@@ -32,10 +32,31 @@ import {
   FRAME_SCAN_MAX,
   SEQ_MAX,
   STALE_RUN_LIMIT,
+  STALE_RUN_MS,
 } from '../src/bridge/envelope.ts'
 
 let failed = 0
 let ran = 0
+
+/**
+ * A clock the suite winds by hand.
+ *
+ * The gate's re-seed is counted AND timed, and the two halves are the point of
+ * each other: eight envelopes can arrive inside a millisecond from one `for`
+ * loop, so a run that only counts is a run anything can produce. Sleeping
+ * through a real quarter second in a suite that otherwise runs instantly would
+ * be the wrong trade twice over -- slower, and still unable to assert the case
+ * where NO time passes, which is the one that matters.
+ */
+function clock(start = 1_000_000) {
+  let t = start
+  return { now: () => t, advance: (ms) => { t += ms } }
+}
+
+/** A gate on a driven clock. Every timed case below wants this one. */
+function timedGate(c) {
+  return createSeqGate(STALE_RUN_LIMIT, STALE_RUN_MS, c.now)
+}
 
 function check(label, got, expected) {
   ran++
@@ -265,24 +286,90 @@ console.log('\nthe sequence gate')
   // anything Lua counts to, and every genuine envelope after it was stale
   // forever. admit() now refuses MAX_SAFE_INTEGER outright, but a forged number
   // just under the ceiling passes -- so the range check is not the fix, this is.
-  const g = createSeqGate()
+  //
+  // ═══ AND THE RECOVERY NOW DELIVERS NOTHING ═══
+  //
+  // The first version of this re-seed returned TRUE for the envelope that
+  // tripped the run, which is by definition a stale envelope carrying an old
+  // payload -- so the cure rendered a wrong value and left the next real
+  // envelope to correct it. The gate adopts the newest sequence the sender has
+  // been SEEN to use instead, and refuses the whole run including the one that
+  // tripped it. The freeze costs one envelope more and no wrong frame at all.
+  const c = clock()
+  const g = timedGate(c)
   g.fresh(SEQ_MAX - 1)
   g.commit(SEQ_MAX - 1)
 
   const dropped = []
-  for (let i = 1; i <= STALE_RUN_LIMIT; i++) dropped.push(g.fresh(i))
+  for (let i = 1; i <= STALE_RUN_LIMIT; i++) {
+    c.advance(100)          // 10Hz, the rate the magazine pushes at
+    dropped.push(g.fresh(i))
+  }
 
   check(
-    'a poisoned sequence drops exactly STALE_RUN_LIMIT - 1 envelopes',
+    'a poisoned sequence refuses every envelope in the run',
     dropped,
-    [...Array(STALE_RUN_LIMIT - 1).fill(false), true],
+    Array(STALE_RUN_LIMIT).fill(false),
   )
-  check('and then the gate lets go of the bad number', g.last, -1)
+  check('and then the gate adopts the newest sequence it saw', g.last, STALE_RUN_LIMIT)
+  check('with the run cleared', g.staleRun, 0)
 
-  g.commit(STALE_RUN_LIMIT)
-  check('the session carries on from the real counter', g.last, STALE_RUN_LIMIT)
-  check('and normal freshness is back', g.fresh(STALE_RUN_LIMIT), false)
-  check('with the run cleared', g.staleRun, 1)
+  // The freeze is over, because the sender's NEXT envelope is above everything
+  // the run contained.
+  check('the session carries on from the real counter', g.fresh(STALE_RUN_LIMIT + 1), true)
+  g.commit(STALE_RUN_LIMIT + 1)
+  check('and normal freshness is back', g.fresh(STALE_RUN_LIMIT + 1), false)
+}
+
+{
+  // THE COUNT ON ITS OWN IS FREE TO PRODUCE, and that is why it is not the whole
+  // condition. Eight postMessages from one `for` loop land in a single
+  // task-queue drain, inside a millisecond -- so a run measured only in
+  // envelopes lets anything that can reach the dispatcher decide, for nothing,
+  // that the gate is wrong about its own high-water mark. The clock does not
+  // move here and neither does the gate.
+  const c = clock()
+  const g = timedGate(c)
+  g.fresh(900)
+  g.commit(900)
+  for (let i = 0; i < STALE_RUN_LIMIT * 4; i++) g.fresh(500)
+  check('a flood inside one millisecond refuses every time', g.fresh(500), false)
+  check('and never re-seeds', g.last, 900)
+
+  // The same run, once it has actually gone on for a quarter second.
+  c.advance(STALE_RUN_MS)
+  check('the same run past the floor still refuses this one', g.fresh(500), false)
+  check('but the gate has let go of the bad number', g.last, 500)
+}
+
+{
+  // WHAT THE TRANSPORT ACTUALLY PRODUCES, which is the whole safety case for
+  // re-seeding at all: if an ordinary session walked into a run, a re-seed would
+  // be a routine event rather than a recovery. It does not. Lua's counter only
+  // rises and NUI delivers in order, so a monotonic stream refuses nothing --
+  // and even a stream in which EVERY envelope arrives twice peaks at a run of
+  // one, because the next real envelope clears it.
+  const c = clock()
+  const g = timedGate(c)
+  let peak = 0
+  for (let s = 1; s <= 500; s++) {
+    c.advance(100)
+    if (g.fresh(s)) g.commit(s)
+    if (g.staleRun > peak) peak = g.staleRun
+  }
+  check('a monotonic stream refuses nothing', g.last, 500)
+  check('and never builds a run', peak, 0)
+
+  const d = timedGate(c)
+  let dupPeak = 0
+  for (let s = 1; s <= 500; s++) {
+    c.advance(100)
+    if (d.fresh(s)) d.commit(s)
+    if (d.fresh(s)) d.commit(s)     // the same envelope a second time
+    if (d.staleRun > dupPeak) dupPeak = d.staleRun
+  }
+  check('every envelope twice still arrives once', d.last, 500)
+  check('and peaks at a run of one', dupPeak, 1)
 }
 
 {
@@ -326,7 +413,8 @@ function route(host, source, data, gate, handlers) {
 }
 
 {
-  const gate = createSeqGate()
+  const c = clock()
+  const gate = timedGate(c)
   const heard = []
   const handlers = new Map([
     ['toast', [(d) => heard.push(['toast', d])]],
@@ -353,6 +441,22 @@ function route(host, source, data, gate, handlers) {
   check('lastSeq is unchanged', gate.last, 41)
   check('and no stale run was started', gate.staleRun, 0)
 
+  // AND FORTY MORE CHANGE NOTHING EITHER, which is the half of the re-seed's
+  // safety that is easiest to lose. The run watches STALE refusals, counted
+  // inside the gate; a message refused at the DOOR never reaches the gate at
+  // all. If the two counters were ever merged, the manual iframe could spend a
+  // session driving the gate towards a re-seed nobody asked for -- and a
+  // re-seed is the one moment the gate lowers its own high-water mark.
+  for (let i = 0; i < 40; i++) {
+    c.advance(100)
+    route(HOST, FRAME, forged, gate, handlers)
+  }
+  check(
+    'a frame we embedded can post all day without moving the gate',
+    [gate.last, gate.staleRun, heard.length],
+    [41, 0, 1],
+  )
+
   // Step 4: the envelope that would have been eaten.
   route(HOST, ROOT, { t: 'br', v: 1, k: 'toast', d: { text: 'real' }, s: 42 }, gate, handlers)
   check('the next real envelope still lands', heard.length, 2)
@@ -366,13 +470,75 @@ function route(host, source, data, gate, handlers) {
   // sequence half of this fix does not depend on knowing the sender at all.
   const sneaky = { ...forged, s: SEQ_MAX - 1 }
   check('a plausible forgery from the root page is admitted', route(HOST, ROOT, sneaky, gate, handlers), 'delivered')
-  for (let i = 43; i < 43 + STALE_RUN_LIMIT - 1; i++) {
+  for (let i = 43; i < 43 + STALE_RUN_LIMIT; i++) {
+    c.advance(100)
     route(HOST, ROOT, { t: 'br', v: 1, k: 'toast', d: { text: 'real' }, s: i }, gate, handlers)
   }
-  check('it costs a handful of envelopes', heard.length, 3)
+  check('it costs a handful of envelopes, and not one wrong one', heard.length, 3)
+  c.advance(100)
   route(HOST, ROOT, { t: 'br', v: 1, k: 'toast', d: { text: 'back' }, s: 99 }, gate, handlers)
   check('and then the interface comes back', heard.length, 4)
   check('with the payload it was sent', heard[3][1], { text: 'back' })
+}
+
+// ------------------------------------------------------ the owner's report ---
+
+console.log("\nthe ammo counter, from the playtest")
+
+{
+  /**
+   * ═══ THE REGRESSION THE RE-SEED SHIPPED WITH ═══
+   *
+   * Owner, 2026-09-09, playtesting 117df5c:
+   *
+   *   "the HUD does update but it's jittery. shooting from 8 bullets to 7 for
+   *    example - the value goes down to 5 for example, and flicks back to 7
+   *    quickly."
+   *
+   * A LOWER, OLDER NUMBER RENDERING AND THEN BEING CORRECTED is the exact shape
+   * of a gate that recovers by TAKING the envelope which tripped its stale run.
+   * That envelope is a stale one; the payload it carries is an old magazine; and
+   * the next real envelope arrives a tenth of a second later and puts the right
+   * number back. The whole event is one frame long and reads as a flicker.
+   *
+   * DRIVEN THROUGH route(), NOT THROUGH THE GATE DIRECTLY, because the claim is
+   * about what reaches a HANDLER. A gate that returns false and a dispatcher
+   * that runs the handler anyway would pass a gate-level assertion and fail the
+   * player.
+   */
+  const c = clock()
+  const gate = timedGate(c)
+  const clips = []
+  const handlers = new Map([['inv', [(d) => clips.push(d.clip)]]])
+  const inv = (s, clip) => ({ t: 'br', v: 1, k: 'inv', d: { clip }, s })
+
+  // A live match. br_core reads the magazine off the gun at 10Hz and pushes it.
+  route(HOST, ROOT, inv(900, 9), gate, handlers)
+  route(HOST, ROOT, inv(901, 8), gate, handlers)
+  check('the counter follows the gun', clips, [9, 8])
+
+  // Something puts the gate ahead of the sender. Either half of #281 does it: a
+  // forged sequence from a window the deny-list does not cover, or Lua's own
+  // counter starting over with no snapshot behind it.
+  route(HOST, ROOT, inv(SEQ_MAX - 1, 8), gate, handlers)
+  check('and now the gate is ahead of Lua', gate.last, SEQ_MAX - 1)
+
+  // The sender's real stream, still climbing, every envelope of it behind the
+  // gate. The magazines in it are ones the player already fired through, so the
+  // LAST of them -- the one that trips the run -- carries 5, which is the number
+  // that used to reach the screen between 8 and 7.
+  const stale = [[40, 12], [41, 11], [42, 10], [43, 9], [44, 8], [45, 7], [46, 6], [47, 5]]
+  for (const [s, clip] of stale) {
+    c.advance(100)
+    route(HOST, ROOT, inv(s, clip), gate, handlers)
+  }
+  check('not one stale magazine reached the screen', clips, [9, 8, 8])
+  check('and the gate re-seeded to the newest sequence it saw', gate.last, 47)
+
+  // The shot the player actually fired.
+  c.advance(100)
+  check('the next real envelope lands', route(HOST, ROOT, inv(48, 7), gate, handlers), 'delivered')
+  check('and 7 is the only thing the counter shows after 8', clips, [9, 8, 8, 7])
 }
 
 if (failed) {

@@ -302,20 +302,41 @@ export function admit(host: FrameHost, source: unknown, data: unknown): Verdict 
  * How many envelopes in a row may be refused as stale before the gate concludes
  * its own sequence is wrong and re-seeds.
  *
- * IN NORMAL OPERATION THIS RUN NEVER STARTS. Lua's `seq` only rises, and NUI
- * delivers in order, so a stale envelope is not something the transport
- * produces. Two things produce one: a forged `s` far in the future, and br_ui
- * restarting so Lua's counter goes back to 1 without a snapshot behind it. Both
- * present identically -- the interface stops updating and stays stopped -- and
- * both are fixed by noticing that "everything is stale" is not a statement about
- * the messages, it is a statement about us.
+ * IN NORMAL OPERATION THIS RUN NEVER STARTS, and that is measured rather than
+ * assumed. Driven through this module: five hundred envelopes of an ordinary
+ * monotonic stream peak at a run of ZERO, and a stream in which every envelope
+ * arrives TWICE peaks at ONE, because the duplicate is refused and the next real
+ * one clears the run again. Lua's `seq` only rises and NUI delivers in order, so
+ * a stale envelope is not something the transport produces.
  *
- * EIGHT, NOT ONE. One would make the stale check meaningless. Eight is under a
- * second of envelopes at the rate a live match produces them, and the cost of
- * being wrong is applying an update slightly out of order, which is what the
- * check was avoiding in the first place.
+ * Two things produce one: a forged `s` far in the future from a window the
+ * deny-list above does not cover, and Lua's counter going back to 1 without a
+ * snapshot behind it. Both present identically -- the interface stops updating
+ * and stays stopped -- and both are fixed by noticing that "everything is stale"
+ * is not a statement about the messages, it is a statement about us.
+ *
+ * EIGHT, NOT ONE. One would make the stale check meaningless.
  */
 export const STALE_RUN_LIMIT = 8
+
+/**
+ * ...and how long that run must have gone on for.
+ *
+ * ═══ A COUNT ON ITS OWN IS FREE TO PRODUCE ═══
+ *
+ * Eight postMessages from one `for` loop land in a single task-queue drain,
+ * inside a millisecond. So a count alone lets any window that can reach the
+ * dispatcher at all decide, for nothing, that the gate is wrong about itself.
+ * What the run actually claims is that a CONDITION HAS PERSISTED, and a
+ * condition that has persisted has a duration; requiring one is not a second
+ * guard bolted on, it is the test finally matching the claim.
+ *
+ * A QUARTER SECOND: longer than any synchronous flood, shorter than a player
+ * notices. The two conditions are a MAXIMUM and not a choice between them, which
+ * is what keeps both bounded -- a quiet screen re-seeds when the count lands, a
+ * busy one when the clock does, and neither can wait forever.
+ */
+export const STALE_RUN_MS = 250
 
 export interface SeqGate {
   /** Highest sequence delivered. Readable so the guard test can assert it is
@@ -326,15 +347,77 @@ export interface SeqGate {
   /** A snapshot re-seeds everything, so it sets the sequence rather than being
    *  measured against it -- otherwise a resource restart leaves the UI frozen. */
   reseed(s: number | undefined): void
-  /** Is this envelope still ahead of what has been delivered? May re-seed. */
+  /** Is this envelope still ahead of what has been delivered? NEVER true for a
+   *  sequence at or behind `last`; see the body. */
   fresh(s: number | undefined): boolean
   /** Record a delivery. Called only once the envelope has a listener. */
   commit(s: number | undefined): void
 }
 
-export function createSeqGate(limit: number = STALE_RUN_LIMIT): SeqGate {
+/**
+ * The high-water mark, and the way out of a wrong one.
+ *
+ * ═══ THE TWO PROPERTIES, WHICH PULL AGAINST EACH OTHER ═══
+ *
+ *   1. A STALE ENVELOPE NEVER REACHES A HANDLER.
+ *   2. A FORGED OR RESTARTED SEQUENCE NEVER FREEZES THE SESSION.
+ *
+ * The first shipped version of the re-seed bought (2) by selling (1): after a
+ * run of stale refusals it dropped `last` to -1 and RETURNED TRUE FOR THE
+ * ENVELOPE THAT TRIPPED THE RUN. That envelope is by definition a stale one, so
+ * the recovery rendered an old payload and left the next real envelope to
+ * correct it -- an interface that flicks to a wrong number and snaps back, which
+ * is the worse half of both failures rather than a compromise between them. It
+ * was worse again when the tripping envelope had no handler yet: `commit` never
+ * ran, so the gate sat at -1 with no high-water mark at all for the rest of the
+ * session.
+ *
+ * ═══ WHAT SATISFIES BOTH ═══
+ *
+ * The run is still what detects a wrong `last`. What changed is what it does
+ * about it: it ADOPTS THE NEWEST SEQUENCE THE SENDER HAS ACTUALLY BEEN SEEN TO
+ * USE, and refuses the envelope that tripped it like every other one in the run.
+ * Nothing at or below a sequence already seen can ever render, so (1) holds by
+ * construction -- there is exactly one `return true` for a number below, and
+ * `s > last` guards it. And the sender's NEXT envelope is above everything in
+ * the run, so it lands, which is (2). The freeze costs one envelope more than
+ * the old rule did and no wrong frame at all.
+ *
+ * ═══ WHAT THIS STILL DOES NOT CLOSE, said plainly ═══
+ *
+ * A window outside the deny-list -- a SIBLING resource's frame, which the header
+ * states this file cannot refuse -- can post stale envelopes during a run and
+ * drag the adopted sequence wherever it likes. That is not a hole this function
+ * can close, and it is not the interesting one: the same window can simply post
+ * a high `s` and be committed, which is the freeze itself. The allow-list the
+ * header describes is what closes both, and it needs the measurement it names.
+ *
+ * @param limit  consecutive stale refusals before the gate re-seeds
+ * @param minMs  ...and how long that run must have gone on for
+ * @param now    the clock, injectable so the suite can drive a run without
+ *               sleeping through it. `Date.now` is a global rather than an
+ *               import, so this file still has no runtime imports and node can
+ *               go on loading it as-is.
+ */
+export function createSeqGate(
+  limit: number = STALE_RUN_LIMIT,
+  minMs: number = STALE_RUN_MS,
+  now: () => number = Date.now,
+): SeqGate {
   let last = -1
   let staleRun = 0
+  /** The highest sequence seen among the refusals in the CURRENT run. This is
+   *  what a re-seed adopts: it is the closest thing to "where the sender's
+   *  counter actually is" that a gate which has never believed the sender has. */
+  let staleMax = -1
+  /** When this run's first refusal arrived, by `now`. */
+  let staleSince = 0
+
+  const clearRun = () => {
+    staleRun = 0
+    staleMax = -1
+    staleSince = 0
+  }
 
   return {
     get last() { return last },
@@ -342,23 +425,35 @@ export function createSeqGate(limit: number = STALE_RUN_LIMIT): SeqGate {
 
     reseed(s) {
       last = typeof s === 'number' ? s : 0
-      staleRun = 0
+      clearRun()
     },
 
     fresh(s) {
       if (typeof s !== 'number') return true
+
+      // THE ONLY WAY A SEQUENCED ENVELOPE IS EVER ADMITTED. Property (1) above
+      // is this line and nothing else, which is why the re-seed below is
+      // written as an assignment to `last` and not as a second exit.
       if (s > last) {
-        staleRun = 0
+        clearRun()
         return true
       }
+
+      const at = now()
+      if (staleRun === 0) staleSince = at
       staleRun += 1
-      if (staleRun < limit) return false
-      // Everything since the last delivery has been stale. Whatever `last` is,
-      // it is not a number this sender is going to exceed, so stop measuring
-      // against it and take this one.
-      last = -1
-      staleRun = 0
-      return true
+      if (s > staleMax) staleMax = s
+
+      if (staleRun >= limit && at - staleSince >= minMs) {
+        // Long enough, and often enough, that `last` is not a number this
+        // sender is going to exceed. Stop measuring against it and measure
+        // against the sender instead -- the newest sequence it has been seen
+        // to use. Everything in the run stays refused, this one included.
+        last = staleMax
+        clearRun()
+      }
+
+      return false
     },
 
     commit(s) {
