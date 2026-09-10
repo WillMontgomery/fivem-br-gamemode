@@ -234,7 +234,39 @@ local function historyRowFor(p, ctx, license, endedAt, deltas, xpEarned)
 
         matchId     = ctx.matchId or 0,
         endedAt     = endedAt,
+        -- ═══ WHEN IT STARTED, ON THE SAME CLOCK AS `endedAt` (#293) ═══
+        --
+        -- NOT `ctx.startedAt`, WHICH IS THE OTHER CLOCK. The envelope carries
+        -- both: `startedAt` is GetGameTimer() -- milliseconds since the FXServer
+        -- process booted, which returns to zero on every restart and is what
+        -- every duration on these rows is measured against -- and
+        -- `startedAtWall` is `os.time() * 1000`, stamped in the same transition,
+        -- which is the clock `endedAt` above uses. Only the second one can be
+        -- read as a time of day afterwards, so only the second one is stored,
+        -- and it lands under the name that sits beside `endedAt`.
+        --
+        -- ZERO WHEN THE MATCH NEVER STARTED, and left to read as absent. A
+        -- match dissolved on the warmup pad has no start time; substituting
+        -- `endedAt` would file a zero-length match that never happened, and
+        -- br_ddb coerces an absent number to 0 anyway -- so 0 is the one value
+        -- every reader already has to treat as "not recorded". Every match
+        -- played before this shipped has it, and that is expected.
+        startedAt   = ctx.startedAtWall or 0,
         mode        = tostring(ctx.mode or ''),
+        -- ═══ WHICH SQUAD THEY PLAYED IT WITH (#293) ═══
+        --
+        -- Minted as `m<matchId>sq<n>` in br_core/server/party.lua, put on every
+        -- results row by publishResults, and read a few lines up by `deltasFor`
+        -- to decide solo-versus-squad XP and payout -- and then dropped here,
+        -- twenty lines later, before the write. It was in the payload, in the
+        -- handler and in a variable, and in no record.
+        --
+        -- ABSENT RATHER THAN EMPTY FOR A SOLO MATCH. `p.squadId` is nil there
+        -- and stays nil; br_ddb writes the empty string for it, which is what
+        -- "this player had no squad" looks like on a row. It is a STRING at the
+        -- far end and deliberately not in HISTORY_NUMBERS, which would coerce
+        -- `m12sq3` to zero.
+        squadId     = p.squadId,
         placement   = p.placement or 0,
         -- How many were in it. Third of eight and third of ninety-six are not
         -- the same achievement, and the placement alone cannot tell them apart.
@@ -248,6 +280,24 @@ local function historyRowFor(p, ctx, license, endedAt, deltas, xpEarned)
         damage      = math.floor(p.damage or 0.0),
         survivedMs  = p.survivedMs or 0,
         xpEarned    = xpEarned,
+        -- ═══ WHAT THEY SPENT IN THE MATCH (#293) ═══
+        --
+        -- The counterpart to `voltsEarned` below, and the owner asked for it by
+        -- name: "The Volts spent per match should be part of the ledger if not
+        -- already... And include spending in the warmup shop as part of the
+        -- match please, since that's going to be a big contributor."
+        --
+        -- IT IS NOT DERIVED FROM ANYTHING HERE, and cannot be. A purchase is a
+        -- conditional debit written straight to the profile row by br_ddb, so
+        -- the only place the amount ever exists is the moment the write is
+        -- accepted -- BR.Market.charge's success arm, which is where the counter
+        -- on the roster entry is moved. This carries what the entry held when
+        -- the match ended and adds nothing to it.
+        --
+        -- IT DOES NOT ENTER THE PAYOUT. `deltasFor` above never sees it: spending
+        -- is not an input to what a match earns, and putting it there would pay
+        -- people for shopping.
+        voltsSpent  = p.voltsSpent or 0,
         -- INCLUDES THE LEVEL-UP BONUS, because `deltas.balance` does by the time
         -- this is called -- and because that is the figure the player was shown
         -- on the verdict screen. A record that disagrees with what somebody

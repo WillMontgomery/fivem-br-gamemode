@@ -1849,6 +1849,148 @@ console.log('\nstats: brvolts rides the same handler')
   check('while the Volts are on the wire', values[':balance'], 5000)
 }
 
+// ------------------------------------------------------- the match ledger ---
+//
+// ═══ WHAT A HISTORY ROW CARRIES, ASSERTED OFF THE WIRE ═══
+//
+// `historyItem` is module-local to src/index.js, so it is driven through the
+// verb rather than imported -- which is the stronger test anyway: it can only
+// pass if the handler actually built and marshalled the item.
+//
+// THE ALLOWLIST IS THE THING UNDER TEST. `HISTORY_NUMBERS` is hard: a name that
+// is not on it and not spelled out in the item is dropped in silence, so a field
+// added to br_stats and forgotten here fails nowhere and reads as zero forever.
+// Every assertion below that names a new field is the gate against that.
+
+/** One participant's row, in the shape br_stats/server/persist.lua builds it. */
+const HISTORY_ROW = {
+  license: LIC,
+  sk: 'match#0001700000000#7',
+  matchId: 7,
+  endedAt: 1_700_000_000_000,
+  startedAt: 1_699_999_100_000,
+  mode: 'squad',
+  squadId: 'm7sq2',
+  placement: 3,
+  total: 48,
+  kills: 2,
+  downs: 1,
+  revives: 0,
+  damage: 400,
+  survivedMs: 90_000,
+  xpEarned: 100,
+  voltsEarned: 200,
+  voltsSpent: 1_750,
+  won: false,
+}
+
+/** The one item a one-row batch put on the wire. */
+const putItems = (cmd) =>
+  (cmd.input.RequestItems?.['br-players'] ?? []).map((w) => unmarshall(w.PutRequest.Item))
+
+console.log('\nhistory: the three fields the match page is blocked on (#293)')
+{
+  bridge.reset()
+  bridge.reply({})
+
+  const threw = bridge.call('br:ddb:historyPut', 70, [HISTORY_ROW])
+  check('the handler runs', why(threw), null)
+
+  const cmd = sent(0)
+  check('it is a BatchWriteItem', cmd.kind, 'BatchWriteItemCommand')
+
+  const items = putItems(cmd)
+  check('with one item in it', items.length, 1)
+  const it = items[0] ?? {}
+
+  // ── VOLTS SPENT ─────────────────────────────────────────────────────────
+  //
+  // Recorded nowhere in any form before #293: the debit is a conditional write
+  // against the profile row, so once it settles the only trace is a smaller
+  // balance. THE VALUE IS ASSERTED, NOT ITS PRESENCE -- an absent name comes
+  // through this allowlist as 0, which is a number, is present, and is a lie.
+  check('the Volts spent in the match are on the row', it.voltsSpent, 1750)
+  check('and they are a number', typeof it.voltsSpent, 'number')
+
+  // ── THE SQUAD ───────────────────────────────────────────────────────────
+  //
+  // A STRING, and this is the whole risk. `m7sq2` put through HISTORY_NUMBERS
+  // would be `num('m7sq2')` -- zero -- so the grouping would be erased while
+  // leaving a column that looks written, which is worse than the gap it fixes.
+  check('the squad id is on the row', it.squadId, 'm7sq2')
+  check('as a STRING, not coerced through the number allowlist', typeof it.squadId, 'string')
+  check('and the mode beside it is still a string', it.mode, 'squad')
+
+  // ── THE START TIMESTAMP ─────────────────────────────────────────────────
+  //
+  // The envelope's own `startedAt` is a GetGameTimer() reading -- milliseconds
+  // since the FXServer process booted -- which br_stats resolves to a wall clock
+  // before it gets here. Asserted against `endedAt` as well as against its own
+  // value, because the pair only means anything if it is two readings of ONE
+  // clock.
+  check('the match start is on the row', it.startedAt, 1_699_999_100_000)
+  check('and it is earlier than the end, on the same clock', it.startedAt < it.endedAt, true)
+
+  // Untouched by any of it.
+  check('the key is still the caller-owned sort key', it.sk, 'match#0001700000000#7')
+  check('and the row still knows who won', it.won, false)
+}
+
+console.log('\nhistory: absence is zero and an empty string, and never invented')
+{
+  bridge.reset()
+  bridge.reply({})
+
+  // A ROW FROM BEFORE #293, or a solo match: no squad, no start time, no spend.
+  // Every one of these must land as the value that reads as "not recorded"
+  // rather than as a plausible figure -- the owner will not hand-edit DynamoDB
+  // and nothing backfills.
+  const bare = { ...HISTORY_ROW }
+  delete bare.squadId
+  delete bare.startedAt
+  delete bare.voltsSpent
+
+  bridge.call('br:ddb:historyPut', 71, [bare])
+  const it = putItems(sent(0))[0] ?? {}
+
+  check('a solo match carries an empty squad id, not a zero', it.squadId, '')
+  check('and it is still a string', typeof it.squadId, 'string')
+  check('a match with no recorded start reads zero', it.startedAt, 0)
+  check('and one with no recorded spend reads zero', it.voltsSpent, 0)
+  // The rest of the row is unaffected, which is what makes the three above a
+  // gap rather than a broken write.
+  check('while everything that was sent still lands', it.voltsEarned, 200)
+}
+
+console.log('\nhistory: the allowlist is hard, and omission from it is silent')
+{
+  bridge.reset()
+  bridge.reply({})
+
+  // ═══ THE PROPERTY THAT MAKES A FORGOTTEN FIELD DANGEROUS ═══
+  //
+  // Nothing anywhere logs, throws or answers differently when br_stats sends a
+  // name this file does not know. It is simply not written, and the column reads
+  // as absent forever. Pinned here so the next person adding a ledger field
+  // finds out from a test rather than from a console panel full of zeroes.
+  bridge.call('br:ddb:historyPut', 72, [{
+    ...HISTORY_ROW,
+    voltsSpnet: 9_999,        // a typo'd number
+    squadid: 'm7sq9',         // and a typo'd string
+    revivesGiven: 4,          // and a field that simply does not exist here
+  }])
+
+  const it = putItems(sent(0))[0] ?? {}
+  check('a typo\'d number is dropped rather than stored', it.voltsSpnet, undefined)
+  check('a typo\'d string is dropped too', it.squadid, undefined)
+  check('and so is a name this file has never heard of', it.revivesGiven, undefined)
+  check('the correctly spelled fields are unharmed', it.voltsSpent, 1750)
+  check('and so is the squad', it.squadId, 'm7sq2')
+
+  await bridge.settle()
+  check('and the batch is reported as written', lastEmit('br:ddb:historyResult')?.args[1], true)
+}
+
 console.log('\nspend: the debit reaches DynamoDB with its condition intact')
 {
   bridge.reset()

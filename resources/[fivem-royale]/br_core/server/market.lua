@@ -630,6 +630,47 @@ function BR.Market.charge(src, amount, reason, done)
             -- cache that another writer may have moved.
             entry.balance = tonumber(extra.balance) or ((tonumber(entry.balance) or 0) - cost)
             BR.Market.push(src)
+
+            -- ═══ THE MATCH LEDGER'S SPEND COLUMN, AND IT IS ONLY EVER MOVED
+            --     HERE (#293) ═══
+            --
+            -- Volts spent in a match were recorded nowhere in any form. The
+            -- debit is a conditional write against the row, so once it settles
+            -- the only trace is a smaller balance -- and `entry.spent` a few
+            -- lines up is NOT a total of anything: it is an in-flight
+            -- reservation, released on this line's own arm and on the refusal
+            -- below, so it is zero almost always.
+            --
+            -- INSIDE THE SUCCESS ARM, WHICH IS THE WHOLE RULE. Counting at the
+            -- reservation would bank every refused purchase -- and the case
+            -- that reaches the refusal arm is precisely the one the cache
+            -- thought was affordable, so it is neither rare nor visible.
+            --
+            -- ONE PLACE, THREE SPEND PATHS. The warmup showroom
+            -- (server/shop.lua), the gun shop (server/gunshop.lua) and the
+            -- revive key (server/revivekey.lua) all charge through this
+            -- function, so all three are counted without any of them knowing
+            -- about the counter, and a fourth added later is counted too.
+            --
+            -- WHICH MATCH A WARMUP SPEND BELONGS TO: the one the player then
+            -- plays, and it needs no arranging. The showroom refuses a buyer
+            -- with no matchId, so by the time this line runs the entry is
+            -- already attached to that match -- and the only thing that zeroes
+            -- the counter, BR.Match.resetPlayer, does not run until that match
+            -- reaches CLEANUP or the player walks out of it (#161).
+            --
+            -- THE ROSTER IS RE-READ AFTER THE ROUND TRIP RATHER THAN CAPTURED
+            -- BEFORE IT. A DynamoDB write is up to six seconds; a player can
+            -- disconnect inside one and FiveM recycles server ids within the
+            -- minute, so the entry sitting at this `src` may belong to somebody
+            -- else by now. The license is checked against the one that was
+            -- charged, and a mismatch drops the count rather than filing it
+            -- against a stranger -- the same rule server/roster.lua applies to
+            -- every other per-src cache it forgets on disconnect.
+            local e = BR.Roster and BR.Roster.get and BR.Roster.get(src)
+            if e and BR.Roster.licenseOf(src) == lic then
+                e.voltsSpent = (tonumber(e.voltsSpent) or 0) + cost
+            end
             -- ONE READ, THREE USES. The console line, the Store screen (pushed
             -- one line above, out of the same call) and the caller's toast all
             -- quote this, so there is no arrangement in which they disagree.

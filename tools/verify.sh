@@ -399,7 +399,34 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
     # build that lowered the flag there would close the offer on the one player
     # it must stay open for. The server half of the same fix lives in
     # test_roster.lua ('tutorial.holdOncePerAccount'), beside the hold it guards.
-    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua tools/test_artifacts.lua tools/test_airdrop.lua tools/test_client.lua tools/test_spectate.lua tools/test_matchexit.lua tools/test_lobbyseq.lua tools/test_landtime.lua tools/test_config.lua tools/test_admin.lua tools/test_community.lua tools/test_guild.lua tools/test_fuel.lua tools/test_sfx.lua tools/test_boost.lua tools/test_vehdamage.lua tools/test_icons.lua tools/test_vehrefuse.lua tools/test_rescue.lua tools/test_ambheal.lua tools/test_revivekey.lua tools/test_ambulances.lua tools/test_shop.lua tools/test_gunshop.lua tools/test_warmupcrates.lua tools/test_bool_natives.lua tools/test_tutorial.lua; do
+    #
+    # test_volts.lua is the eleventh suite to load a real SERVER file, and it
+    # loads the one file this tree had never stood up at all:
+    # br_core/server/market.lua. test_shop.lua says so in its own words -- it
+    # stubs BR.Market wholesale so the showroom handler can be driven, and falls
+    # back to asserting on the SOURCE TEXT of BR.Market.charge, which is the
+    # strongest statement a stub can make about the function it replaced.
+    #
+    # #293 NEEDS MORE THAN A SOURCE MATCH, because what it adds is not a field,
+    # it is WHERE ONE LINE SITS. The match's Volts-spent counter moves in the
+    # SUCCESS arm of BR.Market.charge and nowhere else, so a purchase DynamoDB
+    # refused contributes nothing to the ledger. Counting at the reservation
+    # instead would look identical from inside the game -- no car, no toast, the
+    # balance they started with -- and would leave a permanent row claiming money
+    # nobody was charged, on data nothing re-derives.
+    #
+    # AND THE REFUSAL ARM IS NOT A RARE PATH. It is reached exactly when the
+    # session cache is stale -- a report award, a console grant, or the same
+    # license connected to a second server -- which is the case the debit was
+    # moved into DynamoDB to catch in the first place.
+    #
+    # IT ALSO HOLDS THE RECYCLED-ID RULE. A spend write is up to six seconds and
+    # FiveM reuses server ids within the minute, so the roster entry sitting at a
+    # source when the answer lands may belong to somebody else; the license is
+    # re-checked, and the suite hands slot 20 to a stranger mid-flight to prove
+    # it. server/roster.lua forgets a dozen per-src caches on disconnect for the
+    # same reason, and this is the first one with money in it.
+    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua tools/test_artifacts.lua tools/test_airdrop.lua tools/test_client.lua tools/test_spectate.lua tools/test_matchexit.lua tools/test_lobbyseq.lua tools/test_landtime.lua tools/test_config.lua tools/test_admin.lua tools/test_community.lua tools/test_guild.lua tools/test_fuel.lua tools/test_sfx.lua tools/test_boost.lua tools/test_vehdamage.lua tools/test_icons.lua tools/test_vehrefuse.lua tools/test_rescue.lua tools/test_ambheal.lua tools/test_revivekey.lua tools/test_ambulances.lua tools/test_shop.lua tools/test_gunshop.lua tools/test_volts.lua tools/test_warmupcrates.lua tools/test_bool_natives.lua tools/test_tutorial.lua; do
         [ -f "$suite" ] || continue
         printf '%s' "${DIM}$(basename "$suite" .lua): ${RST}"
         "$LUA" "$suite" || rc=1

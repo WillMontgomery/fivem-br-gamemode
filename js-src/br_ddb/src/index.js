@@ -500,10 +500,26 @@ const HISTORY_BATCH = 25
  * An ALLOWLIST, like the deltas above and for the same reason: this data
  * crossed a runtime boundary, and a typo'd key should be dropped rather than
  * quietly creating an attribute nobody reads and nobody knows is there.
+ *
+ * IT IS A HARD ALLOWLIST AND OMISSION IS SILENT. A name that is not on this list
+ * and not spelled out in the item below is dropped without a word -- so a field
+ * added to br_stats and forgotten here does not fail anywhere; it reads as zero
+ * on every row, forever. Adding a number to the ledger means adding it here in
+ * the same commit.
+ *
+ * NUMBERS ONLY. Every entry is put through `num()`, which turns anything
+ * unparseable into 0 -- so a string field on this list would be stored as zero.
+ * Strings are named explicitly in `historyItem` instead (`mode`, `squadId`).
  */
 const HISTORY_NUMBERS = [
   'matchId',
+  // WHEN IT ENDED AND WHEN IT STARTED, both `os.time() * 1000` on the game box
+  // (#293). `startedAt` is NOT the `startedAt` on br_core's results envelope,
+  // which is a GetGameTimer() reading that returns to zero on every restart;
+  // br_stats resolves that before it gets here. Zero means the match never
+  // reached PLAYING, or predates this field.
   'endedAt',
+  'startedAt',
   'placement',
   'total',
   'kills',
@@ -513,6 +529,11 @@ const HISTORY_NUMBERS = [
   'survivedMs',
   'xpEarned',
   'voltsEarned',
+  // AND THE OTHER DIRECTION (#293). Volts spent during the match, counted in the
+  // success arm of BR.Market.charge on the game box -- the warmup showroom, the
+  // gun shop and the revive key. Zero on every match played before this shipped,
+  // and nothing backfills it.
+  'voltsSpent',
 ]
 
 /**
@@ -535,6 +556,16 @@ function historyItem(r) {
     pk: license,
     sk,
     mode: String(r.mode ?? ''),
+    // WHO THEY PLAYED IT WITH (#293), as a STRING and never through
+    // HISTORY_NUMBERS -- `num('m12sq3')` is 0, which would erase the grouping
+    // while leaving a column that looks written. Minted in br_core's party.lua
+    // as `m<matchId>sq<n>`, so it groups a squad within one match and cannot
+    // collide across matches.
+    //
+    // EMPTY MEANS NO SQUAD, which is what a solo match is, and it is the same
+    // answer a row written before this shipped gives. The console cannot tell
+    // those apart and should not pretend to.
+    squadId: String(r.squadId ?? ''),
     // NOT `placement === 1`. The last squad standing can be taken by the storm:
     // they place first and they died, and a match with no survivors has no
     // winner (#133). The caller decides this from the `died` flag it already

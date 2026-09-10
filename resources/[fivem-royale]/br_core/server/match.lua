@@ -489,6 +489,27 @@ function BR.Match.onEnter(m, state, from)
         -- and the log reads as though a match was played and won in one tick.
         m.startedAt = GetGameTimer()
 
+        -- ═══ THE SAME MOMENT ON A CLOCK THAT SURVIVES A RESTART (#293) ═══
+        --
+        -- `startedAt` above is GetGameTimer(): milliseconds since THIS FXServer
+        -- process booted, which returns to zero on every deploy. It is the right
+        -- clock for every in-match measurement -- survivedMs, presentMs and the
+        -- win grace all subtract it from another reading of the same timer -- and
+        -- it is the wrong one for a record, because nothing downstream can turn
+        -- it into a time of day after the fact.
+        --
+        -- SO BOTH ARE STAMPED, ON THE SAME LINE OF THE SAME TRANSITION, and
+        -- neither replaces the other. `os.time() * 1000` is exactly what
+        -- br_stats already stamps `endedAt` with, so the pair a match record
+        -- carries is two readings of ONE clock and their difference is a
+        -- duration rather than an accident.
+        --
+        -- NIL UNTIL PLAYING, like `startedAt`, and deliberately not defaulted:
+        -- a match dissolved on the warmup pad never started, and a record
+        -- claiming it started the instant it ended would be a fabrication that
+        -- reads as real.
+        m.startedAtWall = math.floor(os.time() * 1000)
+
         m.landCheck = nil   -- fresh stuck-lander bookkeeping per match
 
         -- The flight is over, so nobody is waiting for it. The `bus.landing`
@@ -792,6 +813,12 @@ function BR.Match.publishResults(m)
             -- `died` is: this is the only journey it makes, and the formula that
             -- reads it should not have to re-derive it from anything.
             voltsPickedUp = e.voltsPickedUp or 0,
+            -- And what they spent in it (#293), which until now was recorded
+            -- nowhere at all: the debit is a conditional write against the
+            -- profile row, so after it settles the only trace is a smaller
+            -- balance. Carried the same way `voltsPickedUp` is, for the same
+            -- reason -- this is the one journey it makes.
+            voltsSpent = e.voltsSpent or 0,
             placement = e.placement,
             -- PLACEMENT 1 IS NOT THE SAME QUESTION AS "DID THEY WIN".
             --
@@ -833,6 +860,20 @@ function BR.Match.publishResults(m)
         matchId   = m.id,
         mode      = m.mode,
         startedAt = startedAt,
+        -- ═══ AND THE SAME MOMENT ON A CLOCK A RECORD CAN USE (#293) ═══
+        --
+        -- `startedAt` above is the GetGameTimer() reading every duration on
+        -- these rows is measured against, and it is milliseconds since this
+        -- process booted -- so it cannot be turned into a time of day, and it
+        -- was the only start time a match record had.
+        --
+        -- FORWARDED RAW, INCLUDING nil. `startedAt` falls back to `endedAt` a
+        -- few lines up because the durations beside it must not go negative;
+        -- this one must NOT fall back, because a match that never reached
+        -- PLAYING has no start time and inventing one that reads as real is the
+        -- failure #293 asks for this field to avoid. The consumer writes zero
+        -- for absent and says so.
+        startedAtWall = m.startedAtWall,
         endedAt   = endedAt,
         -- How many were in it, for placement-relative scoring: finishing 3rd of
         -- 8 and 3rd of 96 are not the same achievement. Counts the departed --
@@ -861,6 +902,10 @@ function BR.Match.resetPlayer(src, e)
     -- counter left standing follows the player into their NEXT match and is
     -- banked a second time there. One airdrop, paid twice.
     e.voltsPickedUp = 0
+    -- AND THE OTHER DIRECTION OF THE SAME LEDGER (#293). Left standing, a car
+    -- bought in one warmup would be reported as spending in the next match too,
+    -- and the match after that -- #161 exactly, wearing the newest key.
+    e.voltsSpent = 0
 
     -- THE SQUAD'S REVIVE KEY FOR THIS PLAYER (#219). Per-match like everything
     -- around it, and here for the reason #161 spells out above: this is the one

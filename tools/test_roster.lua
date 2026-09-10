@@ -786,6 +786,15 @@ do
     ok(BR.Roster.get(1).name == 'Alice', 'names are captured')
     ok(BR.Roster.get(1).state == BR.PlayerState.LOBBY, 'new players start in the lobby')
 
+    -- ZERO, NOT ABSENT. Both halves of the match Volts ledger are declared on
+    -- newEntry so the entry shape is written down in one place -- and so that
+    -- every reader of them is reading a number rather than a nil that each
+    -- reader has to remember to coerce. `voltsSpent` is #293's half.
+    ok(BR.Roster.get(1).voltsPickedUp == 0, 'a new entry starts with nothing picked up',
+        ('got %s'):format(tostring(BR.Roster.get(1).voltsPickedUp)))
+    ok(BR.Roster.get(1).voltsSpent == 0, 'and nothing spent',
+        ('got %s'):format(tostring(BR.Roster.get(1).voltsSpent)))
+
     join(1, 'Alice')
     ok(BR.Server.count() == 2, 'adding an existing player is idempotent')
 
@@ -2135,6 +2144,11 @@ do
     local mleave = theMatch()
     -- They found an airdrop before they walked out (#88).
     BR.Roster.get(2).voltsPickedUp = 100
+    -- ...and bought a car in the warmup before that (#293). Written straight
+    -- onto the entry, exactly as the pickup above is: what BR.Market.charge does
+    -- with a settled debit has its own suite, and what is under test HERE is the
+    -- counter's exit from a match somebody walks out of.
+    BR.Roster.get(2).voltsSpent = 1500
     fire(BR.Net.MATCH_LEAVE, 2)
     local e = BR.Roster.get(2)
     ok(e.state == BR.PlayerState.LOBBY, 'the leaver is back in the lobby')
@@ -2162,6 +2176,15 @@ do
     ok(sealed and sealed.voltsPickedUp == 100,
         'while the sealed copy keeps them -- that is the row that gets published',
         ('got %s'):format(tostring(sealed and sealed.voltsPickedUp)))
+    -- AND THE SAME FOR WHAT THEY SPENT (#293), which is the same bug in the
+    -- other direction: a warmup purchase left on the entry would be reported as
+    -- spending in the NEXT match, and the one after that.
+    ok((e.voltsSpent or 0) == 0,
+        'the Volts they spent are cleared too, so one car is not billed to two matches',
+        ('got %s'):format(tostring(e.voltsSpent)))
+    ok(sealed and sealed.voltsSpent == 1500,
+        'while the sealed copy keeps the spend, which is what reaches the ledger',
+        ('got %s'):format(tostring(sealed and sealed.voltsSpent)))
     ok(#eventsOf(BR.Net.TO_LOBBY) == 1, 'and is sent home')
     ok(mstate() == BR.MatchState.PLAYING,
         'while the match plays on for everyone else')
@@ -17304,6 +17327,17 @@ do
     BR.Roster.get(1).voltsPickedUp = 100
     BR.Roster.get(2).voltsPickedUp = 100
 
+    -- AND BOTH OF THEM SPENT IN IT (#293), which until now was recorded nowhere
+    -- at all: the debit is a conditional write against the profile row, so once
+    -- it settles the only trace anywhere is a smaller balance. Written onto the
+    -- entry rather than charged, for the same reason the pickups above are --
+    -- what moves the counter is BR.Market.charge's success arm and has its own
+    -- suite; the journey from an entry to a stored row is what is under test
+    -- here. Two different figures, so a row that carried the wrong player's
+    -- would be visible rather than symmetrical.
+    BR.Roster.get(1).voltsSpent = 1500
+    BR.Roster.get(2).voltsSpent = 750
+
     -- Two minutes in, the quitter is eliminated...
     fakeTime = fakeTime + 120000
     BR.Combat.eliminate(2, 'weapon', 1)
@@ -17443,6 +17477,91 @@ do
         ('got %s'):format(tostring(winner and winner.mode)))
     ok(quitter and quitter.won == false, 'the player who died did not win')
 
+    -- ══════════ THE THREE FIELDS THE LEDGER WAS MISSING (#293) ══════════
+    --
+    -- 1. WHAT THEY SPENT. Nothing recorded it in any form, per match or
+    --    cumulatively, so the console's match page had no spend column to read.
+    ok(winner and winner.voltsSpent == 1500,
+        'the record carries what the survivor spent in the match',
+        ('got %s'):format(tostring(winner and winner.voltsSpent)))
+    ok(quitter and quitter.voltsSpent == 750,
+        'and what the player who disconnected spent in it',
+        ('got %s'):format(tostring(quitter and quitter.voltsSpent)))
+    -- IT IS NOT NETTED AGAINST THE PAYOUT, and must never be: `voltsEarned` is
+    -- what the match paid, `voltsSpent` is what they bought with, and a single
+    -- net figure cannot answer either question.
+    ok(winner and winner.voltsEarned ~= winner.voltsSpent
+       and winner.voltsEarned == deltasBy['license:test1'].balance,
+        'and the earned figure beside it is untouched by the spending',
+        ('earned %s spent %s'):format(tostring(winner and winner.voltsEarned),
+            tostring(winner and winner.voltsSpent)))
+
+    -- 2. WHEN IT STARTED, on the clock `endedAt` beside it already uses. The
+    --    envelope's own `startedAt` is the game timer and is deliberately NOT
+    --    what lands here.
+    ok(winner and winner.startedAt == captured.startedAtWall,
+        'the record carries the wall-clock start, not the process timer',
+        ('row %s vs envelope wall %s / timer %s'):format(
+            tostring(winner and winner.startedAt),
+            tostring(captured.startedAtWall), tostring(captured.startedAt)))
+    -- COMPARED THROUGH `or 0` RATHER THAN BARE. An absent field would make
+    -- `nil > number` throw and take the rest of the suite with it, which reads
+    -- as a broken harness rather than as the missing field it is.
+    ok((winner and winner.startedAt or 0) > 1600000000000,
+        'it is epoch milliseconds',
+        ('got %s'):format(tostring(winner and winner.startedAt)))
+    ok((winner and winner.startedAt or 0) <= (winner and winner.endedAt or 0),
+        'and the pair is two readings of ONE clock, so their difference is a duration',
+        ('%s .. %s'):format(tostring(winner and winner.startedAt),
+            tostring(winner and winner.endedAt)))
+    ok(winner and quitter and winner.startedAt == quitter.startedAt,
+        'one start for the whole match, like the end')
+
+    -- 3. WHICH SQUAD. THE NEGATIVE FIRST, because this match is solo: `squadId`
+    --    is nil on every row and must stay nil rather than becoming a zero or an
+    --    invented group. br_ddb turns an absent one into the empty string, which
+    --    is what "no squad" looks like on a stored row.
+    ok(winner and winner.squadId == nil,
+        'a solo match records no squad id at all',
+        ('got %s'):format(tostring(winner and winner.squadId)))
+
+    --    AND THE POSITIVE, from the same envelope with the two players put in
+    --    one squad. The id was already in the payload, already in the handler
+    --    and already in a variable -- `deltasFor` reads it to decide solo versus
+    --    squad -- and was dropped twenty lines later, before the write. So the
+    --    assertion that matters is that the record and the aggregate agree about
+    --    the same id, rather than that a field exists.
+    local squadded = { matchId = captured.matchId, mode = 'squad',
+                       startedAt = captured.startedAt,
+                       startedAtWall = captured.startedAtWall,
+                       endedAt = captured.endedAt,
+                       total = captured.total, players = {} }
+    for _, r in ipairs(captured.players) do
+        local copy = {}
+        for k, v in pairs(r) do copy[k] = v end
+        copy.squadId = ('m%dsq1'):format(captured.matchId)
+        squadded.players[#squadded.players + 1] = copy
+    end
+    local sqMark = #fired
+    fire('br:match:results', nil, squadded)
+    local sqRows, sqDeltas = since(sqMark)
+
+    local sqWinner
+    for _, r in ipairs(sqRows or {}) do
+        if r.license == 'license:test1' then sqWinner = r end
+    end
+    ok(sqWinner and sqWinner.squadId == ('m%dsq1'):format(captured.matchId),
+        'a squad match records the squad id it was played with',
+        ('got %s'):format(tostring(sqWinner and sqWinner.squadId)))
+    ok(sqDeltas['license:test1'] and sqDeltas['license:test1'].squadMatches == 1
+       and sqDeltas['license:test1'].soloMatches == 0,
+        'and the aggregate counted it as a squad match off the SAME field',
+        ('solo %s squad %s'):format(
+            tostring(sqDeltas['license:test1'] and sqDeltas['license:test1'].soloMatches),
+            tostring(sqDeltas['license:test1'] and sqDeltas['license:test1'].squadMatches)))
+    ok(deltasBy['license:test1'].soloMatches == 1,
+        'while the solo run of the same envelope counted a solo match -- one field, two readers')
+
     -- THE ROW AND THE AGGREGATE ARE WRITTEN SEPARATELY AND MUST STILL AGREE.
     -- They are two DynamoDB operations built from one payload; if they ever
     -- disagree, the profile page shows a career total that no listed match adds
@@ -17468,6 +17587,47 @@ do
     ok(byName.Quitter and byName.Quitter.voltsPickedUp == 100,
         'and so does the row of the player who disconnected',
         ('got %s'):format(tostring(byName.Quitter and byName.Quitter.voltsPickedUp)))
+
+    -- ══════════ AND WHAT THEY SPENT TAKES THE SAME ROAD (#293) ══════════
+    --
+    -- Owner, 2026-09-10: "The Volts spent per match should be part of the ledger
+    -- if not already... And include spending in the warmup shop as part of the
+    -- match please, since that's going to be a big contributor."
+    --
+    -- BOTH FIGURES ARE ASSERTED, and they differ on purpose: a row() that read
+    -- the wrong entry, or a field that fell back to a constant, would still
+    -- satisfy a test where both players spent the same amount.
+    ok(byName.Survivor and byName.Survivor.voltsSpent == 1500,
+        'the results row carries what the survivor spent in the match',
+        ('got %s'):format(tostring(byName.Survivor and byName.Survivor.voltsSpent)))
+    -- ...AND THE SEALED ROW CARRIES IT TOO, which is the #100 failure wearing
+    -- the newest key: a field added to newEntry but not to row() is silently
+    -- zero for everybody who left.
+    ok(byName.Quitter and byName.Quitter.voltsSpent == 750,
+        'and so does the row of the player who disconnected mid-match',
+        ('got %s'):format(tostring(byName.Quitter and byName.Quitter.voltsSpent)))
+
+    -- ══════════ A MATCH START THAT SURVIVES A RESTART (#293) ══════════
+    --
+    -- The envelope has always carried `startedAt`, and it has always been a
+    -- GetGameTimer() reading -- milliseconds since THIS FXServer process booted,
+    -- back to zero on every deploy. It is the right clock for `survivedMs` and
+    -- `presentMs`, which subtract it from another reading of the same timer, and
+    -- it cannot be turned into a time of day afterwards. So both are stamped.
+    ok(captured.startedAtWall ~= nil,
+        'the envelope carries a wall-clock start as well as the game timer')
+    ok((captured.startedAtWall or 0) > 1600000000000,
+        'and it is epoch milliseconds',
+        ('got %s'):format(tostring(captured.startedAtWall)))
+    ok(captured.startedAtWall ~= captured.startedAt,
+        'which is NOT the process-relative one beside it',
+        ('wall %s vs timer %s'):format(tostring(captured.startedAtWall),
+            tostring(captured.startedAt)))
+    -- THE DURATIONS STILL COME OFF THE OTHER CLOCK, which is the half a careless
+    -- fix breaks: measuring survival against a wall clock stamped seconds apart
+    -- would make every player's survival time nonsense.
+    ok(byName.Survivor.survivedMs == 630000,
+        'and the durations are still measured against the game timer')
 
     -- AND IT IS IN THE MONEY, PROVED BY DIFFERENCE RATHER THAN BY ARITHMETIC.
     -- The same envelope, driven through the same real consumer, with the pile
@@ -17629,6 +17789,15 @@ do
     -- are gone.
     ok(BR.Roster.get(1).kills == 0, 'CLEANUP has zeroed the per-match counters')
     ok(BR.Roster.get(1).placement == nil, 'and cleared placement')
+    -- INCLUDING THE SPEND (#293). This is the CLEANUP half of the same rule
+    -- match.leave asserts for the other way out: a counter left standing is
+    -- reported again in the player's next match, and the one after that. It was
+    -- 1500 four lines of match ago.
+    ok((BR.Roster.get(1).voltsSpent or 0) == 0,
+        'and the Volts spent, so a warmup purchase is billed to one match only',
+        ('got %s'):format(tostring(BR.Roster.get(1).voltsSpent)))
+    ok((BR.Roster.get(1).voltsPickedUp or 0) == 0,
+        'beside the Volts picked up, which is the rule it was written from')
 
     -- RESULTS ARE PUBLISHED ONCE PER MATCH, and the second publish was not a
     -- duplicate -- it was a fabrication.

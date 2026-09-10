@@ -94,6 +94,28 @@ local function newEntry(src)
         -- console cannot act on it.
         voltsPickedUp = 0,
 
+        -- CURRENCY SPENT THIS MATCH (#293). The other direction of the same
+        -- ledger, and the reason it exists is that nothing recorded it: a
+        -- purchase is a conditional debit against the row, so after it settles
+        -- the only trace anywhere is a smaller balance.
+        --
+        -- MOVED IN EXACTLY ONE PLACE -- the SUCCESS arm of BR.Market.charge --
+        -- so all three spend paths (the warmup showroom, the gun shop and the
+        -- revive key) are counted by construction and a refused purchase adds
+        -- nothing. Do not confuse it with `entry.spent` in server/market.lua,
+        -- which is an in-flight RESERVATION released the moment DynamoDB
+        -- answers either way and is therefore a total of nothing.
+        --
+        -- A WARMUP SPEND BELONGS TO THE MATCH THE PLAYER THEN PLAYS, which is
+        -- automatic rather than arranged: the showroom refuses anyone without a
+        -- matchId, so the counter is already attached to that match, and
+        -- BR.Match.resetPlayer -- the only thing that zeroes it -- does not run
+        -- until that match cleans up.
+        --
+        -- LIKE voltsPickedUp IT IS IN NEITHER ALLOWLIST, published once in the
+        -- match results and cleared with the rest at CLEANUP.
+        voltsSpent = 0,
+
         pos        = nil,          -- sampled server-side, not reported by the client
         posAt      = 0,
 
