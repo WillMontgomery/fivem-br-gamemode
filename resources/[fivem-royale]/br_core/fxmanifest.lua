@@ -70,6 +70,12 @@ shared_scripts {
     -- the reset's event name out of here, which is what keeps the surveyed
     -- numbers written down exactly once.
     '@br_lib/config/warmupcrates.lua',
+    -- The warmup stat board (#247): the Ringmaster URL's host, the prop it
+    -- stands on, and the five numbers that align the quad on it. BESIDE
+    -- config/warmupcrates.lua because both are about the same patch of island,
+    -- and NO LOAD ORDER AT ALL -- it reads nothing, calls nothing, and defines
+    -- one pure function (BR.BoardUrl) that is called at draw time.
+    '@br_lib/config/board.lua',
     -- AFTER config/loot.lua AND config/weapons.lua, and not merely near them.
     -- It resolves its payout pools at LOAD time out of their rarity buckets and
     -- their id lookups -- including BR.Config.AirdropWeapons, the four explosives
@@ -671,6 +677,12 @@ server_scripts {
     -- ordinary loot entries; the props are built client side like every other
     -- crate's, which is the only shape sv_entityLockdown relaxed allows.
     'server/warmupcrates.lua',
+    -- The warmup stat board's server half (#247), which is one push and no
+    -- logic: on READY, tell a client its own license so its browser can build
+    -- the board's URL. AFTER nothing in particular -- it reads BR.Identity
+    -- (shared) and BR.Net (shared) and touches no server subsystem at all.
+    -- BESIDE server/warmupcrates.lua because both are about the warmup pad.
+    'server/board.lua',
     -- Aerial supply drops. AFTER storm.lua and loot.lua for a reader rather
     -- than for the loader: it asks BR.StormAt where the circle will be when the
     -- crate arrives, and hands the contents to BR.Loot.spawnStack so they

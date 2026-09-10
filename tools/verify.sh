@@ -426,7 +426,31 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
     # re-checked, and the suite hands slot 20 to a stranger mid-flight to prove
     # it. server/roster.lua forgets a dozen per-src caches on disconnect for the
     # same reason, and this is the first one with money in it.
-    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua tools/test_artifacts.lua tools/test_airdrop.lua tools/test_client.lua tools/test_spectate.lua tools/test_matchexit.lua tools/test_lobbyseq.lua tools/test_landtime.lua tools/test_config.lua tools/test_admin.lua tools/test_community.lua tools/test_guild.lua tools/test_fuel.lua tools/test_sfx.lua tools/test_boost.lua tools/test_vehdamage.lua tools/test_icons.lua tools/test_vehrefuse.lua tools/test_rescue.lua tools/test_ambheal.lua tools/test_revivekey.lua tools/test_ambulances.lua tools/test_shop.lua tools/test_gunshop.lua tools/test_volts.lua tools/test_warmupcrates.lua tools/test_bool_natives.lua tools/test_tutorial.lua; do
+    #
+    # test_board.lua is the warmup stat board (#247), and it is the first suite
+    # in this tree whose subject is mostly a URL. That sounds thin and is the
+    # point: the board is a DUI, which is a browser on the PLAYER'S machine
+    # pointed at a Ringmaster address, and a browser pointed at the wrong address
+    # has no symptom at all on the game box. Nothing logs, nothing errors,
+    # nothing retries. A prop just quietly shows an error page.
+    #
+    # SO THE STRING IS PINNED AS A LITERAL, in the owner's own spelling
+    # (2026-09-09), rather than rebuilt out of the config it is meant to check --
+    # and the license is composed through the REAL BR.Identity path, so the wire
+    # format and the builder are proved to agree rather than each proved against
+    # itself. The three ways to break the push all look like it working: the
+    # qualified `license:...` form (an HTTP 400 forever), a broadcast to -1
+    # instead of the one player it describes, and sending something when FiveM
+    # reported no license at all.
+    #
+    # IT ALSO STANDS client/dui.lua ON A PROP. drawBoard is drawFace with a
+    # lateral and a yaw, and both are arithmetic that looks right and comes out
+    # backwards -- a nudge that moves the board away from where it was nudged, a
+    # yaw that turns it edge-on. The yaw's sense is a 2D cross product rather
+    # than an angle comparison, which would read the same for 90 and 270, and 360
+    # is asserted to be the identity because that is the only assertion that can
+    # tell degrees from radians.
+    for suite in tools/test_board.lua tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua tools/test_artifacts.lua tools/test_airdrop.lua tools/test_client.lua tools/test_spectate.lua tools/test_matchexit.lua tools/test_lobbyseq.lua tools/test_landtime.lua tools/test_config.lua tools/test_admin.lua tools/test_community.lua tools/test_guild.lua tools/test_fuel.lua tools/test_sfx.lua tools/test_boost.lua tools/test_vehdamage.lua tools/test_icons.lua tools/test_vehrefuse.lua tools/test_rescue.lua tools/test_ambheal.lua tools/test_revivekey.lua tools/test_ambulances.lua tools/test_shop.lua tools/test_gunshop.lua tools/test_volts.lua tools/test_warmupcrates.lua tools/test_bool_natives.lua tools/test_tutorial.lua; do
         [ -f "$suite" ] || continue
         printf '%s' "${DIM}$(basename "$suite" .lua): ${RST}"
         "$LUA" "$suite" || rc=1

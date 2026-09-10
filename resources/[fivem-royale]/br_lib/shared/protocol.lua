@@ -112,6 +112,23 @@ BR.Net = {
     -- those is BR.Net. A second registry of wire names is how two halves come to
     -- disagree about a string.
     WARMUP_CRATE_RETURN = 'br:warmupcrate:return',
+    -- THE PLAYER'S OWN LICENSE, S->C, a bare hex string (#247).
+    --
+    -- The warmup stat board is a DUI pointed at a Ringmaster URL whose only
+    -- parameter is the viewer's license, and NOTHING IN br_core/client HOLDS ONE
+    -- -- a client knows its server id and its name and has never had a reason to
+    -- know its identifiers. So the server tells it, once, on READY.
+    --
+    -- IT TOUCHES RINGMASTER NOT AT ALL. This is one value the game server
+    -- already has, handed to the one client it belongs to, and it would be sent
+    -- identically on a box that had never heard of the console. The board's
+    -- request is made later, by that client's own browser, over the public
+    -- internet; the game box neither makes it nor hears about it.
+    --
+    -- AND IT IS SENT ONLY TO THE PLAYER IT DESCRIBES. TriggerClientEvent with a
+    -- source, never -1: an identifier broadcast to the lobby would be a
+    -- different feature with a different argument behind it.
+    BOARD_ID        = 'br:board:id',          -- S->C  '<hex>'
     -- Parties are persistent; squads are formed from them per match. The events
     -- are named "squad" for continuity with the UI, but they operate on parties.
     SQUAD_INVITE    = 'br:squad:invite',     -- C->S  { target }

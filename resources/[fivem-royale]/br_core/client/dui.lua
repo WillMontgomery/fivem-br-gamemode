@@ -147,6 +147,17 @@ function BR.Dui.page(name, url, w, h)
     pages[name] = {
         dui = dui, txd = 'br_dui_' .. name, tex = name,
         w = w, h = h, ready = false,
+        -- WHAT THIS BROWSER IS CURRENTLY POINTED AT. Recorded rather than
+        -- assumed, because BR.Dui.url below can move it and a caller that has to
+        -- report what is on screen (client/board.lua's /brboard) would otherwise
+        -- be reading the address it asked for rather than the one in force.
+        --
+        -- MEMOISED ON `name`, WHICH MEANS THE URL ARGUMENT IS ONLY READ ONCE.
+        -- A second call with the same name and a different url returns the
+        -- FIRST page, unchanged -- so a caller whose address is not known at
+        -- boot (again, the board: its URL contains a license the server has not
+        -- sent yet) must not create the page until it has the real one.
+        url = url,
     }
     return pages[name]
 end
@@ -159,6 +170,39 @@ end
 function BR.Dui.send(page, msg)
     if not page or not page.dui then return end
     SendDuiMessage(page.dui, json.encode(msg))
+end
+
+--- Point an existing page's browser somewhere else.
+---
+--- ═══ THIS IS HOW A PAGE CHANGES, AND RECREATING THE DUI IS NOT ═══
+---
+--- A DUI is a whole CEF instance: creating one costs a browser start, and
+--- destroying one to show a different address means the runtime texture and the
+--- txd go with it and every draw in flight is pointed at a texture that no
+--- longer exists. #247 names the rule outright ("refresh via SendDuiMessage or
+--- SetDuiUrl, never by recreating the DUI") and this is the second of those two.
+---
+--- SendDuiMessage IS STILL THE CHEAPER ONE and remains the right answer whenever
+--- the page can update ITSELF from a message -- that is every page br_ui ships.
+--- This is for the other case: a document served from somewhere else, which has
+--- to be re-fetched to change, and its opposite, a local fallback page shown
+--- when that fetch cannot happen.
+---
+--- IDEMPOTENT, AND THE GUARD IS NOT COSMETIC. This is reachable from a 10Hz pass
+--- that re-decides which of two addresses should be up; without the comparison,
+--- every one of those passes would reload the document, which for a page fetched
+--- over the public internet is a request ten times a second from every client in
+--- the lobby.
+--- @param page table
+--- @param url string
+--- @return boolean moved  true only when the browser was actually sent somewhere
+function BR.Dui.url(page, url)
+    if not page or not page.dui then return false end
+    if type(url) ~= 'string' or url == '' then return false end
+    if page.url == url then return false end
+    page.url = url
+    SetDuiUrl(page.dui, url)
+    return true
 end
 
 --- Is the page's browser actually up? Drawing before this is true renders a
@@ -490,6 +534,88 @@ function BR.Dui.drawFace(page, entity, oy, oz, widthM, alpha)
     -- approved it there; a nil would do the same thing, and 0.0 says the
     -- decision was made rather than skipped.
     drawPlane(page, p.x, p.y, p.z, fx, fy, oy, 0.0, oz, hw, hh, alpha)
+end
+
+--- Draw a page as a BOARD BOLTED TO A PROP, with a lateral and a yaw (#247).
+---
+--- ═══ IT IS drawFace's BASIS AND drawFace's QUAD, WITH TWO MORE TERMS ═══
+---
+--- Everything that was hard about the yard sign is `levelBasis` and `drawPlane`
+--- above -- leveling a prop that is not sitting square, getting the reader's
+--- left the right way round so the writing is not mirrored, winding the two
+--- triangles toward the camera so the board is not invisible from the side
+--- everybody stands on, and measuring the whole thing in meters. All of it is
+--- shared verbatim rather than reasoned about a second time, and at yaw 0 with
+--- no lateral this function IS drawFace. tools/test_board.lua asserts that
+--- equality, because two quads that were meant to be the same geometry and
+--- quietly diverged is the failure worth pinning.
+---
+--- ═══ WHY THE WARMUP BOARD NEEDS THE TWO drawFace DOES NOT HAVE ═══
+---
+--- Owner, 2026-09-09: "I already have a prop in mind for this. Not sure how to
+--- put the DUI on it though... I can help align it if you give me the tools."
+---
+--- Aligning means moving it, and a showroom yard sign only ever had to stand on
+--- the middle of a nose:
+---
+---   THE LATERAL is the same argument client/revivekey.lua's plate already won
+---   ("I need to be able to move it left/right as well"). It is spent along the
+---   line that already decides the reader's left, inside drawPlane, so a board
+---   nudged right goes right FROM WHERE IT IS READ and the offset can never
+---   disagree with the writing on it.
+---
+---   THE YAW EXISTS BECAUSE A PROP'S FORWARD IS THE MODELLER'S CHOICE. drawFace
+---   stands its sign out along the entity's own forward vector, which is right
+---   for a car (a car's nose is unambiguous) and is a guess for a prop: plenty
+---   of GTA props face along their local -Y, or are authored square to a wall
+---   they were meant to hang on. Without this term, aligning the board would
+---   mean rotating the PROP away from the direction the owner wants the prop
+---   itself to face, which is a fix that breaks the thing it is fixing.
+---
+--- ROTATED IN THE LEVELED PLANE, AFTER LEVELING AND NOT INSTEAD OF IT. The yaw
+--- turns the flattened forward vector about the WORLD's up, so a board turned 90
+--- degrees on a prop standing on a slope is still level and still upright. It is
+--- degrees, positive counter-clockwise seen from above, and both of those are
+--- asserted rather than described: 360 is the identity only if the unit is
+--- degrees, and the sense is a 2D cross product rather than an angle comparison,
+--- which would read the same for 90 and 270.
+---
+--- @param page table
+--- @param entity integer  the prop the board is bolted to
+--- @param fwd number      meters out along the (yawed) facing to the board's centre
+--- @param side number     meters along the face, positive to the READER'S right
+--- @param up number       meters straight up the WORLD from the prop's origin
+--- @param widthM number   how wide, in meters; the height follows the page's aspect
+--- @param yawDeg number|nil  degrees off the prop's own facing, CCW from above
+--- @param alpha number|nil
+function BR.Dui.drawBoard(page, entity, fwd, side, up, widthM, yawDeg, alpha)
+    if not BR.Dui.ready(page) then return end
+    if not entity or entity == 0 or not isTrue(DoesEntityExist(entity)) then
+        return
+    end
+
+    local hw = ((tonumber(widthM) or 0.75) * 0.5) * prefs.ui
+    if hw <= 0.0 then return end
+    local hh = hw * (page.h / page.w)
+
+    local fx, fy = levelBasis(entity)
+    if not fx then return end
+
+    -- THE TURN, IN THE PLANE levelBasis JUST FLATTENED. `(x, y)` to
+    -- `(x cos - y sin, x sin + y cos)` is the counter-clockwise rotation about
+    -- +Z, and +Z is the world's up here rather than the prop's -- which is the
+    -- whole reason the leveling above is not undone by this line.
+    local yaw = tonumber(yawDeg) or 0.0
+    if yaw ~= 0.0 then
+        local r = math.rad(yaw)
+        local c, s = math.cos(r), math.sin(r)
+        fx, fy = fx * c - fy * s, fx * s + fy * c
+    end
+
+    local p = GetEntityCoords(entity)
+    drawPlane(page, p.x, p.y, p.z, fx, fy,
+              tonumber(fwd) or 0.0, tonumber(side) or 0.0, tonumber(up) or 0.0,
+              hw, hh, alpha)
 end
 
 --- Which face of a vehicle a point is nearest to, and everything the caller
