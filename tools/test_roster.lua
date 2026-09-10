@@ -6608,6 +6608,77 @@ do
     ok(BR.Inv.of(1).active == 1,
         'A RESET CLEARS THE CHOICE, so the next match arms normally -- #155',
         ('active %s'):format(tostring(BR.Inv.of(1).active)))
+
+    -- ═══ `opts.focus`: A PURCHASE IS NOT A PICKUP (I3) ═══
+    --
+    -- Owner, 2026-09-09: "when they buy a weapon and it's granted to them, the
+    -- weapon must immediately be the inventory slot in focus."
+    --
+    -- Every rule above is right about FLOOR LOOT and wrong about a counter. The
+    -- two cases below are the exact ones the shop kept losing: a player already
+    -- holding a gun, and a player who deliberately holstered. Both leave the
+    -- purchase in a slot they cannot see, and both are what the flag is for.
+    --
+    -- ITS DEFAULT IS THE HALF THAT MATTERS MOST. Every chest, death box and
+    -- airdrop in the game calls give() with no opts at all, so the first
+    -- assertion here is that nothing changed for them.
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON, rarity = 1,
+                     count = 1, clip = 12 })
+    fire(BR.Net.INV_SELECT, 1, { slot = 1 })
+    BR.Inv.give(1, { item = 'sawnoff', kind = BR.ItemKind.WEAPON, rarity = 1,
+                     count = 1, clip = 8 })
+    ok(BR.Inv.of(1).active == 1,
+        'a gun off the floor still does not tear the one in your hands away',
+        ('active %s'):format(tostring(BR.Inv.of(1).active)))
+
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON, rarity = 1,
+                     count = 1, clip = 12 })
+    fire(BR.Net.INV_SELECT, 1, { slot = 1 })
+    BR.Inv.give(1, { item = 'sawnoff', kind = BR.ItemKind.WEAPON, rarity = 1,
+                     count = 1, clip = 8 }, { focus = true })
+    ok(BR.Inv.of(1).active == 2,
+        '...but a gun handed over the counter comes straight up in them (I3)',
+        ('active %s'):format(tostring(BR.Inv.of(1).active)))
+    do
+        local inHand = BR.Inv.of(1).slots[BR.Inv.of(1).active]
+        ok(inHand and inHand.item == 'sawnoff',
+            'and the slot in focus is the one the purchase landed in',
+            inHand and tostring(inHand.item) or 'nothing in hand')
+    end
+
+    -- A DELIBERATE HOLSTER IS OVERRIDDEN TOO, and that is the request rather
+    -- than an oversight: #155's rule protects a choice the player made about
+    -- the ground they were walking over, and buying a weapon is a later, louder
+    -- choice about the same hands.
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON, rarity = 1,
+                     count = 1, clip = 12 })
+    fire(BR.Net.INV_SELECT, 1, { slot = MELEE })
+    BR.Inv.give(1, { item = 'sawnoff', kind = BR.ItemKind.WEAPON, rarity = 1,
+                     count = 1, clip = 8 }, { focus = true })
+    ok(BR.Inv.of(1).active == 2,
+        'a holstered buyer is armed with what they bought',
+        ('active %s'):format(tostring(BR.Inv.of(1).active)))
+
+    -- AND IT IS NOT A SECOND ARMING RULE. `focus` picks the slot give() ALREADY
+    -- chose -- including the swap slot when the bag is full -- so it can never
+    -- point at a square the purchase did not land in.
+    BR.Inv.reset(1)
+    for i = 1, BR.Config.Loot.slots do
+        BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON,
+                         rarity = 1, count = 1, clip = 12 })
+        fire(BR.Net.INV_SELECT, 1, { slot = i })
+    end
+    fire(BR.Net.INV_SELECT, 1, { slot = 3 })
+    BR.Inv.give(1, { item = 'sawnoff', kind = BR.ItemKind.WEAPON, rarity = 1,
+                     count = 1, clip = 8 }, { focus = true })
+    local held = BR.Inv.of(1).slots[BR.Inv.of(1).active]
+    ok(held and held.item == 'sawnoff',
+        'with a full bag it focuses the slot the swap actually used',
+        ('active %s holds %s'):format(tostring(BR.Inv.of(1).active),
+            held and tostring(held.item) or 'nothing'))
 end
 
 describe('inv.use')

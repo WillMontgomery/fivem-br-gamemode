@@ -426,7 +426,24 @@ local function deliver(src, row)
     local stack = {}
     for k, v in pairs(row.stack) do stack[k] = v end
 
-    local ok, displaced, reason = BR.Inv.give(src, stack, { quiet = true })
+    -- ═══ `focus`: THE GUN THEY BOUGHT IS THE GUN IN THEIR HANDS (I3) ═══
+    --
+    -- Owner, 2026-09-09: "when they buy a weapon and it's granted to them, the
+    -- weapon must immediately be the inventory slot in focus."
+    --
+    -- BR.Inv.give deliberately does NOT arm a player who is already holding
+    -- something, and it is right about floor loot: walking over a rifle must
+    -- not tear the shotgun out of your hands. A purchase is the opposite event
+    -- -- the player named this weapon, paid for it and watched the clerk hand
+    -- it over -- so the flag is set here and nowhere else. It is the only
+    -- caller in the tree that passes it, and it defaults off.
+    --
+    -- HARMLESS ON AN AMMO ROW. That branch of give() returns before a slot is
+    -- ever chosen, because a pool does not have one; passing the flag on every
+    -- delivery is one fewer condition here than asking the row what kind it is,
+    -- and asking would be a second copy of a question give() already answers.
+    local ok, displaced, reason =
+        BR.Inv.give(src, stack, { quiet = true, focus = true })
     if ok then
         if displaced then BR.Loot.dropForPlayer(src, displaced) end
         print(('[br_core] gunshop: %d received "%s"'):format(src, row.id))

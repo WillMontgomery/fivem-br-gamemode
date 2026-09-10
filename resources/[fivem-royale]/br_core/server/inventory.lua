@@ -489,6 +489,11 @@ end
 ---
 --- @param src integer
 --- @param stack table
+--- @param opts table|nil  { quiet = true } to deliver without the pickup cue;
+---                        { focus = true } to put a weapon straight into their
+---                        hands even though they were already holding one --
+---                        see the block at the arming rule, and note the gun
+---                        shop is the only caller entitled to it
 --- @return boolean ok
 --- @return table|nil displaced
 --- @return string|nil reason
@@ -680,7 +685,27 @@ function BR.Inv.give(src, stack, opts)
     -- empty-handed is the ask, staying empty-handed while standing on a rifle is
     -- not. `choseActive` is only set by an INV_SELECT the player actually sent,
     -- so the deliberate holster is still honoured and the default is not.
-    if (inv.active ~= MELEE_SLOT or not inv.choseActive)
+    -- ═══ ...UNLESS THE CALLER IS HANDING IT OVER, WHICH IS NOT A PICKUP ═══
+    --
+    -- Owner, 2026-09-09, I3: "when they buy a weapon and it's granted to them,
+    -- the weapon must immediately be the inventory slot in focus."
+    --
+    -- Every clause above is about FLOOR LOOT and is right about it: walking
+    -- over a rifle must not tear the shotgun out of your hands mid-fight, and
+    -- the holster you chose must survive the ground you walk on. A PURCHASE is
+    -- the opposite event -- the player named this weapon, paid for it and
+    -- watched a clerk pass it across a counter -- so "you already had something
+    -- in your hands" is not a reason to leave the thing they just bought in a
+    -- slot they cannot see.
+    --
+    -- A FLAG, DEFAULT OFF, SET BY ONE CALLER. Making the grant path always
+    -- focus would change every chest, every death box and every airdrop; making
+    -- the gun shop write `inv.active` itself afterwards would put the arming
+    -- rule in two files, and the second copy would not know about MELEE_SLOT or
+    -- about `at`. The decision stays here and the shop supplies the reason.
+    if type(opts) == 'table' and opts.focus == true then
+        inv.active = at
+    elseif (inv.active ~= MELEE_SLOT or not inv.choseActive)
        and (displaced or not inv.slots[inv.active] or inv.active == at) then
         inv.active = at
     end

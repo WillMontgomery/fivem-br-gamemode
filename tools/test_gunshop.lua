@@ -2130,6 +2130,15 @@ do
         'handed over QUIETLY: the purchase cue is about to play and two sounds '
             .. 'a frame apart for one event is the fault config/audio.lua is '
             .. 'about')
+    -- I3, and the half this file can prove. Owner, 2026-09-09: "when they buy a
+    -- weapon and it's granted to them, the weapon must immediately be the
+    -- inventory slot in focus." BR.Inv.give will not arm a player who is
+    -- already holding something -- correctly, for floor loot -- so the shop has
+    -- to say that a purchase is not floor loot. What give() then DOES with the
+    -- flag is asserted against the real inventory in tools/test_roster.lua.
+    ok(#given == 1 and given[1].opts and given[1].opts.focus == true,
+        '...and with `focus`, because a gun they chose and paid for goes into '
+            .. 'their hands rather than into a slot they cannot see (I3)')
     ok(boughtFor(10) ~= nil and boughtFor(10).row == 'carbinerifle',
         'the client is told which row landed, so it plays the cue for what '
             .. 'arrived rather than for what it last asked about')
