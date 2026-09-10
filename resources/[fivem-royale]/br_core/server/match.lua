@@ -58,23 +58,99 @@ local WARMUP_HOLD_MS = 24 * 60 * 60 * 1000
 -- ---------------------------------------------------------------------------
 -- Match ids (#291)
 --
--- TWO NUMBERS, AND THEY WILL ANSWER DIFFERENT QUESTIONS.
+-- TWO NUMBERS, AND THEY ANSWER DIFFERENT QUESTIONS.
 --
---   m.seq  an increment from 1. INTERNAL: never on the wire, never displayed.
---          This is what m.id has always been, and it keeps the two jobs that
---          are about position rather than identity -- ORDER (which match was
---          formed most recently, which is what BR.Server.latestMatch answers)
---          and a DENSE SMALL NUMBER for the routing bucket, so buckets stay
---          101, 102, 103 exactly as they are in production today.
---   m.id   the match's NAME: what is logged, what goes in a squad id, what a
---          moderator reads off a page. Still the increment as of this commit;
---          it becomes a random 20-bit draw in the next one.
+--   m.seq  an increment from 1. Internal: never on the wire, never displayed.
+--          It is what m.id used to be, and it keeps the two jobs an id can no
+--          longer do -- ORDER, and a DENSE SMALL NUMBER for the routing bucket
+--          so buckets stay 101, 102, 103.
+--   m.id   a random 20-bit integer, 0x00001 to 0xFFFFF, unique for the life of
+--          this process. This is the match's name: shown as five hex
+--          characters, put in squad ids, carried on every record.
 --
--- THE SPLIT LANDS FIRST, ON ITS OWN, and the two numbers are equal until it
--- does. Every consumer that meant "position" rather than "identity" is moved
--- onto `seq` here, while both still hold the same value, so this commit changes
--- no behaviour at all and the one that follows changes only the draw.
+-- IT STAYS A NUMBER. A hex STRING was considered and rejected on the issue:
+-- `tonumber` collapses two rng seeds to 0, BR.Voice.radioChannel returns nil
+-- and silently kills every squad radio, sixty-eight `%d` sites raise, br_ddb's
+-- num() flattens it to 0 and Ringmaster's `z.number().int()` refuses it, which
+-- is byte for byte the 2026-09-04 ingest outage. The formatting happens at the
+-- point of DISPLAY and nowhere else.
 -- ---------------------------------------------------------------------------
+
+--- The bounds of the id space. 0 IS EXCLUDED and that is load bearing:
+--- server/loot.lua reserves id 0 for the communal warmup pseudo-match and
+--- compares against the literal, so a real match drawing 0 would share a loot
+--- registry with the warmup pad.
+local ID_MIN, ID_MAX = 0x00001, 0xFFFFF
+
+--- Every id issued since this process started. Never cleared, including for a
+--- match that has been destroyed: `seq` is what guarantees a bucket is never
+--- reused, and this guarantees a NAME is never reused, so two rounds in one
+--- session can never be confused in a log or on a moderation page.
+local issuedIds = {}
+
+--- How many times the draw is retried before falling back to a walk.
+---
+--- COLLISIONS ARE NOT THEORETICAL. The space is 1,048,576 wide, so a box that
+--- runs a thousand matches between restarts has roughly a 38 percent chance of
+--- drawing a repeat under the birthday bound -- and the failure would be
+--- SILENT, because `BR.Server.matches[m.id] = m` below replaces a live instance
+--- rather than raising. Sixty-four consecutive collisions against a hundred
+--- thousand live ids is a probability with sixty-six zeroes after the point;
+--- the walk beneath it is what makes the guarantee absolute rather than
+--- overwhelming.
+local ID_TRIES = 64
+
+--- The generator ids are drawn from, seeded once per process.
+---
+--- THREE INDEPENDENT SOURCES, for the reason br_ringmaster's boot epoch has
+--- three: any one of them varying is enough, and each fails in a different
+--- situation. os.time() separates two FXServer processes; GetGameTimer()
+--- separates two `restart br_core` calls inside one second; a fresh table's
+--- address differs per allocation and per Lua state.
+---
+--- THE OBVIOUS VERSION OF THIS IS WRONG, and br_ringmaster/server/main.lua
+--- carries the measurement: seeding from os.clock() collided 185 times in 200,
+--- because CPU time barely moves between two restarts. A seed that repeats
+--- would hand every restart the same sequence of "random" ids, which is the
+--- disclosure this change exists to end.
+local idRng = BR.Rng((function()
+    local s = tostring({})
+    local addr = tonumber(s:match('0x(%x+)') or s:match('(%x+)%s*$') or '', 16)
+    local boot = type(GetGameTimer) == 'function' and GetGameTimer() or 0
+    return (math.floor(os.time()) * 1000)
+         ~ math.floor(tonumber(boot) or 0)
+         ~ math.floor(addr or 0)
+end)())
+
+--- Draw an id nothing has been given yet.
+--- @return integer
+local function mintId()
+    for _ = 1, ID_TRIES do
+        local id = idRng:int(ID_MIN, ID_MAX)
+        if not issuedIds[id] then
+            issuedIds[id] = true
+            return id
+        end
+    end
+
+    -- Every draw collided. Walk from a random start to the first free id, which
+    -- terminates whenever ANY id is free.
+    local start = idRng:int(ID_MIN, ID_MAX)
+    local span  = ID_MAX - ID_MIN + 1
+    for step = 0, span - 1 do
+        local id = ID_MIN + ((start - ID_MIN + step) % span)
+        if not issuedIds[id] then
+            issuedIds[id] = true
+            return id
+        end
+    end
+
+    -- Unreachable: this process would have formed 1,048,575 matches, which at
+    -- one a minute is two years of uninterrupted uptime. Loud rather than nil,
+    -- because a match with no id would fail everywhere except here.
+    error('[br_core] match id space exhausted after ' .. tostring(span)
+          .. ' matches on one process')
+end
 
 --- Mint the (seq, id) pair a new match is built from.
 ---
@@ -85,7 +161,7 @@ local WARMUP_HOLD_MS = 24 * 60 * 60 * 1000
 --- @return integer seq, integer id
 function BR.Match.mintIds()
     BR.Server.matchSeq = BR.Server.matchSeq + 1
-    return BR.Server.matchSeq, BR.Server.matchSeq
+    return BR.Server.matchSeq, mintId()
 end
 
 --- Mint a new match instance and start its warmup.

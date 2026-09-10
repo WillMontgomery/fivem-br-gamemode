@@ -85,17 +85,18 @@ local told = {}
 
 --- The seed one match's shelves are rolled from.
 ---
---- THE ARITHMETIC IS BR.Loot.begin's, deliberately: the clock plus the match id
---- folded with a prime of this feature's own, so two matches minted in the same
---- server millisecond do not stock the same eleven shops. The storm uses 7919,
---- the bus 104729, the loot layout 15485863; this is the fourth.
+--- THE ARITHMETIC IS BR.Loot.begin's, deliberately: the clock plus the match's
+--- sequence number folded with a prime of this feature's own, so two matches
+--- minted in the same server millisecond do not stock the same eleven shops.
+--- The storm uses 7919, the bus 104729, the loot layout 15485863; this is the
+--- fourth. `seq` rather than `id` for the reason BR.Loot.begin gives (#291).
 --- @param m table
 --- @return integer
 local function seedFor(m)
     local t = 0
     if type(GetGameTimer) == 'function' then t = tonumber(GetGameTimer()) or 0 end
     if t <= 0 then t = math.floor(os.time() * 1000) end
-    return math.floor(t + (tonumber(m.id) or 0) * 32452843)
+    return math.floor(t + (tonumber(m.seq) or 0) * 32452843)
 end
 
 --- ONE MATCH'S SHELVES, ROLLED ON FIRST ASK.

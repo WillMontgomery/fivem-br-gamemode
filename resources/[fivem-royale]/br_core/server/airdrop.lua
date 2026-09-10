@@ -515,7 +515,8 @@ function BR.Airdrop.begin(m)
     -- /brairdrop has to be able to say "nobody came within 200m; the closest
     -- anybody got was 340m" rather than shrugging.
     local st = {
-        rng     = BR.Rng(now + m.id * 1299709),
+        -- `seq`, not `id`: see BR.Loot.begin (#291).
+        rng     = BR.Rng(now + m.seq * 1299709),
         pending = {},
         waiting = {},
         live    = {},

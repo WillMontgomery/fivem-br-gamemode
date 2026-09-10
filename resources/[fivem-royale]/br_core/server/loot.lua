@@ -362,7 +362,14 @@ function BR.Loot.begin(m, seed)
     -- Folded with a prime of its own, exactly as the storm (7919) and the bus
     -- (104729) do, so two matches minted in the same server millisecond do not
     -- lay out the same map.
-    seed = seed or pinnedSeed or (GetGameTimer() + m.id * 15485863)
+    --
+    -- THE FOLD IS `seq`, NOT `id` (#291). All this number has to do is tell two
+    -- matches apart inside one millisecond, which `seq` does exactly as well --
+    -- and being an increment it keeps this seed the value it has always had.
+    -- The random id would have made every layout on the box unreproducible from
+    -- one boot to the next, including in the unit tests, where a layout that
+    -- differs per run is a suite that fails one time in twenty for no reason.
+    seed = seed or pinnedSeed or (GetGameTimer() + m.seq * 15485863)
 
     m.loot = {
         seed    = seed,

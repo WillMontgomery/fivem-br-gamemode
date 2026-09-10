@@ -230,9 +230,11 @@ function BR.Storm.begin(m)
         m.anchor = a
     end
 
-    -- Seeded per match. The id keeps two matches started in the same server
-    -- millisecond (tests do this constantly) from replaying each other.
-    m.stormRng   = BR.Rng(GetGameTimer() + m.id * 7919)
+    -- Seeded per match. The sequence number keeps two matches started in the
+    -- same server millisecond (tests do this constantly) from replaying each
+    -- other. `seq` rather than `id` (#291): the id is a random draw now, and a
+    -- storm path that cannot be reproduced from a boot is one nobody can debug.
+    m.stormRng   = BR.Rng(GetGameTimer() + m.seq * 7919)
     m.stormCarry = {}
 
     -- The free-loot hold is priced for the FURTHEST player's run to the

@@ -1182,5 +1182,50 @@ do
 end
 
 -- ---------------------------------------------------------------------------
+describe('the bucket is the match\'s own, not one derived from its id')
+do
+    -- ═══ EVERY FIXTURE ABOVE THIS ONE HAS `seq == id` ═══
+    --
+    -- Which is what a match looked like before #291, and it is why none of them
+    -- can tell `m.bucket` apart from `matchBucketBase + m.id`. Ids are a random
+    -- 20-bit draw now and the bucket comes from `seq`, so the two answers part
+    -- company on every real match -- and this file's own re-derivation, which
+    -- also carried a hardcoded `100` fallback, would have put twenty-three
+    -- ambulances in a bucket forty thousand away from the players.
+    --
+    -- So this block builds the case the others cannot: a small `seq` and a
+    -- realistic id.
+    matches, world, spawnCalls = {}, {}, {}
+    BR.Server.matches = matches
+    local BASE = BR.Config.Match.matchBucketBase
+    matches[0xa3f1] = {
+        id = 0xa3f1, seq = 3, state = BR.MatchState.BUS,
+        bucket = BASE + 3,
+        route = { timed = true, jumpFrom = fakeTime - 1000 },
+    }
+    tick(4)
+
+    ok(BR.Ambulances.count(0xa3f1) == 23,
+        'fixture: a match with a random id still gets its 23',
+        BR.Ambulances.count(0xa3f1))
+
+    local wrong = 0
+    for _, c in ipairs(spawnCalls) do
+        if c.bucket ~= BASE + 3 then wrong = wrong + 1 end
+    end
+    ok(wrong == 0,
+        'every one of them is in the match\'s OWN bucket, matchBucketBase + its '
+            .. 'seq -- not matchBucketBase + its id, which is somewhere else '
+            .. 'entirely and has nobody standing in it',
+        spawnCalls[1] and ('bucket %s, wanted %d, id-derived would be %d')
+            :format(tostring(spawnCalls[1].bucket), BASE + 3, BASE + 0xa3f1))
+
+    matches[0xa3f1].state = BR.MatchState.ENDED
+    tick(6)
+    ok(liveVehicles() == 0, 'and it tears down out of that bucket too',
+        liveVehicles())
+end
+
+-- ---------------------------------------------------------------------------
 print(('\n%d passed, %d failed'):format(pass, fail))
 os.exit(fail == 0 and 0 or 1)

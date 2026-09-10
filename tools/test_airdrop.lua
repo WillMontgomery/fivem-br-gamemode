@@ -2038,6 +2038,11 @@ local function newMatch(id, radius, phase)
     local r = radius or 2600.0
     local m = {
         id = id,
+        -- `seq` IS ON IT BECAUSE IT IS ON A REAL ONE (#291). server/airdrop.lua
+        -- seeds its generator off the match's sequence number rather than its
+        -- id, which is a random draw. These fixtures use `id` as the dense
+        -- number, so `seq = id` keeps every drop below rolling what it rolled.
+        seq = id,
         state = BR.MatchState.PLAYING,
         loot = { items = {} },
         -- A HELD circle, so BR.StormAt answers the same thing whatever the

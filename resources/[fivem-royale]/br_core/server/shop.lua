@@ -177,16 +177,18 @@ function BR.Shop.rows() return rows end
 --- an answer. It is announced, because it is the only thing that can explain a
 --- colour after the fact and there is no other record of it anywhere.
 ---
---- THE ARITHMETIC IS BR.Loot.begin's, deliberately: the clock plus the match id
---- times a prime. Two matches starting in the same millisecond are the case the
---- id is there for.
+--- THE ARITHMETIC IS BR.Loot.begin's, deliberately: the clock plus the match's
+--- sequence number times a prime. Two matches starting in the same millisecond
+--- are the case that number is there for -- and it is `seq` rather than `id`
+--- for the reason BR.Loot.begin gives (#291): the id is a random draw now, and
+--- a showroom nobody can reproduce is a colour nobody can explain.
 --- @param m table|nil
 --- @return integer|nil
 function BR.Shop.seedFor(m)
     if not m then return nil end
     if m.shopSeed then return m.shopSeed end
 
-    m.shopSeed = (GetGameTimer() + (tonumber(m.id) or 0) * 15485863)
+    m.shopSeed = (GetGameTimer() + (tonumber(m.seq) or 0) * 15485863)
                  & 0xFFFFFFFF
     print(('[br_core] shop: match %d showroom painted from seed %d')
         :format(m.id, m.shopSeed))

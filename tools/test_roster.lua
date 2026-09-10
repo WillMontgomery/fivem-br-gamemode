@@ -5007,6 +5007,112 @@ do
                               tostring(seen[2] and seen[2].seq)))
 end
 
+describe('match.ids')
+do
+    -- ═══ THE ID IS A RANDOM 20-BIT DRAW, THE SEQ IS STILL AN INCREMENT ═══
+    --
+    -- Ids were a pure increment from 1 until #291, so any id disclosed the next
+    -- one and two matches on different days shared a number. They are now drawn
+    -- from 0x00001..0xFFFFF and retried against every id issued this process.
+    --
+    -- COLLISIONS ARE NOT THEORETICAL, which is why the retry is here rather
+    -- than a comment: 20 bits is 1,048,576 values, so a box running a thousand
+    -- matches between restarts has roughly a 38 percent chance of drawing a
+    -- repeat under the birthday bound -- and the failure would be SILENT,
+    -- because `BR.Server.matches[m.id] = m` replaces a live instance rather
+    -- than raising.
+    reset()
+
+    local N = 400
+    local seen, ids = {}, {}
+    local firstSeq = BR.Server.matchSeq + 1
+    local dupe, outOfRange, seqBreak = nil, nil, nil
+    local ascending = true
+
+    for i = 1, N do
+        local seq, id = BR.Match.mintIds()
+        if seq ~= firstSeq + i - 1 then seqBreak = seqBreak or seq end
+        if type(id) ~= 'number' or id < 0x00001 or id > 0xFFFFF
+           or math.tointeger(id) == nil then
+            outOfRange = outOfRange or id
+        end
+        if seen[id] then dupe = dupe or id end
+        seen[id] = true
+        ids[#ids + 1] = id
+        if i > 1 and ids[i] <= ids[i - 1] then ascending = false end
+    end
+
+    ok(seqBreak == nil, 'seq is still a contiguous increment, one per match',
+        tostring(seqBreak))
+    ok(outOfRange == nil,
+        ('every id is an integer in 0x00001..0xFFFFF across %d mints'):format(N),
+        tostring(outOfRange))
+    ok(dupe == nil,
+        ('and no two of %d minted ids collide -- the mint redraws against every '
+         .. 'id issued this process'):format(N),
+        dupe and ('%05x'):format(dupe) or nil)
+
+    -- AND IT IS ACTUALLY RANDOM, which the three assertions above would all
+    -- pass against the old increment. 400 draws arriving in ascending order by
+    -- chance is 1/400!, so this fails against an increment on every run and
+    -- against a real draw on none.
+    ok(not ascending, 'and they are drawn, not counted: the sequence is not '
+        .. 'monotonic', ('%05x %05x %05x ...'):format(ids[1], ids[2], ids[3]))
+
+    -- THE FLOOR IS ASSERTED AT THE SOURCE, not by drawing. 400 draws would
+    -- clear 0 by luck rather than by construction -- one in a million is not a
+    -- test -- and 0 is the id server/loot.lua reserves for the communal warmup
+    -- pseudo-match, which it compares against the literal. A match that drew 0
+    -- would share a loot registry with the warmup pad.
+    local mfh = io.open(ROOT .. 'br_core/server/match.lua')
+    local msrc = mfh and mfh:read('a') or ''
+    if mfh then mfh:close() end
+    ok(msrc:find('local ID_MIN, ID_MAX = 0x00001, 0xFFFFF', 1, true) ~= nil,
+        'and the space starts at 1, so 0 stays the warmup pad\'s alone')
+
+    -- ═══ THE PER-MATCH SEEDS FOLD IN `seq`, NOT THE ID ═══
+    --
+    -- Six generators are seeded `clock + N * prime` so that two matches minted
+    -- in the same server millisecond do not replay each other: the loot layout
+    -- (15485863), the storm (7919), the bus tour (104729), the airdrop
+    -- (1299709) and the two showrooms. N is the SEQUENCE number.
+    --
+    -- ALL THAT NUMBER HAS TO DO is tell two matches apart inside one
+    -- millisecond, which an increment does exactly as well -- and being an
+    -- increment it keeps every one of those seeds the value it has always had.
+    -- Folding the random id in instead makes every layout, storm path and tour
+    -- on the box unreproducible from one boot to the next, INCLUDING in this
+    -- file: when it was tried, `loot.repair.bounds` failed one run in three, on
+    -- a cell that held a second entry only when the seed came out right.
+    local planA = { id = 0x00011, seq = 77 }
+    local planB = { id = 0xfa3c1, seq = 77 }
+    BR.Bus.plan(planA)
+    BR.Bus.plan(planB)
+    ok(table.concat(planA.route.legs, '-') == table.concat(planB.route.legs, '-')
+       and planA.anchor.name == planB.anchor.name,
+        'two matches with the same seq fly the same tour whatever their ids are '
+            .. '-- the per-match seeds are reproducible from a boot, and a '
+            .. 'random id is not',
+        ('%s homing on %s, vs %s on %s')
+            :format(table.concat(planA.route.legs, '-'), planA.anchor.name,
+                    table.concat(planB.route.legs, '-'), planB.anchor.name))
+
+    -- THE BUCKET IS STILL DENSE AND SMALL, which is the whole reason `seq`
+    -- exists. A bucket derived from the id would be scattered across a million.
+    reset()
+    BR.Server.devMode = true
+    join(1, 'A'); join(2, 'B')
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = 'solo' })
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = 'solo' })
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    local m = theMatch()
+    ok(m ~= nil and m.bucket == BR.Config.Match.matchBucketBase + m.seq,
+        "a match's bucket is matchBucketBase + its seq, never its id",
+        m and ('bucket %s, seq %s, id %05x'):format(tostring(m.bucket),
+                                                    tostring(m.seq), m.id))
+end
+
 describe('match.modes')
 do
     -- HOMOGENEOUS MATCHES (user call, 2026-08-04): a solo queuer never

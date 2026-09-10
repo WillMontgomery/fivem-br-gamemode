@@ -39,9 +39,11 @@ end
 function BR.Bus.plan(m)
     local cfg = BR.Config.Bus
 
-    -- Seeded with the match id folded in: two matches planned in the same
-    -- server millisecond (tests, mostly) must not fly identical tours.
-    local rng = BR.Rng(GetGameTimer() + m.id * 104729)
+    -- Seeded with the match's sequence number folded in: two matches planned in
+    -- the same server millisecond (tests, mostly) must not fly identical tours.
+    -- `seq` rather than `id` (#291) -- see BR.Loot.begin for why every one of
+    -- these four seeds stayed on the increment.
+    local rng = BR.Rng(GetGameTimer() + m.seq * 104729)
 
     -- Draw the tour: one option per leg, flattened into waypoints.
     local legs, waypoints = {}, {}
