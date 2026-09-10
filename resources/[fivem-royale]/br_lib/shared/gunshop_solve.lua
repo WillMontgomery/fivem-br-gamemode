@@ -1043,7 +1043,7 @@ end
 --- ONE SENTENCE, AUTHORED IN config/gunshop.lua, WITH TWO HOLES. `{item}` is
 --- BR.GunshopSolve.menuLabel -- the owner's own label out of config/weapons.lua
 --- or config/loot.lua, plus the quantity mark an ammo row already carries -- and
---- `{cost}` is BR.ShopSolve.priceLine, marked for the currency's colour the way
+--- `{cost}` is BR.ShopSolve.priceLine, marked for the currency's color the way
 --- every other figure in a toast in this game is.
 ---
 --- WEAPONS GET NOTHING HERE, and that is his scoping rather than an omission:

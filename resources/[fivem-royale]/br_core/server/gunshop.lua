@@ -556,7 +556,7 @@ AddEventHandler(BR.Net.GUNSHOP_BUY, function(d)
         -- two sentences, and the third is one this game already had:
         --
         --   afford    his own, out of config/gunshop.lua, joined and marked for
-        --             the signature colour by BR.GunshopSolve.poorToast. It
+        --             the signature color by BR.GunshopSolve.poorToast. It
         --             REPLACES tellShortfall's "You need %d more to buy that."
         --             here -- which he called "not good copy" -- and takes the
         --             `shop.denied` cue with it so the refusal still has its

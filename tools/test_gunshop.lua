@@ -1783,7 +1783,7 @@ do
         'the market\'s "You need %d more to buy that." no longer reaches this '
             .. 'counter -- the owner called it not good copy and replaced it')
     ok(srv:find('BR.GunshopSolve.poorToast', 1, true) ~= nil,
-        '...with his own sentence, joined and colour-marked in br_lib where a '
+        '...with his own sentence, joined and color-marked in br_lib where a '
             .. 'test can read it rather than concatenated here')
     ok(srv:find("BR.Loot.refusalText('ammofull'", 1, true) ~= nil,
         'a full ammo pool is refused in the LOOT PICKUP\'S own words, called '
@@ -2254,7 +2254,7 @@ do
         '...and carries the refusal cue ON the payload, so one sound plays '
             .. 'rather than the general warn sound and a second one')
     ok(sh ~= nil and select(2, sh.text:gsub('~', '')) == 4,
-        'both the word and the figure are marked for the signature colour -- '
+        'both the word and the figure are marked for the signature color -- '
             .. 'two pairs of tildes, which is what he asked for twice')
     ok(sh ~= nil and sh.text:find('378', 1, true) == nil
        and sh.text:find('more to buy', 1, true) == nil,
@@ -2571,7 +2571,7 @@ do
        and notices[1].text == 'You purchased SMG Ammo x60 for ~20 Volts~.'
        and notices[1].tone == 'success',
         'buying ammo says exactly what he wrote, with the figure marked for '
-            .. 'the signature colour',
+            .. 'the signature color',
         notices[1] and notices[1].text)
 
     reset()

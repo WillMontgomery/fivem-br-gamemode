@@ -484,7 +484,7 @@ BR.Config.Gunshop = {
     -- follows is his wording, character for character, and the ONLY marks added
     -- to it are the tildes -- which are not letters. ui-src's KeyText paints
     -- anything between a pair of them with `--color-volts`, which is this
-    -- project's one mechanism for the signature colour, and he asked for it by
+    -- project's one mechanism for the signature color, and he asked for it by
     -- name: "remember the Volts text and quantity must be our signature color".
     --
     -- NOTHING BELOW MAY BE TIDIED. The colon-space in "Your balance is: ", the
@@ -562,7 +562,7 @@ BR.Config.Gunshop = {
     --- TWO HOLES, IN HIS ORDER. `%s` one is the item, which is
     --- BR.GunshopSolve.menuLabel -- his own label out of config/weapons.lua or
     --- config/loot.lua, plus the quantity mark an ammo row already carries. `%s`
-    --- two is the cost, marked for the signature colour like every other figure
+    --- two is the cost, marked for the signature color like every other figure
     --- in a toast in this game.
     ---
     --- AMMO ONLY, WHICH IS HIS SCOPING. A weapon purchase gets the clerk's
