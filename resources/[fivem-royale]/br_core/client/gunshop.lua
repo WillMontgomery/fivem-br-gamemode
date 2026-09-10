@@ -1559,13 +1559,20 @@ end)
 -- equivalent, built deliberately rather than a networked entity that would
 -- silently never appear.
 --
--- ═══ STEP 4 ALREADY HAPPENED BEFORE STEP 3 CAN START ═══
+-- ═══ STEP 4 IS THREE THINGS AND THEY END TOGETHER ═══
 --
--- server/gunshop.lua delivers the weapon into the bag and THEN fires
--- GUNSHOP_BOUGHT, so by the time this handler runs the player is already armed.
--- His ordering wants the arming to land AT THE END of the presentation, and
--- that is a change on the server side of the wire, not here. Flagged rather
--- than faked: nothing below pretends to hold the weapon back.
+-- "the entity is deleted, the ped tasks cleared, and I am now armed with that
+-- weapon all at once." The first two happen HERE, at the end of `present`; the
+-- third happens on the SERVER, which is the only thing that may write an
+-- inventory. server/gunshop.lua used to deliver the weapon and THEN fire
+-- GUNSHOP_BOUGHT, so the player was armed before the clerk had begun to offer
+-- the gun -- his sequence backwards, with the clerk animated presenting
+-- something already in the buyer's hands.
+--
+-- IT FIRES THE EVENT FIRST NOW AND SCHEDULES THE DELIVERY FOR THE SAME MOMENT
+-- THIS THREAD FINISHES. Both sides read `handoverMs` out of
+-- br_lib/config/gunshop.lua rather than carrying a constant, because a moment
+-- that lands on two machines cannot be spelled in two files.
 
 --- HOW LONG THE CLERK HOLDS IT OUT, in milliseconds, and WHERE IT SITS IN HIS
 --- HAND.
@@ -1577,7 +1584,10 @@ end)
 --- are here as named constants rather than as six numbers inside a call so that
 --- /brgunclerk hand can move them live -- which is the same answer the owner
 --- already asked for on the plate.
-local HAND_MS = 1400
+--- CONFIG'S NUMBER, NOT THIS FILE'S. The server waits the same span before it
+--- delivers, so P2 step 4's "all at once" is two machines reading one value
+--- rather than two constants somebody has to remember to move together.
+local HAND_MS = tonumber(G.handoverMs) or 1400
 local HAND = { x = 0.09, y = 0.02, z = -0.02, rx = -80.0, ry = 100.0, rz = 0.0 }
 
 --- SKEL_R_Hand. The ID, which GetPedBoneIndex turns into the INDEX that

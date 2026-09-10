@@ -330,6 +330,33 @@ BR.Config.Gunshop = {
     clerkRightM  = 1.0,
     clerkFaceDeg = 0.0,
 
+    --- HOW LONG THE CLERK HOLDS THE WEAPON OUT, in milliseconds.
+    ---
+    --- ═══ ONE NUMBER, READ BY BOTH HALVES, BECAUSE IT IS ONE MOMENT ═══
+    ---
+    --- Owner, 2026-09-09, P2 step 4: "the entity is deleted, the ped tasks
+    --- cleared, and I am now armed with that weapon ALL AT ONCE."
+    ---
+    --- Three things end together and they end on two different machines. The
+    --- CLIENT deletes the prop and clears the clerk's tasks when this elapses;
+    --- the SERVER delivers the weapon into the inventory when this elapses. A
+    --- number typed into either file alone would be that moment splitting in
+    --- half the day somebody tuned one of them -- the gun appearing before the
+    --- clerk has finished offering it, or the clerk's hand emptying into
+    --- nothing. It is spelled here so there is nothing to keep in step.
+    ---
+    --- AMMO NEVER WAITS. P2 step 5 skips the whole presentation for ammo, so an
+    --- ammo purchase is delivered the instant the charge lands and this number
+    --- is not consulted.
+    ---
+    --- IT IS A REAL COST AND IT IS STATED. The server's post-charge gate
+    --- forfeits a purchase whose buyer stopped being alive in a live match, and
+    --- this widens that window by exactly this many milliseconds. Against a
+    --- DynamoDB write of up to six seconds, which is what the gate was written
+    --- for, 1.4 seconds is a small addition -- but it is an addition, and the
+    --- day this is raised to something theatrical it is the thing to weigh.
+    handoverMs = 1400,
+
     --- HOW LONG A CLERK MODEL MAY TAKE TO STREAM BEFORE THE COUNTER GIVES UP.
     ---
     --- client/rescue.lua's paramedic uses 5000 for the same question and the same

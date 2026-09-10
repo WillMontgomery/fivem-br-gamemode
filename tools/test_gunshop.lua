@@ -1819,6 +1819,23 @@ do
     ok(cli:find('BR.Sfx.play(G.cue)', 1, true) ~= nil,
         'the cue key comes out of config, so /brsfx can still audition it')
 
+    -- ═══ ONE HANDOVER, TWO MACHINES, ONE NUMBER ═══
+    --
+    -- P2 step 4: the prop is deleted, the clerk's tasks are cleared and the
+    -- player is armed "all at once" -- and the first two of those happen on the
+    -- client while the third happens on the server. A literal in either file
+    -- would be that moment splitting in half the day somebody tuned one side.
+    ok(tonumber(G.handoverMs) ~= nil,
+        'config authors how long the clerk holds the weapon out',
+        tostring(G.handoverMs))
+    ok(cli:find('G.handoverMs', 1, true) ~= nil,
+        'the client waits config\'s number before deleting the prop')
+    ok(srv:find('G.handoverMs', 1, true) ~= nil,
+        '...and the server waits the SAME number before delivering, so neither '
+            .. 'half can drift out of the other')
+    ok(cli:find('HAND_MS = 1400', 1, true) == nil,
+        'and neither half still carries a literal of its own')
+
     -- ═══ THE SERVER SPEAKS THREE SENTENCES NOW, AND IT AUTHORS NONE OF THEM
     --     ═══
     --
@@ -1915,6 +1932,23 @@ do
     function RegisterCommand(name, fn) commands[name] = fn end
     function GetGameTimer() return 1234567 end
 
+    -- ═══ THE HANDOVER PAUSE, HELD OPEN THE WAY THE CHARGE IS ═══
+    --
+    -- P2 step 4 puts the delivery at the END of the clerk's presentation, so
+    -- the server schedules it. A stub that ran the callback immediately would
+    -- make the ordering untestable -- which is the whole assertion -- so these
+    -- queue like BR.Market.hold does and `runTimers()` is what lets them go.
+    local timers = {}
+    function SetTimeout(ms, fn)
+        timers[#timers + 1] = { ms = ms, fn = fn }
+    end
+    local function runTimers()
+        local due = timers
+        timers = {}
+        for _, t in ipairs(due) do t.fn() end
+        return #due
+    end
+
     BR.Server = {
         matchOf = function(src)
             local e = roster[src]
@@ -1977,10 +2011,14 @@ do
         end,
     }
 
+    --- Let the held DynamoDB writes land -- AND the handover that follows them.
+    --- The presentation pause is scheduled inside the charge callback, so a
+    --- settle that stopped there would leave every weapon undelivered.
     local function settleCharges()
         local due = BR.Market.held
         BR.Market.held = {}
         for _, fn in ipairs(due) do fn() end
+        runTimers()
     end
 
     local bagFull = false
@@ -2105,11 +2143,21 @@ do
         end
     end
 
-    local function buy(src, id, extra)
+    --- One purchase, played all the way through.
+    ---
+    --- THE TIMERS ARE DRAINED, because since P2 step 4 a weapon is delivered at
+    --- the END of the clerk's presentation rather than at the charge. Every
+    --- assertion below about what a buyer ends up holding is an assertion about
+    --- the whole event, so the default is the whole event. `opts.hold` is for
+    --- the one test that needs to look inside it -- see 'P2 step 4'.
+    local function buy(src, id, extra, opts)
         local payload = { id = id }
         if extra then for k, v in pairs(extra) do payload[k] = v end end
         _G.source = src
         quiet(handlers[BR.Net.GUNSHOP_BUY], payload)
+        if not (type(opts) == 'table' and opts.hold == true) then
+            quiet(runTimers)
+        end
     end
 
     local function boughtFor(src)
@@ -2271,6 +2319,81 @@ do
     ok(#charged == 0 and #given == 0,
         'a nil, a string, a number and a table for an id all buy nothing and '
             .. 'none of them throws')
+
+    -- -----------------------------------------------------------------------
+    describe('P2 step 4: the arming is the END of the handover, not the start')
+    -- -----------------------------------------------------------------------
+    do
+        -- ═══ HIS SEQUENCE, AND IT WAS RUNNING BACKWARDS ═══
+        --
+        --   3. the weapon I just purchased is spawned as a network entity in
+        --      the clerk's hands as the clerk presents it to me
+        --   4. the entity is deleted, the ped tasks cleared, and I am now armed
+        --      with that weapon ALL AT ONCE
+        --
+        -- server/gunshop.lua called deliver() and THEN fired GUNSHOP_BOUGHT, so
+        -- the gun was in the bag -- and since I3 in the player's hands -- before
+        -- the clerk had begun to offer it. The clerk was animated presenting
+        -- something the buyer was already holding.
+        reset()
+        player(60)
+        buy(60, 'carbinerifle', nil, { hold = true })
+
+        ok(boughtFor(60) ~= nil and boughtFor(60).row == 'carbinerifle',
+            'the client is told to start the presentation')
+        ok(#charged == 1, '...and the Volts are already gone, because the '
+            .. 'charge is still the point of no return', #charged)
+        ok(#given == 0,
+            'but the weapon is NOT in the bag yet -- the clerk is still holding '
+                .. 'it out (P2 step 4)', #given)
+
+        local fired = 0
+        quiet(function() fired = runTimers() end)
+        ok(fired == 1, 'exactly one handover is scheduled', fired)
+        ok(#given == 1 and given[1].stack.item == 'carbinerifle',
+            'and when the presentation ends the gun lands',
+            #given)
+        ok(#given == 1 and given[1].opts and given[1].opts.focus == true,
+            '...into their hands, which is the same moment (I3 + P2 step 4)')
+
+        -- ═══ AMMO NEVER WAITS, BECAUSE THERE IS NOTHING TO WAIT FOR ═══
+        --
+        -- P2 step 5: "This animation/entity/speech process should be skipped for
+        -- all ammo purchases." No presentation means no pause; scheduling one
+        -- would be a second and a half of nothing before a number moved.
+        reset()
+        player(61)
+        buy(61, 'ammo_' .. BR.AmmoType.SMG, nil, { hold = true })
+        ok(#given == 1 and given[1].stack.kind == BR.ItemKind.AMMO,
+            'an ammo purchase is delivered before any timer runs')
+        ok(runTimers() == 0, '...and schedules no handover at all')
+        ok(#notices >= 1, 'and it still gets his success toast', #notices)
+
+        -- ═══ THE FORFEIT GATE IS ASKED AGAIN AT THE FAR END ═══
+        --
+        -- The wait is a window a player can die in like any other, and the file
+        -- already has a rule for a buyer who stopped being alive between the
+        -- charge and the goods. It is the same rule, so it is the same answer:
+        -- no item, no refund, and the unit goes back on the shelf because
+        -- nothing was handed over.
+        reset()
+        player(62)
+        local before = BR.Gunshop.stock(1, matches[1])['pillbox']['carbinerifle']
+        buy(62, 'carbinerifle', nil, { hold = true })
+        -- `OUT`, NOT `DEAD`. The enum's KEY is OUT and its wire value is 'dead'
+        -- (see br_lib/shared/enums.lua) -- and BR.PlayerState.DEAD being nil
+        -- would have made this case pass for the wrong reason, because `~= nil`
+        -- is true for a live player too. tools/verify.sh's enum gate caught it.
+        roster[62].state = BR.PlayerState.OUT
+        quiet(runTimers)
+        ok(#given == 0, 'a buyer who died during the handover gets nothing',
+            #given)
+        ok(#charged == 1, '...and is not refunded, which the file says twice')
+        local after = BR.Gunshop.stock(1, matches[1])['pillbox']['carbinerifle']
+        ok(after == before,
+            'but the rifle goes back on the shelf, because nobody received it',
+            ('%s -> %s'):format(tostring(before), tostring(after)))
+    end
 
     -- -----------------------------------------------------------------------
     describe('a player cannot buy what they cannot afford')

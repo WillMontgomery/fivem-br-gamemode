@@ -660,33 +660,89 @@ AddEventHandler(BR.Net.GUNSHOP_BUY, function(d)
                 return
             end
 
-            deliver(src, row)
+            print(('[br_core] gunshop: %d bought "%s" for %d Volts -- %s left')
+                :format(src, row.id, row.price, tostring(left)))
 
-            -- ═══ A TOAST, FOR AMMO, IN HIS WORDS ═══
+            -- ═══ AMMO IS HANDED OVER AT ONCE, BECAUSE THERE IS NO HANDOVER ═══
+            --
+            -- P2 step 5: "This animation/entity/speech process should be skipped
+            -- for all ammo purchases." No presentation means nothing to wait
+            -- for, so this arm is the old order unchanged.
+            --
+            -- ═══ AND THE TOAST IS AMMO-ONLY, WHICH IS HIS SCOPING ═══
             --
             -- Owner, 2026-09-09: "when ammo is purchased show a success toast:
             -- You purchased {item} for {cost}. otherwise they have no way to
             -- know anything went through."
             --
-            -- AMMO ONLY, WHICH IS HIS SCOPING RATHER THAN AN OMISSION. A weapon
-            -- purchase is answered by the clerk handing the gun over, so a
-            -- sentence there would be the second thing saying the same thing.
-            -- Ammo goes into a pool with no slot and no animation, which is
-            -- exactly the "no way to know" he is describing.
+            -- A weapon purchase is answered by the clerk handing the gun over,
+            -- so a sentence there would be the second thing saying the same
+            -- thing. Ammo goes into a pool with no slot and no animation, which
+            -- is exactly the "no way to know" he is describing.
             --
             -- SUCCESS, NOT WARN, and no cue: `shop.buy` already rides on
-            -- GUNSHOP_BOUGHT below and two sounds for one purchase is the fault
+            -- GUNSHOP_BOUGHT and two sounds for one purchase is the fault
             -- config/audio.lua's rule is about.
             if row.kind == BR.ItemKind.AMMO then
+                deliver(src, row)
                 BR.Server.notify(src, BR.GunshopSolve.boughtToast(
                     G, row,
                     BR.Config.Market and BR.Config.Market.currency or nil),
                     'success')
+                TriggerClientEvent(BR.Net.GUNSHOP_BOUGHT, src, { row = row.id })
+                return
             end
 
+            -- ═══ P2 STEP 4: THE ARMING IS THE END OF THE PRESENTATION ═══
+            --
+            -- Owner, 2026-09-09:
+            --
+            --   3. the weapon I just purchased is spawned as a network entity in
+            --      the clerk's hands as the clerk presents it to me
+            --   4. the entity is deleted, the ped tasks cleared, and I am now
+            --      armed with that weapon ALL AT ONCE
+            --
+            -- This used to call deliver() and THEN fire GUNSHOP_BOUGHT, which is
+            -- his sequence backwards: the gun was in the bag -- and, since I3,
+            -- in the player's hands -- before the clerk had begun to offer it.
+            -- The clerk was then animated presenting something the player was
+            -- already holding.
+            --
+            -- SO THE EVENT GOES FIRST AND THE GOODS FOLLOW. GUNSHOP_BOUGHT
+            -- starts the remark and the presentation; `handoverMs` later the
+            -- client deletes the prop and clears the clerk's tasks, and this
+            -- delivers. Three things, one moment, two machines reading ONE
+            -- config value -- see the note on `handoverMs` for why the number is
+            -- not typed in either file.
+            --
+            -- THE GATE IS ASKED AGAIN, and it is the same gate for the same
+            -- reason. The one above proves the buyer was alive when the charge
+            -- landed; this proves it when the goods do, because the wait is a
+            -- window a player can die in like any other. It costs them the Volts
+            -- and says so, exactly as the first one does -- there is still no
+            -- refund path, and inventing one for a window we introduced would be
+            -- a rule the rest of the file does not have.
             TriggerClientEvent(BR.Net.GUNSHOP_BOUGHT, src, { row = row.id })
 
-            print(('[br_core] gunshop: %d bought "%s" for %d Volts -- %s left')
-                :format(src, row.id, row.price, tostring(left)))
+            SetTimeout(tonumber(G.handoverMs) or 0, function()
+                local m2 = BR.Server.matchOf(src)
+                local e3 = BR.Roster.get(src)
+                if not m2 or m2.state ~= BR.MatchState.PLAYING
+                   or not e3 or e3.state ~= BR.PlayerState.ALIVE then
+                    -- BACK ON THE SHELF, because nothing was handed over. The
+                    -- rule is stated at `reserved` above and both of the other
+                    -- failure arms already keep it; a forfeit that left the
+                    -- count short would take a rifle out of the match that
+                    -- nobody ever received.
+                    release()
+                    print(('^3[br_core] gunshop: %d was charged %d Volts for '
+                           .. '"%s" and was no longer alive in a live match '
+                           .. 'when the clerk finished handing it over -- '
+                           .. 'FORFEITED, no item and no refund^7')
+                        :format(src, row.price, row.id))
+                    return
+                end
+                deliver(src, row)
+            end)
         end)
 end)
