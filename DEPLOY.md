@@ -112,8 +112,8 @@ Two halves fix it, and they are independent:
   for diagnosing a bad round -- honest play never approaches the ceiling -- and a
   flood becomes a bounded number of lines that say how big it is.
 * **On the box.** `tools/royale.logrotate` plus `royale-logrotate.timer` rotate
-  the file daily, or sooner if it passes 64MB, keeping seven compressed
-  generations. Worst case on disk is roughly 100-150MB.
+  the file daily, or sooner if it passes 4MB, keeping seven compressed
+  generations. Worst case on disk is roughly 7-8MB.
 
 ```bash
 sudo logrotate -d /etc/logrotate.d/royale   # dry run: says what it would do
@@ -126,7 +126,7 @@ a rename-and-create rotation would leave it writing into the renamed inode with
 `console.log` stuck at zero bytes. The trade is that a few milliseconds of output
 is lost at each rotation.
 
-**64MB is a bound, not a measurement.** Nobody has load-tested any of this
+**4MB is a bound, not a measurement.** Nobody has load-tested any of this
 against a live FXServer at population, and #287 says the same about its own
 numbers. To settle it: `wc -c` the file before and after a full round, multiply
 out, and set `maxsize` to a couple of days of that.
