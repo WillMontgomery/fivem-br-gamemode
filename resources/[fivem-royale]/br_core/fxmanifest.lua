@@ -334,6 +334,16 @@ client_scripts {
     -- everything else is call time. It is declared here so the two files that
     -- are about crate props read as a pair.
     'client/warmupcrates.lua',
+    -- The warmup stat board (#247): one browser on a prop in the same corner of
+    -- the island. AFTER client/dui.lua, and that is a REAL load order rather
+    -- than a reader's: it registers its loop callbacks at load and both of them
+    -- call BR.Dui, so the file that defines that table has to have run. It also
+    -- needs BR.Loop (client/main.lua, first) and BR.State (client/state.lua),
+    -- both of which are already above.
+    --
+    -- BESIDE client/warmupcrates.lua because the two are about the same patch of
+    -- warmup pad, and because both are inert off it.
+    'client/board.lua',
     -- The airdrop's flares: how one is lit, and where they go WHILE THE CRATE
     -- FALLS. It needs client/main.lua for the loop registry and BR.Native
     -- (natives.lua) for the prop scale on the object route, and that is now the

@@ -1,0 +1,86 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<!--
+  What the warmup stat board shows when there is no board to show (#247).
+
+  Owner, 2026-09-09: "If ringmaster is down, that's fine. We just show static on
+  the screen instead."
+
+  STATIC IS A TEXTURE, NOT AN ABSENCE. A blank quad and a switched-off board look
+  the same as a bug; a screen full of noise reads as a screen that is on and has
+  nothing to show. That is the whole brief, and there is deliberately no text on
+  this page: nobody asked for a message, and a wall in a lobby is the last place
+  to invent one.
+
+  IT IS LOCAL, WHICH IT HAS TO BE. This document is fetched over the nui scheme
+  from inside the resource, with no network of any kind, because the only reason
+  it is ever on screen is that the network did not answer.
+
+  ═══ IT PAINTS ONCE AND THEN STOPS, AND THAT IS THE PERFORMANCE DECISION ═══
+
+  A DUI repaints when its content changes and costs approximately nothing when it
+  does not. Real television static crawls; this does not, and must not. Every
+  client in the lobby is holding its own browser and its own 1280x720 RGBA
+  texture, so an animated fallback would be every one of those machines
+  re-rasterizing a megapixel forever -- for a screen that by definition has
+  nothing to say. The noise below is generated in one pass at load and never
+  touched again: no requestAnimationFrame, no setInterval, no CSS animation, no
+  transition.
+
+  ═══ 640x360 SCALED UP, RATHER THAN A MEGAPIXEL OF RANDOM ═══
+
+  The canvas is a quarter of the surface in each axis and is stretched to fill it
+  with `image-rendering: pixelated`, so each source pixel becomes an exact 2x2
+  block at 1280x720 and there is no resampling to blur it. That is a quarter of
+  the random numbers and a quarter of the ImageData for a picture nobody can tell
+  apart from the full-resolution version, and the integer ratio is what keeps the
+  blocks square. A board configured at another size still fills correctly; only
+  the block size changes.
+-->
+<style>
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #000;
+}
+canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  image-rendering: pixelated;
+}
+</style>
+</head>
+<body>
+<canvas id="noise" width="640" height="360"></canvas>
+<script>
+(function () {
+  var c = document.getElementById('noise');
+  var ctx = c.getContext('2d');
+  if (!ctx) { return; }
+
+  var img = ctx.createImageData(c.width, c.height);
+  var px = img.data;
+
+  // GRAY, NOT COLOR. Three independent channels give confetti; one value written
+  // to all three gives the monochrome snow the word "static" means. Alpha is
+  // opaque throughout, because a transparent pixel here would show the quad's
+  // own black through and read as holes rather than as noise.
+  for (var i = 0; i < px.length; i += 4) {
+    var v = (Math.random() * 256) | 0;
+    px[i] = v;
+    px[i + 1] = v;
+    px[i + 2] = v;
+    px[i + 3] = 255;
+  }
+
+  ctx.putImageData(img, 0, 0);
+})();
+</script>
+</body>
+</html>

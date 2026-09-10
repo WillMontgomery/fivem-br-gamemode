@@ -314,11 +314,50 @@ do
         return body(1.0, 0.0, 0.0), body(0.0, 1.0, 0.0), body(0.0, 0.0, 1.0)
     end
 
-    function GetEntityCoords() return { x = PROP.x, y = PROP.y, z = PROP.z } end
-    function GetEntityForwardVector()
-        local _, fwd = axes()
-        return { x = fwd[1], y = fwd[2], z = fwd[3] }
+    -- ═══ HANDLE-AWARE FROM THE START, BECAUSE PART D SHARES THIS WORLD ═══
+    --
+    -- ENT is the tilted fixture drawBoard is measured against. Part D lets
+    -- client/board.lua BUILD its own prop and stand a ped near it, and both have
+    -- to be readable through the same natives -- a stub that answered one fixed
+    -- position for every handle would let a lifecycle bug (drawing on a handle
+    -- that was deleted, say) pass by reading the fixture instead.
+    dui.PED = 1
+    dui.ped = { x = 0.0, y = 0.0, z = 0.0, h = 0.0 }
+    dui.objects = {}
+    dui.nextObj = 100
+
+    function PlayerPedId() return dui.PED end
+
+    function GetEntityCoords(e)
+        if e == ENT then return { x = PROP.x, y = PROP.y, z = PROP.z } end
+        if e == dui.PED then
+            return { x = dui.ped.x, y = dui.ped.y, z = dui.ped.z }
+        end
+        local o = dui.objects[e]
+        if o then return { x = o.x, y = o.y, z = o.z } end
+        return { x = 0.0, y = 0.0, z = 0.0 }
     end
+
+    function GetEntityForwardVector(e)
+        if e == ENT then
+            local _, fwd = axes()
+            return { x = fwd[1], y = fwd[2], z = fwd[3] }
+        end
+        local o = dui.objects[e]
+        local h = math.rad((o and o.heading) or 0.0)
+        return { x = -math.sin(h), y = math.cos(h), z = 0.0 }
+    end
+
+    function GetEntityHeading(e)
+        if e == dui.PED then return dui.ped.h end
+        local o = dui.objects[e]
+        return (o and o.heading) or 0.0
+    end
+    function SetEntityHeading(e, v)
+        local o = dui.objects[e]
+        if o then o.heading = v end
+    end
+
     function GetOffsetFromEntityInWorldCoords(_, lx, ly, lz)
         local rt, fwd, up = axes()
         return {
@@ -335,8 +374,48 @@ do
     -- DoesEntityExist ANSWERS 1 AND 0, NOT true AND false, which is what the
     -- runtime does and what the ratchet in tools/verify.sh exists for. A stub
     -- answering Lua booleans would let a bare `if DoesEntityExist(e)` pass.
-    function DoesEntityExist() return 1 end
+    function DoesEntityExist(e)
+        if e == ENT then return 1 end
+        return dui.objects[e] and 1 or 0
+    end
     function IsDuiAvailable() return 1 end
+
+    -- ═══ OBJECTS ARE MADE AND DESTROYED FOR REAL, AND BOTH ARE COUNTED ═══
+    --
+    -- A board that leaks a prop per warmup and a board that keeps one are the
+    -- same picture. Counting is the only way to tell them apart from outside.
+    dui.made, dui.deleted = 0, 0
+    dui.modelLoaded = true
+    dui.requests = {}
+
+    -- FORGIVING ON PURPOSE. A nil model has to be refused by `sited()` long
+    -- before it reaches here, and that refusal is an assertion below. If this
+    -- stub threw on nil the way a length operator does, deleting that gate would
+    -- blow the suite up with a stack trace instead of failing the assertion that
+    -- names the rule, and a crash is a much worse diagnosis than a FAIL line.
+    function GetHashKey(s)
+        if type(s) ~= 'string' then return 0 end
+        local h = 5381
+        for i = 1, #s do h = (h * 33 + s:byte(i)) % 4294967296 end
+        return h
+    end
+    function HasModelLoaded() return dui.modelLoaded and 1 or 0 end
+    function RequestModel(m) dui.requests[#dui.requests + 1] = m end
+    function SetModelAsNoLongerNeeded() end
+    function CreateObjectNoOffset(model, x, y, z)
+        dui.nextObj = dui.nextObj + 1
+        dui.objects[dui.nextObj] = { model = model, x = x, y = y, z = z,
+                                     heading = 0.0 }
+        dui.made = dui.made + 1
+        return dui.nextObj
+    end
+    function DeleteEntity(e)
+        if dui.objects[e] then dui.deleted = dui.deleted + 1 end
+        dui.objects[e] = nil
+    end
+    function FreezeEntityPosition() end
+    function SetEntityAsMissionEntity() end
+    function GetCurrentResourceName() return 'br_core' end
 
     local cam = { x = 120.0, y = 190.0, z = 31.0 }
     function GetGameplayCamCoord() return cam end
@@ -346,13 +425,26 @@ do
     -- the stub exists so the file under test can take its ordinary path.
     json = { encode = function() return '{}' end }
 
-    function CreateDui() return 1 end
+    -- ═══ EVERY BROWSER IS COUNTED AND EVERY NAVIGATION IS RECORDED ═══
+    --
+    -- The issue's rule is one browser, refreshed with SetDuiUrl and never
+    -- recreated to change what is on it. A fixture that did not count could not
+    -- tell a swap from a leak: both put the right picture on the prop, and only
+    -- one of them costs a Chromium instance per match.
+    dui.created = {}
+    dui.destroyed = 0
+    dui.navigations = {}
+
+    function CreateDui(url)
+        dui.created[#dui.created + 1] = url
+        return 900 + #dui.created
+    end
     function GetDuiHandle() return 2 end
     function CreateRuntimeTxd() return 3 end
     function CreateRuntimeTextureFromDuiHandle() end
     function SendDuiMessage() end
-    function DestroyDui() end
-    function SetDuiUrl() end
+    function DestroyDui() dui.destroyed = dui.destroyed + 1 end
+    function SetDuiUrl(_, url) dui.navigations[#dui.navigations + 1] = url end
 
     -- THE BILLBOARD NATIVES ARE DEFINED AND MUST NEVER FIRE. If drawBoard ever
     -- reaches for SetDrawOrigin it is a screen-space sprite again, whatever else
@@ -519,6 +611,358 @@ do
     ok(near(f[1], a0[1], 0.0005) and near(f[2], a0[2], 0.0005)
         and near(f[3], a0[3], 0.0005),
         'and at yaw 0 with no lateral it is drawFace exactly')
+end
+
+-- =========================================================================
+-- PART D -- the lifecycle
+-- =========================================================================
+--
+-- ═══ THE THINGS THAT LOOK IDENTICAL FROM INSIDE THE GAME ═══
+--
+-- A board that leaks a browser per match and a board that keeps one show the
+-- same picture. A board that recreates its DUI to change the page and a board
+-- that navigates it show the same picture. A board that quietly spawned a prop
+-- nobody asked for and a board waiting for a model to stream look the same for
+-- the first hundred milliseconds and then do not, in a way nobody is watching
+-- for. Every one of those is a count, and counting is what this part does.
+
+local loops = {}
+local cmds  = {}
+
+BR.Loop = {
+    FRAME = 'frame', TICK = 'tick', SLOW = 'slow',
+    register = function(_, name, fn) loops[name] = fn end,
+}
+BR.State = { me = { state = BR.PlayerState.LOBBY } }
+
+function RegisterCommand(name, fn) cmds[name] = fn end
+
+-- THE COUNTERS START AT ZERO HERE, not at load. Part C opened a probe page of
+-- its own through the same BR.Dui, and a browser count that carried it in would
+-- make every "exactly one browser" assertion below off by one -- which is a
+-- fixture bug that reads as a leak.
+dui.created = {}
+dui.navigations = {}
+dui.destroyed = 0
+dui.made, dui.deleted = 0, 0
+
+loadAll({ 'br_core/client/board.lua' })
+
+local LIC = 'b6f5a1273092df7eb6a8c2a981418f275f2ae3fb'
+local BOARD_URL = 'https://ringmaster.blitz-royale.com/scoreboard?id=' .. LIC
+local STATIC_URL = 'nui://br_ui/dui/static.html'
+
+local function tick() loops['board.track']() end
+local function frame()
+    dui.polys = {}
+    loops['board.draw']()
+    return dui.polys
+end
+
+--- How many times the browser has been sent to this address.
+local function navs(url)
+    local n = 0
+    for _, u in ipairs(dui.navigations) do
+        if u == url then n = n + 1 end
+    end
+    return n
+end
+
+--- Run /brboard and hand back every line it printed.
+local function brboard(...)
+    local lines = {}
+    local realp = print
+    print = function(s) lines[#lines + 1] = tostring(s) end
+    cmds['brboard'](nil, { ... })
+    print = realp
+    return lines
+end
+
+--- Does any printed line match this Lua pattern?
+local function printed(lines, pat)
+    for _, l in ipairs(lines) do
+        if l:match(pat) then return true end
+    end
+    return false
+end
+
+describe('a checkout with no prop named builds nothing whatever')
+do
+    -- ⚠ THE ASSERTION THAT PROTECTS THE WARMUP PAD FROM US. The owner has a prop
+    -- in mind and has not said which, so the shipped config names none -- and a
+    -- feature that spawned a placeholder anyway would put an object nobody asked
+    -- for in front of every player in the lobby.
+    BR.State.me.state = BR.PlayerState.WARMUP
+    tick()
+    tick()
+    eq(dui.made, 0, 'no object is created')
+    eq(#dui.created, 0, 'no browser is started')
+    eq(#frame(), 0, 'and nothing is drawn')
+
+    -- ═══ AND THE TWO HALVES ARE CHECKED SEPARATELY, WHICH THEY HAVE TO BE ═══
+    --
+    -- The shipped config is missing BOTH the model and the coordinates, so an
+    -- assertion driven only from that state passes whether the gate asks about
+    -- the model, the coordinates, or nothing at all. A first attempt at this
+    -- suite did exactly that: deleting the model check from `sited()` broke
+    -- nothing, because the coordinates were nil too and stopped it further down.
+    B.prop.x, B.prop.y, B.prop.z = 500.0, 600.0, 30.0
+    tick()
+    tick()
+    eq(dui.made, 0, 'coordinates with no model name build nothing')
+    eq(#dui.created, 0, 'and start no browser')
+
+    B.prop.x, B.prop.y, B.prop.z = nil, nil, nil
+    B.prop.model = 'prop_board_probe'
+    tick()
+    tick()
+    eq(dui.made, 0, 'and a model with nowhere to stand builds nothing either')
+    eq(#dui.created, 0, 'and starts no browser')
+
+    -- ALL THREE COORDINATES, AND THE THIRD IS CHECKED ON ITS OWN. Setting x and
+    -- y together and leaving z out is the shape a half-finished config edit
+    -- takes, and CREATE_OBJECT_NO_OFFSET with a nil z is an engine error rather
+    -- than a board that is slightly wrong.
+    B.prop.x, B.prop.y = 500.0, 600.0
+    tick()
+    tick()
+    eq(dui.made, 0, 'x and y with no z build nothing')
+    B.prop.x, B.prop.y = nil, nil
+
+    -- OFF THE PAD IS THE THIRD GATE, and it is not the same as the other two.
+    B.prop.x, B.prop.y, B.prop.z = 500.0, 600.0, 30.0
+    BR.State.me.state = BR.PlayerState.LOBBY
+    tick()
+    tick()
+    eq(dui.made, 0, 'a fully sited board is still nothing from the lobby menu')
+    eq(#dui.created, 0, 'and no browser is started there')
+
+    -- ...AND SO IS THE CONFIG SWITCH.
+    BR.State.me.state = BR.PlayerState.WARMUP
+    B.enabled = false
+    tick()
+    tick()
+    eq(dui.made, 0, 'enabled = false turns the whole feature off')
+    B.enabled = true
+
+    -- Put the model back where the next block expects it.
+    B.prop.model = nil
+end
+
+describe('the prop waits for its model rather than yielding for it')
+do
+    B.prop.model = 'prop_board_probe'
+    B.prop.x, B.prop.y, B.prop.z = 500.0, 600.0, 30.0
+    B.prop.heading = 90.0
+    dui.ped.x, dui.ped.y, dui.ped.z = 500.0, 605.0, 30.0
+
+    -- ═══ MODEL LOADING IS ASYNCHRONOUS AND THIS PASS CANNOT WAIT ═══
+    --
+    -- client/loot.lua's spawn worker says a RequestModel-then-wait loop "cannot
+    -- live in a loop callback", and it is right. The cure here is a state
+    -- machine rather than a thread: ask, return, and build on whichever later
+    -- pass the model has actually arrived on. The failure this catches is a
+    -- board that asks once, finds the model missing, and never comes back.
+    dui.modelLoaded = false
+    tick()
+    eq(dui.made, 0, 'a model that has not streamed yields no object')
+    ok(#dui.requests > 0, 'but it has been asked for')
+    eq(#dui.created, 0, 'and no browser is built around a prop that is not there')
+
+    dui.modelLoaded = true
+    tick()
+    eq(dui.made, 1, 'the next pass builds it, with no thread and no wait')
+    eq(#dui.created, 1, 'and exactly one browser goes with it')
+end
+
+describe('with no license there is nothing true to paint, so it paints static')
+do
+    -- FiveM does not always report a license and server/board.lua then sends
+    -- nothing. A board that built its URL anyway would ask for `?id=` and sit on
+    -- an HTTP 400 page; a board that refused to exist would leave a black
+    -- rectangle that reads as a bug. Static is the honest third answer, and it
+    -- is the SAME answer as a Ringmaster outage because it is the same fact.
+    eq(dui.created[1], STATIC_URL,
+        'the first browser opens on the local static page')
+    eq(#frame(), 2, 'and the quad is drawn, so the screen is visibly on')
+end
+
+describe('the license arrives and the browser is NAVIGATED, not replaced')
+do
+    handlers[BR.Net.BOARD_ID](LIC)
+    tick()
+    eq(navs(BOARD_URL), 1, 'it is sent to the board')
+    eq(#dui.created, 1, 'and no second browser was started to do it')
+    eq(dui.destroyed, 0, 'nor was the first one destroyed')
+
+    -- ═══ AND THE 10Hz PASS DOES NOT RELOAD IT TEN TIMES A SECOND ═══
+    --
+    -- The address is re-decided every pass. Without the comparison inside
+    -- BR.Dui.url this is a page load per tick, per client, from every machine in
+    -- the lobby, against a route that reads DynamoDB. It would work perfectly
+    -- and be invisible from in front of the prop.
+    for _ = 1, 20 do tick() end
+    eq(navs(BOARD_URL), 1, 'twenty more passes navigate nowhere')
+end
+
+describe('the draw is gated on range and lives on the frame band')
+do
+    local polys = frame()
+    eq(#polys, 2, 'in range, two triangles')
+
+    dui.ped.x, dui.ped.y = 500.0 + 400.0, 600.0
+    eq(#frame(), 2,
+        'moving does not change the draw until the 10Hz pass re-decides')
+    tick()
+    eq(#frame(), 0, 'and then the far-away board stops being drawn')
+
+    dui.ped.x = 500.0
+    tick()
+    eq(#frame(), 2, 'walking back turns it on again')
+end
+
+describe('static is a SetDuiUrl away and never a new browser')
+do
+    local before = #dui.created
+    brboard('static')
+    tick()
+    eq(navs(STATIC_URL), 1, 'the board goes to the static page')
+    eq(#dui.created, before, 'with no browser created')
+    eq(dui.destroyed, 0, 'and none destroyed')
+
+    for _ = 1, 20 do tick() end
+    eq(navs(STATIC_URL), 1, 'and it does not keep reloading it')
+
+    -- STILL DRAWN. "Show static instead" is a different picture on the same
+    -- surface, not the surface going away -- a board that stopped drawing here
+    -- would be the blank quad the owner asked us not to ship.
+    eq(#frame(), 2, 'the quad is still there, showing noise')
+
+    brboard('live')
+    tick()
+    eq(navs(BOARD_URL), 2, 'and going live navigates back')
+    eq(#dui.created, before, 'still on the same browser')
+end
+
+describe('leaving warmup takes the browser and the prop with it')
+do
+    -- ═══ THE ISSUE IS EXPLICIT: A DUI IS A REAL BROWSER AND LEAKING ONE PER
+    --     MATCH IS NOT ACCEPTABLE ═══
+    --
+    -- MATCH START IS THIS EDGE AND NOT A SECOND MECHANISM. A match starting is
+    -- this player's state leaving WARMUP, so the one teardown covers "left the
+    -- area" and "the match began" and the two cannot come to disagree.
+    local madeBefore, createdBefore = dui.made, #dui.created
+    BR.State.me.state = BR.PlayerState.BUS
+    tick()
+    eq(dui.destroyed, 1, 'the browser is destroyed')
+    eq(dui.deleted, 1, 'and the prop is deleted')
+    eq(#frame(), 0, 'nothing is drawn from the bus')
+
+    for _ = 1, 10 do tick() end
+    eq(dui.destroyed, 1, 'and the teardown is not repeated every pass')
+
+    BR.State.me.state = BR.PlayerState.WARMUP
+    tick()
+    eq(#dui.created, createdBefore + 1, 'coming back builds a browser')
+    eq(dui.made, madeBefore + 1, 'and a prop')
+    eq(dui.destroyed, 1, 'and the old one really was destroyed, not orphaned')
+end
+
+describe('/brboard moves the board and prints what it moved it to')
+do
+    -- ═══ HE ASKED FOR A TOOL, AND A TOOL WHOSE OUTPUT IS NOT PASTEABLE IS A
+    --     SECOND ROUND OF GUESSING ═══
+    --
+    -- Owner, 2026-09-09: "I can help align it if you give me the tools."
+    local lines = brboard('w', '4.0')
+    ok(printed(lines, '^%s*widthM%s*= 4%.00,$'),
+        'a new width prints as the config line it belongs on')
+
+    local wide = frame()
+    local tl, tr = nil, nil
+    for _, p in ipairs(wide) do
+        for i = 1, 3 do
+            if p.uv[i][1] == 0.0 and p.uv[i][2] == 0.0 then tl = p.v[i] end
+            if p.uv[i][1] == 1.0 and p.uv[i][2] == 0.0 then tr = p.v[i] end
+        end
+    end
+    ok(tl and tr and near(dist3(tl, tr), 4.0, 0.001),
+        'and the quad on the prop is actually four meters across now',
+        tl and tr and ('%.3f'):format(dist3(tl, tr)) or 'not drawn')
+
+    -- A DELTA, WHICH IS THE HALF THAT MAKES IT A NUDGER. `4.0` sets, `+0.5`
+    -- moves; the leading sign is the entire difference and it is read off the
+    -- raw string, because tonumber('+0.5') and tonumber('0.5') are equal.
+    lines = brboard('w', '+0.5')
+    ok(printed(lines, '^%s*widthM%s*= 4%.50,$'), 'and +0.5 nudges from there')
+
+    lines = brboard('yaw', '-90')
+    ok(printed(lines, '^%s*yawDeg%s*= %-90%.00,$'),
+        'a negative delta on an untouched field reads from the config value')
+
+    -- THE WHOLE BLOCK IS THERE, not just the field that changed. Pasting back a
+    -- partial block is how a field somebody never touched gets quietly zeroed.
+    lines = brboard()
+    for _, key in ipairs({ 'forwardM', 'sideM', 'upM', 'widthM', 'yawDeg' }) do
+        ok(printed(lines, '^%s*' .. key .. '%s*= '), key .. ' is in the block')
+    end
+    ok(printed(lines, "^%s*prop = { model = 'prop_board_probe', x = 500%.00"),
+        'and so is the prop, in the shape config/board.lua writes it')
+
+    -- IT SAYS WHAT THE BOARD IS DOING, which is the other half of the request:
+    -- seven different faults all look like "the board is not there".
+    ok(printed(lines, '^  health '), 'the health state is printed')
+    ok(printed(lines, 'texture 1280x720'), 'so is the resolution')
+    ok(printed(lines, '^  url    ' .. BOARD_URL:gsub('%p', '%%%0')),
+        'and the address actually in force')
+    ok(printed(lines, '^  warmup true'), 'and whether we are on the pad')
+end
+
+describe('/brboard prop and here place it without a config edit')
+do
+    local madeBefore, deletedBefore = dui.made, dui.deleted
+
+    brboard('prop', 'prop_board_other')
+    eq(dui.deleted, deletedBefore + 1, 'auditioning a model drops the old prop')
+    tick()
+    eq(dui.made, madeBefore + 1, 'and stands the new one up')
+
+    dui.ped.x, dui.ped.y, dui.ped.z = 511.0, 622.0, 33.0
+    dui.ped.h = 250.0
+    local lines = brboard('here')
+    ok(printed(lines, "model = 'prop_board_other', x = 511%.00, y = 622%.00, "
+        .. 'z = 33%.00, heading = 250%.0'),
+        'and `here` surveys the spot he is standing on, heading included')
+
+    -- AND THE OBJECT REALLY MOVES THERE, rather than the numbers moving and the
+    -- prop staying put -- which would be a readout that agrees with itself and
+    -- with nothing on screen.
+    tick()
+    local moved = nil
+    for h, o in pairs(dui.objects) do
+        if near(o.x, 511.0, 0.01) and near(o.y, 622.0, 0.01) then moved = h end
+    end
+    ok(moved ~= nil, 'the prop is standing where he stood')
+
+    -- RESET PUTS EVERYTHING BACK, INCLUDING THE PROP. A reset that restored the
+    -- numbers and left an object standing at the overridden site would make the
+    -- readout lie about where the board is.
+    deletedBefore = dui.deleted
+    lines = brboard('reset')
+    eq(dui.deleted, deletedBefore + 1, 'reset drops the prop it was auditioning')
+    ok(printed(lines, "model = 'prop_board_probe'"),
+        'and the model goes back to the config')
+    ok(printed(lines, '^%s*widthM%s*= 2%.40,$'),
+        'and so do the five numbers')
+end
+
+describe('the resource stopping does not leave a browser behind')
+do
+    local before = dui.destroyed
+    handlers['onResourceStop']('br_core')
+    eq(dui.destroyed, before + 1, 'the browser is destroyed on the way out')
+    eq(#frame(), 0, 'and nothing is drawn after it')
 end
 
 -- ---------------------------------------------------------------- report ---
