@@ -2927,6 +2927,36 @@ do
         if not okc then error(err, 0) end
     end
 
+    --- ...except when the printed lines ARE the thing under test.
+    ---
+    --- /brgunclerk's whole output is a block the owner pastes back into
+    --- br_lib/config/gunshop.lua. A wrong number in it is not a cosmetic fault:
+    --- it is a config edit he makes on our say-so, so the lines have to be
+    --- readable by the suite rather than swallowed by it.
+    --- @return string[] lines
+    local function grab(fn, ...)
+        local out = {}
+        _G.print = function(...)
+            local parts = {}
+            for i = 1, select('#', ...) do
+                parts[#parts + 1] = tostring((select(i, ...)))
+            end
+            out[#out + 1] = table.concat(parts, ' ')
+        end
+        local okc, err = pcall(fn, ...)
+        _G.print = realPrint2
+        if not okc then error(err, 0) end
+        return out
+    end
+
+    --- One captured line containing `needle`, or nil.
+    local function lineWith(lines, needle)
+        for _, l in ipairs(lines) do
+            if l:find(needle, 1, true) then return l end
+        end
+        return nil
+    end
+
     --- Every ordinary row of the built menu, keyed by its visible label.
     local function shelf()
         local out = {}
@@ -3427,6 +3457,68 @@ do
         ok(drawn[#drawn] ~= nil
             and math.abs(drawn[#drawn].oz - G.signUpM) < 0.001,
             'and reset hands it back to config')
+    end
+
+    -- -----------------------------------------------------------------------
+    describe('S2: the clerk nudger starts from what the game is running')
+    -- -----------------------------------------------------------------------
+    do
+        -- ═══ A TOOL THAT MOVED THE THING IT WAS MEASURING ═══
+        --
+        -- `fwd` and `face` both fell back to config; `lat` fell back to 0.0
+        -- because `clerkRightM` did not exist when this command was written and
+        -- C1 added it without coming back here. The config ships 1.0.
+        --
+        -- SO RUNNING THE TOOL UNDID THE FIX. Bare /brgunclerk moves the standing
+        -- clerk to fwd/lat/face, which with lat at zero teleports him a metre
+        -- off the position the game had just built him at -- and then prints
+        -- `clerkRightM = 0.00` as a line to paste back into the config.
+        walkAway()
+        standAt('pillbox')
+        local st = storeById['pillbox']
+        local wx, wy = S.clerkAt(G, st, 0.0)
+
+        local lines = grab(cmds['brgunclerk'], nil, {})
+        local moved = lineWith(lines, 'pillbox')
+        ok(moved ~= nil, 'the tool reports the clerk it moved',
+            table.concat(lines, ' | '))
+
+        -- NOT `moved and moved:match(...)`. `and` yields exactly ONE value, so
+        -- that form silently drops the second capture and gy is nil forever.
+        local gx, gy
+        if moved then
+            gx, gy = moved:match('now%s+([%-%d%.]+),%s*([%-%d%.]+)')
+        end
+        ok(gx ~= nil and gy ~= nil
+            and math.abs(tonumber(gx) - wx) < 0.01
+            and math.abs(tonumber(gy) - wy) < 0.01,
+            'and a bare call leaves him exactly where config put him, rather '
+                .. 'than sliding him off it (S2)',
+            moved or 'no line')
+
+        -- THE PASTEABLE BLOCK IS THE OTHER HALF, AND THE MORE EXPENSIVE ONE.
+        -- A ped a metre out is visible; a config line the owner pastes back is
+        -- a silent revert of his own playtest fix.
+        local right = lineWith(lines, 'clerkRightM')
+        ok(right ~= nil
+            and math.abs((tonumber(right:match('=%s*([%-%d%.]+)')) or -1)
+                         - (tonumber(G.clerkRightM) or 0.0)) < 0.001,
+            'and the pasteable line reports the config figure, not a zero that '
+                .. 'would undo C1',
+            right or 'no clerkRightM line')
+
+        -- AND IT IS STILL A NUDGER. A delta has to move from the LIVE number,
+        -- which is the same fault seen from the other side: nudging from a
+        -- baseline the game is not using produces a number that means nothing.
+        local after = grab(cmds['brgunclerk'], nil, { 'right', '+0.25' })
+        local r2 = lineWith(after, 'clerkRightM')
+        ok(r2 ~= nil
+            and math.abs((tonumber(r2:match('=%s*([%-%d%.]+)')) or -1)
+                         - ((tonumber(G.clerkRightM) or 0.0) + 0.25)) < 0.001,
+            'a +0.25 nudge moves from the config figure, not from zero',
+            r2 or 'no clerkRightM line')
+
+        hush(cmds['brgunclerk'], nil, { 'reset' })
     end
 end
 

@@ -2100,9 +2100,15 @@ RegisterCommand('brgunclerk', function(_, args)
         return
     end
 
-    local fwd  = clerkFwd or tonumber(G.clerkOffsetM) or 0.0
-    local lat  = clerkRight or 0.0
-    local face = clerkFace or tonumber(G.clerkFaceDeg) or 0.0
+    -- ALL THREE FALL BACK TO CONFIG, AND THE MIDDLE ONE DID NOT. `clerkRightM`
+    -- was written into config/gunshop.lua by C1 and this tool never learned to
+    -- read it, so a nudger whose whole job is to refine the owner's numbers
+    -- started from a lateral baseline of ZERO while the game shipped 1.0 -- it
+    -- reported the wrong figure, nudged from the wrong figure, and printed a
+    -- pasteable config line that would have undone C1 the moment he used it.
+    local fwd  = clerkFwd   or tonumber(G.clerkOffsetM) or 0.0
+    local lat  = clerkRight or tonumber(G.clerkRightM)  or 0.0
+    local face = clerkFace  or tonumber(G.clerkFaceDeg) or 0.0
 
     if what == 'reset' then
         clerkFwd, clerkRight, clerkFace = nil, nil, nil
@@ -2118,9 +2124,9 @@ RegisterCommand('brgunclerk', function(_, args)
               .. 'hand ... | say ... | reset')
     end
 
-    fwd  = clerkFwd or tonumber(G.clerkOffsetM) or 0.0
-    lat  = clerkRight or 0.0
-    face = clerkFace or tonumber(G.clerkFaceDeg) or 0.0
+    fwd  = clerkFwd   or tonumber(G.clerkOffsetM) or 0.0
+    lat  = clerkRight or tonumber(G.clerkRightM)  or 0.0
+    face = clerkFace  or tonumber(G.clerkFaceDeg) or 0.0
 
     print('=== gunshop clerk ===')
     if store then
@@ -2150,11 +2156,13 @@ RegisterCommand('brgunclerk', function(_, args)
     else
         print('  not at a counter -- the numbers below are still set')
     end
-    -- PASTEABLE. `clerkRightM` IS A FIELD THAT DOES NOT EXIST YET: it is what
-    -- C1 needs adding to br_lib/config/gunshop.lua, spent along (cos h, sin h)
-    -- in BR.GunshopSolve.clerkAt.
+    -- PASTEABLE, AND EVERY LINE STARTS FROM WHAT THE GAME IS ACTUALLY RUNNING.
+    -- All three names exist in br_lib/config/gunshop.lua now -- `clerkRightM`
+    -- landed with C1 -- so what prints here is either a number the owner has
+    -- nudged this session or the number the file already holds, and pasting the
+    -- block back can never quietly zero a field he did not touch.
     print(('    clerkOffsetM = %.2f,'):format(fwd))
-    print(('    clerkRightM  = %.2f,   -- NEW FIELD, see C1'):format(lat))
+    print(('    clerkRightM  = %.2f,'):format(lat))
     print(('    clerkFaceDeg = %.2f,'):format(face))
 end, false)
 
