@@ -177,6 +177,11 @@ end
 --- is no compensating write -- and two guards that can disagree is how you get a
 --- third one.
 ---
+--- The `wipedAt` branch below reads `publishedAt`, and that is not a second
+--- guard: it does not decide whether to publish, only which of two very
+--- different console lines to print. The decision is `wipedAt` alone, exactly as
+--- it was.
+---
 --- NO PLACEMENTS ARE AWARDED EITHER, and that is the other deliberate half. See
 --- the note on awardPlacements.
 --- @param m table
@@ -189,13 +194,34 @@ function BR.Match.publishAbandoned(m)
     -- breath. Publishing after that records a match in which nobody did anything
     -- -- #132's fingerprint, filed permanently.
     --
-    -- The normal path never gets here with this clear (ENDED published long
-    -- before CLEANUP wiped anything), so this is not a second once-guard: it is
-    -- the one reachable ordering hazard, `brforce cleanup` straight from PLAYING,
-    -- where the wipe would happen with nothing yet published.
+    -- ═══ EVERY FINISHED MATCH REACHES THIS BRANCH, AND THAT IS NOT THE ALARMING
+    --     CASE. IT USED TO SAY IT WAS ═══
+    --
+    -- The note here used to claim "the normal path never gets here", naming
+    -- `brforce cleanup` straight from PLAYING as the one way in. That is wrong,
+    -- and an ordinary round disproves it: ENDED publishes, CLEANUP wipes and
+    -- stamps `wipedAt`, and destroy calls this function immediately afterwards.
+    -- So the branch is taken at the end of EVERY match that was played.
+    --
+    -- The old sentence made both of those look like the same event, and it
+    -- picked the frightening wording for the one that happens every round.
+    -- Owner, 2026-09-09, reading it after a clean two-player match that had
+    -- already written its rows: "then I guess nothing was saved?" Everything
+    -- was saved. The line said otherwise.
+    --
+    -- `publishedAt` IS WHAT TELLS THEM APART, and it is already the real guard
+    -- (see the note above). Stamped means the rows went to br_stats before the
+    -- wipe, so there is nothing further to do and this is routine. Clear means
+    -- the numbers were destroyed with nothing yet published, which is the
+    -- genuine ordering hazard and the only version of this worth a second look.
     if m.wipedAt then
-        print(('[br_core] match %d: dissolved after CLEANUP wiped it -- '
-            .. 'nothing left to record'):format(m.id))
+        if m.publishedAt then
+            print(('[br_core] match %d: already recorded at ENDED; '
+                .. 'nothing further to publish'):format(m.id))
+        else
+            print(('^3[br_core] match %d: CLEANUP wiped it before anything was '
+                .. 'published -- the result is lost^7'):format(m.id))
+        end
         return
     end
 

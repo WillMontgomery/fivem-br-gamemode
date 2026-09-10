@@ -17772,6 +17772,60 @@ do
         'and the CLEANUP -> destroy that follows every finished match adds no second one',
         ('got %d'):format(#resultsSince(mark)))
 
+    -- ------------------------------------------------------------------
+    -- (7) AND THE CONSOLE LINE TELLS THOSE TWO APART.
+    --
+    --     Cases (5) and (6) both end in the same `wipedAt` branch, and until
+    --     2026-09-09 both printed the same sentence: "dissolved after CLEANUP
+    --     wiped it -- nothing left to record". Case (6) is EVERY finished match
+    --     on the server and case (5) is a genuinely lost result, and the shared
+    --     wording picked the frightening reading for the routine one.
+    --
+    --     Owner, 2026-09-09, reading it on a clean two-player round whose rows
+    --     br_stats had already written: "then I guess nothing was saved?".
+    --     Everything was saved.
+    --
+    --     NOTHING OWNED THAT SENTENCE, which is how it stayed wrong through a
+    --     green suite. Every assertion above is about PUBLISHES, and all of them
+    --     hold whichever string is printed, so none of them could see it. These
+    --     are about what the operator is told.
+    -- ------------------------------------------------------------------
+    local realPrint = print
+    local said = {}
+    local function saidMatching(needle)
+        local n = 0
+        for _, s in ipairs(said) do
+            if s:find(needle, 1, true) then n = n + 1 end
+        end
+        return n
+    end
+
+    local m6 = twoInAMatch()
+    BR.Combat.eliminate(2, 'weapon', 1)
+    BR.Match.transition(m6, BR.MatchState.ENDED)
+    BR.Match.transition(m6, BR.MatchState.CLEANUP)
+    said = {}
+    print = function(s) said[#said + 1] = tostring(s) end
+    BR.Match.destroy(m6)
+    print = realPrint
+    ok(saidMatching('already recorded at ENDED') == 1,
+        'a finished match is told its rows were already written',
+        ('got %d lines'):format(#said))
+    ok(saidMatching('the result is lost') == 0,
+        'and is never told the result is lost, which is the reading that alarmed the owner')
+
+    local m7 = twoInAMatch()
+    BR.Match.transition(m7, BR.MatchState.CLEANUP)
+    said = {}
+    print = function(s) said[#said + 1] = tostring(s) end
+    BR.Match.destroy(m7)
+    print = realPrint
+    ok(saidMatching('the result is lost') == 1,
+        'a match wiped before anything was published IS told the result is lost',
+        ('got %d lines'):format(#said))
+    ok(saidMatching('already recorded at ENDED') == 0,
+        'and is not told it was recorded')
+
     TriggerEvent = realTrigger
 end
 
