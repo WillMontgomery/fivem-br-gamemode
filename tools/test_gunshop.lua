@@ -2796,6 +2796,10 @@ do
             -- watch happen rather than assume.
             InstructionalButtons = { 'select', 'back' },
             _mouse = true, _edge = true, _visible = false,
+            -- DEFAULTED TO A NO-OP AT CONSTRUCTION, exactly as the real
+            -- UIMenu.New does. It is the seam a consumer overrides to hear
+            -- about a close it did not ask for.
+            OnMenuClose = function() end,
         }, UIMenu)
         return lastMenu
     end
@@ -2819,8 +2823,31 @@ do
         i.ParentMenu = self
     end
     function UIMenu:Visible(v)
-        if v ~= nil then self._visible = v end
+        if v ~= nil then
+            local was = self._visible
+            self._visible = v
+            -- ON THE FALLING EDGE, FROM INSIDE Visible ITSELF, which is where
+            -- the real library calls it (ScaleformUI.lua, UIMenu:Visible, the
+            -- `else` arm). That placement is the whole reason this is a usable
+            -- seam: EVERY path that lowers the menu goes through Visible, so a
+            -- consumer that hooks it hears about the ones it did not initiate.
+            if was == true and v == false
+                and type(self.OnMenuClose) == 'function' then
+                self.OnMenuClose(self)
+            end
+        end
         return self._visible
+    end
+
+    --- THE BACK BUTTON, AND IT TELLS US NOTHING DIRECTLY.
+    ---
+    --- UIMenu:GoBack at breadcrumb depth 1 calls
+    --- MenuHandler:CloseAndClearHistory, which lowers the menu with
+    --- Visible(false) and does not touch any state a consumer owns. Modelling
+    --- it is what makes "the player pressed Back" a thing this suite can do --
+    --- without it, the only close the suite could ever produce was our own.
+    function UIMenu:GoBack()
+        if self._visible then self:Visible(false) end
     end
 
     UIMenuItem = {}
@@ -3440,6 +3467,54 @@ do
         ok(down ~= nil and down.payload.open == false,
             'and walking away puts the squad panel back',
             down and tostring(down.payload.open) or 'nothing sent')
+    end
+
+    -- -----------------------------------------------------------------------
+    describe("S5: the library's own Back button reaches our flag")
+    -- -----------------------------------------------------------------------
+    do
+        -- ═══ A COUNTER THAT WENT DEAD UNTIL YOU WALKED AWAY FROM IT ═══
+        --
+        -- UIMenu:GoBack takes the menu down through the library alone --
+        -- MenuHandler:CloseAndClearHistory -> Visible(false) -- and touched no
+        -- state of ours. `menuOpen` stayed TRUE with nothing on screen, and the
+        -- TICK pass reads it before anything else: the plate stayed down, and
+        -- the interact key returns early while it is set. So pressing Back left
+        -- the player standing at a counter that would not open again, and the
+        -- only cure was to walk out of reach so `best ~= menuStore` closed a
+        -- menu that had already closed itself.
+        walkAway()
+        standAt('pillbox')
+        press()
+        ok(lastMenu ~= nil and lastMenu._visible == true, 'the menu is up')
+        ok(BR.Gunshop.busy() == true, 'and this file agrees it is busy')
+
+        lastMenu:GoBack()
+        ok(lastMenu._visible == false, 'the library took the menu down')
+        ok(BR.Gunshop.busy() == false,
+            "...and our flag came down with it, without the player having to "
+                .. 'walk away (S5)')
+
+        local back = lastLocal('gunshopmenu')
+        ok(back ~= nil and back.payload.open == false,
+            'so the squad panel comes back on Back, not just on walk-away',
+            back and tostring(back.payload.open) or 'nothing sent')
+
+        -- THE COUNTER IS ALIVE AGAIN, which is the symptom rather than the
+        -- flag: one TICK pass and the world plate is back up.
+        local mark = #dui
+        loops['gunshop.prompt']()
+        local reraised = false
+        for i = mark + 1, #dui do
+            if dui[i].show == true then reraised = true end
+        end
+        ok(reraised, 'the plate comes back on the very next tick')
+
+        -- AND THE KEY WORKS. `if menuOpen then return end` is the first line of
+        -- the interact handler, so a stale flag deadens the press itself.
+        press()
+        ok(lastMenu._visible == true, 'and pressing E opens it again')
+        walkAway()
     end
 
     -- -----------------------------------------------------------------------

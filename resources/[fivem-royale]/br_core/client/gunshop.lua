@@ -772,7 +772,16 @@ local function closeMenu(why)
     -- library's own Back button and onClientResourceStop, because a flag the
     -- page holds and Lua forgets to lower is a squad panel gone for the match.
     setMenuFlag(false)
-    if menu then pcall(menu.Visible, menu, false) end
+    -- ASKED BEFORE IT IS TOLD, because this is now reachable FROM the library's
+    -- own close: buildMenu hands UIMenu.OnMenuClose a call to this function, and
+    -- Visible(false) is what fires that callback. Lowering an already-lowered
+    -- menu would run the library's whole teardown a second time and re-enter
+    -- here -- harmless, since `menuOpen` is already false by this line, and
+    -- avoided anyway rather than relied on.
+    if menu then
+        local seen, vis = pcall(menu.Visible, menu)
+        if not seen or vis == true then pcall(menu.Visible, menu, false) end
+    end
     if why then print(('[br_core] gunshop: menu closed -- %s'):format(why)) end
 end
 
@@ -1097,6 +1106,30 @@ local function buildMenu()
         return false
     end
 
+    -- ═══ THE LIBRARY'S OWN BACK BUTTON HAS TO REACH `menuOpen` ═══
+    --
+    -- The note on the TICK pass used to say the Back button "needs nothing from
+    -- this file". It needed one thing: UIMenu:GoBack takes the menu down
+    -- through the library alone -- MenuHandler:CloseAndClearHistory ->
+    -- Visible(false) -- and never touches our flag. So `menuOpen` stayed TRUE
+    -- with nothing on screen, and the TICK pass reads it before anything else:
+    -- the plate stayed down, and the interact key returns early while it is
+    -- set, so the counter was dead for as long as the player stood at it. It
+    -- came back only when they walked out of reach and `best ~= menuStore`
+    -- closed a menu that had already closed itself.
+    --
+    -- OnMenuClose IS THE LIBRARY'S OWN SEAM FOR THIS, defaulted to an empty
+    -- function at construction and called on every path that lowers the menu,
+    -- Back and CloseAndClearHistory included. So this is OUR file reconciling
+    -- to the library rather than a patch to the vendored one, and it needs no
+    -- BR-PATCH entry in its VENDOR.json.
+    --
+    -- POLLING `built:Visible()` IN THE TICK PASS WAS THE ALTERNATIVE and is
+    -- worse: it puts a frame of "menu closed but our flag says open" into every
+    -- close, and it asks a question ten times a second that the library is
+    -- already willing to answer once.
+    built.OnMenuClose = function() closeMenu(nil) end
+
     menu = built
     return true
 end
@@ -1414,7 +1447,9 @@ end)
 --- Three ways the menu closes and all of them are here: the player leaves the
 --- counter it was opened at, the match or the player leaves PLAYING/ALIVE, or
 --- one of our NUI screens takes the keyboard. The fourth is the library's own
---- Back button, which needs nothing from this file.
+--- Back button, and it does NOT come through here -- it is reconciled at the
+--- source, through UIMenu.OnMenuClose, which buildMenu points at closeMenu. See
+--- the block there for why this pass must not poll for it instead.
 BR.Loop.register(BR.Loop.TICK, 'gunshop.prompt', function()
     if not wantScene() then
         setPlate(false)
