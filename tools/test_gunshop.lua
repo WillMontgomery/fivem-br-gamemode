@@ -2744,7 +2744,23 @@ do
     function RegisterNetEvent() end
     function RegisterCommand(name, fn) cmds[name] = fn end
     function GetCurrentResourceName() return 'br_core' end
-    function TriggerEvent() end
+    -- RECORDED RATHER THAN SWALLOWED. `br:ui:sendLocal` is the only door
+    -- br_core has to the page -- br_ui/client/nui.lua is the one file allowed
+    -- to call SendNUIMessage -- so a no-op stub here makes every HUD envelope
+    -- this file sends invisible to the suite. M5 and M6 shipped fully built on
+    -- the page and unreachable from Lua underneath exactly that blind spot.
+    local local_ = {}
+    function TriggerEvent(name, kind, payload)
+        local_[#local_ + 1] = { name = name, kind = kind, payload = payload }
+    end
+    --- The last `br:ui:sendLocal` of one kind, or nil.
+    local function lastLocal(kind)
+        for i = #local_, 1, -1 do
+            local e = local_[i]
+            if e.name == 'br:ui:sendLocal' and e.kind == kind then return e end
+        end
+        return nil
+    end
     function TriggerServerEvent(name, payload)
         sent[#sent + 1] = { name = name, payload = payload }
     end
@@ -3057,6 +3073,68 @@ do
         local rich = rowItem('carbinerifle')
         ok(rich ~= nil and rich._leftBadge == BadgeStyle.GUN,
             'and the lock comes off again when they can pay')
+    end
+
+    -- -----------------------------------------------------------------------
+    describe('M5 and M6: the page is told the menu is up, and Lua is the teller')
+    -- -----------------------------------------------------------------------
+    do
+        -- ═══ THE ASSERTION THAT WOULD HAVE CAUGHT A WHOLE DEAD FEATURE ═══
+        --
+        -- Owner, 2026-09-09, M5 and M6: the squad panel goes away while the
+        -- shop menu is open, and his Volts balance stays visible bottom-right
+        -- while it is. Both are decided in Hud.tsx off one store flag,
+        -- `gunshopMenu`, and ui-src/scripts/check-ui.mjs's R15 proves the page
+        -- half thoroughly. NOTHING PROVED THE SENDER, and there was not one:
+        -- the string `gunshopmenu` appeared in no .lua file in the tree, so the
+        -- flag was false for the life of every session and both requests were
+        -- unreachable code that reviewed as finished.
+        walkAway()
+        standAt('pillbox')
+        local before = lastLocal('gunshopmenu')
+        ok(before == nil or before.payload.open == false,
+            'standing at the counter does not raise it -- the world plate is '
+                .. 'not the menu')
+
+        local mark = #local_
+        press()
+        local up = lastLocal('gunshopmenu')
+        ok(up ~= nil,
+            'opening the menu sends a gunshopmenu envelope at all -- the whole '
+                .. 'of M5 and M6 hangs off this one line')
+        ok(up ~= nil and up.payload.open == true,
+            '...and it says the menu is open',
+            up and tostring(up.payload.open) or 'nothing sent')
+
+        -- ═══ AND IT GOES OUT BEFORE THE PLATE COMES DOWN ═══
+        --
+        -- Hud.tsx raises the Volts readout on `shopPlate || gunshopMenu`, and
+        -- openMenu lowers shopPlate. Sending this second would leave both false
+        -- for one envelope and blink the balance off and back on at the exact
+        -- moment M6 asks for it to hold.
+        local iUp, iPlateDown
+        for i = mark + 1, #local_ do
+            local e = local_[i]
+            if e.name == 'br:ui:sendLocal' then
+                if e.kind == 'gunshopmenu' and e.payload.open == true then
+                    iUp = iUp or i
+                elseif e.kind == 'shopplate' and e.payload.show == false then
+                    iPlateDown = iPlateDown or i
+                end
+            end
+        end
+        ok(iPlateDown ~= nil, 'the plate does come down with the menu up')
+        ok(iUp ~= nil and iPlateDown ~= nil and iUp < iPlateDown,
+            '...and the menu flag was raised first, so the balance never '
+                .. 'blinks between the two',
+            ('menu at %s, plate at %s'):format(tostring(iUp),
+                                               tostring(iPlateDown)))
+
+        walkAway()
+        local down = lastLocal('gunshopmenu')
+        ok(down ~= nil and down.payload.open == false,
+            'and walking away puts the squad panel back',
+            down and tostring(down.payload.open) or 'nothing sent')
     end
 
     -- -----------------------------------------------------------------------

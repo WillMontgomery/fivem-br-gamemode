@@ -192,6 +192,10 @@ local gen = 0
 --- here for reasons that are stated rather than assumed.
 local plateShown = false
 
+--- The last `open` the HUD was told about, so the envelope is sent on the edge
+--- only. Its writer is setMenuFlag(); see the note there.
+local menuFlagged = false
+
 --- The counter the TICK pass decided the player is at, held for the FRAME pass
 --- to draw against -- and the ONE counter a keypress may open.
 ---
@@ -380,6 +384,36 @@ local function setPlate(show)
         key   = BR.Native.keyLabelForCommand('brinteract', 51),
         ring  = false,
     })
+end
+
+--- Tell the HUD the shop menu is up, or down.
+---
+--- ═══ THE HALF THAT WAS MISSING ═══
+---
+--- Owner, 2026-09-09, M5 and M6: the squad panel goes away while the shop menu
+--- is open, and his Volts balance stays visible bottom-right while it is. The
+--- page side of both was built -- `gunshopMenu` in the store, a `gunshopmenu`
+--- member on the envelope union, App.tsx routing it, Hud.tsx gating the squad
+--- slot and the Volts selector on it -- and NOTHING IN LUA EVER SENT IT, so the
+--- whole of it was unreachable code. This function is the sender.
+---
+--- SAME SEAM AS THE PLATE ABOVE, AND FOR THE SAME REASON. br_ui/client/nui.lua
+--- is the only file in the project that may call SendNUIMessage; everything
+--- else asks it to, and `br:ui:sendLocal` is the same-client door it exposes
+--- for br_core. This carries a BOOLEAN and no figure: br_ui already holds the
+--- player's Volts, so sending the number from here would be a second copy of it
+--- free to disagree with the shop screen -- client/shop.lua's argument for the
+--- plate, unchanged.
+---
+--- ON THE EDGE ONLY. refreshMenu runs on every stock and balance push while the
+--- menu is up, and an unconditional send would be a HUD render per push for an
+--- answer that has not moved.
+--- @param open boolean
+local function setMenuFlag(open)
+    open = (open == true)
+    if open == menuFlagged then return end
+    menuFlagged = open
+    TriggerEvent('br:ui:sendLocal', 'gunshopmenu', { open = open })
 end
 
 -- ---------------------------------------------------------------------------
@@ -685,6 +719,11 @@ local function closeMenu(why)
     if not menuOpen then return end
     menuOpen  = false
     menuStore = nil
+    -- THE SQUAD PANEL COMES BACK AND THE VOLTS READOUT GOES AWAY WITH IT (M5,
+    -- M6). Unconditional at the top of every close path, including the
+    -- library's own Back button and onClientResourceStop, because a flag the
+    -- page holds and Lua forgets to lower is a squad panel gone for the match.
+    setMenuFlag(false)
     if menu then pcall(menu.Visible, menu, false) end
     if why then print(('[br_core] gunshop: menu closed -- %s'):format(why)) end
 end
@@ -1224,6 +1263,13 @@ local function openMenu(store)
     -- APPLIED BEFORE THE MENU IS SHOWN, which is what keeps the description
     -- writes off the shared GXT key -- see buildMenu.
     refreshMenu(store)
+    -- ═══ THE ORDER OF THESE TWO IS THE FIX, NOT AN ACCIDENT ═══
+    --
+    -- Hud.tsx raises the Volts readout on `shopPlate || gunshopMenu`. The plate
+    -- going down is what lowers the first of those, so raising the second AFTER
+    -- it would put both false for one envelope and flick the balance off and on
+    -- at the exact moment M6 asks for it to stay. Raise, then lower.
+    setMenuFlag(true)
     -- THE PLATE GOES DOWN WITH THE MENU UP. They say the same word, and one of
     -- them is a full-screen panel; leaving the world plate lit behind it is the
     -- same prompt twice.
