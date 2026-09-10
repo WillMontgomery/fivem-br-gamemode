@@ -864,37 +864,38 @@ local function ammoFull(row)
     return held >= cap
 end
 
---- EVERY WEAPON IN THE GAME THAT TAKES ONE AMMO POOL, AS ONE LINE.
+--- WHICH WEAPON TABLES A PLAYER CAN END UP HOLDING SOMETHING OUT OF.
 ---
---- Owner, 2026-09-09: "When an ammo item is in focus in the menu, a description
---- should be shown that includes a list of all weapons that ammo is used in.
---- This will help the customer understand what ammo they need to purchase for
---- their given loadout."
+--- Owner, 2026-09-09, L5: "When an ammo item is in focus in the menu, a
+--- description should be shown that includes a list of all weapons that ammo is
+--- used in. This will help the customer understand what ammo they need to
+--- purchase for their given loadout."
 ---
---- ═══ ALL OF THEM, NOT JUST THE ONES ON SALE ═══
+--- ═══ TWO ARRAYS, AND THE SECOND ONE WAS BEING LEFT OUT ═══
 ---
---- His reason is the loadout, and a loadout is mostly floor loot: this shop only
---- stocks RARE and above, so a list drawn from the catalogue would leave out
---- every pistol and SMG the map hands out -- which is most of what a player
---- standing here is actually carrying. BR.Config.Weapons is the whole table and
---- it is the one the ground rolls from.
+--- BR.Config.Weapons is what the ground rolls from and BR.Config.AirdropWeapons
+--- is a separate array for reasons that have nothing to do with ammunition --
+--- see the long note above it about why an airdrop gun is not in the ordinary
+--- table. A player who has just opened an airdrop is holding one, and it was
+--- the one gun the description would not name.
 ---
---- NOT ONE WORD OF IT IS WRITTEN HERE. It is config/weapons.lua's own `label`
---- fields in config/weapons.lua's own order, joined with a comma. A sentence
---- around it would be copy he did not ask for.
---- @param pool string
---- @return string
-local function ammoUsers(pool)
-    local out = {}
-    local list = BR.Config.Weapons
-    if type(list) ~= 'table' then return '' end
-    for i = 1, #list do
-        local w = list[i]
-        if type(w) == 'table' and w.ammo == pool and type(w.label) == 'string' then
-            out[#out + 1] = w.label
-        end
-    end
-    return table.concat(out, ', ')
+--- THE LIST ITSELF IS BR.GunshopSolve.ammoUsers, which was built for exactly
+--- this question, takes source tables for exactly this reason and is tested
+--- against both of them. This file rolled its own scan over BR.Config.Weapons
+--- alone -- two answers to one question, with the shorter one shipped.
+---
+--- NOT ONE WORD OF IT IS WRITTEN HERE OR THERE. It is config/weapons.lua's own
+--- `label` fields in config/weapons.lua's own order, joined with a comma.
+---
+--- READ AT CALL TIME, NOT CAPTURED AT LOAD. config/gunshop.lua's header records
+--- that br_lib expands `config/*.lua` as a glob and `gunshop` sorts before
+--- `weapons`, which is why the catalogue itself is built at resource start
+--- rather than at config load. Holding these two tables in an upvalue would be
+--- the same trap one step further out -- a nil captured once is a nil forever,
+--- and the symptom would be an ammo row that silently names fewer guns.
+--- @return table
+local function ammoSources()
+    return { BR.Config.Weapons, BR.Config.AirdropWeapons }
 end
 
 --- THE CATALOGUE, REGROUPED TOP-DOWN, WITH A HEADER OVER EACH GROUP.
@@ -1065,7 +1066,8 @@ local function buildMenu()
                 BR.GunshopSolve.menuLabel(row), nil,
                 BR.Menu.rarityColor(row.rarity),
                 { description = (row.kind == BR.ItemKind.AMMO)
-                    and ammoUsers(row.pool) or nil })
+                    and BR.GunshopSolve.ammoUsersLine(row.pool, ammoSources())
+                    or nil })
             if item then
                 items[row.id] = item
                 -- ═══ THE PRESS NAMES A ROW AND SAYS NOTHING ELSE ═══

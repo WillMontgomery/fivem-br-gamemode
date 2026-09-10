@@ -3279,6 +3279,50 @@ do
         ok(S.rowById(select(1, G.build()), 'pistol') == nil,
             '...proven by the Pistol not being on sale anywhere')
 
+        -- ═══ AND THE AIRDROP GUNS, WHICH IT LEFT OUT ENTIRELY ═══
+        --
+        -- BR.GunshopSolve.ammoUsers takes SOURCE TABLES and was built and tested
+        -- for exactly this, against both BR.Config.Weapons and
+        -- BR.Config.AirdropWeapons. This file rolled a private scan over the
+        -- first of those alone, so every airdrop weapon was missing from every
+        -- description -- two answers to one question with the shorter one
+        -- shipped. All four airdrop guns feed on HEAVY, which is the pool a
+        -- player who has just opened a crate is standing at the counter to buy.
+        local heavy = rowItem('ammo_' .. BR.AmmoType.HEAVY)
+        ok(heavy ~= nil and heavy._Description ~= nil
+            and heavy._Description ~= '', 'the heavy row has a description')
+
+        local missing = {}
+        for _, w in ipairs(BR.Config.AirdropWeapons or {}) do
+            if w.ammo == BR.AmmoType.HEAVY
+               and (heavy == nil or heavy._Description == nil
+                    or heavy._Description:find(w.label, 1, true) == nil) then
+                missing[#missing + 1] = w.label
+            end
+        end
+        ok(#missing == 0,
+            'and it names every airdrop weapon that feeds on the pool (L5)',
+            #missing > 0
+                and ('missing: ' .. table.concat(missing, ', ')
+                     .. ' -- description is: '
+                     .. tostring(heavy and heavy._Description))
+                or nil)
+
+        -- THE TWO TABLES ARE GENUINELY SEPARATE, which is what stops the
+        -- assertion above passing on a config where the airdrop guns happen to
+        -- be in the ordinary array as well. That separation is deliberate and
+        -- documented -- an airdrop gun is not something the ground rolls.
+        local inOrdinary = 0
+        for _, a in ipairs(BR.Config.AirdropWeapons or {}) do
+            for _, w in ipairs(BR.Config.Weapons or {}) do
+                if w.id == a.id then inOrdinary = inOrdinary + 1 end
+            end
+        end
+        ok(inOrdinary == 0,
+            '...and none of them is in BR.Config.Weapons, so the second source '
+                .. 'table is the only way they could have got there',
+            inOrdinary)
+
         local gun = rowItem('carbinerifle')
         ok(gun ~= nil and (gun._Description == nil or gun._Description == ''),
             'a WEAPON row still says nothing -- he asked for this on ammo rows '
