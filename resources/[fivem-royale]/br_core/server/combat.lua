@@ -210,8 +210,8 @@ local function holdForStart(src, entry, m)
         .. 'you will be revived automatically when it does.',
         'info', { key = 'revive.pending', sticky = true })
 
-    print(('[br_core] %s (%d) died before match %d started -- held for revive, '
-        .. 'nothing recorded'):format(entry.name, src, m.id))
+    print(('[br_core] %s (%d) died before match %s started -- held for revive, '
+        .. 'nothing recorded'):format(entry.name, src, BR.MatchTag(m.id)))
 end
 
 --- Get a held player back up, on the transition into PLAYING (#144).

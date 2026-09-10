@@ -103,6 +103,9 @@ for _, f in ipairs({
     'br_lib/shared/protocol.lua',
     -- BR.Identity; awards.lua resolves a license back to a connected src.
     'br_lib/shared/identity.lua',
+    -- BR.MatchTag and BR.MatchFromTag; br_core/server/debug.lua's brloot names
+    -- matches with the first and reads its argument with the second.
+    'br_lib/shared/matchtag.lua',
     'br_stats/server/awards.lua',
 }) do
     local chunk, err = loadfile(ROOT .. f)
@@ -1207,6 +1210,63 @@ do
     online = { [9] = { 'steam:110000100000009' } }
     sent = {}
     ok(finish(9) == nil, 'a connection with no license is not paid')
+end
+
+describe('brloot.matchArg')
+do
+    -- ═══ THE ONE PLACE A MATCH ID TRAVELS THE OTHER WAY (#291) ═══
+    --
+    -- Every line this project prints names a match in five hex characters, so
+    -- `brloot a3f1` is somebody copying what the log just said. `tonumber` on
+    -- that answers nil for the fifteen sixteenths of ids that contain a letter,
+    -- and -- worse -- answers about a DIFFERENT match for the ones that do not:
+    -- typing the `00120` it just read would have selected match 120.
+    local seen = {}
+    local matches = {
+        { id = 0x000a3, state = 'PLAYING' },
+        { id = 0x00120, state = 'PLAYING' },   -- decimal 288; reads as 120
+    }
+    BR.Server.eachMatch = function(fn)
+        for _, m in ipairs(matches) do fn(m) end
+    end
+
+    local function brloot(arg)
+        seen = {}
+        local mark = #printed
+        commands.brloot.fn(0, { arg }, '')
+        for i = mark + 1, #printed do
+            local tag = printed[i]:match('match (%x+): no loot')
+            if tag then seen[#seen + 1] = tag end
+        end
+        return table.concat(seen, ',')
+    end
+
+    ok(brloot(nil) == '000a3,00120',
+        'with no argument brloot reports every match, named in hex',
+        brloot(nil))
+
+    ok(brloot('000a3') == '000a3',
+        'and the hex the console printed selects the match it named',
+        brloot('000a3'))
+
+    -- THE TRAP THE OLD `tonumber` WALKED INTO. `00120` is 288, and 120 is a
+    -- different match entirely -- so a decimal parse would answer about neither
+    -- the one asked for nor obviously the wrong one.
+    ok(brloot('00120') == '00120',
+        'an id made only of digits still means the hex one, not the decimal '
+            .. 'number that shares its spelling', brloot('00120'))
+
+    ok(brloot('a3') == '000a3',
+        'and a tag typed without its padding still lands')
+
+    -- UNCHANGED, AND WORTH PINNING RATHER THAN FIXING. An argument that is not
+    -- a match id has always fallen through to "every match", because `tonumber`
+    -- returned nil for it and nil means "no filter". Hex parsing keeps exactly
+    -- that shape; this assertion is here so the day somebody decides a typo
+    -- should be refused instead, they do it on purpose.
+    ok(brloot('zzz') == '000a3,00120',
+        'and something that is not a match id falls through to every match, as '
+            .. 'it always has', brloot('zzz'))
 end
 
 print = realPrint

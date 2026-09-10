@@ -255,7 +255,7 @@ local function historyRowFor(p, ctx, license, endedAt, deltas, xpEarned)
         mode        = tostring(ctx.mode or ''),
         -- ═══ WHICH SQUAD THEY PLAYED IT WITH (#293) ═══
         --
-        -- Minted as `m<matchId>sq<n>` in br_core/server/party.lua, put on every
+        -- Minted as `m<hex match id>sq<n>` in br_core/server/party.lua, put on every
         -- results row by publishResults, and read a few lines up by `deltasFor`
         -- to decide solo-versus-squad XP and payout -- and then dropped here,
         -- twenty lines later, before the write. It was in the payload, in the
@@ -558,6 +558,7 @@ AddEventHandler('br:match:results', function(res)
     -- that used to be silently zero, so it is the one worth being able to read
     -- off the console when checking this works.
     print(('[br_stats] match %s: %d recorded (%d had left), %d skipped (no license), %d history rows in %d batch(es)')
-        :format(tostring(res.matchId), written, left, skipped,
+        :format(tostring(res.matchId and BR.MatchTag(res.matchId)),
+                written, left, skipped,
                 #history, math.ceil(#history / 25)))
 end)

@@ -235,8 +235,8 @@ function BR.Match.create(mode, participants)
         end
     end
 
-    print(('[br_core] match %d formed -- %s, %d player(s), bucket %d')
-        :format(m.id, m.mode, #(participants or {}), m.bucket))
+    print(('[br_core] match %s formed -- %s, %d player(s), bucket %d')
+        :format(BR.MatchTag(m.id), m.mode, #(participants or {}), m.bucket))
 
     BR.Match.transition(m, BR.MatchState.WARMUP)
     return m
@@ -332,16 +332,17 @@ function BR.Match.publishAbandoned(m)
     -- genuine ordering hazard and the only version of this worth a second look.
     if m.wipedAt then
         if m.publishedAt then
-            print(('[br_core] match %d: already recorded at ENDED; '
-                .. 'nothing further to publish'):format(m.id))
+            print(('[br_core] match %s: already recorded at ENDED; '
+                .. 'nothing further to publish'):format(BR.MatchTag(m.id)))
         else
-            print(('^3[br_core] match %d: CLEANUP wiped it before anything was '
-                .. 'published -- the result is lost^7'):format(m.id))
+            print(('^3[br_core] match %s: CLEANUP wiped it before anything was '
+                .. 'published -- the result is lost^7'):format(BR.MatchTag(m.id)))
         end
         return
     end
 
-    print(('[br_core] match %d: abandoned -- recording it anyway (#161)'):format(m.id))
+    print(('[br_core] match %s: abandoned -- recording it anyway (#161)')
+        :format(BR.MatchTag(m.id)))
     BR.Match.publishResults(m)
 end
 
@@ -391,7 +392,7 @@ function BR.Match.destroy(m)
     BR.Roster.clearDeparted(m.id)
 
     BR.Server.matches[m.id] = nil
-    print(('[br_core] match %d destroyed'):format(m.id))
+    print(('[br_core] match %s destroyed'):format(BR.MatchTag(m.id)))
 
     -- THE ONE RELIABLE END-OF-MATCH SIGNAL, for anything holding match-scoped
     -- state. `br:match:results` is not it: that fires from the summary path and
@@ -461,8 +462,8 @@ function BR.Match.transition(m, state, durationSec)
     -- printing the opposite, so the console actively argued the freeze was off.
     -- A stuck server with no indication of why is bad; a stuck server whose log
     -- denies it is worse.
-    print(('[br_core] match %d: %s -> %s%s'):format(
-        m.id, from, state,
+    print(('[br_core] match %s: %s -> %s%s'):format(
+        BR.MatchTag(m.id), from, state,
         heldByFreeze
             and ' (HELD by brwarmupfreeze -- `brwarmupfreeze off` releases it)'
             or (secs and (' (%ds)'):format(secs) or '')))
@@ -691,8 +692,8 @@ function BR.Match.onEnter(m, state, from)
         -- side effects outside this resource, and a future caller should not
         -- have to know about this.
         if m.publishedAt then
-            print(('[br_core] match %d: results already published, not republishing')
-                :format(m.id))
+            print(('[br_core] match %s: results already published, not republishing')
+                :format(BR.MatchTag(m.id)))
         else
             BR.Match.awardPlacements(m)
             BR.Match.publishResults(m)
@@ -857,10 +858,11 @@ function BR.Match.awardPlacements(m)
     if #living > 0 then
         local names = {}
         for _, p in ipairs(living) do names[#names + 1] = p.e.name end
-        print(('[br_core] match %d won by %s'):format(m.id,
+        print(('[br_core] match %s won by %s'):format(BR.MatchTag(m.id),
             table.concat(names, ', ')))
     else
-        print(('[br_core] match %d ended with no survivors'):format(m.id))
+        print(('[br_core] match %s ended with no survivors')
+            :format(BR.MatchTag(m.id)))
     end
 end
 
@@ -1158,7 +1160,8 @@ function BR.Match.shortenWarmupIfFull(m)
 
     m.endsAt = cap
     m.shortened = true
-    print(('[br_core] match %d full -- warmup cut to %ds'):format(m.id, M.warmupShortened))
+    print(('[br_core] match %s full -- warmup cut to %ds')
+        :format(BR.MatchTag(m.id), M.warmupShortened))
     BR.Broadcast.state(m, m.state, m.endsAt, { reason = 'lobbyFull' })
 end
 
@@ -1208,8 +1211,8 @@ function BR.Match.tutorialHold(m)
 
     m.endsAt = GetGameTimer() + M.warmupSeconds * 1000
     m.shortened = false
-    print(('[br_core] match %d: the tutorial is over -- warmup starts now (%ds)')
-        :format(m.id, M.warmupSeconds))
+    print(('[br_core] match %s: the tutorial is over -- warmup starts now (%ds)')
+        :format(BR.MatchTag(m.id), M.warmupSeconds))
     BR.Broadcast.state(m, m.state, m.endsAt, { reason = 'tutorialDone' })
 end
 
@@ -1483,7 +1486,8 @@ local function matchTick(m, now)
     if BR.Server.countIn(m) == 0
        and m.state ~= BR.MatchState.ENDED
        and m.state ~= BR.MatchState.CLEANUP then
-        print(('[br_core] match %d: memberless -- dissolving'):format(m.id))
+        print(('[br_core] match %s: memberless -- dissolving')
+            :format(BR.MatchTag(m.id)))
         BR.Match.destroy(m)
         return
     end
@@ -1527,10 +1531,12 @@ local function matchTick(m, now)
             return p.state == BR.PlayerState.OUT
         end) > 0
         if anyDead then
-            print(('[br_core] match %d: everyone is down -- ending'):format(m.id))
+            print(('[br_core] match %s: everyone is down -- ending')
+                :format(BR.MatchTag(m.id)))
             BR.Match.transition(m, BR.MatchState.ENDED)
         else
-            print(('[br_core] match %d: everyone left -- dissolving'):format(m.id))
+            print(('[br_core] match %s: everyone left -- dissolving')
+                :format(BR.MatchTag(m.id)))
             BR.Match.destroy(m)
         end
         return
@@ -1555,7 +1561,8 @@ local function matchTick(m, now)
         -- state transition that will not happen.
         if airborne == 0
            and (BR.Server.aliveCount(m) > 0 or heldForStart(m) > 0) then
-            print(('[br_core] match %d: last player down -- going live'):format(m.id))
+            print(('[br_core] match %s: last player down -- going live')
+                :format(BR.MatchTag(m.id)))
             BR.Match.transition(m, BR.MatchState.PLAYING)
             return
         end
@@ -1617,8 +1624,8 @@ local function matchTick(m, now)
                 m.descent.extended = m.descent.extended + 10000
                 m.endsAt = m.endsAt + 10000
                 BR.Broadcast.state(m, m.state, m.endsAt, { reason = 'descent' })
-                print(('[br_core] match %d: someone is still descending -- holding BUS 10s more')
-                    :format(m.id))
+                print(('[br_core] match %s: someone is still descending -- holding BUS 10s more')
+                    :format(BR.MatchTag(m.id)))
             end
         end
     end
@@ -1707,7 +1714,8 @@ local function matchTick(m, now)
             -- never readied up must not pad the number that decides whether
             -- this match is worth flying.
             if BR.Server.aliveCount(m) < M.MinPlayers(BR.Server.devMode) then
-                print(('[br_core] match %d: not enough players, dissolving'):format(m.id))
+                print(('[br_core] match %s: not enough players, dissolving')
+                    :format(BR.MatchTag(m.id)))
                 BR.Match.destroy(m)
             else
                 -- No duration passed: onEnter(BUS) plans the route and sets
@@ -2040,7 +2048,8 @@ RegisterCommand('brforce', function(_, args)
         -- newest match outright, which is what the command was for.
         local m = BR.Server.latestMatch()
         if m then
-            print(('[br_core] admin dissolved match %d (was %s)'):format(m.id, m.state))
+            print(('[br_core] admin dissolved match %s (was %s)')
+                :format(BR.MatchTag(m.id), m.state))
             BR.Match.destroy(m)
         else
             print('  no match to dissolve')
@@ -2051,7 +2060,8 @@ RegisterCommand('brforce', function(_, args)
     for _, v in pairs(BR.MatchState) do
         if v == target then
             local m = debugTarget()
-            print(('[br_core] admin forced match %d: %s -> %s'):format(m.id, m.state, v))
+            print(('[br_core] admin forced match %s: %s -> %s')
+                :format(BR.MatchTag(m.id), m.state, v))
             BR.Match.transition(m, v)
             return
         end
@@ -2068,7 +2078,8 @@ RegisterCommand('brskip', function()
     end
     if m.endsAt > 0 then
         m.endsAt = GetGameTimer()
-        print(('[br_core] admin skipped to the end of match %d\'s %s'):format(m.id, m.state))
+        print(('[br_core] admin skipped to the end of match %s\'s %s')
+            :format(BR.MatchTag(m.id), m.state))
     else
         print(('  %s has no timer to skip'):format(m.state))
     end

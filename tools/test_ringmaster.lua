@@ -1137,6 +1137,7 @@ end
 loadAll({
     'br_lib/shared/protocol.lua',
     'br_lib/shared/names.lua',
+    'br_lib/shared/matchtag.lua',  -- BR.MatchTag; server/loot.lua names its match
     'br_lib/shared/notice.lua',  -- BR.Notice; server/broadcast.lua unpacks with it
     'br_lib/shared/rng.lua',
     'br_lib/shared/geo.lua',
@@ -1824,6 +1825,9 @@ local function newIncidentWorld()
         'br_lib/shared/enums.lua',
         'br_lib/shared/protocol.lua',
         'br_lib/shared/identity.lua',
+        -- BR.MatchTag; br_core/server/incident.lua names the match in the line
+        -- it prints when a report hint goes out.
+        'br_lib/shared/matchtag.lua',
     }) do
         local chunk, err = loadfile(ROOT .. f, 't', env)
         if not chunk then
@@ -2160,6 +2164,9 @@ local function newTimelineWorld()
         'br_lib/shared/enums.lua',
         'br_lib/shared/protocol.lua',
         'br_lib/shared/identity.lua',
+        -- BR.MatchTag; br_core/server/incident.lua names the match in the line
+        -- it prints when a report hint goes out.
+        'br_lib/shared/matchtag.lua',
         'br_lib/shared/combat_solve.lua',
         -- THE REAL WEAPON TABLE, not a stub. weaponFacts() decides whether a kill
         -- gets painted red as an unissued weapon, and a stub would let that

@@ -991,7 +991,8 @@ local function announceReporting(matchId, subjectLicense, reporterLicense)
     -- match -- and a number that only ever appears bundled with two deliberate
     -- withholdings is a number nobody will ever investigate.
     print(('[br_core] report hint: told %d player(s) in match %s, withheld from %d subject(s) and %d reporter(s), %d unnamed')
-        :format(told, tostring(matchId), skipped, hushed, blind))
+        :format(told, tostring(matchId and BR.MatchTag(matchId)),
+                skipped, hushed, blind))
 end
 
 -- The other half of the loop: br_ringmaster reports back what id the write got,

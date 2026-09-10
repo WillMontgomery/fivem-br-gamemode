@@ -579,8 +579,9 @@ function BR.Roster.setTutorialGame(src, on)
 
     entry.tutorialGame = true
     print(('[br_core] %s (%d) is taking the in-game tutorial -- match %s holds '
-        .. 'its warmup until they are done'):format(entry.name, src,
-                                                    tostring(entry.matchId)))
+        .. 'its warmup until they are done')
+        :format(entry.name, src,
+                tostring(entry.matchId and BR.MatchTag(entry.matchId))))
     return true
 end
 

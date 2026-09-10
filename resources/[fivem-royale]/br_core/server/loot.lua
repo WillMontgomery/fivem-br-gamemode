@@ -388,8 +388,8 @@ function BR.Loot.begin(m, seed)
         index(m.loot, e)
     end
 
-    print(('[br_core] loot: match %d seeded %d -- %d items, %d chests, %d filler across %d cells')
-        :format(m.id, seed, stats.poi, stats.chest, stats.filler,
+    print(('[br_core] loot: match %s seeded %d -- %d items, %d chests, %d filler across %d cells')
+        :format(BR.MatchTag(m.id), seed, stats.poi, stats.chest, stats.filler,
                 (function()
                     local n = 0
                     for _ in pairs(m.loot.cells) do n = n + 1 end

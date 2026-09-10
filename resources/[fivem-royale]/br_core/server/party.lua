@@ -938,13 +938,20 @@ function BR.Party.formSquads(m)
         end
     end
 
-    -- Assign ids and colours. Squad ids are NAMESPACED BY MATCH ('m3sq1'):
+    -- Assign ids and colours. Squad ids are NAMESPACED BY MATCH ('m4a3f1sq1'):
     -- with concurrent matches, a bare 'sq1' in two of them would conflate
     -- everything keyed on squadId -- the win condition, squad beacons,
     -- marker audiences -- across match boundaries.
+    --
+    -- THE MATCH HALF IS THE HEX TAG (#291), and the trailing index is what
+    -- everything downstream actually reads: BR.Voice.radioChannel parses
+    -- `sq(%d+)$` off the END of this string and Ringmaster's MatchCard.tsx runs
+    -- /sq(\d+)$/ over the same value. Neither looks at the prefix, and neither
+    -- can be confused by one -- `s` and `q` are not hex digits, so the tag can
+    -- never contribute a second "sq".
 
     for i, sq in ipairs(squads) do
-        local id = ('m%dsq%d'):format(m.id, i)
+        local id = ('m%ssq%d'):format(BR.MatchTag(m.id), i)
         local colour = COLOURS[((i - 1) % #COLOURS) + 1]
         for _, src in ipairs(sq.members) do
             local e = BR.Roster.get(src)
@@ -1209,7 +1216,7 @@ function BR.Party.lateJoin(src, m)
     if target then
         colour = colours[target]
     else
-        target = ('m%dsq%d'):format(m.id, maxIdx + 1)
+        target = ('m%ssq%d'):format(BR.MatchTag(m.id), maxIdx + 1)
         colour = COLOURS[(maxIdx % #COLOURS) + 1]
     end
 

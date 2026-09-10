@@ -136,8 +136,8 @@ local function land(m, d)
     m.airdrop.landed = m.airdrop.landed or {}
     m.airdrop.landed[rec.n] = rec
 
-    print(('[br_core] airdrop: match %d drop %d landed SEALED at %s (%.0f, %.0f) -- %d items inside, entry %s')
-        :format(m.id, rec.n, tostring(rec.poi), rec.x, rec.y, #items,
+    print(('[br_core] airdrop: match %s drop %d landed SEALED at %s (%.0f, %.0f) -- %d items inside, entry %s')
+        :format(BR.MatchTag(m.id), rec.n, tostring(rec.poi), rec.x, rec.y, #items,
                 tostring(crate and crate.id)))
 end
 
@@ -168,8 +168,8 @@ function BR.Airdrop.opened(m, n)
     rec.tOpen = GetGameTimer()
     BR.Broadcast.toMatch(m, BR.Net.AIRDROP_SYNC, rec)
 
-    print(('[br_core] airdrop: match %d drop %d opened -- blip goes in %.0fs')
-        :format(m.id, n,
+    print(('[br_core] airdrop: match %s drop %d opened -- blip goes in %.0fs')
+        :format(BR.MatchTag(m.id), n,
                 (BR.AirdropBlipEndsAt(rec, A) - rec.tOpen) / 1000))
 end
 
@@ -214,8 +214,8 @@ end
 --- @return string outcome
 local function trySite(m, p, now)
     if not BR.AirdropStormOk(m.storm, A.maxPhase) then
-        print(('[br_core] airdrop: match %d gets none -- storm is past stage %d')
-            :format(m.id, A.maxPhase or 4))
+        print(('[br_core] airdrop: match %s gets none -- storm is past stage %d')
+            :format(BR.MatchTag(m.id), A.maxPhase or 4))
         return 'phase'
     end
 
@@ -325,8 +325,8 @@ local function trySite(m, p, now)
     -- one's drop.
     BR.Server.notify(BR.Server.audience(m), A.notifyText, 'info')
 
-    print(('[br_core] airdrop: match %d drop %d SITED at %s (%.0f, %.0f) -- waiting for a player within %.0fm, %d POI(s) qualified (%d circle(s), tightest r %.0f, margin %.0f), expires in %.0fs')
-        :format(m.id, rec.n, tostring(poi.id), poi.x, poi.y,
+    print(('[br_core] airdrop: match %s drop %d SITED at %s (%.0f, %.0f) -- waiting for a player within %.0fm, %d POI(s) qualified (%d circle(s), tightest r %.0f, margin %.0f), expires in %.0fs')
+        :format(BR.MatchTag(m.id), rec.n, tostring(poi.id), poi.x, poi.y,
                 A.armWithin or 200.0, seen, #circles,
                 BR.AirdropTightest(circles), A.insideBy or 250.0,
                 (BR.AirdropBlipEndsAt(rec, A) - now) / 1000))
@@ -427,8 +427,9 @@ local function tryArm(m, w, now)
     local rec = w.rec
 
     if BR.AirdropExpired(rec, now, A) then
-        print(('[br_core] airdrop: match %d drop %d EXPIRED at %s -- nobody came within %.0fm (closest was %s). This match gets no airdrop.')
-            :format(m.id, rec.n, tostring(rec.poi), A.armWithin or 200.0,
+        print(('[br_core] airdrop: match %s drop %d EXPIRED at %s -- nobody came within %.0fm (closest was %s). This match gets no airdrop.')
+            :format(BR.MatchTag(m.id), rec.n, tostring(rec.poi),
+                    A.armWithin or 200.0,
                     w.closest < math.huge and ('%.0fm'):format(w.closest)
                                            or 'nobody in the match'))
         return 'expired'
@@ -437,8 +438,8 @@ local function tryArm(m, w, now)
     if not BR.AirdropStormOk(m.storm, A.maxPhase) then
         w.why = ('the storm went past stage %d while it waited')
             :format(A.maxPhase or 4)
-        print(('[br_core] airdrop: match %d drop %d abandoned -- storm went past stage %d while it waited (closest was %s)')
-            :format(m.id, rec.n, A.maxPhase or 4,
+        print(('[br_core] airdrop: match %s drop %d abandoned -- storm went past stage %d while it waited (closest was %s)')
+            :format(BR.MatchTag(m.id), rec.n, A.maxPhase or 4,
                     w.closest < math.huge and ('%.0fm'):format(w.closest)
                                            or 'nobody in the match'))
         return 'expired'
@@ -459,8 +460,8 @@ local function tryArm(m, w, now)
                  .. 'circle of r %.0f, and the margin is %.0fm')
             :format(BR.Dist(rec.x, rec.y, circles[1].x, circles[1].y),
                     BR.AirdropTightest(circles), A.insideBy or 250.0)
-        print(('[br_core] airdrop: match %d drop %d abandoned at %s -- %s (closest player was %s)')
-            :format(m.id, rec.n, tostring(rec.poi), w.why,
+        print(('[br_core] airdrop: match %s drop %d abandoned at %s -- %s (closest player was %s)')
+            :format(BR.MatchTag(m.id), rec.n, tostring(rec.poi), w.why,
                     w.closest < math.huge and ('%.0fm'):format(w.closest)
                                            or 'nobody in the match'))
         return 'expired'
@@ -473,8 +474,8 @@ local function tryArm(m, w, now)
     BR.ArmAirdropRecord(rec, now, A)
     BR.Broadcast.toMatch(m, BR.Net.AIRDROP_SYNC, rec)
 
-    print(('[br_core] airdrop: match %d drop %d ARMED -- a player is %.0fm away, released in %.0fs and lands in %.0fs')
-        :format(m.id, rec.n, d, (A.planeLeadMs or 0) / 1000,
+    print(('[br_core] airdrop: match %s drop %d ARMED -- a player is %.0fm away, released in %.0fs and lands in %.0fs')
+        :format(BR.MatchTag(m.id), rec.n, d, (A.planeLeadMs or 0) / 1000,
                 (rec.tLand - now) / 1000))
     return 'armed'
 end
@@ -541,15 +542,15 @@ function BR.Airdrop.begin(m)
     m.airdrop = st
 
     if #st.pending == 0 then
-        print(('[br_core] airdrop: match %d rolled no drop (chance %.2f)')
-            :format(m.id, A.chance or 1.0))
+        print(('[br_core] airdrop: match %s rolled no drop (chance %.2f)')
+            :format(BR.MatchTag(m.id), A.chance or 1.0))
     else
         local due = {}
         for _, p in ipairs(st.pending) do
             due[#due + 1] = ('%.0fs'):format((p.dueAt - now) / 1000)
         end
-        print(('[br_core] airdrop: match %d scheduled %d drop(s), due %s')
-            :format(m.id, #st.pending, table.concat(due, ', ')))
+        print(('[br_core] airdrop: match %s scheduled %d drop(s), due %s')
+            :format(BR.MatchTag(m.id), #st.pending, table.concat(due, ', ')))
     end
 end
 
@@ -721,8 +722,8 @@ RegisterCommand('brairdrop', function(_, args)
         return
     end
     if m.state ~= BR.MatchState.PLAYING then
-        print(('  airdrops only run during PLAYING (match %d is %s)')
-            :format(m.id, tostring(m.state)))
+        print(('  airdrops only run during PLAYING (match %s is %s)')
+            :format(BR.MatchTag(m.id), tostring(m.state)))
         return
     end
     if not m.airdrop then
@@ -735,7 +736,7 @@ RegisterCommand('brairdrop', function(_, args)
     local arg = args[1] and tostring(args[1]) or nil
 
     if not arg then
-        print(('=== airdrop: match %d ==='):format(m.id))
+        print(('=== airdrop: match %s ==='):format(BR.MatchTag(m.id)))
         print(('  sent %d, pending %d, waiting for a player %d, in flight %d')
             :format(st.sent or 0, #st.pending, #st.waiting, #st.live))
         for _, p in ipairs(st.pending) do

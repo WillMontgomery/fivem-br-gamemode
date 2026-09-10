@@ -190,8 +190,8 @@ function BR.Shop.seedFor(m)
 
     m.shopSeed = (GetGameTimer() + (tonumber(m.seq) or 0) * 15485863)
                  & 0xFFFFFFFF
-    print(('[br_core] shop: match %d showroom painted from seed %d')
-        :format(m.id, m.shopSeed))
+    print(('[br_core] shop: match %s showroom painted from seed %d')
+        :format(BR.MatchTag(m.id), m.shopSeed))
     return m.shopSeed
 end
 

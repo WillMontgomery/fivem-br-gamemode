@@ -116,6 +116,7 @@ local function loadCore(f) loadAt(RES, f) end
 for _, f in ipairs({
     'shared/enums.lua',
     'shared/geo.lua',        -- BR.Dist and BR.NormHash
+    'shared/matchtag.lua',   -- BR.MatchTag; the showroom line names its match
     -- BR.Rng, WHICH IS WHAT MAKES THE COLOUR ROLL A PROPERTY RATHER THAN A HOPE.
     -- The shipped generator, not a stub: BR.ShopSolve.paint runs on the server
     -- and on every client and they have to agree, so a fixture RNG here would

@@ -400,6 +400,9 @@ for _, f in ipairs({
     'br_lib/shared/rng.lua', 'br_lib/shared/geo.lua', 'br_lib/shared/clock.lua',
     'br_lib/shared/sched.lua',   -- BR.Sched; br_core/server/* registers into it
     'br_lib/shared/identity.lua',-- BR.Identity; BR.Roster.ringmaster resolves licenses
+    -- BR.MatchTag; every console line that names a match writes it in hex,
+    -- and half a dozen of the files below print one.
+    'br_lib/shared/matchtag.lua',
     'br_lib/config/match.lua', 'br_lib/config/storm.lua', 'br_lib/config/map.lua',
     'br_lib/config/weapons.lua',
     -- AFTER geo.lua, not merely near it: it calls BR.NormHash at LOAD time to
@@ -2733,9 +2736,10 @@ do
     ok(admitted ~= nil,
         'and the console records the admission, which the queue line cannot',
         admitted)
-    ok(admitted ~= nil and admitted:find('match ' .. tostring(theMatch().id),
-                                          1, true) ~= nil,
-        'naming the instance they were put into', admitted)
+    ok(admitted ~= nil
+       and admitted:find('match ' .. BR.MatchTag(theMatch().id), 1, true) ~= nil,
+        'naming the instance they were put into, in the hex the console uses '
+            .. 'everywhere else', admitted)
 
     -- Both now count as starting teams: the solo-dev hold does not engage and
     -- the match ends like any other.
@@ -4932,185 +4936,6 @@ do
     ok(BR.Server.matchOf(3) == nil
        and BR.Roster.get(3).state == BR.PlayerState.LOBBY,
         "B's players are ordinary lobby players again")
-end
-
-describe('match.latest')
-do
-    -- ═══ "NEWEST" MEANS THE HIGHEST seq, NOT THE HIGHEST id (#291) ═══
-    --
-    -- BR.Server.latestMatch used to answer "the biggest id", which was the same
-    -- sentence for as long as ids were an increment. Eight call sites lean on
-    -- it -- `brforce` and its `debugTarget` fallback, `brphase`, the storm and
-    -- airdrop admin verbs, two debug helpers -- and `theMatch()` in this file IS
-    -- it, ninety-six times over.
-    --
-    -- IT KEEPS WORKING PERFECTLY WITH ONE MATCH RUNNING, which is every dev
-    -- session and every playtest, and misbehaves only once two are live: an
-    -- admin verb would silently drive a match nobody was looking at. So the case
-    -- has to be built rather than waited for.
-    reset()
-    BR.Server.devMode = true
-    join(1, 'A1'); join(2, 'A2'); join(3, 'B1'); join(4, 'B2')
-
-    fire(BR.Net.QUEUE_JOIN, 1, { mode = 'solo' })
-    fire(BR.Net.QUEUE_JOIN, 2, { mode = 'solo' })
-    fakeTime = fakeTime + 300
-    BR.Sched.step(fakeTime)
-    local A = theMatch()
-    ok(A ~= nil, 'fixture: the first match forms')
-
-    BR.Match.transition(A, BR.MatchState.BUS)
-    fire(BR.Net.QUEUE_JOIN, 3, { mode = 'solo' })
-    fire(BR.Net.QUEUE_JOIN, 4, { mode = 'solo' })
-    fakeTime = fakeTime + 300
-    BR.Sched.step(fakeTime)
-
-    local B = BR.Server.matches[BR.Roster.get(3).matchId]
-    ok(B ~= nil and B ~= A, 'fixture: a second match forms alongside it')
-    ok(A.seq < B.seq, 'fixture: and it is the later of the two by seq',
-        ('%s then %s'):format(tostring(A.seq), tostring(B.seq)))
-
-    -- THE LIVE CASE, off the real machine.
-    ok(BR.Server.latestMatch() == B,
-        'with two matches live, latestMatch is the one formed most recently')
-
-    -- AND THE SAME QUESTION WITH THE IDS RUNNING BACKWARDS, which is what makes
-    -- this deterministic rather than a coin toss. A random 20-bit draw puts the
-    -- older match above the newer one about half the time; pinning the two ids
-    -- by hand asks the invariant directly, so a revert to `id > best.id` fails
-    -- here on every run rather than on every other one.
-    BR.Server.matches[A.id] = nil
-    BR.Server.matches[B.id] = nil
-    for _, e in pairs(BR.Server.roster) do
-        if e.matchId == A.id then e.matchId = 0xFFFFE
-        elseif e.matchId == B.id then e.matchId = 0x00002 end
-    end
-    A.id, B.id = 0xFFFFE, 0x00002
-    BR.Server.matches[A.id] = A
-    BR.Server.matches[B.id] = B
-
-    ok(BR.Server.latestMatch() == B,
-        'the newest match wins even when the older one holds the bigger id',
-        ('latest is seq %s / id %s')
-            :format(tostring((BR.Server.latestMatch() or {}).seq),
-                    tostring((BR.Server.latestMatch() or {}).id)))
-
-    -- AND THE ITERATION ORDER, WHICH IS THE SAME BUG WEARING A SECOND FACE.
-    -- BR.Server.eachMatch sorted the registry's keys and its own docstring says
-    -- tests and logs depend on the order. Sorting random ids is still
-    -- deterministic and is no longer creation order.
-    local seen = {}
-    BR.Server.eachMatch(function(m) seen[#seen + 1] = m end)
-    ok(#seen == 2 and seen[1] == A and seen[2] == B,
-        'and eachMatch still walks them in creation order, oldest first',
-        ('%s then %s'):format(tostring(seen[1] and seen[1].seq),
-                              tostring(seen[2] and seen[2].seq)))
-end
-
-describe('match.ids')
-do
-    -- ═══ THE ID IS A RANDOM 20-BIT DRAW, THE SEQ IS STILL AN INCREMENT ═══
-    --
-    -- Ids were a pure increment from 1 until #291, so any id disclosed the next
-    -- one and two matches on different days shared a number. They are now drawn
-    -- from 0x00001..0xFFFFF and retried against every id issued this process.
-    --
-    -- COLLISIONS ARE NOT THEORETICAL, which is why the retry is here rather
-    -- than a comment: 20 bits is 1,048,576 values, so a box running a thousand
-    -- matches between restarts has roughly a 38 percent chance of drawing a
-    -- repeat under the birthday bound -- and the failure would be SILENT,
-    -- because `BR.Server.matches[m.id] = m` replaces a live instance rather
-    -- than raising.
-    reset()
-
-    local N = 400
-    local seen, ids = {}, {}
-    local firstSeq = BR.Server.matchSeq + 1
-    local dupe, outOfRange, seqBreak = nil, nil, nil
-    local ascending = true
-
-    for i = 1, N do
-        local seq, id = BR.Match.mintIds()
-        if seq ~= firstSeq + i - 1 then seqBreak = seqBreak or seq end
-        if type(id) ~= 'number' or id < 0x00001 or id > 0xFFFFF
-           or math.tointeger(id) == nil then
-            outOfRange = outOfRange or id
-        end
-        if seen[id] then dupe = dupe or id end
-        seen[id] = true
-        ids[#ids + 1] = id
-        if i > 1 and ids[i] <= ids[i - 1] then ascending = false end
-    end
-
-    ok(seqBreak == nil, 'seq is still a contiguous increment, one per match',
-        tostring(seqBreak))
-    ok(outOfRange == nil,
-        ('every id is an integer in 0x00001..0xFFFFF across %d mints'):format(N),
-        tostring(outOfRange))
-    ok(dupe == nil,
-        ('and no two of %d minted ids collide -- the mint redraws against every '
-         .. 'id issued this process'):format(N),
-        dupe and ('%05x'):format(dupe) or nil)
-
-    -- AND IT IS ACTUALLY RANDOM, which the three assertions above would all
-    -- pass against the old increment. 400 draws arriving in ascending order by
-    -- chance is 1/400!, so this fails against an increment on every run and
-    -- against a real draw on none.
-    ok(not ascending, 'and they are drawn, not counted: the sequence is not '
-        .. 'monotonic', ('%05x %05x %05x ...'):format(ids[1], ids[2], ids[3]))
-
-    -- THE FLOOR IS ASSERTED AT THE SOURCE, not by drawing. 400 draws would
-    -- clear 0 by luck rather than by construction -- one in a million is not a
-    -- test -- and 0 is the id server/loot.lua reserves for the communal warmup
-    -- pseudo-match, which it compares against the literal. A match that drew 0
-    -- would share a loot registry with the warmup pad.
-    local mfh = io.open(ROOT .. 'br_core/server/match.lua')
-    local msrc = mfh and mfh:read('a') or ''
-    if mfh then mfh:close() end
-    ok(msrc:find('local ID_MIN, ID_MAX = 0x00001, 0xFFFFF', 1, true) ~= nil,
-        'and the space starts at 1, so 0 stays the warmup pad\'s alone')
-
-    -- ═══ THE PER-MATCH SEEDS FOLD IN `seq`, NOT THE ID ═══
-    --
-    -- Six generators are seeded `clock + N * prime` so that two matches minted
-    -- in the same server millisecond do not replay each other: the loot layout
-    -- (15485863), the storm (7919), the bus tour (104729), the airdrop
-    -- (1299709) and the two showrooms. N is the SEQUENCE number.
-    --
-    -- ALL THAT NUMBER HAS TO DO is tell two matches apart inside one
-    -- millisecond, which an increment does exactly as well -- and being an
-    -- increment it keeps every one of those seeds the value it has always had.
-    -- Folding the random id in instead makes every layout, storm path and tour
-    -- on the box unreproducible from one boot to the next, INCLUDING in this
-    -- file: when it was tried, `loot.repair.bounds` failed one run in three, on
-    -- a cell that held a second entry only when the seed came out right.
-    local planA = { id = 0x00011, seq = 77 }
-    local planB = { id = 0xfa3c1, seq = 77 }
-    BR.Bus.plan(planA)
-    BR.Bus.plan(planB)
-    ok(table.concat(planA.route.legs, '-') == table.concat(planB.route.legs, '-')
-       and planA.anchor.name == planB.anchor.name,
-        'two matches with the same seq fly the same tour whatever their ids are '
-            .. '-- the per-match seeds are reproducible from a boot, and a '
-            .. 'random id is not',
-        ('%s homing on %s, vs %s on %s')
-            :format(table.concat(planA.route.legs, '-'), planA.anchor.name,
-                    table.concat(planB.route.legs, '-'), planB.anchor.name))
-
-    -- THE BUCKET IS STILL DENSE AND SMALL, which is the whole reason `seq`
-    -- exists. A bucket derived from the id would be scattered across a million.
-    reset()
-    BR.Server.devMode = true
-    join(1, 'A'); join(2, 'B')
-    fire(BR.Net.QUEUE_JOIN, 1, { mode = 'solo' })
-    fire(BR.Net.QUEUE_JOIN, 2, { mode = 'solo' })
-    fakeTime = fakeTime + 300
-    BR.Sched.step(fakeTime)
-    local m = theMatch()
-    ok(m ~= nil and m.bucket == BR.Config.Match.matchBucketBase + m.seq,
-        "a match's bucket is matchBucketBase + its seq, never its id",
-        m and ('bucket %s, seq %s, id %05x'):format(tostring(m.bucket),
-                                                    tostring(m.seq), m.id))
 end
 
 describe('match.modes')
@@ -17723,7 +17548,7 @@ do
     for _, r in ipairs(captured.players) do
         local copy = {}
         for k, v in pairs(r) do copy[k] = v end
-        copy.squadId = ('m%dsq1'):format(captured.matchId)
+        copy.squadId = ('m%ssq1'):format(BR.MatchTag(captured.matchId))
         squadded.players[#squadded.players + 1] = copy
     end
     local sqMark = #fired
@@ -17734,7 +17559,7 @@ do
     for _, r in ipairs(sqRows or {}) do
         if r.license == 'license:test1' then sqWinner = r end
     end
-    ok(sqWinner and sqWinner.squadId == ('m%dsq1'):format(captured.matchId),
+    ok(sqWinner and sqWinner.squadId == ('m%ssq1'):format(BR.MatchTag(captured.matchId)),
         'a squad match records the squad id it was played with',
         ('got %s'):format(tostring(sqWinner and sqWinner.squadId)))
     ok(sqDeltas['license:test1'] and sqDeltas['license:test1'].squadMatches == 1
@@ -23752,6 +23577,290 @@ do
 
     BR.Market = marketWas
     BR.Dev = devWas
+end
+
+-- ---------------------------------------------------------------------------
+-- MATCH IDS (#291). LAST IN THE FILE, ON PURPOSE.
+--
+-- `BR.Server.matchSeq` is process-global and reset() does not clear it, which
+-- is true of the counter it replaced too. `match.ids` below mints four hundred
+-- of them, and every per-match seed in the gamemode is `clock + seq * prime` --
+-- so minting in the middle of this file shifts the loot layout of every block
+-- after it, and `loot.repair.bounds` needs a layout that put two weapons in one
+-- cell. Running these last costs nothing and moves nobody else's ground.
+-- ---------------------------------------------------------------------------
+
+describe('match.latest')
+do
+    -- ═══ "NEWEST" MEANS THE HIGHEST seq, NOT THE HIGHEST id (#291) ═══
+    --
+    -- BR.Server.latestMatch used to answer "the biggest id", which was the same
+    -- sentence for as long as ids were an increment. Eight call sites lean on
+    -- it -- `brforce` and its `debugTarget` fallback, `brphase`, the storm and
+    -- airdrop admin verbs, two debug helpers -- and `theMatch()` in this file IS
+    -- it, ninety-six times over.
+    --
+    -- IT KEEPS WORKING PERFECTLY WITH ONE MATCH RUNNING, which is every dev
+    -- session and every playtest, and misbehaves only once two are live: an
+    -- admin verb would silently drive a match nobody was looking at. So the case
+    -- has to be built rather than waited for.
+    reset()
+    BR.Server.devMode = true
+    join(1, 'A1'); join(2, 'A2'); join(3, 'B1'); join(4, 'B2')
+
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = 'solo' })
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = 'solo' })
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    local A = theMatch()
+    ok(A ~= nil, 'fixture: the first match forms')
+
+    BR.Match.transition(A, BR.MatchState.BUS)
+    fire(BR.Net.QUEUE_JOIN, 3, { mode = 'solo' })
+    fire(BR.Net.QUEUE_JOIN, 4, { mode = 'solo' })
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+
+    local B = BR.Server.matches[BR.Roster.get(3).matchId]
+    ok(B ~= nil and B ~= A, 'fixture: a second match forms alongside it')
+    ok(A.seq < B.seq, 'fixture: and it is the later of the two by seq',
+        ('%s then %s'):format(tostring(A.seq), tostring(B.seq)))
+
+    -- THE LIVE CASE, off the real machine.
+    ok(BR.Server.latestMatch() == B,
+        'with two matches live, latestMatch is the one formed most recently')
+
+    -- AND THE SAME QUESTION WITH THE IDS RUNNING BACKWARDS, which is what makes
+    -- this deterministic rather than a coin toss. A random 20-bit draw puts the
+    -- older match above the newer one about half the time; pinning the two ids
+    -- by hand asks the invariant directly, so a revert to `id > best.id` fails
+    -- here on every run rather than on every other one.
+    BR.Server.matches[A.id] = nil
+    BR.Server.matches[B.id] = nil
+    for _, e in pairs(BR.Server.roster) do
+        if e.matchId == A.id then e.matchId = 0xFFFFE
+        elseif e.matchId == B.id then e.matchId = 0x00002 end
+    end
+    A.id, B.id = 0xFFFFE, 0x00002
+    BR.Server.matches[A.id] = A
+    BR.Server.matches[B.id] = B
+
+    ok(BR.Server.latestMatch() == B,
+        'the newest match wins even when the older one holds the bigger id',
+        ('latest is seq %s / id %s')
+            :format(tostring((BR.Server.latestMatch() or {}).seq),
+                    tostring((BR.Server.latestMatch() or {}).id)))
+
+    -- AND THE ITERATION ORDER, WHICH IS THE SAME BUG WEARING A SECOND FACE.
+    -- BR.Server.eachMatch sorted the registry's keys and its own docstring says
+    -- tests and logs depend on the order. Sorting random ids is still
+    -- deterministic and is no longer creation order.
+    local seen = {}
+    BR.Server.eachMatch(function(m) seen[#seen + 1] = m end)
+    ok(#seen == 2 and seen[1] == A and seen[2] == B,
+        'and eachMatch still walks them in creation order, oldest first',
+        ('%s then %s'):format(tostring(seen[1] and seen[1].seq),
+                              tostring(seen[2] and seen[2].seq)))
+end
+
+describe('match.ids')
+do
+    -- ═══ THE ID IS A RANDOM 20-BIT DRAW, THE SEQ IS STILL AN INCREMENT ═══
+    --
+    -- Ids were a pure increment from 1 until #291, so any id disclosed the next
+    -- one and two matches on different days shared a number. They are now drawn
+    -- from 0x00001..0xFFFFF and retried against every id issued this process.
+    --
+    -- COLLISIONS ARE NOT THEORETICAL, which is why the retry is here rather
+    -- than a comment: 20 bits is 1,048,576 values, so a box running a thousand
+    -- matches between restarts has roughly a 38 percent chance of drawing a
+    -- repeat under the birthday bound -- and the failure would be SILENT,
+    -- because `BR.Server.matches[m.id] = m` replaces a live instance rather
+    -- than raising.
+    reset()
+
+    local N = 400
+    local seen, ids = {}, {}
+    local firstSeq = BR.Server.matchSeq + 1
+    local dupe, outOfRange, seqBreak = nil, nil, nil
+    local ascending = true
+
+    for i = 1, N do
+        local seq, id = BR.Match.mintIds()
+        if seq ~= firstSeq + i - 1 then seqBreak = seqBreak or seq end
+        if type(id) ~= 'number' or id < 0x00001 or id > 0xFFFFF
+           or math.tointeger(id) == nil then
+            outOfRange = outOfRange or id
+        end
+        if seen[id] then dupe = dupe or id end
+        seen[id] = true
+        ids[#ids + 1] = id
+        if i > 1 and ids[i] <= ids[i - 1] then ascending = false end
+    end
+
+    ok(seqBreak == nil, 'seq is still a contiguous increment, one per match',
+        tostring(seqBreak))
+    ok(outOfRange == nil,
+        ('every id is an integer in 0x00001..0xFFFFF across %d mints'):format(N),
+        tostring(outOfRange))
+    ok(dupe == nil,
+        ('and no two of %d minted ids collide -- the mint redraws against every '
+         .. 'id issued this process'):format(N),
+        dupe and ('%05x'):format(dupe) or nil)
+
+    -- AND IT IS ACTUALLY RANDOM, which the three assertions above would all
+    -- pass against the old increment. 400 draws arriving in ascending order by
+    -- chance is 1/400!, so this fails against an increment on every run and
+    -- against a real draw on none.
+    ok(not ascending, 'and they are drawn, not counted: the sequence is not '
+        .. 'monotonic', ('%05x %05x %05x ...'):format(ids[1], ids[2], ids[3]))
+
+    -- THE FLOOR IS ASSERTED AT THE SOURCE, not by drawing. 400 draws would
+    -- clear 0 by luck rather than by construction -- one in a million is not a
+    -- test -- and 0 is the id server/loot.lua reserves for the communal warmup
+    -- pseudo-match, which it compares against the literal. A match that drew 0
+    -- would share a loot registry with the warmup pad.
+    local mfh = io.open(ROOT .. 'br_core/server/match.lua')
+    local msrc = mfh and mfh:read('a') or ''
+    if mfh then mfh:close() end
+    ok(msrc:find('local ID_MIN, ID_MAX = 0x00001, 0xFFFFF', 1, true) ~= nil,
+        'and the space starts at 1, so 0 stays the warmup pad\'s alone')
+
+    -- ═══ THE PER-MATCH SEEDS FOLD IN `seq`, NOT THE ID ═══
+    --
+    -- Six generators are seeded `clock + N * prime` so that two matches minted
+    -- in the same server millisecond do not replay each other: the loot layout
+    -- (15485863), the storm (7919), the bus tour (104729), the airdrop
+    -- (1299709) and the two showrooms. N is the SEQUENCE number.
+    --
+    -- ALL THAT NUMBER HAS TO DO is tell two matches apart inside one
+    -- millisecond, which an increment does exactly as well -- and being an
+    -- increment it keeps every one of those seeds the value it has always had.
+    -- Folding the random id in instead makes every layout, storm path and tour
+    -- on the box unreproducible from one boot to the next, INCLUDING in this
+    -- file: when it was tried, `loot.repair.bounds` failed one run in three, on
+    -- a cell that held a second entry only when the seed came out right.
+    local planA = { id = 0x00011, seq = 77 }
+    local planB = { id = 0xfa3c1, seq = 77 }
+    BR.Bus.plan(planA)
+    BR.Bus.plan(planB)
+    ok(table.concat(planA.route.legs, '-') == table.concat(planB.route.legs, '-')
+       and planA.anchor.name == planB.anchor.name,
+        'two matches with the same seq fly the same tour whatever their ids are '
+            .. '-- the per-match seeds are reproducible from a boot, and a '
+            .. 'random id is not',
+        ('%s homing on %s, vs %s on %s')
+            :format(table.concat(planA.route.legs, '-'), planA.anchor.name,
+                    table.concat(planB.route.legs, '-'), planB.anchor.name))
+
+    -- THE BUCKET IS STILL DENSE AND SMALL, which is the whole reason `seq`
+    -- exists. A bucket derived from the id would be scattered across a million.
+    reset()
+    BR.Server.devMode = true
+    join(1, 'A'); join(2, 'B')
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = 'solo' })
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = 'solo' })
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    local m = theMatch()
+    ok(m ~= nil and m.bucket == BR.Config.Match.matchBucketBase + m.seq,
+        "a match's bucket is matchBucketBase + its seq, never its id",
+        m and ('bucket %s, seq %s, id %05x'):format(tostring(m.bucket),
+                                                    tostring(m.seq), m.id))
+end
+
+describe('match.tag')
+do
+    -- ═══ STORED AS A NUMBER, SHOWN AS FIVE HEX CHARACTERS (#291) ═══
+    --
+    -- Owner, 2026-09-09: "I like the idea of storing as number, displaying as
+    -- hex", and "Why can't we display it as hex everywhere?" There are sixty-odd
+    -- places in the gamemode that put a match id in front of a person and one
+    -- function that decides how it is spelled.
+
+    local bad = nil
+    for _, id in ipairs({ 0x00001, 0x0000f, 0x000ff, 0x00abc, 0x0a3f1, 0xfffff }) do
+        local t = BR.MatchTag(id)
+        if #t ~= 5 or t:match('^[0-9a-f]+$') == nil or BR.MatchFromTag(t) ~= id then
+            bad = bad or ('%s -> %s'):format(tostring(id), tostring(t))
+        end
+    end
+    ok(bad == nil,
+        'a tag is five lower-case hex characters, zero padded, and reads back '
+            .. 'as the number it came from -- across the whole 20-bit space',
+        bad)
+
+    -- ZERO PADDED, WHICH IS NOT DECORATION: the space is fixed width, so
+    -- `0a3f1` and `a3f1` being one match written two ways is a difference
+    -- somebody has to hold in their head while reading a console.
+    ok(BR.MatchTag(0xa3f1) == '0a3f1', 'a short id is padded, never trimmed',
+        BR.MatchTag(0xa3f1))
+
+    -- AND THE CONSOLE ACTUALLY SAYS IT. Every one of those sites was a `%d`
+    -- until this round, and a `%d` and a `%05x` of the same number are two
+    -- different strings for the same match -- which is the state moderation was
+    -- being asked to read.
+    reset()
+    BR.Server.devMode = true
+    join(1, 'A'); join(2, 'B')
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = 'solo' })
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = 'solo' })
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    local m = theMatch()
+    local formed = printedSaying('formed --')
+    ok(formed ~= nil
+       and formed:find('match ' .. BR.MatchTag(m.id), 1, true) ~= nil
+       and formed:find('match ' .. tostring(m.id), 1, true) == nil,
+        'the formation line names the match in hex and nowhere in decimal',
+        ('%s (id %d)'):format(tostring(formed), m.id))
+
+    -- ═══ THE SQUAD ID CARRIES THE TAG, AND ITS SUFFIX STILL PARSES ═══
+    --
+    -- server/party.lua mints 'm<tag>sq<n>', so a squad now reads `m0a3f1sq2`
+    -- rather than `m4sq2`. THE PREFIX IS NOT LOAD BEARING AND THE SUFFIX IS:
+    -- BR.Voice.radioChannel parses `sq(%d+)$` off the END of it, and
+    -- Ringmaster's MatchCard.tsx runs /sq(\d+)$/ over the same value. Neither
+    -- can be confused by the prefix -- `s` and `q` are not hex digits, so the
+    -- tag can never contribute a second "sq" for the anchor to find.
+    --
+    -- A FAILURE HERE IS SILENT SQUAD VOICE. radioChannel returns nil when it
+    -- cannot read an index, which is proximity-only squad chat with one line in
+    -- the console, and #150 is the precedent for that going unnoticed for weeks.
+    reset()
+    BR.Server.devMode = true
+    for s = 1, 4 do queueUp(s, 'S' .. s, BR.Mode.SQUAD.key) end
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    local sqm = theMatch()
+    local sqid = BR.Roster.get(1).squadId
+    ok(sqm ~= nil and sqid ~= nil
+       and sqid == ('m%ssq'):format(BR.MatchTag(sqm.id)) .. sqid:match('%d+$'),
+        'a squad id is m<tag>sq<n>, the match named the way everything else '
+            .. 'names it', tostring(sqid))
+
+    local ch = BR.Voice.radioChannel(sqm.id, sqid)
+    ok(ch ~= nil and ch > 0,
+        'and BR.Voice.radioChannel still reads an index off it -- nil here is '
+            .. 'every squad radio in the game going quiet', tostring(ch))
+    ok(printedSaying('cannot read a squad index') == nil,
+        'without the format-has-changed warning that guards exactly this')
+
+    -- THE INDEX IT READS IS THE RIGHT ONE, not merely a number. The channel is
+    -- base + match * stride + index, so two squads of one match differ by
+    -- exactly the difference between their indexes.
+    local tag = BR.MatchTag(sqm.id)
+    local c2 = BR.Voice.radioChannel(sqm.id, ('m%ssq2'):format(tag))
+    local c5 = BR.Voice.radioChannel(sqm.id, ('m%ssq5'):format(tag))
+    ok(c2 ~= nil and c5 ~= nil and c5 - c2 == 3,
+        'and it is the trailing index that lands in the channel, not the hex '
+            .. 'in front of it', ('%s vs %s'):format(tostring(c2), tostring(c5)))
+
+    -- THE PREFIX IS GENUINELY IGNORED. Same match, same index, a prefix that
+    -- looks nothing like the real one: same room. This is the property
+    -- MatchCard.tsx leans on too.
+    ok(BR.Voice.radioChannel(sqm.id, 'anything-at-all-sq2') == c2,
+        'the parse anchors on the suffix and reads nothing before it')
 end
 
 realPrint(('\n\27[32m%d passed\27[0m'):format(pass))

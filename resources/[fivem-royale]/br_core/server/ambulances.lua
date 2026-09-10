@@ -183,8 +183,9 @@ end
 local function begin(m)
     local points = A.Points()
     if #points == 0 then
-        print(('[br_core] ambulances: match %d -- no surveyed points, nothing to '
-               .. 'spawn (BR.Config.Map.AmbulanceSpawns is empty)'):format(m.id))
+        print(('[br_core] ambulances: match %s -- no surveyed points, nothing to '
+               .. 'spawn (BR.Config.Map.AmbulanceSpawns is empty)')
+            :format(BR.MatchTag(m.id)))
         -- A RECORD IS STILL MADE. Without one this runs the empty check on every
         -- pass for the whole match, and -- worse -- `advance` would be re-entered
         -- from scratch the moment somebody authored a point mid-match.
@@ -239,8 +240,8 @@ local function advance(matchId, rec)
 
         if not veh then
             rec.refused = rec.refused + 1
-            print(('[br_core] ambulances: match %d -- %s refused (%s)')
-                :format(matchId, pointName(p), tostring(why)))
+            print(('[br_core] ambulances: match %s -- %s refused (%s)')
+                :format(BR.MatchTag(matchId), pointName(p), tostring(why)))
         else
             rec.stations[#rec.stations + 1] = {
                 id    = p.id,
@@ -261,9 +262,9 @@ local function advance(matchId, rec)
     end
 
     if rec.next > #rec.pending then
-        print(('[br_core] ambulances: match %d -- %d of %d station ambulances up '
+        print(('[br_core] ambulances: match %s -- %d of %d station ambulances up '
                .. 'in bucket %d (%d refused)')
-            :format(matchId, #rec.stations, #rec.pending, rec.bucket,
+            :format(BR.MatchTag(matchId), #rec.stations, #rec.pending, rec.bucket,
                     rec.refused))
     end
 end
@@ -737,8 +738,8 @@ local function teardown(matchId, rec)
     rec.stations = remaining
 
     if #rec.stations == 0 then
-        print(('[br_core] ambulances: match %d -- every station ambulance is gone '
-               .. '(%d pass(es))'):format(matchId, rec.attempts))
+        print(('[br_core] ambulances: match %s -- every station ambulance is gone '
+               .. '(%d pass(es))'):format(BR.MatchTag(matchId), rec.attempts))
         live[matchId] = nil
         return
     end
@@ -753,12 +754,13 @@ local function teardown(matchId, rec)
         for _, s in ipairs(rec.stations) do
             names[#names + 1] = ('%s(%d)'):format(tostring(s.id or '?'), s.veh)
         end
-        print(('[br_core] ambulances: match %d -- %d station ambulance(s) SURVIVED '
+        print(('[br_core] ambulances: match %s -- %d station ambulance(s) SURVIVED '
                .. '%d delete(s) each across %d pass(es) in bucket %d: %s. '
                .. 'citizenfx/fivem#2256; the bucket is never reused and every '
                .. 'player left it at ENDED, so they are unreachable rather than '
                .. 'leaked.')
-            :format(matchId, #rec.stations, maxTries, rec.attempts, rec.bucket,
+            :format(BR.MatchTag(matchId), #rec.stations, maxTries, rec.attempts,
+                    rec.bucket,
                     table.concat(names, ' ')))
         live[matchId] = nil
     end
@@ -1025,15 +1027,15 @@ RegisterCommand('brambulances', function(src)
         any = true
         local s = BR.Ambulances.stats(m.id)
         if not s then
-            print(('[br_core] ambulances: match %d (%s) -- no set yet; doors %s')
-                :format(m.id, tostring(m.state),
+            print(('[br_core] ambulances: match %s (%s) -- no set yet; doors %s')
+                :format(BR.MatchTag(m.id), tostring(m.state),
                         doorsOpen(m) and 'ARE open' or 'are not open'))
             return
         end
-        print(('[br_core] ambulances: match %d (%s) -- %d up of %d planned '
+        print(('[br_core] ambulances: match %s (%s) -- %d up of %d planned '
                .. '(%d built, %d refused) in bucket %d, %d found; %d player(s) '
                .. 'watching%s')
-            :format(m.id, tostring(m.state), s.up, s.planned, s.built,
+            :format(BR.MatchTag(m.id), tostring(m.state), s.up, s.planned, s.built,
                     s.refused, s.bucket, s.found, s.watching,
                     s.tearing and (', tearing down, pass ' .. s.attempts) or ''))
 

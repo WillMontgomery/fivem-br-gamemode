@@ -103,8 +103,8 @@ function BR.Lobby.admitWaiting(mode)
 
         local entry = BR.Roster.get(src)
         queue[src] = nil
-        print(('[br_core] %s (%d) readied into forming match %d (%s)')
-            :format(entry and entry.name or '?', src, m.id, mode))
+        print(('[br_core] %s (%d) readied into forming match %s (%s)')
+            :format(entry and entry.name or '?', src, BR.MatchTag(m.id), mode))
         BR.Party.lateJoin(src, m)
     end
 end

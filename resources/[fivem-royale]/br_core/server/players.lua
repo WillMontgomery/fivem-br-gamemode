@@ -1099,7 +1099,8 @@ AddEventHandler(BR.Net.REPORT_SUBMIT, function(data)
     answer(src, true, sentCount, nil)
 
     print(('[br_core] report: %s sent %d report(s) in match %s (%d/%d submissions used)')
-        :format(me.name, sentCount, tostring(me.matchId),
+        :format(me.name, sentCount,
+                tostring(me.matchId and BR.MatchTag(me.matchId)),
                 u.count, BR.Config.Report.maxPerMatch))
 
     -- NO PUSH BACK TO THE PANEL. There used to be one, because the panel showed

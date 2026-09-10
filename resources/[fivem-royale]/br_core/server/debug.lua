@@ -195,8 +195,8 @@ RegisterCommand('brstate', function()
     local any = false
     BR.Server.eachMatch(function(m)
         any = true
-        print(('  match %-4d %-8s %-6s bucket %-5d players %-3d alive %-3d squads %-3d endsAt %s')
-            :format(m.id, m.state, m.mode, m.bucket,
+        print(('  match %-5s %-8s %-6s bucket %-5d players %-3d alive %-3d squads %-3d endsAt %s')
+            :format(BR.MatchTag(m.id), m.state, m.mode, m.bucket,
                     BR.Server.countIn(m), BR.Server.aliveCount(m),
                     BR.Server.squadsAlive(m),
                     m.endsAt > 0 and secs(m.endsAt - GetGameTimer()) or '-'))
@@ -322,8 +322,10 @@ RegisterCommand('brsquads', function()
             names[#names + 1] = ('%s(%d,%s)'):format(m.e.name, m.src, m.e.state)
         end
 
+        local mid = members[1].e.matchId
         print(('  [%s] match %s  %d/%d still in'):format(
-            tostring(id), tostring(members[1].e.matchId), standing, #members))
+            tostring(id), tostring(mid and BR.MatchTag(mid)),
+            standing, #members))
         print(('      %s'):format(table.concat(names, ', ')))
     end
 
@@ -345,7 +347,7 @@ RegisterCommand('brsquads', function()
     if BR.Server.eachMatch then
         BR.Server.eachMatch(function(m)
             line('-')
-            print(('  match %d (%s)'):format(m.id, tostring(m.state)))
+            print(('  match %s (%s)'):format(BR.MatchTag(m.id), tostring(m.state)))
             for _, l in ipairs(BR.Party.formationReport(m)) do print('  ' .. l) end
         end)
     end
@@ -485,7 +487,12 @@ RegisterCommand('brconfig', function()
 end, RESTRICTED)
 
 RegisterCommand('brloot', function(_, args)
-    local wanted = tonumber(args[1])
+    -- READ AS HEX, because hex is the only form there is (#291). Match ids are
+    -- printed as five hex characters everywhere, and the argument to this verb
+    -- is somebody copying what the log just said. Parsing it as decimal would
+    -- answer about a DIFFERENT match for any id made only of digits, and about
+    -- no match at all for the other fifteen sixteenths of them.
+    local wanted = BR.MatchFromTag(args[1])
 
     local any = false
     BR.Server.eachMatch(function(m)
@@ -493,11 +500,12 @@ RegisterCommand('brloot', function(_, args)
         any = true
 
         if not m.loot then
-            print(('  match %d: no loot (state %s)'):format(m.id, m.state))
+            print(('  match %s: no loot (state %s)')
+                :format(BR.MatchTag(m.id), m.state))
             return
         end
 
-        header(('loot -- match %d, seed %d'):format(m.id, m.loot.seed))
+        header(('loot -- match %s, seed %d'):format(BR.MatchTag(m.id), m.loot.seed))
 
         local byKind, byRarity, cells, total = {}, {}, 0, 0
         for _, e in pairs(m.loot.items) do

@@ -41,6 +41,7 @@ end
 loadAll({
     'br_lib/shared/enums.lua',
     'br_lib/shared/protocol.lua',
+    'br_lib/shared/matchtag.lua',  -- BR.MatchTag; every drop line names its match
     'br_lib/shared/rng.lua',
     'br_lib/shared/geo.lua',
     'br_lib/shared/clock.lua',

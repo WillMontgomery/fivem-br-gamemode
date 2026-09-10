@@ -67,6 +67,7 @@ end
 loadAll({
     'br_lib/shared/enums.lua',
     'br_lib/shared/geo.lua',      -- BR.Dist and BR.NormHash
+    'br_lib/shared/matchtag.lua', -- BR.MatchTag; the stock lines name their match
     -- THE SHIPPED WEAPON AND LOOT TABLES, NOT FIXTURES. These two files are the
     -- SUBJECT of half this suite: the catalogue is derived from them, so a
     -- fixture here would be a test that the derivation agrees with itself.

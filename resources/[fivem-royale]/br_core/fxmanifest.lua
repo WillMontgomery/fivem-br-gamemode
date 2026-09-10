@@ -26,6 +26,12 @@ shared_scripts {
     '@br_lib/shared/enums.lua',
     '@br_lib/shared/protocol.lua',
     '@br_lib/shared/names.lua',   -- display-name rules; client and server share them
+    -- BR.MatchTag: how a match id is written down (#291). The id is a number
+    -- everywhere and hex only where a person reads it, and this is the one
+    -- place that conversion happens. Reads nothing at load and calls no native,
+    -- so the position is company rather than a requirement -- it sits beside
+    -- names.lua because both files are about how a thing is spelled on screen.
+    '@br_lib/shared/matchtag.lua',
     -- A toast that names a player, split so the name can be drawn bold and can
     -- never be anything but text. SHARED because both halves of every such
     -- notice are here: server/combat.lua and server/party.lua compose them,

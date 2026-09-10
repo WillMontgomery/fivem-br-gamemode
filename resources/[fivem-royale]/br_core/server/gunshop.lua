@@ -131,7 +131,7 @@ function BR.Gunshop.stock(id, m)
     end
     stock[id] = by
     print(('[br_core] gunshop: match %s stocked %d counters')
-        :format(tostring(id), #stores))
+        :format(BR.MatchTag(id), #stores))
     return by
 end
 
@@ -319,7 +319,7 @@ RegisterCommand('brgunshopstock', function()
                 end
                 table.sort(parts)
                 print(('[br_core] gunshop stock: match %s / %s -- %s')
-                    :format(tostring(id), tostring(stores[i].id),
+                    :format(BR.MatchTag(id), tostring(stores[i].id),
                             #parts > 0 and table.concat(parts, ', ') or 'empty'))
             end
         end

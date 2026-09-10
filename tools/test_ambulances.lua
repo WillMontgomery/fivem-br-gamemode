@@ -50,6 +50,7 @@ for _, f in ipairs({
     'shared/enums.lua',
     'shared/geo.lua',        -- BR.Dist, which the blip and the displacement use
     'shared/protocol.lua',   -- BR.Net.RESCUE_BLIP
+    'shared/matchtag.lua',   -- BR.MatchTag; every line here names its match
     'config/match.lua',      -- matchBucketBase
     'config/overrides.lua',
     'config/storm.lua',
