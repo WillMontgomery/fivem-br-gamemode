@@ -136,6 +136,53 @@ do
 end
 
 -- ---------------------------------------------------------------------------
+describe('the one string on this surface we wrote is still flagged as ours')
+-- ---------------------------------------------------------------------------
+--
+-- ═══ THE RULE, IN HIS WORDS ═══
+--
+--   "please do not add any helper text to any pages on your own ever ... it
+--    comes across as AI slop"
+--
+-- Every word a player reads at this counter is either his, typed as he typed
+-- it, or derived from a table somebody owns -- with ONE exception. He asked for
+-- "separators in between that indicate the category"; three of the four groups
+-- take their word from BR.RarityInfo, and the ammunition group has no table
+-- with a name in it, so AMMO_GROUP is a placeholder WE chose.
+--
+-- IT STANDS, AND IT STAYS MARKED. Replacing it with a different invention would
+-- be the same violation in fresh words, and blanking the label draws an empty
+-- bar above three that read Rare, Epic and Legendary -- a header that looks
+-- broken rather than a header that is absent. So the fix is that nobody may
+-- quietly bless it: the day the marked block goes, this goes red.
+--
+-- A COMMENT TEST, DELIBERATELY, and the same argument the header test above
+-- makes. What protects this string is that the next person to read the file is
+-- told it is not his; a flag nothing checks is a flag that survives exactly
+-- until somebody tidies up.
+do
+    local raw = readFile(ROOT .. 'br_core/client/gunshop.lua')
+
+    ok(raw:find("AWAITING THE OWNER'S WORDING", 1, true) ~= nil,
+        'the placeholder is marked as awaiting his wording, in terms nobody '
+            .. 'can mistake for a decision that was made')
+    ok(raw:find('AMMO_GROUP below is a placeholder WE wrote', 1, true) ~= nil,
+        '...and the marker names the constant it is about, so it cannot drift '
+            .. 'onto a different string')
+    ok(raw:find('do not add any helper text to any pages', 1, true) ~= nil,
+        'and it quotes the rule it is standing in breach of, so the cost of '
+            .. 'leaving it is legible without going and finding the report')
+
+    -- AND THE OTHER TWO ARE STILL HIS, which is the half that says the marker
+    -- is narrow. If this ever grew to cover PLATE_HINT or the out-of-stock
+    -- line, our copy would have been normalised rather than flagged.
+    ok(raw:find('"a line underneath PRESS TO OPEN"', 1, true) ~= nil,
+        'the plate hint is still attributed to him at its declaration')
+    ok(raw:find('"instead show Out of Stock"', 1, true) ~= nil,
+        'and so is the out-of-stock line')
+end
+
+-- ---------------------------------------------------------------------------
 describe('the catalogue is DERIVED, and that is checked from both directions')
 -- ---------------------------------------------------------------------------
 

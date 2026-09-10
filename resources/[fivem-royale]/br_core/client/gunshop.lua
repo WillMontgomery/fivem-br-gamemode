@@ -89,12 +89,30 @@ local G = BR.Config.Gunshop
 -- as he typed them. AMMO_GROUP is NOT his: he asked for "separators in between
 -- that indicate the category", which structurally needs a word per group, and
 -- three of the four groups get theirs from BR.RarityInfo. The ammo group has no
--- table with a name for it, so this is the shortest neutral one and it is
--- flagged for him to replace.
+-- table with a name for it, so this is the shortest neutral one.
 --
--- ─────────────────────────────────────────────────────────────────────
---  NEEDS HIS WORDING: the header over the ammunition group in the menu.
--- ─────────────────────────────────────────────────────────────────────
+-- ╔═══════════════════════════════════════════════════════════════════════╗
+-- ║  AWAITING THE OWNER'S WORDING.                                        ║
+-- ║                                                                       ║
+-- ║  AMMO_GROUP below is a placeholder WE wrote. It is the only string on  ║
+-- ║  this surface he has not typed, and his rule is that we do not write   ║
+-- ║  player-facing copy: "please do not add any helper text to any pages   ║
+-- ║  on your own ever ... it comes across as AI slop".                     ║
+-- ║                                                                       ║
+-- ║  It stands because the separator he asked for structurally needs a     ║
+-- ║  word. Replacing it with a DIFFERENT invention would be the same       ║
+-- ║  violation with fresh wording, so it stays exactly as it is until he   ║
+-- ║  says what it should read.                                            ║
+-- ║                                                                       ║
+-- ║  DELETING THE LABEL WAS CHECKED AND IS NOT BETTER.                     ║
+-- ║  UIMenuSeparatorItem.New('', true) is legal -- the constructor does    ║
+-- ║  `Text or ""` and an empty string is truthy in Lua, so it neither      ║
+-- ║  errors nor falls back -- and the scaleform draws the bar either way.  ║
+-- ║  What it draws is a BLANK bar sitting directly above three bars that   ║
+-- ║  read Rare, Epic and Legendary, at the top of the menu where it is     ║
+-- ║  the first thing on screen. That is not "no copy", it is a header      ║
+-- ║  that looks broken, so it is not the cheaper answer it appears to be.  ║
+-- ╚═══════════════════════════════════════════════════════════════════════╝
 
 --- Owner, 2026-09-09: "a line underneath PRESS TO OPEN".
 local PLATE_HINT = 'PRESS TO OPEN'
@@ -102,7 +120,7 @@ local PLATE_HINT = 'PRESS TO OPEN'
 --- Owner, 2026-09-09: "instead show Out of Stock".
 local OUT_OF_STOCK = 'Out of Stock'
 
---- NOT HIS. See the block above.
+--- NOT HIS, AND AWAITING HIS WORDING. See the marked block above.
 local AMMO_GROUP = 'Ammo'
 
 --- 0 IS TRUTHY IN LUA AND A FIVEM BOOL NATIVE MAY ANSWER 1 OR 0. Nine shipped
