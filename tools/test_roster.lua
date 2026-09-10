@@ -17495,6 +17495,98 @@ do
     ok(winner and winner.damage == deltasBy['license:test1'].damageDealt,
         'and the damage, floored the same way')
 
+    -- ══════════ THE LEVEL IS DERIVED AND IS NOT STORED (#116) ══════════
+    --
+    -- `xp` is a fact: it accumulates through an atomic ADD, so two matches
+    -- ending together compose and it cannot race. `level` was `levelFor(xp)` --
+    -- the same truth a second time, written separately from a read-modify-write
+    -- -- and only the copy could be wrong. It was: 3558 lifetime XP stored as
+    -- level 2.
+    --
+    -- ASSERTED AS ABSENT RATHER THAN AS CORRECT, and this is the only place it
+    -- can be caught. br_ddb's SET list is an allowlist, so a level that came
+    -- back here would be dropped silently at the far end -- nothing downstream
+    -- would fail, and nothing would be written either.
+    ok(deltasBy['license:test1'] and deltasBy['license:test1'].level == nil,
+        'no level is sent to the store -- it is derived from xp at read time (#116)',
+        ('got %s'):format(tostring(deltasBy['license:test1']
+            and deltasBy['license:test1'].level)))
+    ok(deltasBy['license:test2'] and deltasBy['license:test2'].level == nil,
+        'and none for the player who disconnected either',
+        ('got %s'):format(tostring(deltasBy['license:test2']
+            and deltasBy['license:test2'].level)))
+    ok(deltasBy['license:test1'] and (deltasBy['license:test1'].xp or 0) > 0,
+        'while the xp every reader derives it FROM is still written',
+        ('got %s'):format(tostring(deltasBy['license:test1']
+            and deltasBy['license:test1'].xp)))
+
+    -- ══════════ BUT BOTH ENDS OF THE CURVE ARE STILL EVALUATED ══════════
+    --
+    -- The level-up bonus has to know which boundaries this match crossed, and
+    -- the verdict screen has to draw its bar from where it was to where it is.
+    -- Both now come from the lifetime total either side of the write rather
+    -- than from a stored column, so dropping the column must not have cost
+    -- either of them. PROVED BY DIFFERENCE against the same envelope from a
+    -- total that crosses nothing: everything the payout is otherwise made of
+    -- cancels, and the level-up bonus is what is left.
+    local xpEarned = deltasBy['license:test1'].xp
+    local base = BR.Xp.thresholdFor(10)
+    ok(BR.Xp.levelFor(base) == 10 and BR.Xp.levelFor(base - 1) == 9,
+        'the fixture sits on a real level boundary')
+    ok(BR.Xp.levelFor(base + xpEarned) == 10,
+        'and one match is not enough to cross the NEXT one',
+        ('%d + %s lands at level %d'):format(base, tostring(xpEarned),
+            BR.Xp.levelFor(base + xpEarned)))
+
+    local cachedWas = BR.Stats.cachedXp['license:test1']
+
+    -- (a) a veteran who starts the match exactly ON the boundary: no crossing.
+    BR.Stats.cachedXp['license:test1'] = base
+    local flatMark = #fired
+    fire('br:match:results', nil, captured)
+    local _, flatDeltas = since(flatMark)
+
+    -- (b) the same veteran one XP short of it: this match crosses level 10.
+    BR.Stats.cachedXp['license:test1'] = base - 1
+    local upMark, upSent = #fired, #sent
+    fire('br:match:results', nil, captured)
+    local _, upDeltas = since(upMark)
+
+    ok(flatDeltas['license:test1'] and upDeltas['license:test1']
+       and upDeltas['license:test1'].balance
+           - flatDeltas['license:test1'].balance == BR.Config.levelBonus(10),
+        'crossing a boundary still pays the level-up bonus for the level reached',
+        ('%s vs %s, bonus %s'):format(
+            tostring(upDeltas['license:test1'] and upDeltas['license:test1'].balance),
+            tostring(flatDeltas['license:test1'] and flatDeltas['license:test1'].balance),
+            tostring(BR.Config.levelBonus(10))))
+    ok(flatDeltas['license:test1'] and flatDeltas['license:test1'].level == nil
+       and upDeltas['license:test1'] and upDeltas['license:test1'].level == nil,
+        'and neither run stores the level it just worked out')
+
+    -- AND THE VERDICT SCREEN IS TOLD BOTH ENDS, which is what stops the client
+    -- deriving the bar itself and getting it wrong (#91, #130).
+    local earned
+    for i = upSent + 1, #sent do
+        if sent[i].event == BR.Net.MATCH_EARNED and sent[i].target == 1 then
+            earned = sent[i].args[1]
+        end
+    end
+    ok(earned ~= nil, 'the survivor is told what the match earned')
+    ok(earned and earned.fromLevel == 9,
+        'the bar starts at the level their lifetime total was',
+        ('got %s'):format(tostring(earned and earned.fromLevel)))
+    ok(earned and earned.level == 10,
+        'and ends at the level it is now',
+        ('got %s'):format(tostring(earned and earned.level)))
+    ok(earned and earned.levelUp == true,
+        'so the level-up is announced')
+
+    -- PUT BACK, because cachedXp is process-lifetime state that reset() does not
+    -- clear -- a total left here would change what every later block in this
+    -- file banks, and the failure would point somewhere else entirely.
+    BR.Stats.cachedXp['license:test1'] = cachedWas
+
     -- A WIN IS NOT PLACEMENT 1 (#133). The last squad standing can be taken by
     -- the storm: eliminate() records placement 1 because nobody outlasted them,
     -- and they are still dead. The aggregate learned this rule; the record has

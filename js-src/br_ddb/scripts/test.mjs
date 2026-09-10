@@ -3,7 +3,7 @@ import { effective, isActive } from '../src/ban.js'
 import { buildIncidentClose, CLOSE_LIMITS } from '../src/close.js'
 import { buildIncidentItem, LIMITS } from '../src/incident.js'
 import { spendCost, spendUpdate, SPEND_MAX } from '../src/spend.js'
-import { buildStatsUpdate } from '../src/stats.js'
+import { buildStatsUpdate, STATS_ADDS, STATS_SETS } from '../src/stats.js'
 import { projectVerdict, verdictWord } from '../src/verdict.js'
 
 // NOT `../src/`. These two drive src/index.js itself -- the twenty handlers,
@@ -1374,10 +1374,19 @@ const entryOf = (extra) =>
 /**
  * Apply one UpdateItem-shaped command to a plain row.
  *
- * Supports exactly the two clause forms this file's verbs produce: a condition
- * `#name <op> :value`, and an `ADD #a :x, #b :y` update. Anything else throws,
- * loudly, rather than being silently ignored -- a clause the fake cannot read is
- * a clause the assertions below are not really testing.
+ * Supports exactly the three clause forms this file's verbs produce: a condition
+ * `#name <op> :value`, a `SET #a = :x, #b = :y` replace, and an `ADD #a :x, #b :y`
+ * accumulate. Anything else throws, loudly, rather than being silently ignored --
+ * a clause the fake cannot read is a clause the assertions below are not really
+ * testing.
+ *
+ * ═══ IT LEARNED `SET` FOR #116, AND THAT IS NOT A DETAIL ═══
+ *
+ * Without it this fake ignored the SET clause entirely -- so "the stored `level`
+ * does not move any more" passed identically against the code that still wrote
+ * it, which is the shape of assertion this project has shipped four times and
+ * been taught nothing by. A fake that silently drops the clause under test is
+ * worse than no fake.
  *
  * @returns {{ ok: boolean, row: object }}  ok=false is ConditionalCheckFailed
  */
@@ -1406,6 +1415,24 @@ function fakeUpdate(row, cmd) {
       else pass = have === want
     }
     if (!pass) return { ok: false, row }
+  }
+
+  // SET FIRST, because that is the order the expression is written in and
+  // because a SET and an ADD on the same attribute would otherwise disagree
+  // about which won. Nothing produces that today; the ordering is fixed anyway
+  // so that a future verb which does cannot be read two ways.
+  const set = /^\s*SET\s+(.+?)(?=\s+ADD\s|$)/.exec(cmd.UpdateExpression || '')
+  if (set) {
+    for (const term of set[1].split(',')) {
+      const t = /^\s*(#\w+)\s*=\s*(:\w+)\s*$/.exec(term)
+      if (!t) throw new Error(`fakeUpdate cannot read SET term: ${term}`)
+      const attr = names[t[1]]
+      const value = values[t[2]]
+      if (attr === undefined || value === undefined) {
+        throw new Error(`fakeUpdate: unbound placeholder in SET ${term}`)
+      }
+      out[attr] = value
+    }
   }
 
   const add = /(?:^|\s)ADD\s+(.+)$/.exec(cmd.UpdateExpression || '')
@@ -1499,12 +1526,25 @@ const MATCH_PAYOUT = {
   xp: 1048, balance: 1200, matches: 1, wins: 1, top10s: 1, kills: 3,
   deaths: 0, downs: 1, revives: 2, damageDealt: 450, playtimeSec: 900,
   soloMatches: 1, squadMatches: 0,
-  level: 12, name: 'Epyc', at: 1_700_000_000_000,
+  // NO `level`, AND ITS ABSENCE IS THE POINT (#116). persist.lua stopped
+  // computing it: the curve is still evaluated at both ends of the match, for
+  // the level-up bonus and the verdict screen, and the ANSWER is not stored.
+  name: 'Epyc', at: 1_700_000_000_000,
 }
+
+/**
+ * The same match from a caller that has not been updated -- or from a stale
+ * bundle on a box somebody forgot to deploy.
+ *
+ * A DROPPED FIELD IS THE ONLY ACCEPTABLE ANSWER. `level` is not on STATS_SETS
+ * any more, so it must be ignored exactly the way a typo'd ADD key is; anything
+ * else means the column starts moving again from whatever that caller believed.
+ */
+const MATCH_PAYOUT_WITH_LEVEL = { ...MATCH_PAYOUT, level: 12 }
 
 /** What that payload must become, byte for byte. */
 const PAYOUT_EXPRESSION =
-  'SET #lvl = :lvl, #nm = :nm, #ls = :ls ADD #xp :xp, #balance :balance,'
+  'SET #nm = :nm, #ls = :ls ADD #xp :xp, #balance :balance,'
   + ' #matches :matches, #wins :wins, #top10s :top10s, #kills :kills,'
   + ' #deaths :deaths, #downs :downs, #revives :revives,'
   + ' #damageDealt :damageDealt, #playtimeSec :playtimeSec,'
@@ -1521,15 +1561,70 @@ console.log('\nstats: the match payout writes what it always wrote')
     payout.UpdateExpression,
     PAYOUT_EXPRESSION,
   )
-  check('the level it derived is written', payout.ExpressionAttributeValues[':lvl'], 12)
   check('the name it saw is written', payout.ExpressionAttributeValues[':nm'], 'Epyc')
   check('and the match end is stamped', payout.ExpressionAttributeValues[':ls'], 1_700_000_000_000)
+  check('the XP the level is derived from is written', payout.ExpressionAttributeValues[':xp'], 1048)
 
   // Applied to a row, it is still an ADD and still atomic in the sense that
   // matters here: it composes with whatever was already there.
   const after = fakeUpdate({ balance: 300, kills: 40 }, payout)
   check('the balance accumulates rather than replacing', after.row.balance, 1500)
   check('and so does every other counter', after.row.kills, 43)
+}
+
+console.log('\nstats: `level` is derived data and is not written at all (#116)')
+{
+  // ═══ WHY THE PAYLOAD BELOW CARRIES A LEVEL ═══
+  //
+  // Asserting that MATCH_PAYOUT -- which no longer has the field -- produces no
+  // `:lvl` proves nothing: it would pass just as happily with `level` still on
+  // STATS_SETS. The only assertion worth making sends a level and demands it be
+  // dropped, which is red the moment the entry comes back.
+  const stale = buildStatsUpdate(MATCH_PAYOUT_WITH_LEVEL)
+
+  check(
+    'a caller that still sends a level gets the same expression as one that does not',
+    stale.UpdateExpression,
+    PAYOUT_EXPRESSION,
+  )
+  check('no value placeholder is bound for it', stale.ExpressionAttributeValues[':lvl'], undefined)
+  check('no name placeholder either', stale.ExpressionAttributeNames['#lvl'], undefined)
+  // The attribute, not the placeholder: a future entry under a different
+  // shorthand would slip past the two checks above and still write the column.
+  check(
+    'and the `level` attribute is named nowhere in the write',
+    Object.values(stale.ExpressionAttributeNames).includes('level'),
+    false,
+  )
+  check(
+    'nor does the expression text mention it',
+    /lvl|level/i.test(stale.UpdateExpression),
+    false,
+  )
+
+  // STATS_SETS IS THE LIST, AND IT IS ASSERTED DIRECTLY as well, because the
+  // expression above is only the list's output.
+  check(
+    'STATS_SETS carries no level entry',
+    STATS_SETS.some((s) => s.field === 'level' || s.attr === 'level'),
+    false,
+  )
+  check('it is exactly the two fields that are still facts', STATS_SETS.map((s) => s.attr), [
+    'name',
+    'lastMatchAt',
+  ])
+
+  // AND `xp` IS UNTOUCHED, which is the half of #116 that must not move. It is
+  // an ADD, so two matches ending together compose rather than racing -- the
+  // property the stored level never had.
+  check('xp is still an ADD, not a SET', STATS_ADDS.includes('xp'), true)
+  const row = fakeUpdate({ xp: 2510, level: 2 }, stale).row
+  check('so a career total accumulates', row.xp, 3558)
+  check(
+    'and the stale level already on the row is left exactly where it was',
+    row.level,
+    2,
+  )
 }
 
 console.log('\nstats: a grant is not a match')
@@ -1542,13 +1637,13 @@ console.log('\nstats: a grant is not a match')
     grant.UpdateExpression.startsWith('ADD '),
     true,
   )
-  // ═══ THE THREE FIELDS A GRANT MUST NOT TOUCH ═══
+  // ═══ THE FIELDS A GRANT MUST NOT TOUCH ═══
   //
-  // The first version of this wrote all three unconditionally with `num()` and
-  // `String()` fallbacks, so THIS payload would have set the player to level 0,
-  // blanked their name, and stamped lastMatchAt 0 -- silently, on a live
-  // profile row, every time somebody granted themselves Volts to test the shop.
-  check('no level is claimed', grant.ExpressionAttributeValues[':lvl'], undefined)
+  // The first version of this wrote them unconditionally with `num()` and
+  // `String()` fallbacks, so THIS payload would have blanked the player's name
+  // and stamped lastMatchAt 0 -- silently, on a live profile row, every time
+  // somebody granted themselves Volts to test the shop. It set level 0 too,
+  // until #116 stopped that column being written by anybody.
   check('no name is written', grant.ExpressionAttributeValues[':nm'], undefined)
   check('and no match end is stamped', grant.ExpressionAttributeValues[':ls'], undefined)
 
@@ -1559,10 +1654,12 @@ console.log('\nstats: a grant is not a match')
   check('the name survives it', after.name, 'Epyc')
   check('and so does the last match', after.lastMatchAt, 1_700_000_000_000)
 
-  // Present-and-zero is a value, not an absence. A caller that means level 0
-  // has a bug of its own and this function is not the place to hide it.
-  const explicit = buildStatsUpdate({ balance: 1, level: 0 })
-  check('an explicit zero is still written', explicit.ExpressionAttributeValues[':lvl'], 0)
+  // Present-and-zero is a value, not an absence. A caller that means
+  // lastMatchAt 0 has a bug of its own and this function is not the place to
+  // hide it. (This was written against `level: 0`, which #116 retired -- the
+  // rule it demonstrates belongs to `supplied()` and is unchanged.)
+  const explicit = buildStatsUpdate({ balance: 1, at: 0 })
+  check('an explicit zero is still written', explicit.ExpressionAttributeValues[':ls'], 0)
   // ...and the empty string is treated as absent, because '' is exactly what
   // the old unconditional write produced from a missing name.
   const blank = buildStatsUpdate({ balance: 1, name: '' })
@@ -1633,7 +1730,12 @@ console.log('\nstats: the handler, not just the expression it builds')
   bridge.reset()
   bridge.reply({}) // DynamoDB accepts the write
 
-  const threw = bridge.call('br:ddb:statsApply', 41, LIC, MATCH_PAYOUT)
+  // THE STALE SHAPE, DELIBERATELY. It is MATCH_PAYOUT with `level` put back on
+  // it -- what a game box running a br_stats from before #116 would send. The
+  // wire assertions below then say two things at once: the handler carries the
+  // caller's deltas to the builder, and the retired field never reaches
+  // DynamoDB. Sending the current shape would prove only the first.
+  const threw = bridge.call('br:ddb:statsApply', 41, LIC, MATCH_PAYOUT_WITH_LEVEL)
 
   // ═══ THE ASSERTION THIS BLOCK EXISTS FOR ═══
   //
@@ -1673,8 +1775,16 @@ console.log('\nstats: the handler, not just the expression it builds')
   // they are the caller's.
   check("the caller's XP is on the wire", values[':xp'], 1048)
   check('and the Volts the match paid', values[':balance'], 1200)
-  check('and the level br_stats derived', values[':lvl'], 12)
   check('and the name it saw', values[':nm'], 'Epyc')
+  // #116, ON THE WIRE RATHER THAN IN THE BUILDER. The caller sent level 12 and
+  // DynamoDB is told nothing about a level at all.
+  check('but the level it sent is dropped before the send', values[':lvl'], undefined)
+  // Names are not marshalled -- they are a plain placeholder -> attribute map.
+  check(
+    'and no attribute name binds it either',
+    (cmd.input.ExpressionAttributeNames ?? {})['#lvl'],
+    undefined,
+  )
 
   // End to end: the command the handler built, applied to a profile row.
   // Guarded, because `fakeUpdate` throws on an expression it cannot read and a
@@ -1735,7 +1845,7 @@ console.log('\nstats: brvolts rides the same handler')
 
   const values = unmarshall(cmd.input.ExpressionAttributeValues)
   check('so no name is blanked on the row', values[':nm'], undefined)
-  check('and no level is claimed', values[':lvl'], undefined)
+  check('and no match end is stamped', values[':ls'], undefined)
   check('while the Volts are on the wire', values[':balance'], 5000)
 }
 

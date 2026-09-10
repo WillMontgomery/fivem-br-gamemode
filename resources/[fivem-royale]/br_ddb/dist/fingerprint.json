@@ -1,7 +1,7 @@
 {
   "scheme": "br_ddb-source-fingerprint-1",
-  "source": "36e6e290fd0890ff72ea6361773876deaa28d30c49ac51afc7096356aa91e386",
-  "bundle": "e92f1cbb038613052f5dc9c052fb472e36f8a1a849b14babf92f6f8b1ee09610",
-  "bundleBytes": 715988,
+  "source": "a39012dcb035bb3dd1cde84fb770357e2f6b64d6cb62be32677fd5d5ebba30c7",
+  "bundle": "33fc35c04b6246938e91f6b9ec3fce68cc106aad5d53f0ca3f19348f935807b4",
+  "bundleBytes": 715925,
   "files": 10
 }

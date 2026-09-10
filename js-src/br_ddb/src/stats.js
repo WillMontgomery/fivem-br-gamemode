@@ -17,23 +17,35 @@
  *
  * ═══ THE SET LIST IS NOT, AND THAT IS THE FIX ═══
  *
- * `level`, `name` and `lastMatchAt` REPLACE rather than accumulate, and the
- * first version of this wrote all three unconditionally with `num()`/`String()`
- * fallbacks -- so a caller that did not supply them wrote level 0, an empty
- * name and lastMatchAt 0 over whatever was there. For the match payout that is
- * invisible, because a payout always supplies all three. For any OTHER caller
- * of the same verb it is silent data loss, and there is a second caller now:
- * `brvolts` grants Volts through this exact write (see br_core/server/debug.lua)
- * and has no business claiming the player just finished a match.
+ * `name` and `lastMatchAt` REPLACE rather than accumulate, and the first version
+ * of this wrote them unconditionally with `num()`/`String()` fallbacks -- so a
+ * caller that did not supply them wrote an empty name and lastMatchAt 0 over
+ * whatever was there. For the match payout that is invisible, because a payout
+ * always supplies them. For any OTHER caller of the same verb it is silent data
+ * loss, and there is a second caller now: `brvolts` grants Volts through this
+ * exact write (see br_core/server/debug.lua) and has no business claiming the
+ * player just finished a match.
  *
  * So a field that is absent is not written. Present-and-zero is still a value
- * and is still written -- `level = 0` from a caller that means it is a caller's
- * bug, not this function's.
+ * and is still written -- `lastMatchAt = 0` from a caller that means it is a
+ * caller's bug, not this function's.
  *
- * THE PAYOUT'S OWN EXPRESSION IS UNCHANGED BY THIS, byte for byte, and
- * scripts/test.mjs pins that: a delta carrying all three fields produces the
- * same string it produced before the SET clause became conditional. This is a
- * change to what happens when a field is MISSING and to nothing else.
+ * ═══ `level` USED TO BE THE THIRD SET FIELD AND IS NOT WRITTEN AT ALL (#116) ═══
+ *
+ * `xp` is a fact: it accumulates through the ADD below, so concurrent match ends
+ * compose and it cannot race. `level` was `levelFor(xp)` -- a pure function of
+ * the attribute sitting beside it, computed in Lua and replaced here from a
+ * read-modify-write. Two representations of one truth, and only the derived one
+ * can be wrong. It was: 3558 lifetime XP stored as level 2.
+ *
+ * Every surface derives it at read time already (the lobby chip, the Ringmaster
+ * profile, `brprofile`), so the stored attribute could no longer be right by
+ * accident and could still be wrong. It is left in place on rows that already
+ * carry it -- deleting it is not worth a migration -- and simply stops moving.
+ *
+ * A caller that still sends `level` contributes nothing, exactly like a typo'd
+ * ADD key. That is the allowlist doing its job, and it is asserted rather than
+ * assumed in scripts/test.mjs.
  */
 
 /**
@@ -62,9 +74,11 @@ export const STATS_ADDS = [
  * Everything that replaces: the caller's field name, the placeholder it gets,
  * and the attribute it lands on. Three separate names because the attribute is
  * `lastMatchAt` and the caller calls it `at`.
+ *
+ * `level` was the first entry here until #116. See the header for why nothing
+ * derived belongs on this list.
  */
 export const STATS_SETS = [
-  { field: 'level', ph: '#lvl', vh: ':lvl', attr: 'level', kind: 'number' },
   { field: 'name', ph: '#nm', vh: ':nm', attr: 'name', kind: 'string' },
   { field: 'at', ph: '#ls', vh: ':ls', attr: 'lastMatchAt', kind: 'number' },
 ]

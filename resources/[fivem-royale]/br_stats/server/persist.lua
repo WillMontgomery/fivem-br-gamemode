@@ -293,11 +293,16 @@ AddEventHandler('br:match:results', function(res)
         else
             local deltas, xpEarned = deltasFor(p, res)
 
-            -- The level is derived HERE, from the total the store will hold
-            -- after this write, using the same curve the summary screen uses.
-            -- br_ddb stores what we compute rather than computing its own, so
-            -- there is one implementation of the curve rather than two that
-            -- can disagree.
+            -- BOTH ENDS OF THE LEVEL ARE DERIVED HERE AND NEITHER IS STORED
+            -- (#116). The level-up bonus below and the verdict screen both need
+            -- to know which boundaries this match crossed, so the curve is
+            -- evaluated at the lifetime total either side of the write -- but
+            -- the ANSWER is not sent to br_ddb any more. `xp` accumulates
+            -- through an atomic ADD and cannot race; a `level` column beside it
+            -- was the same truth written a second time from a read-modify-write,
+            -- and only the copy could be wrong. It was: 3558 XP stored as
+            -- level 2. Every surface derives it from `xp` at read time already.
+            --
             -- POPULATED AT LAST. This read `BR.Stats.cachedXp` since the day it
             -- was written and nothing ever wrote to that table, so `before` was
             -- always 0 -- and every level below was derived from ONE match's XP
@@ -308,7 +313,7 @@ AddEventHandler('br:match:results', function(res)
             local before = BR.Stats.cachedXp[license] or 0
             local after = before + xpEarned
             local levelBefore = BR.Xp and BR.Xp.levelFor(before) or 1
-            deltas.level = BR.Xp and BR.Xp.levelFor(after) or 1
+            local levelAfter = BR.Xp and BR.Xp.levelFor(after) or 1
             deltas.name = p.name
             deltas.at = endedAt
 
@@ -321,8 +326,8 @@ AddEventHandler('br:match:results', function(res)
             -- same write. A separate one could credit the match and not the
             -- level, and a player who saw "LEVEL 12" and no matching balance
             -- change has no way to tell that from the bonus not existing.
-            if deltas.level > levelBefore and BR.Config.levelBonus then
-                for lvl = levelBefore + 1, deltas.level do
+            if levelAfter > levelBefore and BR.Config.levelBonus then
+                for lvl = levelBefore + 1, levelAfter do
                     deltas.balance = deltas.balance + BR.Config.levelBonus(lvl)
                 end
             end
@@ -386,7 +391,7 @@ AddEventHandler('br:match:results', function(res)
                     xp      = xpEarned,
                     volts   = deltas.balance,
                     -- Where the bar is NOW.
-                    level   = deltas.level,
+                    level   = levelAfter,
                     into    = intoAfter,
                     needed  = math.max(1, spanAfter),
                     -- Where it has to start from, so the fill is the match
@@ -394,7 +399,7 @@ AddEventHandler('br:match:results', function(res)
                     fromLevel  = levelBefore,
                     fromXp     = intoBefore,
                     fromNeeded = math.max(1, spanBefore),
-                    levelUp = deltas.level > levelBefore,
+                    levelUp = levelAfter > levelBefore,
                 })
             end
 
