@@ -8063,6 +8063,158 @@ do
     pedHealth[1002] = nil
 end
 
+describe('combat.fire.self')
+do
+    -- THE DEATH THAT COULD NOT SAY WHAT KILLED IT.
+    --
+    -- Observed 2026-09-09, a two-client solos playtest: `brgive 1 molotov`, the
+    -- owner killed himself with it, and the console said
+    -- `eliminated Xeon (1) -- placement 2 (unknown)`.
+    --
+    -- Two facts made that word, and only one of them was a defect:
+    --
+    --   NO KILLER IS CORRECT. The fire ledger credits the burn to whoever lit
+    --   it, which here is the victim, and BR.Combat.attributedKiller refuses to
+    --   name a player as their own killer. That refusal is deliberate and is
+    --   asserted below so a later change cannot quietly hand somebody a kill for
+    --   dying.
+    --
+    --   'unknown' WAS NOT. `describeCause` translated the seven hashes the WORLD
+    --   kills with and nothing the gamemode issues, so the one weapon in this
+    --   scene fell through it. WEAPON_FIRE was already mapped and would have
+    --   matched, which is how we know the engine named the bottle rather than
+    --   the flames.
+    --
+    -- The distinction only shows on a death with no killer, because that is the
+    -- only kind whose feed row reads the cause at all -- so this block builds
+    -- exactly that death rather than asserting on `describeCause` in isolation.
+    reset()
+    queueUp(1, 'A', BR.Mode.SOLO.key)
+    queueUp(2, 'B', BR.Mode.SOLO.key)
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    BR.Roster.setState(1, BR.PlayerState.ALIVE)
+    BR.Roster.setState(2, BR.PlayerState.ALIVE)
+
+    -- Health and position flow ped -> sampler -> roster, never the other way,
+    -- so the fixture burns the PED. The other player is parked far enough away
+    -- that nothing about this is theirs.
+    setPos(1, 0.0, 0.0, 30.0)
+    setPos(2, 60.0, 0.0, 30.0)
+    pedHealth[1001] = 200
+    fakeTime = fakeTime + 600
+    BR.Sched.step(fakeTime)
+
+    local a = BR.Roster.get(1)
+    a.lastHitBy, a.lastHitWeapon = nil, nil
+
+    BR.Damage.noteThrow(1, 'molotov')
+    fire('explosionEvent', 1, 1,
+        { explosionType = 3, posX = 0.0, posY = 0.0, posZ = 30.0 })
+
+    -- One pass to take the baseline, then the burn: `damage.fires` returns
+    -- before touching `burnHp` while there are no fires.
+    fakeTime = fakeTime + 600
+    BR.Sched.step(fakeTime)
+    pedHealth[1001] = 40
+    fakeTime = fakeTime + 600
+    BR.Sched.step(fakeTime)
+
+    ok(a.lastHitBy == 1,
+        'burning in your own molotov is credited to you, like anyone else\'s',
+        tostring(a.lastHitBy))
+    ok(BR.Combat.attributedKiller(a) == nil,
+        'and attribution still refuses to name a player as their own killer',
+        tostring(BR.Combat.attributedKiller(a)))
+
+    -- The client reports the engine's cause of death. For a molotov that is the
+    -- WEAPON hash, not WEAPON_FIRE.
+    sent = {}
+    fire(BR.Net.PLAYER_DIED, 1, { cause = GetHashKey('WEAPON_MOLOTOV') })
+
+    local feed = eventsOf(BR.Net.KILL_FEED)
+    local last = feed[#feed] and feed[#feed].args[1]
+    ok(last ~= nil, 'the death is processed')
+    ok(last and last.killer == nil and last.killerSrc == nil,
+        'a self-thrown molotov credits nobody',
+        tostring(last and last.killerSrc))
+    ok(last and last.cause == 'burned',
+        'and the feed can finally say what it was, instead of "unknown"',
+        tostring(last and last.cause))
+
+    -- THE OTHER TWO THROWABLES ARE THE SAME HOLE, and they are asserted through
+    -- the same translation rather than through a second fixture: what was broken
+    -- is one table, and a grenade at your own feet reaches it by the identical
+    -- route.
+    reset()
+    queueUp(1, 'A', BR.Mode.SOLO.key)
+    queueUp(2, 'B', BR.Mode.SOLO.key)
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    BR.Roster.setState(1, BR.PlayerState.ALIVE)
+    BR.Roster.setState(2, BR.PlayerState.ALIVE)
+    setPos(1, 0.0, 0.0, 30.0)
+    setPos(2, 60.0, 0.0, 30.0)
+    fakeTime = fakeTime + 600
+    BR.Sched.step(fakeTime)
+
+    sent = {}
+    fire(BR.Net.PLAYER_DIED, 1, { cause = GetHashKey('WEAPON_GRENADE') })
+    feed = eventsOf(BR.Net.KILL_FEED)
+    last = feed[#feed] and feed[#feed].args[1]
+    ok(last and last.cause == 'explosion',
+        'a grenade at your own feet is an explosion rather than "unknown"',
+        tostring(last and last.cause))
+
+    reset()
+    queueUp(1, 'A', BR.Mode.SOLO.key)
+    queueUp(2, 'B', BR.Mode.SOLO.key)
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    BR.Roster.setState(1, BR.PlayerState.ALIVE)
+    BR.Roster.setState(2, BR.PlayerState.ALIVE)
+    setPos(1, 0.0, 0.0, 30.0)
+    setPos(2, 60.0, 0.0, 30.0)
+    fakeTime = fakeTime + 600
+    BR.Sched.step(fakeTime)
+
+    sent = {}
+    fire(BR.Net.PLAYER_DIED, 1, { cause = GetHashKey('WEAPON_STICKYBOMB') })
+    feed = eventsOf(BR.Net.KILL_FEED)
+    last = feed[#feed] and feed[#feed].args[1]
+    ok(last and last.cause == 'explosion',
+        'and so is a sticky bomb',
+        tostring(last and last.cause))
+
+    -- A WEAPON WE DO ISSUE IS STILL NOT THE WHOLE ARSENAL. Nothing here turns
+    -- `describeCause` into a weapon table: a rifle death has a killer and a
+    -- weapon of its own on the feed, and the cause it reports is meant to fall
+    -- through to the generic word. Pinned so the next person does not "finish"
+    -- this by mapping every gun in the game.
+    reset()
+    queueUp(1, 'A', BR.Mode.SOLO.key)
+    queueUp(2, 'B', BR.Mode.SOLO.key)
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    BR.Roster.setState(1, BR.PlayerState.ALIVE)
+    BR.Roster.setState(2, BR.PlayerState.ALIVE)
+    setPos(1, 0.0, 0.0, 30.0)
+    setPos(2, 60.0, 0.0, 30.0)
+    fakeTime = fakeTime + 600
+    BR.Sched.step(fakeTime)
+
+    sent = {}
+    fire(BR.Net.PLAYER_DIED, 1, { cause = GetHashKey('WEAPON_CARBINERIFLE') })
+    feed = eventsOf(BR.Net.KILL_FEED)
+    last = feed[#feed] and feed[#feed].args[1]
+    ok(last and last.cause == 'unknown',
+        'a rifle is still not a cause -- the feed names the killer and the '
+        .. 'weapon on that path',
+        tostring(last and last.cause))
+
+    pedHealth[1001] = nil
+end
+
 describe('loot.origin')
 do
     -- WHERE A THING CAME FROM TRAVELS WITH IT.

@@ -553,6 +553,45 @@ local function describeCause(raw)
         put('WEAPON_EXPLOSION',            'explosion')
         put('WEAPON_RAMMED_BY_CAR',        'roadkill')
         put('WEAPON_RUN_OVER_BY_CAR',      'roadkill')
+
+        -- ...AND THE THREE THIS GAMEMODE ISSUES, WHICH THE ENGINE BLAMES BY
+        -- WEAPON RATHER THAN BY THE WORLD.
+        --
+        -- Observed 2026-09-09, a two-client solos playtest: the owner gave
+        -- himself a molotov with `brgive 1 molotov`, killed himself with it, and
+        -- the console said `eliminated Xeon (1) -- placement 2 (unknown)`.
+        -- WEAPON_FIRE was already in this table and would have matched, so the
+        -- engine did not blame the flames. It named the bottle, and a weapon we
+        -- issue was never one of the seven world hashes above.
+        --
+        -- IT IS ONLY VISIBLE WHEN THERE IS NO KILLER, which is why it outlived
+        -- every molotov kill anybody has ever scored. With a killer the feed
+        -- draws their name and the weapon the damage ledger recorded and never
+        -- reads the cause at all; without one the cause is the only word the
+        -- victim gets. And the throw nobody can be credited for is your own:
+        -- BR.Combat.attributedKiller refuses to name a player as their own
+        -- killer, deliberately, so a self-thrown molotov is exactly the case
+        -- that had nothing to say. It said 'unknown', which the feed renders as
+        -- "was wasted" and the death slam as WASTED -- honest, and no help
+        -- whatever to a player asking what just killed them.
+        --
+        -- THE WORDS ARE ONES THE UI ALREADY HAS. 'burned' and 'explosion' are
+        -- already in the feed's phrase table and the verdict slam
+        -- (ui-src/src/hud/KillFeed.tsx, ui-src/src/hud/verdictWord.ts), so this
+        -- reaches the player through copy that shipped months ago rather than
+        -- through a sentence nobody asked for.
+        --
+        -- A MOLOTOV THAT KILLS ON IMPACT still reads 'burned' rather than
+        -- 'explosion'. The engine reports one hash for the weapon either way and
+        -- 'burned' is the closer of the two words for a bottle of burning
+        -- petrol; splitting them would need a fact the hash does not carry.
+        --
+        -- ALL THREE, BECAUSE IT IS ONE HOLE. A grenade and a sticky bomb are
+        -- thrown by the same hand, land at the same feet and fell through this
+        -- table for the same reason.
+        put('WEAPON_MOLOTOV',              'burned')
+        put('WEAPON_GRENADE',              'explosion')
+        put('WEAPON_STICKYBOMB',           'explosion')
     end
     return causeByHash[raw & 0xFFFFFFFF] or 'unknown'
 end
