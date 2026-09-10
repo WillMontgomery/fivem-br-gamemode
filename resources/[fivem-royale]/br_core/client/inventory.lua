@@ -68,6 +68,48 @@ BR.Inv.suspendAmmo = false
 -- without reporting, so a weapon switch never looks like a burst of fire.
 local lastReport = { total = -1, clip = -1, at = 0 }
 
+--- THE MAGAZINE THE ENGINE HOLDS, WHICH IS THE ONE THE HUD DRAWS.
+---
+--- ═══ THE COUNTER JITTERED BECAUSE TWO SOURCES WERE DRAWING IT (owner,
+---     2026-09-09) ═══
+---
+--- "shooting from 8 bullets to 7 for example - the value goes down to 5 for
+--- example, and flicks back to 7 quickly."
+---
+--- BOTH NUMBERS WERE REAL AND NEITHER WAS LATE. The report loop reads the gun
+--- and writes `slot.clip` every tick, which is the whole reason the counter
+--- keeps up with the trigger (see its own note); `adopt` then REPLACES the slot
+--- table with the server's, magazine included, and pushes that. So an INV_SET
+--- arriving while the server's split sat BELOW the engine's painted the
+--- server's number, and the loop painted the gun's back one tick later. Two
+--- honest writers, one field, and the flicker is the gap between them.
+---
+--- THE ENGINE IS THE AUTHORITY AND THIS FILE ALREADY SAID SO, three hundred
+--- lines down: "the magazine is read straight off the gun in the player's
+--- hands, so there is nothing to check with the server before showing it".
+--- That sentence was only ever true of the tick path. This makes it true of the
+--- INV_SET path as well.
+---
+--- WHAT IS NOT CHANGED, AND IT IS MOST OF IT. `slot.clip` still receives the
+--- server's number on every INV_SET, because two readers need it there and both
+--- run BEFORE the interface is pushed: rebaseline() takes the compare-and-swap
+--- token the far end refuses a stale report on, and stampReports() takes what
+--- became of the last thing we said. Only the value the HUD is handed changes.
+---
+--- WHY A RECORD RATHER THAN A SECOND READ OF THE GUN. Re-reading inside adopt
+--- would need the report loop's whole guard train copied to a second site --
+--- our grant has landed, the engine agrees the weapon is in the hand, no reload
+--- is playing -- and then kept honest against it by hand. Every write below is
+--- either already past those guards or is a number this file has just written
+--- to the ped itself, so what is kept here is trustworthy by construction and
+--- there is no second copy of the rule to drift.
+---
+--- KEYED BY ITEM for the reason `shortfall` is: a slot whose weapon changed is
+--- a different magazine, and a rifle's count printed over the pistol that
+--- replaced it is somebody else's number. A `clip` below zero means "no reading
+--- yet", the same way lastReport's -1 does.
+local shown = { id = nil, clip = -1 }
+
 --- THE LAST FEW REPORTS THIS CLIENT SENT, AND WHAT BECAME OF THEM.
 ---
 --- ═══ THE FIFTH DOOR WAS A MESSAGE IN FLIGHT (owner, 2026-08-23, third
@@ -451,6 +493,11 @@ local function applyActive(force)
         SetAmmoInClip(ped, want, clip)
         SetCurrentPedWeapon(ped, want, true)
 
+        -- WHAT THE GUN NOW HOLDS, WRITTEN DOWN RATHER THAN READ BACK. This is
+        -- the number that just went into the ped, so it is the engine's
+        -- magazine without asking the engine. See `shown`.
+        shown.id, shown.clip = slot.id, clip
+
         -- AND THE ENGINE MAY NOT PICK THE WEAPON. Without this the engine
         -- swaps to "something better" on pickup and on empty, which fights the
         -- active-slot model for control of the hand.
@@ -463,6 +510,10 @@ local function applyActive(force)
         -- called from the tick loop.
     else
         SetCurrentPedWeapon(ped, UNARMED, true)
+        -- FISTS HAVE NO MAGAZINE, so there is no reading to keep. Leaving the
+        -- last gun's number here would let it be printed over whatever lands in
+        -- the hand next.
+        shown.id, shown.clip = nil, -1
     end
 
     applied = want
@@ -502,6 +553,9 @@ local function reapplyAmmo(serverClip)
 
     SetPedAmmo(ped, hash, total)
     SetAmmoInClip(ped, hash, clip)
+    -- ...AND THE SAME NOTE APPLIES AS IN applyActive: this is what the gun now
+    -- holds, so it is what the HUD may print. See `shown`.
+    shown.id, shown.clip = slot.id, clip
     lastReport.clip = serverClip or clip
 end
 
@@ -565,6 +619,10 @@ local function clearLocal()
     inv.ammo, inv.active, inv.using = {}, MELEE_SLOT, nil
     applied, appliedPed = nil, 0
     lastReport.clip, lastReport.total = -1, -1
+    -- The reading described a gun this player no longer has. A new match deals
+    -- new weapons and the first INV_SET of it must not be printed over with the
+    -- last life's magazine.
+    shown.id, shown.clip = nil, -1
     -- The deficits go with the guns they were measured on. A new match hands
     -- out new weapons and a corpse's rifle is not this player's problem any
     -- more; carrying the numbers over would dock the next magazine.
@@ -767,6 +825,26 @@ local function adopt(d)
     rebaseline()
     -- ...and it is also the first news of what became of anything we said.
     stampReports()
+
+    -- AND NOW THE GUN'S OWN MAGAZINE GOES BACK ON TOP.
+    --
+    -- Last, deliberately: both readers that want the SERVER's number have had
+    -- it by this line -- rebaseline() for its compare-and-swap token and
+    -- stampReports() for the fate of the last report -- and the only thing left
+    -- below is the interface, which wants the engine's. That ordering is the
+    -- whole of the fix; see `shown`.
+    --
+    -- GUARDED ON THE WEAPON ACTUALLY IN THE HAND, not merely on the slot: the
+    -- reading describes whatever `applied` last put there, so a slot holding
+    -- something else is a slot this has nothing to say about.
+    do
+        local held = inv.slots[inv.active]
+        if held and shown.clip >= 0 and shown.id == held.id
+           and hashOf(held) == applied then
+            held.clip = shown.clip
+        end
+    end
+
     pushUi()
 
     if gained then
@@ -1875,6 +1953,11 @@ BR.Loop.register(BR.Loop.TICK, 'inv.ammo', function()
     -- 10Hz -- and costs one NUI message on the frames where it changed.
     --
     -- The RESERVE stays the server's and still arrives with the next INV_SET.
+    -- THE READING IS KEPT WHETHER OR NOT IT MOVED, because what makes it worth
+    -- keeping is not that it changed but that it is the gun's -- and the next
+    -- INV_SET is going to overwrite the mirror with the server's. See `shown`.
+    shown.id, shown.clip = slot.id, clip
+
     if clip ~= slot.clip then
         slot.clip = clip
         pushUi()

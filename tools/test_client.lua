@@ -15520,6 +15520,188 @@ do
 end
 
 -- ======================================================================== --
+-- N2. THE COUNTER THAT JITTERED
+-- ======================================================================== --
+--
+-- Owner, 2026-09-09, playtest: "the HUD does update but it's jittery. shooting
+-- from 8 bullets to 7 for example - the value goes down to 5 for example, and
+-- flicks back to 7 quickly."
+--
+-- TWO WRITERS, ONE FIELD, AND BOTH OF THEM HONEST. The report loop reads
+-- GetAmmoInClip and writes `slot.clip` every tick so the counter keeps up with
+-- the trigger; `adopt` then replaces the whole slot table with the server's
+-- payload, magazine included, and pushes THAT. Neither is late. The flicker is
+-- what the interface sees in the gap between them, and there is a gap whenever
+-- the server's split has fallen below the engine's.
+--
+-- IT REALLY CAN FALL BELOW, AND THAT HALF IS SERVER-SIDE. With
+-- Combat.serverAmmo on, an INV_AMMO that reaches the handler BEFORE the
+-- weaponDamageEvent for the same shot is ACCEPTED -- its `was` token still
+-- matches, because the server has not processed the event yet -- and then
+-- spendRound charges the same round a second time. One round of divergence per
+-- racing shot, and it persists, because a RISE is refused at both ends so the
+-- client can never report it back. That is a separate fault and it is not what
+-- this block fixes. What is pinned HERE is the half this file owns: the
+-- interface is never handed a magazine the gun does not have, whatever the
+-- server has come to believe.
+--
+-- WHY THE ASSERTION IS MADE AT PUSH TIME AND NOT AFTERWARDS. pushUi sends the
+-- live slot tables BY REFERENCE, so reading one after the fact reports the
+-- number it ended on and the flicker is invisible -- a suite written that way
+-- agrees with the defect. The recorder below copies both numbers as the
+-- envelope leaves, which is the only moment the two are comparable.
+describe('the counter is never drawn a magazine the gun does not have')
+do
+    local savedGive    = GiveWeaponToPed
+    local savedRemove  = RemoveAllPedWeapons
+    local savedSetAmmo = SetPedAmmo
+    local savedSetClip = SetAmmoInClip
+    local savedGetAmmo = GetAmmoInPedWeapon
+    local savedGetClip = GetAmmoInClip
+    local savedCurrent = SetCurrentPedWeapon
+    local savedHasGot  = HasPedGotWeapon
+
+    -- NO PARACHUTE, AND IT HAS TO BE SAID OUT LOUD. An earlier block leaves
+    -- HasPedGotWeapon answering for a chute it gave a ped of its own, and
+    -- skydive.lua's post-landing sweep believes it: three ticks in, that sweep
+    -- reaches RemoveAllPedWeapons and BR.Inv.reapply, which re-grants the active
+    -- slot from the SERVER's numbers and writes the magazine back up. That is a
+    -- real path and it has its own coverage; here it would simply hide the race
+    -- this block exists to drive, by moving the gun under the assertion.
+    function HasPedGotWeapon() return false end
+
+    -- The same ped model section N uses, and for the same reason: "SetAmmoInClip
+    -- was called with 7" is true of the fix and of the bug.
+    local gun = { total = {}, clip = {} }
+    function RemoveAllPedWeapons() gun.total, gun.clip = {}, {} end
+    function GiveWeaponToPed(_, hash, ammo)
+        local h = BR.NormHash(hash)
+        gun.total[h] = (gun.total[h] or 0) + (ammo or 0)
+    end
+    function SetPedAmmo(_, hash, n)
+        local h = BR.NormHash(hash)
+        gun.total[h] = math.max(0, n or 0)
+        gun.clip[h]  = math.min(gun.clip[h] or 0, gun.total[h])
+    end
+    function SetAmmoInClip(_, hash, n)
+        local h = BR.NormHash(hash)
+        gun.clip[h] = math.min(math.max(0, n or 0), gun.total[h] or 0)
+    end
+    function GetAmmoInPedWeapon(_, hash) return gun.total[BR.NormHash(hash)] or 0 end
+    function GetAmmoInClip(_, hash) return true, gun.clip[BR.NormHash(hash)] or 0 end
+    function SetCurrentPedWeapon(_, hash) pedWeapon = hash end
+
+    local PISTOL = BR.Config.WeaponById['pistol']
+    local PH     = BR.NormHash(PISTOL.hash)
+
+    -- WHAT THE INTERFACE WAS HANDED, BESIDE WHAT THE GUN HELD AT THAT INSTANT.
+    local drawn = {}
+    AddEventHandler('br:ui:sendLocal', function(kind, p)
+        if kind ~= BR.Nui.INV then return end
+        local s = p and p.slots and p.slots[p.active or 0]
+        if type(s) ~= 'table' or s.id ~= 'pistol' then return end
+        drawn[#drawn + 1] = { said = s.clip, gun = gun.clip[PH] }
+    end)
+
+    --- Every envelope whose magazine disagreed with the gun, as text.
+    local function disagreed()
+        local out = {}
+        for _, d in ipairs(drawn) do
+            if d.said ~= d.gun then
+                out[#out + 1] = ('drawn %s / gun %s')
+                    :format(tostring(d.said), tostring(d.gun))
+            end
+        end
+        return table.concat(out, ', ')
+    end
+
+    local function serverSays(clip, pool)
+        fire(BR.Net.INV_SET, {
+            slots = { { id = 'pistol', label = 'Pistol', kind = BR.ItemKind.WEAPON,
+                        rarity = 1, count = 1, clip = clip, pool = 'light' } },
+            ammo = { light = pool }, active = 1,
+        })
+    end
+    local function tick(n)
+        for _ = 1, (n or 1) do
+            fakeTime = fakeTime + 100
+            BR.Loop.step(BR.Loop.TICK)
+        end
+    end
+
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.State.landed = true
+    fire(BR.Net.STATE, { state = BR.MatchState.PLAYING })
+
+    serverSays(PISTOL.clip, 20)
+    tick(3)
+    ok(gun.clip[PH] == PISTOL.clip, 'a pistol off the floor starts loaded',
+       tostring(gun.clip[PH]))
+
+    -- THE FIRST WRITER. One round leaves the gun and the tick that follows reads
+    -- it off the ped and pushes what it read.
+    gun.total[PH] = gun.total[PH] - 1
+    gun.clip[PH]  = gun.clip[PH] - 1
+    drawn = {}
+    tick(1)
+    ok(#drawn > 0 and drawn[#drawn].said == gun.clip[PH],
+       'a shot moves the counter without waiting for the server',
+       ('drawn %s, gun %s'):format(
+           tostring(drawn[#drawn] and drawn[#drawn].said), tostring(gun.clip[PH])))
+
+    -- THE SECOND WRITER, IN THE ORDER THAT PRODUCES THE WRONG VALUE. The server
+    -- speaks, and its magazine sits two rounds BELOW the one in the gun -- the
+    -- state the double-charge above leaves it in.
+    local low = gun.clip[PH] - 2
+    drawn = {}
+    serverSays(low, 20)
+
+    -- THE PREMISE IS ASSERTED FIRST, or this could pass by never reaching the
+    -- disagreement it exists to catch.
+    ok(gun.clip[PH] > low,
+       'the gun still holds more than the server believes it does',
+       ('gun %s, server %d'):format(tostring(gun.clip[PH]), low))
+    ok(#drawn > 0, 'and the arriving inventory did push the bar',
+       ('%d envelope(s)'):format(#drawn))
+    ok(disagreed() == '',
+       'THE INTERFACE IS NEVER HANDED A MAGAZINE THE GUN DOES NOT HAVE',
+       disagreed())
+
+    -- ...AND IT DOES NOT SETTLE THERE EITHER. The tick after the INV_SET used to
+    -- be the other half of the flicker: the loop painting the gun's number back
+    -- over the server's. With one authority there is nothing left to paint.
+    drawn = {}
+    tick(2)
+    ok(disagreed() == '', 'nor on the ticks that follow it', disagreed())
+
+    -- THE OTHER DIRECTION, WHICH A FIX THAT SIMPLY IGNORED THE SERVER WOULD
+    -- BREAK. A magazine the server has just PAID FOR -- rounds moved out of the
+    -- reserve -- has to reach the counter, or the engine owning the number would
+    -- mean the number never moves again.
+    drawn = {}
+    serverSays(PISTOL.clip, 8)
+    ok(gun.clip[PH] == PISTOL.clip,
+       'a reload the server paid for lands in the gun',
+       tostring(gun.clip[PH]))
+    ok(drawn[#drawn] and drawn[#drawn].said == PISTOL.clip,
+       'AND THE COUNTER SHOWS IT -- one authority is not a frozen one',
+       ('drawn %s, gun %s'):format(
+           tostring(drawn[#drawn] and drawn[#drawn].said), tostring(gun.clip[PH])))
+    ok(disagreed() == '', 'and the two still agree across the grant', disagreed())
+
+    GiveWeaponToPed     = savedGive
+    RemoveAllPedWeapons = savedRemove
+    SetPedAmmo          = savedSetAmmo
+    SetAmmoInClip       = savedSetClip
+    GetAmmoInPedWeapon  = savedGetAmmo
+    GetAmmoInClip       = savedGetClip
+    SetCurrentPedWeapon = savedCurrent
+    HasPedGotWeapon     = savedHasGot
+    pedWeapon = nil
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+end
+
+-- ======================================================================== --
 -- O. THE MANUAL RELOAD KEY
 -- ======================================================================== --
 --
