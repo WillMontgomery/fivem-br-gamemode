@@ -18,7 +18,8 @@ in `br_lib/shared/loot_gen.lua`. Not at `PLAYING` — players land during `BUS`,
 so a layout generated at the state flip would pop items under whoever landed
 first. The warmup island has its own separate, shared layout.
 
-**The seed.** `GetGameTimer() + matchId × 15485863`. The prime keeps two
+**The seed.** `GetGameTimer() + matchSeq × 15485863` — the match's internal
+sequence number, not its id, which is a random draw (#291). The prime keeps two
 matches minted in the same server millisecond from replaying each other (the
 storm uses 7919 and the bus 104729 for the same reason). **Layouts therefore
 differ every match** — `brlootseed <n>` pins one when you need to debug the
@@ -154,7 +155,7 @@ route = spawn → leg1[i] → leg2[j] → leg3[k] → leg4[l] → overrun
 
 Drawing from ordered lists rather than sampling the map means every flight
 crosses land, passes POIs, and cannot degenerate into a corner-to-corner
-diagonal over the ocean. The rng is `GetGameTimer() + matchId × 104729`, so
+diagonal over the ocean. The rng is `GetGameTimer() + matchSeq × 104729`, so
 concurrent matches fly different tours.
 
 Timing is computed from the geometry, not scripted: the ground roll is uniform

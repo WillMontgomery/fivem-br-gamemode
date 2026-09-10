@@ -64,13 +64,19 @@ that are data rather than logic (see [Testing](testing.md)).
 Four independent seeds per match, each folded with a **different prime**:
 
 ```
-lootSeed    = now + matchId × 15485863
-stormSeed   = now + matchId ×     7919
-busSeed     = now + matchId ×   104729
-airdropSeed = now + matchId ×   1299709
+lootSeed    = now + matchSeq × 15485863
+stormSeed   = now + matchSeq ×     7919
+busSeed     = now + matchSeq ×   104729
+airdropSeed = now + matchSeq ×   1299709
 ```
 
-where `now` is `GetGameTimer()` — milliseconds since the resource started.
+where `now` is `GetGameTimer()` — milliseconds since the resource started, and
+`matchSeq` is the match's **sequence number**: an increment from 1, internal,
+never displayed. It is not the match **id**, which since #291 is a random 20-bit
+draw shown as five hex characters. All this number has to do is tell two matches
+apart inside one millisecond, and an increment does that exactly as well as a
+random draw — while keeping every layout, storm path and tour reproducible from
+a boot, which a random draw would not.
 Each seed is expanded through SplitMix32 into the four 32-bit state words of an
 xoshiro-style generator (`br_lib/shared/rng.lua`), because Lua's built-in RNG
 is neither portable nor reproducible across runtimes.
@@ -78,25 +84,25 @@ is neither portable nor reproducible across runtimes.
 ### The exact odds of two identical matches
 
 A match is fully determined by its three seeds, so two matches are identical if
-and only if all three collide. Write that out for matches `(t₁, id₁)` and
-`(t₂, id₂)`:
+and only if all three collide. Write that out for matches `(t₁, n₁)` and
+`(t₂, n₂)`, where `n` is the sequence number:
 
 ```
-t₁ + id₁ × 15485863  =  t₂ + id₂ × 15485863
-t₁ + id₁ ×     7919  =  t₂ + id₂ ×     7919
+t₁ + n₁ × 15485863  =  t₂ + n₂ × 15485863
+t₁ + n₁ ×     7919  =  t₂ + n₂ ×     7919
 ```
 
 Subtract the second from the first:
 
 ```
-(id₁ − id₂) × (15485863 − 7919) = 0     ⟹    id₁ = id₂     ⟹    t₁ = t₂
+(n₁ − n₂) × (15485863 − 7919) = 0     ⟹    n₁ = n₂     ⟹    t₁ = t₂
 ```
 
-**So two matches are identical only if they have the same match id at the same
-millisecond.** Match ids are allocated by increment and never reused, so within
-a single server run the probability is *exactly zero* — not small, structurally
-impossible. That is a stronger guarantee than one seed would give, and it is
-what the four different primes buy.
+**So two matches are identical only if they have the same sequence number at
+the same millisecond.** Sequence numbers are allocated by increment and never
+reused, so within a single server run the probability is *exactly zero* — not
+small, structurally impossible. That is a stronger guarantee than one seed would
+give, and it is what the four different primes buy.
 
 **A new subsystem takes a new prime, and the reason is not tidiness.** The
 airdrop (#88) draws its schedule, its landing POI and its contents from
@@ -114,9 +120,9 @@ silently, because a different-but-valid layout is indistinguishable from a
 correct one. `tools/test_airdrop.lua` generates a whole layout, burns an airdrop
 payout, and generates it again, rather than trusting this paragraph.
 
-Across separate server runs, ids restart from the same base, so identity needs
-the same id to be minted at the same millisecond offset. Treating that offset as
-uniform over a 32-bit range gives **≈ 1 in 4.3 × 10⁹**, and in practice far less
+Across separate server runs, sequence numbers restart from the same base, so
+identity needs the same one to be minted at the same millisecond offset.
+Treating that offset as uniform over a 32-bit range gives **≈ 1 in 4.3 × 10⁹**, and in practice far less
 — matches start when players queue, not on a schedule.
 
 For scale, the space the seeds *address* is much larger than the seeds
