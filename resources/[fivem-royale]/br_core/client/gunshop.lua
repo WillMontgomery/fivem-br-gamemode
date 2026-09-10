@@ -585,20 +585,50 @@ local function buildClerk(store)
         -- the interior has streamed -- and the probe is documented as answering
         -- false outside the render distance. The first `false` is information
         -- about the world, not about the floor.
+        -- ═══ WHERE HE STANDS IS SOLVED FIRST, AND THE PROBE GOES THERE ═══
+        --
+        -- C1 moved the clerk in X and Y -- "back behind the counter and to the
+        -- left (the ped-s right) about 1m" -- and the probe was left sampling
+        -- the ANCHOR, which is the register he was moved off. So his height was
+        -- being solved for a spot he no longer stands on: a metre and a half
+        -- away, through a counter, on the customer's side of it. On a flat shop
+        -- floor the two agree and nothing is visible; the moment a counter has
+        -- a step, a plinth or a raised platform behind it -- which is what a
+        -- shop counter usually has -- the clerk is placed at the wrong one, and
+        -- the symptom is a ped sunk into the floor or standing on air with no
+        -- error anywhere.
+        --
+        -- SO clerkAt IS ASKED TWICE. It is a pure function of the config and
+        -- the store, and z is the only argument that changes between the two
+        -- calls: the first spends the two offsets to find the XY, the probe
+        -- runs THERE, and the second turns the answer into the final position.
+        -- Solving the XY here by hand instead would be a second copy of the
+        -- offset arithmetic in a client file, which is the thing that whole
+        -- function exists to prevent.
+        local px, py = BR.GunshopSolve.clerkAt(G, store, nil)
+        if not px or not py then
+            SetModelAsNoLongerNeeded(model)
+            return giveUp()
+        end
+
+        -- THE START HEIGHT IS STILL THE ANCHOR'S. `probeStart` is about how far
+        -- ABOVE the authored z to begin, and the authored z is the floor of
+        -- this interior; moving a metre along it does not change which storey
+        -- we are looking for.
         local fromZ = BR.GunshopSolve.probeStart(G, store)
             or ((tonumber(store.z) or 0.0) + 0.0)
         local pWait  = 0
         local pBudget = tonumber(G.probeWaitMs) or 1500
-        local hit, gz = probeGround(store.x + 0.0, store.y + 0.0, fromZ)
+        local hit, gz = probeGround(px, py, fromZ)
         while not hit and pWait < pBudget do
-            nat(RequestCollisionAtCoord, store.x + 0.0, store.y + 0.0, fromZ)
+            nat(RequestCollisionAtCoord, px, py, fromZ)
             Citizen.Wait(50)
             pWait = pWait + 50
             if mine ~= gen then
                 SetModelAsNoLongerNeeded(model)
                 return giveUp()
             end
-            hit, gz = probeGround(store.x + 0.0, store.y + 0.0, fromZ)
+            hit, gz = probeGround(px, py, fromZ)
         end
 
         -- THE ARITHMETIC IS br_lib's, NOT THIS FILE'S. "The probe wins over the

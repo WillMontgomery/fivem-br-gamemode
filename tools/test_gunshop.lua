@@ -2833,7 +2833,15 @@ do
     function RequestModel() end
     function HasModelLoaded() return 1 end
     function SetModelAsNoLongerNeeded() end
-    function GetGroundZFor_3dCoord(_, _, z) return 1, z - 0.12 end
+    -- THE COORDINATES ARE RECORDED, NOT DISCARDED. This stub used to ignore x
+    -- and y, which meant the suite could not tell WHERE the clerk's floor was
+    -- being solved -- and C1 moved the clerk in x and y while leaving the probe
+    -- on the anchor he was moved off.
+    local probes = {}
+    function GetGroundZFor_3dCoord(x, y, z)
+        probes[#probes + 1] = { x = x, y = y, z = z }
+        return 1, z - 0.12
+    end
     function CreatePed(_, _, x, y, z)
         nextPed = nextPed + 1
         peds[nextPed] = { x = x, y = y, z = z }
@@ -2949,6 +2957,50 @@ do
     ok(plate ~= nil and plate.label == G.menuTitle,
         'the title is still config/gunshop.lua\'s one word, not a second copy '
             .. 'of it typed here (D2, M8)')
+
+    -- -----------------------------------------------------------------------
+    describe('S1: the ground probe samples where the clerk actually stands')
+    -- -----------------------------------------------------------------------
+    do
+        -- ═══ C1 MOVED HIM AND THE PROBE STAYED BEHIND ═══
+        --
+        -- Owner, 2026-09-09: "let us move their position back behind the
+        -- counter and to the left (the ped-s right) about 1m". The config ships
+        -- clerkOffsetM -0.7 and clerkRightM 1.0, so the clerk stands about 1.2m
+        -- from the anchor -- and the probe was still being fired at the anchor,
+        -- which is the register he was moved OFF. His height was solved for a
+        -- spot on the customer's side of the counter.
+        --
+        -- ON A FLAT FLOOR THE TWO AGREE AND NOTHING SHOWS, which is why this
+        -- survived review: it is invisible until a counter has a step or a
+        -- plinth behind it, and then the clerk is sunk into it or standing on
+        -- air with nothing in any log.
+        local st = storeById['pillbox']
+        local wx, wy = S.clerkAt(G, st, 0.0)
+        local p = probes[1]
+
+        ok(p ~= nil, 'the floor was probed at all', #probes)
+        ok(p ~= nil and math.abs(p.x - wx) < 0.001
+            and math.abs(p.y - wy) < 0.001,
+            'and at the CLERK\'S position, not the counter anchor he was moved '
+                .. 'off (S1, C1)',
+            p and ('probed %.3f,%.3f -- clerk is at %.3f,%.3f')
+                :format(p.x, p.y, wx, wy) or 'no probe')
+
+        -- AND THE TWO ARE GENUINELY DIFFERENT PLACES, which is what stops the
+        -- assertion above passing on a config where both offsets are zero.
+        ok(BR.Dist(wx, wy, st.x, st.y) > 0.5,
+            '...and those are over half a metre apart, so the assertion above '
+                .. 'is not comparing a point with itself',
+            ('%.3f m'):format(BR.Dist(wx, wy, st.x, st.y)))
+
+        -- THE START HEIGHT IS STILL THE ANCHOR'S, because probeStart is about
+        -- how far ABOVE the authored floor to begin looking, and sliding a
+        -- metre along that floor does not change which storey we want.
+        ok(p ~= nil and math.abs(p.z - S.probeStart(G, st)) < 0.001,
+            'the probe still starts from the anchor height plus the lift',
+            p and ('%.3f vs %.3f'):format(p.z, S.probeStart(G, st)) or 'none')
+    end
 
     -- -----------------------------------------------------------------------
     describe('the chrome the owner filed six reports about')
