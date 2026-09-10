@@ -3093,7 +3093,7 @@ do
         out['ammo_' .. BR.AmmoType.LIGHT] = 0
 
         walkAway()
-        handlers[BR.Net.GUNSHOP_STOCK]({ stock = { pillbox = out } })
+        handlers[BR.Net.GUNSHOP_STOCK]({ stores = { pillbox = out }, full = true })
         standAt('pillbox')
         press()
 
@@ -3127,6 +3127,22 @@ do
         ok(elsewhere ~= nil and elsewhere._rightLabel ~= 'Out of Stock',
             'S2: the shelf is per counter -- walking to another shop repaints '
                 .. 'the same one menu against that shop\'s ledger')
+
+        -- ═══ A DELTA IS MERGED, NOT ASSIGNED ═══
+        --
+        -- The shelf is shared: every client in the match is told when anybody
+        -- buys anything, as one counter and one row with no `full` flag.
+        -- Assigning that would empty the other ten counters the moment a
+        -- stranger bought a rifle somewhere else, and the symptom would be a
+        -- shop that goes blank for no reason the player can see.
+        handlers[BR.Net.GUNSHOP_STOCK](
+            { stores = { hawick = { carbinerifle = 2 } } })
+        walkAway()
+        standAt('pillbox')
+        press()
+        local still = rowItem('carbinerifle')
+        ok(still ~= nil and still._rightLabel == 'Out of Stock',
+            'a purchase at another counter does not restock this one')
     end
 
     -- -----------------------------------------------------------------------
@@ -3134,7 +3150,7 @@ do
     -- -----------------------------------------------------------------------
     do
         walkAway()
-        handlers[BR.Net.GUNSHOP_STOCK]({ stock = {} })
+        handlers[BR.Net.GUNSHOP_STOCK]({ stores = {}, full = true })
         standAt('pillbox')
         press()
 

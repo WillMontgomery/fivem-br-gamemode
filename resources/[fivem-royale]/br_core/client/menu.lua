@@ -94,6 +94,38 @@ local GOLD_HEX   = '#FFD9AE35'   -- --color-volts, opaque
 --- a decision rather than making a fresh one.
 local SUBTITLE_HUD = 9
 
+--- THE PRICE ON A ROW, AND THE SAME LIMIT ONE STEP WORSE.
+---
+--- Owner, 2026-09-09: "The item cost in the menu is white, not gold. it should
+--- be gold."
+---
+--- ═══ A RIGHT LABEL HAS NO COLOR ARGUMENT AT ALL ═══
+---
+--- The subtitle above is at least a HUD index this file chooses. The right label
+--- is not even that: UIMenu:SendItemToScaleform pushes an item's panel color and
+--- highlight color as ARGB integers and then pushes the right label as a GTA
+--- TEXT COMMAND (CELL_EMAIL_BCON). A text command carries no color, so the only
+--- route to a colored price is a color TOKEN inside the string, and a token
+--- names an index into the engine's own HUD palette.
+---
+--- 109 IS HUD_COLOUR_GOLD, which is the nearest thing GTA has to `--color-volts`
+--- (#d9ae35). IT IS NOT THAT HEX AND CANNOT BE MADE INTO IT HERE: the RGB behind
+--- an index comes from common:/data/ui/hudcolor.dat at runtime.
+---
+--- ═══ THERE IS ONE ESCAPE HATCH AND IT IS NOT AN AGENT'S TO TAKE ═══
+---
+--- REPLACE_HUD_COLOUR_WITH_RGBA(index, r, g, b, a) reassigns what an index
+--- MEANS, and the movie resolves `~HC_n~` through GET_HUD_COLOUR at draw time,
+--- so a remapped index really would render in our exact gold. The price is that
+--- the remap is GLOBAL AND PERMANENT for the session -- every HUD element in the
+--- game that uses that index changes with it. That is the owner's call, on an
+--- index nothing else touches, and it is written down here rather than taken.
+local PRICE_HUD = 109
+
+--- The gold token, once. `~HC_109~` is the short form the movie's own string
+--- table carries (`~HC_` and `~HUD_COLOUR` are both in it).
+local PRICE_TOKEN = ('~HC_%d~'):format(PRICE_HUD)
+
 --- IS THE LIBRARY IN THIS LUA STATE?
 ---
 --- ═══ ASKED AT CALL TIME, EVERY TIME, AND NOT CACHED ═══
@@ -113,6 +145,20 @@ local SUBTITLE_HUD = 9
 function BR.Menu.available()
     return type(UIMenu) == 'table' and type(SColor) == 'table'
         and type(UIMenuItem) == 'table' and type(MenuHandler) == 'table'
+end
+
+--- A PRICE, IN GOLD, FOR A RIGHT LABEL. See PRICE_HUD above for what "gold"
+--- can and cannot mean on this surface.
+---
+--- THE TOKEN IS APPLIED HERE AND NOWHERE ELSE, which is the same rule
+--- BR.ShopSolve.priceLine states from the other end: priceLine formats "N Volts"
+--- for BOTH this menu and the showroom's DUI, and a DUI renders raw text -- a
+--- `~HC_109~` written into the formatter would print as those characters on the
+--- warmup pad. So the formatter stays colorless and the SURFACE marks it.
+--- @param text string|nil
+--- @return string
+function BR.Menu.priceGold(text)
+    return PRICE_TOKEN .. tostring(text or '')
 end
 
 --- One hex through the library's parser, without letting its assert escape.
@@ -140,6 +186,26 @@ function BR.Menu.accent() return hexColor(ACCENT_HEX) end
 --- The signature gold, as an SColor. nil when the library is absent.
 --- @return table|nil
 function BR.Menu.gold() return hexColor(GOLD_HEX) end
+
+--- ONE OF THE LIBRARY'S OWN ICONS, BY NAME.
+---
+--- BadgeStyle is 191 entries of GTA's own sprite ids and it is a global the
+--- vendored bundle exports. This is here rather than in a caller for the same
+--- reason the two hexes are: a caller that wrote `BadgeStyle.LOCK` would be a
+--- second file that stops working when the library is not deployed, and it
+--- would be the file that has to remember that a missing global is nil-indexed
+--- rather than absent.
+---
+--- NIL RATHER THAN 0 WHEN THERE IS NO SUCH BADGE. 0 is BadgeStyle.NONE, a real
+--- instruction meaning "clear it", and a lookup miss must not be mistaken for
+--- one.
+--- @param name string  a BadgeStyle key: 'LOCK', 'GUN', 'AMMO'
+--- @return integer|nil
+function BR.Menu.badge(name)
+    if type(BadgeStyle) ~= 'table' then return nil end
+    local v = BadgeStyle[name]
+    return type(v) == 'number' and v or nil
+end
 
 --- How much of a rarity's color a menu row wears. See the note below.
 local RARITY_TINT_A = 70
@@ -196,14 +262,62 @@ end
 --- NIL WHEN THE LIBRARY IS ABSENT, rather than a stub object. A caller that gets
 --- nil must say so and do nothing -- a fake menu that silently swallows a
 --- keypress is worse than a counter that visibly does not open.
+---
+--- ═══ NO MOUSE, AND NO INSTRUCTIONAL BUTTONS ═══
+---
+--- Owner, 2026-09-09: "The menus have a mouse for some reason" and "while the
+--- menu is open, instructional buttons are shown. that is not necessary if it is
+--- possible to remove them."
+---
+--- BOTH ARE THE LIBRARY'S DEFAULTS rather than anything this project asked for,
+--- and both are turned off HERE rather than per menu, because a second menu that
+--- came out with a cursor on it would be the same report a second time.
+---
+--- THE MOUSE IS A ONE-LINE SETTER AND THE BUTTONS ARE NOT, which is worth
+--- writing down because the obvious call does nothing:
+---
+---   `MouseControlsEnabled(false)` WORKS. UIMenu:ProcessMouse returns on its
+---   first guard when that flag is false, before SetMouseCursorActiveThisFrame
+---   is ever reached. (Its own `ENABLE_MOUSE` movie call fires only when the
+---   menu is already visible, and ScaleformUI.gfx does not export that function
+---   anyway -- it is in RadialMenu.gfx and RadioMenu.gfx. Dead, harmless, and
+---   not what does the work.)
+---
+---   `HasInstructionalButtons(false)` DOES NOTHING. It writes
+---   Settings.InstructionalButtons, and in 5.8.1 that field is read by its own
+---   getter and by nothing else in the 20,143-line bundle. UIMenu:Visible(true)
+---   hands `self.InstructionalButtons` -- the LIST, a different field -- to the
+---   shared ButtonsHandler unconditionally, and that handler's Draw and Update
+---   both return immediately on an empty list. So EMPTYING THE LIST is the
+---   mechanism, and it is a plain field write rather than a vendor patch.
+---
+--- WHAT WOULD PUT THEM BACK: `CanPlayerCloseMenu(...)` rebuilds the default list
+--- from scratch, and `AddInstructionButton(...)` obviously repopulates it. No
+--- menu built through here may call either.
+---
+--- ═══ THE BANNER IS ART OR IT IS A COLORED BAR, AND IT CANNOT BE BOTH HERE ═══
+---
+--- UIMenu.New takes the banner texture as arguments SIX AND SEVEN. This file
+--- passed five and stopped, so the movie was handed two empty strings and drew
+--- the bar with no art on it -- which is exactly what the owner saw. `banner` is
+--- that pair, and when it is supplied THE BANNER COLOR IS LEFT ALONE: the movie
+--- tints the sprite with it, and our cyan over a shop title texture is a cyan
+--- Ammu-Nation sign. UNSEEN IN GAME either way; if the art comes out washed or
+--- tinted, this branch is the one line to move.
 --- @param title string
 --- @param subtitle string|nil
+--- @param banner table|nil  { txd = string, txn = string }, or nil for the bar
 --- @return table|nil
-function BR.Menu.new(title, subtitle)
+function BR.Menu.new(title, subtitle, banner)
     if not BR.Menu.available() then return nil end
 
+    local txd = type(banner) == 'table' and tostring(banner.txd or '') or ''
+    local txn = type(banner) == 'table' and tostring(banner.txn or '') or ''
+    local sprite = (txd ~= '' and txn ~= '')
+
     local ok, menu = pcall(UIMenu.New, tostring(title or ''),
-                           tostring(subtitle or ''), 0, 0, false)
+                           tostring(subtitle or ''), 0, 0, false,
+                           sprite and txd or nil, sprite and txn or nil)
     if not ok or type(menu) ~= 'table' then
         print('^3[br_core] menu: ScaleformUI refused to build a menu^7')
         return nil
@@ -213,9 +327,19 @@ function BR.Menu.new(title, subtitle)
     -- EACH WRITE GUARDED SEPARATELY. These are setters on a vendored object and
     -- a version bump could rename any one of them; losing the counter's color is
     -- a cosmetic regression, and losing the menu is a counter that will not open.
-    if accent then pcall(menu.SetBannerColor, menu, accent) end
+    if accent and not sprite then pcall(menu.SetBannerColor, menu, accent) end
     if gold then pcall(menu.CounterColor, menu, gold) end
     pcall(menu.SubtitleColor, menu, SUBTITLE_HUD)
+    pcall(menu.MouseControlsEnabled, menu, false)
+    -- THE CAMERA SWING, WHICH IS A SEPARATE FLAG AND ALSO ON BY DEFAULT. With it
+    -- set, ProcessMouse rotates the gameplay camera when the pointer nears a
+    -- screen edge -- which is not something a player standing at a counter wants
+    -- and would read as the menu fighting them.
+    pcall(menu.MouseEdgeEnabled, menu, false)
+
+    -- A PLAIN FIELD, NOT A SETTER. See the block above: the setter is a no-op in
+    -- this version and emptying the list is what actually removes them.
+    menu.InstructionalButtons = {}
 
     return menu
 end
@@ -228,19 +352,80 @@ end
 --- THE HIGHLIGHT IS ALWAYS OUR CYAN, on every item, in every menu built through
 --- here. The selected row is the one thing a player is looking at, so it is the
 --- one place the brand color is unambiguously worth spending.
+--- ═══ THE DESCRIPTION AND THE BADGE ARE BOTH PER ITEM AND BOTH FOLLOW THE
+---     HIGHLIGHT ═══
+---
+--- `description` is the strip under the list. It is a GTA text entry, so `~n~`
+--- breaks a line and it word-wraps; the library re-asserts it on every selection
+--- change. ONE TRAP, and it belongs to the caller rather than to this function:
+--- `UIMenu_Current_Description` is a SINGLE SHARED GXT KEY, so setting a
+--- description on a row that is not the highlighted one WHILE THE MENU IS OPEN
+--- overwrites the text the player is reading until the next index change. Set
+--- descriptions with the menu down, or re-assert the current selection after.
+---
+--- `badge` is a BadgeStyle id on the LEFT of the row. Left rather than right
+--- because the right end of a row is where the price is, and how the movie lays
+--- out a right badge and a right label together is not something this project
+--- has seen on screen.
 --- @param text string
 --- @param rightLabel string|nil
 --- @param mainColor table|nil   an SColor; nil takes the library's default panel
+--- @param opts table|nil        { description = string, badge = integer }
 --- @return table|nil
-function BR.Menu.item(text, rightLabel, mainColor)
+function BR.Menu.item(text, rightLabel, mainColor, opts)
     if not BR.Menu.available() then return nil end
+    opts = type(opts) == 'table' and opts or {}
 
-    local ok, item = pcall(UIMenuItem.New, tostring(text or ''), '',
+    local ok, item = pcall(UIMenuItem.New, tostring(text or ''),
+                           tostring(opts.description or ''),
                            mainColor, BR.Menu.accent())
     if not ok or type(item) ~= 'table' then return nil end
 
     if rightLabel ~= nil then
         pcall(item.RightLabel, item, tostring(rightLabel))
     end
+    -- A NUMBER, AND NOT `and/or`. BadgeStyle.NONE is 0 and 0 IS TRUTHY IN LUA,
+    -- so a caller clearing a badge with 0 must reach the setter rather than be
+    -- folded into "no badge" by an idiom that reads as if it would.
+    if type(opts.badge) == 'number' then
+        pcall(item.LeftBadge, item, opts.badge)
+    end
     return item
+end
+
+--- A CATEGORY HEADER: A ROW THE ARROW KEYS CANNOT LAND ON.
+---
+--- Owner, 2026-09-09: "re-categorize it top-down with the top being the most
+--- common weapon types they sell, and the bottom being legendary, with
+--- separators in between that indicate the category".
+---
+--- ═══ IT IS A REAL ITEM TYPE, NOT A DISABLED ROW DRESSED UP AS ONE ═══
+---
+--- UIMenuSeparatorItem is ItemId 6, and GoUp and GoDown both loop past one while
+--- its `Jumpable` is set, BuildMenu steps off one that lands at index 1, and a
+--- mouse click on one plays the error sound and returns. A DISABLED UIMenuItem
+--- would NOT do that -- Enabled(false) is not skipped by the arrow keys, only
+--- ItemId 6 is -- so a fake header would be a row the player can sit on.
+---
+--- `jumpable` IS PASSED EXPLICITLY AND IS ALWAYS A BOOLEAN. The library stores
+--- it raw and pushes it straight into PushScaleformMovieFunctionParameterBool,
+--- so a nil there is a native call with a nil argument.
+---
+--- THE COLOR IS SET AFTERWARDS, ON PURPOSE. UIMenuSeparatorItem.New declares
+--- mainColor, textColor and highlightedTextColor and then throws all three away:
+--- its body reads the undefined globals `color` and `Description` instead of its
+--- own parameters. The INHERITED MainColor setter is correct, so this calls that
+--- and the vendored file stays untouched.
+--- @param text string
+--- @param mainColor table|nil
+--- @return table|nil
+function BR.Menu.separator(text, mainColor)
+    if not BR.Menu.available() then return nil end
+    if type(UIMenuSeparatorItem) ~= 'table' then return nil end
+
+    local ok, sep = pcall(UIMenuSeparatorItem.New, tostring(text or ''), true)
+    if not ok or type(sep) ~= 'table' then return nil end
+
+    if mainColor then pcall(sep.MainColor, sep, mainColor) end
+    return sep
 end
