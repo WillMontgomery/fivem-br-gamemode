@@ -203,7 +203,7 @@ RegisterCommand('brstate', function()
     end)
     if not any then print('  (no match instances -- lobby is WAITING)') end
     line('-')
-    print(('  minted ids   %d'):format(BR.Server.matchId))
+    print(('  minted ids   %d'):format(BR.Server.matchSeq))
     print(('  devMode      %s'):format(tostring(BR.Server.devMode)))
 
     -- THE DEBUG HOLDS, PRINTED ONLY WHEN THEY ARE ON.

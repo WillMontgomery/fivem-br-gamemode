@@ -117,7 +117,6 @@ BR = BR or {}
 BR.Ambulances = {}
 
 local A = BR.Config.Ambulances
-local M = BR.Config.Match
 
 --- A BOOL native's answer, believed correctly.
 ---
@@ -195,7 +194,13 @@ local function begin(m)
     for i = 1, #points do pending[i] = points[i] end
 
     live[m.id] = {
-        bucket   = (M and M.matchBucketBase or 100) + m.id,
+        -- THE MATCH'S OWN BUCKET, READ OFF THE MATCH (#291). This used to
+        -- re-derive it as `(M and M.matchBucketBase or 100) + m.id`, a second
+        -- copy of BR.Match.create's arithmetic with a hardcoded fallback that
+        -- would silently disagree with the config if it ever fired. Both are
+        -- gone: the bucket now comes from `seq`, is computed once in
+        -- BR.Match.create, and is read from the record here.
+        bucket   = m.bucket,
         pending  = pending,
         next     = 1,
         stations = {},
@@ -226,8 +231,8 @@ local function advance(matchId, rec)
         -- spawnOwned's `forSrc` reads one player's bucket, and at doors-open
         -- there is no player whose bucket is reliably the match's: riders stay
         -- in the communal warmup bucket until `m.hopAt`, and whether that has
-        -- passed depends on the route. The match's own bucket is
-        -- matchBucketBase + matchId and is known without asking anybody.
+        -- passed depends on the route. The match's own bucket is on the match
+        -- record and is known without asking anybody.
         local veh, netId, why = BR.Vehicles.spawnOwned(
             A.Model(), 'automobile',
             p.x, p.y, p.z, p.heading or 0.0, nil, rec.bucket)
@@ -651,7 +656,7 @@ end
 --- symptom is that the server's DeleteEntity succeeds, DoesEntityExist answers
 --- false from then on, and CLIENTS GO ON RENDERING THE VEHICLE. The thread
 --- carries no workaround. This feature is that reproduction almost exactly:
---- twenty-three vehicles, deleted together, in bucket matchBucketBase + matchId.
+--- twenty-three vehicles, deleted together, in the match's own routing bucket.
 ---
 --- IT IS TWO FAILURES WEARING ONE NAME, AND THEY NEED DIFFERENT ANSWERS.
 ---
@@ -666,14 +671,22 @@ end
 ---      re-asking finds this one -- the server's own answer is the thing that is
 ---      wrong -- so it is not answered by retrying. IT IS ANSWERED BY THE
 ---      BUCKET, and that is a property rather than a hope: BR.Match.create takes
----      `BR.Server.matchId + 1` and never reuses a number, so a match's bucket
----      (matchBucketBase + matchId) is used by exactly one match for the
----      server's uptime. A ghost left in bucket 100+N is in a bucket no future
----      match is ever placed in, and every player of match N is moved to the
----      lobby bucket at ENDED -- before this teardown runs -- by
----      BR.Match.sweepHome. So a surviving ghost is unobservable by
----      construction, and "it does not leak into the next match" does not depend
----      on the delete having worked.
+---      `BR.Server.matchSeq + 1` and never reuses a number, so a match's bucket
+---      (matchBucketBase + seq) is used by exactly one match for the server's
+---      uptime. A ghost left in bucket 100+N is in a bucket no future match is
+---      ever placed in, and every player of that match is moved to the lobby
+---      bucket at ENDED -- before this teardown runs -- by BR.Match.sweepHome.
+---      So a surviving ghost is unobservable by construction, and "it does not
+---      leak into the next match" does not depend on the delete having worked.
+---
+---      THE RANDOM MATCH ID (#291) DID NOT WEAKEN THIS, and it is worth saying
+---      why rather than leaving the next reader to check. The bucket was moved
+---      onto `seq` in the same change precisely so this property survived: `seq`
+---      is still a pure increment that is never reused, so the sentence above is
+---      as true as it was. Deriving the bucket from the random id instead would
+---      have broken it -- a redrawn id is refused by the mint, but nothing about
+---      a random number is monotonic, and the argument here needs "never used
+---      twice", not "unguessable".
 ---
 --- SPREAD OVER PASSES, `perTick` at a time, for the reason the creation is: the
 --- same thread that reports the bug is a tight server-side loop over several

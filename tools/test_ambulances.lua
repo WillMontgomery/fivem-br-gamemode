@@ -201,9 +201,15 @@ local function tick(n)
 end
 
 --- A match whose bus doors opened one second ago.
+--- `seq` AND `bucket` ARE BOTH ON IT, because both are on a real one (#291).
+--- server/ambulances.lua reads `m.bucket` off the record rather than re-deriving
+--- it, so a fixture without one would place twenty-three ambulances in bucket
+--- nil. These fixtures use `id` as the dense number, so `seq = id` keeps every
+--- `matchBucketBase + N` assertion below saying what it always said.
 local function busMatch(id)
     matches[id] = {
-        id = id, state = BR.MatchState.BUS,
+        id = id, seq = id, state = BR.MatchState.BUS,
+        bucket = BR.Config.Match.matchBucketBase + id,
         route = { timed = true, jumpFrom = fakeTime - 1000 },
     }
     return matches[id]
@@ -1004,7 +1010,7 @@ do
     -- AND THE CONTAINMENT, WHICH IS WHAT MAKES GIVING UP SAFE.
     ok(BR.Config.Match.matchBucketBase + 8 ~= BR.Config.Match.matchBucketBase + 9,
         'a ghost is confined to its own match\'s bucket, and BR.Match.create '
-            .. 'takes matchId + 1 without ever reusing one -- so no later match '
+            .. 'takes matchSeq + 1 without ever reusing one -- so no later match '
             .. 'is ever placed in a bucket a ghost is standing in')
     refuseDelete = 0
 end
@@ -1156,7 +1162,8 @@ do
     -- three times, wearing a different cause each time.
     matches, world, spawnCalls = {}, {}, {}
     BR.Server.matches = matches
-    matches[13] = { id = 13, state = BR.MatchState.PLAYING }   -- no route at all
+    matches[13] = { id = 13, seq = 13, state = BR.MatchState.PLAYING,
+                    bucket = BR.Config.Match.matchBucketBase + 13 }  -- no route
     tick(4)
     ok(BR.Ambulances.count(13) == 23,
         'a PLAYING match with no route record at all still gets all 23 -- '

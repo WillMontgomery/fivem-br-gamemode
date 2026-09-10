@@ -55,6 +55,39 @@ local DURATION = {
 --- what tools/check_forward_locals.lua exists to refuse.
 local WARMUP_HOLD_MS = 24 * 60 * 60 * 1000
 
+-- ---------------------------------------------------------------------------
+-- Match ids (#291)
+--
+-- TWO NUMBERS, AND THEY WILL ANSWER DIFFERENT QUESTIONS.
+--
+--   m.seq  an increment from 1. INTERNAL: never on the wire, never displayed.
+--          This is what m.id has always been, and it keeps the two jobs that
+--          are about position rather than identity -- ORDER (which match was
+--          formed most recently, which is what BR.Server.latestMatch answers)
+--          and a DENSE SMALL NUMBER for the routing bucket, so buckets stay
+--          101, 102, 103 exactly as they are in production today.
+--   m.id   the match's NAME: what is logged, what goes in a squad id, what a
+--          moderator reads off a page. Still the increment as of this commit;
+--          it becomes a random 20-bit draw in the next one.
+--
+-- THE SPLIT LANDS FIRST, ON ITS OWN, and the two numbers are equal until it
+-- does. Every consumer that meant "position" rather than "identity" is moved
+-- onto `seq` here, while both still hold the same value, so this commit changes
+-- no behaviour at all and the one that follows changes only the draw.
+-- ---------------------------------------------------------------------------
+
+--- Mint the (seq, id) pair a new match is built from.
+---
+--- PUBLIC SO THE TESTS CAN MINT THE SAME WAY. tools/test_roster.lua's
+--- `fakeMatch` builds bare instances for blocks that exercise one subsystem
+--- without running the machine; when it had its own copy of this arithmetic,
+--- every block built on it drifted from production the moment this changed.
+--- @return integer seq, integer id
+function BR.Match.mintIds()
+    BR.Server.matchSeq = BR.Server.matchSeq + 1
+    return BR.Server.matchSeq, BR.Server.matchSeq
+end
+
 --- Mint a new match instance and start its warmup.
 ---
 --- The participants are ATTACHED FIRST, then flipped to WARMUP: the state
@@ -65,10 +98,17 @@ local WARMUP_HOLD_MS = 24 * 60 * 60 * 1000
 --- @param participants integer[]
 --- @return table the instance
 function BR.Match.create(mode, participants)
-    BR.Server.matchId = BR.Server.matchId + 1
+    local seq, id = BR.Match.mintIds()
     local m = {
-        id        = BR.Server.matchId,
-        bucket    = M.matchBucketBase + BR.Server.matchId,
+        id        = id,
+        seq       = seq,
+        -- THE BUCKET COMES FROM `seq`, NOT FROM `id` (#291). Buckets are dense
+        -- and small on purpose -- 101, 102, 103, exactly as in production today
+        -- -- and `seq` is the only number left that is dense. Deriving them from
+        -- a random id would scatter them across a million values, and dividing
+        -- the id down to a small range would eventually put two LIVE matches in
+        -- one bucket, where they would see and shoot each other.
+        bucket    = M.matchBucketBase + seq,
         state     = BR.MatchState.WAITING,   -- transition() below moves it out
         mode      = mode or BR.Mode.SOLO.key,
         endsAt    = 0,

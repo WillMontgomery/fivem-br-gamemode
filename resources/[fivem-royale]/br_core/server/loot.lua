@@ -455,8 +455,9 @@ end
 -- different crates in the same spot.
 --
 -- It is a pseudo-match: same `loot` shape, so every function above operates on
--- it unchanged. Id 0, which no real match can have (BR.Server.matchId starts
--- at 1), so a stray lookup cannot collide.
+-- it unchanged. Id 0, which no real match can have -- BR.Match.mintIds never
+-- issues it (#291), and this line is the reason it never will -- so a stray
+-- lookup cannot collide.
 local warmupZone = nil
 
 --- [src] = the loot registry this player is currently subscribed to (a match

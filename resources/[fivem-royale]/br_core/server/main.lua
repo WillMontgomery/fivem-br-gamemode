@@ -23,10 +23,23 @@ BR = BR or {}
 
 BR.Server = {
     devMode  = false,
-    matchId  = 0,   -- mint counter; the highest id ever issued
+
+    -- HOW MANY MATCHES THIS PROCESS HAS FORMED, and the whole of what a match's
+    -- `seq` is (#291). It used to be called `matchId` and it used to BE the id:
+    -- ids were a pure increment from 1, so any id disclosed the next one and two
+    -- matches on different days shared a number.
+    --
+    -- The id is now a random 20-bit draw (BR.Match.mintIds in server/match.lua)
+    -- and this counter kept its old job under its real name. IT IS INTERNAL:
+    -- nothing puts `seq` on the wire and nothing displays it. What it is for is
+    -- the two things an id can no longer do -- ORDER (which match was formed
+    -- most recently, which is what BR.Server.latestMatch answers) and a DENSE
+    -- SMALL NUMBER for the routing bucket, so buckets stay 101, 102, 103 rather
+    -- than scattering across a million.
+    matchSeq = 0,
 
     -- THE MATCH REGISTRY (parallel-matches refactor, user call 2026-08-04).
-    -- matches[id] = a match INSTANCE: { id, bucket, state, mode, endsAt, ... }.
+    -- matches[id] = a match INSTANCE: { id, seq, bucket, state, mode, endsAt, ... }.
     -- There is no global "the match" any more: an instance is born straight
     -- into WARMUP when a queue clears the start gate, and is destroyed after
     -- its CLEANUP -- WAITING is not a state an instance can be in, it is what
@@ -84,26 +97,42 @@ function BR.Server.matchById(id)
     return id and BR.Server.matches[id] or nil
 end
 
---- Iterate every live match instance, in id order (deterministic -- tests
---- and logs depend on it).
+--- Iterate every live match instance, in CREATION order (deterministic --
+--- tests and logs depend on it).
+---
+--- ORDERED BY `seq`, NOT BY `id` (#291). This used to sort the registry's keys,
+--- which are ids, and that was creation order for as long as ids were an
+--- increment. A random id sorts just as deterministically and means nothing:
+--- the second match formed would print above the first about half the time, in
+--- a listing whose whole contract is that it does not move around.
 --- @param fn function  receives (m)
 function BR.Server.eachMatch(fn)
-    local ids = {}
-    for id in pairs(BR.Server.matches) do ids[#ids + 1] = id end
-    table.sort(ids)
-    for _, id in ipairs(ids) do
-        local m = BR.Server.matches[id]
-        if m then fn(m) end
-    end
+    local order = {}
+    for _, m in pairs(BR.Server.matches) do order[#order + 1] = m end
+    table.sort(order, function(a, b) return a.seq < b.seq end)
+    for _, m in ipairs(order) do fn(m) end
 end
 
 --- The newest instance, or nil. Admin commands (brforce, brphase) target
 --- this: with one match running -- the dev norm -- it is simply THE match.
+---
+--- ═══ "NEWEST" MEANS THE HIGHEST `seq`, NOT THE HIGHEST `id` (#291) ═══
+---
+--- This used to read `id > best.id`, which was the same sentence while ids were
+--- an increment and is a different one now that they are a random draw: it
+--- would return an ARBITRARY live match.
+---
+--- IT WOULD HAVE KEPT WORKING PERFECTLY, which is the part that makes it worth
+--- a paragraph. Eight call sites depend on this -- `brforce` and its
+--- `debugTarget` fallback, `brphase`, the storm and airdrop admin verbs, and
+--- two debug helpers -- and every one of them is right with ONE match running,
+--- which is every dev session and every playtest. It misbehaves only once two
+--- are live, which is exactly the moment somebody is debugging something.
 --- @return table|nil
 function BR.Server.latestMatch()
     local best = nil
-    for id, m in pairs(BR.Server.matches) do
-        if not best or id > best.id then best = m end
+    for _, m in pairs(BR.Server.matches) do
+        if not best or m.seq > best.seq then best = m end
     end
     return best
 end

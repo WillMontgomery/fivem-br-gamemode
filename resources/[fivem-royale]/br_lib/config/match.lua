@@ -785,7 +785,9 @@ BR.Config.Match = {
     },
 
     -- Routing buckets. Lobby and warmup are fixed SHARED buckets; matches
-    -- allocate upward from matchBase. The warmup pad is communal (user call,
+    -- allocate upward from this base, one per match, by `m.seq` -- the internal
+    -- increment, NOT the random match id (#291), so they stay 101, 102, 103
+    -- rather than scattering across a million. The warmup pad is communal (user call,
     -- 2026-08-04): everyone waiting for any flight stands there together and
     -- watches departures -- riders only hop to their match's own bucket a
     -- few seconds after wheels-up (bus.lua schedules it), jumpers the moment

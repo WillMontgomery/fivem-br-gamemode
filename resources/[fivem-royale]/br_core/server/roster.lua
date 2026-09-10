@@ -218,8 +218,16 @@ local departed = {}
 --- where you watch other lobbies' planes take off. From the moment a rider's
 --- flight climbs out (m.airborne, set by the bus a few seconds after
 --- wheels-up) -- or the moment they jump -- they live in their match's OWN
---- bucket, matchBucketBase + matchId, so two concurrent matches never see
---- each other and a fresh match never inherits anything.
+--- bucket, `m.bucket`, so two concurrent matches never see each other and a
+--- fresh match never inherits anything.
+---
+--- THE BUCKET IS READ OFF THE MATCH, NOT RE-DERIVED FROM THE ID (#291). It used
+--- to read `matchBucketBase + entry.matchId`, which was the same arithmetic
+--- BR.Match.create ran and therefore the same answer -- right up until ids
+--- became a random 20-bit draw and the bucket moved to `seq`. Two independent
+--- derivations of one number agree until the day one of them changes, and the
+--- symptom here would have been players in the same match placed in different
+--- worlds. There is one bucket per match and one place it is computed.
 ---
 --- A LOBBY-state player rides the lobby bucket even while they still carry
 --- a matchId (the ENDED summary trip home) -- the bucket is about where
@@ -238,7 +246,7 @@ local function applyBucket(src, entry)
         or (entry.state == BR.PlayerState.BUS and not m.airborne) then
         bucket = M.warmupBucket
     else
-        bucket = M.matchBucketBase + entry.matchId
+        bucket = m.bucket
     end
     if SetRoutingBucketPopulationEnabled then
         -- MATCH buckets get ambient life (user call, 2026-08-04: parked

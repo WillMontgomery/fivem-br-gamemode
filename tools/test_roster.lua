@@ -693,11 +693,16 @@ end
 --- A bare instance for blocks that exercise one subsystem (squad formation,
 --- a scoped broadcast) without running the machine; attaches every
 --- rostered player, which mirrors the old whole-roster semantics.
+--- MINTED THROUGH BR.Match.mintIds, NOT BY COPYING ITS ARITHMETIC (#291).
+--- This helper used to increment the counter and derive the bucket itself, which
+--- was the same answer right up until the id became a random draw and the bucket
+--- moved onto `seq` -- at which point every block built on it would have been
+--- testing a match shaped unlike any match production makes.
 local function fakeMatch(mode)
-    BR.Server.matchId = BR.Server.matchId + 1
-    local m = { id = BR.Server.matchId, mode = mode or BR.Mode.SOLO.key,
+    local seq, id = BR.Match.mintIds()
+    local m = { id = id, seq = seq, mode = mode or BR.Mode.SOLO.key,
                 state = BR.MatchState.WARMUP, endsAt = 0,
-                bucket = BR.Config.Match.matchBucketBase + BR.Server.matchId }
+                bucket = BR.Config.Match.matchBucketBase + seq }
     BR.Server.matches[m.id] = m
     for src in pairs(BR.Server.roster) do BR.Roster.setMatch(src, m.id) end
     return m
@@ -2728,7 +2733,7 @@ do
     ok(admitted ~= nil,
         'and the console records the admission, which the queue line cannot',
         admitted)
-    ok(admitted ~= nil and admitted:find('match ' .. tostring(BR.Server.matchId),
+    ok(admitted ~= nil and admitted:find('match ' .. tostring(theMatch().id),
                                           1, true) ~= nil,
         'naming the instance they were put into', admitted)
 
@@ -3108,7 +3113,7 @@ do
     ok(buckets[1] == WB, 'riders keep the communal bucket through boarding')
     fakeTime = m.route.rotateAt + 3600
     BR.Sched.step(fakeTime)
-    local mb = BR.Config.Match.matchBucketBase + m.id
+    local mb = m.bucket
     ok(m.airborne == true, 'the flight goes airborne shortly after wheels-up')
     ok(buckets[1] == mb, "and its riders hop to the match's own bucket",
         ('got %s want %d'):format(tostring(buckets[1]), mb))
@@ -3124,7 +3129,7 @@ do
     fakeTime = fakeTime + 1000
     BR.Sched.step(fakeTime)
     ok(mstate() == BR.MatchState.WARMUP, 'second match starts')
-    local mb2 = BR.Config.Match.matchBucketBase + theMatch().id
+    local mb2 = theMatch().bucket
     ok(mb2 ~= mb, 'and it owns a fresh private bucket for its flight')
 end
 
@@ -4927,6 +4932,79 @@ do
     ok(BR.Server.matchOf(3) == nil
        and BR.Roster.get(3).state == BR.PlayerState.LOBBY,
         "B's players are ordinary lobby players again")
+end
+
+describe('match.latest')
+do
+    -- ═══ "NEWEST" MEANS THE HIGHEST seq, NOT THE HIGHEST id (#291) ═══
+    --
+    -- BR.Server.latestMatch used to answer "the biggest id", which was the same
+    -- sentence for as long as ids were an increment. Eight call sites lean on
+    -- it -- `brforce` and its `debugTarget` fallback, `brphase`, the storm and
+    -- airdrop admin verbs, two debug helpers -- and `theMatch()` in this file IS
+    -- it, ninety-six times over.
+    --
+    -- IT KEEPS WORKING PERFECTLY WITH ONE MATCH RUNNING, which is every dev
+    -- session and every playtest, and misbehaves only once two are live: an
+    -- admin verb would silently drive a match nobody was looking at. So the case
+    -- has to be built rather than waited for.
+    reset()
+    BR.Server.devMode = true
+    join(1, 'A1'); join(2, 'A2'); join(3, 'B1'); join(4, 'B2')
+
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = 'solo' })
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = 'solo' })
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    local A = theMatch()
+    ok(A ~= nil, 'fixture: the first match forms')
+
+    BR.Match.transition(A, BR.MatchState.BUS)
+    fire(BR.Net.QUEUE_JOIN, 3, { mode = 'solo' })
+    fire(BR.Net.QUEUE_JOIN, 4, { mode = 'solo' })
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+
+    local B = BR.Server.matches[BR.Roster.get(3).matchId]
+    ok(B ~= nil and B ~= A, 'fixture: a second match forms alongside it')
+    ok(A.seq < B.seq, 'fixture: and it is the later of the two by seq',
+        ('%s then %s'):format(tostring(A.seq), tostring(B.seq)))
+
+    -- THE LIVE CASE, off the real machine.
+    ok(BR.Server.latestMatch() == B,
+        'with two matches live, latestMatch is the one formed most recently')
+
+    -- AND THE SAME QUESTION WITH THE IDS RUNNING BACKWARDS, which is what makes
+    -- this deterministic rather than a coin toss. A random 20-bit draw puts the
+    -- older match above the newer one about half the time; pinning the two ids
+    -- by hand asks the invariant directly, so a revert to `id > best.id` fails
+    -- here on every run rather than on every other one.
+    BR.Server.matches[A.id] = nil
+    BR.Server.matches[B.id] = nil
+    for _, e in pairs(BR.Server.roster) do
+        if e.matchId == A.id then e.matchId = 0xFFFFE
+        elseif e.matchId == B.id then e.matchId = 0x00002 end
+    end
+    A.id, B.id = 0xFFFFE, 0x00002
+    BR.Server.matches[A.id] = A
+    BR.Server.matches[B.id] = B
+
+    ok(BR.Server.latestMatch() == B,
+        'the newest match wins even when the older one holds the bigger id',
+        ('latest is seq %s / id %s')
+            :format(tostring((BR.Server.latestMatch() or {}).seq),
+                    tostring((BR.Server.latestMatch() or {}).id)))
+
+    -- AND THE ITERATION ORDER, WHICH IS THE SAME BUG WEARING A SECOND FACE.
+    -- BR.Server.eachMatch sorted the registry's keys and its own docstring says
+    -- tests and logs depend on the order. Sorting random ids is still
+    -- deterministic and is no longer creation order.
+    local seen = {}
+    BR.Server.eachMatch(function(m) seen[#seen + 1] = m end)
+    ok(#seen == 2 and seen[1] == A and seen[2] == B,
+        'and eachMatch still walks them in creation order, oldest first',
+        ('%s then %s'):format(tostring(seen[1] and seen[1].seq),
+                              tostring(seen[2] and seen[2].seq)))
 end
 
 describe('match.modes')
