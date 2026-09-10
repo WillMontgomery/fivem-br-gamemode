@@ -85,8 +85,10 @@ local G = BR.Config.Gunshop
 -- fields, the key cap from the player's binding, and the title from
 -- config/gunshop.lua's `menuTitle`.
 --
--- PLATE_HINT and OUT_OF_STOCK are the owner's own words from 2026-09-09, typed
--- as he typed them. AMMO_GROUP is NOT his: he asked for "separators in between
+-- PLATE_HINT and OUT_OF_STOCK are the owner's own words from 2026-09-09.
+-- OUT_OF_STOCK is READ rather than typed -- config/gunshop.lua authors
+-- `outOfStockLabel` for it, in a block that says nothing in it may be tidied,
+-- and it had no reader until now. AMMO_GROUP is NOT his: he asked for "separators in between
 -- that indicate the category", which structurally needs a word per group, and
 -- three of the four groups get theirs from BR.RarityInfo. The ammo group has no
 -- table with a name for it, so this is the shortest neutral one.
@@ -118,7 +120,21 @@ local G = BR.Config.Gunshop
 local PLATE_HINT = 'PRESS TO OPEN'
 
 --- Owner, 2026-09-09: "instead show Out of Stock".
-local OUT_OF_STOCK = 'Out of Stock'
+---
+--- ═══ HIS WORDS, READ FROM WHERE HE PUT THEM ═══
+---
+--- config/gunshop.lua authors `outOfStockLabel` for exactly this, in a block
+--- that says in as many words that nothing in it may be tidied -- "the capital
+--- letters in 'Out of Stock' -- all his". It had no reader: this file typed the
+--- phrase a second time, so his one edit would have changed the config and left
+--- the shelf saying the old thing, with nothing to say why.
+---
+--- THE FALLBACK IS THE SAME STRING AND THAT IS NOT A SECOND COPY. It is what
+--- the row says if the config value is ever removed, which is a row that reads
+--- correctly rather than a row labelled `nil` -- and the ONE place it could
+--- differ from his is under test.
+local OUT_OF_STOCK = (type(G.outOfStockLabel) == 'string'
+    and G.outOfStockLabel ~= '' and G.outOfStockLabel) or 'Out of Stock'
 
 --- NOT HIS, AND AWAITING HIS WORDING. See the marked block above.
 local AMMO_GROUP = 'Ammo'

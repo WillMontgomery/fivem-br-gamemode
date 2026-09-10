@@ -3559,6 +3559,22 @@ do
         ok(gun ~= nil and gun._rightLabel == 'Out of Stock',
             'S3: the price is replaced by his own words, verbatim',
             gun and gun._rightLabel or 'no row')
+        -- ═══ AND THEY COME FROM WHERE HE PUT THEM ═══
+        --
+        -- config/gunshop.lua authors `outOfStockLabel` for exactly this, under
+        -- a block saying nothing in it may be tidied -- "the capital letters in
+        -- 'Out of Stock' -- all his" -- and it had no reader: the client typed
+        -- the phrase a second time. One string with two representations, so an
+        -- edit to the config would have changed nothing on screen and nothing
+        -- would have said why. Asserting equality with the CONFIG rather than
+        -- with a literal is what makes this a link instead of a coincidence.
+        ok(gun ~= nil and gun._rightLabel == G.outOfStockLabel,
+            "...read from config's outOfStockLabel, so his edit is one edit",
+            ('row %s vs config %s'):format(
+                tostring(gun and gun._rightLabel), tostring(G.outOfStockLabel)))
+        ok(readFile(ROOT .. 'br_core/client/gunshop.lua')
+            :find('G.outOfStockLabel', 1, true) ~= nil,
+            'and the client names that field rather than the words')
         ok(gun ~= nil and gun._Enabled == false,
             '...and the row is genuinely locked. He asked for no toast on this '
                 .. 'one, so disabling it is right: the library plays its error '
