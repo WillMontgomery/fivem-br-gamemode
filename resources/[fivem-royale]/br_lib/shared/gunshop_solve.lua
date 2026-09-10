@@ -393,15 +393,34 @@ end
 
 --- WHERE THE CLERK IS CREATED, ONCE HIS FLOOR IS KNOWN.
 ---
---- THE OFFSET IS SPENT ALONG THE COUNTER'S OWN HEADING, which is the one thing
---- the store table does say about which way this building faces. GTA headings
---- are degrees clockwise from north, so forward is (-sin h, cos h) -- the same
---- convention client/dui.lua's `levelBasis` records for the entity form of the
---- same arithmetic.
+--- TWO OFFSETS, SPENT IN THE COUNTER'S OWN FRAME. The store table says where the
+--- anchor is and which way the counter faces, and that heading is the only basis
+--- there is. Forward is (-sin h, cos h) -- the same convention client/dui.lua's
+--- `levelBasis` records for the entity form of the same arithmetic -- and RIGHT
+--- is that turned a quarter turn, (cos h, sin h). Facing north, forward is north
+--- and right is east; that is the whole derivation.
 ---
---- ZERO OFFSET IS THE SHIPPED CASE AND IT IS NOT A NO-OP WORTH SKIPPING: the
---- multiplication is what makes the owner's one number in config mean something
---- without anybody editing Lua.
+--- ═══ WHY THERE ARE TWO NOW, AND IT IS THE OWNER'S PLAYTEST ═══
+---
+--- Owner, 2026-09-09, having visited five of the eleven counters:
+---
+---   "The ped position is consistently on top of the register (as I have
+---    validated at many shops) - let us move their position back behind the
+---    counter and to the left (the ped-s right) about 1m"
+---
+--- "Back" is `clerkOffsetM` going negative, which this function could already
+--- express. "TO THE PED'S RIGHT" IS THE HALF IT COULD NOT: there was no lateral
+--- term in this arithmetic at all, so the second half of his sentence had no
+--- number it could be written into. `clerkRightM` is that number.
+---
+--- BOTH ARE SPENT ALONG THE STORE'S HEADING RATHER THAN THE CLERK'S, and that is
+--- deliberate: `clerkFaceDeg` turns the clerk on the spot and must not also
+--- slide him sideways, or one playtest fix would quietly undo another. With
+--- `clerkFaceDeg` at zero -- which is where it ships -- the counter's right IS
+--- the ped's right, which is the frame his sentence is written in.
+---
+--- ZERO IS NOT A NO-OP WORTH SKIPPING: the multiplication is what makes the
+--- owner's numbers in config mean something without anybody editing Lua.
 --- @param cfg table|nil
 --- @param store table|nil
 --- @param z number|nil    the resolved floor height
@@ -416,12 +435,15 @@ function BR.GunshopSolve.clerkAt(cfg, store, z)
     if not sx or not sy or not h then return nil, nil, nil, nil end
 
     local c = type(cfg) == 'table' and cfg or {}
-    local out  = tonumber(c.clerkOffsetM) or 0.0
-    local face = tonumber(c.clerkFaceDeg) or 0.0
+    local out   = tonumber(c.clerkOffsetM) or 0.0
+    local right = tonumber(c.clerkRightM) or 0.0
+    local face  = tonumber(c.clerkFaceDeg) or 0.0
 
     local rad = math.rad(h)
-    return sx - math.sin(rad) * out,
-           sy + math.cos(rad) * out,
+    local fx, fy = -math.sin(rad), math.cos(rad)
+    local rx, ry =  math.cos(rad), math.sin(rad)
+    return sx + fx * out + rx * right,
+           sy + fy * out + ry * right,
            tonumber(z),
            (h + face) % 360.0
 end
@@ -768,18 +790,301 @@ function BR.GunshopSolve.menuLabel(row)
 end
 
 -- ---------------------------------------------------------------------------
+-- What is on the shelf, this match, at this counter
+-- ---------------------------------------------------------------------------
+
+--- WHICH WEAPONS THIS COUNTER HOLDS FOR THE LIFE OF ONE MATCH, AND HOW MANY.
+---
+--- Owner, 2026-09-09:
+---
+---   "Each shop should start the match with a random number of weapons in
+---    stock, distributed across all categories they sell. Let us say this
+---    number is between 3 and 8 total. They will have no limited stock on
+---    ammo."
+---   "The amount of each item they have in stock should differ between shops"
+---
+--- ═══ THREE READINGS OF THAT SENTENCE, AND THE ONE TAKEN ═══
+---
+--- "Between 3 and 8 TOTAL" is read as UNITS, not as distinct models: a counter
+--- rolls a total somewhere in that band and then spends it, one unit at a time,
+--- across the shelf. So a shop with a 5 might hold two Carbine Rifles and three
+--- other guns, or five different guns, and the two shops next door will not
+--- match -- which is the second sentence, satisfied by the roll being taken
+--- independently per store rather than by any extra rule.
+---
+--- "DISTRIBUTED ACROSS ALL CATEGORIES THEY SELL" IS A GUARANTEE, NOT A HOPE, so
+--- it is spent first: one unit into each rarity band present on the shelf,
+--- before a single unit is spent at random. His floor of 3 and the catalogue's
+--- three bands (rare, epic, legendary) are the same number, which is what makes
+--- that affordable -- the smallest legal shop is exactly one of each.
+---
+--- THE CATEGORY AXIS IS RARITY BECAUSE RARITY IS THE ONLY ONE THAT EXISTS.
+--- `rarity` is a field on every catalogue row. Weapon CLASS -- pistols, SMGs,
+--- rifles -- is a comment header in config/weapons.lua and nothing else, so a
+--- class axis would have to be authored from scratch before it could be rolled
+--- against. Flagged rather than assumed: if he meant class, this function is
+--- where that changes and the band grouping below is the four lines that move.
+---
+--- AMMO IS NOT IN THE ANSWER AT ALL. "They will have no limited stock on ammo",
+--- so an ammo row never appears in the returned table, and the ABSENCE is the
+--- vocabulary the rest of the feature reads: nil means unlimited, a number means
+--- counted. That is why every weapon row appears here even at zero -- a shelf
+--- that omitted its sold-out rows would be indistinguishable from a shelf that
+--- sells unlimited ones.
+---
+--- @param cfg table|nil   BR.Config.Gunshop
+--- @param rows table|nil  the catalogue
+--- @param rnd function|nil  (lo, hi) -> integer, inclusive. math.random by
+---                          default; a test passes its own so the roll is a
+---                          thing that can be replayed.
+--- @return table  { [rowId] = count } -- weapons only, zeros included
+function BR.GunshopSolve.rollStock(cfg, rows, rnd)
+    local out = {}
+    if type(rows) ~= 'table' then return out end
+    if type(rnd) ~= 'function' then rnd = math.random end
+
+    local guns = BR.GunshopSolve.ofKind(rows, BR.ItemKind.WEAPON)
+    for i = 1, #guns do out[guns[i].id] = 0 end
+    if #guns == 0 then return out end
+
+    local c  = type(cfg) == 'table' and cfg or {}
+    local lo = math.floor(tonumber(c.stockMin) or 0)
+    local hi = math.floor(tonumber(c.stockMax) or 0)
+    -- A CONFIG WITH THE TWO THE WRONG WAY ROUND IS A SHOP, NOT A CRASH. The
+    -- owner authors both numbers by hand; swapping them is a typo with a
+    -- sensible reading and the alternative is an empty shelf nobody can explain.
+    if hi < lo then lo, hi = hi, lo end
+    if lo < 0 then lo = 0 end
+    if hi <= 0 then return out end
+
+    local left = math.floor(tonumber(rnd(lo, hi)) or lo)
+    if left <= 0 then return out end
+
+    -- THE BANDS, IN RARITY ORDER RATHER THAN pairs() ORDER. Everything in this
+    -- file that iterates a table iterates it in an authored order for the same
+    -- reason: a roll that replays differently on two machines is not a roll a
+    -- test can pin.
+    local bands, order = {}, {}
+    for i = 1, #guns do
+        local r = guns[i].rarity
+        if r ~= nil then
+            local b = bands[r]
+            if not b then
+                b = {}
+                bands[r] = b
+                order[#order + 1] = r
+            end
+            b[#b + 1] = guns[i]
+        end
+    end
+    table.sort(order, function(a, b)
+        if type(a) == 'number' and type(b) == 'number' then return a < b end
+        return tostring(a) < tostring(b)
+    end)
+
+    for i = 1, #order do
+        if left <= 0 then break end
+        local b = bands[order[i]]
+        local pick = b[rnd(1, #b)]
+        if pick then
+            out[pick.id] = (out[pick.id] or 0) + 1
+            left = left - 1
+        end
+    end
+
+    while left > 0 do
+        local pick = guns[rnd(1, #guns)]
+        if not pick then break end
+        out[pick.id] = (out[pick.id] or 0) + 1
+        left = left - 1
+    end
+
+    return out
+end
+
+--- HOW MANY OF THIS ROW ARE LEFT, OR nil FOR "THIS ROW IS NOT COUNTED".
+---
+--- THE nil IS THE POINT. Ammo has no stock, and a counted zero and an uncounted
+--- row are the two things every caller of this has to keep apart -- `0` is
+--- TRUTHY in Lua, so a caller that tested the number rather than asking this
+--- would read "sold out" as "in stock" without an error anywhere.
+--- @param stock table|nil  { [rowId] = count } for ONE store
+--- @param row table|nil
+--- @return integer|nil
+function BR.GunshopSolve.stockOf(stock, row)
+    if type(stock) ~= 'table' or type(row) ~= 'table' then return nil end
+    if row.kind ~= BR.ItemKind.WEAPON then return nil end
+    local n = tonumber(stock[row.id])
+    if not n then return nil end
+    n = math.floor(n)
+    if n < 0 then return 0 end
+    return n
+end
+
+-- ---------------------------------------------------------------------------
+-- Which guns take this ammo
+-- ---------------------------------------------------------------------------
+
+--- EVERY WEAPON IN THE GAME THAT FEEDS ON ONE POOL, IN AUTHORED ORDER.
+---
+--- Owner, 2026-09-09:
+---
+---   "When an ammo item is in focus in the menu, a description should be shown
+---    that includes a list of all weapons that ammo is used in. This will help
+---    the customer understand what ammo they need to purchase for their given
+---    loadout."
+---
+--- ═══ "ALL WEAPONS", NOT "ALL WEAPONS ON THIS SHELF" ═══
+---
+--- The counter sells RARE and above. A player's loadout is mostly floor loot,
+--- so the Pump Shotgun they are actually carrying is COMMON, is not for sale
+--- here, and is exactly the gun they are trying to work out which box of shells
+--- feeds. Listing only the shelf would answer a question nobody asked. So this
+--- takes SOURCE TABLES rather than the catalogue, and the caller passes the ones
+--- a player can end up holding -- BR.Config.Weapons and BR.Config.AirdropWeapons
+--- are two arrays for reasons that have nothing to do with ammo.
+---
+--- NOTHING HERE IS COPY. Every word out of this function is a `label` the owner
+--- authored in config/weapons.lua, in the order he authored it, and the only
+--- character this file adds is the comma between them.
+--- @param pool string|nil       a BR.AmmoType value
+--- @param sources table|nil     an array of weapon arrays
+--- @return table  array of label strings, de-duplicated by weapon id
+function BR.GunshopSolve.ammoUsers(pool, sources)
+    local out = {}
+    if type(pool) ~= 'string' or pool == '' then return out end
+    if type(sources) ~= 'table' then return out end
+
+    local seen = {}
+    for i = 1, #sources do
+        local list = sources[i]
+        if type(list) == 'table' then
+            for j = 1, #list do
+                local w = list[j]
+                if type(w) == 'table' and w.ammo == pool
+                   and type(w.id) == 'string' and not seen[w.id] then
+                    seen[w.id] = true
+                    local label = type(w.label) == 'string' and w.label ~= ''
+                        and w.label or w.id
+                    out[#out + 1] = label
+                end
+            end
+        end
+    end
+    return out
+end
+
+--- The same list as one line, for a surface that has one line to put it on.
+---
+--- IN br_lib SO THE JOINING IS A THING A TEST CAN RUN, which is
+--- BR.ShopSolve.boughtToast's stated reason for living here rather than in the
+--- server file that sends it. A comma and a space is a separator, not a word.
+--- @param pool string|nil
+--- @param sources table|nil
+--- @return string  '' when nothing takes this pool
+function BR.GunshopSolve.ammoUsersLine(pool, sources)
+    return table.concat(BR.GunshopSolve.ammoUsers(pool, sources), ', ')
+end
+
+-- ---------------------------------------------------------------------------
+-- The two sentences the counter now speaks, joined where a test can read them
+-- ---------------------------------------------------------------------------
+
+--- WHAT A PLAYER WHO CANNOT AFFORD A ROW IS TOLD.
+---
+--- Owner, 2026-09-09:
+---
+---   "if they select an item they cannot afford, give them a toast that says
+---    You do not have enough Volts for that item. Your balance is: {balance}
+---    Volts. remember the Volts text and quantity must be our signature color."
+---
+--- BOTH SENTENCES ARE AUTHORED IN config/gunshop.lua and neither is written
+--- here. This does the joining and the marking and nothing else -- the same
+--- division of labour as BR.ShopSolve.boughtToast, for the same reason: the
+--- alternative is a concatenation in server/gunshop.lua, where the only way to
+--- see what a player reads is to stand at a till in a running game and be poor.
+---
+--- ═══ THE MARK IS TILDES AND IT IS THE ONE THIS PROJECT ALREADY HAS ═══
+---
+--- ui-src's KeyText paints anything between tildes with `--color-volts`. Lua
+--- composes this sentence, so the mark travels with it. His instruction covers
+--- both halves -- "the Volts text AND quantity" -- so the bare word in the first
+--- sentence is marked in the config string, and the figure in the second is
+--- marked here, where it is built.
+---
+--- A TEMPLATE THAT WILL NOT TAKE A STRING LEAVES THE FIRST SENTENCE ALONE.
+--- `balanceToast` is authored, so a `%d` in it is an authoring slip rather than
+--- a runtime condition -- but string.format would THROW on it, on the refusal
+--- path, which would turn "you are broke" into a server error.
+--- @param cfg table|nil       BR.Config.Gunshop
+--- @param balance number|nil  what the player actually holds
+--- @param currency string|nil BR.Config.Market.currency
+--- @return string
+function BR.GunshopSolve.poorToast(cfg, balance, currency)
+    local c = type(cfg) == 'table' and cfg or {}
+    local head = type(c.poorToast) == 'string' and c.poorToast or ''
+    local tmpl = type(c.balanceToast) == 'string' and c.balanceToast or ''
+    if tmpl == '' then return head end
+
+    local okFmt, line = pcall(string.format, tmpl,
+        '~' .. BR.ShopSolve.priceLine(balance, currency) .. '~')
+    if not okFmt or type(line) ~= 'string' then return head end
+    if head == '' then return line end
+    return head .. ' ' .. line
+end
+
+--- WHAT A PLAYER WHO JUST BOUGHT AMMO IS TOLD.
+---
+--- Owner, 2026-09-09:
+---
+---   "when ammo is purchased show a success toast: You purchased {item} for
+---    {cost}. otherwise they have no way to know anything went through."
+---
+--- ONE SENTENCE, AUTHORED IN config/gunshop.lua, WITH TWO HOLES. `{item}` is
+--- BR.GunshopSolve.menuLabel -- the owner's own label out of config/weapons.lua
+--- or config/loot.lua, plus the quantity mark an ammo row already carries -- and
+--- `{cost}` is BR.ShopSolve.priceLine, marked for the currency's colour the way
+--- every other figure in a toast in this game is.
+---
+--- WEAPONS GET NOTHING HERE, and that is his scoping rather than an omission:
+--- he asked for this "when ammo is purchased" and gave the weapon purchase a
+--- clerk animation instead. The caller decides; this function will compose a
+--- line for any row it is handed.
+--- @param cfg table|nil       BR.Config.Gunshop
+--- @param row table|nil       the catalogue row that was bought
+--- @param currency string|nil
+--- @return string  '' when no sentence is authored
+function BR.GunshopSolve.boughtToast(cfg, row, currency)
+    local c = type(cfg) == 'table' and cfg or {}
+    local tmpl = type(c.boughtToast) == 'string' and c.boughtToast or ''
+    if tmpl == '' then return '' end
+
+    local item = BR.GunshopSolve.menuLabel(row)
+    local cost = '~' .. BR.ShopSolve.priceLine(
+        type(row) == 'table' and row.price or 0, currency) .. '~'
+
+    local okFmt, line = pcall(string.format, tmpl, item, cost)
+    if not okFmt or type(line) ~= 'string' then return '' end
+    return line
+end
+
+-- ---------------------------------------------------------------------------
 -- May this player buy this, right now?
 -- ---------------------------------------------------------------------------
 
---- Refusal reasons. Values are what the SERVER logs. Nothing here is copy: no
---- string below is written to be read by a player, and inventing player-facing
---- wording for a feature the owner has not written copy for is a standing rule
---- against.
+--- Refusal reasons. Values are what the SERVER logs.
+---
+--- THESE ARE LOG KEYS AND NOT COPY. Two of them now have a player-facing
+--- sentence attached at the call site -- `afford` speaks the owner's own toast
+--- out of config/gunshop.lua, `ammofull` borrows the sentence the loot pickup
+--- already refuses with -- but the sentence lives where it is sent, never here.
 BR.GunshopSolve.Refusal = {
     OFF    = 'gunshopoff',  -- no stores: the feature does not exist
     STATE  = 'notplaying',  -- the counter is open during a live match only
     NOROW  = 'nosuchitem',  -- the client named something that is not for sale
     NOTAT  = 'notatcounter',-- the player is not standing at a counter
+    STOCK  = 'outofstock',  -- this counter has none of these left this match
+    FULL   = 'ammofull',    -- the pool this fills is already at its cap
     AFFORD = 'afford',      -- not enough Volts
 }
 
@@ -815,7 +1120,22 @@ BR.GunshopSolve.Refusal = {
 --- cap is wanted it belongs in config/gunshop.lua as a number, the way
 --- BR.Config.Shop.limit is.
 ---
---- @param st table  { on, matchState, playerState, atCounter, row, balance, price }
+--- ═══ TWO NEW TERMS, AND BOTH RANK ABOVE THE MONEY ═══
+---
+--- `stock` and `ammoFull` are asked BEFORE `afford`, and the order is the
+--- sentence the player gets. Somebody broke standing in front of an empty shelf
+--- is told the shelf is empty, not that they are broke -- being told the price
+--- of a thing that is not for sale is the worse of the two answers, and it is
+--- the one a naive ordering gives.
+---
+--- `stock` IS nil FOR "NOT COUNTED", NEVER ZERO. Ammo has no stock (owner: "They
+--- will have no limited stock on ammo"), so its term is absent rather than
+--- large. `0` is TRUTHY in Lua, so the nil and the zero have to be told apart by
+--- an explicit `~= nil`, which is what BR.GunshopSolve.stockOf exists to make
+--- one decision rather than one per caller.
+---
+--- @param st table  { on, matchState, playerState, atCounter, row, stock,
+---                    ammoFull, balance, price }
 --- @return boolean ok
 --- @return string|nil why  a BR.GunshopSolve.Refusal value
 function BR.GunshopSolve.canBuy(st)
@@ -837,6 +1157,20 @@ function BR.GunshopSolve.canBuy(st)
     end
 
     if st.row == nil then return false, BR.GunshopSolve.Refusal.NOROW end
+
+    -- AN EXPLICIT nil TEST, BECAUSE `0` IS TRUTHY IN LUA. `if st.stock then` is
+    -- true for a sold-out shelf and would sell the gun that is not there.
+    if st.stock ~= nil and (tonumber(st.stock) or 0) <= 0 then
+        return false, BR.GunshopSolve.Refusal.STOCK
+    end
+
+    -- Owner, 2026-09-09: "If someone is already carrying the max of an ammo ...
+    -- reject the purchase and give them a toast explaining they already have the
+    -- max (same as we do for loot pickups)". Which retires the flag in
+    -- server/gunshop.lua's `deliver`: buying Heavy Ammo on a full heavy pool
+    -- used to take the Volts and leave a pile on the floor, and the note there
+    -- said the fix was a rule the owner had not made. He has made it.
+    if st.ammoFull == true then return false, BR.GunshopSolve.Refusal.FULL end
 
     -- THE PRICE COMES FROM THE ROW AND THE BALANCE FROM THE LEDGER; neither ever
     -- comes from the client. A `>=` rather than a `>`: spending your last Volt

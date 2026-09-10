@@ -73,6 +73,15 @@ loadAll({
     'br_lib/config/weapons.lua',
     'br_lib/config/loot.lua',
     'br_lib/config/gunshop.lua',
+    -- THE CURRENCY WORD AND THE PRICE FORMATTER, because the counter's two
+    -- toasts are joined out of them and the joining is the thing under test.
+    -- BR.GunshopSolve.poorToast and .boughtToast both call
+    -- BR.ShopSolve.priceLine, which reads BR.Config.Market.currency through its
+    -- caller -- so a suite without these would exercise the empty-currency
+    -- branch and never the sentence a player reads.
+    'br_lib/config/market.lua',
+    'br_lib/shared/shop_solve.lua',
+    'br_lib/shared/rng.lua',
     'br_lib/shared/gunshop_solve.lua',
 })
 
@@ -1002,6 +1011,374 @@ do
     ok(S.shortfall(149, 150) == 1 and S.shortfall(1000, 150) == 0
        and S.shortfall(nil, 150) == 150,
         'the shortfall never goes negative and survives a nil balance')
+
+    -- ═══ THE SHELF, AND THE TWO WAYS `0` IS TRUTHY COULD RUIN IT ═══
+    --
+    -- Owner, 2026-09-09: "If an item is out of stock, the row should be locked
+    -- and a price should not be shown". A sold-out row must never be sellable,
+    -- and the trap is Lua's: `if st.stock then` is TRUE for a stock of zero, so
+    -- an implementation that tested the number rather than comparing it would
+    -- sell the gun that is not there and would look correct in a diff.
+    okv, why = S.canBuy(state({ stock = 0 }))
+    ok(okv == false and why == Refusal.STOCK,
+        'a shelf with none left sells none', why)
+
+    okv = S.canBuy(state({ stock = 1 }))
+    ok(okv == true, 'the last one on the shelf is still for sale')
+
+    -- nil IS NOT ZERO. Ammo is uncounted, and a match whose shelves have not
+    -- been rolled yet is uncounted too. Both mean unlimited, and neither means
+    -- empty.
+    okv = S.canBuy(state({ stock = nil }))
+    ok(okv == true, 'and an UNCOUNTED row -- which is what ammo is -- sells')
+
+    -- ═══ THE SHELF OUTRANKS THE MONEY, AND THAT ORDER IS THE SENTENCE ═══
+    --
+    -- Somebody broke, standing in front of an empty shelf, is told the shelf is
+    -- empty rather than told the price of a thing that is not for sale.
+    okv, why = S.canBuy(state({ stock = 0, balance = 0 }))
+    ok(why == Refusal.STOCK,
+        'a broke player at an empty shelf is told about the shelf', why)
+
+    -- ═══ A FULL AMMO POOL, WHICH USED TO TAKE THE VOLTS ═══
+    --
+    -- Owner, 2026-09-09: "If someone is already carrying the max of an ammo ...
+    -- reject the purchase". Before this the purchase went through, the pool
+    -- clamped, and the bundle landed on the floor -- server/gunshop.lua's
+    -- `deliver` carried a note saying so and that it was a rule he had not made.
+    okv, why = S.canBuy(state({ ammoFull = true }))
+    ok(okv == false and why == Refusal.FULL,
+        'a pool already at its cap refuses the purchase', why)
+
+    okv, why = S.canBuy(state({ ammoFull = true, balance = 0 }))
+    ok(why == Refusal.FULL,
+        '...and outranks the money too, because "you already have the maximum" '
+            .. 'is the useful half of that answer', why)
+
+    okv = S.canBuy(state({ ammoFull = false }))
+    ok(okv == true, 'and a pool with room in it buys')
+end
+
+-- ---------------------------------------------------------------------------
+describe('what one counter starts the match holding')
+-- ---------------------------------------------------------------------------
+--
+-- Owner, 2026-09-09: "Each shop should start the match with a random number of
+-- weapons in stock, distributed across all categories they sell. Let us say
+-- this number is between 3 and 8 total. They will have no limited stock on
+-- ammo." / "The amount of each item they have in stock should differ between
+-- shops"
+--
+-- THE ROLL IS DRIVEN BY AN INJECTED GENERATOR rather than by math.random, so
+-- every assertion below is about the RULE and none of them is about luck. The
+-- server passes BR.Rng, seeded off the clock and the match id the way
+-- BR.Loot.begin is; this passes a counter, a constant, or a script.
+do
+    local shelf = select(1, G.build())
+
+    -- HIS TWO NUMBERS, RETYPED FROM HIS MESSAGE. Double entry, the same
+    -- technique this suite uses for the eleven anchors and the price bands:
+    -- config/gunshop.lua was authored from the same sentence independently, so
+    -- a transposed digit in either makes the two disagree.
+    ok(G.stockMin == 3 and G.stockMax == 8,
+        'the band is his: between 3 and 8 total',
+        ('%s..%s'):format(tostring(G.stockMin), tostring(G.stockMax)))
+
+    --- Every roll in [lo, hi] is answered with `pick`, clamped into range.
+    local function fixed(pick)
+        return function(lo, hi)
+            if pick < lo then return lo end
+            if pick > hi then return hi end
+            return pick
+        end
+    end
+
+    local function total(st)
+        local n = 0
+        for _, c in pairs(st) do n = n + c end
+        return n
+    end
+
+    -- ═══ THE TOTAL IS ALWAYS INSIDE HIS BAND, WHATEVER THE GENERATOR SAYS ═══
+    for _, p in ipairs({ 1, 3, 5, 8, 99 }) do
+        local st = S.rollStock(G, shelf, fixed(p))
+        local n = total(st)
+        ok(n >= G.stockMin and n <= G.stockMax,
+            ('a generator that always answers %d still stocks inside the band')
+                :format(p), n)
+    end
+
+    -- ═══ AMMO IS NEVER COUNTED, WHICH IS THE HALF OF HIS SENTENCE A TEST CAN
+    --     ACTUALLY HOLD ═══
+    --
+    -- "They will have no limited stock on ammo". The ABSENCE is the vocabulary:
+    -- a row that is not a key here is uncounted, and BR.GunshopSolve.stockOf
+    -- answers nil for it rather than zero.
+    do
+        local st = S.rollStock(G, shelf, fixed(1))
+        local ammo = S.ofKind(shelf, BR.ItemKind.AMMO)
+        ok(#ammo == 5, 'all five ammo pools are on the shelf', #ammo)
+        local counted = 0
+        for _, r in ipairs(ammo) do
+            if st[r.id] ~= nil then counted = counted + 1 end
+        end
+        ok(counted == 0, 'and not one of them is stocked', counted)
+        for _, r in ipairs(ammo) do
+            ok(S.stockOf(st, r) == nil,
+                ('%s reads as uncounted, not as empty'):format(r.id))
+            break
+        end
+
+        -- AND EVERY WEAPON IS A KEY, INCLUDING THE ONES AT ZERO. A shelf that
+        -- omitted its sold-out rows would be indistinguishable from a shelf
+        -- that sells them without limit -- which is exactly what ammo is.
+        local guns = S.ofKind(shelf, BR.ItemKind.WEAPON)
+        local missing = 0
+        for _, r in ipairs(guns) do
+            if st[r.id] == nil then missing = missing + 1 end
+        end
+        ok(missing == 0,
+            'every weapon row is present, at zero if it was not stocked',
+            missing)
+    end
+
+    -- ═══ "DISTRIBUTED ACROSS ALL CATEGORIES THEY SELL" IS A GUARANTEE ═══
+    --
+    -- Spent FIRST, before a single unit goes anywhere at random: one into every
+    -- rarity band on the shelf. His floor of 3 and the catalogue's three bands
+    -- are the same number, which is what makes that affordable at the smallest
+    -- legal roll.
+    do
+        local guns = S.ofKind(shelf, BR.ItemKind.WEAPON)
+        local bandOf = {}
+        for _, r in ipairs(guns) do bandOf[r.id] = r.rarity end
+
+        local seen = {}
+        for _, r in ipairs(guns) do seen[r.rarity] = true end
+        local bands = 0
+        for _ in pairs(seen) do bands = bands + 1 end
+        ok(bands == 3, 'the shelf has three rarity bands', bands)
+
+        -- AT THE SMALLEST LEGAL SHOP: three units, one per band, no slack.
+        local st = S.rollStock(G, shelf, fixed(1))
+        local hit = {}
+        for id, n in pairs(st) do
+            if n > 0 then hit[bandOf[id]] = true end
+        end
+        local covered = 0
+        for _ in pairs(hit) do covered = covered + 1 end
+        ok(covered == 3,
+            'even a shop that rolled the minimum holds one of every band',
+            covered)
+
+        -- AND AT THE LARGEST. The extra units are scattered, so this is the
+        -- guarantee surviving the part that is random rather than being an
+        -- accident of a three-unit roll.
+        st = S.rollStock(G, shelf, function(lo, hi)
+            if lo == G.stockMin and hi == G.stockMax then return hi end
+            return lo
+        end)
+        hit = {}
+        for id, n in pairs(st) do
+            if n > 0 then hit[bandOf[id]] = true end
+        end
+        covered = 0
+        for _ in pairs(hit) do covered = covered + 1 end
+        ok(covered == 3, '...and so does one that rolled the maximum', covered)
+        ok(total(st) == G.stockMax, 'which spends all eight units', total(st))
+    end
+
+    -- ═══ SHOPS DIFFER, WHICH IS THE SECOND SENTENCE ═══
+    --
+    -- Rolled off ONE generator in sequence, which is exactly what the server
+    -- does: eleven calls against one BR.Rng. If two consecutive shelves came out
+    -- identical, either the generator is not being advanced or the roll is not
+    -- reading it.
+    do
+        local rng = BR.Rng(20260909)
+        local roll = function(lo, hi) return rng:int(lo, hi) end
+        local a = S.rollStock(G, shelf, roll)
+        local b = S.rollStock(G, shelf, roll)
+        local same = true
+        for id, n in pairs(a) do if b[id] ~= n then same = false break end end
+        ok(not same, 'two counters rolled in a row do not hold the same thing')
+    end
+
+    -- ═══ A DEGENERATE CONFIG IS AN EMPTY SHOP, NEVER A CRASH ═══
+    ok(next(S.rollStock(G, nil, fixed(3))) == nil,
+        'no catalogue, no shelf')
+    ok(next(S.rollStock({ stockMin = 0, stockMax = 0 }, shelf, fixed(0))) ~= nil,
+        'a band of zero still lists every weapon row')
+    do
+        local st = S.rollStock({ stockMin = 0, stockMax = 0 }, shelf, fixed(0))
+        ok(total(st) == 0, '...at zero', total(st))
+
+        -- THE TWO THE WRONG WAY ROUND IS A TYPO WITH A SENSIBLE READING. The
+        -- owner authors both by hand and an empty shelf nobody can explain is a
+        -- worse answer than the obvious one.
+        local sw = S.rollStock({ stockMin = 8, stockMax = 3 }, shelf, fixed(5))
+        ok(total(sw) == 5, 'a swapped band is read the way round it was meant',
+            total(sw))
+    end
+
+    -- stockOf IS THE ONE PLACE THAT DECIDES WHAT A COUNT MEANS.
+    do
+        local gun = S.ofKind(shelf, BR.ItemKind.WEAPON)[1]
+        ok(S.stockOf({ [gun.id] = 0 }, gun) == 0, 'a zero reads as zero')
+        ok(S.stockOf({}, gun) == nil, 'and a missing row reads as uncounted')
+        ok(S.stockOf({ [gun.id] = -4 }, gun) == 0,
+            'a negative count cannot happen and would read as empty anyway')
+        ok(S.stockOf(nil, gun) == nil and S.stockOf({}, nil) == nil,
+            'and nothing at all is uncounted rather than an error')
+    end
+end
+
+-- ---------------------------------------------------------------------------
+describe('which guns take which ammo, for the description on an ammo row')
+-- ---------------------------------------------------------------------------
+--
+-- Owner, 2026-09-09: "When an ammo item is in focus in the menu, a description
+-- should be shown that includes a list of all weapons that ammo is used in.
+-- This will help the customer understand what ammo they need to purchase for
+-- their given loadout."
+--
+-- "ALL WEAPONS", NOT "ALL WEAPONS ON THIS SHELF". The counter sells RARE and
+-- above; a player's loadout is mostly floor loot. The Pump Shotgun they are
+-- carrying is COMMON, is not for sale here, and is exactly the gun they are
+-- trying to work out which shells feed.
+do
+    local src = { BR.Config.Weapons, BR.Config.AirdropWeapons }
+
+    local shells = S.ammoUsers(BR.AmmoType.SHELLS, src)
+    local set = {}
+    for _, l in ipairs(shells) do set[l] = true end
+
+    ok(set['Pump Shotgun'] == true,
+        'a COMMON-or-better gun nobody can buy here is still listed, because '
+            .. 'the player is holding one')
+    ok(set['Assault Shotgun'] == true,
+        '...alongside the ones the counter does sell')
+
+    -- EVERY SHELLS WEAPON AND NOTHING ELSE, checked against the shipped table
+    -- from both directions -- which is the technique the whole top of this file
+    -- rests on.
+    local want = 0
+    for _, w in ipairs(BR.Config.Weapons) do
+        if w.ammo == BR.AmmoType.SHELLS then want = want + 1 end
+    end
+    for _, w in ipairs(BR.Config.AirdropWeapons) do
+        if w.ammo == BR.AmmoType.SHELLS then want = want + 1 end
+    end
+    ok(#shells == want and want > 0,
+        'the list is every shells weapon in the shipped tables and no other',
+        ('%d of %d'):format(#shells, want))
+
+    local wrong = {}
+    for _, w in ipairs(BR.Config.Weapons) do
+        if w.ammo ~= BR.AmmoType.SHELLS and set[w.label] then
+            wrong[#wrong + 1] = w.label
+        end
+    end
+    ok(#wrong == 0, 'and nothing that feeds on another pool is in it',
+        table.concat(wrong, ', '))
+
+    -- THE AIRDROP FOUR ARE HEAVY, AND THE PLAYER CAN BE HOLDING ONE. They are
+    -- not for sale at any counter -- that is the rule at the top of
+    -- config/gunshop.lua -- but "which ammo does my Minigun take" is the
+    -- question this description exists to answer.
+    local heavy = {}
+    for _, l in ipairs(S.ammoUsers(BR.AmmoType.HEAVY, src)) do heavy[l] = true end
+    ok(heavy['Minigun'] == true and heavy['RPG'] == true,
+        'the airdrop weapons are listed under Heavy, because a player can be '
+            .. 'carrying one even though no counter sells it')
+
+    -- ORDER IS THE SOURCE TABLE'S, never pairs(). Everything in this feature
+    -- that renders a list gets a stable order for free, and a description that
+    -- reshuffled itself between two openings of the same menu would read as a
+    -- bug.
+    local a = S.ammoUsersLine(BR.AmmoType.MEDIUM, src)
+    local b = S.ammoUsersLine(BR.AmmoType.MEDIUM, src)
+    ok(a == b and a ~= '', 'the line is stable across calls', a)
+    ok(a:find('Carbine Rifle', 1, true) ~= nil
+       and a:find(', ', 1, true) ~= nil,
+        '...and is the labels joined by a comma, which is a separator rather '
+            .. 'than a word')
+
+    -- NOTHING HERE INVENTS A WORD. Every entry is a `label` the owner authored.
+    local made_up = 0
+    for _, l in ipairs(S.ammoUsers(BR.AmmoType.LIGHT, src)) do
+        local found = false
+        for _, w in ipairs(BR.Config.Weapons) do
+            if w.label == l then found = true break end
+        end
+        if not found then made_up = made_up + 1 end
+    end
+    ok(made_up == 0, 'and every word of it comes out of config/weapons.lua',
+        made_up)
+
+    ok(#S.ammoUsers(nil, src) == 0 and #S.ammoUsers('nonsense', src) == 0
+       and #S.ammoUsers(BR.AmmoType.LIGHT, nil) == 0
+       and S.ammoUsersLine(nil, nil) == '',
+        'a pool nobody uses, or no tables at all, is an empty list rather '
+            .. 'than an error')
+end
+
+-- ---------------------------------------------------------------------------
+describe('the two sentences the counter speaks, joined where a test can see')
+-- ---------------------------------------------------------------------------
+--
+-- ═══ HIS WORDING, RETYPED FROM HIS MESSAGE ═══
+--
+-- Double entry, the same technique as the anchors and the price bands. Reading
+-- config/gunshop.lua here would assert that a string equals itself; typing it
+-- from what he wrote means a tidied colon, a dropped full stop or an invented
+-- word fails a test.
+do
+    local cur = BR.Config.Market.currency
+
+    ok(cur == 'Volts', 'the currency word is the market\'s, not this file\'s', cur)
+
+    -- "You do not have enough Volts for that item. Your balance is: {balance}
+    --  Volts. remember the Volts text and quantity must be our signature color"
+    local poor = S.poorToast(G, 378, cur)
+    ok(poor == 'You do not have enough ~Volts~ for that item. '
+            .. 'Your balance is: ~378 Volts~.',
+        'the shortfall toast is exactly his sentence', poor)
+    ok(select(2, poor:gsub('~', '')) == 4,
+        '...with the word marked and the quantity marked, which is what "the '
+            .. 'Volts text and quantity" asks for twice', poor)
+
+    -- "You purchased {item} for {cost}."
+    local shelf = select(1, G.build())
+    local smg = S.rowById(shelf, S.ammoIdFor(BR.AmmoType.SMG))
+    local got = S.boughtToast(G, smg, cur)
+    ok(got == ('You purchased %s for ~%d Volts~.')
+            :format(S.menuLabel(smg), smg.price),
+        'the ammo success toast is exactly his sentence', got)
+    ok(got:find('SMG Ammo x60', 1, true) ~= nil,
+        '...and {item} is the row\'s own label plus the quantity it hands '
+            .. 'over, which is the only thing that makes 20 Volts judgeable',
+        got)
+
+    -- A WEAPON ROW COMPOSES TOO. The scoping to ammo is the CALLER's -- he
+    -- asked for this "when ammo is purchased" and gave a weapon purchase the
+    -- clerk's handover instead -- and this function does not second-guess it.
+    local gun = S.rowById(shelf, 'carbinerifle')
+    ok(S.boughtToast(G, gun, cur) == 'You purchased Carbine Rifle for ~115 Volts~.',
+        'and the same joining works for any row it is handed')
+
+    -- A BROKEN TEMPLATE MUST NOT BE THE THING THAT THROWS. Both of these are
+    -- authored strings, so a bad one is an authoring slip rather than a runtime
+    -- condition -- but string.format would throw on it, on the refusal path,
+    -- after a press.
+    ok(S.poorToast({ poorToast = 'a', balanceToast = 'b %d' }, 5, cur) == 'a',
+        'a balance template that will not take a string costs the second '
+            .. 'sentence and nothing else')
+    ok(S.boughtToast({ boughtToast = 'x %d %d' }, gun, cur) == '',
+        '...and a broken purchase template costs the toast rather than the '
+            .. 'purchase')
+    ok(S.poorToast(nil, 5, cur) == '' and S.boughtToast(nil, gun, cur) == '',
+        'and no config at all says nothing rather than throwing')
 end
 
 -- ---------------------------------------------------------------------------
@@ -1192,16 +1569,35 @@ describe('where the clerk stands, relative to the counter')
 do
     local st = { id = 'n', x = 0.0, y = 0.0, z = 0.0, heading = 0.0 }
 
+    -- ═══ THE SHIPPED NUMBERS ARE NO LONGER ZERO, AND THAT IS THE PLAYTEST ═══
+    --
+    -- Owner, 2026-09-09: "The ped position is consistently on top of the
+    -- register (as I have validated at many shops) - let us move their position
+    -- back behind the counter and to the left (the ped-s right) about 1m".
+    --
+    -- SO THE ASSERTION IS THAT HE IS NO LONGER ON THE ANCHOR, and specifically
+    -- that he is BEHIND it and to its right. Pinned as a DIRECTION rather than
+    -- as the two literals, because the two literals are exactly what he is
+    -- expected to move after the next round -- but a sign flip in either one
+    -- would put him in front of the counter or in the wall, which is the
+    -- regression worth catching and is invisible in a diff.
     local x, y, z, h = S.clerkAt(G, st, 5.0)
-    ok(math.abs(x) < 1e-9 and math.abs(y) < 1e-9 and z == 5.0 and h == 0.0,
-        'the shipped offset is zero, so he stands on the anchor facing the '
-            .. "counter's own heading -- which is where the two source "
-            .. 'resources this survey came from put their shop peds')
+    ok(z == 5.0 and h == 0.0,
+        'the floor and the facing come through untouched')
+    ok(y < -0.05,
+        'at heading 0 the clerk stands BEHIND the register, not on it -- '
+            .. 'forward is +Y and his offset is negative',
+        ('%.4f'):format(y))
+    ok(x > 0.05,
+        "...and to the ped's right, which at heading 0 is +X -- the half of "
+            .. 'his sentence this arithmetic could not express at all before',
+        ('%.4f'):format(x))
+    ok(math.abs(x - 1.0) < 1e-9,
+        'and the lateral step is his metre', ('%.4f'):format(x))
 
-    -- GTA HEADINGS ARE DEGREES CLOCKWISE FROM NORTH and forward is
-    -- (-sin h, cos h). Asserted rather than assumed, because a sign error here
-    -- would put every clerk on the wrong side of every counter and would look
-    -- exactly like a bad survey.
+    -- FORWARD IS (-sin h, cos h). Asserted rather than assumed, because a sign
+    -- error here would put every clerk on the wrong side of every counter and
+    -- would look exactly like a bad survey.
     local cfg = { clerkOffsetM = 2.0, clerkFaceDeg = 180.0 }
     x, y = S.clerkAt(cfg, st, 0.0)
     ok(math.abs(x) < 1e-9 and math.abs(y - 2.0) < 1e-9,
@@ -1227,6 +1623,34 @@ do
     ok(select(1, S.clerkAt(G, nil, 1.0)) == nil
        and select(1, S.clerkAt(G, { id = 'z' }, 1.0)) == nil,
         'a store with no coordinates places nobody')
+
+    -- ═══ THE LATERAL TERM, ON ITS OWN, IN BOTH FRAMES ═══
+    --
+    -- RIGHT IS (cos h, sin h), which is forward turned a quarter turn. Facing
+    -- north, right is east. A sign error here is the same class of invisible
+    -- fault as the forward one and deserves the same treatment.
+    local flat = { id = 'n', x = 0.0, y = 0.0, z = 0.0, heading = 0.0 }
+    local rx, ry = S.clerkAt({ clerkRightM = 3.0 }, flat, 0.0)
+    ok(math.abs(rx - 3.0) < 1e-9 and math.abs(ry) < 1e-9,
+        'at heading 0 the lateral step is spent along +X, which is east',
+        ('%.4f, %.4f'):format(rx, ry))
+
+    flat.heading = 90.0
+    rx, ry = S.clerkAt({ clerkRightM = 3.0 }, flat, 0.0)
+    ok(math.abs(rx) < 1e-6 and math.abs(ry - 3.0) < 1e-6,
+        '...and at heading 90, which faces west, right is north',
+        ('%.4f, %.4f'):format(rx, ry))
+
+    -- TURNING HIM MUST NOT MOVE HIM. `clerkFaceDeg` and the two offsets are
+    -- three independent numbers and one playtest fix must not undo another --
+    -- which is only true because both offsets are spent in the STORE's frame
+    -- rather than the clerk's.
+    flat.heading = 0.0
+    local ax, ay = S.clerkAt({ clerkOffsetM = -0.7, clerkRightM = 1.0 }, flat, 0.0)
+    local bx, by = S.clerkAt({ clerkOffsetM = -0.7, clerkRightM = 1.0,
+                               clerkFaceDeg = 143.0 }, flat, 0.0)
+    ok(math.abs(ax - bx) < 1e-9 and math.abs(ay - by) < 1e-9,
+        'turning the clerk on the spot leaves him exactly where he was')
 end
 
 -- ---------------------------------------------------------------------------
@@ -1348,16 +1772,26 @@ do
     ok(cli:find('BR.Sfx.play(G.cue)', 1, true) ~= nil,
         'the cue key comes out of config, so /brsfx can still audition it')
 
-    -- ═══ THE SERVER SPEAKS EXACTLY ONE SENTENCE, AND IT IS NOT ITS OWN ═══
+    -- ═══ THE SERVER SPEAKS THREE SENTENCES NOW, AND IT AUTHORS NONE OF THEM
+    --     ═══
     --
-    -- The owner has written no player-facing copy for this feature. `afford` is
-    -- the one refusal with an existing sentence and it is the market's, spoken
-    -- at the one funnel every shortfall in the game reaches.
-    ok(srv:find('BR.Market.tellShortfall', 1, true) ~= nil,
-        'the server refuses a shortfall in the market\'s own words')
-    ok(srv:find('BR.Server.notify', 1, true) == nil,
-        '...and says nothing else to anybody -- no toast was ever written for '
-            .. 'this counter')
+    -- It used to speak exactly one, borrowed from BR.Market.tellShortfall,
+    -- because the owner had written no copy for this counter. He wrote three on
+    -- 2026-09-09 and the rule did not change: every word a player reads here is
+    -- authored somewhere a person can find it, and this file only joins.
+    ok(srv:find('BR.Market.tellShortfall', 1, true) == nil,
+        'the market\'s "You need %d more to buy that." no longer reaches this '
+            .. 'counter -- the owner called it not good copy and replaced it')
+    ok(srv:find('BR.GunshopSolve.poorToast', 1, true) ~= nil,
+        '...with his own sentence, joined and colour-marked in br_lib where a '
+            .. 'test can read it rather than concatenated here')
+    ok(srv:find("BR.Loot.refusalText('ammofull'", 1, true) ~= nil,
+        'a full ammo pool is refused in the LOOT PICKUP\'S own words, called '
+            .. 'rather than copied -- "same as we do for loot pickups"')
+    ok(srv:find('Already carrying') == nil
+       and srv:find('You do not have enough') == nil
+       and srv:find('You purchased') == nil,
+        '...and not one of those three sentences is spelled in this file')
     ok(srv:find('BR.Roster.get', 1, true) ~= nil
        and srv:find('GetPlayerPed', 1, true) == nil,
         "the position is the roster's sampled one, never a fresh GetPlayerPed "
@@ -1426,11 +1860,38 @@ do
     function TriggerClientEvent(name, src, payload)
         sent[#sent + 1] = { name = name, src = src, payload = payload }
     end
+    -- THE DEV DUMP AND THE CLOCK. Both are natives the file now touches:
+    -- `brgunshopstock` prints what a match stocked, and GetGameTimer is half the
+    -- stock seed. Neither is under test here; they are stubbed so that loading
+    -- the file headless is possible at all.
+    local commands = {}
+    function RegisterCommand(name, fn) commands[name] = fn end
+    function GetGameTimer() return 1234567 end
 
     BR.Server = {
         matchOf = function(src)
             local e = roster[src]
             return e and matches[e.matchId] or nil
+        end,
+        eachMatch = function(fn)
+            local ids = {}
+            for id in pairs(matches) do ids[#ids + 1] = id end
+            table.sort(ids)
+            for _, id in ipairs(ids) do fn(matches[id]) end
+        end,
+        --- EVERYONE IN ONE MATCH, sorted, exactly as server/main.lua's is. The
+        --- shelf is shared, so this is who hears a purchase.
+        audience = function(m)
+            local out = {}
+            for src, e in pairs(roster) do
+                if e.matchId == m.id then out[#out + 1] = src end
+            end
+            table.sort(out)
+            return out
+        end,
+        notify = function(target, text, tone)
+            notices[#notices + 1] =
+                { src = target, text = text, tone = tone }
         end,
     }
     BR.Roster = { get = function(src) return roster[src] end }
@@ -1476,16 +1937,32 @@ do
     end
 
     local bagFull = false
+    --- THE AMMO POOLS ARE REAL HERE, because the counter now READS them: a
+    --- purchase is refused when the pool this bundle fills is already at
+    --- BR.Config.AmmoCaps. A stub that had no pools would exercise the
+    --- defensive branch and never the rule.
+    local pools = {}
     BR.Inv = {
+        of = function(src)
+            if not pools[src] then pools[src] = { ammo = {} } end
+            return pools[src]
+        end,
         give = function(src, stack, opts)
             given[#given + 1] = { src = src, stack = stack, opts = opts }
             if bagFull then return false, nil, 'carrymax' end
             return true, nil, nil
         end,
     }
+    --- THE LOOT PICKUP'S OWN REFUSAL SENTENCE, which the counter borrows rather
+    --- than copies -- owner, 2026-09-09: "same as we do for loot pickups". The
+    --- WORDING is server/loot.lua's and is under test in tools/test_loot.lua;
+    --- what this suite pins is that the counter CALLS it.
     BR.Loot = {
         dropForPlayer = function(src, stack)
             dropped[#dropped + 1] = { src = src, stack = stack }
+        end,
+        refusalText = function(reason)
+            return 'REFUSAL:' .. tostring(reason)
         end,
     }
 
@@ -1529,6 +2006,34 @@ do
         BR.Market.balances = {}
         BR.Market.hold, BR.Market.held = false, {}
         bagFull = false
+        pools = {}
+        -- THE SHELVES ARE KEYED BY MATCH ID AND NOTHING ELSE WOULD CLEAR THEM
+        -- BETWEEN CASES. This is the real hook the server file installs, called
+        -- for the same reason server/players.lua calls it: a match that is gone
+        -- has no shelves. Using it here also means the hook itself is exercised
+        -- by every case in this block rather than by one.
+        if handlers['br:match:destroyed'] then
+            handlers['br:match:destroyed']({ matchId = 1 })
+        end
+    end
+
+    --- EVERY SHELF IN MATCH 1, SET TO ONE NUMBER.
+    ---
+    --- ═══ WHY THE OTHER TESTS IN THIS BLOCK NEED THIS ═══
+    ---
+    --- A counter now holds between three and eight weapons for the whole match,
+    --- so "buy a Heavy Sniper" is a question about the shelf as well as about
+    --- the money. Every test below that is NOT about stock tops the shelves up
+    --- first, so that a roll which happened not to put a Heavy Sniper in Pillbox
+    --- Hill cannot fail an assertion about dying inside a DynamoDB write.
+    --- The stock rules are tested in their own block, on their own numbers.
+    --- @param n integer
+    local function stockAll(n)
+        local by = BR.Gunshop.stock(1, matches[1])
+        if not by then return end
+        for _, one in pairs(by) do
+            for id in pairs(one) do one[id] = n end
+        end
     end
 
     --- One player, standing at the Pillbox Hill counter, in a live match.
@@ -1546,6 +2051,11 @@ do
                 or { x = pillbox.x, y = pillbox.y, z = pillbox.z },
         }
         BR.Market.balances[src] = opts.balance or 5000
+        if opts.stock ~= false then quiet(stockAll, 99) end
+        if opts.ammo then
+            local inv = BR.Inv.of(src)
+            for pool, n in pairs(opts.ammo) do inv.ammo[pool] = n end
+        end
     end
 
     local function buy(src, id, extra)
@@ -1562,6 +2072,26 @@ do
             end
         end
         return nil
+    end
+
+    --- The refusal toast one player was sent, payload and all.
+    ---
+    --- IT IS A RAW NOTIFY RATHER THAN BR.Server.notify, and that is the thing
+    --- worth reading here: the `shop.denied` cue has to ride ON the payload so
+    --- it REPLACES br_ui's general warn sound rather than playing on top of it.
+    --- server/market.lua's own `refuse` carries the same three fields for the
+    --- same reason.
+    local function noticeFor(src)
+        for _, s in ipairs(sent) do
+            if s.name == BR.Net.NOTIFY and s.src == src then return s.payload end
+        end
+        return nil
+    end
+
+    --- What the stock table for match 1 says one counter holds.
+    local function shelfAt(storeId)
+        local by = BR.Gunshop.stock(1, matches[1])
+        return by and by[storeId] or nil
     end
 
     -- -----------------------------------------------------------------------
@@ -1693,9 +2223,33 @@ do
     player(20, { balance = 114 })
     buy(20, 'carbinerifle')
     ok(#charged == 0 and #given == 0, 'one Volt short buys nothing')
-    ok(#notices == 1 and notices[1].src == 20 and notices[1].price == 115,
-        "...and it is the ONE refusal that speaks, in the market's own words, "
-            .. 'through the one funnel that carries the shop.denied cue')
+
+    -- ═══ HIS SENTENCE, CHARACTER FOR CHARACTER ═══
+    --
+    -- Owner, 2026-09-09: "give them a toast that says You do not have enough
+    -- Volts for that item. Your balance is: {balance} Volts. remember the Volts
+    -- text and quantity must be our signature color."
+    --
+    -- RETYPED FROM HIS MESSAGE RATHER THAN READ OUT OF THE CONFIG, which is the
+    -- double-entry this suite already uses for the eleven anchors and the price
+    -- bands. Reading config/gunshop.lua here would assert that the string equals
+    -- itself; typing it from his message means a "helpful" tidy of the colon, a
+    -- dropped full stop or an invented word fails a test.
+    local sh = noticeFor(20)
+    ok(sh ~= nil and sh.text ==
+        'You do not have enough ~Volts~ for that item. '
+            .. 'Your balance is: ~114 Volts~.',
+        'it says exactly what he wrote, with his balance in it',
+        sh and sh.text)
+    ok(sh ~= nil and sh.tone == 'warn' and sh.cue == 'shop.denied',
+        '...and carries the refusal cue ON the payload, so one sound plays '
+            .. 'rather than the general warn sound and a second one')
+    ok(sh ~= nil and select(2, sh.text:gsub('~', '')) == 4,
+        'both the word and the figure are marked for the signature colour -- '
+            .. 'two pairs of tildes, which is what he asked for twice')
+    ok(sh ~= nil and sh.text:find('378', 1, true) == nil
+       and sh.text:find('more to buy', 1, true) == nil,
+        'and the sentence he called not good copy is gone from this counter')
 
     reset()
     player(21, { balance = 115 })
@@ -1703,7 +2257,7 @@ do
     ok(#charged == 1 and #given == 1,
         'spending your last Volt at the counter is a purchase, not an '
             .. 'overdraft')
-    ok(#notices == 0, 'and says nothing')
+    ok(noticeFor(21) == nil, 'and says nothing')
 
     -- -----------------------------------------------------------------------
     describe('the counter is open in a live match, to a living player')
@@ -1809,6 +2363,869 @@ do
     quiet(settleCharges)
     ok(#given == 1 and boughtFor(62) ~= nil,
         'a player who paid and then walked out of the shop still gets the gun')
+
+    -- -----------------------------------------------------------------------
+    describe('the shelf empties, and empties for everybody')
+    -- -----------------------------------------------------------------------
+    --
+    -- Owner, 2026-09-09: "Each shop should start the match with a random number
+    -- of weapons in stock ... between 3 and 8 total" / "If an item is out of
+    -- stock, the row should be locked and a price should not be shown".
+    reset()
+    player(70)
+    quiet(stockAll, 2)
+    local before = shelfAt('pillbox').carbinerifle
+    buy(70, 'carbinerifle')
+    ok(#charged == 1 and shelfAt('pillbox').carbinerifle == before - 1,
+        'a purchase takes one off that counter', shelfAt('pillbox').carbinerifle)
+
+    buy(70, 'carbinerifle')
+    ok(#charged == 2 and shelfAt('pillbox').carbinerifle == 0,
+        'and the second takes the last one')
+
+    buy(70, 'carbinerifle')
+    ok(#charged == 2 and #given == 2,
+        'the third press buys nothing, because there is nothing there')
+    ok(noticeFor(70) == nil,
+        '...in silence, because he asked for the row to be LOCKED with no '
+            .. 'price rather than for a sentence, and inventing one is the '
+            .. 'slop his standing rule refuses')
+
+    -- ═══ THE SHELF IS PER COUNTER, WHICH IS THE OTHER HALF OF S2 ═══
+    ok(shelfAt('pillbox').carbinerifle == 0
+       and shelfAt('cypress').carbinerifle == 2,
+        'emptying Pillbox Hill does not empty the counter across town')
+
+    -- ═══ AMMO IS NEVER COUNTED, HOWEVER MANY TIMES IT IS BOUGHT ═══
+    reset()
+    player(71)
+    for _ = 1, 12 do buy(71, 'ammo_smg') end
+    ok(#charged == 12 and #given == 12,
+        'twelve boxes of SMG ammo is twelve purchases -- "no limited stock on '
+            .. 'ammo"')
+    ok(shelfAt('pillbox').ammo_smg == nil,
+        'and no ammo row is a key on any shelf at all')
+
+    -- -----------------------------------------------------------------------
+    describe('the unit comes off the shelf BEFORE the money moves')
+    -- -----------------------------------------------------------------------
+    --
+    -- A charge is a DynamoDB round trip of up to six seconds and the shelf is
+    -- shared. Decrementing after the callback would let two players pressing on
+    -- the last Carbine inside one round trip both read a stock of 1, both pass
+    -- the predicate, and both get a gun that only existed once.
+    reset()
+    player(72)
+    player(73)
+    quiet(stockAll, 1)
+    BR.Market.hold = true
+    buy(72, 'carbinerifle')
+    ok(shelfAt('pillbox').carbinerifle == 0,
+        'the shelf is short the moment the charge is issued, not when it lands')
+    buy(73, 'carbinerifle')
+    quiet(settleCharges)
+    ok(#charged == 1 and #given == 1,
+        'so the second player inside the round trip is refused rather than '
+            .. 'being sold the same gun')
+
+    -- ...AND IT GOES BACK IF NOTHING IS HANDED OVER.
+    reset()
+    player(74, { balance = 0 })
+    quiet(stockAll, 1)
+    -- A charge that reaches the ledger and is refused there, rather than one
+    -- refused by canBuy: the reservation has already happened by then.
+    BR.Market.balances[74] = 5000
+    BR.Market.hold = true
+    buy(74, 'carbinerifle')
+    ok(shelfAt('pillbox').carbinerifle == 0, 'reserved while in flight')
+    BR.Market.balances[74] = 0
+    quiet(settleCharges)
+    ok(#charged == 0 and #given == 0, 'the charge is refused at the ledger')
+    ok(shelfAt('pillbox').carbinerifle == 1,
+        '...and the gun goes back on the shelf, because nobody was handed one')
+
+    -- THE FORFEIT PATH TOO. It still costs that player the Volts -- there is no
+    -- refund path anywhere in this feature -- but the gun was never handed to
+    -- anybody, so a shelf that stayed short would be wrong about the world.
+    reset()
+    player(75)
+    quiet(stockAll, 1)
+    BR.Market.hold = true
+    buy(75, 'heavysniper')
+    roster[75].state = BR.PlayerState.OUT
+    quiet(settleCharges)
+    ok(#charged == 1 and #given == 0, 'the debit lands and the item does not')
+    ok(shelfAt('pillbox').heavysniper == 1,
+        '...and the shelf is whole again, because nothing left it')
+
+    -- -----------------------------------------------------------------------
+    describe('every client in the match is told what is left')
+    -- -----------------------------------------------------------------------
+    --
+    -- The shelf is SHARED, so the player who takes the last Carbine takes it
+    -- from everybody in that match. A client that only heard about its own
+    -- purchases would show a row as available that nobody can buy.
+    reset()
+    player(80)
+    player(81)
+    quiet(BR.Gunshop.sync)
+
+    local fulls, deltas = 0, 0
+    for _, s in ipairs(sent) do
+        if s.name == BR.Net.GUNSHOP_STOCK then
+            if s.payload.full == true then fulls = fulls + 1
+            else deltas = deltas + 1 end
+        end
+    end
+    ok(fulls == 2 and deltas == 0,
+        'both players are sent the whole picture once', fulls)
+
+    -- ...AND ONLY ONCE. `told` is what stops a second of heartbeat becoming a
+    -- second copy of eleven shelves on the wire.
+    quiet(BR.Gunshop.sync)
+    quiet(BR.Gunshop.sync)
+    fulls = 0
+    for _, s in ipairs(sent) do
+        if s.name == BR.Net.GUNSHOP_STOCK and s.payload.full == true then
+            fulls = fulls + 1
+        end
+    end
+    ok(fulls == 2, 'and not again on every tick', fulls)
+
+    sent = {}
+    quiet(stockAll, 3)
+    buy(80, 'carbinerifle')
+    local heard = {}
+    for _, s in ipairs(sent) do
+        if s.name == BR.Net.GUNSHOP_STOCK then
+            heard[s.src] = s.payload
+        end
+    end
+    ok(heard[80] ~= nil and heard[81] ~= nil,
+        "one player's purchase reaches the other player's client")
+    ok(heard[81] ~= nil and heard[81].full ~= true
+       and heard[81].stores.pillbox.carbinerifle == 2,
+        '...as a delta naming the counter, the row and what is left of it',
+        heard[81] and heard[81].stores.pillbox.carbinerifle)
+
+    -- A MATCH THAT IS GONE HAS NO SHELVES, and nothing else would ever clear
+    -- this table -- it is keyed by match id and matches are minted forever.
+    handlers['br:match:destroyed']({ matchId = 1 })
+    ok(BR.Gunshop.stock(1) == nil, 'a destroyed match takes its shelves with it')
+
+    -- -----------------------------------------------------------------------
+    describe('an ammo pool that is already full')
+    -- -----------------------------------------------------------------------
+    --
+    -- Owner, 2026-09-09: "If someone is already carrying the max of an ammo, it
+    -- should be locked out in the menu. If they still try to purchase it,
+    -- reject the purchase and give them a toast explaining they already have
+    -- the max (same as we do for loot pickups)".
+    reset()
+    player(90, { ammo = { [BR.AmmoType.SMG] = BR.Config.AmmoCaps[BR.AmmoType.SMG] } })
+    buy(90, 'ammo_smg')
+    ok(#charged == 0 and #given == 0,
+        'a pool at its cap takes no money and hands over nothing -- it used to '
+            .. 'take the Volts and leave the bundle on the floor')
+    ok(#notices == 1 and notices[1].src == 90
+       and notices[1].text == 'REFUSAL:ammofull'
+       and notices[1].tone == 'warn',
+        "...and says so in the LOOT PICKUP'S own sentence, called rather than "
+            .. 'copied, so the day he rewords one both move',
+        notices[1] and notices[1].text)
+
+    -- ONE ROUND SHORT OF THE CAP STILL BUYS. The bundle clamps and the
+    -- remainder drops, exactly as a piece of ammo off the floor does; the
+    -- refusal is for a pool that is FULL, which is what he wrote.
+    reset()
+    player(91, { ammo = { [BR.AmmoType.SMG] = BR.Config.AmmoCaps[BR.AmmoType.SMG] - 1 } })
+    buy(91, 'ammo_smg')
+    ok(#charged == 1 and #given == 1, 'one round short of the cap is a sale')
+
+    -- AND A WEAPON IS NEVER REFUSED FOR THIS, whatever the pools hold.
+    reset()
+    player(92, { ammo = { [BR.AmmoType.MEDIUM] = BR.Config.AmmoCaps[BR.AmmoType.MEDIUM] } })
+    buy(92, 'carbinerifle')
+    ok(#charged == 1, 'a full Medium pool does not stop you buying a rifle')
+
+    -- -----------------------------------------------------------------------
+    describe('the ammo purchase says something, and the weapon purchase does not')
+    -- -----------------------------------------------------------------------
+    --
+    -- Owner, 2026-09-09: "when ammo is purchased show a success toast: You
+    -- purchased {item} for {cost}. otherwise they have no way to know anything
+    -- went through."
+    reset()
+    player(95)
+    buy(95, 'ammo_smg')
+    ok(#notices == 1 and notices[1].src == 95
+       and notices[1].text == 'You purchased SMG Ammo x60 for ~20 Volts~.'
+       and notices[1].tone == 'success',
+        'buying ammo says exactly what he wrote, with the figure marked for '
+            .. 'the signature colour',
+        notices[1] and notices[1].text)
+
+    reset()
+    player(96)
+    buy(96, 'carbinerifle')
+    ok(#notices == 0,
+        'and buying a WEAPON says nothing, because the clerk hands it over -- '
+            .. 'which is his scoping rather than an omission')
+end
+
+
+-- ---------------------------------------------------------------------------
+-- The counter's CHROME, stood up for real
+-- ---------------------------------------------------------------------------
+--
+-- ═══ WHY THIS IS A SANDBOX AND NOT ANOTHER GREP ═══
+--
+-- The block above checks client/gunshop.lua by reading its source, which is the
+-- pattern this project uses for client files because they register loop bands
+-- and keypress listeners at load. That pattern met its limit on 2026-09-09: the
+-- owner playtested the counter and filed eleven separate reports about what the
+-- menu LOOKED LIKE, and every one of them is a fact about ROWS -- their order,
+-- their labels, their locks, their icons -- that a presence check on an
+-- identifier cannot see. A grep for `LeftBadge` is equally true whether the
+-- badge is a padlock or a gun and whether it is on the right row.
+--
+-- So client/menu.lua and client/gunshop.lua are both LOADED here against a stub
+-- of the vendored library, and the menu is opened the way a player opens it:
+-- resource start, walk into range, let the reconciler build a clerk, press the
+-- interact key. The assertions are then about the items that came out.
+--
+-- WHAT THE STUB IS AND IS NOT. It is an honest model of the ScaleformUI entry
+-- points this project calls -- New, AddItem, RightLabel, LeftBadge, Enabled,
+-- Description -- and it is NOT a model of the movie. Nothing here can tell you
+-- what the banner looks like, whether GTA's HUD_COLOUR_GOLD reads as our gold,
+-- or whether a ped voices a speech line. Those are playtest questions and they
+-- are named as such in the handover rather than faked here.
+do
+    -- ═══ THE VENDORED LIBRARY, MODELLED ═══
+    local lastMenu = nil
+
+    UIMenu = {}
+    UIMenu.__index = UIMenu
+    function UIMenu.New(title, subTitle, x, y, glare, txd, txn)
+        lastMenu = setmetatable({
+            Title = title, SubTitle = subTitle,
+            TxtDictionary = txd or '', TxtName = txn or '',
+            Items = {},
+            -- THE TWO DEFAULTS THE OWNER REPORTED. The real library ships a
+            -- cursor on and two instructional buttons in the list, so this stub
+            -- ships the same two: turning them off is then something a test can
+            -- watch happen rather than assume.
+            InstructionalButtons = { 'select', 'back' },
+            _mouse = true, _edge = true, _visible = false,
+        }, UIMenu)
+        return lastMenu
+    end
+    function UIMenu:MouseControlsEnabled(v)
+        if v ~= nil then self._mouse = v end
+        return self._mouse
+    end
+    function UIMenu:MouseEdgeEnabled(v)
+        if v ~= nil then self._edge = v end
+        return self._edge
+    end
+    function UIMenu:SetBannerColor(c) self._bannerColor = c end
+    function UIMenu:SetBannerSprite(d, n)
+        self.TxtDictionary = d
+        self.TxtName = n
+    end
+    function UIMenu:CounterColor(c) self._counter = c end
+    function UIMenu:SubtitleColor(n) self._subtitle = n end
+    function UIMenu:AddItem(i)
+        self.Items[#self.Items + 1] = i
+        i.ParentMenu = self
+    end
+    function UIMenu:Visible(v)
+        if v ~= nil then self._visible = v end
+        return self._visible
+    end
+
+    UIMenuItem = {}
+    UIMenuItem.__index = UIMenuItem
+    function UIMenuItem.New(text, description, main, highlight)
+        return setmetatable({
+            _text = text, _Description = description,
+            _main = main, _highlight = highlight,
+            _Enabled = true, ItemId = 0,
+        }, UIMenuItem)
+    end
+    function UIMenuItem:RightLabel(t)
+        if t ~= nil then self._rightLabel = tostring(t) end
+        return self._rightLabel
+    end
+    function UIMenuItem:LeftBadge(b)
+        if tonumber(b) then self._leftBadge = tonumber(b) end
+        return self._leftBadge
+    end
+    function UIMenuItem:Enabled(b)
+        if b ~= nil then self._Enabled = b end
+        return self._Enabled
+    end
+    function UIMenuItem:Description(s)
+        if s ~= nil then self._Description = tostring(s) end
+        return self._Description
+    end
+    function UIMenuItem:MainColor(c) self._main = c end
+
+    -- ItemId 6 AND A Jumpable FLAG are the two things that make a separator a
+    -- separator rather than a row somebody disabled. The real GoUp and GoDown
+    -- skip on exactly that pair.
+    UIMenuSeparatorItem = {}
+    UIMenuSeparatorItem.__index = UIMenuSeparatorItem
+    setmetatable(UIMenuSeparatorItem, { __index = UIMenuItem })
+    function UIMenuSeparatorItem.New(text, jumpable)
+        local b = UIMenuItem.New(text, '', nil, nil)
+        b.Jumpable = jumpable
+        b.ItemId = 6
+        return setmetatable(b, UIMenuSeparatorItem)
+    end
+
+    MenuHandler = {}
+    BadgeStyle = { CUSTOM = -1, NONE = 0, LOCK = 1, AMMO = 13, GUN = 20 }
+
+    SColor = {}
+    -- THE EIGHT-DIGIT RULE, MODELLED THE WAY THE LIBRARY MODELS IT: an assert on
+    -- the `#` and nothing else.
+    function SColor.FromHex(h)
+        assert(type(h) == 'string' and h:sub(1, 1) == '#', 'not a hex')
+        return { hex = h }
+    end
+    function SColor.FromArgb(a, r, g, b) return { a = a, r = r, g = g, b = b } end
+
+    assert(loadfile(ROOT .. 'br_core/client/menu.lua'))()
+
+    -- ═══ THE HOST, MODELLED ═══
+    local loops, keys, handlers, cmds = {}, {}, {}, {}
+    local dui, sfx, sent, speech, drawn = {}, {}, {}, {}, {}
+    local peds, nextPed = {}, 100
+    local me = { x = 0.0, y = 0.0, z = 0.0 }
+    local invAmmo = {}
+
+    BR.Loop = {
+        SLOW = 'slow', TICK = 'tick', FRAME = 'frame',
+        register = function(_, name, fn) loops[name] = fn end,
+    }
+    BR.Keys = { on = function(k, fn) keys[k] = fn end, uiScreen = nil }
+    BR.Dui = {
+        page = function() return { w = 512, h = 256 } end,
+        send = function(_, d) dui[#dui + 1] = d end,
+        drawFace = function(_, _, oy, oz, w)
+            drawn[#drawn + 1] = { oy = oy, oz = oz, w = w }
+        end,
+        ready = function() return true end,
+    }
+    BR.Native = { keyLabelForCommand = function() return 'E' end }
+    BR.Sfx = { play = function(k) sfx[#sfx + 1] = k end }
+    BR.Inv = { local_ = function() return { slots = {}, ammo = invAmmo } end }
+    BR.State = {
+        match = { state = BR.MatchState.PLAYING },
+        me    = { state = BR.PlayerState.ALIVE },
+    }
+    BR.ShopSolve = {
+        priceLine = function(p, c) return ('%d %s'):format(p or 0, c or 'Volts') end,
+    }
+    -- GUNSHOP_STOCK IS SUPPLIED HERE AND IS NOT IN protocol.lua YET, which is
+    -- exactly what the guard in client/gunshop.lua is for: with the constant
+    -- absent nothing registers, `stock` stays nil, and every row shows its
+    -- price. This sandbox supplies it so the stocked behavior can be asserted
+    -- before the wire exists.
+    BR.Net = {
+        GUNSHOP_BUY    = 'br:gunshop:buy',
+        GUNSHOP_BOUGHT = 'br:gunshop:bought',
+        GUNSHOP_STOCK  = 'br:gunshop:stock',
+        MARKET_STATE   = 'br:market:state',
+    }
+
+    function AddEventHandler(name, fn) handlers[name] = fn end
+    function RegisterNetEvent() end
+    function RegisterCommand(name, fn) cmds[name] = fn end
+    function GetCurrentResourceName() return 'br_core' end
+    function TriggerEvent() end
+    function TriggerServerEvent(name, payload)
+        sent[#sent + 1] = { name = name, payload = payload }
+    end
+    function PlayerPedId() return 1 end
+    function GetEntityCoords(e)
+        if e == 1 then return me end
+        return peds[e] or { x = 0.0, y = 0.0, z = 0.0 }
+    end
+    function DoesEntityExist(e) return (e == 1 or peds[e] ~= nil) and 1 or 0 end
+    function GetGameTimer() return 1000 end
+    function GetHashKey(s) return #tostring(s) end
+    function IsModelValid() return 1 end
+    function IsModelAPed() return 1 end
+    function RequestModel() end
+    function HasModelLoaded() return 1 end
+    function SetModelAsNoLongerNeeded() end
+    function GetGroundZFor_3dCoord(_, _, z) return 1, z - 0.12 end
+    function CreatePed(_, _, x, y, z)
+        nextPed = nextPed + 1
+        peds[nextPed] = { x = x, y = y, z = z }
+        return nextPed
+    end
+    function DeleteEntity(e) peds[e] = nil end
+    function SetEntityHeading() end
+    function SetEntityCoordsNoOffset(e, x, y, z) peds[e] = { x = x, y = y, z = z } end
+    function PlayPedAmbientSpeechWithVoiceNative(ped, name, voice, params)
+        speech[#speech + 1] =
+            { ped = ped, name = name, voice = voice, params = params }
+    end
+
+    -- ═══ THE HANDOVER'S NATIVES ═══
+    local props, attaches, anims, cleared = {}, {}, {}, {}
+    function GetWeapontypeModel(h) return 900000 + (tonumber(h) or 0) % 1000 end
+    function CreateObjectNoOffset(model, x, y, z, isNetwork, netMission)
+        nextPed = nextPed + 1
+        peds[nextPed] = { x = x, y = y, z = z }
+        props[#props + 1] = { obj = nextPed, model = model,
+                              isNetwork = isNetwork, netMission = netMission,
+                              alive = true }
+        return nextPed
+    end
+    function GetPedBoneIndex(_, id) return 40000 + id end
+    function AttachEntityToEntity(obj, parent, bone)
+        attaches[#attaches + 1] = { obj = obj, parent = parent, bone = bone }
+    end
+    function DetachEntity(obj)
+        for _, p in ipairs(props) do if p.obj == obj then p.detached = true end end
+    end
+    function SetEntityCollision() end
+    function RequestAnimDict() end
+    function HasAnimDictLoaded() return 1 end
+    function TaskPlayAnim(ped, dict, clip, _, _, ms, flag)
+        anims[#anims + 1] =
+            { ped = ped, dict = dict, clip = clip, ms = ms, flag = flag }
+    end
+    function ClearPedTasks(ped) cleared[#cleared + 1] = ped end
+    -- WRAPPED RATHER THAN REPLACED, because the ped teardown above is the same
+    -- native and both halves have to keep working.
+    local baseDelete = DeleteEntity
+    function DeleteEntity(e)
+        baseDelete(e)
+        for _, p in ipairs(props) do if p.obj == e then p.alive = false end end
+    end
+    Citizen = {
+        -- RUN INLINE. buildClerk's thread only yields on a model request and
+        -- this stub answers immediately, so running it here is the same
+        -- sequence with the waiting taken out.
+        CreateThread = function(fn) fn() end,
+        Wait = function() end,
+    }
+
+    assert(loadfile(ROOT .. 'br_core/client/gunshop.lua'))()
+    handlers['onClientResourceStart']('br_core')
+
+    local storeById = {}
+    for _, s in ipairs(G.stores) do storeById[s.id] = s end
+
+    --- Stand at a counter and let the reconciler build its clerk.
+    local function standAt(id)
+        local s = storeById[id]
+        me = { x = s.x, y = s.y, z = s.z }
+        loops['gunshop.clerks']()
+        loops['gunshop.prompt']()
+    end
+
+    --- Leave, which is what closes the menu.
+    local function walkAway()
+        me = { x = 0.0, y = 0.0, z = 0.0 }
+        loops['gunshop.prompt']()
+    end
+
+    local function press() keys['interact'](true) end
+
+    --- A console command prints a table by design; the suite does not want it.
+    local realPrint2 = print
+    local function hush(fn, ...)
+        _G.print = function() end
+        local okc, err = pcall(fn, ...)
+        _G.print = realPrint2
+        if not okc then error(err, 0) end
+    end
+
+    --- Every ordinary row of the built menu, keyed by its visible label.
+    local function shelf()
+        local out = {}
+        if not lastMenu then return out end
+        for _, it in ipairs(lastMenu.Items) do
+            if it.ItemId ~= 6 then out[it._text] = it end
+        end
+        return out
+    end
+
+    --- One row by catalogue id, through the same labeller the menu used.
+    local function rowItem(id)
+        local r = S.rowById(select(1, G.build()), id)
+        if not r then return nil end
+        return shelf()[S.menuLabel(r)]
+    end
+
+    -- -----------------------------------------------------------------------
+    describe('the plate says two lines now, and the second one is his')
+    -- -----------------------------------------------------------------------
+    standAt('pillbox')
+    local plate
+    for _, d in ipairs(dui) do if d.show == true then plate = d end end
+    ok(plate ~= nil, 'the plate went up at the counter')
+    ok(plate ~= nil and plate.hint == 'PRESS TO OPEN',
+        'and carries his second line, verbatim and in his own caps (D2)',
+        plate and tostring(plate.hint) or 'no plate')
+    ok(plate ~= nil and plate.label == G.menuTitle,
+        'the title is still config/gunshop.lua\'s one word, not a second copy '
+            .. 'of it typed here (D2, M8)')
+
+    -- -----------------------------------------------------------------------
+    describe('the chrome the owner filed six reports about')
+    -- -----------------------------------------------------------------------
+    press()
+    ok(lastMenu ~= nil and lastMenu._visible == true, 'the menu opened')
+    ok(lastMenu._mouse == false,
+        'M1: the cursor is off -- UIMenu:ProcessMouse returns on that flag '
+            .. 'before it reaches SetMouseCursorActiveThisFrame')
+    ok(lastMenu._edge == false,
+        '...and so is the edge-of-screen camera swing that rides with it')
+    ok(#lastMenu.InstructionalButtons == 0,
+        'M9: the instructional button LIST is empty, which is what actually '
+            .. 'removes them -- HasInstructionalButtons(false) is a no-op in '
+            .. '5.8.1 and would have looked like a fix')
+    ok(lastMenu.TxtDictionary ~= '' and lastMenu.TxtName ~= '',
+        'M2: the banner has a texture at all, which is arguments six and seven '
+            .. 'of UIMenu.New -- passing five is what left it a bare bar',
+        ('%s / %s'):format(tostring(lastMenu.TxtDictionary),
+                           tostring(lastMenu.TxtName)))
+    ok(lastMenu._bannerColor == nil,
+        '...and the cyan is NOT painted over it, because the movie tints the '
+            .. 'sprite with that color')
+    ok(lastMenu.Title == G.menuTitle,
+        'M8: the title comes from config, so his one word changes the banner '
+            .. 'and the world plate together')
+
+    -- -----------------------------------------------------------------------
+    describe('M3: top-down by category, legendary at the bottom')
+    -- -----------------------------------------------------------------------
+    do
+        local heads = {}
+        for _, it in ipairs(lastMenu.Items) do
+            if it.ItemId == 6 then heads[#heads + 1] = it end
+        end
+        ok(#heads >= 4, 'there are category headers at all', #heads)
+        for i = 1, #heads do
+            if heads[i].Jumpable ~= true then
+                ok(false, 'every header is jumpable, so the arrow keys skip it '
+                    .. '-- a disabled row would be one the player can sit on')
+                break
+            end
+            if i == #heads then
+                ok(true, 'every header is jumpable, so the arrow keys skip it '
+                    .. '-- a disabled row would be one the player can sit on')
+            end
+        end
+        ok(heads[1] and heads[1]._text == 'Ammo',
+            'the top group is the ammunition -- "the top being the most common '
+                .. '... they sell"',
+            heads[1] and heads[1]._text or 'none')
+        ok(heads[#heads] and heads[#heads]._text == 'Legendary',
+            '...and the bottom one is Legendary, in BR.RarityInfo\'s own word',
+            heads[#heads] and heads[#heads]._text or 'none')
+
+        -- THE ROWS ARE UNDER THE RIGHT HEADERS, which is the half a count of
+        -- separators would not catch.
+        local group, wrong = nil, {}
+        local byLabel = {}
+        for _, r in ipairs(select(1, G.build())) do byLabel[S.menuLabel(r)] = r end
+        for _, it in ipairs(lastMenu.Items) do
+            if it.ItemId == 6 then
+                group = it._text
+            else
+                local r = byLabel[it._text]
+                local want = (r.kind == BR.ItemKind.AMMO) and 'Ammo'
+                    or BR.RarityInfo[r.rarity].label
+                if group ~= want then wrong[#wrong + 1] = it._text end
+            end
+        end
+        ok(#wrong == 0, 'and every row sits under the header for its own group',
+            #wrong > 0 and table.concat(wrong, ', ') or nil)
+    end
+
+    -- -----------------------------------------------------------------------
+    describe('M4 and M7: an icon on every row, and a gold price')
+    -- -----------------------------------------------------------------------
+    do
+        local noBadge, notGold = {}, {}
+        for label, it in pairs(shelf()) do
+            if it._leftBadge == nil then noBadge[#noBadge + 1] = label end
+            if type(it._rightLabel) ~= 'string'
+                or it._rightLabel:sub(1, 8) ~= '~HC_109~' then
+                notGold[#notGold + 1] = label
+            end
+        end
+        ok(#noBadge == 0, 'M4: every row carries a left badge',
+            #noBadge > 0 and table.concat(noBadge, ', ') or nil)
+        ok(#notGold == 0,
+            'M7: and every price is marked with the HUD gold token -- the '
+                .. 'right label is pushed as a text command with no color '
+                .. 'argument, so a token in the string is the only route',
+            #notGold > 0 and table.concat(notGold, ', ') or nil)
+
+        local gun  = rowItem('carbinerifle')
+        local ammo = rowItem('ammo_' .. BR.AmmoType.LIGHT)
+        ok(gun and gun._leftBadge == BadgeStyle.GUN,
+            'a gun wears the gun badge', gun and gun._leftBadge or 'no row')
+        ok(ammo and ammo._leftBadge == BadgeStyle.AMMO,
+            'and an ammo row wears the ammo badge',
+            ammo and ammo._leftBadge or 'no row')
+    end
+
+    -- -----------------------------------------------------------------------
+    describe('L5: an ammo row says what it is for, and nothing else does')
+    -- -----------------------------------------------------------------------
+    do
+        local light = rowItem('ammo_' .. BR.AmmoType.LIGHT)
+        ok(light ~= nil and light._Description ~= nil
+            and light._Description ~= '',
+            'the focused ammo row has a description at all')
+        -- ═══ ALL WEAPONS, NOT JUST THE ONES ON SALE ═══
+        --
+        -- His reason is the LOADOUT, and a loadout is mostly floor loot. The
+        -- shop only stocks RARE and above, so a list drawn from the catalogue
+        -- would omit every pistol and SMG the map hands out -- which is most of
+        -- what the player standing there is carrying. `Pistol` is COMMON and is
+        -- not for sale at any counter, so its presence is the proof.
+        ok(light ~= nil and light._Description:find('Pistol', 1, true) ~= nil,
+            'and it lists weapons the shop does NOT sell, because the customer '
+                .. 'is carrying those too',
+            light and light._Description or 'none')
+        ok(S.rowById(select(1, G.build()), 'pistol') == nil,
+            '...proven by the Pistol not being on sale anywhere')
+
+        local gun = rowItem('carbinerifle')
+        ok(gun ~= nil and (gun._Description == nil or gun._Description == ''),
+            'a WEAPON row still says nothing -- he asked for this on ammo rows '
+                .. 'only, and a sentence per gun would be thirty pieces of '
+                .. 'copy he did not ask for')
+    end
+
+    -- -----------------------------------------------------------------------
+    describe('P1: the clerk speaks when the menu opens')
+    -- -----------------------------------------------------------------------
+    ok(#speech >= 1, 'something was said', #speech)
+    ok(speech[#speech] and speech[#speech].name == 'SHOP_SELL',
+        'and it is the line whose NAME is the thing he asked for -- '
+            .. '"something about selling product"',
+        speech[#speech] and speech[#speech].name or 'nothing')
+    ok(speech[#speech] and speech[#speech].voice
+        == 'S_M_Y_AMMUCITY_01_WHITE_MINI_01',
+        'named with the voice that HAS that line: the model declares a voice '
+            .. 'GROUP whose two members carry different speech sets, so an '
+            .. 'unnamed voice is a coin flip',
+        speech[#speech] and speech[#speech].voice or 'none')
+
+    -- -----------------------------------------------------------------------
+    describe('L1: a row they cannot afford is locked but still pressable')
+    -- -----------------------------------------------------------------------
+    do
+        walkAway()
+        handlers[BR.Net.MARKET_STATE]({ balance = 0 })
+        standAt('pillbox')
+        press()
+        local gun = rowItem('carbinerifle')
+        ok(gun ~= nil and gun._leftBadge == BadgeStyle.LOCK,
+            'the padlock is on it')
+        -- ═══ AND THIS IS WHY IT IS NOT A DISABLED ROW ═══
+        --
+        -- He asked for a lock AND a toast on the same press. UIMenu:SelectItem
+        -- returns on the Enabled check BEFORE Item.Activated runs, so a
+        -- disabled row can never reach the server -- and the toast has to be
+        -- composed by the server, which is the half that holds the ledger.
+        ok(gun ~= nil and gun._Enabled ~= false,
+            '...and the row still reaches the server, because a disabled row '
+                .. 'cannot raise the toast he asked for')
+        gun.Activated()
+        ok(sent[#sent] and sent[#sent].name == BR.Net.GUNSHOP_BUY
+            and sent[#sent].payload.id == 'carbinerifle',
+            'pressing it asks the server, which is the half that can say why '
+                .. 'not')
+
+        walkAway()
+        handlers[BR.Net.MARKET_STATE]({ balance = 999999 })
+        standAt('pillbox')
+        press()
+        local rich = rowItem('carbinerifle')
+        ok(rich ~= nil and rich._leftBadge == BadgeStyle.GUN,
+            'and the lock comes off again when they can pay')
+    end
+
+    -- -----------------------------------------------------------------------
+    describe('L2: a full ammo pool is locked out')
+    -- -----------------------------------------------------------------------
+    do
+        invAmmo[BR.AmmoType.LIGHT] = BR.Config.AmmoCaps[BR.AmmoType.LIGHT]
+        walkAway()
+        standAt('pillbox')
+        press()
+        local light = rowItem('ammo_' .. BR.AmmoType.LIGHT)
+        local heavy = rowItem('ammo_' .. BR.AmmoType.HEAVY)
+        ok(light ~= nil and light._leftBadge == BadgeStyle.LOCK,
+            'the pool they are already carrying the maximum of wears the lock')
+        ok(heavy ~= nil and heavy._leftBadge == BadgeStyle.AMMO,
+            '...and the one they are not does not')
+        ok(light ~= nil and light._Enabled ~= false,
+            'and it is still pressable, so the server can refuse it in the '
+                .. 'same words a full pickup already uses')
+        invAmmo[BR.AmmoType.LIGHT] = nil
+    end
+
+    -- -----------------------------------------------------------------------
+    describe('S3 and S4: an empty shelf, and a clerk who says so')
+    -- -----------------------------------------------------------------------
+    do
+        local all = select(1, G.build())
+        local out = {}
+        for _, r in ipairs(all) do
+            if r.kind == BR.ItemKind.WEAPON then out[r.id] = 0 end
+        end
+        -- A COUNT ON AN AMMO ROW IS IGNORED RATHER THAN OBEYED. "They will have
+        -- no limited stock on ammo."
+        out['ammo_' .. BR.AmmoType.LIGHT] = 0
+
+        walkAway()
+        handlers[BR.Net.GUNSHOP_STOCK]({ stock = { pillbox = out } })
+        standAt('pillbox')
+        press()
+
+        local gun = rowItem('carbinerifle')
+        ok(gun ~= nil and gun._rightLabel == 'Out of Stock',
+            'S3: the price is replaced by his own words, verbatim',
+            gun and gun._rightLabel or 'no row')
+        ok(gun ~= nil and gun._Enabled == false,
+            '...and the row is genuinely locked. He asked for no toast on this '
+                .. 'one, so disabling it is right: the library plays its error '
+                .. 'beep and nothing else happens')
+        ok(gun ~= nil and gun._leftBadge == BadgeStyle.LOCK,
+            'and it wears the padlock')
+
+        local light = rowItem('ammo_' .. BR.AmmoType.LIGHT)
+        ok(light ~= nil and light._Enabled ~= false
+            and light._rightLabel ~= 'Out of Stock',
+            'ammo is never sold out, whatever the ledger says about it')
+
+        ok(speech[#speech] and speech[#speech].name == 'SHOP_OUT_OF_STOCK',
+            'S4: with every gun gone the clerk plays the line whose name is '
+                .. 'exactly that case, rather than a sentence we wrote for him',
+            speech[#speech] and speech[#speech].name or 'nothing')
+
+        -- ANOTHER COUNTER IS NOT AFFECTED, which is S2 in one assertion: the
+        -- ledger is per store and the menu is repainted per open.
+        walkAway()
+        standAt('hawick')
+        press()
+        local elsewhere = rowItem('carbinerifle')
+        ok(elsewhere ~= nil and elsewhere._rightLabel ~= 'Out of Stock',
+            'S2: the shelf is per counter -- walking to another shop repaints '
+                .. 'the same one menu against that shop\'s ledger')
+    end
+
+    -- -----------------------------------------------------------------------
+    describe('P2: the handover, and what is skipped for ammo')
+    -- -----------------------------------------------------------------------
+    do
+        walkAway()
+        handlers[BR.Net.GUNSHOP_STOCK]({ stock = {} })
+        standAt('pillbox')
+        press()
+
+        local before = #speech
+        handlers[BR.Net.GUNSHOP_BOUGHT]({ row = 'carbinerifle' })
+        ok(#speech == before + 1 and speech[#speech].name == 'GUNSH_BOUGHT',
+            'a gun purchase gets a remark from the clerk',
+            speech[#speech] and speech[#speech].name or 'nothing')
+        ok(speech[#speech].voice == 'S_M_Y_AMMUCITY_01_WHITE_01',
+            '...from the FULL voice, which is the bank that has that line -- '
+                .. 'the MINI voice does not')
+        ok(sfx[#sfx] == G.cue, 'and the purchase cue still plays')
+
+        ok(#props == 1, 'and a prop was put in his hand', #props)
+        -- ═══ NOT A NETWORK ENTITY, AND THAT IS THE ONE THING HE ASKED FOR THAT
+        --     CANNOT BE BUILT ═══
+        --
+        -- `sv_entityLockdown relaxed` refuses a client-created networked entity
+        -- outright, and even with it off the clerk himself is a LOCAL ped that
+        -- exists on one machine -- so there is no handle for a remote viewer to
+        -- attach anything to. This assertion is what stops somebody "fixing"
+        -- that flag later and getting a prop that silently never appears.
+        ok(props[1].isNetwork == false,
+            '...client-local, because a networked one would be deleted by the '
+                .. 'platform before any resource saw it')
+        -- THE SAME PED THE REMARK CAME OUT OF, which is what ties the prop to
+        -- the clerk rather than to some entity that merely exists.
+        ok(#attaches == 1 and attaches[1].obj == props[1].obj
+            and attaches[1].parent == speech[#speech].ped
+            and attaches[1].parent ~= PlayerPedId(),
+            'attached to the clerk who just spoke, not to the player')
+        ok(#attaches == 1 and attaches[1].bone == 40000 + 57005,
+            '...at the INDEX GetPedBoneIndex returned for SKEL_R_Hand, never '
+                .. 'the bone id itself, which attaches to the wrong bone in '
+                .. 'silence',
+            #attaches == 1 and attaches[1].bone or 'none')
+        ok(#anims == 1 and anims[1].clip == 'givetake1_a',
+            'the give gesture plays', #anims == 1 and anims[1].clip or 'none')
+        ok(#anims == 1 and anims[1].flag == 48,
+            '...upper body only, so a counter clerk cannot walk out of position')
+        ok(props[1].detached == true and props[1].alive == false,
+            'P2 step 4: and the prop is detached and deleted when he is done')
+        ok(#cleared >= 1, '...and his tasks cleared with it')
+
+        before = #speech
+        local n = #sfx
+        local hadProps = #props
+        handlers[BR.Net.GUNSHOP_BOUGHT]({ row = 'ammo_' .. BR.AmmoType.LIGHT })
+        ok(#speech == before,
+            'P2 step 5: an AMMO purchase says nothing')
+        ok(#props == hadProps, '...and presents nothing')
+        ok(#sfx == n + 1, '...but still makes the noise a purchase makes')
+    end
+
+    -- -----------------------------------------------------------------------
+    describe('D1: the tool he asked for actually moves the plate')
+    -- -----------------------------------------------------------------------
+    do
+        ok(cmds['brgunplate'] ~= nil, 'the command exists')
+        ok(cmds['brgunclerk'] ~= nil, 'and so does the clerk one (C1)')
+
+        walkAway()
+        standAt('pillbox')
+        drawn = {}
+        loops['gunshop.draw']()
+        local was = drawn[#drawn]
+        ok(was ~= nil and math.abs(was.oz - G.signUpM) < 0.001,
+            'the plate draws at the config height to start with',
+            was and was.oz or 'nothing drawn')
+
+        -- A DELTA, WHICH IS THE HALF THAT MAKES IT A NUDGER. A leading sign is
+        -- the whole difference between setting and moving.
+        hush(cmds['brgunplate'], nil, { 'up', '-0.10' })
+        hush(cmds['brgunplate'], nil, { 'fwd', '0.80' })
+        drawn = {}
+        loops['gunshop.draw']()
+        local now = drawn[#drawn]
+        ok(now ~= nil and math.abs(now.oz - (G.signUpM - 0.10)) < 0.001,
+            'and the very next frame draws it 10cm lower',
+            now and now.oz or 'nothing drawn')
+        ok(now ~= nil and math.abs(now.oy - 0.80) < 0.001,
+            '...and an unsigned number sets rather than nudges',
+            now and now.oy or 'nothing drawn')
+
+        hush(cmds['brgunplate'], nil, { 'reset' })
+        drawn = {}
+        loops['gunshop.draw']()
+        ok(drawn[#drawn] ~= nil
+            and math.abs(drawn[#drawn].oz - G.signUpM) < 0.001,
+            'and reset hands it back to config')
+    end
 end
 
 print(('\n\27[32m%d passed\27[0m'):format(pass))

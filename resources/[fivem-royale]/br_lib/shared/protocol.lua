@@ -867,6 +867,27 @@ BR.Net = {
     GUNSHOP_BUY     = 'br:gunshop:buy',      -- C->S  { id }
     GUNSHOP_BOUGHT  = 'br:gunshop:bought',   -- S->C  { row }
 
+    -- WHAT IS LEFT ON THE SHELF. Owner, 2026-09-09: each counter starts the
+    -- match holding between three and eight weapons, spread across the bands it
+    -- sells, and a different spread at every counter. Ammo is not counted.
+    --
+    -- THE SERVER OWNS IT AND THE CLIENT IS TOLD, rather than both deriving it
+    -- from a shared seed. A seed would agree at the start of the match and
+    -- diverge the moment anybody bought anything, and the shelf is SHARED --
+    -- the player who takes the last Carbine takes it from everyone in that
+    -- match, so every client has to hear about a purchase it did not make.
+    --
+    -- ONE SHAPE, TWO USES. `stores` is { [storeId] = { [rowId] = count } } and
+    -- `full` says how to apply it: true is the whole picture for this match,
+    -- sent once when a player is first seen in it; absent is a delta to merge,
+    -- sent to everyone in the match each time a count moves. A row that is
+    -- ABSENT from a full snapshot is not counted at all, which is what ammo is.
+    --
+    -- COUNTS, NOT PRICES OR LABELS. Everything else about a row is config both
+    -- ends already hold; a second copy of a price on this wire would be a
+    -- second thing free to disagree with the shelf.
+    GUNSHOP_STOCK   = 'br:gunshop:stock',    -- S->C  { stores, full }
+
     -- Chat
     CHAT_SEND       = 'br:chat:send',        -- C->S  { channel, text }
     CHAT_MSG        = 'br:chat:msg',         -- S->C  { channel, from, name, text, at }

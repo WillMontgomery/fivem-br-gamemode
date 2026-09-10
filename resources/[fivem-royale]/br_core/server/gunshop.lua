@@ -58,6 +58,171 @@ local G = BR.Config.Gunshop
 local rows   = {}
 local stores = {}
 
+--- WHAT IS LEFT ON EVERY SHELF, PER MATCH. `stock[matchId][storeId][rowId] = n`.
+---
+--- ═══ THE SERVER OWNS IT, WHICH IS NOT A STYLE CHOICE ═══
+---
+--- The shelf is SHARED. The player who takes the last Carbine takes it from
+--- everybody in that match, so a client that derived its own copy from a seed
+--- would be right at the start of the match and wrong from the first purchase
+--- anyone made. There is one count and it is here.
+---
+--- WEAPONS ONLY, AND THE ABSENCE IS THE VOCABULARY. Owner, 2026-09-09: "They
+--- will have no limited stock on ammo", so an ammo row is never a key in these
+--- tables and BR.GunshopSolve.stockOf answers nil for it -- which every reader
+--- takes to mean uncounted rather than sold out. `0` is truthy in Lua and those
+--- two have to be told apart by an explicit nil test, which is why that
+--- distinction is one function rather than one branch per caller.
+local stock = {}
+
+--- WHO HAS BEEN SENT THE WHOLE PICTURE, AND FOR WHICH MATCH. `told[src] = id`.
+---
+--- Keyed by the match rather than by a bare boolean so that a player who moves
+--- between matches gets a fresh snapshot without anybody having to notice they
+--- moved. A reconnecting player is a new server id and is unknown here, which is
+--- the same answer.
+local told = {}
+
+--- The seed one match's shelves are rolled from.
+---
+--- THE ARITHMETIC IS BR.Loot.begin's, deliberately: the clock plus the match id
+--- folded with a prime of this feature's own, so two matches minted in the same
+--- server millisecond do not stock the same eleven shops. The storm uses 7919,
+--- the bus 104729, the loot layout 15485863; this is the fourth.
+--- @param m table
+--- @return integer
+local function seedFor(m)
+    local t = 0
+    if type(GetGameTimer) == 'function' then t = tonumber(GetGameTimer()) or 0 end
+    if t <= 0 then t = math.floor(os.time() * 1000) end
+    return math.floor(t + (tonumber(m.id) or 0) * 32452843)
+end
+
+--- ONE MATCH'S SHELVES, ROLLED ON FIRST ASK.
+---
+--- ═══ LAZY, BECAUSE THE ALTERNATIVE IS A WINDOW IN WHICH EVERYTHING IS FREE
+---     ═══
+---
+--- A missing shelf means "not counted", and not counted means unlimited -- that
+--- is how ammo works and it is the right answer for ammo. If the only thing that
+--- rolled a shelf were the one-second heartbeat, then for up to a second after a
+--- match came into existence every counter on the map would sell every gun with
+--- no limit, silently. So the roll happens on the first ASK, from whichever side
+--- asks first, and the heartbeat is only what carries it to the clients.
+---
+--- IDEMPOTENT AND SEEDED ONCE. The second caller gets the first caller's table,
+--- not a second roll, which is the property the shelf being SHARED rests on.
+--- @param id any        a match id
+--- @param m table|nil   the match, when the caller has it. Without it an
+---                      unrolled match stays unrolled rather than being rolled
+---                      off a seed nobody can reproduce.
+--- @return table|nil    { [storeId] = { [rowId] = count } }
+function BR.Gunshop.stock(id, m)
+    if id == nil then return nil end
+    if stock[id] ~= nil then return stock[id] end
+    if type(m) ~= 'table' or #stores == 0 or #rows == 0 then return nil end
+
+    local rng  = BR.Rng(seedFor(m))
+    local roll = function(lo, hi) return rng:int(lo, hi) end
+    local by   = {}
+    for i = 1, #stores do
+        by[stores[i].id] = BR.GunshopSolve.rollStock(G, rows, roll)
+    end
+    stock[id] = by
+    print(('[br_core] gunshop: match %s stocked %d counters')
+        :format(tostring(id), #stores))
+    return by
+end
+
+--- ONE ENVELOPE, TWO USES. See BR.Net.GUNSHOP_STOCK in shared/protocol.lua.
+--- @param targets integer[]
+--- @param payload table
+local function pushStock(targets, payload)
+    for i = 1, #targets do
+        TriggerClientEvent(BR.Net.GUNSHOP_STOCK, targets[i], payload)
+    end
+end
+
+--- ROLL A MATCH'S SHELVES ONCE, AND TELL EVERYONE IN IT WHO HAS NOT BEEN TOLD.
+---
+--- ═══ WHY THIS IS A POLL RATHER THAN A HOOK ON THE STATE MACHINE ═══
+---
+--- The natural place to stock eleven shops is the WARMUP branch of
+--- server/match.lua, beside BR.Loot.begin, and that is where the loot layout is
+--- seeded for the same reason. It is NOT done there, because the same round that
+--- added stock is being built by three people at once and match.lua belongs to
+--- none of them -- so the trigger lives in this file, where the feature is, and
+--- reads the state machine rather than editing it.
+---
+--- IT ALSO SOLVES A PROBLEM A HOOK WOULD NOT. There is no "this player is now in
+--- this match" event on this server, so even with a hook at WARMUP something
+--- would still have to notice a player who joined afterwards. `told` is that
+--- notice, and it costs one table lookup per player per second.
+---
+--- ROLLED FOR ANY LIVE MATCH, NOT ONLY A PLAYING ONE. "Start the match with" is
+--- the owner's phrasing, so the shelves exist before the bus does. Nobody can
+--- buy from them until PLAYING -- that is BR.GunshopSolve.canBuy's term and it
+--- has not moved.
+function BR.Gunshop.sync()
+    if #stores == 0 or #rows == 0 then return end
+
+    BR.Server.eachMatch(function(m)
+        local id = m.id
+        BR.Gunshop.stock(id, m)
+
+        local fresh = {}
+        local seats = BR.Server.audience(m)
+        for i = 1, #seats do
+            if told[seats[i]] ~= id then
+                told[seats[i]] = id
+                fresh[#fresh + 1] = seats[i]
+            end
+        end
+        if #fresh > 0 then
+            pushStock(fresh, { stores = stock[id], full = true })
+        end
+    end)
+end
+
+--- The counts one store holds right now, or nil for a match with no shelves yet.
+--- @param m table|nil
+--- @param storeId any
+--- @return table|nil
+local function stockAt(m, storeId)
+    local by = m and BR.Gunshop.stock(m.id, m) or nil
+    if type(by) ~= 'table' then return nil end
+    local one = by[storeId]
+    if type(one) ~= 'table' then return nil end
+    return one
+end
+
+--- Move one count and tell the whole match, which is everyone the shelf is
+--- shared with.
+--- @param m table
+--- @param storeId any
+--- @param rowId string
+--- @param delta integer
+local function moveStock(m, storeId, rowId, delta)
+    local one = stockAt(m, storeId)
+    if not one or one[rowId] == nil then return end
+    local n = (tonumber(one[rowId]) or 0) + delta
+    if n < 0 then n = 0 end
+    one[rowId] = n
+    pushStock(BR.Server.audience(m), { stores = { [storeId] = { [rowId] = n } } })
+end
+
+-- A MATCH THAT IS GONE HAS NO SHELVES. The same hook server/players.lua uses to
+-- forget a finished match, for the same reason: this table is keyed by match id
+-- and nothing else would ever clear it.
+AddEventHandler('br:match:destroyed', function(ev)
+    local id = type(ev) == 'table' and ev.matchId or nil
+    if id == nil then return end
+    stock[id] = nil
+    for src, at in pairs(told) do
+        if at == id then told[src] = nil end
+    end
+end)
+
 --- BUILD THE CATALOGUE AND THE COUNTER LIST, AND SAY WHAT WAS THROWN OUT.
 ---
 --- ═══ THIS IS ONE OF THE TWO CALL SITES OF BR.Config.Gunshop.build(), AND
@@ -115,6 +280,50 @@ end
 AddEventHandler('onResourceStart', function(name)
     if name == GetCurrentResourceName() then resolve() end
 end)
+
+-- THE ONE HEARTBEAT THIS FILE HAS. A second is far below anything a player can
+-- perceive here -- the shelves cannot change without a purchase, and a purchase
+-- pushes its own delta immediately -- so this loop exists only to stock a new
+-- match and to catch a player who was not in the audience a second ago.
+--
+-- GUARDED, BECAUSE THIS FILE IS STOOD UP HEADLESS BY tools/test_gunshop.lua and
+-- CreateThread does not exist there. BR.Gunshop.sync is public for the same
+-- reason: the suite drives it directly rather than waiting a second.
+if type(CreateThread) == 'function' then
+    CreateThread(function()
+        while true do
+            Wait(1000)
+            BR.Gunshop.sync()
+        end
+    end)
+end
+
+--- WHAT IS ON EVERY SHELF, PRINTED. Dev-gated by construction, like every other
+--- command in this project -- shared/devgate.lua wraps RegisterCommand once so a
+--- new verb is gated without anybody remembering to gate it.
+---
+--- IT EXISTS BECAUSE "WHY DOES THIS SHOP HAVE NOTHING" IS OTHERWISE
+--- UNANSWERABLE. A shelf is rolled once, per match, per store, and the only
+--- other evidence of it is what a player sees at a counter -- which is the same
+--- argument /brlootseed makes for the loot layout and /brgunshop makes for the
+--- clerk ledger.
+RegisterCommand('brgunshopstock', function()
+    for id, by in pairs(stock) do
+        for i = 1, #stores do
+            local one = by[stores[i].id]
+            if one then
+                local parts = {}
+                for rowId, n in pairs(one) do
+                    if n > 0 then parts[#parts + 1] = ('%s x%d'):format(rowId, n) end
+                end
+                table.sort(parts)
+                print(('[br_core] gunshop stock: match %s / %s -- %s')
+                    :format(tostring(id), tostring(stores[i].id),
+                            #parts > 0 and table.concat(parts, ', ') or 'empty'))
+            end
+        end
+    end
+end, false)
 
 --- The catalogue, for anything that needs to look a row up.
 --- @return table
@@ -175,14 +384,21 @@ end
 --- showroom applied here: a displaced item lands at their feet, and a stack that
 --- will not fit at all lands there instead of being taken along with the money.
 ---
---- ═══ AND A FULL AMMO POOL IS THE ONE CASE THAT IS UNSATISFYING ═══
+--- ═══ AND A FULL AMMO POOL USED TO BE THE ONE CASE THAT WAS UNSATISFYING ═══
 ---
---- Buying Heavy Ammo with a full heavy pool takes the Volts and leaves a pile on
---- the floor the player cannot pick up until they have fired some. That is not
---- refused here, and the alternative -- a refusal -- is worse in this project's
---- terms: BR.GunshopSolve.canBuy has no fullness term, adding one is a rule the
---- owner has not made, and a refusal with no sentence behind it is a press that
---- does nothing for a reason nobody can see. Flagged rather than decided.
+--- Buying Heavy Ammo with a full heavy pool took the Volts and left a pile on
+--- the floor the player could not pick up until they had fired some. The note
+--- here said that was flagged rather than decided, because refusing it was a
+--- rule the owner had not made and a refusal with no sentence behind it is a
+--- press that does nothing for a reason nobody can see.
+---
+--- HE MADE THE RULE AND WROTE THE SENTENCE ON 2026-09-09: "If someone is already
+--- carrying the max of an ammo ... reject the purchase and give them a toast
+--- explaining they already have the max (same as we do for loot pickups)". So a
+--- full pool is now refused above the charge, in BR.GunshopSolve.canBuy, in the
+--- loot pickup's own words. What is left here is the PARTIAL case -- a pool with
+--- room for some of the bundle but not all of it -- which still clamps and drops
+--- the remainder, exactly as a piece of ammo off the floor does.
 --- @param src integer
 --- @param row table
 local function deliver(src, row)
@@ -222,6 +438,59 @@ local function deliver(src, row)
            .. 'their feet'):format(src, row.id, tostring(reason)))
 end
 
+--- IS THE POOL THIS ROW FILLS ALREADY AT ITS CEILING?
+---
+--- Owner, 2026-09-09: "If someone is already carrying the max of an ammo ...
+--- reject the purchase and give them a toast explaining they already have the
+--- max (same as we do for loot pickups)".
+---
+--- READ, NEVER WRITTEN, AND OUT OF THE INVENTORY'S OWN TABLES. `inv.ammo` is the
+--- pool and BR.Config.AmmoCaps is the ceiling, which are the same two values
+--- BR.Inv.give's own `addAmmo` clamps against -- so the number that refuses the
+--- purchase here cannot disagree with the number that would have clamped it.
+---
+--- FALSE FOR EVERYTHING THAT IS NOT AMMO, and false when the pool has no cap at
+--- all. A refusal invented out of a lookup that came back empty is the defect
+--- BR.Loot.refusalText's own header is about.
+--- @param src integer
+--- @param row table|nil
+--- @return boolean
+local function ammoFull(src, row)
+    if type(row) ~= 'table' or row.kind ~= BR.ItemKind.AMMO then return false end
+    local pool = row.pool
+    if type(pool) ~= 'string' or pool == '' then return false end
+
+    local inv = BR.Inv and BR.Inv.of and BR.Inv.of(src) or nil
+    if type(inv) ~= 'table' or type(inv.ammo) ~= 'table' then return false end
+
+    local caps = BR.Config and BR.Config.AmmoCaps or nil
+    local cap  = tonumber(type(caps) == 'table' and caps[pool] or nil)
+    if not cap or cap <= 0 then return false end
+
+    return (tonumber(inv.ammo[pool]) or 0) >= cap
+end
+
+--- ONE REFUSAL, SPOKEN THE WAY server/market.lua SPEAKS ITS OWN.
+---
+--- ═══ WHY A RAW NOTIFY RATHER THAN BR.Server.notify ═══
+---
+--- The cue has to ride ON the payload rather than beside it. BR.Server.notify
+--- has no cue field, so a separate SFX_CUE would race the sentence and, worse,
+--- would play ON TOP of the general warn sound br_ui/client/nui.lua gives every
+--- warn toast -- two sounds for one refusal. market.lua's own `refuse` helper
+--- carries the same three lines for the same reason, and BR.Market.tellShortfall
+--- has the write-up.
+---
+--- THE KEY COMES OUT OF CONFIG, so client/sfx.lua stays the only file that knows
+--- what set and name it resolves to and /brsfx can still audition it.
+--- @param src integer
+--- @param text string
+local function refuse(src, text)
+    if type(text) ~= 'string' or text == '' then return end
+    TriggerClientEvent(BR.Net.NOTIFY, src,
+        { text = text, tone = 'warn', ms = 4000, cue = G.denyCue })
+end
+
 --- C->S. "I am at a counter and I want this."
 RegisterNetEvent(BR.Net.GUNSHOP_BUY)
 AddEventHandler(BR.Net.GUNSHOP_BUY, function(d)
@@ -238,6 +507,11 @@ AddEventHandler(BR.Net.GUNSHOP_BUY, function(d)
     local row = BR.GunshopSolve.rowById(rows, id)
     local at  = atCounter(src)
 
+    -- THE SHELF THIS PRESS IS AGAINST, RESOLVED FROM THE SERVER'S OWN POSITION
+    -- SAMPLE like every other term here. A client cannot name a store any more
+    -- than it can name a price.
+    local shelf = at and stockAt(m, at.id) or nil
+
     -- ONE PREDICATE, AND EVERY TERM RESOLVED HERE. The balance is asked for
     -- rather than cached: one ledger, one reader, and a second copy of a balance
     -- is a second thing that can be wrong about how much money somebody has.
@@ -247,28 +521,77 @@ AddEventHandler(BR.Net.GUNSHOP_BUY, function(d)
         playerState = e.state,
         atCounter   = at ~= nil,
         row         = row,
+        -- nil FOR AMMO AND FOR A MATCH THAT HAS NOT BEEN STOCKED, WHICH ARE THE
+        -- SAME ANSWER: not counted. stockOf makes that one decision so no caller
+        -- has to remember that `0` is truthy.
+        stock       = BR.GunshopSolve.stockOf(shelf, row),
+        ammoFull    = ammoFull(src, row),
         balance     = BR.Market and BR.Market.balanceOf(src) or 0,
         price       = row and row.price or 0,
     })
 
     if not ok then
-        -- ═══ SILENT TO THE PLAYER EXCEPT WHERE THE MARKET ALREADY HAS A
-        --     SENTENCE ═══
+        -- ═══ TWO REFUSALS SPEAK NOW, AND STILL NOTHING INVENTS A WORD ═══
         --
-        -- The owner has written NO player-facing copy for this feature at all --
-        -- config/gunshop.lua says so where it explains why the store rows carry
-        -- no display name -- and inventing a refusal would be exactly the
-        -- unrequested copy his standing rule refuses. `afford` is the one case
-        -- with an existing sentence, and it is the market's own, spoken at the
-        -- one funnel every shortfall in the game reaches. The `shop.denied` cue
-        -- rides on that toast rather than beside it, so this path plays one
-        -- sound rather than two.
-        if why == BR.GunshopSolve.Refusal.AFFORD and BR.Market then
-            BR.Market.tellShortfall(src, row and row.price or 0)
+        -- This path used to be silent everywhere except `afford`, where it
+        -- borrowed BR.Market.tellShortfall's sentence, because the owner had
+        -- written no copy for this counter. He played it on 2026-09-09 and wrote
+        -- two sentences, and the third is one this game already had:
+        --
+        --   afford    his own, out of config/gunshop.lua, joined and marked for
+        --             the signature colour by BR.GunshopSolve.poorToast. It
+        --             REPLACES tellShortfall's "You need %d more to buy that."
+        --             here -- which he called "not good copy" -- and takes the
+        --             `shop.denied` cue with it so the refusal still has its
+        --             one sound.
+        --   ammofull  "same as we do for loot pickups", so it IS the loot
+        --             pickup's: BR.Loot.refusalText is public and this calls it
+        --             rather than copying the sentence out of it. The day he
+        --             rewords one, both move.
+        --
+        -- AND `outofstock` STAYS SILENT, deliberately. He asked for that row to
+        -- be LOCKED with no price rather than for a sentence, so a press that
+        -- reaches here is a press the menu should not have allowed -- a race
+        -- with somebody else's purchase, or a client that named a row it could
+        -- not see. There is no wording for it because he wrote none.
+        if why == BR.GunshopSolve.Refusal.AFFORD then
+            refuse(src, BR.GunshopSolve.poorToast(
+                G,
+                BR.Market and BR.Market.balanceOf(src) or 0,
+                BR.Config.Market and BR.Config.Market.currency or nil))
+        elseif why == BR.GunshopSolve.Refusal.FULL then
+            BR.Server.notify(src,
+                BR.Loot.refusalText('ammofull', row and row.stack or nil), 'warn')
         end
         print(('[br_core] gunshop: %d refused "%s" -- %s')
             :format(src, id, tostring(why)))
         return
+    end
+
+    -- ═══ THE UNIT COMES OFF THE SHELF BEFORE THE MONEY MOVES ═══
+    --
+    -- A charge is a DynamoDB round trip of up to six seconds, and the shelf is
+    -- shared. Decrementing after the callback would mean two players pressing on
+    -- the last Carbine inside one round trip both read a stock of 1, both pass
+    -- canBuy, and both get a gun that only existed once. So the unit is RESERVED
+    -- here, on the same line of reasoning that has BR.Market.charge reserve the
+    -- Volts against the session cache the moment it is called.
+    --
+    -- AND IT GOES BACK ON THE SHELF IF NOTHING IS HANDED OVER. Both failure arms
+    -- below release it: a refused charge, and the post-charge gate that forfeits
+    -- a purchase whose buyer died inside the write. The forfeit still costs that
+    -- player the Volts -- there is no refund path and that is stated below --
+    -- but the gun was never handed to anybody, so the shelf is wrong if it
+    -- stays short.
+    local shelfId = at and at.id or nil
+    local reserved = shelfId ~= nil
+        and BR.GunshopSolve.stockOf(shelf, row) ~= nil
+    if reserved then moveStock(m, shelfId, row.id, -1) end
+    local function release()
+        if reserved then
+            reserved = false
+            moveStock(m, shelfId, row.id, 1)
+        end
     end
 
     -- ═══ THE CHARGE IS THE POINT OF NO RETURN ═══
@@ -283,6 +606,7 @@ AddEventHandler(BR.Net.GUNSHOP_BUY, function(d)
                 -- SILENT, except where BR.Market.charge has already spoken the
                 -- market's own shortfall sentence on its way out. Same rule as
                 -- the refusals above.
+                release()
                 print(('[br_core] gunshop: %d could not be charged for "%s" '
                        .. '-- %s'):format(src, row.id, tostring(why2)))
                 return
@@ -311,6 +635,7 @@ AddEventHandler(BR.Net.GUNSHOP_BUY, function(d)
             local e2  = BR.Roster.get(src)
             if not now or now.state ~= BR.MatchState.PLAYING
                or not e2 or e2.state ~= BR.PlayerState.ALIVE then
+                release()
                 print(('^3[br_core] gunshop: %d was charged %d Volts for "%s" '
                        .. 'and was no longer alive in a live match when the '
                        .. 'write landed -- FORFEITED, no item and no refund^7')
@@ -320,11 +645,28 @@ AddEventHandler(BR.Net.GUNSHOP_BUY, function(d)
 
             deliver(src, row)
 
-            -- NO TOAST. The showroom speaks two sentences here and both are the
-            -- owner's own, authored in config/shop.lua for #239. He has written
-            -- none for this counter, so this path says nothing: the cue below
-            -- and the balance dropping on the HUD are the feedback, and both are
-            -- mechanisms that already existed.
+            -- ═══ A TOAST, FOR AMMO, IN HIS WORDS ═══
+            --
+            -- Owner, 2026-09-09: "when ammo is purchased show a success toast:
+            -- You purchased {item} for {cost}. otherwise they have no way to
+            -- know anything went through."
+            --
+            -- AMMO ONLY, WHICH IS HIS SCOPING RATHER THAN AN OMISSION. A weapon
+            -- purchase is answered by the clerk handing the gun over, so a
+            -- sentence there would be the second thing saying the same thing.
+            -- Ammo goes into a pool with no slot and no animation, which is
+            -- exactly the "no way to know" he is describing.
+            --
+            -- SUCCESS, NOT WARN, and no cue: `shop.buy` already rides on
+            -- GUNSHOP_BOUGHT below and two sounds for one purchase is the fault
+            -- config/audio.lua's rule is about.
+            if row.kind == BR.ItemKind.AMMO then
+                BR.Server.notify(src, BR.GunshopSolve.boughtToast(
+                    G, row,
+                    BR.Config.Market and BR.Config.Market.currency or nil),
+                    'success')
+            end
+
             TriggerClientEvent(BR.Net.GUNSHOP_BOUGHT, src, { row = row.id })
 
             print(('[br_core] gunshop: %d bought "%s" for %d Volts -- %s left')

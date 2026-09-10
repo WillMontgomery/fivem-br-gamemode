@@ -287,19 +287,47 @@ BR.Config.Gunshop = {
 
     --- WHERE HE STANDS RELATIVE TO THE ANCHOR, AND WHICH WAY HE FACES.
     ---
-    --- BOTH DEFAULT TO ZERO, WHICH IS "ON THE ANCHOR, FACING THE COUNTER'S OWN
-    --- HEADING", and that is a reading of where these coordinates came from
-    --- rather than a shrug. The anchors were cross-checked against ox_inventory's
-    --- shop locations and qb-shops' `ammunation` config (see the store table
-    --- above), and in BOTH of those resources the row is where the SHOP PED is
-    --- created and the heading is the heading it is created with. So zero and
-    --- zero is those two resources' own answer, adopted rather than invented.
+    --- ═══ THESE WERE ZERO AND ZERO, AND THE PLAYTEST SAID WHY THAT WAS WRONG
+    ---     ═══
     ---
-    --- WHAT WOULD MAKE THEM NON-ZERO is the owner looking at a clerk standing in
-    --- the customer's spot, or facing a wall. `clerkOffsetM` slides him along the
-    --- counter's heading (positive is forward, the way the counter faces);
-    --- `clerkFaceDeg` is added to that heading. Two numbers, one playtest.
-    clerkOffsetM = 0.0,
+    --- They shipped at zero because the anchors were cross-checked against
+    --- ox_inventory's shop locations and qb-shops' `ammunation` config (see the
+    --- store table above), and in BOTH of those resources the row is where the
+    --- SHOP PED is created. Zero was those two resources' own answer, adopted
+    --- rather than invented. The note here said what would change it: "the owner
+    --- looking at a clerk standing in the customer's spot".
+    ---
+    --- Owner, 2026-09-09, having done exactly that at five of the eleven:
+    ---
+    ---   "The ped position is consistently on top of the register (as I have
+    ---    validated at many shops) - let us move their position back behind the
+    ---    counter and to the left (the ped-s right) about 1m"
+    ---
+    --- SO THE ANCHOR IS THE REGISTER, NOT THE CLERK'S SPOT. Consistently, at
+    --- every store he checked, which is the useful half of that sentence: one
+    --- correction moves all eleven and no store needs a number of its own.
+    ---
+    --- ─────────────────────────────────────────────────────────────────────
+    ---  NEEDS HIS PLAYTEST: HOW FAR BACK IS "BEHIND THE COUNTER".
+    --- ─────────────────────────────────────────────────────────────────────
+    ---
+    --- HE GAVE ONE NUMBER AND THERE ARE TWO HOLES. "About 1m" is read as the
+    --- LATERAL move, which is the half of his sentence it sits next to, and
+    --- `clerkRightM` is that metre. The step BACK has no number in his message
+    --- at all, so -0.7 is this file's guess at a shop counter's depth -- far
+    --- enough to clear a register, not so far that he is against the back wall.
+    --- It is the first number to move if the clerk is still not where he wants
+    --- him, and moving it is one edit here.
+    ---
+    --- WHAT EACH ONE DOES. `clerkOffsetM` slides him along the counter's own
+    --- heading -- positive is forward, the way the counter faces, so NEGATIVE IS
+    --- BACK. `clerkRightM` slides him along the counter's right, positive to the
+    --- ped's right, which with `clerkFaceDeg` at zero is the direction his
+    --- sentence names. `clerkFaceDeg` turns him on the spot and does not move
+    --- him, so a facing fix cannot silently undo a position fix. Three numbers,
+    --- one playtest round.
+    clerkOffsetM = -0.7,
+    clerkRightM  = 1.0,
     clerkFaceDeg = 0.0,
 
     --- HOW LONG A CLERK MODEL MAY TAKE TO STREAM BEFORE THE COUNTER GIVES UP.
@@ -391,37 +419,156 @@ BR.Config.Gunshop = {
     --- in the game reaches, so this feature inherits it without naming it.
     cue = 'shop.buy',
 
+    --- THE REFUSAL CUE, WHICH IS HERE NOW AND WAS NOT BEFORE.
+    ---
+    --- ═══ IT HAD TO BE NAMED THE DAY THE COUNTER STOPPED BORROWING THE
+    ---     MARKET'S SENTENCE ═══
+    ---
+    --- The note above is still true about HOW it works -- `shop.denied` rides ON
+    --- the toast payload rather than beside it, so it REPLACES the general warn
+    --- sound instead of playing on top of it -- and no longer true that this
+    --- feature inherits it for free. The owner rewrote this counter's shortfall
+    --- sentence on 2026-09-09 (`poorToast` below), so server/gunshop.lua now
+    --- speaks its own toast and BR.Market.tellShortfall is off the path.
+    ---
+    --- A KEY, NOT A SOUND, exactly as `cue` above is: br_core/client/sfx.lua
+    --- stays the only file in the project that knows what set and name this
+    --- resolves to, and /brsfx can still audition it.
+    denyCue = 'shop.denied',
+
+    -- ------------------------------------------------------------------
+    -- WHAT IS ON THE SHELF, AND HOW MUCH OF IT
+    -- ------------------------------------------------------------------
+    --
+    -- Owner, 2026-09-09:
+    --
+    --   "Each shop should start the match with a random number of weapons in
+    --    stock, distributed across all categories they sell. Let us say this
+    --    number is between 3 and 8 total. They will have no limited stock on
+    --    ammo."
+    --   "The amount of each item they have in stock should differ between
+    --    shops"
+    --
+    -- HIS TWO NUMBERS, AND NOTHING ELSE IS AUTHORED HERE. How the total is
+    -- spent -- one unit into every rarity band first, then the remainder at
+    -- random across the shelf -- is BR.GunshopSolve.rollStock's rule, where a
+    -- test can run it. This file holds the band, because the band is the thing
+    -- he is likely to move after a round.
+    --
+    -- THE FLOOR AND THE NUMBER OF BANDS ARE THE SAME NUMBER, WHICH IS WHAT MAKES
+    -- "DISTRIBUTED ACROSS ALL CATEGORIES" AFFORDABLE. The catalogue has three
+    -- rarity bands -- rare, epic, legendary -- and his floor is 3, so the
+    -- smallest legal shop is exactly one of each and every shop above it has
+    -- spare units to scatter. Lowering `stockMin` below 3 is legal and quietly
+    -- gives the guarantee up: rollStock spends what it has, in band order, and
+    -- stops.
+    --
+    -- EVERY SHOP THEREFORE HOLDS AT LEAST ONE LEGENDARY, which is the reading of
+    -- his sentence rather than a decision this file made. If eleven guaranteed
+    -- legendaries across the map is more than he wants, the rule to change is
+    -- rollStock's band pass, not these two integers.
+    --
+    -- AMMO IS NOT COUNTED AT ALL. "They will have no limited stock on ammo", so
+    -- there is no ammo term here and none in the roll: an ammo row never appears
+    -- in a stock table, and that absence is what every reader takes to mean
+    -- unlimited.
+    stockMin = 3,
+    stockMax = 8,
+
     -- ═══════════════════════════════════════════════════════════════════════
-    --  THE ONLY WORD IN THIS FEATURE THAT IS NOT HIS. HE SHOULD REPLACE IT.
+    --  EVERY WORD A PLAYER READS AT THIS COUNTER, AND ALL OF THEM ARE HIS
     -- ═══════════════════════════════════════════════════════════════════════
     --
-    -- ─────────────────────────────────────────────────────────────────────
-    --  NEEDS HIS WORDING: WHAT THE COUNTER IS CALLED ON SCREEN.
-    -- ─────────────────────────────────────────────────────────────────────
+    -- This block used to hold one placeholder and a note asking the owner to
+    -- replace it. He played the counter on 2026-09-09 and wrote the lot. What
+    -- follows is his wording, character for character, and the ONLY marks added
+    -- to it are the tildes -- which are not letters. ui-src's KeyText paints
+    -- anything between a pair of them with `--color-volts`, which is this
+    -- project's one mechanism for the signature colour, and he asked for it by
+    -- name: "remember the Volts text and quantity must be our signature color".
     --
-    -- The note beside the store table says a display name is COPY, that the
-    -- owner has not written any for this feature, and that whoever builds the UI
-    -- should ask him for the words rather than reading a guess out of this file.
-    -- That was right, and the UI is now built, and TWO SURFACES STRUCTURALLY
-    -- REQUIRE A SUBJECT:
-    --
-    --   the WORLD PLATE at the counter, which is a title and a key cap, and a
-    --   key cap with nothing over it is a prompt to do an unnamed thing;
-    --   the MENU BANNER, which is the colored bar at the top of every
-    --   ScaleformUI menu and cannot be empty without looking broken.
-    --
-    -- SO IT IS ONE WORD, THE SHORTEST NEUTRAL ONE, USED IN BOTH PLACES. Not
-    -- "Ammu-Nation" (Rockstar's brand, and the store ids are districts rather
-    -- than a chain), not "Gun Shop", not "Weapons" (it sells ammo too), and
-    -- nothing with a verb in it. One word, one line, one edit.
-    --
-    -- EVERY OTHER STRING A PLAYER SEES AT THIS COUNTER IS DERIVED: item names
-    -- come from config/weapons.lua's and config/loot.lua's own `label` fields,
-    -- prices from `prices` and `ammo` above through BR.ShopSolve.priceLine, the
-    -- key cap from the player's own binding, the refusal sentence from
-    -- BR.Market.tellShortfall, and the menu's Select/Back captions from GTA's
-    -- own label table. There is nothing else here to replace.
-    menuTitle = 'Shop',
+    -- NOTHING BELOW MAY BE TIDIED. The colon-space in "Your balance is: ", the
+    -- full stops, the capital letters in "Out of Stock" -- all his. A rewrite
+    -- that reads better is a rewrite that is wrong.
+
+    --- WHAT THE COUNTER IS CALLED ON SCREEN. Two surfaces, one word.
+    ---
+    --- Owner, 2026-09-09: "The menu title should say Weapon Shop", and, of the
+    --- world plate, "the DUI should follow our standard formatting and content -
+    --- a title Weapon Shop and a line underneath PRESS TO OPEN".
+    ---
+    --- ONE VALUE FOR BOTH, WHICH IS WHY THE PLACEHOLDER WAS ONE VALUE FOR BOTH.
+    --- br_core/client/gunshop.lua reads this twice -- once for the plate's label
+    --- and once for the ScaleformUI banner -- so his two sentences are one edit
+    --- and the two surfaces cannot drift apart. Whoever builds the plate must
+    --- read this rather than typing the words a second time.
+    menuTitle = 'Weapon Shop',
+
+    --- WHAT A ROW WITH NOTHING BEHIND IT SAYS WHERE ITS PRICE WOULD BE.
+    ---
+    --- Owner, 2026-09-09: "If an item is out of stock, the row should be locked
+    --- and a price should not be shown - instead show Out of Stock".
+    ---
+    --- IT REPLACES THE PRICE RATHER THAN JOINING IT. "a price should not be
+    --- shown" is the load-bearing half of that sentence: a sold-out row must not
+    --- read as a thing with a cost.
+    outOfStockLabel = 'Out of Stock',
+
+    --- WHAT A PLAYER WHO CANNOT AFFORD A ROW IS TOLD. TWO SENTENCES.
+    ---
+    --- Owner, 2026-09-09: "if they select an item they cannot afford, give them
+    --- a toast that says You do not have enough Volts for that item. Your
+    --- balance is: {balance} Volts."
+    ---
+    --- ═══ THIS REPLACES THE MARKET'S SENTENCE AT THIS COUNTER, AND HE ASKED
+    ---     FOR THAT TOO ═══
+    ---
+    --- Owner, same message: "You need 378 more to buy that is not good copy -
+    --- how about You need more Volts to buy that item. again, volts text should
+    --- be our color."
+    ---
+    --- ─────────────────────────────────────────────────────────────────────
+    ---  NEEDS HIS DECISION: HE WROTE TWO SENTENCES FOR ONE REFUSAL.
+    --- ─────────────────────────────────────────────────────────────────────
+    ---
+    --- "You need more Volts to buy that item." and "You do not have enough Volts
+    --- for that item. Your balance is: {balance} Volts." are both his, both
+    --- written in the same message, and both about the press that produced "You
+    --- need 378 more to buy that". THE LONGER ONE IS USED HERE, because it is
+    --- strictly the shorter one plus the balance he asked to see, and because it
+    --- is the one he wrote as a specification rather than as a "how about". If
+    --- he wants the short one, it is this string and nothing else moves.
+    ---
+    --- AND THE OLD SENTENCE IS STILL LIVE SOMEWHERE ELSE. "You need %d more to
+    --- buy that." is BR.Market.tellShortfall's, and three other callers speak
+    --- it: the pregame vehicle showroom, and both arms of BR.Market.charge,
+    --- which is the revive-key purchase's path. Retiring it there is a change to
+    --- server/market.lua and a decision about a screen he has not commented on,
+    --- so it is NOT made here.
+    ---
+    --- `%s` IS THE BALANCE, ALREADY MARKED AND ALREADY WORDED. It arrives as
+    --- "~1234 Volts~" from BR.ShopSolve.priceLine, so the currency word is
+    --- BR.Config.Market.currency's and this file never spells it -- the same
+    --- division config/shop.lua's `balanceToast` makes for the same reason.
+    poorToast    = 'You do not have enough ~Volts~ for that item.',
+    balanceToast = 'Your balance is: %s.',
+
+    --- WHAT A PLAYER WHO JUST BOUGHT AMMO IS TOLD.
+    ---
+    --- Owner, 2026-09-09: "when ammo is purchased show a success toast: You
+    --- purchased {item} for {cost}. otherwise they have no way to know anything
+    --- went through."
+    ---
+    --- TWO HOLES, IN HIS ORDER. `%s` one is the item, which is
+    --- BR.GunshopSolve.menuLabel -- his own label out of config/weapons.lua or
+    --- config/loot.lua, plus the quantity mark an ammo row already carries. `%s`
+    --- two is the cost, marked for the signature colour like every other figure
+    --- in a toast in this game.
+    ---
+    --- AMMO ONLY, WHICH IS HIS SCOPING. A weapon purchase gets the clerk's
+    --- handover animation instead, so a toast there would be the second thing
+    --- saying the same thing.
+    boughtToast = 'You purchased %s for %s.',
 
     -- ------------------------------------------------------------------
     -- WHAT IT COSTS
