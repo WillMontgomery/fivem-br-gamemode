@@ -826,11 +826,64 @@ AddEventHandler(BR.Net.INV_SWAP, function(d)
     BR.Inv.push(src)
 end)
 
+-- TWO ADDRESSES, BECAUSE AMMUNITION HAS NEVER HAD THE FIRST ONE.
+--
+-- Owner, gun shop playtest: "for some reason there is no way to drop ammo from
+-- my inventory, only weapons?"
+--
+-- It was not a missing button, it was a missing address. Every drop this
+-- interface has ever made names a SLOT, and a pool is not in a slot -- give()
+-- says so in one line ("Ammo never occupies a slot"), it is a number on the
+-- inventory. So `{ slot }` had nothing the panel could put in it, and the panel
+-- shipped a Drop control under each pool that sent `{ pool }` to a handler
+-- which read `d.slot`, found nil and returned: a live button, served and
+-- clickable, that did nothing at all.
+--
+-- `pool` IS ANSWERED FIRST AND THE TWO NEVER MIX. A payload naming both is a
+-- payload from nothing we wrote; taking the pool branch on it drops one thing
+-- rather than guessing which the sender meant.
 RegisterNetEvent(BR.Net.INV_DROP)
 AddEventHandler(BR.Net.INV_DROP, function(d)
     local src = source
     local inv = liveInv(src)
     if not inv or type(d) ~= 'table' then return end
+
+    if type(d.pool) == 'string' then
+        -- THE POOL NAME IS VALIDATED BY THE INVENTORY, NOT BY A LIST. A live
+        -- inventory carries a key per pool it can hold, so `inv.ammo[pool]`
+        -- being nil is exactly "there is no such pool" -- the same test addAmmo
+        -- makes, which keeps one answer to one question.
+        --
+        -- `== nil`, NOT `not`. Zero is truthy in Lua and a pool at zero is a
+        -- real pool; `not inv.ammo[pool]` would have been right by accident
+        -- here and wrong the moment the guard moved.
+        local have = inv.ammo[d.pool]
+        if have == nil or have <= 0 then return end
+
+        -- THE WHOLE POOL, WHICH IS THE ONLY QUANTITY THIS GAME HAS EVER
+        -- DROPPED. A slot puts its whole stack down and a corpse puts one stack
+        -- per pool down (BR.Inv.dropAll, whose stack shape this is, field for
+        -- field). "Some of it" is a number the player would have to choose and
+        -- no screen in the project asks for one.
+        --
+        -- THE MAGAZINE STAYS IN THE GUN. `clip` travels on the weapon stack;
+        -- this is the RESERVE, which is what the panel draws and what the
+        -- player is looking at when they press the button.
+        --
+        -- NOT A WAY TO MINT ROUNDS. give() puts an ammo stack back with
+        -- addAmmo, clamped to the same cap, so a drop and a pickup returns the
+        -- pool to the number it left at -- no `carried` mark needed, because
+        -- unlike a weapon an ammo stack is never handed a reserve on arrival.
+        inv.ammo[d.pool] = 0
+        BR.Loot.dropForPlayer(src, {
+            item   = d.pool,
+            kind   = BR.ItemKind.AMMO,
+            rarity = BR.Rarity.COMMON,
+            count  = have,
+        })
+        BR.Inv.push(src)
+        return
+    end
 
     local slot = math.tointeger(d.slot)
     if not slot then return end

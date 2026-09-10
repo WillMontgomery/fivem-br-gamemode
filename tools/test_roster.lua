@@ -6425,6 +6425,86 @@ do
         'at the dropper, carrying the same item')
     ok(BR.Inv.of(1).slots[1] == false, 'and it leaves the inventory')
 
+    -- ═══ AND AMMUNITION CAN BE PUT DOWN, WHICH IT COULD NOT ═══
+    --
+    -- Owner, gun shop playtest: "for some reason there is no way to drop ammo
+    -- from my inventory, only weapons?"
+    --
+    -- It was not a missing button, it was a missing ADDRESS. Every drop in the
+    -- interface names a slot, and a pool has never had one, so the panel that
+    -- shipped a Drop control under each pool sent `{ pool }` to a handler that
+    -- read `d.slot`, found nil and returned. A live button, served, clickable
+    -- and inert -- the shape of defect a suite cannot see unless it fires the
+    -- payload the page actually sends, which is what these lines do.
+    do
+        local pool = BR.AmmoType.LIGHT
+        BR.Inv.reset(1)
+        BR.Roster.get(1).pos = { x = 1234.0, y = -567.0, z = 30.0 }
+        BR.Inv.give(1, { item = pool, kind = BR.ItemKind.AMMO,
+                         rarity = 1, count = 60 })
+        local held = BR.Inv.of(1).ammo[pool]
+        ok(held == 60, 'sixty rounds in the pool to start with', held)
+
+        local was = m.loot.nextId
+        fire(BR.Net.INV_DROP, 1, { pool = pool })
+        ok(m.loot.nextId == was + 1,
+            'dropping a POOL creates a ground entry, exactly as a slot does',
+            ('%d -> %d'):format(was, m.loot.nextId))
+        local e = m.loot.items[m.loot.nextId]
+        ok(e ~= nil and e.item == pool and e.count == 60,
+            'carrying the whole pool -- the quantity every other drop in this '
+                .. 'game uses, and the one no screen has to ask for',
+            e and ('%s x%s'):format(tostring(e.item), tostring(e.count)))
+        ok(BR.Inv.of(1).ammo[pool] == 0, 'and the pool is empty afterwards',
+            BR.Inv.of(1).ammo[pool])
+
+        -- AN EMPTY POOL IS NOTHING TO PUT DOWN. A handler that announced a
+        -- stack of zero would litter the map for every idle click.
+        was = m.loot.nextId
+        fire(BR.Net.INV_DROP, 1, { pool = pool })
+        ok(m.loot.nextId == was, 'a second press on an empty pool drops nothing')
+
+        -- AND A NAME NO INVENTORY HOLDS IS NOT A POOL. `inv.ammo[pool] == nil`
+        -- is the whole test, and it has to be `== nil` rather than `not`:
+        -- zero is truthy in Lua and a pool at zero is a real pool.
+        was = m.loot.nextId
+        fire(BR.Net.INV_DROP, 1, { pool = 'plasma' })
+        ok(m.loot.nextId == was, 'and a pool nobody has heard of drops nothing')
+
+        -- ═══ IT IS NOT A WAY TO MINT ROUNDS ═══
+        --
+        -- Four ways to conjure ammunition have been closed in this file's
+        -- history and every one of them was a round trip somebody could repeat.
+        -- This one balances because give() puts an ammo stack back through
+        -- addAmmo against the same cap: what leaves is what returns.
+        BR.Inv.reset(1)
+        BR.Inv.give(1, { item = pool, kind = BR.ItemKind.AMMO,
+                         rarity = 1, count = 60 })
+        for _ = 1, 5 do
+            fire(BR.Net.INV_DROP, 1, { pool = pool })
+            BR.Inv.give(1, { item = pool, kind = BR.ItemKind.AMMO,
+                             rarity = 1, count = 60 })
+        end
+        ok(BR.Inv.of(1).ammo[pool] == 60,
+            'five drop-and-pickup round trips leave the pool where it started',
+            BR.Inv.of(1).ammo[pool])
+
+        -- THE MAGAZINE STAYS IN THE GUN. The pool is the RESERVE, which is the
+        -- figure the panel draws next to the button; emptying it must not
+        -- unload the weapon the player is holding.
+        BR.Inv.reset(1)
+        BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON,
+                         rarity = 1, count = 1, clip = 12 })
+        BR.Inv.give(1, { item = pool, kind = BR.ItemKind.AMMO,
+                         rarity = 1, count = 60 })
+        fire(BR.Net.INV_DROP, 1, { pool = pool })
+        local gun = BR.Inv.of(1).slots[1]
+        ok(gun ~= nil and gun ~= false and gun.item == 'pistol'
+            and gun.clip == 12,
+            'and the loaded magazine is untouched by a pool drop',
+            gun and gun ~= false and tostring(gun.clip) or 'no gun')
+    end
+
     -- The slot INDEX is what is selected, not the gun in it: dragging an item
     -- into slot 3 while slot 1 is up must not change what is in your hands.
     BR.Inv.reset(1)

@@ -265,7 +265,12 @@ BR.Net = {
     LOOT_DEV        = 'br:loot:dev',         -- C->S  { item?, x, y, z }
     INV_SET         = 'br:inv:set',          -- S->C  authoritative inventory mirror
     INV_SWAP        = 'br:inv:swap',         -- C->S  { from, to }
-    INV_DROP        = 'br:inv:drop',         -- C->S  { slot }
+    -- C->S { slot } or { pool }. PUT SOMETHING DOWN, AND THERE ARE TWO KINDS OF
+    -- SOMETHING because a pool has never had a slot to name (give(): "Ammo
+    -- never occupies a slot"). `slot` drops the whole stack in that square;
+    -- `pool` drops the whole reserve of that ammunition and leaves the loaded
+    -- magazine in the gun. A payload naming both takes the pool branch.
+    INV_DROP        = 'br:inv:drop',
     INV_USE         = 'br:inv:use',          -- C->S  { slot }
     INV_SELECT      = 'br:inv:select',       -- C->S  { slot }
     -- The server owns the inventory but cannot write a ped: it decides the
