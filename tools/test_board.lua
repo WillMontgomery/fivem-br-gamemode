@@ -727,6 +727,14 @@ do
     tick()
     tick()
     eq(dui.made, 0, 'x and y with no z build nothing')
+
+    -- AND THE READOUT SURVIVES A HALF-FILLED CONFIG. It formats three
+    -- coordinates with %.2f, so a partial site is a dev command that throws --
+    -- on precisely the checkout where somebody is using it to fill the rest in.
+    local half = brboard()
+    ok(printed(half, 'prop = { model = nil'),
+        '/brboard prints the empty prop line rather than throwing on it')
+
     B.prop.x, B.prop.y = nil, nil
 
     -- OFF THE PAD IS THE THIRD GATE, and it is not the same as the other two.

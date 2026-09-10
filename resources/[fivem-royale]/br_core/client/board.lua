@@ -147,6 +147,20 @@ local function cfgUp()    return ovUp   or tonumber(C.upM)      or 0.0 end
 local function cfgW()     return ovW    or tonumber(C.widthM)   or 1.0 end
 local function cfgYaw()   return ovYaw  or tonumber(C.yawDeg)   or 0.0 end
 
+--- Are all three coordinates there?
+---
+--- ALL THREE, TOGETHER, AND SEPARATELY FROM THE MODEL. A half-finished config
+--- edit that sets x and y and forgets z is the shape this catches, and
+--- CREATE_OBJECT_NO_OFFSET with a nil z is an engine error rather than a board
+--- that is slightly wrong. `sited()` below spends this, and so does the readout
+--- in /brboard, which formats all three with %.2f and would throw on a nil.
+--- @return boolean
+local function haveSite()
+    return type(cfgX()) == 'number'
+       and type(cfgY()) == 'number'
+       and type(cfgZ()) == 'number'
+end
+
 --- Has anybody said where the board goes?
 ---
 --- ⚠ FALSE ON A SHIPPED CHECKOUT, DELIBERATELY. The owner has a prop in mind and
@@ -159,9 +173,7 @@ local function sited()
     if C.enabled == false then return false end
     local m = cfgModel()
     if type(m) ~= 'string' or m == '' then return false end
-    return type(cfgX()) == 'number'
-       and type(cfgY()) == 'number'
-       and type(cfgZ()) == 'number'
+    return haveSite()
 end
 
 --- Is the local player somewhere this board could be seen from?
@@ -555,7 +567,7 @@ RegisterCommand('brboard', function(_, args)
     end
     print(('  you    %s, %s, %s   %sm from the site   draw range %sm')
         :format(m(p.x), m(p.y), m(p.z),
-                (cfgX() and m(BR.Dist(p.x, p.y, cfgX(), cfgY()))) or '-',
+                haveSite() and m(BR.Dist(p.x, p.y, cfgX(), cfgY())) or '-',
                 m(tonumber(C.drawM))))
 
     -- PASTEABLE, WHICH IS THE POINT. These are the shapes they take in
@@ -564,7 +576,7 @@ RegisterCommand('brboard', function(_, args)
     -- he did not -- so pasting the block back can never quietly zero a field he
     -- never touched.
     print('  -- br_lib/config/board.lua')
-    if cfgModel() and cfgX() then
+    if cfgModel() and haveSite() then
         print(("    prop = { model = '%s', x = %.2f, y = %.2f, z = %.2f, "
                .. "heading = %.1f },")
             :format(cfgModel(), cfgX(), cfgY(), cfgZ(), cfgH()))
