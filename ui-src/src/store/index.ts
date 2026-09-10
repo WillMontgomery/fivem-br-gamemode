@@ -168,6 +168,11 @@ export interface UiState {
    *  FLAG travels; the figure itself is `market.balance`, which is already
    *  here -- see the `shopplate` envelope. */
   shopPlate: boolean
+  /** Is the in-match gun shop's menu open? It hides the squad panel and it
+   *  keeps the Volts readout up, which are the owner's two requests about the
+   *  same moment. A FLAG only, like `shopPlate` above -- see the `gunshopmenu`
+   *  envelope for why the balance does not travel with it. */
+  gunshopMenu: boolean
   /** The in-game player list, and the report rules that came with it. */
   players: PlayersPayload
   /** The admin console (#23): where it is, and the last mint answer.
@@ -475,6 +480,7 @@ export interface UiState {
   setReportResult: (r: ReportResult | null) => void
   setMarket: (m: MarketPayload) => void
   setShopPlate: (up: boolean) => void
+  setGunshopMenu: (open: boolean) => void
   setKeybinds: (k: KeybindAction[], raw: boolean) => void
   openChat: (channel: ChatMessage['channel']) => void
   closeChat: () => void
@@ -819,6 +825,7 @@ export const useUi = create<UiState>((set, get) => {
   earnedStaged: false,
   market: { balance: 0, items: [] },
   shopPlate: false,
+  gunshopMenu: false,
   players: { players: [], categories: [], defaultCategory: 'cheating', maxTargets: 5 },
   admin: {},
   community: {},
@@ -1064,6 +1071,7 @@ export const useUi = create<UiState>((set, get) => {
   clearXpAward: () => set({ xpAward: null }),
   setMarket: (market) => set({ market }),
   setShopPlate: (shopPlate) => set({ shopPlate }),
+  setGunshopMenu: (gunshopMenu) => set({ gunshopMenu }),
   setPlayers: (players) => set({ players }),
   setAdmin: (admin) => set({ admin }),
   setCommunity: (community) => set({ community }),

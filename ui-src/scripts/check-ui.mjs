@@ -692,6 +692,155 @@ for (const name of builtCss) {
 }
 
 // ---------------------------------------------------------------------------
+// R15  The gun shop menu flag reaches BOTH surfaces it was asked for.
+//
+// Owner, after the first in-match gun shop playtest, two sentences: "hide the
+// squad panel when the menu is open" and "their volts balance is always shown
+// in the bottom right while the menu is open". One fact, two surfaces, four
+// files -- the envelope kind, the router, the Volts selector and the squad
+// slot -- and THREE of the four are silent when they go missing. A kind nobody
+// routes is discarded by the dispatcher with no error (that is exactly how the
+// `squadcue` sounds were dropped for a fortnight); a selector that forgets the
+// flag simply renders null.
+//
+// THE VOLTS HALF IS THE ONE THAT LOOKS ALREADY DONE. `shopPlate` has driven
+// that readout since 2026-08-29, so the balance appears at the warmup shop and
+// the code reads correct -- but the counter takes its own plate DOWN to raise
+// the menu, so the one moment the owner asked about is the one moment
+// `shopPlate` is false. The OR below is the whole fix, and it is one character
+// away from looking untouched.
+//
+// WHAT THIS CANNOT PROVE, said plainly: that Lua ever sends the envelope. The
+// sender is br_core/client/gunshop.lua, which is not this project. A pass here
+// means the page would act on it if it arrived.
+//
+// IT CAN FAIL. Drop `!gunshopMenu` from the squad block, or `s.gunshopMenu`
+// from the selector, or the handler, or the union member.
+// ---------------------------------------------------------------------------
+{
+  const T = join(SRC, 'bridge', 'types.ts')
+  const A = join(SRC, 'App.tsx')
+  const H = join(SRC, 'hud', 'Hud.tsx')
+
+  if (!existsSync(T) || !existsSync(A) || !existsSync(H)) {
+    fail('R15 gunshopmenu', 'src',
+      'types.ts, App.tsx or hud/Hud.tsx is missing. If they moved, move this'
+      + ' rule with them rather than letting it pass over nothing.')
+  } else {
+    if (!/k:\s*'gunshopmenu'/.test(read(T))) {
+      fail('R15 gunshopmenu', 'src/bridge/types.ts',
+        "the Envelope union has no `gunshopmenu` member. Lua sends the kind as a"
+        + ' raw string, so nothing here would fail to compile -- the envelope'
+        + ' would simply arrive and be discarded.')
+    }
+    if (!/useNuiEvent\(\s*'gunshopmenu'/.test(read(A))) {
+      fail('R15 gunshopmenu', 'src/App.tsx',
+        "nothing subscribes to 'gunshopmenu'. An unrouted kind is dropped by the"
+        + ' dispatcher in silence, which presents as "the squad panel does not'
+        + ' hide" and is indistinguishable from Lua never sending it.')
+    }
+
+    const hud = stripComments(read(H))
+
+    // The Volts readout: the flag must be one of the conditions that puts a
+    // balance on screen.
+    // BALANCED PARENS, NOT A LINE MATCH AND NOT A FIXED WINDOW. Both cheaper
+    // spellings were tried and both were wrong: `\)\n` finds nothing in a CRLF
+    // checkout, and a 300-character window from `useUi(` reaches PAST the end
+    // of this selector into `const gunshopMenu = useUi((s) => s.gunshopMenu)`
+    // on the next line -- so the rule passed over a shopVolts selector that had
+    // been reverted, which is the one thing it exists to catch.
+    const selAt = hud.search(/const\s+shopVolts\s*=\s*useUi\(/)
+    let sel = null
+    if (selAt !== -1) {
+      const open = hud.indexOf('(', hud.indexOf('useUi', selAt))
+      let depth = 0
+      for (let i = open; i < hud.length; i++) {
+        if (hud[i] === '(') depth++
+        else if (hud[i] === ')' && --depth === 0) { sel = [null, hud.slice(open, i + 1)]; break }
+      }
+    }
+    if (!sel) {
+      fail('R15 gunshopmenu', 'src/hud/Hud.tsx',
+        'no `const shopVolts = useUi(...)` selector found. That selector is'
+        + ' where "is a balance relevant" is decided; if it was renamed, rename'
+        + ' it here too.')
+    } else if (!/\bs\.gunshopMenu\b/.test(sel[1])) {
+      fail('R15 gunshopmenu', 'src/hud/Hud.tsx',
+        'the shopVolts selector does not read s.gunshopMenu. `shopPlate` alone'
+        + ' is false at a gun shop counter -- the counter lowers its plate to'
+        + ' raise the menu -- so the balance vanishes at exactly the moment the'
+        + ' owner asked for it.')
+    }
+
+    // The squad panel: the flag must gate the block that carries the slot id.
+    const at = hud.indexOf('id={SQUAD_SLOT_ID}')
+    if (at === -1) {
+      fail('R15 gunshopmenu', 'src/hud/Hud.tsx',
+        'the squad slot (id={SQUAD_SLOT_ID}) is gone. screens/PlayerList.tsx'
+        + ' measures that id -- see the note above it -- so this is a bigger'
+        + ' change than this rule; do not delete the rule to make it pass.')
+    } else if (!/!gunshopMenu\s*&&/.test(hud.slice(Math.max(0, at - 300), at))) {
+      fail('R15 gunshopmenu', 'src/hud/Hud.tsx',
+        'the squad slot is not gated on !gunshopMenu. It must go away while the'
+        + ' gun shop menu is up, the same way it already does during the'
+        + ' descent -- one block, two reasons, one panel that comes back.')
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// R16  The inventory names a weapon's ammunition, and ammunition can be put
+//      down.
+//
+// Owner, same report: "for some reason there is no way to drop ammo from my
+// inventory, only weapons?" and "please add an item in the inventory page that
+// shows what type of ammo each weapon takes. like instead of where it says
+// weapon say Medium shells etc".
+//
+// BOTH ARE ONE-EXPRESSION CHANGES THAT REVERT INVISIBLY. `{slot.kind}` renders
+// a perfectly reasonable word, and a strip with no control on it looks
+// finished -- neither reads as missing in a diff, which is how the first one
+// survived to a playtest.
+//
+// THE DROP HALF IS HALF A FEATURE HERE AND THIS RULE SAYS SO. A pool has no
+// slot index (br_core/server/inventory.lua: "Ammo never occupies a slot"), so
+// the request below names a POOL, and the server handler that can act on one
+// is not in this project. This gate proves the page asks. It cannot prove
+// anybody answers.
+//
+// IT CAN FAIL. Put `{slot.kind}` back, or delete the pool drop.
+// ---------------------------------------------------------------------------
+{
+  const f = join(SRC, 'screens', 'InventoryPanel.tsx')
+  if (!existsSync(f)) {
+    fail('R16 inventory', 'src/screens/InventoryPanel.tsx', 'file is missing.')
+  } else {
+    const body = stripComments(read(f))
+
+    if (/\{\s*slot\.kind\s*\}/.test(body)) {
+      fail('R16 inventory', 'src/screens/InventoryPanel.tsx',
+        'a slot still prints `{slot.kind}` bare. A weapon should name the'
+        + " ammunition it takes -- AMMO_LABEL[slot.pool], the same word the"
+        + ' strip at the bottom uses -- and fall back to the kind only when'
+        + ' there is no pool, which is what melee is.')
+    }
+    if (!/AMMO_LABEL\[\s*slot\.pool\s*\]/.test(body)) {
+      fail('R16 inventory', 'src/screens/InventoryPanel.tsx',
+        'no AMMO_LABEL[slot.pool] anywhere. The pool name must come from the'
+        + ' map already in this file, never from a second list written beside'
+        + ' it -- two spellings of "Shells" is the bug this avoids.')
+    }
+    if (!/fetchNui\(\s*CB\.INV_DROP\s*,\s*\{\s*pool\s*\}/.test(body)) {
+      fail('R16 inventory', 'src/screens/InventoryPanel.tsx',
+        'nothing sends CB.INV_DROP with a { pool }. Ammunition has no slot'
+        + ' index, so a pool name is the only address a drop can carry; without'
+        + ' this the strip is read-only and the owner\'s report stands.')
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Result
 // ---------------------------------------------------------------------------
 if (failures) {

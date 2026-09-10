@@ -243,7 +243,25 @@ export default function Hud({ visible }: { visible: boolean }) {
   // THE FIGURE IS THE STORE'S OWN. `market.balance` is what the Store screen
   // renders and it is refreshed on every MARKET_STATE, so the HUD and the shop
   // screen cannot disagree about how many Volts somebody has.
-  const shopVolts = useUi((s) => (s.shopPlate ? s.market.balance : null))
+  //
+  // TWO CONDITIONS, ONE READOUT (owner, after the gun shop playtest: "their
+  // volts balance is always shown in the bottom right while the menu is open").
+  // The warmup plate is one moment the balance matters; standing at a counter
+  // with the menu up is the other, and the counter takes its own plate DOWN to
+  // show that menu -- so `shopPlate` alone put the balance away at exactly the
+  // moment he is spending it. OR'd here rather than in Lua because this is
+  // already the one place "is a balance relevant" is decided.
+  const shopVolts = useUi((s) => (
+    (s.shopPlate || s.gunshopMenu) ? s.market.balance : null))
+  // ═══ THE SQUAD PANEL STANDS DOWN FOR THE SHOP MENU ═══
+  //
+  // Owner, same report: "hide the squad panel when the menu is open".
+  //
+  // A SECOND CONDITION ON THE SAME BLOCK `descending` already guards, not a
+  // second copy of the panel. The two reasons to put it away are unrelated --
+  // one is the bus, one is the counter -- but the effect is the same one, and
+  // the panel that comes back is the same panel.
+  const gunshopMenu = useUi((s) => s.gunshopMenu)
   // THE CURRENCY'S NAME, FROM THE ONE PLACE IT IS WRITTEN. Lua sends it with
   // the market state (BR.Config.Market.currency) so the word lives in config
   // rather than in two languages; the Store screen reads the same field. A
@@ -373,7 +391,7 @@ export default function Hud({ visible }: { visible: boolean }) {
             the rendered box rather than guessing at a rem constant. Removing or
             renaming this leaves that panel falling back to the safe zone and
             overlapping this one again. */}
-        {!descending && (
+        {!descending && !gunshopMenu && (
           <div
             id={SQUAD_SLOT_ID}
             className="absolute w-[13rem]"

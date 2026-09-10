@@ -1363,6 +1363,22 @@ export type Envelope =
    *
    *  A RAW KIND STRING RATHER THAN A BR.Nui CONSTANT, like `squadcue` above. */
   | { k: 'shopplate'; d: { show: boolean } }
+  /** THE IN-MATCH GUN SHOP'S MENU IS OPEN, OR IT IS NOT.
+   *
+   *  Owner, after the first gun shop playtest: "hide the squad panel when the
+   *  menu is open" and "their volts balance is always shown in the bottom right
+   *  while the menu is open". Two requests, ONE FACT, so one envelope: the menu
+   *  is a scaleform, which this page cannot observe by any other means, and two
+   *  flags for one state would be free to disagree about whether it is up.
+   *
+   *  IT CARRIES NO BALANCE, for the same reason `shopplate` above does not --
+   *  the figure is `market.balance` and it already lives here. This flag joins
+   *  `shopPlate` in deciding whether that figure is drawn; the counter takes the
+   *  world plate DOWN when the menu goes up, so without this the balance went
+   *  down with it.
+   *
+   *  A RAW KIND STRING RATHER THAN A BR.Nui CONSTANT, like `shopplate` above. */
+  | { k: 'gunshopmenu'; d: { open: boolean } }
 
 export type EnvelopeKind = Envelope['k']
 

@@ -109,8 +109,23 @@ function SlotCard({
               <ItemIcon slot={slot} size="3.4rem" />
             </div>
             <div className="text-lg font-semibold leading-tight">{slot.label}</div>
+            {/* ═══ WHAT IT EATS, NOT WHAT IT IS (owner, gun shop playtest:
+                "please add an item in the inventory page that shows what type
+                of ammo each weapon takes. like instead of where it says weapon
+                say Medium shells etc") ═══
+
+                THE WORD IS THE ONE ALREADY IN THIS FILE. `AMMO_LABEL` is what
+                the strip at the bottom calls each pool, so a rifle now names
+                its ammunition with the same word the number under it carries --
+                and nothing new is written down to disagree with later.
+
+                `slot.pool` IS LUA'S ANSWER, not a lookup here: the weapon table
+                lives in br_lib (see InvSlot.pool). A weapon with no pool is a
+                melee weapon and keeps saying `weapon`, which is also what a
+                consumable and a throwable keep saying -- there is no ammunition
+                to name for any of them. */}
             <div className="text-[0.8rem] uppercase tracking-wide text-white/45 mt-1">
-              {slot.kind}
+              {(slot.pool && AMMO_LABEL[slot.pool]) || slot.kind}
               {slot.count > 1 && ` · x${slot.count}`}
               {slot.clip != null && ` · ${slot.clip} in clip`}
             </div>
@@ -301,17 +316,61 @@ export default function InventoryPanel() {
           ))}
         </div>
 
+        {/* ═══ AMMUNITION, AND IT CAN NOW BE PUT DOWN ═══
+
+            Owner, gun shop playtest: "for some reason there is no way to drop
+            ammo from my inventory, only weapons?"
+
+            IT WAS NOT A MISSING BUTTON, IT WAS A MISSING ADDRESS. Every drop in
+            this interface names a SLOT, and ammunition has never had one --
+            br_core/server/inventory.lua's give() says so in one line ("Ammo
+            never occupies a slot"): a pool is a number on the inventory, not a
+            stack in a square. So there was no index this panel could have sent,
+            and the control below is the first thing that names a POOL.
+
+            THE WHOLE POOL, WHICH IS THE ONLY QUANTITY ANYTHING HERE HAS EVER
+            USED. A slot drops its whole stack; a corpse drops one stack per
+            pool (BR.Inv.dropAll). "Some of it" would be a number the player has
+            to choose, and no screen in this project asks for one.
+
+            NOTHING BELOW MUTATES THE STORE, same as every other control here:
+            the figure moves when INV_SET comes back. */}
         <div className="mt-4 pt-3 border-t border-white/10 flex gap-5">
-          {Object.keys(AMMO_LABEL).map((pool) => (
-            <div key={pool} className="text-right">
-              <div className="font-display text-xl tabular-nums leading-none">
-                {inv.ammo[pool] ?? 0}
+          {Object.keys(AMMO_LABEL).map((pool) => {
+            const held = inv.ammo[pool] ?? 0
+            return (
+              <div key={pool} className="text-right w-[5rem]">
+                <div className="font-display text-xl tabular-nums leading-none">
+                  {held}
+                </div>
+                <div className="text-[0.7rem] uppercase tracking-[0.16em] text-white/40 mt-1">
+                  {AMMO_LABEL[pool]}
+                </div>
+                {/* An empty pool is nothing to put down, and a button that
+                    reports success on nothing is the worse of the two. */}
+                <button
+                  type="button"
+                  disabled={held <= 0}
+                  className={`btn plate mt-1.5 w-full px-2 py-1 font-display
+                             text-[0.7rem] uppercase tracking-[0.1em]${
+                    held <= 0 ? ' btn--off' : ''}`}
+                  style={{
+                    ['--edgec' as string]: 'rgba(255,255,255,0.22)',
+                    ['--plate-fill' as string]: 'rgba(30,34,48,0.94)',
+                    ['--cut-max' as string]: '0.4rem',
+                  }}
+                  onPointerEnter={() => { if (held > 0) play('ui.hover') }}
+                  onClick={() => {
+                    if (held <= 0) return
+                    play('ui.back')
+                    void fetchNui(CB.INV_DROP, { pool })
+                  }}
+                >
+                  Drop
+                </button>
               </div>
-              <div className="text-[0.7rem] uppercase tracking-[0.16em] text-white/40 mt-1">
-                {AMMO_LABEL[pool]}
-              </div>
-            </div>
-          ))}
+            )
+          })}
         </div>
       </div>
     </div>
