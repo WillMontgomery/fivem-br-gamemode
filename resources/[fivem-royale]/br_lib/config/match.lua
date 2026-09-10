@@ -810,9 +810,12 @@ BR.Config.Match = {
     -- NAME instead of by room. See BR.Config.Match.voice.range below and
     -- br_core/client/voice.lua for why the squad room was removed (#157).
     --
-    -- Channel numbers are opaque integers to the client. They are derived
-    -- from matchId, which is NEVER public (roster.lua PUBLIC_FIELDS), so the
-    -- server hands each player their number over VOICE_SET.
+    -- Channel numbers are derived from matchId, and the server hands each
+    -- player theirs over VOICE_SET rather than a rule for computing it. They
+    -- are not opaque and were never secret (#291): `prox` is matchBase +
+    -- matchId, so the id comes back out by subtraction. What stops a client
+    -- joining a channel it was not given is the addChannelCheck in
+    -- server/voice.lua.
     voice = {
         enabled          = true,
 

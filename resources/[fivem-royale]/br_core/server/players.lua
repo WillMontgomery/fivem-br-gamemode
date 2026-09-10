@@ -2,10 +2,16 @@
     The in-game player list, and the reports filed from it.
 
     THE SERVER RESOLVES THE BUCKET AND SENDS THE ANSWER. It never sends a
-    matchId for the client to filter on -- `matchId` is marked NEVER PUBLIC in
-    roster.lua's PUBLIC_FIELDS, and shipping it so the client can do the
-    filtering would leak the exact field that projection exists to withhold.
-    What goes out is a list of people, already correct.
+    matchId for the client to filter on: a filter the client performs is a
+    filter the client can decline to perform. What goes out is a list of
+    people, already correct.
+
+    NOT BECAUSE THE ID IS SECRET (#291). `matchId` is absent from roster.lua's
+    PUBLIC_FIELDS, but the id reaches every client anyway -- VOICE_SET's `prox`
+    is matchBase + matchId, `squadId` is in PUBLIC_FIELDS and carries the
+    match's hex tag, and BUS_SPECTATE sends the id outright. No server handler
+    reads a match id off the wire, so none of that is exploitable, and the ids
+    are unguessable as of #291.
 
     THIS IS AN INFORMATION CHANGE, AND THAT WAS A DELIBERATE CALL (owner,
     2026-08-12). Before this, a player knew how many were alive but not who.

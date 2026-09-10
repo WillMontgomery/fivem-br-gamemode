@@ -1286,10 +1286,17 @@ end)
 --- setRadioChannel is a round trip to the server and back.
 ---
 --- THE NUMBER IS NEVER OURS. `state.radio` arrives over VOICE_SET and is
---- derived from matchId and squadId, neither of which is public -- so a client
---- cannot work out another squad's channel, and server/voice.lua registers a
---- pma-voice `addChannelCheck` on it so a client that guessed one anyway is
---- refused. All this decides is whether to ask for the one we were given.
+--- derived from matchId and squadId. What stops a client joining another
+--- squad's radio is the `addChannelCheck` server/voice.lua registers with
+--- pma-voice, which re-derives the answer from the roster every time it is
+--- asked. All this decides is whether to ask for the one we were given.
+---
+--- IT IS NOT THAT THE INPUTS ARE SECRET (#291). This used to say neither
+--- matchId nor squadId is public. `squadId` is in the roster's PUBLIC_FIELDS
+--- and reaches every client on the server, and it now carries the match's hex
+--- tag in front of the squad index -- so both halves of the derivation are
+--- visible to anybody who wants them. The check is the wall; the arithmetic
+--- never was.
 local function applyRadio()
     local s = BR.Voice.state
     -- DERIVED FROM THE ROUTING TABLE, not from a mode name. This line used to

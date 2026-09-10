@@ -223,10 +223,24 @@ BR.Net = {
     MARKER_CLEAR    = 'br:marker:clear',     -- C->S  remove my marker
     MARKER_SYNC     = 'br:marker:sync',      -- S->C  { op, owner, x, y, colour }
 
-    -- Voice channels. The client cannot work these out for itself: a channel
-    -- is derived from the match, and matchId is deliberately NEVER public
-    -- (see PUBLIC_FIELDS in server/roster.lua). So the server hands each
-    -- player the two numbers and nothing else.
+    -- Voice channels. The server hands each player their two numbers rather
+    -- than a rule for computing them, and server/voice.lua registers a pma-voice
+    -- `addChannelCheck` so a client that guessed somebody else's is refused.
+    --
+    -- THE MATCH ID IS NOT A SECRET, AND SAYING OTHERWISE HERE WAS WRONG (#291).
+    -- This comment used to claim `matchId` is "deliberately NEVER public". It
+    -- is not in the roster projection (PUBLIC_FIELDS, server/roster.lua) and it
+    -- never has been -- but `prox` below IS `matchBase + matchId`, so this very
+    -- event discloses it by subtraction, on a 1 Hz sweep, to every player. So
+    -- does `squadId`, which IS in PUBLIC_FIELDS and carries the match's hex tag
+    -- in front of the squad index, and so does BUS_SPECTATE's `matchId`.
+    --
+    -- IT IS NOT EXPLOITABLE AND THAT IS THE PART THAT MATTERS: not one server
+    -- net handler reads a match id off the wire, and every lookup re-derives
+    -- the match from the player who sent the message. The ids are also
+    -- unguessable now, and the owner has ruled (2026-09-09) that once they are,
+    -- disclosure is not a leak. The channel check is what stops a guess, not the
+    -- number being hidden.
     VOICE_SET       = 'br:voice:set',        -- S->C  { prox, mates, nearbyRange, squadRange }
 
     -- ONE BIT ABOUT THIS PLAYER'S OWN VOICE, TO THEIR OWN SQUAD.
@@ -792,11 +806,16 @@ BR.Net = {
                                              --         fromLevel, fromXp, fromNeeded, levelUp }
     -- The in-game player list and reporting.
     --
-    -- THE SERVER FILTERS THE BUCKET; THE CLIENT NEVER LEARNS WHICH ONE. `matchId`
-    -- is marked NEVER PUBLIC in roster.lua's PUBLIC_FIELDS, so the list is
-    -- resolved server-side and the answer sent -- rather than sending an id and
-    -- asking the client to filter on it, which would leak the very field the
-    -- projection exists to withhold.
+    -- THE SERVER FILTERS THE BUCKET AND SENDS THE ANSWER. `matchId` is not in
+    -- roster.lua's PUBLIC_FIELDS, so the list is resolved server-side rather
+    -- than shipping an id and asking the client to filter on it.
+    --
+    -- THAT IS ABOUT TRUST, NOT SECRECY (#291). This used to say the client
+    -- never learns which bucket it is in, which was never true: VOICE_SET's
+    -- `prox` is `matchBase + matchId`, `squadId` carries the match's hex tag and
+    -- IS in PUBLIC_FIELDS, and BUS_SPECTATE sends `matchId` outright. The reason
+    -- to resolve here is that a filter the client performs is a filter the
+    -- client can decline to perform.
     PLAYERS_ASK     = 'br:players:ask',      -- C->S  (no payload; the server knows who asked)
     PLAYERS_LIST    = 'br:players:list',     -- S->C  { players = { { id, name, state, squadId, left } } }
     -- C->S { targets = { { id, category } } }.
