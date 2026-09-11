@@ -448,6 +448,163 @@ do
 end
 
 -- ---------------------------------------------------------------------------
+describe('the shortfall sentence, which is his and is the same one everywhere')
+-- ---------------------------------------------------------------------------
+--
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Owner, 2026-09-09: "You need 378 more to buy that is not good copy - how
+-- about You need more Volts to buy that item. again, volts text should be our
+-- color." And on 2026-09-11: "Yes please change the 'You need N more to buy
+-- that' copy everywhere - great call."
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- ⚠ THIS SUITE IS WHERE IT CAN BE PROVED AND THE ONLY PLACE. Every other suite
+-- that touches a refusal stubs BR.Market wholesale -- tools/test_shop.lua and
+-- tools/test_gunshop.lua both replace `tellShortfall` with a recorder -- so a
+-- stub could be handed any sentence at all and would agree. This file stands
+-- the real server/market.lua up, so the words on the wire are readable.
+--
+-- ═══ FOUR SPEAKERS, AND A COUNT OF tellShortfall's CALLERS FINDS THREE ═══
+--
+-- The three that go through the funnel are the warmup showroom and both arms of
+-- BR.Market.charge, which is the revive key's path. THE FOURTH is the Store
+-- screen's own MARKET_BUY refusal, which typed the same sentence a second time
+-- in the same file and never called the funcion that owned it. Both arms of
+-- charge and the storefront handler are driven below; the showroom is
+-- server/shop.lua calling the same function with a different price.
+do
+    --- The newest NOTIFY payload sent to `src`, or nil.
+    local function noticeFor(src)
+        for i = #sent, 1, -1 do
+            local s = sent[i]
+            if s.event == BR.Net.NOTIFY and s.target == src then
+                return s.args[1]
+            end
+        end
+        return nil
+    end
+
+    -- HIS SENTENCE, RETYPED FROM HIS MESSAGE RATHER THAN READ OUT OF THE FILE.
+    -- Double entry: an assertion that quoted the constant would pass against any
+    -- rewording at all, which is the exact failure this project keeps paying
+    -- for. The only mark added is the TILDE PAIR, which is not a letter --
+    -- ui-src's KeyText paints anything between a pair of them with
+    -- `--color-volts`, and he asked for that by name ("volts text should be our
+    -- color").
+    local WANT = 'You need more ~Volts~ to buy that item.'
+
+    -- ═══ 1. THE CHEAP REFUSAL, WHICH NEVER REACHES DYNAMODB ═══
+    reset()
+    player(31, 100)
+    charge(31, 750, nil)
+    local cheap = noticeFor(31)
+    ok(cheap ~= nil and cheap.text == WANT,
+        'the charge-side refusal speaks his sentence, character for character',
+        cheap and tostring(cheap.text) or 'nothing sent')
+    ok(cheap ~= nil and cheap.cue == 'shop.denied' and cheap.tone == 'warn',
+        '...still carrying the cue he picked for "Shop insufficient funds", '
+            .. 'riding ON the toast so it REPLACES the general warn sound',
+        cheap and tostring(cheap.cue) or 'nothing sent')
+
+    -- ═══ 2. THE ARM DYNAMODB REFUSES, WHICH THE CACHE THOUGHT WAS AFFORDABLE
+    --     ═══
+    --
+    -- Reachable whenever the session cache is stale: a report award, a console
+    -- grant, or the same license connected on another box. It is the arm a
+    -- playtest cannot produce on demand, and it speaks the same sentence.
+    -- THE ANSWER CARRIES THE ROW'S REAL BALANCE, which is what makes this arm
+    -- speak at all: `tellShortfall` is below a `need <= 0` guard, so it says
+    -- nothing to somebody the cache still believes can pay. `charge` corrects
+    -- the cache from `extra.balance` one line before it calls the funnel, which
+    -- is exactly the stale-cache case this arm exists for.
+    reset()
+    player(32, 5000)
+    charge(32, 750,
+           { ok = false, extra = { refused = 'not enough currency', balance = 100 } })
+    local refusedNotice = noticeFor(32)
+    ok(refusedNotice ~= nil and refusedNotice.text == WANT,
+        'and so does the arm DynamoDB refuses after the round trip',
+        refusedNotice and tostring(refusedNotice.text) or 'nothing sent')
+
+    -- ═══ 3. THE STORE SCREEN, WHICH IS THE ONE THAT WAS MISSED ═══
+    --
+    -- ⚠ NOT THROUGH tellShortfall. MARKET_BUY refuses in its own handler, so
+    -- this assertion is the whole reason "find every caller" was not the same
+    -- job as "change the writer".
+    reset()
+    player(33, 10)
+    local paid = nil
+    for id, it in pairs(BR.Config.MarketIndex) do
+        if it.purchasable and not it.default and (it.price or 0) > 1000 then
+            paid = id
+            break
+        end
+    end
+    ok(paid ~= nil,
+        'the storefront has something expensive enough to be refused at 10 '
+            .. 'Volts, so the case below is real rather than arranged',
+        tostring(paid))
+    fire(BR.Net.MARKET_BUY, 33, { id = paid })
+    local store = noticeFor(33)
+    ok(store ~= nil and store.text == WANT,
+        'the Store screen says the same sentence, which it did not before -- it '
+            .. 'typed its own copy of the old one',
+        store and tostring(store.text) or 'nothing sent')
+    ok(countOf('br:ddb:purchase') == 0,
+        '...and refuses without a round trip, which is unchanged',
+        countOf('br:ddb:purchase'))
+
+    -- ═══ 4. THE NUMBER IS GONE, WHICH IS THE THING HE OBJECTED TO ═══
+    --
+    -- "You need 378 more to buy that is not good copy". A digit anywhere in the
+    -- sentence means somebody put the shortfall, a balance or a price back into
+    -- it -- and an appended balance is the likeliest way that happens, because
+    -- config/gunshop.lua's `balanceToast` legitimately does exactly that at a
+    -- counter he wrote two sentences for.
+    for _, n in ipairs({ cheap, refusedNotice, store }) do
+        ok(n ~= nil and n.text ~= nil and n.text:find('%d') == nil,
+            'and not one of the three carries a digit -- no shortfall, no '
+                .. 'balance, no price',
+            n and tostring(n.text) or 'nothing sent')
+    end
+
+    -- ═══ 5. AND THE OLD SENTENCE IS NOT ANYWHERE IN THE FILE ═══
+    --
+    -- A LITERAL SWEEP, BECAUSE THE THREE CASES ABOVE ARE THREE CASES. A fourth
+    -- refusal path in this file still typing the old words would pass everything
+    -- above it, which is precisely how the storefront survived the first round
+    -- of this change.
+    -- COMMENTS STRIPPED FIRST, the same way tools/test_shop.lua strips them
+    -- before asserting on this file. The block above SHORTFALL quotes the old
+    -- sentence in the owner's own words while explaining why it went; prose
+    -- about a retired string is exactly what these files should carry, and
+    -- matching it would turn this assertion into a ban on explaining the change.
+    local raw = io.open(RES .. 'br_core/server/market.lua', 'rb')
+    local src = raw and raw:read('a') or ''
+    if raw then raw:close() end
+    ok(#src > 0, 'server/market.lua was actually read', #src)
+    local code = (src:gsub('%-%-[^\n]*', ''))
+    ok(code:find('more to buy that', 1, true) == nil,
+        'the old sentence does not survive anywhere in the CODE of '
+            .. 'server/market.lua',
+        code:find('more to buy that', 1, true))
+
+    -- ...AND IT IS WRITTEN ONCE. Two literals is what made this a hunt; the
+    -- constant is what stops the next rewording being a hunt again.
+    local n, at = 0, 1
+    while true do
+        local i = code:find(WANT, at, true)
+        if not i then break end
+        n = n + 1
+        at = i + 1
+    end
+    ok(n == 1,
+        'and his sentence is spelled exactly ONCE in the code, as a constant '
+            .. 'both refusals read',
+        n)
+end
+
+-- ---------------------------------------------------------------------------
 if fail > 0 then
     realPrint(('\27[31m%d failed\27[0m, %d passed'):format(fail, pass))
     os.exit(1)

@@ -318,6 +318,38 @@ local function refuse(src, text, cue)
         { text = text, tone = 'warn', ms = 4000, cue = cue })
 end
 
+--- ═══ THE SENTENCE EVERY SHORTFALL IN THE GAME SPEAKS, AND IT IS HIS ═══
+---
+--- Owner, 2026-09-09: "You need 378 more to buy that is not good copy - how
+--- about You need more Volts to buy that item. again, volts text should be our
+--- color." And on 2026-09-11, on changing it everywhere rather than only at the
+--- gun counter: "Yes please change the 'You need N more to buy that' copy
+--- everywhere - great call."
+---
+--- VERBATIM, INCLUDING THE FULL STOP. The only mark added is the TILDE PAIR,
+--- which is not a letter: ui-src's KeyText paints anything between a pair of
+--- them with `--color-volts`, and that is this project's one mechanism for the
+--- signature color. It is the same pair config/gunshop.lua's `poorToast` wears
+--- for the same word, so there is no second way to colour Volts in a toast.
+---
+--- ═══ THE NUMBER IS GONE, AND THAT IS THE CHANGE ═══
+---
+--- "You need %d more to buy that." stated a shortfall to the Volt. He read it on
+--- a real screen and it is the thing he objected to. Nothing may put the figure
+--- back: no appended balance, no second sentence. The gun shop says more than
+--- this at its own counter because he WROTE more for that counter
+--- (config/gunshop.lua's `poorToast` and `balanceToast`); every other surface
+--- says exactly this.
+---
+--- ═══ DECLARED HERE, ABOVE BOTH READERS ═══
+---
+--- A Lua local is invisible above its own declaration, and the two places that
+--- speak it are the storefront handler immediately below and
+--- BR.Market.tellShortfall two hundred lines down. It is ONE constant because it
+--- was two literals: the same sentence typed twice in this file, which is how
+--- "change it everywhere" came to mean "find every one of them".
+local SHORTFALL = 'You need more ~Volts~ to buy that item.'
+
 RegisterNetEvent(BR.Net.MARKET_BUY)
 AddEventHandler(BR.Net.MARKET_BUY, function(data)
     local src = source
@@ -350,7 +382,21 @@ AddEventHandler(BR.Net.MARKET_BUY, function(data)
     -- know about a debit that has not been written.
     local have = BR.Market.spendable(entry)
     if have < item.price then
-        refuse(src, ('You need %d more to buy that.'):format(item.price - have))
+        -- ═══ THE FOURTH SPEAKER OF THIS SENTENCE, AND THE ONE A COUNT OF
+        --     tellShortfall's CALLERS MISSES ═══
+        --
+        -- The Store screen's own refusal. It never went through
+        -- BR.Market.tellShortfall -- it typed the same sentence a second time,
+        -- in this file, forty lines from the function that owns it -- so "the
+        -- copy is in one place" was true of three callers and false of this one.
+        -- Both now read SHORTFALL.
+        --
+        -- THE CUE IS STILL NOT PASSED HERE AND THAT IS DELIBERATE. `shop.denied`
+        -- is what the owner picked for "Shop insufficient funds" and it rides on
+        -- tellShortfall's payload; adding it to the cosmetics store would be a
+        -- sound he has not asked for on a screen he has not commented on. The
+        -- copy is what he decided, so the copy is what changed.
+        refuse(src, SHORTFALL)
         return
     end
 
@@ -500,26 +546,44 @@ function BR.Market.spendable(entry)
                       - (tonumber(entry.spent) or 0))
 end
 
---- Say the market's existing "you cannot afford this" sentence.
+--- Say the market's "you cannot afford this" sentence.
 ---
 --- THE MARKET'S WORDING, NOT A SECOND ONE. #224 shipped exactly three
 --- player-facing strings and none of them is a refusal; the owner's standing
 --- rule is that unrequested copy reads as slop. This is the sentence the
---- storefront has always used for the same fact.
+--- storefront has always used for the same fact, and since 2026-09-11 it is HIS
+--- sentence rather than ours -- see SHORTFALL at the top of this file.
+---
+--- ═══ THE PRICE IS STILL A PARAMETER AND IT NO LONGER REACHES THE PLAYER ═══
+---
+--- The sentence used to quote the shortfall to the Volt; it does not any more.
+--- `price` survives because the GUARD below survives, and the guard is not
+--- cosmetic: a caller that is not actually short says nothing, and the cue rides
+--- on the toast, so a call that says nothing plays nothing. Deleting the
+--- parameter would make every refusal speak, including the ones where the row
+--- moved underneath a stale cache and the player can in fact afford it.
 --- @param src integer
 --- @param price number
 function BR.Market.tellShortfall(src, price)
     local need = math.floor((tonumber(price) or 0) - BR.Market.balanceOf(src))
     if need <= 0 then return end
-    -- ═══ THE ONE FUNNEL EVERY SHORTFALL REACHES, WHICH IS WHY THE SOUND IS
-    --     HERE AND NOT AT THE FOUR CALL SITES ═══
+    -- ═══ THE FUNNEL EVERY CHARGE-SIDE SHORTFALL REACHES, WHICH IS WHY THE
+    --     SOUND IS HERE AND NOT AT THE THREE CALL SITES ═══
     --
     -- Owner, 2026-09-08: "Shop insufficient funds" is what he picked
-    -- `shop.denied` for. Every refusal that speaks this sentence comes through
-    -- this function -- the warmup vehicle showroom (server/shop.lua), the
-    -- revive-key purchase, and both arms of BR.Market.charge -- so one line here
-    -- is every shop refusal in the game, and a fifth caller added later inherits
-    -- it without anybody remembering to.
+    -- `shop.denied` for. Three callers reach this function -- the warmup vehicle
+    -- showroom (server/shop.lua) and both arms of BR.Market.charge, which is the
+    -- revive-key purchase's path -- so one line here is all three, and a fourth
+    -- caller added later inherits it without anybody remembering to.
+    --
+    -- ⚠ IT IS NOT THE ONLY SPEAKER OF THE SENTENCE, AND SAYING IT WAS IS HOW A
+    -- WHOLE SURFACE GOT MISSED. The Store screen's MARKET_BUY handler, in this
+    -- same file, refuses a purchase it cannot afford WITHOUT coming through
+    -- here, so a count of this function's callers is a count of three out of
+    -- four. What both share is the SHORTFALL constant at the top of the file;
+    -- what they do not share is this cue, deliberately. The gun shop is a fifth
+    -- surface and is off this path entirely -- it speaks config/gunshop.lua's
+    -- `poorToast`, which the owner wrote for that counter.
     --
     -- CARRIED ON THE TOAST RATHER THAN SENT BESIDE IT. A separate SFX_CUE would
     -- race the sentence and, worse, would play ON TOP of the general warn sound
@@ -528,7 +592,7 @@ function BR.Market.tellShortfall(src, price)
     --
     -- AND IT IS BELOW THE `need <= 0` GUARD, so a call that says nothing plays
     -- nothing. The sound and the sentence are the same event or they are neither.
-    refuse(src, ('You need %d more to buy that.'):format(need), 'shop.denied')
+    refuse(src, SHORTFALL, 'shop.denied')
 end
 
 --- Take Volts for something that is not a cosmetic, durably.

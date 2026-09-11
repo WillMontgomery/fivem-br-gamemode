@@ -580,12 +580,15 @@ BR.Config.Gunshop = {
     --- is the one he wrote as a specification rather than as a "how about". If
     --- he wants the short one, it is this string and nothing else moves.
     ---
-    --- AND THE OLD SENTENCE IS STILL LIVE SOMEWHERE ELSE. "You need %d more to
-    --- buy that." is BR.Market.tellShortfall's, and three other callers speak
-    --- it: the pregame vehicle showroom, and both arms of BR.Market.charge,
-    --- which is the revive-key purchase's path. Retiring it there is a change to
-    --- server/market.lua and a decision about a screen he has not commented on,
-    --- so it is NOT made here.
+    --- AND THE OLD SENTENCE IS RETIRED EVERYWHERE ELSE TOO, SINCE 2026-09-11.
+    --- "You need %d more to buy that." is gone: the owner said "Yes please
+    --- change the 'You need N more to buy that' copy everywhere", and
+    --- server/market.lua's SHORTFALL constant now carries his SHORT sentence --
+    --- "You need more ~Volts~ to buy that item." -- for the pregame vehicle
+    --- showroom, both arms of BR.Market.charge (the revive key's path) and the
+    --- Store screen's own refusal, which was a fourth speaker nobody had
+    --- counted. THIS COUNTER IS STILL OFF THAT PATH and still says the two
+    --- sentences below, because those two are what he wrote for this counter.
     ---
     --- `%s` IS THE BALANCE, ALREADY MARKED AND ALREADY WORDED. It arrives as
     --- "~1234 Volts~" from BR.ShopSolve.priceLine, so the currency word is
