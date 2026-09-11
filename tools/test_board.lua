@@ -1575,6 +1575,79 @@ do
         'and no model was ever requested, because none was ever spawned')
 end
 
+-- =========================================================================
+-- PART E -- what these two files SAY about the page they point a texture at
+-- =========================================================================
+--
+-- ═══ A COMMENT THAT CONTRADICTS THE CODE IS A DEFECT, AND THIS PROJECT HAS
+--     BEEN BITTEN BY IT REPEATEDLY ═══
+--
+-- Neither of these files can see the document. They aim a browser at a URL
+-- another repository serves, so everything they say about what that document
+-- DOES is a claim about somebody else's codebase, and nothing in this tree can
+-- notice it going stale. Two of them already had:
+--
+--   "Ringmaster's renderer is deliberately built with no transition, no
+--    keyframe and no easing anywhere in it." Untrue since Ringmaster's ee66ad2,
+--    which added a bounded view transition and a motion setting, and further
+--    untrue since 657242e, which added a background that drifts continuously.
+--    It now describes SCOREBOARD_MOTION=off alone, and the default is full.
+--
+--   "A DUI repaints when its content changes and costs approximately nothing
+--    when it does not." Untrue of FiveM: NUIRenderCallbacks.cpp calls
+--    UpdateFrame() on every registered NUI window unconditionally, and the
+--    dirty-flag gate is in the software fallback branch only.
+--
+-- ⚠ WHAT THIS CAN AND CANNOT DO. It cannot check Ringmaster -- that repository
+-- is not on this box at test time and must never be a dependency of this gate.
+-- What it CAN do is refuse to let the retired claims come back, and insist the
+-- correction names the knob that replaced them, so the next reader is pointed at
+-- the file that owns the argument instead of re-deriving it.
+describe('neither board file claims the page is still or free any more')
+do
+    local function readFile(p)
+        local fh = io.open(p, 'rb')
+        if not fh then return '' end
+        local s = fh:read('a')
+        fh:close()
+        return s
+    end
+
+    local cfg = readFile(ROOT .. 'br_lib/config/board.lua')
+    local cli = readFile(ROOT .. 'br_core/client/board.lua')
+    ok(#cfg > 0 and #cli > 0, 'both board files were actually read',
+        ('%d / %d bytes'):format(#cfg, #cli))
+
+    -- THE RETIRED CLAIMS, MATCHED ON THE LOAD-BEARING FRAGMENT. Both are
+    -- quotable in a note that says they were withdrawn, so the match is on the
+    -- ASSERTION rather than on the words -- "is deliberately built with no"
+    -- cannot appear in a sentence retiring itself.
+    ok(cfg:find('renderer is deliberately built with no', 1, true) == nil,
+        'config/board.lua no longer asserts the page has no transition, '
+            .. 'keyframe or easing',
+        cfg:find('renderer is deliberately built with no', 1, true))
+    ok(cli:find('costs approximately nothing when it does', 1, true) == nil,
+        'and client/board.lua no longer reasons from a still DUI being free',
+        cli:find('costs approximately nothing when it does', 1, true))
+
+    -- AND THE CORRECTION NAMES WHAT REPLACED THEM, in both files, so neither is
+    -- merely a deletion. SCOREBOARD_MOTION is the knob and scoreboardPage.ts is
+    -- where the argument lives; a reader who has only one of those has to guess
+    -- at the other.
+    ok(cfg:find('SCOREBOARD_MOTION', 1, true) ~= nil,
+        'config/board.lua names the motion setting that decides it now')
+    ok(cli:find('SCOREBOARD_MOTION', 1, true) ~= nil,
+        'and so does client/board.lua')
+    ok(cfg:find('scoreboardPage.ts', 1, true) ~= nil
+        and cli:find('scoreboardPage.ts', 1, true) ~= nil,
+        'and both point at the file in the other repository that owns the '
+            .. 'argument, rather than re-deriving it here')
+    ok(cfg:find('NUIRenderCallbacks', 1, true) ~= nil
+        and cli:find('NUIRenderCallbacks', 1, true) ~= nil,
+        'and both name the FiveM source the per-frame blit was read out of, so '
+            .. 'the correction is checkable rather than asserted')
+end
+
 -- ---------------------------------------------------------------- report ---
 
 realPrint(('\n%s  board: %d passed, %d failed')

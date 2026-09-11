@@ -88,19 +88,40 @@ BR.Config.Board = {
     -- Owner, 2026-09-09: "Resolution, not sure. I'm thinking 1920x1080 and 30hz,
     -- but I wasn't aware that a DUI had a refresh rate?"
     --
-    -- IT DOES NOT HAVE ONE. CreateDui(url, w, h) takes pixels and nothing else.
-    -- There is no frame rate to set, because repaint is driven by the PAGE
-    -- CHANGING: a still document costs approximately nothing after its first
-    -- paint, and anything that animates continuously repaints this texture
-    -- forever, on every machine in the lobby at once. That is a page-side
-    -- property, and Ringmaster's renderer is deliberately built with no
-    -- transition, no keyframe and no easing anywhere in it.
+    -- NOT ONE THIS SIDE CAN SET. CreateDui(url, w, h) takes pixels and nothing
+    -- else; there is no frame-rate argument and no native that adds one.
     --
-    -- WHAT THE PIXELS COST. A runtime texture from a DUI handle is live RGBA, so
+    -- ⚠ THE REST OF THIS PARAGRAPH USED TO SAY THE PAGE HAS NO MOTION AND THAT
+    -- A STILL DUI IS FREE. BOTH WERE WRONG, and they were wrong in opposite
+    -- directions, so the answer below is unchanged and the reasoning is not.
+    --
+    --   THE PAGE MOVES NOW. Ringmaster's `ee66ad2` gave the board a bounded
+    --   view transition (TRANSITION_MS, 620ms) and a motion setting, and
+    --   `657242e` added a background that drifts continuously. So "deliberately
+    --   built with no transition, no keyframe and no easing anywhere in it" is
+    --   retired: that describes only `SCOREBOARD_MOTION=off`, and the default is
+    --   `full`. The knob is server-side in Ringmaster (`full`, `transitions`,
+    --   `off`) and is read per request, so it is an operator decision over
+    --   there rather than anything this file can express.
+    --
+    --   AND A STILL DUI IS NOT FREE. FiveM's NUIRenderCallbacks.cpp calls
+    --   UpdateFrame() on every registered NUI window unconditionally on OnRender;
+    --   the dirty-flag gate exists only in the software fallback branch. So the
+    --   game's renderer does the same full-surface blit every game frame whether
+    --   or not the page painted, and animation's marginal cost THERE is zero.
+    --   What continuous motion actually costs is frame production inside CEF,
+    --   in process, on every machine at the pad. Ringmaster's
+    --   `src/lib/scoreboardPage.ts` carries the whole argument under THE MOTION,
+    --   read out of the FiveM and CEF sources rather than inferred; it is not
+    --   re-derived here and this note should not drift from it.
+    --
+    -- WHAT THE PIXELS COST, AND THE CORRECTION MAKES THIS ARGUMENT STRONGER
+    -- RATHER THAN WEAKER. A runtime texture from a DUI handle is live RGBA, so
     -- the bill is width x height x 4 bytes and nothing amortizes it: 1920x1080 is
     -- 8.3 MB, 1280x720 is 3.7 MB. That is 4.6 MB per client given back on a
     -- machine already holding a battle royale map, and it is paid whether or not
-    -- anybody is looking at the prop.
+    -- anybody is looking at the prop. These two numbers are ALSO the unit of the
+    -- per-frame blit above, so they are spent every game frame and not only once.
     --
     -- WHAT 1080p WOULD BUY: nothing legible. The texture is sampled at whatever
     -- screen area the quad occupies, and a board a player stands a few meters

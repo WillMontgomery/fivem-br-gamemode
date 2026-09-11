@@ -28,13 +28,33 @@
 --
 -- ═══ THE ALTERNATION IS THE PAGE'S AND NOT OURS ═══
 --
--- The board shows a leaderboard and the viewer's own career, and swaps between
--- them. That swap lives entirely in the document Ringmaster serves; there is no
--- mode push, no timer and no message about it anywhere in this file. A DUI
--- repaints when its content changes and costs approximately nothing when it does
--- not, so a page that swaps itself is one repaint per swap on each machine, and
--- a page Lua drove would be the same repaints plus a message per swap per client
--- for nothing.
+-- The board shows a leaderboard, the viewer's own career and, in squads, their
+-- squadmates', and moves between them. That handover lives entirely in the
+-- document Ringmaster serves; there is no mode push, no timer and no message
+-- about it anywhere in this file.
+--
+-- ⚠ THE REASON USED TO BE "A STILL DUI COSTS APPROXIMATELY NOTHING, SO A PAGE
+-- THAT SWAPS ITSELF IS ONE REPAINT PER SWAP". That premise is false and so is
+-- the sentence it was standing on. FiveM's NUIRenderCallbacks.cpp calls
+-- UpdateFrame() on every registered NUI window unconditionally, and the
+-- dirty-flag gate exists only in the software fallback branch -- so the game's
+-- renderer does the same full-surface blit every game frame whether the page
+-- painted or not, and there is no such thing as a repaint this side is billed
+-- for. Ringmaster's src/lib/scoreboardPage.ts carries the correction in full,
+-- out of the FiveM and CEF sources; config/board.lua's texture note records it
+-- beside the two numbers it bears on.
+--
+-- THE CONCLUSION IS UNCHANGED AND THE HONEST REASON IS SIMPLER. Lua driving the
+-- handover would put a message on the wire per swap per client and could not
+-- lower the cost of anything, because the cost is frame production inside CEF on
+-- the player's own machine and the page is what decides how much work a frame
+-- is. What CAN lower it is Ringmaster's own SCOREBOARD_MOTION setting, which is
+-- a server-side knob over there and nothing this file can reach.
+--
+-- ⚠ IT ALSO MOVES ON ITS OWN CLOCK, DELIBERATELY. Every animated layer starts at
+-- a random offset and there is no seed and no start time, so two players at this
+-- prop see different backgrounds. Owner: "Each one having a different background
+-- is fine - nobody will know." Nothing here should ever try to synchronise it.
 --
 -- ═══ WHY A QUAD AND NOT AddReplaceTexture ═══
 --
