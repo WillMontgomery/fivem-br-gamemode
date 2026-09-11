@@ -1150,27 +1150,43 @@ local function buildMenu()
     return true
 end
 
---- EVERY ROW'S PRICE, BADGE AND LOCK, RE-APPLIED AGAINST ONE COUNTER.
+--- EVERY ROW'S PRICE, BADGE AND SHADE, RE-APPLIED AGAINST ONE COUNTER.
 ---
---- ═══ THREE OF THE OWNER'S ITEMS MEET ON THIS FUNCTION AND THEY DO NOT ALL
----     WANT THE SAME MECHANISM ═══
+--- ═══ "LOCKED" IS TWO STATES AND THEY DO NOT LOOK THE SAME ═══
 ---
----   S3, OUT OF STOCK: "the row should be locked and a price should not be shown
----   - instead show Out of Stock". He asked for no toast on this one, so the row
----   is genuinely DISABLED: UIMenu:SelectItem returns on the Enabled check and
----   plays the library's error beep, which is the whole feedback.
+--- Owner, 2026-09-11, on both of them:
 ---
----   L1, CANNOT AFFORD: "put a lock on any items which the customer cannot
----   afford. if they select an item they cannot afford, give them a toast".
----   L2, AMMO AT MAX: same shape -- lock it, and refuse with a toast if pressed.
+---   OUT OF STOCK. "instead of a gold price text, we'll show a grey 'Out of
+---   stock' text. Also, the row should be shaded differently like it's greyed
+---   out/disabled."
 ---
---- THOSE TWO CANNOT BE DISABLED ROWS AND THIS IS THE REASON. SelectItem's first
---- line is `if not self:CurrentItem():Enabled() then PlaySoundFrontend(ERROR);
---- return end`, which returns BEFORE Item.Activated is called -- so a disabled
---- row cannot reach the server, and a toast that only the server can compose
---- (it owns the balance and the ledger) could never be raised. So an
---- unaffordable or full row stays PRESSABLE and wears the padlock, the press
---- reaches server/gunshop.lua, and the refusal comes back in words.
+---   IN STOCK BUT UNAFFORDABLE. The row keeps its gold price so the player can
+---   see what they are saving toward, and takes the same shading.
+---
+--- SO THE SHADE MEANS "YOU CANNOT BUY THIS RIGHT NOW" AND THE RIGHT LABEL SAYS
+--- WHICH OF THE TWO IT IS. That is the whole rule, and the third state -- an
+--- ammo pool already at its cap -- falls out of it: it is in stock, so it keeps
+--- its price and takes the shade.
+---
+--- ═══ AND "SHADED" IS THE PANEL, NOT UIMenuItem:Enabled ═══
+---
+--- S3, OUT OF STOCK, is the one row that is genuinely DISABLED, and it always
+--- was: "the row should be locked and a price should not be shown". He asked for
+--- no toast on this one, so UIMenu:SelectItem returning on the Enabled check and
+--- playing the library's error beep IS the feedback.
+---
+--- L1, CANNOT AFFORD ("if they select an item they cannot afford, give them a
+--- toast") and L2, AMMO AT MAX, cannot be disabled rows, for a reason that has
+--- not changed: SelectItem's first line is `if not self:CurrentItem():Enabled()
+--- then PlaySoundFrontend(ERROR); return end`, which returns BEFORE
+--- Item.Activated is called. A disabled row cannot reach the server, and the
+--- toast is composed by the server because the server is the half that holds the
+--- balance and the ledger. So those two stay PRESSABLE, the press reaches
+--- server/gunshop.lua, and the refusal comes back in words.
+---
+--- THE SHADE IS THEREFORE BR.Menu.disabledColor ON THE ITEM'S OWN PANEL, which
+--- is the same `_mainColor` the rarity tint uses, so a row wears one or the
+--- other and never both. That function carries the argument.
 ---
 -- ---------------------------------------------------------------------------
 -- The per-weapon row icons (#274 M4)
@@ -1280,27 +1296,32 @@ local function iconFor(id)
     return a
 end
 
---- ═══ THE BADGE SLOT IS ONE SLOT AND THE LOCK STILL WINS IT ═══
+--- ═══ THE BADGE SLOT IS ONE SLOT AND THE ICON WINS IT ═══
 ---
---- M4 asks for an icon per row and L1/L2/S3 ask for a padlock on the same rows.
---- The right end of a row is where the price is and how the movie lays out a
---- right badge beside a right label is not something this project has seen, so
+--- M4 asks for an icon per row and L1/L2/S3 asked for a padlock on the same
+--- rows. The right end of a row is where the price is and how the movie lays out
+--- a right badge beside a right label is not something this project has seen, so
 --- there is exactly one badge position in play.
 ---
---- ⚠ THE PRIORITY IS UNCHANGED AND IT IS A DECISION SOMEBODY ELSE SHOULD MAKE.
---- A locked row shows the lock, so a gun the player cannot afford loses its new
---- icon -- and "cannot afford" is most rows for most of a match, which means the
---- icons are least visible exactly when somebody is browsing. The alternative is
---- the icon always winning and the lock moving to the right label beside the
---- price. Keeping the padlock is the conservative choice because it preserves
---- behavior the owner has already played with; it is written up for him rather
---- than quietly settled here.
+--- THE PADLOCK USED TO WIN IT, AND THE OWNER SETTLED THAT ON 2026-09-11: "If a
+--- weapon is both iconed and locked, the icon should remain on the left of the
+--- row before the name as normal". Confirmed on both locked states, so the
+--- padlock does not occupy the slot in either of them.
+---
+--- THE ARGUMENT THE OLD PRIORITY LOST. "Cannot afford" is most rows for most of
+--- a match, so a lock that won the slot made the icons least visible exactly
+--- when somebody is browsing. What carries "locked" now is the row's shade and
+--- its right label, neither of which is competing with anything.
+---
+--- SO THE BADGE IS AN IDENTITY AND NOTHING ELSE: a weapon's own art where the
+--- base game has some, the kind badge where it does not, and the kind badge on
+--- every row for as long as the dictionaries are still streaming. BadgeStyle.LOCK
+--- is no longer reached from this file at all.
 --- @param store table|nil
 local function refreshMenu(store)
     local currency = BR.Config.Market and BR.Config.Market.currency
     local gun  = BR.Menu.badge('GUN')
     local ammo = BR.Menu.badge('AMMO')
-    local lock = BR.Menu.badge('LOCK')
     local art  = iconDictsReady()
 
     for i = 1, #rows do
@@ -1310,8 +1331,23 @@ local function refreshMenu(store)
             local out    = soldOut(store, row)
             local locked = out or (not affordable(row)) or ammoFull(row)
 
+            -- ═══ THE RIGHT LABEL SAYS WHICH KIND OF LOCKED THIS IS ═══
+            --
+            -- OUT OF STOCK REPLACES THE PRICE, IN GREY -- "instead of a gold
+            -- price text, we'll show a grey 'Out of stock' text", and "a price
+            -- should not be shown" from the round before it. A sold-out row must
+            -- not read as a thing with a cost.
+            --
+            -- EVERYTHING ELSE KEEPS THE GOLD PRICE, INCLUDING A ROW THEY CANNOT
+            -- AFFORD. That is his, and the reason is his too: the player can see
+            -- what they are saving toward. The shade below is what tells them
+            -- they cannot have it yet.
+            --
+            -- THE WORDS ARE STILL config/gunshop.lua's. BR.Menu.dimmed prefixes
+            -- a color token and touches nothing else, exactly as
+            -- BR.Menu.priceGold does for the price.
             if out then
-                pcall(item.RightLabel, item, OUT_OF_STOCK)
+                pcall(item.RightLabel, item, BR.Menu.dimmed(OUT_OF_STOCK))
             else
                 pcall(item.RightLabel, item,
                       BR.Menu.priceGold(
@@ -1323,24 +1359,38 @@ local function refreshMenu(store)
             --
             -- The library keeps an integer badge and a { TXD, TXN } pair on
             -- every item and pushes both into the movie on every redraw, and
-            -- neither setter clears the other. Rows flip between "icon" and
-            -- "padlock" on every balance change, so BR.Menu.leftBadge owns the
-            -- ordering that makes that flip mean one thing; its header has the
-            -- whole argument.
+            -- neither setter clears the other. A row still flips between a
+            -- texture and an enum -- the dictionaries arrive mid-session, and
+            -- `enabled = false` puts every row back on its kind badge -- so
+            -- BR.Menu.leftBadge still owns the ordering that makes that flip
+            -- mean one thing; its header has the whole argument.
             --
-            -- AN UNLOCKED WEAPON ROW WITH ART GETS THE ART. Everything else --
-            -- a locked row, an ammo row, a gun with no icon in the base game,
-            -- and every row at all while the dictionaries are still streaming
-            -- -- gets the badge it got before this feature existed.
-            local pic = (not locked) and art
-                and row.kind == BR.ItemKind.WEAPON and iconFor(row.id) or nil
+            -- A WEAPON ROW WITH ART GETS THE ART, LOCKED OR NOT. What it no
+            -- longer loses it to is the padlock: see the block above. An ammo
+            -- row, a gun the base game never drew an icon for, and every row at
+            -- all while the dictionaries are still streaming get the kind badge.
+            local pic = art and row.kind == BR.ItemKind.WEAPON
+                and iconFor(row.id) or nil
 
-            local badge = locked and lock
-                or (row.kind == BR.ItemKind.AMMO and ammo or gun)
+            local badge = row.kind == BR.ItemKind.AMMO and ammo or gun
 
             BR.Menu.leftBadge(item, badge, pic and pic.txd, pic and pic.txn)
 
-            -- ONLY STOCK DISABLES. See the block above.
+            -- ═══ THE SHADE, WHICH IS WHAT "LOCKED" NOW LOOKS LIKE ═══
+            --
+            -- SET ON EVERY PASS, ON BOTH ARMS, WHICH IS THE WHOLE GUARD. A row
+            -- that was shaded and then became buyable has to be repainted with
+            -- its rarity, and an arm that answered nil would leave the shade on
+            -- until the menu was rebuilt -- a permanently dead-looking row a
+            -- player can buy from. Every row on this shelf carries a rarity
+            -- BR.RarityInfo knows (`grouped` cannot place one that does not), so
+            -- both arms answer a color whenever the library is present.
+            pcall(item.MainColor, item,
+                  locked and BR.Menu.disabledColor()
+                      or BR.Menu.rarityColor(row.rarity))
+
+            -- ONLY STOCK DISABLES. See the block above: the other two locked
+            -- states have to stay pressable to be refused in words.
             pcall(item.Enabled, item, not out)
         end
     end

@@ -126,6 +126,30 @@ local PRICE_HUD = 109
 --- table carries (`~HC_` and `~HUD_COLOUR` are both in it).
 local PRICE_TOKEN = ('~HC_%d~'):format(PRICE_HUD)
 
+--- A RIGHT LABEL THAT IS NOT A PRICE, AND MUST NOT READ AS ONE.
+---
+--- Owner, 2026-09-11: "instead of a gold price text, we'll show a grey 'Out of
+--- stock' text."
+---
+--- ═══ THE SAME ONE ROUTE, WHICH IS WHY IT IS A SECOND INDEX AND NOT A SECOND
+---     MECHANISM ═══
+---
+--- Everything PRICE_HUD's block says applies here unchanged: a right label is
+--- pushed as a GTA text command with no color argument, so a token inside the
+--- string is the only route and the token names an index into the engine's own
+--- HUD palette. 3 is HUD_COLOUR_GREY, the neutral mid-grey in
+--- common:/data/ui/hudcolor.dat -- not GREYDARK (5), which is nearly the panel
+--- it would be drawn on, and not GREYLIGHT (4), which is close enough to
+--- HUD_COLOUR_WHITE to read as ordinary text rather than as stood-down text.
+---
+--- IT IS A CONTRAST DECISION AND IT IS THE DIAL. Nobody has compared these two
+--- indices on a real row; if grey reads as invisible against the disabled
+--- shading, this constant is the one thing to move.
+local DIM_HUD = 3
+
+--- The grey token, once. Same short form as PRICE_TOKEN above.
+local DIM_TOKEN = ('~HC_%d~'):format(DIM_HUD)
+
 --- IS THE LIBRARY IN THIS LUA STATE?
 ---
 --- ═══ ASKED AT CALL TIME, EVERY TIME, AND NOT CACHED ═══
@@ -159,6 +183,17 @@ end
 --- @return string
 function BR.Menu.priceGold(text)
     return PRICE_TOKEN .. tostring(text or '')
+end
+
+--- A RIGHT LABEL IN GREY, FOR A ROW THAT HAS NOTHING TO SELL.
+---
+--- THE CALLER STILL OWNS THE WORDS. This adds a color token and nothing else --
+--- exactly as BR.Menu.priceGold does -- so the string it is handed is still
+--- whichever config field the surface reads. See DIM_HUD above for the index.
+--- @param text string|nil
+--- @return string
+function BR.Menu.dimmed(text)
+    return DIM_TOKEN .. tostring(text or '')
 end
 
 --- One hex through the library's parser, without letting its assert escape.
@@ -260,6 +295,15 @@ end
 --- How much of a rarity's color a menu row wears. See the note below.
 local RARITY_TINT_A = 70
 
+--- How much of the shade a row the player cannot act on wears, and of what.
+---
+--- DECLARED HERE, BESIDE THE TINT IT REPLACES, and above every reader: a Lua
+--- local is invisible above its own declaration, and BR.Menu.disabledColor sits
+--- below BR.Menu.rarityColor for the same reason these two sit below
+--- RARITY_TINT_A. The argument for the numbers is on that function.
+local DISABLED_TINT_A   = 140
+local DISABLED_TINT_RGB = { 24, 24, 24 }
+
 --- A RARITY'S OWN COLOR, FROM THE ONE PLACE RARITY COLORS LIVE.
 ---
 --- BR.RarityInfo is what the loot glow markers and the inventory borders are
@@ -289,6 +333,45 @@ function BR.Menu.rarityColor(rarity)
     local rgb = info and info.rgb
     if type(rgb) ~= 'table' or #rgb < 3 then return nil end
     local ok, c = pcall(SColor.FromArgb, RARITY_TINT_A, rgb[1], rgb[2], rgb[3])
+    if not ok then return nil end
+    return c
+end
+
+--- HOW A ROW THE PLAYER CANNOT ACT ON IS SHADED.
+---
+--- Owner, 2026-09-11: "the row should be shaded differently like it's greyed
+--- out/disabled."
+---
+--- ═══ THE PANEL IS THE ONLY LEVER, BECAUSE THE REAL ONE IS SPOKEN FOR ═══
+---
+--- The library has a disabled state and the movie draws it -- UIMenuItem:Enabled
+--- is pushed as a bool on every redraw -- and it cannot be used for this. A
+--- disabled row is unreachable: UIMenu:SelectItem returns on the Enabled check
+--- BEFORE Item.Activated runs, so the refusal toast the owner asked for on an
+--- unaffordable press could never be raised. The gun shop's refreshMenu has the
+--- whole argument.
+---
+--- So "shaded like it's disabled" has to be the item's own panel rectangle,
+--- which is the same `_mainColor` BR.Menu.rarityColor paints. A row carries one
+--- or the other and never both: the rarity it is, or the fact that it cannot be
+--- bought right now.
+---
+--- ═══ DARKER AND NEUTRAL, RATHER THAN A SIXTH TINT ═══
+---
+--- A grey at the rarity alpha would read as "a rarity we have no color for"
+--- next to four rows that are tinted. Recessing it does the opposite: the row
+--- goes back toward the menu's own dark ground while its neighbours stay
+--- colored, which is the direction every greyed-out control in the game moves.
+---
+--- UNSEEN IN GAME, LIKE RARITY_TINT_A ABOVE, AND THESE TWO NUMBERS ARE THE
+--- DIAL. If it comes out as a black bar, lower the alpha; if it is
+--- indistinguishable from an affordable row, raise it.
+--- @return table|nil
+function BR.Menu.disabledColor()
+    if not BR.Menu.available() then return nil end
+    local ok, c = pcall(SColor.FromArgb, DISABLED_TINT_A,
+                        DISABLED_TINT_RGB[1], DISABLED_TINT_RGB[2],
+                        DISABLED_TINT_RGB[3])
     if not ok then return nil end
     return c
 end

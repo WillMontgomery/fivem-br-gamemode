@@ -2895,7 +2895,16 @@ do
         if s ~= nil then self._Description = tostring(s) end
         return self._Description
     end
-    function UIMenuItem:MainColor(c) self._main = c end
+    -- A SETTER ONLY WHEN IT IS HANDED SOMETHING, which is how the library reads
+    -- it: `UIMenuItem:MainColor(color)` with no argument RETURNS the current
+    -- colour and changes nothing. Modelling that matters for the shading, where
+    -- the row is repainted on every refresh: a stub that assigned nil would make
+    -- "the shade came off" pass on a build where neither arm produced a colour,
+    -- and a stub that ignored nil would hide a shade that never came off.
+    function UIMenuItem:MainColor(c)
+        if c ~= nil then self._main = c end
+        return self._main
+    end
 
     -- ItemId 6 AND A Jumpable FLAG are the two things that make a separator a
     -- separator rather than a row somebody disabled. The real GoUp and GoDown
@@ -3471,37 +3480,63 @@ do
         ok(ammo ~= nil and ammo._leftBadge == BadgeStyle.AMMO,
             'and an ammo row still wears the ammo badge')
 
-        -- ═══ E. ⚠ THE PADLOCK STILL WINS, AND IT TAKES THE TEXTURE WITH IT ═══
+        -- ═══ E. ⚠ THE ICON WINS THE SLOT, AND IT KEEPS IT WHILE LOCKED ═══
         --
-        -- THIS IS THE ASSERTION THE WHOLE FEATURE TURNS ON. There is one badge
-        -- slot and the library keeps two badges in it: an integer and a
-        -- { TXD, TXN } pair, both pushed into the movie on every redraw, and
-        -- neither setter clearing the other. A Carbine Rifle that had an icon
-        -- and then became unaffordable would push a padlock id alongside a stale
-        -- carbine texture, and which one the movie draws is a question about a
-        -- .gfx nobody here has opened.
+        -- THIS IS THE ASSERTION THE WHOLE FEATURE TURNS ON, AND IT USED TO
+        -- ASSERT THE OPPOSITE. There is one badge slot; the padlock took it on
+        -- every locked row, and "cannot afford" is most rows for most of a
+        -- match, so the icons were least visible exactly while somebody was
+        -- browsing.
         --
-        -- The gun shop flips rows between those two states on every balance
-        -- change, so this is the ordinary path and not a corner.
+        -- Owner, 2026-09-11: "If a weapon is both iconed and locked, the icon
+        -- should remain on the left of the row before the name as normal."
+        -- Confirmed on both locked states, so the padlock does not take the slot
+        -- in either.
+        --
+        -- A COLD BALANCE IS THE ORDINARY PATH AND NOT A CORNER. The shelf is
+        -- repainted on every balance change, so a client that spends down to
+        -- nothing repaints all thirty rows into this state.
         walkAway()
         handlers[BR.Net.MARKET_STATE]({ balance = 0 })
         standAt('pillbox')
         press()
 
         local broke = rowItem('carbinerifle')
-        ok(broke ~= nil and broke._leftBadge == BadgeStyle.LOCK,
-            'a row they cannot afford still shows the padlock',
-            broke and tostring(broke._leftBadge) or 'no row')
         ok(broke ~= nil and broke.customLeftIcon ~= nil
-            and broke.customLeftIcon.TXD == '',
-            'and its weapon texture is CLEARED rather than left underneath it',
+            and broke.customLeftIcon.TXD == 'mpweaponsgang0_small'
+            and broke.customLeftIcon.TXN == 'w_ar_carbinerifle',
+            'a Carbine Rifle they cannot afford KEEPS its carbine icon',
             broke and broke.customLeftIcon
                 and ('%s/%s'):format(tostring(broke.customLeftIcon.TXD),
                                      tostring(broke.customLeftIcon.TXN))
                 or 'no icon field')
+        ok(broke ~= nil and broke._leftBadge == BadgeStyle.CUSTOM,
+            '...and the enum badge is still stood down for it, so no padlock id '
+                .. 'rides into the movie beside the texture',
+            broke and tostring(broke._leftBadge) or 'no row')
 
-        -- ...AND IT COMES BACK when they can pay, so the clear above is a swap
-        -- and not a one-way door.
+        -- ═══ AND THE PADLOCK IS NOT ON ANY ROW ANYWHERE, WHICH A PER-ROW
+        --     ASSERTION WOULD NOT SAY ═══
+        --
+        -- Thirteen of the twenty-five guns on sale have no icon in the base
+        -- game. A Carbine keeping its art proves nothing about those, and
+        -- leaving the lock on exactly the rows that have no icon would be the
+        -- same slot fight one size smaller -- half the shelf padlocked and half
+        -- not, at a balance of zero.
+        local padlocked = {}
+        for label, it in pairs(shelf()) do
+            if it._leftBadge == BadgeStyle.LOCK then
+                padlocked[#padlocked + 1] = label
+            end
+        end
+        ok(#padlocked == 0,
+            'and with a balance of zero NOT ONE row on the shelf wears the '
+                .. 'padlock -- including the thirteen guns with no icon at all',
+            #padlocked > 0 and table.concat(padlocked, ', ') or nil)
+
+        -- ...AND THE ART IS STILL THERE when they can pay, which is what makes
+        -- the block above a statement about the lock rather than about the
+        -- streamer having dropped the dictionaries.
         walkAway()
         handlers[BR.Net.MARKET_STATE]({ balance = 999999 })
         standAt('pillbox')
@@ -3509,7 +3544,40 @@ do
         local rich = rowItem('carbinerifle')
         ok(rich ~= nil and rich.customLeftIcon ~= nil
             and rich.customLeftIcon.TXN == 'w_ar_carbinerifle',
-            'and the icon comes back when they can pay again')
+            'and an affordable one wears the same icon, so nothing about the '
+                .. 'balance touches the badge slot at all')
+
+        -- ═══ E2. ALL TWELVE, ON A REAL SHELF, COUNTED ═══
+        --
+        -- ⚠ THE ASSERTIONS ABOVE NAME THREE ROWS. Part A proves every art KEY is
+        -- a row the shop builds and part B proves every dictionary is requested,
+        -- and neither of those is the same claim as "the texture reached the
+        -- item". A row dropped between the catalogue and the menu, or an
+        -- `iconFor` that answered nil for eleven of the twelve, passes both.
+        --
+        -- A REAL COUNT RATHER THAN A ZERO-LENGTH LIST. `#missing == 0` is also
+        -- true when the loop never ran, which is how a suite comes to agree with
+        -- an empty feature.
+        local wantIcon, gotIcon, missIcon = 0, 0, {}
+        for id, a in pairs(art) do
+            wantIcon = wantIcon + 1
+            local it = rowItem(id)
+            if it ~= nil and it.customLeftIcon ~= nil
+                and it.customLeftIcon.TXD == a.txd
+                and it.customLeftIcon.TXN == a.txn
+                and it._leftBadge == BadgeStyle.CUSTOM then
+                gotIcon = gotIcon + 1
+            else
+                missIcon[#missIcon + 1] = id
+            end
+        end
+        ok(wantIcon == 12,
+            'the art table is the eight evidenced icons plus the four MK2s',
+            wantIcon)
+        ok(gotIcon == wantIcon,
+            '...and every one of them is on its own row, as the exact pair the '
+                .. 'config names',
+            #missIcon > 0 and table.concat(missIcon, ', ') or gotIcon)
 
         -- ═══ F. ONE SWITCH PUTS IT ALL BACK ═══
         --
@@ -3517,18 +3585,47 @@ do
         -- movie's badge slot treats a 2:1 base game texture is not, and cannot
         -- be without running the game. `enabled = false` is the line that undoes
         -- the whole feature without touching anything else.
+        --
+        -- ⚠ TESTED AT A BALANCE OF ZERO, WHICH IS THE STATE THAT USED TO HIDE A
+        -- BUG HERE. While the padlock won the badge slot, EVERY row of a broke
+        -- client wore BadgeStyle.LOCK whether the feature was on or off, so this
+        -- block would have passed against an `enabled` flag that did nothing.
+        -- Now the icon owns the slot in that state too, so the switch is the
+        -- only thing that can put the kind badge back.
         ICONS.enabled = false
         walkAway()
+        handlers[BR.Net.MARKET_STATE]({ balance = 0 })
         standAt('pillbox')
         press()
-        local off = rowItem('carbinerifle')
-        ok(off ~= nil and off._leftBadge == BadgeStyle.GUN,
-            'enabled = false puts every row back on the kind badge',
-            off and tostring(off._leftBadge) or 'no row')
-        ok(off ~= nil and off.customLeftIcon ~= nil
-            and off.customLeftIcon.TXD == '',
-            'and leaves no texture behind on the way out')
+
+        local offKind, offArt = 0, {}
+        for id in pairs(art) do
+            local it = rowItem(id)
+            if it ~= nil and it._leftBadge == BadgeStyle.GUN
+                and (it.customLeftIcon == nil or it.customLeftIcon.TXD == '') then
+                offKind = offKind + 1
+            else
+                offArt[#offArt + 1] = id
+            end
+        end
+        ok(offKind == wantIcon,
+            'enabled = false puts all twelve back on the kind badge and leaves '
+                .. 'no texture behind, at a balance of zero',
+            #offArt > 0 and table.concat(offArt, ', ') or offKind)
+
+        local offPad = {}
+        for label, it in pairs(shelf()) do
+            if it._leftBadge == BadgeStyle.LOCK then
+                offPad[#offPad + 1] = label
+            end
+        end
+        ok(#offPad == 0,
+            '...and turning the icons off does not bring the padlock back, '
+                .. 'because the owner retired it separately',
+            #offPad > 0 and table.concat(offPad, ', ') or nil)
+
         ICONS.enabled = true
+        handlers[BR.Net.MARKET_STATE]({ balance = 999999 })
     end
 
     -- -----------------------------------------------------------------------
@@ -3620,7 +3717,7 @@ do
         speech[#speech] and speech[#speech].voice or 'none')
 
     -- -----------------------------------------------------------------------
-    describe('L1: a row they cannot afford is locked but still pressable')
+    describe('L1: a row they cannot afford is shaded but still pressable')
     -- -----------------------------------------------------------------------
     do
         walkAway()
@@ -3628,8 +3725,50 @@ do
         standAt('pillbox')
         press()
         local gun = rowItem('carbinerifle')
-        ok(gun ~= nil and gun._leftBadge == BadgeStyle.LOCK,
-            'the padlock is on it')
+
+        -- ═══ THE SHADE IS WHAT SAYS "LOCKED" NOW, AND IT IS THE ITEM'S OWN
+        --     PANEL ═══
+        --
+        -- Owner, 2026-09-11: "the row should be shaded differently like it's
+        -- greyed out/disabled." It cannot be UIMenuItem:Enabled -- see the note
+        -- below, which is the same reason it could not be before -- so it is
+        -- `_mainColor`, the field the rarity tint paints, and a row wears one or
+        -- the other.
+        --
+        -- ASSERTED AGAINST BR.Menu's OWN TWO ANSWERS rather than against
+        -- literals, so the two dials in that file stay tunable and this stays a
+        -- statement about WHICH of them a locked row gets.
+        local shade = BR.Menu.disabledColor()
+        local rare  = BR.Menu.rarityColor(
+            S.rowById(select(1, G.build()), 'carbinerifle').rarity)
+        local function same(a, b)
+            return a ~= nil and b ~= nil and a.a == b.a and a.r == b.r
+                and a.g == b.g and a.b == b.b
+        end
+        ok(not same(shade, rare),
+            'the disabled shade and a rarity tint are actually different '
+                .. 'colours, so the assertions below can tell them apart')
+        ok(gun ~= nil and same(gun._main, shade),
+            'a row they cannot afford wears the disabled shade',
+            gun and gun._main and ('a%s r%s g%s b%s'):format(gun._main.a,
+                gun._main.r, gun._main.g, gun._main.b) or 'no colour')
+
+        -- ═══ AND IT KEEPS ITS GOLD PRICE, WHICH IS THE HALF HE SPELLED OUT
+        --     ═══
+        --
+        -- Owner, 2026-09-11: in stock but unaffordable keeps the price "so the
+        -- player can see what they are saving toward". Only OUT OF STOCK
+        -- replaces it. A shade that also blanked the price would read as a
+        -- sold-out shelf the moment somebody spent their last Volts.
+        ok(gun ~= nil and type(gun._rightLabel) == 'string'
+            and gun._rightLabel:sub(1, 8) == '~HC_109~',
+            '...and still shows its price, in gold',
+            gun and tostring(gun._rightLabel) or 'no row')
+        ok(gun ~= nil and gun._rightLabel ~= nil
+            and gun._rightLabel:find(G.outOfStockLabel, 1, true) == nil,
+            '...and does NOT say Out of Stock, because it is in stock',
+            gun and tostring(gun._rightLabel) or 'no row')
+
         -- ═══ AND THIS IS WHY IT IS NOT A DISABLED ROW ═══
         --
         -- He asked for a lock AND a toast on the same press. UIMenu:SelectItem
@@ -3650,16 +3789,22 @@ do
         standAt('pillbox')
         press()
         local rich = rowItem('carbinerifle')
-        -- ⚠ "NOT THE LOCK" RATHER THAN "THE GUN BADGE", AND THE CHANGE IS THE
-        -- POINT OF M4. This read `== BadgeStyle.GUN` until per-weapon icons
-        -- landed, and a Carbine Rifle is one of the twelve guns the base game
-        -- has art for -- so an affordable one now wears its own carbine icon and
-        -- BadgeStyle.CUSTOM. What L1 is actually about is that the PADLOCK comes
-        -- off, and pinning the replacement here would make this block fail every
-        -- time the icon table grows. The icon itself is asserted in the M4 block
-        -- above, which is where it belongs.
+
+        -- ⚠ THE SHADE COMES OFF AGAIN, AND THIS IS THE ASSERTION THAT MAKES IT
+        -- A STATE RATHER THAN A ONE-WAY DOOR.
+        --
+        -- The row is repainted on every balance change, so both arms of the
+        -- shade have to produce a colour: an arm that answered nil would leave
+        -- the shade on -- `UIMenuItem:MainColor(nil)` is the library's GETTER --
+        -- and the symptom would be a permanently dead-looking row a player can
+        -- buy from. Its rarity is the thing it must come back to, not merely
+        -- "not the shade".
+        ok(rich ~= nil and same(rich._main, rare),
+            'and the shade comes off for its own rarity tint when they can pay',
+            rich and rich._main and ('a%s r%s g%s b%s'):format(rich._main.a,
+                rich._main.r, rich._main.g, rich._main.b) or 'no colour')
         ok(rich ~= nil and rich._leftBadge ~= BadgeStyle.LOCK,
-            'and the lock comes off again when they can pay',
+            'and no padlock was involved on either side of that',
             rich and tostring(rich._leftBadge) or 'no row')
     end
 
@@ -3783,10 +3928,27 @@ do
         press()
         local light = rowItem('ammo_' .. BR.AmmoType.LIGHT)
         local heavy = rowItem('ammo_' .. BR.AmmoType.HEAVY)
-        ok(light ~= nil and light._leftBadge == BadgeStyle.LOCK,
-            'the pool they are already carrying the maximum of wears the lock')
-        ok(heavy ~= nil and heavy._leftBadge == BadgeStyle.AMMO,
-            '...and the one they are not does not')
+
+        -- THE THIRD LOCKED STATE, AND IT FALLS OUT OF HIS RULE RATHER THAN
+        -- NEEDING ONE. A full pool is IN STOCK, so it keeps its price and takes
+        -- the shade -- the same pair an unaffordable row gets. He wrote the rule
+        -- for the other two and this is what it says about this one.
+        local shade2 = BR.Menu.disabledColor()
+        local function same2(a, b)
+            return a ~= nil and b ~= nil and a.a == b.a and a.r == b.r
+                and a.g == b.g and a.b == b.b
+        end
+        ok(light ~= nil and same2(light._main, shade2),
+            'the pool they are already carrying the maximum of is shaded')
+        ok(heavy ~= nil and not same2(heavy._main, shade2),
+            '...and the one they are not is not')
+        ok(light ~= nil and light._leftBadge == BadgeStyle.AMMO,
+            '...and it keeps its ammo badge rather than losing it to a padlock',
+            light and tostring(light._leftBadge) or 'no row')
+        ok(light ~= nil and type(light._rightLabel) == 'string'
+            and light._rightLabel:sub(1, 8) == '~HC_109~',
+            '...and keeps its gold price, because ammo is never out of stock',
+            light and tostring(light._rightLabel) or 'no row')
         ok(light ~= nil and light._Enabled ~= false,
             'and it is still pressable, so the server can refuse it in the '
                 .. 'same words a full pickup already uses')
@@ -3812,8 +3974,22 @@ do
         press()
 
         local gun = rowItem('carbinerifle')
-        ok(gun ~= nil and gun._rightLabel == 'Out of Stock',
-            'S3: the price is replaced by his own words, verbatim',
+        ok(gun ~= nil and gun._rightLabel == '~HC_3~Out of Stock',
+            'S3: the price is replaced by his own words, verbatim, in grey',
+            gun and gun._rightLabel or 'no row')
+
+        -- ═══ GREY, AND NOT THE GOLD THE PRICE WEARS ═══
+        --
+        -- Owner, 2026-09-11: "instead of a gold price text, we'll show a grey
+        -- 'Out of stock' text." A right label is pushed as a GTA text command
+        -- with no colour argument, so a `~HC_n~` token inside the string is the
+        -- only route there is -- the same one the gold price already takes.
+        -- ASSERTED AS "not the price token" as well as "is the grey one",
+        -- because a sold-out row that kept gold is exactly the failure that
+        -- would look like nothing had changed.
+        ok(gun ~= nil and gun._rightLabel ~= nil
+            and gun._rightLabel:sub(1, 8) ~= '~HC_109~',
+            '...and NOT in the gold the price wears',
             gun and gun._rightLabel or 'no row')
         -- ═══ AND THEY COME FROM WHERE HE PUT THEM ═══
         --
@@ -3824,7 +4000,8 @@ do
         -- edit to the config would have changed nothing on screen and nothing
         -- would have said why. Asserting equality with the CONFIG rather than
         -- with a literal is what makes this a link instead of a coincidence.
-        ok(gun ~= nil and gun._rightLabel == G.outOfStockLabel,
+        ok(gun ~= nil and gun._rightLabel ~= nil
+            and gun._rightLabel:sub(-#G.outOfStockLabel) == G.outOfStockLabel,
             "...read from config's outOfStockLabel, so his edit is one edit",
             ('row %s vs config %s'):format(
                 tostring(gun and gun._rightLabel), tostring(G.outOfStockLabel)))
@@ -3835,12 +4012,30 @@ do
             '...and the row is genuinely locked. He asked for no toast on this '
                 .. 'one, so disabling it is right: the library plays its error '
                 .. 'beep and nothing else happens')
-        ok(gun ~= nil and gun._leftBadge == BadgeStyle.LOCK,
-            'and it wears the padlock')
+        -- ⚠ AND IT KEEPS ITS ICON WHILE IT IS SOLD OUT. This asserted the
+        -- padlock until 2026-09-11. A Carbine Rifle is one of the guns the base
+        -- game has art for, and an empty shelf is the state where the MOST rows
+        -- are locked at once -- so it is the case where a lock that took the
+        -- badge slot cost the most icons.
+        ok(gun ~= nil and gun._leftBadge == BadgeStyle.CUSTOM
+            and gun.customLeftIcon ~= nil
+            and gun.customLeftIcon.TXN == 'w_ar_carbinerifle',
+            'and it keeps its weapon icon, rather than losing it to a padlock',
+            gun and tostring(gun._leftBadge) or 'no row')
+
+        -- AND IT IS SHADED, which is the other half of his sentence about this
+        -- exact state: "Also, the row should be shaded differently like it's
+        -- greyed out/disabled."
+        local shade3 = BR.Menu.disabledColor()
+        ok(gun ~= nil and gun._main ~= nil and shade3 ~= nil
+            and gun._main.a == shade3.a and gun._main.r == shade3.r
+            and gun._main.g == shade3.g and gun._main.b == shade3.b,
+            'and it is shaded as disabled, not merely labelled')
 
         local light = rowItem('ammo_' .. BR.AmmoType.LIGHT)
         ok(light ~= nil and light._Enabled ~= false
-            and light._rightLabel ~= 'Out of Stock',
+            and light._rightLabel ~= nil
+            and light._rightLabel:find(G.outOfStockLabel, 1, true) == nil,
             'ammo is never sold out, whatever the ledger says about it')
 
         ok(speech[#speech] and speech[#speech].name == 'SHOP_OUT_OF_STOCK',
@@ -3854,7 +4049,8 @@ do
         standAt('hawick')
         press()
         local elsewhere = rowItem('carbinerifle')
-        ok(elsewhere ~= nil and elsewhere._rightLabel ~= 'Out of Stock',
+        ok(elsewhere ~= nil and elsewhere._rightLabel ~= nil
+            and elsewhere._rightLabel:find(G.outOfStockLabel, 1, true) == nil,
             'S2: the shelf is per counter -- walking to another shop repaints '
                 .. 'the same one menu against that shop\'s ledger')
 
@@ -3871,7 +4067,8 @@ do
         standAt('pillbox')
         press()
         local still = rowItem('carbinerifle')
-        ok(still ~= nil and still._rightLabel == 'Out of Stock',
+        ok(still ~= nil and still._rightLabel ~= nil
+            and still._rightLabel:find(G.outOfStockLabel, 1, true) ~= nil,
             'a purchase at another counter does not restock this one')
     end
 
