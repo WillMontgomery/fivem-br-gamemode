@@ -290,6 +290,33 @@ AddEventHandler(BR.Net.AIRDROP_SYNC, function(rec)
     if rec.tLand ~= nil and type(rec.tLand) ~= 'number' then return end
 
     local n = math.tointeger(rec.n) or 1
+
+    -- ═══ THE ANNOUNCEMENT IS AN EDGE, NOT A FIELD (owner, 2026-09-11) ═══
+    --
+    -- "the airdrop sound happens when the airdrop arms too - not sure why."
+    --
+    -- IT HAPPENED ON EVERY SEND, AND THE ARM WAS SIMPLY THE ONE HE NOTICED. The
+    -- gate here read `d.tLand`, and `d` is the wrapper built below -- the times
+    -- live one level down on `d.rec`, which is how every other line in this file
+    -- reads them. `d.tLand` is nil on a record that is falling, on a record that
+    -- has landed and on a record somebody has just opened, so the cue fired for
+    -- all five of server/airdrop.lua's sends and not only for the siting.
+    --
+    -- SO THE PROPERTY IS STATED RATHER THAN INFERRED. The cue belongs to the
+    -- moment the match is TOLD a drop is coming -- the same moment, and the only
+    -- moment, the server sends A.notifyText -- and that moment is two facts:
+    --
+    --   * this client has not heard of drop `n` before. The server re-sends the
+    --     SAME record to arm it and again to stamp `tOpen`, which is why
+    --     `removeDrop` is here at all ("a re-send replaces"), and a second
+    --     telling is not a second announcement.
+    --   * nothing is in the air yet. BR.AirdropArmed is the one function that
+    --     answers that question for the whole codebase, so it is asked rather
+    --     than re-derived from a field that happens to be absent.
+    --
+    -- ASKED BEFORE `removeDrop`, because that is what erases the first fact.
+    local announcement = drops[n] == nil and not BR.AirdropArmed(rec)
+
     removeDrop(n)   -- a re-send replaces
 
     local d = { rec = rec }
@@ -301,10 +328,7 @@ AddEventHandler(BR.Net.AIRDROP_SYNC, function(rec)
     -- clock estimate.
     addBlip(d)
 
-    -- THE ANNOUNCE, NOT THE ARM OR THE OPEN. This handler also fires when the
-    -- drop lands and when /brairdrop forces one; `tLand` is nil only on the
-    -- inbound message, which is the one worth a sound.
-    if d.tLand == nil then BR.Sfx.play('airdrop.inbound') end
+    if announcement then BR.Sfx.play('airdrop.inbound') end
 end)
 
 -- Between matches the world is a different place, and a crate still falling

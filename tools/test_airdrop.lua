@@ -3393,6 +3393,11 @@ local function clientReset()
     validModels = nil
     reachable, reachWhy = true, 'ok'
     lootBox = nil
+    -- THE CUES GO WITH IT. A cue is an EVENT, so every count below is a count
+    -- since the reset -- a test that inherited the previous block's plays could
+    -- only ever assert "at least one", which is the assertion that let a cue
+    -- fire four extra times unnoticed.
+    sfxPlayed = {}
     -- THE ROUTE IS RESET TOO. /brflare edits the live config on purpose, and a
     -- test that switched to the object route would otherwise poison every test
     -- after it -- which is the same silent-carry-over class of bug the flares
@@ -3472,6 +3477,24 @@ local function armSited(rec)
     BR.ArmAirdropRecord(rec, gameMs, A)
     fire(BR.Net.AIRDROP_SYNC, rec)
     return rec
+end
+
+--- How many times a CUE KEY has played since the last clientReset.
+---
+--- Resolved through BR.Config.Audio.cues rather than matched against a sound
+--- name typed in here: br_core/client/sfx.lua is the only file allowed to know
+--- a set and name pair, and a test that hard-coded the pair would start failing
+--- the day the owner auditions a better clip for the same key.
+--- @param key string
+--- @return integer
+local function cueCount(key)
+    local def = BR.Config.Audio.cues[key]
+    if not def then return -1 end   -- an unknown key can never be "silent"
+    local n = 0
+    for _, played in ipairs(sfxPlayed) do
+        if played.name == def.name and played.set == def.set then n = n + 1 end
+    end
+    return n
 end
 
 local function oneBlip()
@@ -4938,6 +4961,82 @@ do
     gameMs = gameMs + A.planeLeadMs
     render()
     ok(entCount() > 0, 'and the crate is released on the new clock')
+end
+
+describe('client: the cue is the announcement, and nothing else')
+do
+    -- ═══ "the airdrop sound happens when the airdrop arms too - not sure why"
+    --     (owner, 2026-09-11) ═══
+    --
+    -- IT PLAYED ON ALL FIVE OF THE SERVER'S SENDS, and the arm was simply the
+    -- one he was standing next to. server/airdrop.lua broadcasts AIRDROP_SYNC
+    -- from five places -- trySite, tryArm, BR.Airdrop.opened and both halves of
+    -- /brairdrop -- and the cue was gated on `d.tLand`, a field of the WRAPPER
+    -- the handler builds rather than of the record inside it. It is nil on every
+    -- record ever sent, so the gate was `true` five times out of five.
+    --
+    -- SO EVERY SEND IS DRIVEN HERE AND THE SILENT ONES ARE ASSERTED SILENT. An
+    -- assertion that the announcement sounds cannot fail on this bug: the
+    -- announcement sounded before the fix too.
+    clientReset()
+
+    local rec = announceSited()
+    eq(cueCount('airdrop.inbound'), 1,
+        'the siting is the announcement, and it sounds once')
+
+    -- THE ARM: the same record, with tRelease and tLand filled in, re-sent.
+    armSited(rec)
+    eq(cueCount('airdrop.inbound'), 1, 'the arm is silent -- it is the same drop')
+
+    -- THE OPEN: the same record a third time, with tOpen stamped on it. By then
+    -- the crate has been a husk for a minute and the re-send exists only to move
+    -- the blip's expiry.
+    gameMs = gameMs + A.planeLeadMs + A.descentMs
+    rec.tOpen = gameMs
+    fire(BR.Net.AIRDROP_SYNC, rec)
+    eq(cueCount('airdrop.inbound'), 1, 'and so is the open')
+
+    -- A SECOND DROP IS A SECOND ANNOUNCEMENT. `/brairdrop <poi>` sites another
+    -- one while the first is still out, and it takes the next free number, so
+    -- this is a place the match genuinely has not been told about yet.
+    local second = BR.BuildAirdropSite(2,
+        { id = 'sandy', x = 300.0, y = 400.0, z = 30.0 },
+        A.altitude, gameMs, 90.0)
+    fire(BR.Net.AIRDROP_SYNC, second)
+    eq(cueCount('airdrop.inbound'), 2, 'a second drop announces on its own account')
+
+    -- ═══ AND AN ANNOUNCEMENT RE-SENT IS STILL ONE ANNOUNCEMENT ═══
+    --
+    -- The handler replaces a record it already holds (`removeDrop` -- "a re-send
+    -- replaces"), and nothing stops the server re-publishing a record it has not
+    -- armed yet. Being told twice is not two drops.
+    clientReset()
+    announceSited()
+    announceSited()
+    eq(cueCount('airdrop.inbound'), 1, 'a re-sent siting does not sound twice')
+
+    -- ═══ AND A CLIENT WHOSE FIRST SIGHT OF A DROP IS AN ARMED RECORD HEARS
+    --     NOTHING ═══
+    --
+    -- Nothing re-syncs airdrops to a late joiner, so the first record they see
+    -- is whatever the server sends next -- the arm, or the open. They were never
+    -- sent the notification either, because that goes out at the siting to the
+    -- audience of that moment. A cue here would be a sound with no sentence
+    -- under it, for a crate that is already on its way down.
+    clientReset()
+    local late = BR.BuildAirdropSite(1,
+        { id = 'lsia', x = 100.0, y = 200.0, z = 30.0 },
+        A.altitude, gameMs, 90.0)
+    BR.ArmAirdropRecord(late, gameMs, A)
+    fire(BR.Net.AIRDROP_SYNC, late)
+    eq(cueCount('airdrop.inbound'), 0, 'an armed record is not an announcement')
+    ok(oneBlip() ~= nil, 'but the blip still goes up for them')
+
+    -- A NEW MATCH FORGIVES THE OLD NUMBERS. clearAll() takes the whole table, so
+    -- the next match's drop 1 announces exactly like this one's did.
+    clientReset()
+    announceSited()
+    eq(cueCount('airdrop.inbound'), 1, 'and the next match announces its own drop 1')
 end
 
 describe('client: an unarmed record answers no to every descent question')
