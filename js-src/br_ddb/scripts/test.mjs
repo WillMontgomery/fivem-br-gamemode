@@ -1523,9 +1523,9 @@ console.log('\nspend: the condition refuses an overspend')
  * same and drifted would make the second block agree with a bug in the first.
  */
 const MATCH_PAYOUT = {
-  xp: 1048, balance: 1200, matches: 1, wins: 1, top10s: 1, kills: 3,
-  deaths: 0, downs: 1, revives: 2, damageDealt: 450, playtimeSec: 900,
-  soloMatches: 1, squadMatches: 0,
+  xp: 1048, balance: 1200, voltsSpent: 750, matches: 1, wins: 1, top10s: 1,
+  kills: 3, deaths: 0, downs: 1, revives: 2, damageDealt: 450,
+  playtimeSec: 900, soloMatches: 1, squadMatches: 0,
   // NO `level`, AND ITS ABSENCE IS THE POINT (#116). persist.lua stopped
   // computing it: the curve is still evaluated at both ends of the match, for
   // the level-up bonus and the verdict screen, and the ANSWER is not stored.
@@ -1545,6 +1545,7 @@ const MATCH_PAYOUT_WITH_LEVEL = { ...MATCH_PAYOUT, level: 12 }
 /** What that payload must become, byte for byte. */
 const PAYOUT_EXPRESSION =
   'SET #nm = :nm, #ls = :ls ADD #xp :xp, #balance :balance,'
+  + ' #voltsSpent :voltsSpent,'
   + ' #matches :matches, #wins :wins, #top10s :top10s, #kills :kills,'
   + ' #deaths :deaths, #downs :downs, #revives :revives,'
   + ' #damageDealt :damageDealt, #playtimeSec :playtimeSec,'
@@ -1570,6 +1571,35 @@ console.log('\nstats: the match payout writes what it always wrote')
   const after = fakeUpdate({ balance: 300, kills: 40 }, payout)
   check('the balance accumulates rather than replacing', after.row.balance, 1500)
   check('and so does every other counter', after.row.kills, 43)
+
+  // ═══ THE LIFETIME SPEND COLUMN, WHICH DID NOT EXIST UNTIL #293's SECOND
+  //     HALF ═══
+  //
+  // The owner asked for a BIGGEST SPENDERS board. `voltsSpent` landed on
+  // HISTORY_NUMBERS in 03cce2d -- the per-match rows -- and not on STATS_ADDS,
+  // so every match recorded its own figure and the profile row this board
+  // ranks on held nothing. Nothing errored; the card would simply have read
+  // zero for everybody.
+  //
+  // ⚠ AN `includes` CHECK IS NOT ENOUGH AND IS THE SHAPE THAT SHIPPED THE BUG.
+  // What matters is that it ACCUMULATES on a row that already has a total, and
+  // that it is a column of its own rather than something folded into
+  // `balance` -- a board ranks on a flow, and a balance is a position.
+  check('voltsSpent is on the ADD allowlist', STATS_ADDS.includes('voltsSpent'), true)
+  const spender = fakeUpdate({ balance: 300, voltsSpent: 4_000 }, payout)
+  check('a lifetime spend total accumulates across matches', spender.row.voltsSpent, 4_750)
+  check(
+    'and it does not disturb the balance beside it, which moves by the payout alone',
+    spender.row.balance,
+    1_500,
+  )
+
+  // A PROFILE ROW THAT HAS NEVER SPENT ANYTHING GETS THE COLUMN AT ZERO, which
+  // is why every counter is listed on every write: `ADD x 0` creates an absent
+  // attribute at zero, so the board reads a number rather than `undefined` for
+  // a player who has only ever played.
+  const frugal = fakeUpdate({ balance: 300 }, buildStatsUpdate({ ...MATCH_PAYOUT, voltsSpent: 0 }))
+  check('and a profile that has spent nothing still carries the column', frugal.row.voltsSpent, 0)
 }
 
 console.log('\nstats: `level` is derived data and is not written at all (#116)')
@@ -1769,12 +1799,13 @@ console.log('\nstats: the handler, not just the expression it builds')
   )
 
   const values = unmarshall(cmd.input.ExpressionAttributeValues)
-  // `buildStatsUpdate({})` would still produce a valid ADD of thirteen zeroes,
+  // `buildStatsUpdate({})` would still produce a valid ADD of fourteen zeroes,
   // which is a shape a passing test could easily accept and a player would
   // experience as a match that paid nothing. So the NUMBERS are asserted, and
   // they are the caller's.
   check("the caller's XP is on the wire", values[':xp'], 1048)
   check('and the Volts the match paid', values[':balance'], 1200)
+  check('and the Volts the match SPENT, which is a separate column', values[':voltsSpent'], 750)
   check('and the name it saw', values[':nm'], 'Epyc')
   // #116, ON THE WIRE RATHER THAN IN THE BUILDER. The caller sent level 12 and
   // DynamoDB is told nothing about a level at all.

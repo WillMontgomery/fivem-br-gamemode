@@ -186,6 +186,31 @@ local function deltasFor(p, ctx)
         playtimeSec  = math.floor((p.presentMs or r.survivedMs) / 1000),
         soloMatches  = squad and 0 or 1,
         squadMatches = squad and 1 or 0,
+        -- ═══ WHAT THEY SPENT, ACCUMULATING ON THE PROFILE ROW (#293) ═══
+        --
+        -- The owner asked for a BIGGEST SPENDERS board, and a board ranks on an
+        -- attribute of the `sk=profile` row. 03cce2d put this figure on the
+        -- per-match history rows and on br_ddb's HISTORY_NUMBERS and stopped
+        -- there, so every match was recorded and there was no lifetime total to
+        -- rank: the card would have read zero for everybody. This is the line
+        -- that accumulates it, and `voltsSpent` on br_ddb's STATS_ADDS is its
+        -- other half -- a delta the allowlist does not name contributes nothing
+        -- and says nothing about it.
+        --
+        -- ⚠ IT IS STILL NOT AN INPUT TO ANYTHING THE MATCH PAYS. `r` above is
+        -- what BR.Xp.forMatch and BR.Config.marketPayout read, and this is NOT
+        -- in it -- it is a member of the RETURNED deltas, which is the table the
+        -- atomic ADD is built from. Putting it in `r` would pay people for
+        -- shopping and would be invisible until somebody noticed the curve had
+        -- moved.
+        --
+        -- READ OFF THE ROW, ADDING NOTHING TO IT. The amount only ever exists
+        -- at the moment BR.Market.charge's success arm sees DynamoDB accept the
+        -- debit; the roster entry carries the running total and the results row
+        -- carries what it held when the match ended. `historyRowFor` below reads
+        -- the same `p.voltsSpent`, so the per-match record and the career total
+        -- are two readings of one number rather than two derivations.
+        voltsSpent   = p.voltsSpent or 0,
     }, xpEarned
 end
 
@@ -294,9 +319,17 @@ local function historyRowFor(p, ctx, license, endedAt, deltas, xpEarned)
         -- on the roster entry is moved. This carries what the entry held when
         -- the match ended and adds nothing to it.
         --
-        -- IT DOES NOT ENTER THE PAYOUT. `deltasFor` above never sees it: spending
-        -- is not an input to what a match earns, and putting it there would pay
-        -- people for shopping.
+        -- IT DOES NOT ENTER THE PAYOUT, AND THAT IS A NARROWER CLAIM THAN IT
+        -- USED TO BE. This said `deltasFor` never sees it. It does now: the same
+        -- `p.voltsSpent` is a member of the deltas so it accumulates on the
+        -- profile row for the BIGGEST SPENDERS board. What it is still not is a
+        -- member of `r`, the table BR.Xp.forMatch and BR.Config.marketPayout
+        -- read -- spending is not an input to what a match earns, and putting it
+        -- there would pay people for shopping.
+        --
+        -- BOTH READ `p.voltsSpent`, so the per-match record and the career total
+        -- are two readings of one number. A history row that disagreed with the
+        -- sum of the career would be two numbers nobody could reconcile.
         voltsSpent  = p.voltsSpent or 0,
         -- INCLUDES THE LEVEL-UP BONUS, because `deltas.balance` does by the time
         -- this is called -- and because that is the figure the player was shown

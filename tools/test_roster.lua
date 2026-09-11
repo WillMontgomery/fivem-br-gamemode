@@ -17616,6 +17616,57 @@ do
         'and so does the row of the player who disconnected mid-match',
         ('got %s'):format(tostring(byName.Quitter and byName.Quitter.voltsSpent)))
 
+    -- ══════════ AND IT REACHES THE PROFILE ROW, WHICH IS WHERE A BOARD
+    --            RANKS ON IT ══════════
+    --
+    -- ⚠ THIS IS THE HALF 03cce2d LEFT OUT AND THE FAILURE IS SILENT. The owner
+    -- asked for a BIGGEST SPENDERS board. A board ranks on an attribute of the
+    -- `sk=profile` row, which is built from the DELTAS -- and `voltsSpent` went
+    -- onto the per-match history rows and br_ddb's HISTORY_NUMBERS and stopped
+    -- there. Every match recorded its own figure, no write errored, nothing was
+    -- missing from a payload, and the lifetime total did not exist: the card
+    -- would have read zero for every player on the server.
+    --
+    -- THE TWO ASSERTIONS ABOVE WOULD BOTH HAVE PASSED THROUGHOUT. That is the
+    -- whole reason this one is separate: "the field is on the results row" and
+    -- "the field accumulates on the career" are different claims with one name,
+    -- and the suite agreed with the first while the second was missing.
+    --
+    -- ASSERTED AGAINST THE OTHER PLAYER'S FIGURE TOO, so a delta that read the
+    -- wrong entry or fell back to a constant cannot satisfy it.
+    ok(deltasBy['license:test1'] and deltasBy['license:test1'].voltsSpent == 1500,
+        'the profile-row delta carries the survivor\'s spend, so a lifetime '
+            .. 'total exists for a spenders board to rank on',
+        ('got %s'):format(tostring(deltasBy['license:test1']
+            and deltasBy['license:test1'].voltsSpent)))
+    ok(deltasBy['license:test2'] and deltasBy['license:test2'].voltsSpent == 750,
+        'and the quitter\'s own, rather than one figure for the whole match',
+        ('got %s'):format(tostring(deltasBy['license:test2']
+            and deltasBy['license:test2'].voltsSpent)))
+
+    -- THE RECORD AND THE CAREER ARE TWO READINGS OF ONE NUMBER. They are two
+    -- separate DynamoDB operations built from one payload; a history row that
+    -- disagreed with what the career total moved by would be two numbers
+    -- nobody could reconcile, and no way to tell which half was lying. This is
+    -- the same pairing already asserted for XP and for the Volts earned.
+    ok(byName.Survivor
+       and byName.Survivor.voltsSpent == deltasBy['license:test1'].voltsSpent,
+        'and the per-match record and the career delta agree, because both '
+            .. 'read the same field off the same row')
+
+    -- ⚠ AND IT IS STILL NOT AN INPUT TO WHAT THE MATCH PAID. `deltasFor` builds
+    -- the payout out of a SEPARATE table that this field is deliberately not in
+    -- -- putting it there would pay people for shopping, and the symptom would
+    -- be a payout curve that had quietly moved. The survivor spent 1500 and the
+    -- quitter 750, so a payout that had absorbed either would differ from one
+    -- that had not.
+    ok(deltasBy['license:test1'].balance == winner.voltsEarned
+       and deltasBy['license:test1'].balance > 0,
+        'while the balance the match paid is untouched by the spending',
+        ('paid %s, spent %s'):format(
+            tostring(deltasBy['license:test1'].balance),
+            tostring(deltasBy['license:test1'].voltsSpent)))
+
     -- ══════════ A MATCH START THAT SURVIVES A RESTART (#293) ══════════
     --
     -- The envelope has always carried `startedAt`, and it has always been a

@@ -10,10 +10,18 @@
  * ═══ THE ADD LIST IS AN ALLOWLIST AND IT IS ALWAYS WRITTEN IN FULL ═══
  *
  * A typo'd key must be dropped rather than quietly creating an attribute nobody
- * reads, so the payload is never looped over -- these thirteen names are, and a
+ * reads, so the payload is never looped over -- these fourteen names are, and a
  * caller who names something else contributes nothing. `ADD x 0` on an absent
  * attribute creates it at zero, which is why every counter is listed on every
  * write: a profile row's shape does not depend on what happened in one match.
+ *
+ * ⚠ AND A COUNTER THAT IS NOT ON THIS LIST DOES NOT EXIST ON THE PROFILE ROW,
+ * WHICH IS A SILENT FAILURE AND HAS ALREADY HAPPENED ONCE. `voltsSpent` landed
+ * on HISTORY_NUMBERS in 03cce2d -- the per-match rows -- and not here, so every
+ * per-match figure was recorded and the lifetime total did not exist. Nothing
+ * errors, nothing is missing from a payload, and a board that ranks on the
+ * attribute reads zero for everybody. Adding the field to a caller is half the
+ * change; the allowlist is the other half.
  *
  * ═══ THE SET LIST IS NOT, AND THAT IS THE FIX ═══
  *
@@ -57,6 +65,23 @@ export const STATS_ADDS = [
   // CURRENCY IS EARNED HERE AND NOWHERE ELSE except `awardPay`, which says so
   // at its own definition. `br:ddb:spend` can only ever reduce a balance.
   'balance',
+  // ═══ WHAT THEY HAVE SPENT, FOR THE LIFETIME OF THE PROFILE (#293) ═══
+  //
+  // The owner asked for a BIGGEST SPENDERS board, and a board ranks on an
+  // attribute of the `sk=profile` row. This is that attribute.
+  //
+  // NOT THE COMPLEMENT OF `balance`, WHICH IS WHY IT IS ITS OWN COLUMN. A
+  // balance is a position and this is a flow: a player who has earned 40k and
+  // spent 39k holds the same 1k as somebody who earned 1k and bought nothing,
+  // and only one of them is a big spender. The two cannot be derived from each
+  // other in either direction.
+  //
+  // IT IS NOT A SECOND WRITER OF THE DEBIT EITHER. `br:ddb:spend` moves the
+  // money, conditionally, at the moment of the purchase; this is a COUNTER of
+  // what that verb took, accumulated at match end out of the same per-match
+  // figure the history row already carries. A write that lost this one would
+  // cost a leaderboard column and could never cost anybody Volts.
+  'voltsSpent',
   'matches',
   'wins',
   'top10s',
