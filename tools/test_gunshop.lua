@@ -2868,6 +2868,25 @@ do
         if tonumber(b) then self._leftBadge = tonumber(b) end
         return self._leftBadge
     end
+
+    -- ═══ MODELLED THE WAY THE LIBRARY REALLY BEHAVES, INCLUDING THE PART THAT
+    --     IS A TRAP ═══
+    --
+    -- ScaleformUI keeps a badge TWICE on every item -- `_leftBadge`, an integer,
+    -- and `customLeftIcon`, a { TXD, TXN } pair -- and pushes BOTH into the movie
+    -- on every redraw. CustomLeftBadge writes the pair and sets `_leftBadge` to
+    -- -1 (BadgeStyle.CUSTOM); LeftBadge above writes the integer and LEAVES THE
+    -- PAIR WHERE IT WAS.
+    --
+    -- A STUB THAT CLEARED THE PAIR WOULD HIDE THE ONE BUG WORTH CATCHING. The
+    -- gun shop flips rows between an icon and a padlock on every balance change,
+    -- so a row that wore a weapon icon and then became unaffordable would push a
+    -- padlock id alongside a stale texture name. Reproducing the library's own
+    -- non-clearing behavior is what makes BR.Menu.leftBadge's ordering testable.
+    function UIMenuItem:CustomLeftBadge(txd, txn)
+        self._leftBadge = -1
+        self.customLeftIcon = { TXD = txd, TXN = txn }
+    end
     function UIMenuItem:Enabled(b)
         if b ~= nil then self._Enabled = b end
         return self._Enabled
@@ -2984,6 +3003,36 @@ do
     function RequestModel() end
     function HasModelLoaded() return 1 end
     function SetModelAsNoLongerNeeded() end
+
+    -- ═══ THE STREAMED TEXTURE DICTIONARIES BEHIND THE PER-WEAPON ICONS (M4)
+    --     ═══
+    --
+    -- ScaleformUI's badge path never requests a dictionary -- it pushes a txd and
+    -- a txn into the movie and nothing else -- so client/gunshop.lua has to load
+    -- them itself, and an unloaded dictionary draws a blank badge and reports
+    -- nothing at all.
+    --
+    -- ⚠ NOT LOADED UNTIL THE SUITE SAYS SO, which is the whole value of this
+    -- stub. `dictsLoaded` starts false so the assertions can watch a cold client
+    -- open the menu before the streamer has answered -- the state a fast player
+    -- on a slow machine is actually in, and the one where a feature that assumed
+    -- its textures were resident shows thirteen blank rows.
+    --
+    -- AND IT ANSWERS 1 AND 0, NOT true AND false, which is what the runtime does
+    -- and what the ratchet in tools/verify.sh exists for. A stub answering Lua
+    -- booleans would let a bare `if HasStreamedTextureDictLoaded(d)` pass.
+    dictRequests = {}
+    dictsLoaded = false
+    function RequestStreamedTextureDict(d, p1)
+        dictRequests[#dictRequests + 1] = { dict = d, p1 = p1 }
+    end
+    function HasStreamedTextureDictLoaded(d)
+        if not dictsLoaded then return 0 end
+        for i = 1, #dictRequests do
+            if dictRequests[i].dict == d then return 1 end
+        end
+        return 0
+    end
     -- THE COORDINATES ARE RECORDED, NOT DISCARDED. This stub used to ignore x
     -- and y, which meant the suite could not tell WHERE the clerk's floor was
     -- being solved -- and C1 moved the clerk in x and y while leaving the probe
@@ -3283,6 +3332,203 @@ do
         ok(ammo and ammo._leftBadge == BadgeStyle.AMMO,
             'and an ammo row wears the ammo badge',
             ammo and ammo._leftBadge or 'no row')
+
+        -- ⚠ AND EVERY ONE OF THE ASSERTIONS ABOVE RAN WITH THE TEXTURE
+        -- DICTIONARIES NOT YET STREAMED, which is the cold-start state and is
+        -- asserted rather than assumed. A per-weapon icon feature that reached
+        -- for a texture the streamer had not answered for would put a blank
+        -- badge on twelve of these rows and report nothing.
+        ok(dictsLoaded == false,
+            'the block above ran on a client whose icon dictionaries had not '
+                .. 'arrived yet, and every row still had a badge')
+        ok(gun and (gun.customLeftIcon == nil or gun.customLeftIcon.TXD == ''),
+            'and no texture was reached for before the streamer answered -- an '
+                .. 'empty pair, not a name that would draw a blank badge')
+    end
+
+    -- -----------------------------------------------------------------------
+    describe('M4: the icons are the base game\'s own weapon art')
+    -- -----------------------------------------------------------------------
+    do
+        -- ═══════════════════════════════════════════════════════════════════
+        -- Owner, 2026-09-11: "As for the menu icons - how does the ScaleformUI
+        -- demo menu draw them? Those gfx are built into the base game. We
+        -- should use those."
+        -- ═══════════════════════════════════════════════════════════════════
+        --
+        -- He was right and the previous round's answer was wrong. What makes
+        -- this hard to test is what makes it hard to get right: A WRONG TEXTURE
+        -- NAME DRAWS NOTHING AND REPORTS NO ERROR. So does a wrong dictionary,
+        -- so does a dictionary nobody requested, and so does a key in the art
+        -- table that is not a real shop row id. All four are invisible from
+        -- inside the game and all four are visible from here.
+        local ICONS = G.weaponIcons
+        local art = ICONS.art
+
+        -- ═══ A. EVERY KEY IN THE ART TABLE IS A GUN THE SHOP ACTUALLY SELLS
+        --     ═══
+        --
+        -- ⚠ THE FAILURE THIS CATCHES HAS NO SYMPTOM. `carbinrifle` with the
+        -- letter missing is not an error, it is a table entry nothing ever looks
+        -- up, and the row it was meant for keeps the generic badge exactly as if
+        -- the feature had never been written. The catalogue is DERIVED from the
+        -- loot table, so this also catches a gun being priced out of the shop
+        -- and its icon being left behind.
+        local catalogue = select(1, G.build())
+        local strays = {}
+        for id in pairs(art) do
+            if S.rowById(catalogue, id) == nil then
+                strays[#strays + 1] = id
+            end
+        end
+        ok(#strays == 0,
+            'every id in the art table is a row the shop really builds',
+            #strays > 0 and table.concat(strays, ', ') or nil)
+
+        -- ═══ B. EVERY DICTIONARY THE ART NAMES IS ONE THAT GETS REQUESTED ═══
+        --
+        -- ScaleformUI requests nothing for a badge -- it pushes a txd and a txn
+        -- into the movie and stops -- so a dictionary this file names and never
+        -- asks the streamer for is a blank badge on every row that uses it.
+        local wanted, asked = {}, {}
+        for _, a in pairs(art) do wanted[a.txd] = true end
+        for _, r in ipairs(dictRequests) do asked[r.dict] = true end
+        local unasked = {}
+        for d in pairs(wanted) do
+            if not asked[d] then unasked[#unasked + 1] = d end
+        end
+        ok(#unasked == 0,
+            'every dictionary the art table names is requested from the '
+                .. 'streamer, because the library never will',
+            #unasked > 0 and table.concat(unasked, ', ') or nil)
+
+        -- ...AND NOTHING ELSE IS. A dictionary held for no row is memory spent
+        -- for nothing on every client that walks past a counter.
+        local spare = {}
+        for d in pairs(asked) do
+            if not wanted[d] then spare[#spare + 1] = d end
+        end
+        ok(#spare == 0, 'and no dictionary is held that no row uses',
+            #spare > 0 and table.concat(spare, ', ') or nil)
+
+        -- p1 IS FALSE, which is what Rockstar's own mp_weapons script passes for
+        -- these exact three dictionaries. The argument is undocumented in
+        -- citizenfx/natives and the vendored library passes true elsewhere.
+        local badP1 = false
+        for _, r in ipairs(dictRequests) do
+            if r.p1 ~= false then badP1 = true end
+        end
+        ok(not badP1, 'and each is asked for the way the base game asks for it')
+
+        -- ═══ C. WITH THEM LOADED, THE REAL ART LANDS ON THE RIGHT ROWS ═══
+        walkAway()
+        handlers[BR.Net.MARKET_STATE]({ balance = 999999 })
+        dictsLoaded = true
+        standAt('pillbox')
+        press()
+
+        local rifle = rowItem('carbinerifle')
+        ok(rifle ~= nil and rifle.customLeftIcon ~= nil
+            and rifle.customLeftIcon.TXD == 'mpweaponsgang0_small'
+            and rifle.customLeftIcon.TXN == 'w_ar_carbinerifle',
+            'a Carbine Rifle wears the game\'s own carbine icon',
+            rifle and rifle.customLeftIcon
+                and (rifle.customLeftIcon.TXD .. '/' .. rifle.customLeftIcon.TXN)
+                or 'no icon')
+
+        -- ...AND THE LIBRARY IS TOLD IT IS A CUSTOM BADGE. CustomLeftBadge sets
+        -- `_leftBadge` to BadgeStyle.CUSTOM on its way past, and the movie is
+        -- handed both values on every redraw; a row still carrying GUN beside a
+        -- texture name is the ambiguity BR.Menu.leftBadge exists to remove.
+        ok(rifle ~= nil and rifle._leftBadge == BadgeStyle.CUSTOM,
+            'and the enum badge is stood down for it',
+            rifle and tostring(rifle._leftBadge) or 'no row')
+
+        -- THE MK2 WEARS ITS BASE GUN'S ART, which is the one line in the config
+        -- table that is a judgment rather than a lookup.
+        local mk2 = rowItem('carbinemk2')
+        ok(mk2 ~= nil and mk2.customLeftIcon ~= nil
+            and mk2.customLeftIcon.TXN == 'w_ar_carbinerifle',
+            'and a Carbine MK2 wears the same carbine, deliberately')
+
+        -- ═══ D. A GUN WITH NO ART IN THE BASE GAME KEEPS THE GENERIC BADGE
+        --     ═══
+        --
+        -- Thirteen of the twenty-five on sale are post-2013 weapons Rockstar
+        -- never drew an icon for, and its own lookup answers the empty string
+        -- for every one of them. Falling back is the feature, not a gap.
+        local none = rowItem('gusenberg')
+        ok(none ~= nil and none._leftBadge == BadgeStyle.GUN,
+            'a Gusenberg, which the base game has no icon for, keeps the gun '
+                .. 'badge', none and tostring(none._leftBadge) or 'no row')
+        ok(none ~= nil and (none.customLeftIcon == nil
+            or none.customLeftIcon.TXD == ''),
+            'and carries no texture name at all, rather than a plausible one')
+
+        -- AMMO ROWS ARE UNTOUCHED. There is no per-pool art and the kind badge
+        -- was always the right answer for them.
+        local ammo = rowItem('ammo_' .. BR.AmmoType.LIGHT)
+        ok(ammo ~= nil and ammo._leftBadge == BadgeStyle.AMMO,
+            'and an ammo row still wears the ammo badge')
+
+        -- ═══ E. ⚠ THE PADLOCK STILL WINS, AND IT TAKES THE TEXTURE WITH IT ═══
+        --
+        -- THIS IS THE ASSERTION THE WHOLE FEATURE TURNS ON. There is one badge
+        -- slot and the library keeps two badges in it: an integer and a
+        -- { TXD, TXN } pair, both pushed into the movie on every redraw, and
+        -- neither setter clearing the other. A Carbine Rifle that had an icon
+        -- and then became unaffordable would push a padlock id alongside a stale
+        -- carbine texture, and which one the movie draws is a question about a
+        -- .gfx nobody here has opened.
+        --
+        -- The gun shop flips rows between those two states on every balance
+        -- change, so this is the ordinary path and not a corner.
+        walkAway()
+        handlers[BR.Net.MARKET_STATE]({ balance = 0 })
+        standAt('pillbox')
+        press()
+
+        local broke = rowItem('carbinerifle')
+        ok(broke ~= nil and broke._leftBadge == BadgeStyle.LOCK,
+            'a row they cannot afford still shows the padlock',
+            broke and tostring(broke._leftBadge) or 'no row')
+        ok(broke ~= nil and broke.customLeftIcon ~= nil
+            and broke.customLeftIcon.TXD == '',
+            'and its weapon texture is CLEARED rather than left underneath it',
+            broke and broke.customLeftIcon
+                and ('%s/%s'):format(tostring(broke.customLeftIcon.TXD),
+                                     tostring(broke.customLeftIcon.TXN))
+                or 'no icon field')
+
+        -- ...AND IT COMES BACK when they can pay, so the clear above is a swap
+        -- and not a one-way door.
+        walkAway()
+        handlers[BR.Net.MARKET_STATE]({ balance = 999999 })
+        standAt('pillbox')
+        press()
+        local rich = rowItem('carbinerifle')
+        ok(rich ~= nil and rich.customLeftIcon ~= nil
+            and rich.customLeftIcon.TXN == 'w_ar_carbinerifle',
+            'and the icon comes back when they can pay again')
+
+        -- ═══ F. ONE SWITCH PUTS IT ALL BACK ═══
+        --
+        -- ⚠ NOBODY HAS SEEN THIS ON A SCREEN. The names are evidenced; how the
+        -- movie's badge slot treats a 2:1 base game texture is not, and cannot
+        -- be without running the game. `enabled = false` is the line that undoes
+        -- the whole feature without touching anything else.
+        ICONS.enabled = false
+        walkAway()
+        standAt('pillbox')
+        press()
+        local off = rowItem('carbinerifle')
+        ok(off ~= nil and off._leftBadge == BadgeStyle.GUN,
+            'enabled = false puts every row back on the kind badge',
+            off and tostring(off._leftBadge) or 'no row')
+        ok(off ~= nil and off.customLeftIcon ~= nil
+            and off.customLeftIcon.TXD == '',
+            'and leaves no texture behind on the way out')
+        ICONS.enabled = true
     end
 
     -- -----------------------------------------------------------------------
@@ -3404,8 +3650,17 @@ do
         standAt('pillbox')
         press()
         local rich = rowItem('carbinerifle')
-        ok(rich ~= nil and rich._leftBadge == BadgeStyle.GUN,
-            'and the lock comes off again when they can pay')
+        -- ⚠ "NOT THE LOCK" RATHER THAN "THE GUN BADGE", AND THE CHANGE IS THE
+        -- POINT OF M4. This read `== BadgeStyle.GUN` until per-weapon icons
+        -- landed, and a Carbine Rifle is one of the twelve guns the base game
+        -- has art for -- so an affordable one now wears its own carbine icon and
+        -- BadgeStyle.CUSTOM. What L1 is actually about is that the PADLOCK comes
+        -- off, and pinning the replacement here would make this block fail every
+        -- time the icon table grows. The icon itself is asserted in the M4 block
+        -- above, which is where it belongs.
+        ok(rich ~= nil and rich._leftBadge ~= BadgeStyle.LOCK,
+            'and the lock comes off again when they can pay',
+            rich and tostring(rich._leftBadge) or 'no row')
     end
 
     -- -----------------------------------------------------------------------

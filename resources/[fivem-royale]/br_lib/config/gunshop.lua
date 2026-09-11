@@ -683,6 +683,117 @@ BR.Config.Gunshop = {
     },
 
     -- ------------------------------------------------------------------
+    -- PER-WEAPON ROW ICONS, OUT OF THE BASE GAME (#274 M4)
+    -- ------------------------------------------------------------------
+    --
+    -- Owner, 2026-09-11: "As for the menu icons - how does the ScaleformUI demo
+    -- menu draw them? Those gfx are built into the base game. We should use
+    -- those."
+    --
+    -- HE WAS RIGHT AND THE PREVIOUS ANSWER WAS WRONG. That round shipped one
+    -- generic badge per KIND and reported that per-weapon art would have to be
+    -- drawn. The art has been in the game since launch.
+    --
+    -- ═══════════════════════════════════════════════════════════════════════
+    -- WHAT IS ACTUALLY THERE, AND WHAT IS NOT
+    -- ═══════════════════════════════════════════════════════════════════════
+    --
+    -- ⚠ THERE IS NO TEXTURE DICTIONARY NAMED AFTER A WEAPON. The shape everybody
+    -- reaches for first -- RequestStreamedTextureDict('WEAPON_PISTOL') and a
+    -- texture of the same name -- does not exist in any capitalization, and the
+    -- pairs that turn up on the Cfx forum under that shape are RedM. `w_pi_pistol`
+    -- IS a real name, but it is also a weapon MODEL name, which is how the
+    -- confusion starts.
+    --
+    -- WHAT EXISTS IS THREE SHARED DICTIONARIES of small weapon icons, which are
+    -- what Rockstar's own mp_weapons script loads to draw exactly this kind of
+    -- list. Every txn below was read out of a texture dump of the shipped .ytd
+    -- files rather than inferred from a pattern, and anything that was only
+    -- attested by a decompiled script and could not be found in a dump was left
+    -- out. That distinction is the whole point of this block: A WRONG TEXTURE
+    -- NAME DRAWS NOTHING AND REPORTS NO ERROR, which is this project's worst
+    -- failure shape, and a plausible name is indistinguishable from a real one
+    -- until somebody is standing at a counter looking at a blank row.
+    --
+    -- ⚠ AND THE COVERAGE STOPS AT 2013. These dictionaries are the launch
+    -- lineup. Rockstar's own hash-to-texture lookup returns an empty string for
+    -- every weapon added after it, which is the game itself saying there is no
+    -- icon -- so the thirteen guns listed in the `withNoArt` note below are not
+    -- an oversight here, they are art that was never made.
+    --
+    -- ═══ THE MK2s WEAR THEIR BASE GUN'S ART, AND THAT IS A DECISION ═══
+    --
+    -- The texture is evidenced; the PAIRING is ours. An Assault Rifle MK2 is an
+    -- Assault Rifle with furniture on it and reads as one at badge size, so four
+    -- rows that would otherwise fall back to the generic badge get the right
+    -- silhouette instead. It is the one place in this table where a line is a
+    -- judgment rather than a lookup, and it is marked on each of them.
+    weaponIcons = {
+        -- ⚠ ONE SWITCH, BECAUSE NOBODY HAS SEEN THIS ON A SCREEN YET.
+        --
+        -- The names are evidenced. What is NOT evidenced, and cannot be without
+        -- running the game, is how the menu movie's badge slot treats them: the
+        -- slot is square-ish and this art is 2:1, so it may letterbox, crop or
+        -- squash, and the item badge path has never been fed a base-game
+        -- dictionary before. If it looks wrong, this is the line that turns all
+        -- of it back into the badges that shipped last round, with no other edit
+        -- and no restart of anything else.
+        enabled = true,
+
+        -- ═══ KEYED BY THE SHOP ROW'S id, WHICH IS config/weapons.lua's id ═══
+        --
+        -- Not by WEAPON_* and not by hash. A key that is not a real weapon id is
+        -- as invisible as a wrong texture name -- the row simply falls back to
+        -- the generic badge and says nothing -- so tools/test_gunshop.lua checks
+        -- every key here against the catalogue the shop actually builds.
+        art = {
+            -- EXACT: the weapon's own icon, name read straight out of the dump.
+            assaultsmg      = { txd = 'mpweaponscommon_small', txn = 'w_sb_assaultsmg' },
+            assaultshotgun  = { txd = 'mpweaponscommon_small', txn = 'w_sg_assaultshotgun' },
+            carbinerifle    = { txd = 'mpweaponsgang0_small',  txn = 'w_ar_carbinerifle' },
+            combatmg        = { txd = 'mpweaponsgang0_small',  txn = 'w_mg_combatmg' },
+            sniperrifle     = { txd = 'mpweaponsgang0_small',  txn = 'w_sr_sniperrifle' },
+            heavysniper     = { txd = 'mpweaponsgang0_small',  txn = 'w_sr_heavysniper' },
+            assaultrifle    = { txd = 'mpweaponsgang1_small',  txn = 'w_ar_assaultrifle' },
+            mg              = { txd = 'mpweaponsgang1_small',  txn = 'w_mg_mg' },
+
+            -- THE FOUR MK2s, WEARING THE BASE GUN'S ART. See the note above:
+            -- the texture is evidenced, the pairing is our call.
+            pumpshotgunmk2  = { txd = 'mpweaponscommon_small', txn = 'w_sg_pumpshotgun' },
+            carbinemk2      = { txd = 'mpweaponsgang0_small',  txn = 'w_ar_carbinerifle' },
+            combatmgmk2     = { txd = 'mpweaponsgang0_small',  txn = 'w_mg_combatmg' },
+            assaultmk2      = { txd = 'mpweaponsgang1_small',  txn = 'w_ar_assaultrifle' },
+        },
+
+        -- ═══ THE THIRTEEN THAT KEEP THE GENERIC BADGE, AND WHY EACH ONE DOES
+        --     ═══
+        --
+        -- ⚠ WRITTEN DOWN RATHER THAN LEFT AS AN ABSENCE, so the next person does
+        -- not spend an afternoon re-deriving that the art is missing. This list
+        -- is not read by anything; it is the working.
+        --
+        --   NO ART EXISTS ANYWHERE IN THE GAME. Post-2013 weapons. Rockstar's
+        --   own lookup answers the empty string for every one of them, so there
+        --   is nothing to point at and no amount of searching will find it:
+        --     combatpdw, gusenberg, heavypistol, revolver, revolvermk2,
+        --     specialcarbine, marksmanrifle, marksmanmk2, combatshotgun,
+        --     heavyshotgun, militaryrifle
+        --
+        --   ART EXISTS BUT NOT AT THIS SIZE. `w_sb_smg` is in the full
+        --   `mpweaponsgang0` and is absent from `mpweaponsgang0_small`. Reaching
+        --   it means holding a dictionary of roughly eighty textures -- every
+        --   attachment and every silhouette -- for one row:
+        --     smgmk2
+        --
+        --   ⚠ A NAME THAT IS REAL AND MAY STILL DRAW NOTHING. The only
+        --   `mpweaponsgang0_small` entry for it is `w_ar_addvancedrifle`, with
+        --   the typo, and a secondary source reports that entry is a blank stub
+        --   rather than the icon. A blank badge and a wrong name look identical
+        --   from a chair, so it is not shipped on a report nobody could confirm:
+        --     advancedrifle
+    },
+
+    -- ------------------------------------------------------------------
     -- AMMO: ALL FIVE POOLS
     -- ------------------------------------------------------------------
     --

@@ -207,6 +207,56 @@ function BR.Menu.badge(name)
     return type(v) == 'number' and v or nil
 end
 
+--- Put something in a row's ONE badge slot: a base game texture, or an enum.
+---
+--- ═══ THERE IS ONE SLOT AND TWO WAYS TO FILL IT, AND THEY DO NOT CLEAR EACH
+---     OTHER ═══
+---
+--- ⚠ THE ORDERING BELOW IS THE WHOLE REASON THIS FUNCTION EXISTS. The library
+--- keeps a badge TWICE on every item: `_leftBadge`, an integer, and
+--- `customLeftIcon`, a { TXD, TXN } pair. CustomLeftBadge writes the pair AND
+--- sets `_leftBadge` to -1 (BadgeStyle.CUSTOM); LeftBadge writes the integer and
+--- LEAVES THE PAIR WHERE IT WAS. Both are pushed into the movie together on
+--- every redraw.
+---
+--- So a row that wore a weapon icon and then became locked would push a padlock
+--- id alongside a stale texture name, and which of the two the movie honours is
+--- a question about a .gfx nobody here has opened. The gun shop flips rows
+--- between those two states on every balance change, so this is not a corner:
+--- it is the ordinary path. Clearing the pair first makes the answer the same
+--- whichever way the movie resolves it.
+---
+--- SPELT OUT IN ONE PLACE rather than left to each caller to remember, for the
+--- same reason BR.Menu.badge exists: a caller that wrote `item:CustomLeftBadge`
+--- would be a second file that stops working when the library is not deployed,
+--- and it would be the file that has to remember this ordering.
+---
+--- @param item table         a UIMenuItem
+--- @param badge integer|nil  a BadgeStyle id, used when there is no texture
+--- @param txd string|nil     a streamed texture dictionary, already loaded
+--- @param txn string|nil     a texture name inside it
+function BR.Menu.leftBadge(item, badge, txd, txn)
+    if type(item) ~= 'table' then return end
+
+    if type(txd) == 'string' and txd ~= ''
+        and type(txn) == 'string' and txn ~= '' then
+        pcall(item.CustomLeftBadge, item, txd, txn)
+        return
+    end
+
+    -- THE CLEAR COMES FIRST, AND IT IS NOT OPTIONAL -- see the header. It also
+    -- sets `_leftBadge` to -1 on its way past, which is exactly why the enum
+    -- below cannot be written the other way round.
+    pcall(item.CustomLeftBadge, item, '', '')
+
+    -- A NUMBER, AND NOT `and/or`. BadgeStyle.NONE is 0 and 0 IS TRUTHY IN LUA,
+    -- so a caller clearing a badge with 0 must reach the setter rather than be
+    -- folded into "no badge" by an idiom that reads as if it would.
+    if type(badge) == 'number' then
+        pcall(item.LeftBadge, item, badge)
+    end
+end
+
 --- How much of a rarity's color a menu row wears. See the note below.
 local RARITY_TINT_A = 70
 

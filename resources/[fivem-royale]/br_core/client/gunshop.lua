@@ -1172,19 +1172,136 @@ end
 --- unaffordable or full row stays PRESSABLE and wears the padlock, the press
 --- reaches server/gunshop.lua, and the refusal comes back in words.
 ---
---- ═══ THE BADGE SLOT IS ONE SLOT AND THE LOCK WINS IT ═══
+-- ---------------------------------------------------------------------------
+-- The per-weapon row icons (#274 M4)
+-- ---------------------------------------------------------------------------
+--
+-- Owner, 2026-09-11: "As for the menu icons - how does the ScaleformUI demo menu
+-- draw them? Those gfx are built into the base game. We should use those."
+--
+-- ═══ HE WAS RIGHT, AND HERE IS THE PART THE LIBRARY DOES NOT DO FOR US ═══
+--
+-- ScaleformUI's UIMenuItem:CustomLeftBadge(txd, txn) takes an arbitrary texture
+-- dictionary and texture name, so any base game texture is reachable and not
+-- just the 191 entries of BadgeStyle. But the library pushes those two strings
+-- into the movie and NOTHING ELSE: it never calls RequestStreamedTextureDict for
+-- a badge anywhere in the bundle. It requests `commonmenu` once, for the pause
+-- menu, and streams dictionaries for minimap overlays and mission cards -- the
+-- UIMenu item path has no such call in it at all.
+--
+-- SO THE DICTIONARY IS OURS TO LOAD, AND AN UNLOADED ONE DRAWS NOTHING AND SAYS
+-- NOTHING. That is why `iconDictsReady` gates the whole feature rather than
+-- being assumed: a badge slot with a texture name the streamer has never heard
+-- of is a blank row, which looks exactly like a wrong name, which looks exactly
+-- like a bug in this file.
+--
+-- ROCKSTAR'S OWN mp_weapons SCRIPT RE-REQUESTS THESE THREE DICTIONARIES INSIDE
+-- ITS MENU LOOP, which is the tell that they can be evicted while in use. This
+-- file asks whenever the counter plate is up -- seconds before a menu can be
+-- opened, and again for as long as anybody is standing there.
+
+local ICONS = type(G.weaponIcons) == 'table' and G.weaponIcons or {}
+
+--- Whether the dictionaries were in memory the last time the TICK pass looked.
+---
+--- DECLARED HERE, ABOVE EVERY READER, because a Lua local is invisible above its
+--- own declaration and the pass that spends this is four hundred lines below.
+--- It is the previous answer and not the current one: the pass compares the two
+--- and refreshes on the edge, so this must not be read as "are they ready".
+local iconsReady = false
+
+--- Every distinct texture dictionary the art table names.
+---
+--- DERIVED FROM THE ART RATHER THAN LISTED BESIDE IT. A second list would be
+--- free to drift from the first, and the failure that drift causes is the silent
+--- one: a row whose dictionary was never requested draws nothing and reports
+--- nothing. SORTED so the request order is the same on every client, which keeps
+--- the assertions about it in tools/test_gunshop.lua from depending on `pairs`.
+local ICON_DICTS = {}
+do
+    local seen = {}
+    local art = type(ICONS.art) == 'table' and ICONS.art or {}
+    for _, a in pairs(art) do
+        local d = type(a) == 'table' and a.txd or nil
+        if type(d) == 'string' and d ~= '' and not seen[d] then
+            seen[d] = true
+            ICON_DICTS[#ICON_DICTS + 1] = d
+        end
+    end
+    table.sort(ICON_DICTS)
+end
+
+--- Ask the streamer for them. Idempotent, and cheap once they are in.
+local function requestIconDicts()
+    if ICONS.enabled == false then return end
+    for i = 1, #ICON_DICTS do
+        -- `false` FOR p1, WHICH IS WHAT ROCKSTAR PASSES FOR THESE EXACT THREE
+        -- DICTIONARIES. The argument is undocumented in citizenfx/natives and
+        -- the vendored library passes true elsewhere; matching the game's own
+        -- call for the game's own textures is the better precedent to copy.
+        RequestStreamedTextureDict(ICON_DICTS[i], false)
+    end
+end
+
+--- Are all of them in memory?
+---
+--- ALL, NOT ANY. A row is handed one dictionary, but the alternative to "all
+--- ready" is a menu where some guns have icons and others silently do not,
+--- depending on which of three streaming requests happened to land first. That
+--- reads as a broken table rather than as a slow load.
+--- @return boolean
+local function iconDictsReady()
+    if ICONS.enabled == false then return false end
+    if #ICON_DICTS == 0 then return false end
+    for i = 1, #ICON_DICTS do
+        if not isTrue(HasStreamedTextureDictLoaded(ICON_DICTS[i])) then
+            return false
+        end
+    end
+    return true
+end
+
+--- The art for one shop row, or nil.
+---
+--- NIL IS THE ORDINARY ANSWER AND NOT AN ERROR. Thirteen of the twenty-five guns
+--- on sale have no icon anywhere in the base game -- they were added after 2013
+--- and Rockstar never drew one -- so those rows keep the generic kind badge.
+--- config/gunshop.lua lists every one of them and says which reason applies.
+--- @param id string  a shop row id
+--- @return table|nil { txd, txn }
+local function iconFor(id)
+    if ICONS.enabled == false then return nil end
+    local art = type(ICONS.art) == 'table' and ICONS.art or nil
+    if not art then return nil end
+    local a = art[id]
+    if type(a) ~= 'table' then return nil end
+    if type(a.txd) ~= 'string' or a.txd == '' then return nil end
+    if type(a.txn) ~= 'string' or a.txn == '' then return nil end
+    return a
+end
+
+--- ═══ THE BADGE SLOT IS ONE SLOT AND THE LOCK STILL WINS IT ═══
 ---
 --- M4 asks for an icon per row and L1/L2/S3 ask for a padlock on the same rows.
 --- The right end of a row is where the price is and how the movie lays out a
 --- right badge beside a right label is not something this project has seen, so
---- there is exactly one badge position in play. A locked row shows the lock; an
---- ordinary one shows its kind.
+--- there is exactly one badge position in play.
+---
+--- ⚠ THE PRIORITY IS UNCHANGED AND IT IS A DECISION SOMEBODY ELSE SHOULD MAKE.
+--- A locked row shows the lock, so a gun the player cannot afford loses its new
+--- icon -- and "cannot afford" is most rows for most of a match, which means the
+--- icons are least visible exactly when somebody is browsing. The alternative is
+--- the icon always winning and the lock moving to the right label beside the
+--- price. Keeping the padlock is the conservative choice because it preserves
+--- behavior the owner has already played with; it is written up for him rather
+--- than quietly settled here.
 --- @param store table|nil
 local function refreshMenu(store)
     local currency = BR.Config.Market and BR.Config.Market.currency
     local gun  = BR.Menu.badge('GUN')
     local ammo = BR.Menu.badge('AMMO')
     local lock = BR.Menu.badge('LOCK')
+    local art  = iconDictsReady()
 
     for i = 1, #rows do
         local row  = rows[i]
@@ -1201,11 +1318,27 @@ local function refreshMenu(store)
                           BR.ShopSolve.priceLine(row.price, currency)))
             end
 
+            -- ═══ ONE SLOT, FILLED IN ONE CALL, SO THE TWO KINDS OF BADGE
+            --     CANNOT BE LEFT ON A ROW TOGETHER ═══
+            --
+            -- The library keeps an integer badge and a { TXD, TXN } pair on
+            -- every item and pushes both into the movie on every redraw, and
+            -- neither setter clears the other. Rows flip between "icon" and
+            -- "padlock" on every balance change, so BR.Menu.leftBadge owns the
+            -- ordering that makes that flip mean one thing; its header has the
+            -- whole argument.
+            --
+            -- AN UNLOCKED WEAPON ROW WITH ART GETS THE ART. Everything else --
+            -- a locked row, an ammo row, a gun with no icon in the base game,
+            -- and every row at all while the dictionaries are still streaming
+            -- -- gets the badge it got before this feature existed.
+            local pic = (not locked) and art
+                and row.kind == BR.ItemKind.WEAPON and iconFor(row.id) or nil
+
             local badge = locked and lock
                 or (row.kind == BR.ItemKind.AMMO and ammo or gun)
-            if type(badge) == 'number' then
-                pcall(item.LeftBadge, item, badge)
-            end
+
+            BR.Menu.leftBadge(item, badge, pic and pic.txd, pic and pic.txn)
 
             -- ONLY STOCK DISABLES. See the block above.
             pcall(item.Enabled, item, not out)
@@ -1503,8 +1636,34 @@ BR.Loop.register(BR.Loop.TICK, 'gunshop.prompt', function()
         if best ~= menuStore then closeMenu(nil) end
         -- The plate stays down for as long as the menu is up.
         setPlate(false)
+
+        -- ═══ THE ICONS CAN ARRIVE AFTER THE MENU IS ALREADY OPEN ═══
+        --
+        -- Streaming is asynchronous, so a player who sprints to a counter on a
+        -- cold client can open the menu in the window between the request and
+        -- the dictionaries landing. Without this the rows keep the generic
+        -- badges until something else happens to move the balance -- a menu that
+        -- is permanently missing the feature on exactly the machines slow enough
+        -- to notice.
+        --
+        -- EDGE-TRIGGERED, NOT LEVEL. `refreshMenu` walks every row and writes
+        -- three strings per item into the movie; running it ten times a second
+        -- for as long as the menu is up is the shape of bug this file already
+        -- has a note about elsewhere. It runs on the pass the answer CHANGES,
+        -- which is once.
+        local ready = iconDictsReady()
+        if ready ~= iconsReady then
+            iconsReady = ready
+            refreshMenu(menuStore)
+        end
         return
     end
+
+    -- ASKED WHILE THE PLATE IS UP, WHICH IS SECONDS BEFORE THE MENU CAN BE. The
+    -- request is idempotent and near-free once the dictionaries are resident,
+    -- and Rockstar's own weapon menu re-requests these same three inside its
+    -- loop -- which is the tell that a dictionary in use can still be evicted.
+    if best ~= nil then requestIconDicts() end
 
     setPlate(best ~= nil)
 end)
