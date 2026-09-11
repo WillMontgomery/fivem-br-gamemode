@@ -106,6 +106,49 @@ local G = BR.Config.Gunshop
 -- ║  violation with fresh wording, so it stays exactly as it is until he   ║
 -- ║  says what it should read.                                            ║
 -- ║                                                                       ║
+-- ║  ─────────────────────────────────────────────────────────────────    ║
+-- ║  HE ANSWERED ON 2026-09-11, AND THE ANSWER CANNOT BE CARRIED OUT.      ║
+-- ║  ─────────────────────────────────────────────────────────────────    ║
+-- ║                                                                       ║
+-- ║  "The `Ammo` separator should be simply the name of the category of    ║
+-- ║  rarity for the items listed below the separator."                    ║
+-- ║                                                                       ║
+-- ║  That is a rule, not a word: a separator names the rarity of the       ║
+-- ║  group under it. It is already what the other three separators do,     ║
+-- ║  and it is answerable for every group except this one.                 ║
+-- ║                                                                       ║
+-- ║  AMMUNITION CARRIES NO RARITY. Not "one we have not surfaced" --       ║
+-- ║  none, and three separate files say so in as many words:               ║
+-- ║                                                                       ║
+-- ║    config/gunshop.lua's own `ammo` table authors a PRICE per pool and  ║
+-- ║    nothing else. config/loot.lua's AmmoPickups authors a label, an     ║
+-- ║    amount and a prop. Neither has a rarity field to read.              ║
+-- ║                                                                       ║
+-- ║    shared/loot_gen.lua, in the loot roll itself: "Ammo has no rarity   ║
+-- ║    of its own; the roll is spent picking a pool."                      ║
+-- ║                                                                       ║
+-- ║    shared/gunshop_solve.lua, stamping these very rows: "AMMO HAS NO    ║
+-- ║    RARITY OF ITS OWN ANYWHERE IN THIS PROJECT ... COMMON here is that  ║
+-- ║    same convention rather than a claim that ammo is common."           ║
+-- ║                                                                       ║
+-- ║  SO READING THAT FIELD BACK OUT WOULD PUT "Common" ON THE WALL, AND    ║
+-- ║  THAT IS AN INVENTION WEARING A LOOKUP'S CLOTHES. Rarity in this game  ║
+-- ║  is a real claim with real consequences -- BR.RarityInfo carries a     ║
+-- ║  damageMult per band and the loot roll bands every other kind by it.   ║
+-- ║  A header reading Common would tell a player ammunition is common-     ║
+-- ║  rarity loot, which is the one thing every file that touches it is at  ║
+-- ║  pains to say the project does NOT claim. It would also be a word we   ║
+-- ║  chose rather than one he typed, which is the rule this block is       ║
+-- ║  about, so it is the same violation with a citation stapled to it.     ║
+-- ║                                                                       ║
+-- ║  WHAT WOULD UNBLOCK IT, AND IT IS ONE FIELD. A rarity authored for     ║
+-- ║  ammunition -- in config/gunshop.lua's `ammo` rows or in              ║
+-- ║  config/loot.lua's AmmoPickups -- makes his rule executable here with  ║
+-- ║  no further decision, because the label would then be BR.RarityInfo's  ║
+-- ║  own word exactly as the other three already are.                     ║
+-- ║  tools/test_gunshop.lua goes RED the day either table grows one, so    ║
+-- ║  this block cannot outlive the thing blocking it.                      ║
+-- ║                                                                       ║
 -- ║  DELETING THE LABEL WAS CHECKED AND IS NOT BETTER.                     ║
 -- ║  UIMenuSeparatorItem.New('', true) is legal -- the constructor does    ║
 -- ║  `Text or ""` and an empty string is truthy in Lua, so it neither      ║

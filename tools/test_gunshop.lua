@@ -174,6 +174,70 @@ do
         'and it quotes the rule it is standing in breach of, so the cost of '
             .. 'leaving it is legible without going and finding the report')
 
+    -- ═══════════════════════════════════════════════════════════════════════
+    -- HIS ANSWER IS RECORDED, AND SO IS THE REASON IT CANNOT BE CARRIED OUT
+    -- ═══════════════════════════════════════════════════════════════════════
+    --
+    -- Owner, 2026-09-11: "The `Ammo` separator should be simply the name of the
+    -- category of rarity for the items listed below the separator."
+    --
+    -- That is a RULE and not a word, and it is already what the other three
+    -- separators do. It is answerable for every group but this one, so the
+    -- marked block has to carry his sentence as well as the placeholder --
+    -- otherwise the next reader finds a flag with no decision attached to it
+    -- and re-derives the whole thing.
+    -- MATCHED ON ONE LINE'S WORTH. His sentence is wrapped inside a box drawn
+    -- with box characters, so the whole quotation never appears contiguously in
+    -- the file; this is the longest run of it that sits on a single line.
+    ok(raw:find('simply the name of the category of', 1, true) ~= nil,
+        'his 2026-09-11 answer is quoted at the placeholder, so nobody has to '
+            .. 'go and find the issue to know a decision was made')
+    ok(raw:find('rarity for the items listed below the separator', 1, true)
+        ~= nil,
+        '...including the half that says WHOSE rarity, which is the whole rule')
+    ok(raw:find('AMMUNITION CARRIES NO RARITY', 1, true) ~= nil,
+        '...and so is the finding that blocks it, rather than the block '
+            .. 'silently outliving the question')
+
+    -- ═══ AND THE FINDING IS CHECKED AGAINST THE TABLES, NOT ONLY ASSERTED
+    --     IN A COMMENT ═══
+    --
+    -- ⚠ THIS IS THE ASSERTION THAT EXPIRES THE BLOCK ABOVE. A comment test
+    -- proves somebody wrote the reason down; it cannot notice the reason
+    -- ceasing to be true. The moment ammunition is given a rarity -- in
+    -- config/gunshop.lua's own `ammo` rows or in config/loot.lua's AmmoPickups
+    -- -- his rule becomes executable with no further decision, because the
+    -- label would then be BR.RarityInfo's own word exactly as the other three
+    -- already are. So this goes RED on that day and says what to do.
+    --
+    -- ⚠ NOT A LOOK AT THE BUILT ROW. `BR.GunshopSolve` stamps every ammo row
+    -- with BR.Rarity.COMMON as a structural convention -- shared/loot_gen.lua
+    -- spends the rarity roll on picking a pool instead, and says so -- so the
+    -- row always has the field and asking it would answer COMMON forever. The
+    -- question is whether anybody AUTHORED one, which is a question about the
+    -- config tables.
+    local authored = {}
+    for _, pool in ipairs(BR.Config.AmmoOrder or {}) do
+        local shopRow = (G.ammo or {})[pool]
+        if type(shopRow) == 'table' and shopRow.rarity ~= nil then
+            authored[#authored + 1] = 'Gunshop.ammo.' .. tostring(pool)
+        end
+        local pickup = (BR.Config.AmmoPickups or {})[pool]
+        if type(pickup) == 'table' and pickup.rarity ~= nil then
+            authored[#authored + 1] = 'AmmoPickups.' .. tostring(pool)
+        end
+    end
+    ok(#BR.Config.AmmoOrder == 5,
+        'all five ammo pools were actually looked at, rather than a loop that '
+            .. 'never ran agreeing with the claim',
+        #BR.Config.AmmoOrder)
+    ok(#authored == 0,
+        'ammunition still carries no authored rarity anywhere, which is why '
+            .. 'his rule cannot be executed -- WHEN THIS GOES RED, delete '
+            .. 'AMMO_GROUP and take the separator from BR.RarityInfo like the '
+            .. 'other three',
+        #authored > 0 and table.concat(authored, ', ') or nil)
+
     -- AND THE OTHER TWO ARE STILL HIS, which is the half that says the marker
     -- is narrow. If this ever grew to cover PLATE_HINT or the out-of-stock
     -- line, our copy would have been normalised rather than flagged.
