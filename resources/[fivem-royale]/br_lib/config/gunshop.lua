@@ -421,8 +421,22 @@ BR.Config.Gunshop = {
     --- origin, which is somewhere around its axle line, and BR.ShopSolve
     --- .signHeight derives them from the model's own bounding box. A ped's box is
     --- about 0.35m deep and "bumper fraction" means nothing on it, so these are
-    --- authored: 1.05m up is chest height on a standing ped, 0.55m forward puts
-    --- the plate over the counter rather than inside the clerk.
+    --- authored rather than measured, and 0.55m forward puts the plate over the
+    --- counter rather than inside the clerk.
+    ---
+    --- ═══ signUpM IS MEASURED IN GAME AND CHEST HEIGHT WAS WRONG ═══
+    ---
+    --- It shipped at 1.05, authored as "chest height on a standing ped". Owner,
+    --- 2026-09-11: "The DUI is still above the ped's head - it should be closer
+    --- to waist level so it sits on the counter." He aimed it with /brgunplate
+    --- and it came back at 0.25.
+    ---
+    --- The reasoning behind 1.05 was not wrong about a ped, it was wrong about
+    --- what the plate is FOR. A number derived from the clerk's body puts the
+    --- plate where his chest is; what a player is looking at is the COUNTER, and
+    --- the counter is nowhere near his chest. The clerk is the thing standing
+    --- behind the surface the plate belongs on, not the thing it should be
+    --- measured against. 0.25 is his number, taken from the game.
     ---
     --- "FORWARD" IS THE CLERK'S OWN FACING, so `clerkFaceDeg` above turns the
     --- clerk and his sign together and one number fixes both. If a playtest finds
@@ -431,7 +445,7 @@ BR.Config.Gunshop = {
     --- from whichever side the camera is on, so a sign facing away reads
     --- backwards rather than not at all.
     signForwardM = 0.55,
-    signUpM      = 1.05,
+    signUpM      = 0.25,
     signWidthM   = 0.55,
 
     --- THE CUE KEY THE PURCHASE PLAYS. A KEY, NOT A SOUND.
