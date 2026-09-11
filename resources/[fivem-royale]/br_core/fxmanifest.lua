@@ -76,8 +76,9 @@ shared_scripts {
     -- the reset's event name out of here, which is what keeps the surveyed
     -- numbers written down exactly once.
     '@br_lib/config/warmupcrates.lua',
-    -- The warmup stat board (#247): the Ringmaster URL's host, the prop it
-    -- stands on, and the five numbers that align the quad on it. BESIDE
+    -- The stat board (#247): the Ringmaster URL's host, the display it is
+    -- painted on, and the five numbers that align the quad -- three of which are
+    -- nil because they are measured off the prop. BESIDE
     -- config/warmupcrates.lua because both are about the same patch of island,
     -- and NO LOAD ORDER AT ALL -- it reads nothing, calls nothing, and defines
     -- one pure function (BR.BoardUrl) that is called at draw time.
@@ -340,8 +341,12 @@ client_scripts {
     -- everything else is call time. It is declared here so the two files that
     -- are about crate props read as a pair.
     'client/warmupcrates.lua',
-    -- The warmup stat board (#247): one browser on a prop in the same corner of
-    -- the island. AFTER client/dui.lua, and that is a REAL load order rather
+    -- The stat board (#247), which is also the scoreboard -- one display, one
+    -- browser, one quad, showing a page that alternates. IT DOES NOT SPAWN THE
+    -- PROP: the display is already in a ymap and this file adopts it with
+    -- GetClosestObjectOfType, the same way client/warmupcrates.lua adopts its
+    -- crates, which is the other reason the two are declared as a pair below.
+    -- AFTER client/dui.lua, and that is a REAL load order rather
     -- than a reader's: it registers its loop callbacks at load and both of them
     -- call BR.Dui, so the file that defines that table has to have run. It also
     -- needs BR.Loop (client/main.lua, first) and BR.State (client/state.lua),

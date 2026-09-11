@@ -155,14 +155,129 @@ do
     ok(BR.BoardUrl('ab') ~= nil, 'a short hex license is not rejected for length')
 end
 
-describe('the config is inert until the owner names a prop')
+describe('the shipped heading is the owner\'s quaternion, converted')
 do
-    -- ⚠ THE ONE ASSERTION IN THIS FILE THAT IS MEANT TO BE DELETED. He has a
-    -- prop in mind and has not said which. Until he does, the shipped config
-    -- must not conjure one -- and the whole feature is gated on this field, so a
-    -- placeholder model here would put an unasked-for object on the warmup pad.
-    eq(B.prop.model, nil, 'no model ships')
-    eq(B.prop.x, nil, 'and no coordinates ship with it')
+    -- ═══════════════════════════════════════════════════════════════════════
+    -- FOUR NUMBERS BECAME ONE, AND THIS IS THE ARITHMETIC THAT DID IT
+    -- ═══════════════════════════════════════════════════════════════════════
+    --
+    -- Owner, 2026-09-11: "Rotation is: 0, 0, -0.9238796, -0.3826834"
+    --
+    -- THE CONFIG FIELD IS A HEADING AND HE GAVE A QUATERNION. Any one of the
+    -- four pasted straight in would have been a number in a number-shaped hole,
+    -- and the board would have faced somewhere arbitrary with nothing anywhere
+    -- saying why.
+    --
+    -- ⚠ SO THIS DOES THE CONVERSION HERE, FROM HIS RAW FOUR, AND COMPARES. An
+    -- assertion that only read `B.prop.heading == 135.0` would agree with any
+    -- edit to the config -- it would prove a field exists and nothing else. This
+    -- one fails if the shipped number stops being the correct conversion of the
+    -- quaternion he actually sent, which is the claim worth pinning.
+    local QX, QY, QZ, QW = 0.0, 0.0, -0.9238796, -0.3826834
+
+    -- IT IS A UNIT QUATERNION, which is how we know all four components are
+    -- present and none of them is a scale factor or a stray field.
+    ok(near(math.sqrt(QX * QX + QY * QY + QZ * QZ + QW * QW), 1.0, 0.0001),
+        'the four components are a unit quaternion',
+        ('%.7f'):format(math.sqrt(QX * QX + QY * QY + QZ * QZ + QW * QW)))
+
+    --- Yaw, pitch and roll in degrees, from a quaternion read as (x, y, z, w).
+    local function euler(x, y, z, w)
+        local yaw = math.atan(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
+        local sp = 2 * (w * y - z * x)
+        if sp > 1.0 then sp = 1.0 elseif sp < -1.0 then sp = -1.0 end
+        local deg = 180.0 / math.pi
+        return yaw * deg, math.asin(sp) * deg,
+               math.atan(2 * (w * x + y * z), 1 - 2 * (x * x + y * y)) * deg
+    end
+
+    -- ═══ THE COMPONENT ORDER IS (x, y, z, w), AND THE NUMBERS PROVE IT ═══
+    --
+    -- Read that way the rotation is a PURE YAW: pitch and roll are exactly zero,
+    -- which is what a display standing upright on flat ground is.
+    local yaw, pitch, roll = euler(QX, QY, QZ, QW)
+    ok(near(pitch, 0.0, 0.0001), 'read as (x,y,z,w) there is no pitch',
+        ('%.6f'):format(pitch))
+    ok(near(roll, 0.0, 0.0001), 'and no roll -- it is a rotation about the '
+        .. 'world\'s up and nothing else', ('%.6f'):format(roll))
+
+    -- ...AND THE OTHER READING IS ABSURD, which is the half that makes the
+    -- sentence above a deduction rather than a preference. The same four numbers
+    -- taken as (w, x, y, z) describe a screen lying over on its corner.
+    local _, _, wrongRoll = euler(QY, QZ, QW, QX)
+    ok(math.abs(wrongRoll) > 1.0,
+        'while (w,x,y,z) would put a 135 degree ROLL on it, which is a screen '
+            .. 'on its side and not what he placed', ('%.6f'):format(wrongRoll))
+
+    -- ═══ AND THE ANSWER IS THE ONE IN THE CONFIG ═══
+    --
+    -- Normalized into [0, 360) because the formula answers in (-180, 180] and
+    -- the config carries the positive spelling.
+    local want = yaw % 360.0
+    ok(near(want, 135.0, 0.001), 'the conversion lands on 135 degrees',
+        ('%.6f'):format(want))
+    ok(near(B.prop.heading % 360.0, want, 0.001),
+        'and that is what br_lib/config/board.lua ships',
+        ('config %s, converted %.6f'):format(tostring(B.prop.heading), want))
+
+    -- IT IS AN EXACT MULTIPLE OF 22.5, which is the tell that the component
+    -- order is right: 0.9238796 is cos(22.5) and 0.3826834 is sin(22.5), so a
+    -- ragged answer would have meant reading the four in the wrong order.
+    ok(near(want % 22.5, 0.0, 0.001),
+        'and it is an exact multiple of 22.5, as those two cosines promise',
+        ('%.6f'):format(want % 22.5))
+
+    -- ═══ THE INVERSE READING IS NAMED, NOT SILENTLY EXCLUDED ═══
+    --
+    -- ymaps frequently store the conjugate of an entity's rotation. The config
+    -- says why the direct reading was chosen anyway -- the prop is FOUND, so its
+    -- real orientation comes from the ymap through the entity and this number
+    -- steers no geometry -- and this pins the alternative so that "225" turning
+    -- up in the config later is a deliberate edit rather than a typo.
+    local inv = euler(-QX, -QY, -QZ, QW) % 360.0
+    ok(near(inv, 225.0, 0.001),
+        'the ymap-inverse reading would have been 225, and is not what ships',
+        ('%.6f'):format(inv))
+end
+
+describe('the prop is sited, and sited on the owner\'s own numbers')
+do
+    -- ⚠ THE ASSERTION THAT USED TO SAY THE OPPOSITE. It read `eq(B.prop.model,
+    -- nil)` and its comment called itself "the one assertion in this file that
+    -- is meant to be deleted", because the owner had a prop in mind and had not
+    -- named it. He has now named it, so the rule it protected -- do not guess a
+    -- model -- is satisfied by his own words rather than by emptiness.
+    eq(B.prop.model, 'prop_huge_display_02', 'his model ships')
+
+    -- HIS COORDINATES, UNROUNDED. This project does not lower, ground-probe or
+    -- tidy a surveyed number, and a `%.2f` somewhere in the pipeline that
+    -- quietly trimmed one would pass any assertion written to two places.
+    ok(near(B.prop.x, 4539.29443, 1e-5), 'x is his, to the digit',
+        tostring(B.prop.x))
+    ok(near(B.prop.y, -4498.826, 1e-5), 'y is his, to the digit',
+        tostring(B.prop.y))
+    ok(near(B.prop.z, 7.20210361, 1e-5), 'z is his, to the digit',
+        tostring(B.prop.z))
+
+    -- THE SEARCH RADIUS IS A REAL NUMBER, because a nil one would make every
+    -- search in client/board.lua fall back to a default nobody chose.
+    ok(type(B.prop.radiusM) == 'number' and B.prop.radiusM > 0.0,
+        'and there is a radius to look within', tostring(B.prop.radiusM))
+
+    -- ═══ THREE OF THE FIVE ARE nil ON PURPOSE ═══
+    --
+    -- forwardM, upM and widthM are measured off the prop. The previous draft's
+    -- 0.06 / 1.20 / 2.40 were invented against no prop at all and are known
+    -- wrong against a stage display; a number here again would silently beat the
+    -- measurement, which is exactly what the resolver is built to let it do.
+    eq(B.forwardM, nil, 'forwardM is left to the prop to answer')
+    eq(B.upM, nil, 'and so is upM')
+    eq(B.widthM, nil, 'and so is widthM')
+
+    -- ...WHILE THE OTHER TWO ARE NOT, and 0.0 is a real instruction rather than
+    -- an absent one. A bounding box has no opinion about either.
+    eq(B.sideM, 0.0, 'sideM is centred, which is a decision and not a nil')
+    eq(B.yawDeg, 0.0, 'and yawDeg is the prop\'s own facing')
 
     -- THE TEXTURE MATCHES THE PAGE. Ringmaster's src/lib/scoreboard.ts pins
     -- BOARD_WIDTH/BOARD_HEIGHT at 1280x720 and writes a fixed-pixel document
@@ -367,8 +482,98 @@ do
         }
     end
     function GetEntityModel() return 1 end
-    function GetModelDimensions()
+
+    --- Per-model boxes, so the board's fitted numbers are a MEASUREMENT of a
+    --- specific model rather than whatever one box every model shares.
+    ---
+    --- The default is drawFace's old fixture, kept byte for byte so Part C and
+    --- tools/test_shop.lua keep reading the shape they were written against.
+    dui.boxes = {}
+    function GetModelDimensions(model)
+        local b = dui.boxes[model]
+        if b then
+            return { x = b[1], y = b[2], z = b[3] },
+                   { x = b[4], y = b[5], z = b[6] }
+        end
         return { x = -1.0, y = -0.2, z = 0.0 }, { x = 1.0, y = 0.2, z = 2.0 }
+    end
+
+    -- ═══ A CLOCK, BECAUSE THE SEARCH IS THROTTLED AND A THROTTLE IS A CLAIM
+    --     ABOUT TIME ═══
+    --
+    -- GET_CLOSEST_OBJECT_OF_TYPE costs 2-4ms and client/fuel.lua's post-mortem is
+    -- that an uncached MISS is what turns that into a collapse. Asserting the
+    -- board does not repeat it every pass needs a tick that does not advance
+    -- unless the test advances it.
+    dui.now = 100000
+    function GetGameTimer() return dui.now end
+
+    -- ═══════════════════════════════════════════════════════════════════════
+    -- THE WORLD ALREADY HAS A DISPLAY IN IT
+    -- ═══════════════════════════════════════════════════════════════════════
+    --
+    -- Owner, 2026-09-11: "The prop is prop_huge_display_02, already in a ymap and
+    -- streamed and verified working in-game."
+    --
+    -- `place` is a ymap. It puts an object into the same table CreateObjectNoOffset
+    -- writes to -- so it is readable through every native above and is
+    -- indistinguishable from a spawned one from inside the code under test -- but
+    -- it deliberately does NOT touch `dui.made`. That separation is the whole
+    -- fixture: `made` now counts only objects br_core conjured, so "we found the
+    -- one that was there" and "we built a second one on top of it" stop being the
+    -- same picture and become two different numbers.
+    dui.place = function(model, x, y, z, heading)
+        dui.nextObj = dui.nextObj + 1
+        dui.objects[dui.nextObj] = { model = model, x = x, y = y, z = z,
+                                     heading = heading or 0.0 }
+        return dui.nextObj
+    end
+
+    --- Every GetClosestObjectOfType call, with the arguments it was made with.
+    dui.searches = {}
+
+    --- ═══ THE FIRST SPELLING OF `isMission` ANSWERS NOTHING ═══
+    ---
+    --- citizenfx/natives documents the flag as "if true doesn't return mission
+    --- objects", which is backwards from how the name reads, and p6/p7 are
+    --- undocumented everywhere. client/warmupcrates.lua asks both spellings for
+    --- that reason and client/board.lua now does too.
+    ---
+    --- SO THIS STUB MAKES THAT LOAD-BEARING RATHER THAN DECORATIVE. It answers
+    --- only for `isMission == true`, so a search that asked one spelling and
+    --- guessed finds nothing at all -- and every downstream assertion in Part D
+    --- fails rather than passing on a coin flip that happened to land right.
+    ---
+    --- ═══ AND `sloppyRadius` IS A NATIVE THAT DOES NOT KEEP ITS PROMISE ═══
+    ---
+    --- client/board.lua re-checks the distance of a hit AFTER passing the native
+    --- a radius, which reads as belt and braces right up until you ask what would
+    --- catch it if the braces were cut. A fixture that always honours the radius
+    --- argument cannot: the re-check would be dead code that every test agreed
+    --- with. This flag makes the stub answer with the nearest match at ANY
+    --- distance, which is the behaviour the re-check exists for, and is not an
+    --- invented worry -- this project has been wrong about what a native promises
+    --- before, which is why client/probe.lua exists.
+    dui.sloppyRadius = false
+
+    function GetClosestObjectOfType(x, y, z, radius, hash, mission, p6, p7)
+        dui.searches[#dui.searches + 1] = {
+            x = x, y = y, z = z, radius = radius, hash = hash,
+            mission = mission, p6 = p6, p7 = p7,
+        }
+        if mission ~= true then return 0 end
+
+        local best, bestD = 0, math.huge
+        for h, o in pairs(dui.objects) do
+            if o.model == hash then
+                local dx, dy, dz = o.x - x, o.y - y, o.z - z
+                local d = math.sqrt(dx * dx + dy * dy + dz * dz)
+                if (dui.sloppyRadius or d <= radius) and d < bestD then
+                    best, bestD = h, d
+                end
+            end
+        end
+        return best
     end
 
     -- DoesEntityExist ANSWERS 1 AND 0, NOT true AND false, which is what the
@@ -652,12 +857,51 @@ local LIC = 'b6f5a1273092df7eb6a8c2a981418f275f2ae3fb'
 local BOARD_URL = 'https://ringmaster.blitz-royale.com/scoreboard?id=' .. LIC
 local STATIC_URL = 'nui://br_ui/dui/static.html'
 
-local function tick() loops['board.track']() end
+--- One pass of the 10 Hz band, AND A TENTH OF A SECOND OF GAME TIME WITH IT.
+---
+--- The clock has to move or the throttle on the object search can never expire,
+--- and a fixture whose clock stood still would make "it retries" untestable and
+--- "it does not retry every pass" trivially true. 100ms is what BR.Loop.TICK
+--- actually is.
+local function tick()
+    dui.now = dui.now + 100
+    loops['board.track']()
+end
+
 local function frame()
     dui.polys = {}
     loops['board.draw']()
     return dui.polys
 end
+
+--- The model hash for a name, through the same stub the code under test uses.
+local function hashOf(name) return GetHashKey(name) end
+
+--- Put the owner's display into the world, exactly where the shipped config
+--- says it is and facing the way the shipped heading claims.
+---
+--- ═══ THE SHIPPED NUMBERS, NOT A FIXTURE'S OWN ═══
+---
+--- Part D used to invent 'prop_board_probe' at (500, 600, 30). Driving it from
+--- br_lib/config/board.lua instead means the search radius, the coordinates and
+--- the model name are all under test together: a config whose radiusM was too
+--- small for its own coordinates, or a model name with a typo in it, now fails
+--- here rather than in the warmup area.
+local function placeTheDisplay(dx, dy, dz)
+    return dui.place(hashOf(B.prop.model),
+                     B.prop.x + (dx or 0.0),
+                     B.prop.y + (dy or 0.0),
+                     B.prop.z + (dz or 0.0),
+                     B.prop.heading)
+end
+
+--- Stand the player next to the site.
+local function standAtSite()
+    dui.ped.x, dui.ped.y, dui.ped.z = B.prop.x + 3.0, B.prop.y, B.prop.z
+end
+
+--- How many object searches have happened.
+local function searchCount() return #dui.searches end
 
 --- How many times the browser has been sent to this address.
 local function navs(url)
@@ -686,101 +930,206 @@ local function printed(lines, pat)
     return false
 end
 
-describe('a checkout with no prop named builds nothing whatever')
-do
-    -- ⚠ THE ASSERTION THAT PROTECTS THE WARMUP PAD FROM US. The owner has a prop
-    -- in mind and has not said which, so the shipped config names none -- and a
-    -- feature that spawned a placeholder anyway would put an object nobody asked
-    -- for in front of every player in the lobby.
-    BR.State.me.state = BR.PlayerState.WARMUP
-    tick()
-    tick()
-    eq(dui.made, 0, 'no object is created')
-    eq(#dui.created, 0, 'no browser is started')
-    eq(#frame(), 0, 'and nothing is drawn')
+-- ═══ THE DISPLAY'S REAL SIZE, PINNED HERE AND NOWHERE ELSE IN THIS FILE ═══
+--
+-- config/board.lua ships forwardM, upM and widthM as nil because no dimensions
+-- for prop_huge_display_02 are published anywhere, and client/board.lua measures
+-- them off GET_MODEL_DIMENSIONS instead. So this fixture is the only thing in
+-- the suite that knows how big the prop is, and every fitted number asserted
+-- below is derived from these six: nine metres across, six tall, standing on the
+-- ground, with its front face 0.30 out along its local +Y.
+--
+-- SET BEFORE THE FIRST TICK, because client/board.lua caches a model's box by
+-- hash the first time it is asked and a default measured early would stick.
+dui.boxes[hashOf(B.prop.model)] = { -4.5, -0.30, 0.0, 4.5, 0.30, 6.0 }
 
-    -- ═══ AND THE TWO HALVES ARE CHECKED SEPARATELY, WHICH THEY HAVE TO BE ═══
-    --
-    -- The shipped config is missing BOTH the model and the coordinates, so an
-    -- assertion driven only from that state passes whether the gate asks about
-    -- the model, the coordinates, or nothing at all. A first attempt at this
-    -- suite did exactly that: deleting the model check from `sited()` broke
-    -- nothing, because the coordinates were nil too and stopped it further down.
-    B.prop.x, B.prop.y, B.prop.z = 500.0, 600.0, 30.0
-    tick()
-    tick()
-    eq(dui.made, 0, 'coordinates with no model name build nothing')
-    eq(#dui.created, 0, 'and start no browser')
-
-    B.prop.x, B.prop.y, B.prop.z = nil, nil, nil
-    B.prop.model = 'prop_board_probe'
-    tick()
-    tick()
-    eq(dui.made, 0, 'and a model with nowhere to stand builds nothing either')
-    eq(#dui.created, 0, 'and starts no browser')
-
-    -- ALL THREE COORDINATES, AND THE THIRD IS CHECKED ON ITS OWN. Setting x and
-    -- y together and leaving z out is the shape a half-finished config edit
-    -- takes, and CREATE_OBJECT_NO_OFFSET with a nil z is an engine error rather
-    -- than a board that is slightly wrong.
-    B.prop.x, B.prop.y = 500.0, 600.0
-    tick()
-    tick()
-    eq(dui.made, 0, 'x and y with no z build nothing')
-
-    -- AND THE READOUT SURVIVES A HALF-FILLED CONFIG. It formats three
-    -- coordinates with %.2f, so a partial site is a dev command that throws --
-    -- on precisely the checkout where somebody is using it to fill the rest in.
-    local half = brboard()
-    ok(printed(half, 'prop = { model = nil'),
-        '/brboard prints the empty prop line rather than throwing on it')
-
-    B.prop.x, B.prop.y = nil, nil
-
-    -- OFF THE PAD IS THE THIRD GATE, and it is not the same as the other two.
-    B.prop.x, B.prop.y, B.prop.z = 500.0, 600.0, 30.0
+--- Take the board down the way leaving warmup does, and empty the world of
+--- displays, so the next block starts from nothing.
+---
+--- THE BROWSER COUNTERS ARE NOT RESET AND THAT IS DELIBERATE. `created` and
+--- `destroyed` are cumulative for the whole of Part D, so a browser leaked in
+--- one block shows up in the next one rather than being tidied away between
+--- them. Blocks below take deltas.
+local function teardownWorld()
     BR.State.me.state = BR.PlayerState.LOBBY
     tick()
-    tick()
-    eq(dui.made, 0, 'a fully sited board is still nothing from the lobby menu')
-    eq(#dui.created, 0, 'and no browser is started there')
-
-    -- ...AND SO IS THE CONFIG SWITCH.
-    BR.State.me.state = BR.PlayerState.WARMUP
-    B.enabled = false
-    tick()
-    tick()
-    eq(dui.made, 0, 'enabled = false turns the whole feature off')
-    B.enabled = true
-
-    -- Put the model back where the next block expects it.
-    B.prop.model = nil
+    for h, o in pairs(dui.objects) do
+        if o.model == hashOf(B.prop.model)
+            or o.model == hashOf('prop_huge_display_01') then
+            dui.objects[h] = nil
+        end
+    end
 end
 
-describe('the prop waits for its model rather than yielding for it')
+describe('the prop is FOUND, and nothing is ever built or unbuilt')
 do
-    B.prop.model = 'prop_board_probe'
-    B.prop.x, B.prop.y, B.prop.z = 500.0, 600.0, 30.0
-    B.prop.heading = 90.0
-    dui.ped.x, dui.ped.y, dui.ped.z = 500.0, 605.0, 30.0
-
-    -- ═══ MODEL LOADING IS ASYNCHRONOUS AND THIS PASS CANNOT WAIT ═══
+    -- ═══════════════════════════════════════════════════════════════════════
+    -- ⚠ THE TWO ASSERTIONS THIS WHOLE PART EXISTS FOR
+    -- ═══════════════════════════════════════════════════════════════════════
     --
-    -- client/loot.lua's spawn worker says a RequestModel-then-wait loop "cannot
-    -- live in a loop callback", and it is right. The cure here is a state
-    -- machine rather than a thread: ask, return, and build on whichever later
-    -- pass the model has actually arrived on. The failure this catches is a
-    -- board that asks once, finds the model missing, and never comes back.
-    dui.modelLoaded = false
-    tick()
-    eq(dui.made, 0, 'a model that has not streamed yields no object')
-    ok(#dui.requests > 0, 'but it has been asked for')
-    eq(#dui.created, 0, 'and no browser is built around a prop that is not there')
+    -- Owner, 2026-09-11: "The prop is prop_huge_display_02, already in a ymap and
+    -- streamed and verified working in-game."
+    --
+    -- A board that spawns its own copy and a board that adopts the one already
+    -- standing there SHOW THE SAME PICTURE. From in front of the prop the only
+    -- difference is a faint shimmer where two coincident meshes z-fight, which is
+    -- exactly the kind of thing somebody decides is a graphics setting.
+    --
+    -- AND A BOARD THAT DELETES THE PROP ON THE WAY OUT IS WORSE, because it works
+    -- perfectly the first time. The symptom arrives one match later as a hole in
+    -- the owner's map that lasts until he reconnects, caused by a teardown that
+    -- ran when the match started.
+    --
+    -- Both are counts, and counting is the only way to tell them apart from
+    -- outside. `dui.place` deliberately does not touch `made`, so these two
+    -- numbers mean exactly "objects br_core conjured" and "objects br_core
+    -- destroyed" -- and they must be zero here and everywhere below.
+    BR.State.me.state = BR.PlayerState.WARMUP
+    standAtSite()
+    local display = placeTheDisplay()
 
-    dui.modelLoaded = true
     tick()
-    eq(dui.made, 1, 'the next pass builds it, with no thread and no wait')
-    eq(#dui.created, 1, 'and exactly one browser goes with it')
+    eq(dui.made, 0, 'no object is created -- the display was already there')
+    eq(dui.deleted, 0, 'and none is destroyed')
+    eq(#dui.created, 1, 'a browser is started, because the prop was found')
+
+    -- ═══ AND IT IS THE PRE-PLACED ENTITY, BY HANDLE ═══
+    --
+    -- "made == 0" alone would also be true of a board that found nothing and
+    -- quietly drew on nothing. The quad has to be standing on the ymap's own
+    -- object, and its position is the only thing that says so.
+    local polys = frame()
+    eq(#polys, 2, 'and the quad is drawn')
+    local c = GetEntityCoords(display)
+    local onIt = false
+    for _, p in ipairs(polys) do
+        for i = 1, 3 do
+            if math.abs(p.v[i][1] - c.x) < 20.0
+                and math.abs(p.v[i][2] - c.y) < 20.0 then onIt = true end
+        end
+    end
+    ok(onIt, 'on the entity the ymap placed, not somewhere else')
+
+    -- ═══ THE SEARCH ASKED BOTH SPELLINGS OF `isMission` ═══
+    --
+    -- citizenfx/natives documents it as "if true doesn't return mission objects",
+    -- which is backwards from how the name reads, and p6/p7 are undocumented
+    -- everywhere. The fixture answers only for `true`, so a search that asked one
+    -- spelling and guessed would have found nothing and failed everything above
+    -- -- but this pins the rule directly, so the reason is legible when it does.
+    local sawFalse, sawTrue = false, false
+    for _, s in ipairs(dui.searches) do
+        if s.mission == false then sawFalse = true end
+        if s.mission == true then sawTrue = true end
+    end
+    ok(sawFalse and sawTrue, 'both spellings of isMission were tried')
+
+    -- ...AND IT ASKED AT THE CONFIGURED SITE, WITH THE CONFIGURED RADIUS. A
+    -- search centred on the player would find the board from wherever he happened
+    -- to be standing and never from where it actually is.
+    local s1 = dui.searches[1]
+    ok(near(s1.x, B.prop.x, 1e-3) and near(s1.y, B.prop.y, 1e-3)
+        and near(s1.z, B.prop.z, 1e-3),
+        'the search is centred on the configured site')
+    ok(near(s1.radius, B.prop.radiusM, 1e-4),
+        'with the configured radius', tostring(s1.radius))
+    eq(s1.hash, hashOf(B.prop.model), 'and asks for the configured model')
+
+    -- p6 AND p7 ARE FALSE. Undocumented everywhere, and every working call in
+    -- this repository passes false for both; a stray `true` changes what the pool
+    -- walk returns with nothing anywhere saying why.
+    eq(s1.p6, false, 'p6 is false, as every other call in this repo passes it')
+    eq(s1.p7, false, 'and so is p7')
+end
+
+describe('a prop outside the radius is a different prop')
+do
+    -- THE RADIUS IS THE ONLY THING STOPPING THIS ADOPTING A DISPLAY SOMEWHERE
+    -- ELSE ON THE ISLAND. GET_CLOSEST_OBJECT_OF_TYPE answers with the nearest
+    -- match it can find, and a board drawn on a screen half a kilometre away is
+    -- "the board does not work" from the warmup area.
+    teardownWorld()
+    BR.State.me.state = BR.PlayerState.WARMUP
+    standAtSite()
+
+    placeTheDisplay(B.prop.radiusM + 5.0, 0.0, 0.0)
+    for _ = 1, 30 do tick() end
+    eq(#frame(), 0, 'a display beyond radiusM is not adopted')
+    eq(dui.made, 0, 'and nothing is conjured to replace it')
+
+    -- ═══ AND THE DISTANCE IS CHECKED AGAIN AFTER THE NATIVE HAS CHECKED IT ═══
+    --
+    -- ⚠ THE ASSERTION ABOVE PASSES WITHOUT client/board.lua DOING ANYTHING, and
+    -- that was worth finding out: the fixture honours the radius argument, so a
+    -- findProp with its own distance test deleted still refuses a far display --
+    -- the native had already refused it. The re-check would be dead code every
+    -- test agreed with.
+    --
+    -- SO THIS ASKS THE QUESTION THE RE-CHECK IS ACTUALLY FOR: a native that does
+    -- not keep its promise. p6 and p7 are undocumented, `isMission` is documented
+    -- backwards, and this project has been wrong about what a native does before
+    -- -- which is the whole reason client/probe.lua exists.
+    dui.sloppyRadius = true
+    for _ = 1, 30 do tick() end
+    eq(#frame(), 0,
+        'and a native that ignores its own radius does not get the board '
+            .. 'drawn on a display sixty metres away')
+    dui.sloppyRadius = false
+
+    -- ...WHILE ONE INSIDE IT IS, so the assertions above are about the radius and
+    -- not about the search being broken.
+    placeTheDisplay(1.0, 0.0, 0.0)
+    for _ = 1, 30 do tick() end
+    eq(#frame(), 2, 'and one inside it is')
+end
+
+describe('a prop that has not streamed in is waited for, not hammered')
+do
+    -- ═══ client/fuel.lua ALREADY PAID FOR THIS LESSON IN FRAME TIME ═══
+    --
+    -- "Major client performance hits when at gas stations - what can we do about
+    -- that?"  -- owner, 2026-08-23. The post-mortem in fuel.lua's resolvePump is
+    -- that the cost of GET_CLOSEST_OBJECT_OF_TYPE (2-4ms, no spatial index, it
+    -- walks the object pool) was not the fault. The fault was that A MISS WAS
+    -- NEVER CACHED, so the sweep ran again on the very next pass and kept running
+    -- for as long as the player stood there.
+    --
+    -- THIS IS THE SAME SHAPE. The board's site is in the warmup area, the player
+    -- stands in the warmup area, and a prop that has not streamed yet is a miss
+    -- that lasts seconds. Unthrottled at 10 Hz that is up to 80ms of pool walking
+    -- per second, on every machine in the lobby at once.
+    teardownWorld()
+    BR.State.me.state = BR.PlayerState.WARMUP
+    standAtSite()
+
+    local createdBefore = #dui.created
+    local before = searchCount()
+    tick()
+    ok(searchCount() > before, 'with nothing there, it looks')
+    eq(#dui.created, createdBefore,
+        'and starts no browser around a prop that is not there')
+    eq(#frame(), 0, 'and draws nothing')
+
+    -- ...AND THEN IT STOPS LOOKING FOR A WHILE. Ten more passes is a whole second
+    -- of game time and must not be ten more pool walks.
+    local afterFirst = searchCount()
+    for _ = 1, 10 do tick() end
+    eq(searchCount(), afterFirst,
+        'ten more passes inside the retry window look again zero times')
+
+    -- ...BUT IT DOES COME BACK. A miss cached forever is the opposite bug and
+    -- looks identical from a chair: the board simply never appears.
+    for _ = 1, 15 do tick() end
+    ok(searchCount() > afterFirst, 'and once the window is up it looks again')
+
+    -- AND WHEN THE PROP FINALLY STREAMS IN, IT IS ADOPTED. No thread, no
+    -- Citizen.Wait inside a band callback; whichever pass is next finds it.
+    placeTheDisplay()
+    for _ = 1, 25 do tick() end
+    eq(dui.made, 0, 'still nothing was created')
+    eq(#dui.created, createdBefore + 1,
+        'and exactly one browser goes up once it is there')
+    eq(#frame(), 2, 'and the board is finally drawn')
 end
 
 describe('with no license there is nothing true to paint, so it paints static')
@@ -788,27 +1137,86 @@ do
     -- FiveM does not always report a license and server/board.lua then sends
     -- nothing. A board that built its URL anyway would ask for `?id=` and sit on
     -- an HTTP 400 page; a board that refused to exist would leave a black
-    -- rectangle that reads as a bug. Static is the honest third answer, and it
-    -- is the SAME answer as a Ringmaster outage because it is the same fact.
+    -- rectangle that reads as a bug. Static is the honest third answer, and it is
+    -- the SAME answer as a Ringmaster outage because it is the same fact.
     eq(dui.created[1], STATIC_URL,
         'the first browser opens on the local static page')
     eq(#frame(), 2, 'and the quad is drawn, so the screen is visibly on')
 end
 
+describe('the board is sized and placed by measuring the prop')
+do
+    -- ═══════════════════════════════════════════════════════════════════════
+    -- WE DO NOT KNOW HOW BIG prop_huge_display_02 IS, AND THE ENGINE DOES
+    -- ═══════════════════════════════════════════════════════════════════════
+    --
+    -- The previous draft shipped forwardM 0.06, upM 1.20 and widthM 2.40,
+    -- invented against no prop at all. On a stage display a 2.4m board is a
+    -- postage stamp somewhere in the middle of a wall. Every number below is
+    -- derived from the fixture's box and nothing else.
+    local lines = brboard()
+
+    -- THE WIDTH IS THE MODEL'S WIDTH: 4.5 - (-4.5) = 9.00.
+    ok(printed(lines, '^%s*widthM%s*= 9%.00,$'),
+        'widthM comes off the model box and not out of the air')
+
+    -- THE STAND-OFF IS THE FRONT FACE PLUS CLEARANCE: 0.30 + 0.02 = 0.32. A quad
+    -- at the origin's own depth would be inside the mesh, z-fighting with it.
+    ok(printed(lines, '^%s*forwardM%s*= 0%.32,$'),
+        'forwardM clears the front face of the box')
+
+    -- AND THE HEIGHT IS THE BOX'S CENTRE: (0.0 + 6.0) / 2 = 3.00. A board at the
+    -- prop's own origin would be down at its feet.
+    ok(printed(lines, '^%s*upM%s*= 3%.00,$'),
+        'upM is the vertical centre of the box')
+
+    -- ...AND THE QUAD REALLY IS NINE METRES ACROSS, which is what separates a
+    -- readout agreeing with itself from a board that changed size.
+    local polys = frame()
+    local tl, tr = nil, nil
+    for _, p in ipairs(polys) do
+        for i = 1, 3 do
+            if p.uv[i][1] == 0.0 and p.uv[i][2] == 0.0 then tl = p.v[i] end
+            if p.uv[i][1] == 1.0 and p.uv[i][2] == 0.0 then tr = p.v[i] end
+        end
+    end
+    ok(tl and tr and near(dist3(tl, tr), 9.0, 0.001),
+        'and the quad on the prop is actually nine meters across',
+        tl and tr and ('%.3f'):format(dist3(tl, tr)) or 'not drawn')
+
+    -- ═══ AND A NUMBER IN THE CONFIG STILL BEATS THE TAPE MEASURE ═══
+    --
+    -- Pasting /brboard's block back into config/board.lua is how a measurement
+    -- becomes a decision, and a config that could be silently overruled by a
+    -- model change would not be a config.
+    B.widthM = 5.0
+    ok(printed(brboard(), '^%s*widthM%s*= 5%.00,$'),
+        'a configured widthM wins over the measurement')
+    B.widthM = nil
+    ok(printed(brboard(), '^%s*widthM%s*= 9%.00,$'),
+        'and taking it away hands the question back to the prop')
+
+    -- THE SOURCE OF EACH NUMBER IS PRINTED, because `widthM = 9.00` in the paste
+    -- block and `widthM = nil` in the file otherwise read as a contradiction.
+    ok(printed(brboard(), '^  source fwd measured  up measured  w measured'),
+        'and the readout says where the three came from')
+end
+
 describe('the license arrives and the browser is NAVIGATED, not replaced')
 do
+    local createdBefore = #dui.created
     handlers[BR.Net.BOARD_ID](LIC)
     tick()
     eq(navs(BOARD_URL), 1, 'it is sent to the board')
-    eq(#dui.created, 1, 'and no second browser was started to do it')
-    eq(dui.destroyed, 0, 'nor was the first one destroyed')
+    eq(#dui.created, createdBefore, 'and no second browser was started to do it')
+    eq(dui.destroyed, 2, 'and only the two torn down between blocks are gone')
 
     -- ═══ AND THE 10Hz PASS DOES NOT RELOAD IT TEN TIMES A SECOND ═══
     --
     -- The address is re-decided every pass. Without the comparison inside
     -- BR.Dui.url this is a page load per tick, per client, from every machine in
-    -- the lobby, against a route that reads DynamoDB. It would work perfectly
-    -- and be invisible from in front of the prop.
+    -- the lobby, against a route that reads DynamoDB. It would work perfectly and
+    -- be invisible from in front of the prop.
     for _ = 1, 20 do tick() end
     eq(navs(BOARD_URL), 1, 'twenty more passes navigate nowhere')
 end
@@ -818,13 +1226,13 @@ do
     local polys = frame()
     eq(#polys, 2, 'in range, two triangles')
 
-    dui.ped.x, dui.ped.y = 500.0 + 400.0, 600.0
+    dui.ped.x = B.prop.x + 400.0
     eq(#frame(), 2,
         'moving does not change the draw until the 10Hz pass re-decides')
     tick()
     eq(#frame(), 0, 'and then the far-away board stops being drawn')
 
-    dui.ped.x = 500.0
+    standAtSite()
     tick()
     eq(#frame(), 2, 'walking back turns it on again')
 end
@@ -836,7 +1244,6 @@ do
     tick()
     eq(navs(STATIC_URL), 1, 'the board goes to the static page')
     eq(#dui.created, before, 'with no browser created')
-    eq(dui.destroyed, 0, 'and none destroyed')
 
     for _ = 1, 20 do tick() end
     eq(navs(STATIC_URL), 1, 'and it does not keep reloading it')
@@ -852,7 +1259,7 @@ do
     eq(#dui.created, before, 'still on the same browser')
 end
 
-describe('leaving warmup takes the browser and the prop with it')
+describe('leaving warmup takes the browser, AND LEAVES THE PROP ALONE')
 do
     -- ═══ THE ISSUE IS EXPLICIT: A DUI IS A REAL BROWSER AND LEAKING ONE PER
     --     MATCH IS NOT ACCEPTABLE ═══
@@ -860,21 +1267,38 @@ do
     -- MATCH START IS THIS EDGE AND NOT A SECOND MECHANISM. A match starting is
     -- this player's state leaving WARMUP, so the one teardown covers "left the
     -- area" and "the match began" and the two cannot come to disagree.
-    local madeBefore, createdBefore = dui.made, #dui.created
+    --
+    -- ⚠ AND THIS BLOCK USED TO ASSERT THE EXACT OPPOSITE OF ITS SECOND LINE. It
+    -- read `eq(dui.deleted, 1, 'and the prop is deleted')`, which was right for a
+    -- prop we had spawned and is now the single most damaging thing this file
+    -- could let through: DeleteEntity on a ymap entity takes a piece of the
+    -- owner's map away for the rest of that client's session, and this is the
+    -- edge that would fire it -- on every match start, for every player.
+    local createdBefore, destroyedBefore = #dui.created, dui.destroyed
     BR.State.me.state = BR.PlayerState.BUS
     tick()
-    eq(dui.destroyed, 1, 'the browser is destroyed')
-    eq(dui.deleted, 1, 'and the prop is deleted')
+    eq(dui.destroyed, destroyedBefore + 1, 'the browser is destroyed')
+    eq(dui.deleted, 0, 'and the display is NOT deleted, because it is not ours')
     eq(#frame(), 0, 'nothing is drawn from the bus')
 
+    -- ...AND IT IS STILL STANDING THERE. "deleted == 0" counts calls; this reads
+    -- the world, so a teardown that removed the entity by some other route than
+    -- DeleteEntity would still be caught.
+    local still = nil
+    for h, o in pairs(dui.objects) do
+        if o.model == hashOf(B.prop.model) then still = h end
+    end
+    ok(still ~= nil, 'and the display is still standing in the world')
+
     for _ = 1, 10 do tick() end
-    eq(dui.destroyed, 1, 'and the teardown is not repeated every pass')
+    eq(dui.destroyed, destroyedBefore + 1,
+        'and the teardown is not repeated every pass')
 
     BR.State.me.state = BR.PlayerState.WARMUP
     tick()
     eq(#dui.created, createdBefore + 1, 'coming back builds a browser')
-    eq(dui.made, madeBefore + 1, 'and a prop')
-    eq(dui.destroyed, 1, 'and the old one really was destroyed, not orphaned')
+    eq(dui.made, 0, 'and still conjures no prop')
+    eq(#frame(), 2, 'and finds the same display again')
 end
 
 describe('/brboard moves the board and prints what it moved it to')
@@ -900,8 +1324,8 @@ do
         tl and tr and ('%.3f'):format(dist3(tl, tr)) or 'not drawn')
 
     -- A DELTA, WHICH IS THE HALF THAT MAKES IT A NUDGER. `4.0` sets, `+0.5`
-    -- moves; the leading sign is the entire difference and it is read off the
-    -- raw string, because tonumber('+0.5') and tonumber('0.5') are equal.
+    -- moves; the leading sign is the entire difference and it is read off the raw
+    -- string, because tonumber('+0.5') and tonumber('0.5') are equal.
     lines = brboard('w', '+0.5')
     ok(printed(lines, '^%s*widthM%s*= 4%.50,$'), 'and +0.5 nudges from there')
 
@@ -909,14 +1333,30 @@ do
     ok(printed(lines, '^%s*yawDeg%s*= %-90%.00,$'),
         'a negative delta on an untouched field reads from the config value')
 
+    -- A DELTA ON A MEASURED FIELD NUDGES FROM THE MEASUREMENT, which is the one
+    -- new way this could have gone wrong: `+0.10` on a forwardM the config does
+    -- not carry has to start from 0.32 and not from zero.
+    lines = brboard('fwd', '+0.10')
+    ok(printed(lines, '^%s*forwardM%s*= 0%.42,$'),
+        'and a delta on a MEASURED field nudges from the measurement')
+
     -- THE WHOLE BLOCK IS THERE, not just the field that changed. Pasting back a
     -- partial block is how a field somebody never touched gets quietly zeroed.
     lines = brboard()
     for _, key in ipairs({ 'forwardM', 'sideM', 'upM', 'widthM', 'yawDeg' }) do
         ok(printed(lines, '^%s*' .. key .. '%s*= '), key .. ' is in the block')
     end
-    ok(printed(lines, "^%s*prop = { model = 'prop_board_probe', x = 500%.00"),
-        'and so is the prop, in the shape config/board.lua writes it')
+
+    -- ...AND SO IS THE PROP, IN THE SHAPE config/board.lua ACTUALLY WRITES IT --
+    -- spread over lines, with five decimals on the coordinates and the search
+    -- radius included. Two decimals here would quietly trim the owner's own
+    -- surveyed numbers in the one place they get written down.
+    ok(printed(lines, "^%s*model%s*= 'prop_huge_display_02',$"),
+        'the model is in the block')
+    ok(printed(lines, '^%s*x%s*= 4539%.29443,$'),
+        'and x, to five decimals rather than rounded to a centimetre')
+    ok(printed(lines, '^%s*radiusM%s*= 8%.00,$'), 'and the search radius')
+    ok(printed(lines, '^%s*heading%s*= 135%.00,$'), 'and the heading')
 
     -- IT SAYS WHAT THE BOARD IS DOING, which is the other half of the request:
     -- seven different faults all look like "the board is not there".
@@ -925,52 +1365,214 @@ do
     ok(printed(lines, '^  url    ' .. BOARD_URL:gsub('%p', '%%%0')),
         'and the address actually in force')
     ok(printed(lines, '^  warmup true'), 'and whether we are on the pad')
+
+    -- AND IT SAYS THE PROP WAS FOUND RATHER THAN BUILT, plus what it measured --
+    -- the two facts that changed when the prop stopped being ours.
+    ok(printed(lines, '^  prop   prop_huge_display_02   handle %d+   FOUND at '),
+        'the readout says FOUND, with the handle')
+    ok(printed(lines, '^  model  9%.00 wide  6%.00 tall  0%.60 deep'),
+        'and prints the box it measured, so the fitted numbers can be checked')
+
+    brboard('reset')
 end
 
-describe('/brboard prop and here place it without a config edit')
+describe('/brboard fit and adopt turn the unknowns into written-down numbers')
 do
-    local madeBefore, deletedBefore = dui.made, dui.deleted
+    -- Owner, 2026-09-11: "If you can't get the DUI right that's totally fine.
+    -- Just give me tools like `brscoreboard` or something to adjust them."
 
-    brboard('prop', 'prop_board_other')
-    eq(dui.deleted, deletedBefore + 1, 'auditioning a model drops the old prop')
+    -- ═══ fit PINS THE MEASUREMENT ═══
+    --
+    -- It changes nothing on screen -- the three numbers were already measured --
+    -- and that is the point: it moves them from "measured" to "nudged" so the
+    -- block carries three real numbers to nudge from rather than three nils to
+    -- wonder about.
+    --
+    -- THE PASS FIRST, BECAUSE `fit` NEEDS A PROP IN HAND. The block above ended
+    -- on a `reset`, which lets go of the display; the measurement comes off the
+    -- entity, so there has to be one.
     tick()
-    eq(dui.made, madeBefore + 1, 'and stands the new one up')
+    local lines = brboard('fit')
+    ok(printed(lines, '^  source fwd nudged  up nudged  w nudged'),
+        'fit pins the measured three')
+    ok(printed(lines, '^%s*widthM%s*= 9%.00,$'),
+        'and the block still reads nine metres, because fit is not a change')
 
-    dui.ped.x, dui.ped.y, dui.ped.z = 511.0, 622.0, 33.0
-    dui.ped.h = 250.0
-    local lines = brboard('here')
-    ok(printed(lines, "model = 'prop_board_other', x = 511%.00, y = 622%.00, "
-        .. 'z = 33%.00, heading = 250%.0'),
-        'and `here` surveys the spot he is standing on, heading included')
-
-    -- AND THE OBJECT REALLY MOVES THERE, rather than the numbers moving and the
-    -- prop staying put -- which would be a readout that agrees with itself and
-    -- with nothing on screen.
+    -- ═══ adopt READS THE PROP'S REAL POSE ═══
+    --
+    -- ⚠ THIS IS WHAT SETTLES THE QUATERNION. config/board.lua converted the
+    -- owner's four components to 135 degrees and records that ymaps frequently
+    -- store the INVERSE of a rotation, which would have made it 225. Both were
+    -- defensible from the four numbers alone. This reads the answer off the
+    -- entity the ymap actually produced.
+    brboard('reset')
     tick()
-    local moved = nil
-    for h, o in pairs(dui.objects) do
-        if near(o.x, 511.0, 0.01) and near(o.y, 622.0, 0.01) then moved = h end
+
+    -- Move the real entity off the configured pose, so `adopt` has something to
+    -- correct and cannot pass by copying a value that already matched.
+    local h = nil
+    for handle, o in pairs(dui.objects) do
+        if o.model == hashOf(B.prop.model) then h = handle end
     end
-    ok(moved ~= nil, 'the prop is standing where he stood')
+    -- ⚠ GUARDED, AND THE GUARD IS NOT DECORATION. If a regression ever deletes
+    -- the display -- the one fault this whole part is built to catch -- `h` is
+    -- nil here, and an unguarded index would blow the suite up with a stack
+    -- trace at this line instead of letting the assertions that NAME the rule
+    -- report it. Part C's GetHashKey stub carries the same note for the same
+    -- reason: a crash is a much worse diagnosis than a FAIL line.
+    ok(h ~= nil, 'the display is in the world')
+    if h then
+        dui.objects[h].x = B.prop.x + 0.37
+        dui.objects[h].heading = 225.0
+    end
 
-    -- RESET PUTS EVERYTHING BACK, INCLUDING THE PROP. A reset that restored the
-    -- numbers and left an object standing at the overridden site would make the
-    -- readout lie about where the board is.
-    deletedBefore = dui.deleted
-    lines = brboard('reset')
-    eq(dui.deleted, deletedBefore + 1, 'reset drops the prop it was auditioning')
-    ok(printed(lines, "model = 'prop_board_probe'"),
-        'and the model goes back to the config')
-    ok(printed(lines, '^%s*widthM%s*= 2%.40,$'),
-        'and so do the five numbers')
+    -- ═══ AND THE READOUT SHOWS THE DISAGREEMENT BEFORE HE ACTS ON IT ═══
+    --
+    -- 225 against a configured 135 is ninety degrees out, and the whole point of
+    -- printing the difference is that it is legible from a chair without
+    -- measuring anything. This is the line that would tell the owner the ymap had
+    -- stored the inverse after all.
+    ok(printed(brboard(), '^  facing 225%.00   config says 135%.00   off by 90%.00$'),
+        'the readout prints the real heading, the configured one and the gap')
+
+    brboard('adopt')
+    local after = brboard()
+    ok(printed(after, '^%s*x%s*= ' .. ('%.5f'):format(B.prop.x + 0.37) .. ',$'),
+        'adopt writes the entity\'s true origin into the block')
+    ok(printed(after, '^%s*heading%s*= 225%.00,$'),
+        'and its true heading, which is how 135 becomes 225 if the ymap inverted it')
+    ok(printed(after, '^  facing 225%.00   config says 225%.00   off by 0%.00$'),
+        'and the readout then agrees with itself')
+
+    -- Put it back the way the rest of the file expects.
+    if h then
+        dui.objects[h].x = B.prop.x
+        dui.objects[h].heading = B.prop.heading
+    end
+    brboard('reset')
+    tick()
+end
+
+describe('/brboard prop auditions a model without touching the map')
+do
+    -- AUDITION THE SIBLING. prop_huge_display_01 is the other half of the pair and
+    -- is the first thing to try if this turns out to be the wrong one.
+    local deletedBefore, createdBefore = dui.deleted, #dui.created
+
+    brboard('prop', 'prop_huge_display_01')
+    tick()
+    eq(dui.deleted, deletedBefore,
+        'auditioning a model deletes nothing -- the old prop was never ours')
+    eq(dui.made, 0, 'and builds nothing')
+    eq(#frame(), 0, 'and with no such model in the world, nothing is drawn')
+
+    -- ═══ AND THE BROWSER SURVIVES A PROP THAT IS NOT THERE ═══
+    --
+    -- A display that streams out from under a player is the ordinary case, and
+    -- destroying a Chromium instance every time one does -- then building another
+    -- when it comes back -- is the churn the issue's one-browser rule is about.
+    eq(#dui.created, createdBefore, 'and no browser is built or rebuilt for it')
+
+    -- ...AND THE OTHER MODEL IS FOUND WHEN IT EXISTS, so the block above is about
+    -- the audition and not about the search being broken.
+    dui.place(hashOf('prop_huge_display_01'), B.prop.x, B.prop.y, B.prop.z, 0.0)
+    for _ = 1, 30 do tick() end
+    eq(#frame(), 2, 'and a world containing the audition model draws on it')
+
+    brboard('reset')
+    for _ = 1, 30 do tick() end
+    ok(printed(brboard(), "model%s*= 'prop_huge_display_02',"),
+        'and reset goes back to the configured model')
+end
+
+describe('/brboard here moves where we LOOK, not where the prop stands')
+do
+    -- ═══ THIS COMMAND CHANGED MEANING WHEN THE PROP STOPPED BEING OURS ═══
+    --
+    -- It used to survey a spot to build a prop on, and it took the player's own
+    -- heading with it. Nothing is built any more and nothing may be rotated, so
+    -- what is left is the useful half: stand next to the display and the search
+    -- starts from there, which is how a configured coordinate that turns out to
+    -- be too far off gets corrected without a restart.
+    teardownWorld()
+    BR.State.me.state = BR.PlayerState.WARMUP
+
+    -- A display a long way from the configured site: out of radiusM, so the
+    -- shipped coordinates cannot reach it.
+    local far = dui.place(hashOf(B.prop.model),
+                          B.prop.x + 60.0, B.prop.y, B.prop.z, 42.0)
+    dui.ped.x, dui.ped.y, dui.ped.z = B.prop.x + 61.0, B.prop.y, B.prop.z
+
+    for _ = 1, 30 do tick() end
+    eq(#frame(), 0, 'from the configured site it cannot be reached')
+
+    brboard('here')
+    for _ = 1, 30 do tick() end
+    eq(#frame(), 2, 'and standing beside it and typing `here` finds it')
+    eq(dui.made, 0, 'without building anything')
+
+    -- AND THE SEARCH REALLY MOVED, rather than the numbers moving and the search
+    -- staying put -- which would be a readout that agrees with itself and with
+    -- nothing on screen.
+    local last = dui.searches[#dui.searches]
+    ok(near(last.x, B.prop.x + 61.0, 0.01),
+        'the search is now centred on the player')
+
+    -- `here` NO LONGER TAKES HIS HEADING. It cannot: the facing belongs to the
+    -- ymap. The block still reads the configured heading, and `adopt` is what
+    -- replaces it with the real one.
+    ok(printed(brboard(), '^%s*heading%s*= 135%.00,$'),
+        'and it leaves the heading alone, because it has no business rotating '
+            .. 'a piece of the map')
+
+    dui.objects[far] = nil
+    brboard('reset')
+end
+
+describe('/brscoreboard is the same tool under the name he reached for')
+do
+    -- Owner, 2026-09-11: "Just give me tools like `brscoreboard` or something to
+    -- adjust them."
+    --
+    -- AN ALIAS AND NOT A SECOND IMPLEMENTATION. Two commands that tune the same
+    -- five numbers are two commands that will one day disagree about what they
+    -- tune, so this asserts they are the SAME FUNCTION VALUE rather than that
+    -- both happen to print something.
+    ok(cmds['brscoreboard'] ~= nil, 'the alias is registered')
+    ok(cmds['brscoreboard'] == cmds['brboard'],
+        'and it is the identical function, not a copy of it')
 end
 
 describe('the resource stopping does not leave a browser behind')
 do
-    local before = dui.destroyed
+    teardownWorld()
+    BR.State.me.state = BR.PlayerState.WARMUP
+    standAtSite()
+    placeTheDisplay()
+    for _ = 1, 30 do tick() end
+    eq(#frame(), 2, 'the board is up')
+
+    local before, deletedBefore = dui.destroyed, dui.deleted
     handlers['onResourceStop']('br_core')
     eq(dui.destroyed, before + 1, 'the browser is destroyed on the way out')
+    eq(dui.deleted, deletedBefore,
+        'and the map keeps its display, on the one edge that fires for every '
+            .. 'player on every `restart br_core`')
     eq(#frame(), 0, 'and nothing is drawn after it')
+end
+
+-- ═══ THE TWO NUMBERS THAT MUST STILL BE ZERO ═══
+--
+-- Asserted per block above and asserted once more here at the end, because these
+-- two are the whole difference between adopting the owner's display and building
+-- a second one on top of it -- and between leaving his map alone and taking a
+-- piece out of it.
+describe('across the whole of Part D, nothing was built and nothing deleted')
+do
+    eq(dui.made, 0, 'not one object was created by br_core')
+    eq(dui.deleted, 0, 'and not one was deleted')
+    eq(#dui.requests, 0,
+        'and no model was ever requested, because none was ever spawned')
 end
 
 -- ---------------------------------------------------------------- report ---
