@@ -1864,6 +1864,47 @@ local function openMenu(store)
     greet(store)
 end
 
+--- IS THE SHOP MENU UP RIGHT NOW?
+---
+--- Owner, 2026-09-12: "Please disable the scroll wheel as a control for selected
+--- inventory slots while the shop menu is open."
+---
+--- ═══ ONE NOTION OF MENU STATE, READ TWO WAYS ═══
+---
+--- `menuOpen` is the only thing in this project that knows whether this menu is
+--- up, and this is a READER for it rather than a second copy. BR.Gunshop.busy
+--- below now asks this rather than the upvalue, so the two can never come to
+--- disagree about the half they share.
+---
+--- ⚠ IT IS NOT `busy()`, AND THE DIFFERENCE IS THE WHOLE OF HIS SENTENCE.
+--- `busy()` is also true while the world PLATE is up, which is any player
+--- standing within `reachM` of a counter with the menu shut -- walking around the
+--- shop floor, browsing the room. Gating the wheel on that would take slot
+--- switching away from a player who has not opened anything, which is an invented
+--- rule he did not ask for. "While the shop menu is open" is this function.
+---
+--- ═══ AND IT IS A LIVE READ, WHICH IS WHAT MAKES EVERY EXIT PATH FREE ═══
+---
+--- The caller asks on the frame it wants to know, so there is no latch anywhere
+--- to leave set. Death, the match ending, walking away, the library's own Back
+--- button and one of our NUI screens taking the keyboard all lower `menuOpen`
+--- through closeMenu -- the TICK pass and UIMenu.OnMenuClose between them cover
+--- the lot -- and a br_core restart takes this file, client/inventory.lua and the
+--- whole Lua state with it. There is no path that can strand a player without
+--- their wheel for the rest of a match.
+---
+--- ⚠ ScaleformUI's OWN MenuHandler:IsAnyMenuOpen() IS NOT USABLE FOR THIS AND
+--- THAT IS WORTH WRITING DOWN. It answers `BreadcrumbsHandler:Count() > 0`, and
+--- the vendored UIMenu:Visible(false) clears `MenuHandler._currentMenu` WITHOUT
+--- popping the breadcrumb -- only UIMenu:GoBack at depth 1 calls
+--- CloseAndClearHistory and BreadcrumbsHandler:Clear. closeMenu lowers this menu
+--- with Visible(false), so that predicate would stay true after every close this
+--- file performs, and the symptom would be exactly the stranded wheel above.
+--- @return boolean
+function BR.Gunshop.menuUp()
+    return menuOpen == true
+end
+
 --- IS THIS FILE HOLDING THE INTERACT KEY OR THE SCREEN?
 ---
 --- ═══ BUILT AHEAD OF ITS ONE CALLER, AND THE CALLER IS NAMED ═══
@@ -1887,9 +1928,13 @@ end
 --- claims the crate as well -- which is the shared-prompt cost client/ambheal.lua
 --- already documents, met for the first time in a place where it is likely
 --- rather than rare.
+---
+--- THE MENU HALF IS BR.Gunshop.menuUp's, ASKED RATHER THAN REPEATED. The wheel
+--- gate needs that half on its own and this needs it ORed with the plate; one
+--- upvalue, two readings, and no way for them to drift apart.
 --- @return boolean
 function BR.Gunshop.busy()
-    return menuOpen or plateShown
+    return BR.Gunshop.menuUp() or plateShown
 end
 
 -- ---------------------------------------------------------------------------

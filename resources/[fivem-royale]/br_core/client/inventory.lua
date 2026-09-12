@@ -1662,9 +1662,41 @@ BR.Loop.register(BR.Loop.FRAME, 'inv.controls', function()
     -- all this actually needs to know.
     local scoped = IsPlayerFreeAiming(PlayerId())
 
+    -- ...AND NOT WHILE THE GUN SHOP MENU IS UP (#274).
+    --
+    -- Owner, 2026-09-12: "Please disable the scroll wheel as a control for
+    -- selected inventory slots while the shop menu is open."
+    --
+    -- ═══ THE SAME MECHANISM AS THE PAUSE MAP AND THE SCOPE, ONE LINE FURTHER
+    --     ALONG ═══
+    --
+    -- ScaleformUI holds the menu's input with Controls:ToggleAll(false), which is
+    -- DisableAllControlActions plus a whitelist -- and the note above says why
+    -- that changes nothing here: IsDisabledControlJustPressed is DOCUMENTED to
+    -- see a control somebody has suppressed. So the wheel went on cycling slots
+    -- underneath an open shop screen exactly as it went on cycling them under the
+    -- pause map, and for exactly the same reason.
+    --
+    -- ASKED, NOT LATCHED, which is what makes every way out of that menu free.
+    -- BR.Gunshop.menuUp() is a live read of client/gunshop.lua's own `menuOpen`,
+    -- and the paths that lower it include the ones that are not a clean close:
+    -- the player dies or the match ends (the TICK pass calls closeMenu on
+    -- wantScene), they walk away from the counter, one of our NUI screens takes
+    -- the keyboard, or the library's own Back button fires UIMenu.OnMenuClose. A
+    -- br_core restart takes that file and this one together. There is no state
+    -- here to leave set, so there is no way to lose the wheel for a match.
+    --
+    -- NIL-GUARDED ON THE MODULE AND ON THE FUNCTION, the shape every cross-file
+    -- call in this file takes -- and it FAILS OPEN on purpose: a build where
+    -- client/gunshop.lua did not load is one where there is no shop menu to be
+    -- under, and the wrong way to be wrong here is a player who cannot switch
+    -- slots and cannot see why.
+    local shopMenu = BR.Gunshop ~= nil and BR.Gunshop.menuUp ~= nil
+        and BR.Gunshop.menuUp() == true
+
     -- MOUSE WHEEL UP CYCLES DOWNWARD THROUGH THE RING, wrapping past the fist
     -- slot at the bottom to slot 5 at the top.
-    if not IsPauseMenuActive() and not scoped
+    if not IsPauseMenuActive() and not scoped and not shopMenu
        and IsDisabledControlJustPressed(0, WHEEL_UP) then
         local want = inv.active - 1
         if want < MELEE_SLOT then want = SLOTS end

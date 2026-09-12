@@ -5543,6 +5543,122 @@ do
     BR.Spectate = realSpectate
 end
 
+describe('the scroll wheel belongs to the gun shop menu while it is open')
+do
+    -- "Please disable the scroll wheel as a control for selected inventory slots
+    -- while the shop menu is open" -- the owner, 2026-09-12, #274.
+    --
+    -- ═══ WHY A LONGER LIST IN client/gunshop.lua COULD NOT HAVE DONE IT ═══
+    --
+    -- ScaleformUI holds the menu's input with Controls:ToggleAll(false), which is
+    -- DisableAllControlActions plus a re-enabled whitelist. That stops the ENGINE
+    -- reacting. THIS file is not the engine: it reads the wheel with
+    -- IsDisabledControlJustPressed, which exists precisely to see a control
+    -- somebody has suppressed -- the same asymmetry the spectator block above is
+    -- about. So the wheel went on swapping the gun in the player's hands while
+    -- they were reading a shop screen, and no amount of disabling reaches it.
+    --
+    -- ═══ AND WHY THE GATE IS A LIVE READ RATHER THAN A LATCH ═══
+    --
+    -- The menu closes on paths that are not a clean close -- the player dies, the
+    -- match ends, they walk out of reach, the library's own Back button. A
+    -- boolean set on open and cleared on close would have to be cleared on every
+    -- one of them, and the cost of missing one is a player with no scroll wheel
+    -- for the rest of the match. Asking on the frame has no such cases, and step
+    -- 3 below is that property under test.
+    local realGunshop = BR.Gunshop
+    local shopMenuOpen = false
+    BR.Gunshop = { menuUp = function() return shopMenuOpen end }
+
+    local realPressed = IsDisabledControlJustPressed
+    local pressing = nil
+    function IsDisabledControlJustPressed(_pad, c) return c == pressing end
+
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.State.landed = true
+    fire(BR.Net.INV_SET, {
+        slots = { { id = 'carbinerifle', kind = BR.ItemKind.WEAPON, count = 1 },
+                  { id = 'shield_small', kind = BR.ItemKind.CONSUMABLE,
+                    count = 1 } },
+        ammo = {}, active = 1,
+    })
+
+    local function asked(name)
+        local n = 0
+        for _, s in ipairs(sent) do if s.name == name then n = n + 1 end end
+        return n
+    end
+
+    -- 1. THE BASELINE, and it is load-bearing: a gate that blocks something
+    --    already impossible passes for the wrong reason. With no shop menu up,
+    --    the wheel still cycles the ring exactly as it always has.
+    sent = {}
+    pressing = 15                                    -- WHEEL_UP
+    BR.Loop.step(BR.Loop.FRAME)
+    ok(asked(BR.Net.INV_SELECT) == 1,
+       'with no shop menu up the wheel still cycles the inventory ring',
+       ('%d INV_SELECT'):format(asked(BR.Net.INV_SELECT)))
+
+    -- 2. THE SAME WHEEL, WITH THE COUNTER OPEN.
+    shopMenuOpen = true
+    sent = {}
+    BR.Loop.step(BR.Loop.FRAME)
+    ok(asked(BR.Net.INV_SELECT) == 0,
+       'and the same scroll with the shop menu open changes no slot -- the '
+           .. 'wheel belongs to the menu',
+       ('%d INV_SELECT'):format(asked(BR.Net.INV_SELECT)))
+
+    -- 3. IT HANDS BACK, WITH NOTHING TO RESET. This is the assertion that says
+    --    the gate is a predicate and not a latch: the only thing that changed is
+    --    the answer client/gunshop.lua gives.
+    shopMenuOpen = false
+    sent = {}
+    BR.Loop.step(BR.Loop.FRAME)
+    ok(asked(BR.Net.INV_SELECT) == 1,
+       'and it comes straight back the moment the menu is down, however it went '
+           .. 'down',
+       ('%d INV_SELECT'):format(asked(BR.Net.INV_SELECT)))
+
+    -- 4. A BUILD WITH NO GUN SHOP AT ALL KEEPS ITS WHEEL. The nil-guard fails
+    --    OPEN, deliberately: there is no shop menu to be under, and a player who
+    --    cannot switch slots and cannot see why is the worse way to be wrong.
+    BR.Gunshop = nil
+    sent = {}
+    BR.Loop.step(BR.Loop.FRAME)
+    ok(asked(BR.Net.INV_SELECT) == 1,
+       'and a build where client/gunshop.lua never loaded still has a wheel',
+       ('%d INV_SELECT'):format(asked(BR.Net.INV_SELECT)))
+
+    -- 5. ...AND SO DOES ONE WHOSE GUN SHOP HAS NO SUCH FUNCTION, which is the
+    --    shape a rename takes. The module is guarded as well as the call.
+    BR.Gunshop = {}
+    sent = {}
+    BR.Loop.step(BR.Loop.FRAME)
+    ok(asked(BR.Net.INV_SELECT) == 1,
+       '...and so does one whose BR.Gunshop lost the function to a rename',
+       ('%d INV_SELECT'):format(asked(BR.Net.INV_SELECT)))
+
+    -- 6. THE ENGINE'S OWN WEAPON WHEEL IS STILL HELD DOWN (#134). The gate sits
+    --    below the suppression loop for the reason the spectator gate does: a
+    --    line written one block higher would trade this bug for that one, and
+    --    GTA's wheel over a shop screen is the same class of accident.
+    shopMenuOpen = true
+    BR.Gunshop = { menuUp = function() return shopMenuOpen end }
+    local disabled = {}
+    local realDisable = DisableControlAction
+    function DisableControlAction(_pad, c) disabled[c] = true end
+    BR.Loop.step(BR.Loop.FRAME)
+    DisableControlAction = realDisable
+    ok(disabled[37] == true and disabled[15] == true,
+       'and GTA\'s own weapon wheel is still suppressed underneath the shop '
+           .. 'screen -- #134 is not traded away for #274',
+       ('37 %s, 15 %s'):format(tostring(disabled[37]), tostring(disabled[15])))
+
+    pressing = nil
+    IsDisabledControlJustPressed = realPressed
+    BR.Gunshop = realGunshop
+end
+
 describe('the inventory panel holds the PASSENGER trigger, not just the driver\'s')
 do
     -- ═══ THE COMMENT NAMED THE CONTROL WE MEANT, BESIDE A DIFFERENT ID ═══
