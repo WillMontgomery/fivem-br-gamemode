@@ -814,8 +814,29 @@ do
         -- send the first label and never the second -- so "Currently fueling"
         -- would be in the file, correct, and never once displayed. There is no
         -- symptom to notice in code review. Mutation testing found this too.
-        ok(src:find('(not show or promptFueling == fueling)', 1, true) ~= nil,
-           'and the dedupe compares the label, not just whether it is shown')
+        --
+        -- THE RULE ITSELF MOVED TO BR.FuelSolve.plateOwes ON 2026-09-12, verbatim
+        -- and with a third term beside it, so what is checked here is that this
+        -- file still ROUTES through it. The rule is executed rather than searched
+        -- for in `prompt.delivery` below -- which is the whole reason it moved.
+        ok(src:find('BR.FuelSolve.plateOwes(show, fueling,', 1, true) ~= nil,
+           'and the dedupe is the solver\'s, so it compares the label as well as '
+               .. 'whether the plate is shown')
+
+        -- ═══ AND THE PLATE IS NOT MARKED SENT UNLESS A BROWSER HEARD IT ═══
+        --
+        --   "There's a bug in the fuel stations where coming up to the pumps the
+        --    first time no DUI shows until you press {interactkey}."
+        --                                          -- owner, 2026-09-12
+        --
+        -- The answer BR.Dui.ready gives has to reach `promptSent`, because that
+        -- is what plateOwes reads to decide whether to try again. A version that
+        -- asked the question and threw the answer away would pass every
+        -- assertion in `prompt.delivery` -- they are about the predicate -- and
+        -- ship the bug unchanged.
+        ok(src:find('promptShown, promptFueling, promptSent = show, fueling, ready',
+                    1, true) ~= nil,
+           'and what the browser could hear is what gets recorded')
 
         -- ═══ THE COSMETIC REPAIR IS STILL GATED ON COMPLETION ═══
         --
@@ -849,6 +870,139 @@ do
         ok(src:find('pcall(WashDecalsFromVehicle, veh', 1, true) ~= nil,
            'and WashDecalsFromVehicle, for the scratches')
     end
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+describe('prompt.delivery')
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+--   "There's a bug in the fuel stations where coming up to the pumps the first
+--    time no DUI shows until you press {interactkey}."  -- owner, 2026-09-12
+--
+-- ═══ WHAT THIS REPLAYS ═══
+--
+-- The first approach of a session, frame by frame. This file is normally what
+-- CREATES the shared `lootprompt` browser -- nothing else in br_core has drawn a
+-- world prompt yet if the player drove off the pad and straight to a station --
+-- and IsDuiAvailable is false for a beat after CreateDui, during which every
+-- SendDuiMessage is dropped without a word (client/dui.lua). So the sequence is:
+-- the plate becomes wanted while the browser is still starting, the browser
+-- comes up a few frames later, and THEN the player presses the key.
+--
+-- The plate has to be on screen BEFORE that keypress. That is the whole report.
+--
+-- ═══ THE OLD RULE IS RUN BESIDE THE NEW ONE, ON PURPOSE ═══
+--
+-- `oldGuard` below is the guard that shipped, transcribed. It is here so this
+-- block cannot go quietly green on a change that reintroduces the fault: the
+-- same sequence is driven through both, and the assertion is that they DISAGREE
+-- at the frame where the browser comes up. A suite that only exercised the fix
+-- would pass just as happily against a predicate that ignores `sent`.
+do
+    --- The guard as it was before 2026-09-12: state only, no delivery term.
+    local function oldGuard(show, fueling, sentShow, sentFueling)
+        return not (sentShow == show and (not show or sentFueling == fueling))
+    end
+
+    --- Replay one approach and report what the page was told, in order.
+    ---
+    --- @param owes function  the predicate under test
+    --- @param upAt integer   the frame the CEF instance starts answering
+    --- @param pressAt integer  the frame the player presses interact
+    --- @return table sends   one entry per message that actually went out
+    local function approach(owes, upAt, pressAt, frames)
+        local sends = {}
+        -- The three fields client/fuel.lua holds, at their shipped initial
+        -- values. `sent` starts true because the plate starts down and the page
+        -- starts blank, so nothing is owed to anybody.
+        local sentShow, sentFueling, sent = false, false, true
+        for f = 1, (frames or 12) do
+            local show    = true                  -- parked at the pump throughout
+            local fueling = (f >= pressAt)
+            if owes(show, fueling, sentShow, sentFueling, sent) then
+                local ready = (f >= upAt)
+                sentShow, sentFueling, sent = show, fueling, ready
+                if ready then
+                    sends[#sends + 1] = { frame = f, fueling = fueling }
+                end
+            end
+        end
+        return sends
+    end
+
+    --- Was anything put on the plate before the given frame?
+    local function shownBefore(sends, frame)
+        for _, s in ipairs(sends) do
+            if s.frame < frame and not s.fueling then return true end
+        end
+        return false
+    end
+
+    -- ═══ 1. THE REPORT ═══
+    --
+    -- The browser answers on frame 4; the player presses on frame 8. Four frames
+    -- is generous towards the old code -- the real gap is closer to a second --
+    -- and it still fails.
+    local fixed = approach(BR.FuelSolve.plateOwes, 4, 8)
+    ok(shownBefore(fixed, 8),
+       'the plate is on screen before the player touches the key, even though '
+           .. 'the browser was not up on the frame it was first wanted',
+       ('%d message(s) went out'):format(#fixed))
+
+    local shipped = approach(oldGuard, 4, 8)
+    ok(not shownBefore(shipped, 8),
+       'and the guard that shipped could not do that -- which is the report, '
+           .. 'reproduced',
+       ('%d message(s) went out'):format(#shipped))
+
+    -- ═══ 2. AND IT IS THE KEYPRESS THAT RESCUED IT, WHICH IS WHY THE OWNER
+    --     DESCRIBED IT THE WAY HE DID ═══
+    ok(#shipped == 1 and shipped[1].frame == 8 and shipped[1].fueling == true,
+       'the shipped guard put exactly one thing on the plate, on the keypress, '
+           .. 'saying "Currently fueling"',
+       #shipped > 0 and ('frame %d, fueling %s'):format(shipped[1].frame,
+                                                        tostring(shipped[1].fueling))
+                     or 'nothing at all')
+
+    -- ═══ 3. A BROWSER THAT IS ALREADY UP IS UNAFFECTED ═══
+    --
+    -- The second station of a match, and every station after it. The fix must
+    -- not change the traffic on the path that already worked: one message up,
+    -- one on the press.
+    local warm = approach(BR.FuelSolve.plateOwes, 1, 8)
+    ok(#warm == 2 and warm[1].frame == 1 and warm[2].frame == 8,
+       'a warm browser still gets exactly two messages -- the plate, then the '
+           .. 'hint swapping on the press', ('%d'):format(#warm))
+
+    local warmOld = approach(oldGuard, 1, 8)
+    ok(#warmOld == #warm,
+       'which is what the old guard did on a warm browser, unchanged',
+       ('%d vs %d'):format(#warmOld, #warm))
+
+    -- ═══ 4. HOLDING THE KEY IS STILL ONE MESSAGE, NOT FORTY ═══
+    --
+    -- The dedupe is the reason this plate is cheap, and `sent` must not turn it
+    -- off. Sixty frames of a held key after the swap is one message.
+    local held = approach(BR.FuelSolve.plateOwes, 1, 3, 60)
+    ok(#held == 2,
+       'and fifty-seven more frames of a held key send nothing at all',
+       ('%d messages across 60 frames'):format(#held))
+
+    -- ═══ 5. THE HIDDEN-PLATE RULE CAME ACROSS INTACT ═══
+    --
+    -- "A hidden plate has no label, so `fueling` is not compared while hidden --
+    -- otherwise letting go of the key off a forecourt would send a second hide
+    -- message for a plate that is already down." The original guard's wording;
+    -- this is the assertion that it still holds after the move.
+    ok(BR.FuelSolve.plateOwes(false, false, false, true, true) == false,
+       'a plate that is already down owes nothing when the key comes up')
+    ok(BR.FuelSolve.plateOwes(false, false, true, false, true) == true,
+       'but a plate that is up owes a hide')
+    ok(BR.FuelSolve.plateOwes(true, true, true, false, true) == true,
+       'and a plate that is up owes the hint swap')
+    ok(BR.FuelSolve.plateOwes(true, false, true, false, false) == true,
+       'and a payload the browser never heard is still owed, however many '
+           .. 'frames ago it was asked for')
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════

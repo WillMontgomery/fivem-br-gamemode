@@ -116,6 +116,31 @@ local promptShown = false
 --- them into one variable is how the switch stops being sent.
 local promptFueling = false
 
+--- Did the last payload reach a browser that was actually up?
+---
+--- ═══ THE TWO ABOVE RECORD WHAT WE ASKED FOR. THIS RECORDS WHAT LANDED ═══
+---
+---   "There's a bug in the fuel stations where coming up to the pumps the first
+---    time no DUI shows until you press {interactkey}."   -- owner, 2026-09-12
+---
+--- A DUI is a whole CEF instance and IsDuiAvailable is FALSE for a beat after
+--- CreateDui; a message sent inside that beat is dropped WITHOUT A WORD
+--- (client/dui.lua, and client/bus.lua's jump prompt paid for the same lesson).
+--- On the first approach of a session this file is normally the thing that
+--- CREATES the shared `lootprompt` browser -- `promptPage()` below is reached
+--- from nowhere but here and the draw -- so the very first "show the plate"
+--- payload is handed to a browser that does not exist yet, and the two fields
+--- above then latch, so it is never re-sent. Pressing interact swaps the hint
+--- to "Currently fueling", which is the only other state this plate has; that
+--- second message lands, and the plate appears. Verbatim the report.
+---
+--- STARTS true, WHICH IS NOT A FIDDLE: the plate starts down and the page starts
+--- blank, so the screen already agrees with the two fields above and nothing is
+--- owed. It is what keeps a driver who never goes near a station from building
+--- a CEF instance -- `BR.FuelSolve.plateOwes` answers false for them on every
+--- frame and `promptPage()` is never reached.
+local promptSent = true
+
 --- Last time a pump request went out, for the send cadence.
 local pumpedAt = 0
 
@@ -817,13 +842,37 @@ local PROMPT_HINT_FUELING = 'Currently fueling'
 local function setPrompt(show, fueling)
     show = (show == true)
     fueling = (fueling == true)
-    -- A HIDDEN PLATE HAS NO LABEL, so `fueling` is not compared while hidden --
-    -- otherwise letting go of the key off a forecourt would send a second hide
-    -- message for a plate that is already down.
-    if promptShown == show and (not show or promptFueling == fueling) then return end
-    promptShown, promptFueling = show, fueling
+    -- THE WHOLE GUARD IS BR.FuelSolve.plateOwes' NOW, INCLUDING THE PART THAT
+    -- WAS ALREADY RIGHT. The hidden-plate rule ("a hidden plate has no label, so
+    -- `fueling` is not compared while hidden") moved there verbatim; what is NEW
+    -- is the third term, `promptSent`, which is the bug. Both halves live in one
+    -- pure function because this file cannot be loaded by any suite in the tree,
+    -- so a rule left here is a rule only a string search can look at -- and a
+    -- string search cannot replay the frames this fault is made of.
+    if not BR.FuelSolve.plateOwes(show, fueling,
+                                  promptShown, promptFueling, promptSent) then
+        return
+    end
 
     local page = promptPage()
+
+    -- ═══ AND THE ANSWER IS RECORDED AGAINST WHAT THE BROWSER CAN HEAR ═══
+    --
+    -- BR.Dui.ready is the false->true edge dui.lua already calls "the one moment
+    -- a message to this page is guaranteed to land" -- it is where that file
+    -- pushes the text-size preference to a new browser, for this exact reason.
+    -- Asking it here costs one latched boolean per frame and turns a dropped
+    -- payload into a retry on the next one: `promptSent` stays false, plateOwes
+    -- keeps answering true, and the first frame the CEF instance answers, the
+    -- plate goes up with its words on it.
+    --
+    -- THE DRAW BELOW IS GATED ON THE SAME QUESTION (BR.Dui.drawWorld's first
+    -- line), so there is no frame where a blank texture is put on screen while
+    -- this waits.
+    local ready = BR.Dui.ready(page)
+    promptShown, promptFueling, promptSent = show, fueling, ready
+    if not ready then return end
+
     if not show then
         BR.Dui.send(page, { t = 'prompt', show = false })
         return

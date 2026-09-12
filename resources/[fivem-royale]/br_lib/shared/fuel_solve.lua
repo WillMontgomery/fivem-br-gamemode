@@ -362,6 +362,57 @@ function BR.FuelSolve.atPump(vx, vy, px, py, radius)
     return d <= radius, d
 end
 
+--- Does the pump plate still owe the browser a message?
+---
+--- ═══ THE REPORT ═══
+---
+---   "There's a bug in the fuel stations where coming up to the pumps the first
+---    time no DUI shows until you press {interactkey}."   -- owner, 2026-09-12
+---
+--- ═══ WHY A PREDICATE RATHER THAN THREE LINES IN THE FRAME LOOP ═══
+---
+--- Because the three lines in the frame loop are what shipped the bug, and
+--- nothing could see them. client/fuel.lua cannot be loaded by any suite in this
+--- tree (tools/test_fuel.lua's `prompt.copy` block says so at length), so the
+--- ONLY rule that decided whether a player ever saw the plate was asserted by a
+--- string search for its own source text. A string search cannot replay a
+--- sequence of frames, and a sequence of frames is the entire fault.
+---
+--- ═══ THE FAULT, IN ONE SENTENCE ═══
+---
+--- The plate is SENT ON CHANGE, and on the first approach of a session that
+--- change happens on the same frame the shared `lootprompt` browser is created
+--- -- so SendDuiMessage is handed to a CEF instance that has not started,
+--- dropped without a word, and the state latch guarantees it is never re-sent.
+--- The page renders its own default, which is blank. Pressing interact moves the
+--- hint from "Hold to refuel" to "Currently fueling", which is the ONLY other
+--- state change this plate has, and that second message lands on a browser that
+--- has had a second to come up. Hence "until you press interact".
+---
+--- SO `sent` IS A THIRD TERM AND NOT A TIDY-UP. The two state fields record what
+--- the plate was last ASKED to say; `sent` records whether that payload reached
+--- a browser that was up. Without it the two are conflated, and a payload that
+--- went into the void is indistinguishable from one on the screen.
+---
+--- @param show boolean         what the plate should be doing now
+--- @param fueling boolean      ...and which of its two hints
+--- @param sentShow boolean     what it was last asked to do...
+--- @param sentFueling boolean
+--- @param sent boolean         ...and whether the browser was up to hear it
+--- @return boolean owes        true when a message has to go out
+function BR.FuelSolve.plateOwes(show, fueling, sentShow, sentFueling, sent)
+    -- A PAYLOAD NOBODY HEARD IS A PAYLOAD STILL OWED, and this is the line the
+    -- bug did not have. It is FIRST because it outranks the state comparison:
+    -- the state is already what we want, and the page still does not know.
+    if sent ~= true then return true end
+    if sentShow ~= show then return true end
+    -- A HIDDEN PLATE HAS NO HINT, so `fueling` is not compared while hidden --
+    -- otherwise letting go of the key off a forecourt would owe a second hide
+    -- for a plate that is already down. The original guard's reasoning, kept.
+    if show == true and sentFueling ~= fueling then return true end
+    return false
+end
+
 -- ═══════════════════════════════════════════════════════════════════════════
 -- WHO MAY SEE THE STATION BLIPS, WHICH IS NOT ARITHMETIC AND IS HERE ANYWAY
 -- ═══════════════════════════════════════════════════════════════════════════
