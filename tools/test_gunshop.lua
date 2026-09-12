@@ -218,8 +218,8 @@ do
             authored[#authored + 1] = 'AmmoPickups.' .. tostring(pool)
         end
     end
-    ok(#BR.Config.AmmoOrder == 7,
-        'all seven ammo pools were actually looked at, rather than a loop that '
+    ok(#BR.Config.AmmoOrder == 6,
+        'all six ammo pools were actually looked at, rather than a loop that '
             .. 'never ran agreeing with the claim',
         #BR.Config.AmmoOrder)
     ok(#authored == 0,
@@ -371,10 +371,10 @@ do
     ok(n[BR.Rarity.LEGENDARY] == 4, 'four legendary guns', n[BR.Rarity.LEGENDARY])
 
     local ammo = S.ofKind(rows, BR.ItemKind.AMMO)
-    ok(#ammo == #BR.Config.AmmoOrder and #ammo == 7,
-        'and all seven ammo pools -- BR.Config.AmmoOrder, in its order', #ammo)
+    ok(#ammo == #BR.Config.AmmoOrder and #ammo == 6,
+        'and all six ammo pools -- BR.Config.AmmoOrder, in its order', #ammo)
 
-    ok(#rows == 25 + 7, 'thirty-two rows in total', #rows)
+    ok(#rows == 25 + 6, 'thirty-one rows in total', #rows)
 
     -- ORDER IS THE SOURCE TABLES', so anything that renders this list gets a
     -- stable order without sorting it. Asserted by walking BR.Config.Weapons and
@@ -490,7 +490,7 @@ do
 end
 
 -- ---------------------------------------------------------------------------
-describe('ammo: cheap, all seven pools, and one ground pickup per purchase')
+describe('ammo: cheap, all six pools, and one ground pickup per purchase')
 -- ---------------------------------------------------------------------------
 --
 -- "ammo should be cheap (20-50 Volts)"
@@ -1258,7 +1258,7 @@ do
     do
         local st = S.rollStock(G, shelf, fixed(1))
         local ammo = S.ofKind(shelf, BR.ItemKind.AMMO)
-        ok(#ammo == 7, 'all seven ammo pools are on the shelf', #ammo)
+        ok(#ammo == 6, 'all six ammo pools are on the shelf', #ammo)
         local counted = 0
         for _, r in ipairs(ammo) do
             if st[r.id] ~= nil then counted = counted + 1 end
@@ -1588,7 +1588,7 @@ do
     local a = select(1, G.build())
     local b = select(1, G.build())
     ok(a == b, 'the client and the server share one catalogue table')
-    ok(#a == 32, 'and a second call does not double it', #a)
+    ok(#a == 31, 'and a second call does not double it', #a)
 end
 
 -- ---------------------------------------------------------------------------
@@ -3876,10 +3876,10 @@ do
         ok(#textured == 0,
             'no row on the shelf carries a streamed texture at all',
             #textured > 0 and table.concat(textured, ', ') or nil)
-        ok(enums == 25 + 7,
-            ('and all %d rows -- 25 guns and 7 ammo -- wear a built-in '
+        ok(enums == 25 + 6,
+            ('and all %d rows -- 25 guns and 6 ammo -- wear a built-in '
              .. 'BadgeStyle enum, which is the half that inverts')
-                :format(25 + 7),
+                :format(25 + 6),
             enums)
 
         -- ...AND THE STREAMER IS NEVER ASKED. `requestIconDicts` returns on the
@@ -4407,11 +4407,12 @@ do
         -- empties `{otherguntypes}`, and "As well as:" with nothing after it is
         -- the same fault from the other end.
         --
-        -- HEAVY IS THREE GUNS NOW, NOT TWELVE. It held the snipers and the
-        -- machine guns until 2026-09-11; since the owner's ruling it is the three
-        -- airdrop launchers and nothing else, so the count is pinned at 3 -- and
-        -- pinned deliberately, because "the whole pool is carried" is only an
-        -- interesting state if the number it is checked against is the real one.
+        -- HEAVY IS SEVEN GUNS: the four marksman and sniper rifles and the three
+        -- airdrop launchers. It was twelve before 2026-09-11, three for the one
+        -- day it meant explosives alone, and seven since the owner asked for the
+        -- rockets to go back into a capped category (2026-09-12). The count is
+        -- pinned to a literal deliberately, because "the whole pool is carried" is
+        -- only an interesting state if the number it is checked against is real.
         local allHeavy = S.ammoUsers(BR.AmmoType.HEAVY, ammoSrc)
         local heavyIds = {}
         for _, list in ipairs(ammoSrc) do
@@ -4419,20 +4420,20 @@ do
                 if w.ammo == BR.AmmoType.HEAVY then heavyIds[#heavyIds + 1] = w.id end
             end
         end
-        ok(#heavyIds == #allHeavy and #heavyIds == 3,
-            'three guns in the shipped tables take HEAVY, and all three are '
-                .. 'airdrop-only',
+        ok(#heavyIds == #allHeavy and #heavyIds == 7,
+            'seven guns in the shipped tables take HEAVY -- four scoped rifles '
+                .. 'off the shelf and three airdrop-only launchers',
             ('%d ids, %d labels'):format(#heavyIds, #allHeavy))
 
         -- THE SANDBOX STILL ASKS THE SOLVER DIRECTLY rather than filling a bag.
-        -- Three launchers would now fit in five slots, unlike the twelve this was
-        -- written against -- but a bag stuffed with airdrop exclusives is not a
-        -- state a player reaches either, and the property under test belongs to
-        -- ammoUsersSplit rather than to the row plumbing.
+        -- Seven will not fit in five slots, so this is not a state a player
+        -- reaches -- but the property under test belongs to ammoUsersSplit rather
+        -- than to the row plumbing, and the empty-second-half branch has to be
+        -- reachable from somewhere or it is never exercised at all.
         local hAll = {}
         for _, id in ipairs(heavyIds) do hAll[id] = true end
         local hMine, hRest = S.ammoUsersSplit(BR.AmmoType.HEAVY, ammoSrc, hAll)
-        ok(#hMine == 3 and #hRest == 0,
+        ok(#hMine == 7 and #hRest == 0,
             'with every one of them in hand the other half is empty',
             ('%d + %d'):format(#hMine, #hRest))
         local onlyHead = S.ammoDesc(G, BLUE .. table.concat(hMine, ', ') .. RESET,
@@ -4617,8 +4618,8 @@ do
                 guns = guns + 1
             end
         end
-        ok(guns == 25 and ammos == 7 and #silent == 0,
-            'all 25 weapon rows and all 7 ammo rows say something',
+        ok(guns == 25 and ammos == 6 and #silent == 0,
+            'all 25 weapon rows and all 6 ammo rows say something',
             #silent > 0 and ('silent: ' .. table.concat(silent, ', '))
                 or ('%d guns, %d ammo'):format(guns, ammos))
 

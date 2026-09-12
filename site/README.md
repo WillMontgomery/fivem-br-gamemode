@@ -69,7 +69,7 @@ manual. What is currently baked in, and where it comes from:
 | Consumable amounts, caps and times | `br_lib/config/loot.lua` → `BR.Config.Consumables` |
 | Storm phases and damage per second | `br_lib/config/storm.lua` → `phases` |
 | Default keybinds | `br_core/client/keybinds.lua` |
-| Seven ammo pools | `br_lib/shared/enums.lua` → `BR.AmmoType` |
+| Six ammo pools | `br_lib/shared/enums.lua` → `BR.AmmoType` |
 | 48 players, squads of 4 | `br_lib/config/match.lua` |
 | XP per event, and the level curve | `br_lib/shared/xp.lua` → `BR.Xp.Config` |
 | Volts per event, and the worked totals | `br_lib/config/market.lua` → `BR.Config.Market.payout` |

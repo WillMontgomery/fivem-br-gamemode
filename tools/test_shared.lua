@@ -3169,30 +3169,32 @@ end
 
 describe('ammo.pools')
 do
-    -- ═══ SEVEN POOLS SINCE 2026-09-11, AND HEAVY IS THE EXPLOSIVE ONE ═══
+    -- ═══ SIX POOLS SINCE 2026-09-12, AND HEAVY IS THE LONG GUNS AND THE
+    --     LAUNCHERS TOGETHER ═══
     --
-    -- Owner: "move the minigun off heavy and move explosives to heavy". Offered
-    -- three shapes he took the strictest -- heavy is the explosives and nothing
-    -- else -- so nine weapons changed pool in one edit.
+    -- There were seven for one day. Owner, having played it: "Can we put rockets
+    -- into any other category that has limited carry quantity?" Heavy is that
+    -- category, so SNIPER is deleted and its four rifles rejoin the three
+    -- launchers there.
     --
     -- MEMBERSHIP IS PINNED WEAPON BY WEAPON RATHER THAN BY COUNTING, because the
     -- failure this is written against is a single gun left behind in the pool it
-    -- used to be in. A count of three in HEAVY would be satisfied by the wrong
-    -- three, and a sniper still drawing rockets is invisible until somebody
-    -- reloads one in a match.
+    -- used to be in. A count of seven in HEAVY would be satisfied by the wrong
+    -- seven, and a sniper still drawing a pool nothing rolls is invisible until
+    -- somebody tries to reload one in a match.
     local moved = {
-        { 'marksmanrifle',   BR.AmmoType.SNIPER },
-        { 'sniperrifle',     BR.AmmoType.SNIPER },
-        { 'marksmanmk2',     BR.AmmoType.SNIPER },
-        { 'heavysniper',     BR.AmmoType.SNIPER },
+        { 'marksmanrifle',   BR.AmmoType.HEAVY  },
+        { 'sniperrifle',     BR.AmmoType.HEAVY  },
+        { 'marksmanmk2',     BR.AmmoType.HEAVY  },
+        { 'heavysniper',     BR.AmmoType.HEAVY  },
+        { 'rpg',             BR.AmmoType.HEAVY  },
+        { 'grenadelauncher', BR.AmmoType.HEAVY  },
+        { 'railgun',         BR.AmmoType.HEAVY  },
         { 'mg',              BR.AmmoType.LMG    },
         { 'gusenberg',       BR.AmmoType.LMG    },
         { 'combatmg',        BR.AmmoType.LMG    },
         { 'combatmgmk2',     BR.AmmoType.LMG    },
         { 'minigun',         BR.AmmoType.LMG    },
-        { 'rpg',             BR.AmmoType.HEAVY  },
-        { 'grenadelauncher', BR.AmmoType.HEAVY  },
-        { 'railgun',         BR.AmmoType.HEAVY  },
     }
     local wrongPool = {}
     for _, row in ipairs(moved) do
@@ -3206,11 +3208,12 @@ do
         end
     end
     ok(#wrongPool == 0,
-        'all twelve weapons the 2026-09-11 split touched draw their new pool',
+        'every weapon in the two specialist pools draws the pool it should',
         table.concat(wrongPool, '; '))
 
-    -- AND HEAVY HOLDS NOTHING ELSE, which is the half of his ruling a membership
-    -- list cannot state on its own: the three launchers are the WHOLE pool.
+    -- AND HEAVY HOLDS THOSE SEVEN AND NOTHING ELSE, which is the half a
+    -- membership list cannot state on its own. Written out by id rather than
+    -- counted for the same reason as above.
     local inHeavy = {}
     for _, list in ipairs({ BR.Config.Weapons, BR.Config.AirdropWeapons }) do
         for _, w in ipairs(list) do
@@ -3218,13 +3221,15 @@ do
         end
     end
     table.sort(inHeavy)
-    ok(table.concat(inHeavy, ',') == 'grenadelauncher,railgun,rpg',
-        'heavy is the explosive pool and nothing else is in it',
-        table.concat(inHeavy, ','))
+    ok(table.concat(inHeavy, ',') == 'grenadelauncher,heavysniper,marksmanmk2,'
+        .. 'marksmanrifle,railgun,rpg,sniperrifle',
+        'heavy is the four scoped rifles and the three launchers, and nothing '
+            .. 'else is in it', table.concat(inHeavy, ','))
 
     -- ...and from the other direction. `explosive` is a VALIDATOR flag and the
-    -- pool is a LOOT fact; his ruling is that those two sets are now the same one,
-    -- so a launcher added later without a pool change fails here.
+    -- pool is a LOOT fact. They are no longer the same set -- heavy holds four
+    -- weapons that are not explosive -- but every explosive is still IN heavy, so
+    -- a launcher added later without a pool change still fails here.
     local offPool = {}
     for _, list in ipairs({ BR.Config.Weapons, BR.Config.AirdropWeapons }) do
         for _, w in ipairs(list) do
@@ -3236,24 +3241,37 @@ do
     ok(#offPool == 0, 'and every explosive in the weapon tables draws heavy',
         table.concat(offPool, ', '))
 
-    -- HIS CAP, AND THE TWO THAT DELIBERATELY DID NOT MOVE. 24 is the owner's
-    -- ("let's change the max heavy ammo to 24 please"); 60 twice is what heavy
-    -- itself was the day before, so the snipers and the machine guns keep the
-    -- economy they already had and the explosives are the only class that moved.
+    -- HIS CAP, UNCHANGED, NOW BINDING FOUR MORE WEAPONS. 24 is the owner's own
+    -- ("let's change the max heavy ammo to 24 please") and it was set on
+    -- 2026-09-11, the one day heavy meant rockets alone. The merge back did not
+    -- touch the number, so the scoped rifles that carried 60 yesterday carry 24
+    -- today -- two to four magazines at their clip sizes. THAT IS A REAL CUT AND
+    -- IT IS FLAGGED IN config/weapons.lua RATHER THAN SMOOTHED OVER HERE: 24 is
+    -- his to revisit now that it governs something else.
     ok(BR.Config.AmmoCaps[BR.AmmoType.HEAVY] == 24,
-        'the heavy cap is his 24', BR.Config.AmmoCaps[BR.AmmoType.HEAVY])
-    ok(BR.Config.AmmoCaps[BR.AmmoType.SNIPER] == 60,
-        'sniper inherits heavy\'s old 60 unchanged',
-        BR.Config.AmmoCaps[BR.AmmoType.SNIPER])
+        'the heavy cap is still his 24, and it is what the snipers live under now',
+        BR.Config.AmmoCaps[BR.AmmoType.HEAVY])
     ok(BR.Config.AmmoCaps[BR.AmmoType.LMG] == 60,
-        'and so does lmg', BR.Config.AmmoCaps[BR.AmmoType.LMG])
+        'and lmg is 60, which is what it has always been',
+        BR.Config.AmmoCaps[BR.AmmoType.LMG])
 
-    -- 12 A PICKUP ON ALL THREE, which is also what one purchase buys: no row in
-    -- config/gunshop.lua authors a `bundle`, so the counter reads this number.
-    -- Owner: "each loot pickup should be 12 rounds. Same for purchasing - 12
-    -- rounds per purchase."
-    for _, pool in ipairs({ BR.AmmoType.HEAVY, BR.AmmoType.SNIPER,
-                            BR.AmmoType.LMG }) do
+    -- AND SNIPER IS GONE EVERYWHERE, not merely absent from AmmoOrder. A cap or a
+    -- pickup left behind under a deleted key is dead config that reads as live.
+    local ghost = {}
+    for name, tbl in pairs({ AmmoCaps = BR.Config.AmmoCaps,
+                             AmmoPickups = BR.Config.AmmoPickups,
+                             AmmoWeights = BR.Config.AmmoWeights }) do
+        if tbl['sniper'] ~= nil then ghost[#ghost + 1] = name end
+    end
+    ok(#ghost == 0 and BR.AmmoType.SNIPER == nil,
+        'the sniper pool is deleted from the enum and from every pool table, '
+            .. 'not just from the order', table.concat(ghost, ', '))
+
+    -- 12 A PICKUP ON BOTH SPECIALIST POOLS, which is also what one purchase buys:
+    -- no row in config/gunshop.lua authors a `bundle`, so the counter reads this
+    -- number. Owner: "each loot pickup should be 12 rounds. Same for purchasing -
+    -- 12 rounds per purchase."
+    for _, pool in ipairs({ BR.AmmoType.HEAVY, BR.AmmoType.LMG }) do
         local def = BR.Config.AmmoPickups[pool]
         ok(def ~= nil and def.amount == 12,
             ('%s pays 12 rounds a pickup'):format(pool),
@@ -3262,26 +3280,38 @@ do
 
     -- THE PICKUP PROPS ARE REUSED AND NOT NEW. A model that is not already in
     -- this table would have to be streamed, and nothing streams it.
+    --
+    -- AND THE POOLS NOW DIVIDE EVENLY ACROSS THEM, which is the owner's second
+    -- point: "we also have a limited number of ammo props for loot drops". Seven
+    -- pools over three models meant heavy, sniper and MG rounds were one object on
+    -- the ground under three names. Six over three is two each.
     local props = {}
     for _, pool in ipairs(BR.Config.AmmoOrder) do
-        props[BR.Config.AmmoPickups[pool].prop] = true
+        local p = BR.Config.AmmoPickups[pool].prop
+        props[p] = (props[p] or 0) + 1
     end
-    local distinct = 0
-    for _ in pairs(props) do distinct = distinct + 1 end
-    ok(distinct == 3,
-        'the seven pools share the three ammo-box props that were already '
-            .. 'streamed, so the split introduced no new model', distinct)
+    local distinct, lopsided = 0, {}
+    for prop, n in pairs(props) do
+        distinct = distinct + 1
+        if n ~= 2 then lopsided[#lopsided + 1] = ('%s x%d'):format(prop, n) end
+    end
+    ok(distinct == 3, 'the six pools still use only the three ammo-box props '
+        .. 'that were already streamed, so nothing new has to load', distinct)
+    ok(#lopsided == 0,
+        'and they divide two pools per prop, where seven pools put three on one',
+        table.concat(lopsided, ', '))
 
     -- ═══ A POOL VALUE MAY NOT BE AN ITEM ID, AND 'mg' WAS ONE CHARACTER AWAY ═══
     --
     -- An ammo stack's `item` IS THE BARE POOL STRING -- shared/loot_gen.lua and
     -- server/inventory.lua both set it that way -- and every dispatch that
-    -- resolves an item id asks BR.Config.WeaponById BEFORE BR.Config.AmmoPickups:
-    -- server/loot.lua's labelOf, pluralOf and adminStack, and server/debug.lua's
-    -- brgive. So a belt pool valued 'mg' would put a box of rounds on the floor
-    -- carrying WEAPON_MG's own id, and those lookups would hand back a machine
-    -- gun. It is 'lmg' for that reason, and this is what stops anybody shortening
-    -- it back.
+    -- resolves a BARE id asks BR.Config.WeaponById BEFORE BR.Config.AmmoPickups:
+    -- server/debug.lua's brgive and brarm, and server/loot.lua's devStack. So a
+    -- belt pool valued 'mg' would put a box of rounds on the floor carrying
+    -- WEAPON_MG's own id, and those lookups would hand back a machine gun. It is
+    -- 'lmg' for that reason, and this is what stops anybody shortening it back --
+    -- INCLUDING on 2026-09-12, when the pool's LABEL became 'Belt Ammo' and the
+    -- obvious follow-up would have been to re-key it to match.
     --
     -- ⚠ 'smg' ALREADY COLLIDES, AND IT IS NOT NEW. BR.AmmoType.SMG is 'smg' and
     -- BR.Config.Weapons carries `{ id = 'smg', name = 'WEAPON_SMG' }`. The
@@ -3334,12 +3364,13 @@ do
         'and the one known collision is still exactly the shipped smg one',
         table.concat(known, ', '))
 
-    -- THE TWO POOLS THIS CHANGE ADDED ARE CLEAN, stated separately so the ratchet
-    -- above can never be what is carrying them.
-    ok(BR.Config.WeaponById[BR.AmmoType.LMG] == nil
-       and BR.Config.WeaponById[BR.AmmoType.SNIPER] == nil,
-        'the two new pool values are not item ids -- which is the whole reason '
-            .. 'the belt pool is "lmg" and not "mg"')
+    -- THE BELT POOL'S VALUE IS CLEAN, stated separately so the ratchet above can
+    -- never be what is carrying it. This is the assertion that survived the pool
+    -- being renamed on the shelf: the label moved, the value did not, and this is
+    -- the reason it did not.
+    ok(BR.Config.WeaponById[BR.AmmoType.LMG] == nil,
+        'the belt pool value is not an item id -- which is the whole reason it is '
+            .. '"lmg" and not "mg", whatever the shelf calls it')
 
     -- THE THREE POOL TABLES MUST AGREE ABOUT WHICH POOLS EXIST. A pool in the
     -- order with no cap can never be held; one with no pickup rolls a stack with
@@ -3351,7 +3382,8 @@ do
     end
     ok(#gaps == 0, 'every pool in AmmoOrder has both a cap and a pickup',
         table.concat(gaps, ', '))
-    ok(#BR.Config.AmmoOrder == 7, 'seven pools, not five', #BR.Config.AmmoOrder)
+    ok(#BR.Config.AmmoOrder == 6, 'six pools, not seven and not five',
+        #BR.Config.AmmoOrder)
 end
 
 -- ----------------------------------------------------------- ammo.weights ---
@@ -3361,14 +3393,15 @@ do
     -- ═══ THE FOUR COMMON POOLS KEEP THE SHARE THEY ALREADY HAD ═══
     --
     -- BR.RollLootStack used to pick with rng:pick over BR.Config.AmmoOrder, which
-    -- is UNIFORM: five pools, 20% each. Splitting to seven on 2026-09-11 would
-    -- have taken every pool to 14.3% -- measured at 14.1% for light over 70k
-    -- draws -- making pistol, SMG, rifle and shotgun ammo 29% rarer on the floor
-    -- as a pure side effect of a change about explosives. Nobody asked for that.
+    -- is UNIFORM: five pools, 20% each. Any change to the POOL COUNT moves every
+    -- pool's share under a uniform draw -- seven pools is 14.3% each, six is
+    -- 16.7% -- so pistol, SMG, rifle and shotgun ammo would get rarer or commoner
+    -- on the floor every time somebody reorganizes the specialist pools. Nobody
+    -- has ever asked for that, in either direction.
     --
-    -- THIS IS THE ASSERTION THAT WOULD HAVE CAUGHT IT, and it fails in both
-    -- directions: on a uniform draw over seven pools, and on any future edit that
-    -- adds a pool without paying for it out of an existing share.
+    -- THIS IS THE ASSERTION THAT HOLDS THEM, and it fails both ways: on a uniform
+    -- draw over any number of pools, and on any future edit that adds or removes
+    -- a pool without paying for it out of the specialist shares.
     local N = 70000
     local rng, seen = BR.Rng(4242), {}
     for _, p in ipairs(BR.Config.AmmoOrder) do seen[p] = 0 end
@@ -3402,19 +3435,44 @@ do
             ('%.4f'):format(seen[p] / N))
     end
 
-    -- ⚠ EXPLOSIVE AMMO IS THE RAREST OF THE SEVEN, AND THE FIGURES BEHIND THAT
-    -- ARE AN ASSUMPTION RATHER THAN THE OWNER'S. sniper 8 / lmg 8 / heavy 4 is a
-    -- guess at how heavy's old 20 should divide -- see the note in
-    -- config/loot.lua -- so this pins the ORDER it was chosen for and not the
-    -- numbers, which he is free to tune without editing a test.
-    ok(seen[BR.AmmoType.HEAVY] < seen[BR.AmmoType.SNIPER]
-       and seen[BR.AmmoType.HEAVY] < seen[BR.AmmoType.LMG],
-        'explosive rounds are rarer on the floor than sniper or MG rounds, '
-            .. 'because the only three weapons that take them are '
-            .. 'airdrop-exclusive',
-        ('heavy %d, sniper %d, lmg %d'):format(
-            seen[BR.AmmoType.HEAVY], seen[BR.AmmoType.SNIPER],
-            seen[BR.AmmoType.LMG]))
+    -- ⚠ THE TWO SPECIALIST SHARES ARE AN ASSUMPTION RATHER THAN THE OWNER'S.
+    -- heavy 12 / lmg 8 is what sniper 8 / lmg 8 / heavy 4 becomes when sniper's
+    -- four weapons move into heavy: the same ammunition is rolled at the same
+    -- rate under one name instead of two. See the note in config/loot.lua. So
+    -- this pins the PROPERTY the numbers were chosen for and not the numbers,
+    -- which he is free to tune without editing a test.
+    local rarest = {}
+    for _, common in ipairs({ BR.AmmoType.LIGHT, BR.AmmoType.SMG,
+                              BR.AmmoType.MEDIUM, BR.AmmoType.SHELLS }) do
+        for _, spec in ipairs({ BR.AmmoType.HEAVY, BR.AmmoType.LMG }) do
+            if seen[spec] >= seen[common] then
+                rarest[#rarest + 1] = ('%s >= %s'):format(spec, common)
+            end
+        end
+    end
+    ok(#rarest == 0,
+        'both specialist pools are rarer on the floor than every common one, '
+            .. 'which is what the weighting is for',
+        table.concat(rarest, ', '))
+
+    -- AND HEAVY CARRIES WHAT SNIPER USED TO. The merge is only honest if the guns
+    -- that moved kept their supply: sniper drew 8 of 100 and heavy drew 4, so
+    -- heavy draws 12 now and the floor pays the scoped rifles exactly what it did.
+    ok(BR.Config.AmmoWeights[BR.AmmoType.HEAVY] == 12
+       and BR.Config.AmmoWeights[BR.AmmoType.LMG] == 8,
+        'heavy carries its own 4 plus the 8 that was sniper\'s, and lmg is '
+            .. 'untouched at 8',
+        ('heavy %s, lmg %s'):format(
+            tostring(BR.Config.AmmoWeights[BR.AmmoType.HEAVY]),
+            tostring(BR.Config.AmmoWeights[BR.AmmoType.LMG])))
+
+    local weightTotal = 0
+    for _, p in ipairs(BR.Config.AmmoOrder) do
+        weightTotal = weightTotal + (BR.Config.AmmoWeights[p] or 0)
+    end
+    ok(weightTotal == 100,
+        'and the rows still sum to 100, so each one reads as a percentage',
+        weightTotal)
 
     -- ═══ DETERMINISM, WHICH IS THE HARD CONSTRAINT ═══
     --
@@ -3452,9 +3510,11 @@ do
     ok(p1:next() == p2:next(),
         'a weighted pool draw burns the same single rng draw a uniform pick did')
 
-    -- AND THE NEW POOLS ARE ACTUALLY IN A GENERATED LAYOUT. 'loot.gen' asserts
-    -- the byte-identical replay; this is what stops that passing over ammunition
-    -- nothing can roll.
+    -- AND EVERY POOL IS ACTUALLY IN A GENERATED LAYOUT. 'loot.gen' asserts the
+    -- byte-identical replay; this is what stops that passing over ammunition
+    -- nothing can roll. It is also what catches a DELETED pool that something
+    -- still hands out, which is the failure mode of the 2026-09-12 merge rather
+    -- than of the split that preceded it.
     local layout = BR.BuildLootLayout(2026)
     local found = {}
     for _, e in ipairs(layout) do
@@ -3463,13 +3523,21 @@ do
             if s.kind == BR.ItemKind.AMMO then found[s.item] = true end
         end
     end
-    local absent = {}
+    local absent, stray = {}, {}
+    local live = {}
     for _, p in ipairs(BR.Config.AmmoOrder) do
+        live[p] = true
         if not found[p] then absent[#absent + 1] = p end
     end
-    ok(#absent == 0,
-        'a generated layout contains a stack of every pool, the two new ones '
-            .. 'included', table.concat(absent, ', '))
+    for item in pairs(found) do
+        if not live[item] then stray[#stray + 1] = item end
+    end
+    ok(#absent == 0, 'a generated layout contains a stack of every pool',
+        table.concat(absent, ', '))
+    ok(#stray == 0,
+        'and no stack of a pool that no longer exists -- a deleted pool still on '
+            .. 'the floor is a box nothing can pick up',
+        table.concat(stray, ', '))
 end
 
 -- ------------------------------------------------------------------- loot ---

@@ -114,28 +114,53 @@ BR.ItemKind = {
 --- Ammo pools. Mapped onto GTA's native ammo groups so the engine tracks counts
 --- for us rather than us shadowing them.
 ---
---- SEVEN SINCE 2026-09-11, AND HEAVY IS THE EXPLOSIVE POOL. Owner: "move the
---- minigun off heavy and move explosives to heavy". Offered three shapes he took
---- the strictest -- heavy is the explosives and nothing else -- so the snipers
---- and the belt-fed guns that used to share it have pools of their own. The
---- layout cost of two new pools is real and was accepted on purpose; the block
---- above BR.Config.AirdropWeapons has it.
+--- ═══ SIX SINCE 2026-09-12, AND HEAVY IS THE LONG GUNS AND THE LAUNCHERS ═══
+---
+--- There were seven for one day. The owner played that build and asked two
+--- questions, and both of them are answered here:
+---
+---   "Can we put rockets into any other category that has limited carry
+---    quantity?"
+---   "Why do we have SMG ammo and MG ammo as separate categories?"
+---
+--- ...and he added that we have a limited number of ammo props for loot drops,
+--- which the seven-pool shape had already run into: seven pools were sharing
+--- THREE box models, so heavy, sniper and MG rounds were the same object on the
+--- ground under three different names. Six pools over three models is two each.
+---
+--- SO `SNIPER` IS GONE. Its four marksman and sniper rifles are back in HEAVY
+--- with the three launchers, which is where they were before 2026-09-11, and
+--- HEAVY is those seven weapons. IT IS NO LONGER "THE EXPLOSIVE POOL" and no
+--- comment in this repo should say that it is; the ones that did have been cut
+--- rather than annotated. `explosive` is still a validator flag on the three
+--- launchers and it no longer describes a pool.
+---
+--- THE BELT POOL IS RENAMED ON THE SHELF AND NOWHERE ELSE. 'MG Ammo' on the
+--- floor and 'MG' in the inventory strip read one letter from 'SMG' standing
+--- next to them, which is his second question; they are 'Belt Ammo' and 'Belt'
+--- now. ⚠ THOSE TWO STRINGS ARE NOT HIS WORD -- he asked for the clash to go and
+--- did not name the replacement. BR.Config.AmmoPickups carries the flag.
+---
+--- THE KEY AND THE VALUE DID NOT MOVE WITH THE LABEL, and that is the decision
+--- rather than an inconsistency. A pool VALUE has a hard constraint the caption
+--- does not (see below), 'lmg' is verified clean against it, and churning it to
+--- match a word nothing reads would put that at risk for nothing.
 ---
 --- THE BELT POOL IS 'lmg' AND MAY NEVER BE SHORTENED TO 'mg'. config/weapons.lua
 --- defines a weapon with `id = 'mg'`, and an ammo stack's `item` IS THE BARE POOL
 --- STRING (shared/loot_gen.lua, server/inventory.lua). A pool valued 'mg' would
 --- therefore put a box of rounds on the floor carrying WEAPON_MG's own id, and
---- every dispatch that asks BR.Config.WeaponById before BR.Config.AmmoPickups --
---- server/debug.lua's brgive, server/loot.lua -- would hand back a machine gun.
---- tools/test_shared.lua pins that no pool value is an item id.
+--- every dispatch that resolves a BARE id -- server/debug.lua's brgive and brarm,
+--- server/loot.lua's devStack -- asks BR.Config.WeaponById first and would hand
+--- back a machine gun. tools/test_shared.lua pins that no pool value is an item
+--- id, and records the one that already is: 'smg'.
 BR.AmmoType = {
     LIGHT  = 'light',  -- pistols
     SMG    = 'smg',
     MEDIUM = 'medium', -- rifles
     SHELLS = 'shells', -- shotguns
-    HEAVY  = 'heavy',  -- explosives: RPG, grenade launcher, railgun
-    SNIPER = 'sniper', -- marksman and sniper rifles
-    LMG    = 'lmg',    -- machine guns, and the minigun
+    HEAVY  = 'heavy',  -- marksman and sniper rifles, and the three launchers
+    LMG    = 'lmg',    -- machine guns and the minigun. 'Belt' on the shelf.
 }
 
 --- Match modes.

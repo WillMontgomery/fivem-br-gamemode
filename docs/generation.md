@@ -79,20 +79,29 @@ floor kind ~ weighted(ammo 74, weapon 16, consumable  6, throwable 4)
 > is already an ammo firehose and is untouched), and consumable was widened to
 > 21 so that the healing share did not fall out as a side effect.
 
-**Which ammo pool**, once a roll has landed on `ammo` — weighted, not uniform:
+**Which ammo pool**, once a roll has landed on `ammo`, weighted rather than
+uniform:
 
 ```
 ammo pool ~ weighted(light 20, smg 20, medium 20, shells 20,
-                     heavy 4, sniper 8, lmg 8)
+                     heavy 12, lmg 8)
 ```
 
 The four common pools hold a 20% share each, which is exactly what a uniform
-draw over the five pools that existed before 2026-09-11 gave them. Splitting
-`heavy` into three that day would otherwise have taken every pool to 14.3% and
-made pistol, SMG, rifle and shotgun ammo 29% rarer as a side effect of a change
-about explosives. `heavy` is the smallest share because the only three weapons
-that draw from it are airdrop-exclusive, so most players can never use it. The
-8/8/4 split of heavy's old 20 is an assumption and is the knob to turn.
+draw over the five pools that existed before 2026-09-11 gave them. Holding them
+there is the whole point of the table: under a uniform draw the share of every
+pool moves whenever the pool *count* does, so pistol, SMG, rifle and shotgun
+ammo would have got 29% rarer when the pools went to seven and then commoner
+again when they came back to six, as a pure side effect of reorganizing the
+specialist ones.
+
+There are six pools as of 2026-09-12. `heavy` is the four marksman and sniper
+rifles plus the three launchers; `lmg` is the belt-fed guns and the minigun, and
+is labelled **Belt** on the floor and in the inventory. `heavy` reads 12 because
+it absorbed the 8 that belonged to the short-lived `sniper` pool along with the
+weapons that drew it, so the same ammunition is rolled at the same rate under one
+name. The 12/8 division of the specialist share is an assumption and is the knob
+to turn.
 
 Loose ground loot is deliberately almost all ammo, and **bandages and med kits
 cannot spawn on the floor at all** (`chestOnly` on the consumable, with a

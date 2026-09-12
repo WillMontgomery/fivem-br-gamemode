@@ -998,13 +998,16 @@ BR.Config.Gunshop = {
     -- (BR.Config.AmmoCaps[pool]). They put smg, medium, light and shells in the
     -- same descending order, and that is the order those four are priced in.
     --
-    -- THEY NO LONGER AGREE ABOUT THE LAST THREE, and this block used to claim all
-    -- five agreed. Since the 2026-09-11 split, sniper, lmg and heavy all pay 12 a
-    -- pickup -- so the pickup cannot separate them at all -- while the caps read
-    -- 60, 60 and 24. So the three SHARE a price at 50, the top of his range and
-    -- where heavy already sat, rather than being ranked on a number only one of
-    -- the two measures can see. tools/test_gunshop.lua checks the ordering across
-    -- DISTINCT prices and skips the ties, for exactly that reason.
+    -- THEY DO NOT AGREE ABOUT THE LAST TWO, and this block used to claim all five
+    -- agreed. lmg and heavy both pay 12 a pickup -- so the pickup cannot separate
+    -- them at all -- while the caps read 60 and 24. So the two SHARE a price at
+    -- 50, the top of his range and where heavy already sat, rather than being
+    -- ranked on a number only one of the two measures can see.
+    -- tools/test_gunshop.lua checks the ordering across DISTINCT prices and skips
+    -- the ties, for exactly that reason.
+    --
+    -- THERE WERE THREE OF THEM YESTERDAY. sniper sat here at 50 alongside these
+    -- two and went with the pool on 2026-09-12; the scoped rifles buy heavy now.
     --
     -- ═══ 12 ROUNDS A PURCHASE, AND IT IS STILL DERIVED RATHER THAN TYPED ═══
     --
@@ -1027,7 +1030,6 @@ BR.Config.Gunshop = {
         [BR.AmmoType.MEDIUM] = { price = 25 },  --   45     350   7.8
         [BR.AmmoType.LIGHT]  = { price = 30 },  --   36     300   8.3
         [BR.AmmoType.SHELLS] = { price = 40 },  --   16     120   7.5
-        [BR.AmmoType.SNIPER] = { price = 50 },  --   12      60   5.0
         [BR.AmmoType.LMG]    = { price = 50 },  --   12      60   5.0
         [BR.AmmoType.HEAVY]  = { price = 50 },  --   12      24   2.0
     },

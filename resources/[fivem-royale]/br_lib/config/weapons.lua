@@ -135,10 +135,17 @@ BR.Config.Weapons = {
     -- Deliberately few and high-rarity: the render ceiling makes true long-range
     -- sniping impossible, so a map full of snipers would promise a fantasy the
     -- engine cannot deliver.
-    { id = 'marksmanrifle', name = 'WEAPON_MARKSMANRIFLE',    hash = 0xC734385A, label = 'Marksman Rifle',    rarity = R.EPIC,      ammo = BR.AmmoType.SNIPER, damage = 65, maxRange = 340.0, minInterval = 450, clip = 8, scoped = true, driveby = false },
-    { id = 'sniperrifle',   name = 'WEAPON_SNIPERRIFLE',      hash = 0x05FC3C11, label = 'Sniper Rifle',      rarity = R.EPIC,      ammo = BR.AmmoType.SNIPER, damage = 101,maxRange = 400.0, minInterval = 1400,clip =10, scoped = true, driveby = false },
-    { id = 'marksmanmk2',   name = 'WEAPON_MARKSMANRIFLE_MK2',hash = 0x6A6C02E0, label = 'Marksman Mk II',    rarity = R.LEGENDARY, ammo = BR.AmmoType.SNIPER, damage = 70, maxRange = 380.0, minInterval = 430, clip = 8, scoped = true, driveby = false },
-    { id = 'heavysniper',   name = 'WEAPON_HEAVYSNIPER',      hash = 0x0C472FE2, label = 'Heavy Sniper',      rarity = R.LEGENDARY, ammo = BR.AmmoType.SNIPER, damage = 216,maxRange = 420.0, minInterval = 1800,clip = 6, scoped = true, driveby = false },
+    --
+    -- THEY DRAW HEAVY, WITH THE THREE LAUNCHERS. They had a pool of their own for
+    -- one day (2026-09-11) and the owner asked for the rockets to go back into a
+    -- category with a limited carry quantity, which is this one. THE CAP CAME WITH
+    -- IT AND IT IS SMALL: heavy is 24, not the 60 these four had yesterday. See
+    -- the block above BR.Config.AmmoCaps -- 24 is the owner's own number, set
+    -- when heavy meant rockets, and it is his to revisit now that it does not.
+    { id = 'marksmanrifle', name = 'WEAPON_MARKSMANRIFLE',    hash = 0xC734385A, label = 'Marksman Rifle',    rarity = R.EPIC,      ammo = BR.AmmoType.HEAVY,  damage = 65, maxRange = 340.0, minInterval = 450, clip = 8, scoped = true, driveby = false },
+    { id = 'sniperrifle',   name = 'WEAPON_SNIPERRIFLE',      hash = 0x05FC3C11, label = 'Sniper Rifle',      rarity = R.EPIC,      ammo = BR.AmmoType.HEAVY,  damage = 101,maxRange = 400.0, minInterval = 1400,clip =10, scoped = true, driveby = false },
+    { id = 'marksmanmk2',   name = 'WEAPON_MARKSMANRIFLE_MK2',hash = 0x6A6C02E0, label = 'Marksman Mk II',    rarity = R.LEGENDARY, ammo = BR.AmmoType.HEAVY,  damage = 70, maxRange = 380.0, minInterval = 430, clip = 8, scoped = true, driveby = false },
+    { id = 'heavysniper',   name = 'WEAPON_HEAVYSNIPER',      hash = 0x0C472FE2, label = 'Heavy Sniper',      rarity = R.LEGENDARY, ammo = BR.AmmoType.HEAVY,  damage = 216,maxRange = 420.0, minInterval = 1800,clip = 6, scoped = true, driveby = false },
 
     -- LMG -------------------------------------------------------------------
     { id = 'mg',            name = 'WEAPON_MG',               hash = 0x9D07F764, label = 'MG',                rarity = R.RARE,      ammo = BR.AmmoType.LMG,    damage = 34, maxRange = 230.0, minInterval =  85, clip = 54, driveby = false },
@@ -171,18 +178,23 @@ BR.Config.Weapons = {
 --- on foot is nothing, so it would be an ultra-rare that pays out a dud. Absence
 --- is still refusal here: it remains off the allowlist.
 ---
---- THE THREE LAUNCHERS ARE THE WHOLE OF THE HEAVY POOL, AND THE MINIGUN IS NOT
---- IN IT. Owner, 2026-09-11: "move the minigun off heavy and move explosives to
---- heavy", taking the strictest of three offered shapes -- heavy is the explosive
---- pool and nothing else. The minigun draws LMG with the machine guns, which is
---- what it is.
+--- THE THREE LAUNCHERS DRAW HEAVY WITH THE SCOPED RIFLES, AND THE MINIGUN DRAWS
+--- LMG. Owner, 2026-09-12, having played the seven-pool build: "Can we put
+--- rockets into any other category that has limited carry quantity?" Heavy is
+--- that category -- it is capped at 24 -- so the rockets share it with the four
+--- marksman and sniper rifles rather than holding a pool of their own. The
+--- minigun is a machine gun and stays with the machine guns, which is the one
+--- part of the previous round that survives.
 ---
---- THIS BLOCK USED TO ARGUE THE OPPOSITE, and the argument was cost: a new pool
---- has to join BR.Config.AmmoOrder to be rollable, AmmoOrder is walked by the
---- layout generator, so an entry renumbers every ammo draw in the game and
---- changes every existing map from a fixed seed. That cost is real, it was quoted
---- to him, and he accepted it. Seeds from before 2026-09-11 no longer reproduce
---- the layouts they used to.
+--- HEAVY IS NOT "THE EXPLOSIVE POOL" AND THIS BLOCK NO LONGER SAYS IT IS. For one
+--- day it was, and the argument for the split was written out here at length;
+--- that argument is CUT rather than left standing beside its reversal.
+---
+--- WHAT THE SPLIT COST, AND WHAT UNDOING IT COSTS AGAIN, IS THE SAME THING:
+--- BR.Config.AmmoOrder is walked by the layout generator, so its LENGTH renumbers
+--- every ammo draw in the game. Going five to seven changed every map from a
+--- fixed seed on 2026-09-11 and going seven to six changes them again today.
+--- Seeds do not survive a pool count changing, in either direction.
 ---
 --- THE THREE LAUNCHERS ARE `explosive`, WHICH IS A VALIDATOR DECISION AND NOT A
 --- LABEL. It moves them onto the same path grenades already take, for the same
@@ -387,14 +399,20 @@ BR.Config.Gadgets = {
 --- Ammo pool caps, per pool.
 ---
 --- HEAVY IS 24 BECAUSE HE SAID 24 (owner, 2026-09-11: "let's change the max heavy
---- ammo to 24 please"), and since the same round heavy means the three
---- airdrop-exclusive launchers and nothing else.
+--- ammo to 24 please"). IT IS UNCHANGED AND IT NOW BINDS SEVEN WEAPONS RATHER
+--- THAN THREE, because the marksman and sniper rifles came back into this pool
+--- on 2026-09-12 and 24 was set the day heavy meant rockets alone.
 ---
---- SNIPER AND LMG ARE 60, WHICH IS WHAT HEAVY ITSELF WAS THE DAY BEFORE. The
---- snipers and the machine guns split off heavy carrying the economy they already
---- had, so the only weapon class whose ammo supply actually moved in that change
---- is the explosives. Do not "even these up" -- the point is that they did not
---- move.
+--- ⚠ THAT IS A REAL CUT FOR THE SNIPERS AND IT HAS NOT BEEN PUT TO HIM. They
+--- carried 60 yesterday. Their clips are 6 to 10 rounds, so 24 is two to four
+--- magazines where it was six to ten, and the Heavy Sniper -- clip of 6 -- gets
+--- four. The number is HIS and the number did not move; what moved is who lives
+--- under it. Raising it is his call, and this note is here so the question is
+--- askable rather than buried in a table.
+---
+--- LMG IS 60, WHICH IS WHAT HEAVY ITSELF WAS BEFORE ANY OF THIS. The machine guns
+--- have never changed pool in substance and their supply has never moved. Do not
+--- "even these up" against heavy: the point is that this one did not move.
 ---
 --- TWO MAGAZINES DO NOT FIT UNDER LMG's 60: the Combat MG and Combat MG Mk II
 --- hold 100 and the minigun's belt is 150. That was equally true under heavy's
@@ -407,7 +425,6 @@ BR.Config.AmmoCaps = {
     [BR.AmmoType.MEDIUM] = 350,
     [BR.AmmoType.SHELLS] = 120,
     [BR.AmmoType.HEAVY]  =  24,
-    [BR.AmmoType.SNIPER] =  60,
     [BR.AmmoType.LMG]    =  60,
 }
 

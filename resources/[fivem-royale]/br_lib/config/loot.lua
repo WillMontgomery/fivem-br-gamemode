@@ -444,35 +444,54 @@ end
 --- makes the owner's "each loot pickup should be 12 rounds. Same for purchasing -
 --- 12 rounds per purchase" (2026-09-11) one number rather than two.
 ---
---- SNIPER AND LMG CARRY HEAVY'S OWN 12 because they split off it on 2026-09-11
---- and keep the amount they already had. The props are REUSED and deliberately
---- not new: a model that is not already in BR.Config.AmmoPickups would have to be
---- streamed, and these two pools were drawing prop_box_ammo03a yesterday.
+--- ⚠ 'Belt Ammo' IS NOT THE OWNER'S WORD. It read 'MG Ammo' until 2026-09-12,
+--- and he asked "Why do we have SMG ammo and MG ammo as separate categories?" --
+--- the two sit next to each other on the shop shelf one letter apart while one is
+--- submachine guns and the other is belt-fed machine guns. He asked for the clash
+--- to go and did not name the replacement, so this string and the 'Belt' in
+--- ui-src/src/screens/InventoryPanel.tsx are a PLACEHOLDER waiting on his. They
+--- are the only two places the caption is written; the pool VALUE is still 'lmg'
+--- and must stay that way (see BR.AmmoType).
+---
+--- SIX POOLS OVER THREE PROPS, TWO EACH, which is the other thing he raised:
+--- "we also have a limited number of ammo props for loot drops". Seven pools were
+--- sharing the same three models, so heavy, sniper and MG rounds were one object
+--- on the ground wearing three names. The props are REUSED and deliberately not
+--- new: a model that is not already in this table would have to be streamed, and
+--- nothing streams it.
+---
+--- HEAVY STILL PAYS 12 and now covers the scoped rifles as well as the launchers.
 BR.Config.AmmoPickups = {
     [BR.AmmoType.LIGHT]  = { label = 'Light Ammo',  amount = 36, prop = 'prop_box_ammo01a' },
     [BR.AmmoType.SMG]    = { label = 'SMG Ammo',    amount = 60, prop = 'prop_box_ammo01a' },
     [BR.AmmoType.MEDIUM] = { label = 'Medium Ammo', amount = 45, prop = 'prop_box_ammo02a' },
     [BR.AmmoType.SHELLS] = { label = 'Shells',      amount = 16, prop = 'prop_box_ammo02a' },
     [BR.AmmoType.HEAVY]  = { label = 'Heavy Ammo',  amount = 12, prop = 'prop_box_ammo03a' },
-    [BR.AmmoType.SNIPER] = { label = 'Sniper Ammo', amount = 12, prop = 'prop_box_ammo03a' },
-    [BR.AmmoType.LMG]    = { label = 'MG Ammo',     amount = 12, prop = 'prop_box_ammo03a' },
+    [BR.AmmoType.LMG]    = { label = 'Belt Ammo',   amount = 12, prop = 'prop_box_ammo03a' },
 }
 
 --- The ammo pools in a FIXED order. AmmoPickups is keyed by pool name, and
 --- iterating a string-keyed table with pairs() is order-undefined -- rolling
 --- against it directly would make two servers with the same seed lay out
 --- different maps. Every ordered walk over ammo goes through this.
---- SNIPER AND LMG ARE APPENDED rather than slotted in beside heavy, which is why
---- heavy reads oddly in the middle. Nothing derives meaning from the position --
---- the draw is weighted now, not indexed -- and appending keeps the shop shelf,
---- the /brammo readout and the death-box spill in one order everybody can compare.
+---
+--- ⚠ ITS LENGTH IS LOAD-BEARING AND CHANGING IT BREAKS EVERY SAVED SEED. The
+--- layout generator walks this, so adding or removing an entry renumbers every
+--- ammo draw on the map. Five became seven on 2026-09-11 and seven became six on
+--- 2026-09-12; a seed from before either date lays out a different island now.
+--- That is the price of touching the pool count at all, in either direction, and
+--- it is why the belt pool was RENAMED rather than re-keyed.
+---
+--- LMG IS LAST BECAUSE IT WAS APPENDED, which is also why heavy reads oddly in
+--- the middle. Nothing derives meaning from the position -- the draw is weighted,
+--- not indexed -- and leaving it put keeps the shop shelf, the /brammo readout
+--- and the death-box spill in one order everybody can compare.
 BR.Config.AmmoOrder = {
     BR.AmmoType.LIGHT,
     BR.AmmoType.SMG,
     BR.AmmoType.MEDIUM,
     BR.AmmoType.SHELLS,
     BR.AmmoType.HEAVY,
-    BR.AmmoType.SNIPER,
     BR.AmmoType.LMG,
 }
 
@@ -483,17 +502,21 @@ BR.Config.AmmoOrder = {
 --- ═══ THIS EXISTS BECAUSE THE DRAW USED TO BE UNIFORM ═══
 ---
 --- BR.RollLootStack picked with `rng:pick(BR.Config.AmmoOrder)`, which is uniform:
---- five pools, 20% each. The 2026-09-11 split to seven would have taken every pool
---- to 14.3% -- measured, not estimated -- making pistol, SMG, rifle and shotgun
---- ammo 29% rarer on the floor as a pure side effect of a change about explosives.
---- The owner asked for the explosives and said nothing about the other four, so
---- these numbers hold those four exactly where they already were.
+--- five pools, 20% each. Any change to the POOL COUNT therefore moves every pool's
+--- share unless something holds them -- the 2026-09-11 split to seven took every
+--- pool to 14.3% (measured, not estimated), which would have made pistol, SMG,
+--- rifle and shotgun ammo 29% rarer on the floor as a side effect of a change
+--- about explosives. Nobody asked for that then and nobody has asked for it now,
+--- so LIGHT, SMG, MEDIUM and SHELLS sit on 20 each through both changes and the
+--- specialist pools divide what is left.
 ---
---- ⚠ THE SPLIT OF HEAVY'S OLD 20 IS AN ASSUMPTION AND NOT HIS NUMBER: sniper 8,
---- lmg 8, heavy 4. The reasoning is that explosive ammo should be the rarest of
---- the seven because the only three weapons that take it are airdrop-exclusive
---- (BR.Config.AirdropWeapons), so most players can never spend it. THIS IS THE
---- KNOB TO TURN if the floor feels wrong, and it is his to turn.
+--- ⚠ THE DIVISION OF THAT REMAINDER IS AN ASSUMPTION AND NOT HIS NUMBER: heavy 12,
+--- lmg 8. When sniper was its own pool this read sniper 8 / lmg 8 / heavy 4; the
+--- 2026-09-12 merge folds sniper's 8 into heavy because heavy now holds the four
+--- weapons sniper held, so exactly the same ammunition is rolled at exactly the
+--- same rate under one name. THE FOUR COMMON POOLS DID NOT MOVE, which is the
+--- whole point of this table. THIS IS THE KNOB TO TURN if the floor feels wrong,
+--- and it is his to turn.
 ---
 --- A POOL IN AmmoOrder WITH NO WEIGHT HERE IS NEVER ROLLED, and the deck built
 --- below says so on the console rather than letting it vanish.
@@ -502,8 +525,7 @@ BR.Config.AmmoWeights = {
     [BR.AmmoType.SMG]    = 20,
     [BR.AmmoType.MEDIUM] = 20,
     [BR.AmmoType.SHELLS] = 20,
-    [BR.AmmoType.HEAVY]  =  4,
-    [BR.AmmoType.SNIPER] =  8,
+    [BR.AmmoType.HEAVY]  = 12,
     [BR.AmmoType.LMG]    =  8,
 }
 
