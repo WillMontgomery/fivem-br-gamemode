@@ -82,8 +82,9 @@ local G = BR.Config.Gunshop
 -- Everything else on this surface still comes from a table somebody owns: item
 -- names from config/weapons.lua and config/loot.lua, the price from
 -- BR.ShopSolve.priceLine, the category headers from BR.RarityInfo's own `label`
--- fields, the key cap from the player's binding, and the title from
--- config/gunshop.lua's `menuTitle`.
+-- fields, the key cap from the player's binding, and the plate's title from
+-- config/gunshop.lua's `plateTitle`. (The banner's `menuTitle` is empty since
+-- 2026-09-11 -- he asked for it gone.)
 --
 -- PLATE_HINT and OUT_OF_STOCK are the owner's own words from 2026-09-09.
 -- OUT_OF_STOCK is READ rather than typed -- config/gunshop.lua authors
@@ -375,24 +376,17 @@ end
 
 --- Show or hide the counter plate.
 ---
---- ═══ THE COPY IS ONE WORD AND IT IS NOT HIS ═══
----
---- The owner has written no player-facing text for this feature. A world prompt
---- structurally needs a subject over its key cap, so the plate borrows the same
---- single word the menu banner uses -- `BR.Config.Gunshop.menuTitle`, which
---- carries a marked block asking him to replace it. One word, used twice, in one
---- place, rather than two guesses in two files.
----
---- ═══ AND NOW IT HAS THE SECOND LINE HE ASKED FOR ═══
+--- ═══ BOTH LINES ARE HIS ═══
 ---
 --- Owner, 2026-09-09: "the DUI should follow our standard formatting and content
 --- - a title Weapon Shop and a line underneath PRESS TO OPEN".
 ---
---- THE TITLE IS STILL `menuTitle`, WHICH IS THE ONE WORD HE HAS TO CHANGE. It is
---- 'Shop' in config/gunshop.lua today and it feeds BOTH this plate and the menu
---- banner, so 'Weapon Shop' there answers his D2 title and his M8 in one edit.
---- IT IS NOT HARD-CODED HERE, because a second copy of that phrase is exactly
---- the thing the config's marked block exists to prevent.
+--- THE TITLE IS `plateTitle`, READ RATHER THAN TYPED. It carried the same value
+--- as the menu banner until 2026-09-11, when he asked for the BANNER title to go
+--- ("Please remove the 'weapon shop' menu title") and said nothing about this
+--- plate -- so config/gunshop.lua now holds the two separately and this surface
+--- keeps his sentence. A literal here would be that phrase in two files, which is
+--- the thing the config's block exists to prevent.
 ---
 --- THE SECOND LINE IS HIS OWN CAPS. prompt.html gives #hint `text-transform:
 --- uppercase`, so the rendering is PRESS TO OPEN either way -- his string is
@@ -433,7 +427,7 @@ local function setPlate(show)
     BR.Dui.send(page, {
         t     = 'prompt',
         show  = true,
-        label = tostring(G.menuTitle or ''),
+        label = tostring(G.plateTitle or ''),
         hint  = PLATE_HINT,
         key   = BR.Native.keyLabelForCommand('brinteract', 51),
         ring  = false,
@@ -1127,20 +1121,18 @@ local function grouped()
     -- BR.GunshopSolve.minRarity. Asking the kind cannot go wrong that way.
     local ammo = BR.GunshopSolve.ofKind(rows, BR.ItemKind.AMMO)
     if #ammo > 0 then
-        -- ═══ AND THIS ONE HEADER WEARS ITS OWN ROWS' COLOR (owner, 2026-09-11)
-        --     ═══
+        -- ═══ EVERY HEADER WEARS ITS OWN ROWS' COLOR (owner, 2026-09-11) ═══
         --
         -- "The ammunition separator should read 'Ammo' and be no special color,
-        -- same color as the ammo item rows themselves."
+        -- same color as the ammo item rows themselves", and then, of the rest:
+        -- "change the category separators to have the background color of the
+        -- categories they represent."
         --
         -- READ OFF A ROW, NOT NAMED HERE. Every row in this group is stamped
         -- with the same rarity by BR.GunshopSolve, and `headerRarity` is that
         -- rarity rather than a constant repeating it -- so "the same color as
         -- the rows" stays true if the stamp ever moves, and cannot drift into
         -- being a second opinion about what ammunition is.
-        --
-        -- ONLY THIS GROUP CARRIES THE FIELD, which is what keeps `buildMenu`
-        -- from repainting the other three separators he did not rule on.
         out[#out + 1] = { header       = AMMO_GROUP,
                           rows         = ammo,
                           headerRarity = ammo[1].rarity }
@@ -1173,9 +1165,17 @@ local function grouped()
         if list and #list > 0 then
             -- THE HEADER IS BR.RarityInfo's OWN LABEL, which is the word the
             -- inventory borders and the loot glow already mean by that color.
+            --
+            -- AND `headerRarity` IS THE RARITY THIS BUCKET IS, which is the same
+            -- integer the rows under it carry -- so `buildMenu` paints the bar
+            -- with the call the rows already make and the two cannot disagree.
             local info = BR.RarityInfo and BR.RarityInfo[order[i]]
             local header = info and info.label or nil
-            if header then out[#out + 1] = { header = header, rows = list } end
+            if header then
+                out[#out + 1] = { header       = header,
+                                  rows         = list,
+                                  headerRarity = order[i] }
+            end
         end
     end
     return out
@@ -1242,6 +1242,13 @@ local function buildMenu()
     -- the item counter -- "3/30", in our gold -- and a counter is a number
     -- rather than copy. A word there would be a second invented string for a
     -- surface that reads fine without one.
+    --
+    -- AND THE TITLE IS EMPTY TOO, SINCE 2026-09-11: "Please remove the 'weapon
+    -- shop' menu title". It is still READ from config rather than dropped from
+    -- the call, because `menuTitle = ''` there is where his word goes back and
+    -- because the banner ART is arguments six and seven of BR.Menu.new -- the
+    -- Ammu-Nation sprite still draws with nothing written over it. The world
+    -- plate keeps his sentence off `plateTitle`; see setPlate.
     local built = BR.Menu.new(G.menuTitle, '', bannerSprite())
     if not built then return false end
 
@@ -1254,28 +1261,23 @@ local function buildMenu()
         -- a list without a caption; a `return false` here would be a counter
         -- that does not open at all.
         --
-        -- ═══ NO SEPARATOR CARRIES THE CYAN NOW, AND ONE CARRIES ITS OWN ROWS'
-        --     COLOR ═══
+        -- ═══ EVERY SEPARATOR WEARS ITS OWN CATEGORY'S COLOR ═══
         --
         -- Owner, 2026-09-11, on the ammunition header: "The ammunition separator
         -- should ... be no special color, same color as the ammo item rows
-        -- themselves." `headerRarity` is set by `grouped` on that group alone and
-        -- is the rarity its own rows carry, so this is the same call the rows make
-        -- -- BR.Menu.rarityColor, which is also what refreshMenu repaints them
-        -- with on every pass.
+        -- themselves." Then, of the rest: "change the category separators to have
+        -- the background color of the categories they represent." So the rule is
+        -- the same one for all four groups and `grouped` sets `headerRarity` on
+        -- every one of them.
         --
-        -- AND THE OTHER THREE NOW PASS NOTHING, which is the same day's wider
-        -- ruling: "the selected row and separator rows being that obnoxious light
-        -- blue still", answered with "No ScaleformUI should ever use our cyan
-        -- ever". They took BR.Menu.accent() -- #22d3ee at full opacity, the
-        -- brightest thing on the shelf -- and that function no longer exists.
+        -- ONE CALL, NOT TWO. BR.Menu.rarityColor is what the rows below use and
+        -- what refreshMenu repaints them with, alpha included -- a bar mixed here
+        -- would be a second opinion about the palette, free to drift.
         --
-        -- ⚠ nil IS THE LIBRARY'S DEFAULT PANEL AND NOT A COLOR CHOSEN HERE.
-        -- UIMenuSeparatorItem inherits SColor.HUD_Panel_light, so Rare, Epic and
-        -- Legendary read as plain bars. HE HAS NOT SAID WHAT THEY SHOULD BE: his
-        -- ammunition rule -- a header wears the color of the rows under it --
-        -- would answer it for all four if he wants it applied, and applying it to
-        -- three groups he did not ask about is his call rather than ours.
+        -- AND NO CYAN ANYWHERE, which is the same day's wider ruling: "No
+        -- ScaleformUI should ever use our cyan ever". These bars took
+        -- BR.Menu.accent() -- #22d3ee at full opacity -- and that function no
+        -- longer exists.
         local sepColor = nil
         if grp.headerRarity then
             sepColor = BR.Menu.rarityColor(grp.headerRarity)

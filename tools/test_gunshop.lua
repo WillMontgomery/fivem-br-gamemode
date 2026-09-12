@@ -3392,9 +3392,17 @@ do
     ok(plate ~= nil and plate.hint == 'PRESS TO OPEN',
         'and carries his second line, verbatim and in his own caps (D2)',
         plate and tostring(plate.hint) or 'no plate')
-    ok(plate ~= nil and plate.label == G.menuTitle,
-        'the title is still config/gunshop.lua\'s one word, not a second copy '
+    ok(plate ~= nil and plate.label == G.plateTitle,
+        'the title is still config/gunshop.lua\'s own word, not a second copy '
             .. 'of it typed here (D2, M8)')
+    -- ⚠ THE PLATE DID NOT GO QUIET WHEN THE BANNER DID (owner, 2026-09-11:
+    -- "Please remove the 'weapon shop' menu title"). He emptied the MENU title
+    -- and said nothing about the floating text over the counter, so this asserts
+    -- the plate still says the words -- the whole risk of splitting the field.
+    ok(plate ~= nil and plate.label == 'Weapon Shop',
+        '...and it is still his 2026-09-09 sentence, which the banner ruling did '
+            .. 'not touch',
+        plate and tostring(plate.label) or 'no plate')
 
     -- -----------------------------------------------------------------------
     describe('S1: the ground probe samples where the clerk actually stands')
@@ -3469,8 +3477,21 @@ do
         'and nothing is painted under the sprite, on any branch -- the movie '
             .. 'tints the art with the banner color rather than drawing a bar')
     ok(lastMenu.Title == G.menuTitle,
-        'M8: the title comes from config, so his one word changes the banner '
-            .. 'and the world plate together')
+        'M8: the title comes from config rather than from a literal here')
+    -- ═══ AND IT IS EMPTY (owner, 2026-09-11) ═══
+    --
+    -- "Please remove the 'weapon shop' menu title". Asserted as the LITERAL
+    -- empty string as well as against config, because `== G.menuTitle` alone
+    -- would pass again the moment somebody put a word back in the field.
+    ok(lastMenu.Title == '',
+        'and it is empty -- no words over the banner, which is what he asked for',
+        ('%q'):format(tostring(lastMenu.Title)))
+    -- THE SPRITE IS UNAFFECTED BY THAT. The title is argument one and the art is
+    -- six and seven, so an empty title is the Ammu-Nation sign with nothing
+    -- written on it rather than a blank banner.
+    ok(lastMenu.TxtDictionary == 'shopui_title_gunclub',
+        '...and the banner still draws its own sprite with no title over it',
+        tostring(lastMenu.TxtDictionary))
 
     -- -----------------------------------------------------------------------
     describe('M3: top-down by category, legendary at the bottom')
@@ -3530,31 +3551,57 @@ do
                     ammoRow._main.a, ammoRow._main.r, ammoRow._main.g,
                     ammoRow._main.b) or 'none'))
 
-        -- ═══ AND THE OTHER THREE CARRY NO COLOR OF OURS EITHER ═══
+        -- ═══ AND THE OTHER THREE WEAR THEIR OWN CATEGORY'S COLOR TOO ═══
         --
-        -- Owner, hours after the ammunition ruling above: "What I'm referring to
-        -- on the styling is the selected row and separator rows being that
-        -- obnoxious light blue still", answered with "No ScaleformUI should ever
-        -- use our cyan ever".
+        -- Owner, 2026-09-11: "change the category separators to have the
+        -- background color of the categories they represent." That is the
+        -- ammunition rule above applied to the rest, which is the open question
+        -- the source used to carry.
         --
-        -- Rare, Epic and Legendary took BR.Menu.accent() -- #22d3ee at full
-        -- opacity across the whole bar -- and now pass NOTHING, which lands them
-        -- on SColor.HUD_Panel_light: FromHudColor(152), the library's own default
-        -- and GTA's own palette. The stub models that fallback, which is why this
-        -- can be asserted as an index rather than as an absence.
-        local painted = {}
-        for i = 2, #heads do
-            local c = heads[i]._main
-            if type(c) ~= 'table' or c.hud ~= 152 then
-                painted[#painted + 1] = ('%s (%s)'):format(
-                    tostring(heads[i]._text),
-                    type(c) == 'table' and tostring(c.hud or c.hex) or 'none')
+        -- ⚠ ASSERTED AGAINST BR.Menu.rarityColor, WHICH IS THE CALL THE ROWS
+        -- MAKE. A named RGB here would pass on the day the rows moved and the bar
+        -- did not -- and comparing against the first row under the header cannot
+        -- be the whole test, because an out-of-stock or unaffordable row is
+        -- deliberately wearing the disabled shade instead of its rarity.
+        local wantFor = {}
+        for r = BR.Rarity.COMMON, BR.Rarity.LEGENDARY do
+            local info = BR.RarityInfo and BR.RarityInfo[r]
+            if info and info.label then
+                wantFor[info.label] = BR.Menu.rarityColor(r)
             end
         end
-        ok(#painted == 0,
-            "every rarity separator now wears the library's own panel, index "
-                .. '152 out of GTA\'s palette, rather than the cyan it used to',
-            #painted > 0 and table.concat(painted, ', ') or nil)
+        local wrongBar = {}
+        for i = 2, #heads do
+            local c, want = heads[i]._main, wantFor[heads[i]._text]
+            if want == nil or not sameColor(c, want) then
+                wrongBar[#wrongBar + 1] = ('%s (%s)'):format(
+                    tostring(heads[i]._text),
+                    type(c) == 'table'
+                        and ('a%s r%s g%s b%s'):format(tostring(c.a),
+                            tostring(c.r), tostring(c.g), tostring(c.b))
+                        or 'none')
+            end
+        end
+        ok(#wrongBar == 0,
+            'every rarity separator wears the rarity it names, out of the same '
+                .. 'BR.Menu.rarityColor the rows under it take -- alpha included',
+            #wrongBar > 0 and table.concat(wrongBar, ', ') or nil)
+
+        -- AND NOT ONE OF THEM IS STILL THE LIBRARY'S BARE PANEL. They passed
+        -- nothing until he ruled, which landed them on SColor.HUD_Panel_light --
+        -- FromHudColor(152). This is the assertion that fails if `headerRarity`
+        -- stops being set on a group and the bar quietly goes back to grey.
+        local bare = {}
+        for i = 1, #heads do
+            local c = heads[i]._main
+            if type(c) ~= 'table' or c.hud ~= nil then
+                bare[#bare + 1] = tostring(heads[i]._text)
+            end
+        end
+        ok(#bare == 0,
+            'and none of them is the library default panel any more, which is '
+                .. 'what an unset headerRarity would leave behind',
+            #bare > 0 and table.concat(bare, ', ') or nil)
 
         -- ...AND NOT ONE ITEM ON THE MENU CARRIES A HEX, which is what the
         -- palette rule means at the object level rather than in the source. The
@@ -4221,23 +4268,43 @@ do
                 .. 'is read rather than cached',
             tostring(movedYours))
 
-        -- ═══ THE TWO EMPTY CASES, WHICH HIS STRUCTURE HAS NO FORM FOR ═══
+        -- ═══ THE TWO EMPTY CASES, AND HE HAS NOW WORDED THE FIRST ONE ═══
         --
-        -- ⚠ NOTHING CARRIED. This is the ordinary state early in a match. The
-        -- lead-in is dropped and the row keeps the plain exhaustive list it has
-        -- carried since L5 -- something he has already seen -- rather than "This
-        -- ammo works with your:" followed by nothing. FLAGGED TO HIM: it is the
-        -- one place in this feature where a decision was taken rather than read.
+        -- NOTHING CARRIED. This is the ordinary state early in a match, and it is
+        -- the one case his original two sentences had no form for. Owner,
+        -- 2026-09-11: "When looking at ammo for a gun I do not have, please prefix
+        -- the description with 'This ammo works with: '". The row used to return
+        -- the bare list; it now takes his third lead-in over the same list.
         carry()
         handlers[BR.Net.MARKET_STATE]({ balance = 999999 })
         local bare = rowItem('ammo_' .. BR.AmmoType.LIGHT)
-        ok(bare ~= nil and bare._Description == table.concat(allLight, ', '),
-            'a player carrying nothing that takes the pool gets the plain list '
-                .. 'back, not a sentence with a hole in it',
+        -- THE TEMPLATE IS ASKED FOR RATHER THAN INDEXED, so a config that never
+        -- grew the field fails this assertion instead of crashing the suite two
+        -- hundred checks early.
+        local wantNone = type(G.ammoDescNone) == 'string'
+            and G.ammoDescNone:format(table.concat(allLight, ', ')) or nil
+        ok(bare ~= nil and wantNone ~= nil
+           and bare._Description == wantNone,
+            'a player carrying nothing that takes the pool gets his "This ammo '
+                .. 'works with: " prefix over the exhaustive list',
             bare and bare._Description or 'none')
+        -- ASSERTED AS HIS CHARACTERS TOO, colon and trailing space included. The
+        -- line above compares against the template, so it would pass on the day
+        -- somebody "tidied" the colon out of config -- this is the half that
+        -- catches that.
+        ok(bare ~= nil
+           and bare._Description:sub(1, 22) == 'This ammo works with: ',
+            '...spelled exactly as he typed it -- the colon and the space after '
+                .. 'it are his',
+            bare and bare._Description:sub(1, 30) or 'none')
+        -- AND NEITHER OTHER SENTENCE LEAKS ONTO THIS BRANCH. `others` already is
+        -- the whole list when nothing is carried, so there is no second half and
+        -- nothing to break a line before.
         ok(bare ~= nil and bare._Description:find('~n~', 1, true) == nil
-           and bare._Description:find('works with your', 1, true) == nil,
-            '...with no dangling lead-in and no empty second line',
+           and bare._Description:find('works with your', 1, true) == nil
+           and bare._Description:find('As well as', 1, true) == nil,
+            '...with no second sentence, no dangling "your" lead-in and no line '
+                .. 'break',
             bare and bare._Description or 'none')
 
         -- ⚠ NOTHING ELSE TAKES THE POOL. Carrying every gun that feeds on HEAVY
@@ -4272,6 +4339,23 @@ do
             onlyHead)
         ok(onlyHead:find('~n~', 1, true) == nil,
             '...with no line break left behind it either', onlyHead)
+
+        -- AND THE THIRD LEAD-IN IS GUARDED THE WAY THE OTHER TWO ARE. A template
+        -- that will not take a string is an authoring slip, and the row must keep
+        -- reading -- the bare list is what this branch returned before he worded
+        -- it, which makes it the right thing to fall back to.
+        local brokenNone = {}
+        for k, v in pairs(G) do brokenNone[k] = v end
+        brokenNone.ammoDescNone = 'This ammo works with: %d'
+        ok(S.ammoDesc(brokenNone, '', 'Pistol, SMG') == 'Pistol, SMG',
+            'a broken `ammoDescNone` costs the lead-in and not the description',
+            S.ammoDesc(brokenNone, '', 'Pistol, SMG'))
+        -- AND NOTHING AT ALL STILL SAYS NOTHING. An empty list under his prefix
+        -- would be the dangling sentence the other two branches exist to avoid.
+        ok(S.ammoDesc(G, '', '') == '',
+            'and a pool nothing at all takes says nothing rather than a prefix '
+                .. 'with an empty list after it',
+            ('%q'):format(S.ammoDesc(G, '', '')))
 
         carry()
         handlers[BR.Net.MARKET_STATE]({ balance = 999999 })

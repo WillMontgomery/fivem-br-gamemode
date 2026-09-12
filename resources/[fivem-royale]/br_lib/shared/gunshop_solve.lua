@@ -1070,35 +1070,34 @@ function BR.GunshopSolve.ammoUsersSplitLine(pool, sources, held)
     return table.concat(yours, ', '), table.concat(others, ', ')
 end
 
---- HIS TWO LINES, JOINED, WITH A HALF THAT CANNOT BE FILLED LEFT OFF.
+--- HIS THREE LINES, JOINED, WITH A HALF THAT CANNOT BE FILLED LEFT OFF.
 ---
 --- ═══ NOT ONE WORD OUT OF THIS FUNCTION IS OURS ═══
 ---
---- `ammoDescYours` and `ammoDescOthers` are authored in config/gunshop.lua, in his
---- wording and with his colon. This chooses which of them can be said and puts a
---- line break between them, which is the same division of labour as
+--- `ammoDescYours`, `ammoDescOthers` and `ammoDescNone` are authored in
+--- config/gunshop.lua, in his wording and with his colons. This chooses which of
+--- them can be said and puts a line break between them, which is the same
+--- division of labour as
 --- BR.GunshopSolve.poorToast and for the same reason: the alternative is a
 --- concatenation in client/gunshop.lua, where the only way to see what a player
 --- reads is to stand at a till in a running game.
 ---
---- ═══ THE THREE CASES, AND THE ONE THAT IS A JUDGEMENT ═══
+--- ═══ THE THREE CASES, AND ALL THREE ARE ANSWERED NOW ═══
 ---
 ---   BOTH HALVES FILLED -> both sentences, his line break between them.
 ---
 ---   NOTHING ELSE TAKES THE POOL -> the second sentence is dropped. "As well as:"
 ---   with nothing after it is a dangling sentence.
 ---
----   ⚠ NOTHING CARRIED -> the LEAD-IN is dropped and the bare list is returned,
----   which is the description this row has carried since L5. This is the case his
----   structure has no form for and the one place a decision was taken rather than
----   read. The alternatives were both worse: "This ammo works with your:" followed
----   by nothing, or "As well as:" with no antecedent, or a third lead-in nobody
----   wrote. Falling back to something he has already seen and approved is the only
----   one of the four that invents nothing. FLAGGED FOR HIM.
+---   NOTHING CARRIED -> `ammoDescNone`, which is his own third lead-in. Owner,
+---   2026-09-11: "When looking at ammo for a gun I do not have, please prefix the
+---   description with 'This ammo works with: '". This case used to return the bare
+---   list because a third lead-in would have been ours; he wrote one.
 ---
 --- `others` IS THE WHOLE LIST IN THAT CASE, WHICH IS WHY THERE IS NO FOURTH
 --- PARAMETER. Carried plus other is every gun that takes the pool, so when nothing
---- is carried `others` already IS the exhaustive list.
+--- is carried `others` already IS the exhaustive list -- and therefore there is no
+--- second sentence on that branch and no `~n~` either.
 ---
 --- ═══ THE LINE BREAK IS `~n~` AND IT IS NOT COPY ═══
 ---
@@ -1121,8 +1120,21 @@ function BR.GunshopSolve.ammoDesc(cfg, yours, others)
     local rest  = type(others) == 'string' and others or ''
     local head  = type(c.ammoDescYours) == 'string' and c.ammoDescYours or ''
     local tail  = type(c.ammoDescOthers) == 'string' and c.ammoDescOthers or ''
+    local none  = type(c.ammoDescNone) == 'string' and c.ammoDescNone or ''
 
-    if mine == '' or head == '' then return rest end
+    -- NOTHING CARRIED: HIS THIRD LEAD-IN OVER THE WHOLE LIST. Guarded exactly as
+    -- the other two are -- an authoring slip in the template costs the lead-in and
+    -- leaves the bare list, which is what this branch returned before he wrote one.
+    if mine == '' then
+        if rest == '' or none == '' then return rest end
+        local okNone, only = pcall(string.format, none, rest)
+        return okNone and only or rest
+    end
+    -- A MISSING `ammoDescYours` IS NOT THE NOTHING-CARRIED CASE. They ARE carrying
+    -- something, so his "works with:" sentence over `others` alone would leave out
+    -- the guns in their hands -- the bare list is the honest answer to a broken
+    -- template here, exactly as it was before.
+    if head == '' then return rest end
 
     local okHead, first = pcall(string.format, head, mine)
     if not okHead then return rest end
