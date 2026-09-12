@@ -1149,8 +1149,29 @@ end
 --- Nothing new is sent for it: the mark is built from the `talking` list this
 --- envelope has always carried and from `silent`/`chosen` below.
 ---
---- So the ONLY row that still sends a headline is squad-with-no-squad: a
---- silence nobody asked for, in a mode the player cannot fix from the panel.
+--- AND NOW NO ROW SENDS ONE AT ALL, WHICH IS THE FOURTH AND LAST OF THESE.
+--- Owner, 2026-09-11:
+---
+---   "'Squad voice: you have no squad' toast should not be a thing - this only
+---    shows because matchmaking hasn't run yet. How about instead, we show them
+---    once matchmaking has completed, a success toast: 'Squad voice channel
+---    **connected**.'"
+---
+--- THE SENTENCE WAS TRUE AND THE MOMENT WAS WRONG. Squad mode with no squad is
+--- exactly what a client is in for the whole of the lobby and for the window
+--- between WARMUP being broadcast and BR.Party.formSquads granting a channel --
+--- so the one row left carrying a headline was firing at the only point in a
+--- match when it described a state that was about to fix itself. It was the
+--- reverse of the three rows above: not furniture, not a caption, just early.
+---
+--- WHAT REPLACES IT IS AN EVENT RATHER THAN A STATE, so it is not a headline at
+--- all -- see the toast at the bottom of pushVoice. A headline is a line drawn
+--- across the screen for as long as the state lasts, and "connected" is a thing
+--- that HAPPENED.
+---
+--- `detail` STAYS ON THIS ROW, exactly as it stayed on the other three: the
+--- settings screen is the only surface that explains a total silence, it is a
+--- page somebody opened on purpose, and it names the way out.
 ---
 --- `detail` IS UNAFFECTED AND STILL SET FOR EVERY ROW, INCLUDING 'off', because
 --- it goes to the SETTINGS SCREEN, which is a page the player opened on purpose.
@@ -1182,11 +1203,18 @@ function BR.Voice.statusFor(mode, radio, mates)
     end
 
     if not radio then
-        -- THE STATE THIS WHOLE CHANGE EXISTS FOR. Squad mode, no squad: the
-        -- server had no channel to grant, so there is no conversation to be in.
+        -- SQUAD MODE, NO SQUAD: the server had no channel to grant, so there is
+        -- no conversation to be in.
+        --
+        -- NO HEADLINE, AND THIS IS THE LAST ROW TO LOSE ONE (owner, 2026-09-11:
+        -- "'Squad voice: you have no squad' toast should not be a thing - this
+        -- only shows because matchmaking hasn't run yet"). The argument is in the
+        -- block above this function. `code` and `silent` both stay: the envelope
+        -- dedups on the code, and the squad panel's mark reads `silent`, which is
+        -- honestly true here -- nothing reaches this player and nothing they say
+        -- leaves.
         return {
             code = 'nosquad', silent = true, chosen = false,
-            headline = 'Squad voice: you have no squad',
             detail = 'Squad voice carries your squad and nobody else, so with '
                   .. 'no squad it carries nobody -- you cannot hear anyone and '
                   .. 'nobody can hear you. Solo matches have no squads. Switch '
@@ -1933,12 +1961,15 @@ end
 ---
 --- THE TOAST IS EDGE-TRIGGERED AND LIVES HERE, next to the thing it is about,
 --- so there is one place that decides what the player is told. It fires when
---- the VERDICT changes -- squad formed, mode picked, squad dissolved -- and
---- never on a tick, because this function is called from the 10 Hz band.
+--- the squad channel comes UP -- once per channel -- and never on a tick,
+--- because this function is called from the 10 Hz band.
 --- @param talking table
 --- @param names table
 --- @param st table  from BR.Voice.status
-local lastToast = nil
+---
+--- The squad channel this client has already announced, or nil. See the toast
+--- below for why the latch is a channel number rather than a boolean.
+local toldChannel = nil
 local function pushVoice(talking, names, st)
     TriggerEvent('br:ui:sendLocal', BR.Nui.VOICE, {
         talking  = talking or {},
@@ -1956,22 +1987,77 @@ local function pushVoice(talking, names, st)
         detail   = st.detail,
     })
 
-    if st.code ~= lastToast then
-        lastToast = st.code
-        -- A HEADLINE IS THE WHOLE CONDITION NOW. This used to read
-        -- `st.headline and not st.chosen`, because 'off' was the one row that
-        -- carried a headline the player had asked for and did not need toasted
-        -- back at them. 'off' carries no headline at all since the owner's
-        -- 2026-08-20 note (see statusFor), so the second half of that test can
-        -- no longer be false while the first is true -- it was a guard against a
-        -- state that no longer exists, which is the kind of line that reads as a
-        -- rule and is really a fossil.
-        if st.headline then
-            TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST, {
-                text = st.headline,
-                tone = st.silent and 'danger' or 'info',
-            })
-        end
+    -- ═══ THE SQUAD CHANNEL CAME UP, WHICH IS THE ONE THING WORTH SAYING ═══
+    --
+    -- Owner, 2026-09-11: "'Squad voice: you have no squad' toast should not be a
+    -- thing - this only shows because matchmaking hasn't run yet. How about
+    -- instead, we show them once matchmaking has completed, a success toast:
+    -- 'Squad voice channel **connected**.'"
+    --
+    -- THE HEADLINE TOAST THAT USED TO BE HERE IS GONE WITH THAT SENTENCE. It
+    -- read `if st.headline then` and no row sends a headline any more (see the
+    -- block above BR.Voice.statusFor), so it was a sender with nothing left to
+    -- send -- the same fossil the `not st.chosen` half of its own condition had
+    -- become, removed for the same reason.
+    --
+    -- ═══ WHAT "MATCHMAKING HAS COMPLETED" IS, AS A FACT THIS FILE ALREADY HOLDS
+    --     ═══
+    --
+    -- It is the 'radio' verdict: squad mode, a channel the server granted, and at
+    -- least one squadmate named on it. BR.Party.formSquads is what grants that and
+    -- it runs ONCE, at WARMUP, off the queue's own membership -- so the first
+    -- moment this verdict appears IS the moment matchmaking finished, and nothing
+    -- new had to be put on any wire to know it.
+    --
+    -- 'alone' IS DELIBERATELY NOT IT. A channel with nobody else on it is a squad
+    -- whose other members have not arrived or have gone; calling that "connected"
+    -- would announce a conversation with nobody in it.
+    --
+    -- ...AND BEING GRANTED A CHANNEL IS NOT BEING ON ONE. `radio` is what the
+    -- server assigned, `joined` is what we last asked pma-voice for, and this
+    -- file's own header says confusing those two cost a week (#150). "Connected"
+    -- is the second claim, so it is the second one that is tested.
+    --
+    -- ═══ ONCE PER CHANNEL, WHICH IS WHAT MAKES IT AN EDGE ═══
+    --
+    -- pushVoice runs on the 10 Hz band, so without a latch this is a hundred
+    -- toasts a match. The latch is keyed on the CHANNEL NUMBER rather than on a
+    -- boolean or on the verdict: a mate joining or leaving moves the verdict
+    -- between 'radio' and 'alone' repeatedly in one match and must re-announce
+    -- nothing, while the next match is a different channel and is news again. It
+    -- re-arms only when the channel is withdrawn.
+    local channel = BR.Voice.state.radio
+    if channel == nil then
+        toldChannel = nil
+    elseif st.code == 'radio' and BR.Voice.state.joined == channel
+           and toldChannel ~= channel then
+        toldChannel = channel
+        TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST, {
+            -- ═══ HIS SENTENCE, AND THE EMPHASIS THIS SURFACE GENUINELY HAS ═══
+            --
+            -- He wrote `**connected**`. A toast is drawn by
+            -- ui-src/src/hud/Notices.tsx through KeyText, which understands
+            -- `{key:command}` and `~amount~` AND NOTHING ELSE. There is no
+            -- markdown on this surface and br_lib/shared/notice.lua refuses at
+            -- length to add any: a notice may carry a player's own name, and `**`
+            -- in band is an injection with a sign-up form in front of it.
+            --
+            -- SO THE BOLD IS THE ONE THE SURFACE REALLY CARRIES -- `parts`, the
+            -- pre-split form, whose `b` piece the page draws as a React text
+            -- child inside a bold span. It is the same weight he asked for with
+            -- no grammar for anything to break out of, and it is built here from
+            -- literals rather than through BR.Notice.who, which marks A PLAYER'S
+            -- NAME and this is not one.
+            --
+            -- `text` IS THE SAME SENTENCE FLATTENED, which is what the notice
+            -- store dedups on and what the pause menu's history matches.
+            text  = 'Squad voice channel connected.',
+            parts = { { t = 'Squad voice channel ' }, { b = 'connected' },
+                      { t = '.' } },
+            tone  = 'success',
+            -- Keyed, so a second one can never stack under the first.
+            key   = 'voice.squad',
+        })
     end
 end
 

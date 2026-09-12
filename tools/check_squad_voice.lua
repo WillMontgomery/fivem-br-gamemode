@@ -126,13 +126,81 @@ if voice then
              .. 'screen about something the squad panel already shows')
     end
 
-    -- THE ONE ROW THAT KEEPS ITS LINE. Squad mode with no squad is a silence
-    -- nobody asked for and cannot fix from the panel -- there is nothing to
-    -- mark, because there is no squad to mark it on.
-    if not voice:find("code = 'nosquad'.-headline") then
-        fail("the 'nosquad' row lost its headline too",
-             'that one is not a caption for the squad panel: there is no '
-             .. 'squad on it. It is the last row that still says anything')
+    -- ═══ AND THE LAST ROW WITH A LINE HAS LOST IT TOO (owner, 2026-09-11) ═══
+    --
+    --   "'Squad voice: you have no squad' toast should not be a thing - this only
+    --    shows because matchmaking hasn't run yet. How about instead, we show
+    --    them once matchmaking has completed, a success toast: 'Squad voice
+    --    channel **connected**.'"
+    --
+    -- THIS CHECK USED TO ASSERT THE EXACT OPPOSITE, and it was worse than wrong
+    -- -- it was TOOTHLESS. `voice:find("code = 'nosquad'.-headline")` is a
+    -- lazy match with no bound, so it was satisfied by the `headline =
+    -- st.headline` line on the envelope four hundred lines further down: it
+    -- would have passed a build whose row carried no headline at all, which is
+    -- exactly the build that exists now. It is scoped to the row here, the way
+    -- the 'alone' pair above it always was.
+    local noSquadRow = voice:match("code = 'nosquad'.-\n%s*}")
+    if not noSquadRow then
+        fail("the 'nosquad' verdict no longer exists",
+             'the row has to keep its own code and its own `silent` even with no '
+             .. 'sentence: the envelope dedups on the code and the squad panel '
+             .. 'reads the flag')
+    elseif noSquadRow:find('headline', 1, true) then
+        fail("the 'nosquad' row carries a headline again",
+             'it is the only row that fires BEFORE the thing it describes can '
+             .. 'be true -- every client is in squad-mode-with-no-squad until '
+             .. 'BR.Party.formSquads runs, so the line was early rather than '
+             .. 'wrong, and what replaces it is a toast on the way UP')
+    end
+
+    -- ...AND NO ROW CARRIES ONE NOW, which is the whole of the four rounds this
+    -- file has been tracking. Asserted over statusFor alone, because `headline`
+    -- is still a FIELD on the envelope below it -- the page's contract is
+    -- unchanged and is simply never filled.
+    local statusFn = voice:match('function BR%.Voice%.statusFor.-\nend')
+    if not statusFn then
+        fail('client/voice.lua no longer defines BR.Voice.statusFor',
+             'this gate reads the verdict rows out of it')
+    elseif statusFn:find('headline', 1, true) then
+        fail('a verdict row has grown a headline again',
+             'all four are gone for four different reasons -- furniture, a '
+             .. 'chosen setting, a caption for the squad panel, and one that '
+             .. 'was simply early. A new one is a line painted across the '
+             .. 'bottom of the screen for as long as its state lasts')
+    end
+
+    -- ═══ AND THE SENTENCE THAT REPLACED IT IS HIS, TO THE CHARACTER ═══
+    --
+    -- One new string in that round. It is pinned here as a LITERAL as well as in
+    -- tools/test_client.lua, for the reason test_board.lua pins a URL: the suite
+    -- proves the toast FIRES, and only a separately written copy of the words
+    -- can catch the words being tidied.
+    --
+    -- BOTH FORMS, because there are two and they must agree. `text` is the flat
+    -- sentence the notice store dedups on; `parts` is the pre-split form the page
+    -- draws, and the middle piece is the emphasis the owner wrote as `**`. A
+    -- toast has no markdown -- KeyText understands `{key:}` and `~amount~` and
+    -- nothing else -- so the bold has to be a piece rather than a mark, and a
+    -- build that put the asterisks back would draw them.
+    if not voice:find('Squad voice channel connected.', 1, true) then
+        fail('the squad-voice success toast no longer carries the owner\'s '
+             .. 'sentence',
+             '"Squad voice channel **connected**." -- his words, 2026-09-11, and '
+             .. 'the only new string in that round')
+    end
+    if not voice:find("{ b = 'connected' }", 1, true) then
+        fail('the success toast no longer emphasises "connected" as its own part',
+             'the owner wrote `**connected**` and a toast cannot render `**` '
+             .. '(ui-src/src/hud/Notices.tsx goes through KeyText). The bold the '
+             .. 'surface DOES have is the pre-split `parts` form -- see '
+             .. 'br_lib/shared/notice.lua for why markup is refused')
+    end
+    if voice:find('%*%*connected%*%*') then
+        fail('the success toast has the owner\'s asterisks in the string itself',
+             'they would be drawn as two asterisks either side of the word: '
+             .. 'there is no markdown on the notice stack. The emphasis is the '
+             .. '`b` part beside the flat sentence')
     end
 end
 

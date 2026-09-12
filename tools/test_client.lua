@@ -3768,9 +3768,25 @@ do
        'squad mode with NO squad is silent and was NOT asked for -- which is '
            .. 'the pair that makes it worth interrupting somebody over',
        tostring(nosquad.code) .. '/' .. tostring(nosquad.chosen))
-    ok(type(nosquad.headline) == 'string'
-       and nosquad.headline:lower():find('no squad') ~= nil,
-       'and it says the words "no squad" rather than describing a channel',
+    -- AND IT SAYS NOTHING ON THE HUD EITHER, WHICH IS THE FOURTH AND LAST ROW TO
+    -- GO QUIET -- and the only one that went for a different reason.
+    --
+    -- Owner, 2026-09-11: "'Squad voice: you have no squad' toast should not be a
+    -- thing - this only shows because matchmaking hasn't run yet."
+    --
+    -- THE SENTENCE WAS TRUE AND THE MOMENT WAS WRONG. The three rows above went
+    -- because they were furniture or captions; this one went because it fired in
+    -- the window between WARMUP being broadcast and BR.Party.formSquads granting
+    -- a channel -- so the only row left carrying a headline was describing a
+    -- state that was about to fix itself, every match, to everybody.
+    --
+    -- `== nil` RATHER THAN A QUIETER SENTENCE, for the reason the 'off' row above
+    -- gives: an empty string, a dash or one word would all pass a test written
+    -- the other way round and all still put something on the screen.
+    ok(nosquad.headline == nil,
+       'and it says NOTHING on the HUD -- squad mode with no squad is what every '
+           .. 'client is in until matchmaking runs, so the line was early rather '
+           .. 'than wrong',
        tostring(nosquad.headline))
     ok(type(nosquad.detail) == 'string'
        and nosquad.detail:find('Nearby') ~= nil,
@@ -3980,6 +3996,11 @@ do
     -- this file has shipped exactly that twice.
     nobodyElse()
     standAt(0, 0)
+    -- THE HIGH WATER MARK, so the "nothing was toasted" assertion below is about
+    -- THIS scene. An unbounded backwards scan finds the last toast in the whole
+    -- suite, which is some other block's and is always there -- a test that
+    -- cannot fail in the direction it is pointed.
+    local noSquadFrom = #events
     voiceApply(BR.VoiceMode.SQUAD, nil, nil, 1)
 
     -- THE HUD. The envelope the page draws from has to carry the WORDS, not
@@ -3996,26 +4017,218 @@ do
     ok(type(env) == 'table' and env.silent == true,
        'the HUD envelope says this player is silent',
        type(env) == 'table' and tostring(env.silent) or 'no voice envelope')
-    ok(type(env) == 'table' and type(env.headline) == 'string'
-       and env.headline:lower():find('no squad') ~= nil,
-       'and carries the sentence rather than leaving the page to invent one',
-       type(env) == 'table' and tostring(env.headline) or '-')
 
-    -- THE TOAST, because a HUD line at the bottom of a screen during a fight
-    -- is a line nobody reads. Edge-triggered: it fires when the verdict
-    -- CHANGES, which is when it is news.
-    local toasted = nil
-    for i = #events, 1, -1 do
-        local e = events[i]
-        if e.name == 'br:ui:sendLocal' and e.args[1] == BR.Nui.TOAST then
-            toasted = e.args[2]; break
+    -- AND IT CARRIES NO SENTENCE, WHICH IS THIS ROUND'S CHANGE.
+    --
+    -- This asserted the OPPOSITE for four rounds, and it was right each time --
+    -- until the owner named the moment rather than the words (2026-09-11). The
+    -- verdict still travels on the envelope, because the settings screen and the
+    -- squad panel both read it; what has gone is anything for VoiceNotice.tsx to
+    -- draw.
+    ok(type(env) == 'table' and env.headline == nil
+       and env.status == 'nosquad' and type(env.detail) == 'string',
+       'and carries NO sentence, while still carrying the verdict the settings '
+           .. 'screen reads -- silence on the HUD is not silence on the wire',
+       type(env) == 'table'
+           and (tostring(env.status) .. '/' .. tostring(env.headline))
+           or 'no voice envelope')
+
+    -- AND NOTHING IS TOASTED, WHICH IS THE OWNER'S WORD "should not be a thing".
+    --
+    -- Read from the REAL push rather than from the condition, for the reason the
+    -- 'alone' block gives: the condition is what a later round edits.
+    do
+        local toasted = nil
+        for i = noSquadFrom + 1, #events do
+            local e = events[i]
+            if e.name == 'br:ui:sendLocal' and e.args[1] == BR.Nui.TOAST then
+                toasted = e.args[2]; break
+            end
         end
+        ok(toasted == nil,
+           'and the player is not interrupted at all for a squad matchmaking '
+               .. 'has not built yet',
+           type(toasted) == 'table' and tostring(toasted.text) or 'no toast')
     end
-    ok(type(toasted) == 'table' and type(toasted.text) == 'string'
-       and toasted.text:lower():find('no squad') ~= nil,
-       'and the player is interrupted once, in words, rather than left to '
-           .. 'work silence out for themselves',
-       type(toasted) == 'table' and tostring(toasted.text) or 'no toast')
+
+    -- ═══ AND THE TOAST THAT REPLACES IT, ONCE THE CHANNEL IS UP ═══
+    --
+    -- Owner, 2026-09-11: "How about instead, we show them once matchmaking has
+    -- completed, a success toast: 'Squad voice channel **connected**.'"
+    --
+    -- ONE NEW STRING IN THE WHOLE ROUND AND IT IS HIS, so it is pinned as a
+    -- LITERAL here rather than matched loosely: a sentence rebuilt out of the
+    -- config it came from is a test agreeing with itself, and this project's one
+    -- rule about copy is that the words are the owner's.
+    --
+    -- THE `**` IS NOT IN IT, AND THAT IS DELIBERATE AND WRITTEN DOWN. A toast is
+    -- drawn through ui-src/src/hud/Notices.tsx and KeyText, which understand
+    -- `{key:command}` and `~amount~` and no markdown at all -- and
+    -- br_lib/shared/notice.lua refuses to add any, because a notice may carry a
+    -- player's own name. So the emphasis is the one the surface really has: the
+    -- pre-split `parts` form, whose `b` piece the page draws bold. Asserted as a
+    -- PAIR -- the flat sentence and the split one -- because either alone passes
+    -- while the other is wrong, and the flat one is what the store dedups on.
+    do
+        local CONNECTED = 'Squad voice channel connected.'
+
+        nobodyElse()
+        standAt(0, 0)
+        local before = #events
+        voiceApply(BR.VoiceMode.SQUAD, 30703, { 2, 3 }, 1)
+
+        local function toastsSince(from)
+            local out = {}
+            for i = from + 1, #events do
+                local e = events[i]
+                if e.name == 'br:ui:sendLocal' and e.args[1] == BR.Nui.TOAST then
+                    out[#out + 1] = e.args[2]
+                end
+            end
+            return out
+        end
+
+        local got = toastsSince(before)
+        ok(#got == 1 and got[1].text == CONNECTED,
+           'a squad channel coming up toasts the owner\'s sentence, once, '
+               .. 'verbatim',
+           (#got == 1) and tostring(got[1].text) or ('%d toast(s)'):format(#got))
+
+        ok(#got == 1 and got[1].tone == 'success',
+           'as a SUCCESS -- the row he asked to replace was the complaint, and '
+               .. 'this is the same event read the other way up',
+           (#got == 1) and tostring(got[1].tone) or '-')
+
+        -- THE EMPHASIS, IN THE FORM THE SURFACE CAN DRAW. Three pieces, the
+        -- middle one bold, and flattening them has to give back the sentence
+        -- above -- which is what stops the two representations drifting.
+        local p = (#got == 1) and got[1].parts or nil
+        local flat = ''
+        for _, piece in ipairs(p or {}) do flat = flat .. (piece.t or piece.b) end
+        ok(type(p) == 'table' and #p == 3
+           and p[1].t == 'Squad voice channel ' and p[2].b == 'connected'
+           and p[3].t == '.' and flat == CONNECTED,
+           'with "connected" carried as its own bold piece rather than as `**` '
+               .. 'in the string, because the toast renderer has no markdown -- '
+               .. 'and the pieces flatten back to the same sentence',
+           type(p) == 'table' and ('%d piece(s): %s'):format(#p, flat)
+               or 'no parts')
+
+        -- ═══ ONCE PER CHANNEL, AND THE LATCH IS WHAT DOES IT ═══
+        --
+        -- A BARE SECOND TICK WOULD PROVE NOTHING, and this assertion was written
+        -- that way first. The band in front of pushVoice dedups on
+        -- `talking .. '|' .. st.code`, so repeating a tick with nothing changed
+        -- never reaches the toast at all -- the latch could be deleted and a
+        -- "three more pushes say nothing" test would still pass.
+        --
+        -- SO THE VERDICT IS MADE TO MOVE AND COME BACK, which is a mate leaving
+        -- the squad and rejoining it: 'radio' -> 'alone' -> 'radio', on the SAME
+        -- channel. That defeats the band's key twice, so what is left holding the
+        -- line is the channel latch and nothing else.
+        --
+        -- Driven with raw VOICE_SET pushes rather than voiceApply, which reboots
+        -- br_core and re-derives the join -- a different scene from a mate
+        -- walking away.
+        fire(BR.Net.VOICE_SET, { radio = 30703, mates = {},
+                                 nearbyRange = VR.nearby })
+        BR.Loop.step(BR.Loop.TICK)
+        before = #events
+        fire(BR.Net.VOICE_SET, { radio = 30703, mates = { 2, 3 },
+                                 nearbyRange = VR.nearby })
+        BR.Loop.step(BR.Loop.TICK)
+        ok(#toastsSince(before) == 0,
+           'a mate leaving and rejoining does NOT announce the channel again -- '
+               .. 'the latch is the channel number, so one squad is one '
+               .. 'announcement however its membership moves',
+           ('%d repeat(s)'):format(#toastsSince(before)))
+
+        -- ═══ 'alone' IS NOT A CONNECTED CHANNEL ═══
+        --
+        -- A granted channel with nobody else on it is a squad whose other members
+        -- have not arrived. Announcing a conversation with nobody in it is the
+        -- state the owner has already had removed once, from the other direction.
+        nobodyElse()
+        standAt(0, 0)
+        before = #events
+        voiceApply(BR.VoiceMode.SQUAD, 30703, {}, 1)
+        ok(#toastsSince(before) == 0,
+           'a channel granted with no squadmate on it announces nothing -- '
+               .. '"matchmaking has completed" is a squad, not a channel number',
+           ('%d toast(s)'):format(#toastsSince(before)))
+
+        -- ═══ AND THE NEXT MATCH'S CHANNEL IS NEWS AGAIN ═══
+        --
+        -- The latch is the channel number, so a player who plays four matches is
+        -- told four times and a player whose mate leaves and rejoins is told
+        -- once. Reaching this state needs the channel WITHDRAWN in between, which
+        -- is what the end of a match does.
+        nobodyElse()
+        standAt(0, 0)
+        voiceApply(BR.VoiceMode.SQUAD, nil, nil, 1)
+        before = #events
+        voiceApply(BR.VoiceMode.SQUAD, 40404, { 2 }, 1)
+        local again = toastsSince(before)
+        ok(#again == 1 and again[1].text == CONNECTED,
+           'and a DIFFERENT channel after the last one was withdrawn says it '
+               .. 'again -- one announcement per squad, not one per session',
+           (#again == 1) and tostring(again[1].text)
+               or ('%d toast(s)'):format(#again))
+
+        -- ═══ A CHANNEL WE WERE GIVEN IS NOT A CHANNEL WE ARE ON ═══
+        --
+        -- `radio` is the server's grant and `joined` is what this client last
+        -- asked pma-voice for; client/voice.lua's own header says confusing those
+        -- two cost a week (#150), and "connected" is a claim about the second.
+        --
+        -- THE STATE IS STAGED BY TAKING pma-voice AWAY, which is the real way to
+        -- reach it: applyRadio records nothing while there is nobody to have done
+        -- it, so the grant lands and the join never happens. That is a total voice
+        -- outage, and a green "connected" toast over the top of one is the worst
+        -- possible reading of this feature.
+        -- DRIVEN BY HAND RATHER THAN THROUGH voiceApply, because that helper
+        -- calls pmaReset() and pmaReset() brings the resource back. These are the
+        -- same lines the absent-pma block further down uses.
+        nobodyElse()
+        standAt(0, 0)
+        pmaReset()
+        pma.running = false
+        BR.Voice.pref.solo, BR.Voice.pref.squad = nil, nil
+        fire('onClientResourceStart', 'br_core')
+        BR.State.me.src = 1
+        setVoicePref(BR.VoiceMode.SQUAD)
+
+        -- THE CHANNEL WITHDRAWN, AND THE BAND MADE TO SEE IT WITHDRAWN. Both
+        -- halves are load-bearing: the step is what moves the dedup key off
+        -- 'radio' (without it the push below never reaches the toast and this
+        -- scene asserts nothing at all) and it is also what re-arms the latch, so
+        -- the only thing left refusing the toast is the join test itself.
+        fire(BR.Net.VOICE_SET, { radio = nil, mates = nil,
+                                 nearbyRange = VR.nearby })
+        BR.Loop.step(BR.Loop.TICK)
+
+        before = #events
+        fire(BR.Net.VOICE_SET, { radio = 50505, mates = { 2 },
+                                 nearbyRange = VR.nearby })
+        BR.Loop.step(BR.Loop.TICK)
+        local outage = toastsSince(before)
+        ok(#outage == 0 and BR.Voice.state.radio == 50505
+           and BR.Voice.state.joined ~= 50505,
+           'a channel granted while pma-voice is not running announces nothing '
+               .. '-- being handed a channel is not being on one',
+           ('%d toast(s), granted %s, joined %s')
+               :format(#outage, tostring(BR.Voice.state.radio),
+                       tostring(BR.Voice.state.joined)))
+        pmaReset()
+
+        -- AND THE SCENE GOES BACK, because the assertions below this one are
+        -- about squad-with-no-squad and read the live state rather than building
+        -- their own. A block that leaves a granted channel behind makes the next
+        -- one pass or fail on a machine it never set up.
+        nobodyElse()
+        standAt(0, 0)
+        voiceApply(BR.VoiceMode.SQUAD, nil, nil, 1)
+    end
 
     -- /brvoice, WHICH IS THE COMMAND A PLAYTESTER IS ACTUALLY TOLD TO RUN.
     -- Three separate claims, each ANSWERED rather than left as two numbers to
