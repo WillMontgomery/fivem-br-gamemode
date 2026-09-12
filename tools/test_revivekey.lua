@@ -785,6 +785,93 @@ do
             .. 'in the file, so there is no second copy of the height, and no '
             .. 'second `or 0.4` for an unconfigured marker to disagree over')
 
+    -- ═══ THE SIREN, AND THE ONLY PROPERTY WORTH ASSERTING IS WHERE IT IS
+    --     SWITCHED ═══
+    --
+    --   "Can you make the ambulance siren turn on while holding the revive key
+    --    at the ambulance?"                       -- owner, 2026-09-12
+    --
+    -- Turning it ON is one native and cannot go wrong quietly. Turning it OFF is
+    -- the whole risk, because the ways a hold can end are a LIST -- the key
+    -- coming up, the server cancelling, the revive completing, switching mates,
+    -- the player dying mid-hold, the match ending, the squad's key being spent,
+    -- client/dbno.lua taking the key -- and an ambulance left wailing at a
+    -- station for the rest of a match is the failure. A list of edge handlers is
+    -- how one of those gets missed.
+    --
+    -- SO WHAT IS PINNED IS THE STRUCTURE THAT MAKES THE LIST IRRELEVANT: the
+    -- siren MIRRORS `holding`, once a frame, at a point after every line that
+    -- can change `holding` and before anything that can return. That is a
+    -- property of WHERE the call is, which is exactly what a text pin can see
+    -- and what no offline harness could -- there is no client state here to run
+    -- a frame pass in (see this block's opening note).
+    local mirror = clientCode:find('syncSiren%(holding and holding%.veh or nil%)')
+    ok(mirror ~= nil,
+        'the siren mirrors the hold rather than being switched by whoever '
+            .. 'happens to end one')
+
+    -- AFTER EVERY WRITER OF `holding`, which is what "every exit path" means
+    -- here. The three branches that release or arm a hold all sit above it.
+    local lastRelease = nil
+    do
+        local at = 1
+        while true do
+            local s = clientCode:find('holding = nil', at, true)
+            if not s then break end
+            lastRelease, at = s, s + 1
+        end
+    end
+    local arm = clientCode:find('holding = { target = c%.id')
+    ok(mirror ~= nil and lastRelease ~= nil and arm ~= nil
+       and mirror > lastRelease and mirror > arm,
+        '...below every line in the frame pass that releases or arms one, so '
+            .. 'the frame a hold ends is the frame the siren stops',
+        ('mirror %s, last release %s, arm %s'):format(tostring(mirror),
+            tostring(lastRelease), tostring(arm)))
+
+    -- ...AND BEFORE THE RE-ASSERTION BLOCK, which is the first thing in that
+    -- pass that can return early.
+    local beat = clientCode:find('TriggerServerEvent%(BR%.Net%.REVIVEKEY_START')
+    ok(mirror ~= nil and beat ~= nil and mirror < beat,
+        '...and above the beat, so no early return can skip it',
+        ('mirror %s, beat %s'):format(tostring(mirror), tostring(beat)))
+
+    -- ═══ AND THE ONE EXIT A FRAME PASS CANNOT COVER ═══
+    --
+    -- A `restart br_core` mid-hold. There is no next frame, and the van would
+    -- outlive the resource that started it.
+    ok(clientCode:find("AddEventHandler%('onResourceStop'") ~= nil
+       and clientCode:find('syncSiren%(nil%)') ~= nil,
+        'and a resource restart mid-hold stops it too, which no frame pass can')
+
+    -- ═══ THE ENGINE GOES ON FIRST, BECAUSE A SIREN ON A DEAD ENGINE IS SILENT ═══
+    --
+    -- These vans are parked at a station. client/rescue.lua spends the same
+    -- three natives in the same order on its own ambulance and that one is
+    -- audible; client/ambheal.lua omits the engine because the AI is already
+    -- driving. Reversed, this feature is lights and no noise -- which is
+    -- indistinguishable from the siren native not working.
+    local eng = clientCode:find('SetVehicleEngineOn, veh, true, true, false')
+    local sir = clientCode:find('SetVehicleSiren, veh, true')
+    ok(eng ~= nil and sir ~= nil and eng < sir,
+        'the engine is started before the siren is asked for',
+        ('engine %s, siren %s'):format(tostring(eng), tostring(sir)))
+
+    ok(clientCode:find('SetVehicleHasMutedSirens, veh, false') ~= nil,
+        '...and the mute flag is cleared rather than assumed, on the one '
+            .. 'feature of the three whose whole point is the noise')
+
+    -- ═══ AND ONLY WHAT WE CHANGED IS PUT BACK ═══
+    --
+    -- client/ambheal.lua's rule: an ambulance somebody was already driving with
+    -- its siren on must not go quiet because a stranger revived beside it. The
+    -- engine half is this file's own, for the same reason in the other
+    -- direction -- a van that was already running must not be switched off.
+    ok(clientCode:find('if cur%.sirenWasOff then') ~= nil,
+        'a van that was already wailing keeps wailing')
+    ok(clientCode:find('if cur%.engineWasOff and SetVehicleEngineOn then') ~= nil,
+        'and a van that was already running keeps running')
+
     -- AND THE VAN PLATE READS A FACE. `plateNumbers` takes the word
     -- BR.Dui.nearFace's answer is named by, so the panel a player is standing at
     -- and the five numbers the plate is drawn with are one decision.

@@ -655,6 +655,138 @@ local cand = nil
 --- because that has cost two playtest rounds.
 local holding = nil
 
+--- The ambulance this client has a siren running on, or nil.
+---
+--- ═══ THE REQUEST ═══
+---
+---   "Can you make the ambulance siren turn on while holding the revive key at
+---    the ambulance?"                            -- owner, 2026-09-12
+---
+--- ═══ A VEHICLE PROPERTY, NOT A CUE, AND THAT IS THE POINT ═══
+---
+--- Nothing is played here and there is no entry in config/audio.lua for it. A
+--- siren belongs to the van, so the engine positions it, attenuates it and mixes
+--- it for every player in earshot -- which is the owner's own reasoning from the
+--- revive cue ("This will allow opponents to hear it which may attract them for
+--- combat"), bought with three natives instead of a server fan-out.
+---
+--- ═══ WHAT IS REMEMBERED, AND WHY BOTH HALVES ═══
+---
+--- `sirenWasOff` is client/ambheal.lua's, verbatim and for its reason: an
+--- ambulance somebody was already driving with its siren on must not go quiet
+--- because a stranger revived beside it. `engineWasOff` is the half that file
+--- did not need -- it attaches a player to a van the AI is driving, engine
+--- running. THESE vans are parked at a station with the engine off, and A
+--- SIREN ON A DEAD ENGINE IS SILENT: SET_VEHICLE_SIREN gives the lights and the
+--- state, the AUDIO follows the vehicle's audio being alive. client/rescue.lua
+--- already spends the same three lines in the same order on its own ambulance
+--- (SetVehicleEngineOn, SetVehicleSiren, SetVehicleHasMutedSirens) and that one
+--- is audible; this is that sequence, on a van that was not already running.
+local siren = nil
+
+--- Ask for control of a vehicle this client did not create.
+---
+--- client/ambheal.lua's, verbatim, and its reasoning holds here unchanged:
+--- NetworkRequestControlOfEntity returns whether the REQUEST was accepted rather
+--- than whether control arrived, so client/rescue.lua asks in a loop. This does
+--- not, because nothing here NEEDS control to succeed -- the revive is the
+--- feature and the siren is the flourish, so a refused request costs a noise
+--- rather than a revive.
+--- @param veh integer
+local function nudgeControl(veh)
+    if NetworkRequestControlOfEntity then pcall(NetworkRequestControlOfEntity, veh) end
+end
+
+--- Turn the siren on at `veh`, off everywhere else. Safe to call every frame.
+---
+--- ═══ A LEVEL TEST, NOT THREE EDGE HANDLERS ═══
+---
+--- client/shop.lua's argument and client/revivekey.lua's own `revivekey.scan`
+--- teardown above: "hanging the cleanup off a particular transition leaves every
+--- case that is not that transition to a handler that did not run." A hold can
+--- stop for the key coming up, the server cancelling it, the revive completing,
+--- the player switching mates, the player DYING mid-hold, the match ending, the
+--- squad's key being spent, or client/dbno.lua taking the interact key -- and
+--- every one of those clears `holding`, because `holding` is itself cleared by a
+--- level test. So this mirrors `holding` once a frame and inherits all of them.
+--- An ambulance left wailing for the rest of a match is the failure being
+--- avoided, and it is not a failure a list of transitions can be trusted with.
+---
+--- WRITES NOTHING WHEN NOTHING HAS CHANGED. The common case is `veh` nil and
+--- `siren` nil, which is two comparisons.
+---
+--- EVERY NATIVE IS pcall'd AND CONTROL IS ONLY NUDGED, exactly as
+--- client/ambheal.lua does: these are writes to somebody else's entity, the
+--- request may simply be refused, and a refused siren costs a noise rather than
+--- a revive.
+--- @param veh integer|nil  the ambulance the hold is at, or nil for none
+local function syncSiren(veh)
+    if K and K.siren == false then veh = nil end
+    if veh == 0 then veh = nil end
+
+    local cur = siren
+    if cur and cur.veh ~= veh then
+        -- PUT BACK ONLY WHAT WE CHANGED. A van that was already wailing keeps
+        -- wailing; an engine that was already running keeps running.
+        if isTrue(DoesEntityExist(cur.veh)) then
+            if cur.sirenWasOff then pcall(SetVehicleSiren, cur.veh, false) end
+            if cur.engineWasOff and SetVehicleEngineOn then
+                pcall(SetVehicleEngineOn, cur.veh, false, true, true)
+            end
+        end
+        siren, cur = nil, nil
+    end
+
+    if not veh or cur then return end
+    if not isTrue(DoesEntityExist(veh)) then return end
+
+    -- READ BEFORE WRITTEN, both of them, or the teardown has nothing to restore
+    -- to. Through pcall so the natives are ARGUMENTS rather than calls -- which
+    -- is also how tools/check_bool_natives.lua recognises that the answer is not
+    -- being believed raw (`0` is truthy in Lua and a BOOL native may return it).
+    local okS, wasOn = pcall(IsVehicleSirenOn, veh)
+    local wasRunning = false
+    if GetIsVehicleEngineRunning then
+        local okE, running = pcall(GetIsVehicleEngineRunning, veh)
+        wasRunning = okE and isTrue(running)
+    end
+
+    nudgeControl(veh)
+
+    -- THE ENGINE FIRST. See the note on `siren` above: the siren's audio follows
+    -- the vehicle's, and a station ambulance is parked with the engine off.
+    -- `instantly` so there is no starter motor between the keypress and the
+    -- noise, and `disableAutoStart` false so nothing about this van's ordinary
+    -- behaviour is changed for whoever drives it next.
+    if SetVehicleEngineOn then
+        pcall(SetVehicleEngineOn, veh, true, true, false)
+    end
+    pcall(SetVehicleSiren, veh, true)
+    -- AND THE MUTE IS CLEARED RATHER THAN ASSUMED. SET_VEHICLE_HAS_MUTED_SIRENS
+    -- is the "lights but no noise" flag, and this is the one feature of the
+    -- three whose whole point is the noise.
+    pcall(SetVehicleHasMutedSirens, veh, false)
+
+    siren = {
+        veh = veh,
+        sirenWasOff  = not (okS and isTrue(wasOn)),
+        engineWasOff = not wasRunning,
+    }
+end
+
+--- THE ONE EXIT THE FRAME PASS CANNOT COVER, because there is no next frame.
+---
+--- A `restart br_core` mid-match is a normal thing to do while developing, and
+--- it is the one way out of a hold where the mirror above never runs again. A
+--- van left wailing at a station for the rest of the match is exactly the shape
+--- of thing the owner reports and nobody can explain, and it would outlive the
+--- resource that caused it. client/dui.lua tears its browsers down on the same
+--- event and for the same reason.
+AddEventHandler('onResourceStop', function(res)
+    if res ~= GetCurrentResourceName() then return end
+    syncSiren(nil)
+end)
+
 --- Throttle on the re-assertion of a running hold.
 local ASK_EVERY_MS = 250
 local lastAsk = 0
@@ -904,6 +1036,20 @@ BR.Loop.register(BR.Loop.FRAME, 'revivekey.hold', function()
             holding = { target = c.id, from = GetGameTimer(), veh = c.veh, n = n }
         end
     end
+
+    -- ═══ AND THE VAN WAILS FOR EXACTLY AS LONG AS SOMEBODY IS HOLDING AT IT ═══
+    --
+    --   "Can you make the ambulance siren turn on while holding the revive key
+    --    at the ambulance?"                       -- owner, 2026-09-12
+    --
+    -- HERE, AFTER EVERY LINE THAT CAN CHANGE `holding`, AND BEFORE ANYTHING THAT
+    -- CAN RETURN. That placement is the whole of "turn it off on every exit
+    -- path": the three branches above are the only ones in this file that arm or
+    -- release a hold, `revivekey.scan`'s level teardown clears it for the death,
+    -- the match ending, the squad losing its key and every other way this stops
+    -- being live, and this line runs on the next frame in all of those cases.
+    -- See syncSiren's header for why it is a mirror rather than a set of edges.
+    syncSiren(holding and holding.veh or nil)
 
     if holding then
         -- THE HOLD IS RE-ASSERTED, NOT ANNOUNCED ONCE. A brief tap completed a
