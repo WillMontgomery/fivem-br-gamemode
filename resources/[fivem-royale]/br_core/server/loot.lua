@@ -1011,15 +1011,37 @@ local REFUSAL = {
 
 --- What to call this item, one of it.
 ---
---- Three tables and a fallback, in the same order pluralOf walks them, because
---- an item id can be a consumable, a weapon or throwable, or an ammo pool and
---- the sentence has no way to know which. The last line is the one that
---- matters: a refusal that renders `nil` into its own text is worse than the
---- refusal it replaced.
+--- ═══ THE STACK SAYS WHICH TABLE IT IS IN, AND THIS USED NOT TO ASK ═══
+---
+--- This header used to say the sentence "has no way to know which" of the three
+--- tables an id belongs to. It has: `kind` is on EVERY stack the inventory ever
+--- builds -- BR.ItemKind.AMMO against WEAPON, THROWABLE and CONSUMABLE -- set by
+--- shared/loot_gen.lua, server/inventory.lua, server/debug.lua and devStack
+--- below, and read by BR.LootLabel, BR.Inv.carryMax and client/loot.lua's
+--- modelOf already. Walking three tables in a fixed order was guessing at an
+--- answer the argument was carrying.
+---
+--- AND THE GUESS IS WRONG FOR ONE POOL TODAY. BR.AmmoType.SMG is the string
+--- 'smg' and config/weapons.lua carries `{ id = 'smg', name = 'WEAPON_SMG' }`, so
+--- a stack of SMG ROUNDS asked WeaponById first came back as the GUN: "Switch
+--- slots to pick up another SMG." The collision is shipped and predates the ammo
+--- pools being split at all; what fixes it here is not renaming a pool but
+--- reading the field that already distinguishes them (2026-09-12).
+---
+--- ONLY AMMO SHORT-CIRCUITS. A stack with no `kind` -- nothing builds one, and
+--- this function has always been defensive about its argument -- still falls
+--- through the three tables exactly as it did.
+---
+--- The last line still matters most: a refusal that renders `nil` into its own
+--- text is worse than the refusal it replaced.
 --- @param stack table|nil
 --- @return string
 local function labelOf(stack)
     local id = stack and stack.item
+    if id and stack.kind == BR.ItemKind.AMMO then
+        local pool = BR.Config.AmmoPickups[id]
+        if pool then return pool.label or 'item' end
+    end
     local c = id and BR.Config.ConsumableById[id]
     if c then return c.label or 'item' end
     local w = id and BR.Config.WeaponById[id]
@@ -1035,10 +1057,21 @@ end
 --- sentence is authored where the item is rather than assembled here. The
 --- fallback forms a regular plural, which is right for every name in the game
 --- today -- including every throwable, whose config is the weapon table.
+---
+--- AMMO FIRST WHEN THE STACK SAYS AMMO, for the reason labelOf's header gives:
+--- 'smg' is both a pool and WEAPON_SMG's id, so a walk that asked WeaponById
+--- first made a plural out of the GUN and told a player they could not carry
+--- more "SMGs".
+--- An ammo label is already a mass noun ("SMG Ammo", "Shells") and takes no `s`,
+--- which is why this arm returns it whole rather than suffixing it.
 --- @param stack table|nil
 --- @return string
 local function pluralOf(stack)
     local id = stack and stack.item
+    if id and stack.kind == BR.ItemKind.AMMO then
+        local pool = BR.Config.AmmoPickups[id]
+        if pool then return pool.label or 'of those' end
+    end
     local c = id and BR.Config.ConsumableById[id]
     if c then return c.plural or ((c.label or 'item') .. 's') end
     local w = id and BR.Config.WeaponById[id]

@@ -3284,12 +3284,21 @@ do
     -- it back.
     --
     -- ⚠ 'smg' ALREADY COLLIDES, AND IT IS NOT NEW. BR.AmmoType.SMG is 'smg' and
-    -- BR.Config.Weapons carries `{ id = 'smg', name = 'WEAPON_SMG' }`, so a
-    -- refused SMG-ammo pickup is described to the player as "SMG" -- the gun's
-    -- label -- rather than "SMG Ammo", and `brgive <id> smg` hands over the gun.
-    -- That is a SHIPPED defect and renaming a pool is a migration across the
-    -- inventory, the shop ids and the saved state, so it is not fixed here and it
-    -- is not silently accepted either: it is the ONE allowed entry below.
+    -- BR.Config.Weapons carries `{ id = 'smg', name = 'WEAPON_SMG' }`. The
+    -- collision is SHIPPED and predates the pools being split at all, so it is
+    -- the ONE allowed entry below rather than a failure.
+    --
+    -- THE CONSUMERS THAT COULD ASK, NOW ASK (2026-09-12). server/loot.lua's
+    -- labelOf and pluralOf read `stack.kind` before they walk any table, which is
+    -- the field every stack has always carried, so a stack of SMG rounds is named
+    -- "SMG Ammo" and the gun is still the gun. No rename and no migration: see
+    -- labelOf's header, and tools/test_roster.lua's `loot.refusal` for the pin.
+    --
+    -- WHAT IS STILL LIVE IS THE ADMIN DOOR, and it is live because it has no
+    -- `kind` to read: server/debug.lua's brgive and brarm and server/loot.lua's
+    -- devStack all resolve a BARE id a human typed, ask WeaponById first, and so
+    -- `brgive <id> smg` hands over WEAPON_SMG rather than 60 rounds. Disambiguating
+    -- that means new syntax at those commands, which is the owner's call.
     --
     -- THIS IS A RATCHET, the same shape as tools/bool_natives.baseline. Any pool
     -- value that collides and is not on this list fails, so the defect cannot

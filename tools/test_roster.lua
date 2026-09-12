@@ -6083,6 +6083,62 @@ do
         ('%q'):format(tostring(orphan)))
 
     -- ======================================================================
+    -- A STACK OF ROUNDS IS NAMED AS ROUNDS, NOT AS THE GUN THAT SHARES ITS ID
+    -- (2026-09-12)
+    --
+    -- BR.AmmoType.SMG is the string 'smg' and config/weapons.lua carries
+    -- `{ id = 'smg', name = 'WEAPON_SMG' }`, so an ammo stack whose `item` is the
+    -- bare pool string collides head-on with a weapon id. labelOf and pluralOf
+    -- walked ConsumableById, then WeaponById, then AmmoPickups in a fixed order
+    -- and asked the stack nothing -- so a stack of SMG ROUNDS came back as the
+    -- GUN: "Switch slots to pick up another SMG.", and "You cannot carry more
+    -- SMGs."
+    --
+    -- IT WAS NEVER A MIGRATION. Every stack already carries `kind`, set by
+    -- shared/loot_gen.lua, server/inventory.lua and server/debug.lua alike, and
+    -- BR.LootLabel and BR.Inv.carryMax were already reading it. The two sentence
+    -- builders simply were not.
+    --
+    -- DRIVEN THROUGH BR.Loot.refusalText RATHER THAN THE CLAIM HANDLER, and that
+    -- is worth being exact about: BR.Inv.give returns `ammofull` for an AMMO
+    -- stack before either sentence is built, so no pickup in the game reaches
+    -- these two lines with ammunition today. What is under test is the FUNCTION,
+    -- which is wrong at its own boundary and is public for this reason (see its
+    -- header) -- the same standard the rest of this block holds it to.
+    --
+    -- 'smg' IS THE ONLY POOL THAT COLLIDES, so it is the only one that can fail
+    -- here; the rest are asserted anyway, because the assertion that survives the
+    -- next pool rename is the one that names none of them.
+    local mislabelled = {}
+    for _, pool in ipairs(BR.Config.AmmoOrder) do
+        local want  = BR.Config.AmmoPickups[pool].label
+        local stack = { item = pool, kind = BR.ItemKind.AMMO }
+        local one   = BR.Loot.refusalText('sameitem', stack)
+        local many  = BR.Loot.refusalText('carrymax', stack)
+        if not one:find(want, 1, true) then
+            mislabelled[#mislabelled + 1] = ('%s one: %q'):format(pool, one)
+        end
+        if not many:find(want, 1, true) then
+            mislabelled[#mislabelled + 1] = ('%s many: %q'):format(pool, many)
+        end
+    end
+    ok(#mislabelled == 0,
+        'every ammo pool is named by its own AmmoPickups label in both the '
+            .. 'singular and the plural refusal, including the one whose value '
+            .. 'is also a weapon id',
+        table.concat(mislabelled, '; '))
+
+    -- AND THE GUN IS STILL THE GUN. The fix reads `kind`, so it must not have
+    -- taught the weapon arm to answer for ammunition as well -- a WEAPON stack
+    -- spelled 'smg' is WEAPON_SMG and says so.
+    local gun = BR.Loot.refusalText('sameitem',
+        { item = 'smg', kind = BR.ItemKind.WEAPON })
+    ok(gun:find('SMG', 1, true) ~= nil
+       and gun:find('SMG Ammo', 1, true) == nil,
+        'and a WEAPON stack spelled "smg" is still the gun, not the pool',
+        ('%q'):format(gun))
+
+    -- ======================================================================
     -- THREE CASES, AND ONLY THE THIRD SAYS "MAXIMUM" (#171, reopened).
     --
     -- The commit before this one asked ONE question -- "is the active slot the
@@ -13971,6 +14027,190 @@ do
     ok(BR.Roster.get(1).state == BR.PlayerState.DBNO,
        'a lone developer in a one-squad dev match can still be knocked, so the '
            .. 'kit and the ambulance stay testable', BR.Roster.get(1).state)
+end
+
+describe('dbno.explosion')
+do
+    -- ═══ A BLAST HAS NO BLEED CLOCK ═══
+    --
+    --   "Can we make it so if you die in an explosion there is no bleed out
+    --    timer? You're just immediately dead."          -- owner, 2026-09-12
+    --
+    -- EVERY HASH HERE IS READ OUT OF THE CONFIG, never written down. What is
+    -- under test is the RULE -- "whatever the tables flag as a detonation" --
+    -- and a block that spelled 0xB1CA77B1 would go on passing after somebody
+    -- renumbered the arsenal, and would say nothing at all about the launcher
+    -- added next week.
+    local function hashOf(id)
+        local w = BR.Config.WeaponById[id]
+        return w and w.hash
+    end
+
+    --- The world's own damage, by the id the environmental table gives it.
+    local function envHash(id)
+        for _, e in ipairs(BR.Config.Environmental) do
+            if e.id == id then return e.hash end
+        end
+    end
+
+    --- Knock player 1 out of health in a squad match that WOULD otherwise down
+    --- them: a standing mate, the mode's dbno flag set, the lone-dev hold on.
+    --- Every 'dies' assertion below is therefore a statement about the cause and
+    --- nothing else, and every one of them was DBNO before 2026-09-12.
+    local function hitBy(causeHash, cause)
+        squadMatch(2)
+        BR.Combat.defeat(1, cause or 'explosion', 2, causeHash)
+        return BR.Roster.get(1).state
+    end
+
+    -- ═══ THE THREE LAUNCHERS, AND THE REASON THIS IS A LOOP ═══
+    --
+    -- They live in BR.Config.AirdropWeapons, which is a DIFFERENT array from
+    -- BR.Config.Weapons -- registered into WeaponByHash by hand at the foot of
+    -- config/weapons.lua, and into no rarity bucket at all. A classifier that
+    -- walked BR.Config.Weapons would miss every rocket in the game and knock
+    -- players down to them, which is exactly the playtest he would run first.
+    for _, id in ipairs({ 'rpg', 'grenadelauncher', 'railgun' }) do
+        ok(hashOf(id) ~= nil, id .. ' is resolvable as a weapon at all')
+        local got = hitBy(hashOf(id))
+        ok(got == BR.PlayerState.OUT,
+           id .. ' kills a squad player outright rather than knocking them down',
+           got)
+    end
+
+    -- ═══ THROWABLES THAT DETONATE ═══
+    for _, id in ipairs({ 'grenade', 'sticky' }) do
+        local got = hitBy(hashOf(id))
+        ok(got == BR.PlayerState.OUT,
+           id .. ' is a blast too -- thrown or launched makes no difference',
+           got)
+    end
+
+    -- ═══ THE WORLD'S OWN BLAST: A CAR, A GAS PUMP, A BARREL ═══
+    --
+    -- The engine bills all of those as WEAPON_EXPLOSION, which is a row in the
+    -- environmental table rather than a weapon anybody was issued.
+    ok(hitBy(envHash('explosion')) == BR.PlayerState.OUT,
+       'an ambient explosion kills outright as well')
+
+    -- ═══ SIGNED HASHES, WHICH IS HOW THE ENGINE ACTUALLY DELIVERS THEM ═══
+    --
+    -- GET_PED_CAUSE_OF_DEATH answers signed, so a top-bit-set weapon arrives
+    -- negative. BR.NormHash exists for precisely this and the RPG is one of the
+    -- weapons it exists for; without it this reads as an unknown hash and the
+    -- rocket goes back to knocking people down.
+    ok(hitBy(hashOf('rpg') - 0x100000000) == BR.PlayerState.OUT,
+       'and the same rocket arriving as a SIGNED hash still kills outright',
+       hitBy(hashOf('rpg') - 0x100000000))
+
+    -- ═══ FIRE IS NOT A BLAST. HE SAID EXPLOSION ═══
+    --
+    -- The molotov carries `explosive = true`, and that flag is a VALIDATOR
+    -- decision -- no magazine, no cadence, reach is throw plus blast -- not a
+    -- claim that the bottle detonates. A rule derived from the flag alone would
+    -- take fire down with it, and the owner has already killed himself with a
+    -- molotov once (2026-09-09), so this is the case he will check.
+    ok(hitBy(hashOf('molotov'), 'burned') == BR.PlayerState.DBNO,
+       'a molotov still knocks a squad player down -- fire is not an explosion',
+       hitBy(hashOf('molotov'), 'burned'))
+    ok(hitBy(envHash('fire'), 'burned') == BR.PlayerState.DBNO,
+       'and so does burning to death in the flames it leaves',
+       hitBy(envHash('fire'), 'burned'))
+
+    -- Smoke is the other `explosive` that is not a bang. It carries no damage
+    -- field so it can never run anybody out of health in the first place; this
+    -- pins the classification rather than a reachable path.
+    ok(hitBy(hashOf('smoke')) == BR.PlayerState.DBNO,
+       'a smoke grenade is not a detonation either')
+
+    -- ═══ ORDINARY DAMAGE IS COMPLETELY UNTOUCHED ═══
+    ok(hitBy(hashOf('pistol'), 'gunshot') == BR.PlayerState.DBNO,
+       'a bullet still knocks a squad player down',
+       hitBy(hashOf('pistol'), 'gunshot'))
+    ok(hitBy(envHash('fall'), 'fall') == BR.PlayerState.DBNO,
+       'and so does a fall')
+
+    -- ═══ A CAUSE NOBODY CAN NAME IS NOT AN EXPLOSION ═══
+    --
+    -- Three shapes of "I do not know": the bleed clock and `brdown` pass
+    -- nothing, the server's own health sampler has no hash to pass, and a
+    -- caller that hands over a WORD rather than a hash must not be read as one
+    -- either. Silence has to mean today's behaviour, or the rule would suppress
+    -- legitimate knocks everywhere it could not see.
+    ok(hitBy(nil, 'gunshot') == BR.PlayerState.DBNO,
+       'no cause at all still knocks')
+    ok(hitBy(0xDEADBEEF) == BR.PlayerState.DBNO,
+       'a hash in no table still knocks')
+    ok(hitBy('explosion') == BR.PlayerState.DBNO,
+       'and the cause WORD is not a hash -- it is never read as one')
+
+    -- ═══ THE CPR KIT IS NOT A SHIELD AGAINST A ROCKET (#191) ═══
+    --
+    -- Three solos so the last-knock rule is not what is being measured; the kit
+    -- is the only thing that can down a solo at all, so without one this would
+    -- prove the mode default instead.
+    local function kittedSolos()
+        reset()
+        BR.Server.devMode = true
+        for i = 1, 3 do queueUp(i, 'P' .. i, BR.Mode.SOLO.key) end
+        tick(300)
+        for i = 1, 3 do BR.Roster.setState(i, BR.PlayerState.ALIVE) end
+        local m = BR.Server.matchOf(1)
+        if m then m.state, m.startSquads = BR.MatchState.PLAYING, 3 end
+        BR.Inv.give(1, { item = 'cprkit', kind = BR.ItemKind.CONSUMABLE,
+                         rarity = BR.Rarity.LEGENDARY, count = 1 })
+    end
+
+    kittedSolos()
+    BR.Combat.defeat(1, 'gunshot', 2, hashOf('pistol'))
+    ok(BR.Roster.get(1).state == BR.PlayerState.DBNO,
+       'a solo holding a CPR kit still goes down to a bullet -- the kit path is '
+           .. 'untouched', BR.Roster.get(1).state)
+
+    kittedSolos()
+    BR.Combat.defeat(1, 'explosion', 2, hashOf('rpg'))
+    ok(BR.Roster.get(1).state == BR.PlayerState.OUT,
+       'but a solo holding a CPR kit dies outright to a rocket -- the blast '
+           .. 'outranks the inventory', BR.Roster.get(1).state)
+
+    -- ═══ ALREADY DOWN, THEN FINISHED BY A BLAST ═══
+    --
+    -- Unchanged, and asserted because the new rule sits ABOVE the ALIVE guard's
+    -- neighbours and could have been written above the guard itself. canBeDowned
+    -- still requires ALIVE, so this was an elimination before and is one now.
+    squadMatch(2)
+    BR.Combat.defeat(1, 'gunshot', 2, hashOf('pistol'))
+    ok(BR.Roster.get(1).state == BR.PlayerState.DBNO, 'P1 is down first')
+    BR.Combat.defeat(1, 'explosion', 2, hashOf('rpg'))
+    ok(BR.Roster.get(1).state == BR.PlayerState.OUT,
+       'and a blast on a downed player finishes them, as any defeat does',
+       BR.Roster.get(1).state)
+
+    -- ═══ THE VALIDATED DAMAGE PATH, WHICH DECIDES BEFORE IT WRITES ═══
+    --
+    -- BR.Damage.applyHit asks canBeDowned BEFORE any health is written, because
+    -- a knock has to be clamped to the downed floor so the victim's own ped
+    -- survives it. Both readings have to agree: if the clamp spared the ped for
+    -- a knock the defeat() below then refused to make, the corpse and the ledger
+    -- would disagree about the same shot.
+    squadMatch(2)
+    BR.Roster.get(1).hp, BR.Roster.get(1).armour = 100.0, 0.0
+    BR.Damage.applyHit(2, 1, 500.0, { weapon = hashOf('pistol') })
+    ok(BR.Roster.get(1).state == BR.PlayerState.DBNO,
+       'a lethal bullet through applyHit knocks', BR.Roster.get(1).state)
+    ok(BR.Roster.get(1).hp == (BR.Config.Match.dbnoHp or 5),
+       'and is clamped to the downed floor so the ped lives',
+       tostring(BR.Roster.get(1).hp))
+
+    squadMatch(2)
+    BR.Roster.get(1).hp, BR.Roster.get(1).armour = 100.0, 0.0
+    BR.Damage.applyHit(2, 1, 500.0, { weapon = hashOf('rpg'), explosive = true })
+    ok(BR.Roster.get(1).state == BR.PlayerState.OUT,
+       'a lethal rocket through applyHit kills outright',
+       BR.Roster.get(1).state)
+    ok(BR.Roster.get(1).hp == 0.0,
+       'and takes the health all the way down -- nothing was clamped for a '
+           .. 'knock that is not happening', tostring(BR.Roster.get(1).hp))
 end
 
 describe('dbno.deadPed')
