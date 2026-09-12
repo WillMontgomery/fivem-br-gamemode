@@ -97,13 +97,30 @@ export default function StormBar({ storm }: { storm: StormPayload | null }) {
   // object changing its mind rather than as two different widgets.
   //
   // `--hot` drives the cap fill and the border together; the drop-in animation
-  // is keyed off the state so it replays on the swap and only on the swap. The
-  // `key` goes on `HotCard` because remounting the component remounts the
-  // `.panel-hot` div the animation is on -- the same element it sat on when
-  // this file drew that div itself.
+  // is keyed off the state so it replays on the swap and only on the swap.
+  //
+  // THE `key` IS ON THE WRAPPER AND NOT ON `HotCard`, which is a change of
+  // element and not of behavior: a keyed wrapper is remounted whole, so the
+  // `.panel-hot` div inside it is rebuilt and hotDrop replays exactly as it did
+  // when the key sat on the card. What the wrapper buys is the RING below --
+  // both surfaces restart on the same frame, which is the only way their two
+  // 1.6s pulses stay in phase across a state swap.
   return (
+    // THE CLOSING RING (owner, 2026-09-11). The tutorial's ring around its
+    // subject, with the halo 4x as wide, put on the card for the moment the
+    // label flips to "Storm closing now". It is a SIBLING of the card because
+    // `.panel-hot` is `overflow: hidden` and would clip the halo off a child;
+    // it is always mounted and hidden, rather than mounted at the flip, so its
+    // breath stays on the same beat as the card's own border pulse. Both facts
+    // are written out in full beside `.storm-ring` in index.css.
+    //
+    // `relative` so the ring has the card's box to sit around. No `inline-block`
+    // here, unlike WarmupTimer's wrapper: this one holds a block-level card that
+    // already stretches to the slot, and an inline-block would put this card
+    // and the warmup card side by side in the shared top-centre slot rather
+    // than one under the other.
+    <div key={hurting ? 'out' : 'in'} className="relative">
     <HotCard
-      key={hurting ? 'out' : 'in'}
       hot={hurting
         ? 'var(--color-danger)'
         : shrinking ? 'var(--color-storm)' : 'rgba(120,132,160,0.85)'}
@@ -138,5 +155,7 @@ export default function StormBar({ storm }: { storm: StormPayload | null }) {
         <HotTime ref={timeRef} fs="1.4rem" />
       )}
     </HotCard>
+    <span className={`storm-ring${shrinking ? ' is-up' : ''}`} aria-hidden="true" />
+    </div>
   )
 }

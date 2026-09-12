@@ -841,6 +841,140 @@ for (const name of builtCss) {
 }
 
 // ---------------------------------------------------------------------------
+// R17  The storm card's closing ring is the tutorial's ring, on the card's beat.
+//
+// Owner, 2026-09-11: "can you also make an affect on the timer card when the
+// 'storm moving now' timer starts? whatever affect the tutorial uses around the
+// buttons -- that would be great but like 4x the radius."
+//
+// FOUR SEPARATE WAYS TO LOOK RIGHT AND BE WRONG, which is why this is a rule
+// and not a screenshot:
+//
+//   * a second pulse. `.panel-hot` already breathes its border on a 1.6s beat,
+//     so a ring mounted at the phase flip breathes at an offset nobody chose --
+//     the card shimmers instead of breathing, and index.css's own words about
+//     .tut-ring are "one pulse in the interface, not two". The lock is the
+//     matching period AND delay, and it is two numbers that can drift apart in
+//     a later edit without anything failing to compile.
+//   * a second set of keyframes. Writing stormRingPulse with the same two
+//     frames reverts nothing visibly and quietly doubles the vocabulary.
+//   * the radius. 4x is the box-shadow SPREAD, measured against the ring it
+//     copies. A literal 1.12rem with no relationship to .tut-ring's 0.28rem
+//     stops being 4x the moment the tutorial's ring is retuned.
+//   * the gate. The ring is mounted always and shown by a class, so the thing
+//     that starts and stops it is one ternary on `shrinking` -- and a ring left
+//     permanently up reads as a broken HUD rather than as a missing feature.
+//
+// IT CAN FAIL. Drop the `is-up` ternary, rename the keyframes, change either
+// time, move the `key` back off the wrapper, or retune one spread on its own.
+// ---------------------------------------------------------------------------
+{
+  const cssPath = join(SRC, 'index.css')
+  const tsxPath = join(SRC, 'hud', 'StormBar.tsx')
+
+  if (!existsSync(cssPath) || !existsSync(tsxPath)) {
+    fail('R17 storm-ring', 'src/hud/StormBar.tsx',
+      'index.css or hud/StormBar.tsx is missing. If they moved, move this rule'
+      + ' with them rather than letting it pass over nothing.')
+  } else {
+    const css = stripComments(read(cssPath))
+    const tsx = stripComments(read(tsxPath))
+    const rule = (name) => (css.match(new RegExp(`\\.${name}\\s*\\{([^}]*)\\}`)) ?? [])[1] ?? null
+
+    // Every time in an animation shorthand, in ms. `1.6s` and `1600ms` are the
+    // same beat and this rule is about the beat, not about the spelling.
+    const times = (decl) =>
+      [...decl.matchAll(/(?<![\w.-])(\d+(?:\.\d+)?)(ms|s)(?![\w-])/g)]
+        .map((m) => (m[2] === 's' ? parseFloat(m[1]) * 1000 : parseFloat(m[1])))
+    const spread = (decl) => {
+      const m = /box-shadow\s*:\s*0\s+0\s+0\s+(\d+(?:\.\d+)?)rem/.exec(decl)
+      return m ? parseFloat(m[1]) : null
+    }
+
+    const ring = rule('storm-ring')
+    const tut = rule('tut-ring')
+    const hot = rule('panel-hot')
+
+    if (ring == null || tut == null || hot == null) {
+      fail('R17 storm-ring', 'src/index.css',
+        'one of .storm-ring, .tut-ring or .panel-hot is gone. The first copies'
+        + ' the second and shares the third\'s beat; renaming any of them means'
+        + ' renaming it here, not deleting the rule.')
+    } else {
+      // ── the ring is the tutorial's, four times as wide ──
+      const rs = spread(ring)
+      const ts = spread(tut)
+      if (rs == null || ts == null) {
+        fail('R17 storm-ring', 'src/index.css',
+          'no `box-shadow: 0 0 0 <n>rem` on .storm-ring or .tut-ring. The halo'
+          + ' IS the request; a ring with only a border is a different effect.')
+      } else if (Math.abs(rs - ts * 4) > 0.005) {
+        fail('R17 storm-ring', 'src/index.css',
+          `.storm-ring's halo spreads ${rs}rem against .tut-ring's ${ts}rem --`
+          + ` 4x is ${(ts * 4).toFixed(2)}rem. The owner asked for the tutorial's`
+          + ' ring at four times the radius, which is this spread and not the'
+          + ' border, the standoff or the card.')
+      }
+
+      // ── one pulse, and it is matePulse ──
+      const ringAnim = (/animation\s*:\s*([^;]+)/.exec(ring) ?? [])[1] ?? ''
+      if (!/\bmatePulse\b/.test(ringAnim)) {
+        fail('R17 storm-ring', 'src/index.css',
+          '.storm-ring does not animate matePulse. The breath is shared with'
+          + ' .tut-ring and the squad panel on purpose -- a second set of'
+          + ' keyframes with the same two frames is a second vocabulary.')
+      }
+
+      // ── on the card's own beat: same period, same delay ──
+      const hotEdge = (hot.match(/animation\s*:\s*([^;]+)/) ?? [])[1]
+        ?.split(',').find((a) => /\bhotEdge\b/.test(a)) ?? null
+      if (hotEdge == null) {
+        fail('R17 storm-ring', 'src/index.css',
+          '.panel-hot no longer runs hotEdge. The ring\'s delay exists only to'
+          + ' fall in step with that pulse; if the card stopped pulsing, this'
+          + ' ring should be rethought rather than left syncing to nothing.')
+      } else {
+        const [rp, rd] = times(ringAnim)
+        const [hp, hd] = times(hotEdge)
+        if (rp !== hp || rd !== hd) {
+          fail('R17 storm-ring', 'src/index.css',
+            `.storm-ring breathes ${rp}ms after ${rd}ms; .panel-hot's hotEdge`
+            + ` breathes ${hp}ms after ${hd}ms. Two pulses on one card at`
+            + ' different periods or out of step is the shimmer this was built'
+            + ' to avoid -- match both numbers or take the card\'s pulse away.')
+        }
+      }
+
+      // ── it starts at the flip and stops when the shrinking does ──
+      const at = tsx.indexOf('storm-ring')
+      if (at === -1) {
+        fail('R17 storm-ring', 'src/hud/StormBar.tsx',
+          'nothing renders the ring. The CSS on its own draws nothing, so this'
+          + ' is the whole feature: a `storm-ring` element beside the card.')
+      } else {
+        const el = tsx.slice(Math.max(0, at - 160), at + 160)
+        if (!/\bshrinking\b/.test(el) || !/is-up/.test(el)) {
+          fail('R17 storm-ring', 'src/hud/StormBar.tsx',
+            'the ring is not gated on `shrinking` via `is-up`. That flag is the'
+            + ' moment the owner pointed at -- the same one that flips the label'
+            + ' to "Storm closing now" -- and the ring has to go away again when'
+            + ' the wall stops, not stay up for the rest of the match.')
+        }
+      }
+
+      // ── the key is on the wrapper, so card and ring restart together ──
+      if (!/key=\{[^}]*\}\s+className="relative"|className="relative"\s+key=\{[^}]*\}/.test(tsx)) {
+        fail('R17 storm-ring', 'src/hud/StormBar.tsx',
+          'the state `key` is not on the `relative` wrapper that holds the ring.'
+          + ' On a swap the card remounts and its hotEdge restarts from zero; a'
+          + ' ring outside that remount keeps its old phase and the two beats'
+          + ' come apart, which is exactly what the matching delay is for.')
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Result
 // ---------------------------------------------------------------------------
 if (failures) {
