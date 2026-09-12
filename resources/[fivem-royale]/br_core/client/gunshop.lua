@@ -126,9 +126,13 @@ local G = BR.Config.Gunshop
 -- `buildMenu`: the header reads it off a row rather than naming a rarity here,
 -- so it cannot come to disagree with the rows underneath it.
 --
--- THE OTHER THREE SEPARATORS ARE UNTOUCHED. He ruled on the ammunition one and
--- said nothing about Rare, Epic or Legendary, and repainting those would be
--- answering a question nobody asked.
+-- THE OTHER THREE SEPARATORS WERE LEFT ON THE CYAN THAT DAY, because he had
+-- ruled on the ammunition one and said nothing about Rare, Epic or Legendary.
+-- HOURS LATER HE RULED ON ALL OF THEM: "No ScaleformUI should ever use our cyan
+-- ever", answering "the selected row and separator rows being that obnoxious
+-- light blue still". So the cyan is gone from those three as well, and what they
+-- wear instead is the library's own panel rather than a color anybody here chose
+-- -- see `buildMenu`, where the open question is marked.
 
 --- Owner, 2026-09-09: "a line underneath PRESS TO OPEN".
 local PLATE_HINT = 'PRESS TO OPEN'
@@ -1096,7 +1100,6 @@ local function buildMenu()
     if not built then return false end
 
     items = {}
-    local accent = BR.Menu.accent()
     for _, grp in ipairs(grouped()) do
         -- THE HEADER IS A REAL SEPARATOR ITEM, WHICH THE ARROW KEYS SKIP. See
         -- BR.Menu.separator for why a disabled row would not do.
@@ -1105,21 +1108,29 @@ local function buildMenu()
         -- a list without a caption; a `return false` here would be a counter
         -- that does not open at all.
         --
-        -- ═══ THE CYAN, EXCEPT ON THE ONE HE RULED ON (owner, 2026-09-11) ═══
+        -- ═══ NO SEPARATOR CARRIES THE CYAN NOW, AND ONE CARRIES ITS OWN ROWS'
+        --     COLOR ═══
         --
-        -- "The ammunition separator should ... be no special color, same color
-        -- as the ammo item rows themselves." `headerRarity` is set by `grouped`
-        -- on that group alone and is the rarity its own rows carry, so this is
-        -- the same call the rows make -- BR.Menu.rarityColor, which is also what
-        -- refreshMenu repaints them with on every pass.
+        -- Owner, 2026-09-11, on the ammunition header: "The ammunition separator
+        -- should ... be no special color, same color as the ammo item rows
+        -- themselves." `headerRarity` is set by `grouped` on that group alone and
+        -- is the rarity its own rows carry, so this is the same call the rows make
+        -- -- BR.Menu.rarityColor, which is also what refreshMenu repaints them
+        -- with on every pass.
         --
-        -- AN `if` RATHER THAN `and/or`, AND THAT IS NOT STYLE. Written as
-        -- `grp.headerRarity and BR.Menu.rarityColor(...) or accent`, a
-        -- rarityColor that answered nil would fall through to the ACCENT --
-        -- quietly putting back the one thing he asked to have removed, on the
-        -- one group he asked about. This way a nil answer is a nil color, which
-        -- the library draws as its own dark panel: still no special color.
-        local sepColor = accent
+        -- AND THE OTHER THREE NOW PASS NOTHING, which is the same day's wider
+        -- ruling: "the selected row and separator rows being that obnoxious light
+        -- blue still", answered with "No ScaleformUI should ever use our cyan
+        -- ever". They took BR.Menu.accent() -- #22d3ee at full opacity, the
+        -- brightest thing on the shelf -- and that function no longer exists.
+        --
+        -- ⚠ nil IS THE LIBRARY'S DEFAULT PANEL AND NOT A COLOR CHOSEN HERE.
+        -- UIMenuSeparatorItem inherits SColor.HUD_Panel_light, so Rare, Epic and
+        -- Legendary read as plain bars. HE HAS NOT SAID WHAT THEY SHOULD BE: his
+        -- ammunition rule -- a header wears the color of the rows under it --
+        -- would answer it for all four if he wants it applied, and applying it to
+        -- three groups he did not ask about is his call rather than ours.
+        local sepColor = nil
         if grp.headerRarity then
             sepColor = BR.Menu.rarityColor(grp.headerRarity)
         end

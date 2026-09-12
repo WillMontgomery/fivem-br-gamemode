@@ -27,71 +27,78 @@
 -- try and nothing downstream should. The owner has said he will look at the gfx
 -- himself.
 --
--- ═══ WHY THE TWO HEXES ARE WRITTEN HERE AND NOT READ FROM THE INTERFACE ═══
+-- ═══ THE PROJECT PALETTE IS NOT ON THIS SURFACE AT ALL, AND THAT IS THE RULE
+--     NOW ═══
 --
--- client/dui.lua is the project's rule for this and it says colors are read out
--- of the document rather than written down, because ui-src/src/index.css is the
--- one place a color in this game is authored. That rule is right and it does not
--- reach here, for two reasons:
+-- Owner, 2026-09-11, after a playtest: "No ScaleformUI should ever use our cyan
+-- ever". And a moment later, asked whether that reached the gold too: "Same for
+-- the gold, use GTA's gold everywhere".
 --
---   A SCALEFORM IS NOT A DOCUMENT. A DUI is a CEF page with a cascade, so
---   br_ui can resolve a token with getComputedStyle and send the answer
---   (`br:settings:palette`, consumed by BR.Dui.hp and BR.Dui.volts). A .gfx
---   movie has no cascade and no way to be told about one; every color it draws
---   arrives from Lua as an ARGB integer.
+-- So EVERY color a ScaleformUI menu draws is an index into the ENGINE'S OWN HUD
+-- PALETTE -- common:/data/ui/hudcolor.dat, read at runtime -- and not one hex of
+-- ours appears in this file or in any caller of it. tools/test_gunshop.lua reads
+-- `--color-royale-accent` and `--color-volts` out of ui-src/src/index.css and
+-- asserts that neither value is anywhere in this path, so the rule is a ratchet
+-- rather than a paragraph.
 --
---   AND THAT EVENT DOES NOT CARRY THESE TWO ANYWAY. It carries `hp` and
---   `volts` -- and its `volts` is `--color-royale-accent2` (#facc15, the
---   victory yellow the Store screen paints prices with), not `--color-volts`
---   (#d9ae35, the signature gold). Neither `--color-royale-accent` nor
---   `--color-volts` is on that wire today. Widening it is an edit to ui-src/
---   and a rebuilt bundle, which is a different round's work.
+-- ⚠ THE ONE EXCEPTION IS FLAGGED AND IS NOT A LOOPHOLE: BR.Menu.rarityColor
+-- below still paints BR.RarityInfo's five loot colors. The argument for keeping
+-- them, and the fact that it is his call and not ours, is on that function.
 --
--- SO THIS IS THE ONE PLACE IN THE LUA TREE THOSE TWO ARE SPELLED, and
--- tools/test_gunshop.lua asserts they still equal index.css. When somebody
--- widens `br:settings:palette`, the fix is to read them from there and delete
--- the literals.
+-- WHY HE IS RIGHT, BEYOND ITS BEING HIS CALL. He chose this library because it
+-- "feels exactly like Rockstar's", and a Rockstar menu wearing two colors out of
+-- a React HUD does not. The two surfaces are never on screen together either:
+-- the menu replaces the HUD rather than sitting beside it.
+--
+-- ═══ AND IT RETIRES A PROBLEM THIS FILE ALREADY HAD ═══
+--
+-- client/dui.lua's rule is that colors are READ out of the document rather than
+-- written down, because ui-src/src/index.css is the one place a color in this
+-- game is authored. A DUI can obey that -- br_ui resolves a token with
+-- getComputedStyle and sends the answer over `br:settings:palette`. A .gfx movie
+-- has no cascade and no way to be told about one, so obeying it here was
+-- impossible and this file held the only Lua copy of two hexes, kept in step
+-- with index.css by a test.
+--
+-- THAT COPY IS NOW GONE. An index is not a color, it is a NAME for one the
+-- engine owns, so there is nothing left to drift out of step with anything.
 
 BR = BR or {}
 BR.Menu = BR.Menu or {}
 
---- ═══ EIGHT DIGITS, ALPHA FIRST, AND SIX IS SILENTLY WRONG ═══
+--- ═══ AN INDEX, NOT A HEX, AND NO HEX PARSER IS REACHED FROM HERE ANY MORE
+---     ═══
 ---
---- SColor.FromHex asserts only that the string starts with `#`. It then reads
---- characters 2-3 as ALPHA, 4-5 as red, 6-7 as green and 8-9 as blue. Handed a
---- six-digit code it does not complain: "#22d3ee" parses as alpha 0x22, red
---- 0xd3, green 0xee and blue `tonumber("0x")`, which is nil -- so the color is
---- built, looks fine in a table dump, and throws several calls later inside
---- ToArgb with a message about arithmetic on a nil value. The fault is nowhere
---- near the line that caused it.
+--- GetHudColour(n) answers the r, g, b, a the engine holds for index n. The
+--- vendored library wraps it as SColor.FromHudColor and builds its own ninety-odd
+--- named colors with it at load -- SColor.HUD_White is FromHudColor(1) -- so this
+--- is the library's own constructor rather than a route invented here.
 ---
---- FF IS FULLY OPAQUE. Both of these are chrome -- a banner and a counter -- and
---- neither wants to be see-through.
----
---- `--color-royale-accent` (#22d3ee) is the interface's cyan: the boost bar, the
---- loading ring, every focused control. `--color-volts` (#d9ae35) is the
---- signature gold, and index.css holds it deliberately BELOW
---- `--color-royale-accent2` so that the currency and a victory do not read as
---- the same event.
-local ACCENT_HEX = '#FF22D3EE'   -- --color-royale-accent, opaque
-local GOLD_HEX   = '#FFD9AE35'   -- --color-volts, opaque
+--- ⚠ THE TRAP THAT IS NOW UNREACHABLE, WRITTEN DOWN BECAUSE ADDING A HEX BACK
+--- WOULD REARM IT. SColor.FromHex asserts only that the string starts with `#`.
+--- It then reads characters 2-3 as ALPHA, 4-5 as red, 6-7 as green and 8-9 as
+--- blue. Handed a six-digit code it does not complain: "#22d3ee" parses as alpha
+--- 0x22, red 0xd3, green 0xee and blue `tonumber("0x")`, which is nil -- so the
+--- color is built, looks fine in a table dump, and throws several calls later
+--- inside ToArgb with a message about arithmetic on a nil value. The fault is
+--- nowhere near the line that caused it.
 
---- THE ONE ELEMENT THAT CANNOT BE BRAND-MATCHED, AND WHY.
+--- THE SUBTITLE STRIP, WHICH COULD NEVER HAVE BEEN OURS EVEN BEFORE THE RULE.
 ---
---- Every other color on a UIMenu is an ARGB integer. The SUBTITLE is not: it is
---- drawn by prefixing the string with a GTA text token, `~HC_<n>~` (see
+--- Most colors on a UIMenu are ARGB integers. The SUBTITLE is not: it is drawn
+--- by prefixing the string with a GTA text token, `~HC_<n>~` (see
 --- UIMenu:SetMenuData in the vendored bundle), and that `n` is an index into the
---- ENGINE'S OWN HUD PALETTE. There is no route from a hex to an index and no
---- native that adds one, so the subtitle can only ever be one of GTA's colors.
+--- engine's palette. There is no route from a hex to an index and no native that
+--- adds one, so this one was always going to be one of GTA's colors -- which was
+--- written here as a caveat and is now simply the house style.
 ---
---- 9 IS HUD_COLOUR_BLUE, which is the nearest thing GTA has to #22d3ee -- a
---- mid-blue where ours is a bright cyan. It is visibly not our color and that is
---- the honest state of it rather than a thing to keep tuning.
+--- 9 IS HUD_COLOUR_BLUE, the nearest thing GTA has to #22d3ee: a mid-blue where
+--- ours is a bright cyan. Visibly not our color, and that is the accepted state
+--- of it rather than a thing to keep tuning.
 ---
 --- IT DOES NOT MATTER MUCH TODAY, because the gun shop's subtitle is empty and
---- the strip carries only the item counter, which IS brand-matched (that one is
---- an SColor). It is set anyway so that the first menu with a subtitle inherits
---- a decision rather than making a fresh one.
+--- the strip carries only the item counter. It is set anyway so that the first
+--- menu with a subtitle inherits a decision rather than making a fresh one.
 local SUBTITLE_HUD = 9
 
 --- THE PRICE ON A ROW, AND THE SAME LIMIT ONE STEP WORSE.
@@ -111,6 +118,22 @@ local SUBTITLE_HUD = 9
 --- 109 IS HUD_COLOUR_GOLD, which is the nearest thing GTA has to `--color-volts`
 --- (#d9ae35). IT IS NOT THAT HEX AND CANNOT BE MADE INTO IT HERE: the RGB behind
 --- an index comes from common:/data/ui/hudcolor.dat at runtime.
+---
+--- ═══ AND SINCE 2026-09-11 IT IS THE ONLY GOLD ON THIS SURFACE ═══
+---
+--- Owner: "The gun shop price doesn't have to be our exact color, just whatever
+--- gold color the game has available", which closed this label. Then: "Same for
+--- the gold, use GTA's gold everywhere" -- so the Volts COUNTER, which was
+--- `#FFD9AE35` and is an SColor rather than a token, now reads its color from
+--- this same index through BR.Menu.gold.
+---
+--- ONE NUMBER FOR BOTH, WHICH IS THE POINT. A token and an SColor are unrelated
+--- mechanisms and the only way they can be made to agree exactly is by naming the
+--- same index. The counter and the prices under it are now the same gold by
+--- construction rather than by two people typing the same hex.
+---
+--- REPLACE_HUD_COLOUR_WITH_RGBA IS STILL NOT OURS TO CALL, and the owner has now
+--- ruled on it directly: the global remap is "explicitly not wanted".
 ---
 --- ═══ THERE IS ONE ESCAPE HATCH AND IT IS NOT AN AGENT'S TO TAKE ═══
 ---
@@ -196,31 +219,34 @@ function BR.Menu.dimmed(text)
     return DIM_TOKEN .. tostring(text or '')
 end
 
---- One hex through the library's parser, without letting its assert escape.
+--- ONE HUD INDEX, AS AN SColor, WITHOUT LETTING THE LIBRARY'S ASSERT ESCAPE.
 ---
---- FromHex ASSERTS rather than returning nil, and an assert inside a keypress
---- handler takes the whole handler with it. pcall here means a mistyped constant
---- costs the color and not the menu.
---- @param hex string
+--- FromHudColor ASSERTS on a nil index rather than returning nil, and an assert
+--- inside a keypress handler takes the whole handler with it. The constructor is
+--- also checked for EXISTENCE rather than assumed: it is a vendored entry point,
+--- a version bump could rename it, and losing a color has to cost a color rather
+--- than a counter that will not open.
+--- @param index integer
 --- @return table|nil
-local function hexColor(hex)
+local function hudColor(index)
     if not BR.Menu.available() then return nil end
-    local ok, c = pcall(SColor.FromHex, hex)
-    if not ok then
-        print(('^3[br_core] menu: "%s" is not a color ScaleformUI can read -- '
-               .. 'it wants eight digits, alpha first^7'):format(tostring(hex)))
+    if type(SColor.FromHudColor) ~= 'function' then
+        print('^3[br_core] menu: this ScaleformUI has no SColor.FromHudColor -- '
+              .. 'menus will wear the library\'s own colors^7')
         return nil
     end
+    local ok, c = pcall(SColor.FromHudColor, index)
+    if not ok or type(c) ~= 'table' then return nil end
     return c
 end
 
---- The interface's cyan, as an SColor. nil when the library is absent.
+--- GTA's gold, as an SColor, from the same index the price token names.
+---
+--- IT IS STILL CALLED `gold` BECAUSE IT IS STILL THE GOLD. What changed on
+--- 2026-09-11 is whose: it was `--color-volts` at `#FFD9AE35` and is now
+--- HUD_COLOUR_GOLD. See PRICE_HUD above.
 --- @return table|nil
-function BR.Menu.accent() return hexColor(ACCENT_HEX) end
-
---- The signature gold, as an SColor. nil when the library is absent.
---- @return table|nil
-function BR.Menu.gold() return hexColor(GOLD_HEX) end
+function BR.Menu.gold() return hudColor(PRICE_HUD) end
 
 --- ONE OF THE LIBRARY'S OWN ICONS, BY NAME.
 ---
@@ -311,6 +337,27 @@ local DISABLED_TINT_RGB = { 24, 24, 24 }
 --- rest of the game already means by "rare" and "legendary". A sixth opinion
 --- about what purple means is exactly the drift this project keeps paying for.
 ---
+--- ═══ ⚠ AND IT IS THE ONE PALETTE ON THIS SURFACE THAT IS STILL OURS ═══
+---
+--- The rule of 2026-09-11 is that a ScaleformUI menu wears GTA's colors and never
+--- the project's. These five are the project's. They are KEPT, and it is flagged
+--- here rather than decided, because the reasons not to sweep them are reasons he
+--- should get to overrule rather than ones we should act on:
+---
+---   THEY ARE NOT THE TWO HE NAMED. He banned the cyan and the gold, which are
+---   brand chrome. These five are the game's own loot vocabulary, shared with the
+---   markers and the bag, and a player reads them as "what kind of thing is this"
+---   rather than as our styling.
+---
+---   GTA HAS NO INDEX THAT MEANS "EPIC". Replacing them means choosing five
+---   palette entries, which is a decision of ours dressed as a lookup -- the
+---   thing the ammunition separator block in client/gunshop.lua exists about.
+---
+---   AND DROPPING THEM TAKES THE GROUPING WITH THEM. He asked for the shelf to be
+---   categorised with separators and has not complained about the row tints, so
+---   removing all color from every row would be a regression filed against a
+---   report he did not make.
+---
 --- ═══ AN ALPHA, AND THE ALPHA IS THE WHOLE JUDGEMENT ═══
 ---
 --- `_mainColor` is the item's own rectangle -- the library's default for it is
@@ -380,10 +427,10 @@ end
 ---
 --- THE FOUR DECISIONS, MADE ONCE:
 ---
----   banner    the cyan. The big brand element, and the one thing a player sees
----             before they read anything.
----   counter   the gold. "3/30" in the subtitle strip.
----   subtitle  the nearest HUD index (see SUBTITLE_HUD above).
+---   banner    NOTHING IS SET. See the block at the foot of this comment.
+---   counter   GTA's gold, index 109 -- the same HUD_COLOUR_GOLD the price token
+---             names. "3/30" in the subtitle strip.
+---   subtitle  a HUD index (see SUBTITLE_HUD above).
 ---   position  the library's own default corner, untouched. Where a menu sits
 ---             is a per-menu decision and this file has no opinion.
 ---
@@ -428,15 +475,24 @@ end
 --- from scratch, and `AddInstructionButton(...)` obviously repopulates it. No
 --- menu built through here may call either.
 ---
---- ═══ THE BANNER IS ART OR IT IS A COLORED BAR, AND IT CANNOT BE BOTH HERE ═══
+--- ═══ THE BANNER IS ART, AND NO COLOR IS PUT UNDER IT ANY MORE ═══
 ---
 --- UIMenu.New takes the banner texture as arguments SIX AND SEVEN. This file
 --- passed five and stopped, so the movie was handed two empty strings and drew
 --- the bar with no art on it -- which is exactly what the owner saw. `banner` is
---- that pair, and when it is supplied THE BANNER COLOR IS LEFT ALONE: the movie
---- tints the sprite with it, and our cyan over a shop title texture is a cyan
---- Ammu-Nation sign. UNSEEN IN GAME either way; if the art comes out washed or
---- tinted, this branch is the one line to move.
+--- that pair.
+---
+--- SetBannerColor IS NO LONGER CALLED AT ALL. It used to paint the cyan, on the
+--- branch where no sprite was supplied, and both halves of that are gone: the
+--- cyan is out of this path, and the library's own default is SColor.HUD_None
+--- (ARGB -1), which is its "do not tint" value.
+---
+--- IT WAS ALREADY MOOT FOR THE GUN SHOP AND IS SAID ANYWAY. That menu supplies
+--- the Ammu-Nation sprite, and the movie TINTS a supplied sprite with the banner
+--- color -- so a color here was never drawn as a bar there; it could only have
+--- discolored the art, which is why the old code skipped it when a sprite was
+--- set. A menu with no sprite now gets the library's own bar instead of a cyan
+--- one. ⚠ UNSEEN IN GAME either way.
 --- @param title string
 --- @param subtitle string|nil
 --- @param banner table|nil  { txd = string, txn = string }, or nil for the bar
@@ -456,11 +512,13 @@ function BR.Menu.new(title, subtitle, banner)
         return nil
     end
 
-    local accent, gold = BR.Menu.accent(), BR.Menu.gold()
+    local gold = BR.Menu.gold()
     -- EACH WRITE GUARDED SEPARATELY. These are setters on a vendored object and
     -- a version bump could rename any one of them; losing the counter's color is
     -- a cosmetic regression, and losing the menu is a counter that will not open.
-    if accent and not sprite then pcall(menu.SetBannerColor, menu, accent) end
+    --
+    -- `sprite` IS STILL READ, ONE LINE UP, and is deliberately not consulted
+    -- here any more: there is no banner color to decide between art and a bar.
     if gold then pcall(menu.CounterColor, menu, gold) end
     pcall(menu.SubtitleColor, menu, SUBTITLE_HUD)
     pcall(menu.MouseControlsEnabled, menu, false)
@@ -482,9 +540,26 @@ end
 --- THE RIGHT LABEL IS WHERE A PRICE GOES, which is the library's own convention
 --- for it and the one Rockstar uses in every shop in the base game.
 ---
---- THE HIGHLIGHT IS ALWAYS OUR CYAN, on every item, in every menu built through
---- here. The selected row is the one thing a player is looking at, so it is the
---- one place the brand color is unambiguously worth spending.
+--- ═══ THE HIGHLIGHT IS THE LIBRARY'S OWN, WHICH IS GTA'S WHITE ═══
+---
+--- Owner, 2026-09-11, having raised it twice: "The selected row is way too bright
+--- blue, very harsh. Don't use that", then "What I'm referring to on the styling
+--- is the selected row and separator rows being that obnoxious light blue still".
+---
+--- IT WAS BR.Menu.accent(), #22d3ee AT FULL OPACITY ACROSS A WHOLE ROW. The cyan
+--- works as a thin element -- a 1px edge, a ring -- and does not work as a fill,
+--- which is the complaint. Asked what to use instead he answered with a rule
+--- rather than a color: "No ScaleformUI should ever use our cyan ever".
+---
+--- SO NOTHING IS PASSED AND THE LIBRARY'S DEFAULT STANDS. UIMenuItem.New falls
+--- back to SColor.HUD_White, which is SColor.FromHudColor(1) -- HUD_COLOUR_WHITE
+--- out of the engine's palette, and the same white the movie inverts a row's text
+--- against. That is not a color chosen here: it is the one the ScaleformUI demo
+--- wears, and the demo is what he said "feels exactly like Rockstar's".
+---
+--- nil IS PASSED EXPLICITLY rather than the argument being dropped, so that the
+--- position cannot be silently occupied if the constructor grows a parameter.
+---
 --- ═══ THE DESCRIPTION AND THE BADGE ARE BOTH PER ITEM AND BOTH FOLLOW THE
 ---     HIGHLIGHT ═══
 ---
@@ -511,7 +586,7 @@ function BR.Menu.item(text, rightLabel, mainColor, opts)
 
     local ok, item = pcall(UIMenuItem.New, tostring(text or ''),
                            tostring(opts.description or ''),
-                           mainColor, BR.Menu.accent())
+                           mainColor, nil)
     if not ok or type(item) ~= 'table' then return nil end
 
     if rightLabel ~= nil then

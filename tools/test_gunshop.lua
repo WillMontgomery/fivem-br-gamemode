@@ -1919,41 +1919,114 @@ do
         "the position is the roster's sampled one, never a fresh GetPlayerPed "
             .. '-- which returns 0 for every player when handed a numeric src')
 
-    -- ═══ THE COLORS ARE OURS, AND EIGHT DIGITS DEEP ═══
+    -- ═══════════════════════════════════════════════════════════════════════
+    -- THE PROJECT PALETTE IS NOT IN THE SCALEFORMUI PATH, AND THIS IS THE
+    -- RATCHET (owner, 2026-09-11)
+    -- ═══════════════════════════════════════════════════════════════════════
     --
-    -- ScaleformUI's hex parser reads characters 2-3 as ALPHA. A six-digit code
-    -- is not rejected: it is misread, and then throws several calls later
-    -- inside ToArgb with a message about nil arithmetic, nowhere near the line
-    -- that caused it.
+    --   "No ScaleformUI should ever use our cyan ever"
+    --   "Same for the gold, use GTA's gold everywhere"
+    --
+    -- THIS BLOCK USED TO ASSERT THE EXACT OPPOSITE: that ACCENT_HEX and GOLD_HEX
+    -- still equalled `--color-royale-accent` and `--color-volts` in index.css,
+    -- because two retyped hexes were the only way a .gfx movie could be told our
+    -- colors. The rule reversed, so the assertion reverses with it -- and it is
+    -- the same two values, read out of the same document, now checked for ABSENCE.
+    --
+    -- ⚠ READ OUT OF index.css RATHER THAN TYPED HERE, which is what makes it
+    -- survive him restyling the interface. A hex spelled in this file would guard
+    -- whatever the cyan used to be on the day somebody moved it.
     local menu = readFile(ROOT .. 'br_core/client/menu.lua')
     local css  = readFile('ui-src/src/index.css')
     ok(menu ~= '', 'the theme helper exists')
+    ok(css ~= '', 'and the document the palette is authored in is readable')
 
-    local accent = menu:match("ACCENT_HEX%s*=%s*'#(%x+)'")
-    local goldc  = menu:match("GOLD_HEX%s*=%s*'#(%x+)'")
-    ok(accent ~= nil and #accent == 8,
-        'the accent is eight digits, alpha first', tostring(accent))
-    ok(goldc ~= nil and #goldc == 8,
-        'and so is the gold', tostring(goldc))
+    --- One Lua file with its comments taken out.
+    ---
+    --- ⚠ THE HISTORY HAS TO STAY READABLE AND THE SWEEP HAS TO BE REAL, AND
+    --- THOSE TWO PULL AGAINST EACH OTHER. client/menu.lua now explains at length
+    --- that #22d3ee was the old highlight and that the parser it travelled
+    --- through misreads a six-digit code as an alpha, so a search for that value
+    --- over the whole file would fail on the explanation of why it is gone.
+    ---
+    --- DROPPING FROM `--` TO END OF LINE IS EXACT FOR THESE TWO FILES. A Lua line
+    --- comment runs to the newline, and neither file puts `--` inside a string
+    --- literal -- which is checked below rather than asserted here, by the fact
+    --- that the stripped source still contains the code the other tests find.
+    local function code(src)
+        local out = {}
+        for line in (src .. '\n'):gmatch('([^\n]*)\n') do
+            out[#out + 1] = line:gsub('%-%-.*$', '')
+        end
+        return table.concat(out, '\n')
+    end
 
-    -- AND THEY ARE STILL index.css's. ui-src is where a color in this game is
-    -- authored; a scaleform cannot read a cascade, so these two are the one Lua
-    -- copy and this is what stops them drifting from it.
+    local menuCode, cliCode = code(menu):lower(), code(cli):lower()
+
     -- THE HYPHENS ARE ESCAPED. `-` is Lua's lazy quantifier, so a raw
     -- `--color-volts` is not the string it looks like -- it is a pattern that
-    -- matches almost nothing, and this assertion would have passed for the
-    -- wrong reason on the day the color drifted.
-    ok(accent ~= nil and css:lower():find('%-%-color%-royale%-accent:%s*#'
-        .. accent:sub(3):lower()) ~= nil,
-        'the accent still equals --color-royale-accent in index.css',
-        tostring(accent))
-    ok(goldc ~= nil and css:lower():find('%-%-color%-volts:%s*#'
-        .. goldc:sub(3):lower()) ~= nil,
-        'and the gold still equals --color-volts', tostring(goldc))
+    -- matches almost nothing, and an assertion built on it would pass for the
+    -- wrong reason.
+    local brand = {}
+    for _, name in ipairs({ 'royale%-accent', 'volts' }) do
+        local hex = css:lower():match('%-%-color%-' .. name .. ':%s*#(%x%x%x%x%x%x)')
+        if hex then brand[#brand + 1] = hex end
+    end
+    ok(#brand == 2,
+        'both brand colors are still authored in index.css, so the sweep below '
+            .. 'is checking against something real rather than against nothing',
+        table.concat(brand, ', '))
 
-    ok(cli:find('#%x%x%x%x%x%x') == nil,
-        'and the shop file itself names no color at all -- the palette is '
-            .. 'applied in one place')
+    local leaked = {}
+    for _, hex in ipairs(brand) do
+        if menuCode:find(hex, 1, true) then
+            leaked[#leaked + 1] = 'client/menu.lua names #' .. hex
+        end
+        if cliCode:find(hex, 1, true) then
+            leaked[#leaked + 1] = 'client/gunshop.lua names #' .. hex
+        end
+    end
+    ok(#leaked == 0,
+        'and neither the cyan nor the gold is anywhere in the code of either '
+            .. 'file -- the rule is total rather than the two rows he pointed at',
+        #leaked > 0 and table.concat(leaked, '; ') or nil)
+
+    -- AND NO HEX AT ALL, WHICH IS STRONGER AND IS ONLY STATEABLE NOW. Every
+    -- color on this surface is a HUD PALETTE INDEX, so a hex literal in the path
+    -- is somebody starting over rather than somebody tuning. It also retires
+    -- SColor.FromHex's eight-digit trap by making the parser unreachable.
+    ok(menuCode:find('#%x%x%x') == nil,
+        'client/menu.lua names no hex color at all any more',
+        menuCode:match('#%x%x%x%x*'))
+    ok(cliCode:find('#%x%x%x') == nil,
+        'and neither does the shop file',
+        cliCode:match('#%x%x%x%x*'))
+
+    -- ═══ AND THE REPLACEMENTS ARE NAMED, SO THE SWEEP IS NOT JUST A DELETION
+    --     ═══
+    --
+    -- ⚠ EVERY ONE OF THESE READS THE STRIPPED, LOWERCASED SOURCE, and the two
+    -- absences are the reason it has to. client/menu.lua now explains in prose
+    -- that BR.Menu.accent is gone and that SetBannerColor used to paint the cyan,
+    -- so an assertion over the raw file would find both names in the paragraph
+    -- saying they are not called -- and fail for exactly the wrong reason. That
+    -- is not hypothetical: it is what happened on the first run of this block.
+    ok(menuCode:find('scolor.fromhudcolor', 1, true) ~= nil,
+        "the colors come through the library's own HUD-palette constructor, "
+            .. 'which is what SColor.HUD_White and its ninety siblings are built '
+            .. 'with')
+    ok(menuCode:find('br.menu.accent', 1, true) == nil
+       and cliCode:find('br.menu.accent', 1, true) == nil,
+        'BR.Menu.accent is GONE rather than merely unused, so no later menu can '
+            .. 'reach the cyan by calling the function that used to hand it out')
+    ok(menuCode:find('function br.menu.gold() return hudcolor(price_hud) end',
+                     1, true) ~= nil,
+        'the Volts counter reads the same index the price token names, so the '
+            .. 'two golds on one strip cannot drift apart -- that is the site '
+            .. 'his gold ruling newly reached')
+    ok(menuCode:find('setbannercolor', 1, true) == nil,
+        'and no banner color is set at all -- it was the cyan on the no-sprite '
+            .. "branch, and the library's own default is SColor.HUD_None")
 end
 
 -- ---------------------------------------------------------------------------
@@ -2910,10 +2983,20 @@ do
 
     UIMenuItem = {}
     UIMenuItem.__index = UIMenuItem
+    -- ═══ THE TWO FALLBACKS ARE MODELLED, AND THAT IS THE WHOLE POINT OF THEM
+    --     ═══
+    --
+    -- The real constructor is `color or SColor.HUD_Panel_light` and
+    -- `highlightColor or SColor.HUD_White`. Since 2026-09-11 the gun shop PASSES
+    -- NOTHING for the highlight and nothing for three of the four separators, so
+    -- "what the library defaults to" stopped being trivia and became the shipped
+    -- appearance. A stub that stored a nil would make every assertion about the
+    -- selected row vacuous.
     function UIMenuItem.New(text, description, main, highlight)
         return setmetatable({
             _text = text, _Description = description,
-            _main = main, _highlight = highlight,
+            _main = main or SColor.HUD_Panel_light,
+            _highlight = highlight or SColor.HUD_White,
             _Enabled = true, ItemId = 0,
         }, UIMenuItem)
     end
@@ -2982,11 +3065,48 @@ do
     SColor = {}
     -- THE EIGHT-DIGIT RULE, MODELLED THE WAY THE LIBRARY MODELS IT: an assert on
     -- the `#` and nothing else.
+    --
+    -- ⚠ KEPT THOUGH NOTHING CALLS IT ANY MORE. Owner, 2026-09-11: "No ScaleformUI
+    -- should ever use our cyan ever", and "Same for the gold" -- so client/menu.lua
+    -- holds no hex at all and this parser is unreachable from our code. It stays
+    -- modelled so that the day somebody adds a hex back, the suite is standing
+    -- where the trap is rather than having to be rebuilt first.
     function SColor.FromHex(h)
         assert(type(h) == 'string' and h:sub(1, 1) == '#', 'not a hex')
         return { hex = h }
     end
     function SColor.FromArgb(a, r, g, b) return { a = a, r = r, g = g, b = b } end
+
+    -- ═══ THE HUD PALETTE, WHICH IS NOW WHERE EVERY COLOR ON THIS SURFACE COMES
+    --     FROM ═══
+    --
+    -- GetHudColour(n) answers the r, g, b, a the engine holds for index n, out of
+    -- common:/data/ui/hudcolor.dat. SColor.FromHudColor is the library's own
+    -- wrapper and is how it builds its ninety-odd named colors at load.
+    --
+    -- ⚠ THE RGB THIS STUB ANSWERS IS NOT THE REAL RGB AND IS NOT MEANT TO BE.
+    -- hudcolor.dat is not in this repository, and a test that hard-coded
+    -- "index 9 is 93,182,229" would be asserting a fact about a file it cannot
+    -- read. What the assertions below check is WHICH INDEX was asked for, so the
+    -- answer only has to be distinguishable per index -- and `hud` carries the
+    -- index so they can say so directly.
+    local hudAsked = {}
+    function GetHudColour(n)
+        hudAsked[#hudAsked + 1] = n
+        return n, n, n, 255
+    end
+    function SColor.FromHudColor(n)
+        assert(n ~= nil, 'Invalid HUD color value')
+        local r, g, b, a = GetHudColour(n)
+        return { hud = n, a = a, r = r, g = g, b = b }
+    end
+    -- THE TWO DEFAULTS THE LIBRARY FALLS BACK TO, AND BOTH ARE GTA INDICES.
+    -- UIMenuItem.New uses `color or SColor.HUD_Panel_light` and
+    -- `highlightColor or SColor.HUD_White`, which the bundle defines as
+    -- FromHudColor(152) and FromHudColor(1). That is what makes "pass nothing"
+    -- a real answer to "use GTA's palette" rather than an absence.
+    SColor.HUD_White = SColor.FromHudColor(1)
+    SColor.HUD_Panel_light = SColor.FromHudColor(152)
 
     assert(loadfile(ROOT .. 'br_core/client/menu.lua'))()
 
@@ -3317,9 +3437,15 @@ do
             .. 'of UIMenu.New -- passing five is what left it a bare bar',
         ('%s / %s'):format(tostring(lastMenu.TxtDictionary),
                            tostring(lastMenu.TxtName)))
+    -- ...AND NO COLOR IS PAINTED UNDER IT. It used to be the cyan, skipped on
+    -- the branch where a sprite was supplied; since 2026-09-11 SetBannerColor is
+    -- not called on any branch at all, so this now holds for a menu with no art
+    -- as well. The movie TINTS a supplied sprite with the banner color, which is
+    -- why a color here was never a bar behind the Ammu-Nation sign -- it could
+    -- only have discolored it.
     ok(lastMenu._bannerColor == nil,
-        '...and the cyan is NOT painted over it, because the movie tints the '
-            .. 'sprite with that color')
+        'and nothing is painted under the sprite, on any branch -- the movie '
+            .. 'tints the art with the banner color rather than drawing a bar')
     ok(lastMenu.Title == G.menuTitle,
         'M8: the title comes from config, so his one word changes the banner '
             .. 'and the world plate together')
@@ -3382,34 +3508,72 @@ do
                     ammoRow._main.a, ammoRow._main.r, ammoRow._main.g,
                     ammoRow._main.b) or 'none'))
 
-        -- ...AND IT IS NOT THE ACCENT, said separately because the assertion
-        -- above would pass if BOTH the header and the rows somehow became cyan.
-        -- The accent is an SColor.FromHex and a rarity tint is an SColor.
-        -- FromArgb, so in this stub they are not even the same SHAPE -- which is
-        -- worth leaning on rather than comparing channels that do not exist.
-        local accent = BR.Menu.accent()
-        ok(heads[1]._main ~= nil and heads[1]._main.hex == nil
-           and accent ~= nil and accent.hex ~= nil,
-            '...and specifically is NOT the interface cyan any more, which is '
-                .. 'the thing he asked to have taken off it',
-            ('header %s'):format(
-                heads[1]._main and tostring(heads[1]._main.hex) or 'none'))
-
-        -- ═══ AND THE OTHER THREE STILL ARE, because he ruled on one ═══
+        -- ═══ AND THE OTHER THREE CARRY NO COLOR OF OURS EITHER ═══
         --
-        -- Repainting Rare, Epic and Legendary would be answering a question
-        -- nobody asked, and it is the shape this change could most easily have
-        -- taken by accident: one `if` in buildMenu away.
-        local stillAccent = {}
+        -- Owner, hours after the ammunition ruling above: "What I'm referring to
+        -- on the styling is the selected row and separator rows being that
+        -- obnoxious light blue still", answered with "No ScaleformUI should ever
+        -- use our cyan ever".
+        --
+        -- Rare, Epic and Legendary took BR.Menu.accent() -- #22d3ee at full
+        -- opacity across the whole bar -- and now pass NOTHING, which lands them
+        -- on SColor.HUD_Panel_light: FromHudColor(152), the library's own default
+        -- and GTA's own palette. The stub models that fallback, which is why this
+        -- can be asserted as an index rather than as an absence.
+        local painted = {}
         for i = 2, #heads do
-            if heads[i]._main == nil or heads[i]._main.hex == nil then
-                stillAccent[#stillAccent + 1] = heads[i]._text
+            local c = heads[i]._main
+            if type(c) ~= 'table' or c.hud ~= 152 then
+                painted[#painted + 1] = ('%s (%s)'):format(
+                    tostring(heads[i]._text),
+                    type(c) == 'table' and tostring(c.hud or c.hex) or 'none')
             end
         end
-        ok(#stillAccent == 0,
-            'while every rarity separator keeps the accent it always had -- he '
-                .. 'ruled on the ammunition one and said nothing about these',
-            #stillAccent > 0 and table.concat(stillAccent, ', ') or nil)
+        ok(#painted == 0,
+            "every rarity separator now wears the library's own panel, index "
+                .. '152 out of GTA\'s palette, rather than the cyan it used to',
+            #painted > 0 and table.concat(painted, ', ') or nil)
+
+        -- ...AND NOT ONE ITEM ON THE MENU CARRIES A HEX, which is what the
+        -- palette rule means at the object level rather than in the source. The
+        -- stub's FromHex answers a table with a `hex` field and FromHudColor and
+        -- FromArgb both answer one without, so a single cyan anywhere on the
+        -- shelf shows up here whichever row it landed on.
+        local hexed = {}
+        for _, it in ipairs(lastMenu.Items) do
+            if type(it._main) == 'table' and it._main.hex ~= nil then
+                hexed[#hexed + 1] = tostring(it._text) .. ' panel'
+            end
+            if type(it._highlight) == 'table' and it._highlight.hex ~= nil then
+                hexed[#hexed + 1] = tostring(it._text) .. ' highlight'
+            end
+        end
+        ok(#hexed == 0,
+            'and no row or header on the whole menu carries a color that came '
+                .. 'from a hex, which is the only way ours could get in',
+            #hexed > 0 and table.concat(hexed, ', ') or nil)
+
+        -- ═══ THE SELECTED ROW, WHICH IS THE ONE HE RAISED TWICE ═══
+        --
+        -- "The selected row is way too bright blue, very harsh. Don't use that."
+        --
+        -- Every item took BR.Menu.accent() as its highlight and now passes nil,
+        -- so UIMenuItem.New falls back to SColor.HUD_White -- FromHudColor(1),
+        -- HUD_COLOUR_WHITE. ASSERTED ON EVERY ITEM rather than on one: the
+        -- highlight is set at construction in one place, so the failure mode is
+        -- all of them or none, and naming the count is what makes a silent
+        -- regression to a per-row override visible.
+        local notWhite = {}
+        for _, it in ipairs(lastMenu.Items) do
+            if type(it._highlight) ~= 'table' or it._highlight.hud ~= 1 then
+                notWhite[#notWhite + 1] = tostring(it._text)
+            end
+        end
+        ok(#notWhite == 0 and #lastMenu.Items > 0,
+            ('all %d rows highlight in GTA\'s own white, index 1, which is the '
+             .. 'library default and what the demo he liked wears')
+                :format(#lastMenu.Items),
+            #notWhite > 0 and table.concat(notWhite, ', ') or nil)
 
         -- THE ROWS ARE UNDER THE RIGHT HEADERS, which is the half a count of
         -- separators would not catch.
