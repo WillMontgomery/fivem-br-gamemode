@@ -616,21 +616,64 @@ do
         end
     end
 
-    -- ═══ NO TWO ACTIONS MAY SOUND THE SAME ═══
+    -- ═══ NO TWO ACTIONS MAY SOUND THE SAME, EXCEPT WHERE HE SAID THEY MUST ═══
     --
     -- The hitmarker, the crate and the pump all fire in the same match and a
     -- player learns them by ear. Sharing a set/name pair between two of them is
     -- not a crash and not a visible fault -- it just makes the game harder to
     -- read, permanently, and nobody ever traces it back to a config line.
-    local seen, clash = {}, nil
+    --
+    -- ONE PAIR IS EXEMPT, BY NAME, BECAUSE THE OWNER ORDERED IT (2026-09-11):
+    --
+    --   "I think the died/knock sounds are the same right now, not sure.
+    --    Regardless both should be the same frontend sound and NOT an NUI
+    --    sound"
+    --
+    -- A squadmate going down and that same squadmate finishing are MATE_CUE's
+    -- `down` and `out` phases. They stay two keys -- the server sends two events
+    -- and he can retune either row on its own -- and they name one sound because
+    -- he asked for one sound. The rule above is about a collision nobody
+    -- decided; this is a decision, so it is written down here rather than the
+    -- rule being weakened for everybody.
+    --
+    -- ⚠ SYMMETRIC, BECAUSE `pairs` HAS NO ORDER. Whichever of the two this loop
+    -- reaches first is the one in `seen`, so a one-way table would exempt the
+    -- clash on some runs and fail on others -- the worst kind of gate there is.
+    local TWINS = { ['squad.down'] = 'squad.out',
+                    ['squad.out']  = 'squad.down' }
+
+    local seen, clash, twinned = {}, nil, false
     for cue, def in pairs(cues) do
         if type(def) == 'table' and def.set and def.name then
             local key = def.set .. '/' .. def.name
-            if seen[key] then clash = ('%s and %s are both %s'):format(seen[key], cue, key) end
+            local prev = seen[key]
+            if prev then
+                if TWINS[prev] == cue then
+                    twinned = true
+                else
+                    clash = ('%s and %s are both %s'):format(prev, cue, key)
+                end
+            end
             seen[key] = cue
         end
     end
-    ok(clash == nil, 'no two cues share a sound', clash)
+    ok(clash == nil, 'no two cues share a sound, bar the one pair he ruled on',
+        clash)
+
+    -- ...AND THE EXEMPTION CANNOT OUTLIVE THE RULING IT IS FOR. An allowlist
+    -- nothing checks is an allowlist that survives the day somebody retunes one
+    -- of the two rows and leaves the other behind -- which is precisely the
+    -- drift two keys exist to make visible, and it would go unreported here
+    -- because a clash that stops clashing is silence in a loop like this one.
+    ok(twinned,
+        'and the knock and the death really are that one pair -- "both should '
+            .. 'be the same frontend sound", and if this is red one of the two '
+            .. 'rows in config/audio.lua has moved without the other',
+        ('squad.down %s, squad.out %s'):format(
+            cues['squad.down'] and (cues['squad.down'].set .. '/'
+                .. cues['squad.down'].name) or 'missing',
+            cues['squad.out'] and (cues['squad.out'].set .. '/'
+                .. cues['squad.out'].name) or 'missing'))
 
     -- ═══ EVERY CUE'S SET IS ONE GTA'S OWN SCRIPTS PLAY ═══
     --

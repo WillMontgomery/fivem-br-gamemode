@@ -383,14 +383,39 @@ BR.Config.Audio = {
         ['squad.out']       = { set = 'GTAO_FM_Events_Soundset',
                                 name = 'Event_Message_Purple' },
 
-        -- NO `squad.down`, AND THAT IS AN ABSENCE RATHER THAN AN OVERSIGHT.
-        -- MATE_CUE has three phases -- down, out, up -- and his table names
-        -- only the second and third. #175 warned about exactly this: "moving
-        -- two of the three natively while leaving the third synthesised breaks
-        -- [the progression] on purpose or by accident." It is on purpose here
-        -- only in the sense that inventing a pair he did not pick is the one
-        -- thing #24 says not to do. `squad.down` stays on the browser tier
-        -- (ui-src/src/audio/cues.ts) until he picks one.
+        -- ═══ AND THE KNOCK PLAYS THE SAME PAIR (owner, 2026-09-11) ═══
+        --
+        -- "I think the died/knock sounds are the same right now, not sure.
+        -- Regardless both should be the same frontend sound and NOT an NUI
+        -- sound."
+        --
+        -- THEY WERE NOT THE SAME, WHICH IS WHY HE COULD NOT TELL. The `out`
+        -- phase played the pair above through PlaySoundFrontend; the `down`
+        -- phase had no pair here at all and fell through to the browser tier's
+        -- synthesised `squad.down` (ui-src/src/audio/cues.ts). Two events, two
+        -- tiers, two entirely different noises. His ruling collapses them: the
+        -- knock and the death are ONE sound, and it is this one.
+        --
+        -- THIS IS WHAT THE BLOCK THAT STOOD HERE SAID, AND IT IS NOW FALSE. It
+        -- said `squad.down` had no pair because his 2026-09-05 table never named
+        -- one, that inventing one is the thing #24 forbids, and that the browser
+        -- tier held it "until he picks one". He has now picked one, and what he
+        -- picked is the pair beside it -- so nothing is invented here: the two
+        -- keys stay two keys because MATE_CUE's three phases are three events,
+        -- and they name the same sound because he said they should.
+        --
+        -- ⚠ IF THE KNOCK AND THE DEATH ARE BOTH SILENT IN GAME, IT IS THIS PAIR
+        -- AND NOT THE WIRING. `GTAO_FM_Events_Soundset` is the set this file's
+        -- own header cites for the two cues that turned out silent -- WIN and
+        -- LOSER, which live in HUD_AWARDS and were being asked of this set. The
+        -- pair below is a different NAME in that set and has never been reported
+        -- silent, and `airdrop.inbound` plays out of the same set. But putting
+        -- one pair on both phases means one bad pair is now two quiet events
+        -- rather than one. `/brsfx cues` prints `[silent?]` against it and
+        -- settles it without touching this file; if it does, the answer is a
+        -- different pair on BOTH lines, not a return to the browser.
+        ['squad.down']      = { set = 'GTAO_FM_Events_Soundset',
+                                name = 'Event_Message_Purple' },
 
         -- ─────────────────────────────────────────────────────── the clock ---
 

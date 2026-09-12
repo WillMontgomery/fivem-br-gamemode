@@ -2067,20 +2067,27 @@ end)
 -- the same reason: the SERVER decides the audience, because it is the only
 -- party that knows the squad and knows not to address the subject.
 --
--- ═══ TWO OF THEM ARE NATIVE NOW, AND THE THIRD IS WAITING ON A CLIP ═══
+-- ═══ ALL THREE ARE NATIVE NOW (owner, 2026-09-08, then 2026-09-11) ═══
 --
 -- "If I gave you any new sounds for #24, please use all of them including
--- MATE_CUE being rewired to PlaySoundFrontend" -- owner, 2026-09-08. He named a
--- set/name pair for the revive (`squad.revived`), `squad.out` already had one,
--- and `squad.down` has none: he has not picked a sound for a squadmate going
--- down, so there is nothing to play natively.
+-- MATE_CUE being rewired to PlaySoundFrontend" -- 2026-09-08. He named a
+-- set/name pair for the revive (`squad.revived`) and `squad.out` already had
+-- one, which left `down` alone on the browser tier because his table had never
+-- named a knock sound.
+--
+-- "I think the died/knock sounds are the same right now, not sure. Regardless
+-- both should be the same frontend sound and NOT an NUI sound" -- 2026-09-11,
+-- which closes that. `squad.down` now carries the same set/name pair as
+-- `squad.out` in config/audio.lua, so the knock and the finish are one sound and
+-- both of them are native. NOT ONE LINE OF THIS FILE CHANGED FOR IT, which is
+-- the thing the paragraph below was written to buy.
 --
 -- SO THE TIER IS DECIDED BY THE CUE TABLE RATHER THAN WRITTEN DOWN HERE. A cue
 -- config/audio.lua knows about goes to PlaySoundFrontend; one it does not falls
--- through to the browser, which is where all three used to live. That is not a
--- hedge -- it is what makes `squad.down` promote itself the day he picks a pair
--- for it, with no line of this file changing, and it is what stops the two
--- tiers ever playing the same cue at once.
+-- through to the browser, which is where all three used to live. The fall-through
+-- is now unreached by any of the three and it stays: it is what promoted
+-- `squad.down` without an edit here, and it is what stops the two tiers ever
+-- playing the same cue at once.
 local MATE_CUE = {
     down = 'squad.down',
     out  = 'squad.out',

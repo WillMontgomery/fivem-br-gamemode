@@ -9960,30 +9960,67 @@ do
         return nil
     end
 
-    env.TriggerEvent(env.BR.Net.DBNO_SET,
-        { mate = { src = 1, name = 'P1', phase = 'down' } })
-    local c = lastUi('squadcue')
-    ok(c ~= nil and c.cue == 'squad.down',
-        'a mate going down reaches the interface as a cue',
-        c and tostring(c.cue) or 'nothing was pushed')
-
-    -- ═══ AND THE OTHER TWO GO NATIVE, BECAUSE THE CUE TABLE HAS THEM ═══
+    -- ═══ ALL THREE GO NATIVE, BECAUSE THE CUE TABLE HAS ALL THREE ═══
     --
     -- The tier is not written down in client/dbno.lua; it is decided per cue by
     -- whether config/audio.lua carries a set/name pair (owner, 2026-09-08 --
-    -- "MATE_CUE being rewired to PlaySoundFrontend"). `squad.down` has no pair
-    -- and stays on the browser; these two have one and do not. Both halves are
-    -- asserted, in both directions, because the failure that costs a round is a
-    -- cue that goes down BOTH tiers and plays twice.
+    -- "MATE_CUE being rewired to PlaySoundFrontend"). `out` and `revived` got
+    -- one that day. `down` got one on 2026-09-11: "I think the died/knock sounds
+    -- are the same right now, not sure. Regardless both should be the same
+    -- frontend sound and NOT an NUI sound."
+    --
+    -- ⚠ THE KNOCK IS DRIVEN FIRST AND BOTH TIERS ARE COUNTED, which is the
+    -- assertion the ruling is about. A stub that only records the cue STRING is
+    -- true of a call site playing the right name down the wrong tier -- and the
+    -- wrong tier here is a browser tone he asked to be rid of, which sounds
+    -- nothing like the frontend pair and would read as the bug unfixed. So the
+    -- browser envelope count is taken before the event and required not to move.
+    local uiBeforeDown, sfxBeforeDown = #CLI.ui, #CLI.sfx
+    env.TriggerEvent(env.BR.Net.DBNO_SET,
+        { mate = { src = 1, name = 'P1', phase = 'down' } })
+    ok(CLI.sfx[#CLI.sfx] == 'squad.down' and #CLI.sfx == sfxBeforeDown + 1,
+        'a mate going down plays the NATIVE cue -- one frontend sound, not a '
+            .. 'browser tone',
+        tostring(CLI.sfx[#CLI.sfx]))
+    ok(#CLI.ui == uiBeforeDown,
+        '...and nothing at all reached the interface tier, which is the half '
+            .. 'of "NOT an NUI sound" a recorded cue string cannot see',
+        ('%d envelope(s) pushed'):format(#CLI.ui - uiBeforeDown))
+    ok(lastUi('squadcue') == nil,
+        '...so no squadcue envelope has ever been pushed by this client',
+        lastUi('squadcue') and tostring(lastUi('squadcue').cue) or nil)
+
+    -- BOTH HALVES ARE ASSERTED, IN BOTH DIRECTIONS, because the failure that
+    -- costs a round is a cue that goes down BOTH tiers and plays twice -- which
+    -- is the exact complaint of 2026-09-07 ("we're playing an NUI sound AND a
+    -- frontend sound") that put the knock on one tier in the first place.
+    local uiBeforeOut = #CLI.ui
     env.TriggerEvent(env.BR.Net.DBNO_SET,
         { mate = { src = 1, name = 'P1', phase = 'out' } })
     ok(CLI.sfx[#CLI.sfx] == 'squad.out',
-        'and going out is a DIFFERENT cue -- two events, two sounds',
+        'and going out is a DIFFERENT cue -- two events, two keys',
         tostring(CLI.sfx[#CLI.sfx]))
-    ok(lastUi('squadcue').cue == 'squad.down',
-        'and it did NOT also go to the browser -- the last envelope there is '
-            .. 'still the down cue',
-        tostring(lastUi('squadcue').cue))
+    ok(#CLI.ui == uiBeforeOut,
+        'and it did NOT also go to the browser',
+        ('%d envelope(s) pushed'):format(#CLI.ui - uiBeforeOut))
+
+    -- ═══ ...AND THE TWO KEYS NAME THE SAME SOUND, WHICH IS THE RULING ═══
+    --
+    -- TWO KEYS AND NOT ONE, DELIBERATELY. MATE_CUE's three phases are three
+    -- events and the server sends three; collapsing the pair into a shared key
+    -- would make "the knock and the death sound the same" a fact about the
+    -- WIRING rather than about the two rows of config he can edit. Asserted on
+    -- the table rather than described, because a comment cannot notice one of
+    -- the two rows being retuned on its own.
+    local A = env.BR.Config.Audio.cues
+    ok(A['squad.down'] ~= nil and A['squad.out'] ~= nil
+       and A['squad.down'].set == A['squad.out'].set
+       and A['squad.down'].name == A['squad.out'].name,
+        'and the knock and the death are THE SAME PAIR -- "both should be the '
+            .. 'same frontend sound" (owner, 2026-09-11)',
+        A['squad.down'] and ('%s/%s vs %s/%s'):format(
+            tostring(A['squad.down'].set), tostring(A['squad.down'].name),
+            tostring(A['squad.out'].set), tostring(A['squad.out'].name)) or nil)
 
     -- THE CUE NAME IS THE DELIVERABLE HERE, and it is asserted rather than
     -- described because it is a string that has to match a key in
@@ -9994,19 +10031,10 @@ do
     ok(CLI.sfx[#CLI.sfx] == 'squad.revived',
         'and being picked up is a THIRD cue -- squad.revived, the success '
         .. 'sound the owner asked for', tostring(CLI.sfx[#CLI.sfx]))
-    ok(env.BR.Config.Audio.cues['squad.out'] ~= nil
-       and env.BR.Config.Audio.cues['squad.revived'] ~= nil
-       and env.BR.Config.Audio.cues['squad.down'] == nil,
-        'which is exactly the split the cue table describes -- out and revived '
-            .. 'have pairs, down does not, and the code reads the table rather '
-            .. 'than repeating it')
-
-    -- THE BROWSER ENVELOPE STILL CARRIES WHO IT WAS, for the one cue that still
-    -- uses it. The interface says the name.
-    c = lastUi('squadcue')
-    ok(c ~= nil and c.src == 1 and c.name == 'P1',
-        'carrying who it was, so the interface can say the name',
-        c and tostring(c.name) or nil)
+    ok(A['squad.revived'] ~= nil
+       and A['squad.revived'].name ~= A['squad.out'].name,
+        'which he called perfect and which is NOT the other two -- the ruling '
+            .. 'collapsed the knock into the death and stopped there')
 
     -- THE TRAP THIS EXISTS FOR. `mate` envelopes carry no `downed` field, so a
     -- handler that fell through would read nil, decide we are not down, and

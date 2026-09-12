@@ -54,10 +54,16 @@
 -- A CUE KEY HELD IN A VARIABLE IS INVISIBLE HERE, and that is correct rather
 -- than a gap. client/dbno.lua's MATE_CUE deliberately routes by whether the
 -- table has the key -- native where there is a pair, the browser where there is
--- not -- so `squad.down` is ABSENT ON PURPOSE and a gate that flagged it would
--- be wrong about the one case the design cares most about. Only a key written as
--- a literal AT the call site is a claim that the cue is native, so only those
--- are checked.
+-- not -- so a phase with no pair is ABSENT ON PURPOSE and a gate that flagged it
+-- would be wrong about the one case the design cares most about. Only a key
+-- written as a literal AT the call site is a claim that the cue is native, so
+-- only those are checked.
+--
+-- `squad.down` USED TO BE THE WORKED EXAMPLE OF THAT, AND IS NO LONGER. The
+-- owner ruled on 2026-09-11 that the knock and the death play the same frontend
+-- pair, so all three MATE_CUE phases have one now. The argument above is
+-- unchanged and still the reason this scan stops at literals; what has gone is
+-- the live instance of it.
 --
 -- Fed the file list on argv by tools/verify.sh, the way check_forward_locals,
 -- check_bool_natives and check_notice_names are: Lua cannot walk a directory

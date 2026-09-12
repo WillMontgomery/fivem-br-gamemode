@@ -214,6 +214,48 @@ do
     end
 end
 
+describe('palette: the knock borrows the death\'s pair, because he said so')
+do
+    -- ═══ NOT IN THE TABLE ABOVE, AND THAT IS THE POINT ═══
+    --
+    -- `HIS` is his 2026-09-05 palette, one pair per event description, and a
+    -- knock is not in it -- he never named a sound for a squadmate going down,
+    -- which is the whole reason `squad.down` lived on the browser tier for
+    -- three days. This is a SECOND ruling, on 2026-09-11:
+    --
+    --   "I think the died/knock sounds are the same right now, not sure.
+    --    Regardless both should be the same frontend sound and NOT an NUI
+    --    sound"
+    --
+    -- So it is asserted as a RELATIONSHIP rather than as a pair. Writing
+    -- GTAO_FM_Events_Soundset/Event_Message_Purple out a second time here would
+    -- pass on the day he retunes the death cue and leaves the knock behind,
+    -- which is exactly the drift the two keys exist to make visible.
+    local down, out = A.cues['squad.down'], A.cues['squad.out']
+
+    ok(type(down) == 'table',
+        'squad.down has a pair at all, so MATE_CUE routes the knock to '
+            .. 'PlaySoundFrontend rather than to the browser')
+    ok(type(down) == 'table' and type(out) == 'table'
+       and down.set == out.set and down.name == out.name,
+        'and it is the SAME pair the death plays -- "both should be the same '
+            .. 'frontend sound"',
+        type(down) == 'table' and ('%s/%s vs %s/%s'):format(
+            tostring(down.set), tostring(down.name),
+            tostring(out.set), tostring(out.name)) or 'squad.down is missing')
+
+    -- ⚠ AND THE REVIVE IS NOT SWEPT UP IN IT. "The revived sound is perfect --
+    -- don't touch it" (same message). One cue moved onto another's pair; a
+    -- third did not.
+    local up = A.cues['squad.revived']
+    ok(type(up) == 'table' and up.set == 'DLC_AW_Frontend_Sounds'
+       and up.name == 'Checkpoint_Finish',
+        'while squad.revived is exactly where he left it -- he called it '
+            .. 'perfect',
+        type(up) == 'table' and ('%s/%s'):format(tostring(up.set),
+                                                 tostring(up.name)) or nil)
+end
+
 describe('palette: every cue is playable at all')
 do
     -- ═══ THE WHOLE TABLE, NOT A LIST ═══
