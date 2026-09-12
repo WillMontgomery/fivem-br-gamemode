@@ -4408,7 +4408,19 @@ do
         -- And: "The {ammotype} should be the same blue as we use above, and the
         -- number should be blue as well."
         -- ═══════════════════════════════════════════════════════════════════
+        -- ═══════════════════════════════════════════════════════════════════
+        -- ...AND AT ZERO THE NUMBER IS NOT BLUE. Owner, 2026-09-12: "In the
+        -- weapon descriptions if they have zero rounds for it, the number should
+        -- be red text instead."
+        -- ═══════════════════════════════════════════════════════════════════
+        --
+        -- 6 IS HUD_COLOUR_RED out of the same hudcolor.dat table 9 and 109 come
+        -- from. SPELLED HERE AS THE LITERAL TOKEN rather than read off
+        -- BR.Menu.red, deliberately and for the same reason BLUE is: a test that
+        -- asks the mark for the mark it applied passes on the day somebody points
+        -- it at our own hex, which is the exact thing the owner's rule forbids.
         local BLUE, RESET = '~HC_9~', '~s~'
+        local RED = '~HC_6~'
 
         invAmmo[BR.AmmoType.MEDIUM] = 37
         handlers[BR.Net.MARKET_STATE]({ balance = 999999 })
@@ -4449,15 +4461,75 @@ do
 
         -- AN EMPTY POOL READS ZERO RATHER THAN GOING SILENT. A player who has
         -- the gun and none of its ammo is exactly who this sentence is for.
+        --
+        -- ⚠ AND THE ZERO IS RED, WHICH IS THE 2026-09-12 CHANGE. This assertion
+        -- said BLUE until that day and passed; it is the same line with his new
+        -- color in it, so a build that still marks a zero blue fails here rather
+        -- than somewhere new.
         invAmmo[BR.AmmoType.MEDIUM] = nil
         handlers[BR.Net.MARKET_STATE]({ balance = 999999 })
         local none = rowItem('carbinerifle')
         ok(none ~= nil and none._Description
             == G.weaponDesc:format(BLUE .. label .. RESET,
-                                   BLUE .. '0' .. RESET),
+                                   RED .. '0' .. RESET),
             'and a pool the mirror has no entry for is 0 rounds, not a missing '
-                .. 'sentence',
+                .. 'sentence -- and the 0 is RED',
             none and none._Description or 'none')
+
+        -- ⚠ ONLY THE NUMBER TURNS. "The ammo type stays as it is", so the pool
+        -- name on this same zero row is still the blue every other row wears --
+        -- and the row carries EXACTLY ONE red run, so the mark cannot have been
+        -- put on the wrong hole or on both.
+        local reds, blues = 0, 0
+        for _ in (none and none._Description or ''):gmatch(RED) do
+            reds = reds + 1
+        end
+        for _ in (none and none._Description or ''):gmatch(BLUE) do
+            blues = blues + 1
+        end
+        ok(reds == 1 and blues == 1,
+            '...with the pool name still blue beside it -- one red run and one '
+                .. 'blue run, so the ammo type did not turn with the count',
+            ('%d red, %d blue'):format(reds, blues))
+
+        -- ...AND IT CLOSES. Without the `~s~` after the count, "rounds for it."
+        -- would be red as well, which is the shape a mark copied without its
+        -- reset takes and which the assertion above cannot see.
+        ok(none ~= nil
+           and none._Description:find(RED .. '0' .. RESET, 1, true) ~= nil,
+            '...and the red closes on the digit rather than bleeding into the '
+                .. 'rest of his sentence',
+            none and none._Description or 'none')
+
+        -- ═══ AND ONE ROUND IS NOT ZERO ═══
+        --
+        -- THE BOUNDARY, FROM THE OTHER SIDE. A gate written `<= 1`, or one that
+        -- tested the STRING for '0', would paint a single round red and still
+        -- pass every assertion above -- and '10', '20' and '100' all contain a
+        -- zero, so a substring test is a live way to get this wrong.
+        invAmmo[BR.AmmoType.MEDIUM] = 1
+        handlers[BR.Net.MARKET_STATE]({ balance = 999999 })
+        local one = rowItem('carbinerifle')
+        ok(one ~= nil and one._Description
+            == G.weaponDesc:format(BLUE .. label .. RESET,
+                                   BLUE .. '1' .. RESET),
+            'one round is not zero rounds, so a single round stays blue',
+            one and one._Description or 'none')
+
+        invAmmo[BR.AmmoType.MEDIUM] = 10
+        handlers[BR.Net.MARKET_STATE]({ balance = 999999 })
+        local ten = rowItem('carbinerifle')
+        ok(ten ~= nil and ten._Description
+            == G.weaponDesc:format(BLUE .. label .. RESET,
+                                   BLUE .. '10' .. RESET),
+            '...and neither is 10, which a test on the printed digits would '
+                .. 'have called empty',
+            ten and ten._Description or 'none')
+
+        -- PUT BACK, because the counted sweep below walks every row and a pool
+        -- left at 10 would be describing a fixture rather than the shelf.
+        invAmmo[BR.AmmoType.MEDIUM] = nil
+        handlers[BR.Net.MARKET_STATE]({ balance = 999999 })
 
         -- ═══ EVERY WEAPON ROW HAS ONE, AND EVERY AMMO ROW HAS THE OTHER ═══
         --

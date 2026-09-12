@@ -1061,6 +1061,19 @@ end
 ---
 --- BOTH HOLES ARE MARKED ON A WEAPON ROW, which is equally his: "The {ammotype}
 --- should be the same blue as we use above, and the number should be blue as well."
+---
+--- ⚠ ...EXCEPT AT ZERO, WHICH IS THE ONE EXCEPTION AND IT IS HIS TOO. Owner,
+--- 2026-09-12: "In the weapon descriptions if they have zero rounds for it, the
+--- number should be red text instead."
+---
+--- ONE OF THE TWO MARKS MOVES AND THE OTHER DOES NOT. "The number" is the count
+--- and nothing else, so `{ammotype}` stays blue on a row with no rounds behind
+--- it -- which is also what makes the line readable: the pool name is what he is
+--- skimming for, and it goes on meaning the same thing in the same color whether
+--- or not he is carrying any of it.
+---
+--- AND THE CHOICE IS MADE HERE RATHER THAN IN BR.Menu, because this is the one
+--- place that has the number. See BR.Menu.red.
 --- @param row table
 --- @param held table  the carried-id set, built once per refresh pass
 --- @return string
@@ -1079,8 +1092,16 @@ local function describeRow(row, held)
     if not label then return '' end
     -- READ AT THIS MOMENT, NEVER CACHED. `{number}` is "You have N rounds for it"
     -- and it has to be the N they have while they are reading it.
+    --
+    -- AND READ ONCE, so the figure that is printed and the figure that decided
+    -- its color cannot be two different answers. `poolHeld` reads a mirror that
+    -- another event handler is free to rewrite between two calls.
+    local rounds = poolHeld(pool)
+    -- `== 0` RATHER THAN `<= 0`. poolHeld already floors a negative holding to 0
+    -- and says so, so there is no second reading of "empty" to keep in step here.
+    local mark = (rounds == 0) and BR.Menu.red or BR.Menu.blue
     return BR.GunshopSolve.weaponDesc(G, BR.Menu.blue(label),
-                                      BR.Menu.blue(tostring(poolHeld(pool))))
+                                      mark(tostring(rounds)))
 end
 
 --- THE CATALOGUE, REGROUPED TOP-DOWN, WITH A HEADER OVER EACH GROUP.

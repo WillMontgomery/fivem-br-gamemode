@@ -188,6 +188,25 @@ local DIM_TOKEN = ('~HC_%d~'):format(DIM_HUD)
 local BLUE_TOKEN  = ('~HC_%d~'):format(BLUE_HUD)
 local RESET_TOKEN = '~s~'
 
+--- THE ONE FIGURE ON THIS SURFACE THAT IS NOT BLUE.
+---
+--- Owner, 2026-09-12: "In the weapon descriptions if they have zero rounds for
+--- it, the number should be red text instead."
+---
+--- 6 IS HUD_COLOUR_RED, out of the same common:/data/ui/hudcolor.dat table every
+--- other index on this surface is read from -- 3 is GREY, 9 is BLUE and 109 is
+--- GOLD in that same list, and all three are already named above. Everything
+--- BLUE_HUD's block says about the mechanism applies here unchanged: a token
+--- names an INDEX into the engine's own palette, there is no route from a hex to
+--- an index, and our own red would not be reachable from a description even if
+--- the owner's rule allowed one.
+---
+--- IT IS A SECOND MARK RATHER THAN A REPLACEMENT FOR BR.Menu.blue, because his
+--- sentence moves one of the two marked runs in that description and not the
+--- other: the ammo type stays blue at zero rounds, and only the count turns.
+local RED_HUD    = 6
+local RED_TOKEN  = ('~HC_%d~'):format(RED_HUD)
+
 --- ═══════════════════════════════════════════════════════════════════════════
 --- WHY A COLOR TOKEN IN A DESCRIPTION IS A COLOR AND NOT FOUR PRINTED
 --- CHARACTERS
@@ -293,6 +312,26 @@ end
 --- @return string
 function BR.Menu.blue(text)
     return BLUE_TOKEN .. tostring(text or '') .. RESET_TOKEN
+end
+
+--- A RUN OF WORDS INSIDE A SENTENCE, IN GTA'S RED.
+---
+--- Owner, 2026-09-12: "In the weapon descriptions if they have zero rounds for
+--- it, the number should be red text instead." See RED_HUD above for which red
+--- that is and why it cannot be ours.
+---
+--- IT CLOSES, for BR.Menu.blue's reason exactly and not as symmetry: this marks
+--- a FRAGMENT with the owner's own white words on both sides of it, so without
+--- the reset every character from the count to the end of his sentence -- "
+--- rounds for it." -- would turn red with it.
+---
+--- THE CALLER STILL OWNS THE WORDS, and the caller also owns the CHOICE: nothing
+--- here knows what zero is. Which of the two marks a figure takes is decided
+--- where the figure is read, which is the only place that can be right about it.
+--- @param text string|nil
+--- @return string
+function BR.Menu.red(text)
+    return RED_TOKEN .. tostring(text or '') .. RESET_TOKEN
 end
 
 --- ONE HUD INDEX, AS AN SColor, WITHOUT LETTING THE LIBRARY'S ASSERT ESCAPE.
