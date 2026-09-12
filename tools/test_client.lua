@@ -10798,6 +10798,39 @@ do
             ('team %s, gate %s'):format(tostring(t), tostring(s)))
     end
 
+    -- ==================================================================== --
+    -- 6b. ...AND A HEX MATCH TAG IS NOT AN UNKNOWN, WHICH IS THE WHOLE BUG
+    -- ==================================================================== --
+    --
+    -- #291 made match ids a random 20 bit draw rendered as five hex characters,
+    -- so a squad id went from `m6sq1` to `m0a3f1sq1`. This function was reading
+    -- `^m%d+sq(%d+)$`, which stops matching the moment a tag contains a letter,
+    -- and section 6 above is exactly what then happened to EVERY squadded
+    -- player: unrecognised id, fail open, solo team, squadmates able to shoot
+    -- each other. Owner, 2026-09-11: "Squadmates are now not in a good
+    -- relationship group I guess."
+    --
+    -- THE EXISTING SUITE COULD NOT SEE IT, and the reason is worth keeping. Its
+    -- fixtures build squad ids from small integers, and every decimal digit is
+    -- also a hex digit, so `m7sq1` matched the broken pattern and the tests
+    -- agreed with the defect. Only a tag carrying a LETTER separates the two
+    -- patterns, so only a tag carrying a letter can pin this.
+    for _, id in ipairs({ 'm0a3f1sq1', 'mfffffsq7', 'm0a3f1sq12', 'mabcdesq2' }) do
+        local want = tonumber(id:match('sq(%d+)$'))
+        local t, s = N.teamFor({ src = 1, squadId = id },
+                               { [1] = { src = 1, squadId = id },
+                                 [2] = { src = 2, squadId = id } })
+        ok(t ~= N.SOLO_TEAM,
+            ('a hex match tag (%s) is a real squad, not an unknown'):format(id),
+            ('team %s'):format(tostring(t)))
+        ok(t == 1 + ((want - 1) % 63),
+            ('and it lands on the index the id actually carries (%d)'):format(want),
+            ('team %s, wanted %s'):format(tostring(t), tostring(1 + ((want - 1) % 63))))
+        ok(s == true,
+            'and with a mate present the friendly-fire gate closes',
+            ('gate %s'):format(tostring(s)))
+    end
+
     do
         local t, s = N.teamFor(nil, nil)
         ok(t == N.SOLO_TEAM and s == false,

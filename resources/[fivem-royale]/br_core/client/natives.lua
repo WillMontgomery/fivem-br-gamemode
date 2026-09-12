@@ -1006,7 +1006,31 @@ function BR.Native.teamFor(me, roster)
     -- is the only place two players can shoot each other anyway, because
     -- separate matches are separate routing buckets and never in each other's
     -- scope.
-    local index = tonumber(squad:match('^m%d+sq(%d+)$'))
+    --
+    -- ═══ %x AND NOT %d, BECAUSE THE MATCH HALF IS HEX AND THIS FAILED OPEN ═══
+    --
+    -- This read `^m%d+sq(%d+)$` until 2026-09-11. #291 made match ids a random
+    -- 20 bit draw rendered as five hex characters, so a squad id went from
+    -- `m6sq1` to `m0a3f1sq1` and `%d+` stopped matching the moment a tag
+    -- contained a letter.
+    --
+    -- THE FAIL-OPEN BELOW IS WHY NOBODY SAW AN ERROR AND WHY IT WAS SERIOUS.
+    -- An unrecognised id answers SOLO_TEAM, so every player in every squad was
+    -- put on the solo team and squadmates could shoot each other. Owner,
+    -- 2026-09-11: "somehow since we've fixed it we've broke it AGAIN.
+    -- Squadmates are now not in a good relationship group I guess."
+    --
+    -- The note below is exactly right about the risk and exactly what happened:
+    -- "an id in a shape this does not recognise means the squad system moved
+    -- and this function did not." It moved.
+    --
+    -- `%x` covers both spellings, since every decimal digit is a hex digit, so
+    -- this does not care which base a tag is written in. server/voice.lua:157
+    -- was never broken because it anchors on the SUFFIX alone and never reads
+    -- the tag at all, which is the more robust shape; the shape check is kept
+    -- here because the fail-open above depends on recognising a malformed id
+    -- rather than pulling a number out of any string that ends in digits.
+    local index = tonumber(squad:match('^m%x+sq(%d+)$'))
 
     -- FAIL OPEN, ALWAYS. An id in a shape this does not recognise means the
     -- squad system moved and this function did not. The safe answer to that is

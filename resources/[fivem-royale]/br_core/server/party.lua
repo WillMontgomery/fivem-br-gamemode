@@ -1150,7 +1150,23 @@ function BR.Party.lateJoin(src, m)
     -- Whatever squads exist in THIS match right now, counted from the
     -- roster: sorted ids so the tie-break between equally empty squads is
     -- reproducible.
-    local idPattern = '^m' .. m.id .. 'sq(%d+)$'
+    -- ═══ THE TAG, NOT THE RAW ID. THE SAME #291 MISS AS natives.lua:1009 ═══
+    --
+    -- Squad ids are minted as `('m%ssq%d'):format(BR.MatchTag(m.id), i)` at
+    -- formSquads above and again at the bottom of this function, both spelling
+    -- the match in HEX. This built the pattern from the raw DECIMAL id, so for
+    -- a match whose id is 41969 it read `^m41969sq(%d+)$` against real ids of
+    -- `m0a3f1sq1` and matched nothing.
+    --
+    -- THE SYMPTOM IS A COLLIDING SQUAD, NOT AN ERROR. `maxIdx` stays 0, and
+    -- `maxIdx + 1` is what names a new squad at the bottom of this function, so
+    -- a late joiner who should open squad 3 is handed squad 1, which already
+    -- exists. A pattern that matches nothing returns nil and `if n and n >
+    -- maxIdx` swallows it.
+    --
+    -- It cost nothing before #291 because a tag and an id are the same
+    -- characters for every id below 10, which is every id a dev session sees.
+    local idPattern = '^m' .. BR.MatchTag(m.id) .. 'sq(%d+)$'
     local counts, colours, ids, maxIdx = {}, {}, {}, 0
     BR.Roster.each(nil, function(_, e)
         if e.squadId and e.matchId == m.id then
