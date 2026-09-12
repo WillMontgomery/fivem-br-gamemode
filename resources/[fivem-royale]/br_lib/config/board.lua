@@ -237,8 +237,17 @@ BR.Config.Board = {
         -- 135 IS THE DIRECT READING, AND THE DIRECT READING IS THE ONE TO WRITE
         -- DOWN, because nothing is riding on it: the prop is FOUND, not placed,
         -- so its real orientation comes from the ymap through the entity, and
-        -- BR.Dui.drawBoard builds its quad from that entity's own matrix. This
-        -- field steers no geometry. It is the claim, recorded, so it can be
+        -- BR.Dui.drawBoard reads that entity's own facing rather than this
+        -- number. This field steers no geometry.
+        --
+        -- NOT "FROM THE ENTITY'S MATRIX", WHICH IS WHAT THIS SAID UNTIL #294.
+        -- drawBoard goes through `levelBasis`, so it takes the prop's forward
+        -- vector FLATTENED and keeps the board level and upright whatever the
+        -- prop is doing -- which is the next block's "the prop's own LEVELED
+        -- frame", and is deliberate. The sentence was wrong rather than the
+        -- code, and it was wrong in the direction that cost a round: #294 was
+        -- diagnosed against it and went looking for a matrix in drawBoard that
+        -- has never been there. It is the claim, recorded, so it can be
         -- checked -- and /brboard prints it beside the heading the found entity
         -- actually has, with the difference, so one command in the lobby settles
         -- it. If that line reads `heading 225.00 (config 135.0, off by 90.0)`,
