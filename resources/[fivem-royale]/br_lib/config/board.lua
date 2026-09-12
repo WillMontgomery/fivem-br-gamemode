@@ -244,7 +244,7 @@ BR.Config.Board = {
         -- it. If that line reads `heading 225.00 (config 135.0, off by 90.0)`,
         -- the ymap did invert it and this number becomes 225. The board looks
         -- identical either way.
-        heading = 135.0,
+        heading = 225.0,
     },
 
     -- ═══════════════════════════════════════════════════════════════════════
@@ -295,7 +295,7 @@ BR.Config.Board = {
     -- floating in front of it. If the board reads as floating, this is the first
     -- number to shrink, and the second thing to consider is AddReplaceTexture
     -- (see client/board.lua's header).
-    forwardM = nil,
+    forwardM = 0.12,
     -- ...along the face, positive to the READER'S RIGHT. The reader stands in
     -- front of the board looking back at it, so this moves the board the way it
     -- looks like it should move from where anybody is standing.
@@ -303,17 +303,17 @@ BR.Config.Board = {
     -- NOT MEASURED, AND 0.0 IS NOT nil. A bounding box has no opinion about
     -- where along a screen its picture belongs, and centred is the answer
     -- anyway: 0.0 is a real instruction meaning "in the middle of the prop".
-    sideM    = 0.0,
+    sideM    = -0.21,
     -- ...and straight up the WORLD from the prop's origin. Up the world rather
     -- than up the entity, for the reason BR.Dui's drawPlane states: a height
     -- pushed through a rolled entity's matrix swings out sideways.
-    upM      = nil,
+    upM      = 0.02,
 
     -- HOW WIDE THE BOARD IS, IN METERS. The height follows the texture's own
     -- aspect (720/1280), so this is one number and not two, and the picture can
     -- never be stretched -- which also means a board fitted to a screen that is
     -- not 16:9 will fit across and leave a band above or below.
-    widthM   = nil,
+    widthM   = 9.43,
 
     -- AND HOW FAR IT IS TURNED OFF THE PROP'S OWN FACING, degrees, positive
     -- counter-clockwise seen from above.
@@ -323,7 +323,7 @@ BR.Config.Board = {
     -- wall they were meant to hang on. Without this, aligning the board would
     -- mean rotating the prop away from the direction the owner wants the prop
     -- itself to face. 0.0 means "the same way the prop faces".
-    yawDeg   = 0.0,
+    yawDeg   = 180.0,
 
     -- ═══════════════════════════════════════════════════════════════════════
     -- WHEN IT DRAWS

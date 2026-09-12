@@ -216,9 +216,6 @@ do
     local want = yaw % 360.0
     ok(near(want, 135.0, 0.001), 'the conversion lands on 135 degrees',
         ('%.6f'):format(want))
-    ok(near(B.prop.heading % 360.0, want, 0.001),
-        'and that is what br_lib/config/board.lua ships',
-        ('config %s, converted %.6f'):format(tostring(B.prop.heading), want))
 
     -- IT IS AN EXACT MULTIPLE OF 22.5, which is the tell that the component
     -- order is right: 0.9238796 is cos(22.5) and 0.3826834 is sin(22.5), so a
@@ -227,17 +224,29 @@ do
         'and it is an exact multiple of 22.5, as those two cosines promise',
         ('%.6f'):format(want % 22.5))
 
-    -- ═══ THE INVERSE READING IS NAMED, NOT SILENTLY EXCLUDED ═══
+    -- ═══ AND THE SHIPPED NUMBER IS THE INVERSE READING, BECAUSE THE GAME SAID SO ═══
     --
-    -- ymaps frequently store the conjugate of an entity's rotation. The config
-    -- says why the direct reading was chosen anyway -- the prop is FOUND, so its
-    -- real orientation comes from the ymap through the entity and this number
-    -- steers no geometry -- and this pins the alternative so that "225" turning
-    -- up in the config later is a deliberate edit rather than a typo.
+    -- ymaps frequently store the conjugate of an entity's rotation, and this one
+    -- does. The config used to ship the DIRECT reading, 135, with a note saying
+    -- nothing rode on it because the prop is FOUND rather than placed, so its
+    -- real orientation comes from the ymap through the entity.
+    --
+    -- That note was right and the number was wrong. Owner, 2026-09-11: /brboard
+    -- against the real entity answered `facing 225.00`, and `/brboard adopt`
+    -- wrote it down. So the arithmetic above still stands as the derivation of
+    -- 135 from those four components, and what it could never have known is
+    -- which convention the ymap uses.
+    --
+    -- BOTH HALVES ARE PINNED ON PURPOSE. The conversion assertion above fails if
+    -- somebody edits the quaternion or the formula; this one fails if the
+    -- shipped heading stops being the conjugate of it. An assertion that only
+    -- read `heading == 225.0` would agree with any edit at all.
     local inv = euler(-QX, -QY, -QZ, QW) % 360.0
     ok(near(inv, 225.0, 0.001),
-        'the ymap-inverse reading would have been 225, and is not what ships',
-        ('%.6f'):format(inv))
+        'the ymap-inverse reading is 225', ('%.6f'):format(inv))
+    ok(near(B.prop.heading % 360.0, inv, 0.001),
+        'and that is what br_lib/config/board.lua ships, measured in game',
+        ('config %s, inverse %.6f'):format(tostring(B.prop.heading), inv))
 end
 
 describe('the prop is sited, and sited on the owner\'s own numbers')
@@ -264,20 +273,41 @@ do
     ok(type(B.prop.radiusM) == 'number' and B.prop.radiusM > 0.0,
         'and there is a radius to look within', tostring(B.prop.radiusM))
 
-    -- ═══ THREE OF THE FIVE ARE nil ON PURPOSE ═══
+    -- ═══ ALL FIVE ARE HIS, MEASURED IN GAME ON 2026-09-11 ═══
     --
-    -- forwardM, upM and widthM are measured off the prop. The previous draft's
-    -- 0.06 / 1.20 / 2.40 were invented against no prop at all and are known
-    -- wrong against a stage display; a number here again would silently beat the
-    -- measurement, which is exactly what the resolver is built to let it do.
-    eq(B.forwardM, nil, 'forwardM is left to the prop to answer')
-    eq(B.upM, nil, 'and so is upM')
-    eq(B.widthM, nil, 'and so is widthM')
+    -- These used to be three nils and two zeroes, and the nils were right at the
+    -- time: forwardM, upM and widthM are measured off the prop when config says
+    -- nothing, and inventing numbers against a prop nobody had named was how the
+    -- previous draft ended up at 0.06 / 1.20 / 2.40, which is a postage stamp on
+    -- a stage display.
+    --
+    -- He has now aimed it with /brboard and pasted the block back, so config
+    -- says something and config wins, which is the resolver working as built.
+    --
+    -- THESE ARE NOT THE TEST FOR THE MEASUREMENT PATH AND MUST NOT BECOME IT.
+    -- That path is driven from a FIXTURE in 'the board is sized and placed by
+    -- measuring the prop' below, which hands the resolver a config of nils and
+    -- a model box and checks the arithmetic. Reading the shipped config there
+    -- would have made the whole block vacuous the moment he tuned it, which is
+    -- exactly what happened to this one.
+    ok(near(B.forwardM, 0.12, 1e-6), 'forwardM is his, off the front face',
+        tostring(B.forwardM))
+    ok(near(B.upM, 0.02, 1e-6), 'and so is upM', tostring(B.upM))
+    ok(near(B.widthM, 9.43, 1e-6), 'and so is widthM, very nearly the full face',
+        tostring(B.widthM))
 
-    -- ...WHILE THE OTHER TWO ARE NOT, and 0.0 is a real instruction rather than
-    -- an absent one. A bounding box has no opinion about either.
-    eq(B.sideM, 0.0, 'sideM is centred, which is a decision and not a nil')
-    eq(B.yawDeg, 0.0, 'and yawDeg is the prop\'s own facing')
+    -- 9.43 AGAINST A MODEL 9.46 WIDE IS THE TELL THAT HE MEASURED RATHER THAN
+    -- GUESSED. A round number here would be somebody's estimate.
+    ok(B.widthM > 8.0, 'and it is a screen-sized board, not the old 2.40',
+        tostring(B.widthM))
+
+    ok(near(B.sideM, -0.21, 1e-6), 'sideM is his lateral correction',
+        tostring(B.sideM))
+
+    -- 180 IS THE FLIP THE CONFIG NOTE PREDICTED: the quad came up behind the
+    -- prop and one command turned it round.
+    ok(near(B.yawDeg, 180.0, 1e-6), 'and yawDeg turns it to face the room',
+        tostring(B.yawDeg))
 
     -- THE TEXTURE MATCHES THE PAGE. Ringmaster's src/lib/scoreboard.ts pins
     -- BOARD_WIDTH/BOARD_HEIGHT at 1280x720 and writes a fixed-pixel document
@@ -1154,6 +1184,23 @@ do
     -- invented against no prop at all. On a stage display a 2.4m board is a
     -- postage stamp somewhere in the middle of a wall. Every number below is
     -- derived from the fixture's box and nothing else.
+    --
+    -- ═══ THIS BLOCK OWNS ITS OWN CONFIG, AND THAT IS THE WHOLE POINT ═══
+    --
+    -- It used to read the SHIPPED config, which happened to carry nils, so it
+    -- tested the measurement path by coincidence. The day the owner aimed the
+    -- board and pasted real numbers in (2026-09-11) every assertion here went
+    -- red, and the tempting repair is to edit the expected numbers to match
+    -- whatever config now says. That would make this block agree with the
+    -- config forever and prove nothing about the resolver.
+    --
+    -- So the three measured fields are nil'd HERE, against this block's own
+    -- fixture box, and restored at the end. The shipped values are asserted in
+    -- 'the prop is sited' above, where they belong, and the two blocks can now
+    -- move independently because they are about different claims.
+    local cfgFwd, cfgUp, cfgW = B.forwardM, B.upM, B.widthM
+    B.forwardM, B.upM, B.widthM = nil, nil, nil
+
     local lines = brboard()
 
     -- THE WIDTH IS THE MODEL'S WIDTH: 4.5 - (-4.5) = 9.00.
@@ -1200,6 +1247,11 @@ do
     -- block and `widthM = nil` in the file otherwise read as a contradiction.
     ok(printed(brboard(), '^  source fwd measured  up measured  w measured'),
         'and the readout says where the three came from')
+
+    -- PUT THE OWNER'S NUMBERS BACK. Every block below this one runs against the
+    -- shipped config, and leaving three nils behind would quietly turn them into
+    -- measurement tests too.
+    B.forwardM, B.upM, B.widthM = cfgFwd, cfgUp, cfgW
 end
 
 describe('the license arrives and the browser is NAVIGATED, not replaced')
@@ -1303,6 +1355,24 @@ end
 
 describe('/brboard moves the board and prints what it moved it to')
 do
+    -- ═══ THIS BLOCK SUPPLIES ITS OWN CONFIG, AND MUST ═══
+    --
+    -- Every assertion below is about what the TOOL does with a starting value,
+    -- not about which starting value ships. Seeded from the shipped config they
+    -- all went red the day the owner aimed the board (2026-09-11), and the
+    -- tempting repair is to edit each expected number to match. That makes the
+    -- block agree with config forever and stop testing the tool.
+    --
+    -- So: the heading that demonstrates a gap, a yaw of zero to nudge off, and
+    -- the three measured fields left to the prop. Restored at the end.
+    local _sv = { h = B.prop.heading, y = B.yawDeg, f = B.forwardM,
+                  u = B.upM, w = B.widthM, s = B.sideM }
+    B.prop.heading = 135.0
+    B.yawDeg   = 0.0
+    B.forwardM = nil
+    B.upM      = nil
+    B.widthM   = nil
+
     -- ═══ HE ASKED FOR A TOOL, AND A TOOL WHOSE OUTPUT IS NOT PASTEABLE IS A
     --     SECOND ROUND OF GUESSING ═══
     --
@@ -1374,10 +1444,31 @@ do
         'and prints the box it measured, so the fitted numbers can be checked')
 
     brboard('reset')
+
+    B.prop.heading, B.yawDeg = _sv.h, _sv.y
+    B.forwardM, B.upM, B.widthM, B.sideM = _sv.f, _sv.u, _sv.w, _sv.s
 end
 
 describe('/brboard fit and adopt turn the unknowns into written-down numbers')
 do
+    -- ═══ THIS BLOCK SUPPLIES ITS OWN CONFIG, AND MUST ═══
+    --
+    -- Every assertion below is about what the TOOL does with a starting value,
+    -- not about which starting value ships. Seeded from the shipped config they
+    -- all went red the day the owner aimed the board (2026-09-11), and the
+    -- tempting repair is to edit each expected number to match. That makes the
+    -- block agree with config forever and stop testing the tool.
+    --
+    -- So: the heading that demonstrates a gap, a yaw of zero to nudge off, and
+    -- the three measured fields left to the prop. Restored at the end.
+    local _sv = { h = B.prop.heading, y = B.yawDeg, f = B.forwardM,
+                  u = B.upM, w = B.widthM, s = B.sideM }
+    B.prop.heading = 135.0
+    B.yawDeg   = 0.0
+    B.forwardM = nil
+    B.upM      = nil
+    B.widthM   = nil
+
     -- Owner, 2026-09-11: "If you can't get the DUI right that's totally fine.
     -- Just give me tools like `brscoreboard` or something to adjust them."
 
@@ -1451,6 +1542,9 @@ do
     end
     brboard('reset')
     tick()
+
+    B.prop.heading, B.yawDeg = _sv.h, _sv.y
+    B.forwardM, B.upM, B.widthM, B.sideM = _sv.f, _sv.u, _sv.w, _sv.s
 end
 
 describe('/brboard prop auditions a model without touching the map')
@@ -1487,6 +1581,24 @@ end
 
 describe('/brboard here moves where we LOOK, not where the prop stands')
 do
+    -- ═══ THIS BLOCK SUPPLIES ITS OWN CONFIG, AND MUST ═══
+    --
+    -- Every assertion below is about what the TOOL does with a starting value,
+    -- not about which starting value ships. Seeded from the shipped config they
+    -- all went red the day the owner aimed the board (2026-09-11), and the
+    -- tempting repair is to edit each expected number to match. That makes the
+    -- block agree with config forever and stop testing the tool.
+    --
+    -- So: the heading that demonstrates a gap, a yaw of zero to nudge off, and
+    -- the three measured fields left to the prop. Restored at the end.
+    local _sv = { h = B.prop.heading, y = B.yawDeg, f = B.forwardM,
+                  u = B.upM, w = B.widthM, s = B.sideM }
+    B.prop.heading = 135.0
+    B.yawDeg   = 0.0
+    B.forwardM = nil
+    B.upM      = nil
+    B.widthM   = nil
+
     -- ═══ THIS COMMAND CHANGED MEANING WHEN THE PROP STOPPED BEING OURS ═══
     --
     -- It used to survey a spot to build a prop on, and it took the player's own
@@ -1527,6 +1639,9 @@ do
 
     dui.objects[far] = nil
     brboard('reset')
+
+    B.prop.heading, B.yawDeg = _sv.h, _sv.y
+    B.forwardM, B.upM, B.widthM, B.sideM = _sv.f, _sv.u, _sv.w, _sv.s
 end
 
 describe('/brscoreboard is the same tool under the name he reached for')
