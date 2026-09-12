@@ -619,7 +619,7 @@ local function describeCause(raw)
         put('WEAPON_RAMMED_BY_CAR',        'roadkill')
         put('WEAPON_RUN_OVER_BY_CAR',      'roadkill')
 
-        -- ...AND THE THREE THIS GAMEMODE ISSUES, WHICH THE ENGINE BLAMES BY
+        -- ...AND THE WEAPONS THIS GAMEMODE ISSUES, WHICH THE ENGINE BLAMES BY
         -- WEAPON RATHER THAN BY THE WORLD.
         --
         -- Observed 2026-09-09, a two-client solos playtest: the owner gave
@@ -657,6 +657,28 @@ local function describeCause(raw)
         put('WEAPON_MOLOTOV',              'burned')
         put('WEAPON_GRENADE',              'explosion')
         put('WEAPON_STICKYBOMB',           'explosion')
+
+        -- AND THE THREE LAUNCHERS, WHICH ARE THE SAME HOLE ONE TABLE OVER. The
+        -- throwables above live in BR.Config.Throwables; the RPG, the grenade
+        -- launcher and the railgun live in BR.Config.AirdropWeapons, a separate
+        -- array for reasons that have nothing to do with this table (see the
+        -- note on the airdrop shelf in config/weapons.lua). The engine blames
+        -- all six by weapon, so a rocket into the wall at your own feet fell
+        -- through here by the identical route a self-thrown grenade did.
+        --
+        -- IT SHOWS MORE SINCE A BLAST STOPPED GOING THROUGH THE BLEED CLOCK
+        -- (BR.Combat.canBeDowned, below). The victim used to read BLED OUT and
+        -- meet this word later, on the end screen; now the slam is immediate and
+        -- 'unknown' is the first thing they are told, as WASTED.
+        --
+        -- 'explosion' AGAIN, AND NOTHING NEW. Same word the grenade above
+        -- already returns, already in the feed's phrase table and the verdict
+        -- slam. The minigun is deliberately NOT here: it shares the airdrop
+        -- shelf with these three and nothing else, it is not explosive, and
+        -- nobody has ever killed themselves with one.
+        put('WEAPON_RPG',                  'explosion')
+        put('WEAPON_GRENADELAUNCHER',      'explosion')
+        put('WEAPON_RAILGUN',              'explosion')
     end
     return causeByHash[raw & 0xFFFFFFFF] or 'unknown'
 end

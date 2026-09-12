@@ -8510,6 +8510,64 @@ do
         'and so is a sticky bomb',
         tostring(last and last.cause))
 
+    -- ═══ AND THE THREE LAUNCHERS, WHICH ARE THE SAME HOLE ONE TABLE OVER ═══
+    --
+    -- The throwables above sit in BR.Config.Throwables; the RPG, the grenade
+    -- launcher and the railgun sit in BR.Config.AirdropWeapons, a separate array
+    -- for reasons that have nothing to do with the cause table. The engine bills
+    -- all six by WEAPON, so a rocket into the wall at your own feet fell through
+    -- `describeCause` by the identical route a self-thrown grenade did.
+    --
+    -- IT SHOWS MORE SINCE A BLAST STOPPED GOING THROUGH THE BLEED CLOCK: the
+    -- word this table returns is now the first thing the victim reads, and
+    -- 'unknown' renders as WASTED.
+    --
+    --- One death, nobody to blame, and the word the feed carried for it.
+    local function selfCause(causeHash)
+        reset()
+        queueUp(1, 'A', BR.Mode.SOLO.key)
+        queueUp(2, 'B', BR.Mode.SOLO.key)
+        fakeTime = fakeTime + 300
+        BR.Sched.step(fakeTime)
+        BR.Roster.setState(1, BR.PlayerState.ALIVE)
+        BR.Roster.setState(2, BR.PlayerState.ALIVE)
+        setPos(1, 0.0, 0.0, 30.0)
+        setPos(2, 60.0, 0.0, 30.0)
+        fakeTime = fakeTime + 600
+        BR.Sched.step(fakeTime)
+
+        sent = {}
+        fire(BR.Net.PLAYER_DIED, 1, { cause = causeHash })
+        local f = eventsOf(BR.Net.KILL_FEED)
+        local l = f[#f] and f[#f].args[1]
+        return l and l.cause
+    end
+
+    --- The engine's own spelling of a joaat hash: SIGNED 32-bit.
+    ---
+    -- GET_PED_CAUSE_OF_DEATH answers signed, which is why `describeCause` masks
+    -- with 0xFFFFFFFF at all, so an unsigned-only assertion proves half the
+    -- mapping. Two of the three below have the top bit set and genuinely arrive
+    -- negative; WEAPON_RAILGUN does not, so for it the two legs are the same
+    -- number and the signed one is a free pass. Asserted for all three anyway:
+    -- the day somebody renames it, the loop still asks the right question.
+    local function signed32(h)
+        return h >= 0x80000000 and h - 0x100000000 or h
+    end
+
+    for _, name in ipairs({ 'WEAPON_RPG', 'WEAPON_GRENADELAUNCHER',
+                            'WEAPON_RAILGUN' }) do
+        local got = selfCause(GetHashKey(name))
+        ok(got == 'explosion',
+            name .. ' with nobody to blame is an explosion, not "unknown"',
+            tostring(got))
+
+        local gotSigned = selfCause(signed32(GetHashKey(name)))
+        ok(gotSigned == 'explosion',
+            'and the same ' .. name .. ' arriving as the engine sends it, SIGNED',
+            tostring(gotSigned))
+    end
+
     -- A WEAPON WE DO ISSUE IS STILL NOT THE WHOLE ARSENAL. Nothing here turns
     -- `describeCause` into a weapon table: a rifle death has a killer and a
     -- weapon of its own on the feed, and the cause it reports is meant to fall
