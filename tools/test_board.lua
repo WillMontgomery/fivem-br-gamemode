@@ -313,8 +313,15 @@ do
     -- BOARD_WIDTH/BOARD_HEIGHT at 1280x720 and writes a fixed-pixel document
     -- with overflow hidden; a texture of another size crops the page or leaves a
     -- band of background, and neither says a word anywhere.
-    eq(B.width, 1280, 'the texture is 1280 wide, matching BOARD_WIDTH')
-    eq(B.height, 720, 'and 720 tall, matching BOARD_HEIGHT')
+    eq(B.width, 1920, 'the texture is 1920 wide, matching BOARD_WIDTH')
+    eq(B.height, 1080, 'and 1080 tall, matching BOARD_HEIGHT')
+
+    -- THE ASPECT IS THE PART THE QUAD DEPENDS ON, and 16:9 survived the bump
+    -- from 720p on 2026-09-11. A texture that stopped being 16:9 would letterbox
+    -- the page against a quad sized from the width alone.
+    ok(math.abs((B.width / B.height) - (16 / 9)) < 1e-9,
+        'and it is 16:9, which is what the quad derives its height from',
+        ('%d x %d'):format(B.width, B.height))
 end
 
 -- =========================================================================
@@ -709,7 +716,7 @@ do
 
     loadAll({ 'br_lib/shared/geo.lua', 'br_core/client/dui.lua' })
 
-    dui.page = BR.Dui.page('boardprobe', 'about:blank', 1280, 720)
+    dui.page = BR.Dui.page('boardprobe', 'about:blank', B.width, B.height)
     dui.ENT = ENT
     dui.PROP = PROP
 
@@ -753,7 +760,7 @@ do
     -- stretched by a second one drifting from it.
     ok(near(dist3(tl, tr), W, 0.001), 'exactly widthM across',
         ('%.4f'):format(dist3(tl, tr)))
-    ok(near(dist3(tl, bl), W * (720 / 1280), 0.001),
+    ok(near(dist3(tl, bl), W * (B.height / B.width), 0.001),
         'and the page\'s own aspect tall', ('%.4f'):format(dist3(tl, bl)))
 
     -- LEVEL, THOUGH THE PROP IS PITCHED 7 DEGREES AND ROLLED 11. The top edge
@@ -1431,7 +1438,8 @@ do
     -- IT SAYS WHAT THE BOARD IS DOING, which is the other half of the request:
     -- seven different faults all look like "the board is not there".
     ok(printed(lines, '^  health '), 'the health state is printed')
-    ok(printed(lines, 'texture 1280x720'), 'so is the resolution')
+    ok(printed(lines, ('texture %dx%d'):format(B.width, B.height)),
+        'so is the resolution')
     ok(printed(lines, '^  url    ' .. BOARD_URL:gsub('%p', '%%%0')),
         'and the address actually in force')
     ok(printed(lines, '^  warmup true'), 'and whether we are on the pad')

@@ -123,14 +123,37 @@ BR.Config.Board = {
     -- anybody is looking at the prop. These two numbers are ALSO the unit of the
     -- per-frame blit above, so they are spent every game frame and not only once.
     --
-    -- WHAT 1080p WOULD BUY: nothing legible. The texture is sampled at whatever
-    -- screen area the quad occupies, and a board a player stands a few meters
-    -- from occupies a few hundred pixels of their actual display. Doubling the
-    -- source resolution of text that is already being downsampled buys sharpness
-    -- nobody can resolve. "Can I read it from over there" is answered by type
-    -- size in the page, not by texture size here.
-    width  = 1280,
-    height = 720,
+    -- ═══ AND 1080p IS WHAT SHIPS, BECAUSE THE ARGUMENT ABOVE RESTED ON A
+    --     BOARD A QUARTER THIS SIZE ═══
+    --
+    -- The paragraph that used to sit here said 1080p would buy "nothing
+    -- legible", reasoning that "a board a player stands a few meters from
+    -- occupies a few hundred pixels of their actual display". That was written
+    -- when `widthM` was an invented 2.40, which is a postage stamp on a stage
+    -- display and was never measured against anything.
+    --
+    -- The owner then measured the real prop: it is 9.46m wide and he aimed the
+    -- quad at 9.43 of it. A screen that size fills a large part of the display
+    -- of anybody standing near it, and 720p upscaled onto it is visibly soft.
+    -- The logic was fine; the number it was applied to was wrong.
+    --
+    -- Owner, 2026-09-11: "If it's still 720p can we bump it to 1080p or 1440p?"
+    -- and then "Yeah let's go 1080p".
+    --
+    -- NOT 1440p, AND NOT BECAUSE OF THE MEMORY. 2560x1440 is 14.7 MB against
+    -- 1080p's 8.3, and neither figure should decide this: a few megabytes on a
+    -- machine already holding a battle royale map is noise, and saying otherwise
+    -- is how the 720p decision got made. 1440p is declined because the extra
+    -- pixels are past what anybody resolves at three meters, not because they
+    -- are expensive.
+    --
+    -- ⚠ RINGMASTER MUST MATCH, AND NOTHING REPORTS IT IF IT DOES NOT.
+    -- src/lib/scoreboard.ts pins BOARD_WIDTH/BOARD_HEIGHT and the page is a
+    -- fixed-pixel document; a texture of a different size crops it or leaves a
+    -- band of background, silently. The two numbers below and those two are one
+    -- contract.
+    width  = 1920,
+    height = 1080,
 
     -- ═══════════════════════════════════════════════════════════════════════
     -- THE PROP
@@ -344,7 +367,13 @@ BR.Config.Board = {
     -- board is up before a player is close enough to read it, short enough that
     -- somebody at the far end of the pad is not paying for a quad a few pixels
     -- across.
-    drawM = 80.0,
+    --
+    -- 110 IS HIS, AND 80 WAS MINE. Owner, 2026-09-11: "can you make the
+    -- leaderboard draw from 110m away instead? I think it's at 80m now." 80 was
+    -- picked against a board nobody had measured; the prop turned out to be
+    -- 9.46m wide, which is visible a great deal further away than the 2.40m
+    -- placeholder the number was guessed against.
+    drawM = 110.0,
 
     -- ═══════════════════════════════════════════════════════════════════════
     -- WHAT IS SHOWN INSTEAD WHEN THERE IS NO PAGE
