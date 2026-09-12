@@ -137,7 +137,7 @@ do
 end
 
 -- ---------------------------------------------------------------------------
-describe('the one string on this surface we wrote is still flagged as ours')
+describe('the ammunition separator is his word now, and it is recorded as his')
 -- ---------------------------------------------------------------------------
 --
 -- ═══ THE RULE, IN HIS WORDS ═══
@@ -146,69 +146,60 @@ describe('the one string on this surface we wrote is still flagged as ours')
 --    comes across as AI slop"
 --
 -- Every word a player reads at this counter is either his, typed as he typed
--- it, or derived from a table somebody owns -- with ONE exception. He asked for
--- "separators in between that indicate the category"; three of the four groups
--- take their word from BR.RarityInfo, and the ammunition group has no table
--- with a name in it, so AMMO_GROUP is a placeholder WE chose.
+-- it, or derived from a table somebody owns. AMMO_GROUP was the one exception
+-- for two days -- he asked for "separators in between that indicate the
+-- category", three of the four groups take their word from BR.RarityInfo, and
+-- the ammunition group has no table with a name in it -- so it stood as a
+-- marked placeholder until he said what it should read.
 --
--- IT STANDS, AND IT STAYS MARKED. Replacing it with a different invention would
--- be the same violation in fresh words, and blanking the label draws an empty
--- bar above three that read Rare, Epic and Legendary -- a header that looks
--- broken rather than a header that is absent. So the fix is that nobody may
--- quietly bless it: the day the marked block goes, this goes red.
+-- ═══ AND HE SAID SO ON 2026-09-11 ═══
 --
--- A COMMENT TEST, DELIBERATELY, and the same argument the header test above
--- makes. What protects this string is that the next person to read the file is
--- told it is not his; a flag nothing checks is a flag that survives exactly
--- until somebody tidies up.
+--   "The ammunition separator should read 'Ammo' and be no special color, same
+--    color as the ammo item rows themselves."
+--
+-- SO WHAT THIS BLOCK CHECKS HAS TURNED OVER. It used to prove the flag was
+-- still up; it now proves the RULING is written down where the string is, which
+-- is the same job pointed the other way. A constant with no provenance beside it
+-- is the thing this file has always been about: the next reader has to be able
+-- to tell his word from ours without going and finding the issue.
 do
     local raw = readFile(ROOT .. 'br_core/client/gunshop.lua')
 
-    ok(raw:find("AWAITING THE OWNER'S WORDING", 1, true) ~= nil,
-        'the placeholder is marked as awaiting his wording, in terms nobody '
-            .. 'can mistake for a decision that was made')
-    ok(raw:find('AMMO_GROUP below is a placeholder WE wrote', 1, true) ~= nil,
-        '...and the marker names the constant it is about, so it cannot drift '
-            .. 'onto a different string')
-    ok(raw:find('do not add any helper text to any pages', 1, true) ~= nil,
-        'and it quotes the rule it is standing in breach of, so the cost of '
-            .. 'leaving it is legible without going and finding the report')
+    -- MATCHED ON ONE LINE'S WORTH, because the quotation is wrapped and never
+    -- appears contiguously in the file.
+    ok(raw:find("separator should read 'Ammo'", 1, true) ~= nil,
+        'his 2026-09-11 wording is quoted at the constant, so `Ammo` is legibly '
+            .. 'his rather than ours')
+    ok(raw:find('same color as the ammo item rows themselves', 1, true) ~= nil,
+        '...including the color half, which is the part that is a change rather '
+            .. 'than a confirmation')
 
-    -- ═══════════════════════════════════════════════════════════════════════
-    -- HIS ANSWER IS RECORDED, AND SO IS THE REASON IT CANNOT BE CARRIED OUT
-    -- ═══════════════════════════════════════════════════════════════════════
-    --
-    -- Owner, 2026-09-11: "The `Ammo` separator should be simply the name of the
-    -- category of rarity for the items listed below the separator."
-    --
-    -- That is a RULE and not a word, and it is already what the other three
-    -- separators do. It is answerable for every group but this one, so the
-    -- marked block has to carry his sentence as well as the placeholder --
-    -- otherwise the next reader finds a flag with no decision attached to it
-    -- and re-derives the whole thing.
-    -- MATCHED ON ONE LINE'S WORTH. His sentence is wrapped inside a box drawn
-    -- with box characters, so the whole quotation never appears contiguously in
-    -- the file; this is the longest run of it that sits on a single line.
-    ok(raw:find('simply the name of the category of', 1, true) ~= nil,
-        'his 2026-09-11 answer is quoted at the placeholder, so nobody has to '
-            .. 'go and find the issue to know a decision was made')
-    ok(raw:find('rarity for the items listed below the separator', 1, true)
-        ~= nil,
-        '...including the half that says WHOSE rarity, which is the whole rule')
-    ok(raw:find('AMMUNITION CARRIES NO RARITY', 1, true) ~= nil,
-        '...and so is the finding that blocks it, rather than the block '
-            .. 'silently outliving the question')
+    -- AND THE FLAG IS DOWN, WHICH IS AN ASSERTION AND NOT AN ABSENCE OF ONE. A
+    -- placeholder marker left standing over a string he has since typed is a
+    -- false comment, and this file is where the last one was caught.
+    ok(raw:find("AWAITING THE OWNER'S WORDING", 1, true) == nil,
+        'and the placeholder marker is gone, because the thing it was flagging '
+            .. 'is gone -- a marker over his own word would be a lie about who '
+            .. 'wrote it')
+    ok(raw:find('AMMO_GROUP below is a placeholder WE wrote', 1, true) == nil,
+        '...and so is the line naming it as ours')
 
-    -- ═══ AND THE FINDING IS CHECKED AGAINST THE TABLES, NOT ONLY ASSERTED
-    --     IN A COMMENT ═══
+    -- ═══ THE FINDING THAT BLOCKED HIS EARLIER ANSWER IS STILL TRUE, AND STILL
+    --     CHECKED ═══
     --
-    -- ⚠ THIS IS THE ASSERTION THAT EXPIRES THE BLOCK ABOVE. A comment test
-    -- proves somebody wrote the reason down; it cannot notice the reason
-    -- ceasing to be true. The moment ammunition is given a rarity -- in
-    -- config/gunshop.lua's own `ammo` rows or in config/loot.lua's AmmoPickups
-    -- -- his rule becomes executable with no further decision, because the
-    -- label would then be BR.RarityInfo's own word exactly as the other three
-    -- already are. So this goes RED on that day and says what to do.
+    -- His answer of earlier the same day -- "The `Ammo` separator should be
+    -- simply the name of the category of rarity for the items listed below the
+    -- separator" -- was a RULE rather than a word, and 503298c found it could
+    -- not be carried out because ammunition has no rarity to name.
+    --
+    -- ⚠ THE ASSERTION BELOW STAYS, AND WHAT IT MEANS HAS CHANGED. His ruling is
+    -- "ammunition has no rarity", not "ammunition has one now" -- so a rarity
+    -- appearing in either config table is still a real change to what
+    -- ammunition IS, and somebody should look at this surface when it happens.
+    -- It is no longer a thing WAITING to happen.
+    ok(raw:find('AMMUNITION STILL CARRIES NO RARITY', 1, true) ~= nil,
+        'and the file still says so where the separator is decided, so the '
+            .. 'premise his answer rests on is legible beside it')
     --
     -- ⚠ NOT A LOOK AT THE BUILT ROW. `BR.GunshopSolve` stamps every ammo row
     -- with BR.Rarity.COMMON as a structural convention -- shared/loot_gen.lua
@@ -232,15 +223,17 @@ do
             .. 'never ran agreeing with the claim',
         #BR.Config.AmmoOrder)
     ok(#authored == 0,
-        'ammunition still carries no authored rarity anywhere, which is why '
-            .. 'his rule cannot be executed -- WHEN THIS GOES RED, delete '
-            .. 'AMMO_GROUP and take the separator from BR.RarityInfo like the '
-            .. 'other three',
+        'ammunition still carries no authored rarity anywhere, which is the '
+            .. 'premise behind "Ammo" -- WHEN THIS GOES RED, ammunition has '
+            .. 'become a thing with a rarity and somebody has to ASK HIM '
+            .. 'whether the separator should say so. Do not rename it on this '
+            .. 'test\'s authority: `Ammo` is his word and the last one he gave',
         #authored > 0 and table.concat(authored, ', ') or nil)
 
-    -- AND THE OTHER TWO ARE STILL HIS, which is the half that says the marker
-    -- is narrow. If this ever grew to cover PLATE_HINT or the out-of-stock
-    -- line, our copy would have been normalised rather than flagged.
+    -- AND EVERY OTHER STRING ON THIS SURFACE IS STILL ATTRIBUTED AT ITS
+    -- DECLARATION, which is what the placeholder marker was a special case of.
+    -- Attribution is the rule; the marker was only ever what it looked like
+    -- while one string had none to give.
     ok(raw:find('"a line underneath PRESS TO OPEN"', 1, true) ~= nil,
         'the plate hint is still attributed to him at its declaration')
     ok(raw:find('"instead show Out of Stock"', 1, true) ~= nil,
@@ -3358,6 +3351,65 @@ do
         ok(heads[#heads] and heads[#heads]._text == 'Legendary',
             '...and the bottom one is Legendary, in BR.RarityInfo\'s own word',
             heads[#heads] and heads[#heads]._text or 'none')
+
+        -- ═══ AND THE AMMUNITION HEADER IS NO LONGER THE BRIGHTEST THING ON
+        --     THE SHELF (owner, 2026-09-11) ═══
+        --
+        -- "The ammunition separator should read 'Ammo' and be no special color,
+        -- same color as the ammo item rows themselves."
+        --
+        -- Every separator took BR.Menu.accent() -- the interface cyan, at full
+        -- opacity -- and the ammunition one now takes what its own rows take.
+        --
+        -- ⚠ ASSERTED AGAINST A ROW, NOT AGAINST A NAMED COLOR. "Same color as
+        -- the ammo item rows themselves" is a statement about two things being
+        -- equal, and a test that spelled out an RGB would pass on the day the
+        -- rows moved and the header did not -- which is the only failure this
+        -- can actually have.
+        local function sameColor(a, b)
+            return type(a) == 'table' and type(b) == 'table'
+               and a.a == b.a and a.r == b.r and a.g == b.g and a.b == b.b
+        end
+        local ammoRow = rowItem('ammo_' .. BR.AmmoType.LIGHT)
+        ok(ammoRow ~= nil and sameColor(heads[1]._main, ammoRow._main),
+            'the Ammo header wears exactly the color of the rows under it, '
+                .. 'which is what "no special color" means here',
+            ('header %s, row %s'):format(
+                heads[1]._main and ('a%s r%s g%s b%s'):format(heads[1]._main.a,
+                    heads[1]._main.r, heads[1]._main.g, heads[1]._main.b)
+                    or 'none',
+                ammoRow and ammoRow._main and ('a%s r%s g%s b%s'):format(
+                    ammoRow._main.a, ammoRow._main.r, ammoRow._main.g,
+                    ammoRow._main.b) or 'none'))
+
+        -- ...AND IT IS NOT THE ACCENT, said separately because the assertion
+        -- above would pass if BOTH the header and the rows somehow became cyan.
+        -- The accent is an SColor.FromHex and a rarity tint is an SColor.
+        -- FromArgb, so in this stub they are not even the same SHAPE -- which is
+        -- worth leaning on rather than comparing channels that do not exist.
+        local accent = BR.Menu.accent()
+        ok(heads[1]._main ~= nil and heads[1]._main.hex == nil
+           and accent ~= nil and accent.hex ~= nil,
+            '...and specifically is NOT the interface cyan any more, which is '
+                .. 'the thing he asked to have taken off it',
+            ('header %s'):format(
+                heads[1]._main and tostring(heads[1]._main.hex) or 'none'))
+
+        -- ═══ AND THE OTHER THREE STILL ARE, because he ruled on one ═══
+        --
+        -- Repainting Rare, Epic and Legendary would be answering a question
+        -- nobody asked, and it is the shape this change could most easily have
+        -- taken by accident: one `if` in buildMenu away.
+        local stillAccent = {}
+        for i = 2, #heads do
+            if heads[i]._main == nil or heads[i]._main.hex == nil then
+                stillAccent[#stillAccent + 1] = heads[i]._text
+            end
+        end
+        ok(#stillAccent == 0,
+            'while every rarity separator keeps the accent it always had -- he '
+                .. 'ruled on the ammunition one and said nothing about these',
+            #stillAccent > 0 and table.concat(stillAccent, ', ') or nil)
 
         -- THE ROWS ARE UNDER THE RIGHT HEADERS, which is the half a count of
         -- separators would not catch.

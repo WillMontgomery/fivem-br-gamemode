@@ -88,76 +88,47 @@ local G = BR.Config.Gunshop
 -- PLATE_HINT and OUT_OF_STOCK are the owner's own words from 2026-09-09.
 -- OUT_OF_STOCK is READ rather than typed -- config/gunshop.lua authors
 -- `outOfStockLabel` for it, in a block that says nothing in it may be tidied,
--- and it had no reader until now. AMMO_GROUP is NOT his: he asked for "separators in between
--- that indicate the category", which structurally needs a word per group, and
--- three of the four groups get theirs from BR.RarityInfo. The ammo group has no
--- table with a name for it, so this is the shortest neutral one.
+-- and it had no reader until now.
 --
--- ╔═══════════════════════════════════════════════════════════════════════╗
--- ║  AWAITING THE OWNER'S WORDING.                                        ║
--- ║                                                                       ║
--- ║  AMMO_GROUP below is a placeholder WE wrote. It is the only string on  ║
--- ║  this surface he has not typed, and his rule is that we do not write   ║
--- ║  player-facing copy: "please do not add any helper text to any pages   ║
--- ║  on your own ever ... it comes across as AI slop".                     ║
--- ║                                                                       ║
--- ║  It stands because the separator he asked for structurally needs a     ║
--- ║  word. Replacing it with a DIFFERENT invention would be the same       ║
--- ║  violation with fresh wording, so it stays exactly as it is until he   ║
--- ║  says what it should read.                                            ║
--- ║                                                                       ║
--- ║  ─────────────────────────────────────────────────────────────────    ║
--- ║  HE ANSWERED ON 2026-09-11, AND THE ANSWER CANNOT BE CARRIED OUT.      ║
--- ║  ─────────────────────────────────────────────────────────────────    ║
--- ║                                                                       ║
--- ║  "The `Ammo` separator should be simply the name of the category of    ║
--- ║  rarity for the items listed below the separator."                    ║
--- ║                                                                       ║
--- ║  That is a rule, not a word: a separator names the rarity of the       ║
--- ║  group under it. It is already what the other three separators do,     ║
--- ║  and it is answerable for every group except this one.                 ║
--- ║                                                                       ║
--- ║  AMMUNITION CARRIES NO RARITY. Not "one we have not surfaced" --       ║
--- ║  none, and three separate files say so in as many words:               ║
--- ║                                                                       ║
--- ║    config/gunshop.lua's own `ammo` table authors a PRICE per pool and  ║
--- ║    nothing else. config/loot.lua's AmmoPickups authors a label, an     ║
--- ║    amount and a prop. Neither has a rarity field to read.              ║
--- ║                                                                       ║
--- ║    shared/loot_gen.lua, in the loot roll itself: "Ammo has no rarity   ║
--- ║    of its own; the roll is spent picking a pool."                      ║
--- ║                                                                       ║
--- ║    shared/gunshop_solve.lua, stamping these very rows: "AMMO HAS NO    ║
--- ║    RARITY OF ITS OWN ANYWHERE IN THIS PROJECT ... COMMON here is that  ║
--- ║    same convention rather than a claim that ammo is common."           ║
--- ║                                                                       ║
--- ║  SO READING THAT FIELD BACK OUT WOULD PUT "Common" ON THE WALL, AND    ║
--- ║  THAT IS AN INVENTION WEARING A LOOKUP'S CLOTHES. Rarity in this game  ║
--- ║  is a real claim with real consequences -- BR.RarityInfo carries a     ║
--- ║  damageMult per band and the loot roll bands every other kind by it.   ║
--- ║  A header reading Common would tell a player ammunition is common-     ║
--- ║  rarity loot, which is the one thing every file that touches it is at  ║
--- ║  pains to say the project does NOT claim. It would also be a word we   ║
--- ║  chose rather than one he typed, which is the rule this block is       ║
--- ║  about, so it is the same violation with a citation stapled to it.     ║
--- ║                                                                       ║
--- ║  WHAT WOULD UNBLOCK IT, AND IT IS ONE FIELD. A rarity authored for     ║
--- ║  ammunition -- in config/gunshop.lua's `ammo` rows or in              ║
--- ║  config/loot.lua's AmmoPickups -- makes his rule executable here with  ║
--- ║  no further decision, because the label would then be BR.RarityInfo's  ║
--- ║  own word exactly as the other three already are.                     ║
--- ║  tools/test_gunshop.lua goes RED the day either table grows one, so    ║
--- ║  this block cannot outlive the thing blocking it.                      ║
--- ║                                                                       ║
--- ║  DELETING THE LABEL WAS CHECKED AND IS NOT BETTER.                     ║
--- ║  UIMenuSeparatorItem.New('', true) is legal -- the constructor does    ║
--- ║  `Text or ""` and an empty string is truthy in Lua, so it neither      ║
--- ║  errors nor falls back -- and the scaleform draws the bar either way.  ║
--- ║  What it draws is a BLANK bar sitting directly above three bars that   ║
--- ║  read Rare, Epic and Legendary, at the top of the menu where it is     ║
--- ║  the first thing on screen. That is not "no copy", it is a header      ║
--- ║  that looks broken, so it is not the cheaper answer it appears to be.  ║
--- ╚═══════════════════════════════════════════════════════════════════════╝
+-- AND AMMO_GROUP IS HIS TOO, SINCE 2026-09-11. It was the one string on this
+-- surface nobody had typed but us, and it was marked as such for two days.
+-- See the block below.
+--
+-- ═══════════════════════════════════════════════════════════════════════════
+-- THE AMMUNITION SEPARATOR IS SETTLED (owner, 2026-09-11)
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+--   "The ammunition separator should read 'Ammo' and be no special color, same
+--    color as the ammo item rows themselves."
+--
+-- THAT IS THE WORD AND THE COLOR, AND IT CLOSES A QUESTION THAT WAS ASKED
+-- TWICE. His answer of earlier the same day -- "The `Ammo` separator should be
+-- simply the name of the category of rarity for the items listed below the
+-- separator" -- was a RULE rather than a word, and 503298c found it could not
+-- be carried out: ammunition carries no rarity anywhere in this project, so
+-- there was no label to read and "Common" would have been an invention wearing
+-- a lookup's clothes. This sentence answers the question that left open. The
+-- placeholder block that stood here is gone because the thing it was flagging
+-- is gone: `Ammo` is the word he typed, in the quotation above.
+--
+-- AMMUNITION STILL CARRIES NO RARITY, and his answer is not that it now has
+-- one -- it is that the separator does not need one. tools/test_gunshop.lua
+-- still goes RED the day either config table grows a rarity for a pool, because
+-- that would be a real change to what ammunition IS and somebody should look at
+-- this file when it happens. What that failure now means is "his premise
+-- moved", not "his wording has arrived".
+--
+-- THE COLOR HALF IS A CHANGE AND NOT A RESTATEMENT. Every separator took
+-- BR.Menu.accent() -- the interface cyan, at full opacity, brighter than
+-- anything else on the shelf. "No special color, same color as the ammo item
+-- rows themselves" means this one takes what its own rows take, which is
+-- BR.Menu.rarityColor of the rarity those rows carry. See `grouped` and
+-- `buildMenu`: the header reads it off a row rather than naming a rarity here,
+-- so it cannot come to disagree with the rows underneath it.
+--
+-- THE OTHER THREE SEPARATORS ARE UNTOUCHED. He ruled on the ammunition one and
+-- said nothing about Rare, Epic or Legendary, and repainting those would be
+-- answering a question nobody asked.
 
 --- Owner, 2026-09-09: "a line underneath PRESS TO OPEN".
 local PLATE_HINT = 'PRESS TO OPEN'
@@ -179,7 +150,9 @@ local PLATE_HINT = 'PRESS TO OPEN'
 local OUT_OF_STOCK = (type(G.outOfStockLabel) == 'string'
     and G.outOfStockLabel ~= '' and G.outOfStockLabel) or 'Out of Stock'
 
---- NOT HIS, AND AWAITING HIS WORDING. See the marked block above.
+--- Owner, 2026-09-11: "The ammunition separator should read 'Ammo'". His word,
+--- and the capital A is his as well. See the block above for the question it
+--- closes.
 local AMMO_GROUP = 'Ammo'
 
 --- 0 IS TRUTHY IN LUA AND A FIVEM BOOL NATIVE MAY ANSWER 1 OR 0. Nine shipped
@@ -1003,7 +976,25 @@ local function grouped()
     -- in the ammunition group on the day somebody lowers
     -- BR.GunshopSolve.minRarity. Asking the kind cannot go wrong that way.
     local ammo = BR.GunshopSolve.ofKind(rows, BR.ItemKind.AMMO)
-    if #ammo > 0 then out[#out + 1] = { header = AMMO_GROUP, rows = ammo } end
+    if #ammo > 0 then
+        -- ═══ AND THIS ONE HEADER WEARS ITS OWN ROWS' COLOR (owner, 2026-09-11)
+        --     ═══
+        --
+        -- "The ammunition separator should read 'Ammo' and be no special color,
+        -- same color as the ammo item rows themselves."
+        --
+        -- READ OFF A ROW, NOT NAMED HERE. Every row in this group is stamped
+        -- with the same rarity by BR.GunshopSolve, and `headerRarity` is that
+        -- rarity rather than a constant repeating it -- so "the same color as
+        -- the rows" stays true if the stamp ever moves, and cannot drift into
+        -- being a second opinion about what ammunition is.
+        --
+        -- ONLY THIS GROUP CARRIES THE FIELD, which is what keeps `buildMenu`
+        -- from repainting the other three separators he did not rule on.
+        out[#out + 1] = { header       = AMMO_GROUP,
+                          rows         = ammo,
+                          headerRarity = ammo[1].rarity }
+    end
 
     local order = { BR.Rarity.COMMON, BR.Rarity.UNCOMMON, BR.Rarity.RARE,
                     BR.Rarity.EPIC, BR.Rarity.LEGENDARY }
@@ -1113,7 +1104,26 @@ local function buildMenu()
         -- IT IS NOT FATAL IF IT DOES NOT BUILD. A group that lost its header is
         -- a list without a caption; a `return false` here would be a counter
         -- that does not open at all.
-        local sep = BR.Menu.separator(grp.header, accent)
+        --
+        -- ═══ THE CYAN, EXCEPT ON THE ONE HE RULED ON (owner, 2026-09-11) ═══
+        --
+        -- "The ammunition separator should ... be no special color, same color
+        -- as the ammo item rows themselves." `headerRarity` is set by `grouped`
+        -- on that group alone and is the rarity its own rows carry, so this is
+        -- the same call the rows make -- BR.Menu.rarityColor, which is also what
+        -- refreshMenu repaints them with on every pass.
+        --
+        -- AN `if` RATHER THAN `and/or`, AND THAT IS NOT STYLE. Written as
+        -- `grp.headerRarity and BR.Menu.rarityColor(...) or accent`, a
+        -- rarityColor that answered nil would fall through to the ACCENT --
+        -- quietly putting back the one thing he asked to have removed, on the
+        -- one group he asked about. This way a nil answer is a nil color, which
+        -- the library draws as its own dark panel: still no special color.
+        local sepColor = accent
+        if grp.headerRarity then
+            sepColor = BR.Menu.rarityColor(grp.headerRarity)
+        end
+        local sep = BR.Menu.separator(grp.header, sepColor)
         if sep then pcall(built.AddItem, built, sep) end
 
         for _, row in ipairs(grp.rows) do
