@@ -19,24 +19,27 @@ import { play } from '../audio/cues'
  * "nothing happened" rather than as a UI that undid itself.
  */
 
-// SEVEN POOLS, IN BR.Config.AmmoOrder'S ORDER -- which is why `heavy` sits in
-// the middle rather than at the end: the two new pools were APPENDED there, and
-// the strip below and the /brammo console readout agreeing is worth more than
-// the alphabet.
+// SIX POOLS, IN BR.Config.AmmoOrder'S ORDER. One column is rendered per key
+// here, so a pool missing from this map is a pool the player cannot see or drop,
+// and a key that is not a pool is a column of zeroes.
 //
-// `heavy` IS THE EXPLOSIVE POOL NOW -- RPG, grenade launcher, railgun and
-// nothing else (owner, 2026-09-11: "move the minigun off heavy and move
-// explosives to heavy") -- so the snipers and the belt-fed guns that used to
-// share it have `sniper` and `lmg` of their own. One column is rendered per key
-// here, so a pool missing from this map is a pool the player cannot see or drop.
+// `heavy` IS THE SCOPED RIFLES AND THE THREE LAUNCHERS TOGETHER. It was the
+// explosives alone for one day; the owner played that build and asked "Can we
+// put rockets into any other category that has limited carry quantity?", so
+// `sniper` is gone and its four rifles are back in `heavy` (2026-09-12).
+//
+// ⚠ 'Belt' IS NOT HIS WORD. The pool read 'MG' here and 'MG Ammo' on the floor,
+// and his other question was "Why do we have SMG ammo and MG ammo as separate
+// categories?" -- they sit next to each other on the same shelf one letter
+// apart. This is a rename waiting for his: change it here and in
+// BR.Config.AmmoPickups, which is the only other place it is written.
 const AMMO_LABEL: Record<string, string> = {
   light: 'Light',
   smg: 'SMG',
   medium: 'Medium',
   shells: 'Shells',
   heavy: 'Heavy',
-  sniper: 'Sniper',
-  lmg: 'MG',
+  lmg: 'Belt',
 }
 
 function SlotCard({
