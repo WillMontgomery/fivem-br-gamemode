@@ -19,12 +19,24 @@ import { play } from '../audio/cues'
  * "nothing happened" rather than as a UI that undid itself.
  */
 
+// SEVEN POOLS, IN BR.Config.AmmoOrder'S ORDER -- which is why `heavy` sits in
+// the middle rather than at the end: the two new pools were APPENDED there, and
+// the strip below and the /brammo console readout agreeing is worth more than
+// the alphabet.
+//
+// `heavy` IS THE EXPLOSIVE POOL NOW -- RPG, grenade launcher, railgun and
+// nothing else (owner, 2026-09-11: "move the minigun off heavy and move
+// explosives to heavy") -- so the snipers and the belt-fed guns that used to
+// share it have `sniper` and `lmg` of their own. One column is rendered per key
+// here, so a pool missing from this map is a pool the player cannot see or drop.
 const AMMO_LABEL: Record<string, string> = {
   light: 'Light',
   smg: 'SMG',
   medium: 'Medium',
   shells: 'Shells',
   heavy: 'Heavy',
+  sniper: 'Sniper',
+  lmg: 'MG',
 }
 
 function SlotCard({

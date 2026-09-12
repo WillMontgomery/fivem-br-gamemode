@@ -360,7 +360,10 @@ export interface InvSlot {
   rarity: Rarity
   count: number
   clip?: number
-  /** Which ammo pool a weapon's reserve comes from ('light', 'heavy', ...).
+  /** Which ammo pool a weapon's reserve comes from. Seven of them, in
+   *  BR.Config.AmmoOrder's order: 'light', 'smg', 'medium', 'shells',
+   *  'heavy', 'sniper', 'lmg' -- where 'heavy' is the EXPLOSIVE pool (RPG,
+   *  grenade launcher, railgun) and nothing else.
    *  Sent by Lua rather than looked up here: the weapon table lives in br_lib
    *  and a hand-mirrored copy would go stale the first time a gun is added. */
   pool?: string

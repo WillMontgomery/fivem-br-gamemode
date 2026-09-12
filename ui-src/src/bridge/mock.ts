@@ -543,11 +543,11 @@ export function startMockDriver(): void {
         slots: [
           { id: 'carbinerifle', label: 'Carbine Rifle', kind: 'weapon', rarity: 3, count: 1, clip: 24, pool: 'medium' },
           { id: 'pumpshotgun',  label: 'Pump Shotgun',  kind: 'weapon', rarity: 2, count: 1, clip: 6, pool: 'shells' },
-          { id: 'heavysniper',  label: 'Heavy Sniper',  kind: 'weapon', rarity: 5, count: 1, clip: 4, pool: 'heavy' },
+          { id: 'heavysniper',  label: 'Heavy Sniper',  kind: 'weapon', rarity: 5, count: 1, clip: 4, pool: 'sniper' },
           { id: 'shield',       label: 'Shield Potion', kind: 'consumable', rarity: 3, count: 2 },
           false,
         ],
-        ammo: { light: 84, smg: 0, medium: 172, shells: 22, heavy: 9 },
+        ammo: { light: 84, smg: 0, medium: 172, shells: 22, heavy: 2, sniper: 9, lmg: 30 },
         active: 1,
         using: null,
       },
