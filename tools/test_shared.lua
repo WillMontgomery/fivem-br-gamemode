@@ -3921,6 +3921,36 @@ do
     ok(BR.Config.Loot.chestsPerTier[4] == 35,
         'a golden POI spawns 35 crates -- the owner\'s number',
         tostring(BR.Config.Loot.chestsPerTier[4]))
+
+    -- ═══ LEGENDARY IS TIER 4'S ALONE, AND THAT IS WHAT MAKES IT TIER 4 ═══
+    --
+    -- Owner, 2026-09-11: "The legendary drop rate should be 0, except for Tier 4
+    -- POIs and airdrops." Before that it was 1 / 2 / 5 / 10, so the golden sites
+    -- were the best odds rather than the only source, and with 64 crates across
+    -- tiers 1 to 3 against 35 at tier 4 most of the map's legendaries came out
+    -- of ordinary POIs by volume alone.
+    --
+    -- ASSERTED AS AN EXCLUSIVITY, NOT AS FOUR NUMBERS. `weights[4] == 10` would
+    -- pass against a table that had quietly grown a legendary back at tier 2,
+    -- which is the whole failure this pins. The loop below is the claim.
+    for tier = 1, 3 do
+        ok(BR.Config.RarityWeights[tier][BR.Rarity.LEGENDARY] == 0,
+            ('tier %d rolls no legendary at all'):format(tier),
+            tostring(BR.Config.RarityWeights[tier][BR.Rarity.LEGENDARY]))
+    end
+    ok(BR.Config.RarityWeights[4][BR.Rarity.LEGENDARY] > 0,
+        'and tier 4 is the only tier that does',
+        tostring(BR.Config.RarityWeights[4][BR.Rarity.LEGENDARY]))
+
+    -- EACH ROW STILL READS AS A PERCENTAGE. The file's own note says the rows
+    -- are written to sum to 100 so a weight reads as a percent; nothing requires
+    -- it, since rng:weighted normalises, which is exactly why it would rot
+    -- silently. Zeroing four cells is the sort of edit that leaves a row at 99.
+    for tier = 1, 4 do
+        local sum = 0
+        for _, w in pairs(BR.Config.RarityWeights[tier]) do sum = sum + w end
+        ok(sum == 100, ('tier %d still sums to 100'):format(tier), tostring(sum))
+    end
     -- FLAT AGAINST TIER 3, ON PURPOSE (owner: "floor items can stay at 14").
     -- A table reading 5 / 8 / 14 / 14 looks like an unfilled cell, so the
     -- flatness is pinned here as a decision rather than left to look like one.
@@ -3948,11 +3978,16 @@ do
     ok(rowOk, 'the tier 4 rarity row is the owner\'s numbers, exactly',
         table.concat(rowDetail, ', '))
 
-    -- LEGENDARY DOUBLES, 5% to 10%, and it is a decision rather than an
-    -- accident of the split. Asserted on its own so that halving it "back" to
-    -- something that looks less generous fails here with the reason attached.
-    ok(R4[BR.Rarity.LEGENDARY] == 2 * BR.Config.RarityWeights[3][BR.Rarity.LEGENDARY],
-        'legendary weight DOUBLES from tier 3 to tier 4, deliberately',
+    -- ⚠ THIS USED TO ASSERT A DOUBLING, 5% TO 10%, AND THE RELATIONSHIP IT
+    -- MEASURED NO LONGER EXISTS. Tier 3 is zero since 2026-09-11, so "twice
+    -- tier 3" is zero and the old form would have demanded tier 4 be zero too.
+    --
+    -- The claim it was protecting survives in a stronger shape: legendary is
+    -- tier 4's alone, which is asserted as an exclusivity over all four tiers up
+    -- in the golden-POI block rather than as a ratio between two of them. What
+    -- is left here is the floor, so that "10" quietly becoming "1" still fails.
+    ok(R4[BR.Rarity.LEGENDARY] == 10,
+        'legendary is the owner\'s 10 at tier 4, the only tier that rolls one',
         ('%s vs %s'):format(tostring(R4[BR.Rarity.LEGENDARY]),
                             tostring(BR.Config.RarityWeights[3][BR.Rarity.LEGENDARY])))
 
@@ -3981,10 +4016,17 @@ do
     -- NOTHING BELOW TIER 4 MOVED. The literal rows, because "I only added a
     -- row" is exactly the claim that is easy to make and easy to get wrong
     -- while retyping a table.
+    --
+    -- ⚠ UPDATED 2026-09-11, AND NOT BY RETYPING WHAT WAS THERE. The owner:
+    -- "The legendary drop rate should be 0, except for Tier 4 POIs and
+    -- airdrops." So tiers 1 to 3 gave up their legendary weight and it went to
+    -- EPIC, which is why the fourth column moved and the fifth is zero. Every
+    -- other cell is untouched, which is still the claim this block exists to
+    -- make.
     local before = {
-        [1] = { 55, 28, 13,  3, 1 },
-        [2] = { 40, 30, 20,  8, 2 },
-        [3] = { 25, 28, 27, 15, 5 },
+        [1] = { 55, 28, 13,  4, 0 },
+        [2] = { 40, 30, 20, 10, 0 },
+        [3] = { 25, 28, 27, 20, 0 },
     }
     local moved = {}
     for tier, row in pairs(before) do

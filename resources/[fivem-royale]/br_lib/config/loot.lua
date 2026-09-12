@@ -498,9 +498,39 @@ BR.Config.AmmoOrder = {
 --- generator and prints what comes out, tier 4 included -- use it rather than
 --- this table when the question is what a crate contains.
 BR.Config.RarityWeights = {
-    [1] = { [R.COMMON] = 55, [R.UNCOMMON] = 28, [R.RARE] = 13, [R.EPIC] =  3, [R.LEGENDARY] =  1 },
-    [2] = { [R.COMMON] = 40, [R.UNCOMMON] = 30, [R.RARE] = 20, [R.EPIC] =  8, [R.LEGENDARY] =  2 },
-    [3] = { [R.COMMON] = 25, [R.UNCOMMON] = 28, [R.RARE] = 27, [R.EPIC] = 15, [R.LEGENDARY] =  5 },
+    -- ═══ LEGENDARY IS ZERO OUTSIDE TIER 4, AND THAT IS THE POINT OF TIER 4 ═══
+    --
+    -- Owner, 2026-09-11: "The legendary drop rate should be 0, except for Tier 4
+    -- POIs and airdrops."
+    --
+    -- WHAT IT WAS. 1 / 2 / 5 / 10 per item roll, and a crate holds three items on
+    -- average, so a crate carried at least one legendary about 3% of the time at
+    -- tier 1, 5.9% at tier 2, 14.3% at tier 3 and 27.1% at tier 4. With 20 / 20 /
+    -- 24 crates at tiers 1 to 3 against 35 at tier 4, sheer volume meant most of
+    -- the map's legendaries came out of ordinary POIs. The four golden sites were
+    -- the best odds and not the only source, which made them a preference rather
+    -- than a destination.
+    --
+    -- WHAT IT IS NOW. The only legendary on the map is at Humane Labs, the Kortz
+    -- Center, Raton Canyon and Great Chaparral, or out of a supply drop. #227
+    -- asked for golden POIs players would "discover on their own"; a site nobody
+    -- has to visit is not discovered, it is noticed.
+    --
+    -- AIRDROPS ARE UNAFFECTED AND DO NOT READ THIS TABLE. server/airdrop.lua
+    -- stamps `rarity = BR.Rarity.LEGENDARY` on its own items directly, and
+    -- BR.Config.AirdropWeapons sits in no rarity bucket at all, so no world roll
+    -- could ever have produced one. Zeroing a weight here cannot reach them.
+    --
+    -- THE FREED WEIGHT GOES TO EPIC, WHICH IS A CHOICE AND NOT ARITHMETIC. The
+    -- rows are written to sum to 100 so each reads as a percentage, so one point
+    -- at tier 1 and five at tier 3 had to land somewhere. Epic keeps the top end
+    -- of an ordinary crate worth opening: pushed into COMMON instead, taking
+    -- legendary away would have made every normal crate flatly worse rather than
+    -- differently shaped. Tier 3 moving 15 -> 20 is the biggest single step here
+    -- and is the one to watch in a playtest.
+    [1] = { [R.COMMON] = 55, [R.UNCOMMON] = 28, [R.RARE] = 13, [R.EPIC] =  4, [R.LEGENDARY] =  0 },
+    [2] = { [R.COMMON] = 40, [R.UNCOMMON] = 30, [R.RARE] = 20, [R.EPIC] = 10, [R.LEGENDARY] =  0 },
+    [3] = { [R.COMMON] = 25, [R.UNCOMMON] = 28, [R.RARE] = 27, [R.EPIC] = 20, [R.LEGENDARY] =  0 },
     [4] = { [R.COMMON] = 14, [R.UNCOMMON] = 23, [R.RARE] = 30, [R.EPIC] = 23, [R.LEGENDARY] = 10 },
 }
 
