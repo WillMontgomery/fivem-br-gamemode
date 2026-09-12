@@ -746,16 +746,61 @@ BR.Config.Gunshop = {
     -- silhouette instead. It is the one place in this table where a line is a
     -- judgment rather than a lookup, and it is marked on each of them.
     weaponIcons = {
-        -- ⚠ ONE SWITCH, BECAUSE NOBODY HAS SEEN THIS ON A SCREEN YET.
+        -- ╔═══════════════════════════════════════════════════════════════════╗
+        -- ║  OFF SINCE 2026-09-11, AND NOT BECAUSE IT IS UNFINISHED.          ║
+        -- ║  DO NOT SWITCH THIS BACK ON WITHOUT READING THE REST OF THIS      ║
+        -- ║  BLOCK.                                                           ║
+        -- ╚═══════════════════════════════════════════════════════════════════╝
         --
-        -- The names are evidenced. What is NOT evidenced, and cannot be without
-        -- running the game, is how the menu movie's badge slot treats them: the
-        -- slot is square-ish and this art is 2:1, so it may letterbox, crop or
-        -- squash, and the item badge path has never been fed a base-game
-        -- dictionary before. If it looks wrong, this is the line that turns all
-        -- of it back into the badges that shipped last round, with no other edit
-        -- and no restart of anything else.
-        enabled = true,
+        -- The owner playtested it, with a screenshot of the Legendary group:
+        --
+        --   "Seems the gfx we're loading doesn't always show for every weapon
+        --    type, see attached. We should just use R*'s default gfx, even if
+        --    it's only one icon, because it has a differentiator between
+        --    selected/not selected as the colors invert. Our .png's do not."
+        --
+        -- And afterwards, as a rule: "also make sure the gunshop menu icons come
+        -- from GTA too".
+        --
+        -- ═══ HIS REASON IS A FACT ABOUT THE MOVIE, AND IT IS BETTER THAN THE
+        --     CONSISTENCY COMPLAINT ═══
+        --
+        -- A row has ONE badge slot and the library fills it two different ways:
+        --
+        --   BadgeStyle.<name>, an integer, is drawn BY THE MOVIE out of its own
+        --   art, and the movie INVERTS it when the row is selected -- which is
+        --   the selection feedback he is describing.
+        --
+        --   CustomLeftBadge(txd, txn) points the row at a STREAMED TEXTURE, and
+        --   the movie draws that flat. It cannot invert. No texture can.
+        --
+        -- So twelve iconed rows were not merely inconsistent with thirteen
+        -- generic ones: they were the twelve rows that had STOPPED SHOWING THE
+        -- PLAYER WHICH ROW THEY WERE ON. One badge everywhere genuinely beats
+        -- twelve that break the highlight.
+        --
+        -- ⚠ AND THE THING HIS WORDING GETS WRONG IS WORTH KNOWING, BECAUSE IT IS
+        -- THE TRAP FOR WHOEVER READS THIS NEXT. He calls them "our .png's" and
+        -- none of them is ours: every txd below is a BASE GAME dictionary and
+        -- every txn is Rockstar's own weapon art, evidenced by name. So
+        -- "use GTA's icons" is NOT satisfied by pointing CustomLeftBadge at a
+        -- base game dictionary, which is exactly what this table does. The
+        -- distinction is the MECHANISM, not the pixels.
+        --
+        -- ═══ TURNED OFF RATHER THAN DELETED, ON PURPOSE ═══
+        --
+        -- This one line reverts the whole feature: `iconFor` answers nil,
+        -- `iconDictsReady` answers false, nothing is streamed, and every row
+        -- takes its kind badge. The evidenced dictionary and texture names below
+        -- are kept because they are the expensive half and they are still
+        -- correct -- the day somebody draws a matching set, or the day the movie
+        -- learns to invert a custom badge, the work is here rather than to be
+        -- redone.
+        --
+        -- WHAT WOULD MAKE IT SHIPPABLE AGAIN: art that reads as selected on its
+        -- own, or a badge path that inverts a streamed texture. Neither exists
+        -- today, and "it looks nicer on a still screenshot" is not one of them.
+        enabled = false,
 
         -- ═══ KEYED BY THE SHOP ROW'S id, WHICH IS config/weapons.lua's id ═══
         --

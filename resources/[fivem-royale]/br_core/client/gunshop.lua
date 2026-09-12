@@ -1253,13 +1253,61 @@ end
 --- other and never both. That function carries the argument.
 ---
 -- ---------------------------------------------------------------------------
--- The per-weapon row icons (#274 M4)
+-- The per-weapon row icons (#274 M4), OFF SINCE 2026-09-11
 -- ---------------------------------------------------------------------------
 --
--- Owner, 2026-09-11: "As for the menu icons - how does the ScaleformUI demo menu
--- draw them? Those gfx are built into the base game. We should use those."
+-- ╔═══════════════════════════════════════════════════════════════════════╗
+-- ║  EVERY BADGE ON THIS MENU IS A BadgeStyle ENUM. NOTHING BELOW RUNS,   ║
+-- ║  AND THE REASON IS A MECHANISM RATHER THAN A PREFERENCE.             ║
+-- ╚═══════════════════════════════════════════════════════════════════════╝
 --
--- ═══ HE WAS RIGHT, AND HERE IS THE PART THE LIBRARY DOES NOT DO FOR US ═══
+-- Owner, 2026-09-11, with a screenshot of the Legendary group:
+--
+--   "Seems the gfx we're loading doesn't always show for every weapon type, see
+--    attached. We should just use R*'s default gfx, even if it's only one icon,
+--    because it has a differentiator between selected/not selected as the colors
+--    invert. Our .png's do not."
+--
+-- Then, as a rule: "also make sure the gunshop menu icons come from GTA too".
+--
+-- ═══ THE ONE BADGE SLOT HAS TWO FILL MECHANISMS AND ONLY ONE OF THEM INVERTS
+--     ═══
+--
+--   A BadgeStyle INTEGER is drawn by the movie out of its own art, and the movie
+--   INVERTS it on the selected row. That is the selection feedback he is naming.
+--
+--   CustomLeftBadge(txd, txn) points the row at a STREAMED TEXTURE and the movie
+--   draws it FLAT. It cannot invert, and no choice of texture changes that.
+--
+-- So the twelve iconed rows were not just inconsistent with the thirteen generic
+-- ones. They were the twelve rows that had stopped telling the player which row
+-- the cursor was on -- on a menu whose selected-row fill he was separately
+-- asking to have toned down. One badge everywhere beats twelve that break the
+-- highlight.
+--
+-- ⚠ AND "USE GTA'S ICONS" IS NOT SATISFIED BY A BASE GAME DICTIONARY, WHICH IS
+-- THE TRAP IN HIS OWN WORDING. He says "our .png's"; none of them is ours.
+-- `mpweaponscommon_small`, `mpweaponsgang0_small` and `mpweaponsgang1_small` are
+-- Rockstar's, and every texture name in config/gunshop.lua's art table was read
+-- out of the game's own dump. Pointing CustomLeftBadge at Rockstar art is exactly
+-- what shipped and exactly what he rejected. THE DISTINCTION IS THE MECHANISM,
+-- NOT THE PIXELS.
+--
+-- ═══ WHAT IS STILL HERE AND WHY ═══
+--
+-- `BR.Config.Gunshop.weaponIcons.enabled` is false, which makes `iconFor` answer
+-- nil, `iconDictsReady` answer false and `requestIconDicts` a no-op -- so every
+-- line below still loads, still reads, and never reaches the movie. Kept rather
+-- than deleted because the evidenced names are the expensive half and are still
+-- correct. config/gunshop.lua's block says what would make them shippable again.
+--
+-- BR.Menu.leftBadge STILL CALLS CustomLeftBadge ONCE, WITH TWO EMPTY STRINGS,
+-- and that is not a survival of this feature: it is the CLEAR that stops a stale
+-- texture pair being pushed alongside an enum. Its header has the argument. The
+-- assertion in tools/test_gunshop.lua is that no row ever carries a non-empty
+-- pair, which is the thing the owner's rule is actually about.
+--
+-- ═══ THE PART THE LIBRARY DOES NOT DO FOR US, KEPT FOR THE SAME REASON ═══
 --
 -- ScaleformUI's UIMenuItem:CustomLeftBadge(txd, txn) takes an arbitrary texture
 -- dictionary and texture name, so any base game texture is reachable and not
@@ -1377,10 +1425,17 @@ end
 --- when somebody is browsing. What carries "locked" now is the row's shade and
 --- its right label, neither of which is competing with anything.
 ---
---- SO THE BADGE IS AN IDENTITY AND NOTHING ELSE: a weapon's own art where the
---- base game has some, the kind badge where it does not, and the kind badge on
---- every row for as long as the dictionaries are still streaming. BadgeStyle.LOCK
---- is no longer reached from this file at all.
+--- SO THE BADGE IS AN IDENTITY AND NOTHING ELSE, and since the icons were retired
+--- later the same day there is exactly ONE identity on the shelf: the kind badge,
+--- BadgeStyle.GUN or BadgeStyle.AMMO, on every row. BadgeStyle.LOCK is not
+--- reached from this file at all, and neither is any texture.
+---
+--- ⚠ THE `pic` BRANCH BELOW IS STILL WRITTEN AND IS NOW STRUCTURALLY DEAD, which
+--- is deliberate and is the whole value of a one-line switch. `iconDictsReady`
+--- answers false while `weaponIcons.enabled` is false, so `art` is false, so
+--- `pic` is nil on every row -- and the day the switch moves, the ordering
+--- BR.Menu.leftBadge exists to enforce is still there rather than having to be
+--- rediscovered.
 --- @param store table|nil
 local function refreshMenu(store)
     local currency = BR.Config.Market and BR.Config.Market.currency

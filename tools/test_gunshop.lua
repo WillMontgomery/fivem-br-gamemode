@@ -3622,37 +3622,130 @@ do
             'and an ammo row wears the ammo badge',
             ammo and ammo._leftBadge or 'no row')
 
-        -- ⚠ AND EVERY ONE OF THE ASSERTIONS ABOVE RAN WITH THE TEXTURE
-        -- DICTIONARIES NOT YET STREAMED, which is the cold-start state and is
-        -- asserted rather than assumed. A per-weapon icon feature that reached
-        -- for a texture the streamer had not answered for would put a blank
-        -- badge on twelve of these rows and report nothing.
+        -- ⚠ AND EVERY ONE OF THE ASSERTIONS ABOVE RAN WITH NO TEXTURE DICTIONARY
+        -- STREAMED, which used to be the cold-start state and since 2026-09-11 is
+        -- the permanent one -- the per-weapon art is retired because a streamed
+        -- badge cannot invert on selection. It is still asserted rather than
+        -- assumed, because the two look identical from here and only one of them
+        -- is what ships: see the next block for the switch itself.
         ok(dictsLoaded == false,
-            'the block above ran on a client whose icon dictionaries had not '
-                .. 'arrived yet, and every row still had a badge')
+            'the block above ran on a client with no icon dictionary in memory, '
+                .. 'and every row still had a badge')
         ok(gun and (gun.customLeftIcon == nil or gun.customLeftIcon.TXD == ''),
-            'and no texture was reached for before the streamer answered -- an '
-                .. 'empty pair, not a name that would draw a blank badge')
+            'and no texture was reached for -- an empty pair, not a name that '
+                .. 'would draw a flat badge the movie cannot invert')
     end
 
     -- -----------------------------------------------------------------------
-    describe('M4: the icons are the base game\'s own weapon art')
+    describe('M4 is RETIRED: every badge is a built-in enum, for a mechanical '
+             .. 'reason')
     -- -----------------------------------------------------------------------
     do
         -- ═══════════════════════════════════════════════════════════════════
-        -- Owner, 2026-09-11: "As for the menu icons - how does the ScaleformUI
-        -- demo menu draw them? Those gfx are built into the base game. We
-        -- should use those."
-        -- ═══════════════════════════════════════════════════════════════════
+        -- Owner, 2026-09-11, with a screenshot of the Legendary group:
         --
-        -- He was right and the previous round's answer was wrong. What makes
-        -- this hard to test is what makes it hard to get right: A WRONG TEXTURE
-        -- NAME DRAWS NOTHING AND REPORTS NO ERROR. So does a wrong dictionary,
-        -- so does a dictionary nobody requested, and so does a key in the art
-        -- table that is not a real shop row id. All four are invisible from
-        -- inside the game and all four are visible from here.
+        --   "Seems the gfx we're loading doesn't always show for every weapon
+        --    type, see attached. We should just use R*'s default gfx, even if
+        --    it's only one icon, because it has a differentiator between
+        --    selected/not selected as the colors invert. Our .png's do not."
+        --
+        -- Then, as a rule: "also make sure the gunshop menu icons come from GTA
+        -- too".
+        -- ═══════════════════════════════════════════════════════════════════
         local ICONS = G.weaponIcons
         local art = ICONS.art
+
+        -- ═══ THE SHIPPED STATE, ASSERTED FIRST AND AT THE SHIPPED CONFIG ═══
+        --
+        -- ⚠ THE DISTINCTION IS THE MECHANISM AND NOT THE PIXELS, WHICH IS THE ONE
+        -- THING A LATER READER CAN GET WRONG HERE. Every txd in the art table is
+        -- a BASE GAME dictionary and every txn is Rockstar's own weapon art, so
+        -- "use GTA's icons" was ALREADY true of the pixels and the feature was
+        -- still wrong. A BadgeStyle integer is drawn by the movie and INVERTS on
+        -- the selected row; CustomLeftBadge points at a streamed texture and the
+        -- movie draws it flat. Twelve rows had stopped showing the selection.
+        ok(ICONS.enabled == false,
+            'the shipped config has the per-weapon art switched OFF',
+            tostring(ICONS.enabled))
+
+        local cfgSrc = readFile(ROOT .. 'br_lib/config/gunshop.lua')
+        ok(cfgSrc:find('the colors invert', 1, true) ~= nil,
+            "...and records HIS reason beside the switch, not ours")
+        ok(cfgSrc:find('It cannot invert', 1, true) ~= nil,
+            '...and the mechanism behind it, so nobody switches it back on '
+                .. 'thinking the feature was merely unfinished')
+        ok(cfgSrc:find('none of them is ours', 1, true) ~= nil,
+            '...including the correction to his own wording, that the art was '
+                .. 'never "our .png\'s" -- so "use GTA\'s icons" is not '
+                .. 'satisfied by pointing CustomLeftBadge at a GTA dictionary')
+
+        -- ═══ AND NOT ONE ROW ON THE LIVE SHELF REACHES FOR A TEXTURE ═══
+        --
+        -- ⚠ ASSERTED WITH THE STREAMER ANSWERING YES, WHICH IS THE ONLY WAY THIS
+        -- MEANS ANYTHING. Written before `dictsLoaded` was set, every assertion
+        -- below passed with the switch flipped BACK ON -- because `iconDictsReady`
+        -- was false for the unrelated reason that no dictionary was resident yet,
+        -- so `pic` was nil either way. That is the shape of a test that agrees
+        -- with an empty feature: it was caught by reverting the switch and finding
+        -- only two of four assertions moved.
+        --
+        -- WITH THE STREAMER WILLING, `enabled` IS THE ONLY THING LEFT holding the
+        -- textures off -- `requestIconDicts` returns on it, so nothing is ever
+        -- requested, so the stub answers 0 for every dictionary and
+        -- `iconDictsReady` is false BECAUSE of the switch rather than beside it.
+        dictsLoaded = true
+        walkAway()
+        standAt('pillbox')
+        press()
+
+        local textured, enums = {}, 0
+        for label, it in pairs(shelf()) do
+            if it.customLeftIcon ~= nil and it.customLeftIcon.TXD ~= ''
+               and it.customLeftIcon.TXD ~= nil then
+                textured[#textured + 1] = label
+            end
+            if it._leftBadge == BadgeStyle.GUN
+               or it._leftBadge == BadgeStyle.AMMO then
+                enums = enums + 1
+            end
+        end
+        ok(#textured == 0,
+            'no row on the shelf carries a streamed texture at all',
+            #textured > 0 and table.concat(textured, ', ') or nil)
+        ok(enums == 25 + 5,
+            ('and all %d rows -- 25 guns and 5 ammo -- wear a built-in '
+             .. 'BadgeStyle enum, which is the half that inverts')
+                :format(25 + 5),
+            enums)
+
+        -- ...AND THE STREAMER IS NEVER ASKED. `requestIconDicts` returns on the
+        -- switch, so a retired feature is not quietly holding three dictionaries
+        -- in memory on every client that walks past a counter.
+        ok(#dictRequests == 0,
+            'and no texture dictionary was ever requested, so the retirement '
+                .. 'costs no streaming either',
+            #dictRequests)
+
+        -- ═══════════════════════════════════════════════════════════════════
+        -- EVERYTHING BELOW RUNS WITH THE SWITCH DELIBERATELY FLIPPED ON.
+        -- ═══════════════════════════════════════════════════════════════════
+        --
+        -- The evidenced dictionary and texture names are KEPT in the tree for the
+        -- day somebody draws a set that reads as selected, or the day the movie
+        -- learns to invert a custom badge. Kept work that nothing checks rots:
+        -- the shop's catalogue is DERIVED, so a gun priced out of the band would
+        -- silently orphan its icon and nobody would know until the switch moved.
+        --
+        -- A WRONG TEXTURE NAME DRAWS NOTHING AND REPORTS NO ERROR. So does a
+        -- wrong dictionary, so does a dictionary nobody requested, and so does a
+        -- key that is not a real shop row id. All four are invisible from inside
+        -- the game and all four are visible from here.
+        --
+        -- THE SWITCH GOES BACK OFF IN SECTION F, and F then re-asserts the
+        -- shipped state rather than trusting that it was put back.
+        ICONS.enabled = true
+        walkAway()
+        standAt('pillbox')
 
         -- ═══ A. EVERY KEY IN THE ART TABLE IS A GUN THE SHOP ACTUALLY SELLS
         --     ═══
@@ -3859,19 +3952,19 @@ do
                 .. 'config names',
             #missIcon > 0 and table.concat(missIcon, ', ') or gotIcon)
 
-        -- ═══ F. ONE SWITCH PUTS IT ALL BACK ═══
+        -- ═══ F. THE SWITCH GOES BACK OFF, WHICH IS THE SHIPPED STATE ═══
         --
-        -- ⚠ NOBODY HAS SEEN THIS ON A SCREEN. The names are evidenced; how the
-        -- movie's badge slot treats a 2:1 base game texture is not, and cannot
-        -- be without running the game. `enabled = false` is the line that undoes
-        -- the whole feature without touching anything else.
+        -- ⚠ THE FLAG IS RESTORED BEFORE ANYTHING IS ASSERTED, so that a failure
+        -- in this block cannot leave the sandbox on a configuration the game does
+        -- not ship. Everything below this line in the suite -- the descriptions,
+        -- the locked states, the speech -- then runs against the real config.
         --
-        -- ⚠ TESTED AT A BALANCE OF ZERO, WHICH IS THE STATE THAT USED TO HIDE A
-        -- BUG HERE. While the padlock won the badge slot, EVERY row of a broke
+        -- ⚠ RE-ASSERTED AT A BALANCE OF ZERO, WHICH IS THE STATE THAT USED TO HIDE
+        -- A BUG HERE. While the padlock won the badge slot, EVERY row of a broke
         -- client wore BadgeStyle.LOCK whether the feature was on or off, so this
         -- block would have passed against an `enabled` flag that did nothing.
-        -- Now the icon owns the slot in that state too, so the switch is the
-        -- only thing that can put the kind badge back.
+        -- Now the kind badge owns the slot in that state too, so the switch is the
+        -- only thing that can have put it there.
         ICONS.enabled = false
         walkAway()
         handlers[BR.Net.MARKET_STATE]({ balance = 0 })
@@ -3889,8 +3982,8 @@ do
             end
         end
         ok(offKind == wantIcon,
-            'enabled = false puts all twelve back on the kind badge and leaves '
-                .. 'no texture behind, at a balance of zero',
+            'the shipped switch puts all twelve on the kind badge and leaves no '
+                .. 'texture behind, at a balance of zero',
             #offArt > 0 and table.concat(offArt, ', ') or offKind)
 
         local offPad = {}
@@ -3900,11 +3993,25 @@ do
             end
         end
         ok(#offPad == 0,
-            '...and turning the icons off does not bring the padlock back, '
+            '...and the icons being off does not bring the padlock back, '
                 .. 'because the owner retired it separately',
             #offPad > 0 and table.concat(offPad, ', ') or nil)
 
-        ICONS.enabled = true
+        -- ...AND THE ENUM IS WHAT THE MOVIE IS HANDED, not merely what our table
+        -- says. BadgeStyle.CUSTOM is -1 and is set by CustomLeftBadge on its way
+        -- past, so a single row still carrying it would mean a texture pair had
+        -- reached the item and the clear had not.
+        local stillCustom = {}
+        for label, it in pairs(shelf()) do
+            if it._leftBadge == BadgeStyle.CUSTOM then
+                stillCustom[#stillCustom + 1] = label
+            end
+        end
+        ok(#stillCustom == 0,
+            'and not one row is left on BadgeStyle.CUSTOM, which is what a '
+                .. 'stale texture pair would show up as',
+            #stillCustom > 0 and table.concat(stillCustom, ', ') or nil)
+
         handlers[BR.Net.MARKET_STATE]({ balance = 999999 })
     end
 
@@ -4292,15 +4399,27 @@ do
             '...and the row is genuinely locked. He asked for no toast on this '
                 .. 'one, so disabling it is right: the library plays its error '
                 .. 'beep and nothing else happens')
-        -- ⚠ AND IT KEEPS ITS ICON WHILE IT IS SOLD OUT. This asserted the
-        -- padlock until 2026-09-11. A Carbine Rifle is one of the guns the base
-        -- game has art for, and an empty shelf is the state where the MOST rows
-        -- are locked at once -- so it is the case where a lock that took the
-        -- badge slot cost the most icons.
-        ok(gun ~= nil and gun._leftBadge == BadgeStyle.CUSTOM
-            and gun.customLeftIcon ~= nil
-            and gun.customLeftIcon.TXN == 'w_ar_carbinerifle',
-            'and it keeps its weapon icon, rather than losing it to a padlock',
+        -- ⚠ AND IT KEEPS ITS IDENTITY BADGE WHILE IT IS SOLD OUT. This asserted
+        -- the PADLOCK until 2026-09-11, when the owner ruled that "the icon
+        -- should remain on the left of the row before the name as normal" and the
+        -- locked state moved onto the right label and the shading. An empty shelf
+        -- is the state where the MOST rows are locked at once, so it is the case
+        -- where a padlock that took the badge slot cost the most.
+        --
+        -- IT IS BadgeStyle.GUN RATHER THAN THE WEAPON ART, and that is the second
+        -- ruling of the same day rather than a regression against the first: the
+        -- per-weapon textures are retired because a streamed badge cannot invert
+        -- on selection. What the row must NOT wear is BadgeStyle.LOCK, which is
+        -- the thing this assertion has always been about.
+        ok(gun ~= nil and gun._leftBadge == BadgeStyle.GUN,
+            'and it keeps its kind badge, rather than losing the slot to a '
+                .. 'padlock',
+            gun and tostring(gun._leftBadge) or 'no row')
+        ok(gun ~= nil and gun._leftBadge ~= BadgeStyle.LOCK
+            and BadgeStyle.LOCK ~= BadgeStyle.GUN,
+            '...which is specifically not the padlock, on the row and in the '
+                .. 'enum, so the assertion above is not comparing two names for '
+                .. 'one number',
             gun and tostring(gun._leftBadge) or 'no row')
 
         -- AND IT IS SHADED, which is the other half of his sentence about this
