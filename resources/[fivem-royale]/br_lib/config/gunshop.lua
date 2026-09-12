@@ -446,7 +446,18 @@ BR.Config.Gunshop = {
     --- backwards rather than not at all.
     signForwardM = 0.55,
     signUpM      = 0.25,
-    signWidthM   = 0.55,
+    --- ═══ WIDTH IS THE ONLY SIZE THE PLATE HAS ═══
+    ---
+    --- Owner, 2026-09-11: "the weapon shop DUI is kinda small. Can you increase
+    --- it by 20%?" 0.55 -> 0.66, and there is no second number to move with it:
+    --- BR.Dui.drawFace derives the height from this width and the page's own
+    --- aspect (`hh = hw * (page.h / page.w)`), so a fifth wider is a fifth taller
+    --- and the page behind it is not re-rendered.
+    ---
+    --- The quad is centered on `signUpM`, so the extra height is spent evenly
+    --- above and below the number he measured rather than growing off the
+    --- counter.
+    signWidthM   = 0.66,
 
     --- THE CUE KEY THE PURCHASE PLAYS. A KEY, NOT A SOUND.
     ---
@@ -532,18 +543,31 @@ BR.Config.Gunshop = {
     -- full stops, the capital letters in "Out of Stock" -- all his. A rewrite
     -- that reads better is a rewrite that is wrong.
 
-    --- WHAT THE COUNTER IS CALLED ON SCREEN. Two surfaces, one word.
+    --- WHAT THE COUNTER IS CALLED ON SCREEN. TWO SURFACES, AND NOW ONLY ONE OF
+    --- THEM SPEAKS.
     ---
     --- Owner, 2026-09-09: "The menu title should say Weapon Shop", and, of the
     --- world plate, "the DUI should follow our standard formatting and content -
     --- a title Weapon Shop and a line underneath PRESS TO OPEN".
     ---
-    --- ONE VALUE FOR BOTH, WHICH IS WHY THE PLACEHOLDER WAS ONE VALUE FOR BOTH.
-    --- br_core/client/gunshop.lua reads this twice -- once for the plate's label
-    --- and once for the ScaleformUI banner -- so his two sentences are one edit
-    --- and the two surfaces cannot drift apart. Whoever builds the plate must
-    --- read this rather than typing the words a second time.
-    menuTitle = 'Weapon Shop',
+    --- ═══ AND THE BANNER TITLE IS OUT, 2026-09-11 ═══
+    ---
+    --- Owner: "Please remove the 'weapon shop' menu title". THAT IS THE BANNER
+    --- AND NOT THE PLATE -- he asked about the ScaleformUI menu and said nothing
+    --- about the floating text over the counter, which is still his 2026-09-09
+    --- sentence and still says Weapon Shop.
+    ---
+    --- SO THE ONE FIELD IS TWO FIELDS NOW, which is the only way to empty one
+    --- surface without emptying the other. `plateTitle` is HIS SAME WORDS moved
+    --- across, not a second string somebody wrote: the plate reads exactly what
+    --- it read yesterday.
+    ---
+    --- EMPTY RATHER THAN REMOVED. BR.Menu.new takes a title positionally and the
+    --- banner ART is arguments six and seven, so an empty title is a banner with
+    --- the Ammu-Nation sprite and no text over it. Putting his word back is this
+    --- one string.
+    menuTitle  = '',
+    plateTitle = 'Weapon Shop',
 
     --- WHAT A ROW WITH NOTHING BEHIND IT SAYS WHERE ITS PRICE WOULD BE.
     ---
@@ -646,16 +670,22 @@ BR.Config.Gunshop = {
     -- `~HC_9~` written into these strings would print as those five characters
     -- anywhere that is not a scaleform.
     --
-    -- ⚠ AND THE EMPTY CASE IS NOT ANSWERED HERE BECAUSE HE HAS NOT ANSWERED IT.
+    -- ═══ AND THE EMPTY CASE IS HIS NOW TOO, 2026-09-11 ═══
+    --
+    -- "When looking at ammo for a gun I do not have, please prefix the description
+    -- with 'This ammo works with: '"
+    --
     -- A player carrying nothing that takes a pool leaves `{guntypes}` empty, which
-    -- is the ordinary state early in a match, and "This ammo works with your:"
-    -- followed by nothing is worse than no sentence. BR.GunshopSolve.ammoDesc drops
-    -- the lead-in and falls back to the plain exhaustive list the row has carried
-    -- since L5 -- something he has already seen rather than a sentence we wrote.
-    -- The alternative was inventing a third lead-in, which is the rule this whole
-    -- block exists under.
+    -- is the ordinary state early in a match. The row used to fall back to the
+    -- bare exhaustive list because a third lead-in would have been ours; he has
+    -- now written it, so `ammoDescNone` is the third one and it is his.
+    --
+    -- ONE SENTENCE AND NO `~n~` ON THIS BRANCH. When nothing is carried the
+    -- "others" list already IS every gun that takes the pool, so there is no
+    -- second half to break a line before -- see BR.GunshopSolve.ammoDesc.
     ammoDescYours  = 'This ammo works with your: %s',
     ammoDescOthers = 'As well as: %s',
+    ammoDescNone   = 'This ammo works with: %s',
     weaponDesc     = 'This weapon uses %s. You have %s rounds for it.',
 
     -- ------------------------------------------------------------------
