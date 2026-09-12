@@ -18034,6 +18034,40 @@ do
         'nothing reaches the kill feed: they are not out',
         tostring(#eventsOf(BR.Net.KILL_FEED)))
 
+    -- ═══ AND THE EDGE ITSELF SAYS IT IS A HOLD (owner, 2026-09-11) ═══
+    --
+    -- "Dying in the bus shouldn't be possible? If you mean before the state
+    -- machine goes to PLAYING we don't need any sound for that since they'll be
+    -- brought back up immediately upon game state = PLAYING."
+    --
+    -- The client plays `death.self` on its own edge into OUT. 7097db4 gave that
+    -- edge a cause so a leaver is silent and named this hold as the one edge
+    -- left that states none; this is that edge stating one.
+    --
+    -- WHY IT IS HERE AND NOT INFERRED AT THE CLIENT. A client asking "are we
+    -- PLAYING yet?" is racing the STATE envelope against this delta -- two
+    -- messages with no ordering between them -- so the answer travels ON the
+    -- transition. See BR.Roster.setState.
+    BR.Broadcast.flushNow()
+    local heldEdge = nil
+    for _, s in ipairs(eventsOf(BR.Net.ROSTER_DELTA)) do
+        for _, d in ipairs(s.args[1].deltas or {}) do
+            if d.src == 1 and d.op == 'update'
+               and d.e and d.e.state == BR.PlayerState.OUT then
+                heldEdge = d
+            end
+        end
+    end
+    ok(heldEdge ~= nil, 'the hold still sends the OUT edge -- the roster really '
+        .. 'does go through OUT, and holdForStart is explicit that it must')
+    ok(heldEdge ~= nil and heldEdge.cause == 'held',
+        'and it states WHY: a hold, not a death, which is what lets the client '
+            .. 'be quiet without guessing at the match state',
+        heldEdge and tostring(heldEdge.cause) or 'no edge')
+    ok(heldEdge ~= nil and heldEdge.e and heldEdge.e.cause == nil,
+        'beside the mirror rather than inside it, like every other cause -- a '
+            .. 'stale `held` on the entry would silence a real death later')
+
     -- The notice, and it has to outlive its own event: the wait it exists to
     -- explain can be the rest of the flight.
     local held = nil
@@ -18054,9 +18088,23 @@ do
         'the match goes live for the held player rather than ending under them',
         tostring(mstate()))
 
+    -- ⚠ AND THIS IS WHAT MAKES THE SILENCE HONEST, WHICH IS WHY IT IS SAID HERE
+    -- RATHER THAN LEFT TO THE READER. The OUT edge above is now marked 'held'
+    -- and the client plays nothing for it. That is only defensible because the
+    -- player really does come back: a cause that silenced a death which then
+    -- STUCK would be a player sitting on a dead screen with no sound and no
+    -- word, which is worse than the sting ever was. The same entry, three lines
+    -- on, is standing up with full health and no hold left on it.
     ok(e1.state == BR.PlayerState.ALIVE, 'who is revived')
     ok(e1.revivePending == nil, 'with the hold cleared')
     ok(e1.hp == 100.0, 'and their health put back', tostring(e1.hp))
+    ok(heldEdge ~= nil and heldEdge.cause == 'held'
+       and e1.state == BR.PlayerState.ALIVE,
+        'so the edge that was silenced is the same edge that got taken back -- '
+            .. 'the silence is a promise this tick keeps, not a death being '
+            .. 'hidden',
+        ('cause %s, state %s'):format(
+            heldEdge and tostring(heldEdge.cause) or 'none', tostring(e1.state)))
     ok(e1.diedAt == nil and e1.placement == nil,
         'and still nothing written down')
     ok(#eventsOf(BR.Net.REVIVED) == 1,

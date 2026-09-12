@@ -697,6 +697,43 @@ AddEventHandler(BR.Net.SNAPSHOT, function(payload)
     applyFocusForState(S.match.state)
 end)
 
+--- WHICH OUT EDGES MAKE NO SOUND, BY THE REASON THE SERVER GAVE FOR THEM.
+---
+--- ═══ A SET, BECAUSE THE SECOND ONE ARRIVED AND A THIRD WILL ═══
+---
+--- This was `d.cause ~= 'left'` when there was one of them (7097db4). The
+--- second is here now, and a chain of `~=` joined by `and` is the shape that
+--- reads correctly, is written with `or` by somebody in a hurry, and silences
+--- every death in the game without failing anything that looks at ONE cause.
+--- A named table cannot be got wrong that way and it is the list itself.
+---
+--- WHAT IS IN IT AND WHY, because "absent means unknown" and unknown SOUNDS:
+---
+---   'left'  Leaving IS an elimination here on purpose (server/match.lua routes
+---           it through BR.Combat.eliminate so quitting is not a cheaper exit
+---           than dying), so this edge fires for a departure. Owner, 2026-09-11:
+---           "the death sound should not play if the player is dying by method
+---           of leaving the match."
+---
+---   'held'  The #144 pre-match hold. server/combat.lua's holdForStart sets OUT
+---           for somebody who died before PLAYING and match.lua stands them
+---           straight back up on the transition. Owner, 2026-09-11: "we don't
+---           need any sound for that since they'll be brought back up
+---           immediately upon game state = PLAYING."
+---
+--- EVERYTHING ELSE SOUNDS, AN ABSENT CAUSE INCLUDED. The storm, a bleed-out, a
+--- fall and an admin's brkill are deaths the player is owed the sting for, and
+--- no sound is the wrong default for an edge that arrives without a reason.
+---
+--- ⚠ READ WITH A nil KEY ON PURPOSE. `d.cause` is absent on most transitions and
+--- `SILENT_OUT[nil]` is a legal read in Lua that answers nil -- it is only
+--- ASSIGNMENT with a nil key that raises. So the absent case needs no guard and
+--- must not grow one that changes what it means.
+local SILENT_OUT = {
+    left = true,
+    held = true,
+}
+
 RegisterNetEvent(BR.Net.ROSTER_DELTA)
 AddEventHandler(BR.Net.ROSTER_DELTA, function(batch)
     -- Deltas are only safe because a snapshot can always re-seed us. If one
@@ -772,11 +809,22 @@ AddEventHandler(BR.Net.ROSTER_DELTA, function(batch)
                     -- where guessing would fail is exactly the case that matters
                     -- -- somebody whose connection is dying as they go.
                     --
-                    -- ONLY 'left' IS SILENT. Every other cause sounds exactly as
-                    -- it did, an absent one included: the storm, a bleed-out and
-                    -- an admin's brkill are all deaths the player is owed the
-                    -- sting for, and nobody has ruled otherwise.
-                    if d.cause ~= 'left' then BR.Sfx.play('death.self') end
+                    -- ═══ AND NOT FOR A DEATH THAT IS ABOUT TO BE UNDONE
+                    --     (owner, 2026-09-11) ═══
+                    --
+                    -- "If you mean before the state machine goes to PLAYING we
+                    -- don't need any sound for that since they'll be brought
+                    -- back up immediately upon game state = PLAYING."
+                    --
+                    -- That is the #144 hold, and it states its own reason on
+                    -- this edge for the reason the paragraph above gives: asking
+                    -- "are we PLAYING yet?" HERE is a race against the message
+                    -- that answers it.
+                    --
+                    -- WHICH CAUSES ARE SILENT IS SILENT_OUT'S, above, and not a
+                    -- chain of comparisons on this line. Two of them is where
+                    -- that chain starts being got wrong.
+                    if not SILENT_OUT[d.cause] then BR.Sfx.play('death.self') end
                 end
                 noteMyState()
                 applyFocusForState(S.match.state)

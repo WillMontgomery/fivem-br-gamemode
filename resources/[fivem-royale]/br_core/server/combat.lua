@@ -192,7 +192,32 @@ local function holdForStart(src, entry, m)
     entry.reviveBeat, entry.reviveTickAt = nil, nil
 
     entry.revivePending = true
-    BR.Roster.setState(src, BR.PlayerState.OUT)
+
+    -- ═══ AND THE EDGE SAYS IT IS A HOLD, SO THE CLIENT CAN STAY QUIET ═══
+    --
+    -- Owner, 2026-09-11: "Dying in the bus shouldn't be possible? If you mean
+    -- before the state machine goes to PLAYING we don't need any sound for that
+    -- since they'll be brought back up immediately upon game state = PLAYING."
+    --
+    -- client/state.lua plays `death.self` on its own edge into OUT, and this is
+    -- an OUT that is about to be taken back: `revivePending` is set one line
+    -- above and match.lua's onEnter(PLAYING) sweeps it into BR.Combat.reviveHeld
+    -- within the tick. Nothing else about this death is written down -- that is
+    -- the whole of the block above -- and the sting was the last part of it that
+    -- still was.
+    --
+    -- THE REASON RIDES THE TRANSITION RATHER THAN BEING INFERRED THERE. The
+    -- client could ask "are we PLAYING yet?" instead, and that is a race: this
+    -- state change and the STATE envelope are separate messages with no ordering
+    -- between them, so a client that had already seen PLAYING would play the
+    -- sting for the one death it is guaranteed to get back. 7097db4 grew this
+    -- argument for 'left' and it is the same argument; see BR.Roster.setState.
+    --
+    -- 'held' AND NOT THE DEATH'S OWN CAUSE. `cause` is still in scope here and
+    -- is 'fall' or 'shot' or 'admin' -- true of how they died and useless for
+    -- what the client has to decide, which is whether this elimination is going
+    -- to stand. It is not.
+    BR.Roster.setState(src, BR.PlayerState.OUT, 'held')
 
     if wasDowned then
         TriggerClientEvent(BR.Net.DBNO_SET, src, { downed = false, died = true })
