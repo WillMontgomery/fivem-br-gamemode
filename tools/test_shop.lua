@@ -4321,6 +4321,139 @@ do
                .. 'nearest-face plate took the matrix, the showroom sign did not',
            ('%.4fm of drop'):format(math.abs(ytl[3] - ytr[3])))
         CAR.pitch, CAR.roll = 0.0, 0.0
+
+        -- ═══ 7d. AND THE ANGLE IS NEVER LEVELLED OFF, AT ANY ATTITUDE ═══
+        --
+        -- Owner, 2026-09-11: "Don't ever reset the angle of the ambulance DUI -
+        -- it draws at the angle/tilt of the ambulance at all times."
+        --
+        -- f7b63ff landed full tilt and asked him whether he wanted a CAP past
+        -- which the plate falls back to level. The answer is no, unconditionally,
+        -- and this block is what that answer is worth in the tree.
+        --
+        -- ═══ WHY THE CASES ABOVE DO NOT ALREADY COVER IT ═══
+        --
+        -- They stop at 25 degrees of roll and 22 of pitch, which is a kerb and a
+        -- driveway. A cap is exactly the kind of thing somebody adds "only for
+        -- the extreme case", with a threshold chosen above whatever the suite
+        -- happens to drive -- so it would sail past every one of them and land
+        -- green. The attitudes here are past any sane threshold: nose up hard,
+        -- on its side, nearly on its roof, and pitched while inverted.
+        --
+        -- ═══ THERE IS NOTHING TO REMOVE TODAY, WHICH IS WHY THIS IS A FENCE
+        --     RATHER THAN A FIX ═══
+        --
+        -- The whole path was read for one: BR.Dui.drawNearFace, faceOf,
+        -- levelBasis, BR.NearestBoxFace, drawPanel and drawQuad. There is no
+        -- clamp, no angle threshold and no fall-back-to-level in any of them,
+        -- and the reason is structural -- client/dui.lua never READS an angle.
+        -- No GetEntityRotation, no pitch, no roll: the orientation arrives
+        -- entirely through GetOffsetFromEntityInWorldCoords, so there is no
+        -- number for a cap to be written against. The source pin at the end of
+        -- this block is that fact, and it is the half that catches a cap added
+        -- at a threshold no fixture here happens to cross.
+        --
+        -- (The one epsilon in the path is levelBasis's `flat < 0.0001`, and it
+        -- is not this. It guards a vehicle stood EXACTLY on its nose, where
+        -- there is no heading left to read, and its answer is nil -- nothing
+        -- drawn -- rather than a levelled plate. It also sits in the face PICK,
+        -- which #294 deliberately kept horizontal. Leaving it is the honest
+        -- reading of "draws at the angle of the ambulance": a plate cannot draw
+        -- at an angle nobody can compute, and a quad of nans is worse than a
+        -- missing frame.)
+        local function unitBetween(p, q)
+            local vx, vy, vz = p[1] - q[1], p[2] - q[2], p[3] - q[3]
+            local n = math.sqrt(vx * vx + vy * vy + vz * vz)
+            return vx / n, vy / n, vz / n
+        end
+
+        for _, case in ipairs({ { 'nose up hard',        74.0,    0.0 },
+                                { 'on its side',          0.0,   90.0 },
+                                { 'nearly on its roof',   0.0, -166.0 },
+                                { 'pitched and inverted', -81.0, 143.0 } }) do
+            CAR.pitch, CAR.roll = case[2], case[3]
+            local pe, le = corners(OUT, 0.0, OZ2)
+
+            -- THE WHOLE CLAIM, IN ONE NUMBER. Every corner is where the model's
+            -- own rectangle through the entity's own matrix puts it, to floating
+            -- point. A cap, a clamp, a lerp toward level or a threshold of any
+            -- kind moves at least one corner, and at these attitudes it moves it
+            -- by a lot.
+            ok(pe < 1e-6,
+               ('%s: every corner still follows the van exactly -- nothing caps '
+                .. 'the tilt and nothing levels it off'):format(case[1]),
+               ('worst corner %.3e m'):format(pe))
+
+            -- AND IT REALLY IS NOWHERE NEAR LEVEL, which is the assertion that
+            -- would catch a cap whose fallback happened to agree with the matrix
+            -- to floating point for a degenerate reason.
+            ok(le > 0.2,
+               ('...and is %s from where a levelled plate would be, so the '
+                .. 'attitude is genuinely extreme rather than a rounding '
+                .. 'difference'):format(('%.2fm'):format(le)),
+               ('%.3f m'):format(le))
+
+            -- ═══ AND THE ROLL IS THE HALF A CAP WOULD MOST LIKELY TAKE ═══
+            --
+            -- A plate held parallel to the nose panel and the right distance off
+            -- it can still be sitting square to the HORIZON on bodywork that is
+            -- not -- a rotation cannot move the axis it turns about, so a roll
+            -- leaves the nose plane exactly where it was. That is the shape a
+            -- "keep it readable when the van is upside down" cap would have. So
+            -- the plate's own two axes are compared with the van's, at a roll of
+            -- 90 and of 143 degrees, where a levelled plate and this one share
+            -- no axis at all.
+            local bodyX = GetOffsetFromEntityInWorldCoords(VEH, 1.0, 0.0, 0.0)
+            local bodyZ = GetOffsetFromEntityInWorldCoords(VEH, 0.0, 0.0, 1.0)
+            local o = GetOffsetFromEntityInWorldCoords(VEH, 0.0, 0.0, 0.0)
+            local tl3, tr3, bl3 = at(0.0, 0.0), at(1.0, 0.0), at(0.0, 1.0)
+            local wx, wy, wz = unitBetween(tl3, tr3)
+            local hx, hy, hz = unitBetween(tl3, bl3)
+            local axX, axY, axZ = bodyX.x - o.x, bodyX.y - o.y, bodyX.z - o.z
+            local azX, azY, azZ = bodyZ.x - o.x, bodyZ.y - o.y, bodyZ.z - o.z
+            ok(near(math.abs(wx * axX + wy * axY + wz * axZ), 1.0, 0.0005)
+                   and near(math.abs(hx * azX + hy * azY + hz * azZ), 1.0,
+                            0.0005),
+               ('...and is turned with the bodywork inside it at this attitude '
+                .. 'too: width along the van\'s own X, height along its own Z '
+                .. '(%s)'):format(case[1]),
+               ('width . bodyX = %.4f, height . bodyZ = %.4f'):format(
+                   wx * axX + wy * axY + wz * axZ,
+                   hx * azX + hy * azY + hz * azZ))
+        end
+        CAR.pitch, CAR.roll = 0.0, 0.0
+
+        -- ...AND THE SOURCE PIN, WHICH IS THE HALF THAT DOES NOT DEPEND ON
+        -- PICKING THE RIGHT ANGLES. A cap needs an angle to compare against, and
+        -- there is no angle in this file to compare: the three functions in the
+        -- plate's path resolve their corners through the entity's matrix and
+        -- read no rotation at all. If somebody adds a threshold, they have to
+        -- add a read first, and that is what this sees.
+        local panelBody = duiSrc:match('local function drawPanel(.-)\nend\n')
+        local quadBody  = duiSrc:match('local function drawQuad(.-)\nend\n')
+        local nearBody  =
+            duiSrc:match('function BR%.Dui%.drawNearFace(.-)\nend\n')
+        ok(panelBody ~= nil and quadBody ~= nil and nearBody ~= nil,
+           'the three functions the plate is drawn by are all findable, so the '
+               .. 'pins below are looking at something')
+        for _, f in ipairs({ { 'drawPanel', panelBody },
+                             { 'drawQuad', quadBody },
+                             { 'drawNearFace', nearBody } }) do
+            local body = f[2] or ''
+            ok(body:find('GetEntityRotation') == nil
+                   and body:find('GetEntityPitch') == nil
+                   and body:find('GetEntityRoll') == nil,
+               ('%s reads no angle off the entity, so there is no number a cap '
+                .. 'could be written against'):format(f[1]))
+            ok(body:find('math%.min') == nil and body:find('math%.max') == nil
+                   and body:find('BR%.Clamp') == nil,
+               ('...and clamps nothing (%s) -- "don\'t ever reset the angle", '
+                .. 'owner 2026-09-11'):format(f[1]))
+        end
+        ok(panelBody ~= nil
+               and panelBody:find('GetOffsetFromEntityInWorldCoords') ~= nil,
+           'and the plate\'s corners are still the entity\'s own matrix, which '
+               .. 'is WHY there is no angle in here to cap')
     end
 
     -- ═══ 8. THE CONFIG KNOB IS A LENGTH, AND THE SCREEN FRACTION IS GONE ═══
