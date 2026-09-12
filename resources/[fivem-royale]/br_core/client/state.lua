@@ -749,7 +749,34 @@ AddEventHandler(BR.Net.ROSTER_DELTA, function(batch)
                     -- ON THE STATE EDGE, not inside BR.NoteDeath -- that returns
                     -- early when the death verdict is switched off, and the sound
                     -- is not part of the verdict.
-                    BR.Sfx.play('death.self')
+                    --
+                    -- ═══ AND NOT FOR THE ONE ELIMINATION THAT IS A DEPARTURE
+                    --     (owner, 2026-09-11) ═══
+                    --
+                    -- "the death sound should not play if the player is dying by
+                    -- method of leaving the match."
+                    --
+                    -- Leaving IS an elimination in this project, deliberately:
+                    -- server/match.lua routes it through BR.Combat.eliminate with
+                    -- cause 'left' so that quitting cannot be a cheaper exit than
+                    -- dying. That is why this edge fires for it at all, and why
+                    -- the fix is here rather than in the server's rule.
+                    --
+                    -- THE CAUSE NOW RIDES THIS MESSAGE. It used to reach the
+                    -- client only on KILL_FEED, which is a different message with
+                    -- no ordering against this one -- see the note over
+                    -- BR.NoteDeath, which is the same problem and answers it by
+                    -- correcting the word afterwards. A sound cannot be corrected
+                    -- afterwards, so the answer has to be in hand on the edge:
+                    -- BR.Roster.setState puts it beside `e`, and the one case
+                    -- where guessing would fail is exactly the case that matters
+                    -- -- somebody whose connection is dying as they go.
+                    --
+                    -- ONLY 'left' IS SILENT. Every other cause sounds exactly as
+                    -- it did, an absent one included: the storm, a bleed-out and
+                    -- an admin's brkill are all deaths the player is owed the
+                    -- sting for, and nobody has ruled otherwise.
+                    if d.cause ~= 'left' then BR.Sfx.play('death.self') end
                 end
                 noteMyState()
                 applyFocusForState(S.match.state)

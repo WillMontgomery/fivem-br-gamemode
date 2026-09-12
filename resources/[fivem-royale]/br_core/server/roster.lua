@@ -815,9 +815,32 @@ end
 --- Set a player's state, with the transition logged.
 --- State changes are the single most useful thing in a match log when working
 --- out why someone did or did not win.
+---
+--- ═══ `cause` RIDES THE EDGE, AND IT IS NOT A ROSTER FIELD (2026-09-11) ═══
+---
+--- Owner: "the death sound should not play if the player is dying by method of
+--- leaving the match." Leaving IS an elimination here on purpose
+--- (BR.Match.leaveMatch -> BR.Combat.eliminate(src, 'left', nil)), so the client
+--- sees one identical edge into OUT for "you were killed" and for "you quit" --
+--- and it had nothing to tell them apart with. The cause DOES cross the wire
+--- already, on KILL_FEED, but that is a different message with no ordering
+--- against this one (see the note over BR.NoteDeath in client/state.lua), and an
+--- answer that usually arrives in time is wrong exactly when somebody is
+--- disconnecting badly.
+---
+--- SO IT TRAVELS BESIDE `e` RATHER THAN INSIDE IT. `e` is the roster mirror and
+--- every key in it is a fact that persists about the player; this is a fact
+--- about the TRANSITION, true for one message and meaningless afterwards. Inside
+--- `e` it would be a field the client had to remember to clear, and a stale
+--- 'left' on the entry would silence a real death in the next round.
+---
+--- OPTIONAL, AND ABSENT MEANS UNKNOWN. Every other caller passes nothing and
+--- gets exactly the message it got before.
 --- @param src integer
 --- @param state string
-function BR.Roster.setState(src, state)
+--- @param cause string|nil  why this transition happened, for the one consumer
+---        that needs it ON the edge rather than in a message that may follow
+function BR.Roster.setState(src, state, cause)
     local entry = roster[src]
     if not entry or entry.state == state then return end
 
@@ -828,7 +851,8 @@ function BR.Roster.setState(src, state)
     -- change already passes through.
     applyBucket(src, entry)
 
-    BR.Broadcast.delta({ op = 'update', src = src, e = { state = state } })
+    BR.Broadcast.delta({ op = 'update', src = src, e = { state = state },
+                         cause = cause })
 
     if BR.Server.devMode then
         print(('[br_core]   %s (%d): %s -> %s'):format(entry.name, src, from, state))

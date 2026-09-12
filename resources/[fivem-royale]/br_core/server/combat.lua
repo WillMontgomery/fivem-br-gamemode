@@ -437,7 +437,12 @@ function BR.Combat.eliminate(src, cause, killerSrc)
     -- dbnoCount deliberately survives: it is per MATCH and resets at CLEANUP,
     -- so being finished does not hand the next knock a fresh 45 seconds.
 
-    BR.Roster.setState(src, BR.PlayerState.OUT)
+    -- THE CAUSE GOES WITH THE EDGE. The kill feed below carries it too, and that
+    -- is not a duplicate: the feed is what the whole match reads and it arrives
+    -- as its own message, while this is the transition the victim's own client
+    -- reacts to in the same instant. Only one of the two can be relied on to be
+    -- in hand when OUT lands. See BR.Roster.setState.
+    BR.Roster.setState(src, BR.PlayerState.OUT, cause)
     entry.placement = placement
     -- WHEN THEIR MATCH STOPPED, for the survival term in the XP curve. Written
     -- here because this is the only place a player stops surviving, and read

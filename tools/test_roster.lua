@@ -1842,6 +1842,91 @@ do
     ok(BR.Roster.get(1).state == BR.PlayerState.LOBBY, 'a player in the lobby cannot be eliminated')
 end
 
+describe('combat: the OUT edge carries WHY, because the kill feed is too late')
+do
+    -- ═══ "the death sound should not play if the player is dying by method of
+    --     leaving the match" (owner, 2026-09-11) ═══
+    --
+    -- The client plays the death sting on its own edge into OUT, and leaving IS
+    -- an elimination here on purpose -- BR.Match.leaveMatch routes it through
+    -- BR.Combat.eliminate(src, 'left', nil) so that quitting cannot be a cheaper
+    -- exit than dying -- so that edge is bit-for-bit identical for somebody who
+    -- was shot and somebody who pressed Leave Match.
+    --
+    -- THE CAUSE WAS ON KILL_FEED AND NOWHERE ELSE, which is a different message
+    -- with no ordering against this one (client/state.lua says so above
+    -- BR.NoteDeath, and answers it for the death WORD by correcting the word a
+    -- moment later). A sound cannot be corrected a moment later, and the case
+    -- where a late-arriving answer would fail is the case where somebody's
+    -- connection is dying as they go. So the edge itself has to say why.
+    local function outDelta(src)
+        for _, s in ipairs(eventsOf(BR.Net.ROSTER_DELTA)) do
+            for _, d in ipairs(s.args[1].deltas or {}) do
+                if d.src == src and d.op == 'update'
+                   and d.e and d.e.state == BR.PlayerState.OUT then
+                    return d
+                end
+            end
+        end
+        return nil
+    end
+
+    -- ═══ NO MATCH IS STARTED HERE, AND THAT IS DELIBERATE ═══
+    --
+    -- Starting one mints a `BR.Server.matchSeq`, every per-match seed in the
+    -- gamemode is `clock + seq * prime`, and `loot.repair.bounds` fifteen
+    -- thousand lines below needs the layout that seq produces -- the same trap
+    -- the match-ids section at the end of this file was moved to the end to
+    -- avoid. Nothing under test needs a match: `canDie` reads the state and
+    -- nothing else, `beforeTheMatch` answers false without one, and the delta
+    -- this block asserts on comes from BR.Roster.setState, which has never
+    -- known what a match is.
+    reset()
+    join(1, 'Leaver'); join(2, 'Victim'); join(3, 'Bystander')
+    BR.Roster.each(nil, function(src) BR.Roster.setState(src, BR.PlayerState.ALIVE) end)
+    BR.Broadcast.flushNow()
+    sent = {}
+
+    BR.Combat.eliminate(1, 'left', nil)
+    BR.Broadcast.flushNow()
+    local left = outDelta(1)
+    ok(left ~= nil, 'a leaver still gets the OUT delta -- leaving is an elimination')
+    ok(left and left.cause == 'left', 'and the delta says so',
+        left and tostring(left.cause))
+
+    -- BESIDE THE MIRROR, NOT INSIDE IT. `e` is what the client copies onto the
+    -- roster entry and keeps; a cause kept would be a stale 'left' silencing a
+    -- real death in the next round.
+    ok(left and left.e and left.e.cause == nil,
+        'and carries it beside `e` rather than in the mirror')
+    ok(left and left.e and left.e.state == BR.PlayerState.OUT,
+        'with the state change itself untouched')
+
+    sent = {}
+    BR.Combat.eliminate(2, 'storm', nil)
+    BR.Broadcast.flushNow()
+    local storm = outDelta(2)
+    ok(storm and storm.cause == 'storm',
+        'and an ordinary death carries its own cause, not a blank',
+        storm and tostring(storm.cause))
+
+    -- EVERY OTHER TRANSITION IS UNCHANGED. The field is optional and absent
+    -- means unknown, so nothing that never had a reason to state one starts
+    -- putting a nil on the wire's shape.
+    sent = {}
+    BR.Roster.setState(3, BR.PlayerState.LOBBY)
+    BR.Broadcast.flushNow()
+    local plain = nil
+    for _, s in ipairs(eventsOf(BR.Net.ROSTER_DELTA)) do
+        for _, d in ipairs(s.args[1].deltas or {}) do
+            if d.src == 3 then plain = d end
+        end
+    end
+    ok(plain ~= nil and plain.cause == nil,
+        'a state change with no reason to give states none',
+        plain and tostring(plain.cause))
+end
+
 describe('combat.credit')
 do
     reset()

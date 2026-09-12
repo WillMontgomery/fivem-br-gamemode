@@ -14,7 +14,12 @@ BR.Net = {
 
     -- Match lifecycle
     STATE           = 'br:state',            -- S->C  { state, endsAt, meta }
-    ROSTER_DELTA    = 'br:roster:delta',     -- S->C  array of roster changes (coalesced)
+    -- S->C  array of roster changes (coalesced). Each entry is
+    -- { op, src, e?, clear?, cause? }, where `e` is the mirror -- facts that
+    -- PERSIST about the player -- and `cause` is a fact about the TRANSITION,
+    -- true for this one message and meaningless afterwards. It rides beside `e`
+    -- rather than inside it for exactly that reason; see BR.Roster.setState.
+    ROSTER_DELTA    = 'br:roster:delta',
     DIGEST          = 'br:digest',           -- S->C  { alive, squadsAlive, phase, endsAt }
 
     -- Lobby / squads
