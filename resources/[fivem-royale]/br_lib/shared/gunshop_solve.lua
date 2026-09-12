@@ -947,10 +947,24 @@ end
 --- NOTHING HERE IS COPY. Every word out of this function is a `label` the owner
 --- authored in config/weapons.lua, in the order he authored it, and the only
 --- character this file adds is the comma between them.
---- @param pool string|nil       a BR.AmmoType value
---- @param sources table|nil     an array of weapon arrays
---- @return table  array of label strings, de-duplicated by weapon id
-function BR.GunshopSolve.ammoUsers(pool, sources)
+--- ONE SCAN, AND EVERY PUBLIC ANSWER BELOW IS A VIEW OF IT.
+---
+--- ⚠ DECLARED ABOVE ITS READERS, because a Lua local is invisible above its own
+--- declaration.
+---
+--- THE REASON IT IS ONE FUNCTION AND NOT TWO IS A BUG THIS FEATURE ALREADY HAD.
+--- client/gunshop.lua rolled a private scan over BR.Config.Weapons alone while
+--- this file scanned both source tables: two answers to one question, and the
+--- shorter one shipped, so every airdrop weapon was missing from every ammo
+--- description. Splitting the list by what a player is carrying is a THIRD caller
+--- for the same walk, and a third walk is the same bug waiting.
+---
+--- IT CARRIES THE id AS WELL AS THE label, which is the only thing the label-only
+--- answer could not do: "is the player holding this one" is a question about ids.
+--- @param pool string|nil    a BR.AmmoType value
+--- @param sources table|nil  an array of weapon arrays
+--- @return table  array of { id, label }, de-duplicated by id, authored order
+local function ammoUserRows(pool, sources)
     local out = {}
     if type(pool) ~= 'string' or pool == '' then return out end
     if type(sources) ~= 'table' then return out end
@@ -966,12 +980,66 @@ function BR.GunshopSolve.ammoUsers(pool, sources)
                     seen[w.id] = true
                     local label = type(w.label) == 'string' and w.label ~= ''
                         and w.label or w.id
-                    out[#out + 1] = label
+                    out[#out + 1] = { id = w.id, label = label }
                 end
             end
         end
     end
     return out
+end
+
+--- @param pool string|nil       a BR.AmmoType value
+--- @param sources table|nil     an array of weapon arrays
+--- @return table  array of label strings, de-duplicated by weapon id
+function BR.GunshopSolve.ammoUsers(pool, sources)
+    local rows = ammoUserRows(pool, sources)
+    local out = {}
+    for i = 1, #rows do out[i] = rows[i].label end
+    return out
+end
+
+--- THE SAME WEAPONS, SPLIT BY WHETHER THE PLAYER IS HOLDING ONE.
+---
+--- Owner, 2026-09-11: "we should prefix them with 'This ammo works with your:
+--- {guntypes} (new line) As well as: {otherguntypes}'", and the reason: "The
+--- {guntypes} text should be blue, comma-separated, and everything else should
+--- remain white. This is because the list is exhaustive to read through and we
+--- should make it so they can skim, which is enabled by the colors."
+---
+--- ═══ THE SPLIT IS THE WHOLE FEATURE AND MUST NOT BE FLATTENED ═══
+---
+--- `{guntypes}` is what is IN THEIR HANDS RIGHT NOW and `{otherguntypes}` is
+--- every other gun that takes the pool. Joining them back into one list would
+--- leave the row saying exactly what it said before he asked, with two sentences
+--- wrapped around it -- and the skim he is describing only works when the first
+--- line is short and is about them.
+---
+--- ORDER IS THE SOURCE TABLES', IN BOTH HALVES. This is a stable partition of
+--- ammoUserRows rather than a re-sort of it, so his authored class grouping in
+--- config/weapons.lua survives into both lists.
+---
+--- `held` IS A SET OF ITEM IDS AND NOT A WEAPON TABLE, which keeps the caller's
+--- job to "what is in the bag" and this function's to "which of these is that".
+--- An id in it that is not a gun at all -- a throwable, a gadget -- simply matches
+--- nothing, because the scan above only ever yields weapons that take the pool.
+--- @param pool string|nil
+--- @param sources table|nil
+--- @param held table|nil  { [itemId] = true }. nil and {} both mean "nothing"
+--- @return table yours   labels the player is carrying, in authored order
+--- @return table others  every other label, in authored order
+function BR.GunshopSolve.ammoUsersSplit(pool, sources, held)
+    local rows = ammoUserRows(pool, sources)
+    local yours, others = {}, {}
+    local have = type(held) == 'table' and held or {}
+    for i = 1, #rows do
+        local r = rows[i]
+        if have[r.id] then
+            yours[#yours + 1] = r.label
+        else
+            others[#others + 1] = r.label
+        end
+    end
+    return yours, others
 end
 
 --- The same list as one line, for a surface that has one line to put it on.
@@ -984,6 +1052,124 @@ end
 --- @return string  '' when nothing takes this pool
 function BR.GunshopSolve.ammoUsersLine(pool, sources)
     return table.concat(BR.GunshopSolve.ammoUsers(pool, sources), ', ')
+end
+
+--- The split, joined, for a surface that has one line per half to put it on.
+---
+--- THE COMMA LIVES HERE FOR THE REASON ammoUsersLine GIVES ABOVE: the joining is a
+--- thing a test can run, and a `, ` assembled in client/gunshop.lua would be the
+--- one character of this feature that only a playtest could check. A comma and a
+--- space is a separator, not a word, which is why it is not in config either.
+--- @param pool string|nil
+--- @param sources table|nil
+--- @param held table|nil
+--- @return string yours   '' when they are carrying nothing that takes the pool
+--- @return string others  '' when nothing else takes it
+function BR.GunshopSolve.ammoUsersSplitLine(pool, sources, held)
+    local yours, others = BR.GunshopSolve.ammoUsersSplit(pool, sources, held)
+    return table.concat(yours, ', '), table.concat(others, ', ')
+end
+
+--- HIS TWO LINES, JOINED, WITH A HALF THAT CANNOT BE FILLED LEFT OFF.
+---
+--- ═══ NOT ONE WORD OUT OF THIS FUNCTION IS OURS ═══
+---
+--- `ammoDescYours` and `ammoDescOthers` are authored in config/gunshop.lua, in his
+--- wording and with his colon. This chooses which of them can be said and puts a
+--- line break between them, which is the same division of labour as
+--- BR.GunshopSolve.poorToast and for the same reason: the alternative is a
+--- concatenation in client/gunshop.lua, where the only way to see what a player
+--- reads is to stand at a till in a running game.
+---
+--- ═══ THE THREE CASES, AND THE ONE THAT IS A JUDGEMENT ═══
+---
+---   BOTH HALVES FILLED -> both sentences, his line break between them.
+---
+---   NOTHING ELSE TAKES THE POOL -> the second sentence is dropped. "As well as:"
+---   with nothing after it is a dangling sentence.
+---
+---   ⚠ NOTHING CARRIED -> the LEAD-IN is dropped and the bare list is returned,
+---   which is the description this row has carried since L5. This is the case his
+---   structure has no form for and the one place a decision was taken rather than
+---   read. The alternatives were both worse: "This ammo works with your:" followed
+---   by nothing, or "As well as:" with no antecedent, or a third lead-in nobody
+---   wrote. Falling back to something he has already seen and approved is the only
+---   one of the four that invents nothing. FLAGGED FOR HIM.
+---
+--- `others` IS THE WHOLE LIST IN THAT CASE, WHICH IS WHY THERE IS NO FOURTH
+--- PARAMETER. Carried plus other is every gun that takes the pool, so when nothing
+--- is carried `others` already IS the exhaustive list.
+---
+--- ═══ THE LINE BREAK IS `~n~` AND IT IS NOT COPY ═══
+---
+--- It is the engine's newline -- the thing "(new line)" in his message names -- and
+--- the movie's own `notColours` list carries `~n`, so it survives the library and
+--- is resolved by the game's formatter. client/menu.lua has that evidence.
+---
+--- A TEMPLATE THAT WILL NOT TAKE A STRING LEAVES THE SENTENCE OUT, exactly as
+--- poorToast does: these are authored, so a `%d` in one is an authoring slip
+--- rather than a runtime condition, and string.format would THROW on it while a
+--- player was reading a menu.
+---
+--- @param cfg table|nil     BR.Config.Gunshop
+--- @param yours string|nil  the carried list, ALREADY MARKED by the surface
+--- @param others string|nil every other, plain
+--- @return string
+function BR.GunshopSolve.ammoDesc(cfg, yours, others)
+    local c     = type(cfg) == 'table' and cfg or {}
+    local mine  = type(yours) == 'string' and yours or ''
+    local rest  = type(others) == 'string' and others or ''
+    local head  = type(c.ammoDescYours) == 'string' and c.ammoDescYours or ''
+    local tail  = type(c.ammoDescOthers) == 'string' and c.ammoDescOthers or ''
+
+    if mine == '' or head == '' then return rest end
+
+    local okHead, first = pcall(string.format, head, mine)
+    if not okHead then return rest end
+    if rest == '' or tail == '' then return first end
+
+    local okTail, second = pcall(string.format, tail, rest)
+    if not okTail then return first end
+    return first .. '~n~' .. second
+end
+
+--- WHAT ONE WEAPON ROW SAYS ABOUT ITS AMMUNITION.
+---
+--- Owner, 2026-09-11: "The weapons should each have a description which reads:
+--- 'This weapon uses {ammotype}. You have {number} rounds for it.'" And: "The
+--- {ammotype} should be the same blue as we use above, and the number should be
+--- blue as well."
+---
+--- BOTH HOLES ARRIVE ALREADY MARKED, for the same reason ammoDesc's do: blue is a
+--- GTA text token and only the surface knows that. This function does not know what
+--- color anything is and must not.
+---
+--- ═══ ALL OR NOTHING, WHICH IS THE ONLY HONEST SHAPE FOR ONE SENTENCE ═══
+---
+--- His sentence has two holes in one clause pair and there is no version of it
+--- with one filled. So a row with no pool, or one where the holding could not be
+--- read, says NOTHING rather than "This weapon uses . You have rounds for it."
+--- Every gun on this shelf takes a pool, so the empty answer is a guard rather
+--- than a state.
+---
+--- ⚠ `rounds` IS A STRING BY THE TIME IT ARRIVES AND THAT IS DELIBERATE. It has
+--- been through BR.Menu.blue, so it is `~HC_9~42~s~` rather than 42 -- which means
+--- this function cannot check it is a number and does not try. The caller owns
+--- reading the holding at the moment the description is built; see the block on
+--- that in client/gunshop.lua.
+--- @param cfg table|nil     BR.Config.Gunshop
+--- @param ammo string|nil   the pool's own label, ALREADY MARKED
+--- @param rounds string|nil the player's holding, ALREADY MARKED
+--- @return string  '' when the template or either hole is missing
+function BR.GunshopSolve.weaponDesc(cfg, ammo, rounds)
+    local c    = type(cfg) == 'table' and cfg or {}
+    local tmpl = type(c.weaponDesc) == 'string' and c.weaponDesc or ''
+    if tmpl == '' then return '' end
+    if type(ammo) ~= 'string' or ammo == '' then return '' end
+    if type(rounds) ~= 'string' or rounds == '' then return '' end
+
+    local okFmt, line = pcall(string.format, tmpl, ammo, rounds)
+    return okFmt and line or ''
 end
 
 -- ---------------------------------------------------------------------------

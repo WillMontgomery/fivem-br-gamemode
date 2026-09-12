@@ -3115,7 +3115,19 @@ do
     local dui, sfx, sent, speech, drawn = {}, {}, {}, {}, {}
     local peds, nextPed = {}, 100
     local me = { x = 0.0, y = 0.0, z = 0.0 }
-    local invAmmo = {}
+    -- ═══ THE MIRROR, AND BOTH HALVES OF IT ARE NOW UNDER TEST ═══
+    --
+    -- `invAmmo` was here for the ammo CAP, which locks a row. `invSlots` is new
+    -- and is what the 2026-09-11 ammo description reads: "{guntypes} is the guns
+    -- the player is CARRYING". A stub that answered a permanently empty slot list
+    -- would make the carried half of that description unreachable, and the row
+    -- would fall back to the plain list on every assertion -- which is exactly
+    -- what the shipped code does when nothing is carried, so the suite would
+    -- agree with a feature that had never been written.
+    --
+    -- SHAPED THE WAY THE REAL MIRROR IS: an array 1..5 whose empty slots are
+    -- `false` rather than nil, and items are { id = ... }.
+    local invAmmo, invSlots = {}, { false, false, false, false, false }
 
     BR.Loop = {
         SLOW = 'slow', TICK = 'tick', FRAME = 'frame',
@@ -3132,7 +3144,17 @@ do
     }
     BR.Native = { keyLabelForCommand = function() return 'E' end }
     BR.Sfx = { play = function(k) sfx[#sfx + 1] = k end }
-    BR.Inv = { local_ = function() return { slots = {}, ammo = invAmmo } end }
+    BR.Inv = {
+        local_ = function() return { slots = invSlots, ammo = invAmmo } end,
+    }
+
+    --- Put guns in the bag, by shop row id, and empty every other slot.
+    local function carry(...)
+        for i = 1, 5 do invSlots[i] = false end
+        for i = 1, select('#', ...) do
+            invSlots[i] = { id = (select(i, ...)), count = 1 }
+        end
+    end
     BR.State = {
         match = { state = BR.MatchState.PLAYING },
         me    = { state = BR.PlayerState.ALIVE },
@@ -4081,11 +4103,280 @@ do
                 .. 'table is the only way they could have got there',
             inOrdinary)
 
+    end
+
+    -- -----------------------------------------------------------------------
+    describe('the ammo description splits into what he is carrying and the rest')
+    -- -----------------------------------------------------------------------
+    do
+        -- ═══════════════════════════════════════════════════════════════════
+        -- Owner, 2026-09-11:
+        --
+        --   "The current ammo items have descriptions, but we should prefix them
+        --    with 'This ammo works with your: {guntypes} (new line) As well as:
+        --    {otherguntypes}'"
+        --   "The {guntypes} text should be blue, comma-separated, and everything
+        --    else should remain white. This is because the list is exhaustive to
+        --    read through and we should make it so they can skim, which is
+        --    enabled by the colors."
+        -- ═══════════════════════════════════════════════════════════════════
+        --
+        -- ⚠ THE SPLIT IS THE WHOLE REQUEST AND A NON-EMPTY STRING PROVES NONE OF
+        -- IT. The block above already asserted that the row says something and
+        -- names every gun, and that was equally true before he asked -- so every
+        -- assertion here is about WHICH SIDE of the line a named gun lands on,
+        -- against a fixture bag, with real counts.
+        local BLUE, RESET = '~HC_9~', '~s~'
+
+        -- THE TWO SOURCE TABLES, WHICH ARE THE SHIPPED ONES. client/gunshop.lua's
+        -- `ammoSources` is private, so this is the same pair named here -- and the
+        -- assertions below compare the ROW against what the solver says about these
+        -- tables, so a drift between the two would show up rather than cancel out.
+        local ammoSrc = { BR.Config.Weapons, BR.Config.AirdropWeapons }
+
+        --- The two halves of one row's description, as they were rendered.
+        --- @return string|nil yours, string|nil others
+        local function halves(desc)
+            if type(desc) ~= 'string' then return nil, nil end
+            local a, b = desc:match('^(.-)~n~(.*)$')
+            if a == nil then return desc, nil end
+            return a, b
+        end
+
+        -- CARRYING TWO OF THE SEVEN GUNS THAT TAKE LIGHT. Pistol and Combat
+        -- Pistol are both COMMON, which is deliberate: neither is on sale at any
+        -- counter, so they can only have got into this sentence out of the bag.
+        carry('pistol', 'combatpistol')
+        walkAway()
+        standAt('pillbox')
+        press()
+
+        local light = rowItem('ammo_' .. BR.AmmoType.LIGHT)
+        local yours, others = halves(light and light._Description)
+
+        ok(yours ~= nil and others ~= nil,
+            'the row is TWO lines now, broken with the engine\'s own ~n~',
+            light and light._Description or 'none')
+
+        -- HIS WORDING, CHARACTER FOR CHARACTER, INCLUDING THE COLON. Built from
+        -- the CONFIG template rather than retyped here, so his edit is one edit.
+        local wantHead = G.ammoDescYours:format(
+            BLUE .. 'Pistol, Combat Pistol' .. RESET)
+        ok(yours == wantHead,
+            'the first line is his sentence with the carried guns in it, blue, '
+                .. 'comma-separated, and closed so the rest stays white',
+            ('got %s\n       want %s'):format(tostring(yours), wantHead))
+
+        -- ═══ AND THE COUNTS, BOTH SIDES, AGAINST THE SHIPPED TABLES ═══
+        --
+        -- ⚠ A REAL NUMBER RATHER THAN "the list is not empty". Seven guns take
+        -- LIGHT and two are in the bag, so the other line must name exactly five
+        -- -- and naming six or four is the failure a presence check cannot see.
+        local allLight = S.ammoUsers(BR.AmmoType.LIGHT, ammoSrc)
+        local mine, rest = S.ammoUsersSplit(BR.AmmoType.LIGHT, ammoSrc,
+                                           { pistol = true, combatpistol = true })
+        ok(#allLight == 7 and #mine == 2 and #rest == 5,
+            'seven guns take LIGHT, two are in the bag and five are not, so the '
+                .. 'split is a partition rather than two independent lists',
+            ('%d = %d + %d'):format(#allLight, #mine, #rest))
+
+        local wantTail = G.ammoDescOthers:format(table.concat(rest, ', '))
+        ok(others == wantTail,
+            "the second line is his other sentence with exactly the five he is "
+                .. 'NOT carrying',
+            ('got %s\n       want %s'):format(tostring(others), wantTail))
+
+        -- ⚠ AND `{otherguntypes}` IS NOT MARKED. "The {guntypes} text should be
+        -- blue ... and everything else should remain white." Marking both would
+        -- look tidier and would destroy the skim, which is the entire reason he
+        -- asked -- so this is asserted rather than assumed.
+        ok(others ~= nil and others:find(BLUE, 1, true) == nil,
+            'and the guns he is NOT carrying stay white, which is what makes the '
+                .. 'blue mean anything',
+            tostring(others))
+
+        -- AND THE MARK OPENS AND CLOSES EXACTLY ONCE ON THE WHOLE ROW. A missing
+        -- ~s~ would turn every word after the carried guns blue, including his
+        -- second sentence, and would still pass a "contains blue" check.
+        local opens, closes = 0, 0
+        for _ in light._Description:gmatch(BLUE) do opens = opens + 1 end
+        for _ in light._Description:gmatch(RESET) do closes = closes + 1 end
+        ok(opens == 1 and closes == 1,
+            'the blue opens once and closes once, so it cannot bleed into the '
+                .. 'white half',
+            ('%d open, %d close'):format(opens, closes))
+
+        -- ═══ THE BAG MOVES AND THE SENTENCE MOVES WITH IT ═══
+        --
+        -- The description is rebuilt in refreshMenu rather than at menu build,
+        -- because "the guns you are carrying" is not a fact about the shelf. A
+        -- version that cached it at open would pass every assertion above.
+        carry('heavypistol')
+        handlers[BR.Net.MARKET_STATE]({ balance = 999999 })
+        local moved = rowItem('ammo_' .. BR.AmmoType.LIGHT)
+        local movedYours = halves(moved and moved._Description)
+        ok(movedYours == G.ammoDescYours:format(
+                BLUE .. 'Heavy Pistol' .. RESET),
+            'swapping the bag rewrites the carried half on the next push, so it '
+                .. 'is read rather than cached',
+            tostring(movedYours))
+
+        -- ═══ THE TWO EMPTY CASES, WHICH HIS STRUCTURE HAS NO FORM FOR ═══
+        --
+        -- ⚠ NOTHING CARRIED. This is the ordinary state early in a match. The
+        -- lead-in is dropped and the row keeps the plain exhaustive list it has
+        -- carried since L5 -- something he has already seen -- rather than "This
+        -- ammo works with your:" followed by nothing. FLAGGED TO HIM: it is the
+        -- one place in this feature where a decision was taken rather than read.
+        carry()
+        handlers[BR.Net.MARKET_STATE]({ balance = 999999 })
+        local bare = rowItem('ammo_' .. BR.AmmoType.LIGHT)
+        ok(bare ~= nil and bare._Description == table.concat(allLight, ', '),
+            'a player carrying nothing that takes the pool gets the plain list '
+                .. 'back, not a sentence with a hole in it',
+            bare and bare._Description or 'none')
+        ok(bare ~= nil and bare._Description:find('~n~', 1, true) == nil
+           and bare._Description:find('works with your', 1, true) == nil,
+            '...with no dangling lead-in and no empty second line',
+            bare and bare._Description or 'none')
+
+        -- ⚠ NOTHING ELSE TAKES THE POOL. Carrying every gun that feeds on HEAVY
+        -- empties `{otherguntypes}`, and "As well as:" with nothing after it is
+        -- the same fault from the other end.
+        local allHeavy = S.ammoUsers(BR.AmmoType.HEAVY, ammoSrc)
+        local heavyIds = {}
+        for _, list in ipairs(ammoSrc) do
+            for _, w in ipairs(list) do
+                if w.ammo == BR.AmmoType.HEAVY then heavyIds[#heavyIds + 1] = w.id end
+            end
+        end
+        ok(#heavyIds == #allHeavy and #heavyIds == 12,
+            'twelve guns in the shipped tables take HEAVY, airdrops included',
+            ('%d ids, %d labels'):format(#heavyIds, #allHeavy))
+
+        -- THE BAG HOLDS FIVE SLOTS AND THERE ARE TWELVE GUNS, so the sandbox
+        -- asks the solver directly for this one. The row itself cannot reach the
+        -- state, which is worth saying rather than faking a six-slot bag.
+        local hAll = {}
+        for _, id in ipairs(heavyIds) do hAll[id] = true end
+        local hMine, hRest = S.ammoUsersSplit(BR.AmmoType.HEAVY, ammoSrc, hAll)
+        ok(#hMine == 12 and #hRest == 0,
+            'with every one of them in hand the other half is empty',
+            ('%d + %d'):format(#hMine, #hRest))
+        local onlyHead = S.ammoDesc(G, BLUE .. table.concat(hMine, ', ') .. RESET,
+                                    table.concat(hRest, ', '))
+        ok(onlyHead == G.ammoDescYours:format(
+                BLUE .. table.concat(hMine, ', ') .. RESET),
+            '...and the row says his first sentence and stops, rather than '
+                .. 'trailing an "As well as:" with nothing after it',
+            onlyHead)
+        ok(onlyHead:find('~n~', 1, true) == nil,
+            '...with no line break left behind it either', onlyHead)
+
+        carry()
+        handlers[BR.Net.MARKET_STATE]({ balance = 999999 })
+    end
+
+    -- -----------------------------------------------------------------------
+    describe('a weapon row says what it eats and how much of it he has')
+    -- -----------------------------------------------------------------------
+    do
+        -- ═══════════════════════════════════════════════════════════════════
+        -- Owner, 2026-09-11: "The weapons should each have a description which
+        -- reads: 'This weapon uses {ammotype}. You have {number} rounds for it.'"
+        -- And: "The {ammotype} should be the same blue as we use above, and the
+        -- number should be blue as well."
+        -- ═══════════════════════════════════════════════════════════════════
+        local BLUE, RESET = '~HC_9~', '~s~'
+
+        invAmmo[BR.AmmoType.MEDIUM] = 37
+        handlers[BR.Net.MARKET_STATE]({ balance = 999999 })
+
+        -- A Carbine Rifle takes MEDIUM, and both of those facts are READ rather
+        -- than typed: config/weapons.lua says which pool and config/loot.lua
+        -- names it, which is the same label the ammo ROW on this shelf wears.
+        local pool  = BR.Config.WeaponById['carbinerifle'].ammo
+        local label = BR.Config.AmmoPickups[pool].label
+        ok(pool == BR.AmmoType.MEDIUM and label == 'Medium Ammo',
+            'the fixture is aimed at a real gun and a real pool',
+            ('%s / %s'):format(tostring(pool), tostring(label)))
+
         local gun = rowItem('carbinerifle')
-        ok(gun ~= nil and (gun._Description == nil or gun._Description == ''),
-            'a WEAPON row still says nothing -- he asked for this on ammo rows '
-                .. 'only, and a sentence per gun would be thirty pieces of '
-                .. 'copy he did not ask for')
+        local want = G.weaponDesc:format(BLUE .. label .. RESET,
+                                         BLUE .. '37' .. RESET)
+        ok(gun ~= nil and gun._Description == want,
+            'his sentence, verbatim from config, with the pool name and the '
+                .. 'round count both in GTA\'s blue and both closed',
+            ('got %s\n       want %s'):format(
+                tostring(gun and gun._Description), want))
+
+        -- ⚠ THE COUNT TRACKS THE HOLDING, WHICH IS THE HALF A STRING CHECK
+        -- CANNOT SEE. "{number} is the player's current holding, so it changes as
+        -- they buy and shoot" -- a description built at menu open and cached
+        -- would pass the assertion above and be wrong for the rest of the match.
+        -- ASSERTED AS TWO DIFFERENT REAL NUMBERS rather than as "it contains a
+        -- digit".
+        invAmmo[BR.AmmoType.MEDIUM] = 37 + 45
+        handlers[BR.Net.MARKET_STATE]({ balance = 999999 })
+        local after = rowItem('carbinerifle')
+        ok(after ~= nil and after._Description
+            == G.weaponDesc:format(BLUE .. label .. RESET,
+                                   BLUE .. '82' .. RESET),
+            'buying a box of Medium moves the row from 37 rounds to 82, so the '
+                .. 'number is read when the description is built',
+            after and after._Description or 'none')
+
+        -- AN EMPTY POOL READS ZERO RATHER THAN GOING SILENT. A player who has
+        -- the gun and none of its ammo is exactly who this sentence is for.
+        invAmmo[BR.AmmoType.MEDIUM] = nil
+        handlers[BR.Net.MARKET_STATE]({ balance = 999999 })
+        local none = rowItem('carbinerifle')
+        ok(none ~= nil and none._Description
+            == G.weaponDesc:format(BLUE .. label .. RESET,
+                                   BLUE .. '0' .. RESET),
+            'and a pool the mirror has no entry for is 0 rounds, not a missing '
+                .. 'sentence',
+            none and none._Description or 'none')
+
+        -- ═══ EVERY WEAPON ROW HAS ONE, AND EVERY AMMO ROW HAS THE OTHER ═══
+        --
+        -- ⚠ COUNTED. "The weapons should each have a description" is a claim about
+        -- all twenty-five, and a spot check on a Carbine Rifle would pass on a
+        -- build where `rowPool` answered nil for the twenty-four guns whose pool
+        -- is not MEDIUM.
+        local guns, ammos, silent = 0, 0, {}
+        for _, r in ipairs(select(1, G.build())) do
+            local it = rowItem(r.id)
+            local d  = it and it._Description or ''
+            if d == '' then
+                silent[#silent + 1] = r.id
+            elseif r.kind == BR.ItemKind.AMMO then
+                ammos = ammos + 1
+            else
+                guns = guns + 1
+            end
+        end
+        ok(guns == 25 and ammos == 5 and #silent == 0,
+            'all 25 weapon rows and all 5 ammo rows say something',
+            #silent > 0 and ('silent: ' .. table.concat(silent, ', '))
+                or ('%d guns, %d ammo'):format(guns, ammos))
+
+        -- ...AND THE TWO SENTENCES DO NOT GET SWAPPED. A weapon row must not
+        -- carry the ammo row's list and the reverse, which is the shape a wrong
+        -- branch in `describeRow` would take.
+        local crossed = {}
+        for _, r in ipairs(select(1, G.build())) do
+            local it = rowItem(r.id)
+            local d  = it and it._Description or ''
+            local isWeaponSentence =
+                d:find('rounds for it', 1, true) ~= nil
+            if (r.kind == BR.ItemKind.AMMO) == isWeaponSentence then
+                crossed[#crossed + 1] = r.id
+            end
+        end
+        ok(#crossed == 0,
+            'and no row is wearing the other kind of sentence',
+            #crossed > 0 and table.concat(crossed, ', ') or nil)
     end
 
     -- -----------------------------------------------------------------------

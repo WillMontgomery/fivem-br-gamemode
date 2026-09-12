@@ -1,4 +1,4 @@
--- Our colors on somebody else's menu library (#274).
+-- GTA's colors on somebody else's menu library (#274).
 --
 -- ═══════════════════════════════════════════════════════════════════════════
 -- THIS IS THE FIRST SCALEFORMUI MENU IN THE PROJECT, SO THIS FILE IS THE
@@ -15,10 +15,10 @@
 -- menu we ever write repeats four color decisions, and the fifth one gets one of
 -- them wrong in a way nobody notices until two menus are open side by side.
 --
--- IT IS DELIBERATELY TINY. Two colors, one HUD index, three constructors. It is
--- not a widget kit and must not become one: the moment it starts deciding what
--- items a menu has, it is a second menu library sitting on top of the vendored
--- one.
+-- IT IS DELIBERATELY TINY. Four HUD indices, three constructors, and three
+-- one-line text marks. It is not a widget kit and must not become one: the moment
+-- it starts deciding what items a menu has, it is a second menu library sitting
+-- on top of the vendored one.
 --
 -- ═══ FONTS ARE NOT OURS AND CANNOT BE ═══
 --
@@ -83,23 +83,30 @@ BR.Menu = BR.Menu or {}
 --- inside ToArgb with a message about arithmetic on a nil value. The fault is
 --- nowhere near the line that caused it.
 
---- THE SUBTITLE STRIP, WHICH COULD NEVER HAVE BEEN OURS EVEN BEFORE THE RULE.
+--- GTA'S BLUE, AND THE TWO PLACES IT IS SPENT.
 ---
---- Most colors on a UIMenu are ARGB integers. The SUBTITLE is not: it is drawn
---- by prefixing the string with a GTA text token, `~HC_<n>~` (see
---- UIMenu:SetMenuData in the vendored bundle), and that `n` is an index into the
---- engine's palette. There is no route from a hex to an index and no native that
---- adds one, so this one was always going to be one of GTA's colors -- which was
---- written here as a caveat and is now simply the house style.
+--- Owner, 2026-09-11, told that a menu description takes a GTA text code rather
+--- than an arbitrary color and so cannot be the project cyan: "Yes please use
+--- GTA's blue instead of our cyan for that".
 ---
 --- 9 IS HUD_COLOUR_BLUE, the nearest thing GTA has to #22d3ee: a mid-blue where
 --- ours is a bright cyan. Visibly not our color, and that is the accepted state
---- of it rather than a thing to keep tuning.
+--- of it rather than a thing to keep tuning -- the same settlement the price
+--- already has at HUD_COLOUR_GOLD, which he accepted in the same words.
 ---
---- IT DOES NOT MATTER MUCH TODAY, because the gun shop's subtitle is empty and
---- the strip carries only the item counter. It is set anyway so that the first
---- menu with a subtitle inherits a decision rather than making a fresh one.
-local SUBTITLE_HUD = 9
+--- ═══ ONE INDEX, TWO MECHANISMS, WHICH IS WHY IT IS A CONSTANT ═══
+---
+---   THE SUBTITLE STRIP is drawn by prefixing the string with `~HC_<n>~` (see
+---   UIMenu:SetMenuData in the vendored bundle). It could never have been ours
+---   even before the rule: there is no route from a hex to an index and no native
+---   that adds one. It matters little today -- the gun shop's subtitle is empty
+---   and the strip carries only the item counter -- and is set so the first menu
+---   with a subtitle inherits a decision rather than making a fresh one.
+---
+---   THE MARKED WORDS INSIDE A DESCRIPTION are a text token in the string, which
+---   is a different mechanism entirely. Naming the same number is the only way the
+---   two can be guaranteed to be the same blue.
+local BLUE_HUD = 9
 
 --- THE PRICE ON A ROW, AND THE SAME LIMIT ONE STEP WORSE.
 ---
@@ -173,6 +180,53 @@ local DIM_HUD = 3
 --- The grey token, once. Same short form as PRICE_TOKEN above.
 local DIM_TOKEN = ('~HC_%d~'):format(DIM_HUD)
 
+--- The blue token, and the one that puts the color back.
+---
+--- `~s~` IS THE ENGINE'S "BACK TO STANDARD". PRICE_TOKEN and DIM_TOKEN mark a
+--- whole right label and there is nothing after them to get wrong; a blue run
+--- INSIDE a sentence has white on both sides of it, so it has to close.
+local BLUE_TOKEN  = ('~HC_%d~'):format(BLUE_HUD)
+local RESET_TOKEN = '~s~'
+
+--- ═══════════════════════════════════════════════════════════════════════════
+--- WHY A COLOR TOKEN IN A DESCRIPTION IS A COLOR AND NOT FOUR PRINTED
+--- CHARACTERS
+--- ═══════════════════════════════════════════════════════════════════════════
+---
+--- ⚠ ESTABLISHED OUT OF THE COMPILED MOVIE RATHER THAN ASSUMED, because a code
+--- that prints literally is worse than no color at all, and a description does
+--- NOT travel the route the price does.
+---
+--- THE PRICE'S ROUTE IS ALREADY PROVEN AND IS A DIFFERENT ONE. A right label
+--- reaches the movie through BeginTextCommandScaleformString("CELL_EMAIL_BCON")
+--- plus EndTextCommandScaleformString_2 -- the GAME formats the string and pushes
+--- the finished thing in. The owner has seen `~HC_109~` come out gold that way.
+---
+--- A DESCRIPTION GOES THE OTHER WAY ROUND. UIMenuItem:Description calls
+--- AddTextEntry("UIMenu_Current_Description", str) and then asks the movie to
+--- redraw; the movie reads that GXT key ITSELF. So the question is what the movie
+--- does with it, and the answer is in ScaleformUI_Assets/stream/ScaleformUI.gfx:
+---
+---   ITS UIMenu CLASS DRAWS `descText` THROUGH
+---   com.rockstargames.ui.utils.Text.setTextWithIcons, whose body is
+---   GameInterface.call(GENERIC_TYPE, "SET_FORMATTED_TEXT_WITH_ICONS", ...). That
+---   hands the key back to THE GAME'S OWN FORMATTER -- the same one that resolves
+---   every `~` token anywhere else in the game -- and the game writes the finished
+---   markup into the field. A token in a description is resolved, not printed.
+---
+---   AND THE LIBRARY KNOWS `~HC_` BY NAME. Its own
+---   com.rockstargames.ScaleformUI.utils.Functions carries a `notColours` array,
+---   the sequences its `replaceRstarColorsWith` must NOT treat as a color it is
+---   free to overwrite, and `~HUD_COLOUR` and `~HC_` are both in it. So is `~n`,
+---   which is what makes a line break inside an owner-authored string survive.
+---
+--- ⚠ AND THIS IS WHY IT IS `~HC_9~` RATHER THAN `~b~`, WHICH WAS THE OTHER
+--- CANDIDATE AND IS THE MORE OBVIOUS ONE. `~b~` appears NOWHERE in that movie. It
+--- is not in `notColours`, which means it is exactly the shape
+--- `replaceRstarColorsWith` is entitled to replace with the item's own color. One
+--- of the two tokens is named and protected by the library and the other is not,
+--- and that asymmetry is the whole argument -- not a preference between blues.
+
 --- IS THE LIBRARY IN THIS LUA STATE?
 ---
 --- ═══ ASKED AT CALL TIME, EVERY TIME, AND NOT CACHED ═══
@@ -217,6 +271,28 @@ end
 --- @return string
 function BR.Menu.dimmed(text)
     return DIM_TOKEN .. tostring(text or '')
+end
+
+--- A RUN OF WORDS INSIDE A SENTENCE, IN GTA'S BLUE.
+---
+--- Owner, 2026-09-11, on both of the gun shop's descriptions: "The {guntypes}
+--- text should be blue, comma-separated, and everything else should remain white.
+--- This is because the list is exhaustive to read through and we should make it so
+--- they can skim, which is enabled by the colors." And on the weapon rows: "The
+--- {ammotype} should be the same blue as we use above, and the number should be
+--- blue as well."
+---
+--- IT CLOSES, WHICH priceGold AND dimmed DO NOT, and the reason is above
+--- BLUE_TOKEN: those two mark a whole right label and this marks a fragment with
+--- his own white words on either side of it. Without the reset, everything from
+--- the marked words to the end of the description turns blue with them.
+---
+--- THE CALLER STILL OWNS THE WORDS, exactly as with the other two marks. This
+--- adds two tokens and nothing else.
+--- @param text string|nil
+--- @return string
+function BR.Menu.blue(text)
+    return BLUE_TOKEN .. tostring(text or '') .. RESET_TOKEN
 end
 
 --- ONE HUD INDEX, AS AN SColor, WITHOUT LETTING THE LIBRARY'S ASSERT ESCAPE.
@@ -430,7 +506,7 @@ end
 ---   banner    NOTHING IS SET. See the block at the foot of this comment.
 ---   counter   GTA's gold, index 109 -- the same HUD_COLOUR_GOLD the price token
 ---             names. "3/30" in the subtitle strip.
----   subtitle  a HUD index (see SUBTITLE_HUD above).
+---   subtitle  GTA's blue, index 9 (see BLUE_HUD above).
 ---   position  the library's own default corner, untouched. Where a menu sits
 ---             is a per-menu decision and this file has no opinion.
 ---
@@ -520,7 +596,7 @@ function BR.Menu.new(title, subtitle, banner)
     -- `sprite` IS STILL READ, ONE LINE UP, and is deliberately not consulted
     -- here any more: there is no banner color to decide between art and a bar.
     if gold then pcall(menu.CounterColor, menu, gold) end
-    pcall(menu.SubtitleColor, menu, SUBTITLE_HUD)
+    pcall(menu.SubtitleColor, menu, BLUE_HUD)
     pcall(menu.MouseControlsEnabled, menu, false)
     -- THE CAMERA SWING, WHICH IS A SEPARATE FLAG AND ALSO ON BY DEFAULT. With it
     -- set, ProcessMouse rotates the gameplay camera when the pointer nears a
@@ -636,4 +712,70 @@ function BR.Menu.separator(text, mainColor)
 
     if mainColor then pcall(sep.MainColor, sep, mainColor) end
     return sep
+end
+
+--- A DESCRIPTION, SET WITHOUT TRAMPLING THE ONE THE PLAYER IS READING.
+---
+--- ═══ THERE IS ONE GXT KEY FOR THE WHOLE MENU ═══
+---
+--- ⚠ UIMenuItem:Description writes AddTextEntry("UIMenu_Current_Description",
+--- str) whenever the parent menu is VISIBLE, for whichever item it was called on.
+--- `UIMenu_Current_Description` is a SINGLE SHARED KEY, so describing a row that
+--- is not the highlighted one while the menu is up replaces the text under the
+--- highlighted row with this row's -- and it stays wrong until the player moves
+--- the cursor. BR.Menu.item's header has always named this trap and left it to the
+--- caller; this is the caller's half, written once.
+---
+--- IT IS NOT A CORNER AT THE GUN COUNTER. Every row's description is rebuilt
+--- whenever the stock or the balance moves, and a balance push is what arrives one
+--- frame after a purchase -- which is exactly when a description carrying a round
+--- count has to change, and exactly when the player is looking at it.
+---
+--- ═══ TWO GUARDS, IN THIS ORDER ═══
+---
+---   UNCHANGED TEXT IS NOT WRITTEN AT ALL. Most rows do not move on most passes,
+---   and a write that changes nothing still takes the key. This alone removes the
+---   whole hazard from every pass except the one that genuinely changed something.
+---
+---   AND AFTER A REAL WRITE, THE HIGHLIGHTED ROW RE-ASSERTS ITS OWN. Setting the
+---   current item's description to the string it already holds puts the right text
+---   back on the shared key, and UIMenu:UpdateDescription is the library's own call
+---   for making the movie re-read it. Both are public entry points; nothing here
+---   reaches into a vendored private field.
+---
+--- EVERY CALL IS pcall'd, for the reason the rest of this file gives: these are
+--- setters on a vendored object, and losing a description must cost a description
+--- rather than the keypress that was building it.
+---
+--- @param menu table|nil  the UIMenu the item belongs to, or nil while it is down
+--- @param item table|nil
+--- @param text string|nil
+function BR.Menu.describe(menu, item, text)
+    if type(item) ~= 'table' then return end
+    local want = tostring(text or '')
+
+    -- READ FIRST. `Description()` with no argument is the library's getter --
+    -- `if tostring(str) and str ~= nil` falls to the else arm -- so this asks
+    -- rather than writes.
+    local seen, had = pcall(item.Description, item)
+    if seen and tostring(had or '') == want then return end
+
+    pcall(item.Description, item, want)
+
+    -- ONLY WHEN THE MENU IS UP. With it down, Description never touched the
+    -- shared key and there is no highlighted row whose text could have been
+    -- replaced.
+    if type(menu) ~= 'table' then return end
+    local vis, up = pcall(menu.Visible, menu)
+    if not vis or up ~= true then return end
+
+    -- `cur ~= item` MATTERS. When the row we just wrote IS the highlighted one,
+    -- the key already holds the right text and re-asserting it would be a second
+    -- redraw for nothing.
+    local got, cur = pcall(menu.CurrentItem, menu)
+    if got and type(cur) == 'table' and cur ~= item then
+        local read, mine = pcall(cur.Description, cur)
+        if read then pcall(cur.Description, cur, tostring(mine or '')) end
+    end
+    pcall(menu.UpdateDescription, menu)
 end

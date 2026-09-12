@@ -943,6 +943,152 @@ local function ammoSources()
     return { BR.Config.Weapons, BR.Config.AirdropWeapons }
 end
 
+-- ---------------------------------------------------------------------------
+-- What a row says about itself, which is now about the player (#274)
+-- ---------------------------------------------------------------------------
+--
+-- Owner, 2026-09-11, both strings verbatim in config/gunshop.lua:
+--
+--   "we should prefix them with 'This ammo works with your: {guntypes} (new line)
+--    As well as: {otherguntypes}'"
+--   "The weapons should each have a description which reads: 'This weapon uses
+--    {ammotype}. You have {number} rounds for it.'"
+--
+-- ═══ EVERY HOLE IN BOTH SENTENCES IS A FACT ABOUT THE BAG, NOT THE SHELF ═══
+--
+-- `{guntypes}` is what the player is carrying, `{number}` is how many rounds they
+-- hold, and both move while the menu is open -- a purchase changes them one frame
+-- later. That is why the descriptions moved out of `buildMenu`, which runs once,
+-- into `refreshMenu`, which runs on every push. BR.Menu.describe is what makes a
+-- write safe while the menu is up; its header has the shared-GXT-key argument.
+--
+-- ⚠ HIS REASON FOR THE SPLIT IS WHY IT MUST NOT BE FLATTENED: "the list is
+-- exhaustive to read through and we should make it so they can skim, which is
+-- enabled by the colors." Two lists and one of them blue is the feature. One list
+-- with a sentence in front of it is what the row already said.
+
+--- WHAT THE PLAYER IS CARRYING, AS A SET OF ITEM IDS.
+---
+--- READ OFF THE CLIENT'S OWN MIRROR, which is the same source `ammoFull` reads and
+--- for the same reason: it is what this client was last told it has, and it decides
+--- what a row LOOKS LIKE rather than what the server will allow.
+---
+--- pairs() RATHER THAN ipairs, AND THAT IS NOT STYLE. An empty slot is `false` on
+--- the wire and in the mirror, not nil, so ipairs would walk past it -- but the
+--- mirror is rebuilt wholesale by `adopt` and a slot table with a hole in it is
+--- not a shape this file should depend on not existing. Order is irrelevant to a
+--- set, so there is nothing to lose by asking for every key.
+--- @return table { [itemId] = true }
+local function carriedIds()
+    local out = {}
+    local inv = BR.Inv and BR.Inv.local_ and BR.Inv.local_() or nil
+    local slots = type(inv) == 'table' and inv.slots or nil
+    if type(slots) ~= 'table' then return out end
+    for _, s in pairs(slots) do
+        if type(s) == 'table' and type(s.id) == 'string' then
+            out[s.id] = true
+        end
+    end
+    return out
+end
+
+--- HOW MANY ROUNDS OF ONE POOL THEY HOLD RIGHT NOW.
+---
+--- ⚠ AN UNKNOWN HOLDING IS REPORTED AS 0 HERE, AND `ammoFull` READS THE SAME
+--- ABSENCE THE OPPOSITE WAY. They are different questions. `ammoFull` asks "can I
+--- prove they are full", where a missing number must NOT lock a row. This asks
+--- "how many have they got", and a player whose mirror holds no entry for a pool
+--- has none of it -- the mirror starts `ammo = {}` and a match starts with an empty
+--- bag, so 0 is the true answer rather than a fallback.
+---
+--- THE WINDOW WHERE THAT COULD BE WRONG IS BEFORE THE FIRST INV_SET, which lands
+--- long before a player can walk to a counter and is re-sent on every pickup.
+--- @param pool string|nil
+--- @return integer
+local function poolHeld(pool)
+    if type(pool) ~= 'string' or pool == '' then return 0 end
+    local inv = BR.Inv and BR.Inv.local_ and BR.Inv.local_() or nil
+    local ammo = type(inv) == 'table' and inv.ammo or nil
+    local n = tonumber(type(ammo) == 'table' and ammo[pool] or nil)
+    if not n then return 0 end
+    if n < 0 then return 0 end
+    return math.floor(n)
+end
+
+--- WHICH POOL A ROW FEEDS ON, WHICHEVER KIND OF ROW IT IS.
+---
+--- AN AMMO ROW CARRIES ITS POOL AND A WEAPON ROW DOES NOT. The catalogue stamps
+--- `pool` on ammo rows only -- see BR.GunshopSolve.catalogue -- so a gun's pool is
+--- looked up in BR.Config.WeaponById, which is the table the ammo COUNT is read
+--- through everywhere else in the game (client/inventory.lua's own
+--- `inv.ammo[w.ammo]`). One source for "which pool is this gun on" rather than a
+--- second copy stamped onto the shop row.
+--- @param row table|nil
+--- @return string|nil
+local function rowPool(row)
+    if type(row) ~= 'table' then return nil end
+    if row.kind == BR.ItemKind.AMMO then
+        return type(row.pool) == 'string' and row.pool ~= '' and row.pool or nil
+    end
+    local by = BR.Config.WeaponById
+    local w  = type(by) == 'table' and by[row.id] or nil
+    local pool = type(w) == 'table' and w.ammo or nil
+    return type(pool) == 'string' and pool ~= '' and pool or nil
+end
+
+--- THE POOL'S OWN NAME, WHICH IS config/loot.lua's AND NOT A WORD FROM HERE.
+---
+--- `{ammotype}` is a slot in his sentence and BR.Config.AmmoPickups authors the
+--- word that goes in it -- "Light Ammo", "Shells" -- which is the same label the
+--- ammo ROW on this same shelf is titled with. So the description names the pool
+--- in exactly the words the row above it does, and neither is typed here.
+--- @param pool string|nil
+--- @return string|nil
+local function poolLabel(pool)
+    local p = BR.Config.AmmoPickups
+    local def = type(p) == 'table' and p[pool] or nil
+    local label = type(def) == 'table' and def.label or nil
+    return type(label) == 'string' and label ~= '' and label or nil
+end
+
+--- ONE ROW'S DESCRIPTION, COMPOSED OUT OF HIS TWO TEMPLATES.
+---
+--- THE MARKING HAPPENS HERE AND THE JOINING DOES NOT, which is the division the
+--- price already follows: BR.Menu.blue adds a GTA text token, br_lib puts the
+--- commas and the line break in, and config/gunshop.lua owns every word. A token
+--- in the config string would print as five characters on any surface that is not
+--- a scaleform, and a comma in br_core would be the one character of this feature
+--- that only a playtest could check.
+---
+--- ⚠ ONLY `{guntypes}` IS MARKED ON AN AMMO ROW. "The {guntypes} text should be
+--- blue ... and everything else should remain white" -- so `{otherguntypes}` goes
+--- in plain, and that asymmetry IS the skim he asked for. Marking both would be
+--- a tidier-looking line that does nothing.
+---
+--- BOTH HOLES ARE MARKED ON A WEAPON ROW, which is equally his: "The {ammotype}
+--- should be the same blue as we use above, and the number should be blue as well."
+--- @param row table
+--- @param held table  the carried-id set, built once per refresh pass
+--- @return string
+local function describeRow(row, held)
+    local pool = rowPool(row)
+    if not pool then return '' end
+
+    if row.kind == BR.ItemKind.AMMO then
+        local yours, others = BR.GunshopSolve.ammoUsersSplitLine(
+            pool, ammoSources(), held)
+        return BR.GunshopSolve.ammoDesc(G,
+            yours ~= '' and BR.Menu.blue(yours) or '', others)
+    end
+
+    local label = poolLabel(pool)
+    if not label then return '' end
+    -- READ AT THIS MOMENT, NEVER CACHED. `{number}` is "You have N rounds for it"
+    -- and it has to be the N they have while they are reading it.
+    return BR.GunshopSolve.weaponDesc(G, BR.Menu.blue(label),
+                                      BR.Menu.blue(tostring(poolHeld(pool))))
+end
+
 --- THE CATALOGUE, REGROUPED TOP-DOWN, WITH A HEADER OVER EACH GROUP.
 ---
 --- Owner, 2026-09-09: "re-categorize it top-down with the top being the most
@@ -1140,23 +1286,22 @@ local function buildMenu()
         for _, row in ipairs(grp.rows) do
             -- ═══ WHAT IS SET HERE IS WHAT NEVER CHANGES ═══
             --
-            -- The label, the panel color and the description are properties of
-            -- the CATALOGUE, which is config and does not move inside a
-            -- session. The price, the badge and the enabled flag are properties
-            -- of the COUNTER and the WALLET, and `refreshMenu` re-applies all
-            -- three on every open.
+            -- The label and the panel color are properties of the CATALOGUE,
+            -- which is config and does not move inside a session. The price, the
+            -- badge, the enabled flag and BOTH DESCRIPTIONS are properties of the
+            -- COUNTER, the WALLET and the BAG, and `refreshMenu` re-applies all
+            -- of them on every open and on every push.
             --
-            -- THE DESCRIPTION IS SET WITH THE MENU DOWN, WHICH MATTERS.
-            -- `UIMenu_Current_Description` is a single shared GXT key, so
-            -- writing a description on a row that is not the highlighted one
-            -- while the menu is up overwrites the text the player is reading.
-            -- Here nothing is visible yet, so there is nothing to trample.
+            -- ⚠ THE DESCRIPTION USED TO BE SET HERE AND CANNOT BE ANY MORE, which
+            -- is the structural half of the 2026-09-11 round. An ammo row's
+            -- description now names the guns the player is CARRYING and a weapon
+            -- row's names how many rounds they are HOLDING, and neither of those
+            -- is a fact about the catalogue: both move while the menu is open.
+            -- `refreshMenu` is the only place that can be right about them, and
+            -- BR.Menu.describe is what makes writing one while the menu is up safe.
             local item = BR.Menu.item(
                 BR.GunshopSolve.menuLabel(row), nil,
-                BR.Menu.rarityColor(row.rarity),
-                { description = (row.kind == BR.ItemKind.AMMO)
-                    and BR.GunshopSolve.ammoUsersLine(row.pool, ammoSources())
-                    or nil })
+                BR.Menu.rarityColor(row.rarity))
             if item then
                 items[row.id] = item
                 -- ═══ THE PRESS NAMES A ROW AND SAYS NOTHING ELSE ═══
@@ -1442,6 +1587,10 @@ local function refreshMenu(store)
     local gun  = BR.Menu.badge('GUN')
     local ammo = BR.Menu.badge('AMMO')
     local art  = iconDictsReady()
+    -- ONE INVENTORY READ FOR THE WHOLE PASS. Thirty rows asking the mirror what
+    -- is in the bag would be thirty answers that cannot differ, and this pass
+    -- already runs on every balance and stock push.
+    local held = carriedIds()
 
     for i = 1, #rows do
         local row  = rows[i]
@@ -1511,6 +1660,19 @@ local function refreshMenu(store)
             -- ONLY STOCK DISABLES. See the block above: the other two locked
             -- states have to stay pressable to be refused in words.
             pcall(item.Enabled, item, not out)
+
+            -- ═══ AND WHAT THE ROW SAYS ABOUT THE PLAYER'S OWN BAG ═══
+            --
+            -- LAST ON THE PASS, ON PURPOSE. BR.Menu.describe may re-assert the
+            -- highlighted row's text and ask the movie to re-read the shared GXT
+            -- key, so it is the one write here that can touch a row other than
+            -- this one. Doing it after the price, the badge and the shade means
+            -- the row it re-asserts has already had all three applied.
+            --
+            -- THE `menu` UPVALUE, NOT `built`. This runs both before the menu is
+            -- shown (from `openMenu`) and while it is up (from a stock or balance
+            -- push), and describe needs to know which -- see its header.
+            BR.Menu.describe(menu, item, describeRow(row, held))
         end
     end
 end

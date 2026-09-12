@@ -615,6 +615,50 @@ BR.Config.Gunshop = {
     boughtToast = 'You purchased %s for %s.',
 
     -- ------------------------------------------------------------------
+    -- WHAT A ROW SAYS ABOUT ITSELF IN THE STRIP UNDER THE LIST
+    -- ------------------------------------------------------------------
+    --
+    -- ⚠ ALL THREE ARE VERBATIM, INCLUDING THE COLON AND BOTH FULL STOPS. Owner,
+    -- 2026-09-11, in #274:
+    --
+    --   "The current ammo items have descriptions, but we should prefix them
+    --    with 'This ammo works with your: {guntypes} (new line) As well as:
+    --    {otherguntypes}'"
+    --
+    --   "The weapons should each have a description which reads: 'This weapon
+    --    uses {ammotype}. You have {number} rounds for it.'"
+    --
+    -- `%s` WHERE HE WROTE A BRACED NAME, which is this file's existing shape for
+    -- a template -- see `balanceToast` and `boughtToast` above. The braces are his
+    -- notation for a slot, not characters a player is meant to read.
+    --
+    -- ═══ WHAT IS DELIBERATELY NOT HERE ═══
+    --
+    -- THE LINE BREAK. "(new line)" separates two sentences rather than being part
+    -- of either, so BR.GunshopSolve.ammoDesc puts `~n~` between them -- the same
+    -- division that keeps the comma out of the weapon labels it joins.
+    --
+    -- THE COLOR MARK. "The {guntypes} text should be blue ... and everything else
+    -- should remain white", and on the weapon row "The {ammotype} should be the
+    -- same blue as we use above, and the number should be blue as well." Blue here
+    -- is a GTA text token, and client/menu.lua is the one file on this surface that
+    -- knows a token from a character -- exactly as it is for the gold price. A
+    -- `~HC_9~` written into these strings would print as those five characters
+    -- anywhere that is not a scaleform.
+    --
+    -- ⚠ AND THE EMPTY CASE IS NOT ANSWERED HERE BECAUSE HE HAS NOT ANSWERED IT.
+    -- A player carrying nothing that takes a pool leaves `{guntypes}` empty, which
+    -- is the ordinary state early in a match, and "This ammo works with your:"
+    -- followed by nothing is worse than no sentence. BR.GunshopSolve.ammoDesc drops
+    -- the lead-in and falls back to the plain exhaustive list the row has carried
+    -- since L5 -- something he has already seen rather than a sentence we wrote.
+    -- The alternative was inventing a third lead-in, which is the rule this whole
+    -- block exists under.
+    ammoDescYours  = 'This ammo works with your: %s',
+    ammoDescOthers = 'As well as: %s',
+    weaponDesc     = 'This weapon uses %s. You have %s rounds for it.',
+
+    -- ------------------------------------------------------------------
     -- WHAT IT COSTS
     -- ------------------------------------------------------------------
     --
