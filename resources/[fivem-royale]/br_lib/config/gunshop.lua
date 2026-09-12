@@ -930,72 +930,52 @@ BR.Config.Gunshop = {
     },
 
     -- ------------------------------------------------------------------
-    -- AMMO: ALL FIVE POOLS
+    -- AMMO: ALL SEVEN POOLS
     -- ------------------------------------------------------------------
     --
-    -- "ammo should be cheap (20-50 Volts)". All five of BR.Config.AmmoOrder are
-    -- sold, because all five are found in the wild -- the floor loot table is
+    -- "ammo should be cheap (20-50 Volts)". All seven of BR.Config.AmmoOrder are
+    -- sold, because all seven are found in the wild -- the floor loot table is
     -- 74% ammo by weight (config/loot.lua) and every pool is in it.
     --
-    -- ═══ THE PRICE ORDER IS SCARCITY, AND THE TWO SCARCITY NUMBERS AGREE ═══
+    -- ═══ PRICE IS SCARCITY, AND THE TOP OF HIS RANGE IS A BAND NOW ═══
     --
-    -- There are two independent measures of how freely a pool is meant to flow,
-    -- and they were both authored years apart by different decisions:
+    -- Two independent measures of how freely a pool flows: the GROUND PICKUP
+    -- (BR.Config.AmmoPickups[pool].amount) and the INVENTORY CAP
+    -- (BR.Config.AmmoCaps[pool]). They put smg, medium, light and shells in the
+    -- same descending order, and that is the order those four are priced in.
     --
-    --   the GROUND PICKUP    BR.Config.AmmoPickups[pool].amount -- how many
-    --                        rounds one piece of ammo on the floor is worth.
-    --   the INVENTORY CAP    BR.Config.AmmoCaps[pool] -- how much of it a player
-    --                        may hold at once.
+    -- THEY NO LONGER AGREE ABOUT THE LAST THREE, and this block used to claim all
+    -- five agreed. Since the 2026-09-11 split, sniper, lmg and heavy all pay 12 a
+    -- pickup -- so the pickup cannot separate them at all -- while the caps read
+    -- 60, 60 and 24. So the three SHARE a price at 50, the top of his range and
+    -- where heavy already sat, rather than being ranked on a number only one of
+    -- the two measures can see. tools/test_gunshop.lua checks the ordering across
+    -- DISTINCT prices and skips the ties, for exactly that reason.
     --
-    -- They put the five pools in EXACTLY THE SAME ORDER: smg, medium, light,
-    -- shells, heavy, from most freely available to least. Two numbers that were
-    -- not written to agree, agreeing, is a better axis than either one alone,
-    -- so that is the order the prices run in.
+    -- ═══ 12 ROUNDS A PURCHASE, AND IT IS STILL DERIVED RATHER THAN TYPED ═══
     --
-    -- THE GAPS ARE UNEVEN BECAUSE THE SCARCITY IS. Light, SMG and medium sit at
-    -- caps of 300-400 and pickups of 36-60; shells and heavy sit at caps of 120
-    -- and 60 and pickups of 16 and 12. That is a cliff, not a slope, and the
-    -- price steps at the same place rather than pretending the five pools are
-    -- evenly spaced.
+    -- Owner, 2026-09-11: "each loot pickup should be 12 rounds. Same for
+    -- purchasing - 12 rounds per purchase." `bundle` is nil on every row below and
+    -- BR.GunshopSolve reads BR.Config.AmmoPickups[pool].amount when it is, so his
+    -- answer is true for heavy without a second copy of the number living here --
+    -- and it stays true the day he moves the pickup.
     --
-    -- ═══ THE BUNDLE SIZE IS THE OWNER'S CALL AND HE HAS NOT MADE IT ═══
-    --
-    -- ─────────────────────────────────────────────────────────────────────
-    --  NEEDS HIS CONFIRMATION: HOW MUCH AMMO ONE PURCHASE BUYS.
-    -- ─────────────────────────────────────────────────────────────────────
-    --
-    -- THE DEFAULT IS ONE GROUND PICKUP'S WORTH, and it is authored as a RULE
-    -- rather than as five copied integers: `bundle` is nil on every row below,
-    -- and BR.GunshopSolve reads BR.Config.AmmoPickups[pool].amount when it is.
-    -- Writing the five numbers out here would be a second copy of a table that
-    -- already exists, which is the defect the header of this file is about.
-    --
-    -- WHY THAT DEFAULT. It is the rule at the top of this file made literal: a
-    -- purchase hands over EXACTLY the stack the player would have picked up off
-    -- the floor, so the counter is a convenience and demonstrably nothing more.
-    -- Any other number is a judgement about pacing that only the owner can make.
-    --
-    -- WHAT HE SHOULD JUDGE IT AGAINST -- both numbers are quoted per row below:
-    -- the pickup amount is how much a single find is worth, and the cap is how
-    -- many of these bundles it takes to fill the pool from empty. Heavy is the
-    -- one to look at first: at 12 a bundle and a cap of 60, filling a Heavy
-    -- Sniper from empty is five purchases and 250 Volts, which may well be more
-    -- transactions than he wants at a counter in the middle of a match.
-    --
-    -- `bundle` IS THE PER-POOL OVERRIDE. An integer on any row below pins that
-    -- pool and leaves the other four deriving. That is where his answer goes.
+    -- `bundle` IS STILL THE PER-POOL OVERRIDE. An integer on any row pins that
+    -- pool and leaves the rest deriving. Nothing needs one today.
     --
     -- KEYED BY BR.AmmoType, NOT BY THE STRING, exactly as BR.Config.AmmoPickups
-    -- and BR.Config.AmmoCaps are keyed. Five bare 'light'/'smg' literals here
-    -- would be the pool vocabulary written down a second time, in a file that
-    -- has no reason to know how it is spelled.
+    -- and BR.Config.AmmoCaps are keyed. Bare 'light'/'smg' literals here would be
+    -- the pool vocabulary written down a second time, in a file that has no
+    -- reason to know how it is spelled.
     ammo = {
         --  pool                       price      pickup   cap   bundles to fill
         [BR.AmmoType.SMG]    = { price = 20 },  --   60     400   6.7
         [BR.AmmoType.MEDIUM] = { price = 25 },  --   45     350   7.8
         [BR.AmmoType.LIGHT]  = { price = 30 },  --   36     300   8.3
         [BR.AmmoType.SHELLS] = { price = 40 },  --   16     120   7.5
-        [BR.AmmoType.HEAVY]  = { price = 50 },  --   12      60   5.0
+        [BR.AmmoType.SNIPER] = { price = 50 },  --   12      60   5.0
+        [BR.AmmoType.LMG]    = { price = 50 },  --   12      60   5.0
+        [BR.AmmoType.HEAVY]  = { price = 50 },  --   12      24   2.0
     },
 }
 

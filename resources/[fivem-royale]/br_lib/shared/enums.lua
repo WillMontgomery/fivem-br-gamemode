@@ -113,12 +113,29 @@ BR.ItemKind = {
 
 --- Ammo pools. Mapped onto GTA's native ammo groups so the engine tracks counts
 --- for us rather than us shadowing them.
+---
+--- SEVEN SINCE 2026-09-11, AND HEAVY IS THE EXPLOSIVE POOL. Owner: "move the
+--- minigun off heavy and move explosives to heavy". Offered three shapes he took
+--- the strictest -- heavy is the explosives and nothing else -- so the snipers
+--- and the belt-fed guns that used to share it have pools of their own. The
+--- layout cost of two new pools is real and was accepted on purpose; the block
+--- above BR.Config.AirdropWeapons has it.
+---
+--- THE BELT POOL IS 'lmg' AND MAY NEVER BE SHORTENED TO 'mg'. config/weapons.lua
+--- defines a weapon with `id = 'mg'`, and an ammo stack's `item` IS THE BARE POOL
+--- STRING (shared/loot_gen.lua, server/inventory.lua). A pool valued 'mg' would
+--- therefore put a box of rounds on the floor carrying WEAPON_MG's own id, and
+--- every dispatch that asks BR.Config.WeaponById before BR.Config.AmmoPickups --
+--- server/debug.lua's brgive, server/loot.lua -- would hand back a machine gun.
+--- tools/test_shared.lua pins that no pool value is an item id.
 BR.AmmoType = {
     LIGHT  = 'light',  -- pistols
     SMG    = 'smg',
     MEDIUM = 'medium', -- rifles
     SHELLS = 'shells', -- shotguns
-    HEAVY  = 'heavy',  -- snipers / LMG
+    HEAVY  = 'heavy',  -- explosives: RPG, grenade launcher, railgun
+    SNIPER = 'sniper', -- marksman and sniper rifles
+    LMG    = 'lmg',    -- machine guns, and the minigun
 }
 
 --- Match modes.

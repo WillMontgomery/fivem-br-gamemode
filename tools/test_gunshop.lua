@@ -218,8 +218,8 @@ do
             authored[#authored + 1] = 'AmmoPickups.' .. tostring(pool)
         end
     end
-    ok(#BR.Config.AmmoOrder == 5,
-        'all five ammo pools were actually looked at, rather than a loop that '
+    ok(#BR.Config.AmmoOrder == 7,
+        'all seven ammo pools were actually looked at, rather than a loop that '
             .. 'never ran agreeing with the claim',
         #BR.Config.AmmoOrder)
     ok(#authored == 0,
@@ -371,10 +371,10 @@ do
     ok(n[BR.Rarity.LEGENDARY] == 4, 'four legendary guns', n[BR.Rarity.LEGENDARY])
 
     local ammo = S.ofKind(rows, BR.ItemKind.AMMO)
-    ok(#ammo == #BR.Config.AmmoOrder and #ammo == 5,
-        'and all five ammo pools -- BR.Config.AmmoOrder, in its order', #ammo)
+    ok(#ammo == #BR.Config.AmmoOrder and #ammo == 7,
+        'and all seven ammo pools -- BR.Config.AmmoOrder, in its order', #ammo)
 
-    ok(#rows == 25 + 5, 'thirty rows in total', #rows)
+    ok(#rows == 25 + 7, 'thirty-two rows in total', #rows)
 
     -- ORDER IS THE SOURCE TABLES', so anything that renders this list gets a
     -- stable order without sorting it. Asserted by walking BR.Config.Weapons and
@@ -490,7 +490,7 @@ do
 end
 
 -- ---------------------------------------------------------------------------
-describe('ammo: cheap, all five pools, and one ground pickup per purchase')
+describe('ammo: cheap, all seven pools, and one ground pickup per purchase')
 -- ---------------------------------------------------------------------------
 --
 -- "ammo should be cheap (20-50 Volts)"
@@ -514,30 +514,48 @@ do
     ok(lo == 20 and hi == 50, 'and both ends of it are used',
         ('%d..%d'):format(lo, hi))
 
-    -- ═══ THE PRICE ORDER IS SCARCITY, AND BOTH SCARCITY NUMBERS AGREE ═══
+    -- ═══ THE PRICE ORDER IS SCARCITY, ACROSS DISTINCT PRICES ONLY ═══
     --
     -- config/gunshop.lua prices the pools by how freely the world gives them
     -- out, and claims the two independent measures of that -- the ground pickup
-    -- size and the inventory cap -- put the five pools in the same order. That
-    -- claim is checked here rather than trusted, because it is the only reason
-    -- the price order is defensible at all.
+    -- size and the inventory cap -- run the same way. That claim is checked here
+    -- rather than trusted, because it is the only reason the price order is
+    -- defensible at all.
+    --
+    -- ⚠ TIES ARE SKIPPED, AND THAT IS THE 2026-09-11 SPLIT SHOWING THROUGH. This
+    -- used to compare every adjacent pair and it could, because five pools had five
+    -- prices. Sniper, lmg and heavy now SHARE 50: all three pay 12 a pickup, so
+    -- the pickup cannot rank them, and their caps are 60, 60 and 24 -- so a
+    -- pairwise walk would fail on whichever order table.sort happened to leave the
+    -- tied three in, which is not a fact about the config at all. Comparing only
+    -- across DIFFERENT prices asserts what the config actually claims: each price
+    -- BAND is scarcer than the one below it.
     local sorted = {}
     for _, r in ipairs(ammo) do sorted[#sorted + 1] = r end
     table.sort(sorted, function(a, b) return a.price < b.price end)
 
-    local pickOk, capOk = true, true
+    local pickOk, capOk, compared = true, true, 0
     for k = 2, #sorted do
-        local a, b = sorted[k - 1].pool, sorted[k].pool
-        if BR.Config.AmmoPickups[a].amount < BR.Config.AmmoPickups[b].amount then
-            pickOk = false
+        local a, b = sorted[k - 1], sorted[k]
+        if a.price ~= b.price then
+            compared = compared + 1
+            if BR.Config.AmmoPickups[a.pool].amount
+               < BR.Config.AmmoPickups[b.pool].amount then
+                pickOk = false
+            end
+            if BR.Config.AmmoCaps[a.pool] < BR.Config.AmmoCaps[b.pool] then
+                capOk = false
+            end
         end
-        if BR.Config.AmmoCaps[a] < BR.Config.AmmoCaps[b] then capOk = false end
     end
     ok(pickOk,
-        'cheapest pool has the biggest ground pickup, dearest the smallest')
+        'a cheaper price band has the bigger ground pickup, a dearer one the '
+            .. 'smaller')
     ok(capOk,
-        'and the inventory caps put the five in the same order, which is what '
+        'and the inventory caps put the bands in the same order, which is what '
             .. 'makes the axis more than one number chosen to fit')
+    -- A loop that skipped everything would agree with both claims above.
+    ok(compared == 4, 'and four band boundaries were actually compared', compared)
 
     -- ═══ THE BUNDLE IS ONE GROUND PICKUP, DERIVED ═══
     --
@@ -1222,7 +1240,7 @@ do
     do
         local st = S.rollStock(G, shelf, fixed(1))
         local ammo = S.ofKind(shelf, BR.ItemKind.AMMO)
-        ok(#ammo == 5, 'all five ammo pools are on the shelf', #ammo)
+        ok(#ammo == 7, 'all seven ammo pools are on the shelf', #ammo)
         local counted = 0
         for _, r in ipairs(ammo) do
             if st[r.id] ~= nil then counted = counted + 1 end
@@ -1387,15 +1405,24 @@ do
     ok(#wrong == 0, 'and nothing that feeds on another pool is in it',
         table.concat(wrong, ', '))
 
-    -- THE AIRDROP FOUR ARE HEAVY, AND THE PLAYER CAN BE HOLDING ONE. They are
+    -- THE AIRDROP GUNS ARE LISTED, AND THE PLAYER CAN BE HOLDING ONE. They are
     -- not for sale at any counter -- that is the rule at the top of
     -- config/gunshop.lua -- but "which ammo does my Minigun take" is the
     -- question this description exists to answer.
-    local heavy = {}
+    --
+    -- THE MINIGUN LEFT HEAVY ON 2026-09-11 and is under MG now (owner: "move the
+    -- minigun off heavy and move explosives to heavy"), so the two halves of that
+    -- ruling are asserted separately. Reading the Minigun under Heavy is the exact
+    -- staleness this pair is here to catch.
+    local heavy, belt = {}, {}
     for _, l in ipairs(S.ammoUsers(BR.AmmoType.HEAVY, src)) do heavy[l] = true end
-    ok(heavy['Minigun'] == true and heavy['RPG'] == true,
-        'the airdrop weapons are listed under Heavy, because a player can be '
-            .. 'carrying one even though no counter sells it')
+    for _, l in ipairs(S.ammoUsers(BR.AmmoType.LMG, src)) do belt[l] = true end
+    ok(heavy['RPG'] == true and heavy['Grenade Launcher'] == true
+       and heavy['Railgun'] == true and heavy['Minigun'] == nil,
+        'Heavy lists the three launchers and NOT the minigun, because a player '
+            .. 'can be carrying one even though no counter sells it')
+    ok(belt['Minigun'] == true and belt['Combat MG'] == true,
+        '...and the minigun is under MG with the machine guns it belongs to')
 
     -- ORDER IS THE SOURCE TABLE'S, never pairs(). Everything in this feature
     -- that renders a list gets a stable order for free, and a description that
@@ -1493,7 +1520,7 @@ do
     local a = select(1, G.build())
     local b = select(1, G.build())
     ok(a == b, 'the client and the server share one catalogue table')
-    ok(#a == 30, 'and a second call does not double it', #a)
+    ok(#a == 32, 'and a second call does not double it', #a)
 end
 
 -- ---------------------------------------------------------------------------
@@ -3781,10 +3808,10 @@ do
         ok(#textured == 0,
             'no row on the shelf carries a streamed texture at all',
             #textured > 0 and table.concat(textured, ', ') or nil)
-        ok(enums == 25 + 5,
-            ('and all %d rows -- 25 guns and 5 ammo -- wear a built-in '
+        ok(enums == 25 + 7,
+            ('and all %d rows -- 25 guns and 7 ammo -- wear a built-in '
              .. 'BadgeStyle enum, which is the half that inverts')
-                :format(25 + 5),
+                :format(25 + 7),
             enums)
 
         -- ...AND THE STREAMER IS NEVER ASKED. `requestIconDicts` returns on the
@@ -4113,8 +4140,9 @@ do
         -- BR.Config.AirdropWeapons. This file rolled a private scan over the
         -- first of those alone, so every airdrop weapon was missing from every
         -- description -- two answers to one question with the shorter one
-        -- shipped. All four airdrop guns feed on HEAVY, which is the pool a
-        -- player who has just opened a crate is standing at the counter to buy.
+        -- shipped. Three of the four airdrop guns feed on HEAVY and the minigun
+        -- feeds on LMG since 2026-09-11, which is why the loop below derives the
+        -- expectation from each weapon's own `ammo` rather than assuming the pool.
         local heavy = rowItem('ammo_' .. BR.AmmoType.HEAVY)
         ok(heavy ~= nil and heavy._Description ~= nil
             and heavy._Description ~= '', 'the heavy row has a description')
@@ -4310,6 +4338,12 @@ do
         -- ⚠ NOTHING ELSE TAKES THE POOL. Carrying every gun that feeds on HEAVY
         -- empties `{otherguntypes}`, and "As well as:" with nothing after it is
         -- the same fault from the other end.
+        --
+        -- HEAVY IS THREE GUNS NOW, NOT TWELVE. It held the snipers and the
+        -- machine guns until 2026-09-11; since the owner's ruling it is the three
+        -- airdrop launchers and nothing else, so the count is pinned at 3 -- and
+        -- pinned deliberately, because "the whole pool is carried" is only an
+        -- interesting state if the number it is checked against is the real one.
         local allHeavy = S.ammoUsers(BR.AmmoType.HEAVY, ammoSrc)
         local heavyIds = {}
         for _, list in ipairs(ammoSrc) do
@@ -4317,17 +4351,20 @@ do
                 if w.ammo == BR.AmmoType.HEAVY then heavyIds[#heavyIds + 1] = w.id end
             end
         end
-        ok(#heavyIds == #allHeavy and #heavyIds == 12,
-            'twelve guns in the shipped tables take HEAVY, airdrops included',
+        ok(#heavyIds == #allHeavy and #heavyIds == 3,
+            'three guns in the shipped tables take HEAVY, and all three are '
+                .. 'airdrop-only',
             ('%d ids, %d labels'):format(#heavyIds, #allHeavy))
 
-        -- THE BAG HOLDS FIVE SLOTS AND THERE ARE TWELVE GUNS, so the sandbox
-        -- asks the solver directly for this one. The row itself cannot reach the
-        -- state, which is worth saying rather than faking a six-slot bag.
+        -- THE SANDBOX STILL ASKS THE SOLVER DIRECTLY rather than filling a bag.
+        -- Three launchers would now fit in five slots, unlike the twelve this was
+        -- written against -- but a bag stuffed with airdrop exclusives is not a
+        -- state a player reaches either, and the property under test belongs to
+        -- ammoUsersSplit rather than to the row plumbing.
         local hAll = {}
         for _, id in ipairs(heavyIds) do hAll[id] = true end
         local hMine, hRest = S.ammoUsersSplit(BR.AmmoType.HEAVY, ammoSrc, hAll)
-        ok(#hMine == 12 and #hRest == 0,
+        ok(#hMine == 3 and #hRest == 0,
             'with every one of them in hand the other half is empty',
             ('%d + %d'):format(#hMine, #hRest))
         local onlyHead = S.ammoDesc(G, BLUE .. table.concat(hMine, ', ') .. RESET,
@@ -4440,8 +4477,8 @@ do
                 guns = guns + 1
             end
         end
-        ok(guns == 25 and ammos == 5 and #silent == 0,
-            'all 25 weapon rows and all 5 ammo rows say something',
+        ok(guns == 25 and ammos == 7 and #silent == 0,
+            'all 25 weapon rows and all 7 ammo rows say something',
             #silent > 0 and ('silent: ' .. table.concat(silent, ', '))
                 or ('%d guns, %d ammo'):format(guns, ammos))
 

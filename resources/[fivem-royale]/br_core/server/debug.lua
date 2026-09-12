@@ -944,7 +944,11 @@ RegisterCommand('brgive', function(_, args)
     if not src or not item then
         print('  usage: brgive <serverId> <itemId> [count]')
         print('    itemId is a weapon/throwable id (carbinerifle), a consumable')
-        print('    id (medkit), or an ammo pool (light|smg|medium|shells|heavy)')
+        -- DERIVED, NOT TYPED. This line listed the five pools by hand and went
+        -- stale the moment there were seven of them; BR.Config.AmmoOrder is the
+        -- vocabulary and the only place it should be written down.
+        print(('    id (medkit), or an ammo pool (%s)')
+            :format(table.concat(BR.Config.AmmoOrder, '|')))
         print('    brweapons lists every id; brarm is the one for testing guns')
         return
     end

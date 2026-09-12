@@ -438,25 +438,103 @@ for _, c in ipairs(BR.Config.Consumables) do
 end
 
 --- Ammo pickups. Dropped alongside weapons so a found gun is usable.
+---
+--- `amount` IS ALSO WHAT ONE PURCHASE BUYS. config/gunshop.lua authors no
+--- `bundle` on any row, so BR.GunshopSolve reads this number -- which is what
+--- makes the owner's "each loot pickup should be 12 rounds. Same for purchasing -
+--- 12 rounds per purchase" (2026-09-11) one number rather than two.
+---
+--- SNIPER AND LMG CARRY HEAVY'S OWN 12 because they split off it on 2026-09-11
+--- and keep the amount they already had. The props are REUSED and deliberately
+--- not new: a model that is not already in BR.Config.AmmoPickups would have to be
+--- streamed, and these two pools were drawing prop_box_ammo03a yesterday.
 BR.Config.AmmoPickups = {
     [BR.AmmoType.LIGHT]  = { label = 'Light Ammo',  amount = 36, prop = 'prop_box_ammo01a' },
     [BR.AmmoType.SMG]    = { label = 'SMG Ammo',    amount = 60, prop = 'prop_box_ammo01a' },
     [BR.AmmoType.MEDIUM] = { label = 'Medium Ammo', amount = 45, prop = 'prop_box_ammo02a' },
     [BR.AmmoType.SHELLS] = { label = 'Shells',      amount = 16, prop = 'prop_box_ammo02a' },
     [BR.AmmoType.HEAVY]  = { label = 'Heavy Ammo',  amount = 12, prop = 'prop_box_ammo03a' },
+    [BR.AmmoType.SNIPER] = { label = 'Sniper Ammo', amount = 12, prop = 'prop_box_ammo03a' },
+    [BR.AmmoType.LMG]    = { label = 'MG Ammo',     amount = 12, prop = 'prop_box_ammo03a' },
 }
 
 --- The ammo pools in a FIXED order. AmmoPickups is keyed by pool name, and
 --- iterating a string-keyed table with pairs() is order-undefined -- rolling
 --- against it directly would make two servers with the same seed lay out
 --- different maps. Every ordered walk over ammo goes through this.
+--- SNIPER AND LMG ARE APPENDED rather than slotted in beside heavy, which is why
+--- heavy reads oddly in the middle. Nothing derives meaning from the position --
+--- the draw is weighted now, not indexed -- and appending keeps the shop shelf,
+--- the /brammo readout and the death-box spill in one order everybody can compare.
 BR.Config.AmmoOrder = {
     BR.AmmoType.LIGHT,
     BR.AmmoType.SMG,
     BR.AmmoType.MEDIUM,
     BR.AmmoType.SHELLS,
     BR.AmmoType.HEAVY,
+    BR.AmmoType.SNIPER,
+    BR.AmmoType.LMG,
 }
+
+--- How often a floor or crate ammo roll lands on each pool. Relative weights,
+--- written to sum to 100 so a row reads as a percentage -- the same convention
+--- BR.Config.RarityWeights uses.
+---
+--- ═══ THIS EXISTS BECAUSE THE DRAW USED TO BE UNIFORM ═══
+---
+--- BR.RollLootStack picked with `rng:pick(BR.Config.AmmoOrder)`, which is uniform:
+--- five pools, 20% each. The 2026-09-11 split to seven would have taken every pool
+--- to 14.3% -- measured, not estimated -- making pistol, SMG, rifle and shotgun
+--- ammo 29% rarer on the floor as a pure side effect of a change about explosives.
+--- The owner asked for the explosives and said nothing about the other four, so
+--- these numbers hold those four exactly where they already were.
+---
+--- ⚠ THE SPLIT OF HEAVY'S OLD 20 IS AN ASSUMPTION AND NOT HIS NUMBER: sniper 8,
+--- lmg 8, heavy 4. The reasoning is that explosive ammo should be the rarest of
+--- the seven because the only three weapons that take it are airdrop-exclusive
+--- (BR.Config.AirdropWeapons), so most players can never spend it. THIS IS THE
+--- KNOB TO TURN if the floor feels wrong, and it is his to turn.
+---
+--- A POOL IN AmmoOrder WITH NO WEIGHT HERE IS NEVER ROLLED, and the deck built
+--- below says so on the console rather than letting it vanish.
+BR.Config.AmmoWeights = {
+    [BR.AmmoType.LIGHT]  = 20,
+    [BR.AmmoType.SMG]    = 20,
+    [BR.AmmoType.MEDIUM] = 20,
+    [BR.AmmoType.SHELLS] = 20,
+    [BR.AmmoType.HEAVY]  =  4,
+    [BR.AmmoType.SNIPER] =  8,
+    [BR.AmmoType.LMG]    =  8,
+}
+
+--- The deck BR.Config.RollAmmoPool draws from, built ONCE at load.
+---
+--- BUILT BY WALKING BR.Config.AmmoOrder AND LOOKING EACH WEIGHT UP, never by
+--- iterating BR.Config.AmmoWeights. That table is string-keyed, pairs() order is
+--- undefined, and a layout that depended on it would differ between two servers
+--- running the same seed -- the rule at the top of shared/loot_gen.lua, applied to
+--- one more table. BR.Config.RollRarity has to SORT for want of an authored order;
+--- this one has one to hand.
+---
+--- BUILDING IT ONCE IS ALSO WHY THE COMPLAINT IS SAID ONCE. Loose ground loot is
+--- 74% ammo, so a layout makes roughly fourteen hundred of these draws; a missing
+--- weight reported per roll would be a console flood rather than a report.
+BR.Config.AmmoWeightDeck = {}
+for _, pool in ipairs(BR.Config.AmmoOrder) do
+    local w = BR.Config.AmmoWeights[pool]
+    if type(w) == 'number' and w > 0 then
+        BR.Config.AmmoWeightDeck[#BR.Config.AmmoWeightDeck + 1] =
+            { pool = pool, weight = w }
+    else
+        -- SAID OUT LOUD, the way config/gunshop.lua reports a row it threw out of
+        -- the catalogue. A pool that is rollable by membership and unrollable by
+        -- weight is ammunition nothing on the map can ever pay out, and that is
+        -- invisible from a chair.
+        print(('^3[br_lib] loot: ammo pool "%s" is in BR.Config.AmmoOrder with no '
+               .. 'weight in BR.Config.AmmoWeights -- nothing will ever roll it^7')
+            :format(tostring(pool)))
+    end
+end
 
 --- Rarity weighting per POI tier. Higher tiers are contested by design, so they
 --- pay out better -- that is the whole reason players fight over them.
@@ -1229,6 +1307,23 @@ end
 function BR.Config.RollKind(rng, weights)
     local pick = rng:weighted(weights or BR.Config.KindWeights)
     return pick and pick.kind or BR.ItemKind.WEAPON
+end
+
+--- Roll which ammo pool one stack is.
+---
+--- ONE rng DRAW, exactly as the `rng:pick(BR.Config.AmmoOrder)` it replaced --
+--- Rng:weighted spends a single float() and Rng:pick spent a single int(). So the
+--- number of draws a loot roll costs is unchanged and only the ANSWER moved,
+--- which is the property that keeps every OTHER subsystem's stream where it was.
+---
+--- THE DECK IS PREBUILT IN BR.Config.AmmoOrder'S ORDER (see AmmoWeightDeck) and
+--- this never touches the string-keyed weight table, which is the whole of how a
+--- weighted ammo draw stays reproducible from a seed.
+--- @param rng table  a BR.Rng instance
+--- @return string pool
+function BR.Config.RollAmmoPool(rng)
+    local pick = rng:weighted(BR.Config.AmmoWeightDeck)
+    return pick and pick.pool or BR.Config.AmmoOrder[1]
 end
 
 --- Total planned item count across every POI, for sanity-checking budgets.
