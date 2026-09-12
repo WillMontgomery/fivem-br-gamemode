@@ -905,6 +905,36 @@ local function adopt(d)
             PlaySoundFrontend(-1, L.pickupSound.name, L.pickupSound.set, true)
         end
     end
+
+    -- ═══ AND THE MIRROR HAS SETTLED, WHICH IS A THING OTHER SURFACES NEED TO
+    --     BE TOLD (#274) ═══
+    --
+    -- Owner, 2026-09-12, at the gun shop counter: "When I buy a weapon, can we
+    -- update the description of the ammo while the menu is still open? Reason
+    -- being I have no ammo for the weapon and want to easily find which ammo I
+    -- need by the blue colored text, but there isn't any until I close and
+    -- reopen the menu."
+    --
+    -- THE SHOP'S ROWS DESCRIBE THE BAG, so every one of them is stale the
+    -- instant this function rewrites it -- and the shop cannot ask, because a
+    -- menu is not a loop and nothing was telling it. `br:inv:slotChanged` above
+    -- is the wrong seam for that: it fires on an ACTIVE SLOT edge, and buying a
+    -- rifle into slot 3 while holding slot 1 moves the bag without moving the
+    -- hand.
+    --
+    -- LAST IN THE FUNCTION, DELIBERATELY. Every listener wants the mirror AFTER
+    -- this push, never during it: `inv.slots`, `inv.ammo` and `inv.active` are
+    -- all written above, `pushUi` has gone out, and the magazine has been put
+    -- back on top. A listener fired any earlier would be reading a bag that is
+    -- half this INV_SET and half the last one.
+    --
+    -- AND IT IS THE SAME CLIENT-LOCAL SEAM `br:inv:slotChanged`,
+    -- `br:loot:opened` and `br:markers:placed` already use -- a plain
+    -- TriggerEvent that nothing outside br_core hears. No payload: a listener
+    -- that was handed the bag would be holding a second copy of it free to
+    -- disagree with BR.Inv.local_(), which is the one mirror this file exists to
+    -- keep. It carries "ask again", not an answer.
+    TriggerEvent('br:inv:changed')
 end
 
 RegisterNetEvent(BR.Net.INV_SET)

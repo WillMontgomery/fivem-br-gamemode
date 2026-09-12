@@ -4573,6 +4573,126 @@ do
     end
 
     -- -----------------------------------------------------------------------
+    describe('the shelf repaints when the bag lands, not when the money moves')
+    -- -----------------------------------------------------------------------
+    do
+        -- ═══════════════════════════════════════════════════════════════════
+        -- Owner, 2026-09-12: "When I buy a weapon, can we update the description
+        -- of the ammo while the menu is still open? Reason being I have no ammo
+        -- for the weapon and want to easily find which ammo I need by the blue
+        -- colored text, but there isn't any until I close and reopen the menu."
+        -- ═══════════════════════════════════════════════════════════════════
+        --
+        -- ⚠ THE ASSERTIONS BELOW DRIVE `br:inv:changed` AND NOTHING ELSE, which
+        -- is the entire point. Every other refresh path in this file fires
+        -- MARKET_STATE, and MARKET_STATE lands when the player PAYS -- ahead of
+        -- the goods by `handoverMs`, because server/gunshop.lua schedules
+        -- deliver() for the end of the clerk's presentation. A test that pushed a
+        -- balance would pass against a build that repainted at purchase time,
+        -- which is the stale description the owner reported arriving sooner.
+        local BLUE, RESET = '~HC_9~', '~s~'
+
+        ok(type(handlers['br:inv:changed']) == 'function',
+            'client/gunshop.lua listens for the bag landing at all',
+            type(handlers['br:inv:changed']))
+
+        -- AND THE OTHER HALF OF THE SEAM IS PINNED TO THE FILE THAT FIRES IT.
+        -- Two files agreeing on a bare string is the failure this project has
+        -- already paid for: a rename on one side is silence on the other, with
+        -- nothing to say so. Read rather than loaded, because client/inventory.lua
+        -- registers loop bands and keypress listeners at load.
+        local invSrc = readFile(ROOT .. 'br_core/client/inventory.lua')
+        ok(invSrc:find("TriggerEvent('br:inv:changed')", 1, true) ~= nil,
+            '...and client/inventory.lua is the file that fires it, by that '
+                .. 'exact name',
+            'no TriggerEvent for br:inv:changed in client/inventory.lua')
+
+        -- ...AND IT FIRES FROM `adopt`, AFTER THE MIRROR IS WRITTEN. The one
+        -- ordering that matters: the listener reads BR.Inv.local_(), so an event
+        -- raised before the slots were replaced would hand the shop the previous
+        -- bag. `pushUi()` is the last thing `adopt` does to the mirror, so the
+        -- trigger has to come after it.
+        local atPush    = invSrc:find('pushUi()', 1, true)
+        local atTrigger = invSrc:find("TriggerEvent('br:inv:changed')", 1, true)
+        ok(atPush ~= nil and atTrigger ~= nil and atTrigger > atPush,
+            '...from the bottom of `adopt`, after the mirror has been rewritten',
+            ('pushUi at %s, trigger at %s'):format(tostring(atPush),
+                                                   tostring(atTrigger)))
+
+        -- ═══ THE REPORTED SEQUENCE, PLAYED OUT ═══
+        --
+        -- 1. He is carrying nothing, so the Light row takes his third lead-in
+        --    over the exhaustive list -- no carried half, no blue.
+        carry()
+        invAmmo[BR.AmmoType.MEDIUM] = nil
+        handlers[BR.Net.MARKET_STATE]({ balance = 999999 })
+        local before = rowItem('ammo_' .. BR.AmmoType.LIGHT)
+        ok(before ~= nil
+           and before._Description:find('works with your', 1, true) == nil,
+            'with an empty bag the Light row has no carried half to colour',
+            before and before._Description or 'none')
+
+        -- 2. THE PURCHASE LANDS. The bag gains a gun that eats Light, and the
+        --    ONLY thing that happens is the inventory event -- no balance push,
+        --    no stock push, no reopen.
+        carry('heavypistol')
+        handlers['br:inv:changed']()
+
+        local after = rowItem('ammo_' .. BR.AmmoType.LIGHT)
+        local pistolLabel = BR.Config.WeaponById['heavypistol'].label
+        ok(after ~= nil
+           and after._Description:find(BLUE .. pistolLabel .. RESET, 1, true)
+               ~= nil,
+            'and the moment the gun is really in the bag the Light row names it '
+                .. 'in blue -- with the menu still open and nothing else pushed',
+            after and after._Description or 'none')
+        ok(after ~= nil
+           and after._Description:sub(1, #G.ammoDescYours - 2)
+               == G.ammoDescYours:sub(1, #G.ammoDescYours - 2),
+            '...under his "works with your" lead-in rather than the empty-bag '
+                .. 'one',
+            after and after._Description or 'none')
+
+        -- 3. AND THE WEAPON ROWS MOVE ON THE SAME SEAM, which is the same defect
+        --    from the other end: "You have N rounds for it" is read off
+        --    `inv.ammo`, and a box of ammo bought at this counter also arrives
+        --    with the delivery rather than with the charge.
+        local pool  = BR.Config.WeaponById['carbinerifle'].ammo
+        local label = BR.Config.AmmoPickups[pool].label
+        invAmmo[pool] = 45
+        handlers['br:inv:changed']()
+        local gun = rowItem('carbinerifle')
+        ok(gun ~= nil and gun._Description
+            == G.weaponDesc:format(BLUE .. label .. RESET,
+                                   BLUE .. '45' .. RESET),
+            'a box of Medium landing repaints the rifle row from 0 to 45 with '
+                .. 'the menu open',
+            gun and gun._Description or 'none')
+
+        -- 4. A BAG THAT LANDS WITH THE MENU DOWN COSTS NOTHING AND TOUCHES
+        --    NOTHING. INV_SET fires on every pickup for the whole match and the
+        --    shop is shut for almost all of it, so this handler has to be a
+        --    boolean and a return -- not thirty rows of scaleform writes per
+        --    pickup.
+        walkAway()
+        local quiet = rowItem('carbinerifle')
+        local held  = quiet and quiet._Description
+        invAmmo[pool] = 999
+        handlers['br:inv:changed']()
+        ok(quiet ~= nil and quiet._Description == held,
+            'and an inventory push with the menu closed repaints nothing',
+            quiet and quiet._Description or 'none')
+
+        -- PUT BACK for the blocks below: the counter reopened, an empty bag, and
+        -- no rounds anywhere.
+        invAmmo[pool] = nil
+        carry()
+        standAt('pillbox')
+        press()
+        handlers[BR.Net.MARKET_STATE]({ balance = 999999 })
+    end
+
+    -- -----------------------------------------------------------------------
     describe('P1: the clerk speaks when the menu opens')
     -- -----------------------------------------------------------------------
     ok(#speech >= 1, 'something was said', #speech)

@@ -2418,6 +2418,53 @@ AddEventHandler(BR.Net.MARKET_STATE, function(d)
     if menuOpen then refreshMenu(menuStore) end
 end)
 
+--- THE BAG MOVED, SO EVERY ROW ON THIS SHELF IS NOW WRONG ABOUT IT.
+---
+--- Owner, 2026-09-12: "When I buy a weapon, can we update the description of the
+--- ammo while the menu is still open? Reason being I have no ammo for the weapon
+--- and want to easily find which ammo I need by the blue colored text, but there
+--- isn't any until I close and reopen the menu."
+---
+--- ═══ THE REFRESH ALREADY EXISTED. WHAT WAS MISSING WAS ANYTHING TELLING IT ═══
+---
+--- `refreshMenu` re-applies both descriptions on every open and on every stock
+--- and balance push, and the block above `describeRow` says in as many words
+--- that it is the only place that can be right about them. So this is not a
+--- second description path -- it is the third caller of the one that exists.
+---
+--- ⚠ AND IT HANGS OFF THE INVENTORY, NOT OFF THE PURCHASE, WHICH IS THE WHOLE
+--- CORRECTNESS ARGUMENT. GUNSHOP_BOUGHT lands FIRST and the weapon arrives
+--- `handoverMs` later -- server/gunshop.lua fires the event and schedules
+--- deliver() for the end of the clerk's presentation, deliberately, so the
+--- player is armed at the moment the gun leaves the clerk's hand. Refreshing on
+--- GUNSHOP_BOUGHT would therefore repaint about a second and a half BEFORE the
+--- rifle is in the bag: every ammo row would still name the old loadout, and the
+--- owner would have watched the same stale description he reported, arriving
+--- slightly sooner.
+---
+--- THE SAME TRAP CATCHES MARKET_STATE, which is why that handler above is not
+--- enough on its own. The balance moves when he PAYS -- one push, at purchase
+--- time, ahead of the goods.
+---
+--- `br:inv:changed` IS CLIENT-LOCAL AND FIRES LAST IN client/inventory.lua's
+--- `adopt`, after the mirror BR.Inv.local_() hands out has been rewritten
+--- wholesale. So this runs exactly once per INV_SET, on a bag that is the one
+--- the server just sent.
+---
+--- IT CARRIES NOTHING AND ASKS FOR NOTHING. `describeRow` reads the mirror
+--- itself, the way it already does on every other pass; a payload here would be
+--- a second copy of the bag free to disagree with it.
+---
+--- AMMO PURCHASES GET IT TOO, AND THAT IS THE SAME DEFECT FROM THE OTHER END.
+--- "You have %s rounds for it" is read off `inv.ammo`, which also lands with the
+--- delivery rather than with the charge -- so a box of Medium bought at this
+--- counter left every rifle row quoting the old count until the menu was closed.
+--- One seam fixes both because there was only ever one thing wrong: nothing was
+--- watching the bag.
+AddEventHandler('br:inv:changed', function()
+    if menuOpen then refreshMenu(menuStore) end
+end)
+
 -- ---------------------------------------------------------------------------
 -- The dev command
 -- ---------------------------------------------------------------------------
