@@ -239,7 +239,9 @@ BR.Config.Shop = {
     -- rule is enforced or broken. The list was checked against it and five rows
     -- were put to the owner by name:
     --
-    --     voltic2     has a rocket boost
+    --     voltic2     had a rocket boost -- AND IS NO LONGER ON THE SHELF. He
+    --                 swapped the row to the plain `voltic` on 2026-09-11, which
+    --                 retires this one of the five outright.
     --     riot        is armoured
     --     mesa3       is armoured
     --     marshall    drives over other cars
@@ -421,7 +423,8 @@ BR.Config.Shop = {
     --
     --     formula2   is "Ocelot R88" and NOT "Formula 2" -- and the pairing is
     --                inverted from the guess: `formula` is the Progen PR4.
-    --     voltic2    is "Rocket Voltic", not "Voltic".
+    --     voltic     is "Voltic"; `voltic2` is the "Rocket Voltic". The shop sold
+    --                `voltic2` until 2026-09-11, when he asked for the plain one.
     --     caracara2  is "Caracara 4x4"; plain `caracara` is "Caracara".
     --     veto       is "Veto Classic"; `veto2` is "Veto Modern".
     --     riot       is "Police Riot"; `riot2` is a different vehicle, the RCV.
@@ -545,7 +548,16 @@ BR.Config.Shop = {
             },
         },
         {
-            id = 'voltic2', model = 'voltic2', label = 'Coil Rocket Voltic',
+            -- ═══ THE PLAIN VOLTIC, NOT THE ROCKET ONE (owner, 2026-09-11) ═══
+            --
+            -- "Also please change the voltic2 to voltic in the warmup shop". So
+            -- the model is `voltic` and the name is Rockstar's for THAT model --
+            -- "Coil Voltic" out of the same dump every other row is read from.
+            --
+            -- THE COORDS AND HEADING ARE UNTOUCHED, and that is his instruction
+            -- rather than tidiness: "No those coords are very specifically placed.
+            -- Don't change them." The pad is the pad; only the car on it changed.
+            id = 'voltic', model = 'voltic', label = 'Coil Voltic',
             price = 1500,
             x = 4495.90, y = -4468.74, z = 3.78, heading = 201.9,
             appearance = {  -- his note: Preset Color 1

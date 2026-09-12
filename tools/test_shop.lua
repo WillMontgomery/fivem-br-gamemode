@@ -189,7 +189,12 @@ local SURVEY = {
     { 'nightshade', 4481.98, -4474.05, 3.63, 201.4, 1 },
     { 'infernus',   4485.30, -4472.56, 3.73, 200.8, 7 },
     { 'drifttampa', 4492.41, -4470.39, 3.59, 199.8, 1 },
-    { 'voltic2',    4495.90, -4468.74, 3.78, 201.9, 1 },
+    -- THE PAD IS HIS SURVEY'S, THE CAR ON IT IS NOT ANY MORE. Owner, 2026-09-11:
+    -- "Also please change the voltic2 to voltic in the warmup shop", and of these
+    -- numbers: "No those coords are very specifically placed. Don't change them."
+    -- So the model moved and the five figures beside it are still the ones he
+    -- measured -- which is the whole thing this row is double entry for.
+    { 'voltic',     4495.90, -4468.74, 3.78, 201.9, 1 },
     { 'formula2',   4499.17, -4467.59, 3.46, 201.0, 1 },
     -- "Livery 5" on his note, which is row five and therefore index four.
     { 'ambulance',  4503.87, -4468.23, 3.89, 198.4, 1, 4 },
@@ -205,7 +210,7 @@ local SURVEY = {
 local PRICES = {
     veto = 250, sanchez = 350, outlaw = 500, ambulance = 500,
     nightshade = 600, drifttampa = 600, mesa3 = 750, caracara2 = 750,
-    infernus = 900, riot = 1250, marshall = 1250, voltic2 = 1500,
+    infernus = 900, riot = 1250, marshall = 1250, voltic = 1500,
     formula2 = 1500,
 }
 
@@ -949,7 +954,7 @@ local NAMES = {
     nightshade = 'Imponte Nightshade',
     infernus   = 'Pegassi Infernus',
     drifttampa = 'Declasse Drift Tampa',
-    voltic2    = 'Coil Rocket Voltic',   -- NOT "Voltic"; that is `voltic`
+    voltic     = 'Coil Voltic',          -- `voltic2` is the "Rocket Voltic"
     formula2   = 'Ocelot R88',           -- NOT "Formula 2"; `formula` is the PR4
     ambulance  = 'Ambulance',            -- no manufacturer in the game files
     riot       = 'Police Riot',          -- NOT "Riot"; `riot2` is the RCV
@@ -985,6 +990,19 @@ do
     ok(#bare == 0,
         'no plate falls back to the spawn code -- every row carries a label',
         table.concat(bare, ', '))
+
+    -- ═══ AND THE ROCKET VOLTIC IS OFF THE SHELF ALTOGETHER ═══
+    --
+    -- Owner, 2026-09-11: "Also please change the voltic2 to voltic in the warmup
+    -- shop". The two models are one character apart and the shipped row was the
+    -- WRONG ONE of the pair for eleven days, so this asserts the absence as well
+    -- as the presence -- a half-applied edit that left both would pass every
+    -- name assertion above.
+    ok(BR.ShopSolve.rowById(rows, 'voltic') ~= nil,
+        'the plain Voltic is on the pad')
+    ok(BR.ShopSolve.rowById(rows, 'voltic2') == nil,
+        '...and the Rocket Voltic is not on the shelf at all any more, which is '
+            .. 'the one rocket-boosted car the catalogue ever carried')
 
     -- THE ITEM IN THE INVENTORY IS NAMED THE SAME WAY, so the car in the bag
     -- and the car on the pad are one thing to a player rather than two.
