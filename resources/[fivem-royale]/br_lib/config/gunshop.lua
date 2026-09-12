@@ -353,9 +353,27 @@ BR.Config.Gunshop = {
     --- forfeits a purchase whose buyer stopped being alive in a live match, and
     --- this widens that window by exactly this many milliseconds. Against a
     --- DynamoDB write of up to six seconds, which is what the gate was written
-    --- for, 1.4 seconds is a small addition -- but it is an addition, and the
+    --- for, 2 seconds is a small addition -- but it is an addition, and the
     --- day this is raised to something theatrical it is the thing to weigh.
-    handoverMs = 1400,
+    ---
+    --- ═══ 1400 -> 2000 ON 2026-09-12, AND IT IS PART OF THE EMOTE FIX ═══
+    ---
+    --- Owner: "The clerk's handover emote still isn't right. I want him to
+    --- present it to me."
+    ---
+    --- `mp_common@givetake1_a` IS ABOUT 27.5 SECONDS LONG and the task is cut off
+    --- at this number, so this value is not "how long he pauses" -- it is HOW FAR
+    --- INTO THE GESTURE HE GETS. At 1400ms the arm was still on its way up. Both
+    --- independently shipped uses of this exact clip run it at 2000ms
+    --- (andristum/dpemotes' `give` emote, and the Cfx forum's TaskPlayAnim call),
+    --- and client/gunshop.lua's GIVE_FLAG now holds the pose it reaches rather
+    --- than blending back out of it.
+    ---
+    --- THIS IS THE DIAL IF THE BEAT IS WRONG IN EITHER DIRECTION, and it is one
+    --- number because both machines read it: raising it lengthens the offer AND
+    --- delays the weapon landing by the same amount, which is what keeps P2 step
+    --- 4 true.
+    handoverMs = 2000,
 
     --- HOW LONG A CLERK MODEL MAY TAKE TO STREAM BEFORE THE COUNTER GIVES UP.
     ---

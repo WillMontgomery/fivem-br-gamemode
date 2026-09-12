@@ -2207,24 +2207,73 @@ local HAND = { x = 0.09, y = 0.02, z = -0.02, rx = -80.0, ry = 100.0, rz = 0.0 }
 --- silently.
 local BONE_R_HAND = 57005
 
---- Rockstar's own gun store clerk animation dictionary, and the give gesture.
+--- THE GIVE GESTURE, AND IT IS THE ONE THE BASE GAME HAS.
 ---
---- Both are confirmed present in the game's animation dictionary listing.
---- random@shop_gunstore carries _greeting, _positive_a, _positive_b,
---- _positive_goodbye, _negative_goodbye and three idles -- THE LEADING
---- UNDERSCORE IS PART OF THE CLIP NAME. mp_common carries givetake1_a and
---- givetake1_b, the giver-and-receiver pair every emote pack ships as "Give".
+--- ═══ RE-VERIFIED ON 2026-09-12 RATHER THAN REPLACED ═══
 ---
---- WHAT I CANNOT PROVE FROM OUTSIDE THE GAME is that either clip is in place
---- rather than carrying root motion. The clerk is FreezeEntityPosition'd, which
---- normally suppresses that, and AF_UPPERBODY below is the cheap insurance --
---- but whether he stays behind his counter is a one-round playtest question.
+--- The owner reported this emote wrong twice, so the honest first move was to
+--- check whether the pair is real before guessing a third one. It is, in three
+--- independent places:
+---
+---   DurtyFree/gta-v-data-dumps `animDictsCompact.json` and alexguirre's
+---   animations-list both list `mp_common` with EXACTLY FOUR clips --
+---   givetake1_a, givetake1_b, givetake2_a, givetake2_b -- and nothing else;
+---
+---   andristum/dpemotes ships `["give"] = {"mp_common", "givetake1_a", "Give",
+---   "give2", ...}` with `["give2"]` as givetake1_b, which is the pair used as a
+---   pair by a script thousands of servers run.
+---
+--- A SWEEP OF ALL 269,414 CLIP NAMES IN THE GAME FOUND 25 THAT MENTION GIVING,
+--- HANDING OVER, OFFERING OR PRESENTING AT ALL, and not one of them is a
+--- standalone "hold an item out toward a person" clip. The alternatives are a
+--- 27-second convenience-store scene (mp_am_hold_up@purchase_chocbar_shopkeeper,
+--- full body, authored to a store layout) and a multi-actor heist cutscene
+--- (anim@heists@biolab@ig_1_karen_codes@handover_karen, which needs a synced
+--- scene and has a camera clip). Neither is a drop-in for a frozen ped behind a
+--- counter. THIS IS THE CLIP; what was wrong was how it was played -- see
+--- GIVE_FLAG.
+---
+--- ⚠ TWO THINGS ARE STILL NOT PROVEN FROM OUTSIDE THE GAME, AND BOTH ARE ONE
+--- PLAYTEST ROUND:
+---
+---   WHICH HALF OF THE PAIR IS THE GIVER. No source anywhere says whether `_a` is
+---   the one offering or the one receiving -- dpemotes labels them "Give" and
+---   "Give 2" and leaves it there. If the clerk still reads as taking rather than
+---   offering after this change, `givetake1_b` is the one line to try, and that
+---   is a swap rather than a search.
+---
+---   WHETHER THE CLIP CARRIES ROOT MOTION. The clerk is FreezeEntityPosition'd,
+---   which normally suppresses it, and AF_UPPERBODY is the cheap insurance.
 local GIVE_DICT, GIVE_CLIP = 'mp_common', 'givetake1_a'
 
---- AF_UPPERBODY (16) + AF_SECONDARY (32). Upper body only, so a counter clerk
---- cannot step out of position, and secondary so it layers rather than
---- replacing whatever pose he is in.
-local GIVE_FLAG = 48
+--- AF_HOLD_LAST_FRAME (2) + AF_UPPERBODY (16) + AF_SECONDARY (32).
+---
+--- ═══ THE 2 IS THE 2026-09-12 FIX, AND THE OTHER TWO ARE UNCHANGED ═══
+---
+--- Owner, of the shipped version: "The clerk's handover emote still isn't right.
+--- I want him to present it to me."
+---
+--- WHAT WAS WRONG WAS NOT THE CLIP, WHICH IS WHY GUESSING A NEW ONE WOULD HAVE
+--- BEEN THE THIRD WRONG ANSWER. `mp_common@givetake1_a` really is the give
+--- gesture (see the block above for where that is now verified). What it is NOT
+--- is a short clip: the dictionary's four clips run about 27.5 SECONDS, and this
+--- task is cut off at `handoverMs`. So the clerk was playing the first fraction
+--- of a long animation and then BLENDING STRAIGHT BACK OUT of it -- an arm that
+--- starts to come up and drops again. There is no beat anywhere in that, which
+--- is exactly the thing he keeps reporting.
+---
+--- AF_HOLD_LAST_FRAME FREEZES THE POSE THE TASK REACHED instead of easing out of
+--- it, so the offer is HELD until `ClearPedTasks` takes it down at the end of the
+--- presentation -- which is the word he used. It is also what both independent
+--- shipped uses of this exact clip pass: `TaskPlayAnim(ped, "mp_common",
+--- "givetake1_a", 8.0, 8.0, 2000, 50, ...)` on the Cfx forum, and andristum/
+--- dpemotes' `["give"] = {"mp_common", "givetake1_a", ...}` at a 2000ms duration.
+--- 50 is this number; the community converged on it for the same reason.
+---
+--- AF_UPPERBODY (16) STAYS: a counter clerk must not step out of position, and
+--- the clip's root motion is still unproven from outside the game.
+--- AF_SECONDARY (32) STAYS: it layers rather than replacing the pose he is in.
+local GIVE_FLAG = 50
 
 --- Stream one animation dictionary, on a budget, without blocking forever.
 ---

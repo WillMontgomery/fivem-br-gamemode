@@ -5117,10 +5117,53 @@ do
                 .. 'the bone id itself, which attaches to the wrong bone in '
                 .. 'silence',
             #attaches == 1 and attaches[1].bone or 'none')
-        ok(#anims == 1 and anims[1].clip == 'givetake1_a',
-            'the give gesture plays', #anims == 1 and anims[1].clip or 'none')
-        ok(#anims == 1 and anims[1].flag == 48,
-            '...upper body only, so a counter clerk cannot walk out of position')
+        ok(#anims == 1 and anims[1].dict == 'mp_common'
+            and anims[1].clip == 'givetake1_a',
+            'the give gesture plays, out of the one dictionary in the game that '
+                .. 'has one',
+            #anims == 1 and (tostring(anims[1].dict) .. '@'
+                .. tostring(anims[1].clip)) or 'none')
+
+        -- ═══ AND HE HOLDS IT OUT RATHER THAN WAVING AT IT (2026-09-12) ═══
+        --
+        -- Owner: "The clerk's handover emote still isn't right. I want him to
+        -- present it to me."
+        --
+        -- ⚠ THE BIT THAT WAS MISSING IS 2, AF_HOLD_LAST_FRAME, AND THE REASON IT
+        -- MATTERS IS THE LENGTH OF THE CLIP. `mp_common@givetake1_a` runs about
+        -- 27.5 seconds and this task is cut off at `handoverMs`, so without the
+        -- hold the clerk played the first fraction of a long animation and then
+        -- BLENDED BACK OUT of it -- an arm that starts up and drops again, with
+        -- no beat anywhere in it. 50 is what both independently shipped uses of
+        -- this exact clip pass (andristum/dpemotes, and the Cfx forum thread).
+        --
+        -- ASSERTED BIT BY BIT rather than as the integer alone, so a failure says
+        -- WHICH property was lost rather than "48 is not 50".
+        local flag = (#anims == 1 and anims[1].flag) or 0
+        ok(flag % 4 >= 2,
+            '...and it HOLDS the last frame it reached (AF_HOLD_LAST_FRAME, 2), '
+                .. 'so the offer is held out rather than blended away',
+            ('flag %d'):format(flag))
+        ok(flag % 32 >= 16,
+            '...upper body only, so a counter clerk cannot walk out of position '
+                .. '(AF_UPPERBODY, 16)',
+            ('flag %d'):format(flag))
+        ok(flag % 64 >= 32,
+            '...and secondary, so it layers on the pose he is in '
+                .. '(AF_SECONDARY, 32)',
+            ('flag %d'):format(flag))
+        ok(flag % 2 == 0,
+            '...and it does NOT loop: a looping offer would never reach the '
+                .. 'ClearPedTasks that ends the handover (AF_LOOPING, 1)',
+            ('flag %d'):format(flag))
+
+        -- AND THE TASK RUNS FOR THE SAME SPAN THE SERVER WAITS, which is the
+        -- whole of why `handoverMs` is one number in config rather than two
+        -- constants. It is also how far into the gesture he gets.
+        ok(#anims == 1 and anims[1].ms == tonumber(G.handoverMs),
+            '...for exactly the span the server waits before it delivers',
+            ('%s vs %s'):format(tostring(#anims == 1 and anims[1].ms),
+                                tostring(G.handoverMs)))
         ok(props[1].detached == true and props[1].alive == false,
             'P2 step 4: and the prop is detached and deleted when he is done')
         ok(#cleared >= 1, '...and his tasks cleared with it')
