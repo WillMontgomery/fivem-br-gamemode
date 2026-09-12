@@ -388,7 +388,11 @@ function BR.WarmupCrateItem(rng, rarity)
         -- Ammo has no rarity of its own anywhere in this project, so the
         -- authored rarity is spent on the pool and nothing else -- exactly as
         -- BR.RollLootStack does it.
-        local pool = rng:pick(BR.Config.AmmoOrder)
+        -- AND WEIGHTED THE SAME WAY IT IS ON THE FLOOR (2026-09-11). This was
+        -- rng:pick over AmmoOrder too, so the seven-pool split would have made
+        -- the four common pools 29% rarer in a warmup crate as well -- the same
+        -- accident, in the one place a new player meets ammunition first.
+        local pool = BR.Config.RollAmmoPool(rng)
         local def  = BR.Config.AmmoPickups[pool]
         return {
             item   = pool,

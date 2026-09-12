@@ -143,7 +143,13 @@ function BR.RollLootStack(rng, tier, floor)
     if kind == BR.ItemKind.AMMO then
         -- Ammo has no rarity of its own; the roll is spent picking a pool. Fixed
         -- order, never pairs() over AmmoPickups.
-        local pool = rng:pick(BR.Config.AmmoOrder)
+        --
+        -- WEIGHTED SINCE 2026-09-11, NOT UNIFORM. This was rng:pick over
+        -- AmmoOrder, and the split from five pools to seven would have made
+        -- pistol, SMG, rifle and shotgun ammo 29% rarer on the floor by accident.
+        -- BR.Config.RollAmmoPool burns the same single draw, so nothing
+        -- downstream in this stream shifts.
+        local pool = BR.Config.RollAmmoPool(rng)
         local def  = BR.Config.AmmoPickups[pool]
         return {
             item   = pool,

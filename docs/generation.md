@@ -79,6 +79,21 @@ floor kind ~ weighted(ammo 74, weapon 16, consumable  6, throwable 4)
 > is already an ammo firehose and is untouched), and consumable was widened to
 > 21 so that the healing share did not fall out as a side effect.
 
+**Which ammo pool**, once a roll has landed on `ammo` — weighted, not uniform:
+
+```
+ammo pool ~ weighted(light 20, smg 20, medium 20, shells 20,
+                     heavy 4, sniper 8, lmg 8)
+```
+
+The four common pools hold a 20% share each, which is exactly what a uniform
+draw over the five pools that existed before 2026-09-11 gave them. Splitting
+`heavy` into three that day would otherwise have taken every pool to 14.3% and
+made pistol, SMG, rifle and shotgun ammo 29% rarer as a side effect of a change
+about explosives. `heavy` is the smallest share because the only three weapons
+that draw from it are airdrop-exclusive, so most players can never use it. The
+8/8/4 split of heavy's old 20 is an assumption and is the knob to turn.
+
 Loose ground loot is deliberately almost all ammo, and **bandages and med kits
 cannot spawn on the floor at all** (`chestOnly` on the consumable, with a
 separate precomputed bucket table so a loose roll still burns the same number of
