@@ -542,8 +542,44 @@ BR.Config.Gunshop = {
     -- there is no ammo term here and none in the roll: an ammo row never appears
     -- in a stock table, and that absence is what every reader takes to mean
     -- unlimited.
-    stockMin = 3,
-    stockMax = 8,
+    --
+    -- ═══════════════════════════════════════════════════════════════════════
+    -- DOUBLED ON 2026-09-12, AND THE BAND IS THE ONLY THING THAT MOVED
+    -- ═══════════════════════════════════════════════════════════════════════
+    --
+    -- Owner: "Please also double the quantity of in-stock weapons at gun shops,
+    -- and it's okay if they have more than 1 of the same weapon in stock."
+    --
+    -- 3..8 -> 6..16. Both ends doubled, so the SHAPE of his original sentence is
+    -- kept -- a shop is still somewhere in a band rather than at a number, and
+    -- the two shops next door still differ.
+    --
+    -- ⚠ THE SECOND HALF OF HIS SENTENCE ASKS FOR NOTHING, BECAUSE IT WAS ALREADY
+    -- TRUE. BR.GunshopSolve.rollStock has always spent UNITS rather than distinct
+    -- models -- `out[pick.id] = (out[pick.id] or 0) + 1`, in both its band pass
+    -- and its scatter pass -- and its header says so in as many words: "a shop
+    -- with a 5 might hold two Carbine Rifles and three other guns". There was no
+    -- uniqueness rule to lift. What doubling changes is how OFTEN a shelf doubles
+    -- up, which at 25 guns and up to 16 units is now common rather than rare.
+    --
+    -- AND A DUPLICATE IS A COUNT, NOT A SECOND ROW. The stock table is
+    -- [rowId] = n and the menu is built from the CATALOGUE, one UIMenuItem per
+    -- row keyed by row id -- so two Carbine Rifles is `carbinerifle = 2` on the
+    -- one Carbine Rifle row, which sells twice before it locks. Nothing about
+    -- `grouped()`, the separators or the row-to-catalogue mapping can see the
+    -- difference.
+    --
+    -- THE FLOOR IS STILL ABOVE THE NUMBER OF BANDS, which is what keeps
+    -- "distributed across all categories" affordable: three bands, and the
+    -- smallest legal shop now holds 6 units rather than 3. Every shop still
+    -- guarantees one of each band, with twice the slack to scatter.
+    --
+    -- AND THE CEILING IS STILL WELL UNDER THE SHELF. 16 units spread over 25
+    -- weapon rows cannot exhaust anything -- there is no per-row cap to breach
+    -- and no way to run out of rows to spend on, so a larger quota degrades into
+    -- more duplicates rather than into an empty category.
+    stockMin = 6,
+    stockMax = 16,
 
     -- ═══════════════════════════════════════════════════════════════════════
     --  EVERY WORD A PLAYER READS AT THIS COUNTER, AND ALL OF THEM ARE HIS

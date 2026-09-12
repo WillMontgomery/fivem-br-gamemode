@@ -1203,9 +1203,27 @@ do
     -- technique this suite uses for the eleven anchors and the price bands:
     -- config/gunshop.lua was authored from the same sentence independently, so
     -- a transposed digit in either makes the two disagree.
-    ok(G.stockMin == 3 and G.stockMax == 8,
-        'the band is his: between 3 and 8 total',
+    -- ⚠ DOUBLED ON 2026-09-12: "Please also double the quantity of in-stock
+    -- weapons at gun shops". His 3..8 became 6..16, and these are retyped from
+    -- the doubling rather than computed from the config -- a test that asserted
+    -- `G.stockMax == G.stockMin * 8 / 3` would agree with any pair of numbers.
+    ok(G.stockMin == 6 and G.stockMax == 16,
+        'the band is his 3..8, doubled: between 6 and 16 total',
         ('%s..%s'):format(tostring(G.stockMin), tostring(G.stockMax)))
+
+    -- AND IT IS STILL A DOUBLING OF THE SENTENCE HE WROTE, which is the property
+    -- a future round is most likely to break by moving one end.
+    ok(G.stockMin * 2 == 12 and G.stockMax / 2 == 8,
+        '...which is exactly twice each end of what he originally said',
+        ('%s..%s'):format(tostring(G.stockMin), tostring(G.stockMax)))
+
+    -- THE FLOOR STILL CLEARS THE NUMBER OF BANDS, which is what makes
+    -- "distributed across all categories they sell" affordable at the smallest
+    -- legal shop. Lowering stockMin under 3 gives that guarantee up silently.
+    ok(G.stockMin >= 3,
+        '...and the floor still covers the three rarity bands, so every shop '
+            .. 'holds one of each',
+        G.stockMin)
 
     --- Every roll in [lo, hi] is answered with `pick`, clamped into range.
     local function fixed(pick)
@@ -1308,7 +1326,57 @@ do
         covered = 0
         for _ in pairs(hit) do covered = covered + 1 end
         ok(covered == 3, '...and so does one that rolled the maximum', covered)
-        ok(total(st) == G.stockMax, 'which spends all eight units', total(st))
+        ok(total(st) == G.stockMax,
+            'which spends every unit of the doubled band', total(st))
+
+        -- ═══ AND THE BIGGER QUOTA STILL FITS ON THE SHELF ═══
+        --
+        -- Owner, 2026-09-12: "it's okay if they have more than 1 of the same
+        -- weapon in stock."
+        --
+        -- ⚠ THIS IS A REGRESSION PIN AND NOT A NEW BEHAVIOR, and saying so is the
+        -- point. rollStock has ALWAYS spent units rather than distinct models --
+        -- `out[pick.id] = (out[pick.id] or 0) + 1` in both passes -- so there was
+        -- never a uniqueness rule to lift. What the doubling changes is how often
+        -- a shelf doubles up. These assertions exist so that somebody who later
+        -- reads "double the quantity" as "twice as many DIFFERENT guns" and adds
+        -- a uniqueness rule breaks a test rather than the owner's sentence.
+        local dup = S.rollStock(G, shelf, function(lo, hi)
+            -- The band roll takes the maximum; every PICK answers 1, so every
+            -- unit that is not spent by the band pass lands on the same gun.
+            if lo == G.stockMin and hi == G.stockMax then return hi end
+            return 1
+        end)
+        local most, mostId = 0, nil
+        for id, n in pairs(dup) do
+            if n > most then most, mostId = n, id end
+        end
+        ok(most > 1,
+            'a shelf really can hold more than one of the same weapon',
+            ('%s x%d'):format(tostring(mostId), most))
+        ok(total(dup) == G.stockMax,
+            '...and the units all land rather than being dropped for being '
+                .. 'duplicates',
+            total(dup))
+
+        -- AND NO ROW IS NEGATIVE OR FRACTIONAL, which is the other way a bigger
+        -- quota could go wrong quietly.
+        local bad = {}
+        for id, n in pairs(dup) do
+            if type(n) ~= 'number' or n < 0 or n % 1 ~= 0 then
+                bad[#bad + 1] = id
+            end
+        end
+        ok(#bad == 0, '...as whole counts, never a negative or a fraction',
+            #bad > 0 and table.concat(bad, ', ') or nil)
+
+        -- ...AND THERE ARE STILL MORE ROWS THAN UNITS, so a bigger quota cannot
+        -- exhaust the shelf and leave a category empty. 25 guns, 16 units at the
+        -- very most.
+        ok(#guns > G.stockMax,
+            'the shelf has more weapon rows than the largest roll has units, so '
+                .. 'the quota cannot outgrow what there is to spend it on',
+            ('%d rows, %d units'):format(#guns, G.stockMax))
     end
 
     -- ═══ SHOPS DIFFER, WHICH IS THE SECOND SENTENCE ═══
