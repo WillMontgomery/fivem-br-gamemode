@@ -16842,6 +16842,188 @@ do
     kvpStore[KVP]            = nil
 end
 
+-- ======================================================================== --
+-- 31. THE PLAYER WHO SET THE WAYPOINT DOES NOT HEAR OUR CUE
+-- ======================================================================== --
+--
+-- THE REQUEST (owner, 2026-09-11): "Whoever sets the waypoint in a squad should
+-- not hear our PlaySoundFrontend as the game already does this"
+--
+-- ═══ WHY THIS IS THE FIRST SUITE TO LOAD client/markers.lua AT ALL ═══
+--
+-- Nothing had ever stood that file up, and the bug is a good argument for why
+-- that had to change: it was a COMMENT. The cue line carried "the server already
+-- excludes the sender, so this cannot fire for your own" -- and
+-- server/markers.lua builds its audience as `{ src }` plus the squad,
+-- deliberately, because a solo player's marker is private and still has to reach
+-- somebody. So the file said the thing that made it correct, the thing was
+-- false, and every reader after that took its word for it.
+--
+-- A PLAYTEST CANNOT SEPARATE THE TWO SOUNDS. GTA's own waypoint blip and
+-- squad.waypoint are both short frontend pings a fraction of a second apart, on
+-- the same gesture; "that sounded a bit doubled" is the entire symptom, and the
+-- fix and the bug are indistinguishable to anybody who is not listening for it.
+--
+-- SO THE WRONG CASE IS DRIVEN AND ASSERTED SILENT, and the right case is asserted
+-- to still sound -- because the squadmates who did NOT place it hear our cue as
+-- the ONLY signal that anything happened, and a fix that muted the cue outright
+-- would be invisible on the placer's screen and total on everybody else's.
+do
+    describe('the waypoint cue is for everyone except the player who placed it')
+
+    local prev = {
+        add = AddBlipForCoord, exists = DoesBlipExist, remove = RemoveBlip,
+        sfx = BR.Sfx.play,
+    }
+
+    -- THE CUE KEY, RECORDED AS A STRING. Every cue test in this project does
+    -- this, and tools/check_cue_sites.lua is what stops the string being one the
+    -- table no longer holds -- the two together are the reason two dead cues were
+    -- found rather than shipped a third time.
+    local cues = {}
+    BR.Sfx.play = function(key) cues[#cues + 1] = key end
+
+    -- Modelled blips, because "quiet" must not have become "absent": the placer
+    -- still gets the blip, the beam and the legend entry. Only the sound goes.
+    local blipSeq, blipsMade = 0, 0
+    AddBlipForCoord = function()
+        blipSeq, blipsMade = blipSeq + 1, blipSeq + 1
+        return blipSeq
+    end
+    DoesBlipExist = function(b) return b ~= nil and b > 0 end
+    RemoveBlip    = noop
+
+    -- THE LEGEND ENTRY IS LEFT AS THE REAL PATH, because "whose marker is this"
+    -- is drawn from the same field the silence is now decided from -- so the name
+    -- going through client/natives.lua's real blipName is worth the one native
+    -- the suite was missing. `BeginTextCommandSetBlipName` and its closer are
+    -- already in the noop list; only this spelling of the middle call was not.
+    local names = {}
+    AddTextComponentString = function(s) names[#names + 1] = s end
+
+    -- The pause map is not open in any of this: placement rides IsWaypointActive
+    -- and every scene below arrives on the WIRE, which is how a marker reaches a
+    -- client whoever placed it.
+    IsWaypointActive        = function() return false end
+    SetWaypointOff          = noop
+    GetFirstBlipInfoId      = function() return 0 end
+    GetNextBlipInfoId       = function() return 0 end
+    GetBlipInfoIdCoord      = function() return { x = 0.0, y = 0.0, z = 0.0 } end
+    GetFinalRenderedCamCoord = function() return { x = 0.0, y = 0.0, z = 0.0 } end
+
+    loadAll({ 'br_core/client/markers.lua' })
+
+    BR.State.me = { src = 1, state = BR.PlayerState.ALIVE, squadId = 'sq1' }
+    BR.State.roster = {
+        [1] = { src = 1, name = 'Me',    squadId = 'sq1' },
+        [2] = { src = 2, name = 'Bravo', squadId = 'sq1' },
+    }
+
+    --- One MARKER_SYNC, and everything it played.
+    local function sync(payload)
+        cues = {}
+        fire(BR.Net.MARKER_SYNC, payload)
+        return cues
+    end
+
+    -- ═══ THE WRONG CASE: MY OWN MARKER, COMING BACK TO ME ═══
+    --
+    -- This is not a hypothetical payload. server/markers.lua puts the sender at
+    -- the head of its own audience, so this is the exact message the placer
+    -- receives, on every placement, in squads and solo alike.
+    local mine = sync({ op = 'set', owner = 1, x = 100.0, y = 200.0, i = 1 })
+    ok(#mine == 0,
+        'the player who placed it hears NOTHING from us -- the engine already '
+            .. 'pinged when the waypoint went down, and two sounds for one '
+            .. 'gesture is the report',
+        (#mine > 0) and table.concat(mine, ',') or 'silent')
+
+    -- ...AND THE MARKER ITSELF IS UNAFFECTED, which is the half that stops the
+    -- fix being applied one level too high. Silence is not absence: the placer
+    -- keeps the blip, its colour and its beam.
+    ok(blipsMade == 1,
+        'while the marker itself is drawn for them exactly as before -- quiet is '
+            .. 'not invisible',
+        ('%d blip(s)'):format(blipsMade))
+
+    -- ═══ AND THE RIGHT CASE: A SQUADMATE'S MARKER STILL SPEAKS ═══
+    --
+    -- For them our cue is the ONLY signal. Nothing on their screen moved, no
+    -- gesture of theirs produced it, and GTA pinged on somebody else's machine.
+    local theirs = sync({ op = 'set', owner = 2, x = 300.0, y = 400.0, i = 2 })
+    ok(#theirs == 1 and theirs[1] == 'squad.waypoint',
+        'a squadmate placing one DOES sound, because for them it is the only '
+            .. 'signal there is',
+        (#theirs > 0) and table.concat(theirs, ',') or 'silent')
+
+    -- ═══ AND THE SECOND CLAIM THAT USED TO BE ON THAT LINE, WRITTEN DOWN AS
+    --     WHAT IT ACTUALLY DOES ═══
+    --
+    -- The cue used to be guarded on `isNew`, over `markers[d.owner] == nil`, with
+    -- "NEW MARKERS ONLY ... a cue for a mate adjusting their own ping is noise"
+    -- beside it. `removeMarker(d.owner)` runs twenty lines earlier and nils that
+    -- entry, so the guard could never be false and a mate dragging their ping
+    -- around re-played the cue every push -- the SECOND false comment in three
+    -- lines, and the reason this block exists at all.
+    --
+    -- THE BEHAVIOUR IS LEFT ALONE AND PINNED HERE HONESTLY. Whether a re-place
+    -- should dedup is the owner's call and nobody has reported it -- a mate
+    -- re-pinging is new information at a new place -- so this asserts what the
+    -- game has always done rather than what the deleted sentence wished it did.
+    -- If he rules the other way, this is the assertion that changes.
+    local again = sync({ op = 'set', owner = 2, x = 305.0, y = 405.0, i = 2 })
+    ok(#again == 1 and again[1] == 'squad.waypoint',
+        'a mate MOVING their own marker sounds again, which is what this has '
+            .. 'always done -- the `isNew` guard that claimed otherwise could '
+            .. 'never be false',
+        (#again > 0) and table.concat(again, ',') or 'silent')
+
+    -- ...and so does one they cleared and placed again.
+    sync({ op = 'clear', owner = 2 })
+    local fresh = sync({ op = 'set', owner = 2, x = 500.0, y = 600.0, i = 2 })
+    ok(#fresh == 1 and fresh[1] == 'squad.waypoint',
+        'as does one they cleared and placed again',
+        (#fresh > 0) and table.concat(fresh, ',') or 'silent')
+
+    -- ═══ AND MINE IS STILL SILENT ON A RE-PLACE, WHICH IS THE PAIR ═══
+    --
+    -- The owner's rule is about the PLACER and it has to survive the gesture he
+    -- actually performs most: dropping a second waypoint to move his own ping.
+    -- Each of those is a fresh engine ping followed by a fresh round trip.
+    local mineAgain = sync({ op = 'set', owner = 1, x = 150.0, y = 250.0, i = 1 })
+    ok(#mineAgain == 0,
+        'and MY OWN marker is silent on a re-place too -- moving a ping is the '
+            .. 'gesture he does most, and each one is another engine ping',
+        (#mineAgain > 0) and table.concat(mineAgain, ',') or 'silent')
+
+    -- ═══ SOLO, WHERE THE ONLY AUDIENCE IS THE PLACER ═══
+    --
+    -- No squad, no member index, and the audience is `{ src }` alone -- so this
+    -- payload is the one the rule has to be right about most, and before the fix
+    -- it was the case where our cue could not possibly have had a listener who
+    -- had not just heard the engine's.
+    local solo = sync({ op = 'set', owner = 1, x = 700.0, y = 800.0, i = nil })
+    ok(#solo == 0,
+        'and in solo -- where the placer is the whole audience -- the marker is '
+            .. 'placed in silence',
+        (#solo > 0) and table.concat(solo, ',') or 'silent')
+
+    -- AND THE TEST IS THE OWNER FIELD, NOT THE SQUAD. A marker from somebody with
+    -- no member index is still somebody else's; a build that keyed the silence on
+    -- `d.i == nil` would mute every solo ping including the ones it should not.
+    local strangerish = sync({ op = 'set', owner = 2, x = 900.0, y = 1000.0,
+                               i = nil })
+    ok(#strangerish == 1,
+        'while a marker with no member index from SOMEBODY ELSE still sounds -- '
+            .. 'the test is whose marker it is, not what colour it is',
+        (#strangerish > 0) and table.concat(strangerish, ',') or 'silent')
+
+    AddBlipForCoord = prev.add
+    DoesBlipExist   = prev.exists
+    RemoveBlip      = prev.remove
+    BR.Sfx.play     = prev.sfx
+end
+
 realPrint(('%s%d passed, %d failed\27[0m')
     :format(fail == 0 and '\27[32m' or '\27[31m', pass, fail))
 os.exit(fail == 0 and 0 or 1)

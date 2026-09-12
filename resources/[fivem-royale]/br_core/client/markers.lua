@@ -87,12 +87,49 @@ AddEventHandler(BR.Net.MARKER_SYNC, function(d)
     BR.Native.blipName(blip,
         who and who.name and (who.name .. "'s Marker") or 'Squad Marker')
     ownBlips[blip] = true
-    -- NEW MARKERS ONLY. Re-placing on top of an existing one is the same wire
-    -- message, and a cue for a mate adjusting their own ping is noise. The server
-    -- already excludes the sender, so this cannot fire for your own.
-    local isNew = markers[d.owner] == nil
     markers[d.owner] = { x = d.x, y = d.y, colour = hex, blip = blip }
-    if isNew then BR.Sfx.play('squad.waypoint') end
+
+    -- ═══ NOT FOR THE PERSON WHO PLACED IT (owner, 2026-09-11) ═══
+    --
+    -- "Whoever sets the waypoint in a squad should not hear our
+    --  PlaySoundFrontend as the game already does this"
+    --
+    -- GTA MAKES ITS OWN NOISE WHEN A WAYPOINT IS SET, and placement rides that
+    -- gesture -- the pause map's only scriptable input is the native waypoint, so
+    -- the engine has already spoken by the time the round trip comes back. The
+    -- setter therefore heard two sounds for one action; everybody else heard one,
+    -- and for them it is the only signal there is.
+    --
+    -- SO THE CUE IS FOR EVERYBODY EXCEPT THE OWNER OF THE MARKER. The line above
+    -- this one used to claim "the server already excludes the sender, so this
+    -- cannot fire for your own", and THAT WAS NEVER TRUE: server/markers.lua
+    -- builds its audience as `{ src }` plus the squad, deliberately, because a
+    -- solo player's marker is private and has to reach somebody. The comment was
+    -- the whole of the bug -- it is the reason nobody looked here.
+    --
+    -- HOW A CLIENT KNOWS A MARKER IS ITS OWN: `d.owner` against
+    -- BR.State.me.src. The payload has carried the owner's server id since the
+    -- feature existed -- it is what `markers` is keyed on -- and this file already
+    -- compares the two twice, for the 120m re-place gesture and for the clear
+    -- key. This is the third use of the same test, not a new fact on the wire.
+    --
+    -- ═══ AND A SECOND CLAIM ON THIS LINE WENT WITH THE FIRST, BECAUSE IT WAS
+    --     ALSO NOT TRUE ═══
+    --
+    -- It read `if isNew then`, over `local isNew = markers[d.owner] == nil`, and
+    -- said "NEW MARKERS ONLY ... a cue for a mate adjusting their own ping is
+    -- noise". THAT GUARD COULD NEVER BE FALSE: `removeMarker(d.owner)` runs
+    -- twenty lines above it and nils the entry, so every 'set' looked new and a
+    -- mate dragging their ping around the map re-played the cue every time.
+    --
+    -- WHAT IS GONE IS THE DEAD VARIABLE AND THE SENTENCE ABOUT IT, NOT A
+    -- BEHAVIOUR. Deduping a re-place is a real question -- a mate re-pinging IS
+    -- new information, at a new place -- and it is the owner's to answer; nobody
+    -- has reported it, so this keeps doing exactly what it has always done rather
+    -- than quietly starting to obey a comment. See the handover note.
+    if d.owner ~= BR.State.me.src then
+        BR.Sfx.play('squad.waypoint')
+    end
 end)
 
 -- The placement watcher: a fresh waypoint while in a match becomes a marker.
