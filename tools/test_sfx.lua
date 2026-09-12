@@ -443,54 +443,61 @@ do
     eq(#plays, 5, 'so five asks in the same millisecond are five sounds')
 end
 
-describe('storm.move: the name the owner could not hear')
+describe('storm.move: the owner\'s own line, not a name like it')
 do
-    -- ═══ THE REPORT, TWICE ═══
+    -- ═══ THE REPORT, TWICE, AND THE ANSWER WAS IN #24 ALL ALONG ═══
     --
     --   "help me find out why storm.move and storm.out don't play any sound"
     --                                          -- owner, 2026-09-07
     --   "storm.move doesn't play, though it says the engine started it."
     --                                          -- owner, 2026-09-12
+    --   "I've heard it play. The line I gave you in the brsfx issue is an exact
+    --    line which I've heard play."           -- owner, 2026-09-12
     --
-    -- The first round wired storm.out, which genuinely had no call site, and
-    -- left this cue's pair alone on the reasoning that the table was fine
-    -- (d11fb96). The pair was the one thing that round did not change.
+    -- His line in #24 is PlaySoundFrontend(-1, "GO", "HUD_MINI_GAME_SOUNDSET",
+    -- 1). The table held GO_NON_RACE, which he never wrote. That is the entire
+    -- fault: a name one word longer than the one he had heard.
     --
     -- ═══ WHY THIS IS A PIN AND NOT A PROPERTY ═══
     --
     -- Nothing offline can hear a sound, so there is no property to assert --
-    -- which is exactly how a name nobody has ever heard sat here through a
-    -- green suite and two reports. What CAN be pinned is the decision and the
-    -- evidence behind it, the same way tools/test_fuel.lua pins the owner's
-    -- prompt copy: GO_NON_RACE was taken off a name list, has no first-hand
-    -- report of anybody hearing it anywhere, and has now shipped silent twice.
-    -- If it comes back, it comes back as a deliberate act with this block red.
-    --
-    -- THE SET IS NOT THE SUSPECT AND MUST NOT MOVE. The owner heard
-    -- CHECKPOINT_NORMAL and CHECKPOINT_PERFECT out of HUD_MINI_GAME_SOUNDSET as
-    -- `hit` and `hit.crit` and rejected them by ear on 2026-09-08 -- disliking
-    -- a sound is the strongest proof in this tree that it played. Moving the
-    -- set would throw that away and put the bank question back on the table.
+    -- which is how a name he never chose sat here through a green suite and two
+    -- playtests, and how the first attempt at this block then pinned a SECOND
+    -- name he never chose (TIMER_STOP, off a forum post). A cue name in this
+    -- table is only ever as good as the ear behind it, so what is pinned is
+    -- whose ear: these two strings are his, copied out of his issue.
     local move = A.cues['storm.move']
 
-    eq(move.set, 'HUD_MINI_GAME_SOUNDSET',
-       'storm.move stays in the set this build is known to sound')
-    eq(move.name, 'TIMER_STOP',
-       'and names the one sound in it with a published, working call site')
+    eq(move.set, 'HUD_MINI_GAME_SOUNDSET', 'storm.move names the set he wrote')
+    eq(move.name, 'GO', 'and the name he wrote, which he has heard play')
 
-    ok(move.name ~= 'GO_NON_RACE' and move.name ~= '3_2_1_NON_RACE',
-       'and neither of the _NON_RACE countdown names, which are what GTA\'s '
-           .. 'own scripts call and what nobody has ever reported hearing',
+    -- ═══ THE TWO NAMES THAT ARE NOT HIS, NAMED ═══
+    --
+    -- Both were arrived at by reasoning about a list rather than by listening,
+    -- and both shipped. If either comes back it comes back with this red.
+    ok(move.name ~= 'GO_NON_RACE',
+       'not GO_NON_RACE, the corruption of his line that shipped silent twice',
+       tostring(move.name))
+    ok(move.name ~= 'TIMER_STOP',
+       'and not TIMER_STOP, which was picked off a forum post to replace it',
        tostring(move.name))
 
-    -- ═══ AND IT IS NOT match.start's SOUND ═══
+    -- ═══ IT IS match.start's SOUND, AND THAT IS RECORDED RATHER THAN ASSERTED
+    --     AGAINST ═══
     --
-    -- Two events a player has to tell apart by ear, out of one set. The wall
-    -- setting off and the match starting are seconds apart in phase 1.
-    ok(move.name ~= A.cues['match.start'].name,
-       'the wall setting off does not sound like the match starting',
-       ('storm.move %s / match.start %s'):format(tostring(move.name),
-                                                 tostring(A.cues['match.start'].name)))
+    -- His "Match timer start" line is where match.start got GO too, so the wall
+    -- setting off and the match starting are now the same noise. This block
+    -- used to assert they DIFFER; that assertion was this suite preferring its
+    -- own taste to his ear, and it is gone. MEDAL_UP is the alternative he
+    -- offered in the same breath and is the one line to change if he wants them
+    -- apart -- so what is checked is that the alternative is still reachable,
+    -- not that the collision has been tidied away behind his back.
+    local alt = false
+    for _, n in ipairs(A.namesIn('HUD_MINI_GAME_SOUNDSET') or {}) do
+        if n == 'MEDAL_UP' then alt = true end
+    end
+    ok(alt, 'and MEDAL_UP, his stated alternative, is still in the catalogue '
+        .. 'for the day he wants the two events to sound different')
 
     -- ═══ AND THAT PAIR IS WHAT REACHES THE ENGINE ═══
     --
@@ -498,10 +505,17 @@ do
     -- the NAME third and the SET fourth, which is the reverse of how a cue is
     -- written down, and a swap there silences every sound in the game with no
     -- error anywhere.
+    --
+    -- THE FOURTH ARGUMENT IS `false` AND HIS LINE SAYS `1`, DELIBERATELY. That
+    -- difference has already been settled by his own ear on this very set: the
+    -- hitmarker was CHECKPOINT_NORMAL / CHECKPOINT_PERFECT out of
+    -- HUD_MINI_GAME_SOUNDSET, it went out through this same `false`, and he
+    -- heard both well enough to reject them on 2026-09-08. Every sound anybody
+    -- has heard from this codebase left through that argument.
     plays = {}
     gameMs = 710000
     BR.Sfx.play('storm.move')
-    ok(#plays == 1 and plays[1].name == 'TIMER_STOP'
+    ok(#plays == 1 and plays[1].name == 'GO'
        and plays[1].set == 'HUD_MINI_GAME_SOUNDSET',
        'and that is the pair PLAY_SOUND_FRONTEND is handed, name then set',
        plays[1] and ('name=%s set=%s'):format(tostring(plays[1].name),
