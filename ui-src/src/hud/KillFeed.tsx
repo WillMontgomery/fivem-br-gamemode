@@ -64,17 +64,30 @@ export default function KillFeed({ entries }: { entries: FeedEntry[] }) {
         return (
           <div
             key={e.id}
-            // `tscale`: names are the thing players squint at, and the feed
-            // grows into the top-right corner rather than pushing anything.
-            className="panel tscale px-3 py-1.5 text-[0.8125rem]
+            // `.ts` WITH AN EXPLICIT --fs, NEVER BARE `tscale` (#159). Names are
+            // what players squint at, so this row does follow the text-size
+            // preference -- but `.tscale` multiplies 1em, which is the PARENT's
+            // size, and this row declares its own. It carried both for months
+            // and the declared size lost: the feed rendered at the inherited
+            // root size, 16px at 1080p, against the 13px it asked for. 0.8125rem
+            // is also a notice row's --fs, which is the surface beside it.
+            className="panel ts px-3 py-1.5
                        flex items-center gap-1.5 max-w-full"
             style={{
-              // .panel has no border any more, so a row that concerns you is
-              // marked with a blade on the leading edge rather than a border
-              // colour that would now silently do nothing.
+              ['--fs' as string]: '0.8125rem',
+              // SQUARE, like every surface in this interface. `.panel` is
+              // `border-radius: 0` and carries a grey hairline of its own, so a
+              // row that concerns you replaces that hairline's leading edge with
+              // a blade in the color of the news -- index.css names this as the
+              // kill feed's blade where it explains what accent means.
+              //
+              // The rows used to round their right-hand corners to --r-panel on
+              // top of that blade, which is the radius `.panel` carried BEFORE
+              // the square restyle. It survived the restyle as an inline
+              // override, so your own rows were a different shape from everyone
+              // else's and the feed answered the corners question with both.
               ...(accent ? {
                 borderLeft: `2px solid ${accent}`,
-                borderRadius: '0 var(--r-panel) var(--r-panel) 0',
                 // A touch of the accent behind your own rows, so they read
                 // even out of the corner of your eye.
                 backgroundColor: e.mine
@@ -121,9 +134,14 @@ export default function KillFeed({ entries }: { entries: FeedEntry[] }) {
                 {e.headshot && (
                   <span
                     className="font-display text-[0.6rem] tracking-[0.1em] leading-none
-                               px-1 py-0.5 rounded-sm shrink-0"
+                               px-1 py-0.5 shrink-0"
                     style={{
-                      color: '#0b0c12',
+                      // The ink on an inverted chip is the interface's own
+                      // backdrop, and there is a token for it -- the literal
+                      // #0b0c12 sitting here was that token's value copied by
+                      // hand. `rounded-sm` went with it: a filled chip carrying
+                      // type is a small plate, and plates are square.
+                      color: 'var(--color-royale-bg)',
                       backgroundColor: accent ?? 'rgba(255,255,255,0.75)',
                     }}
                     title="Headshot"

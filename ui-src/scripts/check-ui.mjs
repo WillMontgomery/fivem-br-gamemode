@@ -975,6 +975,139 @@ for (const name of builtCss) {
 }
 
 // ---------------------------------------------------------------------------
+// R18  `tscale` never sits beside a size the element declared itself (#159).
+//
+// index.css says it in full beside `.ts`, and five HUD files repeat the warning
+// in their own words, and it was still live in two of them: `.tscale` is
+// `calc(1em * var(--text-scale))`, and 1em is the PARENT's size -- so on an
+// element that declares its own, the declared size is discarded without a
+// warning and the element renders at whatever it happened to inherit.
+//
+// MEASURED, NOT REASONED: a kill feed row in `npm run dev` computed to 11px --
+// the root size -- while its own class asked for 0.8125rem, which is 8.94px at
+// that root. In game at 1080p that is a feed running at 16px against the 13px
+// it declares. Chat's log line had the identical fault one file over.
+//
+// NOTHING ELSE CATCHES THIS. Both spellings are valid CSS, both classes are
+// really applied, the screen looks plausible, and which one wins is decided by
+// stylesheet ORDER -- so it cannot be seen in the markup at all. The fix is the
+// one the stylesheet prescribes: `.ts` with the size handed in as `--fs`.
+//
+// `.micro-label` is the other half, and the other way this bit: it declares a
+// font-size too, and `micro-label tscale` ignored the preference entirely.
+//
+// ═══ IT FAILS ON THE HUD AND WARNS ON THE SCREENS, AND THAT IS A DEBT ═══
+//
+// The same fault is live in twelve places across six lobby screens (Lobby,
+// Settings, PlayerList, Keybinds, Market, Locker). Every one of them is a real
+// text size being discarded, and every fix is a visible size change on a screen
+// nobody reported -- which is a round of its own with the owner looking at it,
+// not a quiet side effect of an audit of the kill feed. So they are counted and
+// named on every build rather than hidden behind an allow-list, and the surfaces
+// drawn over live gameplay, which is where this was measured, hold the line.
+//
+// IT CAN FAIL. Put `text-[0.8125rem]` back beside `tscale` on the kill feed row.
+// ---------------------------------------------------------------------------
+{
+  // className="..." and className={`...`}. Both may span lines: the kill feed's
+  // own class list does, which is why neither pattern excludes newlines.
+  const CLASS_ATTR = [/className="([^"]*)"/g, /className=\{`([^`]*)`\}/g]
+  const LIVE = (r) => r.startsWith('src/hud/') || r.startsWith('src/chat/')
+  const owed = new Map()   // file -> count
+
+  for (const f of files.filter((x) => x.endsWith('.tsx'))) {
+    const body = stripComments(read(f))
+    for (const re of CLASS_ATTR) {
+      re.lastIndex = 0
+      let m
+      while ((m = re.exec(body)) !== null) {
+        const cls = m[1]
+        if (!/\btscale\b/.test(cls)) continue
+        const declared = (cls.match(/\btext-\[[^\]]+\]/) ?? [])[0]
+          ?? (/\bmicro-label\b/.test(cls) ? 'micro-label' : null)
+        if (!declared) continue
+        if (!LIVE(rel(f))) {
+          owed.set(rel(f), (owed.get(rel(f)) ?? 0) + 1)
+          continue
+        }
+        fail('R18 tscale', rel(f),
+          `\`tscale\` sits beside \`${declared}\`, which declares a font size of`
+          + ' its own. `.tscale` multiplies 1em -- the PARENT\'s size -- so that'
+          + ' declaration is silently discarded and the element renders at'
+          + ' whatever it inherits. Use `ts` and pass the size in as `--fs`'
+          + ' (#159); index.css says so where `.ts` is declared.')
+      }
+    }
+  }
+
+  if (owed.size) {
+    const total = [...owed.values()].reduce((a, b) => a + b, 0)
+    warn('R18 tscale', 'src/screens',
+      `${total} more in ${owed.size} screens, each throwing away a declared text`
+      + ` size (#159): ${[...owed].map(([f, n]) => `${f} x${n}`).join(', ')}.`
+      + ' Not failed here because every fix changes a size on screen and that is'
+      + ' a round the owner should see, not a side effect of another one.')
+  }
+}
+
+// ---------------------------------------------------------------------------
+// R19  The kill feed is square, and its ink is the palette's.
+//
+// Owner, 2026-09-11: "can you check the kill feed to make sure it complies with
+// our current UI colors, fonts, and outlines/corners? I don't think it does."
+// It did not, and both faults were the same kind: a value that was right once,
+// left behind by a change to the thing it was copied from.
+//
+//   * the rows rounded their right-hand corners to `var(--r-panel)`, which is
+//     the radius `.panel` carried BEFORE the square restyle the owner kept
+//     ("I like the style"). `.panel` is `border-radius: 0` now, so the override
+//     was the only round corner left on the surface -- and it only applied to
+//     rows that concern YOU, so your own eliminations were a different shape
+//     from everyone else's. The HS chip did the same in miniature with
+//     `rounded-sm`. Both are invisible in a diff of index.css, because neither
+//     lives there.
+//   * the chip's ink was `#0b0c12`, which is --color-royale-bg's value copied
+//     by hand. It stops tracking the moment the token moves.
+//
+// NARROW TO ONE FILE ON PURPOSE. Rounded corners are correct elsewhere in the
+// HUD -- every bar in the interface is `rounded-full` and is meant to be -- so
+// a blanket ban would be wrong. This surface has no bars and no exceptions.
+//
+// IT CAN FAIL. Put back `rounded-sm`, the borderRadius line, or the literal.
+// ---------------------------------------------------------------------------
+{
+  const f = join(SRC, 'hud', 'KillFeed.tsx')
+  if (!existsSync(f)) {
+    fail('R19 killfeed', 'src/hud/KillFeed.tsx', 'file is missing.')
+  } else {
+    const body = stripComments(read(f))
+
+    for (const [needle, what] of [
+      [/\brounded-[\w[\]./-]+/, 'a `rounded-` utility'],
+      [/\bborderRadius\b/, 'an inline `borderRadius`'],
+      [/--r-panel/, 'the --r-panel radius'],
+    ]) {
+      const hit = (body.match(needle) ?? [])[0]
+      if (hit) {
+        fail('R19 killfeed', 'src/hud/KillFeed.tsx',
+          `${what} (\`${hit}\`). The feed is a \`.panel\`, and \`.panel\` has`
+          + ' been `border-radius: 0` since the owner kept the square restyle.'
+          + ' A row that concerns the player is marked with the blade on its'
+          + ' leading edge, not with a second shape.')
+      }
+    }
+
+    const hex = (body.match(/#[0-9a-fA-F]{6}\b/) ?? [])[0]
+    if (hex) {
+      fail('R19 killfeed', 'src/hud/KillFeed.tsx',
+        `the literal ${hex}. Every color this surface draws is in the palette`
+        + ' -- --color-royale-accent, --color-danger, --color-royale-bg -- and a'
+        + ' hand-copied value stops following it, colorblind modes included.')
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Result
 // ---------------------------------------------------------------------------
 if (failures) {
