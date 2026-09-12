@@ -132,6 +132,7 @@ BR.HealthExcuse = {
     SETTLING = 'settling',   -- a revive/respawn the server wrote; the ped is catching up
     NOT_LIVE = 'not-live',   -- not an ALIVE player in a live match
     RESCUE   = 'rescue',     -- #191: riding an ambulance, health restored on arrival
+    UNSYNCED = 'unsynced',   -- the server SUBSTITUTED this reading; no client sent it
 }
 
 --- How much health this player recovered that the server never issued them.
@@ -182,9 +183,17 @@ BR.HealthExcuse = {
 ---    early, or a resurrection that restores GTA's default health before our
 ---    number lands, produces a brief spike the other way.
 ---
+--- 6. UNSYNCED -- the server SUBSTITUTED this reading rather than receiving it.
+---    FiveM's ped health sync node transmits no health field at all when its
+---    `isFine` bit is set and hands the parser `maxHealth` instead, which is
+---    itself a hardcoded 200 for a ped whose max was never synced. A read of
+---    exactly the engine ceiling is therefore not evidence, and the clause
+---    below has the full argument and the live report it came from.
+---
 --- @param ledger number|nil    the server's display hp (0..100) BEFORE this sample
 --- @param sampled number       display hp read off the ped this sample
---- @param ctx table            { now, state, rescue, lastHitAt, healUntil, settleUntil }
+--- @param ctx table            { now, state, rescue, lastHitAt, healUntil, settleUntil,
+---                               engine, engineWas, engineCeiling }
 --- @param cfg table|nil        BR.Config.Combat.healthAudit
 --- @return number gain         display points recovered with no explanation (0 if none)
 --- @return string excuse       BR.HealthExcuse.*
@@ -247,6 +256,55 @@ function BR.HealthUnexplainedGain(ledger, sampled, ctx, cfg)
 
     if before(now, ctx.settleUntil) then
         return 0.0, BR.HealthExcuse.SETTLING
+    end
+
+    -- ═══ 6. THE READING THE SERVER MADE UP, WHICH IS NOT EVIDENCE OF ANYTHING ═══
+    --
+    -- THE FALSE POSITIVE THIS EXISTS FOR (owner, live, fair play): one player
+    -- reported for "116 hp the server never issued", across FOUR samples with a
+    -- peak of 29. The mean equalling the peak is the whole diagnosis -- all four
+    -- were exactly 29, so this was never a trickle and never a distribution. It
+    -- was the same fixed reading arriving four times against a ledger that had
+    -- not moved.
+    --
+    -- WHERE A FIXED READING COMES FROM. The server does not receive a health
+    -- number for every ped every tick. FiveM's own sync tree
+    -- (CPedHealthDataNode::Parse, SyncTrees_Five.h) reads an `isFine` bit first,
+    -- and when it is set NO HEALTH FIELD IS TRANSMITTED AT ALL -- the parser
+    -- writes `data.health = maxHealth` instead. `maxHealth` is itself a fallback:
+    -- `(data.maxHealth == 0) ? 200 : data.maxHealth`, so a ped whose max health
+    -- was never synced reads a hardcoded 200 whatever it is really on.
+    --
+    -- So GetEntityHealth == maxHealth, server-side, is NOT a reading. It is the
+    -- value substituted in place of one, and it is indistinguishable from a
+    -- genuinely full ped. Counting it accuses a player for a packet that was
+    -- never sent -- and it accuses the WOUNDED ones hardest, because the size of
+    -- the "gain" is just the distance their ledger sits below the ceiling. That
+    -- is exactly why one player tripped this and the other did not: the second
+    -- player's ledger was already at the ceiling, so the same substitution
+    -- scored zero for them.
+    --
+    -- ONE SAMPLE ONLY, AND THAT IS WHAT KEEPS THIS FROM BEING AN AMNESTY. A
+    -- client actually PINNED at full health presents the ceiling on every
+    -- consecutive sample, so the second one counts and every one after it, and
+    -- the bar is still crossed inside a second at 4Hz. A substitution reverts to
+    -- a real reading on the next pass and is never counted at all. `engineWas`
+    -- is the PREVIOUS pass's raw reading, which server/roster.lua keeps for this.
+    --
+    -- NOTHING HERE CHANGES WHAT THE LEDGER DOES. BR.HealthCommit is not given
+    -- these fields and never was: the rise is still REFUSED, the ledger still
+    -- holds, and the client is still resynchronised once a second. This decides
+    -- only whether a player is ACCUSED of it.
+    local ceiling = tonumber(ctx.engineCeiling)
+    if ceiling ~= nil then
+        local engine = tonumber(ctx.engine)
+        -- `engineWas` nil means there is no previous pass, which is unconfirmed
+        -- by definition -- the first sample of a match is the one case where the
+        -- server has nothing at all to compare against.
+        if engine ~= nil and engine == ceiling
+           and tonumber(ctx.engineWas) ~= ceiling then
+            return 0.0, BR.HealthExcuse.UNSYNCED
+        end
     end
 
     return gain, BR.HealthExcuse.COUNTED

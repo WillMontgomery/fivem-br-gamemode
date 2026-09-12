@@ -357,8 +357,43 @@ function BR.Native.applyDamage(amount, armourFirst)
 end
 
 --- Normalise the player's health model at match start.
+---
+--- ═══ SetPedMaxHealth IS THE ONE THAT TAKES ON A PLAYER PED ═══
+---
+--- SET_ENTITY_MAX_HEALTH is widely reported not to take effect on a PLAYER ped
+--- -- SET_PED_MAX_HEALTH is the native that does -- and the difference is not
+--- academic here, because SET_ENTITY_HEALTH is documented to CLAMP to max health
+--- on a player ped (it raises max to fit for every other kind of entity). So on
+--- the old pair the line below asked for 200 and got whatever the MODEL's own
+--- maximum happened to be.
+---
+--- AND THE MODEL IS THE PLAYER'S CHOICE. config/peds.lua offers three dozen
+--- ambient models and their model-default maximums are not all 200 -- the
+--- freemode female default of 175 against the male 200 is the best documented of
+--- them. A player on such a model had a health bar that could never fill:
+--- BR.ToDisplayHp maps engine 100..200 onto display 0..100, so a ped clamped at
+--- its own lower maximum reads as a permanently wounded player, a med kit "to
+--- 100" leaves them short, and every damage number in the game is measured
+--- against a span they do not have.
+---
+--- IT WAS ALSO HALF OF A LIVE ANTICHEAT FALSE POSITIVE, which is how it was
+--- found. FiveM's ped health sync node sends no health field at all when its
+--- `isFine` bit is set and the server's parser substitutes `maxHealth` -- a
+--- hardcoded 200 for a ped whose max was never synced. So a player capped below
+--- our ceiling read as exactly 200 on the server every time they were "full",
+--- which the health audit scored as recovery nobody issued, at a fixed size
+--- equal to the distance their ledger sat below the ceiling. Raising the max for
+--- real removes the gap on both sides; shared/health_solve.lua's UNSYNCED clause
+--- is the other half, and it is needed anyway because the server can never tell
+--- a substituted ceiling from a real one.
+---
+--- BOTH NATIVES, AND SetPedMaxHealth FIRST. The entity call is kept because it
+--- costs nothing and is the correct one everywhere else in the engine; the ped
+--- call is the one this line depends on. The health write comes after both, so
+--- it has the ceiling it is asking for.
 function BR.Native.initHealthModel()
     local ped = PlayerPedId()
+    SetPedMaxHealth(ped, BR.Config.Match.maxHealth)
     SetEntityMaxHealth(ped, BR.Config.Match.maxHealth)
     SetEntityHealth(ped, BR.Config.Match.maxHealth)
     SetPedArmour(ped, 0)
@@ -2334,6 +2369,10 @@ function BR.Native.check()
     end)
     probe('GetEntityHealth',         function() return GetEntityHealth(ped) end)
     probe('SetEntityMaxHealth',      function() SetEntityMaxHealth(ped, BR.Config.Match.maxHealth) end)
+    -- THE ONE THAT ACTUALLY MOVES A PLAYER PED'S CEILING -- see initHealthModel.
+    -- A nil binding here would be silent and would give every player on a model
+    -- with a lower default maximum a health bar that cannot fill.
+    probe('SetPedMaxHealth',         function() SetPedMaxHealth(ped, BR.Config.Match.maxHealth) end)
     probe('GetPedArmour',            function() return GetPedArmour(ped) end)
     probe('SetPlayerMaxArmour',      function() SetPlayerMaxArmour(PlayerId(), BR.Config.Match.maxArmour) end)
     probe('SetPlayerHealthRechargeMultiplier', function()

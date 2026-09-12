@@ -13941,6 +13941,54 @@ do
         'a point of float disagreement is arithmetic, not evidence',
         ('%s / %s'):format(tostring(gain), tostring(excuse)))
 
+    -- ═══ THE READING THE SERVER SUBSTITUTED FOR ONE IT NEVER RECEIVED ═══
+    --
+    -- THE LIVE FALSE POSITIVE, REPRODUCED (owner, fair play, his own server):
+    -- "recovered 116 hp ... peak 29 in one sample, 4 samples". Mean equals peak,
+    -- so all four were exactly 29 -- one fixed reading arriving four times, not
+    -- a trickle. FiveM's ped health sync node transmits NO health field when its
+    -- `isFine` bit is set and the server's parser writes `maxHealth` in its
+    -- place, itself a hardcoded 200 for a ped whose max was never synced. So
+    -- GetEntityHealth == maxHealth server-side is a substitution, not a reading,
+    -- and the "gain" it produces is just the distance the ledger sits below the
+    -- ceiling -- 29 for a player whose ledger held 71.
+    local CEIL = BR.Config.Match.maxHealth
+    gain, excuse = BR.HealthUnexplainedGain(71.0, 100.0,
+        ctx({ engine = CEIL, engineWas = CEIL - 29, engineCeiling = CEIL }), A)
+    ok(gain == 0.0 and excuse == BR.HealthExcuse.UNSYNCED,
+        'a ped read at exactly the engine ceiling is a packet the client never '
+            .. 'sent, and a wounded player is not accused of 29 points for it',
+        ('%s / %s'):format(tostring(gain), tostring(excuse)))
+
+    -- AND IT IS ONE SAMPLE, WHICH IS WHAT KEEPS IT FROM BEING AN AMNESTY. A
+    -- client actually pinned at full health presents the ceiling on every
+    -- consecutive pass, so the second one counts and so does every one after it.
+    -- At 4Hz the report bar is still crossed inside a second.
+    gain, excuse = BR.HealthUnexplainedGain(71.0, 100.0,
+        ctx({ engine = CEIL, engineWas = CEIL, engineCeiling = CEIL }), A)
+    ok(gain == 29.0 and excuse == BR.HealthExcuse.COUNTED,
+        'a SECOND consecutive reading at the ceiling is a client sitting there '
+            .. 'and is counted in full',
+        ('%s / %s'):format(tostring(gain), tostring(excuse)))
+
+    -- ...AND NOTHING BELOW THE CEILING IS TOUCHED BY ANY OF IT. The exploit this
+    -- detector exists for is a client restoring its ledger after a hit, and that
+    -- lands wherever the shot left them, not on 200.
+    gain, excuse = BR.HealthUnexplainedGain(30.0, 90.0,
+        ctx({ engine = CEIL - 10, engineWas = CEIL - 40, engineCeiling = CEIL }), A)
+    ok(gain == 60.0 and excuse == BR.HealthExcuse.COUNTED,
+        'a rise to anything short of the ceiling is counted exactly as before',
+        ('%s / %s'):format(tostring(gain), tostring(excuse)))
+
+    -- The clause needs the ceiling to be told to it, and a caller that does not
+    -- know one (the ARMOUR call, whose own substitution is a zero and therefore a
+    -- decrease) must get the old behaviour rather than a silent exemption.
+    gain, excuse = BR.HealthUnexplainedGain(71.0, 100.0,
+        ctx({ engine = CEIL, engineWas = CEIL - 29 }), A)
+    ok(gain == 29.0 and excuse == BR.HealthExcuse.COUNTED,
+        'and with no ceiling in the context the clause does not fire at all',
+        ('%s / %s'):format(tostring(gain), tostring(excuse)))
+
     -- ═══ AND THE ARITHMETIC CANNOT BE DISABLED BY A BAD NUMBER ═══
     --
     -- `nan > x` is false for every x, so a NaN sliding through would read as "no

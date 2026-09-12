@@ -1043,7 +1043,8 @@ end
 --- @param hp number      display hp sampled from the ped THIS pass
 --- @param armour number  armour sampled from the ped THIS pass
 --- @param now number
-local function auditHealth(src, entry, hp, armour, now)
+--- @param prevEngineHp number|nil  the RAW engine reading from the previous pass
+local function auditHealth(src, entry, hp, armour, now, prevEngineHp)
     local cfg = (BR.Config.Combat or {}).healthAudit
     -- `enabled` is compared rather than tested for truthiness for the reason
     -- the whole codebase does it: a convar override can leave a string here,
@@ -1055,8 +1056,27 @@ local function auditHealth(src, entry, hp, armour, now)
     -- this an anticheat rather than a second thing to lie to. See healthCtx.
     local ctx = healthCtx(entry, now)
 
+    -- ...AND SO IS THIS ONE, WHICH IS A FACT ABOUT THE READ RATHER THAN THE
+    -- PLAYER. The RAW engine numbers, not the display ones, because the value
+    -- FiveM's sync tree substitutes when a client transmits no health field is
+    -- an engine-unit constant: `maxHealth`, itself a hardcoded 200 for a ped
+    -- whose max was never synced. shared/health_solve.lua's UNSYNCED clause
+    -- carries the whole argument and the live false positive it came from.
+    --
+    -- THE PREVIOUS PASS'S READING GOES WITH IT, because one substituted sample
+    -- is a packet that was never sent and two in a row is a client sitting at
+    -- the ceiling. Only the first is excused.
+    ctx.engine        = entry.engineHp
+    ctx.engineWas     = prevEngineHp
+    ctx.engineCeiling = (BR.Config.Match or {}).maxHealth
+
     local gain, excuse = BR.HealthUnexplainedGain(entry.hp, hp, ctx, cfg)
     entry.healthAudit = BR.HealthTally(entry.healthAudit, gain, excuse)
+
+    -- NOT CARRIED INTO THE ARMOUR CALL, and it would be wrong there twice over:
+    -- the numbers above are HEALTH readings, and armour's own substitution
+    -- (`noArmour` -> 0) is a DECREASE, which this detector never counts anyway.
+    ctx.engine, ctx.engineWas, ctx.engineCeiling = nil, nil, nil
 
     -- ARMOUR IS THE SAME WEAKNESS AND IT IS NOT A SMALLER ONE. `entry.armour`
     -- is what BR.Damage.applyHit soaks a hit with before health is touched, and
@@ -1274,6 +1294,14 @@ local function samplePositions()
 
             -- Health is read the same way, for the same reason. This is what
             -- makes the reconciliation in the combat pipeline possible later.
+            --
+            -- THE PREVIOUS RAW READING IS KEPT FOR ONE PASS, and only the audit
+            -- uses it: a server-side health read of exactly `maxHealth` is the
+            -- value FiveM's sync tree substitutes when the owning client sends
+            -- no health field at all, so "was the last one the same" is what
+            -- separates a missing packet from a ped genuinely sitting at the
+            -- ceiling. See shared/health_solve.lua's UNSYNCED clause.
+            local prevEngineHp = entry.engineHp
             entry.engineHp = GetEntityHealth(ped)
             entry.engineArmour = GetPedArmour(ped)
 
@@ -1300,7 +1328,7 @@ local function samplePositions()
             -- or anybody's state; the ledger rule is the NEXT call, under its
             -- own flag, so a noisy detector and a wrong refusal stay two
             -- separate incidents with two separate switches.
-            auditHealth(src, entry, hp, armour, now)
+            auditHealth(src, entry, hp, armour, now, prevEngineHp)
 
             -- A DOWNED PLAYER'S HEALTH IS THE LEDGER'S, NOT THE PED'S.
             --

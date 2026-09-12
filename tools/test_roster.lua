@@ -21470,6 +21470,108 @@ do
                 .. 'of the next round')
     end
 
+    -- ═══ THE LIVE FALSE POSITIVE, REPRODUCED THROUGH THE REAL SAMPLER ═══
+    --
+    -- WHAT THE OWNER'S CONSOLE SAID, DURING FAIR PLAY ON HIS OWN SERVER:
+    --
+    --   HEALTH AUDIT: Xeon (2) recovered 116 hp and 0 armour this match that the
+    --   server never issued (peak 29 in one sample, 4 samples)
+    --
+    -- 116 over 4 samples with a peak of 29 means every one of them was EXACTLY
+    -- 29. The mean equalling the peak is the diagnosis: there is no distribution
+    -- here, so it was never passive regeneration and never accumulated jitter.
+    -- It was one fixed reading arriving four times against a ledger that had not
+    -- moved between them.
+    --
+    -- WHERE THE FIXED READING COMES FROM. FiveM's ped health sync node
+    -- (CPedHealthDataNode::Parse) sends NO health field at all when its `isFine`
+    -- bit is set; the server's parser writes `data.health = maxHealth` in its
+    -- place, and `maxHealth` is itself `(data.maxHealth == 0) ? 200 : ...` for a
+    -- ped whose maximum was never synced. So a server-side read of exactly
+    -- `maxHealth` is a substitution rather than a reading, and the "recovery" it
+    -- scores is nothing but the distance the ledger sits below the ceiling --
+    -- which is why the wounded player was accused and the one already at full
+    -- (same match, same tick) counted zero.
+    --
+    -- THE OTHER HALF OF IT IS A GAMEPLAY BUG AND IT LIVES IN client/natives.lua:
+    -- initHealthModel used SetEntityMaxHealth, which does not take on a PLAYER
+    -- ped, so a player on any config/peds.lua model with a lower model-default
+    -- maximum was clamped below our ceiling and could never fill their bar. That
+    -- is what put a live player permanently below `maxHealth` in the first place.
+    do
+        local wounded = audited()
+
+        -- Hurt by the world, believed by the ledger: the ordinary asymmetric
+        -- path, and it is what leaves the ledger below the ceiling.
+        pedHealth[1001] = BR.ToEngineHp(71.0)
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        ok(wounded.hp == 71.0,
+            'a wounded player\'s ledger follows the ped down to 71',
+            tostring(wounded.hp))
+
+        -- FOUR SUBSTITUTED READINGS, each reverting to the truth on the very
+        -- next pass -- which is the shape of the owner's report: four counted
+        -- samples spread far enough apart to have earned three resyncs.
+        for _ = 1, 4 do
+            pedHealth[1001] = BR.Config.Match.maxHealth
+            fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+            pedHealth[1001] = BR.ToEngineHp(71.0)
+            fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        end
+
+        local t = wounded.healthAudit or {}
+        ok((t.hp or 0.0) == 0.0 and (t.samples or 0) == 0,
+            'four substituted ceiling readings against a ledger of 71 accuse '
+                .. 'nobody of anything -- this counted 116 hp over 4 samples '
+                .. 'with a peak of 29 before the UNSYNCED clause existed',
+            ('counted %s hp, peak %s, samples %s'):format(
+                tostring(t.hp), tostring(t.peak), tostring(t.samples)))
+        ok((t.excused or {})[BR.HealthExcuse.UNSYNCED] == 4,
+            'and every one of them is named in the excuse breakdown, so the '
+                .. 'operator can see WHAT was thrown away',
+            tostring((t.excused or {})[BR.HealthExcuse.UNSYNCED]))
+
+        -- AND THE LEDGER NEVER MOVED, which is the reason the owner saw a log
+        -- line and nothing else. The detector was the only thing that was wrong.
+        ok(wounded.hp == 71.0, 'while the ledger holds exactly where it was',
+            tostring(wounded.hp))
+    end
+
+    -- ═══ ...AND A CLIENT THAT ACTUALLY SITS THERE IS STILL CAUGHT ═══
+    --
+    -- The excuse is one sample, not a state. A modified client pinning its ped
+    -- at full health presents the ceiling on every consecutive pass, so the
+    -- second one counts and so does every one after it -- at 4Hz the report bar
+    -- is still crossed inside a second. Anything less than this and the clause
+    -- would be an amnesty rather than a correction.
+    do
+        local cheat = audited()
+
+        pedHealth[1001] = BR.ToEngineHp(20.0)
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        ok(cheat.hp == 20.0, 'a shot player\'s ledger is down at 20',
+            tostring(cheat.hp))
+
+        pedHealth[1001] = BR.Config.Match.maxHealth
+        for _ = 1, 6 do
+            fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        end
+
+        local t = cheat.healthAudit or {}
+        ok((t.samples or 0) >= 4 and (t.hp or 0.0) >= 240.0,
+            'a client PINNED at the ceiling is counted on every pass after the '
+                .. 'first, so the exploit this detector exists for still crosses '
+                .. 'the bar in well under a second',
+            ('counted %s hp over %s samples'):format(
+                tostring(t.hp), tostring(t.samples)))
+        ok((t.excused or {})[BR.HealthExcuse.UNSYNCED] == 1,
+            'with exactly one pass excused -- the unconfirmed one',
+            tostring((t.excused or {})[BR.HealthExcuse.UNSYNCED]))
+        ok(cheat.hp == 20.0,
+            'and the ledger refuses the whole of it, exactly as before',
+            tostring(cheat.hp))
+    end
+
     pedHealth[1001], pedHealth[1002] = nil, nil
 end
 
