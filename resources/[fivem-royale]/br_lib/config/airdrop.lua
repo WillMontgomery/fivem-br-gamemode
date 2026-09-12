@@ -798,8 +798,18 @@ BR.Config.Airdrop = {
         -- to this file. It is deliberately NOT defined here -- building it would
         -- be building #191.
         healing   = { kind = 'consumable', ids = { 'medkit', 'cprkit' } },
+        -- EVERY POOL A DROPPED WEAPON CAN ACTUALLY USE, WHICH IS NOT THE SAME
+        -- LIST IT WAS. Until 2026-09-11 HEAVY here meant "sniper and MG rounds";
+        -- it now means rockets, so this list without SNIPER and LMG would pay a
+        -- Heavy Sniper and three rockets -- precisely the failure the note above
+        -- `payout` exists to prevent, wearing the best loot table in the game.
+        --
+        -- tools/test_airdrop.lua derives the requirement from each dropped
+        -- weapon's own `ammo` field rather than from any literal, so this list has
+        -- to move the next time the pools do and cannot quietly fail to.
         ammo      = { kind = 'ammo', ids = {
-            BR.AmmoType.HEAVY, BR.AmmoType.MEDIUM, BR.AmmoType.SHELLS,
+            BR.AmmoType.HEAVY, BR.AmmoType.SNIPER, BR.AmmoType.LMG,
+            BR.AmmoType.MEDIUM, BR.AmmoType.SHELLS,
             BR.AmmoType.SMG, BR.AmmoType.LIGHT,
         } },
     },

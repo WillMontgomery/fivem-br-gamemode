@@ -424,6 +424,56 @@ do
        #BR.Config.WeaponsByRarity[BR.Rarity.LEGENDARY],
        'the legendary pool is the legendary bucket')
 
+    -- ═══ EVERY POOL A DROPPED WEAPON CAN USE, OR THE BEST LOOT TABLE IN THE GAME
+    --     PAYS A GUN WITH NO ROUNDS ═══
+    --
+    -- The note above `payout` says it outright: "a minimum roll that paid an RPG
+    -- and no heavy rounds would be the worst drop in the game wearing the best
+    -- loot table". On 2026-09-11 HEAVY stopped meaning "sniper and MG rounds" and
+    -- started meaning rockets, which put that sentence one commit from being true
+    -- again about the Heavy Sniper -- a legendary this drop deals from its own
+    -- bucket.
+    --
+    -- DERIVED FROM EACH WEAPON'S OWN `ammo` FIELD AND FROM NO LITERAL, which is
+    -- the only version of this check that survives the pools moving again. A
+    -- BR.AmmoType.HEAVY written here would have agreed with the broken config.
+    local paid = {}
+    for _, t in ipairs(A.resolvedPools.ammo or {}) do paid[t.item] = true end
+
+    local needed, unpaid = {}, {}
+    for _, name in ipairs({ 'exclusive', 'legendary', 'epic' }) do
+        for _, t in ipairs(A.resolvedPools[name] or {}) do
+            local w = BR.Config.WeaponById[t.item]
+            if w and w.ammo then needed[w.ammo] = w.label or w.id end
+        end
+    end
+    for pool, byWhom in pairs(needed) do
+        if not paid[pool] then
+            unpaid[#unpaid + 1] = ('%s (%s has no rounds)'):format(pool, byWhom)
+        end
+    end
+    table.sort(unpaid)
+    eq(#unpaid, 0,
+        'every ammo pool a dropped weapon draws from is in the drop\'s own ammo '
+            .. 'pool -- ' .. (#unpaid > 0 and table.concat(unpaid, ', ')
+                              or 'nothing unpaid'))
+
+    -- ...AND IT IS EVERY POOL IN THE GAME, WHICH IS MORE THAN THE CHECK ABOVE
+    -- DEMANDS AND IS DELIBERATE. No EPIC or LEGENDARY weapon draws SMG, so the
+    -- assertion above would pass with SMG rounds left out -- but a player opening
+    -- a crate is carrying floor loot too, and the drop has always fed that. So the
+    -- list tracks BR.Config.AmmoOrder rather than only what the crate itself
+    -- hands out, and this is what makes the next pool anybody adds show up here.
+    local missingPool = {}
+    for _, pool in ipairs(BR.Config.AmmoOrder) do
+        if not paid[pool] then missingPool[#missingPool + 1] = pool end
+    end
+    eq(#missingPool, 0,
+        'and the drop pays every pool in BR.Config.AmmoOrder, for the floor loot '
+            .. 'the player already had -- '
+            .. (#missingPool > 0 and table.concat(missingPool, ', ')
+                or 'none missing'))
+
     -- THE EXCLUSIVE POOL IS THE EXPLOSIVES, whole. Named by id rather than by
     -- bucket, so this is also the check that nobody quietly re-pointed it at a
     -- tier -- which would pay out ordinary rifles under an "exclusive" label.
