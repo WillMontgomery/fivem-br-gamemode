@@ -841,39 +841,51 @@ for (const name of builtCss) {
 }
 
 // ---------------------------------------------------------------------------
-// R17  The storm card's closing ring is the tutorial's ring, on the card's beat.
+// R17  The storm card's closing shockwave fires once, runs for half a second,
+//      and keeps the card's own silhouette.
 //
-// Owner, 2026-09-11: "can you also make an affect on the timer card when the
-// 'storm moving now' timer starts? whatever affect the tutorial uses around the
-// buttons -- that would be great but like 4x the radius."
+// Owner, 2026-09-12: "What I want is a one-time ripple effect that explodes from
+// the border of the card, in the shape of the card, like a shockwave. I want
+// that to happen when the timer changes from 'STORM MOVING IN' to 'STORM CLOSING
+// NOW' and display it for 0.5 seconds."
 //
-// FOUR SEPARATE WAYS TO LOOK RIGHT AND BE WRONG, which is why this is a rule
-// and not a screenshot:
+// THIS RULE REPLACED THE ONE THAT PINNED A CONTINUOUS RING on the same element,
+// shipped the day before and rejected on sight: "I don't like what we did to the
+// storm timer with the outline." Every assertion below is a way this can quietly
+// turn back into that ring, or into something that looks right in a screenshot
+// and is wrong in a match:
 //
-//   * a second pulse. `.panel-hot` already breathes its border on a 1.6s beat,
-//     so a ring mounted at the phase flip breathes at an offset nobody chose --
-//     the card shimmers instead of breathing, and index.css's own words about
-//     .tut-ring are "one pulse in the interface, not two". The lock is the
-//     matching period AND delay, and it is two numbers that can drift apart in
-//     a later edit without anything failing to compile.
-//   * a second set of keyframes. Writing stormRingPulse with the same two
-//     frames reverts nothing visibly and quietly doubles the vocabulary.
-//   * the radius. 4x is the box-shadow SPREAD, measured against the ring it
-//     copies. A literal 1.12rem with no relationship to .tut-ring's 0.28rem
-//     stops being 4x the moment the tutorial's ring is retuned.
-//   * the gate. The ring is mounted always and shown by a class, so the thing
-//     that starts and stops it is one ternary on `shrinking` -- and a ring left
-//     permanently up reads as a broken HUD rather than as a missing feature.
+//   * it loops. `infinite`, or an iteration count above one, and the ripple IS
+//     the rejected ring under a new name.
+//   * it re-fires. `shrinking` is true for the whole closing phase and the storm
+//     envelope lands at 4 Hz, so an element rendered from that flag directly
+//     either sits there permanently or restarts four times a second. The element
+//     has to come from a counter that changes on the EDGE and be keyed by it --
+//     a key change is the only thing that restarts a CSS animation in React.
+//   * it fires on arrival. A `useRef(false)` remembering the previous phase
+//     makes MOUNTING during the closing phase indistinguishable from the
+//     transition into it, and this component remounts mid-match every time the
+//     HUD comes back from the ride. The seed has to be the phase first seen.
+//   * the state swap replays it. The `key` spent one commit on the `relative`
+//     wrapper, for the ring's sake. Left there, running into the storm remounts
+//     the wrapper and replays a one-time effect on an event that is not its
+//     trigger.
+//   * the duration drifts. Half a second is a number he gave, and the player
+//     waits through delay as well as duration, so both are counted.
+//   * the silhouette. "In the shape of the card" is the card's own corner and
+//     nothing else. A circle, a pill and a softened rectangle are three other
+//     effects, and this card is square.
 //
-// IT CAN FAIL. Drop the `is-up` ternary, rename the keyframes, change either
-// time, move the `key` back off the wrapper, or retune one spread on its own.
+// IT CAN FAIL. Add `infinite`, render the span from `shrinking`, seed the ref
+// with `false`, move the key back to the wrapper, change either time, or give
+// the ripple a corner of its own.
 // ---------------------------------------------------------------------------
 {
   const cssPath = join(SRC, 'index.css')
   const tsxPath = join(SRC, 'hud', 'StormBar.tsx')
 
   if (!existsSync(cssPath) || !existsSync(tsxPath)) {
-    fail('R17 storm-ring', 'src/hud/StormBar.tsx',
+    fail('R17 storm-shock', 'src/hud/StormBar.tsx',
       'index.css or hud/StormBar.tsx is missing. If they moved, move this rule'
       + ' with them rather than letting it pass over nothing.')
   } else {
@@ -881,95 +893,181 @@ for (const name of builtCss) {
     const tsx = stripComments(read(tsxPath))
     const rule = (name) => (css.match(new RegExp(`\\.${name}\\s*\\{([^}]*)\\}`)) ?? [])[1] ?? null
 
-    // Every time in an animation shorthand, in ms. `1.6s` and `1600ms` are the
-    // same beat and this rule is about the beat, not about the spelling.
+    // Every time in an animation shorthand, in ms. `0.5s` and `500ms` are the
+    // same half-second and this rule is about the half-second, not the spelling.
     const times = (decl) =>
       [...decl.matchAll(/(?<![\w.-])(\d+(?:\.\d+)?)(ms|s)(?![\w-])/g)]
         .map((m) => (m[2] === 's' ? parseFloat(m[1]) * 1000 : parseFloat(m[1])))
-    const spread = (decl) => {
-      const m = /box-shadow\s*:\s*0\s+0\s+0\s+(\d+(?:\.\d+)?)rem/.exec(decl)
-      return m ? parseFloat(m[1]) : null
+    const corner = (decl) =>
+      (/border-radius\s*:\s*([^;]+)/.exec(decl) ?? [])[1]?.trim() ?? null
+
+    // ── the rejected ring is gone, not parked behind a flag ──
+    if (/storm-ring/.test(css) || /storm-ring/.test(tsx)) {
+      fail('R17 storm-shock', 'src/index.css',
+        '`.storm-ring` is still here. The continuous ring was rejected and'
+        + ' replaced, not retired behind a class -- left in the tree it is one'
+        + ' edit away from being back on the card.')
     }
 
-    const ring = rule('storm-ring')
-    const tut = rule('tut-ring')
+    const shock = rule('storm-shock')
     const hot = rule('panel-hot')
 
-    if (ring == null || tut == null || hot == null) {
-      fail('R17 storm-ring', 'src/index.css',
-        'one of .storm-ring, .tut-ring or .panel-hot is gone. The first copies'
-        + ' the second and shares the third\'s beat; renaming any of them means'
+    if (shock == null || hot == null) {
+      fail('R17 storm-shock', 'src/index.css',
+        'one of .storm-shock or .panel-hot is gone. The first is the ripple and'
+        + ' the second is the card whose shape it copies; renaming either means'
         + ' renaming it here, not deleting the rule.')
     } else {
-      // ── the ring is the tutorial's, four times as wide ──
-      const rs = spread(ring)
-      const ts = spread(tut)
-      if (rs == null || ts == null) {
-        fail('R17 storm-ring', 'src/index.css',
-          'no `box-shadow: 0 0 0 <n>rem` on .storm-ring or .tut-ring. The halo'
-          + ' IS the request; a ring with only a border is a different effect.')
-      } else if (Math.abs(rs - ts * 4) > 0.005) {
-        fail('R17 storm-ring', 'src/index.css',
-          `.storm-ring's halo spreads ${rs}rem against .tut-ring's ${ts}rem --`
-          + ` 4x is ${(ts * 4).toFixed(2)}rem. The owner asked for the tutorial's`
-          + ' ring at four times the radius, which is this spread and not the'
-          + ' border, the standoff or the card.')
-      }
+      const anim = (/animation\s*:\s*([^;]+)/.exec(shock) ?? [])[1] ?? ''
 
-      // ── one pulse, and it is matePulse ──
-      const ringAnim = (/animation\s*:\s*([^;]+)/.exec(ring) ?? [])[1] ?? ''
-      if (!/\bmatePulse\b/.test(ringAnim)) {
-        fail('R17 storm-ring', 'src/index.css',
-          '.storm-ring does not animate matePulse. The breath is shared with'
-          + ' .tut-ring and the squad panel on purpose -- a second set of'
-          + ' keyframes with the same two frames is a second vocabulary.')
-      }
-
-      // ── on the card's own beat: same period, same delay ──
-      const hotEdge = (hot.match(/animation\s*:\s*([^;]+)/) ?? [])[1]
-        ?.split(',').find((a) => /\bhotEdge\b/.test(a)) ?? null
-      if (hotEdge == null) {
-        fail('R17 storm-ring', 'src/index.css',
-          '.panel-hot no longer runs hotEdge. The ring\'s delay exists only to'
-          + ' fall in step with that pulse; if the card stopped pulsing, this'
-          + ' ring should be rethought rather than left syncing to nothing.')
+      // ── half a second, start to invisible ──
+      if (!anim) {
+        fail('R17 storm-shock', 'src/index.css',
+          '.storm-shock has no `animation`. A ripple that does not move is a'
+          + ' second border sitting permanently around the card.')
       } else {
-        const [rp, rd] = times(ringAnim)
-        const [hp, hd] = times(hotEdge)
-        if (rp !== hp || rd !== hd) {
-          fail('R17 storm-ring', 'src/index.css',
-            `.storm-ring breathes ${rp}ms after ${rd}ms; .panel-hot's hotEdge`
-            + ` breathes ${hp}ms after ${hd}ms. Two pulses on one card at`
-            + ' different periods or out of step is the shimmer this was built'
-            + ' to avoid -- match both numbers or take the card\'s pulse away.')
+        const total = times(anim).reduce((a, b) => a + b, 0)
+        if (total !== 500) {
+          fail('R17 storm-shock', 'src/index.css',
+            `.storm-shock's animation totals ${total}ms of duration plus delay.`
+            + ' The owner asked for 0.5 seconds start to invisible, and a delay'
+            + ' is time the player waits through just as much as the duration'
+            + ' is.')
+        }
+
+        // ── once. Not a loop, not two passes ──
+        const counts = anim
+          .replace(/(?<![\w.-])\d+(?:\.\d+)?(?:ms|s)(?![\w-])/g, ' ')
+          .replace(/cubic-bezier\([^)]*\)/g, ' ')
+          .replace(/var\([^)]*\)/g, ' ')
+          .match(/(?<![\w.-])\d+(?:\.\d+)?(?![\w-])/g) ?? []
+        if (/\binfinite\b/.test(anim) || counts.some((n) => Number(n) !== 1)) {
+          fail('R17 storm-shock', 'src/index.css',
+            `.storm-shock animates \`${anim.trim()}\` -- it repeats. "A one-time`
+            + ' ripple" is the request, and a repeating outline on this card is'
+            + ' the effect the owner rejected the day before this replaced it.')
+        }
+
+        // ── it grows and fades, and touches nothing the layout thread reads ──
+        const block = keyframeBlocks(css).find((b) => {
+          const n = (/@keyframes\s+([\w-]+)/.exec(b) ?? [])[1]
+          return n && new RegExp(`(?<![\\w-])${n}(?![\\w-])`).test(anim)
+        })
+        if (!block) {
+          fail('R17 storm-shock', 'src/index.css',
+            '.storm-shock names an animation with no @keyframes in this file.'
+            + ' The element then draws a static outline around the card and'
+            + ' never leaves, which is worse than drawing nothing.')
+        } else {
+          if (!/transform\s*:[^;]*scale\(/.test(block)) {
+            fail('R17 storm-shock', 'src/index.css',
+              'the shockwave does not scale. "Explodes from the border of the'
+              + ' card, in the shape of the card" is a scale on the card\'s own'
+              + ' box; growing it by animating inset or width reflows the'
+              + ' wrapper on every frame of an effect that plays while a wall'
+              + ' is closing.')
+          }
+          if (!/opacity\s*:\s*0(?![\w.])/.test(block)) {
+            fail('R17 storm-shock', 'src/index.css',
+              'the shockwave never reaches opacity 0. A shockwave fades as it'
+              + ' grows, and the final frame is what holds after the 500ms --'
+              + ' without it the ripple parks permanently around the card.')
+          }
+          const props = [...new Set([...block.matchAll(/([a-z-]+)\s*:/g)].map((m) => m[1]))]
+          const stray = props.filter((p) => p !== 'transform' && p !== 'opacity')
+          if (stray.length) {
+            fail('R17 storm-shock', 'src/index.css',
+              `the shockwave animates ${stray.join(', ')}. Transform and opacity`
+              + ' only, so the browser can composite it without a paint or a'
+              + ' layout pass per frame.')
+          }
         }
       }
 
-      // ── it starts at the flip and stops when the shrinking does ──
-      const at = tsx.indexOf('storm-ring')
-      if (at === -1) {
-        fail('R17 storm-ring', 'src/hud/StormBar.tsx',
-          'nothing renders the ring. The CSS on its own draws nothing, so this'
-          + ' is the whole feature: a `storm-ring` element beside the card.')
+      // ── the card's silhouette, and the card is square ──
+      const sc = corner(shock)
+      const hc = corner(hot)
+      if (sc == null || hc == null) {
+        fail('R17 storm-shock', 'src/index.css',
+          'no `border-radius` on .storm-shock or .panel-hot. "In the shape of'
+          + ' the card" is a corner the two have to agree on, and a missing one'
+          + ' on either side is an agreement nobody can check.')
+      } else if (sc !== hc) {
+        fail('R17 storm-shock', 'src/index.css',
+          `.storm-shock's corner is ${sc} against the card's ${hc}. The ripple`
+          + ' keeps the card\'s silhouette or it is a different shape expanding'
+          + ' out of it.')
       } else {
-        const el = tsx.slice(Math.max(0, at - 160), at + 160)
-        if (!/\bshrinking\b/.test(el) || !/is-up/.test(el)) {
-          fail('R17 storm-ring', 'src/hud/StormBar.tsx',
-            'the ring is not gated on `shrinking` via `is-up`. That flag is the'
-            + ' moment the owner pointed at -- the same one that flips the label'
-            + ' to "Storm closing now" -- and the ring has to go away again when'
-            + ' the wall stops, not stay up for the rest of the match.')
+        const px = /^(\d+(?:\.\d+)?)px$/.exec(sc)
+        if (!px || parseFloat(px[1]) > 4) {
+          fail('R17 storm-shock', 'src/index.css',
+            `the shared corner is ${sc}, which is not square. The storm placard`
+            + ' was restyled square and the owner kept it, so the ripple that'
+            + ' copies it is square too. If the card is meant to round, retune'
+            + ' .panel-hot deliberately and move this bound with it.')
         }
       }
+    }
 
-      // ── the key is on the wrapper, so card and ring restart together ──
-      if (!/key=\{[^}]*\}\s+className="relative"|className="relative"\s+key=\{[^}]*\}/.test(tsx)) {
-        fail('R17 storm-ring', 'src/hud/StormBar.tsx',
-          'the state `key` is not on the `relative` wrapper that holds the ring.'
-          + ' On a swap the card remounts and its hotEdge restarts from zero; a'
-          + ' ring outside that remount keeps its old phase and the two beats'
-          + ' come apart, which is exactly what the matching delay is for.')
+    // ── one shot: mounted from a counter on the edge, keyed by which edge ──
+    const lines = tsx.split('\n')
+    const i = lines.findIndex((l) => l.includes('storm-shock'))
+    if (i === -1) {
+      fail('R17 storm-shock', 'src/hud/StormBar.tsx',
+        'nothing renders the shockwave. The CSS on its own draws nothing, so'
+        + ' this is the whole feature: a `storm-shock` element beside the card,'
+        + ' inside the `relative` wrapper it needs because `.panel-hot` clips'
+        + ' its own overflow.')
+    } else {
+      const el = lines.slice(Math.max(0, i - 2), i + 2).join('\n')
+      if (/\bshrinking\b/.test(el)) {
+        fail('R17 storm-shock', 'src/hud/StormBar.tsx',
+          'the shockwave is rendered from `shrinking`. That flag is true for the'
+          + ' whole closing phase and the storm envelope lands at 4 Hz, so the'
+          + ' ripple would either sit there permanently or restart four times a'
+          + ' second. Mount it from a counter that only moves on the transition.')
       }
+      if (!/key=\{/.test(el)) {
+        fail('R17 storm-shock', 'src/hud/StormBar.tsx',
+          'the shockwave element carries no `key`. Re-rendering an element does'
+          + ' not restart its CSS animation; remounting it does, and a changed'
+          + ' key is how React is told to remount. Without one the second'
+          + ' transition of a match plays nothing at all.')
+      }
+    }
+
+    // ── mounting mid-phase is not a transition ──
+    if (/useRef\s*(?:<[^>]*>)?\s*\(\s*false\s*\)/.test(tsx)) {
+      fail('R17 storm-shock', 'src/hud/StormBar.tsx',
+        'a `useRef(false)` is remembering the previous phase. Seeded false, a'
+        + ' component that MOUNTS during the closing phase sees the same'
+        + ' false-to-true edge as one that watched the wall start moving -- and'
+        + ' this component remounts mid-match every time the HUD comes back from'
+        + ' the ride. Seed it with the phase first seen.')
+    }
+    if (!/useRef\s*(?:<[^>]*>)?\s*\([^)]*\bshrinking\b[^)]*\)/.test(tsx)) {
+      fail('R17 storm-shock', 'src/hud/StormBar.tsx',
+        'no `useRef` is seeded from `shrinking`. The remembered phase has to'
+        + ' start as the phase this component first saw, or opening the HUD'
+        + ' while the storm is already closing fires a transition that never'
+        + ' happened.')
+    }
+
+    // ── the wrapper holds still, or a state swap replays a one-shot ──
+    if (!/className="relative"/.test(tsx)) {
+      fail('R17 storm-shock', 'src/hud/StormBar.tsx',
+        'the `relative` wrapper is gone. The shockwave is positioned against it,'
+        + ' and it is a sibling of the card rather than a child because'
+        + ' `.panel-hot` is `overflow: hidden` for its cap bar and would clip the'
+        + ' ripple off at the card\'s edge -- the whole distance it travels.')
+    }
+    if (/key=\{[^}]*\}\s+className="relative"|className="relative"\s+key=\{[^}]*\}/.test(tsx)) {
+      fail('R17 storm-shock', 'src/hud/StormBar.tsx',
+        'the state `key` is on the `relative` wrapper. It was there for the ring,'
+        + ' which needed card and ring to remount on the same frame. Left there,'
+        + ' running into the storm remounts the wrapper -- and a remount of the'
+        + ' wrapper replays the shockwave on an event that is not its trigger.'
+        + ' The key belongs on the card, whose hotDrop it exists to replay.')
     }
   }
 }

@@ -327,11 +327,6 @@
   --color-storm-fade:  rgba(192, 38, 211, 0.55);
   --color-danger-edge: rgba(239, 68, 68, 0.55);
   --color-accent-edge: rgba(34, 211, 238, 0.60);
-  /* The storm's HALO, at the alpha .tut-ring uses for the tutorial's. A token
-     rather than a literal because the halo sits directly against a border in
-     --color-storm, and tritan mode moves that hue: a hardcoded rgba would put
-     two different magentas on one element in that mode. */
-  --color-storm-glow:  rgba(192, 38, 211, 0.16);
 
   /* SURFACE GEOMETRY.
      --cut is the bevel a .plate opens to when it takes focus; at rest a plate
@@ -395,7 +390,6 @@
   --rarity-5: #fb7185;
   --color-storm: #d946ef;
   --color-storm-fade: rgba(217, 70, 239, 0.55);
-  --color-storm-glow: rgba(217, 70, 239, 0.16);
 }
 
 /* THE PIPS. A rarity you can COUNT, for when a rarity you can see is not
@@ -1362,48 +1356,59 @@ html, body, #root {
              stormWarnPulse 1.1s ease-in-out 400ms infinite;
 }
 
-/* ═══ THE CLOSING RING ═══
+/* ═══ THE CLOSING SHOCKWAVE ═══
 
-   Owner, 2026-09-11: "can you also make an affect on the timer card when the
-   'storm moving now' timer starts? whatever affect the tutorial uses around the
-   buttons -- that would be great but like 4x the radius."
+   Owner, 2026-09-12: "What I want is a one-time ripple effect that explodes
+   from the border of the card, in the shape of the card, like a shockwave. I
+   want that to happen when the timer changes from 'STORM MOVING IN' to 'STORM
+   CLOSING NOW' and display it for 0.5 seconds."
 
-   THE TUTORIAL'S RING WITH ITS HALO FOUR TIMES AS WIDE, and nothing else
-   changed: .tut-ring's box-shadow spread is 0.28rem and this is 1.12rem. The
-   2px border, the standoff and the breath are that ring's own, and the breath
-   is literally its keyframes -- matePulse, not a second pulse spelled
-   differently. One pulse in the interface.
+   THIS REPLACED A CONTINUOUS RING, and the replacement is the point. The ring
+   (2026-09-11) breathed for the whole of the closing phase on the card's own
+   1.6s beat; he looked at it and said "I don't like what we did to the storm
+   timer with the outline". A thing that announces a transition should be over
+   when the transition is, so this one is a single 500ms expansion and then
+   nothing at all. Do not reintroduce an `infinite` here.
+
+   IT STARTS AS THE CARD'S BORDER. `inset: 0` and a 2px border in the same
+   --color-storm the card's edge already wears means frame zero draws the ripple
+   exactly on top of the outline it explodes from; scale(1) to scale(1.3) is it
+   peeling off and travelling outward. There is no separate "appear" -- what you
+   see start is the card's own edge leaving.
+
+   IN THE SHAPE OF THE CARD, which is what rules out both a circle and a
+   softened rectangle. `border-radius` here is `.panel-hot`'s 3px and has to
+   stay equal to it: the card was restyled square and a ripple with its own
+   corner treatment stops being the card's silhouette the moment either number
+   moves. check-ui R17 asserts the two are the same.
 
    A SIBLING OF THE CARD, NEVER A CHILD. `.panel-hot` is `overflow: hidden` so
-   its cap bar can sit flush inside a 2px border, and that clip applies to a
-   child's OUTER box-shadow -- a ring drawn inside the card would lose the halo,
-   which is the whole of what was asked for. StormBar puts it beside the card in
-   a `relative` wrapper instead.
+   its cap bar can sit flush inside a 2px border, and that clip would cut the
+   ripple off at the card's edge -- which is the entire distance it travels.
+   StormBar puts it beside the card in a `relative` wrapper instead.
 
-   IT BREATHES ON THE CARD'S OWN BEAT, WHICH IS WHAT THE DELAY IS FOR. The card
-   is already pulsing: `.panel-hot` runs hotEdge on its border color, 1.6s
-   ease-in-out with a 620ms delay from mount, for as long as it is on screen.
-   Same period, same easing, same delay here -- and the ring is MOUNTED WITH THE
-   CARD and merely hidden, rather than mounted at the phase flip, so the two are
-   in phase rather than beating against each other at an offset that depends on
-   when the wall happened to start moving. The card's `key` moved to that same
-   wrapper for this reason: a state swap restarts both together or neither.
-
-   Nothing here is a numeral or a word, so there is no type in it: the card
-   below already says "Storm closing now". */
-.storm-ring {
-  position: absolute;
-  /* -0.25rem is the 4px the tutorial's ring stands off its own subject. */
-  inset: -0.25rem;
-  border: 2px solid var(--color-storm);
-  box-shadow: 0 0 0 1.12rem var(--color-storm-glow);
-  pointer-events: none;
-  /* VISIBILITY, NOT A MOUNT AND NOT `display`. The animation has to keep its
-     phase while the storm is holding, and a display:none element runs none. */
-  visibility: hidden;
-  animation: matePulse 1600ms ease-in-out 620ms infinite;
+   TRANSFORM AND OPACITY ONLY, so it composites: no width, no box-shadow, no
+   inset animation. An expanding outline drawn by animating `inset` would relayout
+   the wrapper on every frame of an effect that fires while a wall is closing. */
+@keyframes stormShock {
+  0%   { opacity: 1; transform: scale(1); }
+  100% { opacity: 0; transform: scale(1.3); }
 }
-.storm-ring.is-up { visibility: visible; }
+.storm-shock {
+  position: absolute;
+  inset: 0;
+  border: 2px solid var(--color-storm);
+  /* .panel-hot's own corner. Change one and change both. */
+  border-radius: 3px;
+  pointer-events: none;
+  /* From the middle, so every edge leaves at once and the silhouette stays the
+     card's rather than sliding off a corner. */
+  transform-origin: 50% 50%;
+  /* 500ms, ONE PASS, and `both` so the last frame (invisible) is what holds
+     afterwards. No iteration count is written because the default is 1 and
+     naming it invites someone to edit it. */
+  animation: stormShock 500ms var(--ease-out) both;
+}
 
 /* The health-bar hit flash: a red wash over the bar that burns out in
    ~650ms. Remounted (key change) on every hp drop, so sustained damage --

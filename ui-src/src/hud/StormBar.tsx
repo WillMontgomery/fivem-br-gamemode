@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useUi } from '../store'
 import { HotCard, HotTime } from './HotCard'
 import type { StormPayload } from '../bridge/types'
@@ -27,6 +27,14 @@ export default function StormBar({ storm }: { storm: StormPayload | null }) {
   const timeRef = useRef<HTMLSpanElement>(null)
   const offset = useUi((s) => s.clockOffset)
   const endsAt = storm?.endsAt ?? 0
+
+  // READ BEFORE THE EARLY RETURN, because the shockwave below is a hook and
+  // hooks cannot sit under `if (!storm) return null`. `storm?.` rather than
+  // `storm.` is the whole of the difference from where this used to be
+  // computed; with no storm there is no phase, and `present` below is what
+  // tells that apart from a storm that is merely holding.
+  const shrinking = storm?.phaseState === 'shrinking'
+  const present = storm != null
 
   useEffect(() => {
     if (!endsAt) return
@@ -57,9 +65,36 @@ export default function StormBar({ storm }: { storm: StormPayload | null }) {
     return () => cancelAnimationFrame(raf)
   }, [endsAt, offset])
 
+  // THE CLOSING SHOCKWAVE (owner, 2026-09-12): "a one-time ripple effect that
+  // explodes from the border of the card, in the shape of the card, like a
+  // shockwave ... when the timer changes from 'STORM MOVING IN' to 'STORM
+  // CLOSING NOW' ... for 0.5 seconds."
+  //
+  // A COUNTER, NOT A BOOLEAN, and that is what makes it one-time. A `shrinking`
+  // boolean in the markup is true for the whole of the closing phase, and the
+  // storm envelope lands four times a second -- so anything gated on it directly
+  // is either up permanently or restarted on every payload. `shock` changes ONCE
+  // per edge, the element is keyed by it, and a key change is the only thing in
+  // React that restarts a CSS animation. Between edges the span re-renders with
+  // the same key and the browser leaves the animation exactly where it was.
+  const [shock, setShock] = useState(0)
+
+  // SEEDED FROM THE PHASE THIS COMPONENT FIRST SAW, never from `false`. A ref
+  // that starts false makes MOUNTING during the closing phase look identical to
+  // the transition into it, and this component mounts mid-match every time the
+  // HUD comes back from the ride or a resource restart. `null` is "no storm yet"
+  // and is deliberately not `false`: the first envelope of a match can arrive
+  // already shrinking, and that is a HUD opening late, not a wall starting to
+  // move.
+  const seen = useRef<boolean | null>(present ? shrinking : null)
+  useEffect(() => {
+    const now = present ? shrinking : null
+    if (now === true && seen.current === false) setShock((n) => n + 1)
+    seen.current = now
+  }, [present, shrinking])
+
   if (!storm) return null
 
-  const shrinking = storm.phaseState === 'shrinking'
   const hurting = storm.edgeDistance > 0 && (storm.dps ?? 0) > 0
 
   // THE BAR IS ALWAYS ON (user call, 2026-08-05). It used to hide through the
@@ -99,28 +134,26 @@ export default function StormBar({ storm }: { storm: StormPayload | null }) {
   // `--hot` drives the cap fill and the border together; the drop-in animation
   // is keyed off the state so it replays on the swap and only on the swap.
   //
-  // THE `key` IS ON THE WRAPPER AND NOT ON `HotCard`, which is a change of
-  // element and not of behavior: a keyed wrapper is remounted whole, so the
-  // `.panel-hot` div inside it is rebuilt and hotDrop replays exactly as it did
-  // when the key sat on the card. What the wrapper buys is the RING below --
-  // both surfaces restart on the same frame, which is the only way their two
-  // 1.6s pulses stay in phase across a state swap.
+  // THE `key` IS BACK ON `HotCard`. It spent one commit on the wrapper, for the
+  // continuous ring that used to live there: that ring needed the card and
+  // itself to remount on the same frame or their two 1.6s breaths came apart.
+  // The ring is gone and the shockwave has no beat to stay in step with, so the
+  // key belongs on the element whose animation it exists to replay -- and a
+  // wrapper that no longer remounts is what stops a state swap mid-shockwave
+  // from restarting a one-time effect.
   return (
-    // THE CLOSING RING (owner, 2026-09-11). The tutorial's ring around its
-    // subject, with the halo 4x as wide, put on the card for the moment the
-    // label flips to "Storm closing now". It is a SIBLING of the card because
-    // `.panel-hot` is `overflow: hidden` and would clip the halo off a child;
-    // it is always mounted and hidden, rather than mounted at the flip, so its
-    // breath stays on the same beat as the card's own border pulse. Both facts
-    // are written out in full beside `.storm-ring` in index.css.
+    // `relative` so the shockwave has the card's box to explode from. It is a
+    // SIBLING of the card and not a child because `.panel-hot` is
+    // `overflow: hidden` for its cap bar, and that clip would cut the ripple off
+    // at the card's own edge -- which is the entire distance it travels.
     //
-    // `relative` so the ring has the card's box to sit around. No `inline-block`
-    // here, unlike WarmupTimer's wrapper: this one holds a block-level card that
-    // already stretches to the slot, and an inline-block would put this card
-    // and the warmup card side by side in the shared top-centre slot rather
-    // than one under the other.
-    <div key={hurting ? 'out' : 'in'} className="relative">
+    // No `inline-block` here, unlike WarmupTimer's wrapper: this one holds a
+    // block-level card that already stretches to the slot, and an inline-block
+    // would put this card and the warmup card side by side in the shared
+    // top-centre slot rather than one under the other.
+    <div className="relative">
     <HotCard
+      key={hurting ? 'out' : 'in'}
       hot={hurting
         ? 'var(--color-danger)'
         : shrinking ? 'var(--color-storm)' : 'rgba(120,132,160,0.85)'}
@@ -155,7 +188,12 @@ export default function StormBar({ storm }: { storm: StormPayload | null }) {
         <HotTime ref={timeRef} fs="1.4rem" />
       )}
     </HotCard>
-    <span className={`storm-ring${shrinking ? ' is-up' : ''}`} aria-hidden="true" />
+    {/* MOUNTED ONLY AFTER AN EDGE HAS HAPPENED, and keyed by which one. `shock`
+        is 0 for a HUD that opened mid-phase and for the whole holding phase, so
+        there is nothing in the tree to animate; the first transition mounts it
+        and every later one replaces it. Nothing here is a word or a numeral --
+        the card below already says "Storm closing now". */}
+    {shock > 0 && <span key={shock} className="storm-shock" aria-hidden="true" />}
     </div>
   )
 }
