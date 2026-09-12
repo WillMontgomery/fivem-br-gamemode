@@ -12,7 +12,7 @@ function GetCurrentResourceName() return 'br_core' end
 local playerNames = {}
 function GetPlayerName(src) return playerNames[src] or ('Player' .. tostring(src)) end
 -- Identifier natives, for BR.Roster.ringmaster's lazy license resolution. A
--- test player's license is synthesised from its src so it is stable and
+-- test player's license is synthesized from its src so it is stable and
 -- distinct; the ringmaster projection block is the only thing that reads them.
 --
 -- A SERVER ID IS NOT A PERSON, AND THE OVERRIDE IS WHAT LETS A TEST SAY SO

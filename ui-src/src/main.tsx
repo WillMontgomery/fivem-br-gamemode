@@ -79,7 +79,7 @@ document.documentElement.classList.add('dark')
 // AUDITIONING OUR OWN CUES.
 //
 // /brsfx in Lua can only play the native combat cues -- everything else is
-// synthesised in the browser and Lua cannot reach it. Exposed on window so the
+// synthesized in the browser and Lua cannot reach it. Exposed on window so the
 // palette can be heard from the F8 console with:
 //
 //     brcues()            play every cue, 700ms apart

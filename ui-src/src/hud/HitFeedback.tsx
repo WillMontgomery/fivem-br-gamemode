@@ -22,7 +22,7 @@ import { useNuiEvent } from '../bridge/useNuiEvent'
  * fired from Lua: the per-bullet MARKER because it fires during shooting and
  * has to duck, and now the ELIMINATION too.
  *
- * The elimination was synthesised here for as long as `elim` resolved to
+ * The elimination was synthesized here for as long as `elim` resolved to
  * nothing in config/audio.lua, which made this the only sound a kill made. The
  * owner's own DLC pairs landed on 2026-09-08 and gave that key a real one, so
  * state.lua's `BR.Sfx.play('elim')` and this component's `play('elim')` both

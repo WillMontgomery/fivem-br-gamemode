@@ -541,7 +541,7 @@ html, body, #root {
      numbers at the use site, because 350 is an unusual value that reads as a
      typo -- and a future reader "correcting" it to 400 would quietly undo the
      one thing that makes these cards sound different from the rest of the UI.
-     350 is a REAL weight here and not a synthesised one: the variable axis runs
+     350 is a REAL weight here and not a synthesized one: the variable axis runs
      200-1000 in steps of 1. */
   --font-tutorial-body: 350;
   --font-tutorial-head: 700;
@@ -629,7 +629,7 @@ html, body, #root {
    sentence case. Above ~1.05rem the prose starts competing with SAVE/CANCEL.
 
    WHY 600 AND NOT 700. Both are real loaded weights (main.tsx imports Barlow
-   400/500/600/700, so neither synthesises). 600 is the project's existing
+   400/500/600/700, so neither synthesizes). 600 is the project's existing
    emphasis weight -- `.micro-label`, chat author names -- and 700 across a
    four-line paragraph reads as shouting rather than as body copy.
 
@@ -1228,7 +1228,7 @@ html, body, #root {
    name should be bold."
 
    700 AND NOT 600. Barlow 400/500/600/700 are all really loaded (main.tsx), so
-   neither weight synthesises and both are honest choices. 600 is this project's
+   neither weight synthesizes and both are honest choices. 600 is this project's
    ORDINARY emphasis -- `.micro-label`, chat author names, `.body-text` itself --
    which is exactly why it is wrong here: a notice is one short sentence at
    0.8125rem read peripherally while the player is doing something else, and a

@@ -634,7 +634,7 @@ function Row({ m, talking, silent }: {
               This group is the first flex item of the row above, which is
               baseline-aligned -- so the group's own baseline decides where the
               whole row sits and how tall the plate is. A flex container with no
-              baseline-aligned item inside it synthesises one from its FIRST
+              baseline-aligned item inside it synthesizes one from its FIRST
               item's bottom edge, and that first item is the voice mark, whose
               size follows the player's text-size preference. Aligning on the
               baseline makes the NAME the source instead; the mark opts out with

@@ -2,7 +2,7 @@
 --
 -- WHAT IS AND IS NOT HERE.
 --
--- Everything the player hears from the INTERFACE is synthesised in
+-- Everything the player hears from the INTERFACE is synthesized in
 -- ui-src/src/audio/cues.ts: menus, verdicts, the storm, loot tiers. GTA's
 -- frontend sounds are instantly recognisable as GTA Online's menus, which is
 -- the one association a standalone game mode should not be making, and they
@@ -79,7 +79,7 @@ BR.Config.Audio = {
         --
         -- AND `ui.hover` WENT WITH THEM, ONE ROUND LATE, FOR THE SAME REASON IT
         -- SAYS TWO LINES UP. It sat directly under that sentence at 40ms while
-        -- being a cue this table has never held: ui.hover is synthesised in the
+        -- being a cue this table has never held: ui.hover is synthesized in the
         -- BROWSER (ui-src/src/audio/cues.ts), which carries its own 45ms floor
         -- for it in that file's MIN_GAP. BR.Sfx.play('ui.hover') would take the
         -- unknown-cue path, so this line could never throttle anything.
@@ -110,7 +110,7 @@ BR.Config.Audio = {
         -- NATIVE IS COMBAT ONLY.
         --
         -- Everything the player hears from the INTERFACE -- menus, verdicts,
-        -- pickups, the storm -- is synthesised in the browser
+        -- pickups, the storm -- is synthesized in the browser
         -- (ui-src/src/audio/cues.ts). GTA's frontend sounds are instantly
         -- recognisable as GTA Online's menus, which is the one association a
         -- standalone mode should not be making, and they cannot be varied or
@@ -149,7 +149,7 @@ BR.Config.Audio = {
         --
         -- THE LAST SENTENCE IS THE ONE THAT DECIDES THE MEDIUM, and it decides
         -- it on a fact rather than a preference. ui-src/src/audio/cues.ts plays
-        -- into ONE browser on ONE client: a CEF-synthesised cue physically
+        -- into ONE browser on ONE client: a CEF-synthesized cue physically
         -- cannot reach the passenger sitting beside the driver, because that
         -- passenger is a different machine with a different browser. So "all
         -- occupants hear it" rules the browser out, and the owner asked for
@@ -323,7 +323,7 @@ BR.Config.Audio = {
         -- in the browser. That was the rule until #175, which the owner closed
         -- with "work to be tracked in #24" -- this issue. His reasoning there
         -- was recognition rather than mix purity: a squadmate going down should
-        -- sound like what the player already knows, and a second synthesised
+        -- sound like what the player already knows, and a second synthesized
         -- vocabulary means learning the same event twice.
         --
         -- SO THE OLD RULE IS NOT DELETED, IT IS SCOPED. Native is no longer
@@ -392,7 +392,7 @@ BR.Config.Audio = {
         -- THEY WERE NOT THE SAME, WHICH IS WHY HE COULD NOT TELL. The `out`
         -- phase played the pair above through PlaySoundFrontend; the `down`
         -- phase had no pair here at all and fell through to the browser tier's
-        -- synthesised `squad.down` (ui-src/src/audio/cues.ts). Two events, two
+        -- synthesized `squad.down` (ui-src/src/audio/cues.ts). Two events, two
         -- tiers, two entirely different noises. His ruling collapses them: the
         -- knock and the death are ONE sound, and it is this one.
         --
@@ -482,7 +482,7 @@ BR.Config.Audio = {
         --
         -- KEYED `toast.warn` AND NOT `ui.error`, FOR TWO REASONS THAT BOTH
         -- MATTER. ui-src/src/audio/cues.ts already owns a cue called
-        -- `ui.error`, synthesised, on the other tier -- one name meaning two
+        -- `ui.error`, synthesized, on the other tier -- one name meaning two
         -- different sounds in two different files is the sort of thing that
         -- survives for a year. And this project's toasts have no `error` tone
         -- at all: br_core/client/state.lua's TOAST payload carries `tone`, and
@@ -513,7 +513,7 @@ BR.Config.Audio = {
         --
         -- The old note said "there has never been an `elim` in this table", so
         -- the call in br_core/client/state.lua took the unknown-cue path and the
-        -- player heard only the browser's synthesised version. Landing the pair
+        -- player heard only the browser's synthesized version. Landing the pair
         -- below (2026-09-08, "land the DLC cues") made that note false while it
         -- was still sitting two lines above the entry contradicting it.
         --

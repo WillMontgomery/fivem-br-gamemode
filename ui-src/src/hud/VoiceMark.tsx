@@ -252,7 +252,7 @@ export default function VoiceMark({ fs, talking, silent = null }: {
         // ═══ THE ONE DECLARATION THAT KEEPS A PANEL FROM MOVING ═══
         //
         // This mark is the FIRST item of a flex row, and a flex container with
-        // no baseline-aligned items synthesises its baseline from the bottom
+        // no baseline-aligned items synthesizes its baseline from the bottom
         // edge of that first item. So a mark that grew with the text-size
         // preference dragged its whole row's baseline down with it -- measured
         // at 1.15 in the squad panel: every downed and dead plate 0.6px taller

@@ -25,7 +25,7 @@ import VoiceMark from './VoiceMark'
  * eye learns to skip and a list that changes every few seconds -- should not be
  * set in one weight, or the reader parses the whole string every time somebody
  * new starts speaking. 700 and 400 are BOTH REAL LOADED WEIGHTS (main.tsx
- * imports Barlow 400/500/600/700), so neither is synthesised by the browser --
+ * imports Barlow 400/500/600/700), so neither is synthesized by the browser --
  * a faux-bold at this size over a moving world is exactly the sort of mush that
  * reads as "the font is wrong".
  *

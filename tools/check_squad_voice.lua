@@ -416,7 +416,7 @@ if panel then
     if not panel:find('flex items%-baseline gap%-1 min%-w%-0') then
         fail('the name row is no longer baseline-aligned',
              'with `items-center` there is no baseline-aligned item in the '
-             .. 'row, so its baseline is synthesised from the voice mark -- '
+             .. 'row, so its baseline is synthesized from the voice mark -- '
              .. 'and the plate then changes height with the text-size setting')
     end
 end

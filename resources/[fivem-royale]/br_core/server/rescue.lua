@@ -514,7 +514,7 @@ function BR.Rescue.begin(src)
     -- draws before anybody is put inside it.
     if not dest then
         -- THE ROAD CORRIDORS GO IN WITH IT, and they are the only road knowledge
-        -- this process has: the pathfind natives are client-only, so a synthesised
+        -- this process has: the pathfind natives are client-only, so a synthesized
         -- destination is otherwise a uniformly random spot in whatever the circle
         -- left. BR.Config.Map.Roads is coarse -- authored for loot filler, "being
         -- roughly right is enough" -- so it is a PREFERENCE inside the ring the
