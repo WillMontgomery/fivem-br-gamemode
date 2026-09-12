@@ -208,9 +208,50 @@ local function clearAll()
     disbandAllies()
 end
 
+--- THE VEHICLE THIS CLIENT'S OWN PED IS SITTING IN, or 0.
+---
+--- GetVehiclePedIsIn RETURNS AN ENTITY, NOT A BOOL, which is why this is a
+--- handle comparison and not IsPedInVehicle: the latter is a declared BOOL and
+--- would need an isTrue() wrapper to be read safely, and the bool-natives
+--- ratchet only goes down. Two handles being equal and non-zero is the same
+--- question with nothing to get wrong.
+---
+--- `or 0` because the native answers 0 for a ped on foot on some builds and this
+--- file must never compare against a nil.
+local function vehicleOf(ped)
+    if not ped or ped == 0 then return 0 end
+    return GetVehiclePedIsIn(ped, false) or 0
+end
+
 RegisterNetEvent(BR.Net.SQUAD_POS)
 AddEventHandler(BR.Net.SQUAD_POS, function(list)
     lastPush = GetGameTimer()
+
+    -- ═══ NO BLIP FOR THE TEAMMATE IN YOUR OWN PASSENGER SEAT ═══
+    --
+    -- Owner, 2026-09-11: "Please turn off squad player blips while they're in
+    -- the same vehicle. Let me be clear on this: player 1 and player 2 are in
+    -- the same vehicle. Player 3 can still see blips for both, but player 1 and
+    -- player 2 cannot see a blip for each other. This is because of the sync
+    -- rate between them being a bit off from smooth, but I don't want to fix
+    -- that at tick rate because it's cheaper to turn it off. Then once they get
+    -- out of the vehicles the blip turns back on."
+    --
+    -- IT IS PER VIEWER AND NOT GLOBAL, WHICH IS THE WHOLE RULE. The blip is not
+    -- withdrawn from the world -- there is no wire field for "hide me from these
+    -- two people" and there must not be one, because the answer is different on
+    -- every screen. Player 3, on foot or in another car, keeps both dots. So the
+    -- test is asked HERE, on the machine that is drawing, about ITS OWN ped.
+    --
+    -- WHAT IT IS NOT. It is not a fix for the jitter -- he ruled that out by
+    -- name, and the position sampler stays at posSampleHz. The dot of somebody
+    -- sitting beside you is the one dot that is worth nothing and moves most,
+    -- because it is the only one whose subject you can see out of the window.
+    --
+    -- ONE CALL PER PUSH FOR OUR OWN SEAT, hoisted out of the loop: SQUAD_POS is
+    -- the 4 Hz beacon, not a tick, and "cheaper to turn it off" should not cost
+    -- a native per mate per frame to decide.
+    local mySeat = vehicleOf(PlayerPedId())
 
     local seen = {}
     for _, m in ipairs(list or {}) do
@@ -240,7 +281,32 @@ AddEventHandler(BR.Net.SQUAD_POS, function(list)
             -- edge test cannot cover the blip that was born out (a mate who
             -- was eliminated while this client was out of the squad push).
             local out = m.state == BR.PlayerState.OUT
-            SetBlipAlpha(blips[m.src], out and 120 or 255)
+
+            -- ...AND A MATE IN OUR OWN VEHICLE IS HIDDEN OUTRIGHT -- see the
+            -- block at the top of this handler.
+            --
+            -- ALPHA, WHICH IS WHY THE BLIP NEVER HAS TO BE RE-ADDED. This line
+            -- already wrote alpha every push for the OUT dimming, so "off" is
+            -- the same lever at 0 and the transition back is the same lever at
+            -- 255 -- the handle, its sprite, its colour and its legend name all
+            -- survive the ride. A version that removed the blip and built a new
+            -- one on the way out would flicker the legend and re-run
+            -- AddBlipForCoord four times a second for the whole journey.
+            --
+            -- THE MATE'S PED IS RESOLVED THROUGH pedOf, so a squadmate the
+            -- engine has not streamed answers 0 and is NOT hidden. That is the
+            -- correct degrade and it costs nothing: two players in one vehicle
+            -- are in each other's scope by definition, so the case this rule is
+            -- about is exactly the case where the ped is there.
+            --
+            -- `mySeat ~= 0` GUARDS BOTH SIDES. On foot our own answer is 0, and
+            -- so is the answer for every mate on foot -- without this, a squad
+            -- standing in a field would hide every dot from every member.
+            local sharing = mySeat ~= 0
+                and vehicleOf(BR.Squadmates.pedOf(m.src)) == mySeat
+
+            SetBlipAlpha(blips[m.src],
+                sharing and 0 or (out and 120 or 255))
         end
     end
 

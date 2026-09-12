@@ -8739,6 +8739,209 @@ do
         'and the loop that does all of this has not thrown once',
         ('errors %s'):format(tostring(select(1, loopHealth('squadmates.tags')))))
 
+    -- ====================================================================== --
+    -- A TEAMMATE IN YOUR OWN PASSENGER SEAT HAS NO BLIP -- owner, 2026-09-11
+    -- ====================================================================== --
+    --
+    --   "Please turn off squad player blips while they're in the same vehicle.
+    --    Let me be clear on this: player 1 and player 2 are in the same vehicle.
+    --    Player 3 can still see blips for both, but player 1 and player 2 cannot
+    --    see a blip for each other. This is because of the sync rate between
+    --    them being a bit off from smooth, but I don't want to fix that at tick
+    --    rate because it's cheaper to turn it off. Then once they get out of the
+    --    vehicles the blip turns back on."
+    --
+    -- ═══ WHY THIS IS A SUITE'S JOB AND NOT A PLAYTEST'S ═══
+    --
+    -- THE RULE IS PER VIEWER, and per-viewer rules are the ones a playtest
+    -- confirms wrong. Two people in a car see what they expect the first time
+    -- somebody drives; the assertion that separates a correct build from a
+    -- global hide is PLAYER 3's screen, which needs a third body, in the right
+    -- place, at the same moment, on a machine nobody is looking at. The wrong
+    -- version reads as "it works" from both seats.
+    --
+    -- AND THE RE-ADD IS INVISIBLE EITHER WAY. A build that removed the blip and
+    -- built a new one on the way out of the car is correct on screen and wrong
+    -- in the one way the owner named -- four AddBlipForCoord calls a second for
+    -- the whole journey -- so the handle is what is counted here.
+
+    describe('a squadmate sharing the viewer\'s vehicle loses their blip')
+
+    -- MODELLED BLIPS, because both claims are about a HANDLE. The suite's
+    -- default AddBlipForCoord is a noop returning nil and DoesBlipExist answers
+    -- false, which is enough for every block above -- none of them asks WHICH
+    -- blip was written to. This one asks twice over: that the right mate's alpha
+    -- moved, and that the handle survived the round trip.
+    local prevBlip = {
+        add    = AddBlipForCoord, exists = DoesBlipExist,
+        alpha  = SetBlipAlpha,    remove = RemoveBlip,
+        coords = SetBlipCoords,   veh    = GetVehiclePedIsIn,
+    }
+    local blipSeq, blipAdds = 0, 0
+    local blipAlive, blipAlpha, blipAtX = {}, {}, {}
+    AddBlipForCoord = function(x)
+        blipSeq, blipAdds = blipSeq + 1, blipAdds + 1
+        blipAlive[blipSeq] = true
+        -- KEYED ON THE COORDINATE, because `blips` is a file local this suite
+        -- cannot see and must not be given a reader for. Each mate below stands
+        -- at their own x, so the beacon's own coordinate is the identity.
+        blipAtX[x] = blipSeq
+        return blipSeq
+    end
+    DoesBlipExist = function(b) return b ~= nil and blipAlive[b] == true end
+    RemoveBlip    = function(b) if b ~= nil then blipAlive[b] = nil end end
+    SetBlipCoords = noop
+    SetBlipAlpha  = function(b, a) blipAlpha[b] = a end
+
+    -- WHERE EVERY PED IN THIS FAKE WORLD IS SITTING. 0 is on foot, which is what
+    -- GET_VEHICLE_PED_IS_IN answers and what the rule's own guard is written
+    -- against -- a squad standing in a field must not hide every dot.
+    --
+    -- PER PED, WHICH THE SUITE'S DEFAULT IS NOT. The global stub ignores its
+    -- argument and answers one number for everybody, so under it every mate
+    -- would share the viewer's seat the moment the viewer had one -- a fixture
+    -- that cannot fail.
+    GetVehiclePedIsIn = function(ped) return (bodies[ped] or {}).veh or 0 end
+
+    local CAR, VAN = 8801, 8802
+
+    -- A SQUAD OF THREE, all of them peds this client can resolve. src 3 was the
+    -- enemy two assertions ago and is enrolled here, because what this rule
+    -- needs is a third SQUADMATE -- the one whose screen tells a per-viewer hide
+    -- apart from a global one.
+    BR.State.me = { src = 1, state = BR.PlayerState.ALIVE, squadId = 'sq1' }
+    BR.State.roster = {
+        [1] = { src = 1, name = 'Me',     squadId = 'sq1',
+                state = BR.PlayerState.ALIVE },
+        [2] = { src = 2, name = 'Bravo',  squadId = 'sq1',
+                state = BR.PlayerState.ALIVE },
+        [3] = { src = 3, name = 'Victor', squadId = 'sq1',
+                state = BR.PlayerState.ALIVE },
+    }
+    local BRAVO_X, VICTOR_X = 1.0, 2.0
+    local SQUAD = {
+        { src = 2, name = 'Bravo',  i = 2, x = BRAVO_X, y = 0.0,
+          state = BR.PlayerState.ALIVE },
+        { src = 3, name = 'Victor', i = 3, x = VICTOR_X, y = 0.0,
+          state = BR.PlayerState.ALIVE },
+    }
+
+    --- One 4 Hz beacon, with the ped resolver warm.
+    ---
+    --- THE TICK IN THE MIDDLE IS LOAD-BEARING. `peds` is filled by the tags
+    --- loop, and the beacon handler reads it -- so a single push on a cold
+    --- resolver answers "not in my car" for everybody, which is the right answer
+    --- for the wrong reason and would pass the first case below while proving
+    --- nothing.
+    local function beacon()
+        fire(BR.Net.SQUAD_POS, SQUAD)
+        tickBand()
+        fire(BR.Net.SQUAD_POS, SQUAD)
+    end
+
+    local function alphaAt(x) return blipAlpha[blipAtX[x]] end
+
+    bodies[1].veh, bodies[MATE].veh, bodies[ENEMY].veh = 0, CAR, CAR
+    beacon()
+
+    ok(BR.Squadmates.pedOf(2) ~= 0 and BR.Squadmates.pedOf(3) ~= 0,
+        'the harness can resolve both squadmates\' peds at all, or every '
+            .. 'assertion below is asserting against a zero',
+        ('pedOf(2) = %s, pedOf(3) = %s')
+            :format(tostring(BR.Squadmates.pedOf(2)),
+                    tostring(BR.Squadmates.pedOf(3))))
+
+    -- ═══ PLAYER 3'S SCREEN, ASSERTED FIRST AND DELIBERATELY ═══
+    --
+    -- Both of the others are in one car and this viewer is not. A global hide --
+    -- "that pair are together, so nobody draws them" -- is the obvious wrong
+    -- implementation, it is what a wire field would have bought, and it is
+    -- invisible from either of the two seats. It fails here.
+    ok(alphaAt(BRAVO_X) == 255 and alphaAt(VICTOR_X) == 255,
+        'a squadmate OUTSIDE the vehicle still sees both of the people in it -- '
+            .. 'the rule is per viewer, not a property of the pair',
+        ('Bravo %s, Victor %s')
+            :format(tostring(alphaAt(BRAVO_X)), tostring(alphaAt(VICTOR_X))))
+
+    local addsBefore = blipAdds
+
+    -- ═══ AND NOW FROM INSIDE THE CAR ═══
+    bodies[1].veh, bodies[MATE].veh, bodies[ENEMY].veh = CAR, CAR, 0
+    beacon()
+    ok(alphaAt(BRAVO_X) == 0,
+        'the mate in MY vehicle is hidden -- his dot is the one that jitters '
+            .. 'and the one I can see out of the window',
+        tostring(alphaAt(BRAVO_X)))
+    ok(alphaAt(VICTOR_X) == 255,
+        'and the squadmate who is NOT in it is untouched, on the same push',
+        tostring(alphaAt(VICTOR_X)))
+
+    -- ═══ TWO CARS IS NOT ONE CAR ═══
+    --
+    -- The test is the HANDLE, not "are we both driving". A build that asked
+    -- IsPedInAnyVehicle of each side and compared the answers would hide a mate
+    -- half a kilometre down the road in a different van -- which is the exact
+    -- dot the blip exists for.
+    bodies[MATE].veh = VAN
+    beacon()
+    ok(alphaAt(BRAVO_X) == 255,
+        'a mate in a DIFFERENT vehicle keeps his blip -- the test is the same '
+            .. 'vehicle, not "both of us are driving something"',
+        tostring(alphaAt(BRAVO_X)))
+
+    -- ═══ AND IT COMES BACK WHEN HE GETS OUT, ON THE SAME BLIP ═══
+    bodies[MATE].veh = CAR
+    beacon()
+    ok(alphaAt(BRAVO_X) == 0, 'back in my car, hidden again')
+    bodies[MATE].veh = 0
+    beacon()
+    ok(alphaAt(BRAVO_X) == 255,
+        'and once he gets out the blip turns back on, which is the owner\'s '
+            .. 'last sentence',
+        tostring(alphaAt(BRAVO_X)))
+
+    -- ═══ NOBODY IN A VEHICLE AT ALL, WHICH IS THE COMMON CASE ═══
+    --
+    -- On foot the native answers 0 for every ped in the world, so a test written
+    -- as "is his vehicle the same as mine" is TRUE for a whole squad standing in
+    -- a field -- every dot in the game gone, in the state players spend most of
+    -- a match in. That is one missing `~= 0` and it is the only case in this
+    -- block where the wrong build is worse than no feature.
+    bodies[1].veh, bodies[MATE].veh, bodies[ENEMY].veh = 0, 0, 0
+    beacon()
+    ok(alphaAt(BRAVO_X) == 255 and alphaAt(VICTOR_X) == 255,
+        'a squad ON FOOT keeps every blip -- 0 is what the native answers for a '
+            .. 'ped in no vehicle, and two of them are not in the same car',
+        ('Bravo %s, Victor %s')
+            :format(tostring(alphaAt(BRAVO_X)), tostring(alphaAt(VICTOR_X))))
+
+    -- THE HALF A SCREENSHOT CANNOT SHOW. Five beacons and four transitions have
+    -- passed over these two blips and neither was rebuilt: hiding is an ALPHA,
+    -- so the handle, its sprite, its squad colour and its legend name all
+    -- survive the ride. A remove-and-re-add build draws the same thing and runs
+    -- AddBlipForCoord four times a second for the length of the journey.
+    ok(blipAdds == addsBefore,
+        'and no blip was ever re-added -- the transition is an alpha on the '
+            .. 'blip that was already there',
+        ('%d add(s) before the first transition, %d after four of them')
+            :format(addsBefore, blipAdds))
+
+    ok(select(1, loopHealth('squadmates.tags')) == 0,
+        'with the tags loop still not having thrown',
+        ('errors %s'):format(tostring(select(1, loopHealth('squadmates.tags')))))
+
+    -- Hand the world back: everybody on foot, the squad dissolved, the blip
+    -- natives back to the suite's own.
+    bodies[1].veh, bodies[MATE].veh, bodies[ENEMY].veh = nil, nil, nil
+    fire(BR.Net.SQUAD_POS, {})
+    tickBand()
+    AddBlipForCoord   = prevBlip.add
+    DoesBlipExist     = prevBlip.exists
+    SetBlipAlpha      = prevBlip.alpha
+    RemoveBlip        = prevBlip.remove
+    SetBlipCoords     = prevBlip.coords
+    GetVehiclePedIsIn = prevBlip.veh
+
     others[3] = nil
 end
 
