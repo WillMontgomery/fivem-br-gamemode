@@ -31,6 +31,14 @@
 --   silently never arrives, which is indistinguishable from the purchase having
 --   failed.
 --
+--   ...AND THE DELTA FLUSH ABOVE BOTH OF THEM (owner, 2026-09-11: "the order of
+--   this should be reversed so the player doesn't notice it"). The whole
+--   wheels-up sequence is four lines whose order is the feature, and one of them
+--   is there to make two different transports -- a batched roster delta and an
+--   immediate inventory push -- arrive in the order this file writes them. A
+--   playtest of the wrong version shows an inventory rearranging itself and then
+--   vanishing, which reads as a rendering glitch rather than as an ordering bug.
+--
 --   NO REFUND, EVER. Owner, answer 3: a purchase is not refunded, including when
 --   the engine loses the car. The failure mode of getting that wrong is a
 --   SECOND CAR FOR ONE PAYMENT, and it only shows up under an engine fault
@@ -2382,16 +2390,82 @@ do
     -- Unobservable in game: one line the wrong way round and the purchase
     -- silently never arrives, which looks exactly like the purchase failing.
     local mtc = readFile(RES .. 'br_core/server/match.lua')
-    local wipe = mtc:find('BR%.Inv%.clearFor%(m%)')
-    local hand = mtc:find('BR%.Shop%.deliver%(m%)')
+    local busAt = mtc:find('elseif state == BR%.MatchState%.BUS then')
+    local playAt = mtc:find('elseif state == BR%.MatchState%.PLAYING then')
+
+    -- ANCHORED AT THE BUS BRANCH RATHER THAN AT THE TOP OF THE FILE. There are
+    -- TWO BR.Inv.clearFor calls in match.lua -- wheels-up and CLEANUP -- and
+    -- only the first one is the wipe the car has to survive. An unanchored find
+    -- answers with whichever happens to come first in the file, which is how
+    -- this assertion would silently start reporting on the teardown instead.
+    --
+    -- AND THE ARGUMENT LIST IS OPEN. The wheels-up wipe carries `{ quiet = true }`
+    -- (owner, 2026-09-11) and the teardown does not, so a pattern that pinned
+    -- `clearFor(m)` exactly would match only one of them -- the wrong one.
+    local wipe = busAt and mtc:find('BR%.Inv%.clearFor%(m[,%)]', busAt)
+    local hand = busAt and mtc:find('BR%.Shop%.deliver%(m%)', busAt)
     ok(wipe ~= nil and hand ~= nil and hand > wipe,
         'the car is handed out AFTER the warmup inventory wipe, or the wipe '
             .. 'deletes the thing the player paid for')
 
-    local busAt = mtc:find('elseif state == BR%.MatchState%.BUS then')
-    local playAt = mtc:find('elseif state == BR%.MatchState%.PLAYING then')
     ok(busAt ~= nil and playAt ~= nil and hand > busAt and hand < playAt,
         'and it happens on the BUS transition -- "once the match starts"')
+
+    -- ═══ AND BOTH OF THEM HAPPEN BEHIND A PANEL THAT IS ALREADY DARK ═══
+    --
+    -- Owner, 2026-09-11: "currently, the inventory swaps happen right before the
+    -- slots visually turn off for the flight. The order of this should be
+    -- reversed so the player doesn't notice it and become a distraction."
+    --
+    -- THIS IS NOT A REORDERING OF THE THREE CALLS AND IT COULD NOT HAVE BEEN.
+    -- The wipe and the handout were ALREADY below the state sweep in this file
+    -- and still arrived first on the wire: a roster delta is QUEUED and flushed
+    -- at deltaFlushHz, and BR.Inv.push is a TriggerClientEvent that leaves
+    -- immediately. Two transports, one of them batched, which is a race and not
+    -- an order -- so what is asserted here is the FLUSH that collapses it, sat
+    -- between the sweep that darkens the HUD and the two calls that change what
+    -- is behind it.
+    --
+    -- SWAPPING ANY PAIR OF THESE FOUR LINES BREAKS SOMETHING VISIBLE: above the
+    -- sweep the flush carries nothing, below the wipe it is the bug being fixed,
+    -- and the handout above the wipe is the deleted purchase two assertions up.
+    local sweep = busAt
+        and mtc:find('BR%.Roster%.setState%(src, BR%.PlayerState%.BUS%)', busAt)
+    local flush = busAt and mtc:find('BR%.Broadcast%.flushNow%(%)', busAt)
+    ok(sweep ~= nil and flush ~= nil and wipe ~= nil and hand ~= nil
+           and sweep < flush and flush < wipe and flush < hand
+           and playAt ~= nil and flush < playAt,
+        'the queued deltas are flushed AFTER the sweep that puts everyone in '
+            .. 'the BUS state and BEFORE both inventory calls, so the slots are '
+            .. 'already off when they change rather than a flush interval after',
+        ('sweep %s, flush %s, wipe %s, hand %s')
+            :format(tostring(sweep), tostring(flush), tostring(wipe),
+                    tostring(hand)))
+
+    -- ═══ AND THE WIPE IS SILENT, WHICH IS THE OTHER HALF OF THE SENTENCE ═══
+    --
+    -- "Any inventory adds/removes when the bus spawns should all be muted."
+    -- The car's ARRIVAL has been quiet since 2026-08-29 -- asserted against the
+    -- real BR.Inv.give call further up this file. This is the REMOVAL: an
+    -- emptied bag hands the active slot back to melee, and client/inventory.lua
+    -- rings the switch click on that edge.
+    --
+    -- THE FLAG IS READ OFF THE CALL, not off a comment. `{ quiet = true }`
+    -- between the wipe and the handout is the whole of it.
+    local quietWipe = wipe
+        and mtc:find('BR%.Inv%.clearFor%(m, { quiet = true }%)', busAt)
+    ok(quietWipe ~= nil and quietWipe == wipe,
+        'and the wheels-up wipe is pushed quiet, so the emptied active slot '
+            .. 'does not ring a switch click on the way into the plane',
+        tostring(quietWipe))
+
+    -- ...AND THE TEARDOWN WIPE IS NOT, because nothing has been reported about
+    -- it and a player being walked to the lobby is not in a plane. This is the
+    -- assertion that stops the fix being applied with a global search.
+    local cleanupWipe = playAt and mtc:find('BR%.Inv%.clearFor%(m%)', playAt)
+    ok(cleanupWipe ~= nil,
+        'while the CLEANUP wipe further down is left exactly as it was',
+        tostring(cleanupWipe))
 end
 
 -- ---------------------------------------------------------------------------

@@ -16068,6 +16068,83 @@ do
     fire(BR.Net.INV_SET, gain(4, { quiet = false }))
     ok(#plays > 0, 'nor is an explicit false')
 
+    -- ═══ AND THE WHEELS-UP WIPE IS THE OTHER HALF OF THE SAME SENTENCE
+    --     (owner, 2026-09-11) ═══
+    --
+    -- "Any inventory adds/removes when the bus spawns should all be muted."
+    --
+    -- EVERY ASSERTION ABOVE IS ABOUT AN ADD, and a wipe cannot gain -- so the
+    -- flag as it stood could not have silenced the cue he was hearing. The
+    -- REMOVE case makes its noise somewhere else entirely: an emptied bag hands
+    -- the active slot back to melee, which is an active-slot EDGE, which rings
+    -- the SWITCH CLICK. A player who picked anything up on the warmup pad heard
+    -- a swap they did not make at the moment the plane appeared.
+    --
+    -- THE WRONG CASE IS DRIVEN FIRST AND ASSERTED AUDIBLE, for the reason the
+    -- pickup block gives one screen up: a fix that muted the click outright
+    -- would pass a test that only checked the quiet case, and would take the
+    -- slot click out of the whole game.
+    --
+    -- THE PAIR IS CHECKED, NOT ONLY THE COUNT. Both cues route through this one
+    -- stub, so a build that silenced the click and started ringing PICK_UP at a
+    -- wipe instead would keep `#plays` at 1 and be exactly the bug.
+    local function wipe(extra)
+        local d = { slots = {}, ammo = {}, active = 0 }   -- 0 is Loot.meleeSlot
+        for i = 1, 5 do d.slots[i] = false end
+        for k, v in pairs(extra or {}) do d[k] = v end
+        return d
+    end
+
+    local SWITCH = BR.Config.Loot.switchSound
+    ok(type(SWITCH) == 'table' and SWITCH.name ~= nil,
+        'the switch click is a real pair in config/loot.lua, or everything '
+            .. 'below is asserting silence against silence',
+        SWITCH and tostring(SWITCH.name) or 'nothing')
+
+    -- Hold something in slot 1, so the wipe below really is an edge.
+    fire(BR.Net.INV_SET, gain(2))
+    plays = {}
+    fire(BR.Net.INV_SET, wipe())
+    ok(#plays == 1 and plays[1].name == SWITCH.name
+           and plays[1].set == SWITCH.set,
+        'a wipe nobody marked quiet still clicks -- the ordinary slot click is '
+            .. 'untouched',
+        (#plays == 1) and tostring(plays[1].name) or ('%d plays'):format(#plays))
+
+    fire(BR.Net.INV_SET, gain(2))
+    plays = {}
+    fire(BR.Net.INV_SET, wipe({ quiet = true }))
+    ok(#plays == 0,
+        'and the wheels-up wipe, which the server marks quiet, is SILENT -- no '
+            .. 'switch click for a slot that was emptied rather than swapped',
+        #plays)
+
+    -- ...AND 0 IS STILL NOT SILENCE HERE EITHER. Same wire, same trap, second
+    -- reader of the same field.
+    fire(BR.Net.INV_SET, gain(2))
+    plays = {}
+    fire(BR.Net.INV_SET, wipe({ quiet = 0 }))
+    ok(#plays == 1,
+        'while a 0 on the wipe clicks, because 0 is truthy in Lua and `not '
+            .. 'd.quiet` would have muted every slot change in the game', #plays)
+
+    -- ═══ QUIET IS NOT INVISIBLE, AND THE WALKTHROUGH STILL HEARS IT ═══
+    --
+    -- Step 14 of the guided first run advances on `br:inv:slotChanged`, which is
+    -- raised on this same edge, one line under the click. The slot really did
+    -- change; only the sound is being withheld. Muting the branch instead of the
+    -- cue inside it would strand a first-time player on a step they had already
+    -- completed, and nothing about that is audible.
+    local slotEvents = 0
+    AddEventHandler('br:inv:slotChanged', function() slotEvents = slotEvents + 1 end)
+    fire(BR.Net.INV_SET, gain(2))
+    slotEvents, plays = 0, {}
+    fire(BR.Net.INV_SET, wipe({ quiet = true }))
+    ok(slotEvents == 1 and #plays == 0,
+        'a quiet wipe still raises br:inv:slotChanged, so the walkthrough is '
+            .. 'told about a slot change it can see even though nothing rang',
+        ('%d events, %d plays'):format(slotEvents, #plays))
+
     PlaySoundFrontend = savedPlay
 end
 

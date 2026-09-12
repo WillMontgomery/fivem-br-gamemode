@@ -544,12 +544,55 @@ function BR.Match.onEnter(m, state, from)
                 and e.state == BR.PlayerState.WARMUP end,
             function(src) BR.Roster.setState(src, BR.PlayerState.BUS) end)
 
+        -- ═══ AND THE SLOTS GO DARK BEFORE THEY ARE TOUCHED (owner, 2026-09-11)
+        --     ═══
+        --
+        -- "currently, the inventory swaps happen right before the slots visually
+        --  turn off for the flight. The order of this should be reversed so the
+        --  player doesn't notice it and become a distraction."
+        --
+        -- HE WAS WATCHING A RACE, NOT A SEQUENCE, AND MOVING THESE LINES WOULD
+        -- NOT HAVE FIXED IT. The two halves he is describing travel on different
+        -- transports:
+        --
+        --   the slots turning off   the player's own state reaching `bus`.
+        --                           App.tsx's `ridingBus` is the master switch
+        --                           for the whole HUD, and it reads `hud.state`,
+        --                           which is this client's roster mirror -- so
+        --                           the sweep above is the cause, and it goes out
+        --                           as a QUEUED delta, batched at deltaFlushHz.
+        --   the inventory swaps     BR.Inv.push, which is a TriggerClientEvent
+        --                           the moment it is called.
+        --
+        -- So the wipe below and the handout under it were already BELOW the
+        -- state change in this file and still arrived FIRST on the wire, every
+        -- time, by up to a whole flush interval. Reordering the calls would have
+        -- changed nothing; the fix is to stop the two being independent.
+        --
+        -- BR.Broadcast.flushNow IS EXACTLY THE TOOL THE QUEUE SHIPPED FOR --
+        -- "used before anything that must not arrive out of order behind queued
+        -- deltas" -- and this is its first caller in the tree. Past it, both
+        -- halves are ordinary reliable events to the same client in the order
+        -- this function sends them: dark panel, then the shuffle behind it.
+        BR.Broadcast.flushNow()
+
         -- THE PAD'S LOOT DOES NOT FLY. Everything found during warmup is
         -- wiped at wheels-up: the island exists to be practised on, and
         -- arriving early must not be a head start over a late joiner who
         -- boards with nothing (user call, 2026-08-05 -- Fortnite's pre-game
         -- island rule).
-        BR.Inv.clearFor(m)
+        --
+        -- SILENTLY, WHICH IS THE OTHER HALF OF THE SAME SENTENCE: "Any inventory
+        -- adds/removes when the bus spawns should all be muted". The car's
+        -- ARRIVAL has been quiet since 2026-08-29 (server/shop.lua); this wipe
+        -- is the REMOVAL, and what it rang was the switch click, because an
+        -- emptied bag hands the active slot back to melee. The flag is the one
+        -- the pickup cue already reads -- see BR.Inv.push.
+        --
+        -- ONLY THIS CALLER IS QUIET. The CLEANUP wipe further down is a match
+        -- that is over, on a player being walked to the lobby, and nothing has
+        -- been reported about it.
+        BR.Inv.clearFor(m, { quiet = true })
 
         -- ...AND THE CARS BOUGHT IN THE SHOWROOM ARE HANDED OUT IMMEDIATELY
         -- AFTER THAT WIPE, WHICH IS THE WHOLE OF THE ORDERING (#224).

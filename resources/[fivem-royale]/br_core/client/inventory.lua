@@ -793,7 +793,32 @@ local function adopt(d)
     -- The switch click stays the engine's: it fires mid-fight and wants the
     -- same ducking the pickup does.
     if inv.active ~= wasActive then
-        if L.switchSound then
+        -- ═══ ...UNLESS THE SERVER SAID THIS WHOLE PUSH IS SILENT ═══
+        --
+        -- Owner, 2026-09-11: "Any inventory adds/removes when the bus spawns
+        -- should all be muted".
+        --
+        -- THE REMOVE HALF OF THAT IS THIS LINE AND NOTHING ELSE. `gained` below
+        -- answers the ADD, and the wheels-up wipe can never gain, so the pickup
+        -- flag was never the cue he was hearing. What a wipe DOES do is hand
+        -- back `active = meleeSlot`, so anybody who had picked something up on
+        -- the pad was holding a slot that stopped existing -- an active-slot
+        -- edge, and a click, for a swap they did not make and a panel that was
+        -- about to go dark anyway.
+        --
+        -- `d.quiet` IS THE SAME FLAG THE PICKUP CUE READS and this is
+        -- deliberately not a second one: the server already has a word for
+        -- "this INV_SET is not a thing the player did", server/inventory.lua
+        -- carries the reasoning, and a push that is silent about arrivals and
+        -- audible about the slot they landed in would be silent about nothing.
+        --
+        -- `~= true` for the reason the pickup test uses it: this is a field off
+        -- the wire and 0 IS TRUTHY IN LUA.
+        --
+        -- THE WALKTHROUGH EDGE BELOW IS NOT PART OF THE SILENCE. Quiet means
+        -- quiet, not invisible -- the slot really did change, and step 14 is
+        -- about the slot rather than the sound.
+        if L.switchSound and d.quiet ~= true then
             PlaySoundFrontend(-1, L.switchSound.name, L.switchSound.set, true)
         end
 

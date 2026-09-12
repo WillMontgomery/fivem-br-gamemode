@@ -238,8 +238,21 @@ end
 --- IT DOES NOT SUPPRESS ANYTHING ELSE. The slots still arrive, the panel still
 --- updates, the toast the shop already sends still speaks. Silence here means
 --- silence, not invisibility.
+---
+--- ═══ AND SILENCE IS THE WHOLE PUSH, NOT ONLY THE ARRIVAL (owner, 2026-09-11)
+---     ═══
+---
+--- "Any inventory adds/removes when the bus spawns should all be muted".
+---
+--- The ADD half was already this flag. The REMOVE half is the SWITCH CLICK:
+--- client/inventory.lua rings it whenever the active slot moves, and a wipe
+--- hands back `active = meleeSlot`, so every player who picked something up on
+--- the warmup pad heard a swap they did not make at wheels-up. So `quiet` is
+--- read by both cues in that file and there is no second flag -- a push that was
+--- silent about the items and audible about the slot they left would be silent
+--- about nothing.
 --- @param src integer
---- @param opts table|nil  { quiet = true } to deliver without the pickup cue
+--- @param opts table|nil  { quiet = true } to deliver without any cue at all
 function BR.Inv.push(src, opts)
     local payload = BR.Inv.publicFor(src)
     if not payload then return end
@@ -249,19 +262,23 @@ end
 
 --- Wipe an inventory back to empty and tell the owner.
 --- @param src integer
-function BR.Inv.reset(src)
+--- @param opts table|nil  forwarded to BR.Inv.push -- { quiet = true } wipes
+---                        without the switch click the emptied active slot would
+---                        otherwise ring
+function BR.Inv.reset(src, opts)
     local e = BR.Roster.get(src)
     if not e then return end
     e.inv = newInv()
-    BR.Inv.push(src)
+    BR.Inv.push(src, opts)
 end
 
 --- Reset every inventory in a match. Called at CLEANUP.
 --- @param m table
-function BR.Inv.clearFor(m)
+--- @param opts table|nil  forwarded to BR.Inv.reset, and so to the push
+function BR.Inv.clearFor(m, opts)
     BR.Roster.each(
         function(e) return e.matchId == m.id end,
-        function(src) BR.Inv.reset(src) end)
+        function(src) BR.Inv.reset(src, opts) end)
 end
 
 -- --------------------------------------------------------------------------
