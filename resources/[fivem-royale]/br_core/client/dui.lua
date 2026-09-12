@@ -324,6 +324,18 @@ end
 --- places that can come to disagree about what level means, and this one has
 --- already been got wrong once -- 08d7608 is the fix, and it is one function
 --- now rather than a paragraph to re-read.
+---
+--- ═══ WHO STILL WANTS LEVEL, AFTER #294 ═══
+---
+--- Three callers, and the list is short enough to keep here rather than grep
+--- for: drawFace (the showroom's yard sign, which is the complaint above),
+--- drawBoard (the warmup board, which is drawFace with a lateral and a yaw), and
+--- faceOf -- where it no longer orients anything and is only used to ask which
+--- panel a player is standing beside, which is a horizontal question.
+---
+--- THE NEAREST-FACE PLATE IS NO LONGER ONE OF THEM. It is bolted to bodywork
+--- rather than planted in front of it, so it takes its orientation from the
+--- entity's matrix (drawPanel). Leveling it is what #294 was.
 --- @param entity integer
 --- @return number|nil fx, number fy, number rx, number ry  forward then right
 local function levelBasis(entity)
@@ -340,12 +352,90 @@ local function levelBasis(entity)
     return fx, fy, fy, -fx
 end
 
+--- FOUR CORNERS, WOUND TOWARD THE CAMERA, AS TWO TRIANGLES.
+---
+--- ═══ THE ARRANGEMENT THAT WAS ALWAYS MEANT TO BE ONE, LIFTED OUT SO IT IS ═══
+---
+--- drawPlane's header has said since #236 that the normal, the camera-side test,
+--- the two triangles and their UVs are "one proven arrangement that is
+--- deliberately not re-derived per caller". That stayed true only while every
+--- caller wanted the same corners. #294 breaks that: drawNearFace's plate is
+--- glued to a panel and takes its corners from the entity's matrix, while the
+--- yard sign and the warmup board stay level. Two corner derivations, one tail
+--- -- so the tail moves here rather than being pasted a second time.
+---
+--- NOT ONE LINE OF IT CHANGED IN THE MOVE. The vertex order, the UV triples and
+--- the sign of the camera test are lifted verbatim; `a` is still the texture's
+--- top-left and the reader's left is still whoever built the corners' problem.
+---
+--- TWELVE NUMBERS RATHER THAN FOUR TABLES, deliberately. This runs per frame per
+--- plate inside a FRAME band, and four table constructors a frame is garbage
+--- this file has no reason to make.
+--- @param page table
+--- @param ax number  the texture's top-left corner...
+--- @param ay number
+--- @param az number
+--- @param bx number  ...top-right...
+--- @param by number
+--- @param bz number
+--- @param cx number  ...bottom-left...
+--- @param cy number
+--- @param cz number
+--- @param dx number  ...and bottom-right
+--- @param dy number
+--- @param dz number
+--- @param alpha number|nil
+local function drawQuad(page, ax, ay, az, bx, by, bz, cx, cy, cz, dx, dy, dz,
+                        alpha)
+    -- WHICH SIDE THE CAMERA IS ON. DrawSpritePoly is single-sided, so a quad
+    -- wound for one side is invisible from the other -- and at a five-meter
+    -- reach on a four-meter car the player is regularly behind the bumper. The
+    -- winding swaps; the vertex-to-UV mapping does NOT, so the sign reads
+    -- correctly from the front and (as any real sign does) backwards from
+    -- behind, rather than vanishing.
+    local ux, uy, uz = bx - ax, by - ay, bz - az
+    local vx, vy, vz = cx - ax, cy - ay, cz - az
+    local nx = uy * vz - uz * vy
+    local ny = uz * vx - ux * vz
+    local nz = ux * vy - uy * vx
+
+    local cam = GetGameplayCamCoord()
+    local mx, my, mz = (ax + dx) * 0.5, (ay + dy) * 0.5, (az + dz) * 0.5
+    local flip = (nx * (cam.x - mx) + ny * (cam.y - my) + nz * (cam.z - mz)) < 0.0
+
+    local a = alpha or 255
+    local txd, tex = page.txd, page.tex
+
+    if flip then
+        DrawSpritePoly(ax, ay, az, cx, cy, cz, bx, by, bz,
+            255, 255, 255, a, txd, tex,
+            0.0, 0.0, 1.0,  0.0, 1.0, 1.0,  1.0, 0.0, 1.0)
+        DrawSpritePoly(cx, cy, cz, dx, dy, dz, bx, by, bz,
+            255, 255, 255, a, txd, tex,
+            0.0, 1.0, 1.0,  1.0, 1.0, 1.0,  1.0, 0.0, 1.0)
+    else
+        DrawSpritePoly(ax, ay, az, bx, by, bz, cx, cy, cz,
+            255, 255, 255, a, txd, tex,
+            0.0, 0.0, 1.0,  1.0, 0.0, 1.0,  0.0, 1.0, 1.0)
+        DrawSpritePoly(cx, cy, cz, bx, by, bz, dx, dy, dz,
+            255, 255, 255, a, txd, tex,
+            0.0, 1.0, 1.0,  1.0, 0.0, 1.0,  1.0, 1.0, 1.0)
+    end
+end
+
 --- Draw the page as an UPRIGHT QUAD standing out along a level direction.
 ---
---- The shared body of the two signs below: they differ only in which direction
---- is "out", and everything after that -- the corners, the normal, the
---- camera-side test, the two triangles and their UVs -- is one proven
---- arrangement that is deliberately not re-derived per caller.
+--- The shared body of the YARD SIGN AND THE WARMUP BOARD: they differ only in
+--- which direction is "out", and everything after the corners is drawQuad's.
+---
+--- ═══ NOT THE NEAREST-FACE PLATE ANY MORE (#294) ═══
+---
+--- drawNearFace used to come through here too, and that was the bug: this
+--- function stands a quad up along a LEVEL direction with the WORLD's up for its
+--- height, so a plate bolted flush to an ambulance's flank could not follow the
+--- flank when the ambulance leaned. It builds its corners in drawPanel below
+--- instead. The two signs that genuinely want level are still here and still
+--- share every line of it.
 ---
 --- ═══ WHICH WAY ROUND "TOP-LEFT" IS, BECAUSE MIRRORED TEXT IS THE FAILURE ═══
 ---
@@ -410,40 +500,104 @@ local function drawPlane(page, px, py, pz, ox, oy, dist, side, oz, hw, hh, alpha
     local cx, cy, cz = corner( hw, -hh)   -- bottom-left
     local dx, dy, dz = corner(-hw, -hh)   -- bottom-right
 
-    -- WHICH SIDE THE CAMERA IS ON. DrawSpritePoly is single-sided, so a quad
-    -- wound for one side is invisible from the other -- and at a five-metre
-    -- reach on a four-metre car the player is regularly behind the bumper. The
-    -- winding swaps; the vertex-to-UV mapping does NOT, so the sign reads
-    -- correctly from the front and (as any real sign does) backwards from
-    -- behind, rather than vanishing.
-    local ux, uy, uz = bx - ax, by - ay, bz - az
-    local vx, vy, vz = cx - ax, cy - ay, cz - az
-    local nx = uy * vz - uz * vy
-    local ny = uz * vx - ux * vz
-    local nz = ux * vy - uy * vx
+    drawQuad(page, ax, ay, az, bx, by, bz, cx, cy, cz, dx, dy, dz, alpha)
+end
 
-    local cam = GetGameplayCamCoord()
-    local mx, my, mz = (ax + dx) * 0.5, (ay + dy) * 0.5, (az + dz) * 0.5
-    local flip = (nx * (cam.x - mx) + ny * (cam.y - my) + nz * (cam.z - mz)) < 0.0
+--- Draw the page as a QUAD BOLTED FLAT TO ONE FACE OF AN ENTITY (#294).
+---
+--- ═══ THE REPORT, TWICE ═══
+---
+---   "feedback on the ambulance DUIs - they're not fixed to the rotation of the
+---    ambulance entity - an ambulance on a slope has DUIs clipping through when
+---    I try to use it"                                     -- owner, 2026-09-07
+---
+---   "the ambulance DUIs are still not positioned with rotation to match the
+---    ambulance entity...."                                -- owner, 2026-09-11
+---
+--- ═══ WHY THE FIRST ANSWER COULD NOT HAVE WORKED ═══
+---
+--- The plate came through drawPlane, which is handed a LEVELED direction --
+--- `levelBasis` normalizes the forward vector's x and y and throws its z away --
+--- and stands the quad up along the WORLD's up. So the plate was level BY
+--- CONSTRUCTION, before any correction ran. 2026-09-07's answer added a `lean`
+--- term that measured how far the real panel had swung and pushed the plate
+--- further out to clear it. That is a plate held off a surface it is not
+--- parallel to: it stops the worst of the clipping at one height and leaves the
+--- plate visibly out of true with the bodywork everywhere else, which is what
+--- "still not positioned with rotation to match" describes. The term is gone
+--- rather than layered under this, because it was correcting for this.
+---
+--- ═══ WHAT THIS DOES INSTEAD: THE QUAD IS BUILT IN THE ENTITY'S OWN SPACE ═══
+---
+--- Every number the caller tunes is already a measurement on the model -- the
+--- face's `reach` comes off GET_MODEL_DIMENSIONS' box, `oz` is a height up that
+--- same box (BR.ShopSolve.signHeight), and `out` and `side` are meters off and
+--- along the panel. They were being spent half in the model's frame and half in
+--- the world's, and the seam between those two frames IS the bug. So the whole
+--- quad is laid out in the entity's own axes and every corner goes out through
+--- GET_OFFSET_FROM_ENTITY_IN_WORLD_COORDS -- the entity's full matrix, yaw,
+--- pitch and roll together. There is no orientation maths here to get wrong, the
+--- plate is parallel to its panel at every attitude, and it stands exactly `out`
+--- meters off it measured perpendicular to the panel rather than along a level
+--- line that no longer touches it.
+---
+--- drawOnEntity below has bought its anchoring the same way since 2026-08-06 and
+--- its header says why. This is that decision, for a quad stood on a side rather
+--- than laid on a lid.
+---
+--- ═══ AND IT IS THE SAME QUAD ON FLAT GROUND, WHICH IS WHY IT IS SAFE ═══
+---
+--- With no pitch and no roll the entity's matrix is a yaw and a translation, and
+--- a yaw maps the entity's own axes onto exactly the vectors `levelBasis`
+--- returns and its own up onto the world's. So corner for corner this agrees
+--- with drawPlane to floating point on every vehicle standing flat, and every
+--- number the owner has tuned by eye is where he left it. Only a leaning vehicle
+--- moves -- which is the whole of the report. tools/test_shop.lua section 7c
+--- executes both halves of that claim rather than trusting this paragraph.
+---
+--- FOUR MATRIX READS A FRAME, which is what drawOnEntity has always spent on a
+--- crate label. It replaces three reads on the old path (the basis, the entity's
+--- coordinates and the `lean` probe), so the plate is one native a frame dearer
+--- than the bug was.
+--- @param page table
+--- @param entity integer  the entity the plate is bolted to
+--- @param ux number       the face's outward normal IN THE ENTITY'S OWN AXES --
+--- @param uy number       one of (0,1) (0,-1) (1,0) (-1,0)
+--- @param dist number     meters out along it, from the entity's origin
+--- @param side number|nil meters ALONG the face, positive to the reader's right
+--- @param oz number       meters up the ENTITY -- not up the world, which is the
+---                        difference: this height is read off the model's own box
+---                        and belongs on the panel, wherever the panel has got to
+--- @param hw number       half width, and half height, in meters
+--- @param hh number
+--- @param alpha number|nil
+local function drawPanel(page, entity, ux, uy, dist, side, oz, hw, hh, alpha)
+    -- The reader's LEFT, in the entity's own axes. drawPlane takes (out.y,
+    -- -out.x) of a world direction for the same reason and with the same
+    -- consequence if it is reversed -- a sign that renders perfectly, in mirror
+    -- writing, from the only side anybody stands on. At the nose (ux, uy) is
+    -- (0, 1) and this is the entity's +X, which is drawFace's answer too.
+    --
+    -- SUBTRACTED, BECAUSE POSITIVE IS THE READER'S RIGHT and this is their left.
+    local lx, ly = uy, -ux
+    local s = tonumber(side) or 0.0
+    local cx0 = ux * dist - lx * s
+    local cy0 = uy * dist - ly * s
 
-    local a = alpha or 255
-    local txd, tex = page.txd, page.tex
-
-    if flip then
-        DrawSpritePoly(ax, ay, az, cx, cy, cz, bx, by, bz,
-            255, 255, 255, a, txd, tex,
-            0.0, 0.0, 1.0,  0.0, 1.0, 1.0,  1.0, 0.0, 1.0)
-        DrawSpritePoly(cx, cy, cz, dx, dy, dz, bx, by, bz,
-            255, 255, 255, a, txd, tex,
-            0.0, 1.0, 1.0,  1.0, 1.0, 1.0,  1.0, 0.0, 1.0)
-    else
-        DrawSpritePoly(ax, ay, az, bx, by, bz, cx, cy, cz,
-            255, 255, 255, a, txd, tex,
-            0.0, 0.0, 1.0,  1.0, 0.0, 1.0,  0.0, 1.0, 1.0)
-        DrawSpritePoly(cx, cy, cz, bx, by, bz, dx, dy, dz,
-            255, 255, 255, a, txd, tex,
-            0.0, 1.0, 1.0,  1.0, 0.0, 1.0,  1.0, 1.0, 1.0)
+    local function corner(sx, sz)
+        local v = GetOffsetFromEntityInWorldCoords(entity,
+                                                   cx0 + lx * sx,
+                                                   cy0 + ly * sx,
+                                                   oz + sz)
+        return v.x, v.y, v.z
     end
+
+    local ax, ay, az = corner( hw,  hh)   -- top-left
+    local bx, by, bz = corner(-hw,  hh)   -- top-right
+    local cx, cy, cz = corner( hw, -hh)   -- bottom-left
+    local dx, dy, dz = corner(-hw, -hh)   -- bottom-right
+
+    drawQuad(page, ax, ay, az, bx, by, bz, cx, cy, cz, dx, dy, dz, alpha)
 end
 
 --- Draw a page as a FIXED SIGN STANDING ON AN ENTITY'S FRONT FACE (#236).
@@ -516,12 +670,23 @@ function BR.Dui.drawFace(page, entity, oy, oz, widthM, alpha)
     -- its kickstand really is rolled. `levelBasis` above is the cure and carries
     -- the whole argument for it.
     --
-    -- drawOnEntity BELOW KEEPS THE WHOLE MATRIX, and the divergence is the
-    -- point. Its header (the "STUCK TO AN ENTITY'S TOP FACE" block) records the
-    -- 2026-08-06 bug where a label that ignored pitch and roll lay dead flat
-    -- beside a crate resting on a slope. A label stuck to a lid must follow the
-    -- lid; a sign standing in front of a car must not follow the car's lean.
-    -- Do not "make them consistent".
+    -- ═══ AND IT IS THIS FUNCTION THAT WANTS LEVEL, NOT EVERY SIGN (#294) ═══
+    --
+    -- Two other draws in this file keep the whole matrix, and the divergence is
+    -- the point rather than an inconsistency to tidy up. drawOnEntity's header
+    -- (the "STUCK TO AN ENTITY'S TOP FACE" block) records the 2026-08-06 bug
+    -- where a label that ignored pitch and roll lay dead flat beside a crate
+    -- resting on a slope; drawPanel's records 2026-09-07 and 2026-09-11, where a
+    -- plate bolted flush to an ambulance's flank could not follow the flank.
+    --
+    -- WHAT SEPARATES THEM IS WHETHER THE PAGE IS ON THE ENTITY OR IN FRONT OF
+    -- IT. A label stuck to a lid follows the lid, and a plate flush to a panel
+    -- follows the panel, because both ARE the surface. A yard sign is planted in
+    -- the ground in FRONT of a car the player is shopping for -- it is not on
+    -- the bodywork, nothing about it is measured off the bodywork, and the owner
+    -- asked in as many words for it to stay level when a Sanchez leans on its
+    -- kickstand. Same for the warmup board on its prop. Do not "make them
+    -- consistent"; the question is what the page is attached to.
     local fx, fy = levelBasis(entity)
     if not fx then return end
 
@@ -638,13 +803,30 @@ end
 --- NIL WHEN THE MODEL HAS NOT ANSWERED, which both callers propagate rather than
 --- guess through: BR.NearestBoxFace's own header explains what a box of zeroes
 --- does, and a `modelBox` that is still nil has not even got that far.
+---
+--- ═══ THE PICK IS STILL LEVELED, AND ONLY THE PICK (#294) ═══
+---
+--- This used to hand its caller the leveled basis as well, and drawNearFace
+--- built the plate's orientation out of it. That was the bug, and the plate is
+--- built from the entity's own matrix now -- so the only thing left here that is
+--- leveled is the QUESTION, "which panel is the player standing beside".
+---
+--- THAT ONE GENUINELY IS A HORIZONTAL QUESTION. A player is on the ground beside
+--- a van; flattening the displacement into the van's own heading answers where
+--- they are standing, and it answers it identically for a van on a slope and the
+--- same van on the flat. Running the pick through the full matrix instead would
+--- move the plate to a different PANEL on a tilted van -- and a different panel
+--- means a different one of the owner's four tuned sets of five
+--- (br_lib/config/revivekey.lua), which is a second behavior change nobody
+--- reported. The report is that the plate does not lie on the panel, not that it
+--- is on the wrong panel.
 --- @param entity integer
 --- @param px number
 --- @param py number
---- @return number|nil ux, number uy, number reach  the face, and metres from the
----                        entity's ORIGIN out to its plane
---- @return number fx, number fy, number rx, number ry  the levelled basis
---- @return table p        the entity's own coordinates
+--- @return number|nil ux, number uy, number reach  the face IN THE ENTITY'S OWN
+---                        AXES, and meters from the entity's ORIGIN out to its
+---                        plane. All three are the model's own numbers, and
+---                        drawPanel spends them without leaving that frame.
 local function faceOf(entity, px, py)
     local fx, fy, rx, ry = levelBasis(entity)
     if not fx then return nil end
@@ -663,7 +845,7 @@ local function faceOf(entity, px, py)
 
     local ux, uy, reach = BR.NearestBoxFace(lx, ly, box.minx, box.maxx,
                                             box.miny, box.maxy)
-    return ux, uy, reach, fx, fy, rx, ry, p
+    return ux, uy, reach
 end
 
 --- WHICH FACE, WITHOUT DRAWING ANYTHING.
@@ -705,13 +887,22 @@ end
 --- driver's side; walk round the back and it moves to the back. drawFace above
 --- is this with the answer fixed to the nose.
 ---
---- ═══ IT IS drawFace's BASIS AND drawFace's QUAD, WITH ONE DIFFERENT NUMBER ═══
+--- ═══ IT WAS drawFace's BASIS AND drawFace's QUAD, AND THAT WAS THE BUG ═══
 ---
---- Everything that was hard about the yard sign -- levelling a leaning bike,
---- getting the reader's left the right way round, winding the triangles toward
---- the camera -- is `levelBasis` and `drawPlane`, and both are shared verbatim
---- with the function above rather than reasoned about a second time. What is new
---- here is two lines: which way is out, and how far.
+--- It used to share `levelBasis` and `drawPlane` with the yard sign above, on
+--- the reasoning that everything hard about a sign -- the reader's left, the
+--- winding toward the camera, the meters -- had been solved once and should not
+--- be reasoned about twice. Only one of those two functions was the right thing
+--- to share. `drawPlane` and its tail still are, through drawQuad. `levelBasis`
+--- was not: a yard sign is planted in front of a car and must stay level, while
+--- THIS plate is bolted to a panel and must lie on it. Sharing the basis made
+--- the plate level by construction, and two rounds of the owner reporting a
+--- plate that does not follow the ambulance are what that cost (#294).
+---
+--- SO THE ORIENTATION COMES FROM THE ENTITY'S MATRIX NOW, through drawPanel,
+--- whose header carries the whole argument and the proof that a vehicle standing
+--- flat is unaffected. What is new here is still only which way is out and how
+--- far; what changed is the frame those two are spent in.
 ---
 --- ═══ THE FACE COMES OFF THE MODEL, SO AN UNSEEN VAN IS RIGHT ═══
 ---
@@ -742,8 +933,12 @@ end
 --- drawPlane, beside the line that already decides the reader's left, so the
 --- text and the offset cannot come to disagree -- see the note there.
 ---
---- @param out number      metres the sign stands off that face's panel
---- @param oz number       metres straight up from the entity's origin
+--- @param out number      meters the sign stands off that face's panel, measured
+---                        PERPENDICULAR TO THE PANEL. May be negative, and every
+---                        face the owner has tuned is.
+--- @param oz number       meters up the ENTITY from its origin. A height read off
+---                        the model's own box (BR.ShopSolve.signHeight), so it
+---                        belongs on the panel and travels with it.
 --- @param widthM number   how wide the sign is, in metres; height follows the
 ---                        page's own aspect
 --- @param side number|nil metres along that face, positive to the reader's right
@@ -761,62 +956,25 @@ function BR.Dui.drawNearFace(page, entity, px, py, out, oz, widthM, side, alpha)
     if hw <= 0.0 then return nil end
     local hh = hw * (page.h / page.w)
 
-    -- THE FACE, AND THE BASIS IT WAS FOUND IN, out of the one derivation
-    -- BR.Dui.nearFace above shares -- see its header for why the caller may have
-    -- asked the same question a moment ago and must get the same answer.
-    local ux, uy, reach, fx, fy, rx, ry, p = faceOf(entity, px, py)
+    -- THE FACE, out of the one derivation BR.Dui.nearFace above shares -- see
+    -- its header for why the caller may have asked the same question a moment
+    -- ago and must get the same answer.
+    --
+    -- ALL THREE NUMBERS ARE IN THE MODEL'S OWN FRAME and are handed straight on
+    -- in it. Nothing is converted to a world direction here any more: that
+    -- conversion, and the level basis it went through, is what #294 removed.
+    local ux, uy, reach = faceOf(entity, px, py)
     if not ux then return nil end
 
-    -- ...and that face's outward normal, back in the world. (ux, uy) is one of
-    -- the four unit axes, so this is a column of the basis and stays unit
-    -- length -- which is what lets `reach + out` be read as metres.
-    local ox = rx * ux + fx * uy
-    local oy = ry * ux + fy * uy
-
-    -- ═══ AND HOW FAR THE PANEL HAS LEANED TOWARDS THE SIGN ═══
-    --
-    --   "feedback on the ambulance DUIs - they're not fixed to the rotation of
-    --    the ambulance entity - an ambulance on a slope has DUIs clipping
-    --    through when I try to use it"                   -- owner, 2026-09-07
-    --
-    -- EVERYTHING ABOVE IS LEVEL, DELIBERATELY, and drawPlane's header carries
-    -- the argument: `oz` is a height up the WORLD rather than up the entity,
-    -- because pushed through a rolled bike's matrix that height swings out
-    -- sideways and hangs the sign off beside the bike. That decision is not
-    -- being reversed here -- the sign stays upright and stays where it was.
-    --
-    -- WHAT IT MISSED IS THAT THE PANEL MOVES. `reach` is measured off the
-    -- model's box in the vehicle's LEVEL axes, so it answers "how far out is the
-    -- bodywork" for a vehicle standing flat. Tip the van nose-down on a hill and
-    -- the panel at height `oz` swings towards the sign, and a stand-off tuned on
-    -- the flat puts the plate inside the metal.
-    --
-    -- SO THE SHORTFALL IS MEASURED RATHER THAN GUESSED AT. The panel point in
-    -- the vehicle's own space is (ux*reach, uy*reach, oz); through
-    -- GET_OFFSET_FROM_ENTITY_IN_WORLD_COORDS -- the entity's full matrix, pitch
-    -- and roll included -- that is where the metal really is. How far it sits
-    -- along the LEVEL outward normal is the number the sign has to beat, and the
-    -- difference is added to the stand-off.
-    --
-    -- IT IS EXACTLY ZERO ON FLAT GROUND, which is what makes this safe: a van
-    -- with no pitch and no roll maps that point straight back to `reach`, the
-    -- term vanishes, and every plate the owner has already tuned by eye is
-    -- untouched. Only a leaning vehicle pays, and it pays precisely what it
-    -- leaned.
-    --
-    -- NOT APPLIED TO drawFace, which is the showroom's yard sign (#236). Its
-    -- distance is one tuned number rather than a reach plus an offset, so there
-    -- is nothing to add to without re-deriving its geometry -- and its cars
-    -- stand on an authored flat pad, where this term would be zero anyway.
-    local lean = 0.0
-    local q = GetOffsetFromEntityInWorldCoords(entity, ux * reach, uy * reach, oz)
-    if q then
-        local d = (q.x - p.x) * ox + (q.y - p.y) * oy
-        if d > reach then lean = d - reach end
-    end
-
-    drawPlane(page, p.x, p.y, p.z, ox, oy,
-              reach + lean + (tonumber(out) or 0.0),
+    -- THE PLATE IS BOLTED TO THAT PANEL. `reach` is where the model's own box
+    -- puts the bodywork and `out` is the owner's meters off it -- negative on
+    -- every face he has tuned (br_lib/config/revivekey.lua), because an
+    -- ambulance's slab sides are inside their bounding box and a plate standing
+    -- proud of them "read as floating beside it". A number tuned that finely is
+    -- a number that has to be spent perpendicular to the panel it was measured
+    -- against, at every attitude, which is exactly what drawPanel does and what
+    -- the leveled path could not do at any lean.
+    drawPanel(page, entity, ux, uy, reach + (tonumber(out) or 0.0),
               tonumber(side) or 0.0, oz, hw, hh, alpha)
     return ux, uy
 end

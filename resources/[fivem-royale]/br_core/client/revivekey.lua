@@ -1057,11 +1057,16 @@ end)
 --- drawWorld is SetDrawOrigin + DrawSprite: a point projected to the screen with
 --- the plate then sized in SCREEN fractions, so it was a billboard hanging over
 --- the roof that held the same share of the display from any distance. This
---- draws a quad in the world in METRES, squared to the van's own heading and
---- level with the horizon, standing off the panel the player is nearest to.
---- client/shop.lua made the same move for the same complaint (#236) and
---- BR.Dui.drawNearFace is that function's basis and quad with one different
---- direction.
+--- draws a quad in the world in METERS, bolted flat to the panel the player is
+--- nearest to. client/shop.lua made the same move for the same complaint (#236).
+---
+--- IT IS NOT LEVEL WITH THE HORIZON, AND SINCE #294 THAT IS THE POINT. It used
+--- to be, sharing the yard sign's leveled basis, and the owner reported the
+--- consequence twice: "an ambulance on a slope has DUIs clipping through"
+--- (2026-09-07) and "the ambulance DUIs are still not positioned with rotation
+--- to match the ambulance entity" (2026-09-11). The five numbers this function
+--- looks up are measurements ON the bodywork, so the plate wears the van's whole
+--- attitude now. BR.Dui.drawPanel carries the argument.
 ---
 --- WHICH FACE IS ABOUT WHERE THE PLAYER IS STANDING, NOT WHERE THE CAMERA IS
 --- POINTING. He asked for the face he is closest to; a plate that moved to the

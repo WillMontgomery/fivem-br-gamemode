@@ -4057,58 +4057,269 @@ do
                 .. 'shared quad grew a parameter, not an offset',
             ('%.3f %.3f %.3f'):format(ux2, uy2, uz2))
 
-        -- ═══ 7c. A VEHICLE ON A SLOPE, WHICH IS WHERE THE PLATE WENT INSIDE
-        --     THE METAL ═══
+        -- ═══ 7c. THE PLATE IS BOLTED TO THE PANEL, NOT STOOD LEVEL BESIDE IT
+        --     (#294) ═══
         --
         --   "feedback on the ambulance DUIs - they're not fixed to the rotation
         --    of the ambulance entity - an ambulance on a slope has DUIs clipping
         --    through when I try to use it"               -- owner, 2026-09-07
         --
-        -- THE SIGN IS STILL LEVEL AND IS NOT BEING WELDED TO THE MATRIX. Section
-        -- 7's pins above say why, and they still hold: a rolled bike must not
-        -- wear a rolled sign, and `oz` must not be pushed through the matrix or
-        -- a leaning vehicle hangs its plate off to one side. What changed is
-        -- narrower -- `reach` is measured off the model's box in the vehicle's
-        -- LEVEL axes, so it answers "how far out is the bodywork" for a vehicle
-        -- standing flat, and a van tipped nose-down brings the panel to meet a
-        -- stand-off tuned on the flat.
+        --   "the ambulance DUIs are still not positioned with rotation to match
+        --    the ambulance entity...."                   -- owner, 2026-09-11
         --
-        -- WHAT IS PINNED IS THE PROPERTY, NOT A NUMBER, and deliberately: the
-        -- exact shortfall is trigonometry against this fixture's own axes, so
-        -- asserting a figure would be asserting the fixture. The claim is that
-        -- the plate is never nearer the origin than the panel actually is.
-        local function panelOutAlongY()
-            local q = GetOffsetFromEntityInWorldCoords(VEH, 0.0, 3.0, OZ2)
-            return q.y - CAR.y
+        -- ═══ WHY THIS BLOCK IS WRITTEN THE WAY IT IS ═══
+        --
+        -- THE SUITE COULD NOT SEE THIS BUG, AND THAT IS THE LESSON. A leveled
+        -- basis and a real matrix agree on every flat fixture, and every fixture
+        -- was flat -- so 2026-09-07's answer shipped green while the plate was
+        -- still wrong, and the owner reported it a second time four days later.
+        -- Section 7 above pitches and rolls the car and asserts the yard sign
+        -- IGNORES it; nothing anywhere drove a tilted van and asserted this
+        -- plate FOLLOWS it.
+        --
+        -- SO THE EXPECTATION IS BUILT FROM THE MODEL'S OWN NUMBERS, INDEPENDENTLY
+        -- OF THE CODE UNDER TEST, and pushed through the fixture's matrix -- the
+        -- same matrix section 7 already proved genuinely pitches and rolls. If
+        -- the plate is the model-space rectangle it claims to be, every corner
+        -- lands on the point computed here; a leveled plate misses all four.
+        --
+        -- AND THE NEGATIVE HALF IS ASSERTED TOO, because it is the claim that
+        -- protects the four sets of five numbers the owner tuned by eye
+        -- (br_lib/config/revivekey.lua) and every other caller of this file. The
+        -- OLD leveled construction is written out below and the new drawing is
+        -- required to equal it to floating point on flat ground -- and required
+        -- to differ from it, visibly, the moment the van leans.
+
+        --- The old leveled path, reproduced here rather than called: the
+        --- flattened forward vector, the world-space outward normal, the
+        --- 2026-09-07 `lean` term, and an upright quad standing along it. This is
+        --- what drawNearFace used to emit, corner for corner.
+        local function levelCorner(out, side, oz, sx, sz)
+            local hr2 = math.rad(CAR.h)
+            local fxl, fyl = -math.sin(hr2), math.cos(hr2)
+            local rxl, ryl = fyl, -fxl
+            -- The nose face, which is where this block stands the reader.
+            local uxf, uyf, reach = 0.0, 1.0, 3.0
+            local oxl = rxl * uxf + fxl * uyf
+            local oyl = ryl * uxf + fyl * uyf
+            local q = GetOffsetFromEntityInWorldCoords(VEH, uxf * reach,
+                                                       uyf * reach, oz)
+            local d = (q.x - CAR.x) * oxl + (q.y - CAR.y) * oyl
+            local lean = (d > reach) and (d - reach) or 0.0
+            local dist = reach + lean + out
+            local lxl, lyl = oyl, -oxl
+            return CAR.x + oxl * dist - lxl * side + lxl * sx,
+                   CAR.y + oyl * dist - lyl * side + lyl * sx,
+                   CAR.z + oz + sz
         end
 
-        -- FLAT FIRST, AS THE CONTROL. The term has to be exactly zero here or
-        -- every plate the owner has already tuned by eye has moved.
+        --- ...and where the panel-space plate must be: the same rectangle in the
+        --- MODEL's own axes, through the entity's whole matrix.
+        local function panelCorner(out, side, oz, sx, sz)
+            local uxf, uyf, reach = 0.0, 1.0, 3.0
+            local lxl, lyl = uyf, -uxf
+            local dist = reach + out
+            local v = GetOffsetFromEntityInWorldCoords(VEH,
+                          uxf * dist - lxl * side + lxl * sx,
+                          uyf * dist - lyl * side + lyl * sx,
+                          oz + sz)
+            return v.x, v.y, v.z
+        end
+
+        local HW, HH = W * 0.5, W * 0.25
+        local SIGNS = { { 'top-left',      HW,  HH, 0.0, 0.0 },
+                        { 'top-right',    -HW,  HH, 1.0, 0.0 },
+                        { 'bottom-left',   HW, -HH, 0.0, 1.0 },
+                        { 'bottom-right', -HW, -HH, 1.0, 1.0 } }
+
+        --- Ten meters off the car's OWN NOSE, wherever the nose is pointing.
+        --- Standing due north of a car at heading 197.7 is standing at its TAIL,
+        --- and the two expectations above are written for the nose.
+        local function offTheNose()
+            local hr2 = math.rad(CAR.h)
+            return CAR.x - math.sin(hr2) * 10.0, CAR.y + math.cos(hr2) * 10.0
+        end
+
+        --- How far the drawn quad is from the panel-space expectation, and from
+        --- the old leveled one, as the worst of the four corners.
+        --- @return number panelErr, number levelErr
+        local function corners(out, side, oz)
+            local nx2, ny2 = offTheNose()
+            drawNear(nx2, ny2, side)
+            local pe, le = 0.0, 0.0
+            for _, c in ipairs(SIGNS) do
+                local got = at(c[4], c[5])
+                local ex, ey, ez = panelCorner(out, side, oz, c[2], c[3])
+                local lxp, lyp, lzp = levelCorner(out, side, oz, c[2], c[3])
+                pe = math.max(pe, math.abs(got[1] - ex),
+                                  math.abs(got[2] - ey), math.abs(got[3] - ez))
+                le = math.max(le, math.abs(got[1] - lxp),
+                                  math.abs(got[2] - lyp), math.abs(got[3] - lzp))
+            end
+            return pe, le
+        end
+
+        -- ── THE NEGATIVE HALF, FIRST: A FLAT VAN HAS NOT MOVED ─────────────
+        --
+        -- The claim that makes this change safe to land is that a vehicle
+        -- standing flat draws exactly what it drew before -- so it is asserted
+        -- against the old construction, at a tolerance that is floating point
+        -- and not "close enough to look right".
         CAR.pitch, CAR.roll = 0.0, 0.0
-        drawNear(CAR.x, CAR.y + 10.0, 0.0)
-        local px0, py0 = mid()
-        ok(near(py0, CAR.y + 3.0 + OUT, 0.001) and near(px0, CAR.x, 0.001),
-           'on flat ground the slope term is exactly zero, so a tuned plate has '
-               .. 'not moved by a millimetre',
-           ('%.4f vs %.4f'):format(py0, CAR.y + 3.0 + OUT))
+        local fpe, fle = corners(OUT, 0.0, OZ2)
+        ok(fle < 1e-6,
+           'on flat ground every corner is where the OLD leveled path put it, '
+               .. 'to floating point -- so the four tuned sets of five, the gun '
+               .. 'shop counter and the yard sign are all untouched',
+           ('worst corner %.3e m'):format(fle))
+        ok(fpe < 1e-6,
+           '...and that is the same point the model-space rectangle gives, '
+               .. 'which is why a flat van cannot tell the two apart',
+           ('worst corner %.3e m'):format(fpe))
 
-        -- ...AND NOSE-DOWN, WHERE THE PANEL SWINGS TOWARDS THE READER.
-        for _, deg in ipairs({ 12.0, -12.0, 22.0 }) do
-            CAR.pitch = deg
-            drawNear(CAR.x, CAR.y + 10.0, 0.0)
-            local _, py1 = mid()
-            local panel = panelOutAlongY()
-            ok(py1 >= CAR.y + panel + OUT - 0.001,
-               ('at %.0f degrees of pitch the plate still stands clear of the '
-                .. 'panel -- which is where it actually is, not where a level '
-                .. 'box says it is'):format(deg),
-               ('plate %.3f, panel %.3f, out %.2f')
-                   :format(py1 - CAR.y, panel, OUT))
-            ok(py1 >= CAR.y + 3.0 + OUT - 0.001,
-               ('...and never nearer than the flat-ground stand-off (%.0f deg)')
-                   :format(deg),
-               ('%.3f'):format(py1 - CAR.y))
+        -- ...AND AT A HEADING, so "unchanged" is not an accident of facing north.
+        CAR.h = 197.7
+        local hpe, hle = corners(OUT, 0.35, OZ2)
+        ok(hle < 1e-6 and hpe < 1e-6,
+           'and at a heading of 197.7 with a lateral on, flat, the two '
+               .. 'constructions still agree corner for corner',
+           ('level %.3e, panel %.3e'):format(hle, hpe))
+        CAR.h = 0.0
+
+        -- ── AND NOW THE BUG: A PITCHED VAN, AND A ROLLED ONE ───────────────
+        --
+        -- EVERY ONE OF THESE FAILS WITH THE FIX REVERTED, by tens of
+        -- centimeters, which is the size of the gap the owner was looking at.
+        for _, case in ipairs({ { 'pitched nose-up',   12.0,  0.0 },
+                                { 'pitched nose-down', -12.0, 0.0 },
+                                { 'pitched hard',      22.0,  0.0 },
+                                { 'rolled',             0.0, 25.0 },
+                                { 'rolled the other way', 0.0, -18.0 },
+                                { 'pitched AND rolled', 14.0, 20.0 } }) do
+            CAR.pitch, CAR.roll = case[2], case[3]
+            local pe, le = corners(OUT, 0.0, OZ2)
+            ok(pe < 1e-6,
+               ('%s, every corner follows the van: the plate is the model-space '
+                .. 'rectangle through the entity\'s own matrix')
+                   :format(case[1]),
+               ('worst corner %.3e m'):format(pe))
+            ok(le > 0.05,
+               ('...and is nowhere near where the leveled path put it (%s), '
+                .. 'which is the bug being reported for the second time')
+                   :format(case[1]),
+               ('%.3f m away from the leveled corner'):format(le))
         end
+        CAR.pitch, CAR.roll = 0.0, 0.0
+
+        -- ── THE PROPERTY SAID IN THE OWNER'S TERMS ─────────────────────────
+        --
+        -- The corner equality above is the whole of it, but it is stated against
+        -- a construction. These two say the same thing in the language of the
+        -- complaint: the plate is PARALLEL to the panel, and it stands off it by
+        -- exactly the meters it was tuned with, measured perpendicular to the
+        -- panel rather than along a level line that no longer touches it.
+        --
+        -- A NEGATIVE STAND-OFF, because every face he has tuned is negative --
+        -- an ambulance's slab sides sit inside their bounding box, so the plate
+        -- is pulled IN. A version that clamped at zero, or that only ever pushed
+        -- the plate outward the way the `lean` term did, passes the flat case and
+        -- fails here.
+        for _, case in ipairs({ { 'flat',    0.0,  0.0 },
+                                { 'pitched', 15.0, 0.0 },
+                                { 'rolled',   0.0, 25.0 } }) do
+            CAR.pitch, CAR.roll = case[2], case[3]
+            -- THE STAND-OFF IS PASSED, not borrowed from `drawNear`'s positive
+            -- one -- the whole point of this loop is the negative number the
+            -- owner actually ships.
+            local OUTN = -0.25
+            polys = {}
+            BR.Dui.drawNearFace(page, VEH, CAR.x, CAR.y + 10.0, OUTN, OZ2, W, 0.0)
+            local tl2, tr2 = at(0.0, 0.0), at(1.0, 0.0)
+            local bl2 = at(0.0, 1.0)
+
+            -- The panel's own outward normal, and a point on it, straight off
+            -- the fixture's matrix.
+            local o0 = GetOffsetFromEntityInWorldCoords(VEH, 0.0, 3.0, OZ2)
+            local o1 = GetOffsetFromEntityInWorldCoords(VEH, 0.0, 4.0, OZ2)
+            local nX, nY, nZ = o1.x - o0.x, o1.y - o0.y, o1.z - o0.z
+
+            -- Parallel: both edges of the quad lie in the panel's plane, so
+            -- neither has any component along its normal.
+            local eW = (tr2[1] - tl2[1]) * nX + (tr2[2] - tl2[2]) * nY
+                       + (tr2[3] - tl2[3]) * nZ
+            local eH = (bl2[1] - tl2[1]) * nX + (bl2[2] - tl2[2]) * nY
+                       + (bl2[3] - tl2[3]) * nZ
+            ok(math.abs(eW) < 1e-6 and math.abs(eH) < 1e-6,
+               ('%s: the plate lies flat IN the panel\'s plane -- it is not a '
+                .. 'level rectangle held off a surface it is not parallel to, '
+                .. 'which is what "clipping through" looked like'):format(case[1]),
+               ('width %.3e, height %.3e off plane'):format(eW, eH))
+
+            -- ═══ AND IT IS TURNED THE RIGHT WAY ROUND WITHIN THAT PLANE ═══
+            --
+            -- THE TWO ASSERTIONS ABOVE ARE BLIND TO ROLL, and saying so is the
+            -- point of writing this one. A roll turns the van about its own
+            -- forward axis, and a rotation cannot move the axis it turns about
+            -- -- so the NOSE PANEL'S PLANE and its normal are exactly where they
+            -- were. A level plate on a rolled ambulance is still parallel to the
+            -- nose and still the right distance off it; what it is doing is
+            -- sitting square to the horizon on bodywork that is not, which is a
+            -- plate that does not "match the ambulance entity" and which those
+            -- two checks would pass forever.
+            --
+            -- So the plate's own two axes are compared with the van's. Its width
+            -- runs along the van's local X and its height along the van's local
+            -- Z, and under a roll both of those have left the world's.
+            local bodyX = GetOffsetFromEntityInWorldCoords(VEH, 1.0, 0.0, 0.0)
+            local bodyZ = GetOffsetFromEntityInWorldCoords(VEH, 0.0, 0.0, 1.0)
+            local o = GetOffsetFromEntityInWorldCoords(VEH, 0.0, 0.0, 0.0)
+            local function unit(p, q)
+                local ux3, uy3, uz3 = p[1] - q[1], p[2] - q[2], p[3] - q[3]
+                local n = math.sqrt(ux3 * ux3 + uy3 * uy3 + uz3 * uz3)
+                return ux3 / n, uy3 / n, uz3 / n
+            end
+            local wx, wy, wz = unit(tl2, tr2)
+            local hx, hy, hz = unit(tl2, bl2)
+            local axX, axY, axZ = bodyX.x - o.x, bodyX.y - o.y, bodyX.z - o.z
+            local azX, azY, azZ = bodyZ.x - o.x, bodyZ.y - o.y, bodyZ.z - o.z
+            ok(near(math.abs(wx * axX + wy * axY + wz * axZ), 1.0, 0.0005)
+                   and near(math.abs(hx * azX + hy * azY + hz * azZ), 1.0,
+                            0.0005),
+               ('...and is turned with the bodywork inside it: its width runs '
+                .. 'along the van\'s own X and its height along the van\'s own '
+                .. 'Z (%s)'):format(case[1]),
+               ('width . bodyX = %.4f, height . bodyZ = %.4f'):format(
+                   wx * axX + wy * axY + wz * axZ,
+                   hx * azX + hy * azY + hz * azZ))
+
+            -- ...and exactly OUTN off it, perpendicular.
+            local mx3, my3, mz3 = mid()
+            local gap = (mx3 - o0.x) * nX + (my3 - o0.y) * nY
+                        + (mz3 - o0.z) * nZ
+            ok(near(gap, OUTN, 0.0005),
+               ('...and stands exactly the tuned %.2fm off it, measured '
+                .. 'perpendicular to the panel (%s)'):format(OUTN, case[1]),
+               ('%.4f'):format(gap))
+        end
+        CAR.pitch, CAR.roll = 0.0, 0.0
+
+        -- ── AND THE LEVEL CALLERS DID NOT COME WITH IT ─────────────────────
+        --
+        -- drawNearFace shares drawQuad with the yard sign now instead of sharing
+        -- levelBasis with it. If the extraction had taken the leveling out of
+        -- drawFace too, the Sanchez complaint of 2026-08-30 would be back and
+        -- section 7's pins are the ones that would have caught it -- so the
+        -- rolled car is put back under the SHOP's sign here, in this block,
+        -- where a reader is looking at the change.
+        CAR.pitch, CAR.roll = 6.0, 25.0
+        draw(OY, OZ)
+        local ytl, ytr = at(0.0, 0.0), at(1.0, 0.0)
+        local ybl = at(0.0, 1.0)
+        ok(near(ytl[3], ytr[3], 0.0005)
+               and near(ytl[1], ybl[1], 0.0005) and near(ytl[2], ybl[2], 0.0005),
+           'the same leaning car still wears a dead level yard sign -- the '
+               .. 'nearest-face plate took the matrix, the showroom sign did not',
+           ('%.4fm of drop'):format(math.abs(ytl[3] - ytr[3])))
         CAR.pitch, CAR.roll = 0.0, 0.0
     end
 
