@@ -19640,14 +19640,27 @@ end
 -- killer at all, records it as a LICENSE, hands the solver a live server id, and
 -- that a death with no killer travels all the way through as nil.
 
---- A solo match: three players, no squadIds, everybody alive.
-local function soloMatch()
+--- A solo match: no squadIds, everybody alive.
+---
+--- @param n integer|nil  how many players. Three by default, which is what every
+---        caller but one wants: one dies, one killed them, one is left to cycle
+---        onto.
+---
+--- A CALLER ASKS FOR MORE WHEN ITS SCENARIO CONTAINS A SECOND DEATH. In solos
+--- every player is their own squad, so the second death in a three-player match
+--- leaves ONE standing -- which is the match being decided, and
+--- BR.Spectate.onEliminated closes the camera for the whole round at that moment
+--- ("whenever the 2nd to last player (or squad) dies - they should not go
+--- immediately to spectate" -- the owner, 2026-09-11). A fixture that wants to
+--- watch a session SURVIVE a second death has to leave somebody for the match to
+--- still be about. See spectate.theKillerIsLostAgain.
+local function soloMatch(n)
     reset()
-    join(1, 'Me'); join(2, 'Killer'); join(3, 'Bystander')
+    n = n or 3
+    local names = { 'Me', 'Killer', 'Bystander', 'Spare' }
+    for s = 1, n do join(s, names[s] or ('P' .. s)) end
     local m = fakeMatch(BR.Mode.SOLO.key)
-    for _, s in ipairs({ 1, 2, 3 }) do
-        BR.Roster.setState(s, BR.PlayerState.ALIVE)
-    end
+    for s = 1, n do BR.Roster.setState(s, BR.PlayerState.ALIVE) end
     sent = {}
     return m
 end
@@ -19711,7 +19724,15 @@ do
 
     -- 1. THE KILLER DIES. The feed re-resolves every push. The list loses one
     --    row and keeps the rest, so the camera moves rather than stopping.
-    soloMatch()
+    --
+    --    FOUR PLAYERS, BECAUSE THIS BLOCK CONTAINS TWO DEATHS. On three the
+    --    second one leaves a single solo standing, which is the match being
+    --    decided -- and since 2026-09-11 that closes the camera for the round
+    --    rather than moving it (BR.Spectate.onEliminated). The property under
+    --    test here is the RETARGET, which is only a question while there is
+    --    still a match to retarget inside; the closing behaviour is
+    --    tools/test_spectate.lua's.
+    soloMatch(4)
     BR.Combat.eliminate(1, 'headshot', 2)
     fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 0 })
     ok(watching(1) == 2, 'precondition: watching the killer')

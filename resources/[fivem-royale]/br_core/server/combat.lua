@@ -478,6 +478,36 @@ function BR.Combat.eliminate(src, cause, killerSrc)
     entry.diedAt = GetGameTimer()
     BR.Broadcast.delta({ op = 'update', src = src, e = { placement = placement } })
 
+    -- ═══ AND IF THAT WAS THE DEATH THAT DECIDED THE MATCH, THE CAMERA CLOSES ═══
+    --
+    -- Owner, 2026-09-11: "whenever the 2nd to last player (or squad) dies - they
+    -- should not go immediately to spectate and just show the verdict and fade to
+    -- black like normal."
+    --
+    -- ONE GUARDED CALL, and the decision is server/spectate.lua's -- the same
+    -- shape and the same file-crossing idiom as BR.ReviveKey.onEliminated above.
+    -- The rule is entirely about who may look at what, which is that file's
+    -- subject and #192's; putting the predicate here would put it where no suite
+    -- can reach it and where the camera's own tests cannot see it.
+    --
+    -- BELOW THE STATE WRITE, AND THAT IS LOAD-BEARING. The answer is an EDGE --
+    -- were there two or more standing squads before this, and one or fewer after
+    -- it -- and the "after" half is BR.Server.squadsAlive, which cannot see this
+    -- player leave the fight until BR.Roster.setState above has said so.
+    --
+    -- `placement` IS THE "BEFORE" COUNT. It is BR.Server.squadsAlive(m) read at
+    -- the top of this function, before anything was written; handing it over
+    -- costs nothing and is the only way the two counts are guaranteed to be the
+    -- same question asked twice rather than two questions.
+    --
+    -- AND NOTHING CAN ASK BETWEEN THE TWO. This whole function is one
+    -- synchronous call, so the seal is in place before any client has been told
+    -- the player is out -- which is the entire reason it does not have to race
+    -- the OUT delta, the kill feed or the match's own transition to ENDED.
+    if m and BR.Spectate and BR.Spectate.onEliminated then
+        BR.Spectate.onEliminated(m, placement)
+    end
+
     if wasDowned then
         TriggerClientEvent(BR.Net.DBNO_SET, src, { downed = false, died = true })
         TriggerClientEvent(BR.Net.HEALTH_SYNC, src, { hp = 0, armour = 0 })

@@ -644,6 +644,34 @@ BR.Net = {
     -- `{ stop = true, reason = <string> }` when it ends, for whatever reason.
     -- ONE EVENT FOR BOTH so a stop can never be lost behind a position push
     -- that arrives after it.
+    --
+    -- ═══ `final = true` ON A STOP MEANS "AND DO NOT ASK AGAIN THIS MATCH" ═══
+    --
+    -- Owner, 2026-09-11: "whenever the 2nd to last player (or squad) dies - they
+    -- should not go immediately to spectate and just show the verdict and fade
+    -- to black like normal."
+    --
+    -- The elimination that DECIDES a match must not hand its victim a camera.
+    -- The server knows that at the moment it writes the death
+    -- (BR.Spectate.onEliminated); the client cannot work it out without racing,
+    -- because the OUT edge and the match's transition to ENDED are separate
+    -- messages with no ordering between them and the automatic ask fires on a
+    -- timer after the death verdict. So the fact TRAVELS, on the same event that
+    -- already carries every other thing the client knows about its session.
+    --
+    -- IT IS A FIELD ON THE STOP RATHER THAN AN EVENT OF ITS OWN, for the reason
+    -- stated one paragraph up: a seal on a second event could arrive behind a
+    -- position push and leave a camera up with the latch already down. One
+    -- event, one order, one meaning per envelope.
+    --
+    -- SENT TO EVERY PLAYER IN THAT MATCH WHO IS NOT IN THE FIGHT, which is the
+    -- set that could open a camera -- so the whole of a losing squad gets it and
+    -- not only the member whose death ended it. A player with a session running
+    -- gets it as the stop that ends that session; a player with nothing running
+    -- gets it as the latch alone, and client/spectate.lua's local teardown is
+    -- documented safe with no session. Nobody still in the fight is sent it at
+    -- all: they cannot spectate, and the winners must not be handed a message
+    -- about a camera.
     SPECTATE_SET    = 'br:spectate:set',
     -- C->S  { dir } -- +1 next, -1 previous, 0 "start, or re-resolve what I
     -- have". 0 is what a client sends on being eliminated: it asks the server

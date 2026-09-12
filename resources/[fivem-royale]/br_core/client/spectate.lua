@@ -45,6 +45,59 @@ BR.Spectate = {}
 --- The running session, or nil. `{ targetSrc, name, admin }`
 local session = nil
 
+--- Has the server said this match's camera is closed for good?
+---
+--- ═══ WHY THERE IS A LATCH AT ALL, GIVEN THE SERVER ALREADY REFUSES ═══
+---
+--- "whenever the 2nd to last player (or squad) dies - they should not go
+--- immediately to spectate and just show the verdict and fade to black like
+--- normal." -- the owner, 2026-09-11.
+---
+--- server/spectate.lua's `resolve` is what makes that TRUE: the deciding
+--- elimination latches the match and every ask after it is answered with no
+--- camera, so nothing can flicker even if this variable did not exist. This is
+--- what makes it QUIET -- the request never leaves the machine, the retry budget
+--- below is never spent, and there is no round trip between a player's death and
+--- a verdict screen that is about to come up over it.
+---
+--- ═══ IT IS SET BY A MESSAGE AND NOT INFERRED, WHICH IS HOW THE RACE CLOSES ═══
+---
+--- The tempting local test is `BR.State.match.state == BR.MatchState.ENDED`, and
+--- it is a race this file would lose. Three things arrive on three schedules: the
+--- OUT edge on a roster delta, the ENDED transition on the 250ms match tick, and
+--- the ask on THIS loop's own timer once the death verdict is down. Worse, the
+--- verdict comes down EARLY when the match ends (client/state.lua dismisses every
+--- match surface on any state that is not PLAYING), so the release of the hold
+--- and the arrival of ENDED are the same event racing itself.
+---
+--- The latch has no such ordering to get wrong. It is raised by the server on the
+--- same event that carries everything else about a session (`final` on a stop --
+--- see BR.Net.SPECTATE_SET), and it is only ever lowered by THIS player leaving
+--- OUT. So it does not matter whether it arrives before or after the death this
+--- client is reacting to: either order ends with the latch up and the ask
+--- suppressed.
+---
+--- ═══ AND NOT A BR.MatchSurface, WHICH IS THE TRAP ═══
+---
+--- Every other thing a match raises on this client is registered with
+--- BR.MatchSurface and dismissed on any state that is not PLAYING. This must not
+--- be, and the reason is exact: that dismissal fires ON THE TRANSITION TO ENDED,
+--- which is the moment the latch has to hold hardest. A surface-scoped seal would
+--- be lowered a quarter of a second after it was raised, by the very event it
+--- exists to survive.
+---
+--- ═══ WHAT LOWERS IT: LEAVING OUT, ON THE EDGE THE BUDGET ALREADY USES ═══
+---
+--- A seal belongs to a MATCH, not to a person -- the failure that would make this
+--- the reported bug wearing the opposite coat is a latch nothing clears, which
+--- would deny a player spectating for the rest of their session with nothing on
+--- screen to say why. So it is lowered on every state edge that is not into OUT,
+--- and OUT is the only state from which a player can spectate: the trip home at
+--- CLEANUP, a revive key standing them back up, and the next match's warmup all
+--- clear it, and there is no path that stays OUT forever except a match that is
+--- already over.
+local sealed = false
+
 --- Where the server last said the target is, and where the camera has eased to.
 --- Two points rather than one because the feed is 4 Hz and the camera is not: a
 --- shot that teleported four times a second was the first thing to fix.
@@ -210,6 +263,16 @@ AddEventHandler(BR.Net.SPECTATE_SET, function(d)
     if type(d) ~= 'table' then return end
 
     if d.stop then
+        -- THE LATCH GOES UP BEFORE THE TEARDOWN RUNS, so the two halves of one
+        -- message cannot be seen apart. `endLocally` reaches other modules (the
+        -- inventory bar, the HUD); a raise in any of them with the assignment
+        -- below it would leave a player whose camera is down free to ask for
+        -- another one on the next tick.
+        --
+        -- `== true` RATHER THAN A TRUTH TEST. This is a field off the wire and
+        -- `0` is truthy in Lua -- `didHit` at the top of this file carries the
+        -- same note over the same hazard.
+        if d.final == true then sealed = true end
         endLocally(d.reason)
         return
     end
@@ -277,6 +340,15 @@ end)
 --- there is no local candidate list to walk, and there must not be one.
 --- @param dir number  +1 next, -1 previous, 0 "start / re-resolve"
 local function ask(dir)
+    -- NOT IN A MATCH THAT IS ALREADY DECIDED, AND THIS IS THE ONE DOOR.
+    --
+    -- The automatic open below and the arrow keys above both come through here,
+    -- so the owner's 2026-09-11 rule is stated once rather than at each caller --
+    -- which matters most for the arrows, the door with no death-verdict hold in
+    -- front of it: a player who dies as the match ends and presses Right would
+    -- otherwise get the camera the automatic path was just stopped from opening.
+    if sealed then return end
+
     -- Not while still in the fight. The server refuses this case too (it is the
     -- side that decides), but sending a request per keypress from every living
     -- player who happens to press an arrow is traffic with no possible outcome.
@@ -379,6 +451,23 @@ BR.Loop.register(BR.Loop.SLOW, 'spectate.open', function()
     if st ~= lastState then
         lastState = st
         asks = 0
+
+        -- AND A NEW STATE THAT IS NOT OUT IS A NEW MATCH'S WORTH OF PERMISSION.
+        --
+        -- OUT is the only state a player can spectate from, so every edge away
+        -- from it has already left the sealed round behind: the trip home at
+        -- CLEANUP, a revive key standing them up, the next warmup. Lowered HERE,
+        -- on the edge the retry budget already resets on, so there is one place
+        -- that knows what "a new death is a new sequence" means rather than two
+        -- that can come to disagree.
+        --
+        -- WIDER THAN IT STRICTLY NEEDS TO BE, ON PURPOSE. The failure worth
+        -- guarding against is a latch nothing clears -- spectating gone for the
+        -- rest of the session with nothing on screen to explain it, which is the
+        -- shape of bug this file's header and server/spectate.lua's `revivePending`
+        -- note are both written about. Clearing on more edges than the one that
+        -- matters cannot produce it; clearing on fewer can.
+        if st ~= BR.PlayerState.OUT then sealed = false end
     end
 
     if session or asks >= OPEN_TRIES then return end
