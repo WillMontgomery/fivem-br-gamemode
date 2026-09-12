@@ -742,16 +742,25 @@ do
     if fh then
         local src = fh:read('a'); fh:close()
 
+        -- ═══ TWO LINES NOW, RULED 2026-09-11 ═══
+        --
+        --   "please change the format of our DUIs for the gas stations - 'Fuel
+        --    Station' on the top line and 'Hold to refuel' on the bottom line"
+        --                                      -- owner, 2026-09-11
+        --
         -- Plain find (the `true` argument): the string is compared as text, so
         -- a `%` in a future edit cannot be read as a Lua pattern.
-        ok(src:find("local PROMPT_LABEL = 'Hold to refuel'", 1, true) ~= nil,
-           "the plate says exactly 'Hold to refuel'")
+        ok(src:find("local PROMPT_LABEL = 'Fuel Station'", 1, true) ~= nil,
+           "the top line says exactly 'Fuel Station'")
 
-        -- ═══ AND THE SECOND STRING, ADDED 2026-08-22 ═══
+        ok(src:find("local PROMPT_HINT = 'Hold to refuel'", 1, true) ~= nil,
+           "and the bottom line says exactly 'Hold to refuel'")
+
+        -- ═══ AND THE HELD STATE, ADDED 2026-08-22, NOW THE BOTTOM LINE ═══
         --
         --   "While holding the key, the DUI should change to say 'Currently
         --    fueling'"                        -- owner, 2026-08-22
-        ok(src:find("local PROMPT_LABEL_FUELING = 'Currently fueling'", 1, true) ~= nil,
+        ok(src:find("local PROMPT_HINT_FUELING = 'Currently fueling'", 1, true) ~= nil,
            "and says exactly 'Currently fueling' while the key is down")
 
         -- ═══ THE SPELLING IS THE OWNER'S AND IS PINNED AGAINST A HELPFUL
@@ -764,11 +773,16 @@ do
         ok(src:find('Currently fuelling', 1, true) == nil,
            "and nobody has 'corrected' it to the double-L spelling")
 
-        -- AND NOTHING IS APPENDED. The label field must be one of the two
-        -- constants and only that -- no `..`, no :format(), no metres.
-        ok(src:find('label = fueling and PROMPT_LABEL_FUELING or PROMPT_LABEL,',
+        -- BOTH SLOTS, BOTH STATES, AND NOTHING APPENDED TO EITHER -- no `..`,
+        -- no :format(), no metres. The station name is on the top line on every
+        -- frame and only the bottom line moves when the key goes down, which is
+        -- the half of the 2026-09-11 ruling that a string check cannot see.
+        ok(src:find('label = PROMPT_LABEL,', 1, true) ~= nil,
+           'the station name is the top line in both states')
+
+        ok(src:find('hint = fueling and PROMPT_HINT_FUELING or PROMPT_HINT,',
                     1, true) ~= nil,
-           'and the prompt sends one of the two constants unmodified')
+           'and only the bottom line swaps while the key is down')
 
         -- ═══ THE GAP THE OWNER REJECTED, PINNED SHUT ═══
         --
