@@ -904,7 +904,16 @@ function BR.Damage.applyHit(shooter, victim, amount, meta)
     -- victim's own machine a beat before the server said anything about being
     -- downed. So the instruction is clamped to the ledger's downed floor and
     -- the overflow is simply dropped -- there is nothing left for it to hurt.
-    local downing = (hp - toHealth <= 0.0) and BR.Combat.canBeDowned(e)
+    --
+    -- ...AND IT NEEDS THE WEAPON TO DECIDE, since 2026-09-12: a blast kills
+    -- outright rather than knocking. `meta.weapon` is weaponDamageEvent's own
+    -- `weaponType` hash, which is exactly what canBeDowned wants -- NOT
+    -- `meta.explosive`, which is true for a molotov and would take fire down with
+    -- it. The same hash goes to defeat() below so both readings agree; if they
+    -- disagreed, the clamp here would spare the ped for a knock that the call
+    -- down there then refused to make.
+    local downing = (hp - toHealth <= 0.0)
+                    and BR.Combat.canBeDowned(e, meta and meta.weapon)
     if downing then
         toHealth = math.max(0.0, hp - (BR.Config.Match.dbnoHp or 5))
     end
@@ -994,7 +1003,11 @@ function BR.Damage.applyHit(shooter, victim, amount, meta)
         -- NOT eliminate() any more. defeat() is the one place that decides
         -- whether running out of health means down or out, so a knock is
         -- possible from every damage path or from none of them.
-        BR.Combat.defeat(victim, how, shooter)
+        --
+        -- THE HASH, NOT `how`. defeat() asks canBeDowned again and has to reach
+        -- the same answer the clamp above was built on; `how` is already
+        -- 'explosion' for a molotov and would not.
+        BR.Combat.defeat(victim, how, shooter, meta and meta.weapon)
     end
 end
 

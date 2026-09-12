@@ -20,6 +20,11 @@ BR.Combat = {}
 
 local M = BR.Config.Match
 
+--- 0 IS TRUTHY IN LUA, so a config flag that may have arrived from a BOOL
+--- native -- or from a table somebody later writes 1 into -- is read through
+--- this rather than as a bare truth value.
+local function isTrue(v) return v == true or v == 1 end
+
 --- Can this player be eliminated? Dying in the lobby is not a thing.
 ---
 --- Takes an ENTRY, not a state string, so it matches the predicate contract of
@@ -803,15 +808,84 @@ local function standingSquadsBesides(entry)
     return n
 end
 
+--- The two throwables whose `explosive` flag is not a bang.
+---
+--- `explosive` IS A VALIDATOR DECISION AND NOT A LABEL -- config/weapons.lua
+--- says so twice. It means "no magazine to be empty of, no action to cycle,
+--- reach is the travel PLUS the blast", and all three are as true of a molotov
+--- and a smoke grenade as they are of an RPG. Neither of those detonates: a
+--- molotov is FIRE, which the engine bills as WEAPON_FIRE on the victim's own
+--- machine and which describeCause above already calls 'burned'; smoke carries
+--- no damage field at all and can never run anybody out of health.
+---
+--- KEYED BY ID, AND DELIBERATELY THE ONLY LIST IN THIS RULE. Everything else is
+--- derived from the flag, so the next launcher anybody adds to config/weapons.lua
+--- inherits the rule without touching this file. Only a weapon that is
+--- `explosive` WITHOUT exploding belongs here.
+local notADetonation = { molotov = true, smoke = true }
+
+--- Was this damage a blast?
+---
+--- TAKES THE RAW DAMAGE HASH, because nothing else can answer it. The cause
+--- WORD cannot: the validated path calls a molotov 'explosion' off the same
+--- flag this function has to look past. And anything that is not a hash --
+--- nil, a word, a bleed-out tick, a caller that simply does not know -- is not
+--- an explosion, so every path that cannot say goes on behaving as it did.
+---
+--- BOTH WEAPON TABLES, and BR.Config.WeaponByHash is the lookup that spans
+--- them. The three launchers live in BR.Config.AirdropWeapons and are registered
+--- into it by hand (see the foot of config/weapons.lua), so a walk over
+--- BR.Config.Weapons alone would miss every rocket in the game.
+--- @param causeHash integer|nil
+--- @return boolean
+local function isExplosion(causeHash)
+    -- Hashes only, and the guard is load-bearing twice over: a cause WORD is not
+    -- an explosion, and it would error inside BR.NormHash's bitwise mask.
+    if type(causeHash) ~= 'number' then return false end
+
+    -- THE WORLD'S OWN BLAST FIRST -- a car, a gas pump, a barrel, all of which
+    -- the engine bills as WEAPON_EXPLOSION. The environmental table names that
+    -- row, and names the fall, the drowning and the fire it is not.
+    local env = BR.Config.EnvironmentalFor(causeHash)
+    if env then return env.id == 'explosion' end
+
+    local w = BR.Config.WeaponByHash[BR.NormHash(causeHash)]
+    if not w or not isTrue(w.explosive) then return false end
+    return not notADetonation[w.id]
+end
+
 --- Would running out of health knock this player down rather than kill them?
 ---
 --- Public because BR.Damage.applyHit has to ask BEFORE it writes any health:
 --- the answer changes how much damage the victim is instructed to apply to
 --- their own ped, and a knock has to leave that ped alive.
+---
+--- IT HAS TO BE TOLD WHAT HIT THEM. Nothing on a roster entry says what ran the
+--- health out, and since 2026-09-12 the answer depends on it. `causeHash` is the
+--- raw engine hash where the caller has one and nothing where it does not.
 --- @param entry table
+--- @param causeHash integer|nil  the damage hash that ran them out of health
 --- @return boolean
-function BR.Combat.canBeDowned(entry)
+function BR.Combat.canBeDowned(entry, causeHash)
     if not entry or entry.state ~= BR.PlayerState.ALIVE then return false end
+
+    -- ═══ A BLAST KILLS OUTRIGHT. THERE IS NO BLEED CLOCK AFTER AN EXPLOSION ═══
+    --
+    --   "Can we make it so if you die in an explosion there is no bleed out
+    --    timer? You're just immediately dead."          -- owner, 2026-09-12
+    --
+    -- ADDITIVE, AND ABOVE BOTH RULES BELOW, because it only ever answers NO. The
+    -- two below decide when a knock is worth HAVING -- is anybody left to fight
+    -- over it, is anybody left to pick them up, are they carrying a kit. This one
+    -- says a blast is never one of those occasions, in every mode, whatever the
+    -- squad looks like and whatever is in the victim's pockets. Neither of the
+    -- others can reach a different answer once this has fired, which is why it
+    -- sits first and why it changes nothing about them.
+    --
+    -- FIRE IS NOT A BLAST, and is deliberately left exactly as it was: a molotov
+    -- still knocks a squad player down. He said explosion. See isExplosion for
+    -- where the line is drawn and why the `explosive` flag alone cannot draw it.
+    if isExplosion(causeHash) then return false end
 
     local m = entry.matchId and BR.Server.matches[entry.matchId]
     if not m then return false end
@@ -1057,14 +1131,23 @@ end
 ---
 --- Every caller that used to reach eliminate() directly comes here instead, so
 --- "down or dead" is answered once rather than four times in four files.
+---
+--- `causeHash` IS NOT `cause`, and the two are not interchangeable. The WORD is
+--- for the kill feed and is a translation; the HASH is what canBeDowned reads to
+--- tell a blast from a bullet, and it has to be the raw engine value because the
+--- translation is lossy in exactly the direction that matters -- a molotov is
+--- `explosive`, so the validated path already calls it 'explosion', and it is
+--- still fire. Callers with no hash to give pass nothing, and nothing knocks
+--- exactly as it always did.
 --- @param src integer
 --- @param cause string
 --- @param killerSrc integer|nil
-function BR.Combat.defeat(src, cause, killerSrc)
+--- @param causeHash integer|nil  the raw damage hash, where the caller has one
+function BR.Combat.defeat(src, cause, killerSrc, causeHash)
     local entry = BR.Roster.get(src)
     if not entry or not canDie(entry) then return end
 
-    if BR.Combat.canBeDowned(entry) then
+    if BR.Combat.canBeDowned(entry, causeHash) then
         BR.Combat.knock(src, killerSrc)
         return
     end
@@ -1901,7 +1984,12 @@ AddEventHandler(BR.Net.PLAYER_DIED, function(data)
         cause = 'roadkill'
     end
 
-    BR.Combat.defeat(src, cause, killer)
+    -- THE RAW HASH RIDES ALONGSIDE THE WORD, and is deliberately NOT the two
+    -- overrides above. Those answer "what do we CALL this", which is a kill feed
+    -- question; the hash answers "was it a blast", which is a mechanic. A player
+    -- blown up a second after a storm tick is labelled by the storm and killed by
+    -- the grenade, and both of those are true.
+    BR.Combat.defeat(src, cause, killer, data and data.cause)
 end)
 
 --- Independent confirmation from server-side health.
@@ -1968,6 +2056,12 @@ BR.Sched.every(1000, 'combat.deathcheck', function()
                and BR.Vehicles.roadkillRecent(entry) then
                 cause = 'roadkill'
             end
+            -- NO CAUSE HASH, AND NOT ONE INVENTED. This path is reached when the
+            -- client said nothing at all -- the comment above says so -- so there
+            -- is genuinely nothing to pass. `entry.lastHitWeapon` is NOT it: it
+            -- is the last thing that touched them, which may be a rocket from
+            -- twenty seconds and one long fall ago, and a stale hash here would
+            -- suppress a legitimate knock. Silence means "not an explosion".
             BR.Combat.defeat(src, cause, killer)
         end
     end)
