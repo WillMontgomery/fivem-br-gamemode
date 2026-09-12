@@ -443,6 +443,71 @@ do
     eq(#plays, 5, 'so five asks in the same millisecond are five sounds')
 end
 
+describe('storm.move: the name the owner could not hear')
+do
+    -- ═══ THE REPORT, TWICE ═══
+    --
+    --   "help me find out why storm.move and storm.out don't play any sound"
+    --                                          -- owner, 2026-09-07
+    --   "storm.move doesn't play, though it says the engine started it."
+    --                                          -- owner, 2026-09-12
+    --
+    -- The first round wired storm.out, which genuinely had no call site, and
+    -- left this cue's pair alone on the reasoning that the table was fine
+    -- (d11fb96). The pair was the one thing that round did not change.
+    --
+    -- ═══ WHY THIS IS A PIN AND NOT A PROPERTY ═══
+    --
+    -- Nothing offline can hear a sound, so there is no property to assert --
+    -- which is exactly how a name nobody has ever heard sat here through a
+    -- green suite and two reports. What CAN be pinned is the decision and the
+    -- evidence behind it, the same way tools/test_fuel.lua pins the owner's
+    -- prompt copy: GO_NON_RACE was taken off a name list, has no first-hand
+    -- report of anybody hearing it anywhere, and has now shipped silent twice.
+    -- If it comes back, it comes back as a deliberate act with this block red.
+    --
+    -- THE SET IS NOT THE SUSPECT AND MUST NOT MOVE. The owner heard
+    -- CHECKPOINT_NORMAL and CHECKPOINT_PERFECT out of HUD_MINI_GAME_SOUNDSET as
+    -- `hit` and `hit.crit` and rejected them by ear on 2026-09-08 -- disliking
+    -- a sound is the strongest proof in this tree that it played. Moving the
+    -- set would throw that away and put the bank question back on the table.
+    local move = A.cues['storm.move']
+
+    eq(move.set, 'HUD_MINI_GAME_SOUNDSET',
+       'storm.move stays in the set this build is known to sound')
+    eq(move.name, 'TIMER_STOP',
+       'and names the one sound in it with a published, working call site')
+
+    ok(move.name ~= 'GO_NON_RACE' and move.name ~= '3_2_1_NON_RACE',
+       'and neither of the _NON_RACE countdown names, which are what GTA\'s '
+           .. 'own scripts call and what nobody has ever reported hearing',
+       tostring(move.name))
+
+    -- ═══ AND IT IS NOT match.start's SOUND ═══
+    --
+    -- Two events a player has to tell apart by ear, out of one set. The wall
+    -- setting off and the match starting are seconds apart in phase 1.
+    ok(move.name ~= A.cues['match.start'].name,
+       'the wall setting off does not sound like the match starting',
+       ('storm.move %s / match.start %s'):format(tostring(move.name),
+                                                 tostring(A.cues['match.start'].name)))
+
+    -- ═══ AND THAT PAIR IS WHAT REACHES THE ENGINE ═══
+    --
+    -- The half a config pin cannot see. BR.Sfx.play hands PLAY_SOUND_FRONTEND
+    -- the NAME third and the SET fourth, which is the reverse of how a cue is
+    -- written down, and a swap there silences every sound in the game with no
+    -- error anywhere.
+    plays = {}
+    gameMs = 710000
+    BR.Sfx.play('storm.move')
+    ok(#plays == 1 and plays[1].name == 'TIMER_STOP'
+       and plays[1].set == 'HUD_MINI_GAME_SOUNDSET',
+       'and that is the pair PLAY_SOUND_FRONTEND is handed, name then set',
+       plays[1] and ('name=%s set=%s'):format(tostring(plays[1].name),
+                                              tostring(plays[1].set)) or 'nothing')
+end
+
 describe('throttle: each cue has its own window')
 do
     -- Two cues sharing one clock would make a refusal toast mute the

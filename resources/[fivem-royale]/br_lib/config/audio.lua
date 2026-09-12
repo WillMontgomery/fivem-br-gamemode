@@ -276,34 +276,98 @@ BR.Config.Audio = {
         -- differs between phase 1 and phase 8 is the circle on their map, not
         -- what the moment means.
         --
-        -- ═══ WHY THIS SOUND, AND WHY IT IS THE EASIEST THING HERE TO CHANGE
+        -- ═══ IT WAS GO_NON_RACE, AND THE NAME IS WHAT WAS WRONG (2026-09-12)
         --     ═══
         --
-        -- GO_NON_RACE is GTA's "the thing has started -- move" stinger: the
-        -- one it plays to start a non-race event. That is the sentence this
-        -- cue has to say. It is a ONE-SHOT rather than a countdown loop, which
-        -- rules out the other close candidates in the same set (10_SEC_WARNING
-        -- and 5_SEC_WARNING are the tail of a timer, and the wall starting to
-        -- move is the beginning of one).
+        --   "storm.move doesn't play, though it says the engine started it."
+        --                                          -- owner, 2026-09-12
         --
-        -- THE SET IS THE SAFE HALF OF THE CHOICE AND IT WAS CHOSEN FIRST.
-        -- HUD_MINI_GAME_SOUNDSET is where the hitmarker and the crate already
-        -- live -- CHECKPOINT_NORMAL and CHECKPOINT_PERFECT, audible in every
-        -- match this project has ever played. A cue fails SILENTLY when its
-        -- set is not loaded (see this file's header), so picking the name out
-        -- of a set this codebase demonstrably hears is what stops "I do not
-        -- like it" and "it never played" looking identical.
+        -- THE SECOND TIME HE HAS REPORTED THIS CUE. The first (2026-09-07, "help
+        -- me find out why storm.move and storm.out don't play any sound") was
+        -- answered by wiring storm.out, which genuinely had no call site, and by
+        -- concluding that storm.move's table entry was fine -- d11fb96, "the cue
+        -- table was never the bug". The table entry was the only thing that
+        -- round did not change, and here it is again.
         --
-        -- AND IT IS A DEFAULT, NOT A VERDICT. Two fuel sounds have now been
-        -- chosen from a desk and rejected by ear, so this one is wired to be
-        -- replaced without a code edit:
+        -- ═══ WHAT WAS RULED OUT BEFORE THE NAME WAS TOUCHED ═══
+        --
+        --   THE PAIR IS REAL. GTA's own scripts call
+        --   PLAY_SOUND_FRONTEND(-1, "GO_NON_RACE", "HUD_MINI_GAME_SOUNDSET",
+        --   true) -- once, at line 408 of the Cayo-Perico-era decompiled call
+        --   dump the citizenfx natives doc links from PlaySoundFrontend.md
+        --   (gist.github.com/Sainan/021bd2f48f1c68d3eb002caab635b5a4).
+        --
+        --   THE SET NEEDS NO BANK. HUD_MINI_GAME_SOUNDSET is base-game frontend
+        --   audio, always resident. RequestScriptAudioBank /
+        --   RequestAmbientAudioBank are for DLC and mission sets (the Cfx.re
+        --   thread people are pointed at, forum.cfx.re/t/playsoundfrontend/
+        --   246355/15, is SAFE_CRACK_SOUNDSET). PREPARE_SOUNDSET does not exist
+        --   in GTA V at all -- it is an RDR3 native.
+        --
+        --   THE FOURTH ARGUMENT IS NOT IT. client/sfx.lua passes `false` and
+        --   R* passes `true`, and for THIS set the difference cannot matter: the
+        --   parameter is `enableOnReplay`, and the engine force-disables it when
+        --   the soundset hash is one of a fixed internal list which includes
+        --   HUD_MINI_GAME_SOUNDSET (joaat 0xD382DF7C -- computed, not taken on
+        --   trust; the list is documented on ScriptSound.PlayFrontend in
+        --   ScriptHookVDotNet and also contains HUD_AWARDS, WastedSounds,
+        --   HUD_FRONTEND_DEFAULT_SOUNDSET and MP_MISSION_COUNTDOWN_SOUNDSET,
+        --   four more sets this table already uses).
+        --
+        --   THE WIRING IS LIVE. server/storm.lua's cueMovementOnce is called
+        --   from its own 1 Hz job and broadcasts to the match.
+        --
+        -- ═══ WHICH LEAVES THE SOUND, AND WHY NOBODY COULD TELL ═══
+        --
+        -- In ten years of a community that has enumerated every name in this
+        -- set, there is not one first-hand report of anybody HEARING
+        -- GO_NON_RACE -- a Cfx.re full-text search for it returns zero posts,
+        -- and the only places it appears are enumeration tools that read the
+        -- same decompiled dump. It was chosen here off a name list, which is
+        -- the exact thing this file's header forbids ("EVERY NAME HERE MUST BE
+        -- AUDITIONED... never from a wiki") and the exact way two fuel sounds
+        -- were already lost.
+        --
+        -- AND `/brsfx` COULD NOT CONTRADICT IT. "the engine started it" is
+        -- client/sfx.lua's playProbed reporting that HAS_SOUND_FINISHED
+        -- answered false about a handle GET_SOUND_ID had just allocated. That
+        -- is also what a handle which never played anything looks like, and the
+        -- native's own documentation says nothing about the case. So the
+        -- readout the owner quoted is not evidence of audio, and a wrong name
+        -- can sit in this table indefinitely with the tool agreeing.
+        --
+        -- ═══ TIMER_STOP, AND WHY THAT ONE ═══
+        --
+        -- SAME SET, so nothing above about banks or the fourth argument has to
+        -- be re-derived, and the set itself is proven on THIS build: the owner
+        -- heard CHECKPOINT_NORMAL and CHECKPOINT_PERFECT out of it as `hit` and
+        -- `hit.crit` and rejected them by ear on 2026-09-08 ("those are wrong
+        -- sound clips"). Disliking a sound is a stronger proof it played than
+        -- any probe in this tree.
+        --
+        -- AND IT IS THE ONE NAME IN THE SET WITH A PUBLISHED, WORKING CALL
+        -- SITE: forum.cfx.re/t/playsoundfrontend/246355, first post, "So this
+        -- works:" over PlaySoundFrontend(-1, "TIMER_STOP",
+        -- "HUD_MINI_GAME_SOUNDSET", 1). R* plays it too (line 834 of the same
+        -- dump).
+        --
+        -- IT SAYS THE RIGHT THING. The wall spends a phase HOLDING and then
+        -- sets off; the moment this cue marks is a clock running out, which is
+        -- what TIMER_STOP is. Still a ONE-SHOT, so the original argument
+        -- against 10_SEC_WARNING and 5_SEC_WARNING (the tail of a timer, not
+        -- the start of a move) is untouched -- and `timer.final` already owns
+        -- the countdown, out of a different set.
+        --
+        -- AND IT IS STILL A DEFAULT, NOT A VERDICT. Nobody here has heard this
+        -- either; what it has is a stranger's report that it makes a noise,
+        -- which GO_NON_RACE never had. Wired to be replaced without a code edit:
         --
         --   /brsfx storm.move                  hear what is configured
         --   /brsfx audition HUD_MINI_GAME_SOUNDSET   hear the whole set
         --   /brsfx bind storm.move <SET> <NAME>      try one, live
         --
         -- and the line below is the one line to edit once the ear has decided.
-        ['storm.move']  = { set = 'HUD_MINI_GAME_SOUNDSET', name = 'GO_NON_RACE' },
+        ['storm.move']  = { set = 'HUD_MINI_GAME_SOUNDSET', name = 'TIMER_STOP' },
 
         -- ═══════════════════════════════════════════════════════════════════
         -- THE OWNER'S PALETTE (#24, 2026-09-05)
