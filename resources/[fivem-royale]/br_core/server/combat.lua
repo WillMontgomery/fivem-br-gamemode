@@ -2207,20 +2207,227 @@ RegisterCommand('brdown', function(_, args)
     BR.Combat.knock(src, tonumber(args[2]))
 end, true)
 
---- Finish a revive on a downed player instantly, from nobody in particular.
+--- Finish a revive on a downed player instantly, from nobody in particular --
+--- or put an ELIMINATED one back in the match.
+---
+--- Owner, 2026-09-12: "Can you please also fix brrevive to revive folks in dead
+--- state".
+---
+--- ═══ TWO OPERATIONS BEHIND ONE VERB, AND THEY STAY TWO ═══
+---
+--- A DOWNED PLAYER NEVER LEFT THE MATCH. BR.Combat.revive is the whole of that
+--- path, it is called unchanged below, and nothing here touches it: the knock is
+--- undone, the ped was never a corpse, and the health that comes back is
+--- dbnoReviveHp because they are being picked up off the floor.
+---
+--- AN OUT PLAYER HAS BEEN THROUGH eliminate(), which wrote a placement, stamped
+--- diedAt, scattered their inventory, minted a revive key, credited a killer,
+--- broadcast a kill feed line to the whole match, wrote an evidence row, pointed
+--- their camera at whoever shot them, and -- if theirs was the deciding death --
+--- sealed the round. Putting them back is an UNDO of that list, and it is a
+--- different function from finishing a knock.
+---
+--- ═══ WHAT IS UNDONE ═══
+---
+--- Every one of these would corrupt the match rather than merely look wrong:
+---
+---   * `placement`, THROUGH BR.Roster.clearFields RATHER THAN BY ASSIGNMENT. A
+---     nil cannot travel in a delta (see server/roster.lua), so a bare
+---     `entry.placement = nil` would leave every scoreboard in the match drawing
+---     a finishing position against a player who is up and shooting. And leaving
+---     the field set hands the same number out TWICE: the next elimination reads
+---     BR.Server.squadsAlive, which counts this player again the moment they are
+---     ALIVE, so the next body out gets the placement this one is still holding.
+---   * `diedAt`, the field `died` is derived from -- which decides wins, deaths
+---     and the survival term in the XP curve. #144's write-up is the authority:
+---     both of these reach DynamoDB as an atomic ADD with no compensating write,
+---     so a death being taken back must leave neither behind.
+---   * `engineHp`, or the 1Hz server-observed death check reads the corpse
+---     sample from before the revive and eliminates them again a second in.
+---   * `stormHp` and `lastStormAt`. server/storm.lua seeds its display from the
+---     first and only ever clamps it DOWN, so a player the wall killed would die
+---     again on the next tick whatever health they were just handed.
+---   * `killedByLicense`, the camera's memory of who killed them. They are not
+---     spectating anybody now, and a LATER death with no killer would otherwise
+---     inherit this one's answer and point their camera at a stranger.
+---   * `reviveKey`. The squad may not buy back a mate standing next to them, and
+---     BR.ReviveKey.forSquad filters on the record EXISTING -- so nil is the
+---     only representation of "gone" that cannot be bought a second time.
+---   * the spectate session, through BR.Spectate.stop rather than by leaving it
+---     to the 250ms resolve pass: the one teardown is what gives the microphone
+---     back and closes the audit row with a duration.
+---
+--- ═══ AND WHAT HONESTLY CANNOT BE, WHICH IS PRINTED RATHER THAN GLOSSED OVER ═══
+---
+--- A dev command that lies about what it did is worse than one that refuses, so
+--- the three below are stated in the console at the moment it runs:
+---
+---   * THE KILL FEED. It is a broadcast. Every client in the match has drawn the
+---     line already and there is no unsend.
+---   * THE KILLER'S KILL, and the evidence row under it. Both stand -- the same
+---     ruling server/revivekey.lua's `bringBack` makes for a key revive, and for
+---     the same reason: somebody did put them on the floor.
+---   * THEIR LOOT. BR.Loot.deathBox scattered it before the state changed and
+---     somebody may already have walked over it, so they come back empty-handed.
+---     Handing it back would duplicate items into the match.
+---
+--- WHERE THEY COME BACK IS WHERE THEY FELL, through BR.Net.REVIVED -- the same
+--- instruction #144's held death uses, which stands the ped up at its own
+--- coordinates. If the storm has closed over that spot since they died, they
+--- come back inside the wall and start taking damage from the health they were
+--- just given. That is the honest outcome rather than a safe place invented
+--- here; server/storm.lua already says being picked up outside the circle is a
+--- bad place to be picked up.
+---
+--- ═══ WHAT MAKES IT REFUSE ═══
+---
+--- Three of the four are questions about the MATCH rather than the player:
+---
+---   * NO MATCH -- there is nothing to be put back into.
+---   * THE MATCH IS NOT PLAYING. ENDED and CLEANUP are a finished round, and a
+---     revive into one is a player standing up inside a results screen.
+---   * `m.spectateSealed`, which is this codebase's own latch for "that was the
+---     death that decided it" -- set synchronously inside the deciding
+---     elimination (server/spectate.lua). It is READ rather than re-derived: a
+---     second copy of winConditionMet's predicate here would have to carry its
+---     dev carve-out too, and the day the two drifted this command would refuse
+---     the lone-developer match it exists for.
+---   * NOBODY IS STANDING. The one way past the seal is a dev match that started
+---     with one squad -- the seal's edge needs two squads standing BEFORE the
+---     death, so it never latches, and winConditionMet's carve-out holds that
+---     match open only while the squad still has somebody up. Once the count is
+---     zero the match ends on the next tick, and a revive into it is a player
+---     put back into an instance that tears down underneath them.
+---
+--- #144's HELD DEATH IS THE ONE OUT STATE THAT SKIPS ALL FOUR. It is an OUT
+--- before the match has started, it is owed a free revive by match.lua's
+--- transition into PLAYING, and it is holding a sticky notice that says so -- so
+--- it goes to BR.Combat.reviveHeld, the one function that withdraws all three.
+--- Undoing it here instead would leave onEnter(PLAYING) sweeping a player who is
+--- already on their feet.
 RegisterCommand('brrevive', function(_, args)
     local src = tonumber(args[1])
     local entry = src and BR.Roster.get(src)
     if not entry then
-        print('  usage: brrevive <serverId>   -- pick a downed player back up')
-        return
-    end
-    if entry.state ~= BR.PlayerState.DBNO then
-        print(('  %s (%d) is not down (state %s)'):format(entry.name, src, entry.state))
+        print('  usage: brrevive <serverId> [byId]')
+        print('  picks a downed player up, or puts an eliminated one back in')
         return
     end
 
-    BR.Combat.revive(src, tonumber(args[2]))
+    local reviverSrc = tonumber(args[2])
+
+    -- UNCHANGED, AND FIRST. A knock is finished by the function a player's eight
+    -- seconds finish it with, so this command cannot drift from the feature.
+    if entry.state == BR.PlayerState.DBNO then
+        BR.Combat.revive(src, reviverSrc)
+        return
+    end
+    if entry.state ~= BR.PlayerState.OUT then
+        print(('  %s (%d) is neither down nor out (state %s)')
+            :format(entry.name, src, entry.state))
+        return
+    end
+
+    if entry.revivePending then
+        BR.Combat.reviveHeld(src, entry)
+        print(('  %s (%d) died before the match started -- brought back through '
+            .. 'the held-death path, which had nothing to undo')
+            :format(entry.name, src))
+        return
+    end
+
+    local m = BR.Server.matchOf(src)
+    if not m then
+        print(('  %s (%d) is out and in no match -- there is nothing to put '
+            .. 'them back into'):format(entry.name, src))
+        return
+    end
+    if m.state ~= BR.MatchState.PLAYING then
+        print(('  match %s is %s, not playing -- refusing to revive into a '
+            .. 'round that is not being fought')
+            :format(BR.MatchTag(m.id), tostring(m.state)))
+        return
+    end
+    if isTrue(m.spectateSealed) then
+        print(('  match %s is already decided -- the deciding death closed every '
+            .. 'camera in it, and putting a squad back would un-decide a round '
+            .. 'that has been called'):format(BR.MatchTag(m.id)))
+        return
+    end
+    if BR.Server.squadsAlive(m) == 0 then
+        print(('  nobody is standing in match %s -- it ends on the next tick, so '
+            .. 'a revive here would last until then')
+            :format(BR.MatchTag(m.id)))
+        return
+    end
+
+    -- FULL HEALTH, matching both existing OUT -> ALIVE paths: BR.Combat.reviveHeld
+    -- hands back 100 and server/revivekey.lua's `bringBack` hands back
+    -- BR.Config.ReviveKey.reviveHp, which is 100. dbnoReviveHp is the pick-up
+    -- number and belongs to the branch above.
+    local hp = 100
+    local placement = entry.placement
+    local hadKey = entry.reviveKey ~= nil
+
+    -- THE CAMERA COMES DOWN BEFORE ANYTHING ELSE. `resolve` would catch this
+    -- within 250ms of the state flip below -- mayWatch refuses a player who is
+    -- isInMatch -- but that is the net rather than the plan, and only the
+    -- teardown gives the microphone back.
+    local wasWatching = false
+    if BR.Spectate and BR.Spectate.stop then
+        wasWatching = BR.Spectate.stop(src, 'revived') == true
+    end
+
+    BR.Roster.clearFields(src, {
+        'placement', 'diedAt', 'engineHp',
+        'stormHp', 'lastStormAt', 'killedByLicense', 'reviveKey',
+        -- None of these should be set on a body and all of them are cleared
+        -- anyway, for the reason reviveHeld and bringBack both give: this is not
+        -- undoing our own work, it is refusing to trust that no other path
+        -- reached this entry while it was lying there.
+        'dbnoUntil', 'downedBy',
+        'reviverSrc', 'reviveFrom', 'reviveBeat', 'reviveTickAt',
+    })
+
+    -- THE PED FIRST, THE LEDGER SECOND. protocol.lua's REVIVED note and
+    -- BR.Combat.reviveHeld both give the reason: a client left holding a corpse
+    -- while the server calls it ALIVE is exactly the state the server-observed
+    -- death check exists to eliminate. This event also takes the verdict word
+    -- off their screen (client/state.lua) and stands the body up where it came
+    -- to rest (client/spawn.lua).
+    TriggerClientEvent(BR.Net.REVIVED, src)
+
+    entry.healthSettleUntil = GetGameTimer()
+        + ((BR.Config.Combat.healthAudit or {}).settleMs or 2000)
+
+    BR.Roster.update(src, { hp = hp + 0.0, armour = 0.0 })
+    BR.Roster.setState(src, BR.PlayerState.ALIVE)
+    TriggerClientEvent(BR.Net.HEALTH_SYNC, src, { hp = hp, armour = 0 })
+
+    local reviver = reviverSrc and BR.Roster.get(reviverSrc) or nil
+    if reviver then
+        reviver.revives = (reviver.revives or 0) + 1
+    end
+
+    -- The third phase of the squad channel, which is the same sentence
+    -- BR.Combat.revive raises for a pick-up: a mate is back up. The subject is
+    -- excluded by tellSquad, unchanged and for the unchanged reason.
+    tellSquad(src, entry, 'up')
+
+    print(('[br_core] brrevive: %s (%d) was OUT -- back in match %s on %d hp, '
+        .. 'where they fell%s')
+        :format(entry.name, src, BR.MatchTag(m.id), hp,
+                reviver and (' -- credited to ' .. reviver.name) or ''))
+    print(('  undone: placement %s, diedAt, engineHp, the storm ledger, the '
+        .. 'killer record%s%s')
+        :format(tostring(placement),
+                hadKey and ', the squad\'s revive key' or '',
+                wasWatching and ', their spectate camera' or ''))
+    print('  NOT undone: the kill feed already went out to the whole match, the '
+        .. 'killer keeps the kill and the evidence row, and their kit is still '
+        .. 'on the ground where the death box scattered it')
+    print('  they come back where the body was, which is inside the wall if the '
+        .. 'storm has closed over it since')
 end, true)
 
 --- Shoot a downed player without a second squad to shoot them with.

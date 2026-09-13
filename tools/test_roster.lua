@@ -16617,6 +16617,307 @@ do
         'an enemy standing over you is not a medic')
 end
 
+-- ---------------------------------------------------------------------------
+describe('dbno.reviveOut')
+do
+    -- ═══ /brrevive ON A PLAYER WHO IS ALREADY OUT (owner, 2026-09-12) ═══
+    --
+    -- "Can you please also fix brrevive to revive folks in dead state".
+    --
+    -- FINISHING A KNOCK AND UN-ELIMINATING SOMEBODY ARE DIFFERENT OPERATIONS,
+    -- and everything asserted below is something eliminate() wrote that a DBNO
+    -- revive has never had to undo: a placement, a death stamp, a spilled
+    -- inventory, a minted revive key, a storm ledger, a spectate camera, and --
+    -- when it was the deciding death -- a sealed round.
+    --
+    -- THE TWO FAILURES WORTH NAMING, because they are the ones that corrupt a
+    -- match rather than merely looking wrong: a placement left on a revived
+    -- player is handed out a SECOND time by the next elimination, and a revive
+    -- into a decided match puts a squad back on a field whose winner has already
+    -- been announced and whose camera has already been closed for everybody.
+
+    --- A live solos match of `n`, every player their own squad.
+    ---
+    --- THROUGH THE REAL MACHINE rather than fakeMatch, because the death box
+    --- only scatters into a match that has a loot table -- and "their kit is on
+    --- the ground and is NOT handed back" is the assertion a hand-built instance
+    --- cannot make. Solos so that BR.Server.squadsAlive is the head count and a
+    --- placement is a number that moves when somebody is put back.
+    local function outMatch(n)
+        reset()
+        BR.Server.devMode = true
+        for s = 1, n do
+            join(s, 'P' .. s)
+            fire(BR.Net.QUEUE_JOIN, s, { mode = BR.Mode.SOLO.key })
+        end
+        fakeTime = fakeTime + 300
+        BR.Sched.step(fakeTime)
+        forceState(BR.MatchState.PLAYING)
+        local m = theMatch()
+        for s = 1, n do
+            BR.Roster.setState(s, BR.PlayerState.ALIVE)
+            BR.Roster.get(s).pos = { x = 400.0 + s, y = 400.0, z = 30.0 }
+        end
+        sent = {}
+        return m
+    end
+
+    --- The last SPECTATE_SET this player was sent, or nil.
+    local function lastSpectate(src)
+        local found = nil
+        for _, s in ipairs(sent) do
+            if s.event == BR.Net.SPECTATE_SET and s.target == src then
+                found = s.args[1]
+            end
+        end
+        return found
+    end
+
+    --- How many slots this player is carrying something in.
+    local function carrying(src)
+        local inv, n = BR.Inv.of(src), 0
+        for _, s in ipairs((inv or {}).slots or {}) do
+            if s then n = n + 1 end
+        end
+        return n
+    end
+
+    local m = outMatch(4)
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON, rarity = 1,
+                     count = 1, clip = 12 })
+    local lootBefore  = m.loot.nextId
+    local aliveBefore = BR.Server.aliveCount(m)
+    local squadsBefore = BR.Server.squadsAlive(m)
+
+    BR.Roster.get(1).stormHp, BR.Roster.get(1).lastStormAt = 0.0, fakeTime
+    BR.Combat.eliminate(1, 'storm', 2)
+    ok(BR.Roster.get(1).state == BR.PlayerState.OUT, 'p1 is eliminated')
+    ok(BR.Roster.get(1).placement == 4, 'and is given 4th of four',
+        tostring(BR.Roster.get(1).placement))
+    ok(m.loot.nextId > lootBefore, 'their kit is scattered on the ground',
+        ('nextId %d -> %d'):format(lootBefore, m.loot.nextId))
+    ok(BR.Server.aliveCount(m) == aliveBefore - 1, 'the alive count dropped')
+    ok(BR.Server.squadsAlive(m) == squadsBefore - 1,
+        'and so did the standing-squad count -- OUT is not isInMatch')
+
+    -- A CAMERA IS OPEN ON THEM, which is where an eliminated player actually is
+    -- when somebody types this. Nothing in BR.Combat.revive would close it.
+    fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 0 })
+    ok((lastSpectate(1) or {}).targetSrc ~= nil,
+        'and they are watching somebody', tostring((lastSpectate(1) or {}).targetSrc))
+
+    sent = {}
+    ok(runCommand('brrevive', '1'), 'brrevive is registered')
+
+    local e1 = BR.Roster.get(1)
+    ok(e1.state == BR.PlayerState.ALIVE,
+        'an OUT player is put back on their feet', e1.state)
+    ok(BR.Server.aliveCount(m) == aliveBefore,
+        'the alive count is whole again', BR.Server.aliveCount(m))
+    ok(BR.Server.squadsAlive(m) == squadsBefore,
+        'and the standing-squad count agrees with it -- the two cannot disagree '
+            .. 'about whether the match can still be won',
+        BR.Server.squadsAlive(m))
+
+    -- ═══ THE FIELDS A RESULTS ROW IS MADE OF ═══
+    --
+    -- Cleared for #144's reason rather than for tidiness: a placement and a
+    -- `diedAt` reach DynamoDB as an atomic ADD with no compensating write, so a
+    -- death that is being taken back must leave neither behind.
+    ok(e1.placement == nil, 'they hold no placement', tostring(e1.placement))
+    ok(e1.diedAt == nil, 'and no death stamp', tostring(e1.diedAt))
+
+    -- ...AND THE CLIENTS ARE TOLD THE PLACEMENT IS GONE. A nil cannot travel in
+    -- a delta (see roster.clearFields), so a server-side assignment alone would
+    -- leave every scoreboard in the match still drawing 4th against a player who
+    -- is up and shooting.
+    BR.Broadcast.flushNow()
+    local cleared = {}
+    for _, s in ipairs(eventsOf(BR.Net.ROSTER_DELTA)) do
+        for _, d in ipairs(s.args[1].deltas or {}) do
+            if d.src == 1 then
+                for _, k in ipairs(d.clear or {}) do cleared[k] = true end
+            end
+        end
+    end
+    ok(cleared.placement,
+        'and the wire carries a named clear for it, not a vanished key')
+
+    -- ═══ THE LEDGERS THAT WOULD KILL THEM AGAIN ═══
+    ok(e1.engineHp == nil,
+        'the stale corpse sample is dropped, or the server-observed death check '
+            .. 'eliminates them again a second into their new life')
+    ok(e1.stormHp == nil and e1.lastStormAt == nil,
+        'and the storm ledger with it -- storm.lua only ever clamps DOWN, so a '
+            .. 'player the wall killed would die to the next tick regardless of '
+            .. 'the health they were just handed',
+        tostring(e1.stormHp))
+    ok(e1.killedByLicense == nil,
+        'and the camera\'s memory of who killed them, which a LATER death with '
+            .. 'no killer would otherwise inherit')
+
+    -- ═══ THE PED, THE HEALTH AND THE CAMERA ═══
+    local gotRevived, sync = false, nil
+    for _, s in ipairs(sent) do
+        if s.event == BR.Net.REVIVED and s.target == 1 then gotRevived = true end
+        if s.event == BR.Net.HEALTH_SYNC and s.target == 1 then sync = s.args[1] end
+    end
+    ok(gotRevived,
+        'the ped is resurrected where it fell, through the one event that means '
+            .. 'exactly that (#144 uses it too)')
+    ok(sync and sync.hp == 100,
+        'on full health -- the number both existing OUT->ALIVE paths hand back, '
+            .. 'not the 30 an in-person pick-up does', tostring(sync and sync.hp))
+    ok((lastSpectate(1) or {}).stop == true,
+        'and the camera they were watching from is closed rather than left for '
+            .. 'the 250ms resolve pass to notice')
+
+    -- ═══ THEIR KIT STAYS ON THE FLOOR ═══
+    ok(carrying(1) == 0,
+        'they come back empty-handed -- the death box already scattered what '
+            .. 'they had and another player may already have walked over it',
+        carrying(1))
+
+    -- ═══ AND THE NEXT ELIMINATION DOES NOT HAND OUT A DUPLICATE ═══
+    BR.Combat.eliminate(2, 'admin', 3)
+    ok(BR.Roster.get(2).placement == 4,
+        'the next elimination is 4th again, because four were standing',
+        tostring(BR.Roster.get(2).placement))
+    local holders = 0
+    BR.Roster.each(nil, function(_, e)
+        if e.placement == 4 then holders = holders + 1 end
+    end)
+    ok(holders == 1, 'and exactly one player holds 4th', holders)
+
+    -- ═══ A DECIDED MATCH IS REFUSED ═══
+    --
+    -- `spectateSealed` is the codebase's own latch for "that was the death that
+    -- ended it", set synchronously inside the deciding elimination -- so it is
+    -- asked here rather than a second copy of winConditionMet's carve-out, which
+    -- would drift and would refuse the lone-developer match this command exists
+    -- for.
+    local m2 = outMatch(2)
+    BR.Combat.eliminate(1, 'admin', 2)
+    ok(m2.spectateSealed == true, 'the second-to-last death sealed the round')
+    runCommand('brrevive', '1')
+    ok(BR.Roster.get(1).state == BR.PlayerState.OUT,
+        'and brrevive refuses to resurrect into it rather than un-deciding a '
+            .. 'match whose camera is already closed for everybody',
+        BR.Roster.get(1).state)
+
+    -- ═══ A FINISHED MATCH IS REFUSED ═══
+    local m3 = outMatch(3)
+    BR.Combat.eliminate(1, 'admin', 2)
+    m3.state = BR.MatchState.ENDED
+    runCommand('brrevive', '1')
+    ok(BR.Roster.get(1).state == BR.PlayerState.OUT,
+        'a match that is no longer being played refuses too',
+        BR.Roster.get(1).state)
+
+    -- ═══ AND SO DOES A FIELD WITH NOBODY LEFT STANDING ═══
+    --
+    -- The one way past the seal: a dev match that STARTED with one squad never
+    -- latches it (the edge needs two squads before the death) and never
+    -- auto-ends while that squad stands. Once BOTH of them are down the count is
+    -- zero, winConditionMet is true and the tick is about to tear the instance
+    -- down -- so a revive here is a player put back into a match that ends
+    -- underneath them.
+    squadMatch(2)
+    BR.Combat.eliminate(1, 'admin', nil)
+    BR.Combat.eliminate(2, 'admin', nil)
+    local m4 = BR.Server.matches[BR.Roster.get(1).matchId]
+    ok(m4 and not m4.spectateSealed,
+        'a one-squad dev match never seals -- the edge needs two squads before '
+            .. 'the death')
+    ok(BR.Server.squadsAlive(m4) == 0, 'and nobody is standing in it')
+    runCommand('brrevive', '1')
+    ok(BR.Roster.get(1).state == BR.PlayerState.OUT,
+        'so brrevive refuses rather than reviving into a match the next tick '
+            .. 'ends', BR.Roster.get(1).state)
+
+    -- ═══ THE SQUAD'S REVIVE KEY IS VOIDED ═══
+    --
+    -- Left standing it is a purchase the squad can still make -- 500 Volts for a
+    -- key whose subject is already up -- and BR.ReviveKey.forSquad filters on the
+    -- record existing, so nil is the only representation of "gone" that cannot
+    -- be bought a second time.
+    local m5 = outMatch(4)
+    BR.Roster.get(1).squadId, BR.Roster.get(2).squadId = 'sq_k', 'sq_k'
+    BR.Combat.eliminate(1, 'admin', 3)
+    ok(BR.Roster.get(1).reviveKey ~= nil, 'the elimination minted a key')
+    runCommand('brrevive', '1')
+    ok(BR.Roster.get(1).state == BR.PlayerState.ALIVE, 'the revive lands')
+    ok(BR.Roster.get(1).reviveKey == nil,
+        'and the key is destroyed with it -- a squad may not buy a mate back '
+            .. 'who is already standing next to them')
+    ok(BR.ReviveKey.outstanding('sq_k', m5.id) == 0,
+        'so the squad has nothing outstanding',
+        BR.ReviveKey.outstanding('sq_k', m5.id))
+
+    -- ═══ #144's HELD DEATH GOES THROUGH ITS OWN DOOR ═══
+    --
+    -- A player who died before the match started is OUT with `revivePending`, is
+    -- owed a free revive by match.lua's transition into PLAYING, and is holding a
+    -- sticky notice that says so. BR.Combat.reviveHeld is the function that
+    -- withdraws all three; a second path that half-did it would leave the sweep
+    -- to fire at an already-living player.
+    local m6 = outMatch(3)
+    m6.state = BR.MatchState.BUS
+    BR.Combat.eliminate(1, 'fall', nil)
+    ok(BR.Roster.get(1).revivePending == true, 'the death is held, not banked')
+    runCommand('brrevive', '1')
+    ok(BR.Roster.get(1).state == BR.PlayerState.ALIVE,
+        'brrevive brings a held death back even though the match is not PLAYING',
+        BR.Roster.get(1).state)
+    ok(BR.Roster.get(1).revivePending == nil,
+        'and takes the hold with it, so onEnter(PLAYING) does not sweep a player '
+            .. 'who is already up')
+
+    -- ═══════════════════════════════════════════════════════════════════════
+    -- AND THE DBNO PATH IS UNTOUCHED
+    -- ═══════════════════════════════════════════════════════════════════════
+    --
+    -- A downed player never left the match, so none of the above applies to them
+    -- and BR.Combat.revive is still the whole of that path. The two assertions
+    -- that would catch it drifting are the HEALTH and the ped: a knock is
+    -- finished at dbnoReviveHp with no resurrection, because the ped was never
+    -- dead (client/natives.lua keeps it invincible while it crawls).
+    squadMatch(2)
+    BR.Combat.defeat(1, 'gunshot', 2)
+    ok(BR.Roster.get(1).state == BR.PlayerState.DBNO, 'p1 is down')
+    sent = {}
+    runCommand('brrevive', '1', '2')
+    ok(BR.Roster.get(1).state == BR.PlayerState.ALIVE, 'brrevive picks them up')
+
+    local dbnoSync, dbnoRevived = nil, false
+    for _, s in ipairs(sent) do
+        if s.event == BR.Net.HEALTH_SYNC and s.target == 1 then dbnoSync = s.args[1] end
+        if s.event == BR.Net.REVIVED and s.target == 1 then dbnoRevived = true end
+    end
+    ok(dbnoSync and dbnoSync.hp == BR.Config.Match.dbnoReviveHp,
+        'at the configured pick-up health, not the un-elimination\'s full bar',
+        tostring(dbnoSync and dbnoSync.hp))
+    ok(not dbnoRevived,
+        'and with no resurrection -- their ped was never a corpse')
+    ok(BR.Roster.get(2).revives == 1,
+        'the named reviver is still credited', tostring(BR.Roster.get(2).revives))
+    ok(BR.Roster.get(1).placement == nil and BR.Roster.get(1).dbnoUntil == nil,
+        'and the knock is undone the way it always was')
+
+    -- A player who is neither down nor out is left exactly where they are.
+    sent = {}
+    runCommand('brrevive', '2')
+    ok(BR.Roster.get(2).state == BR.PlayerState.ALIVE,
+        'a standing player is not "revived"')
+    local touched = false
+    for _, s in ipairs(sent) do
+        if (s.event == BR.Net.REVIVED or s.event == BR.Net.HEALTH_SYNC)
+           and s.target == 2 then touched = true end
+    end
+    ok(not touched, 'and nothing is sent to them at all')
+end
+
 describe('dbno.teardown')
 do
     -- The knock count is per MATCH. A player picked up three times last round
@@ -17479,7 +17780,20 @@ do
     -- comparison, infinity defeats the arithmetic, and 1e9 defeats neither --
     -- it is simply a legal float in an illegal place, and only the world-height
     -- pair refuses it.
+    --
+    -- ═══ AND THE LAYOUT IS PINNED, BECAUSE THIS BLOCK READS TWO ENTRIES ═══
+    --
+    -- The live-position assertion at the bottom needs a SECOND weapon in a cell
+    -- this player has subscribed to, and takes whatever the match's own layout
+    -- happened to put there. That layout is seeded from `GetGameTimer() +
+    -- m.seq * 15485863` (BR.Loot.begin), so ANY block added above this one moves
+    -- both terms and the `else` branch below fires -- a failure that reads as a
+    -- repair-bounds bug and is nothing of the sort. Pinned through /brlootseed,
+    -- which exists for exactly this, and released immediately after so no later
+    -- block inherits a frozen world.
+    commands['brlootseed'](nil, { '20260912' }, '')
     local m = lootMatch()
+    commands['brlootseed'](nil, { 'off' }, '')
     local target
     for id = 1, m.loot.nextId do
         local e = m.loot.items[id]
