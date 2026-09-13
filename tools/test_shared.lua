@@ -3169,18 +3169,25 @@ end
 
 describe('ammo.pools')
 do
-    -- ═══ SIX POOLS SINCE 2026-09-12, AND HEAVY IS THE LONG GUNS AND THE
-    --     LAUNCHERS TOGETHER ═══
+    -- ═══ FIVE POOLS SINCE 2026-09-12: LIGHT, SMG, MEDIUM, SHELLS, HEAVY ═══
     --
-    -- There were seven for one day. Owner, having played it: "Can we put rockets
-    -- into any other category that has limited carry quantity?" Heavy is that
-    -- category, so SNIPER is deleted and its four rifles rejoin the three
-    -- launchers there.
+    -- Seven for one day, six for part of one. Owner, having played the seven-pool
+    -- build: "Can we put rockets into any other category that has limited carry
+    -- quantity?" Heavy is that category, so SNIPER went and its four rifles
+    -- rejoined the three launchers there.
+    --
+    -- AND THEN THE MACHINE GUNS WENT INTO MEDIUM. The sixth pool was captioned
+    -- 'Belt Ammo' by us and not by him, and he said so: "Not sure what 'belt' is
+    -- or why we call it that. It doesn't actually show on the person's belt. Very
+    -- misleading." He asked for it merged somewhere roomier and chose the room:
+    -- "let's put MGs in medium then". Medium is 350, which is the second largest
+    -- cap in the game; the deleted pool's 60 could not fill a Combat MG's
+    -- 100-round magazine, which is the defect that started this.
     --
     -- MEMBERSHIP IS PINNED WEAPON BY WEAPON RATHER THAN BY COUNTING, because the
     -- failure this is written against is a single gun left behind in the pool it
-    -- used to be in. A count of seven in HEAVY would be satisfied by the wrong
-    -- seven, and a sniper still drawing a pool nothing rolls is invisible until
+    -- used to be in. A count in HEAVY would be satisfied by the wrong seven, and
+    -- a machine gun still drawing a pool that no longer exists is invisible until
     -- somebody tries to reload one in a match.
     local moved = {
         { 'marksmanrifle',   BR.AmmoType.HEAVY  },
@@ -3190,11 +3197,11 @@ do
         { 'rpg',             BR.AmmoType.HEAVY  },
         { 'grenadelauncher', BR.AmmoType.HEAVY  },
         { 'railgun',         BR.AmmoType.HEAVY  },
-        { 'mg',              BR.AmmoType.LMG    },
-        { 'gusenberg',       BR.AmmoType.LMG    },
-        { 'combatmg',        BR.AmmoType.LMG    },
-        { 'combatmgmk2',     BR.AmmoType.LMG    },
-        { 'minigun',         BR.AmmoType.LMG    },
+        { 'mg',              BR.AmmoType.MEDIUM },
+        { 'gusenberg',       BR.AmmoType.MEDIUM },
+        { 'combatmg',        BR.AmmoType.MEDIUM },
+        { 'combatmgmk2',     BR.AmmoType.MEDIUM },
+        { 'minigun',         BR.AmmoType.MEDIUM },
     }
     local wrongPool = {}
     for _, row in ipairs(moved) do
@@ -3208,7 +3215,8 @@ do
         end
     end
     ok(#wrongPool == 0,
-        'every weapon in the two specialist pools draws the pool it should',
+        'every weapon that has changed pool draws the pool it should -- the five '
+            .. 'machine guns on medium, the scoped rifles and launchers on heavy',
         table.concat(wrongPool, '; '))
 
     -- AND HEAVY HOLDS THOSE SEVEN AND NOTHING ELSE, which is the half a
@@ -3225,6 +3233,25 @@ do
         .. 'marksmanrifle,railgun,rpg,sniperrifle',
         'heavy is the four scoped rifles and the three launchers, and nothing '
             .. 'else is in it', table.concat(inHeavy, ','))
+
+    -- AND MEDIUM IS THE EIGHT ASSAULT RIFLES PLUS THE FIVE MACHINE GUNS. Written
+    -- out by id for the same reason: the failure being guarded is one machine gun
+    -- left behind on a pool that no longer exists, and a count of thirteen would
+    -- be satisfied by the wrong thirteen. The minigun is in this list because the
+    -- airdrop shelf is walked too -- it is the only gun in the pool that a world
+    -- roll can never produce.
+    local inMedium = {}
+    for _, list in ipairs({ BR.Config.Weapons, BR.Config.AirdropWeapons }) do
+        for _, w in ipairs(list) do
+            if w.ammo == BR.AmmoType.MEDIUM then inMedium[#inMedium + 1] = w.id end
+        end
+    end
+    table.sort(inMedium)
+    ok(table.concat(inMedium, ',') == 'advancedrifle,assaultmk2,assaultrifle,'
+        .. 'bullpuprifle,carbinemk2,carbinerifle,combatmg,combatmgmk2,gusenberg,'
+        .. 'mg,militaryrifle,minigun,specialcarbine',
+        'medium is the eight assault rifles plus the five machine guns, and '
+            .. 'nothing else is in it', table.concat(inMedium, ','))
 
     -- ...and from the other direction. `explosive` is a VALIDATOR flag and the
     -- pool is a LOOT fact. They are no longer the same set -- heavy holds four
@@ -3251,67 +3278,112 @@ do
     ok(BR.Config.AmmoCaps[BR.AmmoType.HEAVY] == 24,
         'the heavy cap is still his 24, and it is what the snipers live under now',
         BR.Config.AmmoCaps[BR.AmmoType.HEAVY])
-    ok(BR.Config.AmmoCaps[BR.AmmoType.LMG] == 60,
-        'and lmg is 60, which is what it has always been',
-        BR.Config.AmmoCaps[BR.AmmoType.LMG])
+    -- AND MEDIUM IS STILL 350, WHICH IS THE WHOLE POINT OF PUTTING THE MACHINE
+    -- GUNS THERE. The deleted pool capped at 60, so a Combat MG or Combat MG Mk II
+    -- -- 100-round magazines both -- could never load a full magazine out of a
+    -- full pool. 350 is three and a half of them. The number is unchanged: the
+    -- rifles are not paying for this.
+    ok(BR.Config.AmmoCaps[BR.AmmoType.MEDIUM] == 350,
+        'medium is still 350, so a 100-round machine gun magazine now fills from '
+            .. 'a full pool where the deleted 60 could never fill one',
+        BR.Config.AmmoCaps[BR.AmmoType.MEDIUM])
 
-    -- AND SNIPER IS GONE EVERYWHERE, not merely absent from AmmoOrder. A cap or a
-    -- pickup left behind under a deleted key is dead config that reads as live.
+    -- AND BOTH DELETED POOLS ARE GONE EVERYWHERE, not merely absent from
+    -- AmmoOrder. A cap or a pickup left behind under a deleted key is dead config
+    -- that reads as live: 'sniper' went on 2026-09-12 and 'lmg' went the same day,
+    -- a few hours later.
     local ghost = {}
     for name, tbl in pairs({ AmmoCaps = BR.Config.AmmoCaps,
                              AmmoPickups = BR.Config.AmmoPickups,
                              AmmoWeights = BR.Config.AmmoWeights }) do
-        if tbl['sniper'] ~= nil then ghost[#ghost + 1] = name end
+        for _, dead in ipairs({ 'sniper', 'lmg' }) do
+            if tbl[dead] ~= nil then
+                ghost[#ghost + 1] = ('%s.%s'):format(name, dead)
+            end
+        end
     end
-    ok(#ghost == 0 and BR.AmmoType.SNIPER == nil,
-        'the sniper pool is deleted from the enum and from every pool table, '
-            .. 'not just from the order', table.concat(ghost, ', '))
+    ok(#ghost == 0 and BR.AmmoType.SNIPER == nil and BR.AmmoType.LMG == nil,
+        'the sniper and lmg pools are deleted from the enum and from every pool '
+            .. 'table, not just from the order', table.concat(ghost, ', '))
 
-    -- 12 A PICKUP ON BOTH SPECIALIST POOLS, which is also what one purchase buys:
-    -- no row in config/gunshop.lua authors a `bundle`, so the counter reads this
-    -- number. Owner: "each loot pickup should be 12 rounds. Same for purchasing -
-    -- 12 rounds per purchase."
-    for _, pool in ipairs({ BR.AmmoType.HEAVY, BR.AmmoType.LMG }) do
-        local def = BR.Config.AmmoPickups[pool]
-        ok(def ~= nil and def.amount == 12,
-            ('%s pays 12 rounds a pickup'):format(pool),
+    -- AND NO WEAPON ANYWHERE STILL POINTS AT A POOL THAT DOES NOT EXIST. The
+    -- membership lists above name the guns that were expected to move; this is
+    -- what catches one that was not on anybody's list.
+    local orphan = {}
+    local livePool = {}
+    for _, p in ipairs(BR.Config.AmmoOrder) do livePool[p] = true end
+    for _, list in ipairs({ BR.Config.Weapons, BR.Config.AirdropWeapons }) do
+        for _, w in ipairs(list) do
+            if w.ammo ~= nil and not livePool[w.ammo] then
+                orphan[#orphan + 1] = ('%s -> %s'):format(w.id, tostring(w.ammo))
+            end
+        end
+    end
+    ok(#orphan == 0,
+        'and every weapon draws a pool that is still in AmmoOrder',
+        table.concat(orphan, ', '))
+
+    -- 12 A PICKUP ON HEAVY, which is also what one purchase buys: no row in
+    -- config/gunshop.lua authors a `bundle`, so the counter reads this number.
+    -- Owner: "each loot pickup should be 12 rounds. Same for purchasing - 12
+    -- rounds per purchase."
+    do
+        local def = BR.Config.AmmoPickups[BR.AmmoType.HEAVY]
+        ok(def ~= nil and def.amount == 12, 'heavy pays 12 rounds a pickup',
+            def and def.amount or 'no pickup')
+    end
+
+    -- AND MEDIUM STILL PAYS 45, WHICH IS WHAT THE MACHINE GUNS INHERIT. The
+    -- deleted pool paid 12 a pickup, so a machine gun found on the floor is fed
+    -- nearly four times what it was this morning. That is the merge doing what it
+    -- was asked to do rather than a number anybody tuned: 45 is the rifles' and it
+    -- has not moved.
+    do
+        local def = BR.Config.AmmoPickups[BR.AmmoType.MEDIUM]
+        ok(def ~= nil and def.amount == 45,
+            'medium still pays 45 rounds a pickup, and the machine guns now eat '
+                .. 'from that instead of a 12-round pickup',
             def and def.amount or 'no pickup')
     end
 
     -- THE PICKUP PROPS ARE REUSED AND NOT NEW. A model that is not already in
     -- this table would have to be streamed, and nothing streams it.
     --
-    -- AND THE POOLS NOW DIVIDE EVENLY ACROSS THEM, which is the owner's second
+    -- AND THE SHARING IS AS THIN AS IT HAS EVER BEEN, which is the owner's second
     -- point: "we also have a limited number of ammo props for loot drops". Seven
     -- pools over three models meant heavy, sniper and MG rounds were one object on
-    -- the ground under three names. Six over three is two each.
+    -- the ground under three names. Five pools over three models is two, two and
+    -- ONE: heavy is now the only user of prop_box_ammo03a, so a box of heavy rounds
+    -- on the ground is unambiguous for the first time.
     local props = {}
     for _, pool in ipairs(BR.Config.AmmoOrder) do
         local p = BR.Config.AmmoPickups[pool].prop
         props[p] = (props[p] or 0) + 1
     end
-    local distinct, lopsided = 0, {}
+    local distinct, crowded = 0, {}
     for prop, n in pairs(props) do
         distinct = distinct + 1
-        if n ~= 2 then lopsided[#lopsided + 1] = ('%s x%d'):format(prop, n) end
+        if n > 2 then crowded[#crowded + 1] = ('%s x%d'):format(prop, n) end
     end
-    ok(distinct == 3, 'the six pools still use only the three ammo-box props '
+    ok(distinct == 3, 'the five pools still use only the three ammo-box props '
         .. 'that were already streamed, so nothing new has to load', distinct)
-    ok(#lopsided == 0,
-        'and they divide two pools per prop, where seven pools put three on one',
-        table.concat(lopsided, ', '))
+    ok(#crowded == 0,
+        'and no prop carries more than two pools, where seven pools put three on '
+            .. 'one', table.concat(crowded, ', '))
+    ok(props['prop_box_ammo03a'] == 1
+       and BR.Config.AmmoPickups[BR.AmmoType.HEAVY].prop == 'prop_box_ammo03a',
+        'and prop_box_ammo03a is heavy alone now the belt pool is gone, which is '
+            .. 'the first pool in the game with a box model to itself',
+        tostring(props['prop_box_ammo03a']))
 
-    -- ═══ A POOL VALUE MAY NOT BE AN ITEM ID, AND 'mg' WAS ONE CHARACTER AWAY ═══
+    -- ═══ A POOL VALUE MAY NOT BE AN ITEM ID ═══
     --
     -- An ammo stack's `item` IS THE BARE POOL STRING -- shared/loot_gen.lua and
     -- server/inventory.lua both set it that way -- and every dispatch that
     -- resolves a BARE id asks BR.Config.WeaponById BEFORE BR.Config.AmmoPickups:
     -- server/debug.lua's brgive and brarm, and server/loot.lua's devStack. So a
-    -- belt pool valued 'mg' would put a box of rounds on the floor carrying
-    -- WEAPON_MG's own id, and those lookups would hand back a machine gun. It is
-    -- 'lmg' for that reason, and this is what stops anybody shortening it back --
-    -- INCLUDING on 2026-09-12, when the pool's LABEL became 'Belt Ammo' and the
-    -- obvious follow-up would have been to re-key it to match.
+    -- pool valued the same as a gun would put a box of rounds on the floor
+    -- carrying that gun's own id, and those lookups would hand back the gun.
     --
     -- ⚠ 'smg' ALREADY COLLIDES, AND IT IS NOT NEW. BR.AmmoType.SMG is 'smg' and
     -- BR.Config.Weapons carries `{ id = 'smg', name = 'WEAPON_SMG' }`. The
@@ -3364,14 +3436,6 @@ do
         'and the one known collision is still exactly the shipped smg one',
         table.concat(known, ', '))
 
-    -- THE BELT POOL'S VALUE IS CLEAN, stated separately so the ratchet above can
-    -- never be what is carrying it. This is the assertion that survived the pool
-    -- being renamed on the shelf: the label moved, the value did not, and this is
-    -- the reason it did not.
-    ok(BR.Config.WeaponById[BR.AmmoType.LMG] == nil,
-        'the belt pool value is not an item id -- which is the whole reason it is '
-            .. '"lmg" and not "mg", whatever the shelf calls it')
-
     -- THE THREE POOL TABLES MUST AGREE ABOUT WHICH POOLS EXIST. A pool in the
     -- order with no cap can never be held; one with no pickup rolls a stack with
     -- no amount and no label, which is a blank card in the bag.
@@ -3382,7 +3446,7 @@ do
     end
     ok(#gaps == 0, 'every pool in AmmoOrder has both a cap and a pickup',
         table.concat(gaps, ', '))
-    ok(#BR.Config.AmmoOrder == 6, 'six pools, not seven and not five',
+    ok(#BR.Config.AmmoOrder == 5, 'five pools: light, smg, medium, shells, heavy',
         #BR.Config.AmmoOrder)
 end
 
@@ -3390,7 +3454,7 @@ end
 
 describe('ammo.weights')
 do
-    -- ═══ THE FOUR COMMON POOLS KEEP THE SHARE THEY ALREADY HAD ═══
+    -- ═══ THE COMMON POOLS KEEP THE SHARE THEY ALREADY HAD ═══
     --
     -- BR.RollLootStack used to pick with rng:pick over BR.Config.AmmoOrder, which
     -- is UNIFORM: five pools, 20% each. Any change to the POOL COUNT moves every
@@ -3398,6 +3462,10 @@ do
     -- 16.7% -- so pistol, SMG, rifle and shotgun ammo would get rarer or commoner
     -- on the floor every time somebody reorganizes the specialist pools. Nobody
     -- has ever asked for that, in either direction.
+    --
+    -- MEDIUM IS THE ONE THAT MOVED, AND IT MOVED UP: the deleted belt pool's 8 was
+    -- folded into it on 2026-09-12 because the five machine guns landed there, so
+    -- it reads 28. Light, SMG and shells are still on 20.
     --
     -- THIS IS THE ASSERTION THAT HOLDS THEM, and it fails both ways: on a uniform
     -- draw over any number of pools, and on any future edit that adds or removes
@@ -3428,42 +3496,54 @@ do
         table.concat(off, ', '))
 
     for _, p in ipairs({ BR.AmmoType.LIGHT, BR.AmmoType.SMG,
-                         BR.AmmoType.MEDIUM, BR.AmmoType.SHELLS }) do
+                         BR.AmmoType.SHELLS }) do
         ok(math.abs(seen[p] / N - 0.20) <= 0.01,
             ('%s still gets the 20%% a uniform draw over five pools gave it')
                 :format(p),
             ('%.4f'):format(seen[p] / N))
     end
 
-    -- ⚠ THE TWO SPECIALIST SHARES ARE AN ASSUMPTION RATHER THAN THE OWNER'S.
-    -- heavy 12 / lmg 8 is what sniper 8 / lmg 8 / heavy 4 becomes when sniper's
-    -- four weapons move into heavy: the same ammunition is rolled at the same
-    -- rate under one name instead of two. See the note in config/loot.lua. So
-    -- this pins the PROPERTY the numbers were chosen for and not the numbers,
-    -- which he is free to tune without editing a test.
+    -- ⚠ MEDIUM'S 28 IS NOT THE OWNER'S NUMBER AND THE COMMENT IN config/loot.lua
+    -- SAYS SO. He asked for the machine guns to live in medium and said nothing
+    -- about the floor rate; the deleted pool's 8 had to go somewhere for the rows
+    -- to keep summing to 100, and folding it here is the only choice that does not
+    -- thin rifle ammo for assault rifle players as a side effect of a change about
+    -- machine guns. It is the knob to turn if the floor feels wrong.
+    ok(math.abs(seen[BR.AmmoType.MEDIUM] / N - 0.28) <= 0.01,
+        'medium is drawn at 28%, which is its old 20 plus the 8 the deleted belt '
+            .. 'pool was drawing for the guns that just moved in',
+        ('%.4f'):format(seen[BR.AmmoType.MEDIUM] / N))
+
+    -- ⚠ HEAVY'S SHARE IS AN ASSUMPTION RATHER THAN THE OWNER'S TOO. heavy 12 is
+    -- what sniper 8 / heavy 4 became when sniper's four weapons moved into heavy:
+    -- the same ammunition rolled at the same rate under one name instead of two.
+    -- See the note in config/loot.lua. So this pins the PROPERTY the number was
+    -- chosen for and not the number, which he is free to tune without editing a
+    -- test.
     local rarest = {}
     for _, common in ipairs({ BR.AmmoType.LIGHT, BR.AmmoType.SMG,
                               BR.AmmoType.MEDIUM, BR.AmmoType.SHELLS }) do
-        for _, spec in ipairs({ BR.AmmoType.HEAVY, BR.AmmoType.LMG }) do
-            if seen[spec] >= seen[common] then
-                rarest[#rarest + 1] = ('%s >= %s'):format(spec, common)
-            end
+        if seen[BR.AmmoType.HEAVY] >= seen[common] then
+            rarest[#rarest + 1] = ('heavy >= %s'):format(common)
         end
     end
     ok(#rarest == 0,
-        'both specialist pools are rarer on the floor than every common one, '
+        'heavy is the rarest pool on the floor, and rarer than every common one, '
             .. 'which is what the weighting is for',
         table.concat(rarest, ', '))
 
-    -- AND HEAVY CARRIES WHAT SNIPER USED TO. The merge is only honest if the guns
-    -- that moved kept their supply: sniper drew 8 of 100 and heavy drew 4, so
-    -- heavy draws 12 now and the floor pays the scoped rifles exactly what it did.
+    -- AND THE TWO MERGES EACH CARRY WHAT THEY ABSORBED. A merge is only honest if
+    -- the guns that moved kept their supply: sniper drew 8 of 100 and heavy drew 4,
+    -- so heavy draws 12; the belt pool drew 8 and its five guns are in medium, so
+    -- medium draws 28.
     ok(BR.Config.AmmoWeights[BR.AmmoType.HEAVY] == 12
-       and BR.Config.AmmoWeights[BR.AmmoType.LMG] == 8,
-        'heavy carries its own 4 plus the 8 that was sniper\'s, and lmg is '
-            .. 'untouched at 8',
-        ('heavy %s, lmg %s'):format(
+       and BR.Config.AmmoWeights[BR.AmmoType.MEDIUM] == 28
+       and BR.Config.AmmoWeights[BR.AmmoType.LMG] == nil,
+        'heavy carries its own 4 plus sniper\'s 8, medium carries its own 20 plus '
+            .. 'the belt pool\'s 8, and the belt pool has no row left at all',
+        ('heavy %s, medium %s, lmg %s'):format(
             tostring(BR.Config.AmmoWeights[BR.AmmoType.HEAVY]),
+            tostring(BR.Config.AmmoWeights[BR.AmmoType.MEDIUM]),
             tostring(BR.Config.AmmoWeights[BR.AmmoType.LMG])))
 
     local weightTotal = 0
@@ -5745,6 +5825,18 @@ local function newClient(settleMs, streamMs)
     --- reviving, and going to the emote we chose" (owner, 2026-08-18).
     local function pedFrame()
         if P.pending then P.anim, P.pending = P.pending, nil end
+
+        -- RULE 6: FIRE IS A DAMAGE PATH, NOT A COSMETIC (owner, 2026-09-12: a
+        -- body in a molotov is "repeatedly respawned, then immediately die").
+        -- A ped standing in flames that has not REFUSED fire damage runs out of
+        -- health -- five display points is nothing -- and the pool goes on
+        -- burning for twenty seconds, so it does it again on the next frame. A
+        -- rig that modelled fire as scenery would make the fix untestable in the
+        -- one way that matters.
+        if P.onFire and P.fireProof ~= true and not P.dying and not P.dead then
+            P.hp, P.dying, P.since = 0, true, C.now
+        end
+
         if P.dying and not P.dead and (C.now - P.since) >= settleMs then
             P.dead = true
         end
@@ -5786,6 +5878,16 @@ local function newClient(settleMs, streamMs)
         P.anim, P.pending = nil, nil
     end
     env.ClearPedTasks    = function() P.anim, P.pending = nil, nil end
+    -- FIRE, AND THE TWO HALVES ARE SEPARATE SYSTEMS. The proof refuses the
+    -- damage; the flames on the body are their own state and a resurrection does
+    -- not put them out. SET_ENTITY_PROOFS takes bullet, FIRE, explosion,
+    -- collision, melee, steam, p7, water, and only the second one is this bug.
+    env.SetEntityProofs  = function(_, _, fireProof) P.fireProof = fireProof end
+    env.IsEntityOnFire   = function() return P.onFire and 1 or 0 end
+    env.StopEntityFire   = function()
+        P.onFire = false
+        C.doused = (C.doused or 0) + 1
+    end
     env.SetPedArmour     = function() end
     env.GetPedArmour     = function() return 0 end
     env.RemoveAllPedWeapons = function() end
@@ -5935,6 +6037,15 @@ local function newClient(settleMs, streamMs)
     --- environmental and returns, so nothing clamps it.
     function C.fall()
         P.hp, P.dying, P.since = 0, true, C.now
+    end
+
+    --- A molotov lands on them, and the pool keeps burning.
+    ---
+    --- THE SAME DAMAGE PATH AS THE FALL and one difference that is the whole bug:
+    --- the ground stops arriving. `onFire` stays true until something puts it out,
+    --- so pedFrame kills this ped again on every frame it is not refused.
+    function C.light()
+        P.onFire = true
     end
 
     return C
@@ -6108,6 +6219,90 @@ do
         .. 'the resurrection restored',
         ('engine health %s, expected %s')
             :format(tostring(CLI.env.GetEntityHealth(1)), tostring(floorHp)))
+end
+
+describe('dbno.fire.client')
+do
+    -- ═══ THE SAME RIG, WITH A FIRE THAT DOES NOT GO OUT (owner, 2026-09-12) ═══
+    --
+    --   "when dying to a fire, like a molotov, the ped doesn't get a chance to
+    --    crawl because they're caught in the flames and repeatedly respawned,
+    --    then immediately die. This is basically just infinite ragdoll cycles."
+    --
+    -- A FALL IS ONE EVENT AND A MOLOTOV IS TWENTY SECONDS, which is the whole
+    -- difference and the reason the matrix above passed while the owner watched
+    -- this happen. The block above kills the ped once and asks whether the client
+    -- puts it back; this one keeps killing it, and asks whether the client stops
+    -- the damage instead of repairing the corpse over and over.
+    --
+    -- THE REAL CLIENT AND THE REAL SERVER, over a wire, so the answer covers both
+    -- halves: whatever this client does must not produce a second death report the
+    -- server has to refuse, and must leave the ped alive and crawling.
+    local SRV = newServer()
+    local CLI = newClient(96, 0)
+    local PS  = CLI.env.BR.PlayerState
+
+    local wire = {}
+    local function drain(now)
+        SRV.tick(now)
+        for i = 1, #SRV.out do
+            wire[#wire + 1] = { at = now + 30, event = SRV.out[i].event,
+                                target = SRV.out[i].target,
+                                payload = SRV.out[i].payload }
+        end
+        for i = #SRV.out, 1, -1 do SRV.out[i] = nil end
+        while wire[1] and now >= wire[1].at do
+            local m = table.remove(wire, 1)
+            CLI.env.BR.State.me.state = SRV.roster[1].state
+            if m.target == 1 or m.target == -1 then
+                CLI.env.TriggerEvent(m.event, m.payload)
+            end
+        end
+        for i = 1, #CLI.toServer do
+            local m = CLI.toServer[i]
+            if m and now >= m.at + 30 then
+                SRV.roster[1].engineHp = CLI.env.GetEntityHealth(1)
+                SRV.died(1, m.data)
+                CLI.toServer[i] = false
+            end
+        end
+    end
+
+    CLI.pump(6000, drain)
+    CLI.light()
+    -- FOUR SECONDS IN THE POOL, which is a fifth of a molotov's life and about
+    -- eighty beats of the floor watch. Every one of them is a chance to cycle.
+    CLI.pump(4000, drain)
+
+    ok(SRV.roster[1].state == PS.DBNO,
+        'a player burned down is DOWN, which is feddd23\'s decision and not '
+        .. 'something this fix changes',
+        tostring(SRV.roster[1].state))
+
+    ok(CLI.resurrects == 1,
+        'AND THE PED IS STOOD UP EXACTLY ONCE over four seconds in the flames',
+        ('resurrections: %d'):format(CLI.resurrects))
+
+    ok(not CLI.ped.dead and not CLI.ped.dying,
+        'the body is alive on the downed floor rather than a corpse the watch '
+        .. 'gave up on',
+        ('dead %s, dying %s'):format(tostring(CLI.ped.dead),
+                                     tostring(CLI.ped.dying)))
+
+    ok(CLI.ped.anim ~= nil,
+        'and it is playing the crawl, which is the thing the owner never saw',
+        tostring(CLI.ped.anim))
+
+    ok(CLI.reports == 1,
+        'with ONE death report on the wire -- the knock -- rather than one per '
+        .. 'beat for the server to keep refusing',
+        ('reports: %d'):format(CLI.reports))
+
+    ok(CLI.ped.fireProof == true and CLI.ped.onFire == false,
+        'because the fire is refused and the flames are put out, rather than the '
+        .. 'corpse being repaired faster',
+        ('fireproof %s, alight %s'):format(tostring(CLI.ped.fireProof),
+                                           tostring(CLI.ped.onFire)))
 end
 
 -- ==========================================================================
@@ -6880,6 +7075,12 @@ local function newReviver(mySrc, mateSrc, peds)
     env.RemoveAllPedWeapons = function() end
     env.SetCurrentPedWeapon = function() end
     env.SetPedCanRagdoll = function() end
+    -- Fire, as the two natives a downed ped now asks for. Nothing in this rig
+    -- burns -- it is about a REVIVER holding a key -- so they record nothing and
+    -- exist because a knock calls them.
+    env.SetEntityProofs = function() end
+    env.IsEntityOnFire = function() return 0 end
+    env.StopEntityFire = function() end
     env.IsPedRagdoll = function() return false end
     env.IsEntityInAir = function() return false end
     env.ResetPedMovementClipset = function() end
@@ -13541,8 +13742,8 @@ do
     -- demand there were none at all.
     --
     -- THAT WAS A HEURISTIC AND IT HAS BEEN OVERTAKEN BY EVIDENCE. The owner
-    -- auditioned five DLC banks with /brsfx on a running client and came back
-    -- with what each should be used for (2026-09-08, "land the DLC cues"),
+    -- auditioned DLC banks with /brsfx on a running client and came back with
+    -- what each should be used for (2026-09-08, "land the DLC cues"),
     -- which is the same class of evidence as `heard from this codebase` and
     -- strictly better than a filter written because nobody had listened.
     --
@@ -13552,7 +13753,12 @@ do
     -- the owner back in front of sounds that cannot play -- which is worse than
     -- no tool, because it manufactures the exact ambiguity [silent?] exists to
     -- resolve.
-    local HEARD = 8   -- 3 heard from this codebase + 5 the owner auditioned
+    -- 3 heard from this codebase + 6 the owner has heard. The sixth is
+    -- DLC_AW_BB_Sounds, promoted on 2026-09-12 when his "Alternative timer start
+    -- (airhorn)" became the live `match.start`; it is Arena War, the same pack
+    -- as DLC_AW_Frontend_Sounds, which has shipped audible with no bank request
+    -- since 2026-09-08.
+    local HEARD = 9
     local strayDlc = nil
     for i = HEARD + 1, #A.catalogue do
         if string.lower(A.catalogue[i].set):sub(1, 4) == 'dlc_' then
@@ -13600,13 +13806,13 @@ do
        'the three sets this codebase has actually heard sort first, in order',
        A.catalogue[1].set .. ', ' .. A.catalogue[2].set .. ', ' .. A.catalogue[3].set)
 
-    -- THEN THE OWNER'S FIVE, which are heard on the same terms and for the same
+    -- THEN THE OWNER'S SIX, which are heard on the same terms and for the same
     -- reason sort with them rather than into the body: a silence in one of
     -- these is a wrong NAME, not an absent bank.
-    ok(A.catalogue[4].set == 'DLC_AW_Frontend_Sounds'
-       and A.catalogue[8].set == 'dlc_vw_koth_Sounds',
-       'and the five DLC banks the owner auditioned follow them',
-       A.catalogue[4].set .. ' .. ' .. A.catalogue[8].set)
+    ok(A.catalogue[4].set == 'DLC_AW_BB_Sounds'
+       and A.catalogue[HEARD].set == 'dlc_vw_koth_Sounds',
+       'and the DLC banks the owner has heard follow them',
+       A.catalogue[4].set .. ' .. ' .. A.catalogue[HEARD].set)
 
     local outOfOrder = nil
     for i = HEARD + 2, #A.catalogue do

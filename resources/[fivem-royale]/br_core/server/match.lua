@@ -64,8 +64,8 @@ local WARMUP_HOLD_MS = 24 * 60 * 60 * 1000
 --          It is what m.id used to be, and it keeps the two jobs an id can no
 --          longer do -- ORDER, and a DENSE SMALL NUMBER for the routing bucket
 --          so buckets stay 101, 102, 103.
---   m.id   a random 20-bit integer, 0x00001 to 0xFFFFF, unique for the life of
---          this process. This is the match's name: shown as five hex
+--   m.id   a random 28-bit integer, 0x0000001 to 0xFFFFFFF, unique for the life
+--          of this process. This is the match's name: shown as seven hex
 --          characters, put in squad ids, carried on every record.
 --
 -- IT STAYS A NUMBER. A hex STRING was considered and rejected on the issue:
@@ -80,7 +80,31 @@ local WARMUP_HOLD_MS = 24 * 60 * 60 * 1000
 --- server/loot.lua reserves id 0 for the communal warmup pseudo-match and
 --- compares against the literal, so a real match drawing 0 would share a loot
 --- registry with the warmup pad.
-local ID_MIN, ID_MAX = 0x00001, 0xFFFFF
+---
+--- ═══ 28 BITS SINCE 2026-09-12, WIDENED FROM 20 ═══
+---
+--- THE RETRY BELOW WAS NEVER THE WHOLE GUARANTEE, and `issuedIds` says so in its
+--- own comment: it holds for the life of THIS PROCESS and dies on restart. That
+--- was enough while an id was a thing a console printed and forgot. It stopped
+--- being enough when Ringmaster gave every match a PERMANENT URL keyed on the
+--- tag -- at which point the question is not "can two LIVE matches collide" but
+--- "can two matches this box has EVER played collide", and the answer is the
+--- birthday bound over the whole history rather than over one session.
+---
+--- 20 bits reached even odds at roughly 1,200 matches, which is a season of
+--- play, and two different matches answering to /matches/d93aa is a moderator
+--- reading one match's page while talking about another. 28 bits moves that to
+--- past 19,000 matches. It is not infinity and it is not meant to be: it is the
+--- width at which the next person can judge the risk, which is why the number is
+--- written down here rather than left to be re-derived.
+---
+--- IT IS ONLY A RENDERING CHANGE AT THE FAR END. The id was always a number and
+--- still is; br_ddb's num() and Ringmaster's z.number().int() both take
+--- 268,435,455 without complaint, and BR.Voice.radioChannel's arithmetic stays
+--- an integer (a large one -- see tools/test_roster.lua, which pins the top of
+--- the space because pma-voice uses that number as a table key and never hands
+--- it to a native).
+local ID_MIN, ID_MAX = 0x00001, 0xFFFFFFF
 
 --- Every id issued since this process started. Never cleared, including for a
 --- match that has been destroyed: `seq` is what guarantees a bucket is never
@@ -90,14 +114,14 @@ local issuedIds = {}
 
 --- How many times the draw is retried before falling back to a walk.
 ---
---- COLLISIONS ARE NOT THEORETICAL. The space is 1,048,576 wide, so a box that
---- runs a thousand matches between restarts has roughly a 38 percent chance of
---- drawing a repeat under the birthday bound -- and the failure would be
---- SILENT, because `BR.Server.matches[m.id] = m` below replaces a live instance
---- rather than raising. Sixty-four consecutive collisions against a hundred
---- thousand live ids is a probability with sixty-six zeroes after the point;
---- the walk beneath it is what makes the guarantee absolute rather than
---- overwhelming.
+--- COLLISIONS ARE NOT THEORETICAL, AND THE RETRY IS CHEAPER THAN CHECKING. The
+--- space is 268,435,455 wide, so a repeat inside one process is now remote --
+--- but the failure it guards is SILENT, because `BR.Server.matches[m.id] = m`
+--- below replaces a live instance rather than raising, and a guard whose cost is
+--- one table lookup does not need a probability argument to justify it. Sixty-
+--- four consecutive collisions is a probability with hundreds of zeroes after
+--- the point; the walk beneath it is what makes the guarantee absolute rather
+--- than overwhelming.
 local ID_TRIES = 64
 
 --- The generator ids are drawn from, seeded once per process.
@@ -145,9 +169,9 @@ local function mintId()
         end
     end
 
-    -- Unreachable: this process would have formed 1,048,575 matches, which at
-    -- one a minute is two years of uninterrupted uptime. Loud rather than nil,
-    -- because a match with no id would fail everywhere except here.
+    -- Unreachable: this process would have formed 268,435,455 matches, which at
+    -- one a minute is five centuries of uninterrupted uptime. Loud rather than
+    -- nil, because a match with no id would fail everywhere except here.
     error('[br_core] match id space exhausted after ' .. tostring(span)
           .. ' matches on one process')
 end

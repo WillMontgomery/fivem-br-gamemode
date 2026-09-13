@@ -8356,6 +8356,43 @@ do
         resurrect.count = resurrect.count + 1
         resurrect.dictLoadedFirst = anim.loaded
         bodies[1].dead = false
+        -- ...AND IT DOES NOT PUT A FIRE OUT, which is the engine fact the whole
+        -- burning block below turns on. A resurrected ped is standing in the same
+        -- molotov it just died in, still alight, and the flames are a separate
+        -- system from its health.
+    end
+
+    -- ═══ FIRE, MODELLED AS THE THING THAT KEEPS KILLING THE PED ═══
+    --
+    -- The owner's report (2026-09-12): a player knocked into a molotov is
+    -- "repeatedly respawned, then immediately die... basically just infinite
+    -- ragdoll cycles."
+    --
+    -- THE MODEL IS THREE FACTS AND THE MIDDLE ONE IS THE BUG. A ped in the flames
+    -- is on fire; a ped on fire loses health it has not refused; a downed ped has
+    -- five display points of health, so it dies. Written so it CAN fail: the
+    -- `proof ~= true` test in the Wait stub is what makes a client that only
+    -- REPAIRS the corpse cycle forever, which is what shipped.
+    --
+    -- IsEntityOnFire ANSWERS 1/0, deliberately. It is declared BOOL, `0` is truthy
+    -- in Lua, and a reader that took it raw would douse a ped that is not burning
+    -- on every frame of every knock -- the class of defect tools/check_bool_natives
+    -- exists for and the reason dbno.lua has one comparison for all of them.
+    local burning = { lit = false, doused = 0, proof = nil }
+    function IsEntityOnFire(e) return (e == 1 and burning.lit) and 1 or 0 end
+    function StopEntityFire(e)
+        if e ~= 1 then return end
+        burning.lit = false
+        burning.doused = burning.doused + 1
+        note('douse')
+    end
+    --- SET_ENTITY_PROOFS(entity, bullet, FIRE, explosion, collision, melee,
+    --- steam, p7, water). Only the fire argument is recorded, and nil is a third
+    --- answer: "never touched" is not "touched with false".
+    function SetEntityProofs(e, _, fireProof)
+        if e ~= 1 then return end
+        burning.proof = fireProof
+        note('fireproof', fireProof)
     end
 
     -- ---------------------------------------------------------- the labels ---
@@ -8418,7 +8455,16 @@ do
 
     local threads = {}
     Citizen.CreateThread = function(fn) threads[#threads + 1] = fn end
-    Citizen.Wait = function(ms) note('wait', ms) end
+    Citizen.Wait = function(ms)
+        note('wait', ms)
+        -- TIME PASSING IS WHAT FIRE DOES, and the floor watch is made of waits. A
+        -- body lying in the flames that has not REFUSED fire damage is dead again
+        -- by the next beat -- five display points is nothing -- so the beat after
+        -- a resurrection finds another corpse and resurrects it too. That is the
+        -- cycle, and modelling it here is what lets the fix be measured in
+        -- resurrections rather than in intent.
+        if burning.lit and burning.proof ~= true then bodies[1].dead = true end
+    end
     local function runThreads()
         local i = 1
         while i <= #threads do
@@ -8723,6 +8769,98 @@ do
         'a player shot down is knocked down, not resurrected',
         ('resurrects %d, knockdowns %d')
             :format(countOf('resurrect'), countOf('knockdown')))
+
+    -- ====================================================================== --
+    -- 3b. A BODY KNOCKED INTO A FIRE IS RESURRECTED ONCE, NOT THIRTY TIMES
+    -- ====================================================================== --
+    --
+    -- Owner, playtest 2026-09-12: "when dying to a fire, like a molotov, the ped
+    -- doesn't get a chance to crawl because they're caught in the flames and
+    -- repeatedly respawned, then immediately die. This is basically just infinite
+    -- ragdoll cycles."
+    --
+    -- ONE KNOCK, AND THE CYCLE IS ENTIRELY THIS FILE'S. The server refuses a
+    -- second knock three separate ways (canBeDowned requires ALIVE, the death
+    -- report is declined while DBNO, combat.deathcheck skips DBNO), so what the
+    -- owner watched was the floor watch repairing the same corpse once per beat --
+    -- each repair a fresh dying animation over a fresh resurrection, and then
+    -- nothing at all for the remaining hundred and eighteen seconds of the bleed.
+    --
+    -- THE MEASUREMENT IS THE RESURRECTION COUNT, which is the one number that
+    -- separates "the fire was refused" from "the corpse was repaired faster".
+
+    describe('a body in the flames keeps its crawl -- the 2026-09-12 playtest')
+
+    fire(BR.Net.DBNO_SET, { downed = false })
+    runThreads()
+    log = {}
+    burning.lit, burning.proof, burning.doused = true, nil, 0
+    bodies[1].dead = true       -- the molotov killed this ped where it stands
+    bodies[1].prone = false
+    resurrect.count = 0
+
+    fire(BR.Net.DBNO_SET, { downed = true, bleedEndsAt = 60000 })
+    runThreads()
+
+    ok(resurrect.count == 1,
+        'A PED KNOCKED DOWN IN A FIRE IS STOOD UP ONCE, not once per beat of the '
+        .. 'floor watch',
+        ('resurrections: %d'):format(resurrect.count))
+
+    ok(burning.proof == true,
+        'because the fire damage is REFUSED rather than repaired -- the ped is '
+        .. 'fireproof while it is down',
+        tostring(burning.proof))
+
+    ok(burning.doused >= 1 and burning.lit == false,
+        'and the flames already on the body are put out, because a proof does not '
+        .. 'extinguish what is already burning',
+        ('doused %d, still alight %s'):format(burning.doused,
+                                              tostring(burning.lit)))
+
+    -- AND THE CRAWL IS THE POINT OF ALL OF IT. Thirty resurrections is thirty
+    -- restarted dying animations, which is why the owner never saw one.
+    ok(countOf('anim:play') >= 1,
+        'the crawl this whole state exists for is actually tasked',
+        ('poses: %d'):format(countOf('anim:play')))
+
+    -- ...AND IT SURVIVES TIME SPENT LYING IN THE POOL. A molotov burns for twenty
+    -- seconds and the ground re-lights a body lying in it, so the frame loop has
+    -- to hold what the knock asserted.
+    burning.lit = true          -- the pool sets them alight again
+    for _ = 1, 20 do frame(16) end
+    ok(burning.lit == false and bodies[1].dead == false,
+        'a body re-lit by the pool it is lying in is doused again and stays alive',
+        ('alight %s, dead %s'):format(tostring(burning.lit),
+                                      tostring(bodies[1].dead)))
+    ok(resurrect.count == 1,
+        'with no further resurrections at all -- the cycle is gone rather than '
+        .. 'slower',
+        ('resurrections: %d'):format(resurrect.count))
+
+    -- ═══ AND STANDING BACK UP HANDS THE FIRE BACK ═══
+    --
+    -- The same rule as SetPedCanRagdoll in leaveDowned: a revived player must be
+    -- indistinguishable from one who was never downed, and a fireproof survivor
+    -- walking through a molotov would be the downed state leaking into the match.
+    fire(BR.Net.DBNO_SET, { downed = false })
+    runThreads()
+    ok(burning.proof == false,
+        'a revived player is mortal to fire again',
+        tostring(burning.proof))
+
+    -- AND THE FIXTURE IS HANDED BACK THE WAY IT WAS BORROWED. Everything below
+    -- this line continues from the LIVE knock the fall block left standing -- a
+    -- downed player, prone, with no fire anywhere near them -- so the flames are
+    -- put away and the knock is re-established rather than left revived. A block
+    -- that leaves the harness in its own state is a block that breaks the next
+    -- three by accident.
+    burning.lit, burning.proof, burning.doused = false, nil, 0
+    bodies[1].dead = false
+    log = {}
+    fire(BR.Net.DBNO_SET, { downed = true, bleedEndsAt = 60000 })
+    runThreads()
+    bodies[1].prone = true
 
     -- ====================================================================== --
     -- 2. LETTING GO MEANS STOPPING
@@ -16165,7 +16303,13 @@ do
         if kind ~= BR.Nui.INV then return end
         local s = p and p.slots and p.slots[p.active or 0]
         if type(s) ~= 'table' or s.id ~= 'pistol' then return end
-        drawn[#drawn + 1] = { said = s.clip, gun = gun.clip[PH] }
+        -- BOTH RIGHT-HAND NUMBERS RIDE ALONG for the block below. `reserve` is
+        -- what the BAR draws beside the magazine and the two have to add up;
+        -- `pool` is what the TAB panel draws beside a Drop button and has to stay
+        -- the server's. They are different quantities and the block asserts both.
+        drawn[#drawn + 1] = { said = s.clip, gun = gun.clip[PH],
+                              pool = p.ammo and p.ammo.light,
+                              reserve = p.reserve }
     end)
 
     --- Every envelope whose magazine disagreed with the gun, as text.
@@ -16253,6 +16397,88 @@ do
        ('drawn %s, gun %s'):format(
            tostring(drawn[#drawn] and drawn[#drawn].said), tostring(gun.clip[PH])))
     ok(disagreed() == '', 'and the two still agree across the grant', disagreed())
+
+    -- ═══ AND THE PAIR HAS TO ADD UP (owner, 2026-09-12) ═══
+    --
+    -- "I buy 60 rounds for my combat PDW at the shop - the HUD shows 30/60 now. I
+    -- had 0 before." Sixty bought, ninety drawn.
+    --
+    -- THE MAGAZINE ABOVE IS HONEST AND THE RESERVE BESIDE IT DESCRIBES A DIFFERENT
+    -- MOMENT, which is the whole of the bug. Everything above this line asserts
+    -- the LEFT number against the gun; nothing asserted the two TOGETHER, and the
+    -- reserve is the half that goes stale. The engine fills a magazine out of its
+    -- own reserve the moment it is handed ammunition with an empty clip; the
+    -- server is never told, because a reload does not move the TOTAL and
+    -- server/inventory.lua's floor returns on `lost <= 0`. So the bar drew a
+    -- magazine the engine had already loaded next to a reserve that still counted
+    -- those rounds as unspent.
+    --
+    -- DRIVEN THE WAY THE ENGINE DOES IT: the clip goes UP and the total does NOT
+    -- move, because the rounds came out of the gun's own reserve rather than out
+    -- of thin air. That is the one transition `SetPedAmmo` is never called for and
+    -- the one the report loop cannot report, since it is decrease-only on a total
+    -- that did not decrease.
+    do
+        -- Bought into an EMPTY gun: no magazine, sixty loose rounds.
+        drawn = {}
+        serverSays(0, 60)
+        tick(1)
+        ok(gun.total[PH] == 60,
+           'sixty rounds reach the ped and none of them are in the magazine',
+           ('total %s, clip %s'):format(tostring(gun.total[PH]),
+                                        tostring(gun.clip[PH])))
+
+        -- GTA LOADS THE GUN BY ITSELF. Inside the engine's single number the
+        -- rounds move; the total is untouched.
+        gun.clip[PH] = PISTOL.clip
+        drawn = {}
+        tick(1)
+
+        local d = drawn[#drawn]
+        ok(d ~= nil and d.said == PISTOL.clip,
+           'the counter follows the magazine the engine just filled',
+           tostring(d and d.said))
+        -- THE ASSERTION THAT WAS MISSING. Sixty is what he owns, so the two
+        -- numbers on the plate have to come to sixty and not to seventy-two.
+        ok(d ~= nil and (d.said or 0) + (d.reserve or 0) == 60,
+           'AND THE MAGAZINE PLUS THE RESERVE IS WHAT HE ACTUALLY OWNS',
+           ('%s + %s'):format(tostring(d and d.said), tostring(d and d.reserve)))
+        ok(d ~= nil and d.reserve == 60 - PISTOL.clip,
+           '...so the reserve is the rounds BEHIND the magazine, not the total',
+           tostring(d and d.reserve))
+
+        -- ⚠ AND THE POOL FIGURE IS UNTOUCHED, which is not a detail. The TAB panel
+        -- draws `ammo[pool]` beside a Drop button, and that button puts the WHOLE
+        -- pool on the floor -- server/inventory.lua writes `inv.ammo[pool] = 0` and
+        -- leaves every magazine alone. A fix that rebalanced the map instead of
+        -- sending its own number would show forty-eight under a button that drops
+        -- sixty.
+        ok(d ~= nil and d.pool == 60,
+           'and the POOL the panel draws is still the server\'s, to the round',
+           tostring(d and d.pool))
+
+        -- AND THE MIRROR ITSELF IS NOT REWRITTEN, the other trap here:
+        -- `reserveFor` feeds SetPedAmmo, so a rebalanced pool in `inv.ammo` would
+        -- hand the engine's own reload back to the ped as a smaller grant on the
+        -- next re-apply and compound.
+        local mirror = BR.Inv.local_()
+        ok((mirror.ammo.light or 0) == 60,
+           'the mirror still holds the SERVER\'s reserve, untouched',
+           tostring(mirror.ammo.light))
+
+        -- A SETTLED BOOK NEEDS NO CORRECTION. When the server's magazine and the
+        -- gun's agree the reserve IS the pool, so this cannot be a fix that always
+        -- subtracts a magazine.
+        drawn = {}
+        serverSays(PISTOL.clip, 31)
+        tick(1)
+        local e = drawn[#drawn]
+        ok(e ~= nil and e.said == PISTOL.clip and e.pool == 31
+           and (e.reserve == nil or e.reserve == 31),
+           'and when the two books already agree the reserve is the pool',
+           ('%s / pool %s / reserve %s'):format(tostring(e and e.said),
+               tostring(e and e.pool), tostring(e and e.reserve)))
+    end
 
     GiveWeaponToPed     = savedGive
     RemoveAllPedWeapons = savedRemove

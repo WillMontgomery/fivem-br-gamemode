@@ -381,6 +381,23 @@ export interface InvUsing {
 export interface InvPayload {
   slots: (InvSlot | null)[]
   ammo: Record<string, number>
+  /** The rounds behind the magazine of the weapon in hand -- the right-hand
+   *  number on the HUD's ammo plate, and NOT the same quantity as
+   *  `ammo[slot.pool]`.
+   *
+   *  WHY IT IS ITS OWN FIELD. `ammo` is the server's reserve per pool, and the
+   *  TAB panel draws it beside a Drop button that puts that whole pool on the
+   *  floor -- so that figure has to match the server exactly. The bar's number is
+   *  paired with a MAGAZINE instead and has to add up to what the player holds,
+   *  which is a different number whenever the engine has loaded a magazine the
+   *  server has not been told about (it fills the clip out of its own reserve, and
+   *  a reload does not move the total the report loop watches).
+   *
+   *  ABSENT MEANS "NOTHING TO CORRECT" -- an empty hand, a melee weapon, or two
+   *  books that already agree -- and the bar falls back to `ammo[pool]`. It is
+   *  also absent for a spectated inventory, whose magazine readings are not ours.
+   *  br_core/client/inventory.lua's `uiReserve` is the whole of it. */
+  reserve?: number | null
   /** 1-based, matching the slot1..slot5 keybinds. */
   active: number
   using?: InvUsing | null

@@ -1217,6 +1217,76 @@ function BR.Combat.bleed(src, amount, shooterSrc, meta)
     BR.Combat.pushDbno(src)
 end
 
+--- Run a downed player's clock faster because they are lying in a fire.
+---
+--- ═══ THE OWNER'S SECOND SENTENCE ABOUT BURNING (playtest 2026-09-12) ═══
+---
+---   "My preference would be they can crawl until they die, and their body being
+---    on fire should accelerate the bleed out."
+---
+--- The first half is client/dbno.lua's -- a downed ped refuses fire damage now,
+--- so the flames can no longer kill it and the crawl survives them. This is the
+--- second half, and the two are one decision: the punishment for being caught in
+--- a molotov moved off the ped and onto the clock, where the downed player's
+--- health has lived since 2026-08-09.
+---
+--- TIME, NOT DAMAGE, WHICH IS WHY THIS IS NOT A CALL TO BLEED. `bleed` converts
+--- damage the server ADJUDGED into seconds at dbnoBleedPerDamage. Burning damage
+--- is never adjudged: it does not raise weaponDamageEvent at all (config/match.lua
+--- says so from a measurement, and server/damage.lua's whole fire ledger exists
+--- because of it), so there is no number of points to convert and inventing one
+--- would be a fiction with a config key in front of it. What is real is the
+--- ELAPSED TIME a body spent in somebody's fire, and dbnoBurnRate is what that
+--- time is worth.
+---
+--- IT DOES NOT ELIMINATE, AND THAT IS DELIBERATE. `bleed` finishes a player whose
+--- clock it just ran out because a bullet should kill on the frame it lands. A
+--- burn is a rate, so the ending belongs to the tick that already owns it:
+--- stepDowned runs four times a second, carries the rescue guard and the
+--- match-state gate with it, and calls the death 'bledout' -- which is what this
+--- is. A second elimination path here would be a second place for a finished
+--- match to kill its own winner (see the note above combat.dbno).
+---
+--- @param src integer
+--- @param ms number            milliseconds spent in the fire since the last call
+--- @param lighterSrc integer|nil  who lit it, from the fire ledger
+--- @param item string|nil      'molotov', for the kill feed's weapon column
+function BR.Combat.burn(src, ms, lighterSrc, item)
+    local e = BR.Roster.get(src)
+    if not e or e.state ~= BR.PlayerState.DBNO then return end
+    if not ms or ms <= 0 then return end
+
+    -- AT OR BELOW 1.0 THE FIRE IS SCENERY. One config line turns the whole
+    -- mechanic off, and this is the line that honours it.
+    local rate = M.dbnoBurnRate or 1.0
+    if rate <= 1.0 then return end
+
+    local now = GetGameTimer()
+
+    -- THE EXTRA ONLY. The clock is already counting the second that just passed
+    -- on its own; what burning adds is the difference, so a rate of 3.0 takes two
+    -- seconds off per second of flames and the player experiences three.
+    e.dbnoUntil = (e.dbnoUntil or now) - math.floor(ms * (rate - 1.0))
+
+    -- WHOEVER LIT IT OWNS THE FINISH, on exactly the terms `bleed` gives a
+    -- shooter and for the same reason: a bleed runs 40-120s, attributedKiller
+    -- expires in 10s, and a body left to burn would otherwise be credited to
+    -- nobody. Self-lit fires credit nobody, which is the rule the fire ledger
+    -- already applies to a player standing in their own molotov.
+    if lighterSrc and lighterSrc ~= src then
+        e.lastHitBy     = lighterSrc
+        e.lastHitAt     = now
+        e.lastHitWeapon = item or e.lastHitWeapon
+        e.downedBy      = lighterSrc
+    end
+
+    -- THE MOVED DEADLINE GOES BACK TO THE PLAYER WATCHING IT COUNT. DBNO_SET is
+    -- sent on edges and the overlay counts down from whatever deadline it was last
+    -- given (see the REVIVE_PROGRESS note in stepDowned), so a clock that raced
+    -- without being published would be a number that stalls and then jumps.
+    BR.Combat.pushDbno(src)
+end
+
 -- ----------------------------------------------------------------- revive ---
 
 --- Everything that has to be true for a revive to still be running.

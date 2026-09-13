@@ -997,16 +997,57 @@ end
 ---
 --- THE WINDOW WHERE THAT COULD BE WRONG IS BEFORE THE FIRST INV_SET, which lands
 --- long before a player can walk to a counter and is re-sent on every pickup.
+---
+--- ═══ THE MAGAZINES COUNT, AND THEY USED NOT TO (owner, 2026-09-12) ═══
+---
+--- "The 'You have X rounds for it' description text in the menu doesn't seem to
+--- count the rounds in the clip of a weapon I'm holding."
+---
+--- This read `inv.ammo[pool]` directly, and that number is the RESERVE -- what is
+--- left once every magazine is taken out of it. It is the right number for
+--- `ammoFull`, whose ceiling BR.Config.AmmoCaps applies to the reserve, and it is
+--- the wrong one for a sentence about what the player HAS: a man holding a full
+--- Combat PDW and no loose rounds was told he had none at all.
+---
+--- ⚠ SO THIS AND `ammoFull` NOW READ DIFFERENT QUANTITIES AS WELL AS DIFFERENT
+--- ABSENCES, and that is the point rather than a drift to tidy up. "Can I buy
+--- more" is a question about the reserve the purchase lands in; "how many have I
+--- got" is a question about every round the player owns.
+---
+--- EVERY CARRIED WEAPON ON THE POOL, NOT JUST THE ONE IN HAND. The pool is shared
+--- -- an Assault SMG and a Combat PDW eat the same rounds -- so a player at the
+--- counter asking how much SMG ammo he has owns the magazine in the PDW whether or
+--- not the PDW is the gun in his hands. This is the same sum /brammo prints per
+--- pool.
+---
+--- WeaponById FOR THE POOL, which is how `rowPool` above resolves a gun's pool and
+--- how client/inventory.lua's own `reserveFor` does -- one answer to "which pool is
+--- this gun on" rather than a second copy stamped somewhere else.
 --- @param pool string|nil
 --- @return integer
 local function poolHeld(pool)
     if type(pool) ~= 'string' or pool == '' then return 0 end
     local inv = BR.Inv and BR.Inv.local_ and BR.Inv.local_() or nil
-    local ammo = type(inv) == 'table' and inv.ammo or nil
-    local n = tonumber(type(ammo) == 'table' and ammo[pool] or nil)
-    if not n then return 0 end
-    if n < 0 then return 0 end
-    return math.floor(n)
+    if type(inv) ~= 'table' then return 0 end
+
+    local ammo = type(inv.ammo) == 'table' and inv.ammo or nil
+    local n = math.floor(tonumber(ammo and ammo[pool] or nil) or 0)
+    if n < 0 then n = 0 end
+
+    -- pairs() RATHER THAN ipairs, for the reason `carriedIds` gives above: an
+    -- empty slot is `false` in the mirror and ipairs would walk past the rest.
+    local slots = type(inv.slots) == 'table' and inv.slots or nil
+    for _, s in pairs(slots or {}) do
+        if type(s) == 'table' and type(s.id) == 'string' then
+            local w = BR.Config.WeaponById[s.id]
+            if w and w.ammo == pool then
+                local c = math.floor(tonumber(s.clip) or 0)
+                if c > 0 then n = n + c end
+            end
+        end
+    end
+
+    return n
 end
 
 --- WHICH POOL A ROW FEEDS ON, WHICHEVER KIND OF ROW IT IS.

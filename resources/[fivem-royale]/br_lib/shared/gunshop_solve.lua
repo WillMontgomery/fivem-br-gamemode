@@ -664,11 +664,44 @@ function BR.GunshopSolve.catalogue(cfg, src)
                         price  = cost,
                         rarity = w.rarity,
                         label  = w.label,
+                        -- ═══ SOLD EMPTY, BECAUSE IT IS SOLD (owner, 2026-09-12)
+                        --     ═══
+                        --
+                        -- "So I buy an SMG Mk II, which takes the same SMG ammo
+                        -- as the rest of my owned loadout. Now the SMG Mk II
+                        -- immediately shows 30/30 - the gun isn't sold with free
+                        -- ammo....."
+                        --
+                        -- It was, twice over. BR.Inv.give hands every arriving
+                        -- weapon a full magazine (`stack.clip or w.clip`) AND a
+                        -- clip's worth of reserve, and both are right about FLOOR
+                        -- LOOT for the reason give() states in as many words: "a
+                        -- found gun has to be usable". Neither is right about a
+                        -- purchase. A player who walked to a counter and paid for
+                        -- a gun can walk two rows up the same menu and pay for the
+                        -- rounds; handing him sixty free ones is the ammo economy
+                        -- deciding not to apply to anybody with Volts.
+                        --
+                        -- ⚠ `clip = 0` AND NOT nil, AND 0 IS TRUTHY IN LUA --
+                        -- which is the whole reason this works. give() reads
+                        -- `stack.clip or (w and w.clip)`, so a 0 here is taken as
+                        -- the answer where a nil would fall through to the
+                        -- weapon's full magazine. The same line's own note warns
+                        -- that absent and empty are different facts on this field;
+                        -- this is the empty one, said deliberately.
+                        --
+                        -- `sold` IS THE OTHER HALF and give() reads it beside
+                        -- `carried`. They are different facts -- this gun has
+                        -- never been in an inventory -- that give() needs for one
+                        -- shared purpose: neither is found loot, so neither is
+                        -- owed a magazine out of nowhere.
                         stack  = {
                             item   = id,
                             kind   = BR.ItemKind.WEAPON,
                             rarity = w.rarity,
                             count  = 1,
+                            clip   = 0,
+                            sold   = true,
                         },
                     }
                 end

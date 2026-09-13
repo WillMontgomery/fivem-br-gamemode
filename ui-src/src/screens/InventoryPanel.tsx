@@ -19,7 +19,7 @@ import { play } from '../audio/cues'
  * "nothing happened" rather than as a UI that undid itself.
  */
 
-// SIX POOLS, IN BR.Config.AmmoOrder'S ORDER. One column is rendered per key
+// FIVE POOLS, IN BR.Config.AmmoOrder'S ORDER. One column is rendered per key
 // here, so a pool missing from this map is a pool the player cannot see or drop,
 // and a key that is not a pool is a column of zeroes.
 //
@@ -28,18 +28,17 @@ import { play } from '../audio/cues'
 // put rockets into any other category that has limited carry quantity?", so
 // `sniper` is gone and its four rifles are back in `heavy` (2026-09-12).
 //
-// ⚠ 'Belt' IS NOT HIS WORD. The pool read 'MG' here and 'MG Ammo' on the floor,
-// and his other question was "Why do we have SMG ammo and MG ammo as separate
-// categories?" -- they sit next to each other on the same shelf one letter
-// apart. This is a rename waiting for his: change it here and in
-// BR.Config.AmmoPickups, which is the only other place it is written.
+// `medium` IS THE ASSAULT RIFLES AND THE MACHINE GUNS. A sixth column read 'MG'
+// here and then 'Belt' -- our word rather than his, and he rejected it: "Not sure
+// what 'belt' is or why we call it that. It doesn't actually show on the person's
+// belt. Very misleading." Asked where to merge it, he chose medium. Every caption
+// in this map is now a word he wrote.
 const AMMO_LABEL: Record<string, string> = {
   light: 'Light',
   smg: 'SMG',
   medium: 'Medium',
   shells: 'Shells',
   heavy: 'Heavy',
-  lmg: 'Belt',
 }
 
 function SlotCard({

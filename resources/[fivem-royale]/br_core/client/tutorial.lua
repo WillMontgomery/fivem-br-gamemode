@@ -142,6 +142,29 @@ local offering = false
 --- finishes. It outlives the run, which is exactly what the second toggle needs.
 local offerable = false
 
+--- Has this SESSION ever started either half of the walkthrough?
+---
+--- ═══ A FOURTH FLAG, AND IT IS THE ONLY ONE THAT NEVER GOES BACK DOWN ═══
+---
+--- The three above are all states -- they answer "right now" -- and by the time
+--- the bus takes a player every one of them reads false whatever they did: the
+--- leave tick drops `inGame` the instant their state stops being WARMUP, and
+--- `running` and `offering` went when the lobby half ended. So none of them can
+--- tell "they never touched it" from "they tried it and it broke under them",
+--- and that distinction is the whole of what the owner asked us to keep on
+--- 2026-09-07: "leaving the game tutorial early results in the toggle still
+--- being available in the lobby - great, keep it."
+---
+--- SO THIS ONE REMEMBERS THE TRYING RATHER THAN THE STATE. It is raised where
+--- either half starts and lowered nowhere, which is why it is safe for the tick
+--- that spends an untaken offer to read it long after every other flag has
+--- settled.
+---
+--- PER-SESSION, LIKE EVERYTHING ELSE IN THIS FILE. It dies with the client, and
+--- a reconnect starts again from the profile row -- which by then says
+--- 'declined' or 'done' for anybody this latch mattered to.
+local took = false
+
 --- Is the IN-GAME walkthrough running?
 ---
 --- A THIRD FLAG, AND THEY ARE THREE MOMENTS. `offering` is the invitation in
@@ -338,7 +361,9 @@ function BR.Tutorial.set(on)
     -- THE PAGE MIRRORS THIS FLAG, IT DOES NOT OWN IT. That is the whole point of
     -- Lua holding it, and it means a page-side clear is a repaint rather than a
     -- decision -- correct until the next push, and then silently undone.
-    if running then offering = false end
+    -- AND STARTING IT IS TAKING THE OFFER, WHICH OUTLIVES THE RUN. See `took`:
+    -- an abandoned lobby half must not read as never having tried.
+    if running then offering, took = false, true end
 
     publish()
 
@@ -376,8 +401,9 @@ function BR.Tutorial.game(on)
     on = on == true
     if on == inGame then return end
     inGame = on
-    -- FROM ZERO EVERY TIME. See `crates`.
-    if on then crates, waypoints, slots = 0, 0, 0 end
+    -- FROM ZERO EVERY TIME. See `crates`. And the offer counts as taken from
+    -- here on, however this run ends -- see `took`.
+    if on then crates, waypoints, slots, took = 0, 0, 0, true end
     -- THE HOLD RISES WITH THE CARDS AND CAN FALL BEFORE THEM. See `holding`.
     holding = on
     -- AND A CAMERA NEVER OUTLIVES THE RUN. Every ending comes through here --
@@ -454,6 +480,84 @@ BR.Loop.register(BR.Loop.TICK, 'tutorial.leave', function()
     print('[br_core] tutorial: left warmup -- the in-game walkthrough is over')
     camTo(nil)
     BR.Tutorial.game(false)
+end)
+
+--- The states that mean a match has actually started for this player.
+---
+--- THE BUS IS THE DOORWAY AND EVERYTHING AFTER IT FOLLOWS, but a tick can sample
+--- late -- a player who jumps immediately is in FREEFALL before this next runs --
+--- so the whole of the far side is named rather than just its first step.
+---
+--- WARMUP IS NOT IN HERE AND THAT IS THE LOAD-BEARING OMISSION. See the loop.
+local PLAYED = {
+    [BR.PlayerState.BUS]      = true,
+    [BR.PlayerState.FREEFALL] = true,
+    [BR.PlayerState.GLIDE]    = true,
+    [BR.PlayerState.ALIVE]    = true,
+    [BR.PlayerState.DBNO]     = true,
+    [BR.PlayerState.OUT]      = true,
+}
+
+--- Going into a match without taking the offer is an answer to it.
+---
+--- ═══ THE REPORT (owner, 2026-09-12) ═══
+---
+--- "if a new player rejects the offer for first-time tutorial, the offer still
+--- shows up after their first match. Even for subsequent sessions."
+---
+--- Because rejecting it sent nothing. The only gesture in the tree that reaches
+--- BR.Net.TUTORIAL_DECLINE is unticking the SECOND toggle, the one that offers to
+--- carry the walkthrough into the match -- and that toggle is not drawn until the
+--- LOBBY half has reached its last card. The first toggle, the one a brand new
+--- player actually meets beside Ready up, is page-local state: turning it off
+--- changes the button's label back and tells Lua nothing. So the profile row
+--- stayed at '' for every player who turned the offer down the obvious way, and
+--- '' is the state that gets offered.
+---
+--- ═══ WHAT COUNTS AS ANSWERING, WHICH IS A JUDGEMENT AND NOT A MECHANISM ═══
+---
+--- Readying up into a match without taking the offer IS an answer. The page's own
+--- decline card already tells the player so -- owner, 2026-09-07: "Also inform
+--- them the offer is only valid for their first match" -- and an account that has
+--- played a match is no longer the brand new player the offer was written for.
+--- Nothing else on this side could stand in for the gesture, because there is no
+--- gesture: the player's answer is the thing they did not do.
+---
+--- ═══ AND STARTING IT IS NOT REJECTING IT, WHICH BOUNDS THE WHOLE CHANGE ═══
+---
+--- `took` is read first and it is why the thing the owner asked to keep is
+--- untouched: a player who started either half and abandoned it has taken the
+--- offer, so the bus writes nothing for them and their toggle is still there.
+--- Only an account that never started it and then played a match is recorded.
+---
+--- ═══ WHY THE BUS AND NOT READY UP, OR WARMUP ═══
+---
+--- Ready up is not observable here -- it is a page callback into br_ui -- and
+--- WARMUP is where the IN-GAME half runs: the page arms it on ready-up and starts
+--- it once the player is on the pad, so spending the offer on arrival would race
+--- the very walkthrough whose absence is being detected. The bus is the first
+--- moment that cannot be anything else.
+---
+--- ═══ IT REUSES THE DECLINE PATH RATHER THAN ADDING A SECOND ONE ═══
+---
+--- BR.Tutorial.decline already lowers both flags, publishes, and has the server
+--- write 'declined' -- so this is one new trigger for a path that works, not a
+--- new message, a new state or a new writer. 'declined' is the honest value: they
+--- turned it down, just not with a click. It is also self-disabling -- `offerable`
+--- is false the moment it fires -- so the tick costs one comparison thereafter.
+---
+--- TICK RATHER THAN AN EVENT, for the leave tick's reason directly above: there
+--- is no client event for "my own state changed".
+BR.Loop.register(BR.Loop.TICK, 'tutorial.spend', function()
+    if not offerable or took then return end
+    if running or inGame then return end
+
+    local me = BR.State and BR.State.me
+    if not me or not PLAYED[me.state] then return end
+
+    print('[br_core] tutorial: the first match started without it -- '
+        .. 'the offer is spent')
+    BR.Tutorial.decline()
 end)
 
 --- Monotonic, so the page can tell one press from the same press re-sent.

@@ -978,6 +978,94 @@ local function worldTookUs(ped)
     return IsEntityDead(ped) or IsPedFatallyInjured(ped)
 end
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- THE BODY IN THE FIRE (owner, playtest 2026-09-12)
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- "when dying to a fire, like a molotov, the ped doesn't get a chance to crawl
+--  because they're caught in the flames and repeatedly respawned, then
+--  immediately die. This is basically just infinite ragdoll cycles."
+--
+-- ═══ WHAT IS ACTUALLY HAPPENING, LINK BY LINK ═══
+--
+--   1. Fire knocks them down, deliberately (feddd23: a blast kills outright and
+--      fire still knocks you down). The knock arrives at a ped the engine has
+--      already killed, so enterDowned takes the FALL path and floorTheBody
+--      stands the corpse back up.
+--   2. THE PED IS STILL ALIGHT WHEN IT COMES BACK, and it is still lying in a
+--      molotov pool that burns for twenty seconds. Nothing in this gamemode has
+--      ever extinguished a ped -- StopEntityFire appears nowhere else in it --
+--      and a resurrection does not put a fire out.
+--   3. The one thing that was supposed to stop fire finishing a downed player
+--      is the DBNO arm of client/natives.lua's `wantInvincible`, whose own note
+--      claims in words that "a downed player cannot burn to death". Player
+--      invincibility does not hold against every damage path -- citizenfx/fivem
+--      #2669, open, GetPlayerInvincible reading true while damage still lands --
+--      and the playtest is the counter-example. The ped burns to death again.
+--   4. So the floor watch resurrects it again. And again: thirty beats at fifty
+--      milliseconds, each one a fresh dying animation over a fresh resurrection,
+--      which is the cycling the owner watched. When the watch runs out the body
+--      is left dead wearing the downed state for the rest of the bleed, which is
+--      the half of his report that says the crawl never happens.
+--
+-- THE SERVER IS NOT INVOLVED AND WAS NEVER THE HOLE. Both doors from "this ped
+-- reads dead" to a second knock are already shut -- the client's own death report
+-- is declined while DBNO (the PLAYER_DIED handler) and combat.deathcheck skips
+-- DBNO outright -- and canBeDowned requires ALIVE besides. One knock, thirty
+-- resurrections.
+--
+-- ═══ SO THE DAMAGE IS REFUSED RATHER THAN REPAIRED ═══
+--
+-- A proof refuses the damage EVENT instead of absorbing its result, which is the
+-- argument client/shop.lua's showroom block already makes about a car that must
+-- not "flinch, smoke or catch fire while its health sits pinned". That is exactly
+-- what a downed ped needs: its health is not its health -- the bleed clock is
+-- (server/combat.lua) -- so there is nothing for fire to take and every frame it
+-- spends taking it is a frame of the cycle above.
+--
+-- AND A PROOF IS THE CHANNEL THAT WORKS ON YOUR OWN PED. FiveM's sync tree
+-- carries the bullet/fire/explosion/collision/melee proofs as player state
+-- written by the ped's OWNER -- client/natives.lua's engine-teams note cites the
+-- tree for it -- which is the same channel SetPlayerInvincible travels on and the
+-- reason warmup peace has always worked.
+--
+-- WHAT IT COSTS, STATED RATHER THAN HIDDEN: a downed body no longer burns where
+-- everybody can see it. What replaced that is on the clock instead -- a downed
+-- player inside somebody's fire bleeds out at BR.Config.Match.dbnoBurnRate
+-- (server/damage.lua's fire ledger drives it) -- so being caught in the flames
+-- is still the worst place on the map to be knocked, and crawling out of them is
+-- still the answer. The owner asked for exactly that trade.
+
+--- Refuse fire damage on this ped, or hand it back.
+---
+--- FIRE AND NOTHING ELSE. SET_ENTITY_PROOFS takes bullet, FIRE, explosion,
+--- collision, melee, steam, p7 and water in that order -- the list shop.lua
+--- writes down -- and only one of them is this bug. A downed player is still
+--- finished by a gun (through BR.Combat.bleed, which never touches this ped) and
+--- still run out of time by the storm, and both of those must stay true.
+--- @param ped integer
+--- @param on boolean
+local function fireProof(ped, on)
+    SetEntityProofs(ped, false, on, false, false, false, false, false, false)
+end
+
+--- Put the flames out, and refuse the next ones.
+---
+--- BOTH HALVES, BECAUSE EITHER ALONE LEAVES THE CYCLE STANDING. The proof stops
+--- the damage but a ped that is already burning keeps burning, and the fire on
+--- the ground re-lights a body lying in it -- so the flames are taken off as well
+--- as refused. Idempotent and cheap: one native while nothing is alight.
+---
+--- THROUGH didHit, LIKE EVERY OTHER BOOL NATIVE IN THIS FILE. IsEntityOnFire is
+--- declared BOOL, `0` is truthy in Lua, and reading it raw would douse a ped that
+--- is not burning on every frame of every knock.
+--- @param ped integer
+local function douse(ped)
+    if not didHit(IsEntityOnFire(ped)) then return end
+    StopEntityFire(ped)
+    fireProof(ped, true)
+end
+
 --- Put a body the world killed back onto the downed floor, in one tick.
 ---
 --- IN PLACE, AND WITHOUT BR.Spawn.respawn. This body is already lying on the
@@ -1004,6 +1092,12 @@ local function floorTheBody()
     NetworkResurrectLocalPlayer(p.x, p.y, p.z,
                                 GetEntityHeading(PlayerPedId()),
                                 true, false)
+    -- ...AND THE FIRE IS REFUSED AGAIN ON THE OTHER SIDE OF IT, for the same
+    -- reason BR.Spawn.reviveAt re-applies the health model here: a resurrection
+    -- restores GTA's defaults rather than ours. A ped stood back up inside a
+    -- molotov pool with the proof lost is the whole cycle, one beat later.
+    fireProof(PlayerPedId(), true)
+    StopEntityFire(PlayerPedId())
     -- The dying animation outlives the resurrection otherwise: the ped stands
     -- up and then finishes collapsing over the top of the crawl.
     ClearPedTasksImmediately(PlayerPedId())
@@ -1067,6 +1161,15 @@ local function enterDowned()
     -- clears what is currently in their hands.
     RemoveAllPedWeapons(PlayerPedId(), true)
     SetCurrentPedWeapon(PlayerPedId(), GetHashKey('WEAPON_UNARMED'), true)
+
+    -- AND THE FIRE IS REFUSED ON THIS FRAME TOO, for the same reason the weapon
+    -- goes first: everything below can yield, and the thing this is stopping is
+    -- already burning. See the fire block above worldTookUs for the cycle it is
+    -- there to end. Both halves -- the proof and the flames on the body -- because
+    -- a player knocked BY fire is alight at this instant and a player knocked into
+    -- fire is about to be.
+    fireProof(PlayerPedId(), true)
+    StopEntityFire(PlayerPedId())
 
     -- AND THE RECORD OPENS HERE, on the same frame and for the same reason the
     -- anchor is taken here: everything below can yield, and a blast is still
@@ -1234,6 +1337,11 @@ local function leaveDowned()
     -- Handed back, or a revived player is permanently immune to being knocked
     -- over by anything for the rest of the match.
     SetPedCanRagdoll(ped, true)
+    -- ...and so is the fire, for exactly the same reason and in the same words: a
+    -- player who stands back up must be indistinguishable from one who was never
+    -- downed, and a fireproof survivor walking through a molotov is the downed
+    -- state leaking into the rest of the match.
+    fireProof(ped, false)
     -- The inventory re-arms itself on the next pass, now that canArm() is true
     -- again; asking it here would race the state delta that made it true.
 end
@@ -1907,6 +2015,13 @@ BR.Loop.register(BR.Loop.FRAME, 'dbno.controls', function()
     -- reading it needs -- did the clip ever land -- has to be taken on loose
     -- frames too, and the loose branch below returns.
     knockReport(ped)
+
+    -- ...AND SO IS THE FIRE, ABOVE THE BRANCHES FOR THE SAME REASON. A body
+    -- ragdolling in a molotov is the exact frame this is for, and that branch
+    -- returns. The proof is asserted on the knock and re-asserted after every
+    -- resurrection; this is the belt for whatever else the engine resets
+    -- underneath us, and it costs ONE native on a frame with no flames on it.
+    douse(ped)
 
     -- The loop is the pose; if anything cancelled it -- a car, a blast, a
     -- scripted task -- put it straight back. Cheap: one IsEntityPlayingAnim

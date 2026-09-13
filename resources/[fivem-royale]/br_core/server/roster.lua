@@ -224,7 +224,7 @@ local departed = {}
 --- THE BUCKET IS READ OFF THE MATCH, NOT RE-DERIVED FROM THE ID (#291). It used
 --- to read `matchBucketBase + entry.matchId`, which was the same arithmetic
 --- BR.Match.create ran and therefore the same answer -- right up until ids
---- became a random 20-bit draw and the bucket moved to `seq`. Two independent
+--- became a random 28-bit draw and the bucket moved to `seq`. Two independent
 --- derivations of one number agree until the day one of them changes, and the
 --- symptom here would have been players in the same match placed in different
 --- worlds. There is one bucket per match and one place it is computed.

@@ -72,8 +72,8 @@ airdropSeed = now + matchSeq ×   1299709
 
 where `now` is `GetGameTimer()` — milliseconds since the resource started, and
 `matchSeq` is the match's **sequence number**: an increment from 1, internal,
-never displayed. It is not the match **id**, which since #291 is a random 20-bit
-draw shown as five hex characters. All this number has to do is tell two matches
+never displayed. It is not the match **id**, which since #291 is a random 28-bit
+draw shown as seven hex characters. All this number has to do is tell two matches
 apart inside one millisecond, and an increment does that exactly as well as a
 random draw — while keeping every layout, storm path and tour reproducible from
 a boot, which a random draw would not.

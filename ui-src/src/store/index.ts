@@ -509,6 +509,10 @@ function normaliseInv(d: WireInvPayload): InvPayload {
   return {
     slots: (d.slots ?? []).map((s) => (s ? s : null)),
     ammo: d.ammo ?? {},
+    // `?? null` AND NOT `?? 0`. Absent means "the bar should read the pool
+    // itself", which is a different instruction from "the reserve is zero" -- and
+    // 0 is a real reserve on a gun with its last magazine in it. See InvPayload.
+    reserve: d.reserve ?? null,
     // Fists when the wire says nothing -- see emptyInv (#155). `??` and not
     // `||`, because 0 is the fist slot and a real answer rather than an absent
     // one.

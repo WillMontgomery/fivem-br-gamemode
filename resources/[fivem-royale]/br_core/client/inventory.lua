@@ -656,6 +656,72 @@ end
 --- one player it has already decided this viewer may watch.
 local spectated = nil
 
+--- THE RESERVE, REBALANCED AGAINST THE MAGAZINE THE INTERFACE IS ABOUT TO SHOW.
+---
+--- ═══ THE COUNTER ADDED UP TO MORE THAN THE PLAYER OWNED (owner, 2026-09-12) ═══
+---
+--- "I buy 60 rounds for my combat PDW at the shop - the HUD shows 30/60 now. I
+--- had 0 before." Sixty bought, ninety displayed.
+---
+--- BOTH HALVES OF THAT READOUT ARE HONEST AND THEY DESCRIBE DIFFERENT MOMENTS,
+--- which is the whole of it. `shortfall`'s own note already says so: the report
+--- loop writes the ENGINE's magazine into the mirror at 10Hz, "which means the
+--- mirror's clip is honest and the mirror's POOL is the only stale half left".
+--- The engine had filled a magazine out of its own reserve; the server was never
+--- told, because a reload does not move the TOTAL and server/inventory.lua's
+--- floor returns on `lost <= 0`. So the interface paired a magazine the engine
+--- had already loaded with a reserve that still counted those rounds as behind
+--- it, and the two numbers summed to a holding nobody had.
+---
+--- `clip + reserve` IS THE INVARIANT, AND IT IS THE ONLY ONE ASSERTED HERE. The
+--- server's holding for this pool is `saidClipFor` plus the pool -- what it said
+--- the magazine had, plus what it said was behind it -- and moving rounds between
+--- those two does not change it. So the reserve shown is that holding less the
+--- magazine being shown, and the pair adds up to what the player actually has
+--- whichever of the two magazine readings the interface ended up with.
+---
+--- ═══ ITS OWN NUMBER, AND NOT A REBALANCED `inv.ammo` ═══
+---
+--- The first shape of this fix adjusted the pool map that goes to the interface,
+--- and that map has a SECOND reader with a different question. screens/
+--- InventoryPanel.tsx draws one figure per pool with a Drop button under it, and
+--- that button puts THE WHOLE POOL on the floor -- server/inventory.lua's drop
+--- handler writes `inv.ammo[pool] = 0` and leaves every magazine where it is. So
+--- the panel's number has to be the server's pool exactly, or the button drops
+--- sixty having shown forty-eight.
+---
+--- THE TWO SURFACES WANT DIFFERENT NUMBERS BECAUSE THEY PAIR THEM WITH DIFFERENT
+--- THINGS: the bar pairs a reserve with a MAGAZINE and must add up to a holding,
+--- the panel pairs a pool with a BUTTON and must match what that button moves.
+--- One value cannot be both, so the bar's gets its own field and travels beside
+--- the `active` it describes.
+---
+--- AND THE MIRROR IS NEVER WRITTEN. `reserveFor` feeds SetPedAmmo and has to stay
+--- the server's number: rebalancing `inv.ammo` in place would hand the engine's
+--- own reload back to the ped as a smaller grant on the next re-apply, which is
+--- the compounding shape `saidClipFor`'s note is about.
+---
+--- nil WHEN THERE IS NOTHING TO SAY -- no gun, no pool, or two books that already
+--- agree -- and the bar falls back to the pool for exactly those cases.
+--- @return integer|nil
+local function uiReserve()
+    local slot = inv.slots[inv.active]
+    if type(slot) ~= 'table' then return nil end
+
+    -- WeaponById rather than the wire's `pool` field, because `reserveFor` reads
+    -- it that way and "which pool is this gun on" wants one answer, not two.
+    local w = BR.Config.WeaponById[slot.id]
+    if not w or not w.ammo then return nil end
+
+    local pool = inv.ammo[w.ammo]
+    -- `== nil` IS "NO SUCH POOL", NOT "EMPTY ONE". 0 is truthy in Lua and an
+    -- empty pool is a real holding that still wants describing.
+    if pool == nil then return nil end
+
+    local said = saidClipFor(inv.active, slot)
+    return math.max(0, math.floor(pool) + said - math.floor(slot.clip or 0))
+end
+
 local function pushUi()
     -- WHOSE INVENTORY THIS IS, DECIDED IN ONE PLACE. The bar is the same
     -- component either way -- it draws what it is given -- so the substitution
@@ -663,12 +729,24 @@ local function pushUi()
     -- no notion of spectating at all, which is what stops a second copy of
     -- "am I watching somebody" appearing in TypeScript.
     local src = spectated or inv
+    -- OUR OWN BAG ONLY, AND ASKED AS `src == inv` RATHER THAN BY READING THE FEED
+    -- AGAIN. A watched player's payload is a picture of somebody else's inventory,
+    -- and `shown`/`shortfall` describe OUR ped -- there is no engine reading here
+    -- that belongs to those numbers, so the bar falls back to their pool. The
+    -- identity test is the same question one line up already answered, and asking
+    -- it this way keeps the count of feed reads in this file at the one the suite
+    -- pins.
+    local reserve = (src == inv) and uiReserve() or nil
     -- Sent whole rather than as deltas: five slots is a tiny payload, and the
     -- storm's "never send a nil clear" rule means a partial update would need
     -- a vocabulary for "this slot is now empty" that `false` already is.
     TriggerEvent('br:ui:sendLocal', BR.Nui.INV, {
         slots  = src.slots,
         ammo   = src.ammo,
+        -- THE RESERVE BEHIND THE MAGAZINE IN HAND. Beside `active` because that is
+        -- what it describes, and separate from `ammo` because the panel's pool
+        -- figure answers to a Drop button. See uiReserve.
+        reserve = reserve,
         active = src.active,
         using  = src.using,
     })

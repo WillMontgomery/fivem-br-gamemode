@@ -29,7 +29,7 @@ BR.Server = {
     -- ids were a pure increment from 1, so any id disclosed the next one and two
     -- matches on different days shared a number.
     --
-    -- The id is now a random 20-bit draw (BR.Match.mintIds in server/match.lua)
+    -- The id is now a random 28-bit draw (BR.Match.mintIds in server/match.lua)
     -- and this counter kept its old job under its real name. IT IS INTERNAL:
     -- nothing puts `seq` on the wire and nothing displays it. What it is for is
     -- the two things an id can no longer do -- ORDER (which match was formed

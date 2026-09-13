@@ -670,18 +670,42 @@ local holding = nil
 --- revive cue ("This will allow opponents to hear it which may attract them for
 --- combat"), bought with three natives instead of a server fan-out.
 ---
---- ═══ WHAT IS REMEMBERED, AND WHY BOTH HALVES ═══
+--- ═══ THE LIGHTS AND THE NOISE ARE TWO THINGS, AND ONLY ONE NEEDS A DRIVER ═══
+---
+---   "The lights come on while using the ambulance, but siren does not."
+---                                                -- owner, 2026-09-12
+---
+--- The first attempt at this reasoned from client/rescue.lua, which sounds a
+--- siren on an ambulance with SetVehicleEngineOn / SetVehicleSiren /
+--- SetVehicleHasMutedSirens and is audible. THAT VAN HAS AN AI DRIVER IN SEAT -1
+--- (`r.driver`, and rescue.lua checks `GetPedInVehicleSeat(veh, -1)`), so it
+--- never met the gate these vans meet: GTA refuses siren AUDIO on a vehicle with
+--- an empty driver's seat, and refuses nothing about the light bar. Lights, no
+--- noise. See syncSiren for the native that lifts it and where the ordering came
+--- from.
+---
+--- ═══ WHAT IS REMEMBERED, AND WHY EACH OF THE THREE ═══
 ---
 --- `sirenWasOff` is client/ambheal.lua's, verbatim and for its reason: an
 --- ambulance somebody was already driving with its siren on must not go quiet
---- because a stranger revived beside it. `engineWasOff` is the half that file
---- did not need -- it attaches a player to a van the AI is driving, engine
---- running. THESE vans are parked at a station with the engine off, and A
---- SIREN ON A DEAD ENGINE IS SILENT: SET_VEHICLE_SIREN gives the lights and the
---- state, the AUDIO follows the vehicle's audio being alive. client/rescue.lua
---- already spends the same three lines in the same order on its own ambulance
---- (SetVehicleEngineOn, SetVehicleSiren, SetVehicleHasMutedSirens) and that one
---- is audible; this is that sequence, on a van that was not already running.
+--- because a stranger revived beside it. `engineWasOff` is the same rule for the
+--- engine. `noDriver` is the no-driver permission, which has no getter and so is
+--- recorded rather than read back.
+---
+--- ═══ ONE THING STILL UNANSWERED, AND IT IS FOR THE NEXT PLAYTEST ═══
+---
+--- The premise of doing this with a vehicle property rather than a cue is that
+--- the engine mixes it for everybody in earshot, which is the owner's own
+--- reasoning from the revive cue ("This will allow opponents to hear it which
+--- may attract them for combat"). SET_VEHICLE_SIREN is vehicle state and
+--- replicates; SET_SIREN_WITH_NO_DRIVER is an AUDIO-namespace call and is most
+--- likely a flag on the LOCAL audio entity, in which case a remote client
+--- applies its own gate and hears nothing. Nothing here fans it out, because
+--- guessing at that would be a second untested change in a round that already
+--- has one. IF the report comes back "I hear it, my opponent does not", the
+--- answer is that every client near the van has to raise the same permission --
+--- the flag is silent on its own, so it can be raised once per ambulance
+--- everywhere rather than driven from whoever is holding.
 local siren = nil
 
 --- Ask for control of a vehicle this client did not create.
@@ -730,6 +754,15 @@ local function syncSiren(veh)
         -- wailing; an engine that was already running keeps running.
         if isTrue(DoesEntityExist(cur.veh)) then
             if cur.sirenWasOff then pcall(SetVehicleSiren, cur.veh, false) end
+            -- AND THE NO-DRIVER PERMISSION GOES BACK TOO. There is no getter for
+            -- it, so it cannot be restored to a value that was read -- it is put
+            -- back to the engine's own default, which is the gate being on, and
+            -- only on a van we lifted it for. With the siren off it is silent
+            -- either way; this is the "leave it as you found it" rule rather
+            -- than a fix for anything audible.
+            if cur.noDriver and SetSirenWithNoDriver then
+                pcall(SetSirenWithNoDriver, cur.veh, false)
+            end
             if cur.engineWasOff and SetVehicleEngineOn then
                 pcall(SetVehicleEngineOn, cur.veh, false, true, true)
             end
@@ -753,24 +786,60 @@ local function syncSiren(veh)
 
     nudgeControl(veh)
 
-    -- THE ENGINE FIRST. See the note on `siren` above: the siren's audio follows
-    -- the vehicle's, and a station ambulance is parked with the engine off.
-    -- `instantly` so there is no starter motor between the keypress and the
-    -- noise, and `disableAutoStart` false so nothing about this van's ordinary
-    -- behaviour is changed for whoever drives it next.
+    -- ═══ THE PERMISSIONS FIRST, THEN THE SWITCH ═══
+    --
+    --   "The lights come on while using the ambulance, but siren does not."
+    --                                          -- owner, 2026-09-12
+    --
+    -- THE LIGHT BAR AND THE SIREN AUDIO ARE TWO DIFFERENT THINGS TO THE ENGINE,
+    -- and GTA gates only the second of them on the van HAVING A DRIVER. These
+    -- are station ambulances with nobody in them, so SET_VEHICLE_SIREN lit the
+    -- bar and the audio was refused -- exactly the report, and the reason
+    -- nothing in the call looked wrong.
+    --
+    -- SET_SIREN_WITH_NO_DRIVER IS THAT GATE, and nothing was calling it. It is
+    -- in the AUDIO namespace rather than VEHICLE, it goes back to GTA IV, and
+    -- the parameter is named `allow` in ScriptHookDotNet's GTA IV binding --
+    -- which is what it is: permission for this van to sound its siren with an
+    -- empty driver's seat. It makes no noise on its own.
+    --
+    -- ORDER TAKEN FROM THE ONE PUBLISHED CALL SITE rather than guessed:
+    -- xaniz/rpv_ragemp's Main.cs does SetSirenWithNoDriver(veh, true) and THEN
+    -- turns the siren sound on. Permissions, then the switch. The mute flag
+    -- moved up here with it for the same reason.
+    --
+    -- client/rescue.lua IS NOT A PRECEDENT AND THAT IS THE WHOLE MISREADING. It
+    -- spends SetVehicleEngineOn/SetVehicleSiren/SetVehicleHasMutedSirens on an
+    -- ambulance with an AI DRIVER IN SEAT -1 (`r.driver`), so it never met this
+    -- gate and never needed this native. An unoccupied van is a different case.
+    if SetSirenWithNoDriver then
+        pcall(SetSirenWithNoDriver, veh, true)
+    end
+    -- SET_VEHICLE_HAS_MUTED_SIRENS IS THE "LIGHTS BUT NO NOISE" FLAG AND `false`
+    -- IS THE RIGHT SENSE, checked rather than assumed: the native is
+    -- 0xD8050E0EB60CF274 and citizenfx lists `_SET_DISABLE_VEHICLE_SIREN_SOUND`
+    -- among its aliases, so passing false is "do not disable the siren sound".
+    pcall(SetVehicleHasMutedSirens, veh, false)
+    -- THE ENGINE, AND IT IS NOT WHAT WAS WRONG. The owner's report came from a
+    -- build that already ran this line, so starting the engine is demonstrably
+    -- not sufficient; it is kept because it is demonstrably harmless, a van
+    -- sounding its siren with a dead engine would be the odder thing, and
+    -- removing it would put a second untested variable in a round that already
+    -- has one. `instantly`, so there is no starter motor between the keypress
+    -- and the noise, and `disableAutoStart` false so nothing about this van's
+    -- ordinary behaviour changes for whoever drives it next.
     if SetVehicleEngineOn then
         pcall(SetVehicleEngineOn, veh, true, true, false)
     end
     pcall(SetVehicleSiren, veh, true)
-    -- AND THE MUTE IS CLEARED RATHER THAN ASSUMED. SET_VEHICLE_HAS_MUTED_SIRENS
-    -- is the "lights but no noise" flag, and this is the one feature of the
-    -- three whose whole point is the noise.
-    pcall(SetVehicleHasMutedSirens, veh, false)
 
     siren = {
         veh = veh,
         sirenWasOff  = not (okS and isTrue(wasOn)),
         engineWasOff = not wasRunning,
+        -- Recorded rather than derived, because the teardown must not lower a
+        -- gate on a van whose permission this client never raised.
+        noDriver     = (SetSirenWithNoDriver ~= nil),
     }
 end
 

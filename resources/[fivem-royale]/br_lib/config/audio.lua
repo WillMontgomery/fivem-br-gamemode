@@ -304,13 +304,14 @@ BR.Config.Audio = {
         -- sound anybody has ever heard from this codebase left through that
         -- `false`. There is nothing to match.
         --
-        -- ═══ AND IT IS match.start's SOUND, WHICH IS WORTH SAYING OUT LOUD ═══
+        -- ═══ AND THE STORM KEEPS IT; match.start IS WHAT MOVED ═══
         --
-        -- His "Match timer start" line is where `match.start` below got GO, so
-        -- the two now sound identical. That is a real cost -- a player learns an
-        -- event by ear -- and it is recorded rather than quietly accepted:
-        -- MEDAL_UP, the alternative he offered in the same breath, is the one
-        -- line to try if he wants them apart.
+        -- GO was his line for "Match timer start", so promoting it here put two
+        -- cues on one sound. tools/test_fuel.lua's `audio.pumpCues` refuses that
+        -- and caught it the same day. He ruled: "Keep the storm sound where it's
+        -- at", and "MEDAL_UP is not it. We can drop that." So `match.start` took
+        -- his own documented spare for that event, the Arena War airhorn, and
+        -- the wall keeps GO (2026-09-12).
         --
         -- ═══ WHY /brsfx AGREED WITH A NAME THAT PLAYED NOTHING ═══
         --
@@ -443,12 +444,43 @@ BR.Config.Audio = {
 
         -- ─────────────────────────────────────────────────────── the clock ---
 
-        -- His: "Match timer start".
-        ['match.start']     = { set = 'HUD_MINI_GAME_SOUNDSET', name = 'GO' },
-        -- His alternative, in his words "Alternative timer start (airhorn)":
-        --   DLC_AW_BB_Sounds / Period_Start
-        -- DLC bank -- see the block above. Hear it with:
-        --   /brsfx play DLC_AW_BB_Sounds Period_Start
+        -- ═══ HIS SECOND LINE FOR THIS EVENT, PROMOTED 2026-09-12 ═══
+        --
+        -- His words: "Alternative timer start (airhorn)". It was written down
+        -- under this cue as the alternative from the day #24 landed, and it is
+        -- now the one that plays, because his FIRST line for this event -- GO --
+        -- turned out to be what `storm.move` had been missing all along and he
+        -- ruled that the storm keeps it ("Keep the storm sound where it's at").
+        -- Two cues cannot share a sound, so the event with a documented spare is
+        -- the one that moves. MEDAL_UP was the other candidate and is not in the
+        -- running: "MEDAL_UP is not it. We can drop that."
+        --
+        -- ═══ IT IS A DLC SET AND IT DOES NOT GET A BANK REQUEST ═══
+        --
+        -- Said out loud because the block at the top of the DLC catalogue below
+        -- warns that "a DLC script audio bank this gamemode never requests is
+        -- SILENT, and silent is indistinguishable from wrong" -- which is the
+        -- heuristic that got Pit_Stop_Complete rejected at a desk and was then
+        -- overruled by evidence on 2026-09-08.
+        --
+        -- THE EVIDENCE HERE IS THE SAME SHAPE AND THE PRECEDENT IS THE SAME DLC.
+        -- Five DLC-set cues already ship and he heard every one of them on a
+        -- running client -- and one of them, `squad.revived`, is
+        -- DLC_AW_Frontend_Sounds: Arena War, the same pack as this set. Nothing
+        -- in br_core requests an audio bank for any of them (the only
+        -- RequestScriptAudioBank in this tree is inside vendored ScaleformUI),
+        -- and none has been reported silent. He described this one as an
+        -- airhorn, which is a thing you can only say about a sound you have
+        -- heard.
+        --
+        -- SO A BANK REQUEST WOULD BE MACHINERY ADDED ON A HUNCH, against the
+        -- file's own rule, to a path with five working counterexamples. If this
+        -- one does come back silent the answer is RequestScriptAudioBank for the
+        -- Arena War bank and it is the first thing to try -- but it is not
+        -- something to add before there is anything to fix.
+        --
+        --   /brsfx play DLC_AW_BB_Sounds Period_Start    hear it on its own
+        ['match.start']     = { set = 'DLC_AW_BB_Sounds', name = 'Period_Start' },
 
         -- His: "Timer down to 3s". The name really is `5s`; it is the generic
         -- countdown pip in that set and the digit in the name is Rockstar's,
@@ -773,6 +805,13 @@ BR.Config.Audio.catalogue = {
         -- filter still stands for every DLC pair nobody has played. Each line
         -- here is one sound one person heard. Do not widen a set to "the rest
         -- of its names" from a dump -- that is how Pit_Stop_Complete happened.
+        { set = 'DLC_AW_BB_Sounds',                 -- heard by the owner
+          -- His "Alternative timer start (airhorn)" from #24, live as
+          -- `match.start` since 2026-09-12. Listed here for the reason every
+          -- row in this block is: a cue has to be re-choosable with the same
+          -- tool that found it, and tools/test_shared.lua refuses a cue whose
+          -- pair the catalogue does not carry.
+          names = { 'Period_Start', } },
         { set = 'DLC_AW_Frontend_Sounds',           -- heard by the owner
           names = { 'Checkpoint_Finish', } },
         { set = 'DLC_H3_Drone_Tranq_Weapon_Sounds', -- heard by the owner

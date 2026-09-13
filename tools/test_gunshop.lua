@@ -218,8 +218,8 @@ do
             authored[#authored + 1] = 'AmmoPickups.' .. tostring(pool)
         end
     end
-    ok(#BR.Config.AmmoOrder == 6,
-        'all six ammo pools were actually looked at, rather than a loop that '
+    ok(#BR.Config.AmmoOrder == 5,
+        'all five ammo pools were actually looked at, rather than a loop that '
             .. 'never ran agreeing with the claim',
         #BR.Config.AmmoOrder)
     ok(#authored == 0,
@@ -371,10 +371,10 @@ do
     ok(n[BR.Rarity.LEGENDARY] == 4, 'four legendary guns', n[BR.Rarity.LEGENDARY])
 
     local ammo = S.ofKind(rows, BR.ItemKind.AMMO)
-    ok(#ammo == #BR.Config.AmmoOrder and #ammo == 6,
-        'and all six ammo pools -- BR.Config.AmmoOrder, in its order', #ammo)
+    ok(#ammo == #BR.Config.AmmoOrder and #ammo == 5,
+        'and all five ammo pools -- BR.Config.AmmoOrder, in its order', #ammo)
 
-    ok(#rows == 25 + 6, 'thirty-one rows in total', #rows)
+    ok(#rows == 25 + 5, 'thirty rows in total', #rows)
 
     -- ORDER IS THE SOURCE TABLES', so anything that renders this list gets a
     -- stable order without sorting it. Asserted by walking BR.Config.Weapons and
@@ -490,7 +490,7 @@ do
 end
 
 -- ---------------------------------------------------------------------------
-describe('ammo: cheap, all six pools, and one ground pickup per purchase')
+describe('ammo: cheap, all five pools, and one ground pickup per purchase')
 -- ---------------------------------------------------------------------------
 --
 -- "ammo should be cheap (20-50 Volts)"
@@ -522,14 +522,13 @@ do
     -- rather than trusted, because it is the only reason the price order is
     -- defensible at all.
     --
-    -- ⚠ TIES ARE SKIPPED, AND THAT IS THE 2026-09-11 SPLIT SHOWING THROUGH. This
-    -- used to compare every adjacent pair and it could, because five pools had five
-    -- prices. Sniper, lmg and heavy now SHARE 50: all three pay 12 a pickup, so
-    -- the pickup cannot rank them, and their caps are 60, 60 and 24 -- so a
-    -- pairwise walk would fail on whichever order table.sort happened to leave the
-    -- tied three in, which is not a fact about the config at all. Comparing only
-    -- across DIFFERENT prices asserts what the config actually claims: each price
-    -- BAND is scarcer than the one below it.
+    -- TIES ARE SKIPPED, AND TODAY THERE ARE NONE TO SKIP. Five pools hold five
+    -- distinct prices again -- 20/25/30/40/50 -- so every adjacent pair is
+    -- compared and `compared` below says so. The skip is kept because a tie is a
+    -- price two pools share, and two pools sharing a price is not a fact about
+    -- scarcity that table.sort's ordering of the tied rows could ever test. What
+    -- is asserted either way is what the config actually claims: each price BAND
+    -- is scarcer than the one below it.
     local sorted = {}
     for _, r in ipairs(ammo) do sorted[#sorted + 1] = r end
     table.sort(sorted, function(a, b) return a.price < b.price end)
@@ -1258,7 +1257,7 @@ do
     do
         local st = S.rollStock(G, shelf, fixed(1))
         local ammo = S.ofKind(shelf, BR.ItemKind.AMMO)
-        ok(#ammo == 6, 'all six ammo pools are on the shelf', #ammo)
+        ok(#ammo == 5, 'all five ammo pools are on the shelf', #ammo)
         local counted = 0
         for _, r in ipairs(ammo) do
             if st[r.id] ~= nil then counted = counted + 1 end
@@ -1478,19 +1477,23 @@ do
     -- config/gunshop.lua -- but "which ammo does my Minigun take" is the
     -- question this description exists to answer.
     --
-    -- THE MINIGUN LEFT HEAVY ON 2026-09-11 and is under MG now (owner: "move the
-    -- minigun off heavy and move explosives to heavy"), so the two halves of that
-    -- ruling are asserted separately. Reading the Minigun under Heavy is the exact
+    -- THE MINIGUN LEFT HEAVY ON 2026-09-11 and is under MEDIUM now: it followed
+    -- the machine guns off heavy (owner: "move the minigun off heavy and move
+    -- explosives to heavy"), and on 2026-09-12 the machine guns went into medium
+    -- with the assault rifles (owner: "let's put MGs in medium then"). Both halves
+    -- of that are asserted separately. Reading the Minigun under Heavy is the exact
     -- staleness this pair is here to catch.
-    local heavy, belt = {}, {}
+    local heavy, medium = {}, {}
     for _, l in ipairs(S.ammoUsers(BR.AmmoType.HEAVY, src)) do heavy[l] = true end
-    for _, l in ipairs(S.ammoUsers(BR.AmmoType.LMG, src)) do belt[l] = true end
+    for _, l in ipairs(S.ammoUsers(BR.AmmoType.MEDIUM, src)) do medium[l] = true end
     ok(heavy['RPG'] == true and heavy['Grenade Launcher'] == true
        and heavy['Railgun'] == true and heavy['Minigun'] == nil,
         'Heavy lists the three launchers and NOT the minigun, because a player '
             .. 'can be carrying one even though no counter sells it')
-    ok(belt['Minigun'] == true and belt['Combat MG'] == true,
-        '...and the minigun is under MG with the machine guns it belongs to')
+    ok(medium['Minigun'] == true and medium['Combat MG'] == true
+       and medium['Assault Rifle'] == true,
+        '...and the minigun is under Medium with the machine guns it belongs to, '
+            .. 'which is where the assault rifles already were')
 
     -- ORDER IS THE SOURCE TABLE'S, never pairs(). Everything in this feature
     -- that renders a list gets a stable order for free, and a description that
@@ -1588,7 +1591,7 @@ do
     local a = select(1, G.build())
     local b = select(1, G.build())
     ok(a == b, 'the client and the server share one catalogue table')
-    ok(#a == 31, 'and a second call does not double it', #a)
+    ok(#a == 30, 'and a second call does not double it', #a)
 end
 
 -- ---------------------------------------------------------------------------
@@ -2445,6 +2448,44 @@ do
         end
         ok(#given == 1 and given[1].stack ~= shelfRow.stack,
             'and it is a COPY of that stack, not the shelf\'s own table')
+    end
+
+    -- ═══ AND IT IS SOLD EMPTY (owner, 2026-09-12) ═══
+    --
+    -- "So I buy an SMG Mk II, which takes the same SMG ammo as the rest of my
+    -- owned loadout. Now the SMG Mk II immediately shows 30/30 - the gun isn't
+    -- sold with free ammo....."
+    --
+    -- BR.Inv.give hands every arriving weapon a magazine (`stack.clip or w.clip`)
+    -- AND a clip's worth of reserve, and both are right about the floor and wrong
+    -- about a counter. The stack is where the shop says which this is, because the
+    -- stack is the only thing that survives the trip: `deliver` copies it field by
+    -- field and a full bag hands the same table to BR.Loot.
+    --
+    -- ⚠ `clip == 0` AND NOT `not clip`. 0 is truthy in Lua, which is the whole
+    -- mechanism -- give() reads `stack.clip or (w and w.clip)`, so a 0 is taken as
+    -- the answer where a nil falls through to the weapon's full magazine. A nil
+    -- here would also read as MELEE downstream and take the counter off the plate
+    -- altogether.
+    ok(#given == 1 and given[1].stack.clip == 0,
+        'the gun is handed over with an EMPTY magazine, not a full one',
+        tostring(given[1] and given[1].stack.clip))
+    ok(#given == 1 and given[1].stack.sold == true,
+        '...and marked `sold`, which is how give() knows it is not found loot '
+            .. 'owed a free clip of reserve')
+
+    -- AN AMMO ROW IS UNTOUCHED BY EITHER FIELD. It has no magazine to empty and
+    -- give()'s reserve grant never looks at an ammo stack, so stamping these onto
+    -- the wrong kind of row would be a lie that happened not to matter yet.
+    do
+        local ammoRow
+        for _, r in ipairs(BR.Config.Gunshop.rows) do
+            if r.kind == BR.ItemKind.AMMO then ammoRow = r break end
+        end
+        ok(ammoRow ~= nil and ammoRow.stack.clip == nil
+           and ammoRow.stack.sold == nil,
+            'and an ammo row carries neither field -- a pool has no magazine '
+                .. 'and is nobody\'s found gun')
     end
 
     ok(#given == 1 and given[1].opts and given[1].opts.quiet == true,
@@ -3876,10 +3917,10 @@ do
         ok(#textured == 0,
             'no row on the shelf carries a streamed texture at all',
             #textured > 0 and table.concat(textured, ', ') or nil)
-        ok(enums == 25 + 6,
-            ('and all %d rows -- 25 guns and 6 ammo -- wear a built-in '
+        ok(enums == 25 + 5,
+            ('and all %d rows -- 25 guns and 5 ammo -- wear a built-in '
              .. 'BadgeStyle enum, which is the half that inverts')
-                :format(25 + 6),
+                :format(25 + 5),
             enums)
 
         -- ...AND THE STREAMER IS NEVER ASKED. `requestIconDicts` returns on the
@@ -4595,6 +4636,69 @@ do
                 .. 'have called empty',
             ten and ten._Description or 'none')
 
+        -- ═══ AND THE MAGAZINES COUNT (owner, 2026-09-12) ═══
+        --
+        -- "The 'You have X rounds for it' description text in the menu doesn't
+        -- seem to count the rounds in the clip of a weapon I'm holding."
+        --
+        -- IT WAS READING `inv.ammo[pool]` AND THAT IS THE RESERVE. The pool is
+        -- what is left once every magazine is taken out of it -- which is the
+        -- model, and is what lets the TAB panel's Drop button name a quantity it
+        -- can actually put on the floor -- so it is the wrong number for a
+        -- sentence about what the player HAS, short by whatever is in the guns.
+        do
+            carry('carbinerifle')
+            invSlots[1].clip = 30
+            invAmmo[BR.AmmoType.MEDIUM] = 10
+            handlers[BR.Net.MARKET_STATE]({ balance = 999999 })
+            local loaded = rowItem('carbinerifle')
+            ok(loaded ~= nil and loaded._Description
+                == G.weaponDesc:format(BLUE .. label .. RESET,
+                                       BLUE .. '40' .. RESET),
+                'ten loose rounds and a full magazine is forty rounds, not ten',
+                loaded and loaded._Description or 'none')
+
+            -- EVERY CARRIED GUN ON THE POOL, NOT JUST THE ONE IN HAND. The pool
+            -- is shared, so the magazine in the rifle he is not holding is still
+            -- ammunition he owns -- and a sum over the ACTIVE slot alone would
+            -- pass the assertion above and miss this.
+            carry('carbinerifle', 'bullpuprifle')
+            invSlots[1].clip = 30
+            invSlots[2].clip = 17
+            handlers[BR.Net.MARKET_STATE]({ balance = 999999 })
+            local both = rowItem('carbinerifle')
+            ok(both ~= nil and both._Description
+                == G.weaponDesc:format(BLUE .. label .. RESET,
+                                       BLUE .. '57' .. RESET),
+                '...and a second rifle on the same pool brings its magazine too',
+                both and both._Description or 'none')
+
+            -- ⚠ SO A LOADED GUN OVER AN EMPTY POOL IS NOT RED, which is the
+            -- owner's zero rule meeting his magazine rule. A man holding thirty
+            -- rounds was being told in red that he had none.
+            carry('carbinerifle')
+            invSlots[1].clip = 30
+            invAmmo[BR.AmmoType.MEDIUM] = nil
+            handlers[BR.Net.MARKET_STATE]({ balance = 999999 })
+            local dry = rowItem('carbinerifle')
+            ok(dry ~= nil and dry._Description
+                == G.weaponDesc:format(BLUE .. label .. RESET,
+                                       BLUE .. '30' .. RESET),
+                'a full magazine over an empty pool reads 30 in blue, not 0 in '
+                    .. 'red', dry and dry._Description or 'none')
+
+            -- AND A GUN THE PLAYER DOES NOT CARRY CONTRIBUTES NOTHING. The sum
+            -- walks the BAG, not the catalogue -- a shelf row is not a magazine.
+            carry()
+            handlers[BR.Net.MARKET_STATE]({ balance = 999999 })
+            local empty = rowItem('carbinerifle')
+            ok(empty ~= nil and empty._Description
+                == G.weaponDesc:format(BLUE .. label .. RESET,
+                                       RED .. '0' .. RESET),
+                '...and an empty bag over an empty pool is still a red 0',
+                empty and empty._Description or 'none')
+        end
+
         -- PUT BACK, because the counted sweep below walks every row and a pool
         -- left at 10 would be describing a fixture rather than the shelf.
         invAmmo[BR.AmmoType.MEDIUM] = nil
@@ -4618,8 +4722,8 @@ do
                 guns = guns + 1
             end
         end
-        ok(guns == 25 and ammos == 6 and #silent == 0,
-            'all 25 weapon rows and all 6 ammo rows say something',
+        ok(guns == 25 and ammos == 5 and #silent == 0,
+            'all 25 weapon rows and all 5 ammo rows say something',
             #silent > 0 and ('silent: ' .. table.concat(silent, ', '))
                 or ('%d guns, %d ammo'):format(guns, ammos))
 

@@ -686,6 +686,230 @@ on('br:ddb:historyPut', (req, rows) => {
 })
 
 /**
+ * ═══ ONE ROW PER MATCH, ON THE GAME'S OWN `br-matches` ═══
+ *
+ * WHAT IT IS FOR. The history batch above writes one item per PLAYER, each in a
+ * different partition, with the match id buried as the trailing component of a
+ * sort key -- addressable only by somebody who already holds the license. So
+ * "show me match X" had no cheaper shape than a full Scan of `br-players` with a
+ * filter, and Ringmaster's `lib/matchLedger.ts` pays exactly that today: a
+ * filter is applied AFTER the read, so answering one question costs every
+ * profile row and every other match's history in the table. One row keyed on the
+ * match turns that into a GetItem.
+ *
+ * THE THIRD WRITE OF A MATCH END, AND THE LEAST IMPORTANT OF THE THREE. The
+ * aggregate is a player's progression and the history is the per-player record;
+ * this is a read model for a console page. It fails the way everything else in
+ * this file fails -- a log line and an answer -- and it can never fail a match.
+ *
+ * ═══ THE PARTITION KEY IS THE TAG, AND THAT IS THE WHOLE DESIGN ═══
+ *
+ * `pk` is the seven hex characters `BR.MatchTag` produces: the string the game
+ * console prints, the string a moderator pastes into Discord, and the segment
+ * Ringmaster's `/matches/<tag>` URL carries. The tag is the thing that has to be
+ * unique and the thing that gets looked up, so it is the thing the key
+ * constraint is written against. The numeric id rides along ON the item so a
+ * reader holding the row does not have to parse the key back into a number.
+ *
+ * THE TAG IS BUILT ON THE LUA SIDE AND NEVER HERE. `br_lib/shared/matchtag.lua`
+ * is the one home for that conversion and states in its own header that it
+ * happens there and nowhere else; a `%07x` reimplemented in JavaScript is the
+ * second spelling of a match's name, which is the exact thing that file exists
+ * to prevent.
+ *
+ * ═══ CONDITIONAL, BECAUSE THE NAME IS ONLY UNIQUE PER PROCESS ═══
+ *
+ * `issuedIds` in `br_core/server/match.lua` guarantees an id is never reused for
+ * the life of one FXServer run and dies on restart -- so across the history of
+ * the box the only guarantee is the width of the space. A reused tag is
+ * therefore possible, and it is now permanent: Ringmaster keys a URL on it.
+ *
+ * WITHOUT THE CONDITION the failure is silent and late -- one match's page
+ * quietly showing another match's participants, discovered by somebody
+ * moderating from it. WITH IT, the second match is refused at the moment it ends
+ * and the game box says so in its own log with the tag in the line. The match
+ * keeps its history rows either way; what it loses is the read model, which is
+ * the cheapest of the three things to lose.
+ *
+ * NOT THE SAME AS `putIncident`'s CONDITIONAL REFUSAL, and the difference is
+ * worth stating because the code looks identical. There, a refusal means "the
+ * row I wanted is already there" -- the desired end state, reached by a retry
+ * after a lost answer -- so it answers TRUE and the caller stops retrying. Here
+ * a refusal means two different matches have been given one name, which is never
+ * the desired end state and must reach a human. So it answers FALSE and flags
+ * the reason, and `br_stats` prints the collision rather than a generic failure.
+ *
+ * ═══ THE TABLE MAY NOT EXIST, AND THAT MUST STAY SURVIVABLE ═══
+ *
+ * `br-matches` is newer than this code path. It exists in production now
+ * (us-east-2, `pk` String, on-demand, with `dynamodb:PutItem` for the game box
+ * role and `GetItem` for Ringmaster), but a fresh environment and the dev
+ * instance are both a window where the resource is deployed and the table is
+ * not. That arrives as `ResourceNotFoundException` on every match end, so it
+ * gets its own branch and its own sentence -- a bare SDK message repeated once
+ * per match is how an operator learns to ignore this log.
+ *
+ * NOTHING HERE IS AWAITED BY THE CALLER and nothing can raise into the match-end
+ * handler. Same rule the whole file runs on.
+ */
+const MATCH_TABLE = `${TABLE_PREFIX_GAME}matches`
+
+/**
+ * The match-level numbers, as an allowlist for the same reason HISTORY_NUMBERS
+ * is one: this data crossed a runtime boundary and a typo should cost the field
+ * rather than quietly create an attribute nobody reads.
+ *
+ * OMISSION IS SILENT HERE TOO. A name that is not on this list and not spelled
+ * out in `matchItem` is dropped without a word. Adding a field to the match row
+ * means adding it here in the same commit.
+ */
+const MATCH_NUMBERS = ['matchId', 'startedAt', 'endedAt', 'total']
+
+/**
+ * The per-participant numbers.
+ *
+ * EXACTLY THE COLUMNS Ringmaster's `MatchView` DRAWS, AND NO OTHERS. `xpEarned`
+ * is on its ledger interface and no column renders it; `name` is resolved from
+ * the console's own `ringmaster-players` registry and deliberately never read
+ * off a game row (`matchLedger.ts`: "THE NAMES DO NOT COME FROM THESE ROWS").
+ * A field stored here that nothing displays is one the next reader has to guess
+ * the meaning of.
+ */
+const PARTICIPANT_NUMBERS = [
+  'placement',
+  'kills',
+  'downs',
+  'revives',
+  'damage',
+  'survivedMs',
+  // The two the owner asked for by name, and they are never netted against each
+  // other: `voltsEarned` is what the match paid, `voltsSpent` is what they
+  // bought with, and one combined figure answers neither question.
+  'voltsEarned',
+  'voltsSpent',
+]
+
+/**
+ * One participant, or null if there is no key to name them by.
+ *
+ * A ROW WITH NO LICENSE IS DROPPED RATHER THAN GUESSED AT -- the same rule
+ * `historyItem` applies, for the same reason: a record filed under an invented
+ * key is worse than no record. On this item it would also be a participant the
+ * page could not link to a profile.
+ */
+function matchParticipant(p) {
+  const license = typeof p?.license === 'string' ? p.license : ''
+  if (license === '') return null
+
+  const out = {
+    license,
+    // A STRING, and never through the number allowlist -- `num('m0a3f1sq2')` is
+    // 0, which would erase the grouping while leaving a field that looks
+    // written. Empty means no squad, which is what a solo match is.
+    squadId: String(p.squadId ?? ''),
+    // NOT `placement === 1`. The last squad standing can be taken by the storm:
+    // they place first and they died, and a match with no survivors has no
+    // winner (#133). The caller decides this from the `died` flag it already
+    // carries, so there is one implementation of the rule rather than three.
+    //
+    // AND THIS IS THE WINNER. There is no top-level `winner` attribute on the
+    // item: `MatchView` filters the participant list on this flag, so a second
+    // copy at the top would be a second thing that can disagree with the first.
+    won: p.won === true,
+  }
+  for (const k of PARTICIPANT_NUMBERS) out[k] = num(p[k])
+
+  return out
+}
+
+/**
+ * One envelope -> one item, or null if it cannot be keyed or has nobody in it.
+ *
+ * GUARDED HERE AS WELL AS IN br_stats, and deliberately twice: `pk` is the
+ * partition key, so an item marshalled without one is a ValidationException at
+ * the far end rather than a missing record at this one.
+ */
+function matchItem(m) {
+  const pk = typeof m?.pk === 'string' ? m.pk : ''
+  if (pk === '') return null
+
+  const participants = []
+  for (const p of Array.isArray(m.participants) ? m.participants : []) {
+    const one = matchParticipant(p)
+    if (one) participants.push(one)
+  }
+  // A MATCH WITH NO PARTICIPANTS IS NOT A MATCH PAGE. `publishResults` already
+  // returns early on an empty field, so reaching here with none means every row
+  // was unkeyable -- and an item carrying a tag, two timestamps and nobody would
+  // render as a match that happened to nobody.
+  if (participants.length === 0) return null
+
+  const item = {
+    pk,
+    mode: String(m.mode ?? ''),
+    participants,
+  }
+  for (const k of MATCH_NUMBERS) item[k] = num(m[k])
+
+  return item
+}
+
+on('br:ddb:matchPut', (req, match) => {
+  const answer = (ok, extra) => {
+    emit('br:ddb:matchResult', req, ok, extra ?? {})
+  }
+
+  const item = matchItem(match)
+  if (!item) {
+    // Refused before the wire. No log line: br_stats guards the same two cases
+    // and has the match id to name them with, which this does not.
+    answer(false, { error: 'no tag, or no keyable participants' })
+    return
+  }
+
+  withTimeout(
+    ddb().send(
+      new PutItemCommand({
+        TableName: MATCH_TABLE,
+        Item: marshall(item, { removeUndefinedValues: true }),
+        // APPEND, NEVER OVERWRITE. See the header: this is what turns a reused
+        // match name from a page that quietly disagrees with itself into a line
+        // in the server log at the moment it happens.
+        ConditionExpression: 'attribute_not_exists(pk)',
+      }),
+    ),
+    TIMEOUT_MS,
+  )
+    .then(() => answer(true, { tag: item.pk }))
+    .catch((e) => {
+      if (e.name === 'ConditionalCheckFailedException') {
+        console.log(
+          `[br_ddb] MATCH TAG COLLISION: ${MATCH_TABLE} already holds a row `
+            + `under ${item.pk}. Match ${item.matchId} was not recorded there, `
+            + `and that tag now names two different matches.`,
+        )
+        answer(false, { tag: item.pk, duplicate: true, error: 'tag already recorded' })
+        return
+      }
+
+      if (e.name === 'ResourceNotFoundException') {
+        // ONE SENTENCE THAT SAYS WHAT TO DO, because this one repeats once per
+        // match end until somebody creates the table.
+        console.log(
+          `[br_ddb] ${MATCH_TABLE} does not exist -- match ${item.pk} has no `
+            + `match row. Per-player history is unaffected; the console falls `
+            + `back to a scan for this match.`,
+        )
+        answer(false, { tag: item.pk, error: `${MATCH_TABLE} does not exist` })
+        return
+      }
+
+      console.log(`[br_ddb] match row not written for ${item.pk}: ${e.message}`)
+      answer(false, { tag: item.pk, error: e.message })
+    })
+})
+
+/**
  * ONE ROW HOLDS THE WHOLE PLAYER, AND THAT IS A COST DECISION AS MUCH AS A
  * CORRECTNESS ONE.
  *

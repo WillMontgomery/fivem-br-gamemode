@@ -6495,6 +6495,90 @@ do
         ('%d of %d'):format(taken, #ids))
 end
 
+describe('a gun sold over the counter arrives empty')
+do
+    -- ═══ "THE GUN ISN'T SOLD WITH FREE AMMO" (owner, 2026-09-12) ═══
+    --
+    -- "So I buy an SMG Mk II, which takes the same SMG ammo as the rest of my
+    -- owned loadout. Now the SMG Mk II immediately shows 30/30 - the gun isn't
+    -- sold with free ammo....."
+    --
+    -- IT ARRIVED WITH TWO FREE MAGAZINES, NOT ONE, AND THEY COME FROM DIFFERENT
+    -- LINES OF give(). The magazine is `stack.clip or w.clip` and the reserve is
+    -- `w.clip * weaponReserveClips` into the pool. Both are right about FLOOR
+    -- LOOT -- "a found gun has to be usable" -- and neither is right about a
+    -- thing somebody paid for, so BR.GunshopSolve.catalogue stamps `clip = 0` and
+    -- `sold = true` on the stack it sells and this pins what give() does with
+    -- them.
+    --
+    -- MEASURED AS MAGAZINE PLUS POOL, because the split is exactly what hid the
+    -- last bug on this same line -- see THE FOURTH DOOR further down this file,
+    -- where the owner's own row moved 0 -> 1 in one column while the other
+    -- stayed put.
+    local m = lootMatch()
+
+    --- Everything a player holds for one pool, magazines included.
+    local function heldFor(src, pool)
+        local i = BR.Inv.of(src)
+        local n = i.ammo[pool] or 0
+        for s = 1, 5 do
+            local slot = i.slots[s]
+            local w = slot and BR.Config.WeaponById[slot.item]
+            if w and w.ammo == pool then n = n + (slot.clip or 0) end
+        end
+        return n
+    end
+
+    local mk2 = BR.Config.WeaponById['smgmk2']
+
+    -- ⚠ TWO HALVES, TWO SUITES, and this file owns the second one. That the
+    -- CATALOGUE stamps `clip = 0` and `sold = true` on the stack it sells is
+    -- pinned in tools/test_gunshop.lua, which loads the solver; what give() does
+    -- when handed them needs the real inventory and is pinned here. The same
+    -- split the `focus` flag already lives under, for the same reason.
+    local function soldStack()
+        return { item = 'smgmk2', kind = BR.ItemKind.WEAPON, rarity = mk2.rarity,
+                 count = 1, clip = 0, sold = true }
+    end
+
+    BR.Inv.reset(1)
+    BR.Inv.give(1, soldStack(), { quiet = true, focus = true })
+    local inv = BR.Inv.of(1)
+
+    ok(inv.slots[1] and inv.slots[1].item == 'smgmk2',
+        'the gun they paid for lands in a slot')
+    -- `== 0` AND NOT falsiness: 0 is truthy in Lua and a nil clip means MELEE to
+    -- everything downstream, which would take the counter off the plate
+    -- altogether rather than showing it empty.
+    ok(inv.slots[1] and inv.slots[1].clip == 0,
+        'and its magazine is EMPTY, not full',
+        tostring(inv.slots[1] and inv.slots[1].clip))
+    ok(heldFor(1, mk2.ammo) == 0,
+        'and it brought no rounds with it at all -- magazine and pool both',
+        heldFor(1, mk2.ammo))
+
+    -- THE POOL THEY ALREADY HAD IS NOT TOUCHED, which is the other half of his
+    -- report: the 30 in the second column was his own SMG reserve, and a fix that
+    -- confiscated it to stop the gun arriving loaded would be a worse bug.
+    BR.Inv.reset(1)
+    local keep = BR.Inv.of(1)
+    keep.ammo[mk2.ammo] = 47
+    BR.Inv.give(1, soldStack(), { quiet = true, focus = true })
+    ok(keep.ammo[mk2.ammo] == 47,
+        'a purchase neither mints nor spends the reserve already in the bag',
+        keep.ammo[mk2.ammo])
+
+    -- AND A FOUND GUN STILL ARRIVES LOADED. Asserted here rather than only in
+    -- inv.model below, because this is the direction the fix above breaks: the
+    -- floor has to go on handing out a usable weapon.
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'smgmk2', kind = BR.ItemKind.WEAPON,
+                     rarity = mk2.rarity, count = 1, clip = mk2.clip })
+    ok(heldFor(1, mk2.ammo) == mk2.clip * 2,
+        'the same gun off the FLOOR still comes with a magazine and a spare',
+        heldFor(1, mk2.ammo))
+end
+
 describe('inv.model')
 do
     local m = lootMatch()
@@ -16099,6 +16183,139 @@ do
         'while still being told to apply something')
 end
 
+describe('dbno.burn')
+do
+    -- ═══ A DOWNED BODY IN THE FLAMES BLEEDS FASTER (owner, 2026-09-12) ═══
+    --
+    --   "There's a bug where when dying to a fire, like a molotov, the ped
+    --    doesn't get a chance to crawl because they're caught in the flames and
+    --    repeatedly respawned, then immediately die... My preference would be
+    --    they can crawl until they die, and their body being on fire should
+    --    accelerate the bleed out."
+    --
+    -- THE CYCLING IS THE CLIENT'S HALF (client/dbno.lua now refuses fire damage
+    -- on a downed ped, which is where the resurrection loop lived). This is the
+    -- half that replaces it: the punishment for being caught in a molotov moved
+    -- off the ped and onto the clock, which is where a downed player's health has
+    -- lived since 2026-08-09.
+    --
+    -- DRIVEN THROUGH THE REAL LEDGER, not by calling BR.Combat.burn directly. The
+    -- thing that can be wrong is WHICH BODIES the fire tick decides are burning --
+    -- server/damage.lua walked past every downed player for as long as the ledger
+    -- has existed, because its only guard is a health delta and a downed player's
+    -- hp is pinned at dbnoHp -- so the test has to come in through
+    -- `explosionEvent` like a real molotov.
+    local RATE = BR.Config.Match.dbnoBurnRate
+
+    squadMatch(3)
+    BR.Damage.noteThrow(3, 'molotov')
+    fire('explosionEvent', 3, 3,
+        { explosionType = 3, posX = 0.0, posY = 0.0, posZ = 30.0 })
+
+    BR.Combat.defeat(1, 'burned', 2)
+    ok(BR.Roster.get(1).state == BR.PlayerState.DBNO,
+        'fire still knocks a squad player down rather than killing them (feddd23)')
+
+    -- THE ARRIVAL IS NOT CHARGED. The first pass only learns that they are in it;
+    -- charging it would bill a body for time it spent somewhere else.
+    local before = BR.Roster.get(1).dbnoUntil
+    tick(600)
+    ok(BR.Roster.get(1).dbnoUntil == before,
+        'the first pass over a burning body takes nothing off the clock',
+        before - BR.Roster.get(1).dbnoUntil)
+
+    -- ...AND THEN IT RUNS AT THE CONFIGURED RATE. The EXTRA only: the clock is
+    -- already counting the 600ms that just passed on its own, so a rate of 3.0
+    -- takes 1200 more off it.
+    before = BR.Roster.get(1).dbnoUntil
+    tick(600)
+    local took = before - BR.Roster.get(1).dbnoUntil
+    ok(took == math.floor(600 * (RATE - 1.0)),
+        ('600ms in the flames costs %.0fms of clock at a rate of %.2f')
+            :format(600 * (RATE - 1.0), RATE),
+        took)
+
+    -- WHOEVER LIT IT OWNS THE FINISH, on the same terms a shooter gets: a bleed
+    -- outruns the assist window, so a body left to burn would be credited to
+    -- nobody at all.
+    ok(BR.Roster.get(1).downedBy == 3,
+        'and the clock now belongs to whoever threw the bottle',
+        tostring(BR.Roster.get(1).downedBy))
+    ok(BR.Roster.get(1).lastHitWeapon == 'molotov',
+        'named as the molotov, which is the column the kill feed reads',
+        tostring(BR.Roster.get(1).lastHitWeapon))
+
+    -- ═══ AND CRAWLING OUT OF IT IS THE ANSWER, WHICH IS THE WHOLE POINT ═══
+    --
+    -- The owner asked for the crawl to work. A crawl that cannot escape the
+    -- acceleration would be the same dead end wearing a countdown.
+    setPos(1, 40.0, 0.0, 30.0)
+    BR.Roster.get(1).pos = { x = 40.0, y = 0.0, z = 30.0 }
+    tick(600)   -- the pass that notices they have gone
+    before = BR.Roster.get(1).dbnoUntil
+    tick(600)
+    ok(BR.Roster.get(1).dbnoUntil == before,
+        'a body that crawled clear of the flames stops losing time to them',
+        before - BR.Roster.get(1).dbnoUntil)
+
+    -- A GAP IS AN ARRIVAL, NOT A STRETCH. `burnAt` survives a ledger that empties
+    -- (the tick returns early on no fires) and a player who left and came back, so
+    -- the first pass after a long absence must charge nothing rather than bill the
+    -- absence.
+    setPos(1, 0.0, 0.0, 30.0)
+    BR.Roster.get(1).pos = { x = 0.0, y = 0.0, z = 30.0 }
+    before = BR.Roster.get(1).dbnoUntil
+    tick(600)
+    ok(BR.Roster.get(1).dbnoUntil == before,
+        'and coming back to the fire is a fresh arrival rather than a bill for '
+        .. 'the time away',
+        before - BR.Roster.get(1).dbnoUntil)
+
+    -- ═══ THE FIRE STILL KILLS, THROUGH THE CLOCK RATHER THAN THE PED ═══
+    --
+    -- Nothing is lost by taking fire damage off a downed ped: the ending arrives
+    -- on the same tick that owns every other bleed-out, and it is called 'bledout'
+    -- because that is what it is. No second elimination path, no new cause word.
+    local drained = BR.Roster.get(1)
+    drained.dbnoUntil = fakeTime + 1000
+    sent = {}
+    tick(600)
+    tick(600)
+    ok(BR.Roster.get(1).state == BR.PlayerState.OUT,
+        'a body that never gets out of the fire is finished by its own clock',
+        tostring(BR.Roster.get(1).state))
+    ok(BR.Roster.get(3).kills == 1,
+        'and the kill goes to whoever lit it',
+        BR.Roster.get(3).kills)
+
+    -- ═══ ONE CONFIG LINE TURNS IT OFF ═══
+    squadMatch(3)
+    BR.Damage.noteThrow(3, 'molotov')
+    fire('explosionEvent', 3, 3,
+        { explosionType = 3, posX = 0.0, posY = 0.0, posZ = 30.0 })
+    BR.Combat.defeat(1, 'burned', 2)
+
+    BR.Config.Match.dbnoBurnRate = 1.0
+    tick(600)
+    before = BR.Roster.get(1).dbnoUntil
+    tick(600)
+    ok(BR.Roster.get(1).dbnoUntil == before,
+        'at a rate of 1.0 the fire is scenery again and the clock is untouched',
+        before - BR.Roster.get(1).dbnoUntil)
+    BR.Config.Match.dbnoBurnRate = RATE
+
+    -- AND IT IS A DOWNED-ONLY RULE. A player on their feet in a molotov loses
+    -- HEALTH, which the engine applies and the ledger only attributes; handing
+    -- them a clock as well would be inventing a second bleed for the living.
+    ok(BR.Roster.get(2).state == BR.PlayerState.ALIVE
+       and BR.Roster.get(2).dbnoUntil == nil,
+        'a standing player in the same fire has no clock to accelerate',
+        tostring(BR.Roster.get(2).dbnoUntil))
+    BR.Combat.burn(2, 5000, 3, 'molotov')
+    ok(BR.Roster.get(2).dbnoUntil == nil,
+        'and burn() refuses them outright rather than opening one')
+end
+
 describe('dbno.bleedout')
 do
     -- THE REASON downedBy EXISTS AT ALL.
@@ -17796,8 +18013,14 @@ do
     fire('br:match:results', nil, captured)
 
     --- Everything br_stats emitted for this match, split by verb.
+    ---
+    --- `matchPut` IS THE FOURTH RETURN AND IT IS A SINGLE ROW, not a list: one
+    --- item per MATCH on br-matches, beside the one item per PLAYER the history
+    --- batch writes to br-players. `mputs` counts the calls so a second write
+    --- per match is a failure rather than an unnoticed duplicate.
     local function since(n)
         local rows, deltasBy, batches = nil, {}, 0
+        local match, mputs = nil, 0
         for i = n + 1, #fired do
             local f = fired[i]
             if f.event == 'br:ddb:historyPut' then
@@ -17805,12 +18028,15 @@ do
                 rows = f.args[2]
             elseif f.event == 'br:ddb:statsApply' then
                 deltasBy[f.args[2]] = f.args[3]
+            elseif f.event == 'br:ddb:matchPut' then
+                mputs = mputs + 1
+                match = f.args[2]
             end
         end
-        return rows, deltasBy, batches
+        return rows, deltasBy, batches, match, mputs
     end
 
-    local rows, deltasBy, batches = since(mark)
+    local rows, deltasBy, batches, matchRow, mputs = since(mark)
 
     ok(batches == 1, 'the whole match is ONE history event, not one per player',
         ('got %s'):format(tostring(batches)))
@@ -17964,6 +18190,117 @@ do
             tostring(deltasBy['license:test1'].xp)))
     ok(winner and winner.voltsEarned == deltasBy['license:test1'].balance,
         'and so are the Volts -- including the level-up bonus the player was shown')
+
+    -- ══════════ AND ONE ROW FOR THE MATCH ITSELF (br-matches) ══════════
+    --
+    -- WHY A THIRD WRITE EXISTS AT ALL. Until this shipped the only record of a
+    -- match was one history row per PARTICIPANT on br-players, each in a
+    -- different partition, with the match id buried as the trailing component of
+    -- a sort key. "Show me match X" was therefore a full table Scan with a
+    -- filter -- Ringmaster's lib/matchLedger.ts says so in as many words and
+    -- pays for every profile row in the table to answer it. A row keyed on the
+    -- match makes it a GetItem.
+    --
+    -- THE PARTITION KEY IS THE TAG, NOT THE NUMBER, and that is the decision the
+    -- rest of this block exists to pin. The tag is what Ringmaster's URL
+    -- carries, what a moderator pastes, and the thing that has to be unique --
+    -- so it is the thing the uniqueness constraint is written against.
+    ok(mputs == 1, 'a finished match writes exactly ONE match row',
+        ('got %s'):format(tostring(mputs)))
+    ok(matchRow ~= nil, 'and it goes out on br:ddb:matchPut')
+
+    ok(matchRow and matchRow.pk == BR.MatchTag(m.id),
+        'the partition key is the seven-character hex tag, the same string every '
+            .. 'console line and every Ringmaster URL uses',
+        ('got %s, wanted %s'):format(tostring(matchRow and matchRow.pk),
+            BR.MatchTag(m.id)))
+    ok(matchRow and type(matchRow.pk) == 'string' and #matchRow.pk == 7,
+        'and it is a STRING of seven characters -- a DynamoDB key, not a number',
+        ('%s (%s)'):format(tostring(matchRow and matchRow.pk),
+            type(matchRow and matchRow.pk)))
+    -- THE NUMBER RIDES ALONG RATHER THAN BEING RE-DERIVED. Ringmaster parses the
+    -- tag back with matchFromTag, and a reader that has the item in hand should
+    -- not have to: two derivations of one number agree until one of them
+    -- changes, which is the lesson roster.lua's bucket comment already carries.
+    ok(matchRow and matchRow.matchId == m.id
+       and math.tointeger(matchRow.matchId) ~= nil,
+        'the numeric id is on the item too, as a number',
+        ('got %s'):format(tostring(matchRow and matchRow.matchId)))
+
+    -- THE MATCH-LEVEL FIELDS ARE THE ONES THE PAGE DRAWS, AND NO OTHERS.
+    -- Ringmaster's MatchView renders mode, the two timestamps and the field
+    -- size; #51 closes with "no label on the page should be copy he did not
+    -- write", and the storage side of that rule is not inventing fields nothing
+    -- displays.
+    ok(matchRow and matchRow.mode == m.mode, 'the mode is on the item',
+        ('got %s'):format(tostring(matchRow and matchRow.mode)))
+    ok(matchRow and matchRow.endedAt == winner.endedAt,
+        'the end stamp is the SAME wall clock the history rows carry -- two '
+            .. 'records of one match must not disagree about when it ended',
+        ('%s vs %s'):format(tostring(matchRow and matchRow.endedAt),
+            tostring(winner and winner.endedAt)))
+    ok(matchRow and matchRow.startedAt == captured.startedAtWall,
+        'and the start stamp is the wall clock, not the process timer',
+        ('%s vs %s'):format(tostring(matchRow and matchRow.startedAt),
+            tostring(captured.startedAtWall)))
+    ok(matchRow and matchRow.total == 2,
+        'the field size is on it -- 3rd of 8 is not 3rd of 96',
+        ('got %s'):format(tostring(matchRow and matchRow.total)))
+
+    -- ═══ THE PARTICIPANTS, AND THE WINNER AMONG THEM ═══
+    --
+    -- NO TOP-LEVEL `winner` FIELD, DELIBERATELY. MatchView filters
+    -- `participants.filter(p => p.won)` -- so `won` per participant IS the
+    -- winner, and a second copy at the top of the item is a second thing that
+    -- can disagree with the first. Same reasoning that deleted the `level`
+    -- column beside `xp`, and the same reason #133 put `died` on the results row
+    -- rather than letting two halves infer it separately.
+    local parts = matchRow and matchRow.participants
+    ok(type(parts) == 'table' and #parts == 2,
+        'every participant is on the item, including the one who disconnected',
+        ('got %s'):format(tostring(parts and #parts)))
+
+    local pBy = {}
+    for _, p in ipairs(parts or {}) do pBy[p.license] = p end
+    local pw = pBy['license:test1']
+    local pq = pBy['license:test2']
+
+    ok(pw ~= nil and pq ~= nil,
+        'keyed by license, which is what profileHref links on')
+    ok(pw and pw.won == true and pq and pq.won == false,
+        'the winner is the participant carrying won, and nobody else is')
+    ok(pw and pw.placement == 1 and pq and pq.placement == 2,
+        'with their placements',
+        ('%s / %s'):format(tostring(pw and pw.placement), tostring(pq and pq.placement)))
+    ok(pw and pw.kills == 1, 'kills are per participant',
+        ('got %s'):format(tostring(pw and pw.kills)))
+
+    -- THE TWO VOLTS FIGURES THE OWNER ASKED FOR BY NAME, and they are read off
+    -- the SAME history row that went to br-players rather than recomputed -- so
+    -- the match page and the profile's match list cannot show two numbers.
+    ok(pw and pw.voltsEarned == winner.voltsEarned
+       and pw.voltsSpent == winner.voltsSpent,
+        'earned and spent are the same readings the history row carries',
+        ('earned %s/%s spent %s/%s'):format(
+            tostring(pw and pw.voltsEarned), tostring(winner.voltsEarned),
+            tostring(pw and pw.voltsSpent), tostring(winner.voltsSpent)))
+    ok(pq and pq.voltsSpent == 750,
+        'including for the player who disconnected mid-match',
+        ('got %s'):format(tostring(pq and pq.voltsSpent)))
+
+    -- AND THE COLUMNS THE PAGE DRAWS BESIDE THEM.
+    ok(pw and pw.damage == winner.damage and pw.downs == winner.downs
+       and pw.revives == winner.revives and pw.survivedMs == winner.survivedMs,
+        'damage, downs, revives and time alive agree with the history row too')
+
+    -- NOTHING THE PAGE DOES NOT DRAW. `xpEarned` is on Ringmaster's ledger
+    -- interface and no column renders it; `name` comes from the console's own
+    -- ringmaster-players registry, never from the game's rows -- matchLedger.ts
+    -- states that outright ("THE NAMES DO NOT COME FROM THESE ROWS"). A field
+    -- here that nothing reads is a field the next person has to work out the
+    -- meaning of.
+    ok(pw and pw.xpEarned == nil and pw.name == nil,
+        'and nothing the match page never renders')
 
     -- THE AIRDROP'S VOLTS TAKE THE SAME ROAD (#88), which is the whole reason
     -- they are not credited at the pickup. The pile is on the ROW, the row is
@@ -24270,18 +24607,25 @@ end
 
 describe('match.ids')
 do
-    -- ═══ THE ID IS A RANDOM 20-BIT DRAW, THE SEQ IS STILL AN INCREMENT ═══
+    -- ═══ THE ID IS A RANDOM 28-BIT DRAW, THE SEQ IS STILL AN INCREMENT ═══
     --
     -- Ids were a pure increment from 1 until #291, so any id disclosed the next
     -- one and two matches on different days shared a number. They are now drawn
-    -- from 0x00001..0xFFFFF and retried against every id issued this process.
+    -- from 0x0000001..0xFFFFFFF and retried against every id issued this
+    -- process.
     --
-    -- COLLISIONS ARE NOT THEORETICAL, which is why the retry is here rather
-    -- than a comment: 20 bits is 1,048,576 values, so a box running a thousand
-    -- matches between restarts has roughly a 38 percent chance of drawing a
-    -- repeat under the birthday bound -- and the failure would be SILENT,
-    -- because `BR.Server.matches[m.id] = m` replaces a live instance rather
-    -- than raising.
+    -- WIDENED FROM 20 BITS, AND THE REASON IS OUTSIDE THIS PROCESS. `issuedIds`
+    -- only ever guaranteed uniqueness for the life of one FXServer run, and
+    -- Ringmaster now keys a PERMANENT URL on the tag -- so two matches weeks
+    -- apart answering to /matches/d93aa is the outcome that matters, and the
+    -- birthday bound over the whole history of the box is the number to judge.
+    -- 20 bits reached even odds at about 1,200 matches. 28 bits reaches them
+    -- past 19,000.
+    --
+    -- COLLISIONS WITHIN ONE PROCESS ARE STILL NOT THEORETICAL, which is why the
+    -- retry is here rather than a comment: the failure would be SILENT, because
+    -- `BR.Server.matches[m.id] = m` replaces a live instance rather than
+    -- raising.
     reset()
 
     local N = 400
@@ -24293,7 +24637,7 @@ do
     for i = 1, N do
         local seq, id = BR.Match.mintIds()
         if seq ~= firstSeq + i - 1 then seqBreak = seqBreak or seq end
-        if type(id) ~= 'number' or id < 0x00001 or id > 0xFFFFF
+        if type(id) ~= 'number' or id < 0x00001 or id > 0xFFFFFFF
            or math.tointeger(id) == nil then
             outOfRange = outOfRange or id
         end
@@ -24306,19 +24650,38 @@ do
     ok(seqBreak == nil, 'seq is still a contiguous increment, one per match',
         tostring(seqBreak))
     ok(outOfRange == nil,
-        ('every id is an integer in 0x00001..0xFFFFF across %d mints'):format(N),
+        ('every id is an integer in 0x00001..0xFFFFFFF across %d mints'):format(N),
         tostring(outOfRange))
     ok(dupe == nil,
         ('and no two of %d minted ids collide -- the mint redraws against every '
          .. 'id issued this process'):format(N),
-        dupe and ('%05x'):format(dupe) or nil)
+        dupe and ('%07x'):format(dupe) or nil)
 
     -- AND IT IS ACTUALLY RANDOM, which the three assertions above would all
     -- pass against the old increment. 400 draws arriving in ascending order by
     -- chance is 1/400!, so this fails against an increment on every run and
     -- against a real draw on none.
     ok(not ascending, 'and they are drawn, not counted: the sequence is not '
-        .. 'monotonic', ('%05x %05x %05x ...'):format(ids[1], ids[2], ids[3]))
+        .. 'monotonic', ('%07x %07x %07x ...'):format(ids[1], ids[2], ids[3]))
+
+    -- ═══ AND THE SPACE IS ACTUALLY 28 BITS WIDE, NOT MERELY DECLARED SO ═══
+    --
+    -- THE ASSERTION ABOVE CANNOT SEE THE WIDENING. Every id a 20-bit mint draws
+    -- is also a legal 28-bit id, so `outOfRange` passes just as happily against
+    -- the old bound -- which would have let this whole change ship as a comment.
+    -- What only a 28-bit mint can do is draw ABOVE the old ceiling.
+    --
+    -- IT IS NOT A COIN TOSS EITHER WAY. A 28-bit draw lands under 0xFFFFF one
+    -- time in 256, so 400 draws all staying inside the old space is 256^-400 --
+    -- and against a 20-bit mint it is not unlikely, it is impossible.
+    local highest = 0
+    for _, id in ipairs(ids) do
+        if id > highest then highest = id end
+    end
+    ok(highest > 0xFFFFF,
+        ('the draws use the whole 28-bit space, not just the old 20-bit floor '
+         .. '-- %d draws confined under 0xFFFFF would be the old mint'):format(N),
+        ('highest of %d was %07x'):format(N, highest))
 
     -- THE FLOOR IS ASSERTED AT THE SOURCE, not by drawing. 400 draws would
     -- clear 0 by luck rather than by construction -- one in a million is not a
@@ -24328,7 +24691,7 @@ do
     local mfh = io.open(ROOT .. 'br_core/server/match.lua')
     local msrc = mfh and mfh:read('a') or ''
     if mfh then mfh:close() end
-    ok(msrc:find('local ID_MIN, ID_MAX = 0x00001, 0xFFFFF', 1, true) ~= nil,
+    ok(msrc:find('local ID_MIN, ID_MAX = 0x00001, 0xFFFFFFF', 1, true) ~= nil,
         'and the space starts at 1, so 0 stays the warmup pad\'s alone')
 
     -- ═══ THE PER-MATCH SEEDS FOLD IN `seq`, NOT THE ID ═══
@@ -24376,30 +24739,72 @@ end
 
 describe('match.tag')
 do
-    -- ═══ STORED AS A NUMBER, SHOWN AS FIVE HEX CHARACTERS (#291) ═══
+    -- ═══ STORED AS A NUMBER, SHOWN AS SEVEN HEX CHARACTERS (#291) ═══
     --
     -- Owner, 2026-09-09: "I like the idea of storing as number, displaying as
     -- hex", and "Why can't we display it as hex everywhere?" There are sixty-odd
     -- places in the gamemode that put a match id in front of a person and one
     -- function that decides how it is spelled.
+    --
+    -- WIDENED FROM FIVE TO SEVEN, 2026-09-12, BECAUSE THE NAME OUTLIVED THE
+    -- PROCESS. `issuedIds` guarantees no reuse for the life of one FXServer run
+    -- and nothing else, and Ringmaster now keys a permanent URL on the tag -- so
+    -- the number to judge is the birthday bound over every match the box ever
+    -- plays, not over one session. 20 bits reached even odds at about 1,200
+    -- matches; 28 bits reaches them past 19,000.
 
     local bad = nil
-    for _, id in ipairs({ 0x00001, 0x0000f, 0x000ff, 0x00abc, 0x0a3f1, 0xfffff }) do
+    for _, id in ipairs({ 0x0000001, 0x000000f, 0x00000ff, 0x0000abc, 0x000a3f1,
+                          0x00fffff, 0x0a3f1c4, 0xfffffff }) do
         local t = BR.MatchTag(id)
-        if #t ~= 5 or t:match('^[0-9a-f]+$') == nil or BR.MatchFromTag(t) ~= id then
+        if #t ~= 7 or t:match('^[0-9a-f]+$') == nil or BR.MatchFromTag(t) ~= id then
             bad = bad or ('%s -> %s'):format(tostring(id), tostring(t))
         end
     end
     ok(bad == nil,
-        'a tag is five lower-case hex characters, zero padded, and reads back '
-            .. 'as the number it came from -- across the whole 20-bit space',
+        'a tag is seven lower-case hex characters, zero padded, and reads back '
+            .. 'as the number it came from -- across the whole 28-bit space',
         bad)
 
     -- ZERO PADDED, WHICH IS NOT DECORATION: the space is fixed width, so
-    -- `0a3f1` and `a3f1` being one match written two ways is a difference
+    -- `000a3f1` and `a3f1` being one match written two ways is a difference
     -- somebody has to hold in their head while reading a console.
-    ok(BR.MatchTag(0xa3f1) == '0a3f1', 'a short id is padded, never trimmed',
+    ok(BR.MatchTag(0xa3f1) == '000a3f1', 'a short id is padded, never trimmed',
         BR.MatchTag(0xa3f1))
+
+    -- ═══ AND EVERY LINK PRINTED BEFORE TODAY STILL RESOLVES ═══
+    --
+    -- THIS IS THE HALF THAT CANNOT BE ALLOWED TO BREAK. Every match already
+    -- recorded carries a five-character tag, and Ringmaster has live
+    -- `/matches/<tag>` URLs built from them -- in Discord, in bookmarks, in
+    -- incident notes. Widening the RENDERING renames those matches: `d93aa`
+    -- becomes `00d93aa` from now on.
+    --
+    -- THE PARSER IS WHAT MAKES THAT SAFE, AND IT IS SAFE BY CONSTRUCTION RATHER
+    -- THAN BY A SPECIAL CASE. BR.MatchFromTag is `tonumber(s, 16)` with no width
+    -- check at all, so a tag of any length is the same number it always was --
+    -- leading zeroes have never carried meaning in base 16. Ringmaster's
+    -- `matchFromTag` accepts 1..8 hex digits for the same reason. So the old URL
+    -- and the new one address one match, and there is nothing to migrate.
+    --
+    -- PINNED HERE BECAUSE THE OBVIOUS "FIX" WOULD BREAK IT. Adding `#s == 7` to
+    -- the parser to reject typos would 404 every link the console has ever
+    -- handed out, and it would look like a tightening rather than a regression.
+    local short = nil
+    for _, pair in ipairs({ { 'd93aa', 0xd93aa }, { '0d93aa', 0xd93aa },
+                            { '00d93aa', 0xd93aa }, { 'a3f1', 0xa3f1 },
+                            { '1', 0x1 }, { '0019c', 412 } }) do
+        if BR.MatchFromTag(pair[1]) ~= pair[2] then
+            short = short or ('%s -> %s, wanted %d')
+                :format(pair[1], tostring(BR.MatchFromTag(pair[1])), pair[2])
+        end
+    end
+    ok(short == nil,
+        'a five-character tag from before the widening still parses to the same '
+            .. 'id as its seven-character spelling -- old links resolve', short)
+    ok(BR.MatchFromTag('d93aa') == BR.MatchFromTag(BR.MatchTag(0xd93aa)),
+        'and the old spelling and the canonical one are the same match',
+        ('%s vs %s'):format('d93aa', BR.MatchTag(0xd93aa)))
 
     -- AND THE CONSOLE ACTUALLY SAYS IT. Every one of those sites was a `%d`
     -- until this round, and a `%d` and a `%05x` of the same number are two
@@ -24466,6 +24871,36 @@ do
     -- MatchCard.tsx leans on too.
     ok(BR.Voice.radioChannel(sqm.id, 'anything-at-all-sq2') == c2,
         'the parse anchors on the suffix and reads nothing before it')
+
+    -- ═══ AND THE CHANNEL SURVIVES THE TOP OF THE 28-BIT SPACE ═══
+    --
+    -- radioChannel is `radioBase + matchId * radioStride + index`, so widening
+    -- the id multiplied the biggest channel this can produce by 256: the old
+    -- ceiling was about 1.05e8, which fits an int32, and the new one is about
+    -- 2.68e10, which does not. That is worth an assertion rather than an
+    -- argument, because the failure would be silent squad voice and #150 is the
+    -- precedent for that going unnoticed for weeks.
+    --
+    -- IT IS SAFE, AND THE REASON IS WHERE THE NUMBER GOES. This one is genuinely
+    -- JOINED, unlike proxChannel above it -- server/voice.lua hands it to
+    -- pma-voice's addChannelCheck and the client to setRadioChannel. But
+    -- pma-voice only ever uses it as a Lua table key (`radioData[channel]`), a
+    -- state-bag value and a `> 0` test. It never reaches a Mumble native:
+    -- MumbleSetVoiceChannel takes pma-voice's own `assignedChannel`, not ours.
+    -- So a channel past 2^32 is a large identifier and nothing more.
+    local topId = 0xFFFFFFF
+    local hi1 = BR.Voice.radioChannel(topId, ('m%ssq1'):format(BR.MatchTag(topId)))
+    local hi2 = BR.Voice.radioChannel(topId, ('m%ssq2'):format(BR.MatchTag(topId)))
+    ok(hi1 ~= nil and math.tointeger(hi1) ~= nil and hi1 > 0,
+        'the highest id in the space still yields a positive integer channel',
+        tostring(hi1))
+    ok(hi1 ~= nil and hi2 ~= nil and hi2 - hi1 == 1,
+        'and two squads of that match are still one apart, so the stride did '
+            .. 'not wrap', ('%s vs %s'):format(tostring(hi1), tostring(hi2)))
+    -- DISTINCT FROM A LOW-ID MATCH, which is the property the whole number is
+    -- for: two matches that must not hear each other have to differ on it.
+    ok(hi1 ~= BR.Voice.radioChannel(0x0000001, 'm0000001sq1'),
+        'and it is still distinct from the bottom of the space')
 end
 
 realPrint(('\n\27[32m%d passed\27[0m'):format(pass))

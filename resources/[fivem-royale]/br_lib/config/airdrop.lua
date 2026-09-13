@@ -801,9 +801,10 @@ BR.Config.Airdrop = {
         -- EVERY POOL A DROPPED WEAPON CAN ACTUALLY USE, AND THE LIST MOVES WHEN
         -- THE POOLS DO. The note above `payout` is what this is for: "a minimum
         -- roll that paid an RPG and no heavy rounds would be the worst drop in the
-        -- game wearing the best loot table". SNIPER is off it because SNIPER no
-        -- longer exists (2026-09-12) -- the Heavy Sniper this crate deals from its
-        -- own legendary bucket draws HEAVY again, which is already here.
+        -- game wearing the best loot table". SNIPER and LMG are both off it because
+        -- neither pool exists any more (2026-09-12): the Heavy Sniper this crate
+        -- deals from its own legendary bucket draws HEAVY, and the MINIGUN it deals
+        -- from `exclusive` draws MEDIUM. Both are already here.
         --
         -- tools/test_airdrop.lua derives the requirement from each dropped
         -- weapon's own `ammo` field rather than from any literal, so this list has
@@ -811,9 +812,9 @@ BR.Config.Airdrop = {
         -- the pool without removing it here was checked and it does fail: the test
         -- names the weapon that would land with no rounds.
         ammo      = { kind = 'ammo', ids = {
-            BR.AmmoType.HEAVY, BR.AmmoType.LMG,
-            BR.AmmoType.MEDIUM, BR.AmmoType.SHELLS,
-            BR.AmmoType.SMG, BR.AmmoType.LIGHT,
+            BR.AmmoType.HEAVY, BR.AmmoType.MEDIUM,
+            BR.AmmoType.SHELLS, BR.AmmoType.SMG,
+            BR.AmmoType.LIGHT,
         } },
     },
 
@@ -1436,6 +1437,16 @@ local function resolvePool(p)
             out[#out + 1] = {
                 item = w.id, kind = BR.ItemKind.WEAPON,
                 rarity = w.rarity, count = 1, clip = w.clip,
+                -- WHICH ROUNDS THIS GUN TAKES, CARRIED ON THE TEMPLATE AND
+                -- RESOLVED HERE. BR.AirdropPayout points the crate's ammo slots
+                -- at the guns it actually dealt (owner, 2026-09-12: "Airdrop
+                -- weapons came with some ammo, except the grenade launcher which
+                -- came with none"), and it must not have to look a weapon up to
+                -- do it: the note at the head of this function is that the
+                -- payout shuffles and copies and resolves nothing, which is what
+                -- keeps a drop replayable from a seed. Nil for a weapon with no
+                -- ammo field, which the payout reads as "nothing to feed".
+                ammo = w.ammo,
             }
         end
 

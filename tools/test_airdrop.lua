@@ -955,6 +955,144 @@ do
     eq(repeats, 0, 'and they are different ones')
 end
 
+describe('payout: a crate that pays a gun pays rounds that gun can fire')
+do
+    -- THE BUG (owner, playtest 2026-09-12): "Airdrop weapons came with some
+    -- ammo, except the grenade launcher which came with none."
+    --
+    -- ═══ WHY THE POOL TEST ABOVE COULD NOT HAVE CAUGHT IT ═══
+    --
+    -- That one reads A.resolvedPools.ammo -- the DECK -- and proves every type a
+    -- dropped weapon could need is a card in it. A drop DEALS two of those cards
+    -- (three at an n of 13), independently of which guns it dealt, so "HEAVY is
+    -- in the deck" and "this crate paid HEAVY" are different claims and only the
+    -- first was ever asserted. Measured against the old code: 229 of 300 seeds
+    -- paid an exclusive with no rounds for it, and seed 42 paid a Grenade
+    -- Launcher, an RPG, a Marksman Mk II, a Heavy Sniper and a Marksman Rifle
+    -- against medium, light and shells -- five HEAVY weapons and no rockets.
+    --
+    -- SO THIS BLOCK ROLLS DROPS AND READS WHAT IS IN THEM, which is the only
+    -- shape of this test that can fail while the config is complete.
+    local excl = {}
+    for _, w in ipairs(BR.Config.AirdropWeapons) do excl[w.id] = true end
+
+    --- What one rolled drop needs, what it paid, and how many ammo slots it got.
+    local function readDrop(seed)
+        local items = BR.AirdropPayout(BR.Rng(seed), A)
+
+        local slots = 0
+        for i = 1, #items do
+            if A.payout[i] == 'ammo' then slots = slots + 1 end
+        end
+
+        local paid, need, needExcl, guns = {}, {}, {}, {}
+        for _, s in ipairs(items) do
+            if s.kind == BR.ItemKind.AMMO then
+                paid[s.item] = (paid[s.item] or 0) + 1
+            else
+                guns[#guns + 1] = s.item
+            end
+            local w = BR.Config.WeaponById[s.item]
+            if s.kind == BR.ItemKind.WEAPON and w and w.ammo then
+                need[w.ammo] = w.label or w.id
+                if excl[s.item] then needExcl[w.ammo] = w.label or w.id end
+            end
+        end
+        return items, slots, paid, need, needExcl, guns
+    end
+
+    -- ═══ THE EXCLUSIVES ARE FED, ALWAYS, AND THAT IS THE OWNER'S SENTENCE ═══
+    --
+    -- Two exclusive slots can name at most two distinct ammo types (three of the
+    -- four take HEAVY), and the guaranteed ten hold two ammo slots -- so a crate
+    -- can always cover its own shelf and every failure here is the deal ignoring
+    -- what it dealt rather than a shortage of slots.
+    local dryExcl = {}
+    for seed = 1, 300 do
+        local _, _, paid, _, needExcl = readDrop(seed)
+        for pool, byWhom in pairs(needExcl) do
+            if not paid[pool] and #dryExcl < 4 then
+                dryExcl[#dryExcl + 1] =
+                    ('seed %d: %s with no %s'):format(seed, byWhom, pool)
+            end
+        end
+    end
+    eq(#dryExcl, 0,
+        'no drop in 300 pays an airdrop-only weapon with no rounds for it -- '
+            .. (#dryExcl > 0 and table.concat(dryExcl, ', ') or 'none dry'))
+
+    -- ═══ AND THE SLOTS IT HAS ARE SPENT ON ITS OWN GUNS FIRST ═══
+    --
+    -- A crate pays two or three ammo stacks against as many as eight guns, so
+    -- COMPLETE coverage is not a property the slot count can support and this is
+    -- deliberately not asserted. What is asserted is that no slot is wasted: a
+    -- drop covers as many of its own distinct ammo types as it has slots, and
+    -- only a drop whose guns need FEWER types than it has slots may pay a type
+    -- nothing in the crate can fire (which is the free roll the deck used to be,
+    -- kept for the floor loot the player walked in with).
+    local wasted, foreign = {}, {}
+    for seed = 1, 300 do
+        local _, slots, paid, need = readDrop(seed)
+
+        local types, covered = 0, 0
+        for pool in pairs(need) do
+            types = types + 1
+            if paid[pool] then covered = covered + 1 end
+        end
+        local want = math.min(types, slots)
+        if covered ~= want and #wasted < 4 then
+            wasted[#wasted + 1] = ('seed %d: covered %d of %d needed, %d slots')
+                :format(seed, covered, types, slots)
+        end
+
+        local spare = slots - types
+        local off = 0
+        for pool, n in pairs(paid) do
+            if not need[pool] then off = off + n end
+        end
+        if off > math.max(0, spare) and #foreign < 4 then
+            foreign[#foreign + 1] = ('seed %d: %d stacks nothing here can fire, '
+                .. '%d spare slots'):format(seed, off, spare)
+        end
+    end
+    eq(#wasted, 0,
+        'every ammo slot a drop deals goes to a gun in that same drop while one '
+            .. 'is still unfed -- '
+            .. (#wasted > 0 and table.concat(wasted, '; ') or 'none wasted'))
+    eq(#foreign, 0,
+        'and rounds for nothing in the crate appear only in a slot its own guns '
+            .. 'did not need -- '
+            .. (#foreign > 0 and table.concat(foreign, '; ') or 'none foreign'))
+
+    -- ═══ THE GUNS DID NOT MOVE ═══
+    --
+    -- Captured from the code BEFORE the ammo slots were re-pointed, and pinned
+    -- as literals because that is the whole claim: the fix spends the same rng in
+    -- the same order, so a seed deals the same crate and only the AMMO in it
+    -- changed. A diff here means the shuffle sequence moved, which would silently
+    -- redraw every airdrop ever rolled from a stored seed.
+    local golden = {
+        [7]  = 'minigun, rpg, volts, heavysniper, marksmanmk2, heavyshotgun, '
+               .. 'grenade, cprkit',
+        [11] = 'minigun, grenadelauncher, volts, militaryrifle, marksmanmk2, '
+               .. 'revolvermk2, sticky, cprkit, combatmgmk2, pumpshotgunmk2',
+        [42] = 'grenadelauncher, rpg, volts, marksmanmk2, heavysniper, '
+               .. 'assaultmk2, grenade, medkit, combatmgmk2, marksmanrifle, '
+               .. 'militaryrifle',
+    }
+    for seed, want in pairs(golden) do
+        local _, _, _, _, _, guns = readDrop(seed)
+        eq(table.concat(guns, ', '), want,
+            ('seed %d deals the same non-ammo items it always did'):format(seed))
+    end
+
+    -- ...AND SEED 42 IS THE OWNER'S OWN DROP, so it gets the assertion in his
+    -- words: five HEAVY weapons in one crate, and now rockets to go with them.
+    local _, _, paid42 = readDrop(42)
+    ok(paid42[BR.AmmoType.HEAVY] ~= nil,
+        'the crate that pays a Grenade Launcher pays heavy rounds')
+end
+
 describe('payout: 10 to 14, drawn per drop')
 do
     -- Owner, 2026-08-22: "instead of 'up to 12' items, let's make it 10-14

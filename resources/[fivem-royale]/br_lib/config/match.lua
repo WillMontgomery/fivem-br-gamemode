@@ -1006,6 +1006,38 @@ BR.Config.Match = {
     -- it -- but tune it against the round count, not against the seconds.
     dbnoBleedPerDamage = 0.93,
 
+    -- ═══ WHAT BEING ON FIRE DOES TO A DOWNED PLAYER ═══
+    --
+    -- Owner, playtest 2026-09-12, on burning to death in a molotov: "My
+    -- preference would be they can crawl until they die, and their body being on
+    -- fire should accelerate the bleed out."
+    --
+    -- A MULTIPLIER ON THE CLOCK, NOT A DAMAGE NUMBER, and that is the honest
+    -- shape for it. dbnoBleedPerDamage above converts damage the server ADJUDGED
+    -- into seconds; burning damage is never adjudged at all -- it is applied on
+    -- the victim's own machine down a path the server cannot see, which
+    -- server/damage.lua's fire ledger exists because of and says so twice. There
+    -- is no honest number of points to convert, so what is configured is the rate
+    -- the countdown runs at while the body is in somebody's fire.
+    --
+    -- 3.0 IS A JUDGEMENT AND HERE IS THE ARITHMETIC IT WAS MADE ON. Every second
+    -- in the flames costs three seconds of clock, so:
+    --
+    --   * a first knock (120s) burns out in 40s of continuous fire;
+    --   * a molotov pool lives 20s (BR.Config.Combat.fireLifeMs), so a body that
+    --     cannot get out of one loses 60s -- half a fresh knock -- and no more,
+    --     because the fire goes out before the player does;
+    --   * crawling clear after five seconds costs fifteen, which is the point:
+    --     the crawl is the answer to the fire, and it can be got wrong.
+    --   * at the floor (dbnoBleedMin, 40s) it is 13s, which is the one case worth
+    --     watching in a playtest -- a late-match knock into a molotov is close to
+    --     being a kill.
+    --
+    -- 1.0 TURNS IT OFF and nothing else has to change: server/combat.lua's
+    -- BR.Combat.burn returns on anything at or below 1.0, so the fire goes back to
+    -- being scenery a downed player is lying in.
+    dbnoBurnRate = 3.0,
+
     -- The display health the LEDGER holds a downed player at. It has to be
     -- greater than zero for two separate reasons and both are load-bearing:
     -- BR.Damage.applyHit only sends the shooter their `netId`/`hp` correction

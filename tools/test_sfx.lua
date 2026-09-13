@@ -190,8 +190,12 @@ do
           name = 'GOLF_NEW_RECORD',        was = 'Volts award at verdict' },
         { cue = 'toast.warn',        set = 'HUD_FRONTEND_DEFAULT_SOUNDSET',
           name = 'ERROR',                  was = 'Error toast notification sound' },
-        { cue = 'match.start',       set = 'HUD_MINI_GAME_SOUNDSET',
-          name = 'GO',                     was = 'Match timer start' },
+        -- HIS SECOND LINE FOR THIS EVENT, not his first. GO was "Match timer
+        -- start" and moved to `storm.move` on 2026-09-12, where it turned out
+        -- to be the sound that cue had been missing; he kept it there. This is
+        -- the alternative he wrote down beside it in the same issue.
+        { cue = 'match.start',       set = 'DLC_AW_BB_Sounds',
+          name = 'Period_Start',           was = 'Alternative timer start (airhorn)' },
         { cue = 'blips.shown',       set = 'GTAO_Magnate_Boss_Modes_Soundset',
           name = 'Crates_Blipped',         was = 'Courtesy blips or ambulance blips shown' },
         { cue = 'revivekey.pickup',  set = 'In_And_Out_Attacker_Sounds',
@@ -311,7 +315,12 @@ do
             -- are wrong sound clips") and the hitmarker cues are gone, so the
             -- pair is no longer an artefact worth protecting.
             { 'DLC_H3_Drone_Tranq_Weapon_Sounds', 'Pilot_Perspective_Fire',  'Damage killed sound' },
-            { 'DLC_AW_BB_Sounds',                 'Period_Start',            'alt timer start (airhorn)' },
+            -- DLC_AW_BB_Sounds / Period_Start IS NO LONGER ONE OF THESE. It was
+            -- his documented alternative for the timer start and it went LIVE as
+            -- `match.start` on 2026-09-12, so it is pinned in the wired table at
+            -- the top of this file instead. Left here it would claim, in a list
+            -- whose whole subject is pairs that are written down and not wired,
+            -- that the cue table does not use it.
             { 'DLC_IO_Warehouse_Mod_Garage_Sounds', 'Remove_Tracker',        'gas pump started' },
             { 'DLC_AW_Frontend_Sounds',           'Checkpoint_Finish',       'squad mate revived' },
             { 'DLC_Security_Investigation_The_Yacht_Sounds', 'GPS_Set',      'alt squad waypoint' },
@@ -482,22 +491,13 @@ do
        'and not TIMER_STOP, which was picked off a forum post to replace it',
        tostring(move.name))
 
-    -- ═══ IT IS match.start's SOUND, AND THAT IS RECORDED RATHER THAN ASSERTED
-    --     AGAINST ═══
-    --
-    -- His "Match timer start" line is where match.start got GO too, so the wall
-    -- setting off and the match starting are now the same noise. This block
-    -- used to assert they DIFFER; that assertion was this suite preferring its
-    -- own taste to his ear, and it is gone. MEDAL_UP is the alternative he
-    -- offered in the same breath and is the one line to change if he wants them
-    -- apart -- so what is checked is that the alternative is still reachable,
-    -- not that the collision has been tidied away behind his back.
-    local alt = false
-    for _, n in ipairs(A.namesIn('HUD_MINI_GAME_SOUNDSET') or {}) do
-        if n == 'MEDAL_UP' then alt = true end
-    end
-    ok(alt, 'and MEDAL_UP, his stated alternative, is still in the catalogue '
-        .. 'for the day he wants the two events to sound different')
+    -- THE COLLISION THIS BLOCK ONCE DOCUMENTED IS GONE. Promoting GO here put
+    -- it on `match.start` as well and tools/test_fuel.lua's `audio.pumpCues`
+    -- refused the pair, which is the guard doing its job. He ruled that the
+    -- storm keeps GO and that MEDAL_UP "is not it", so match.start took his own
+    -- documented spare instead (2026-09-12) and there is nothing left here to
+    -- record. `audio.pumpCues` is where two cues sharing a sound is caught, and
+    -- a second half-rule in this file would only give it somewhere to drift to.
 
     -- ═══ AND THAT PAIR IS WHAT REACHES THE ENGINE ═══
     --

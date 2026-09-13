@@ -35,6 +35,16 @@
 -- it"), and the page's re-arm is gated on this flag, so a fixture that let an
 -- abandonment lower it would be asserting the fix had gone too far.
 --
+-- AND, SINCE 2026-09-12, WHEN A MATCH ITSELF ANSWERS THE OFFER. The owner: "if a
+-- new player rejects the offer for first-time tutorial, the offer still shows up
+-- after their first match. Even for subsequent sessions." Rejecting it sent
+-- nothing -- the only gesture wired to TUTORIAL_DECLINE is unticking the SECOND
+-- toggle, which is not drawn until the lobby half reaches its last card, and the
+-- first toggle beside Ready up is page-local state. So the row stayed at '' and
+-- '' is the state that gets offered. What is pinned is the new tick: the bus
+-- spends an offer nobody took, the pad does not, and a player who STARTED either
+-- half keeps theirs however the run ended.
+--
 -- ═══ WHAT IS DELIBERATELY NOT COVERED ═══
 --
 -- Whether the PAGE re-arms. That is Lobby.tsx's `queue()` and it is TypeScript;
@@ -104,16 +114,38 @@ local ROOT = 'resources/[fivem-royale]/'
 
 BR = BR or {}
 
---- The loop registry, stubbed to a sink.
+--- The loop registry, kept BY NAME so one of them can be stepped.
 ---
---- tutorial.lua registers two loops at load -- the leave tick and the arrow-key
---- frame pass -- and neither is driven here. Registering them into a table that
---- nothing steps is the honest version of that: the file loads exactly as it
---- ships, and no block below can accidentally depend on a tick it never pumped.
+--- tutorial.lua registers three loops at load -- the leave tick, the arrow-key
+--- frame pass, and the one that spends an untaken offer when the bus goes. Only
+--- the last is driven here, by `pump` below and only where a block says so, so
+--- the other two still cannot be depended on by accident.
+local loops = {}
 BR.Loop = {
     TICK = 'tick', FRAME = 'frame',
-    register = function() end,
+    register = function(_, name, fn) loops[name] = fn end,
 }
+
+--- Step one registered loop once.
+---
+--- A MISSING LOOP IS REPORTED AND NOT FATAL, so a suite written against a loop
+--- that does not exist yet fails at its assertions -- where the reason is -- and
+--- not at its first pump.
+local function pump(name)
+    local fn = loops[name]
+    if not fn then
+        realPrint('\27[31mno loop registered\27[0m ' .. tostring(name))
+        return
+    end
+    fn()
+end
+
+--- MY OWN PLAYER STATE, which is the only way a client file can learn that a
+--- match has actually started for it.
+---
+--- tutorial.lua already reads this on its leave tick -- "there is no client
+--- event for 'my own state changed'" -- and the new tick reads the same field.
+BR.State = { me = { state = nil } }
 
 for _, f in ipairs({
     'br_lib/shared/enums.lua',
@@ -163,6 +195,9 @@ end)
 local function connect(offer)
     BR.Tutorial.game(false)
     BR.Tutorial.set(false)
+    -- IN THE LOBBY, which is where a connection lands. The spend tick reads this
+    -- and a block that left it in a match would arm the next block's first pump.
+    BR.State.me.state = BR.PlayerState.LOBBY
     sent = {}
     last = nil
     TriggerEvent(BR.Net.TUTORIAL_OFFER, { offer = offer ~= false })
@@ -192,6 +227,112 @@ do
     connect(false)
     ok(published('offerable') == false,
        'and an account whose row already says declined or done is not')
+end
+
+-- ---------------------------------------------------------------------------
+-- THE OWNER'S REPORT, 2026-09-12
+--
+-- "if a new player rejects the offer for first-time tutorial, the offer still
+-- shows up after their first match. Even for subsequent sessions."
+--
+-- ═══ THESE TWO BLOCKS ARE FIRST, AND THE ORDER IS LOAD-BEARING ═══
+--
+-- `took` inside tutorial.lua is a ONE-WAY SESSION LATCH with no reset, which is
+-- correct for a client whose flags die with the session and is exactly what
+-- `connect()` cannot undo. So the block that needs it FALSE has to run before
+-- anything in this suite starts a walkthrough. Anything added above here that
+-- calls `br:tutorial:set` or `br:tutorial:game` will silently turn the first
+-- block below into a copy of the second.
+-- ---------------------------------------------------------------------------
+
+describe('tutorial.firstMatch')
+do
+    -- ═══ READYING UP WITHOUT TAKING IT IS AN ANSWER ═══
+    --
+    -- The page's decline card says the offer "is only valid for their first
+    -- match" (owner, 2026-09-07), and nothing enforced that: the ONLY gesture in
+    -- the tree that sent TUTORIAL_DECLINE was unticking the SECOND toggle, which
+    -- is not even drawn until the lobby half reaches its last card. A player who
+    -- turned the first toggle off and pressed Ready up sent nothing at all, so
+    -- the row stayed '' forever and the offer came back every match and every
+    -- session.
+    connect(true)
+
+    pump('tutorial.spend')
+    ok(published('offerable') == true,
+       'SITTING IN THE LOBBY ANSWERS NOTHING -- the offer stands while there is '
+       .. 'still a way to take it')
+    ok(sentOne(BR.Net.TUTORIAL_DECLINE) == nil, 'and nothing is written')
+
+    -- ═══ NOR DOES THE PAD, AND THAT IS THE POINT OF WAITING FOR THE BUS ═══
+    --
+    -- WARMUP is where the IN-GAME half runs. The page arms it on ready-up and
+    -- starts it once the player is on the pad, so a tick that spent the offer on
+    -- arrival would race the walkthrough it is meant to be detecting the absence
+    -- of.
+    BR.State.me.state = BR.PlayerState.WARMUP
+    pump('tutorial.spend')
+    ok(published('offerable') == true,
+       'NOR DOES REACHING THE PAD -- the in-game half starts from here, so the '
+       .. 'offer cannot expire on arrival',
+       'offerable = ' .. tostring(published('offerable')))
+    ok(sentOne(BR.Net.TUTORIAL_DECLINE) == nil, 'and still nothing is written')
+
+    -- ═══ THE BUS IS THE MOMENT ═══
+    BR.State.me.state = BR.PlayerState.BUS
+    pump('tutorial.spend')
+
+    ok(sentOne(BR.Net.TUTORIAL_DECLINE) ~= nil,
+       'THE BUS SPENDS IT -- the match has started and they did not take the '
+       .. 'offer, which is an answer, and the row is written so it is still an '
+       .. 'answer tomorrow')
+    ok(published('offerable') == false,
+       'and the account-level flag falls with it, so the second toggle cannot '
+       .. 'be re-armed for the rest of the session',
+       'offerable = ' .. tostring(published('offerable')))
+    ok(published('offer') == false,
+       'and the lobby toggle goes too, which is the half of the report that '
+       .. 'happens without reconnecting')
+
+    -- ONCE, NOT EVERY TICK. `offerable` is false now, which is what closes the
+    -- loop's own gate -- so this also asserts the gate is read and not just set.
+    sent = {}
+    BR.State.me.state = BR.PlayerState.ALIVE
+    pump('tutorial.spend')
+    pump('tutorial.spend')
+    ok(sentOne(BR.Net.TUTORIAL_DECLINE) == nil,
+       'and it is sent ONCE, not on every tick of the match they are now in')
+end
+
+describe('tutorial.firstMatch.took')
+do
+    -- ═══ STARTING IT IS TAKING THE OFFER, HOWEVER THE RUN ENDS ═══
+    --
+    -- Owner, 2026-09-07: "leaving the game tutorial early results in the toggle
+    -- still being available in the lobby - great, keep it." An abandoned run is
+    -- deliberately neither a decline nor a completion, and the whole risk in the
+    -- fix above is that it starts reading as one: the leave tick takes `inGame`
+    -- down the instant the player's state stops being WARMUP, so by the time the
+    -- bus has them there is nothing left on the flags to say they ever tried.
+    --
+    -- `took` is what remembers. If this block fails, the player the owner asked
+    -- us to protect has had their second go taken away.
+    connect(true)
+    TriggerEvent('br:tutorial:set', true)
+    ok(published('run') == true, 'they pressed Start tutorial')
+    TriggerEvent('br:tutorial:set', false)
+    ok(published('run') == false, 'and abandoned it')
+
+    sent = {}
+    BR.State.me.state = BR.PlayerState.BUS
+    pump('tutorial.spend')
+
+    ok(sentOne(BR.Net.TUTORIAL_DECLINE) == nil,
+       'AN ABANDONED RUN IS STILL NOT AN ANSWER -- the bus does not write one '
+       .. 'for a player who took the offer and had it break under them')
+    ok(published('offerable') == true,
+       'so the offer survives the match, exactly as it survives the abandonment',
+       'offerable = ' .. tostring(published('offerable')))
 end
 
 -- ---------------------------------------------------------------------------
@@ -336,5 +477,6 @@ if fail > 0 then
     os.exit(1)
 end
 realPrint(('\27[32mok\27[0m   %d assertions: finishing spends the account\'s '
-    .. 'offer, abandoning does not, and /brtutorial still outranks both')
+    .. 'offer, so does a first match nobody took it into, abandoning does '
+    .. 'neither, and /brtutorial still outranks all three')
     :format(pass))

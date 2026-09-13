@@ -737,7 +737,22 @@ function BR.Inv.give(src, stack, opts)
     -- it up again -- out of an empty pool, repeatable, compounding. A weapon
     -- that has been in an inventory is not found loot; it is the same weapon
     -- coming back, and it comes back with what it left with.
-    if w and w.ammo and not stack.carried then
+    -- ═══ ...AND `sold` IS THE SECOND WAY A WEAPON CAN NOT BE FOUND LOOT ═══
+    --
+    -- Owner, 2026-09-12: "the gun isn't sold with free ammo".
+    --
+    -- `carried` and `sold` are different facts -- one gun has been in an
+    -- inventory and the other has never been in one -- and this line needs the
+    -- thing they have in common rather than either of them: neither arrived off
+    -- the floor, so neither is owed a magazine's worth of reserve out of nothing.
+    -- BR.GunshopSolve.catalogue stamps `sold` on the stack it sells, alongside the
+    -- `clip = 0` that withholds the other free magazine.
+    --
+    -- ⚠ `sold` DOES NOT SURVIVE A TRIP THROUGH THE WORLD. server/loot.lua's stamp
+    -- lists the fields it carries and `carried` is on that list because it had to
+    -- be; `sold` is not. A purchase only reaches the floor when the buyer's bag
+    -- was full, and it comes back as ordinary found loot.
+    if w and w.ammo and not stack.carried and not stack.sold then
         addAmmo(inv, w.ammo, (w.clip or 0) * (L.weaponReserveClips or 1))
     end
 

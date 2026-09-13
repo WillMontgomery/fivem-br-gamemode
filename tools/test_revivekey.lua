@@ -844,33 +844,59 @@ do
        and clientCode:find('syncSiren%(nil%)') ~= nil,
         'and a resource restart mid-hold stops it too, which no frame pass can')
 
-    -- ═══ THE ENGINE GOES ON FIRST, BECAUSE A SIREN ON A DEAD ENGINE IS SILENT ═══
+    -- ═══ THE NO-DRIVER GATE, WHICH IS THE WHOLE OF THE SECOND REPORT ═══
     --
-    -- These vans are parked at a station. client/rescue.lua spends the same
-    -- three natives in the same order on its own ambulance and that one is
-    -- audible; client/ambheal.lua omits the engine because the AI is already
-    -- driving. Reversed, this feature is lights and no noise -- which is
-    -- indistinguishable from the siren native not working.
+    --   "The lights come on while using the ambulance, but siren does not."
+    --                                          -- owner, 2026-09-12
+    --
+    -- GTA gates siren AUDIO on the van having a driver and gates nothing about
+    -- the light bar, and these are station ambulances with nobody in them. So
+    -- the first version lit the bar and was refused the noise, which is why
+    -- nothing in the call looked wrong. SET_SIREN_WITH_NO_DRIVER is that gate.
+    --
+    -- WHY THIS IS PINNED RATHER THAN TRUSTED TO A READER: the sequence now has
+    -- four natives, three of which are permissions and one of which is the
+    -- switch, and the failure mode of getting it wrong is silence -- the exact
+    -- symptom that has already cost two rounds and looks identical to the
+    -- feature not being implemented.
+    local nod = clientCode:find('SetSirenWithNoDriver, veh, true')
+    local mut = clientCode:find('SetVehicleHasMutedSirens, veh, false')
     local eng = clientCode:find('SetVehicleEngineOn, veh, true, true, false')
     local sir = clientCode:find('SetVehicleSiren, veh, true')
-    ok(eng ~= nil and sir ~= nil and eng < sir,
-        'the engine is started before the siren is asked for',
-        ('engine %s, siren %s'):format(tostring(eng), tostring(sir)))
 
-    ok(clientCode:find('SetVehicleHasMutedSirens, veh, false') ~= nil,
-        '...and the mute flag is cleared rather than assumed, on the one '
-            .. 'feature of the three whose whole point is the noise')
+    ok(nod ~= nil,
+        'the no-driver audio gate is lifted, which is what an unoccupied van '
+            .. 'needs and what client/rescue.lua never needed')
+
+    -- PERMISSIONS FIRST, THEN THE SWITCH. The order is the one published call
+    -- site's (xaniz/rpv_ragemp Main.cs: SetSirenWithNoDriver then the siren),
+    -- not a preference.
+    ok(nod ~= nil and sir ~= nil and nod < sir,
+        '...before the siren is switched on, not after',
+        ('no-driver %s, siren %s'):format(tostring(nod), tostring(sir)))
+    ok(mut ~= nil and sir ~= nil and mut < sir,
+        '...and so is the mute flag, whose `false` means "do not disable the '
+            .. 'siren sound" (alias _SET_DISABLE_VEHICLE_SIREN_SOUND)',
+        ('mute %s, siren %s'):format(tostring(mut), tostring(sir)))
+    ok(eng ~= nil and sir ~= nil and eng < sir,
+        '...and the engine is still started first, which was not the fault but '
+            .. 'is not being removed in the same round as the fix',
+        ('engine %s, siren %s'):format(tostring(eng), tostring(sir)))
 
     -- ═══ AND ONLY WHAT WE CHANGED IS PUT BACK ═══
     --
     -- client/ambheal.lua's rule: an ambulance somebody was already driving with
     -- its siren on must not go quiet because a stranger revived beside it. The
     -- engine half is this file's own, for the same reason in the other
-    -- direction -- a van that was already running must not be switched off.
+    -- direction -- a van that was already running must not be switched off. The
+    -- gate has no getter, so it is put back to the engine's default and only on
+    -- a van this client raised it for.
     ok(clientCode:find('if cur%.sirenWasOff then') ~= nil,
         'a van that was already wailing keeps wailing')
     ok(clientCode:find('if cur%.engineWasOff and SetVehicleEngineOn then') ~= nil,
         'and a van that was already running keeps running')
+    ok(clientCode:find('if cur%.noDriver and SetSirenWithNoDriver then') ~= nil,
+        'and the no-driver gate goes back down on the way out')
 
     -- AND THE VAN PLATE READS A FACE. `plateNumbers` takes the word
     -- BR.Dui.nearFace's answer is named by, so the panel a player is standing at

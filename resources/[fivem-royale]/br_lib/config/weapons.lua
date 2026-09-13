@@ -147,11 +147,18 @@ BR.Config.Weapons = {
     { id = 'marksmanmk2',   name = 'WEAPON_MARKSMANRIFLE_MK2',hash = 0x6A6C02E0, label = 'Marksman Mk II',    rarity = R.LEGENDARY, ammo = BR.AmmoType.HEAVY,  damage = 70, maxRange = 380.0, minInterval = 430, clip = 8, scoped = true, driveby = false },
     { id = 'heavysniper',   name = 'WEAPON_HEAVYSNIPER',      hash = 0x0C472FE2, label = 'Heavy Sniper',      rarity = R.LEGENDARY, ammo = BR.AmmoType.HEAVY,  damage = 216,maxRange = 420.0, minInterval = 1800,clip = 6, scoped = true, driveby = false },
 
-    -- LMG -------------------------------------------------------------------
-    { id = 'mg',            name = 'WEAPON_MG',               hash = 0x9D07F764, label = 'MG',                rarity = R.RARE,      ammo = BR.AmmoType.LMG,    damage = 34, maxRange = 230.0, minInterval =  85, clip = 54, driveby = false },
-    { id = 'gusenberg',     name = 'WEAPON_GUSENBERG',        hash = 0x61012683, label = 'Gusenberg Sweeper', rarity = R.RARE,      ammo = BR.AmmoType.LMG,    damage = 32, maxRange = 200.0, minInterval =  80, clip = 50, driveby = false },
-    { id = 'combatmg',      name = 'WEAPON_COMBATMG',         hash = 0x7FD62962, label = 'Combat MG',         rarity = R.EPIC,      ammo = BR.AmmoType.LMG,    damage = 38, maxRange = 250.0, minInterval =  85, clip = 100, driveby = false },
-    { id = 'combatmgmk2',   name = 'WEAPON_COMBATMG_MK2',     hash = 0xDBBD7280, label = 'Combat MG Mk II',   rarity = R.LEGENDARY, ammo = BR.AmmoType.LMG,    damage = 40, maxRange = 270.0, minInterval =  85, clip = 100, driveby = false },
+    -- Machine guns ----------------------------------------------------------
+    -- THEY DRAW MEDIUM, WITH THE ASSAULT RIFLES. They had a pool of their own
+    -- until 2026-09-12, captioned 'Belt Ammo' by us rather than by him, and he
+    -- rejected the caption: "Not sure what 'belt' is or why we call it that. It
+    -- doesn't actually show on the person's belt. Very misleading." Asked where to
+    -- merge it, he picked the room: "let's put MGs in medium then". The pool it
+    -- left capped at 60, which could never fill the 100-round magazines two of
+    -- these four carry; medium is 350. See BR.Config.AmmoCaps.
+    { id = 'mg',            name = 'WEAPON_MG',               hash = 0x9D07F764, label = 'MG',                rarity = R.RARE,      ammo = BR.AmmoType.MEDIUM, damage = 34, maxRange = 230.0, minInterval =  85, clip = 54, driveby = false },
+    { id = 'gusenberg',     name = 'WEAPON_GUSENBERG',        hash = 0x61012683, label = 'Gusenberg Sweeper', rarity = R.RARE,      ammo = BR.AmmoType.MEDIUM, damage = 32, maxRange = 200.0, minInterval =  80, clip = 50, driveby = false },
+    { id = 'combatmg',      name = 'WEAPON_COMBATMG',         hash = 0x7FD62962, label = 'Combat MG',         rarity = R.EPIC,      ammo = BR.AmmoType.MEDIUM, damage = 38, maxRange = 250.0, minInterval =  85, clip = 100, driveby = false },
+    { id = 'combatmgmk2',   name = 'WEAPON_COMBATMG_MK2',     hash = 0xDBBD7280, label = 'Combat MG Mk II',   rarity = R.LEGENDARY, ammo = BR.AmmoType.MEDIUM, damage = 40, maxRange = 270.0, minInterval =  85, clip = 100, driveby = false },
 }
 
 --- THE AIRDROP SHELF. Ordinary weapons in every respect but one: they are in no
@@ -179,22 +186,30 @@ BR.Config.Weapons = {
 --- is still refusal here: it remains off the allowlist.
 ---
 --- THE THREE LAUNCHERS DRAW HEAVY WITH THE SCOPED RIFLES, AND THE MINIGUN DRAWS
---- LMG. Owner, 2026-09-12, having played the seven-pool build: "Can we put
---- rockets into any other category that has limited carry quantity?" Heavy is
---- that category -- it is capped at 24 -- so the rockets share it with the four
---- marksman and sniper rifles rather than holding a pool of their own. The
---- minigun is a machine gun and stays with the machine guns, which is the one
---- part of the previous round that survives.
+--- MEDIUM WITH THE MACHINE GUNS. Owner, 2026-09-12, having played the seven-pool
+--- build: "Can we put rockets into any other category that has limited carry
+--- quantity?" Heavy is that category -- it is capped at 24 -- so the rockets share
+--- it with the four marksman and sniper rifles rather than holding a pool of their
+--- own. The minigun follows the machine guns, and later the same day the machine
+--- guns went into medium: "let's put MGs in medium then".
 ---
 --- HEAVY IS NOT "THE EXPLOSIVE POOL" AND THIS BLOCK NO LONGER SAYS IT IS. For one
 --- day it was, and the argument for the split was written out here at length;
 --- that argument is CUT rather than left standing beside its reversal.
 ---
---- WHAT THE SPLIT COST, AND WHAT UNDOING IT COSTS AGAIN, IS THE SAME THING:
+--- ⚠ THE MINIGUN IS NOW FED BY THE SECOND COMMONEST AMMUNITION IN THE GAME, AND
+--- NOBODY HAS ASKED FOR A CEILING ON IT. 350 rounds at an 18ms interval is about
+--- six seconds of continuous fire, where the pool it left held 60 -- roughly one
+--- burst. Ammo drawn at 28% of floor ammo rolls rather than 8% keeps it fed. A
+--- per-weapon cap on this one gun is the clean lever if it should stay a burst
+--- weapon; it is the owner's call and it is NOT built.
+---
+--- WHAT EVERY ONE OF THESE CHANGES COSTS IS THE SAME THING:
 --- BR.Config.AmmoOrder is walked by the layout generator, so its LENGTH renumbers
---- every ammo draw in the game. Going five to seven changed every map from a
---- fixed seed on 2026-09-11 and going seven to six changes them again today.
---- Seeds do not survive a pool count changing, in either direction.
+--- every ammo draw in the game. Five to seven changed every map from a fixed seed
+--- on 2026-09-11, seven to six changed them again on 2026-09-12, and six to five
+--- changed them a third time. Seeds do not survive a pool count changing, in
+--- either direction.
 ---
 --- THE THREE LAUNCHERS ARE `explosive`, WHICH IS A VALIDATOR DECISION AND NOT A
 --- LABEL. It moves them onto the same path grenades already take, for the same
@@ -217,7 +232,7 @@ BR.Config.AirdropWeapons = {
     -- 13 a round at 18ms is ~700 display points a second against the Combat MG
     -- Mk II's ~470 -- the fastest kill in the game, on the loudest, slowest,
     -- most visible thing a player can be holding, once per match if at all.
-    { id = 'minigun',         name = 'WEAPON_MINIGUN',         hash = 0x42BF8A85, label = 'Minigun',          rarity = R.LEGENDARY, ammo = BR.AmmoType.LMG,   damage =  13, maxRange = 200.0, minInterval =   18, clip = 150 },
+    { id = 'minigun',         name = 'WEAPON_MINIGUN',         hash = 0x42BF8A85, label = 'Minigun',          rarity = R.LEGENDARY, ammo = BR.AmmoType.MEDIUM, damage =  13, maxRange = 200.0, minInterval =   18, clip = 150 },
 }
 
 --- Throwables. Smoke is not filler: it is the only tool that makes a contested
@@ -410,22 +425,18 @@ BR.Config.Gadgets = {
 --- under it. Raising it is his call, and this note is here so the question is
 --- askable rather than buried in a table.
 ---
---- LMG IS 60, WHICH IS WHAT HEAVY ITSELF WAS BEFORE ANY OF THIS. The machine guns
---- have never changed pool in substance and their supply has never moved. Do not
---- "even these up" against heavy: the point is that this one did not move.
----
---- TWO MAGAZINES DO NOT FIT UNDER LMG's 60: the Combat MG and Combat MG Mk II
---- hold 100 and the minigun's belt is 150. That was equally true under heavy's
---- own 60 before the split, so it is not a regression -- but it does mean those
---- three can never load a full magazine from a full pool, and raising the cap is
---- the owner's call rather than ours.
+--- MEDIUM IS 350 AND IT IS WHY THE MACHINE GUNS ARE IN IT. The pool they left
+--- capped at 60, which is a cap no Combat MG or Combat MG Mk II could ever fill a
+--- magazine from -- both hold 100 -- and the minigun's belt is 150. That is the
+--- defect the owner's merge fixes. He chose the destination from this table
+--- ("let's put MGs in medium then"), so the number is his and it has not moved:
+--- the rifles are not paying for the machine guns arriving.
 BR.Config.AmmoCaps = {
     [BR.AmmoType.LIGHT]  = 300,
     [BR.AmmoType.SMG]    = 400,
     [BR.AmmoType.MEDIUM] = 350,
     [BR.AmmoType.SHELLS] = 120,
     [BR.AmmoType.HEAVY]  =  24,
-    [BR.AmmoType.LMG]    =  60,
 }
 
 -- Lookup tables, built once at load. The combat validator runs these per hit, so

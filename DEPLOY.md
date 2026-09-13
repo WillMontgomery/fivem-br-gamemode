@@ -187,7 +187,7 @@ never contained anything (see below).
 
 ### What you need
 
-Two tables in **us-east-2**, and the IAM policy in the Ringmaster repo's
+Three tables in **us-east-2**, and the IAM policy in the Ringmaster repo's
 `docs/aws-setup.md`:
 
 > **The incident-close statement must be widened before this code is deployed.**
@@ -215,6 +215,20 @@ Two tables in **us-east-2**, and the IAM policy in the Ringmaster repo's
 | Table | Partition key | Sort key | Holds |
 |---|---|---|---|
 | `br-players` | `pk` (String) | `sk` (String) | `sk = profile` — matches, wins, kills, XP, level.<br>`sk = purchases` — market items, granted back on join.<br>`sk = match#<endedAt>#<matchId>` — one row per match played. |
+| `br-matches` | `pk` (String) | *none* | One row per finished match, keyed on the seven-character hex tag. Written once at match end by `br_stats`, read by Ringmaster's match page. |
+
+**`br-matches` is a read model and the game only ever writes it**, so the grant is
+`dynamodb:PutItem` for the game box role and `dynamodb:GetItem` for Ringmaster —
+nothing needs `UpdateItem`, `Query` or `Scan` on it. The write is conditional on
+`attribute_not_exists(pk)`: match ids are unique for the life of one FXServer
+process and no longer, so a reused tag is refused at the moment it happens and
+logged as `MATCH TAG COLLISION` rather than silently overwriting another match's
+record. **A missing table is survivable** — `ResourceNotFoundException` costs the
+row, logs one line, and never touches the match or the per-player history.
+
+**Nothing backfills it.** Matches recorded before this shipped have history rows
+and no match row, and Ringmaster keeps its table scan as the fallback for those.
+The gap closes as matches are played.
 
 Purchases are a separate item under the same key deliberately: they are
 irreplaceable, they are read on the connect path where latency strands people on

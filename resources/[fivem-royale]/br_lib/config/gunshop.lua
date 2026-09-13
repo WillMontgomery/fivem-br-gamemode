@@ -984,30 +984,30 @@ BR.Config.Gunshop = {
     },
 
     -- ------------------------------------------------------------------
-    -- AMMO: ALL SEVEN POOLS
+    -- AMMO: ALL FIVE POOLS
     -- ------------------------------------------------------------------
     --
-    -- "ammo should be cheap (20-50 Volts)". All seven of BR.Config.AmmoOrder are
-    -- sold, because all seven are found in the wild -- the floor loot table is
+    -- "ammo should be cheap (20-50 Volts)". All five of BR.Config.AmmoOrder are
+    -- sold, because all five are found in the wild -- the floor loot table is
     -- 74% ammo by weight (config/loot.lua) and every pool is in it.
     --
-    -- ═══ PRICE IS SCARCITY, AND THE TOP OF HIS RANGE IS A BAND NOW ═══
+    -- ═══ PRICE IS SCARCITY, AND THE ORDER IS AGREED AGAIN ═══
     --
     -- Two independent measures of how freely a pool flows: the GROUND PICKUP
     -- (BR.Config.AmmoPickups[pool].amount) and the INVENTORY CAP
-    -- (BR.Config.AmmoCaps[pool]). They put smg, medium, light and shells in the
-    -- same descending order, and that is the order those four are priced in.
-    --
-    -- THEY DO NOT AGREE ABOUT THE LAST TWO, and this block used to claim all five
-    -- agreed. lmg and heavy both pay 12 a pickup -- so the pickup cannot separate
-    -- them at all -- while the caps read 60 and 24. So the two SHARE a price at
-    -- 50, the top of his range and where heavy already sat, rather than being
-    -- ranked on a number only one of the two measures can see.
+    -- (BR.Config.AmmoCaps[pool]). They put all five pools in the same descending
+    -- order, and that is the order the five are priced in. heavy is alone at the
+    -- top of his range.
     -- tools/test_gunshop.lua checks the ordering across DISTINCT prices and skips
-    -- the ties, for exactly that reason.
+    -- any tie, which is what let the two rows that used to share 50 be checked at
+    -- all.
     --
-    -- THERE WERE THREE OF THEM YESTERDAY. sniper sat here at 50 alongside these
-    -- two and went with the pool on 2026-09-12; the scoped rifles buy heavy now.
+    -- THERE WERE SEVEN OF THESE ROWS YESTERDAY. `sniper` went with its pool on
+    -- 2026-09-12 and the scoped rifles buy heavy; `lmg` went the same day and the
+    -- five machine guns buy MEDIUM, at 25 rather than the 50 their own pool cost.
+    -- ⚠ THAT IS A PRICE CUT FOR MACHINE GUN AMMO AND IT FOLLOWS FROM THE MERGE
+    -- RATHER THAN FROM A DECISION ABOUT PRICES: a machine gun owner now buys 45
+    -- rounds for 25 where they bought 12 for 50. It is the owner's to revisit.
     --
     -- ═══ 12 ROUNDS A PURCHASE, AND IT IS STILL DERIVED RATHER THAN TYPED ═══
     --
@@ -1030,7 +1030,6 @@ BR.Config.Gunshop = {
         [BR.AmmoType.MEDIUM] = { price = 25 },  --   45     350   7.8
         [BR.AmmoType.LIGHT]  = { price = 30 },  --   36     300   8.3
         [BR.AmmoType.SHELLS] = { price = 40 },  --   16     120   7.5
-        [BR.AmmoType.LMG]    = { price = 50 },  --   12      60   5.0
         [BR.AmmoType.HEAVY]  = { price = 50 },  --   12      24   2.0
     },
 }

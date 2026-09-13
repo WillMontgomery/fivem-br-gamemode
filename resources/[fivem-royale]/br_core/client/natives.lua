@@ -1045,7 +1045,8 @@ function BR.Native.teamFor(me, roster)
     -- ═══ %x AND NOT %d, BECAUSE THE MATCH HALF IS HEX AND THIS FAILED OPEN ═══
     --
     -- This read `^m%d+sq(%d+)$` until 2026-09-11. #291 made match ids a random
-    -- 20 bit draw rendered as five hex characters, so a squad id went from
+    -- 20 bit draw rendered as hex (seven characters since 2026-09-12, five
+    -- before it), so a squad id went from
     -- `m6sq1` to `m0a3f1sq1` and `%d+` stopped matching the moment a tag
     -- contained a letter.
     --

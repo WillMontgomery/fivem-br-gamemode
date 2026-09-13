@@ -83,25 +83,31 @@ floor kind ~ weighted(ammo 74, weapon 16, consumable  6, throwable 4)
 uniform:
 
 ```
-ammo pool ~ weighted(light 20, smg 20, medium 20, shells 20,
-                     heavy 12, lmg 8)
+ammo pool ~ weighted(light 20, smg 20, medium 28, shells 20, heavy 12)
 ```
 
-The four common pools hold a 20% share each, which is exactly what a uniform
+`light`, `smg` and `shells` hold a 20% share each, which is exactly what a uniform
 draw over the five pools that existed before 2026-09-11 gave them. Holding them
 there is the whole point of the table: under a uniform draw the share of every
 pool moves whenever the pool *count* does, so pistol, SMG, rifle and shotgun
-ammo would have got 29% rarer when the pools went to seven and then commoner
-again when they came back to six, as a pure side effect of reorganizing the
-specialist ones.
+ammo would have got 29% rarer when the pools went to seven and commoner again
+each time they came back, as a pure side effect of reorganizing the specialist
+ones. A pool's share only moves when the *weapons* in it move.
 
-There are six pools as of 2026-09-12. `heavy` is the four marksman and sniper
-rifles plus the three launchers; `lmg` is the belt-fed guns and the minigun, and
-is labelled **Belt** on the floor and in the inventory. `heavy` reads 12 because
+There are five pools as of 2026-09-12, after two merges the same day. `heavy` is
+the four marksman and sniper rifles plus the three launchers, and reads 12 because
 it absorbed the 8 that belonged to the short-lived `sniper` pool along with the
-weapons that drew it, so the same ammunition is rolled at the same rate under one
-name. The 12/8 division of the specialist share is an assumption and is the knob
-to turn.
+weapons that drew it. `medium` is the eight assault rifles **plus the five machine
+guns** (`mg`, `gusenberg`, `combatmg`, `combatmgmk2` and the airdrop `minigun`) and
+reads 28 for the same reason: it absorbed the deleted `lmg` pool's 8 along with its
+guns. So in both cases the same ammunition is rolled at the same rate under one
+name instead of two.
+
+> **The 28 was chosen by Claude, not by the owner.** He asked for the machine guns
+> to live in medium and said nothing about the floor rate. Leaving medium on 20
+> would have thinned rifle ammo for assault rifle players, since medium now feeds
+> five more weapons than it did, as a side effect of a change about machine guns.
+> The 12/28 division of the merged shares is the knob to turn.
 
 Loose ground loot is deliberately almost all ammo, and **bandages and med kits
 cannot spawn on the floor at all** (`chestOnly` on the consumable, with a

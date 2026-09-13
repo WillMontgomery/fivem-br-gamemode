@@ -2022,6 +2022,204 @@ console.log('\nhistory: the allowlist is hard, and omission from it is silent')
   check('and the batch is reported as written', lastEmit('br:ddb:historyResult')?.args[1], true)
 }
 
+// ═══════════════════════ ONE ROW PER MATCH (br-matches) ═══════════════════════
+//
+// A SECOND TABLE, AND A DIFFERENT KIND OF WRITE FROM EVERY OTHER ONE HERE. The
+// history batch above is one item per PLAYER, idempotent by construction --
+// writing the same row twice produces the same row, which is why it can retry
+// its unprocessed items without a thought. This is one item per MATCH, keyed on
+// the match's NAME, and writing it twice would mean two different matches had
+// been given the same name. So it is the one write in this file that is
+// conditional on its key being absent, and the refusal is the feature.
+
+/** The envelope br_stats/server/persist.lua builds at match end. */
+const MATCH_ITEM = {
+  pk: '00d93aa',
+  matchId: 0xd93aa,
+  mode: 'squad',
+  startedAt: 1_699_999_100_000,
+  endedAt: 1_700_000_000_000,
+  total: 48,
+  participants: [
+    {
+      license: LIC,
+      squadId: 'm00d93aasq1',
+      placement: 1,
+      kills: 6,
+      downs: 2,
+      revives: 1,
+      damage: 1_412,
+      survivedMs: 1_020_000,
+      voltsEarned: 420,
+      voltsSpent: 250,
+      won: true,
+    },
+    {
+      license: 'license:11000010000102',
+      squadId: '',
+      placement: 7,
+      kills: 0,
+      downs: 0,
+      revives: 0,
+      damage: 61,
+      survivedMs: 90_000,
+      voltsEarned: 20,
+      voltsSpent: 0,
+      won: false,
+    },
+  ],
+}
+
+console.log('\nmatch row: keyed on the tag, written once, and conditional')
+{
+  bridge.reset()
+  bridge.reply({})
+
+  const threw = bridge.call('br:ddb:matchPut', 80, MATCH_ITEM)
+  check('the handler runs', why(threw), null)
+
+  const cmd = sent(0)
+  check('it is a PutItem, not a batch', cmd.kind, 'PutItemCommand')
+  check('against the game\'s own br-matches table', cmd.input.TableName, 'br-matches')
+
+  // THE CONDITION IS THE WHOLE FEATURE, exactly as it is for spend above. A
+  // handler that built the item and forgot this would overwrite one match's
+  // record with another's, and every other assertion in this block would still
+  // pass -- which is why it is asserted on the COMMAND rather than inferred.
+  check(
+    'the write refuses to replace an existing tag',
+    cmd.input.ConditionExpression,
+    'attribute_not_exists(pk)',
+  )
+
+  const it = unmarshall(cmd.input.Item)
+  check('the partition key is the seven-character tag', it.pk, '00d93aa')
+  check('and it is a string, because it is a key', typeof it.pk, 'string')
+  // THE NUMBER RIDES ALONG. Ringmaster can parse the tag back, but a reader
+  // holding the item should not have to -- and `num()` keeps a 28-bit id whole.
+  check('the numeric id is on the item too', it.matchId, 0xd93aa)
+  // SPELLED IN DECIMAL AS WELL AS HEX, on purpose: the assertion above would
+  // pass against a `num()` that mangled the value in a way the same literal
+  // mangles identically. 0xd93aa is 889,770.
+  check('undamaged by the number coercion', it.matchId, 889_770)
+
+  check('the mode is a string', it.mode, 'squad')
+  check('the start stamp is a wall clock', it.startedAt, 1_699_999_100_000)
+  check('the end stamp beside it', it.endedAt, 1_700_000_000_000)
+  check('and the field size', it.total, 48)
+
+  // THE PARTICIPANTS SURVIVE THE TRIP AS A LIST OF MAPS. This is the only
+  // nested structure this resource writes; a marshaller that flattened it would
+  // produce an item that stores and reads back as nothing in particular.
+  check('every participant is on the item', it.participants.length, 2)
+  const [top, tail] = it.participants
+  check('the winner keeps their license', top.license, LIC)
+  check('and their squad', top.squadId, 'm00d93aasq1')
+  check('and their placement', top.placement, 1)
+  check('and their kills', top.kills, 6)
+  check('and the two Volts figures the page draws', [top.voltsEarned, top.voltsSpent], [420, 250])
+  check('and the rest of the columns', [top.damage, top.downs, top.revives, top.survivedMs],
+    [1_412, 2, 1, 1_020_000])
+
+  // ═══ `won` IS THE WINNER, AND IT IS A BOOL ═══
+  //
+  // There is no top-level winner field, deliberately: Ringmaster's MatchView
+  // filters this list on `won`, so a second copy at the top of the item would
+  // be a second thing that can disagree with the first. And it is `=== true`
+  // rather than truthy for the reason #133 exists -- the last squad standing can
+  // be taken by the storm, so placement 1 and a win are different questions.
+  check('the winner is marked on their own row', top.won, true)
+  check('as a boolean, not a number', typeof top.won, 'boolean')
+  check('and the player who placed seventh is not', tail.won, false)
+  check('a solo entry carries an empty squad, not a zero', tail.squadId, '')
+
+  await bridge.settle()
+  const res = answer('br:ddb:matchResult')
+  check('and the write is reported as landed', res.ok, true)
+  check('naming the tag it wrote', res.extra.tag, '00d93aa')
+}
+
+console.log('\nmatch row: a reused tag is refused, loudly, and the match survives')
+{
+  bridge.reset()
+  // What DynamoDB answers when `attribute_not_exists(pk)` does not hold: the
+  // row is already there, under this name, for a DIFFERENT match.
+  const refused = new Error('The conditional request failed')
+  refused.name = 'ConditionalCheckFailedException'
+  bridge.reply(refused)
+
+  const threw = bridge.call('br:ddb:matchPut', 81, MATCH_ITEM)
+  check('the handler still does not throw', why(threw), null)
+
+  await bridge.settle()
+  const res = answer('br:ddb:matchResult')
+
+  // NOT REPORTED AS SUCCESS, which is the one difference from the incident
+  // write's conditional refusal. There, a refusal means "the row I wanted is
+  // already there" and the caller must stop retrying. HERE it means two
+  // different matches have been given one name, which is a fact somebody has to
+  // see -- so it answers false and carries the flag that makes the caller's
+  // message say what actually happened.
+  check('a collision is not success', res.ok, false)
+  check('and it is named as a duplicate rather than a generic failure',
+    res.extra.duplicate, true)
+  check('the tag comes back so the log line can name it', res.extra.tag, '00d93aa')
+
+  // THE GAME BOX SAYS IT AT THE MOMENT IT HAPPENS. This is the entire point of
+  // the conditional write: without it the symptom is one match's page showing
+  // another match's participants, found weeks later by somebody moderating from
+  // it.
+  check(
+    'and the box logs the collision with the tag in it',
+    bridge.logs.some((l) => l.includes('00d93aa') && /collision/i.test(l)),
+    true,
+  )
+}
+
+console.log('\nmatch row: a table that does not exist yet costs the record and nothing else')
+{
+  bridge.reset()
+  // The shape of a box deployed ahead of its table -- a real window on a fresh
+  // environment and on dev, even now that production has br-matches.
+  const missing = new Error('Requested resource not found')
+  missing.name = 'ResourceNotFoundException'
+  bridge.reply(missing)
+
+  const threw = bridge.call('br:ddb:matchPut', 82, MATCH_ITEM)
+  check('nothing raises into the match-end handler', why(threw), null)
+
+  await bridge.settle()
+  const res = answer('br:ddb:matchResult')
+  check('the write is reported as failed', res.ok, false)
+  check('but not as a collision', res.extra.duplicate, undefined)
+  check('and the cause travels with it', /ResourceNotFound|does not exist/.test(
+    String(res.extra.error)), true)
+  check(
+    'the log says the table is missing rather than printing a bare SDK error',
+    bridge.logs.some((l) => l.includes('br-matches')),
+    true,
+  )
+}
+
+console.log('\nmatch row: an unkeyable match is never written')
+{
+  bridge.reset()
+  bridge.reply({})
+
+  // NO TAG, NO ROW. br_stats guards this too, and it is guarded twice on
+  // purpose: `pk` is the partition key, and an item marshalled without one is a
+  // ValidationException at the far end rather than a missing record here.
+  const noKey = { ...MATCH_ITEM }
+  delete noKey.pk
+
+  const threw = bridge.call('br:ddb:matchPut', 83, noKey)
+  check('the handler runs', why(threw), null)
+  check('and sends nothing', bridge.calls.length, 0)
+
+  await bridge.settle()
+  check('answering false rather than pretending', answer('br:ddb:matchResult').ok, false)
+}
+
 console.log('\nspend: the debit reaches DynamoDB with its condition intact')
 {
   bridge.reset()
@@ -2306,6 +2504,8 @@ console.log('\nevery verb runs: no free variables anywhere in the bridge')
     'br:ddb:profileFetch': [4, LIC],
     'br:ddb:statsApply': [5, LIC, MATCH_PAYOUT],
     'br:ddb:historyPut': [6, [MATCH_ROW]],
+    // The MATCH's own row, as distinct from the per-player history above it.
+    'br:ddb:matchPut': [22, MATCH_ITEM],
     'br:ddb:inventoryFetch': [7, LIC],
     'br:ddb:purchase': [8, LIC, 'chute_azure', 750],
     'br:ddb:spend': [9, LIC, 750],

@@ -1794,6 +1794,37 @@ end)
 --- Runs off the roster's own 2Hz health sampling, so it sees the same numbers
 --- the storm does and needs no client cooperation. A player whose health did
 --- not move is not burning, whatever they are standing in.
+--- The live fire whose reach this player is inside, or nil.
+---
+--- ONE GEOMETRY, TWO READERS. Attribution asks it of a player who has just lost
+--- health, and the downed burn below asks it of a body that has no health left to
+--- lose -- and both have to mean the same thing by "in the fire", or a molotov
+--- could credit its owner for a kill it was not close enough to accelerate.
+--- @param e table
+--- @return table|nil
+local function fireOver(e)
+    if not e.pos then return nil end
+
+    local r = cfg.fireRadius or 6.0
+    local r2 = r * r
+    for _, f in ipairs(fires) do
+        if f.matchId == e.matchId then
+            local dx, dy = e.pos.x - f.x, e.pos.y - f.y
+            if dx * dx + dy * dy <= r2 and math.abs(e.pos.z - f.z) < 8.0 then
+                return f
+            end
+        end
+    end
+    return nil
+end
+
+-- HOW WIDE A GAP THIS TICK WILL CHARGE A BURNING BODY FOR, in ms. The beat is
+-- 500, so three of them is the ceiling: `burnAt` goes stale whenever the tick
+-- returns early on an empty ledger, and a body that walked out of one molotov and
+-- was knocked into another a minute later must not be charged for the minute.
+-- Anything wider is read as a fresh arrival and costs nothing.
+local BURN_MAX_GAP_MS = 1500
+
 BR.Sched.every(500, 'damage.fires', function()
     if #fires == 0 then return end
 
@@ -1805,9 +1836,6 @@ BR.Sched.every(500, 'damage.fires', function()
     fires = live
     if #fires == 0 then return end
 
-    local r = cfg.fireRadius or 6.0
-    local r2 = r * r
-
     BR.Roster.each(
         function(e) return e.state == BR.PlayerState.ALIVE
                         or e.state == BR.PlayerState.DBNO end,
@@ -1817,43 +1845,67 @@ BR.Sched.every(500, 'damage.fires', function()
             local hp = (e.hp or 100.0) + (e.armour or 0.0)
             local was = e.burnHp
             e.burnHp = hp
+
+            -- ═══ A DOWNED BODY IN THE FLAMES BLEEDS FASTER ═══
+            --
+            -- Owner, playtest 2026-09-12: "their body being on fire should
+            -- accelerate the bleed out."
+            --
+            -- THE HEALTH DELTA CANNOT ANSWER THIS AND NEVER COULD. A downed
+            -- player's hp is pinned at dbnoHp by the ledger (server/combat.lua's
+            -- knock) and their real health IS the bleed clock, so `hp >= was`
+            -- above is true of a burning body on every single tick -- which means
+            -- DBNO has been in this filter, walking past the guard, since the
+            -- ledger was written. What is observable is only WHERE they are, so
+            -- that is what this branch asks, and the seconds it charges are real
+            -- elapsed time rather than a damage number nobody can see.
+            --
+            -- client/dbno.lua is the other half: a downed ped refuses fire damage
+            -- now, so the flames cannot kill it and cannot cycle it through
+            -- resurrections either. The fire moved from the ped to the clock.
+            if e.state == BR.PlayerState.DBNO then
+                local f = fireOver(e)
+                local since = e.burnAt
+                e.burnAt = f and now or nil
+
+                if f and since and (now - since) <= BURN_MAX_GAP_MS then
+                    BR.Combat.burn(src, now - since, f.owner, f.item)
+                end
+                return
+            end
+            e.burnAt = nil
+
             -- Not hurt since the last sample: nothing to attribute. This is
             -- the whole guard -- without it, standing near a burnt-out patch
             -- would credit its owner for a storm death.
             if not was or hp >= was then return end
 
-            for _, f in ipairs(fires) do
-                if f.matchId == e.matchId then
-                    local dx, dy = e.pos.x - f.x, e.pos.y - f.y
-                    local dz = e.pos.z - f.z
-                    if dx * dx + dy * dy <= r2 and math.abs(dz) < 8.0 then
-                        e.lastHitBy = f.owner
-                        e.lastHitAt = now
-                        e.lastHitWeapon = f.item
+            local f = fireOver(e)
+            if f then
+                e.lastHitBy = f.owner
+                e.lastHitAt = now
+                e.lastHitWeapon = f.item
 
-                        -- SELF-HARM IS COUNTED HERE, because there is nowhere
-                        -- else left to count it.
-                        --
-                        -- The repeat guard used to live in the validator, on
-                        -- weaponDamageEvent. It could never fire: dropping
-                        -- three grenades at your own feet raises NO
-                        -- weaponDamageEvent at all (user capture,
-                        -- 2026-08-08 -- the log stayed empty and the player
-                        -- died), exactly like the molotov. Explosions are the
-                        -- only realistic way to hurt yourself, so the one path
-                        -- that could see it was the one path that never ran.
-                        --
-                        -- The damage still cannot be refused -- it is the
-                        -- engine's, applied on the victim's own machine -- but
-                        -- the PATTERN is now visible, which is what the rule
-                        -- was ever about. Blowing yourself up once is a
-                        -- mistake; doing it three times in five seconds is
-                        -- somebody exercising something.
-                        if f.owner == src and BR.Damage.noteSelfHit(src) then
-                            BR.Damage.noteRefusal(src, BR.ShotRefusal.SELF)
-                        end
-                        return
-                    end
+                -- SELF-HARM IS COUNTED HERE, because there is nowhere
+                -- else left to count it.
+                --
+                -- The repeat guard used to live in the validator, on
+                -- weaponDamageEvent. It could never fire: dropping
+                -- three grenades at your own feet raises NO
+                -- weaponDamageEvent at all (user capture,
+                -- 2026-08-08 -- the log stayed empty and the player
+                -- died), exactly like the molotov. Explosions are the
+                -- only realistic way to hurt yourself, so the one path
+                -- that could see it was the one path that never ran.
+                --
+                -- The damage still cannot be refused -- it is the
+                -- engine's, applied on the victim's own machine -- but
+                -- the PATTERN is now visible, which is what the rule
+                -- was ever about. Blowing yourself up once is a
+                -- mistake; doing it three times in five seconds is
+                -- somebody exercising something.
+                if f.owner == src and BR.Damage.noteSelfHit(src) then
+                    BR.Damage.noteRefusal(src, BR.ShotRefusal.SELF)
                 end
             end
         end)

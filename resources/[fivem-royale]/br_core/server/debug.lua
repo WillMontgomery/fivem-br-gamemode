@@ -488,7 +488,7 @@ end, RESTRICTED)
 
 RegisterCommand('brloot', function(_, args)
     -- READ AS HEX, because hex is the only form there is (#291). Match ids are
-    -- printed as five hex characters everywhere, and the argument to this verb
+    -- printed as seven hex characters everywhere, and the argument to this verb
     -- is somebody copying what the log just said. Parsing it as decimal would
     -- answer about a DIFFERENT match for any id made only of digits, and about
     -- no match at all for the other fifteen sixteenths of them.

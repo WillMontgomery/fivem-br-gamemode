@@ -304,7 +304,7 @@ builds keybinds out of commands, so `+brinteract` and `brslot3` are also E and
 | `brweather <name>`, `brweather`, `brweather reset` | server console only, dev mode | The same for the sky, over the same 15 names (`BR.World.WEATHERS`, `EXTRASUNNY` through `HALLOWEEN`). Bare, it prints the list. While a sky is set it **outranks** the storm's thunder and the island's overcast rather than fighting them; `reset` hands the sky back to both. Neither verb is server state — the clock is overridden per client and the weather is written per client — so what the server owns is the one small override record, sent whole |
 | `brscatter` | server | Spread everyone 3 km apart to test OneSync scoping |
 | `brforce <state>`, `brskip`, `brkill <id>` | server | Drive the match by hand |
-| `brloot [matchId]` | server | World loot: counts by kind and rarity, cells, who is subscribed. The id is the five hex characters the console prints, and is read as hex |
+| `brloot [matchId]` | server | World loot: counts by kind and rarity, cells, who is subscribed. The id is the seven hex characters the console prints, and is read as hex (a shorter tag printed before 2026-09-12 still resolves) |
 | `brinv <id>`, `brgive <id> <item> [n]` | server | Read or fill a player's inventory |
 | `brphase <n>` | server | Jump the storm to phase n, seamlessly from the live circle |
 | `brstormscale <0.05–1>` | server | Compress storm pacing for testing (0.1 ≈ a 2-minute cycle) |
