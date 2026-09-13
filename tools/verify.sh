@@ -1495,6 +1495,21 @@ if [ -f tools/dispatch.sh ]; then
             boundary=1
         fi
     fi
+
+    # AND THE VERB ACTUALLY RUN OVER REAL FILES, which the two gates above
+    # cannot do and were never going to. Both of them read the TEXT of
+    # dispatch.sh: one pins the verb set, one refuses a credential-shaped name in
+    # the allowlist. Neither can tell whether the report the box sends back is
+    # true, and the failure that shipped was exactly that -- `sv_hostname` moved
+    # into server-identity.cfg (65387ec) and a reporter still grepping server.cfg
+    # answered `not set` about a value that is set, with both gates green.
+    #
+    # IT ALSO ASSERTS THE KEY IS ABSENT FROM THE RESPONSE, on every box shape it
+    # builds. That is the allowlist's own promise, checked from the outside on
+    # output rather than from the inside on a list.
+    if [ -f tools/test_configreport.sh ]; then
+        bash tools/test_configreport.sh || boundary=1
+    fi
 fi
 
 # br_ringmaster: the commands it registers ARE its surface, so the list is
