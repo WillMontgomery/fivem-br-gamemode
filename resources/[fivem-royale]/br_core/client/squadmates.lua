@@ -28,7 +28,8 @@ local mates    = {}   -- [src] = latest server record for that squadmate
 local peds     = {}   -- [src] = local ped handle, or absent when out of scope
 local lastPush = 0
 -- Mates whose name is drawn BY US rather than by the engine, because they are
--- on the floor and a gamer tag cannot be lowered onto them.
+-- on the floor and a gamer tag cannot be lowered onto them. DBNO only: an OUT
+-- mate's ped is invisible, so their name is drawn by nobody (see the tick).
 -- [src] = { ped = handle, text = 'Alice [DOWN]', dim = boolean, downed = boolean }
 local low      = {}
 
@@ -433,16 +434,37 @@ BR.Loop.register(BR.Loop.TICK, 'squadmates.tags', function()
         -- the flight, and a tag on an invisible rider rendered as a name
         -- floating over the fuselage. Pre-drop there is nothing to label.
         --
-        -- OUT AND DOWNED MATES ARE STILL LABELLED. Nothing hides faster in a
-        -- firefight than the question "where did my teammate go down", and the
-        -- corpse is the answer. The state is written into the tag so it reads
-        -- at a glance rather than being a name that mysteriously stopped
-        -- moving (user report, 2026-08-05: could not see dead squadmates).
+        -- A DOWNED MATE IS STILL LABELLED. Nothing hides faster in a firefight
+        -- than the question "where did my teammate go down", and the crawling
+        -- body is the answer. The state is written into the tag so it reads at
+        -- a glance rather than being a name that mysteriously stopped moving
+        -- (user report, 2026-08-05: could not see dead squadmates).
         --
-        -- THE TAG STILL READS [DEAD], and that is deliberate rather than a
-        -- missed rename: the word on screen is the owner's, and #219 Q1 asks
-        -- him whether he wants a different one. A state renamed in the enum is
-        -- not a license to rewrite what a player reads.
+        -- ═══ AN OUT MATE IS NOT, AND THE CIRCUMSTANCE IS WHAT CHANGED ═══
+        --
+        -- Owner, 2026-09-13: "turn off playernames for dead squadmates. We
+        -- already have a 3dmarker at their position but since their ped is
+        -- invisible their playername is just floating text saying `Xeon
+        -- [DEAD]`."
+        --
+        -- THE WORD WAS NEVER THE PROBLEM AND HAS NOT BEEN OVERRULED. `[DEAD]`
+        -- was the owner's own, it answered his 2026-08-05 report, and #219 Q1
+        -- still asks him whether he wants a different one. What moved under it
+        -- is the BODY: his 2026-08-31 instruction -- "after a player has bled
+        -- out, their ped should become invisible. Only the 3dmarker (type 24)
+        -- and DUI should be shown at their position. I like the blip though --
+        -- let's keep that" -- is implemented in client/natives.lua, which drops
+        -- SetEntityVisible on an OUT player's own ped. So this label stopped
+        -- hanging over a corpse and started hanging over nothing.
+        --
+        -- NOTHING REPLACES IT, because the two things he named already carry
+        -- the position: client/revivekey.lua draws the type-24 marker and its
+        -- plate at the body, and the squad blip below is untouched and outlives
+        -- both. A label invented here to fill the gap would be UI he did not
+        -- ask for.
+        --
+        -- DBNO IS UNTOUCHED. A downed mate is crawling, visible, and revivable,
+        -- which is the whole of why that name exists.
         local e = BR.State.roster[src]
         local st = e and e.state
         local jumped = st == BR.PlayerState.FREEFALL
@@ -452,10 +474,7 @@ BR.Loop.register(BR.Loop.TICK, 'squadmates.tags', function()
             or st == BR.PlayerState.OUT
 
         local mark = ''
-        if st == BR.PlayerState.DBNO then mark = ' [DOWN]'
-        elseif st == BR.PlayerState.OUT then
-            mark = ' [DEAD]'
-        end
+        if st == BR.PlayerState.DBNO then mark = ' [DOWN]' end
 
         -- A GAMER TAG CANNOT BE LOWERED, SO A BODY ON THE FLOOR DOES NOT GET
         -- ONE (owner, 2026-08-17: names "drawing above a ped's standing height
@@ -469,11 +488,17 @@ BR.Loop.register(BR.Loop.TICK, 'squadmates.tags', function()
         -- animation rather than a posture the engine knows about, so the tag
         -- floats where the head would be if they stood up.
         --
-        -- So the two upright states keep the engine's tag -- it is the proven
-        -- path, it fades and occludes the way every other name in the game
-        -- does -- and the two floor states get a name this file draws itself,
-        -- at the head bone, in the loop below. The seam is deliberate: the
-        -- common case is not being rewritten to fix the uncommon one.
+        -- So the upright states keep the engine's tag -- it is the proven path,
+        -- it fades and occludes the way every other name in the game does --
+        -- and DBNO gets a name this file draws itself, at the head bone, in the
+        -- loop below. The seam is deliberate: the common case is not being
+        -- rewritten to fix the uncommon one.
+        --
+        -- OUT IS ON THIS LIST AND GETS NEITHER. It must not get an engine tag,
+        -- for the reason above and because the ped is invisible; and it no
+        -- longer gets a drawn one either, which is the 2026-09-13 change noted
+        -- further up. It falls through to the `else`, where dropTag tears down
+        -- whatever tag it was wearing while it was alive.
         local onFloor = st == BR.PlayerState.DBNO
             or st == BR.PlayerState.OUT
 
@@ -504,7 +529,7 @@ BR.Loop.register(BR.Loop.TICK, 'squadmates.tags', function()
             -- on, so the name leaves and returns with them rather than a beat
             -- apart.
             SetMpGamerTagVisibility(t.tag, 0, not scoped)
-        elseif ped ~= 0 and jumped then
+        elseif ped ~= 0 and jumped and st == BR.PlayerState.DBNO then
             dropTag(src)
             low[src] = {
                 ped  = ped,

@@ -8403,7 +8403,15 @@ do
         note('gamertag', text)
         return 900 + tagsMade
     end
-    function RemoveMpGamerTag() end
+    -- COUNTED, not swallowed. "The tag a mate wore while they were alive is
+    -- torn down when they die" is the half of the 2026-09-13 change that cannot
+    -- be seen by looking at what is drawn: an orphaned gamer tag hangs off an
+    -- invisible ped and nothing in the draw list mentions it.
+    local tagsRemoved = 0
+    function RemoveMpGamerTag(h)
+        tagsRemoved = tagsRemoved + 1
+        note('gamertag:remove', h)
+    end
     function SetMpGamerTagVisibility() end
     function IsSphereVisible() return true end
 
@@ -8653,24 +8661,66 @@ do
         'and nothing is drawn over them by hand',
         ('%d hand-drawn name(s)'):format(#drawn))
 
-    -- A DEAD mate is the owner's second sentence: "the playernames thing is
-    -- also true for dead players".
+    -- ═══ A DEAD MATE WEARS NO NAME AT ALL (owner, 2026-09-13) ═══
+    --
+    -- "turn off playernames for dead squadmates. We already have a 3dmarker at
+    -- their position but since their ped is invisible their playername is just
+    -- floating text saying `Xeon [DEAD]`."
+    --
+    -- THE LABEL USED TO BE RIGHT AND THE BODY MOVED OUT FROM UNDER IT. `[DEAD]`
+    -- answered his own 2026-08-05 report and the word is his; what changed is
+    -- that client/natives.lua now drops SetEntityVisible on an OUT player's own
+    -- ped, on his 2026-08-31 instruction -- so the name was hanging over nothing
+    -- and reading as a bug rather than as an answer.
+    --
+    -- MEASURED OUT OF REVIVE REACH, AT 4m, WHICH IS LOAD-BEARING. At the 1.0m
+    -- the rest of this block uses, "no name" would also be true of the BROKEN
+    -- code for a downed mate -- the revive prompt suppresses it -- so an
+    -- assertion made there would pass for a reason that has nothing to do with
+    -- the change. Out of reach, nothing suppresses anything, and the only way to
+    -- draw no name is to have none.
+    bodies[MATE].x = 4.0
     BR.State.roster[2].state = BR.PlayerState.OUT
-    fire(BR.Net.SQUAD_POS, { { src = 2, name = 'Bravo', i = 2, x = 1.0, y = 0.0,
+    fire(BR.Net.SQUAD_POS, { { src = 2, name = 'Bravo', i = 2, x = 4.0, y = 0.0,
                               state = BR.PlayerState.OUT } })
-    tagsMade = 0
+    tagsMade, tagsRemoved = 0, 0
     tickBand()
     drawn = {}
     frame(16)
-    local deadName = lastName()
-    ok(tagsMade == 0 and deadName ~= nil and deadName.text == 'Bravo [DEAD]',
-        'A DEAD MATE IS LABELLED THE SAME WAY, which the owner asked for by name',
-        ('tags %d, drew %s'):format(tagsMade,
-            deadName and tostring(deadName.text) or 'nothing'))
-    ok(deadName ~= nil and deadName.z < 30.0 + HEAD_STANDING,
-        'and below the height a standing head would be at',
-        deadName and ('%.2f vs %.2f'):format(deadName.z, 30.0 + HEAD_STANDING)
-                  or 'nothing was drawn')
+    ok(#drawn == 0,
+        'A DEAD MATE GETS NO OVERHEAD NAME -- their ped is invisible and the '
+        .. 'type-24 marker and the blip carry the position instead',
+        (#drawn > 0) and ('drew %q'):format(tostring(lastName().text))
+                     or 'nothing was drawn, which is the point')
+    ok(tagsMade == 0,
+        'and the engine is not asked for one either -- a gamer tag cannot be '
+        .. 'lowered onto a body, and there is no body to lower it onto',
+        ('the engine was asked for %d tag(s)'):format(tagsMade))
+
+    -- AND THE TAG THEY WERE WEARING WHILE ALIVE IS TORN DOWN, rather than left
+    -- orphaned on an invisible ped. The frame before this one had them ALIVE
+    -- with an engine tag (asserted above), so there is genuinely one to remove.
+    ok(tagsRemoved >= 1,
+        'and the tag they wore while they were alive is removed on the edge '
+        .. 'into OUT, not left hanging off an invisible ped',
+        ('RemoveMpGamerTag called %d time(s)'):format(tagsRemoved))
+
+    -- ═══ AND [DOWN] IS UNTOUCHED, which is the whole scope of the change ═══
+    --
+    -- A DBNO mate is crawling, visible and revivable. Same distance, same
+    -- fixture, one state apart: the name is back.
+    BR.State.roster[2].state = BR.PlayerState.DBNO
+    fire(BR.Net.SQUAD_POS, { { src = 2, name = 'Bravo', i = 2, x = 4.0, y = 0.0,
+                              state = BR.PlayerState.DBNO } })
+    tickBand()
+    drawn = {}
+    frame(16)
+    local downAgain = lastName()
+    ok(downAgain ~= nil and downAgain.text == 'Bravo [DOWN]',
+        'a DOWNED mate at the same distance still gets theirs -- he said dead, '
+        .. 'and a crawling player is not',
+        downAgain and tostring(downAgain.text) or 'nothing was drawn')
+    bodies[MATE].x = 1.0
 
     -- THE REVIVE PROMPT IS THE DUI HALF OF THE SAME SENTENCE.
     BR.State.roster[2].state = BR.PlayerState.DBNO
