@@ -280,6 +280,22 @@ Both prefixes are convars (`br_ddb_table_prefix`, default `ringmaster-`;
 `br_ddb_game_prefix`, default `br-`), so the names above are the defaults rather
 than constants.
 
+**Except on a dev box, where they are constants.** `sv_devMode` or `br_devMode`
+being true forces both prefixes to `dev-ringmaster-` and `dev-br-` and *ignores*
+the two convars above. That is the same OR `br_lib/shared/devgate.lua` does, read
+straight from the convars because `br_ddb` is a separate resource. Every row
+in the table then reads with a `dev-` in front of it, and the production tables
+are not nameable from that box at all. The reason it is forced rather than
+defaulted is the threat model this document is about: an override is a thing a
+config file can say, and the config file on a dev box is usually a copy of the
+production one. `br_ddb` prints the resolved prefixes, and any convar it
+ignored, once at startup. A box with neither flag set is entirely unaffected.
+
+The security consequence is the useful one: a dev box's instance role can be
+scoped to `dev-*`, so nothing in this contract is reachable from it even if the
+box is taken. Not the ban list, not the audit log, not the incident queue.
+`js-src/br_ddb/src/prefix.js` holds the decision and the reasoning.
+
 Everything touching `ringmaster-*` is the console's data and the game server only
 ever asks it questions about a key it already has. Everything touching `br-*` is
 the game's own, so that a match never fails because a web console in another

@@ -17,6 +17,7 @@ import { artifactNames, isSpoolFile } from './artifacts.js'
 import { effective } from './ban.js'
 import { buildIncidentClose } from './close.js'
 import { buildIncidentItem } from './incident.js'
+import { banner, resolvePrefixes } from './prefix.js'
 import { spendCost, spendUpdate } from './spend.js'
 import { buildStatsUpdate } from './stats.js'
 import { projectVerdict } from './verdict.js'
@@ -97,7 +98,24 @@ import { projectVerdict } from './verdict.js'
  */
 
 const REGION = GetConvar('br_ddb_region', 'us-east-2')
-const TABLE_PREFIX = GetConvar('br_ddb_table_prefix', 'ringmaster-')
+
+/**
+ * Both table prefixes, resolved once, here.
+ *
+ * ON A DEV BOX THEY ARE FORCED, NOT DEFAULTED. `sv_devMode` or `br_devMode`
+ * being true makes every table this file names start with `dev-`, and the two
+ * prefix convars are ignored rather than consulted. The reasoning, the cost and
+ * the exact list of tables a dev box then needs are in src/prefix.js; the short
+ * version is that a dev box writing the live server's tables is a silent
+ * failure, and the only reliable way to stop it is to not let a config file
+ * have an opinion. A box with neither convar set is completely unaffected.
+ *
+ * `GetConvar` is handed over rather than called inside, so the decision is
+ * testable without a FiveM runtime.
+ */
+const PREFIXES = resolvePrefixes(GetConvar)
+
+const TABLE_PREFIX = PREFIXES.table
 
 /**
  * The GAME's own tables, separate from Ringmaster's.
@@ -106,9 +124,10 @@ const TABLE_PREFIX = GetConvar('br_ddb_table_prefix', 'ringmaster-')
  * console's data, which this resource only reads; `br-*` is the server's own,
  * which it reads and writes. Keeping them apart lets an IAM policy say exactly
  * that, rather than granting write on a wildcard that also covers the ban list
- * and the audit log.
+ * and the audit log. Dev mode moves BOTH and keeps them apart while it does it,
+ * so that separation survives onto the dev box's role as well.
  */
-const TABLE_PREFIX_GAME = GetConvar('br_ddb_game_prefix', 'br-')
+const TABLE_PREFIX_GAME = PREFIXES.game
 
 /**
  * How long a single lookup may take before we give up on it.
@@ -2186,6 +2205,12 @@ on('br:ddb:selftest', (req) => {
       })
     })
 })
+
+// EMPTY ON A PRODUCTION BOX, so the line below is the whole of what a live
+// server prints, exactly as it always was. On a dev box this says which
+// prefixes were resolved and why, which is the one question an operator staring
+// at a console cannot otherwise answer.
+for (const line of banner(PREFIXES)) console.log(line)
 
 console.log(
   `[br_ddb] ready -- region ${REGION}, ${TABLE_PREFIX}* read-only (bans, grants, maintenance)`

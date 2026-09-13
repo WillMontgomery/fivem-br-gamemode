@@ -2,6 +2,7 @@ import { artifactNames, ARTIFACT_PREFIX, isSpoolFile } from '../src/artifacts.js
 import { effective, isActive } from '../src/ban.js'
 import { buildIncidentClose, CLOSE_LIMITS } from '../src/close.js'
 import { buildIncidentItem, LIMITS } from '../src/incident.js'
+import { banner, resolvePrefixes } from '../src/prefix.js'
 import { spendCost, spendUpdate, SPEND_MAX } from '../src/spend.js'
 import { buildStatsUpdate, STATS_ADDS, STATS_SETS } from '../src/stats.js'
 import { projectVerdict, verdictWord } from '../src/verdict.js'
@@ -12,7 +13,7 @@ import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { marshall, unmarshall } from './aws_stub.mjs'
-import { loadBridge, lastEmit } from './bridge.mjs'
+import { loadBridge, loadIsolated, lastEmit } from './bridge.mjs'
 
 /**
  * Tests for the decisions in br_ddb that are pure arithmetic on data, and
@@ -1696,6 +1697,154 @@ console.log('\nstats: a grant is not a match')
   check('but an empty name is an absent one', blank.ExpressionAttributeValues[':nm'], undefined)
 }
 
+// ------------------------------------------------------- which tables at all ---
+//
+// The prefixes decide, before any other decision in this file, WHICH DATABASE
+// every one of them lands in. A dev box that resolves `br-` writes the live
+// server's XP, match records and moderation cases, and every write succeeds --
+// there is no error, no log line and no symptom until somebody notices numbers
+// moving on a server nobody was playing on.
+//
+// The convar-shaped fix (`set br_ddb_game_prefix dev-br-` in the dev box's
+// config) is a thing a person has to remember, which is the same thing as a
+// thing a person will one day forget. So dev mode drives it, and these cases
+// pin the three answers that matter: production is untouched, a dev box is
+// moved, and a config file cannot argue with either.
+
+console.log('\ntable prefixes: production is exactly what it always was')
+{
+  // The only convar reader in these cases: a map, with the caller's fallback
+  // for anything absent. Same contract as FiveM's GetConvar.
+  const convars = (map) => (key, fallback) =>
+    Object.hasOwn(map, key) ? map[key] : fallback
+
+  const bare = resolvePrefixes(convars({}))
+  check('no convars at all is not dev mode', bare.dev, false)
+  check('and the console family is the shipped default', bare.table, 'ringmaster-')
+  check('and the game family is the shipped default', bare.game, 'br-')
+  check('and nothing is announced', banner(bare), [])
+
+  // A production box that DOES set the prefixes explicitly still gets them.
+  // This is the path an operator with tables of their own is on, and dev mode
+  // must not have quietly taken it away from them.
+  const named = resolvePrefixes(convars({
+    br_ddb_table_prefix: 'rm2-',
+    br_ddb_game_prefix: 'game2-',
+  }))
+  check('an explicit console prefix is honored off dev', named.table, 'rm2-')
+  check('an explicit game prefix is honored off dev', named.game, 'game2-')
+  check('and that is still not dev mode', named.dev, false)
+  check('and still announces nothing', banner(named), [])
+
+  // The convars exist and say the OPPOSITE of dev. `false` is not `true`.
+  const off = resolvePrefixes(convars({ sv_devMode: 'false', br_devMode: 'false' }))
+  check('both flags explicitly false is production', off.dev, false)
+  check('and the production game tables', off.game, 'br-')
+
+  // Neither is a boolean on the wire: GetConvar returns strings, and the value
+  // a config file most plausibly carries by accident is one of these.
+  for (const v of ['1', 'yes', 'TRUE', 'True', '']) {
+    const odd = resolvePrefixes(convars({ sv_devMode: v }))
+    check(`sv_devMode "${v}" is not dev mode -- only the string true is`, odd.dev, false)
+  }
+}
+
+console.log('\ntable prefixes: either dev convar moves both families')
+{
+  const convars = (map) => (key, fallback) =>
+    Object.hasOwn(map, key) ? map[key] : fallback
+
+  // BOTH NAMES, SEPARATELY. br_lib/shared/devgate.lua ORs them, and a box with
+  // only one set is a dev box to every other resource in the project. If this
+  // read only one name, that box would be in dev mode everywhere except the
+  // place where it decides which database to write.
+  const sv = resolvePrefixes(convars({ sv_devMode: 'true' }))
+  check('sv_devMode alone is dev mode', sv.dev, true)
+  check('and the game tables move', sv.game, 'dev-br-')
+  check('and the console tables move with them', sv.table, 'dev-ringmaster-')
+
+  const br = resolvePrefixes(convars({ br_devMode: 'true' }))
+  check('br_devMode alone is dev mode', br.dev, true)
+  check('and the game tables move', br.game, 'dev-br-')
+  check('and the console tables move with them', br.table, 'dev-ringmaster-')
+
+  const both = resolvePrefixes(convars({ sv_devMode: 'true', br_devMode: 'true' }))
+  check('both set is dev mode', both.dev, true)
+  check('and the banner names both', both.on, ['sv_devMode', 'br_devMode'])
+
+  // The table names the owner has to create in AWS, spelled out, because they
+  // are the deliverable and a typo here is a table that silently is not there.
+  check('the dev profile/history table', `${both.game}players`, 'dev-br-players')
+  check('the dev match table', `${both.game}matches`, 'dev-br-matches')
+  check('the dev ban table', `${both.table}bans`, 'dev-ringmaster-bans')
+  check('the dev grants table', `${both.table}grants`, 'dev-ringmaster-grants')
+  check('the dev maintenance table', `${both.table}maintenance`, 'dev-ringmaster-maintenance')
+  check('the dev incident table', `${both.table}incidents`, 'dev-ringmaster-incidents')
+
+  // THE TWO FAMILIES STAY APART. Collapsing them onto one `dev-` prefix would
+  // read fine and would throw away the ownership split that lets an IAM policy
+  // grant write on the game's tables without granting it on the ban list.
+  check('the two families are still distinguishable', both.table === both.game, false)
+}
+
+console.log('\ntable prefixes: a config file cannot argue with dev mode')
+{
+  const convars = (map) => (key, fallback) =>
+    Object.hasOwn(map, key) ? map[key] : fallback
+
+  // THE CASE THIS WHOLE MECHANISM EXISTS FOR. The dev box's server.cfg was
+  // copied from the live box, so it carries the live box's explicit prefixes.
+  // If an explicit convar won here, the dev flag would be decoration and the
+  // copied config would put a dev box back on production tables.
+  const copied = resolvePrefixes(convars({
+    br_devMode: 'true',
+    br_ddb_table_prefix: 'ringmaster-',
+    br_ddb_game_prefix: 'br-',
+  }))
+  check('a copied production config does not win', copied.game, 'dev-br-')
+  check('and does not win on the console family either', copied.table, 'dev-ringmaster-')
+  // Set to the defaults, so there is nothing surprising to report.
+  check('and nothing is reported as ignored', copied.ignored, [])
+
+  // An explicit prefix that is NOT the default. Ignored the same way, and said
+  // out loud, because a setting that silently does nothing is how somebody
+  // spends an hour debugging the wrong box.
+  const argued = resolvePrefixes(convars({
+    sv_devMode: 'true',
+    br_ddb_game_prefix: 'br-',
+    br_ddb_table_prefix: 'staging-',
+  }))
+  check('an explicit console prefix loses to dev mode', argued.table, 'dev-ringmaster-')
+  check('and it is not folded into the dev name either', argued.table.includes('staging'), false)
+  check('and the ignored setting is reported', argued.ignored, [
+    { convar: 'br_ddb_table_prefix', value: 'staging-' },
+  ])
+  check(
+    'and the banner says so in words',
+    banner(argued).some((l) => l.includes('IGNORING br_ddb_table_prefix "staging-"')),
+    true,
+  )
+
+  // NOT `dev- + whatever the convar said`. Prepending would leave an explicit
+  // convar choosing half the table name, which is most of the way back to a
+  // config file deciding which database a box writes.
+  const weird = resolvePrefixes(convars({
+    br_devMode: 'true',
+    br_ddb_game_prefix: 'prod-br-',
+  }))
+  check('a dev box never builds on the convar it was given', weird.game, 'dev-br-')
+
+  // THE INVARIANT, AS ONE ASSERTION. Whatever the config said, every table a
+  // dev box can name begins with `dev-`. This is the property an IAM role
+  // scoped to `dev-*` can be written against.
+  check(
+    'every prefix a dev box resolves starts with dev-',
+    [weird.game, weird.table, argued.game, argued.table, copied.game, copied.table]
+      .filter((p) => !p.startsWith('dev-')),
+    [],
+  )
+}
+
 // -------------------------------------------------------------- handlers ---
 //
 // ═══ EVERYTHING ABOVE THIS LINE TESTS A FUNCTION. NOTHING ABOVE IT RAN A
@@ -2458,6 +2607,202 @@ console.log('\nban check: neither identifier, and a failure')
   // docs/ban-contract.md refuses.
   check('one unreadable row fails the whole check open', res.ok, false)
   check('and says so', res.extra.error, 'ProvisionedThroughputExceededException')
+}
+
+// --------------------------------------- which tables, taken off the wire ---
+//
+// `resolvePrefixes` has its own cases above and they pin the DECISION. This
+// block pins the CONSEQUENCE, which is a different statement and the one that
+// actually protects the live tables: a resolution nothing reads is worth
+// nothing, and the failure this project has already shipped once is a
+// `TableName` built from a constant that stopped meaning what its name said.
+//
+// So src/index.js is loaded a second time with the dev convar set, its handlers
+// are driven, and the assertions are on the `TableName` that reached the SDK.
+// A third load with no convars at all is the control: it has to produce the
+// historic names, character for character, or the production path moved.
+//
+// See `loadIsolated` in scripts/bridge.mjs for how two instances of a
+// module-scope-side-effects file coexist.
+
+/**
+ * Every table one command names.
+ *
+ * TWO PLACES, NOT ONE. `BatchWriteItem` carries its table as a KEY of
+ * `RequestItems` rather than as a `TableName`, and match history is the only
+ * write that goes through it -- so reading `TableName` alone would leave the
+ * 48-rows-per-match path out of exactly the check that exists to cover it.
+ */
+const tablesNamed = (c) => [
+  ...(c.input.TableName ? [c.input.TableName] : []),
+  ...Object.keys(c.input.RequestItems ?? {}),
+]
+
+console.log('\ndev mode: the tables a dev box actually names')
+{
+  const dev = await loadIsolated({ br_devMode: 'true' })
+  const CASE = '11111111-2222-4333-8444-555555555555'
+
+  // Every verb that names a table, one of each family, driven for real.
+  const DRIVE = [
+    ['br:ddb:profileFetch', [70, LIC]],
+    ['br:ddb:statsApply', [71, LIC, MATCH_PAYOUT]],
+    ['br:ddb:matchPut', [72, MATCH_ITEM]],
+    ['br:ddb:historyPut', [73, [{
+      license: LIC, sk: 'match#1700000000000#m1', mode: 'solo',
+      placement: 3, kills: 2, damage: 400, survivedMs: 600_000,
+      xpEarned: 100, voltsEarned: 200, won: false,
+    }]]],
+    ['br:ddb:banCheck', [74, LIC, DISCORD]],
+    ['br:ddb:grantsFetch', [75, LIC]],
+    ['br:ddb:maintenance', [76]],
+    ['br:ddb:putIncident', [77, 'token-dev', refusalPayload()]],
+    ['br:ddb:incidentVerdict', [78, CASE]],
+  ]
+
+  bridge.reset()
+  for (const [verb, args] of DRIVE) {
+    check(`dev instance runs ${verb}`, why(dev.call(verb, ...args)), null)
+  }
+  await bridge.settle()
+
+  const named = [...new Set(bridge.calls.flatMap(tablesNamed))].sort()
+
+  // THE ASSERTION THE OWNER'S DEV BOX DEPENDS ON. Not "the prefix variable is
+  // dev-", but "these are the table names on the wire, and this is all of them".
+  check('a dev box names exactly these tables', named, [
+    'dev-br-matches',
+    'dev-br-players',
+    'dev-ringmaster-bans',
+    'dev-ringmaster-grants',
+    'dev-ringmaster-incidents',
+    'dev-ringmaster-maintenance',
+  ])
+
+  // Said as the negative too, because the list above passing is not by itself
+  // the guarantee: the guarantee is that nothing WITHOUT the prefix was named.
+  check(
+    'and no production table is reachable from it',
+    named.filter((t) => !t.startsWith('dev-')),
+    [],
+  )
+
+  // The close path builds its table name in a different place -- the name is
+  // passed INTO buildIncidentClose rather than read inside it -- so it gets its
+  // own assertion rather than riding on the filing path's.
+  bridge.reset()
+  check('dev instance runs br:ddb:incidentClose', why(dev.call('br:ddb:incidentClose', 79, {
+    incidentId: CASE,
+    matchEndedAt: 1_700_000_500_000,
+    matchStartedAt: 1_700_000_000_000,
+    verdict: 'upheld',
+    byName: 'Admin',
+    byLicense: LIC,
+  })), null)
+  await bridge.settle()
+  check('a close lands on the dev incident table', sent(0).input.TableName, 'dev-ringmaster-incidents')
+
+  // THE BANNER, off the real load. A diagnostic nobody can read is not a
+  // diagnostic, and this is the line the owner will be looking at on the dev
+  // box's console.
+  check(
+    'the dev box announces the mode',
+    dev.logs.some((l) => l.startsWith('[br_ddb] DEV MODE (br_devMode=true).')),
+    true,
+  )
+  check(
+    'and says what it will not touch',
+    dev.logs.some((l) => l.includes('will NOT touch ringmaster-* or br-*')),
+    true,
+  )
+  check(
+    'and the ready line carries the dev prefixes',
+    dev.logs.some((l) => l.includes('dev-ringmaster-* read-only') && l.includes('dev-br-* read/write')),
+    true,
+  )
+}
+
+console.log('\ndev mode: a box with neither convar is untouched')
+{
+  // THE CONTROL, AND IT IS THE IMPORTANT HALF. Everything above describes a box
+  // that does not exist yet. This is the box that is live right now, loaded the
+  // same way, and the expected values are the names that have been in
+  // DEPLOY.md since the tables were created.
+  const prod = await loadIsolated({})
+
+  bridge.reset()
+  for (const [verb, args] of [
+    ['br:ddb:profileFetch', [80, LIC]],
+    ['br:ddb:matchPut', [81, MATCH_ITEM]],
+    ['br:ddb:banCheck', [82, LIC, DISCORD]],
+    ['br:ddb:grantsFetch', [83, LIC]],
+    ['br:ddb:maintenance', [84]],
+    ['br:ddb:putIncident', [85, 'token-prod', refusalPayload()]],
+  ]) {
+    check(`production instance runs ${verb}`, why(prod.call(verb, ...args)), null)
+  }
+  await bridge.settle()
+
+  check(
+    'a production box names exactly the tables it always has',
+    [...new Set(bridge.calls.flatMap(tablesNamed))].sort(),
+    [
+      'br-matches',
+      'br-players',
+      'ringmaster-bans',
+      'ringmaster-grants',
+      'ringmaster-incidents',
+      'ringmaster-maintenance',
+    ],
+  )
+
+  // NOT ONE EXTRA CONSOLE LINE. The dev banner is the new behavior; on a
+  // production box the startup output has to be what it was, because "the log
+  // changed" is how a change that was supposed to be invisible gets noticed at
+  // three in the morning.
+  check(
+    'and prints one line at startup, the same one as before',
+    prod.logs.filter((l) => l.startsWith('[br_ddb]')).length,
+    1,
+  )
+  check(
+    'and it is the ready line, with the production prefixes',
+    prod.logs.some((l) => l.includes('ringmaster-* read-only') && l.includes('br-* read/write')),
+    true,
+  )
+  check(
+    'and nothing on it mentions dev',
+    prod.logs.filter((l) => /DEV MODE|dev-/.test(l)),
+    [],
+  )
+}
+
+console.log('\ndev mode: an explicit prefix on a dev box does not win')
+{
+  // The scenario, concretely: the dev box's server.cfg was copied off the live
+  // box and still carries its prefixes. Under a DEFAULT rather than a force,
+  // every assertion here would come back with a production table name.
+  const argued = await loadIsolated({
+    sv_devMode: 'true',
+    br_ddb_game_prefix: 'br-',
+    br_ddb_table_prefix: 'ringmaster-',
+  })
+
+  bridge.reset()
+  argued.call('br:ddb:profileFetch', 90, LIC)
+  argued.call('br:ddb:putIncident', 91, 'token-argued', refusalPayload())
+  await bridge.settle()
+
+  check(
+    'the copied config loses on both families',
+    [...new Set(bridge.calls.flatMap(tablesNamed))].sort(),
+    ['dev-br-players', 'dev-ringmaster-incidents'],
+  )
+  check(
+    'and the banner names the flag that did it',
+    argued.logs.some((l) => l.startsWith('[br_ddb] DEV MODE (sv_devMode=true).')),
+    true,
+  )
 }
 
 // ------------------------------------------------- no free variables, ever ---

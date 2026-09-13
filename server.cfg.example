@@ -402,6 +402,26 @@ ensure br_ringmaster     # optional -- the admin console's game-side half
 #
 # Both have working defaults; set them only if your tables live elsewhere.
 # `brddb` in the server console proves the box can actually reach DynamoDB.
+#
+# A DEV BOX MOVES ITSELF, AND THESE TWO SETTINGS STOP APPLYING TO IT. If either
+# sv_devMode or br_devMode is true (see Development, further down), br_ddb reads
+# and writes `dev-` tables and CANNOT reach the production ones:
+#
+#   dev-br-players            dev-ringmaster-bans
+#   dev-br-matches            dev-ringmaster-grants
+#                             dev-ringmaster-maintenance
+#                             dev-ringmaster-incidents
+#
+# That is forced, not defaulted: br_ddb_table_prefix and br_ddb_game_prefix are
+# IGNORED on a dev box, and br_ddb says on the console which ones it ignored.
+# The reason is that a dev box on production tables is silent -- the writes all
+# succeed -- so it must not be possible to reach that state by copying a
+# server.cfg from the live box, which is the way it would actually happen.
+#
+# The six tables above have to exist in DynamoDB before a dev box is useful,
+# with the same keys as the production ones (DEPLOY.md section 2 lists them).
+# They start EMPTY: a dev box does not see admins granted on the live console,
+# because it reads dev-ringmaster-grants rather than ringmaster-grants.
 # ---------------------------------------------------------------------------
 # set br_ddb_region       "us-east-2"
 # set br_ddb_table_prefix "ringmaster-"
@@ -825,6 +845,12 @@ setr sv_showBusySpinnerOnLoadingScreen false
 # command in the list below refuses on the console, the client's F8 dev commands
 # refuse too, and a match needs a full lobby to start. Flip BOTH to true here
 # and restart the server.
+#
+# IT ALSO DECIDES WHICH DATABASE THIS BOX WRITES. Either of these being true
+# moves br_ddb onto `dev-` tables -- dev-br-players, dev-br-matches and the four
+# dev-ringmaster-* -- and takes production out of its reach entirely. See the
+# br_ddb block further up for the table list and for why that is forced rather
+# than merely defaulted. br_ddb prints which prefixes it resolved at startup.
 #
 # AND FLIP BOTH BACK. br_devMode is the replicated one, so a box where only
 # sv_devMode was set to false and br_core restarted reads the br_devMode it

@@ -247,6 +247,50 @@ The game box needs `GetItem`, `PutItem`, `UpdateItem`, `BatchWriteItem` and
 `Query` on `br-*`. It keeps **read-only** access to `ringmaster-*`, which is the
 console's data.
 
+### A dev box uses `dev-` tables, and cannot reach these
+
+**`sv_devMode` or `br_devMode` being true moves every table `br_ddb` names.** It
+is not a separate setting and there is nothing extra to remember: a dev box is
+already a dev box for the rest of the gamemode, and this follows the same flag.
+A box with neither convar set behaves exactly as it always has.
+
+**It is forced, not defaulted.** On a dev box `br_ddb_table_prefix` and
+`br_ddb_game_prefix` are *ignored*, and `br_ddb` prints which ones it ignored.
+A dev box that writes production tables is a silent failure, because every write
+succeeds, and the realistic way to get there is copying the live box's
+`server.cfg`, which a default-with-override would not stop.
+
+**Create these six before standing a dev box up.** Same region (`us-east-2`),
+same on-demand billing, same key schema as the production table each one shadows:
+
+| Dev table | Partition key | Sort key | Shadows |
+|---|---|---|---|
+| `dev-br-players` | `pk` (String) | `sk` (String) | `br-players` |
+| `dev-br-matches` | `pk` (String) | *none* | `br-matches` |
+| `dev-ringmaster-bans` | `license` (String) | *none* | `ringmaster-bans` |
+| `dev-ringmaster-grants` | `license` (String) | *none* | `ringmaster-grants` |
+| `dev-ringmaster-maintenance` | `id` (String) | *none* | `ringmaster-maintenance` |
+| `dev-ringmaster-incidents` | `incidentId` (String) | *none* | `ringmaster-incidents` |
+
+**They start empty, and two of them being empty is visible.** The dev box reads
+`dev-ringmaster-grants`, so admins granted on the live console are not admins
+there until a row is added; and it reads `dev-ringmaster-bans`, so nobody banned
+on the live server is banned there. That is the price of the dev box never
+naming a production table, and it buys something worth having: **the dev box's
+instance role can be scoped to `dev-*` and nothing else**, which is a guarantee
+no amount of care in the code can match. Scope it that way.
+
+The startup banner on a dev box says what it resolved:
+
+```
+[br_ddb] DEV MODE (sv_devMode=true, br_devMode=true). Table prefixes forced to "dev-".
+[br_ddb]   dev-br-players, dev-br-matches read/write (profile, inventory, stats, history, match rows)
+[br_ddb]   dev-ringmaster-bans, dev-ringmaster-grants, dev-ringmaster-maintenance read-only, dev-ringmaster-incidents append + verdict-read
+[br_ddb]   This box will NOT touch ringmaster-* or br-*. Those are production.
+```
+
+A production box prints no such block, and its `ready` line is unchanged.
+
 > `BatchWriteItem` is a *separate* IAM action from `PutItem` — a policy granting
 > only the latter denies the batch. If match history is the one thing not
 > appearing, that is the first place to look; the server log says
@@ -379,7 +423,7 @@ Edit `server.cfg`:
 |---|---|
 | `sv_licenseKey` | From <https://keymaster.fivem.net>. The server will not start without it. |
 | `add_principal` | Uncomment and insert your own license identifier to get admin. |
-| `sv_devMode` / `br_devMode` | **Set both to `false` for production.** They lower the minimum players to start and enable client dev tools. |
+| `sv_devMode` / `br_devMode` | **Set both to `false` for production.** They lower the minimum players to start, enable client dev tools, and move `br_ddb` onto the `dev-` tables (section 2). |
 | `sv_maxclients` | 48 is the free OneSync ceiling — see the note in `server.cfg` before raising it. |
 
 ### The dev/public split: `tunables.cfg`
