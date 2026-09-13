@@ -35,7 +35,7 @@ it at `$LOCALAPPDATA/Programs/Lua/bin/`.
 | **Forward locals** | Catches a `local function` called above its own declaration. |
 | **Player states** | Every `PlayerState` reference across the tree names one of the nine that exist. A typo'd member is `nil`, and a comparison against `nil` is not an error — it is a branch that never runs. |
 | **Bool natives** | A `BOOL` native read as a bare Lua truth value, against a recorded baseline of the known set. `0` is truthy in Lua and several natives answer `1`/`0`, so `if IsThing() then` is true forever; the gate proves the tree has not got worse, and `test_bool_natives.lua` proves the gate still detects. |
-| **Config report** | The convar allowlist may not name a credential. |
+| **Config report** | The convar allowlist may not name a credential. Since `configreport` began reading `server-identity.cfg` as well as `server.cfg`, `tools/test_configreport.sh` also runs the verb over six temporary box shapes and reads the JSON back: migrated, unmigrated and half-migrated boxes all report their `sv_hostname`, and none of them reports `sv_licenseKey` or its value. The allowlist gate reads the *text* of `dispatch.sh`, so it stayed green through a reporter that answered `not set` about a hostname that was set; this one asks the verb. |
 | **Voice defaults** | Voice modes are mutually exclusive, and the default agrees in Lua, in TypeScript and in the built bundle — three copies of one constant, compared as text. |
 | **Tunable overrides** | Overridable keys are server-only, and every consumer loads them in order. |
 | **Manifest coverage** | Every `.lua` is declared in an fxmanifest. |
