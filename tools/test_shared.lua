@@ -2935,9 +2935,56 @@ end
 
 describe('config')
 do
-    ok(BR.Config.Match.maxPlayers <= 48,
-        'maxPlayers respects the free OneSync ceiling',
-        'above 48 the server fails its heartbeat check and delists')
+    -- THE CLOSED BETA'S SIZING, AND IT IS TWO NUMBERS RATHER THAN ONE
+    -- (infradocs#23).
+    --
+    -- What used to stand here was `maxPlayers <= 48`, named "respects the free
+    -- OneSync ceiling". That sentence is true of `sv_maxclients` -- the
+    -- CONNECTION cap, set in server.cfg -- and was never true of this value,
+    -- which caps ONE MATCH: both of its readers compare it against
+    -- BR.Server.countIn(m), the headcount of a single instance. The assertion
+    -- is replaced rather than loosened, because a bound that reads as a fact
+    -- about a different setting is how the two got confused in the first place.
+    ok(BR.Config.Match.maxPlayers == 24,
+        'a match holds 24 players',
+        tostring(BR.Config.Match.maxPlayers))
+
+    ok(BR.Config.Match.minToStartProd == 2,
+        'and a production match starts once two of them are queued',
+        tostring(BR.Config.Match.minToStartProd))
+
+    -- The two the beta did NOT change, pinned so a future sizing pass has to
+    -- mean it. minToStart is the dev minimum that lets a lone client walk the
+    -- whole flow; maxSquadSize is four because a squad is four.
+    ok(BR.Config.Match.minToStart == 1,
+        'while the dev minimum stays 1, so one client can still walk the flow',
+        tostring(BR.Config.Match.minToStart))
+
+    ok(BR.Config.Match.maxSquadSize == 4,
+        'and a squad is still four',
+        tostring(BR.Config.Match.maxSquadSize))
+
+    -- THE RELATIONSHIP THE OLD ASSERTION WAS REACHING FOR, stated between the
+    -- two values it actually holds between. A match cap above the connection
+    -- cap is a lobby that can never fill; below it -- which is the beta's
+    -- shape, 24 in a match and 48 able to connect -- is a second match forming
+    -- beside the first, which is the point.
+    local maxclients = nil
+    local cfg = io.open('server.cfg.example', 'r')
+    if cfg then
+        for line in cfg:lines() do
+            local n = line:match('^%s*sv_maxclients%s+(%d+)')
+            if n then maxclients = tonumber(n) end
+        end
+        cfg:close()
+    end
+    ok(maxclients ~= nil,
+        'server.cfg.example still sets sv_maxclients',
+        'nothing matched -- the connection cap moved or was renamed')
+    ok(maxclients ~= nil and BR.Config.Match.maxPlayers <= maxclients,
+        'and the match cap never exceeds the connection cap',
+        ('maxPlayers %s, sv_maxclients %s')
+            :format(tostring(BR.Config.Match.maxPlayers), tostring(maxclients)))
 
     local phases = BR.Config.Storm.phases
     local shrinking = true

@@ -2018,6 +2018,13 @@ do
     reset()
     BR.Server.devMode = true       -- minToStart 2, minSquads 1
 
+    -- THE SHIPPED PRODUCTION MINIMUM, CAPTURED RATHER THAN WRITTEN DOWN. This
+    -- block moves it twice and has to put it back; the literal it used to put
+    -- back was 16, which stopped being the shipped value when the beta sized
+    -- production at 2 (infradocs#23) and left every later block in this suite
+    -- running against a number the config no longer holds.
+    local SHIPPED_MIN_TO_START_PROD = BR.Config.Match.minToStartProd
+
     ok(BR.Match.startBlocker().reason == 'players',
         'an empty queue is blocked on players')
 
@@ -2033,7 +2040,7 @@ do
     -- Put them in one party and the headcount is still met, but the TEAM count
     -- is not -- with production thresholds this is the case that matters.
     BR.Party.invite(1, 2); BR.Party.respond(2, true)
-    BR.Server.devMode = false      -- minSquads 2, minToStart 16
+    BR.Server.devMode = false      -- minSquads 2, minToStartProd decides
     BR.Config.Match.minToStartProd = 2
     local sq = BR.Match.startBlocker()
     ok(sq and sq.reason == 'squads', 'one party of two is blocked on squads')
@@ -2053,7 +2060,7 @@ do
     ok(BR.Match.startBlocker() == nil,
         'a solo round is never held for want of squads')
 
-    BR.Config.Match.minToStartProd = 16
+    BR.Config.Match.minToStartProd = SHIPPED_MIN_TO_START_PROD
     BR.Server.devMode = true
 end
 
@@ -25411,6 +25418,109 @@ do
     -- for: two matches that must not hear each other have to differ on it.
     ok(hi1 ~= BR.Voice.radioChannel(0x0000001, 'm0000001sq1'),
         'and it is still distinct from the bottom of the space')
+end
+
+describe('lobby.capacityFormsASecondMatch')
+do
+    --[[
+        THE 25TH PLAYER FORMS A SECOND MATCH RATHER THAN STANDING IN THE LOBBY
+        (infradocs#23).
+
+        The closed beta runs 48 connection slots against a 24-player match.
+        Those are two different settings -- `sv_maxclients` in server.cfg and
+        `BR.Config.Match.maxPlayers` here -- and the shape only works if a full
+        warmup pushes the next arrival into a NEW instance. BR.Server.formingMatch
+        answers nil once every warmup of the mode is full, and nil is the
+        formation gate: the tick's else branch mints a match out of the queue.
+        If that nil stranded the player instead, the lobby would dead-end at 24
+        and the other 24 connection slots would be decoration.
+
+        THE CAP IS NOT OVERRIDDEN HERE, unlike the blocks that borrow
+        `maxPlayers = 2` to reach shortenWarmupIfFull cheaply. The shipped
+        number is the thing under test: a beta sized at 24 that was only ever
+        proved at 2 is a beta nobody proved.
+
+        AND IT RUNS IN PRODUCTION MODE, which is the mode the beta runs and the
+        one `minToStartProd` governs -- so the wait the 25th player does before
+        the 26th arrives is asserted as a WAIT ON PLAYERS rather than mistaken
+        for a refusal.
+    ]]
+
+    local savedDev = BR.Server.devMode
+    local savedMin = BR.Config.Match.minToStart
+
+    local function pump(ms)
+        for _ = 1, math.max(1, math.floor(ms / 250)) do
+            fakeTime = fakeTime + 250
+            BR.Sched.step(fakeTime)
+        end
+    end
+
+    reset()
+    BR.Server.devMode = false      -- production: minToStartProd decides
+    local SQUAD = BR.Mode.SQUAD.key
+    local cap   = BR.Config.Match.maxPlayers
+
+    ok(cap == 24, 'the shipped match cap is 24', tostring(cap))
+
+    for src = 1, cap do queueUp(src, ('P%d'):format(src), SQUAD) end
+    pump(1000)
+
+    local mA = theMatch()
+    ok(mA ~= nil and mA.state == BR.MatchState.WARMUP,
+        'a full lobby opens one warmup',
+        mA and tostring(mA.state) or 'no match at all')
+    ok(mA ~= nil and BR.Server.countIn(mA) == cap,
+        'with every one of them in it',
+        mA and tostring(BR.Server.countIn(mA)) or 'no match at all')
+
+    -- THE GATE ITSELF: a full WARMUP is not a forming match, and that nil is
+    -- what the next ready-up meets.
+    ok(BR.Server.formingMatch(SQUAD) == nil,
+        'and it stops forming once it is full')
+
+    -- ------------------------------------------- the 25th, on their own ---
+    --
+    -- One queuer is not a production match, so this is a WAIT and not a
+    -- refusal: they keep their place in the queue and the full match is not
+    -- disturbed to make room for them.
+    queueUp(cap + 1, 'LATE', SQUAD)
+    pump(1000)
+
+    local late = BR.Roster.get(cap + 1)
+    ok(late ~= nil and late.matchId == nil,
+        'the 25th player is not squeezed into the full match',
+        late and tostring(late.matchId) or 'no roster entry')
+    ok(mA ~= nil and BR.Server.countIn(mA) == cap,
+        'which is still exactly full',
+        mA and tostring(BR.Server.countIn(mA)) or 'no match at all')
+
+    local blk = BR.Match.startBlocker(SQUAD)
+    ok(blk ~= nil and blk.reason == 'players'
+        and blk.have == 1 and blk.need == 2,
+        'and they are waiting for a second player, which is all they are '
+            .. 'waiting for',
+        blk and ('%s %s/%s'):format(tostring(blk.reason),
+                                    tostring(blk.have), tostring(blk.need))
+            or 'nothing is blocking')
+
+    -- ------------------------------------------- and the 26th lands it ---
+    queueUp(cap + 2, 'LATER', SQUAD)
+    pump(1000)
+
+    local mB = BR.Server.formingMatch(SQUAD)
+    ok(mB ~= nil and mA ~= nil and mB.id ~= mA.id,
+        'the pair behind a full warmup form a SECOND match',
+        mB and 'same instance as the first' or 'no second match formed')
+    ok(mB ~= nil and BR.Roster.get(cap + 1).matchId == mB.id
+        and BR.Roster.get(cap + 2).matchId == mB.id,
+        'with both of them in it')
+    ok(mA ~= nil and BR.Server.countIn(mA) == cap,
+        'and the first match is untouched by any of it',
+        mA and tostring(BR.Server.countIn(mA)) or 'no match at all')
+
+    BR.Server.devMode = savedDev
+    BR.Config.Match.minToStart = savedMin
 end
 
 realPrint(('\n\27[32m%d passed\27[0m'):format(pass))

@@ -1,23 +1,45 @@
 -- Match configuration.
 --
--- Player counts live here rather than being hardcoded so raising the cap later is
--- a one-line change. Note the hard ceiling below: OneSync is free up to 48 slots,
--- and setting sv_maxclients above that without a Cfx.re Element Club tier makes
--- the server fail its heartbeat check and drop off the public list entirely.
+-- Player counts live here rather than being hardcoded so resizing a match later
+-- is a one-line change. Note that the cap below is the size of ONE MATCH and not
+-- the size of the server: how many players may CONNECT is sv_maxclients in
+-- server.cfg, a separate setting this file neither reads nor sets.
 
 BR = BR or {}
 
 BR.Config = BR.Config or {}
 
 BR.Config.Match = {
-    -- Slots. 48 is the free OneSync ceiling; the code paths are written to scale
-    -- past it, but do not raise this without the matching Element Club tier.
-    maxPlayers      = 48,
+    -- HOW MANY PLAYERS ONE MATCH HOLDS, and that is the whole of what it
+    -- means. Both readers compare it against BR.Server.countIn(m), the
+    -- headcount of a single instance: BR.Server.formingMatch in
+    -- br_core/server/main.lua and BR.Match.shortenWarmupIfFull in
+    -- br_core/server/match.lua. 24 for the closed beta (infradocs#23).
+    --
+    -- IT IS NOT THE CONNECTION CAP, and it used to be described here as though
+    -- it were. sv_maxclients in server.cfg decides how many players may be on
+    -- the server at once, and it is 48. The two numbers differing is the
+    -- design rather than a mismatch: 48 people connect, a match caps at 24,
+    -- and the 25th to ready up forms a SECOND match beside the first.
+    -- BR.Server.formingMatch answers nil once every warmup of that player's
+    -- mode is full, and nil is the formation gate, not a refusal.
+    --
+    -- THE ELEMENT CLUB QUESTION BELONGS TO sv_maxclients. OneSync is free up
+    -- to 48 slots; above that the server fails its heartbeat check and drops
+    -- off the public list entirely without a Cfx.re tier. So raising THIS
+    -- number past 48 one day -- toward the hundred a full battle royale field
+    -- wants -- means raising the connection cap first, and the tier is what
+    -- that costs. Nothing about moving it between 1 and 48 touches any of it.
+    maxPlayers      = 24,
     -- 1 so a lone dev client can walk the whole flow. The win condition knows
     -- a dev match that STARTED with one squad has nothing to win (see
     -- winConditionMet) -- otherwise PLAYING would end three seconds in.
     minToStart      = 1,
-    minToStartProd  = 16,
+    -- 2 for the closed beta (infradocs#23): a handful of testers should get a
+    -- round rather than a queue. minSquads below still applies on top of it in
+    -- squad mode, so two players who queued as ONE PARTY are one squad and
+    -- wait for a third; two who queued separately are two squads and start.
+    minToStartProd  = 2,
 
     -- Lobby / warmup timings, in seconds.
     warmupSeconds   = 45,
