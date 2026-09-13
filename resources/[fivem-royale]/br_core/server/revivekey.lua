@@ -1326,6 +1326,28 @@ end
 --- rule -- storm.lua says so in as many words. This only makes the damage start
 --- from the health they were given.
 ---
+--- ═══ AND EVERY CLEAR GOES THROUGH BR.Roster.clearFields, NOT BY ASSIGNMENT ═══
+---
+--- `placement` IS A PUBLIC ROSTER FIELD and it has already been broadcast. The
+--- elimination that wrote it sent it to the whole match on its own delta
+--- (server/combat.lua), so by the time anybody is brought back, every client in
+--- the match is holding a finishing position for this player.
+---
+--- A NIL CANNOT TRAVEL IN A DELTA. Setting `e.placement = nil` removes the key
+--- from the table, so the delta serialises as though nothing changed and every
+--- client keeps the number forever -- see server/roster.lua, where the same
+--- defect is recorded for `squadId` and a squad match that switched to solo.
+--- This path had it too: a player revived at an ambulance stood up, walked
+--- around and kept a finishing position on every scoreboard in the match for the
+--- rest of the round.
+---
+--- SO THE WHOLE LIST GOES THROUGH ONE VERB rather than the public field alone.
+--- Most of these are server-side and a bare nil would have been correct for
+--- them, but clearFields does exactly the same thing to a private field and
+--- sends a named clear for a public one -- so the mechanism cannot be got wrong
+--- by the next person to add a field here, and it is the same call
+--- server/combat.lua's `/brrevive` OUT branch makes for the same undo.
+---
 --- @param src integer
 --- @param e table
 --- @param reviverSrc integer|nil  credited; nil for the console path
@@ -1338,28 +1360,40 @@ local function bringBack(src, e, reviverSrc, at)
     -- argument this replaced.
     local hp = tonumber(K and K.reviveHp) or 100
 
-    -- THE KEY IS SPENT. Nilled and not un-held: `forSquad` filters on the record
-    -- existing, so nil is the only representation of "gone" that cannot be
-    -- bought a second time.
-    e.reviveKey = nil
-
-    e.revivePending = nil
-    e.placement, e.diedAt = nil, nil
-    e.engineHp = nil
-    e.stormHp, e.lastStormAt = nil, nil
-    -- THE CAMERA'S MEMORY OF WHO KILLED THEM. Written by eliminate() for the
-    -- spectate default and deliberately a license rather than an id, so it
-    -- outlives the moment on purpose. Cleared here because they are not
-    -- spectating anybody any more, and because a LATER death with no killer --
-    -- the storm, a fall -- would otherwise inherit this one and point their
-    -- camera at somebody who did not kill them.
-    e.killedByLicense = nil
-    -- Nothing above wrote these, and they are cleared anyway for the reason
-    -- reviveHeld gives: this is not undoing our own work, it is refusing to
-    -- trust that no other path reached this entry while the body was lying there.
-    e.dbnoUntil, e.downedBy = nil, nil
-    e.reviverSrc, e.reviveFrom = nil, nil
-    e.reviveBeat, e.reviveTickAt = nil, nil
+    BR.Roster.clearFields(src, {
+        -- THE ONE PUBLIC FIELD IN THIS LIST, AND THE WHOLE REASON FOR THE VERB.
+        -- It was broadcast by the elimination and a bare nil cannot retract it;
+        -- see the header. Leaving it set is also handed out a SECOND time by the
+        -- next elimination, which reads BR.Server.squadsAlive and counts this
+        -- player again the moment they are ALIVE.
+        'placement',
+        -- `diedAt`, the field `died` is derived from. #144's write-up is the
+        -- authority: it reaches DynamoDB as an atomic ADD with no compensating
+        -- write, so a death being taken back must leave it behind.
+        'diedAt',
+        -- Or the 1Hz server-observed death check reads the corpse sample from
+        -- before the revive and eliminates them again a second in.
+        'engineHp',
+        'stormHp', 'lastStormAt',
+        -- THE CAMERA'S MEMORY OF WHO KILLED THEM. Written by eliminate() for the
+        -- spectate default and deliberately a license rather than an id, so it
+        -- outlives the moment on purpose. Cleared here because they are not
+        -- spectating anybody any more, and because a LATER death with no killer
+        -- -- the storm, a fall -- would otherwise inherit this one and point
+        -- their camera at somebody who did not kill them.
+        'killedByLicense',
+        -- THE KEY IS SPENT. Cleared and not un-held: `forSquad` filters on the
+        -- record existing, so nil is the only representation of "gone" that
+        -- cannot be bought a second time.
+        'reviveKey',
+        'revivePending',
+        -- Nothing above wrote these, and they are cleared anyway for the reason
+        -- reviveHeld gives: this is not undoing our own work, it is refusing to
+        -- trust that no other path reached this entry while the body was lying
+        -- there.
+        'dbnoUntil', 'downedBy',
+        'reviverSrc', 'reviveFrom', 'reviveBeat', 'reviveTickAt',
+    })
 
     -- THE PED FIRST, THE LEDGER SECOND, for the reason protocol.lua's REVIVED
     -- note gives: a client left holding a corpse while the server calls it ALIVE

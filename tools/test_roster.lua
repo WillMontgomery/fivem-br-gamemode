@@ -23407,6 +23407,157 @@ do
 end
 
 -- ---------------------------------------------------------------------------
+describe('revivekey.bringBack')
+do
+    -- ═══ AN AMBULANCE REVIVE HAS TO RETRACT THE PLACEMENT, NOT JUST DROP IT ═══
+    --
+    -- `placement` is a PUBLIC roster field, and BR.Combat.eliminate broadcasts
+    -- it to the whole match on its own delta the moment it is written. So by the
+    -- time a squad buys somebody back at an ambulance, every client in the match
+    -- is holding a finishing position for that player.
+    --
+    -- server/revivekey.lua's `bringBack` cleared it with `e.placement = nil`,
+    -- which REMOVES THE KEY FROM THE TABLE -- so the next delta serialises as
+    -- though nothing changed, and every scoreboard and every surface that draws
+    -- a finishing position kept showing the one the player had while they were
+    -- dead, for the rest of the match, after they were back on their feet and
+    -- shooting. It is the same defect server/roster.lua records for `squadId`
+    -- and the squad match that switched to solo.
+    --
+    -- ═══ THE ASSERTION IS ABOUT THE WIRE, NOT ABOUT THE ENTRY ═══
+    --
+    -- A test that only read `e.placement == nil` PASSES AGAINST THE BROKEN CODE.
+    -- The server side of the clear was never the half that was wrong, so the
+    -- only assertion that can fail is the one that reads the delta.
+    --
+    -- ═══ AND IT IS HERE RATHER THAN IN tools/test_revivekey.lua ═══
+    --
+    -- That suite drives BR.ReviveKey against a STUBBED BR.Roster and has no
+    -- broadcast layer at all -- no BR.Broadcast, no ROSTER_DELTA, nothing that
+    -- could tell a named clear from a vanished key. This file loads the real
+    -- server/revivekey.lua against the real roster and the real BR.Broadcast,
+    -- which makes it the only suite where the question can be asked.
+    reset()
+    BR.Server.devMode = true
+    for s = 1, 4 do queueUp(s, 'K' .. s, BR.Mode.SOLO.key) end
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    forceState(BR.MatchState.PLAYING)
+
+    local m = theMatch()
+    for s = 1, 4 do
+        BR.Roster.setState(s, BR.PlayerState.ALIVE)
+        BR.Roster.get(s).pos = { x = 400.0 + s, y = 400.0, z = 30.0 }
+        -- A SQUAD OF ONE EACH, which is the only shape that gets both halves of
+        -- this test. The mint is gated on `squadId` being set at all -- a player
+        -- with no squad leaves no key and there would be nothing to revive with
+        -- -- while BR.Server.squadsAlive keys on `squadId or 'solo:'..src`, so
+        -- four distinct ids are four teams and a placement is a number that
+        -- moves when somebody is put back.
+        BR.Roster.get(s).squadId = 'sq_bb' .. s
+    end
+
+    sent = {}
+    BR.Combat.eliminate(1, 'storm', 2)
+
+    local e1 = BR.Roster.get(1)
+    ok(e1.state == BR.PlayerState.OUT, 'the player is eliminated', e1.state)
+    ok(e1.placement == 4, 'and is given 4th of four', tostring(e1.placement))
+
+    -- THE VALUE GENUINELY REACHED EVERY CLIENT, which is what makes a bare nil
+    -- a bug rather than an untidiness. Asserted rather than assumed: if the
+    -- elimination ever stopped publishing it, the clear below would be
+    -- retracting nothing and this block would be pinning nothing.
+    BR.Broadcast.flushNow()
+    local published = nil
+    for _, s in ipairs(eventsOf(BR.Net.ROSTER_DELTA)) do
+        for _, d in ipairs(s.args[1].deltas or {}) do
+            if d.src == 1 and (d.e or {}).placement ~= nil then
+                published = d.e.placement
+            end
+        end
+    end
+    ok(published == 4,
+        'and the placement went out to the whole match on a delta -- there is '
+            .. 'a number on every client to take back', tostring(published))
+
+    local rec = e1.reviveKey
+    ok(rec ~= nil, 'the elimination minted a key for their squad')
+
+    -- THE STATE BR.ReviveKey.revive NEEDS, WRITTEN DIRECTLY: a key somebody is
+    -- holding, at a van. The hold, the reach and the ambulance ruling are
+    -- tools/test_revivekey.lua's subject and are driven at length there; what is
+    -- under test here is the COMPLETION, which is the only part that writes the
+    -- roster and the only part that can broadcast.
+    if rec then
+        rec.held = true
+        rec.spot = { x = 500.0, y = 500.0, z = 31.0 }
+    end
+
+    sent = {}
+    local revived, whyNot = BR.ReviveKey.revive(1)
+    ok(revived, 'the key revive completes', tostring(whyNot))
+    ok(e1.state == BR.PlayerState.ALIVE,
+        'and puts them back in the match', e1.state)
+
+    -- THE SERVER SIDE, WHICH WAS ALREADY RIGHT. Kept so that a regression in
+    -- the entry and a regression on the wire are told apart by which assertion
+    -- goes red, rather than by reading the diff.
+    ok(e1.placement == nil, 'the entry holds no placement', tostring(e1.placement))
+    ok(e1.diedAt == nil, 'and no death stamp', tostring(e1.diedAt))
+
+    -- ...AND THE CLEAR TRAVELS. THIS IS THE ASSERTION THE FIX EXISTS FOR.
+    BR.Broadcast.flushNow()
+    local cleared, resent = {}, nil
+    for _, s in ipairs(eventsOf(BR.Net.ROSTER_DELTA)) do
+        for _, d in ipairs(s.args[1].deltas or {}) do
+            if d.src == 1 then
+                for _, k in ipairs(d.clear or {}) do cleared[k] = true end
+                if (d.e or {}).placement ~= nil then resent = d.e.placement end
+            end
+        end
+    end
+    ok(cleared.placement,
+        'AND THE WIRE CARRIES A NAMED CLEAR FOR IT, not a vanished key -- '
+            .. 'without this every scoreboard in the match goes on drawing a '
+            .. 'finishing position over a player who is up and shooting')
+    ok(resent == nil,
+        'and nothing put the old number back on the wire behind it',
+        tostring(resent))
+
+    -- ═══ THE LEDGERS THAT WOULD KILL THEM AGAIN, none of them public ═══
+    ok(e1.engineHp == nil,
+        'the stale corpse sample is dropped, or the 1Hz server-observed death '
+            .. 'check eliminates them again a second into their new life')
+    ok(e1.stormHp == nil and e1.lastStormAt == nil,
+        'and the storm ledger with it -- storm.lua only ever clamps DOWN',
+        tostring(e1.stormHp))
+    ok(e1.killedByLicense == nil,
+        'and the camera\'s memory of who killed them, which a LATER death with '
+            .. 'no killer would otherwise inherit')
+    ok(e1.reviveKey == nil,
+        'the key is spent -- forSquad filters on the record EXISTING, so nil is '
+            .. 'the only representation of "gone" that cannot be bought twice')
+
+    -- ═══ AND THE NEXT ELIMINATION DOES NOT HAND OUT A DUPLICATE ═══
+    --
+    -- The other half of why the placement has to go: the next death reads
+    -- BR.Server.squadsAlive, which counts this player again the moment they are
+    -- ALIVE -- so a placement left set is handed out a SECOND time.
+    BR.Combat.eliminate(2, 'admin', 3)
+    ok(BR.Roster.get(2).placement == 4,
+        'the next elimination is 4th again, because four were standing',
+        tostring(BR.Roster.get(2).placement))
+    local holders = 0
+    BR.Roster.each(nil, function(_, e)
+        if e.placement == 4 then holders = holders + 1 end
+    end)
+    ok(holders == 1, 'and exactly one player holds 4th', holders)
+
+    if m then end
+end
+
+-- ---------------------------------------------------------------------------
 describe('combat.leaver')
 do
     -- ═══════════════════════════════════════════════════════════════════════

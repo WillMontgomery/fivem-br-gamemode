@@ -1303,6 +1303,25 @@ do
             e.state = state
             sent[#sent + 1] = { ev = '<setState>', src = src, d = state }
         end,
+        -- ═══ AND clearFields, WHICH IS HOW bringBack CLEARS (2026-09-13) ═══
+        --
+        -- Stubbed rather than mocked, like the two above and for their reason:
+        -- every assertion in `revive.brings-back` is about what the entry LOOKS
+        -- LIKE afterwards, so the stub really does empty the fields.
+        --
+        -- ⚠ THE HALF THAT MATTERS CANNOT BE SEEN FROM HERE, and that is why the
+        -- fix has a test in another file. The real clearFields also BROADCASTS a
+        -- named clear for a public field, because a nil cannot travel in a delta
+        -- -- and this sandbox has no BR.Broadcast, no roster module and no
+        -- ROSTER_DELTA to read, so it cannot tell a named clear from a vanished
+        -- key. That assertion lives in tools/test_roster.lua's
+        -- `revivekey.bringBack`, where the real server/revivekey.lua runs
+        -- against the real roster and the real broadcast.
+        clearFields = function(src, fields)
+            local e = roster[src]
+            if not e then return end
+            for _, k in ipairs(fields or {}) do e[k] = nil end
+        end,
         each = function(pred, fn)
             -- SORTED, because two of the tests below assert WHICH squadmate
             -- collected a key and pairs() order is not defined. A suite that
