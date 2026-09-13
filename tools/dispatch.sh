@@ -87,14 +87,40 @@ SRC_DIR="${BR_SRC_DIR:-$SERVER_ROOT/.gamemode-src}"
 # deployed), so status degrades to "roughly right" instead of "unknown".
 [ -d "$SRC_DIR/.git" ] || SRC_DIR="$REPO"
 
-# THE TWO FILES `configreport` READS, and both are "what the server actually
-# loaded" rather than "what the repo says", which is the whole point of asking
-# the box instead of reading GitHub.
+# THE FILES `configreport` READS, and every one of them is "what the server
+# actually loaded" rather than "what the repo says", which is the whole point of
+# asking the box instead of reading GitHub.
 #
 # server.cfg is NOT in the repo and never will be -- it holds the real license
 # key -- so there is nothing to compare it against and no version of this that
 # works without reading the file on the box.
 CFG_FILE="${BR_SERVER_CFG:-$SERVER_ROOT/server.cfg}"
+
+# THE IDENTITY FILE server.cfg EXECS, WHICH IS WHERE sv_hostname WENT.
+#
+# 65387ec moved sv_hostname and sv_licenseKey out of server.cfg and into this
+# file, so a box takes its name and its key from the Elastic IP already attached
+# to it rather than from whatever a human pasted. royale-identity.service writes
+# it at boot out of SSM Parameter Store (ops/royale-identity in infradocs), mode
+# 0600, owned by the game user this script runs as. A box that has NOT migrated
+# has no such file and still carries both literals in server.cfg -- and dev
+# migrates before prod, so both shapes are live at the same time and both have
+# to report correctly.
+#
+# READING IT IS WHY `configreport` STOPPED BEING ABLE TO ANSWER "what is this
+# server called". Before this, the reporter grepped server.cfg alone, so a
+# migrated box answered `sv_hostname: not set`, which is not a gap in the report
+# -- it is the report stating something false about a value the console has no
+# other way to see. `status` carries a commit and a ref and no name; the console
+# knows the box by its private IP. This is the only channel that name travels.
+#
+# IT ALSO HOLDS THE LICENSE KEY, WHICH IS WHY IT IS READ THE SAME WAY server.cfg
+# IS AND NOT ONE BIT MORE LOOSELY. There is ONE reader, `convar_line`, it is
+# only ever handed a name out of CONVAR_ALLOW, and nothing anywhere enumerates
+# this file's lines -- so a name that is not on that list is never searched for,
+# never matched and never printed. Adding the file widened WHICH FILES are read;
+# it did not widen WHICH NAMES can come back, and those are different edits.
+IDENTITY_FILE="${BR_SERVER_IDENTITY_CFG:-$SERVER_ROOT/server-identity.cfg}"
 
 # The DEPLOYED resources, not the clone's. deploy.sh rsyncs
 # $SRC_DIR/resources/[fivem-royale] into $SERVER_ROOT/resources/<category>/,
@@ -542,12 +568,19 @@ do_telemetry() {
 # THE ALLOWLIST IS THE WHOLE SECURITY MODEL, AND IT IS CLOSED, NOT OPEN.
 # ===========================================================================
 #
-# server.cfg on this box holds `sv_licenseKey`, and on a fuller deployment it
-# would hold `rcon_password`, `mumble_adminPass`, a Steam web API key and
+# The files this reads hold `sv_licenseKey` -- server.cfg before 65387ec, the
+# identity file beside it after -- and on a fuller deployment they would hold
+# `rcon_password`, `mumble_adminPass`, a Steam web API key and
 # `br_ringmaster_ingest_secret`. This output is rendered in a web browser and
 # written to an audit log. So the rule is the same one PUBLIC_FIELDS and
 # RINGMASTER_FIELDS follow in br_core/server/roster.lua: NAME WHAT GOES OUT,
 # never name what stays behind.
+#
+# WHICH IS WHY ADDING THE IDENTITY FILE CHANGED NOTHING ABOUT THIS MODEL. The
+# secret did not become reachable by moving files; it was already in a file this
+# verb opens, and the only thing that has ever kept it out of the response is
+# that its name is not on the list. A second source is a second place the list
+# is applied, not a second policy.
 #
 # A denylist of secret-looking names would be the obvious shortcut and it FAILS
 # OPEN. The day somebody adds a credential to server.cfg under a name nobody
@@ -577,12 +610,51 @@ do_telemetry() {
 #
 #   server.cfg   the name appears in server.cfg -- value and LINE NUMBER, so
 #                the answer to "where is that set" is a line to go and look at.
-#   default      the name does not appear in server.cfg, so the engine's own
-#                built-in default is in effect. The value is null rather than a
-#                guess: this script does not know FXServer's defaults and
+#   server-identity.cfg
+#                the name appears in the identity file server.cfg execs, with
+#                the line number IN THAT FILE. Same promise, different file, and
+#                it is named rather than folded into "server.cfg" because the
+#                two differ in the way that matters to whoever goes looking:
+#                server.cfg is edited by hand and the identity file is
+#                REGENERATED AT BOOT, so "go and change line 4" is wrong advice
+#                about it. The SSM parameter behind it is what changes.
+#   unknown      the name is in neither file this script could read, AND the
+#                identity file exists but is not readable by this user -- so it
+#                may well be set in there. Value null.
+#   default      the name appears in no file the server loads, so the engine's
+#                own built-in default is in effect. The value is null rather
+#                than a guess: this script does not know FXServer's defaults and
 #                inventing them would be confidently wrong, which is worse than
 #                blank. "Not set anywhere" is itself the useful answer -- it is
 #                exactly the answer #150 needed about voice_useNativeAudio.
+#
+# `unknown` AND `default` ARE THE SAME SHAPE ON THE WIRE AND MUST NOT BE THE
+# SAME WORD. Both carry a null value; only one of them is a claim. `default`
+# says nothing sets this, which is a positive statement this script has the
+# evidence for only when it has read every file the server reads. When the
+# identity file is there and mode 0600 kept us out of it, that evidence is
+# missing, and reporting the absence as a default would be the report inventing
+# a fact out of its own blindness -- the one failure that costs more than a
+# blank row, because a blank row gets investigated and a confident wrong answer
+# gets believed. `identityState` on the response says which of the two the whole
+# report is in, so the reason appears once rather than per row.
+#
+# HOW READABLE THE IDENTITY FILE ACTUALLY IS: royale-identity chowns it to the
+# same user this dispatcher runs as, so `read` is the ordinary state and
+# `unreadable` means that chown did not happen -- the script warns and carries
+# on root-owned when it fails, and a file written by hand under sudo lands the
+# same way. It is a box misconfiguration with a name, not a mystery.
+#
+# WHEN BOTH FILES SET THE SAME NAME, THE LATER ONE WINS, AND "LATER" SPANS THE
+# EXEC. FXServer runs server.cfg top to bottom and `exec` is executed in place,
+# so a name set above the exec line loses to the identity file and one set below
+# it wins. This matters for exactly one box shape and it is the shape this
+# change exists for: a HALF-migrated server.cfg that has gained the exec but not
+# yet lost its old `sv_hostname` literal, which sits ABOVE it in the Identity
+# section. FXServer uses the identity file there. A reporter that preferred
+# server.cfg would print the stale literal, with a line number, during the
+# migration window -- a wrong answer dressed as the most trustworthy kind of
+# right one.
 #
 # THERE IS NO "SET AT RUNTIME", AND THAT IS A LIMIT WORTH STATING OUT LOUD.
 # Reading a live convar means GetConvar, which means running inside FXServer;
@@ -593,28 +665,81 @@ do_telemetry() {
 #
 # So the gap that matters is: the files may have changed since FXServer read
 # them. That is detectable without touching the process, and it is reported as
-# `staleSinceStart` -- newest mtime across server.cfg and the deployed config
-# files, against the FXServer process's own start time. When it is true the
-# console says the running server is on older values than these, which is the
-# one way this report could otherwise mislead somebody.
+# `staleSinceStart` -- newest mtime across server.cfg, the identity file and the
+# deployed config files, against the FXServer process's own start time. When it
+# is true the console says the running server is on older values than these,
+# which is the one way this report could otherwise mislead somebody.
 
-# Read one allowlisted convar out of server.cfg.
+# Read one allowlisted convar out of one config file.
 #
 # THE NAME IS OURS, NEVER THE CALLER'S. It comes from CONVAR_ALLOW below and
 # nowhere else, which is what makes it safe to put in a regex -- this verb takes
 # no arguments at all, so nothing from $SSH_ORIGINAL_COMMAND reaches this.
 #
-# LAST MATCH WINS. FXServer executes server.cfg top to bottom, so a name set
+# THE FILE IS A PARAMETER AND THE FUNCTION IS STILL THE ONLY READER, which is
+# the property worth keeping rather than the parameter. Both server.cfg and the
+# identity file go through this one anchored grep, so "what can this verb print
+# out of a file that holds the license key" has one place to check and the
+# answer is "a line whose name is on the allowlist". Copying it per file would
+# have made that two places, and the second copy is where the loosening lands.
+#
+# LAST MATCH WINS. FXServer executes a cfg file top to bottom, so a name set
 # twice ends up holding the LAST value, and reporting the first would be a lie
 # that is very hard to spot. `tail -1`, not `head -1`.
 #
 # The optional `set|setr|sets|seta` prefix covers every spelling in
 # server.cfg.example; the mandatory whitespace after the name is what stops
 # `sv_maxclients` matching a line about `sv_maxclientsSomething`. A leading `#`
-# is not matched, so commented-out lines are correctly read as "not set".
+# is not matched, so commented-out lines are correctly read as "not set" -- and
+# the identity file opens with three comment lines saying who wrote it, which
+# this therefore steps over rather than reading as configuration.
 convar_line() {
     grep -nE "^[[:space:]]*(set|setr|sets|seta)?[[:space:]]*$1[[:space:]]+" \
-        "$CFG_FILE" 2>/dev/null | tail -1
+        "$2" 2>/dev/null | tail -1
+}
+
+# Which of the three states the identity file is in, as one word: `read`,
+# `unreadable` or `absent`. See the source list above for why the last two are
+# not the same answer.
+#
+# COMPUTED ONCE PER REPORT, NOT PER CONVAR. It is also the value that goes out
+# as `identityState`, so the rows and the header cannot disagree about whether
+# this file was readable -- which they could if each row tested it again and the
+# file changed underneath a thirteen-name loop.
+#
+# A READABLE REGULAR FILE, NOT MERELY A READABLE PATH. `[ -r ]` alone is true of
+# a directory, and a directory at this path would then be opened, produce no
+# matches, and report every name as an engine `default` -- the report answering
+# confidently from a file it never read. Anything at this path that is not a
+# regular file we can open is `unreadable`, which is the honest word for it.
+identity_state() {
+    if [ -f "$IDENTITY_FILE" ] && [ -r "$IDENTITY_FILE" ]; then
+        printf 'read'
+    elif [ -e "$IDENTITY_FILE" ]; then
+        printf 'unreadable'
+    else
+        printf 'absent'
+    fi
+}
+
+# The line in server.cfg where the identity file is exec'd, or 0.
+#
+# THIS IS THE POSITION THE IDENTITY FILE'S VALUES TAKE EFFECT AT, which is what
+# makes "later wins" answerable across two files instead of guessable. A box
+# with no exec line has not migrated, gets 0, and every name in server.cfg is
+# therefore below it and wins -- which is the correct answer for that box by the
+# same rule rather than by a special case for it.
+#
+# Matched on the basename anywhere after `exec`, so an absolute path in the exec
+# reads the same as the bare name server.cfg.example uses. A commented-out exec
+# does not match, for the same reason a commented-out convar does not.
+identity_exec_lineno() {
+    local l
+    l="$(grep -nE "^[[:space:]]*exec[[:space:]]+.*server-identity\.cfg" \
+         "$CFG_FILE" 2>/dev/null | tail -1)"
+    l="${l%%:*}"
+    l="${l//[^0-9]/}"
+    printf '%s' "${l:-0}"
 }
 
 # The value half of such a line, unquoted and de-commented.
@@ -684,6 +809,15 @@ do_configreport() {
     # is kept as a flat list of bare names with nothing clever around it: there
     # is no expression to misread and no pattern that could match more than what
     # is written.
+    #
+    # IT IS STILL THE ONLY FILTER NOW THAT A SECOND FILE IS READ, and that is
+    # the reason the second file was safe to add. The loop below asks for these
+    # names and only these names; `sv_licenseKey` is not among them, so it is
+    # never searched for in either file, and no line of either file reaches the
+    # output except one whose name matched a member of this list. tools/verify.sh
+    # reads this exact block and fails the build on anything credential-shaped in
+    # it -- `licen[cs]e` and `_key` are both in its pattern, so `sv_licenseKey`
+    # cannot be added here even by somebody who has stopped reading comments.
     local CONVAR_ALLOW="
         voice_useNativeAudio
         voice_use2dAudio
@@ -700,23 +834,58 @@ do_configreport() {
         br_devMode
     "
 
-    local convars="" name line lineno value
+    local id_state exec_at
+    id_state="$(identity_state)"
+    exec_at="$(identity_exec_lineno)"
+
+    local convars="" name cfg_hit cfg_at id_hit hit src lineno value
     for name in $CONVAR_ALLOW; do
-        line="$(convar_line "$name")"
+        cfg_hit="$(convar_line "$name" "$CFG_FILE")"
+        # ASKED FOR ONLY WHEN THE FILE IS READABLE, so an unreadable one produces
+        # no hit rather than a grep error swallowed into an empty string that
+        # would be indistinguishable from a genuine miss.
+        id_hit=""
+        [ "$id_state" = read ] && id_hit="$(convar_line "$name" "$IDENTITY_FILE")"
+
+        # WHICH FILE ANSWERS, by the rule written out above: the later setting
+        # wins, and the identity file sits at its exec's line in server.cfg.
+        hit=""; src="default"; lineno=0
+        if [ -n "$cfg_hit" ] && [ -n "$id_hit" ]; then
+            cfg_at="${cfg_hit%%:*}"
+            cfg_at="${cfg_at//[^0-9]/}"
+            if [ "${cfg_at:-0}" -gt "$exec_at" ]; then
+                hit="$cfg_hit"; src="server.cfg"
+            else
+                hit="$id_hit"; src="server-identity.cfg"
+            fi
+        elif [ -n "$cfg_hit" ]; then
+            hit="$cfg_hit"; src="server.cfg"
+        elif [ -n "$id_hit" ]; then
+            hit="$id_hit"; src="server-identity.cfg"
+        elif [ "$id_state" = unreadable ]; then
+            # NOT `default`, BECAUSE THAT WOULD BE A CLAIM WE CANNOT MAKE. There
+            # is a file the server loads that this user could not open, so "it
+            # is set nowhere" is not something this report knows.
+            src="unknown"
+        fi
+
         [ -n "$convars" ] && convars="$convars,"
-        if [ -n "$line" ]; then
-            lineno="${line%%:*}"
+        if [ -n "$hit" ]; then
+            lineno="${hit%%:*}"
             lineno="${lineno//[^0-9]/}"
             [ -n "$lineno" ] || lineno=0
-            value="$(convar_value "$name" "${line#*:}")"
-            convars="$convars$(printf '{"name":"%s","value":"%s","source":"server.cfg","line":%s}' \
-                "$(json_str "$name")" "$(json_str "$value")" "$lineno")"
+            value="$(convar_value "$name" "${hit#*:}")"
+            # `src` IS ONE OF FOUR LITERALS CHOSEN ABOVE and never a byte read
+            # off a file, so it goes in unescaped while the name and the value,
+            # which are read, do not.
+            convars="$convars$(printf '{"name":"%s","value":"%s","source":"%s","line":%s}' \
+                "$(json_str "$name")" "$(json_str "$value")" "$src" "$lineno")"
         else
             # null, not "" -- the console renders the two differently, and it
             # must. An empty string is a convar set to nothing; null is a
-            # convar nobody has mentioned.
-            convars="$convars$(printf '{"name":"%s","value":null,"source":"default","line":0}' \
-                "$(json_str "$name")")"
+            # convar nobody has mentioned, or one we could not go and look for.
+            convars="$convars$(printf '{"name":"%s","value":null,"source":"%s","line":0}' \
+                "$(json_str "$name")" "$src")"
         fi
     done
 
@@ -777,6 +946,14 @@ do_configreport() {
         m="$(stat -c %Y "$f" 2>/dev/null || echo 0)"
         [ "${m:-0}" -gt "$newest" ] && newest="$m"
     done
+    # THE IDENTITY FILE COUNTS TOO, AND IT IS TESTED FOR EXISTENCE RATHER THAN
+    # FOR READABILITY. An mtime needs only the directory, so this stays honest
+    # on the one box where the contents are closed to us -- which is exactly the
+    # box where a reader most needs to know the file moved under the server.
+    if [ -e "$IDENTITY_FILE" ]; then
+        m="$(stat -c %Y "$IDENTITY_FILE" 2>/dev/null || echo 0)"
+        [ "${m:-0}" -gt "$newest" ] && newest="$m"
+    fi
     # Only claimable when the server is actually running: with no process there
     # is no "since it started", and answering true would read as "your edits are
     # not live" when the truth is "nothing is live".
@@ -790,8 +967,15 @@ do_configreport() {
     # zeros, so a box with FXServer stopped answered with a line the console
     # could not parse at all. The one state where the report is most worth
     # reading is the one it broke in.
-    printf '{"ok":true,"at":%s,"serverCfg":"%s","libDir":"%s","startedAt":%s,"configMtime":%s,"staleSinceStart":%s,"convars":[%s],"game":%s}\n' \
-        "$((now_s * 1000))" "$(json_str "$CFG_FILE")" "$(json_str "$LIB_DIR")" \
+    # `identityCfg` AND `identityState` ARE ADDITIVE FIELDS AND DELIBERATELY NOT
+    # A PER-ROW REPEAT. Which file was consulted is one fact about the whole
+    # report, and it is the fact that explains a page of `unknown` rows or a
+    # hostname that is suddenly attributed somewhere new. An older console
+    # ignores both, which is the whole reason they go here rather than into a
+    # shape the existing fields would have had to change to carry.
+    printf '{"ok":true,"at":%s,"serverCfg":"%s","identityCfg":"%s","identityState":"%s","libDir":"%s","startedAt":%s,"configMtime":%s,"staleSinceStart":%s,"convars":[%s],"game":%s}\n' \
+        "$((now_s * 1000))" "$(json_str "$CFG_FILE")" \
+        "$(json_str "$IDENTITY_FILE")" "$id_state" "$(json_str "$LIB_DIR")" \
         "$((started_at * 1000))" "$((newest * 1000))" \
         "$stale" "$convars" "$game"
 }
