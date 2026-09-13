@@ -16493,6 +16493,349 @@ do
 end
 
 -- ======================================================================== --
+-- N3. THE MAGAZINE THAT WAS NEVER OURS TO CHOOSE
+-- ======================================================================== --
+--
+-- Owner, 2026-09-12: "I buy one pack of 12 heavy ammo for it, then the HUD reads
+-- 1/12 ... I fire one round, the gun reloads, and now it shows 1/8. Fire another
+-- - now HUD shows 1/5 ... That's 4 rounds when I paid for 12."
+--
+-- THREE ROUNDS A SHOT, AND `clip = 3` IS WHERE THE THREE COMES FROM.
+-- WEAPON_RAILGUN's magazine is 1. The two numbers never meet in one place, so
+-- neither side errors:
+--
+--   * server/inventory.lua's BR.Inv.reload moves `w.clip - clip` out of the pool
+--     when the magazine reads empty, so THREE rounds leave the heavy pool;
+--   * SetAmmoInClip cannot put three rounds into a one-round magazine. The
+--     engine takes ONE and says nothing;
+--   * the report loop reads the gun and writes that 1 into the mirror, so the
+--     NEXT tick computes `granted` as 1 + the pool -- below what the ped is
+--     actually holding -- and the clamp fires:
+--
+--         if total > granted then SetPedAmmo(ped, hash, granted) end
+--
+--     The ped is written DOWN by two, and the lower number is reported, and the
+--     server debits it. Nobody fired those two rounds.
+--
+-- ═══ WHY EVERY EXISTING BLOCK IN THIS FILE AGREED WITH THE DEFECT ═══
+--
+-- Sections N and N2 model the engine's reload as
+--
+--     gun.clip[h] = math.min(w and w.clip or 0, gun.total[h])
+--
+-- -- the engine's magazine, taken from OUR config. That is the assumption under
+-- test. A harness built that way cannot fail while the config is wrong, because
+-- the model is wrong in exactly the same direction: it is docs/testing.md rule 4
+-- with a gun. THE ENGINE'S MAGAZINE IS ITS OWN NUMBER HERE, authored from
+-- weapons.meta, and `w.clip` is never read by the model below.
+describe('the engine\'s magazine is its own number, not ours')
+do
+    local savedGive    = GiveWeaponToPed
+    local savedRemove  = RemoveAllPedWeapons
+    local savedSetAmmo = SetPedAmmo
+    local savedSetClip = SetAmmoInClip
+    local savedGetAmmo = GetAmmoInPedWeapon
+    local savedGetClip = GetAmmoInClip
+    local savedCurrent = SetCurrentPedWeapon
+    local savedHasGot  = HasPedGotWeapon
+
+    -- NO PARACHUTE, for the reason N2 spells out: an earlier block leaves
+    -- HasPedGotWeapon answering for a chute, and skydive.lua's post-landing
+    -- sweep then re-grants the active slot from the SERVER's numbers in the
+    -- middle of the firing loop below -- which would move the gun under the
+    -- assertion rather than test it.
+    function HasPedGotWeapon() return false end
+
+    local RAILGUN = BR.Config.WeaponById['railgun']
+    local MINIGUN = BR.Config.WeaponById['minigun']
+    local RH = BR.NormHash(RAILGUN.hash)
+    local MH = BR.NormHash(MINIGUN.hash)
+
+    -- `<ClipSize>` on the CWeaponInfo in the stock .meta. NOT BR.Config -- see
+    -- the note above, and tools/check_weapons.lua for where these come from.
+    local ENGINE_MAG = { [RH] = 1, [MH] = 15000 }
+
+    local gun = { total = {}, clip = {} }
+    function RemoveAllPedWeapons() gun.total, gun.clip = {}, {} end
+    function GiveWeaponToPed(_, hash, ammo)
+        local h = BR.NormHash(hash)
+        gun.total[h] = (gun.total[h] or 0) + (ammo or 0)
+    end
+    function SetPedAmmo(_, hash, n)
+        local h = BR.NormHash(hash)
+        gun.total[h] = math.max(0, n or 0)
+        gun.clip[h]  = math.min(gun.clip[h] or 0, gun.total[h])
+    end
+    -- THE LINE THE WHOLE BLOCK TURNS ON, and it is the engine's real contract:
+    -- a magazine takes what fits and the overflow is not an error and not a
+    -- return value. It is nothing at all.
+    function SetAmmoInClip(_, hash, n)
+        local h = BR.NormHash(hash)
+        local cap = ENGINE_MAG[h] or math.maxinteger
+        gun.clip[h] = math.min(math.max(0, n or 0), gun.total[h] or 0, cap)
+    end
+    function GetAmmoInPedWeapon(_, hash) return gun.total[BR.NormHash(hash)] or 0 end
+    function GetAmmoInClip(_, hash) return true, gun.clip[BR.NormHash(hash)] or 0 end
+    function SetCurrentPedWeapon(_, hash) pedWeapon = hash end
+
+    local function tick(n)
+        for _ = 1, (n or 1) do
+            fakeTime = fakeTime + 100
+            BR.Loop.step(BR.Loop.TICK)
+        end
+    end
+
+    local function serverSays(id, pool, clip, amount)
+        fire(BR.Net.INV_SET, {
+            slots = { { id = id, label = id, kind = BR.ItemKind.WEAPON,
+                        rarity = 5, count = 1, clip = clip, pool = pool } },
+            ammo = { [pool] = amount }, active = 1,
+        })
+        tick(1)
+    end
+
+    local function lastReportTotal()
+        local out = nil
+        for _, s in ipairs(sent) do
+            if s.name == BR.Net.INV_AMMO then out = s.args[1] end
+        end
+        return out and out.total or nil
+    end
+
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.State.landed = true
+    fire(BR.Net.STATE, { state = BR.MatchState.PLAYING })
+
+    -- ── 1. TWELVE ROUNDS, THE WAY HE BOUGHT THEM. One magazine in the gun and
+    --       the rest behind it. TWELVE IS THE CONSTANT, whatever `clip` is: the
+    --       split moves with the config and the holding does not, which is what
+    --       makes this assertion mean the same thing before and after the fix.
+    local OWNED = 12
+    local MAG   = RAILGUN.clip
+    sent = {}
+    serverSays('railgun', 'heavy', MAG, OWNED - MAG)
+    ok(gun.total[RH] == OWNED,
+       'a railgun and twelve heavy rounds put twelve rounds on the ped',
+       ('engine %s, owned %d'):format(tostring(gun.total[RH]), OWNED))
+
+    -- ── 2. AND NOBODY HAS FIRED YET.
+    --
+    --       THIS IS THE WHOLE BUG IN ONE ASSERTION. With `clip = 3` against a
+    --       one-round magazine the ped is written down to 1 + the pool on the
+    --       SECOND tick -- two rounds destroyed, no trigger pulled, nothing in
+    --       the log. Owner: "the available rounds evaporate quickly down to zero
+    --       as I stand there doing nothing."
+    tick(8)
+    ok(gun.total[RH] == OWNED,
+       'A GUN NOBODY FIRED STILL HOLDS EVERY ROUND IT WAS GIVEN',
+       ('engine %s after 8 idle ticks, owned %d'):format(
+           tostring(gun.total[RH]), OWNED))
+
+    -- ...AND THE SERVER IS NOT TOLD OTHERWISE, which is the half that makes the
+    -- loss permanent: the report is decrease-only and the far end subtracts it.
+    local told = lastReportTotal()
+    ok(told == nil or told >= OWNED,
+       'and the server is never told rounds are gone that nobody spent',
+       ('reported %s, owned %d'):format(tostring(told), OWNED))
+
+    -- ── 3. NOW FIRE, AND RELOAD, AND FIRE AGAIN. THE INVARIANT IS THE ONLY
+    --       THING ASSERTED: the holding falls by the rounds fired and by
+    --       nothing else, however many reloads happen in between.
+    --
+    --       The magazine is 1, so this is eight shots and eight reloads -- the
+    --       worst case for a defect that leaks per reload rather than per shot.
+    local fired, leaked = 0, nil
+    for shot = 1, 8 do
+        local h = RH
+        if (gun.total[h] or 0) > 0 then
+            gun.total[h] = gun.total[h] - 1
+            gun.clip[h]  = math.max(0, (gun.clip[h] or 0) - 1)
+            fired = fired + 1
+            -- The engine's own reload, out of the engine's own reserve, up to
+            -- the engine's own magazine. No round is created and none is lost.
+            if gun.clip[h] == 0 then
+                gun.clip[h] = math.min(ENGINE_MAG[h], gun.total[h])
+            end
+        end
+        tick(3)
+        if leaked == nil and gun.total[h] ~= OWNED - fired then
+            leaked = ('after shot %d: engine %s, expected %d')
+                :format(shot, tostring(gun.total[h]), OWNED - fired)
+        end
+    end
+    ok(leaked == nil,
+       'EIGHT SHOTS AND EIGHT RELOADS COST EXACTLY EIGHT ROUNDS',
+       leaked)
+    ok(gun.total[RH] == OWNED - fired,
+       'and the ped ends holding what twelve minus what was fired comes to',
+       ('engine %s, %d - %d'):format(tostring(gun.total[RH]), OWNED, fired))
+
+    local endTold = lastReportTotal()
+    ok(endTold == nil or endTold >= OWNED - fired,
+       'and no report ever claimed fewer rounds left than there were',
+       ('reported %s, actually %d'):format(tostring(endTold), OWNED - fired))
+
+    -- ── 4. THE OTHER DIRECTION, WHICH IS THE MINIGUN AND IS DELIBERATE.
+    --
+    --       WEAPON_MINIGUN's ClipSize is 15000 and we declare 150, because
+    --       `w.clip` is also what BR.Inv.give grants as reserve and what one
+    --       press of the reload key moves. Declaring 15000 would hand a found
+    --       minigun the whole medium cap and empty the pool into one magazine.
+    --
+    --       SO THE CLAIM THAT IT IS SAFE IS TESTED RATHER THAN ASSERTED. The
+    --       engine keeps the whole remaining holding in its own clip, which
+    --       makes `granted` RISE with the reading instead of falling, so the
+    --       clamp that destroyed the railgun's rounds never fires here.
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+    fire(BR.Net.STATE, { state = BR.MatchState.PLAYING })
+    sent = {}
+    local BELT, RESERVE = MINIGUN.clip, 200
+    serverSays('minigun', 'medium', BELT, RESERVE)
+    ok(gun.total[MH] == BELT + RESERVE,
+       'a minigun holds its belt plus its reserve',
+       tostring(gun.total[MH]))
+    ok(gun.clip[MH] == BELT,
+       'and the engine took the whole declared belt, because 150 fits in 15000',
+       tostring(gun.clip[MH]))
+
+    -- The belt runs out, and GTA loads EVERYTHING that is left -- a 15000-round
+    -- magazine has room for all of it. The clip now reads far above `w.clip`.
+    gun.total[MH] = gun.total[MH] - BELT
+    gun.clip[MH]  = math.min(ENGINE_MAG[MH], gun.total[MH])
+    tick(4)
+    ok(gun.clip[MH] == RESERVE,
+       'the engine pulls the whole remainder into one magazine',
+       tostring(gun.clip[MH]))
+    ok(gun.total[MH] == RESERVE,
+       'AND A MAGAZINE BIGGER THAN WE DECLARE COSTS NOTHING -- the belt is '
+           .. 'spent and the reserve is not',
+       ('engine %s, expected %d'):format(tostring(gun.total[MH]), RESERVE))
+
+    GiveWeaponToPed     = savedGive
+    RemoveAllPedWeapons = savedRemove
+    SetPedAmmo          = savedSetAmmo
+    SetAmmoInClip       = savedSetClip
+    GetAmmoInPedWeapon  = savedGetAmmo
+    GetAmmoInClip       = savedGetClip
+    SetCurrentPedWeapon = savedCurrent
+    HasPedGotWeapon     = savedHasGot
+    pedWeapon = nil
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+end
+
+-- ======================================================================== --
+-- N3b. /brprobe clips -- THE AUDIT THAT REPLACES THE LOOKUP
+-- ======================================================================== --
+--
+-- The owner asked how our magazine sizes can be validated against GTA's, and
+-- whether there is a source online. Two of the three obvious sources are traps:
+--
+--   * DurtyFree's gta-v-data-dumps weapons.json carries DefaultMaxAmmo, which is
+--     the POOL ceiling, not a magazine. Reading it as one would have "confirmed"
+--     the railgun at 20-something and settled nothing.
+--   * weaponcomponents.meta is authoritative and INCOMPLETE for us: it is silent
+--     on the railgun and on every Mk II, and four of our weapons appear in it
+--     only as an EXTENDED clip, which is not the magazine a found gun arrives
+--     with.
+--
+-- So the answer is a command that asks the engine on the build he is running,
+-- and the thing worth testing about it is the thing that would make it useless:
+-- that it says "ok" for a magazine that is actually wrong.
+describe('/brprobe clips names every magazine that disagrees with the engine')
+do
+    -- Loaded here rather than in the top-level list: probe.lua is a diagnostic
+    -- that spawns crates and reads gfx natives, and every other block in this
+    -- file would pay for those stubs to test none of them. Same shape as
+    -- config/peds.lua and client/locker.lua further down.
+    local chunk, err = loadfile(ROOT .. 'br_core/client/probe.lua')
+    ok(chunk ~= nil, 'client/probe.lua loads', err)
+    if chunk then chunk() end
+
+    local savedWeaponClip = GetWeaponClipSize
+    local savedMaxInClip  = GetMaxAmmoInClip
+
+    -- THE ENGINE, AND IT IS NOT BUILT OUT OF BR.Config. Three real answers and
+    -- silence for everything else, which also exercises the `no reading` path --
+    -- a command that printed a confident 0 for an unanswerable weapon would read
+    -- as "the engine says this gun has no magazine".
+    local TRUTH = {
+        [BR.NormHash(BR.Config.WeaponById['railgun'].hash)] = 1,
+        [BR.NormHash(BR.Config.WeaponById['minigun'].hash)] = 15000,
+        [BR.NormHash(BR.Config.WeaponById['pistol'].hash)]  = 12,
+    }
+    function GetWeaponClipSize(hash) return TRUTH[BR.NormHash(hash)] or 0 end
+    function GetMaxAmmoInClip() return false, 0 end
+
+    --- Run the command and hand back everything it printed.
+    local function run()
+        local from = #logged + 1
+        local safe = pcall(commands['brprobe'], nil, { 'clips' }, '')
+        local out = {}
+        for i = from, #logged do out[#out + 1] = logged[i] end
+        return safe, table.concat(out, '\n')
+    end
+
+    --- The audit's own line for one weapon.
+    local function rowFor(text, id)
+        for row in text:gmatch('[^\n]+') do
+            if row:match('^%s+' .. id .. '%s') then return row end
+        end
+        return nil
+    end
+
+    local safe, text = run()
+    ok(safe, '/brprobe clips does not throw with no weapon in hand')
+
+    -- ── THE THREE VERDICTS, one weapon each.
+    local rail = rowFor(text, 'railgun')
+    ok(rail ~= nil and not rail:find('OVER'),
+       'the railgun agrees with the engine now and is not flagged', rail)
+    local mini = rowFor(text, 'minigun')
+    ok(mini ~= nil and mini:find('under') ~= nil and not mini:find('OVER'),
+       'the minigun reads as UNDER the engine, which is the safe direction',
+       mini)
+    local blind = rowFor(text, 'heavysniper')
+    ok(blind ~= nil and blind:find('no reading') ~= nil,
+       'a weapon nothing will answer for says so rather than printing 0',
+       blind)
+
+    -- ── THE META COLUMN, AND THE HALF OF IT THAT IS BLANK ON PURPOSE.
+    ok(rowFor(text, 'pistol') ~= nil
+       and rowFor(text, 'pistol'):find('12%s+12') ~= nil,
+       'the weaponcomponents.meta column prints beside the engine\'s',
+       rowFor(text, 'pistol'))
+    ok(text:find('EXTENDED clip') ~= nil,
+       'and the weapons it has only an EXTENDED clip for are named, not numbered')
+    ok(rowFor(text, 'combatpdw') ~= nil
+       and not rowFor(text, 'combatpdw'):find('100'),
+       'COMBATPDW_CLIP_03\'s 100 never appears as though it were the default',
+       rowFor(text, 'combatpdw'))
+
+    -- ── AND THE RED. A command that cannot fail is not an audit: the railgun is
+    --    put back to the number that lost the owner eight rounds, and the audit
+    --    has to name it. Restored immediately -- this is the live config table.
+    local RAIL = BR.Config.WeaponById['railgun']
+    local realClip = RAIL.clip
+    RAIL.clip = 3
+    local _, broken = run()
+    RAIL.clip = realClip
+
+    local badRow = rowFor(broken, 'railgun')
+    ok(badRow ~= nil and badRow:find('OVER') ~= nil,
+       'A RAILGUN DECLARED 3 AGAINST A MAGAZINE OF 1 IS NAMED, LOUDLY', badRow)
+    ok(broken:find('railgun %(3 over 1%)') ~= nil,
+       'and the summary line says which weapon and by how much')
+    ok(broken:find('DESTROYS ROUNDS') ~= nil,
+       'and says what it costs, rather than calling it a mismatch')
+    ok(BR.Config.WeaponById['railgun'].clip == realClip,
+       'and the config table is left exactly as it was found',
+       tostring(BR.Config.WeaponById['railgun'].clip))
+
+    GetWeaponClipSize = savedWeaponClip
+    GetMaxAmmoInClip  = savedMaxInClip
+end
+
+-- ======================================================================== --
 -- O. THE MANUAL RELOAD KEY
 -- ======================================================================== --
 --

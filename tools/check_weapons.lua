@@ -200,6 +200,108 @@ for _, list in ipairs({ BR.Config.Weapons, BR.Config.AirdropWeapons }) do
     end
 end
 
+-- ------------------------------------------------------- magazine size ----
+--
+-- A DECLARED `clip` ABOVE THE ENGINE'S OWN ClipSize DESTROYS AMMUNITION, AND
+-- NOTHING ERRORS (owner, 2026-09-12: "That's 4 rounds when I paid for 12.")
+--
+-- The railgun was declared 3 and WEAPON_RAILGUN's magazine is 1. BR.Inv.reload
+-- moves `w.clip - clip` out of the pool on an empty magazine, the engine can only
+-- take its own ClipSize of that, and client/inventory.lua's report loop then
+-- clamps the ped's total down to the magazine it read back plus the pool -- and
+-- reports the lower number, which the server debits. Three rounds a shot for one
+-- round fired, on the one pool (heavy, capped at 24) with nothing in it to hide
+-- the loss. The same defect sat on the Gusenberg (50 declared, 30 real) and the
+-- Combat Shotgun (8 declared, 6 real) and was invisible on both, because a rifle
+-- pool holds hundreds of rounds.
+--
+-- BELOW THE ENGINE'S IS SAFE AND IS ALLOWED. A magazine bigger than we declare
+-- means the engine keeps more of the holding in its own clip, so `granted` rises
+-- with the reading rather than falling and the clamp never fires. The minigun
+-- relies on that: its ClipSize is 15000 and we declare 150, because `w.clip` is
+-- also what BR.Inv.give grants as reserve and what a reload press moves.
+--
+-- ═══ WHERE THESE NUMBERS COME FROM, BECAUSE A TABLE OF REMEMBERED ONES WOULD
+--     BE THE BUG AGAIN ═══
+--
+-- Every value below is `<ClipSize value="N" />` inside the `CWeaponInfo` whose
+-- `<Name>` matches, read out of published copies of the stock .meta files and
+-- cross-checked against a second, independent copy before being written here:
+--
+--   CyCoSnag/snag_weapon_metas       metas/weapons/
+--   TheRealVSSVSSN/GTV_Meta_Files    data/meta/
+--
+-- The comment on each row is the .meta the entry lives in -- the base game's
+-- common/data/ai/weapons.meta, or the per-weapon DLC file that adds it. A NEW
+-- WEAPON NEEDS A ROW, and the row has to be read rather than recalled; a weapon
+-- with no row fails below rather than passing unchecked, which is the whole
+-- reason this is a gate and not a comment.
+local ENGINE_CLIP = {
+    ['WEAPON_PISTOL']            =    12,   -- weapons.meta
+    ['WEAPON_SNSPISTOL']         =     6,   -- weaponsnspistol.meta
+    ['WEAPON_COMBATPISTOL']      =    12,   -- weapons.meta
+    ['WEAPON_PISTOL_MK2']        =    12,   -- weapons_pistol_mk2.meta
+    ['WEAPON_HEAVYPISTOL']       =    18,   -- weaponheavypistol.meta
+    ['WEAPON_REVOLVER']          =     6,   -- weaponrevolver.meta
+    ['WEAPON_REVOLVER_MK2']      =     6,   -- weapons_revolver_mk2.meta
+    ['WEAPON_MICROSMG']          =    16,   -- weapons.meta
+    ['WEAPON_MACHINEPISTOL']     =    12,   -- weaponmachinepistol.meta
+    ['WEAPON_MINISMG']           =    20,   -- weaponminismg.meta
+    ['WEAPON_SMG']               =    30,   -- weapons.meta
+    ['WEAPON_SMG_MK2']           =    30,   -- weapons_smg_mk2.meta
+    ['WEAPON_ASSAULTSMG']        =    30,   -- weapons.meta
+    ['WEAPON_COMBATPDW']         =    30,   -- weaponcombatpdw.meta
+    ['WEAPON_BULLPUPRIFLE']      =    30,   -- weaponbullpuprifle.meta
+    ['WEAPON_ASSAULTRIFLE']      =    30,   -- weapons.meta
+    ['WEAPON_CARBINERIFLE']      =    30,   -- weapons.meta
+    ['WEAPON_ADVANCEDRIFLE']     =    30,   -- weapons.meta
+    ['WEAPON_CARBINERIFLE_MK2']  =    30,   -- weapons_carbinerifle_mk2.meta
+    ['WEAPON_ASSAULTRIFLE_MK2']  =    30,   -- weapons_assaultrifle_mk2.meta
+    ['WEAPON_SPECIALCARBINE']    =    30,   -- weaponspecialcarbine.meta
+    ['WEAPON_MILITARYRIFLE']     =    30,   -- weapon_militaryrifle.meta
+    ['WEAPON_SAWNOFFSHOTGUN']    =     8,   -- weapons.meta
+    ['WEAPON_PUMPSHOTGUN']       =     8,   -- weapons.meta
+    ['WEAPON_ASSAULTSHOTGUN']    =     8,   -- weapons.meta
+    ['WEAPON_PUMPSHOTGUN_MK2']   =     8,   -- weapons_pumpshotgun_mk2.meta
+    ['WEAPON_HEAVYSHOTGUN']      =     6,   -- weaponheavyshotgun.meta
+    ['WEAPON_COMBATSHOTGUN']     =     6,   -- weapon_combatshotgun.meta
+    ['WEAPON_MARKSMANRIFLE']     =     8,   -- weaponmarksmanrifle.meta
+    ['WEAPON_SNIPERRIFLE']       =    10,   -- weapons.meta
+    ['WEAPON_MARKSMANRIFLE_MK2'] =     8,   -- weapons_marksmanrifle_mk2.meta
+    ['WEAPON_HEAVYSNIPER']       =     6,   -- weapons.meta
+    ['WEAPON_MG']                =    54,   -- weapons.meta
+    ['WEAPON_GUSENBERG']         =    30,   -- weapongusenberg.meta
+    ['WEAPON_COMBATMG']          =   100,   -- weapons.meta
+    ['WEAPON_COMBATMG_MK2']      =   100,   -- weapons_combatmg_mk2.meta
+    ['WEAPON_RPG']               =     1,   -- weapons.meta
+    ['WEAPON_GRENADELAUNCHER']   =    10,   -- weapons.meta
+    ['WEAPON_RAILGUN']           =     1,   -- weaponrailgun.meta
+    ['WEAPON_MINIGUN']           = 15000,   -- weapons.meta
+}
+
+local clipChecked, clipUnder = 0, 0
+for _, list in ipairs({ BR.Config.Weapons, BR.Config.AirdropWeapons }) do
+    for _, w in ipairs(list or {}) do
+        local engine = ENGINE_CLIP[w.name]
+        if engine == nil then
+            fail('weapon %q (%s) has no engine ClipSize recorded in '
+                 .. 'tools/check_weapons.lua. Read `<ClipSize>` out of the '
+                 .. 'stock .meta for this weapon and add the row -- an unchecked '
+                 .. 'clip above the engine\'s destroys rounds on every reload',
+                 w.id, tostring(w.name))
+        elseif (w.clip or 0) > engine then
+            fail('weapon %q declares clip %d and %s\'s magazine holds %d. Every '
+                 .. 'reload would move %d rounds out of the pool for a magazine '
+                 .. 'that can take %d, and the difference is DESTROYED rather '
+                 .. 'than spent (2026-09-12)',
+                 w.id, w.clip or 0, w.name, engine, w.clip or 0, engine)
+        else
+            clipChecked = clipChecked + 1
+            if (w.clip or 0) < engine then clipUnder = clipUnder + 1 end
+        end
+    end
+end
+
 -- ------------------------------------------------------------ drive-by ----
 --
 -- EVERY WEAPON MUST SAY WHETHER A CAR SEAT ACCEPTS IT, AND SAYING NOTHING IS
@@ -424,9 +526,10 @@ if fails == 0 then
     end
     io.write(('\27[32mok\27[0m   %d weapon hashes match their names; %d resolve from '
         .. 'both signed and unsigned (%d have the top bit set); %d are claimed '
-        .. 'usable from a car seat; %d slot weapons have a PNG in both the '
-        .. 'source and the built bundle, and none is drawn\n')
-        :format(checked, signedChecked, topBit, db, paired))
+        .. 'usable from a car seat; %d declared magazines are within the '
+        .. 'engine\'s ClipSize (%d deliberately below it); %d slot weapons have a '
+        .. 'PNG in both the source and the built bundle, and none is drawn\n')
+        :format(checked, signedChecked, topBit, db, clipChecked, clipUnder, paired))
 else
     io.write(('\27[31m%d weapon table problem(s)\27[0m\n'):format(fails))
 end

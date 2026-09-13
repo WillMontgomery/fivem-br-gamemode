@@ -10546,22 +10546,38 @@ do
     -- a FLOOR: the client may say the total has fallen and may say nothing else.
     ok(BR.Config.Combat.serverAmmo, 'server ammo is on for this block')
 
+    -- ═══ THE WEAPON HERE IS THE GRENADE LAUNCHER, AND THE SWAP IS A FINDING
+    --     RATHER THAN A CONVENIENCE (2026-09-12) ═══
+    --
+    -- This block was written on the railgun because that is the gun the owner was
+    -- holding, and every assertion below needs a magazine with rounds STILL IN IT
+    -- after a shot. WEAPON_RAILGUN's magazine is one round. It was declared 3
+    -- until today, which is exactly what made it look like a weapon that could
+    -- hold a partial magazine -- and what made BR.Inv.reload move three rounds out
+    -- of the heavy pool into a chamber that takes one.
+    --
+    -- THE GRENADE LAUNCHER KEEPS EVERY REASON THE RAILGUN WAS CHOSEN and has a
+    -- magazine of ten: it is on the same heavy pool, it is on the airdrop shelf,
+    -- and it is EXPLOSIVE -- so it raises no weaponDamageEvent either, which is
+    -- the entire premise of this block. The railgun is back at the bottom, on the
+    -- one thing only it can say now.
     lootMatch()
     BR.Inv.reset(1)
     local rail = BR.Config.WeaponById['railgun']
-    BR.Inv.give(1, { item = 'railgun', kind = BR.ItemKind.WEAPON, rarity = 5,
-                     count = 1, clip = rail.clip })
+    local gl   = BR.Config.WeaponById['grenadelauncher']
+    BR.Inv.give(1, { item = 'grenadelauncher', kind = BR.ItemKind.WEAPON,
+                     rarity = 5, count = 1, clip = gl.clip })
     local inv = BR.Inv.of(1)
     inv.active = 1
-    inv.ammo[BR.AmmoType.HEAVY] = rail.clip
-    local total = rail.clip + rail.clip
+    inv.ammo[BR.AmmoType.HEAVY] = gl.clip
+    local total = gl.clip + gl.clip
 
     -- THE MAGAZINE PAYS FIRST, because that is the order rounds leave a gun.
     ammoReport(1, 1, total - 1, 0)
-    ok(inv.slots[1].clip == rail.clip - 1,
+    ok(inv.slots[1].clip == gl.clip - 1,
         'a round the server never saw still comes off the magazine',
         tostring(inv.slots[1].clip))
-    ok(inv.ammo[BR.AmmoType.HEAVY] == rail.clip,
+    ok(inv.ammo[BR.AmmoType.HEAVY] == gl.clip,
         'and the reserve is untouched while the magazine has rounds in it',
         tostring(inv.ammo[BR.AmmoType.HEAVY]))
 
@@ -10612,6 +10628,35 @@ do
     inv.ammo[BR.AmmoType.HEAVY] = 0
     ammoReport(1, 1, 1, 1)
     ok(#eventsOf(BR.Net.INV_SET) > 0, 'and the corrected inventory is pushed back')
+
+    -- ═══ AND NOW THE RAILGUN, WHOSE MAGAZINE IS ONE ROUND (owner, 2026-09-12) ═══
+    --
+    -- "I buy one pack of 12 heavy ammo for it, then the HUD reads 1/12 ... That's
+    -- 4 rounds when I paid for 12."
+    --
+    -- THIS IS THE POOL ARITHMETIC HE WAS WATCHING, and the number under test is
+    -- the one BR.Inv.reload takes out of the reserve when the chamber empties.
+    -- `w.clip` IS that number, so it has to be the engine's: at 3 this refilled a
+    -- one-round chamber by moving three rounds, and client/inventory.lua then
+    -- wrote the two that did not fit off the ped and reported them gone.
+    --
+    -- Twelve owned, one of them chambered. One shot, and eleven must remain --
+    -- ONE in the chamber and TEN behind it, not one and eight.
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'railgun', kind = BR.ItemKind.WEAPON, rarity = 5,
+                     count = 1, clip = rail.clip })
+    inv = BR.Inv.of(1)
+    inv.active = 1
+    inv.ammo[BR.AmmoType.HEAVY] = 12 - rail.clip
+    ammoReport(1, 1, 11, 0)
+    ok(inv.slots[1].clip + inv.ammo[BR.AmmoType.HEAVY] == 11,
+        'ONE ROUND FIRED COSTS THE RAILGUN ONE ROUND OUT OF TWELVE',
+        ('clip %s reserve %s'):format(inv.slots[1].clip,
+                                      inv.ammo[BR.AmmoType.HEAVY]))
+    ok(inv.slots[1].clip == 1 and inv.ammo[BR.AmmoType.HEAVY] == 10,
+        'and the refill moves exactly one round into a one-round chamber',
+        ('clip %s reserve %s'):format(inv.slots[1].clip,
+                                      inv.ammo[BR.AmmoType.HEAVY]))
 
     -- IT IS NOT RAILGUN-ONLY. The railgun is where the owner found it because
     -- an explosive is charged for nothing at all; every other weapon leaks the

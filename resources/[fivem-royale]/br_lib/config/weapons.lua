@@ -89,6 +89,43 @@
 -- rather than leaving eleven `false`s that read as though the question were
 -- open per weapon.
 
+-- `clip` -- THE ENGINE'S OWN MAGAZINE SIZE, COPIED, NOT CHOSEN
+--
+-- WHAT IT IS: weapons.meta's `ClipSize` for this weapon. That is game DATA inside
+-- the .rpf and no native writes it, so a number here that disagrees with the
+-- engine does not make the gun hold more. It makes two books disagree, and the
+-- server's book is the one the ammo pool is debited from.
+--
+-- ═══ A VALUE ABOVE THE ENGINE'S DESTROYS ROUNDS (owner, 2026-09-12) ═══
+--
+-- "I buy one pack of 12 heavy ammo for it, then the HUD reads 1/12 ... Fire
+-- another - 1/0. Fire another - 0/0. That's 4 rounds when I paid for 12."
+--
+-- The railgun was declared 3 and WEAPON_RAILGUN's ClipSize is 1. Three rounds a
+-- shot, for one round fired, and the two that went missing were destroyed rather
+-- than spent:
+--
+--   1. BR.Inv.reload (server/inventory.lua) moves `w.clip - clip` out of the pool
+--      when the magazine reads empty, so THREE rounds left the heavy pool;
+--   2. SetAmmoInClip cannot put three rounds into a one-round magazine, so the
+--      engine took ONE and the report loop wrote what it read back into the
+--      mirror;
+--   3. `if total > granted then SetPedAmmo(ped, hash, granted)` in
+--      client/inventory.lua then found the ped holding more than the laundered
+--      magazine plus the pool, wrote the ped DOWN, and reported the lower total
+--      -- which the server debited.
+--
+-- Nobody fired those two rounds and no code path gave them back.
+--
+-- BELOW THE ENGINE'S IS THE SAFE DIRECTION. A magazine bigger than we declare
+-- costs nothing: the engine keeps more of the holding in its own clip, `granted`
+-- rises with it rather than falling, and the clamp never fires. The minigun is
+-- deliberately there and says so at its own entry.
+--
+-- THE ENGINE'S NUMBERS ARE WRITTEN DOWN IN tools/check_weapons.lua, which fails
+-- the build for a declared clip above one of them. A new weapon needs a row in
+-- that table, and the row has to come from the .meta rather than from memory.
+
 BR = BR or {}
 BR.Config = BR.Config or {}
 
@@ -129,7 +166,7 @@ BR.Config.Weapons = {
     { id = 'assaultshotgun',name = 'WEAPON_ASSAULTSHOTGUN',   hash = 0xE284C527, label = 'Assault Shotgun',   rarity = R.RARE,      ammo = BR.AmmoType.SHELLS, damage = 72, maxRange =  40.0, minInterval = 300, clip =  8, driveby = false },
     { id = 'pumpshotgunmk2',name = 'WEAPON_PUMPSHOTGUN_MK2',  hash = 0x555AF99A, label = 'Pump Shotgun Mk II',rarity = R.EPIC,      ammo = BR.AmmoType.SHELLS, damage = 92, maxRange =  45.0, minInterval = 850, clip =  8, driveby = false },
     { id = 'heavyshotgun',  name = 'WEAPON_HEAVYSHOTGUN',     hash = 0x3AABBBAA, label = 'Heavy Shotgun',     rarity = R.EPIC,      ammo = BR.AmmoType.SHELLS, damage = 88, maxRange =  42.0, minInterval = 400, clip =  6, driveby = false },
-    { id = 'combatshotgun', name = 'WEAPON_COMBATSHOTGUN',    hash = 0x05A96BA4, label = 'Combat Shotgun',    rarity = R.EPIC,      ammo = BR.AmmoType.SHELLS, damage = 80, maxRange =  48.0, minInterval = 320, clip =  8, driveby = false },
+    { id = 'combatshotgun', name = 'WEAPON_COMBATSHOTGUN',    hash = 0x05A96BA4, label = 'Combat Shotgun',    rarity = R.EPIC,      ammo = BR.AmmoType.SHELLS, damage = 80, maxRange =  48.0, minInterval = 320, clip =  6, driveby = false },
 
     -- Marksman and sniper ---------------------------------------------------
     -- Deliberately few and high-rarity: the render ceiling makes true long-range
@@ -156,7 +193,7 @@ BR.Config.Weapons = {
     -- left capped at 60, which could never fill the 100-round magazines two of
     -- these four carry; medium is 350. See BR.Config.AmmoCaps.
     { id = 'mg',            name = 'WEAPON_MG',               hash = 0x9D07F764, label = 'MG',                rarity = R.RARE,      ammo = BR.AmmoType.MEDIUM, damage = 34, maxRange = 230.0, minInterval =  85, clip = 54, driveby = false },
-    { id = 'gusenberg',     name = 'WEAPON_GUSENBERG',        hash = 0x61012683, label = 'Gusenberg Sweeper', rarity = R.RARE,      ammo = BR.AmmoType.MEDIUM, damage = 32, maxRange = 200.0, minInterval =  80, clip = 50, driveby = false },
+    { id = 'gusenberg',     name = 'WEAPON_GUSENBERG',        hash = 0x61012683, label = 'Gusenberg Sweeper', rarity = R.RARE,      ammo = BR.AmmoType.MEDIUM, damage = 32, maxRange = 200.0, minInterval =  80, clip = 30, driveby = false },
     { id = 'combatmg',      name = 'WEAPON_COMBATMG',         hash = 0x7FD62962, label = 'Combat MG',         rarity = R.EPIC,      ammo = BR.AmmoType.MEDIUM, damage = 38, maxRange = 250.0, minInterval =  85, clip = 100, driveby = false },
     { id = 'combatmgmk2',   name = 'WEAPON_COMBATMG_MK2',     hash = 0xDBBD7280, label = 'Combat MG Mk II',   rarity = R.LEGENDARY, ammo = BR.AmmoType.MEDIUM, damage = 40, maxRange = 270.0, minInterval =  85, clip = 100, driveby = false },
 }
@@ -228,10 +265,23 @@ BR.Config.Weapons = {
 BR.Config.AirdropWeapons = {
     { id = 'rpg',             name = 'WEAPON_RPG',             hash = 0xB1CA77B1, label = 'RPG',              rarity = R.LEGENDARY, ammo = BR.AmmoType.HEAVY, damage = 120, maxRange = 300.0, minInterval = 1000, clip =  1, explosive = true, blastRadius = 12.0 },
     { id = 'grenadelauncher', name = 'WEAPON_GRENADELAUNCHER', hash = 0xA284510B, label = 'Grenade Launcher', rarity = R.LEGENDARY, ammo = BR.AmmoType.HEAVY, damage =  85, maxRange = 180.0, minInterval =  600, clip = 10, explosive = true, blastRadius = 10.0 },
-    { id = 'railgun',         name = 'WEAPON_RAILGUN',         hash = 0x6D544C99, label = 'Railgun',          rarity = R.LEGENDARY, ammo = BR.AmmoType.HEAVY, damage = 110, maxRange = 350.0, minInterval = 1200, clip =  3, explosive = true, blastRadius =  5.0 },
+    { id = 'railgun',         name = 'WEAPON_RAILGUN',         hash = 0x6D544C99, label = 'Railgun',          rarity = R.LEGENDARY, ammo = BR.AmmoType.HEAVY, damage = 110, maxRange = 350.0, minInterval = 1200, clip =  1, explosive = true, blastRadius =  5.0 },
     -- 13 a round at 18ms is ~700 display points a second against the Combat MG
     -- Mk II's ~470 -- the fastest kill in the game, on the loudest, slowest,
     -- most visible thing a player can be holding, once per match if at all.
+    --
+    -- ⚠ 150 IS DELIBERATELY NOT THE ENGINE'S NUMBER, AND IT IS THE ONLY ENTRY IN
+    -- THIS FILE THAT ISN'T. WEAPON_MINIGUN's ClipSize is 15000 -- the belt never
+    -- reloads in stock GTA -- and that is the SAFE direction to disagree in: the
+    -- engine holding a bigger magazine than we declare cannot destroy a round
+    -- (see the `clip` note above), it only means the engine keeps the whole
+    -- holding in one clip and the split we draw is ours rather than its.
+    --
+    -- COPYING 15000 HERE WOULD CHANGE TWO THINGS NOBODY ASKED FOR: BR.Inv.give
+    -- grants `w.clip * weaponReserveClips` of reserve, so a found minigun would
+    -- arrive with the whole medium cap rather than 150 rounds, and BR.Inv.reload
+    -- would move the entire pool into the magazine in one press. 150 is a burst
+    -- and it is the number the paragraph above is about.
     { id = 'minigun',         name = 'WEAPON_MINIGUN',         hash = 0x42BF8A85, label = 'Minigun',          rarity = R.LEGENDARY, ammo = BR.AmmoType.MEDIUM, damage =  13, maxRange = 200.0, minInterval =   18, clip = 150 },
 }
 
