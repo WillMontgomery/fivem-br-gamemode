@@ -2355,6 +2355,88 @@ do
         ('2:%d 4:%d'):format(lo, hi))
 end
 
+describe('loot.floorkinds')
+do
+    -- ═══ EVERY ROW OF FloorKindWeights, PINNED TO WHAT IT ACTUALLY ROLLS ═══
+    --
+    -- The ammo-share gate in loot.floor above is one-sided and cannot catch the
+    -- failure this exists for. If the weapon row stopped paying out entirely --
+    -- an emptied rarity bucket, a kind roll falling through to its fallback --
+    -- loose loot would go to 90% ammo and `ammoShare > 0.6` would still pass,
+    -- green, forever. The owner found it from a chair instead (2026-09-12:
+    -- "can't validate ground weapons because there aren't any", 30+ floor items
+    -- with no gun in them). The generator turned out to be correct and his
+    -- sample was a 1-in-180 run of luck, but nothing in the suite could have
+    -- told him that, which is the actual gap.
+    --
+    -- DRIVEN OFF THE TABLE, NOT OFF COPIED NUMBERS. FloorKindWeights is his
+    -- knob to turn; a test carrying its own hardcoded 16 would fail the next
+    -- time he turns it and teach everyone to edit the test. It asserts that the
+    -- generator pays out what the table SAYS, whatever the table says.
+    --
+    -- ALL FOUR TIERS, because the kind roll is tier-independent by design and a
+    -- regression that made it tier-dependent belongs here too.
+    local rolled, total = {}, 0
+    for tier = 1, 4 do
+        local rng = BR.Rng(4242 + tier * 7919)
+        for _ = 1, 25000 do
+            local s = BR.RollLootStack(rng, tier, true)
+            rolled[s.kind] = (rolled[s.kind] or 0) + 1
+            total = total + 1
+        end
+    end
+
+    local declared = 0
+    for _, row in ipairs(BR.Config.FloorKindWeights) do
+        declared = declared + row.weight
+    end
+
+    -- 1.5 POINTS IS ABOUT EIGHT SIGMA AT THIS n, and a row that has stopped
+    -- paying out misses by its whole weight -- four points at the narrowest.
+    -- So this is loose enough never to flake and tight enough to be worth
+    -- having.
+    local kinds = {}
+    for _, row in ipairs(BR.Config.FloorKindWeights) do
+        kinds[row.kind] = true
+        local want = 100.0 * row.weight / declared
+        local got  = 100.0 * (rolled[row.kind] or 0) / total
+        ok(math.abs(got - want) <= 1.5,
+            ('floor %s rolls at its declared share'):format(tostring(row.kind)),
+            ('declared %.2f%%, measured %.2f%% over %d rolls')
+                :format(want, got, total))
+        -- Said separately from the tolerance above: "this row pays nothing at
+        -- all" is the failure that prompted the test, and it should name itself
+        -- rather than arriving as a number that is 16 away from 16.
+        ok((rolled[row.kind] or 0) > 0,
+            ('floor %s can be rolled at all'):format(tostring(row.kind)))
+    end
+
+    -- A kind the table does not declare must never appear. BR.Config.RollKind
+    -- falls back to WEAPON when its weighted draw comes back nil, so a table
+    -- this walk cannot reach would show up here as a kind nobody authored.
+    local stray = nil
+    for kind in pairs(rolled) do
+        if not kinds[kind] then stray = kind end
+    end
+    ok(stray == nil, 'a floor roll only ever produces a declared kind',
+        tostring(stray))
+
+    -- And the same thing once through the real layout builder, which is the
+    -- path that actually ships: the raw roll above cannot catch a caller that
+    -- forgets to pass `floor`, or a layout that stops placing floor items.
+    local floorWeapons, floorItems = 0, 0
+    for _, e in ipairs(BR.BuildLootLayout(31337)) do
+        if e.kind ~= 'chest' then
+            floorItems = floorItems + 1
+            if e.kind == BR.ItemKind.WEAPON then
+                floorWeapons = floorWeapons + 1
+            end
+        end
+    end
+    ok(floorWeapons > 0, 'a real layout puts guns on the ground',
+        ('%d of %d floor items'):format(floorWeapons, floorItems))
+end
+
 describe('loot.shields')
 do
     -- HOW OFTEN A CRATE PAYS OUT A SHIELD, WHICH IS THE ONLY FORM OF THIS
