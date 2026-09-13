@@ -1363,11 +1363,16 @@ html, body, #root {
    want that to happen when the timer changes from 'STORM MOVING IN' to 'STORM
    CLOSING NOW' and display it for 0.5 seconds."
 
+   AND THEN, HAVING SEEN IT: "Shockwave looks good on the timer - can you make
+   it take twice as long?" So the half-second is now a full second, and that is
+   the ONLY thing that moved -- still one shot, still the card's silhouette,
+   still transform and opacity alone.
+
    THIS REPLACED A CONTINUOUS RING, and the replacement is the point. The ring
    (2026-09-11) breathed for the whole of the closing phase on the card's own
    1.6s beat; he looked at it and said "I don't like what we did to the storm
    timer with the outline". A thing that announces a transition should be over
-   when the transition is, so this one is a single 500ms expansion and then
+   when the transition is, so this one is a single 1000ms expansion and then
    nothing at all. Do not reintroduce an `infinite` here.
 
    IT STARTS AS THE CARD'S BORDER. `inset: 0` and a 2px border in the same
@@ -1404,10 +1409,13 @@ html, body, #root {
   /* From the middle, so every edge leaves at once and the silhouette stays the
      card's rather than sliding off a corner. */
   transform-origin: 50% 50%;
-  /* 500ms, ONE PASS, and `both` so the last frame (invisible) is what holds
+  /* 1000ms, ONE PASS, and `both` so the last frame (invisible) is what holds
      afterwards. No iteration count is written because the default is 1 and
-     naming it invites someone to edit it. */
-  animation: stormShock 500ms var(--ease-out) both;
+     naming it invites someone to edit it.
+
+     TWICE THE 500ms IT SHIPPED AT, on his word after watching it -- see the
+     block above. Only this number moved. */
+  animation: stormShock 1000ms var(--ease-out) both;
 }
 
 /* The health-bar hit flash: a red wash over the bar that burns out in

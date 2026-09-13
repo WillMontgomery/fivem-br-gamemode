@@ -68,7 +68,8 @@ export default function StormBar({ storm }: { storm: StormPayload | null }) {
   // THE CLOSING SHOCKWAVE (owner, 2026-09-12): "a one-time ripple effect that
   // explodes from the border of the card, in the shape of the card, like a
   // shockwave ... when the timer changes from 'STORM MOVING IN' to 'STORM
-  // CLOSING NOW' ... for 0.5 seconds."
+  // CLOSING NOW' ... for 0.5 seconds." Then, on seeing it: "can you make it take
+  // twice as long?" -- which is one number in index.css and nothing here.
   //
   // A COUNTER, NOT A BOOLEAN, and that is what makes it one-time. A `shrinking`
   // boolean in the markup is true for the whole of the closing phase, and the

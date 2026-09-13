@@ -841,13 +841,17 @@ for (const name of builtCss) {
 }
 
 // ---------------------------------------------------------------------------
-// R17  The storm card's closing shockwave fires once, runs for half a second,
-//      and keeps the card's own silhouette.
+// R17  The storm card's closing shockwave fires once, runs for a second, and
+//      keeps the card's own silhouette.
 //
 // Owner, 2026-09-12: "What I want is a one-time ripple effect that explodes from
 // the border of the card, in the shape of the card, like a shockwave. I want
 // that to happen when the timer changes from 'STORM MOVING IN' to 'STORM CLOSING
 // NOW' and display it for 0.5 seconds."
+//
+// AND, THE SAME DAY, HAVING WATCHED IT: "Shockwave looks good on the timer - can
+// you make it take twice as long?" 500ms -> 1000ms, and nothing else about it
+// changed. Every other assertion below is pinned exactly as strongly as it was.
 //
 // THIS RULE REPLACED THE ONE THAT PINNED A CONTINUOUS RING on the same element,
 // shipped the day before and rejected on sight: "I don't like what we did to the
@@ -870,8 +874,9 @@ for (const name of builtCss) {
 //     wrapper, for the ring's sake. Left there, running into the storm remounts
 //     the wrapper and replays a one-time effect on an event that is not its
 //     trigger.
-//   * the duration drifts. Half a second is a number he gave, and the player
-//     waits through delay as well as duration, so both are counted.
+//   * the duration drifts. A second is a number he gave -- twice the half-second
+//     he gave first -- and the player waits through delay as well as duration,
+//     so both are counted.
 //   * the silhouette. "In the shape of the card" is the card's own corner and
 //     nothing else. A circle, a pill and a softened rectangle are three other
 //     effects, and this card is square.
@@ -893,8 +898,8 @@ for (const name of builtCss) {
     const tsx = stripComments(read(tsxPath))
     const rule = (name) => (css.match(new RegExp(`\\.${name}\\s*\\{([^}]*)\\}`)) ?? [])[1] ?? null
 
-    // Every time in an animation shorthand, in ms. `0.5s` and `500ms` are the
-    // same half-second and this rule is about the half-second, not the spelling.
+    // Every time in an animation shorthand, in ms. `1s` and `1000ms` are the
+    // same second and this rule is about the second, not the spelling.
     const times = (decl) =>
       [...decl.matchAll(/(?<![\w.-])(\d+(?:\.\d+)?)(ms|s)(?![\w-])/g)]
         .map((m) => (m[2] === 's' ? parseFloat(m[1]) * 1000 : parseFloat(m[1])))
@@ -920,19 +925,20 @@ for (const name of builtCss) {
     } else {
       const anim = (/animation\s*:\s*([^;]+)/.exec(shock) ?? [])[1] ?? ''
 
-      // ── half a second, start to invisible ──
+      // ── a second, start to invisible ──
       if (!anim) {
         fail('R17 storm-shock', 'src/index.css',
           '.storm-shock has no `animation`. A ripple that does not move is a'
           + ' second border sitting permanently around the card.')
       } else {
         const total = times(anim).reduce((a, b) => a + b, 0)
-        if (total !== 500) {
+        if (total !== 1000) {
           fail('R17 storm-shock', 'src/index.css',
             `.storm-shock's animation totals ${total}ms of duration plus delay.`
-            + ' The owner asked for 0.5 seconds start to invisible, and a delay'
-            + ' is time the player waits through just as much as the duration'
-            + ' is.')
+            + ' The owner watched the 0.5 seconds he first asked for and said'
+            + ' "can you make it take twice as long", so the number is 1000ms --'
+            + ' and a delay is time the player waits through just as much as the'
+            + ' duration is.')
         }
 
         // ── once. Not a loop, not two passes ──
@@ -970,7 +976,7 @@ for (const name of builtCss) {
           if (!/opacity\s*:\s*0(?![\w.])/.test(block)) {
             fail('R17 storm-shock', 'src/index.css',
               'the shockwave never reaches opacity 0. A shockwave fades as it'
-              + ' grows, and the final frame is what holds after the 500ms --'
+              + ' grows, and the final frame is what holds after the 1000ms --'
               + ' without it the ripple parks permanently around the card.')
           }
           const props = [...new Set([...block.matchAll(/([a-z-]+)\s*:/g)].map((m) => m[1]))]
