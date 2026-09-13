@@ -5249,6 +5249,185 @@ do
     end
 
     -- -----------------------------------------------------------------------
+    describe('S5: a sold-out row says where else to look')
+    -- -----------------------------------------------------------------------
+    --
+    -- Owner, 2026-09-12: "For items which are out of stock, let's show their
+    -- description as 'This item may be in stock at other locations.'"
+    --
+    -- ═══ THE ROW WAS ALREADY THERE, WHICH IS WHY THIS IS A STRING AND NOT A
+    --     FEATURE ═══
+    --
+    -- The menu is built from the CATALOGUE and the ledger only paints it, so a
+    -- gun at zero keeps its place, its label and its badge -- S3 above pins all
+    -- three. What it loses is the gold price and the press. The DESCRIPTION was
+    -- the one part of a sold-out row still talking about the player's
+    -- ammunition, which is the one thing they cannot act on there.
+    --
+    -- AND A SOLD-OUT ROW IS NOT AN UNAFFORDABLE ONE. That is the assertion below
+    -- that costs the most to get wrong, because the two states look alike: both
+    -- wear the disabled shade. Only one of them is a row with nothing behind it.
+    -- A row that is in stock and merely out of reach still has to say what it
+    -- takes and how many rounds the player holds -- it is the row they are
+    -- saving toward, which is the owner's own reason for leaving its price up.
+    do
+        local all = select(1, G.build())
+
+        -- BOTH ROWS ARE READ OFF THE CATALOGUE, never named here. The shelf is
+        -- derived from config/weapons.lua and the rarity floor is a function, so
+        -- a gun spelled into this test is a gun that can leave the shop without
+        -- the test noticing it is now asserting nothing.
+        local stocked
+        for _, r in ipairs(all) do
+            if r.kind == BR.ItemKind.WEAPON and r.id ~= 'carbinerifle' then
+                local w = BR.Config.WeaponById[r.id]
+                local p = w and w.ammo
+                local def = p and BR.Config.AmmoPickups[p]
+                if def and type(def.label) == 'string' then
+                    stocked = r
+                    break
+                end
+            end
+        end
+        ok(stocked ~= nil,
+            'the fixture found a second real gun on the shelf to keep in stock',
+            stocked and stocked.id or 'none')
+
+        local out = {}
+        for _, r in ipairs(all) do
+            if r.kind == BR.ItemKind.WEAPON then out[r.id] = 0 end
+        end
+        if stocked then out[stocked.id] = 3 end
+
+        local stockedPool  = stocked and BR.Config.WeaponById[stocked.id].ammo
+        local stockedLabel = stockedPool
+            and BR.Config.AmmoPickups[stockedPool].label
+        invAmmo[stockedPool] = 41
+        invAmmo[BR.AmmoType.MEDIUM] = 37
+
+        walkAway()
+        handlers[BR.Net.GUNSHOP_STOCK]({ stores = { pillbox = out }, full = true })
+        -- BROKE, DELIBERATELY. At a balance of zero EVERY row on this shelf is
+        -- unaffordable, so the ledger is the only thing left that can tell the
+        -- two locked states apart -- and a `describeRow` that keyed off the
+        -- shade rather than off the stock would light both.
+        handlers[BR.Net.MARKET_STATE]({ balance = 0 })
+        standAt('pillbox')
+        press()
+
+        -- ═══ HIS SENTENCE, WHERE THE OTHER FOUR LIVE ═══
+        --
+        -- ASSERTED AGAINST THE LITERAL ONCE, HERE AND NOWHERE ELSE. Every other
+        -- assertion in this block compares the ROW to the CONFIG, which is what
+        -- makes them a link rather than a coincidence; this one is the single
+        -- place that checks the config says what he typed, full stop included.
+        ok(type(G.outOfStockDesc) == 'string'
+            and G.outOfStockDesc
+                == 'This item may be in stock at other locations.',
+            'his sentence is authored in config/gunshop.lua, verbatim and with '
+                .. 'his full stop',
+            tostring(G.outOfStockDesc))
+
+        local gone = rowItem('carbinerifle')
+        ok(gone ~= nil and gone._Description == G.outOfStockDesc,
+            'S5: the sold-out row reads his sentence, and only his sentence',
+            gone and tostring(gone._Description) or 'no row')
+        ok(gone ~= nil and gone._Description ~= nil
+            and gone._Description:find('rounds for it', 1, true) == nil,
+            '...so it has stopped quoting a round count at a row that cannot '
+                .. 'be bought',
+            gone and tostring(gone._Description) or 'no row')
+        -- IT IS THE SAME ROW S3 PINS, which is what stops this passing on a row
+        -- that lost its stock state altogether.
+        ok(gone ~= nil and gone._rightLabel ~= nil
+            and gone._rightLabel:find(G.outOfStockLabel, 1, true) ~= nil
+            and gone._Enabled == false,
+            '...on the row that is still grey-labelled and still locked')
+
+        -- ═══ AND NOT BECAUSE HE IS BROKE ═══
+        local BLUE, RESET = '~HC_9~', '~s~'
+        local poorWant = stockedLabel and G.weaponDesc:format(
+            BLUE .. stockedLabel .. RESET, BLUE .. '41' .. RESET)
+        local poor = stocked and rowItem(stocked.id)
+        ok(poor ~= nil and poor._Description == poorWant,
+            'a row that is IN stock and merely unaffordable keeps his weapon '
+                .. 'sentence -- "out of stock" and "cannot afford" are two '
+                .. 'states and only one of them is empty',
+            ('%s\n       want %s'):format(
+                tostring(poor and poor._Description), tostring(poorWant)))
+        -- ...ON A ROW WEARING THE SAME SHADE, so the assertion above is about
+        -- the ledger and not about two rows that merely look different.
+        local shade5 = BR.Menu.disabledColor()
+        ok(poor ~= nil and gone ~= nil and shade5 ~= nil
+            and poor._main ~= nil and gone._main ~= nil
+            and poor._main.r == shade5.r and gone._main.r == shade5.r
+            and poor._main.g == shade5.g and gone._main.g == shade5.g
+            and poor._main.b == shade5.b and gone._main.b == shade5.b,
+            '...and both rows are wearing the disabled shade while they say '
+                .. 'different things')
+        ok(poor ~= nil and poor._Enabled ~= false,
+            '...and the unaffordable one is still pressable, so the server can '
+                .. 'still refuse it in words')
+
+        -- AMMO IS NEVER SOLD OUT, so no ammo row can ever reach his sentence --
+        -- whatever the ledger says about it. The fixture above sends a 0 for
+        -- every weapon and the ammo rows are simply absent from it.
+        local light = rowItem('ammo_' .. BR.AmmoType.LIGHT)
+        ok(light ~= nil and light._Description ~= nil
+            and light._Description ~= G.outOfStockDesc
+            and light._Description:find('works with', 1, true) ~= nil,
+            'an ammo row still says what it feeds, because ammo is never sold '
+                .. 'out',
+            light and tostring(light._Description) or 'no row')
+
+        -- ═══ AND IT COMES BACK WHEN THE SHELF DOES, UNDER AN OPEN MENU ═══
+        --
+        -- `refreshMenu` is the only place that can be right about a description
+        -- and it runs on every stock push. A description chosen once at menu
+        -- BUILD would pass every assertion above and then sit there saying "try
+        -- another shop" about a rifle somebody had just restocked.
+        handlers[BR.Net.GUNSHOP_STOCK](
+            { stores = { pillbox = { carbinerifle = 2 } } })
+        local back = rowItem('carbinerifle')
+        local backWant = G.weaponDesc:format(
+            BLUE .. BR.Config.AmmoPickups[BR.AmmoType.MEDIUM].label .. RESET,
+            BLUE .. '37' .. RESET)
+        ok(back ~= nil and back._Description == backWant,
+            'a restock under an open menu puts the weapon sentence back',
+            ('%s\n       want %s'):format(
+                tostring(back and back._Description), backWant))
+        ok(back ~= nil and back._rightLabel ~= nil
+            and back._rightLabel:find(G.outOfStockLabel, 1, true) == nil,
+            '...and the grey label goes with it')
+
+        -- ═══ THE WORDS ARE HIS, AND THE CLIENT NAMES THE FIELD ═══
+        --
+        -- The same link S3 asserts for `outOfStockLabel`, for the same reason:
+        -- a client that typed the sentence a second time would leave his one
+        -- edit changing the config and nothing on screen.
+        -- ⚠ COMMENTS STRIPPED BEFORE THE SECOND ASSERTION, and that is the
+        -- difference between the rule and a spelling ban. Every owner sentence
+        -- in this project is QUOTED in the comment above the code that carries
+        -- it out, and that is the convention rather than a violation -- what must
+        -- not exist is a second LIVE copy the config can no longer reach.
+        local src = readFile(ROOT .. 'br_core/client/gunshop.lua')
+        local code = {}
+        for line in (src .. '\n'):gmatch('([^\n]*)\n') do
+            code[#code + 1] = line:gsub('%-%-.*$', '')
+        end
+        code = table.concat(code, '\n')
+        ok(src:find('G.outOfStockDesc', 1, true) ~= nil,
+            'the client reads the config field')
+        ok(code:find('may be in stock at other locations', 1, true) == nil,
+            '...rather than carrying a second live copy of his sentence',
+            code:find('may be in stock at other locations', 1, true) and 'found'
+                or nil)
+
+        invAmmo[stockedPool] = nil
+        handlers[BR.Net.MARKET_STATE]({ balance = 999999 })
+    end
+
+    -- -----------------------------------------------------------------------
     describe('P2: the handover, and what is skipped for ammo')
     -- -----------------------------------------------------------------------
     do

@@ -1115,10 +1115,41 @@ end
 ---
 --- AND THE CHOICE IS MADE HERE RATHER THAN IN BR.Menu, because this is the one
 --- place that has the number. See BR.Menu.red.
+---
+--- ═══ A SOLD-OUT ROW SAYS ONE OTHER THING INSTEAD, AND IT IS HIS ═══
+---
+--- Owner, 2026-09-12: "For items which are out of stock, let's show their
+--- description as 'This item may be in stock at other locations.'"
+---
+--- FIRST, BEFORE THE POOL IS EVEN RESOLVED, for two reasons. It is a CONSTANT --
+--- nothing about the bag can change it -- so reading the mirror and counting
+--- rounds to build a sentence that is about to be thrown away is work done for
+--- nothing on a shelf where most rows are at zero. And a row with no pool at all
+--- returns '' below, so a branch placed after that guard would be a sentence
+--- that quietly did not appear on some rows.
+---
+--- `out` IS PASSED IN RATHER THAN ASKED FOR HERE. `refreshMenu` has already
+--- computed `soldOut(store, row)` for the price and the lock, and this is the
+--- same question: asking it twice is two answers to one fact, and only this
+--- file's caller holds the store the answer is about.
+---
+--- WORDED IN config/gunshop.lua, LIKE THE OTHER FOUR. `outOfStockDesc` sits
+--- beside `weaponDesc` and the three ammo lead-ins, under a block saying nothing
+--- in it may be tidied.
+---
+--- AND AN ABSENT STRING IS AN EMPTY DESCRIPTION, NOT A SENTENCE FROM HERE. The
+--- fallback `outOfStockLabel` carries is right for a LABEL, which reads as `nil`
+--- on screen if it is missing; a description simply does not appear, and every
+--- other arm of this function already degrades to '' the same way.
 --- @param row table
 --- @param held table  the carried-id set, built once per refresh pass
+--- @param out boolean|nil  is this row sold out at the counter being painted
 --- @return string
-local function describeRow(row, held)
+local function describeRow(row, held, out)
+    if out then
+        return type(G.outOfStockDesc) == 'string' and G.outOfStockDesc or ''
+    end
+
     local pool = rowPool(row)
     if not pool then return '' end
 
@@ -1736,7 +1767,13 @@ local function refreshMenu(store)
             -- THE `menu` UPVALUE, NOT `built`. This runs both before the menu is
             -- shown (from `openMenu`) and while it is up (from a stock or balance
             -- push), and describe needs to know which -- see its header.
-            BR.Menu.describe(menu, item, describeRow(row, held))
+            --
+            -- `out` IS HANDED OVER RATHER THAN ASKED FOR AGAIN. A sold-out row
+            -- says his 'in stock at other locations' sentence instead of what it
+            -- feeds on, and it is the SAME `out` that took the price away three
+            -- blocks up -- so the label, the lock and the description cannot come
+            -- to disagree about whether the row has anything behind it.
+            BR.Menu.describe(menu, item, describeRow(row, held, out))
         end
     end
 end

@@ -742,6 +742,31 @@ BR.Config.Gunshop = {
     ammoDescNone   = 'This ammo works with: %s',
     weaponDesc     = 'This weapon uses %s. You have %s rounds for it.',
 
+    -- ═══ AND WHAT A ROW WITH NOTHING BEHIND IT SAYS, 2026-09-12 ═══
+    --
+    -- Owner: "For items which are out of stock, let's show their description as
+    -- 'This item may be in stock at other locations.'"
+    --
+    -- HIS SENTENCE, HIS FULL STOP, AND NOTHING AFTER IT. One sentence is what he
+    -- wrote and one sentence is what the row says.
+    --
+    -- NO `%s`, WHICH IS THE ONE DIFFERENCE FROM THE FOUR ABOVE. It names no shop
+    -- and counts nothing, and that is right rather than a gap somebody should
+    -- fill: this client knows what every OTHER counter is holding -- the ledger
+    -- arrives whole -- but naming one would be a promise that expires the moment
+    -- a stranger buys there, on a menu the player then walks several minutes to
+    -- reach. "may be" is the honest strength of the claim and it is already his.
+    --
+    -- IT REPLACES `weaponDesc` ON THAT ROW RATHER THAN JOINING IT, the same way
+    -- `outOfStockLabel` replaces the price: a sold-out row must not read as a
+    -- thing you can act on, and "You have 37 rounds for it" is an instruction to
+    -- a player who cannot buy the gun those rounds are for.
+    --
+    -- ⚠ IT CAN NEVER LAND ON AN AMMO ROW. "They will have no limited stock on
+    -- ammo", so no ammo row is ever out of stock and none of them can reach this
+    -- string. See client/gunshop.lua's `soldOut`.
+    outOfStockDesc = 'This item may be in stock at other locations.',
+
     -- ------------------------------------------------------------------
     -- WHAT IT COSTS
     -- ------------------------------------------------------------------
