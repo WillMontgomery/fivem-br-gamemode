@@ -151,14 +151,49 @@ sv_entityLockdown relaxed
 # ---------------------------------------------------------------------------
 # Identity
 # ---------------------------------------------------------------------------
-sv_hostname "FiveM Royale | Battle Royale"
 sets sv_projectName "FiveM Royale"
 sets sv_projectDesc "48-player battle royale. Drop, loot, outlast the storm."
 sets locale "en-US"
 sets tags "battle royale, br, pvp, gamemode"
 
-# Get one from https://keymaster.fivem.net -- the server will not start without it.
-sv_licenseKey "CHANGEME"
+# ---------------------------------------------------------------------------
+# sv_hostname AND sv_licenseKey ARE NOT IN THIS FILE, AND THAT IS THE FEATURE.
+#
+# They live in server-identity.cfg, which is gitignored, mode 0600, and WRITTEN
+# AT BOOT rather than by hand. On the Blitz Royale boxes the thing that writes
+# it is royale-identity.service: it asks AWS which Elastic IP is attached to
+# this instance, looks that address up to get a slot name, and reads that slot's
+# hostname and license key out of SSM Parameter Store. See ops/royale-identity
+# in the infradocs repo.
+#
+# THE REASON IS NOT TIDINESS. Cfx.re suspends BOTH servers when it sees one
+# license key on two addresses, so the expensive mistake here is not a box with
+# no key, it is two boxes with the same one -- and the healthy server goes down
+# with the one that was wrong. A key that reaches a box because a human pasted
+# it there is a key that can be pasted onto a second box. A key that reaches it
+# from the address already attached to that box cannot, because an Elastic IP is
+# associated with one instance at a time.
+#
+# ⚠ THE SERVER WILL NOT START WITHOUT sv_licenseKey, so this exec failing is not
+#   a silent degradation the way a missing tunables.cfg is. That is deliberate
+#   on both sides: royale-identity refuses to let the game start on a box with
+#   no identity file at all rather than letting FXServer fail with the reason
+#   buried in its own startup log.
+#
+# RUNNING THIS GAMEMODE SOMEWHERE ELSE: you do not need any of the above. Write
+# the file yourself, once, beside this one, and never commit it:
+#
+#     sv_hostname "Your Server Name"
+#     sv_licenseKey "..."      # from https://keymaster.fivem.net
+#
+# UNLIKE tunables.cfg, THE POSITION OF THIS LINE IS NOT LOAD-BEARING. Both
+# values are read by FXServer core at startup and neither is a convar any
+# resource reads, so there is no equivalent of the "set it after `ensure` and it
+# silently does nothing" trap documented at the tunables exec below. It is here
+# because this is the Identity section and that is where somebody will look for
+# it.
+# ---------------------------------------------------------------------------
+exec "server-identity.cfg"
 
 # ---------------------------------------------------------------------------
 # Admin permissions

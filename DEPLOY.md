@@ -421,10 +421,39 @@ Edit `server.cfg`:
 
 | Setting | Notes |
 |---|---|
-| `sv_licenseKey` | From <https://keymaster.fivem.net>. The server will not start without it. |
+| `sv_licenseKey` | **Not in `server.cfg`.** It lives in `server-identity.cfg` beside it, with `sv_hostname`. See below. |
 | `add_principal` | Uncomment and insert your own license identifier to get admin. |
 | `sv_devMode` / `br_devMode` | **Set both to `false` for production.** They lower the minimum players to start, enable client dev tools, and move `br_ddb` onto the `dev-` tables (section 2). |
 | `sv_maxclients` | 48 is the free OneSync ceiling — see the note in `server.cfg` before raising it. |
+
+### The identity: `server-identity.cfg`
+
+`sv_hostname` and `sv_licenseKey` are not tracked and are not in `server.cfg`.
+They live in a two-line file `server.cfg` execs, gitignored the same way
+`server.cfg` itself is:
+
+```bash
+printf 'sv_hostname "My Server"\nsv_licenseKey "..."\n' > server-identity.cfg
+chmod 600 server-identity.cfg
+```
+
+**On the Blitz Royale boxes nobody writes that file by hand.**
+`royale-identity.service` writes it at boot: it asks AWS which Elastic IP is
+attached to this instance, maps that address to a server slot, and reads that
+slot's hostname and key out of SSM Parameter Store. `ops/royale-identity` in the
+infradocs repo carries it.
+
+The reason is worth knowing even if you are running this somewhere else:
+**Cfx.re suspends both servers when one license key turns up on two addresses**,
+so the expensive mistake is not a box with no key, it is two boxes with the same
+one, and the healthy server goes down with the one that was wrong. A key a human
+pastes onto a box can be pasted onto a second box. A key derived from the address
+already attached to that box cannot be, because an Elastic IP is associated with
+one instance at a time.
+
+**The server does not start without `sv_licenseKey`**, so a missing or unexec'd
+identity file is loud rather than silent. That is the opposite of `tunables.cfg`
+below, where every value has a committed default and an absent file is harmless.
 
 ### The dev/public split: `tunables.cfg`
 

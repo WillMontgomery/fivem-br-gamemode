@@ -10,8 +10,14 @@ See **[DEPLOY.md](../DEPLOY.md)** for the full walkthrough. In short:
 
 ```bash
 git clone https://github.com/WillMontgomery/fivem-br-gamemode.git
-cp server.cfg.example server.cfg     # then fill in sv_licenseKey
+cp server.cfg.example server.cfg
+printf 'sv_hostname "My Server"\nsv_licenseKey "..."\n' > server-identity.cfg
 ```
+
+`sv_hostname` and `sv_licenseKey` are **not** in `server.cfg` any more. They live
+in `server-identity.cfg`, which `server.cfg` execs and which is gitignored. On
+the Blitz Royale boxes that file is written at boot from SSM Parameter Store; see
+the block above the exec in `server.cfg.example` for why.
 
 Copy `resources/[fivem-royale]/` into your server's resources directory, or use
 [`tools/deploy.sh`](../tools/deploy.sh) to pull and sync automatically.
