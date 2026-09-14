@@ -46,25 +46,45 @@ rc=0
 # --- locate luac -------------------------------------------------------------
 
 find_luac() {
-    if command -v luac >/dev/null 2>&1; then command -v luac; return; fi
+    local candidate
+    if command -v luac >/dev/null 2>&1; then
+        candidate=$(command -v luac)
+        if "$candidate" -v 2>&1 | grep -q 'Lua 5\.4'; then
+            echo "$candidate"
+            return
+        fi
+    fi
+    if command -v brew >/dev/null 2>&1; then
+        candidate="$(brew --prefix lua@5.4 2>/dev/null || true)/bin/luac"
+        [ -x "$candidate" ] && { echo "$candidate"; return; }
+    fi
+    local localappdata="${LOCALAPPDATA:-}"
     for c in \
-        "$LOCALAPPDATA/Programs/Lua/bin/luac.exe" \
+        "${localappdata:+$localappdata/Programs/Lua/bin/luac.exe}" \
         "$HOME/AppData/Local/Programs/Lua/bin/luac.exe" \
         "/c/Program Files/Lua/bin/luac.exe" \
         "/c/Program Files (x86)/Lua/bin/luac.exe"
     do
-        [ -x "$c" ] && { echo "$c"; return; }
+        [ -n "$c" ] && [ -x "$c" ] && { echo "$c"; return; }
     done
 }
 
 LUAC="$(find_luac)"
 if [ -z "${LUAC:-}" ]; then
-    echo "${RED}luac not found.${RST}"
-    echo "Install Lua 5.4 (matching FiveM's runtime):  winget install --id DEVCOM.Lua -e"
+    echo "${RED}Lua 5.4 luac not found.${RST}"
+    case "$(uname -s 2>/dev/null || true)" in
+        Darwin) echo "Install the keg-pinned FiveM version:  brew install lua@5.4" ;;
+        Linux)  echo "Install Lua 5.4 (matching FiveM's runtime):  sudo apt install lua5.4" ;;
+        *)      echo "Install Lua 5.4 (matching FiveM's runtime):  winget install --id DEVCOM.Lua -e" ;;
+    esac
     exit 127
 fi
-LUA="${LUAC%luac.exe}lua.exe"
-[ -x "$LUA" ] || LUA="$(command -v lua || true)"
+if [[ "$LUAC" == *.exe ]]; then
+    LUA="${LUAC%luac.exe}lua.exe"
+else
+    LUA="${LUAC%/luac}/lua"
+    [ -x "$LUA" ] || LUA="$(command -v lua || true)"
+fi
 
 # --- 1. syntax ---------------------------------------------------------------
 
@@ -457,8 +477,67 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
     # one, a detached sha -- and every unreadable case are walked here without a
     # .git anywhere. A wrong parse shows a stale hex that looks right, which no
     # playtest would ever catch.
-    for suite in tools/test_board.lua tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua tools/test_artifacts.lua tools/test_airdrop.lua tools/test_client.lua tools/test_spectate.lua tools/test_matchexit.lua tools/test_lobbyseq.lua tools/test_landtime.lua tools/test_config.lua tools/test_admin.lua tools/test_community.lua tools/test_guild.lua tools/test_fuel.lua tools/test_sfx.lua tools/test_boost.lua tools/test_vehdamage.lua tools/test_icons.lua tools/test_vehrefuse.lua tools/test_rescue.lua tools/test_ambheal.lua tools/test_revivekey.lua tools/test_ambulances.lua tools/test_shop.lua tools/test_gunshop.lua tools/test_volts.lua tools/test_warmupcrates.lua tools/test_bool_natives.lua tools/test_tutorial.lua tools/test_gitref.lua; do
-        [ -f "$suite" ] || continue
+    # ORDER STAYS EXPLICIT because docs/testing.md records it and the slowest,
+    # broadest suites deliberately come after the cheap pure checks. Completeness
+    # is discovered, though: a new test_*.lua that nobody adds here is now a red
+    # gate instead of a green suite that CI never ran.
+    suites=(
+        tools/test_board.lua
+        tools/test_shared.lua
+        tools/test_loop.lua
+        tools/test_sched.lua
+        tools/test_roster.lua
+        tools/test_stats.lua
+        tools/test_ringmaster.lua
+        tools/test_artifacts.lua
+        tools/test_airdrop.lua
+        tools/test_client.lua
+        tools/test_spectate.lua
+        tools/test_matchexit.lua
+        tools/test_lobbyseq.lua
+        tools/test_landtime.lua
+        tools/test_config.lua
+        tools/test_admin.lua
+        tools/test_community.lua
+        tools/test_guild.lua
+        tools/test_fuel.lua
+        tools/test_sfx.lua
+        tools/test_boost.lua
+        tools/test_vehdamage.lua
+        tools/test_icons.lua
+        tools/test_vehrefuse.lua
+        tools/test_rescue.lua
+        tools/test_ambheal.lua
+        tools/test_revivekey.lua
+        tools/test_ambulances.lua
+        tools/test_shop.lua
+        tools/test_gunshop.lua
+        tools/test_volts.lua
+        tools/test_warmupcrates.lua
+        tools/test_bool_natives.lua
+        tools/test_tutorial.lua
+        tools/test_gitref.lua
+    )
+
+    listed=$(printf '%s\n' "${suites[@]}" | LC_ALL=C sort)
+    found=$(find tools -maxdepth 1 -type f -name 'test_*.lua' -print | LC_ALL=C sort)
+    unlisted=$(comm -13 <(printf '%s\n' "$listed") <(printf '%s\n' "$found"))
+    missing=$(comm -23 <(printf '%s\n' "$listed") <(printf '%s\n' "$found"))
+    if [ -n "$unlisted" ] || [ -n "$missing" ]; then
+        echo "${RED}FAIL${RST} Lua test-suite inventory is incomplete"
+        if [ -n "$unlisted" ]; then
+            echo "     present but never run:"
+            printf '%s\n' "$unlisted" | sed 's/^/       /'
+        fi
+        if [ -n "$missing" ]; then
+            echo "     listed but missing:"
+            printf '%s\n' "$missing" | sed 's/^/       /'
+        fi
+        echo "     Keep the ordered suites array and tools/test_*.lua in exact agreement."
+        rc=1
+    fi
+
+    for suite in "${suites[@]}"; do
         printf '%s' "${DIM}$(basename "$suite" .lua): ${RST}"
         "$LUA" "$suite" || rc=1
     done

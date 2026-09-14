@@ -172,10 +172,16 @@ hear; `brvoice` in the server console says whether pma-voice is even present.
 ## Development
 
 ```bash
-./tools/verify.sh          # syntax, tests, and 34 further gates
-cd ui-src && npm run dev   # the UI in a browser, no game required
-cd ui-src && npm run build # typecheck, build, and CSS compatibility check
+./tools/verify.sh                    # Lua syntax, suites, and repository gates
+cd ui-src && npm run dev             # UI in a browser, no game required
+cd ui-src && npm run build           # typecheck, build, CSS/UI/envelope checks
+cd ui-src && npm run build:check     # rebuild, compare committed output, restore it
+cd js-src/br_ddb && npm run check    # rebuild in memory and compare its bundle
 ```
+
+CI runs both package installs and bundle checks under Node 22 before
+`tools/verify.sh`. Pull requests and pushes to `main` receive the same checks;
+the local pre-commit gate remains the first line of defence on `dev`.
 
 `verify.sh` runs **36 gates**, in increasing order of strictness, exiting
 non-zero on any failure:
@@ -183,7 +189,7 @@ non-zero on any failure:
 | | |
 |---|---|
 | `syntax` | Lua 5.4 on every file |
-| `tests` | ~10,300 assertions across 28 suites |
+| `tests` | over 10,000 assertions across 35 suites; the ordered inventory must name every `tools/test_*.lua` file |
 | `scope gate` | OneSync scope-limited natives banned from client gameplay code |
 | `weapon table` | every weapon hash re-derived from its name, and every slot weapon's icon present in both the source and the built bundle |
 | `vehicle table` | every refused-vehicle hash re-derived from its name, signed and unsigned |
