@@ -16839,8 +16839,8 @@ end
 --
 -- SECTIONS 4 TO 6 BUY THROUGH `buy`, which is the payload the server sends now:
 -- give() loads an empty magazine as the rounds arrive. On it they drive a
--- gunfight and a second purchase, a purchase landing mid-reload, and one
--- landing while the gun is stowed.
+-- gunfight and a second purchase, a purchase that loads the server's magazine
+-- while GTA reloads the gun, and one landing while the gun is stowed.
 describe('the bar reads one moment, and a purchase adds rounds behind the magazine')
 do
     local savedGive    = GiveWeaponToPed
@@ -16860,7 +16860,11 @@ do
     -- The ped, as in N: the magazine is part of the total. AddAmmoToPed ADDS to
     -- the total and leaves the magazine where it is. `lowered` counts every write
     -- that took rounds OUT of a magazine, because that is what makes GTA reload.
-    local gun = { total = {}, clip = {}, lowered = 0, reloading = false }
+    -- `underReload` counts every magazine write made while GTA is reloading, and
+    -- `reloadOnAdd` is GTA starting that reload the moment an empty gun is
+    -- handed rounds.
+    local gun = { total = {}, clip = {}, lowered = 0, reloading = false,
+                  underReload = 0, reloadOnAdd = false }
     function RemoveAllPedWeapons() gun.total, gun.clip = {}, {} end
     function GiveWeaponToPed(_, hash, ammo)
         local h = BR.NormHash(hash)
@@ -16874,15 +16878,34 @@ do
     function AddAmmoToPed(_, hash, n)
         local h = BR.NormHash(hash)
         gun.total[h] = math.max(0, (gun.total[h] or 0) + (n or 0))
+        if gun.reloadOnAdd and (gun.clip[h] or 0) == 0 and gun.total[h] > 0 then
+            gun.reloading = true
+        end
     end
     function SetAmmoInClip(_, hash, n)
         local h = BR.NormHash(hash)
         local want = math.min(math.max(0, n or 0), gun.total[h] or 0)
         if want < (gun.clip[h] or 0) then gun.lowered = gun.lowered + 1 end
+        if gun.reloading then gun.underReload = gun.underReload + 1 end
         gun.clip[h] = want
     end
-    function GetAmmoInPedWeapon(_, hash) return gun.total[BR.NormHash(hash)] or 0 end
-    function GetAmmoInClip(_, hash) return true, gun.clip[BR.NormHash(hash)] or 0 end
+    -- THE AMMO NATIVES ANSWER FOR THE GUN IN THE HAND AND READ 0 FOR ANY OTHER,
+    -- which is what client/inventory.lua's report loop says the engine does for
+    -- a stowed gun. A model that answered with the stowed gun's real numbers
+    -- would let grantAmmo ask the engine and never use its record.
+    local function inHand(h)
+        return type(pedWeapon) == 'number' and BR.NormHash(pedWeapon) == h
+    end
+    function GetAmmoInPedWeapon(_, hash)
+        local h = BR.NormHash(hash)
+        if not inHand(h) then return 0 end
+        return gun.total[h] or 0
+    end
+    function GetAmmoInClip(_, hash)
+        local h = BR.NormHash(hash)
+        if not inHand(h) then return true, 0 end
+        return true, gun.clip[h] or 0
+    end
     function SetCurrentPedWeapon(_, hash) pedWeapon = hash end
     function IsPedReloading() return gun.reloading end
 
@@ -17162,36 +17185,51 @@ do
            tostring(gun.clip[PH]), tostring(gun.total[PH]),
            tostring(clipWas), tostring(totalWas), gun.lowered))
 
-    -- ── 5. A PURCHASE WHILE GTA RELOADS. grantAmmo adds the rounds and leaves
-    --       the magazine to the animation, so what counts is the plate once the
-    --       reload is over.
+    -- ── 5. A PURCHASE THAT LOADS THE SERVER'S MAGAZINE WHILE GTA RELOADS. The
+    --       PDW is fired dry over an empty pool, so the server's magazine is 0
+    --       when sixty rounds arrive and give() loads it: the payload carries the
+    --       load. GTA starts its own reload the moment an empty gun is handed
+    --       rounds, and grantAmmo has to leave the magazine to that animation.
     fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
     fire(BR.Net.STATE, { state = BR.MatchState.PLAYING })
     srv.clip, srv.pool = 0, 0
     push(PDW)
     tick(1)
     sent = {}
-    buy(PDW, 60)
+    buy(PDW, PDW.clip)
     tick(1)
     answer(PDW)
-    for _ = 1, PDW.clip - 1 do
+    for _ = 1, PDW.clip do
         shoot(PDW)
         tick(1)
         answer(PDW)
     end
-    -- The last round leaves and the reload starts, with thirty behind it.
-    gun.total[PH] = gun.total[PH] - 1
-    gun.clip[PH]  = 0
-    gun.reloading = true
-    tick(1)
+    -- The report of the last round leaves on the loop's own cadence.
+    tick(2)
+    answer(PDW)
+    ok(srv.clip == 0 and srv.pool == 0 and (gun.total[PH] or 0) == 0,
+       'a PDW fired dry over an empty pool, on both sides',
+       ('server %d/%d, gun %s/%s'):format(srv.clip, srv.pool,
+           tostring(gun.clip[PH]), tostring(gun.total[PH])))
 
-    gun.lowered = 0
+    gun.lowered, gun.underReload = 0, 0
+    gun.reloadOnAdd = true
     drawn = {}
     buy(PDW, 60)
+    gun.reloadOnAdd = false
+    ok(srv.clip == PDW.clip and gun.reloading,
+       'the server loaded the magazine as the rounds arrived, and GTA is reloading',
+       ('server %d/%d, reloading %s'):format(srv.clip, srv.pool,
+           tostring(gun.reloading)))
+    ok(gun.underReload == 0 and gun.clip[PH] == 0 and gun.total[PH] == 60,
+       'NO MAGAZINE IS WRITTEN UNDER THE RELOAD, and the rounds go behind the '
+           .. 'empty chamber',
+       ('gun %s/%s, %d write(s) under the reload'):format(
+           tostring(gun.clip[PH]), tostring(gun.total[PH]), gun.underReload))
     tick(1)
     d = drawn[#drawn]
-    ok(d ~= nil and d.said == 0 and d.reserve == 90,
-       'mid-reload the rounds bought go behind the empty chamber',
+    ok(d ~= nil and d.said == 0 and d.reserve == 60,
+       'mid-reload the plate is the empty chamber and sixty behind it',
        d and ('%s/%s'):format(tostring(d.said), tostring(d.reserve)) or 'nothing drawn')
 
     gun.clip[PH]  = PDW.clip
@@ -17200,15 +17238,15 @@ do
     tick(2)
     answer(PDW)
     d = drawn[#drawn]
-    ok(gun.lowered == 0 and gun.clip[PH] == PDW.clip and gun.total[PH] == 90,
+    ok(gun.lowered == 0 and gun.clip[PH] == PDW.clip and gun.total[PH] == 60,
        'the reload ends with a whole magazine and every round bought',
        ('gun %s/%s'):format(tostring(gun.clip[PH]), tostring(gun.total[PH])))
-    ok(d ~= nil and d.said == PDW.clip and d.reserve == 90 - PDW.clip,
+    ok(d ~= nil and d.said == PDW.clip and d.reserve == 60 - PDW.clip,
        'AND THE PLATE AFTER THE RELOAD IS THE GUN',
        d and ('%s/%s'):format(tostring(d.said), tostring(d.reserve)) or 'nothing drawn')
 
     -- ── 6. A PURCHASE WHILE THE GUN IS STOWED (a seat, a get-in animation). The
-    --       natives answer about a gun that is not in the hand, so grantAmmo
+    --       natives read 0 for a gun that is not in the hand, so grantAmmo
     --       works from the last reading, and the magazine the server loaded on
     --       arrival still has to reach the gun.
     fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
