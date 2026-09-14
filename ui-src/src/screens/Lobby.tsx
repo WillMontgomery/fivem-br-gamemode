@@ -892,13 +892,27 @@ export default function Lobby({
               Help
             </Btn>
           </div>
-          <div className="flex-1" data-tut="settings">
+          <div className="flex-1 relative" data-tut="settings">
             <Btn
               variant="default" size="md" full cue="ui.select"
               onPress={() => { void fetchNui(CB.SETTINGS_FOCUS, { open: true }) }}
             >
               Settings
             </Btn>
+            {/* THE SERVED COMMIT, DEV BOXES ONLY. Lua sends it only while dev
+                mode is on, so its presence is the gate and a public box never
+                draws it. ABSOLUTE, so it adds no height to a column whose
+                budget the note below measures, and it sits outside this
+                wrapper's box, so the walkthrough's ring around Settings does
+                not grow to include it. */}
+            {lobby?.commit && (
+              <div
+                className="absolute inset-x-0 top-full mt-1 text-center text-[0.7rem] tabular-nums"
+                style={{ color: 'var(--color-text-dim)' }}
+              >
+                {lobby.commit}
+              </div>
+            )}
           </div>
         </div>
 

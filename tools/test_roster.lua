@@ -2083,6 +2083,52 @@ do
     ok(d.wait.need == 2, 'including the minimum needed to start')
 end
 
+describe('lobby.commit')
+do
+    -- THE SERVED COMMIT RIDES THIS BROADCAST ON A DEV BOX AND NOWHERE ELSE.
+    -- BR.Lobby.commit is set by hand because there is no served clone under this
+    -- suite; tools/test_gitref.lua owns the parse.
+    reset()
+    local prevDev, prevCommit, prevDevMode = BR.Dev, BR.Lobby.commit, BR.Server.devMode
+    BR.Lobby.commit = 'a6cbdab'
+
+    local function lastStatus()
+        sent = {}
+        fakeTime = fakeTime + 600
+        BR.Sched.step(fakeTime)
+        local status = eventsOf(BR.Net.LOBBY_STATUS)
+        return status[#status] and status[#status].args[1] or {}
+    end
+
+    BR.Dev = { on = function() return true end }
+    local d = lastStatus()
+    ok(d.commit == 'a6cbdab', 'dev mode on: the lobby broadcast carries the commit',
+        tostring(d.commit))
+
+    BR.Dev = { on = function() return false end }
+    d = lastStatus()
+    ok(d.commit == nil, 'dev mode off: the key is not sent', tostring(d.commit))
+
+    -- THE GATE IS BR.Dev.on(), NOT A FLAG LATCHED AT START. The task named that
+    -- switch, and it is the one every dev-only verb in the project reads.
+    BR.Server.devMode = true
+    d = lastStatus()
+    ok(d.commit == nil, 'BR.Server.devMode alone does not send it', tostring(d.commit))
+
+    BR.Dev = nil
+    d = lastStatus()
+    ok(d.commit == nil, 'with no dev gate loaded nothing is sent', tostring(d.commit))
+
+    -- NOTHING READ, NOTHING SENT, even on a dev box.
+    BR.Dev = { on = function() return true end }
+    BR.Lobby.commit = nil
+    d = lastStatus()
+    ok(d.commit == nil, 'a box whose clone could not be read sends no commit',
+        tostring(d.commit))
+
+    BR.Dev, BR.Lobby.commit, BR.Server.devMode = prevDev, prevCommit, prevDevMode
+end
+
 describe('party.ofOne')
 do
     -- REGRESSION, reported in play: after a match one player left the party and

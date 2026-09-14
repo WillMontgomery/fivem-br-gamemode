@@ -739,6 +739,9 @@ export interface LobbyPayload {
    *  which members are still holding the group. Already public knowledge --
    *  the same broadcast carries it to every client. */
   readyIds?: number[]
+  /** Short hex of the commit the server is serving. Sent only while dev mode
+   *  is on (br_core/server/lobby.lua), so its presence is the whole gate. */
+  commit?: string
 }
 
 /**

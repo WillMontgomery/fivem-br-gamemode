@@ -613,6 +613,11 @@ server_scripts {
     -- case gets, and when, is a moderation rule. server/artifacts.lua calls
     -- BR.ArtifactPlan.new() at load time, so this must precede it.
     '@br_lib/shared/artifact_plan.lua',
+    -- BR.GitRef: which commit the served clone is on, for the dev-mode hex under
+    -- the lobby's Settings button. SERVER-ONLY like the files above it, because
+    -- only this side has a filesystem to read, and BEFORE server/lobby.lua, which
+    -- reads it once at load.
+    '@br_lib/shared/gitref.lua',
     'server/main.lua',      -- defines BR.Server and starts the scheduler
     'server/clock.lua',
     -- brtime and brweather: the console's clock and sky. AFTER server/main.lua,

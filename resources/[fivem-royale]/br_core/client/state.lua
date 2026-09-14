@@ -2352,6 +2352,9 @@ AddEventHandler(BR.Net.LOBBY_STATUS, function(d)
         -- still holding the group. The id list is already on the wire in
         -- this same broadcast -- forwarding it reveals nothing new.
         readyIds  = d.ids or {},
+        -- The served commit's short hex. The server sends it only in dev mode
+        -- (server/lobby.lua), so passing it through is the whole of the gate.
+        commit    = d.commit,
     })
 end)
 

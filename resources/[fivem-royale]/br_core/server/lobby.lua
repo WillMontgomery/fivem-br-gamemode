@@ -362,6 +362,24 @@ AddEventHandler('playerDropped', function()
     queue[source] = nil
 end)
 
+--- The short hex of the commit this box is serving, or nil.
+---
+--- READ ONCE, HERE AT LOAD. The served clone only moves under a deploy, and a
+--- deploy restarts the server. BR.GitRef.served answers nil for every failure of
+--- its own; the pcall is for the one it cannot guard, a GetResourcePath that
+--- throws. nil draws nothing in the lobby.
+---
+--- A FIELD RATHER THAN A LOCAL so tools/test_roster.lua can put a value on the
+--- wire without a git directory to read it from.
+BR.Lobby.commit = nil
+if BR.GitRef then
+    local okRead, hex = pcall(function()
+        local path = GetResourcePath and GetResourcePath(GetCurrentResourceName())
+        return BR.GitRef.served(path)
+    end)
+    if okRead then BR.Lobby.commit = hex end
+end
+
 --- Queue progress, so a waiting player can see WHY they are waiting.
 ---
 --- "Searching for players" with no numbers behind it is indistinguishable from
@@ -427,6 +445,12 @@ BR.Sched.every(500, 'lobby.status', function()
         -- because this payload is rebuilt whole every time rather than merged:
         -- the client sees the reason vanish instead of keeping the last one.
         wait      = BR.Match.startBlocker(),
+
+        -- THE SERVED COMMIT, ON A DEV BOX ONLY, printed under the lobby's
+        -- Settings button. Asked of BR.Dev.on() every tick rather than latched,
+        -- which is how every dev gate in the project reads the switch; on a
+        -- public box this is nil and the key is not sent at all.
+        commit    = (BR.Dev and BR.Dev.on and BR.Dev.on()) and BR.Lobby.commit or nil,
     })
 end)
 

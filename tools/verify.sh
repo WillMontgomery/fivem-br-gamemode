@@ -450,7 +450,14 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
     # than an angle comparison, which would read the same for 90 and 270, and 360
     # is asserted to be the identity because that is the only assertion that can
     # tell degrees from radians.
-    for suite in tools/test_board.lua tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua tools/test_artifacts.lua tools/test_airdrop.lua tools/test_client.lua tools/test_spectate.lua tools/test_matchexit.lua tools/test_lobbyseq.lua tools/test_landtime.lua tools/test_config.lua tools/test_admin.lua tools/test_community.lua tools/test_guild.lua tools/test_fuel.lua tools/test_sfx.lua tools/test_boost.lua tools/test_vehdamage.lua tools/test_icons.lua tools/test_vehrefuse.lua tools/test_rescue.lua tools/test_ambheal.lua tools/test_revivekey.lua tools/test_ambulances.lua tools/test_shop.lua tools/test_gunshop.lua tools/test_volts.lua tools/test_warmupcrates.lua tools/test_bool_natives.lua tools/test_tutorial.lua; do
+    #
+    # test_gitref.lua is the served-commit reader behind the dev-mode hex under
+    # the lobby's Settings button. It hands br_lib/shared/gitref.lua a table for a
+    # filesystem, so the three shapes git keeps HEAD in -- a loose ref, a packed
+    # one, a detached sha -- and every unreadable case are walked here without a
+    # .git anywhere. A wrong parse shows a stale hex that looks right, which no
+    # playtest would ever catch.
+    for suite in tools/test_board.lua tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua tools/test_artifacts.lua tools/test_airdrop.lua tools/test_client.lua tools/test_spectate.lua tools/test_matchexit.lua tools/test_lobbyseq.lua tools/test_landtime.lua tools/test_config.lua tools/test_admin.lua tools/test_community.lua tools/test_guild.lua tools/test_fuel.lua tools/test_sfx.lua tools/test_boost.lua tools/test_vehdamage.lua tools/test_icons.lua tools/test_vehrefuse.lua tools/test_rescue.lua tools/test_ambheal.lua tools/test_revivekey.lua tools/test_ambulances.lua tools/test_shop.lua tools/test_gunshop.lua tools/test_volts.lua tools/test_warmupcrates.lua tools/test_bool_natives.lua tools/test_tutorial.lua tools/test_gitref.lua; do
         [ -f "$suite" ] || continue
         printf '%s' "${DIM}$(basename "$suite" .lua): ${RST}"
         "$LUA" "$suite" || rc=1
