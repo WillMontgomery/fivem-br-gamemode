@@ -125,6 +125,35 @@ local lastReport = { total = -1, clip = -1, at = 0 }
 --- with one clock in it. See uiReserve.
 local shown = { id = nil, clip = -1, total = -1 }
 
+--- THE MAGAZINE A GUN WAS JUST DRAWN WITH, HELD UNTIL THE ENGINE HAS IT.
+---
+--- ═══ THE PDW CAME BACK FULL (owner, playtesting 94fbf74) ═══
+---
+--- "Switch to the PDW again WITHOUT doing anything else: the slot reads 30 and
+--- the HUD reads 30/25." Five rounds had left a thirty-round magazine, the PDW
+--- was put away, and it came back with thirty in it and five fewer behind.
+---
+--- GTA RELOADS A GUN BY ITSELF AS IT COMES UP. A stowed weapon keeps no
+--- magazine; the engine builds a whole one out of the gun's total when it
+--- reaches the hand ("pocket reloading", which the Manual Reload mod for GTA V
+--- exists to remove). applyActive wrote the magazine before the gun was in the
+--- hand, and the engine's reload landed on top of it. A reload moves no total,
+--- so no report said so, and the server charged the next five shots out of its
+--- own 25: the 20 the bag drew.
+---
+--- SO THE NUMBER IS HELD UNTIL THE GUN IS UP. The report loop reads the gun under
+--- its own guards and writes this magazine back whenever the engine's is above
+--- it, for DRAW_SETTLE_MS after the draw, because the engine's reload can land
+--- frames after the natives that asked for the weapon. It lets go at the first
+--- shot or reload, when the engine is the authority on the magazine again. It
+--- only ever moves rounds between the two halves of the gun, so it cannot make
+--- or spend one.
+---
+--- `id` nil is "nothing drawn to hold". `total` is the holding granted with it,
+--- raised by grantAmmo's own adds, so a purchase during the draw is not a shot.
+local drawing = { id = nil, clip = -1, total = -1, at = 0 }
+local DRAW_SETTLE_MS = 1000
+
 --- THE LAST FEW REPORTS THIS CLIENT SENT, AND WHAT BECAME OF THEM.
 ---
 --- ═══ THE FIFTH DOOR WAS A MESSAGE IN FLIGHT (owner, 2026-08-23, third
@@ -441,6 +470,39 @@ local function assertDriveBy()
     driveBy.at, driveBy.count = GetGameTimer(), driveBy.count + 1
 end
 
+--- WHAT A GUN COMES OUT OF THE BAG HOLDING: its magazine, and its whole total.
+---
+--- ONE ANSWER FOR THE DRAW AND FOR THE BAG. applyActive puts these numbers on the
+--- ped and adopt prints the magazine on a stowed gun's slot, so the slot reads
+--- what the gun will hold in the hand (owner, playtesting 94fbf74: the stowed
+--- PDW read 20 while it had been put away with 25).
+---
+--- THE SERVER'S NUMBERS, LESS WHAT THE ENGINE HAS SPENT THAT THE SERVER HAS NOT
+--- CHARGED YET (see `shortfall`). Those rounds left the MAGAZINE, so they come
+--- off it before the reserve, in the order server/inventory.lua's INV_AMMO floor
+--- will charge them when the report lands, its reload of an emptied magazine
+--- included. The draw used to take them off the total alone and cap the
+--- magazine at what was left, which put rounds fired inside a report window back
+--- into the magazine of the gun that fired them.
+---
+--- A THROWABLE HAS NO MAGAZINE, and keeps the cap it always had.
+--- @param at integer
+--- @param slot table
+--- @return integer clip
+--- @return integer total
+local function drawnFor(at, slot)
+    local clip  = saidClipFor(at, slot)
+    local short = shortfallFor(at, slot)
+    local total = math.max(0, clip + reserveFor(slot) - short)
+    local w = BR.Config.WeaponById[slot.id]
+    if short > 0 and slot.kind == BR.ItemKind.WEAPON
+       and w and w.clip and not w.melee then
+        clip = math.max(0, clip - short)
+        if clip == 0 then clip = w.clip end
+    end
+    return math.min(clip, total), total
+end
+
 --- Make the ped hold whatever the active slot says, and nothing else.
 --- @param force boolean|nil  re-apply even if the mirror thinks it is current
 local function applyActive(force)
@@ -477,9 +539,7 @@ local function applyActive(force)
         -- engine's magazine written into it by the report loop, and subtracting
         -- the deficit from a number that already reflects it charges the same
         -- rounds twice. See saidClipFor.
-        local clip    = saidClipFor(inv.active, slot)
-        local reserve = reserveFor(slot)
-
+        --
         -- WHAT THIS PED HAS ALREADY SPENT COMES OFF THE TOP.
         --
         -- The server's numbers are the authority on what this player OWNS; they
@@ -492,9 +552,9 @@ local function applyActive(force)
         -- because that is the order rounds actually leave a gun. A weapon that
         -- ran dry has a deficit equal to everything it was granted, so both
         -- halves land on zero and it comes back empty.
-        local short = shortfallFor(inv.active, slot)
-        local total = math.max(0, clip + reserve - short)
-        clip = math.min(clip, total)
+        -- drawnFor does both, and the bag prints its magazine for a gun that is
+        -- not drawn.
+        local clip, total = drawnFor(inv.active, slot)
 
         -- GIVE THE WEAPON WITH ZERO AMMO, THEN SET THE AMMO. This is
         -- ox_inventory's order, and the reason for it is that
@@ -505,8 +565,15 @@ local function applyActive(force)
         -- and compounding whenever anything re-applied the same one.
         GiveWeaponToPed(ped, want, 0, false, true)
         SetPedAmmo(ped, want, total)
-        SetAmmoInClip(ped, want, clip)
+        -- THE GUN IN THE HAND FIRST, THEN ITS MAGAZINE. GTA builds a whole
+        -- magazine as a gun comes up, so a magazine written before the gun was
+        -- in the hand was written onto a gun about to be reloaded (owner,
+        -- playtesting 94fbf74). The engine can still do it a few frames late,
+        -- so the report loop holds the number until it has it. See `drawing`.
         SetCurrentPedWeapon(ped, want, true)
+        SetAmmoInClip(ped, want, clip)
+        drawing.id, drawing.clip, drawing.total = slot.id, clip, total
+        drawing.at = GetGameTimer()
 
         -- WHAT THE GUN NOW HOLDS, WRITTEN DOWN RATHER THAN READ BACK. This is
         -- the number that just went into the ped, so it is the engine's
@@ -529,6 +596,7 @@ local function applyActive(force)
         -- last gun's number here would let it be printed over whatever lands in
         -- the hand next.
         shown.id, shown.clip, shown.total = nil, -1, -1
+        drawing.id = nil
     end
 
     applied = want
@@ -612,6 +680,12 @@ local function grantAmmo(gain, loadTo)
         return
     end
 
+    -- A GUN STILL COMING UP holds the magazine it was drawn with, whatever GTA
+    -- has built on it so far. See `drawing`.
+    if drawing.id == slot.id then
+        clip = math.min(drawing.clip, total)
+    end
+
     local want = loadTo and math.min(loadTo, total) or -1
     if clip < want then
         SetAmmoInClip(ped, hash, want)
@@ -620,6 +694,9 @@ local function grantAmmo(gain, loadTo)
     -- READ BACK rather than written down where it could be, because this is the
     -- one writer that does not set the total itself. See `shown`.
     shown.id, shown.clip, shown.total = slot.id, clip, total
+    if drawing.id == slot.id then
+        drawing.clip, drawing.total = clip, total
+    end
 end
 
 --- Re-anchor the report baseline on what the SERVER just said.
@@ -686,6 +763,7 @@ local function clearLocal()
     -- new weapons and the first INV_SET of it must not be printed over with the
     -- last life's magazine.
     shown.id, shown.clip, shown.total = nil, -1, -1
+    drawing.id = nil
     -- The deficits go with the guns they were measured on. A new match hands
     -- out new weapons and a corpse's rifle is not this player's problem any
     -- more; carrying the numbers over would dock the next magazine.
@@ -1027,6 +1105,20 @@ local function adopt(d)
         if held and shown.clip >= 0 and shown.id == held.id
            and hashOf(held) == applied then
             held.clip = shown.clip
+        end
+    end
+
+    -- AND A GUN IN THE BAG READS WHAT IT WILL HOLD WHEN IT IS DRAWN (owner,
+    -- playtesting 94fbf74). The server's magazine is ahead of that by any rounds
+    -- it has not been told about yet, and the draw takes them off, so the slot
+    -- prints the number the draw will write. Only a slot that already carries a
+    -- magazine: a melee weapon's `clip` is nil and the bar draws no badge for it.
+    -- See drawnFor.
+    for i = 1, SLOTS do
+        local s = inv.slots[i]
+        if i ~= inv.active and type(s) == 'table'
+           and s.kind == BR.ItemKind.WEAPON and s.clip ~= nil then
+            s.clip = (drawnFor(i, s))
         end
     end
 
@@ -2176,6 +2268,27 @@ BR.Loop.register(BR.Loop.TICK, 'inv.ammo', function()
     if not reloading and total > granted then
         SetPedAmmo(ped, hash, granted)
         total = granted
+    end
+
+    -- THE MAGAZINE THE GUN WAS DRAWN WITH, PUT BACK OVER GTA'S OWN RELOAD. See
+    -- `drawing`. Rounds fired since the draw came out of that magazine, so they
+    -- come off the number held; the first shot also lets go of it, because a gun
+    -- that has fired is one the engine has finished drawing. Only ever LOWERED,
+    -- and never to 0 over a live total: GTA reloads an empty gun by itself, and
+    -- holding one at 0 would restart that reload every tick.
+    if drawing.id ~= nil then
+        local shots = drawing.total - total
+        if drawing.id ~= slot.id or reloading or shots < 0
+           or GetGameTimer() - drawing.at > DRAW_SETTLE_MS then
+            drawing.id = nil
+        else
+            local _, c = GetAmmoInClip(ped, hash)
+            local want = math.max(0, math.min(drawing.clip - shots, total))
+            if (c or 0) > want and want > 0 then
+                SetAmmoInClip(ped, hash, want)
+            end
+            if shots > 0 then drawing.id = nil end
+        end
     end
 
     -- ...AND THE OTHER DIRECTION, WHICH USED TO BE THROWN AWAY.

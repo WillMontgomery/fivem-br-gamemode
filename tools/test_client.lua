@@ -17289,6 +17289,306 @@ do
 end
 
 -- ======================================================================== --
+-- N4b. A STOWED GUN COMES BACK WITH THE MAGAZINE IT WAS PUT AWAY WITH
+-- ======================================================================== --
+--
+-- Owner, playtesting 94fbf74: a heavy pistol in the hand, an empty Combat PDW in
+-- the bag, sixty SMG rounds bought. Up with the PDW, five at a wall: 25/30.
+-- Pistol, then PDW again with nothing else done: 30/25. Five more: 25/25, and
+-- the stowed PDW's slot read 20. PDW again: 30/20.
+--
+-- GTA RELOADS A GUN BY ITSELF AS IT COMES UP ("pocket reloading", the behavior
+-- the Manual Reload mod for GTA V exists to remove). applyActive wrote the
+-- magazine before the gun was in the hand, so the engine's full one won. A
+-- reload moves no total, so the server was never told, charged the next five
+-- shots out of its own 25, and the bag drew that 20.
+--
+-- THE PED HERE RELOADS A FEW FRAMES AFTER THE DRAW, the harder of the two shapes
+-- the engine can take: a fix that only reordered the natives passes a ped that
+-- reloads at once and fails this one.
+--
+-- SECTION 9 IS THE SAME SWITCH INSIDE A REPORT WINDOW: five shots the loop has
+-- measured and not yet sent when the switch lands, which is a player firing and
+-- swapping in one motion.
+describe('a stowed gun comes back with the magazine it was put away with')
+do
+    local saved = {
+        give = GiveWeaponToPed, remove = RemoveAllPedWeapons,
+        setAmmo = SetPedAmmo, addAmmo = AddAmmoToPed, setClip = SetAmmoInClip,
+        getAmmo = GetAmmoInPedWeapon, getClip = GetAmmoInClip,
+        current = SetCurrentPedWeapon, hasGot = HasPedGotWeapon,
+        reload = IsPedReloading,
+    }
+
+    -- NO PARACHUTE, for the reason N2 gives.
+    function HasPedGotWeapon() return false end
+    function IsPedReloading() return false end
+
+    local HP  = BR.Config.WeaponById['heavypistol']
+    local PDW = BR.Config.WeaponById['combatpdw']
+    local PH  = BR.NormHash(PDW.hash)
+    local SMG = PDW.ammo
+
+    -- The ped, as in N4, plus the draw: a gun that comes up after a strip is
+    -- reloaded by the engine `frames` ticks later, out of its own total.
+    local gun = { total = {}, clip = {}, stripped = false, drawing = nil,
+                  frames = 0 }
+    function RemoveAllPedWeapons()
+        gun.total, gun.clip, gun.stripped = {}, {}, true
+    end
+    function GiveWeaponToPed(_, hash, ammo)
+        local h = BR.NormHash(hash)
+        gun.total[h] = (gun.total[h] or 0) + (ammo or 0)
+    end
+    function SetPedAmmo(_, hash, n)
+        local h = BR.NormHash(hash)
+        gun.total[h] = math.max(0, n or 0)
+        gun.clip[h]  = math.min(gun.clip[h] or 0, gun.total[h])
+    end
+    function AddAmmoToPed(_, hash, n)
+        local h = BR.NormHash(hash)
+        gun.total[h] = math.max(0, (gun.total[h] or 0) + (n or 0))
+    end
+    function SetAmmoInClip(_, hash, n)
+        local h = BR.NormHash(hash)
+        gun.clip[h] = math.min(math.max(0, n or 0), gun.total[h] or 0)
+    end
+    local function inHand(h)
+        return type(pedWeapon) == 'number' and BR.NormHash(pedWeapon) == h
+    end
+    function GetAmmoInPedWeapon(_, hash)
+        local h = BR.NormHash(hash)
+        if not inHand(h) then return 0 end
+        return gun.total[h] or 0
+    end
+    function GetAmmoInClip(_, hash)
+        local h = BR.NormHash(hash)
+        if not inHand(h) then return true, 0 end
+        return true, gun.clip[h] or 0
+    end
+    function SetCurrentPedWeapon(_, hash)
+        pedWeapon = hash
+        if gun.stripped then
+            gun.stripped, gun.drawing, gun.frames = false, BR.NormHash(hash), 2
+        end
+    end
+
+    --- One engine frame: the pocket reload lands on a gun that has just come up.
+    local function frame()
+        if not gun.drawing then return end
+        gun.frames = gun.frames - 1
+        if gun.frames > 0 then return end
+        local h = gun.drawing
+        gun.drawing = nil
+        local w = BR.Config.WeaponByHash[h]
+        gun.clip[h] = math.min(w and w.clip or 0, gun.total[h] or 0)
+    end
+
+    -- THE SERVER: server/inventory.lua's INV_AMMO floor under serverAmmo, as N4
+    -- models it, over a two-slot bag. Wall shots raise no weaponDamageEvent, so
+    -- the report is the only thing that charges them.
+    local weapons = { HP, PDW }
+    local srv = { active = 1, clip = { HP.clip, 0 },
+                  ammo = { [HP.ammo] = 0, [SMG] = 0 } }
+    local function push()
+        local slots = {}
+        for i, w in ipairs(weapons) do
+            slots[i] = { id = w.id, label = w.label, kind = BR.ItemKind.WEAPON,
+                         rarity = 3, count = 1, clip = srv.clip[i],
+                         pool = w.ammo }
+        end
+        local ammo = {}
+        for k, n in pairs(srv.ammo) do ammo[k] = n end
+        fire(BR.Net.INV_SET, { slots = slots, ammo = ammo, active = srv.active })
+    end
+    local function answer()
+        local out = sent
+        sent = {}
+        for _, s in ipairs(out) do
+            local r = s.args[1]
+            local w = s.name == BR.Net.INV_AMMO and weapons[r.slot] or nil
+            if w and r.was == srv.clip[r.slot] + srv.ammo[w.ammo] then
+                local lost = srv.clip[r.slot] + srv.ammo[w.ammo] - r.total
+                if lost > 0 then
+                    local c = srv.clip[r.slot] - lost
+                    if c < 0 then
+                        srv.ammo[w.ammo] = math.max(0, srv.ammo[w.ammo] + c)
+                        c = 0
+                    end
+                    if c <= 0 then
+                        local moved = math.min(w.clip, srv.ammo[w.ammo])
+                        c, srv.ammo[w.ammo] = moved, srv.ammo[w.ammo] - moved
+                    end
+                    srv.clip[r.slot] = c
+                    push()
+                end
+            end
+        end
+    end
+
+    local function tick(n)
+        for _ = 1, (n or 1) do
+            frame()
+            fakeTime = fakeTime + 100
+            BR.Loop.step(BR.Loop.TICK)
+            answer()
+        end
+    end
+    --- A number key: whatever the client already said is answered first,
+    --- because the server takes its messages in the order they were sent.
+    local function select(i)
+        answer()
+        srv.active = i
+        push()
+    end
+    --- Rounds at a wall, one a tick, the engine's own arithmetic.
+    local function shoot(n)
+        for _ = 1, n do
+            gun.total[PH] = gun.total[PH] - 1
+            gun.clip[PH]  = math.max(0, gun.clip[PH] - 1)
+            tick(1)
+        end
+    end
+
+    -- WHAT THE BAR WAS HANDED: the plate, and the PDW's slot in the bag. `high`
+    -- is the largest magazine any PDW plate printed since it was last reset.
+    local plate, high, listening = {}, 0, true
+    AddEventHandler('br:ui:sendLocal', function(kind, p)
+        if not listening or kind ~= BR.Nui.INV or type(p) ~= 'table' then return end
+        local a = p.slots and p.slots[p.active or 0]
+        local b = p.slots and p.slots[2]
+        plate = { active = p.active, reserve = p.reserve,
+                  clip = type(a) == 'table' and a.clip or nil,
+                  bag  = type(b) == 'table' and b.clip or nil }
+        if p.active == 2 and plate.clip and plate.clip > high then
+            high = plate.clip
+        end
+    end)
+    local function said()
+        return ('plate %s/%s (slot %s), bag %s, gun %s/%s, server %d/%d'):format(
+            tostring(plate.clip), tostring(plate.reserve), tostring(plate.active),
+            tostring(plate.bag), tostring(gun.clip[PH]), tostring(gun.total[PH]),
+            srv.clip[2], srv.ammo[SMG])
+    end
+
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.State.landed = true
+    fire(BR.Net.STATE, { state = BR.MatchState.PLAYING })
+    sent = {}
+
+    -- ── 1. THE HEAVY PISTOL IN THE HAND, AN EMPTY PDW IN THE BAG, SIXTY BOUGHT.
+    --       give() loads the empty magazine as the rounds arrive.
+    push()
+    tick(2)
+    srv.clip[2], srv.ammo[SMG] = PDW.clip, 60 - PDW.clip
+    push()
+    tick(2)
+    ok(plate.active == 1 and plate.bag == 30,
+       'sixty SMG rounds bought: the stowed PDW reads a whole magazine', said())
+
+    -- ── 2. UP WITH THE PDW.
+    select(2)
+    tick(4)
+    ok(plate.clip == 30 and plate.reserve == 30
+       and gun.clip[PH] == 30 and gun.total[PH] == 60,
+       'the PDW comes up 30/30', said())
+
+    -- ── 3. FIVE AT A WALL.
+    shoot(5)
+    tick(4)
+    ok(plate.clip == 25 and plate.reserve == 30
+       and srv.clip[2] == 25 and srv.ammo[SMG] == 30,
+       'five at a wall: 25/30, and the server charged them to the magazine',
+       said())
+
+    -- ── 4. BACK TO THE PISTOL.
+    local stowed = gun.clip[PH]
+    select(1)
+    tick(4)
+    ok(plate.active == 1 and plate.bag == stowed,
+       'the stowed PDW reads the 25 it was put away with', said())
+
+    -- ── 5. BACK TO THE PDW, AND NOTHING ELSE.
+    high = 0
+    select(2)
+    tick(4)
+    ok(gun.clip[PH] == 25 and gun.total[PH] == 55,
+       'THE PDW COMES BACK WITH 25 IN IT, not a magazine GTA refilled on the draw',
+       said())
+    ok(plate.clip == 25 and plate.reserve == 30 and high == 25,
+       'and every plate on the way up reads 25/30',
+       said() .. (', highest plate %d'):format(high))
+
+    -- ── 6. FIVE MORE.
+    shoot(5)
+    tick(4)
+    ok(plate.clip == 20 and plate.reserve == 30 and gun.clip[PH] == 20
+       and srv.clip[2] == 20 and srv.ammo[SMG] == 30,
+       'five more: 20/30 on the plate, in the gun and on the server', said())
+
+    -- ── 7. THE PISTOL. The bag has to read the magazine the PDW was stowed with.
+    stowed = gun.clip[PH]
+    select(1)
+    tick(4)
+    ok(plate.bag == stowed,
+       'THE BAG READS THE MAGAZINE THE PDW WAS PUT AWAY WITH',
+       said() .. (', stowed with %s'):format(tostring(stowed)))
+
+    -- ── 8. THE PDW. It comes up holding exactly what the bag said.
+    local bag = plate.bag
+    select(2)
+    tick(4)
+    ok(gun.clip[PH] == bag and plate.clip == bag and plate.reserve == 30,
+       'and it comes up holding exactly what the bag said', said())
+    ok(gun.total[PH] == 50 and srv.clip[2] + srv.ammo[SMG] == 50,
+       'sixty bought and ten fired is fifty, in the gun and on the server',
+       said())
+
+    -- ── 9. FIVE SHOTS THE SERVER HAS NOT HEARD OF WHEN THE SWITCH LANDS. A long
+    --       step opens the report gate at rest; the shots are then measured by a
+    --       step too short for the gate, and the number key follows.
+    fakeTime = fakeTime + 200
+    BR.Loop.step(BR.Loop.TICK)
+    answer()
+    for _ = 1, 5 do
+        gun.total[PH] = gun.total[PH] - 1
+        gun.clip[PH]  = gun.clip[PH] - 1
+    end
+    fakeTime = fakeTime + 10
+    BR.Loop.step(BR.Loop.TICK)
+    stowed = gun.clip[PH]
+    select(1)
+    tick(4)
+    ok(plate.bag == stowed,
+       'A PDW STOWED INSIDE A REPORT WINDOW READS THE MAGAZINE IT HAD',
+       said() .. (', stowed with %s'):format(tostring(stowed)))
+
+    high = 0
+    select(2)
+    tick(4)
+    ok(gun.clip[PH] == stowed and plate.clip == stowed and high == stowed,
+       'and comes up with it, five rounds still gone from the magazine',
+       said() .. (', highest plate %d'):format(high))
+    ok(gun.total[PH] == 45 and srv.clip[2] == stowed
+       and srv.clip[2] + srv.ammo[SMG] == 45,
+       'with fifteen fired out of sixty on both sides of the wire', said())
+
+    listening = false
+    GiveWeaponToPed     = saved.give
+    RemoveAllPedWeapons = saved.remove
+    SetPedAmmo          = saved.setAmmo
+    AddAmmoToPed        = saved.addAmmo
+    SetAmmoInClip       = saved.setClip
+    GetAmmoInPedWeapon  = saved.getAmmo
+    GetAmmoInClip       = saved.getClip
+    SetCurrentPedWeapon = saved.current
+    HasPedGotWeapon     = saved.hasGot
+    IsPedReloading      = saved.reload
+    pedWeapon = nil
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+end
+
+-- ======================================================================== --
 -- N3b. /brprobe clips -- THE AUDIT THAT REPLACES THE LOOKUP
 -- ======================================================================== --
 --
