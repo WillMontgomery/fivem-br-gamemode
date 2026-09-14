@@ -904,11 +904,15 @@ export default function Lobby({
                 draws it. ABSOLUTE, so it adds no height to a column whose
                 budget the note below measures, and it sits outside this
                 wrapper's box, so the walkthrough's ring around Settings does
-                not grow to include it. */}
+                not grow to include it.
+                AN OPAQUE GREY, NOT --color-text-dim. That token is white at 0.58
+                alpha, which reads as whatever is behind it, and the owner asked
+                for grey. #9ca3af on the scrim is about 7:1, and still near 6:1
+                with a bright sky behind the scrim's 12% at this column. */}
             {lobby?.commit && (
               <div
                 className="absolute inset-x-0 top-full mt-1 text-center text-[0.7rem] tabular-nums"
-                style={{ color: 'var(--color-text-dim)' }}
+                style={{ color: '#9ca3af' }}
               >
                 {lobby.commit}
               </div>

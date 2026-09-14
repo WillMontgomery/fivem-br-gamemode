@@ -364,20 +364,50 @@ end)
 
 --- The short hex of the commit this box is serving, or nil.
 ---
---- READ ONCE, HERE AT LOAD. The served clone only moves under a deploy, and a
---- deploy restarts the server. BR.GitRef.served answers nil for every failure of
---- its own; the pcall is for the one it cannot guard, a GetResourcePath that
---- throws. nil draws nothing in the lobby.
+--- READ ONCE, HERE AT LOAD. The stamp only changes under a deploy, and a deploy
+--- restarts the server. BR.GitRef.served answers nil for every failure of its
+--- own; the pcall is for the ones it cannot guard, a native that throws. nil
+--- draws nothing in the lobby.
 ---
---- A FIELD RATHER THAN A LOCAL so tools/test_roster.lua can put a value on the
---- wire without a git directory to read it from.
-BR.Lobby.commit = nil
+--- THE STAMP IS READ WITH LoadResourceFile, NOT io. FXServer's Lua sandbox
+--- refuses io.open anywhere in the server root outside a resource folder, which
+--- is where the served clone's .git is -- the reason the first version of this
+--- showed nothing on the dev box. deploy.sh writes br_core/served-commit after
+--- its rsync; see br_lib/shared/gitref.lua.
+---
+--- FIELDS RATHER THAN LOCALS so tools/test_roster.lua can put a value on the
+--- wire, and a reason in the console line, without a deploy to read them from.
+--- `commitFrom` is where the hex came from, or why there is none.
+BR.Lobby.commit, BR.Lobby.commitFrom = nil, 'br_lib/shared/gitref.lua is not loaded'
 if BR.GitRef then
-    local okRead, hex = pcall(function()
-        local path = GetResourcePath and GetResourcePath(GetCurrentResourceName())
-        return BR.GitRef.served(path)
+    local okRead, hex, from = pcall(function()
+        local res = GetCurrentResourceName()
+        local stamp = LoadResourceFile and LoadResourceFile(res, BR.GitRef.STAMP) or nil
+        local path = GetResourcePath and GetResourcePath(res) or nil
+        return BR.GitRef.served(path, nil, stamp)
     end)
-    if okRead then BR.Lobby.commit = hex end
+    if okRead then
+        BR.Lobby.commit, BR.Lobby.commitFrom = hex, from
+    else
+        BR.Lobby.commitFrom = 'reading it raised: ' .. tostring(hex)
+    end
+end
+
+--- The boot banner's line about the served commit, or nil off a dev box.
+---
+--- ONE LINE, SO THE NEXT "THE HEX DOES NOT SHOW" IS ANSWERED FROM THE CONSOLE.
+--- It names the hex and its source, or says `none:` and every path tried with the
+--- reason each failed. Gated on BR.Dev.on(), the same switch the broadcast reads,
+--- so the console and the lobby cannot disagree about whether it applies.
+--- server/main.lua prints it at resource start, after this file has loaded.
+--- @return string|nil
+function BR.Lobby.commitLine()
+    if not (BR.Dev and BR.Dev.on and BR.Dev.on()) then return nil end
+    if BR.Lobby.commit then
+        return ('[br_core]   commit       %s (%s)')
+            :format(BR.Lobby.commit, tostring(BR.Lobby.commitFrom))
+    end
+    return ('[br_core]   commit       none: %s'):format(tostring(BR.Lobby.commitFrom))
 end
 
 --- Queue progress, so a waiting player can see WHY they are waiting.

@@ -2126,7 +2126,36 @@ do
     ok(d.commit == nil, 'a box whose clone could not be read sends no commit',
         tostring(d.commit))
 
+    -- THE BOOT BANNER'S LINE. The first version of the hex drew nothing on the
+    -- dev box and said nothing anywhere; this line is how the next such failure
+    -- is read off the console instead of guessed at.
+    local prevFrom = BR.Lobby.commitFrom
+    ok(prevFrom == 'br_lib/shared/gitref.lua is not loaded',
+        'with no reader loaded, which is this suite, the reason says so', tostring(prevFrom))
+
+    BR.Dev = { on = function() return true end }
+    BR.Lobby.commit, BR.Lobby.commitFrom = 'a6cbdab', 'served-commit'
+    ok(BR.Lobby.commitLine() == '[br_core]   commit       a6cbdab (served-commit)',
+        'dev mode on: the line names the hex and where it came from',
+        tostring(BR.Lobby.commitLine()))
+
+    BR.Lobby.commit = nil
+    BR.Lobby.commitFrom = 'served-commit missing; '
+        .. '/opt/fivem-server-classic/.gamemode-src/.git/HEAD: Permission denied'
+    ok(BR.Lobby.commitLine() == '[br_core]   commit       none: served-commit missing; '
+        .. '/opt/fivem-server-classic/.gamemode-src/.git/HEAD: Permission denied',
+        'nothing read: the line says none and every reason',
+        tostring(BR.Lobby.commitLine()))
+
+    BR.Dev = { on = function() return false end }
+    ok(BR.Lobby.commitLine() == nil, 'dev mode off: there is no line',
+        tostring(BR.Lobby.commitLine()))
+    BR.Dev = nil
+    ok(BR.Lobby.commitLine() == nil, 'with no dev gate loaded there is no line',
+        tostring(BR.Lobby.commitLine()))
+
     BR.Dev, BR.Lobby.commit, BR.Server.devMode = prevDev, prevCommit, prevDevMode
+    BR.Lobby.commitFrom = prevFrom
 end
 
 describe('party.ofOne')

@@ -253,6 +253,85 @@ do
 end
 
 -- =========================================================================
+-- the deploy stamp
+-- =========================================================================
+
+describe('gitref.stamp')
+do
+    local RES = '/opt/fivem-server-classic/resources/[gamemodes]/[fivem-royale]/br_core'
+    local ROOTDIR = '/opt/fivem-server-classic/.gamemode-src/.git'
+
+    -- WHAT deploy.sh WRITES into br_core after its rsync: `git rev-parse HEAD`
+    -- and a newline.
+    eq(G.STAMP, 'served-commit', 'the stamp has the name deploy.sh writes')
+    eq(G.fromStamp(SHA .. '\n'), SHA, 'a stamp is its sha')
+    eq(G.fromStamp(SHA:upper() .. '\r\n'), SHA, 'CRLF and upper case read as the same sha')
+    eq(G.fromStamp('a6cbdab\n'), nil, 'a short hex is not a stamp')
+    eq(G.fromStamp(''), nil, 'an empty stamp is nil')
+    eq(G.fromStamp(nil), nil, 'no stamp is nil')
+
+    -- THE STAMP WINS, AND NOTHING ELSE IS OPENED. It is the one source the
+    -- sandbox lets the server read; a clone the sandbox refuses is not asked when
+    -- the answer is already in hand.
+    local read, reads = fs({})
+    local hex, from = G.served(RES, read, SHA .. '\n')
+    eq(hex, 'a6cbdab', 'a stamp answers the served commit')
+    eq(from, 'served-commit', 'and says it came from the stamp')
+    eq(#reads, 0, 'without a single file read')
+
+    -- A GARBLED STAMP falls through to the clone rather than printing garbage.
+    read = fs({ [ROOTDIR .. '/HEAD'] = SHA2 .. '\n' })
+    hex, from = G.served(RES, read, 'not a sha\n')
+    eq(hex, '0f1e2d3', 'a stamp that is not a sha falls through to the clone')
+    eq(from, ROOTDIR, 'and names the .git that answered')
+end
+
+-- =========================================================================
+-- the sandbox, and the reasons the console prints
+-- =========================================================================
+
+describe('gitref.sandbox')
+do
+    local RES = '/opt/fivem-server-classic/resources/[gamemodes]/[fivem-royale]/br_core'
+    local ROOTDIR = '/opt/fivem-server-classic/.gamemode-src/.git'
+
+    -- THE DEV BOX AS IT WAS: no stamp, and every path in the server root answered
+    -- the way FXServer's Lua sandbox answers io.open there. Nothing resolves, and
+    -- the reason is the whole diagnosis -- the stamp, then each path, then io's
+    -- own words for each.
+    local function denied(path) return nil, path .. ': Permission denied' end
+    local hex, why = G.served(RES, denied, nil)
+    eq(hex, nil, 'no stamp and a refused clone is nil')
+    eq(why, 'served-commit missing; '
+        .. ROOTDIR .. '/HEAD: Permission denied; '
+        .. '.gamemode-src/.git/HEAD: Permission denied',
+        'and the reason names the stamp and every path the sandbox refused')
+
+    -- A READER THAT GIVES NO REASON still leaves the path it could not read.
+    hex, why = G.served(nil, fs({}), nil)
+    eq(why, 'served-commit missing; .gamemode-src/.git/HEAD: unreadable',
+        'a reader with no message still names the path')
+
+    -- A THROWING READER costs its candidate, and says what it threw.
+    hex, why = G.served(RES, function() error('boom', 0) end, nil)
+    eq(hex, nil, 'a throwing reader is nil')
+    ok(type(why) == 'string' and why:find(ROOTDIR .. ': boom', 1, true) ~= nil,
+        'and the reason carries what it threw, beside the path', why)
+
+    -- resolve's own reasons, one per way a HEAD can fail to become a sha.
+    local _, r = G.resolve(DIR, fs({ [DIR .. '/HEAD'] = 'ref: refs/heads/dev\n' }))
+    eq(r, DIR .. '/HEAD: refs/heads/dev has no sha, loose or packed',
+        'a branch with no sha says which branch')
+    _, r = G.resolve(DIR, fs({ [DIR .. '/HEAD'] = 'not a head\n' }))
+    eq(r, DIR .. '/HEAD: not a sha or a ref this will open', 'a garbage HEAD says so')
+    _, r = G.resolve(DIR, fs({
+        [DIR .. '/HEAD'] = 'ref: refs/heads/dev\n',
+        [DIR .. '/refs/heads/dev'] = '',
+    }))
+    eq(r, DIR .. '/refs/heads/dev: not a sha', 'a broken loose ref names its file')
+end
+
+-- =========================================================================
 -- the one io-backed function
 -- =========================================================================
 
@@ -261,7 +340,10 @@ do
     local body = G.readFile('tools/test_gitref.lua')
     ok(type(body) == 'string' and body:find('gitref.readFile', 1, true) ~= nil,
         'an existing file comes back whole')
-    eq(G.readFile('tools/no-such-dir/HEAD'), nil, 'a missing file is nil, not an error')
+    local missing, msg = G.readFile('tools/no-such-dir/HEAD')
+    eq(missing, nil, 'a missing file is nil, not an error')
+    ok(type(msg) == 'string' and msg:find('no-such-dir', 1, true) ~= nil,
+        "and io's own message comes with it, path included", msg)
 end
 
 -- ------------------------------------------------------------------ done ---

@@ -478,6 +478,22 @@ rsync "${RSYNC_OPTS[@]}" \
     "$SRC_GROUP/" "$TARGET_DIR/$RESOURCE_GROUP/" \
     | sed 's/^/     /' || die "rsync failed"
 
+# THE SERVED COMMIT, for the dev-mode hex under the lobby's Settings button.
+#
+# The game server cannot read $SRC_DIR/.git: FXServer's Lua sandbox refuses io on
+# any path in the server root outside a resource folder. So the sha goes INSIDE a
+# resource, where br_core reads it with LoadResourceFile (br_lib/shared/gitref.lua).
+#
+# AFTER THE RSYNC, AND THAT IS THE ORDER THAT KEEPS IT HONEST. The stamp is not in
+# the source, so the --delete above removes it on every deploy (a dry run lists
+# that as `*deleting`); a deploy that dies before this line leaves no stamp rather
+# than the previous commit's. Not on a dry run, which must change nothing.
+if [ "$DRY_RUN" -eq 0 ]; then
+    STAMP="$TARGET_DIR/$RESOURCE_GROUP/br_core/served-commit"
+    git -C "$SRC_DIR" rev-parse HEAD > "$STAMP.tmp.$$" && mv -f "$STAMP.tmp.$$" "$STAMP" \
+        || die "could not write $STAMP"
+fi
+
 # Vendored third-party resources, one rsync each.
 #
 # NOT UNDER $TARGET_DIR. These live directly under $SERVER_ROOT/resources/, in

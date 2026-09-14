@@ -295,6 +295,10 @@ AddEventHandler('onResourceStart', function(res)
     print('[br_core] server started')
     print(('[br_core]   onesync      %s'):format(BR.Server.onesync))
     print(('[br_core]   devMode      %s'):format(tostring(BR.Server.devMode)))
+    -- The served commit, or why it could not be read -- dev boxes only. Built by
+    -- server/lobby.lua, which loads after this file and before this event fires.
+    local commitLine = BR.Lobby and BR.Lobby.commitLine and BR.Lobby.commitLine()
+    if commitLine then print(commitLine) end
     print(('[br_core]   maxPlayers   %d (free OneSync ceiling is 48)')
         :format(BR.Config.Match.maxPlayers))
     print(('[br_core]   minToStart   %d'):format(BR.Config.Match.MinPlayers(BR.Server.devMode)))
