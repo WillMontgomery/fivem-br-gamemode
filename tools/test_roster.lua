@@ -10728,6 +10728,107 @@ do
                                       inv.ammo[BR.AmmoType.MEDIUM]))
 end
 
+describe('inv.ammo.loadsEmpty')
+do
+    -- ═══ ROUNDS THAT ARRIVE LOAD AN EMPTY MAGAZINE (owner, playtesting a6cbdab) ═══
+    --
+    -- Buying ammo for a Combat PDW he owned but was not holding left its slot
+    -- reading 0 until he switched to it and GTA reloaded it. A gun is sold with
+    -- `clip = 0` (see 'a gun sold over the counter arrives empty'), and nothing on
+    -- this side ever loaded that magazine: BR.Inv.reload runs when a magazine is
+    -- spent dry and when the key is pressed, and an ammo pickup is neither. The
+    -- engine loads the gun in the HAND by itself, so the held gun hid it; the
+    -- slot plate draws this server's `clip`, so the gun in the bag did not.
+    --
+    -- THE SAME RULE spendRound AND THE INV_AMMO FLOOR ALREADY RUN -- an empty
+    -- magazine over a live pool refills, once -- asked at the moment the pool
+    -- stops being empty. It MOVES, so `held` is the same number either side.
+    --
+    -- ⚠ ONLY WHEN ROUNDS ARRIVE. A gun that arrives over a pool the player already
+    -- had is still left empty: "a purchase neither mints nor spends the reserve
+    -- already in the bag" is pinned above and this does not reopen it.
+    ok(BR.Config.Combat.serverAmmo, 'server ammo is on for this block')
+    lootMatch()
+
+    local pdw    = BR.Config.WeaponById['combatpdw']
+    local pistol = BR.Config.WeaponById['pistol']
+
+    local function held(src, pool)
+        local i = BR.Inv.of(src)
+        local n = i.ammo[pool] or 0
+        for s = 1, 5 do
+            local slot = i.slots[s]
+            local w = slot and BR.Config.WeaponById[slot.item]
+            if w and w.ammo == pool then n = n + (slot.clip or 0) end
+        end
+        return n
+    end
+
+    -- ── 1. HIS SEQUENCE. A pistol in the hand, a PDW bought into slot 2, then
+    --    sixty SMG rounds.
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON, rarity = 1,
+                     count = 1, clip = pistol.clip, carried = true })
+    BR.Inv.give(1, { item = 'combatpdw', kind = BR.ItemKind.WEAPON,
+                     rarity = pdw.rarity, count = 1, clip = 0, sold = true })
+    local inv = BR.Inv.of(1)
+    inv.active = 1
+    ok(inv.slots[2] and inv.slots[2].item == 'combatpdw'
+       and inv.slots[2].clip == 0 and inv.ammo[pdw.ammo] == 0,
+       'a PDW in slot 2 with an empty magazine and nothing in the pool')
+
+    BR.Inv.give(1, { item = pdw.ammo, kind = BR.ItemKind.AMMO, rarity = 1,
+                     count = 60 })
+    ok(inv.slots[2].clip == pdw.clip,
+       'SIXTY ROUNDS INTO THE BAG LOAD THE PDW THAT IS NOT IN HAND',
+       tostring(inv.slots[2].clip))
+    ok(inv.ammo[pdw.ammo] == 60 - pdw.clip,
+       'out of those sixty, not on top of them',
+       tostring(inv.ammo[pdw.ammo]))
+    ok(held(1, pdw.ammo) == 60, 'so the player holds exactly what was bought',
+       tostring(held(1, pdw.ammo)))
+    ok(inv.slots[1].clip == pistol.clip,
+       'and a gun on another pool is not touched', tostring(inv.slots[1].clip))
+
+    -- ── 2. A PARTIAL MAGAZINE IS THE RELOAD KEY'S, NOT THE PICKUP'S. Topping
+    --    one up here would be a reload nobody pressed.
+    inv.slots[2].clip = 10
+    inv.ammo[pdw.ammo] = 0
+    BR.Inv.give(1, { item = pdw.ammo, kind = BR.ItemKind.AMMO, rarity = 1,
+                     count = 30 })
+    ok(inv.slots[2].clip == 10 and inv.ammo[pdw.ammo] == 30,
+       'a magazine with rounds in it is left as it is',
+       ('clip %s pool %s'):format(tostring(inv.slots[2].clip),
+                                  tostring(inv.ammo[pdw.ammo])))
+
+    -- ── 3. THE HAND FIRST. Two empty guns on one pool and one magazine's worth
+    --    of rounds: the gun the player is holding is the one they are about to
+    --    fire.
+    local other
+    for _, w in ipairs(BR.Config.Weapons) do
+        if w.ammo == pdw.ammo and w.id ~= pdw.id and w.clip and not w.melee then
+            other = w
+            break
+        end
+    end
+    ok(other ~= nil, 'there is a second gun on the PDW\'s pool to test with')
+    if other then
+        BR.Inv.reset(1)
+        BR.Inv.give(1, { item = other.id, kind = BR.ItemKind.WEAPON,
+                         rarity = other.rarity, count = 1, clip = 0, sold = true })
+        BR.Inv.give(1, { item = 'combatpdw', kind = BR.ItemKind.WEAPON,
+                         rarity = pdw.rarity, count = 1, clip = 0, sold = true })
+        inv = BR.Inv.of(1)
+        inv.active = 2
+        BR.Inv.give(1, { item = pdw.ammo, kind = BR.ItemKind.AMMO, rarity = 1,
+                         count = pdw.clip })
+        ok(inv.slots[2].clip == pdw.clip and inv.slots[1].clip == 0,
+           'the gun in the hand is loaded before the one in the bag',
+           ('hand %s, bag %s'):format(tostring(inv.slots[2].clip),
+                                      tostring(inv.slots[1].clip)))
+    end
+end
+
 describe('inv.ammo.dropPickup')
 do
     -- ═══ THE FOURTH DOOR (owner, 2026-08-23) ═══

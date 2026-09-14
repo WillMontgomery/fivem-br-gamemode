@@ -314,6 +314,9 @@ end
 ---   the INV_AMMO floor  ...and when the client reports it emptied unseen
 ---   INV_RELOAD          the manual key, which is the reason this is shared
 ---
+--- ...and a fourth since: loadEmpty, when rounds arrive in a pool that an empty
+--- magazine draws on. Its own `<= 0` test, the same arithmetic.
+---
 --- The first two keep their own `clip <= 0` test and this is a strict
 --- generalisation of what they used to do inline: at clip 0, `w.clip - 0` is
 --- `w.clip` and the arithmetic is identical to the line each of them held. The
@@ -491,6 +494,49 @@ local function isLikeForLike(displaced, stack)
     return displaced.item == stack.item
 end
 
+--- LOAD EVERY EMPTY MAGAZINE ON A POOL THAT HAS JUST TAKEN ROUNDS.
+---
+--- ═══ THE PDW IN THE BAG READ 0 (owner, playtesting a6cbdab) ═══
+---
+--- Ammo bought for a Combat PDW he owned but was not holding left its slot
+--- reading 0 until he switched to it and GTA reloaded it. A sold gun arrives
+--- with `clip = 0`, and BR.Inv.reload's callers were a magazine spent dry, the
+--- floor and the key -- never an arrival. The engine loads the gun in the HAND
+--- by itself, which hid it there; the slot plate draws this file's `clip`,
+--- which is why the gun in the bag showed it. And the held gun paid for the same
+--- gap later: its magazine here stayed 0 while the engine's was full, so the
+--- first report after it fired drove this magazine below zero and ran a reload
+--- the engine never had.
+---
+--- THE RULE IS THE ONE THOSE CALLERS ALREADY RUN -- an empty magazine over a
+--- live pool refills, once -- asked at the moment the pool takes rounds. It
+--- MOVES and mints nothing, so `clip + pool` is the same either side, and it
+--- leaves a partial magazine alone: topping one up is a reload nobody pressed.
+---
+--- THE HAND FIRST, then slot order. The gun being held is the one about to be
+--- fired, so a pickup that fills one magazine fills that one.
+---
+--- ⚠ ONLY WHEN ROUNDS ARRIVE. A gun that arrives over a pool already in the bag
+--- is left empty -- "a purchase neither mints nor spends the reserve already in
+--- the bag" -- which is why the weapon branch of give() does not call this.
+--- @param inv table
+--- @param pool string
+local function loadEmpty(inv, pool)
+    local order = { inv.active }
+    for i = 1, SLOTS do
+        if i ~= inv.active then order[#order + 1] = i end
+    end
+    for _, i in ipairs(order) do
+        local s = inv.slots[i]
+        local w = s and BR.Config.WeaponById[s.item]
+        -- `<= 0`, not truthiness: 0 IS TRUTHY IN LUA and an empty magazine is
+        -- the only one this is for.
+        if w and w.ammo == pool and (s.clip or 0) <= 0 then
+            BR.Inv.reload(inv, s)
+        end
+    end
+end
+
 --- Put a stack into a player's inventory.
 ---
 --- Returns what happened, because the caller (a claim, a chest, a death box)
@@ -522,6 +568,8 @@ function BR.Inv.give(src, stack, opts)
     if stack.kind == BR.ItemKind.AMMO then
         local taken = addAmmo(inv, stack.item, stack.count or 0)
         if taken <= 0 then return false, nil, 'ammofull' end
+        -- ...but it does fill a magazine that has none. See loadEmpty.
+        loadEmpty(inv, stack.item)
         BR.Inv.push(src, opts)
         return true, nil, nil
     end
