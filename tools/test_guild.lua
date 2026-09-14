@@ -83,7 +83,10 @@ function Wait() end
 -- FiveM's does, so the pcall around it is exercised rather than assumed.
 local resourceState, exported = {}, {}
 function GetResourceState(name) return resourceState[name] or 'missing' end
+-- What THIS resource exports, by name: guild.lua exports its brallowlist switch.
+local ownExports = {}
 exports = setmetatable({}, {
+    __call = function(_, name, fn) ownExports[name] = fn end,
     __index = function(_, res)
         return setmetatable({}, { __index = function(_, name)
             local fn = (exported[res] or {})[name]
@@ -184,7 +187,34 @@ local B_NO_ROLE_KEY = body('{"nick":"x"}', { nick = 'x' })
 local B_ROLE_NUMBER = body('{"roles":[1548704100621750272]}', { roles = { tonumber(ROLE) } })
 
 local realPrint = print
-function print() end
+local printed = {}
+function print(...)
+    local parts = {}
+    for i = 1, select('#', ...) do parts[#parts + 1] = tostring((select(i, ...))) end
+    printed[#printed + 1] = table.concat(parts, ' ')
+end
+
+-- --- commands --------------------------------------------------------------
+--
+-- FiveM's `restricted` flag, modelled, because it IS the authority here: the
+-- server console (source 0) always runs a restricted command, and a player only
+-- while holding its ACE. A refused caller never reaches the handler.
+local commands, aces = {}, {}
+function RegisterCommand(name, fn, restricted)
+    commands[name] = { fn = fn, restricted = restricted }
+end
+function GetPlayerName(src) return 'Player' .. tostring(src) end
+
+--- Type `line` as `src`. Returns whether FiveM would have run it.
+local function run(src, line)
+    local args = {}
+    for w in line:gmatch('%S+') do args[#args + 1] = w end
+    local c = commands[table.remove(args, 1)]
+    if c == nil then return false end
+    if c.restricted and src ~= 0 and not aces[src] then return false end
+    c.fn(src, args, line)
+    return true
+end
 
 local ROOT = 'resources/[fivem-royale]/'
 
@@ -207,11 +237,15 @@ local function boot(cvs)
     convars = {}
     for k, v in pairs(cvs or {}) do convars[k] = v end
     handlers, http, timers, idents, triggered = {}, {}, {}, {}, {}
-    resourceState, exported = {}, {}
+    resourceState, exported, ownExports = {}, {}, {}
+    commands, aces, printed = {}, {}, {}
     clock = 0
 
     local env = setmetatable({}, { __index = _G })
     for _, f in ipairs({
+        -- FIRST, as br_core's manifest has it: brallowlist registers through
+        -- its wrap, which is what refuses the command with dev mode off.
+        'br_lib/shared/devgate.lua',
         'br_lib/shared/identity.lua',
         'br_lib/config/allowlist.lua',
         'br_core/server/guild.lua',
@@ -1013,6 +1047,131 @@ do
         tostring(d.deferred) .. '/' .. tostring(d.doneCount))
 
     ok(#http == 0, 'and no backstop case asks Discord anything', tostring(#http))
+end
+
+describe('guild.brallowlist')
+do
+    -- THE SWITCH, ITS ONE OWNER, AND WHO MAY THROW IT. The gate's side -- a ban
+    -- still refusing with the switch off, an unreadable switch reading as on --
+    -- is in tools/test_ringmaster.lua.
+    local function fnRef(fn)
+        return setmetatable({}, { __call = function(_, ...) return fn(...) end })
+    end
+    local function connect(src)
+        local d = { deferred = false, doneCount = 0, doneArg = nil }
+        d.defer = fnRef(function() d.deferred = true end)
+        d.update = fnRef(function() end)
+        d.done = fnRef(function(reason)
+            d.doneCount = d.doneCount + 1
+            d.doneArg = reason
+        end)
+        fire('playerConnecting', src, 'Someone', function() end, d)
+        return d
+    end
+    local function lines() return table.concat(printed, ' | ') end
+    local REFUSAL = 'This server is restricted to allowlisted players.'
+
+    bootReady(5)
+    local switch = ownExports.allowlistEnforced
+    ok(type(switch) == 'function' and switch() == true, 'every load starts with the allowlist ON',
+        tostring(switch and switch()))
+    ok(commands.brallowlist ~= nil and commands.brallowlist.restricted == true,
+        'brallowlist is registered restricted, so in game only its ACE may run it',
+        tostring(commands.brallowlist and commands.brallowlist.restricted))
+
+    -- DEV MODE OFF: the dev gate refuses the command, and joining is untouched.
+    printed = {}
+    run(0, 'brallowlist off')
+    ok(switch() == true, 'dev off: brallowlist off changes nothing', tostring(switch()))
+    ok(#printed == 1 and printed[1]:find('dev-mode only', 1, true) ~= nil,
+        'and the console is told the command is dev-mode only', lines())
+    local d = connect(5)
+    ok(not d.deferred and d.doneCount == 0, 'dev off: the backstop touches no join',
+        tostring(d.deferred) .. '/' .. tostring(d.doneCount))
+
+    convars.br_devMode = 'true'
+
+    -- THE STATUS LINE.
+    printed = {}
+    run(0, 'brallowlist')
+    local status = printed[1] or ''
+    ok(#printed == 1 and status:find('allowlist ON', 1, true) ~= nil
+       and status:find('Discord lookup configured', 1, true) ~= nil
+       and status:find('every start of br_core is ON', 1, true) ~= nil,
+        'bare brallowlist says ON, that the lookup is configured, and that every start is ON', lines())
+    ok(switch() == true, 'and changes nothing', tostring(switch()))
+
+    d = connect(5)
+    ok(d.deferred and d.doneCount == 1 and d.doneArg == REFUSAL,
+        'dev on, switch on, no gate: the backstop refuses', tostring(d.doneArg))
+
+    -- OFF, FROM THE CONSOLE.
+    printed = {}
+    run(0, 'brallowlist off')
+    ok(switch() == false, 'console: brallowlist off turns it off', tostring(switch()))
+    ok(#printed == 1 and printed[1]:find('allowlist OFF', 1, true) ~= nil
+       and printed[1]:find('set by console', 1, true) ~= nil,
+        'in one line naming the console and the new state', lines())
+
+    -- STILL REFUSED WITH NO GATE. Nothing checks bans then, so admitting this
+    -- join would admit a banned player whatever the switch says.
+    d = connect(5)
+    ok(d.deferred and d.doneCount == 1 and d.doneArg == REFUSAL,
+        'dev on, switch off, no gate: the backstop still refuses, because nothing checks bans',
+        tostring(d.deferred) .. '/' .. tostring(d.doneArg))
+
+    -- AND WITH THE GATE ARMED IT LEAVES THE JOIN TO THE GATE, which reads the switch.
+    resourceState.br_ringmaster = 'started'
+    exported.br_ringmaster = { gateArmed = function() return true end }
+    d = connect(5)
+    ok(not d.deferred and d.doneCount == 0,
+        'dev on, switch off, gate armed: the backstop leaves the deferral to the gate',
+        tostring(d.deferred) .. '/' .. tostring(d.doneCount))
+    resourceState.br_ringmaster, exported.br_ringmaster = nil, nil
+
+    printed = {}
+    run(0, 'brallowlist')
+    ok((printed[1] or ''):find('allowlist OFF', 1, true) ~= nil, 'and the status line says OFF', lines())
+
+    -- AN IN-GAME CALLER WITHOUT THE ACE.
+    idents[7] = { 'license:abc777', 'discord:' .. SNOW }
+    printed = {}
+    local ran = run(7, 'brallowlist on')
+    ok(not ran and switch() == false, 'a player without the ACE cannot turn it back on',
+        tostring(ran) .. '/' .. tostring(switch()))
+    ok(#printed == 0, 'and nothing is logged as if they had', lines())
+
+    -- AND ONE WITH IT.
+    aces[7] = true
+    printed = {}
+    run(7, 'brallowlist on')
+    ok(switch() == true, 'a player holding the ACE can', tostring(switch()))
+    ok(#printed == 1 and printed[1]:find('allowlist ON', 1, true) ~= nil
+       and printed[1]:find('Player7 (license:abc777)', 1, true) ~= nil,
+        'and the line names them by name and license', lines())
+
+    d = connect(5)
+    ok(d.deferred and d.doneCount == 1 and d.doneArg == REFUSAL,
+        'switched back on: the backstop refuses again', tostring(d.doneArg))
+
+    printed = {}
+    run(0, 'brallowlist of')
+    ok(switch() == true and #printed == 1 and printed[1]:find('usage: brallowlist [on|off]', 1, true) ~= nil,
+        'a typo changes nothing and prints the usage', lines())
+
+    -- NOT PERSISTED. A restart of br_core is a fresh load.
+    run(0, 'brallowlist off')
+    ok(switch() == false, 'off before the restart', tostring(switch()))
+    bootReady(5)
+    ok(ownExports.allowlistEnforced ~= nil and ownExports.allowlistEnforced() == true,
+        'and ON again after it, whatever it was left at', tostring(ownExports.allowlistEnforced
+            and ownExports.allowlistEnforced()))
+
+    boot({ br_devMode = 'true' })
+    printed = {}
+    run(0, 'brallowlist')
+    ok((printed[1] or ''):find('Discord lookup NOT configured', 1, true) ~= nil,
+        'with no token the status line says the lookup is NOT configured', lines())
 end
 
 -- ------------------------------------------------------------------ done ---

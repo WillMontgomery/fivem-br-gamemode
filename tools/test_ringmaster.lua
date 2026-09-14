@@ -90,9 +90,26 @@ Citizen = { CreateThread = function() end, Wait = function() end, SetTimeout = f
 -- handlers existed at that moment, because WHERE gate.lua exports gateArmed is
 -- what br_core/server/guild.lua's backstop relies on.
 local exported = {}
-exports = setmetatable({}, { __call = function(_, name, fn)
-    exported[name] = { fn = fn, connectHandlers = #(handlers['playerConnecting'] or {}) }
-end })
+-- exports.<resource>:<name>(), as gate.lua reads br_core's brallowlist switch.
+-- A resource with no entry here, or an export it does not have, throws, as a
+-- call into a stopped resource does in FiveM.
+local foreign = {}
+exports = setmetatable({}, {
+    __call = function(_, name, fn)
+        exported[name] = { fn = fn, connectHandlers = #(handlers['playerConnecting'] or {}) }
+    end,
+    __index = function(_, res)
+        local t = foreign[res]
+        if t == nil then error(('No such resource %s'):format(res)) end
+        return setmetatable({}, { __index = function(_, name)
+            local fn = t[name]
+            if fn == nil then
+                error(('No such export %s in resource %s'):format(name, res))
+            end
+            return function(_, ...) return fn(...) end
+        end })
+    end,
+})
 
 local realPrint = print
 local printed = {}
@@ -1112,6 +1129,93 @@ do
         'and exports it only once its connect handler is registered',
         tostring(armed and armed.connectHandlers) .. ' / ' .. tostring(connectHandlersAtLoad))
 
+    -- ------------------------------------------- brallowlist, br_core's switch ---
+    --
+    -- OFF JUDGES A CONNECT AS DEV MODE OFF DOES: nobody is asked about a role,
+    -- and a ban still refuses with the ban notice. Every case above ran with no
+    -- br_core export at all, which is also the proof that an unreadable switch
+    -- reads as on.
+    local switch = false
+    local switchReads = 0
+    foreign.br_core = { allowlistEnforced = function()
+        switchReads = switchReads + 1
+        return switch
+    end }
+
+    nRole = #roleChecks
+    d = connect(74)
+    TriggerEvent('br:ddb:banResult', lastBanCheckReq(), false, {})
+    ok(d.doneCount == 1 and d.doneArg == nil and #roleChecks == nRole,
+        'brallowlist off: a player without the role is admitted, and nobody is asked',
+        tostring(d.doneArg) .. '/' .. tostring(#roleChecks - nRole))
+
+    d = connect(70)
+    TriggerEvent('br:ddb:banResult', lastBanCheckReq(), true, { reason = 'Aimbot' })
+    ok(banNotice(d), 'brallowlist off: a banned player is still refused, with the ban notice',
+        tostring(d.doneArg))
+
+    resourceState.br_ddb = 'missing'
+    d = connect(74)
+    ok(not d.deferred and d.doneCount == 0,
+        'brallowlist off without br_ddb: the join is not held, as with dev mode off', tostring(d.deferred))
+    resourceState.br_ddb = 'started'
+
+    switch = true
+    d = connect(74)
+    TriggerEvent('br:ddb:banResult', lastBanCheckReq(), false, {})
+    ok(#roleChecks == nRole + 1, 'brallowlist on: the role is asked about again',
+        tostring(#roleChecks - nRole))
+    answerRole('missing')
+    ok(d.doneCount == 1 and d.doneArg == REFUSAL, 'and a player without it is refused again',
+        tostring(d.doneArg))
+
+    -- FAILS CLOSED. A stopped br_core is not believed whatever it last said.
+    switch = false
+    resourceState.br_core = 'stopped'
+    d = connect(74)
+    TriggerEvent('br:ddb:banResult', lastBanCheckReq(), false, {})
+    ok(d.doneCount == 1 and d.doneArg == REFUSAL,
+        'br_core not started: an off switch reads as on, so the join is refused', tostring(d.doneArg))
+    resourceState.br_core = 'started'
+
+    local unreadable = {
+        { 'no such export', {} },
+        { 'a throw', { allowlistEnforced = function() error('boom') end } },
+        { 'nil', { allowlistEnforced = function() return nil end } },
+        { 'the string false', { allowlistEnforced = function() return 'false' end } },
+        { '0', { allowlistEnforced = function() return 0 end } },
+    }
+    for _, case in ipairs(unreadable) do
+        foreign.br_core = case[2]
+        local asked0 = #roleChecks
+        d = connect(74)
+        TriggerEvent('br:ddb:banResult', lastBanCheckReq(), false, {})
+        local asked = #roleChecks == asked0 + 1
+        answerRole('missing')
+        ok(asked and d.doneCount == 1 and d.doneArg == REFUSAL,
+            ('br_core started, switch answers %s: read as on, role asked, refused'):format(case[1]),
+            tostring(asked) .. '/' .. tostring(d.doneArg))
+    end
+
+    -- DEV OFF: the switch is never read, and nothing about joining changes.
+    devOn = false
+    switch = false
+    foreign.br_core = { allowlistEnforced = function()
+        switchReads = switchReads + 1
+        return switch
+    end }
+    local reads0 = switchReads
+    nRole = #roleChecks
+    d = connect(74)
+    TriggerEvent('br:ddb:banResult', lastBanCheckReq(), false, {})
+    ok(d.doneCount == 1 and d.doneArg == nil and #roleChecks == nRole and switchReads == reads0,
+        'dev off: admitted as before, and br_core is never asked about the switch',
+        tostring(d.doneArg) .. '/' .. tostring(switchReads - reads0))
+    d = connect(70)
+    TriggerEvent('br:ddb:banResult', lastBanCheckReq(), true, { reason = 'Aimbot' })
+    ok(banNotice(d), 'dev off: a ban still refuses with the ban notice', tostring(d.doneArg))
+
+    foreign.br_core = nil
     BR.Dev = nil
     resourceState.br_core = nil
 end

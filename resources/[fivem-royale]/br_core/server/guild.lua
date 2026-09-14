@@ -68,6 +68,12 @@
 -- AND WITH NO GATE TO ASK, THIS FILE SHUTS IT. br_ringmaster is optional, and a
 -- dev box without its gate running would otherwise admit everybody. See the
 -- backstop below, which refuses every dev-mode join that gate is not there for.
+--
+-- `brallowlist off` STOPS THE GATE'S ALLOWLIST UNTIL `on` OR THE NEXT START OF
+-- br_core, AND LEAVES THE BACKSTOP ALONE. The switch lives in this file and
+-- nowhere else; the gate reads it through the allowlistEnforced export. With no
+-- gate there is no ban check, so the backstop refuses every dev-mode join
+-- whichever way the switch is thrown. See the backstop.
 
 BR = BR or {}
 BR.Guild = BR.Guild or {}
@@ -679,10 +685,64 @@ end
 -- caught mid `restart br_ringmaster`, or one whose gate.lua failed to load,
 -- would let everybody in with no ban check and no allowlist.
 --
--- REFUSES EVERYBODY, ROLE OR NOT. With no gate there is no ban check either, and
--- admitting a role holder here would let a banned one in. Dev mode off, or the
--- gate armed, and this does not touch the deferral at all: one deferral per
--- join, so nothing here can land before the gate's ban notice.
+-- REFUSES EVERYBODY, ROLE OR NOT, SWITCH OR NOT. With no gate there is no ban
+-- check either, and admitting anybody here, a role holder or anyone at all with
+-- `brallowlist off`, would let a banned one in. Dev mode off, or the gate armed,
+-- and this does not touch the deferral at all: one deferral per join, so nothing
+-- here can land before the gate's ban notice.
+
+--- Is the dev allowlist enforced? Thrown by `brallowlist` and read, through the
+--- allowlistEnforced export, by br_ringmaster's gate and nothing else.
+---
+--- ONE OWNER. The gate keeps no copy, and reads anything short of a running
+--- br_core answering false as on. The backstop below never reads it: the only
+--- join it judges is one with no gate, and that join has no ban check.
+---
+--- NOT PERSISTED, AND ON AT EVERY LOAD. A boot or a `restart br_core` (the
+--- restart tools/deploy.sh tells the operator to run) puts it back, so a
+--- forgotten "off" cannot outlive a restart. It switches no ban off: the ban
+--- check is the gate's and never reads this.
+local enforced = true
+
+--- Who ran a command, for the console line: the console, or name and license.
+--- @param src number
+--- @return string
+local function caller(src)
+    if tonumber(src) == 0 then return 'console' end
+    local license = BR.Identity and BR.Identity.qualified('license', BR.Identity.licenseOf(src))
+    return ('%s (%s)'):format(tostring(GetPlayerName(src)), license or 'no license')
+end
+
+-- brallowlist [on|off] -- enforce the dev allowlist, or stop enforcing it.
+--
+-- RESTRICTED, like brring: the server console always, in game only a player
+-- holding its `command` ACE (server.cfg.example grants group.admin). AND
+-- DEV-GATED, like every command not on devgate.lua's exempt line: with dev mode
+-- off the wrap refuses it before this runs, which is the right answer there
+-- too, because with dev mode off there is no allowlist to switch.
+RegisterCommand('brallowlist', function(src, args)
+    local want = args and args[1] and tostring(args[1]):lower()
+
+    if want == 'on' or want == 'off' then
+        enforced = want == 'on'
+        print(('[br_core] allowlist %s, set by %s')
+            :format(enforced and 'ON' or 'OFF', caller(src)))
+        return
+    end
+
+    if want ~= nil then
+        print('  usage: brallowlist [on|off]')
+        return
+    end
+
+    local lookup = BR.Guild.configured() and allowlistRole() ~= nil
+    print(('[br_core] allowlist %s, Discord lookup %s (runtime only; every start of br_core is ON)')
+        :format(enforced and 'ON' or 'OFF', lookup and 'configured' or 'NOT configured'))
+end, true)
+
+-- THE SWITCH, FOR br_ringmaster/server/gate.lua. Always a boolean.
+exports('allowlistEnforced', function() return enforced end)
+
 AddEventHandler('playerConnecting', function(_name, _setKickReason, deferrals)
     if not (BR.Dev and BR.Dev.on and BR.Dev.on() == true) then return end
 

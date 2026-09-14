@@ -302,6 +302,7 @@ builds keybinds out of commands, so `+brinteract` and `brslot3` are also E and
 | `brperf` | both | Per-subsystem frame and tick cost |
 | `brconfig` | server | The config values that most often explain odd behaviour |
 | `brring` | server | Ringmaster link: whether it is configured, and what it would send |
+| `brallowlist [on\|off]` | server | The dev-mode join allowlist: `off` stops enforcing it (bans still apply, so with br_ringmaster down every dev-mode join is still refused) until `on` or the next start of br_core, bare prints which and whether the Discord lookup is configured. Restricted |
 | `brddb` | server | Probe DynamoDB — reachability, credentials, table access |
 | `brwhy <id>` | server | Why a given player is in the state they're in |
 | `brshots [n\|reason]` | server console only | The last N shot adjudications with the arithmetic that decided each one: the measured distance beside the weapon's reach, this shot's interval beside its cadence floor, the magazine the **server** believed, and whether it watched a throw. The starred pair is the comparison that refused the row. Console-only rather than restricted, and that is #93 rather than caution: nobody is exempt from incidents, so an admin can be the *subject* of these rows, and a `br.admin` readout would hand that person the exact bound to stay under |

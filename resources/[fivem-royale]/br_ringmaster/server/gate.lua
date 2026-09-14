@@ -33,6 +33,10 @@
     When this file is not there to do it -- br_ringmaster stopped, restarting,
     or started with this file broken -- br_core/server/guild.lua refuses the
     join instead. See gateArmed, at the bottom.
+    `brallowlist off` in br_core turns the allowlist off and leaves the ban
+    check alone. br_core owns that switch and this file only reads it, and
+    anything short of a running br_core saying off reads as on. See
+    allowlistOn, below the allowlist function.
 
     WHY THIS LIVES IN br_ringmaster RATHER THAN br_ddb: br_ddb answers questions
     and knows nothing about players, moderation or connect flow. Keeping the
@@ -370,6 +374,21 @@ local function allowlist(who, discordId, deferrals, door)
     end)
 end
 
+--- Is br_core's `brallowlist` switch on? The allowlist above runs only if so.
+---
+--- br_core OWNS THE SWITCH and this is its only reader, so there is no copy of
+--- it to drift. br_core's backstop never reads it: that only judges joins with
+--- no gate, and those have no ban check. FAILS CLOSED, like the rest of the allowlist:
+--- br_core not started, no such export, a throw, or any answer but false all
+--- read as on. Off turns off the allowlist and nothing else; the ban check never
+--- reads it.
+--- @return boolean
+local function allowlistOn()
+    if GetResourceState('br_core') ~= 'started' then return true end
+    local good, on = pcall(function() return exports.br_core:allowlistEnforced() end)
+    return not good or on ~= false
+end
+
 
 -- Printed once when the file loads. If this line is absent from the console at
 -- boot, the gate is not installed at all -- which is invisible from the game
@@ -422,9 +441,14 @@ AddEventHandler('playerConnecting', function(_name, _setKickReason, deferrals)
     -- has not installed br_ddb would be slower for everyone and never say why.
     -- Checking the resource state is instant and turns that into a no-op.
     -- READ ONCE PER CONNECT, so one connection is never judged by two answers if
-    -- the convar changes while it waits. BR.Dev is @br_lib/shared/devgate.lua's,
-    -- the first script this resource loads.
-    local dev = BR.Dev ~= nil and BR.Dev.on() == true
+    -- the convar or the switch changes while it waits. BR.Dev is
+    -- @br_lib/shared/devgate.lua's, the first script this resource loads.
+    --
+    -- `dev` MEANS "THE ALLOWLIST RUNS": dev mode on AND br_core's brallowlist
+    -- switch on. Switched off, every line below judges this connect as dev mode
+    -- off does, ban check included. The switch is read only in dev mode, so the
+    -- public box asks br_core nothing per connect.
+    local dev = BR.Dev ~= nil and BR.Dev.on() == true and allowlistOn()
 
     local ddbState = GetResourceState('br_ddb')
     local ddbUp = ddbState == 'started'
