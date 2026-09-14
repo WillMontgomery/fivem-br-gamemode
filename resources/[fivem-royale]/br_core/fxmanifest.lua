@@ -597,7 +597,8 @@ server_scripts {
     -- above), whose enum values it keys its severity table on.
     '@br_lib/shared/evidence_buf.lua',
     -- ONE OF TWO config/*.lua THIS RESOURCE LOADS SERVER-SIDE (the other is
-    -- config/allowlist.lua, beside server/guild.lua), and both exceptions are
+    -- config/allowlist.lua, beside server/guild.lua, only because no client
+    -- script reads it), and both exceptions are
     -- deliberate: every other config file is in shared_scripts above and goes
     -- to clients with them. This one is the domain and shortener lists, and a
     -- player holding those knows exactly which host still gets through. Read
@@ -778,8 +779,10 @@ server_scripts {
     -- than for the loader: it asks BR.Grants.holds the question grants.lua
     -- answers, and it is declared below the file that answers it.
     'server/admin.lua',
-    -- The dev-mode join allowlist's Discord role. SERVER-ONLY because no client
-    -- reads it; guild.lua reads it at call time, so the order is a reader's.
+    -- The dev-mode join allowlist's Discord role. Loaded into this server state
+    -- alone because nothing else reads it, NOT to keep it from clients: the file
+    -- is in br_lib's `files` glob like every config file, and a role id is not a
+    -- secret. guild.lua reads it at call time, so the order is a reader's.
     '@br_lib/config/allowlist.lua',
     -- Whether a player is already in our Discord: one authenticated GET to
     -- Discord per connection, cached for that connection. AFTER
