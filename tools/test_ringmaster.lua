@@ -928,6 +928,131 @@ do
         d.doneArg)
 
     BR.Config.Community.discordUrl = ''
+
+    -- ------------------------------------------------- the dev allowlist ---
+    --
+    -- DEV MODE ONLY, AFTER THE BAN CHECK, AND FAILING CLOSED. Every case above
+    -- ran with BR.Dev absent, which is dev mode off, so they are also the proof
+    -- that dev off changes nothing. These stand in for br_core's answer the way
+    -- banChecks stands in for br_ddb's.
+    local REFUSAL = 'This server is restricted to allowlisted players.'
+    local roleChecks = {}
+    AddEventHandler('br:guild:roleCheck', function(req, discordId)
+        roleChecks[#roleChecks + 1] = { req = req, discordId = discordId }
+    end)
+    local function lastRoleReq()
+        return roleChecks[#roleChecks] and roleChecks[#roleChecks].req
+    end
+    local function answerRole(verdict)
+        TriggerEvent('br:guild:roleResult', lastRoleReq(), verdict)
+    end
+
+    local devOn = false
+    BR.Dev = { on = function() return devOn end }
+    resourceState.br_core = 'started'
+    identifiers[74] = { 'license:4444444444444444444444444444444444444444', 'discord:904' }
+
+    -- DEV OFF: somebody who is in no guild at all walks in, and nobody is asked.
+    d = connect(74)
+    TriggerEvent('br:ddb:banResult', lastBanCheckReq(), false, {})
+    ok(d.doneCount == 1 and d.doneArg == nil, 'dev off: a non-member is admitted', tostring(d.doneArg))
+    ok(#roleChecks == 0, 'dev off: and the allowlist is never consulted', tostring(#roleChecks))
+
+    devOn = true
+
+    -- DEV ON, WITHOUT THE ROLE.
+    d = connect(74)
+    ok(#roleChecks == 0, 'dev on: the allowlist is not asked before the ban answer',
+        tostring(#roleChecks))
+    TriggerEvent('br:ddb:banResult', lastBanCheckReq(), false, {})
+    ok(#roleChecks == 1 and roleChecks[1].discordId == '904',
+        'then br_core is asked about the BARE discord id', tostring((roleChecks[1] or {}).discordId))
+    ok(d.doneCount == 0, 'and the join waits for the answer', tostring(d.doneCount))
+    answerRole('missing')
+    ok(d.doneCount == 1 and d.doneArg == REFUSAL, 'dev on: a member without the role is refused',
+        tostring(d.doneArg))
+
+    d = connect(74)
+    TriggerEvent('br:ddb:banResult', lastBanCheckReq(), false, {})
+    answerRole('notmember')
+    ok(d.doneCount == 1 and d.doneArg == REFUSAL, 'dev on: somebody not in the guild is refused',
+        tostring(d.doneArg))
+
+    -- DEV ON, WITH THE ROLE.
+    d = connect(74)
+    TriggerEvent('br:ddb:banResult', lastBanCheckReq(), false, {})
+    answerRole('held')
+    ok(d.doneCount == 1 and d.doneArg == nil, 'dev on: a player holding the role is admitted',
+        tostring(d.doneArg))
+
+    -- A BAN BEATS THE ALLOWLIST, and not by winning a race: the allowlist is
+    -- never asked, so it has no answer that could land first.
+    local nRole = #roleChecks
+    d = connect(70)
+    TriggerEvent('br:ddb:banResult', lastBanCheckReq(), true, { reason = 'Aimbot' })
+    ok(d.doneCount == 1 and type(d.doneArg) == 'string'
+       and d.doneArg:find('You are banned', 1, true) == 1,
+        'dev on: a banned player gets the ban notice, not the allowlist refusal', tostring(d.doneArg))
+    ok(#roleChecks == nRole, 'and the allowlist is never asked', tostring(#roleChecks - nRole))
+
+    -- A LOOKUP THAT FAILS REFUSES.
+    for _, verdict in ipairs({ 'unknown', 'unconfigured', 'noid' }) do
+        d = connect(74)
+        TriggerEvent('br:ddb:banResult', lastBanCheckReq(), false, {})
+        answerRole(verdict)
+        ok(d.doneCount == 1 and d.doneArg == REFUSAL,
+            ('dev on: %q from br_core refuses'):format(verdict), tostring(d.doneArg))
+    end
+
+    d = connect(74)
+    TriggerEvent('br:ddb:banResult', lastBanCheckReq(), false, {})
+    local timedOut = lastRoleReq()
+    fireTimers()
+    ok(d.doneCount == 1 and d.doneArg == REFUSAL, 'dev on: no answer at all refuses when the timer fires',
+        tostring(d.doneArg))
+    TriggerEvent('br:guild:roleResult', timedOut, 'held')
+    ok(d.doneCount == 1 and d.doneArg == REFUSAL, 'and a late held cannot turn it into an admit',
+        tostring(d.doneCount))
+
+    resourceState.br_core = 'stopped'
+    nRole = #roleChecks
+    d = connect(74)
+    TriggerEvent('br:ddb:banResult', lastBanCheckReq(), false, {})
+    ok(d.doneCount == 1 and d.doneArg == REFUSAL and #roleChecks == nRole,
+        'dev on: with br_core not started the join is refused at once', tostring(d.doneArg))
+    resourceState.br_core = 'started'
+
+    d = connect(72)   -- a license and a steam id, and no discord
+    TriggerEvent('br:ddb:banResult', lastBanCheckReq(), false, {})
+    ok(d.doneCount == 1 and d.doneArg == REFUSAL and #roleChecks == nRole,
+        'dev on: no discord identifier is refused without asking', tostring(d.doneArg))
+
+    d = connect(73)   -- neither identifier
+    ok(d.doneCount == 1 and d.doneArg == REFUSAL,
+        'dev on: neither identifier is refused rather than admitted', tostring(d.doneArg))
+
+    -- BANS STILL FAIL OPEN; THE ALLOWLIST BEHIND THEM DOES NOT.
+    d = connect(74)
+    TriggerEvent('br:ddb:banResult', lastBanCheckReq(), false, { error = 'no credentials' })
+    ok(d.doneCount == 0 and #roleChecks == nRole + 1,
+        'dev on: a failed ban check still goes on to the allowlist', tostring(d.doneCount))
+    answerRole('missing')
+    ok(d.doneCount == 1 and d.doneArg == REFUSAL, 'and is refused without the role', tostring(d.doneArg))
+
+    resourceState.br_ddb = 'missing'
+    local nBan = #banChecks
+    d = connect(74)
+    ok(d.deferred and #banChecks == nBan,
+        'dev on without br_ddb: the join still defers, with no ban check', tostring(d.deferred))
+    answerRole('held')
+    ok(d.doneCount == 1 and d.doneArg == nil, 'and a role holder is admitted', tostring(d.doneArg))
+    d = connect(74)
+    answerRole('missing')
+    ok(d.doneCount == 1 and d.doneArg == REFUSAL, 'and anybody else is refused', tostring(d.doneArg))
+    resourceState.br_ddb = 'started'
+
+    BR.Dev = nil
+    resourceState.br_core = nil
 end
 
 -- --------------------------------------------------------------- brkick ---

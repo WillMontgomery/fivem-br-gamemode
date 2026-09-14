@@ -51,6 +51,19 @@
 -- capability boundary already fails the build if anything token-shaped is named
 -- in configreport's allowlist. Nothing here prints the token, echoes a header, or
 -- puts it anywhere a client can reach.
+--
+-- ═══ IN DEV MODE IT IS ALSO THE JOIN ALLOWLIST ═══
+--
+-- While BR.Dev.on() is true, br_ringmaster/server/gate.lua lets a player in only
+-- if they hold br_lib/config/allowlist.lua's role in our guild, and it asks HERE
+-- (`br:guild:roleCheck`) because this file already has the token, the endpoint
+-- and a queue Discord is used to. The same GET answers both questions: the member
+-- object a 200 carries has a `roles` array in it. See readRole and askRole.
+--
+-- THE POLARITY IS TURNED ROUND AND THE RULE IS NOT. The card hides only on a
+-- confirmed yes; the door opens only on a confirmed yes. Every unknown above --
+-- no token, no identifier, a timeout, a 429, a 500 -- keeps the card up AND keeps
+-- the door shut.
 
 BR = BR or {}
 BR.Guild = BR.Guild or {}
@@ -95,6 +108,16 @@ end
 local TOKEN = convar('br_discord_bot_token')
 local GUILD_RAW = convar('br_discord_guild_id')
 local GUILD = snowflake(GUILD_RAW)
+
+--- The dev allowlist's role id, or nil when it is absent or not a snowflake.
+---
+--- READ AT CALL TIME, unlike the two convars above: it is a committed br_lib
+--- value rather than an operator's setting, and a harness that loads this file
+--- without br_lib/config/allowlist.lua gets nil here rather than a load error.
+local function allowlistRole()
+    local cfg = BR.Config and BR.Config.Allowlist
+    return snowflake(cfg and cfg.roleId)
+end
 
 --- Both halves, or the feature is off.
 ---
@@ -216,6 +239,13 @@ local standDownUntil = 0
 
 local stat = { asked = 0, member = 0, notMember = 0, unknown = 0, rateLimited = 0 }
 
+--- Allowlist lookups queued by askRole. [key] = { discordId, roleId, cb }
+---
+--- IN THE SAME `queue` AS THE MEMBERSHIP LOOKUPS, under a string key no source
+--- can have, so the pacing and the 429 stand-down cover both questions.
+local roleJobs = {}
+local nextRoleJob = 0
+
 --- Normalise a source to the key everything else uses.
 ---
 --- `source` in a net event handler is a NUMBER and `source` in playerDropped
@@ -290,6 +320,38 @@ function BR.Guild.backoffMs(body)
     return ms
 end
 
+--- Turn one HTTP answer into an allowlist verdict for `roleId`.
+---
+--- ONLY 'held' LETS ANYBODY IN, and it takes a 200 AND a readable `roles` array
+--- AND the role's id in it. Everything else is a refusal at the gate; the three
+--- other verdicts exist so its log can say which kind. Pure, like readAnswer,
+--- and for the same reason.
+---
+--- @param status number|nil
+--- @param body string|nil
+--- @param roleId string  a snowflake
+--- @return string 'held' | 'missing' | 'notmember' | 'unknown'
+function BR.Guild.readRole(status, body, roleId)
+    local member = BR.Guild.readAnswer(status, body)
+    if member == false then return 'notmember' end
+    if member ~= true then return 'unknown' end
+
+    -- readAnswer never parses a 200. This has to, because the role is in the body,
+    -- and a 200 we cannot read is not a yes.
+    if type(body) ~= 'string' or body == '' then return 'unknown' end
+    local good, parsed = pcall(json.decode, body)
+    if not good or type(parsed) ~= 'table' or type(parsed.roles) ~= 'table' then
+        return 'unknown'
+    end
+
+    for _, r in ipairs(parsed.roles) do
+        -- STRINGS ONLY. Discord sends snowflakes as strings, and a role id in any
+        -- other shape is a body we do not understand.
+        if type(r) == 'string' and r == roleId then return 'held' end
+    end
+    return 'missing'
+end
+
 -- ---------------------------------------------------------------------------
 -- The queue
 -- ---------------------------------------------------------------------------
@@ -319,6 +381,58 @@ local function settle(src, member)
     end
 end
 
+--- Send one GET about one snowflake, and hand what came back to `onAnswer`
+--- exactly once: (status, body), or (nil, nil) when nothing came back at all.
+---
+--- SHARED BY THE TWO QUESTIONS THIS FILE ASKS -- is this player in the guild,
+--- and, in dev mode, do they hold the allowlist role. They are the same request
+--- to the same endpoint, and a second copy of the pacing, the stand-down and the
+--- timeout would be a second queue Discord counts against the same bot.
+local function request(discordId, onAnswer)
+    stat.asked = stat.asked + 1
+
+    -- ANSWERED EXACTLY ONCE, whichever of the two paths gets here first.
+    local done = false
+    local function finish(status, body, retryMs)
+        if done then return end
+        done = true
+        if retryMs then standDownUntil = GetGameTimer() + retryMs end
+        -- pcall, for settle()'s reason: a throw in here must not leave `busy`
+        -- true and every lookup after this one stopped behind it.
+        pcall(onAnswer, status, body)
+        busy = false
+        -- The gap is spent AFTER an answer rather than before the next request,
+        -- so a slow Discord does not also get a faster question rate.
+        SetTimeout(GAP_MS, drain)
+    end
+
+    -- ARMED BEFORE THE REQUEST, which is server/handoff.lua's idiom and is not
+    -- equivalent to arming it after: a PerformHttpRequest that throws
+    -- synchronously would otherwise leave `busy` true and this queue stopped for
+    -- the life of the process.
+    SetTimeout(TIMEOUT_MS, function() finish(nil, nil, nil) end)
+
+    PerformHttpRequest(API:format(GUILD, discordId), function(status, body)
+        if status == 429 then
+            stat.rateLimited = stat.rateLimited + 1
+            -- NOT RETRIED. A 429 is "we do not know", the card stays up, and this
+            -- connection's one lookup is spent. Re-queueing it would turn the
+            -- busiest moment on the server -- everybody connecting at once -- into
+            -- the moment we send Discord the most traffic, which is how a rate
+            -- limit becomes an IP ban.
+            finish(status, body, BR.Guild.backoffMs(body))
+            return
+        end
+        finish(status, body, nil)
+    end, 'GET', '', {
+        -- THE ONLY PLACE THE TOKEN IS USED. It is never printed, never returned,
+        -- never put in a payload and never echoed on an error path -- the response
+        -- handler above reads a status and a body and nothing else.
+        ['Authorization'] = 'Bot ' .. TOKEN,
+        ['User-Agent']    = USER_AGENT,
+    })
+end
+
 --- Ask Discord about one source.
 local function lookup(src)
     -- THE PLAYER MAY HAVE GONE while this sat in the queue. `waiting` is cleared
@@ -339,46 +453,24 @@ local function lookup(src)
         return
     end
 
-    stat.asked = stat.asked + 1
+    request(discordId, function(status, body)
+        settle(src, BR.Guild.readAnswer(status, body))
+    end)
+end
 
-    -- ANSWERED EXACTLY ONCE, whichever of the two paths gets here first.
-    local done = false
-    local function finish(member, retryMs)
-        if done then return end
-        done = true
-        if retryMs then standDownUntil = GetGameTimer() + retryMs end
-        settle(src, member)
-        busy = false
-        -- The gap is spent AFTER an answer rather than before the next request,
-        -- so a slow Discord does not also get a faster question rate.
-        SetTimeout(GAP_MS, drain)
-    end
-
-    -- ARMED BEFORE THE REQUEST, which is server/handoff.lua's idiom and is not
-    -- equivalent to arming it after: a PerformHttpRequest that throws
-    -- synchronously would otherwise leave `busy` true and this queue stopped for
-    -- the life of the process.
-    SetTimeout(TIMEOUT_MS, function() finish(nil, nil) end)
-
-    PerformHttpRequest(API:format(GUILD, discordId), function(status, body)
-        if status == 429 then
-            stat.rateLimited = stat.rateLimited + 1
-            -- NOT RETRIED. A 429 is "we do not know", the card stays up, and this
-            -- connection's one lookup is spent. Re-queueing it would turn the
-            -- busiest moment on the server -- everybody connecting at once -- into
-            -- the moment we send Discord the most traffic, which is how a rate
-            -- limit becomes an IP ban.
-            finish(nil, BR.Guild.backoffMs(body))
-            return
-        end
-        finish(BR.Guild.readAnswer(status, body), nil)
-    end, 'GET', '', {
-        -- THE ONLY PLACE THE TOKEN IS USED. It is never printed, never returned,
-        -- never put in a payload and never echoed on an error path -- the response
-        -- handler above reads a status and a body and nothing else.
-        ['Authorization'] = 'Bot ' .. TOKEN,
-        ['User-Agent']    = USER_AGENT,
-    })
+--- Ask Discord whether one connecting player holds the allowlist role.
+---
+--- NOT KEYED BY SOURCE AND NEVER CACHED, and both are the point. The asker is
+--- br_ringmaster/server/gate.lua at `playerConnecting`, where the source is a
+--- TEMPORARY id that gets recycled -- so a remembered answer, or an in-flight
+--- lookup to attach to, would be one person's role handed to whoever connects
+--- under that number next. Every connection spends its own call.
+local function lookupRole(k)
+    local job = roleJobs[k]
+    roleJobs[k] = nil
+    request(job.discordId, function(status, body)
+        pcall(job.cb, BR.Guild.readRole(status, body, job.roleId))
+    end)
 end
 
 --- Send the next queued lookup, if the queue is idle and Discord is not sulking.
@@ -391,11 +483,14 @@ drain = function()
 
     busy = true
 
+    -- A key with a job behind it is an allowlist lookup; anything else is a source.
+    local run = roleJobs[src] and lookupRole or lookup
+
     local wait = standDownUntil - GetGameTimer()
     if wait > 0 then
-        SetTimeout(wait, function() lookup(src) end)
+        SetTimeout(wait, function() run(src) end)
     else
-        lookup(src)
+        run(src)
     end
 end
 
@@ -462,6 +557,52 @@ function BR.Guild.ask(src, cb)
     drain()
 end
 
+--- Queue one allowlist lookup for a connecting player.
+---
+--- `cb` IS ALWAYS CALLED, EXACTLY ONCE, with a verdict from readRole or with one
+--- of two that are answered here without asking anybody:
+---
+---   'unconfigured'  no token, no usable guild id, or no usable role id
+---   'noid'          the connection carries no usable `discord:` snowflake
+---
+--- Always, because the caller is holding a deferral open on it.
+---
+--- @param discordId string|nil  the bare snowflake
+--- @param cb function  called with the verdict
+function BR.Guild.askRole(discordId, cb)
+    local role = allowlistRole()
+    if not BR.Guild.configured() or role == nil then
+        pcall(cb, 'unconfigured')
+        return
+    end
+
+    local id = snowflake(discordId)
+    if id == nil then
+        pcall(cb, 'noid')
+        return
+    end
+
+    nextRoleJob = nextRoleJob + 1
+    local k = 'role#' .. nextRoleJob
+    roleJobs[k] = { discordId = id, roleId = role, cb = cb }
+    queued[k] = true
+    queue[#queue + 1] = k
+    drain()
+end
+
+-- THE ALLOWLIST'S WAY IN, for br_ringmaster/server/gate.lua. An event rather than
+-- a call because that resource deliberately does not depend on this one: if
+-- br_core is not running nobody answers, and the gate's own timer refuses the
+-- join, which is the direction a dev allowlist has to fail.
+--
+-- SERVER-INTERNAL. Neither this name nor the answer's has a RegisterNetEvent, so
+-- no client can ask the question or forge the reply.
+AddEventHandler('br:guild:roleCheck', function(req, discordId)
+    BR.Guild.askRole(discordId, function(verdict)
+        TriggerEvent('br:guild:roleResult', req, verdict)
+    end)
+end)
+
 -- FORGOTTEN ON DROP, AND THE FORGETTING IS LOAD-BEARING TWICE OVER. A server id
 -- is recycled within the minute, so a verdict left behind is a verdict handed to
 -- the next person to hold that number -- and it is the WRONG DIRECTION of wrong:
@@ -499,6 +640,18 @@ function BR.Guild.report()
         lines[#lines + 1] = '          it must be the guild id, digits only'
     else
         lines[#lines + 1] = 'guild     not configured -- the Discord card shows to everybody'
+    end
+
+    -- THE DEV ALLOWLIST, IN ONE LINE AND ONLY IN DEV MODE. With dev mode off
+    -- nothing about joining changes, so nothing is said about it either.
+    if BR.Dev and BR.Dev.on and BR.Dev.on() then
+        local role = allowlistRole()
+        if BR.Guild.configured() and role ~= nil then
+            lines[#lines + 1] = ('allowlist ON (dev mode): Discord role %s required, lookup configured')
+                :format(role)
+        else
+            lines[#lines + 1] = 'allowlist ON (dev mode): Discord lookup NOT configured -- every join is refused'
+        end
     end
 
     return lines, BR.Guild.configured()

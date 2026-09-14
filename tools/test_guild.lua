@@ -44,6 +44,13 @@ end
 function RegisterNetEvent() end
 function TriggerClientEvent() end
 
+-- Recorded rather than dispatched: the only server event guild.lua raises is the
+-- allowlist's answer to br_ringmaster, which lives in another resource.
+local triggered = {}
+function TriggerEvent(name, ...)
+    triggered[#triggered + 1] = { name = name, args = { ... } }
+end
+
 local function fire(name, src, ...)
     local prev = source
     source = src
@@ -148,6 +155,14 @@ local B_RETRY_ZERO  = body('{"retry_after":0}', { retry_after = 0 })
 local B_RETRY_NEG   = body('{"retry_after":-3}', { retry_after = -3 })
 local B_RETRY_HUGE  = body('{"retry_after":9999}', { retry_after = 9999 })
 
+-- The allowlist role, pinned as the owner gave it, and member objects around it.
+local ROLE = '1548704100621750272'
+local B_HAS_ROLE    = body('{"roles":["111","1548704100621750272"]}', { roles = { '111', ROLE } })
+local B_OTHER_ROLE  = body('{"roles":["111"]}', { roles = { '111' } })
+local B_NO_ROLES    = body('{"roles":[]}', { roles = {} })
+local B_NO_ROLE_KEY = body('{"nick":"x"}', { nick = 'x' })
+local B_ROLE_NUMBER = body('{"roles":[1548704100621750272]}', { roles = { tonumber(ROLE) } })
+
 local realPrint = print
 function print() end
 
@@ -171,12 +186,13 @@ local SNOW  = '280000000000000000'
 local function boot(cvs)
     convars = {}
     for k, v in pairs(cvs or {}) do convars[k] = v end
-    handlers, http, timers, idents = {}, {}, {}, {}
+    handlers, http, timers, idents, triggered = {}, {}, {}, {}, {}
     clock = 0
 
     local env = setmetatable({}, { __index = _G })
     for _, f in ipairs({
         'br_lib/shared/identity.lua',
+        'br_lib/config/allowlist.lua',
         'br_core/server/guild.lua',
     }) do
         local chunk, err = loadfile(ROOT .. f, 't', env)
@@ -675,10 +691,189 @@ do
     -- test_community.lua drives the real file, so a rename would fail there too
     -- -- this names them so the failure says WHICH one moved.
     local env = bootReady(5)
-    for _, name in ipairs({ 'member', 'ask', 'configured', 'report', 'readAnswer', 'backoffMs' }) do
+    for _, name in ipairs({ 'member', 'ask', 'configured', 'report', 'readAnswer', 'backoffMs',
+                            'readRole', 'askRole' }) do
         ok(type(env.BR.Guild[name]) == 'function', ('BR.Guild.%s is a function'):format(name),
             type(env.BR.Guild[name]))
     end
+end
+
+-- ------------------------------------------------------- the dev allowlist ---
+--
+-- THE CARD'S POLARITY, TURNED ROUND. In dev mode br_ringmaster/server/gate.lua
+-- admits a join only on 'held', so every case here that is not a confirmed role
+-- is asserted to be something else by name -- `== 'unknown'` rather than
+-- `~= 'held'` wherever the verdict is known, so a collapse between two refusals
+-- still shows up.
+
+describe('guild.role.answer')
+do
+    local env = boot({})
+    local read = env.BR.Guild.readRole
+
+    ok(env.BR.Config.Allowlist.roleId == ROLE, 'the allowlist role is the one the owner named',
+        tostring(env.BR.Config.Allowlist.roleId))
+
+    ok(read(200, B_HAS_ROLE, ROLE) == 'held', 'a member whose roles carry it holds it',
+        read(200, B_HAS_ROLE, ROLE))
+    ok(read(200, B_OTHER_ROLE, ROLE) == 'missing', 'a member with other roles is missing it',
+        read(200, B_OTHER_ROLE, ROLE))
+    ok(read(200, B_NO_ROLES, ROLE) == 'missing', 'and so is a member with no roles at all',
+        read(200, B_NO_ROLES, ROLE))
+    ok(read(404, B_NOT_MEMBER, ROLE) == 'notmember', 'a 10007 is not a member',
+        read(404, B_NOT_MEMBER, ROLE))
+
+    -- A 200 IS NOT A YES HERE. readAnswer can stop at the status; this cannot,
+    -- because the role is in the body, and a body we cannot read holds nothing.
+    ok(read(200, '', ROLE) == 'unknown', 'a 200 with no body is unknown', read(200, '', ROLE))
+    ok(read(200, B_HTML, ROLE) == 'unknown', 'a 200 with an unreadable body is unknown',
+        read(200, B_HTML, ROLE))
+    ok(read(200, B_NO_ROLE_KEY, ROLE) == 'unknown', 'a 200 with no roles array is unknown',
+        read(200, B_NO_ROLE_KEY, ROLE))
+    ok(read(200, B_ROLE_NUMBER, ROLE) ~= 'held', 'a role id that is not a string never matches',
+        read(200, B_ROLE_NUMBER, ROLE))
+
+    ok(read(404, B_UNKNOWN_GLD, ROLE) == 'unknown', 'a 10004 is about US, not the player',
+        read(404, B_UNKNOWN_GLD, ROLE))
+    for _, status in ipairs({ 401, 403, 429, 500, 502, 0, -1 }) do
+        ok(read(status, B_HAS_ROLE, ROLE) == 'unknown',
+            ('%d is unknown, whatever the body says'):format(status), read(status, B_HAS_ROLE, ROLE))
+    end
+    ok(read(nil, nil, ROLE) == 'unknown', 'and so is no answer at all', read(nil, nil, ROLE))
+end
+
+describe('guild.role.unconfigured')
+do
+    local env = boot({})
+    local got = {}
+    env.BR.Guild.askRole(SNOW, function(v) got[#got + 1] = v end)
+    advance(60000)
+    ok(#http == 0, 'with no token Discord is not asked', tostring(#http))
+    ok(#got == 1 and got[1] == 'unconfigured', 'and the caller is told so at once, exactly once',
+        table.concat(got, ','))
+
+    local badRole = bootReady(5)
+    badRole.BR.Config.Allowlist.roleId = 'tester'
+    local v = 'untouched'
+    badRole.BR.Guild.askRole(SNOW, function(x) v = x end)
+    ok(#http == 0 and v == 'unconfigured', 'a role id that is not a snowflake is unconfigured too',
+        tostring(#http) .. '/' .. tostring(v))
+end
+
+describe('guild.role.noid')
+do
+    local env = bootReady(5)
+    local v = 'untouched'
+    env.BR.Guild.askRole(nil, function(x) v = x end)
+    ok(v == 'noid', 'no discord identifier is noid', tostring(v))
+    for _, bad in ipairs({ '', 'not-a-snowflake', '280000000000000000/../x' }) do
+        v = 'untouched'
+        env.BR.Guild.askRole(bad, function(x) v = x end)
+        ok(v == 'noid', ('%q is noid'):format(bad), tostring(v))
+    end
+    advance(60000)
+    ok(#http == 0, 'and none of them reaches a URL', tostring(#http))
+end
+
+describe('guild.role.request')
+do
+    local env = bootReady(5)
+    local got = 'untouched'
+    env.BR.Guild.askRole(SNOW, function(v) got = v end)
+    ok(#http == 1, 'one request goes out', tostring(#http))
+    ok((http[1] or {}).url == ('https://discord.com/api/v10/guilds/%s/members/%s'):format(GUILD, SNOW),
+        'to the same member endpoint the card uses', tostring((http[1] or {}).url))
+    ok(got == 'untouched', 'nothing is answered before Discord is', tostring(got))
+    respond(1, 200, B_HAS_ROLE)
+    ok(got == 'held', 'and a member holding the role is held', tostring(got))
+
+    -- NEVER CACHED. The asker is a connection whose source is a temporary id.
+    advance(250)
+    local again = 'untouched'
+    env.BR.Guild.askRole(SNOW, function(v) again = v end)
+    ok(#http == 2, 'a second connection asks again rather than reusing the answer', tostring(#http))
+    respond(2, 200, B_OTHER_ROLE)
+    ok(again == 'missing', 'and gets its own answer', tostring(again))
+end
+
+describe('guild.role.sharedqueue')
+do
+    -- ONE QUEUE FOR BOTH QUESTIONS, so the allowlist cannot double the rate the
+    -- card already asks Discord at.
+    local env = bootReady(5)
+    env.BR.Guild.ask(5, nil)
+    local got = 'untouched'
+    env.BR.Guild.askRole(SNOW, function(v) got = v end)
+    ok(#http == 1, 'a role lookup waits behind a membership lookup already out', tostring(#http))
+    respond(1, 200, '')
+    advance(249)
+    ok(#http == 1, 'and keeps the 250ms gap', tostring(#http))
+    advance(1)
+    ok(#http == 2, 'then goes', tostring(#http))
+    respond(2, 404, B_NOT_MEMBER)
+    ok(got == 'notmember', 'and is answered for itself', tostring(got))
+    ok(env.BR.Guild.member(5) == true, 'without disturbing the membership verdict',
+        tostring(env.BR.Guild.member(5)))
+end
+
+describe('guild.role.failure')
+do
+    local env = bootReady(5)
+    local got = 'untouched'
+    env.BR.Guild.askRole(SNOW, function(v) got = v end)
+    respond(1, 429, B_RETRY_1_5)
+    ok(got == 'unknown', 'a 429 is unknown', tostring(got))
+
+    local slow = bootReady(5)
+    local calls, v = 0, 'untouched'
+    slow.BR.Guild.askRole(SNOW, function(x) calls = calls + 1; v = x end)
+    advance(5999)
+    ok(calls == 0, 'nothing gives up early', tostring(calls))
+    advance(1)
+    ok(calls == 1 and v == 'unknown', 'no answer in 6s is unknown', tostring(calls) .. '/' .. tostring(v))
+    respond(1, 200, B_HAS_ROLE)
+    ok(calls == 1 and v == 'unknown', 'and a late held changes nothing', tostring(calls) .. '/' .. tostring(v))
+end
+
+describe('guild.role.event')
+do
+    local env = bootReady(5)
+    fire('br:guild:roleCheck', nil, 41, SNOW)
+    ok(#http == 1, 'br_ringmaster\'s question becomes one request', tostring(#http))
+    respond(1, 200, B_HAS_ROLE)
+    local last = triggered[#triggered] or { args = {} }
+    ok(last.name == 'br:guild:roleResult', 'answered on the result event', tostring(last.name))
+    ok(last.args[1] == 41 and last.args[2] == 'held', 'carrying the request id and the verdict',
+        tostring(last.args[1]) .. '/' .. tostring(last.args[2]))
+
+    -- AND A QUESTION WITH NOTHING TO ASK IS STILL ANSWERED, because a deferral is
+    -- being held open on it.
+    fire('br:guild:roleCheck', nil, 42, nil)
+    last = triggered[#triggered] or { args = {} }
+    ok(last.args[1] == 42 and last.args[2] == 'noid', 'a missing identifier is answered, not dropped',
+        tostring(last.args[1]) .. '/' .. tostring(last.args[2]))
+end
+
+describe('guild.role.boot')
+do
+    local env = bootReady(5)
+    local text = table.concat(env.BR.Guild.report(), '\n')
+    ok(text:find('allowlist', 1, true) == nil, 'dev mode off says nothing about an allowlist', text)
+
+    env.BR.Dev = { on = function() return true end }
+    text = table.concat(env.BR.Guild.report(), '\n')
+    local _, n = text:gsub('allowlist', '')
+    ok(n == 1, 'dev mode on says it in one line', text)
+    ok(text:find('allowlist ON', 1, true) ~= nil and text:find(ROLE, 1, true) ~= nil
+       and text:find('lookup configured', 1, true) ~= nil,
+        'naming the role and saying the lookup is configured', text)
+    ok(text:find(TOKEN, 1, true) == nil, 'and never the token', text)
+
+    local bare = boot({})
+    bare.BR.Dev = { on = function() return true end }
+    text = table.concat(bare.BR.Guild.report(), '\n')
+    ok(text:find('lookup NOT configured', 1, true) ~= nil,
+        'with no token it says the lookup is NOT configured', text)
 end
 
 -- ------------------------------------------------------------------ done ---

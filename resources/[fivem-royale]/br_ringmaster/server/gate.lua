@@ -23,6 +23,13 @@
          strictly better than "nobody gets in at all", which is how a game night
          ends.
 
+    THE ONE THING HERE THAT FAILS CLOSED is the dev-mode join allowlist. With
+    dev mode on (BR.Dev.on()), a join the ban check did not refuse must also
+    hold br_lib/config/allowlist.lua's Discord role, and anything short of
+    Discord confirming it is a refusal. It runs AFTER the ban check and inside
+    the same deferral, so a banned player is always told about the ban and never
+    about the allowlist. With dev mode off none of it runs. See allowlist().
+
     WHY THIS LIVES IN br_ringmaster RATHER THAN br_ddb: br_ddb answers questions
     and knows nothing about players, moderation or connect flow. Keeping the
     policy here and the data access there means the resource with AWS
@@ -220,6 +227,105 @@ local function askBanned(license, discord, cb)
     TriggerEvent('br:ddb:banCheck', req, license or '', discord or '')
 end
 
+-- ---------------------------------------------------------------------------
+-- The dev allowlist
+-- ---------------------------------------------------------------------------
+
+--- How long we wait for br_core to say whether a dev-mode join holds the role.
+---
+--- ABOVE br_core/server/guild.lua'S OWN 6s REQUEST TIMEOUT, for the reason
+--- ANSWER_TIMEOUT_MS sits above br_ddb's: in the ordinary failure the inner
+--- timer lands first and the log gets a real verdict. This one is the backstop
+--- for nobody answering at all -- br_core mid-restart, or a lookup queued behind
+--- a 429 stand-down -- and when it fires the join is REFUSED, not admitted.
+local ROLE_TIMEOUT_MS = 10000
+
+--- What a dev-mode join is told when the allowlist does not let it in.
+---
+--- ONE SENTENCE FOR EVERY REASON. The reason goes to the console, which logs
+--- it; the player is told the fact.
+local ALLOWLIST_REFUSAL = 'This server is restricted to allowlisted players.'
+
+--- req -> function(verdict), exactly as `pending` is for the ban check.
+local rolePending = {}
+
+AddEventHandler('br:guild:roleResult', function(req, verdict)
+    local resolve = rolePending[req]
+    if not resolve then return end
+    rolePending[req] = nil
+    resolve(verdict)
+end)
+
+--- Ask br_core whether this Discord id holds the allowlist role, guaranteeing
+--- exactly one answer. askBanned's shape, timer first, for askBanned's reason.
+--- @param discordId string  the bare snowflake
+--- @param cb fun(verdict: string)  'held' is the only verdict that admits
+local function askRole(discordId, cb)
+    nextReq = nextReq + 1
+    local req = nextReq
+
+    local answered = false
+    local function once(verdict)
+        if answered then return end
+        answered = true
+        rolePending[req] = nil
+        cb(verdict)
+    end
+
+    rolePending[req] = once
+
+    SetTimeout(ROLE_TIMEOUT_MS, function()
+        -- NO lateWatch HERE. A late answer has nothing to undo: nobody was
+        -- admitted on this timeout, so there is nobody to remove.
+        once(('no answer within %dms'):format(ROLE_TIMEOUT_MS))
+    end)
+
+    TriggerEvent('br:guild:roleCheck', req, discordId)
+end
+
+--- The dev-mode join allowlist. Called only once no ban stands in the way.
+---
+--- FAILS CLOSED, the opposite of the ban check and on purpose. A ban list that
+--- cannot be read must not lock everybody out of the public server; an
+--- allowlist that cannot be read must not let everybody into a dev one. So
+--- every state short of Discord confirming the role -- no identifier, br_core
+--- not running, no token, a timeout, a 429, not a member -- refuses.
+--- @param who string  what the log lines name
+--- @param discordId string|nil  the bare snowflake, or nil when FiveM reported none
+--- @param deferrals table
+local function allowlist(who, discordId, deferrals)
+    local function refuse(why)
+        print(('^3[br_ringmaster] gate: refused %s -- dev allowlist: %s^7')
+            :format(who, tostring(why)))
+        deferrals.done(ALLOWLIST_REFUSAL)
+    end
+
+    if not discordId then
+        refuse('no discord identifier')
+        return
+    end
+
+    -- NOBODY TO ASK, SO NO TEN SECONDS SPENT FINDING THAT OUT. The same instant
+    -- check the ban path makes for br_ddb, refusing where that one admits.
+    local coreState = GetResourceState('br_core')
+    if coreState ~= 'started' then
+        refuse(('br_core is "%s", not "started"'):format(tostring(coreState)))
+        return
+    end
+
+    deferrals.update('Checking your account...')
+
+    askRole(discordId, function(verdict)
+        if verdict == 'held' then
+            print(('^2[br_ringmaster] gate: %s holds the allowlist role -- admitted^7')
+                :format(who))
+            deferrals.done()
+            return
+        end
+        refuse(verdict)
+    end)
+end
+
 
 -- Printed once when the file loads. If this line is absent from the console at
 -- boot, the gate is not installed at all -- which is invisible from the game
@@ -271,14 +377,22 @@ AddEventHandler('playerConnecting', function(_name, _setKickReason, deferrals)
     -- EVERY player five seconds on the connect screen to do it. A server that
     -- has not installed br_ddb would be slower for everyone and never say why.
     -- Checking the resource state is instant and turns that into a no-op.
+    -- READ ONCE PER CONNECT, so one connection is never judged by two answers if
+    -- the convar changes while it waits. BR.Dev is @br_lib/shared/devgate.lua's,
+    -- the first script this resource loads.
+    local dev = BR.Dev ~= nil and BR.Dev.on() == true
+
     local ddbState = GetResourceState('br_ddb')
-    if ddbState ~= 'started' then
+    local ddbUp = ddbState == 'started'
+    if not ddbUp then
         -- Said out loud rather than skipped quietly. A server whose ban gate is
         -- silently inert looks identical to one whose bans do not work, and
         -- this is the single most likely reason for the latter.
         print(('^3[br_ringmaster] gate: br_ddb is "%s", not "started" -- NO BAN CHECK^7')
             :format(tostring(ddbState)))
-        return
+        -- NO BAN LIST IS NOT NO ALLOWLIST. In dev mode the join still defers
+        -- and goes to allowlist() below, just without a ban to wait for.
+        if not dev then return end
     end
 
     deferrals.defer()
@@ -323,7 +437,26 @@ AddEventHandler('playerConnecting', function(_name, _setKickReason, deferrals)
     -- a ban on somebody the game does not know, and skipping the lookup for
     -- exactly the people it was written for would be the bug this change is
     -- about, in a new place.
+    -- Once no ban stands in the way: in, or in dev mode, on to the allowlist.
+    local function letIn(who)
+        if dev then
+            allowlist(who, byKind and byKind.discord, deferrals)
+            return
+        end
+        deferrals.done()
+    end
+
+    -- No br_ddb, so no ban to wait for. Only dev mode gets this far without it.
+    if not ddbUp then
+        letIn(tostring(src))
+        return
+    end
+
     if not license and not discord then
+        if dev then
+            letIn(tostring(src))
+            return
+        end
         print('^3[br_ringmaster] gate: connecting player has no license or discord id -- admitted^7')
         deferrals.done()
         return
@@ -339,9 +472,10 @@ AddEventHandler('playerConnecting', function(_name, _setKickReason, deferrals)
 
     askBanned(license, discord, function(banned, info)
         if info.error then
-            print(('^3[br_ringmaster] ban check failed for %s: %s -- allowing (fail open)^7')
-                :format(asked, tostring(info.error)))
-            deferrals.done()
+            print(('^3[br_ringmaster] ban check failed for %s: %s -- %s^7')
+                :format(asked, tostring(info.error),
+                    dev and 'no ban check (fail open)' or 'allowing (fail open)'))
+            letIn(asked)
             return
         end
 
@@ -352,8 +486,9 @@ AddEventHandler('playerConnecting', function(_name, _setKickReason, deferrals)
             -- you whether the gate ran at all, found no row, or was never asked.
             -- At 48 slots this is a handful of lines a minute, and every server
             -- logs connects anyway.
-            print(('^2[br_ringmaster] gate: %s not banned -- admitted^7'):format(asked))
-            deferrals.done()
+            print(('^2[br_ringmaster] gate: %s not banned%s^7')
+                :format(asked, dev and '' or ' -- admitted'))
+            letIn(asked)
             return
         end
 

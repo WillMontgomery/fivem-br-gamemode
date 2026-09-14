@@ -596,8 +596,9 @@ server_scripts {
     -- at load time -- and incident_build after combat_solve (in shared_scripts
     -- above), whose enum values it keys its severity table on.
     '@br_lib/shared/evidence_buf.lua',
-    -- THE ONLY config/*.lua THIS RESOURCE LOADS SERVER-SIDE, and the exception
-    -- is deliberate: every other config file is in shared_scripts above and goes
+    -- ONE OF TWO config/*.lua THIS RESOURCE LOADS SERVER-SIDE (the other is
+    -- config/allowlist.lua, beside server/guild.lua), and both exceptions are
+    -- deliberate: every other config file is in shared_scripts above and goes
     -- to clients with them. This one is the domain and shortener lists, and a
     -- player holding those knows exactly which host still gets through. Read
     -- lazily by chat_screen.lua, so this ordering is belt to that braces.
@@ -777,6 +778,9 @@ server_scripts {
     -- than for the loader: it asks BR.Grants.holds the question grants.lua
     -- answers, and it is declared below the file that answers it.
     'server/admin.lua',
+    -- The dev-mode join allowlist's Discord role. SERVER-ONLY because no client
+    -- reads it; guild.lua reads it at call time, so the order is a reader's.
+    '@br_lib/config/allowlist.lua',
     -- Whether a player is already in our Discord: one authenticated GET to
     -- Discord per connection, cached for that connection. AFTER
     -- @br_lib/shared/identity.lua, and that IS a real order rather than a
