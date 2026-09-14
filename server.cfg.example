@@ -151,20 +151,20 @@ sv_entityLockdown relaxed
 # ---------------------------------------------------------------------------
 # Identity
 # ---------------------------------------------------------------------------
-sets sv_projectName "FiveM Royale"
 sets sv_projectDesc "48-player battle royale. Drop, loot, outlast the storm."
 sets locale "en-US"
 sets tags "battle royale, br, pvp, gamemode"
 
 # ---------------------------------------------------------------------------
-# sv_hostname AND sv_licenseKey ARE NOT IN THIS FILE, AND THAT IS THE FEATURE.
+# sv_hostname, sv_projectName AND sv_licenseKey ARE NOT IN THIS FILE, AND THAT
+# IS THE FEATURE.
 #
 # They live in server-identity.cfg, which is gitignored, mode 0600, and WRITTEN
 # AT BOOT rather than by hand. On the Blitz Royale boxes the thing that writes
 # it is royale-identity.service: it asks AWS which Elastic IP is attached to
 # this instance, looks that address up to get a slot name, and reads that slot's
-# hostname and license key out of SSM Parameter Store. See ops/royale-identity
-# in the infradocs repo.
+# hostname, project name and license key out of SSM Parameter Store. See
+# ops/royale-identity in the infradocs repo.
 #
 # THE REASON IS NOT TIDINESS. Cfx.re suspends BOTH servers when it sees one
 # license key on two addresses, so the expensive mistake here is not a box with
@@ -184,11 +184,12 @@ sets tags "battle royale, br, pvp, gamemode"
 # the file yourself, once, beside this one, and never commit it:
 #
 #     sv_hostname "Your Server Name"
+#     sets sv_projectName "Your Project Name"
 #     sv_licenseKey "..."      # from https://keymaster.fivem.net
 #
-# UNLIKE tunables.cfg, THE POSITION OF THIS LINE IS NOT LOAD-BEARING. Both
-# values are read by FXServer core at startup and neither is a convar any
-# resource reads, so there is no equivalent of the "set it after `ensure` and it
+# UNLIKE tunables.cfg, THE POSITION OF THIS LINE IS NOT LOAD-BEARING. All
+# three values are read by FXServer core and none is a convar any resource
+# reads, so there is no equivalent of the "set it after `ensure` and it
 # silently does nothing" trap documented at the tunables exec below. It is here
 # because this is the Identity section and that is where somebody will look for
 # it.
