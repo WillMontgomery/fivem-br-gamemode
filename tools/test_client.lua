@@ -16836,6 +16836,11 @@ end
 -- serverAmmo, BR.Inv.reload included, and it answers with the payload the
 -- owner's build sent: a purchase into an empty gun leaves the server's magazine
 -- at 0. The client has to survive that payload whatever the server does now.
+--
+-- SECTIONS 4 TO 6 BUY THROUGH `buy`, which is the payload the server sends now:
+-- give() loads an empty magazine as the rounds arrive. On it they drive a
+-- gunfight and a second purchase, a purchase landing mid-reload, and one
+-- landing while the gun is stowed.
 describe('the bar reads one moment, and a purchase adds rounds behind the magazine')
 do
     local savedGive    = GiveWeaponToPed
@@ -16946,6 +16951,42 @@ do
         end
     end
 
+    --- A purchase, the way give()'s AMMO branch lands one now: into the pool,
+    --- clamped to its cap, and a magazine left empty over rounds that arrived
+    --- loads from them (server/inventory.lua, loadEmpty).
+    local function buy(w, n)
+        local was = srv.pool
+        srv.pool = math.min(BR.Config.AmmoCaps[w.ammo] or 0, srv.pool + n)
+        if srv.pool > was and srv.clip <= 0 then
+            local moved = math.min(w.clip, srv.pool)
+            srv.clip, srv.pool = moved, srv.pool - moved
+        end
+        push(w)
+    end
+
+    --- One round a tick for forty ticks, with a pause every seventh, because a
+    --- player who stops shooting is the moment a mixed-up clamp writes the gun
+    --- down. Returns the first round that went missing, as text, and the
+    --- magazine the gun held once the first one was spent.
+    local function gunfight(w)
+        local h = BR.NormHash(w.hash)
+        local start = gun.total[h] or 0
+        local fired, lost, secondMag = 0, nil, nil
+        for i = 1, 40 do
+            if i % 7 ~= 0 and shoot(w) then fired = fired + 1 end
+            tick(1)
+            answer(w)
+            if lost == nil and gun.total[h] ~= start - fired then
+                lost = ('after %d shots the gun holds %d, expected %d')
+                    :format(fired, gun.total[h], start - fired)
+            end
+            if secondMag == nil and fired == w.clip then
+                secondMag = gun.clip[h]
+            end
+        end
+        return lost, secondMag
+    end
+
     -- WHAT THE BAR WAS HANDED, BESIDE THE GUN AT THAT INSTANT. Copied as the
     -- envelope leaves, for the reason N2 gives.
     local drawn, watching = {}, nil
@@ -16991,22 +17032,8 @@ do
        'sixty rounds bought into an empty PDW: a magazine and the rest behind it',
        ('gun %s/%s'):format(tostring(gun.clip[PH]), tostring(gun.total[PH])))
 
-    -- One round a tick, with a pause every seventh, because a player who stops
-    -- shooting is the moment a mixed-up clamp writes the gun down.
     drawn = {}
-    local fired, lost, secondMag = 0, nil, nil
-    for i = 1, 40 do
-        if i % 7 ~= 0 and shoot(PDW) then fired = fired + 1 end
-        tick(1)
-        answer(PDW)
-        if lost == nil and gun.total[PH] ~= 60 - fired then
-            lost = ('after %d shots the gun holds %d, expected %d')
-                :format(fired, gun.total[PH], 60 - fired)
-        end
-        if secondMag == nil and fired == PDW.clip then
-            secondMag = gun.clip[PH]
-        end
-    end
+    local lost, secondMag = gunfight(PDW)
     ok(lost == nil, 'EVERY ROUND GONE FROM THE PDW IS A ROUND THAT WAS FIRED', lost)
     ok(secondMag == PDW.clip,
        'so the magazine after the reload is a whole one, not 29',
@@ -17095,6 +17122,118 @@ do
     ok(d ~= nil and d.said == 1 and d.reserve == 10,
        'and when the round is in: one in the chamber and ten behind',
        d and ('%s/%s'):format(tostring(d.said), tostring(d.reserve)) or 'nothing drawn')
+
+    -- ── 4. THE PAYLOAD THE SERVER SENDS NOW. Sixty rounds into an empty PDW
+    --       arrive as a loaded magazine and thirty behind it, and the gunfight
+    --       and the purchase after it have to hold on those numbers too.
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+    fire(BR.Net.STATE, { state = BR.MatchState.PLAYING })
+    watching = PDW
+    srv.clip, srv.pool = 0, 0
+    push(PDW)
+    tick(1)
+    sent = {}
+    buy(PDW, 60)
+    tick(1)
+    answer(PDW)
+    ok(srv.clip == PDW.clip and gun.clip[PH] == PDW.clip and gun.total[PH] == 60,
+       'sixty rounds the server loaded on arrival are a loaded PDW',
+       ('server %d/%d, gun %s/%s'):format(srv.clip, srv.pool,
+           tostring(gun.clip[PH]), tostring(gun.total[PH])))
+
+    drawn = {}
+    lost, secondMag = gunfight(PDW)
+    ok(lost == nil, 'no round goes missing from a magazine the server loaded', lost)
+    ok(secondMag == PDW.clip, 'and the magazine after the reload is a whole one',
+       tostring(secondMag))
+    ok(#drawn > 0 and unequal() == '',
+       'and every plate drawn while shooting is the gun at that moment',
+       #drawn > 0 and unequal() or 'nothing was drawn')
+
+    gun.lowered = 0
+    local clipWas, totalWas = gun.clip[PH], gun.total[PH]
+    buy(PDW, 60)
+    tick(2)
+    answer(PDW)
+    ok(gun.lowered == 0 and gun.clip[PH] == clipWas
+       and gun.total[PH] == totalWas + 60,
+       'A PURCHASE AFTER THE FIGHT LANDS BEHIND THE MAGAZINE, taking nothing out',
+       ('gun %s/%s, was %s/%s, %d write(s) lowered it'):format(
+           tostring(gun.clip[PH]), tostring(gun.total[PH]),
+           tostring(clipWas), tostring(totalWas), gun.lowered))
+
+    -- ── 5. A PURCHASE WHILE GTA RELOADS. grantAmmo adds the rounds and leaves
+    --       the magazine to the animation, so what counts is the plate once the
+    --       reload is over.
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+    fire(BR.Net.STATE, { state = BR.MatchState.PLAYING })
+    srv.clip, srv.pool = 0, 0
+    push(PDW)
+    tick(1)
+    sent = {}
+    buy(PDW, 60)
+    tick(1)
+    answer(PDW)
+    for _ = 1, PDW.clip - 1 do
+        shoot(PDW)
+        tick(1)
+        answer(PDW)
+    end
+    -- The last round leaves and the reload starts, with thirty behind it.
+    gun.total[PH] = gun.total[PH] - 1
+    gun.clip[PH]  = 0
+    gun.reloading = true
+    tick(1)
+
+    gun.lowered = 0
+    drawn = {}
+    buy(PDW, 60)
+    tick(1)
+    d = drawn[#drawn]
+    ok(d ~= nil and d.said == 0 and d.reserve == 90,
+       'mid-reload the rounds bought go behind the empty chamber',
+       d and ('%s/%s'):format(tostring(d.said), tostring(d.reserve)) or 'nothing drawn')
+
+    gun.clip[PH]  = PDW.clip
+    gun.reloading = false
+    drawn = {}
+    tick(2)
+    answer(PDW)
+    d = drawn[#drawn]
+    ok(gun.lowered == 0 and gun.clip[PH] == PDW.clip and gun.total[PH] == 90,
+       'the reload ends with a whole magazine and every round bought',
+       ('gun %s/%s'):format(tostring(gun.clip[PH]), tostring(gun.total[PH])))
+    ok(d ~= nil and d.said == PDW.clip and d.reserve == 90 - PDW.clip,
+       'AND THE PLATE AFTER THE RELOAD IS THE GUN',
+       d and ('%s/%s'):format(tostring(d.said), tostring(d.reserve)) or 'nothing drawn')
+
+    -- ── 6. A PURCHASE WHILE THE GUN IS STOWED (a seat, a get-in animation). The
+    --       natives answer about a gun that is not in the hand, so grantAmmo
+    --       works from the last reading, and the magazine the server loaded on
+    --       arrival still has to reach the gun.
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+    fire(BR.Net.STATE, { state = BR.MatchState.PLAYING })
+    srv.clip, srv.pool = 0, 0
+    push(PDW)
+    tick(1)
+    sent = {}
+    pedWeapon = 0xA2719263   -- WEAPON_UNARMED, what the engine holds instead
+    gun.lowered = 0
+    drawn = {}
+    buy(PDW, 60)
+    ok(gun.clip[PH] == PDW.clip and gun.total[PH] == 60,
+       'the magazine the server loaded reaches the stowed gun',
+       ('gun %s/%s'):format(tostring(gun.clip[PH]), tostring(gun.total[PH])))
+
+    pedWeapon = PDW.hash
+    tick(2)
+    answer(PDW)
+    d = drawn[#drawn]
+    ok(d ~= nil and d.said == PDW.clip and d.reserve == 60 - PDW.clip,
+       'AND BACK IN THE HAND THE PLATE IS A WHOLE MAGAZINE AND THIRTY BEHIND',
+       d and ('%s/%s'):format(tostring(d.said), tostring(d.reserve)) or 'nothing drawn')
+    ok(unequal() == '', 'with no plate along the way that was not the gun',
+       unequal())
 
     watching = nil
     GiveWeaponToPed     = savedGive
