@@ -145,6 +145,18 @@ end
 --- grows: at most one entry per connection that outran the timeout.
 local lateWatch = {}
 
+--- req -> { req, ban }, for a dev-mode join whose ban check timed out and whose
+--- deferral is still open on the allowlist.
+---
+--- THE HOLE lateWatch CANNOT CLOSE. In dev mode a timed-out ban check admits
+--- nobody yet: it goes on to allowlist() and holds the deferral while Discord is
+--- asked. A late "banned" landing in that window would reach dropByLicense,
+--- which walks GetPlayers() -- and a connection still deferring is not in it, so
+--- nobody would be removed and the role answer would admit them for good. So the
+--- ban is handed to the deferral instead, and allowlist() refuses with it
+--- whatever Discord says. Cleared when that deferral ends.
+local lateDoor = {}
+
 AddEventHandler('br:ddb:banResult', function(req, banned, info)
     local resolve = pending[req]
     if resolve then
@@ -153,13 +165,22 @@ AddEventHandler('br:ddb:banResult', function(req, banned, info)
         return
     end
 
-    -- No pending resolver: this answer lost the race with our timeout, and the
-    -- player was admitted. Only a "banned" verdict is actionable now.
+    -- No pending resolver: this answer lost the race with our timeout. Only a
+    -- "banned" verdict is actionable now.
     local license = lateWatch[req]
-    if not license then return end
+    local door = lateDoor[req]
+    if not license and not door then return end
     lateWatch[req] = nil
+    lateDoor[req] = nil
 
     if not banned or (info or {}).error then return end
+
+    -- STILL AT THE DOOR, so refused there, with this notice, when allowlist()
+    -- ends. No license is needed for this one: nobody has to be found again.
+    if door then
+        door.ban = info or {}
+        return
+    end
 
     local reason = rejection(info or {})
     local kicked = BR.Ring.dropByLicense and BR.Ring.dropByLicense(license, reason)
@@ -190,7 +211,7 @@ end)
 --- timer never gets set and the caller waits forever.
 --- @param license string|nil qualified, or nil when FiveM reported none
 --- @param discord string|nil qualified `discord:...`, or nil
---- @param cb fun(banned: boolean, info: table)
+--- @param cb fun(banned: boolean, info: table, req: integer)
 local function askBanned(license, discord, cb)
     nextReq = nextReq + 1
     local req = nextReq
@@ -200,7 +221,7 @@ local function askBanned(license, discord, cb)
         if answered then return end
         answered = true
         pending[req] = nil
-        cb(banned, info)
+        cb(banned, info, req)
     end
 
     pending[req] = once
@@ -296,15 +317,38 @@ end
 --- @param who string  what the log lines name
 --- @param discordId string|nil  the bare snowflake, or nil when FiveM reported none
 --- @param deferrals table
-local function allowlist(who, discordId, deferrals)
-    local function refuse(why)
+--- @param door table|nil  this join's lateDoor slot, when its ban check timed out
+local function allowlist(who, discordId, deferrals, door)
+    --- EVERY WAY OUT GOES THROUGH HERE, so a late ban is looked at on all of
+    --- them: an admit it must turn into a refusal, and a refusal that must be the
+    --- ban notice rather than the allowlist sentence.
+    --- @param admit boolean
+    --- @param why string|nil  what the log names on a refusal
+    local function finish(admit, why)
+        if door then
+            lateDoor[door.req] = nil
+            if door.ban then
+                print(('^1[br_ringmaster] refused banned connection %s (%s) -- late ban answer^7')
+                    :format(who, tostring(door.ban.reason)))
+                deferrals.done(rejection(door.ban))
+                return
+            end
+        end
+
+        if admit then
+            print(('^2[br_ringmaster] gate: %s holds the allowlist role -- admitted^7')
+                :format(who))
+            deferrals.done()
+            return
+        end
+
         print(('^3[br_ringmaster] gate: refused %s -- dev allowlist: %s^7')
             :format(who, tostring(why)))
         deferrals.done(ALLOWLIST_REFUSAL)
     end
 
     if not discordId then
-        refuse('no discord identifier')
+        finish(false, 'no discord identifier')
         return
     end
 
@@ -312,20 +356,14 @@ local function allowlist(who, discordId, deferrals)
     -- check the ban path makes for br_ddb, refusing where that one admits.
     local coreState = GetResourceState('br_core')
     if coreState ~= 'started' then
-        refuse(('br_core is "%s", not "started"'):format(tostring(coreState)))
+        finish(false, ('br_core is "%s", not "started"'):format(tostring(coreState)))
         return
     end
 
     deferrals.update('Checking your account...')
 
     askRole(discordId, function(verdict)
-        if verdict == 'held' then
-            print(('^2[br_ringmaster] gate: %s holds the allowlist role -- admitted^7')
-                :format(who))
-            deferrals.done()
-            return
-        end
-        refuse(verdict)
+        finish(verdict == 'held', verdict)
     end)
 end
 
@@ -441,9 +479,10 @@ AddEventHandler('playerConnecting', function(_name, _setKickReason, deferrals)
     -- exactly the people it was written for would be the bug this change is
     -- about, in a new place.
     -- Once no ban stands in the way: in, or in dev mode, on to the allowlist.
-    local function letIn(who)
+    -- `door` is this join's lateDoor slot when its ban check timed out.
+    local function letIn(who, door)
         if dev then
-            allowlist(who, byKind and byKind.discord, deferrals)
+            allowlist(who, byKind and byKind.discord, deferrals, door)
             return
         end
         deferrals.done()
@@ -473,12 +512,19 @@ AddEventHandler('playerConnecting', function(_name, _setKickReason, deferrals)
     local asked = license or discord
     if license and discord then asked = license .. ' + ' .. discord end
 
-    askBanned(license, discord, function(banned, info)
+    askBanned(license, discord, function(banned, info, req)
         if info.error then
             print(('^3[br_ringmaster] ban check failed for %s: %s -- %s^7')
                 :format(asked, tostring(info.error),
                     dev and 'no ban check (fail open)' or 'allowing (fail open)'))
-            letIn(asked)
+            -- A LATE ANSWER CAN STILL COME, and in dev mode this deferral stays
+            -- open on the allowlist while it might. See lateDoor.
+            local door = nil
+            if dev then
+                door = { req = req }
+                lateDoor[req] = door
+            end
+            letIn(asked, door)
             return
         end
 

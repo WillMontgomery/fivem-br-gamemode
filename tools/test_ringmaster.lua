@@ -1025,6 +1025,43 @@ do
     ok(d.doneCount == 1 and d.doneArg == REFUSAL, 'and a late held cannot turn it into an admit',
         tostring(d.doneCount))
 
+    -- A BAN THAT LANDS WHILE DISCORD IS BEING ASKED STILL WINS. br_ddb is slow,
+    -- the ban check times out, and the join goes on to the allowlist -- still
+    -- deferring, so in no player list a late ban could remove it from.
+    local function slowBanThenRole(src, banned, verdict)
+        local c = connect(src)
+        local banReq = lastBanCheckReq()
+        local asked0 = #roleChecks
+        fireTimers()                               -- the ban check times out
+        local waiting = c.doneCount == 0 and #roleChecks == asked0 + 1
+        TriggerEvent('br:ddb:banResult', banReq, banned, banned and { reason = 'Aimbot' } or {})
+        local stillOpen = c.doneCount == 0
+        answerRole(verdict)
+        return c, waiting, stillOpen
+    end
+    local function banNotice(c)
+        return c.doneCount == 1 and type(c.doneArg) == 'string'
+            and c.doneArg:find('You are banned', 1, true) == 1
+    end
+
+    local waiting, stillOpen
+    d, waiting, stillOpen = slowBanThenRole(74, true, 'held')
+    ok(waiting, 'dev on: a timed-out ban check goes on to ask about the role')
+    ok(stillOpen, 'and a late ban answer does not end the deferral by itself')
+    ok(banNotice(d), 'dev on: a late ban beats a held role -- the ban notice, not an admit',
+        tostring(d.doneArg))
+
+    d = slowBanThenRole(74, true, 'missing')
+    ok(banNotice(d), 'and beats an allowlist refusal, so a banned player is told about the ban',
+        tostring(d.doneArg))
+
+    d = slowBanThenRole(71, true, 'held')      -- a discord id and no license
+    ok(banNotice(d), 'including for a connection with no license to watch', tostring(d.doneArg))
+
+    d = slowBanThenRole(74, false, 'held')
+    ok(d.doneCount == 1 and d.doneArg == nil, 'while a late clean answer still lets a role holder in',
+        tostring(d.doneArg))
+
     resourceState.br_core = 'stopped'
     nRole = #roleChecks
     d = connect(74)
