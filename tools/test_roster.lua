@@ -9959,6 +9959,9 @@ do
         -- instant the magazine reaches zero, so a test that emptied only the
         -- tube would refill it on the very next shot and never refuse.
         BR.Inv.of(1).ammo[GL.ammo] = pool
+        -- ...AND THE TUBE IS STATED AFTER THE GIVE. A found gun's spare magazine
+        -- is rounds arriving, and those load an empty tube (see loadEmpty).
+        BR.Inv.of(1).slots[1].clip = n
         BR.Roster.get(1).pos = { x = 0.0, y = 0.0, z = 30.0 }
         BR.Roster.get(2).pos = { x = 5.0, y = 0.0, z = 30.0 }
         BR.Roster.get(2).hp, BR.Roster.get(2).armour = 100.0, 0.0
@@ -10881,6 +10884,26 @@ do
            'the gun in the hand is loaded before the one in the bag',
            ('hand %s, bag %s'):format(tostring(inv.slots[2].clip),
                                       tostring(inv.slots[1].clip)))
+
+        -- ── 4. A FOUND GUN'S SPARE MAGAZINE IS ROUNDS ARRIVING TOO. A floor gun
+        --    on the PDW's pool, picked up beside an empty sold PDW, left the
+        --    PDW's badge at 0 until GTA loaded it in the hand.
+        local spare = BR.Config.Loot.weaponReserveClips or 1
+        BR.Inv.reset(1)
+        BR.Inv.give(1, { item = 'combatpdw', kind = BR.ItemKind.WEAPON,
+                         rarity = pdw.rarity, count = 1, clip = 0, sold = true })
+        BR.Inv.give(1, { item = other.id, kind = BR.ItemKind.WEAPON,
+                         rarity = other.rarity, count = 1, clip = other.clip })
+        inv = BR.Inv.of(1)
+        ok(inv.slots[1].item == 'combatpdw'
+           and inv.slots[1].clip == math.min(pdw.clip, other.clip * spare),
+           'A FLOOR GUN\'S SPARE MAGAZINE LOADS THE EMPTY PDW IN THE BAG',
+           tostring(inv.slots[1].clip))
+        ok(inv.slots[2].clip == other.clip
+           and held(1, pdw.ammo) == other.clip + other.clip * spare,
+           'out of the rounds that gun brought, not on top of them',
+           ('found gun %s, held %s'):format(tostring(inv.slots[2].clip),
+                                            tostring(held(1, pdw.ammo))))
     end
 end
 
@@ -11126,9 +11149,15 @@ do
     ok(held(1, BR.AmmoType.HEAVY) == rail.clip * 2,
        'A REPORT MEASURED BEFORE THE PICKUP CANNOT SPEND WHAT THE PICKUP ADDED',
        tostring(held(1, BR.AmmoType.HEAVY)))
-    ok(BR.Inv.of(1).ammo[BR.AmmoType.HEAVY] == rail.clip,
-       'and the reserve the railgun came with is still in the pool',
-       tostring(BR.Inv.of(1).ammo[BR.AmmoType.HEAVY]))
+    -- IN THE POOL, OR IN THE DRY RPG IT LOADED. The railgun's spare magazine is
+    -- rounds arriving on the heavy pool, and those load an empty magazine on it
+    -- (see loadEmpty), so part of it moved into the tube in the hand.
+    ok(BR.Inv.of(1).ammo[BR.AmmoType.HEAVY] + BR.Inv.of(1).slots[1].clip
+           == rail.clip
+       and BR.Inv.of(1).slots[1].clip == math.min(rpg.clip, rail.clip),
+       'and the reserve the railgun came with is still in the bag',
+       ('pool %s, rpg %s'):format(tostring(BR.Inv.of(1).ammo[BR.AmmoType.HEAVY]),
+                                  tostring(BR.Inv.of(1).slots[1].clip)))
 
     -- ── 2. THE SAME SLOT, A DIFFERENT WEAPON. A pickup that DISPLACES the held
     --    weapon reuses the slot number the in-flight report is addressed to, so

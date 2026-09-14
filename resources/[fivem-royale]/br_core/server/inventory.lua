@@ -518,7 +518,10 @@ end
 ---
 --- ⚠ ONLY WHEN ROUNDS ARRIVE. A gun that arrives over a pool already in the bag
 --- is left empty -- "a purchase neither mints nor spends the reserve already in
---- the bag" -- which is why the weapon branch of give() does not call this.
+--- the bag" -- so the weapon branch of give() calls this only for the spare
+--- magazine a FOUND gun brings, and a sold or carried gun brings none. GTA
+--- loads that empty gun once it is in the hand, and server/damage.lua's
+--- loadFired pays for the load when the gun is fired.
 --- @param inv table
 --- @param pool string
 local function loadEmpty(inv, pool)
@@ -801,7 +804,12 @@ function BR.Inv.give(src, stack, opts)
     -- be; `sold` is not. A purchase only reaches the floor when the buyer's bag
     -- was full, and it comes back as ordinary found loot.
     if w and w.ammo and not stack.carried and not stack.sold then
-        addAmmo(inv, w.ammo, (w.clip or 0) * (L.weaponReserveClips or 1))
+        local taken = addAmmo(inv, w.ammo,
+                              (w.clip or 0) * (L.weaponReserveClips or 1))
+        -- ...AND THOSE ARE ROUNDS ARRIVING, so they load an empty magazine on
+        -- the pool the way ammo off the floor does. A floor SMG picked up beside
+        -- an empty sold PDW left the PDW's badge at 0. See loadEmpty.
+        if taken > 0 then loadEmpty(inv, w.ammo) end
     end
 
     BR.Inv.push(src, opts)
