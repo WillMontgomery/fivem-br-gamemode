@@ -22,7 +22,6 @@
 1	resources/[fivem-royale]/br_core/client/inventory.lua	HasPedGotWeapon
 5	resources/[fivem-royale]/br_core/client/inventory.lua	IsDisabledControlJustPressed
 2	resources/[fivem-royale]/br_core/client/inventory.lua	IsPauseMenuActive
-1	resources/[fivem-royale]/br_core/client/inventory.lua	IsPedReloading
 2	resources/[fivem-royale]/br_core/client/locker.lua	HasModelLoaded
 1	resources/[fivem-royale]/br_core/client/locker.lua	IsModelAPed
 2	resources/[fivem-royale]/br_core/client/locker.lua	IsModelInCdimage

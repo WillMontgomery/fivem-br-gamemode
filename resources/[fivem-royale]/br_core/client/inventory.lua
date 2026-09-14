@@ -2367,7 +2367,7 @@ function BR.Inv.reportState()
     elseif applied ~= hash then             why = 'our own grant has not landed yet'
     elseif not heldOk or BR.NormHash(held) ~= BR.NormHash(hash) then
                                             why = 'the ENGINE says the ped holds a different weapon'
-    elseif IsPedReloading(ped) then         why = 'mid-reload'
+    elseif yes(IsPedReloading(ped)) then    why = 'mid-reload'
     end
 
     return {
