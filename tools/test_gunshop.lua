@@ -2264,6 +2264,25 @@ do
         give = function(src, stack, opts)
             given[#given + 1] = { src = src, stack = stack, opts = opts }
             if bagFull then return false, nil, 'carrymax' end
+            -- AN AMMO STACK HANDS BACK WHAT ITS POOL HAS NO ROOM FOR, as
+            -- server/inventory.lua's give() does. That contract, and the pool it
+            -- fills, are pinned on the real inventory in tools/test_roster.lua,
+            -- inv.ammo.remainder; what this suite pins is that deliver() drops
+            -- it. The pool is read and never written, so a case that buys a
+            -- bundle many times is not refused at the cap.
+            if stack.kind == BR.ItemKind.AMMO then
+                local have  = BR.Inv.of(src).ammo[stack.item] or 0
+                local count = stack.count or 0
+                local taken = math.min((BR.Config.AmmoCaps[stack.item] or 0) - have,
+                                       count)
+                if taken <= 0 then return false, nil, 'ammofull' end
+                if taken < count then
+                    local rest = {}
+                    for k, v in pairs(stack) do rest[k] = v end
+                    rest.count = count - taken
+                    return true, rest, nil
+                end
+            end
             return true, nil, nil
         end,
     }
@@ -2987,6 +3006,21 @@ do
     player(91, { ammo = { [BR.AmmoType.SMG] = BR.Config.AmmoCaps[BR.AmmoType.SMG] - 1 } })
     buy(91, 'ammo_smg')
     ok(#charged == 1 and #given == 1, 'one round short of the cap is a sale')
+
+    -- AND THE REMAINDER REALLY DROPS. Sixteen shells at 106 of 120: one charge,
+    -- one bundle handed over, and the two that did not fit at the buyer's feet.
+    reset()
+    player(93, { ammo = { [BR.AmmoType.SHELLS] = 106 } })
+    buy(93, S.ammoIdFor(BR.AmmoType.SHELLS))
+    ok(#charged == 1 and #given == 1 and given[1].stack.count == 16,
+        'sixteen shells at 106 of 120 are one sale of the whole bundle',
+        given[1] and given[1].stack.count)
+    ok(#dropped == 1 and dropped[1].src == 93
+       and dropped[1].stack.item == BR.AmmoType.SHELLS
+       and dropped[1].stack.kind == BR.ItemKind.AMMO
+       and dropped[1].stack.count == 2,
+        "AND THE TWO THAT DID NOT FIT LAND AT THE BUYER'S FEET",
+        dropped[1] and dropped[1].stack.count)
 
     -- AND A WEAPON IS NEVER REFUSED FOR THIS, whatever the pools hold.
     reset()

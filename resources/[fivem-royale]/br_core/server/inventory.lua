@@ -561,7 +561,8 @@ end
 --- Returns what happened, because the caller (a claim, a chest, a death box)
 --- has to know whether the item left the world:
 ---   ok        -- any of it was taken
----   displaced -- a stack pushed out to make room, for the world to catch
+---   displaced -- a stack pushed out to make room, or the part of this one
+---                that did not fit, for the world to catch
 ---   reason    -- why nothing was taken
 ---
 --- WEAPONS DISPLACE, EVERYTHING ELSE REFUSES. Picking up a rifle with five
@@ -585,11 +586,23 @@ function BR.Inv.give(src, stack, opts)
 
     -- Ammo never occupies a slot.
     if stack.kind == BR.ItemKind.AMMO then
-        local taken = addAmmo(inv, stack.item, stack.count or 0)
+        local count = stack.count or 0
+        local taken = addAmmo(inv, stack.item, count)
         if taken <= 0 then return false, nil, 'ammofull' end
         -- ...but it does fill a magazine that has none. See loadEmpty.
         loadEmpty(inv, stack.item)
         BR.Inv.push(src, opts)
+        -- A POOL WITH ROOM FOR PART OF IT TAKES THAT PART AND HANDS THE REST
+        -- BACK, as a consumable's remainder is handed back below. This returned
+        -- nothing, so the rest vanished: the gun shop charged a whole bundle and
+        -- delivered what fit (server/gunshop.lua, deliver, drops what comes back
+        -- at the buyer's feet), and a floor pickup was retired whole.
+        if taken < count then
+            local rest = {}
+            for k, v in pairs(stack) do rest[k] = v end
+            rest.count = count - taken
+            return true, rest, nil
+        end
         return true, nil, nil
     end
 

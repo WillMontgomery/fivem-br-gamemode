@@ -10929,6 +10929,53 @@ do
     end
 end
 
+describe('inv.ammo.remainder')
+do
+    -- ═══ A BUNDLE CHARGED WHOLE AND DELIVERED CLAMPED ═══
+    --
+    -- give()'s AMMO branch returned nothing when a pool took only part of a
+    -- stack, so the part that did not fit vanished. server/gunshop.lua's
+    -- deliver() says a partial bundle "clamps and drops the remainder", and it
+    -- charges the whole bundle; there was never a remainder to drop.
+    local m = lootMatch()
+    local pool = BR.AmmoType.SHELLS
+    ok(BR.Config.AmmoCaps[pool] == 120 and BR.Config.AmmoPickups[pool].amount == 16,
+       'shells: a bundle of 16 against a pool of 120',
+       ('cap %s, bundle %s'):format(tostring(BR.Config.AmmoCaps[pool]),
+                                    tostring(BR.Config.AmmoPickups[pool].amount)))
+
+    BR.Inv.reset(1)
+    BR.Roster.get(1).pos = { x = 1234.0, y = -567.0, z = 30.0 }
+    local inv = BR.Inv.of(1)
+    inv.ammo[pool] = 106
+    local stack = { item = pool, kind = BR.ItemKind.AMMO, rarity = 1, count = 16 }
+    local took, rest, reason = BR.Inv.give(1, stack, { quiet = true, focus = true })
+    ok(took == true and reason == nil and inv.ammo[pool] == 120,
+       'SIXTEEN SHELLS AT 106 OF 120 DELIVER FOURTEEN', tostring(inv.ammo[pool]))
+    ok(type(rest) == 'table' and rest.item == pool
+       and rest.kind == BR.ItemKind.AMMO and rest.count == 2,
+       'AND HAND BACK THE TWO THAT DID NOT FIT',
+       type(rest) == 'table' and tostring(rest.count) or 'nothing handed back')
+    ok(stack.count == 16, 'without writing on the stack it was given',
+       tostring(stack.count))
+
+    -- What deliver() does with it.
+    local was = m.loot.nextId
+    if type(rest) == 'table' then BR.Loot.dropForPlayer(1, rest) end
+    local e = m.loot.items[m.loot.nextId]
+    ok(m.loot.nextId == was + 1 and e ~= nil and e.item == pool and e.count == 2
+       and math.abs(e.x - 1234.0) < 0.01,
+       'which lands at the buyer\'s feet as an ordinary ammo pickup',
+       e and ('%s x%s'):format(tostring(e.item), tostring(e.count)) or 'nothing dropped')
+
+    -- A bundle that fits hands nothing back.
+    inv.ammo[pool] = 0
+    local took2, rest2 = BR.Inv.give(1, { item = pool, kind = BR.ItemKind.AMMO,
+                                          rarity = 1, count = 16 })
+    ok(took2 == true and rest2 == nil and inv.ammo[pool] == 16,
+       'a bundle that fits hands nothing back', tostring(inv.ammo[pool]))
+end
+
 describe('inv.ammo.dropPickup')
 do
     -- ═══ THE FOURTH DOOR (owner, 2026-08-23) ═══
