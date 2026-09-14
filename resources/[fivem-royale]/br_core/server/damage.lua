@@ -2354,7 +2354,7 @@ RegisterCommand('brtestfire', function(src, args)
         --
         -- THE CLIENT KEEPS ITS ROUNDS, AND THAT IS THE POINT. BR.Inv.push sends
         -- the new numbers, but the client writes ammo onto the ped only when the
-        -- server's number goes UP (client/inventory.lua, reapplyAmmo) -- so the
+        -- server's number goes UP (client/inventory.lua, grantAmmo) -- so the
         -- engine still lets them fire and the shot arrives at a server that
         -- knows better. That is the documented engine/server drift, used on
         -- purpose instead of waited for.

@@ -2486,6 +2486,12 @@ function BR.Native.check()
         -- that the name resolves.
         SetAmmoInClip(ped, BR.Config.WeaponById['pistol'].hash, 0)
     end)
+    -- An ammo purchase adds its rounds behind the magazine with this, rather
+    -- than writing the whole split back and emptying the magazine (owner,
+    -- playtesting a6cbdab). Zero rounds, to a ped that does not hold the weapon.
+    probe('AddAmmoToPed',            function()
+        AddAmmoToPed(ped, BR.Config.WeaponById['pistol'].hash, 0)
+    end)
     probe('SetDrawOrigin',           function()
         SetDrawOrigin(0.0, 0.0, -200.0, 0)
         ClearDrawOrigin()

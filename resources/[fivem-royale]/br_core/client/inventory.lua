@@ -104,11 +104,26 @@ local lastReport = { total = -1, clip = -1, at = 0 }
 --- to the ped itself, so what is kept here is trustworthy by construction and
 --- there is no second copy of the rule to drift.
 ---
+--- ONE WRITER READS BACK, and grantAmmo says why: it adds rounds without setting
+--- the total, so the only way to know the total is to ask. It asks under those
+--- same three guards, and outside them keeps the record and adds to it.
+---
 --- KEYED BY ITEM for the reason `shortfall` is: a slot whose weapon changed is
 --- a different magazine, and a rifle's count printed over the pistol that
 --- replaced it is somebody else's number. A `clip` below zero means "no reading
 --- yet", the same way lastReport's -1 does.
-local shown = { id = nil, clip = -1 }
+---
+--- ═══ AND THE TOTAL BESIDE IT, READ IN THE SAME TICK (owner, playtesting
+---     a6cbdab) ═══
+---
+--- The reserve number jittered while he was shooting. The bar's reserve was the
+--- SERVER's holding less THIS magazine: two moments again, one field over.
+--- While a player shoots, the magazine falls every tick and the server's
+--- holding falls only when an INV_SET lands, so the reserve climbed a round a
+--- shot and snapped back on every answer. `total` is GetAmmoInPedWeapon taken
+--- at the same instant as `clip`, so the reserve on the plate is a subtraction
+--- with one clock in it. See uiReserve.
+local shown = { id = nil, clip = -1, total = -1 }
 
 --- THE LAST FEW REPORTS THIS CLIENT SENT, AND WHAT BECAME OF THEM.
 ---
@@ -452,7 +467,7 @@ local function applyActive(force)
     -- display was right and the ammo genuinely was not going down.
     --
     -- Ammo is now written to the ped in exactly one place: a fresh grant
-    -- below, or reapplyAmmo() when the SERVER's number goes UP (a pickup).
+    -- below, or grantAmmo() when the SERVER's number goes UP (a pickup).
     if not force and want == applied then return end
 
     RemoveAllPedWeapons(ped, true)
@@ -496,7 +511,7 @@ local function applyActive(force)
         -- WHAT THE GUN NOW HOLDS, WRITTEN DOWN RATHER THAN READ BACK. This is
         -- the number that just went into the ped, so it is the engine's
         -- magazine without asking the engine. See `shown`.
-        shown.id, shown.clip = slot.id, clip
+        shown.id, shown.clip, shown.total = slot.id, clip, total
 
         -- AND THE ENGINE MAY NOT PICK THE WEAPON. Without this the engine
         -- swaps to "something better" on pickup and on empty, which fights the
@@ -513,50 +528,98 @@ local function applyActive(force)
         -- FISTS HAVE NO MAGAZINE, so there is no reading to keep. Leaving the
         -- last gun's number here would let it be printed over whatever lands in
         -- the hand next.
-        shown.id, shown.clip = nil, -1
+        shown.id, shown.clip, shown.total = nil, -1, -1
     end
 
     applied = want
+    -- SAID, so the INV_SET that brought us here does not also add its gain on
+    -- top of a grant that has just counted it. See grantAmmo.
+    return true
 end
 
---- Push the server's ammo numbers onto the ped, when they went UP.
+--- Add what the SERVER just added for the weapon in hand, behind its magazine.
 ---
 --- The only legitimate reason for the server to know about more ammo than the
 --- engine has is a PICKUP. Pushing on any other change would fight the engine
 --- as the player fires -- see the note in applyActive.
-local function reapplyAmmo(serverClip)
+---
+--- ═══ IT ADDS, IT DOES NOT RE-ASSERT (owner, playtesting a6cbdab) ═══
+---
+--- Two reports: the gun reloaded on the SECOND ammo purchase although it had
+--- already reloaded on the first, and a Combat PDW bought sixty rounds came up
+--- a round short a few shots later.
+---
+--- THIS USED TO WRITE THE SERVER'S WHOLE SPLIT ONTO THE GUN, and the split is
+--- the half the server does not know. GTA loads an empty gun by itself the
+--- moment it is handed rounds; a reload moves no total, so no report says so,
+--- and the server's magazine stays where it was. The second purchase wrote that
+--- empty magazine over a full one, and GTA reloaded.
+---
+--- ITS TRIGGER COMPARED TWO BOOKS AS WELL. It fired when the server's new
+--- magazine beat the mirror's, and the mirror's is the ENGINE's (the report loop
+--- writes it every tick). So every reload the server ran for its own reasons read
+--- as a gain, and the rewrite subtracted a deficit measured BEFORE that INV_SET
+--- had charged it: the same rounds twice. On a6cbdab, sixty rounds and two shots
+--- left the gun holding 56. tools/test_client.lua N4 drives it.
+---
+--- SO THE GAIN IS MEASURED SERVER AGAINST SERVER (see adopt) and added with
+--- AddAmmoToPed, which moves the total and leaves the magazine alone. Nothing
+--- here says how many rounds the gun holds, only how many more, so the rounds
+--- the engine has already spent stay spent without a deficit to subtract.
+---
+--- THE MAGAZINE IS ONLY EVER RAISED, and only when the server has just loaded
+--- its own with nothing leaving the holding (`loadTo`, see adopt): the reload
+--- key, or a magazine it filled as the rounds arrived. Capped by what the gun
+--- holds, so the raise moves rounds and makes none. Lowering one is what made
+--- GTA reload, and nothing here does.
+--- @param gain integer        rounds the server's holding for this weapon rose by
+--- @param loadTo integer|nil  the magazine the server has just loaded, or nil
+local function grantAmmo(gain, loadTo)
     if not canArm() or BR.Inv.suspendAmmo then return end
     local slot = inv.slots[inv.active]
     local hash = hashOf(slot)
     if not hash or applied ~= hash then return end
 
-    -- ONLY WHEN THE SERVER'S NUMBERS WENT UP, and never by comparing against
-    -- the engine. Comparing against GetAmmoInPedWeapon is what produced
-    -- unlimited ammo: that native does not move when firing on this build, so
-    -- a mirror that had drifted upward looked like a gun that needed topping
-    -- up, forever (user, 2026-08-06).
-    local ped  = PlayerPedId()
-    -- The SERVER's magazine, for the reason applyActive uses it: this path is
-    -- reached from a tick as well as from an INV_SET, and away from an INV_SET
-    -- the mirror's clip is the engine's. See saidClipFor.
-    local clip = saidClipFor(inv.active, slot)
+    local ped = PlayerPedId()
+    if gain > 0 then AddAmmoToPed(ped, hash, gain) end
 
-    -- ...AND MINUS WHAT WAS ALREADY SPENT, exactly as applyActive does it and
-    -- for the same reason. This path is reached on every INV_SET whose ammo
-    -- went up -- which includes a pickup of something else entirely, since the
-    -- pool is shared -- so without the deduction ANY inventory change refilled a
-    -- gun the server had not noticed running dry. The switch is the way the
-    -- owner found it; it was never the only way in.
-    local short = shortfallFor(inv.active, slot)
-    local total = math.max(0, reserveFor(slot) + clip - short)
-    clip = math.min(clip, total)
+    local heldOk, held = GetCurrentPedWeapon(ped, true)
+    local inHand = yes(heldOk) and BR.NormHash(held) == BR.NormHash(hash)
 
-    SetPedAmmo(ped, hash, total)
-    SetAmmoInClip(ped, hash, clip)
-    -- ...AND THE SAME NOTE APPLIES AS IN applyActive: this is what the gun now
-    -- holds, so it is what the HUD may print. See `shown`.
-    shown.id, shown.clip = slot.id, clip
-    lastReport.clip = serverClip or clip
+    -- A RELOAD IN PROGRESS IS GTA ALREADY DOING THE RAISE BELOW, and writing a
+    -- magazine under it would race the animation. The next tick reads what it
+    -- made of it; until then the rounds just added go behind the last reading.
+    if inHand and yes(IsPedReloading(ped)) then
+        if shown.id == slot.id and shown.total >= 0 then
+            shown.total = shown.total + math.max(0, gain)
+        end
+        return
+    end
+
+    -- IN THE HAND, THE GUN IS ASKED -- under the report loop's own guards, which
+    -- are why it can be believed. OUT OF IT (a seat, a get-in animation), the
+    -- natives answer about a stowed gun, so the record is used instead: nothing
+    -- can be fired from a stowed gun, so the magazine the record holds is still
+    -- the gun's, and the rounds just added are behind it.
+    local clip, total
+    if inHand then
+        total = GetAmmoInPedWeapon(ped, hash) or 0
+        local _, c = GetAmmoInClip(ped, hash)
+        clip = math.max(0, math.min(c or 0, total))
+    elseif shown.id == slot.id and shown.clip >= 0 and shown.total >= 0 then
+        clip, total = shown.clip, shown.total + math.max(0, gain)
+    else
+        return
+    end
+
+    local want = loadTo and math.min(loadTo, total) or -1
+    if clip < want then
+        SetAmmoInClip(ped, hash, want)
+        clip = want
+    end
+    -- READ BACK rather than written down where it could be, because this is the
+    -- one writer that does not set the total itself. See `shown`.
+    shown.id, shown.clip, shown.total = slot.id, clip, total
 end
 
 --- Re-anchor the report baseline on what the SERVER just said.
@@ -622,7 +685,7 @@ local function clearLocal()
     -- The reading described a gun this player no longer has. A new match deals
     -- new weapons and the first INV_SET of it must not be printed over with the
     -- last life's magazine.
-    shown.id, shown.clip = nil, -1
+    shown.id, shown.clip, shown.total = nil, -1, -1
     -- The deficits go with the guns they were measured on. A new match hands
     -- out new weapons and a corpse's rifle is not this player's problem any
     -- more; carrying the numbers over would dock the next magazine.
@@ -673,12 +736,18 @@ local spectated = nil
 --- had already loaded with a reserve that still counted those rounds as behind
 --- it, and the two numbers summed to a holding nobody had.
 ---
---- `clip + reserve` IS THE INVARIANT, AND IT IS THE ONLY ONE ASSERTED HERE. The
---- server's holding for this pool is `saidClipFor` plus the pool -- what it said
---- the magazine had, plus what it said was behind it -- and moving rounds between
---- those two does not change it. So the reserve shown is that holding less the
---- magazine being shown, and the pair adds up to what the player actually has
---- whichever of the two magazine readings the interface ended up with.
+--- `clip + reserve` IS THE INVARIANT, AND BOTH HALVES ARE THE GUN'S. The engine's
+--- magazine and the engine's total, read in the same tick (see `shown`), so the
+--- reserve is the rounds behind that magazine at that instant and the pair adds
+--- up to what the gun actually holds.
+---
+--- ═══ IT WAS THE SERVER'S HOLDING LESS THE ENGINE'S MAGAZINE (owner, playtesting
+---     a6cbdab) ═══
+---
+--- That added up once the two books had settled, and not while he was shooting:
+--- the magazine fell every tick, the server's holding fell when an INV_SET
+--- landed, and the reserve between them climbed a round a shot and snapped back.
+--- Two clocks in one subtraction was the jitter he reported.
 ---
 --- ═══ ITS OWN NUMBER, AND NOT A REBALANCED `inv.ammo` ═══
 ---
@@ -701,8 +770,8 @@ local spectated = nil
 --- own reload back to the ped as a smaller grant on the next re-apply, which is
 --- the compounding shape `saidClipFor`'s note is about.
 ---
---- nil WHEN THERE IS NOTHING TO SAY -- no gun, no pool, or two books that already
---- agree -- and the bar falls back to the pool for exactly those cases.
+--- nil WHEN THERE IS NOTHING TO SAY -- no gun, no pool, or no reading of the gun
+--- in the hand yet -- and the bar falls back to the pool for exactly those cases.
 --- @return integer|nil
 local function uiReserve()
     local slot = inv.slots[inv.active]
@@ -713,13 +782,14 @@ local function uiReserve()
     local w = BR.Config.WeaponById[slot.id]
     if not w or not w.ammo then return nil end
 
-    local pool = inv.ammo[w.ammo]
-    -- `== nil` IS "NO SUCH POOL", NOT "EMPTY ONE". 0 is truthy in Lua and an
-    -- empty pool is a real holding that still wants describing.
-    if pool == nil then return nil end
-
-    local said = saidClipFor(inv.active, slot)
-    return math.max(0, math.floor(pool) + said - math.floor(slot.clip or 0))
+    -- A READING OF THIS GUN, IN THIS HAND. Below zero is "not read yet" for the
+    -- total exactly as it is for the magazine, and a reading of the weapon that
+    -- was here before is somebody else's reserve. See `shown`.
+    if shown.id ~= slot.id or shown.clip < 0 or shown.total < 0
+       or hashOf(slot) ~= applied then
+        return nil
+    end
+    return math.max(0, shown.total - shown.clip)
 end
 
 local function pushUi()
@@ -819,25 +889,37 @@ local function adopt(d)
         end
     end
 
-    -- Did the SERVER's ammo for the weapon in hand go up? A pickup, or a
-    -- reload it just paid for -- either way the ped needs the rounds putting
-    -- into it. Measured against the last thing the server said, never against
-    -- the engine.
-    local gainedAmmo = false
+    -- Did the SERVER's holding for the weapon in hand go up? A pickup, or a
+    -- reload it just paid for -- either way the ped needs telling. Measured
+    -- against the last thing the server said, never against the engine.
+    --
+    -- SERVER AGAINST SERVER, ON BOTH HALVES (owner, playtesting a6cbdab). The
+    -- magazine used to be compared with the mirror's, and the mirror's is the
+    -- ENGINE's -- the report loop writes it every tick -- so a server that had
+    -- not charged the last few shots yet always looked like a gain. The old
+    -- magazine is saidClipFor, read here before the loop below moves the record
+    -- on. And it has to be the same gun in the same hand: anything else is a
+    -- fresh grant, which applyActive makes from the server's numbers.
+    local gain, loadTo = 0, nil
     do
-        local nowSlot = d.slots[d.active or 0]
+        local nowAt   = d.active or MELEE_SLOT
+        local nowSlot = d.slots[nowAt]
         local wasSlot = inv.slots[inv.active]
-        if type(nowSlot) == 'table' then
+        if nowAt == inv.active and type(nowSlot) == 'table'
+           and type(wasSlot) == 'table' and wasSlot.id == nowSlot.id then
             local w = BR.Config.WeaponById[nowSlot.id]
             if w and w.ammo then
-                local nowPool = (d.ammo and d.ammo[w.ammo]) or 0
-                local wasPool = inv.ammo[w.ammo] or 0
-                local nowClip = nowSlot.clip or 0
-                local wasClip = (wasSlot and wasSlot.id == nowSlot.id)
-                    and (wasSlot.clip or 0) or -1
-                if nowPool > wasPool or nowClip > wasClip then
-                    gainedAmmo = true
-                end
+                local nowClip = math.floor(nowSlot.clip or 0)
+                local wasClip = saidClipFor(inv.active, wasSlot)
+                gain = (nowClip + math.floor((d.ammo and d.ammo[w.ammo]) or 0))
+                     - (wasClip + math.floor(inv.ammo[w.ammo] or 0))
+                -- A LOAD WITH NO LOSS: rounds went into the server's magazine
+                -- and none left the holding. That is the reload key, or a load
+                -- as rounds arrive. A load that came with rounds GONE is the
+                -- server catching up on shots and reloading a magazine it
+                -- believes is spent; the engine has its own opinion of that
+                -- magazine, reloads it itself, and is not overruled.
+                if nowClip > wasClip and gain >= 0 then loadTo = nowClip end
             end
         end
     end
@@ -914,14 +996,14 @@ local function adopt(d)
         TriggerEvent('br:inv:slotChanged', inv.active)
     end
 
-    applyActive(false)
+    local granted = applyActive(false)
 
-    -- Push the server's ammo onto the ped when it went UP -- a pickup, or a
-    -- reload the server just paid for. `gainedAmmo` is measured against what
-    -- we last saw the server say, never against the engine.
-    if gainedAmmo then
-        local s = inv.slots[inv.active]
-        reapplyAmmo(s and s.clip)
+    -- Add what the server added to the gun ALREADY in the hand -- a pickup, or
+    -- a reload it just paid for. A fresh grant has counted it already. Both
+    -- numbers are measured against what we last saw the server say, never
+    -- against the engine. See grantAmmo.
+    if not granted and (gain > 0 or loadTo ~= nil) then
+        grantAmmo(gain, loadTo)
     end
     -- The server has just spoken; that is what the next decrease is measured
     -- against, whether or not anything was reapplied to the ped.
@@ -1243,7 +1325,7 @@ BR.Keys.on('use', function(pressed)
     -- slot, no count, no ammo type: the server reloads what IT thinks is in the
     -- hand, out of the pool IT holds, by the same rule that refills a gun that
     -- ran dry mid-burst. Nothing is written to the ped from here -- the magazine
-    -- arrives with the INV_SET that follows, through reapplyAmmo, on the path a
+    -- arrives with the INV_SET that follows, through grantAmmo, on the path a
     -- server-paid reload has always travelled. Asking the engine to reload
     -- instead would put the ped's magazine back in charge of a number the server
     -- owns, which is what all four of this week's ammo bugs were made of.
@@ -2045,10 +2127,18 @@ BR.Loop.register(BR.Loop.TICK, 'inv.ammo', function()
     local heldOk, held = GetCurrentPedWeapon(ped, true)
     if not heldOk or BR.NormHash(held) ~= BR.NormHash(hash) then return end
 
-    -- Nor while a reload is playing: the magazine is mid-swap and reads as
-    -- whatever the animation has reached, which is not a number to build a
-    -- reserve calculation on.
-    if IsPedReloading(ped) then return end
+    -- A RELOAD IN PROGRESS IS STILL READ, AND ONLY READ (owner, playtesting
+    -- a6cbdab). This returned outright, so a one-round magazine was never seen
+    -- empty: the railgun fires, GTA starts the reload inside the same tick, and
+    -- the counter went on printing the round that had just left until the next
+    -- one was in. The magazine mid-reload is what the gun holds at that instant,
+    -- which is exactly what the plate is for.
+    --
+    -- WHAT A RELOAD STILL STOPS is everything that writes or reports: the clamp,
+    -- the deficit and the report below all reason about rounds LEAVING the gun,
+    -- and while rounds are moving between its two halves that is not a question
+    -- to answer. `yes`, because IsPedReloading is a BOOL and 0 IS TRUTHY IN LUA.
+    local reloading = yes(IsPedReloading(ped))
 
     -- THE TOTAL IS THE NUMBER THAT MATTERS. The clip is only the split.
     --
@@ -2067,7 +2157,14 @@ BR.Loop.register(BR.Loop.TICK, 'inv.ammo', function()
     --
     -- So: decrease-only on the total, and the clip rides along purely so the
     -- server can keep the HUD's split honest.
-    local granted = math.floor((slot.clip or 0) + reserveFor(slot))
+    --
+    -- `granted` IS THE SERVER'S OWN HOLDING, magazine and pool as it stated them
+    -- (owner, playtesting a6cbdab). It was the mirror's magazine -- the ENGINE's,
+    -- which this loop writes every tick -- plus the server's pool: two books in
+    -- one sum. Whenever the server's split had more in its magazine than the
+    -- engine's, because it ran a reload first, that sum came in under what the
+    -- gun honestly held and the clamp below wrote the difference off the ped.
+    local granted = saidClipFor(inv.active, slot) + reserveFor(slot)
     local total   = GetAmmoInPedWeapon(ped, hash) or 0
 
     -- THE CLAMP, and the reason this is now immune to whatever is doing it.
@@ -2076,7 +2173,7 @@ BR.Loop.register(BR.Loop.TICK, 'inv.ammo', function()
     -- of being explained -- which fixes the runaway at the ped as well as in
     -- the counter. Never upward: writing ammo up is what produced the
     -- unlimited-ammo round.
-    if total > granted then
+    if not reloading and total > granted then
         SetPedAmmo(ped, hash, granted)
         total = granted
     end
@@ -2089,14 +2186,14 @@ BR.Loop.register(BR.Loop.TICK, 'inv.ammo', function()
     -- next re-grant wrote the server's larger number back onto the ped and the
     -- rounds came back (owner, 2026-08-23). It is recorded here, against the
     -- SERVER's own magazine rather than the laundered mirror -- see `shortfall`
-    -- -- and it is subtracted by both write paths.
+    -- -- and applyActive subtracts it from every re-grant.
     --
     -- MEASURED ONLY WHERE THE READ IS TRUSTED. Every guard above this line --
     -- our grant has landed, the ENGINE agrees the ped holds it, no reload is
     -- playing -- exists because those are the states where the ammo natives
     -- answer about a weapon that is not in the hand. A stow reads 0, and 0
     -- recorded here would be a whole holding declared spent.
-    do
+    if not reloading then
         local rec = shortfall[inv.active]
         if rec and rec.id == slot.id then
             local said = (rec.svClip or slot.clip or 0) + reserveFor(slot)
@@ -2117,16 +2214,21 @@ BR.Loop.register(BR.Loop.TICK, 'inv.ammo', function()
     -- (user, 2026-08-06: "make it update like 3 or 4x"). This is every tick --
     -- 10Hz -- and costs one NUI message on the frames where it changed.
     --
-    -- The RESERVE stays the server's and still arrives with the next INV_SET.
+    -- AND SO DOES THE RESERVE NOW. The total above was read in this same tick,
+    -- and the plate draws the one less the other (see uiReserve), so a change in
+    -- either half is a change on the plate.
     -- THE READING IS KEPT WHETHER OR NOT IT MOVED, because what makes it worth
     -- keeping is not that it changed but that it is the gun's -- and the next
     -- INV_SET is going to overwrite the mirror with the server's. See `shown`.
-    shown.id, shown.clip = slot.id, clip
+    local moved = clip ~= slot.clip or total ~= shown.total
+    shown.id, shown.clip, shown.total = slot.id, clip, total
 
-    if clip ~= slot.clip then
+    if moved then
         slot.clip = clip
         pushUi()
     end
+
+    if reloading then return end
 
     -- THROWABLES REPORT REGARDLESS OF serverAmmo, and the server's INV_AMMO
     -- handler has the matching exception for the same reason.

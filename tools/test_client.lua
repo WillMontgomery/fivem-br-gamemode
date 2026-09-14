@@ -806,7 +806,7 @@ end
 
 local function noop() end
 for _, n in ipairs({
-    'ActivatePhysics', 'AddBlipForCoord', 'AddBlipForRadius',
+    'ActivatePhysics', 'AddAmmoToPed', 'AddBlipForCoord', 'AddBlipForRadius',
     'AddTextComponentSubstringPlayerName', 'BeginTextCommandSetBlipName',
     'DeleteEntity', 'DisableControlAction', 'DrawLightWithRange', 'DrawMarker',
     'EndTextCommandSetBlipName', 'FreezeEntityPosition', 'GiveWeaponToPed',
@@ -15948,6 +15948,14 @@ do
     -- which is the whole point of the model the report loop watches.
     local gun = { total = {}, clip = {} }
 
+    -- AddAmmoToPed ADDS to the total and leaves the magazine alone. A pickup
+    -- reaches a gun already in the hand through it (see grantAmmo).
+    local savedAddAmmo = AddAmmoToPed
+    function AddAmmoToPed(_, hash, n)
+        local h = BR.NormHash(hash)
+        gun.total[h] = math.max(0, (gun.total[h] or 0) + (n or 0))
+    end
+
     function RemoveAllPedWeapons() gun.total, gun.clip = {}, {} end
     function GiveWeaponToPed(_, hash, ammo)
         local h = BR.NormHash(hash)
@@ -16071,10 +16079,10 @@ do
        ('engine total %s (server still says %d + %d)'):format(
            tostring(gun.total[RH]), RAILGUN.clip, RAILGUN.clip))
 
-    -- ...AND NOT ONLY THROUGH THE SWITCH. reapplyAmmo runs on any INV_SET whose
+    -- ...AND NOT ONLY THROUGH THE SWITCH. grantAmmo runs on any INV_SET whose
     -- ammo went up, and the pool is SHARED -- so picking up a bandage while
-    -- somebody else's sniper ammo landed used to reload the railgun too. Same
-    -- deficit, same subtraction, different door.
+    -- somebody else's sniper ammo landed used to reload the railgun too. It
+    -- adds only the rise now, so the rounds the engine spent stay spent.
     serverSays(1, RAILGUN.clip, RAILGUN.clip + 5)
     ok((gun.total[RH] or 0) == 5,
        'and an unrelated pickup credits only what was actually picked up',
@@ -16264,6 +16272,7 @@ do
     GiveWeaponToPed     = savedGive
     RemoveAllPedWeapons = savedRemove
     SetPedAmmo          = savedSetAmmo
+    AddAmmoToPed        = savedAddAmmo
     SetAmmoInClip       = savedSetClip
     GetAmmoInPedWeapon  = savedGetAmmo
     GetAmmoInClip       = savedGetClip
@@ -16326,6 +16335,11 @@ do
     -- The same ped model section N uses, and for the same reason: "SetAmmoInClip
     -- was called with 7" is true of the fix and of the bug.
     local gun = { total = {}, clip = {} }
+    local savedAddAmmo = AddAmmoToPed
+    function AddAmmoToPed(_, hash, n)
+        local h = BR.NormHash(hash)
+        gun.total[h] = math.max(0, (gun.total[h] or 0) + (n or 0))
+    end
     function RemoveAllPedWeapons() gun.total, gun.clip = {}, {} end
     function GiveWeaponToPed(_, hash, ammo)
         local h = BR.NormHash(hash)
@@ -16438,7 +16452,11 @@ do
     -- reserve -- has to reach the counter, or the engine owning the number would
     -- mean the number never moves again.
     drawn = {}
-    serverSays(PISTOL.clip, 8)
+    -- A PAID RELOAD MOVES ROUNDS: the magazine rises by exactly what the pool
+    -- gives up. This sent a pool of 8 until the grant stopped re-writing the
+    -- whole split, which was the only thing that let nine rounds vanish inside
+    -- a reload and still pass.
+    serverSays(PISTOL.clip, 20 - (PISTOL.clip - low))
     ok(gun.clip[PH] == PISTOL.clip,
        'a reload the server paid for lands in the gun',
        tostring(gun.clip[PH]))
@@ -16469,7 +16487,13 @@ do
     -- the one the report loop cannot report, since it is decrease-only on a total
     -- that did not decrease.
     do
-        -- Bought into an EMPTY gun: no magazine, sixty loose rounds.
+        -- Bought into an EMPTY gun: no magazine, sixty loose rounds. EMPTY FOR
+        -- REAL -- fired dry, and the server agrees -- because a purchase no
+        -- longer empties a magazine that has rounds in it, and a gun holding
+        -- twelve would have no load for GTA to do.
+        gun.total[PH], gun.clip[PH] = 0, 0
+        serverSays(0, 0)
+        tick(1)
         drawn = {}
         serverSays(0, 60)
         tick(1)
@@ -16533,6 +16557,7 @@ do
     GiveWeaponToPed     = savedGive
     RemoveAllPedWeapons = savedRemove
     SetPedAmmo          = savedSetAmmo
+    AddAmmoToPed        = savedAddAmmo
     SetAmmoInClip       = savedSetClip
     GetAmmoInPedWeapon  = savedGetAmmo
     GetAmmoInClip       = savedGetClip
@@ -16615,6 +16640,11 @@ do
         local h = BR.NormHash(hash)
         gun.total[h] = math.max(0, n or 0)
         gun.clip[h]  = math.min(gun.clip[h] or 0, gun.total[h])
+    end
+    local savedAddAmmo = AddAmmoToPed
+    function AddAmmoToPed(_, hash, n)
+        local h = BR.NormHash(hash)
+        gun.total[h] = math.max(0, (gun.total[h] or 0) + (n or 0))
     end
     -- THE LINE THE WHOLE BLOCK TURNS ON, and it is the engine's real contract:
     -- a magazine takes what fits and the overflow is not an error and not a
@@ -16764,11 +16794,319 @@ do
     GiveWeaponToPed     = savedGive
     RemoveAllPedWeapons = savedRemove
     SetPedAmmo          = savedSetAmmo
+    AddAmmoToPed        = savedAddAmmo
     SetAmmoInClip       = savedSetClip
     GetAmmoInPedWeapon  = savedGetAmmo
     GetAmmoInClip       = savedGetClip
     SetCurrentPedWeapon = savedCurrent
     HasPedGotWeapon     = savedHasGot
+    pedWeapon = nil
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+end
+
+-- ======================================================================== --
+-- N4. THE PAIR ON THE PLATE, AND WHAT A PURCHASE DOES TO THE GUN
+-- ======================================================================== --
+--
+-- Owner, playtesting dev at a6cbdab:
+--
+--   1. The reserve number jitters while shooting.
+--   2. Combat PDW and 60 SMG rounds: after a few shots it reads 20/29 when it
+--      should read 20/30. 3. After the reload the magazine shows 29.
+--   5. The railgun still shows 1 in the chamber while it is visibly reloading.
+--   7. Buying ammo makes the gun reload on the SECOND purchase, though it
+--      already reloaded on the first.
+--
+-- THREE CAUSES IN client/inventory.lua, ONE PART OF THIS BLOCK EACH:
+--
+--   * The bar's reserve was the SERVER's holding less the ENGINE's magazine.
+--     While shooting the magazine falls every tick and the server's holding
+--     falls only when an INV_SET lands, so the reserve climbed a round a shot
+--     and snapped back. Two moments, one number.
+--   * A rise in the server's numbers re-asserted the server's whole SPLIT onto
+--     the gun. The server's magazine is still 0 after the engine loaded the gun
+--     itself (a reload moves no total, so no report says so), so the second
+--     purchase emptied the magazine and GTA reloaded. The same test compared the
+--     server's new magazine with the ENGINE's old one, so every server-side
+--     reload counted as a "gain" and rewrote the gun with a stale deficit.
+--   * The report loop read nothing at all while IsPedReloading, so a one-round
+--     magazine is never seen empty.
+--
+-- THE SERVER HERE IS A MODEL OF server/inventory.lua's INV_AMMO floor under
+-- serverAmmo, BR.Inv.reload included, and it answers with the payload the
+-- owner's build sent: a purchase into an empty gun leaves the server's magazine
+-- at 0. The client has to survive that payload whatever the server does now.
+describe('the bar reads one moment, and a purchase adds rounds behind the magazine')
+do
+    local savedGive    = GiveWeaponToPed
+    local savedRemove  = RemoveAllPedWeapons
+    local savedSetAmmo = SetPedAmmo
+    local savedAddAmmo = AddAmmoToPed
+    local savedSetClip = SetAmmoInClip
+    local savedGetAmmo = GetAmmoInPedWeapon
+    local savedGetClip = GetAmmoInClip
+    local savedCurrent = SetCurrentPedWeapon
+    local savedHasGot  = HasPedGotWeapon
+    local savedReload  = IsPedReloading
+
+    -- NO PARACHUTE, for the reason N2 gives.
+    function HasPedGotWeapon() return false end
+
+    -- The ped, as in N: the magazine is part of the total. AddAmmoToPed ADDS to
+    -- the total and leaves the magazine where it is. `lowered` counts every write
+    -- that took rounds OUT of a magazine, because that is what makes GTA reload.
+    local gun = { total = {}, clip = {}, lowered = 0, reloading = false }
+    function RemoveAllPedWeapons() gun.total, gun.clip = {}, {} end
+    function GiveWeaponToPed(_, hash, ammo)
+        local h = BR.NormHash(hash)
+        gun.total[h] = (gun.total[h] or 0) + (ammo or 0)
+    end
+    function SetPedAmmo(_, hash, n)
+        local h = BR.NormHash(hash)
+        gun.total[h] = math.max(0, n or 0)
+        gun.clip[h]  = math.min(gun.clip[h] or 0, gun.total[h])
+    end
+    function AddAmmoToPed(_, hash, n)
+        local h = BR.NormHash(hash)
+        gun.total[h] = math.max(0, (gun.total[h] or 0) + (n or 0))
+    end
+    function SetAmmoInClip(_, hash, n)
+        local h = BR.NormHash(hash)
+        local want = math.min(math.max(0, n or 0), gun.total[h] or 0)
+        if want < (gun.clip[h] or 0) then gun.lowered = gun.lowered + 1 end
+        gun.clip[h] = want
+    end
+    function GetAmmoInPedWeapon(_, hash) return gun.total[BR.NormHash(hash)] or 0 end
+    function GetAmmoInClip(_, hash) return true, gun.clip[BR.NormHash(hash)] or 0 end
+    function SetCurrentPedWeapon(_, hash) pedWeapon = hash end
+    function IsPedReloading() return gun.reloading end
+
+    local PDW  = BR.Config.WeaponById['combatpdw']
+    local RAIL = BR.Config.WeaponById['railgun']
+    local PH   = BR.NormHash(PDW.hash)
+    local RH   = BR.NormHash(RAIL.hash)
+
+    local function tick(n)
+        for _ = 1, (n or 1) do
+            fakeTime = fakeTime + 100
+            BR.Loop.step(BR.Loop.TICK)
+        end
+    end
+
+    --- GTA loading an empty gun by itself, out of its own reserve. `w.clip` is
+    --- the engine's magazine for these two; tools/check_weapons.lua keeps it so.
+    local function settle(w)
+        local h = BR.NormHash(w.hash)
+        if (gun.clip[h] or 0) == 0 and (gun.total[h] or 0) > 0 then
+            gun.clip[h] = math.min(w.clip, gun.total[h])
+        end
+    end
+
+    local function shoot(w)
+        local h = BR.NormHash(w.hash)
+        if (gun.total[h] or 0) <= 0 then return false end
+        gun.total[h] = gun.total[h] - 1
+        gun.clip[h]  = math.max(0, (gun.clip[h] or 0) - 1)
+        settle(w)
+        return true
+    end
+
+    local srv = { clip = 0, pool = 0 }
+    local function push(w)
+        fire(BR.Net.INV_SET, {
+            slots = { { id = w.id, label = w.label, kind = BR.ItemKind.WEAPON,
+                        rarity = 3, count = 1, clip = srv.clip, pool = w.ammo } },
+            ammo = { [w.ammo] = srv.pool }, active = 1,
+        })
+    end
+
+    --- Everything the client said since the last answer, applied the way the
+    --- INV_AMMO handler applies it: refused unless `was` is still true, the
+    --- magazine pays first, and an empty magazine over a live pool reloads.
+    local function answer(w)
+        local out = sent
+        sent = {}
+        for _, s in ipairs(out) do
+            local r = s.args[1]
+            if s.name == BR.Net.INV_AMMO and r.was == srv.clip + srv.pool then
+                local lost = srv.clip + srv.pool - r.total
+                if lost > 0 then
+                    srv.clip = srv.clip - lost
+                    if srv.clip < 0 then
+                        srv.pool = math.max(0, srv.pool + srv.clip)
+                        srv.clip = 0
+                    end
+                    if srv.clip <= 0 then
+                        local moved = math.min(w.clip, srv.pool)
+                        srv.clip, srv.pool = moved, srv.pool - moved
+                    end
+                    push(w)
+                end
+            end
+        end
+    end
+
+    -- WHAT THE BAR WAS HANDED, BESIDE THE GUN AT THAT INSTANT. Copied as the
+    -- envelope leaves, for the reason N2 gives.
+    local drawn, watching = {}, nil
+    AddEventHandler('br:ui:sendLocal', function(kind, p)
+        if kind ~= BR.Nui.INV or watching == nil then return end
+        local s = p and p.slots and p.slots[p.active or 0]
+        if type(s) ~= 'table' or s.id ~= watching.id then return end
+        local h = BR.NormHash(watching.hash)
+        drawn[#drawn + 1] = { said = s.clip, reserve = p.reserve,
+                              clip = gun.clip[h], total = gun.total[h] }
+    end)
+
+    --- Every plate that was not the gun, as text.
+    local function unequal()
+        local out = {}
+        for _, d in ipairs(drawn) do
+            local behind = (d.total or 0) - (d.clip or 0)
+            if d.said ~= d.clip or d.reserve ~= behind then
+                out[#out + 1] = ('drawn %s/%s, gun %s/%s'):format(
+                    tostring(d.said), tostring(d.reserve),
+                    tostring(d.clip), tostring(behind))
+            end
+        end
+        return table.concat(out, ', ')
+    end
+
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.State.landed = true
+    fire(BR.Net.STATE, { state = BR.MatchState.PLAYING })
+
+    -- ── 1. SIXTY ROUNDS INTO AN EMPTY PDW, AND THEN A GUNFIGHT WITH A WALL.
+    watching = PDW
+    srv.clip, srv.pool = 0, 0
+    push(PDW)
+    tick(1)
+    sent = {}
+    srv.pool = 60
+    push(PDW)
+    settle(PDW)
+    tick(1)
+    answer(PDW)
+    ok(gun.total[PH] == 60 and gun.clip[PH] == PDW.clip,
+       'sixty rounds bought into an empty PDW: a magazine and the rest behind it',
+       ('gun %s/%s'):format(tostring(gun.clip[PH]), tostring(gun.total[PH])))
+
+    -- One round a tick, with a pause every seventh, because a player who stops
+    -- shooting is the moment a mixed-up clamp writes the gun down.
+    drawn = {}
+    local fired, lost, secondMag = 0, nil, nil
+    for i = 1, 40 do
+        if i % 7 ~= 0 and shoot(PDW) then fired = fired + 1 end
+        tick(1)
+        answer(PDW)
+        if lost == nil and gun.total[PH] ~= 60 - fired then
+            lost = ('after %d shots the gun holds %d, expected %d')
+                :format(fired, gun.total[PH], 60 - fired)
+        end
+        if secondMag == nil and fired == PDW.clip then
+            secondMag = gun.clip[PH]
+        end
+    end
+    ok(lost == nil, 'EVERY ROUND GONE FROM THE PDW IS A ROUND THAT WAS FIRED', lost)
+    ok(secondMag == PDW.clip,
+       'so the magazine after the reload is a whole one, not 29',
+       tostring(secondMag))
+    ok(#drawn > 0 and unequal() == '',
+       'AND EVERY PLATE DRAWN WHILE SHOOTING IS THE GUN AT THAT MOMENT',
+       #drawn > 0 and unequal() or 'nothing was drawn')
+
+    -- ── 2. THE SECOND PURCHASE. The server's magazine is STILL 0: the engine
+    --       loaded the gun itself after the first, and nothing told the server.
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+    fire(BR.Net.STATE, { state = BR.MatchState.PLAYING })
+    sent = {}
+    srv.clip, srv.pool = 0, 0
+    push(PDW)
+    tick(1)
+    srv.pool = 60
+    push(PDW)
+    settle(PDW)
+    tick(2)
+    answer(PDW)
+    ok(gun.clip[PH] == PDW.clip, 'the first purchase loaded the gun',
+       tostring(gun.clip[PH]))
+
+    gun.lowered = 0
+    srv.pool = 120
+    push(PDW)
+    tick(2)
+    answer(PDW)
+    ok(gun.lowered == 0,
+       'THE SECOND PURCHASE TAKES NOTHING OUT OF THE MAGAZINE, so GTA has '
+           .. 'nothing to reload',
+       ('%d write(s) lowered it'):format(gun.lowered))
+    ok(gun.clip[PH] == PDW.clip and gun.total[PH] == 120,
+       'and the sixty bought land behind the magazine',
+       ('gun %s/%s'):format(tostring(gun.clip[PH]), tostring(gun.total[PH])))
+
+    -- THE OTHER DIRECTION: a magazine the SERVER loads as the rounds arrive has
+    -- to reach an empty gun, with no reload for GTA to play.
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+    fire(BR.Net.STATE, { state = BR.MatchState.PLAYING })
+    srv.clip, srv.pool = 0, 0
+    push(PDW)
+    tick(1)
+    srv.clip, srv.pool = PDW.clip, 60 - PDW.clip
+    push(PDW)
+    tick(1)
+    ok(gun.clip[PH] == PDW.clip and gun.total[PH] == 60,
+       'a magazine the server loaded on arrival is in the gun at once',
+       ('gun %s/%s'):format(tostring(gun.clip[PH]), tostring(gun.total[PH])))
+
+    -- ── 3. THE RAILGUN RELOADING.
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+    fire(BR.Net.STATE, { state = BR.MatchState.PLAYING })
+    watching = RAIL
+    srv.clip, srv.pool = RAIL.clip, 11
+    push(RAIL)
+    tick(2)
+    sent = {}
+
+    -- The round leaves and GTA starts the reload. Nothing is in the chamber until
+    -- the animation puts the next round there.
+    gun.total[RH] = gun.total[RH] - 1
+    gun.clip[RH]  = 0
+    gun.reloading = true
+    drawn = {}
+    tick(2)
+    local d = drawn[#drawn]
+    ok(d ~= nil and d.said == 0,
+       'WHILE THE RAILGUN RELOADS THE COUNTER READS AN EMPTY CHAMBER',
+       tostring(d and d.said))
+    ok(d ~= nil and d.reserve == 11, 'with the eleven rounds behind it',
+       tostring(d and d.reserve))
+    local spoke = 0
+    for _, s in ipairs(sent) do
+        if s.name == BR.Net.INV_AMMO then spoke = spoke + 1 end
+    end
+    ok(spoke == 0, 'and nothing is reported to the server mid-reload',
+       ('%d report(s)'):format(spoke))
+
+    gun.clip[RH]  = 1
+    gun.reloading = false
+    drawn = {}
+    tick(2)
+    d = drawn[#drawn]
+    ok(d ~= nil and d.said == 1 and d.reserve == 10,
+       'and when the round is in: one in the chamber and ten behind',
+       d and ('%s/%s'):format(tostring(d.said), tostring(d.reserve)) or 'nothing drawn')
+
+    watching = nil
+    GiveWeaponToPed     = savedGive
+    RemoveAllPedWeapons = savedRemove
+    SetPedAmmo          = savedSetAmmo
+    AddAmmoToPed        = savedAddAmmo
+    SetAmmoInClip       = savedSetClip
+    GetAmmoInPedWeapon  = savedGetAmmo
+    GetAmmoInClip       = savedGetClip
+    SetCurrentPedWeapon = savedCurrent
+    HasPedGotWeapon     = savedHasGot
+    IsPedReloading      = savedReload
     pedWeapon = nil
     fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
 end
