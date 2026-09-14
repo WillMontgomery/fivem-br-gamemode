@@ -513,8 +513,17 @@ end
 --- MOVES and mints nothing, so `clip + pool` is the same either side, and it
 --- leaves a partial magazine alone: topping one up is a reload nobody pressed.
 ---
---- THE HAND FIRST, then slot order. The gun being held is the one about to be
---- fired, so a pickup that fills one magazine fills that one.
+--- ═══ THE BAG ONLY WHEN THE HAND DOES NOT DRAW THE POOL ═══
+---
+--- If the gun in the hand draws this pool, the rounds are ITS reserve: an empty
+--- one loads, as above, and no gun in the bag does. Loading the bag first took
+--- the rounds a player had just bought for the gun he was holding and put them
+--- in one he was not, so a partly loaded PDW's reserve did not rise because an
+--- empty SMG in slot 4 had taken them. An empty gun left in the bag is loaded
+--- by GTA when it comes up, and paid for by server/damage.lua's loadFired when
+--- it is fired. If the hand holds nothing on this pool (another pool, a
+--- consumable, fists), the empty guns in the bag load in slot order: a pistol
+--- in the hand and sixty SMG rounds fill the PDW in slot 2.
 ---
 --- ⚠ ONLY WHEN ROUNDS ARRIVE. A gun that arrives over a pool already in the bag
 --- is left empty -- "a purchase neither mints nor spends the reserve already in
@@ -525,16 +534,23 @@ end
 --- @param inv table
 --- @param pool string
 local function loadEmpty(inv, pool)
-    local order = { inv.active }
-    for i = 1, SLOTS do
-        if i ~= inv.active then order[#order + 1] = i end
+    --- Is this slot a gun that draws on this pool?
+    local function drawsPool(s)
+        local w = s and s.kind == BR.ItemKind.WEAPON and BR.Config.WeaponById[s.item]
+        return w and w.ammo == pool
     end
-    for _, i in ipairs(order) do
-        local s = inv.slots[i]
-        local w = s and BR.Config.WeaponById[s.item]
+
+    local hand = inv.slots[inv.active]
+    if drawsPool(hand) then
         -- `<= 0`, not truthiness: 0 IS TRUTHY IN LUA and an empty magazine is
         -- the only one this is for.
-        if w and w.ammo == pool and (s.clip or 0) <= 0 then
+        if (hand.clip or 0) <= 0 then BR.Inv.reload(inv, hand) end
+        return
+    end
+
+    for i = 1, SLOTS do
+        local s = inv.slots[i]
+        if drawsPool(s) and (s.clip or 0) <= 0 then
             BR.Inv.reload(inv, s)
         end
     end

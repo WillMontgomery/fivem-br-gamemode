@@ -10859,9 +10859,9 @@ do
        ('clip %s pool %s'):format(tostring(inv.slots[2].clip),
                                   tostring(inv.ammo[pdw.ammo])))
 
-    -- ── 3. THE HAND FIRST. Two empty guns on one pool and one magazine's worth
-    --    of rounds: the gun the player is holding is the one they are about to
-    --    fire.
+    -- ── 3. A HAND THAT DRAWS THE POOL TAKES THE ROUNDS. Two empty guns on one
+    --    pool and two magazines' worth of rounds: the gun the player is holding
+    --    loads, and the rest is its reserve rather than a magazine in the bag.
     local other
     for _, w in ipairs(BR.Config.Weapons) do
         if w.ammo == pdw.ammo and w.id ~= pdw.id and w.clip and not w.melee then
@@ -10878,31 +10878,53 @@ do
                          rarity = pdw.rarity, count = 1, clip = 0, sold = true })
         inv = BR.Inv.of(1)
         inv.active = 2
+        local bought = pdw.clip + other.clip
         BR.Inv.give(1, { item = pdw.ammo, kind = BR.ItemKind.AMMO, rarity = 1,
-                         count = pdw.clip })
-        ok(inv.slots[2].clip == pdw.clip and inv.slots[1].clip == 0,
-           'the gun in the hand is loaded before the one in the bag',
-           ('hand %s, bag %s'):format(tostring(inv.slots[2].clip),
-                                      tostring(inv.slots[1].clip)))
+                         count = bought })
+        ok(inv.slots[2].clip == pdw.clip,
+           'the empty gun in the hand is loaded', tostring(inv.slots[2].clip))
+        ok(inv.slots[1].clip == 0 and inv.ammo[pdw.ammo] == bought - pdw.clip,
+           'AND THE EMPTY GUN IN THE BAG IS NOT: the rest is the hand\'s reserve',
+           ('bag %s, pool %s'):format(tostring(inv.slots[1].clip),
+                                      tostring(inv.ammo[pdw.ammo])))
+
+        -- ── 3b. THE SAME WITH A PARTLY LOADED GUN IN THE HAND, which is the
+        --    case the bag used to rob: a PDW at 10 and an empty gun in the bag,
+        --    and the PDW's reserve did not rise because the bag gun took it.
+        inv.slots[2].clip = 10
+        inv.slots[1].clip = 0
+        inv.ammo[pdw.ammo] = 0
+        BR.Inv.give(1, { item = pdw.ammo, kind = BR.ItemKind.AMMO, rarity = 1,
+                         count = 60 })
+        ok(inv.slots[2].clip == 10 and inv.ammo[pdw.ammo] == 60,
+           'A PARTLY LOADED PDW IN THE HAND KEEPS ITS MAGAZINE AND GAINS ALL SIXTY',
+           ('hand %s, pool %s'):format(tostring(inv.slots[2].clip),
+                                       tostring(inv.ammo[pdw.ammo])))
+        ok(inv.slots[1].clip == 0,
+           'and the empty gun in the bag on the same pool stays empty',
+           tostring(inv.slots[1].clip))
 
         -- ── 4. A FOUND GUN'S SPARE MAGAZINE IS ROUNDS ARRIVING TOO. A floor gun
-        --    on the PDW's pool, picked up beside an empty sold PDW, left the
-        --    PDW's badge at 0 until GTA loaded it in the hand.
+        --    on the PDW's pool, picked up with a pistol in the hand beside an
+        --    empty sold PDW, left the PDW's badge at 0 until GTA loaded it.
         local spare = BR.Config.Loot.weaponReserveClips or 1
         BR.Inv.reset(1)
+        BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON, rarity = 1,
+                         count = 1, clip = pistol.clip, carried = true })
         BR.Inv.give(1, { item = 'combatpdw', kind = BR.ItemKind.WEAPON,
                          rarity = pdw.rarity, count = 1, clip = 0, sold = true })
+        inv = BR.Inv.of(1)
+        inv.active = 1
         BR.Inv.give(1, { item = other.id, kind = BR.ItemKind.WEAPON,
                          rarity = other.rarity, count = 1, clip = other.clip })
-        inv = BR.Inv.of(1)
-        ok(inv.slots[1].item == 'combatpdw'
-           and inv.slots[1].clip == math.min(pdw.clip, other.clip * spare),
+        ok(inv.active == 1 and inv.slots[2].item == 'combatpdw'
+           and inv.slots[2].clip == math.min(pdw.clip, other.clip * spare),
            'A FLOOR GUN\'S SPARE MAGAZINE LOADS THE EMPTY PDW IN THE BAG',
-           tostring(inv.slots[1].clip))
-        ok(inv.slots[2].clip == other.clip
+           tostring(inv.slots[2].clip))
+        ok(inv.slots[3].clip == other.clip
            and held(1, pdw.ammo) == other.clip + other.clip * spare,
            'out of the rounds that gun brought, not on top of them',
-           ('found gun %s, held %s'):format(tostring(inv.slots[2].clip),
+           ('found gun %s, held %s'):format(tostring(inv.slots[3].clip),
                                             tostring(held(1, pdw.ammo))))
     end
 end
