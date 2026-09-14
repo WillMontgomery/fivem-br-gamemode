@@ -64,6 +64,10 @@
 -- confirmed yes; the door opens only on a confirmed yes. Every unknown above --
 -- no token, no identifier, a timeout, a 429, a 500 -- keeps the card up AND keeps
 -- the door shut.
+--
+-- AND WITH NO GATE TO ASK, THIS FILE SHUTS IT. br_ringmaster is optional, and a
+-- dev box without its gate running would otherwise admit everybody. See the
+-- backstop below, which refuses every dev-mode join that gate is not there for.
 
 BR = BR or {}
 BR.Guild = BR.Guild or {}
@@ -601,6 +605,71 @@ AddEventHandler('br:guild:roleCheck', function(req, discordId)
     BR.Guild.askRole(discordId, function(verdict)
         TriggerEvent('br:guild:roleResult', req, verdict)
     end)
+end)
+
+-- ---------------------------------------------------------------------------
+-- The backstop
+-- ---------------------------------------------------------------------------
+
+--- What a dev-mode join is told when there is no gate to check it.
+---
+--- br_ringmaster/server/gate.lua's ALLOWLIST_REFUSAL, restated because the two
+--- resources share no state. tools/test_guild.lua reads the gate's copy out of
+--- that file and fails if the two ever differ.
+local ALLOWLIST_REFUSAL = 'This server is restricted to allowlisted players.'
+
+--- Is br_ringmaster's connect gate there to refuse this join?
+---
+--- THE EXPORT, NOT JUST THE RESOURCE STATE. "started" says br_ringmaster is up;
+--- it does not say gate.lua loaded, and a resource can read "started" with one
+--- of its scripts broken. gateArmed is exported directly after the gate's
+--- handler, so an answer means the handler exists. A call into a resource that
+--- is not running, or that has no such export, throws, and pcall turns that
+--- into "not armed".
+--- @return boolean armed
+--- @return string|nil why  when not armed, for the console
+local function gateArmed()
+    local state = GetResourceState('br_ringmaster')
+    if state ~= 'started' then
+        return false, ('br_ringmaster is "%s", not "started"'):format(tostring(state))
+    end
+    local good, armed = pcall(function() return exports.br_ringmaster:gateArmed() end)
+    if not good or armed ~= true then
+        return false, ('br_ringmaster is started but its gate is not armed (%s)'):format(tostring(armed))
+    end
+    return true, nil
+end
+
+-- THE DEV ALLOWLIST WHEN br_ringmaster CANNOT ENFORCE IT. server.cfg.example
+-- marks br_ringmaster optional, and its gate is the only thing that refuses a
+-- dev-mode join -- so without this, a dev box that does not ensure it, or one
+-- caught mid `restart br_ringmaster`, or one whose gate.lua failed to load,
+-- would let everybody in with no ban check and no allowlist.
+--
+-- REFUSES EVERYBODY, ROLE OR NOT. With no gate there is no ban check either, and
+-- admitting a role holder here would let a banned one in. Dev mode off, or the
+-- gate armed, and this does not touch the deferral at all: one deferral per
+-- join, so nothing here can land before the gate's ban notice.
+AddEventHandler('playerConnecting', function(_name, _setKickReason, deferrals)
+    if not (BR.Dev and BR.Dev.on and BR.Dev.on() == true) then return end
+
+    local armed, why = gateArmed()
+    if armed then return end
+
+    -- Read before the yield below, after which `source` is somebody else's.
+    local src = source
+
+    if type(deferrals) ~= 'table' then
+        print(('^1[br_core] dev allowlist: cannot refuse %s -- deferrals is %s^7')
+            :format(tostring(src), type(deferrals)))
+        return
+    end
+
+    deferrals.defer()
+    -- The tick FiveM needs between defer() and done(); gate.lua has the note.
+    Wait(0)
+    print(('^3[br_core] dev allowlist: refused %s -- %s^7'):format(tostring(src), why))
+    deferrals.done(ALLOWLIST_REFUSAL)
 end)
 
 -- FORGOTTEN ON DROP, AND THE FORGETTING IS LOAD-BEARING TWICE OVER. A server id

@@ -86,6 +86,14 @@ end
 
 Citizen = { CreateThread = function() end, Wait = function() end, SetTimeout = function() end }
 
+-- exports('name', fn), as gate.lua calls it. Recorded with how many connect
+-- handlers existed at that moment, because WHERE gate.lua exports gateArmed is
+-- what br_core/server/guild.lua's backstop relies on.
+local exported = {}
+exports = setmetatable({}, { __call = function(_, name, fn)
+    exported[name] = { fn = fn, connectHandlers = #(handlers['playerConnecting'] or {}) }
+end })
+
 local realPrint = print
 local printed = {}
 function print(s) printed[#printed + 1] = tostring(s) end
@@ -121,6 +129,9 @@ loadAll({
     'br_ringmaster/server/gate.lua',
     'br_ringmaster/server/debug.lua',
 })
+
+-- Taken before any case below reloads main.lua and adds handlers of its own.
+local connectHandlersAtLoad = #(handlers['playerConnecting'] or {})
 
 local pass, fail = 0, 0
 local group = ''
@@ -1050,6 +1061,16 @@ do
     answerRole('missing')
     ok(d.doneCount == 1 and d.doneArg == REFUSAL, 'and anybody else is refused', tostring(d.doneArg))
     resourceState.br_ddb = 'started'
+
+    -- br_core's BACKSTOP STANDS ASIDE ONLY WHILE THIS ANSWERS. It refuses every
+    -- dev-mode join itself otherwise (tools/test_guild.lua), so the export has to
+    -- exist exactly when the handler does: registered after it, with no connect
+    -- handler after the export that a load error could separate from it.
+    local armed = exported['gateArmed']
+    ok(armed ~= nil and armed.fn() == true, 'gate.lua exports gateArmed, answering true')
+    ok(armed ~= nil and armed.connectHandlers == connectHandlersAtLoad,
+        'and exports it only once its connect handler is registered',
+        tostring(armed and armed.connectHandlers) .. ' / ' .. tostring(connectHandlersAtLoad))
 
     BR.Dev = nil
     resourceState.br_core = nil

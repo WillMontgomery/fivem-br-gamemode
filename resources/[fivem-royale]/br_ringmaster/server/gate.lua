@@ -29,6 +29,9 @@
     Discord confirming it is a refusal. It runs AFTER the ban check and inside
     the same deferral, so a banned player is always told about the ban and never
     about the allowlist. With dev mode off none of it runs. See allowlist().
+    When this file is not there to do it -- br_ringmaster stopped, restarting,
+    or started with this file broken -- br_core/server/guild.lua refuses the
+    join instead. See gateArmed, at the bottom.
 
     WHY THIS LIVES IN br_ringmaster RATHER THAN br_ddb: br_ddb answers questions
     and knows nothing about players, moderation or connect flow. Keeping the
@@ -501,3 +504,14 @@ AddEventHandler('playerConnecting', function(_name, _setKickReason, deferrals)
         deferrals.done(rejection(info))
     end)
 end)
+
+-- THE PROOF THAT THE HANDLER ABOVE EXISTS, for br_core/server/guild.lua. In dev
+-- mode br_core refuses every join itself unless this answers, because a
+-- br_ringmaster that is stopped, mid-restart, or started with this file broken
+-- has no gate in it, and a dev allowlist with no gate is an open door.
+--
+-- DIRECTLY AFTER THE HANDLER, WITH NOTHING BETWEEN THEM THAT CAN THROW. A load
+-- error anywhere above leaves neither registered, so br_core refuses; with both
+-- registered br_core stands aside. There is no state in which both defer the
+-- same join, which is what keeps a ban notice from racing an allowlist refusal.
+exports('gateArmed', function() return true end)

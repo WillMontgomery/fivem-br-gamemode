@@ -74,6 +74,26 @@ function SetTimeout(ms, fn)
     timers[#timers + 1] = { at = clock + (tonumber(ms) or 0), fn = fn }
 end
 Citizen = { CreateThread = function() end, Wait = function() end, SetTimeout = SetTimeout }
+function Wait() end
+
+-- --- other resources -------------------------------------------------------
+--
+-- Which resources are running and what they export. The dev allowlist's
+-- backstop asks both about br_ringmaster, and a missing export THROWS, as
+-- FiveM's does, so the pcall around it is exercised rather than assumed.
+local resourceState, exported = {}, {}
+function GetResourceState(name) return resourceState[name] or 'missing' end
+exports = setmetatable({}, {
+    __index = function(_, res)
+        return setmetatable({}, { __index = function(_, name)
+            local fn = (exported[res] or {})[name]
+            if fn == nil then
+                error(('No such export %s in resource %s'):format(name, res))
+            end
+            return function(_, ...) return fn(...) end
+        end })
+    end,
+})
 
 --- Run every timer due within `ms`, in time order, including ones armed by the
 --- callbacks that run. Re-scanned each pass on purpose: `lookup` arms its next
@@ -187,6 +207,7 @@ local function boot(cvs)
     convars = {}
     for k, v in pairs(cvs or {}) do convars[k] = v end
     handlers, http, timers, idents, triggered = {}, {}, {}, {}, {}
+    resourceState, exported = {}, {}
     clock = 0
 
     local env = setmetatable({}, { __index = _G })
@@ -874,6 +895,80 @@ do
     text = table.concat(bare.BR.Guild.report(), '\n')
     ok(text:find('lookup NOT configured', 1, true) ~= nil,
         'with no token it says the lookup is NOT configured', text)
+end
+
+describe('guild.backstop')
+do
+    -- THE ALLOWLIST WITH NO GATE IN FRONT OF IT. br_ringmaster/server/gate.lua is
+    -- the only thing that refuses a dev-mode join, and br_ringmaster is optional.
+    -- So br_core refuses every dev-mode join itself unless that gate answers, and
+    -- does not touch the deferral at all when it does.
+    local function fnRef(fn)
+        return setmetatable({}, { __call = function(_, ...) return fn(...) end })
+    end
+    local function connect(src)
+        local d = { deferred = false, doneCount = 0, doneArg = nil }
+        d.defer = fnRef(function() d.deferred = true end)
+        d.update = fnRef(function() end)
+        d.done = fnRef(function(reason)
+            d.doneCount = d.doneCount + 1
+            d.doneArg = reason
+        end)
+        fire('playerConnecting', src, 'Someone', function() end, d)
+        return d
+    end
+
+    -- THE GATE'S OWN SENTENCE, read out of the gate, so the two copies cannot
+    -- drift apart without this failing.
+    local f = io.open(ROOT .. 'br_ringmaster/server/gate.lua', 'r')
+    local gateSrc = f and f:read('*a') or ''
+    if f then f:close() end
+    local REFUSAL = gateSrc:match("local ALLOWLIST_REFUSAL = '([^']*)'")
+    ok(REFUSAL == 'This server is restricted to allowlisted players.',
+        'the gate\'s refusal is the owner\'s sentence', tostring(REFUSAL))
+
+    local env = bootReady(5)
+    local devOn = true
+    env.BR.Dev = { on = function() return devOn end }
+
+    for _, state in ipairs({ 'missing', 'stopped', 'stopping', 'starting' }) do
+        resourceState.br_ringmaster = state
+        local d = connect(5)
+        ok(d.deferred and d.doneCount == 1 and d.doneArg == REFUSAL,
+            ('dev on, br_ringmaster %q: refused'):format(state), tostring(d.doneArg))
+    end
+
+    -- STARTED, WITH NO GATE IN IT. The case a resource-state check alone admits.
+    resourceState.br_ringmaster = 'started'
+    local d = connect(5)
+    ok(d.deferred and d.doneCount == 1 and d.doneArg == REFUSAL,
+        'dev on, br_ringmaster started but gate.lua not loaded: refused', tostring(d.doneArg))
+
+    exported.br_ringmaster = { gateArmed = function() return 1 end }
+    d = connect(5)
+    ok(d.doneCount == 1 and d.doneArg == REFUSAL, 'an answer that is not true is not armed',
+        tostring(d.doneArg))
+
+    -- THE GATE IS THERE: ONE DEFERRAL, AND IT IS THE GATE'S.
+    exported.br_ringmaster = { gateArmed = function() return true end }
+    d = connect(5)
+    ok(not d.deferred and d.doneCount == 0,
+        'dev on, gate armed: the deferral is not touched, so nothing can race the ban notice',
+        tostring(d.deferred) .. '/' .. tostring(d.doneCount))
+
+    devOn = false
+    exported.br_ringmaster = nil
+    resourceState.br_ringmaster = 'missing'
+    d = connect(5)
+    ok(not d.deferred and d.doneCount == 0, 'dev off: nothing is deferred or refused, gate or no gate',
+        tostring(d.deferred) .. '/' .. tostring(d.doneCount))
+
+    env.BR.Dev = nil
+    d = connect(5)
+    ok(not d.deferred and d.doneCount == 0, 'and neither is it with no dev gate loaded at all',
+        tostring(d.deferred) .. '/' .. tostring(d.doneCount))
+
+    ok(#http == 0, 'and no backstop case asks Discord anything', tostring(#http))
 end
 
 -- ------------------------------------------------------------------ done ---
