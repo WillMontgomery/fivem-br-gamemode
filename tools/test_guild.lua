@@ -856,6 +856,50 @@ do
     ok(calls == 1 and v == 'unknown', 'and a late held changes nothing', tostring(calls) .. '/' .. tostring(v))
 end
 
+describe('guild.role.expired')
+do
+    -- A LOOKUP WHOSE GATE HAS GIVEN UP IS NOT SENT. After a 429 the queue stands
+    -- down for up to a minute, and br_ringmaster's gate refuses the join after
+    -- its own ten seconds whatever happens here -- so a role job still queued
+    -- once its budget is gone is answered without spending a call.
+    local env = bootReady(5)
+    env.BR.Guild.ask(5, nil)
+    respond(1, 429, B_RETRY_HUGE)                 -- a 60s stand-down
+    local calls, got = 0, 'untouched'
+    env.BR.Guild.askRole(SNOW, function(v) calls = calls + 1; got = v end, 10000)
+    advance(60000)
+    ok(#http == 1, 'a role job whose budget ran out in the queue sends no request', tostring(#http))
+    ok(calls == 1 and got == 'expired', 'and is answered expired, exactly once',
+        tostring(calls) .. '/' .. tostring(got))
+
+    -- AND IT DOES NOT HOLD UP THE ONE BEHIND IT: no request, so no gap either.
+    local fresh = 'untouched'
+    env.BR.Guild.askRole(SNOW, function(v) fresh = v end, 10000)
+    ok(#http == 2, 'a fresh lookup behind it goes straight out', tostring(#http))
+    respond(2, 200, B_HAS_ROLE)
+    ok(fresh == 'held', 'and is answered for itself', tostring(fresh))
+
+    -- WITH BUDGET LEFT IT STILL GOES, even from behind a request that took a while.
+    local slow = bootReady(5)
+    slow.BR.Guild.ask(5, nil)
+    slow.BR.Guild.askRole(SNOW, function() end, 10000)
+    advance(4000)
+    respond(1, 200, '')
+    advance(250)
+    ok(#http == 2, 'a role job with budget left behind a slow request is still sent', tostring(#http))
+
+    -- THE BUDGET RIDES THE EVENT, which is the only way the gate asks.
+    local viaEvent = bootReady(5)
+    viaEvent.BR.Guild.ask(5, nil)
+    respond(1, 429, B_RETRY_HUGE)
+    fire('br:guild:roleCheck', nil, 43, SNOW, 10000)
+    advance(60000)
+    local last = triggered[#triggered] or { args = {} }
+    ok(#http == 1 and last.args[1] == 43 and last.args[2] == 'expired',
+        'br_ringmaster\'s budget reaches the queue through br:guild:roleCheck',
+        tostring(#http) .. '/' .. tostring(last.args[1]) .. '/' .. tostring(last.args[2]))
+end
+
 describe('guild.role.event')
 do
     local env = bootReady(5)

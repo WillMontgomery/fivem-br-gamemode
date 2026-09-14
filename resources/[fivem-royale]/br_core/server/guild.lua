@@ -203,6 +203,18 @@ local BACKOFF_MS = 5000
 --- short enough that the queue always comes back.
 local BACKOFF_MAX_MS = 60000
 
+--- How much of the gate's budget a role lookup must still have to be sent.
+---
+--- A LOOKUP WHOSE GATE HAS GIVEN UP IS NOT WORTH A CALL. br_ringmaster/server/
+--- gate.lua refuses the join when its own timer runs out, and the role job can
+--- still be in this queue then -- behind another request, or behind a 429
+--- stand-down of up to BACKOFF_MAX_MS. Sending it anyway spends a Discord call and
+--- a GAP_MS on an answer nobody reads, in front of the tester's fresh retry, which
+--- then times out too. So a job with less than this left of the budget the gate
+--- sent with it is answered 'expired' without asking. A second is far longer than
+--- Discord takes to answer.
+local ROLE_SEND_MARGIN_MS = 1000
+
 -- ---------------------------------------------------------------------------
 -- State
 -- ---------------------------------------------------------------------------
@@ -243,7 +255,7 @@ local standDownUntil = 0
 
 local stat = { asked = 0, member = 0, notMember = 0, unknown = 0, rateLimited = 0 }
 
---- Allowlist lookups queued by askRole. [key] = { discordId, roleId, cb }
+--- Allowlist lookups queued by askRole. [key] = { discordId, roleId, cb, deadline }
 ---
 --- IN THE SAME `queue` AS THE MEMBERSHIP LOOKUPS, under a string key no source
 --- can have, so the pacing and the 429 stand-down cover both questions.
@@ -472,6 +484,16 @@ end
 local function lookupRole(k)
     local job = roleJobs[k]
     roleJobs[k] = nil
+
+    -- THE GATE MAY HAVE GIVEN UP while this sat in the queue: lookup()'s
+    -- departed-player check, for an asker with no source. See ROLE_SEND_MARGIN_MS.
+    if job.deadline ~= nil and job.deadline - GetGameTimer() <= ROLE_SEND_MARGIN_MS then
+        pcall(job.cb, 'expired')
+        busy = false
+        drain()
+        return
+    end
+
     request(job.discordId, function(status, body)
         pcall(job.cb, BR.Guild.readRole(status, body, job.roleId))
     end)
@@ -564,16 +586,19 @@ end
 --- Queue one allowlist lookup for a connecting player.
 ---
 --- `cb` IS ALWAYS CALLED, EXACTLY ONCE, with a verdict from readRole or with one
---- of two that are answered here without asking anybody:
+--- of three that are answered here without asking Discord:
 ---
 ---   'unconfigured'  no token, no usable guild id, or no usable role id
 ---   'noid'          the connection carries no usable `discord:` snowflake
+---   'expired'       its turn in the queue came with less than
+---                   ROLE_SEND_MARGIN_MS of `budgetMs` left
 ---
 --- Always, because the caller is holding a deferral open on it.
 ---
 --- @param discordId string|nil  the bare snowflake
 --- @param cb function  called with the verdict
-function BR.Guild.askRole(discordId, cb)
+--- @param budgetMs number|nil  how long the asker waits for it; nil never expires
+function BR.Guild.askRole(discordId, cb, budgetMs)
     local role = allowlistRole()
     if not BR.Guild.configured() or role == nil then
         pcall(cb, 'unconfigured')
@@ -588,7 +613,12 @@ function BR.Guild.askRole(discordId, cb)
 
     nextRoleJob = nextRoleJob + 1
     local k = 'role#' .. nextRoleJob
-    roleJobs[k] = { discordId = id, roleId = role, cb = cb }
+    -- STAMPED AT ENQUEUE, on the clock the gate's own timer runs on.
+    local budget = tonumber(budgetMs)
+    roleJobs[k] = {
+        discordId = id, roleId = role, cb = cb,
+        deadline = budget and (GetGameTimer() + budget) or nil,
+    }
     queued[k] = true
     queue[#queue + 1] = k
     drain()
@@ -601,10 +631,13 @@ end
 --
 -- SERVER-INTERNAL. Neither this name nor the answer's has a RegisterNetEvent, so
 -- no client can ask the question or forge the reply.
-AddEventHandler('br:guild:roleCheck', function(req, discordId)
+--
+-- `budgetMs` IS THE GATE'S OWN TIMEOUT, sent with the question rather than
+-- restated here, so a lookup never outlives a gate that has already refused.
+AddEventHandler('br:guild:roleCheck', function(req, discordId, budgetMs)
     BR.Guild.askRole(discordId, function(verdict)
         TriggerEvent('br:guild:roleResult', req, verdict)
-    end)
+    end, budgetMs)
 end)
 
 -- ---------------------------------------------------------------------------

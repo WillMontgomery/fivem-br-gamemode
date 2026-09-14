@@ -948,8 +948,8 @@ do
     -- banChecks stands in for br_ddb's.
     local REFUSAL = 'This server is restricted to allowlisted players.'
     local roleChecks = {}
-    AddEventHandler('br:guild:roleCheck', function(req, discordId)
-        roleChecks[#roleChecks + 1] = { req = req, discordId = discordId }
+    AddEventHandler('br:guild:roleCheck', function(req, discordId, budgetMs)
+        roleChecks[#roleChecks + 1] = { req = req, discordId = discordId, budgetMs = budgetMs }
     end)
     local function lastRoleReq()
         return roleChecks[#roleChecks] and roleChecks[#roleChecks].req
@@ -978,6 +978,9 @@ do
     TriggerEvent('br:ddb:banResult', lastBanCheckReq(), false, {})
     ok(#roleChecks == 1 and roleChecks[1].discordId == '904',
         'then br_core is asked about the BARE discord id', tostring((roleChecks[1] or {}).discordId))
+    ok(roleChecks[1] and roleChecks[1].budgetMs == 10000,
+        'with the gate\'s own 10s budget, so br_core can stop on a lookup the gate gave up on',
+        tostring((roleChecks[1] or {}).budgetMs))
     ok(d.doneCount == 0, 'and the join waits for the answer', tostring(d.doneCount))
     answerRole('missing')
     ok(d.doneCount == 1 and d.doneArg == REFUSAL, 'dev on: a member without the role is refused',

@@ -257,11 +257,13 @@ end
 
 --- How long we wait for br_core to say whether a dev-mode join holds the role.
 ---
---- ABOVE br_core/server/guild.lua'S OWN 6s REQUEST TIMEOUT, for the reason
---- ANSWER_TIMEOUT_MS sits above br_ddb's: in the ordinary failure the inner
---- timer lands first and the log gets a real verdict. This one is the backstop
---- for nobody answering at all -- br_core mid-restart, or a lookup queued behind
---- a 429 stand-down -- and when it fires the join is REFUSED, not admitted.
+--- ABOVE br_core/server/guild.lua'S OWN 6s REQUEST TIMEOUT, so a lookup that is
+--- sent at once and fails lands its real verdict first. NOT ABOVE EVERY LOOKUP'S
+--- WORST CASE, and no number would be: a lookup queued behind another request
+--- (up to 6s plus a 250ms gap) or behind a 429 stand-down (up to a minute) can
+--- reach this timer with Discord perfectly healthy. When it fires the join is
+--- REFUSED, not admitted, and the number travels with the question so br_core
+--- stops spending a call on a lookup this gate has already given up on.
 local ROLE_TIMEOUT_MS = 10000
 
 --- What a dev-mode join is told when the allowlist does not let it in.
@@ -304,7 +306,7 @@ local function askRole(discordId, cb)
         once(('no answer within %dms'):format(ROLE_TIMEOUT_MS))
     end)
 
-    TriggerEvent('br:guild:roleCheck', req, discordId)
+    TriggerEvent('br:guild:roleCheck', req, discordId, ROLE_TIMEOUT_MS)
 end
 
 --- The dev-mode join allowlist. Called only once no ban stands in the way.
