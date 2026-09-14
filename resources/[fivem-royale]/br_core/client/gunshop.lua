@@ -2277,13 +2277,22 @@ end)
 --- delivers, so P2 step 4's "all at once" is two machines reading one value
 --- rather than two constants somebody has to remember to move together.
 local HAND_MS = tonumber(G.handoverMs) or 1400
-local HAND = { x = 0.09, y = 0.02, z = -0.02, rx = -80.0, ry = 100.0, rz = 0.0 }
 
---- SKEL_R_Hand. The ID, which GetPedBoneIndex turns into the INDEX that
+--- ═══ THE LEFT HAND, AND THE MIRROR IS STILL A GUESS ═══
+---
+--- The owner wants the gun in the clerk's LEFT hand (2026-09-13). These are the
+--- right-hand numbers mirrored across the hand bone's local Z: z changes sign,
+--- and so do the two rotations that reflection reverses, rx and ry; x, y and rz
+--- carry over. That holds only if the game authored the two hand frames as
+--- mirror images across Z, which nothing outside the game confirms. If the gun
+--- sits wrong, /brgunclerk hand is the fix rather than another guess.
+local HAND = { x = 0.09, y = 0.02, z = 0.02, rx = 80.0, ry = -100.0, rz = 0.0 }
+
+--- SKEL_L_Hand. The ID, which GetPedBoneIndex turns into the INDEX that
 --- AttachEntityToEntity actually wants -- a distinction client/squadmates.lua
 --- already records in prose because passing the ID attaches to the wrong bone
 --- silently.
-local BONE_R_HAND = 57005
+local BONE_L_HAND = 18905
 
 --- THE GIVE GESTURE, AND IT IS THE ONE THE BASE GAME HAS.
 ---
@@ -2455,7 +2464,7 @@ local function present(store, row)
         nat(SetEntityCollision, obj, false, false)
         local bone = 0
         if type(GetPedBoneIndex) == 'function' then
-            bone = GetPedBoneIndex(live, BONE_R_HAND) or 0
+            bone = GetPedBoneIndex(live, BONE_L_HAND) or 0
         end
         -- p9 has no documented effect; softPinning false so it cannot pop off;
         -- collision FALSE because this is a prop in a hand; isPed false because

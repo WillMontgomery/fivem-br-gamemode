@@ -5464,8 +5464,8 @@ do
             and attaches[1].parent == speech[#speech].ped
             and attaches[1].parent ~= PlayerPedId(),
             'attached to the clerk who just spoke, not to the player')
-        ok(#attaches == 1 and attaches[1].bone == 40000 + 57005,
-            '...at the INDEX GetPedBoneIndex returned for SKEL_R_Hand, never '
+        ok(#attaches == 1 and attaches[1].bone == 40000 + 18905,
+            '...at the INDEX GetPedBoneIndex returned for SKEL_L_Hand, never '
                 .. 'the bone id itself, which attaches to the wrong bone in '
                 .. 'silence',
             #attaches == 1 and attaches[1].bone or 'none')
