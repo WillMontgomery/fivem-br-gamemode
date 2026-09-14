@@ -777,6 +777,34 @@ local function heldClipFor(src, weapon)
     return slot.clip or 0
 end
 
+--- LOAD THE MAGAZINE GTA HAS ALREADY LOADED, AT THE MOMENT THE GUN IS FIRED.
+---
+--- ═══ A GUN BOUGHT OVER A LIVE POOL FIRED ITS FIRST ROUND INTO A REFUSAL ═══
+---
+--- A gun sold over the counter arrives with `clip = 0`, and a purchase leaves
+--- the pool it lands on alone -- 'a gun sold over the counter arrives empty'
+--- pins both. The engine loads that gun out of the same pool as soon as it is in
+--- the hand, and a reload moves no total, so no report ever says so. The first
+--- shot then reached a server still holding an empty magazine: heldClipFor read
+--- 0, BR.ValidateShot refused it as NO_AMMO, and NO_AMMO is means-class with a
+--- bar of one. An honest player opened a case against himself with the first
+--- round he fired, and spendRound counted it as a dry shot.
+---
+--- SO A SHOT FROM AN EMPTY MAGAZINE OVER A LIVE POOL IS THAT RELOAD, run here
+--- before anything reads the magazine. It is BR.Inv.reload, so it MOVES and mints
+--- nothing, and it runs only when the gun is fired, so the counter still hands a
+--- gun over empty. An empty pool loads nothing and that shot is still NO_AMMO.
+--- @param src integer
+--- @param weapon integer  weapon hash from the event
+local function loadFired(src, weapon)
+    -- nil is every case with no magazine to load. `> 0` and not truthiness:
+    -- 0 IS TRUTHY IN LUA and the empty magazine is the one this is for.
+    local clip = heldClipFor(src, weapon)
+    if clip == nil or clip > 0 then return end
+    local inv = BR.Inv.of(src)
+    BR.Inv.reload(inv, inv.slots[inv.active])
+end
+
 --- Called on EVERY validated shot, hit or miss. A miss still costs a round,
 --- which is the entire difference between counting shots and counting hits.
 --- @param src integer
@@ -1306,6 +1334,10 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
     -- READ FIRST, SPEND SECOND. `heldClipFor` is the magazine as it stood
     -- BEFORE this event charged for itself, which is the only number an
     -- ammunition check can honestly be made against -- see its own note.
+    --
+    -- ...AFTER THE LOAD GTA HAS ALREADY DONE. An empty magazine over a live pool
+    -- is one the engine filled before the trigger was pulled. See loadFired.
+    if cfg.serverAmmo then loadFired(shooter, data.weaponType) end
     local clipBefore = heldClipFor(shooter, data.weaponType)
     if cfg.serverAmmo then
         BR.Damage.spendRound(shooter, data.weaponType)

@@ -9865,6 +9865,61 @@ do
         'and is refused, once', ('%d -> %d'):format(r0, BR.Damage.refusals or 0))
 end
 
+describe('damage.autoload')
+do
+    -- A GUN BOUGHT OVER A LIVE POOL IS LOADED BY THE ENGINE, AND ITS FIRST ROUND
+    -- WAS AN ANTICHEAT CASE.
+    --
+    -- A sold gun arrives with `clip = 0` and leaves the pool it lands on alone
+    -- (see 'a gun sold over the counter arrives empty'). GTA loads it out of that
+    -- pool the moment it is in the hand, and a reload moves no total, so the
+    -- server's magazine stayed 0 and the first validated hit was refused as
+    -- NO_AMMO. The shot is that reload, and loadFired runs it on this side.
+    ok(BR.Config.Combat.serverAmmo, 'server ammo is on for this block')
+    local PDW = BR.Config.WeaponById['combatpdw']
+    reset()
+    queueUp(1, 'A', BR.Mode.SOLO.key)
+    queueUp(2, 'B', BR.Mode.SOLO.key)
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    for s = 1, 2 do
+        BR.Roster.setState(s, BR.PlayerState.ALIVE)
+        BR.Roster.get(s).squadId = 10 + s
+    end
+    BR.Damage.forget(1); BR.Damage.forgetRefusals(1)
+    BR.Inv.reset(1)
+    BR.Inv.of(1).ammo[PDW.ammo] = 60
+    BR.Inv.give(1, { item = 'combatpdw', kind = BR.ItemKind.WEAPON,
+                     rarity = PDW.rarity, count = 1, clip = 0, sold = true },
+                { quiet = true, focus = true })
+    local inv  = BR.Inv.of(1)
+    local slot = inv.slots[inv.active]
+    ok(slot and slot.item == 'combatpdw' and slot.clip == 0
+       and inv.ammo[PDW.ammo] == 60,
+       'a PDW bought over sixty SMG rounds is in the hand, empty',
+       ('clip %s pool %s'):format(tostring(slot and slot.clip),
+                                  tostring(inv.ammo[PDW.ammo])))
+
+    BR.Roster.get(1).pos = { x = 0.0, y = 0.0, z = 30.0 }
+    BR.Roster.get(2).pos = { x = 5.0, y = 0.0, z = 30.0 }
+    BR.Roster.get(2).hp, BR.Roster.get(2).armour = 100.0, 0.0
+    local r0 = BR.Damage.refusals or 0
+    fakeTime = fakeTime + 5000
+    fire('weaponDamageEvent', 1, 1, {
+        damageType = 3, weaponType = PDW.hash, hitComponent = 3,
+        weaponDamage = PDW.damage, hitGlobalIds = { 1002 },
+    })
+    ok(BR.Roster.get(2).hp < 100.0, 'ITS FIRST ROUND LANDS',
+       tostring(BR.Roster.get(2).hp))
+    ok((BR.Damage.refusals or 0) == r0,
+       'and is not refused for a magazine GTA had already loaded',
+       ('%d -> %d'):format(r0, BR.Damage.refusals or 0))
+    ok(slot.clip == PDW.clip - 1 and inv.ammo[PDW.ammo] == 60 - PDW.clip,
+       'a magazine moved out of the pool and the shot spent one round of it',
+       ('clip %s pool %s'):format(tostring(slot.clip),
+                                  tostring(inv.ammo[PDW.ammo])))
+end
+
 describe('damage.launch')
 do
     -- THE PROJECTILE IS AUTHORIZED NOW, NOT THE IMPACT (audit finding 3).
