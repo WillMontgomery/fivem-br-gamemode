@@ -28,7 +28,8 @@
     hold br_lib/config/allowlist.lua's Discord role, and anything short of
     Discord confirming it is a refusal. It runs AFTER the ban check and inside
     the same deferral, so a banned player is always told about the ban and never
-    about the allowlist. With dev mode off none of it runs. See allowlist().
+    about the allowlist. With dev mode off none of it runs. See the allowlist
+    function further down.
     When this file is not there to do it -- br_ringmaster stopped, restarting,
     or started with this file broken -- br_core/server/guild.lua refuses the
     join instead. See gateArmed, at the bottom.
