@@ -137,22 +137,40 @@ local shown = { id = nil, clip = -1, total = -1 }
 --- shots, lowered again, and the INV_AMMO floor charged both (owner, on d0af8cf:
 --- 25/30, then 20/25, bag 15, 15/15, bag 30, 30/0).
 ---
---- SO THE ROUNDS GO BACK IN THE SAME TICK. The report loop lowers the magazine,
---- reads the total, and AddAmmoToPed returns exactly what that read shows was
---- removed, never more than the lowering could have removed. AddAmmoToPed moves
---- the total and leaves the magazine alone, which grantAmmo already relies on.
---- The total the loop then measures is the one the draw set, so its own write is
---- never a shot.
+--- THE ROUNDS GO BACK ON WHICHEVER TICK THEY ARE SEEN TO GO. The owner's numbers
+--- fit the removal landing inside the SetAmmoInClip call and on the next engine
+--- frame equally. f0059cc read the total back in the same tick only, so under
+--- the second it found nothing gone, and the next tick charged the removed rounds
+--- as shots. After its one lowering write the hold now watches the gun, and on
+--- the write's tick and every tick after it measures
 ---
---- ONCE A DRAW, ON FOOT. The hold lets go on its write, on any change in the
---- total (a shot, a purchase), a reload, another slot, DRAW_SETTLE_MS or canArm
---- going false, and lets go WITHOUT writing when GTA's fill lands on a ped that
---- is seated, getting in, attached (the bus) or under a parachute.
+---     removed = (drawing.total - total) - (drawing.clip - clip)
+---
+--- A shot lowers the magazine and the total together and cancels out; the
+--- removal lowers the total alone. Rounds already returned are back in `total`,
+--- so this is what is gone and not yet returned. AddAmmoToPed hands exactly that
+--- back, never past what the lowering could have taken (`cap`). AddAmmoToPed
+--- moves the total and leaves the magazine alone, which grantAmmo already relies
+--- on. The loop carries on with the total the return makes, so neither the
+--- removal nor the return is ever a shot, and a tick that wrote or returned sends
+--- no report.
+---
+--- ONCE A DRAW, ON FOOT. The write comes only when GTA's fill lands on a ped on
+--- its own feet: seated, getting in, attached (the bus) or under a parachute, the
+--- hold lets go without writing, and a return asks the same. Before the write it
+--- lets go on any change in the total, a reload, another slot, DRAW_SETTLE_MS or
+--- canArm going false. After it, once `back` reaches `cap`, and without returning
+--- on a reload, another slot, a purchase (grantAmmo), the clamp, a total or a
+--- magazine that rose, canArm going false, or DRAW_RETURN_MS after the write.
 ---
 --- `id` nil is "nothing to hold". A magazine that GTA's fill would not change is
 --- never held, and neither is an empty one: GTA reloading an empty gun is real.
-local drawing = { id = nil, slot = -1, clip = -1, total = -1, at = 0 }
+local drawing = { id = nil, slot = -1, clip = -1, total = -1, at = 0,
+                  lowered = false, cap = 0, back = 0 }
 local DRAW_SETTLE_MS = 1500
+--- How long the hold watches for the removal after its write. On the next frame
+--- it shows on the next tick; the rest is margin for a hitch.
+local DRAW_RETURN_MS = 500
 
 --- THE LAST FEW REPORTS THIS CLIENT SENT, AND WHAT BECAME OF THEM.
 ---
@@ -567,6 +585,7 @@ local function applyActive(force)
            and clip > 0 and clip < math.min(w.clip, total) then
             drawing.id, drawing.slot = slot.id, inv.active
             drawing.clip, drawing.total, drawing.at = clip, total, GetGameTimer()
+            drawing.lowered, drawing.cap, drawing.back = false, 0, 0
         else
             drawing.id = nil
         end
@@ -638,6 +657,10 @@ local function grantAmmo(gain, loadTo)
     local slot = inv.slots[inv.active]
     local hash = hashOf(slot)
     if not hash or applied ~= hash then return end
+
+    -- A PURCHASE ENDS THE DRAW HOLD. These rounds move the total and the
+    -- magazine it measures against, and are not its to explain. See `drawing`.
+    drawing.id = nil
 
     local ped = PlayerPedId()
     if gain > 0 then AddAmmoToPed(ped, hash, gain) end
@@ -2238,26 +2261,67 @@ BR.Loop.register(BR.Loop.TICK, 'inv.ammo', function()
     if not reloading and total > granted then
         SetPedAmmo(ped, hash, granted)
         total = granted
+        -- The server's number, and the draw hold's baseline is not it.
+        drawing.id = nil
     end
 
     -- THE MAGAZINE THE GUN WAS DRAWN WITH, PUT BACK OVER GTA'S FILL ONCE, AND THE
-    -- ROUNDS THAT LOWERING TOOK OUT OF THE TOTAL RETURNED IN THE SAME TICK.
-    -- `total` stays the number read above, which is the draw's, so nothing below
-    -- reads this write as a shot. See `drawing`.
+    -- ROUNDS THAT LOWERING TOOK OUT OF THE TOTAL RETURNED ON WHICHEVER TICK THEY
+    -- ARE SEEN TO GO, inside the call or a frame later. `total` becomes what the
+    -- gun holds with them back, so nothing below reads the write, the removal or
+    -- the return as a shot, and a tick that wrote or returned reports nothing.
+    -- See `drawing`.
+    local holdWrote = false
     if drawing.id ~= nil then
         local _, c = GetAmmoInClip(ped, hash)
         c = c or 0
-        if drawing.id ~= slot.id or drawing.slot ~= inv.active or reloading
-           or total ~= drawing.total
-           or GetGameTimer() - drawing.at > DRAW_SETTLE_MS then
+        local onFoot = nil
+        if drawing.id ~= slot.id or drawing.slot ~= inv.active or reloading then
             drawing.id = nil
-        elseif c > drawing.clip then
-            drawing.id = nil
-            if not offFoot(ped) then
-                SetAmmoInClip(ped, hash, drawing.clip)
-                local left = GetAmmoInPedWeapon(ped, hash) or total
-                local removed = math.min(total - left, c - drawing.clip)
-                if removed > 0 then AddAmmoToPed(ped, hash, removed) end
+        elseif not drawing.lowered then
+            if total ~= drawing.total
+               or GetGameTimer() - drawing.at > DRAW_SETTLE_MS then
+                drawing.id = nil
+            elseif c > drawing.clip then
+                onFoot = not offFoot(ped)
+                if not onFoot then
+                    drawing.id = nil
+                else
+                    SetAmmoInClip(ped, hash, drawing.clip)
+                    drawing.lowered, drawing.at = true, GetGameTimer()
+                    drawing.cap, drawing.back = c - drawing.clip, 0
+                    holdWrote = true
+                    -- READ AGAIN: a removal inside the call shows here. No shot
+                    -- lands inside a tick, so the magazine is the one written.
+                    total = GetAmmoInPedWeapon(ped, hash) or total
+                    c = drawing.clip
+                end
+            end
+        end
+
+        if drawing.id ~= nil and drawing.lowered then
+            local removed = (drawing.total - total) - (drawing.clip - c)
+            if removed < 0 or c > drawing.clip then
+                -- A total or a magazine that ROSE: a purchase, a reload, a fill
+                -- landing again. Not the removal, and never answered with rounds.
+                drawing.id = nil
+            else
+                local give = math.min(removed, drawing.cap - drawing.back)
+                if give > 0 and onFoot == nil then onFoot = not offFoot(ped) end
+                if give > 0 and not onFoot then
+                    drawing.id = nil
+                else
+                    if give > 0 then
+                        AddAmmoToPed(ped, hash, give)
+                        drawing.back = drawing.back + give
+                        total = total + give
+                        holdWrote = true
+                    end
+                    if drawing.back >= drawing.cap
+                       or GetGameTimer() - drawing.at > DRAW_RETURN_MS then
+                        drawing.id = nil
+                    end
+                end
             end
         end
     end
@@ -2312,7 +2376,10 @@ BR.Loop.register(BR.Loop.TICK, 'inv.ammo', function()
         pushUi()
     end
 
-    if reloading then return end
+    -- A TICK THE DRAW HOLD WROTE OR RETURNED ON REPORTS NOTHING, so a removal it
+    -- has not seen through is never sent as shots. Shots fired meanwhile are
+    -- still below the baseline and go out with the next report. See `drawing`.
+    if reloading or holdWrote then return end
 
     -- THROWABLES REPORT REGARDLESS OF serverAmmo, and the server's INV_AMMO
     -- handler has the matching exception for the same reason.

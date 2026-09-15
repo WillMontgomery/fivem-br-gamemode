@@ -17558,8 +17558,14 @@ do
     local SMG = PDW.ammo
     local REFILL_FRAMES = 3
 
+    -- WHEN B TAKES THE ROUNDS. The owner's numbers fit the removal landing inside
+    -- the SetAmmoInClip call ('call') and on the next engine frame ('frame')
+    -- equally, so every section below runs under both. 'none' keeps the total,
+    -- which the owner's numbers rule out; it is run to prove the hold only ever
+    -- returns rounds the engine actually took.
+    local removal = 'call'
     local gun = { total = {}, clip = {}, stripped = false, drawing = nil,
-                  frames = 0 }
+                  frames = 0, removing = {} }
     -- client/inventory.lua's own writes; client/skydive.lua shares the natives.
     local calls = { clip = 0, add = 0 }
     --- Was the native called from client/inventory.lua? Level 3 is the caller of
@@ -17575,6 +17581,7 @@ do
 
     function RemoveAllPedWeapons()
         gun.total, gun.clip, gun.stripped, gun.drawing = {}, {}, true, nil
+        gun.removing = {}
     end
     function GiveWeaponToPed(_, hash, ammo)
         local h = BR.NormHash(hash)
@@ -17590,14 +17597,20 @@ do
         local h = BR.NormHash(hash)
         gun.total[h] = math.max(0, (gun.total[h] or 0) + (n or 0))
     end
-    -- B: lowering the magazine of the gun in hand takes rounds out of the total.
+    -- B: lowering the magazine of the gun in hand takes rounds out of the total,
+    -- inside the call or on the next frame (see `removal`). The magazine itself
+    -- reads the lower number at once under every timing.
     function SetAmmoInClip(_, hash, n)
         if mine() then calls.clip = calls.clip + 1 end
         local h = BR.NormHash(hash)
         local want = math.min(math.max(0, n or 0), gun.total[h] or 0)
         local was = gun.clip[h] or 0
         if inHand(h) and want < was then
-            gun.total[h] = gun.total[h] - (was - want)
+            if removal == 'call' then
+                gun.total[h] = gun.total[h] - (was - want)
+            elseif removal == 'frame' then
+                gun.removing[h] = (gun.removing[h] or 0) + (was - want)
+            end
         end
         gun.clip[h] = want
     end
@@ -17619,9 +17632,15 @@ do
         end
     end
 
-    --- A: one engine frame, before each tick. GTA fills the magazine of a gun
-    --- that has just come up out of its own total.
+    --- A: one engine frame, before each tick. B's rounds leave the total if they
+    --- were left for this frame, and GTA fills the magazine of a gun that has
+    --- just come up out of its own total.
     local function frame()
+        for h, n in pairs(gun.removing) do
+            gun.total[h] = math.max(0, (gun.total[h] or 0) - n)
+            gun.clip[h]  = math.min(gun.clip[h] or 0, gun.total[h])
+        end
+        gun.removing = {}
         if not gun.drawing then return end
         gun.frames = gun.frames - 1
         if gun.frames > 0 then return end
@@ -17637,7 +17656,8 @@ do
     -- models it, over a two-slot bag. Wall shots raise no weaponDamageEvent, so
     -- the report is the only thing that charges them.
     local weapons = { HP, PDW }
-    local srv = { active = 1, clip = {}, ammo = {} }
+    -- `said`: every total an INV_AMMO about the PDW carried, in order.
+    local srv = { active = 1, clip = {}, ammo = {}, said = {} }
     local function push()
         local slots = {}
         for i, w in ipairs(weapons) do
@@ -17655,6 +17675,7 @@ do
         for _, s in ipairs(out) do
             local r = s.args[1]
             local w = s.name == BR.Net.INV_AMMO and weapons[r.slot] or nil
+            if w == PDW then srv.said[#srv.said + 1] = r.total end
             if w and r.was == srv.clip[r.slot] + srv.ammo[w.ammo] then
                 local lost = srv.clip[r.slot] + srv.ammo[w.ammo] - r.total
                 if lost > 0 then
@@ -17722,6 +17743,7 @@ do
     local function replay(script)
         fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
         gun.total, gun.clip, gun.stripped, gun.drawing = {}, {}, false, nil
+        gun.removing = {}
         pedWeapon = nil
         BR.State.me.state = BR.PlayerState.ALIVE
         BR.State.landed = true
@@ -17778,74 +17800,147 @@ do
         return table.concat(trace, ', '), lost, moved
     end
 
-    -- ── 1. THE OWNER'S SWITCHES: five at a wall, then the PDW put away and drawn
-    --       again three times with nothing else done.
-    local trace, lost, moved = replay({ 'buy', 'draw', 'fire', 'stow', 'draw',
-                                        'stow', 'draw', 'stow', 'draw' })
-    ok(trace == 'bag 30, 30/30, 25/30, bag 25, 25/30, bag 25, 25/30, bag 25, 25/30',
-       'EVERY REDRAW OF A PDW PUT AWAY AT 25/30 READS 25/30', trace)
-    ok(lost == nil, 'and no round is made or lost, in the gun or on the server',
-       lost)
-    ok(moved == nil,
-       'and no plate on the way up reads anything else, so the magazine never empties',
-       moved)
-    ok(gun.clip[PH] == 25 and gun.total[PH] == 55,
-       'the gun itself holds 25 in the magazine and 55 in all',
-       ('gun %s/%s'):format(tostring(gun.clip[PH]), tostring(gun.total[PH])))
-
-    -- ── 2. FIVE MORE AFTER THE REDRAW, AND THE PDW PUT AWAY AND DRAWN AGAIN.
-    trace, lost, moved = replay({ 'buy', 'draw', 'fire', 'stow', 'draw', 'fire',
-                                  'stow', 'draw' })
-    ok(trace == 'bag 30, 30/30, 25/30, bag 25, 25/30, 20/30, bag 20, 20/30',
-       'FIVE MORE READ 20/30, THE BAG READS 20, AND THE PDW COMES BACK 20/30', trace)
-    ok(lost == nil, 'with ten fired out of sixty on both sides of the wire', lost)
-    ok(moved == nil, 'and no plate on either redraw moved without input', moved)
-    ok(gun.clip[PH] == 20 and gun.total[PH] == 50
-       and srv.clip[2] == 20 and srv.ammo[SMG] == 30,
-       'the gun holds 20 of 50, and the server says 20 and 30',
-       ('gun %s/%s, server %d/%d'):format(tostring(gun.clip[PH]),
-           tostring(gun.total[PH]), srv.clip[2], srv.ammo[SMG]))
-
-    -- ── 3. ONE WRITE A DRAW, ON FOOT ONLY. The PDW put away at 25/30 comes up in
-    --       a posture, and the hold's writes are counted from after the grant
-    --       until well past GTA's fill. `after` runs one tick into the draw,
-    --       before the fill lands.
-    local function redraw(before, after)
+    --- The PDW put away at 25/30 and drawn again, ticked one at a time until the
+    --- hold has written. Returns whether it wrote, with the counters zeroed at
+    --- the select so everything after the grant is counted.
+    local function upToWrite()
         replay({ 'buy', 'draw', 'fire', 'stow' })
-        if before then before() end
+        draw = { high = -1, low = math.huge }
         select(2)
         calls.clip, calls.add = 0, 0
-        tick(1)
-        if after then after() end
-        tick(30)
-        local counted = ('SetAmmoInClip %d, AddAmmoToPed %d, gun %s/%s'):format(
-            calls.clip, calls.add, tostring(gun.clip[PH]), tostring(gun.total[PH]))
-        local wrote = calls.clip + calls.add
-        inVehicle, vehicle, vehicleSeat = false, 0, nil
-        attached, chute = false, BR.Native.ChuteState.NONE
-        return calls.clip, calls.add, wrote, counted
+        srv.said = {}
+        for _ = 1, 20 do
+            tick(1)
+            if calls.clip > 0 then return true end
+        end
+        return false
+    end
+    local function gunIs()
+        return ('gun %s/%s, server %d/%d, SetAmmoInClip %d, AddAmmoToPed %d'):format(
+            tostring(gun.clip[PH]), tostring(gun.total[PH]), srv.clip[2],
+            srv.ammo[SMG], calls.clip, calls.add)
     end
 
-    local c, a, wrote, counted = redraw()
-    ok(c == 1 and a == 1 and gun.clip[PH] == 25 and gun.total[PH] == 55,
-       'ON FOOT THE HOLD WRITES ONCE: one SetAmmoInClip and one AddAmmoToPed',
-       counted)
-    c, a, wrote, counted = redraw(function()
-        inVehicle, vehicle, vehicleSeat = true, 77, 0
-    end)
-    ok(wrote == 0, 'IN A SEAT IT WRITES NOTHING', counted)
-    c, a, wrote, counted = redraw(function() attached = true end)
-    ok(wrote == 0, 'ATTACHED TO THE BUS IT WRITES NOTHING', counted)
-    c, a, wrote, counted = redraw(function()
-        chute = BR.Native.ChuteState.OPEN
-    end)
-    ok(wrote == 0, 'UNDER A CANOPY IT WRITES NOTHING', counted)
-    c, a, wrote, counted = redraw(nil, function()
-        BR.State.me.state = BR.PlayerState.FREEFALL
-        BR.State.landed = false
-    end)
-    ok(wrote == 0, 'AND ONCE THE HAND IS NOT OURS (canArm false) IT WRITES NOTHING',
-       counted)
+    for _, timing in ipairs({ 'call', 'frame', 'none' }) do
+        removal = timing
+        local function say(s) return ('[%s] %s'):format(timing, s) end
+        -- What the hold hands back on a redraw: what B took, and nothing when
+        -- B took nothing.
+        local returns = timing == 'none' and 0 or 1
+
+        -- ── 1. THE OWNER'S SWITCHES: five at a wall, then the PDW put away and
+        --       drawn again three times with nothing else done.
+        local trace, lost, moved = replay({ 'buy', 'draw', 'fire', 'stow', 'draw',
+                                            'stow', 'draw', 'stow', 'draw' })
+        ok(trace == 'bag 30, 30/30, 25/30, bag 25, 25/30, bag 25, 25/30, bag 25, 25/30',
+           say('EVERY REDRAW OF A PDW PUT AWAY AT 25/30 READS 25/30'), trace)
+        ok(lost == nil,
+           say('and no round is made or lost, in the gun or on the server'), lost)
+        ok(moved == nil,
+           say('and no plate on the way up reads anything else, so the magazine never empties'),
+           moved)
+        ok(gun.clip[PH] == 25 and gun.total[PH] == 55,
+           say('the gun itself holds 25 in the magazine and 55 in all'),
+           ('gun %s/%s'):format(tostring(gun.clip[PH]), tostring(gun.total[PH])))
+
+        -- ── 2. FIVE MORE AFTER THE REDRAW, AND THE PDW PUT AWAY AND DRAWN AGAIN.
+        trace, lost, moved = replay({ 'buy', 'draw', 'fire', 'stow', 'draw', 'fire',
+                                      'stow', 'draw' })
+        ok(trace == 'bag 30, 30/30, 25/30, bag 25, 25/30, 20/30, bag 20, 20/30',
+           say('FIVE MORE READ 20/30, THE BAG READS 20, AND THE PDW COMES BACK 20/30'),
+           trace)
+        ok(lost == nil, say('with ten fired out of sixty on both sides of the wire'),
+           lost)
+        ok(moved == nil, say('and no plate on either redraw moved without input'),
+           moved)
+        ok(gun.clip[PH] == 20 and gun.total[PH] == 50
+           and srv.clip[2] == 20 and srv.ammo[SMG] == 30,
+           say('the gun holds 20 of 50, and the server says 20 and 30'),
+           ('gun %s/%s, server %d/%d'):format(tostring(gun.clip[PH]),
+               tostring(gun.total[PH]), srv.clip[2], srv.ammo[SMG]))
+
+        -- ── 3. ONE WRITE A DRAW, ON FOOT ONLY. The PDW put away at 25/30 comes
+        --       up in a posture, and the hold's writes are counted from after the
+        --       grant until well past GTA's fill. `after` runs one tick into the
+        --       draw, before the fill lands.
+        local function redraw(before, after)
+            replay({ 'buy', 'draw', 'fire', 'stow' })
+            if before then before() end
+            select(2)
+            calls.clip, calls.add = 0, 0
+            tick(1)
+            if after then after() end
+            tick(30)
+            local counted = gunIs()
+            local wrote = calls.clip + calls.add
+            inVehicle, vehicle, vehicleSeat = false, 0, nil
+            attached, chute = false, BR.Native.ChuteState.NONE
+            return calls.clip, calls.add, wrote, counted
+        end
+
+        local c, a, wrote, counted = redraw()
+        ok(c == 1 and a == returns and gun.clip[PH] == 25 and gun.total[PH] == 55
+           and srv.clip[2] == 25 and srv.ammo[SMG] == 30,
+           say(('ON FOOT THE HOLD WRITES ONCE: one SetAmmoInClip and %d AddAmmoToPed')
+               :format(returns)),
+           counted)
+        c, a, wrote, counted = redraw(function()
+            inVehicle, vehicle, vehicleSeat = true, 77, 0
+        end)
+        ok(wrote == 0, say('IN A SEAT IT WRITES NOTHING'), counted)
+        c, a, wrote, counted = redraw(function() attached = true end)
+        ok(wrote == 0, say('ATTACHED TO THE BUS IT WRITES NOTHING'), counted)
+        c, a, wrote, counted = redraw(function()
+            chute = BR.Native.ChuteState.OPEN
+        end)
+        ok(wrote == 0, say('UNDER A CANOPY IT WRITES NOTHING'), counted)
+        c, a, wrote, counted = redraw(nil, function()
+            BR.State.me.state = BR.PlayerState.FREEFALL
+            BR.State.landed = false
+        end)
+        ok(wrote == 0,
+           say('AND ONCE THE HAND IS NOT OURS (canArm false) IT WRITES NOTHING'),
+           counted)
+
+        -- ── 4. A SHOT BETWEEN THE WRITE AND THE NEXT TICK. Under 'frame' it lands
+        --       in the same gap as B's removal, so that tick reads both at once.
+        local wroteOnce = upToWrite()
+        shoot(1)
+        tick(30)
+        local seen = draw
+        draw = nil
+        local low = math.huge
+        for _, n in ipairs(srv.said) do low = math.min(low, n) end
+        ok(wroteOnce and calls.clip == 1 and calls.add == returns
+           and gun.clip[PH] == 24 and gun.total[PH] == 54,
+           say('A SHOT INSIDE THE CORRECTION LEAVES THE GUN 24 OF 54, one write and the return'),
+           gunIs())
+        ok(srv.clip[2] == 24 and srv.ammo[SMG] == 30 and low == 54
+           and srv.said[#srv.said] == 54,
+           say('and the server charges that one round exactly once, and never hears a lower total'),
+           ('%s, reported %s'):format(gunIs(), table.concat(srv.said, ',')))
+        ok(seen.high == 25 and seen.low == 24 and plate.clip == 24
+           and plate.reserve == 30,
+           say('and the plate reads 25/30 up to the shot and 24/30 after it'),
+           ('plate high %s low %s, now %s/%s'):format(tostring(seen.high),
+               tostring(seen.low), tostring(plate.clip), tostring(plate.reserve)))
+
+        -- ── 5. THE HOLD LETS GO. Thirty rounds bought the tick after the write
+        --       are thirty rounds: nothing more is returned, nothing is lowered.
+        wroteOnce = upToWrite()
+        tick(1)
+        answer()
+        srv.ammo[SMG] = srv.ammo[SMG] + 30
+        push()
+        tick(30)
+        ok(wroteOnce and calls.clip == 1 and calls.add == returns + 1
+           and gun.clip[PH] == 25 and gun.total[PH] == 85
+           and srv.clip[2] == 25 and srv.ammo[SMG] == 60
+           and plate.clip == 25 and plate.reserve == 60,
+           say('A PURCHASE AFTER THE CORRECTION ADDS EXACTLY WHAT WAS BOUGHT, and the hold writes no more'),
+           gunIs())
+    end
+    draw = nil
 
     listening = false
     GiveWeaponToPed      = saved.give
