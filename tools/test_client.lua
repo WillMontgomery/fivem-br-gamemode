@@ -318,6 +318,11 @@ function HasModelLoaded() return true end
 function CreateObjectNoOffset() return 0 end
 function DoesEntityExist() return false end
 function IsPedInAnyVehicle() return inVehicle end
+--- Not attached to anything and wearing no parachute: a ped standing on the
+--- ground. client/inventory.lua reads both before its draw hold writes a
+--- magazine; N4b drives them.
+function IsEntityAttached() return false end
+function GetPedParachuteState() return -1 end
 --- WHAT THE ENGINE SAYS IS IN THE HAND, and it is a variable rather than a
 --- constant because two things read it and they disagree about what a `false`
 --- means. The ammo report treats "no answer" as a reason to say nothing; the
@@ -17499,6 +17504,368 @@ do
     IsPedReloading      = savedReload
     pedWeapon = nil
     fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+end
+
+-- ======================================================================== --
+-- N4b. A STOWED GUN COMES BACK WITH THE MAGAZINE IT WAS PUT AWAY WITH, AND NO
+--      ROUND IS MADE OR LOST PUTTING IT THERE
+-- ======================================================================== --
+--
+-- #317. Owner, playtesting 94fbf74: a heavy pistol in the hand, an empty Combat
+-- PDW in the bag, sixty SMG rounds bought. Up with the PDW, five at a wall:
+-- 25/30. Pistol, then PDW again with nothing else done: 30/25.
+--
+-- 822bfe6 wrote the magazine back down and, on d0af8cf, destroyed rounds on
+-- every switch: 25/30, then 20/25, bag 15, 15/15, bag 30, 30/0. The block that
+-- passed it kept the total when a magazine was lowered. The ped below is the
+-- engine as calibrated against the owner's numbers:
+--
+--   A. applyActive's draw (GiveWeaponToPed with 0, SetPedAmmo T, SetAmmoInClip
+--      c, SetCurrentPedWeapon) comes up with min(clip size, T) in the magazine
+--      inside the first second, and the SetAmmoInClip written before it does not
+--      stick. REFILL_FRAMES ticks here.
+--   B. A SetAmmoInClip that LOWERS the magazine of the gun in hand lowers
+--      GetAmmoInPedWeapon by the same amount. Those rounds are removed, not put
+--      behind the magazine.
+--
+-- Run over 822bfe6's inventory.lua, section 1 replays the owner's numbers
+-- exactly; over 3cae792's, the plain refill (30/25 on every redraw, total kept).
+-- AddAmmoToPed adds to the total and leaves the magazine alone, as N4's ped and
+-- grantAmmo both take it.
+describe('a stowed gun keeps its magazine, and no round is made or lost')
+do
+    local saved = {
+        give = GiveWeaponToPed, remove = RemoveAllPedWeapons,
+        setAmmo = SetPedAmmo, addAmmo = AddAmmoToPed, setClip = SetAmmoInClip,
+        getAmmo = GetAmmoInPedWeapon, getClip = GetAmmoInClip,
+        current = SetCurrentPedWeapon, hasGot = HasPedGotWeapon,
+        reload = IsPedReloading, attached = IsEntityAttached,
+        chute = GetPedParachuteState,
+    }
+
+    -- NO PARACHUTE IN THE INVENTORY, for the reason N2 gives, and none open: an
+    -- earlier block leaves the canopy OPEN for every block after it.
+    local attached, chute = false, BR.Native.ChuteState.NONE
+    function HasPedGotWeapon() return false end
+    function IsPedReloading() return false end
+    function IsEntityAttached() return attached end
+    function GetPedParachuteState() return chute end
+    inVehicle, vehicle, vehicleSeat = false, 0, nil
+
+    local HP  = BR.Config.WeaponById['heavypistol']
+    local PDW = BR.Config.WeaponById['combatpdw']
+    local PH  = BR.NormHash(PDW.hash)
+    local SMG = PDW.ammo
+    local REFILL_FRAMES = 3
+
+    local gun = { total = {}, clip = {}, stripped = false, drawing = nil,
+                  frames = 0 }
+    -- client/inventory.lua's own writes; client/skydive.lua shares the natives.
+    local calls = { clip = 0, add = 0 }
+    --- Was the native called from client/inventory.lua? Level 3 is the caller of
+    --- the stub that asked.
+    local function mine()
+        local info = debug.getinfo(3, 'S')
+        return info ~= nil
+            and info.source:find('client/inventory.lua', 1, true) ~= nil
+    end
+    local function inHand(h)
+        return type(pedWeapon) == 'number' and BR.NormHash(pedWeapon) == h
+    end
+
+    function RemoveAllPedWeapons()
+        gun.total, gun.clip, gun.stripped, gun.drawing = {}, {}, true, nil
+    end
+    function GiveWeaponToPed(_, hash, ammo)
+        local h = BR.NormHash(hash)
+        gun.total[h] = (gun.total[h] or 0) + (ammo or 0)
+    end
+    function SetPedAmmo(_, hash, n)
+        local h = BR.NormHash(hash)
+        gun.total[h] = math.max(0, n or 0)
+        gun.clip[h]  = math.min(gun.clip[h] or 0, gun.total[h])
+    end
+    function AddAmmoToPed(_, hash, n)
+        if mine() then calls.add = calls.add + 1 end
+        local h = BR.NormHash(hash)
+        gun.total[h] = math.max(0, (gun.total[h] or 0) + (n or 0))
+    end
+    -- B: lowering the magazine of the gun in hand takes rounds out of the total.
+    function SetAmmoInClip(_, hash, n)
+        if mine() then calls.clip = calls.clip + 1 end
+        local h = BR.NormHash(hash)
+        local want = math.min(math.max(0, n or 0), gun.total[h] or 0)
+        local was = gun.clip[h] or 0
+        if inHand(h) and want < was then
+            gun.total[h] = gun.total[h] - (was - want)
+        end
+        gun.clip[h] = want
+    end
+    function GetAmmoInPedWeapon(_, hash)
+        local h = BR.NormHash(hash)
+        if not inHand(h) then return 0 end
+        return gun.total[h] or 0
+    end
+    function GetAmmoInClip(_, hash)
+        local h = BR.NormHash(hash)
+        if not inHand(h) then return true, 0 end
+        return true, gun.clip[h] or 0
+    end
+    function SetCurrentPedWeapon(_, hash)
+        pedWeapon = hash
+        if gun.stripped then
+            gun.stripped, gun.drawing = false, BR.NormHash(hash)
+            gun.frames = REFILL_FRAMES
+        end
+    end
+
+    --- A: one engine frame, before each tick. GTA fills the magazine of a gun
+    --- that has just come up out of its own total.
+    local function frame()
+        if not gun.drawing then return end
+        gun.frames = gun.frames - 1
+        if gun.frames > 0 then return end
+        local h = gun.drawing
+        gun.drawing = nil
+        local w = BR.Config.WeaponByHash[h]
+        if w and w.clip and inHand(h) then
+            gun.clip[h] = math.min(w.clip, gun.total[h] or 0)
+        end
+    end
+
+    -- THE SERVER: server/inventory.lua's INV_AMMO floor under serverAmmo, as N4
+    -- models it, over a two-slot bag. Wall shots raise no weaponDamageEvent, so
+    -- the report is the only thing that charges them.
+    local weapons = { HP, PDW }
+    local srv = { active = 1, clip = {}, ammo = {} }
+    local function push()
+        local slots = {}
+        for i, w in ipairs(weapons) do
+            slots[i] = { id = w.id, label = w.label, kind = BR.ItemKind.WEAPON,
+                         rarity = 3, count = 1, clip = srv.clip[i],
+                         pool = w.ammo }
+        end
+        local ammo = {}
+        for k, n in pairs(srv.ammo) do ammo[k] = n end
+        fire(BR.Net.INV_SET, { slots = slots, ammo = ammo, active = srv.active })
+    end
+    local function answer()
+        local out = sent
+        sent = {}
+        for _, s in ipairs(out) do
+            local r = s.args[1]
+            local w = s.name == BR.Net.INV_AMMO and weapons[r.slot] or nil
+            if w and r.was == srv.clip[r.slot] + srv.ammo[w.ammo] then
+                local lost = srv.clip[r.slot] + srv.ammo[w.ammo] - r.total
+                if lost > 0 then
+                    local c = srv.clip[r.slot] - lost
+                    if c < 0 then
+                        srv.ammo[w.ammo] = math.max(0, srv.ammo[w.ammo] + c)
+                        c = 0
+                    end
+                    if c <= 0 then
+                        local moved = math.min(w.clip, srv.ammo[w.ammo])
+                        c, srv.ammo[w.ammo] = moved, srv.ammo[w.ammo] - moved
+                    end
+                    srv.clip[r.slot] = c
+                    push()
+                end
+            end
+        end
+    end
+
+    local function tick(n)
+        for _ = 1, n do
+            frame()
+            fakeTime = fakeTime + 100
+            BR.Loop.step(BR.Loop.TICK)
+            answer()
+        end
+    end
+    --- A number key. What the client already said is answered first, because the
+    --- server takes its messages in the order they were sent.
+    local function select(i)
+        answer()
+        srv.active = i
+        push()
+    end
+    --- Rounds at a wall, one a tick, the engine's own arithmetic.
+    local function shoot(n)
+        for _ = 1, n do
+            gun.total[PH] = gun.total[PH] - 1
+            gun.clip[PH]  = math.max(0, gun.clip[PH] - 1)
+            tick(1)
+        end
+    end
+
+    -- WHAT THE BAR WAS HANDED: the plate, and the PDW's slot in the bag. While a
+    -- draw is watched, the highest and lowest magazine any PDW plate printed.
+    local plate, draw, listening = {}, nil, true
+    AddEventHandler('br:ui:sendLocal', function(kind, p)
+        if not listening or kind ~= BR.Nui.INV or type(p) ~= 'table' then return end
+        local a = p.slots and p.slots[p.active or 0]
+        local b = p.slots and p.slots[2]
+        plate = { active = p.active, reserve = p.reserve,
+                  clip = type(a) == 'table' and a.clip or nil,
+                  bag  = type(b) == 'table' and b.clip or nil }
+        if draw and p.active == 2 and plate.clip then
+            draw.high = math.max(draw.high, plate.clip)
+            draw.low  = math.min(draw.low, plate.clip)
+        end
+    end)
+
+    --- One life on foot, one script of 'buy', 'draw', 'fire' (five rounds) and
+    --- 'stow'. Returns what the owner read after each step ("25/30" on the
+    --- plate, "bag 25" on the stowed PDW), the first step at which a round was
+    --- made or lost in the gun or on the server, and the first draw whose plate
+    --- moved with no input.
+    local function replay(script)
+        fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+        gun.total, gun.clip, gun.stripped, gun.drawing = {}, {}, false, nil
+        pedWeapon = nil
+        BR.State.me.state = BR.PlayerState.ALIVE
+        BR.State.landed = true
+        fire(BR.Net.STATE, { state = BR.MatchState.PLAYING })
+        fakeTime = fakeTime + 5000
+        sent = {}
+        srv.active, srv.clip = 1, { HP.clip, 0 }
+        srv.ammo = { [HP.ammo] = 0, [SMG] = 0 }
+        push()
+        tick(2)
+
+        local trace, lost, moved, fired, bought = {}, nil, nil, 0, false
+        for n, step in ipairs(script) do
+            if step == 'buy' then
+                -- give() loads the empty magazine as the rounds arrive.
+                srv.clip[2], srv.ammo[SMG] = PDW.clip, 60 - PDW.clip
+                bought = true
+                push()
+                tick(2)
+            elseif step == 'draw' then
+                draw = { high = -1, low = math.huge }
+                select(2)
+                tick(15)
+                if moved == nil and draw.high ~= draw.low then
+                    moved = ('step %d: the plate read %d and %d'):format(
+                        n, draw.low, draw.high)
+                end
+                draw = nil
+            elseif step == 'stow' then
+                select(1)
+                tick(4)
+            elseif step == 'fire' then
+                shoot(5)
+                fired = fired + 5
+                tick(4)
+            end
+
+            if step == 'buy' or step == 'stow' then
+                trace[#trace + 1] = ('bag %s'):format(tostring(plate.bag))
+            else
+                trace[#trace + 1] = ('%s/%s'):format(tostring(plate.clip),
+                                                     tostring(plate.reserve))
+            end
+
+            local want = 60 - fired
+            local held = srv.clip[2] + srv.ammo[SMG]
+            local inGun = inHand(PH) and gun.total[PH] or want
+            if bought and lost == nil and (held ~= want or inGun ~= want) then
+                lost = ('step %d (%s): server %d, gun %s, bought 60 fired %d'):format(
+                    n, step, held, tostring(inHand(PH) and gun.total[PH] or '-'),
+                    fired)
+            end
+        end
+        return table.concat(trace, ', '), lost, moved
+    end
+
+    -- ── 1. THE OWNER'S SWITCHES: five at a wall, then the PDW put away and drawn
+    --       again three times with nothing else done.
+    local trace, lost, moved = replay({ 'buy', 'draw', 'fire', 'stow', 'draw',
+                                        'stow', 'draw', 'stow', 'draw' })
+    ok(trace == 'bag 30, 30/30, 25/30, bag 25, 25/30, bag 25, 25/30, bag 25, 25/30',
+       'EVERY REDRAW OF A PDW PUT AWAY AT 25/30 READS 25/30', trace)
+    ok(lost == nil, 'and no round is made or lost, in the gun or on the server',
+       lost)
+    ok(moved == nil,
+       'and no plate on the way up reads anything else, so the magazine never empties',
+       moved)
+    ok(gun.clip[PH] == 25 and gun.total[PH] == 55,
+       'the gun itself holds 25 in the magazine and 55 in all',
+       ('gun %s/%s'):format(tostring(gun.clip[PH]), tostring(gun.total[PH])))
+
+    -- ── 2. FIVE MORE AFTER THE REDRAW, AND THE PDW PUT AWAY AND DRAWN AGAIN.
+    trace, lost, moved = replay({ 'buy', 'draw', 'fire', 'stow', 'draw', 'fire',
+                                  'stow', 'draw' })
+    ok(trace == 'bag 30, 30/30, 25/30, bag 25, 25/30, 20/30, bag 20, 20/30',
+       'FIVE MORE READ 20/30, THE BAG READS 20, AND THE PDW COMES BACK 20/30', trace)
+    ok(lost == nil, 'with ten fired out of sixty on both sides of the wire', lost)
+    ok(moved == nil, 'and no plate on either redraw moved without input', moved)
+    ok(gun.clip[PH] == 20 and gun.total[PH] == 50
+       and srv.clip[2] == 20 and srv.ammo[SMG] == 30,
+       'the gun holds 20 of 50, and the server says 20 and 30',
+       ('gun %s/%s, server %d/%d'):format(tostring(gun.clip[PH]),
+           tostring(gun.total[PH]), srv.clip[2], srv.ammo[SMG]))
+
+    -- ── 3. ONE WRITE A DRAW, ON FOOT ONLY. The PDW put away at 25/30 comes up in
+    --       a posture, and the hold's writes are counted from after the grant
+    --       until well past GTA's fill. `after` runs one tick into the draw,
+    --       before the fill lands.
+    local function redraw(before, after)
+        replay({ 'buy', 'draw', 'fire', 'stow' })
+        if before then before() end
+        select(2)
+        calls.clip, calls.add = 0, 0
+        tick(1)
+        if after then after() end
+        tick(30)
+        local counted = ('SetAmmoInClip %d, AddAmmoToPed %d, gun %s/%s'):format(
+            calls.clip, calls.add, tostring(gun.clip[PH]), tostring(gun.total[PH]))
+        local wrote = calls.clip + calls.add
+        inVehicle, vehicle, vehicleSeat = false, 0, nil
+        attached, chute = false, BR.Native.ChuteState.NONE
+        return calls.clip, calls.add, wrote, counted
+    end
+
+    local c, a, wrote, counted = redraw()
+    ok(c == 1 and a == 1 and gun.clip[PH] == 25 and gun.total[PH] == 55,
+       'ON FOOT THE HOLD WRITES ONCE: one SetAmmoInClip and one AddAmmoToPed',
+       counted)
+    c, a, wrote, counted = redraw(function()
+        inVehicle, vehicle, vehicleSeat = true, 77, 0
+    end)
+    ok(wrote == 0, 'IN A SEAT IT WRITES NOTHING', counted)
+    c, a, wrote, counted = redraw(function() attached = true end)
+    ok(wrote == 0, 'ATTACHED TO THE BUS IT WRITES NOTHING', counted)
+    c, a, wrote, counted = redraw(function()
+        chute = BR.Native.ChuteState.OPEN
+    end)
+    ok(wrote == 0, 'UNDER A CANOPY IT WRITES NOTHING', counted)
+    c, a, wrote, counted = redraw(nil, function()
+        BR.State.me.state = BR.PlayerState.FREEFALL
+        BR.State.landed = false
+    end)
+    ok(wrote == 0, 'AND ONCE THE HAND IS NOT OURS (canArm false) IT WRITES NOTHING',
+       counted)
+
+    listening = false
+    GiveWeaponToPed      = saved.give
+    RemoveAllPedWeapons  = saved.remove
+    SetPedAmmo           = saved.setAmmo
+    AddAmmoToPed         = saved.addAmmo
+    SetAmmoInClip        = saved.setClip
+    GetAmmoInPedWeapon   = saved.getAmmo
+    GetAmmoInClip        = saved.getClip
+    SetCurrentPedWeapon  = saved.current
+    HasPedGotWeapon      = saved.hasGot
+    IsPedReloading       = saved.reload
+    IsEntityAttached     = saved.attached
+    GetPedParachuteState = saved.chute
+    inVehicle, vehicle, vehicleSeat = false, 0, nil
+    pedWeapon = nil
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.State.landed = true
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+    sent = {}
 end
 
 -- ======================================================================== --

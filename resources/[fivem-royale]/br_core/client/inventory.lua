@@ -125,6 +125,35 @@ local lastReport = { total = -1, clip = -1, at = 0 }
 --- with one clock in it. See uiReserve.
 local shown = { id = nil, clip = -1, total = -1 }
 
+--- THE MAGAZINE A GUN WAS JUST DRAWN WITH, UNTIL GTA HAS FILLED IT.
+---
+--- ═══ THE PDW CAME BACK FULL (#317), AND THE FIRST FIX DESTROYED ROUNDS ═══
+---
+--- A PDW put away at 25/30 came back 30/25 (owner, playtesting 94fbf74). GTA
+--- fills the magazine to min(clip size, total) within a second of the draw, over
+--- the SetAmmoInClip applyActive writes before it. 822bfe6 wrote the magazine
+--- back down, and a SetAmmoInClip that LOWERS the magazine of the gun in hand
+--- takes those rounds out of the total. Its next tick read the lower total as
+--- shots, lowered again, and the INV_AMMO floor charged both (owner, on d0af8cf:
+--- 25/30, then 20/25, bag 15, 15/15, bag 30, 30/0).
+---
+--- SO THE ROUNDS GO BACK IN THE SAME TICK. The report loop lowers the magazine,
+--- reads the total, and AddAmmoToPed returns exactly what that read shows was
+--- removed, never more than the lowering could have removed. AddAmmoToPed moves
+--- the total and leaves the magazine alone, which grantAmmo already relies on.
+--- The total the loop then measures is the one the draw set, so its own write is
+--- never a shot.
+---
+--- ONCE A DRAW, ON FOOT. The hold lets go on its write, on any change in the
+--- total (a shot, a purchase), a reload, another slot, DRAW_SETTLE_MS or canArm
+--- going false, and lets go WITHOUT writing when GTA's fill lands on a ped that
+--- is seated, getting in, attached (the bus) or under a parachute.
+---
+--- `id` nil is "nothing to hold". A magazine that GTA's fill would not change is
+--- never held, and neither is an empty one: GTA reloading an empty gun is real.
+local drawing = { id = nil, slot = -1, clip = -1, total = -1, at = 0 }
+local DRAW_SETTLE_MS = 1500
+
 --- THE LAST FEW REPORTS THIS CLIENT SENT, AND WHAT BECAME OF THEM.
 ---
 --- ═══ THE FIFTH DOOR WAS A MESSAGE IN FLIGHT (owner, 2026-08-23, third
@@ -394,6 +423,24 @@ end
 --- @return boolean
 local function yes(v) return v == true or v == 1 end
 
+--- IS THE PED ANYWHERE BUT ON ITS OWN FEET? Seated, getting in (the same native
+--- asked with `true`), attached to something (client/bus.lua rides the ped
+--- attached to the plane), or falling with or under a parachute. A chute merely
+--- worn, ON_BACK, is standing.
+---
+--- Asked only when the draw hold is about to write (see `drawing`). Read with
+--- BR.NativeTruthy, so any answer but nil, false and 0 is OFF foot: a wrong "off
+--- foot" leaves GTA's full magazine, a wrong "on foot" writes one in a seat.
+--- @param ped integer
+--- @return boolean
+local function offFoot(ped)
+    if inVehicle() then return true end
+    if BR.NativeTruthy(IsPedInAnyVehicle(ped, true)) then return true end
+    if BR.NativeTruthy(IsEntityAttached(ped)) then return true end
+    local cs, chute = GetPedParachuteState(ped), BR.Native.ChuteState
+    return cs == chute.OPENING or cs == chute.OPEN or cs == chute.FREEFALL
+end
+
 --- When we last told the engine this player may fire from a seat, and how many
 --- times. Read by /brdriveby so "did we ever ask?" is an observation rather
 --- than an argument about which branch ran.
@@ -513,6 +560,17 @@ local function applyActive(force)
         -- magazine without asking the engine. See `shown`.
         shown.id, shown.clip, shown.total = slot.id, clip, total
 
+        -- AND GTA FILLS THIS MAGAZINE AS THE GUN COMES UP. Recorded for the
+        -- report loop, which puts `clip` back once, on foot. See `drawing`.
+        local w = BR.Config.WeaponById[slot.id]
+        if slot.kind == BR.ItemKind.WEAPON and w and w.clip and not w.melee
+           and clip > 0 and clip < math.min(w.clip, total) then
+            drawing.id, drawing.slot = slot.id, inv.active
+            drawing.clip, drawing.total, drawing.at = clip, total, GetGameTimer()
+        else
+            drawing.id = nil
+        end
+
         -- AND THE ENGINE MAY NOT PICK THE WEAPON. Without this the engine
         -- swaps to "something better" on pickup and on empty, which fights the
         -- active-slot model for control of the hand.
@@ -529,6 +587,7 @@ local function applyActive(force)
         -- last gun's number here would let it be printed over whatever lands in
         -- the hand next.
         shown.id, shown.clip, shown.total = nil, -1, -1
+        drawing.id = nil
     end
 
     applied = want
@@ -686,6 +745,7 @@ local function clearLocal()
     -- new weapons and the first INV_SET of it must not be printed over with the
     -- last life's magazine.
     shown.id, shown.clip, shown.total = nil, -1, -1
+    drawing.id = nil
     -- The deficits go with the guns they were measured on. A new match hands
     -- out new weapons and a corpse's rifle is not this player's problem any
     -- more; carrying the numbers over would dock the next magazine.
@@ -1640,6 +1700,8 @@ BR.Loop.register(BR.Loop.TICK, 'inv.apply', function()
         -- on the way down (nothing, today -- but the bus ride is where a
         -- future starting kit would arrive).
         applied = nil
+        -- Nor is the magazine of a gun still coming up. See `drawing`.
+        drawing.id = nil
         -- A panel left open over a death or a teardown would keep the cursor
         -- on screen with nothing under it.
         closePanel()
@@ -2176,6 +2238,28 @@ BR.Loop.register(BR.Loop.TICK, 'inv.ammo', function()
     if not reloading and total > granted then
         SetPedAmmo(ped, hash, granted)
         total = granted
+    end
+
+    -- THE MAGAZINE THE GUN WAS DRAWN WITH, PUT BACK OVER GTA'S FILL ONCE, AND THE
+    -- ROUNDS THAT LOWERING TOOK OUT OF THE TOTAL RETURNED IN THE SAME TICK.
+    -- `total` stays the number read above, which is the draw's, so nothing below
+    -- reads this write as a shot. See `drawing`.
+    if drawing.id ~= nil then
+        local _, c = GetAmmoInClip(ped, hash)
+        c = c or 0
+        if drawing.id ~= slot.id or drawing.slot ~= inv.active or reloading
+           or total ~= drawing.total
+           or GetGameTimer() - drawing.at > DRAW_SETTLE_MS then
+            drawing.id = nil
+        elseif c > drawing.clip then
+            drawing.id = nil
+            if not offFoot(ped) then
+                SetAmmoInClip(ped, hash, drawing.clip)
+                local left = GetAmmoInPedWeapon(ped, hash) or total
+                local removed = math.min(total - left, c - drawing.clip)
+                if removed > 0 then AddAmmoToPed(ped, hash, removed) end
+            end
+        end
     end
 
     -- ...AND THE OTHER DIRECTION, WHICH USED TO BE THROWN AWAY.
