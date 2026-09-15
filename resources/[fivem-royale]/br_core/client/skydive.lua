@@ -28,9 +28,7 @@ local CHUTE = GetHashKey('GADGET_PARACHUTE')   -- 0xFBAB5776, verified
 ---   machine never stands down.
 --- @param v any
 --- @return boolean
-local function isTrue(v)
-    return v ~= nil and v ~= false and v ~= 0
-end
+local isTrue = BR.NativeTruthy
 
 local dropping = false
 

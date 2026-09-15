@@ -42,7 +42,7 @@ BR.Tutorial = BR.Tutorial or {}
 --- The file-local every client module in this tree carries, for the reason
 --- tools/verify.sh's bool-natives ratchet exists: `if IsDisabledControlJustPressed(...)`
 --- is true on every frame, pressed or not.
-local function isTrue(v) return v == true or v == 1 end
+local isTrue = BR.NativeBool
 
 --- The arrows, and what each one does to a card.
 ---

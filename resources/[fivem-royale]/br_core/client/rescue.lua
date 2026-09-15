@@ -72,7 +72,7 @@ local R = BR.Config.Rescue
 --- is TRUTHY in Lua -- so both obvious spellings of the test are wrong, in
 --- opposite directions. Every BOOL read in this file goes through here; see
 --- tools/bool_native_rules.lua for the seven shipped instances that bought this.
-local function isTrue(v) return v == true or v == 1 end
+local isTrue = BR.NativeBool
 
 --- The ride, or nil. Everything the teardown needs is on it, because a teardown
 --- that has to go looking for its own handles is a teardown that leaks one.

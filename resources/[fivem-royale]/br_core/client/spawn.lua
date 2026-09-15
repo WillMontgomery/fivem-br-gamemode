@@ -44,9 +44,7 @@ local placing = false
 --- spelling may be written bare. tools/check_bool_natives.lua enforces that.
 --- @param v any
 --- @return boolean
-local function isTrue(v)
-    return v ~= nil and v ~= false and v ~= 0
-end
+local isTrue = BR.NativeTruthy
 
 -- --------------------------------------------------------------------------
 -- The cover handshake

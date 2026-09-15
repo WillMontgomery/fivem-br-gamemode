@@ -96,9 +96,7 @@ local A = BR.Config.Airdrop
 --- through here.
 --- @param v any
 --- @return boolean
-local function isTrue(v)
-    return v ~= nil and v ~= false and v ~= 0
-end
+local isTrue = BR.NativeTruthy
 
 --- [n] = { rec, obj, chute, flares, plane, pilot, blip, blipMini, gz, gzAt,
 ---         spawning, flying, warned, audio, assetsTried, primed, flaresReady,

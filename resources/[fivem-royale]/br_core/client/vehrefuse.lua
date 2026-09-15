@@ -172,9 +172,7 @@ local MAX_RULINGS = 128
 --- reason those two are per-file.
 --- @param v any
 --- @return boolean
-local function isTrue(v)
-    return v == 1 or v == true
-end
+local isTrue = BR.NativeBool
 
 --- Call a native that may not exist on this build and may throw on a stale
 --- handle. nil is the answer for both, and every caller here treats nil as

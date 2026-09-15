@@ -101,9 +101,7 @@ local C = BR.Config and BR.Config.Boost
 --- have this file boosting a player stood in a field.
 --- @param v any
 --- @return boolean
-local function isTrue(v)
-    return v == 1 or v == true
-end
+local isTrue = BR.NativeBool
 
 --- Is the boost switched on at all?
 --- @return boolean

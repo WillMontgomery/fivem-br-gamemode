@@ -31,7 +31,7 @@ local pages = {}   -- [name] = { dui, txd, tex, w, h }
 --- rather than a rider on a shop fix.
 --- @param v any
 --- @return boolean
-local function isTrue(v) return v == true or v == 1 end
+local isTrue = BR.NativeBool
 
 --- Model bounding boxes, cached by model hash. A model's dimensions never
 --- change, and drawOnEntity would otherwise ask the engine for them on every

@@ -827,9 +827,7 @@ end
 --- it cost, and it is worth more than the deduplication.
 --- @param v any
 --- @return boolean
-local function isTrue(v)
-    return v ~= nil and v ~= false and v ~= 0
-end
+local isTrue = BR.NativeTruthy
 
 --- Hold a solid prop still until the map's collision underneath it exists.
 ---

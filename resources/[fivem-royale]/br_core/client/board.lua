@@ -98,9 +98,7 @@ local C = BR.Config.Board
 --- count may only go down. Every BOOL native in this file goes through here.
 --- @param v any
 --- @return boolean
-local function isTrue(v)
-    return v ~= nil and v ~= false and v ~= 0
-end
+local isTrue = BR.NativeTruthy
 
 -- ---------------------------------------------------------------------------
 -- What we have been told

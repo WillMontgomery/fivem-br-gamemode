@@ -51,9 +51,7 @@ local smoothHdg, smoothPitch, smoothRoll = nil, 0.0, 0.0
 --- with it everybody's jump -- is over before it started.
 --- @param v any
 --- @return boolean
-local function isTrue(v)
-    return v ~= nil and v ~= false and v ~= 0
-end
+local isTrue = BR.NativeTruthy
 
 local function angDiff(a, b)
     return ((a - b + 540.0) % 360.0) - 180.0

@@ -268,7 +268,7 @@ end)
 --- br_ui/client/pause.lua already carries over its own copy of this.
 --- @param v any
 --- @return boolean
-local function isTrue(v) return v == true or v == 1 end
+local isTrue = BR.NativeBool
 
 --- TAKING BACK A FRONTEND WE DID NOT RAISE, AND KNOWING WHEN TO STOP.
 --- (owner, 2026-08-29 -- the Rockstar Editor.)

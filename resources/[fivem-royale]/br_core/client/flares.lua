@@ -60,9 +60,7 @@ BR.Flare = BR.Flare or {}
 --- in this file goes through here.
 --- @param v any
 --- @return boolean
-local function isTrue(v)
-    return v ~= nil and v ~= false and v ~= 0
-end
+local isTrue = BR.NativeTruthy
 
 --- Is this a looped-particle handle that is actually running?
 ---

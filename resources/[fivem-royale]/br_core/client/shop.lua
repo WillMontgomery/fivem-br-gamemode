@@ -68,7 +68,7 @@ local S = BR.Config.Shop
 
 --- 0 IS TRUTHY IN LUA AND A FIVEM BOOL NATIVE MAY ANSWER 1 OR 0. Nine shipped
 --- instances on this project; every client file carries this line.
-local function isTrue(v) return v == true or v == 1 end
+local isTrue = BR.NativeBool
 
 --- Call a native only if this build has it, and never let it throw.
 ---

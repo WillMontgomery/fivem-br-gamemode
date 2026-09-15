@@ -64,7 +64,7 @@ BR = BR or {}
 --- tools/bool_native_rules.lua for the six shipped instances that bought it.
 --- @param v any
 --- @return boolean
-local function isTrue(v) return v == true or v == 1 end
+local isTrue = BR.NativeBool
 
 -- --------------------------------------------------------------- the pose ---
 

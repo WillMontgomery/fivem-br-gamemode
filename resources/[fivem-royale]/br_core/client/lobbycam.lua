@@ -49,9 +49,7 @@ BR.LobbyCam = {}
 --- one mid-interpolation and drops the view to the gameplay camera.
 --- @param v any
 --- @return boolean
-local function isTrue(v)
-    return v ~= nil and v ~= false and v ~= 0
-end
+local isTrue = BR.NativeTruthy
 
 -- The camera that is rendering, or becoming the one that renders.
 local cam = nil

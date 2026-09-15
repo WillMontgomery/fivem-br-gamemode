@@ -29,9 +29,7 @@ BR.State = BR.State or {}
 --- is that same test, once, for the four questions that gate the reveal.
 --- @param v any
 --- @return boolean
-local function isTrue(v)
-    return v ~= nil and v ~= false and v ~= 0
-end
+local isTrue = BR.NativeTruthy
 
 -- Initial value by cheap observation: a fresh join still has the loadscreen
 -- up (world genuinely not ready); a br_core restart mid-session does not,

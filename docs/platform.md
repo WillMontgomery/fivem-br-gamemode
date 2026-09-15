@@ -164,10 +164,13 @@ answers.
 **A native declared BOOL may hand Lua a number.** `IsRawKeyDown` may answer
 `true/false`, `1/false`, `1/0` or `1/nil` depending on the build, and **`0` is
 truthy in Lua** — so the obvious normalisation `v and true or false` reads a
-released key as held forever. `natives.lua` compares `hit == 1 or hit == true`
-and `spawn.lua` compares `== true or == 1` for the same reason; both were
-written after the value arrived as a number in play. Stubbing one shape in a
-test proves only that shape (see [testing.md](testing.md), rule 4).
+released key as held forever. Use `BR.NativeBool(v)` for the strict documented
+BOOL shapes (`true` or `1`). Existing call sites that deliberately accepted any
+non-zero result use `BR.NativeTruthy(v)` instead; the wider name makes that
+policy visible rather than silently broadening the strict helper. Both live in
+`br_lib/shared/enums.lua`, and `tools/test_shared.lua` pins the difference.
+Stubbing one shape in a test proves only that shape (see
+[testing.md](testing.md), rule 4).
 
 **`DISABLE_FRONTEND_THIS_FRAME` (`0x6D3465A73092F0E6`) is the only way to take
 GTA's pause menu away.** Disabling controls 199/200 does not do it; this native

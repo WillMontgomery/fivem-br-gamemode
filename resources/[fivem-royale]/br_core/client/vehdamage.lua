@@ -135,9 +135,7 @@ local C = BR.Config and BR.Config.VehicleDamage
 --- looking for the handling of a vehicle a player on foot is not in.
 --- @param v any
 --- @return boolean
-local function isTrue(v)
-    return v == 1 or v == true
-end
+local isTrue = BR.NativeBool
 
 --- Is the feature switched on and pointed the right way?
 ---

@@ -2,6 +2,31 @@
 
 BR = BR or {}
 
+--- Normalize a FiveM native declared BOOL when only the documented true shapes
+--- are acceptable. Depending on the runtime build, true may arrive as Lua
+--- `true` or numeric `1`; numeric `0` is truthy in Lua and must remain false.
+---
+--- A second helper exists below because this tree historically used two
+--- deliberate policies. NativeTruthy preserves the wider "anything except
+--- nil/false/0" reading at call sites that accepted non-zero native results.
+--- Keeping both policies here makes the difference explicit and testable rather
+--- than leaving 26 private implementations to drift independently.
+--- @param v any
+--- @return boolean
+function BR.NativeBool(v)
+    return v == true or v == 1
+end
+
+--- Normalize a native result under the wider, non-zero policy used by older
+--- entity/camera/streaming call sites. This intentionally accepts values other
+--- than 1; do not substitute it for NativeBool without reviewing the caller's
+--- native contract.
+--- @param v any
+--- @return boolean
+function BR.NativeTruthy(v)
+    return v ~= nil and v ~= false and v ~= 0
+end
+
 --- Match lifecycle. The server owns transitions; clients only ever mirror them.
 BR.MatchState = {
     WAITING = 'waiting', -- not enough players, lobby open

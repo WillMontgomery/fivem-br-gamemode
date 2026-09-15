@@ -23,9 +23,7 @@ local last = { w = 0, h = 0, l = -1.0, t = -1.0, r = -1.0, b = -1.0,
 --- client/airdrop.lua; see tools/bool_native_rules.lua for the write-up.
 --- @param v any
 --- @return boolean
-local function isTrue(v)
-    return v ~= nil and v ~= false and v ~= 0
-end
+local isTrue = BR.NativeTruthy
 
 --- The native radar's footprint, as a fraction of screen height.
 ---

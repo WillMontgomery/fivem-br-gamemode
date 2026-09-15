@@ -891,6 +891,17 @@ else
     echo "${YEL}skip${RST} (lua interpreter not found)"
 fi
 
+private_bool=$(grep -rnE 'local[[:space:]]+function[[:space:]]+isTrue' \
+    'resources/[fivem-royale]/br_core/client' --include='*.lua' 2>/dev/null || true)
+if [ -n "$private_bool" ]; then
+    echo "${RED}FAIL${RST} private isTrue helpers bypass the shared BOOL policies:"
+    printf '%s\n' "$private_bool" | sed 's/^/     /'
+    echo "     Alias BR.NativeBool or BR.NativeTruthy instead; their difference is tested."
+    rc=1
+else
+    echo "${GRN}ok${RST}   client BOOL normalization uses the two shared policies"
+fi
+
 # --- 3f. the config report still finds everything it names --------------------
 #
 # tools/config_report.lua is the gamemode half of the console's `configreport`

@@ -85,9 +85,7 @@ local L = BR.Config.Loot
 --- rest. Every BOOL native in this file goes through here.
 --- @param v any
 --- @return boolean
-local function isTrue(v)
-    return v ~= nil and v ~= false and v ~= 0
-end
+local isTrue = BR.NativeTruthy
 
 --- Smoothstep. The same curve client/loot.lua eases its take animation with, so
 --- an item flying home reads as the same movement as one flying to a hand.

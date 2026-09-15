@@ -1925,9 +1925,7 @@ end)
 --- because anybody decided it was safe.
 --- @param v any
 --- @return boolean
-local function isTrue(v)
-    return v ~= nil and v ~= false and v ~= 0
-end
+local isTrue = BR.NativeTruthy
 
 --- WHO IS TALKING -- AND ONLY PEOPLE WE CAN ACTUALLY HEAR.
 ---

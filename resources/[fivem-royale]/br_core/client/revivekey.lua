@@ -124,9 +124,7 @@ local K = BR.Config.ReviveKey
 --- would mean offering to sell keys at an ambulance that does not exist.
 --- @param v any
 --- @return boolean
-local function isTrue(v)
-    return v == true or v == 1
-end
+local isTrue = BR.NativeBool
 
 --- The owner's wording, or an empty table. See config/revivekey.lua.
 --- @return table

@@ -198,7 +198,7 @@ end
 --- BOOL natives hand back 1 and 0 here, and `0` is TRUTHY in Lua.
 --- @param v any
 --- @return boolean
-local function isTrue(v) return v == true or v == 1 end
+local isTrue = BR.NativeBool
 
 --- EVERY DECLARED MAGAZINE, BESIDE THE ONE THE ENGINE ACTUALLY HAS.
 ---

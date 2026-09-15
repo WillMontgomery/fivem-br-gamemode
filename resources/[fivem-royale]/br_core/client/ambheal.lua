@@ -61,7 +61,7 @@ local R = BR.Config.Rescue
 --- A FiveM native declared BOOL may hand Lua a `1` rather than `true`, and `0`
 --- is TRUTHY in Lua -- so both obvious spellings of the test are wrong, in
 --- opposite directions. Every BOOL read in this file goes through here.
-local function isTrue(v) return v == true or v == 1 end
+local isTrue = BR.NativeBool
 
 --- The heal in progress, or nil.
 ---

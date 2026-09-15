@@ -147,9 +147,7 @@ BR.LobbyPed = {}
 --- second move. A raw read of either is a wait that does not wait.
 --- @param v any
 --- @return boolean
-local function isTrue(v)
-    return v ~= nil and v ~= false and v ~= 0
-end
+local isTrue = BR.NativeTruthy
 
 -- ---------------------------------------------------------------------------
 -- Local or networked

@@ -99,6 +99,26 @@ local function near(a, b, eps)
     return math.abs(a - b) <= (eps or 1e-6)
 end
 
+-- ------------------------------------------------ native BOOL normalization ---
+
+describe('native BOOL normalization')
+do
+    ok(BR.NativeBool(true) and BR.NativeBool(1),
+        'NativeBool accepts both true shapes')
+    ok(not BR.NativeBool(false) and not BR.NativeBool(0) and not BR.NativeBool(nil),
+        'NativeBool refuses every ordinary false shape')
+    ok(not BR.NativeBool(2) and not BR.NativeBool('true'),
+        'NativeBool does not broaden a declared BOOL contract')
+
+    ok(BR.NativeTruthy(true) and BR.NativeTruthy(1) and BR.NativeTruthy(2),
+        'NativeTruthy preserves the existing non-zero policy')
+    ok(BR.NativeTruthy('native-value'),
+        'NativeTruthy preserves non-empty non-number results')
+    ok(not BR.NativeTruthy(false) and not BR.NativeTruthy(0)
+        and not BR.NativeTruthy(nil),
+        'NativeTruthy still refuses every false shape, including numeric zero')
+end
+
 -- -------------------------------------------------------------------- rng ---
 
 describe('rng')
