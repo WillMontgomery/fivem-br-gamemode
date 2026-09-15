@@ -1465,87 +1465,16 @@ end)
 --
 -- HasPedGotWeapon first, so the ordinary case is one cheap call at 10Hz and the
 -- expensive height probe only runs for a ped that actually still has a chute.
---
--- ═══ IN A SEAT IT IS AN EDGE, THEN ONCE A SECOND, THEN ONCE EVERY FIVE ═══
---
--- The owner's client hung twice just after "drop: finished from a vehicle seat
--- -- the machine was still armed", which is the seat branch of skydive.state
--- handing a seated player to this net. From its third sweep this takes every
--- weapon and calls BR.Inv.reapply, so a seat that keeps giving the chute back
--- was RemoveAllPedWeapons, a whole grant, SetPedAmmo and ClearHelp ten times a
--- second for as long as the player sat there. Whether the engine really hands a
--- seated ped its parachute every frame is inferred, not observed; this is
--- bounded because it cannot be ruled out.
---
--- So in a seat (or climbing into one, the same read skydive.state makes) the
--- first sweep runs on the tick the chute is seen, exactly as before, and the
--- next ones wait DISARM_SEAT_MS each. The escalation to the hard sweep still
--- counts sweeps, so it arrives on the third one. After DISARM_SEAT_TRIES sweeps
--- that each found the chute back, they wait DISARM_SEAT_BACKOFF_MS instead and
--- ONE console line says so, so a real fight with the engine reads in the client
--- log rather than as a silent hammer.
---
--- NOTHING USABLE IS LEFT IN THE SEAT MEANWHILE, inferred from this file: the
--- chute floor never runs in a vehicle (skydive.state returns first), and the
--- moment the player stands up this goes back to sweeping every tick with the
--- escalation it had already reached.
---
--- ON FOOT NOTHING CHANGED. Every tick, soft twice, then hard.
 local sweeps = 0
-local DISARM_SEAT_MS         = 1000
-local DISARM_SEAT_TRIES      = 5
-local DISARM_SEAT_BACKOFF_MS = 5000
---- `at` is when the last seated sweep ran (nil for never), `streak` how many
---- seated sweeps in a row found the chute back, `told` whether this streak has
---- printed its line.
-local seatSweep = { at = nil, streak = 0, told = false }
-
---- How long a seated sweep waits after the last one.
---- @return integer
-local function seatSweepWait()
-    if seatSweep.streak >= DISARM_SEAT_TRIES then return DISARM_SEAT_BACKOFF_MS end
-    return DISARM_SEAT_MS
-end
-
---- End the seated fight: the next seated sweep runs on the tick it is due and
---- counts, and prints, from one again. `at` goes with the streak, so a record
---- is open exactly while `at` is set.
-local function forgetSeatSweep()
-    seatSweep.at, seatSweep.streak, seatSweep.told = nil, 0, false
-end
-
 BR.Loop.register(BR.Loop.TICK, 'skydive.disarm', function()
-    -- A SEATED FIGHT BELONGS TO ONE SEAT IN ONE LIFE, and each early return
-    -- below used to leave it standing. A streak built in one round then paced
-    -- the next round's first seated sweeps at five seconds and never printed,
-    -- because `told` was still set. So a new drop ends it, a state that is not
-    -- ALIVE or DBNO (dead, out, the lobby, the bus) ends it, and so does the
-    -- ped not being seated, whatever else is true of it.
-    if dropping then
-        forgetSeatSweep()
-        return
-    end
+    if dropping then return end
 
     local st = BR.State.me.state
-    if st ~= BR.PlayerState.ALIVE and st ~= BR.PlayerState.DBNO then
-        forgetSeatSweep()
-        return
-    end
+    if st ~= BR.PlayerState.ALIVE and st ~= BR.PlayerState.DBNO then return end
 
     local ped = PlayerPedId()
-    -- Asked only while a record is open, so the ordinary tick stays one call.
-    -- Above the chute and height tests on purpose: a ped thrown out of a seat
-    -- in the air, or standing up after the chute went, is not seated either.
-    if seatSweep.at and not isTrue(IsPedInAnyVehicle(ped, true)) then
-        forgetSeatSweep()
-    end
-
     if not hasChute(ped) then
         sweeps = 0
-        -- A seated sweep that was due and found nothing to take ends the fight.
-        if seatSweep.at and GetGameTimer() - seatSweep.at >= seatSweepWait() then
-            forgetSeatSweep()
-        end
         return
     end
 
@@ -1561,18 +1490,6 @@ BR.Loop.register(BR.Loop.TICK, 'skydive.disarm', function()
         if isTrue(IsPedFalling(ped)) or GetEntityHeightAboveGround(ped) > 5.0 then
             sweeps = 0
             return
-        end
-    end
-
-    if isTrue(IsPedInAnyVehicle(ped, true)) then
-        local now = GetGameTimer()
-        if seatSweep.at and now - seatSweep.at < seatSweepWait() then return end
-        seatSweep.at = now
-        seatSweep.streak = seatSweep.streak + 1
-        if seatSweep.streak == DISARM_SEAT_TRIES and not seatSweep.told then
-            seatSweep.told = true
-            print(('[br_core] drop: a seated ped kept its parachute through %d disarm sweeps -- sweeping every %d ms now')
-                :format(DISARM_SEAT_TRIES, DISARM_SEAT_BACKOFF_MS))
         end
     end
 
