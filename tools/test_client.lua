@@ -313,6 +313,10 @@ end
 function GetWaterHeight() return false, 0.0 end
 function GetHashKey() return 1 end
 function GetWeapontypeModel() return 1 end
+--- A GROUP, AND A MODEL ABOVE, FOR EVERY HASH: every weapon here is one a hand
+--- holds. client/inventory.lua reads both as zero only for a weapon a vehicle
+--- hands out (see its `isVehicleWeapon`); N4c answers zero for its turret.
+function GetWeapontypeGroup() return 0x18D5FA97 end   -- GROUP_PISTOL
 function IsModelValid() return true end
 function HasModelLoaded() return true end
 function CreateObjectNoOffset() return 0 end
@@ -17780,6 +17784,13 @@ end
 -- In a seat each now acts on the tick the gun or the chute appears, then at most
 -- once a second, then once every five seconds after five in a row, with ONE
 -- console line. On foot neither changed, and both sections say so.
+--
+-- AND THE STRIP'S PACING IS NARROWED TO WHAT NEEDED IT. On 633f0c4 a seat paced
+-- the strip for every hash, so a pistol a cheat re-granted every frame stayed in
+-- a seated hand for up to five seconds at a time. Section 3b strips it on every
+-- tick again; only a hash with no group and no model, a vehicle's, waits. And
+-- the standing disarm's seated streak outlived a death, the next drop and the
+-- seat itself; the end of section 7 ends it each of those ways.
 describe('a switch is never a loop: a seat, the bus, a canopy, a hand not ours')
 do
     local saved = {
@@ -17789,6 +17800,7 @@ do
         current = SetCurrentPedWeapon, hasGot = HasPedGotWeapon,
         reload = IsPedReloading, attached = IsEntityAttached,
         chute = GetPedParachuteState, strip = RemoveWeaponFromPed,
+        group = GetWeapontypeGroup, model = GetWeapontypeModel,
     }
 
     local HP      = BR.Config.WeaponById['heavypistol']
@@ -17796,6 +17808,27 @@ do
     local PH      = BR.NormHash(PDW.hash)
     local HALF    = math.floor(HP.clip / 2)
     local MOUNTED = 0xE2822A29   -- VEHICLE_WEAPON_PLAYER_BUZZARD, as #216 uses it
+    local PISTOL  = 0x1B06D571   -- WEAPON_PISTOL, in neither of the bag's slots
+    local SNIPER  = 0x33058E22   -- WEAPON_REMOTESNIPER: no group, no model
+    local CASE    = 0x22222222   -- no group but a model, a briefcase's shape
+
+    --- WHAT weapons.meta SAYS ABOUT EACH, as client/inventory.lua reads it: a
+    --- vehicle weapon has no group and no model. A hash not listed is a hand's.
+    local weaponData = {
+        [BR.NormHash(MOUNTED)] = { group = 0, model = 0 },
+        [SNIPER]               = { group = 0, model = 0 },
+        [CASE]                 = { group = 0, model = 0x3E4E1A1B },
+    }
+    function GetWeapontypeGroup(h)
+        local d = weaponData[BR.NormHash(h) or 0]
+        if d then return d.group end
+        return saved.group(h)
+    end
+    function GetWeapontypeModel(h)
+        local d = weaponData[BR.NormHash(h) or 0]
+        if d then return d.model end
+        return saved.model(h)
+    end
 
     local calls = { current = 0, clip = 0, give = 0, removeAll = 0,
                     strip = 0, stripHash = nil }
@@ -18022,6 +18055,18 @@ do
        'and the fight is ONE console line, not one a strip',
        table.concat(logged, ' | '))
 
+    -- ...BUT ONLY A WEAPON A VEHICLE HANDS OUT WAITS. The same seat, its turret
+    -- already on the five-second wait, is handed a pistol every frame instead,
+    -- and a gun a hand holds comes out on every tick, as it did on 822bfe6.
+    engine.handBack = PISTOL
+    zero()
+    logged = {}
+    tick(100)
+    ok(calls.strip == 100 and calls.stripHash == PISTOL
+       and printed(STRIP_LINE) == 0,
+       'A SEAT WAITING ON ITS TURRET STILL STRIPS A PISTOL EVERY TICK, and prints nothing',
+       counted())
+
     -- ...AND ON FOOT NOTHING WAITS: a hand stripped a moment after a grant is
     -- re-armed on the same tick, as it always was.
     inVehicle, vehicle, vehicleSeat = false, 0, nil
@@ -18039,6 +18084,31 @@ do
     ok(calls.strip == 10 and printed(STRIP_LINE) == 0,
        'on foot a gun handed back every frame is still stripped every tick, '
            .. 'and nothing is printed', counted())
+    engine.handBack = nil
+
+    -- ── 3b. A SEAT, AND A GUN A HAND HOLDS, FROM ITS FIRST TICK. A cheat that
+    --        re-grants a gun every frame in a passenger seat is stripped on
+    --        every one of a hundred ticks: no pacing, no backoff, no line. The
+    --        remote sniper has no group and no model, like a turret, and the
+    --        briefcase's shape has no group but a model; neither waits either.
+    for _, held in ipairs({
+        { hash = PISTOL, what = 'a pistol' },
+        { hash = SNIPER, what = 'the remote sniper' },
+        { hash = CASE,   what = 'a weapon with no group and a model' },
+    }) do
+        start()
+        inVehicle, vehicle, vehicleSeat = true, 77, 0
+        vehWeapon = nil
+        engine.handBack = held.hash
+        zero()
+        logged = {}
+        tick(100)
+        ok(calls.strip == 100 and calls.stripHash == held.hash
+           and printed(STRIP_LINE) == 0,
+           ('IN A SEAT, %s RE-GRANTED EVERY TICK IS STRIPPED ON ALL HUNDRED, '
+               .. 'and nothing is printed'):format(held.what),
+           counted())
+    end
     engine.handBack = nil
 
     -- ── 4. THE BUS. The ped rides attached to the plane (client/bus.lua) and
@@ -18196,6 +18266,85 @@ do
        countedSky())
     chuteHeld = false
 
+    -- ...AND A SEATED FIGHT ENDS WITH THE LIFE, THE DROP AND THE SEAT. On
+    -- 633f0c4 every early return in skydive.disarm skipped the reset, so a streak
+    -- built in one round paced the next round's seated sweeps at five seconds
+    -- and never printed its line again. Each case below builds a streak to its
+    -- line, ends it one way, and asks for a fresh one: a sweep on the tick the
+    -- chute is seen, the next a second later, and the line again on the fifth.
+    --- A seat that kept its parachute through five sweeps. True if it said so.
+    local function buildStreak()
+        chuteHeld = false
+        start()
+        inVehicle, vehicle, vehicleSeat = true, 77, 0
+        tick(1)
+        chuteHeld = true
+        logged = {}
+        tick(41)
+        return printed(SEAT_LINE) == 1
+    end
+    --- The next forty-one seated ticks, counted from nothing.
+    local function freshSeat(how)
+        zero()
+        logged = {}
+        tick(1)
+        local first = sky.ammo
+        tick(10)
+        local second = sky.ammo - first
+        tick(30)
+        ok(first == 1 and second == 1 and sky.ammo == 5
+           and printed(SEAT_LINE) == 1,
+           ('%s, the first seated sweep runs on its tick, the next a second '
+               .. 'later, and the fifth prints the line'):format(how),
+           ('first %d, second %d, %s | %s'):format(first, second, countedSky(),
+               table.concat(logged, ' | ')))
+    end
+
+    -- THE NEXT ROUND: out in the seat, the lobby a minute later, the next drop,
+    -- and a landing in a seat with the chute still on.
+    ok(buildStreak(), 'a seat that keeps its parachute says so on the fifth sweep',
+       table.concat(logged, ' | '))
+    BR.State.me.state = BR.PlayerState.OUT
+    tick(10)
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+    fakeTime = fakeTime + 60000
+    inVehicle, vehicle, vehicleSeat = false, 0, nil
+    BR.State.me.state = BR.PlayerState.FREEFALL
+    BR.State.landed = false
+    function IsPedFalling() return true end
+    function GetEntityHeightAboveGround() return 400.0 end
+    fire('br:drop:begin', { heading = 0.0 })
+    tick(20)
+    function IsPedFalling() return false end
+    function GetEntityHeightAboveGround() return 0.5 end
+    inVehicle, vehicle, vehicleSeat = true, 77, 0
+    tick(1)   -- skydive.state finishes the drop from the seat
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.State.landed = true
+    freshSeat('A STREAK FROM ONE ROUND DOES NOT PACE OR SILENCE THE NEXT: landed in a seat')
+
+    -- A DEATH IN THE SEAT, and nothing else: the ped never leaves it.
+    ok(buildStreak(), 'the streak is built again before a death in the seat',
+       table.concat(logged, ' | '))
+    BR.State.me.state = BR.PlayerState.OUT
+    tick(1)
+    BR.State.me.state = BR.PlayerState.ALIVE
+    freshSeat('after a death in the seat')
+
+    -- OUT OF THE SEAT IN THE AIR, and nothing else: the height test returns
+    -- first, which is the early return that used to keep the streak.
+    ok(buildStreak(), 'the streak is built again before the seat is left in the air',
+       table.concat(logged, ' | '))
+    inVehicle, vehicle, vehicleSeat = false, 0, nil
+    function IsPedFalling() return true end
+    function GetEntityHeightAboveGround() return 30.0 end
+    tick(1)
+    function IsPedFalling() return false end
+    function GetEntityHeightAboveGround() return 0.5 end
+    inVehicle, vehicle, vehicleSeat = true, 77, 0
+    freshSeat('after leaving the seat in the air')
+    chuteHeld = false
+
     function HasPedGotWeapon() return false end
     IsPedFalling               = world.falling
     GetEntityHeightAboveGround = world.agl
@@ -18215,6 +18364,8 @@ do
     IsPedReloading       = saved.reload
     IsEntityAttached     = saved.attached
     GetPedParachuteState = saved.chute
+    GetWeapontypeGroup   = saved.group
+    GetWeapontypeModel   = saved.model
     inVehicle, vehicle, vehicleSeat = false, 0, nil
     vehWeapon, pedWeapon = nil, nil
     BR.State.me.state = BR.PlayerState.ALIVE

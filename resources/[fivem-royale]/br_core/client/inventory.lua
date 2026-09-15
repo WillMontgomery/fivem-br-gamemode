@@ -1825,11 +1825,14 @@ end
 --- so a real fight reads in the client log. A tick that does not strip clears
 --- nothing and reports nothing, because nothing was taken.
 ---
---- THE TRIPWIRE IS WEAKER IN A SEAT FOR IT, AND THAT IS STATED: a conjured gun
---- that comes straight back stays in a seated hand between strips. The defense
---- was never this file -- server/damage.lua refuses the shots, see
---- br_core/server/strip.lua -- and on foot nothing waits: the strip still runs
---- every tick there.
+--- ONLY A WEAPON A VEHICLE HANDS OUT WAITS. A gun a hand holds -- a pistol a
+--- cheat re-grants every frame in the passenger seat -- is stripped every tick
+--- in a seat exactly as on foot, because pacing that would hand the cheat the
+--- gun back for up to five seconds at a time. See `isVehicleWeapon` for how the
+--- two are told apart. So the tripwire is weaker in a seat only for a vehicle
+--- weapon, and that is stated: one that comes straight back stays in a seated
+--- hand between strips. The defense was never this file -- server/damage.lua
+--- refuses the shots, see br_core/server/strip.lua.
 ---
 --- `at` is when the last seated strip ran (nil for never), `streak` how many ran
 --- in a row with the weapon back, `told` whether this streak has printed.
@@ -1845,7 +1848,39 @@ local function seatStripWait()
     return SEAT_STRIP_MS
 end
 
---- May the strip check take `h` out of the hand on this tick? Always on foot.
+--- WEAPON_REMOTESNIPER, the one weapon a hand holds that has no group and no
+--- model. See `isVehicleWeapon`.
+local REMOTE_SNIPER = 0x33058E22
+
+--- Is `h` a weapon only a vehicle hands out -- a mounted gun or a turret -- by
+--- the engine's own weapon data?
+---
+--- NO GROUP AND NO MODEL. In weapons.meta every VEHICLE_WEAPON_* entry, the
+--- base game's and each DLC vehicle's (read 2026-09-14 from a public dump of
+--- the metas), carries `<Group />` and `<Model />`, so GetWeapontypeGroup and
+--- GetWeapontypeModel both answer zero. Every weapon a hand holds names one of
+--- the GROUP_ constants citizenfx's native docs list, none of which is for
+--- vehicles. The weapons.meta entries with no group that are not vehicle
+--- weapons are the briefcases, which have a model; the damage-only entries
+--- (a fall, fire, drowning), which fire nothing; and WEAPON_REMOTESNIPER, which
+--- has no model either and is named by hash above.
+---
+--- `isMountedWeapon` REJECTS THE GROUP, AND THAT DOES NOT CONTRADICT THIS. There
+--- the answer would EXCUSE a weapon; here it only decides how often a strip of
+--- it runs. A wrong "no" is 822bfe6's strip every tick, the loop 633f0c4 paced,
+--- and a native that is absent or throws reads as "no".
+--- @param h integer|nil  the normalized hash in the hand
+--- @return boolean
+local function isVehicleWeapon(h)
+    if h == REMOTE_SNIPER then return false end
+    local gok, group = pcall(GetWeapontypeGroup, h)
+    if not gok or group ~= 0 then return false end
+    local mok, model = pcall(GetWeapontypeModel, h)
+    return mok and model == 0
+end
+
+--- May the strip check take `h` out of the hand on this tick? Always on foot,
+--- and always in a seat for a weapon a hand holds.
 --- @param h integer|nil  the normalized hash in the hand
 --- @return boolean
 local function mayStrip(h)
@@ -1853,6 +1888,7 @@ local function mayStrip(h)
         seatStrip.streak, seatStrip.told = 0, false
         return true
     end
+    if not isVehicleWeapon(h) then return true end
     local now = GetGameTimer()
     if seatStrip.at and now - seatStrip.at < seatStripWait() then return false end
     seatStrip.at = now
