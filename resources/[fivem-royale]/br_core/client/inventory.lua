@@ -125,6 +125,82 @@ local lastReport = { total = -1, clip = -1, at = 0 }
 --- with one clock in it. See uiReserve.
 local shown = { id = nil, clip = -1, total = -1 }
 
+--- THE MAGAZINE A GUN WAS JUST DRAWN WITH, HELD UNTIL THE ENGINE HAS IT.
+---
+--- ═══ THE PDW CAME BACK FULL (owner, playtesting 94fbf74) ═══
+---
+--- "Switch to the PDW again WITHOUT doing anything else: the slot reads 30 and
+--- the HUD reads 30/25." Five rounds had left a thirty-round magazine, the PDW
+--- was put away, and it came back with thirty in it and five fewer behind.
+---
+--- GTA RELOADS A GUN BY ITSELF AS IT COMES UP. A stowed weapon keeps no
+--- magazine; the engine builds a whole one out of the gun's total when it
+--- reaches the hand ("pocket reloading", which the Manual Reload mod for GTA V
+--- exists to remove), and it can land frames after the natives that asked for
+--- the weapon. A reload moves no total, so no report said so, and the server
+--- charged the next five shots out of its own 25: the 20 the bag drew.
+---
+--- SO THE REPORT LOOP PUTS THE NUMBER BACK, once the gun is confirmed in the
+--- hand and the engine's magazine is above it. It only ever moves rounds between
+--- the two halves of the gun, so it cannot make or spend one.
+---
+--- ═══ AND IT IS ONE WRITE, ON FOOT (owner's client, 6efeaf8) ═══
+---
+--- The first version of this (ecb9170) wrote that magazine on every tick of a
+--- one-second window in any posture, and swapped applyActive's natives so the
+--- gun was drawn before its magazine was set. The client running it hung three
+--- times in one evening, twice as a drop ended in a vehicle seat and once aboard
+--- the bus; the revert played clean. Nothing in that Lua was found to run in
+--- those windows, so rather than guess, every engine-facing difference is gone:
+---
+---   * applyActive keeps the order that played clean, magazine before draw.
+---   * The loop writes at most ONCE a draw, and once more only if the engine
+---     did not take it (DRAW_WRITES_MAX). A draw is an applyActive grant, which
+---     is an edge, so no tick can write twice for one switch.
+---   * It lets go on the first shot, a reload, DRAW_SETTLE_MS, a confirmed
+---     write, a different slot, and the moment the ped is not on foot: a seat,
+---     climbing into one, attached to the bus, or under a parachute (offFoot).
+---     Off foot the engine keeps whatever magazine it built.
+---
+--- `id` nil is "nothing drawn to hold". `total` is the holding granted with it,
+--- raised by grantAmmo's own adds, so a purchase during the draw is not a shot.
+--- `writes` counts this draw's writes; drawCount counts every one, for
+--- BR.Inv.reportState.
+local drawing = { id = nil, clip = -1, total = -1, at = 0, writes = 0 }
+local DRAW_SETTLE_MS  = 1000
+local DRAW_WRITES_MAX = 2
+local drawCount = { writes = 0 }
+
+--- THE LAST WEAPON applyActive PUT ON A PED, AND WHEN.
+---
+--- ═══ A SEAT THE ENGINE KEEPS ARMING WAS A GRANT A TICK ═══
+---
+--- The strip check clears `applied` whenever the hand holds a weapon nobody
+--- issued, and applyActive then re-grants the slot's weapon on the same tick.
+--- On foot that is one strip and one grant. In a seat whose mounted gun
+--- isMountedWeapon cannot vouch for (its own note lists the turret and the
+--- passenger gun position), the engine hands the gun straight back, so every
+--- tick was RemoveAllPedWeapons, GiveWeaponToPed, SetPedAmmo, SetAmmoInClip and
+--- SetCurrentPedWeapon, for as long as the player sat there.
+---
+--- AND THE STANDING DISARM IS THE SAME SHAPE. client/skydive.lua's
+--- skydive.disarm sweeps every tick for a landed ped below five metres that
+--- still has a parachute, and from its third sweep takes every weapon and calls
+--- BR.Inv.reapply, which forces a grant even into an empty hand. A seat that
+--- does not give the chute up was a RemoveAllPedWeapons and a grant a tick.
+---
+--- Both predate the draw hold above. They are bounded here because a switch
+--- storm in a seat is one of the candidates for the hangs that note describes.
+---
+--- OFF FOOT, THE SAME WEAPON (FISTS INCLUDED) ON THE SAME PED IS RE-GRANTED AT
+--- MOST ONCE EVERY REGRANT_OFF_FOOT_MS, forced or not. A switch to a different
+--- weapon is never held back, and nothing on foot is: the strip still re-arms a
+--- stripped hand at once there. `ped` 0 is "nothing granted since the last
+--- teardown". `deferred` counts the ticks a re-grant waited, for
+--- BR.Inv.reportState.
+local regrant = { hash = nil, ped = 0, at = 0, deferred = 0 }
+local REGRANT_OFF_FOOT_MS = 1000
+
 --- THE LAST FEW REPORTS THIS CLIENT SENT, AND WHAT BECAME OF THEM.
 ---
 --- ═══ THE FIFTH DOOR WAS A MESSAGE IN FLIGHT (owner, 2026-08-23, third
@@ -394,6 +470,32 @@ end
 --- @return boolean
 local function yes(v) return v == true or v == 1 end
 
+--- IS THE PED ANYWHERE BUT STANDING ON ITS OWN FEET?
+---
+--- The postures in which the draw hold keeps its hands off the magazine and a
+--- repeated grant is held back (see `drawing` and `regrant`): seated, climbing
+--- into a seat (the same native asked with `true`, which counts the get-in),
+--- attached to something (client/bus.lua rides the ped attached to the plane),
+--- or falling with a parachute or under one (a cliff fall re-arms the drop
+--- machine for a player who has already landed). A chute merely worn, ON_BACK,
+--- is not counted: a ped can stand on the ground wearing one.
+---
+--- READ ONLY, and asked only inside a draw window or before a grant that would
+--- repeat, so an ordinary tick never reaches it. A native that answers nothing
+--- reads as on foot, the same lean inVehicle takes and for the same reason.
+--- @param ped integer
+--- @return boolean
+local function offFoot(ped)
+    if inVehicle() then return true end
+    local entering = IsPedInAnyVehicle(ped, true)
+    if not (entering == nil or entering == false or entering == 0) then
+        return true
+    end
+    if yes(IsEntityAttached(ped)) then return true end
+    local cs, chute = GetPedParachuteState(ped), BR.Native.ChuteState
+    return cs == chute.OPENING or cs == chute.OPEN or cs == chute.FREEFALL
+end
+
 --- When we last told the engine this player may fire from a seat, and how many
 --- times. Read by /brdriveby so "did we ever ask?" is an observation rather
 --- than an argument about which branch ran.
@@ -441,6 +543,41 @@ local function assertDriveBy()
     driveBy.at, driveBy.count = GetGameTimer(), driveBy.count + 1
 end
 
+--- WHAT A GUN COMES OUT OF THE BAG HOLDING: its magazine, and its whole total.
+---
+--- ONE ANSWER FOR THE DRAW AND FOR THE BAG. applyActive puts these numbers on the
+--- ped and adopt prints the magazine on a stowed gun's slot, so the slot reads
+--- what the gun will hold in the hand (owner, playtesting 94fbf74: the stowed
+--- PDW read 20 while it had been put away with 25).
+---
+--- THE SERVER'S NUMBERS, LESS WHAT THE ENGINE HAS SPENT THAT THE SERVER HAS NOT
+--- CHARGED YET (see `shortfall`). Those rounds left the MAGAZINE, so they come
+--- off it before the reserve, in the order server/inventory.lua's INV_AMMO floor
+--- will charge them when the report lands, its reload of an emptied magazine
+--- included. The draw used to take them off the total alone and cap the
+--- magazine at what was left, which put rounds fired inside a report window back
+--- into the magazine of the gun that fired them.
+---
+--- PURE LUA. It reads the mirror and the deficit record and touches no native.
+---
+--- A THROWABLE HAS NO MAGAZINE, and keeps the cap it always had.
+--- @param at integer
+--- @param slot table
+--- @return integer clip
+--- @return integer total
+local function drawnFor(at, slot)
+    local clip  = saidClipFor(at, slot)
+    local short = shortfallFor(at, slot)
+    local total = math.max(0, clip + reserveFor(slot) - short)
+    local w = BR.Config.WeaponById[slot.id]
+    if short > 0 and slot.kind == BR.ItemKind.WEAPON
+       and w and w.clip and not w.melee then
+        clip = math.max(0, clip - short)
+        if clip == 0 then clip = w.clip end
+    end
+    return math.min(clip, total), total
+end
+
 --- Make the ped hold whatever the active slot says, and nothing else.
 --- @param force boolean|nil  re-apply even if the mirror thinks it is current
 local function applyActive(force)
@@ -470,6 +607,17 @@ local function applyActive(force)
     -- below, or grantAmmo() when the SERVER's number goes UP (a pickup).
     if not force and want == applied then return end
 
+    -- OFF FOOT, THE SAME WEAPON (OR THE SAME EMPTY HAND) IS NOT PUT BACK ON THE
+    -- SAME PED TWICE INSIDE REGRANT_OFF_FOOT_MS, forced or not. `applied` is left
+    -- as it is, so the next tick asks again and the grant lands once the window
+    -- has passed. See `regrant`.
+    local now = GetGameTimer()
+    if ped == regrant.ped and want == regrant.hash
+       and now - regrant.at < REGRANT_OFF_FOOT_MS and offFoot(ped) then
+        regrant.deferred = regrant.deferred + 1
+        return
+    end
+
     RemoveAllPedWeapons(ped, true)
 
     if want and slot then
@@ -477,9 +625,7 @@ local function applyActive(force)
         -- engine's magazine written into it by the report loop, and subtracting
         -- the deficit from a number that already reflects it charges the same
         -- rounds twice. See saidClipFor.
-        local clip    = saidClipFor(inv.active, slot)
-        local reserve = reserveFor(slot)
-
+        --
         -- WHAT THIS PED HAS ALREADY SPENT COMES OFF THE TOP.
         --
         -- The server's numbers are the authority on what this player OWNS; they
@@ -492,9 +638,9 @@ local function applyActive(force)
         -- because that is the order rounds actually leave a gun. A weapon that
         -- ran dry has a deficit equal to everything it was granted, so both
         -- halves land on zero and it comes back empty.
-        local short = shortfallFor(inv.active, slot)
-        local total = math.max(0, clip + reserve - short)
-        clip = math.min(clip, total)
+        -- drawnFor does both, and the bag prints its magazine for a gun that is
+        -- not drawn.
+        local clip, total = drawnFor(inv.active, slot)
 
         -- GIVE THE WEAPON WITH ZERO AMMO, THEN SET THE AMMO. This is
         -- ox_inventory's order, and the reason for it is that
@@ -507,6 +653,19 @@ local function applyActive(force)
         SetPedAmmo(ped, want, total)
         SetAmmoInClip(ped, want, clip)
         SetCurrentPedWeapon(ped, want, true)
+
+        -- THE MAGAZINE IS STILL WRITTEN BEFORE THE DRAW, the order that played
+        -- clean, and GTA may build a whole one on top of it as the gun comes up.
+        -- The report loop puts this number back, on foot, at most twice.
+        -- Recorded here, not written: nothing below calls the engine again for
+        -- it. See `drawing`.
+        local w = BR.Config.WeaponById[slot.id]
+        if slot.kind == BR.ItemKind.WEAPON and w and w.clip and not w.melee then
+            drawing.id, drawing.clip, drawing.total = slot.id, clip, total
+            drawing.at, drawing.writes = now, 0
+        else
+            drawing.id = nil
+        end
 
         -- WHAT THE GUN NOW HOLDS, WRITTEN DOWN RATHER THAN READ BACK. This is
         -- the number that just went into the ped, so it is the engine's
@@ -529,9 +688,11 @@ local function applyActive(force)
         -- last gun's number here would let it be printed over whatever lands in
         -- the hand next.
         shown.id, shown.clip, shown.total = nil, -1, -1
+        drawing.id = nil
     end
 
     applied = want
+    regrant.hash, regrant.ped, regrant.at = want, ped, now
     -- SAID, so the INV_SET that brought us here does not also add its gain on
     -- top of a grant that has just counted it. See grantAmmo.
     return true
@@ -612,6 +773,12 @@ local function grantAmmo(gain, loadTo)
         return
     end
 
+    -- A GUN STILL COMING UP holds the magazine it was drawn with, whatever GTA
+    -- has built on it so far. See `drawing`. A read of the record, no native.
+    if drawing.id == slot.id then
+        clip = math.min(drawing.clip, total)
+    end
+
     local want = loadTo and math.min(loadTo, total) or -1
     if clip < want then
         SetAmmoInClip(ped, hash, want)
@@ -620,6 +787,9 @@ local function grantAmmo(gain, loadTo)
     -- READ BACK rather than written down where it could be, because this is the
     -- one writer that does not set the total itself. See `shown`.
     shown.id, shown.clip, shown.total = slot.id, clip, total
+    if drawing.id == slot.id then
+        drawing.clip, drawing.total = clip, total
+    end
 end
 
 --- Re-anchor the report baseline on what the SERVER just said.
@@ -686,6 +856,9 @@ local function clearLocal()
     -- new weapons and the first INV_SET of it must not be printed over with the
     -- last life's magazine.
     shown.id, shown.clip, shown.total = nil, -1, -1
+    drawing.id = nil
+    -- A new match's first grant is not a repeat of the last life's.
+    regrant.hash, regrant.ped = nil, 0
     -- The deficits go with the guns they were measured on. A new match hands
     -- out new weapons and a corpse's rifle is not this player's problem any
     -- more; carrying the numbers over would dock the next magazine.
@@ -1027,6 +1200,20 @@ local function adopt(d)
         if held and shown.clip >= 0 and shown.id == held.id
            and hashOf(held) == applied then
             held.clip = shown.clip
+        end
+    end
+
+    -- AND A GUN IN THE BAG READS WHAT IT WILL HOLD WHEN IT IS DRAWN (owner,
+    -- playtesting 94fbf74). The server's magazine is ahead of that by any rounds
+    -- it has not been told about yet, and the draw takes them off, so the slot
+    -- prints the number the draw will write. Only a slot that already carries a
+    -- magazine: a melee weapon's `clip` is nil and the bar draws no badge for it.
+    -- Five passes over the mirror, no native. See drawnFor.
+    for i = 1, SLOTS do
+        local s = inv.slots[i]
+        if i ~= inv.active and type(s) == 'table'
+           and s.kind == BR.ItemKind.WEAPON and s.clip ~= nil then
+            s.clip = (drawnFor(i, s))
         end
     end
 
@@ -2178,6 +2365,34 @@ BR.Loop.register(BR.Loop.TICK, 'inv.ammo', function()
         total = granted
     end
 
+    -- THE MAGAZINE THE GUN WAS DRAWN WITH, PUT BACK OVER GTA'S OWN RELOAD. See
+    -- `drawing` for why this is at most two writes a draw and only on foot.
+    -- Rounds fired since the draw came out of that magazine, so they come off
+    -- the number held, and the first shot lets go of it. Only ever LOWERED, and
+    -- never to 0 over a live total: GTA reloads an empty gun by itself.
+    if drawing.id ~= nil then
+        local shots = drawing.total - total
+        if drawing.id ~= slot.id or reloading or shots < 0
+           or GetGameTimer() - drawing.at > DRAW_SETTLE_MS
+           or offFoot(ped) then
+            drawing.id = nil
+        else
+            local _, c = GetAmmoInClip(ped, hash)
+            c = c or 0
+            local want = math.max(0, math.min(drawing.clip - shots, total))
+            if c > want and want > 0 and drawing.writes < DRAW_WRITES_MAX then
+                SetAmmoInClip(ped, hash, want)
+                drawing.writes = drawing.writes + 1
+                drawCount.writes = drawCount.writes + 1
+            elseif c > want or drawing.writes > 0 then
+                -- The engine has the number, or kept its own through every
+                -- write a draw is allowed, or wants a 0 only GTA may reload.
+                drawing.id = nil
+            end
+            if shots > 0 then drawing.id = nil end
+        end
+    end
+
     -- ...AND THE OTHER DIRECTION, WHICH USED TO BE THROWN AWAY.
     --
     -- The engine holding FEWER rounds than the server issued is not impossible
@@ -2384,6 +2599,11 @@ function BR.Inv.reportState()
         -- amount a slot switch would have handed back. See `shortfall`.
         shortfall   = slot and shortfallFor(inv.active, slot) or nil,
         lastTotal   = lastReport.total,
+        -- Magazines the draw hold has written this session, and ticks an
+        -- off-foot re-grant waited. Numbers, not text: a log taken near a hang
+        -- can say whether either moved. See `drawing` and `regrant`.
+        drawWrites      = drawCount.writes,
+        regrantDeferred = regrant.deferred,
         inVehicle   = yes(IsPedInAnyVehicle(ped, false)),
         blockedBy   = why,
     }

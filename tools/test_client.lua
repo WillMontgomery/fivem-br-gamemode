@@ -318,6 +318,11 @@ function HasModelLoaded() return true end
 function CreateObjectNoOffset() return 0 end
 function DoesEntityExist() return false end
 function IsPedInAnyVehicle() return inVehicle end
+--- Not attached to anything and wearing no parachute, which is a ped standing on
+--- the ground. client/inventory.lua's offFoot reads both before its draw hold
+--- writes a magazine; N4c drives them.
+function IsEntityAttached() return false end
+function GetPedParachuteState() return -1 end
 --- WHAT THE ENGINE SAYS IS IN THE HAND, and it is a variable rather than a
 --- constant because two things read it and they disagree about what a `false`
 --- means. The ammo report treats "no answer" as a reason to say nothing; the
@@ -1229,6 +1234,8 @@ local function markUnreachable(x, y, why)
 end
 
 BR.Native = {
+    -- client/natives.lua's table, copied because the real file is loaded late.
+    ChuteState = { NONE = -1, ON_BACK = 0, OPENING = 1, OPEN = 2, FREEFALL = 3 },
     aim = function() return false, nil, 0 end,
     keyLabelForCommand = function() return 'E', 'brinteract' end,
     blipName = noop, help = noop,
@@ -6824,6 +6831,13 @@ do
         none and tostring(none.key) or 'nothing sent')
     BR.Keys.reset('brtrail')
     fire('br:keys:changed')
+    -- Off the canopy again, and out of the chute: every later block's ped stands
+    -- on the ground with no parachute. client/inventory.lua reads the canopy
+    -- before it touches a gun, and client/skydive.lua's standing disarm strips
+    -- and re-grants every tick for a ped that still has one.
+    GetPedParachuteState = function() return BR.Native.ChuteState.NONE end
+    HasPedGotWeapon      = function() return false end
+    GetAmmoInPedWeapon   = function() return 0 end
 end
 
 describe('the drop readout answers the four questions it was written for')
@@ -17286,6 +17300,676 @@ do
     IsPedReloading      = savedReload
     pedWeapon = nil
     fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+end
+
+-- ======================================================================== --
+-- N4b. A STOWED GUN COMES BACK WITH THE MAGAZINE IT WAS PUT AWAY WITH
+-- ======================================================================== --
+--
+-- Owner, playtesting 94fbf74: a heavy pistol in the hand, an empty Combat PDW in
+-- the bag, sixty SMG rounds bought. Up with the PDW, five at a wall: 25/30.
+-- Pistol, then PDW again with nothing else done: 30/25. Five more: 25/25, and
+-- the stowed PDW's slot read 20. PDW again: 30/20.
+--
+-- GTA RELOADS A GUN BY ITSELF AS IT COMES UP ("pocket reloading", the behavior
+-- the Manual Reload mod for GTA V exists to remove). applyActive wrote the
+-- magazine before the gun was in the hand, so the engine's full one won. A
+-- reload moves no total, so the server was never told, charged the next five
+-- shots out of its own 25, and the bag drew that 20.
+--
+-- THE PED HERE RELOADS A FEW FRAMES AFTER THE DRAW, the harder of the two shapes
+-- the engine can take: a fix that only reordered the natives passes a ped that
+-- reloads at once and fails this one.
+--
+-- SECTION 9 IS THE SAME SWITCH INSIDE A REPORT WINDOW: five shots the loop has
+-- measured and not yet sent when the switch lands, which is a player firing and
+-- swapping in one motion.
+--
+-- The ped stands on the ground, unattached and with no parachute, which is
+-- where the draw hold is allowed to write. N4c covers everywhere else.
+describe('a stowed gun comes back with the magazine it was put away with')
+do
+    local saved = {
+        give = GiveWeaponToPed, remove = RemoveAllPedWeapons,
+        setAmmo = SetPedAmmo, addAmmo = AddAmmoToPed, setClip = SetAmmoInClip,
+        getAmmo = GetAmmoInPedWeapon, getClip = GetAmmoInClip,
+        current = SetCurrentPedWeapon, hasGot = HasPedGotWeapon,
+        reload = IsPedReloading, attached = IsEntityAttached,
+        chute = GetPedParachuteState,
+    }
+
+    -- NO PARACHUTE, for the reason N2 gives.
+    function HasPedGotWeapon() return false end
+    function IsPedReloading() return false end
+    function IsEntityAttached() return false end
+    function GetPedParachuteState() return BR.Native.ChuteState.NONE end
+    inVehicle, vehicle, vehicleSeat = false, 0, nil
+
+    local HP  = BR.Config.WeaponById['heavypistol']
+    local PDW = BR.Config.WeaponById['combatpdw']
+    local PH  = BR.NormHash(PDW.hash)
+    local SMG = PDW.ammo
+
+    -- The ped, as in N4, plus the draw: a gun that comes up after a strip is
+    -- reloaded by the engine `frames` ticks later, out of its own total.
+    local gun = { total = {}, clip = {}, stripped = false, drawing = nil,
+                  frames = 0 }
+    function RemoveAllPedWeapons()
+        gun.total, gun.clip, gun.stripped = {}, {}, true
+    end
+    function GiveWeaponToPed(_, hash, ammo)
+        local h = BR.NormHash(hash)
+        gun.total[h] = (gun.total[h] or 0) + (ammo or 0)
+    end
+    function SetPedAmmo(_, hash, n)
+        local h = BR.NormHash(hash)
+        gun.total[h] = math.max(0, n or 0)
+        gun.clip[h]  = math.min(gun.clip[h] or 0, gun.total[h])
+    end
+    function AddAmmoToPed(_, hash, n)
+        local h = BR.NormHash(hash)
+        gun.total[h] = math.max(0, (gun.total[h] or 0) + (n or 0))
+    end
+    function SetAmmoInClip(_, hash, n)
+        local h = BR.NormHash(hash)
+        gun.clip[h] = math.min(math.max(0, n or 0), gun.total[h] or 0)
+    end
+    local function inHand(h)
+        return type(pedWeapon) == 'number' and BR.NormHash(pedWeapon) == h
+    end
+    function GetAmmoInPedWeapon(_, hash)
+        local h = BR.NormHash(hash)
+        if not inHand(h) then return 0 end
+        return gun.total[h] or 0
+    end
+    function GetAmmoInClip(_, hash)
+        local h = BR.NormHash(hash)
+        if not inHand(h) then return true, 0 end
+        return true, gun.clip[h] or 0
+    end
+    function SetCurrentPedWeapon(_, hash)
+        pedWeapon = hash
+        if gun.stripped then
+            gun.stripped, gun.drawing, gun.frames = false, BR.NormHash(hash), 2
+        end
+    end
+
+    --- One engine frame: the pocket reload lands on a gun that has just come up.
+    local function frame()
+        if not gun.drawing then return end
+        gun.frames = gun.frames - 1
+        if gun.frames > 0 then return end
+        local h = gun.drawing
+        gun.drawing = nil
+        local w = BR.Config.WeaponByHash[h]
+        gun.clip[h] = math.min(w and w.clip or 0, gun.total[h] or 0)
+    end
+
+    -- THE SERVER: server/inventory.lua's INV_AMMO floor under serverAmmo, as N4
+    -- models it, over a two-slot bag. Wall shots raise no weaponDamageEvent, so
+    -- the report is the only thing that charges them.
+    local weapons = { HP, PDW }
+    local srv = { active = 1, clip = { HP.clip, 0 },
+                  ammo = { [HP.ammo] = 0, [SMG] = 0 } }
+    local function push()
+        local slots = {}
+        for i, w in ipairs(weapons) do
+            slots[i] = { id = w.id, label = w.label, kind = BR.ItemKind.WEAPON,
+                         rarity = 3, count = 1, clip = srv.clip[i],
+                         pool = w.ammo }
+        end
+        local ammo = {}
+        for k, n in pairs(srv.ammo) do ammo[k] = n end
+        fire(BR.Net.INV_SET, { slots = slots, ammo = ammo, active = srv.active })
+    end
+    local function answer()
+        local out = sent
+        sent = {}
+        for _, s in ipairs(out) do
+            local r = s.args[1]
+            local w = s.name == BR.Net.INV_AMMO and weapons[r.slot] or nil
+            if w and r.was == srv.clip[r.slot] + srv.ammo[w.ammo] then
+                local lost = srv.clip[r.slot] + srv.ammo[w.ammo] - r.total
+                if lost > 0 then
+                    local c = srv.clip[r.slot] - lost
+                    if c < 0 then
+                        srv.ammo[w.ammo] = math.max(0, srv.ammo[w.ammo] + c)
+                        c = 0
+                    end
+                    if c <= 0 then
+                        local moved = math.min(w.clip, srv.ammo[w.ammo])
+                        c, srv.ammo[w.ammo] = moved, srv.ammo[w.ammo] - moved
+                    end
+                    srv.clip[r.slot] = c
+                    push()
+                end
+            end
+        end
+    end
+
+    local function tick(n)
+        for _ = 1, (n or 1) do
+            frame()
+            fakeTime = fakeTime + 100
+            BR.Loop.step(BR.Loop.TICK)
+            answer()
+        end
+    end
+    --- A number key: whatever the client already said is answered first,
+    --- because the server takes its messages in the order they were sent.
+    local function select(i)
+        answer()
+        srv.active = i
+        push()
+    end
+    --- Rounds at a wall, one a tick, the engine's own arithmetic.
+    local function shoot(n)
+        for _ = 1, n do
+            gun.total[PH] = gun.total[PH] - 1
+            gun.clip[PH]  = math.max(0, gun.clip[PH] - 1)
+            tick(1)
+        end
+    end
+
+    -- WHAT THE BAR WAS HANDED: the plate, and the PDW's slot in the bag. `high`
+    -- is the largest magazine any PDW plate printed since it was last reset.
+    local plate, high, listening = {}, 0, true
+    AddEventHandler('br:ui:sendLocal', function(kind, p)
+        if not listening or kind ~= BR.Nui.INV or type(p) ~= 'table' then return end
+        local a = p.slots and p.slots[p.active or 0]
+        local b = p.slots and p.slots[2]
+        plate = { active = p.active, reserve = p.reserve,
+                  clip = type(a) == 'table' and a.clip or nil,
+                  bag  = type(b) == 'table' and b.clip or nil }
+        if p.active == 2 and plate.clip and plate.clip > high then
+            high = plate.clip
+        end
+    end)
+    local function said()
+        return ('plate %s/%s (slot %s), bag %s, gun %s/%s, server %d/%d'):format(
+            tostring(plate.clip), tostring(plate.reserve), tostring(plate.active),
+            tostring(plate.bag), tostring(gun.clip[PH]), tostring(gun.total[PH]),
+            srv.clip[2], srv.ammo[SMG])
+    end
+
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.State.landed = true
+    fire(BR.Net.STATE, { state = BR.MatchState.PLAYING })
+    sent = {}
+
+    -- ── 1. THE HEAVY PISTOL IN THE HAND, AN EMPTY PDW IN THE BAG, SIXTY BOUGHT.
+    --       give() loads the empty magazine as the rounds arrive.
+    push()
+    tick(2)
+    srv.clip[2], srv.ammo[SMG] = PDW.clip, 60 - PDW.clip
+    push()
+    tick(2)
+    ok(plate.active == 1 and plate.bag == 30,
+       'sixty SMG rounds bought: the stowed PDW reads a whole magazine', said())
+
+    -- ── 2. UP WITH THE PDW.
+    select(2)
+    tick(4)
+    ok(plate.clip == 30 and plate.reserve == 30
+       and gun.clip[PH] == 30 and gun.total[PH] == 60,
+       'the PDW comes up 30/30', said())
+
+    -- ── 3. FIVE AT A WALL.
+    shoot(5)
+    tick(4)
+    ok(plate.clip == 25 and plate.reserve == 30
+       and srv.clip[2] == 25 and srv.ammo[SMG] == 30,
+       'five at a wall: 25/30, and the server charged them to the magazine',
+       said())
+
+    -- ── 4. BACK TO THE PISTOL.
+    local stowed = gun.clip[PH]
+    select(1)
+    tick(4)
+    ok(plate.active == 1 and plate.bag == stowed,
+       'the stowed PDW reads the 25 it was put away with', said())
+
+    -- ── 5. BACK TO THE PDW, AND NOTHING ELSE.
+    high = 0
+    select(2)
+    tick(4)
+    ok(gun.clip[PH] == 25 and gun.total[PH] == 55,
+       'THE PDW COMES BACK WITH 25 IN IT, not a magazine GTA refilled on the draw',
+       said())
+    ok(plate.clip == 25 and plate.reserve == 30 and high == 25,
+       'and every plate on the way up reads 25/30',
+       said() .. (', highest plate %d'):format(high))
+
+    -- ── 6. FIVE MORE.
+    shoot(5)
+    tick(4)
+    ok(plate.clip == 20 and plate.reserve == 30 and gun.clip[PH] == 20
+       and srv.clip[2] == 20 and srv.ammo[SMG] == 30,
+       'five more: 20/30 on the plate, in the gun and on the server', said())
+
+    -- ── 7. THE PISTOL. The bag has to read the magazine the PDW was stowed with.
+    stowed = gun.clip[PH]
+    select(1)
+    tick(4)
+    ok(plate.bag == stowed,
+       'THE BAG READS THE MAGAZINE THE PDW WAS PUT AWAY WITH',
+       said() .. (', stowed with %s'):format(tostring(stowed)))
+
+    -- ── 8. THE PDW. It comes up holding exactly what the bag said.
+    local bag = plate.bag
+    select(2)
+    tick(4)
+    ok(gun.clip[PH] == bag and plate.clip == bag and plate.reserve == 30,
+       'and it comes up holding exactly what the bag said', said())
+    ok(gun.total[PH] == 50 and srv.clip[2] + srv.ammo[SMG] == 50,
+       'sixty bought and ten fired is fifty, in the gun and on the server',
+       said())
+
+    -- ── 9. FIVE SHOTS THE SERVER HAS NOT HEARD OF WHEN THE SWITCH LANDS. A long
+    --       step opens the report gate at rest; the shots are then measured by a
+    --       step too short for the gate, and the number key follows.
+    fakeTime = fakeTime + 200
+    BR.Loop.step(BR.Loop.TICK)
+    answer()
+    for _ = 1, 5 do
+        gun.total[PH] = gun.total[PH] - 1
+        gun.clip[PH]  = gun.clip[PH] - 1
+    end
+    fakeTime = fakeTime + 10
+    BR.Loop.step(BR.Loop.TICK)
+    stowed = gun.clip[PH]
+    select(1)
+    tick(4)
+    ok(plate.bag == stowed,
+       'A PDW STOWED INSIDE A REPORT WINDOW READS THE MAGAZINE IT HAD',
+       said() .. (', stowed with %s'):format(tostring(stowed)))
+
+    high = 0
+    select(2)
+    tick(4)
+    ok(gun.clip[PH] == stowed and plate.clip == stowed and high == stowed,
+       'and comes up with it, five rounds still gone from the magazine',
+       said() .. (', highest plate %d'):format(high))
+    ok(gun.total[PH] == 45 and srv.clip[2] == stowed
+       and srv.clip[2] + srv.ammo[SMG] == 45,
+       'with fifteen fired out of sixty on both sides of the wire', said())
+
+    listening = false
+    GiveWeaponToPed      = saved.give
+    RemoveAllPedWeapons  = saved.remove
+    SetPedAmmo           = saved.setAmmo
+    AddAmmoToPed         = saved.addAmmo
+    SetAmmoInClip        = saved.setClip
+    GetAmmoInPedWeapon   = saved.getAmmo
+    GetAmmoInClip        = saved.getClip
+    SetCurrentPedWeapon  = saved.current
+    HasPedGotWeapon      = saved.hasGot
+    IsPedReloading       = saved.reload
+    IsEntityAttached     = saved.attached
+    GetPedParachuteState = saved.chute
+    pedWeapon = nil
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+end
+
+-- ======================================================================== --
+-- N4c. A SWITCH IS NEVER A LOOP: IN A SEAT, ON THE BUS, UNDER A CANOPY, OR
+--      WHILE THE HAND IS NOT OURS
+-- ======================================================================== --
+--
+-- The owner's client hung three times on 6efeaf8, which carried N4b's first fix
+-- (ecb9170): Windows "not responding", no crash dump, no Lua error. Twice just
+-- after a drop ended in a vehicle seat, once aboard the bus. The revert played
+-- two clean matches. No mechanism was found in that Lua, so this block does NOT
+-- claim to reproduce the hang. It pins what the re-land promises instead: the
+-- four natives a weapon switch is made of, SetCurrentPedWeapon, SetAmmoInClip,
+-- GiveWeaponToPed and RemoveAllPedWeapons, are called a bounded number of times
+-- across a hundred ticks (ten seconds) in each of those postures.
+--
+-- THE ENGINE IS THE WORST ONE THAT CAN BE HONESTLY DESCRIBED. `rebuild` builds a
+-- whole magazine on the gun in the hand every frame, GTA's pocket reload refusing
+-- to settle. `handBack` puts a seat's mounted gun back in the hand every frame,
+-- which is #216's turret that GetCurrentPedVehicleWeapon cannot vouch for. A hold
+-- that writes until the engine agrees, or a grant that answers every strip, is a
+-- write a tick against this engine.
+--
+-- COUNTED ONLY FROM client/inventory.lua, because client/skydive.lua is loaded in
+-- this suite and uses the same natives for the parachute.
+--
+-- WHAT IT SAYS ABOUT THE TWO BUILDS BEFORE THIS ONE, measured by running it
+-- over each one's inventory.lua. On ecb9170 seven assertions fail: its hold
+-- writes SetAmmoInClip ten times in a draw's first second on foot, in a seat,
+-- on the bus and under a canopy, and sections 3 and 7 call all four natives a
+-- hundred times in a hundred ticks. On 8691f25, the revert that played clean,
+-- sections 3 and 7 fail the same way. So the unbounded seat loops predate
+-- ecb9170 and do not by themselves explain the hangs; they are bounded anyway.
+describe('a switch is never a loop: a seat, the bus, a canopy, a hand not ours')
+do
+    local saved = {
+        give = GiveWeaponToPed, remove = RemoveAllPedWeapons,
+        setAmmo = SetPedAmmo, addAmmo = AddAmmoToPed, setClip = SetAmmoInClip,
+        getAmmo = GetAmmoInPedWeapon, getClip = GetAmmoInClip,
+        current = SetCurrentPedWeapon, hasGot = HasPedGotWeapon,
+        reload = IsPedReloading, attached = IsEntityAttached,
+        chute = GetPedParachuteState,
+    }
+
+    local HP      = BR.Config.WeaponById['heavypistol']
+    local PDW     = BR.Config.WeaponById['combatpdw']
+    local PH      = BR.NormHash(PDW.hash)
+    local HALF    = math.floor(HP.clip / 2)
+    local MOUNTED = 0xE2822A29   -- VEHICLE_WEAPON_PLAYER_BUZZARD, as #216 uses it
+
+    local calls = { current = 0, clip = 0, give = 0, removeAll = 0 }
+    --- Was the native called from client/inventory.lua? Level 3 is the caller of
+    --- the stub that asked.
+    local function mine()
+        local info = debug.getinfo(3, 'S')
+        return info ~= nil
+            and info.source:find('client/inventory.lua', 1, true) ~= nil
+    end
+
+    local gun = { total = {}, clip = {} }
+    local engine = { rebuild = false, handBack = nil }
+    local attached, chute = false, BR.Native.ChuteState.NONE
+
+    function RemoveAllPedWeapons()
+        if mine() then calls.removeAll = calls.removeAll + 1 end
+        gun.total, gun.clip = {}, {}
+    end
+    function GiveWeaponToPed(_, hash, ammo)
+        if mine() then calls.give = calls.give + 1 end
+        local h = BR.NormHash(hash)
+        gun.total[h] = (gun.total[h] or 0) + (ammo or 0)
+    end
+    function SetPedAmmo(_, hash, n)
+        local h = BR.NormHash(hash)
+        gun.total[h] = math.max(0, n or 0)
+        gun.clip[h]  = math.min(gun.clip[h] or 0, gun.total[h])
+    end
+    function AddAmmoToPed(_, hash, n)
+        local h = BR.NormHash(hash)
+        gun.total[h] = math.max(0, (gun.total[h] or 0) + (n or 0))
+    end
+    function SetAmmoInClip(_, hash, n)
+        if mine() then calls.clip = calls.clip + 1 end
+        local h = BR.NormHash(hash)
+        gun.clip[h] = math.min(math.max(0, n or 0), gun.total[h] or 0)
+    end
+    local function inHand(h)
+        return type(pedWeapon) == 'number' and BR.NormHash(pedWeapon) == h
+    end
+    function GetAmmoInPedWeapon(_, hash)
+        local h = BR.NormHash(hash)
+        if not inHand(h) then return 0 end
+        return gun.total[h] or 0
+    end
+    function GetAmmoInClip(_, hash)
+        local h = BR.NormHash(hash)
+        if not inHand(h) then return true, 0 end
+        return true, gun.clip[h] or 0
+    end
+    function SetCurrentPedWeapon(_, hash)
+        if mine() then calls.current = calls.current + 1 end
+        pedWeapon = hash
+    end
+    function HasPedGotWeapon() return false end
+    function IsPedReloading() return false end
+    function IsEntityAttached() return attached end
+    function GetPedParachuteState() return chute end
+
+    --- One engine frame, before the tick reads the ped.
+    local function frame()
+        if engine.handBack then pedWeapon = engine.handBack end
+        if engine.rebuild and type(pedWeapon) == 'number' then
+            local h = BR.NormHash(pedWeapon)
+            local w = BR.Config.WeaponByHash[h]
+            if w and w.clip and gun.total[h] then
+                gun.clip[h] = math.min(w.clip, gun.total[h])
+            end
+        end
+    end
+    local function tick(n)
+        for _ = 1, n do
+            frame()
+            fakeTime = fakeTime + 100
+            BR.Loop.step(BR.Loop.TICK)
+        end
+        sent = {}
+    end
+    local function zero()
+        calls.current, calls.clip, calls.give, calls.removeAll = 0, 0, 0, 0
+    end
+    local function counted()
+        return ('SetCurrentPedWeapon %d, SetAmmoInClip %d, GiveWeaponToPed %d, '
+            .. 'RemoveAllPedWeapons %d'):format(calls.current, calls.clip,
+            calls.give, calls.removeAll)
+    end
+    local function none()
+        return calls.current + calls.clip + calls.give + calls.removeAll == 0
+    end
+    local function oneGrant()
+        return calls.current == 1 and calls.clip == 1 and calls.give == 1
+            and calls.removeAll == 1
+    end
+
+    --- The bag: a heavy pistol with half its magazine spent in slot 1, a PDW at
+    --- 25 in slot 2, and `active` in the hand.
+    local function bag(active)
+        fire(BR.Net.INV_SET, {
+            slots = {
+                { id = HP.id, label = HP.label, kind = BR.ItemKind.WEAPON,
+                  rarity = 3, count = 1, clip = HALF, pool = HP.ammo },
+                { id = PDW.id, label = PDW.label, kind = BR.ItemKind.WEAPON,
+                  rarity = 3, count = 1, clip = 25, pool = PDW.ammo },
+            },
+            ammo = { [HP.ammo] = 24, [PDW.ammo] = 30 }, active = active,
+        })
+    end
+
+    --- A fresh life on foot with the PDW up and the engine behaving.
+    local function start(state, landed)
+        fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+        inVehicle, vehicle, vehicleSeat = false, 0, nil
+        vehWeapon, attached, chute = nil, false, BR.Native.ChuteState.NONE
+        engine.rebuild, engine.handBack = false, nil
+        pedWeapon = nil
+        BR.State.me.state = state or BR.PlayerState.ALIVE
+        BR.State.landed = landed ~= false
+        fakeTime = fakeTime + 5000
+        sent = {}
+        bag(2)
+        tick(3)
+    end
+
+    -- ── 1. ON FOOT THE HOLD IS TWO WRITES AT MOST, however hard GTA rebuilds.
+    start()
+    ok(inHand(PH) and gun.clip[PH] == 25, 'the PDW is up on foot at 25',
+       ('gun %s'):format(tostring(gun.clip[PH])))
+    engine.rebuild = true
+    zero()
+    bag(1)
+    ok(oneGrant(), 'a switch is one grant: one call of each native', counted())
+    zero()
+    tick(100)
+    ok(calls.clip <= 2 and calls.current == 0 and calls.give == 0
+       and calls.removeAll == 0,
+       'ON FOOT, A HUNDRED TICKS OF GTA REBUILDING THE MAGAZINE COST TWO WRITES AT MOST',
+       counted())
+
+    -- ── 2. A PASSENGER SEAT, THE PISTOL DRAWN IN IT.
+    start()
+    inVehicle, vehicle, vehicleSeat = true, 77, 0
+    tick(2)
+    engine.rebuild = true
+    zero()
+    bag(1)
+    ok(oneGrant(), 'a switch in a seat is one grant', counted())
+    zero()
+    tick(100)
+    ok(none(),
+       'IN A SEAT, A HUNDRED TICKS WITH GTA REBUILDING THE PISTOL CALL NONE OF THEM',
+       counted())
+
+    -- ── 3. A SEAT WHOSE MOUNTED GUN THE ENGINE KEEPS HANDING BACK. The strip
+    --       takes it out of the hand every tick, which is the tripwire and stays;
+    --       what the strip used to buy was a whole grant of the PDW every tick.
+    start()
+    inVehicle, vehicle, vehicleSeat = true, 77, 0
+    vehWeapon = nil
+    engine.handBack = MOUNTED
+    zero()
+    tick(100)
+    ok(calls.give <= 11 and calls.removeAll <= 11 and calls.current <= 11
+       and calls.clip <= 11,
+       'A SEAT THAT KEEPS ARMING THE PED IS RE-GRANTED AT MOST ONCE A SECOND, '
+           .. 'not once a tick',
+       counted())
+    ok(calls.give >= 5, 'and it is still re-granted, so the slot comes back',
+       counted())
+
+    -- ...AND ON FOOT NOTHING WAITS: a hand stripped a moment after a grant is
+    -- re-armed on the same tick, as it always was.
+    inVehicle, vehicle, vehicleSeat = false, 0, nil
+    engine.handBack = nil
+    pedWeapon = MOUNTED
+    zero()
+    tick(1)
+    ok(calls.give == 1 and calls.current == 1 and inHand(PH),
+       'on foot a stripped hand is re-armed at once', counted())
+
+    -- ── 4. THE BUS. The ped rides attached to the plane (client/bus.lua) and
+    --       the server may not have moved this player off WARMUP yet, so the
+    --       hand is still ours to fill while a draw is still coming up.
+    start(BR.PlayerState.WARMUP, false)
+    engine.rebuild = true
+    bag(1)
+    attached = true
+    zero()
+    tick(100)
+    ok(none(),
+       'ATTACHED TO THE BUS WITH A GUN STILL COMING UP, NONE OF THEM IS CALLED',
+       counted())
+
+    BR.State.me.state = BR.PlayerState.BUS
+    zero()
+    for _ = 1, 20 do
+        bag(2)
+        tick(1)
+        bag(1)
+        tick(1)
+    end
+    fire(BR.Net.INV_SET, { slots = {}, ammo = {},
+                           active = BR.Config.Loot.meleeSlot or 0, quiet = true })
+    tick(100)
+    ok(none(),
+       'and once the server says BUS, forty INV_SETs, the wheels-up wipe and a '
+           .. 'hundred ticks call none of them',
+       counted())
+
+    -- ── 5. UNDER AN OPEN CANOPY (a cliff re-arms the drop machine for a player
+    --       who has landed), with a gun still coming up.
+    start()
+    engine.rebuild = true
+    bag(1)
+    chute = BR.Native.ChuteState.OPEN
+    zero()
+    tick(100)
+    ok(none(), 'UNDER A CANOPY, A GUN STILL COMING UP CALLS NONE OF THEM',
+       counted())
+
+    -- ── 6. THE HAND IS NOT OURS (the drop): canArm is false.
+    start()
+    BR.State.me.state = BR.PlayerState.FREEFALL
+    BR.State.landed = false
+    engine.rebuild = true
+    zero()
+    for _ = 1, 20 do
+        bag(1)
+        tick(1)
+        bag(2)
+        tick(1)
+    end
+    tick(100)
+    ok(none(),
+       'WHILE THE HAND IS NOT OURS, FORTY INV_SETS AND A HUNDRED TICKS CALL NONE',
+       counted())
+
+    -- ── 7. THE STANDING DISARM, IN A SEAT. client/skydive.lua's skydive.disarm
+    --       sweeps a landed ped below five metres that still has a parachute,
+    --       and from its third sweep takes every weapon and calls BR.Inv.reapply,
+    --       which re-grants even an empty hand. A seat that will not give the
+    --       chute up is that every tick. Counted with the bag empty, which is how
+    --       every player lands after the wheels-up wipe, and with a gun up.
+    --       `sweeps` counts skydive's own RemoveAllPedWeapons, so a sweep that
+    --       never ran cannot pass this for the wrong reason.
+    -- skydive.lua took its CHUTE from GetHashKey when it loaded, which in this
+    -- harness is a number no later block can name. So the ped has every weapon
+    -- that is not one of the bag's two guns: skydive only asks about the chute,
+    -- and client/inventory.lua only asks about throwables, which neither gun is.
+    local BAG = { [BR.NormHash(HP.hash)] = true, [PH] = true }
+    local world = { falling = IsPedFalling, agl = GetEntityHeightAboveGround,
+                    water = IsEntityInWater, remove = RemoveAllPedWeapons }
+    local sweeps = 0
+    -- Counted HERE, not by forwarding to the stub above: that one would see this
+    -- function as its caller and count client/inventory.lua's strips as nobody's.
+    function RemoveAllPedWeapons()
+        if mine() then
+            calls.removeAll = calls.removeAll + 1
+        else
+            sweeps = sweeps + 1
+        end
+        gun.total, gun.clip = {}, {}
+    end
+    function IsPedFalling() return false end
+    function GetEntityHeightAboveGround() return 0.5 end
+    function IsEntityInWater() return false end
+    function HasPedGotWeapon(_, hash) return not BAG[BR.NormHash(hash)] end
+
+    for _, armed in ipairs({ false, true }) do
+        start()
+        inVehicle, vehicle, vehicleSeat = true, 77, 0
+        if not armed then
+            fire(BR.Net.INV_SET, { slots = {}, ammo = {},
+                                   active = BR.Config.Loot.meleeSlot or 0,
+                                   quiet = true })
+        end
+        zero()
+        sweeps = 0
+        tick(100)
+        local how = armed and 'with the PDW up' or 'with an empty bag'
+        ok(sweeps >= 90,
+           ('the standing disarm really did strip the seat every tick, %s'):format(how),
+           ('%d sweeps'):format(sweeps))
+        ok(calls.removeAll <= 11 and calls.current <= 11 and calls.give <= 11
+           and calls.clip <= 11,
+           ('A SEAT THAT KEEPS ITS PARACHUTE IS RE-ARMED AT MOST ONCE A SECOND, %s')
+               :format(how),
+           counted())
+    end
+
+    function HasPedGotWeapon() return false end
+    IsPedFalling               = world.falling
+    GetEntityHeightAboveGround = world.agl
+    IsEntityInWater            = world.water
+
+    GiveWeaponToPed      = saved.give
+    RemoveAllPedWeapons  = saved.remove
+    SetPedAmmo           = saved.setAmmo
+    AddAmmoToPed         = saved.addAmmo
+    SetAmmoInClip        = saved.setClip
+    GetAmmoInPedWeapon   = saved.getAmmo
+    GetAmmoInClip        = saved.getClip
+    SetCurrentPedWeapon  = saved.current
+    HasPedGotWeapon      = saved.hasGot
+    IsPedReloading       = saved.reload
+    IsEntityAttached     = saved.attached
+    GetPedParachuteState = saved.chute
+    inVehicle, vehicle, vehicleSeat = false, 0, nil
+    vehWeapon, pedWeapon = nil, nil
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.State.landed = true
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+    sent = {}
 end
 
 -- ======================================================================== --
