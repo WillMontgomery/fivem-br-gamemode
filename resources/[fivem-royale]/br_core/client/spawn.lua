@@ -96,6 +96,83 @@ AddEventHandler('br:ui:ready', function()
     for kind in pairs(coveredNow) do coveredNow[kind] = false end
 end)
 
+--- Is my own ped under a cover that has to hide it from everybody else too?
+---
+--- ═══ A JOINING PED WAS SEEN FOR A SECOND, ON THE OLD SPAWN POINT ═══
+---
+--- Owner, 2026-09-14: "New players spawning in are still visible to others for
+--- a brief second when in lobby, as their peds are reset to the pre-walk
+--- location."
+---
+--- Every other lobby client hides my ped for itself, per frame, with
+--- SET_ENTITY_LOCALLY_INVISIBLE (client/squadmates.lua). That hide can only
+--- reach a ped it has already matched to a player, and a ped that has just come
+--- into scope, or a NEW ped handed out by SetPlayerModel or a resurrection, is
+--- a clone the observer can draw before that match exists (inferred, not
+--- measured in the engine). The owner can close that from its own side with
+--- SetEntityVisible, which replicates -- and the lobby has never been able to
+--- use it, because it hides you from yourself as well and the lobby is a
+--- character shot. WHILE MY OWN SCREEN IS COVERED THAT OBJECTION IS EMPTY:
+--- there is nothing of mine on screen to lose.
+---
+--- SO THIS IS EXACTLY "AM I LOOKING AT A COVER THAT IS BRINGING ME INTO THE
+--- LOBBY", and there are three:
+---
+---   * the boot's loading screen and its opaque backdrop (worldReady is false,
+---     client/loading.lua), in any state -- a player on a loading screen is not
+---     somebody anyone should be looking at;
+---   * the end-of-match black, once it is genuinely black. holdBlack is set while
+---     the verdict still slams over the live world, so the fade has to have
+---     landed too, and this road stands the ped on the lobby mark itself until
+---     WAITING hands over;
+---   * the leaving curtain (/brleave, TO_LOBBY), once the page has said it is
+---     opaque rather than when we asked for it -- a curtain half way through its
+---     fade still shows the ped.
+---
+--- The last two only in the LOBBY state: they are covers over a trip home, and a
+--- player still in a match is somebody else's business.
+---
+--- NOT THE LOBBY WATCHDOG'S OWN TRIP. Its black lifts in the same frame the ped
+--- lands on the start mark, so there is no stretch of it left to hold.
+---
+--- client/natives.lua reads this every frame for the one visibility rule it
+--- owns, and the places that lift one of these covers push that rule through
+--- straight away (see syncOwnVisibility just below) rather than a frame later.
+--- @return boolean
+function BR.Spawn.pedConcealed()
+    local S = BR.State
+    if S and S.worldReady == false then return true end
+    if not (S and S.me and S.me.state == BR.PlayerState.LOBBY) then return false end
+    if BR.Spawn.holdBlack and isTrue(IsScreenFadedOut()) then return true end
+    if BR.Spawn.curtainWanted and coveredNow.curtain == true then return true end
+    return false
+end
+
+--- Hide the ped I have RIGHT NOW, in this frame, if a cover says nobody may see it.
+---
+--- FOR THE MOMENT A NEW PED APPEARS: a ped is visible by default, and the frame
+--- rule in client/natives.lua would not reach a new handle until the next frame
+--- -- after the engine may already have sent it to everybody, standing wherever
+--- it was created. Called straight after SetPlayerModel (client/locker.lua) and
+--- straight after the resurrection in BR.Spawn.respawn. It only ever HIDES, so
+--- it cannot argue with the bus rider's or the bled-out player's rule.
+--- @return boolean  whether it hid anything
+function BR.Spawn.concealPed()
+    if not BR.Spawn.pedConcealed() then return false end
+    SetEntityVisible(PlayerPedId(), false, false)
+    return true
+end
+
+--- A cover has just lifted: put my ped's visibility right in this frame.
+---
+--- THROUGH client/natives.lua's rule rather than a bare SetEntityVisible(true),
+--- because a lift is not the only thing that decides it -- a bus rider stays
+--- hidden whatever a curtain does. Nil-guarded: that file may not be loaded in
+--- a harness, and its frame rule is the net underneath this either way.
+local function syncOwnVisibility()
+    if BR.Native and BR.Native.syncVisibility then BR.Native.syncVisibility() end
+end
+
 --- Ask the page for the curtain, or to take it away.
 ---
 --- The STATE we want, every time -- never a toggle. A dropped message then
@@ -110,6 +187,9 @@ function BR.Spawn.curtain(show, kind)
         BR.Spawn.curtainAt = GetGameTimer()
         TriggerEvent('br:ui:sendLocal', BR.Nui.LEAVING, { show = true, kind = kind })
     else
+        -- The ped comes back BEFORE the page is told, so it is there by the
+        -- time the curtain's fade can show anything (see BR.Spawn.pedConcealed).
+        syncOwnVisibility()
         TriggerEvent('br:ui:sendLocal', BR.Nui.LEAVING, { show = false })
     end
 end
@@ -334,6 +414,11 @@ function BR.Spawn.respawn(x, y, z, heading, exact, cb)
     local ped = PlayerPedId()
 
     NetworkResurrectLocalPlayer(x, y, z, heading or 0.0, true, false)
+    -- IN THE SAME FRAME AS THE RESURRECTION, before anything else touches the
+    -- ped: under a cover that brings me into the lobby, whatever ped the engine
+    -- hands back is hidden from everybody before it can be sent to them. A no-op
+    -- on every road without such a cover. See BR.Spawn.pedConcealed.
+    BR.Spawn.concealPed()
     ClearPedTasksImmediately(ped)
     RemoveAllPedWeapons(ped, true)
 
@@ -441,17 +526,41 @@ AddEventHandler(BR.Net.REVIVED, function()
     print('[br_core] revived where we fell')
 end)
 
---- Bring the player into the world for the first time: straight onto the
---- lobby mark, where BR.LobbyCam frames them. Visibility is owned by the game
---- rules (client/natives.lua) and OTHER players' lobby peds are hidden by
---- each client for itself (client/squadmates.lua), so nothing here has to
---- hide anyone.
+--- Bring the player into the world for the first time: onto the lobby mark,
+--- and into the lobby entrance in the same frame.
+---
+--- ═══ THIS WAS THE OLD SPAWN POINT, WRITTEN OVER A WALK THAT HAD BEGUN ═══
+---
+--- This line predates the walk-in entrance and was never told about it. On a
+--- real join the lobby watchdog below has usually taken the ped home already --
+--- BR.State.me.state defaults to LOBBY and GTA puts the ped nowhere near the
+--- vista -- and that trip has started the entrance and stood the ped on its
+--- start mark. This then ran half a second after the session started and put it
+--- back on lobbyPos, which is where the walk ENDS: the locker's model swap
+--- happened there, and the entrance only put it back on its mark after the
+--- streaming waits, 22m later. The owner's console said so every session: "the
+--- ped was 22.2m off its start mark while the cover was still up -- put back".
+---
+--- SO A TRIP OR AN ENTRANCE THAT ALREADY OWNS THE PED IS LEFT ALONE, and when
+--- this is the first writer after all it does what BR.Spawn.toLobby does: the
+--- respawn and BR.LobbyPed.startNow with no Citizen.Wait between them, so the
+--- lobby mark and the start mark land in one frame whichever of the two roads
+--- gets there first. No argument to startNow: this is not the trip, and its
+--- ordinary guards apply.
 local function initialSpawn()
     if spawned then return end
     spawned = true
 
+    if BR.Spawn.traveling or (BR.LobbyPed and BR.LobbyPed.entering()) then
+        print('[br_core] first spawn: the trip home already placed the ped -- left alone')
+        return
+    end
+
     local p = BR.Config.Match.lobbyPos
     BR.Spawn.respawn(p.x, p.y, p.z, p.heading, true)
+    if BR.LobbyPed and BR.LobbyPed.startNow then
+        BR.LobbyPed.startNow()
+    end
 
     print('[br_core] spawned at the lobby vista')
 end
@@ -1094,6 +1203,11 @@ AddEventHandler(BR.Net.STATE, function(d)
                 BR.LobbyPed.startNow()
             end
 
+            -- AND THE PED IS SHOWN AGAIN HERE: after it is on its start mark and
+            -- before the fade starts, in one frame. It spent the black standing
+            -- on the lobby mark hidden from everybody (BR.Spawn.pedConcealed).
+            syncOwnVisibility()
+
             DoScreenFadeIn(2000)
         end
     end
@@ -1448,6 +1562,7 @@ BR.Loop.register(BR.Loop.SLOW, 'spawn.antiblack', function()
         if BR.State.match.state == BR.MatchState.WAITING then
             print('[br_core] holdBlack outlived the match -- releasing (watchdog)')
             BR.Spawn.holdBlack = false
+            syncOwnVisibility()
             DoScreenFadeIn(1000)
         end
         darkTicks = 0

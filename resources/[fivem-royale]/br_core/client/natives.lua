@@ -1410,6 +1410,39 @@ function BR.Native.forgetRules()
     latch.clockHour, latch.clockMin = nil, nil
 end
 
+--- Should my own ped be visible? THE ONE RULE, for both writers below.
+---
+--- Hidden aboard the bus and once bled out (see the long note in
+--- applyGameRules), and hidden while BR.Spawn.pedConcealed says my own screen is
+--- under a cover that is bringing me into the lobby -- the joining ped the owner
+--- saw on the old spawn point (see client/spawn.lua). Read at call time and
+--- nil-guarded, because client/spawn.lua loads after this file.
+--- @param st string|nil  my player state
+--- @return boolean
+local function ownPedVisible(st)
+    if st == BR.PlayerState.BUS or st == BR.PlayerState.OUT then return false end
+    local S = BR.Spawn
+    if S and S.pedConcealed and S.pedConcealed() then return false end
+    return true
+end
+
+--- Write my own ped's visibility NOW rather than on the next frame.
+---
+--- For the moment a cover lifts (client/loading.lua's reveal, the end-of-match
+--- handover, the leaving curtain): the ped has to be back before the cover can
+--- show anything, and the frame rule would only notice on the frame after.
+--- Updates the latch, so that next frame agrees instead of writing it twice. It
+--- deliberately leaves `latch.ped` alone: a new handle still makes the frame
+--- rule re-assert everything else it owns.
+--- @return boolean  what was written
+function BR.Native.syncVisibility()
+    local me = BR.State and BR.State.me
+    local want = ownPedVisible(me and me.state)
+    latch.visible = want
+    SetEntityVisible(PlayerPedId(), want, false)
+    return want
+end
+
 -- ═══════════════════════════════════════════════════════════════════════════
 -- EMERGENCY DISPATCH -- "For some reason firetrucks are dispatching when I do
 -- things?" (owner, 2026-08-23, during a playtest)
@@ -1945,8 +1978,16 @@ function BR.Native.applyGameRules()
     -- undo it underneath us: the handle changing (a new ped is visible by
     -- default, and the write that matters is the one hiding a BUS rider) and
     -- the state changing, which is what this value is derived from anyway.
-    local wantVisible = st ~= BR.PlayerState.BUS
-                        and st ~= BR.PlayerState.OUT
+    --
+    -- ═══ ...AND A LOBBY ARRIVAL UNDER ITS OWN COVER IS THE THIRD ═══
+    --
+    -- The lobby objection above is that the property hides you from yourself.
+    -- While my own screen is covered on the way into the lobby -- the boot's
+    -- loading screen, the end-of-match black, the leaving curtain -- there is
+    -- nothing of mine on screen to hide, and every other lobby client's local
+    -- hide cannot reach a clone it has not matched to a player yet (inferred).
+    -- BR.Spawn.pedConcealed is that question; ownPedVisible above folds it in.
+    local wantVisible = ownPedVisible(st)
     if due or wantVisible ~= latch.visible then
         latch.visible = wantVisible
         SetEntityVisible(ped, wantVisible, false)

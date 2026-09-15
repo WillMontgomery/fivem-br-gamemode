@@ -10572,6 +10572,49 @@ do
         world.restore()
     end
 
+    describe('the ped is shown to everybody in the frame the lobby is revealed, not before')
+    do
+        -- Owner, 2026-09-14: "New players spawning in are still visible to
+        -- others for a brief second when in lobby". The joining ped is now
+        -- hidden from the network for the whole boot (client/spawn.lua's
+        -- BR.Spawn.pedConcealed reads worldReady), so the reveal is where it is
+        -- given back -- AFTER the flip, because the flip is what the rule reads,
+        -- and BEFORE the refresh, because the refresh starts the backdrop fading.
+        -- The rule itself is asserted against the real natives.lua further down.
+        local seen, recording = {}, true
+        local keepSync = BR.Native.syncVisibility
+        BR.Native.syncVisibility = function()
+            if recording then
+                seen[#seen + 1] = { kind = 'sync', ready = BR.State.worldReady }
+            end
+        end
+        AddEventHandler('br:screen:refresh', function()
+            if recording then
+                seen[#seen + 1] = { kind = 'refresh', ready = BR.State.worldReady }
+            end
+        end)
+
+        join()
+        pump(5000)
+
+        local trail = {}
+        for _, s in ipairs(seen) do
+            trail[#trail + 1] = s.kind .. '(' .. tostring(s.ready) .. ')'
+        end
+        trail = table.concat(trail, ' ')
+
+        ok(BR.State.worldReady == true, 'precondition: the lobby was revealed',
+           tostring(BR.State.worldReady))
+        ok(seen[1] ~= nil and seen[1].kind == 'sync' and seen[1].ready == true,
+           'the ped\'s visibility is put right in the reveal, after worldReady flips', trail)
+        ok(seen[2] ~= nil and seen[2].kind == 'refresh',
+           'and before the refresh that starts the backdrop fading', trail)
+        ok(#seen == 2, 'once, in that order', trail)
+
+        recording = false
+        BR.Native.syncVisibility = keepSync
+    end
+
     -- ====================================================================== --
     -- The scar: a native declared BOOL that answers with a NUMBER
     -- ====================================================================== --
@@ -14616,6 +14659,93 @@ do
        .. 'heartbeat in between')
 
     BR.State.me.state = BR.PlayerState.ALIVE
+    BR.Native.forgetRules()
+end
+
+-- ======================================================================== --
+-- A LOBBY ARRIVAL UNDER ITS OWN COVER IS HIDDEN FROM EVERYBODY, AND ONLY THEN
+-- ======================================================================== --
+--
+-- Owner, 2026-09-14: "New players spawning in are still visible to others for
+-- a brief second when in lobby, as their peds are reset to the pre-walk
+-- location."
+--
+-- The other lobby clients' per-frame local hide cannot reach a clone they have
+-- not matched to a player yet (inferred), so the owner hides its own ped over
+-- the network while its OWN screen is covered on the way in -- the one time the
+-- property's "it hides you from yourself too" costs nothing. Which covers count
+-- is client/spawn.lua's question (asserted in tools/test_lobbyseq.lua, where the
+-- real file is loaded); what is asserted here is that this file's one rule obeys
+-- the answer, gives the ped back the moment it changes, and still keeps the bus
+-- rider and the bled-out body hidden whatever a cover says.
+
+describe('a lobby ped under its own cover is hidden from everybody, and only then')
+do
+    local keepSpawn = BR.Spawn
+    local concealed = false
+    BR.Spawn = { pedConcealed = function() return concealed end }
+
+    local function visIn(st, c)
+        BR.State.me = { src = 1, state = st }
+        BR.State.match = { state = BR.MatchState.WAITING }
+        concealed = c
+        BR.Native.forgetRules()
+        visWrites = {}
+        BR.Native.applyGameRules()
+        local last = visWrites[#visWrites]
+        return last and last.on
+    end
+
+    ok(visIn(BR.PlayerState.LOBBY, true) == false,
+       'a lobby ped under its own cover is set invisible, which replicates')
+    ok(visIn(BR.PlayerState.LOBBY, false) == true,
+       'and with no cover the lobby ped is the character shot again')
+    ok(visIn(BR.PlayerState.BUS, false) == false and visIn(BR.PlayerState.OUT, false) == false,
+       'the bus rider and the bled-out body stay hidden with no cover at all')
+
+    -- THE LIFT, WITH THE LATCH INTACT, which is what a real reveal does.
+    BR.State.me = { src = 1, state = BR.PlayerState.LOBBY }
+    concealed = true
+    BR.Native.forgetRules()
+    BR.Native.applyGameRules()
+    visWrites = {}
+    BR.Native.applyGameRules()
+    ok(#visWrites == 0, 'holding under the cover writes nothing on the next frame')
+    concealed = false
+    visWrites = {}
+    BR.Native.applyGameRules()
+    ok(visWrites[1] ~= nil and visWrites[1].on == true,
+       'and the frame the cover lifts, the ped is visible again with no heartbeat in between')
+
+    ok(type(BR.Native.syncVisibility) == 'function',
+       'natives.lua can put the ped right NOW, for the frame a cover lifts')
+    if type(BR.Native.syncVisibility) == 'function' then
+        concealed = true
+        BR.Native.forgetRules()
+        BR.Native.applyGameRules()
+        concealed = false
+        visWrites = {}
+        BR.Native.syncVisibility()
+        ok(#visWrites == 1 and visWrites[1].on == true and visWrites[1].kind == 'boolean',
+           'a lift writes a real true in the same call, not on the next frame')
+        visWrites = {}
+        BR.Native.applyGameRules()
+        ok(#visWrites == 0, 'and the next frame agrees rather than writing it again')
+
+        BR.State.me.state = BR.PlayerState.BUS
+        visWrites = {}
+        BR.Native.syncVisibility()
+        ok(visWrites[1] ~= nil and visWrites[1].on == false,
+           'a lift never shows a bus rider: it runs the rule, it does not just show')
+    end
+
+    -- FAILS OPEN: a build without client/spawn.lua's answer hides nobody extra.
+    BR.Spawn = nil
+    ok(visIn(BR.PlayerState.LOBBY, false) == true,
+       'with no spawn module loaded, a lobby ped is simply visible')
+
+    BR.Spawn = keepSpawn
+    BR.State.me = { src = 1, state = BR.PlayerState.ALIVE }
     BR.Native.forgetRules()
 end
 

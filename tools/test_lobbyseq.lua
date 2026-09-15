@@ -194,6 +194,10 @@ function RemoveAllPedWeapons() end
 function SetPedCanRagdoll() end
 function SetPedDefaultComponentVariation() end
 function NetworkResurrectLocalPlayer(x, y, z) note('resurrect', { x = x, y = y, z = z }) end
+-- VISIBILITY IS NOTED IN THE SAME LOG AS POSITIONS, because the joining-ped bug
+-- is an ordering between the two: a coordinate written onto, or a new ped handed
+-- out as, a ped the network may still see (owner, 2026-09-14).
+function SetEntityVisible(_p, on) note('visible', { on = on == true }) end
 
 -- The walking style. `loaded` is a fixture knob: a clipset that never streams
 -- must cost a plain walk rather than an entrance that never starts.
@@ -210,15 +214,24 @@ function ResetPedMovementClipset()
     note('clipset', { name = nil })
 end
 
--- Models. locker.lua streams one and swaps it; nothing here has to be slow.
+-- Models. locker.lua streams one and swaps it. Instant unless a block sets
+-- modelDelayMs: the first load's swap lands seconds in, inside the window the
+-- owner's report is about, and an instant stream would put it before the trip.
 local models = {}
+local modelDelayMs = 0
 function GetHashKey(s)
     local h = 0
     for i = 1, #s do h = (h * 31 + s:byte(i)) % 2147483647 end
     return h
 end
-function RequestModel(h) models[h] = true end
-function HasModelLoaded(h) return models[h] and 1 or 0 end
+function RequestModel(h)
+    if models[h] == nil then models[h] = fakeTime + modelDelayMs end
+end
+-- A REAL BOOLEAN, unlike the numeric stubs around it. client/locker.lua reads
+-- this one raw (`while not HasModelLoaded(hash)`), so a 0 here ends its stream
+-- wait on the first poll and a delayed model would be swapped before it had
+-- streamed -- the fixture would be testing that raw read, not the ordering.
+function HasModelLoaded(h) return models[h] ~= nil and fakeTime >= models[h] end
 function SetModelAsNoLongerNeeded() end
 function IsModelInCdimage() return 1 end
 function IsModelValid() return 1 end
@@ -414,12 +427,25 @@ BR.State.match = { state = BR.MatchState.WAITING }
 BR.State.worldReady = true
 
 -- The collaborators, at the surface they are actually used through.
-BR.Native = { initHealthModel = function() end }
+-- syncVisibility is client/natives.lua's rule, asserted against the real file in
+-- tools/test_client.lua. Here only WHEN it is asked for is the question, so it
+-- is a note in the log.
+BR.Native = { initHealthModel = function() end,
+              syncVisibility = function() note('sync') end }
 BR.Notify = function() end
 BR.Spectate = { active = function() return false end }
 
+-- THE BOOT THREAD IS KEPT RATHER THAN DROPPED. spawn.lua starts one thread at
+-- load -- wait for the session, reveal, half a second, then the first spawn --
+-- and the no-op Citizen above threw it away, which is how the first spawn's
+-- write onto the old spawn point went unmodelled for as long as it did. Block
+-- 21b runs it.
+local bootThreads = {}
+Citizen.CreateThread = function(fn) bootThreads[#bootThreads + 1] = fn end
+loadAll({ 'br_core/client/spawn.lua' })
+Citizen.CreateThread = function() end
+
 loadAll({
-    'br_core/client/spawn.lua',
     'br_core/client/lobbycam.lua',
     'br_core/client/locker.lua',
     'br_core/client/lobbyped.lua',
@@ -551,6 +577,8 @@ AddEventHandler('br:ui:sendLocal', function(kind, d)
             TriggerEvent('br:ui:covered', 'curtain', true)
         end)
     else
+        -- Noted, so "the ped came back before the page was told" is readable.
+        note('curtaindown')
         TriggerEvent('br:ui:covered', 'curtain', false)
     end
 end)
@@ -578,6 +606,7 @@ local function reset()
     clipsetStreams = true
     dictsStream = true
     dictDelayMs = 0
+    modelDelayMs = 0
     for k in pairs(animDicts) do animDicts[k] = nil end
     BR.Spawn.curtainWanted = false
     BR.State.party = nil
@@ -3415,6 +3444,286 @@ do
 
     settleLate = false
     BR.State.worldReady = true
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 21b. THE FIRST LOAD HAS ONE WRITER, AND THE NETWORK SEES NONE OF IT
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- Owner, 2026-09-14: "our original spawn point (the same coords where the lobby
+-- ends up after the walk) are still in there somewhere. New players spawning in
+-- are still visible to others for a brief second when in lobby, as their peds
+-- are reset to the pre-walk location."
+--
+-- His console, every session: the entrance begins, THEN "spawned at the lobby
+-- vista", then the locker swap, then "the ped was 22.2m off its start mark
+-- while the cover was still up -- put back". 22.2m is the start mark to
+-- lobbyPos. Block 21 models that drift as an engine settle and never ran the
+-- boot thread, so the real writer -- spawn.lua's first spawn, still aimed at
+-- the old spawn point -- was never in the fixture.
+--
+-- SO THIS RUNS THE REAL BOOT THREAD AND THE REAL LOCKER SWAP, the model taking
+-- three seconds to stream and no fixture settle, and asserts the two halves of
+-- the report: nothing writes the old spawn point once the walk has placed the
+-- ped, and nothing is written onto -- or handed out as -- a ped the network may
+-- still see while the loading screen is up.
+--
+-- WHAT IT CANNOT PROVE is how quickly another client matches a new clone to a
+-- player. It proves this client never offers one to be seen.
+
+--- Did the console say it? `logged` is cleared by reset().
+local function said(s)
+    for _, l in ipairs(logged) do
+        if l:find(s, 1, true) then return true end
+    end
+    return false
+end
+
+--- Coordinate writes that landed while the ped could be seen, up to `last`.
+--- A setmodel or a resurrect is a ped the engine may have made NEW, and a new
+--- ped is visible until something says otherwise.
+local function exposedWrites(first, last)
+    local vis, n = nil, 0
+    for i = first, last do
+        local e = order[i]
+        if e.kind == 'setmodel' or e.kind == 'resurrect' then vis = true
+        elseif e.kind == 'visible' then vis = e.on
+        elseif e.kind == 'sync' then vis = true
+        elseif e.kind == 'coords' and vis == true then n = n + 1 end
+    end
+    return n
+end
+
+--- Is the entry at `i` hidden before the frame it happened in is over, and
+--- before anything else was done to the ped?
+local function hiddenNext(i)
+    local e, nx = order[i], order[i + 1]
+    return nx ~= nil and nx.kind == 'visible' and nx.on == false and nx.at == e.at
+end
+
+do
+    local C = BR.Config.Match.lobbyEntrance
+    local L = BR.Config.Match.lobbyPos
+    local S = C.pedStart
+
+    ok(#bootThreads == 1,
+       ('precondition: spawn.lua starts exactly one thread at load (%d)'):format(#bootThreads))
+
+    reset()
+    ped.model = 0
+    ped.x, ped.y, ped.z = 0.0, 0.0, 0.0
+    BR.State.worldReady = false
+    settleLate = false
+    for k in pairs(models) do models[k] = nil end
+    modelDelayMs = 3000
+
+    -- The locker's first-lobby tick fires on the first tick of a session, before
+    -- the watchdog's trip has started anything; then the boot thread, exactly as
+    -- spawn.lua started it.
+    BR.Locker.apply(nil)
+    for _, fn in ipairs(bootThreads) do
+        threads[#threads + 1] = { co = coroutine.create(fn), wake = fakeTime }
+    end
+
+    pump(6000)
+    local covered = #order          -- everything up to here is under the loading screen
+    BR.State.worldReady = true      -- client/loading.lua reveals
+    pump(40000)
+
+    ok(said('first spawn:') or said('spawned at the lobby vista'),
+       'precondition: the boot thread reached the first spawn')
+    local swapI = firstOf('setmodel')
+    ok(swapI ~= nil and swapI <= covered,
+       'precondition: the character was swapped under the loading screen')
+    local startI = firstOf('coords', function(e) return BR.Dist(e.x, e.y, S.x, S.y) < 0.01 end)
+    local taskI = firstOf('task')
+    ok(startI ~= nil and taskI ~= nil, 'precondition: the entrance placed the ped and walked')
+
+    -- THE OLD SPAWN POINT, AFTER THE START MARK. Counted between the entrance's
+    -- placement and its first leg, which is the whole of the covered wait.
+    local stale = 0
+    for i = (startI or 1) + 1, (taskI or 0) - 1 do
+        local e = order[i]
+        if e.kind == 'coords' and BR.Dist(e.x, e.y, L.x, L.y) < 1.0 then stale = stale + 1 end
+    end
+    ok(stale == 0,
+       ('nothing writes the old spawn point once the walk has placed the ped (%d writes)')
+           :format(stale))
+    ok(not said('put back'),
+       'and the entrance never has to put the ped back on its start mark')
+
+    -- THE SWAP ON THE START MARK. locker.apply restores the position it read
+    -- before the swap, so the first write after it says where the swap happened.
+    local restore = nil
+    for i = (swapI or #order) + 1, #order do
+        if order[i].kind == 'coords' then restore = order[i] break end
+    end
+    ok(restore ~= nil and BR.Dist(restore.x, restore.y, S.x, S.y) < 0.01,
+       'the character is swapped standing on the start mark, not on the old spawn point')
+
+    ok(swapI ~= nil and hiddenNext(swapI),
+       'the new ped from the swap is hidden in its own frame, before its position is restored')
+
+    local res, hid = 0, 0
+    for i = 1, covered do
+        if order[i].kind == 'resurrect' then
+            res = res + 1
+            if hiddenNext(i) then hid = hid + 1 end
+        end
+    end
+    ok(res > 0 and hid == res,
+       ('every resurrection under the loading screen is hidden in its own frame (%d of %d)')
+           :format(hid, res))
+
+    local exposed = exposedWrites(1, covered)
+    ok(exposed == 0,
+       ('no position is written onto a ped the network can see while the loading '
+           .. 'screen is up (%d were)'):format(exposed))
+
+    -- AND THE ENTRANCE THE OWNER APPROVED IS THE ONE THAT RUNS.
+    ok(taskI ~= nil
+       and BR.Dist(order[taskI].fromX, order[taskI].fromY, S.x, S.y) < 1.0,
+       'the walk still begins on the start mark')
+    ok(math.abs(ped.x - L.x) < 0.01 and math.abs(ped.y - L.y) < 0.01,
+       'and still ends on the lobby mark')
+
+    modelDelayMs = 0
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 21c. WHICH COVERS HIDE THE PED FROM EVERYBODY, AND WHICH DO NOT
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- BR.Spawn.pedConcealed is the question client/natives.lua asks every frame and
+-- the swap and the resurrection ask in their own frame. Each case below is a
+-- different way to get it wrong: too narrow and a trip home is seen, too wide
+-- and a player loses sight of their own character in a shot they are watching.
+
+do
+    local P = BR.Spawn.pedConcealed
+    ok(type(P) == 'function',
+       'spawn.lua answers whether my ped is under a cover that hides it from everybody')
+    if type(P) == 'function' then
+        reset()
+        BR.State.worldReady = true
+        fadedOut = false
+        ok(P() == false, 'standing in the lobby in the open, the ped is not hidden')
+
+        BR.State.worldReady = false
+        ok(P() == true, 'behind the loading screen it is')
+        BR.State.me.state = BR.PlayerState.ALIVE
+        ok(P() == true, 'in any state: nobody should be looking at a player on a loading screen')
+        BR.State.me.state = BR.PlayerState.LOBBY
+        BR.State.worldReady = true
+
+        BR.Spawn.holdBlack = true
+        ok(P() == false,
+           'the end-of-match hold alone is not a cover -- the verdict slams over the live world')
+        fadedOut = true
+        ok(P() == true, 'once its black has landed, the ped on the lobby mark is hidden')
+        BR.State.me.state = BR.PlayerState.ALIVE
+        ok(P() == false, 'but only in the lobby; a player still in the match is not')
+        BR.State.me.state = BR.PlayerState.LOBBY
+        BR.Spawn.holdBlack = false
+        fadedOut = false
+
+        -- The page's last word on the curtain, stated: reset() does not reach
+        -- spawn.lua's mirror of it, and an earlier block's acknowledgement can
+        -- land after its own lowering.
+        TriggerEvent('br:ui:covered', 'curtain', false)
+        BR.Spawn.curtainWanted = true
+        ok(P() == false, 'a curtain asked for but still fading in is not a cover yet')
+        TriggerEvent('br:ui:covered', 'curtain', true)
+        ok(P() == true, 'once the page says it is opaque, it is')
+        BR.Spawn.curtainWanted = false
+        ok(P() == false, 'and the moment it is lowered, it is not')
+        TriggerEvent('br:ui:covered', 'curtain', false)
+    end
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 21d. THE END OF A MATCH: HIDDEN ON THE LOBBY MARK, SHOWN ON THE START MARK
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- "Handle a respawn into the lobby the same way." This road stands the ped on
+-- lobbyPos -- the old spawn point -- for the whole black, because the entrance
+-- is deliberately not started until WAITING hands over. The ped is resurrected
+-- there, which may be a new ped (inferred), in the lobby's routing bucket.
+
+do
+    local S = BR.Config.Match.lobbyEntrance.pedStart
+
+    reset()
+    wearChosenModel()
+    pump(70000)
+    BR.State.me.state = BR.PlayerState.ALIVE
+    ped.x, ped.y = 1500.0, 2500.0
+    pump(500)
+
+    order = {}
+    BR.Spawn.toLobby(true)
+    BR.State.me.state = BR.PlayerState.LOBBY    -- the server's sweep
+    pump(20000)
+
+    local resI = firstOf('resurrect')
+    ok(resI ~= nil and not BR.Spawn.traveling,
+       'precondition: the trip home resurrected the ped under the black and landed')
+    ok(not BR.LobbyPed.entering(), 'precondition: and the entrance waits for WAITING on this road')
+    ok(resI ~= nil and hiddenNext(resI),
+       'the ped is hidden in the frame it is resurrected onto the lobby mark')
+
+    TriggerEvent(BR.Net.STATE, { state = BR.MatchState.WAITING })
+    local startI = firstOf('coords', function(e) return BR.Dist(e.x, e.y, S.x, S.y) < 0.01 end)
+    local syncI = firstOf('sync')
+    local fadeI = firstOf('fadein', function(e) return e.ms == 2000 end)
+    ok(startI ~= nil and syncI ~= nil and fadeI ~= nil
+       and startI < syncI and syncI < fadeI
+       and order[startI].at == order[fadeI].at,
+       'and shown again after it is on its start mark and before the fade, in one frame')
+    ok(resI ~= nil and syncI ~= nil and exposedWrites(resI, syncI) == 0,
+       'with no position written onto it in between while it could be seen')
+
+    pump(40000)
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 21e. THE LEAVING CURTAIN: HIDDEN UNDER IT, SHOWN AS IT LIFTS
+-- ═══════════════════════════════════════════════════════════════════════════
+
+do
+    reset()
+    wearChosenModel()
+    pump(70000)
+    BR.State.me.state = BR.PlayerState.ALIVE
+    ped.x, ped.y = 1500.0, 2500.0
+    pump(500)
+
+    BR.State.me.state = BR.PlayerState.LOBBY
+    -- The page's last word on the curtain, stated here rather than inherited: a
+    -- stale acknowledgement would let the trip skip its own wait for the cover.
+    TriggerEvent('br:ui:covered', 'curtain', false)
+    order = {}
+    TriggerEvent(BR.Net.TO_LOBBY)
+    pump(30000)
+
+    local coverI = firstOf('covered')
+    local resI = firstOf('resurrect')
+    ok(coverI ~= nil and resI ~= nil and coverI < resI,
+       'precondition: the trip home ran behind a curtain the page had called opaque')
+    ok(resI ~= nil and hiddenNext(resI),
+       'the ped is hidden in the frame it is resurrected under the curtain')
+
+    local syncI = firstOf('sync')
+    local downI = firstOf('curtaindown')
+    ok(syncI ~= nil and downI ~= nil and syncI < downI and order[syncI].at == order[downI].at,
+       'and shown again in the frame the curtain is lowered, before the page is told')
+    ok(resI ~= nil and syncI ~= nil and exposedWrites(resI, syncI) == 0,
+       'with no position written onto it in between while it could be seen')
+    local taskI = firstOf('task')
+    ok(taskI ~= nil and syncI ~= nil and taskI > syncI,
+       'and the walk does not begin until it has been shown')
+
+    pump(40000)
 end
 
 -- And the gather loop goes back on, so nothing added after this inherits a

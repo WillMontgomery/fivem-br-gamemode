@@ -186,6 +186,12 @@ function BR.Locker.apply(id, cb)
         SetModelAsNoLongerNeeded(hash)
 
         local ped = PlayerPedId()
+        -- A NEW PED IS VISIBLE BY DEFAULT, and on the first lobby this swap
+        -- happens under the loading screen, where nobody may see the player at
+        -- all. So it is hidden in this frame, before the position restore and
+        -- before the engine can send it anywhere. A no-op under no cover. See
+        -- BR.Spawn.pedConcealed.
+        if BR.Spawn and BR.Spawn.concealPed then BR.Spawn.concealPed() end
         SetEntityCoordsNoOffset(ped, pos.x, pos.y, pos.z, false, false, false)
         SetEntityHeading(ped, heading)
 

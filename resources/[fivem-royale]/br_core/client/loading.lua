@@ -318,6 +318,23 @@ Citizen.CreateThread(function()
     if left > 0 then Citizen.Wait(left) end
 
     BR.State.worldReady = true
+
+    -- THE PED IS SHOWN TO EVERYBODY IN THIS FRAME, AND NOT BEFORE IT.
+    --
+    -- It spent the whole boot hidden from the network (BR.Spawn.pedConcealed:
+    -- a player behind a loading screen is nobody anyone should see), and by now
+    -- it has been standing on its start mark, under this backdrop, for seconds.
+    -- Right after the flip, because the flip is what the rule reads, and before
+    -- the refresh, because the refresh is what starts the backdrop fading.
+    -- pcall'd like everything else on this stretch: a throw here must not keep
+    -- the menu from fading in.
+    if BR.Native and BR.Native.syncVisibility then
+        local okv, err = pcall(BR.Native.syncVisibility)
+        if not okv then
+            print(('[br_core] loading: ped visibility sync errored (%s)'):format(tostring(err)))
+        end
+    end
+
     TriggerEvent('br:screen:refresh')
     print('[br_core] loading: world ready -- menu and world fade in')
 end)
