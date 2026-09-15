@@ -1164,6 +1164,39 @@ do
        tostring(saidSince(m, NOWHERE)))
 end
 
+describe('relationship derivation generation follows only relevant roster changes')
+do
+    local before = BR.State.relationshipVersion or 0
+    snapshot(BR.PlayerState.LOBBY, BR.MatchState.WAITING)
+    ok(BR.State.relationshipVersion == before + 1,
+       'a full roster snapshot invalidates relationship derivation once',
+       BR.State.relationshipVersion)
+
+    before = BR.State.relationshipVersion
+    deltas({ op = 'update', src = 1, e = { hp = 87 } })
+    ok(BR.State.relationshipVersion == before,
+       'an ordinary vitals delta does not invalidate squad relationships',
+       BR.State.relationshipVersion)
+
+    deltas({ op = 'add', src = 2,
+             e = { src = 2, state = BR.PlayerState.ALIVE } })
+    ok(BR.State.relationshipVersion == before + 1,
+       'adding a roster member invalidates immediately',
+       BR.State.relationshipVersion)
+
+    before = BR.State.relationshipVersion
+    deltas({ op = 'update', src = 2, e = { squadId = 'mabcdesq1' } })
+    ok(BR.State.relationshipVersion == before + 1,
+       'assigning a squad invalidates immediately',
+       BR.State.relationshipVersion)
+
+    before = BR.State.relationshipVersion
+    deltas({ op = 'update', src = 2, e = {}, clear = { 'squadId' } })
+    ok(BR.State.relationshipVersion == before + 1,
+       'clearing a squad invalidates immediately',
+       BR.State.relationshipVersion)
+end
+
 realPrint(('%s%d passed, %d failed\27[0m')
     :format(fail == 0 and '\27[32m' or '\27[31m', pass, fail))
 os.exit(fail == 0 and 0 or 1)

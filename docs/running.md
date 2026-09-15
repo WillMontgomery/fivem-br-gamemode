@@ -305,7 +305,7 @@ builds keybinds out of commands, so `+brinteract` and `brslot3` are also E and
 | `brcrawl` | client | The crawl: which clip the build actually resolved, and whether this client is emitting anything network-visible while lying still |
 | `brpromptcheck` | client | Which prompt glyph actually renders for a custom keybind |
 | `/brleave` | client | Leave the current match (counts as an elimination) |
-| `brperf` | both | Per-subsystem frame and tick cost |
+| `brperf [reset\|stop]` | both | Per-subsystem calls, errors and suspension. Client `reset` clears the window and arms per-callback stall capture; `stop` removes its timer overhead while the always-on frame histogram continues. Use `brbench`/`brab` for ordinary sub-frame cost |
 | `brconfig` | server | The config values that most often explain odd behaviour |
 | `brring` | server | Ringmaster link: whether it is configured, and what it would send |
 | `brallowlist [on\|off]` | server | The dev-mode join allowlist: `off` stops enforcing it (bans still apply, so with br_ringmaster down every dev-mode join is still refused) until `on` or the next start of br_core, bare prints which and whether the Discord lookup is configured. Restricted |

@@ -1,10 +1,10 @@
 {
   "_comment": [
     "THIRD-PARTY VENDORED SOURCE. This directory is not ours. It is the published",
-    "ScaleformUI_Lua.zip from upstream release 5.8.1, extracted whole, plus the three",
+    "ScaleformUI_Lua.zip from upstream release 5.8.1, extracted whole, plus the four",
     "local patches listed below and nothing else -- no reformatting, no",
-    "restructuring, no 'improvements'. Every byte outside the three BR-PATCH blocks --",
-    "two in fxmanifest.lua, one in ScaleformUI.lua -- is byte-identical to that",
+    "restructuring, no 'improvements'. Every byte outside the BR-PATCH blocks --",
+    "two in fxmanifest.lua, three in ScaleformUI.lua -- is byte-identical to that",
     "release asset, whose sha256 is recorded in `release_assets` below, so the next",
     "upstream bump is: download the new ScaleformUI_Lua.zip, extract it over this",
     "directory, then re-apply the patches. Keeping that true is the whole reason",
@@ -75,7 +75,7 @@
 
   "provenance_check": {
     "claim": "This directory is the extracted ScaleformUI_Lua.zip of release 5.8.1, and that zip's ScaleformUI.lua is not an opaque build artifact -- it is the tag's own source, concatenated. All 125 .lua files under ScaleformUI_Lua/src/ at tag 5.8.1 appear in it verbatim, in case-insensitive path order, separated by a 73-character banner comment. Nothing is added and nothing is removed: the 9,124 characters by which the bundle exceeds the sum of its sources are exactly those 125 banners.",
-    "claim_is_as_vendored": "That claim describes this directory as it was vendored, at commit 731c5d0. BR-PATCH 1 and BR-PATCH 3 have since reshaped fxmanifest.lua into an include-only resource, and BR-PATCH 2 edited one comment block and three lines inside ScaleformUI.lua's MinimapOverlays thread. Every other byte of the bundle is still the release asset.",
+    "claim_is_as_vendored": "That claim describes this directory as it was vendored, at commit 731c5d0. BR-PATCH 1 and BR-PATCH 3 have since reshaped fxmanifest.lua into an include-only resource; BR-PATCH 2 and BR-PATCH 4 edit the two documented hot paths inside ScaleformUI.lua. Every other byte of the bundle is still the release asset.",
     "verified_on": "2026-09-08",
     "how": [
       "curl -sSL -o ScaleformUI_Lua.zip https://github.com/manups4e/ScaleformUI/releases/download/5.8.1/ScaleformUI_Lua.zip",
@@ -140,11 +140,20 @@
       "what_was_deliberately_not_done": "isLoaded was not 'repaired'. Dropping the minimapHandle term from it would send the thread down the branch above instead, calling GetScaleformMovieCursorSelection(0) every frame -- the same fault wearing a different hat. Uncommenting upstream's handle acquisition was the other option and it is worse: it requests a second 'minimap' scaleform and toggles SetBigmapActive on and then off at start, on every client, for a mouse-event feature no menu of ours uses.",
       "upstream_fixable": "yes -- an unconditional per-frame Load() in a retry branch would be accepted upstream as a bug fix. The deeper fix is upstream's alone: restore minimapHandle (the commented block at the top of Load()), without which the cursor-selection half of this thread is dead code.",
       "recheck_at_next_bump": "Look at the else branch of that thread. If upstream has made isLoaded reachable -- i.e. minimapHandle is set again -- this patch is no longer load-bearing, though it stays harmless: the branch is then simply not taken. If the branch is still an unconditional Load(), re-apply. The cursor polling resumes on its own within 500ms of isLoaded turning true, so keeping the patch does not block an upstream fix."
+    },
+    {
+      "id": "BR-PATCH 4",
+      "file": "ScaleformUI.lua",
+      "symbol": "UIMenu:Draw, UIMenu:RefreshMenuOffset and UIMenu:SetMenuOffset",
+      "what": "UIMenu:Draw now change-detects position, alignment, safe-zone and active/actual resolution before rebuilding glare geometry and sending SET_MENU_DATA. Explicit SetMenuOffset calls still invalidate immediately. Draw also creates its mouse-check coroutine only when mouse controls are enabled; a disabled menu records the same false result directly.",
+      "why": "Upstream called SetMenuOffset on every visible frame. That setter allocated vectors/tables, queried screen geometry and sent the full menu metadata payload even when every input was unchanged. It also spawned one coroutine per frame to run mouseCheck, whose first boolean was permanently false for this project's mouse-disabled Ammu-Nation menu. Both changes suppress only repeated work whose result is provably unchanged; drawing, controls, safe-zone/resolution changes and mouse-enabled menus retain their original paths.",
+      "upstream_fixable": "yes -- cache menu geometry by its complete input tuple and avoid scheduling disabled mouse work",
+      "recheck_at_next_bump": "If upstream Draw no longer calls SetMenuOffset unconditionally and no longer spawns mouseCheck for a mouse-disabled menu, drop this patch. Otherwise re-apply both halves together and run the actual Ammu-Nation menu playtest."
     }
   ],
 
   "untouched_on_purpose": [
-    "ScaleformUI.lua -- the library itself, one patch (BR-PATCH 2) and nothing else. Of the two upstream faults reported at vendoring time, the first -- MinimapOverlays:Load() called every frame forever, because minimapHandle stays 0 and isLoaded therefore never turns true -- is the one the owner asked to have fixed, and BR-PATCH 2 is that fix.",
+    "ScaleformUI.lua -- the library itself, two patches (BR-PATCH 2 and BR-PATCH 4) and nothing else. BR-PATCH 2 fixes the MinimapOverlays retry loop; BR-PATCH 4 suppresses unchanged UIMenu metadata sends and disabled-mouse coroutine creation without changing rendered or input behavior.",
     "The second upstream fault stands, on purpose. WHEN EXECUTED, THIS LIBRARY RUNS ALWAYS-ON THREADS whether or not any menu exists: the main one, below initializeScaleforms(), loops at Citizen.Wait(0) calling Warning:Update(), InstructionalButtons:Update(), BigMessageInstance:Update() and five more every frame, and a third ticks GlobalGameTimer every 100ms. BR-PATCH 2 idles the minimap thread; BR-PATCH 3 makes br_core's external include the only execution, so this cost exists once rather than once per Lua state. If ScaleformUI appears in a framerate investigation, that main thread is where to look first.",
     "example.lua -- byte-identical to the release and intentionally absent from the include-only manifest.",
     "COLORS. The owner asked for 'our colors for now'. Nothing was recolored here and that is not an omission: ScaleformUI takes its colors per menu at construction time (SColor.HUD_Yellow and friends, passed when a UIMenu is built), so there is no palette inside the library to change. Our colors get applied by the code that builds our menus -- which, since #274, is br_core/client/menu.lua (BR.Menu): two hexes, one HUD color index and three constructors, and the one place in the Lua tree those two hexes are spelled. Nothing in THIS directory changed to make that work."

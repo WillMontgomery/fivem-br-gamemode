@@ -528,7 +528,10 @@ Run these in order. Each one answers a question that is expensive to discover la
 3. **Client — is the HUD where it should be?**
    ```
    brdebug          # overlay: perf / state / keys
-   brperf           # per-subsystem frame cost, budget < 0.35ms for br_core
+   brperf reset     # clear + arm per-callback stall capture
+   # exercise the server, then:
+   brperf           # inspect; budget < 0.35ms for br_core
+   brperf stop      # return to the timer-free normal path
    ```
 
 4. **The scatter test.** Put two clients ~3 km apart. Both must show the same

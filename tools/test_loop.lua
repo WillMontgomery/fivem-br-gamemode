@@ -8,7 +8,11 @@
 -- ------------------------------------------------------------ native stubs ---
 
 local fakeTime = 0
-function GetGameTimer() return fakeTime end
+local timerReads = 0
+function GetGameTimer()
+    timerReads = timerReads + 1
+    return fakeTime
+end
 function GetPlayerServerId() return 1 end
 function PlayerId() return 0 end
 
@@ -263,6 +267,55 @@ do
     BR.Loop.unregister(h)
 end
 
+-- ------------------------------------------------ opt-in stall capture -----
+
+describe('opt-in stall capture')
+do
+    clearAll()
+    local ran, stall = 0, false
+    local h = BR.Loop.register(BR.Loop.FRAME, 't.capture', function()
+        ran = ran + 1
+        if stall then fakeTime = fakeTime + 7 end
+    end)
+
+    BR.Loop.captureStalls(false)
+    timerReads = 0
+    BR.Loop.step(BR.Loop.FRAME)
+    ok(ran == 1, 'callbacks still run with diagnostic capture off')
+    ok(timerReads == 1,
+        'a normal frame reads the clock once for cadence/histogram, not around every callback',
+        ('timer reads=%d'):format(timerReads))
+
+    local found
+    for _, s in ipairs(BR.Loop.stats()) do
+        if s.name == 't.capture' then found = s end
+    end
+    ok(found and found.calls == 1 and found.stalls == 0,
+        'call accounting remains live while stall attribution is off')
+
+    BR.Loop.resetStats()
+    BR.Loop.captureStalls(true)
+    stall = true
+    timerReads = 0
+    BR.Loop.step(BR.Loop.FRAME)
+    for _, s in ipairs(BR.Loop.stats()) do
+        if s.name == 't.capture' then found = s end
+    end
+    ok(found and found.calls == 1 and found.stalls == 1 and found.peakMs == 7,
+        'explicit capture still names and sizes a callback that spans a frame',
+        found and ('calls=%d stalls=%d peak=%d'):format(
+            found.calls, found.stalls, found.peakMs) or 'missing')
+    ok(timerReads == 4,
+        'capture pays the callback and band timer reads only while armed',
+        ('timer reads=%d'):format(timerReads))
+
+    BR.Loop.captureStalls(false)
+    ok(BR.Loop.timing().stallCapture == false,
+        'capture state is observable and returns to the optimized path')
+    BR.Loop.unregister(h)
+    BR.Loop.step(BR.Loop.FRAME)
+end
+
 -- ------------------------------------------------------- timing aggregation ---
 --
 -- THE SUITE THAT SHOULD HAVE EXISTED FIRST.
@@ -480,6 +533,7 @@ do
     -- its peak, and -- the part the old build got wrong -- must never have its
     -- milliseconds divided by the call count and presented as an average.
     BR.Loop.resetStats()
+    BR.Loop.captureStalls(true)
     local spanner = BR.Loop.register(BR.Loop.SLOW, 't.cap.spanner', function()
         fakeTime = fakeTime + 55      -- as if a frame boundary passed mid-call
     end)
@@ -512,6 +566,7 @@ do
     BR.Loop.unregister(spanner)
     BR.Loop.unregister(quiet)
     BR.Loop.step(BR.Loop.SLOW)
+    BR.Loop.captureStalls(false)
     BR.Loop.resetStats()
 
     -- The probe itself, against the stub -- which is a faithful model of the

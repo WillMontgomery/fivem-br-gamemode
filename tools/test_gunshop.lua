@@ -2128,6 +2128,43 @@ do
 end
 
 -- ---------------------------------------------------------------------------
+-- The vendored menu hot path: identical pixels and input, less repeated work
+-- ---------------------------------------------------------------------------
+do
+    local sf = readFile('resources/[scaleformui]/ScaleformUI_Lua/ScaleformUI.lua')
+    ok(sf ~= '', 'the vendored ScaleformUI bundle is readable')
+
+    local drawAt = sf:find('function UIMenu:Draw()', 1, true)
+    local drawEnd = drawAt and sf:find('function UIMenu:CallExtensionMethod()', drawAt, true)
+    local draw = drawAt and drawEnd and sf:sub(drawAt, drawEnd - 1) or ''
+    ok(draw ~= '', 'the UIMenu draw body is identifiable')
+    ok(draw:find('self:RefreshMenuOffset()', 1, true) ~= nil
+       and draw:find('self:SetMenuOffset(self.Position.x, self.Position.y)', 1, true) == nil,
+        'Draw checks geometry without invalidating and resending it every frame')
+
+    local mouseGate = draw:find('if self:MouseControlsEnabled() then', 1, true)
+    local mouseThread = draw:find('Citizen.CreateThread(function()', 1, true)
+    local mouseFalse = draw:find('self._mouseOnMenu = false', 1, true)
+    ok(mouseGate and mouseThread and mouseFalse
+       and mouseGate < mouseThread and mouseThread < mouseFalse,
+        'a mouse-disabled menu creates no per-frame mouse coroutine')
+
+    local refreshAt = sf:find('function UIMenu:RefreshMenuOffset()', 1, true)
+    local setterAt = refreshAt and sf:find('function UIMenu:SetMenuOffset', refreshAt, true)
+    local refresh = refreshAt and setterAt and sf:sub(refreshAt, setterAt - 1) or ''
+    ok(refresh:find('_menuOffsetCache', 1, true) ~= nil
+       and refresh:find('GetSafeZoneSize()', 1, true) ~= nil
+       and refresh:find('GetActiveScreenResolution()', 1, true) ~= nil
+       and refresh:find('GetActualScreenResolution()', 1, true) ~= nil,
+        'offset caching invalidates on position, safe-zone and both resolution readings')
+    local unchanged = refresh:find(
+        'c.rightAlign == rightAlign then\n        return false', 1, true)
+    local send = refresh:find('self:SetMenuData(true)', 1, true)
+    ok(unchanged and send and unchanged < send,
+        'unchanged geometry returns before the Scaleform metadata send')
+end
+
+-- ---------------------------------------------------------------------------
 -- The server half, stood up for real
 -- ---------------------------------------------------------------------------
 --

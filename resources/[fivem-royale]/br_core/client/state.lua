@@ -14,6 +14,10 @@ BR = BR or {}
 local S = BR.State
 local lastSeq = -1
 
+local function relationshipsChanged()
+    S.relationshipVersion = (S.relationshipVersion or 0) + 1
+end
+
 -- Set by the delta handler the moment MY state reads 'dead'; consumed by the
 -- match-end summary (see the long note above its declaration site... which is
 -- the STATE handler below). Declared HERE because the delta handler assigns
@@ -654,6 +658,7 @@ AddEventHandler(BR.Net.SNAPSHOT, function(payload)
     mark('snapshot')
     local was = S.match.state
     S.roster = payload.roster or {}
+    relationshipsChanged()
     S.match.state  = payload.match.state
     S.match.mode   = payload.match.mode
     S.match.endsAt = payload.match.endsAt
@@ -742,14 +747,21 @@ AddEventHandler(BR.Net.ROSTER_DELTA, function(batch)
     if batch.seq and batch.seq <= lastSeq then return end
     lastSeq = batch.seq or lastSeq
 
+    local relationshipDirty = false
     for _, d in ipairs(batch.deltas or {}) do
         if d.op == 'add' then
+            relationshipDirty = true
             S.roster[d.src] = d.e
 
         elseif d.op == 'remove' then
+            relationshipDirty = true
             S.roster[d.src] = nil
 
         elseif d.op == 'update' then
+            if d.e and d.e.squadId ~= nil then relationshipDirty = true end
+            for _, k in ipairs(d.clear or {}) do
+                if k == 'squadId' then relationshipDirty = true break end
+            end
             local entry = S.roster[d.src]
             if entry then
                 for k, v in pairs(d.e or {}) do entry[k] = v end
@@ -832,6 +844,7 @@ AddEventHandler(BR.Net.ROSTER_DELTA, function(batch)
         end
     end
 
+    if relationshipDirty then relationshipsChanged() end
     BR.PushHud()
 end)
 

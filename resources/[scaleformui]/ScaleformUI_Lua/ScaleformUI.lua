@@ -14635,7 +14635,7 @@ function UIMenu:Draw()
 
     Controls:ToggleAll(not self:DisableGameControls())
 
-    self:SetMenuOffset(self.Position.x, self.Position.y)
+    self:RefreshMenuOffset()
     ScaleformUI.Scaleforms._ui:Render2D()
 
     if self.Glare then
@@ -14665,9 +14665,16 @@ function UIMenu:Draw()
         self:UpdateDescription()
         self._changed = false
     end
-    Citizen.CreateThread(function()
-        self:mouseCheck()
-    end)
+    -- BR-PATCH 4: a menu with mouse controls disabled has a permanent false
+    -- answer here. Do not create and schedule a coroutine every frame merely to
+    -- rediscover it; mouse-enabled menus retain the exact upstream path.
+    if self:MouseControlsEnabled() then
+        Citizen.CreateThread(function()
+            self:mouseCheck()
+        end)
+    else
+        self._mouseOnMenu = false
+    end
 end
 
 function UIMenu:CallExtensionMethod()
@@ -15071,25 +15078,53 @@ function UIMenu:RemoveEnabledControl(Inputgroup, Control, Controller)
     end
 end
 
+-- BR-PATCH 4: UIMenu:Draw used to call SetMenuOffset every frame. That setter
+-- rebuilt glare geometry and sent the full SET_MENU_DATA payload even when the
+-- offset, safe zone and resolution were byte-for-byte unchanged. Read the same
+-- engine values every frame so a real display change still lands immediately,
+-- but cross the Scaleform bridge only on an actual change.
+function UIMenu:RefreshMenuOffset()
+    if not self:Visible() then return false end
+
+    local x, y = self.Position.x, self.Position.y
+    local safezone = (1.0 - math.round(GetSafeZoneSize(), 2)) * 100 * 0.005
+    local activeW, activeH = GetActiveScreenResolution()
+    local actualW, actualH = GetActualScreenResolution()
+    local rightAlign = self.menuAlignment == MenuAlignment.RIGHT
+    local c = self._menuOffsetCache
+
+    if c and c.x == x and c.y == y and c.safezone == safezone
+       and c.activeW == activeW and c.activeH == activeH
+       and c.actualW == actualW and c.actualH == actualH
+       and c.rightAlign == rightAlign then
+        return false
+    end
+
+    self._menuOffsetCache = {
+        x = x, y = y, safezone = safezone,
+        activeW = activeW, activeH = activeH,
+        actualW = actualW, actualH = actualH,
+        rightAlign = rightAlign,
+    }
+
+    local glareX = 0.45 + safezone
+    local pos1080 = ConvertScaleformCoordsToResolutionCoords(x, y)
+    local screenCoords = ConvertResolutionCoordsToScreenCoords(pos1080.x, pos1080.y)
+    self._glarePos = vector2(screenCoords.x + glareX, screenCoords.y + 0.45 + safezone)
+    if rightAlign then
+        glareX = 1.225 - safezone
+        screenCoords = ConvertResolutionCoordsToScreenCoords(1920 - pos1080.x, pos1080.y)
+        self._glarePos = vector2(screenCoords.x - 1 + glareX, screenCoords.y + 0.45 + safezone)
+    end
+    self._glareSize = { w = 1.0, h = 1.0 }
+    self:SetMenuData(true)
+    return true
+end
+
 function UIMenu:SetMenuOffset(x, y)
     self.Position = vector2(x, y)
-    if self:Visible() then
-        local safezone = (1.0 - math.round(GetSafeZoneSize(), 2)) * 100 * 0.005
-        local rightAlign = self.menuAlignment == MenuAlignment.RIGHT
-        local glareX = 0.45 + safezone
-
-        local pos1080 = ConvertScaleformCoordsToResolutionCoords(x, y)
-        local screenCoords = ConvertResolutionCoordsToScreenCoords(pos1080.x, pos1080.y)
-        self._glarePos = vector2(screenCoords.x + glareX, screenCoords.y + 0.45 + safezone)
-        if rightAlign then
-            glareX = 1.225 - safezone
-            local w, h = GetActualScreenResolution()
-            screenCoords = ConvertResolutionCoordsToScreenCoords(1920 - pos1080.x, pos1080.y)
-            self._glarePos = vector2(screenCoords.x - 1 + glareX, screenCoords.y + 0.45 + safezone)
-        end
-        self._glareSize = { w = 1.0, h = 1.0 }
-        self:SetMenuData(true)
-    end
+    self._menuOffsetCache = nil
+    if self:Visible() then self:RefreshMenuOffset() end
 end
 
 

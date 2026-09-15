@@ -1247,6 +1247,38 @@ end
 -- against a belief that has gone stale without anything noticing.
 local lastGroup, lastGroupMine = nil, nil
 
+-- DERIVATION CACHE, SEPARATE FROM THE ENGINE-WRITE MEMO ABOVE.
+--
+-- groupFor walks the roster to decide whether this player still has a
+-- squadmate. That answer changes only when roster membership or a squadId
+-- changes, not on health/armour deltas and certainly not every rendered frame.
+-- state.lua increments relationshipVersion on exactly those authoritative
+-- changes. Object identity and the local keys are included so tests, restarts
+-- and any future whole-table replacement cannot leave the cache stale.
+local groupCache = {
+    version = -1, me = nil, roster = nil, src = nil, squadId = nil,
+    group = nil, mine = nil,
+}
+
+local function resolvedGroup()
+    local state = BR.State or {}
+    local me, roster = state.me, state.roster
+    local version = state.relationshipVersion or 0
+    local src, squadId = me and me.src, me and me.squadId
+
+    if groupCache.group == nil
+       or groupCache.version ~= version
+       or groupCache.me ~= me or groupCache.roster ~= roster
+       or groupCache.src ~= src or groupCache.squadId ~= squadId then
+        groupCache.group, groupCache.mine = BR.Native.groupFor(me, roster)
+        groupCache.version, groupCache.me = version, me
+        groupCache.roster, groupCache.src = roster, src
+        groupCache.squadId = squadId
+    end
+
+    return groupCache.group, groupCache.mine
+end
+
 --- Announce this client's group and lay out the one row of the relationship
 --- matrix that governs its own shots.
 ---
@@ -1291,6 +1323,9 @@ end
 --- engine's idea of the group has been reset underneath us.
 function BR.Native.forgetTeam()
     lastGroup, lastGroupMine = nil, nil
+    groupCache.version, groupCache.me, groupCache.roster = -1, nil, nil
+    groupCache.src, groupCache.squadId = nil, nil
+    groupCache.group, groupCache.mine = nil, nil
 end
 
 -- --------------------------------------------------------------- game rules ---
@@ -1824,10 +1859,12 @@ function BR.Native.applyGameRules()
     -- than on all sixty of every second the old one was alive.
     --
     -- ...AND ALSO WHEN THE SQUAD CHANGES, which `due` does not carry: a mate
-    -- joining or dying moves this client between groups without touching the
-    -- ped handle, the state or the match. applyGroup memoises the expensive
-    -- half itself, so calling it on both triggers is free.
-    local group, mine = BR.Native.groupFor(BR.State.me, BR.State.roster)
+    -- joining or leaving moves this client between groups without touching the
+    -- ped handle, state or match. state.lua increments relationshipVersion on
+    -- roster membership and squadId changes; resolvedGroup recomputes on that
+    -- generation and otherwise returns the exact cached pair. applyGroup still
+    -- memoises the expensive engine-write half independently.
+    local group, mine = resolvedGroup()
     if due or group ~= lastGroup or mine ~= lastGroupMine then
         applyGroup(group, mine, ped)
     end

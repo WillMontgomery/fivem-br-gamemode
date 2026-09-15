@@ -1237,10 +1237,14 @@ local function markUnreachable(x, y, why)
     unreachable[('%.1f,%.1f'):format(x, y)] = why or 'roof'
 end
 
+local aimCalls = 0
 BR.Native = {
     -- client/natives.lua's table, copied because the real file is loaded late.
     ChuteState = { NONE = -1, ON_BACK = 0, OPENING = 1, OPEN = 2, FREEFALL = 3 },
-    aim = function() return false, nil, 0 end,
+    aim = function()
+        aimCalls = aimCalls + 1
+        return false, nil, 0
+    end,
     keyLabelForCommand = function() return 'E', 'brinteract' end,
     blipName = noop, help = noop,
     inputForCommand = function() return '~INPUT~' end,
@@ -1487,6 +1491,48 @@ local function lastClaim()
     local id, kind = line:match('last claim #(%S+) %((%w+)%)')
     if not id then return { none = true } end
     return { id = id, kind = kind, answered = line:find('SERVER ACTED') ~= nil }
+end
+
+-- ======================================================================== --
+-- 0. TARGET RESOLUTION REUSES THE FRAME'S DISTANCE PASS
+-- ======================================================================== --
+
+describe('loot targeting spends the synchronous ray only when it can matter')
+do
+    bootOn(true, true)
+    clearWorld()
+    pedPos.x, pedPos.y = 0.0, 0.0
+
+    aimCalls = 0
+    addEntry(BR.ItemKind.WEAPON, 'pistol', 50.0, 0.0)
+    frames(2)
+    ok(aimCalls == 0,
+        'streamed loot outside interaction reach does not fire the expensive ray',
+        ('aim calls=%d'):format(aimCalls))
+
+    clearWorld()
+    aimCalls = 0
+    addEntry('chest', nil, 1.0, 0.0)
+    frames(2)
+    ok(aimCalls == 0,
+        'a reachable container remains eligible without a ray it never consults',
+        ('aim calls=%d'):format(aimCalls))
+
+    clearWorld()
+    aimCalls = 0
+    local id = addEntry(BR.ItemKind.WEAPON, 'pistol', 1.0, 0.0)
+    frame(16)
+    ok(aimCalls == 1,
+        'a reachable loose item still gets exactly one same-frame ray',
+        ('aim calls=%d'):format(aimCalls))
+    fakeTime = fakeTime + 500   -- clear the real client's first-claim throttle
+    pressInteract()
+    frame(16)
+    local got = claims()
+    ok(#got == 1 and got[1] == id,
+        'and the same nearest-facing loose item is still claimed',
+        ('claims=%d first=%s'):format(#got, tostring(got[1])))
+    releaseInteract()
 end
 
 local CHEST_MS = BR.Config.Loot.chestHoldMs or 1000
@@ -11778,6 +11824,41 @@ do
         'the matrix is written once, not once a frame -- it is 127 natives',
         ('%d group rows after one frame, %d after three')
             :format(afterOne, afterThree))
+
+    -- THE PURE DERIVATION HAS ITS OWN COST: teamFor scans every roster row to
+    -- decide whether I still have a mate. The matrix memo above does not avoid
+    -- that scan; it only avoids the engine writes after it. Pin both halves:
+    -- unchanged frames resolve once, and an authoritative roster generation
+    -- invalidates on the very next frame.
+    reset()
+    local stable = world({ { 1, 'm7sq1' }, { 2, 'm7sq1' }, { 3, 'm7sq2' } })
+    BR.State.me = { src = 1, squadId = 'm7sq1', state = BR.PlayerState.ALIVE }
+    BR.State.roster = stable
+    BR.State.match = { state = BR.MatchState.PLAYING }
+    BR.State.relationshipVersion = 10
+
+    local realGroupFor, resolutions = N.groupFor, 0
+    N.groupFor = function(...)
+        resolutions = resolutions + 1
+        return realGroupFor(...)
+    end
+
+    N.applyGameRules(); N.applyGameRules(); N.applyGameRules()
+    ok(resolutions == 1,
+        'unchanged frames reuse one relationship derivation instead of rescanning the roster',
+        ('resolutions=%d'):format(resolutions))
+    local withMate = myGroup()
+
+    stable[2] = nil
+    BR.State.relationshipVersion = 11
+    N.applyGameRules()
+    local withoutMate = myGroup()
+    ok(resolutions == 2 and withoutMate ~= withMate and selfRel(withoutMate) == 5,
+        'a roster generation change recomputes immediately and opens an emptied squad',
+        ('resolutions=%d group %s -> %s self=%s')
+            :format(resolutions, tostring(withMate), tostring(withoutMate),
+                    tostring(selfRel(withoutMate))))
+    N.groupFor = realGroupFor
 
     reset()
     rules(1, twoSquads)

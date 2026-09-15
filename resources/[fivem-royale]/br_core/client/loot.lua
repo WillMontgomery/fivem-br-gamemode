@@ -2098,47 +2098,79 @@ end
 --- nearest survivor wins. A single pass, single-valued, and it cannot disagree
 --- with itself.
 ---
---- The ray still earns its place, but it decides ELIGIBILITY rather than the
---- winner: a crate the player is looking straight at is reachable out to
---- reachOf() even if some loose item is technically nearer, which is the
---- "which crate am I standing in front of" behaviour the ray was added for.
+--- The ray still earns its place, but only for a reachable LOOSE item: it is a
+--- stricter facing answer than the ped cone. Containers never read it and no
+--- out-of-reach entry can become eligible because of it.
 ---
---- COST, SINCE THIS RUNS EVERY FRAME AND THE SHINE SCAN WAS MOVED OFF THE
---- FRAME BAND FOR EXACTLY THIS REASON: it is one walk of the streamed entries,
---- which is what the old proximity fallback already did on every frame the ray
---- did not happen to hit something -- i.e. nearly all of them. What is gone is
---- the ray's early return, which only ever fired while the player was looking
---- directly at a prop. Unlike the shine, this cannot be sampled at 10Hz: it
---- decides what a keypress claims, and a keypress lands on a frame.
+--- COST. The render pass already walks every streamed entry and computes this
+--- frame's distance. It now records only the handful inside interaction reach;
+--- target resolution consumes that list instead of walking the cell again, and
+--- does not fire the synchronous ray when the list is empty or container-only.
+--- Nothing is sampled: the candidates, ray and keypress answer are still from
+--- the same rendered frame.
+-- Records are reused: this is a frame path and replacing one scan with a
+-- table-allocation storm would be no optimization.
+local targetCandidates = {}
+local targetCandidateN = 0
+
+local function beginTargetCandidates()
+    for i = 1, targetCandidateN do
+        local c = targetCandidates[i]
+        c.id, c.entry, c.d2 = nil, nil, nil
+    end
+    targetCandidateN = 0
+end
+
+local function addTargetCandidate(id, e, d2)
+    if isHusk(e) then return end
+    local reach = reachOf(e)
+    if d2 > reach * reach then return end
+
+    targetCandidateN = targetCandidateN + 1
+    local c = targetCandidates[targetCandidateN]
+    if not c then
+        c = {}
+        targetCandidates[targetCandidateN] = c
+    end
+    c.id, c.entry, c.d2 = id, e, d2
+end
+
+--- Resolve the nearest eligible entry out of the candidates collected by this
+--- frame's render pass. Same candidates, same order and same rule as before;
+--- only the duplicate full scan is gone.
 --- @param ped integer
 --- @param px number
 --- @param py number
 --- @return table|nil
 local function targetEntry(ped, px, py)
-    -- One ray per pass, not one per candidate. It answers a single question:
-    -- which entry, if any, is the player looking straight at.
+    if targetCandidateN == 0 then return nil end
+
+    -- Containers never consult the ray. If every candidate is a container,
+    -- there is no ray result that could alter the answer. Otherwise ask exactly
+    -- once, as before, but only after the distance pass proved the result can be
+    -- relevant to this frame.
+    local needsRay = false
+    for i = 1, targetCandidateN do
+        if not isContainer(targetCandidates[i].entry) then
+            needsRay = true
+            break
+        end
+    end
+
     local rayId = nil
-    local hit, _, entity = BR.Native.aim((L.pickupDistance or 3.5) + 1.5, 16)
-    if hit and entity and entity ~= 0 then rayId = byObject[entity] end
+    if needsRay then
+        local hit, _, entity = BR.Native.aim((L.pickupDistance or 3.5) + 1.5, 16)
+        if hit and entity and entity ~= 0 then rayId = byObject[entity] end
+    end
 
     local best, bestD2 = nil, nil
-    for id, e in pairs(entries) do
-        -- A husk is an already-opened crate: scenery, and the server refuses
-        -- to claim it.
-        if not isHusk(e) then
-            local reach = reachOf(e)
-            local d2 = BR.Dist2(px, py, e.x, e.y)
-            if d2 <= reach * reach then
-                -- A container is exempt from the facing cone: a crate is a
-                -- metre-wide box you are standing at, and making players line
-                -- up with one to open it is friction for nothing. So is
-                -- anything the ray hit -- the ray IS a facing test, and a
-                -- stricter one.
-                if isContainer(e) or id == rayId
-                   or facing(ped, px, py, e) then
-                    if not bestD2 or d2 < bestD2 then best, bestD2 = e, d2 end
-                end
-            end
+    for i = 1, targetCandidateN do
+        local c, e = targetCandidates[i], targetCandidates[i].entry
+        -- A container is exempt from the facing cone: a crate is a metre-wide
+        -- box you are standing at. So is the loose item hit by the ray, whose
+        -- whole purpose is to be the stricter facing answer.
+        if isContainer(e) or c.id == rayId or facing(ped, px, py, e) then
+            if not bestD2 or c.d2 < bestD2 then best, bestD2 = e, c.d2 end
         end
     end
 
@@ -2497,6 +2529,7 @@ end)
 
 BR.Loop.register(BR.Loop.FRAME, 'loot.render', function(dt)
     local frameNow = GetGameTimer()
+    beginTargetCandidates()
 
     -- BEFORE THE EARLY-OUT, and deliberately. A retiring prop is no longer an
     -- entry, so claiming the last item in scope would otherwise leave it
@@ -2520,6 +2553,7 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function(dt)
     local ped = PlayerPedId()
     local p = GetEntityCoords(ped)
     local glow2  = L.glowDistance * L.glowDistance
+    local canTakeNow = canTake()
 
     -- ONE CRATE GLOWS: the nearest, and only inside the shine radius.
     --
@@ -2593,6 +2627,7 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function(dt)
 
     for id, e in pairs(entries) do
         local d2 = BR.Dist2(p.x, p.y, e.x, e.y)
+        if canTakeNow then addTargetCandidate(id, e, d2) end
         -- A husk is scenery. Glowing it would send players across open ground
         -- for a crate somebody already emptied, which is the exact opposite of
         -- what the open-crate model is for.
@@ -2731,7 +2766,7 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function(dt)
         end
     end
 
-    if not canTake() then
+    if not canTakeNow then
         -- The offer goes with the ability to accept it. Leaving `target` set
         -- through a spell of canTake() being false -- in a car, suppressed by
         -- a downed mate, mid-respawn -- leaves a claim armed for an item the

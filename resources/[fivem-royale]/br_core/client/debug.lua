@@ -168,7 +168,13 @@ end, false)
 RegisterCommand('brperf', function(_, args)
     if args[1] == 'reset' then
         BR.Loop.resetStats()
-        print('[br_core] client loop stats reset')
+        BR.Loop.captureStalls(true)
+        print('[br_core] client loop stats reset; per-callback stall capture ON')
+        return
+    end
+    if args[1] == 'stop' then
+        BR.Loop.captureStalls(false)
+        print('[br_core] per-callback stall capture off; frame histogram remains on')
         return
     end
 
@@ -185,6 +191,9 @@ RegisterCommand('brperf', function(_, args)
     local t     = BR.Loop.timing()
 
     print('--- timing capability ---')
+    print(('  per-callback stall capture: %s%s')
+        :format(t.stallCapture and 'ON' or 'off',
+                t.stallCapture and '' or ' -- arm with /brperf reset'))
     if not t.perCallResolvable then
         print(('  in-frame clock did NOT advance over %d iterations of busy work.')
             :format(probe.iterations))
@@ -211,21 +220,28 @@ RegisterCommand('brperf', function(_, args)
     -- command.
     print('--- band passes ---')
     for band, b in pairs(BR.Loop.bandStats()) do
-        if b.stalls > 0 then
+        if not t.stallCapture then
+            print(('  %-6s passes %-7d  stall capture off'):format(band, b.passes))
+        elseif b.stalls > 0 then
             print(('  %-6s passes %-7d  STALLS %d  worst %dms  (mean stall %.1fms)')
                 :format(band, b.passes, b.stalls, b.peakMs, b.avgStallMs))
         else
-            print(('  %-6s passes %-7d  no pass ever spanned a frame')
+            print(('  %-6s passes %-7d  no captured pass spanned a frame')
                 :format(band, b.passes))
         end
     end
 
     print('--- callbacks ---')
     for _, s in ipairs(BR.Loop.stats()) do
-        local cost = (s.stalls > 0)
-            and ('STALLED %d of %d passes, worst %dms')
+        local cost
+        if not t.stallCapture then
+            cost = 'stall capture off; cost via /brbench or /brab'
+        elseif s.stalls > 0 then
+            cost = ('STALLED %d of %d passes, worst %dms')
                 :format(s.stalls, s.calls, s.peakMs)
-            or  ('never spanned a frame; cost via /brbench or /brab')
+        else
+            cost = 'never spanned a captured frame; cost via /brbench or /brab'
+        end
         print(('  %-24s %-5s calls %-7d %s%s%s')
             :format(s.name, s.band, s.calls, cost,
                     s.errors > 0 and ('  errors ' .. s.errors) or '',

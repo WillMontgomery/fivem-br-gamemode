@@ -121,6 +121,15 @@ local timingOn = false
 -- nil = not probed yet. Set by BR.Loop.probeClock().
 local clockProbe = nil
 
+-- PER-CALLBACK STALL ATTRIBUTION IS A DIAGNOSTIC, NOT GAMEPLAY.
+--
+-- Bracketing every registered callback with two GetGameTimer calls cost more
+-- than six thousand native crossings a second at ordinary frame rates, even
+-- though the frame-stamped clock returns zero for every healthy call. The frame
+-- histogram remains always-on; this narrower attribution is armed explicitly by
+-- `/brperf reset` and can be stopped with `/brperf stop`.
+local stallCapture = false
+
 local function median(t)
     local n = #t
     if n == 0 then return nil end
@@ -161,13 +170,30 @@ end
 
 --- What the instrument can and cannot measure right now. Printers must consult
 --- this before reporting a per-callback number OR concluding from its absence.
---- @return table { perCallResolvable, probed, probeIterations }
+--- @return table { perCallResolvable, probed, probeIterations, stallCapture }
 function BR.Loop.timing()
     return {
         perCallResolvable = timingOn,
         probed            = clockProbe ~= nil,
         probeIterations   = clockProbe and clockProbe.iterations or 0,
+        stallCapture      = stallCapture,
     }
+end
+
+--- Arm or disarm per-callback stall attribution.
+---
+--- Calls, errors, suspension and the global frame histogram are always
+--- collected. Only the two timer reads around every callback are optional.
+--- Turning capture off clears lastMs so a later worst-frame snapshot cannot
+--- name a callback from an earlier capture window.
+--- @param on boolean
+function BR.Loop.captureStalls(on)
+    stallCapture = on and true or false
+    if not stallCapture then
+        for _, list in pairs(registry) do
+            for _, e in ipairs(list) do e.lastMs = 0 end
+        end
+    end
 end
 
 -- Band-level accumulators, keyed by band.
@@ -679,9 +705,9 @@ function BR.Loop.step(band)
             -- calls is 0.000 and means nothing at all. Cost comes from
             -- BR.Loop.bench and BR.Loop.ab.
             e.calls = e.calls + 1
-            local s = GetGameTimer()
+            local s = stallCapture and GetGameTimer() or nil
             local ok, err = pcall(e.fn, dt)
-            local elapsed = GetGameTimer() - s
+            local elapsed = s and (GetGameTimer() - s) or 0
             e.lastMs = elapsed              -- for the hitch snapshot
             if elapsed > 0 then
                 e.stalls  = e.stalls + 1
@@ -726,7 +752,7 @@ function BR.Loop.step(band)
         bandStats[band] = bs
     end
     bs.passes = bs.passes + 1
-    local elapsedMs = GetGameTimer() - bandStart
+    local elapsedMs = stallCapture and (GetGameTimer() - bandStart) or 0
     if elapsedMs > 0 then
         bs.stalls  = bs.stalls + 1
         bs.totalMs = bs.totalMs + elapsedMs
@@ -762,6 +788,10 @@ BR.State = {
     match    = { state = BR.MatchState.WAITING, endsAt = 0, mode = BR.Mode.SOLO.key },
     me       = { src = 0, squadId = nil, state = BR.PlayerState.LOBBY, hp = 100.0, armour = 0.0 },
     roster   = {},   -- [serverId] = { name, squadId, state, ... } -- mirror only
+    -- Incremented only when roster membership or a squadId can change. Native
+    -- relationship derivation reads this instead of rescanning up to 48 roster
+    -- rows on every rendered frame.
+    relationshipVersion = 0,
     squad    = {},   -- array of serverIds
     party    = nil,  -- persistent party, pushed by the server; survives a match
     storm    = nil,  -- the published storm record; solved locally via BR.StormAt
