@@ -46,25 +46,45 @@ rc=0
 # --- locate luac -------------------------------------------------------------
 
 find_luac() {
-    if command -v luac >/dev/null 2>&1; then command -v luac; return; fi
+    local candidate
+    if command -v luac >/dev/null 2>&1; then
+        candidate=$(command -v luac)
+        if "$candidate" -v 2>&1 | grep -q 'Lua 5\.4'; then
+            echo "$candidate"
+            return
+        fi
+    fi
+    if command -v brew >/dev/null 2>&1; then
+        candidate="$(brew --prefix lua@5.4 2>/dev/null || true)/bin/luac"
+        [ -x "$candidate" ] && { echo "$candidate"; return; }
+    fi
+    local localappdata="${LOCALAPPDATA:-}"
     for c in \
-        "$LOCALAPPDATA/Programs/Lua/bin/luac.exe" \
+        "${localappdata:+$localappdata/Programs/Lua/bin/luac.exe}" \
         "$HOME/AppData/Local/Programs/Lua/bin/luac.exe" \
         "/c/Program Files/Lua/bin/luac.exe" \
         "/c/Program Files (x86)/Lua/bin/luac.exe"
     do
-        [ -x "$c" ] && { echo "$c"; return; }
+        [ -n "$c" ] && [ -x "$c" ] && { echo "$c"; return; }
     done
 }
 
 LUAC="$(find_luac)"
 if [ -z "${LUAC:-}" ]; then
-    echo "${RED}luac not found.${RST}"
-    echo "Install Lua 5.4 (matching FiveM's runtime):  winget install --id DEVCOM.Lua -e"
+    echo "${RED}Lua 5.4 luac not found.${RST}"
+    case "$(uname -s 2>/dev/null || true)" in
+        Darwin) echo "Install the keg-pinned FiveM version:  brew install lua@5.4" ;;
+        Linux)  echo "Install Lua 5.4 (matching FiveM's runtime):  sudo apt install lua5.4" ;;
+        *)      echo "Install Lua 5.4 (matching FiveM's runtime):  winget install --id DEVCOM.Lua -e" ;;
+    esac
     exit 127
 fi
-LUA="${LUAC%luac.exe}lua.exe"
-[ -x "$LUA" ] || LUA="$(command -v lua || true)"
+if [[ "$LUAC" == *.exe ]]; then
+    LUA="${LUAC%luac.exe}lua.exe"
+else
+    LUA="${LUAC%/luac}/lua"
+    [ -x "$LUA" ] || LUA="$(command -v lua || true)"
+fi
 
 # --- 1. syntax ---------------------------------------------------------------
 
@@ -341,8 +361,183 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
     # which has no visual symptom and will not be found by playing". It also
     # holds the hitmarker floor against config/weapons.lua's fastest weapon,
     # which is the only reason that number is defensible rather than arbitrary.
-    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua tools/test_artifacts.lua tools/test_airdrop.lua tools/test_client.lua tools/test_spectate.lua tools/test_matchexit.lua tools/test_lobbyseq.lua tools/test_landtime.lua tools/test_config.lua tools/test_admin.lua tools/test_community.lua tools/test_guild.lua tools/test_fuel.lua tools/test_sfx.lua tools/test_boost.lua tools/test_vehdamage.lua tools/test_icons.lua tools/test_vehrefuse.lua tools/test_rescue.lua tools/test_ambheal.lua tools/test_revivekey.lua tools/test_ambulances.lua tools/test_shop.lua tools/test_warmupcrates.lua tools/test_bool_natives.lua; do
-        [ -f "$suite" ] || continue
+    #
+    # test_gunshop.lua is the IN-MATCH Ammu-Nation counter (#274), and it is a
+    # different feature from test_shop.lua rather than a second file about the
+    # same one -- BR.Config.Gunshop and BR.GunshopSolve against BR.Config.Shop
+    # and BR.ShopSolve. Its subject is one sentence of the owner's, from
+    # 2026-09-08: "we're not planning to sell items which could not otherwise be
+    # found in the wild - just a convenience with a fee."
+    #
+    # THAT RULE IS UNOBSERVABLE IN A RUNNING GAME. A shop that breaks it looks
+    # exactly like a shop that keeps it -- nobody at a counter can see that the
+    # gun they just bought is one the map would never have given them, they can
+    # only see a gun. And the way it breaks is not an edit to the shop at all: a
+    # rarity moves in config/weapons.lua and a hand-written catalogue silently
+    # stops matching the world it was copied from. That is this repository's
+    # signature defect, two representations of one fact, and it has shipped here
+    # before.
+    #
+    # SO THE CATALOGUE IS DERIVED AND THE DERIVATION IS WHAT IS TESTED, from
+    # both directions against the shipped tables: every gun on sale is a
+    # BR.Config.Weapons row at RARE or above, AND every such row is on sale. A
+    # copied list passes the first of those forever and fails the second the day
+    # somebody retunes a rarity. It also holds the exclusions against the real
+    # tables rather than against retyped names -- nothing from
+    # BR.Config.AirdropWeapons (which would be selling the one thing the map
+    # cannot give you), nothing melee, nothing thrown.
+    #
+    # AND IT PINS THAT NO CLERK HEIGHT IS EVER AUTHORED. The eleven counter
+    # anchors come from tables that disagree by up to about a metre on whether
+    # the z is the floor or a standing figure's centre, so the client
+    # ground-probes and the config carries the anchor and two empty override
+    # slots. The instinct when a clerk stands wrong is to type a better number
+    # in, one store at a time; the warmup showroom paid three playtest rounds
+    # for exactly that instinct (`veto`). The suite fixes the key set of a store
+    # row so a height field fails the build.
+    #
+    # test_tutorial.lua is the seventh suite to load a CLIENT file, and it loads
+    # the only one no suite had ever stood up: br_core/client/tutorial.lua. Its
+    # subject is the account-level fact underneath the guided first run, and the
+    # report that made it worth a suite is the owner's, 2026-09-08 -- a player
+    # who finished the walkthrough in solos was shown the whole thing again in
+    # squads, and had their matchmaking deferred a second time for it.
+    #
+    # WHAT MADE THAT POSSIBLE IS TWO COMPLETION RECORDS AND ONE READER. The
+    # payment lock (`reportRewards`, a conditional write) is asked at the moment
+    # of paying and correctly refused the second credit. The OFFER record (the
+    # profile row's `tutorial` string) is read exactly once per connection to
+    # send one TUTORIAL_OFFER and was never re-pushed after it changed -- so
+    # finishing wrote 'done' and changed nothing anybody consulted. Both arming
+    # paths, the page's and the server's, went on saying yes.
+    #
+    # THE SUITE ASSERTS THE FLAG, NOT THE CARDS. What the page's re-arm consumes
+    # is one published boolean, so that is what is pinned: true for a first-timer,
+    # true after an ABANDONED run, false after a completion. The middle one is the
+    # assertion that stops the fix going too far -- an abandoned run is
+    # deliberately not a decline and not a completion (owner, 2026-09-07), and a
+    # build that lowered the flag there would close the offer on the one player
+    # it must stay open for. The server half of the same fix lives in
+    # test_roster.lua ('tutorial.holdOncePerAccount'), beside the hold it guards.
+    #
+    # test_volts.lua is the eleventh suite to load a real SERVER file, and it
+    # loads the one file this tree had never stood up at all:
+    # br_core/server/market.lua. test_shop.lua says so in its own words -- it
+    # stubs BR.Market wholesale so the showroom handler can be driven, and falls
+    # back to asserting on the SOURCE TEXT of BR.Market.charge, which is the
+    # strongest statement a stub can make about the function it replaced.
+    #
+    # #293 NEEDS MORE THAN A SOURCE MATCH, because what it adds is not a field,
+    # it is WHERE ONE LINE SITS. The match's Volts-spent counter moves in the
+    # SUCCESS arm of BR.Market.charge and nowhere else, so a purchase DynamoDB
+    # refused contributes nothing to the ledger. Counting at the reservation
+    # instead would look identical from inside the game -- no car, no toast, the
+    # balance they started with -- and would leave a permanent row claiming money
+    # nobody was charged, on data nothing re-derives.
+    #
+    # AND THE REFUSAL ARM IS NOT A RARE PATH. It is reached exactly when the
+    # session cache is stale -- a report award, a console grant, or the same
+    # license connected to a second server -- which is the case the debit was
+    # moved into DynamoDB to catch in the first place.
+    #
+    # IT ALSO HOLDS THE RECYCLED-ID RULE. A spend write is up to six seconds and
+    # FiveM reuses server ids within the minute, so the roster entry sitting at a
+    # source when the answer lands may belong to somebody else; the license is
+    # re-checked, and the suite hands slot 20 to a stranger mid-flight to prove
+    # it. server/roster.lua forgets a dozen per-src caches on disconnect for the
+    # same reason, and this is the first one with money in it.
+    #
+    # test_board.lua is the warmup stat board (#247), and it is the first suite
+    # in this tree whose subject is mostly a URL. That sounds thin and is the
+    # point: the board is a DUI, which is a browser on the PLAYER'S machine
+    # pointed at a Ringmaster address, and a browser pointed at the wrong address
+    # has no symptom at all on the game box. Nothing logs, nothing errors,
+    # nothing retries. A prop just quietly shows an error page.
+    #
+    # SO THE STRING IS PINNED AS A LITERAL, in the owner's own spelling
+    # (2026-09-09), rather than rebuilt out of the config it is meant to check --
+    # and the license is composed through the REAL BR.Identity path, so the wire
+    # format and the builder are proved to agree rather than each proved against
+    # itself. The three ways to break the push all look like it working: the
+    # qualified `license:...` form (an HTTP 400 forever), a broadcast to -1
+    # instead of the one player it describes, and sending something when FiveM
+    # reported no license at all.
+    #
+    # IT ALSO STANDS client/dui.lua ON A PROP. drawBoard is drawFace with a
+    # lateral and a yaw, and both are arithmetic that looks right and comes out
+    # backwards -- a nudge that moves the board away from where it was nudged, a
+    # yaw that turns it edge-on. The yaw's sense is a 2D cross product rather
+    # than an angle comparison, which would read the same for 90 and 270, and 360
+    # is asserted to be the identity because that is the only assertion that can
+    # tell degrees from radians.
+    #
+    # test_gitref.lua is the served-commit reader behind the dev-mode hex under
+    # the lobby's Settings button. It hands br_lib/shared/gitref.lua a table for a
+    # filesystem, so the three shapes git keeps HEAD in -- a loose ref, a packed
+    # one, a detached sha -- and every unreadable case are walked here without a
+    # .git anywhere. A wrong parse shows a stale hex that looks right, which no
+    # playtest would ever catch.
+    # ORDER STAYS EXPLICIT because docs/testing.md records it and the slowest,
+    # broadest suites deliberately come after the cheap pure checks. Completeness
+    # is discovered, though: a new test_*.lua that nobody adds here is now a red
+    # gate instead of a green suite that CI never ran.
+    suites=(
+        tools/test_board.lua
+        tools/test_shared.lua
+        tools/test_loop.lua
+        tools/test_sched.lua
+        tools/test_roster.lua
+        tools/test_stats.lua
+        tools/test_ringmaster.lua
+        tools/test_artifacts.lua
+        tools/test_airdrop.lua
+        tools/test_client.lua
+        tools/test_spectate.lua
+        tools/test_matchexit.lua
+        tools/test_lobbyseq.lua
+        tools/test_landtime.lua
+        tools/test_config.lua
+        tools/test_admin.lua
+        tools/test_community.lua
+        tools/test_guild.lua
+        tools/test_fuel.lua
+        tools/test_sfx.lua
+        tools/test_boost.lua
+        tools/test_vehdamage.lua
+        tools/test_icons.lua
+        tools/test_vehrefuse.lua
+        tools/test_rescue.lua
+        tools/test_ambheal.lua
+        tools/test_revivekey.lua
+        tools/test_ambulances.lua
+        tools/test_shop.lua
+        tools/test_gunshop.lua
+        tools/test_volts.lua
+        tools/test_warmupcrates.lua
+        tools/test_bool_natives.lua
+        tools/test_tutorial.lua
+        tools/test_gitref.lua
+    )
+
+    listed=$(printf '%s\n' "${suites[@]}" | LC_ALL=C sort)
+    found=$(find tools -maxdepth 1 -type f -name 'test_*.lua' -print | LC_ALL=C sort)
+    unlisted=$(comm -13 <(printf '%s\n' "$listed") <(printf '%s\n' "$found"))
+    missing=$(comm -23 <(printf '%s\n' "$listed") <(printf '%s\n' "$found"))
+    if [ -n "$unlisted" ] || [ -n "$missing" ]; then
+        echo "${RED}FAIL${RST} Lua test-suite inventory is incomplete"
+        if [ -n "$unlisted" ]; then
+            echo "     present but never run:"
+            printf '%s\n' "$unlisted" | sed 's/^/       /'
+        fi
+        if [ -n "$missing" ]; then
+            echo "     listed but missing:"
+            printf '%s\n' "$missing" | sed 's/^/       /'
+        fi
+        echo "     Keep the ordered suites array and tools/test_*.lua in exact agreement."
+        rc=1
+    fi
+
+    for suite in "${suites[@]}"; do
         printf '%s' "${DIM}$(basename "$suite" .lua): ${RST}"
         "$LUA" "$suite" || rc=1
     done
@@ -530,6 +725,31 @@ else
     echo "${YEL}skip${RST} (lua interpreter not found)"
 fi
 
+# Every cue key a call site NAMES is a key config/audio.lua HOLDS.
+#
+# THE SUITES CANNOT SEE THIS AND THE GAME BARELY CAN. Every test of a cue call
+# site stubs BR.Sfx and records the string -- test_shared.lua's storm sandbox
+# writes `env.BR.Sfx = { play = function(cue) ... end }` and then asserts
+# `played(C, 'timer.final') == 1`, which is true for any string at all. In game a
+# key that is not in the table prints ONE console line per resource lifetime and
+# is silent forever after, so a dead call site survives both the suite and the
+# playtest. This gate was written after the owner reported sounds broken on a
+# green tree (2026-09-08) and immediately found two: client/state.lua was still
+# firing `hit` and `hit.crit` on every damage event, hours after both keys were
+# deleted for being the wrong clips and after the twin call in client/dbno.lua
+# had already been removed for that reason.
+#
+# THE REVERSE IS PRINTED AND NEVER GATED, and it is not a list of unwired cues --
+# a key can be held in a local, passed to a helper, or asked for by the browser
+# through the SFX callback, and this scan sees none of those. Wiring a sound is
+# the owner's decision rather than a gate's.
+echo "${DIM}== cue call sites ==${RST}"
+if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
+    "$LUA" tools/check_cue_sites.lua $(find resources -name '*.lua' | sort) || rc=1
+else
+    echo "${YEL}skip${RST} (lua interpreter not found)"
+fi
+
 # A xN on a notice means "again, while you were still looking at it" (owner,
 # 2026-09-02). The live stack cannot get that wrong -- it coalesces against the
 # rows that are still up. The pause menu's history coalesced against the whole
@@ -582,10 +802,25 @@ else
     echo "${YEL}skip${RST} (lua interpreter not found)"
 fi
 
+# VENDORED RESOURCES ARE EXCLUDED, the same way `bool natives` below excludes
+# them and for the same reason: upstream's code is not edited here, a forward
+# local in it is upstream's bug to have, and a gate that reddens the build over
+# somebody else's correct-enough code is a gate that grows an --exclude and then
+# gets ignored. This was a gap rather than a decision -- `bool natives` carried
+# the exclusion and this did not, which only showed when a second library was
+# vendored (2026-09-08).
 echo "${DIM}== forward locals ==${RST}"
 if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
-    # shellcheck disable=SC2046
-    "$LUA" tools/check_forward_locals.lua $(find resources -name '*.lua' | sort) || rc=1
+    fwdfiles=$(find resources -name '*.lua' | while IFS= read -r f; do
+        d=$(dirname "$f"); keep=1
+        while [ "$d" != "." ] && [ "$d" != "/" ]; do
+            [ -f "$d/VENDOR.json" ] && { keep=0; break; }
+            d=$(dirname "$d")
+        done
+        [ "$keep" -eq 1 ] && echo "$f"
+    done | sort)
+    # shellcheck disable=SC2086
+    "$LUA" tools/check_forward_locals.lua $fwdfiles || rc=1
 else
     echo "${YEL}skip${RST} (lua interpreter not found)"
 fi
@@ -1970,6 +2205,48 @@ if [ "$devgate" -eq 0 ]; then
     echo "${GRN}ok${RST}   the ungated door is player input only (the keybind rows and /brleave)"
 else
     rc=1
+fi
+
+# --- 4d-ter. no net event treats dev mode as a permission ---------------------
+#
+# THE SECTION ABOVE IS ENTIRELY ABOUT RegisterCommand, AND THAT IS THE HOLE THIS
+# CLOSES. A console command can only be typed by whoever owns the box. A NET
+# EVENT is a door a client knocks on, and nothing here checked those at all --
+# which is why `br:loot:dev` shipped with `if not BR.Server.devMode then return
+# end` as its whole authorization and no gate said a word (#232, audited
+# 2026-09-08). Dev mode is a fact about how the process was started; every
+# connected client passes it, and the handler behind that one spawns any weapon
+# in BR.Config.WeaponById -- airdrop RPGs, grenade launchers, railguns and the
+# minigun included.
+#
+# THE CHECK ITSELF IS LUA, in tools/check_net_gates.lua, and that is not a
+# preference. This one has to know where a handler BEGINS AND ENDS -- a
+# dev-mode read three functions down the file is somebody else's business, and
+# a `print` under `if BR.Server.devMode` is a diagnostic rather than a gate.
+# Both of those are block questions, and a `grep -q` cannot ask one. The first
+# draft here WAS a grep, and it reddened on broadcast.lua's snapshot log.
+#
+# THE SELF-TEST RUNS FIRST AND ITS FAILURE IS A BUILD FAILURE. A static gate
+# that silently stops matching is worse than no gate, because the build stays
+# green over the thing it was written to catch -- the exact failure recorded
+# above, where a sed pattern read `[fivem-royale]` as a character class and half
+# the dev gate did nothing for weeks while printing ok.
+echo "${DIM}== dev gate on net events ==${RST}"
+if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
+    if "$LUA" tools/check_net_gates.lua --selftest; then
+        # shellcheck disable=SC2046
+        "$LUA" tools/check_net_gates.lua \
+            $(find "resources/[fivem-royale]" -path '*/server/*.lua' | sort) || rc=1
+    else
+        echo "${RED}FAIL${RST} tools/check_net_gates.lua's own fixtures no longer hold"
+        echo "     The gate is not asserted to fire any more, so a green run"
+        echo "     below this line means nothing. Fix the checker first."
+        rc=1
+    fi
+else
+    # NOT SILENT. Without Lua this whole section is absent rather than passing,
+    # and the operator has to know which of the two they are looking at.
+    echo "${YEL}skip${RST} (lua interpreter not found)"
 fi
 
 # --- 4e. the branch-switch invariant ------------------------------------------

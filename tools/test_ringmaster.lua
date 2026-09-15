@@ -86,6 +86,31 @@ end
 
 Citizen = { CreateThread = function() end, Wait = function() end, SetTimeout = function() end }
 
+-- exports('name', fn), as gate.lua calls it. Recorded with how many connect
+-- handlers existed at that moment, because WHERE gate.lua exports gateArmed is
+-- what br_core/server/guild.lua's backstop relies on.
+local exported = {}
+-- exports.<resource>:<name>(), as gate.lua reads br_core's brallowlist switch.
+-- A resource with no entry here, or an export it does not have, throws, as a
+-- call into a stopped resource does in FiveM.
+local foreign = {}
+exports = setmetatable({}, {
+    __call = function(_, name, fn)
+        exported[name] = { fn = fn, connectHandlers = #(handlers['playerConnecting'] or {}) }
+    end,
+    __index = function(_, res)
+        local t = foreign[res]
+        if t == nil then error(('No such resource %s'):format(res)) end
+        return setmetatable({}, { __index = function(_, name)
+            local fn = t[name]
+            if fn == nil then
+                error(('No such export %s in resource %s'):format(name, res))
+            end
+            return function(_, ...) return fn(...) end
+        end })
+    end,
+})
+
 local realPrint = print
 local printed = {}
 function print(s) printed[#printed + 1] = tostring(s) end
@@ -121,6 +146,9 @@ loadAll({
     'br_ringmaster/server/gate.lua',
     'br_ringmaster/server/debug.lua',
 })
+
+-- Taken before any case below reloads main.lua and adds handlers of its own.
+local connectHandlersAtLoad = #(handlers['playerConnecting'] or {})
 
 local pass, fail = 0, 0
 local group = ''
@@ -928,6 +956,268 @@ do
         d.doneArg)
 
     BR.Config.Community.discordUrl = ''
+
+    -- ------------------------------------------------- the dev allowlist ---
+    --
+    -- DEV MODE ONLY, AFTER THE BAN CHECK, AND FAILING CLOSED. Every case above
+    -- ran with BR.Dev absent, which is dev mode off, so they are also the proof
+    -- that dev off changes nothing. These stand in for br_core's answer the way
+    -- banChecks stands in for br_ddb's.
+    local REFUSAL = 'This server is restricted to allowlisted players.'
+    local roleChecks = {}
+    AddEventHandler('br:guild:roleCheck', function(req, discordId, budgetMs)
+        roleChecks[#roleChecks + 1] = { req = req, discordId = discordId, budgetMs = budgetMs }
+    end)
+    local function lastRoleReq()
+        return roleChecks[#roleChecks] and roleChecks[#roleChecks].req
+    end
+    local function answerRole(verdict)
+        TriggerEvent('br:guild:roleResult', lastRoleReq(), verdict)
+    end
+
+    local devOn = false
+    BR.Dev = { on = function() return devOn end }
+    resourceState.br_core = 'started'
+    identifiers[74] = { 'license:4444444444444444444444444444444444444444', 'discord:904' }
+
+    -- DEV OFF: somebody who is in no guild at all walks in, and nobody is asked.
+    d = connect(74)
+    TriggerEvent('br:ddb:banResult', lastBanCheckReq(), false, {})
+    ok(d.doneCount == 1 and d.doneArg == nil, 'dev off: a non-member is admitted', tostring(d.doneArg))
+    ok(#roleChecks == 0, 'dev off: and the allowlist is never consulted', tostring(#roleChecks))
+
+    devOn = true
+
+    -- DEV ON, WITHOUT THE ROLE.
+    d = connect(74)
+    ok(#roleChecks == 0, 'dev on: the allowlist is not asked before the ban answer',
+        tostring(#roleChecks))
+    TriggerEvent('br:ddb:banResult', lastBanCheckReq(), false, {})
+    ok(#roleChecks == 1 and roleChecks[1].discordId == '904',
+        'then br_core is asked about the BARE discord id', tostring((roleChecks[1] or {}).discordId))
+    ok(roleChecks[1] and roleChecks[1].budgetMs == 10000,
+        'with the gate\'s own 10s budget, so br_core can stop on a lookup the gate gave up on',
+        tostring((roleChecks[1] or {}).budgetMs))
+    ok(d.doneCount == 0, 'and the join waits for the answer', tostring(d.doneCount))
+    answerRole('missing')
+    ok(d.doneCount == 1 and d.doneArg == REFUSAL, 'dev on: a member without the role is refused',
+        tostring(d.doneArg))
+
+    d = connect(74)
+    TriggerEvent('br:ddb:banResult', lastBanCheckReq(), false, {})
+    answerRole('notmember')
+    ok(d.doneCount == 1 and d.doneArg == REFUSAL, 'dev on: somebody not in the guild is refused',
+        tostring(d.doneArg))
+
+    -- DEV ON, WITH THE ROLE.
+    d = connect(74)
+    TriggerEvent('br:ddb:banResult', lastBanCheckReq(), false, {})
+    answerRole('held')
+    ok(d.doneCount == 1 and d.doneArg == nil, 'dev on: a player holding the role is admitted',
+        tostring(d.doneArg))
+
+    -- A BAN BEATS THE ALLOWLIST, and not by winning a race: the allowlist is
+    -- never asked, so it has no answer that could land first.
+    local nRole = #roleChecks
+    d = connect(70)
+    TriggerEvent('br:ddb:banResult', lastBanCheckReq(), true, { reason = 'Aimbot' })
+    ok(d.doneCount == 1 and type(d.doneArg) == 'string'
+       and d.doneArg:find('You are banned', 1, true) == 1,
+        'dev on: a banned player gets the ban notice, not the allowlist refusal', tostring(d.doneArg))
+    ok(#roleChecks == nRole, 'and the allowlist is never asked', tostring(#roleChecks - nRole))
+
+    -- A LOOKUP THAT FAILS REFUSES.
+    for _, verdict in ipairs({ 'unknown', 'unconfigured', 'noid' }) do
+        d = connect(74)
+        TriggerEvent('br:ddb:banResult', lastBanCheckReq(), false, {})
+        answerRole(verdict)
+        ok(d.doneCount == 1 and d.doneArg == REFUSAL,
+            ('dev on: %q from br_core refuses'):format(verdict), tostring(d.doneArg))
+    end
+
+    d = connect(74)
+    TriggerEvent('br:ddb:banResult', lastBanCheckReq(), false, {})
+    local timedOut = lastRoleReq()
+    fireTimers()
+    ok(d.doneCount == 1 and d.doneArg == REFUSAL, 'dev on: no answer at all refuses when the timer fires',
+        tostring(d.doneArg))
+    TriggerEvent('br:guild:roleResult', timedOut, 'held')
+    ok(d.doneCount == 1 and d.doneArg == REFUSAL, 'and a late held cannot turn it into an admit',
+        tostring(d.doneCount))
+
+    -- A BAN THAT LANDS WHILE DISCORD IS BEING ASKED STILL WINS. br_ddb is slow,
+    -- the ban check times out, and the join goes on to the allowlist -- still
+    -- deferring, so in no player list a late ban could remove it from.
+    local function slowBanThenRole(src, banned, verdict)
+        local c = connect(src)
+        local banReq = lastBanCheckReq()
+        local asked0 = #roleChecks
+        fireTimers()                               -- the ban check times out
+        local waiting = c.doneCount == 0 and #roleChecks == asked0 + 1
+        TriggerEvent('br:ddb:banResult', banReq, banned, banned and { reason = 'Aimbot' } or {})
+        local stillOpen = c.doneCount == 0
+        answerRole(verdict)
+        return c, waiting, stillOpen
+    end
+    local function banNotice(c)
+        return c.doneCount == 1 and type(c.doneArg) == 'string'
+            and c.doneArg:find('You are banned', 1, true) == 1
+    end
+
+    local waiting, stillOpen
+    d, waiting, stillOpen = slowBanThenRole(74, true, 'held')
+    ok(waiting, 'dev on: a timed-out ban check goes on to ask about the role')
+    ok(stillOpen, 'and a late ban answer does not end the deferral by itself')
+    ok(banNotice(d), 'dev on: a late ban beats a held role -- the ban notice, not an admit',
+        tostring(d.doneArg))
+
+    d = slowBanThenRole(74, true, 'missing')
+    ok(banNotice(d), 'and beats an allowlist refusal, so a banned player is told about the ban',
+        tostring(d.doneArg))
+
+    d = slowBanThenRole(71, true, 'held')      -- a discord id and no license
+    ok(banNotice(d), 'including for a connection with no license to watch', tostring(d.doneArg))
+
+    d = slowBanThenRole(74, false, 'held')
+    ok(d.doneCount == 1 and d.doneArg == nil, 'while a late clean answer still lets a role holder in',
+        tostring(d.doneArg))
+
+    resourceState.br_core = 'stopped'
+    nRole = #roleChecks
+    d = connect(74)
+    TriggerEvent('br:ddb:banResult', lastBanCheckReq(), false, {})
+    ok(d.doneCount == 1 and d.doneArg == REFUSAL and #roleChecks == nRole,
+        'dev on: with br_core not started the join is refused at once', tostring(d.doneArg))
+    resourceState.br_core = 'started'
+
+    d = connect(72)   -- a license and a steam id, and no discord
+    TriggerEvent('br:ddb:banResult', lastBanCheckReq(), false, {})
+    ok(d.doneCount == 1 and d.doneArg == REFUSAL and #roleChecks == nRole,
+        'dev on: no discord identifier is refused without asking', tostring(d.doneArg))
+
+    d = connect(73)   -- neither identifier
+    ok(d.doneCount == 1 and d.doneArg == REFUSAL,
+        'dev on: neither identifier is refused rather than admitted', tostring(d.doneArg))
+
+    -- BANS STILL FAIL OPEN; THE ALLOWLIST BEHIND THEM DOES NOT.
+    d = connect(74)
+    TriggerEvent('br:ddb:banResult', lastBanCheckReq(), false, { error = 'no credentials' })
+    ok(d.doneCount == 0 and #roleChecks == nRole + 1,
+        'dev on: a failed ban check still goes on to the allowlist', tostring(d.doneCount))
+    answerRole('missing')
+    ok(d.doneCount == 1 and d.doneArg == REFUSAL, 'and is refused without the role', tostring(d.doneArg))
+
+    resourceState.br_ddb = 'missing'
+    local nBan = #banChecks
+    d = connect(74)
+    ok(d.deferred and #banChecks == nBan,
+        'dev on without br_ddb: the join still defers, with no ban check', tostring(d.deferred))
+    answerRole('held')
+    ok(d.doneCount == 1 and d.doneArg == nil, 'and a role holder is admitted', tostring(d.doneArg))
+    d = connect(74)
+    answerRole('missing')
+    ok(d.doneCount == 1 and d.doneArg == REFUSAL, 'and anybody else is refused', tostring(d.doneArg))
+    resourceState.br_ddb = 'started'
+
+    -- br_core's BACKSTOP STANDS ASIDE ONLY WHILE THIS ANSWERS. It refuses every
+    -- dev-mode join itself otherwise (tools/test_guild.lua), so the export has to
+    -- exist exactly when the handler does: registered after it, with no connect
+    -- handler after the export that a load error could separate from it.
+    local armed = exported['gateArmed']
+    ok(armed ~= nil and armed.fn() == true, 'gate.lua exports gateArmed, answering true')
+    ok(armed ~= nil and armed.connectHandlers == connectHandlersAtLoad,
+        'and exports it only once its connect handler is registered',
+        tostring(armed and armed.connectHandlers) .. ' / ' .. tostring(connectHandlersAtLoad))
+
+    -- ------------------------------------------- brallowlist, br_core's switch ---
+    --
+    -- OFF JUDGES A CONNECT AS DEV MODE OFF DOES: nobody is asked about a role,
+    -- and a ban still refuses with the ban notice. Every case above ran with no
+    -- br_core export at all, which is also the proof that an unreadable switch
+    -- reads as on.
+    local switch = false
+    local switchReads = 0
+    foreign.br_core = { allowlistEnforced = function()
+        switchReads = switchReads + 1
+        return switch
+    end }
+
+    nRole = #roleChecks
+    d = connect(74)
+    TriggerEvent('br:ddb:banResult', lastBanCheckReq(), false, {})
+    ok(d.doneCount == 1 and d.doneArg == nil and #roleChecks == nRole,
+        'brallowlist off: a player without the role is admitted, and nobody is asked',
+        tostring(d.doneArg) .. '/' .. tostring(#roleChecks - nRole))
+
+    d = connect(70)
+    TriggerEvent('br:ddb:banResult', lastBanCheckReq(), true, { reason = 'Aimbot' })
+    ok(banNotice(d), 'brallowlist off: a banned player is still refused, with the ban notice',
+        tostring(d.doneArg))
+
+    resourceState.br_ddb = 'missing'
+    d = connect(74)
+    ok(not d.deferred and d.doneCount == 0,
+        'brallowlist off without br_ddb: the join is not held, as with dev mode off', tostring(d.deferred))
+    resourceState.br_ddb = 'started'
+
+    switch = true
+    d = connect(74)
+    TriggerEvent('br:ddb:banResult', lastBanCheckReq(), false, {})
+    ok(#roleChecks == nRole + 1, 'brallowlist on: the role is asked about again',
+        tostring(#roleChecks - nRole))
+    answerRole('missing')
+    ok(d.doneCount == 1 and d.doneArg == REFUSAL, 'and a player without it is refused again',
+        tostring(d.doneArg))
+
+    -- FAILS CLOSED. A stopped br_core is not believed whatever it last said.
+    switch = false
+    resourceState.br_core = 'stopped'
+    d = connect(74)
+    TriggerEvent('br:ddb:banResult', lastBanCheckReq(), false, {})
+    ok(d.doneCount == 1 and d.doneArg == REFUSAL,
+        'br_core not started: an off switch reads as on, so the join is refused', tostring(d.doneArg))
+    resourceState.br_core = 'started'
+
+    local unreadable = {
+        { 'no such export', {} },
+        { 'a throw', { allowlistEnforced = function() error('boom') end } },
+        { 'nil', { allowlistEnforced = function() return nil end } },
+        { 'the string false', { allowlistEnforced = function() return 'false' end } },
+        { '0', { allowlistEnforced = function() return 0 end } },
+    }
+    for _, case in ipairs(unreadable) do
+        foreign.br_core = case[2]
+        local asked0 = #roleChecks
+        d = connect(74)
+        TriggerEvent('br:ddb:banResult', lastBanCheckReq(), false, {})
+        local asked = #roleChecks == asked0 + 1
+        answerRole('missing')
+        ok(asked and d.doneCount == 1 and d.doneArg == REFUSAL,
+            ('br_core started, switch answers %s: read as on, role asked, refused'):format(case[1]),
+            tostring(asked) .. '/' .. tostring(d.doneArg))
+    end
+
+    -- DEV OFF: the switch is never read, and nothing about joining changes.
+    devOn = false
+    switch = false
+    foreign.br_core = { allowlistEnforced = function()
+        switchReads = switchReads + 1
+        return switch
+    end }
+    local reads0 = switchReads
+    nRole = #roleChecks
+    d = connect(74)
+    TriggerEvent('br:ddb:banResult', lastBanCheckReq(), false, {})
+    ok(d.doneCount == 1 and d.doneArg == nil and #roleChecks == nRole and switchReads == reads0,
+        'dev off: admitted as before, and br_core is never asked about the switch',
+        tostring(d.doneArg) .. '/' .. tostring(switchReads - reads0))
+    d = connect(70)
+    TriggerEvent('br:ddb:banResult', lastBanCheckReq(), true, { reason = 'Aimbot' })
+    ok(banNotice(d), 'dev off: a ban still refuses with the ban notice', tostring(d.doneArg))
+
+    foreign.br_core = nil
+    BR.Dev = nil
+    resourceState.br_core = nil
 end
 
 -- --------------------------------------------------------------- brkick ---
@@ -1137,6 +1427,7 @@ end
 loadAll({
     'br_lib/shared/protocol.lua',
     'br_lib/shared/names.lua',
+    'br_lib/shared/matchtag.lua',  -- BR.MatchTag; server/loot.lua names its match
     'br_lib/shared/notice.lua',  -- BR.Notice; server/broadcast.lua unpacks with it
     'br_lib/shared/rng.lua',
     'br_lib/shared/geo.lua',
@@ -1824,6 +2115,9 @@ local function newIncidentWorld()
         'br_lib/shared/enums.lua',
         'br_lib/shared/protocol.lua',
         'br_lib/shared/identity.lua',
+        -- BR.MatchTag; br_core/server/incident.lua names the match in the line
+        -- it prints when a report hint goes out.
+        'br_lib/shared/matchtag.lua',
     }) do
         local chunk, err = loadfile(ROOT .. f, 't', env)
         if not chunk then
@@ -2160,6 +2454,9 @@ local function newTimelineWorld()
         'br_lib/shared/enums.lua',
         'br_lib/shared/protocol.lua',
         'br_lib/shared/identity.lua',
+        -- BR.MatchTag; br_core/server/incident.lua names the match in the line
+        -- it prints when a report hint goes out.
+        'br_lib/shared/matchtag.lua',
         'br_lib/shared/combat_solve.lua',
         -- THE REAL WEAPON TABLE, not a stub. weaponFacts() decides whether a kill
         -- gets painted red as an unissued weapon, and a stub would let that
@@ -2928,6 +3225,19 @@ do
     ok(#W.S.corroborations == 1, 'it corroborates the first', #W.S.corroborations)
     ok(W.S.corroborations[1].incidentId == 'inc-1',
         'against the case that already exists')
+
+    -- AND IT NAMES NOBODY, WHICH IS A CONTRACT AND NOT AN OVERSIGHT. A person's
+    -- corroboration carries `reporterLicense` and `reporterName`
+    -- (server/players.lua, both paths, asserted in tools/test_roster.lua); the
+    -- anticheat's carries neither, and that absence is the ONLY thing telling the
+    -- console "the system did this" rather than "we did not look". A default
+    -- added anywhere on this path -- even an empty string -- credits a machine
+    -- with a human's report and folds two people's rows into one.
+    ok(W.S.corroborations[1].reporterLicense == nil
+       and W.S.corroborations[1].reporterName == nil,
+        'and names no reporter, which is what makes an absent one mean the system',
+        tostring(W.S.corroborations[1].reporterLicense) .. ' / ' ..
+        tostring(W.S.corroborations[1].reporterName))
 
     W.at(9000)
     W.endMatch(7)
@@ -4544,6 +4854,114 @@ do
         #W.S.corroborations)
     ok(W.S.corroborations[1].incidentId == 'inc-mixed',
         'onto the case that already exists')
+end
+
+-- ======================================================================== --
+-- THE REPORTER SURVIVES THE OUTBOX  (owner: "it doesn't credit me")
+-- ======================================================================== --
+--
+-- br_core puts `reporterLicense` and `reporterName` on a corroboration a PERSON
+-- made, and br_ringmaster/server/incident.lua is the only thing between that
+-- event and the wire. Its payload was a fixed six-field literal, so both fields
+-- were dropped one function call after they were set and the console could never
+-- credit anybody -- which is the owner's report, read from the other end.
+--
+-- LAST IN THE FILE ON PURPOSE. This raises `br:ringmaster:corroborate` in the
+-- shared global state, which moves the outbox queue and br_ring's own counters,
+-- and nothing above may be made to depend on that.
+
+describe('corroboration.the-outbox-carries-the-reporter')
+do
+    -- CAPTURED AT `emit`, not off a flushed request, so the assertion is about
+    -- what this file BUILDS rather than about whether a batch happened to go.
+    local seen = {}
+    local ob = BR.Ring.outbox
+    ok(ob ~= nil, 'the outbox exists to emit onto')
+
+    if ob then
+        local real = ob.emit
+        ob.emit = function(self, kind, payload, now)
+            if kind == 'incident_corroborated' then seen[#seen + 1] = payload end
+            return real(self, kind, payload, now)
+        end
+
+        TriggerEvent('br:ringmaster:corroborate', {
+            incidentId      = 'inc-human',
+            license         = 'license:cheat',
+            name            = 'Cheater',
+            seq             = 2,
+            count           = 2,
+            reason          = 'cheating',
+            reporterLicense = 'license:owner',
+            reporterName    = 'Owner',
+        })
+
+        local p = seen[#seen]
+        ok(p ~= nil, 'a human corroboration reaches the outbox')
+        ok(p and p.reporterLicense == 'license:owner',
+            'carrying the license of the person who made it',
+            p and tostring(p.reporterLicense))
+        ok(p and p.reporterName == 'Owner',
+            'and their name, which is the whole of what the console credits',
+            p and tostring(p.reporterName))
+        -- THE SUBJECT IS UNDISTURBED, because the two pairs are easy to swap and
+        -- a swap reads perfectly while crediting the accused with the report.
+        ok(p and p.subjectLicense == 'license:cheat',
+            'about the player it was always about',
+            p and tostring(p.subjectLicense))
+
+        -- AND NOTHING GRADED IT, BECAUSE NOBODY DID. br_core's two human
+        -- corroborations send no `severity` at all -- server/players.lua, both
+        -- literals, pinned in tools/test_roster.lua -- and this handler FORWARDS
+        -- the field rather than defaulting it, so a human's row reaches DynamoDB
+        -- with no `worst: <severity>` clause on its sentence.
+        --
+        -- THAT CLAUSE IS WHAT THE CONSOLE FOLDS ON. `foldable` in Ringmaster's
+        -- src/lib/corroborationText.ts collapses a run of corroborations into
+        -- one row reading "happened 20 times in 10 minutes", and it refuses any
+        -- row whose sentence does not grade a severity. An `or 'normal'` added
+        -- to the literal above would put that clause on every human row in the
+        -- table and make one player's report absorbable into another's run --
+        -- which is the same failure an empty-string reporter would be, arriving
+        -- through a different field.
+        ok(p and p.severity == nil,
+            'and carrying no severity, which is what keeps a person out of a fold',
+            p and tostring(p.severity))
+
+        -- THE ANTICHEAT'S, THROUGH THE SAME DOOR AND THE SAME LITERAL. Neither
+        -- field is invented and neither is blanked. An empty string is NOT an
+        -- absent field: the console tests for a non-empty string and writes
+        -- `System` otherwise, so a blank would still read right on the page --
+        -- and the fold that groups a run of these would then be unable to tell a
+        -- person's row from a machine's, which is where a report gets deleted.
+        TriggerEvent('br:ringmaster:corroborate', {
+            incidentId = 'inc-system',
+            license    = 'license:cheat',
+            name       = 'Cheater',
+            seq        = 2,
+            count      = 16,
+            reason     = 'weapon is not one this gamemode issues',
+            severity   = 'high',
+        })
+
+        local q = seen[#seen]
+        ok(q ~= nil and q.incidentId == 'inc-system',
+            'and so does the anticheat one, off the same handler')
+        ok(q and q.reporterLicense == nil and q.reporterName == nil,
+            'naming nobody, and given no empty string in place of nobody',
+            q and (tostring(q.reporterLicense) .. ' / ' .. tostring(q.reporterName)))
+
+        -- AND KEEPING THE GRADE IT ARRIVED WITH, which is the same forwarding
+        -- read in the other direction. Together with the human row above, these
+        -- two say the handler neither invents a severity nor drops one -- and
+        -- the console's fold reads exactly that difference to tell a machine's
+        -- run from a person's report.
+        ok(q and q.severity == 'high',
+            'while the anticheat one keeps the severity it was graded at',
+            q and tostring(q.severity))
+
+        ob.emit = nil
+    end
 end
 
 -- ----------------------------------------------------------------- result ---

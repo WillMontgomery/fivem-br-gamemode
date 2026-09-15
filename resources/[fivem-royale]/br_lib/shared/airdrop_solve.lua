@@ -517,40 +517,151 @@ function BR.AirdropPayout(rng, cfg)
     local decks, dealt = {}, {}
     local out = {}
 
+    --- This pool's deck, shuffled the first time the pool is asked for anything.
+    ---
+    --- SHUFFLED WHERE IT ALWAYS WAS, which is the whole of the rng contract: the
+    --- ammo pass below defers the DEAL and not the shuffle, deals consume no
+    --- draws, and so a seed produces the same decks it did before the ammo slots
+    --- learned what the crate was carrying.
+    local function deckFor(name)
+        local src = pools[name]
+        if not src or #src == 0 then return nil end
+
+        local deck = decks[name]
+        if not deck then
+            deck = {}
+            for j = 1, #src do deck[j] = src[j] end
+            rng:shuffle(deck)
+            decks[name], dealt[name] = deck, 0
+        end
+        return deck
+    end
+
+    --- The next card off a pool's deck, wrapping when the slots outnumber it.
+    local function dealFrom(name)
+        local deck = deckFor(name)
+        if not deck then return nil end
+        dealt[name] = dealt[name] + 1
+        return deck[((dealt[name] - 1) % #deck) + 1]
+    end
+
+    --- A COPY, never the template. These become ground entries that the
+    --- inventory then mutates (a magazine is spent, a stack is split), and
+    --- handing out the shared template would let one pickup rewrite what every
+    --- future drop contains.
+    local function copyOf(t)
+        return {
+            item   = t.item,
+            kind   = t.kind,
+            rarity = t.rarity,
+            count  = t.count,
+            clip   = t.clip,
+            -- Carried because the Volts pile names its own model: every other
+            -- kind resolves a prop from its id on the client, and 'volts' is not
+            -- an id any config table holds.
+            prop   = t.prop,
+        }
+    end
+
+    -- ═══ THE AMMO SLOTS PAY FOR THE GUNS THIS CRATE ACTUALLY DEALT ═══
+    --
+    -- Owner, playtest 2026-09-12: "Airdrop weapons came with some ammo, except
+    -- the grenade launcher which came with none."
+    --
+    -- WHAT WAS WRONG WAS THE SLOT MODEL, NOT THE POOL. Every type a dropped
+    -- weapon can use is a card in the `ammo` pool and tools/test_airdrop.lua has
+    -- asserted that from the weapons' own `ammo` fields for a while -- but a drop
+    -- deals only two of those six cards (three at an n of 13) and used to deal
+    -- them off the shuffle, blind to what the weapon slots had just paid. Three of
+    -- the four exclusives take HEAVY, so EVERY crate needs rockets, and two cards
+    -- off a six-card deck find them a third of the time: measured over 300 seeds,
+    -- 229 drops paid an airdrop-only weapon with nothing it could fire. The
+    -- comment above `payout` in config/airdrop.lua had already named this exact
+    -- drop as the worst in the game; it was reachable all along.
+    --
+    -- SO THE GUNS ARE DEALT FIRST AND THE ROUNDS FOLLOW THEM. The ammo slots keep
+    -- their POSITION in the crate -- they are holes in `out`, filled in a second
+    -- pass -- so the order the payout array authored is the order the ground
+    -- entries arrive in, and the holes are only ever made where the old code
+    -- would have dealt a card.
+    --
+    -- PRIORITY IS THE PAYOUT'S OWN ORDER AND NEEDS NO SECOND RULE. Two or three
+    -- ammo slots cannot feed the eight guns a full drop can hold, so coverage is
+    -- a queue: the distinct types are collected in the order the slots dealt
+    -- them, which is exclusives, then legendaries, then epics. The crate feeds its
+    -- own shelf first, always, and a tail legendary can still land dry.
+    local AMMO = 'ammo'
+    local holes, wanted, seen = {}, {}, {}
+
     for i = 1, n do
         local name = slots[i]
-        local src = pools[name]
-        if src and #src > 0 then
-            local deck = decks[name]
-            if not deck then
-                deck = {}
-                for j = 1, #src do deck[j] = src[j] end
-                rng:shuffle(deck)
-                decks[name], dealt[name] = deck, 0
+        if name == AMMO then
+            -- A HOLE, AND ONLY WHERE A CARD WOULD HAVE GONE. deckFor is what
+            -- decides that, exactly as the old `#src > 0` did, so a drop with an
+            -- empty ammo pool still pays one fewer item rather than a nil.
+            if deckFor(name) then
+                out[#out + 1] = false
+                holes[#holes + 1] = #out
             end
-
-            dealt[name] = dealt[name] + 1
-            local t = deck[((dealt[name] - 1) % #deck) + 1]
-
-            -- A COPY, never the template. These become ground entries that the
-            -- inventory then mutates (a magazine is spent, a stack is split),
-            -- and handing out the shared template would let one pickup rewrite
-            -- what every future drop contains.
-            out[#out + 1] = {
-                item   = t.item,
-                kind   = t.kind,
-                rarity = t.rarity,
-                count  = t.count,
-                clip   = t.clip,
-                -- Carried because the Volts pile names its own model: every
-                -- other kind resolves a prop from its id on the client, and
-                -- 'volts' is not an id any config table holds.
-                prop   = t.prop,
-            }
+        else
+            local t = dealFrom(name)
+            if t then
+                out[#out + 1] = copyOf(t)
+                if t.ammo and not seen[t.ammo] then
+                    seen[t.ammo] = true
+                    wanted[#wanted + 1] = t.ammo
+                end
+            end
         end
     end
 
-    return out
+    -- The ammo pool by type, so a wanted type can be paid as the stack the config
+    -- authored for it -- the same template, the same amount.
+    local byType = {}
+    for _, t in ipairs(pools[AMMO] or {}) do byType[t.item] = t end
+
+    local paid, next_ = {}, 1
+    for _, at in ipairs(holes) do
+        local t
+
+        -- The queue first, skipping anything an earlier hole already paid.
+        while next_ <= #wanted and not t do
+            local want = wanted[next_]
+            next_ = next_ + 1
+            if not paid[want] then t = byType[want] end
+        end
+
+        -- ...AND THE DECK WHEN THE CRATE'S OWN GUNS ARE ALL FED. This is the free
+        -- roll the ammo slots used to be, and it is deliberately kept: a player
+        -- opening a crate is carrying floor loot too, and the drop has always fed
+        -- that. A type already paid is skipped so a spare slot widens the drop
+        -- rather than doubling a stack.
+        if not t then
+            for _ = 1, #(pools[AMMO] or {}) do
+                local card = dealFrom(AMMO)
+                if not card then break end
+                if not paid[card.item] then t = card; break end
+                t = card
+            end
+        end
+
+        if t then
+            out[at] = copyOf(t)
+            paid[t.item] = true
+        end
+    end
+
+    -- NOTHING IS LEFT FALSE, and the compaction is defensive rather than
+    -- load-bearing: a hole is only made when the ammo pool has a card in it, so
+    -- the fill above cannot come back empty-handed. It costs one walk and it means
+    -- a future pool that resolves to nothing can never put a `false` on the
+    -- ground.
+    local kept = {}
+    for _, s in ipairs(out) do
+        if s then kept[#kept + 1] = s end
+    end
+
+    return kept
 end
 
 -- ---------------------------------------------------------------------------

@@ -223,7 +223,13 @@ end
 --- End a session. Safe to call for a player who has none.
 --- @param src integer
 --- @param reason string  'stopped' | 'left' | 'target-left' | 'no-targets' | ...
-function BR.Spectate.stop(src, reason)
+--- @param final boolean|nil  ALSO tell the client not to ask again for the rest
+---        of this match -- see BR.Spectate.onEliminated and the `final` note over
+---        BR.Net.SPECTATE_SET. Absent on every ordinary stop, which is every
+---        caller that existed before it: a session that ends because a target
+---        left or a watcher was revived says nothing about the MATCH.
+--- @return boolean  was anything running?
+function BR.Spectate.stop(src, reason, final)
     local s = sessions[src]
     if not s then return false end
 
@@ -240,7 +246,152 @@ function BR.Spectate.stop(src, reason)
     -- TOLD EVEN IF THEY ARE GONE. TriggerClientEvent to a departed source is a
     -- no-op, and the alternative -- checking first -- is a second place that can
     -- disagree with the roster about who is here.
-    TriggerClientEvent(BR.Net.SPECTATE_SET, src, { stop = true, reason = reason })
+    TriggerClientEvent(BR.Net.SPECTATE_SET, src,
+                       { stop = true, reason = reason, final = final == true or nil })
+    return true
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- THE ELIMINATION THAT DECIDES THE MATCH CLOSES THE CAMERA
+--
+-- "whenever the 2nd to last player (or squad) dies - they should not go
+-- immediately to spectate and just show the verdict and fade to black like
+-- normal." -- the owner, 2026-09-11.
+--
+-- ═══ WHY THE SERVER SAYS SO AND THE CLIENT DOES NOT WORK IT OUT ═══
+--
+-- The obvious client-side rule is "do not open a session if the match has
+-- ENDED", and it is a race it can lose. The victim's OUT edge and the match's
+-- transition to ENDED are two messages with no ordering between them, sent from
+-- two different places -- BR.Roster.setState here, BR.Match.transition on the
+-- 250ms match tick -- and client/spectate.lua's ask fires on a TIMER after the
+-- death verdict rather than on either of them. A client that had not yet seen
+-- ENDED would ask, be given a camera, and have it taken away a fraction of a
+-- second later: the flicker the owner is asking to remove, with an extra step.
+--
+-- SO THE FACT TRAVELS WITH THE ELIMINATION. This runs inside
+-- BR.Combat.eliminate, in the same synchronous call that writes the death, which
+-- is BEFORE any client can have reacted to it -- and it does two things that
+-- close the race from both ends:
+--
+--   * IT LATCHES ON THE MATCH INSTANCE, so `resolve` below refuses every ask
+--     that arrives afterwards however late and however often. That is the half
+--     that cannot be lost: no camera is ever created, so there is nothing to
+--     flicker, even if the message the next paragraph sends never arrives.
+--   * IT TELLS THE CLIENTS, so they do not even ask. That is the half that
+--     keeps the request off the wire and out of client/spectate.lua's retry
+--     budget.
+--
+-- ═══ THE PREDICATE, AND WHY IT IS TWO COUNTS RATHER THAN ONE ═══
+--
+-- "Did this death leave one squad standing" is not "one squad is standing": a
+-- dev match that STARTED with one squad has one squad standing from the first
+-- tick of PLAYING, and winConditionMet (server/match.lua) carves it out
+-- explicitly so a lone developer can sit in the world and poke at it. A
+-- predicate of `squadsAlive <= 1` would seal that match on the first death and
+-- take spectating away from exactly the person who has to test it.
+--
+-- So the question asked is the EDGE: the field was two or more squads before
+-- this elimination and is one or fewer after it. That reads as the owner's own
+-- sentence -- the second-to-last squad just went out -- and it keeps the dev
+-- match out WITHOUT a second copy of winConditionMet's carve-out to drift from.
+--
+-- `squadsBefore` IS COMBAT'S `placement`, WHICH IS ALREADY THAT COUNT.
+-- BR.Combat.eliminate reads BR.Server.squadsAlive(m) before it writes anything
+-- and calls it the victim's placement; a second walk of the roster here would be
+-- the same number arrived at twice and the second one could disagree.
+--
+-- AND THE "AFTER" COUNT IS BR.Server.squadsAlive, WHICH IS THE WIN CONDITION'S
+-- OWN. Deliberately not standingSquadsBesides, one file over: that one EXCLUDES
+-- DBNO, because it answers "is there anybody left to fight over this knock",
+-- and isInMatch counts DBNO because a downed player is coming back. Using the
+-- narrower count here would seal a match that is not over -- three squads, one
+-- of them entirely downed in an ambulance -- and the losing side would lose
+-- their camera while the round was still being played.
+--
+-- ═══ WHO IS TOLD: EVERY PLAYER IN THE MATCH WHO IS NOT IN THE FIGHT ═══
+--
+-- Not "the squad that just lost". The owner's sentence is about a group -- in
+-- squads the second-to-last SQUAD dies, and its other members are already OUT
+-- and may already be watching -- and once the match is decided the set "players
+-- who could still open a camera in it" and the set "players it should be closed
+-- for" are the same set: everybody who is not isInMatch. So there is no squad
+-- bookkeeping here at all, and the group case falls out of the match-wide answer
+-- rather than out of a rule about squads that could be got wrong.
+--
+--   * a member of that squad ALREADY WATCHING a mate gets this as the stop that
+--     ends their session -- the one teardown, so the microphone comes back and
+--     the audit row is closed with a duration. They are not left in a camera
+--     with nothing to watch.
+--   * a member who is OUT with nothing running gets the latch alone.
+--   * a member who is DBNO when it lands is isInMatch and is not told, and that
+--     is consistent rather than lucky. squadsAlive COUNTS DBNO, so a squad with
+--     somebody on the floor is a squad that is still standing -- which means the
+--     death that decided the match cannot have come from it. The only downed
+--     player who can exist at this moment is on the winning side, which is the
+--     ambulance ride, whose whole feature is that being down is survivable; and
+--     their bleed clock stops with the match rather than finishing them
+--     (server/combat.lua's combat.dbno gate). A LOSING squad's downed member
+--     reaches this function later, on their own bleed-out, as the deciding
+--     elimination itself -- and is sealed on that edge like any other victim.
+--   * the winners are not told either, for the same test. A living player has no
+--     camera to close and no ask to suppress.
+--
+-- AND IT IS NOT GATED ON THE MATCH BEING IN PLAYING, which is the obvious extra
+-- condition and would buy nothing. The one way to reach this before PLAYING is a
+-- LEAVER -- 'left' is the single cause that skips holdForStart -- and every
+-- player who is OUT before a match starts is #144's HELD death, which mayWatch
+-- refuses a camera to anyway. So the pre-match case seals a match nobody could
+-- have been watching, and that match's one remaining squad is ended by
+-- winConditionMet within the grace period of PLAYING regardless.
+--
+-- AN ADMIN'S SESSION IS NOT TOUCHED, which is the one policy this must not
+-- reach. A moderator watching somebody in this match is almost always ALIVE and
+-- filtered out by the test above; the `kind` check covers the remaining case, an
+-- admin who died in the round and then opened a console session. The match
+-- ending is not a reason to end a moderation session, and adminStart is not
+-- gated by the seal either -- the latch governs what a PLAYER may ask for.
+-- ═══════════════════════════════════════════════════════════════════════════
+
+--- A player has just been eliminated. Was that the one that ended the match?
+---
+--- @param m table            the match they were in
+--- @param squadsBefore integer  BR.Server.squadsAlive(m) as it read BEFORE this
+---        elimination was written to the roster -- combat.lua's `placement`.
+--- @return boolean  did this seal the match?
+function BR.Spectate.onEliminated(m, squadsBefore)
+    if not m or m.spectateSealed then return false end
+
+    -- THE EDGE, IN THE ORDER THAT COSTS LEAST. The `before` value is already in
+    -- hand, so the roster walk below only happens for the deaths that could
+    -- possibly be the last one.
+    if (squadsBefore or 0) < 2 then return false end
+    if BR.Server.squadsAlive(m) > 1 then return false end
+
+    m.spectateSealed = true
+
+    local told = 0
+    BR.Roster.each(
+        function(e)
+            return e.matchId == m.id and not BR.Server.isInMatch(e.state)
+        end,
+        function(src)
+            local s = sessions[src]
+            if s and s.kind == 'admin' then return end
+            -- A RUNNING SESSION COMES DOWN THROUGH THE ONE TEARDOWN, which is
+            -- what gives the microphone back and closes the audit row; a player
+            -- with nothing running still needs the latch, and `stop` returns
+            -- false for exactly them.
+            if not BR.Spectate.stop(src, 'match-over', true) then
+                TriggerClientEvent(BR.Net.SPECTATE_SET, src,
+                                   { stop = true, reason = 'match-over',
+                                     final = true })
+            end
+            told = told + 1
+        end)
+
+    print(('[br_core] spectate: match %s is decided -- camera closed for %d '
+        .. 'player(s)'):format(BR.MatchTag(m.id), told))
     return true
 end
 
@@ -402,6 +553,28 @@ local function resolve(src, dir)
     end
     if not entry.matchId then
         if s then BR.Spectate.stop(src, 'no-match') end
+        return false
+    end
+
+    -- ...AND IS THAT MATCH STILL BEING PLAYED FOR?
+    --
+    -- THE AUTHORITATIVE HALF OF THE OWNER'S 2026-09-11 RULE, and it is here
+    -- rather than only on the client because a refusal the client cannot see
+    -- round is the only kind that closes the race. BR.Spectate.onEliminated
+    -- latches this inside the same synchronous call that writes the deciding
+    -- death, so every ask that arrives afterwards -- the automatic one, the
+    -- arrow keys, all three of the client's retries, a client that never got the
+    -- seal message at all -- is answered with no camera rather than with a camera
+    -- that is taken away a moment later.
+    --
+    -- ASKED IN `resolve` AND NOT IN mayWatch, because it is not a fact about the
+    -- WATCHER. mayWatch answers "is this player entitled to be looking at
+    -- anybody", and a dead player in a finished match still is; what has changed
+    -- is that there is no longer a round to look at. Same reason the matchId test
+    -- above sits here.
+    local m = BR.Server.matches and BR.Server.matches[entry.matchId]
+    if m and m.spectateSealed then
+        if s then BR.Spectate.stop(src, 'match-over', true) end
         return false
     end
 

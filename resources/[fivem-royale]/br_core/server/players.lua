@@ -2,10 +2,16 @@
     The in-game player list, and the reports filed from it.
 
     THE SERVER RESOLVES THE BUCKET AND SENDS THE ANSWER. It never sends a
-    matchId for the client to filter on -- `matchId` is marked NEVER PUBLIC in
-    roster.lua's PUBLIC_FIELDS, and shipping it so the client can do the
-    filtering would leak the exact field that projection exists to withhold.
-    What goes out is a list of people, already correct.
+    matchId for the client to filter on: a filter the client performs is a
+    filter the client can decline to perform. What goes out is a list of
+    people, already correct.
+
+    NOT BECAUSE THE ID IS SECRET (#291). `matchId` is absent from roster.lua's
+    PUBLIC_FIELDS, but the id reaches every client anyway -- VOICE_SET's `prox`
+    is matchBase + matchId, `squadId` is in PUBLIC_FIELDS and carries the
+    match's hex tag, and BUS_SPECTATE sends the id outright. No server handler
+    reads a match id off the wire, so none of that is exploitable, and the ids
+    are unguessable as of #291.
 
     THIS IS AN INFORMATION CHANGE, AND THAT WAS A DELIBERATE CALL (owner,
     2026-08-12). Before this, a player knew how many were alive but not who.
@@ -942,14 +948,57 @@ AddEventHandler(BR.Net.REPORT_SUBMIT, function(data)
                 count      = s.reports,
                 -- The category, matching the `category` field on the incident
                 -- this is being appended to, so the two read in the same
-                -- vocabulary. No reporter name rides along: the corroboration
-                -- envelope br_ringmaster forwards has a fixed field set, and
-                -- widening the outbox contract for a channel that is allowed to
-                -- drop messages is not worth it.
+                -- vocabulary.
                 reason     = t.category,
+                -- WHO SAID IT, AND THE ONLY REASON THESE TWO FIELDS EXIST.
+                -- Owner, reading his own corroboration on a case: "when I
+                -- personally corroborate something it doesn't credit me". It
+                -- never could -- the name was not stored, not dropped in
+                -- transit, and never put on the wire at all.
+                --
+                -- THE ANTICHEAT MUST KEEP SENDING NEITHER, and that is what
+                -- makes their absence mean something. The three corroborations
+                -- server/incident.lua raises each build their own literal and
+                -- none of them carries a reporter, so the console can read "no
+                -- reporter" as "the system did this" rather than as "we did not
+                -- look" -- the same test IncidentDetail already makes about a
+                -- case's filer. Adding a fallback here would destroy that.
+                --
+                -- NEITHER CAN BE MISSING ON THIS PATH. `reporter` is
+                -- BR.Identity.qualified, which is never the empty string, and a
+                -- submission with no license was refused far above this line
+                -- before a single target was resolved. `me.name` is the roster's
+                -- own field, which is `GetPlayerName(src) or 'Unknown'`.
+                --
+                -- THE FIELD NAMES ARE THE FILING ENVELOPE'S, not new vocabulary:
+                -- BR.IncidentBuild.fromReport is handed `reporterLicense` and
+                -- `reporterName` a few lines below this branch.
+                reporterLicense = reporter,
+                reporterName    = me.name,
                 -- NO SEVERITY, for the reason BR.IncidentBuild.fromReport
                 -- gives: a human's category is not a measurement, and grading
                 -- it here would invent confidence that does not exist.
+                --
+                -- AND ADDING ONE WOULD DELETE SOMEBODY'S REPORT, which is a
+                -- second reason and a much more expensive one. The console
+                -- stores this row's sentence ending in a `worst: <severity>`
+                -- clause when a severity travels, and it FOLDS a run of
+                -- corroborations into one line reading "happened 20 times in 10
+                -- minutes". `foldable` in Ringmaster's
+                -- src/lib/corroborationText.ts refuses a person's row on two
+                -- tests: an absent reporter, and `gradesSeverity`, which is a
+                -- test for that clause. The second is the only one that reaches
+                -- the rows ALREADY in the owner's table -- every corroboration
+                -- stored before `reporterLicense` existed arrived as
+                -- `byLicense: null, byName: 'System'`, a person's identical to
+                -- the anticheat's, and nobody is going to hand-edit DynamoDB. A
+                -- severity on this literal makes all of them foldable at once.
+                --
+                -- SO THE ABSENCE IS PINNED RATHER THAN TRUSTED.
+                -- tools/test_roster.lua asserts it on both human paths and
+                -- asserts that an anticheat corroboration DOES carry one, so
+                -- adding a severity here is a red suite today instead of a
+                -- deleted report months from now.
             })
 
             -- CORROBORATORS ARE PAID TOO, AND THAT IS THE WHOLE POINT (#168).
@@ -1056,7 +1105,8 @@ AddEventHandler(BR.Net.REPORT_SUBMIT, function(data)
     answer(src, true, sentCount, nil)
 
     print(('[br_core] report: %s sent %d report(s) in match %s (%d/%d submissions used)')
-        :format(me.name, sentCount, tostring(me.matchId),
+        :format(me.name, sentCount,
+                tostring(me.matchId and BR.MatchTag(me.matchId)),
                 u.count, BR.Config.Report.maxPerMatch))
 
     -- NO PUSH BACK TO THE PANEL. There used to be one, because the panel showed
@@ -1432,7 +1482,30 @@ AddEventHandler(BR.Net.REPORT_CORROBORATE, function()
         -- THE PROMPT ASKED "SUSPECT CHEATING?", so the category is the answer to
         -- that question and not a menu the player never saw.
         reason     = BR.Config.defaultReportCategory(),
-        -- NO SEVERITY, for the reason BR.IncidentBuild.fromReport gives.
+        -- WHO PRESSED THE KEY. Same two fields, same reasoning and the same
+        -- absence on the anticheat path as the panel's corroboration above.
+        --
+        -- IT MATTERS MOST HERE. `reason` on this path is one constant for every
+        -- press, so two players answering the prompt about the same offender
+        -- produce two rows that differ in nothing else at all. Without these
+        -- fields the console cannot tell them apart from each other or from the
+        -- system, which is the state server/incident.lua calls destroying
+        -- evidence rather than tidying it.
+        --
+        -- NEITHER CAN BE MISSING. `corroborationFor` returns nil outright when
+        -- the presser has no license, so reaching this line means `c.myLicense`
+        -- is a qualified license and `c.me` is a live roster entry.
+        reporterLicense = c.myLicense,
+        reporterName    = c.me.name,
+        -- NO SEVERITY, for the reason BR.IncidentBuild.fromReport gives, and
+        -- for the console reason spelled out at the panel's corroboration
+        -- above, which bites harder here than it does there. `reason` on this
+        -- path is one constant, so two presses about the same offender store
+        -- two sentences identical character for character, and that sentence is
+        -- what the console's fold groups a run by. A severity on this literal is
+        -- the difference between two rows and one, and the row that disappears
+        -- is a player's report. Pinned in tools/test_roster.lua, on both human
+        -- paths.
     })
 
     -- PAID LIKE ANY OTHER CORROBORATOR (#168). The id is already in hand, so

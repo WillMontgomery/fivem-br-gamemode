@@ -18,20 +18,27 @@ in `br_lib/shared/loot_gen.lua`. Not at `PLAYING` — players land during `BUS`,
 so a layout generated at the state flip would pop items under whoever landed
 first. The warmup island has its own separate, shared layout.
 
-**The seed.** `GetGameTimer() + matchId × 15485863`. The prime keeps two
+**The seed.** `GetGameTimer() + matchSeq × 15485863` — the match's internal
+sequence number, not its id, which is a random draw (#291). The prime keeps two
 matches minted in the same server millisecond from replaying each other (the
 storm uses 7919 and the bus 104729 for the same reason). **Layouts therefore
 differ every match** — `brlootseed <n>` pins one when you need to debug the
 same map twice. The seed never leaves the server: a client that could replay
 it would know where every item is.
 
-**How much, and where.** For each of the **120** POIs — 77 tier 1, 29 tier 2,
-14 tier 3 — by tier:
+**How much, and where.** For each of the **120** POIs — 75 tier 1, 28 tier 2,
+13 tier 3, **4 tier 4** — by tier:
 
 ```
-crates(tier)     = 20 | 20 | 24          (tier 1 | 2 | 3)
-floor items(tier)=  5 |  8 | 14
+crates(tier)     = 20 | 20 | 24 | 35     (tier 1 | 2 | 3 | 4)
+floor items(tier)=  5 |  8 | 14 | 14
 ```
+
+Tier 4 is the **golden** POIs (#227): Humane Labs, Kortz Center, Great
+Chaparral and Raton Canyon. They pay their premium in crates and in the rarity
+mix; floor loot is deliberately flat against tier 3, because crates carry the
+loot and floor items garnish it. They are **not marked on any map a player can
+see** — the point is that they are discovered rather than suspected.
 
 Crates land uniformly **by area** in a disc of `radius × 0.95`, floor items in
 `radius × 0.97` — just off the rim, where a first-pass radius is most likely to
@@ -72,6 +79,36 @@ floor kind ~ weighted(ammo 74, weapon 16, consumable  6, throwable 4)
 > is already an ammo firehose and is untouched), and consumable was widened to
 > 21 so that the healing share did not fall out as a side effect.
 
+**Which ammo pool**, once a roll has landed on `ammo`, weighted rather than
+uniform:
+
+```
+ammo pool ~ weighted(light 20, smg 20, medium 28, shells 20, heavy 12)
+```
+
+`light`, `smg` and `shells` hold a 20% share each, which is exactly what a uniform
+draw over the five pools that existed before 2026-09-11 gave them. Holding them
+there is the whole point of the table: under a uniform draw the share of every
+pool moves whenever the pool *count* does, so pistol, SMG, rifle and shotgun
+ammo would have got 29% rarer when the pools went to seven and commoner again
+each time they came back, as a pure side effect of reorganizing the specialist
+ones. A pool's share only moves when the *weapons* in it move.
+
+There are five pools as of 2026-09-12, after two merges the same day. `heavy` is
+the four marksman and sniper rifles plus the three launchers, and reads 12 because
+it absorbed the 8 that belonged to the short-lived `sniper` pool along with the
+weapons that drew it. `medium` is the eight assault rifles **plus the five machine
+guns** (`mg`, `gusenberg`, `combatmg`, `combatmgmk2` and the airdrop `minigun`) and
+reads 28 for the same reason: it absorbed the deleted `lmg` pool's 8 along with its
+guns. So in both cases the same ammunition is rolled at the same rate under one
+name instead of two.
+
+> **The 28 was chosen by Claude, not by the owner.** He asked for the machine guns
+> to live in medium and said nothing about the floor rate. Leaving medium on 20
+> would have thinned rifle ammo for assault rifle players, since medium now feeds
+> five more weapons than it did, as a side effect of a change about machine guns.
+> The 12/28 division of the merged shares is the knob to turn.
+
 Loose ground loot is deliberately almost all ammo, and **bandages and med kits
 cannot spawn on the floor at all** (`chestOnly` on the consumable, with a
 separate precomputed bucket table so a loose roll still burns the same number of
@@ -84,6 +121,7 @@ empty. The rarity roll is shared:
 
 ```
 rarity ~ weighted(RarityWeights[tier])      -- tier 3: 25/28/27/15/5
+                                            -- tier 4: 14/23/30/23/10
 item   ~ uniform(bucket[rarity]), walking DOWN if that bucket is empty
 ```
 
@@ -91,6 +129,27 @@ The walk-down matters: there is no legendary consumable, and a nil item would
 be an invisible prop. A crate's contents roll at `min(tier + 1, 3)` — one tier
 hotter than the ground around it, which is what makes crossing open ground for
 one worth the exposure. Its glow colour is the best thing inside.
+
+**Tier 4 is the exception and rolls its own row rather than being bumped**, and
+the clamp above is why it had to be: it stops at 3, so `tier + 1` at a tier-4
+POI would land back on row 3 and a golden crate would roll exactly what a tier-2
+crate already rolls. Raising the clamp to 4 instead would hand row 4 to all
+thirteen tier-3 POIs. So tiers 1–3 keep the bump and the old ceiling, and tier
+4 reads row 4 directly.
+
+Measured through the generator over 300k crates per tier — lower than the raw
+weights, because ammo is always common, melee stops at uncommon and consumables
+have no rare:
+
+```
+crate item rare+   18.4% | 29.8% | 29.8% | 41.2%     (tier 1 | 2 | 3 | 4)
+crate item legend   1.4% |  3.5% |  3.5% |  7.0%
+crate glows rare+  45.1% | 64.2% | 64.2% | 78.1%
+crate holds legend  4.1% | 10.1% | 10.1% | 19.3%
+```
+
+Tiers 2 and 3 are identical here on purpose: both clamp to row 3, so what
+separates them is the crate COUNT, not the mix.
 
 **Determinism.** Every walk is over an **array**, never a hash — `pairs()`
 order is undefined, so `AmmoOrder`, `WeaponsByRarity` and `ConsumablesByRarity`
@@ -126,7 +185,7 @@ route = spawn → leg1[i] → leg2[j] → leg3[k] → leg4[l] → overrun
 
 Drawing from ordered lists rather than sampling the map means every flight
 crosses land, passes POIs, and cannot degenerate into a corner-to-corner
-diagonal over the ocean. The rng is `GetGameTimer() + matchId × 104729`, so
+diagonal over the ocean. The rng is `GetGameTimer() + matchSeq × 104729`, so
 concurrent matches fly different tours.
 
 Timing is computed from the geometry, not scripted: the ground roll is uniform

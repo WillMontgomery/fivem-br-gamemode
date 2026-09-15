@@ -17,7 +17,7 @@ import { fetchNui } from '../bridge/nui'
  * Volume is the odd one out because it is not a paint: it goes to the audio
  * module, which is the only tier a slider can reach at all. Engine audio
  * (PlaySoundFrontend) has no per-cue volume, which is a large part of why the
- * interface cues are synthesised in the browser in the first place.
+ * interface cues are synthesized in the browser in the first place.
  */
 
 export const DEFAULT_SETTINGS: SettingsPayload = {

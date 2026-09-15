@@ -20,6 +20,11 @@ BR.Combat = {}
 
 local M = BR.Config.Match
 
+--- 0 IS TRUTHY IN LUA, so a config flag that may have arrived from a BOOL
+--- native -- or from a table somebody later writes 1 into -- is read through
+--- this rather than as a bare truth value.
+local function isTrue(v) return v == true or v == 1 end
+
 --- Can this player be eliminated? Dying in the lobby is not a thing.
 ---
 --- Takes an ENTRY, not a state string, so it matches the predicate contract of
@@ -192,7 +197,32 @@ local function holdForStart(src, entry, m)
     entry.reviveBeat, entry.reviveTickAt = nil, nil
 
     entry.revivePending = true
-    BR.Roster.setState(src, BR.PlayerState.OUT)
+
+    -- ═══ AND THE EDGE SAYS IT IS A HOLD, SO THE CLIENT CAN STAY QUIET ═══
+    --
+    -- Owner, 2026-09-11: "Dying in the bus shouldn't be possible? If you mean
+    -- before the state machine goes to PLAYING we don't need any sound for that
+    -- since they'll be brought back up immediately upon game state = PLAYING."
+    --
+    -- client/state.lua plays `death.self` on its own edge into OUT, and this is
+    -- an OUT that is about to be taken back: `revivePending` is set one line
+    -- above and match.lua's onEnter(PLAYING) sweeps it into BR.Combat.reviveHeld
+    -- within the tick. Nothing else about this death is written down -- that is
+    -- the whole of the block above -- and the sting was the last part of it that
+    -- still was.
+    --
+    -- THE REASON RIDES THE TRANSITION RATHER THAN BEING INFERRED THERE. The
+    -- client could ask "are we PLAYING yet?" instead, and that is a race: this
+    -- state change and the STATE envelope are separate messages with no ordering
+    -- between them, so a client that had already seen PLAYING would play the
+    -- sting for the one death it is guaranteed to get back. 7097db4 grew this
+    -- argument for 'left' and it is the same argument; see BR.Roster.setState.
+    --
+    -- 'held' AND NOT THE DEATH'S OWN CAUSE. `cause` is still in scope here and
+    -- is 'fall' or 'shot' or 'admin' -- true of how they died and useless for
+    -- what the client has to decide, which is whether this elimination is going
+    -- to stand. It is not.
+    BR.Roster.setState(src, BR.PlayerState.OUT, 'held')
 
     if wasDowned then
         TriggerClientEvent(BR.Net.DBNO_SET, src, { downed = false, died = true })
@@ -210,8 +240,8 @@ local function holdForStart(src, entry, m)
         .. 'you will be revived automatically when it does.',
         'info', { key = 'revive.pending', sticky = true })
 
-    print(('[br_core] %s (%d) died before match %d started -- held for revive, '
-        .. 'nothing recorded'):format(entry.name, src, m.id))
+    print(('[br_core] %s (%d) died before match %s started -- held for revive, '
+        .. 'nothing recorded'):format(entry.name, src, BR.MatchTag(m.id)))
 end
 
 --- Get a held player back up, on the transition into PLAYING (#144).
@@ -437,7 +467,12 @@ function BR.Combat.eliminate(src, cause, killerSrc)
     -- dbnoCount deliberately survives: it is per MATCH and resets at CLEANUP,
     -- so being finished does not hand the next knock a fresh 45 seconds.
 
-    BR.Roster.setState(src, BR.PlayerState.OUT)
+    -- THE CAUSE GOES WITH THE EDGE. The kill feed below carries it too, and that
+    -- is not a duplicate: the feed is what the whole match reads and it arrives
+    -- as its own message, while this is the transition the victim's own client
+    -- reacts to in the same instant. Only one of the two can be relied on to be
+    -- in hand when OUT lands. See BR.Roster.setState.
+    BR.Roster.setState(src, BR.PlayerState.OUT, cause)
     entry.placement = placement
     -- WHEN THEIR MATCH STOPPED, for the survival term in the XP curve. Written
     -- here because this is the only place a player stops surviving, and read
@@ -447,6 +482,36 @@ function BR.Combat.eliminate(src, cause, killerSrc)
     -- paid the winner (#99).
     entry.diedAt = GetGameTimer()
     BR.Broadcast.delta({ op = 'update', src = src, e = { placement = placement } })
+
+    -- ═══ AND IF THAT WAS THE DEATH THAT DECIDED THE MATCH, THE CAMERA CLOSES ═══
+    --
+    -- Owner, 2026-09-11: "whenever the 2nd to last player (or squad) dies - they
+    -- should not go immediately to spectate and just show the verdict and fade to
+    -- black like normal."
+    --
+    -- ONE GUARDED CALL, and the decision is server/spectate.lua's -- the same
+    -- shape and the same file-crossing idiom as BR.ReviveKey.onEliminated above.
+    -- The rule is entirely about who may look at what, which is that file's
+    -- subject and #192's; putting the predicate here would put it where no suite
+    -- can reach it and where the camera's own tests cannot see it.
+    --
+    -- BELOW THE STATE WRITE, AND THAT IS LOAD-BEARING. The answer is an EDGE --
+    -- were there two or more standing squads before this, and one or fewer after
+    -- it -- and the "after" half is BR.Server.squadsAlive, which cannot see this
+    -- player leave the fight until BR.Roster.setState above has said so.
+    --
+    -- `placement` IS THE "BEFORE" COUNT. It is BR.Server.squadsAlive(m) read at
+    -- the top of this function, before anything was written; handing it over
+    -- costs nothing and is the only way the two counts are guaranteed to be the
+    -- same question asked twice rather than two questions.
+    --
+    -- AND NOTHING CAN ASK BETWEEN THE TWO. This whole function is one
+    -- synchronous call, so the seal is in place before any client has been told
+    -- the player is out -- which is the entire reason it does not have to race
+    -- the OUT delta, the kill feed or the match's own transition to ENDED.
+    if m and BR.Spectate and BR.Spectate.onEliminated then
+        BR.Spectate.onEliminated(m, placement)
+    end
 
     if wasDowned then
         TriggerClientEvent(BR.Net.DBNO_SET, src, { downed = false, died = true })
@@ -553,6 +618,67 @@ local function describeCause(raw)
         put('WEAPON_EXPLOSION',            'explosion')
         put('WEAPON_RAMMED_BY_CAR',        'roadkill')
         put('WEAPON_RUN_OVER_BY_CAR',      'roadkill')
+
+        -- ...AND THE WEAPONS THIS GAMEMODE ISSUES, WHICH THE ENGINE BLAMES BY
+        -- WEAPON RATHER THAN BY THE WORLD.
+        --
+        -- Observed 2026-09-09, a two-client solos playtest: the owner gave
+        -- himself a molotov with `brgive 1 molotov`, killed himself with it, and
+        -- the console said `eliminated Xeon (1) -- placement 2 (unknown)`.
+        -- WEAPON_FIRE was already in this table and would have matched, so the
+        -- engine did not blame the flames. It named the bottle, and a weapon we
+        -- issue was never one of the seven world hashes above.
+        --
+        -- IT IS ONLY VISIBLE WHEN THERE IS NO KILLER, which is why it outlived
+        -- every molotov kill anybody has ever scored. With a killer the feed
+        -- draws their name and the weapon the damage ledger recorded and never
+        -- reads the cause at all; without one the cause is the only word the
+        -- victim gets. And the throw nobody can be credited for is your own:
+        -- BR.Combat.attributedKiller refuses to name a player as their own
+        -- killer, deliberately, so a self-thrown molotov is exactly the case
+        -- that had nothing to say. It said 'unknown', which the feed renders as
+        -- "was wasted" and the death slam as WASTED -- honest, and no help
+        -- whatever to a player asking what just killed them.
+        --
+        -- THE WORDS ARE ONES THE UI ALREADY HAS. 'burned' and 'explosion' are
+        -- already in the feed's phrase table and the verdict slam
+        -- (ui-src/src/hud/KillFeed.tsx, ui-src/src/hud/verdictWord.ts), so this
+        -- reaches the player through copy that shipped months ago rather than
+        -- through a sentence nobody asked for.
+        --
+        -- A MOLOTOV THAT KILLS ON IMPACT still reads 'burned' rather than
+        -- 'explosion'. The engine reports one hash for the weapon either way and
+        -- 'burned' is the closer of the two words for a bottle of burning
+        -- petrol; splitting them would need a fact the hash does not carry.
+        --
+        -- ALL THREE, BECAUSE IT IS ONE HOLE. A grenade and a sticky bomb are
+        -- thrown by the same hand, land at the same feet and fell through this
+        -- table for the same reason.
+        put('WEAPON_MOLOTOV',              'burned')
+        put('WEAPON_GRENADE',              'explosion')
+        put('WEAPON_STICKYBOMB',           'explosion')
+
+        -- AND THE THREE LAUNCHERS, WHICH ARE THE SAME HOLE ONE TABLE OVER. The
+        -- throwables above live in BR.Config.Throwables; the RPG, the grenade
+        -- launcher and the railgun live in BR.Config.AirdropWeapons, a separate
+        -- array for reasons that have nothing to do with this table (see the
+        -- note on the airdrop shelf in config/weapons.lua). The engine blames
+        -- all six by weapon, so a rocket into the wall at your own feet fell
+        -- through here by the identical route a self-thrown grenade did.
+        --
+        -- IT SHOWS MORE SINCE A BLAST STOPPED GOING THROUGH THE BLEED CLOCK
+        -- (BR.Combat.canBeDowned, below). The victim used to read BLED OUT and
+        -- meet this word later, on the end screen; now the slam is immediate and
+        -- 'unknown' is the first thing they are told, as WASTED.
+        --
+        -- 'explosion' AGAIN, AND NOTHING NEW. Same word the grenade above
+        -- already returns, already in the feed's phrase table and the verdict
+        -- slam. The minigun is deliberately NOT here: it shares the airdrop
+        -- shelf with these three and nothing else, it is not explosive, and
+        -- nobody has ever killed themselves with one.
+        put('WEAPON_RPG',                  'explosion')
+        put('WEAPON_GRENADELAUNCHER',      'explosion')
+        put('WEAPON_RAILGUN',              'explosion')
     end
     return causeByHash[raw & 0xFFFFFFFF] or 'unknown'
 end
@@ -704,15 +830,84 @@ local function standingSquadsBesides(entry)
     return n
 end
 
+--- The two throwables whose `explosive` flag is not a bang.
+---
+--- `explosive` IS A VALIDATOR DECISION AND NOT A LABEL -- config/weapons.lua
+--- says so twice. It means "no magazine to be empty of, no action to cycle,
+--- reach is the travel PLUS the blast", and all three are as true of a molotov
+--- and a smoke grenade as they are of an RPG. Neither of those detonates: a
+--- molotov is FIRE, which the engine bills as WEAPON_FIRE on the victim's own
+--- machine and which describeCause above already calls 'burned'; smoke carries
+--- no damage field at all and can never run anybody out of health.
+---
+--- KEYED BY ID, AND DELIBERATELY THE ONLY LIST IN THIS RULE. Everything else is
+--- derived from the flag, so the next launcher anybody adds to config/weapons.lua
+--- inherits the rule without touching this file. Only a weapon that is
+--- `explosive` WITHOUT exploding belongs here.
+local notADetonation = { molotov = true, smoke = true }
+
+--- Was this damage a blast?
+---
+--- TAKES THE RAW DAMAGE HASH, because nothing else can answer it. The cause
+--- WORD cannot: the validated path calls a molotov 'explosion' off the same
+--- flag this function has to look past. And anything that is not a hash --
+--- nil, a word, a bleed-out tick, a caller that simply does not know -- is not
+--- an explosion, so every path that cannot say goes on behaving as it did.
+---
+--- BOTH WEAPON TABLES, and BR.Config.WeaponByHash is the lookup that spans
+--- them. The three launchers live in BR.Config.AirdropWeapons and are registered
+--- into it by hand (see the foot of config/weapons.lua), so a walk over
+--- BR.Config.Weapons alone would miss every rocket in the game.
+--- @param causeHash integer|nil
+--- @return boolean
+local function isExplosion(causeHash)
+    -- Hashes only, and the guard is load-bearing twice over: a cause WORD is not
+    -- an explosion, and it would error inside BR.NormHash's bitwise mask.
+    if type(causeHash) ~= 'number' then return false end
+
+    -- THE WORLD'S OWN BLAST FIRST -- a car, a gas pump, a barrel, all of which
+    -- the engine bills as WEAPON_EXPLOSION. The environmental table names that
+    -- row, and names the fall, the drowning and the fire it is not.
+    local env = BR.Config.EnvironmentalFor(causeHash)
+    if env then return env.id == 'explosion' end
+
+    local w = BR.Config.WeaponByHash[BR.NormHash(causeHash)]
+    if not w or not isTrue(w.explosive) then return false end
+    return not notADetonation[w.id]
+end
+
 --- Would running out of health knock this player down rather than kill them?
 ---
 --- Public because BR.Damage.applyHit has to ask BEFORE it writes any health:
 --- the answer changes how much damage the victim is instructed to apply to
 --- their own ped, and a knock has to leave that ped alive.
+---
+--- IT HAS TO BE TOLD WHAT HIT THEM. Nothing on a roster entry says what ran the
+--- health out, and since 2026-09-12 the answer depends on it. `causeHash` is the
+--- raw engine hash where the caller has one and nothing where it does not.
 --- @param entry table
+--- @param causeHash integer|nil  the damage hash that ran them out of health
 --- @return boolean
-function BR.Combat.canBeDowned(entry)
+function BR.Combat.canBeDowned(entry, causeHash)
     if not entry or entry.state ~= BR.PlayerState.ALIVE then return false end
+
+    -- ═══ A BLAST KILLS OUTRIGHT. THERE IS NO BLEED CLOCK AFTER AN EXPLOSION ═══
+    --
+    --   "Can we make it so if you die in an explosion there is no bleed out
+    --    timer? You're just immediately dead."          -- owner, 2026-09-12
+    --
+    -- ADDITIVE, AND ABOVE BOTH RULES BELOW, because it only ever answers NO. The
+    -- two below decide when a knock is worth HAVING -- is anybody left to fight
+    -- over it, is anybody left to pick them up, are they carrying a kit. This one
+    -- says a blast is never one of those occasions, in every mode, whatever the
+    -- squad looks like and whatever is in the victim's pockets. Neither of the
+    -- others can reach a different answer once this has fired, which is why it
+    -- sits first and why it changes nothing about them.
+    --
+    -- FIRE IS NOT A BLAST, and is deliberately left exactly as it was: a molotov
+    -- still knocks a squad player down. He said explosion. See isExplosion for
+    -- where the line is drawn and why the `explosive` flag alone cannot draw it.
+    if isExplosion(causeHash) then return false end
 
     local m = entry.matchId and BR.Server.matches[entry.matchId]
     if not m then return false end
@@ -958,14 +1153,23 @@ end
 ---
 --- Every caller that used to reach eliminate() directly comes here instead, so
 --- "down or dead" is answered once rather than four times in four files.
+---
+--- `causeHash` IS NOT `cause`, and the two are not interchangeable. The WORD is
+--- for the kill feed and is a translation; the HASH is what canBeDowned reads to
+--- tell a blast from a bullet, and it has to be the raw engine value because the
+--- translation is lossy in exactly the direction that matters -- a molotov is
+--- `explosive`, so the validated path already calls it 'explosion', and it is
+--- still fire. Callers with no hash to give pass nothing, and nothing knocks
+--- exactly as it always did.
 --- @param src integer
 --- @param cause string
 --- @param killerSrc integer|nil
-function BR.Combat.defeat(src, cause, killerSrc)
+--- @param causeHash integer|nil  the raw damage hash, where the caller has one
+function BR.Combat.defeat(src, cause, killerSrc, causeHash)
     local entry = BR.Roster.get(src)
     if not entry or not canDie(entry) then return end
 
-    if BR.Combat.canBeDowned(entry) then
+    if BR.Combat.canBeDowned(entry, causeHash) then
         BR.Combat.knock(src, killerSrc)
         return
     end
@@ -1010,6 +1214,76 @@ function BR.Combat.bleed(src, amount, shooterSrc, meta)
         return
     end
 
+    BR.Combat.pushDbno(src)
+end
+
+--- Run a downed player's clock faster because they are lying in a fire.
+---
+--- ═══ THE OWNER'S SECOND SENTENCE ABOUT BURNING (playtest 2026-09-12) ═══
+---
+---   "My preference would be they can crawl until they die, and their body being
+---    on fire should accelerate the bleed out."
+---
+--- The first half is client/dbno.lua's -- a downed ped refuses fire damage now,
+--- so the flames can no longer kill it and the crawl survives them. This is the
+--- second half, and the two are one decision: the punishment for being caught in
+--- a molotov moved off the ped and onto the clock, where the downed player's
+--- health has lived since 2026-08-09.
+---
+--- TIME, NOT DAMAGE, WHICH IS WHY THIS IS NOT A CALL TO BLEED. `bleed` converts
+--- damage the server ADJUDGED into seconds at dbnoBleedPerDamage. Burning damage
+--- is never adjudged: it does not raise weaponDamageEvent at all (config/match.lua
+--- says so from a measurement, and server/damage.lua's whole fire ledger exists
+--- because of it), so there is no number of points to convert and inventing one
+--- would be a fiction with a config key in front of it. What is real is the
+--- ELAPSED TIME a body spent in somebody's fire, and dbnoBurnRate is what that
+--- time is worth.
+---
+--- IT DOES NOT ELIMINATE, AND THAT IS DELIBERATE. `bleed` finishes a player whose
+--- clock it just ran out because a bullet should kill on the frame it lands. A
+--- burn is a rate, so the ending belongs to the tick that already owns it:
+--- stepDowned runs four times a second, carries the rescue guard and the
+--- match-state gate with it, and calls the death 'bledout' -- which is what this
+--- is. A second elimination path here would be a second place for a finished
+--- match to kill its own winner (see the note above combat.dbno).
+---
+--- @param src integer
+--- @param ms number            milliseconds spent in the fire since the last call
+--- @param lighterSrc integer|nil  who lit it, from the fire ledger
+--- @param item string|nil      'molotov', for the kill feed's weapon column
+function BR.Combat.burn(src, ms, lighterSrc, item)
+    local e = BR.Roster.get(src)
+    if not e or e.state ~= BR.PlayerState.DBNO then return end
+    if not ms or ms <= 0 then return end
+
+    -- AT OR BELOW 1.0 THE FIRE IS SCENERY. One config line turns the whole
+    -- mechanic off, and this is the line that honours it.
+    local rate = M.dbnoBurnRate or 1.0
+    if rate <= 1.0 then return end
+
+    local now = GetGameTimer()
+
+    -- THE EXTRA ONLY. The clock is already counting the second that just passed
+    -- on its own; what burning adds is the difference, so a rate of 3.0 takes two
+    -- seconds off per second of flames and the player experiences three.
+    e.dbnoUntil = (e.dbnoUntil or now) - math.floor(ms * (rate - 1.0))
+
+    -- WHOEVER LIT IT OWNS THE FINISH, on exactly the terms `bleed` gives a
+    -- shooter and for the same reason: a bleed runs 40-120s, attributedKiller
+    -- expires in 10s, and a body left to burn would otherwise be credited to
+    -- nobody. Self-lit fires credit nobody, which is the rule the fire ledger
+    -- already applies to a player standing in their own molotov.
+    if lighterSrc and lighterSrc ~= src then
+        e.lastHitBy     = lighterSrc
+        e.lastHitAt     = now
+        e.lastHitWeapon = item or e.lastHitWeapon
+        e.downedBy      = lighterSrc
+    end
+
+    -- THE MOVED DEADLINE GOES BACK TO THE PLAYER WATCHING IT COUNT. DBNO_SET is
+    -- sent on edges and the overlay counts down from whatever deadline it was last
+    -- given (see the REVIVE_PROGRESS note in stepDowned), so a clock that raced
+    -- without being published would be a number that stalls and then jumps.
     BR.Combat.pushDbno(src)
 end
 
@@ -1802,7 +2076,12 @@ AddEventHandler(BR.Net.PLAYER_DIED, function(data)
         cause = 'roadkill'
     end
 
-    BR.Combat.defeat(src, cause, killer)
+    -- THE RAW HASH RIDES ALONGSIDE THE WORD, and is deliberately NOT the two
+    -- overrides above. Those answer "what do we CALL this", which is a kill feed
+    -- question; the hash answers "was it a blast", which is a mechanic. A player
+    -- blown up a second after a storm tick is labelled by the storm and killed by
+    -- the grenade, and both of those are true.
+    BR.Combat.defeat(src, cause, killer, data and data.cause)
 end)
 
 --- Independent confirmation from server-side health.
@@ -1869,6 +2148,12 @@ BR.Sched.every(1000, 'combat.deathcheck', function()
                and BR.Vehicles.roadkillRecent(entry) then
                 cause = 'roadkill'
             end
+            -- NO CAUSE HASH, AND NOT ONE INVENTED. This path is reached when the
+            -- client said nothing at all -- the comment above says so -- so there
+            -- is genuinely nothing to pass. `entry.lastHitWeapon` is NOT it: it
+            -- is the last thing that touched them, which may be a rocket from
+            -- twenty seconds and one long fall ago, and a stale hash here would
+            -- suppress a legitimate knock. Silence means "not an explosion".
             BR.Combat.defeat(src, cause, killer)
         end
     end)
@@ -1922,20 +2207,227 @@ RegisterCommand('brdown', function(_, args)
     BR.Combat.knock(src, tonumber(args[2]))
 end, true)
 
---- Finish a revive on a downed player instantly, from nobody in particular.
+--- Finish a revive on a downed player instantly, from nobody in particular --
+--- or put an ELIMINATED one back in the match.
+---
+--- Owner, 2026-09-12: "Can you please also fix brrevive to revive folks in dead
+--- state".
+---
+--- ═══ TWO OPERATIONS BEHIND ONE VERB, AND THEY STAY TWO ═══
+---
+--- A DOWNED PLAYER NEVER LEFT THE MATCH. BR.Combat.revive is the whole of that
+--- path, it is called unchanged below, and nothing here touches it: the knock is
+--- undone, the ped was never a corpse, and the health that comes back is
+--- dbnoReviveHp because they are being picked up off the floor.
+---
+--- AN OUT PLAYER HAS BEEN THROUGH eliminate(), which wrote a placement, stamped
+--- diedAt, scattered their inventory, minted a revive key, credited a killer,
+--- broadcast a kill feed line to the whole match, wrote an evidence row, pointed
+--- their camera at whoever shot them, and -- if theirs was the deciding death --
+--- sealed the round. Putting them back is an UNDO of that list, and it is a
+--- different function from finishing a knock.
+---
+--- ═══ WHAT IS UNDONE ═══
+---
+--- Every one of these would corrupt the match rather than merely look wrong:
+---
+---   * `placement`, THROUGH BR.Roster.clearFields RATHER THAN BY ASSIGNMENT. A
+---     nil cannot travel in a delta (see server/roster.lua), so a bare
+---     `entry.placement = nil` would leave every scoreboard in the match drawing
+---     a finishing position against a player who is up and shooting. And leaving
+---     the field set hands the same number out TWICE: the next elimination reads
+---     BR.Server.squadsAlive, which counts this player again the moment they are
+---     ALIVE, so the next body out gets the placement this one is still holding.
+---   * `diedAt`, the field `died` is derived from -- which decides wins, deaths
+---     and the survival term in the XP curve. #144's write-up is the authority:
+---     both of these reach DynamoDB as an atomic ADD with no compensating write,
+---     so a death being taken back must leave neither behind.
+---   * `engineHp`, or the 1Hz server-observed death check reads the corpse
+---     sample from before the revive and eliminates them again a second in.
+---   * `stormHp` and `lastStormAt`. server/storm.lua seeds its display from the
+---     first and only ever clamps it DOWN, so a player the wall killed would die
+---     again on the next tick whatever health they were just handed.
+---   * `killedByLicense`, the camera's memory of who killed them. They are not
+---     spectating anybody now, and a LATER death with no killer would otherwise
+---     inherit this one's answer and point their camera at a stranger.
+---   * `reviveKey`. The squad may not buy back a mate standing next to them, and
+---     BR.ReviveKey.forSquad filters on the record EXISTING -- so nil is the
+---     only representation of "gone" that cannot be bought a second time.
+---   * the spectate session, through BR.Spectate.stop rather than by leaving it
+---     to the 250ms resolve pass: the one teardown is what gives the microphone
+---     back and closes the audit row with a duration.
+---
+--- ═══ AND WHAT HONESTLY CANNOT BE, WHICH IS PRINTED RATHER THAN GLOSSED OVER ═══
+---
+--- A dev command that lies about what it did is worse than one that refuses, so
+--- the three below are stated in the console at the moment it runs:
+---
+---   * THE KILL FEED. It is a broadcast. Every client in the match has drawn the
+---     line already and there is no unsend.
+---   * THE KILLER'S KILL, and the evidence row under it. Both stand -- the same
+---     ruling server/revivekey.lua's `bringBack` makes for a key revive, and for
+---     the same reason: somebody did put them on the floor.
+---   * THEIR LOOT. BR.Loot.deathBox scattered it before the state changed and
+---     somebody may already have walked over it, so they come back empty-handed.
+---     Handing it back would duplicate items into the match.
+---
+--- WHERE THEY COME BACK IS WHERE THEY FELL, through BR.Net.REVIVED -- the same
+--- instruction #144's held death uses, which stands the ped up at its own
+--- coordinates. If the storm has closed over that spot since they died, they
+--- come back inside the wall and start taking damage from the health they were
+--- just given. That is the honest outcome rather than a safe place invented
+--- here; server/storm.lua already says being picked up outside the circle is a
+--- bad place to be picked up.
+---
+--- ═══ WHAT MAKES IT REFUSE ═══
+---
+--- Three of the four are questions about the MATCH rather than the player:
+---
+---   * NO MATCH -- there is nothing to be put back into.
+---   * THE MATCH IS NOT PLAYING. ENDED and CLEANUP are a finished round, and a
+---     revive into one is a player standing up inside a results screen.
+---   * `m.spectateSealed`, which is this codebase's own latch for "that was the
+---     death that decided it" -- set synchronously inside the deciding
+---     elimination (server/spectate.lua). It is READ rather than re-derived: a
+---     second copy of winConditionMet's predicate here would have to carry its
+---     dev carve-out too, and the day the two drifted this command would refuse
+---     the lone-developer match it exists for.
+---   * NOBODY IS STANDING. The one way past the seal is a dev match that started
+---     with one squad -- the seal's edge needs two squads standing BEFORE the
+---     death, so it never latches, and winConditionMet's carve-out holds that
+---     match open only while the squad still has somebody up. Once the count is
+---     zero the match ends on the next tick, and a revive into it is a player
+---     put back into an instance that tears down underneath them.
+---
+--- #144's HELD DEATH IS THE ONE OUT STATE THAT SKIPS ALL FOUR. It is an OUT
+--- before the match has started, it is owed a free revive by match.lua's
+--- transition into PLAYING, and it is holding a sticky notice that says so -- so
+--- it goes to BR.Combat.reviveHeld, the one function that withdraws all three.
+--- Undoing it here instead would leave onEnter(PLAYING) sweeping a player who is
+--- already on their feet.
 RegisterCommand('brrevive', function(_, args)
     local src = tonumber(args[1])
     local entry = src and BR.Roster.get(src)
     if not entry then
-        print('  usage: brrevive <serverId>   -- pick a downed player back up')
-        return
-    end
-    if entry.state ~= BR.PlayerState.DBNO then
-        print(('  %s (%d) is not down (state %s)'):format(entry.name, src, entry.state))
+        print('  usage: brrevive <serverId> [byId]')
+        print('  picks a downed player up, or puts an eliminated one back in')
         return
     end
 
-    BR.Combat.revive(src, tonumber(args[2]))
+    local reviverSrc = tonumber(args[2])
+
+    -- UNCHANGED, AND FIRST. A knock is finished by the function a player's eight
+    -- seconds finish it with, so this command cannot drift from the feature.
+    if entry.state == BR.PlayerState.DBNO then
+        BR.Combat.revive(src, reviverSrc)
+        return
+    end
+    if entry.state ~= BR.PlayerState.OUT then
+        print(('  %s (%d) is neither down nor out (state %s)')
+            :format(entry.name, src, entry.state))
+        return
+    end
+
+    if entry.revivePending then
+        BR.Combat.reviveHeld(src, entry)
+        print(('  %s (%d) died before the match started -- brought back through '
+            .. 'the held-death path, which had nothing to undo')
+            :format(entry.name, src))
+        return
+    end
+
+    local m = BR.Server.matchOf(src)
+    if not m then
+        print(('  %s (%d) is out and in no match -- there is nothing to put '
+            .. 'them back into'):format(entry.name, src))
+        return
+    end
+    if m.state ~= BR.MatchState.PLAYING then
+        print(('  match %s is %s, not playing -- refusing to revive into a '
+            .. 'round that is not being fought')
+            :format(BR.MatchTag(m.id), tostring(m.state)))
+        return
+    end
+    if isTrue(m.spectateSealed) then
+        print(('  match %s is already decided -- the deciding death closed every '
+            .. 'camera in it, and putting a squad back would un-decide a round '
+            .. 'that has been called'):format(BR.MatchTag(m.id)))
+        return
+    end
+    if BR.Server.squadsAlive(m) == 0 then
+        print(('  nobody is standing in match %s -- it ends on the next tick, so '
+            .. 'a revive here would last until then')
+            :format(BR.MatchTag(m.id)))
+        return
+    end
+
+    -- FULL HEALTH, matching both existing OUT -> ALIVE paths: BR.Combat.reviveHeld
+    -- hands back 100 and server/revivekey.lua's `bringBack` hands back
+    -- BR.Config.ReviveKey.reviveHp, which is 100. dbnoReviveHp is the pick-up
+    -- number and belongs to the branch above.
+    local hp = 100
+    local placement = entry.placement
+    local hadKey = entry.reviveKey ~= nil
+
+    -- THE CAMERA COMES DOWN BEFORE ANYTHING ELSE. `resolve` would catch this
+    -- within 250ms of the state flip below -- mayWatch refuses a player who is
+    -- isInMatch -- but that is the net rather than the plan, and only the
+    -- teardown gives the microphone back.
+    local wasWatching = false
+    if BR.Spectate and BR.Spectate.stop then
+        wasWatching = BR.Spectate.stop(src, 'revived') == true
+    end
+
+    BR.Roster.clearFields(src, {
+        'placement', 'diedAt', 'engineHp',
+        'stormHp', 'lastStormAt', 'killedByLicense', 'reviveKey',
+        -- None of these should be set on a body and all of them are cleared
+        -- anyway, for the reason reviveHeld and bringBack both give: this is not
+        -- undoing our own work, it is refusing to trust that no other path
+        -- reached this entry while it was lying there.
+        'dbnoUntil', 'downedBy',
+        'reviverSrc', 'reviveFrom', 'reviveBeat', 'reviveTickAt',
+    })
+
+    -- THE PED FIRST, THE LEDGER SECOND. protocol.lua's REVIVED note and
+    -- BR.Combat.reviveHeld both give the reason: a client left holding a corpse
+    -- while the server calls it ALIVE is exactly the state the server-observed
+    -- death check exists to eliminate. This event also takes the verdict word
+    -- off their screen (client/state.lua) and stands the body up where it came
+    -- to rest (client/spawn.lua).
+    TriggerClientEvent(BR.Net.REVIVED, src)
+
+    entry.healthSettleUntil = GetGameTimer()
+        + ((BR.Config.Combat.healthAudit or {}).settleMs or 2000)
+
+    BR.Roster.update(src, { hp = hp + 0.0, armour = 0.0 })
+    BR.Roster.setState(src, BR.PlayerState.ALIVE)
+    TriggerClientEvent(BR.Net.HEALTH_SYNC, src, { hp = hp, armour = 0 })
+
+    local reviver = reviverSrc and BR.Roster.get(reviverSrc) or nil
+    if reviver then
+        reviver.revives = (reviver.revives or 0) + 1
+    end
+
+    -- The third phase of the squad channel, which is the same sentence
+    -- BR.Combat.revive raises for a pick-up: a mate is back up. The subject is
+    -- excluded by tellSquad, unchanged and for the unchanged reason.
+    tellSquad(src, entry, 'up')
+
+    print(('[br_core] brrevive: %s (%d) was OUT -- back in match %s on %d hp, '
+        .. 'where they fell%s')
+        :format(entry.name, src, BR.MatchTag(m.id), hp,
+                reviver and (' -- credited to ' .. reviver.name) or ''))
+    print(('  undone: placement %s, diedAt, engineHp, the storm ledger, the '
+        .. 'killer record%s%s')
+        :format(tostring(placement),
+                hadKey and ', the squad\'s revive key' or '',
+                wasWatching and ', their spectate camera' or ''))
+    print('  NOT undone: the kill feed already went out to the whole match, the '
+        .. 'killer keeps the kill and the evidence row, and their kit is still '
+        .. 'on the ground where the death box scattered it')
+    print('  they come back where the body was, which is inside the wall if the '
+        .. 'storm has closed over it since')
 end, true)
 
 --- Shoot a downed player without a second squad to shoot them with.

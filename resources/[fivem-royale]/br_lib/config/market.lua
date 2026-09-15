@@ -661,9 +661,16 @@ BR.Config.Market.currency = 'Volts'
 --- damage is NOT an unbounded payout -- br_stats computes `after` as
 --- `before + xpEarned`, so a zero `before` gives a small `after` and the loop
 --- crosses at most a level or two. The real cost is the level itself: the
---- profile row and the verdict screen both take a veteran's level from one
---- match's XP. Small per-level numbers here are what keep the money half of
---- that failure boring while the level half gets fixed properly.
+--- verdict screen takes a veteran's level from one match's XP. Small per-level
+--- numbers here are what keep the money half of that failure boring while the
+--- level half gets fixed properly.
+---
+--- THE PROFILE ROW USED TO BE THE OTHER HALF OF THAT COST AND NO LONGER IS.
+--- `level` was stored beside `xp` and written from this same calculation, so a
+--- missing `before` was filed permanently. #116 stopped storing it on
+--- 2026-09-10: every reader derives `levelFor(xp)` at read time now, so a bad
+--- `before` costs one screen for one match rather than a wrong number that
+--- outlives the round. The verdict screen is what is left.
 --- @param level integer  the level just reached
 --- @return integer
 function BR.Config.levelBonus(level)

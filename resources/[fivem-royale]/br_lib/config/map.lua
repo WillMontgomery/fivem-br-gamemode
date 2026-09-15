@@ -8,6 +8,9 @@
 -- radius shows up as loot in the sea long before anything else complains.
 --
 -- `tier` drives loot density and quality:
+--   4 = golden (#227): four named sites, 35 crates and their own rarity row,
+--       and deliberately indistinguishable from their old tier on any map a
+--       player can see -- see the note above BR.Config.Map.POIs
 --   3 = hot drop, dense and high quality (contested by design)
 --   2 = standard named location
 --   1 = sparse filler, rewards rotating through
@@ -175,6 +178,43 @@ BR.Config.Map.Boundary = {
 ---
 --- Loot cost of the eight: budget 859 -> 813 items (-46), crates 2616 -> 2456
 --- (-160). Both stay inside the window tools/test_shared.lua pins.
+---
+--- THE FOUR GOLDEN POIs, TIER 4 (#227, owner 2026-09-08). Exactly four rows in
+--- this table carry `tier = 4` and each is marked `-- golden (#227)`:
+---
+---     humane      Humane Labs        was tier 3
+---     kortz       Kortz Center       was tier 2
+---     raton       Raton Canyon       was tier 1
+---     chaparral   Great Chaparral    was tier 1
+---
+--- They were at three different tiers before, which is the whole reason golden
+--- could not be "tier 2 plus a bonus" or a per-tier bonus: he picked these four
+--- places, not a band. 35 crates each and their own rarity row -- see
+--- chestsPerTier and RarityWeights in br_lib/config/loot.lua.
+---
+--- THEY MUST NOT LOOK DIFFERENT ON ANY MAP A PLAYER CAN SEE. That is not a
+--- nice-to-have, it is the entire design intent, in his words: "I want players
+--- to discover these on their own and not just suspect high-profile places to
+--- always be the ones." A gold marker on the pause map turns all four into
+--- camping spots before anyone has opened a crate, and the project has already
+--- made this exact call once at smaller scale -- the rarity disc under unopened
+--- crates was removed (2026-08-07) for leaking what was inside before it was
+--- opened. So a golden POI reads as golden by being LOOTED, and nothing else.
+--- No POI has a player-facing blip today; do not give these four the first one.
+--- /brpois does color tier 4, and /brpois is dev-gated and prints to console.
+---
+--- AND ZANCUDO AND THE PRISON ARE DELIBERATELY NOT ON THE LIST. The issue was
+--- filed naming them, and they are the obvious high-profile sites, so their
+--- absence WILL read as an oversight to the next person here. It is not: same
+--- sentence, "not just suspect high-profile places to always be the ones".
+--- Fort Zancudo stays tier 3 and Bolingbroke Penitentiary is not a POI at all.
+---
+--- THE NEIGHBORS ARE NOT GOLDEN, and they are the live way to get this wrong:
+--- `chaparral_n` (North Chaparral), `chaparral_w` (West Chaparral), `raton_n`
+--- (North Raton Canyon) and `kortz_s` (South Kortz Bluffs) are all real rows in
+--- this table and all tier 1. He named the four main sites. tools/check_pois.lua
+--- pins the golden set by id in both directions so a stray flag or a rename
+--- fails the build rather than quietly moving the map's best loot.
 BR.Config.Map.POIs = {
     -- Los Santos city
     -- THE TWO SOUTHERN HOT DROPS. Both were tier 2 on a 280-300m radius, which
@@ -245,18 +285,18 @@ BR.Config.Map.POIs = {
     { id = 'ulsa',        name = 'ULSA Campus',      x = -1750.0, y =   350.0, z =  60.0, radius = 220.0, tier = 1 },
 
     -- The west coast
-    { id = 'kortz',       name = 'Kortz Center',     x = -2245.0, y =   265.0, z = 170.0, radius = 220.0, tier = 2 },
+    { id = 'kortz',       name = 'Kortz Center',     x = -2245.0, y =   265.0, z = 170.0, radius = 220.0, tier = 4 },   -- golden (#227)
     { id = 'chumash',     name = 'Chumash',          x = -3170.0, y =  1080.0, z =   8.0, radius = 220.0, tier = 2 },
     { id = 'banham',      name = 'Banham Canyon',    x = -2540.0, y =  2320.0, z =  25.0, radius = 220.0, tier = 1 },
     { id = 'hookies',     name = 'Hookies',          x = -2200.0, y =  4290.0, z =   5.0, radius = 200.0, tier = 1 },
-    { id = 'raton',       name = 'Raton Canyon',     x = -1450.0, y =  4450.0, z =  20.0, radius = 220.0, tier = 1 },
+    { id = 'raton',       name = 'Raton Canyon',     x = -1450.0, y =  4450.0, z =  20.0, radius = 220.0, tier = 4 },   -- golden (#227)
     -- Added 2026-08-06: the west was thin between Chumash and Banham, which
     -- is a long stretch of coast road with nothing to stop for.
     { id = 'palomino_hw', name = 'Pacific Bluffs',   x = -3060.0, y =   330.0, z =  10.0, radius = 220.0, tier = 1 },
     { id = 'tongva',      name = 'Tongva Hills',     x = -1550.0, y =  2200.0, z =  60.0, radius = 240.0, tier = 1 },
 
     -- North and county
-    { id = 'chaparral',   name = 'Great Chaparral',  x =  -100.0, y =  2000.0, z =  70.0, radius = 260.0, tier = 1 },
+    { id = 'chaparral',   name = 'Great Chaparral',  x =  -100.0, y =  2000.0, z =  70.0, radius = 260.0, tier = 4 },   -- golden (#227)
     { id = 'route68',     name = 'Route 68',         x =   600.0, y =  1900.0, z = 190.0, radius = 240.0, tier = 2 },
     { id = 'harmony',     name = 'Harmony',          x =   700.0, y =  2700.0, z =  42.0, radius = 200.0, tier = 2 },
     { id = 'sandy',       name = 'Sandy Shores',     x =  1900.0, y =  3700.0, z =  32.0, radius = 320.0, tier = 3 },
@@ -273,7 +313,7 @@ BR.Config.Map.POIs = {
     { id = 'chiliad',     name = 'Mount Chiliad',    x =   450.0, y =  5700.0, z = 780.0, radius = 240.0, tier = 1 },
     { id = 'procopio',    name = 'Procopio Beach',   x =  1450.0, y =  6550.0, z =   2.0, radius = 240.0, tier = 1 },
     { id = 'gordo',       name = 'Mount Gordo',      x =  2870.0, y =  5910.0, z = 340.0, radius = 220.0, tier = 1 },
-    { id = 'humane',      name = 'Humane Labs',      x =  3600.0, y =  3700.0, z =  30.0, radius = 260.0, tier = 3 },
+    { id = 'humane',      name = 'Humane Labs',      x =  3600.0, y =  3700.0, z =  30.0, radius = 260.0, tier = 4 },   -- golden (#227)
     { id = 'zancudo',     name = 'Fort Zancudo',     x = -2100.0, y =  3200.0, z =  32.0, radius = 340.0, tier = 3 },
 
     -- THE MOUNTAINS AND THE NORTH, TRIPLED (user call, 2026-08-06: "there's
@@ -374,14 +414,15 @@ BR.Config.Map.POIs = {
     { id = 'gordo_s',     name = 'Mount Gordo South Face', x = 2650.0, y = 4950.0, z = 130.0, radius = 220.0, tier = 1 },
     { id = 'senora_n',    name = 'North Senora Flats', x = 2500.0, y =  4300.0, z =  40.0, radius = 240.0, tier = 2 },
     { id = 'mthaan',      name = 'Mount Haan',       x =  3100.0, y =  4500.0, z = 110.0, radius = 220.0, tier = 2 },
-    { id = 'eastbeach',   name = 'East Coast Bluffs', x = 3600.0, y =  4350.0, z =  30.0, radius = 200.0, tier = 1 },
+    { id = 'eastbeach',   name = 'East Coast Bluffs', x = 3791.9, y =  4461.7, z =  30.0, radius = 200.0, tier = 1 },
 
     -- TWENTY-ONE MORE GREEN, OUT OF A LIST OF TWENTY-FIVE COORDINATES.
     --
     -- Owner, 2026-08-23: a bare list of 25 x/y pairs and "all of these should
     -- be green". Green is tier 1 -- br_core/client/loot.lua colours the
-    -- /brpois blips { [1] = 2, [2] = 5, [3] = 1 } and prints "green = tier 1
-    -- (rural)" underneath them.
+    -- /brpois blips { [1] = 2, [2] = 5, [3] = 1, [4] = 3 } and prints "green =
+    -- tier 1 (rural)" underneath them. (Tier 4 and its blue arrived later, on
+    -- 2026-09-08; not one row in this list moved.)
     --
     -- THE LIST IS NOT A RE-TIERING REQUEST, and that was the first thing that
     -- had to be settled rather than assumed. NOT ONE of the 25 falls inside
@@ -398,8 +439,11 @@ BR.Config.Map.POIs = {
     -- the whole POI would simply be 25 loot entries that never appear.
     --   (218.9, 7414.8)   1174m north of Paleto Bay, and further north than
     --                     anything else in this table by 769m
-    --   (4116.2, 4494.0)  536m from East Coast Bluffs, and further east than
+    --   (4116.2, 4494.0)  326m from East Coast Bluffs, and further east than
     --                     any mainland POI by 438m
+    --                     (was 536m -- the owner moved East Coast Bluffs to
+    --                     3791.9, 4461.7 on 2026-09-08, which brought this
+    --                     candidate 210m closer to it)
     --   (2499.3, -1885.0) 101m west of the eastern-seaboard water rectangle,
     --                     inside its latitudes
     --   (2838.6, -1453.3) 147m north of the same rectangle, inside its

@@ -89,6 +89,43 @@
 -- rather than leaving eleven `false`s that read as though the question were
 -- open per weapon.
 
+-- `clip` -- THE ENGINE'S OWN MAGAZINE SIZE, COPIED, NOT CHOSEN
+--
+-- WHAT IT IS: weapons.meta's `ClipSize` for this weapon. That is game DATA inside
+-- the .rpf and no native writes it, so a number here that disagrees with the
+-- engine does not make the gun hold more. It makes two books disagree, and the
+-- server's book is the one the ammo pool is debited from.
+--
+-- ═══ A VALUE ABOVE THE ENGINE'S DESTROYS ROUNDS (owner, 2026-09-12) ═══
+--
+-- "I buy one pack of 12 heavy ammo for it, then the HUD reads 1/12 ... Fire
+-- another - 1/0. Fire another - 0/0. That's 4 rounds when I paid for 12."
+--
+-- The railgun was declared 3 and WEAPON_RAILGUN's ClipSize is 1. Three rounds a
+-- shot, for one round fired, and the two that went missing were destroyed rather
+-- than spent:
+--
+--   1. BR.Inv.reload (server/inventory.lua) moves `w.clip - clip` out of the pool
+--      when the magazine reads empty, so THREE rounds left the heavy pool;
+--   2. SetAmmoInClip cannot put three rounds into a one-round magazine, so the
+--      engine took ONE and the report loop wrote what it read back into the
+--      mirror;
+--   3. `if total > granted then SetPedAmmo(ped, hash, granted)` in
+--      client/inventory.lua then found the ped holding more than the laundered
+--      magazine plus the pool, wrote the ped DOWN, and reported the lower total
+--      -- which the server debited.
+--
+-- Nobody fired those two rounds and no code path gave them back.
+--
+-- BELOW THE ENGINE'S IS THE SAFE DIRECTION. A magazine bigger than we declare
+-- costs nothing: the engine keeps more of the holding in its own clip, `granted`
+-- rises with it rather than falling, and the clamp never fires. The minigun is
+-- deliberately there and says so at its own entry.
+--
+-- THE ENGINE'S NUMBERS ARE WRITTEN DOWN IN tools/check_weapons.lua, which fails
+-- the build for a declared clip above one of them. A new weapon needs a row in
+-- that table, and the row has to come from the .meta rather than from memory.
+
 BR = BR or {}
 BR.Config = BR.Config or {}
 
@@ -129,22 +166,36 @@ BR.Config.Weapons = {
     { id = 'assaultshotgun',name = 'WEAPON_ASSAULTSHOTGUN',   hash = 0xE284C527, label = 'Assault Shotgun',   rarity = R.RARE,      ammo = BR.AmmoType.SHELLS, damage = 72, maxRange =  40.0, minInterval = 300, clip =  8, driveby = false },
     { id = 'pumpshotgunmk2',name = 'WEAPON_PUMPSHOTGUN_MK2',  hash = 0x555AF99A, label = 'Pump Shotgun Mk II',rarity = R.EPIC,      ammo = BR.AmmoType.SHELLS, damage = 92, maxRange =  45.0, minInterval = 850, clip =  8, driveby = false },
     { id = 'heavyshotgun',  name = 'WEAPON_HEAVYSHOTGUN',     hash = 0x3AABBBAA, label = 'Heavy Shotgun',     rarity = R.EPIC,      ammo = BR.AmmoType.SHELLS, damage = 88, maxRange =  42.0, minInterval = 400, clip =  6, driveby = false },
-    { id = 'combatshotgun', name = 'WEAPON_COMBATSHOTGUN',    hash = 0x05A96BA4, label = 'Combat Shotgun',    rarity = R.EPIC,      ammo = BR.AmmoType.SHELLS, damage = 80, maxRange =  48.0, minInterval = 320, clip =  8, driveby = false },
+    { id = 'combatshotgun', name = 'WEAPON_COMBATSHOTGUN',    hash = 0x05A96BA4, label = 'Combat Shotgun',    rarity = R.EPIC,      ammo = BR.AmmoType.SHELLS, damage = 80, maxRange =  48.0, minInterval = 320, clip =  6, driveby = false },
 
     -- Marksman and sniper ---------------------------------------------------
     -- Deliberately few and high-rarity: the render ceiling makes true long-range
     -- sniping impossible, so a map full of snipers would promise a fantasy the
     -- engine cannot deliver.
+    --
+    -- THEY DRAW HEAVY, WITH THE THREE LAUNCHERS. They had a pool of their own for
+    -- one day (2026-09-11) and the owner asked for the rockets to go back into a
+    -- category with a limited carry quantity, which is this one. THE CAP CAME WITH
+    -- IT AND IT IS SMALL: heavy is 24, not the 60 these four had yesterday. See
+    -- the block above BR.Config.AmmoCaps -- 24 is the owner's own number, set
+    -- when heavy meant rockets, and it is his to revisit now that it does not.
     { id = 'marksmanrifle', name = 'WEAPON_MARKSMANRIFLE',    hash = 0xC734385A, label = 'Marksman Rifle',    rarity = R.EPIC,      ammo = BR.AmmoType.HEAVY,  damage = 65, maxRange = 340.0, minInterval = 450, clip = 8, scoped = true, driveby = false },
     { id = 'sniperrifle',   name = 'WEAPON_SNIPERRIFLE',      hash = 0x05FC3C11, label = 'Sniper Rifle',      rarity = R.EPIC,      ammo = BR.AmmoType.HEAVY,  damage = 101,maxRange = 400.0, minInterval = 1400,clip =10, scoped = true, driveby = false },
     { id = 'marksmanmk2',   name = 'WEAPON_MARKSMANRIFLE_MK2',hash = 0x6A6C02E0, label = 'Marksman Mk II',    rarity = R.LEGENDARY, ammo = BR.AmmoType.HEAVY,  damage = 70, maxRange = 380.0, minInterval = 430, clip = 8, scoped = true, driveby = false },
     { id = 'heavysniper',   name = 'WEAPON_HEAVYSNIPER',      hash = 0x0C472FE2, label = 'Heavy Sniper',      rarity = R.LEGENDARY, ammo = BR.AmmoType.HEAVY,  damage = 216,maxRange = 420.0, minInterval = 1800,clip = 6, scoped = true, driveby = false },
 
-    -- LMG -------------------------------------------------------------------
-    { id = 'mg',            name = 'WEAPON_MG',               hash = 0x9D07F764, label = 'MG',                rarity = R.RARE,      ammo = BR.AmmoType.HEAVY,  damage = 34, maxRange = 230.0, minInterval =  85, clip = 54, driveby = false },
-    { id = 'gusenberg',     name = 'WEAPON_GUSENBERG',        hash = 0x61012683, label = 'Gusenberg Sweeper', rarity = R.RARE,      ammo = BR.AmmoType.HEAVY,  damage = 32, maxRange = 200.0, minInterval =  80, clip = 50, driveby = false },
-    { id = 'combatmg',      name = 'WEAPON_COMBATMG',         hash = 0x7FD62962, label = 'Combat MG',         rarity = R.EPIC,      ammo = BR.AmmoType.HEAVY,  damage = 38, maxRange = 250.0, minInterval =  85, clip = 100, driveby = false },
-    { id = 'combatmgmk2',   name = 'WEAPON_COMBATMG_MK2',     hash = 0xDBBD7280, label = 'Combat MG Mk II',   rarity = R.LEGENDARY, ammo = BR.AmmoType.HEAVY,  damage = 40, maxRange = 270.0, minInterval =  85, clip = 100, driveby = false },
+    -- Machine guns ----------------------------------------------------------
+    -- THEY DRAW MEDIUM, WITH THE ASSAULT RIFLES. They had a pool of their own
+    -- until 2026-09-12, captioned 'Belt Ammo' by us rather than by him, and he
+    -- rejected the caption: "Not sure what 'belt' is or why we call it that. It
+    -- doesn't actually show on the person's belt. Very misleading." Asked where to
+    -- merge it, he picked the room: "let's put MGs in medium then". The pool it
+    -- left capped at 60, which could never fill the 100-round magazines two of
+    -- these four carry; medium is 350. See BR.Config.AmmoCaps.
+    { id = 'mg',            name = 'WEAPON_MG',               hash = 0x9D07F764, label = 'MG',                rarity = R.RARE,      ammo = BR.AmmoType.MEDIUM, damage = 34, maxRange = 230.0, minInterval =  85, clip = 54, driveby = false },
+    { id = 'gusenberg',     name = 'WEAPON_GUSENBERG',        hash = 0x61012683, label = 'Gusenberg Sweeper', rarity = R.RARE,      ammo = BR.AmmoType.MEDIUM, damage = 32, maxRange = 200.0, minInterval =  80, clip = 30, driveby = false },
+    { id = 'combatmg',      name = 'WEAPON_COMBATMG',         hash = 0x7FD62962, label = 'Combat MG',         rarity = R.EPIC,      ammo = BR.AmmoType.MEDIUM, damage = 38, maxRange = 250.0, minInterval =  85, clip = 100, driveby = false },
+    { id = 'combatmgmk2',   name = 'WEAPON_COMBATMG_MK2',     hash = 0xDBBD7280, label = 'Combat MG Mk II',   rarity = R.LEGENDARY, ammo = BR.AmmoType.MEDIUM, damage = 40, maxRange = 270.0, minInterval =  85, clip = 100, driveby = false },
 }
 
 --- THE AIRDROP SHELF. Ordinary weapons in every respect but one: they are in no
@@ -171,11 +222,31 @@ BR.Config.Weapons = {
 --- on foot is nothing, so it would be an ultra-rare that pays out a dud. Absence
 --- is still refusal here: it remains off the allowlist.
 ---
---- AMMO COMES OUT OF THE HEAVY POOL rather than a sixth pool of its own. A new
---- pool would have to join BR.Config.AmmoOrder to be rollable, and AmmoOrder is
---- walked by the layout generator -- adding an entry would renumber every ammo
---- draw in the game and change every existing map from a fixed seed. Sharing
---- HEAVY costs a line of realism and zero layout drift.
+--- THE THREE LAUNCHERS DRAW HEAVY WITH THE SCOPED RIFLES, AND THE MINIGUN DRAWS
+--- MEDIUM WITH THE MACHINE GUNS. Owner, 2026-09-12, having played the seven-pool
+--- build: "Can we put rockets into any other category that has limited carry
+--- quantity?" Heavy is that category -- it is capped at 24 -- so the rockets share
+--- it with the four marksman and sniper rifles rather than holding a pool of their
+--- own. The minigun follows the machine guns, and later the same day the machine
+--- guns went into medium: "let's put MGs in medium then".
+---
+--- HEAVY IS NOT "THE EXPLOSIVE POOL" AND THIS BLOCK NO LONGER SAYS IT IS. For one
+--- day it was, and the argument for the split was written out here at length;
+--- that argument is CUT rather than left standing beside its reversal.
+---
+--- ⚠ THE MINIGUN IS NOW FED BY THE SECOND COMMONEST AMMUNITION IN THE GAME, AND
+--- NOBODY HAS ASKED FOR A CEILING ON IT. 350 rounds at an 18ms interval is about
+--- six seconds of continuous fire, where the pool it left held 60 -- roughly one
+--- burst. Ammo drawn at 28% of floor ammo rolls rather than 8% keeps it fed. A
+--- per-weapon cap on this one gun is the clean lever if it should stay a burst
+--- weapon; it is the owner's call and it is NOT built.
+---
+--- WHAT EVERY ONE OF THESE CHANGES COSTS IS THE SAME THING:
+--- BR.Config.AmmoOrder is walked by the layout generator, so its LENGTH renumbers
+--- every ammo draw in the game. Five to seven changed every map from a fixed seed
+--- on 2026-09-11, seven to six changed them again on 2026-09-12, and six to five
+--- changed them a third time. Seeds do not survive a pool count changing, in
+--- either direction.
 ---
 --- THE THREE LAUNCHERS ARE `explosive`, WHICH IS A VALIDATOR DECISION AND NOT A
 --- LABEL. It moves them onto the same path grenades already take, for the same
@@ -194,11 +265,24 @@ BR.Config.Weapons = {
 BR.Config.AirdropWeapons = {
     { id = 'rpg',             name = 'WEAPON_RPG',             hash = 0xB1CA77B1, label = 'RPG',              rarity = R.LEGENDARY, ammo = BR.AmmoType.HEAVY, damage = 120, maxRange = 300.0, minInterval = 1000, clip =  1, explosive = true, blastRadius = 12.0 },
     { id = 'grenadelauncher', name = 'WEAPON_GRENADELAUNCHER', hash = 0xA284510B, label = 'Grenade Launcher', rarity = R.LEGENDARY, ammo = BR.AmmoType.HEAVY, damage =  85, maxRange = 180.0, minInterval =  600, clip = 10, explosive = true, blastRadius = 10.0 },
-    { id = 'railgun',         name = 'WEAPON_RAILGUN',         hash = 0x6D544C99, label = 'Railgun',          rarity = R.LEGENDARY, ammo = BR.AmmoType.HEAVY, damage = 110, maxRange = 350.0, minInterval = 1200, clip =  3, explosive = true, blastRadius =  5.0 },
+    { id = 'railgun',         name = 'WEAPON_RAILGUN',         hash = 0x6D544C99, label = 'Railgun',          rarity = R.LEGENDARY, ammo = BR.AmmoType.HEAVY, damage = 110, maxRange = 350.0, minInterval = 1200, clip =  1, explosive = true, blastRadius =  5.0 },
     -- 13 a round at 18ms is ~700 display points a second against the Combat MG
     -- Mk II's ~470 -- the fastest kill in the game, on the loudest, slowest,
     -- most visible thing a player can be holding, once per match if at all.
-    { id = 'minigun',         name = 'WEAPON_MINIGUN',         hash = 0x42BF8A85, label = 'Minigun',          rarity = R.LEGENDARY, ammo = BR.AmmoType.HEAVY, damage =  13, maxRange = 200.0, minInterval =   18, clip = 150 },
+    --
+    -- ⚠ 150 IS DELIBERATELY NOT THE ENGINE'S NUMBER, AND IT IS THE ONLY ENTRY IN
+    -- THIS FILE THAT ISN'T. WEAPON_MINIGUN's ClipSize is 15000 -- the belt never
+    -- reloads in stock GTA -- and that is the SAFE direction to disagree in: the
+    -- engine holding a bigger magazine than we declare cannot destroy a round
+    -- (see the `clip` note above), it only means the engine keeps the whole
+    -- holding in one clip and the split we draw is ours rather than its.
+    --
+    -- COPYING 15000 HERE WOULD CHANGE TWO THINGS NOBODY ASKED FOR: BR.Inv.give
+    -- grants `w.clip * weaponReserveClips` of reserve, so a found minigun would
+    -- arrive with the whole medium cap rather than 150 rounds, and BR.Inv.reload
+    -- would move the entire pool into the magazine in one press. 150 is a burst
+    -- and it is the number the paragraph above is about.
+    { id = 'minigun',         name = 'WEAPON_MINIGUN',         hash = 0x42BF8A85, label = 'Minigun',          rarity = R.LEGENDARY, ammo = BR.AmmoType.MEDIUM, damage =  13, maxRange = 200.0, minInterval =   18, clip = 150 },
 }
 
 --- Throwables. Smoke is not filler: it is the only tool that makes a contested
@@ -247,21 +331,43 @@ BR.Config.Throwables = {
 --- them on every commit -- so a typo here fails the build instead of shipping a
 --- machete nobody can pick up.
 ---
---- Damage is banded by rarity rather than by GTA's own numbers: a Stone Hatchet
---- that two-shots is a legendary find, a Broken Bottle is what you swing when
---- the drop went badly.
+--- Damage is banded by rarity rather than by GTA's own numbers: a Broken Bottle
+--- is what you swing when the drop went badly, and the band climbs from there.
+---
+--- ═══ AND THE BAND STOPS AT UNCOMMON ═══
+---
+--- Owner, 2026-09-08, in two passes. First: "why are any melee epic? please fix
+--- that." Then, when the answer only capped them at RARE: "melee are not
+--- special. They should be more common."
+---
+--- SO NOTHING HERE IS RARE OR BETTER. Half the list is COMMON and the rest is
+--- UNCOMMON, which means a melee weapon can never occupy a rare, epic or
+--- legendary slot, and every one of those slots is a firearm. Opening a good
+--- crate and finding an axe was the thing he objected to, and a RARE ceiling
+--- still allowed it.
+---
+--- THE DAMAGE NUMBERS DID NOT MOVE, deliberately. They are his balance and he
+--- asked about rarity both times. The consequence is that the two bands are
+--- wide -- COMMON runs 32 to 46 and UNCOMMON 52 to 70 -- and a Battle Axe hits
+--- harder than most of the firearms that outrank it. That is the point rather
+--- than a side effect: melee is a thing you find early and often, and the
+--- reward for finding one is that it hurts, not that it was hard to get.
+---
+--- AND IT KEEPS MELEE OUT OF THE GUNSHOP FOR FREE (#274), which sells RARE and
+--- above. A second reason not to raise this ceiling later without reading
+--- br_lib/config/gunshop.lua first.
 BR.Config.Melee = {
     { id = 'knuckle',   name = 'WEAPON_KNUCKLE',      hash = 0xD8DF3C3C, label = 'Brass Knuckles',        rarity = R.COMMON,    damage = 32, melee = true, maxRange = 3.0, minInterval = 450 },
     { id = 'bottle',    name = 'WEAPON_BOTTLE',       hash = 0xF9E6AA4B, label = 'Broken Bottle',         rarity = R.COMMON,    damage = 32, melee = true, maxRange = 3.0, minInterval = 450 },
-    { id = 'crowbar',   name = 'WEAPON_CROWBAR',      hash = 0x84BD7BFD, label = 'Crowbar',               rarity = R.UNCOMMON,  damage = 40, melee = true, maxRange = 3.0, minInterval = 450 },
-    { id = 'bat',       name = 'WEAPON_BAT',          hash = 0x958A4A8F, label = 'Baseball Bat',          rarity = R.UNCOMMON,  damage = 44, melee = true, maxRange = 3.0, minInterval = 450 },
-    { id = 'wrench',    name = 'WEAPON_WRENCH',       hash = 0x19044EE0, label = 'Pipe Wrench',           rarity = R.UNCOMMON,  damage = 46, melee = true, maxRange = 3.0, minInterval = 450 },
-    { id = 'dagger',    name = 'WEAPON_DAGGER',       hash = 0x92A27487, label = 'Antique Cavalry Dagger',rarity = R.RARE,      damage = 52, melee = true, maxRange = 3.0, minInterval = 450 },
-    { id = 'knife',     name = 'WEAPON_KNIFE',        hash = 0x99B507EA, label = 'Knife',                 rarity = R.RARE,      damage = 52, melee = true, maxRange = 3.0, minInterval = 450 },
-    { id = 'switchblade',name= 'WEAPON_SWITCHBLADE',  hash = 0xDFE37640, label = 'Switchblade',           rarity = R.RARE,      damage = 54, melee = true, maxRange = 3.0, minInterval = 450 },
-    { id = 'machete',   name = 'WEAPON_MACHETE',      hash = 0xDD5DF8D9, label = 'Machete',               rarity = R.RARE,      damage = 58, melee = true, maxRange = 3.0, minInterval = 450 },
-    { id = 'hatchet',   name = 'WEAPON_HATCHET',      hash = 0xF9DCBF2D, label = 'Hatchet',               rarity = R.RARE,      damage = 64, melee = true, maxRange = 3.0, minInterval = 450 },
-    { id = 'battleaxe', name = 'WEAPON_BATTLEAXE',    hash = 0xCD274149, label = 'Battle Axe',            rarity = R.RARE,      damage = 70, melee = true, maxRange = 3.0, minInterval = 450 },
+    { id = 'crowbar',   name = 'WEAPON_CROWBAR',      hash = 0x84BD7BFD, label = 'Crowbar',               rarity = R.COMMON,    damage = 40, melee = true, maxRange = 3.0, minInterval = 450 },
+    { id = 'bat',       name = 'WEAPON_BAT',          hash = 0x958A4A8F, label = 'Baseball Bat',          rarity = R.COMMON,    damage = 44, melee = true, maxRange = 3.0, minInterval = 450 },
+    { id = 'wrench',    name = 'WEAPON_WRENCH',       hash = 0x19044EE0, label = 'Pipe Wrench',           rarity = R.COMMON,    damage = 46, melee = true, maxRange = 3.0, minInterval = 450 },
+    { id = 'dagger',    name = 'WEAPON_DAGGER',       hash = 0x92A27487, label = 'Antique Cavalry Dagger',rarity = R.UNCOMMON,  damage = 52, melee = true, maxRange = 3.0, minInterval = 450 },
+    { id = 'knife',     name = 'WEAPON_KNIFE',        hash = 0x99B507EA, label = 'Knife',                 rarity = R.UNCOMMON,  damage = 52, melee = true, maxRange = 3.0, minInterval = 450 },
+    { id = 'switchblade',name= 'WEAPON_SWITCHBLADE',  hash = 0xDFE37640, label = 'Switchblade',           rarity = R.UNCOMMON,  damage = 54, melee = true, maxRange = 3.0, minInterval = 450 },
+    { id = 'machete',   name = 'WEAPON_MACHETE',      hash = 0xDD5DF8D9, label = 'Machete',               rarity = R.UNCOMMON,  damage = 58, melee = true, maxRange = 3.0, minInterval = 450 },
+    { id = 'hatchet',   name = 'WEAPON_HATCHET',      hash = 0xF9DCBF2D, label = 'Hatchet',               rarity = R.UNCOMMON,  damage = 64, melee = true, maxRange = 3.0, minInterval = 450 },
+    { id = 'battleaxe', name = 'WEAPON_BATTLEAXE',    hash = 0xCD274149, label = 'Battle Axe',            rarity = R.UNCOMMON,  damage = 70, melee = true, maxRange = 3.0, minInterval = 450 },
 }
 
 --- FISTS, and they are a real weapon here for a reason that cost a playtest.
@@ -356,12 +462,31 @@ BR.Config.Gadgets = {
 }
 
 --- Ammo pool caps, per pool.
+---
+--- HEAVY IS 24 BECAUSE HE SAID 24 (owner, 2026-09-11: "let's change the max heavy
+--- ammo to 24 please"). IT IS UNCHANGED AND IT NOW BINDS SEVEN WEAPONS RATHER
+--- THAN THREE, because the marksman and sniper rifles came back into this pool
+--- on 2026-09-12 and 24 was set the day heavy meant rockets alone.
+---
+--- ⚠ THAT IS A REAL CUT FOR THE SNIPERS AND IT HAS NOT BEEN PUT TO HIM. They
+--- carried 60 yesterday. Their clips are 6 to 10 rounds, so 24 is two to four
+--- magazines where it was six to ten, and the Heavy Sniper -- clip of 6 -- gets
+--- four. The number is HIS and the number did not move; what moved is who lives
+--- under it. Raising it is his call, and this note is here so the question is
+--- askable rather than buried in a table.
+---
+--- MEDIUM IS 350 AND IT IS WHY THE MACHINE GUNS ARE IN IT. The pool they left
+--- capped at 60, which is a cap no Combat MG or Combat MG Mk II could ever fill a
+--- magazine from -- both hold 100 -- and the minigun's belt is 150. That is the
+--- defect the owner's merge fixes. He chose the destination from this table
+--- ("let's put MGs in medium then"), so the number is his and it has not moved:
+--- the rifles are not paying for the machine guns arriving.
 BR.Config.AmmoCaps = {
     [BR.AmmoType.LIGHT]  = 300,
     [BR.AmmoType.SMG]    = 400,
     [BR.AmmoType.MEDIUM] = 350,
     [BR.AmmoType.SHELLS] = 120,
-    [BR.AmmoType.HEAVY]  =  60,
+    [BR.AmmoType.HEAVY]  =  24,
 }
 
 -- Lookup tables, built once at load. The combat validator runs these per hit, so

@@ -202,6 +202,89 @@ function BR.ShotIntervalFloor(w, cfg)
     return w.minInterval * ((cfg or {}).intervalSlack or 0.6)
 end
 
+--- The shortest gap between two LAUNCHES of this explosive.
+---
+--- THE OPPOSITE HALF OF THE FUNCTION ABOVE, AND THE REASON THAT ONE RETURNS
+--- NIL. "A detonation is not a trigger pull" is true and it was read as "an
+--- explosive has no cadence at all", which is a different claim and a false
+--- one. A grenade launcher has an action; it cycles in 600ms; nothing honest
+--- fires two rounds from it in the same millisecond. What the impact cadence
+--- could not be applied to is the BLAST -- one rocket catching four people is
+--- four legitimate events with no gap between them -- and applying the rule to
+--- the launch instead costs that nothing (audit finding 3, 2026-09-08).
+---
+--- NIL FOR A THROWABLE, because none of them authors a minInterval and the
+--- bound on throwing is not time: it is that the server watched a grenade leave
+--- your hand and has one credit to spend for it. An arm has no action to cycle.
+--- @param w table|nil
+--- @param cfg table|nil
+--- @return number|nil  nil when nothing about launch cadence can be refused
+function BR.ShotLaunchFloor(w, cfg)
+    if not w or not w.explosive or not w.minInterval then return nil end
+    return w.minInterval * ((cfg or {}).intervalSlack or 0.6)
+end
+
+--- How long ONE projectile's impacts may go on arriving.
+---
+--- The window a launch authorization stays open for. Everything inside it is
+--- the same blast catching more people and is free; the first impact outside it
+--- is a new projectile and has to pay for itself again.
+---
+--- CAPPED BY THE LAUNCH CADENCE WHERE THERE IS ONE, and that is not a detail. A
+--- grenade launcher cycles in 600ms, so a flat 1200ms window would let the
+--- SECOND honest round of a pair be absorbed into the first one's authorization
+--- -- no round spent, no cadence measured. The window has to close before the
+--- weapon can fire again or it swallows the shot it was meant to charge for.
+--- @param w table|nil
+--- @param cfg table|nil
+--- @return number
+function BR.ShotBlastWindow(w, cfg)
+    cfg = cfg or {}
+    -- Defaults to the attribution window, which is the same physical fact
+    -- measured for a different purpose: "the bang either caught you or it did
+    -- not" (BR.Config.Combat.blastAttributeMs).
+    local win = cfg.blastWindowMs or cfg.blastAttributeMs or 1200
+    local floor = BR.ShotLaunchFloor(w, cfg)
+    if floor and floor < win then return floor end
+    return win
+end
+
+--- How many DISTINCT players one event may hurt, given what fired it.
+---
+--- ONE EVENT IS ONE SHOT, AND A SHOT REACHES A BOUNDED NUMBER OF PEOPLE.
+--- `hitGlobalIds` is a list the CLIENT composes, so its length is a claim and
+--- not a measurement -- and the handler used to apply damage once per entry
+--- with no ceiling at all. Three copies of one victim in a pistol event were
+--- three hits for one round (audit, 2026-09-08).
+---
+--- Deduplication alone would not close it: a hundred DISTINCT victims in one
+--- event is the same fabrication wearing a different hat, and against a full
+--- lobby it is a wipe. So the count is bounded as well, by what the weapon can
+--- physically reach.
+---
+--- THE NUMBERS ARE DELIBERATELY GENEROUS, because the failure direction is not
+--- symmetric. Dropping a legitimate victim from a real grenade is a hit that
+--- silently did nothing -- the shooter sees a blast and no marker -- and that
+--- reads as the game being broken. Accepting one impossible extra victim is a
+--- rounding error nobody can build an exploit on. Same reasoning as the range
+--- and cadence slack above.
+---
+---   melee      A swing is one contact. Two is a body that walked into the arc
+---              of a machete already travelling; three is not a swing.
+---   explosive  A grenade in a squad fight genuinely catches everybody stood
+---              together, and the blast radii here run to 12m.
+---   firearm    A shotgun raises ONE event for a whole pellet spread, and a
+---              round can pass through a body into the one behind it.
+--- @param w table|nil  a BR.Config.Weapon* row, nil for a hash we do not issue
+--- @param cfg table|nil BR.Config.Combat
+--- @return integer
+function BR.ShotMaxTargets(w, cfg)
+    cfg = cfg or {}
+    if w and w.explosive then return cfg.maxBlastTargets or 12 end
+    if w and w.melee     then return cfg.maxMeleeTargets or 2  end
+    return cfg.maxShotTargets or 6
+end
+
 --- Is this shot physically possible, given what the SERVER believes?
 ---
 --- Everything here is checked against the server's own model -- the roster's
@@ -282,13 +365,73 @@ function BR.ValidateShot(shot, ctx, cfg)
     --   RATE.  There is no action to cycle. A cluster of stickies detonates
     --          together, and every one of those is a legitimate event in the
     --          same millisecond -- TOO_FAST would refuse all but the first.
+    --
+    -- WHAT THAT ARGUMENT LEFT UNGUARDED, AND FOR TWENTY-ONE DAYS NOBODY SAW IT:
+    -- all three of those exemptions are about the IMPACT, and skipping them left
+    -- nothing at all checking the LAUNCH. Holding an empty grenade launcher --
+    -- empty magazine, empty reserve -- authorized damage, repeatedly, at any
+    -- rate, for as long as you kept hold of it. The audit's harness hit a victim
+    -- twice on the same millisecond with one and neither attempt was refused
+    -- (finding 3, 2026-09-08).
+    --
+    -- So the projectile is authorized rather than the impact, and the two
+    -- questions are asked separately:
+    --
+    --   ctx.blastShared   this impact belongs to a launch the server already
+    --                     authorized and is still counting victims for. Four
+    --                     people caught by one rocket share one authorization,
+    --                     which is exactly the property the three exemptions
+    --                     above exist to protect.
+    --   otherwise         a NEW projectile, which has to pay for itself: it
+    --                     came out of a magazine the server filled, or it was a
+    --                     throw the server watched happen and has a credit for.
     if w.explosive then
-        if ctx.heldItem ~= w.id and not ctx.threwRecently then
-            return false, BR.ShotRefusal.NOT_THROWN
+        if not ctx.blastShared then
+            if w.clip then
+                -- A LAUNCHER IS IN YOUR HANDS WHEN IT FIRES, unlike a grenade,
+                -- so the ordinary held check is the right one and always was.
+                if ctx.heldItem ~= w.id then
+                    return false, BR.ShotRefusal.NOT_THROWN
+                end
+            elseif not ctx.threwRecently then
+                -- A THROWABLE IS NOT AUTHORIZED BY BEING HELD, and it used to
+                -- be: `heldItem == w.id or threwRecently`. Holding grenades
+                -- therefore authorized unlimited blasts, because the held half
+                -- of that test is true for as long as any remain in the slot and
+                -- says nothing whatever about a particular one having been
+                -- thrown. The credit does say that, and there is one of them per
+                -- grenade the server watched leave the hand.
+                return false, BR.ShotRefusal.NOT_THROWN
+            end
         end
+
         if (shot.dist or 0.0) > BR.ShotRangeLimit(w, cfg) then
             return false, BR.ShotRefusal.TOO_FAR
         end
+
+        -- Another victim of a projectile already paid for. Nothing further is
+        -- owed: charging again here is precisely the mistake that would refuse
+        -- the second, third and fourth person a grenade caught.
+        if ctx.blastShared then return true, nil end
+
+        -- A MAGAZINE THE SERVER NEVER FILLED. Read as the magazine stood BEFORE
+        -- this event spent from it -- the last rocket in the tube is a rocket,
+        -- and the check that fired on the post-spend number would refuse it.
+        -- Explicitly `== false` so an unset field means "not applicable" rather
+        -- than "empty": a thrown grenade has no magazine to be empty of.
+        if ctx.launchAmmo == false then
+            return false, BR.ShotRefusal.NO_AMMO
+        end
+
+        -- ...and the action still cannot cycle faster than it cycles. Measured
+        -- between LAUNCHES, which is why BR.ShotIntervalFloor still says nil for
+        -- an explosive and BR.ShotLaunchFloor is a different function.
+        local launchFloor = BR.ShotLaunchFloor(w, cfg)
+        if launchFloor and ctx.sinceLaunchMs
+           and ctx.sinceLaunchMs < launchFloor then
+            return false, BR.ShotRefusal.TOO_FAST
+        end
+
         return true, nil
     end
 
@@ -367,4 +510,418 @@ function BR.ShotDamage(weapon, rarity, dist, component, cfg)
     -- weapon's own falloff above, and the headshot's close-range payoff here.
     local mult = BR.Config.BodyMultFor(component, dist)
     return base * mult, mult
+end
+
+-- ---------------------------------------------------------------------------
+-- The world's own damage, which is not ours and is still not unconditional
+-- ---------------------------------------------------------------------------
+--
+-- A HASH IS A CLAIM ABOUT THE CAUSE, NOT PROOF THAT THE CAUSE HAPPENED, and
+-- until 2026-09-08 the handler read it as proof. `weaponType` landing in
+-- BR.Config.Environmental returned before every check in this file -- inventory,
+-- state, squad, range, rate, damage value -- and did not cancel the event, so a
+-- client-composed payload labelled WEAPON_EXPLOSION with a large damage figure
+-- and somebody else's ped in `hitGlobalIds` reached the exit unopposed (audit
+-- finding 4).
+--
+-- WHAT MAKES THIS THE DANGEROUS ONE TO FIX. Falls, fire, drowning and cars are
+-- damage this project DELIBERATELY leaves to the engine: it kills the ped
+-- outright on the victim's own machine and the server finds out by sampling
+-- health (server/combat.lua's server-observed death check, and the note in
+-- BR.Combat.defeat about a knock arriving after a corpse). Making environmental
+-- damage strict does not make those safe -- it makes a player who falls off a
+-- building not die, which is a worse bug than the one being fixed.
+--
+-- SO THE SHAPE IS A BOUND, NOT A DENIAL, and it rests on what Cfx documents
+-- about the event: weaponDamageEvent fires when a client wants to damage a
+-- REMOTELY-OWNED entity. Your own fall, your own drowning, your own burning are
+-- applied to a ped you own; they are not this event, and where a build raises
+-- them anyway they arrive with the sender as their own victim. That case is
+-- never refused here, on any hash, for any reason.
+--
+-- What is left is the genuinely remote kind -- somebody's car exploding next to
+-- you, somebody running you over, somebody's fire -- and every one of those
+-- requires the two of them to be in the same match and near each other. That is
+-- a fact the server holds from its own 2Hz sampling and the client does not
+-- control, which is what makes it a boundary rather than a second claim.
+
+--- Why an environmental claim was refused. Deliberately NOT members of
+--- BR.ShotRefusal.
+---
+--- THE INCIDENT SURFACE IS PINNED BY A GATE AND BY AN EXHAUSTIVE TEST, and both
+--- of them are right to be: a reason quietly added to BR.ShotSuspicious starts
+--- opening cases somebody has to review. These are a different question -- was
+--- this event the world's -- reached by a different path, and they cancel
+--- without accusing anybody. Wiring them into the anticheat feed is a decision
+--- worth taking on its own evidence rather than as a side effect of closing a
+--- hole; until then a refused environmental claim is counted and printed to the
+--- server console, which no player reads.
+BR.EnvRefusal = {
+    NO_SENDER   = 'the sender is not in a match',
+    OTHER_MATCH = 'the world does not reach into another match',
+    NOT_LIVE    = 'the victim is not alive in this match',
+    TOO_FAR     = 'too far apart for the world to have done it',
+    TOO_BIG     = 'more damage than the world deals',
+    TOO_OFTEN   = 'more of these than the world produces',
+    BAD_POS     = 'an explosion nowhere',
+    NOT_OURS    = 'an explosive the server never issued',
+}
+
+--- How far a cause of each kind can honestly reach across two SAMPLED
+--- positions.
+---
+---   own      A fall, drowning, exhaustion, bleeding. These are computed on the
+---            ped they happen to, so a REMOTE one is already odd -- the honest
+---            residue is a passenger drowning in somebody else's car, which is
+---            a distance of nearly zero. Bounded tightly rather than refused,
+---            because "already odd" is not the same as impossible and this file
+---            has been wrong about that before.
+---   contact  A car, an animal, rotors, a fence. The two entities have to have
+---            touched.
+---   area     An explosion, a fire, a flare. The blast has a radius and neither
+---            end of it is a position the server can see, so this one is
+---            generous on purpose.
+---
+--- ANYTHING NOT LISTED IS `contact`, which is the strictest of the three that
+--- can still happen between two players. A hash added by a future game build
+--- lands there and is bounded rather than exempt -- the opposite of the default
+--- that produced this finding.
+BR.EnvClass = {
+    fall       = 'own',
+    drown      = 'own',
+    drownveh   = 'own',
+    exhaustion = 'own',
+    bleeding   = 'own',
+    explosion  = 'area',
+    fire       = 'area',
+    flare      = 'area',
+}
+
+--- @param env table|nil  a BR.Config.Environmental row
+--- @param cfg table|nil  BR.Config.Combat
+--- @return number
+function BR.EnvReach(env, cfg)
+    cfg = cfg or {}
+    local class = env and BR.EnvClass[env.id] or 'contact'
+    if class == 'area' then return cfg.envAreaM or 60.0 end
+    if class == 'own'  then return cfg.envOwnM  or 12.0 end
+    return cfg.envContactM or 25.0
+end
+
+--- May this remote environmental claim stand?
+---
+--- ORDERED SO THE ANSWER NAMES THE STRONGEST THING WRONG WITH IT. A claim
+--- against somebody in another match is a fabrication whatever its distance, and
+--- reporting it as TOO_FAR would file the mildest true statement about it.
+---
+--- @param env table|nil  the BR.Config.Environmental row the hash resolved to
+--- @param ctx table  { sameSrc, onRoster, sameMatch, victimLive, dist, amount,
+---                     burst }
+--- @param cfg table|nil BR.Config.Combat
+--- @return boolean ok, string|nil why
+function BR.EnvDamageAllowed(env, ctx, cfg)
+    cfg = cfg or {}
+
+    -- THE WORLD HURTING YOU IS NEVER REFUSED, AND THIS IS THE WHOLE SAFETY
+    -- ARGUMENT. Every path the owner cares about -- the fall off a building, the
+    -- fire, the drowning, the storm -- ends on the victim's own ped. Refusing
+    -- one of those to close a hole about OTHER people's peds would trade a
+    -- theoretical exploit for a player who steps off a roof and walks away.
+    if ctx.sameSrc then return true, nil end
+
+    -- A sender the roster has never heard of, or one outside a match: there is
+    -- no world here for anything to happen in.
+    if not ctx.onRoster then return false, BR.EnvRefusal.NO_SENDER end
+    if not ctx.sameMatch then return false, BR.EnvRefusal.OTHER_MATCH end
+    if not ctx.victimLive then return false, BR.EnvRefusal.NOT_LIVE end
+
+    -- Nil distance means the server has not sampled one of them yet, which is a
+    -- gap in OUR knowledge and never evidence against the player. Fail open.
+    if ctx.dist and ctx.dist > BR.EnvReach(env, cfg) then
+        return false, BR.EnvRefusal.TOO_FAR
+    end
+
+    -- THE ONE NUMBER WE CANNOT REWRITE, ONLY REFUSE. Environmental damage stays
+    -- the engine's -- there is no ledger of ours behind it -- so the figure in
+    -- the payload is the client's and it is applied. The cap is therefore set
+    -- well above anything lethal rather than anywhere near a plausible value: a
+    -- long fall or a car at speed is allowed to kill outright, and only a number
+    -- with no physical meaning is cut.
+    if (ctx.amount or 0) > (cfg.envMaxDamage or 400) then
+        return false, BR.EnvRefusal.TOO_BIG
+    end
+
+    if ctx.burst then return false, BR.EnvRefusal.TOO_OFTEN end
+
+    return true, nil
+end
+
+--- May this explosion happen at all?
+---
+--- THE SECOND ROUTE AROUND THE ADJUDICATOR. `explosionEvent` fires server-side,
+--- is cancellable, and this file's handler only ever read attribution out of it
+--- -- so an explosion nobody was issued, anywhere on the map, at any rate, was
+--- never anybody's business. Cfx's own OneSync cookbook is about cancelling
+--- exactly this event.
+---
+--- CANCELLING AN EXPLOSION IS VISIBLE, WHICH IS WHY THE BOUNDS ARE WIDE. Every
+--- one of them is a fact the sender does not control -- their own sampled
+--- position, their own inventory, how often they have done this -- and the
+--- ambient blasts the owner asked to keep working (a car going off a cliff, a
+--- petrol pump) pass all of them: they are not one of the three types this
+--- gamemode issues, so provenance never applies to them.
+---
+--- @param ctx table  { onRoster, posOk, dist, scale, burst, item, owns }
+--- @param cfg table|nil BR.Config.Combat
+--- @return boolean ok, string|nil why
+function BR.ExplosionAllowed(ctx, cfg)
+    cfg = cfg or {}
+
+    if not ctx.onRoster then return false, BR.EnvRefusal.NO_SENDER end
+    if not ctx.posOk then return false, BR.EnvRefusal.BAD_POS end
+
+    -- REACH, NOT PROXIMITY. A rocket travels 300m before it goes off and a
+    -- sticky can be driven somewhere and detonated, so this is deliberately the
+    -- longest reach in the arsenal plus room -- it is here to refuse an
+    -- explosion on the far side of an eight-kilometre map, not to decide
+    -- whether somebody could have thrown that far.
+    if ctx.dist and ctx.dist > (cfg.blastMaxDistM or 400.0) then
+        return false, BR.EnvRefusal.TOO_FAR
+    end
+
+    -- `damageScale` is the client's multiplier on the blast and reads 1.0 for
+    -- everything the game does by itself.
+    if ctx.scale and ctx.scale > (cfg.blastMaxScale or 2.0) then
+        return false, BR.EnvRefusal.TOO_BIG
+    end
+
+    if ctx.burst then return false, BR.EnvRefusal.TOO_OFTEN end
+
+    -- PROVENANCE, AND ONLY FOR THE THREE WE ISSUE. `item` is non-nil exactly
+    -- when the explosion type is one of ours (BR.Config.Combat.explosionTypes),
+    -- so a car fire or a gas pump never reaches this line. To have thrown a
+    -- grenade you must have been given one, and the server is the only party
+    -- that can give you one.
+    --
+    -- DELIBERATELY NOT THE CONSUMABLE CREDIT the damage path spends. The
+    -- explosion and its damage are two events with no guaranteed order, so a
+    -- consuming test here could refuse the visible blast of a grenade whose
+    -- damage had already been paid for -- and the failure would be an
+    -- explosion that never appeared, which is the kind of thing a player
+    -- reports as the game being broken.
+    if ctx.item and not ctx.owns then
+        return false, BR.EnvRefusal.NOT_OURS
+    end
+
+    return true, nil
+end
+
+--- Is there room in the fire ledger for one more record?
+---
+--- WHAT THE RATE CEILING ABOVE DOES NOT COVER (external audit, #287). `burst`
+--- bounds how OFTEN one player may set off an explosion; it says nothing about
+--- how many records the accepted ones leave lying around. A molotov is
+--- remembered for BR.Config.Combat.fireLifeMs -- twenty seconds -- so at the
+--- shipped ceiling of twelve blasts per five seconds a single player can hold
+--- forty-eight live records, and forty-eight players holding forty-eight each is
+--- a table server/damage.lua walks twice a second against every living player.
+---
+--- THE PER-OWNER CAP IS THE LOAD-BEARING ONE, and `total` is a backstop rather
+--- than the rule. The property worth protecting is that a flooder cannot push
+--- anybody ELSE's fire out of the ledger and steal or void their attribution --
+--- which a global cap alone does not give, whichever end it evicts from. So the
+--- owner's own share is what runs out first, and 48 players each holding their
+--- full share still fits inside `firesMax` with room to spare: the global number
+--- can only be reached by a roster far larger than this gamemode runs, which is
+--- exactly what a backstop should look like.
+---
+--- REFUSE THE NEW RECORD, NEVER EVICT AN OLD ONE, for the same reason. Evicting
+--- oldest-first would let somebody at the ceiling roll the table over
+--- continuously, and the records they destroyed would be the ones that had been
+--- there long enough to matter -- a molotov still burning on somebody else's
+--- kill. Dropping the newest costs the flooder their own attribution, which is
+--- the correct party to charge.
+---
+--- TWENTY-FOUR IS HALF OF WHAT THE RATE CEILING ALONE WOULD ALLOW TO PILE UP,
+--- and it is a bound rather than a measurement -- see the note in
+--- tools/royale.logrotate about what has and has not been load-tested. Holding
+--- twenty-four live molotov records means better than one molotov per second
+--- sustained for twenty seconds, from an inventory the server issued.
+--- @param total number   how many records the ledger holds now
+--- @param mine number    how many of them belong to this owner
+--- @param cfg table|nil  BR.Config.Combat
+--- @return string|nil    'OWNER' or 'GLOBAL' when it is full, nil when it is not
+function BR.FireLedgerFull(total, mine, cfg)
+    cfg = cfg or {}
+    if (tonumber(mine) or 0) >= (cfg.firesPerOwner or 24) then return 'OWNER' end
+    if (tonumber(total) or 0) >= (cfg.firesMax or 2048) then return 'GLOBAL' end
+    return nil
+end
+
+-- --------------------------------------------------------------------------
+-- How loud a refusal is allowed to be
+-- --------------------------------------------------------------------------
+
+--- A ceiling on how many console lines one kind of event may produce, with the
+--- surplus COUNTED AND REPORTED rather than dropped.
+---
+--- WHY THIS EXISTS (external audit, #287). Several refusal paths in
+--- br_core/server/damage.lua print one line per refused EVENT, and a refused
+--- event is the cheapest thing a hostile client can manufacture. The explosion
+--- listener is the clearest case: BR.ExplosionAllowed refuses a flood as
+--- TOO_OFTEN after twelve in five seconds, but the handler printed a line for
+--- every one of them -- so the rate ceiling bounded the WORK and not the LOG.
+--- royale.service mirrors the console into console.log with `tmux pipe-pane`,
+--- which makes that a file on the game box growing at whatever rate somebody
+--- chooses to send packets at.
+---
+--- SILENCE IS NOT THE FIX, AND THAT IS THE WHOLE DESIGN CONSTRAINT. Those lines
+--- are how an operator diagnoses a bad round, and damage.lua says so in four
+--- separate places -- the comment above the shot-refusal print is explicit that
+--- "a silent refusal teaches nothing". Trading a disk-space bug for a blindness
+--- bug is the worse of the two, because under an attack the flood IS the signal.
+---
+--- SO: PRINT THE FIRST FEW, COUNT THE REST, AND SAY HOW MANY WERE NOT PRINTED.
+--- Two alternatives lost to that. A fixed cooldown per key ("one line every ten
+--- seconds") keeps the console readable and throws away the magnitude, so an
+--- operator cannot tell ten refusals from ten thousand -- which is the single
+--- fact they most need. Sampling one line in N has the same defect and adds a
+--- second one: N has to be guessed before anybody knows the rate.
+---
+--- TWO CEILINGS, BECAUSE ONE IS NOT ENOUGH EITHER WAY ROUND. `perKey` alone lets
+--- 48 players times seven refusal reasons through as separate keys, which is the
+--- flood again wearing a hat. `perWindow` alone lets whichever key arrives first
+--- spend the whole allowance, so the loudest attacker silences everybody else's
+--- diagnostics. Together the first few of each KIND get through and the total is
+--- still bounded.
+---
+--- `now` IS ALWAYS A PARAMETER and nothing here calls a native, so the whole
+--- thing is exercised in tools/test_shared.lua rather than by watching a
+--- console. Same split as the solvers above.
+BR.LogBudget = {}
+BR.LogBudget.__index = BR.LogBudget
+
+--- Where every key past `maxKeys` is counted instead.
+---
+--- The key space callers use is server-derived (a player id and a refusal
+--- reason), so it is already bounded -- but a table keyed by anything an
+--- attacker influences is the exact shape of the finding this file is answering,
+--- and a budget that could itself be made to grow without bound would be a
+--- joke. Surplus kinds collapse into one bucket: the count survives, the
+--- breakdown does not, and the breakdown is what nobody can read at that volume
+--- anyway.
+local OVERFLOW = '(other)'
+
+local BUDGET_DEFAULTS = {
+    windowMs  = 60000,
+    perKey    = 3,
+    perWindow = 20,
+    maxKeys   = 64,
+}
+
+--- Start a fresh window. Also the constructor's initializer, so there is one
+--- definition of what an empty budget looks like.
+local function budgetClear(self, now)
+    self.since     = now
+    self.printed   = 0
+    self.held      = 0
+    self.kinds     = 0
+    self.worst     = nil
+    self.worstHeld = 0
+    self.keys      = { [OVERFLOW] = { printed = 0, held = 0 } }
+    self.keyCount  = 1
+end
+
+--- Close the current window and hand back what it held back, if anything.
+local function budgetRoll(self, now)
+    local s = nil
+    if self.held > 0 then
+        s = { held = self.held, kinds = self.kinds, worst = self.worst,
+              worstHeld = self.worstHeld, windowMs = self.windowMs }
+    end
+    budgetClear(self, now)
+    return s
+end
+
+--- @param opts table|nil { windowMs, perKey, perWindow, maxKeys, now }
+--- @return table
+function BR.LogBudget.new(opts)
+    opts = opts or {}
+    local self = setmetatable({}, BR.LogBudget)
+    for k, v in pairs(BUDGET_DEFAULTS) do
+        local given = tonumber(opts[k])
+        self[k] = (given and given > 0) and given or v
+    end
+    budgetClear(self, tonumber(opts.now) or 0)
+    return self
+end
+
+--- Ask whether this line may be printed.
+---
+--- RETURNS TWO THINGS, AND THE SECOND IS THE HALF THAT IS EASY TO DROP. When
+--- this call is the one that rolls a window over, the closing window's summary
+--- comes back with it and the caller must print it -- otherwise a flood that
+--- keeps going never reports how much it held back, which is the whole feature.
+--- @param key any      what makes this line the same as another one
+--- @param now number   GetGameTimer()
+--- @return boolean printIt, table|nil summary
+function BR.LogBudget:admit(key, now)
+    now = tonumber(now) or 0
+    local summary = nil
+    if (now - self.since) >= self.windowMs then summary = budgetRoll(self, now) end
+
+    key = tostring(key)
+    local r = self.keys[key]
+    if not r then
+        if self.keyCount >= self.maxKeys then
+            key, r = OVERFLOW, self.keys[OVERFLOW]
+        else
+            r = { printed = 0, held = 0 }
+            self.keys[key] = r
+            self.keyCount = self.keyCount + 1
+        end
+    end
+
+    if r.printed < self.perKey and self.printed < self.perWindow then
+        r.printed = r.printed + 1
+        self.printed = self.printed + 1
+        return true, summary
+    end
+
+    r.held = r.held + 1
+    self.held = self.held + 1
+    if r.held == 1 then self.kinds = self.kinds + 1 end
+    if r.held > self.worstHeld then self.worst, self.worstHeld = key, r.held end
+    return false, summary
+end
+
+--- Close a window that has expired with nothing arriving to close it.
+---
+--- WITHOUT A TICK CALLING THIS, A FLOOD THAT STOPS IS NEVER REPORTED: `admit`
+--- only rolls when something asks to be printed, so the last window of an attack
+--- would sit unreported until the next refusal -- which may be the next match.
+--- The caller ticks this; nothing here can tick itself.
+--- @param now number
+--- @return table|nil summary
+function BR.LogBudget:sweep(now)
+    now = tonumber(now) or 0
+    if (now - self.since) < self.windowMs then return nil end
+    return budgetRoll(self, now)
+end
+
+--- The sentence a summary becomes. Here rather than at the call site so the two
+--- consoles that print it cannot word it differently, and so it is asserted by
+--- the suite rather than read off a screen.
+--- @param s table|nil    what admit or sweep returned
+--- @param noun string|nil what the suppressed lines were about
+--- @return string|nil
+function BR.LogBudget.line(s, noun)
+    if not s then return nil end
+    local plural = (s.held == 1) and '' or 's'
+    local kplural = (s.kinds == 1) and '' or 's'
+    return ('[br_core] %d more %s line%s in the last %ds went unprinted -- '
+            .. '%d kind%s, worst %s x%d')
+        :format(s.held, noun or 'refusal', plural,
+                math.floor((s.windowMs / 1000) + 0.5),
+                s.kinds, kplural, tostring(s.worst), s.worstHeld)
 end

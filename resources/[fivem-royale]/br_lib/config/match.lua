@@ -1,23 +1,45 @@
 -- Match configuration.
 --
--- Player counts live here rather than being hardcoded so raising the cap later is
--- a one-line change. Note the hard ceiling below: OneSync is free up to 48 slots,
--- and setting sv_maxclients above that without a Cfx.re Element Club tier makes
--- the server fail its heartbeat check and drop off the public list entirely.
+-- Player counts live here rather than being hardcoded so resizing a match later
+-- is a one-line change. Note that the cap below is the size of ONE MATCH and not
+-- the size of the server: how many players may CONNECT is sv_maxclients in
+-- server.cfg, a separate setting this file neither reads nor sets.
 
 BR = BR or {}
 
 BR.Config = BR.Config or {}
 
 BR.Config.Match = {
-    -- Slots. 48 is the free OneSync ceiling; the code paths are written to scale
-    -- past it, but do not raise this without the matching Element Club tier.
-    maxPlayers      = 48,
+    -- HOW MANY PLAYERS ONE MATCH HOLDS, and that is the whole of what it
+    -- means. Both readers compare it against BR.Server.countIn(m), the
+    -- headcount of a single instance: BR.Server.formingMatch in
+    -- br_core/server/main.lua and BR.Match.shortenWarmupIfFull in
+    -- br_core/server/match.lua. 24 for the closed beta (infradocs#23).
+    --
+    -- IT IS NOT THE CONNECTION CAP, and it used to be described here as though
+    -- it were. sv_maxclients in server.cfg decides how many players may be on
+    -- the server at once, and it is 48. The two numbers differing is the
+    -- design rather than a mismatch: 48 people connect, a match caps at 24,
+    -- and the 25th to ready up forms a SECOND match beside the first.
+    -- BR.Server.formingMatch answers nil once every warmup of that player's
+    -- mode is full, and nil is the formation gate, not a refusal.
+    --
+    -- THE ELEMENT CLUB QUESTION BELONGS TO sv_maxclients. OneSync is free up
+    -- to 48 slots; above that the server fails its heartbeat check and drops
+    -- off the public list entirely without a Cfx.re tier. So raising THIS
+    -- number past 48 one day -- toward the hundred a full battle royale field
+    -- wants -- means raising the connection cap first, and the tier is what
+    -- that costs. Nothing about moving it between 1 and 48 touches any of it.
+    maxPlayers      = 24,
     -- 1 so a lone dev client can walk the whole flow. The win condition knows
     -- a dev match that STARTED with one squad has nothing to win (see
     -- winConditionMet) -- otherwise PLAYING would end three seconds in.
     minToStart      = 1,
-    minToStartProd  = 16,
+    -- 2 for the closed beta (infradocs#23): a handful of testers should get a
+    -- round rather than a queue. minSquads below still applies on top of it in
+    -- squad mode, so two players who queued as ONE PARTY are one squad and
+    -- wait for a third; two who queued separately are two squads and start.
+    minToStartProd  = 2,
 
     -- Lobby / warmup timings, in seconds.
     warmupSeconds   = 45,
@@ -785,7 +807,9 @@ BR.Config.Match = {
     },
 
     -- Routing buckets. Lobby and warmup are fixed SHARED buckets; matches
-    -- allocate upward from matchBase. The warmup pad is communal (user call,
+    -- allocate upward from this base, one per match, by `m.seq` -- the internal
+    -- increment, NOT the random match id (#291), so they stay 101, 102, 103
+    -- rather than scattering across a million. The warmup pad is communal (user call,
     -- 2026-08-04): everyone waiting for any flight stands there together and
     -- watches departures -- riders only hop to their match's own bucket a
     -- few seconds after wheels-up (bus.lua schedules it), jumpers the moment
@@ -808,9 +832,12 @@ BR.Config.Match = {
     -- NAME instead of by room. See BR.Config.Match.voice.range below and
     -- br_core/client/voice.lua for why the squad room was removed (#157).
     --
-    -- Channel numbers are opaque integers to the client. They are derived
-    -- from matchId, which is NEVER public (roster.lua PUBLIC_FIELDS), so the
-    -- server hands each player their number over VOICE_SET.
+    -- Channel numbers are derived from matchId, and the server hands each
+    -- player theirs over VOICE_SET rather than a rule for computing it. They
+    -- are not opaque and were never secret (#291): `prox` is matchBase +
+    -- matchId, so the id comes back out by subtraction. What stops a client
+    -- joining a channel it was not given is the addChannelCheck in
+    -- server/voice.lua.
     voice = {
         enabled          = true,
 
@@ -1000,6 +1027,38 @@ BR.Config.Match = {
     -- blast -> 84s. Still a guess, still never played. Tune it before defending
     -- it -- but tune it against the round count, not against the seconds.
     dbnoBleedPerDamage = 0.93,
+
+    -- ═══ WHAT BEING ON FIRE DOES TO A DOWNED PLAYER ═══
+    --
+    -- Owner, playtest 2026-09-12, on burning to death in a molotov: "My
+    -- preference would be they can crawl until they die, and their body being on
+    -- fire should accelerate the bleed out."
+    --
+    -- A MULTIPLIER ON THE CLOCK, NOT A DAMAGE NUMBER, and that is the honest
+    -- shape for it. dbnoBleedPerDamage above converts damage the server ADJUDGED
+    -- into seconds; burning damage is never adjudged at all -- it is applied on
+    -- the victim's own machine down a path the server cannot see, which
+    -- server/damage.lua's fire ledger exists because of and says so twice. There
+    -- is no honest number of points to convert, so what is configured is the rate
+    -- the countdown runs at while the body is in somebody's fire.
+    --
+    -- 3.0 IS A JUDGEMENT AND HERE IS THE ARITHMETIC IT WAS MADE ON. Every second
+    -- in the flames costs three seconds of clock, so:
+    --
+    --   * a first knock (120s) burns out in 40s of continuous fire;
+    --   * a molotov pool lives 20s (BR.Config.Combat.fireLifeMs), so a body that
+    --     cannot get out of one loses 60s -- half a fresh knock -- and no more,
+    --     because the fire goes out before the player does;
+    --   * crawling clear after five seconds costs fifteen, which is the point:
+    --     the crawl is the answer to the fire, and it can be got wrong.
+    --   * at the floor (dbnoBleedMin, 40s) it is 13s, which is the one case worth
+    --     watching in a playtest -- a late-match knock into a molotov is close to
+    --     being a kill.
+    --
+    -- 1.0 TURNS IT OFF and nothing else has to change: server/combat.lua's
+    -- BR.Combat.burn returns on anything at or below 1.0, so the fire goes back to
+    -- being scenery a downed player is lying in.
+    dbnoBurnRate = 3.0,
 
     -- The display health the LEDGER holds a downed player at. It has to be
     -- greater than zero for two separate reasons and both are load-bearing:
@@ -1473,30 +1532,41 @@ BR.Config.Combat = {
     logSamples    = 15,
 
     --[[
-        IS ANYBODY REFUSING TO TAKE DAMAGE. (The health audit.)
+        WHO OWNS A PLAYER'S HEALTH. (The health ledger, and the audit on it.)
 
-        server/roster.lua samples every ped's health four times a second and
-        writes it into the same `entry.hp` that BR.Damage.applyHit subtracts
-        from. The ped's health belongs to the OWNING CLIENT, so that write hands
-        back the one number the whole damage model depends on: a client that
-        pins its ped at full has its ledger restored 250ms after every hit, and
-        the server-observed death check in server/combat.lua reads the same
-        client-owned value, so the backstop misses it too.
+        server/roster.lua samples every ped's health four times a second. The
+        ped's health belongs to the OWNING CLIENT, so what comes back is a CLAIM
+        and not a reading -- and the sampler used to write that claim straight
+        into the same `entry.hp` that BR.Damage.applyHit subtracts from. That
+        handed back the one number the whole damage model depends on: the server
+        subtracted 25, told the client to apply it, a modified client ignored the
+        instruction, and 250ms later the sampler copied the untouched 100 back
+        over the server's 75. A security audit reproduced exactly that on
+        2026-09-08 (finding 1) and noted the second half of the problem: the
+        ledger was overwritten, so no LATER sample had any discrepancy left to
+        count and the detector below scored zero throughout.
 
-        THIS BLOCK CHANGES NOTHING ABOUT WHAT HAPPENS TO ANY PLAYER. It counts.
-        The fix is a gameplay change with a real blast radius -- the legitimate
-        upward paths are med kits, shields, revives and respawns, and a ledger
-        that refuses the engine outright would also refuse falls, fire and
-        drowning -- so it goes behind a playtest, and this goes in first. It is
-        the same order the damage validator shipped in (see `enforce` above and
-        docs/security.md): measure, prove the log is empty during honest play,
-        then act.
+        SO THE SAMPLER IS NOW ASYMMETRIC, and shared/health_solve.lua's header
+        carries the full argument. In one line: a sample BELOW the ledger is
+        believed, because that is a fall, a fire, drowning or a car and the
+        engine still owns every one of them; a sample ABOVE the ledger is
+        refused unless the SERVER authorized the rise, and an authorized rise is
+        capped at what was authorized.
 
-        THE NUMBERS ARE CHOSEN TO NEVER FIRE ON HONEST PLAY, in that direction
-        deliberately. Every ambiguous sample is excused, because the exploit is
-        not one sample -- it is the same lie four times a second for a whole
-        match -- so a detector that misses its first two seconds still catches
-        it, while one that fires on a bad ping gets switched off.
+        THE DETECTOR STAYED, AND IT GOT BETTER RATHER THAN REDUNDANT. It runs one
+        line before the ledger is touched, it is the only thing that produces an
+        operator line, and now that the ledger is no longer overwritten a
+        divergent client keeps scoring on every sample instead of on the first
+        one. `enabled` and `enforce` are separate flags on purpose: one silences
+        the console, the other surrenders the ledger, and they are not the same
+        decision.
+
+        THE NUMBERS ARE STILL CHOSEN TO NEVER ACCUSE HONEST PLAY, in that
+        direction deliberately. What changed is that a window no longer COMMITS
+        anything -- a grace period that committed an unverified increase is the
+        finding itself -- it only decides whether a disagreement is worth a name.
+        Refusing an honest high-ping player's rise costs them nothing: their ped
+        is already on its way down to the number the ledger holds.
     ]]
     healthAudit = {
         -- OFF IS NOT A DEFAULT ANYONE HAS TO REMEMBER: this is a counter and a
@@ -1504,6 +1574,40 @@ BR.Config.Combat = {
         -- learn what honest play looks like. It is here so a playtest that
         -- turns up noise can be quietened without a redeploy.
         enabled = true,
+
+        -- DOES THE LEDGER WIN. Off surrenders `entry.hp` and `entry.armour` back
+        -- to the owning client, which is the shape the audit's finding 1 was
+        -- written against -- so this is a lever for a playtest that turns up a
+        -- false refusal, not a setting anybody should be running on.
+        --
+        -- SEPARATE FROM `enabled`, and never folded into it: quietening a noisy
+        -- console is a five-second decision and handing every client authority
+        -- over its own health is not. A build that needs one almost never needs
+        -- the other.
+        --
+        -- COMPARED AGAINST false RATHER THAN TESTED, at every reader, for the
+        -- reason `enabled` is: a convar override can leave a string here and
+        -- `if cfg.enforce then` is true for the string "false".
+        enforce = true,
+
+        -- HOW OFTEN A DIVERGENT CLIENT IS TOLD THE REAL NUMBER.
+        --
+        -- Refusing the rise fixes the SERVER's arithmetic and leaves the player
+        -- walking around on their own screen with health the server does not
+        -- believe in -- which is a bad game even for a cheat, because their
+        -- squad's panel, the shooter's hitmarkers and their own HUD would all
+        -- disagree with what kills them. So the ledger is pushed back at them on
+        -- HEALTH_SYNC, the same verb a revive already uses.
+        --
+        -- THROTTLED, AND ONLY ON THE UNEXPLAINED CASE. An honest client never
+        -- reaches it: damage still in flight, a heal, a rescue and a revive are
+        -- each refused under their own name and none of them resynchronises
+        -- anything. A cheat reaches it on every sample, and four corrections a
+        -- second is a fight with the engine rather than a correction -- one a
+        -- second lands, is visible to an operator, and leaves the sampler's hot
+        -- loop cheap. Zero or below turns the correction off and leaves the
+        -- refusal in place.
+        resyncMs = 1000,
 
         -- Rounding, not evidence. Our display value and the engine's come
         -- through different float pipelines and both get floored.
@@ -1519,6 +1623,16 @@ BR.Config.Combat = {
         -- sample interval (250ms) plus the round trip, and a player on a bad
         -- connection is not a cheat -- so 1500ms covers a 1.2s round trip,
         -- which is worse than anybody actually plays on.
+        --
+        -- WHAT IT NO LONGER DOES, and this is the whole of the audit's finding:
+        -- it does not COMMIT the rise. It used to -- the sampler excused the
+        -- sample and then wrote it into the ledger anyway, which is a grace
+        -- period that restores health rather than one that withholds judgement.
+        -- The rise is refused inside the window exactly as it is outside it;
+        -- this only decides whether the disagreement gets counted and whether
+        -- the client is corrected. That costs the honest player NOTHING, because
+        -- the number their ped is heading for is the number the ledger already
+        -- holds -- see the honest-client section of shared/health_solve.lua.
         hurtGraceMs = 1500,
 
         -- HOW LONG A CONSUMABLE OR A REVIVE IS ALLOWED TO KEEP CLIMBING.
@@ -1528,6 +1642,14 @@ BR.Config.Combat = {
         -- the one honest upward path the ledger does not already own. The window
         -- starts when the server issues the effect, so it covers the animation
         -- and the round trip after it.
+        --
+        -- THE WINDOW IS HALF OF THE AUTHORIZATION AND THE TARGET IS THE OTHER
+        -- HALF. Whoever issues the effect echoes that target onto the entry
+        -- (`grantHpTo` / `grantArmourTo`) and the ledger will not follow the ped
+        -- one point past it. A window on its own would be an amnesty: two
+        -- seconds per issue in which any claim at all is believed, re-stamped
+        -- every 250ms for the length of a channel and openable on demand by the
+        -- re-press loop in #271. So a bandage buys the bandage.
         healSettleMs = 2000,
 
         -- A revive or a respawn is the LEDGER leading and the ped following, so

@@ -541,7 +541,7 @@ html, body, #root {
      numbers at the use site, because 350 is an unusual value that reads as a
      typo -- and a future reader "correcting" it to 400 would quietly undo the
      one thing that makes these cards sound different from the rest of the UI.
-     350 is a REAL weight here and not a synthesised one: the variable axis runs
+     350 is a REAL weight here and not a synthesized one: the variable axis runs
      200-1000 in steps of 1. */
   --font-tutorial-body: 350;
   --font-tutorial-head: 700;
@@ -629,7 +629,7 @@ html, body, #root {
    sentence case. Above ~1.05rem the prose starts competing with SAVE/CANCEL.
 
    WHY 600 AND NOT 700. Both are real loaded weights (main.tsx imports Barlow
-   400/500/600/700, so neither synthesises). 600 is the project's existing
+   400/500/600/700, so neither synthesizes). 600 is the project's existing
    emphasis weight -- `.micro-label`, chat author names -- and 700 across a
    four-line paragraph reads as shouting rather than as body copy.
 
@@ -1228,7 +1228,7 @@ html, body, #root {
    name should be bold."
 
    700 AND NOT 600. Barlow 400/500/600/700 are all really loaded (main.tsx), so
-   neither weight synthesises and both are honest choices. 600 is this project's
+   neither weight synthesizes and both are honest choices. 600 is this project's
    ORDINARY emphasis -- `.micro-label`, chat author names, `.body-text` itself --
    which is exactly why it is wrong here: a notice is one short sentence at
    0.8125rem read peripherally while the player is doing something else, and a
@@ -1354,6 +1354,69 @@ html, body, #root {
   color: var(--color-danger);
   animation: stormbarIn 400ms ease-out both,
              stormWarnPulse 1.1s ease-in-out 400ms infinite;
+}
+
+/* ═══ THE CLOSING SHOCKWAVE ═══
+
+   Owner, 2026-09-12: "What I want is a one-time ripple effect that explodes
+   from the border of the card, in the shape of the card, like a shockwave. I
+   want that to happen when the timer changes from 'STORM MOVING IN' to 'STORM
+   CLOSING NOW' and display it for 0.5 seconds."
+
+   AND THEN, HAVING SEEN IT: "Shockwave looks good on the timer - can you make
+   it take twice as long?" So the half-second became a full second. That still
+   read too fast, so it doubled again to two seconds. The duration is the ONLY
+   thing that moved either time -- same easing, still one shot, still the card's
+   silhouette, still transform and opacity alone.
+
+   THIS REPLACED A CONTINUOUS RING, and the replacement is the point. The ring
+   (2026-09-11) breathed for the whole of the closing phase on the card's own
+   1.6s beat; he looked at it and said "I don't like what we did to the storm
+   timer with the outline". A thing that announces a transition should be over
+   when the transition is, so this one is a single 2000ms expansion and then
+   nothing at all. Do not reintroduce an `infinite` here.
+
+   IT STARTS AS THE CARD'S BORDER. `inset: 0` and a 2px border in the same
+   --color-storm the card's edge already wears means frame zero draws the ripple
+   exactly on top of the outline it explodes from; scale(1) to scale(1.3) is it
+   peeling off and travelling outward. There is no separate "appear" -- what you
+   see start is the card's own edge leaving.
+
+   IN THE SHAPE OF THE CARD, which is what rules out both a circle and a
+   softened rectangle. `border-radius` here is `.panel-hot`'s 3px and has to
+   stay equal to it: the card was restyled square and a ripple with its own
+   corner treatment stops being the card's silhouette the moment either number
+   moves. check-ui R17 asserts the two are the same.
+
+   A SIBLING OF THE CARD, NEVER A CHILD. `.panel-hot` is `overflow: hidden` so
+   its cap bar can sit flush inside a 2px border, and that clip would cut the
+   ripple off at the card's edge -- which is the entire distance it travels.
+   StormBar puts it beside the card in a `relative` wrapper instead.
+
+   TRANSFORM AND OPACITY ONLY, so it composites: no width, no box-shadow, no
+   inset animation. An expanding outline drawn by animating `inset` would relayout
+   the wrapper on every frame of an effect that fires while a wall is closing. */
+@keyframes stormShock {
+  0%   { opacity: 1; transform: scale(1); }
+  100% { opacity: 0; transform: scale(1.3); }
+}
+.storm-shock {
+  position: absolute;
+  inset: 0;
+  border: 2px solid var(--color-storm);
+  /* .panel-hot's own corner. Change one and change both. */
+  border-radius: 3px;
+  pointer-events: none;
+  /* From the middle, so every edge leaves at once and the silhouette stays the
+     card's rather than sliding off a corner. */
+  transform-origin: 50% 50%;
+  /* 2000ms, ONE PASS, and `both` so the last frame (invisible) is what holds
+     afterwards. No iteration count is written because the default is 1 and
+     naming it invites someone to edit it.
+
+     FOUR TIMES THE 500ms IT SHIPPED AT, doubled twice on his word after
+     watching it -- see the block above. Only this number moved. */
+  animation: stormShock 2000ms var(--ease-out) both;
 }
 
 /* The health-bar hit flash: a red wash over the bar that burns out in

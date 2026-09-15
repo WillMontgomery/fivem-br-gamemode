@@ -10,8 +10,14 @@ See **[DEPLOY.md](../DEPLOY.md)** for the full walkthrough. In short:
 
 ```bash
 git clone https://github.com/WillMontgomery/fivem-br-gamemode.git
-cp server.cfg.example server.cfg     # then fill in sv_licenseKey
+cp server.cfg.example server.cfg
+printf 'sv_hostname "My Server"\nsv_licenseKey "..."\n' > server-identity.cfg
 ```
+
+`sv_hostname` and `sv_licenseKey` are **not** in `server.cfg` any more. They live
+in `server-identity.cfg`, which `server.cfg` execs and which is gitignored. On
+the Blitz Royale boxes that file is written at boot from SSM Parameter Store; see
+the block above the exec in `server.cfg.example` for why.
 
 Copy `resources/[fivem-royale]/` into your server's resources directory, or use
 [`tools/deploy.sh`](../tools/deploy.sh) to pull and sync automatically.
@@ -166,10 +172,16 @@ hear; `brvoice` in the server console says whether pma-voice is even present.
 ## Development
 
 ```bash
-./tools/verify.sh          # syntax, tests, and 34 further gates
-cd ui-src && npm run dev   # the UI in a browser, no game required
-cd ui-src && npm run build # typecheck, build, and CSS compatibility check
+./tools/verify.sh                    # Lua syntax, suites, and repository gates
+cd ui-src && npm run dev             # UI in a browser, no game required
+cd ui-src && npm run build           # typecheck, build, CSS/UI/envelope checks
+cd ui-src && npm run build:check     # rebuild, compare committed output, restore it
+cd js-src/br_ddb && npm run check    # rebuild in memory and compare its bundle
 ```
+
+CI runs both package installs and bundle checks under Node 22 before
+`tools/verify.sh`. Pull requests and pushes to `main` receive the same checks;
+the local pre-commit gate remains the first line of defence on `dev`.
 
 `verify.sh` runs **36 gates**, in increasing order of strictness, exiting
 non-zero on any failure:
@@ -177,7 +189,7 @@ non-zero on any failure:
 | | |
 |---|---|
 | `syntax` | Lua 5.4 on every file |
-| `tests` | ~10,300 assertions across 28 suites |
+| `tests` | over 10,000 assertions across 35 suites; the ordered inventory must name every `tools/test_*.lua` file |
 | `scope gate` | OneSync scope-limited natives banned from client gameplay code |
 | `weapon table` | every weapon hash re-derived from its name, and every slot weapon's icon present in both the source and the built bundle |
 | `vehicle table` | every refused-vehicle hash re-derived from its name, signed and unsigned |
@@ -296,6 +308,7 @@ builds keybinds out of commands, so `+brinteract` and `brslot3` are also E and
 | `brperf` | both | Per-subsystem frame and tick cost |
 | `brconfig` | server | The config values that most often explain odd behaviour |
 | `brring` | server | Ringmaster link: whether it is configured, and what it would send |
+| `brallowlist [on\|off]` | server | The dev-mode join allowlist: `off` stops enforcing it (bans still apply, so with br_ringmaster down every dev-mode join is still refused) until `on` or the next start of br_core, bare prints which and whether the Discord lookup is configured. Restricted |
 | `brddb` | server | Probe DynamoDB — reachability, credentials, table access |
 | `brwhy <id>` | server | Why a given player is in the state they're in |
 | `brshots [n\|reason]` | server console only | The last N shot adjudications with the arithmetic that decided each one: the measured distance beside the weapon's reach, this shot's interval beside its cadence floor, the magazine the **server** believed, and whether it watched a throw. The starred pair is the comparison that refused the row. Console-only rather than restricted, and that is #93 rather than caution: nobody is exempt from incidents, so an admin can be the *subject* of these rows, and a `br.admin` readout would hand that person the exact bound to stay under |
@@ -304,11 +317,11 @@ builds keybinds out of commands, so `+brinteract` and `brslot3` are also E and
 | `brweather <name>`, `brweather`, `brweather reset` | server console only, dev mode | The same for the sky, over the same 15 names (`BR.World.WEATHERS`, `EXTRASUNNY` through `HALLOWEEN`). Bare, it prints the list. While a sky is set it **outranks** the storm's thunder and the island's overcast rather than fighting them; `reset` hands the sky back to both. Neither verb is server state — the clock is overridden per client and the weather is written per client — so what the server owns is the one small override record, sent whole |
 | `brscatter` | server | Spread everyone 3 km apart to test OneSync scoping |
 | `brforce <state>`, `brskip`, `brkill <id>` | server | Drive the match by hand |
-| `brloot [matchId]` | server | World loot: counts by kind and rarity, cells, who is subscribed |
+| `brloot [matchId]` | server | World loot: counts by kind and rarity, cells, who is subscribed. The id is the seven hex characters the console prints, and is read as hex (a shorter tag printed before 2026-09-12 still resolves) |
 | `brinv <id>`, `brgive <id> <item> [n]` | server | Read or fill a player's inventory |
 | `brphase <n>` | server | Jump the storm to phase n, seamlessly from the live circle |
 | `brstormscale <0.05–1>` | server | Compress storm pacing for testing (0.1 ≈ a 2-minute cycle) |
-| `brdown <id>`, `brrevive <id>`, `brbleed <id> [damage]` | server | Knock, pick up, or take damage off a downed player's clock as an enemy shot would. `brdown` refuses and says why when the rules say it should — solo, or no standing squadmate |
+| `brdown <id>`, `brrevive <id> [by]`, `brbleed <id> [damage]` | server | Knock, pick up, or take damage off a downed player's clock as an enemy shot would. `brdown` refuses and says why when the rules say it should — solo, or no standing squadmate. `brrevive` also puts an **eliminated** player back in: their placement, death stamp, storm ledger, killer record, revive key and spectate camera are all undone, they come back on full health where the body was, and the console names the three things that cannot be undone — the kill feed already broadcast, the killer's kill, and the kit the death box scattered. It refuses a match that is over, one the deciding death has already sealed, and one with nobody left standing |
 | `brartifacts` | server | Incident screenshots: whether `screenshot-basic` is even running, cases open, frames claimed / asked for / stored / lost, and the refusals told apart from the losses — at the cap of nine, inside the first ten seconds, or for a case this process did not file. The only window onto this feature from the box, because nothing about a capture is visible in the game. Restricted |
 | `brstrips` | server | The unissued-weapon detector: reports received and counted, throttled, and refused because the weapon turned out to be in the player's own server-side inventory. That last counter is what the command exists for — it is the one false positive this feature can produce, and on a healthy server it is zero. Restricted |
 | `bradmin` | server | Why a given player has no Admin tab. The tab is binary and its preconditions are not, so this names which of six reasons applies to each connected player — convar unset, no license, grant row without the scope, no answer from DynamoDB yet, no `discord:` identifier, or an answer this process already settled. Restricted, because it names who holds admin scope |

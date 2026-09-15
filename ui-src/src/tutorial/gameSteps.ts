@@ -80,26 +80,31 @@ import type { Step } from './steps'
  */
 export type Keybinds = Array<{ command: string; key?: string; vk?: number }>
 
-/** Windows VK for the backtick/tilde key. */
-export const VK_TILDE = 0xc0
+/**
+ * ═══ `VK_TILDE` AND `isTilde` WERE HERE, AND THE SUFFIX THEY SERVED IS GONE ═══
+ *
+ * They answered exactly one question -- is `brplayers` still on the backtick
+ * key, 0xC0? -- for the `{tilde:…}` token, which appended "(above TAB on your
+ * keyboard)" to the player list card while the answer was yes. Owner,
+ * 2026-09-04: "If the key is still bound to tilde at this point in time,
+ * include a suffix to that sentence '(above TAB on your keyboard)'." Tilde is
+ * the one default in the game a player may genuinely be unable to find -- it is
+ * missing, moved or dead on a good many non-US layouts -- so the suffix taught
+ * a LOCATION rather than a name.
+ *
+ * HE REMOVED IT ON 2026-09-08, once the card drew the real key glyph. See
+ * `game-players` below for that decision in full. Nothing else in the project
+ * ever asked the question, so the constant and the predicate left with the
+ * token rather than staying as exports nobody imports.
+ *
+ * `PlayerList.tsx` still knows 0xC0, and that is unrelated: it is the default
+ * that panel falls back to for its own open/close latch, not a fact about prose.
+ */
 
 export function keyFor(binds: Keybinds, command: string): string | null {
   const b = binds.find((x) => x.command === command)
   if (!b || !b.key) return null
   return b.key
-}
-
-/**
- * Is this action still on tilde?
- *
- * Owner: "If the key is still bound to tilde at this point in time, include a
- * suffix to that sentence '(above TAB on your keyboard)'." Tilde is the one
- * default in the game a player may genuinely be unable to find — it is missing,
- * moved or dead on a good many non-US layouts — so the suffix is a location
- * rather than a name.
- */
-export function isTilde(binds: Keybinds, command: string): boolean {
-  return binds.find((x) => x.command === command)?.vk === VK_TILDE
 }
 
 /**
@@ -231,9 +236,30 @@ export const GAME_STEPS: Step[] = [
     //
     place: 'quarter',
     title: 'Everybody in the match',
-    // {key:…} becomes the player's ACTUAL binding, {tilde:…} adds the location
-    // suffix only while that command is still on tilde. See `withKeys`.
-    body: 'Press **{key:brplayers}**{tilde:brplayers} to see everyone still playing, and to report someone if you need to.',
+    // {key:…} names the player's ACTUAL binding and is drawn as the project's
+    // own KeyCap -- see AnnotationCard's `emphasise`. The command reaches the
+    // renderer rather than a substituted letter, so the cap follows a rebind.
+    //
+    // ═══ THE LOCATION SUFFIX CAME OUT ON 2026-09-08 ═══
+    //
+    // A second token sat against the glyph here, `{tilde:brplayers}`, and its
+    // only job was to append "(above TAB on your keyboard)" -- and only while
+    // this command was still on tilde. Owner, 2026-09-04: "If the key is still
+    // bound to tilde at this point in time, include a suffix to that sentence
+    // '(above TAB on your keyboard)'." Tilde is the one default in this game a
+    // player may genuinely be unable to find, so the suffix taught WHERE the key
+    // is rather than what it is called.
+    //
+    // The glyph made it redundant. A cap the player can see is already the
+    // answer to "which key", and the sentence was explaining itself twice. The
+    // alternative that lost was keeping a shortened suffix: he asked for the
+    // phrasing to go, not to be trimmed, and said the same of the incident toast
+    // in the same breath.
+    //
+    // THE ESCAPE HATCH BELOW IS NOT THIS FEATURE and did not go with it. The
+    // suffix was for a player who cannot LOCATE the key; the button is for one
+    // who cannot PRESS it, which no glyph fixes.
+    body: 'Press **{key:brplayers}** to see everyone still playing, and to report someone if you need to.',
     advance: 'screen',
     awaitScreen: 'players',
     // THE ESCAPE HATCH. A player whose layout has no usable tilde, or who needs

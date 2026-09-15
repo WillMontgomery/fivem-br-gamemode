@@ -2,7 +2,7 @@
 --
 -- WHAT IS AND IS NOT HERE.
 --
--- Everything the player hears from the INTERFACE is synthesised in
+-- Everything the player hears from the INTERFACE is synthesized in
 -- ui-src/src/audio/cues.ts: menus, verdicts, the storm, loot tiers. GTA's
 -- frontend sounds are instantly recognisable as GTA Online's menus, which is
 -- the one association a standalone game mode should not be making, and they
@@ -76,7 +76,20 @@ BR.Config.Audio = {
         -- `hit` and `hit.crit` had floors here and no longer exist as cues
         -- (2026-09-08: the clips were wrong). A floor for a cue that isn't
         -- there is dead weight, so they went with them.
-        ['ui.hover']         = 40,
+        --
+        -- AND `ui.hover` WENT WITH THEM, ONE ROUND LATE, FOR THE SAME REASON IT
+        -- SAYS TWO LINES UP. It sat directly under that sentence at 40ms while
+        -- being a cue this table has never held: ui.hover is synthesized in the
+        -- BROWSER (ui-src/src/audio/cues.ts), which carries its own 45ms floor
+        -- for it in that file's MIN_GAP. BR.Sfx.play('ui.hover') would take the
+        -- unknown-cue path, so this line could never throttle anything.
+        --
+        -- IT IS WORTH A NOTE RATHER THAN A SILENT DELETION because the harm was
+        -- not the wasted table entry. This table is the closest thing the
+        -- project has to a list of which cues are NATIVE, and an entry here for
+        -- a browser cue makes it lie about that -- which is the same reading
+        -- error that puts a browser cue key into a BR.Sfx call site.
+
         -- A refusal the player can re-trigger by leaning on a key, and the
         -- server sends one toast per attempt. Longer than the cue, shorter
         -- than a deliberate second press.
@@ -97,7 +110,7 @@ BR.Config.Audio = {
         -- NATIVE IS COMBAT ONLY.
         --
         -- Everything the player hears from the INTERFACE -- menus, verdicts,
-        -- pickups, the storm -- is synthesised in the browser
+        -- pickups, the storm -- is synthesized in the browser
         -- (ui-src/src/audio/cues.ts). GTA's frontend sounds are instantly
         -- recognisable as GTA Online's menus, which is the one association a
         -- standalone mode should not be making, and they cannot be varied or
@@ -136,7 +149,7 @@ BR.Config.Audio = {
         --
         -- THE LAST SENTENCE IS THE ONE THAT DECIDES THE MEDIUM, and it decides
         -- it on a fact rather than a preference. ui-src/src/audio/cues.ts plays
-        -- into ONE browser on ONE client: a CEF-synthesised cue physically
+        -- into ONE browser on ONE client: a CEF-synthesized cue physically
         -- cannot reach the passenger sitting beside the driver, because that
         -- passenger is a different machine with a different browser. So "all
         -- occupants hear it" rules the browser out, and the owner asked for
@@ -263,34 +276,59 @@ BR.Config.Audio = {
         -- differs between phase 1 and phase 8 is the circle on their map, not
         -- what the moment means.
         --
-        -- ═══ WHY THIS SOUND, AND WHY IT IS THE EASIEST THING HERE TO CHANGE
-        --     ═══
+        -- ═══ THE NAME IS HIS, AND IT HAD BEEN CORRUPTED ═══
         --
-        -- GO_NON_RACE is GTA's "the thing has started -- move" stinger: the
-        -- one it plays to start a non-race event. That is the sentence this
-        -- cue has to say. It is a ONE-SHOT rather than a countdown loop, which
-        -- rules out the other close candidates in the same set (10_SEC_WARNING
-        -- and 5_SEC_WARNING are the tail of a timer, and the wall starting to
-        -- move is the beginning of one).
+        --   "storm.move doesn't play, though it says the engine started it."
+        --                                          -- owner, 2026-09-12
         --
-        -- THE SET IS THE SAFE HALF OF THE CHOICE AND IT WAS CHOSEN FIRST.
-        -- HUD_MINI_GAME_SOUNDSET is where the hitmarker and the crate already
-        -- live -- CHECKPOINT_NORMAL and CHECKPOINT_PERFECT, audible in every
-        -- match this project has ever played. A cue fails SILENTLY when its
-        -- set is not loaded (see this file's header), so picking the name out
-        -- of a set this codebase demonstrably hears is what stops "I do not
-        -- like it" and "it never played" looking identical.
+        -- His line in #24, verbatim:
         --
-        -- AND IT IS A DEFAULT, NOT A VERDICT. Two fuel sounds have now been
-        -- chosen from a desk and rejected by ear, so this one is wired to be
-        -- replaced without a code edit:
+        --   Match timer start: PlaySoundFrontend(-1, "GO", "HUD_MINI_GAME_SOUNDSET", 1)
+        --   Another alt: PlaySoundFrontend(-1, "MEDAL_UP", "HUD_MINI_GAME_SOUNDSET", 1)
+        --
+        -- HE HAS HEARD IT PLAY. The name is GO. Somewhere between his issue and
+        -- this table it became GO_NON_RACE, which he never wrote, and that is
+        -- the whole of why nothing came out of it -- the set was right, the call
+        -- was right, the wiring was right, and the name was a word longer than
+        -- he typed. Two playtests went on that.
+        --
+        -- ═══ THE FOURTH ARGUMENT IS NOT WORTH MATCHING, AND THE PROOF IS IN
+        --     THIS TABLE'S OWN HISTORY ═══
+        --
+        -- He writes `1` and client/sfx.lua passes `false` to every cue here.
+        -- That difference has already been tested by ear on this exact set: the
+        -- hitmarker was HUD_MINI_GAME_SOUNDSET / CHECKPOINT_NORMAL and
+        -- CHECKPOINT_PERFECT (removed in de45860), it went out through the same
+        -- PlaySoundFrontend(-1, name, set, false), and he heard both well enough
+        -- to reject them on 2026-09-08 -- "those are wrong sound clips". Every
+        -- sound anybody has ever heard from this codebase left through that
+        -- `false`. There is nothing to match.
+        --
+        -- ═══ AND THE STORM KEEPS IT; match.start IS WHAT MOVED ═══
+        --
+        -- GO was his line for "Match timer start", so promoting it here put two
+        -- cues on one sound. tools/test_fuel.lua's `audio.pumpCues` refuses that
+        -- and caught it the same day. He ruled: "Keep the storm sound where it's
+        -- at", and "MEDAL_UP is not it. We can drop that." So `match.start` took
+        -- his own documented spare for that event, the Arena War airhorn, and
+        -- the wall keeps GO (2026-09-12).
+        --
+        -- ═══ WHY /brsfx AGREED WITH A NAME THAT PLAYED NOTHING ═══
+        --
+        -- "the engine started it" is client/sfx.lua's playProbed reporting that
+        -- HAS_SOUND_FINISHED answered false about a handle GET_SOUND_ID had just
+        -- allocated -- which is also exactly what a handle that never played
+        -- anything looks like, and the native's own documentation says nothing
+        -- about the case. The readout he quoted was never evidence of audio, so
+        -- a wrong name can sit here indefinitely with the tool agreeing. That is
+        -- the half of this round worth keeping.
+        --
+        -- Re-pointed without a code edit, as ever:
         --
         --   /brsfx storm.move                  hear what is configured
         --   /brsfx audition HUD_MINI_GAME_SOUNDSET   hear the whole set
         --   /brsfx bind storm.move <SET> <NAME>      try one, live
-        --
-        -- and the line below is the one line to edit once the ear has decided.
-        ['storm.move']  = { set = 'HUD_MINI_GAME_SOUNDSET', name = 'GO_NON_RACE' },
+        ['storm.move']  = { set = 'HUD_MINI_GAME_SOUNDSET', name = 'GO' },
 
         -- ═══════════════════════════════════════════════════════════════════
         -- THE OWNER'S PALETTE (#24, 2026-09-05)
@@ -310,7 +348,7 @@ BR.Config.Audio = {
         -- in the browser. That was the rule until #175, which the owner closed
         -- with "work to be tracked in #24" -- this issue. His reasoning there
         -- was recognition rather than mix purity: a squadmate going down should
-        -- sound like what the player already knows, and a second synthesised
+        -- sound like what the player already knows, and a second synthesized
         -- vocabulary means learning the same event twice.
         --
         -- SO THE OLD RULE IS NOT DELETED, IT IS SCOPED. Native is no longer
@@ -370,23 +408,79 @@ BR.Config.Audio = {
         ['squad.out']       = { set = 'GTAO_FM_Events_Soundset',
                                 name = 'Event_Message_Purple' },
 
-        -- NO `squad.down`, AND THAT IS AN ABSENCE RATHER THAN AN OVERSIGHT.
-        -- MATE_CUE has three phases -- down, out, up -- and his table names
-        -- only the second and third. #175 warned about exactly this: "moving
-        -- two of the three natively while leaving the third synthesised breaks
-        -- [the progression] on purpose or by accident." It is on purpose here
-        -- only in the sense that inventing a pair he did not pick is the one
-        -- thing #24 says not to do. `squad.down` stays on the browser tier
-        -- (ui-src/src/audio/cues.ts) until he picks one.
+        -- ═══ AND THE KNOCK PLAYS THE SAME PAIR (owner, 2026-09-11) ═══
+        --
+        -- "I think the died/knock sounds are the same right now, not sure.
+        -- Regardless both should be the same frontend sound and NOT an NUI
+        -- sound."
+        --
+        -- THEY WERE NOT THE SAME, WHICH IS WHY HE COULD NOT TELL. The `out`
+        -- phase played the pair above through PlaySoundFrontend; the `down`
+        -- phase had no pair here at all and fell through to the browser tier's
+        -- synthesized `squad.down` (ui-src/src/audio/cues.ts). Two events, two
+        -- tiers, two entirely different noises. His ruling collapses them: the
+        -- knock and the death are ONE sound, and it is this one.
+        --
+        -- THIS IS WHAT THE BLOCK THAT STOOD HERE SAID, AND IT IS NOW FALSE. It
+        -- said `squad.down` had no pair because his 2026-09-05 table never named
+        -- one, that inventing one is the thing #24 forbids, and that the browser
+        -- tier held it "until he picks one". He has now picked one, and what he
+        -- picked is the pair beside it -- so nothing is invented here: the two
+        -- keys stay two keys because MATE_CUE's three phases are three events,
+        -- and they name the same sound because he said they should.
+        --
+        -- ⚠ IF THE KNOCK AND THE DEATH ARE BOTH SILENT IN GAME, IT IS THIS PAIR
+        -- AND NOT THE WIRING. `GTAO_FM_Events_Soundset` is the set this file's
+        -- own header cites for the two cues that turned out silent -- WIN and
+        -- LOSER, which live in HUD_AWARDS and were being asked of this set. The
+        -- pair below is a different NAME in that set and has never been reported
+        -- silent, and `airdrop.inbound` plays out of the same set. But putting
+        -- one pair on both phases means one bad pair is now two quiet events
+        -- rather than one. `/brsfx cues` prints `[silent?]` against it and
+        -- settles it without touching this file; if it does, the answer is a
+        -- different pair on BOTH lines, not a return to the browser.
+        ['squad.down']      = { set = 'GTAO_FM_Events_Soundset',
+                                name = 'Event_Message_Purple' },
 
         -- ─────────────────────────────────────────────────────── the clock ---
 
-        -- His: "Match timer start".
-        ['match.start']     = { set = 'HUD_MINI_GAME_SOUNDSET', name = 'GO' },
-        -- His alternative, in his words "Alternative timer start (airhorn)":
-        --   DLC_AW_BB_Sounds / Period_Start
-        -- DLC bank -- see the block above. Hear it with:
-        --   /brsfx play DLC_AW_BB_Sounds Period_Start
+        -- ═══ HIS SECOND LINE FOR THIS EVENT, PROMOTED 2026-09-12 ═══
+        --
+        -- His words: "Alternative timer start (airhorn)". It was written down
+        -- under this cue as the alternative from the day #24 landed, and it is
+        -- now the one that plays, because his FIRST line for this event -- GO --
+        -- turned out to be what `storm.move` had been missing all along and he
+        -- ruled that the storm keeps it ("Keep the storm sound where it's at").
+        -- Two cues cannot share a sound, so the event with a documented spare is
+        -- the one that moves. MEDAL_UP was the other candidate and is not in the
+        -- running: "MEDAL_UP is not it. We can drop that."
+        --
+        -- ═══ IT IS A DLC SET AND IT DOES NOT GET A BANK REQUEST ═══
+        --
+        -- Said out loud because the block at the top of the DLC catalogue below
+        -- warns that "a DLC script audio bank this gamemode never requests is
+        -- SILENT, and silent is indistinguishable from wrong" -- which is the
+        -- heuristic that got Pit_Stop_Complete rejected at a desk and was then
+        -- overruled by evidence on 2026-09-08.
+        --
+        -- THE EVIDENCE HERE IS THE SAME SHAPE AND THE PRECEDENT IS THE SAME DLC.
+        -- Five DLC-set cues already ship and he heard every one of them on a
+        -- running client -- and one of them, `squad.revived`, is
+        -- DLC_AW_Frontend_Sounds: Arena War, the same pack as this set. Nothing
+        -- in br_core requests an audio bank for any of them (the only
+        -- RequestScriptAudioBank in this tree is inside vendored ScaleformUI),
+        -- and none has been reported silent. He described this one as an
+        -- airhorn, which is a thing you can only say about a sound you have
+        -- heard.
+        --
+        -- SO A BANK REQUEST WOULD BE MACHINERY ADDED ON A HUNCH, against the
+        -- file's own rule, to a path with five working counterexamples. If this
+        -- one does come back silent the answer is RequestScriptAudioBank for the
+        -- Arena War bank and it is the first thing to try -- but it is not
+        -- something to add before there is anything to fix.
+        --
+        --   /brsfx play DLC_AW_BB_Sounds Period_Start    hear it on its own
+        ['match.start']     = { set = 'DLC_AW_BB_Sounds', name = 'Period_Start' },
 
         -- His: "Timer down to 3s". The name really is `5s`; it is the generic
         -- countdown pip in that set and the digit in the name is Rockstar's,
@@ -444,7 +538,7 @@ BR.Config.Audio = {
         --
         -- KEYED `toast.warn` AND NOT `ui.error`, FOR TWO REASONS THAT BOTH
         -- MATTER. ui-src/src/audio/cues.ts already owns a cue called
-        -- `ui.error`, synthesised, on the other tier -- one name meaning two
+        -- `ui.error`, synthesized, on the other tier -- one name meaning two
         -- different sounds in two different files is the sort of thing that
         -- survives for a year. And this project's toasts have no `error` tone
         -- at all: br_core/client/state.lua's TOAST payload carries `tone`, and
@@ -470,15 +564,31 @@ BR.Config.Audio = {
 
         -- His: "Damage killed sound".
         --
-        -- AND `elim` IS CALLED TODAY AND RESOLVES TO NOTHING.
-        -- br_core/client/state.lua:1369 plays `elim` when you get a kill, and
-        -- there has never been an `elim` in this table -- so that call takes
-        -- the unknown-cue path in client/sfx.lua and prints one console line
-        -- per session. The player is not left silent: the browser synthesises
-        -- its own `elim` (ui-src/src/audio/cues.ts:290, played from
-        -- HitFeedback.tsx:54), which is what they actually hear. So this is a
-        -- dead call plus a warning, not a missing sound -- but it is the reason
-        -- this key cannot simply be left blank and forgotten.
+        -- ═══ THIS NOTE USED TO SAY `elim` RESOLVED TO NOTHING. IT RESOLVES
+        --     NOW, AND THE CONSEQUENCE IS A DOUBLE ═══
+        --
+        -- The old note said "there has never been an `elim` in this table", so
+        -- the call in br_core/client/state.lua took the unknown-cue path and the
+        -- player heard only the browser's synthesized version. Landing the pair
+        -- below (2026-09-08, "land the DLC cues") made that note false while it
+        -- was still sitting two lines above the entry contradicting it.
+        --
+        -- AND IT LEFT ONE EVENT MAKING TWO NOISES. state.lua plays this cue when
+        -- you get a kill, and the same block sends BR.Nui.HIT carrying the
+        -- victim's name -- which ui-src/src/hud/HitFeedback.tsx answers by
+        -- playing its OWN `elim` (ui-src/src/audio/cues.ts). Both fire, on every
+        -- kill. That is precisely the shape the owner rejected on 2026-09-07
+        -- ("so now when a squad mate goes DBNO we're playing an NUI sound AND a
+        -- frontend sound"), and the fix that answered him then -- one event, one
+        -- noise -- was applied here on 2026-09-08.
+        --
+        -- THE FIX WAS NOT ON THIS LINE, BECAUSE IT WAS NOT IN THIS FILE. Both
+        -- tiers were wired and correct; what was wrong is that both were wired
+        -- at once. The browser side is the one that went, which is the direction
+        -- his "use all of the sounds I gave you, including MATE_CUE being
+        -- rewired to PlaySoundFrontend" points and the direction MATE_CUE itself
+        -- took. HitFeedback.tsx still draws the banner and now makes no sound;
+        -- the note at the top of that file records why.
         ['elim'] = { set = 'DLC_H3_Drone_Tranq_Weapon_Sounds',
                      name = 'Pilot_Perspective_Fire' },
         --   /brsfx play DLC_H3_Drone_Tranq_Weapon_Sounds Pilot_Perspective_Fire
@@ -695,6 +805,13 @@ BR.Config.Audio.catalogue = {
         -- filter still stands for every DLC pair nobody has played. Each line
         -- here is one sound one person heard. Do not widen a set to "the rest
         -- of its names" from a dump -- that is how Pit_Stop_Complete happened.
+        { set = 'DLC_AW_BB_Sounds',                 -- heard by the owner
+          -- His "Alternative timer start (airhorn)" from #24, live as
+          -- `match.start` since 2026-09-12. Listed here for the reason every
+          -- row in this block is: a cue has to be re-choosable with the same
+          -- tool that found it, and tools/test_shared.lua refuses a cue whose
+          -- pair the catalogue does not carry.
+          names = { 'Period_Start', } },
         { set = 'DLC_AW_Frontend_Sounds',           -- heard by the owner
           names = { 'Checkpoint_Finish', } },
         { set = 'DLC_H3_Drone_Tranq_Weapon_Sounds', -- heard by the owner

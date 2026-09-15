@@ -28,7 +28,8 @@ local mates    = {}   -- [src] = latest server record for that squadmate
 local peds     = {}   -- [src] = local ped handle, or absent when out of scope
 local lastPush = 0
 -- Mates whose name is drawn BY US rather than by the engine, because they are
--- on the floor and a gamer tag cannot be lowered onto them.
+-- on the floor and a gamer tag cannot be lowered onto them. DBNO only: an OUT
+-- mate's ped is invisible, so their name is drawn by nobody (see the tick).
 -- [src] = { ped = handle, text = 'Alice [DOWN]', dim = boolean, downed = boolean }
 local low      = {}
 
@@ -208,9 +209,50 @@ local function clearAll()
     disbandAllies()
 end
 
+--- THE VEHICLE THIS CLIENT'S OWN PED IS SITTING IN, or 0.
+---
+--- GetVehiclePedIsIn RETURNS AN ENTITY, NOT A BOOL, which is why this is a
+--- handle comparison and not IsPedInVehicle: the latter is a declared BOOL and
+--- would need an isTrue() wrapper to be read safely, and the bool-natives
+--- ratchet only goes down. Two handles being equal and non-zero is the same
+--- question with nothing to get wrong.
+---
+--- `or 0` because the native answers 0 for a ped on foot on some builds and this
+--- file must never compare against a nil.
+local function vehicleOf(ped)
+    if not ped or ped == 0 then return 0 end
+    return GetVehiclePedIsIn(ped, false) or 0
+end
+
 RegisterNetEvent(BR.Net.SQUAD_POS)
 AddEventHandler(BR.Net.SQUAD_POS, function(list)
     lastPush = GetGameTimer()
+
+    -- ═══ NO BLIP FOR THE TEAMMATE IN YOUR OWN PASSENGER SEAT ═══
+    --
+    -- Owner, 2026-09-11: "Please turn off squad player blips while they're in
+    -- the same vehicle. Let me be clear on this: player 1 and player 2 are in
+    -- the same vehicle. Player 3 can still see blips for both, but player 1 and
+    -- player 2 cannot see a blip for each other. This is because of the sync
+    -- rate between them being a bit off from smooth, but I don't want to fix
+    -- that at tick rate because it's cheaper to turn it off. Then once they get
+    -- out of the vehicles the blip turns back on."
+    --
+    -- IT IS PER VIEWER AND NOT GLOBAL, WHICH IS THE WHOLE RULE. The blip is not
+    -- withdrawn from the world -- there is no wire field for "hide me from these
+    -- two people" and there must not be one, because the answer is different on
+    -- every screen. Player 3, on foot or in another car, keeps both dots. So the
+    -- test is asked HERE, on the machine that is drawing, about ITS OWN ped.
+    --
+    -- WHAT IT IS NOT. It is not a fix for the jitter -- he ruled that out by
+    -- name, and the position sampler stays at posSampleHz. The dot of somebody
+    -- sitting beside you is the one dot that is worth nothing and moves most,
+    -- because it is the only one whose subject you can see out of the window.
+    --
+    -- ONE CALL PER PUSH FOR OUR OWN SEAT, hoisted out of the loop: SQUAD_POS is
+    -- the 4 Hz beacon, not a tick, and "cheaper to turn it off" should not cost
+    -- a native per mate per frame to decide.
+    local mySeat = vehicleOf(PlayerPedId())
 
     local seen = {}
     for _, m in ipairs(list or {}) do
@@ -240,7 +282,32 @@ AddEventHandler(BR.Net.SQUAD_POS, function(list)
             -- edge test cannot cover the blip that was born out (a mate who
             -- was eliminated while this client was out of the squad push).
             local out = m.state == BR.PlayerState.OUT
-            SetBlipAlpha(blips[m.src], out and 120 or 255)
+
+            -- ...AND A MATE IN OUR OWN VEHICLE IS HIDDEN OUTRIGHT -- see the
+            -- block at the top of this handler.
+            --
+            -- ALPHA, WHICH IS WHY THE BLIP NEVER HAS TO BE RE-ADDED. This line
+            -- already wrote alpha every push for the OUT dimming, so "off" is
+            -- the same lever at 0 and the transition back is the same lever at
+            -- 255 -- the handle, its sprite, its colour and its legend name all
+            -- survive the ride. A version that removed the blip and built a new
+            -- one on the way out would flicker the legend and re-run
+            -- AddBlipForCoord four times a second for the whole journey.
+            --
+            -- THE MATE'S PED IS RESOLVED THROUGH pedOf, so a squadmate the
+            -- engine has not streamed answers 0 and is NOT hidden. That is the
+            -- correct degrade and it costs nothing: two players in one vehicle
+            -- are in each other's scope by definition, so the case this rule is
+            -- about is exactly the case where the ped is there.
+            --
+            -- `mySeat ~= 0` GUARDS BOTH SIDES. On foot our own answer is 0, and
+            -- so is the answer for every mate on foot -- without this, a squad
+            -- standing in a field would hide every dot from every member.
+            local sharing = mySeat ~= 0
+                and vehicleOf(BR.Squadmates.pedOf(m.src)) == mySeat
+
+            SetBlipAlpha(blips[m.src],
+                sharing and 0 or (out and 120 or 255))
         end
     end
 
@@ -367,16 +434,37 @@ BR.Loop.register(BR.Loop.TICK, 'squadmates.tags', function()
         -- the flight, and a tag on an invisible rider rendered as a name
         -- floating over the fuselage. Pre-drop there is nothing to label.
         --
-        -- OUT AND DOWNED MATES ARE STILL LABELLED. Nothing hides faster in a
-        -- firefight than the question "where did my teammate go down", and the
-        -- corpse is the answer. The state is written into the tag so it reads
-        -- at a glance rather than being a name that mysteriously stopped
-        -- moving (user report, 2026-08-05: could not see dead squadmates).
+        -- A DOWNED MATE IS STILL LABELLED. Nothing hides faster in a firefight
+        -- than the question "where did my teammate go down", and the crawling
+        -- body is the answer. The state is written into the tag so it reads at
+        -- a glance rather than being a name that mysteriously stopped moving
+        -- (user report, 2026-08-05: could not see dead squadmates).
         --
-        -- THE TAG STILL READS [DEAD], and that is deliberate rather than a
-        -- missed rename: the word on screen is the owner's, and #219 Q1 asks
-        -- him whether he wants a different one. A state renamed in the enum is
-        -- not a license to rewrite what a player reads.
+        -- ═══ AN OUT MATE IS NOT, AND THE CIRCUMSTANCE IS WHAT CHANGED ═══
+        --
+        -- Owner, 2026-09-13: "turn off playernames for dead squadmates. We
+        -- already have a 3dmarker at their position but since their ped is
+        -- invisible their playername is just floating text saying `Xeon
+        -- [DEAD]`."
+        --
+        -- THE WORD WAS NEVER THE PROBLEM AND HAS NOT BEEN OVERRULED. `[DEAD]`
+        -- was the owner's own, it answered his 2026-08-05 report, and #219 Q1
+        -- still asks him whether he wants a different one. What moved under it
+        -- is the BODY: his 2026-08-31 instruction -- "after a player has bled
+        -- out, their ped should become invisible. Only the 3dmarker (type 24)
+        -- and DUI should be shown at their position. I like the blip though --
+        -- let's keep that" -- is implemented in client/natives.lua, which drops
+        -- SetEntityVisible on an OUT player's own ped. So this label stopped
+        -- hanging over a corpse and started hanging over nothing.
+        --
+        -- NOTHING REPLACES IT, because the two things he named already carry
+        -- the position: client/revivekey.lua draws the type-24 marker and its
+        -- plate at the body, and the squad blip below is untouched and outlives
+        -- both. A label invented here to fill the gap would be UI he did not
+        -- ask for.
+        --
+        -- DBNO IS UNTOUCHED. A downed mate is crawling, visible, and revivable,
+        -- which is the whole of why that name exists.
         local e = BR.State.roster[src]
         local st = e and e.state
         local jumped = st == BR.PlayerState.FREEFALL
@@ -386,10 +474,7 @@ BR.Loop.register(BR.Loop.TICK, 'squadmates.tags', function()
             or st == BR.PlayerState.OUT
 
         local mark = ''
-        if st == BR.PlayerState.DBNO then mark = ' [DOWN]'
-        elseif st == BR.PlayerState.OUT then
-            mark = ' [DEAD]'
-        end
+        if st == BR.PlayerState.DBNO then mark = ' [DOWN]' end
 
         -- A GAMER TAG CANNOT BE LOWERED, SO A BODY ON THE FLOOR DOES NOT GET
         -- ONE (owner, 2026-08-17: names "drawing above a ped's standing height
@@ -403,11 +488,17 @@ BR.Loop.register(BR.Loop.TICK, 'squadmates.tags', function()
         -- animation rather than a posture the engine knows about, so the tag
         -- floats where the head would be if they stood up.
         --
-        -- So the two upright states keep the engine's tag -- it is the proven
-        -- path, it fades and occludes the way every other name in the game
-        -- does -- and the two floor states get a name this file draws itself,
-        -- at the head bone, in the loop below. The seam is deliberate: the
-        -- common case is not being rewritten to fix the uncommon one.
+        -- So the upright states keep the engine's tag -- it is the proven path,
+        -- it fades and occludes the way every other name in the game does --
+        -- and DBNO gets a name this file draws itself, at the head bone, in the
+        -- loop below. The seam is deliberate: the common case is not being
+        -- rewritten to fix the uncommon one.
+        --
+        -- OUT IS ON THIS LIST AND GETS NEITHER. It must not get an engine tag,
+        -- for the reason above and because the ped is invisible; and it no
+        -- longer gets a drawn one either, which is the 2026-09-13 change noted
+        -- further up. It falls through to the `else`, where dropTag tears down
+        -- whatever tag it was wearing while it was alive.
         local onFloor = st == BR.PlayerState.DBNO
             or st == BR.PlayerState.OUT
 
@@ -438,7 +529,7 @@ BR.Loop.register(BR.Loop.TICK, 'squadmates.tags', function()
             -- on, so the name leaves and returns with them rather than a beat
             -- apart.
             SetMpGamerTagVisibility(t.tag, 0, not scoped)
-        elseif ped ~= 0 and jumped then
+        elseif ped ~= 0 and jumped and st == BR.PlayerState.DBNO then
             dropTag(src)
             low[src] = {
                 ped  = ped,

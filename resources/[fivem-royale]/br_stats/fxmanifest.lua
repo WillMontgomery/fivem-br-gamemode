@@ -34,6 +34,10 @@ server_scripts {
     -- calculated.
     '@br_lib/shared/protocol.lua',
     '@br_lib/shared/identity.lua',  -- BR.Identity; persist.lua keys on license
+    -- BR.MatchTag; persist.lua names the match in the line it prints when a
+    -- result is written, and a console showing two numbers for one match is
+    -- exactly what #291 was avoiding.
+    '@br_lib/shared/matchtag.lua',
     -- The payout table. Currency is earned here and nowhere else, and what a
     -- match pays lives beside what things cost so the two stay calibrated.
     '@br_lib/config/market.lua',

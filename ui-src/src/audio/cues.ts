@@ -1,7 +1,7 @@
 /**
  * OUR OWN SOUNDS.
  *
- * Everything the player hears from the interface is synthesised here, in the
+ * Everything the player hears from the interface is synthesized here, in the
  * browser, from oscillators and filtered noise. Not one of these is a GTA
  * frontend sound.
  *
@@ -280,7 +280,7 @@ const CUES: Record<Cue, () => void> = {
 
   // LOOT ASCENDS BY RARITY, across pickups and never within one cue. A warm
   // harmonic body with a short decay -- bell partials ring like glass, which
-  // is literally how you synthesise a wine glass.
+  // is literally how you synthesize a wine glass.
   'loot':           () => lootCue(0),
   'loot.rare':      () => lootCue(2),
   'loot.legendary': () => lootCue(4),

@@ -112,7 +112,7 @@ BR.Config.Ambulances = {
     -- open since 2023-10-29, labelled onesync) is the reason this is a number
     -- and not a single call. Its reproduction is a server-side delete loop over
     -- SEVERAL vehicles IN A NON-DEFAULT ROUTING BUCKET -- which is exactly this
-    -- feature, twenty-three at a time, in bucket matchBucketBase + matchId --
+    -- feature, twenty-three at a time, in the match's own routing bucket --
     -- and the reported symptom is that DoesEntityExist answers false on the
     -- server while clients go on rendering the vehicle. The thread carries no
     -- workaround.

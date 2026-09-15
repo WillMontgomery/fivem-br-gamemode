@@ -678,6 +678,235 @@ do
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
+-- THE DEATH THAT ENDS THE MATCH DOES NOT OPEN A CAMERA
+--
+-- "whenever the 2nd to last player (or squad) dies - they should not go
+-- immediately to spectate and just show the verdict and fade to black like
+-- normal." -- the owner, 2026-09-11.
+--
+-- ═══ THE BUG IS AN ABSENCE, SO THE CONTROL IS THE FIRST ASSERTION ═══
+--
+-- "no session opened" passes just as happily against a file that has stopped
+-- opening sessions for ANYBODY, and breaking spectate for the whole lobby is the
+-- easy wrong fix here -- the automatic open is one `if` away from being switched
+-- off for good. So the ordinary death goes first, in the same fixture, one
+-- message different, and it has to produce a request.
+--
+-- ═══ AND THE UNIT IS THE REQUEST, NOT THE CAMERA ═══
+--
+-- This half of the rule is about what leaves the machine. The camera is the
+-- server's to grant (the block at the bottom of this file drives the real
+-- `resolve` and asserts no session is handed over), so what is observable here is
+-- BR.Net.SPECTATE_CYCLE on the wire -- and a client that asks and is refused is
+-- still a client with a round trip between a player's death and the verdict
+-- screen coming up over it, which is the thing the latch exists to remove.
+-- ═══════════════════════════════════════════════════════════════════════════
+
+describe('the elimination that ends the match')
+
+--- One pass of the SLOW band, which is where `spectate.open` lives.
+local function slow()
+    BR.Loop.step(BR.Loop.SLOW)
+end
+
+--- How many SPECTATE_CYCLE requests have been sent so far.
+local function cycleCount()
+    local n = 0
+    for _, s in ipairs(sent) do
+        if s.name == BR.Net.SPECTATE_CYCLE then n = n + 1 end
+    end
+    return n
+end
+
+--- Put this client in a known place: no session, no seal, dead in a live match.
+---
+--- THE SEAL IS LOWERED THROUGH THE REAL EDGE rather than by reaching into the
+--- file, because "an edge away from OUT clears it" is one of the properties under
+--- test and a fixture that set the variable directly could not tell a latch that
+--- clears from one that was never raised.
+local function freshDeath()
+    stop()
+    BR.State.me.state = BR.PlayerState.ALIVE
+    slow()                                  -- the edge that lowers any seal
+    BR.State.me.state = BR.PlayerState.OUT
+    sent = {}
+end
+
+do
+    -- THE CONTROL. An ordinary death still asks for a camera, on the first SLOW
+    -- pass after the verdict is down.
+    freshDeath()
+    slow()
+    ok(cycleCount() == 1,
+       'an ordinary death asks for a camera -- the control, without which every '
+           .. 'absence below is vacuous',
+       ('sent %d request(s)'):format(cycleCount()))
+    ok(sent[1] and sent[1].args[1] and sent[1].args[1].dir == 0,
+       'and it asks with dir 0, which is "open one under the rules"')
+end
+
+do
+    -- ═══ THE REPORTED BUG ═══
+    --
+    -- The deciding elimination. server/spectate.lua's onEliminated sends the
+    -- stop envelope with `final` to every player in the match who is not in the
+    -- fight -- which for the player who just died is a stop with nothing to stop
+    -- and the latch alone.
+    freshDeath()
+    fire(BR.Net.SPECTATE_SET, { stop = true, reason = 'match-over', final = true })
+
+    slow()
+    ok(cycleCount() == 0,
+       'the death that ends the match asks for nothing -- the verdict stands and '
+           .. 'no camera is requested',
+       ('sent %d request(s)'):format(cycleCount()))
+
+    -- ...AND NOT ON THE RETRIES EITHER. The open loop budgets three attempts per
+    -- death, so a gate that only held for the first would produce the reported
+    -- snap one second later.
+    slow(); slow(); slow(); slow()
+    ok(cycleCount() == 0,
+       'and still nothing across the whole retry budget and past it',
+       ('sent %d request(s)'):format(cycleCount()))
+
+    -- ...AND THE ARROWS ARE THE SAME ANSWER, which is the door with no
+    -- death-verdict hold in front of it: `ask(dir)` fires on the keypress the
+    -- instant the state reads OUT, and the hint naming those keys is on screen.
+    for _, fn in ipairs(keySubs.specNext or {}) do fn(true) end
+    for _, fn in ipairs(keySubs.specPrev or {}) do fn(true) end
+    ok(cycleCount() == 0,
+       'and the arrow keys ask for nothing either -- one gate, on the one door '
+           .. 'both paths come through',
+       ('sent %d request(s)'):format(cycleCount()))
+end
+
+do
+    -- ═══ ORDER DOES NOT MATTER, WHICH IS THE WHOLE POINT OF A LATCH ═══
+    --
+    -- The seal and this client's own OUT edge are separate messages with no
+    -- ordering between them: the server writes the death and seals the match in
+    -- one synchronous call, and which of the two envelopes is read first here is
+    -- not something either side promises. So the seal arriving while this client
+    -- still believes it is ALIVE has to end in the same place.
+    stop()
+    BR.State.me.state = BR.PlayerState.LOBBY
+    slow()
+    BR.State.me.state = BR.PlayerState.ALIVE
+    slow()
+    sent = {}
+
+    fire(BR.Net.SPECTATE_SET, { stop = true, reason = 'match-over', final = true })
+    BR.State.me.state = BR.PlayerState.OUT      -- the delta lands afterwards
+    slow()
+    ok(cycleCount() == 0,
+       'a seal that arrives BEFORE this client has seen its own death still '
+           .. 'suppresses the ask -- the edge into OUT does not lower it',
+       ('sent %d request(s)'):format(cycleCount()))
+end
+
+do
+    -- ═══ A SESSION ALREADY RUNNING COMES DOWN, AND THE PLAYER GETS THEIR BODY
+    --     BACK ═══
+    --
+    -- The squadmate who was already watching when the last member of their squad
+    -- died. "Stuck in a camera with nothing to watch" is the failure, and the
+    -- observable half of it on this side is the control suppression: a `session`
+    -- cleared without the teardown is a player who cannot move for the rest of
+    -- the round, which is the bug this whole suite exists for.
+    freshDeath()
+    start()
+    ok(count(frame()) > 0, 'a watcher is holding controls down')
+
+    fire(BR.Net.SPECTATE_SET, { stop = true, reason = 'match-over', final = true })
+    ok(BR.Spectate.active() == false, 'the seal ends the session it arrived on')
+    ok(count(frame()) == 0,
+       'and the very next frame holds nothing -- the camera is down and the ped '
+           .. 'is the player\'s again',
+       sorted(held))
+
+    -- AND IT DOES NOT COME BACK. A teardown that left the open loop armed would
+    -- re-open the session it just closed, one second later.
+    sent = {}
+    slow(); slow()
+    ok(cycleCount() == 0,
+       'and the open loop does not re-open what the seal just closed',
+       ('sent %d request(s)'):format(cycleCount()))
+end
+
+do
+    -- ═══ THE HALF THAT MUST NOT BREAK: THE SEAL IS A MATCH'S, NOT A PERSON'S ═══
+    --
+    -- The way this fix goes wrong quietly is a latch nothing lowers -- spectating
+    -- gone for the rest of the session with nothing on screen to say why, which
+    -- is the reported bug wearing the opposite coat. So the whole arc, in one
+    -- fixture: sealed at the end of one match, home, and killed again in the next
+    -- one, which has to behave exactly as it always did.
+    freshDeath()
+    fire(BR.Net.SPECTATE_SET, { stop = true, reason = 'match-over', final = true })
+    slow()
+    ok(cycleCount() == 0, 'sealed at the end of a match: no camera')
+
+    -- CLEANUP takes them home; the next match flies a bus and drops them.
+    for _, st in ipairs({ BR.PlayerState.LOBBY, BR.PlayerState.WARMUP,
+                          BR.PlayerState.BUS, BR.PlayerState.FREEFALL,
+                          BR.PlayerState.ALIVE }) do
+        BR.State.me.state = st
+        slow()
+    end
+    BR.State.me.state = BR.PlayerState.OUT
+    sent = {}
+    slow()
+    ok(cycleCount() == 1,
+       'and a death in the NEXT match gets the camera it always should have -- '
+           .. 'the seal closed a round, not a player',
+       ('sent %d request(s)'):format(cycleCount()))
+end
+
+do
+    -- AND A REVIVE INSIDE THE SEALED ROUND LOWERS IT TOO. There is one way back
+    -- out of OUT without the match ending (server/revivekey.lua stands a player
+    -- up mid-match), and a player who is fighting again must not be carrying a
+    -- seal that would deny them the camera for the death after this one.
+    freshDeath()
+    fire(BR.Net.SPECTATE_SET, { stop = true, reason = 'match-over', final = true })
+    slow()
+    BR.State.me.state = BR.PlayerState.ALIVE
+    slow()
+    BR.State.me.state = BR.PlayerState.OUT
+    sent = {}
+    slow()
+    ok(cycleCount() == 1,
+       'a revive out of a sealed round leaves no seal behind it',
+       ('sent %d request(s)'):format(cycleCount()))
+end
+
+do
+    -- AND AN ORDINARY STOP IS NOT A SEAL. Every other reason a session ends --
+    -- the target left, the pause-menu exit, a watcher revived -- says nothing
+    -- about the MATCH, and an envelope without `final` must leave the open loop
+    -- exactly as armed as it found it. A gate keyed on `d.stop` rather than on
+    -- `d.final` would pass every assertion above this line and switch the
+    -- feature off for the whole lobby.
+    freshDeath()
+    start()
+    fire(BR.Net.SPECTATE_SET, { stop = true, reason = 'target-left' })
+    sent = {}
+    slow()
+    ok(cycleCount() == 1,
+       'a stop with no `final` on it re-arms the open loop as it always did',
+       ('sent %d request(s)'):format(cycleCount()))
+
+    -- AND `final` IS READ AS A BOOLEAN. `0` is truthy in Lua and this field
+    -- comes off the wire; a truth test would seal on a field that said no.
+    freshDeath()
+    fire(BR.Net.SPECTATE_SET, { stop = true, reason = 'target-left', final = false })
+    sent = {}
+    slow()
+    ok(cycleCount() == 1,
+       'and `final = false` is not a seal', ('sent %d'):format(cycleCount()))
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
 -- THE SERVER'S HALF: WHO MAY HOLD A SESSION, AND FOR HOW LONG
 --
 -- "New bug: dying before the match results in spectating, then getting stuck in
@@ -768,6 +997,10 @@ local function newServer()
         'br_lib/shared/enums.lua', 'br_lib/shared/protocol.lua',
         'br_lib/shared/sched.lua', 'br_lib/config/match.lua',
         'br_lib/shared/spectate_solve.lua',
+        -- The match id in a log line. Pure, two functions, no dependencies --
+        -- and server/spectate.lua prints one when it closes a decided match, so
+        -- without this that path raises instead of asserting.
+        'br_lib/shared/matchtag.lua',
     })
 
     local PS = env.BR.PlayerState
@@ -800,12 +1033,36 @@ local function newServer()
             return st == PS.ALIVE or st == PS.DBNO or st == PS.WARMUP
                 or st == PS.BUS or st == PS.FREEFALL or st == PS.GLIDE
         end,
+        -- THE MATCH REGISTRY, because `resolve` reads the seal off the instance
+        -- it belongs to. One match, because a second one would be testing
+        -- server/main.lua's bookkeeping rather than this file's rule.
+        matches = { [1] = { id = 1 } },
     }
+
+    -- AND THE WIN CONDITION'S OWN COUNT, WRITTEN IN TERMS OF THE isInMatch
+    -- ABOVE so there is still only one statement of "in the fight" in this
+    -- fixture. server/main.lua is not loaded here (see the note over isInMatch);
+    -- this is the second and last thing restated from it, and it is restated
+    -- whole -- DBNO INCLUDED, which is the half that matters: a downed player
+    -- keeps their squad standing, and a copy that quietly dropped them would
+    -- make the seal fire a match early and this suite agree with it.
+    env.BR.Server.squadsAlive = function(m)
+        local seen, n = {}, 0
+        for src, p in pairs(roster) do
+            if env.BR.Server.isInMatch(p.state)
+               and (not m or p.matchId == m.id) then
+                local key = p.squadId or ('solo:' .. tostring(src))
+                if not seen[key] then seen[key] = true; n = n + 1 end
+            end
+        end
+        return n
+    end
 
     loadInto(env, { 'br_core/server/spectate.lua' })
 
     local S = {}
     S.env, S.roster, S.toClient = env, roster, toClient
+    S.match = env.BR.Server.matches[1]
 
     --- Put a player on the roster. Solos by default: `freeAfterSquadOut` ships
     --- false, and spectate_solve widens a SOLO's list regardless, so a solo
@@ -864,6 +1121,32 @@ local function newServer()
             end
         end
         return r
+    end
+
+    --- How many stops carrying `final` have been sent to this watcher.
+    ---
+    --- COUNTED RATHER THAN LATCHED, because a player with a session running and a
+    --- player with nothing running reach the message by two different routes --
+    --- BR.Spectate.stop and a direct send -- and "exactly one, whichever route it
+    --- took" is the property. A latch would pass on a version that sent both.
+    function S.seals(src)
+        local n = 0
+        for _, m in ipairs(toClient) do
+            if m.name == env.BR.Net.SPECTATE_SET and m.src == src
+               and m.d.stop and m.d.final == true then
+                n = n + 1
+            end
+        end
+        return n
+    end
+
+    --- How many messages of any kind this src has been sent.
+    function S.messages(src)
+        local n = 0
+        for _, m in ipairs(toClient) do
+            if m.src == src then n = n + 1 end
+        end
+        return n
     end
 
     return S
@@ -1035,6 +1318,261 @@ do
     ok(S.watching(1),
        'and a real death later in the SAME match gets the camera it always '
            .. 'should have -- the hold gated a window, not a person')
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- THE DECIDED MATCH: NO CAMERA IS HANDED OVER, AND THE RUNNING ONES COME DOWN
+--
+-- The server's half of the owner's 2026-09-11 rule. The client block above pins
+-- what leaves the machine; this pins the thing that actually cannot be raced --
+-- BR.Spectate.onEliminated latches the match inside the same synchronous call
+-- that writes the deciding death, so every ask after it is answered with NO
+-- SESSION rather than with one that is taken away a moment later.
+--
+-- IT IS DRIVEN THROUGH THE REAL NET HANDLER AND THE REAL FEED, so what is being
+-- refused is what a client actually reaches -- and the absence of a session is
+-- read off the messages the server SENT, not off its private table.
+-- ═══════════════════════════════════════════════════════════════════════════
+
+describe('a match that has been decided')
+do
+    -- THE CONTROL, AND IT IS THE WHOLE POINT OF THE PREDICATE BEING AN EDGE.
+    -- Three solos: one dies, two are left, and the round goes on. A rule keyed on
+    -- "is one squad standing" would be satisfied by nothing here, but a rule keyed
+    -- on the wrong count -- or a seal with no predicate at all -- would take this
+    -- player's camera away mid-match.
+    local S = newServer()
+    local PS = S.env.BR.PlayerState
+    S.add(1, PS.ALIVE); S.add(2, PS.ALIVE); S.add(3, PS.ALIVE)
+
+    S.roster[1].state = PS.OUT
+    local sealedIt = S.env.BR.Spectate.onEliminated(S.match, 3)
+    ok(sealedIt == false,
+       'a death that leaves TWO squads standing seals nothing', sealedIt)
+    ok(S.match.spectateSealed == nil, 'and the match carries no latch')
+
+    S.cycle(1, 0)
+    ok(S.watching(1),
+       'and the dead player gets the camera they always did -- the control, '
+           .. 'without which every absence below is vacuous')
+end
+
+do
+    -- ═══ THE REPORTED BUG, IN THE OWNER'S OWN WORDS: TWO SOLOS LEFT ═══
+    --
+    -- "whenever the 2nd to last player (or squad) dies" -- the second-to-last
+    -- solo is the second-to-last squad, because a solo IS their own squad
+    -- everywhere this project counts them.
+    local S = newServer()
+    local PS = S.env.BR.PlayerState
+    S.add(1, PS.ALIVE); S.add(2, PS.ALIVE)
+
+    -- BR.Combat.eliminate: the placement is read BEFORE anything is written, the
+    -- roster goes to OUT, and then the question is asked.
+    local placement = S.env.BR.Server.squadsAlive(S.match)
+    ok(placement == 2, 'two squads are standing before the death', placement)
+    S.roster[1].state = PS.OUT
+    local sealedIt = S.env.BR.Spectate.onEliminated(S.match, placement)
+
+    ok(sealedIt == true, 'the death of the second-to-last squad seals the match')
+    ok(S.seals(1) == 1,
+       'and its victim is told once, on the stop envelope, that the camera is '
+           .. 'closed for good', ('%d seal message(s)'):format(S.seals(1)))
+    ok(S.lastStop(1) == 'match-over',
+       'with the reason naming why', tostring(S.lastStop(1)))
+
+    -- ═══ AND THE ASK IS REFUSED, WHICH IS THE HALF THAT CANNOT BE LOST ═══
+    --
+    -- A client that never got the message -- one that was mid-load, one whose
+    -- envelope was dropped -- still asks. The flicker the owner is describing is
+    -- a session that OPENS and is torn down, so the property is that nothing
+    -- opens at all.
+    S.cycle(1, 0)
+    ok(not S.watching(1),
+       'a client that asks anyway is handed no session -- not one that is taken '
+           .. 'away a moment later, none at all')
+    S.cycle(1, 0); S.cycle(1, 0); S.cycle(1, 0)
+    ok(not S.watching(1), 'and is still handed none across the retry budget')
+    S.cycle(1, 1); S.cycle(1, -1)
+    ok(not S.watching(1), 'and the arrow keys open nothing either')
+
+    S.feed()
+    S.feed()
+    ok(not S.watching(1), 'and the feed does not open one behind their back')
+
+    -- THE WINNER IS NOT SENT A MESSAGE ABOUT A CAMERA. They are in the fight,
+    -- they have nothing to close, and a stop envelope arriving at a living player
+    -- runs a teardown for a session that never existed.
+    ok(S.messages(2) == 0,
+       'and the player still standing is told nothing at all',
+       ('%d message(s)'):format(S.messages(2)))
+end
+
+do
+    -- ═══ THE SQUAD CASE: EVERY MEMBER GETS IT, INCLUDING THE ONE ALREADY
+    --     WATCHING ═══
+    --
+    -- "A squad mode match ends when the last squad standing is alone, so the
+    -- 2nd to last squad is a group." Squad A is 1, 2 and 4; squad B is 3.
+    -- Player 4 died early and never asked for a camera; player 1 died and IS
+    -- watching player 2; player 2 is the last one standing in A.
+    local S = newServer()
+    local PS = S.env.BR.PlayerState
+
+    -- FREE SPECTATE ON, IN THIS FIXTURE ONLY, AND IT IS WHAT MAKES THE BLOCK
+    -- MEAN ANYTHING. Under the shipped `freeAfterSquadOut = false` a wiped squad
+    -- has no targets at all, so their session ends with 'no-targets' whatever
+    -- this change does and every absence below would pass against a file with no
+    -- seal in it. With the widening ON the winners ARE eligible targets, so a
+    -- version that stopped the session without latching the match would hand
+    -- player 1 the winning squad to watch on the very next feed push -- which is
+    -- precisely "stuck in a camera", and is the failure this asserts against.
+    S.env.BR.Config.Spectate.freeAfterSquadOut = true
+
+    S.add(1, PS.OUT,   { squadId = 'A' })
+    S.add(2, PS.ALIVE, { squadId = 'A' })
+    S.add(4, PS.OUT,   { squadId = 'A' })
+    S.add(3, PS.ALIVE, { squadId = 'B' })
+
+    S.cycle(1, 0)
+    ok(S.watching(1),
+       'a dead squad member is watching their last standing mate -- the control')
+
+    -- Player 2 dies: A is out, B is alone, the match is over.
+    local placement = S.env.BR.Server.squadsAlive(S.match)
+    S.roster[2].state = PS.OUT
+    ok(S.env.BR.Spectate.onEliminated(S.match, placement) == true,
+       'the last member of the second-to-last SQUAD ends it too')
+
+    ok(not S.watching(1),
+       'the squadmate who was already watching is not left in a camera with '
+           .. 'nothing to watch')
+    ok(S.lastStop(1) == 'match-over' and S.seals(1) == 1,
+       'and their session ends as a seal, through the one teardown -- so the '
+           .. 'microphone comes back and the audit row is closed',
+       ('reason=%s seals=%d'):format(tostring(S.lastStop(1)), S.seals(1)))
+    ok(S.seals(2) == 1,
+       'the member whose death ended it gets the latch with nothing to stop')
+    ok(S.seals(4) == 1,
+       'and so does the member who died early and never asked -- the whole squad, '
+           .. 'not just the one who triggered it')
+    ok(S.messages(3) == 0, 'the winning squad is told nothing')
+
+    -- AND NOTHING RE-OPENS. The feed re-resolves every player session on every
+    -- push, and with the widening on (see the top of this block) the winning
+    -- squad is an eligible target -- so this is the assertion that a stop without
+    -- a latch cannot pass.
+    S.feed(); S.feed()
+    ok(not S.watching(1), 'and the feed re-opens nothing for either of them')
+    S.cycle(1, 0); S.cycle(4, 0)
+    ok(not S.watching(1) and not S.watching(4),
+       'and neither of them can ask their way back in')
+end
+
+do
+    -- ═══ A SQUADMATE WHO IS DBNO IS NOT A SQUAD THAT IS OUT ═══
+    --
+    -- The count this asks is BR.Server.squadsAlive, which COUNTS DBNO -- a downed
+    -- player is coming back, and the whole ambulance feature turns on that. So
+    -- the last player of a squad dying while a mate is still on the floor does
+    -- NOT end the match, and must not close anybody's camera: the round is still
+    -- being played for the squad that is up.
+    --
+    -- USING standingSquadsBesides -- the sibling question one file over, which
+    -- EXCLUDES DBNO because it answers "is there anybody left to fight over this
+    -- knock" -- would seal here, and this is the assertion that says so.
+    local S = newServer()
+    local PS = S.env.BR.PlayerState
+    S.add(1, PS.ALIVE, { squadId = 'A' })
+    S.add(2, PS.DBNO,  { squadId = 'A' })
+    S.add(3, PS.ALIVE, { squadId = 'B' })
+
+    local placement = S.env.BR.Server.squadsAlive(S.match)
+    S.roster[1].state = PS.OUT
+    ok(S.env.BR.Spectate.onEliminated(S.match, placement) == false,
+       'a squad with a downed member left is still a squad, and nothing is sealed')
+    ok(S.seals(1) == 0, 'and nobody is told the camera is closed')
+    S.cycle(1, 0)
+    ok(S.watching(1),
+       'the player who just died watches their downed mate, as they always have')
+
+    -- ...AND THE BLEED-OUT IS WHAT ENDS IT. The same call, one death later.
+    local p2 = S.env.BR.Server.squadsAlive(S.match)
+    S.roster[2].state = PS.OUT
+    ok(S.env.BR.Spectate.onEliminated(S.match, p2) == true,
+       'and the bleed-out that finally empties the squad is the deciding death')
+    ok(not S.watching(1) and S.seals(1) == 1,
+       'which closes the camera the earlier death correctly left open')
+end
+
+do
+    -- ═══ THE DEV MATCH THAT NEVER HAD A SECOND SQUAD ═══
+    --
+    -- server/match.lua's winConditionMet carves out a dev match that STARTED with
+    -- one squad so a lone developer can sit in PLAYING and poke at the world --
+    -- which means "one squad is standing" is true there from the first tick, and
+    -- a seal keyed on that count alone would take spectating away from exactly
+    -- the person who has to test it.
+    --
+    -- THE EDGE IS WHAT KEEPS IT OUT, with no second copy of that carve-out to
+    -- drift from: the field was never two squads, so it never went down to one.
+    local S = newServer()
+    local PS = S.env.BR.PlayerState
+    S.add(1, PS.ALIVE, { squadId = 'A' })
+    S.add(2, PS.ALIVE, { squadId = 'A' })
+
+    local placement = S.env.BR.Server.squadsAlive(S.match)
+    ok(placement == 1, 'the dev match has one squad in it', placement)
+    S.roster[1].state = PS.OUT
+    ok(S.env.BR.Spectate.onEliminated(S.match, placement) == false,
+       'a match that never had a second squad is not sealed by its first death')
+    S.cycle(1, 0)
+    ok(S.watching(1), 'and the developer who died still gets to watch their mate')
+end
+
+do
+    -- AN ADMIN'S SESSION IS THE ONE POLICY THIS MUST NOT REACH. A moderator who
+    -- died in the round and then opened a console session is watching on the
+    -- admin policy, and the match ending is not a reason to end a moderation
+    -- session -- nor to send them a latch governing what a PLAYER may ask for.
+    local S = newServer()
+    local PS = S.env.BR.PlayerState
+    S.add(1, PS.OUT); S.add(2, PS.ALIVE); S.add(3, PS.ALIVE)
+    ok(S.env.BR.Spectate.adminStart({ admin = 1, target = 2 }),
+       'an admin session is running against a dead admin')
+
+    local placement = S.env.BR.Server.squadsAlive(S.match)
+    S.roster[3].state = PS.OUT
+    ok(S.env.BR.Spectate.onEliminated(S.match, placement) == true,
+       'the match is decided')
+    ok(S.watching(1), 'and the admin is still watching')
+    ok(S.seals(1) == 0, 'and was sent no seal')
+    S.feed()
+    ok(S.watching(1), 'and survives the feed after the match is decided')
+end
+
+do
+    -- AND IT HAPPENS ONCE. Two players can be eliminated in the same instant --
+    -- a grenade, the storm closing on a pair -- and the second call must not send
+    -- a second round of stops to a lobby that has already had them.
+    local S = newServer()
+    local PS = S.env.BR.PlayerState
+    S.add(1, PS.ALIVE); S.add(2, PS.ALIVE); S.add(3, PS.ALIVE)
+
+    S.roster[1].state = PS.OUT
+    S.env.BR.Spectate.onEliminated(S.match, 3)
+    local placement = S.env.BR.Server.squadsAlive(S.match)
+    S.roster[2].state = PS.OUT
+    ok(S.env.BR.Spectate.onEliminated(S.match, placement) == true,
+       'the second of two deaths is the one that decides it')
+    local before = S.seals(1)
+    ok(before == 1, 'and the first victim is sealed', before)
+
+    local p3 = S.env.BR.Server.squadsAlive(S.match)
+    ok(S.env.BR.Spectate.onEliminated(S.match, p3) == false,
+       'a further elimination in an already-decided match does nothing')
+    ok(S.seals(1) == before,
+       'and sends nobody a second seal', ('%d -> %d'):format(before, S.seals(1)))
 end
 
 -- ---------------------------------------------------------------- result ---

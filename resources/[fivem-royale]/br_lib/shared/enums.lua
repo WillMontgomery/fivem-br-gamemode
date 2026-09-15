@@ -113,12 +113,52 @@ BR.ItemKind = {
 
 --- Ammo pools. Mapped onto GTA's native ammo groups so the engine tracks counts
 --- for us rather than us shadowing them.
+---
+--- ═══ FIVE SINCE 2026-09-12: LIGHT, SMG, MEDIUM, SHELLS, HEAVY ═══
+---
+--- There were seven for one day and six for a few hours. The owner played the
+--- seven-pool build and asked three things, and all three are answered here:
+---
+---   "Can we put rockets into any other category that has limited carry
+---    quantity?"
+---   "Why do we have SMG ammo and MG ammo as separate categories?"
+---   ...and that we have a limited number of ammo props for loot drops.
+---
+--- SO `SNIPER` IS GONE. Its four marksman and sniper rifles are back in HEAVY
+--- with the three launchers, which is where they were before 2026-09-11, and
+--- HEAVY is those seven weapons. IT IS NO LONGER "THE EXPLOSIVE POOL" and no
+--- comment in this repo should say that it is. `explosive` is still a validator
+--- flag on the three launchers and it no longer describes a pool.
+---
+--- AND `LMG` IS GONE, WHICH IS WHAT ANSWERS THE SECOND QUESTION PROPERLY. It was
+--- renamed rather than merged first, to 'Belt Ammo' on the floor and 'Belt' in the
+--- inventory strip -- our word and not his -- and he rejected it: "Not sure what
+--- 'belt' is or why we call it that. It doesn't actually show on the person's
+--- belt. Very misleading." He asked for it merged into somewhere roomier and, given
+--- the caps, chose: "let's put MGs in medium then". So the five machine guns --
+--- `mg`, `gusenberg`, `combatmg`, `combatmgmk2` and the airdrop `minigun` -- draw
+--- MEDIUM, and no pool in the game is captioned with a word he did not write.
+---
+--- THE 60-ROUND CAP IS THE DEFECT THAT DROVE IT. A Combat MG's magazine holds 100
+--- and the minigun's belt is 150, so neither could ever be filled from a full pool.
+--- Medium is 350.
+---
+--- FIVE POOLS OVER THREE BOX MODELS IS TWO, TWO AND ONE, which is the props point:
+--- heavy is now the only user of prop_box_ammo03a, so for the first time a box of
+--- heavy rounds on the ground is not also something else.
+---
+--- A POOL VALUE MAY NOT COLLIDE WITH AN ITEM ID. An ammo stack's `item` IS THE
+--- BARE POOL STRING (shared/loot_gen.lua, server/inventory.lua), and every dispatch
+--- that resolves a BARE id -- server/debug.lua's brgive and brarm,
+--- server/loot.lua's devStack -- asks BR.Config.WeaponById first, so a pool named
+--- after a gun would hand back the gun. tools/test_shared.lua ratchets that, and
+--- records the one collision that already ships: 'smg'.
 BR.AmmoType = {
     LIGHT  = 'light',  -- pistols
     SMG    = 'smg',
-    MEDIUM = 'medium', -- rifles
+    MEDIUM = 'medium', -- rifles, and the machine guns since 2026-09-12
     SHELLS = 'shells', -- shotguns
-    HEAVY  = 'heavy',  -- snipers / LMG
+    HEAVY  = 'heavy',  -- marksman and sniper rifles, and the three launchers
 }
 
 --- Match modes.

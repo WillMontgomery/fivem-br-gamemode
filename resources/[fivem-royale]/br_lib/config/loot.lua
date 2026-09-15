@@ -438,6 +438,28 @@ for _, c in ipairs(BR.Config.Consumables) do
 end
 
 --- Ammo pickups. Dropped alongside weapons so a found gun is usable.
+---
+--- `amount` IS ALSO WHAT ONE PURCHASE BUYS. config/gunshop.lua authors no
+--- `bundle` on any row, so BR.GunshopSolve reads this number -- which is what
+--- makes the owner's "each loot pickup should be 12 rounds. Same for purchasing -
+--- 12 rounds per purchase" (2026-09-11) one number rather than two.
+---
+--- EVERY CAPTION HERE IS A WORD THE OWNER WROTE, WHICH IS NEW AS OF 2026-09-12.
+--- A sixth row read 'Belt Ammo' for part of that day -- our word, not his, and he
+--- said so: "Not sure what 'belt' is or why we call it that. It doesn't actually
+--- show on the person's belt. Very misleading." It is deleted rather than renamed
+--- again, and its five machine guns eat Medium Ammo now.
+---
+--- FIVE POOLS OVER THREE PROPS: TWO, TWO AND ONE, which is the other thing he
+--- raised: "we also have a limited number of ammo props for loot drops". Seven
+--- pools were sharing the same three models, so heavy, sniper and MG rounds were
+--- one object on the ground wearing three names. HEAVY NOW HAS prop_box_ammo03a TO
+--- ITSELF. The props are REUSED and deliberately not new: a model that is not
+--- already in this table would have to be streamed, and nothing streams it.
+---
+--- HEAVY STILL PAYS 12 and now covers the scoped rifles as well as the launchers.
+--- MEDIUM STILL PAYS 45, which is what the machine guns inherit in place of the
+--- deleted pool's 12.
 BR.Config.AmmoPickups = {
     [BR.AmmoType.LIGHT]  = { label = 'Light Ammo',  amount = 36, prop = 'prop_box_ammo01a' },
     [BR.AmmoType.SMG]    = { label = 'SMG Ammo',    amount = 60, prop = 'prop_box_ammo01a' },
@@ -450,6 +472,18 @@ BR.Config.AmmoPickups = {
 --- iterating a string-keyed table with pairs() is order-undefined -- rolling
 --- against it directly would make two servers with the same seed lay out
 --- different maps. Every ordered walk over ammo goes through this.
+---
+--- ⚠ ITS LENGTH IS LOAD-BEARING AND CHANGING IT BREAKS EVERY SAVED SEED. The
+--- layout generator walks this, so adding or removing an entry renumbers every
+--- ammo draw on the map. Five became seven on 2026-09-11, seven became six on
+--- 2026-09-12 and six became five the same day; a seed from before any of those
+--- lays out a different island now. That is the price of touching the pool count at
+--- all, in either direction.
+---
+--- HEAVY IS LAST AND THE ORDER IS OTHERWISE THE PRE-SPLIT ONE. Nothing derives
+--- meaning from the position -- the draw is weighted, not indexed -- and this
+--- keeps the shop shelf, the /brammo readout and the death-box spill in one order
+--- everybody can compare.
 BR.Config.AmmoOrder = {
     BR.AmmoType.LIGHT,
     BR.AmmoType.SMG,
@@ -458,14 +492,151 @@ BR.Config.AmmoOrder = {
     BR.AmmoType.HEAVY,
 }
 
+--- How often a floor or crate ammo roll lands on each pool. Relative weights,
+--- written to sum to 100 so a row reads as a percentage -- the same convention
+--- BR.Config.RarityWeights uses.
+---
+--- ═══ THIS EXISTS BECAUSE THE DRAW USED TO BE UNIFORM ═══
+---
+--- BR.RollLootStack picked with `rng:pick(BR.Config.AmmoOrder)`, which is uniform:
+--- five pools, 20% each. Any change to the POOL COUNT therefore moves every pool's
+--- share unless something holds them -- the 2026-09-11 split to seven took every
+--- pool to 14.3% (measured, not estimated), which would have made pistol, SMG,
+--- rifle and shotgun ammo 29% rarer on the floor as a side effect of a change
+--- about explosives. Nobody asked for that then and nobody has asked for it since,
+--- so a pool's share only ever moves when the WEAPONS in it move.
+---
+--- ⚠ THE DIVISION OF WHAT THE DELETED POOLS WERE DRAWING IS AN ASSUMPTION AND NOT
+--- HIS NUMBER, and it is the same rule applied twice on 2026-09-12: a merged pool's
+--- share goes to the pool its weapons went to, so exactly the same ammunition is
+--- rolled at exactly the same rate under one name instead of two.
+---
+---   * sniper's 8 folded into heavy, which took heavy's own 4 to 12. Heavy holds
+---     the four weapons sniper held.
+---   * lmg's 8 folded into MEDIUM, which takes medium's 20 to 28. ⚠ THE 28 IS MINE
+---     AND NOT HIS. He asked for the machine guns to live in medium and said
+---     nothing about the floor rate; leaving medium on 20 would have thinned rifle
+---     ammo for assault rifle players, because medium now feeds five more weapons
+---     than it did, as a side effect of a change about machine guns. Nobody asked
+---     for that either.
+---
+--- LIGHT, SMG AND SHELLS HAVE NOT MOVED THROUGH ANY OF IT, which is the whole
+--- point of this table. THIS IS THE KNOB TO TURN if the floor feels wrong, and it
+--- is his to turn.
+---
+--- A POOL IN AmmoOrder WITH NO WEIGHT HERE IS NEVER ROLLED, and the deck built
+--- below says so on the console rather than letting it vanish.
+BR.Config.AmmoWeights = {
+    [BR.AmmoType.LIGHT]  = 20,
+    [BR.AmmoType.SMG]    = 20,
+    [BR.AmmoType.MEDIUM] = 28,
+    [BR.AmmoType.SHELLS] = 20,
+    [BR.AmmoType.HEAVY]  = 12,
+}
+
+--- The deck BR.Config.RollAmmoPool draws from, built ONCE at load.
+---
+--- BUILT BY WALKING BR.Config.AmmoOrder AND LOOKING EACH WEIGHT UP, never by
+--- iterating BR.Config.AmmoWeights. That table is string-keyed, pairs() order is
+--- undefined, and a layout that depended on it would differ between two servers
+--- running the same seed -- the rule at the top of shared/loot_gen.lua, applied to
+--- one more table. BR.Config.RollRarity has to SORT for want of an authored order;
+--- this one has one to hand.
+---
+--- BUILDING IT ONCE IS ALSO WHY THE COMPLAINT IS SAID ONCE. Loose ground loot is
+--- 74% ammo, so a layout makes roughly fourteen hundred of these draws; a missing
+--- weight reported per roll would be a console flood rather than a report.
+BR.Config.AmmoWeightDeck = {}
+for _, pool in ipairs(BR.Config.AmmoOrder) do
+    local w = BR.Config.AmmoWeights[pool]
+    if type(w) == 'number' and w > 0 then
+        BR.Config.AmmoWeightDeck[#BR.Config.AmmoWeightDeck + 1] =
+            { pool = pool, weight = w }
+    else
+        -- SAID OUT LOUD, the way config/gunshop.lua reports a row it threw out of
+        -- the catalogue. A pool that is rollable by membership and unrollable by
+        -- weight is ammunition nothing on the map can ever pay out, and that is
+        -- invisible from a chair.
+        print(('^3[br_lib] loot: ammo pool "%s" is in BR.Config.AmmoOrder with no '
+               .. 'weight in BR.Config.AmmoWeights -- nothing will ever roll it^7')
+            :format(tostring(pool)))
+    end
+end
+
 --- Rarity weighting per POI tier. Higher tiers are contested by design, so they
 --- pay out better -- that is the whole reason players fight over them.
 ---
---- Weights are relative within a row and do not need to sum to anything.
+--- Weights are relative within a row and do not need to sum to anything. They
+--- are written to sum to 100 anyway, so a row reads as a percentage.
+---
+--- TIER 4, THE GOLDEN POIs (#227, owner 2026-09-08). Four sites -- Humane Labs,
+--- Kortz Center, Great Chaparral and Raton Canyon -- pay out noticeably better
+--- than anything else on the map.
+---
+--- A REAL FOURTH TIER, NOT A FLAG ON TOP OF AN EXISTING ONE. The issue argued
+--- for the flag, on the grounds that a fourth tier means a fourth row in every
+--- tier-keyed table -- this one, budgetPerTier, chestsPerTier, the POI
+--- validator, the /brpois blip colors, the config report and every test that
+--- walks them. The owner overruled it: "yes make them a real tier 4". So the
+--- maintenance cost is real and it was paid on purpose, and the thing to check
+--- when adding any new tier-keyed table is that it has four rows and not three.
+---
+--- THE LADDER, WHICH IS THE POINT AND IS INVISIBLE FROM ONE ROW. His numbers
+--- are a deliberate continuation of the three rows above them:
+---
+---     rare-or-better   17%  ->  30%  ->  47%  ->  63%
+---     legendary         1%  ->   2%  ->   5%  ->  10%
+---     common           55%  ->  40%  ->  25%  ->  14%
+---
+--- LEGENDARY DOUBLES, 5% to 10%, and that is his decision rather than an
+--- accident of the split. Do not read it as a typo and halve it.
+---
+--- The row is his, exactly as he gave it, and is not ours to adjust. He said
+--- "55% chance" a minute before writing the split out, and the split is 63%
+--- rare-or-better; the split is the specific thing and it wins.
+---
+--- WHAT A PLAYER ACTUALLY SEES IS LESS THAN THE ROW SAYS, in both directions,
+--- because three of the five kinds cannot pay out at the top: ammo is always
+--- COMMON, melee stops at UNCOMMON, consumables have no RARE, throwables have
+--- no LEGENDARY. Arithmetic done straight off this table overstates the payout
+--- by roughly a third. `brlootsim` on the server console rolls the real
+--- generator and prints what comes out, tier 4 included -- use it rather than
+--- this table when the question is what a crate contains.
 BR.Config.RarityWeights = {
-    [1] = { [R.COMMON] = 55, [R.UNCOMMON] = 28, [R.RARE] = 13, [R.EPIC] =  3, [R.LEGENDARY] = 1 },
-    [2] = { [R.COMMON] = 40, [R.UNCOMMON] = 30, [R.RARE] = 20, [R.EPIC] =  8, [R.LEGENDARY] = 2 },
-    [3] = { [R.COMMON] = 25, [R.UNCOMMON] = 28, [R.RARE] = 27, [R.EPIC] = 15, [R.LEGENDARY] = 5 },
+    -- ═══ LEGENDARY IS ZERO OUTSIDE TIER 4, AND THAT IS THE POINT OF TIER 4 ═══
+    --
+    -- Owner, 2026-09-11: "The legendary drop rate should be 0, except for Tier 4
+    -- POIs and airdrops."
+    --
+    -- WHAT IT WAS. 1 / 2 / 5 / 10 per item roll, and a crate holds three items on
+    -- average, so a crate carried at least one legendary about 3% of the time at
+    -- tier 1, 5.9% at tier 2, 14.3% at tier 3 and 27.1% at tier 4. With 20 / 20 /
+    -- 24 crates at tiers 1 to 3 against 35 at tier 4, sheer volume meant most of
+    -- the map's legendaries came out of ordinary POIs. The four golden sites were
+    -- the best odds and not the only source, which made them a preference rather
+    -- than a destination.
+    --
+    -- WHAT IT IS NOW. The only legendary on the map is at Humane Labs, the Kortz
+    -- Center, Raton Canyon and Great Chaparral, or out of a supply drop. #227
+    -- asked for golden POIs players would "discover on their own"; a site nobody
+    -- has to visit is not discovered, it is noticed.
+    --
+    -- AIRDROPS ARE UNAFFECTED AND DO NOT READ THIS TABLE. server/airdrop.lua
+    -- stamps `rarity = BR.Rarity.LEGENDARY` on its own items directly, and
+    -- BR.Config.AirdropWeapons sits in no rarity bucket at all, so no world roll
+    -- could ever have produced one. Zeroing a weight here cannot reach them.
+    --
+    -- THE FREED WEIGHT GOES TO EPIC, WHICH IS A CHOICE AND NOT ARITHMETIC. The
+    -- rows are written to sum to 100 so each reads as a percentage, so one point
+    -- at tier 1 and five at tier 3 had to land somewhere. Epic keeps the top end
+    -- of an ordinary crate worth opening: pushed into COMMON instead, taking
+    -- legendary away would have made every normal crate flatly worse rather than
+    -- differently shaped. Tier 3 moving 15 -> 20 is the biggest single step here
+    -- and is the one to watch in a playtest.
+    [1] = { [R.COMMON] = 55, [R.UNCOMMON] = 28, [R.RARE] = 13, [R.EPIC] =  4, [R.LEGENDARY] =  0 },
+    [2] = { [R.COMMON] = 40, [R.UNCOMMON] = 30, [R.RARE] = 20, [R.EPIC] = 10, [R.LEGENDARY] =  0 },
+    [3] = { [R.COMMON] = 25, [R.UNCOMMON] = 28, [R.RARE] = 27, [R.EPIC] = 20, [R.LEGENDARY] =  0 },
+    [4] = { [R.COMMON] = 14, [R.UNCOMMON] = 23, [R.RARE] = 30, [R.EPIC] = 23, [R.LEGENDARY] = 10 },
 }
 
 --- What kind of thing a roll INSIDE A CRATE produces.
@@ -553,7 +724,14 @@ BR.Config.Loot = {
     -- CUT AGAIN, 2026-08-06: loose loot should be "rare except for ammo", so
     -- there is less of it and what remains is mostly ammo (see
     -- BR.Config.FloorKindWeights). Roughly halved a second time.
-    budgetPerTier = { [1] = 5, [2] = 8, [3] = 14 },
+    -- TIER 4 IS FLAT AGAINST TIER 3, ON PURPOSE (owner, 2026-09-08: "floor
+    -- items can stay at 14"). A table reading 5 / 8 / 14 / 14 looks like
+    -- somebody forgot to fill the last cell in, so: this field is LOOSE FLOOR
+    -- ITEMS and not crates, and the rule since 2026-08-05 two comments up is
+    -- that crates carry the loot and floor items garnish it. A golden POI pays
+    -- its whole premium in crates -- 35 of them against tier 3's 24 -- and in
+    -- the rarity mix. The garnish stays where tier 3 has it.
+    budgetPerTier = { [1] = 5, [2] = 8, [3] = 14, [4] = 14 },
 
     -- HOW FAR OUT THE ROLLS REACH, as a fraction of the POI radius.
     --
@@ -579,7 +757,19 @@ BR.Config.Loot = {
     -- transit corridor. It is now closer to 1.5x: a hot drop is still better,
     -- but a rural POI can gear you up (user, 2026-08-05 -- "even it out a bit
     -- between POIs and rural areas").
-    chestsPerTier = { [1] = 20, [2] = 20, [3] = 24 },
+    --
+    -- AND TIER 4 RE-WIDENS THE SPREAD THAT PARAGRAPH DELIBERATELY FLATTENED,
+    -- which has to be said out loud right here because the comment above it
+    -- argues the other way. 35 against tier 1's 20 is 1.75x, so a golden POI
+    -- sits back up near the 2.4x the tier-3 sites used to pay before the
+    -- 2026-08-05 flattening. That is the owner's call (2026-09-08: "let's make
+    -- tier 4 have 35 crates then", revising the 25 he had said a minute
+    -- earlier) and it is what makes these four destination drops rather than
+    -- merely good ones. What keeps it from repeating the mistake is that there
+    -- are FOUR of them against fourteen tier 3s, and that they are not the
+    -- places a player would guess -- see the note on the tier-4 rows in
+    -- br_lib/config/map.lua.
+    chestsPerTier = { [1] = 20, [2] = 20, [3] = 24, [4] = 35 },
     -- HOW MANY THINGS ARE IN A CRATE. Never zero -- opening one is a
     -- commitment in the open and it has to pay. 3-5 was too generous (user,
     -- 2026-08-06); this peaks at three with two and four equally likely either
@@ -1020,17 +1210,68 @@ BR.Config.Loot = {
     -- rarity and no route into the inventory -- the answer was never "no
     -- drop", it was "our drop".
     --
-    -- The server cannot see ambient peds die, so this is a client report, and
-    -- the limits below are what make lying pointless rather than impossible:
-    -- one drop every few seconds with a hard per-match ceiling is strictly
-    -- slower than opening crates, so the honest path stays the fast one.
-    -- The gun arrives EMPTY -- it is a lifeline after a bad landing, not a
-    -- substitute for finding a crate.
+    -- ═══ OFF BY DEFAULT SINCE 2026-09-08, AND HOW TO TURN IT BACK ON ═══
+    --
+    -- `enabled = true` is the whole of the change. Nothing else here or in
+    -- br_core/server/loot.lua needs touching, and the feature comes back
+    -- hardened rather than as it was. This is a decision, not a deletion, and it
+    -- is recorded here so it can be reversed by whoever disagrees with it.
+    --
+    -- WHY IT IS OFF. The #232 security audit (2026-09-08, finding 2, HIGH) sent
+    -- the NPC_DROP event from a player who had killed nothing and got a
+    -- LEGENDARY MINIGUN WITH 150 ROUNDS on the ground, then picked it up -- after
+    -- which every possession check saw a weapon the server had issued. Two of the
+    -- three causes were ours and are now fixed outright: the client no longer
+    -- chooses the weapon (the server draws from `pool` below, which cannot reach
+    -- BR.Config.AirdropWeapons by construction) and no longer chooses the
+    -- magazine (it is empty). The third cause cannot be fixed from here:
+    --
+    --   THE SERVER CANNOT PROVE THE NPC EVER DIED. Not "has never heard of it" --
+    --   FXServer does know about ambient peds and can read their health, their
+    --   killer and their weapon -- but every one of those reads is parsed out of
+    --   the sync packets sent by the CLIENT THAT OWNS THE PED, there is no
+    --   server-side ped-death event to hang the check on, and the population type
+    --   that would say "this really was a pedestrian" is itself a known, exploited
+    --   spoof. Everything the handler does is bounding a claim, not checking a
+    --   fact. It now also refuses a second payout for a corpse in the same place,
+    --   which is as close to "one death, one reward" as this can get -- close, and
+    --   not the same thing.
+    --
+    -- SO THE RESIDUAL, STATED PLAINLY, IS WHAT THE FLAG IS WEIGHED AGAINST: with
+    -- this on, a modified client can fabricate up to `maxPerMatch` EMPTY COMMON
+    -- SIDEARMS a match, one per `minIntervalMs`, at places it has actually walked
+    -- to and at least six metres apart. That is an honest player's own reward for
+    -- killing twelve pedestrians, taken without killing them. It is worth less
+    -- than one crate -- and it is still a client minting server-issued items,
+    -- which is a sentence worth being deliberate about the week before launch
+    -- (owner on #232: keep it open "until launch to ensure strong posture going
+    -- into a highly-visible time period").
+    --
+    -- WHAT WOULD EARN IT A `true` WITHOUT THE ASTERISK, AND WHY IT IS NOT IN THIS
+    -- CHANGE. The shape is: track peds from `entityCreating`, poll only those for
+    -- GetEntityHealth <= 0, read the corpse's position and weapon off the entity
+    -- (GetEntityCoords, GetSelectedPedWeapon -- both server natives), and mark the
+    -- corpse itself with an entity state bag so the payout dies with the ped
+    -- rather than with a recyclable id. That is a polling subsystem, not a check,
+    -- and it buys less than it looks like it does: the data it polls is still the
+    -- owning client's own packets. It belongs in an issue of its own with a
+    -- private-server test attached, not as a rider on a security fix.
     npcDrop = {
-        enabled       = true,
+        enabled       = false,
         range         = 60.0,   -- corpse must be this close to the reporter
         minIntervalMs = 4000,   -- one drop per reporter per this long
         maxPerMatch   = 12,     -- and no more than this many all match
+
+        -- WHAT AN NPC MAY BE CARRYING. Ids here are resolved against
+        -- BR.Config.Weapons ONLY -- see the note on `npcPool` in
+        -- br_core/server/loot.lua -- so an id naming an airdrop weapon resolves
+        -- to nothing and drops nothing, whatever is written here.
+        --
+        -- COMMON SIDEARMS AND NOTHING ELSE, because the point of the drop is a
+        -- lifeline after a bad landing and not a reason to skip crates. These are
+        -- also the guns GTA's own ambient population actually carries, so the
+        -- fiction survives the server choosing for itself.
+        pool          = { 'pistol', 'snspistol', 'microsmg', 'machinepistol' },
     },
 
     -- Starting kit. Deliberately nothing but the drop itself -- landing unarmed
@@ -1093,6 +1334,23 @@ end
 function BR.Config.RollKind(rng, weights)
     local pick = rng:weighted(weights or BR.Config.KindWeights)
     return pick and pick.kind or BR.ItemKind.WEAPON
+end
+
+--- Roll which ammo pool one stack is.
+---
+--- ONE rng DRAW, exactly as the `rng:pick(BR.Config.AmmoOrder)` it replaced --
+--- Rng:weighted spends a single float() and Rng:pick spent a single int(). So the
+--- number of draws a loot roll costs is unchanged and only the ANSWER moved,
+--- which is the property that keeps every OTHER subsystem's stream where it was.
+---
+--- THE DECK IS PREBUILT IN BR.Config.AmmoOrder'S ORDER (see AmmoWeightDeck) and
+--- this never touches the string-keyed weight table, which is the whole of how a
+--- weighted ammo draw stays reproducible from a seed.
+--- @param rng table  a BR.Rng instance
+--- @return string pool
+function BR.Config.RollAmmoPool(rng)
+    local pick = rng:weighted(BR.Config.AmmoWeightDeck)
+    return pick and pick.pool or BR.Config.AmmoOrder[1]
 end
 
 --- Total planned item count across every POI, for sanity-checking budgets.

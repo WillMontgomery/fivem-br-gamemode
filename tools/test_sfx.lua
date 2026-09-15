@@ -190,8 +190,12 @@ do
           name = 'GOLF_NEW_RECORD',        was = 'Volts award at verdict' },
         { cue = 'toast.warn',        set = 'HUD_FRONTEND_DEFAULT_SOUNDSET',
           name = 'ERROR',                  was = 'Error toast notification sound' },
-        { cue = 'match.start',       set = 'HUD_MINI_GAME_SOUNDSET',
-          name = 'GO',                     was = 'Match timer start' },
+        -- HIS SECOND LINE FOR THIS EVENT, not his first. GO was "Match timer
+        -- start" and moved to `storm.move` on 2026-09-12, where it turned out
+        -- to be the sound that cue had been missing; he kept it there. This is
+        -- the alternative he wrote down beside it in the same issue.
+        { cue = 'match.start',       set = 'DLC_AW_BB_Sounds',
+          name = 'Period_Start',           was = 'Alternative timer start (airhorn)' },
         { cue = 'blips.shown',       set = 'GTAO_Magnate_Boss_Modes_Soundset',
           name = 'Crates_Blipped',         was = 'Courtesy blips or ambulance blips shown' },
         { cue = 'revivekey.pickup',  set = 'In_And_Out_Attacker_Sounds',
@@ -212,6 +216,48 @@ do
             eq(def.name, h.name, ('%s plays the sound he named'):format(h.cue))
         end
     end
+end
+
+describe('palette: the knock borrows the death\'s pair, because he said so')
+do
+    -- ═══ NOT IN THE TABLE ABOVE, AND THAT IS THE POINT ═══
+    --
+    -- `HIS` is his 2026-09-05 palette, one pair per event description, and a
+    -- knock is not in it -- he never named a sound for a squadmate going down,
+    -- which is the whole reason `squad.down` lived on the browser tier for
+    -- three days. This is a SECOND ruling, on 2026-09-11:
+    --
+    --   "I think the died/knock sounds are the same right now, not sure.
+    --    Regardless both should be the same frontend sound and NOT an NUI
+    --    sound"
+    --
+    -- So it is asserted as a RELATIONSHIP rather than as a pair. Writing
+    -- GTAO_FM_Events_Soundset/Event_Message_Purple out a second time here would
+    -- pass on the day he retunes the death cue and leaves the knock behind,
+    -- which is exactly the drift the two keys exist to make visible.
+    local down, out = A.cues['squad.down'], A.cues['squad.out']
+
+    ok(type(down) == 'table',
+        'squad.down has a pair at all, so MATE_CUE routes the knock to '
+            .. 'PlaySoundFrontend rather than to the browser')
+    ok(type(down) == 'table' and type(out) == 'table'
+       and down.set == out.set and down.name == out.name,
+        'and it is the SAME pair the death plays -- "both should be the same '
+            .. 'frontend sound"',
+        type(down) == 'table' and ('%s/%s vs %s/%s'):format(
+            tostring(down.set), tostring(down.name),
+            tostring(out.set), tostring(out.name)) or 'squad.down is missing')
+
+    -- ⚠ AND THE REVIVE IS NOT SWEPT UP IN IT. "The revived sound is perfect --
+    -- don't touch it" (same message). One cue moved onto another's pair; a
+    -- third did not.
+    local up = A.cues['squad.revived']
+    ok(type(up) == 'table' and up.set == 'DLC_AW_Frontend_Sounds'
+       and up.name == 'Checkpoint_Finish',
+        'while squad.revived is exactly where he left it -- he called it '
+            .. 'perfect',
+        type(up) == 'table' and ('%s/%s'):format(tostring(up.set),
+                                                 tostring(up.name)) or nil)
 end
 
 describe('palette: every cue is playable at all')
@@ -269,7 +315,12 @@ do
             -- are wrong sound clips") and the hitmarker cues are gone, so the
             -- pair is no longer an artefact worth protecting.
             { 'DLC_H3_Drone_Tranq_Weapon_Sounds', 'Pilot_Perspective_Fire',  'Damage killed sound' },
-            { 'DLC_AW_BB_Sounds',                 'Period_Start',            'alt timer start (airhorn)' },
+            -- DLC_AW_BB_Sounds / Period_Start IS NO LONGER ONE OF THESE. It was
+            -- his documented alternative for the timer start and it went LIVE as
+            -- `match.start` on 2026-09-12, so it is pinned in the wired table at
+            -- the top of this file instead. Left here it would claim, in a list
+            -- whose whole subject is pairs that are written down and not wired,
+            -- that the cue table does not use it.
             { 'DLC_IO_Warehouse_Mod_Garage_Sounds', 'Remove_Tracker',        'gas pump started' },
             { 'DLC_AW_Frontend_Sounds',           'Checkpoint_Finish',       'squad mate revived' },
             { 'DLC_Security_Investigation_The_Yacht_Sounds', 'GPS_Set',      'alt squad waypoint' },
@@ -401,6 +452,76 @@ do
     eq(#plays, 5, 'so five asks in the same millisecond are five sounds')
 end
 
+describe('storm.move: the owner\'s own line, not a name like it')
+do
+    -- ═══ THE REPORT, TWICE, AND THE ANSWER WAS IN #24 ALL ALONG ═══
+    --
+    --   "help me find out why storm.move and storm.out don't play any sound"
+    --                                          -- owner, 2026-09-07
+    --   "storm.move doesn't play, though it says the engine started it."
+    --                                          -- owner, 2026-09-12
+    --   "I've heard it play. The line I gave you in the brsfx issue is an exact
+    --    line which I've heard play."           -- owner, 2026-09-12
+    --
+    -- His line in #24 is PlaySoundFrontend(-1, "GO", "HUD_MINI_GAME_SOUNDSET",
+    -- 1). The table held GO_NON_RACE, which he never wrote. That is the entire
+    -- fault: a name one word longer than the one he had heard.
+    --
+    -- ═══ WHY THIS IS A PIN AND NOT A PROPERTY ═══
+    --
+    -- Nothing offline can hear a sound, so there is no property to assert --
+    -- which is how a name he never chose sat here through a green suite and two
+    -- playtests, and how the first attempt at this block then pinned a SECOND
+    -- name he never chose (TIMER_STOP, off a forum post). A cue name in this
+    -- table is only ever as good as the ear behind it, so what is pinned is
+    -- whose ear: these two strings are his, copied out of his issue.
+    local move = A.cues['storm.move']
+
+    eq(move.set, 'HUD_MINI_GAME_SOUNDSET', 'storm.move names the set he wrote')
+    eq(move.name, 'GO', 'and the name he wrote, which he has heard play')
+
+    -- ═══ THE TWO NAMES THAT ARE NOT HIS, NAMED ═══
+    --
+    -- Both were arrived at by reasoning about a list rather than by listening,
+    -- and both shipped. If either comes back it comes back with this red.
+    ok(move.name ~= 'GO_NON_RACE',
+       'not GO_NON_RACE, the corruption of his line that shipped silent twice',
+       tostring(move.name))
+    ok(move.name ~= 'TIMER_STOP',
+       'and not TIMER_STOP, which was picked off a forum post to replace it',
+       tostring(move.name))
+
+    -- THE COLLISION THIS BLOCK ONCE DOCUMENTED IS GONE. Promoting GO here put
+    -- it on `match.start` as well and tools/test_fuel.lua's `audio.pumpCues`
+    -- refused the pair, which is the guard doing its job. He ruled that the
+    -- storm keeps GO and that MEDAL_UP "is not it", so match.start took his own
+    -- documented spare instead (2026-09-12) and there is nothing left here to
+    -- record. `audio.pumpCues` is where two cues sharing a sound is caught, and
+    -- a second half-rule in this file would only give it somewhere to drift to.
+
+    -- ═══ AND THAT PAIR IS WHAT REACHES THE ENGINE ═══
+    --
+    -- The half a config pin cannot see. BR.Sfx.play hands PLAY_SOUND_FRONTEND
+    -- the NAME third and the SET fourth, which is the reverse of how a cue is
+    -- written down, and a swap there silences every sound in the game with no
+    -- error anywhere.
+    --
+    -- THE FOURTH ARGUMENT IS `false` AND HIS LINE SAYS `1`, DELIBERATELY. That
+    -- difference has already been settled by his own ear on this very set: the
+    -- hitmarker was CHECKPOINT_NORMAL / CHECKPOINT_PERFECT out of
+    -- HUD_MINI_GAME_SOUNDSET, it went out through this same `false`, and he
+    -- heard both well enough to reject them on 2026-09-08. Every sound anybody
+    -- has heard from this codebase left through that argument.
+    plays = {}
+    gameMs = 710000
+    BR.Sfx.play('storm.move')
+    ok(#plays == 1 and plays[1].name == 'GO'
+       and plays[1].set == 'HUD_MINI_GAME_SOUNDSET',
+       'and that is the pair PLAY_SOUND_FRONTEND is handed, name then set',
+       plays[1] and ('name=%s set=%s'):format(tostring(plays[1].name),
+                                              tostring(plays[1].set)) or 'nothing')
+end
+
 describe('throttle: each cue has its own window')
 do
     -- Two cues sharing one clock would make a refusal toast mute the
@@ -415,6 +536,93 @@ do
     BR.Sfx.play('toast.warn')
     BR.Sfx.play('squad.waypoint')
     eq(#plays, 2, 'a throttled cue does not close the window on a different one')
+end
+
+describe('delivery: every configured cue survives the trip to the native')
+do
+    -- ═══ LAST IN PART B, NOT FIRST IN PART A, AND THAT IS THE CLOCK'S DOING ═══
+    --
+    -- This belongs beside the palette by subject, and it cannot go there. The
+    -- block below plays EVERY cue, which writes `lastPlayed[cue]` for each of
+    -- the five that carry a floor, and it has to walk the clock forward to do it
+    -- without testing the throttle by accident. Run before PART B, that leaves
+    -- the throttle's cues stamped in the FUTURE relative to the `gameMs = 500000`
+    -- those tests set -- so every one of them fails on its first call with
+    -- `got 0, want 1`, which reads as a broken rate limiter rather than as a
+    -- neighbour that moved the clock. That is precisely what happened when this
+    -- was written, and the note is here so the next person to reorder this file
+    -- by subject finds out from a comment rather than from six red lines.
+    --
+    -- ═══ THE SEAM NOTHING ELSE IN THE PROJECT CROSSES ═══
+    --
+    -- Owner, 2026-09-08: "the 5s storm sound is broke somehow ... perhaps you
+    -- could fix the other sounds that are broken." The suites were green while
+    -- he said it, AND they were green about the cues he named, which is the part
+    -- worth fixing.
+    --
+    -- The reason is that every OTHER test of audio in this repo stubs BR.Sfx and
+    -- asserts the string a call site passed. tools/test_shared.lua's storm
+    -- sandbox is explicit about it -- `env.BR.Sfx = { play = function(cue)
+    -- C.sfx[#C.sfx + 1] = cue end }` -- so `played(C, 'timer.final') == 1` proves
+    -- storm.lua ASKED and proves nothing whatever about whether the ask arrives
+    -- anywhere. Between the ask and the engine sit a mute flag, a master switch,
+    -- a table lookup and a throttle, and four of those five exits are silent.
+    --
+    -- So this walks the whole table through the REAL BR.Sfx.play -- the one
+    -- loaded from br_core/client/sfx.lua at the top of this file -- and requires
+    -- the pair to come out the other side at PlaySoundFrontend. It is the only
+    -- assertion in the repo that the cue table and the player agree.
+    --
+    -- WHAT IT STILL CANNOT TELL YOU, and the file header says this too: whether
+    -- the engine makes a NOISE. A wrong set name reaches PlaySoundFrontend
+    -- exactly like a right one and plays nothing, which is why /brsfx has a
+    -- probe and why `brsfx cues` exists. This proves the cue is DELIVERED; only
+    -- a running client can prove it is AUDIBLE.
+    local undelivered, wrongPair = nil, nil
+    for cue, def in pairs(A.cues) do
+        plays = {}
+        -- A FRESH CLOCK PER CUE, far past any floor. Several cues carry a
+        -- minInterval and this loop would otherwise be testing the throttle --
+        -- and would do it in `pairs` order, so which cue got dropped would
+        -- change between runs.
+        gameMs = gameMs + 100000
+        BR.Sfx.play(cue)
+        if #plays ~= 1 then
+            undelivered = tostring(cue)
+        elseif plays[1].name ~= def.name or plays[1].set ~= def.set then
+            wrongPair = ('%s -> %s / %s'):format(tostring(cue),
+                tostring(plays[1].set), tostring(plays[1].name))
+        end
+    end
+    ok(undelivered == nil,
+       'every cue in the table reaches PlaySoundFrontend when it is played',
+       undelivered)
+    ok(wrongPair == nil,
+       'and arrives carrying the set and sound the table gave it', wrongPair)
+
+    -- ═══ THE ARGUMENT ORDER, PINNED ═══
+    --
+    -- PLAY_SOUND_FRONTEND is (soundId, audioName, audioRef, isNetwork) -- the
+    -- NAME first and the SET second, which is the reverse of how every table in
+    -- config/audio.lua, every /brsfx verb and every sentence anybody writes
+    -- about these puts them. Swapping them is a one-word edit that compiles,
+    -- runs, warns about nothing and silences the entire palette at once. It is
+    -- the single most expensive typo available in this file's blast radius, so
+    -- it is asserted against a pair written out by hand rather than read back
+    -- out of the table.
+    plays = {}
+    gameMs = gameMs + 100000
+    BR.Sfx.play('timer.final')
+    eq(#plays, 1, 'the storm pip is delivered')
+    if #plays == 1 then
+        eq(plays[1].name, '5s',
+           'and the SOUND goes in the second slot, which is audioName')
+        eq(plays[1].set, 'MP_MISSION_COUNTDOWN_SOUNDSET',
+           'and the SET goes in the third, which is audioRef')
+        eq(plays[1].id, -1, 'with no sound id -- these are never stopped')
+        eq(plays[1].net, false,
+           'and never networked: every cue here is for THIS client only')
+    end
 end
 
 -- =========================================================================

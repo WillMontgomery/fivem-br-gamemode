@@ -697,6 +697,43 @@ AddEventHandler(BR.Net.SNAPSHOT, function(payload)
     applyFocusForState(S.match.state)
 end)
 
+--- WHICH OUT EDGES MAKE NO SOUND, BY THE REASON THE SERVER GAVE FOR THEM.
+---
+--- ═══ A SET, BECAUSE THE SECOND ONE ARRIVED AND A THIRD WILL ═══
+---
+--- This was `d.cause ~= 'left'` when there was one of them (7097db4). The
+--- second is here now, and a chain of `~=` joined by `and` is the shape that
+--- reads correctly, is written with `or` by somebody in a hurry, and silences
+--- every death in the game without failing anything that looks at ONE cause.
+--- A named table cannot be got wrong that way and it is the list itself.
+---
+--- WHAT IS IN IT AND WHY, because "absent means unknown" and unknown SOUNDS:
+---
+---   'left'  Leaving IS an elimination here on purpose (server/match.lua routes
+---           it through BR.Combat.eliminate so quitting is not a cheaper exit
+---           than dying), so this edge fires for a departure. Owner, 2026-09-11:
+---           "the death sound should not play if the player is dying by method
+---           of leaving the match."
+---
+---   'held'  The #144 pre-match hold. server/combat.lua's holdForStart sets OUT
+---           for somebody who died before PLAYING and match.lua stands them
+---           straight back up on the transition. Owner, 2026-09-11: "we don't
+---           need any sound for that since they'll be brought back up
+---           immediately upon game state = PLAYING."
+---
+--- EVERYTHING ELSE SOUNDS, AN ABSENT CAUSE INCLUDED. The storm, a bleed-out, a
+--- fall and an admin's brkill are deaths the player is owed the sting for, and
+--- no sound is the wrong default for an edge that arrives without a reason.
+---
+--- ⚠ READ WITH A nil KEY ON PURPOSE. `d.cause` is absent on most transitions and
+--- `SILENT_OUT[nil]` is a legal read in Lua that answers nil -- it is only
+--- ASSIGNMENT with a nil key that raises. So the absent case needs no guard and
+--- must not grow one that changes what it means.
+local SILENT_OUT = {
+    left = true,
+    held = true,
+}
+
 RegisterNetEvent(BR.Net.ROSTER_DELTA)
 AddEventHandler(BR.Net.ROSTER_DELTA, function(batch)
     -- Deltas are only safe because a snapshot can always re-seed us. If one
@@ -749,7 +786,45 @@ AddEventHandler(BR.Net.ROSTER_DELTA, function(batch)
                     -- ON THE STATE EDGE, not inside BR.NoteDeath -- that returns
                     -- early when the death verdict is switched off, and the sound
                     -- is not part of the verdict.
-                    BR.Sfx.play('death.self')
+                    --
+                    -- ═══ AND NOT FOR THE ONE ELIMINATION THAT IS A DEPARTURE
+                    --     (owner, 2026-09-11) ═══
+                    --
+                    -- "the death sound should not play if the player is dying by
+                    -- method of leaving the match."
+                    --
+                    -- Leaving IS an elimination in this project, deliberately:
+                    -- server/match.lua routes it through BR.Combat.eliminate with
+                    -- cause 'left' so that quitting cannot be a cheaper exit than
+                    -- dying. That is why this edge fires for it at all, and why
+                    -- the fix is here rather than in the server's rule.
+                    --
+                    -- THE CAUSE NOW RIDES THIS MESSAGE. It used to reach the
+                    -- client only on KILL_FEED, which is a different message with
+                    -- no ordering against this one -- see the note over
+                    -- BR.NoteDeath, which is the same problem and answers it by
+                    -- correcting the word afterwards. A sound cannot be corrected
+                    -- afterwards, so the answer has to be in hand on the edge:
+                    -- BR.Roster.setState puts it beside `e`, and the one case
+                    -- where guessing would fail is exactly the case that matters
+                    -- -- somebody whose connection is dying as they go.
+                    --
+                    -- ═══ AND NOT FOR A DEATH THAT IS ABOUT TO BE UNDONE
+                    --     (owner, 2026-09-11) ═══
+                    --
+                    -- "If you mean before the state machine goes to PLAYING we
+                    -- don't need any sound for that since they'll be brought
+                    -- back up immediately upon game state = PLAYING."
+                    --
+                    -- That is the #144 hold, and it states its own reason on
+                    -- this edge for the reason the paragraph above gives: asking
+                    -- "are we PLAYING yet?" HERE is a race against the message
+                    -- that answers it.
+                    --
+                    -- WHICH CAUSES ARE SILENT IS SILENT_OUT'S, above, and not a
+                    -- chain of comparisons on this line. Two of them is where
+                    -- that chain starts being got wrong.
+                    if not SILENT_OUT[d.cause] then BR.Sfx.play('death.self') end
                 end
                 noteMyState()
                 applyFocusForState(S.match.state)
@@ -1926,7 +2001,29 @@ RegisterNetEvent(BR.Net.DAMAGE_FEED)
 AddEventHandler(BR.Net.DAMAGE_FEED, function(d)
     if not d then return end
 
-    BR.Sfx.play(d.headshot and 'hit.crit' or 'hit')
+    -- ═══ THE HIT IS SILENT, AND THAT IS THE OWNER'S CALL ═══
+    --
+    -- This line was `BR.Sfx.play(d.headshot and 'hit.crit' or 'hit')`. Owner,
+    -- 2026-09-08: "do not wire in any sound at all for hit or hit.crit -- those
+    -- are wrong sound clips." Both keys were deleted from config/audio.lua that
+    -- day, and a call naming a key that is not in the table is not silence: it
+    -- takes the unknown-cue path in client/sfx.lua and prints
+    -- `[br_core] sfx: unknown cue "hit"` once per session, plus a second line
+    -- for "hit.crit" the first time somebody lands a headshot. This is the
+    -- knock's twin at client/dbno.lua, which had the same call removed for the
+    -- same reason on the same day -- this site was simply missed.
+    --
+    -- THE FEEDBACK IS THE MARKER, AND IT ALWAYS WAS. The envelope below drives
+    -- the hitmarker in ui-src/src/hud/HitFeedback.tsx -- four strokes, red on a
+    -- kill, accent on a headshot, white otherwise. That component plays NO
+    -- browser cue for a plain hit, so there is no second tier quietly covering
+    -- for this: the hit is visual and nothing else, which is the state the owner
+    -- asked for rather than an omission.
+    --
+    -- DELETED RATHER THAN BLANKED, and not replaced with a placeholder key. A
+    -- cue key that exists to be filled in later is a call site that resolves to
+    -- nothing and warns forever; if he picks a clip for the hitmarker, add the
+    -- cue to config/audio.lua and play it on this line.
 
     -- The banner for a kill rides KILL_FEED (it has the name); this is the
     -- marker only. `killed` still travels so the marker can punctuate.
@@ -2255,6 +2352,9 @@ AddEventHandler(BR.Net.LOBBY_STATUS, function(d)
         -- still holding the group. The id list is already on the wire in
         -- this same broadcast -- forwarding it reveals nothing new.
         readyIds  = d.ids or {},
+        -- The served commit's short hex. The server sends it only in dev mode
+        -- (server/lobby.lua), so passing it through is the whole of the gate.
+        commit    = d.commit,
     })
 end)
 

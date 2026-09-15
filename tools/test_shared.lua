@@ -944,10 +944,21 @@ do
     ok(why == BR.ShotRefusal.NOT_THROWN,
         'a blast from one you never threw does not', tostring(why))
 
-    -- Still holding them (more than one in the stack) is the other honest case.
-    ok(BR.ValidateShot({ weapon = CAPTURED_GRENADE, dist = 6.0 },
-        ctx({ heldItem = 'grenade', threwRecently = false }), cfg),
-        'and holding the stack is enough on its own')
+    -- HOLDING THE STACK USED TO BE ENOUGH ON ITS OWN, and this assertion said
+    -- so until the audit (finding 3, 2026-09-08).
+    --
+    -- The rule was `heldItem == w.id or threwRecently`, read as "either honest
+    -- case". The held half is true for as long as ANY grenade remains in the
+    -- slot, so it authorized every blast a client cared to claim while it held
+    -- one -- a statement about the STACK, never about the particular grenade
+    -- that went off. The credit is the statement about the grenade: one per
+    -- throw the server watched leave the hand, and spent when a blast is
+    -- authorized against it.
+    local _, whyHeld = BR.ValidateShot({ weapon = CAPTURED_GRENADE, dist = 6.0 },
+        ctx({ heldItem = 'grenade', threwRecently = false }), cfg)
+    ok(whyHeld == BR.ShotRefusal.NOT_THROWN,
+        'holding the stack is not, on its own, a grenade having been thrown',
+        tostring(whyHeld))
 
     -- RANGE IS THROW PLUS BLAST. A victim can be a whole blast radius further
     -- from the thrower than the grenade ever travelled.
@@ -963,6 +974,102 @@ do
     ok(BR.ValidateShot({ weapon = CAPTURED_GRENADE, dist = 6.0, sinceLastMs = 0 },
         ctx(), cfg),
         'two detonations in the same millisecond are both legitimate')
+
+    -- ═══ THE LAUNCH, WHICH NOTHING USED TO CHECK ═══
+    --
+    -- "A detonation is not a trigger pull" is true of the IMPACT and was read
+    -- as an exemption for the whole weapon. An RPG, a grenade launcher and a
+    -- railgun are all `explosive`, so all three returned success after the held
+    -- and range checks -- before ammunition, before cadence. Holding an empty
+    -- launcher with an empty reserve authorized damage, at any rate, forever:
+    -- the audit's harness hurt a victim twice on the same millisecond with one
+    -- and neither attempt was refused (finding 3, 2026-09-08).
+    local rpg = BR.Config.WeaponById['rpg']
+    ok(rpg and rpg.explosive and rpg.clip,
+        'the RPG is explosive and carries a magazine -- both halves matter here',
+        tostring(rpg and rpg.clip))
+
+    local function launch(over)
+        local c = { sameSrc = false, sameMatch = true, shooterLive = true,
+                    victimLive = true, sameSquad = false,
+                    heldItem = 'rpg', threwRecently = false,
+                    blastShared = false, launchAmmo = true }
+        for k, v in pairs(over or {}) do c[k] = v end
+        return c
+    end
+
+    ok(BR.ValidateShot({ weapon = rpg.hash, dist = 40.0 }, launch(), cfg),
+        'a loaded RPG in the shooter\'s own hands still fires')
+
+    local _, whyDry = BR.ValidateShot({ weapon = rpg.hash, dist = 40.0 },
+        launch({ launchAmmo = false }), cfg)
+    ok(whyDry == BR.ShotRefusal.NO_AMMO,
+        'an empty one with an empty reserve does not', tostring(whyDry))
+    ok(BR.ShotSuspicious[BR.ShotRefusal.NO_AMMO],
+        'and that refusal is means-class, so it counts')
+
+    -- THE MAGAZINE IS READ AS IT WAS BEFORE THE SHOT, which is the reason the
+    -- check could not simply be un-skipped. `launchAmmo` unset means "not
+    -- applicable" -- a thrown grenade has no magazine to be empty of -- and
+    -- must never read as empty.
+    ok(BR.ValidateShot({ weapon = CAPTURED_GRENADE, dist = 6.0 },
+        ctx({ launchAmmo = nil }), cfg),
+        'a thrown grenade is not refused for having no rounds in it')
+
+    -- CADENCE ON THE LAUNCH, NOT ON THE BLAST. A launcher has an action and it
+    -- cycles; what it does not have is a rule that the four people one rocket
+    -- caught arrived too close together.
+    local floor = BR.ShotLaunchFloor(rpg, cfg)
+    ok(floor and floor > 0.0,
+        'an RPG has a launch cadence floor', tostring(floor))
+    ok(BR.ShotIntervalFloor(rpg, cfg) == nil,
+        'while its IMPACT cadence is still nil, which is the older rule intact')
+
+    local _, whyFast = BR.ValidateShot({ weapon = rpg.hash, dist = 40.0 },
+        launch({ sinceLaunchMs = 5 }), cfg)
+    ok(whyFast == BR.ShotRefusal.TOO_FAST,
+        'two rockets five milliseconds apart is not an action cycling',
+        tostring(whyFast))
+
+    ok(BR.ValidateShot({ weapon = rpg.hash, dist = 40.0 },
+        launch({ sinceLaunchMs = floor + 1.0 }), cfg),
+        'and one fired a full cycle later is simply a second rocket')
+
+    -- ONE PROJECTILE, MANY VICTIMS. This is the property the three exemptions
+    -- were protecting all along, and it survives: an impact the server has
+    -- already authorized a launch for pays nothing further, so a rocket that
+    -- catches four people is not three refusals and a hit.
+    ok(BR.ValidateShot({ weapon = rpg.hash, dist = 40.0 },
+        launch({ blastShared = true, launchAmmo = false, sinceLaunchMs = 0 }),
+        cfg),
+        'a second victim of a rocket already paid for is not charged again')
+    ok(BR.ValidateShot({ weapon = CAPTURED_GRENADE, dist = 6.0 },
+        ctx({ heldItem = 'fists', threwRecently = false, blastShared = true }),
+        cfg),
+        'and neither is the fourth person one grenade caught')
+
+    -- ...but a shared authorization is not a range exemption. The victim has
+    -- to be somewhere the blast could reach, or "one grenade caught four
+    -- people" would cover four people anywhere on the map.
+    local _, whySharedFar = BR.ValidateShot(
+        { weapon = CAPTURED_GRENADE, dist = 250.0 },
+        ctx({ blastShared = true }), cfg)
+    ok(whySharedFar == BR.ShotRefusal.TOO_FAR,
+        'while a victim two hundred metres away was not caught by it',
+        tostring(whySharedFar))
+
+    -- THE WINDOW CLOSES BEFORE THE WEAPON CAN FIRE AGAIN. A flat window longer
+    -- than the action would let the SECOND honest round of a pair be absorbed
+    -- into the first one's authorization -- no round spent, no cadence
+    -- measured, which is the hole reopened from the other side.
+    ok(BR.ShotBlastWindow(rpg, cfg) <= BR.ShotLaunchFloor(rpg, cfg),
+        'a launcher\'s blast window closes no later than its action cycles',
+        ('%.0fms window, %.0fms floor'):format(BR.ShotBlastWindow(rpg, cfg),
+                                               BR.ShotLaunchFloor(rpg, cfg)))
+    ok(BR.ShotBlastWindow(nade, cfg) > 0.0
+        and BR.ShotLaunchFloor(nade, cfg) == nil,
+        'while a throwable has a window and no action to cycle at all',
+        tostring(BR.ShotBlastWindow(nade, cfg)))
 
     -- FLAT DAMAGE, and this is the check that would catch falloff creeping
     -- back in. The only distance the server knows is thrower-to-victim, and a
@@ -1242,6 +1349,394 @@ do
     ok(#surprises == 0,
         'and the only one-shot headshots come from weapons that hit for 60+',
         table.concat(surprises, ', '))
+end
+
+describe('combat.targets')
+do
+    -- HOW MANY PEOPLE ONE SHOT MAY HURT (audit finding 5, 2026-09-08).
+    --
+    -- `hitGlobalIds` is composed on the shooter's machine, so its LENGTH is a
+    -- claim like everything else in the payload. Deduplication alone does not
+    -- bound it -- a hundred distinct victims in one event is the same
+    -- fabrication wearing a different hat, and against a full lobby it is a
+    -- wipe -- so the count is bounded by what the weapon physically reaches.
+    local cfg = BR.Config.Combat
+    local rifle = BR.Config.WeaponById['carbinerifle']
+    local machete = BR.Config.WeaponById['machete']
+    local grenade = BR.Config.WeaponById['grenade']
+
+    ok(BR.ShotMaxTargets(machete, cfg) < BR.ShotMaxTargets(rifle, cfg),
+        'a swing reaches fewer people than a round does',
+        ('%d vs %d'):format(BR.ShotMaxTargets(machete, cfg),
+                            BR.ShotMaxTargets(rifle, cfg)))
+    ok(BR.ShotMaxTargets(grenade, cfg) > BR.ShotMaxTargets(rifle, cfg),
+        'and a blast reaches more of them than either',
+        ('%d'):format(BR.ShotMaxTargets(grenade, cfg)))
+
+    -- EVERY CEILING IS ABOVE ONE, and that is the assertion worth having
+    -- rather than the exact numbers. The failure direction is not symmetric:
+    -- dropping a real victim is a hit that silently did nothing and reads as
+    -- the game being broken, while one impossible extra victim is a rounding
+    -- error nobody can build an exploit on. A ceiling of 1 on a shotgun would
+    -- quietly delete the second half of every pellet spread.
+    for _, w in ipairs({ machete, rifle, grenade }) do
+        ok(BR.ShotMaxTargets(w, cfg) > 1,
+            ('%s can still catch more than one player'):format(w.id),
+            tostring(BR.ShotMaxTargets(w, cfg)))
+    end
+
+    -- A HASH WE DO NOT ISSUE STILL GETS A CEILING. It is refused as NO_WEAPON
+    -- per victim anyway, but the ceiling is what stops a fabricated list being
+    -- WALKED -- and a nil weapon row must not read as "no limit".
+    ok(BR.ShotMaxTargets(nil, cfg) > 0,
+        'an unissued weapon has a ceiling too, not an absent one',
+        tostring(BR.ShotMaxTargets(nil, cfg)))
+    ok(BR.ShotMaxTargets(nil, nil) > 0,
+        'and so does one adjudicated with no config at all')
+end
+
+describe('combat.environmental')
+do
+    -- A HASH IS A CLAIM ABOUT THE CAUSE, NOT PROOF THAT THE CAUSE HAPPENED.
+    --
+    --   "a remote-target event labelled WEAPON_EXPLOSION, with a large
+    --    client-supplied damage figure, reached the early return without
+    --    cancellation."
+    --                              -- security audit, finding 4, 2026-09-08
+    --
+    -- THE FIX THAT WOULD HAVE BEEN WORSE THAN THE BUG is the one this block
+    -- spends most of its assertions ruling out. Falls, fire, drowning and cars
+    -- are damage this project deliberately leaves to the engine; making them
+    -- strict means a player steps off a building and walks away. So the first
+    -- assertion here is the one that matters most, and everything after it is
+    -- the bound.
+    local cfg = BR.Config.Combat
+    local FALL = BR.Config.EnvironmentalFor(BR.Config.Environmental[1].hash)
+    local BOOM = BR.Config.EnvironmentalFor(0x2024F4E8)   -- WEAPON_EXPLOSION
+    local CAR  = BR.Config.EnvironmentalFor(0xA36D413E)   -- RUN_OVER_BY_CAR
+    ok(FALL and FALL.id == 'fall', 'the fall hash resolves to a fall')
+    ok(BOOM and BOOM.id == 'explosion' and CAR and CAR.id == 'runover',
+        'and the explosion and roadkill hashes resolve too')
+
+    -- ═══ THE WORLD HURTING YOU IS NEVER REFUSED ═══
+    --
+    -- Deliberately with every other term set to its worst value: no match, a
+    -- dead victim, half the map away, an absurd damage figure and mid-burst.
+    -- None of them may matter, because the sender IS the victim and that is a
+    -- player being hurt by the world on their own machine.
+    for _, env in ipairs({ FALL, BOOM, CAR }) do
+        ok(BR.EnvDamageAllowed(env, {
+            sameSrc = true, onRoster = false, sameMatch = false,
+            victimLive = false, dist = 9000.0, amount = 99999, burst = true,
+        }, cfg), ('a player hurt by %s on their own ped is never refused')
+            :format(env.id))
+    end
+
+    -- ═══ AND A REMOTE CLAIM IS BOUNDED ═══
+    local function remote(over)
+        local c = { sameSrc = false, onRoster = true, sameMatch = true,
+                    victimLive = true, dist = 4.0, amount = 60, burst = false }
+        for k, v in pairs(over or {}) do c[k] = v end
+        return c
+    end
+
+    ok(BR.EnvDamageAllowed(CAR, remote(), cfg),
+        'somebody running somebody else over four metres away still happens')
+
+    local _, whyMatch = BR.EnvDamageAllowed(BOOM, remote({ sameMatch = false }),
+                                            cfg)
+    ok(whyMatch == BR.EnvRefusal.OTHER_MATCH,
+        'the world does not reach into another match', tostring(whyMatch))
+
+    local _, whyRoster = BR.EnvDamageAllowed(BOOM, remote({ onRoster = false }),
+                                             cfg)
+    ok(whyRoster == BR.EnvRefusal.NO_SENDER,
+        'and a sender in no match at all has no world to do it in',
+        tostring(whyRoster))
+
+    local _, whyFar = BR.EnvDamageAllowed(BOOM, remote({ dist = 900.0 }), cfg)
+    ok(whyFar == BR.EnvRefusal.TOO_FAR,
+        'an explosion nine hundred metres away did not catch them',
+        tostring(whyFar))
+
+    -- THE ONE NUMBER THAT CANNOT BE REWRITTEN, ONLY REFUSED. There is no
+    -- ledger of ours behind environmental damage, so the figure in the payload
+    -- is the client's and it lands. The cap sits well above anything lethal.
+    local _, whyBig = BR.EnvDamageAllowed(BOOM, remote({ amount = 99999 }), cfg)
+    ok(whyBig == BR.EnvRefusal.TOO_BIG,
+        'and a five-figure damage number is not a thing the world does',
+        tostring(whyBig))
+    ok(BR.EnvDamageAllowed(BOOM, remote({ amount = 200 }), cfg),
+        'while a number that merely kills outright is allowed to')
+
+    local _, whyOften = BR.EnvDamageAllowed(BOOM, remote({ burst = true }), cfg)
+    ok(whyOften == BR.EnvRefusal.TOO_OFTEN,
+        'and a stream of them is refused by rate rather than by plausibility',
+        tostring(whyOften))
+
+    -- A MISSING SAMPLE IS A GAP IN OUR KNOWLEDGE, NEVER EVIDENCE. Positions
+    -- arrive at 2Hz and a player who has just spawned has none.
+    ok(BR.EnvDamageAllowed(CAR, remote({ dist = nil }), cfg),
+        'a hit the server cannot measure the distance of is not refused for it')
+
+    -- ═══ REACH IS PER CAUSE ═══
+    ok(BR.EnvReach(FALL, cfg) < BR.EnvReach(CAR, cfg),
+        'a fall reaches less far between two players than a car does',
+        ('%.0f vs %.0f'):format(BR.EnvReach(FALL, cfg), BR.EnvReach(CAR, cfg)))
+    ok(BR.EnvReach(BOOM, cfg) > BR.EnvReach(CAR, cfg),
+        'and a blast reaches further than either',
+        ('%.0f'):format(BR.EnvReach(BOOM, cfg)))
+    -- A HASH FROM A FUTURE GAME BUILD LANDS ON `contact` RATHER THAN EXEMPT,
+    -- which is the opposite of the default that produced this finding.
+    ok(BR.EnvReach({ id = 'somethingnew' }, cfg) == BR.EnvReach(CAR, cfg),
+        'an unclassified cause is bounded like contact, not left unbounded')
+    ok(BR.EnvReach(nil, cfg) > 0.0, 'and so is one with no row at all')
+
+    -- ═══ EXPLOSIONS, THE SECOND ROUTE ═══
+    local function blast(over)
+        local c = { onRoster = true, posOk = true, dist = 20.0, scale = 1.0,
+                    burst = false, item = 'grenade', owns = true }
+        for k, v in pairs(over or {}) do c[k] = v end
+        return c
+    end
+
+    ok(BR.ExplosionAllowed(blast(), cfg),
+        'a grenade from somebody who was issued one goes off')
+
+    local _, whyNoOne = BR.ExplosionAllowed(blast({ onRoster = false }), cfg)
+    ok(whyNoOne == BR.EnvRefusal.NO_SENDER,
+        'an explosion from nobody does not', tostring(whyNoOne))
+
+    local _, whyPos = BR.ExplosionAllowed(blast({ posOk = false }), cfg)
+    ok(whyPos == BR.EnvRefusal.BAD_POS,
+        'and neither does one at coordinates that are not numbers',
+        tostring(whyPos))
+
+    local _, whyAcross = BR.ExplosionAllowed(blast({ dist = 4000.0 }), cfg)
+    ok(whyAcross == BR.EnvRefusal.TOO_FAR,
+        'or one on the far side of the map from the player who caused it',
+        tostring(whyAcross))
+    -- REACH, NOT PROXIMITY: a rocket travels 300m before it goes off and a
+    -- sticky can be driven somewhere first. The bound is there to refuse an
+    -- eight-kilometre map, not to decide how far somebody can throw.
+    ok(BR.ExplosionAllowed(blast({ dist = 300.0 }), cfg),
+        'while a rocket that flew three hundred metres still explodes')
+
+    local _, whyScale = BR.ExplosionAllowed(blast({ scale = 50.0 }), cfg)
+    ok(whyScale == BR.EnvRefusal.TOO_BIG,
+        'a fifty-times damage scale is the client editing the blast',
+        tostring(whyScale))
+
+    local _, whyBurst = BR.ExplosionAllowed(blast({ burst = true }), cfg)
+    ok(whyBurst == BR.EnvRefusal.TOO_OFTEN,
+        'and a stream of explosions is refused by rate', tostring(whyBurst))
+
+    local _, whyNotOurs = BR.ExplosionAllowed(blast({ owns = false }), cfg)
+    ok(whyNotOurs == BR.EnvRefusal.NOT_OURS,
+        'a grenade from somebody the server never gave one to is a fabrication',
+        tostring(whyNotOurs))
+
+    -- ...AND AN AMBIENT BLAST IS NOT ASKED FOR PROVENANCE AT ALL. "It's by
+    -- design that vehicles in the game can explode under normal circumstances,
+    -- without a killer necessarily" (owner, 2026-08-21). `item` is nil for
+    -- every type outside BR.Config.Combat.explosionTypes, so a petrol pump
+    -- never reaches that line.
+    --
+    -- Built by hand rather than through `blast`, because an override table
+    -- cannot carry a nil: `{ item = nil }` stores nothing, pairs() never sees
+    -- it, and the assertion would quietly test a grenade again.
+    ok(BR.ExplosionAllowed({ onRoster = true, posOk = true, dist = 20.0,
+                             scale = 1.0, burst = false,
+                             item = nil, owns = false }, cfg),
+        'a car going off a cliff still explodes, owned by nobody')
+end
+
+describe('combat.fireledger')
+do
+    -- WHAT THE RATE CEILING ABOVE DOES NOT COVER (external audit, #287).
+    -- `burst` bounds how often somebody may set an explosion off. The records
+    -- the accepted ones leave behind live for BR.Config.Combat.fireLifeMs -- and
+    -- server/damage.lua walks the whole ledger twice a second against every
+    -- living player, so an unbounded ledger is unbounded work.
+    local cfg = BR.Config.Combat
+
+    ok(BR.FireLedgerFull(0, 0, cfg) == nil,
+        'an empty ledger has room')
+    ok(BR.FireLedgerFull(10, 2, cfg) == nil,
+        'and so does one with a normal round in it')
+
+    local per = cfg.firesPerOwner or 24
+    local cap = cfg.firesMax or 2048
+
+    ok(BR.FireLedgerFull(per, per, cfg) == 'OWNER',
+        'a player at their own share is refused the next record',
+        tostring(BR.FireLedgerFull(per, per, cfg)))
+    ok(BR.FireLedgerFull(cap, 0, cfg) == 'GLOBAL',
+        'and a full ledger is refused even for somebody holding none of it',
+        tostring(BR.FireLedgerFull(cap, 0, cfg)))
+
+    -- THE ORDER OF THE TWO TESTS IS THE DIAGNOSIS. When both are full the
+    -- interesting fact is that this player is the one filling it, so that is
+    -- what the console line has to say.
+    ok(BR.FireLedgerFull(cap, per, cfg) == 'OWNER',
+        'and when both are full the owner cap is what gets reported')
+
+    -- THE DESIGN PROPERTY, ASSERTED RATHER THAN ASSUMED: the per-owner share is
+    -- what runs out first. A full 48-player roster ALL holding their maximum
+    -- still fits under the global backstop, so the global cap can never be the
+    -- thing that refuses an honest player because of what somebody else did --
+    -- which is the whole reason there is a per-owner cap at all.
+    ok(48 * per < cap,
+        'a full roster at maximum share still fits under the global backstop',
+        ('48 x %d = %d vs %d'):format(per, 48 * per, cap))
+
+    -- Both numbers are BR.Config.Combat's if it carries them, so a playtest can
+    -- widen either without a redeploy.
+    ok(BR.FireLedgerFull(5, 5, { firesPerOwner = 4 }) == 'OWNER',
+        'the per-owner share is configurable')
+    ok(BR.FireLedgerFull(5, 0, { firesMax = 4 }) == 'GLOBAL',
+        'and so is the backstop')
+
+    -- A LEDGER READ AS NONSENSE IS NOT A FULL LEDGER. `#fires` cannot be nil in
+    -- practice, but a cap that refuses everything on a nil would silently stop
+    -- attributing every molotov in the match, which is a worse failure than the
+    -- one it is guarding against.
+    ok(BR.FireLedgerFull(nil, nil, cfg) == nil,
+        'and a ledger it cannot measure is treated as having room')
+end
+
+describe('combat.logbudget')
+do
+    -- HOW LOUD A REFUSAL IS ALLOWED TO BE (external audit, #287).
+    --
+    -- server/damage.lua prints a line per refused EVENT on three paths, and a
+    -- refused event is the cheapest thing a hostile client can manufacture.
+    -- royale.service mirrors the console into console.log, so those lines are a
+    -- file on the game box growing at whatever rate somebody sends packets.
+    --
+    -- THE PROPERTY UNDER TEST IS NOT "IT GOES QUIET". It is that the console
+    -- stays bounded AND still says how much it did not print -- a rate limit
+    -- that silently drops the surplus would trade a disk bug for a blindness
+    -- bug, and under an attack the volume is the signal.
+    local function budget(over)
+        local o = { windowMs = 1000, perKey = 2, perWindow = 5, maxKeys = 3,
+                    now = 0 }
+        for k, v in pairs(over or {}) do o[k] = v end
+        return BR.LogBudget.new(o)
+    end
+
+    do
+        local b = budget()
+        ok(b:admit('a', 0) and b:admit('a', 10),
+            'the first lines of a kind are printed')
+        ok(not b:admit('a', 20), 'and the ones past its allowance are not')
+        -- A SEPARATE KIND IS NOT SILENCED BY THE LOUD ONE. Without this, an
+        -- attacker flooding one path buys silence on all of them, which is the
+        -- more useful outcome for them than the log growth ever was.
+        ok(b:admit('b', 30), 'a different kind still has its own allowance')
+    end
+
+    do
+        -- ...AND THE TOTAL IS STILL BOUNDED, which is the other half. Per-key
+        -- alone lets 48 players times seven reasons through as separate keys.
+        local b = budget({ perKey = 10, perWindow = 3 })
+        local printed = 0
+        for i = 1, 40 do
+            if b:admit('k' .. (i % 2), i) then printed = printed + 1 end
+        end
+        ok(printed == 3, 'the window total holds even when no single kind does',
+            tostring(printed))
+    end
+
+    do
+        -- NOTHING IS LOST, ONLY DEFERRED. Every line the budget refused is in
+        -- the count it hands back, which is the sentence an operator reads.
+        local b = budget()
+        local refused = 0
+        for i = 1, 100 do
+            if not b:admit('a', i) then refused = refused + 1 end
+        end
+        local s = b:sweep(5000)
+        ok(s and s.held == refused,
+            'every line held back is counted in the summary',
+            s and ('%d vs %d'):format(s.held, refused) or 'no summary')
+        ok(s and s.worst == 'a' and s.worstHeld == refused,
+            'and the summary names the kind that produced most of them')
+    end
+
+    do
+        -- THE WINDOW REOPENS, AND THE CALL THAT REOPENS IT CARRIES THE OLD
+        -- WINDOW'S REPORT OUT. Dropping that second return value is the easy
+        -- mistake: a flood that never stops would then never report anything,
+        -- because sweep is only reached when the console goes quiet.
+        local b = budget()
+        b:admit('a', 0); b:admit('a', 0)
+        ok(not b:admit('a', 0), 'a kind is spent for the rest of its window')
+
+        local printIt, summary = b:admit('a', 2000)
+        ok(printIt, 'and printable again once the window rolls')
+        ok(summary and summary.held == 1,
+            'with the closing window reported by the call that rolled it',
+            summary and tostring(summary.held) or 'no summary')
+    end
+
+    do
+        -- A FLOOD THAT STOPS IS THE CASE SWEEP EXISTS FOR: admit only rolls when
+        -- something asks to be printed, so without a tick the last window of an
+        -- attack would sit unreported until the next refusal -- possibly next
+        -- match. An operator reading the console afterwards is exactly the
+        -- person who needs that number.
+        local b = budget()
+        for i = 1, 9 do b:admit('a', 0) end
+        ok(b:sweep(500) == nil, 'a window that has not closed reports nothing')
+        local s = b:sweep(1000)
+        ok(s and s.held == 7, 'a closed one reports what it held back',
+            s and tostring(s.held) or 'no summary')
+        ok(b:sweep(2000) == nil, 'and reports it exactly once')
+    end
+
+    do
+        -- THE BUDGET'S OWN TABLE IS BOUNDED, which is not a formality in a file
+        -- answering a finding about unbounded growth. Callers key on a player id
+        -- and a refusal reason -- server-derived and already bounded -- but a
+        -- rate limiter that could itself be made to allocate without bound would
+        -- be the finding wearing a hat.
+        local b = budget({ perKey = 1, perWindow = 100, maxKeys = 3 })
+        local printed = 0
+        for i = 1, 50 do
+            if b:admit('key' .. i, 0) then printed = printed + 1 end
+        end
+        ok(printed <= 3, 'a key space wider than the cap cannot buy more lines',
+            tostring(printed))
+        local s = b:sweep(2000)
+        ok(s and s.held == 50 - printed,
+            'and the ones that collapsed into the overflow bucket still count',
+            s and tostring(s.held) or 'no summary')
+    end
+
+    do
+        -- THE SENTENCE ITSELF, because it is the whole user-visible output of
+        -- this module and a formatter that throws takes the server's console
+        -- handler with it.
+        ok(BR.LogBudget.line(nil) == nil, 'no summary is no line')
+
+        local line = BR.LogBudget.line(
+            { held = 412, kinds = 7, worst = 'blast:3:TOO_OFTEN',
+              worstHeld = 380, windowMs = 60000 }, 'refusal')
+        ok(line:find('412', 1, true) ~= nil, 'the line carries the count', line)
+        ok(line:find('blast:3:TOO_OFTEN', 1, true) ~= nil,
+            'and names the worst offender so it is actionable', line)
+        ok(line:find('60s', 1, true) ~= nil,
+            'and says how long it is talking about', line)
+        ok(line:find('\u{2014}', 1, true) == nil,
+            'and carries no em dash, the way nothing else here does', line)
+
+        local one = BR.LogBudget.line(
+            { held = 1, kinds = 1, worst = 'a', worstHeld = 1,
+              windowMs = 60000 })
+        ok(one:find('1 more refusal line in', 1, true) ~= nil,
+            'a single held line reads as one line rather than one lines', one)
+    end
 end
 
 describe('combat.refusal.classes')
@@ -1860,6 +2355,88 @@ do
         ('2:%d 4:%d'):format(lo, hi))
 end
 
+describe('loot.floorkinds')
+do
+    -- ═══ EVERY ROW OF FloorKindWeights, PINNED TO WHAT IT ACTUALLY ROLLS ═══
+    --
+    -- The ammo-share gate in loot.floor above is one-sided and cannot catch the
+    -- failure this exists for. If the weapon row stopped paying out entirely --
+    -- an emptied rarity bucket, a kind roll falling through to its fallback --
+    -- loose loot would go to 90% ammo and `ammoShare > 0.6` would still pass,
+    -- green, forever. The owner found it from a chair instead (2026-09-12:
+    -- "can't validate ground weapons because there aren't any", 30+ floor items
+    -- with no gun in them). The generator turned out to be correct and his
+    -- sample was a 1-in-180 run of luck, but nothing in the suite could have
+    -- told him that, which is the actual gap.
+    --
+    -- DRIVEN OFF THE TABLE, NOT OFF COPIED NUMBERS. FloorKindWeights is his
+    -- knob to turn; a test carrying its own hardcoded 16 would fail the next
+    -- time he turns it and teach everyone to edit the test. It asserts that the
+    -- generator pays out what the table SAYS, whatever the table says.
+    --
+    -- ALL FOUR TIERS, because the kind roll is tier-independent by design and a
+    -- regression that made it tier-dependent belongs here too.
+    local rolled, total = {}, 0
+    for tier = 1, 4 do
+        local rng = BR.Rng(4242 + tier * 7919)
+        for _ = 1, 25000 do
+            local s = BR.RollLootStack(rng, tier, true)
+            rolled[s.kind] = (rolled[s.kind] or 0) + 1
+            total = total + 1
+        end
+    end
+
+    local declared = 0
+    for _, row in ipairs(BR.Config.FloorKindWeights) do
+        declared = declared + row.weight
+    end
+
+    -- 1.5 POINTS IS ABOUT EIGHT SIGMA AT THIS n, and a row that has stopped
+    -- paying out misses by its whole weight -- four points at the narrowest.
+    -- So this is loose enough never to flake and tight enough to be worth
+    -- having.
+    local kinds = {}
+    for _, row in ipairs(BR.Config.FloorKindWeights) do
+        kinds[row.kind] = true
+        local want = 100.0 * row.weight / declared
+        local got  = 100.0 * (rolled[row.kind] or 0) / total
+        ok(math.abs(got - want) <= 1.5,
+            ('floor %s rolls at its declared share'):format(tostring(row.kind)),
+            ('declared %.2f%%, measured %.2f%% over %d rolls')
+                :format(want, got, total))
+        -- Said separately from the tolerance above: "this row pays nothing at
+        -- all" is the failure that prompted the test, and it should name itself
+        -- rather than arriving as a number that is 16 away from 16.
+        ok((rolled[row.kind] or 0) > 0,
+            ('floor %s can be rolled at all'):format(tostring(row.kind)))
+    end
+
+    -- A kind the table does not declare must never appear. BR.Config.RollKind
+    -- falls back to WEAPON when its weighted draw comes back nil, so a table
+    -- this walk cannot reach would show up here as a kind nobody authored.
+    local stray = nil
+    for kind in pairs(rolled) do
+        if not kinds[kind] then stray = kind end
+    end
+    ok(stray == nil, 'a floor roll only ever produces a declared kind',
+        tostring(stray))
+
+    -- And the same thing once through the real layout builder, which is the
+    -- path that actually ships: the raw roll above cannot catch a caller that
+    -- forgets to pass `floor`, or a layout that stops placing floor items.
+    local floorWeapons, floorItems = 0, 0
+    for _, e in ipairs(BR.BuildLootLayout(31337)) do
+        if e.kind ~= 'chest' then
+            floorItems = floorItems + 1
+            if e.kind == BR.ItemKind.WEAPON then
+                floorWeapons = floorWeapons + 1
+            end
+        end
+    end
+    ok(floorWeapons > 0, 'a real layout puts guns on the ground',
+        ('%d of %d floor items'):format(floorWeapons, floorItems))
+end
+
 describe('loot.shields')
 do
     -- HOW OFTEN A CRATE PAYS OUT A SHIELD, WHICH IS THE ONLY FORM OF THIS
@@ -2358,9 +2935,56 @@ end
 
 describe('config')
 do
-    ok(BR.Config.Match.maxPlayers <= 48,
-        'maxPlayers respects the free OneSync ceiling',
-        'above 48 the server fails its heartbeat check and delists')
+    -- THE CLOSED BETA'S SIZING, AND IT IS TWO NUMBERS RATHER THAN ONE
+    -- (infradocs#23).
+    --
+    -- What used to stand here was `maxPlayers <= 48`, named "respects the free
+    -- OneSync ceiling". That sentence is true of `sv_maxclients` -- the
+    -- CONNECTION cap, set in server.cfg -- and was never true of this value,
+    -- which caps ONE MATCH: both of its readers compare it against
+    -- BR.Server.countIn(m), the headcount of a single instance. The assertion
+    -- is replaced rather than loosened, because a bound that reads as a fact
+    -- about a different setting is how the two got confused in the first place.
+    ok(BR.Config.Match.maxPlayers == 24,
+        'a match holds 24 players',
+        tostring(BR.Config.Match.maxPlayers))
+
+    ok(BR.Config.Match.minToStartProd == 2,
+        'and a production match starts once two of them are queued',
+        tostring(BR.Config.Match.minToStartProd))
+
+    -- The two the beta did NOT change, pinned so a future sizing pass has to
+    -- mean it. minToStart is the dev minimum that lets a lone client walk the
+    -- whole flow; maxSquadSize is four because a squad is four.
+    ok(BR.Config.Match.minToStart == 1,
+        'while the dev minimum stays 1, so one client can still walk the flow',
+        tostring(BR.Config.Match.minToStart))
+
+    ok(BR.Config.Match.maxSquadSize == 4,
+        'and a squad is still four',
+        tostring(BR.Config.Match.maxSquadSize))
+
+    -- THE RELATIONSHIP THE OLD ASSERTION WAS REACHING FOR, stated between the
+    -- two values it actually holds between. A match cap above the connection
+    -- cap is a lobby that can never fill; below it -- which is the beta's
+    -- shape, 24 in a match and 48 able to connect -- is a second match forming
+    -- beside the first, which is the point.
+    local maxclients = nil
+    local cfg = io.open('server.cfg.example', 'r')
+    if cfg then
+        for line in cfg:lines() do
+            local n = line:match('^%s*sv_maxclients%s+(%d+)')
+            if n then maxclients = tonumber(n) end
+        end
+        cfg:close()
+    end
+    ok(maxclients ~= nil,
+        'server.cfg.example still sets sv_maxclients',
+        'nothing matched -- the connection cap moved or was renamed')
+    ok(maxclients ~= nil and BR.Config.Match.maxPlayers <= maxclients,
+        'and the match cap never exceeds the connection cap',
+        ('maxPlayers %s, sv_maxclients %s')
+            :format(tostring(BR.Config.Match.maxPlayers), tostring(maxclients)))
 
     local phases = BR.Config.Storm.phases
     local shrinking = true
@@ -2668,6 +3292,461 @@ do
         ('close=%.2f far=%.2f'):format(close, far))
     ok(BR.Config.ExpectedDamage(0xDEADBEEF, BR.Rarity.COMMON, 10.0) == 0.0,
         'unknown weapon expects zero damage')
+end
+
+-- ------------------------------------------------------------- ammo.pools ---
+
+describe('ammo.pools')
+do
+    -- ═══ FIVE POOLS SINCE 2026-09-12: LIGHT, SMG, MEDIUM, SHELLS, HEAVY ═══
+    --
+    -- Seven for one day, six for part of one. Owner, having played the seven-pool
+    -- build: "Can we put rockets into any other category that has limited carry
+    -- quantity?" Heavy is that category, so SNIPER went and its four rifles
+    -- rejoined the three launchers there.
+    --
+    -- AND THEN THE MACHINE GUNS WENT INTO MEDIUM. The sixth pool was captioned
+    -- 'Belt Ammo' by us and not by him, and he said so: "Not sure what 'belt' is
+    -- or why we call it that. It doesn't actually show on the person's belt. Very
+    -- misleading." He asked for it merged somewhere roomier and chose the room:
+    -- "let's put MGs in medium then". Medium is 350, which is the second largest
+    -- cap in the game; the deleted pool's 60 could not fill a Combat MG's
+    -- 100-round magazine, which is the defect that started this.
+    --
+    -- MEMBERSHIP IS PINNED WEAPON BY WEAPON RATHER THAN BY COUNTING, because the
+    -- failure this is written against is a single gun left behind in the pool it
+    -- used to be in. A count in HEAVY would be satisfied by the wrong seven, and
+    -- a machine gun still drawing a pool that no longer exists is invisible until
+    -- somebody tries to reload one in a match.
+    local moved = {
+        { 'marksmanrifle',   BR.AmmoType.HEAVY  },
+        { 'sniperrifle',     BR.AmmoType.HEAVY  },
+        { 'marksmanmk2',     BR.AmmoType.HEAVY  },
+        { 'heavysniper',     BR.AmmoType.HEAVY  },
+        { 'rpg',             BR.AmmoType.HEAVY  },
+        { 'grenadelauncher', BR.AmmoType.HEAVY  },
+        { 'railgun',         BR.AmmoType.HEAVY  },
+        { 'mg',              BR.AmmoType.MEDIUM },
+        { 'gusenberg',       BR.AmmoType.MEDIUM },
+        { 'combatmg',        BR.AmmoType.MEDIUM },
+        { 'combatmgmk2',     BR.AmmoType.MEDIUM },
+        { 'minigun',         BR.AmmoType.MEDIUM },
+    }
+    local wrongPool = {}
+    for _, row in ipairs(moved) do
+        local id, want = row[1], row[2]
+        local w = BR.Config.WeaponById[id]
+        if not w then
+            wrongPool[#wrongPool + 1] = id .. ' does not resolve at all'
+        elseif w.ammo ~= want then
+            wrongPool[#wrongPool + 1] = ('%s draws %s, want %s'):format(
+                id, tostring(w.ammo), tostring(want))
+        end
+    end
+    ok(#wrongPool == 0,
+        'every weapon that has changed pool draws the pool it should -- the five '
+            .. 'machine guns on medium, the scoped rifles and launchers on heavy',
+        table.concat(wrongPool, '; '))
+
+    -- AND HEAVY HOLDS THOSE SEVEN AND NOTHING ELSE, which is the half a
+    -- membership list cannot state on its own. Written out by id rather than
+    -- counted for the same reason as above.
+    local inHeavy = {}
+    for _, list in ipairs({ BR.Config.Weapons, BR.Config.AirdropWeapons }) do
+        for _, w in ipairs(list) do
+            if w.ammo == BR.AmmoType.HEAVY then inHeavy[#inHeavy + 1] = w.id end
+        end
+    end
+    table.sort(inHeavy)
+    ok(table.concat(inHeavy, ',') == 'grenadelauncher,heavysniper,marksmanmk2,'
+        .. 'marksmanrifle,railgun,rpg,sniperrifle',
+        'heavy is the four scoped rifles and the three launchers, and nothing '
+            .. 'else is in it', table.concat(inHeavy, ','))
+
+    -- AND MEDIUM IS THE EIGHT ASSAULT RIFLES PLUS THE FIVE MACHINE GUNS. Written
+    -- out by id for the same reason: the failure being guarded is one machine gun
+    -- left behind on a pool that no longer exists, and a count of thirteen would
+    -- be satisfied by the wrong thirteen. The minigun is in this list because the
+    -- airdrop shelf is walked too -- it is the only gun in the pool that a world
+    -- roll can never produce.
+    local inMedium = {}
+    for _, list in ipairs({ BR.Config.Weapons, BR.Config.AirdropWeapons }) do
+        for _, w in ipairs(list) do
+            if w.ammo == BR.AmmoType.MEDIUM then inMedium[#inMedium + 1] = w.id end
+        end
+    end
+    table.sort(inMedium)
+    ok(table.concat(inMedium, ',') == 'advancedrifle,assaultmk2,assaultrifle,'
+        .. 'bullpuprifle,carbinemk2,carbinerifle,combatmg,combatmgmk2,gusenberg,'
+        .. 'mg,militaryrifle,minigun,specialcarbine',
+        'medium is the eight assault rifles plus the five machine guns, and '
+            .. 'nothing else is in it', table.concat(inMedium, ','))
+
+    -- ...and from the other direction. `explosive` is a VALIDATOR flag and the
+    -- pool is a LOOT fact. They are no longer the same set -- heavy holds four
+    -- weapons that are not explosive -- but every explosive is still IN heavy, so
+    -- a launcher added later without a pool change still fails here.
+    local offPool = {}
+    for _, list in ipairs({ BR.Config.Weapons, BR.Config.AirdropWeapons }) do
+        for _, w in ipairs(list) do
+            if w.explosive and w.ammo ~= BR.AmmoType.HEAVY then
+                offPool[#offPool + 1] = w.id
+            end
+        end
+    end
+    ok(#offPool == 0, 'and every explosive in the weapon tables draws heavy',
+        table.concat(offPool, ', '))
+
+    -- HIS CAP, UNCHANGED, NOW BINDING FOUR MORE WEAPONS. 24 is the owner's own
+    -- ("let's change the max heavy ammo to 24 please") and it was set on
+    -- 2026-09-11, the one day heavy meant rockets alone. The merge back did not
+    -- touch the number, so the scoped rifles that carried 60 yesterday carry 24
+    -- today -- two to four magazines at their clip sizes. THAT IS A REAL CUT AND
+    -- IT IS FLAGGED IN config/weapons.lua RATHER THAN SMOOTHED OVER HERE: 24 is
+    -- his to revisit now that it governs something else.
+    ok(BR.Config.AmmoCaps[BR.AmmoType.HEAVY] == 24,
+        'the heavy cap is still his 24, and it is what the snipers live under now',
+        BR.Config.AmmoCaps[BR.AmmoType.HEAVY])
+    -- AND MEDIUM IS STILL 350, WHICH IS THE WHOLE POINT OF PUTTING THE MACHINE
+    -- GUNS THERE. The deleted pool capped at 60, so a Combat MG or Combat MG Mk II
+    -- -- 100-round magazines both -- could never load a full magazine out of a
+    -- full pool. 350 is three and a half of them. The number is unchanged: the
+    -- rifles are not paying for this.
+    ok(BR.Config.AmmoCaps[BR.AmmoType.MEDIUM] == 350,
+        'medium is still 350, so a 100-round machine gun magazine now fills from '
+            .. 'a full pool where the deleted 60 could never fill one',
+        BR.Config.AmmoCaps[BR.AmmoType.MEDIUM])
+
+    -- AND BOTH DELETED POOLS ARE GONE EVERYWHERE, not merely absent from
+    -- AmmoOrder. A cap or a pickup left behind under a deleted key is dead config
+    -- that reads as live: 'sniper' went on 2026-09-12 and 'lmg' went the same day,
+    -- a few hours later.
+    local ghost = {}
+    for name, tbl in pairs({ AmmoCaps = BR.Config.AmmoCaps,
+                             AmmoPickups = BR.Config.AmmoPickups,
+                             AmmoWeights = BR.Config.AmmoWeights }) do
+        for _, dead in ipairs({ 'sniper', 'lmg' }) do
+            if tbl[dead] ~= nil then
+                ghost[#ghost + 1] = ('%s.%s'):format(name, dead)
+            end
+        end
+    end
+    ok(#ghost == 0 and BR.AmmoType.SNIPER == nil and BR.AmmoType.LMG == nil,
+        'the sniper and lmg pools are deleted from the enum and from every pool '
+            .. 'table, not just from the order', table.concat(ghost, ', '))
+
+    -- AND NO WEAPON ANYWHERE STILL POINTS AT A POOL THAT DOES NOT EXIST. The
+    -- membership lists above name the guns that were expected to move; this is
+    -- what catches one that was not on anybody's list.
+    local orphan = {}
+    local livePool = {}
+    for _, p in ipairs(BR.Config.AmmoOrder) do livePool[p] = true end
+    for _, list in ipairs({ BR.Config.Weapons, BR.Config.AirdropWeapons }) do
+        for _, w in ipairs(list) do
+            if w.ammo ~= nil and not livePool[w.ammo] then
+                orphan[#orphan + 1] = ('%s -> %s'):format(w.id, tostring(w.ammo))
+            end
+        end
+    end
+    ok(#orphan == 0,
+        'and every weapon draws a pool that is still in AmmoOrder',
+        table.concat(orphan, ', '))
+
+    -- 12 A PICKUP ON HEAVY, which is also what one purchase buys: no row in
+    -- config/gunshop.lua authors a `bundle`, so the counter reads this number.
+    -- Owner: "each loot pickup should be 12 rounds. Same for purchasing - 12
+    -- rounds per purchase."
+    do
+        local def = BR.Config.AmmoPickups[BR.AmmoType.HEAVY]
+        ok(def ~= nil and def.amount == 12, 'heavy pays 12 rounds a pickup',
+            def and def.amount or 'no pickup')
+    end
+
+    -- AND MEDIUM STILL PAYS 45, WHICH IS WHAT THE MACHINE GUNS INHERIT. The
+    -- deleted pool paid 12 a pickup, so a machine gun found on the floor is fed
+    -- nearly four times what it was this morning. That is the merge doing what it
+    -- was asked to do rather than a number anybody tuned: 45 is the rifles' and it
+    -- has not moved.
+    do
+        local def = BR.Config.AmmoPickups[BR.AmmoType.MEDIUM]
+        ok(def ~= nil and def.amount == 45,
+            'medium still pays 45 rounds a pickup, and the machine guns now eat '
+                .. 'from that instead of a 12-round pickup',
+            def and def.amount or 'no pickup')
+    end
+
+    -- THE PICKUP PROPS ARE REUSED AND NOT NEW. A model that is not already in
+    -- this table would have to be streamed, and nothing streams it.
+    --
+    -- AND THE SHARING IS AS THIN AS IT HAS EVER BEEN, which is the owner's second
+    -- point: "we also have a limited number of ammo props for loot drops". Seven
+    -- pools over three models meant heavy, sniper and MG rounds were one object on
+    -- the ground under three names. Five pools over three models is two, two and
+    -- ONE: heavy is now the only user of prop_box_ammo03a, so a box of heavy rounds
+    -- on the ground is unambiguous for the first time.
+    local props = {}
+    for _, pool in ipairs(BR.Config.AmmoOrder) do
+        local p = BR.Config.AmmoPickups[pool].prop
+        props[p] = (props[p] or 0) + 1
+    end
+    local distinct, crowded = 0, {}
+    for prop, n in pairs(props) do
+        distinct = distinct + 1
+        if n > 2 then crowded[#crowded + 1] = ('%s x%d'):format(prop, n) end
+    end
+    ok(distinct == 3, 'the five pools still use only the three ammo-box props '
+        .. 'that were already streamed, so nothing new has to load', distinct)
+    ok(#crowded == 0,
+        'and no prop carries more than two pools, where seven pools put three on '
+            .. 'one', table.concat(crowded, ', '))
+    ok(props['prop_box_ammo03a'] == 1
+       and BR.Config.AmmoPickups[BR.AmmoType.HEAVY].prop == 'prop_box_ammo03a',
+        'and prop_box_ammo03a is heavy alone now the belt pool is gone, which is '
+            .. 'the first pool in the game with a box model to itself',
+        tostring(props['prop_box_ammo03a']))
+
+    -- ═══ A POOL VALUE MAY NOT BE AN ITEM ID ═══
+    --
+    -- An ammo stack's `item` IS THE BARE POOL STRING -- shared/loot_gen.lua and
+    -- server/inventory.lua both set it that way -- and every dispatch that
+    -- resolves a BARE id asks BR.Config.WeaponById BEFORE BR.Config.AmmoPickups:
+    -- server/debug.lua's brgive and brarm, and server/loot.lua's devStack. So a
+    -- pool valued the same as a gun would put a box of rounds on the floor
+    -- carrying that gun's own id, and those lookups would hand back the gun.
+    --
+    -- ⚠ 'smg' ALREADY COLLIDES, AND IT IS NOT NEW. BR.AmmoType.SMG is 'smg' and
+    -- BR.Config.Weapons carries `{ id = 'smg', name = 'WEAPON_SMG' }`. The
+    -- collision is SHIPPED and predates the pools being split at all, so it is
+    -- the ONE allowed entry below rather than a failure.
+    --
+    -- THE CONSUMERS THAT COULD ASK, NOW ASK (2026-09-12). server/loot.lua's
+    -- labelOf and pluralOf read `stack.kind` before they walk any table, which is
+    -- the field every stack has always carried, so a stack of SMG rounds is named
+    -- "SMG Ammo" and the gun is still the gun. No rename and no migration: see
+    -- labelOf's header, and tools/test_roster.lua's `loot.refusal` for the pin.
+    --
+    -- WHAT IS STILL LIVE IS THE ADMIN DOOR, and it is live because it has no
+    -- `kind` to read: server/debug.lua's brgive and brarm and server/loot.lua's
+    -- devStack all resolve a BARE id a human typed, ask WeaponById first, and so
+    -- `brgive <id> smg` hands over WEAPON_SMG rather than 60 rounds. Disambiguating
+    -- that means new syntax at those commands, which is the owner's call.
+    --
+    -- THIS IS A RATCHET, the same shape as tools/bool_natives.baseline. Any pool
+    -- value that collides and is not on this list fails, so the defect cannot
+    -- grow while the owner decides what to do about the one that exists.
+    local KNOWN_COLLISION = { smg = 'WEAPON_SMG, shipped long before the '
+        .. '2026-09-11 split; the owner has not been asked about renaming it' }
+
+    local collide, known = {}, {}
+    for _, pool in ipairs(BR.Config.AmmoOrder) do
+        local w = BR.Config.WeaponById[pool]
+        local c = BR.Config.ConsumableById[pool]
+        if w or c then
+            local what = ('%s is also %s'):format(
+                pool, w and (w.name or w.id) or 'a consumable id')
+            if KNOWN_COLLISION[pool] then
+                known[#known + 1] = pool
+            else
+                collide[#collide + 1] = what
+            end
+        end
+    end
+    ok(#collide == 0,
+        'no NEW ammo pool value collides with a weapon or consumable id -- '
+            .. 'checked against BR.Config.WeaponById, which holds '
+            .. 'BR.Config.Weapons, BR.Config.AirdropWeapons, the throwables, the '
+            .. 'melee and fists',
+        table.concat(collide, '; '))
+
+    -- AND THE ALLOWLIST IS NOT ALLOWED TO ROT EITHER. If somebody renames the SMG
+    -- pool, or the SMG weapon, this goes red and the exception above comes out
+    -- rather than sitting there excusing a collision that no longer exists.
+    ok(#known == 1 and known[1] == 'smg',
+        'and the one known collision is still exactly the shipped smg one',
+        table.concat(known, ', '))
+
+    -- THE THREE POOL TABLES MUST AGREE ABOUT WHICH POOLS EXIST. A pool in the
+    -- order with no cap can never be held; one with no pickup rolls a stack with
+    -- no amount and no label, which is a blank card in the bag.
+    local gaps = {}
+    for _, pool in ipairs(BR.Config.AmmoOrder) do
+        if not BR.Config.AmmoCaps[pool]    then gaps[#gaps + 1] = pool .. ':cap' end
+        if not BR.Config.AmmoPickups[pool] then gaps[#gaps + 1] = pool .. ':pickup' end
+    end
+    ok(#gaps == 0, 'every pool in AmmoOrder has both a cap and a pickup',
+        table.concat(gaps, ', '))
+    ok(#BR.Config.AmmoOrder == 5, 'five pools: light, smg, medium, shells, heavy',
+        #BR.Config.AmmoOrder)
+end
+
+-- ----------------------------------------------------------- ammo.weights ---
+
+describe('ammo.weights')
+do
+    -- ═══ THE COMMON POOLS KEEP THE SHARE THEY ALREADY HAD ═══
+    --
+    -- BR.RollLootStack used to pick with rng:pick over BR.Config.AmmoOrder, which
+    -- is UNIFORM: five pools, 20% each. Any change to the POOL COUNT moves every
+    -- pool's share under a uniform draw -- seven pools is 14.3% each, six is
+    -- 16.7% -- so pistol, SMG, rifle and shotgun ammo would get rarer or commoner
+    -- on the floor every time somebody reorganizes the specialist pools. Nobody
+    -- has ever asked for that, in either direction.
+    --
+    -- MEDIUM IS THE ONE THAT MOVED, AND IT MOVED UP: the deleted belt pool's 8 was
+    -- folded into it on 2026-09-12 because the five machine guns landed there, so
+    -- it reads 28. Light, SMG and shells are still on 20.
+    --
+    -- THIS IS THE ASSERTION THAT HOLDS THEM, and it fails both ways: on a uniform
+    -- draw over any number of pools, and on any future edit that adds or removes
+    -- a pool without paying for it out of the specialist shares.
+    local N = 70000
+    local rng, seen = BR.Rng(4242), {}
+    for _, p in ipairs(BR.Config.AmmoOrder) do seen[p] = 0 end
+    for _ = 1, N do
+        local p = BR.Config.RollAmmoPool(rng)
+        seen[p] = (seen[p] or 0) + 1
+    end
+
+    local total = 0
+    for _, p in ipairs(BR.Config.AmmoOrder) do
+        total = total + (BR.Config.AmmoWeights[p] or 0)
+    end
+    local off = {}
+    for _, p in ipairs(BR.Config.AmmoOrder) do
+        local want = (BR.Config.AmmoWeights[p] or 0) / total
+        local got  = seen[p] / N
+        -- 0.01 is about six standard errors at these counts, so this is a real
+        -- assertion rather than a tolerance wide enough to pass on anything.
+        if math.abs(got - want) > 0.01 then
+            off[#off + 1] = ('%s %.4f vs %.4f'):format(p, got, want)
+        end
+    end
+    ok(#off == 0, 'every pool is drawn at its authored share',
+        table.concat(off, ', '))
+
+    for _, p in ipairs({ BR.AmmoType.LIGHT, BR.AmmoType.SMG,
+                         BR.AmmoType.SHELLS }) do
+        ok(math.abs(seen[p] / N - 0.20) <= 0.01,
+            ('%s still gets the 20%% a uniform draw over five pools gave it')
+                :format(p),
+            ('%.4f'):format(seen[p] / N))
+    end
+
+    -- ⚠ MEDIUM'S 28 IS NOT THE OWNER'S NUMBER AND THE COMMENT IN config/loot.lua
+    -- SAYS SO. He asked for the machine guns to live in medium and said nothing
+    -- about the floor rate; the deleted pool's 8 had to go somewhere for the rows
+    -- to keep summing to 100, and folding it here is the only choice that does not
+    -- thin rifle ammo for assault rifle players as a side effect of a change about
+    -- machine guns. It is the knob to turn if the floor feels wrong.
+    ok(math.abs(seen[BR.AmmoType.MEDIUM] / N - 0.28) <= 0.01,
+        'medium is drawn at 28%, which is its old 20 plus the 8 the deleted belt '
+            .. 'pool was drawing for the guns that just moved in',
+        ('%.4f'):format(seen[BR.AmmoType.MEDIUM] / N))
+
+    -- ⚠ HEAVY'S SHARE IS AN ASSUMPTION RATHER THAN THE OWNER'S TOO. heavy 12 is
+    -- what sniper 8 / heavy 4 became when sniper's four weapons moved into heavy:
+    -- the same ammunition rolled at the same rate under one name instead of two.
+    -- See the note in config/loot.lua. So this pins the PROPERTY the number was
+    -- chosen for and not the number, which he is free to tune without editing a
+    -- test.
+    local rarest = {}
+    for _, common in ipairs({ BR.AmmoType.LIGHT, BR.AmmoType.SMG,
+                              BR.AmmoType.MEDIUM, BR.AmmoType.SHELLS }) do
+        if seen[BR.AmmoType.HEAVY] >= seen[common] then
+            rarest[#rarest + 1] = ('heavy >= %s'):format(common)
+        end
+    end
+    ok(#rarest == 0,
+        'heavy is the rarest pool on the floor, and rarer than every common one, '
+            .. 'which is what the weighting is for',
+        table.concat(rarest, ', '))
+
+    -- AND THE TWO MERGES EACH CARRY WHAT THEY ABSORBED. A merge is only honest if
+    -- the guns that moved kept their supply: sniper drew 8 of 100 and heavy drew 4,
+    -- so heavy draws 12; the belt pool drew 8 and its five guns are in medium, so
+    -- medium draws 28.
+    ok(BR.Config.AmmoWeights[BR.AmmoType.HEAVY] == 12
+       and BR.Config.AmmoWeights[BR.AmmoType.MEDIUM] == 28
+       and BR.Config.AmmoWeights[BR.AmmoType.LMG] == nil,
+        'heavy carries its own 4 plus sniper\'s 8, medium carries its own 20 plus '
+            .. 'the belt pool\'s 8, and the belt pool has no row left at all',
+        ('heavy %s, medium %s, lmg %s'):format(
+            tostring(BR.Config.AmmoWeights[BR.AmmoType.HEAVY]),
+            tostring(BR.Config.AmmoWeights[BR.AmmoType.MEDIUM]),
+            tostring(BR.Config.AmmoWeights[BR.AmmoType.LMG])))
+
+    local weightTotal = 0
+    for _, p in ipairs(BR.Config.AmmoOrder) do
+        weightTotal = weightTotal + (BR.Config.AmmoWeights[p] or 0)
+    end
+    ok(weightTotal == 100,
+        'and the rows still sum to 100, so each one reads as a percentage',
+        weightTotal)
+
+    -- ═══ DETERMINISM, WHICH IS THE HARD CONSTRAINT ═══
+    --
+    -- The deck is built by walking BR.Config.AmmoOrder and looking each weight up,
+    -- never by iterating the string-keyed BR.Config.AmmoWeights. pairs() order is
+    -- undefined, and a layout that depended on it would differ between two servers
+    -- running the same seed -- which is the one thing loot_gen.lua's header
+    -- forbids outright.
+    local a, b = BR.Rng(31337), BR.Rng(31337)
+    local same = true
+    for _ = 1, 3000 do
+        if BR.Config.RollAmmoPool(a) ~= BR.Config.RollAmmoPool(b) then
+            same = false
+            break
+        end
+    end
+    ok(same, 'the same seed draws the same pools in the same order')
+
+    local deckOrder = #BR.Config.AmmoWeightDeck == #BR.Config.AmmoOrder
+    for i = 1, #BR.Config.AmmoWeightDeck do
+        if BR.Config.AmmoWeightDeck[i].pool ~= BR.Config.AmmoOrder[i] then
+            deckOrder = false
+        end
+    end
+    ok(deckOrder, 'and the deck is AmmoOrder, entry for entry -- which is what '
+        .. 'makes that reproducible across processes and not merely repeatable '
+        .. 'inside one')
+
+    -- ONE DRAW, EXACTLY AS THE rng:pick IT REPLACED. If the weighted roll cost a
+    -- different number of draws, every subsequent roll in the loot stream would
+    -- shift and this change would have moved far more than ammunition.
+    local p1, p2 = BR.Rng(7), BR.Rng(7)
+    BR.Config.RollAmmoPool(p1)
+    p2:pick(BR.Config.AmmoOrder)
+    ok(p1:next() == p2:next(),
+        'a weighted pool draw burns the same single rng draw a uniform pick did')
+
+    -- AND EVERY POOL IS ACTUALLY IN A GENERATED LAYOUT. 'loot.gen' asserts the
+    -- byte-identical replay; this is what stops that passing over ammunition
+    -- nothing can roll. It is also what catches a DELETED pool that something
+    -- still hands out, which is the failure mode of the 2026-09-12 merge rather
+    -- than of the split that preceded it.
+    local layout = BR.BuildLootLayout(2026)
+    local found = {}
+    for _, e in ipairs(layout) do
+        if e.kind == BR.ItemKind.AMMO then found[e.item] = true end
+        for _, s in ipairs(e.contents or {}) do
+            if s.kind == BR.ItemKind.AMMO then found[s.item] = true end
+        end
+    end
+    local absent, stray = {}, {}
+    local live = {}
+    for _, p in ipairs(BR.Config.AmmoOrder) do
+        live[p] = true
+        if not found[p] then absent[#absent + 1] = p end
+    end
+    for item in pairs(found) do
+        if not live[item] then stray[#stray + 1] = item end
+    end
+    ok(#absent == 0, 'a generated layout contains a stack of every pool',
+        table.concat(absent, ', '))
+    ok(#stray == 0,
+        'and no stack of a pool that no longer exists -- a deleted pool still on '
+            .. 'the floor is a box nothing can pick up',
+        table.concat(stray, ', '))
 end
 
 -- ------------------------------------------------------------------- loot ---
@@ -3333,6 +4412,289 @@ do
     end
     ok(floor > 100, 'weapons still lie on the floor as well',
         ('%d of them'):format(floor))
+end
+
+-- ------------------------------------------------------------- loot.golden ---
+--
+-- TIER 4, THE GOLDEN POIs (#227, owner 2026-09-08).
+--
+-- Four named sites -- Humane Labs, Kortz Center, Great Chaparral and Raton
+-- Canyon -- were promoted to a real fourth tier with 35 crates and their own
+-- rarity row. Three things can go wrong with that and only one of them is loud:
+--
+--   1. THE WRONG ROWS ARE FLAGGED. Every one of the four has a similarly named
+--      neighbor in the same table (raton_n, chaparral_n, chaparral_w, kortz_s),
+--      all tier 1, all one line away in a search. The symptom is 35 crates of
+--      the map's best loot appearing somewhere nobody chose, and nothing else
+--      in this suite would notice.
+--   2. THE FOURTH ROW IS MISSING FROM A TIER-KEYED TABLE. The tables fall back
+--      rather than erroring -- RollRarity does `RarityWeights[tier] or
+--      RarityWeights[2]` and the budgets do `or 0` -- so a missing row is a
+--      SILENT downgrade to tier 2 loot or to no loot at all.
+--   3. THE MIX DOES NOT ACTUALLY SHIFT. This is the quiet one and it is the
+--      reason the feature could not be built as `tier + 1`: crate contents roll
+--      one tier hotter and that bump used to clamp at 3, so a tier-4 POI whose
+--      crates still clamp to row 3 rolls exactly what a Humane Labs crate
+--      already rolled and the whole thing is 35 crates of nothing new.
+
+describe('loot.golden')
+do
+    -- The owner's four, by id. Written out here rather than derived from the
+    -- POI table, because deriving it from the thing under test would assert
+    -- nothing at all.
+    local GOLDEN = { 'humane', 'kortz', 'raton', 'chaparral' }
+    local isGolden = {}
+    for _, id in ipairs(GOLDEN) do isGolden[id] = true end
+
+    local atTier4, strays = {}, {}
+    for _, poi in ipairs(BR.Config.Map.POIs) do
+        if poi.tier == 4 then
+            atTier4[#atTier4 + 1] = poi.id
+            if not isGolden[poi.id] then strays[#strays + 1] = poi.id end
+        end
+    end
+    ok(#atTier4 == 4 and #strays == 0,
+        'exactly four POIs are tier 4, and they are the four he named',
+        ('tier 4: %s | not on the list: %s'):format(
+            table.concat(atTier4, ', '),
+            #strays > 0 and table.concat(strays, ', ') or 'none'))
+
+    local notFour = {}
+    for _, id in ipairs(GOLDEN) do
+        local poi = BR.Config.Map.GetPOI(id)
+        if not poi then
+            notFour[#notFour + 1] = id .. ' (not in the POI table)'
+        elseif poi.tier ~= 4 then
+            notFour[#notFour + 1] = ('%s (tier %s)'):format(id, tostring(poi.tier))
+        end
+    end
+    ok(#notFour == 0, 'every golden POI is present and at tier 4',
+        table.concat(notFour, ', '))
+
+    -- THE NEIGHBORS, WHICH ARE THE LIVE MISTAKE. All four were tier 1 before
+    -- this change and all four must still be: he named the main sites.
+    local wrong = {}
+    for _, id in ipairs({ 'raton_n', 'chaparral_n', 'chaparral_w', 'kortz_s' }) do
+        local poi = BR.Config.Map.GetPOI(id)
+        if not poi then
+            wrong[#wrong + 1] = id .. ' (gone)'
+        elseif poi.tier ~= 1 then
+            wrong[#wrong + 1] = ('%s (tier %s)'):format(id, tostring(poi.tier))
+        end
+    end
+    ok(#wrong == 0,
+        'the similarly named neighbors are untouched and still tier 1',
+        table.concat(wrong, ', '))
+
+    -- And the two sites the issue was FILED about are deliberately not golden
+    -- (owner: "let's not include zancudo or the prison"). Zancudo stays a tier
+    -- 3 hot drop; the penitentiary is not a POI at all.
+    local zancudo = BR.Config.Map.GetPOI('zancudo')
+    ok(zancudo ~= nil and zancudo.tier == 3,
+        'Fort Zancudo is deliberately NOT golden and is still tier 3',
+        zancudo and ('tier ' .. tostring(zancudo.tier)) or 'missing')
+
+    -- ---------------------------------------------------------------------
+    -- Every tier-keyed table grew a fourth row. A missing one falls back
+    -- silently rather than erroring, which is why this is asserted rather
+    -- than left to the first crate that rolls wrong.
+    ok(BR.Config.RarityWeights[4] ~= nil, 'RarityWeights has a tier 4 row')
+    ok(BR.Config.Loot.budgetPerTier[4] ~= nil, 'budgetPerTier has a tier 4 row')
+    ok(BR.Config.Loot.chestsPerTier[4] ~= nil, 'chestsPerTier has a tier 4 row')
+
+    ok(BR.Config.Loot.chestsPerTier[4] == 35,
+        'a golden POI spawns 35 crates -- the owner\'s number',
+        tostring(BR.Config.Loot.chestsPerTier[4]))
+
+    -- ═══ LEGENDARY IS TIER 4'S ALONE, AND THAT IS WHAT MAKES IT TIER 4 ═══
+    --
+    -- Owner, 2026-09-11: "The legendary drop rate should be 0, except for Tier 4
+    -- POIs and airdrops." Before that it was 1 / 2 / 5 / 10, so the golden sites
+    -- were the best odds rather than the only source, and with 64 crates across
+    -- tiers 1 to 3 against 35 at tier 4 most of the map's legendaries came out
+    -- of ordinary POIs by volume alone.
+    --
+    -- ASSERTED AS AN EXCLUSIVITY, NOT AS FOUR NUMBERS. `weights[4] == 10` would
+    -- pass against a table that had quietly grown a legendary back at tier 2,
+    -- which is the whole failure this pins. The loop below is the claim.
+    for tier = 1, 3 do
+        ok(BR.Config.RarityWeights[tier][BR.Rarity.LEGENDARY] == 0,
+            ('tier %d rolls no legendary at all'):format(tier),
+            tostring(BR.Config.RarityWeights[tier][BR.Rarity.LEGENDARY]))
+    end
+    ok(BR.Config.RarityWeights[4][BR.Rarity.LEGENDARY] > 0,
+        'and tier 4 is the only tier that does',
+        tostring(BR.Config.RarityWeights[4][BR.Rarity.LEGENDARY]))
+
+    -- EACH ROW STILL READS AS A PERCENTAGE. The file's own note says the rows
+    -- are written to sum to 100 so a weight reads as a percent; nothing requires
+    -- it, since rng:weighted normalises, which is exactly why it would rot
+    -- silently. Zeroing four cells is the sort of edit that leaves a row at 99.
+    for tier = 1, 4 do
+        local sum = 0
+        for _, w in pairs(BR.Config.RarityWeights[tier]) do sum = sum + w end
+        ok(sum == 100, ('tier %d still sums to 100'):format(tier), tostring(sum))
+    end
+    -- FLAT AGAINST TIER 3, ON PURPOSE (owner: "floor items can stay at 14").
+    -- A table reading 5 / 8 / 14 / 14 looks like an unfilled cell, so the
+    -- flatness is pinned here as a decision rather than left to look like one.
+    ok(BR.Config.Loot.budgetPerTier[4] == BR.Config.Loot.budgetPerTier[3],
+        'tier 4 floor loot is deliberately FLAT against tier 3',
+        ('%s vs %s'):format(tostring(BR.Config.Loot.budgetPerTier[4]),
+                            tostring(BR.Config.Loot.budgetPerTier[3])))
+
+    -- The owner's exact split, which is not ours to adjust. He said "55%" a
+    -- minute before writing it out; the split is 63% rare-or-better and the
+    -- split is the specific thing.
+    local R4 = BR.Config.RarityWeights[4]
+    local wantedRow = {
+        [BR.Rarity.COMMON] = 14, [BR.Rarity.UNCOMMON] = 23, [BR.Rarity.RARE] = 30,
+        [BR.Rarity.EPIC] = 23, [BR.Rarity.LEGENDARY] = 10,
+    }
+    local rowOk, rowDetail = true, {}
+    for rarity, weight in pairs(wantedRow) do
+        if R4[rarity] ~= weight then
+            rowOk = false
+            rowDetail[#rowDetail + 1] = ('%s: %s not %d'):format(
+                BR.RarityInfo[rarity].label, tostring(R4[rarity]), weight)
+        end
+    end
+    ok(rowOk, 'the tier 4 rarity row is the owner\'s numbers, exactly',
+        table.concat(rowDetail, ', '))
+
+    -- ⚠ THIS USED TO ASSERT A DOUBLING, 5% TO 10%, AND THE RELATIONSHIP IT
+    -- MEASURED NO LONGER EXISTS. Tier 3 is zero since 2026-09-11, so "twice
+    -- tier 3" is zero and the old form would have demanded tier 4 be zero too.
+    --
+    -- The claim it was protecting survives in a stronger shape: legendary is
+    -- tier 4's alone, which is asserted as an exclusivity over all four tiers up
+    -- in the golden-POI block rather than as a ratio between two of them. What
+    -- is left here is the floor, so that "10" quietly becoming "1" still fails.
+    ok(R4[BR.Rarity.LEGENDARY] == 10,
+        'legendary is the owner\'s 10 at tier 4, the only tier that rolls one',
+        ('%s vs %s'):format(tostring(R4[BR.Rarity.LEGENDARY]),
+                            tostring(BR.Config.RarityWeights[3][BR.Rarity.LEGENDARY])))
+
+    -- The ladder, which is what makes his numbers a continuation rather than a
+    -- new species of crate: rare-or-better 17 -> 30 -> 47 -> 63, common
+    -- 55 -> 40 -> 25 -> 14. Monotone in both directions, all four rows.
+    local rareUp, commonDown, ladder = true, true, {}
+    local prevRare, prevCommon
+    for tier = 1, 4 do
+        local row = BR.Config.RarityWeights[tier]
+        local total = 0
+        for _, w in pairs(row) do total = total + w end
+        local rareOrBetter = row[BR.Rarity.RARE] + row[BR.Rarity.EPIC]
+            + row[BR.Rarity.LEGENDARY]
+        ladder[#ladder + 1] = ('t%d %d/%d'):format(tier, rareOrBetter, total)
+        if total ~= 100 then rareUp = false end
+        if prevRare and rareOrBetter <= prevRare then rareUp = false end
+        if prevCommon and row[BR.Rarity.COMMON] >= prevCommon then commonDown = false end
+        prevRare, prevCommon = rareOrBetter, row[BR.Rarity.COMMON]
+    end
+    ok(rareUp, 'every rarity row sums to 100 and rare-or-better climbs every tier',
+        table.concat(ladder, '  '))
+    ok(commonDown, 'and common falls every tier')
+
+    -- ---------------------------------------------------------------------
+    -- NOTHING BELOW TIER 4 MOVED. The literal rows, because "I only added a
+    -- row" is exactly the claim that is easy to make and easy to get wrong
+    -- while retyping a table.
+    --
+    -- ⚠ UPDATED 2026-09-11, AND NOT BY RETYPING WHAT WAS THERE. The owner:
+    -- "The legendary drop rate should be 0, except for Tier 4 POIs and
+    -- airdrops." So tiers 1 to 3 gave up their legendary weight and it went to
+    -- EPIC, which is why the fourth column moved and the fifth is zero. Every
+    -- other cell is untouched, which is still the claim this block exists to
+    -- make.
+    local before = {
+        [1] = { 55, 28, 13,  4, 0 },
+        [2] = { 40, 30, 20, 10, 0 },
+        [3] = { 25, 28, 27, 20, 0 },
+    }
+    local moved = {}
+    for tier, row in pairs(before) do
+        for rarity = BR.Rarity.COMMON, BR.Rarity.LEGENDARY do
+            if BR.Config.RarityWeights[tier][rarity] ~= row[rarity] then
+                moved[#moved + 1] = ('t%d %s'):format(tier, BR.RarityInfo[rarity].label)
+            end
+        end
+    end
+    ok(#moved == 0, 'tiers 1 to 3 kept their rarity rows to the number',
+        table.concat(moved, ', '))
+    ok(BR.Config.Loot.budgetPerTier[1] == 5 and BR.Config.Loot.budgetPerTier[2] == 8
+        and BR.Config.Loot.budgetPerTier[3] == 14,
+        'tiers 1 to 3 kept their floor budgets')
+    ok(BR.Config.Loot.chestsPerTier[1] == 20 and BR.Config.Loot.chestsPerTier[2] == 20
+        and BR.Config.Loot.chestsPerTier[3] == 24,
+        'tiers 1 to 3 kept their crate counts')
+
+    -- ---------------------------------------------------------------------
+    -- WHICH ROW A CRATE ACTUALLY ROLLS, asserted exactly rather than
+    -- statistically. BR.Config.RollRarity spends exactly ONE rng draw whatever
+    -- row it reads, so two crate streams from the same seed diverge if and only
+    -- if they are reading different rows. That turns the whole `hot` mapping
+    -- into an equality test:
+    --
+    --   tier 2 -> row 3 and tier 3 -> row 3 (the bump clamps), so those two
+    --     streams must be IDENTICAL, item for item;
+    --   tier 1 -> row 2, so it must differ from tier 2;
+    --   tier 4 -> row 4 and NOT the clamp, so it must differ from tier 3.
+    --
+    -- The last of those is the one that would have caught `math.min(tier+1, 3)`
+    -- being left alone, which is the failure that makes golden a no-op.
+    local function crateStream(tier, n)
+        local rng, out = BR.Rng(9271), {}
+        for _ = 1, n do
+            for _, s in ipairs(BR.LootChestContents(rng, tier)) do
+                out[#out + 1] = tostring(s.item) .. ':' .. tostring(s.rarity)
+            end
+        end
+        return table.concat(out, '|')
+    end
+    local s1, s2, s3, s4 =
+        crateStream(1, 400), crateStream(2, 400), crateStream(3, 400), crateStream(4, 400)
+
+    ok(s2 == s3,
+        'tier 2 and tier 3 crates still roll the SAME row -- the bump clamps at 3')
+    ok(s1 ~= s2, 'tier 1 crates roll a colder row than tier 2 crates')
+    ok(s4 ~= s3,
+        'a tier 4 crate does NOT clamp back to row 3 -- golden is not a no-op')
+
+    -- ---------------------------------------------------------------------
+    -- AND THE MIX ACTUALLY SHIFTED, measured through the real generator rather
+    -- than off the weights table. It has to be measured because three of the
+    -- five kinds cannot pay out at the top -- ammo is always common, melee
+    -- stops at uncommon, consumables have no rare -- so the share of crate
+    -- items that come out rare-or-better is well below the row's 63%.
+    local function share(tier, crates)
+        local rng, items, good, legendary = BR.Rng(42424), 0, 0, 0
+        for _ = 1, crates do
+            for _, s in ipairs(BR.LootChestContents(rng, tier)) do
+                items = items + 1
+                if s.rarity >= BR.Rarity.RARE then good = good + 1 end
+                if s.rarity >= BR.Rarity.LEGENDARY then legendary = legendary + 1 end
+            end
+        end
+        return good / items, legendary / items
+    end
+    local g3, l3 = share(3, 20000)
+    local g4, l4 = share(4, 20000)
+
+    -- Generous margins on purpose: this asserts the DIRECTION and rough size of
+    -- the shift, not a distribution. A tight bound here would be a test that
+    -- fails every time somebody legitimately retunes a weight.
+    ok(g4 > g3 * 1.25,
+        'a golden crate item is markedly more likely to be rare or better',
+        ('tier 3 %.1f%% -> tier 4 %.1f%%'):format(g3 * 100.0, g4 * 100.0))
+    ok(l4 > l3 * 1.4,
+        'and markedly more likely to be legendary',
+        ('tier 3 %.2f%% -> tier 4 %.2f%%'):format(l3 * 100.0, l4 * 100.0))
+    -- The other half of the same claim: it is a shift, not a jackpot. If a
+    -- golden crate item were rare-or-better more often than not, the four sites
+    -- would stop being destinations and start being the only destinations.
+    ok(g4 < 0.60, 'but a golden crate is still mostly ordinary loot',
+        ('%.1f%%'):format(g4 * 100.0))
 end
 
 -- ------------------------------------------------------------- loot.warmup ---
@@ -4592,6 +5954,18 @@ local function newClient(settleMs, streamMs)
     --- reviving, and going to the emote we chose" (owner, 2026-08-18).
     local function pedFrame()
         if P.pending then P.anim, P.pending = P.pending, nil end
+
+        -- RULE 6: FIRE IS A DAMAGE PATH, NOT A COSMETIC (owner, 2026-09-12: a
+        -- body in a molotov is "repeatedly respawned, then immediately die").
+        -- A ped standing in flames that has not REFUSED fire damage runs out of
+        -- health -- five display points is nothing -- and the pool goes on
+        -- burning for twenty seconds, so it does it again on the next frame. A
+        -- rig that modelled fire as scenery would make the fix untestable in the
+        -- one way that matters.
+        if P.onFire and P.fireProof ~= true and not P.dying and not P.dead then
+            P.hp, P.dying, P.since = 0, true, C.now
+        end
+
         if P.dying and not P.dead and (C.now - P.since) >= settleMs then
             P.dead = true
         end
@@ -4633,6 +6007,16 @@ local function newClient(settleMs, streamMs)
         P.anim, P.pending = nil, nil
     end
     env.ClearPedTasks    = function() P.anim, P.pending = nil, nil end
+    -- FIRE, AND THE TWO HALVES ARE SEPARATE SYSTEMS. The proof refuses the
+    -- damage; the flames on the body are their own state and a resurrection does
+    -- not put them out. SET_ENTITY_PROOFS takes bullet, FIRE, explosion,
+    -- collision, melee, steam, p7, water, and only the second one is this bug.
+    env.SetEntityProofs  = function(_, _, fireProof) P.fireProof = fireProof end
+    env.IsEntityOnFire   = function() return P.onFire and 1 or 0 end
+    env.StopEntityFire   = function()
+        P.onFire = false
+        C.doused = (C.doused or 0) + 1
+    end
     env.SetPedArmour     = function() end
     env.GetPedArmour     = function() return 0 end
     env.RemoveAllPedWeapons = function() end
@@ -4782,6 +6166,15 @@ local function newClient(settleMs, streamMs)
     --- environmental and returns, so nothing clamps it.
     function C.fall()
         P.hp, P.dying, P.since = 0, true, C.now
+    end
+
+    --- A molotov lands on them, and the pool keeps burning.
+    ---
+    --- THE SAME DAMAGE PATH AS THE FALL and one difference that is the whole bug:
+    --- the ground stops arriving. `onFire` stays true until something puts it out,
+    --- so pedFrame kills this ped again on every frame it is not refused.
+    function C.light()
+        P.onFire = true
     end
 
     return C
@@ -4955,6 +6348,90 @@ do
         .. 'the resurrection restored',
         ('engine health %s, expected %s')
             :format(tostring(CLI.env.GetEntityHealth(1)), tostring(floorHp)))
+end
+
+describe('dbno.fire.client')
+do
+    -- ═══ THE SAME RIG, WITH A FIRE THAT DOES NOT GO OUT (owner, 2026-09-12) ═══
+    --
+    --   "when dying to a fire, like a molotov, the ped doesn't get a chance to
+    --    crawl because they're caught in the flames and repeatedly respawned,
+    --    then immediately die. This is basically just infinite ragdoll cycles."
+    --
+    -- A FALL IS ONE EVENT AND A MOLOTOV IS TWENTY SECONDS, which is the whole
+    -- difference and the reason the matrix above passed while the owner watched
+    -- this happen. The block above kills the ped once and asks whether the client
+    -- puts it back; this one keeps killing it, and asks whether the client stops
+    -- the damage instead of repairing the corpse over and over.
+    --
+    -- THE REAL CLIENT AND THE REAL SERVER, over a wire, so the answer covers both
+    -- halves: whatever this client does must not produce a second death report the
+    -- server has to refuse, and must leave the ped alive and crawling.
+    local SRV = newServer()
+    local CLI = newClient(96, 0)
+    local PS  = CLI.env.BR.PlayerState
+
+    local wire = {}
+    local function drain(now)
+        SRV.tick(now)
+        for i = 1, #SRV.out do
+            wire[#wire + 1] = { at = now + 30, event = SRV.out[i].event,
+                                target = SRV.out[i].target,
+                                payload = SRV.out[i].payload }
+        end
+        for i = #SRV.out, 1, -1 do SRV.out[i] = nil end
+        while wire[1] and now >= wire[1].at do
+            local m = table.remove(wire, 1)
+            CLI.env.BR.State.me.state = SRV.roster[1].state
+            if m.target == 1 or m.target == -1 then
+                CLI.env.TriggerEvent(m.event, m.payload)
+            end
+        end
+        for i = 1, #CLI.toServer do
+            local m = CLI.toServer[i]
+            if m and now >= m.at + 30 then
+                SRV.roster[1].engineHp = CLI.env.GetEntityHealth(1)
+                SRV.died(1, m.data)
+                CLI.toServer[i] = false
+            end
+        end
+    end
+
+    CLI.pump(6000, drain)
+    CLI.light()
+    -- FOUR SECONDS IN THE POOL, which is a fifth of a molotov's life and about
+    -- eighty beats of the floor watch. Every one of them is a chance to cycle.
+    CLI.pump(4000, drain)
+
+    ok(SRV.roster[1].state == PS.DBNO,
+        'a player burned down is DOWN, which is feddd23\'s decision and not '
+        .. 'something this fix changes',
+        tostring(SRV.roster[1].state))
+
+    ok(CLI.resurrects == 1,
+        'AND THE PED IS STOOD UP EXACTLY ONCE over four seconds in the flames',
+        ('resurrections: %d'):format(CLI.resurrects))
+
+    ok(not CLI.ped.dead and not CLI.ped.dying,
+        'the body is alive on the downed floor rather than a corpse the watch '
+        .. 'gave up on',
+        ('dead %s, dying %s'):format(tostring(CLI.ped.dead),
+                                     tostring(CLI.ped.dying)))
+
+    ok(CLI.ped.anim ~= nil,
+        'and it is playing the crawl, which is the thing the owner never saw',
+        tostring(CLI.ped.anim))
+
+    ok(CLI.reports == 1,
+        'with ONE death report on the wire -- the knock -- rather than one per '
+        .. 'beat for the server to keep refusing',
+        ('reports: %d'):format(CLI.reports))
+
+    ok(CLI.ped.fireProof == true and CLI.ped.onFire == false,
+        'because the fire is refused and the flames are put out, rather than the '
+        .. 'corpse being repaired faster',
+        ('fireproof %s, alight %s'):format(tostring(CLI.ped.fireProof),
+                                           tostring(CLI.ped.onFire)))
 end
 
 -- ==========================================================================
@@ -5727,6 +7204,12 @@ local function newReviver(mySrc, mateSrc, peds)
     env.RemoveAllPedWeapons = function() end
     env.SetCurrentPedWeapon = function() end
     env.SetPedCanRagdoll = function() end
+    -- Fire, as the two natives a downed ped now asks for. Nothing in this rig
+    -- burns -- it is about a REVIVER holding a key -- so they record nothing and
+    -- exist because a knock calls them.
+    env.SetEntityProofs = function() end
+    env.IsEntityOnFire = function() return 0 end
+    env.StopEntityFire = function() end
     env.IsPedRagdoll = function() return false end
     env.IsEntityInAir = function() return false end
     env.ResetPedMovementClipset = function() end
@@ -9224,30 +10707,67 @@ do
         return nil
     end
 
-    env.TriggerEvent(env.BR.Net.DBNO_SET,
-        { mate = { src = 1, name = 'P1', phase = 'down' } })
-    local c = lastUi('squadcue')
-    ok(c ~= nil and c.cue == 'squad.down',
-        'a mate going down reaches the interface as a cue',
-        c and tostring(c.cue) or 'nothing was pushed')
-
-    -- ═══ AND THE OTHER TWO GO NATIVE, BECAUSE THE CUE TABLE HAS THEM ═══
+    -- ═══ ALL THREE GO NATIVE, BECAUSE THE CUE TABLE HAS ALL THREE ═══
     --
     -- The tier is not written down in client/dbno.lua; it is decided per cue by
     -- whether config/audio.lua carries a set/name pair (owner, 2026-09-08 --
-    -- "MATE_CUE being rewired to PlaySoundFrontend"). `squad.down` has no pair
-    -- and stays on the browser; these two have one and do not. Both halves are
-    -- asserted, in both directions, because the failure that costs a round is a
-    -- cue that goes down BOTH tiers and plays twice.
+    -- "MATE_CUE being rewired to PlaySoundFrontend"). `out` and `revived` got
+    -- one that day. `down` got one on 2026-09-11: "I think the died/knock sounds
+    -- are the same right now, not sure. Regardless both should be the same
+    -- frontend sound and NOT an NUI sound."
+    --
+    -- ⚠ THE KNOCK IS DRIVEN FIRST AND BOTH TIERS ARE COUNTED, which is the
+    -- assertion the ruling is about. A stub that only records the cue STRING is
+    -- true of a call site playing the right name down the wrong tier -- and the
+    -- wrong tier here is a browser tone he asked to be rid of, which sounds
+    -- nothing like the frontend pair and would read as the bug unfixed. So the
+    -- browser envelope count is taken before the event and required not to move.
+    local uiBeforeDown, sfxBeforeDown = #CLI.ui, #CLI.sfx
+    env.TriggerEvent(env.BR.Net.DBNO_SET,
+        { mate = { src = 1, name = 'P1', phase = 'down' } })
+    ok(CLI.sfx[#CLI.sfx] == 'squad.down' and #CLI.sfx == sfxBeforeDown + 1,
+        'a mate going down plays the NATIVE cue -- one frontend sound, not a '
+            .. 'browser tone',
+        tostring(CLI.sfx[#CLI.sfx]))
+    ok(#CLI.ui == uiBeforeDown,
+        '...and nothing at all reached the interface tier, which is the half '
+            .. 'of "NOT an NUI sound" a recorded cue string cannot see',
+        ('%d envelope(s) pushed'):format(#CLI.ui - uiBeforeDown))
+    ok(lastUi('squadcue') == nil,
+        '...so no squadcue envelope has ever been pushed by this client',
+        lastUi('squadcue') and tostring(lastUi('squadcue').cue) or nil)
+
+    -- BOTH HALVES ARE ASSERTED, IN BOTH DIRECTIONS, because the failure that
+    -- costs a round is a cue that goes down BOTH tiers and plays twice -- which
+    -- is the exact complaint of 2026-09-07 ("we're playing an NUI sound AND a
+    -- frontend sound") that put the knock on one tier in the first place.
+    local uiBeforeOut = #CLI.ui
     env.TriggerEvent(env.BR.Net.DBNO_SET,
         { mate = { src = 1, name = 'P1', phase = 'out' } })
     ok(CLI.sfx[#CLI.sfx] == 'squad.out',
-        'and going out is a DIFFERENT cue -- two events, two sounds',
+        'and going out is a DIFFERENT cue -- two events, two keys',
         tostring(CLI.sfx[#CLI.sfx]))
-    ok(lastUi('squadcue').cue == 'squad.down',
-        'and it did NOT also go to the browser -- the last envelope there is '
-            .. 'still the down cue',
-        tostring(lastUi('squadcue').cue))
+    ok(#CLI.ui == uiBeforeOut,
+        'and it did NOT also go to the browser',
+        ('%d envelope(s) pushed'):format(#CLI.ui - uiBeforeOut))
+
+    -- ═══ ...AND THE TWO KEYS NAME THE SAME SOUND, WHICH IS THE RULING ═══
+    --
+    -- TWO KEYS AND NOT ONE, DELIBERATELY. MATE_CUE's three phases are three
+    -- events and the server sends three; collapsing the pair into a shared key
+    -- would make "the knock and the death sound the same" a fact about the
+    -- WIRING rather than about the two rows of config he can edit. Asserted on
+    -- the table rather than described, because a comment cannot notice one of
+    -- the two rows being retuned on its own.
+    local A = env.BR.Config.Audio.cues
+    ok(A['squad.down'] ~= nil and A['squad.out'] ~= nil
+       and A['squad.down'].set == A['squad.out'].set
+       and A['squad.down'].name == A['squad.out'].name,
+        'and the knock and the death are THE SAME PAIR -- "both should be the '
+            .. 'same frontend sound" (owner, 2026-09-11)',
+        A['squad.down'] and ('%s/%s vs %s/%s'):format(
+            tostring(A['squad.down'].set), tostring(A['squad.down'].name),
+            tostring(A['squad.out'].set), tostring(A['squad.out'].name)) or nil)
 
     -- THE CUE NAME IS THE DELIVERABLE HERE, and it is asserted rather than
     -- described because it is a string that has to match a key in
@@ -9258,19 +10778,10 @@ do
     ok(CLI.sfx[#CLI.sfx] == 'squad.revived',
         'and being picked up is a THIRD cue -- squad.revived, the success '
         .. 'sound the owner asked for', tostring(CLI.sfx[#CLI.sfx]))
-    ok(env.BR.Config.Audio.cues['squad.out'] ~= nil
-       and env.BR.Config.Audio.cues['squad.revived'] ~= nil
-       and env.BR.Config.Audio.cues['squad.down'] == nil,
-        'which is exactly the split the cue table describes -- out and revived '
-            .. 'have pairs, down does not, and the code reads the table rather '
-            .. 'than repeating it')
-
-    -- THE BROWSER ENVELOPE STILL CARRIES WHO IT WAS, for the one cue that still
-    -- uses it. The interface says the name.
-    c = lastUi('squadcue')
-    ok(c ~= nil and c.src == 1 and c.name == 'P1',
-        'carrying who it was, so the interface can say the name',
-        c and tostring(c.name) or nil)
+    ok(A['squad.revived'] ~= nil
+       and A['squad.revived'].name ~= A['squad.out'].name,
+        'which he called perfect and which is NOT the other two -- the ruling '
+            .. 'collapsed the knock into the death and stopped there')
 
     -- THE TRAP THIS EXISTS FOR. `mate` envelopes carry no `downed` field, so a
     -- handler that fell through would read nil, decide we are not down, and
@@ -12360,8 +13871,8 @@ do
     -- demand there were none at all.
     --
     -- THAT WAS A HEURISTIC AND IT HAS BEEN OVERTAKEN BY EVIDENCE. The owner
-    -- auditioned five DLC banks with /brsfx on a running client and came back
-    -- with what each should be used for (2026-09-08, "land the DLC cues"),
+    -- auditioned DLC banks with /brsfx on a running client and came back with
+    -- what each should be used for (2026-09-08, "land the DLC cues"),
     -- which is the same class of evidence as `heard from this codebase` and
     -- strictly better than a filter written because nobody had listened.
     --
@@ -12371,7 +13882,12 @@ do
     -- the owner back in front of sounds that cannot play -- which is worse than
     -- no tool, because it manufactures the exact ambiguity [silent?] exists to
     -- resolve.
-    local HEARD = 8   -- 3 heard from this codebase + 5 the owner auditioned
+    -- 3 heard from this codebase + 6 the owner has heard. The sixth is
+    -- DLC_AW_BB_Sounds, promoted on 2026-09-12 when his "Alternative timer start
+    -- (airhorn)" became the live `match.start`; it is Arena War, the same pack
+    -- as DLC_AW_Frontend_Sounds, which has shipped audible with no bank request
+    -- since 2026-09-08.
+    local HEARD = 9
     local strayDlc = nil
     for i = HEARD + 1, #A.catalogue do
         if string.lower(A.catalogue[i].set):sub(1, 4) == 'dlc_' then
@@ -12419,13 +13935,13 @@ do
        'the three sets this codebase has actually heard sort first, in order',
        A.catalogue[1].set .. ', ' .. A.catalogue[2].set .. ', ' .. A.catalogue[3].set)
 
-    -- THEN THE OWNER'S FIVE, which are heard on the same terms and for the same
+    -- THEN THE OWNER'S SIX, which are heard on the same terms and for the same
     -- reason sort with them rather than into the body: a silence in one of
     -- these is a wrong NAME, not an absent bank.
-    ok(A.catalogue[4].set == 'DLC_AW_Frontend_Sounds'
-       and A.catalogue[8].set == 'dlc_vw_koth_Sounds',
-       'and the five DLC banks the owner auditioned follow them',
-       A.catalogue[4].set .. ' .. ' .. A.catalogue[8].set)
+    ok(A.catalogue[4].set == 'DLC_AW_BB_Sounds'
+       and A.catalogue[HEARD].set == 'dlc_vw_koth_Sounds',
+       'and the DLC banks the owner has heard follow them',
+       A.catalogue[4].set .. ' .. ' .. A.catalogue[HEARD].set)
 
     local outOfOrder = nil
     for i = HEARD + 2, #A.catalogue do
@@ -12835,6 +14351,54 @@ do
     gain, excuse = BR.HealthUnexplainedGain(30.0, 30.0 + A.toleranceHp, ctx(), A)
     ok(gain == 0.0 and excuse == BR.HealthExcuse.TOLERANCE,
         'a point of float disagreement is arithmetic, not evidence',
+        ('%s / %s'):format(tostring(gain), tostring(excuse)))
+
+    -- ═══ THE READING THE SERVER SUBSTITUTED FOR ONE IT NEVER RECEIVED ═══
+    --
+    -- THE LIVE FALSE POSITIVE, REPRODUCED (owner, fair play, his own server):
+    -- "recovered 116 hp ... peak 29 in one sample, 4 samples". Mean equals peak,
+    -- so all four were exactly 29 -- one fixed reading arriving four times, not
+    -- a trickle. FiveM's ped health sync node transmits NO health field when its
+    -- `isFine` bit is set and the server's parser writes `maxHealth` in its
+    -- place, itself a hardcoded 200 for a ped whose max was never synced. So
+    -- GetEntityHealth == maxHealth server-side is a substitution, not a reading,
+    -- and the "gain" it produces is just the distance the ledger sits below the
+    -- ceiling -- 29 for a player whose ledger held 71.
+    local CEIL = BR.Config.Match.maxHealth
+    gain, excuse = BR.HealthUnexplainedGain(71.0, 100.0,
+        ctx({ engine = CEIL, engineWas = CEIL - 29, engineCeiling = CEIL }), A)
+    ok(gain == 0.0 and excuse == BR.HealthExcuse.UNSYNCED,
+        'a ped read at exactly the engine ceiling is a packet the client never '
+            .. 'sent, and a wounded player is not accused of 29 points for it',
+        ('%s / %s'):format(tostring(gain), tostring(excuse)))
+
+    -- AND IT IS ONE SAMPLE, WHICH IS WHAT KEEPS IT FROM BEING AN AMNESTY. A
+    -- client actually pinned at full health presents the ceiling on every
+    -- consecutive pass, so the second one counts and so does every one after it.
+    -- At 4Hz the report bar is still crossed inside a second.
+    gain, excuse = BR.HealthUnexplainedGain(71.0, 100.0,
+        ctx({ engine = CEIL, engineWas = CEIL, engineCeiling = CEIL }), A)
+    ok(gain == 29.0 and excuse == BR.HealthExcuse.COUNTED,
+        'a SECOND consecutive reading at the ceiling is a client sitting there '
+            .. 'and is counted in full',
+        ('%s / %s'):format(tostring(gain), tostring(excuse)))
+
+    -- ...AND NOTHING BELOW THE CEILING IS TOUCHED BY ANY OF IT. The exploit this
+    -- detector exists for is a client restoring its ledger after a hit, and that
+    -- lands wherever the shot left them, not on 200.
+    gain, excuse = BR.HealthUnexplainedGain(30.0, 90.0,
+        ctx({ engine = CEIL - 10, engineWas = CEIL - 40, engineCeiling = CEIL }), A)
+    ok(gain == 60.0 and excuse == BR.HealthExcuse.COUNTED,
+        'a rise to anything short of the ceiling is counted exactly as before',
+        ('%s / %s'):format(tostring(gain), tostring(excuse)))
+
+    -- The clause needs the ceiling to be told to it, and a caller that does not
+    -- know one (the ARMOUR call, whose own substitution is a zero and therefore a
+    -- decrease) must get the old behaviour rather than a silent exemption.
+    gain, excuse = BR.HealthUnexplainedGain(71.0, 100.0,
+        ctx({ engine = CEIL, engineWas = CEIL - 29 }), A)
+    ok(gain == 29.0 and excuse == BR.HealthExcuse.COUNTED,
+        'and with no ceiling in the context the clause does not fire at all',
         ('%s / %s'):format(tostring(gain), tostring(excuse)))
 
     -- ═══ AND THE ARITHMETIC CANNOT BE DISABLED BY A BAD NUMBER ═══

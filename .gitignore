@@ -36,6 +36,16 @@ server.cfg
 # one -- so the box keeps its own and the repo tracks the two examples it is
 # copied from: tunables.dev.cfg.example and tunables.public.cfg.example.
 tunables.cfg
+# The server identity, exec'd by server.cfg: sv_hostname and sv_licenseKey.
+# GENERATED, NOT COPIED FROM AN EXAMPLE, which is why there is no
+# server-identity.cfg.example beside the two tunables ones. On the Blitz Royale
+# boxes royale-identity.service writes it at boot from SSM Parameter Store; see
+# ops/royale-identity in infradocs. Anywhere else it is two lines somebody
+# writes once by hand.
+#
+# IT HOLDS THE LICENSE KEY, so it is ignored for the same reason server.cfg is
+# and tools/check_secrets.sh would catch it if it ever landed in a tracked file.
+server-identity.cfg
 *.env
 .env*
 

@@ -86,8 +86,17 @@ RESOURCE_GROUP="[fivem-royale]"
 # ADDING A VENDORED RESOURCE MEANS ADDING IT HERE. tools/verify.sh fails the
 # build if resources/ contains a VENDOR.json this list does not name, so the
 # source-only failure above cannot recur silently.
+#
+# THE TWO ScaleformUI ENTRIES ARE A PAIR AND NEITHER IS OPTIONAL. The library is
+# pure Lua that drives compiled Flash movies; the movies live in the assets
+# resource. Upstream says so outright -- "it will not work without them" -- so
+# deploying one without the other produces a resource that starts, reports no
+# error, and draws nothing. Listed assets-first to match the start order in
+# server.cfg.example, though rsync order does not itself matter.
 VENDORED_RESOURCES=(
     "[voice]/pma-voice"
+    "[scaleformui]/ScaleformUI_Assets"
+    "[scaleformui]/ScaleformUI_Lua"
 )
 
 DRY_RUN=0
@@ -468,6 +477,22 @@ rsync "${RSYNC_OPTS[@]}" \
     --exclude '*.md' \
     "$SRC_GROUP/" "$TARGET_DIR/$RESOURCE_GROUP/" \
     | sed 's/^/     /' || die "rsync failed"
+
+# THE SERVED COMMIT, for the dev-mode hex under the lobby's Settings button.
+#
+# The game server cannot read $SRC_DIR/.git: FXServer's Lua sandbox refuses io on
+# any path in the server root outside a resource folder. So the sha goes INSIDE a
+# resource, where br_core reads it with LoadResourceFile (br_lib/shared/gitref.lua).
+#
+# AFTER THE RSYNC, AND THAT IS THE ORDER THAT KEEPS IT HONEST. The stamp is not in
+# the source, so the --delete above removes it on every deploy (a dry run lists
+# that as `*deleting`); a deploy that dies before this line leaves no stamp rather
+# than the previous commit's. Not on a dry run, which must change nothing.
+if [ "$DRY_RUN" -eq 0 ]; then
+    STAMP="$TARGET_DIR/$RESOURCE_GROUP/br_core/served-commit"
+    git -C "$SRC_DIR" rev-parse HEAD > "$STAMP.tmp.$$" && mv -f "$STAMP.tmp.$$" "$STAMP" \
+        || die "could not write $STAMP"
+fi
 
 # Vendored third-party resources, one rsync each.
 #

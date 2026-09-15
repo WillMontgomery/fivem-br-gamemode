@@ -176,7 +176,12 @@ BR.ToDisplayHp = function(hp) return hp or 100 end
 BR.ToEngineHp  = function(hp) return hp or 100 end
 BR.Native      = { applyDamage = function() end }
 BR.Damage      = { resync = function() end }
-BR.Sfx         = { play = function() end }
+-- WHICH CUES PLAYED, BY KEY, IN ORDER. Recorded rather than swallowed: two of
+-- the exits below have to be SILENT, and a stub that threw the calls away could
+-- only ever be asked whether the right sound played -- never whether one played
+-- at all, which is the whole of the owner's complaint.
+local cues = {}
+BR.Sfx         = { play = function(cue) cues[#cues + 1] = cue end }
 BR.Party       = { memberIndex = function() return nil end,
                    withdrawInvitesFrom = function() end }
 BR.Pause       = { handOverToFrontend = function() end }
@@ -268,8 +273,20 @@ local function snapshot(myState, state)
     })
 end
 
-local function meState(state)
-    return { op = 'update', src = 1, e = { state = state } }
+--- @param state string
+--- @param cause string|nil  why the transition happened. Rides BESIDE `e`,
+---        exactly as BR.Roster.setState puts it there -- it is a fact about the
+---        edge, not a roster field, and a test that put it inside `e` would be
+---        asserting against a wire shape the server does not send.
+local function meState(state, cause)
+    return { op = 'update', src = 1, e = { state = state }, cause = cause }
+end
+
+--- Cue keys played since `from`, which is a `#cues` taken before the act.
+local function cuesFrom(from)
+    local out = {}
+    for i = from + 1, #cues do out[#out + 1] = cues[i] end
+    return out
 end
 
 local function matchState(state)
@@ -401,6 +418,155 @@ do
     ok(BR.State.match.state == BR.MatchState.PLAYING,
        'and the match is still running, which is what makes this an EXIT and '
        .. 'not a teardown', BR.State.match.state)
+end
+
+describe('the death sting is for dying, and leaving is not dying')
+do
+    -- ═══ "the death sound should not play if the player is dying by method of
+    --     leaving the match" (owner, 2026-09-11) ═══
+    --
+    -- Leaving IS an elimination in this project, deliberately: server/match.lua
+    -- routes it through BR.Combat.eliminate(src, 'left', nil) so that quitting
+    -- cannot be a cheaper exit than dying. The consequence is that this client
+    -- sees ONE identical edge into OUT for "you were killed" and for "you quit",
+    -- and it played the sting for both.
+    --
+    -- THE CAUSE HAD TO GROW ONTO THIS MESSAGE, and the block above is the
+    -- evidence for why nothing else would do: the cause arrives on KILL_FEED,
+    -- separately and with no ordering, which is survivable for a WORD that can
+    -- be corrected a moment later and useless for a SOUND that cannot.
+    inMatch()
+    local c = #cues
+    deltas(meState(BR.PlayerState.OUT))
+    local played = cuesFrom(c)
+    ok(#played == 1 and played[1] == 'death.self',
+       'an ordinary death still sounds', table.concat(played, ','))
+
+    -- THE LEAVE, exactly as leaveMatch sends it: eliminate('left') flips the
+    -- roster to OUT, setState puts them in the LOBBY, and both deltas are queued
+    -- and flushed as one batch.
+    inMatch()
+    c = #cues
+    local m = mark()
+    deltas(meState(BR.PlayerState.OUT, 'left'), meState(BR.PlayerState.LOBBY))
+    ok(#cuesFrom(c) == 0, 'and walking out is silent',
+       table.concat(cuesFrom(c), ','))
+
+    -- ...AND #204 IS UNTOUCHED BY THAT. BR.NoteDeath still runs on this edge --
+    -- the sound was never part of the verdict, which is why it sits outside it
+    -- in client/state.lua -- so the word still goes up on the death and still
+    -- comes down on the leave.
+    local sent = envelopes(BR.Nui.DEATH, m)
+    ok(#sent == 2, 'the verdict word still goes up and comes down on the leave',
+       #sent)
+    ok(sent[#sent] ~= nil and sent[#sent].show == false,
+       'ending down', sent[#sent] and sent[#sent].show)
+
+    -- THE OWNER'S OWN #204 REPRO TAKES THE SAME DOOR: down, then leave.
+    inMatch()
+    deltas(meState(BR.PlayerState.DBNO))
+    c = #cues
+    deltas(meState(BR.PlayerState.OUT, 'left'), meState(BR.PlayerState.LOBBY))
+    ok(#cuesFrom(c) == 0, 'and leaving from a knock is silent too',
+       table.concat(cuesFrom(c), ','))
+
+    -- ═══ AND EVERY OTHER WAY OUT STILL SOUNDS ═══
+    --
+    -- One cause has been ruled on and one only. The storm, a bleed-out, an
+    -- admin's brkill and a plain fall are deaths, and a fix that silenced the
+    -- sting for all of them would be answering a question nobody asked.
+    for _, cause in ipairs({ 'storm', 'bledout', 'admin', 'fall', 'finished' }) do
+        inMatch()
+        c = #cues
+        deltas(meState(BR.PlayerState.OUT, cause))
+        ok(#cuesFrom(c) == 1, ('a death by %s still sounds'):format(cause),
+           table.concat(cuesFrom(c), ','))
+    end
+
+    -- AND SO DOES A DEATH WITH NO CAUSE ON IT. Absent means unknown, and the
+    -- unknown death is still a death: no sound is the wrong default for
+    -- anything that arrives without a reason on it.
+    inMatch()
+    c = #cues
+    deltas(meState(BR.PlayerState.OUT))
+    ok(#cuesFrom(c) == 1, 'and a death with no cause stated still sounds',
+       table.concat(cuesFrom(c), ','))
+end
+
+describe('the pre-match hold is a death that is about to be undone, so it is silent')
+do
+    -- ═══ "If you mean before the state machine goes to PLAYING we don't need
+    --     any sound for that since they'll be brought back up immediately upon
+    --     game state = PLAYING" (owner, 2026-09-11) ═══
+    --
+    -- The #144 hold was the ONE OUT edge 7097db4 left stating no reason, and it
+    -- was named in that commit as such. server/combat.lua's holdForStart now
+    -- states one, and this side is the half that acts on it.
+    --
+    -- ⚠ THE STRING IS READ OUT OF THE SERVER, NOT TYPED HERE A SECOND TIME.
+    -- Both halves of this feature are a bare literal -- the server writes one on
+    -- the transition, this client compares against a table of them -- and two
+    -- literals in two files that must agree is a rename waiting to restore the
+    -- sound silently. So the cause under test is lifted from the file that mints
+    -- it: rename it there and this block drives the NEW string through a client
+    -- that does not know it, which is a failure rather than a quiet regression.
+    --
+    -- COMMENTS ARE STRIPPED FIRST, for check_cue_sites.lua's reason: this same
+    -- literal appears in prose in both files explaining the rule, and a raw
+    -- search would happily read the explanation instead of the code.
+    local function heldCause()
+        local fh = io.open(ROOT .. 'br_core/server/combat.lua', 'r')
+        if not fh then return nil end
+        local src = fh:read('a')
+        fh:close()
+        src = src:gsub('%-%-%[%[.-%]%]', ''):gsub('%-%-[^\n]*', '')
+        -- A LITERAL, WHICH IS WHAT MAKES THIS UNAMBIGUOUS. eliminate's own call
+        -- passes the variable `cause` and cannot match a quoted pattern, so the
+        -- only OUT transition in that file naming a reason out loud is the hold.
+        return src:match(
+            "BR%.Roster%.setState%(src, BR%.PlayerState%.OUT, '([%a%d_]+)'%)")
+    end
+
+    local HELD = heldCause()
+    ok(type(HELD) == 'string' and #HELD > 0,
+       'server/combat.lua states a literal reason on the hold\'s OUT edge, '
+           .. 'which is the thing this block exists to act on',
+       tostring(HELD))
+
+    -- THE HOLD, AS THE SERVER SENDS IT. holdForStart flips the roster to OUT and
+    -- nothing else: no LOBBY delta follows, because the player is still in this
+    -- match and is about to be stood back up in it.
+    inMatch()
+    local c = #cues
+    deltas(meState(BR.PlayerState.OUT, HELD))
+    ok(#cuesFrom(c) == 0, 'dying before the match starts makes no sound',
+       table.concat(cuesFrom(c), ','))
+
+    -- ...AND FROM A KNOCK, which is the other way into the hold: holdForStart
+    -- clears a bleed clock that was already running, so a player who was downed
+    -- during the flight reaches this edge too.
+    inMatch()
+    deltas(meState(BR.PlayerState.DBNO))
+    c = #cues
+    deltas(meState(BR.PlayerState.OUT, HELD))
+    ok(#cuesFrom(c) == 0, 'and neither does being finished before it starts',
+       table.concat(cuesFrom(c), ','))
+
+    -- ═══ AND THE SILENCE IS NARROW ═══
+    --
+    -- Two causes are silent and the rest are deaths. A fix that reached for "we
+    -- are not PLAYING yet" instead of the stated reason would silence the storm
+    -- death of a player whose client had not caught up, which is the race the
+    -- server-side note is about -- so the ordinary causes are driven again here,
+    -- next to the new one, rather than trusted to the block above.
+    for _, cause in ipairs({ 'storm', 'bledout', 'fall' }) do
+        inMatch()
+        c = #cues
+        deltas(meState(BR.PlayerState.OUT, cause))
+        ok(#cuesFrom(c) == 1,
+           ('a real death by %s still sounds, on the same client'):format(cause),
+           table.concat(cuesFrom(c), ','))
+    end
 end
 
 describe('#204 -- the match ends underneath the player')

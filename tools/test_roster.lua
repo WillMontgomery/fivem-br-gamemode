@@ -12,7 +12,7 @@ function GetCurrentResourceName() return 'br_core' end
 local playerNames = {}
 function GetPlayerName(src) return playerNames[src] or ('Player' .. tostring(src)) end
 -- Identifier natives, for BR.Roster.ringmaster's lazy license resolution. A
--- test player's license is synthesised from its src so it is stable and
+-- test player's license is synthesized from its src so it is stable and
 -- distinct; the ringmaster projection block is the only thing that reads them.
 --
 -- A SERVER ID IS NOT A PERSON, AND THE OVERRIDE IS WHAT LETS A TEST SAY SO
@@ -400,6 +400,9 @@ for _, f in ipairs({
     'br_lib/shared/rng.lua', 'br_lib/shared/geo.lua', 'br_lib/shared/clock.lua',
     'br_lib/shared/sched.lua',   -- BR.Sched; br_core/server/* registers into it
     'br_lib/shared/identity.lua',-- BR.Identity; BR.Roster.ringmaster resolves licenses
+    -- BR.MatchTag; every console line that names a match writes it in hex,
+    -- and half a dozen of the files below print one.
+    'br_lib/shared/matchtag.lua',
     'br_lib/config/match.lua', 'br_lib/config/storm.lua', 'br_lib/config/map.lua',
     'br_lib/config/weapons.lua',
     -- AFTER geo.lua, not merely near it: it calls BR.NormHash at LOAD time to
@@ -693,11 +696,16 @@ end
 --- A bare instance for blocks that exercise one subsystem (squad formation,
 --- a scoped broadcast) without running the machine; attaches every
 --- rostered player, which mirrors the old whole-roster semantics.
+--- MINTED THROUGH BR.Match.mintIds, NOT BY COPYING ITS ARITHMETIC (#291).
+--- This helper used to increment the counter and derive the bucket itself, which
+--- was the same answer right up until the id became a random draw and the bucket
+--- moved onto `seq` -- at which point every block built on it would have been
+--- testing a match shaped unlike any match production makes.
 local function fakeMatch(mode)
-    BR.Server.matchId = BR.Server.matchId + 1
-    local m = { id = BR.Server.matchId, mode = mode or BR.Mode.SOLO.key,
+    local seq, id = BR.Match.mintIds()
+    local m = { id = id, seq = seq, mode = mode or BR.Mode.SOLO.key,
                 state = BR.MatchState.WARMUP, endsAt = 0,
-                bucket = BR.Config.Match.matchBucketBase + BR.Server.matchId }
+                bucket = BR.Config.Match.matchBucketBase + seq }
     BR.Server.matches[m.id] = m
     for src in pairs(BR.Server.roster) do BR.Roster.setMatch(src, m.id) end
     return m
@@ -785,6 +793,15 @@ do
     ok(BR.Server.count() == 2, 'players are added on playerJoining')
     ok(BR.Roster.get(1).name == 'Alice', 'names are captured')
     ok(BR.Roster.get(1).state == BR.PlayerState.LOBBY, 'new players start in the lobby')
+
+    -- ZERO, NOT ABSENT. Both halves of the match Volts ledger are declared on
+    -- newEntry so the entry shape is written down in one place -- and so that
+    -- every reader of them is reading a number rather than a nil that each
+    -- reader has to remember to coerce. `voltsSpent` is #293's half.
+    ok(BR.Roster.get(1).voltsPickedUp == 0, 'a new entry starts with nothing picked up',
+        ('got %s'):format(tostring(BR.Roster.get(1).voltsPickedUp)))
+    ok(BR.Roster.get(1).voltsSpent == 0, 'and nothing spent',
+        ('got %s'):format(tostring(BR.Roster.get(1).voltsSpent)))
 
     join(1, 'Alice')
     ok(BR.Server.count() == 2, 'adding an existing player is idempotent')
@@ -1825,6 +1842,91 @@ do
     ok(BR.Roster.get(1).state == BR.PlayerState.LOBBY, 'a player in the lobby cannot be eliminated')
 end
 
+describe('combat: the OUT edge carries WHY, because the kill feed is too late')
+do
+    -- ═══ "the death sound should not play if the player is dying by method of
+    --     leaving the match" (owner, 2026-09-11) ═══
+    --
+    -- The client plays the death sting on its own edge into OUT, and leaving IS
+    -- an elimination here on purpose -- BR.Match.leaveMatch routes it through
+    -- BR.Combat.eliminate(src, 'left', nil) so that quitting cannot be a cheaper
+    -- exit than dying -- so that edge is bit-for-bit identical for somebody who
+    -- was shot and somebody who pressed Leave Match.
+    --
+    -- THE CAUSE WAS ON KILL_FEED AND NOWHERE ELSE, which is a different message
+    -- with no ordering against this one (client/state.lua says so above
+    -- BR.NoteDeath, and answers it for the death WORD by correcting the word a
+    -- moment later). A sound cannot be corrected a moment later, and the case
+    -- where a late-arriving answer would fail is the case where somebody's
+    -- connection is dying as they go. So the edge itself has to say why.
+    local function outDelta(src)
+        for _, s in ipairs(eventsOf(BR.Net.ROSTER_DELTA)) do
+            for _, d in ipairs(s.args[1].deltas or {}) do
+                if d.src == src and d.op == 'update'
+                   and d.e and d.e.state == BR.PlayerState.OUT then
+                    return d
+                end
+            end
+        end
+        return nil
+    end
+
+    -- ═══ NO MATCH IS STARTED HERE, AND THAT IS DELIBERATE ═══
+    --
+    -- Starting one mints a `BR.Server.matchSeq`, every per-match seed in the
+    -- gamemode is `clock + seq * prime`, and `loot.repair.bounds` fifteen
+    -- thousand lines below needs the layout that seq produces -- the same trap
+    -- the match-ids section at the end of this file was moved to the end to
+    -- avoid. Nothing under test needs a match: `canDie` reads the state and
+    -- nothing else, `beforeTheMatch` answers false without one, and the delta
+    -- this block asserts on comes from BR.Roster.setState, which has never
+    -- known what a match is.
+    reset()
+    join(1, 'Leaver'); join(2, 'Victim'); join(3, 'Bystander')
+    BR.Roster.each(nil, function(src) BR.Roster.setState(src, BR.PlayerState.ALIVE) end)
+    BR.Broadcast.flushNow()
+    sent = {}
+
+    BR.Combat.eliminate(1, 'left', nil)
+    BR.Broadcast.flushNow()
+    local left = outDelta(1)
+    ok(left ~= nil, 'a leaver still gets the OUT delta -- leaving is an elimination')
+    ok(left and left.cause == 'left', 'and the delta says so',
+        left and tostring(left.cause))
+
+    -- BESIDE THE MIRROR, NOT INSIDE IT. `e` is what the client copies onto the
+    -- roster entry and keeps; a cause kept would be a stale 'left' silencing a
+    -- real death in the next round.
+    ok(left and left.e and left.e.cause == nil,
+        'and carries it beside `e` rather than in the mirror')
+    ok(left and left.e and left.e.state == BR.PlayerState.OUT,
+        'with the state change itself untouched')
+
+    sent = {}
+    BR.Combat.eliminate(2, 'storm', nil)
+    BR.Broadcast.flushNow()
+    local storm = outDelta(2)
+    ok(storm and storm.cause == 'storm',
+        'and an ordinary death carries its own cause, not a blank',
+        storm and tostring(storm.cause))
+
+    -- EVERY OTHER TRANSITION IS UNCHANGED. The field is optional and absent
+    -- means unknown, so nothing that never had a reason to state one starts
+    -- putting a nil on the wire's shape.
+    sent = {}
+    BR.Roster.setState(3, BR.PlayerState.LOBBY)
+    BR.Broadcast.flushNow()
+    local plain = nil
+    for _, s in ipairs(eventsOf(BR.Net.ROSTER_DELTA)) do
+        for _, d in ipairs(s.args[1].deltas or {}) do
+            if d.src == 3 then plain = d end
+        end
+    end
+    ok(plain ~= nil and plain.cause == nil,
+        'a state change with no reason to give states none',
+        plain and tostring(plain.cause))
+end
+
 describe('combat.credit')
 do
     reset()
@@ -1916,6 +2018,13 @@ do
     reset()
     BR.Server.devMode = true       -- minToStart 2, minSquads 1
 
+    -- THE SHIPPED PRODUCTION MINIMUM, CAPTURED RATHER THAN WRITTEN DOWN. This
+    -- block moves it twice and has to put it back; the literal it used to put
+    -- back was 16, which stopped being the shipped value when the beta sized
+    -- production at 2 (infradocs#23) and left every later block in this suite
+    -- running against a number the config no longer holds.
+    local SHIPPED_MIN_TO_START_PROD = BR.Config.Match.minToStartProd
+
     ok(BR.Match.startBlocker().reason == 'players',
         'an empty queue is blocked on players')
 
@@ -1931,7 +2040,7 @@ do
     -- Put them in one party and the headcount is still met, but the TEAM count
     -- is not -- with production thresholds this is the case that matters.
     BR.Party.invite(1, 2); BR.Party.respond(2, true)
-    BR.Server.devMode = false      -- minSquads 2, minToStart 16
+    BR.Server.devMode = false      -- minSquads 2, minToStartProd decides
     BR.Config.Match.minToStartProd = 2
     local sq = BR.Match.startBlocker()
     ok(sq and sq.reason == 'squads', 'one party of two is blocked on squads')
@@ -1951,7 +2060,7 @@ do
     ok(BR.Match.startBlocker() == nil,
         'a solo round is never held for want of squads')
 
-    BR.Config.Match.minToStartProd = 16
+    BR.Config.Match.minToStartProd = SHIPPED_MIN_TO_START_PROD
     BR.Server.devMode = true
 end
 
@@ -1972,6 +2081,81 @@ do
     ok(d.wait ~= nil and d.wait.reason == 'players',
         'and it carries the reason the match has not started')
     ok(d.wait.need == 2, 'including the minimum needed to start')
+end
+
+describe('lobby.commit')
+do
+    -- THE SERVED COMMIT RIDES THIS BROADCAST ON A DEV BOX AND NOWHERE ELSE.
+    -- BR.Lobby.commit is set by hand because there is no served clone under this
+    -- suite; tools/test_gitref.lua owns the parse.
+    reset()
+    local prevDev, prevCommit, prevDevMode = BR.Dev, BR.Lobby.commit, BR.Server.devMode
+    BR.Lobby.commit = 'a6cbdab'
+
+    local function lastStatus()
+        sent = {}
+        fakeTime = fakeTime + 600
+        BR.Sched.step(fakeTime)
+        local status = eventsOf(BR.Net.LOBBY_STATUS)
+        return status[#status] and status[#status].args[1] or {}
+    end
+
+    BR.Dev = { on = function() return true end }
+    local d = lastStatus()
+    ok(d.commit == 'a6cbdab', 'dev mode on: the lobby broadcast carries the commit',
+        tostring(d.commit))
+
+    BR.Dev = { on = function() return false end }
+    d = lastStatus()
+    ok(d.commit == nil, 'dev mode off: the key is not sent', tostring(d.commit))
+
+    -- THE GATE IS BR.Dev.on(), NOT A FLAG LATCHED AT START. The task named that
+    -- switch, and it is the one every dev-only verb in the project reads.
+    BR.Server.devMode = true
+    d = lastStatus()
+    ok(d.commit == nil, 'BR.Server.devMode alone does not send it', tostring(d.commit))
+
+    BR.Dev = nil
+    d = lastStatus()
+    ok(d.commit == nil, 'with no dev gate loaded nothing is sent', tostring(d.commit))
+
+    -- NOTHING READ, NOTHING SENT, even on a dev box.
+    BR.Dev = { on = function() return true end }
+    BR.Lobby.commit = nil
+    d = lastStatus()
+    ok(d.commit == nil, 'a box whose clone could not be read sends no commit',
+        tostring(d.commit))
+
+    -- THE BOOT BANNER'S LINE. The first version of the hex drew nothing on the
+    -- dev box and said nothing anywhere; this line is how the next such failure
+    -- is read off the console instead of guessed at.
+    local prevFrom = BR.Lobby.commitFrom
+    ok(prevFrom == 'br_lib/shared/gitref.lua is not loaded',
+        'with no reader loaded, which is this suite, the reason says so', tostring(prevFrom))
+
+    BR.Dev = { on = function() return true end }
+    BR.Lobby.commit, BR.Lobby.commitFrom = 'a6cbdab', 'served-commit'
+    ok(BR.Lobby.commitLine() == '[br_core]   commit       a6cbdab (served-commit)',
+        'dev mode on: the line names the hex and where it came from',
+        tostring(BR.Lobby.commitLine()))
+
+    BR.Lobby.commit = nil
+    BR.Lobby.commitFrom = 'served-commit missing; '
+        .. '/opt/fivem-server-classic/.gamemode-src/.git/HEAD: Permission denied'
+    ok(BR.Lobby.commitLine() == '[br_core]   commit       none: served-commit missing; '
+        .. '/opt/fivem-server-classic/.gamemode-src/.git/HEAD: Permission denied',
+        'nothing read: the line says none and every reason',
+        tostring(BR.Lobby.commitLine()))
+
+    BR.Dev = { on = function() return false end }
+    ok(BR.Lobby.commitLine() == nil, 'dev mode off: there is no line',
+        tostring(BR.Lobby.commitLine()))
+    BR.Dev = nil
+    ok(BR.Lobby.commitLine() == nil, 'with no dev gate loaded there is no line',
+        tostring(BR.Lobby.commitLine()))
+
+    BR.Dev, BR.Lobby.commit, BR.Server.devMode = prevDev, prevCommit, prevDevMode
+    BR.Lobby.commitFrom = prevFrom
 end
 
 describe('party.ofOne')
@@ -2135,6 +2319,11 @@ do
     local mleave = theMatch()
     -- They found an airdrop before they walked out (#88).
     BR.Roster.get(2).voltsPickedUp = 100
+    -- ...and bought a car in the warmup before that (#293). Written straight
+    -- onto the entry, exactly as the pickup above is: what BR.Market.charge does
+    -- with a settled debit has its own suite, and what is under test HERE is the
+    -- counter's exit from a match somebody walks out of.
+    BR.Roster.get(2).voltsSpent = 1500
     fire(BR.Net.MATCH_LEAVE, 2)
     local e = BR.Roster.get(2)
     ok(e.state == BR.PlayerState.LOBBY, 'the leaver is back in the lobby')
@@ -2162,6 +2351,15 @@ do
     ok(sealed and sealed.voltsPickedUp == 100,
         'while the sealed copy keeps them -- that is the row that gets published',
         ('got %s'):format(tostring(sealed and sealed.voltsPickedUp)))
+    -- AND THE SAME FOR WHAT THEY SPENT (#293), which is the same bug in the
+    -- other direction: a warmup purchase left on the entry would be reported as
+    -- spending in the NEXT match, and the one after that.
+    ok((e.voltsSpent or 0) == 0,
+        'the Volts they spent are cleared too, so one car is not billed to two matches',
+        ('got %s'):format(tostring(e.voltsSpent)))
+    ok(sealed and sealed.voltsSpent == 1500,
+        'while the sealed copy keeps the spend, which is what reaches the ledger',
+        ('got %s'):format(tostring(sealed and sealed.voltsSpent)))
     ok(#eventsOf(BR.Net.TO_LOBBY) == 1, 'and is sent home')
     ok(mstate() == BR.MatchState.PLAYING,
         'while the match plays on for everyone else')
@@ -2705,9 +2903,10 @@ do
     ok(admitted ~= nil,
         'and the console records the admission, which the queue line cannot',
         admitted)
-    ok(admitted ~= nil and admitted:find('match ' .. tostring(BR.Server.matchId),
-                                          1, true) ~= nil,
-        'naming the instance they were put into', admitted)
+    ok(admitted ~= nil
+       and admitted:find('match ' .. BR.MatchTag(theMatch().id), 1, true) ~= nil,
+        'naming the instance they were put into, in the hex the console uses '
+            .. 'everywhere else', admitted)
 
     -- Both now count as starting teams: the solo-dev hold does not engage and
     -- the match ends like any other.
@@ -3085,7 +3284,7 @@ do
     ok(buckets[1] == WB, 'riders keep the communal bucket through boarding')
     fakeTime = m.route.rotateAt + 3600
     BR.Sched.step(fakeTime)
-    local mb = BR.Config.Match.matchBucketBase + m.id
+    local mb = m.bucket
     ok(m.airborne == true, 'the flight goes airborne shortly after wheels-up')
     ok(buckets[1] == mb, "and its riders hop to the match's own bucket",
         ('got %s want %d'):format(tostring(buckets[1]), mb))
@@ -3101,7 +3300,7 @@ do
     fakeTime = fakeTime + 1000
     BR.Sched.step(fakeTime)
     ok(mstate() == BR.MatchState.WARMUP, 'second match starts')
-    local mb2 = BR.Config.Match.matchBucketBase + theMatch().id
+    local mb2 = theMatch().bucket
     ok(mb2 ~= mb, 'and it owns a fresh private bucket for its flight')
 end
 
@@ -5966,6 +6165,62 @@ do
         ('%q'):format(tostring(orphan)))
 
     -- ======================================================================
+    -- A STACK OF ROUNDS IS NAMED AS ROUNDS, NOT AS THE GUN THAT SHARES ITS ID
+    -- (2026-09-12)
+    --
+    -- BR.AmmoType.SMG is the string 'smg' and config/weapons.lua carries
+    -- `{ id = 'smg', name = 'WEAPON_SMG' }`, so an ammo stack whose `item` is the
+    -- bare pool string collides head-on with a weapon id. labelOf and pluralOf
+    -- walked ConsumableById, then WeaponById, then AmmoPickups in a fixed order
+    -- and asked the stack nothing -- so a stack of SMG ROUNDS came back as the
+    -- GUN: "Switch slots to pick up another SMG.", and "You cannot carry more
+    -- SMGs."
+    --
+    -- IT WAS NEVER A MIGRATION. Every stack already carries `kind`, set by
+    -- shared/loot_gen.lua, server/inventory.lua and server/debug.lua alike, and
+    -- BR.LootLabel and BR.Inv.carryMax were already reading it. The two sentence
+    -- builders simply were not.
+    --
+    -- DRIVEN THROUGH BR.Loot.refusalText RATHER THAN THE CLAIM HANDLER, and that
+    -- is worth being exact about: BR.Inv.give returns `ammofull` for an AMMO
+    -- stack before either sentence is built, so no pickup in the game reaches
+    -- these two lines with ammunition today. What is under test is the FUNCTION,
+    -- which is wrong at its own boundary and is public for this reason (see its
+    -- header) -- the same standard the rest of this block holds it to.
+    --
+    -- 'smg' IS THE ONLY POOL THAT COLLIDES, so it is the only one that can fail
+    -- here; the rest are asserted anyway, because the assertion that survives the
+    -- next pool rename is the one that names none of them.
+    local mislabelled = {}
+    for _, pool in ipairs(BR.Config.AmmoOrder) do
+        local want  = BR.Config.AmmoPickups[pool].label
+        local stack = { item = pool, kind = BR.ItemKind.AMMO }
+        local one   = BR.Loot.refusalText('sameitem', stack)
+        local many  = BR.Loot.refusalText('carrymax', stack)
+        if not one:find(want, 1, true) then
+            mislabelled[#mislabelled + 1] = ('%s one: %q'):format(pool, one)
+        end
+        if not many:find(want, 1, true) then
+            mislabelled[#mislabelled + 1] = ('%s many: %q'):format(pool, many)
+        end
+    end
+    ok(#mislabelled == 0,
+        'every ammo pool is named by its own AmmoPickups label in both the '
+            .. 'singular and the plural refusal, including the one whose value '
+            .. 'is also a weapon id',
+        table.concat(mislabelled, '; '))
+
+    -- AND THE GUN IS STILL THE GUN. The fix reads `kind`, so it must not have
+    -- taught the weapon arm to answer for ammunition as well -- a WEAPON stack
+    -- spelled 'smg' is WEAPON_SMG and says so.
+    local gun = BR.Loot.refusalText('sameitem',
+        { item = 'smg', kind = BR.ItemKind.WEAPON })
+    ok(gun:find('SMG', 1, true) ~= nil
+       and gun:find('SMG Ammo', 1, true) == nil,
+        'and a WEAPON stack spelled "smg" is still the gun, not the pool',
+        ('%q'):format(gun))
+
+    -- ======================================================================
     -- THREE CASES, AND ONLY THE THIRD SAYS "MAXIMUM" (#171, reopened).
     --
     -- The commit before this one asked ONE question -- "is the active slot the
@@ -6322,6 +6577,90 @@ do
         ('%d of %d'):format(taken, #ids))
 end
 
+describe('a gun sold over the counter arrives empty')
+do
+    -- ═══ "THE GUN ISN'T SOLD WITH FREE AMMO" (owner, 2026-09-12) ═══
+    --
+    -- "So I buy an SMG Mk II, which takes the same SMG ammo as the rest of my
+    -- owned loadout. Now the SMG Mk II immediately shows 30/30 - the gun isn't
+    -- sold with free ammo....."
+    --
+    -- IT ARRIVED WITH TWO FREE MAGAZINES, NOT ONE, AND THEY COME FROM DIFFERENT
+    -- LINES OF give(). The magazine is `stack.clip or w.clip` and the reserve is
+    -- `w.clip * weaponReserveClips` into the pool. Both are right about FLOOR
+    -- LOOT -- "a found gun has to be usable" -- and neither is right about a
+    -- thing somebody paid for, so BR.GunshopSolve.catalogue stamps `clip = 0` and
+    -- `sold = true` on the stack it sells and this pins what give() does with
+    -- them.
+    --
+    -- MEASURED AS MAGAZINE PLUS POOL, because the split is exactly what hid the
+    -- last bug on this same line -- see THE FOURTH DOOR further down this file,
+    -- where the owner's own row moved 0 -> 1 in one column while the other
+    -- stayed put.
+    local m = lootMatch()
+
+    --- Everything a player holds for one pool, magazines included.
+    local function heldFor(src, pool)
+        local i = BR.Inv.of(src)
+        local n = i.ammo[pool] or 0
+        for s = 1, 5 do
+            local slot = i.slots[s]
+            local w = slot and BR.Config.WeaponById[slot.item]
+            if w and w.ammo == pool then n = n + (slot.clip or 0) end
+        end
+        return n
+    end
+
+    local mk2 = BR.Config.WeaponById['smgmk2']
+
+    -- ⚠ TWO HALVES, TWO SUITES, and this file owns the second one. That the
+    -- CATALOGUE stamps `clip = 0` and `sold = true` on the stack it sells is
+    -- pinned in tools/test_gunshop.lua, which loads the solver; what give() does
+    -- when handed them needs the real inventory and is pinned here. The same
+    -- split the `focus` flag already lives under, for the same reason.
+    local function soldStack()
+        return { item = 'smgmk2', kind = BR.ItemKind.WEAPON, rarity = mk2.rarity,
+                 count = 1, clip = 0, sold = true }
+    end
+
+    BR.Inv.reset(1)
+    BR.Inv.give(1, soldStack(), { quiet = true, focus = true })
+    local inv = BR.Inv.of(1)
+
+    ok(inv.slots[1] and inv.slots[1].item == 'smgmk2',
+        'the gun they paid for lands in a slot')
+    -- `== 0` AND NOT falsiness: 0 is truthy in Lua and a nil clip means MELEE to
+    -- everything downstream, which would take the counter off the plate
+    -- altogether rather than showing it empty.
+    ok(inv.slots[1] and inv.slots[1].clip == 0,
+        'and its magazine is EMPTY, not full',
+        tostring(inv.slots[1] and inv.slots[1].clip))
+    ok(heldFor(1, mk2.ammo) == 0,
+        'and it brought no rounds with it at all -- magazine and pool both',
+        heldFor(1, mk2.ammo))
+
+    -- THE POOL THEY ALREADY HAD IS NOT TOUCHED, which is the other half of his
+    -- report: the 30 in the second column was his own SMG reserve, and a fix that
+    -- confiscated it to stop the gun arriving loaded would be a worse bug.
+    BR.Inv.reset(1)
+    local keep = BR.Inv.of(1)
+    keep.ammo[mk2.ammo] = 47
+    BR.Inv.give(1, soldStack(), { quiet = true, focus = true })
+    ok(keep.ammo[mk2.ammo] == 47,
+        'a purchase neither mints nor spends the reserve already in the bag',
+        keep.ammo[mk2.ammo])
+
+    -- AND A FOUND GUN STILL ARRIVES LOADED. Asserted here rather than only in
+    -- inv.model below, because this is the direction the fix above breaks: the
+    -- floor has to go on handing out a usable weapon.
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'smgmk2', kind = BR.ItemKind.WEAPON,
+                     rarity = mk2.rarity, count = 1, clip = mk2.clip })
+    ok(heldFor(1, mk2.ammo) == mk2.clip * 2,
+        'the same gun off the FLOOR still comes with a magazine and a spare',
+        heldFor(1, mk2.ammo))
+end
+
 describe('inv.model')
 do
     local m = lootMatch()
@@ -6424,6 +6763,86 @@ do
         and math.abs(droppedEntry.x - 1234.0) < 0.01,
         'at the dropper, carrying the same item')
     ok(BR.Inv.of(1).slots[1] == false, 'and it leaves the inventory')
+
+    -- ═══ AND AMMUNITION CAN BE PUT DOWN, WHICH IT COULD NOT ═══
+    --
+    -- Owner, gun shop playtest: "for some reason there is no way to drop ammo
+    -- from my inventory, only weapons?"
+    --
+    -- It was not a missing button, it was a missing ADDRESS. Every drop in the
+    -- interface names a slot, and a pool has never had one, so the panel that
+    -- shipped a Drop control under each pool sent `{ pool }` to a handler that
+    -- read `d.slot`, found nil and returned. A live button, served, clickable
+    -- and inert -- the shape of defect a suite cannot see unless it fires the
+    -- payload the page actually sends, which is what these lines do.
+    do
+        local pool = BR.AmmoType.LIGHT
+        BR.Inv.reset(1)
+        BR.Roster.get(1).pos = { x = 1234.0, y = -567.0, z = 30.0 }
+        BR.Inv.give(1, { item = pool, kind = BR.ItemKind.AMMO,
+                         rarity = 1, count = 60 })
+        local held = BR.Inv.of(1).ammo[pool]
+        ok(held == 60, 'sixty rounds in the pool to start with', held)
+
+        local was = m.loot.nextId
+        fire(BR.Net.INV_DROP, 1, { pool = pool })
+        ok(m.loot.nextId == was + 1,
+            'dropping a POOL creates a ground entry, exactly as a slot does',
+            ('%d -> %d'):format(was, m.loot.nextId))
+        local e = m.loot.items[m.loot.nextId]
+        ok(e ~= nil and e.item == pool and e.count == 60,
+            'carrying the whole pool -- the quantity every other drop in this '
+                .. 'game uses, and the one no screen has to ask for',
+            e and ('%s x%s'):format(tostring(e.item), tostring(e.count)))
+        ok(BR.Inv.of(1).ammo[pool] == 0, 'and the pool is empty afterwards',
+            BR.Inv.of(1).ammo[pool])
+
+        -- AN EMPTY POOL IS NOTHING TO PUT DOWN. A handler that announced a
+        -- stack of zero would litter the map for every idle click.
+        was = m.loot.nextId
+        fire(BR.Net.INV_DROP, 1, { pool = pool })
+        ok(m.loot.nextId == was, 'a second press on an empty pool drops nothing')
+
+        -- AND A NAME NO INVENTORY HOLDS IS NOT A POOL. `inv.ammo[pool] == nil`
+        -- is the whole test, and it has to be `== nil` rather than `not`:
+        -- zero is truthy in Lua and a pool at zero is a real pool.
+        was = m.loot.nextId
+        fire(BR.Net.INV_DROP, 1, { pool = 'plasma' })
+        ok(m.loot.nextId == was, 'and a pool nobody has heard of drops nothing')
+
+        -- ═══ IT IS NOT A WAY TO MINT ROUNDS ═══
+        --
+        -- Four ways to conjure ammunition have been closed in this file's
+        -- history and every one of them was a round trip somebody could repeat.
+        -- This one balances because give() puts an ammo stack back through
+        -- addAmmo against the same cap: what leaves is what returns.
+        BR.Inv.reset(1)
+        BR.Inv.give(1, { item = pool, kind = BR.ItemKind.AMMO,
+                         rarity = 1, count = 60 })
+        for _ = 1, 5 do
+            fire(BR.Net.INV_DROP, 1, { pool = pool })
+            BR.Inv.give(1, { item = pool, kind = BR.ItemKind.AMMO,
+                             rarity = 1, count = 60 })
+        end
+        ok(BR.Inv.of(1).ammo[pool] == 60,
+            'five drop-and-pickup round trips leave the pool where it started',
+            BR.Inv.of(1).ammo[pool])
+
+        -- THE MAGAZINE STAYS IN THE GUN. The pool is the RESERVE, which is the
+        -- figure the panel draws next to the button; emptying it must not
+        -- unload the weapon the player is holding.
+        BR.Inv.reset(1)
+        BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON,
+                         rarity = 1, count = 1, clip = 12 })
+        BR.Inv.give(1, { item = pool, kind = BR.ItemKind.AMMO,
+                         rarity = 1, count = 60 })
+        fire(BR.Net.INV_DROP, 1, { pool = pool })
+        local gun = BR.Inv.of(1).slots[1]
+        ok(gun ~= nil and gun ~= false and gun.item == 'pistol'
+            and gun.clip == 12,
+            'and the loaded magazine is untouched by a pool drop',
+            gun and gun ~= false and tostring(gun.clip) or 'no gun')
+    end
 
     -- The slot INDEX is what is selected, not the gun in it: dragging an item
     -- into slot 3 while slot 1 is up must not change what is in your hands.
@@ -6528,6 +6947,77 @@ do
     ok(BR.Inv.of(1).active == 1,
         'A RESET CLEARS THE CHOICE, so the next match arms normally -- #155',
         ('active %s'):format(tostring(BR.Inv.of(1).active)))
+
+    -- ═══ `opts.focus`: A PURCHASE IS NOT A PICKUP (I3) ═══
+    --
+    -- Owner, 2026-09-09: "when they buy a weapon and it's granted to them, the
+    -- weapon must immediately be the inventory slot in focus."
+    --
+    -- Every rule above is right about FLOOR LOOT and wrong about a counter. The
+    -- two cases below are the exact ones the shop kept losing: a player already
+    -- holding a gun, and a player who deliberately holstered. Both leave the
+    -- purchase in a slot they cannot see, and both are what the flag is for.
+    --
+    -- ITS DEFAULT IS THE HALF THAT MATTERS MOST. Every chest, death box and
+    -- airdrop in the game calls give() with no opts at all, so the first
+    -- assertion here is that nothing changed for them.
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON, rarity = 1,
+                     count = 1, clip = 12 })
+    fire(BR.Net.INV_SELECT, 1, { slot = 1 })
+    BR.Inv.give(1, { item = 'sawnoff', kind = BR.ItemKind.WEAPON, rarity = 1,
+                     count = 1, clip = 8 })
+    ok(BR.Inv.of(1).active == 1,
+        'a gun off the floor still does not tear the one in your hands away',
+        ('active %s'):format(tostring(BR.Inv.of(1).active)))
+
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON, rarity = 1,
+                     count = 1, clip = 12 })
+    fire(BR.Net.INV_SELECT, 1, { slot = 1 })
+    BR.Inv.give(1, { item = 'sawnoff', kind = BR.ItemKind.WEAPON, rarity = 1,
+                     count = 1, clip = 8 }, { focus = true })
+    ok(BR.Inv.of(1).active == 2,
+        '...but a gun handed over the counter comes straight up in them (I3)',
+        ('active %s'):format(tostring(BR.Inv.of(1).active)))
+    do
+        local inHand = BR.Inv.of(1).slots[BR.Inv.of(1).active]
+        ok(inHand and inHand.item == 'sawnoff',
+            'and the slot in focus is the one the purchase landed in',
+            inHand and tostring(inHand.item) or 'nothing in hand')
+    end
+
+    -- A DELIBERATE HOLSTER IS OVERRIDDEN TOO, and that is the request rather
+    -- than an oversight: #155's rule protects a choice the player made about
+    -- the ground they were walking over, and buying a weapon is a later, louder
+    -- choice about the same hands.
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON, rarity = 1,
+                     count = 1, clip = 12 })
+    fire(BR.Net.INV_SELECT, 1, { slot = MELEE })
+    BR.Inv.give(1, { item = 'sawnoff', kind = BR.ItemKind.WEAPON, rarity = 1,
+                     count = 1, clip = 8 }, { focus = true })
+    ok(BR.Inv.of(1).active == 2,
+        'a holstered buyer is armed with what they bought',
+        ('active %s'):format(tostring(BR.Inv.of(1).active)))
+
+    -- AND IT IS NOT A SECOND ARMING RULE. `focus` picks the slot give() ALREADY
+    -- chose -- including the swap slot when the bag is full -- so it can never
+    -- point at a square the purchase did not land in.
+    BR.Inv.reset(1)
+    for i = 1, BR.Config.Loot.slots do
+        BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON,
+                         rarity = 1, count = 1, clip = 12 })
+        fire(BR.Net.INV_SELECT, 1, { slot = i })
+    end
+    fire(BR.Net.INV_SELECT, 1, { slot = 3 })
+    BR.Inv.give(1, { item = 'sawnoff', kind = BR.ItemKind.WEAPON, rarity = 1,
+                     count = 1, clip = 8 }, { focus = true })
+    local held = BR.Inv.of(1).slots[BR.Inv.of(1).active]
+    ok(held and held.item == 'sawnoff',
+        'with a full bag it focuses the slot the swap actually used',
+        ('active %s holds %s'):format(tostring(BR.Inv.of(1).active),
+            held and tostring(held.item) or 'nothing'))
 end
 
 describe('inv.use')
@@ -7990,6 +8480,15 @@ do
     b.lastHitBy, b.lastHitWeapon = nil, nil
 
     -- Player 1 lands a molotov next to player 2.
+    --
+    -- THE THROW IS PART OF THE FIXTURE NOW, and it was always part of reality:
+    -- to land a molotov you have to have been given one and thrown it, and
+    -- server/inventory.lua tells BR.Damage about that the moment the count
+    -- falls. The explosion gate asks for exactly that (audit finding 4) -- an
+    -- explosion of a type this gamemode issues, from somebody the server never
+    -- issued one to, is the fabrication it exists to refuse. Without this line
+    -- the block would be asserting that an explosion from nowhere lights a fire.
+    BR.Damage.noteThrow(1, 'molotov')
     fire('explosionEvent', 1, 1,
         { explosionType = 3, posX = 3.0, posY = 0.0, posZ = 30.0 })
 
@@ -8039,6 +8538,7 @@ do
 
     -- THE FIRE GOES OUT. Credit must not outlive the flames, or a storm death
     -- half a minute later belongs to whoever last threw something.
+    BR.Damage.noteThrow(1, 'molotov')
     fire('explosionEvent', 1, 1,
         { explosionType = 3, posX = 3.0, posY = 0.0, posZ = 30.0 })
     fakeTime = fakeTime + (BR.Config.Combat.fireLifeMs or 20000) + 2000
@@ -8051,6 +8551,216 @@ do
 
     -- Leave the stub as it was found: later blocks read this ped's health.
     pedHealth[1002] = nil
+end
+
+describe('combat.fire.self')
+do
+    -- THE DEATH THAT COULD NOT SAY WHAT KILLED IT.
+    --
+    -- Observed 2026-09-09, a two-client solos playtest: `brgive 1 molotov`, the
+    -- owner killed himself with it, and the console said
+    -- `eliminated Xeon (1) -- placement 2 (unknown)`.
+    --
+    -- Two facts made that word, and only one of them was a defect:
+    --
+    --   NO KILLER IS CORRECT. The fire ledger credits the burn to whoever lit
+    --   it, which here is the victim, and BR.Combat.attributedKiller refuses to
+    --   name a player as their own killer. That refusal is deliberate and is
+    --   asserted below so a later change cannot quietly hand somebody a kill for
+    --   dying.
+    --
+    --   'unknown' WAS NOT. `describeCause` translated the seven hashes the WORLD
+    --   kills with and nothing the gamemode issues, so the one weapon in this
+    --   scene fell through it. WEAPON_FIRE was already mapped and would have
+    --   matched, which is how we know the engine named the bottle rather than
+    --   the flames.
+    --
+    -- The distinction only shows on a death with no killer, because that is the
+    -- only kind whose feed row reads the cause at all -- so this block builds
+    -- exactly that death rather than asserting on `describeCause` in isolation.
+    reset()
+    queueUp(1, 'A', BR.Mode.SOLO.key)
+    queueUp(2, 'B', BR.Mode.SOLO.key)
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    BR.Roster.setState(1, BR.PlayerState.ALIVE)
+    BR.Roster.setState(2, BR.PlayerState.ALIVE)
+
+    -- Health and position flow ped -> sampler -> roster, never the other way,
+    -- so the fixture burns the PED. The other player is parked far enough away
+    -- that nothing about this is theirs.
+    setPos(1, 0.0, 0.0, 30.0)
+    setPos(2, 60.0, 0.0, 30.0)
+    pedHealth[1001] = 200
+    fakeTime = fakeTime + 600
+    BR.Sched.step(fakeTime)
+
+    local a = BR.Roster.get(1)
+    a.lastHitBy, a.lastHitWeapon = nil, nil
+
+    BR.Damage.noteThrow(1, 'molotov')
+    fire('explosionEvent', 1, 1,
+        { explosionType = 3, posX = 0.0, posY = 0.0, posZ = 30.0 })
+
+    -- One pass to take the baseline, then the burn: `damage.fires` returns
+    -- before touching `burnHp` while there are no fires.
+    fakeTime = fakeTime + 600
+    BR.Sched.step(fakeTime)
+    pedHealth[1001] = 40
+    fakeTime = fakeTime + 600
+    BR.Sched.step(fakeTime)
+
+    ok(a.lastHitBy == 1,
+        'burning in your own molotov is credited to you, like anyone else\'s',
+        tostring(a.lastHitBy))
+    ok(BR.Combat.attributedKiller(a) == nil,
+        'and attribution still refuses to name a player as their own killer',
+        tostring(BR.Combat.attributedKiller(a)))
+
+    -- The client reports the engine's cause of death. For a molotov that is the
+    -- WEAPON hash, not WEAPON_FIRE.
+    sent = {}
+    fire(BR.Net.PLAYER_DIED, 1, { cause = GetHashKey('WEAPON_MOLOTOV') })
+
+    local feed = eventsOf(BR.Net.KILL_FEED)
+    local last = feed[#feed] and feed[#feed].args[1]
+    ok(last ~= nil, 'the death is processed')
+    ok(last and last.killer == nil and last.killerSrc == nil,
+        'a self-thrown molotov credits nobody',
+        tostring(last and last.killerSrc))
+    ok(last and last.cause == 'burned',
+        'and the feed can finally say what it was, instead of "unknown"',
+        tostring(last and last.cause))
+
+    -- THE OTHER TWO THROWABLES ARE THE SAME HOLE, and they are asserted through
+    -- the same translation rather than through a second fixture: what was broken
+    -- is one table, and a grenade at your own feet reaches it by the identical
+    -- route.
+    reset()
+    queueUp(1, 'A', BR.Mode.SOLO.key)
+    queueUp(2, 'B', BR.Mode.SOLO.key)
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    BR.Roster.setState(1, BR.PlayerState.ALIVE)
+    BR.Roster.setState(2, BR.PlayerState.ALIVE)
+    setPos(1, 0.0, 0.0, 30.0)
+    setPos(2, 60.0, 0.0, 30.0)
+    fakeTime = fakeTime + 600
+    BR.Sched.step(fakeTime)
+
+    sent = {}
+    fire(BR.Net.PLAYER_DIED, 1, { cause = GetHashKey('WEAPON_GRENADE') })
+    feed = eventsOf(BR.Net.KILL_FEED)
+    last = feed[#feed] and feed[#feed].args[1]
+    ok(last and last.cause == 'explosion',
+        'a grenade at your own feet is an explosion rather than "unknown"',
+        tostring(last and last.cause))
+
+    reset()
+    queueUp(1, 'A', BR.Mode.SOLO.key)
+    queueUp(2, 'B', BR.Mode.SOLO.key)
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    BR.Roster.setState(1, BR.PlayerState.ALIVE)
+    BR.Roster.setState(2, BR.PlayerState.ALIVE)
+    setPos(1, 0.0, 0.0, 30.0)
+    setPos(2, 60.0, 0.0, 30.0)
+    fakeTime = fakeTime + 600
+    BR.Sched.step(fakeTime)
+
+    sent = {}
+    fire(BR.Net.PLAYER_DIED, 1, { cause = GetHashKey('WEAPON_STICKYBOMB') })
+    feed = eventsOf(BR.Net.KILL_FEED)
+    last = feed[#feed] and feed[#feed].args[1]
+    ok(last and last.cause == 'explosion',
+        'and so is a sticky bomb',
+        tostring(last and last.cause))
+
+    -- ═══ AND THE THREE LAUNCHERS, WHICH ARE THE SAME HOLE ONE TABLE OVER ═══
+    --
+    -- The throwables above sit in BR.Config.Throwables; the RPG, the grenade
+    -- launcher and the railgun sit in BR.Config.AirdropWeapons, a separate array
+    -- for reasons that have nothing to do with the cause table. The engine bills
+    -- all six by WEAPON, so a rocket into the wall at your own feet fell through
+    -- `describeCause` by the identical route a self-thrown grenade did.
+    --
+    -- IT SHOWS MORE SINCE A BLAST STOPPED GOING THROUGH THE BLEED CLOCK: the
+    -- word this table returns is now the first thing the victim reads, and
+    -- 'unknown' renders as WASTED.
+    --
+    --- One death, nobody to blame, and the word the feed carried for it.
+    local function selfCause(causeHash)
+        reset()
+        queueUp(1, 'A', BR.Mode.SOLO.key)
+        queueUp(2, 'B', BR.Mode.SOLO.key)
+        fakeTime = fakeTime + 300
+        BR.Sched.step(fakeTime)
+        BR.Roster.setState(1, BR.PlayerState.ALIVE)
+        BR.Roster.setState(2, BR.PlayerState.ALIVE)
+        setPos(1, 0.0, 0.0, 30.0)
+        setPos(2, 60.0, 0.0, 30.0)
+        fakeTime = fakeTime + 600
+        BR.Sched.step(fakeTime)
+
+        sent = {}
+        fire(BR.Net.PLAYER_DIED, 1, { cause = causeHash })
+        local f = eventsOf(BR.Net.KILL_FEED)
+        local l = f[#f] and f[#f].args[1]
+        return l and l.cause
+    end
+
+    --- The engine's own spelling of a joaat hash: SIGNED 32-bit.
+    ---
+    -- GET_PED_CAUSE_OF_DEATH answers signed, which is why `describeCause` masks
+    -- with 0xFFFFFFFF at all, so an unsigned-only assertion proves half the
+    -- mapping. Two of the three below have the top bit set and genuinely arrive
+    -- negative; WEAPON_RAILGUN does not, so for it the two legs are the same
+    -- number and the signed one is a free pass. Asserted for all three anyway:
+    -- the day somebody renames it, the loop still asks the right question.
+    local function signed32(h)
+        return h >= 0x80000000 and h - 0x100000000 or h
+    end
+
+    for _, name in ipairs({ 'WEAPON_RPG', 'WEAPON_GRENADELAUNCHER',
+                            'WEAPON_RAILGUN' }) do
+        local got = selfCause(GetHashKey(name))
+        ok(got == 'explosion',
+            name .. ' with nobody to blame is an explosion, not "unknown"',
+            tostring(got))
+
+        local gotSigned = selfCause(signed32(GetHashKey(name)))
+        ok(gotSigned == 'explosion',
+            'and the same ' .. name .. ' arriving as the engine sends it, SIGNED',
+            tostring(gotSigned))
+    end
+
+    -- A WEAPON WE DO ISSUE IS STILL NOT THE WHOLE ARSENAL. Nothing here turns
+    -- `describeCause` into a weapon table: a rifle death has a killer and a
+    -- weapon of its own on the feed, and the cause it reports is meant to fall
+    -- through to the generic word. Pinned so the next person does not "finish"
+    -- this by mapping every gun in the game.
+    reset()
+    queueUp(1, 'A', BR.Mode.SOLO.key)
+    queueUp(2, 'B', BR.Mode.SOLO.key)
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    BR.Roster.setState(1, BR.PlayerState.ALIVE)
+    BR.Roster.setState(2, BR.PlayerState.ALIVE)
+    setPos(1, 0.0, 0.0, 30.0)
+    setPos(2, 60.0, 0.0, 30.0)
+    fakeTime = fakeTime + 600
+    BR.Sched.step(fakeTime)
+
+    sent = {}
+    fire(BR.Net.PLAYER_DIED, 1, { cause = GetHashKey('WEAPON_CARBINERIFLE') })
+    feed = eventsOf(BR.Net.KILL_FEED)
+    last = feed[#feed] and feed[#feed].args[1]
+    ok(last and last.cause == 'unknown',
+        'a rifle is still not a cause -- the feed names the killer and the '
+        .. 'weapon on that path',
+        tostring(last and last.cause))
+
+    pedHealth[1001] = nil
 end
 
 describe('loot.origin')
@@ -8346,38 +9056,40 @@ do
 
     -- ═══ AND AN NPC DROP NEVER HAD ONE ═══
     --
-    -- There really is a ped root here, and the server never saw it: the corpse
-    -- is client-side, so all three floats arrived over the wire and the whole
-    -- handler is machinery for believing them only as far as is harmless. Its
-    -- bound is HORIZONTAL, so it cannot check a z at all. Vouching would let a
+    -- There really is a ped root here, and the server never measured it: all
+    -- three floats arrived over the wire and the whole handler is machinery for
+    -- believing them only as far as is harmless. Its bound on the z is a
+    -- world-height sanity check, not a measurement, so vouching would let a
     -- client choose where everyone else's ground probe starts.
     --
     -- The cost is honest: an NPC shot under an overpass still drops its pistol
     -- on the deck. That is a known gap, not an oversight.
-    local npcWeapon
-    for _, w in pairs(BR.Config.WeaponById or {}) do
-        if w.ammo then npcWeapon = w break end
-    end
-    if npcWeapon then
-        BR.Roster.get(1).pos = { x = 700.0, y = 700.0, z = 35.0 }
-        local beforeNpc = m.loot.nextId
-        fire(BR.Net.NPC_DROP, 1, { item = npcWeapon.id, clip = 1,
-                                   x = 705.0, y = 700.0, z = 35.0 })
-        local npcMade, npcVouched = 0, 0
-        for id = beforeNpc + 1, m.loot.nextId do
-            local e = m.loot.items[id]
-            if e then
-                npcMade = npcMade + 1
-                if e.pz then npcVouched = npcVouched + 1 end
-            end
+    --
+    -- SWITCHED ON FOR THE LENGTH OF THIS ASSERTION AND OFF AGAIN. The feature
+    -- ships disabled since #232 (see the note beside the flag in
+    -- config/loot.lua); this block is about the VOUCH, and a vouch it cannot
+    -- produce a drop to test is not a passing assertion, it is a silent one.
+    local npcCfg = BR.Config.Loot.npcDrop
+    local wasEnabled = npcCfg.enabled
+    npcCfg.enabled = true
+    BR.Loot.clearNpcDrops(1)
+    BR.Roster.get(1).pos = { x = 700.0, y = 700.0, z = 35.0 }
+    local beforeNpc = m.loot.nextId
+    fire(BR.Net.NPC_DROP, 1, { x = 705.0, y = 700.0, z = 35.0 })
+    local npcMade, npcVouched = 0, 0
+    for id = beforeNpc + 1, m.loot.nextId do
+        local e = m.loot.items[id]
+        if e then
+            npcMade = npcMade + 1
+            if e.pz then npcVouched = npcVouched + 1 end
         end
-        ok(npcMade > 0 and npcVouched == 0,
-            'an NPC drop is never vouched for -- its position is a client '
-            .. 'report, not a server measurement',
-            ('%d made, %d vouched'):format(npcMade, npcVouched))
-    else
-        ok(false, 'no firearm in the weapon table to drop from an NPC')
     end
+    ok(npcMade > 0 and npcVouched == 0,
+        'an NPC drop is never vouched for -- its position is a client '
+        .. 'report, not a server measurement',
+        ('%d made, %d vouched'):format(npcMade, npcVouched))
+    npcCfg.enabled = wasEnabled
+    BR.Loot.clearNpcDrops(1)
 end
 
 describe('combat.paths')
@@ -8494,6 +9206,142 @@ do
     end
     ok((BR.Damage.refusals or 0) > refSelf,
         'but doing it over and over is refused and counted')
+end
+
+describe('damage.targets')
+do
+    -- ONE ROUND IS ONE HIT PER PLAYER (audit finding 5, 2026-09-08).
+    --
+    -- The handler spent the round and computed the firing interval ONCE per
+    -- event, then applied damage once per entry in `hitGlobalIds` -- a list the
+    -- shooter's own machine composes. So a pistol event naming one victim three
+    -- times was three applications of damage for one round, every one of them
+    -- measured against the same accepted interval. The auditor drove exactly
+    -- this and watched applyHit run three times.
+    --
+    -- The expectations below are that finding with its sign flipped: the same
+    -- payload now costs the victim ONE pistol hit and the shooter ONE round.
+    local PISTOL = 0x1B06D571
+
+    --- A shooter with a loaded pistol and N victims, all alive, all in
+    --- different squads, all standing 5m away. Squads matter: without them
+    --- SAME_SQUAD refuses everything before the interesting part.
+    local function withVictims(n)
+        reset()
+        queueUp(1, 'Shooter', BR.Mode.SOLO.key)
+        for s = 2, 1 + n do queueUp(s, 'V' .. s, BR.Mode.SOLO.key) end
+        fakeTime = fakeTime + 300
+        BR.Sched.step(fakeTime)
+        for s = 1, 1 + n do
+            BR.Roster.setState(s, BR.PlayerState.ALIVE)
+            BR.Roster.get(s).squadId = 10 + s
+        end
+        BR.Damage.forget(1)
+        BR.Damage.forgetRefusals(1)
+        BR.Inv.reset(1)
+        BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON,
+                         rarity = 1, count = 1, clip = 12 })
+        BR.Inv.of(1).active = 1
+        -- Written straight onto the entries, AFTER the step that would have
+        -- overwritten them. Nothing steps again in this block.
+        BR.Roster.get(1).pos = { x = 0.0, y = 0.0, z = 30.0 }
+        for s = 2, 1 + n do
+            local e = BR.Roster.get(s)
+            e.pos = { x = 5.0, y = 0.0, z = 30.0 }
+            e.hp, e.armour = 100.0, 0.0
+        end
+    end
+
+    withVictims(1)
+    local one = BR.ShotDamage(PISTOL, 1, 5.0, 3, BR.Config.Combat)
+    local clip0 = BR.Inv.of(1).slots[1].clip
+    local dupes0 = BR.Damage.dupeTargets or 0
+    local refusals0 = BR.Damage.refusals or 0
+
+    fakeTime = fakeTime + 5000
+    fire('weaponDamageEvent', 1, 1, {
+        damageType = 3, weaponType = PISTOL, hitComponent = 3,
+        weaponDamage = 26, hitGlobalIds = { 1002, 1002, 1002 },
+    })
+
+    local lost = 100.0 - BR.Roster.get(2).hp
+    ok(math.abs(lost - one) < 0.01,
+        'the same victim named three times in one event costs one pistol hit',
+        ('%.2f off, one hit is %.2f'):format(lost, one))
+    ok(BR.Inv.of(1).slots[1].clip == clip0 - 1,
+        'and one round, exactly as it always did', tostring(BR.Inv.of(1).slots[1].clip))
+    ok((BR.Damage.dupeTargets or 0) == dupes0 + 2,
+        'and the two copies are counted as duplicates',
+        ('%d -> %d'):format(dupes0, BR.Damage.dupeTargets or 0))
+    ok((BR.Damage.refusals or 0) == refusals0,
+        'and never as a refusal -- an engine that double-reports must not file '
+        .. 'a case against the player who fired',
+        ('%d -> %d'):format(refusals0, BR.Damage.refusals or 0))
+
+    -- A DUPLICATE CAN BE SPELT SEVERAL WAYS. `1002` and `1002.0` are the same
+    -- ped and different table keys, so a set keyed by the raw value would
+    -- deduplicate neither of them.
+    withVictims(1)
+    dupes0 = BR.Damage.dupeTargets or 0
+    fakeTime = fakeTime + 5000
+    fire('weaponDamageEvent', 1, 1, {
+        damageType = 3, weaponType = PISTOL, hitComponent = 3,
+        weaponDamage = 26, hitGlobalIds = { 1002, 1002.0, '1002' },
+    })
+    ok(math.abs((100.0 - BR.Roster.get(2).hp) - one) < 0.01,
+        'and the same victim spelt three ways is still one hit',
+        tostring(BR.Roster.get(2).hp))
+    ok((BR.Damage.dupeTargets or 0) == dupes0 + 2,
+        'because the ids are normalised before they are compared')
+
+    -- DISTINCT VICTIMS ARE NOT A FABRICATION A SET CAN CATCH, so the count is
+    -- bounded too. Fists cap at two: a swing can clip a second body that walked
+    -- into an arc already travelling, and a third is not a swing.
+    withVictims(3)
+    -- Fists are the EMPTY active slot, not an item -- so the pistol the fixture
+    -- issued has to go, or the punch is refused as NOT_HELD before the ceiling
+    -- is ever reached.
+    BR.Inv.reset(1)
+    local UNARMED = 2725352035
+    local capped0 = BR.Damage.cappedTargets or 0
+    for s = 2, 4 do BR.Roster.get(s).hp = 100.0 end
+    fakeTime = fakeTime + 5000
+    fire('weaponDamageEvent', 1, 1, {
+        damageType = 3, weaponType = UNARMED, hitComponent = 8,
+        weaponDamage = 25, hitGlobalIds = { 1002, 1003, 1004 },
+    })
+    local hurt = 0
+    for s = 2, 4 do
+        if BR.Roster.get(s).hp < 100.0 then hurt = hurt + 1 end
+    end
+    ok(hurt == BR.ShotMaxTargets(BR.Config.Fists, BR.Config.Combat),
+        'one punch cannot hurt more people than a punch reaches',
+        ('%d hurt, ceiling %d'):format(hurt,
+            BR.ShotMaxTargets(BR.Config.Fists, BR.Config.Combat)))
+    ok((BR.Damage.cappedTargets or 0) > capped0,
+        'and the ones past the ceiling are counted rather than refused',
+        ('%d -> %d'):format(capped0, BR.Damage.cappedTargets or 0))
+
+    -- ...AND A LEGITIMATE MULTI-VICTIM EVENT IS UNTOUCHED. The ceiling has to
+    -- be a ceiling rather than a rule that a round hits one person: a shotgun
+    -- raises one event for a whole pellet spread, and a grenade in a squad
+    -- fight genuinely catches everybody stood together.
+    withVictims(3)
+    for s = 2, 4 do BR.Roster.get(s).hp = 100.0 end
+    fakeTime = fakeTime + 5000
+    fire('weaponDamageEvent', 1, 1, {
+        damageType = 3, weaponType = PISTOL, hitComponent = 3,
+        weaponDamage = 26, hitGlobalIds = { 1002, 1003, 1004 },
+    })
+    hurt = 0
+    for s = 2, 4 do
+        if BR.Roster.get(s).hp < 100.0 then hurt = hurt + 1 end
+    end
+    ok(hurt == 3, 'while a round that clips three different players hits three',
+        tostring(hurt))
+    ok(BR.Inv.of(1).slots[1].clip == 12 - 1,
+        'for one round, which is what put spendRound outside the loop',
+        tostring(BR.Inv.of(1).slots[1].clip))
 end
 
 describe('damage.brshots')
@@ -8860,6 +9708,12 @@ do
     runCommand('brtestfire', 'thrown')
     ok(BR.Config.Combat.explosiveGraceMs == shippedGrace,
         'arming thrown does not edit the shipped grace window')
+    -- A FRESH CREDIT, SO THE LEVER IS THE ONLY THING LEFT TO REFUSE IT. Throw
+    -- credits are consumed by the blast they authorize now, so the first shot
+    -- above spent the one the fixture pushed -- and without this line the
+    -- refusal below would be an empty queue rather than the bent window, and
+    -- the block would pass while proving nothing about the lever.
+    BR.Damage.noteThrow(1, 'grenade')
     fakeTime = fakeTime + 1500
     shoot(GRENADE)
     printed = {}
@@ -8970,6 +9824,617 @@ do
         'off with nothing armed is a statement, not a silent success')
 
     BR.Server.devMode = devWas
+end
+
+describe('damage.lastround')
+do
+    -- THE LAST ROUND IN THE MAGAZINE IS A ROUND, and until 2026-09-08 it was a
+    -- high-severity anticheat case against the player who fired it.
+    --
+    -- FOUND WHILE FIXING THE EXPLOSIVE HOLE BELOW, and it is the same defect
+    -- with the sign reversed. spendRound charges the magazine once per event,
+    -- BEFORE any victim is resolved, and contextFor then reads that same slot --
+    -- so on the last round of the last magazine `ctx.clip` came back 0 and
+    -- `ctx.clip <= 0` refused the round that had just been legitimately fired.
+    -- NO_AMMO is means-class with a bar of one, so an honest player running dry
+    -- at the end of a fight opened a case on themselves, every time.
+    --
+    -- THE EMPTY RESERVE IS WHAT MAKES IT REACHABLE. spendRound reloads from the
+    -- pool the instant the magazine empties, so the ledger only sits at zero
+    -- when there is nothing left to reload from -- which is exactly the moment
+    -- this fired.
+    local PISTOL = BR.Config.WeaponById['pistol']
+    reset()
+    queueUp(1, 'A', BR.Mode.SOLO.key)
+    queueUp(2, 'B', BR.Mode.SOLO.key)
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    for s = 1, 2 do
+        BR.Roster.setState(s, BR.PlayerState.ALIVE)
+        BR.Roster.get(s).squadId = 10 + s
+    end
+    BR.Damage.forget(1); BR.Damage.forgetRefusals(1)
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON,
+                     rarity = 1, count = 1, clip = 1 })
+    BR.Inv.of(1).active = 1
+    BR.Inv.of(1).ammo[PISTOL.ammo] = 0
+    BR.Roster.get(1).pos = { x = 0.0, y = 0.0, z = 30.0 }
+    BR.Roster.get(2).pos = { x = 5.0, y = 0.0, z = 30.0 }
+    BR.Roster.get(2).hp, BR.Roster.get(2).armour = 100.0, 0.0
+    local r0 = BR.Damage.refusals or 0
+    fakeTime = fakeTime + 5000
+    fire('weaponDamageEvent', 1, 1, {
+        damageType = 3, weaponType = PISTOL.hash, hitComponent = 3,
+        weaponDamage = 26, hitGlobalIds = { 1002 },
+    })
+    ok(BR.Roster.get(2).hp < 100.0, 'the last round in the magazine still lands',
+        tostring(BR.Roster.get(2).hp))
+    ok((BR.Damage.refusals or 0) == r0,
+        'and is not refused for the magazine it just emptied',
+        ('%d -> %d'):format(r0, BR.Damage.refusals or 0))
+    ok(BR.Inv.of(1).slots[1].clip == 0,
+        'the server\'s own magazine really is empty afterwards',
+        tostring(BR.Inv.of(1).slots[1].clip))
+
+    -- ...AND THE SHOT AFTER IT IS STILL REFUSED, which is what makes the two
+    -- assertions above a boundary rather than the check having been switched
+    -- off. NO_AMMO has to stay reachable from a real shot -- it is the reason
+    -- the check exists at all.
+    local hp1 = BR.Roster.get(2).hp
+    fakeTime = fakeTime + 5000
+    fire('weaponDamageEvent', 1, 1, {
+        damageType = 3, weaponType = PISTOL.hash, hitComponent = 3,
+        weaponDamage = 26, hitGlobalIds = { 1002 },
+    })
+    ok(BR.Roster.get(2).hp == hp1,
+        'while the shot after it has nothing left to fire',
+        tostring(BR.Roster.get(2).hp))
+    ok((BR.Damage.refusals or 0) == r0 + 1,
+        'and is refused, once', ('%d -> %d'):format(r0, BR.Damage.refusals or 0))
+end
+
+describe('damage.autoload')
+do
+    -- A GUN BOUGHT OVER A LIVE POOL IS LOADED BY THE ENGINE, AND ITS FIRST ROUND
+    -- WAS AN ANTICHEAT CASE.
+    --
+    -- A sold gun arrives with `clip = 0` and leaves the pool it lands on alone
+    -- (see 'a gun sold over the counter arrives empty'). GTA loads it out of that
+    -- pool the moment it is in the hand, and a reload moves no total, so the
+    -- server's magazine stayed 0 and the first validated hit was refused as
+    -- NO_AMMO. The shot is that reload, and loadFired runs it on this side.
+    ok(BR.Config.Combat.serverAmmo, 'server ammo is on for this block')
+    local PDW = BR.Config.WeaponById['combatpdw']
+    reset()
+    queueUp(1, 'A', BR.Mode.SOLO.key)
+    queueUp(2, 'B', BR.Mode.SOLO.key)
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    for s = 1, 2 do
+        BR.Roster.setState(s, BR.PlayerState.ALIVE)
+        BR.Roster.get(s).squadId = 10 + s
+    end
+    BR.Damage.forget(1); BR.Damage.forgetRefusals(1)
+    BR.Inv.reset(1)
+    BR.Inv.of(1).ammo[PDW.ammo] = 60
+    BR.Inv.give(1, { item = 'combatpdw', kind = BR.ItemKind.WEAPON,
+                     rarity = PDW.rarity, count = 1, clip = 0, sold = true },
+                { quiet = true, focus = true })
+    local inv  = BR.Inv.of(1)
+    local slot = inv.slots[inv.active]
+    ok(slot and slot.item == 'combatpdw' and slot.clip == 0
+       and inv.ammo[PDW.ammo] == 60,
+       'a PDW bought over sixty SMG rounds is in the hand, empty',
+       ('clip %s pool %s'):format(tostring(slot and slot.clip),
+                                  tostring(inv.ammo[PDW.ammo])))
+
+    BR.Roster.get(1).pos = { x = 0.0, y = 0.0, z = 30.0 }
+    BR.Roster.get(2).pos = { x = 5.0, y = 0.0, z = 30.0 }
+    BR.Roster.get(2).hp, BR.Roster.get(2).armour = 100.0, 0.0
+    local r0 = BR.Damage.refusals or 0
+    fakeTime = fakeTime + 5000
+    fire('weaponDamageEvent', 1, 1, {
+        damageType = 3, weaponType = PDW.hash, hitComponent = 3,
+        weaponDamage = PDW.damage, hitGlobalIds = { 1002 },
+    })
+    ok(BR.Roster.get(2).hp < 100.0, 'ITS FIRST ROUND LANDS',
+       tostring(BR.Roster.get(2).hp))
+    ok((BR.Damage.refusals or 0) == r0,
+       'and is not refused for a magazine GTA had already loaded',
+       ('%d -> %d'):format(r0, BR.Damage.refusals or 0))
+    ok(slot.clip == PDW.clip - 1 and inv.ammo[PDW.ammo] == 60 - PDW.clip,
+       'a magazine moved out of the pool and the shot spent one round of it',
+       ('clip %s pool %s'):format(tostring(slot.clip),
+                                  tostring(inv.ammo[PDW.ammo])))
+end
+
+describe('damage.launch')
+do
+    -- THE PROJECTILE IS AUTHORIZED NOW, NOT THE IMPACT (audit finding 3).
+    --
+    --   "an empty grenade launcher with no reserve ammunition damaged a victim
+    --    twice at the same timestamp. Both attempts incremented the dry-shot
+    --    counter, yet neither was refused."
+    --
+    -- Three exemptions kept an explosive out of the ammunition, held and
+    -- cadence checks, and every one of them is correct about the IMPACT: a
+    -- grenade is not in your hand when it lands, its reach is the throw plus
+    -- the blast, and one rocket catching four people is four legitimate events
+    -- in the same millisecond. What none of them was ever about is the LAUNCH,
+    -- and skipping the checks left nothing looking at it.
+    local GL = BR.Config.WeaponById['grenadelauncher']
+    local GRENADE = BR.Config.WeaponById['grenade']
+
+    --- A shooter holding a grenade launcher with `n` in the tube and `pool`
+    --- in reserve, and a victim five metres away.
+    local function withLauncher(n, pool)
+        reset()
+        queueUp(1, 'Gunner', BR.Mode.SOLO.key)
+        queueUp(2, 'Target', BR.Mode.SOLO.key)
+        fakeTime = fakeTime + 300
+        BR.Sched.step(fakeTime)
+        for s = 1, 2 do
+            BR.Roster.setState(s, BR.PlayerState.ALIVE)
+            BR.Roster.get(s).squadId = 10 + s
+        end
+        BR.Damage.forget(1)
+        BR.Damage.forgetRefusals(1)
+        BR.Inv.reset(1)
+        BR.Inv.give(1, { item = GL.id, kind = BR.ItemKind.WEAPON,
+                         rarity = GL.rarity, count = 1, clip = n })
+        BR.Inv.of(1).active = 1
+        -- THE RESERVE IS LOAD-BEARING. spendRound reloads from the pool the
+        -- instant the magazine reaches zero, so a test that emptied only the
+        -- tube would refill it on the very next shot and never refuse.
+        BR.Inv.of(1).ammo[GL.ammo] = pool
+        -- ...AND THE TUBE IS STATED AFTER THE GIVE. A found gun's spare magazine
+        -- is rounds arriving, and those load an empty tube (see loadEmpty).
+        BR.Inv.of(1).slots[1].clip = n
+        BR.Roster.get(1).pos = { x = 0.0, y = 0.0, z = 30.0 }
+        BR.Roster.get(2).pos = { x = 5.0, y = 0.0, z = 30.0 }
+        BR.Roster.get(2).hp, BR.Roster.get(2).armour = 100.0, 0.0
+    end
+
+    local function launch(ids)
+        fire('weaponDamageEvent', 1, 1, {
+            damageType = 3, weaponType = GL.hash, hitComponent = 0,
+            weaponDamage = 200, hitGlobalIds = ids or { 1002 },
+        })
+    end
+
+    --- Put the victim back on their feet between blasts.
+    ---
+    --- A legendary launcher takes more than a full bar off, so the victim is
+    --- ELIMINATED by the first one -- and every shot after that is refused as
+    --- NOT_LIVE, which is a rules refusal that looks from the outside exactly
+    --- like the means refusal this block exists to assert. Restoring the health
+    --- and not the STATE is the version of this that passes while proving
+    --- nothing.
+    local function standUp()
+        local e = BR.Roster.get(2)
+        e.hp, e.armour = 100.0, 0.0
+        BR.Roster.setState(2, BR.PlayerState.ALIVE)
+    end
+
+    -- ═══ THE AUDIT'S CASE, WITH THE EXPECTATION INVERTED ═══
+    withLauncher(0, 0)
+    local refusals0 = BR.Damage.refusals or 0
+    fakeTime = fakeTime + 5000
+    launch()
+    launch()                                  -- the same millisecond, twice
+    ok(BR.Roster.get(2).hp == 100.0,
+        'an empty launcher with an empty reserve hurts nobody, twice over',
+        tostring(BR.Roster.get(2).hp))
+    ok((BR.Damage.refusals or 0) == refusals0 + 2,
+        'and both attempts are refused rather than counted and allowed',
+        ('%d -> %d'):format(refusals0, BR.Damage.refusals or 0))
+
+    -- ═══ AND THE HONEST CASES IT MUST NOT COST ═══
+    withLauncher(3, 0)
+    fakeTime = fakeTime + 5000
+    launch()
+    ok(BR.Roster.get(2).hp < 100.0, 'a loaded launcher still fires',
+        tostring(BR.Roster.get(2).hp))
+    ok(BR.Inv.of(1).slots[1].clip == 2, 'and still costs one round',
+        tostring(BR.Inv.of(1).slots[1].clip))
+
+    -- THE LAST ROCKET IN THE TUBE IS A ROCKET. The round is spent once per
+    -- event, before any victim is resolved, so `ctx.clip` reads ZERO on the
+    -- shot that just took the last one -- and an ammunition check on that
+    -- number would refuse it, as a means-class refusal, against a player who
+    -- did nothing but fire. weapons.lua names this failure by hand; it is the
+    -- reason the check was skipped and not a reason the check was wrong.
+    withLauncher(1, 0)
+    refusals0 = BR.Damage.refusals or 0
+    fakeTime = fakeTime + 5000
+    launch()
+    ok(BR.Roster.get(2).hp < 100.0,
+        'the last rocket in the tube still lands',
+        tostring(BR.Roster.get(2).hp))
+    ok((BR.Damage.refusals or 0) == refusals0,
+        'and is not refused for the magazine it just emptied',
+        ('%d -> %d'):format(refusals0, BR.Damage.refusals or 0))
+
+    -- ...and the NEXT one is refused, which is what makes the assertion above
+    -- a boundary rather than the check being off.
+    standUp()
+    fakeTime = fakeTime + 5000
+    launch()
+    ok(BR.Roster.get(2).hp == 100.0,
+        'while the shot after it has nothing left to fire',
+        tostring(BR.Roster.get(2).hp))
+
+    -- ONE ROCKET, MANY VICTIMS, ONE ROUND. The property the exemptions were
+    -- protecting, and the one a per-impact cadence rule would destroy.
+    reset()
+    queueUp(1, 'Gunner', BR.Mode.SOLO.key)
+    for s = 2, 4 do queueUp(s, 'T' .. s, BR.Mode.SOLO.key) end
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    for s = 1, 4 do
+        BR.Roster.setState(s, BR.PlayerState.ALIVE)
+        BR.Roster.get(s).squadId = 10 + s
+    end
+    BR.Damage.forget(1)
+    BR.Damage.forgetRefusals(1)
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = GL.id, kind = BR.ItemKind.WEAPON,
+                     rarity = GL.rarity, count = 1, clip = 5 })
+    BR.Inv.of(1).active = 1
+    BR.Inv.of(1).ammo[GL.ammo] = 0
+    BR.Roster.get(1).pos = { x = 0.0, y = 0.0, z = 30.0 }
+    for s = 2, 4 do
+        BR.Roster.get(s).pos = { x = 5.0, y = 0.0, z = 30.0 }
+        BR.Roster.get(s).hp, BR.Roster.get(s).armour = 100.0, 0.0
+    end
+    refusals0 = BR.Damage.refusals or 0
+    fakeTime = fakeTime + 5000
+    launch({ 1002, 1003, 1004 })
+    local caught = 0
+    for s = 2, 4 do
+        if BR.Roster.get(s).hp < 100.0 then caught = caught + 1 end
+    end
+    ok(caught == 3, 'one rocket catches everybody stood together',
+        ('%d of 3'):format(caught))
+    ok(BR.Inv.of(1).slots[1].clip == 4, 'for one round',
+        tostring(BR.Inv.of(1).slots[1].clip))
+    ok((BR.Damage.refusals or 0) == refusals0,
+        'and the second and third of them are not refused as too fast',
+        ('%d -> %d'):format(refusals0, BR.Damage.refusals or 0))
+
+    -- ...WHILE THE ACTION STILL CANNOT CYCLE IN A MILLISECOND. The cadence is
+    -- measured between LAUNCHES, so it costs the blast above nothing.
+    withLauncher(5, 0)
+    fakeTime = fakeTime + 5000
+    launch()
+    refusals0 = BR.Damage.refusals or 0
+    standUp()
+    fakeTime = fakeTime + 50
+    launch()
+    ok(BR.Roster.get(2).hp == 100.0,
+        'two rockets fifty milliseconds apart is not an action cycling',
+        tostring(BR.Roster.get(2).hp))
+    ok((BR.Damage.refusals or 0) == refusals0 + 1,
+        'and the second is refused', ('%d -> %d'):format(refusals0,
+                                                         BR.Damage.refusals or 0))
+
+    standUp()
+    fakeTime = fakeTime + 700
+    launch()
+    ok(BR.Roster.get(2).hp < 100.0,
+        'while one fired a full cycle later is simply a second rocket',
+        tostring(BR.Roster.get(2).hp))
+
+    -- ═══ THROW CREDITS ARE SPENT, NOT MERELY OBSERVED ═══
+    --
+    -- The grace record held the time of the LAST throw, so one grenade
+    -- authenticated the weapon TYPE for thirty seconds -- every blast a client
+    -- cared to claim in that window, from one throw. There is one credit per
+    -- grenade the server watched leave the hand now, and a blast spends one.
+    local function withGrenades()
+        reset()
+        queueUp(1, 'Thrower', BR.Mode.SOLO.key)
+        queueUp(2, 'Target', BR.Mode.SOLO.key)
+        fakeTime = fakeTime + 300
+        BR.Sched.step(fakeTime)
+        for s = 1, 2 do
+            BR.Roster.setState(s, BR.PlayerState.ALIVE)
+            BR.Roster.get(s).squadId = 10 + s
+        end
+        BR.Damage.forget(1)
+        BR.Damage.forgetRefusals(1)
+        BR.Inv.reset(1)
+        -- Still holding a stack, which is the whole point: holding one is not
+        -- the same fact as having thrown one.
+        BR.Inv.give(1, { item = 'grenade', kind = BR.ItemKind.THROWABLE,
+                         rarity = 3, count = 3 })
+        BR.Inv.of(1).active = 1
+        BR.Roster.get(1).pos = { x = 0.0, y = 0.0, z = 30.0 }
+        BR.Roster.get(2).pos = { x = 5.0, y = 0.0, z = 30.0 }
+        BR.Roster.get(2).hp, BR.Roster.get(2).armour = 100.0, 0.0
+    end
+
+    local function blast()
+        fire('weaponDamageEvent', 1, 1, {
+            damageType = 3, weaponType = GRENADE.hash, hitComponent = 0,
+            weaponDamage = 500, hitGlobalIds = { 1002 },
+        })
+    end
+
+    withGrenades()
+    BR.Damage.noteThrow(1, 'grenade')
+    fakeTime = fakeTime + 2000
+    blast()
+    ok(BR.Roster.get(2).hp < 100.0, 'a grenade the server watched leave lands',
+        tostring(BR.Roster.get(2).hp))
+
+    standUp()
+    refusals0 = BR.Damage.refusals or 0
+    fakeTime = fakeTime + 100
+    blast()
+    ok(BR.Roster.get(2).hp == 100.0,
+        'a second blast from that one throw does not -- the credit is spent',
+        tostring(BR.Roster.get(2).hp))
+    ok((BR.Damage.refusals or 0) == refusals0 + 1,
+        'and is refused rather than dropped', ('%d -> %d')
+            :format(refusals0, BR.Damage.refusals or 0))
+    ok(BR.Inv.of(1).slots[1].count == 3,
+        'while the stack in hand is untouched, and never was the authority',
+        tostring(BR.Inv.of(1).slots[1].count))
+
+    -- THREE STICKIES ARE THREE CREDITS AND SHOULD BE THREE HITS. A cluster
+    -- detonated together is the one case a per-projectile ledger could get
+    -- wrong in the other direction: the victim is already in the first
+    -- authorization's ledger, so the second and third have to open their own.
+    withGrenades()
+    for _ = 1, 3 do BR.Damage.noteThrow(1, 'grenade') end
+    fakeTime = fakeTime + 2000
+    refusals0 = BR.Damage.refusals or 0
+    local landed = 0
+    for _ = 1, 3 do
+        standUp()
+        blast()
+        if BR.Roster.get(2).hp < 100.0 then landed = landed + 1 end
+    end
+    ok(landed == 3, 'three grenades thrown are three grenades that go off',
+        ('%d of 3'):format(landed))
+    ok((BR.Damage.refusals or 0) == refusals0,
+        'with nothing refused in between',
+        ('%d -> %d'):format(refusals0, BR.Damage.refusals or 0))
+
+    -- ...and a fourth, from three throws, is not.
+    standUp()
+    blast()
+    ok(BR.Roster.get(2).hp == 100.0,
+        'a fourth blast from three throws is refused',
+        tostring(BR.Roster.get(2).hp))
+end
+
+describe('damage.environmental')
+do
+    -- A HASH IS A CLAIM ABOUT THE CAUSE (audit finding 4, 2026-09-08).
+    --
+    --   "a remote-target event labelled WEAPON_EXPLOSION, with a large
+    --    client-supplied damage figure, reached the early return without
+    --    cancellation."
+    --
+    -- HALF OF THIS BLOCK IS ABOUT THE FIX BEING WORSE THAN THE BUG, and that is
+    -- the right proportion. Falls, fire, drowning and cars are damage this
+    -- project deliberately leaves to the engine -- it kills the ped outright on
+    -- the victim's own machine and the server finds out by sampling health.
+    -- Making environmental damage strict means a player steps off a building
+    -- and walks away, which is worse than the thing being closed. So the
+    -- assertions here come in pairs: the fabrication is refused, and the real
+    -- death still happens.
+    local EXPLOSION = GetHashKey('WEAPON_EXPLOSION')
+    local FALL      = GetHashKey('WEAPON_FALL')
+    local RUNOVER   = GetHashKey('WEAPON_RUN_OVER_BY_CAR')
+
+    -- CancelEvent is the only lever this path has -- there is no ledger of ours
+    -- behind a fall to recompute -- so whether it was pulled IS the assertion.
+    local realCancel = CancelEvent
+    local cancels = 0
+    CancelEvent = function() cancels = cancels + 1 end
+
+    --- Two players stood together and a third half a kilometre away.
+    ---
+    --- POSITIONS FLOW PED -> SAMPLER -> ROSTER, so they are set on the ped and
+    --- stepped in. Writing entry.pos here would be overwritten before the
+    --- validator read it, and the block would be asserting against zeroes.
+    local function envMatch()
+        reset()
+        queueUp(1, 'Near', BR.Mode.SOLO.key)
+        queueUp(2, 'Victim', BR.Mode.SOLO.key)
+        queueUp(3, 'Far', BR.Mode.SOLO.key)
+        for s = 1, 3 do pedHealth[1000 + s] = 200 end
+        fakeTime = fakeTime + 300
+        BR.Sched.step(fakeTime)
+        for s = 1, 3 do BR.Roster.setState(s, BR.PlayerState.ALIVE) end
+        theMatch().state = BR.MatchState.PLAYING
+        setPos(1, 0.0, 0.0, 30.0)
+        setPos(2, 6.0, 0.0, 30.0)
+        setPos(3, 500.0, 500.0, 30.0)
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        for s = 1, 3 do BR.Damage.forget(s); BR.Damage.forgetRefusals(s) end
+        cancels = 0
+        sent = {}
+    end
+
+    -- ═══ THE AUDIT'S CASE ═══
+    envMatch()
+    local hits0 = BR.Damage.envHits or 0
+    local ref0  = BR.Damage.envRefused or 0
+    fire('weaponDamageEvent', 3, 3, {
+        damageType = 3, weaponType = EXPLOSION, hitComponent = 0,
+        weaponDamage = 5000, hitGlobalIds = { 1002 },
+    })
+    ok(cancels > 0,
+        'an explosion claimed against somebody half a kilometre away is cancelled',
+        tostring(cancels))
+    ok((BR.Damage.envRefused or 0) == ref0 + 1, 'and counted as refused',
+        ('%d -> %d'):format(ref0, BR.Damage.envRefused or 0))
+    ok((BR.Damage.envHits or 0) == hits0,
+        'rather than counted as the world hurting somebody',
+        ('%d -> %d'):format(hits0, BR.Damage.envHits or 0))
+
+    -- ...AND THE DAMAGE FIGURE ON ITS OWN. The number in the payload is the
+    -- client's and there is no ledger of ours to replace it with, so an absurd
+    -- one is refused even from somebody stood right there.
+    envMatch()
+    ref0 = BR.Damage.envRefused or 0
+    fire('weaponDamageEvent', 1, 1, {
+        damageType = 3, weaponType = EXPLOSION, hitComponent = 0,
+        weaponDamage = 5000, hitGlobalIds = { 1002 },
+    })
+    ok(cancels > 0 and (BR.Damage.envRefused or 0) == ref0 + 1,
+        'and so is a five-figure damage number from six metres away',
+        tostring(cancels))
+
+    -- ═══ AND EVERY LEGITIMATE PATH IT MUST NOT COST ═══
+    --
+    -- A FALL, WHICH IS THE ONE THE OWNER WOULD NOTICE. Deliberately with an
+    -- absurd damage figure attached: the sender IS the victim, so nothing else
+    -- about the claim is allowed to matter. The worst a liar achieves on this
+    -- path is hurting themselves.
+    envMatch()
+    hits0 = BR.Damage.envHits or 0
+    ref0  = BR.Damage.envRefused or 0
+    fire('weaponDamageEvent', 2, 2, {
+        damageType = 3, weaponType = FALL, hitComponent = 0,
+        weaponDamage = 5000, hitGlobalIds = { 1002 },
+    })
+    ok(cancels == 0, 'a fall onto the sender\'s own ped is never cancelled',
+        tostring(cancels))
+    ok((BR.Damage.envHits or 0) == hits0 + 1,
+        'and is still counted as the world hurting somebody')
+    ok((BR.Damage.envRefused or 0) == ref0, 'and never as a refusal')
+
+    -- ...AND THE DEATH AT THE END OF IT STILL LANDS, which is the assertion the
+    -- whole finding hangs on. The engine killed the ped on the victim's own
+    -- machine; the server learns about it by sampling health, and nothing here
+    -- may stand between those two facts.
+    pedHealth[1002] = 0
+    for _ = 1, 8 do
+        setPos(2, 6.0, 0.0, 30.0)
+        fakeTime = fakeTime + 250
+        BR.Sched.step(fakeTime)
+    end
+    ok(BR.Roster.get(2).state == BR.PlayerState.OUT,
+        'a player who falls off a building still dies',
+        tostring(BR.Roster.get(2).state))
+    pedHealth[1002] = nil
+
+    -- A CAR, six metres away, which is a whole roadkill ledger downstream of
+    -- this event surviving or not (server/vehicles.lua reads the health drop).
+    envMatch()
+    ref0 = BR.Damage.envRefused or 0
+    fire('weaponDamageEvent', 1, 1, {
+        damageType = 3, weaponType = RUNOVER, hitComponent = 0,
+        weaponDamage = 120, hitGlobalIds = { 1002 },
+    })
+    ok(cancels == 0 and (BR.Damage.envRefused or 0) == ref0,
+        'somebody running somebody else over from six metres still lands',
+        tostring(cancels))
+
+    -- A FIRE DEATH, END TO END. The molotov's damage never reaches the server
+    -- at all -- measured 2026-08-08, not one payload printed -- so the whole
+    -- feature is the explosionEvent ledger, and cancelling that blast would
+    -- take the kill's owner with it.
+    envMatch()
+    BR.Damage.noteThrow(1, 'molotov')
+    fire('explosionEvent', 1, 1,
+        { explosionType = 3, posX = 6.0, posY = 0.0, posZ = 30.0 })
+    ok(cancels == 0, 'a molotov from somebody who threw one goes off',
+        tostring(cancels))
+
+    -- ONE PASS TO TAKE THE BASELINE, THEN THE BURN. `damage.fires` returns
+    -- before touching `burnHp` while there are no fires, so the first pass
+    -- after one is lit only establishes what the victim had -- and a test that
+    -- skipped it would be asserting against a nil.
+    fakeTime = fakeTime + 600
+    BR.Sched.step(fakeTime)
+    pedHealth[1002] = 164
+    fakeTime = fakeTime + 600
+    BR.Sched.step(fakeTime)
+    ok(BR.Roster.get(2).lastHitBy == 1,
+        'and health lost inside it is still credited to whoever lit it',
+        tostring(BR.Roster.get(2).lastHitBy))
+    ok(BR.Combat.attributedKiller(BR.Roster.get(2)) == 1,
+        'so a molotov kill still has a killer',
+        tostring(BR.Combat.attributedKiller(BR.Roster.get(2))))
+    pedHealth[1002] = nil
+
+    -- AN AMBIENT BLAST, which the owner asked for by name: "It's by design that
+    -- vehicles in the game can explode under normal circumstances, without a
+    -- killer necessarily" (2026-08-21). Type 7 is not one of the three this
+    -- gamemode issues, so it is never asked where it came from.
+    envMatch()
+    fire('explosionEvent', 1, 1,
+        { explosionType = 7, posX = 6.0, posY = 0.0, posZ = 30.0 })
+    ok(cancels == 0, 'a car going off a cliff still explodes, owned by nobody',
+        tostring(cancels))
+
+    -- ═══ THE SECOND ROUTE, CLOSED ═══
+    --
+    -- explosionEvent only ever read attribution out of the payload, so an
+    -- explosion nobody was issued, anywhere on the map, at any rate, was never
+    -- refused.
+    envMatch()
+    local blasts0 = BR.Damage.blastsRefused or 0
+    fire('explosionEvent', 1, 1,
+        { explosionType = 0, posX = 6.0, posY = 0.0, posZ = 30.0 })
+    ok(cancels > 0, 'a grenade from somebody who was never given one is cancelled',
+        tostring(cancels))
+    ok((BR.Damage.blastsRefused or 0) == blasts0 + 1, 'and counted',
+        ('%d -> %d'):format(blasts0, BR.Damage.blastsRefused or 0))
+
+    envMatch()
+    blasts0 = BR.Damage.blastsRefused or 0
+    BR.Damage.noteThrow(1, 'grenade')
+    fire('explosionEvent', 1, 1,
+        { explosionType = 0, posX = 6.0, posY = 0.0, posZ = 30.0 })
+    ok(cancels == 0 and (BR.Damage.blastsRefused or 0) == blasts0,
+        'while one from somebody the server watched throw one is not',
+        tostring(cancels))
+
+    -- THE THROW CREDIT IS NOT SPENT BY THE EXPLOSION, and it must not be: the
+    -- blast and its damage are two events with no guaranteed order, so a
+    -- consuming test here would sometimes cancel the visible explosion of a
+    -- grenade whose damage had already been paid for.
+    ok(BR.Damage.threwRecently(1, 'grenade'),
+        'and the credit the damage path needs is still there afterwards')
+
+    envMatch()
+    BR.Damage.noteThrow(1, 'grenade')
+    fire('explosionEvent', 1, 1,
+        { explosionType = 0, posX = 4000.0, posY = 4000.0, posZ = 30.0 })
+    ok(cancels > 0,
+        'an explosion four kilometres from the player who caused it is cancelled',
+        tostring(cancels))
+
+    -- A POSITION THAT IS NOT A POSITION. NaN sails through every comparison as
+    -- false, so a distance check on its own would pass it.
+    envMatch()
+    BR.Damage.noteThrow(1, 'grenade')
+    fire('explosionEvent', 1, 1,
+        { explosionType = 0, posX = 0.0 / 0.0, posY = 0.0, posZ = 30.0 })
+    ok(cancels > 0, 'and so is one at coordinates that are not numbers',
+        tostring(cancels))
+
+    -- SOURCE 0 IS THE SERVER, AND IS NOT A REFUSAL. An unattributed blast is
+    -- exactly what explosionTypes already declines to claim; cancelling those
+    -- would be this file deciding the world may not have weather.
+    envMatch()
+    blasts0 = BR.Damage.blastsRefused or 0
+    fire('explosionEvent', 0, 0,
+        { explosionType = 7, posX = 6.0, posY = 0.0, posZ = 30.0 })
+    ok(cancels == 0 and (BR.Damage.blastsRefused or 0) == blasts0,
+        'an explosion with no sender is left entirely alone',
+        tostring(cancels))
+
+    CancelEvent = realCancel
 end
 
 describe('damage.notThrownIsReachable')
@@ -9221,22 +10686,38 @@ do
     -- a FLOOR: the client may say the total has fallen and may say nothing else.
     ok(BR.Config.Combat.serverAmmo, 'server ammo is on for this block')
 
+    -- ═══ THE WEAPON HERE IS THE GRENADE LAUNCHER, AND THE SWAP IS A FINDING
+    --     RATHER THAN A CONVENIENCE (2026-09-12) ═══
+    --
+    -- This block was written on the railgun because that is the gun the owner was
+    -- holding, and every assertion below needs a magazine with rounds STILL IN IT
+    -- after a shot. WEAPON_RAILGUN's magazine is one round. It was declared 3
+    -- until today, which is exactly what made it look like a weapon that could
+    -- hold a partial magazine -- and what made BR.Inv.reload move three rounds out
+    -- of the heavy pool into a chamber that takes one.
+    --
+    -- THE GRENADE LAUNCHER KEEPS EVERY REASON THE RAILGUN WAS CHOSEN and has a
+    -- magazine of ten: it is on the same heavy pool, it is on the airdrop shelf,
+    -- and it is EXPLOSIVE -- so it raises no weaponDamageEvent either, which is
+    -- the entire premise of this block. The railgun is back at the bottom, on the
+    -- one thing only it can say now.
     lootMatch()
     BR.Inv.reset(1)
     local rail = BR.Config.WeaponById['railgun']
-    BR.Inv.give(1, { item = 'railgun', kind = BR.ItemKind.WEAPON, rarity = 5,
-                     count = 1, clip = rail.clip })
+    local gl   = BR.Config.WeaponById['grenadelauncher']
+    BR.Inv.give(1, { item = 'grenadelauncher', kind = BR.ItemKind.WEAPON,
+                     rarity = 5, count = 1, clip = gl.clip })
     local inv = BR.Inv.of(1)
     inv.active = 1
-    inv.ammo[BR.AmmoType.HEAVY] = rail.clip
-    local total = rail.clip + rail.clip
+    inv.ammo[BR.AmmoType.HEAVY] = gl.clip
+    local total = gl.clip + gl.clip
 
     -- THE MAGAZINE PAYS FIRST, because that is the order rounds leave a gun.
     ammoReport(1, 1, total - 1, 0)
-    ok(inv.slots[1].clip == rail.clip - 1,
+    ok(inv.slots[1].clip == gl.clip - 1,
         'a round the server never saw still comes off the magazine',
         tostring(inv.slots[1].clip))
-    ok(inv.ammo[BR.AmmoType.HEAVY] == rail.clip,
+    ok(inv.ammo[BR.AmmoType.HEAVY] == gl.clip,
         'and the reserve is untouched while the magazine has rounds in it',
         tostring(inv.ammo[BR.AmmoType.HEAVY]))
 
@@ -9288,6 +10769,35 @@ do
     ammoReport(1, 1, 1, 1)
     ok(#eventsOf(BR.Net.INV_SET) > 0, 'and the corrected inventory is pushed back')
 
+    -- ═══ AND NOW THE RAILGUN, WHOSE MAGAZINE IS ONE ROUND (owner, 2026-09-12) ═══
+    --
+    -- "I buy one pack of 12 heavy ammo for it, then the HUD reads 1/12 ... That's
+    -- 4 rounds when I paid for 12."
+    --
+    -- THIS IS THE POOL ARITHMETIC HE WAS WATCHING, and the number under test is
+    -- the one BR.Inv.reload takes out of the reserve when the chamber empties.
+    -- `w.clip` IS that number, so it has to be the engine's: at 3 this refilled a
+    -- one-round chamber by moving three rounds, and client/inventory.lua then
+    -- wrote the two that did not fit off the ped and reported them gone.
+    --
+    -- Twelve owned, one of them chambered. One shot, and eleven must remain --
+    -- ONE in the chamber and TEN behind it, not one and eight.
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'railgun', kind = BR.ItemKind.WEAPON, rarity = 5,
+                     count = 1, clip = rail.clip })
+    inv = BR.Inv.of(1)
+    inv.active = 1
+    inv.ammo[BR.AmmoType.HEAVY] = 12 - rail.clip
+    ammoReport(1, 1, 11, 0)
+    ok(inv.slots[1].clip + inv.ammo[BR.AmmoType.HEAVY] == 11,
+        'ONE ROUND FIRED COSTS THE RAILGUN ONE ROUND OUT OF TWELVE',
+        ('clip %s reserve %s'):format(inv.slots[1].clip,
+                                      inv.ammo[BR.AmmoType.HEAVY]))
+    ok(inv.slots[1].clip == 1 and inv.ammo[BR.AmmoType.HEAVY] == 10,
+        'and the refill moves exactly one round into a one-round chamber',
+        ('clip %s reserve %s'):format(inv.slots[1].clip,
+                                      inv.ammo[BR.AmmoType.HEAVY]))
+
     -- IT IS NOT RAILGUN-ONLY. The railgun is where the owner found it because
     -- an explosive is charged for nothing at all; every other weapon leaks the
     -- same way for every shot that raises no event, a miss included.
@@ -9303,6 +10813,196 @@ do
         'and an ordinary rifle emptied by misses is emptied on the server too',
         ('clip %s reserve %s'):format(inv.slots[1].clip,
                                       inv.ammo[BR.AmmoType.MEDIUM]))
+end
+
+describe('inv.ammo.loadsEmpty')
+do
+    -- ═══ ROUNDS THAT ARRIVE LOAD AN EMPTY MAGAZINE (owner, playtesting a6cbdab) ═══
+    --
+    -- Buying ammo for a Combat PDW he owned but was not holding left its slot
+    -- reading 0 until he switched to it and GTA reloaded it. A gun is sold with
+    -- `clip = 0` (see 'a gun sold over the counter arrives empty'), and nothing on
+    -- this side ever loaded that magazine: BR.Inv.reload runs when a magazine is
+    -- spent dry and when the key is pressed, and an ammo pickup is neither. The
+    -- engine loads the gun in the HAND by itself, so the held gun hid it; the
+    -- slot plate draws this server's `clip`, so the gun in the bag did not.
+    --
+    -- THE SAME RULE spendRound AND THE INV_AMMO FLOOR ALREADY RUN -- an empty
+    -- magazine over a live pool refills, once -- asked at the moment the pool
+    -- stops being empty. It MOVES, so `held` is the same number either side.
+    --
+    -- ⚠ ONLY WHEN ROUNDS ARRIVE. A gun that arrives over a pool the player already
+    -- had is still left empty: "a purchase neither mints nor spends the reserve
+    -- already in the bag" is pinned above and this does not reopen it.
+    ok(BR.Config.Combat.serverAmmo, 'server ammo is on for this block')
+    lootMatch()
+
+    local pdw    = BR.Config.WeaponById['combatpdw']
+    local pistol = BR.Config.WeaponById['pistol']
+
+    local function held(src, pool)
+        local i = BR.Inv.of(src)
+        local n = i.ammo[pool] or 0
+        for s = 1, 5 do
+            local slot = i.slots[s]
+            local w = slot and BR.Config.WeaponById[slot.item]
+            if w and w.ammo == pool then n = n + (slot.clip or 0) end
+        end
+        return n
+    end
+
+    -- ── 1. HIS SEQUENCE. A pistol in the hand, a PDW bought into slot 2, then
+    --    sixty SMG rounds.
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON, rarity = 1,
+                     count = 1, clip = pistol.clip, carried = true })
+    BR.Inv.give(1, { item = 'combatpdw', kind = BR.ItemKind.WEAPON,
+                     rarity = pdw.rarity, count = 1, clip = 0, sold = true })
+    local inv = BR.Inv.of(1)
+    inv.active = 1
+    ok(inv.slots[2] and inv.slots[2].item == 'combatpdw'
+       and inv.slots[2].clip == 0 and inv.ammo[pdw.ammo] == 0,
+       'a PDW in slot 2 with an empty magazine and nothing in the pool')
+
+    BR.Inv.give(1, { item = pdw.ammo, kind = BR.ItemKind.AMMO, rarity = 1,
+                     count = 60 })
+    ok(inv.slots[2].clip == pdw.clip,
+       'SIXTY ROUNDS INTO THE BAG LOAD THE PDW THAT IS NOT IN HAND',
+       tostring(inv.slots[2].clip))
+    ok(inv.ammo[pdw.ammo] == 60 - pdw.clip,
+       'out of those sixty, not on top of them',
+       tostring(inv.ammo[pdw.ammo]))
+    ok(held(1, pdw.ammo) == 60, 'so the player holds exactly what was bought',
+       tostring(held(1, pdw.ammo)))
+    ok(inv.slots[1].clip == pistol.clip,
+       'and a gun on another pool is not touched', tostring(inv.slots[1].clip))
+
+    -- ── 2. A PARTIAL MAGAZINE IS THE RELOAD KEY'S, NOT THE PICKUP'S. Topping
+    --    one up here would be a reload nobody pressed.
+    inv.slots[2].clip = 10
+    inv.ammo[pdw.ammo] = 0
+    BR.Inv.give(1, { item = pdw.ammo, kind = BR.ItemKind.AMMO, rarity = 1,
+                     count = 30 })
+    ok(inv.slots[2].clip == 10 and inv.ammo[pdw.ammo] == 30,
+       'a magazine with rounds in it is left as it is',
+       ('clip %s pool %s'):format(tostring(inv.slots[2].clip),
+                                  tostring(inv.ammo[pdw.ammo])))
+
+    -- ── 3. A HAND THAT DRAWS THE POOL TAKES THE ROUNDS. Two empty guns on one
+    --    pool and two magazines' worth of rounds: the gun the player is holding
+    --    loads, and the rest is its reserve rather than a magazine in the bag.
+    local other
+    for _, w in ipairs(BR.Config.Weapons) do
+        if w.ammo == pdw.ammo and w.id ~= pdw.id and w.clip and not w.melee then
+            other = w
+            break
+        end
+    end
+    ok(other ~= nil, 'there is a second gun on the PDW\'s pool to test with')
+    if other then
+        BR.Inv.reset(1)
+        BR.Inv.give(1, { item = other.id, kind = BR.ItemKind.WEAPON,
+                         rarity = other.rarity, count = 1, clip = 0, sold = true })
+        BR.Inv.give(1, { item = 'combatpdw', kind = BR.ItemKind.WEAPON,
+                         rarity = pdw.rarity, count = 1, clip = 0, sold = true })
+        inv = BR.Inv.of(1)
+        inv.active = 2
+        local bought = pdw.clip + other.clip
+        BR.Inv.give(1, { item = pdw.ammo, kind = BR.ItemKind.AMMO, rarity = 1,
+                         count = bought })
+        ok(inv.slots[2].clip == pdw.clip,
+           'the empty gun in the hand is loaded', tostring(inv.slots[2].clip))
+        ok(inv.slots[1].clip == 0 and inv.ammo[pdw.ammo] == bought - pdw.clip,
+           'AND THE EMPTY GUN IN THE BAG IS NOT: the rest is the hand\'s reserve',
+           ('bag %s, pool %s'):format(tostring(inv.slots[1].clip),
+                                      tostring(inv.ammo[pdw.ammo])))
+
+        -- ── 3b. THE SAME WITH A PARTLY LOADED GUN IN THE HAND, which is the
+        --    case the bag used to rob: a PDW at 10 and an empty gun in the bag,
+        --    and the PDW's reserve did not rise because the bag gun took it.
+        inv.slots[2].clip = 10
+        inv.slots[1].clip = 0
+        inv.ammo[pdw.ammo] = 0
+        BR.Inv.give(1, { item = pdw.ammo, kind = BR.ItemKind.AMMO, rarity = 1,
+                         count = 60 })
+        ok(inv.slots[2].clip == 10 and inv.ammo[pdw.ammo] == 60,
+           'A PARTLY LOADED PDW IN THE HAND KEEPS ITS MAGAZINE AND GAINS ALL SIXTY',
+           ('hand %s, pool %s'):format(tostring(inv.slots[2].clip),
+                                       tostring(inv.ammo[pdw.ammo])))
+        ok(inv.slots[1].clip == 0,
+           'and the empty gun in the bag on the same pool stays empty',
+           tostring(inv.slots[1].clip))
+
+        -- ── 4. A FOUND GUN'S SPARE MAGAZINE IS ROUNDS ARRIVING TOO. A floor gun
+        --    on the PDW's pool, picked up with a pistol in the hand beside an
+        --    empty sold PDW, left the PDW's badge at 0 until GTA loaded it.
+        local spare = BR.Config.Loot.weaponReserveClips or 1
+        BR.Inv.reset(1)
+        BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON, rarity = 1,
+                         count = 1, clip = pistol.clip, carried = true })
+        BR.Inv.give(1, { item = 'combatpdw', kind = BR.ItemKind.WEAPON,
+                         rarity = pdw.rarity, count = 1, clip = 0, sold = true })
+        inv = BR.Inv.of(1)
+        inv.active = 1
+        BR.Inv.give(1, { item = other.id, kind = BR.ItemKind.WEAPON,
+                         rarity = other.rarity, count = 1, clip = other.clip })
+        ok(inv.active == 1 and inv.slots[2].item == 'combatpdw'
+           and inv.slots[2].clip == math.min(pdw.clip, other.clip * spare),
+           'A FLOOR GUN\'S SPARE MAGAZINE LOADS THE EMPTY PDW IN THE BAG',
+           tostring(inv.slots[2].clip))
+        ok(inv.slots[3].clip == other.clip
+           and held(1, pdw.ammo) == other.clip + other.clip * spare,
+           'out of the rounds that gun brought, not on top of them',
+           ('found gun %s, held %s'):format(tostring(inv.slots[3].clip),
+                                            tostring(held(1, pdw.ammo))))
+    end
+end
+
+describe('inv.ammo.remainder')
+do
+    -- ═══ A BUNDLE CHARGED WHOLE AND DELIVERED CLAMPED ═══
+    --
+    -- give()'s AMMO branch returned nothing when a pool took only part of a
+    -- stack, so the part that did not fit vanished. server/gunshop.lua's
+    -- deliver() says a partial bundle "clamps and drops the remainder", and it
+    -- charges the whole bundle; there was never a remainder to drop.
+    local m = lootMatch()
+    local pool = BR.AmmoType.SHELLS
+    ok(BR.Config.AmmoCaps[pool] == 120 and BR.Config.AmmoPickups[pool].amount == 16,
+       'shells: a bundle of 16 against a pool of 120',
+       ('cap %s, bundle %s'):format(tostring(BR.Config.AmmoCaps[pool]),
+                                    tostring(BR.Config.AmmoPickups[pool].amount)))
+
+    BR.Inv.reset(1)
+    BR.Roster.get(1).pos = { x = 1234.0, y = -567.0, z = 30.0 }
+    local inv = BR.Inv.of(1)
+    inv.ammo[pool] = 106
+    local stack = { item = pool, kind = BR.ItemKind.AMMO, rarity = 1, count = 16 }
+    local took, rest, reason = BR.Inv.give(1, stack, { quiet = true, focus = true })
+    ok(took == true and reason == nil and inv.ammo[pool] == 120,
+       'SIXTEEN SHELLS AT 106 OF 120 DELIVER FOURTEEN', tostring(inv.ammo[pool]))
+    ok(type(rest) == 'table' and rest.item == pool
+       and rest.kind == BR.ItemKind.AMMO and rest.count == 2,
+       'AND HAND BACK THE TWO THAT DID NOT FIT',
+       type(rest) == 'table' and tostring(rest.count) or 'nothing handed back')
+    ok(stack.count == 16, 'without writing on the stack it was given',
+       tostring(stack.count))
+
+    -- What deliver() does with it.
+    local was = m.loot.nextId
+    if type(rest) == 'table' then BR.Loot.dropForPlayer(1, rest) end
+    local e = m.loot.items[m.loot.nextId]
+    ok(m.loot.nextId == was + 1 and e ~= nil and e.item == pool and e.count == 2
+       and math.abs(e.x - 1234.0) < 0.01,
+       'which lands at the buyer\'s feet as an ordinary ammo pickup',
+       e and ('%s x%s'):format(tostring(e.item), tostring(e.count)) or 'nothing dropped')
+
+    -- A bundle that fits hands nothing back.
+    inv.ammo[pool] = 0
+    local took2, rest2 = BR.Inv.give(1, { item = pool, kind = BR.ItemKind.AMMO,
+                                          rarity = 1, count = 16 })
+    ok(took2 == true and rest2 == nil and inv.ammo[pool] == 16,
+       'a bundle that fits hands nothing back', tostring(inv.ammo[pool]))
 end
 
 describe('inv.ammo.dropPickup')
@@ -9547,9 +11247,15 @@ do
     ok(held(1, BR.AmmoType.HEAVY) == rail.clip * 2,
        'A REPORT MEASURED BEFORE THE PICKUP CANNOT SPEND WHAT THE PICKUP ADDED',
        tostring(held(1, BR.AmmoType.HEAVY)))
-    ok(BR.Inv.of(1).ammo[BR.AmmoType.HEAVY] == rail.clip,
-       'and the reserve the railgun came with is still in the pool',
-       tostring(BR.Inv.of(1).ammo[BR.AmmoType.HEAVY]))
+    -- IN THE POOL, OR IN THE DRY RPG IT LOADED. The railgun's spare magazine is
+    -- rounds arriving on the heavy pool, and those load an empty magazine on it
+    -- (see loadEmpty), so part of it moved into the tube in the hand.
+    ok(BR.Inv.of(1).ammo[BR.AmmoType.HEAVY] + BR.Inv.of(1).slots[1].clip
+           == rail.clip
+       and BR.Inv.of(1).slots[1].clip == math.min(rpg.clip, rail.clip),
+       'and the reserve the railgun came with is still in the bag',
+       ('pool %s, rpg %s'):format(tostring(BR.Inv.of(1).ammo[BR.AmmoType.HEAVY]),
+                                  tostring(BR.Inv.of(1).slots[1].clip)))
 
     -- ── 2. THE SAME SLOT, A DIFFERENT WEAPON. A pickup that DISPLACES the held
     --    weapon reuses the slot number the in-flight report is addressed to, so
@@ -10387,6 +12093,34 @@ do
         -- neither envelope says so.
         ok(corr.seq ~= nil, 'and a sequence number, so a gap is detectable',
             tostring(corr.seq))
+
+        -- AND A GRADED SEVERITY, WHICH IS THE HALF OF THIS INVARIANT THAT IS
+        -- SUPPOSED TO BE PRESENT.
+        --
+        -- ASSERTED SO THE TWO ABSENCES ARE WORTH SOMETHING. 'report.rules' and
+        -- 'report.killerPrompt' below both pin `corr.severity == nil` on a
+        -- corroboration a PERSON made, and an absence assertion that would pass
+        -- just as happily against a payload carrying nothing at all proves
+        -- nothing. This is the case that says the field is real, that this
+        -- system sets it, and therefore that the two nils are a decision.
+        --
+        -- READ FROM THE EVENT RATHER THAN RESTATED, so a corroboration cannot
+        -- grade a finding differently from the case it attaches to. All three
+        -- anticheat corroborations in server/incident.lua carry one: this path
+        -- forwards `ev.severity`, and the strip and the vehicle handlers both
+        -- read BR.ShotTier.
+        --
+        -- WHAT THE CONSOLE DOES WITH IT. Ringmaster stores this row's sentence
+        -- ending in a `worst: <severity>` clause, and src/lib/corroborationText
+        -- folds a RUN of such rows into one line reading "happened 20 times in
+        -- 10 minutes". Its `foldable` requires that clause, so the anticheat's
+        -- rows are the ones eligible to be folded and a human's are not. That is
+        -- the whole arrangement, and it holds only while this field is present
+        -- here and absent on both of the human paths.
+        ok(corr.severity ~= nil and corr.severity == second.severity,
+            'and the severity the refusal was graded at, which is the one field '
+            .. 'a human corroboration must never carry',
+            tostring(corr.severity) .. ' vs ' .. tostring(second and second.severity))
     end
 
     -- A REFUSAL WITH NO LICENSE FILES NOTHING. Server ids recycle within the
@@ -10639,6 +12373,66 @@ do
             tostring(corr.count))
         ok(corr.reason == 'exploiting',
             'carrying the category the second reporter picked', tostring(corr.reason))
+
+        -- AND WHO SAID IT. Owner: "when I personally corroborate something it
+        -- doesn't credit me." A corroboration a person made carries that person,
+        -- because the console has no other way to tell one from the anticheat --
+        -- it reads an absent reporter as the system, exactly as the case header
+        -- reads an absent filer.
+        --
+        -- THE LICENSE IS THE QUALIFIED ONE, the same shape `reporterLicense` on
+        -- the filing carries and the same shape the console links a profile by.
+        -- A bare license or a trimmed one would render a dead link rather than
+        -- fail anything here, so it is pinned.
+        ok(corr.reporterLicense
+               == BR.Identity.qualified('license', BR.Identity.licenseOf(3)),
+            'and the license of the player who filed it, qualified',
+            tostring(corr.reporterLicense))
+        ok(corr.reporterName == 'Cass',
+            'and their name, so the console can credit them',
+            tostring(corr.reporterName))
+        -- NOT THE ACCUSED'S. `license` and `name` on this payload are Bex; a
+        -- copy-paste of the wrong pair reads perfectly and credits the cheater.
+        ok(corr.reporterLicense ~= corr.license,
+            'which is not the license of the player being corroborated about',
+            tostring(corr.reporterLicense))
+
+        -- AND NO SEVERITY, WHICH IS AN ABSENCE THE CONSOLE DEPENDS ON.
+        --
+        -- server/players.lua gives one reason for omitting it and it is about
+        -- honesty: a human's category is not a measurement, and grading it here
+        -- would invent confidence that does not exist. That reason is why the
+        -- field is missing. It is not why the absence is PINNED, and the second
+        -- reason is the one that costs a player something.
+        --
+        -- RINGMASTER FOLDS A RUN OF CORROBORATIONS INTO ONE ROW, on the owner's
+        -- instruction: twenty identical anticheat rows thirty seconds apart
+        -- become one line reading "happened 20 times in 10 minutes". Right for a
+        -- machine repeating itself, and evidence destruction for people -- two
+        -- players naming the same offender would become one line and one of them
+        -- would be gone from the page. `foldable` in its
+        -- src/lib/corroborationText.ts holds TWO locks against that, and this
+        -- field is the second: `gradesSeverity` folds a row only when its stored
+        -- sentence ends in a `worst: <severity>` clause, and that clause exists
+        -- only when the corroboration carried a severity.
+        --
+        -- IT IS THE ONLY LOCK THAT REACHES THE ROWS ALREADY IN DYNAMODB. The
+        -- other one is `reporterLicense`, three assertions above. Every row
+        -- stored before that field existed arrived at the console as
+        -- `byLicense: null, byName: 'System'` -- a person's byte for byte the
+        -- same as the anticheat's -- the owner does not hand-edit DynamoDB, and
+        -- no deploy reaches backwards to credit them. A severity added to this
+        -- literal would make every one of those rows foldable at once.
+        --
+        -- SO THIS ASSERTION IS THE WHOLE OF THE PROTECTION ON THIS SIDE. Nothing
+        -- in either repository stops somebody adding `severity` here, and adding
+        -- it breaks nothing that anybody would notice for months. The positive
+        -- half is in 'incident.wiring' above, where an anticheat corroboration
+        -- is asserted to carry one.
+        ok(corr.severity == nil,
+            'and no severity, because a graded row is one the console may fold '
+            .. 'a person out of',
+            tostring(corr.severity))
     end
 
     -- AND THE SECOND REPORTER LEARNS NOTHING FROM IT. "Your report was added to
@@ -11173,6 +12967,48 @@ do
         ok(corr.reason == BR.Config.defaultReportCategory(),
             'under the category the prompt actually asked about',
             tostring(corr.reason))
+
+        -- AND WHO PRESSED THE KEY, which this path needs more than the panel
+        -- does: `reason` here is one constant for every press, so two players
+        -- answering the prompt about the same offender send rows that differ in
+        -- nothing else. Without these the console cannot tell them apart from
+        -- each other, and folding them together is the evidence destruction
+        -- server/incident.lua refuses to do.
+        ok(corr.reporterLicense == vLic,
+            'and the license of the player who pressed it, qualified',
+            tostring(corr.reporterLicense))
+        ok(corr.reporterName == 'Vic',
+            'and their name, so the console can credit them',
+            tostring(corr.reporterName))
+        ok(corr.reporterLicense ~= corr.license,
+            'which is not the killer they are corroborating about',
+            tostring(corr.reporterLicense))
+
+        -- AND NO SEVERITY, WHICH MATTERS MORE HERE THAN ANYWHERE ELSE.
+        --
+        -- `reason` on this path is one constant for every press, so two players
+        -- answering the prompt about the same offender store two sentences that
+        -- are identical character for character -- and that sentence, with its
+        -- count clause stripped, is exactly the fingerprint Ringmaster's fold
+        -- groups a run by. The panel path at least varies by category. This one
+        -- varies by nothing at all.
+        --
+        -- WHAT KEEPS THOSE TWO ROWS APART IS TWO TESTS AND NOTHING ELSE.
+        -- `foldable` in the console's src/lib/corroborationText.ts requires an
+        -- absent author AND a `worst: <severity>` clause on the sentence. The
+        -- author test covers rows written since `reporterLicense` landed on this
+        -- literal; `gradesSeverity` covers every row already sitting in the
+        -- owner's DynamoDB, which he will not hand-edit and which no deploy
+        -- reaches backwards to credit. Put a severity on this payload and both
+        -- presses fold into one row, and one player's report is deleted from the
+        -- case rather than merely uncredited.
+        --
+        -- THE POSITIVE HALF IS IN 'incident.wiring': the anticheat's
+        -- corroboration does carry a severity, which is what makes this nil a
+        -- decision rather than an empty table.
+        ok(corr.severity == nil,
+            'and no severity, so two presses can never be folded into one row',
+            tostring(corr.severity))
     end
 
     -- PAID, like any other corroborator (#168). The id is in hand, so the claim
@@ -12714,6 +14550,190 @@ do
     ok(BR.Roster.get(1).state == BR.PlayerState.DBNO,
        'a lone developer in a one-squad dev match can still be knocked, so the '
            .. 'kit and the ambulance stay testable', BR.Roster.get(1).state)
+end
+
+describe('dbno.explosion')
+do
+    -- ═══ A BLAST HAS NO BLEED CLOCK ═══
+    --
+    --   "Can we make it so if you die in an explosion there is no bleed out
+    --    timer? You're just immediately dead."          -- owner, 2026-09-12
+    --
+    -- EVERY HASH HERE IS READ OUT OF THE CONFIG, never written down. What is
+    -- under test is the RULE -- "whatever the tables flag as a detonation" --
+    -- and a block that spelled 0xB1CA77B1 would go on passing after somebody
+    -- renumbered the arsenal, and would say nothing at all about the launcher
+    -- added next week.
+    local function hashOf(id)
+        local w = BR.Config.WeaponById[id]
+        return w and w.hash
+    end
+
+    --- The world's own damage, by the id the environmental table gives it.
+    local function envHash(id)
+        for _, e in ipairs(BR.Config.Environmental) do
+            if e.id == id then return e.hash end
+        end
+    end
+
+    --- Knock player 1 out of health in a squad match that WOULD otherwise down
+    --- them: a standing mate, the mode's dbno flag set, the lone-dev hold on.
+    --- Every 'dies' assertion below is therefore a statement about the cause and
+    --- nothing else, and every one of them was DBNO before 2026-09-12.
+    local function hitBy(causeHash, cause)
+        squadMatch(2)
+        BR.Combat.defeat(1, cause or 'explosion', 2, causeHash)
+        return BR.Roster.get(1).state
+    end
+
+    -- ═══ THE THREE LAUNCHERS, AND THE REASON THIS IS A LOOP ═══
+    --
+    -- They live in BR.Config.AirdropWeapons, which is a DIFFERENT array from
+    -- BR.Config.Weapons -- registered into WeaponByHash by hand at the foot of
+    -- config/weapons.lua, and into no rarity bucket at all. A classifier that
+    -- walked BR.Config.Weapons would miss every rocket in the game and knock
+    -- players down to them, which is exactly the playtest he would run first.
+    for _, id in ipairs({ 'rpg', 'grenadelauncher', 'railgun' }) do
+        ok(hashOf(id) ~= nil, id .. ' is resolvable as a weapon at all')
+        local got = hitBy(hashOf(id))
+        ok(got == BR.PlayerState.OUT,
+           id .. ' kills a squad player outright rather than knocking them down',
+           got)
+    end
+
+    -- ═══ THROWABLES THAT DETONATE ═══
+    for _, id in ipairs({ 'grenade', 'sticky' }) do
+        local got = hitBy(hashOf(id))
+        ok(got == BR.PlayerState.OUT,
+           id .. ' is a blast too -- thrown or launched makes no difference',
+           got)
+    end
+
+    -- ═══ THE WORLD'S OWN BLAST: A CAR, A GAS PUMP, A BARREL ═══
+    --
+    -- The engine bills all of those as WEAPON_EXPLOSION, which is a row in the
+    -- environmental table rather than a weapon anybody was issued.
+    ok(hitBy(envHash('explosion')) == BR.PlayerState.OUT,
+       'an ambient explosion kills outright as well')
+
+    -- ═══ SIGNED HASHES, WHICH IS HOW THE ENGINE ACTUALLY DELIVERS THEM ═══
+    --
+    -- GET_PED_CAUSE_OF_DEATH answers signed, so a top-bit-set weapon arrives
+    -- negative. BR.NormHash exists for precisely this and the RPG is one of the
+    -- weapons it exists for; without it this reads as an unknown hash and the
+    -- rocket goes back to knocking people down.
+    ok(hitBy(hashOf('rpg') - 0x100000000) == BR.PlayerState.OUT,
+       'and the same rocket arriving as a SIGNED hash still kills outright',
+       hitBy(hashOf('rpg') - 0x100000000))
+
+    -- ═══ FIRE IS NOT A BLAST. HE SAID EXPLOSION ═══
+    --
+    -- The molotov carries `explosive = true`, and that flag is a VALIDATOR
+    -- decision -- no magazine, no cadence, reach is throw plus blast -- not a
+    -- claim that the bottle detonates. A rule derived from the flag alone would
+    -- take fire down with it, and the owner has already killed himself with a
+    -- molotov once (2026-09-09), so this is the case he will check.
+    ok(hitBy(hashOf('molotov'), 'burned') == BR.PlayerState.DBNO,
+       'a molotov still knocks a squad player down -- fire is not an explosion',
+       hitBy(hashOf('molotov'), 'burned'))
+    ok(hitBy(envHash('fire'), 'burned') == BR.PlayerState.DBNO,
+       'and so does burning to death in the flames it leaves',
+       hitBy(envHash('fire'), 'burned'))
+
+    -- Smoke is the other `explosive` that is not a bang. It carries no damage
+    -- field so it can never run anybody out of health in the first place; this
+    -- pins the classification rather than a reachable path.
+    ok(hitBy(hashOf('smoke')) == BR.PlayerState.DBNO,
+       'a smoke grenade is not a detonation either')
+
+    -- ═══ ORDINARY DAMAGE IS COMPLETELY UNTOUCHED ═══
+    ok(hitBy(hashOf('pistol'), 'gunshot') == BR.PlayerState.DBNO,
+       'a bullet still knocks a squad player down',
+       hitBy(hashOf('pistol'), 'gunshot'))
+    ok(hitBy(envHash('fall'), 'fall') == BR.PlayerState.DBNO,
+       'and so does a fall')
+
+    -- ═══ A CAUSE NOBODY CAN NAME IS NOT AN EXPLOSION ═══
+    --
+    -- Three shapes of "I do not know": the bleed clock and `brdown` pass
+    -- nothing, the server's own health sampler has no hash to pass, and a
+    -- caller that hands over a WORD rather than a hash must not be read as one
+    -- either. Silence has to mean today's behaviour, or the rule would suppress
+    -- legitimate knocks everywhere it could not see.
+    ok(hitBy(nil, 'gunshot') == BR.PlayerState.DBNO,
+       'no cause at all still knocks')
+    ok(hitBy(0xDEADBEEF) == BR.PlayerState.DBNO,
+       'a hash in no table still knocks')
+    ok(hitBy('explosion') == BR.PlayerState.DBNO,
+       'and the cause WORD is not a hash -- it is never read as one')
+
+    -- ═══ THE CPR KIT IS NOT A SHIELD AGAINST A ROCKET (#191) ═══
+    --
+    -- Three solos so the last-knock rule is not what is being measured; the kit
+    -- is the only thing that can down a solo at all, so without one this would
+    -- prove the mode default instead.
+    local function kittedSolos()
+        reset()
+        BR.Server.devMode = true
+        for i = 1, 3 do queueUp(i, 'P' .. i, BR.Mode.SOLO.key) end
+        tick(300)
+        for i = 1, 3 do BR.Roster.setState(i, BR.PlayerState.ALIVE) end
+        local m = BR.Server.matchOf(1)
+        if m then m.state, m.startSquads = BR.MatchState.PLAYING, 3 end
+        BR.Inv.give(1, { item = 'cprkit', kind = BR.ItemKind.CONSUMABLE,
+                         rarity = BR.Rarity.LEGENDARY, count = 1 })
+    end
+
+    kittedSolos()
+    BR.Combat.defeat(1, 'gunshot', 2, hashOf('pistol'))
+    ok(BR.Roster.get(1).state == BR.PlayerState.DBNO,
+       'a solo holding a CPR kit still goes down to a bullet -- the kit path is '
+           .. 'untouched', BR.Roster.get(1).state)
+
+    kittedSolos()
+    BR.Combat.defeat(1, 'explosion', 2, hashOf('rpg'))
+    ok(BR.Roster.get(1).state == BR.PlayerState.OUT,
+       'but a solo holding a CPR kit dies outright to a rocket -- the blast '
+           .. 'outranks the inventory', BR.Roster.get(1).state)
+
+    -- ═══ ALREADY DOWN, THEN FINISHED BY A BLAST ═══
+    --
+    -- Unchanged, and asserted because the new rule sits ABOVE the ALIVE guard's
+    -- neighbours and could have been written above the guard itself. canBeDowned
+    -- still requires ALIVE, so this was an elimination before and is one now.
+    squadMatch(2)
+    BR.Combat.defeat(1, 'gunshot', 2, hashOf('pistol'))
+    ok(BR.Roster.get(1).state == BR.PlayerState.DBNO, 'P1 is down first')
+    BR.Combat.defeat(1, 'explosion', 2, hashOf('rpg'))
+    ok(BR.Roster.get(1).state == BR.PlayerState.OUT,
+       'and a blast on a downed player finishes them, as any defeat does',
+       BR.Roster.get(1).state)
+
+    -- ═══ THE VALIDATED DAMAGE PATH, WHICH DECIDES BEFORE IT WRITES ═══
+    --
+    -- BR.Damage.applyHit asks canBeDowned BEFORE any health is written, because
+    -- a knock has to be clamped to the downed floor so the victim's own ped
+    -- survives it. Both readings have to agree: if the clamp spared the ped for
+    -- a knock the defeat() below then refused to make, the corpse and the ledger
+    -- would disagree about the same shot.
+    squadMatch(2)
+    BR.Roster.get(1).hp, BR.Roster.get(1).armour = 100.0, 0.0
+    BR.Damage.applyHit(2, 1, 500.0, { weapon = hashOf('pistol') })
+    ok(BR.Roster.get(1).state == BR.PlayerState.DBNO,
+       'a lethal bullet through applyHit knocks', BR.Roster.get(1).state)
+    ok(BR.Roster.get(1).hp == (BR.Config.Match.dbnoHp or 5),
+       'and is clamped to the downed floor so the ped lives',
+       tostring(BR.Roster.get(1).hp))
+
+    squadMatch(2)
+    BR.Roster.get(1).hp, BR.Roster.get(1).armour = 100.0, 0.0
+    BR.Damage.applyHit(2, 1, 500.0, { weapon = hashOf('rpg'), explosive = true })
+    ok(BR.Roster.get(1).state == BR.PlayerState.OUT,
+       'a lethal rocket through applyHit kills outright',
+       BR.Roster.get(1).state)
+    ok(BR.Roster.get(1).hp == 0.0,
+       'and takes the health all the way down -- nothing was clamped for a '
+           .. 'knock that is not happening', tostring(BR.Roster.get(1).hp))
 end
 
 describe('dbno.deadPed')
@@ -14544,6 +16564,139 @@ do
         'while still being told to apply something')
 end
 
+describe('dbno.burn')
+do
+    -- ═══ A DOWNED BODY IN THE FLAMES BLEEDS FASTER (owner, 2026-09-12) ═══
+    --
+    --   "There's a bug where when dying to a fire, like a molotov, the ped
+    --    doesn't get a chance to crawl because they're caught in the flames and
+    --    repeatedly respawned, then immediately die... My preference would be
+    --    they can crawl until they die, and their body being on fire should
+    --    accelerate the bleed out."
+    --
+    -- THE CYCLING IS THE CLIENT'S HALF (client/dbno.lua now refuses fire damage
+    -- on a downed ped, which is where the resurrection loop lived). This is the
+    -- half that replaces it: the punishment for being caught in a molotov moved
+    -- off the ped and onto the clock, which is where a downed player's health has
+    -- lived since 2026-08-09.
+    --
+    -- DRIVEN THROUGH THE REAL LEDGER, not by calling BR.Combat.burn directly. The
+    -- thing that can be wrong is WHICH BODIES the fire tick decides are burning --
+    -- server/damage.lua walked past every downed player for as long as the ledger
+    -- has existed, because its only guard is a health delta and a downed player's
+    -- hp is pinned at dbnoHp -- so the test has to come in through
+    -- `explosionEvent` like a real molotov.
+    local RATE = BR.Config.Match.dbnoBurnRate
+
+    squadMatch(3)
+    BR.Damage.noteThrow(3, 'molotov')
+    fire('explosionEvent', 3, 3,
+        { explosionType = 3, posX = 0.0, posY = 0.0, posZ = 30.0 })
+
+    BR.Combat.defeat(1, 'burned', 2)
+    ok(BR.Roster.get(1).state == BR.PlayerState.DBNO,
+        'fire still knocks a squad player down rather than killing them (feddd23)')
+
+    -- THE ARRIVAL IS NOT CHARGED. The first pass only learns that they are in it;
+    -- charging it would bill a body for time it spent somewhere else.
+    local before = BR.Roster.get(1).dbnoUntil
+    tick(600)
+    ok(BR.Roster.get(1).dbnoUntil == before,
+        'the first pass over a burning body takes nothing off the clock',
+        before - BR.Roster.get(1).dbnoUntil)
+
+    -- ...AND THEN IT RUNS AT THE CONFIGURED RATE. The EXTRA only: the clock is
+    -- already counting the 600ms that just passed on its own, so a rate of 3.0
+    -- takes 1200 more off it.
+    before = BR.Roster.get(1).dbnoUntil
+    tick(600)
+    local took = before - BR.Roster.get(1).dbnoUntil
+    ok(took == math.floor(600 * (RATE - 1.0)),
+        ('600ms in the flames costs %.0fms of clock at a rate of %.2f')
+            :format(600 * (RATE - 1.0), RATE),
+        took)
+
+    -- WHOEVER LIT IT OWNS THE FINISH, on the same terms a shooter gets: a bleed
+    -- outruns the assist window, so a body left to burn would be credited to
+    -- nobody at all.
+    ok(BR.Roster.get(1).downedBy == 3,
+        'and the clock now belongs to whoever threw the bottle',
+        tostring(BR.Roster.get(1).downedBy))
+    ok(BR.Roster.get(1).lastHitWeapon == 'molotov',
+        'named as the molotov, which is the column the kill feed reads',
+        tostring(BR.Roster.get(1).lastHitWeapon))
+
+    -- ═══ AND CRAWLING OUT OF IT IS THE ANSWER, WHICH IS THE WHOLE POINT ═══
+    --
+    -- The owner asked for the crawl to work. A crawl that cannot escape the
+    -- acceleration would be the same dead end wearing a countdown.
+    setPos(1, 40.0, 0.0, 30.0)
+    BR.Roster.get(1).pos = { x = 40.0, y = 0.0, z = 30.0 }
+    tick(600)   -- the pass that notices they have gone
+    before = BR.Roster.get(1).dbnoUntil
+    tick(600)
+    ok(BR.Roster.get(1).dbnoUntil == before,
+        'a body that crawled clear of the flames stops losing time to them',
+        before - BR.Roster.get(1).dbnoUntil)
+
+    -- A GAP IS AN ARRIVAL, NOT A STRETCH. `burnAt` survives a ledger that empties
+    -- (the tick returns early on no fires) and a player who left and came back, so
+    -- the first pass after a long absence must charge nothing rather than bill the
+    -- absence.
+    setPos(1, 0.0, 0.0, 30.0)
+    BR.Roster.get(1).pos = { x = 0.0, y = 0.0, z = 30.0 }
+    before = BR.Roster.get(1).dbnoUntil
+    tick(600)
+    ok(BR.Roster.get(1).dbnoUntil == before,
+        'and coming back to the fire is a fresh arrival rather than a bill for '
+        .. 'the time away',
+        before - BR.Roster.get(1).dbnoUntil)
+
+    -- ═══ THE FIRE STILL KILLS, THROUGH THE CLOCK RATHER THAN THE PED ═══
+    --
+    -- Nothing is lost by taking fire damage off a downed ped: the ending arrives
+    -- on the same tick that owns every other bleed-out, and it is called 'bledout'
+    -- because that is what it is. No second elimination path, no new cause word.
+    local drained = BR.Roster.get(1)
+    drained.dbnoUntil = fakeTime + 1000
+    sent = {}
+    tick(600)
+    tick(600)
+    ok(BR.Roster.get(1).state == BR.PlayerState.OUT,
+        'a body that never gets out of the fire is finished by its own clock',
+        tostring(BR.Roster.get(1).state))
+    ok(BR.Roster.get(3).kills == 1,
+        'and the kill goes to whoever lit it',
+        BR.Roster.get(3).kills)
+
+    -- ═══ ONE CONFIG LINE TURNS IT OFF ═══
+    squadMatch(3)
+    BR.Damage.noteThrow(3, 'molotov')
+    fire('explosionEvent', 3, 3,
+        { explosionType = 3, posX = 0.0, posY = 0.0, posZ = 30.0 })
+    BR.Combat.defeat(1, 'burned', 2)
+
+    BR.Config.Match.dbnoBurnRate = 1.0
+    tick(600)
+    before = BR.Roster.get(1).dbnoUntil
+    tick(600)
+    ok(BR.Roster.get(1).dbnoUntil == before,
+        'at a rate of 1.0 the fire is scenery again and the clock is untouched',
+        before - BR.Roster.get(1).dbnoUntil)
+    BR.Config.Match.dbnoBurnRate = RATE
+
+    -- AND IT IS A DOWNED-ONLY RULE. A player on their feet in a molotov loses
+    -- HEALTH, which the engine applies and the ledger only attributes; handing
+    -- them a clock as well would be inventing a second bleed for the living.
+    ok(BR.Roster.get(2).state == BR.PlayerState.ALIVE
+       and BR.Roster.get(2).dbnoUntil == nil,
+        'a standing player in the same fire has no clock to accelerate',
+        tostring(BR.Roster.get(2).dbnoUntil))
+    BR.Combat.burn(2, 5000, 3, 'molotov')
+    ok(BR.Roster.get(2).dbnoUntil == nil,
+        'and burn() refuses them outright rather than opening one')
+end
+
 describe('dbno.bleedout')
 do
     -- THE REASON downedBy EXISTS AT ALL.
@@ -14798,6 +16951,307 @@ do
     fire(BR.Net.REVIVE_START, 9, { target = 1 })
     ok(BR.Roster.get(1).reviverSrc == nil,
         'an enemy standing over you is not a medic')
+end
+
+-- ---------------------------------------------------------------------------
+describe('dbno.reviveOut')
+do
+    -- ═══ /brrevive ON A PLAYER WHO IS ALREADY OUT (owner, 2026-09-12) ═══
+    --
+    -- "Can you please also fix brrevive to revive folks in dead state".
+    --
+    -- FINISHING A KNOCK AND UN-ELIMINATING SOMEBODY ARE DIFFERENT OPERATIONS,
+    -- and everything asserted below is something eliminate() wrote that a DBNO
+    -- revive has never had to undo: a placement, a death stamp, a spilled
+    -- inventory, a minted revive key, a storm ledger, a spectate camera, and --
+    -- when it was the deciding death -- a sealed round.
+    --
+    -- THE TWO FAILURES WORTH NAMING, because they are the ones that corrupt a
+    -- match rather than merely looking wrong: a placement left on a revived
+    -- player is handed out a SECOND time by the next elimination, and a revive
+    -- into a decided match puts a squad back on a field whose winner has already
+    -- been announced and whose camera has already been closed for everybody.
+
+    --- A live solos match of `n`, every player their own squad.
+    ---
+    --- THROUGH THE REAL MACHINE rather than fakeMatch, because the death box
+    --- only scatters into a match that has a loot table -- and "their kit is on
+    --- the ground and is NOT handed back" is the assertion a hand-built instance
+    --- cannot make. Solos so that BR.Server.squadsAlive is the head count and a
+    --- placement is a number that moves when somebody is put back.
+    local function outMatch(n)
+        reset()
+        BR.Server.devMode = true
+        for s = 1, n do
+            join(s, 'P' .. s)
+            fire(BR.Net.QUEUE_JOIN, s, { mode = BR.Mode.SOLO.key })
+        end
+        fakeTime = fakeTime + 300
+        BR.Sched.step(fakeTime)
+        forceState(BR.MatchState.PLAYING)
+        local m = theMatch()
+        for s = 1, n do
+            BR.Roster.setState(s, BR.PlayerState.ALIVE)
+            BR.Roster.get(s).pos = { x = 400.0 + s, y = 400.0, z = 30.0 }
+        end
+        sent = {}
+        return m
+    end
+
+    --- The last SPECTATE_SET this player was sent, or nil.
+    local function lastSpectate(src)
+        local found = nil
+        for _, s in ipairs(sent) do
+            if s.event == BR.Net.SPECTATE_SET and s.target == src then
+                found = s.args[1]
+            end
+        end
+        return found
+    end
+
+    --- How many slots this player is carrying something in.
+    local function carrying(src)
+        local inv, n = BR.Inv.of(src), 0
+        for _, s in ipairs((inv or {}).slots or {}) do
+            if s then n = n + 1 end
+        end
+        return n
+    end
+
+    local m = outMatch(4)
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON, rarity = 1,
+                     count = 1, clip = 12 })
+    local lootBefore  = m.loot.nextId
+    local aliveBefore = BR.Server.aliveCount(m)
+    local squadsBefore = BR.Server.squadsAlive(m)
+
+    BR.Roster.get(1).stormHp, BR.Roster.get(1).lastStormAt = 0.0, fakeTime
+    BR.Combat.eliminate(1, 'storm', 2)
+    ok(BR.Roster.get(1).state == BR.PlayerState.OUT, 'p1 is eliminated')
+    ok(BR.Roster.get(1).placement == 4, 'and is given 4th of four',
+        tostring(BR.Roster.get(1).placement))
+    ok(m.loot.nextId > lootBefore, 'their kit is scattered on the ground',
+        ('nextId %d -> %d'):format(lootBefore, m.loot.nextId))
+    ok(BR.Server.aliveCount(m) == aliveBefore - 1, 'the alive count dropped')
+    ok(BR.Server.squadsAlive(m) == squadsBefore - 1,
+        'and so did the standing-squad count -- OUT is not isInMatch')
+
+    -- A CAMERA IS OPEN ON THEM, which is where an eliminated player actually is
+    -- when somebody types this. Nothing in BR.Combat.revive would close it.
+    fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 0 })
+    ok((lastSpectate(1) or {}).targetSrc ~= nil,
+        'and they are watching somebody', tostring((lastSpectate(1) or {}).targetSrc))
+
+    sent = {}
+    ok(runCommand('brrevive', '1'), 'brrevive is registered')
+
+    local e1 = BR.Roster.get(1)
+    ok(e1.state == BR.PlayerState.ALIVE,
+        'an OUT player is put back on their feet', e1.state)
+    ok(BR.Server.aliveCount(m) == aliveBefore,
+        'the alive count is whole again', BR.Server.aliveCount(m))
+    ok(BR.Server.squadsAlive(m) == squadsBefore,
+        'and the standing-squad count agrees with it -- the two cannot disagree '
+            .. 'about whether the match can still be won',
+        BR.Server.squadsAlive(m))
+
+    -- ═══ THE FIELDS A RESULTS ROW IS MADE OF ═══
+    --
+    -- Cleared for #144's reason rather than for tidiness: a placement and a
+    -- `diedAt` reach DynamoDB as an atomic ADD with no compensating write, so a
+    -- death that is being taken back must leave neither behind.
+    ok(e1.placement == nil, 'they hold no placement', tostring(e1.placement))
+    ok(e1.diedAt == nil, 'and no death stamp', tostring(e1.diedAt))
+
+    -- ...AND THE CLIENTS ARE TOLD THE PLACEMENT IS GONE. A nil cannot travel in
+    -- a delta (see roster.clearFields), so a server-side assignment alone would
+    -- leave every scoreboard in the match still drawing 4th against a player who
+    -- is up and shooting.
+    BR.Broadcast.flushNow()
+    local cleared = {}
+    for _, s in ipairs(eventsOf(BR.Net.ROSTER_DELTA)) do
+        for _, d in ipairs(s.args[1].deltas or {}) do
+            if d.src == 1 then
+                for _, k in ipairs(d.clear or {}) do cleared[k] = true end
+            end
+        end
+    end
+    ok(cleared.placement,
+        'and the wire carries a named clear for it, not a vanished key')
+
+    -- ═══ THE LEDGERS THAT WOULD KILL THEM AGAIN ═══
+    ok(e1.engineHp == nil,
+        'the stale corpse sample is dropped, or the server-observed death check '
+            .. 'eliminates them again a second into their new life')
+    ok(e1.stormHp == nil and e1.lastStormAt == nil,
+        'and the storm ledger with it -- storm.lua only ever clamps DOWN, so a '
+            .. 'player the wall killed would die to the next tick regardless of '
+            .. 'the health they were just handed',
+        tostring(e1.stormHp))
+    ok(e1.killedByLicense == nil,
+        'and the camera\'s memory of who killed them, which a LATER death with '
+            .. 'no killer would otherwise inherit')
+
+    -- ═══ THE PED, THE HEALTH AND THE CAMERA ═══
+    local gotRevived, sync = false, nil
+    for _, s in ipairs(sent) do
+        if s.event == BR.Net.REVIVED and s.target == 1 then gotRevived = true end
+        if s.event == BR.Net.HEALTH_SYNC and s.target == 1 then sync = s.args[1] end
+    end
+    ok(gotRevived,
+        'the ped is resurrected where it fell, through the one event that means '
+            .. 'exactly that (#144 uses it too)')
+    ok(sync and sync.hp == 100,
+        'on full health -- the number both existing OUT->ALIVE paths hand back, '
+            .. 'not the 30 an in-person pick-up does', tostring(sync and sync.hp))
+    ok((lastSpectate(1) or {}).stop == true,
+        'and the camera they were watching from is closed rather than left for '
+            .. 'the 250ms resolve pass to notice')
+
+    -- ═══ THEIR KIT STAYS ON THE FLOOR ═══
+    ok(carrying(1) == 0,
+        'they come back empty-handed -- the death box already scattered what '
+            .. 'they had and another player may already have walked over it',
+        carrying(1))
+
+    -- ═══ AND THE NEXT ELIMINATION DOES NOT HAND OUT A DUPLICATE ═══
+    BR.Combat.eliminate(2, 'admin', 3)
+    ok(BR.Roster.get(2).placement == 4,
+        'the next elimination is 4th again, because four were standing',
+        tostring(BR.Roster.get(2).placement))
+    local holders = 0
+    BR.Roster.each(nil, function(_, e)
+        if e.placement == 4 then holders = holders + 1 end
+    end)
+    ok(holders == 1, 'and exactly one player holds 4th', holders)
+
+    -- ═══ A DECIDED MATCH IS REFUSED ═══
+    --
+    -- `spectateSealed` is the codebase's own latch for "that was the death that
+    -- ended it", set synchronously inside the deciding elimination -- so it is
+    -- asked here rather than a second copy of winConditionMet's carve-out, which
+    -- would drift and would refuse the lone-developer match this command exists
+    -- for.
+    local m2 = outMatch(2)
+    BR.Combat.eliminate(1, 'admin', 2)
+    ok(m2.spectateSealed == true, 'the second-to-last death sealed the round')
+    runCommand('brrevive', '1')
+    ok(BR.Roster.get(1).state == BR.PlayerState.OUT,
+        'and brrevive refuses to resurrect into it rather than un-deciding a '
+            .. 'match whose camera is already closed for everybody',
+        BR.Roster.get(1).state)
+
+    -- ═══ A FINISHED MATCH IS REFUSED ═══
+    local m3 = outMatch(3)
+    BR.Combat.eliminate(1, 'admin', 2)
+    m3.state = BR.MatchState.ENDED
+    runCommand('brrevive', '1')
+    ok(BR.Roster.get(1).state == BR.PlayerState.OUT,
+        'a match that is no longer being played refuses too',
+        BR.Roster.get(1).state)
+
+    -- ═══ AND SO DOES A FIELD WITH NOBODY LEFT STANDING ═══
+    --
+    -- The one way past the seal: a dev match that STARTED with one squad never
+    -- latches it (the edge needs two squads before the death) and never
+    -- auto-ends while that squad stands. Once BOTH of them are down the count is
+    -- zero, winConditionMet is true and the tick is about to tear the instance
+    -- down -- so a revive here is a player put back into a match that ends
+    -- underneath them.
+    squadMatch(2)
+    BR.Combat.eliminate(1, 'admin', nil)
+    BR.Combat.eliminate(2, 'admin', nil)
+    local m4 = BR.Server.matches[BR.Roster.get(1).matchId]
+    ok(m4 and not m4.spectateSealed,
+        'a one-squad dev match never seals -- the edge needs two squads before '
+            .. 'the death')
+    ok(BR.Server.squadsAlive(m4) == 0, 'and nobody is standing in it')
+    runCommand('brrevive', '1')
+    ok(BR.Roster.get(1).state == BR.PlayerState.OUT,
+        'so brrevive refuses rather than reviving into a match the next tick '
+            .. 'ends', BR.Roster.get(1).state)
+
+    -- ═══ THE SQUAD'S REVIVE KEY IS VOIDED ═══
+    --
+    -- Left standing it is a purchase the squad can still make -- 500 Volts for a
+    -- key whose subject is already up -- and BR.ReviveKey.forSquad filters on the
+    -- record existing, so nil is the only representation of "gone" that cannot
+    -- be bought a second time.
+    local m5 = outMatch(4)
+    BR.Roster.get(1).squadId, BR.Roster.get(2).squadId = 'sq_k', 'sq_k'
+    BR.Combat.eliminate(1, 'admin', 3)
+    ok(BR.Roster.get(1).reviveKey ~= nil, 'the elimination minted a key')
+    runCommand('brrevive', '1')
+    ok(BR.Roster.get(1).state == BR.PlayerState.ALIVE, 'the revive lands')
+    ok(BR.Roster.get(1).reviveKey == nil,
+        'and the key is destroyed with it -- a squad may not buy a mate back '
+            .. 'who is already standing next to them')
+    ok(BR.ReviveKey.outstanding('sq_k', m5.id) == 0,
+        'so the squad has nothing outstanding',
+        BR.ReviveKey.outstanding('sq_k', m5.id))
+
+    -- ═══ #144's HELD DEATH GOES THROUGH ITS OWN DOOR ═══
+    --
+    -- A player who died before the match started is OUT with `revivePending`, is
+    -- owed a free revive by match.lua's transition into PLAYING, and is holding a
+    -- sticky notice that says so. BR.Combat.reviveHeld is the function that
+    -- withdraws all three; a second path that half-did it would leave the sweep
+    -- to fire at an already-living player.
+    local m6 = outMatch(3)
+    m6.state = BR.MatchState.BUS
+    BR.Combat.eliminate(1, 'fall', nil)
+    ok(BR.Roster.get(1).revivePending == true, 'the death is held, not banked')
+    runCommand('brrevive', '1')
+    ok(BR.Roster.get(1).state == BR.PlayerState.ALIVE,
+        'brrevive brings a held death back even though the match is not PLAYING',
+        BR.Roster.get(1).state)
+    ok(BR.Roster.get(1).revivePending == nil,
+        'and takes the hold with it, so onEnter(PLAYING) does not sweep a player '
+            .. 'who is already up')
+
+    -- ═══════════════════════════════════════════════════════════════════════
+    -- AND THE DBNO PATH IS UNTOUCHED
+    -- ═══════════════════════════════════════════════════════════════════════
+    --
+    -- A downed player never left the match, so none of the above applies to them
+    -- and BR.Combat.revive is still the whole of that path. The two assertions
+    -- that would catch it drifting are the HEALTH and the ped: a knock is
+    -- finished at dbnoReviveHp with no resurrection, because the ped was never
+    -- dead (client/natives.lua keeps it invincible while it crawls).
+    squadMatch(2)
+    BR.Combat.defeat(1, 'gunshot', 2)
+    ok(BR.Roster.get(1).state == BR.PlayerState.DBNO, 'p1 is down')
+    sent = {}
+    runCommand('brrevive', '1', '2')
+    ok(BR.Roster.get(1).state == BR.PlayerState.ALIVE, 'brrevive picks them up')
+
+    local dbnoSync, dbnoRevived = nil, false
+    for _, s in ipairs(sent) do
+        if s.event == BR.Net.HEALTH_SYNC and s.target == 1 then dbnoSync = s.args[1] end
+        if s.event == BR.Net.REVIVED and s.target == 1 then dbnoRevived = true end
+    end
+    ok(dbnoSync and dbnoSync.hp == BR.Config.Match.dbnoReviveHp,
+        'at the configured pick-up health, not the un-elimination\'s full bar',
+        tostring(dbnoSync and dbnoSync.hp))
+    ok(not dbnoRevived,
+        'and with no resurrection -- their ped was never a corpse')
+    ok(BR.Roster.get(2).revives == 1,
+        'the named reviver is still credited', tostring(BR.Roster.get(2).revives))
+    ok(BR.Roster.get(1).placement == nil and BR.Roster.get(1).dbnoUntil == nil,
+        'and the knock is undone the way it always was')
+
+    -- A player who is neither down nor out is left exactly where they are.
+    sent = {}
+    runCommand('brrevive', '2')
+    ok(BR.Roster.get(2).state == BR.PlayerState.ALIVE,
+        'a standing player is not "revived"')
+    local touched = false
+    for _, s in ipairs(sent) do
+        if (s.event == BR.Net.REVIVED or s.event == BR.Net.HEALTH_SYNC)
+           and s.target == 2 then touched = true end
+    end
+    ok(not touched, 'and nothing is sent to them at all')
 end
 
 describe('dbno.teardown')
@@ -15647,6 +18101,320 @@ do
     end
 end
 
+describe('loot.repair.bounds')
+do
+    -- ═══ #232, "OTHER OBSERVATIONS": THE HEIGHT NOBODY WAS CHECKING ═══
+    --
+    -- The audit's line was that repair "validates horizontal displacement but
+    -- accepts a client-provided height". The hole was wider than the missing
+    -- range check, and the first assertion here is the wider half: `tonumber`
+    -- accepts a NaN off the wire, EVERY COMPARISON AGAINST A NaN IS FALSE, and
+    -- the 30m bound is spelled `> FIX_RADIUS` -- so a NaN answered "no, not too
+    -- far" and walked through the one bound this whole mechanism rests on.
+    --
+    -- These are not three flavours of the same assertion. NaN defeats the
+    -- comparison, infinity defeats the arithmetic, and 1e9 defeats neither --
+    -- it is simply a legal float in an illegal place, and only the world-height
+    -- pair refuses it.
+    --
+    -- ═══ AND THE LAYOUT IS PINNED, BECAUSE THIS BLOCK READS TWO ENTRIES ═══
+    --
+    -- The live-position assertion at the bottom needs a SECOND weapon in a cell
+    -- this player has subscribed to, and takes whatever the match's own layout
+    -- happened to put there. That layout is seeded from `GetGameTimer() +
+    -- m.seq * 15485863` (BR.Loot.begin), so ANY block added above this one moves
+    -- both terms and the `else` branch below fires -- a failure that reads as a
+    -- repair-bounds bug and is nothing of the sort. Pinned through /brlootseed,
+    -- which exists for exactly this, and released immediately after so no later
+    -- block inherits a frozen world.
+    commands['brlootseed'](nil, { '20260912' }, '')
+    local m = lootMatch()
+    commands['brlootseed'](nil, { 'off' }, '')
+    local target
+    for id = 1, m.loot.nextId do
+        local e = m.loot.items[id]
+        if e and e.kind == BR.ItemKind.WEAPON and not e.repaired then
+            target = e break
+        end
+    end
+    local cx, cy = BR.LootCellOf(target.x, target.y)
+    standOn(1, target)
+    fire(BR.Net.LOOT_CELL, 1, { cx = cx, cy = cy })
+
+    local ox, oy, oz = target.x, target.y, target.z
+    local function unmoved(why)
+        local now = m.loot.items[target.id]
+        ok(now ~= nil
+            and math.abs(now.x - ox) < 0.01
+            and math.abs(now.y - oy) < 0.01
+            and math.abs((now.z or 0.0) - (oz or 0.0)) < 0.01
+            and not now.repaired,
+            why,
+            now and ('%.2f %.2f %.2f'):format(now.x, now.y, now.z or 0.0))
+    end
+
+    local NAN = 0.0 / 0.0
+    ok(NAN ~= NAN, 'the harness really did build a NaN')
+
+    fire(BR.Net.LOOT_FIX, 1, { id = target.id, x = NAN, y = oy, z = 44.0 })
+    unmoved('a NaN x is refused -- it used to satisfy the 30m bound, because '
+        .. 'every comparison against a NaN is false')
+
+    fire(BR.Net.LOOT_FIX, 1, { id = target.id, x = ox + 5.0, y = oy, z = NAN })
+    unmoved('and a NaN z is refused')
+
+    fire(BR.Net.LOOT_FIX, 1,
+        { id = target.id, x = ox + 5.0, y = oy, z = math.huge })
+    unmoved('an infinite height is refused')
+
+    fire(BR.Net.LOOT_FIX, 1,
+        { id = target.id, x = ox + 5.0, y = oy, z = 1e9 })
+    unmoved('and so is a finite height that is nowhere on the map')
+
+    fire(BR.Net.LOOT_FIX, 1,
+        { id = target.id, x = ox + 5.0, y = oy, z = -5000.0 })
+    unmoved('in both directions')
+
+    -- AND THE HONEST REPAIR STILL LANDS. Every refusal above is worthless if
+    -- the rule that produced them also refuses the thing the feature exists for
+    -- -- an item in the surf being moved onto the sand.
+    fire(BR.Net.LOOT_FIX, 1, { id = target.id, x = ox + 5.0, y = oy, z = 44.0 })
+    ok(math.abs(m.loot.items[target.id].z - 44.0) < 0.01,
+        'a real ground height inside the world is still accepted')
+
+    -- ═══ AND WHERE THEY ARE NOW, NOT WHERE THEY SUBSCRIBED FROM ═══
+    --
+    -- A subscription is a record of a decision that is only revisited on a cell
+    -- edge, so it survives being moved anywhere that does not cross one. The
+    -- player keeps the subscription here and is simply put somewhere else; the
+    -- repair has to be refused on the live position alone.
+    local subs = m.loot.subs[1] or {}
+    local other
+    for id = 1, m.loot.nextId do
+        local e = m.loot.items[id]
+        if e and e.kind == BR.ItemKind.WEAPON and subs[e.cell]
+           and not e.repaired and e.id ~= target.id then
+            other = e break
+        end
+    end
+    if other then
+        ok(subs[other.cell] and true or false,
+            'the subscription that says this cell is still on the books')
+        local px = other.x
+        BR.Roster.get(1).pos = { x = other.x + 4000.0, y = other.y, z = 30.0 }
+        fire(BR.Net.LOOT_FIX, 1,
+            { id = other.id, x = px + 5.0, y = other.y, z = 44.0 })
+        ok(math.abs(m.loot.items[other.id].x - px) < 0.01,
+            'a repair from four kilometres away is refused on the live '
+            .. 'position, whatever the subscription table still says')
+    else
+        ok(false, 'no second entry in the cell to test live proximity with')
+    end
+end
+
+describe('loot.npcdrop')
+do
+    -- ═══ #232 FINDING 2 (HIGH), WITH ITS EXPECTATION INVERTED ═══
+    --
+    -- The audit fired NPC_DROP from a player who had killed nothing, naming a
+    -- minigun and a 150-round belt, and the server put exactly that on the
+    -- ground -- after which LOOT_CLAIM moved it into the inventory and every
+    -- later possession check saw a weapon the server itself had issued.
+    --
+    -- Every assertion below is one of the audit's own steps with "and it
+    -- worked" replaced by "and it is refused". The reproduction is the test:
+    -- the whole point of writing it this way round is that the exploit cannot
+    -- come back silently, only loudly.
+    local m = lootMatch()
+    local cfg = BR.Config.Loot.npcDrop
+
+    -- READ, NOT SET. The first assertion is about the SHIPPED default, and a
+    -- test that assigned it first would be asserting its own setup.
+    ok(cfg.enabled ~= true,
+        'NPC drops ship disabled -- the server cannot authenticate an ambient '
+        .. 'ped death (#232 finding 2)', tostring(cfg.enabled))
+
+    local function madeBy(fn)
+        local before = m.loot.nextId
+        fn()
+        local out = {}
+        for id = before + 1, m.loot.nextId do
+            local e = m.loot.items[id]
+            if e then out[#out + 1] = e end
+        end
+        return out
+    end
+
+    BR.Loot.clearNpcDrops(1)
+    BR.Roster.get(1).pos = { x = 700.0, y = 700.0, z = 35.0 }
+
+    local made = madeBy(function()
+        fire(BR.Net.NPC_DROP, 1, { item = 'minigun', clip = 150,
+                                   x = 702.0, y = 700.0, z = 35.0 })
+    end)
+    ok(#made == 0, 'the audit\'s exact event makes nothing at all while the '
+        .. 'feature is off', ('%d entries'):format(#made))
+
+    -- ═══ AND NOW WITH IT SWITCHED ON, WHICH IS THE PART THAT MATTERS ═══
+    --
+    -- Off-by-default is a decision the owner can reverse in one word, so every
+    -- rule below has to hold in the world where he has reversed it. Testing
+    -- only the disabled path would be testing the config file.
+    local wasEnabled = cfg.enabled
+    cfg.enabled = true
+
+    -- 1. THE CLIENT CANNOT CHOOSE THE WEAPON.
+    local pool = {}
+    for _, id in ipairs(cfg.pool or {}) do pool[id] = true end
+    ok(next(pool) ~= nil, 'there is an authored NPC drop pool to check against')
+
+    local airdrop = {}
+    for _, w in ipairs(BR.Config.AirdropWeapons) do airdrop[w.id] = true end
+    ok(airdrop['minigun'], 'the minigun really is on the airdrop-only shelf')
+
+    BR.Loot.clearNpcDrops(1)
+    fakeTime = fakeTime + 5000
+    made = madeBy(function()
+        fire(BR.Net.NPC_DROP, 1, { item = 'minigun', clip = 150,
+                                   x = 702.0, y = 700.0, z = 35.0 })
+    end)
+    ok(#made == 1, 'an enabled drop makes exactly one entry',
+        ('%d entries'):format(#made))
+    if made[1] then
+        ok(made[1].item ~= 'minigun',
+            'and it is NOT the weapon the client named',
+            tostring(made[1].item))
+        ok(pool[made[1].item] == true,
+            'it comes from the authored pool the server owns',
+            tostring(made[1].item))
+        -- 2. THE CLIENT CANNOT CHOOSE THE MAGAZINE.
+        ok((made[1].clip or 0) == 0,
+            'and its magazine is empty, whatever the client asked for',
+            tostring(made[1].clip))
+        ok(made[1].rarity == BR.Rarity.COMMON,
+            'a pedestrian is not a legendary crate', tostring(made[1].rarity))
+    end
+
+    -- 3. THE AIRDROP SHELF IS UNREACHABLE FROM HERE, BY CONSTRUCTION.
+    --
+    -- Owner, 2026-08-21: the RPG, grenade launcher, railgun and minigun are
+    -- AIRDROP-ONLY. Naming each of them in turn, from four different corpses,
+    -- must never produce one -- and the mechanism is that npcPool resolves ids
+    -- against BR.Config.Weapons, which the airdrop shelf is deliberately not in.
+    BR.Loot.clearNpcDrops(1)
+    local laundered, total = 0, 0
+    for i, w in ipairs(BR.Config.AirdropWeapons) do
+        fakeTime = fakeTime + 5000
+        local got = madeBy(function()
+            fire(BR.Net.NPC_DROP, 1, { item = w.id, clip = w.clip or 1,
+                                       x = 700.0 + i * 9.0, y = 700.0, z = 35.0 })
+        end)
+        for _, e in ipairs(got) do
+            total = total + 1
+            if airdrop[e.item] then laundered = laundered + 1 end
+        end
+    end
+    ok(total > 0 and laundered == 0,
+        'naming an airdrop-only weapon never produces one',
+        ('%d of %d drops were airdrop weapons'):format(laundered, total))
+
+    -- 4. ONE CORPSE PAYS ONCE.
+    --
+    -- The audit's "repeat the process": stand still and re-send. The interval
+    -- is stepped past deliberately, so this is the corpse register refusing it
+    -- and not the rate limit.
+    BR.Loot.clearNpcDrops(1)
+    BR.Roster.get(1).pos = { x = 1500.0, y = 1500.0, z = 35.0 }
+    fakeTime = fakeTime + 5000
+    local first = madeBy(function()
+        fire(BR.Net.NPC_DROP, 1, { x = 1502.0, y = 1500.0, z = 35.0 })
+    end)
+    fakeTime = fakeTime + 5000
+    local again = madeBy(function()
+        fire(BR.Net.NPC_DROP, 1, { x = 1502.0, y = 1500.0, z = 35.0 })
+    end)
+    ok(#first == 1 and #again == 0,
+        'the same corpse pays once, however long you wait between reports',
+        ('%d then %d'):format(#first, #again))
+
+    fakeTime = fakeTime + 5000
+    local jittered = madeBy(function()
+        fire(BR.Net.NPC_DROP, 1, { x = 1503.0, y = 1501.0, z = 35.0 })
+    end)
+    ok(#jittered == 0,
+        'and nudging the floats a metre does not make it a second corpse',
+        ('%d entries'):format(#jittered))
+
+    fakeTime = fakeTime + 5000
+    local moved = madeBy(function()
+        fire(BR.Net.NPC_DROP, 1, { x = 1522.0, y = 1500.0, z = 35.0 })
+    end)
+    ok(#moved == 1, 'a corpse twenty metres away is a different corpse',
+        ('%d entries'):format(#moved))
+
+    -- 5. FINITE FLOATS AND A HEIGHT ON THE MAP.
+    --
+    -- The same NaN hole the repair path had, in the same shape: the range test
+    -- is `BR.Dist(...) > range`, which is FALSE for a NaN, so a corpse could be
+    -- nowhere at all and still be "in range".
+    BR.Loot.clearNpcDrops(1)
+    local NAN = 0.0 / 0.0
+    fakeTime = fakeTime + 5000
+    local nanDrop = madeBy(function()
+        fire(BR.Net.NPC_DROP, 1, { x = NAN, y = 1500.0, z = 35.0 })
+    end)
+    ok(#nanDrop == 0, 'a NaN corpse position is refused, not treated as in range',
+        ('%d entries'):format(#nanDrop))
+
+    fakeTime = fakeTime + 5000
+    local infDrop = madeBy(function()
+        fire(BR.Net.NPC_DROP, 1, { x = 1502.0, y = 1500.0, z = math.huge })
+    end)
+    ok(#infDrop == 0, 'and so is an infinite height',
+        ('%d entries'):format(#infDrop))
+
+    fakeTime = fakeTime + 5000
+    local skyDrop = madeBy(function()
+        fire(BR.Net.NPC_DROP, 1, { x = 1502.0, y = 1500.0, z = 1e9 })
+    end)
+    ok(#skyDrop == 0, 'and a height that is nowhere on the map',
+        ('%d entries'):format(#skyDrop))
+
+    -- 6. THE CEILING STILL BINDS, and it is the last line rather than the only
+    -- one. Corpses are walked round a 20m circle so that each is a genuinely
+    -- new one and it is the budget being tested, not the register.
+    BR.Loot.clearNpcDrops(1)
+    BR.Roster.get(1).pos = { x = 3000.0, y = 3000.0, z = 35.0 }
+    local paid = 0
+    for i = 1, (cfg.maxPerMatch or 12) + 4 do
+        fakeTime = fakeTime + 5000
+        local ang = (i / 16) * 2.0 * math.pi
+        local got = madeBy(function()
+            fire(BR.Net.NPC_DROP, 1, {
+                x = 3000.0 + math.cos(ang) * 20.0,
+                y = 3000.0 + math.sin(ang) * 20.0, z = 35.0 })
+        end)
+        paid = paid + #got
+    end
+    ok(paid == (cfg.maxPerMatch or 12),
+        'and no more than the per-match ceiling is ever paid',
+        ('%d of %d attempts'):format(paid, (cfg.maxPerMatch or 12) + 4))
+
+    -- 7. A REPORT FROM ACROSS THE MAP IS STILL A REPORT FROM ACROSS THE MAP.
+    BR.Loot.clearNpcDrops(1)
+    fakeTime = fakeTime + 5000
+    local farDrop = madeBy(function()
+        fire(BR.Net.NPC_DROP, 1, { x = -2000.0, y = 400.0, z = 35.0 })
+    end)
+    ok(#farDrop == 0, 'a corpse beyond npcDrop.range is refused',
+        ('%d entries'):format(#farDrop))
+
+    cfg.enabled = wasEnabled
+    BR.Loot.clearNpcDrops(1)
+    ok(BR.Config.Loot.npcDrop.enabled ~= true,
+        'and the suite leaves the shipped default where it found it')
+end
+
 describe('loot.teardown')
 do
     local m = lootMatch()
@@ -15863,6 +18631,17 @@ do
     BR.Roster.get(1).voltsPickedUp = 100
     BR.Roster.get(2).voltsPickedUp = 100
 
+    -- AND BOTH OF THEM SPENT IN IT (#293), which until now was recorded nowhere
+    -- at all: the debit is a conditional write against the profile row, so once
+    -- it settles the only trace anywhere is a smaller balance. Written onto the
+    -- entry rather than charged, for the same reason the pickups above are --
+    -- what moves the counter is BR.Market.charge's success arm and has its own
+    -- suite; the journey from an entry to a stored row is what is under test
+    -- here. Two different figures, so a row that carried the wrong player's
+    -- would be visible rather than symmetrical.
+    BR.Roster.get(1).voltsSpent = 1500
+    BR.Roster.get(2).voltsSpent = 750
+
     -- Two minutes in, the quitter is eliminated...
     fakeTime = fakeTime + 120000
     BR.Combat.eliminate(2, 'weapon', 1)
@@ -15929,8 +18708,14 @@ do
     fire('br:match:results', nil, captured)
 
     --- Everything br_stats emitted for this match, split by verb.
+    ---
+    --- `matchPut` IS THE FOURTH RETURN AND IT IS A SINGLE ROW, not a list: one
+    --- item per MATCH on br-matches, beside the one item per PLAYER the history
+    --- batch writes to br-players. `mputs` counts the calls so a second write
+    --- per match is a failure rather than an unnoticed duplicate.
     local function since(n)
         local rows, deltasBy, batches = nil, {}, 0
+        local match, mputs = nil, 0
         for i = n + 1, #fired do
             local f = fired[i]
             if f.event == 'br:ddb:historyPut' then
@@ -15938,12 +18723,15 @@ do
                 rows = f.args[2]
             elseif f.event == 'br:ddb:statsApply' then
                 deltasBy[f.args[2]] = f.args[3]
+            elseif f.event == 'br:ddb:matchPut' then
+                mputs = mputs + 1
+                match = f.args[2]
             end
         end
-        return rows, deltasBy, batches
+        return rows, deltasBy, batches, match, mputs
     end
 
-    local rows, deltasBy, batches = since(mark)
+    local rows, deltasBy, batches, matchRow, mputs = since(mark)
 
     ok(batches == 1, 'the whole match is ONE history event, not one per player',
         ('got %s'):format(tostring(batches)))
@@ -16002,6 +18790,91 @@ do
         ('got %s'):format(tostring(winner and winner.mode)))
     ok(quitter and quitter.won == false, 'the player who died did not win')
 
+    -- ══════════ THE THREE FIELDS THE LEDGER WAS MISSING (#293) ══════════
+    --
+    -- 1. WHAT THEY SPENT. Nothing recorded it in any form, per match or
+    --    cumulatively, so the console's match page had no spend column to read.
+    ok(winner and winner.voltsSpent == 1500,
+        'the record carries what the survivor spent in the match',
+        ('got %s'):format(tostring(winner and winner.voltsSpent)))
+    ok(quitter and quitter.voltsSpent == 750,
+        'and what the player who disconnected spent in it',
+        ('got %s'):format(tostring(quitter and quitter.voltsSpent)))
+    -- IT IS NOT NETTED AGAINST THE PAYOUT, and must never be: `voltsEarned` is
+    -- what the match paid, `voltsSpent` is what they bought with, and a single
+    -- net figure cannot answer either question.
+    ok(winner and winner.voltsEarned ~= winner.voltsSpent
+       and winner.voltsEarned == deltasBy['license:test1'].balance,
+        'and the earned figure beside it is untouched by the spending',
+        ('earned %s spent %s'):format(tostring(winner and winner.voltsEarned),
+            tostring(winner and winner.voltsSpent)))
+
+    -- 2. WHEN IT STARTED, on the clock `endedAt` beside it already uses. The
+    --    envelope's own `startedAt` is the game timer and is deliberately NOT
+    --    what lands here.
+    ok(winner and winner.startedAt == captured.startedAtWall,
+        'the record carries the wall-clock start, not the process timer',
+        ('row %s vs envelope wall %s / timer %s'):format(
+            tostring(winner and winner.startedAt),
+            tostring(captured.startedAtWall), tostring(captured.startedAt)))
+    -- COMPARED THROUGH `or 0` RATHER THAN BARE. An absent field would make
+    -- `nil > number` throw and take the rest of the suite with it, which reads
+    -- as a broken harness rather than as the missing field it is.
+    ok((winner and winner.startedAt or 0) > 1600000000000,
+        'it is epoch milliseconds',
+        ('got %s'):format(tostring(winner and winner.startedAt)))
+    ok((winner and winner.startedAt or 0) <= (winner and winner.endedAt or 0),
+        'and the pair is two readings of ONE clock, so their difference is a duration',
+        ('%s .. %s'):format(tostring(winner and winner.startedAt),
+            tostring(winner and winner.endedAt)))
+    ok(winner and quitter and winner.startedAt == quitter.startedAt,
+        'one start for the whole match, like the end')
+
+    -- 3. WHICH SQUAD. THE NEGATIVE FIRST, because this match is solo: `squadId`
+    --    is nil on every row and must stay nil rather than becoming a zero or an
+    --    invented group. br_ddb turns an absent one into the empty string, which
+    --    is what "no squad" looks like on a stored row.
+    ok(winner and winner.squadId == nil,
+        'a solo match records no squad id at all',
+        ('got %s'):format(tostring(winner and winner.squadId)))
+
+    --    AND THE POSITIVE, from the same envelope with the two players put in
+    --    one squad. The id was already in the payload, already in the handler
+    --    and already in a variable -- `deltasFor` reads it to decide solo versus
+    --    squad -- and was dropped twenty lines later, before the write. So the
+    --    assertion that matters is that the record and the aggregate agree about
+    --    the same id, rather than that a field exists.
+    local squadded = { matchId = captured.matchId, mode = 'squad',
+                       startedAt = captured.startedAt,
+                       startedAtWall = captured.startedAtWall,
+                       endedAt = captured.endedAt,
+                       total = captured.total, players = {} }
+    for _, r in ipairs(captured.players) do
+        local copy = {}
+        for k, v in pairs(r) do copy[k] = v end
+        copy.squadId = ('m%ssq1'):format(BR.MatchTag(captured.matchId))
+        squadded.players[#squadded.players + 1] = copy
+    end
+    local sqMark = #fired
+    fire('br:match:results', nil, squadded)
+    local sqRows, sqDeltas = since(sqMark)
+
+    local sqWinner
+    for _, r in ipairs(sqRows or {}) do
+        if r.license == 'license:test1' then sqWinner = r end
+    end
+    ok(sqWinner and sqWinner.squadId == ('m%ssq1'):format(BR.MatchTag(captured.matchId)),
+        'a squad match records the squad id it was played with',
+        ('got %s'):format(tostring(sqWinner and sqWinner.squadId)))
+    ok(sqDeltas['license:test1'] and sqDeltas['license:test1'].squadMatches == 1
+       and sqDeltas['license:test1'].soloMatches == 0,
+        'and the aggregate counted it as a squad match off the SAME field',
+        ('solo %s squad %s'):format(
+            tostring(sqDeltas['license:test1'] and sqDeltas['license:test1'].soloMatches),
+            tostring(sqDeltas['license:test1'] and sqDeltas['license:test1'].squadMatches)))
+    ok(deltasBy['license:test1'].soloMatches == 1,
+        'while the solo run of the same envelope counted a solo match -- one field, two readers')
+
     -- THE ROW AND THE AGGREGATE ARE WRITTEN SEPARATELY AND MUST STILL AGREE.
     -- They are two DynamoDB operations built from one payload; if they ever
     -- disagree, the profile page shows a career total that no listed match adds
@@ -16012,6 +18885,117 @@ do
             tostring(deltasBy['license:test1'].xp)))
     ok(winner and winner.voltsEarned == deltasBy['license:test1'].balance,
         'and so are the Volts -- including the level-up bonus the player was shown')
+
+    -- ══════════ AND ONE ROW FOR THE MATCH ITSELF (br-matches) ══════════
+    --
+    -- WHY A THIRD WRITE EXISTS AT ALL. Until this shipped the only record of a
+    -- match was one history row per PARTICIPANT on br-players, each in a
+    -- different partition, with the match id buried as the trailing component of
+    -- a sort key. "Show me match X" was therefore a full table Scan with a
+    -- filter -- Ringmaster's lib/matchLedger.ts says so in as many words and
+    -- pays for every profile row in the table to answer it. A row keyed on the
+    -- match makes it a GetItem.
+    --
+    -- THE PARTITION KEY IS THE TAG, NOT THE NUMBER, and that is the decision the
+    -- rest of this block exists to pin. The tag is what Ringmaster's URL
+    -- carries, what a moderator pastes, and the thing that has to be unique --
+    -- so it is the thing the uniqueness constraint is written against.
+    ok(mputs == 1, 'a finished match writes exactly ONE match row',
+        ('got %s'):format(tostring(mputs)))
+    ok(matchRow ~= nil, 'and it goes out on br:ddb:matchPut')
+
+    ok(matchRow and matchRow.pk == BR.MatchTag(m.id),
+        'the partition key is the seven-character hex tag, the same string every '
+            .. 'console line and every Ringmaster URL uses',
+        ('got %s, wanted %s'):format(tostring(matchRow and matchRow.pk),
+            BR.MatchTag(m.id)))
+    ok(matchRow and type(matchRow.pk) == 'string' and #matchRow.pk == 7,
+        'and it is a STRING of seven characters -- a DynamoDB key, not a number',
+        ('%s (%s)'):format(tostring(matchRow and matchRow.pk),
+            type(matchRow and matchRow.pk)))
+    -- THE NUMBER RIDES ALONG RATHER THAN BEING RE-DERIVED. Ringmaster parses the
+    -- tag back with matchFromTag, and a reader that has the item in hand should
+    -- not have to: two derivations of one number agree until one of them
+    -- changes, which is the lesson roster.lua's bucket comment already carries.
+    ok(matchRow and matchRow.matchId == m.id
+       and math.tointeger(matchRow.matchId) ~= nil,
+        'the numeric id is on the item too, as a number',
+        ('got %s'):format(tostring(matchRow and matchRow.matchId)))
+
+    -- THE MATCH-LEVEL FIELDS ARE THE ONES THE PAGE DRAWS, AND NO OTHERS.
+    -- Ringmaster's MatchView renders mode, the two timestamps and the field
+    -- size; #51 closes with "no label on the page should be copy he did not
+    -- write", and the storage side of that rule is not inventing fields nothing
+    -- displays.
+    ok(matchRow and matchRow.mode == m.mode, 'the mode is on the item',
+        ('got %s'):format(tostring(matchRow and matchRow.mode)))
+    ok(matchRow and matchRow.endedAt == winner.endedAt,
+        'the end stamp is the SAME wall clock the history rows carry -- two '
+            .. 'records of one match must not disagree about when it ended',
+        ('%s vs %s'):format(tostring(matchRow and matchRow.endedAt),
+            tostring(winner and winner.endedAt)))
+    ok(matchRow and matchRow.startedAt == captured.startedAtWall,
+        'and the start stamp is the wall clock, not the process timer',
+        ('%s vs %s'):format(tostring(matchRow and matchRow.startedAt),
+            tostring(captured.startedAtWall)))
+    ok(matchRow and matchRow.total == 2,
+        'the field size is on it -- 3rd of 8 is not 3rd of 96',
+        ('got %s'):format(tostring(matchRow and matchRow.total)))
+
+    -- ═══ THE PARTICIPANTS, AND THE WINNER AMONG THEM ═══
+    --
+    -- NO TOP-LEVEL `winner` FIELD, DELIBERATELY. MatchView filters
+    -- `participants.filter(p => p.won)` -- so `won` per participant IS the
+    -- winner, and a second copy at the top of the item is a second thing that
+    -- can disagree with the first. Same reasoning that deleted the `level`
+    -- column beside `xp`, and the same reason #133 put `died` on the results row
+    -- rather than letting two halves infer it separately.
+    local parts = matchRow and matchRow.participants
+    ok(type(parts) == 'table' and #parts == 2,
+        'every participant is on the item, including the one who disconnected',
+        ('got %s'):format(tostring(parts and #parts)))
+
+    local pBy = {}
+    for _, p in ipairs(parts or {}) do pBy[p.license] = p end
+    local pw = pBy['license:test1']
+    local pq = pBy['license:test2']
+
+    ok(pw ~= nil and pq ~= nil,
+        'keyed by license, which is what profileHref links on')
+    ok(pw and pw.won == true and pq and pq.won == false,
+        'the winner is the participant carrying won, and nobody else is')
+    ok(pw and pw.placement == 1 and pq and pq.placement == 2,
+        'with their placements',
+        ('%s / %s'):format(tostring(pw and pw.placement), tostring(pq and pq.placement)))
+    ok(pw and pw.kills == 1, 'kills are per participant',
+        ('got %s'):format(tostring(pw and pw.kills)))
+
+    -- THE TWO VOLTS FIGURES THE OWNER ASKED FOR BY NAME, and they are read off
+    -- the SAME history row that went to br-players rather than recomputed -- so
+    -- the match page and the profile's match list cannot show two numbers.
+    ok(pw and pw.voltsEarned == winner.voltsEarned
+       and pw.voltsSpent == winner.voltsSpent,
+        'earned and spent are the same readings the history row carries',
+        ('earned %s/%s spent %s/%s'):format(
+            tostring(pw and pw.voltsEarned), tostring(winner.voltsEarned),
+            tostring(pw and pw.voltsSpent), tostring(winner.voltsSpent)))
+    ok(pq and pq.voltsSpent == 750,
+        'including for the player who disconnected mid-match',
+        ('got %s'):format(tostring(pq and pq.voltsSpent)))
+
+    -- AND THE COLUMNS THE PAGE DRAWS BESIDE THEM.
+    ok(pw and pw.damage == winner.damage and pw.downs == winner.downs
+       and pw.revives == winner.revives and pw.survivedMs == winner.survivedMs,
+        'damage, downs, revives and time alive agree with the history row too')
+
+    -- NOTHING THE PAGE DOES NOT DRAW. `xpEarned` is on Ringmaster's ledger
+    -- interface and no column renders it; `name` comes from the console's own
+    -- ringmaster-players registry, never from the game's rows -- matchLedger.ts
+    -- states that outright ("THE NAMES DO NOT COME FROM THESE ROWS"). A field
+    -- here that nothing reads is a field the next person has to work out the
+    -- meaning of.
+    ok(pw and pw.xpEarned == nil and pw.name == nil,
+        'and nothing the match page never renders')
 
     -- THE AIRDROP'S VOLTS TAKE THE SAME ROAD (#88), which is the whole reason
     -- they are not credited at the pickup. The pile is on the ROW, the row is
@@ -16027,6 +19011,98 @@ do
     ok(byName.Quitter and byName.Quitter.voltsPickedUp == 100,
         'and so does the row of the player who disconnected',
         ('got %s'):format(tostring(byName.Quitter and byName.Quitter.voltsPickedUp)))
+
+    -- ══════════ AND WHAT THEY SPENT TAKES THE SAME ROAD (#293) ══════════
+    --
+    -- Owner, 2026-09-10: "The Volts spent per match should be part of the ledger
+    -- if not already... And include spending in the warmup shop as part of the
+    -- match please, since that's going to be a big contributor."
+    --
+    -- BOTH FIGURES ARE ASSERTED, and they differ on purpose: a row() that read
+    -- the wrong entry, or a field that fell back to a constant, would still
+    -- satisfy a test where both players spent the same amount.
+    ok(byName.Survivor and byName.Survivor.voltsSpent == 1500,
+        'the results row carries what the survivor spent in the match',
+        ('got %s'):format(tostring(byName.Survivor and byName.Survivor.voltsSpent)))
+    -- ...AND THE SEALED ROW CARRIES IT TOO, which is the #100 failure wearing
+    -- the newest key: a field added to newEntry but not to row() is silently
+    -- zero for everybody who left.
+    ok(byName.Quitter and byName.Quitter.voltsSpent == 750,
+        'and so does the row of the player who disconnected mid-match',
+        ('got %s'):format(tostring(byName.Quitter and byName.Quitter.voltsSpent)))
+
+    -- ══════════ AND IT REACHES THE PROFILE ROW, WHICH IS WHERE A BOARD
+    --            RANKS ON IT ══════════
+    --
+    -- ⚠ THIS IS THE HALF 03cce2d LEFT OUT AND THE FAILURE IS SILENT. The owner
+    -- asked for a BIGGEST SPENDERS board. A board ranks on an attribute of the
+    -- `sk=profile` row, which is built from the DELTAS -- and `voltsSpent` went
+    -- onto the per-match history rows and br_ddb's HISTORY_NUMBERS and stopped
+    -- there. Every match recorded its own figure, no write errored, nothing was
+    -- missing from a payload, and the lifetime total did not exist: the card
+    -- would have read zero for every player on the server.
+    --
+    -- THE TWO ASSERTIONS ABOVE WOULD BOTH HAVE PASSED THROUGHOUT. That is the
+    -- whole reason this one is separate: "the field is on the results row" and
+    -- "the field accumulates on the career" are different claims with one name,
+    -- and the suite agreed with the first while the second was missing.
+    --
+    -- ASSERTED AGAINST THE OTHER PLAYER'S FIGURE TOO, so a delta that read the
+    -- wrong entry or fell back to a constant cannot satisfy it.
+    ok(deltasBy['license:test1'] and deltasBy['license:test1'].voltsSpent == 1500,
+        'the profile-row delta carries the survivor\'s spend, so a lifetime '
+            .. 'total exists for a spenders board to rank on',
+        ('got %s'):format(tostring(deltasBy['license:test1']
+            and deltasBy['license:test1'].voltsSpent)))
+    ok(deltasBy['license:test2'] and deltasBy['license:test2'].voltsSpent == 750,
+        'and the quitter\'s own, rather than one figure for the whole match',
+        ('got %s'):format(tostring(deltasBy['license:test2']
+            and deltasBy['license:test2'].voltsSpent)))
+
+    -- THE RECORD AND THE CAREER ARE TWO READINGS OF ONE NUMBER. They are two
+    -- separate DynamoDB operations built from one payload; a history row that
+    -- disagreed with what the career total moved by would be two numbers
+    -- nobody could reconcile, and no way to tell which half was lying. This is
+    -- the same pairing already asserted for XP and for the Volts earned.
+    ok(byName.Survivor
+       and byName.Survivor.voltsSpent == deltasBy['license:test1'].voltsSpent,
+        'and the per-match record and the career delta agree, because both '
+            .. 'read the same field off the same row')
+
+    -- ⚠ AND IT IS STILL NOT AN INPUT TO WHAT THE MATCH PAID. `deltasFor` builds
+    -- the payout out of a SEPARATE table that this field is deliberately not in
+    -- -- putting it there would pay people for shopping, and the symptom would
+    -- be a payout curve that had quietly moved. The survivor spent 1500 and the
+    -- quitter 750, so a payout that had absorbed either would differ from one
+    -- that had not.
+    ok(deltasBy['license:test1'].balance == winner.voltsEarned
+       and deltasBy['license:test1'].balance > 0,
+        'while the balance the match paid is untouched by the spending',
+        ('paid %s, spent %s'):format(
+            tostring(deltasBy['license:test1'].balance),
+            tostring(deltasBy['license:test1'].voltsSpent)))
+
+    -- ══════════ A MATCH START THAT SURVIVES A RESTART (#293) ══════════
+    --
+    -- The envelope has always carried `startedAt`, and it has always been a
+    -- GetGameTimer() reading -- milliseconds since THIS FXServer process booted,
+    -- back to zero on every deploy. It is the right clock for `survivedMs` and
+    -- `presentMs`, which subtract it from another reading of the same timer, and
+    -- it cannot be turned into a time of day afterwards. So both are stamped.
+    ok(captured.startedAtWall ~= nil,
+        'the envelope carries a wall-clock start as well as the game timer')
+    ok((captured.startedAtWall or 0) > 1600000000000,
+        'and it is epoch milliseconds',
+        ('got %s'):format(tostring(captured.startedAtWall)))
+    ok(captured.startedAtWall ~= captured.startedAt,
+        'which is NOT the process-relative one beside it',
+        ('wall %s vs timer %s'):format(tostring(captured.startedAtWall),
+            tostring(captured.startedAt)))
+    -- THE DURATIONS STILL COME OFF THE OTHER CLOCK, which is the half a careless
+    -- fix breaks: measuring survival against a wall clock stamped seconds apart
+    -- would make every player's survival time nonsense.
+    ok(byName.Survivor.survivedMs == 630000,
+        'and the durations are still measured against the game timer')
 
     -- AND IT IS IN THE MONEY, PROVED BY DIFFERENCE RATHER THAN BY ARITHMETIC.
     -- The same envelope, driven through the same real consumer, with the pile
@@ -16053,6 +19129,98 @@ do
             tostring(dryDeltas['license:test1'] and dryDeltas['license:test1'].balance)))
     ok(winner and winner.damage == deltasBy['license:test1'].damageDealt,
         'and the damage, floored the same way')
+
+    -- ══════════ THE LEVEL IS DERIVED AND IS NOT STORED (#116) ══════════
+    --
+    -- `xp` is a fact: it accumulates through an atomic ADD, so two matches
+    -- ending together compose and it cannot race. `level` was `levelFor(xp)` --
+    -- the same truth a second time, written separately from a read-modify-write
+    -- -- and only the copy could be wrong. It was: 3558 lifetime XP stored as
+    -- level 2.
+    --
+    -- ASSERTED AS ABSENT RATHER THAN AS CORRECT, and this is the only place it
+    -- can be caught. br_ddb's SET list is an allowlist, so a level that came
+    -- back here would be dropped silently at the far end -- nothing downstream
+    -- would fail, and nothing would be written either.
+    ok(deltasBy['license:test1'] and deltasBy['license:test1'].level == nil,
+        'no level is sent to the store -- it is derived from xp at read time (#116)',
+        ('got %s'):format(tostring(deltasBy['license:test1']
+            and deltasBy['license:test1'].level)))
+    ok(deltasBy['license:test2'] and deltasBy['license:test2'].level == nil,
+        'and none for the player who disconnected either',
+        ('got %s'):format(tostring(deltasBy['license:test2']
+            and deltasBy['license:test2'].level)))
+    ok(deltasBy['license:test1'] and (deltasBy['license:test1'].xp or 0) > 0,
+        'while the xp every reader derives it FROM is still written',
+        ('got %s'):format(tostring(deltasBy['license:test1']
+            and deltasBy['license:test1'].xp)))
+
+    -- ══════════ BUT BOTH ENDS OF THE CURVE ARE STILL EVALUATED ══════════
+    --
+    -- The level-up bonus has to know which boundaries this match crossed, and
+    -- the verdict screen has to draw its bar from where it was to where it is.
+    -- Both now come from the lifetime total either side of the write rather
+    -- than from a stored column, so dropping the column must not have cost
+    -- either of them. PROVED BY DIFFERENCE against the same envelope from a
+    -- total that crosses nothing: everything the payout is otherwise made of
+    -- cancels, and the level-up bonus is what is left.
+    local xpEarned = deltasBy['license:test1'].xp
+    local base = BR.Xp.thresholdFor(10)
+    ok(BR.Xp.levelFor(base) == 10 and BR.Xp.levelFor(base - 1) == 9,
+        'the fixture sits on a real level boundary')
+    ok(BR.Xp.levelFor(base + xpEarned) == 10,
+        'and one match is not enough to cross the NEXT one',
+        ('%d + %s lands at level %d'):format(base, tostring(xpEarned),
+            BR.Xp.levelFor(base + xpEarned)))
+
+    local cachedWas = BR.Stats.cachedXp['license:test1']
+
+    -- (a) a veteran who starts the match exactly ON the boundary: no crossing.
+    BR.Stats.cachedXp['license:test1'] = base
+    local flatMark = #fired
+    fire('br:match:results', nil, captured)
+    local _, flatDeltas = since(flatMark)
+
+    -- (b) the same veteran one XP short of it: this match crosses level 10.
+    BR.Stats.cachedXp['license:test1'] = base - 1
+    local upMark, upSent = #fired, #sent
+    fire('br:match:results', nil, captured)
+    local _, upDeltas = since(upMark)
+
+    ok(flatDeltas['license:test1'] and upDeltas['license:test1']
+       and upDeltas['license:test1'].balance
+           - flatDeltas['license:test1'].balance == BR.Config.levelBonus(10),
+        'crossing a boundary still pays the level-up bonus for the level reached',
+        ('%s vs %s, bonus %s'):format(
+            tostring(upDeltas['license:test1'] and upDeltas['license:test1'].balance),
+            tostring(flatDeltas['license:test1'] and flatDeltas['license:test1'].balance),
+            tostring(BR.Config.levelBonus(10))))
+    ok(flatDeltas['license:test1'] and flatDeltas['license:test1'].level == nil
+       and upDeltas['license:test1'] and upDeltas['license:test1'].level == nil,
+        'and neither run stores the level it just worked out')
+
+    -- AND THE VERDICT SCREEN IS TOLD BOTH ENDS, which is what stops the client
+    -- deriving the bar itself and getting it wrong (#91, #130).
+    local earned
+    for i = upSent + 1, #sent do
+        if sent[i].event == BR.Net.MATCH_EARNED and sent[i].target == 1 then
+            earned = sent[i].args[1]
+        end
+    end
+    ok(earned ~= nil, 'the survivor is told what the match earned')
+    ok(earned and earned.fromLevel == 9,
+        'the bar starts at the level their lifetime total was',
+        ('got %s'):format(tostring(earned and earned.fromLevel)))
+    ok(earned and earned.level == 10,
+        'and ends at the level it is now',
+        ('got %s'):format(tostring(earned and earned.level)))
+    ok(earned and earned.levelUp == true,
+        'so the level-up is announced')
+
+    -- PUT BACK, because cachedXp is process-lifetime state that reset() does not
+    -- clear -- a total left here would change what every later block in this
+    -- file banks, and the failure would point somewhere else entirely.
+    BR.Stats.cachedXp['license:test1'] = cachedWas
 
     -- A WIN IS NOT PLACEMENT 1 (#133). The last squad standing can be taken by
     -- the storm: eliminate() records placement 1 because nobody outlasted them,
@@ -16096,6 +19264,15 @@ do
     -- are gone.
     ok(BR.Roster.get(1).kills == 0, 'CLEANUP has zeroed the per-match counters')
     ok(BR.Roster.get(1).placement == nil, 'and cleared placement')
+    -- INCLUDING THE SPEND (#293). This is the CLEANUP half of the same rule
+    -- match.leave asserts for the other way out: a counter left standing is
+    -- reported again in the player's next match, and the one after that. It was
+    -- 1500 four lines of match ago.
+    ok((BR.Roster.get(1).voltsSpent or 0) == 0,
+        'and the Volts spent, so a warmup purchase is billed to one match only',
+        ('got %s'):format(tostring(BR.Roster.get(1).voltsSpent)))
+    ok((BR.Roster.get(1).voltsPickedUp or 0) == 0,
+        'beside the Volts picked up, which is the rule it was written from')
 
     -- RESULTS ARE PUBLISHED ONCE PER MATCH, and the second publish was not a
     -- duplicate -- it was a fabrication.
@@ -16187,6 +19364,40 @@ do
         'nothing reaches the kill feed: they are not out',
         tostring(#eventsOf(BR.Net.KILL_FEED)))
 
+    -- ═══ AND THE EDGE ITSELF SAYS IT IS A HOLD (owner, 2026-09-11) ═══
+    --
+    -- "Dying in the bus shouldn't be possible? If you mean before the state
+    -- machine goes to PLAYING we don't need any sound for that since they'll be
+    -- brought back up immediately upon game state = PLAYING."
+    --
+    -- The client plays `death.self` on its own edge into OUT. 7097db4 gave that
+    -- edge a cause so a leaver is silent and named this hold as the one edge
+    -- left that states none; this is that edge stating one.
+    --
+    -- WHY IT IS HERE AND NOT INFERRED AT THE CLIENT. A client asking "are we
+    -- PLAYING yet?" is racing the STATE envelope against this delta -- two
+    -- messages with no ordering between them -- so the answer travels ON the
+    -- transition. See BR.Roster.setState.
+    BR.Broadcast.flushNow()
+    local heldEdge = nil
+    for _, s in ipairs(eventsOf(BR.Net.ROSTER_DELTA)) do
+        for _, d in ipairs(s.args[1].deltas or {}) do
+            if d.src == 1 and d.op == 'update'
+               and d.e and d.e.state == BR.PlayerState.OUT then
+                heldEdge = d
+            end
+        end
+    end
+    ok(heldEdge ~= nil, 'the hold still sends the OUT edge -- the roster really '
+        .. 'does go through OUT, and holdForStart is explicit that it must')
+    ok(heldEdge ~= nil and heldEdge.cause == 'held',
+        'and it states WHY: a hold, not a death, which is what lets the client '
+            .. 'be quiet without guessing at the match state',
+        heldEdge and tostring(heldEdge.cause) or 'no edge')
+    ok(heldEdge ~= nil and heldEdge.e and heldEdge.e.cause == nil,
+        'beside the mirror rather than inside it, like every other cause -- a '
+            .. 'stale `held` on the entry would silence a real death later')
+
     -- The notice, and it has to outlive its own event: the wait it exists to
     -- explain can be the rest of the flight.
     local held = nil
@@ -16207,9 +19418,23 @@ do
         'the match goes live for the held player rather than ending under them',
         tostring(mstate()))
 
+    -- ⚠ AND THIS IS WHAT MAKES THE SILENCE HONEST, WHICH IS WHY IT IS SAID HERE
+    -- RATHER THAN LEFT TO THE READER. The OUT edge above is now marked 'held'
+    -- and the client plays nothing for it. That is only defensible because the
+    -- player really does come back: a cause that silenced a death which then
+    -- STUCK would be a player sitting on a dead screen with no sound and no
+    -- word, which is worse than the sting ever was. The same entry, three lines
+    -- on, is standing up with full health and no hold left on it.
     ok(e1.state == BR.PlayerState.ALIVE, 'who is revived')
     ok(e1.revivePending == nil, 'with the hold cleared')
     ok(e1.hp == 100.0, 'and their health put back', tostring(e1.hp))
+    ok(heldEdge ~= nil and heldEdge.cause == 'held'
+       and e1.state == BR.PlayerState.ALIVE,
+        'so the edge that was silenced is the same edge that got taken back -- '
+            .. 'the silence is a promise this tick keeps, not a death being '
+            .. 'hidden',
+        ('cause %s, state %s'):format(
+            heldEdge and tostring(heldEdge.cause) or 'none', tostring(e1.state)))
     ok(e1.diedAt == nil and e1.placement == nil,
         'and still nothing written down')
     ok(#eventsOf(BR.Net.REVIVED) == 1,
@@ -16633,6 +19858,60 @@ do
     ok(#resultsSince(mark) == 1,
         'and the CLEANUP -> destroy that follows every finished match adds no second one',
         ('got %d'):format(#resultsSince(mark)))
+
+    -- ------------------------------------------------------------------
+    -- (7) AND THE CONSOLE LINE TELLS THOSE TWO APART.
+    --
+    --     Cases (5) and (6) both end in the same `wipedAt` branch, and until
+    --     2026-09-09 both printed the same sentence: "dissolved after CLEANUP
+    --     wiped it -- nothing left to record". Case (6) is EVERY finished match
+    --     on the server and case (5) is a genuinely lost result, and the shared
+    --     wording picked the frightening reading for the routine one.
+    --
+    --     Owner, 2026-09-09, reading it on a clean two-player round whose rows
+    --     br_stats had already written: "then I guess nothing was saved?".
+    --     Everything was saved.
+    --
+    --     NOTHING OWNED THAT SENTENCE, which is how it stayed wrong through a
+    --     green suite. Every assertion above is about PUBLISHES, and all of them
+    --     hold whichever string is printed, so none of them could see it. These
+    --     are about what the operator is told.
+    -- ------------------------------------------------------------------
+    local realPrint = print
+    local said = {}
+    local function saidMatching(needle)
+        local n = 0
+        for _, s in ipairs(said) do
+            if s:find(needle, 1, true) then n = n + 1 end
+        end
+        return n
+    end
+
+    local m6 = twoInAMatch()
+    BR.Combat.eliminate(2, 'weapon', 1)
+    BR.Match.transition(m6, BR.MatchState.ENDED)
+    BR.Match.transition(m6, BR.MatchState.CLEANUP)
+    said = {}
+    print = function(s) said[#said + 1] = tostring(s) end
+    BR.Match.destroy(m6)
+    print = realPrint
+    ok(saidMatching('already recorded at ENDED') == 1,
+        'a finished match is told its rows were already written',
+        ('got %d lines'):format(#said))
+    ok(saidMatching('the result is lost') == 0,
+        'and is never told the result is lost, which is the reading that alarmed the owner')
+
+    local m7 = twoInAMatch()
+    BR.Match.transition(m7, BR.MatchState.CLEANUP)
+    said = {}
+    print = function(s) said[#said + 1] = tostring(s) end
+    BR.Match.destroy(m7)
+    print = realPrint
+    ok(saidMatching('the result is lost') == 1,
+        'a match wiped before anything was published IS told the result is lost',
+        ('got %d lines'):format(#said))
+    ok(saidMatching('already recorded at ENDED') == 0,
+        'and is not told it was recorded')
 
     TriggerEvent = realTrigger
 end
@@ -17691,14 +20970,27 @@ end
 -- killer at all, records it as a LICENSE, hands the solver a live server id, and
 -- that a death with no killer travels all the way through as nil.
 
---- A solo match: three players, no squadIds, everybody alive.
-local function soloMatch()
+--- A solo match: no squadIds, everybody alive.
+---
+--- @param n integer|nil  how many players. Three by default, which is what every
+---        caller but one wants: one dies, one killed them, one is left to cycle
+---        onto.
+---
+--- A CALLER ASKS FOR MORE WHEN ITS SCENARIO CONTAINS A SECOND DEATH. In solos
+--- every player is their own squad, so the second death in a three-player match
+--- leaves ONE standing -- which is the match being decided, and
+--- BR.Spectate.onEliminated closes the camera for the whole round at that moment
+--- ("whenever the 2nd to last player (or squad) dies - they should not go
+--- immediately to spectate" -- the owner, 2026-09-11). A fixture that wants to
+--- watch a session SURVIVE a second death has to leave somebody for the match to
+--- still be about. See spectate.theKillerIsLostAgain.
+local function soloMatch(n)
     reset()
-    join(1, 'Me'); join(2, 'Killer'); join(3, 'Bystander')
+    n = n or 3
+    local names = { 'Me', 'Killer', 'Bystander', 'Spare' }
+    for s = 1, n do join(s, names[s] or ('P' .. s)) end
     local m = fakeMatch(BR.Mode.SOLO.key)
-    for _, s in ipairs({ 1, 2, 3 }) do
-        BR.Roster.setState(s, BR.PlayerState.ALIVE)
-    end
+    for s = 1, n do BR.Roster.setState(s, BR.PlayerState.ALIVE) end
     sent = {}
     return m
 end
@@ -17762,7 +21054,15 @@ do
 
     -- 1. THE KILLER DIES. The feed re-resolves every push. The list loses one
     --    row and keeps the rest, so the camera moves rather than stopping.
-    soloMatch()
+    --
+    --    FOUR PLAYERS, BECAUSE THIS BLOCK CONTAINS TWO DEATHS. On three the
+    --    second one leaves a single solo standing, which is the match being
+    --    decided -- and since 2026-09-11 that closes the camera for the round
+    --    rather than moving it (BR.Spectate.onEliminated). The property under
+    --    test here is the RETARGET, which is only a question while there is
+    --    still a match to retarget inside; the closing behaviour is
+    --    tools/test_spectate.lua's.
+    soloMatch(4)
     BR.Combat.eliminate(1, 'headshot', 2)
     fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 0 })
     ok(watching(1) == 2, 'precondition: watching the killer')
@@ -18154,6 +21454,24 @@ local function roadMatch()
     queueUp(1, 'Driver', BR.Mode.SOLO.key)
     queueUp(2, 'Walker', BR.Mode.SOLO.key)
     queueUp(3, 'Bystander', BR.Mode.SOLO.key)
+
+    -- ═══ FULL HEALTH BEFORE THE PROMOTION, NOT AFTER IT ═══
+    --
+    -- `pedHealth` is a suite-wide table and the block before this one leaves a
+    -- wounded ped in it, so a fixture that does not put it back is starting the
+    -- next match on the last one's injuries.
+    --
+    -- THE ORDER MATTERS NOW AND IT DID NOT USED TO. These three lines sat below
+    -- the ALIVE promotion, which meant the ledger was sampled from the STALE ped
+    -- while everyone was still in the lobby and then had to be dragged back up
+    -- by a sample taken after they were already ALIVE. That is a ped rising with
+    -- no server action behind it -- which is the exploit's exact shape, and
+    -- server/roster.lua's ledger rule now refuses it. In the running game the
+    -- situation cannot arise: LOBBY, WARMUP, BUS and FREEFALL are all outside
+    -- the rule, so the sampler tracks the ped freely right up to the moment of
+    -- promotion and the two numbers agree when it happens.
+    for s = 1, 3 do pedHealth[1000 + s] = 200 end
+
     fakeTime = fakeTime + 300
     BR.Sched.step(fakeTime)
     for s = 1, 3 do BR.Roster.setState(s, BR.PlayerState.ALIVE) end
@@ -18165,7 +21483,6 @@ local function roadMatch()
     setPos(1, 0.0, 0.0, 30.0)
     setPos(2, 10.0, 0.0, 30.0)
     setPos(3, 500.0, 500.0, 30.0)
-    for s = 1, 3 do pedHealth[1000 + s] = 200 end
 
     fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
     fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
@@ -19293,11 +22610,19 @@ do
     local A = BR.Config.Combat.healthAudit
 
     --- An ALIVE player in a PLAYING match, with the sampler already settled.
+    ---
+    --- THE PEDS ARE PUT BACK ON FULL BEFORE THE PROMOTION, and roadMatch's note
+    --- has the argument at length: `pedHealth` is suite-wide, the block before
+    --- leaves a wounded ped in it, and healing that ped after the player is
+    --- already ALIVE is a rise with no server action behind it -- the exploit's
+    --- exact shape, which the ledger rule now refuses. LOBBY is outside the rule,
+    --- so doing it one line earlier is both faithful and enough.
     local function audited()
         reset()
         queueUp(1, 'Cheat', BR.Mode.SOLO.key)
         queueUp(2, 'Honest', BR.Mode.SOLO.key)
         queueUp(3, 'Bystander', BR.Mode.SOLO.key)
+        for s = 1, 3 do pedHealth[1000 + s] = BR.Config.Match.maxHealth end
         fakeTime = fakeTime + 300
         BR.Sched.step(fakeTime)
         for s = 1, 3 do BR.Roster.setState(s, BR.PlayerState.ALIVE) end
@@ -19305,7 +22630,6 @@ do
         setPos(1, 0.0, 0.0, 30.0)
         setPos(2, 50.0, 0.0, 30.0)
         setPos(3, 500.0, 500.0, 30.0)
-        for s = 1, 3 do pedHealth[1000 + s] = BR.Config.Match.maxHealth end
         fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
         sent = {}
         return BR.Roster.get(1), BR.Roster.get(2)
@@ -19374,13 +22698,31 @@ do
                 .. 'which is what /brhealth prints to prove the window is right',
             tostring(cheat.healthAudit.excused[BR.HealthExcuse.HURT]))
 
-        -- AND THE LEDGER IS STILL BEING OVERWRITTEN, because this change is a
-        -- detector and nothing else. If this assertion ever flips, somebody has
-        -- landed prevention -- which is a good day, and this block is one of the
-        -- places that has to be updated on purpose.
-        ok(cheat.hp == 100, 'the exploit still WORKS -- detection changed no '
-            .. 'gameplay, which is the whole safety story of this change',
+        -- ═══ AND THIS IS THE DAY THE ASSERTION FLIPPED ═══
+        --
+        -- It used to read `cheat.hp == 100` -- "the exploit still WORKS,
+        -- detection changed no gameplay" -- with a note saying that if it ever
+        -- inverted, somebody had landed prevention and this was one of the
+        -- places to update on purpose. That is what happened: the 2026-09-08
+        -- security audit's finding 1, fixed in server/roster.lua's commitSample.
+        -- Left here rather than moved into the ledger block below, because the
+        -- most valuable thing this line can say is what it used to say.
+        ok(cheat.hp == 60.0, 'and the ledger is NOT handed back -- the exploit '
+            .. 'that this detector was built to measure no longer works',
             tostring(cheat.hp))
+
+        -- ...AND THE DETECTOR GOT SHARPER FOR FREE. The audit's second
+        -- complaint about it was that a working exploit scored almost nothing:
+        -- the first sample past the grace counted, the ledger was overwritten to
+        -- match the client, and every later sample had no discrepancy left to
+        -- measure. Now the ledger holds, so the disagreement is still there on
+        -- the next pass and the tally climbs until it crosses the bar.
+        local before = cheat.healthAudit.hp
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        ok(cheat.healthAudit.hp > before,
+            'a client that goes on lying goes on being counted, sample after '
+                .. 'sample, because the number it is lying about survives',
+            ('%s -> %s'):format(tostring(before), tostring(cheat.healthAudit.hp)))
     end
 
     -- ═══ A MED KIT IS NOT A CHEAT ═══
@@ -19458,7 +22800,697 @@ do
                 .. 'of the next round')
     end
 
+    -- ═══ THE LIVE FALSE POSITIVE, REPRODUCED THROUGH THE REAL SAMPLER ═══
+    --
+    -- WHAT THE OWNER'S CONSOLE SAID, DURING FAIR PLAY ON HIS OWN SERVER:
+    --
+    --   HEALTH AUDIT: Xeon (2) recovered 116 hp and 0 armour this match that the
+    --   server never issued (peak 29 in one sample, 4 samples)
+    --
+    -- 116 over 4 samples with a peak of 29 means every one of them was EXACTLY
+    -- 29. The mean equalling the peak is the diagnosis: there is no distribution
+    -- here, so it was never passive regeneration and never accumulated jitter.
+    -- It was one fixed reading arriving four times against a ledger that had not
+    -- moved between them.
+    --
+    -- WHERE THE FIXED READING COMES FROM. FiveM's ped health sync node
+    -- (CPedHealthDataNode::Parse) sends NO health field at all when its `isFine`
+    -- bit is set; the server's parser writes `data.health = maxHealth` in its
+    -- place, and `maxHealth` is itself `(data.maxHealth == 0) ? 200 : ...` for a
+    -- ped whose maximum was never synced. So a server-side read of exactly
+    -- `maxHealth` is a substitution rather than a reading, and the "recovery" it
+    -- scores is nothing but the distance the ledger sits below the ceiling --
+    -- which is why the wounded player was accused and the one already at full
+    -- (same match, same tick) counted zero.
+    --
+    -- THE OTHER HALF OF IT IS A GAMEPLAY BUG AND IT LIVES IN client/natives.lua:
+    -- initHealthModel used SetEntityMaxHealth, which does not take on a PLAYER
+    -- ped, so a player on any config/peds.lua model with a lower model-default
+    -- maximum was clamped below our ceiling and could never fill their bar. That
+    -- is what put a live player permanently below `maxHealth` in the first place.
+    do
+        local wounded = audited()
+
+        -- Hurt by the world, believed by the ledger: the ordinary asymmetric
+        -- path, and it is what leaves the ledger below the ceiling.
+        pedHealth[1001] = BR.ToEngineHp(71.0)
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        ok(wounded.hp == 71.0,
+            'a wounded player\'s ledger follows the ped down to 71',
+            tostring(wounded.hp))
+
+        -- FOUR SUBSTITUTED READINGS, each reverting to the truth on the very
+        -- next pass -- which is the shape of the owner's report: four counted
+        -- samples spread far enough apart to have earned three resyncs.
+        for _ = 1, 4 do
+            pedHealth[1001] = BR.Config.Match.maxHealth
+            fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+            pedHealth[1001] = BR.ToEngineHp(71.0)
+            fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        end
+
+        local t = wounded.healthAudit or {}
+        ok((t.hp or 0.0) == 0.0 and (t.samples or 0) == 0,
+            'four substituted ceiling readings against a ledger of 71 accuse '
+                .. 'nobody of anything -- this counted 116 hp over 4 samples '
+                .. 'with a peak of 29 before the UNSYNCED clause existed',
+            ('counted %s hp, peak %s, samples %s'):format(
+                tostring(t.hp), tostring(t.peak), tostring(t.samples)))
+        ok((t.excused or {})[BR.HealthExcuse.UNSYNCED] == 4,
+            'and every one of them is named in the excuse breakdown, so the '
+                .. 'operator can see WHAT was thrown away',
+            tostring((t.excused or {})[BR.HealthExcuse.UNSYNCED]))
+
+        -- AND THE LEDGER NEVER MOVED, which is the reason the owner saw a log
+        -- line and nothing else. The detector was the only thing that was wrong.
+        ok(wounded.hp == 71.0, 'while the ledger holds exactly where it was',
+            tostring(wounded.hp))
+    end
+
+    -- ═══ ...AND A CLIENT THAT ACTUALLY SITS THERE IS STILL CAUGHT ═══
+    --
+    -- The excuse is one sample, not a state. A modified client pinning its ped
+    -- at full health presents the ceiling on every consecutive pass, so the
+    -- second one counts and so does every one after it -- at 4Hz the report bar
+    -- is still crossed inside a second. Anything less than this and the clause
+    -- would be an amnesty rather than a correction.
+    do
+        local cheat = audited()
+
+        pedHealth[1001] = BR.ToEngineHp(20.0)
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        ok(cheat.hp == 20.0, 'a shot player\'s ledger is down at 20',
+            tostring(cheat.hp))
+
+        pedHealth[1001] = BR.Config.Match.maxHealth
+        for _ = 1, 6 do
+            fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        end
+
+        local t = cheat.healthAudit or {}
+        ok((t.samples or 0) >= 4 and (t.hp or 0.0) >= 240.0,
+            'a client PINNED at the ceiling is counted on every pass after the '
+                .. 'first, so the exploit this detector exists for still crosses '
+                .. 'the bar in well under a second',
+            ('counted %s hp over %s samples'):format(
+                tostring(t.hp), tostring(t.samples)))
+        ok((t.excused or {})[BR.HealthExcuse.UNSYNCED] == 1,
+            'with exactly one pass excused -- the unconfirmed one',
+            tostring((t.excused or {})[BR.HealthExcuse.UNSYNCED]))
+        ok(cheat.hp == 20.0,
+            'and the ledger refuses the whole of it, exactly as before',
+            tostring(cheat.hp))
+    end
+
     pedHealth[1001], pedHealth[1002] = nil, nil
+end
+
+describe('health.ledger')
+do
+    -- ═══ WHO OWNS A PLAYER'S HEALTH, DRIVEN THROUGH THE REAL SAMPLER ═══
+    --
+    -- The block above measures the disagreement between the ped and the ledger.
+    -- This one is about what the server DOES with it, which until 2026-09-08 was
+    -- "believes the ped" -- the highest-impact finding of that day's security
+    -- audit, reproduced there in one sentence: a 25-point hit took a player from
+    -- 100 to 75, and 300ms later the sampler put it back to 100.
+    --
+    -- EVERY ASSERTION HERE IS DRIVEN THROUGH `roster.positions`, not through
+    -- BR.HealthCommit. The solver's own arithmetic can be exercised with a table
+    -- literal and would pass with the sampler wired to the wrong field, calling
+    -- it with the health tolerance for armour, or not calling it at all. What is
+    -- worth pinning is that a hit lands, a fall lands, a med kit lands, a revive
+    -- survives and a modified client gets nothing -- and all six of those are
+    -- properties of the loop, so the loop is what runs.
+    --
+    -- THE HONEST CASES COME FIRST AND THERE ARE MORE OF THEM THAN CHEATS, which
+    -- is deliberate and is the same order shared/health_solve.lua argues for. A
+    -- rule that refuses honest play is worse than the hole it closed, because
+    -- the hole costs a match and a player who cannot be healed costs the mode.
+    local A = BR.Config.Combat.healthAudit
+    local MAXHP = BR.Config.Match.maxHealth
+
+    --- Two ALIVE players in a PLAYING match, peds and ledgers already agreed.
+    ---
+    --- THE PEDS ARE SET BEFORE THE PROMOTION, exactly as roadMatch and audited()
+    --- do, and the note on the first of those says why: healing a ped after its
+    --- player is already ALIVE is a rise with no server action behind it, which
+    --- is the shape this whole block exists to refuse.
+    local function ledgerMatch()
+        reset()
+        queueUp(1, 'Subject', BR.Mode.SOLO.key)
+        queueUp(2, 'Shooter', BR.Mode.SOLO.key)
+        queueUp(3, 'Bystander', BR.Mode.SOLO.key)
+        for s = 1, 3 do
+            pedHealth[1000 + s] = MAXHP
+            pedArmour[1000 + s] = 0
+        end
+        fakeTime = fakeTime + 300
+        BR.Sched.step(fakeTime)
+        for s = 1, 3 do BR.Roster.setState(s, BR.PlayerState.ALIVE) end
+        theMatch().state = BR.MatchState.PLAYING
+        setPos(1, 0.0, 0.0, 30.0)
+        setPos(2, 20.0, 0.0, 30.0)
+        setPos(3, 500.0, 500.0, 30.0)
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        sent = {}
+        return BR.Roster.get(1)
+    end
+
+    --- One sampler pass.
+    local function sample()
+        fakeTime = fakeTime + 300
+        BR.Sched.step(fakeTime)
+    end
+
+    --- Sampler passes covering at least `ms` of clock.
+    local function samplePast(ms)
+        for _ = 1, math.ceil(ms / 300) do sample() end
+    end
+
+    -- ═══════════════════════════════════════════════════════════════════════
+    -- THE HONEST PLAYER
+    -- ═══════════════════════════════════════════════════════════════════════
+
+    -- ─── A DELAYED BUT REAL ACKNOWLEDGEMENT ───
+    --
+    -- THE CASE THAT DECIDES THE WHOLE DESIGN, and the reason the fix is not
+    -- "refuse the rise and punish it". Between the server subtracting 25 and the
+    -- client applying it, an honest player's ped legitimately reads 25 HIGHER
+    -- than the ledger -- which is the cheat's exact shape, and on a 300ms
+    -- connection it lasts longer than a sample interval.
+    --
+    -- Refusing the rise is already right for them: their ped is on its way down
+    -- to the number the ledger holds, so holding it costs them nothing. What
+    -- they must NOT get is a correction pushed at them or a point counted
+    -- against them, and those are the two assertions that matter here.
+    do
+        local honest = ledgerMatch()
+        BR.Damage.applyHit(2, 1, 25.0, { weapon = 'test' })
+        ok(honest.hp == 75.0, 'the server takes 25 off the ledger', tostring(honest.hp))
+
+        -- Their ped is still on 100. The acknowledgement is in flight.
+        sample()
+        ok(honest.hp == 75.0,
+            'and the sampler does not hand it back while the client catches up',
+            tostring(honest.hp))
+        ok(#eventsOf(BR.Net.HEALTH_SYNC) == 0,
+            'a player on a bad connection is not corrected -- nothing is pushed '
+                .. 'at them for having a ping',
+            #eventsOf(BR.Net.HEALTH_SYNC))
+        ok(((honest.healthAudit or {}).hp or 0.0) == 0.0,
+            'nor counted against them, which is what `hurtGraceMs` still buys',
+            tostring((honest.healthAudit or {}).hp))
+        ok((honest.healthAudit or {}).excused[BR.HealthExcuse.HURT] ~= nil,
+            'and the reason is named in the breakdown rather than inferred')
+
+        -- ...AND IT ARRIVES. Their ped lands on the number the server already
+        -- held, and there was never anything to resolve.
+        pedHealth[1001] = BR.ToEngineHp(75.0)
+        sample()
+        ok(honest.hp == 75.0,
+            'and when the acknowledgement finally lands, the two numbers simply '
+                .. 'agree -- the honest client never notices this rule exists',
+            tostring(honest.hp))
+        ok(#eventsOf(BR.Net.HEALTH_SYNC) == 0,
+            'with no correction ever sent', #eventsOf(BR.Net.HEALTH_SYNC))
+        ok(((honest.healthAudit or {}).hp or 0.0) == 0.0,
+            'and nothing counted, start to finish',
+            tostring((honest.healthAudit or {}).hp))
+    end
+
+    -- ─── A FALL, A FIRE, A DROWNING OR A CAR ───
+    --
+    -- THE REASON THE SAMPLER CANNOT SIMPLY BE DELETED, which is the fix
+    -- everybody reaches for first. The engine owns these and the server models
+    -- none of them, so a ledger that refused the engine outright would mean a
+    -- player could step off a skyscraper and the server would never find out.
+    do
+        local subject = ledgerMatch()
+        pedHealth[1001] = BR.ToEngineHp(20.0)
+        sample()
+        ok(subject.hp == 20,
+            'the world still hurts people -- a sample BELOW the ledger is '
+                .. 'believed, every time',
+            tostring(subject.hp))
+        ok(#eventsOf(BR.Net.HEALTH_SYNC) == 0,
+            'and nobody is corrected for taking fall damage',
+            #eventsOf(BR.Net.HEALTH_SYNC))
+
+        -- ...AND INSIDE THE HURT GRACE TOO. The rule is ASYMMETRIC, not paused:
+        -- a window that suspended the downward path as well would lose a second
+        -- and a half of fire damage after every bullet.
+        BR.Damage.applyHit(2, 1, 5.0, { weapon = 'test' })
+        ok(subject.hp == 15.0, 'shot on top of the fall', tostring(subject.hp))
+        pedHealth[1001] = BR.ToEngineHp(3.0)
+        sample()
+        ok(subject.hp == 3,
+            'and the fire that follows the bullet still lands, inside the same '
+                .. 'grace window that refuses a rise',
+            tostring(subject.hp))
+    end
+
+    -- ─── A MED KIT, A BANDAGE OR A SHIELD PLATE ───
+    --
+    -- The one legitimate upward path the ledger does not already own: the server
+    -- issues INV_EFFECT with a TARGET and the CLIENT walks its own ped up to it.
+    -- server/inventory.lua stamps the window and the ceiling together, and this
+    -- is that pair driven by hand.
+    do
+        local subject = ledgerMatch()
+        BR.Damage.applyHit(2, 1, 60.0, { weapon = 'test' })
+        pedHealth[1001] = BR.ToEngineHp(40.0)
+        samplePast(A.hurtGraceMs + 500)
+        ok(subject.hp == 40, 'wounded, acknowledged, agreed', tostring(subject.hp))
+
+        -- The server issues a bandage worth 35: a deadline AND a destination.
+        subject.healUntil = fakeTime + A.healSettleMs
+        subject.grantHpTo = 75.0
+        pedHealth[1001] = BR.ToEngineHp(75.0)
+        sample()
+        ok(subject.hp == 75,
+            'health the server ISSUED reaches the ledger -- this is the case a '
+                .. 'naive "refuse every rise" fix would break',
+            tostring(subject.hp))
+
+        -- ...AND NOT ONE POINT FURTHER. Without the ceiling the window alone
+        -- would be a two-second amnesty per issue, re-stamped every tick for the
+        -- length of a channel and openable on demand by the re-press loop
+        -- (#271), inside which a modified client could pin its health at full.
+        pedHealth[1001] = MAXHP
+        sample()
+        ok(subject.hp == 75,
+            'and a client that keeps climbing past the target it was given is '
+                .. 'capped at the target -- a bandage buys the bandage',
+            tostring(subject.hp))
+
+        -- ...AND THE WINDOW CLOSES. A ceiling with no deadline behind it would
+        -- authorize the same rise for the rest of the match.
+        subject.healUntil = fakeTime
+        sample()
+        ok(subject.hp == 75,
+            'once the heal window closes the ceiling authorizes nothing at all',
+            tostring(subject.hp))
+    end
+
+    -- ─── ...AND A HEAL WITH NO CEILING FAILS CLOSED, SOFTLY ───
+    --
+    -- A future heal path that opens a window and forgets to name a target must
+    -- not become the hole again. It refuses -- but as an EXPLAINED refusal, so
+    -- the player is not yanked and no case is built against them. The cost is a
+    -- ledger that under-heals until the next authorized write, which is a bug in
+    -- the player's disfavour; the fail-open alternative is the audit finding
+    -- back verbatim.
+    do
+        local subject = ledgerMatch()
+        BR.Damage.applyHit(2, 1, 60.0, { weapon = 'test' })
+        pedHealth[1001] = BR.ToEngineHp(40.0)
+        samplePast(A.hurtGraceMs + 500)
+
+        subject.healUntil = fakeTime + A.healSettleMs
+        subject.grantHpTo = nil
+        pedHealth[1001] = MAXHP
+        subject.healthResyncAt, subject.healthResyncs = nil, nil
+        sent = {}
+        sample()
+        ok(subject.hp == 40,
+            'a heal window with no ceiling authorizes nothing -- it fails CLOSED',
+            tostring(subject.hp))
+        ok(#eventsOf(BR.Net.HEALTH_SYNC) == 0,
+            'and softly: nobody is yanked over a stamp the server forgot to write',
+            #eventsOf(BR.Net.HEALTH_SYNC))
+        ok((subject.healthAudit or {}).excused[BR.HealthExcuse.HEALING] ~= nil,
+            'the detector still reads it as a heal, so no case is built either')
+    end
+
+    -- ─── A REVIVE: THE ONE CASE WHERE THE LEDGER LEADS ───
+    --
+    -- Everywhere else the ped moves first and the ledger follows. A revive is
+    -- the reverse: the server writes 30 and the client's ped is STILL A CORPSE
+    -- until HEALTH_SYNC lands. Believing that downward sample would drag a
+    -- just-revived player back to the number they were revived from, which is
+    -- the fix undoing the feature -- so `healthSettleUntil` freezes BOTH
+    -- directions rather than only the upward one.
+    do
+        reset()
+        BR.Server.devMode = true
+        BR.Config.Match.autofill = true
+        join(1, 'Downed'); join(2, 'Mate')
+        BR.Party.invite(1, 2); BR.Party.respond(2, true)
+        BR.Roster.each(nil, function(s) BR.Roster.setState(s, BR.PlayerState.WARMUP) end)
+        local m = fakeMatch(BR.Mode.SQUAD.key)
+        BR.Party.formSquads(m)
+        m.state = BR.MatchState.PLAYING
+        m.startSquads = 1
+        for i = 1, 2 do
+            pedHealth[1000 + i] = MAXHP
+            pedArmour[1000 + i] = 0
+            setPos(i, 0.0, 0.0, 30.0)
+        end
+        sample()
+        for i = 1, 2 do BR.Roster.setState(i, BR.PlayerState.ALIVE) end
+        sample()
+        sent = {}
+
+        local downed = BR.Roster.get(1)
+        BR.Combat.defeat(1, 'gunshot', 2)
+        ok(downed.state == BR.PlayerState.DBNO, 'knocked', tostring(downed.state))
+
+        -- A DOWNED PLAYER IS NOT THE LEDGER'S BUSINESS AT ALL. Their ped is
+        -- parked at the DBNO floor and their real health is a bleed countdown,
+        -- so the sampler skips them -- and this asserts it still does, because
+        -- the alternative under the new rule would be fighting client/dbno.lua
+        -- for the floor four times a second.
+        pedHealth[1001] = MAXHP
+        sent = {}
+        sample()
+        ok(downed.hp == (BR.Config.Match.dbnoHp or 5) + 0.0,
+            'a downed player\'s ledger is neither sampled nor defended',
+            tostring(downed.hp))
+        ok(#eventsOf(BR.Net.HEALTH_SYNC) == 0,
+            'and nothing is pushed at a ped their own client is already holding',
+            #eventsOf(BR.Net.HEALTH_SYNC))
+
+        -- THE REVIVE. The ledger goes to 30 and the client's ped is still down
+        -- where the knock left it.
+        --
+        -- ONE POINT RATHER THAN ZERO, AND THAT IS NOT A FUDGE. A ped on the
+        -- health FLOOR is a dead ped, and the server-observed death check in
+        -- server/combat.lua reads `engineHp` off this very sample -- so a zero
+        -- here would knock them straight back down and this block would be
+        -- testing that subsystem instead of this one. One point expresses the
+        -- same fact this block is about: the ped is far BELOW the number the
+        -- server just wrote, and the sampler must not believe it yet.
+        pedHealth[1001] = BR.ToEngineHp(1.0)
+        BR.Combat.revive(1, 2)
+        ok(downed.state == BR.PlayerState.ALIVE and downed.hp == 30.0,
+            'a revive writes the ledger and stands them up',
+            ('%s / %s'):format(tostring(downed.state), tostring(downed.hp)))
+
+        sample()
+        ok(downed.hp == 30.0,
+            'and the corpse still on the client\'s screen does NOT drag it back '
+                .. 'down -- the settle window freezes both directions, which is '
+                .. 'the whole reason it is a freeze and not a ceiling',
+            tostring(downed.hp))
+
+        -- ...and the client applies HEALTH_SYNC, and everything agrees.
+        pedHealth[1001] = BR.ToEngineHp(30.0)
+        sample()
+        ok(downed.hp == 30.0, 'the ped catches up to the number it was given',
+            tostring(downed.hp))
+
+        -- ...AND THE WINDOW IS A WINDOW. A settle that never closed would be a
+        -- free two seconds after every revive in the match.
+        downed.healthSettleUntil = fakeTime
+        pedHealth[1001] = MAXHP
+        sample()
+        ok(downed.hp == 30.0,
+            'once it closes, a rise is refused again like any other',
+            tostring(downed.hp))
+        pedHealth[1001] = BR.ToEngineHp(30.0)
+    end
+
+    -- ─── A RESPAWN, AND THE BOUNDARY THAT MAKES IT WORK ───
+    --
+    -- The rule stops at ALIVE, deliberately and for the detector's own reason:
+    -- only a player who can be SHOT has a ledger worth defending. Everything
+    -- outside it is a fight with the game rather than with a cheat -- the road
+    -- home hands out a fresh ped on full health (client/spawn.lua), the locker
+    -- re-applies the health model on every model swap, and the warmup pad heals
+    -- and hurts people who are not in a round yet.
+    do
+        local subject = ledgerMatch()
+        BR.Damage.applyHit(2, 1, 60.0, { weapon = 'test' })
+        pedHealth[1001] = BR.ToEngineHp(40.0)
+        samplePast(A.hurtGraceMs + 500)
+        ok(subject.hp == 40, 'wounded at the end of a match', tostring(subject.hp))
+
+        BR.Roster.setState(1, BR.PlayerState.LOBBY)
+        BR.Match.resetPlayer(1, subject)
+        pedHealth[1001] = MAXHP
+        sample()
+        ok(subject.hp == 100,
+            'a respawn outside the match is believed in full -- the ledger is '
+                .. 'defended for players who can be shot and for nobody else',
+            tostring(subject.hp))
+
+        -- The warmup pad, in both directions, which is what lets a player be
+        -- hurt on the pad and stood back up by BR.Combat.reviveWarmup.
+        BR.Roster.setState(1, BR.PlayerState.WARMUP)
+        pedHealth[1001] = BR.ToEngineHp(50.0)
+        sample()
+        ok(subject.hp == 50, 'the pad hurts freely', tostring(subject.hp))
+        pedHealth[1001] = MAXHP
+        sample()
+        ok(subject.hp == 100, 'and heals freely', tostring(subject.hp))
+    end
+
+    -- ─── AN AMBULANCE RIDE (#191) ───
+    do
+        local subject = ledgerMatch()
+        BR.Damage.applyHit(2, 1, 40.0, { weapon = 'test' })
+        pedHealth[1001] = BR.ToEngineHp(60.0)
+        samplePast(A.hurtGraceMs + 500)
+
+        subject.rescue = { id = 1 }
+        pedHealth[1001] = MAXHP
+        subject.healthResyncAt, subject.healthResyncs = nil, nil
+        sent = {}
+        sample()
+        ok(subject.hp == 60,
+            'the ride itself authorizes nothing -- BR.Combat.revive writes the '
+                .. 'ledger on ARRIVAL, and that write has its own settle window',
+            tostring(subject.hp))
+        ok(#eventsOf(BR.Net.HEALTH_SYNC) == 0,
+            'and a player strapped to a stretcher is not yanked mid-ride',
+            #eventsOf(BR.Net.HEALTH_SYNC))
+        subject.rescue = nil
+    end
+
+    -- ═══════════════════════════════════════════════════════════════════════
+    -- THE CHEAT
+    -- ═══════════════════════════════════════════════════════════════════════
+
+    -- ─── THE AUDIT'S OWN REPRODUCTION, WITH THE EXPECTATION INVERTED ───
+    --
+    -- Verbatim from the 2026-09-08 report: "a 25-point hit reduced health from
+    -- 100 to 75; after 300 ms the sampler restored it to 100, with zero
+    -- unexplained recovery counted." Every number below is that sentence.
+    do
+        local cheat = ledgerMatch()
+        BR.Damage.applyHit(2, 1, 25.0, { weapon = 'test' })
+        ok(cheat.hp == 75.0, 'a 25-point hit reduces health from 100 to 75',
+            tostring(cheat.hp))
+
+        -- THE CHEAT: the client ignores HIT_DAMAGE and keeps its ped healthy.
+        -- `pedHealth` is the owning client's number, which is the whole problem.
+        pedHealth[1001] = MAXHP
+        sample()
+        ok(cheat.hp == 75.0,
+            'after 300ms the sampler does NOT restore it -- which is finding 1 '
+                .. 'of the security audit, with the expectation inverted',
+            tostring(cheat.hp))
+
+        samplePast(A.hurtGraceMs + 1000)
+        ok(cheat.hp == 75.0,
+            'and no later sample restores it either: the refusal is the rule, '
+                .. 'not a window that closes',
+            tostring(cheat.hp))
+
+        -- ...AND THE DAMAGE ACCUMULATES, which is the part that makes them
+        -- killable. Repeated nonlethal damage was the audit's exact claim, and
+        -- three more hits now take them out through the ledger.
+        for _ = 1, 3 do
+            BR.Damage.applyHit(2, 1, 25.0, { weapon = 'test' })
+            samplePast(600)
+        end
+        ok(cheat.hp <= 0.0 or cheat.state ~= BR.PlayerState.ALIVE,
+            'four 25-point hits kill a client that never applied any of them',
+            ('%s / %s'):format(tostring(cheat.hp), tostring(cheat.state)))
+    end
+
+    -- ─── ARMOUR IS THE SAME EXPLOIT AND IT COSTS THE SHOOTER MORE ───
+    --
+    -- `entry.armour` is what BR.Damage.applyHit soaks a hit with BEFORE health
+    -- is touched, and it is sampled off GetPedArmour on the same line -- so a
+    -- client pinning its armour at 100 regenerates the soak four times a second.
+    -- It has its own ceiling and its own tolerance, and a `commitSample` that
+    -- passed the HEALTH tolerance to the armour call would still pass every
+    -- assertion above.
+    do
+        local subject = ledgerMatch()
+
+        -- A plate the server issued: window plus ceiling, armour only.
+        subject.healUntil = fakeTime + A.healSettleMs
+        subject.grantArmourTo = 50.0
+        pedArmour[1001] = 50
+        sample()
+        ok(subject.armour == 50,
+            'an armour plate the server issued reaches the ledger',
+            tostring(subject.armour))
+
+        -- ...and not the whole bar.
+        pedArmour[1001] = BR.Config.Match.maxArmour
+        sample()
+        ok(subject.armour == 50,
+            'and a client that climbs past the plate it was given is capped at '
+                .. 'the plate',
+            tostring(subject.armour))
+
+        -- The soak comes off the ledger, and pinning the ped does not put it
+        -- back.
+        subject.healUntil = fakeTime
+        BR.Damage.applyHit(2, 1, 30.0, { weapon = 'test' })
+        ok(subject.armour == 20.0 and subject.hp == 100.0,
+            'a 30-point hit is soaked by armour and health is untouched',
+            ('%s / %s'):format(tostring(subject.armour), tostring(subject.hp)))
+        samplePast(A.hurtGraceMs + 1000)
+        ok(subject.armour == 20.0,
+            'and a client pinning its armour at 100 does NOT regenerate the '
+                .. 'soak -- the same exploit, refused the same way',
+            tostring(subject.armour))
+    end
+
+    -- ─── THE TOLERANCE IS AN EXCUSE, NOT A RATCHET ───
+    --
+    -- Two float pipelines, both floored, so a point of disagreement is
+    -- arithmetic rather than evidence -- and it is still not COMMITTED. A client
+    -- that claims exactly `ledger + tolerance` on every pass would otherwise
+    -- gain eight points a second and be back at full between fights, having
+    -- never once crossed the bar the detector measures.
+    do
+        local subject = ledgerMatch()
+        BR.Damage.applyHit(2, 1, 25.0, { weapon = 'test' })
+        pedHealth[1001] = BR.ToEngineHp(75.0)
+        samplePast(A.hurtGraceMs + 1000)
+        ok(subject.hp == 75, 'wounded, acknowledged, agreed', tostring(subject.hp))
+
+        for _ = 1, 12 do
+            pedHealth[1001] = BR.ToEngineHp(
+                math.min(100.0, (subject.hp or 0.0) + A.toleranceHp))
+            sample()
+        end
+        ok(subject.hp == 75,
+            'a rise inside the tolerance is refused every time -- twelve passes '
+                .. 'of "just two more" move the ledger nowhere',
+            tostring(subject.hp))
+        ok(((subject.healthAudit or {}).hp or 0.0) == 0.0,
+            'and it is still not ACCUSED of anything: refused and counted are '
+                .. 'two different verdicts',
+            tostring((subject.healthAudit or {}).hp))
+    end
+
+    -- ─── THE DIVERGENT CLIENT IS TOLD THE REAL NUMBER ───
+    --
+    -- Refusing the rise fixes the server and leaves the player walking around
+    -- inside a different game -- so the ledger is pushed back at them on
+    -- HEALTH_SYNC, the verb a revive already uses. Throttled, because four
+    -- corrections a second is a fight with the engine rather than a correction.
+    do
+        local cheat = ledgerMatch()
+        BR.Damage.applyHit(2, 1, 25.0, { weapon = 'test' })
+        samplePast(A.hurtGraceMs + 500)
+
+        -- Fast-forward the throttle so this block watches exactly one
+        -- correction rather than counting the ones the steps above produced.
+        cheat.healthResyncAt, cheat.healthResyncs = nil, nil
+        sent = {}
+        sample()
+
+        local syncs = eventsOf(BR.Net.HEALTH_SYNC)
+        ok(#syncs == 1, 'a client that refuses the instruction is told the real '
+            .. 'number', #syncs)
+        ok(#syncs == 1 and syncs[1].target == 1,
+            'to that player and nobody else',
+            #syncs == 1 and tostring(syncs[1].target) or 'no sync')
+        ok(#syncs == 1 and syncs[1].args[1].hp == 75,
+            'carrying the LEDGER\'s value in display units -- the same contract '
+                .. 'a revive already uses',
+            #syncs == 1 and tostring(syncs[1].args[1].hp) or 'no sync')
+
+        sent = {}
+        sample()
+        ok(#eventsOf(BR.Net.HEALTH_SYNC) == 0,
+            'and not again on the very next pass -- resyncMs, not the sample rate',
+            #eventsOf(BR.Net.HEALTH_SYNC))
+
+        sent = {}
+        fakeTime = fakeTime + (A.resyncMs + 100); BR.Sched.step(fakeTime)
+        ok(#eventsOf(BR.Net.HEALTH_SYNC) == 1,
+            'and again once the throttle expires, for as long as they keep lying',
+            #eventsOf(BR.Net.HEALTH_SYNC))
+        ok((cheat.healthResyncs or 0) == 2,
+            'counted on the entry, which is what /brhealth prints beside the '
+                .. 'tally so an operator can tell a quiet server from a fought one',
+            tostring(cheat.healthResyncs))
+    end
+
+    -- ═══════════════════════════════════════════════════════════════════════
+    -- THE LEVERS
+    -- ═══════════════════════════════════════════════════════════════════════
+
+    -- ─── `enforce` PUTS IT BACK, AND A STRING DOES NOT ───
+    --
+    -- The flag exists for a playtest that turns up a false refusal, and the
+    -- comparison is against the BOOLEAN for the reason `enabled` is: a convar
+    -- override can leave a string here, and every non-nil string is truthy in
+    -- Lua -- so `"false"` must fail SAFE rather than surrender the ledger.
+    do
+        local was = A.enforce
+        local subject = ledgerMatch()
+
+        A.enforce = 'false'
+        BR.Damage.applyHit(2, 1, 25.0, { weapon = 'test' })
+        pedHealth[1001] = MAXHP
+        samplePast(A.hurtGraceMs + 500)
+        ok(subject.hp == 75.0,
+            'a convar that left the STRING "false" here does not switch the '
+                .. 'ledger off -- the comparison is against the boolean',
+            tostring(subject.hp))
+
+        A.enforce = false
+        sample()
+        ok(subject.hp == 100,
+            'and the real boolean does: the pre-2026-09-08 behaviour is exactly '
+                .. 'back, which is what makes this a lever rather than a rewrite',
+            tostring(subject.hp))
+
+        A.enforce = was
+        ok(A.enforce == true, 'and the shipped default is on', tostring(A.enforce))
+    end
+
+    -- ─── THE DETECTOR AND THE RULE ARE TWO SWITCHES ───
+    --
+    -- Quietening a noisy console is a five-second decision; handing every client
+    -- authority over its own health is not. A build that folded them into one
+    -- flag would silently do the second whenever somebody wanted the first.
+    do
+        local wasEnabled = A.enabled
+
+        -- SWITCHED OFF BEFORE THE FIXTURE RUNS, not after it. The sampler builds
+        -- a tally on the first pass it audits, so a block that promoted three
+        -- players and then reached for the flag would be asserting against a
+        -- table the setup had already made -- which is the assertion passing for
+        -- the wrong reason rather than failing.
+        A.enabled = false
+        local subject = ledgerMatch()
+
+        BR.Damage.applyHit(2, 1, 25.0, { weapon = 'test' })
+        pedHealth[1001] = MAXHP
+        samplePast(A.hurtGraceMs + 500)
+        ok(subject.hp == 75.0,
+            'the ledger still holds with the DETECTOR switched off',
+            tostring(subject.hp))
+        ok(subject.healthAudit == nil,
+            'and nothing was counted, because that is the half that was off',
+            tostring(subject.healthAudit))
+
+        A.enabled = wasEnabled
+    end
+
+    pedHealth[1001], pedHealth[1002], pedHealth[1003] = nil, nil, nil
+    pedArmour[1001], pedArmour[1002], pedArmour[1003] = nil, nil, nil
 end
 
 
@@ -19706,6 +23738,157 @@ do
     BR.Match.resetPlayer(2, e2)
     ok(e2.reviveKey == nil,
         'BR.Match.resetPlayer clears the key, so nothing outlives the round')
+
+    if m then end
+end
+
+-- ---------------------------------------------------------------------------
+describe('revivekey.bringBack')
+do
+    -- ═══ AN AMBULANCE REVIVE HAS TO RETRACT THE PLACEMENT, NOT JUST DROP IT ═══
+    --
+    -- `placement` is a PUBLIC roster field, and BR.Combat.eliminate broadcasts
+    -- it to the whole match on its own delta the moment it is written. So by the
+    -- time a squad buys somebody back at an ambulance, every client in the match
+    -- is holding a finishing position for that player.
+    --
+    -- server/revivekey.lua's `bringBack` cleared it with `e.placement = nil`,
+    -- which REMOVES THE KEY FROM THE TABLE -- so the next delta serialises as
+    -- though nothing changed, and every scoreboard and every surface that draws
+    -- a finishing position kept showing the one the player had while they were
+    -- dead, for the rest of the match, after they were back on their feet and
+    -- shooting. It is the same defect server/roster.lua records for `squadId`
+    -- and the squad match that switched to solo.
+    --
+    -- ═══ THE ASSERTION IS ABOUT THE WIRE, NOT ABOUT THE ENTRY ═══
+    --
+    -- A test that only read `e.placement == nil` PASSES AGAINST THE BROKEN CODE.
+    -- The server side of the clear was never the half that was wrong, so the
+    -- only assertion that can fail is the one that reads the delta.
+    --
+    -- ═══ AND IT IS HERE RATHER THAN IN tools/test_revivekey.lua ═══
+    --
+    -- That suite drives BR.ReviveKey against a STUBBED BR.Roster and has no
+    -- broadcast layer at all -- no BR.Broadcast, no ROSTER_DELTA, nothing that
+    -- could tell a named clear from a vanished key. This file loads the real
+    -- server/revivekey.lua against the real roster and the real BR.Broadcast,
+    -- which makes it the only suite where the question can be asked.
+    reset()
+    BR.Server.devMode = true
+    for s = 1, 4 do queueUp(s, 'K' .. s, BR.Mode.SOLO.key) end
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    forceState(BR.MatchState.PLAYING)
+
+    local m = theMatch()
+    for s = 1, 4 do
+        BR.Roster.setState(s, BR.PlayerState.ALIVE)
+        BR.Roster.get(s).pos = { x = 400.0 + s, y = 400.0, z = 30.0 }
+        -- A SQUAD OF ONE EACH, which is the only shape that gets both halves of
+        -- this test. The mint is gated on `squadId` being set at all -- a player
+        -- with no squad leaves no key and there would be nothing to revive with
+        -- -- while BR.Server.squadsAlive keys on `squadId or 'solo:'..src`, so
+        -- four distinct ids are four teams and a placement is a number that
+        -- moves when somebody is put back.
+        BR.Roster.get(s).squadId = 'sq_bb' .. s
+    end
+
+    sent = {}
+    BR.Combat.eliminate(1, 'storm', 2)
+
+    local e1 = BR.Roster.get(1)
+    ok(e1.state == BR.PlayerState.OUT, 'the player is eliminated', e1.state)
+    ok(e1.placement == 4, 'and is given 4th of four', tostring(e1.placement))
+
+    -- THE VALUE GENUINELY REACHED EVERY CLIENT, which is what makes a bare nil
+    -- a bug rather than an untidiness. Asserted rather than assumed: if the
+    -- elimination ever stopped publishing it, the clear below would be
+    -- retracting nothing and this block would be pinning nothing.
+    BR.Broadcast.flushNow()
+    local published = nil
+    for _, s in ipairs(eventsOf(BR.Net.ROSTER_DELTA)) do
+        for _, d in ipairs(s.args[1].deltas or {}) do
+            if d.src == 1 and (d.e or {}).placement ~= nil then
+                published = d.e.placement
+            end
+        end
+    end
+    ok(published == 4,
+        'and the placement went out to the whole match on a delta -- there is '
+            .. 'a number on every client to take back', tostring(published))
+
+    local rec = e1.reviveKey
+    ok(rec ~= nil, 'the elimination minted a key for their squad')
+
+    -- THE STATE BR.ReviveKey.revive NEEDS, WRITTEN DIRECTLY: a key somebody is
+    -- holding, at a van. The hold, the reach and the ambulance ruling are
+    -- tools/test_revivekey.lua's subject and are driven at length there; what is
+    -- under test here is the COMPLETION, which is the only part that writes the
+    -- roster and the only part that can broadcast.
+    if rec then
+        rec.held = true
+        rec.spot = { x = 500.0, y = 500.0, z = 31.0 }
+    end
+
+    sent = {}
+    local revived, whyNot = BR.ReviveKey.revive(1)
+    ok(revived, 'the key revive completes', tostring(whyNot))
+    ok(e1.state == BR.PlayerState.ALIVE,
+        'and puts them back in the match', e1.state)
+
+    -- THE SERVER SIDE, WHICH WAS ALREADY RIGHT. Kept so that a regression in
+    -- the entry and a regression on the wire are told apart by which assertion
+    -- goes red, rather than by reading the diff.
+    ok(e1.placement == nil, 'the entry holds no placement', tostring(e1.placement))
+    ok(e1.diedAt == nil, 'and no death stamp', tostring(e1.diedAt))
+
+    -- ...AND THE CLEAR TRAVELS. THIS IS THE ASSERTION THE FIX EXISTS FOR.
+    BR.Broadcast.flushNow()
+    local cleared, resent = {}, nil
+    for _, s in ipairs(eventsOf(BR.Net.ROSTER_DELTA)) do
+        for _, d in ipairs(s.args[1].deltas or {}) do
+            if d.src == 1 then
+                for _, k in ipairs(d.clear or {}) do cleared[k] = true end
+                if (d.e or {}).placement ~= nil then resent = d.e.placement end
+            end
+        end
+    end
+    ok(cleared.placement,
+        'AND THE WIRE CARRIES A NAMED CLEAR FOR IT, not a vanished key -- '
+            .. 'without this every scoreboard in the match goes on drawing a '
+            .. 'finishing position over a player who is up and shooting')
+    ok(resent == nil,
+        'and nothing put the old number back on the wire behind it',
+        tostring(resent))
+
+    -- ═══ THE LEDGERS THAT WOULD KILL THEM AGAIN, none of them public ═══
+    ok(e1.engineHp == nil,
+        'the stale corpse sample is dropped, or the 1Hz server-observed death '
+            .. 'check eliminates them again a second into their new life')
+    ok(e1.stormHp == nil and e1.lastStormAt == nil,
+        'and the storm ledger with it -- storm.lua only ever clamps DOWN',
+        tostring(e1.stormHp))
+    ok(e1.killedByLicense == nil,
+        'and the camera\'s memory of who killed them, which a LATER death with '
+            .. 'no killer would otherwise inherit')
+    ok(e1.reviveKey == nil,
+        'the key is spent -- forSquad filters on the record EXISTING, so nil is '
+            .. 'the only representation of "gone" that cannot be bought twice')
+
+    -- ═══ AND THE NEXT ELIMINATION DOES NOT HAND OUT A DUPLICATE ═══
+    --
+    -- The other half of why the placement has to go: the next death reads
+    -- BR.Server.squadsAlive, which counts this player again the moment they are
+    -- ALIVE -- so a placement left set is handed out a SECOND time.
+    BR.Combat.eliminate(2, 'admin', 3)
+    ok(BR.Roster.get(2).placement == 4,
+        'the next elimination is 4th again, because four were standing',
+        tostring(BR.Roster.get(2).placement))
+    local holders = 0
+    BR.Roster.each(nil, function(_, e)
+        if e.placement == 4 then holders = holders + 1 end
+    end)
+    ok(holders == 1, 'and exactly one player holds 4th', holders)
 
     if m then end
 end
@@ -21017,6 +25200,656 @@ do
     ok(BR.Party.isGrouped(1) == false, 'so the requester is still unpartied')
 
     BR.Config.Match.maxSquadSize = capWas
+end
+
+-- ---------------------------------------------------------------------------
+-- B2: THE WARMUP HOLD IS ONCE PER ACCOUNT, NOT ONCE PER MATCH
+-- ---------------------------------------------------------------------------
+
+describe('tutorial.holdOncePerAccount')
+do
+    -- ═══ WHAT THIS IS FOR ═══
+    --
+    -- Owner, 2026-09-08: a player completed the in-game walkthrough in solos,
+    -- was paid, left warmup, queued for squads, "then were given deferred
+    -- matchmaking and shown the in-game tutorial a second time."
+    --
+    -- The deferred matchmaking is THIS function saying yes twice. Its only test
+    -- was a STATE test -- are you in WARMUP with a matchId -- and a player who
+    -- finished in match 1 satisfies that in match 2 exactly as a first-timer
+    -- does. The answer that separates them was on this side the whole time:
+    -- the profile row has said 'done' since they were paid, and
+    -- BR.Market.tutorialOf was written to hand it over and had NO CALLERS
+    -- anywhere in the tree.
+    --
+    -- ═══ WHY BR.Market IS STUBBED RATHER THAN LOADED ═══
+    --
+    -- server/market.lua is not in this suite's module list and does not belong
+    -- in it: it would drag in the whole inventory fetch, the DynamoDB `ask`
+    -- seam and the Volts ledger to assert one string. What roster.lua consumes
+    -- is one function returning one of three values, so that is what the
+    -- fixture provides -- and providing it as a global is also faithful, since
+    -- market.lua loads AFTER roster.lua (fxmanifest 542 vs 639) and this can
+    -- only ever be a call-time read.
+    local marketWas = BR.Market
+    local devWas = BR.Dev
+    local answer = ''
+    BR.Market = { tutorialOf = function() return answer end }
+
+    --- Put src on the pad, mid-warmup, with a matchId.
+    ---
+    --- THE HOLD IS ONLY GRANTABLE FROM THERE (the B1 mirror above), so every
+    --- assertion in this block has to start from a genuine warmup rather than
+    --- from a hand-set entry -- a fixture that wrote `state` and `matchId`
+    --- directly would pass whatever the real doors do.
+    local function onThePad(src)
+        BR.Config.Match.minToStart = 1
+        join(src, 'Learner')
+        fire(BR.Net.QUEUE_JOIN, src, { mode = BR.Mode.SOLO.key })
+        for _ = 1, 4 do fakeTime = fakeTime + 250; BR.Sched.step(fakeTime) end
+        return BR.Roster.get(src)
+    end
+
+    -- ── A GENUINE FIRST-TIMER IS STILL HELD ─────────────────────────────
+    --
+    -- FIRST, because it is the assertion that stops the fix being a deletion.
+    -- '' is "never answered", which is what every account reads back until it
+    -- finishes or declines.
+    reset()
+    BR.Server.devMode = true
+    answer = ''
+    local e = onThePad(1)
+    ok(e ~= nil and e.state == BR.PlayerState.WARMUP and e.matchId ~= nil,
+        'the learner is on the pad, mid-warmup', e and e.state)
+    ok(BR.Roster.setTutorialGame(1, true) == true,
+        'A BRAND NEW ACCOUNT IS HELD -- the row says \'\' and the walkthrough '
+            .. 'gets its warmup')
+    ok(BR.Roster.tutorialGameIn(BR.Roster.get(1).matchId) == 1,
+        'and the match counts them, which is what freezes its clock')
+
+    -- ── AN ABANDONED RUN IS STILL NOT A COMPLETION ──────────────────────
+    --
+    -- The row is only written by declining or by being PAID, and an abandoned
+    -- run is neither -- so it still reads '' and the second go the owner asked
+    -- for on 2026-09-07 is still granted. This is the negative that catches a
+    -- fix that went too far and started refusing on "has ever started one".
+    reset()
+    BR.Server.devMode = true
+    answer = ''
+    onThePad(1)
+    ok(BR.Roster.setTutorialGame(1, true) == true, 'they take the walkthrough')
+    ok(BR.Roster.setTutorialGame(1, false) == false,
+        'and abandon it -- giving the hold up is believed on sight')
+    ok(BR.Roster.setTutorialGame(1, true) == true,
+        'AND THEY MAY HAVE ANOTHER GO -- an abandoned run wrote nothing to the '
+            .. 'profile row, so the account is still unanswered')
+
+    -- ── THE OWNER'S SEQUENCE: THE SECOND MATCH IS REFUSED ───────────────
+    --
+    -- The player finished in solos, so the row says 'done'. They queue for
+    -- squads, get matched, and the page asks for the hold again. This is the
+    -- line that now says no, and the deferred matchmaking is what it prevents.
+    reset()
+    BR.Server.devMode = true
+    answer = 'done'
+    local e2 = onThePad(1)
+    ok(e2 ~= nil and e2.state == BR.PlayerState.WARMUP and e2.matchId ~= nil,
+        'the SAME player is on the pad in their next match, state test passing',
+        e2 and e2.state)
+    ok(BR.Roster.setTutorialGame(1, true) == false,
+        'BUT THE HOLD IS REFUSED -- the account already finished it, and that '
+            .. 'is the fact the state test above could never see')
+    ok(BR.Roster.get(1).tutorialGame ~= true, 'and nothing was written')
+    ok(BR.Roster.tutorialGameIn(BR.Roster.get(1).matchId) == 0,
+        'SO THE MATCH IS NOT HELD -- this is the deferred matchmaking the owner '
+            .. 'watched happen to a player who had already finished')
+    ok(printedSaying('already answered the tutorial') ~= nil,
+        'and the refusal is on the record rather than being a dead button')
+
+    -- DECLINING IS THE OTHER TERMINAL ANSWER and reads the same way here. They
+    -- are kept apart only so a human reading the row can tell why.
+    reset()
+    BR.Server.devMode = true
+    answer = 'declined'
+    onThePad(1)
+    ok(BR.Roster.setTutorialGame(1, true) == false,
+        'an account that DECLINED is refused too -- both terminal states mean '
+            .. '"do not offer this again"')
+
+    -- ── AND /brtutorial STILL WORKS ON A DEV BOX ────────────────────────
+    --
+    -- Owner, 2026-09-08: "i should be able to again since I'm using
+    -- `brtutorial`." BR.Tutorial.offerable grants that on the client; without
+    -- this exemption the SERVER would still refuse the hold, and the owner would
+    -- get cards over a warmup that was never frozen -- which is the shape this
+    -- fix would be reported back as a regression in.
+    --
+    -- READ OFF THE CONVAR PAIR devgate.lua READS, not off a field on the wire.
+    -- A client-asserted dev flag would be a 24-hour freeze of a stranger's
+    -- warmup for anyone who sent it.
+    reset()
+    BR.Server.devMode = true
+    answer = 'done'
+    BR.Dev = { on = function() return true end }
+    onThePad(1)
+    ok(BR.Roster.setTutorialGame(1, true) == true,
+        'ON A DEV BOX THE ROW IS OUTRANKED -- /brtutorial can walk a finished '
+            .. 'account through the whole thing again, hold and all')
+
+    -- AND THE EXEMPTION IS THE BOX, NOT THE PLAYER. The same account, the same
+    -- request, on a public box, is refused -- which is what stops this being a
+    -- hole rather than a hatch.
+    reset()
+    BR.Server.devMode = true
+    answer = 'done'
+    BR.Dev = { on = function() return false end }
+    onThePad(1)
+    ok(BR.Roster.setTutorialGame(1, true) == false,
+        'and on a public box the very same request is refused')
+
+    -- ── THE PERMISSIVE DIRECTION, WHICH IS DELIBERATE ───────────────────
+    --
+    -- The row is read once per connect inside the inventory fetch. A read that
+    -- failed, or one that has not landed yet, leaves the account at '' -- and
+    -- market.lua chose that direction on purpose for the offer itself ("costs a
+    -- player one toggle they can untick"). The same trade here costs a warmup
+    -- its clock rather than costing a genuine first-timer their walkthrough.
+    reset()
+    BR.Server.devMode = true
+    BR.Dev = nil
+    BR.Market = nil
+    onThePad(1)
+    ok(BR.Roster.setTutorialGame(1, true) == true,
+        'WITH NO ANSWER AVAILABLE AT ALL THE HOLD IS GRANTED -- an inventory '
+            .. 'read that has not landed must not cost a first-timer their run')
+
+    BR.Market = marketWas
+    BR.Dev = devWas
+end
+
+-- ---------------------------------------------------------------------------
+-- MATCH IDS (#291). LAST IN THE FILE, ON PURPOSE.
+--
+-- `BR.Server.matchSeq` is process-global and reset() does not clear it, which
+-- is true of the counter it replaced too. `match.ids` below mints four hundred
+-- of them, and every per-match seed in the gamemode is `clock + seq * prime` --
+-- so minting in the middle of this file shifts the loot layout of every block
+-- after it, and `loot.repair.bounds` needs a layout that put two weapons in one
+-- cell. Running these last costs nothing and moves nobody else's ground.
+-- ---------------------------------------------------------------------------
+
+describe('match.latest')
+do
+    -- ═══ "NEWEST" MEANS THE HIGHEST seq, NOT THE HIGHEST id (#291) ═══
+    --
+    -- BR.Server.latestMatch used to answer "the biggest id", which was the same
+    -- sentence for as long as ids were an increment. Eight call sites lean on
+    -- it -- `brforce` and its `debugTarget` fallback, `brphase`, the storm and
+    -- airdrop admin verbs, two debug helpers -- and `theMatch()` in this file IS
+    -- it, ninety-six times over.
+    --
+    -- IT KEEPS WORKING PERFECTLY WITH ONE MATCH RUNNING, which is every dev
+    -- session and every playtest, and misbehaves only once two are live: an
+    -- admin verb would silently drive a match nobody was looking at. So the case
+    -- has to be built rather than waited for.
+    reset()
+    BR.Server.devMode = true
+    join(1, 'A1'); join(2, 'A2'); join(3, 'B1'); join(4, 'B2')
+
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = 'solo' })
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = 'solo' })
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    local A = theMatch()
+    ok(A ~= nil, 'fixture: the first match forms')
+
+    BR.Match.transition(A, BR.MatchState.BUS)
+    fire(BR.Net.QUEUE_JOIN, 3, { mode = 'solo' })
+    fire(BR.Net.QUEUE_JOIN, 4, { mode = 'solo' })
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+
+    local B = BR.Server.matches[BR.Roster.get(3).matchId]
+    ok(B ~= nil and B ~= A, 'fixture: a second match forms alongside it')
+    ok(A.seq < B.seq, 'fixture: and it is the later of the two by seq',
+        ('%s then %s'):format(tostring(A.seq), tostring(B.seq)))
+
+    -- THE LIVE CASE, off the real machine.
+    ok(BR.Server.latestMatch() == B,
+        'with two matches live, latestMatch is the one formed most recently')
+
+    -- AND THE SAME QUESTION WITH THE IDS RUNNING BACKWARDS, which is what makes
+    -- this deterministic rather than a coin toss. A random 20-bit draw puts the
+    -- older match above the newer one about half the time; pinning the two ids
+    -- by hand asks the invariant directly, so a revert to `id > best.id` fails
+    -- here on every run rather than on every other one.
+    BR.Server.matches[A.id] = nil
+    BR.Server.matches[B.id] = nil
+    for _, e in pairs(BR.Server.roster) do
+        if e.matchId == A.id then e.matchId = 0xFFFFE
+        elseif e.matchId == B.id then e.matchId = 0x00002 end
+    end
+    A.id, B.id = 0xFFFFE, 0x00002
+    BR.Server.matches[A.id] = A
+    BR.Server.matches[B.id] = B
+
+    ok(BR.Server.latestMatch() == B,
+        'the newest match wins even when the older one holds the bigger id',
+        ('latest is seq %s / id %s')
+            :format(tostring((BR.Server.latestMatch() or {}).seq),
+                    tostring((BR.Server.latestMatch() or {}).id)))
+
+    -- AND THE ITERATION ORDER, WHICH IS THE SAME BUG WEARING A SECOND FACE.
+    -- BR.Server.eachMatch sorted the registry's keys and its own docstring says
+    -- tests and logs depend on the order. Sorting random ids is still
+    -- deterministic and is no longer creation order.
+    local seen = {}
+    BR.Server.eachMatch(function(m) seen[#seen + 1] = m end)
+    ok(#seen == 2 and seen[1] == A and seen[2] == B,
+        'and eachMatch still walks them in creation order, oldest first',
+        ('%s then %s'):format(tostring(seen[1] and seen[1].seq),
+                              tostring(seen[2] and seen[2].seq)))
+end
+
+describe('match.ids')
+do
+    -- ═══ THE ID IS A RANDOM 28-BIT DRAW, THE SEQ IS STILL AN INCREMENT ═══
+    --
+    -- Ids were a pure increment from 1 until #291, so any id disclosed the next
+    -- one and two matches on different days shared a number. They are now drawn
+    -- from 0x0000001..0xFFFFFFF and retried against every id issued this
+    -- process.
+    --
+    -- WIDENED FROM 20 BITS, AND THE REASON IS OUTSIDE THIS PROCESS. `issuedIds`
+    -- only ever guaranteed uniqueness for the life of one FXServer run, and
+    -- Ringmaster now keys a PERMANENT URL on the tag -- so two matches weeks
+    -- apart answering to /matches/d93aa is the outcome that matters, and the
+    -- birthday bound over the whole history of the box is the number to judge.
+    -- 20 bits reached even odds at about 1,200 matches. 28 bits reaches them
+    -- past 19,000.
+    --
+    -- COLLISIONS WITHIN ONE PROCESS ARE STILL NOT THEORETICAL, which is why the
+    -- retry is here rather than a comment: the failure would be SILENT, because
+    -- `BR.Server.matches[m.id] = m` replaces a live instance rather than
+    -- raising.
+    reset()
+
+    local N = 400
+    local seen, ids = {}, {}
+    local firstSeq = BR.Server.matchSeq + 1
+    local dupe, outOfRange, seqBreak = nil, nil, nil
+    local ascending = true
+
+    for i = 1, N do
+        local seq, id = BR.Match.mintIds()
+        if seq ~= firstSeq + i - 1 then seqBreak = seqBreak or seq end
+        if type(id) ~= 'number' or id < 0x00001 or id > 0xFFFFFFF
+           or math.tointeger(id) == nil then
+            outOfRange = outOfRange or id
+        end
+        if seen[id] then dupe = dupe or id end
+        seen[id] = true
+        ids[#ids + 1] = id
+        if i > 1 and ids[i] <= ids[i - 1] then ascending = false end
+    end
+
+    ok(seqBreak == nil, 'seq is still a contiguous increment, one per match',
+        tostring(seqBreak))
+    ok(outOfRange == nil,
+        ('every id is an integer in 0x00001..0xFFFFFFF across %d mints'):format(N),
+        tostring(outOfRange))
+    ok(dupe == nil,
+        ('and no two of %d minted ids collide -- the mint redraws against every '
+         .. 'id issued this process'):format(N),
+        dupe and ('%07x'):format(dupe) or nil)
+
+    -- AND IT IS ACTUALLY RANDOM, which the three assertions above would all
+    -- pass against the old increment. 400 draws arriving in ascending order by
+    -- chance is 1/400!, so this fails against an increment on every run and
+    -- against a real draw on none.
+    ok(not ascending, 'and they are drawn, not counted: the sequence is not '
+        .. 'monotonic', ('%07x %07x %07x ...'):format(ids[1], ids[2], ids[3]))
+
+    -- ═══ AND THE SPACE IS ACTUALLY 28 BITS WIDE, NOT MERELY DECLARED SO ═══
+    --
+    -- THE ASSERTION ABOVE CANNOT SEE THE WIDENING. Every id a 20-bit mint draws
+    -- is also a legal 28-bit id, so `outOfRange` passes just as happily against
+    -- the old bound -- which would have let this whole change ship as a comment.
+    -- What only a 28-bit mint can do is draw ABOVE the old ceiling.
+    --
+    -- IT IS NOT A COIN TOSS EITHER WAY. A 28-bit draw lands under 0xFFFFF one
+    -- time in 256, so 400 draws all staying inside the old space is 256^-400 --
+    -- and against a 20-bit mint it is not unlikely, it is impossible.
+    local highest = 0
+    for _, id in ipairs(ids) do
+        if id > highest then highest = id end
+    end
+    ok(highest > 0xFFFFF,
+        ('the draws use the whole 28-bit space, not just the old 20-bit floor '
+         .. '-- %d draws confined under 0xFFFFF would be the old mint'):format(N),
+        ('highest of %d was %07x'):format(N, highest))
+
+    -- THE FLOOR IS ASSERTED AT THE SOURCE, not by drawing. 400 draws would
+    -- clear 0 by luck rather than by construction -- one in a million is not a
+    -- test -- and 0 is the id server/loot.lua reserves for the communal warmup
+    -- pseudo-match, which it compares against the literal. A match that drew 0
+    -- would share a loot registry with the warmup pad.
+    local mfh = io.open(ROOT .. 'br_core/server/match.lua')
+    local msrc = mfh and mfh:read('a') or ''
+    if mfh then mfh:close() end
+    ok(msrc:find('local ID_MIN, ID_MAX = 0x00001, 0xFFFFFFF', 1, true) ~= nil,
+        'and the space starts at 1, so 0 stays the warmup pad\'s alone')
+
+    -- ═══ THE PER-MATCH SEEDS FOLD IN `seq`, NOT THE ID ═══
+    --
+    -- Six generators are seeded `clock + N * prime` so that two matches minted
+    -- in the same server millisecond do not replay each other: the loot layout
+    -- (15485863), the storm (7919), the bus tour (104729), the airdrop
+    -- (1299709) and the two showrooms. N is the SEQUENCE number.
+    --
+    -- ALL THAT NUMBER HAS TO DO is tell two matches apart inside one
+    -- millisecond, which an increment does exactly as well -- and being an
+    -- increment it keeps every one of those seeds the value it has always had.
+    -- Folding the random id in instead makes every layout, storm path and tour
+    -- on the box unreproducible from one boot to the next, INCLUDING in this
+    -- file: when it was tried, `loot.repair.bounds` failed one run in three, on
+    -- a cell that held a second entry only when the seed came out right.
+    local planA = { id = 0x00011, seq = 77 }
+    local planB = { id = 0xfa3c1, seq = 77 }
+    BR.Bus.plan(planA)
+    BR.Bus.plan(planB)
+    ok(table.concat(planA.route.legs, '-') == table.concat(planB.route.legs, '-')
+       and planA.anchor.name == planB.anchor.name,
+        'two matches with the same seq fly the same tour whatever their ids are '
+            .. '-- the per-match seeds are reproducible from a boot, and a '
+            .. 'random id is not',
+        ('%s homing on %s, vs %s on %s')
+            :format(table.concat(planA.route.legs, '-'), planA.anchor.name,
+                    table.concat(planB.route.legs, '-'), planB.anchor.name))
+
+    -- THE BUCKET IS STILL DENSE AND SMALL, which is the whole reason `seq`
+    -- exists. A bucket derived from the id would be scattered across a million.
+    reset()
+    BR.Server.devMode = true
+    join(1, 'A'); join(2, 'B')
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = 'solo' })
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = 'solo' })
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    local m = theMatch()
+    ok(m ~= nil and m.bucket == BR.Config.Match.matchBucketBase + m.seq,
+        "a match's bucket is matchBucketBase + its seq, never its id",
+        m and ('bucket %s, seq %s, id %05x'):format(tostring(m.bucket),
+                                                    tostring(m.seq), m.id))
+end
+
+describe('match.tag')
+do
+    -- ═══ STORED AS A NUMBER, SHOWN AS SEVEN HEX CHARACTERS (#291) ═══
+    --
+    -- Owner, 2026-09-09: "I like the idea of storing as number, displaying as
+    -- hex", and "Why can't we display it as hex everywhere?" There are sixty-odd
+    -- places in the gamemode that put a match id in front of a person and one
+    -- function that decides how it is spelled.
+    --
+    -- WIDENED FROM FIVE TO SEVEN, 2026-09-12, BECAUSE THE NAME OUTLIVED THE
+    -- PROCESS. `issuedIds` guarantees no reuse for the life of one FXServer run
+    -- and nothing else, and Ringmaster now keys a permanent URL on the tag -- so
+    -- the number to judge is the birthday bound over every match the box ever
+    -- plays, not over one session. 20 bits reached even odds at about 1,200
+    -- matches; 28 bits reaches them past 19,000.
+
+    local bad = nil
+    for _, id in ipairs({ 0x0000001, 0x000000f, 0x00000ff, 0x0000abc, 0x000a3f1,
+                          0x00fffff, 0x0a3f1c4, 0xfffffff }) do
+        local t = BR.MatchTag(id)
+        if #t ~= 7 or t:match('^[0-9a-f]+$') == nil or BR.MatchFromTag(t) ~= id then
+            bad = bad or ('%s -> %s'):format(tostring(id), tostring(t))
+        end
+    end
+    ok(bad == nil,
+        'a tag is seven lower-case hex characters, zero padded, and reads back '
+            .. 'as the number it came from -- across the whole 28-bit space',
+        bad)
+
+    -- ZERO PADDED, WHICH IS NOT DECORATION: the space is fixed width, so
+    -- `000a3f1` and `a3f1` being one match written two ways is a difference
+    -- somebody has to hold in their head while reading a console.
+    ok(BR.MatchTag(0xa3f1) == '000a3f1', 'a short id is padded, never trimmed',
+        BR.MatchTag(0xa3f1))
+
+    -- ═══ AND EVERY LINK PRINTED BEFORE TODAY STILL RESOLVES ═══
+    --
+    -- THIS IS THE HALF THAT CANNOT BE ALLOWED TO BREAK. Every match already
+    -- recorded carries a five-character tag, and Ringmaster has live
+    -- `/matches/<tag>` URLs built from them -- in Discord, in bookmarks, in
+    -- incident notes. Widening the RENDERING renames those matches: `d93aa`
+    -- becomes `00d93aa` from now on.
+    --
+    -- THE PARSER IS WHAT MAKES THAT SAFE, AND IT IS SAFE BY CONSTRUCTION RATHER
+    -- THAN BY A SPECIAL CASE. BR.MatchFromTag is `tonumber(s, 16)` with no width
+    -- check at all, so a tag of any length is the same number it always was --
+    -- leading zeroes have never carried meaning in base 16. Ringmaster's
+    -- `matchFromTag` accepts 1..8 hex digits for the same reason. So the old URL
+    -- and the new one address one match, and there is nothing to migrate.
+    --
+    -- PINNED HERE BECAUSE THE OBVIOUS "FIX" WOULD BREAK IT. Adding `#s == 7` to
+    -- the parser to reject typos would 404 every link the console has ever
+    -- handed out, and it would look like a tightening rather than a regression.
+    local short = nil
+    for _, pair in ipairs({ { 'd93aa', 0xd93aa }, { '0d93aa', 0xd93aa },
+                            { '00d93aa', 0xd93aa }, { 'a3f1', 0xa3f1 },
+                            { '1', 0x1 }, { '0019c', 412 } }) do
+        if BR.MatchFromTag(pair[1]) ~= pair[2] then
+            short = short or ('%s -> %s, wanted %d')
+                :format(pair[1], tostring(BR.MatchFromTag(pair[1])), pair[2])
+        end
+    end
+    ok(short == nil,
+        'a five-character tag from before the widening still parses to the same '
+            .. 'id as its seven-character spelling -- old links resolve', short)
+    ok(BR.MatchFromTag('d93aa') == BR.MatchFromTag(BR.MatchTag(0xd93aa)),
+        'and the old spelling and the canonical one are the same match',
+        ('%s vs %s'):format('d93aa', BR.MatchTag(0xd93aa)))
+
+    -- AND THE CONSOLE ACTUALLY SAYS IT. Every one of those sites was a `%d`
+    -- until this round, and a `%d` and a `%05x` of the same number are two
+    -- different strings for the same match -- which is the state moderation was
+    -- being asked to read.
+    reset()
+    BR.Server.devMode = true
+    join(1, 'A'); join(2, 'B')
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = 'solo' })
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = 'solo' })
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    local m = theMatch()
+    local formed = printedSaying('formed --')
+    ok(formed ~= nil
+       and formed:find('match ' .. BR.MatchTag(m.id), 1, true) ~= nil
+       and formed:find('match ' .. tostring(m.id), 1, true) == nil,
+        'the formation line names the match in hex and nowhere in decimal',
+        ('%s (id %d)'):format(tostring(formed), m.id))
+
+    -- ═══ THE SQUAD ID CARRIES THE TAG, AND ITS SUFFIX STILL PARSES ═══
+    --
+    -- server/party.lua mints 'm<tag>sq<n>', so a squad now reads `m0a3f1sq2`
+    -- rather than `m4sq2`. THE PREFIX IS NOT LOAD BEARING AND THE SUFFIX IS:
+    -- BR.Voice.radioChannel parses `sq(%d+)$` off the END of it, and
+    -- Ringmaster's MatchCard.tsx runs /sq(\d+)$/ over the same value. Neither
+    -- can be confused by the prefix -- `s` and `q` are not hex digits, so the
+    -- tag can never contribute a second "sq" for the anchor to find.
+    --
+    -- A FAILURE HERE IS SILENT SQUAD VOICE. radioChannel returns nil when it
+    -- cannot read an index, which is proximity-only squad chat with one line in
+    -- the console, and #150 is the precedent for that going unnoticed for weeks.
+    reset()
+    BR.Server.devMode = true
+    for s = 1, 4 do queueUp(s, 'S' .. s, BR.Mode.SQUAD.key) end
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    local sqm = theMatch()
+    local sqid = BR.Roster.get(1).squadId
+    ok(sqm ~= nil and sqid ~= nil
+       and sqid == ('m%ssq'):format(BR.MatchTag(sqm.id)) .. sqid:match('%d+$'),
+        'a squad id is m<tag>sq<n>, the match named the way everything else '
+            .. 'names it', tostring(sqid))
+
+    local ch = BR.Voice.radioChannel(sqm.id, sqid)
+    ok(ch ~= nil and ch > 0,
+        'and BR.Voice.radioChannel still reads an index off it -- nil here is '
+            .. 'every squad radio in the game going quiet', tostring(ch))
+    ok(printedSaying('cannot read a squad index') == nil,
+        'without the format-has-changed warning that guards exactly this')
+
+    -- THE INDEX IT READS IS THE RIGHT ONE, not merely a number. The channel is
+    -- base + match * stride + index, so two squads of one match differ by
+    -- exactly the difference between their indexes.
+    local tag = BR.MatchTag(sqm.id)
+    local c2 = BR.Voice.radioChannel(sqm.id, ('m%ssq2'):format(tag))
+    local c5 = BR.Voice.radioChannel(sqm.id, ('m%ssq5'):format(tag))
+    ok(c2 ~= nil and c5 ~= nil and c5 - c2 == 3,
+        'and it is the trailing index that lands in the channel, not the hex '
+            .. 'in front of it', ('%s vs %s'):format(tostring(c2), tostring(c5)))
+
+    -- THE PREFIX IS GENUINELY IGNORED. Same match, same index, a prefix that
+    -- looks nothing like the real one: same room. This is the property
+    -- MatchCard.tsx leans on too.
+    ok(BR.Voice.radioChannel(sqm.id, 'anything-at-all-sq2') == c2,
+        'the parse anchors on the suffix and reads nothing before it')
+
+    -- ═══ AND THE CHANNEL SURVIVES THE TOP OF THE 28-BIT SPACE ═══
+    --
+    -- radioChannel is `radioBase + matchId * radioStride + index`, so widening
+    -- the id multiplied the biggest channel this can produce by 256: the old
+    -- ceiling was about 1.05e8, which fits an int32, and the new one is about
+    -- 2.68e10, which does not. That is worth an assertion rather than an
+    -- argument, because the failure would be silent squad voice and #150 is the
+    -- precedent for that going unnoticed for weeks.
+    --
+    -- IT IS SAFE, AND THE REASON IS WHERE THE NUMBER GOES. This one is genuinely
+    -- JOINED, unlike proxChannel above it -- server/voice.lua hands it to
+    -- pma-voice's addChannelCheck and the client to setRadioChannel. But
+    -- pma-voice only ever uses it as a Lua table key (`radioData[channel]`), a
+    -- state-bag value and a `> 0` test. It never reaches a Mumble native:
+    -- MumbleSetVoiceChannel takes pma-voice's own `assignedChannel`, not ours.
+    -- So a channel past 2^32 is a large identifier and nothing more.
+    local topId = 0xFFFFFFF
+    local hi1 = BR.Voice.radioChannel(topId, ('m%ssq1'):format(BR.MatchTag(topId)))
+    local hi2 = BR.Voice.radioChannel(topId, ('m%ssq2'):format(BR.MatchTag(topId)))
+    ok(hi1 ~= nil and math.tointeger(hi1) ~= nil and hi1 > 0,
+        'the highest id in the space still yields a positive integer channel',
+        tostring(hi1))
+    ok(hi1 ~= nil and hi2 ~= nil and hi2 - hi1 == 1,
+        'and two squads of that match are still one apart, so the stride did '
+            .. 'not wrap', ('%s vs %s'):format(tostring(hi1), tostring(hi2)))
+    -- DISTINCT FROM A LOW-ID MATCH, which is the property the whole number is
+    -- for: two matches that must not hear each other have to differ on it.
+    ok(hi1 ~= BR.Voice.radioChannel(0x0000001, 'm0000001sq1'),
+        'and it is still distinct from the bottom of the space')
+end
+
+describe('lobby.capacityFormsASecondMatch')
+do
+    --[[
+        THE 25TH PLAYER FORMS A SECOND MATCH RATHER THAN STANDING IN THE LOBBY
+        (infradocs#23).
+
+        The closed beta runs 48 connection slots against a 24-player match.
+        Those are two different settings -- `sv_maxclients` in server.cfg and
+        `BR.Config.Match.maxPlayers` here -- and the shape only works if a full
+        warmup pushes the next arrival into a NEW instance. BR.Server.formingMatch
+        answers nil once every warmup of the mode is full, and nil is the
+        formation gate: the tick's else branch mints a match out of the queue.
+        If that nil stranded the player instead, the lobby would dead-end at 24
+        and the other 24 connection slots would be decoration.
+
+        THE CAP IS NOT OVERRIDDEN HERE, unlike the blocks that borrow
+        `maxPlayers = 2` to reach shortenWarmupIfFull cheaply. The shipped
+        number is the thing under test: a beta sized at 24 that was only ever
+        proved at 2 is a beta nobody proved.
+
+        AND IT RUNS IN PRODUCTION MODE, which is the mode the beta runs and the
+        one `minToStartProd` governs -- so the wait the 25th player does before
+        the 26th arrives is asserted as a WAIT ON PLAYERS rather than mistaken
+        for a refusal.
+    ]]
+
+    local savedDev = BR.Server.devMode
+    local savedMin = BR.Config.Match.minToStart
+
+    local function pump(ms)
+        for _ = 1, math.max(1, math.floor(ms / 250)) do
+            fakeTime = fakeTime + 250
+            BR.Sched.step(fakeTime)
+        end
+    end
+
+    reset()
+    BR.Server.devMode = false      -- production: minToStartProd decides
+    local SQUAD = BR.Mode.SQUAD.key
+    local cap   = BR.Config.Match.maxPlayers
+
+    ok(cap == 24, 'the shipped match cap is 24', tostring(cap))
+
+    for src = 1, cap do queueUp(src, ('P%d'):format(src), SQUAD) end
+    pump(1000)
+
+    local mA = theMatch()
+    ok(mA ~= nil and mA.state == BR.MatchState.WARMUP,
+        'a full lobby opens one warmup',
+        mA and tostring(mA.state) or 'no match at all')
+    ok(mA ~= nil and BR.Server.countIn(mA) == cap,
+        'with every one of them in it',
+        mA and tostring(BR.Server.countIn(mA)) or 'no match at all')
+
+    -- THE GATE ITSELF: a full WARMUP is not a forming match, and that nil is
+    -- what the next ready-up meets.
+    ok(BR.Server.formingMatch(SQUAD) == nil,
+        'and it stops forming once it is full')
+
+    -- ------------------------------------------- the 25th, on their own ---
+    --
+    -- One queuer is not a production match, so this is a WAIT and not a
+    -- refusal: they keep their place in the queue and the full match is not
+    -- disturbed to make room for them.
+    queueUp(cap + 1, 'LATE', SQUAD)
+    pump(1000)
+
+    local late = BR.Roster.get(cap + 1)
+    ok(late ~= nil and late.matchId == nil,
+        'the 25th player is not squeezed into the full match',
+        late and tostring(late.matchId) or 'no roster entry')
+    ok(mA ~= nil and BR.Server.countIn(mA) == cap,
+        'which is still exactly full',
+        mA and tostring(BR.Server.countIn(mA)) or 'no match at all')
+
+    local blk = BR.Match.startBlocker(SQUAD)
+    ok(blk ~= nil and blk.reason == 'players'
+        and blk.have == 1 and blk.need == 2,
+        'and they are waiting for a second player, which is all they are '
+            .. 'waiting for',
+        blk and ('%s %s/%s'):format(tostring(blk.reason),
+                                    tostring(blk.have), tostring(blk.need))
+            or 'nothing is blocking')
+
+    -- ------------------------------------------- and the 26th lands it ---
+    queueUp(cap + 2, 'LATER', SQUAD)
+    pump(1000)
+
+    local mB = BR.Server.formingMatch(SQUAD)
+    ok(mB ~= nil and mA ~= nil and mB.id ~= mA.id,
+        'the pair behind a full warmup form a SECOND match',
+        mB and 'same instance as the first' or 'no second match formed')
+    ok(mB ~= nil and BR.Roster.get(cap + 1).matchId == mB.id
+        and BR.Roster.get(cap + 2).matchId == mB.id,
+        'with both of them in it')
+    ok(mA ~= nil and BR.Server.countIn(mA) == cap,
+        'and the first match is untouched by any of it',
+        mA and tostring(BR.Server.countIn(mA)) or 'no match at all')
+
+    BR.Server.devMode = savedDev
+    BR.Config.Match.minToStart = savedMin
 end
 
 realPrint(('\n\27[32m%d passed\27[0m'):format(pass))

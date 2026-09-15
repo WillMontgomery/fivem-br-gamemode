@@ -39,9 +39,11 @@ end
 function BR.Bus.plan(m)
     local cfg = BR.Config.Bus
 
-    -- Seeded with the match id folded in: two matches planned in the same
-    -- server millisecond (tests, mostly) must not fly identical tours.
-    local rng = BR.Rng(GetGameTimer() + m.id * 104729)
+    -- Seeded with the match's sequence number folded in: two matches planned in
+    -- the same server millisecond (tests, mostly) must not fly identical tours.
+    -- `seq` rather than `id` (#291) -- see BR.Loot.begin for why every one of
+    -- these four seeds stayed on the increment.
+    local rng = BR.Rng(GetGameTimer() + m.seq * 104729)
 
     -- Draw the tour: one option per leg, flattened into waypoints.
     local legs, waypoints = {}, {}
@@ -233,9 +235,9 @@ function BR.Bus.plan(m)
     }
     m.route = route
 
-    print(('[br_core] bus: match %d tour %d-%d-%d-%d, %d waypoints, %d path points -- storm homes on %s')
-        :format(m.id, legs[1], legs[2], legs[3], legs[4], #waypoints, #points,
-                m.anchor.name))
+    print(('[br_core] bus: match %s tour %d-%d-%d-%d, %d waypoints, %d path points -- storm homes on %s')
+        :format(BR.MatchTag(m.id), legs[1], legs[2], legs[3], legs[4],
+                #waypoints, #points, m.anchor.name))
 
     BR.Broadcast.toMatch(m, BR.Net.BUS_ROUTE, route)
 end
@@ -309,8 +311,9 @@ function BR.Bus.depart(m)
     m.airborne = false
     m.hopAt    = route.rotateAt + 3500
 
-    print(('[br_core] bus: match %d departing -- doors at %.0fs, %.0fs total')
-        :format(m.id, (route.jumpFrom - now) / 1000, (route.tEnd - now) / 1000))
+    print(('[br_core] bus: match %s departing -- doors at %.0fs, %.0fs total')
+        :format(BR.MatchTag(m.id), (route.jumpFrom - now) / 1000,
+                (route.tEnd - now) / 1000))
 
     BR.Broadcast.toMatch(m, BR.Net.BUS_ROUTE, route)
 
@@ -437,8 +440,8 @@ BR.Sched.every(500, 'bus.eject', function()
                     BR.Roster.rebucket(src)
                     moved = moved + 1
                 end)
-            print(('[br_core] bus: match %d airborne -- %d rider(s) moved to bucket %d')
-                :format(m.id, moved, m.bucket))
+            print(('[br_core] bus: match %s airborne -- %d rider(s) moved to bucket %d')
+                :format(BR.MatchTag(m.id), moved, m.bucket))
         end
 
         if now < m.route.tEnd then return end

@@ -20,7 +20,7 @@ import type { Cue } from '../audio/cues'
  *   * it makes a sound, through Lua's cue table. Hover and press are different
  *     cues, because a menu that only speaks on click feels dead between clicks.
  *
- * THE AUDIO IS OURS, synthesised in the browser -- not a GTA frontend sound.
+ * THE AUDIO IS OURS, synthesized in the browser -- not a GTA frontend sound.
  * The engine's menu sounds are instantly recognisable as GTA Online's menus,
  * which is the one association a standalone mode should not be making. Native
  * audio is kept for per-bullet combat cues only, where engine ducking matters.

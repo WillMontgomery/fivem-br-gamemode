@@ -28,7 +28,7 @@ import react from '@vitejs/plugin-react'
 // containing the bundle -- the build necessarily happens before the commit that
 // records it, so the hash always reads one behind. The timestamp is the
 // unambiguous half; use it to confirm a bundle is current.
-const BUILD_STAMP = (() => {
+const BUILD_STAMP = process.env.BR_BUILD_STAMP ?? (() => {
   const t = new Date().toISOString().replace('T', ' ').slice(0, 19)
   let rev = 'nogit'
   try {

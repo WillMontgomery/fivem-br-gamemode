@@ -312,6 +312,78 @@ function BR.Admin.tabVerdict(src)
     return assess(src, true)
 end
 
+--- May this source drive a DEVELOPER TOOL over the wire?
+---
+--- ═══ DEV MODE IS A BUILD FLAG, NOT AN AUTHORIZATION CHECK ═══
+---
+--- This exists because `br:loot:dev` shipped with exactly one test in front of
+--- it -- `if not BR.Server.devMode then return end` -- and that sentence reads
+--- like a permission while being a fact about how the process was STARTED.
+--- Every connected client passes it. The handler behind it resolves an item id
+--- through BR.Config.WeaponById, which contains BR.Config.AirdropWeapons, so
+--- the refusal that looked like a gate handed any player an RPG, a grenade
+--- launcher, a railgun or a minigun on request (#232, audited 2026-09-08).
+--- server.cfg.example ships with both dev-mode flags `true`, which is what
+--- makes that a deployment rather than a hypothetical.
+---
+--- BOTH HALVES, AND `and` RATHER THAN `or`:
+---
+---   DEV MODE STILL HAS TO BE ON. These tools bend match state -- they spawn
+---   items into a live round -- and have no business existing on the public box
+---   even for an admin. That is the owner's 2026-08-31 instruction about console
+---   commands ("Yes I want all client and server commands gated behind devmode")
+---   applied to the one developer door that is not a console command.
+---
+---   AND THE CALLER STILL HAS TO BE SOMEBODY, which is the half that was
+---   missing. `BR.Grants.CONSOLE` is the project's game-side answer to "is this
+---   person staff" -- argued at length in server/grants.lua -- and it is the
+---   only identity test the game has that an ordinary client cannot pass.
+---
+--- ═══ FAIL CLOSED ON `nil`, WHICH IS THE OPPOSITE OF server/players.lua ═══
+---
+--- `holds` answers nil for "we have never managed to read this license's row"
+--- -- br_ddb absent, DynamoDB unreachable, or the first seconds after a restart.
+--- The report-bounty rule in server/players.lua deliberately PAYS on nil,
+--- because the cost of guessing wrong there is an honest player silently
+--- earning nothing. THE ASYMMETRY RUNS THE OTHER WAY HERE and it is not close:
+--- failing open hands a stranger a minigun, and failing closed costs a developer
+--- one keyboard shortcut. It costs them nothing else -- `brcrate <serverId>
+--- [itemId]` on the server console is the same code path, is dev-gated by
+--- construction through br_lib/shared/devgate.lua, and spawns at the named
+--- player's own sampled position. The developer on a box with no grants backend
+--- loses "two metres in front of my ped" and keeps the feature.
+---
+--- IT NAMES WHICH HALF CLOSED, because "nothing happened" is the failure mode
+--- devgate.lua wrote three paragraphs about. The reason is for the SERVER
+--- CONSOLE, never for the wire -- see the refusal in server/loot.lua.
+--- @param src number|string
+--- @return boolean ok
+--- @return string|nil why  'dev-mode-off' | 'no-license' | 'grant-unknown' | 'not-admin'
+function BR.Admin.devTrusted(src)
+    -- `== true`, NEVER truthiness, and not because devMode is ever a number:
+    -- because a missing BR.Server or a renamed field must read as "no" rather
+    -- than as an error thrown halfway through a decision. This project has
+    -- shipped the truthiness version of a three-state test four times; see the
+    -- `didHit` note in br_core/client/dbno.lua.
+    if not BR.Server or BR.Server.devMode ~= true then
+        return false, 'dev-mode-off'
+    end
+
+    local license = licenseOfSource(src)
+    if license == nil then return false, 'no-license' end
+
+    local grant = BR.Grants and BR.Grants.holds(license, BR.Grants.CONSOLE)
+    if grant ~= true then
+        -- Three reasons out of two falsy values, the same way `assess` above
+        -- splits them: a missing br_ddb and an ordinary player are different
+        -- problems with different fixes, and only the comparison tells them
+        -- apart.
+        return false, (grant == nil) and 'grant-unknown' or 'not-admin'
+    end
+
+    return true, nil
+end
+
 --- The warm's two tables and its counters.
 ---
 --- IT EXISTS FOR THE TEST, and that is a good enough reason here for the same

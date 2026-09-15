@@ -35,50 +35,47 @@ jobs:
           sudo ln -sf /usr/bin/luac5.4 /usr/local/bin/luac
           sudo ln -sf /usr/bin/lua5.4 /usr/local/bin/lua
 
+      # br_ddb runs under FXServer's Node 22 runtime. Building and testing it on
+      # the same major version removes a compatibility gap between CI and the
+      # box. setup-node caches both lockfiles but npm ci remains the authority.
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            js-src/br_ddb/package-lock.json
+            ui-src/package-lock.json
 
-      # WITHOUT THIS THE BUNDLE GATE SKIPS ITSELF. verify.sh degrades to a
-      # `skip` when node_modules is absent, and a skipped gate reads as a
-      # passing one in a wall of green — so CI installs the one dependency that
-      # gate needs. It is the gate that catches `dist/server.js` drifting from
-      # its source, which is a failure that only ever shows up at runtime, on
-      # the live server, as a verb that silently never answers.
-      - name: Install br_ddb build deps
+      - name: Install br_ddb dependencies
         working-directory: js-src/br_ddb
         run: npm ci
 
-      # THE ONE CHECK THAT CANNOT LIVE IN verify.sh (#235). On 2026-08-29 a
-      # refactor left `buildStatsUpdate(d)` in src/index.js where the parameter
-      # is `deltas`. esbuild treats an unbound identifier as a global and says
-      # nothing, so the bundle, the fingerprint gate and every suite went green
-      # while the live server threw `ReferenceError: d is not defined` on every
-      # match end and quietly stopped persisting XP, Volts and balances.
-      #
-      # IT GOES HERE AND NOT IN verify.sh BECAUSE OF #218. That script's whole
-      # design is "no toolchain, runs on every machine" — it is why the bundle
-      # rebuild became a hash. A lint gate there would need node_modules, which
-      # nobody has locally, so it would either skip (a gate nobody notices is
-      # gone) or false-red (indistinguishable from a real finding). CI is the
-      # one place the deps are guaranteed, because npm ci runs directly above.
-      #
-      # THE EXCEPTION IS DELIBERATE, and it is the only step that states its own
-      # check rather than delegating. Keep it to no-undef: eslint.config.mjs
-      # turns on one rule, and a gate that also prints style opinions is a gate
-      # someone switches off.
-      - name: Lint br_ddb for undefined identifiers
+      # THREE DIFFERENT FAILURES, THREE CHECKS:
+      #   lint   catches unbound identifiers that esbuild accepts as globals;
+      #   test   drives the pure rules and the real event bridge;
+      #   check  rebuilds in memory and compares the exact committed bundle.
+      - name: Verify br_ddb source and committed bundle
         working-directory: js-src/br_ddb
-        run: npx eslint src scripts
+        run: |
+          npx eslint src scripts
+          npm test
+          npm run check
 
-      # ONE ENTRY POINT, ON PURPOSE. Everything — syntax, the six test suites,
-      # the scope gate, manifest coverage, the secret scan, the bundle check —
-      # runs from this script, which is the same command run locally and the
-      # same one tools/pre-commit runs.
-      #
-      # THAT IS WHAT MAKES THIS CHEAP TO MAINTAIN. Adding a test means adding it
-      # to verify.sh (or to a suite it already runs); this file does not change.
-      # A workflow that listed the checks individually would be a second list to
-      # keep in sync, and the failure mode of forgetting is a test that quietly
-      # stops running in CI while still passing locally.
-      - run: bash tools/verify.sh
+      - name: Install UI dependencies
+        working-directory: ui-src
+        run: npm ci
+
+      # build:check saves the committed output, rebuilds with a fixed diagnostic
+      # stamp, compares every emitted byte, and restores the checkout. This makes
+      # TypeScript, CSS compatibility, UI rules, envelope tests and source/bundle
+      # drift CI properties instead of relying only on the local hook.
+      - name: Verify UI source and committed bundle
+        working-directory: ui-src
+        run: npm run build:check
+
+      # ONE ENTRY POINT FOR THE TOOLCHAIN-FREE GATES. Everything Lua-specific —
+      # syntax, unit suites, trust-boundary checks, manifests, secrets, deploy
+      # fixtures and cross-language pins — remains the same command developers
+      # run locally and the pre-commit hook invokes.
+      - name: Run repository verification
+        run: bash tools/verify.sh

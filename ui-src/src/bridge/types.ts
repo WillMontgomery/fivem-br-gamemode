@@ -360,7 +360,11 @@ export interface InvSlot {
   rarity: Rarity
   count: number
   clip?: number
-  /** Which ammo pool a weapon's reserve comes from ('light', 'heavy', ...).
+  /** Which ammo pool a weapon's reserve comes from. Six of them, in
+   *  BR.Config.AmmoOrder's order: 'light', 'smg', 'medium', 'shells',
+   *  'heavy', 'lmg' -- where 'heavy' is the marksman and sniper rifles plus
+   *  the three launchers, and 'lmg' is the belt-fed guns and the minigun,
+   *  shown as 'Belt'.
    *  Sent by Lua rather than looked up here: the weapon table lives in br_lib
    *  and a hand-mirrored copy would go stale the first time a gun is added. */
   pool?: string
@@ -377,6 +381,23 @@ export interface InvUsing {
 export interface InvPayload {
   slots: (InvSlot | null)[]
   ammo: Record<string, number>
+  /** The rounds behind the magazine of the weapon in hand -- the right-hand
+   *  number on the HUD's ammo plate, and NOT the same quantity as
+   *  `ammo[slot.pool]`.
+   *
+   *  WHY IT IS ITS OWN FIELD. `ammo` is the server's reserve per pool, and the
+   *  TAB panel draws it beside a Drop button that puts that whole pool on the
+   *  floor -- so that figure has to match the server exactly. The bar's number is
+   *  paired with a MAGAZINE instead and has to add up to what the player holds,
+   *  which is a different number whenever the engine has loaded a magazine the
+   *  server has not been told about (it fills the clip out of its own reserve, and
+   *  a reload does not move the total the report loop watches).
+   *
+   *  ABSENT MEANS "NOTHING TO CORRECT" -- an empty hand, a melee weapon, or two
+   *  books that already agree -- and the bar falls back to `ammo[pool]`. It is
+   *  also absent for a spectated inventory, whose magazine readings are not ours.
+   *  br_core/client/inventory.lua's `uiReserve` is the whole of it. */
+  reserve?: number | null
   /** 1-based, matching the slot1..slot5 keybinds. */
   active: number
   using?: InvUsing | null
@@ -718,6 +739,9 @@ export interface LobbyPayload {
    *  which members are still holding the group. Already public knowledge --
    *  the same broadcast carries it to every client. */
   readyIds?: number[]
+  /** Short hex of the commit the server is serving. Sent only while dev mode
+   *  is on (br_core/server/lobby.lua), so its presence is the whole gate. */
+  commit?: string
 }
 
 /**
@@ -1363,6 +1387,22 @@ export type Envelope =
    *
    *  A RAW KIND STRING RATHER THAN A BR.Nui CONSTANT, like `squadcue` above. */
   | { k: 'shopplate'; d: { show: boolean } }
+  /** THE IN-MATCH GUN SHOP'S MENU IS OPEN, OR IT IS NOT.
+   *
+   *  Owner, after the first gun shop playtest: "hide the squad panel when the
+   *  menu is open" and "their volts balance is always shown in the bottom right
+   *  while the menu is open". Two requests, ONE FACT, so one envelope: the menu
+   *  is a scaleform, which this page cannot observe by any other means, and two
+   *  flags for one state would be free to disagree about whether it is up.
+   *
+   *  IT CARRIES NO BALANCE, for the same reason `shopplate` above does not --
+   *  the figure is `market.balance` and it already lives here. This flag joins
+   *  `shopPlate` in deciding whether that figure is drawn; the counter takes the
+   *  world plate DOWN when the menu goes up, so without this the balance went
+   *  down with it.
+   *
+   *  A RAW KIND STRING RATHER THAN A BR.Nui CONSTANT, like `shopplate` above. */
+  | { k: 'gunshopmenu'; d: { open: boolean } }
 
 export type EnvelopeKind = Envelope['k']
 

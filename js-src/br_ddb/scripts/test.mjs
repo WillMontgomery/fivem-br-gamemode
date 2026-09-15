@@ -2,8 +2,9 @@ import { artifactNames, ARTIFACT_PREFIX, isSpoolFile } from '../src/artifacts.js
 import { effective, isActive } from '../src/ban.js'
 import { buildIncidentClose, CLOSE_LIMITS } from '../src/close.js'
 import { buildIncidentItem, LIMITS } from '../src/incident.js'
+import { banner, resolvePrefixes } from '../src/prefix.js'
 import { spendCost, spendUpdate, SPEND_MAX } from '../src/spend.js'
-import { buildStatsUpdate } from '../src/stats.js'
+import { buildStatsUpdate, STATS_ADDS, STATS_SETS } from '../src/stats.js'
 import { projectVerdict, verdictWord } from '../src/verdict.js'
 
 // NOT `../src/`. These two drive src/index.js itself -- the twenty handlers,
@@ -12,7 +13,7 @@ import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { marshall, unmarshall } from './aws_stub.mjs'
-import { loadBridge, lastEmit } from './bridge.mjs'
+import { loadBridge, loadIsolated, lastEmit } from './bridge.mjs'
 
 /**
  * Tests for the decisions in br_ddb that are pure arithmetic on data, and
@@ -1374,10 +1375,19 @@ const entryOf = (extra) =>
 /**
  * Apply one UpdateItem-shaped command to a plain row.
  *
- * Supports exactly the two clause forms this file's verbs produce: a condition
- * `#name <op> :value`, and an `ADD #a :x, #b :y` update. Anything else throws,
- * loudly, rather than being silently ignored -- a clause the fake cannot read is
- * a clause the assertions below are not really testing.
+ * Supports exactly the three clause forms this file's verbs produce: a condition
+ * `#name <op> :value`, a `SET #a = :x, #b = :y` replace, and an `ADD #a :x, #b :y`
+ * accumulate. Anything else throws, loudly, rather than being silently ignored --
+ * a clause the fake cannot read is a clause the assertions below are not really
+ * testing.
+ *
+ * ═══ IT LEARNED `SET` FOR #116, AND THAT IS NOT A DETAIL ═══
+ *
+ * Without it this fake ignored the SET clause entirely -- so "the stored `level`
+ * does not move any more" passed identically against the code that still wrote
+ * it, which is the shape of assertion this project has shipped four times and
+ * been taught nothing by. A fake that silently drops the clause under test is
+ * worse than no fake.
  *
  * @returns {{ ok: boolean, row: object }}  ok=false is ConditionalCheckFailed
  */
@@ -1406,6 +1416,24 @@ function fakeUpdate(row, cmd) {
       else pass = have === want
     }
     if (!pass) return { ok: false, row }
+  }
+
+  // SET FIRST, because that is the order the expression is written in and
+  // because a SET and an ADD on the same attribute would otherwise disagree
+  // about which won. Nothing produces that today; the ordering is fixed anyway
+  // so that a future verb which does cannot be read two ways.
+  const set = /^\s*SET\s+(.+?)(?=\s+ADD\s|$)/.exec(cmd.UpdateExpression || '')
+  if (set) {
+    for (const term of set[1].split(',')) {
+      const t = /^\s*(#\w+)\s*=\s*(:\w+)\s*$/.exec(term)
+      if (!t) throw new Error(`fakeUpdate cannot read SET term: ${term}`)
+      const attr = names[t[1]]
+      const value = values[t[2]]
+      if (attr === undefined || value === undefined) {
+        throw new Error(`fakeUpdate: unbound placeholder in SET ${term}`)
+      }
+      out[attr] = value
+    }
   }
 
   const add = /(?:^|\s)ADD\s+(.+)$/.exec(cmd.UpdateExpression || '')
@@ -1496,15 +1524,29 @@ console.log('\nspend: the condition refuses an overspend')
  * same and drifted would make the second block agree with a bug in the first.
  */
 const MATCH_PAYOUT = {
-  xp: 1048, balance: 1200, matches: 1, wins: 1, top10s: 1, kills: 3,
-  deaths: 0, downs: 1, revives: 2, damageDealt: 450, playtimeSec: 900,
-  soloMatches: 1, squadMatches: 0,
-  level: 12, name: 'Epyc', at: 1_700_000_000_000,
+  xp: 1048, balance: 1200, voltsSpent: 750, matches: 1, wins: 1, top10s: 1,
+  kills: 3, deaths: 0, downs: 1, revives: 2, damageDealt: 450,
+  playtimeSec: 900, soloMatches: 1, squadMatches: 0,
+  // NO `level`, AND ITS ABSENCE IS THE POINT (#116). persist.lua stopped
+  // computing it: the curve is still evaluated at both ends of the match, for
+  // the level-up bonus and the verdict screen, and the ANSWER is not stored.
+  name: 'Epyc', at: 1_700_000_000_000,
 }
+
+/**
+ * The same match from a caller that has not been updated -- or from a stale
+ * bundle on a box somebody forgot to deploy.
+ *
+ * A DROPPED FIELD IS THE ONLY ACCEPTABLE ANSWER. `level` is not on STATS_SETS
+ * any more, so it must be ignored exactly the way a typo'd ADD key is; anything
+ * else means the column starts moving again from whatever that caller believed.
+ */
+const MATCH_PAYOUT_WITH_LEVEL = { ...MATCH_PAYOUT, level: 12 }
 
 /** What that payload must become, byte for byte. */
 const PAYOUT_EXPRESSION =
-  'SET #lvl = :lvl, #nm = :nm, #ls = :ls ADD #xp :xp, #balance :balance,'
+  'SET #nm = :nm, #ls = :ls ADD #xp :xp, #balance :balance,'
+  + ' #voltsSpent :voltsSpent,'
   + ' #matches :matches, #wins :wins, #top10s :top10s, #kills :kills,'
   + ' #deaths :deaths, #downs :downs, #revives :revives,'
   + ' #damageDealt :damageDealt, #playtimeSec :playtimeSec,'
@@ -1521,15 +1563,99 @@ console.log('\nstats: the match payout writes what it always wrote')
     payout.UpdateExpression,
     PAYOUT_EXPRESSION,
   )
-  check('the level it derived is written', payout.ExpressionAttributeValues[':lvl'], 12)
   check('the name it saw is written', payout.ExpressionAttributeValues[':nm'], 'Epyc')
   check('and the match end is stamped', payout.ExpressionAttributeValues[':ls'], 1_700_000_000_000)
+  check('the XP the level is derived from is written', payout.ExpressionAttributeValues[':xp'], 1048)
 
   // Applied to a row, it is still an ADD and still atomic in the sense that
   // matters here: it composes with whatever was already there.
   const after = fakeUpdate({ balance: 300, kills: 40 }, payout)
   check('the balance accumulates rather than replacing', after.row.balance, 1500)
   check('and so does every other counter', after.row.kills, 43)
+
+  // ═══ THE LIFETIME SPEND COLUMN, WHICH DID NOT EXIST UNTIL #293's SECOND
+  //     HALF ═══
+  //
+  // The owner asked for a BIGGEST SPENDERS board. `voltsSpent` landed on
+  // HISTORY_NUMBERS in 03cce2d -- the per-match rows -- and not on STATS_ADDS,
+  // so every match recorded its own figure and the profile row this board
+  // ranks on held nothing. Nothing errored; the card would simply have read
+  // zero for everybody.
+  //
+  // ⚠ AN `includes` CHECK IS NOT ENOUGH AND IS THE SHAPE THAT SHIPPED THE BUG.
+  // What matters is that it ACCUMULATES on a row that already has a total, and
+  // that it is a column of its own rather than something folded into
+  // `balance` -- a board ranks on a flow, and a balance is a position.
+  check('voltsSpent is on the ADD allowlist', STATS_ADDS.includes('voltsSpent'), true)
+  const spender = fakeUpdate({ balance: 300, voltsSpent: 4_000 }, payout)
+  check('a lifetime spend total accumulates across matches', spender.row.voltsSpent, 4_750)
+  check(
+    'and it does not disturb the balance beside it, which moves by the payout alone',
+    spender.row.balance,
+    1_500,
+  )
+
+  // A PROFILE ROW THAT HAS NEVER SPENT ANYTHING GETS THE COLUMN AT ZERO, which
+  // is why every counter is listed on every write: `ADD x 0` creates an absent
+  // attribute at zero, so the board reads a number rather than `undefined` for
+  // a player who has only ever played.
+  const frugal = fakeUpdate({ balance: 300 }, buildStatsUpdate({ ...MATCH_PAYOUT, voltsSpent: 0 }))
+  check('and a profile that has spent nothing still carries the column', frugal.row.voltsSpent, 0)
+}
+
+console.log('\nstats: `level` is derived data and is not written at all (#116)')
+{
+  // ═══ WHY THE PAYLOAD BELOW CARRIES A LEVEL ═══
+  //
+  // Asserting that MATCH_PAYOUT -- which no longer has the field -- produces no
+  // `:lvl` proves nothing: it would pass just as happily with `level` still on
+  // STATS_SETS. The only assertion worth making sends a level and demands it be
+  // dropped, which is red the moment the entry comes back.
+  const stale = buildStatsUpdate(MATCH_PAYOUT_WITH_LEVEL)
+
+  check(
+    'a caller that still sends a level gets the same expression as one that does not',
+    stale.UpdateExpression,
+    PAYOUT_EXPRESSION,
+  )
+  check('no value placeholder is bound for it', stale.ExpressionAttributeValues[':lvl'], undefined)
+  check('no name placeholder either', stale.ExpressionAttributeNames['#lvl'], undefined)
+  // The attribute, not the placeholder: a future entry under a different
+  // shorthand would slip past the two checks above and still write the column.
+  check(
+    'and the `level` attribute is named nowhere in the write',
+    Object.values(stale.ExpressionAttributeNames).includes('level'),
+    false,
+  )
+  check(
+    'nor does the expression text mention it',
+    /lvl|level/i.test(stale.UpdateExpression),
+    false,
+  )
+
+  // STATS_SETS IS THE LIST, AND IT IS ASSERTED DIRECTLY as well, because the
+  // expression above is only the list's output.
+  check(
+    'STATS_SETS carries no level entry',
+    STATS_SETS.some((s) => s.field === 'level' || s.attr === 'level'),
+    false,
+  )
+  check('it is exactly the two fields that are still facts', STATS_SETS.map((s) => s.attr), [
+    'name',
+    'lastMatchAt',
+  ])
+
+  // AND `xp` IS UNTOUCHED, which is the half of #116 that must not move. It is
+  // an ADD, so two matches ending together compose rather than racing -- the
+  // property the stored level never had.
+  check('xp is still an ADD, not a SET', STATS_ADDS.includes('xp'), true)
+  const row = fakeUpdate({ xp: 2510, level: 2 }, stale).row
+  check('so a career total accumulates', row.xp, 3558)
+  check(
+    'and the stale level already on the row is left exactly where it was',
+    row.level,
+    2,
+  )
 }
 
 console.log('\nstats: a grant is not a match')
@@ -1542,13 +1668,13 @@ console.log('\nstats: a grant is not a match')
     grant.UpdateExpression.startsWith('ADD '),
     true,
   )
-  // ═══ THE THREE FIELDS A GRANT MUST NOT TOUCH ═══
+  // ═══ THE FIELDS A GRANT MUST NOT TOUCH ═══
   //
-  // The first version of this wrote all three unconditionally with `num()` and
-  // `String()` fallbacks, so THIS payload would have set the player to level 0,
-  // blanked their name, and stamped lastMatchAt 0 -- silently, on a live
-  // profile row, every time somebody granted themselves Volts to test the shop.
-  check('no level is claimed', grant.ExpressionAttributeValues[':lvl'], undefined)
+  // The first version of this wrote them unconditionally with `num()` and
+  // `String()` fallbacks, so THIS payload would have blanked the player's name
+  // and stamped lastMatchAt 0 -- silently, on a live profile row, every time
+  // somebody granted themselves Volts to test the shop. It set level 0 too,
+  // until #116 stopped that column being written by anybody.
   check('no name is written', grant.ExpressionAttributeValues[':nm'], undefined)
   check('and no match end is stamped', grant.ExpressionAttributeValues[':ls'], undefined)
 
@@ -1559,14 +1685,164 @@ console.log('\nstats: a grant is not a match')
   check('the name survives it', after.name, 'Epyc')
   check('and so does the last match', after.lastMatchAt, 1_700_000_000_000)
 
-  // Present-and-zero is a value, not an absence. A caller that means level 0
-  // has a bug of its own and this function is not the place to hide it.
-  const explicit = buildStatsUpdate({ balance: 1, level: 0 })
-  check('an explicit zero is still written', explicit.ExpressionAttributeValues[':lvl'], 0)
+  // Present-and-zero is a value, not an absence. A caller that means
+  // lastMatchAt 0 has a bug of its own and this function is not the place to
+  // hide it. (This was written against `level: 0`, which #116 retired -- the
+  // rule it demonstrates belongs to `supplied()` and is unchanged.)
+  const explicit = buildStatsUpdate({ balance: 1, at: 0 })
+  check('an explicit zero is still written', explicit.ExpressionAttributeValues[':ls'], 0)
   // ...and the empty string is treated as absent, because '' is exactly what
   // the old unconditional write produced from a missing name.
   const blank = buildStatsUpdate({ balance: 1, name: '' })
   check('but an empty name is an absent one', blank.ExpressionAttributeValues[':nm'], undefined)
+}
+
+// ------------------------------------------------------- which tables at all ---
+//
+// The prefixes decide, before any other decision in this file, WHICH DATABASE
+// every one of them lands in. A dev box that resolves `br-` writes the live
+// server's XP, match records and moderation cases, and every write succeeds --
+// there is no error, no log line and no symptom until somebody notices numbers
+// moving on a server nobody was playing on.
+//
+// The convar-shaped fix (`set br_ddb_game_prefix dev-br-` in the dev box's
+// config) is a thing a person has to remember, which is the same thing as a
+// thing a person will one day forget. So dev mode drives it, and these cases
+// pin the three answers that matter: production is untouched, a dev box is
+// moved, and a config file cannot argue with either.
+
+console.log('\ntable prefixes: production is exactly what it always was')
+{
+  // The only convar reader in these cases: a map, with the caller's fallback
+  // for anything absent. Same contract as FiveM's GetConvar.
+  const convars = (map) => (key, fallback) =>
+    Object.hasOwn(map, key) ? map[key] : fallback
+
+  const bare = resolvePrefixes(convars({}))
+  check('no convars at all is not dev mode', bare.dev, false)
+  check('and the console family is the shipped default', bare.table, 'ringmaster-')
+  check('and the game family is the shipped default', bare.game, 'br-')
+  check('and nothing is announced', banner(bare), [])
+
+  // A production box that DOES set the prefixes explicitly still gets them.
+  // This is the path an operator with tables of their own is on, and dev mode
+  // must not have quietly taken it away from them.
+  const named = resolvePrefixes(convars({
+    br_ddb_table_prefix: 'rm2-',
+    br_ddb_game_prefix: 'game2-',
+  }))
+  check('an explicit console prefix is honored off dev', named.table, 'rm2-')
+  check('an explicit game prefix is honored off dev', named.game, 'game2-')
+  check('and that is still not dev mode', named.dev, false)
+  check('and still announces nothing', banner(named), [])
+
+  // The convars exist and say the OPPOSITE of dev. `false` is not `true`.
+  const off = resolvePrefixes(convars({ sv_devMode: 'false', br_devMode: 'false' }))
+  check('both flags explicitly false is production', off.dev, false)
+  check('and the production game tables', off.game, 'br-')
+
+  // Neither is a boolean on the wire: GetConvar returns strings, and the value
+  // a config file most plausibly carries by accident is one of these.
+  for (const v of ['1', 'yes', 'TRUE', 'True', '']) {
+    const odd = resolvePrefixes(convars({ sv_devMode: v }))
+    check(`sv_devMode "${v}" is not dev mode -- only the string true is`, odd.dev, false)
+  }
+}
+
+console.log('\ntable prefixes: either dev convar moves both families')
+{
+  const convars = (map) => (key, fallback) =>
+    Object.hasOwn(map, key) ? map[key] : fallback
+
+  // BOTH NAMES, SEPARATELY. br_lib/shared/devgate.lua ORs them, and a box with
+  // only one set is a dev box to every other resource in the project. If this
+  // read only one name, that box would be in dev mode everywhere except the
+  // place where it decides which database to write.
+  const sv = resolvePrefixes(convars({ sv_devMode: 'true' }))
+  check('sv_devMode alone is dev mode', sv.dev, true)
+  check('and the game tables move', sv.game, 'dev-br-')
+  check('and the console tables move with them', sv.table, 'dev-ringmaster-')
+
+  const br = resolvePrefixes(convars({ br_devMode: 'true' }))
+  check('br_devMode alone is dev mode', br.dev, true)
+  check('and the game tables move', br.game, 'dev-br-')
+  check('and the console tables move with them', br.table, 'dev-ringmaster-')
+
+  const both = resolvePrefixes(convars({ sv_devMode: 'true', br_devMode: 'true' }))
+  check('both set is dev mode', both.dev, true)
+  check('and the banner names both', both.on, ['sv_devMode', 'br_devMode'])
+
+  // The table names the owner has to create in AWS, spelled out, because they
+  // are the deliverable and a typo here is a table that silently is not there.
+  check('the dev profile/history table', `${both.game}players`, 'dev-br-players')
+  check('the dev match table', `${both.game}matches`, 'dev-br-matches')
+  check('the dev ban table', `${both.table}bans`, 'dev-ringmaster-bans')
+  check('the dev grants table', `${both.table}grants`, 'dev-ringmaster-grants')
+  check('the dev maintenance table', `${both.table}maintenance`, 'dev-ringmaster-maintenance')
+  check('the dev incident table', `${both.table}incidents`, 'dev-ringmaster-incidents')
+
+  // THE TWO FAMILIES STAY APART. Collapsing them onto one `dev-` prefix would
+  // read fine and would throw away the ownership split that lets an IAM policy
+  // grant write on the game's tables without granting it on the ban list.
+  check('the two families are still distinguishable', both.table === both.game, false)
+}
+
+console.log('\ntable prefixes: a config file cannot argue with dev mode')
+{
+  const convars = (map) => (key, fallback) =>
+    Object.hasOwn(map, key) ? map[key] : fallback
+
+  // THE CASE THIS WHOLE MECHANISM EXISTS FOR. The dev box's server.cfg was
+  // copied from the live box, so it carries the live box's explicit prefixes.
+  // If an explicit convar won here, the dev flag would be decoration and the
+  // copied config would put a dev box back on production tables.
+  const copied = resolvePrefixes(convars({
+    br_devMode: 'true',
+    br_ddb_table_prefix: 'ringmaster-',
+    br_ddb_game_prefix: 'br-',
+  }))
+  check('a copied production config does not win', copied.game, 'dev-br-')
+  check('and does not win on the console family either', copied.table, 'dev-ringmaster-')
+  // Set to the defaults, so there is nothing surprising to report.
+  check('and nothing is reported as ignored', copied.ignored, [])
+
+  // An explicit prefix that is NOT the default. Ignored the same way, and said
+  // out loud, because a setting that silently does nothing is how somebody
+  // spends an hour debugging the wrong box.
+  const argued = resolvePrefixes(convars({
+    sv_devMode: 'true',
+    br_ddb_game_prefix: 'br-',
+    br_ddb_table_prefix: 'staging-',
+  }))
+  check('an explicit console prefix loses to dev mode', argued.table, 'dev-ringmaster-')
+  check('and it is not folded into the dev name either', argued.table.includes('staging'), false)
+  check('and the ignored setting is reported', argued.ignored, [
+    { convar: 'br_ddb_table_prefix', value: 'staging-' },
+  ])
+  check(
+    'and the banner says so in words',
+    banner(argued).some((l) => l.includes('IGNORING br_ddb_table_prefix "staging-"')),
+    true,
+  )
+
+  // NOT `dev- + whatever the convar said`. Prepending would leave an explicit
+  // convar choosing half the table name, which is most of the way back to a
+  // config file deciding which database a box writes.
+  const weird = resolvePrefixes(convars({
+    br_devMode: 'true',
+    br_ddb_game_prefix: 'prod-br-',
+  }))
+  check('a dev box never builds on the convar it was given', weird.game, 'dev-br-')
+
+  // THE INVARIANT, AS ONE ASSERTION. Whatever the config said, every table a
+  // dev box can name begins with `dev-`. This is the property an IAM role
+  // scoped to `dev-*` can be written against.
+  check(
+    'every prefix a dev box resolves starts with dev-',
+    [weird.game, weird.table, argued.game, argued.table, copied.game, copied.table]
+      .filter((p) => !p.startsWith('dev-')),
+    [],
+  )
 }
 
 // -------------------------------------------------------------- handlers ---
@@ -1633,7 +1909,12 @@ console.log('\nstats: the handler, not just the expression it builds')
   bridge.reset()
   bridge.reply({}) // DynamoDB accepts the write
 
-  const threw = bridge.call('br:ddb:statsApply', 41, LIC, MATCH_PAYOUT)
+  // THE STALE SHAPE, DELIBERATELY. It is MATCH_PAYOUT with `level` put back on
+  // it -- what a game box running a br_stats from before #116 would send. The
+  // wire assertions below then say two things at once: the handler carries the
+  // caller's deltas to the builder, and the retired field never reaches
+  // DynamoDB. Sending the current shape would prove only the first.
+  const threw = bridge.call('br:ddb:statsApply', 41, LIC, MATCH_PAYOUT_WITH_LEVEL)
 
   // ═══ THE ASSERTION THIS BLOCK EXISTS FOR ═══
   //
@@ -1667,14 +1948,23 @@ console.log('\nstats: the handler, not just the expression it builds')
   )
 
   const values = unmarshall(cmd.input.ExpressionAttributeValues)
-  // `buildStatsUpdate({})` would still produce a valid ADD of thirteen zeroes,
+  // `buildStatsUpdate({})` would still produce a valid ADD of fourteen zeroes,
   // which is a shape a passing test could easily accept and a player would
   // experience as a match that paid nothing. So the NUMBERS are asserted, and
   // they are the caller's.
   check("the caller's XP is on the wire", values[':xp'], 1048)
   check('and the Volts the match paid', values[':balance'], 1200)
-  check('and the level br_stats derived', values[':lvl'], 12)
+  check('and the Volts the match SPENT, which is a separate column', values[':voltsSpent'], 750)
   check('and the name it saw', values[':nm'], 'Epyc')
+  // #116, ON THE WIRE RATHER THAN IN THE BUILDER. The caller sent level 12 and
+  // DynamoDB is told nothing about a level at all.
+  check('but the level it sent is dropped before the send', values[':lvl'], undefined)
+  // Names are not marshalled -- they are a plain placeholder -> attribute map.
+  check(
+    'and no attribute name binds it either',
+    (cmd.input.ExpressionAttributeNames ?? {})['#lvl'],
+    undefined,
+  )
 
   // End to end: the command the handler built, applied to a profile row.
   // Guarded, because `fakeUpdate` throws on an expression it cannot read and a
@@ -1735,8 +2025,348 @@ console.log('\nstats: brvolts rides the same handler')
 
   const values = unmarshall(cmd.input.ExpressionAttributeValues)
   check('so no name is blanked on the row', values[':nm'], undefined)
-  check('and no level is claimed', values[':lvl'], undefined)
+  check('and no match end is stamped', values[':ls'], undefined)
   check('while the Volts are on the wire', values[':balance'], 5000)
+}
+
+// ------------------------------------------------------- the match ledger ---
+//
+// ═══ WHAT A HISTORY ROW CARRIES, ASSERTED OFF THE WIRE ═══
+//
+// `historyItem` is module-local to src/index.js, so it is driven through the
+// verb rather than imported -- which is the stronger test anyway: it can only
+// pass if the handler actually built and marshalled the item.
+//
+// THE ALLOWLIST IS THE THING UNDER TEST. `HISTORY_NUMBERS` is hard: a name that
+// is not on it and not spelled out in the item is dropped in silence, so a field
+// added to br_stats and forgotten here fails nowhere and reads as zero forever.
+// Every assertion below that names a new field is the gate against that.
+
+/** One participant's row, in the shape br_stats/server/persist.lua builds it. */
+const HISTORY_ROW = {
+  license: LIC,
+  sk: 'match#0001700000000#7',
+  matchId: 7,
+  endedAt: 1_700_000_000_000,
+  startedAt: 1_699_999_100_000,
+  mode: 'squad',
+  squadId: 'm7sq2',
+  placement: 3,
+  total: 48,
+  kills: 2,
+  downs: 1,
+  revives: 0,
+  damage: 400,
+  survivedMs: 90_000,
+  xpEarned: 100,
+  voltsEarned: 200,
+  voltsSpent: 1_750,
+  won: false,
+}
+
+/** The one item a one-row batch put on the wire. */
+const putItems = (cmd) =>
+  (cmd.input.RequestItems?.['br-players'] ?? []).map((w) => unmarshall(w.PutRequest.Item))
+
+console.log('\nhistory: the three fields the match page is blocked on (#293)')
+{
+  bridge.reset()
+  bridge.reply({})
+
+  const threw = bridge.call('br:ddb:historyPut', 70, [HISTORY_ROW])
+  check('the handler runs', why(threw), null)
+
+  const cmd = sent(0)
+  check('it is a BatchWriteItem', cmd.kind, 'BatchWriteItemCommand')
+
+  const items = putItems(cmd)
+  check('with one item in it', items.length, 1)
+  const it = items[0] ?? {}
+
+  // ── VOLTS SPENT ─────────────────────────────────────────────────────────
+  //
+  // Recorded nowhere in any form before #293: the debit is a conditional write
+  // against the profile row, so once it settles the only trace is a smaller
+  // balance. THE VALUE IS ASSERTED, NOT ITS PRESENCE -- an absent name comes
+  // through this allowlist as 0, which is a number, is present, and is a lie.
+  check('the Volts spent in the match are on the row', it.voltsSpent, 1750)
+  check('and they are a number', typeof it.voltsSpent, 'number')
+
+  // ── THE SQUAD ───────────────────────────────────────────────────────────
+  //
+  // A STRING, and this is the whole risk. `m7sq2` put through HISTORY_NUMBERS
+  // would be `num('m7sq2')` -- zero -- so the grouping would be erased while
+  // leaving a column that looks written, which is worse than the gap it fixes.
+  check('the squad id is on the row', it.squadId, 'm7sq2')
+  check('as a STRING, not coerced through the number allowlist', typeof it.squadId, 'string')
+  check('and the mode beside it is still a string', it.mode, 'squad')
+
+  // ── THE START TIMESTAMP ─────────────────────────────────────────────────
+  //
+  // The envelope's own `startedAt` is a GetGameTimer() reading -- milliseconds
+  // since the FXServer process booted -- which br_stats resolves to a wall clock
+  // before it gets here. Asserted against `endedAt` as well as against its own
+  // value, because the pair only means anything if it is two readings of ONE
+  // clock.
+  check('the match start is on the row', it.startedAt, 1_699_999_100_000)
+  check('and it is earlier than the end, on the same clock', it.startedAt < it.endedAt, true)
+
+  // Untouched by any of it.
+  check('the key is still the caller-owned sort key', it.sk, 'match#0001700000000#7')
+  check('and the row still knows who won', it.won, false)
+}
+
+console.log('\nhistory: absence is zero and an empty string, and never invented')
+{
+  bridge.reset()
+  bridge.reply({})
+
+  // A ROW FROM BEFORE #293, or a solo match: no squad, no start time, no spend.
+  // Every one of these must land as the value that reads as "not recorded"
+  // rather than as a plausible figure -- the owner will not hand-edit DynamoDB
+  // and nothing backfills.
+  const bare = { ...HISTORY_ROW }
+  delete bare.squadId
+  delete bare.startedAt
+  delete bare.voltsSpent
+
+  bridge.call('br:ddb:historyPut', 71, [bare])
+  const it = putItems(sent(0))[0] ?? {}
+
+  check('a solo match carries an empty squad id, not a zero', it.squadId, '')
+  check('and it is still a string', typeof it.squadId, 'string')
+  check('a match with no recorded start reads zero', it.startedAt, 0)
+  check('and one with no recorded spend reads zero', it.voltsSpent, 0)
+  // The rest of the row is unaffected, which is what makes the three above a
+  // gap rather than a broken write.
+  check('while everything that was sent still lands', it.voltsEarned, 200)
+}
+
+console.log('\nhistory: the allowlist is hard, and omission from it is silent')
+{
+  bridge.reset()
+  bridge.reply({})
+
+  // ═══ THE PROPERTY THAT MAKES A FORGOTTEN FIELD DANGEROUS ═══
+  //
+  // Nothing anywhere logs, throws or answers differently when br_stats sends a
+  // name this file does not know. It is simply not written, and the column reads
+  // as absent forever. Pinned here so the next person adding a ledger field
+  // finds out from a test rather than from a console panel full of zeroes.
+  bridge.call('br:ddb:historyPut', 72, [{
+    ...HISTORY_ROW,
+    voltsSpnet: 9_999,        // a typo'd number
+    squadid: 'm7sq9',         // and a typo'd string
+    revivesGiven: 4,          // and a field that simply does not exist here
+  }])
+
+  const it = putItems(sent(0))[0] ?? {}
+  check('a typo\'d number is dropped rather than stored', it.voltsSpnet, undefined)
+  check('a typo\'d string is dropped too', it.squadid, undefined)
+  check('and so is a name this file has never heard of', it.revivesGiven, undefined)
+  check('the correctly spelled fields are unharmed', it.voltsSpent, 1750)
+  check('and so is the squad', it.squadId, 'm7sq2')
+
+  await bridge.settle()
+  check('and the batch is reported as written', lastEmit('br:ddb:historyResult')?.args[1], true)
+}
+
+// ═══════════════════════ ONE ROW PER MATCH (br-matches) ═══════════════════════
+//
+// A SECOND TABLE, AND A DIFFERENT KIND OF WRITE FROM EVERY OTHER ONE HERE. The
+// history batch above is one item per PLAYER, idempotent by construction --
+// writing the same row twice produces the same row, which is why it can retry
+// its unprocessed items without a thought. This is one item per MATCH, keyed on
+// the match's NAME, and writing it twice would mean two different matches had
+// been given the same name. So it is the one write in this file that is
+// conditional on its key being absent, and the refusal is the feature.
+
+/** The envelope br_stats/server/persist.lua builds at match end. */
+const MATCH_ITEM = {
+  pk: '00d93aa',
+  matchId: 0xd93aa,
+  mode: 'squad',
+  startedAt: 1_699_999_100_000,
+  endedAt: 1_700_000_000_000,
+  total: 48,
+  participants: [
+    {
+      license: LIC,
+      squadId: 'm00d93aasq1',
+      placement: 1,
+      kills: 6,
+      downs: 2,
+      revives: 1,
+      damage: 1_412,
+      survivedMs: 1_020_000,
+      voltsEarned: 420,
+      voltsSpent: 250,
+      won: true,
+    },
+    {
+      license: 'license:11000010000102',
+      squadId: '',
+      placement: 7,
+      kills: 0,
+      downs: 0,
+      revives: 0,
+      damage: 61,
+      survivedMs: 90_000,
+      voltsEarned: 20,
+      voltsSpent: 0,
+      won: false,
+    },
+  ],
+}
+
+console.log('\nmatch row: keyed on the tag, written once, and conditional')
+{
+  bridge.reset()
+  bridge.reply({})
+
+  const threw = bridge.call('br:ddb:matchPut', 80, MATCH_ITEM)
+  check('the handler runs', why(threw), null)
+
+  const cmd = sent(0)
+  check('it is a PutItem, not a batch', cmd.kind, 'PutItemCommand')
+  check('against the game\'s own br-matches table', cmd.input.TableName, 'br-matches')
+
+  // THE CONDITION IS THE WHOLE FEATURE, exactly as it is for spend above. A
+  // handler that built the item and forgot this would overwrite one match's
+  // record with another's, and every other assertion in this block would still
+  // pass -- which is why it is asserted on the COMMAND rather than inferred.
+  check(
+    'the write refuses to replace an existing tag',
+    cmd.input.ConditionExpression,
+    'attribute_not_exists(pk)',
+  )
+
+  const it = unmarshall(cmd.input.Item)
+  check('the partition key is the seven-character tag', it.pk, '00d93aa')
+  check('and it is a string, because it is a key', typeof it.pk, 'string')
+  // THE NUMBER RIDES ALONG. Ringmaster can parse the tag back, but a reader
+  // holding the item should not have to -- and `num()` keeps a 28-bit id whole.
+  check('the numeric id is on the item too', it.matchId, 0xd93aa)
+  // SPELLED IN DECIMAL AS WELL AS HEX, on purpose: the assertion above would
+  // pass against a `num()` that mangled the value in a way the same literal
+  // mangles identically. 0xd93aa is 889,770.
+  check('undamaged by the number coercion', it.matchId, 889_770)
+
+  check('the mode is a string', it.mode, 'squad')
+  check('the start stamp is a wall clock', it.startedAt, 1_699_999_100_000)
+  check('the end stamp beside it', it.endedAt, 1_700_000_000_000)
+  check('and the field size', it.total, 48)
+
+  // THE PARTICIPANTS SURVIVE THE TRIP AS A LIST OF MAPS. This is the only
+  // nested structure this resource writes; a marshaller that flattened it would
+  // produce an item that stores and reads back as nothing in particular.
+  check('every participant is on the item', it.participants.length, 2)
+  const [top, tail] = it.participants
+  check('the winner keeps their license', top.license, LIC)
+  check('and their squad', top.squadId, 'm00d93aasq1')
+  check('and their placement', top.placement, 1)
+  check('and their kills', top.kills, 6)
+  check('and the two Volts figures the page draws', [top.voltsEarned, top.voltsSpent], [420, 250])
+  check('and the rest of the columns', [top.damage, top.downs, top.revives, top.survivedMs],
+    [1_412, 2, 1, 1_020_000])
+
+  // ═══ `won` IS THE WINNER, AND IT IS A BOOL ═══
+  //
+  // There is no top-level winner field, deliberately: Ringmaster's MatchView
+  // filters this list on `won`, so a second copy at the top of the item would
+  // be a second thing that can disagree with the first. And it is `=== true`
+  // rather than truthy for the reason #133 exists -- the last squad standing can
+  // be taken by the storm, so placement 1 and a win are different questions.
+  check('the winner is marked on their own row', top.won, true)
+  check('as a boolean, not a number', typeof top.won, 'boolean')
+  check('and the player who placed seventh is not', tail.won, false)
+  check('a solo entry carries an empty squad, not a zero', tail.squadId, '')
+
+  await bridge.settle()
+  const res = answer('br:ddb:matchResult')
+  check('and the write is reported as landed', res.ok, true)
+  check('naming the tag it wrote', res.extra.tag, '00d93aa')
+}
+
+console.log('\nmatch row: a reused tag is refused, loudly, and the match survives')
+{
+  bridge.reset()
+  // What DynamoDB answers when `attribute_not_exists(pk)` does not hold: the
+  // row is already there, under this name, for a DIFFERENT match.
+  const refused = new Error('The conditional request failed')
+  refused.name = 'ConditionalCheckFailedException'
+  bridge.reply(refused)
+
+  const threw = bridge.call('br:ddb:matchPut', 81, MATCH_ITEM)
+  check('the handler still does not throw', why(threw), null)
+
+  await bridge.settle()
+  const res = answer('br:ddb:matchResult')
+
+  // NOT REPORTED AS SUCCESS, which is the one difference from the incident
+  // write's conditional refusal. There, a refusal means "the row I wanted is
+  // already there" and the caller must stop retrying. HERE it means two
+  // different matches have been given one name, which is a fact somebody has to
+  // see -- so it answers false and carries the flag that makes the caller's
+  // message say what actually happened.
+  check('a collision is not success', res.ok, false)
+  check('and it is named as a duplicate rather than a generic failure',
+    res.extra.duplicate, true)
+  check('the tag comes back so the log line can name it', res.extra.tag, '00d93aa')
+
+  // THE GAME BOX SAYS IT AT THE MOMENT IT HAPPENS. This is the entire point of
+  // the conditional write: without it the symptom is one match's page showing
+  // another match's participants, found weeks later by somebody moderating from
+  // it.
+  check(
+    'and the box logs the collision with the tag in it',
+    bridge.logs.some((l) => l.includes('00d93aa') && /collision/i.test(l)),
+    true,
+  )
+}
+
+console.log('\nmatch row: a table that does not exist yet costs the record and nothing else')
+{
+  bridge.reset()
+  // The shape of a box deployed ahead of its table -- a real window on a fresh
+  // environment and on dev, even now that production has br-matches.
+  const missing = new Error('Requested resource not found')
+  missing.name = 'ResourceNotFoundException'
+  bridge.reply(missing)
+
+  const threw = bridge.call('br:ddb:matchPut', 82, MATCH_ITEM)
+  check('nothing raises into the match-end handler', why(threw), null)
+
+  await bridge.settle()
+  const res = answer('br:ddb:matchResult')
+  check('the write is reported as failed', res.ok, false)
+  check('but not as a collision', res.extra.duplicate, undefined)
+  check('and the cause travels with it', /ResourceNotFound|does not exist/.test(
+    String(res.extra.error)), true)
+  check(
+    'the log says the table is missing rather than printing a bare SDK error',
+    bridge.logs.some((l) => l.includes('br-matches')),
+    true,
+  )
+}
+
+console.log('\nmatch row: an unkeyable match is never written')
+{
+  bridge.reset()
+  bridge.reply({})
+
+  // NO TAG, NO ROW. br_stats guards this too, and it is guarded twice on
+  // purpose: `pk` is the partition key, and an item marshalled without one is a
+  // ValidationException at the far end rather than a missing record here.
+  const noKey = { ...MATCH_ITEM }
+  delete noKey.pk
+
+  const threw = bridge.call('br:ddb:matchPut', 83, noKey)
+  check('the handler runs', why(threw), null)
+  check('and sends nothing', bridge.calls.length, 0)
+
+  await bridge.settle()
+  check('answering false rather than pretending', answer('br:ddb:matchResult').ok, false)
 }
 
 console.log('\nspend: the debit reaches DynamoDB with its condition intact')
@@ -1979,6 +2609,202 @@ console.log('\nban check: neither identifier, and a failure')
   check('and says so', res.extra.error, 'ProvisionedThroughputExceededException')
 }
 
+// --------------------------------------- which tables, taken off the wire ---
+//
+// `resolvePrefixes` has its own cases above and they pin the DECISION. This
+// block pins the CONSEQUENCE, which is a different statement and the one that
+// actually protects the live tables: a resolution nothing reads is worth
+// nothing, and the failure this project has already shipped once is a
+// `TableName` built from a constant that stopped meaning what its name said.
+//
+// So src/index.js is loaded a second time with the dev convar set, its handlers
+// are driven, and the assertions are on the `TableName` that reached the SDK.
+// A third load with no convars at all is the control: it has to produce the
+// historic names, character for character, or the production path moved.
+//
+// See `loadIsolated` in scripts/bridge.mjs for how two instances of a
+// module-scope-side-effects file coexist.
+
+/**
+ * Every table one command names.
+ *
+ * TWO PLACES, NOT ONE. `BatchWriteItem` carries its table as a KEY of
+ * `RequestItems` rather than as a `TableName`, and match history is the only
+ * write that goes through it -- so reading `TableName` alone would leave the
+ * 48-rows-per-match path out of exactly the check that exists to cover it.
+ */
+const tablesNamed = (c) => [
+  ...(c.input.TableName ? [c.input.TableName] : []),
+  ...Object.keys(c.input.RequestItems ?? {}),
+]
+
+console.log('\ndev mode: the tables a dev box actually names')
+{
+  const dev = await loadIsolated({ br_devMode: 'true' })
+  const CASE = '11111111-2222-4333-8444-555555555555'
+
+  // Every verb that names a table, one of each family, driven for real.
+  const DRIVE = [
+    ['br:ddb:profileFetch', [70, LIC]],
+    ['br:ddb:statsApply', [71, LIC, MATCH_PAYOUT]],
+    ['br:ddb:matchPut', [72, MATCH_ITEM]],
+    ['br:ddb:historyPut', [73, [{
+      license: LIC, sk: 'match#1700000000000#m1', mode: 'solo',
+      placement: 3, kills: 2, damage: 400, survivedMs: 600_000,
+      xpEarned: 100, voltsEarned: 200, won: false,
+    }]]],
+    ['br:ddb:banCheck', [74, LIC, DISCORD]],
+    ['br:ddb:grantsFetch', [75, LIC]],
+    ['br:ddb:maintenance', [76]],
+    ['br:ddb:putIncident', [77, 'token-dev', refusalPayload()]],
+    ['br:ddb:incidentVerdict', [78, CASE]],
+  ]
+
+  bridge.reset()
+  for (const [verb, args] of DRIVE) {
+    check(`dev instance runs ${verb}`, why(dev.call(verb, ...args)), null)
+  }
+  await bridge.settle()
+
+  const named = [...new Set(bridge.calls.flatMap(tablesNamed))].sort()
+
+  // THE ASSERTION THE OWNER'S DEV BOX DEPENDS ON. Not "the prefix variable is
+  // dev-", but "these are the table names on the wire, and this is all of them".
+  check('a dev box names exactly these tables', named, [
+    'dev-br-matches',
+    'dev-br-players',
+    'dev-ringmaster-bans',
+    'dev-ringmaster-grants',
+    'dev-ringmaster-incidents',
+    'dev-ringmaster-maintenance',
+  ])
+
+  // Said as the negative too, because the list above passing is not by itself
+  // the guarantee: the guarantee is that nothing WITHOUT the prefix was named.
+  check(
+    'and no production table is reachable from it',
+    named.filter((t) => !t.startsWith('dev-')),
+    [],
+  )
+
+  // The close path builds its table name in a different place -- the name is
+  // passed INTO buildIncidentClose rather than read inside it -- so it gets its
+  // own assertion rather than riding on the filing path's.
+  bridge.reset()
+  check('dev instance runs br:ddb:incidentClose', why(dev.call('br:ddb:incidentClose', 79, {
+    incidentId: CASE,
+    matchEndedAt: 1_700_000_500_000,
+    matchStartedAt: 1_700_000_000_000,
+    verdict: 'upheld',
+    byName: 'Admin',
+    byLicense: LIC,
+  })), null)
+  await bridge.settle()
+  check('a close lands on the dev incident table', sent(0).input.TableName, 'dev-ringmaster-incidents')
+
+  // THE BANNER, off the real load. A diagnostic nobody can read is not a
+  // diagnostic, and this is the line the owner will be looking at on the dev
+  // box's console.
+  check(
+    'the dev box announces the mode',
+    dev.logs.some((l) => l.startsWith('[br_ddb] DEV MODE (br_devMode=true).')),
+    true,
+  )
+  check(
+    'and says what it will not touch',
+    dev.logs.some((l) => l.includes('will NOT touch ringmaster-* or br-*')),
+    true,
+  )
+  check(
+    'and the ready line carries the dev prefixes',
+    dev.logs.some((l) => l.includes('dev-ringmaster-* read-only') && l.includes('dev-br-* read/write')),
+    true,
+  )
+}
+
+console.log('\ndev mode: a box with neither convar is untouched')
+{
+  // THE CONTROL, AND IT IS THE IMPORTANT HALF. Everything above describes a box
+  // that does not exist yet. This is the box that is live right now, loaded the
+  // same way, and the expected values are the names that have been in
+  // DEPLOY.md since the tables were created.
+  const prod = await loadIsolated({})
+
+  bridge.reset()
+  for (const [verb, args] of [
+    ['br:ddb:profileFetch', [80, LIC]],
+    ['br:ddb:matchPut', [81, MATCH_ITEM]],
+    ['br:ddb:banCheck', [82, LIC, DISCORD]],
+    ['br:ddb:grantsFetch', [83, LIC]],
+    ['br:ddb:maintenance', [84]],
+    ['br:ddb:putIncident', [85, 'token-prod', refusalPayload()]],
+  ]) {
+    check(`production instance runs ${verb}`, why(prod.call(verb, ...args)), null)
+  }
+  await bridge.settle()
+
+  check(
+    'a production box names exactly the tables it always has',
+    [...new Set(bridge.calls.flatMap(tablesNamed))].sort(),
+    [
+      'br-matches',
+      'br-players',
+      'ringmaster-bans',
+      'ringmaster-grants',
+      'ringmaster-incidents',
+      'ringmaster-maintenance',
+    ],
+  )
+
+  // NOT ONE EXTRA CONSOLE LINE. The dev banner is the new behavior; on a
+  // production box the startup output has to be what it was, because "the log
+  // changed" is how a change that was supposed to be invisible gets noticed at
+  // three in the morning.
+  check(
+    'and prints one line at startup, the same one as before',
+    prod.logs.filter((l) => l.startsWith('[br_ddb]')).length,
+    1,
+  )
+  check(
+    'and it is the ready line, with the production prefixes',
+    prod.logs.some((l) => l.includes('ringmaster-* read-only') && l.includes('br-* read/write')),
+    true,
+  )
+  check(
+    'and nothing on it mentions dev',
+    prod.logs.filter((l) => /DEV MODE|dev-/.test(l)),
+    [],
+  )
+}
+
+console.log('\ndev mode: an explicit prefix on a dev box does not win')
+{
+  // The scenario, concretely: the dev box's server.cfg was copied off the live
+  // box and still carries its prefixes. Under a DEFAULT rather than a force,
+  // every assertion here would come back with a production table name.
+  const argued = await loadIsolated({
+    sv_devMode: 'true',
+    br_ddb_game_prefix: 'br-',
+    br_ddb_table_prefix: 'ringmaster-',
+  })
+
+  bridge.reset()
+  argued.call('br:ddb:profileFetch', 90, LIC)
+  argued.call('br:ddb:putIncident', 91, 'token-argued', refusalPayload())
+  await bridge.settle()
+
+  check(
+    'the copied config loses on both families',
+    [...new Set(bridge.calls.flatMap(tablesNamed))].sort(),
+    ['dev-br-players', 'dev-ringmaster-incidents'],
+  )
+  check(
+    'and the banner names the flag that did it',
+    argued.logs.some((l) => l.startsWith('[br_ddb] DEV MODE (sv_devMode=true).')),
+    true,
+  )
+}
+
 // ------------------------------------------------- no free variables, ever ---
 //
 // The block above pins one verb because one verb broke. This one is the ratchet
@@ -2023,6 +2849,8 @@ console.log('\nevery verb runs: no free variables anywhere in the bridge')
     'br:ddb:profileFetch': [4, LIC],
     'br:ddb:statsApply': [5, LIC, MATCH_PAYOUT],
     'br:ddb:historyPut': [6, [MATCH_ROW]],
+    // The MATCH's own row, as distinct from the per-player history above it.
+    'br:ddb:matchPut': [22, MATCH_ITEM],
     'br:ddb:inventoryFetch': [7, LIC],
     'br:ddb:purchase': [8, LIC, 'chute_azure', 750],
     'br:ddb:spend': [9, LIC, 750],

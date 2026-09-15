@@ -417,11 +417,18 @@ end
 -- So this is the resurrection and nothing else, sharing initHealthModel with
 -- respawn so the two cannot drift on what a living player's health means.
 --
--- NO FLAG, NO GUARD, NO STATE OF ITS OWN. The server sends this exactly once per
--- held death, immediately before it flips the roster to ALIVE, and a second copy
--- would resurrect an already-living ped at its own feet -- a no-op, not a bug.
--- A latch here would be a second opinion about whether a player is alive, and
--- this client has one authority for that and it is the server.
+-- NO FLAG, NO GUARD, NO STATE OF ITS OWN. The server sends this once per
+-- resurrection, immediately before it flips the roster to ALIVE, and a second
+-- copy would resurrect an already-living ped at its own feet -- a no-op, not a
+-- bug. A latch here would be a second opinion about whether a player is alive,
+-- and this client has one authority for that and it is the server.
+--
+-- TWO SENDERS SINCE 2026-09-12, AND THE LINE BELOW NO LONGER NAMES EITHER.
+-- #144's held death was the only one for a long time, so this said "the match
+-- had not started yet" -- which became false the moment `/brrevive` learned to
+-- put an eliminated player back mid-round (server/combat.lua). The distinction
+-- is the server's and is printed on the server; what this client knows, and all
+-- it knows, is that it was stood back up where it was lying.
 RegisterNetEvent(BR.Net.REVIVED)
 AddEventHandler(BR.Net.REVIVED, function()
     local ped = PlayerPedId()
@@ -433,7 +440,7 @@ AddEventHandler(BR.Net.REVIVED, function()
     -- key's arrival and lives in BR.Spawn.reviveAt for that reason. See its note.
     BR.Spawn.reviveAt(p.x, p.y, p.z, GetEntityHeading(ped))
 
-    print('[br_core] revived where we fell -- the match had not started yet')
+    print('[br_core] revived where we fell')
 end)
 
 --- Bring the player into the world for the first time: straight onto the

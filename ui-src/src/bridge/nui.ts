@@ -8,6 +8,7 @@
 
 import type { CallbackName, EnvelopeKind, WireEnvelope } from './types'
 import { ENVELOPE_VERSION } from './types'
+import { admit, createSeqGate, type Refusal } from './envelope'
 
 /** True when running under `npm run dev` in a normal browser. */
 export const isBrowser = !(window as unknown as { invokeNative?: unknown }).invokeNative
@@ -24,8 +25,15 @@ type Handler = (data: unknown) => void
 
 const handlers = new Map<EnvelopeKind, Set<Handler>>()
 
-/** Highest sequence number seen, so late-arriving stale messages are dropped. */
-let lastSeq = -1
+/**
+ * Highest sequence number seen, so late-arriving stale messages are dropped.
+ *
+ * Lives in bridge/envelope.ts rather than as a `let` here because the freeze it
+ * can cause (#281) is the thing worth testing, and a module-scoped variable in a
+ * file that touches `window` at load cannot be driven from a test. See that
+ * file's STALE_RUN_LIMIT for why the gate re-seeds itself.
+ */
+const seq = createSeqGate()
 
 export function subscribe(kind: EnvelopeKind, fn: Handler): () => void {
   let set = handlers.get(kind)
@@ -48,9 +56,9 @@ export function dispatch(msg: WireEnvelope): void {
   // Snapshots re-seed everything, so they reset the sequence rather than being
   // dropped as stale -- otherwise a resource restart would leave the UI frozen.
   if (msg.k === 'snapshot') {
-    lastSeq = msg.s ?? 0
-  } else if (typeof msg.s === 'number') {
-    if (msg.s <= lastSeq) return
+    seq.reseed(msg.s)
+  } else if (!seq.fresh(msg.s)) {
+    return
   }
 
   const set = handlers.get(msg.k)
@@ -64,7 +72,7 @@ export function dispatch(msg: WireEnvelope): void {
   // defaults until something unrelated happened to push state again.
   if (!set || set.size === 0) return
 
-  if (msg.k !== 'snapshot' && typeof msg.s === 'number') lastSeq = msg.s
+  if (msg.k !== 'snapshot') seq.commit(msg.s)
   for (const fn of set) {
     try {
       fn(msg.d)
@@ -76,8 +84,52 @@ export function dispatch(msg: WireEnvelope): void {
   }
 }
 
+/**
+ * Refusal reasons already reported, so a hostile page cannot flood the log.
+ *
+ * Four possible values, so this Set is bounded by the type, not by a counter.
+ */
+const refusalsSeen = new Set<Refusal>()
+
+/**
+ * THE ONLY DOOR INTO THE DISPATCHER FROM THE PAGE (#281).
+ *
+ * `bridge/envelope.ts` holds the decision and the reasoning. What lives here is
+ * the reporting, and it is not decoration: if this guard is ever wrong about a
+ * real FiveM build the symptom is a dead interface over a healthy game, with
+ * nothing in the console -- the exact failure reportError() was written for. One
+ * line per reason, to F8 and through the error sink to the server log, is the
+ * difference between a five-minute answer and an evening.
+ *
+ * ONLY ENVELOPE-SHAPED REFUSALS ARE REPORTED. A NUI page hears every
+ * postMessage on the window, including ordinary chatter from the Ringmaster
+ * console frame that Admin.tsx's own listener consumes. Logging those would
+ * bury the one line that matters under traffic that is working exactly as
+ * designed.
+ */
 window.addEventListener('message', (ev: MessageEvent) => {
-  dispatch(ev.data as WireEnvelope)
+  const verdict = admit(window, ev.source, ev.data)
+
+  if (!verdict.ok) {
+    const looksLikeOurs =
+      ev.data !== null
+      && typeof ev.data === 'object'
+      && (ev.data as { t?: unknown }).t === 'br'
+
+    if (looksLikeOurs && !refusalsSeen.has(verdict.why)) {
+      refusalsSeen.add(verdict.why)
+      reportError(
+        'nui message refused',
+        new Error(
+          `${verdict.why} -- an envelope-shaped message was turned away. If the`
+          + ' interface is not updating, this is why; see bridge/envelope.ts.',
+        ),
+      )
+    }
+    return
+  }
+
+  dispatch(verdict.env)
 })
 
 /**

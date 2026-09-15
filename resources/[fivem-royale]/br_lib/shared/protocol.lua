@@ -14,7 +14,12 @@ BR.Net = {
 
     -- Match lifecycle
     STATE           = 'br:state',            -- S->C  { state, endsAt, meta }
-    ROSTER_DELTA    = 'br:roster:delta',     -- S->C  array of roster changes (coalesced)
+    -- S->C  array of roster changes (coalesced). Each entry is
+    -- { op, src, e?, clear?, cause? }, where `e` is the mirror -- facts that
+    -- PERSIST about the player -- and `cause` is a fact about the TRANSITION,
+    -- true for this one message and meaningless afterwards. It rides beside `e`
+    -- rather than inside it for exactly that reason; see BR.Roster.setState.
+    ROSTER_DELTA    = 'br:roster:delta',
     DIGEST          = 'br:digest',           -- S->C  { alive, squadsAlive, phase, endsAt }
 
     -- Lobby / squads
@@ -112,6 +117,23 @@ BR.Net = {
     -- those is BR.Net. A second registry of wire names is how two halves come to
     -- disagree about a string.
     WARMUP_CRATE_RETURN = 'br:warmupcrate:return',
+    -- THE PLAYER'S OWN LICENSE, S->C, a bare hex string (#247).
+    --
+    -- The warmup stat board is a DUI pointed at a Ringmaster URL whose only
+    -- parameter is the viewer's license, and NOTHING IN br_core/client HOLDS ONE
+    -- -- a client knows its server id and its name and has never had a reason to
+    -- know its identifiers. So the server tells it, once, on READY.
+    --
+    -- IT TOUCHES RINGMASTER NOT AT ALL. This is one value the game server
+    -- already has, handed to the one client it belongs to, and it would be sent
+    -- identically on a box that had never heard of the console. The board's
+    -- request is made later, by that client's own browser, over the public
+    -- internet; the game box neither makes it nor hears about it.
+    --
+    -- AND IT IS SENT ONLY TO THE PLAYER IT DESCRIBES. TriggerClientEvent with a
+    -- source, never -1: an identifier broadcast to the lobby would be a
+    -- different feature with a different argument behind it.
+    BOARD_ID        = 'br:board:id',          -- S->C  '<hex>'
     -- Parties are persistent; squads are formed from them per match. The events
     -- are named "squad" for continuity with the UI, but they operate on parties.
     SQUAD_INVITE    = 'br:squad:invite',     -- C->S  { target }
@@ -123,7 +145,7 @@ BR.Net = {
     SQUAD_KICK      = 'br:squad:kick',       -- C->S  { target }
     SQUAD_UPDATE    = 'br:squad:update',     -- S->C  { id, leader, members }
     SQUAD_INVITED   = 'br:squad:invited',    -- S->C  { partyId, from, name, size, max }
-    LOBBY_STATUS    = 'br:lobby:status',     -- S->C  { queued, needed, connected, mode, ids, players, wait }
+    LOBBY_STATUS    = 'br:lobby:status',     -- S->C  { queued, needed, connected, mode, ids, players, wait, commit? }
     SQUAD_RESULT    = 'br:squad:result',     -- S->C  { ok, reason } -- feedback for an invite/kick
     -- S->C one notice for the on-screen stack.
     --   { text, tone, key?, ms?, endsAt?, sticky?, clear? }
@@ -206,10 +228,24 @@ BR.Net = {
     MARKER_CLEAR    = 'br:marker:clear',     -- C->S  remove my marker
     MARKER_SYNC     = 'br:marker:sync',      -- S->C  { op, owner, x, y, colour }
 
-    -- Voice channels. The client cannot work these out for itself: a channel
-    -- is derived from the match, and matchId is deliberately NEVER public
-    -- (see PUBLIC_FIELDS in server/roster.lua). So the server hands each
-    -- player the two numbers and nothing else.
+    -- Voice channels. The server hands each player their two numbers rather
+    -- than a rule for computing them, and server/voice.lua registers a pma-voice
+    -- `addChannelCheck` so a client that guessed somebody else's is refused.
+    --
+    -- THE MATCH ID IS NOT A SECRET, AND SAYING OTHERWISE HERE WAS WRONG (#291).
+    -- This comment used to claim `matchId` is "deliberately NEVER public". It
+    -- is not in the roster projection (PUBLIC_FIELDS, server/roster.lua) and it
+    -- never has been -- but `prox` below IS `matchBase + matchId`, so this very
+    -- event discloses it by subtraction, on a 1 Hz sweep, to every player. So
+    -- does `squadId`, which IS in PUBLIC_FIELDS and carries the match's hex tag
+    -- in front of the squad index, and so does BUS_SPECTATE's `matchId`.
+    --
+    -- IT IS NOT EXPLOITABLE AND THAT IS THE PART THAT MATTERS: not one server
+    -- net handler reads a match id off the wire, and every lookup re-derives
+    -- the match from the player who sent the message. The ids are also
+    -- unguessable now, and the owner has ruled (2026-09-09) that once they are,
+    -- disclosure is not a leak. The channel check is what stops a guess, not the
+    -- number being hidden.
     VOICE_SET       = 'br:voice:set',        -- S->C  { prox, mates, nearbyRange, squadRange }
 
     -- ONE BIT ABOUT THIS PLAYER'S OWN VOICE, TO THEIR OWN SQUAD.
@@ -265,7 +301,12 @@ BR.Net = {
     LOOT_DEV        = 'br:loot:dev',         -- C->S  { item?, x, y, z }
     INV_SET         = 'br:inv:set',          -- S->C  authoritative inventory mirror
     INV_SWAP        = 'br:inv:swap',         -- C->S  { from, to }
-    INV_DROP        = 'br:inv:drop',         -- C->S  { slot }
+    -- C->S { slot } or { pool }. PUT SOMETHING DOWN, AND THERE ARE TWO KINDS OF
+    -- SOMETHING because a pool has never had a slot to name (give(): "Ammo
+    -- never occupies a slot"). `slot` drops the whole stack in that square;
+    -- `pool` drops the whole reserve of that ammunition and leaves the loaded
+    -- magazine in the gun. A payload naming both takes the pool branch.
+    INV_DROP        = 'br:inv:drop',
     INV_USE         = 'br:inv:use',          -- C->S  { slot }
     INV_SELECT      = 'br:inv:select',       -- C->S  { slot }
     -- The server owns the inventory but cannot write a ped: it decides the
@@ -603,6 +644,34 @@ BR.Net = {
     -- `{ stop = true, reason = <string> }` when it ends, for whatever reason.
     -- ONE EVENT FOR BOTH so a stop can never be lost behind a position push
     -- that arrives after it.
+    --
+    -- ═══ `final = true` ON A STOP MEANS "AND DO NOT ASK AGAIN THIS MATCH" ═══
+    --
+    -- Owner, 2026-09-11: "whenever the 2nd to last player (or squad) dies - they
+    -- should not go immediately to spectate and just show the verdict and fade
+    -- to black like normal."
+    --
+    -- The elimination that DECIDES a match must not hand its victim a camera.
+    -- The server knows that at the moment it writes the death
+    -- (BR.Spectate.onEliminated); the client cannot work it out without racing,
+    -- because the OUT edge and the match's transition to ENDED are separate
+    -- messages with no ordering between them and the automatic ask fires on a
+    -- timer after the death verdict. So the fact TRAVELS, on the same event that
+    -- already carries every other thing the client knows about its session.
+    --
+    -- IT IS A FIELD ON THE STOP RATHER THAN AN EVENT OF ITS OWN, for the reason
+    -- stated one paragraph up: a seal on a second event could arrive behind a
+    -- position push and leave a camera up with the latch already down. One
+    -- event, one order, one meaning per envelope.
+    --
+    -- SENT TO EVERY PLAYER IN THAT MATCH WHO IS NOT IN THE FIGHT, which is the
+    -- set that could open a camera -- so the whole of a losing squad gets it and
+    -- not only the member whose death ended it. A player with a session running
+    -- gets it as the stop that ends that session; a player with nothing running
+    -- gets it as the latch alone, and client/spectate.lua's local teardown is
+    -- documented safe with no session. Nobody still in the fight is sent it at
+    -- all: they cannot spectate, and the winners must not be handed a message
+    -- about a camera.
     SPECTATE_SET    = 'br:spectate:set',
     -- C->S  { dir } -- +1 next, -1 previous, 0 "start, or re-resolve what I
     -- have". 0 is what a client sends on being eliminated: it asks the server
@@ -770,11 +839,16 @@ BR.Net = {
                                              --         fromLevel, fromXp, fromNeeded, levelUp }
     -- The in-game player list and reporting.
     --
-    -- THE SERVER FILTERS THE BUCKET; THE CLIENT NEVER LEARNS WHICH ONE. `matchId`
-    -- is marked NEVER PUBLIC in roster.lua's PUBLIC_FIELDS, so the list is
-    -- resolved server-side and the answer sent -- rather than sending an id and
-    -- asking the client to filter on it, which would leak the very field the
-    -- projection exists to withhold.
+    -- THE SERVER FILTERS THE BUCKET AND SENDS THE ANSWER. `matchId` is not in
+    -- roster.lua's PUBLIC_FIELDS, so the list is resolved server-side rather
+    -- than shipping an id and asking the client to filter on it.
+    --
+    -- THAT IS ABOUT TRUST, NOT SECRECY (#291). This used to say the client
+    -- never learns which bucket it is in, which was never true: VOICE_SET's
+    -- `prox` is `matchBase + matchId`, `squadId` carries the match's hex tag and
+    -- IS in PUBLIC_FIELDS, and BUS_SPECTATE sends `matchId` outright. The reason
+    -- to resolve here is that a filter the client performs is a filter the
+    -- client can decline to perform.
     PLAYERS_ASK     = 'br:players:ask',      -- C->S  (no payload; the server knows who asked)
     PLAYERS_LIST    = 'br:players:list',     -- S->C  { players = { { id, name, state, squadId, left } } }
     -- C->S { targets = { { id, category } } }.
@@ -834,6 +908,59 @@ BR.Net = {
     MARKET_STATE    = 'br:market:state',     -- S->C  { balance, owned, equipped }
     MARKET_BUY      = 'br:market:buy',       -- C->S  { id }
     MARKET_EQUIP    = 'br:market:equip',     -- C->S  { id }
+
+    -- The in-match Ammu-Nation counter (#274).
+    --
+    -- ═══ TWO NAMES FOR THE TWO DIRECTIONS ═══
+    --
+    -- `buy` in, `bought` out -- server/shop.lua's convention for the warmup
+    -- showroom, and its argument applies unchanged: one name for both would work
+    -- in the game (client and server handlers are separate registries) and would
+    -- be indistinguishable in a log, in a grep, and in any harness that stands
+    -- both halves up in one Lua state, which tools/test_gunshop.lua now does.
+    --
+    -- THE CLIENT SENDS A CATALOGUE ID AND NOTHING ELSE. No price, no balance, no
+    -- claim about where it is standing or what state it is in -- every one of
+    -- those is resolved server-side against config and the roster, which is
+    -- BR.GunshopSolve.canBuy's stated rule and server/market.lua's rule for the
+    -- storefront before it. A client that could assert "I am at a counter" could
+    -- shop from the top of Mount Chiliad.
+    --
+    -- THE ANSWER CARRIES THE ROW BACK so the client can play the cue for the
+    -- thing that actually landed rather than for the thing it last asked about;
+    -- a purchase is a DynamoDB round trip and the two can differ if a player is
+    -- quick. It carries NO BALANCE: br_ui already holds that figure and a second
+    -- copy on this wire would be free to disagree with the Store screen.
+    --
+    -- WHY THESE ARE HERE AND THE SHOWROOM'S FOUR ARE NOT. This file's own header
+    -- says every event name in the project lives here; `br:shop:buy` and its
+    -- three siblings are literals in br_core/server/shop.lua and predate that
+    -- being enforced anywhere. Moving them is a change to a shipped feature with
+    -- its own suite and is not this round's business -- but a NEW feature
+    -- inheriting the exception would make the exception the rule.
+    GUNSHOP_BUY     = 'br:gunshop:buy',      -- C->S  { id }
+    GUNSHOP_BOUGHT  = 'br:gunshop:bought',   -- S->C  { row }
+
+    -- WHAT IS LEFT ON THE SHELF. Owner, 2026-09-09: each counter starts the
+    -- match holding between three and eight weapons, spread across the bands it
+    -- sells, and a different spread at every counter. Ammo is not counted.
+    --
+    -- THE SERVER OWNS IT AND THE CLIENT IS TOLD, rather than both deriving it
+    -- from a shared seed. A seed would agree at the start of the match and
+    -- diverge the moment anybody bought anything, and the shelf is SHARED --
+    -- the player who takes the last Carbine takes it from everyone in that
+    -- match, so every client has to hear about a purchase it did not make.
+    --
+    -- ONE SHAPE, TWO USES. `stores` is { [storeId] = { [rowId] = count } } and
+    -- `full` says how to apply it: true is the whole picture for this match,
+    -- sent once when a player is first seen in it; absent is a delta to merge,
+    -- sent to everyone in the match each time a count moves. A row that is
+    -- ABSENT from a full snapshot is not counted at all, which is what ammo is.
+    --
+    -- COUNTS, NOT PRICES OR LABELS. Everything else about a row is config both
+    -- ends already hold; a second copy of a price on this wire would be a
+    -- second thing free to disagree with the shelf.
+    GUNSHOP_STOCK   = 'br:gunshop:stock',    -- S->C  { stores, full }
 
     -- Chat
     CHAT_SEND       = 'br:chat:send',        -- C->S  { channel, text }

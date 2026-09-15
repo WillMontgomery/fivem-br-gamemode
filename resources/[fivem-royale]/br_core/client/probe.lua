@@ -195,6 +195,184 @@ local function ammoWatch(seconds, raw)
     end)
 end
 
+--- BOOL natives hand back 1 and 0 here, and `0` is TRUTHY in Lua.
+--- @param v any
+--- @return boolean
+local function isTrue(v) return v == true or v == 1 end
+
+--- EVERY DECLARED MAGAZINE, BESIDE THE ONE THE ENGINE ACTUALLY HAS.
+---
+--- ═══ WHY THIS IS A COMMAND AND NOT A TABLE SOMEBODY MAINTAINS ═══
+---
+--- `clip` in br_lib/config/weapons.lua is our copy of GTA's own magazine size,
+--- and a copy that is too HIGH destroys ammunition on every reload: the server's
+--- BR.Inv.reload moves `w.clip` rounds out of the pool, the engine can only take
+--- its own ClipSize of them, and client/inventory.lua's report loop then writes
+--- the ped down to what it read back. The railgun was declared 3 against a real
+--- magazine of 1, and the owner paid for twelve heavy rounds and fired four
+--- (2026-09-12).
+---
+--- IT HAS BEEN WRONG TWICE NOW, so the question "are any of the others wrong"
+--- has to be answerable from the game rather than from a dump:
+---
+---   * DurtyFree's gta-v-data-dumps weapons.json does NOT carry magazine sizes.
+---     It has DefaultMaxAmmo, which is the POOL ceiling and a different number
+---     entirely -- reading it as a magazine is the trap this command avoids.
+---   * weaponcomponents.meta, inside update.rpf, carries `ClipSize` on a clip
+---     COMPONENT. It needs OpenIV to read, it goes stale with the next DLC, and
+---     IT IS SILENT ON HALF OUR CATALOGUE -- see META_CLIP below, which is the
+---     extraction the owner supplied on 2026-09-12. It settles eighteen of our
+---     forty and does not mention the railgun at all.
+---   * weapons.meta's own `<ClipSize>` on the CWeaponInfo is the weapon's default
+---     magazine, and it is the number a weapon with no clip component uses. It is
+---     where the railgun's 1 comes from, and where the offline gate in
+---     tools/check_weapons.lua got all forty.
+---
+--- So ask the engine, on the build that is actually running, and print the meta
+--- beside it where we have one: three numbers agreeing is a stronger answer than
+--- any one of them, and three numbers disagreeing is the thing worth seeing.
+---
+--- GET_WEAPON_CLIP_SIZE IS THE RIGHT NATIVE AND GetMaxAmmoInClip IS THE FALLBACK.
+--- The first takes a hash alone -- "the size of the default weapon component
+--- clip" -- so it answers for all forty weapons without arming anybody, which
+--- matters because this is runnable mid-match and RemoveAllPedWeapons takes the
+--- parachute with it. The second is ped-scoped and is documented to answer about
+--- a weapon the ped HOLDS, so it is asked second and its source is printed: a
+--- reading is worth nothing if you cannot see which native produced it.
+---
+--- NEITHER IS ASSUMED TO RESOLVE. A misspelled or missing native is nil, not an
+--- error, and this file exists because that failure is silent -- so each is
+--- pcall'd and a weapon nothing would answer for prints `no reading` rather than
+--- a confident 0 that reads as "the engine says zero".
+---
+--- ═══ THE THIRD COLUMN, AND THE HALF OF IT THAT MUST NOT BE READ ═══
+---
+--- `COMPONENT_<X>_CLIP_01` is the DEFAULT magazine and is comparable with ours.
+--- CLIP_02 and CLIP_03 are the EXTENDED magazines a player attaches, and four of
+--- our weapons appear in that file ONLY as an extended clip -- combatpdw and
+--- specialcarbine at 100, heavyshotgun and machinepistol at 30. Printing those in
+--- the same column as a default would read as "we declare 30 and the engine says
+--- 100", which is false and is exactly the misreading that starts a bad fix. They
+--- are deliberately absent from the table below and named in the footnote
+--- instead, with nothing in the column at all.
+local META_CLIP = {
+    -- CLIP_01, the default magazine. Owner's weaponcomponents.meta, 2026-09-12.
+    pistol         =    12, combatpistol   =    12, microsmg     =  16,
+    smg            =    30, assaultsmg     =    30, assaultrifle =  30,
+    carbinerifle   =    30, advancedrifle  =    30, sawnoff      =   8,
+    pumpshotgun    =     8, assaultshotgun =     8, sniperrifle  =  10,
+    heavysniper    =     6, mg             =    54, combatmg     = 100,
+    rpg            =     1, grenadelauncher =   10,
+    -- ...and the minigun's belt, which is the one CLIP_01 in the file that is
+    -- nowhere near what we declare. It is the SAFE direction; see the note on
+    -- the minigun's entry in br_lib/config/weapons.lua for why 150 stays.
+    minigun        = 15000,
+}
+
+--- Weapons the meta mentions only as an EXTENDED clip. Named, never numbered.
+local META_EXTENDED = { 'combatpdw', 'specialcarbine', 'heavyshotgun',
+                        'machinepistol' }
+
+local function clipAudit()
+    local ped = PlayerPedId()
+
+    --- @return integer|nil size, string source
+    local function engineClip(hash)
+        local ok, n = pcall(function() return GetWeaponClipSize(hash) end)
+        if ok and type(n) == 'number' and n > 0 then
+            return math.floor(n), 'GetWeaponClipSize'
+        end
+        -- Two returns: a BOOL and the number. `0` is truthy, hence isTrue.
+        local ok2, got, n2 = pcall(function()
+            return GetMaxAmmoInClip(ped, hash, true)
+        end)
+        if ok2 and isTrue(got) and type(n2) == 'number' and n2 > 0 then
+            return math.floor(n2), 'GetMaxAmmoInClip'
+        end
+        -- ...and the shape where the BOOL is absent and the size is the only
+        -- return, which is how several of these natives behave here.
+        if ok2 and type(got) == 'number' and got > 0 then
+            return math.floor(got), 'GetMaxAmmoInClip'
+        end
+        return nil, '-'
+    end
+
+    local FMT = '  %-16s %-26s %5s %7s %6s  %-17s %s'
+    print(FMT:format('id', 'name', 'ours', 'engine', 'meta', 'read by', 'verdict'))
+    line()
+
+    local over, under, agree, blind, metaOdd = {}, 0, 0, 0, {}
+    for _, list in ipairs({ BR.Config.Weapons, BR.Config.AirdropWeapons }) do
+        for _, w in ipairs(list or {}) do
+            local size, src = engineClip(w.hash)
+            local ours = math.floor(w.clip or 0)
+            local meta = META_CLIP[w.id]
+            local verdict
+            if size == nil then
+                blind = blind + 1
+                verdict = 'no reading'
+            elseif ours > size then
+                over[#over + 1] = ('%s (%d over %d)'):format(w.id, ours, size)
+                verdict = '>> OVER -- DESTROYS ROUNDS'
+            elseif ours < size then
+                under = under + 1
+                verdict = 'under (safe)'
+            else
+                agree = agree + 1
+                verdict = 'ok'
+            end
+
+            -- THE ENGINE AND THE FILE DISAGREEING IS ITS OWN FINDING, separate
+            -- from either of them disagreeing with US: it means the extraction
+            -- is stale, or this build is not the one it came from.
+            if size and meta and size ~= meta then
+                metaOdd[#metaOdd + 1] = ('%s (engine %d, meta %d)')
+                    :format(w.id, size, meta)
+            end
+
+            print(FMT:format(w.id, w.name, tostring(ours),
+                             size and tostring(size) or '?',
+                             meta and tostring(meta) or '-',
+                             src, verdict))
+        end
+    end
+
+    line()
+    val('agree with the engine', agree)
+    val('declared BELOW the engine', under, 'safe -- costs nothing')
+    val('declared ABOVE the engine', #over, 'each one loses rounds per reload')
+    val('no reading at all', blind)
+
+    if #over > 0 then
+        print('  >> ' .. table.concat(over, ', '))
+        print('  Every weapon on that line moves more rounds out of its pool on a')
+        print('  reload than its magazine can hold, and the difference is gone.')
+        print('  Fix `clip` in br_lib/config/weapons.lua to the engine column,')
+        print('  and tools/check_weapons.lua carries the same numbers offline.')
+    elseif blind > 0 then
+        print('  No weapon is over, but ' .. blind .. ' could not be read at all.')
+        print('  Run this again holding one of them: GetMaxAmmoInClip is')
+        print('  ped-scoped and answers about the weapon actually in the hand.')
+    else
+        print('  No declared magazine is above the engine\'s. Nothing here is')
+        print('  losing rounds on a reload.')
+    end
+
+    if #metaOdd > 0 then
+        line()
+        print('  ENGINE AND META DISAGREE: ' .. table.concat(metaOdd, ', '))
+        print('  The engine is the authority here; the meta column is a 2026-09-12')
+        print('  extraction and a DLC moves it. Paste this line.')
+    end
+
+    -- The `meta` column is blank for these ON PURPOSE, and saying so is the
+    -- whole reason the footnote exists: a blank that looks like an oversight
+    -- invites somebody to fill it in with the extended magazine.
+    print('  meta blank on purpose for ' .. table.concat(META_EXTENDED, ', ')
+        .. ': weaponcomponents.meta carries only their EXTENDED clip')
+    print('  (CLIP_02/03), which is not the magazine a found weapon comes with.')
+end
+
 -- --------------------------------------------------------------------------
 -- Screen
 -- --------------------------------------------------------------------------
@@ -617,6 +795,10 @@ RegisterCommand('brprobe', function(_, args)
         head('probe: ammo, ENGINE ONLY')
         ammoWatch(tonumber(args[2]) or 15, true)
         return
+    elseif what == 'clips' then
+        head('probe: does every declared magazine match the engine\'s?')
+        clipAudit()
+        return
     elseif what == 'vehicle' then
         head('probe: does a vehicle seat change the ammo readings?')
         print('  Reading now, then get in a vehicle and read again.')
@@ -656,6 +838,9 @@ RegisterCommand('brprobe', function(_, args)
     print('                              defaults to E, the interact key (#129)')
     print('    /brprobe raw [seconds]    ammo with br_core NOT touching it')
     print('    /brprobe ammo [seconds]   ammo as the game normally runs')
+    print('    /brprobe clips            every weapon\'s declared magazine')
+    print('                              against the engine\'s own. Needs no')
+    print('                              weapon in hand and touches nothing.')
     print('    /brprobe vehicle          what a vehicle seat does to the readings')
     print('  Cannot fire from a passenger seat? That is /brdriveby [seconds],')
     print('  which is its own command because it has to sample across frames.')

@@ -44,6 +44,13 @@ end
 function RegisterNetEvent() end
 function TriggerClientEvent() end
 
+-- Recorded rather than dispatched: the only server event guild.lua raises is the
+-- allowlist's answer to br_ringmaster, which lives in another resource.
+local triggered = {}
+function TriggerEvent(name, ...)
+    triggered[#triggered + 1] = { name = name, args = { ... } }
+end
+
 local function fire(name, src, ...)
     local prev = source
     source = src
@@ -67,6 +74,29 @@ function SetTimeout(ms, fn)
     timers[#timers + 1] = { at = clock + (tonumber(ms) or 0), fn = fn }
 end
 Citizen = { CreateThread = function() end, Wait = function() end, SetTimeout = SetTimeout }
+function Wait() end
+
+-- --- other resources -------------------------------------------------------
+--
+-- Which resources are running and what they export. The dev allowlist's
+-- backstop asks both about br_ringmaster, and a missing export THROWS, as
+-- FiveM's does, so the pcall around it is exercised rather than assumed.
+local resourceState, exported = {}, {}
+function GetResourceState(name) return resourceState[name] or 'missing' end
+-- What THIS resource exports, by name: guild.lua exports its brallowlist switch.
+local ownExports = {}
+exports = setmetatable({}, {
+    __call = function(_, name, fn) ownExports[name] = fn end,
+    __index = function(_, res)
+        return setmetatable({}, { __index = function(_, name)
+            local fn = (exported[res] or {})[name]
+            if fn == nil then
+                error(('No such export %s in resource %s'):format(name, res))
+            end
+            return function(_, ...) return fn(...) end
+        end })
+    end,
+})
 
 --- Run every timer due within `ms`, in time order, including ones armed by the
 --- callbacks that run. Re-scanned each pass on purpose: `lookup` arms its next
@@ -148,8 +178,43 @@ local B_RETRY_ZERO  = body('{"retry_after":0}', { retry_after = 0 })
 local B_RETRY_NEG   = body('{"retry_after":-3}', { retry_after = -3 })
 local B_RETRY_HUGE  = body('{"retry_after":9999}', { retry_after = 9999 })
 
+-- The allowlist role, pinned as the owner gave it, and member objects around it.
+local ROLE = '1548704100621750272'
+local B_HAS_ROLE    = body('{"roles":["111","1548704100621750272"]}', { roles = { '111', ROLE } })
+local B_OTHER_ROLE  = body('{"roles":["111"]}', { roles = { '111' } })
+local B_NO_ROLES    = body('{"roles":[]}', { roles = {} })
+local B_NO_ROLE_KEY = body('{"nick":"x"}', { nick = 'x' })
+local B_ROLE_NUMBER = body('{"roles":[1548704100621750272]}', { roles = { tonumber(ROLE) } })
+
 local realPrint = print
-function print() end
+local printed = {}
+function print(...)
+    local parts = {}
+    for i = 1, select('#', ...) do parts[#parts + 1] = tostring((select(i, ...))) end
+    printed[#printed + 1] = table.concat(parts, ' ')
+end
+
+-- --- commands --------------------------------------------------------------
+--
+-- FiveM's `restricted` flag, modelled, because it IS the authority here: the
+-- server console (source 0) always runs a restricted command, and a player only
+-- while holding its ACE. A refused caller never reaches the handler.
+local commands, aces = {}, {}
+function RegisterCommand(name, fn, restricted)
+    commands[name] = { fn = fn, restricted = restricted }
+end
+function GetPlayerName(src) return 'Player' .. tostring(src) end
+
+--- Type `line` as `src`. Returns whether FiveM would have run it.
+local function run(src, line)
+    local args = {}
+    for w in line:gmatch('%S+') do args[#args + 1] = w end
+    local c = commands[table.remove(args, 1)]
+    if c == nil then return false end
+    if c.restricted and src ~= 0 and not aces[src] then return false end
+    c.fn(src, args, line)
+    return true
+end
 
 local ROOT = 'resources/[fivem-royale]/'
 
@@ -171,12 +236,18 @@ local SNOW  = '280000000000000000'
 local function boot(cvs)
     convars = {}
     for k, v in pairs(cvs or {}) do convars[k] = v end
-    handlers, http, timers, idents = {}, {}, {}, {}
+    handlers, http, timers, idents, triggered = {}, {}, {}, {}, {}
+    resourceState, exported, ownExports = {}, {}, {}
+    commands, aces, printed = {}, {}, {}
     clock = 0
 
     local env = setmetatable({}, { __index = _G })
     for _, f in ipairs({
+        -- FIRST, as br_core's manifest has it: brallowlist registers through
+        -- its wrap, which is what refuses the command with dev mode off.
+        'br_lib/shared/devgate.lua',
         'br_lib/shared/identity.lua',
+        'br_lib/config/allowlist.lua',
         'br_core/server/guild.lua',
     }) do
         local chunk, err = loadfile(ROOT .. f, 't', env)
@@ -675,10 +746,432 @@ do
     -- test_community.lua drives the real file, so a rename would fail there too
     -- -- this names them so the failure says WHICH one moved.
     local env = bootReady(5)
-    for _, name in ipairs({ 'member', 'ask', 'configured', 'report', 'readAnswer', 'backoffMs' }) do
+    for _, name in ipairs({ 'member', 'ask', 'configured', 'report', 'readAnswer', 'backoffMs',
+                            'readRole', 'askRole' }) do
         ok(type(env.BR.Guild[name]) == 'function', ('BR.Guild.%s is a function'):format(name),
             type(env.BR.Guild[name]))
     end
+end
+
+-- ------------------------------------------------------- the dev allowlist ---
+--
+-- THE CARD'S POLARITY, TURNED ROUND. In dev mode br_ringmaster/server/gate.lua
+-- admits a join only on 'held', so every case here that is not a confirmed role
+-- is asserted to be something else by name -- `== 'unknown'` rather than
+-- `~= 'held'` wherever the verdict is known, so a collapse between two refusals
+-- still shows up.
+
+describe('guild.role.answer')
+do
+    local env = boot({})
+    local read = env.BR.Guild.readRole
+
+    ok(env.BR.Config.Allowlist.roleId == ROLE, 'the allowlist role is the one the owner named',
+        tostring(env.BR.Config.Allowlist.roleId))
+
+    ok(read(200, B_HAS_ROLE, ROLE) == 'held', 'a member whose roles carry it holds it',
+        read(200, B_HAS_ROLE, ROLE))
+    ok(read(200, B_OTHER_ROLE, ROLE) == 'missing', 'a member with other roles is missing it',
+        read(200, B_OTHER_ROLE, ROLE))
+    ok(read(200, B_NO_ROLES, ROLE) == 'missing', 'and so is a member with no roles at all',
+        read(200, B_NO_ROLES, ROLE))
+    ok(read(404, B_NOT_MEMBER, ROLE) == 'notmember', 'a 10007 is not a member',
+        read(404, B_NOT_MEMBER, ROLE))
+
+    -- A 200 IS NOT A YES HERE. readAnswer can stop at the status; this cannot,
+    -- because the role is in the body, and a body we cannot read holds nothing.
+    ok(read(200, '', ROLE) == 'unknown', 'a 200 with no body is unknown', read(200, '', ROLE))
+    ok(read(200, B_HTML, ROLE) == 'unknown', 'a 200 with an unreadable body is unknown',
+        read(200, B_HTML, ROLE))
+    ok(read(200, B_NO_ROLE_KEY, ROLE) == 'unknown', 'a 200 with no roles array is unknown',
+        read(200, B_NO_ROLE_KEY, ROLE))
+    ok(read(200, B_ROLE_NUMBER, ROLE) ~= 'held', 'a role id that is not a string never matches',
+        read(200, B_ROLE_NUMBER, ROLE))
+
+    ok(read(404, B_UNKNOWN_GLD, ROLE) == 'unknown', 'a 10004 is about US, not the player',
+        read(404, B_UNKNOWN_GLD, ROLE))
+    for _, status in ipairs({ 401, 403, 429, 500, 502, 0, -1 }) do
+        ok(read(status, B_HAS_ROLE, ROLE) == 'unknown',
+            ('%d is unknown, whatever the body says'):format(status), read(status, B_HAS_ROLE, ROLE))
+    end
+    ok(read(nil, nil, ROLE) == 'unknown', 'and so is no answer at all', read(nil, nil, ROLE))
+end
+
+describe('guild.role.unconfigured')
+do
+    local env = boot({})
+    local got = {}
+    env.BR.Guild.askRole(SNOW, function(v) got[#got + 1] = v end)
+    advance(60000)
+    ok(#http == 0, 'with no token Discord is not asked', tostring(#http))
+    ok(#got == 1 and got[1] == 'unconfigured', 'and the caller is told so at once, exactly once',
+        table.concat(got, ','))
+
+    local badRole = bootReady(5)
+    badRole.BR.Config.Allowlist.roleId = 'tester'
+    local v = 'untouched'
+    badRole.BR.Guild.askRole(SNOW, function(x) v = x end)
+    ok(#http == 0 and v == 'unconfigured', 'a role id that is not a snowflake is unconfigured too',
+        tostring(#http) .. '/' .. tostring(v))
+end
+
+describe('guild.role.noid')
+do
+    local env = bootReady(5)
+    local v = 'untouched'
+    env.BR.Guild.askRole(nil, function(x) v = x end)
+    ok(v == 'noid', 'no discord identifier is noid', tostring(v))
+    for _, bad in ipairs({ '', 'not-a-snowflake', '280000000000000000/../x' }) do
+        v = 'untouched'
+        env.BR.Guild.askRole(bad, function(x) v = x end)
+        ok(v == 'noid', ('%q is noid'):format(bad), tostring(v))
+    end
+    advance(60000)
+    ok(#http == 0, 'and none of them reaches a URL', tostring(#http))
+end
+
+describe('guild.role.request')
+do
+    local env = bootReady(5)
+    local got = 'untouched'
+    env.BR.Guild.askRole(SNOW, function(v) got = v end)
+    ok(#http == 1, 'one request goes out', tostring(#http))
+    ok((http[1] or {}).url == ('https://discord.com/api/v10/guilds/%s/members/%s'):format(GUILD, SNOW),
+        'to the same member endpoint the card uses', tostring((http[1] or {}).url))
+    ok(got == 'untouched', 'nothing is answered before Discord is', tostring(got))
+    respond(1, 200, B_HAS_ROLE)
+    ok(got == 'held', 'and a member holding the role is held', tostring(got))
+
+    -- NEVER CACHED. The asker is a connection whose source is a temporary id.
+    advance(250)
+    local again = 'untouched'
+    env.BR.Guild.askRole(SNOW, function(v) again = v end)
+    ok(#http == 2, 'a second connection asks again rather than reusing the answer', tostring(#http))
+    respond(2, 200, B_OTHER_ROLE)
+    ok(again == 'missing', 'and gets its own answer', tostring(again))
+end
+
+describe('guild.role.sharedqueue')
+do
+    -- ONE QUEUE FOR BOTH QUESTIONS, so the allowlist cannot double the rate the
+    -- card already asks Discord at.
+    local env = bootReady(5)
+    env.BR.Guild.ask(5, nil)
+    local got = 'untouched'
+    env.BR.Guild.askRole(SNOW, function(v) got = v end)
+    ok(#http == 1, 'a role lookup waits behind a membership lookup already out', tostring(#http))
+    respond(1, 200, '')
+    advance(249)
+    ok(#http == 1, 'and keeps the 250ms gap', tostring(#http))
+    advance(1)
+    ok(#http == 2, 'then goes', tostring(#http))
+    respond(2, 404, B_NOT_MEMBER)
+    ok(got == 'notmember', 'and is answered for itself', tostring(got))
+    ok(env.BR.Guild.member(5) == true, 'without disturbing the membership verdict',
+        tostring(env.BR.Guild.member(5)))
+end
+
+describe('guild.role.failure')
+do
+    local env = bootReady(5)
+    local got = 'untouched'
+    env.BR.Guild.askRole(SNOW, function(v) got = v end)
+    respond(1, 429, B_RETRY_1_5)
+    ok(got == 'unknown', 'a 429 is unknown', tostring(got))
+
+    local slow = bootReady(5)
+    local calls, v = 0, 'untouched'
+    slow.BR.Guild.askRole(SNOW, function(x) calls = calls + 1; v = x end)
+    advance(5999)
+    ok(calls == 0, 'nothing gives up early', tostring(calls))
+    advance(1)
+    ok(calls == 1 and v == 'unknown', 'no answer in 6s is unknown', tostring(calls) .. '/' .. tostring(v))
+    respond(1, 200, B_HAS_ROLE)
+    ok(calls == 1 and v == 'unknown', 'and a late held changes nothing', tostring(calls) .. '/' .. tostring(v))
+end
+
+describe('guild.role.expired')
+do
+    -- A LOOKUP WHOSE GATE HAS GIVEN UP IS NOT SENT. After a 429 the queue stands
+    -- down for up to a minute, and br_ringmaster's gate refuses the join after
+    -- its own ten seconds whatever happens here -- so a role job still queued
+    -- once its budget is gone is answered without spending a call.
+    local env = bootReady(5)
+    env.BR.Guild.ask(5, nil)
+    respond(1, 429, B_RETRY_HUGE)                 -- a 60s stand-down
+    local calls, got = 0, 'untouched'
+    env.BR.Guild.askRole(SNOW, function(v) calls = calls + 1; got = v end, 10000)
+    advance(60000)
+    ok(#http == 1, 'a role job whose budget ran out in the queue sends no request', tostring(#http))
+    ok(calls == 1 and got == 'expired', 'and is answered expired, exactly once',
+        tostring(calls) .. '/' .. tostring(got))
+
+    -- AND IT DOES NOT HOLD UP THE ONE BEHIND IT: no request, so no gap either.
+    local fresh = 'untouched'
+    env.BR.Guild.askRole(SNOW, function(v) fresh = v end, 10000)
+    ok(#http == 2, 'a fresh lookup behind it goes straight out', tostring(#http))
+    respond(2, 200, B_HAS_ROLE)
+    ok(fresh == 'held', 'and is answered for itself', tostring(fresh))
+
+    -- WITH BUDGET LEFT IT STILL GOES, even from behind a request that took a while.
+    local slow = bootReady(5)
+    slow.BR.Guild.ask(5, nil)
+    slow.BR.Guild.askRole(SNOW, function() end, 10000)
+    advance(4000)
+    respond(1, 200, '')
+    advance(250)
+    ok(#http == 2, 'a role job with budget left behind a slow request is still sent', tostring(#http))
+
+    -- THE BUDGET RIDES THE EVENT, which is the only way the gate asks.
+    local viaEvent = bootReady(5)
+    viaEvent.BR.Guild.ask(5, nil)
+    respond(1, 429, B_RETRY_HUGE)
+    fire('br:guild:roleCheck', nil, 43, SNOW, 10000)
+    advance(60000)
+    local last = triggered[#triggered] or { args = {} }
+    ok(#http == 1 and last.args[1] == 43 and last.args[2] == 'expired',
+        'br_ringmaster\'s budget reaches the queue through br:guild:roleCheck',
+        tostring(#http) .. '/' .. tostring(last.args[1]) .. '/' .. tostring(last.args[2]))
+end
+
+describe('guild.role.event')
+do
+    local env = bootReady(5)
+    fire('br:guild:roleCheck', nil, 41, SNOW)
+    ok(#http == 1, 'br_ringmaster\'s question becomes one request', tostring(#http))
+    respond(1, 200, B_HAS_ROLE)
+    local last = triggered[#triggered] or { args = {} }
+    ok(last.name == 'br:guild:roleResult', 'answered on the result event', tostring(last.name))
+    ok(last.args[1] == 41 and last.args[2] == 'held', 'carrying the request id and the verdict',
+        tostring(last.args[1]) .. '/' .. tostring(last.args[2]))
+
+    -- AND A QUESTION WITH NOTHING TO ASK IS STILL ANSWERED, because a deferral is
+    -- being held open on it.
+    fire('br:guild:roleCheck', nil, 42, nil)
+    last = triggered[#triggered] or { args = {} }
+    ok(last.args[1] == 42 and last.args[2] == 'noid', 'a missing identifier is answered, not dropped',
+        tostring(last.args[1]) .. '/' .. tostring(last.args[2]))
+end
+
+describe('guild.role.boot')
+do
+    local env = bootReady(5)
+    local text = table.concat(env.BR.Guild.report(), '\n')
+    ok(text:find('allowlist', 1, true) == nil, 'dev mode off says nothing about an allowlist', text)
+
+    env.BR.Dev = { on = function() return true end }
+    text = table.concat(env.BR.Guild.report(), '\n')
+    local _, n = text:gsub('allowlist', '')
+    ok(n == 1, 'dev mode on says it in one line', text)
+    ok(text:find('allowlist ON', 1, true) ~= nil and text:find(ROLE, 1, true) ~= nil
+       and text:find('lookup configured', 1, true) ~= nil,
+        'naming the role and saying the lookup is configured', text)
+    ok(text:find(TOKEN, 1, true) == nil, 'and never the token', text)
+
+    local bare = boot({})
+    bare.BR.Dev = { on = function() return true end }
+    text = table.concat(bare.BR.Guild.report(), '\n')
+    ok(text:find('lookup NOT configured', 1, true) ~= nil,
+        'with no token it says the lookup is NOT configured', text)
+end
+
+describe('guild.backstop')
+do
+    -- THE ALLOWLIST WITH NO GATE IN FRONT OF IT. br_ringmaster/server/gate.lua is
+    -- the only thing that refuses a dev-mode join, and br_ringmaster is optional.
+    -- So br_core refuses every dev-mode join itself unless that gate answers, and
+    -- does not touch the deferral at all when it does.
+    local function fnRef(fn)
+        return setmetatable({}, { __call = function(_, ...) return fn(...) end })
+    end
+    local function connect(src)
+        local d = { deferred = false, doneCount = 0, doneArg = nil }
+        d.defer = fnRef(function() d.deferred = true end)
+        d.update = fnRef(function() end)
+        d.done = fnRef(function(reason)
+            d.doneCount = d.doneCount + 1
+            d.doneArg = reason
+        end)
+        fire('playerConnecting', src, 'Someone', function() end, d)
+        return d
+    end
+
+    -- THE GATE'S OWN SENTENCE, read out of the gate, so the two copies cannot
+    -- drift apart without this failing.
+    local f = io.open(ROOT .. 'br_ringmaster/server/gate.lua', 'r')
+    local gateSrc = f and f:read('*a') or ''
+    if f then f:close() end
+    local REFUSAL = gateSrc:match("local ALLOWLIST_REFUSAL = '([^']*)'")
+    ok(REFUSAL == 'This server is restricted to allowlisted players.',
+        'the gate\'s refusal is the owner\'s sentence', tostring(REFUSAL))
+
+    local env = bootReady(5)
+    local devOn = true
+    env.BR.Dev = { on = function() return devOn end }
+
+    for _, state in ipairs({ 'missing', 'stopped', 'stopping', 'starting' }) do
+        resourceState.br_ringmaster = state
+        local d = connect(5)
+        ok(d.deferred and d.doneCount == 1 and d.doneArg == REFUSAL,
+            ('dev on, br_ringmaster %q: refused'):format(state), tostring(d.doneArg))
+    end
+
+    -- STARTED, WITH NO GATE IN IT. The case a resource-state check alone admits.
+    resourceState.br_ringmaster = 'started'
+    local d = connect(5)
+    ok(d.deferred and d.doneCount == 1 and d.doneArg == REFUSAL,
+        'dev on, br_ringmaster started but gate.lua not loaded: refused', tostring(d.doneArg))
+
+    exported.br_ringmaster = { gateArmed = function() return 1 end }
+    d = connect(5)
+    ok(d.doneCount == 1 and d.doneArg == REFUSAL, 'an answer that is not true is not armed',
+        tostring(d.doneArg))
+
+    -- THE GATE IS THERE: ONE DEFERRAL, AND IT IS THE GATE'S.
+    exported.br_ringmaster = { gateArmed = function() return true end }
+    d = connect(5)
+    ok(not d.deferred and d.doneCount == 0,
+        'dev on, gate armed: the deferral is not touched, so nothing can race the ban notice',
+        tostring(d.deferred) .. '/' .. tostring(d.doneCount))
+
+    devOn = false
+    exported.br_ringmaster = nil
+    resourceState.br_ringmaster = 'missing'
+    d = connect(5)
+    ok(not d.deferred and d.doneCount == 0, 'dev off: nothing is deferred or refused, gate or no gate',
+        tostring(d.deferred) .. '/' .. tostring(d.doneCount))
+
+    env.BR.Dev = nil
+    d = connect(5)
+    ok(not d.deferred and d.doneCount == 0, 'and neither is it with no dev gate loaded at all',
+        tostring(d.deferred) .. '/' .. tostring(d.doneCount))
+
+    ok(#http == 0, 'and no backstop case asks Discord anything', tostring(#http))
+end
+
+describe('guild.brallowlist')
+do
+    -- THE SWITCH, ITS ONE OWNER, AND WHO MAY THROW IT. The gate's side -- a ban
+    -- still refusing with the switch off, an unreadable switch reading as on --
+    -- is in tools/test_ringmaster.lua.
+    local function fnRef(fn)
+        return setmetatable({}, { __call = function(_, ...) return fn(...) end })
+    end
+    local function connect(src)
+        local d = { deferred = false, doneCount = 0, doneArg = nil }
+        d.defer = fnRef(function() d.deferred = true end)
+        d.update = fnRef(function() end)
+        d.done = fnRef(function(reason)
+            d.doneCount = d.doneCount + 1
+            d.doneArg = reason
+        end)
+        fire('playerConnecting', src, 'Someone', function() end, d)
+        return d
+    end
+    local function lines() return table.concat(printed, ' | ') end
+    local REFUSAL = 'This server is restricted to allowlisted players.'
+
+    bootReady(5)
+    local switch = ownExports.allowlistEnforced
+    ok(type(switch) == 'function' and switch() == true, 'every load starts with the allowlist ON',
+        tostring(switch and switch()))
+    ok(commands.brallowlist ~= nil and commands.brallowlist.restricted == true,
+        'brallowlist is registered restricted, so in game only its ACE may run it',
+        tostring(commands.brallowlist and commands.brallowlist.restricted))
+
+    -- DEV MODE OFF: the dev gate refuses the command, and joining is untouched.
+    printed = {}
+    run(0, 'brallowlist off')
+    ok(switch() == true, 'dev off: brallowlist off changes nothing', tostring(switch()))
+    ok(#printed == 1 and printed[1]:find('dev-mode only', 1, true) ~= nil,
+        'and the console is told the command is dev-mode only', lines())
+    local d = connect(5)
+    ok(not d.deferred and d.doneCount == 0, 'dev off: the backstop touches no join',
+        tostring(d.deferred) .. '/' .. tostring(d.doneCount))
+
+    convars.br_devMode = 'true'
+
+    -- THE STATUS LINE.
+    printed = {}
+    run(0, 'brallowlist')
+    local status = printed[1] or ''
+    ok(#printed == 1 and status:find('allowlist ON', 1, true) ~= nil
+       and status:find('Discord lookup configured', 1, true) ~= nil
+       and status:find('every start of br_core is ON', 1, true) ~= nil,
+        'bare brallowlist says ON, that the lookup is configured, and that every start is ON', lines())
+    ok(switch() == true, 'and changes nothing', tostring(switch()))
+
+    d = connect(5)
+    ok(d.deferred and d.doneCount == 1 and d.doneArg == REFUSAL,
+        'dev on, switch on, no gate: the backstop refuses', tostring(d.doneArg))
+
+    -- OFF, FROM THE CONSOLE.
+    printed = {}
+    run(0, 'brallowlist off')
+    ok(switch() == false, 'console: brallowlist off turns it off', tostring(switch()))
+    ok(#printed == 1 and printed[1]:find('allowlist OFF', 1, true) ~= nil
+       and printed[1]:find('set by console', 1, true) ~= nil,
+        'in one line naming the console and the new state', lines())
+
+    -- STILL REFUSED WITH NO GATE. Nothing checks bans then, so admitting this
+    -- join would admit a banned player whatever the switch says.
+    d = connect(5)
+    ok(d.deferred and d.doneCount == 1 and d.doneArg == REFUSAL,
+        'dev on, switch off, no gate: the backstop still refuses, because nothing checks bans',
+        tostring(d.deferred) .. '/' .. tostring(d.doneArg))
+
+    -- AND WITH THE GATE ARMED IT LEAVES THE JOIN TO THE GATE, which reads the switch.
+    resourceState.br_ringmaster = 'started'
+    exported.br_ringmaster = { gateArmed = function() return true end }
+    d = connect(5)
+    ok(not d.deferred and d.doneCount == 0,
+        'dev on, switch off, gate armed: the backstop leaves the deferral to the gate',
+        tostring(d.deferred) .. '/' .. tostring(d.doneCount))
+    resourceState.br_ringmaster, exported.br_ringmaster = nil, nil
+
+    printed = {}
+    run(0, 'brallowlist')
+    ok((printed[1] or ''):find('allowlist OFF', 1, true) ~= nil, 'and the status line says OFF', lines())
+
+    -- AN IN-GAME CALLER WITHOUT THE ACE.
+    idents[7] = { 'license:abc777', 'discord:' .. SNOW }
+    printed = {}
+    local ran = run(7, 'brallowlist on')
+    ok(not ran and switch() == false, 'a player without the ACE cannot turn it back on',
+        tostring(ran) .. '/' .. tostring(switch()))
+    ok(#printed == 0, 'and nothing is logged as if they had', lines())
+
+    -- AND ONE WITH IT.
+    aces[7] = true
+    printed = {}
+    run(7, 'brallowlist on')
+    ok(switch() == true, 'a player holding the ACE can', tostring(switch()))
+    ok(#printed == 1 and printed[1]:find('allowlist ON', 1, true) ~= nil
+       and printed[1]:find('Player7 (license:abc777)', 1, true) ~= nil,
+        'and the line names them by name and license', lines())
+
+    d = connect(5)
+    ok(d.deferred and d.doneCount == 1 and d.doneArg == REFUSAL,
+        'switched back on: the backstop refuses again', tostring(d.doneArg))
+
+    printed = {}
+    run(0, 'brallowlist of')
+    ok(switch() == true and #printed == 1 and printed[1]:find('usage: brallowlist [on|off]', 1, true) ~= nil,
+        'a typo changes nothing and prints the usage', lines())
+
+    -- NOT PERSISTED. A restart of br_core is a fresh load.
+    run(0, 'brallowlist off')
+    ok(switch() == false, 'off before the restart', tostring(switch()))
+    bootReady(5)
+    ok(ownExports.allowlistEnforced ~= nil and ownExports.allowlistEnforced() == true,
+        'and ON again after it, whatever it was left at', tostring(ownExports.allowlistEnforced
+            and ownExports.allowlistEnforced()))
+
+    boot({ br_devMode = 'true' })
+    printed = {}
+    run(0, 'brallowlist')
+    ok((printed[1] or ''):find('Discord lookup NOT configured', 1, true) ~= nil,
+        'with no token the status line says the lookup is NOT configured', lines())
 end
 
 -- ------------------------------------------------------------------ done ---

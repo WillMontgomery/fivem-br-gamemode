@@ -41,6 +41,7 @@ end
 loadAll({
     'br_lib/shared/enums.lua',
     'br_lib/shared/protocol.lua',
+    'br_lib/shared/matchtag.lua',  -- BR.MatchTag; every drop line names its match
     'br_lib/shared/rng.lua',
     'br_lib/shared/geo.lua',
     'br_lib/shared/clock.lua',
@@ -422,6 +423,56 @@ do
     eq(#A.resolvedPools.legendary,
        #BR.Config.WeaponsByRarity[BR.Rarity.LEGENDARY],
        'the legendary pool is the legendary bucket')
+
+    -- ═══ EVERY POOL A DROPPED WEAPON CAN USE, OR THE BEST LOOT TABLE IN THE GAME
+    --     PAYS A GUN WITH NO ROUNDS ═══
+    --
+    -- The note above `payout` says it outright: "a minimum roll that paid an RPG
+    -- and no heavy rounds would be the worst drop in the game wearing the best
+    -- loot table". On 2026-09-11 HEAVY stopped meaning "sniper and MG rounds" and
+    -- started meaning rockets, which put that sentence one commit from being true
+    -- again about the Heavy Sniper -- a legendary this drop deals from its own
+    -- bucket.
+    --
+    -- DERIVED FROM EACH WEAPON'S OWN `ammo` FIELD AND FROM NO LITERAL, which is
+    -- the only version of this check that survives the pools moving again. A
+    -- BR.AmmoType.HEAVY written here would have agreed with the broken config.
+    local paid = {}
+    for _, t in ipairs(A.resolvedPools.ammo or {}) do paid[t.item] = true end
+
+    local needed, unpaid = {}, {}
+    for _, name in ipairs({ 'exclusive', 'legendary', 'epic' }) do
+        for _, t in ipairs(A.resolvedPools[name] or {}) do
+            local w = BR.Config.WeaponById[t.item]
+            if w and w.ammo then needed[w.ammo] = w.label or w.id end
+        end
+    end
+    for pool, byWhom in pairs(needed) do
+        if not paid[pool] then
+            unpaid[#unpaid + 1] = ('%s (%s has no rounds)'):format(pool, byWhom)
+        end
+    end
+    table.sort(unpaid)
+    eq(#unpaid, 0,
+        'every ammo pool a dropped weapon draws from is in the drop\'s own ammo '
+            .. 'pool -- ' .. (#unpaid > 0 and table.concat(unpaid, ', ')
+                              or 'nothing unpaid'))
+
+    -- ...AND IT IS EVERY POOL IN THE GAME, WHICH IS MORE THAN THE CHECK ABOVE
+    -- DEMANDS AND IS DELIBERATE. No EPIC or LEGENDARY weapon draws SMG, so the
+    -- assertion above would pass with SMG rounds left out -- but a player opening
+    -- a crate is carrying floor loot too, and the drop has always fed that. So the
+    -- list tracks BR.Config.AmmoOrder rather than only what the crate itself
+    -- hands out, and this is what makes the next pool anybody adds show up here.
+    local missingPool = {}
+    for _, pool in ipairs(BR.Config.AmmoOrder) do
+        if not paid[pool] then missingPool[#missingPool + 1] = pool end
+    end
+    eq(#missingPool, 0,
+        'and the drop pays every pool in BR.Config.AmmoOrder, for the floor loot '
+            .. 'the player already had -- '
+            .. (#missingPool > 0 and table.concat(missingPool, ', ')
+                or 'none missing'))
 
     -- THE EXCLUSIVE POOL IS THE EXPLOSIVES, whole. Named by id rather than by
     -- bucket, so this is also the check that nobody quietly re-pointed it at a
@@ -902,6 +953,144 @@ do
     end
     eq(n, 2, 'two exclusive slots pay two explosives')
     eq(repeats, 0, 'and they are different ones')
+end
+
+describe('payout: a crate that pays a gun pays rounds that gun can fire')
+do
+    -- THE BUG (owner, playtest 2026-09-12): "Airdrop weapons came with some
+    -- ammo, except the grenade launcher which came with none."
+    --
+    -- ═══ WHY THE POOL TEST ABOVE COULD NOT HAVE CAUGHT IT ═══
+    --
+    -- That one reads A.resolvedPools.ammo -- the DECK -- and proves every type a
+    -- dropped weapon could need is a card in it. A drop DEALS two of those cards
+    -- (three at an n of 13), independently of which guns it dealt, so "HEAVY is
+    -- in the deck" and "this crate paid HEAVY" are different claims and only the
+    -- first was ever asserted. Measured against the old code: 229 of 300 seeds
+    -- paid an exclusive with no rounds for it, and seed 42 paid a Grenade
+    -- Launcher, an RPG, a Marksman Mk II, a Heavy Sniper and a Marksman Rifle
+    -- against medium, light and shells -- five HEAVY weapons and no rockets.
+    --
+    -- SO THIS BLOCK ROLLS DROPS AND READS WHAT IS IN THEM, which is the only
+    -- shape of this test that can fail while the config is complete.
+    local excl = {}
+    for _, w in ipairs(BR.Config.AirdropWeapons) do excl[w.id] = true end
+
+    --- What one rolled drop needs, what it paid, and how many ammo slots it got.
+    local function readDrop(seed)
+        local items = BR.AirdropPayout(BR.Rng(seed), A)
+
+        local slots = 0
+        for i = 1, #items do
+            if A.payout[i] == 'ammo' then slots = slots + 1 end
+        end
+
+        local paid, need, needExcl, guns = {}, {}, {}, {}
+        for _, s in ipairs(items) do
+            if s.kind == BR.ItemKind.AMMO then
+                paid[s.item] = (paid[s.item] or 0) + 1
+            else
+                guns[#guns + 1] = s.item
+            end
+            local w = BR.Config.WeaponById[s.item]
+            if s.kind == BR.ItemKind.WEAPON and w and w.ammo then
+                need[w.ammo] = w.label or w.id
+                if excl[s.item] then needExcl[w.ammo] = w.label or w.id end
+            end
+        end
+        return items, slots, paid, need, needExcl, guns
+    end
+
+    -- ═══ THE EXCLUSIVES ARE FED, ALWAYS, AND THAT IS THE OWNER'S SENTENCE ═══
+    --
+    -- Two exclusive slots can name at most two distinct ammo types (three of the
+    -- four take HEAVY), and the guaranteed ten hold two ammo slots -- so a crate
+    -- can always cover its own shelf and every failure here is the deal ignoring
+    -- what it dealt rather than a shortage of slots.
+    local dryExcl = {}
+    for seed = 1, 300 do
+        local _, _, paid, _, needExcl = readDrop(seed)
+        for pool, byWhom in pairs(needExcl) do
+            if not paid[pool] and #dryExcl < 4 then
+                dryExcl[#dryExcl + 1] =
+                    ('seed %d: %s with no %s'):format(seed, byWhom, pool)
+            end
+        end
+    end
+    eq(#dryExcl, 0,
+        'no drop in 300 pays an airdrop-only weapon with no rounds for it -- '
+            .. (#dryExcl > 0 and table.concat(dryExcl, ', ') or 'none dry'))
+
+    -- ═══ AND THE SLOTS IT HAS ARE SPENT ON ITS OWN GUNS FIRST ═══
+    --
+    -- A crate pays two or three ammo stacks against as many as eight guns, so
+    -- COMPLETE coverage is not a property the slot count can support and this is
+    -- deliberately not asserted. What is asserted is that no slot is wasted: a
+    -- drop covers as many of its own distinct ammo types as it has slots, and
+    -- only a drop whose guns need FEWER types than it has slots may pay a type
+    -- nothing in the crate can fire (which is the free roll the deck used to be,
+    -- kept for the floor loot the player walked in with).
+    local wasted, foreign = {}, {}
+    for seed = 1, 300 do
+        local _, slots, paid, need = readDrop(seed)
+
+        local types, covered = 0, 0
+        for pool in pairs(need) do
+            types = types + 1
+            if paid[pool] then covered = covered + 1 end
+        end
+        local want = math.min(types, slots)
+        if covered ~= want and #wasted < 4 then
+            wasted[#wasted + 1] = ('seed %d: covered %d of %d needed, %d slots')
+                :format(seed, covered, types, slots)
+        end
+
+        local spare = slots - types
+        local off = 0
+        for pool, n in pairs(paid) do
+            if not need[pool] then off = off + n end
+        end
+        if off > math.max(0, spare) and #foreign < 4 then
+            foreign[#foreign + 1] = ('seed %d: %d stacks nothing here can fire, '
+                .. '%d spare slots'):format(seed, off, spare)
+        end
+    end
+    eq(#wasted, 0,
+        'every ammo slot a drop deals goes to a gun in that same drop while one '
+            .. 'is still unfed -- '
+            .. (#wasted > 0 and table.concat(wasted, '; ') or 'none wasted'))
+    eq(#foreign, 0,
+        'and rounds for nothing in the crate appear only in a slot its own guns '
+            .. 'did not need -- '
+            .. (#foreign > 0 and table.concat(foreign, '; ') or 'none foreign'))
+
+    -- ═══ THE GUNS DID NOT MOVE ═══
+    --
+    -- Captured from the code BEFORE the ammo slots were re-pointed, and pinned
+    -- as literals because that is the whole claim: the fix spends the same rng in
+    -- the same order, so a seed deals the same crate and only the AMMO in it
+    -- changed. A diff here means the shuffle sequence moved, which would silently
+    -- redraw every airdrop ever rolled from a stored seed.
+    local golden = {
+        [7]  = 'minigun, rpg, volts, heavysniper, marksmanmk2, heavyshotgun, '
+               .. 'grenade, cprkit',
+        [11] = 'minigun, grenadelauncher, volts, militaryrifle, marksmanmk2, '
+               .. 'revolvermk2, sticky, cprkit, combatmgmk2, pumpshotgunmk2',
+        [42] = 'grenadelauncher, rpg, volts, marksmanmk2, heavysniper, '
+               .. 'assaultmk2, grenade, medkit, combatmgmk2, marksmanrifle, '
+               .. 'militaryrifle',
+    }
+    for seed, want in pairs(golden) do
+        local _, _, _, _, _, guns = readDrop(seed)
+        eq(table.concat(guns, ', '), want,
+            ('seed %d deals the same non-ammo items it always did'):format(seed))
+    end
+
+    -- ...AND SEED 42 IS THE OWNER'S OWN DROP, so it gets the assertion in his
+    -- words: five HEAVY weapons in one crate, and now rockets to go with them.
+    local _, _, paid42 = readDrop(42)
+    ok(paid42[BR.AmmoType.HEAVY] ~= nil,
+        'the crate that pays a Grenade Launcher pays heavy rounds')
 end
 
 describe('payout: 10 to 14, drawn per drop')
@@ -2038,6 +2227,11 @@ local function newMatch(id, radius, phase)
     local r = radius or 2600.0
     local m = {
         id = id,
+        -- `seq` IS ON IT BECAUSE IT IS ON A REAL ONE (#291). server/airdrop.lua
+        -- seeds its generator off the match's sequence number rather than its
+        -- id, which is a random draw. These fixtures use `id` as the dense
+        -- number, so `seq = id` keeps every drop below rolling what it rolled.
+        seq = id,
         state = BR.MatchState.PLAYING,
         loot = { items = {} },
         -- A HELD circle, so BR.StormAt answers the same thing whatever the
@@ -3387,6 +3581,11 @@ local function clientReset()
     validModels = nil
     reachable, reachWhy = true, 'ok'
     lootBox = nil
+    -- THE CUES GO WITH IT. A cue is an EVENT, so every count below is a count
+    -- since the reset -- a test that inherited the previous block's plays could
+    -- only ever assert "at least one", which is the assertion that let a cue
+    -- fire four extra times unnoticed.
+    sfxPlayed = {}
     -- THE ROUTE IS RESET TOO. /brflare edits the live config on purpose, and a
     -- test that switched to the object route would otherwise poison every test
     -- after it -- which is the same silent-carry-over class of bug the flares
@@ -3466,6 +3665,24 @@ local function armSited(rec)
     BR.ArmAirdropRecord(rec, gameMs, A)
     fire(BR.Net.AIRDROP_SYNC, rec)
     return rec
+end
+
+--- How many times a CUE KEY has played since the last clientReset.
+---
+--- Resolved through BR.Config.Audio.cues rather than matched against a sound
+--- name typed in here: br_core/client/sfx.lua is the only file allowed to know
+--- a set and name pair, and a test that hard-coded the pair would start failing
+--- the day the owner auditions a better clip for the same key.
+--- @param key string
+--- @return integer
+local function cueCount(key)
+    local def = BR.Config.Audio.cues[key]
+    if not def then return -1 end   -- an unknown key can never be "silent"
+    local n = 0
+    for _, played in ipairs(sfxPlayed) do
+        if played.name == def.name and played.set == def.set then n = n + 1 end
+    end
+    return n
 end
 
 local function oneBlip()
@@ -4932,6 +5149,82 @@ do
     gameMs = gameMs + A.planeLeadMs
     render()
     ok(entCount() > 0, 'and the crate is released on the new clock')
+end
+
+describe('client: the cue is the announcement, and nothing else')
+do
+    -- ═══ "the airdrop sound happens when the airdrop arms too - not sure why"
+    --     (owner, 2026-09-11) ═══
+    --
+    -- IT PLAYED ON ALL FIVE OF THE SERVER'S SENDS, and the arm was simply the
+    -- one he was standing next to. server/airdrop.lua broadcasts AIRDROP_SYNC
+    -- from five places -- trySite, tryArm, BR.Airdrop.opened and both halves of
+    -- /brairdrop -- and the cue was gated on `d.tLand`, a field of the WRAPPER
+    -- the handler builds rather than of the record inside it. It is nil on every
+    -- record ever sent, so the gate was `true` five times out of five.
+    --
+    -- SO EVERY SEND IS DRIVEN HERE AND THE SILENT ONES ARE ASSERTED SILENT. An
+    -- assertion that the announcement sounds cannot fail on this bug: the
+    -- announcement sounded before the fix too.
+    clientReset()
+
+    local rec = announceSited()
+    eq(cueCount('airdrop.inbound'), 1,
+        'the siting is the announcement, and it sounds once')
+
+    -- THE ARM: the same record, with tRelease and tLand filled in, re-sent.
+    armSited(rec)
+    eq(cueCount('airdrop.inbound'), 1, 'the arm is silent -- it is the same drop')
+
+    -- THE OPEN: the same record a third time, with tOpen stamped on it. By then
+    -- the crate has been a husk for a minute and the re-send exists only to move
+    -- the blip's expiry.
+    gameMs = gameMs + A.planeLeadMs + A.descentMs
+    rec.tOpen = gameMs
+    fire(BR.Net.AIRDROP_SYNC, rec)
+    eq(cueCount('airdrop.inbound'), 1, 'and so is the open')
+
+    -- A SECOND DROP IS A SECOND ANNOUNCEMENT. `/brairdrop <poi>` sites another
+    -- one while the first is still out, and it takes the next free number, so
+    -- this is a place the match genuinely has not been told about yet.
+    local second = BR.BuildAirdropSite(2,
+        { id = 'sandy', x = 300.0, y = 400.0, z = 30.0 },
+        A.altitude, gameMs, 90.0)
+    fire(BR.Net.AIRDROP_SYNC, second)
+    eq(cueCount('airdrop.inbound'), 2, 'a second drop announces on its own account')
+
+    -- ═══ AND AN ANNOUNCEMENT RE-SENT IS STILL ONE ANNOUNCEMENT ═══
+    --
+    -- The handler replaces a record it already holds (`removeDrop` -- "a re-send
+    -- replaces"), and nothing stops the server re-publishing a record it has not
+    -- armed yet. Being told twice is not two drops.
+    clientReset()
+    announceSited()
+    announceSited()
+    eq(cueCount('airdrop.inbound'), 1, 'a re-sent siting does not sound twice')
+
+    -- ═══ AND A CLIENT WHOSE FIRST SIGHT OF A DROP IS AN ARMED RECORD HEARS
+    --     NOTHING ═══
+    --
+    -- Nothing re-syncs airdrops to a late joiner, so the first record they see
+    -- is whatever the server sends next -- the arm, or the open. They were never
+    -- sent the notification either, because that goes out at the siting to the
+    -- audience of that moment. A cue here would be a sound with no sentence
+    -- under it, for a crate that is already on its way down.
+    clientReset()
+    local late = BR.BuildAirdropSite(1,
+        { id = 'lsia', x = 100.0, y = 200.0, z = 30.0 },
+        A.altitude, gameMs, 90.0)
+    BR.ArmAirdropRecord(late, gameMs, A)
+    fire(BR.Net.AIRDROP_SYNC, late)
+    eq(cueCount('airdrop.inbound'), 0, 'an armed record is not an announcement')
+    ok(oneBlip() ~= nil, 'but the blip still goes up for them')
+
+    -- A NEW MATCH FORGIVES THE OLD NUMBERS. clearAll() takes the whole table, so
+    -- the next match's drop 1 announces exactly like this one's did.
+    clientReset()
+    announceSited()
+    eq(cueCount('airdrop.inbound'), 1, 'and the next match announces its own drop 1')
 end
 
 describe('client: an unarmed record answers no to every descent question')

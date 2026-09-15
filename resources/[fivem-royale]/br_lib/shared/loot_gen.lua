@@ -143,7 +143,13 @@ function BR.RollLootStack(rng, tier, floor)
     if kind == BR.ItemKind.AMMO then
         -- Ammo has no rarity of its own; the roll is spent picking a pool. Fixed
         -- order, never pairs() over AmmoPickups.
-        local pool = rng:pick(BR.Config.AmmoOrder)
+        --
+        -- WEIGHTED SINCE 2026-09-11, NOT UNIFORM. This was rng:pick over
+        -- AmmoOrder, and the split from five pools to seven would have made
+        -- pistol, SMG, rifle and shotgun ammo 29% rarer on the floor by accident.
+        -- BR.Config.RollAmmoPool burns the same single draw, so nothing
+        -- downstream in this stream shifts.
+        local pool = BR.Config.RollAmmoPool(rng)
         local def  = BR.Config.AmmoPickups[pool]
         return {
             item   = pool,
@@ -235,8 +241,9 @@ end
 
 --- The contents of a chest. Chests roll one tier hotter than the ground around
 --- them -- that is what makes crossing open ground for one worth the exposure.
+--- Tier 4 is the exception and rolls its own row; see the comment on `hot`.
 --- @param rng table
---- @param tier integer
+--- @param tier integer   1..4
 --- @return table[] stacks
 function BR.LootChestContents(rng, tier)
     local cfg = BR.Config.Loot.chestItems
@@ -254,7 +261,26 @@ function BR.LootChestContents(rng, tier)
         n = rng:int(cfg.min, cfg.max)
     end
 
-    local hot = math.min(tier + 1, 3)
+    -- THE CLAMP IS 3, NOT 4, AND TIER 4 IS NOT BUMPED AT ALL (#227).
+    --
+    -- The "one hotter" bump exists because a crate should out-pay the ground
+    -- around it, and it clamped at 3 because 3 was the top of the ladder. Now
+    -- that there is a row 4 there are two wrong ways to write this line and
+    -- both look tidier than the right one.
+    --
+    -- `math.min(tier + 1, 4)` hands row 4 to all thirteen TIER 3 POIs as
+    -- well, which leaves the four named sites with nothing to be.
+    -- `math.min(tier + 1, 3)` left alone is the opposite failure and the
+    -- quieter one: tier 4 would clamp straight back down to row 3 and a
+    -- golden crate would roll exactly what a tier-2 crate already rolls,
+    -- so the whole feature would be 35 crates of nothing new. That second
+    -- one is why golden could not be built as `tier + 1` in the first
+    -- place: the clamp made the obvious spelling a no-op.
+    --
+    -- So: tiers 1..3 keep the bump and the old ceiling, byte for byte, and
+    -- tier 4 rolls its own row because row 4 IS the top -- there is nothing
+    -- above it to be bumped into.
+    local hot = tier >= 4 and 4 or math.min(tier + 1, 3)
 
     local out = {}
     for _ = 1, n do

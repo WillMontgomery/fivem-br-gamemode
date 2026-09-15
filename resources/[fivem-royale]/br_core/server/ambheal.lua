@@ -466,7 +466,24 @@ local function grant(rec, entry, now)
     -- WITHOUT THIS LINE the owner's own feature would be the loudest thing in
     -- his cheat log: a heal to full is up to 100 unexplained points, and
     -- BR.HealthShouldReport's default bar is exactly 100.
+    --
+    -- ...AND WITHOUT THE CEILING BESIDE IT, the owner's own feature would be
+    -- SILENTLY UNDONE instead. server/roster.lua's ledger rule refuses every
+    -- rise the server did not authorize, so a heal that opened a window without
+    -- naming a target would leave the ped climbing to 100 while the ledger sat
+    -- where the ambulance found it -- a player healed on screen and still one
+    -- bullet from dead. The pair is the authorization: the window says a heal is
+    -- happening, the ceiling says how far. Both halves, or neither works.
+    --
+    -- THE SAME `target` THAT IS ON THE WIRE ONE LINE DOWN, because the client
+    -- applies it upward only -- so the ceiling and the ped's destination are the
+    -- same fact and an honest ped and the ledger land on the same number.
+    --
+    -- THE ARMOUR CEILING IS CLEARED RATHER THAN LEFT ALONE. This heal moves
+    -- health and nothing else, and a shield plate's ceiling left standing from a
+    -- minute ago would be spendable inside THIS window.
     entry.healUntil = now + ((BR.Config.Combat.healthAudit or {}).healSettleMs or 2000)
+    entry.grantHpTo, entry.grantArmourTo = target, nil
 
     TriggerClientEvent(BR.Net.INV_EFFECT, rec.src, {
         health    = target,

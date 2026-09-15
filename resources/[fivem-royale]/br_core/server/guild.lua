@@ -51,6 +51,29 @@
 -- capability boundary already fails the build if anything token-shaped is named
 -- in configreport's allowlist. Nothing here prints the token, echoes a header, or
 -- puts it anywhere a client can reach.
+--
+-- ═══ IN DEV MODE IT IS ALSO THE JOIN ALLOWLIST ═══
+--
+-- While BR.Dev.on() is true, br_ringmaster/server/gate.lua lets a player in only
+-- if they hold br_lib/config/allowlist.lua's role in our guild, and it asks HERE
+-- (`br:guild:roleCheck`) because this file already has the token, the endpoint
+-- and a queue Discord is used to. The same GET answers both questions: the member
+-- object a 200 carries has a `roles` array in it. See readRole and askRole.
+--
+-- THE POLARITY IS TURNED ROUND AND THE RULE IS NOT. The card hides only on a
+-- confirmed yes; the door opens only on a confirmed yes. Every unknown above --
+-- no token, no identifier, a timeout, a 429, a 500 -- keeps the card up AND keeps
+-- the door shut.
+--
+-- AND WITH NO GATE TO ASK, THIS FILE SHUTS IT. br_ringmaster is optional, and a
+-- dev box without its gate running would otherwise admit everybody. See the
+-- backstop below, which refuses every dev-mode join that gate is not there for.
+--
+-- `brallowlist off` STOPS THE GATE'S ALLOWLIST UNTIL `on` OR THE NEXT START OF
+-- br_core, AND LEAVES THE BACKSTOP ALONE. The switch lives in this file and
+-- nowhere else; the gate reads it through the allowlistEnforced export. With no
+-- gate there is no ban check, so the backstop refuses every dev-mode join
+-- whichever way the switch is thrown. See the backstop.
 
 BR = BR or {}
 BR.Guild = BR.Guild or {}
@@ -95,6 +118,16 @@ end
 local TOKEN = convar('br_discord_bot_token')
 local GUILD_RAW = convar('br_discord_guild_id')
 local GUILD = snowflake(GUILD_RAW)
+
+--- The dev allowlist's role id, or nil when it is absent or not a snowflake.
+---
+--- READ AT CALL TIME, unlike the two convars above: it is a committed br_lib
+--- value rather than an operator's setting, and a harness that loads this file
+--- without br_lib/config/allowlist.lua gets nil here rather than a load error.
+local function allowlistRole()
+    local cfg = BR.Config and BR.Config.Allowlist
+    return snowflake(cfg and cfg.roleId)
+end
 
 --- Both halves, or the feature is off.
 ---
@@ -176,6 +209,18 @@ local BACKOFF_MS = 5000
 --- short enough that the queue always comes back.
 local BACKOFF_MAX_MS = 60000
 
+--- How much of the gate's budget a role lookup must still have to be sent.
+---
+--- A LOOKUP WHOSE GATE HAS GIVEN UP IS NOT WORTH A CALL. br_ringmaster/server/
+--- gate.lua refuses the join when its own timer runs out, and the role job can
+--- still be in this queue then -- behind another request, or behind a 429
+--- stand-down of up to BACKOFF_MAX_MS. Sending it anyway spends a Discord call and
+--- a GAP_MS on an answer nobody reads, in front of the tester's fresh retry, which
+--- then times out too. So a job with less than this left of the budget the gate
+--- sent with it is answered 'expired' without asking. A second is far longer than
+--- Discord takes to answer.
+local ROLE_SEND_MARGIN_MS = 1000
+
 -- ---------------------------------------------------------------------------
 -- State
 -- ---------------------------------------------------------------------------
@@ -215,6 +260,13 @@ local busy = false
 local standDownUntil = 0
 
 local stat = { asked = 0, member = 0, notMember = 0, unknown = 0, rateLimited = 0 }
+
+--- Allowlist lookups queued by askRole. [key] = { discordId, roleId, cb, deadline }
+---
+--- IN THE SAME `queue` AS THE MEMBERSHIP LOOKUPS, under a string key no source
+--- can have, so the pacing and the 429 stand-down cover both questions.
+local roleJobs = {}
+local nextRoleJob = 0
 
 --- Normalise a source to the key everything else uses.
 ---
@@ -290,6 +342,38 @@ function BR.Guild.backoffMs(body)
     return ms
 end
 
+--- Turn one HTTP answer into an allowlist verdict for `roleId`.
+---
+--- ONLY 'held' LETS ANYBODY IN, and it takes a 200 AND a readable `roles` array
+--- AND the role's id in it. Everything else is a refusal at the gate; the three
+--- other verdicts exist so its log can say which kind. Pure, like readAnswer,
+--- and for the same reason.
+---
+--- @param status number|nil
+--- @param body string|nil
+--- @param roleId string  a snowflake
+--- @return string 'held' | 'missing' | 'notmember' | 'unknown'
+function BR.Guild.readRole(status, body, roleId)
+    local member = BR.Guild.readAnswer(status, body)
+    if member == false then return 'notmember' end
+    if member ~= true then return 'unknown' end
+
+    -- readAnswer never parses a 200. This has to, because the role is in the body,
+    -- and a 200 we cannot read is not a yes.
+    if type(body) ~= 'string' or body == '' then return 'unknown' end
+    local good, parsed = pcall(json.decode, body)
+    if not good or type(parsed) ~= 'table' or type(parsed.roles) ~= 'table' then
+        return 'unknown'
+    end
+
+    for _, r in ipairs(parsed.roles) do
+        -- STRINGS ONLY. Discord sends snowflakes as strings, and a role id in any
+        -- other shape is a body we do not understand.
+        if type(r) == 'string' and r == roleId then return 'held' end
+    end
+    return 'missing'
+end
+
 -- ---------------------------------------------------------------------------
 -- The queue
 -- ---------------------------------------------------------------------------
@@ -319,6 +403,58 @@ local function settle(src, member)
     end
 end
 
+--- Send one GET about one snowflake, and hand what came back to `onAnswer`
+--- exactly once: (status, body), or (nil, nil) when nothing came back at all.
+---
+--- SHARED BY THE TWO QUESTIONS THIS FILE ASKS -- is this player in the guild,
+--- and, in dev mode, do they hold the allowlist role. They are the same request
+--- to the same endpoint, and a second copy of the pacing, the stand-down and the
+--- timeout would be a second queue Discord counts against the same bot.
+local function request(discordId, onAnswer)
+    stat.asked = stat.asked + 1
+
+    -- ANSWERED EXACTLY ONCE, whichever of the two paths gets here first.
+    local done = false
+    local function finish(status, body, retryMs)
+        if done then return end
+        done = true
+        if retryMs then standDownUntil = GetGameTimer() + retryMs end
+        -- pcall, for settle()'s reason: a throw in here must not leave `busy`
+        -- true and every lookup after this one stopped behind it.
+        pcall(onAnswer, status, body)
+        busy = false
+        -- The gap is spent AFTER an answer rather than before the next request,
+        -- so a slow Discord does not also get a faster question rate.
+        SetTimeout(GAP_MS, drain)
+    end
+
+    -- ARMED BEFORE THE REQUEST, which is server/handoff.lua's idiom and is not
+    -- equivalent to arming it after: a PerformHttpRequest that throws
+    -- synchronously would otherwise leave `busy` true and this queue stopped for
+    -- the life of the process.
+    SetTimeout(TIMEOUT_MS, function() finish(nil, nil, nil) end)
+
+    PerformHttpRequest(API:format(GUILD, discordId), function(status, body)
+        if status == 429 then
+            stat.rateLimited = stat.rateLimited + 1
+            -- NOT RETRIED. A 429 is "we do not know", the card stays up, and this
+            -- connection's one lookup is spent. Re-queueing it would turn the
+            -- busiest moment on the server -- everybody connecting at once -- into
+            -- the moment we send Discord the most traffic, which is how a rate
+            -- limit becomes an IP ban.
+            finish(status, body, BR.Guild.backoffMs(body))
+            return
+        end
+        finish(status, body, nil)
+    end, 'GET', '', {
+        -- THE ONLY PLACE THE TOKEN IS USED. It is never printed, never returned,
+        -- never put in a payload and never echoed on an error path -- the response
+        -- handler above reads a status and a body and nothing else.
+        ['Authorization'] = 'Bot ' .. TOKEN,
+        ['User-Agent']    = USER_AGENT,
+    })
+end
+
 --- Ask Discord about one source.
 local function lookup(src)
     -- THE PLAYER MAY HAVE GONE while this sat in the queue. `waiting` is cleared
@@ -339,46 +475,34 @@ local function lookup(src)
         return
     end
 
-    stat.asked = stat.asked + 1
+    request(discordId, function(status, body)
+        settle(src, BR.Guild.readAnswer(status, body))
+    end)
+end
 
-    -- ANSWERED EXACTLY ONCE, whichever of the two paths gets here first.
-    local done = false
-    local function finish(member, retryMs)
-        if done then return end
-        done = true
-        if retryMs then standDownUntil = GetGameTimer() + retryMs end
-        settle(src, member)
+--- Ask Discord whether one connecting player holds the allowlist role.
+---
+--- NOT KEYED BY SOURCE AND NEVER CACHED, and both are the point. The asker is
+--- br_ringmaster/server/gate.lua at `playerConnecting`, where the source is a
+--- TEMPORARY id that gets recycled -- so a remembered answer, or an in-flight
+--- lookup to attach to, would be one person's role handed to whoever connects
+--- under that number next. Every connection spends its own call.
+local function lookupRole(k)
+    local job = roleJobs[k]
+    roleJobs[k] = nil
+
+    -- THE GATE MAY HAVE GIVEN UP while this sat in the queue: lookup()'s
+    -- departed-player check, for an asker with no source. See ROLE_SEND_MARGIN_MS.
+    if job.deadline ~= nil and job.deadline - GetGameTimer() <= ROLE_SEND_MARGIN_MS then
+        pcall(job.cb, 'expired')
         busy = false
-        -- The gap is spent AFTER an answer rather than before the next request,
-        -- so a slow Discord does not also get a faster question rate.
-        SetTimeout(GAP_MS, drain)
+        drain()
+        return
     end
 
-    -- ARMED BEFORE THE REQUEST, which is server/handoff.lua's idiom and is not
-    -- equivalent to arming it after: a PerformHttpRequest that throws
-    -- synchronously would otherwise leave `busy` true and this queue stopped for
-    -- the life of the process.
-    SetTimeout(TIMEOUT_MS, function() finish(nil, nil) end)
-
-    PerformHttpRequest(API:format(GUILD, discordId), function(status, body)
-        if status == 429 then
-            stat.rateLimited = stat.rateLimited + 1
-            -- NOT RETRIED. A 429 is "we do not know", the card stays up, and this
-            -- connection's one lookup is spent. Re-queueing it would turn the
-            -- busiest moment on the server -- everybody connecting at once -- into
-            -- the moment we send Discord the most traffic, which is how a rate
-            -- limit becomes an IP ban.
-            finish(nil, BR.Guild.backoffMs(body))
-            return
-        end
-        finish(BR.Guild.readAnswer(status, body), nil)
-    end, 'GET', '', {
-        -- THE ONLY PLACE THE TOKEN IS USED. It is never printed, never returned,
-        -- never put in a payload and never echoed on an error path -- the response
-        -- handler above reads a status and a body and nothing else.
-        ['Authorization'] = 'Bot ' .. TOKEN,
-        ['User-Agent']    = USER_AGENT,
-    })
+    request(job.discordId, function(status, body)
+        pcall(job.cb, BR.Guild.readRole(status, body, job.roleId))
+    end)
 end
 
 --- Send the next queued lookup, if the queue is idle and Discord is not sulking.
@@ -391,11 +515,14 @@ drain = function()
 
     busy = true
 
+    -- A key with a job behind it is an allowlist lookup; anything else is a source.
+    local run = roleJobs[src] and lookupRole or lookup
+
     local wait = standDownUntil - GetGameTimer()
     if wait > 0 then
-        SetTimeout(wait, function() lookup(src) end)
+        SetTimeout(wait, function() run(src) end)
     else
-        lookup(src)
+        run(src)
     end
 end
 
@@ -462,6 +589,182 @@ function BR.Guild.ask(src, cb)
     drain()
 end
 
+--- Queue one allowlist lookup for a connecting player.
+---
+--- `cb` IS ALWAYS CALLED, EXACTLY ONCE, with a verdict from readRole or with one
+--- of three that are answered here without asking Discord:
+---
+---   'unconfigured'  no token, no usable guild id, or no usable role id
+---   'noid'          the connection carries no usable `discord:` snowflake
+---   'expired'       its turn in the queue came with less than
+---                   ROLE_SEND_MARGIN_MS of `budgetMs` left
+---
+--- Always, because the caller is holding a deferral open on it.
+---
+--- @param discordId string|nil  the bare snowflake
+--- @param cb function  called with the verdict
+--- @param budgetMs number|nil  how long the asker waits for it; nil never expires
+function BR.Guild.askRole(discordId, cb, budgetMs)
+    local role = allowlistRole()
+    if not BR.Guild.configured() or role == nil then
+        pcall(cb, 'unconfigured')
+        return
+    end
+
+    local id = snowflake(discordId)
+    if id == nil then
+        pcall(cb, 'noid')
+        return
+    end
+
+    nextRoleJob = nextRoleJob + 1
+    local k = 'role#' .. nextRoleJob
+    -- STAMPED AT ENQUEUE, on the clock the gate's own timer runs on.
+    local budget = tonumber(budgetMs)
+    roleJobs[k] = {
+        discordId = id, roleId = role, cb = cb,
+        deadline = budget and (GetGameTimer() + budget) or nil,
+    }
+    queued[k] = true
+    queue[#queue + 1] = k
+    drain()
+end
+
+-- THE ALLOWLIST'S WAY IN, for br_ringmaster/server/gate.lua. An event rather than
+-- a call because that resource deliberately does not depend on this one: if
+-- br_core is not running nobody answers, and the gate's own timer refuses the
+-- join, which is the direction a dev allowlist has to fail.
+--
+-- SERVER-INTERNAL. Neither this name nor the answer's has a RegisterNetEvent, so
+-- no client can ask the question or forge the reply.
+--
+-- `budgetMs` IS THE GATE'S OWN TIMEOUT, sent with the question rather than
+-- restated here, so a lookup never outlives a gate that has already refused.
+AddEventHandler('br:guild:roleCheck', function(req, discordId, budgetMs)
+    BR.Guild.askRole(discordId, function(verdict)
+        TriggerEvent('br:guild:roleResult', req, verdict)
+    end, budgetMs)
+end)
+
+-- ---------------------------------------------------------------------------
+-- The backstop
+-- ---------------------------------------------------------------------------
+
+--- What a dev-mode join is told when there is no gate to check it.
+---
+--- br_ringmaster/server/gate.lua's ALLOWLIST_REFUSAL, restated because the two
+--- resources share no state. tools/test_guild.lua reads the gate's copy out of
+--- that file and fails if the two ever differ.
+local ALLOWLIST_REFUSAL = 'This server is restricted to allowlisted players.'
+
+--- Is br_ringmaster's connect gate there to refuse this join?
+---
+--- THE EXPORT, NOT JUST THE RESOURCE STATE. "started" says br_ringmaster is up;
+--- it does not say gate.lua loaded, and a resource can read "started" with one
+--- of its scripts broken. gateArmed is exported directly after the gate's
+--- handler, so an answer means the handler exists. A call into a resource that
+--- is not running, or that has no such export, throws, and pcall turns that
+--- into "not armed".
+--- @return boolean armed
+--- @return string|nil why  when not armed, for the console
+local function gateArmed()
+    local state = GetResourceState('br_ringmaster')
+    if state ~= 'started' then
+        return false, ('br_ringmaster is "%s", not "started"'):format(tostring(state))
+    end
+    local good, armed = pcall(function() return exports.br_ringmaster:gateArmed() end)
+    if not good or armed ~= true then
+        return false, ('br_ringmaster is started but its gate is not armed (%s)'):format(tostring(armed))
+    end
+    return true, nil
+end
+
+-- THE DEV ALLOWLIST WHEN br_ringmaster CANNOT ENFORCE IT. server.cfg.example
+-- marks br_ringmaster optional, and its gate is the only thing that refuses a
+-- dev-mode join -- so without this, a dev box that does not ensure it, or one
+-- caught mid `restart br_ringmaster`, or one whose gate.lua failed to load,
+-- would let everybody in with no ban check and no allowlist.
+--
+-- REFUSES EVERYBODY, ROLE OR NOT, SWITCH OR NOT. With no gate there is no ban
+-- check either, and admitting anybody here, a role holder or anyone at all with
+-- `brallowlist off`, would let a banned one in. Dev mode off, or the gate armed,
+-- and this does not touch the deferral at all: one deferral per join, so nothing
+-- here can land before the gate's ban notice.
+
+--- Is the dev allowlist enforced? Thrown by `brallowlist` and read, through the
+--- allowlistEnforced export, by br_ringmaster's gate and nothing else.
+---
+--- ONE OWNER. The gate keeps no copy, and reads anything short of a running
+--- br_core answering false as on. The backstop below never reads it: the only
+--- join it judges is one with no gate, and that join has no ban check.
+---
+--- NOT PERSISTED, AND ON AT EVERY LOAD. A boot or a `restart br_core` (the
+--- restart tools/deploy.sh tells the operator to run) puts it back, so a
+--- forgotten "off" cannot outlive a restart. It switches no ban off: the ban
+--- check is the gate's and never reads this.
+local enforced = true
+
+--- Who ran a command, for the console line: the console, or name and license.
+--- @param src number
+--- @return string
+local function caller(src)
+    if tonumber(src) == 0 then return 'console' end
+    local license = BR.Identity and BR.Identity.qualified('license', BR.Identity.licenseOf(src))
+    return ('%s (%s)'):format(tostring(GetPlayerName(src)), license or 'no license')
+end
+
+-- brallowlist [on|off] -- enforce the dev allowlist, or stop enforcing it.
+--
+-- RESTRICTED, like brring: the server console always, in game only a player
+-- holding its `command` ACE (server.cfg.example grants group.admin). AND
+-- DEV-GATED, like every command not on devgate.lua's exempt line: with dev mode
+-- off the wrap refuses it before this runs, which is the right answer there
+-- too, because with dev mode off there is no allowlist to switch.
+RegisterCommand('brallowlist', function(src, args)
+    local want = args and args[1] and tostring(args[1]):lower()
+
+    if want == 'on' or want == 'off' then
+        enforced = want == 'on'
+        print(('[br_core] allowlist %s, set by %s')
+            :format(enforced and 'ON' or 'OFF', caller(src)))
+        return
+    end
+
+    if want ~= nil then
+        print('  usage: brallowlist [on|off]')
+        return
+    end
+
+    local lookup = BR.Guild.configured() and allowlistRole() ~= nil
+    print(('[br_core] allowlist %s, Discord lookup %s (runtime only; every start of br_core is ON)')
+        :format(enforced and 'ON' or 'OFF', lookup and 'configured' or 'NOT configured'))
+end, true)
+
+-- THE SWITCH, FOR br_ringmaster/server/gate.lua. Always a boolean.
+exports('allowlistEnforced', function() return enforced end)
+
+AddEventHandler('playerConnecting', function(_name, _setKickReason, deferrals)
+    if not (BR.Dev and BR.Dev.on and BR.Dev.on() == true) then return end
+
+    local armed, why = gateArmed()
+    if armed then return end
+
+    -- Read before the yield below, after which `source` is somebody else's.
+    local src = source
+
+    if type(deferrals) ~= 'table' then
+        print(('^1[br_core] dev allowlist: cannot refuse %s -- deferrals is %s^7')
+            :format(tostring(src), type(deferrals)))
+        return
+    end
+
+    deferrals.defer()
+    -- The tick FiveM needs between defer() and done(); gate.lua has the note.
+    Wait(0)
+    print(('^3[br_core] dev allowlist: refused %s -- %s^7'):format(tostring(src), why))
+    deferrals.done(ALLOWLIST_REFUSAL)
+end)
+
 -- FORGOTTEN ON DROP, AND THE FORGETTING IS LOAD-BEARING TWICE OVER. A server id
 -- is recycled within the minute, so a verdict left behind is a verdict handed to
 -- the next person to hold that number -- and it is the WRONG DIRECTION of wrong:
@@ -499,6 +802,18 @@ function BR.Guild.report()
         lines[#lines + 1] = '          it must be the guild id, digits only'
     else
         lines[#lines + 1] = 'guild     not configured -- the Discord card shows to everybody'
+    end
+
+    -- THE DEV ALLOWLIST, IN ONE LINE AND ONLY IN DEV MODE. With dev mode off
+    -- nothing about joining changes, so nothing is said about it either.
+    if BR.Dev and BR.Dev.on and BR.Dev.on() then
+        local role = allowlistRole()
+        if BR.Guild.configured() and role ~= nil then
+            lines[#lines + 1] = ('allowlist ON (dev mode): Discord role %s required, lookup configured')
+                :format(role)
+        else
+            lines[#lines + 1] = 'allowlist ON (dev mode): Discord lookup NOT configured -- every join is refused'
+        end
     end
 
     return lines, BR.Guild.configured()

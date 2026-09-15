@@ -547,7 +547,7 @@ export function startMockDriver(): void {
           { id: 'shield',       label: 'Shield Potion', kind: 'consumable', rarity: 3, count: 2 },
           false,
         ],
-        ammo: { light: 84, smg: 0, medium: 172, shells: 22, heavy: 9 },
+        ammo: { light: 84, smg: 0, medium: 172, shells: 22, heavy: 9, lmg: 30 },
         active: 1,
         using: null,
       },

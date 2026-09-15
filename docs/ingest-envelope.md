@@ -34,7 +34,17 @@ br_ringmaster  ──HTTP POST──▶  https://ringmaster/api/ingest
 
 | Header | Value |
 |---|---|
-| `X-Ringmaster-Secret` | the shared secret, compared in constant time |
+| `X-Ringmaster-Secret` | this box's ingest secret, compared in constant time |
+
+**This header is also how the console knows which server sent the envelope.**
+Ringmaster ingests from more than one FXServer now, and it holds one secret per
+server: `dev` and `prod`, the same two words the `Env` instance tag carries.
+The identity is whichever configured secret matched; every one is compared, and
+a secret that matches none is a `401`.
+
+So the only game-side setting this requires is a **different value** of
+`br_ringmaster_ingest_secret` on each box. Nothing in this contract changes and
+no resource needs a rebuild.
 
 **The endpoint must answer fast.** `PerformHttpRequest` has a **hardcoded 5
 second no-response timeout** and it is not configurable — so the endpoint
@@ -91,6 +101,16 @@ Every envelope carries the same `server` block.
   }
 }
 ```
+
+**There is no server id in this block, and adding one would be a mistake.** It
+is the obvious-looking way to tell the console which box is pushing, and it is
+the wrong one: a field in the payload is a *claim*, so anything holding any valid
+ingest secret could write itself into the prod view by spelling `prod` here. A
+dev box left pointing at the prod console after an afternoon of testing would do
+exactly that by accident. The console derives the identity from the credential
+instead, and its own checks read its ingest route off disk to assert no second
+source has appeared. If a server needs to say something about itself, say it in
+a field that is *about* the server and not one that *names* it.
 
 **`v`** — envelope version. The receiver rejects an unknown version rather than
 guessing at it.

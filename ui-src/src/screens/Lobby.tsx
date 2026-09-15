@@ -374,7 +374,32 @@ export default function Lobby({
     // sit ticked forever; readying up is a discrete act with a moment attached.
     // Arming on the preference is what started the walkthrough for every player
     // on every match (2026-09-06).
-    if (tutorialGameShown && tutorialGameOn) setTutorialGameArmed(true)
+    //
+    // ═══ AND ONLY WHILE THE ACCOUNT STILL HAS THE OFFER TO SPEND ═══
+    //
+    // Owner, 2026-09-08: a player finished the in-game half in solos, was paid,
+    // then queued for squads and got the whole walkthrough a second time.
+    //
+    // BOTH of the flags to the left are SESSION LATCHES WITH NO COMPLETION
+    // WRITER, which is exactly what makes them right for the abandoned-run case
+    // above and wrong on their own. `tutorialGameOffered` is raised when the
+    // last lobby card is reached and nothing in the tree ever lowers it;
+    // `tutorialGameOn` is the checkbox, defaults ticked, and only the player
+    // unticking it moves it. Finishing touches neither -- so for a player who
+    // completed it with the box left ticked, which is the normal path, this line
+    // re-armed the walkthrough on every ready-up for the rest of the session.
+    //
+    // `tutorialOfferable` IS THE ACCOUNT-LEVEL FACT and it is the only one of
+    // the three that a completion moves. It mirrors Lua's `offerable`, off the
+    // profile row -- and note that adding this read ALONE would not have fixed
+    // the report: that mirror was stale-true after a completion because
+    // BR.Tutorial.finish did not lower it the way BR.Tutorial.decline does.
+    // That is fixed in the same commit, and this line is why it had to be.
+    //
+    // AN ABANDONED RUN IS STILL NOT A COMPLETION. It never reaches finish(), so
+    // `offerable` stays true, all three flags are true, and the second go the
+    // owner asked for on 2026-09-07 is untouched.
+    if (tutorialOfferable && tutorialGameShown && tutorialGameOn) setTutorialGameArmed(true)
 
     // Optimistic, but the server is the authority -- the next state envelope
     // will correct this if the queue was refused.
@@ -726,14 +751,34 @@ export default function Lobby({
                   the box just cost; showing the box, unticked and ringed, while
                   it says so is what "anchored closer to the thing it talks
                   about" means. It goes when the card is dismissed. */}
-              {(tutorialOfferable || tutorialDeclineCard)
+              {/* ...AND WHILE THE PLAYER HAS IT TICKED, which is what stops the
+                  control vanishing under their own finger. `offerable` is
+                  already false by the time they take a decline back -- the
+                  server lowered it the instant they unticked -- so without
+                  `tutorialGameOn` here, turning the box back on would dismiss
+                  the card and unmount the box in the same frame. */}
+              {(tutorialOfferable || tutorialDeclineCard || tutorialGameOn)
                && (tutorialStep === 'ready' || tutorialGameShown) && (
                 <TutorialToggle
                   tut="tutorial-continue"
                   on={tutorialGameOn}
                   onChange={(v) => {
                     setTutorialGameOn(v)
-                    if (v) return
+                    if (v) {
+                      // ═══ TAKING IT BACK TAKES THE CARD WITH IT ═══
+                      //
+                      // Owner, 2026-09-08: "can you make the 'are you sure?'
+                      // card go away when turning the 'continue' toggle back
+                      // on?" It used to return here and leave the card standing
+                      // over a box that now said the opposite of what the card
+                      // was warning about.
+                      //
+                      // HARMLESS WHEN THE CARD IS NOT UP, which is the ordinary
+                      // case -- the store setter is idempotent and this branch
+                      // is reached every time anybody ticks the box.
+                      setTutorialDeclineCard(false)
+                      return
+                    }
 
                     // ═══ TURNING IT OFF IS A DECISION, AND IT IS FINAL ═══
                     //
@@ -847,13 +892,31 @@ export default function Lobby({
               Help
             </Btn>
           </div>
-          <div className="flex-1" data-tut="settings">
+          <div className="flex-1 relative" data-tut="settings">
             <Btn
               variant="default" size="md" full cue="ui.select"
               onPress={() => { void fetchNui(CB.SETTINGS_FOCUS, { open: true }) }}
             >
               Settings
             </Btn>
+            {/* THE SERVED COMMIT, DEV BOXES ONLY. Lua sends it only while dev
+                mode is on, so its presence is the gate and a public box never
+                draws it. ABSOLUTE, so it adds no height to a column whose
+                budget the note below measures, and it sits outside this
+                wrapper's box, so the walkthrough's ring around Settings does
+                not grow to include it.
+                AN OPAQUE GREY, NOT --color-text-dim. That token is white at 0.58
+                alpha, which reads as whatever is behind it, and the owner asked
+                for grey. #9ca3af on the scrim is about 7:1, and still near 6:1
+                with a bright sky behind the scrim's 12% at this column. */}
+            {lobby?.commit && (
+              <div
+                className="absolute inset-x-0 top-full mt-1 text-center text-[0.7rem] tabular-nums"
+                style={{ color: '#9ca3af' }}
+              >
+                {lobby.commit}
+              </div>
+            )}
           </div>
         </div>
 

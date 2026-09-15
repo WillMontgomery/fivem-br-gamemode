@@ -387,7 +387,27 @@ local function walk(rows, title)
                     print(('  stopped after %d of %d'):format(i - 1, #rows))
                     return
                 end
-                print(('  %3d/%-3d %s / %s'):format(i, #rows, r.set, r.name))
+                -- ═══ THE CUE KEY LEADS THE LINE WHEN THERE IS ONE ═══
+                --
+                -- `/brsfx cues` is the one command that answers "which of my
+                -- sounds are broken", and it used to answer in set/name pairs
+                -- only -- so a `[silent?]` in a run of twenty-one told you a
+                -- pair had not started and left you to map it back to a cue by
+                -- eye, against a table printed by a different command. That is
+                -- the readout somebody is staring at precisely when they are
+                -- already unsure which cue is at fault.
+                --
+                -- CONDITIONAL BECAUSE walk() IS SHARED. `audition` and `find`
+                -- pass catalogue rows, which are a set and a name and have no
+                -- cue key -- prefixing those with an empty column would push
+                -- every pair right for no reason. Rows that know their cue say
+                -- so; rows that do not read exactly as they did.
+                if r.cue then
+                    print(('  %3d/%-3d %-18s %s / %s')
+                        :format(i, #rows, r.cue, r.set, r.name))
+                else
+                    print(('  %3d/%-3d %s / %s'):format(i, #rows, r.set, r.name))
+                end
                 local verdict = playProbed(r.set, r.name)
                 if verdict == 'silent' then silent = silent + 1 end
                 if verdict ~= 'ok' then

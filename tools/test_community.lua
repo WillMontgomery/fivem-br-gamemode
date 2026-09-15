@@ -148,6 +148,11 @@ function PerformHttpRequest(url, cb, method, data, headers)
     http[#http + 1] = { url = url, cb = cb, method = method, headers = headers }
 end
 
+-- guild.lua registers `brallowlist` and exports its switch as it loads. Neither
+-- is this suite's subject; tools/test_guild.lua drives both.
+function RegisterCommand() end
+exports = setmetatable({}, { __call = function() end })
+
 local idents = {}
 function GetNumPlayerIdentifiers(src) return #(idents[tonumber(src) or src] or {}) end
 function GetPlayerIdentifier(src, i)

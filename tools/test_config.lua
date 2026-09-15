@@ -100,7 +100,7 @@ end
 -- had no reader in resources/ since the room stopped waiting for a party, and
 -- the coverage would have gone out with it -- coverage resting on a production
 -- number that can be retuned or removed by somebody who never opens this file.
--- So the example is synthesised here instead.
+-- So the example is synthesized here instead.
 --
 -- IT IS A REAL SPEC ROW, NOT A MOCK, and that is what makes it worth as much as
 -- the borrowed one. apply() walks Ov.SPEC and finds it; parse() reads its min
@@ -342,7 +342,7 @@ do
         { convar = 'br_warmupSeconds',    raw = '0',     why = 'below the minimum' },
         { convar = 'br_warmupSeconds',    raw = '99999', why = 'above the maximum' },
         -- A MINIMUM THAT IS ZERO, one step under it. `fixture` installs the
-        -- synthesised row from the top of this file into that case's sandbox --
+        -- synthesized row from the top of this file into that case's sandbox --
         -- no shipped tunable has a floor of 0 any more, and this refusal is the
         -- one that says "min = 0" never quietly became "no minimum at all". It
         -- runs the same battery as every row above it, which is the point of it

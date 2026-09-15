@@ -238,8 +238,21 @@ end
 --- IT DOES NOT SUPPRESS ANYTHING ELSE. The slots still arrive, the panel still
 --- updates, the toast the shop already sends still speaks. Silence here means
 --- silence, not invisibility.
+---
+--- ═══ AND SILENCE IS THE WHOLE PUSH, NOT ONLY THE ARRIVAL (owner, 2026-09-11)
+---     ═══
+---
+--- "Any inventory adds/removes when the bus spawns should all be muted".
+---
+--- The ADD half was already this flag. The REMOVE half is the SWITCH CLICK:
+--- client/inventory.lua rings it whenever the active slot moves, and a wipe
+--- hands back `active = meleeSlot`, so every player who picked something up on
+--- the warmup pad heard a swap they did not make at wheels-up. So `quiet` is
+--- read by both cues in that file and there is no second flag -- a push that was
+--- silent about the items and audible about the slot they left would be silent
+--- about nothing.
 --- @param src integer
---- @param opts table|nil  { quiet = true } to deliver without the pickup cue
+--- @param opts table|nil  { quiet = true } to deliver without any cue at all
 function BR.Inv.push(src, opts)
     local payload = BR.Inv.publicFor(src)
     if not payload then return end
@@ -249,19 +262,23 @@ end
 
 --- Wipe an inventory back to empty and tell the owner.
 --- @param src integer
-function BR.Inv.reset(src)
+--- @param opts table|nil  forwarded to BR.Inv.push -- { quiet = true } wipes
+---                        without the switch click the emptied active slot would
+---                        otherwise ring
+function BR.Inv.reset(src, opts)
     local e = BR.Roster.get(src)
     if not e then return end
     e.inv = newInv()
-    BR.Inv.push(src)
+    BR.Inv.push(src, opts)
 end
 
 --- Reset every inventory in a match. Called at CLEANUP.
 --- @param m table
-function BR.Inv.clearFor(m)
+--- @param opts table|nil  forwarded to BR.Inv.reset, and so to the push
+function BR.Inv.clearFor(m, opts)
     BR.Roster.each(
         function(e) return e.matchId == m.id end,
-        function(src) BR.Inv.reset(src) end)
+        function(src) BR.Inv.reset(src, opts) end)
 end
 
 -- --------------------------------------------------------------------------
@@ -296,6 +313,9 @@ end
 ---   spendRound          an empty magazine refills when the last round is fired
 ---   the INV_AMMO floor  ...and when the client reports it emptied unseen
 ---   INV_RELOAD          the manual key, which is the reason this is shared
+---
+--- ...and a fourth since: loadEmpty, when rounds arrive in a pool that an empty
+--- magazine draws on. Its own `<= 0` test, the same arithmetic.
 ---
 --- The first two keep their own `clip <= 0` test and this is a strict
 --- generalisation of what they used to do inline: at clip 0, `w.clip - 0` is
@@ -474,12 +494,75 @@ local function isLikeForLike(displaced, stack)
     return displaced.item == stack.item
 end
 
+--- LOAD EVERY EMPTY MAGAZINE ON A POOL THAT HAS JUST TAKEN ROUNDS.
+---
+--- ═══ THE PDW IN THE BAG READ 0 (owner, playtesting a6cbdab) ═══
+---
+--- Ammo bought for a Combat PDW he owned but was not holding left its slot
+--- reading 0 until he switched to it and GTA reloaded it. A sold gun arrives
+--- with `clip = 0`, and BR.Inv.reload's callers were a magazine spent dry, the
+--- floor and the key -- never an arrival. The engine loads the gun in the HAND
+--- by itself, which hid it there; the slot plate draws this file's `clip`,
+--- which is why the gun in the bag showed it. And the held gun paid for the same
+--- gap later: its magazine here stayed 0 while the engine's was full, so the
+--- first report after it fired drove this magazine below zero and ran a reload
+--- the engine never had.
+---
+--- THE RULE IS THE ONE THOSE CALLERS ALREADY RUN -- an empty magazine over a
+--- live pool refills, once -- asked at the moment the pool takes rounds. It
+--- MOVES and mints nothing, so `clip + pool` is the same either side, and it
+--- leaves a partial magazine alone: topping one up is a reload nobody pressed.
+---
+--- ═══ THE BAG ONLY WHEN THE HAND DOES NOT DRAW THE POOL ═══
+---
+--- If the gun in the hand draws this pool, the rounds are ITS reserve: an empty
+--- one loads, as above, and no gun in the bag does. Loading the bag first took
+--- the rounds a player had just bought for the gun he was holding and put them
+--- in one he was not, so a partly loaded PDW's reserve did not rise because an
+--- empty SMG in slot 4 had taken them. An empty gun left in the bag is loaded
+--- by GTA when it comes up, and paid for by server/damage.lua's loadFired when
+--- it is fired. If the hand holds nothing on this pool (another pool, a
+--- consumable, fists), the empty guns in the bag load in slot order: a pistol
+--- in the hand and sixty SMG rounds fill the PDW in slot 2.
+---
+--- ⚠ ONLY WHEN ROUNDS ARRIVE. A gun that arrives over a pool already in the bag
+--- is left empty -- "a purchase neither mints nor spends the reserve already in
+--- the bag" -- so the weapon branch of give() calls this only for the spare
+--- magazine a FOUND gun brings, and a sold or carried gun brings none. GTA
+--- loads that empty gun once it is in the hand, and server/damage.lua's
+--- loadFired pays for the load when the gun is fired.
+--- @param inv table
+--- @param pool string
+local function loadEmpty(inv, pool)
+    --- Is this slot a gun that draws on this pool?
+    local function drawsPool(s)
+        local w = s and s.kind == BR.ItemKind.WEAPON and BR.Config.WeaponById[s.item]
+        return w and w.ammo == pool
+    end
+
+    local hand = inv.slots[inv.active]
+    if drawsPool(hand) then
+        -- `<= 0`, not truthiness: 0 IS TRUTHY IN LUA and an empty magazine is
+        -- the only one this is for.
+        if (hand.clip or 0) <= 0 then BR.Inv.reload(inv, hand) end
+        return
+    end
+
+    for i = 1, SLOTS do
+        local s = inv.slots[i]
+        if drawsPool(s) and (s.clip or 0) <= 0 then
+            BR.Inv.reload(inv, s)
+        end
+    end
+end
+
 --- Put a stack into a player's inventory.
 ---
 --- Returns what happened, because the caller (a claim, a chest, a death box)
 --- has to know whether the item left the world:
 ---   ok        -- any of it was taken
----   displaced -- a stack pushed out to make room, for the world to catch
+---   displaced -- a stack pushed out to make room, or the part of this one
+---                that did not fit, for the world to catch
 ---   reason    -- why nothing was taken
 ---
 --- WEAPONS DISPLACE, EVERYTHING ELSE REFUSES. Picking up a rifle with five
@@ -489,6 +572,11 @@ end
 ---
 --- @param src integer
 --- @param stack table
+--- @param opts table|nil  { quiet = true } to deliver without the pickup cue;
+---                        { focus = true } to put a weapon straight into their
+---                        hands even though they were already holding one --
+---                        see the block at the arming rule, and note the gun
+---                        shop is the only caller entitled to it
 --- @return boolean ok
 --- @return table|nil displaced
 --- @return string|nil reason
@@ -498,9 +586,23 @@ function BR.Inv.give(src, stack, opts)
 
     -- Ammo never occupies a slot.
     if stack.kind == BR.ItemKind.AMMO then
-        local taken = addAmmo(inv, stack.item, stack.count or 0)
+        local count = stack.count or 0
+        local taken = addAmmo(inv, stack.item, count)
         if taken <= 0 then return false, nil, 'ammofull' end
+        -- ...but it does fill a magazine that has none. See loadEmpty.
+        loadEmpty(inv, stack.item)
         BR.Inv.push(src, opts)
+        -- A POOL WITH ROOM FOR PART OF IT TAKES THAT PART AND HANDS THE REST
+        -- BACK, as a consumable's remainder is handed back below. This returned
+        -- nothing, so the rest vanished: the gun shop charged a whole bundle and
+        -- delivered what fit (server/gunshop.lua, deliver, drops what comes back
+        -- at the buyer's feet), and a floor pickup was retired whole.
+        if taken < count then
+            local rest = {}
+            for k, v in pairs(stack) do rest[k] = v end
+            rest.count = count - taken
+            return true, rest, nil
+        end
         return true, nil, nil
     end
 
@@ -680,7 +782,27 @@ function BR.Inv.give(src, stack, opts)
     -- empty-handed is the ask, staying empty-handed while standing on a rifle is
     -- not. `choseActive` is only set by an INV_SELECT the player actually sent,
     -- so the deliberate holster is still honoured and the default is not.
-    if (inv.active ~= MELEE_SLOT or not inv.choseActive)
+    -- ═══ ...UNLESS THE CALLER IS HANDING IT OVER, WHICH IS NOT A PICKUP ═══
+    --
+    -- Owner, 2026-09-09, I3: "when they buy a weapon and it's granted to them,
+    -- the weapon must immediately be the inventory slot in focus."
+    --
+    -- Every clause above is about FLOOR LOOT and is right about it: walking
+    -- over a rifle must not tear the shotgun out of your hands mid-fight, and
+    -- the holster you chose must survive the ground you walk on. A PURCHASE is
+    -- the opposite event -- the player named this weapon, paid for it and
+    -- watched a clerk pass it across a counter -- so "you already had something
+    -- in your hands" is not a reason to leave the thing they just bought in a
+    -- slot they cannot see.
+    --
+    -- A FLAG, DEFAULT OFF, SET BY ONE CALLER. Making the grant path always
+    -- focus would change every chest, every death box and every airdrop; making
+    -- the gun shop write `inv.active` itself afterwards would put the arming
+    -- rule in two files, and the second copy would not know about MELEE_SLOT or
+    -- about `at`. The decision stays here and the shop supplies the reason.
+    if type(opts) == 'table' and opts.focus == true then
+        inv.active = at
+    elseif (inv.active ~= MELEE_SLOT or not inv.choseActive)
        and (displaced or not inv.slots[inv.active] or inv.active == at) then
         inv.active = at
     end
@@ -695,8 +817,28 @@ function BR.Inv.give(src, stack, opts)
     -- it up again -- out of an empty pool, repeatable, compounding. A weapon
     -- that has been in an inventory is not found loot; it is the same weapon
     -- coming back, and it comes back with what it left with.
-    if w and w.ammo and not stack.carried then
-        addAmmo(inv, w.ammo, (w.clip or 0) * (L.weaponReserveClips or 1))
+    -- ═══ ...AND `sold` IS THE SECOND WAY A WEAPON CAN NOT BE FOUND LOOT ═══
+    --
+    -- Owner, 2026-09-12: "the gun isn't sold with free ammo".
+    --
+    -- `carried` and `sold` are different facts -- one gun has been in an
+    -- inventory and the other has never been in one -- and this line needs the
+    -- thing they have in common rather than either of them: neither arrived off
+    -- the floor, so neither is owed a magazine's worth of reserve out of nothing.
+    -- BR.GunshopSolve.catalogue stamps `sold` on the stack it sells, alongside the
+    -- `clip = 0` that withholds the other free magazine.
+    --
+    -- ⚠ `sold` DOES NOT SURVIVE A TRIP THROUGH THE WORLD. server/loot.lua's stamp
+    -- lists the fields it carries and `carried` is on that list because it had to
+    -- be; `sold` is not. A purchase only reaches the floor when the buyer's bag
+    -- was full, and it comes back as ordinary found loot.
+    if w and w.ammo and not stack.carried and not stack.sold then
+        local taken = addAmmo(inv, w.ammo,
+                              (w.clip or 0) * (L.weaponReserveClips or 1))
+        -- ...AND THOSE ARE ROUNDS ARRIVING, so they load an empty magazine on
+        -- the pool the way ammo off the floor does. A floor SMG picked up beside
+        -- an empty sold PDW left the PDW's badge at 0. See loadEmpty.
+        if taken > 0 then loadEmpty(inv, w.ammo) end
     end
 
     BR.Inv.push(src, opts)
@@ -826,11 +968,64 @@ AddEventHandler(BR.Net.INV_SWAP, function(d)
     BR.Inv.push(src)
 end)
 
+-- TWO ADDRESSES, BECAUSE AMMUNITION HAS NEVER HAD THE FIRST ONE.
+--
+-- Owner, gun shop playtest: "for some reason there is no way to drop ammo from
+-- my inventory, only weapons?"
+--
+-- It was not a missing button, it was a missing address. Every drop this
+-- interface has ever made names a SLOT, and a pool is not in a slot -- give()
+-- says so in one line ("Ammo never occupies a slot"), it is a number on the
+-- inventory. So `{ slot }` had nothing the panel could put in it, and the panel
+-- shipped a Drop control under each pool that sent `{ pool }` to a handler
+-- which read `d.slot`, found nil and returned: a live button, served and
+-- clickable, that did nothing at all.
+--
+-- `pool` IS ANSWERED FIRST AND THE TWO NEVER MIX. A payload naming both is a
+-- payload from nothing we wrote; taking the pool branch on it drops one thing
+-- rather than guessing which the sender meant.
 RegisterNetEvent(BR.Net.INV_DROP)
 AddEventHandler(BR.Net.INV_DROP, function(d)
     local src = source
     local inv = liveInv(src)
     if not inv or type(d) ~= 'table' then return end
+
+    if type(d.pool) == 'string' then
+        -- THE POOL NAME IS VALIDATED BY THE INVENTORY, NOT BY A LIST. A live
+        -- inventory carries a key per pool it can hold, so `inv.ammo[pool]`
+        -- being nil is exactly "there is no such pool" -- the same test addAmmo
+        -- makes, which keeps one answer to one question.
+        --
+        -- `== nil`, NOT `not`. Zero is truthy in Lua and a pool at zero is a
+        -- real pool; `not inv.ammo[pool]` would have been right by accident
+        -- here and wrong the moment the guard moved.
+        local have = inv.ammo[d.pool]
+        if have == nil or have <= 0 then return end
+
+        -- THE WHOLE POOL, WHICH IS THE ONLY QUANTITY THIS GAME HAS EVER
+        -- DROPPED. A slot puts its whole stack down and a corpse puts one stack
+        -- per pool down (BR.Inv.dropAll, whose stack shape this is, field for
+        -- field). "Some of it" is a number the player would have to choose and
+        -- no screen in the project asks for one.
+        --
+        -- THE MAGAZINE STAYS IN THE GUN. `clip` travels on the weapon stack;
+        -- this is the RESERVE, which is what the panel draws and what the
+        -- player is looking at when they press the button.
+        --
+        -- NOT A WAY TO MINT ROUNDS. give() puts an ammo stack back with
+        -- addAmmo, clamped to the same cap, so a drop and a pickup returns the
+        -- pool to the number it left at -- no `carried` mark needed, because
+        -- unlike a weapon an ammo stack is never handed a reserve on arrival.
+        inv.ammo[d.pool] = 0
+        BR.Loot.dropForPlayer(src, {
+            item   = d.pool,
+            kind   = BR.ItemKind.AMMO,
+            rarity = BR.Rarity.COMMON,
+            count  = have,
+        })
+        BR.Inv.push(src)
+        return
+    end
 
     local slot = math.tointeger(d.slot)
     if not slot then return end
@@ -1694,7 +1889,29 @@ BR.Sched.every(250, 'inv.use', function()
                 -- what the client actually climbs toward, and a window anchored
                 -- anywhere else would either open before there was anything to
                 -- excuse or close while the ped was still on its way up.
+                --
+                -- ...AND HOW HEALTHY, WHICH IS THE HALF THE WINDOW CANNOT SAY.
+                --
+                -- server/roster.lua's ledger rule refuses every rise it did not
+                -- authorize, and this pair is the authorization: BR.HealthCommit
+                -- lets the ledger follow the ped upward while `healUntil` stands
+                -- and NOT ONE POINT past the ceiling here. The window alone
+                -- would be a two-second amnesty per issue -- re-stamped every
+                -- tick for the length of a channel, and openable on demand by
+                -- the re-press loop in #271 -- in which a modified client could
+                -- pin its health at full and have the server believe it.
+                --
+                -- THE SAME NUMBER THAT IS ON THE WIRE, and it must stay that
+                -- way: the client applies these targets UPWARD ONLY, so the
+                -- ceiling and the ped's destination are the same fact and the
+                -- ledger lands exactly where an honest ped does.
+                --
+                -- BOTH WRITTEN, INCLUDING TO nil. An item that moves only armour
+                -- must not leave a previous med kit's health ceiling standing
+                -- for its own window to spend -- a shield authorizes armour and
+                -- nothing else.
                 e.healUntil = now + ((BR.Config.Combat.healthAudit or {}).healSettleMs or 2000)
+                e.grantHpTo, e.grantArmourTo = partial.health, partial.armour
                 TriggerClientEvent(BR.Net.INV_EFFECT, src, partial)
                 return
             end
@@ -1833,10 +2050,13 @@ BR.Sched.every(250, 'inv.use', function()
                         (u.hp0 or 0) + c.health)
                     payload.healthCap = c.healthCap
                 end
-                -- The same stamp as the partials above, and the landing one
-                -- matters most: this is the payload that carries the FULL
-                -- target, so it is the largest single rise the ped will make.
+                -- The same stamp and the same ceiling as the partials above --
+                -- see the long note there for what each half is for -- and the
+                -- landing one matters most: this is the payload that carries the
+                -- FULL target, so it is the largest single rise the ped will
+                -- make and the highest the ledger is ever allowed to follow it.
                 e.healUntil = now + ((BR.Config.Combat.healthAudit or {}).healSettleMs or 2000)
+                e.grantHpTo, e.grantArmourTo = payload.health, payload.armour
                 TriggerClientEvent(BR.Net.INV_EFFECT, src, payload)
             end
 

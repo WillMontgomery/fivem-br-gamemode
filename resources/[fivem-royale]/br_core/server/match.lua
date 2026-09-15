@@ -55,6 +55,139 @@ local DURATION = {
 --- what tools/check_forward_locals.lua exists to refuse.
 local WARMUP_HOLD_MS = 24 * 60 * 60 * 1000
 
+-- ---------------------------------------------------------------------------
+-- Match ids (#291)
+--
+-- TWO NUMBERS, AND THEY ANSWER DIFFERENT QUESTIONS.
+--
+--   m.seq  an increment from 1. Internal: never on the wire, never displayed.
+--          It is what m.id used to be, and it keeps the two jobs an id can no
+--          longer do -- ORDER, and a DENSE SMALL NUMBER for the routing bucket
+--          so buckets stay 101, 102, 103.
+--   m.id   a random 28-bit integer, 0x0000001 to 0xFFFFFFF, unique for the life
+--          of this process. This is the match's name: shown as seven hex
+--          characters, put in squad ids, carried on every record.
+--
+-- IT STAYS A NUMBER. A hex STRING was considered and rejected on the issue:
+-- `tonumber` collapses two rng seeds to 0, BR.Voice.radioChannel returns nil
+-- and silently kills every squad radio, sixty-eight `%d` sites raise, br_ddb's
+-- num() flattens it to 0 and Ringmaster's `z.number().int()` refuses it, which
+-- is byte for byte the 2026-09-04 ingest outage. The formatting happens at the
+-- point of DISPLAY and nowhere else.
+-- ---------------------------------------------------------------------------
+
+--- The bounds of the id space. 0 IS EXCLUDED and that is load bearing:
+--- server/loot.lua reserves id 0 for the communal warmup pseudo-match and
+--- compares against the literal, so a real match drawing 0 would share a loot
+--- registry with the warmup pad.
+---
+--- ═══ 28 BITS SINCE 2026-09-12, WIDENED FROM 20 ═══
+---
+--- THE RETRY BELOW WAS NEVER THE WHOLE GUARANTEE, and `issuedIds` says so in its
+--- own comment: it holds for the life of THIS PROCESS and dies on restart. That
+--- was enough while an id was a thing a console printed and forgot. It stopped
+--- being enough when Ringmaster gave every match a PERMANENT URL keyed on the
+--- tag -- at which point the question is not "can two LIVE matches collide" but
+--- "can two matches this box has EVER played collide", and the answer is the
+--- birthday bound over the whole history rather than over one session.
+---
+--- 20 bits reached even odds at roughly 1,200 matches, which is a season of
+--- play, and two different matches answering to /matches/d93aa is a moderator
+--- reading one match's page while talking about another. 28 bits moves that to
+--- past 19,000 matches. It is not infinity and it is not meant to be: it is the
+--- width at which the next person can judge the risk, which is why the number is
+--- written down here rather than left to be re-derived.
+---
+--- IT IS ONLY A RENDERING CHANGE AT THE FAR END. The id was always a number and
+--- still is; br_ddb's num() and Ringmaster's z.number().int() both take
+--- 268,435,455 without complaint, and BR.Voice.radioChannel's arithmetic stays
+--- an integer (a large one -- see tools/test_roster.lua, which pins the top of
+--- the space because pma-voice uses that number as a table key and never hands
+--- it to a native).
+local ID_MIN, ID_MAX = 0x00001, 0xFFFFFFF
+
+--- Every id issued since this process started. Never cleared, including for a
+--- match that has been destroyed: `seq` is what guarantees a bucket is never
+--- reused, and this guarantees a NAME is never reused, so two rounds in one
+--- session can never be confused in a log or on a moderation page.
+local issuedIds = {}
+
+--- How many times the draw is retried before falling back to a walk.
+---
+--- COLLISIONS ARE NOT THEORETICAL, AND THE RETRY IS CHEAPER THAN CHECKING. The
+--- space is 268,435,455 wide, so a repeat inside one process is now remote --
+--- but the failure it guards is SILENT, because `BR.Server.matches[m.id] = m`
+--- below replaces a live instance rather than raising, and a guard whose cost is
+--- one table lookup does not need a probability argument to justify it. Sixty-
+--- four consecutive collisions is a probability with hundreds of zeroes after
+--- the point; the walk beneath it is what makes the guarantee absolute rather
+--- than overwhelming.
+local ID_TRIES = 64
+
+--- The generator ids are drawn from, seeded once per process.
+---
+--- THREE INDEPENDENT SOURCES, for the reason br_ringmaster's boot epoch has
+--- three: any one of them varying is enough, and each fails in a different
+--- situation. os.time() separates two FXServer processes; GetGameTimer()
+--- separates two `restart br_core` calls inside one second; a fresh table's
+--- address differs per allocation and per Lua state.
+---
+--- THE OBVIOUS VERSION OF THIS IS WRONG, and br_ringmaster/server/main.lua
+--- carries the measurement: seeding from os.clock() collided 185 times in 200,
+--- because CPU time barely moves between two restarts. A seed that repeats
+--- would hand every restart the same sequence of "random" ids, which is the
+--- disclosure this change exists to end.
+local idRng = BR.Rng((function()
+    local s = tostring({})
+    local addr = tonumber(s:match('0x(%x+)') or s:match('(%x+)%s*$') or '', 16)
+    local boot = type(GetGameTimer) == 'function' and GetGameTimer() or 0
+    return (math.floor(os.time()) * 1000)
+         ~ math.floor(tonumber(boot) or 0)
+         ~ math.floor(addr or 0)
+end)())
+
+--- Draw an id nothing has been given yet.
+--- @return integer
+local function mintId()
+    for _ = 1, ID_TRIES do
+        local id = idRng:int(ID_MIN, ID_MAX)
+        if not issuedIds[id] then
+            issuedIds[id] = true
+            return id
+        end
+    end
+
+    -- Every draw collided. Walk from a random start to the first free id, which
+    -- terminates whenever ANY id is free.
+    local start = idRng:int(ID_MIN, ID_MAX)
+    local span  = ID_MAX - ID_MIN + 1
+    for step = 0, span - 1 do
+        local id = ID_MIN + ((start - ID_MIN + step) % span)
+        if not issuedIds[id] then
+            issuedIds[id] = true
+            return id
+        end
+    end
+
+    -- Unreachable: this process would have formed 268,435,455 matches, which at
+    -- one a minute is five centuries of uninterrupted uptime. Loud rather than
+    -- nil, because a match with no id would fail everywhere except here.
+    error('[br_core] match id space exhausted after ' .. tostring(span)
+          .. ' matches on one process')
+end
+
+--- Mint the (seq, id) pair a new match is built from.
+---
+--- PUBLIC SO THE TESTS CAN MINT THE SAME WAY. tools/test_roster.lua's
+--- `fakeMatch` builds bare instances for blocks that exercise one subsystem
+--- without running the machine; when it had its own copy of this arithmetic,
+--- every block built on it drifted from production the moment this changed.
+--- @return integer seq, integer id
+function BR.Match.mintIds()
+    BR.Server.matchSeq = BR.Server.matchSeq + 1
+    return BR.Server.matchSeq, mintId()
+end
+
 --- Mint a new match instance and start its warmup.
 ---
 --- The participants are ATTACHED FIRST, then flipped to WARMUP: the state
@@ -65,10 +198,17 @@ local WARMUP_HOLD_MS = 24 * 60 * 60 * 1000
 --- @param participants integer[]
 --- @return table the instance
 function BR.Match.create(mode, participants)
-    BR.Server.matchId = BR.Server.matchId + 1
+    local seq, id = BR.Match.mintIds()
     local m = {
-        id        = BR.Server.matchId,
-        bucket    = M.matchBucketBase + BR.Server.matchId,
+        id        = id,
+        seq       = seq,
+        -- THE BUCKET COMES FROM `seq`, NOT FROM `id` (#291). Buckets are dense
+        -- and small on purpose -- 101, 102, 103, exactly as in production today
+        -- -- and `seq` is the only number left that is dense. Deriving them from
+        -- a random id would scatter them across a million values, and dividing
+        -- the id down to a small range would eventually put two LIVE matches in
+        -- one bucket, where they would see and shoot each other.
+        bucket    = M.matchBucketBase + seq,
         state     = BR.MatchState.WAITING,   -- transition() below moves it out
         mode      = mode or BR.Mode.SOLO.key,
         endsAt    = 0,
@@ -119,8 +259,8 @@ function BR.Match.create(mode, participants)
         end
     end
 
-    print(('[br_core] match %d formed -- %s, %d player(s), bucket %d')
-        :format(m.id, m.mode, #(participants or {}), m.bucket))
+    print(('[br_core] match %s formed -- %s, %d player(s), bucket %d')
+        :format(BR.MatchTag(m.id), m.mode, #(participants or {}), m.bucket))
 
     BR.Match.transition(m, BR.MatchState.WARMUP)
     return m
@@ -177,6 +317,11 @@ end
 --- is no compensating write -- and two guards that can disagree is how you get a
 --- third one.
 ---
+--- The `wipedAt` branch below reads `publishedAt`, and that is not a second
+--- guard: it does not decide whether to publish, only which of two very
+--- different console lines to print. The decision is `wipedAt` alone, exactly as
+--- it was.
+---
 --- NO PLACEMENTS ARE AWARDED EITHER, and that is the other deliberate half. See
 --- the note on awardPlacements.
 --- @param m table
@@ -189,17 +334,39 @@ function BR.Match.publishAbandoned(m)
     -- breath. Publishing after that records a match in which nobody did anything
     -- -- #132's fingerprint, filed permanently.
     --
-    -- The normal path never gets here with this clear (ENDED published long
-    -- before CLEANUP wiped anything), so this is not a second once-guard: it is
-    -- the one reachable ordering hazard, `brforce cleanup` straight from PLAYING,
-    -- where the wipe would happen with nothing yet published.
+    -- ═══ EVERY FINISHED MATCH REACHES THIS BRANCH, AND THAT IS NOT THE ALARMING
+    --     CASE. IT USED TO SAY IT WAS ═══
+    --
+    -- The note here used to claim "the normal path never gets here", naming
+    -- `brforce cleanup` straight from PLAYING as the one way in. That is wrong,
+    -- and an ordinary round disproves it: ENDED publishes, CLEANUP wipes and
+    -- stamps `wipedAt`, and destroy calls this function immediately afterwards.
+    -- So the branch is taken at the end of EVERY match that was played.
+    --
+    -- The old sentence made both of those look like the same event, and it
+    -- picked the frightening wording for the one that happens every round.
+    -- Owner, 2026-09-09, reading it after a clean two-player match that had
+    -- already written its rows: "then I guess nothing was saved?" Everything
+    -- was saved. The line said otherwise.
+    --
+    -- `publishedAt` IS WHAT TELLS THEM APART, and it is already the real guard
+    -- (see the note above). Stamped means the rows went to br_stats before the
+    -- wipe, so there is nothing further to do and this is routine. Clear means
+    -- the numbers were destroyed with nothing yet published, which is the
+    -- genuine ordering hazard and the only version of this worth a second look.
     if m.wipedAt then
-        print(('[br_core] match %d: dissolved after CLEANUP wiped it -- '
-            .. 'nothing left to record'):format(m.id))
+        if m.publishedAt then
+            print(('[br_core] match %s: already recorded at ENDED; '
+                .. 'nothing further to publish'):format(BR.MatchTag(m.id)))
+        else
+            print(('^3[br_core] match %s: CLEANUP wiped it before anything was '
+                .. 'published -- the result is lost^7'):format(BR.MatchTag(m.id)))
+        end
         return
     end
 
-    print(('[br_core] match %d: abandoned -- recording it anyway (#161)'):format(m.id))
+    print(('[br_core] match %s: abandoned -- recording it anyway (#161)')
+        :format(BR.MatchTag(m.id)))
     BR.Match.publishResults(m)
 end
 
@@ -249,7 +416,7 @@ function BR.Match.destroy(m)
     BR.Roster.clearDeparted(m.id)
 
     BR.Server.matches[m.id] = nil
-    print(('[br_core] match %d destroyed'):format(m.id))
+    print(('[br_core] match %s destroyed'):format(BR.MatchTag(m.id)))
 
     -- THE ONE RELIABLE END-OF-MATCH SIGNAL, for anything holding match-scoped
     -- state. `br:match:results` is not it: that fires from the summary path and
@@ -319,8 +486,8 @@ function BR.Match.transition(m, state, durationSec)
     -- printing the opposite, so the console actively argued the freeze was off.
     -- A stuck server with no indication of why is bad; a stuck server whose log
     -- denies it is worse.
-    print(('[br_core] match %d: %s -> %s%s'):format(
-        m.id, from, state,
+    print(('[br_core] match %s: %s -> %s%s'):format(
+        BR.MatchTag(m.id), from, state,
         heldByFreeze
             and ' (HELD by brwarmupfreeze -- `brwarmupfreeze off` releases it)'
             or (secs and (' (%ds)'):format(secs) or '')))
@@ -401,12 +568,55 @@ function BR.Match.onEnter(m, state, from)
                 and e.state == BR.PlayerState.WARMUP end,
             function(src) BR.Roster.setState(src, BR.PlayerState.BUS) end)
 
+        -- ═══ AND THE SLOTS GO DARK BEFORE THEY ARE TOUCHED (owner, 2026-09-11)
+        --     ═══
+        --
+        -- "currently, the inventory swaps happen right before the slots visually
+        --  turn off for the flight. The order of this should be reversed so the
+        --  player doesn't notice it and become a distraction."
+        --
+        -- HE WAS WATCHING A RACE, NOT A SEQUENCE, AND MOVING THESE LINES WOULD
+        -- NOT HAVE FIXED IT. The two halves he is describing travel on different
+        -- transports:
+        --
+        --   the slots turning off   the player's own state reaching `bus`.
+        --                           App.tsx's `ridingBus` is the master switch
+        --                           for the whole HUD, and it reads `hud.state`,
+        --                           which is this client's roster mirror -- so
+        --                           the sweep above is the cause, and it goes out
+        --                           as a QUEUED delta, batched at deltaFlushHz.
+        --   the inventory swaps     BR.Inv.push, which is a TriggerClientEvent
+        --                           the moment it is called.
+        --
+        -- So the wipe below and the handout under it were already BELOW the
+        -- state change in this file and still arrived FIRST on the wire, every
+        -- time, by up to a whole flush interval. Reordering the calls would have
+        -- changed nothing; the fix is to stop the two being independent.
+        --
+        -- BR.Broadcast.flushNow IS EXACTLY THE TOOL THE QUEUE SHIPPED FOR --
+        -- "used before anything that must not arrive out of order behind queued
+        -- deltas" -- and this is its first caller in the tree. Past it, both
+        -- halves are ordinary reliable events to the same client in the order
+        -- this function sends them: dark panel, then the shuffle behind it.
+        BR.Broadcast.flushNow()
+
         -- THE PAD'S LOOT DOES NOT FLY. Everything found during warmup is
         -- wiped at wheels-up: the island exists to be practised on, and
         -- arriving early must not be a head start over a late joiner who
         -- boards with nothing (user call, 2026-08-05 -- Fortnite's pre-game
         -- island rule).
-        BR.Inv.clearFor(m)
+        --
+        -- SILENTLY, WHICH IS THE OTHER HALF OF THE SAME SENTENCE: "Any inventory
+        -- adds/removes when the bus spawns should all be muted". The car's
+        -- ARRIVAL has been quiet since 2026-08-29 (server/shop.lua); this wipe
+        -- is the REMOVAL, and what it rang was the switch click, because an
+        -- emptied bag hands the active slot back to melee. The flag is the one
+        -- the pickup cue already reads -- see BR.Inv.push.
+        --
+        -- ONLY THIS CALLER IS QUIET. The CLEANUP wipe further down is a match
+        -- that is over, on a player being walked to the lobby, and nothing has
+        -- been reported about it.
+        BR.Inv.clearFor(m, { quiet = true })
 
         -- ...AND THE CARS BOUGHT IN THE SHOWROOM ARE HANDED OUT IMMEDIATELY
         -- AFTER THAT WIPE, WHICH IS THE WHOLE OF THE ORDERING (#224).
@@ -462,6 +672,27 @@ function BR.Match.onEnter(m, state, from)
         -- path that reaches PLAYING with states still settling ends instantly,
         -- and the log reads as though a match was played and won in one tick.
         m.startedAt = GetGameTimer()
+
+        -- ═══ THE SAME MOMENT ON A CLOCK THAT SURVIVES A RESTART (#293) ═══
+        --
+        -- `startedAt` above is GetGameTimer(): milliseconds since THIS FXServer
+        -- process booted, which returns to zero on every deploy. It is the right
+        -- clock for every in-match measurement -- survivedMs, presentMs and the
+        -- win grace all subtract it from another reading of the same timer -- and
+        -- it is the wrong one for a record, because nothing downstream can turn
+        -- it into a time of day after the fact.
+        --
+        -- SO BOTH ARE STAMPED, ON THE SAME LINE OF THE SAME TRANSITION, and
+        -- neither replaces the other. `os.time() * 1000` is exactly what
+        -- br_stats already stamps `endedAt` with, so the pair a match record
+        -- carries is two readings of ONE clock and their difference is a
+        -- duration rather than an accident.
+        --
+        -- NIL UNTIL PLAYING, like `startedAt`, and deliberately not defaulted:
+        -- a match dissolved on the warmup pad never started, and a record
+        -- claiming it started the instant it ended would be a fabrication that
+        -- reads as real.
+        m.startedAtWall = math.floor(os.time() * 1000)
 
         m.landCheck = nil   -- fresh stuck-lander bookkeeping per match
 
@@ -528,8 +759,8 @@ function BR.Match.onEnter(m, state, from)
         -- side effects outside this resource, and a future caller should not
         -- have to know about this.
         if m.publishedAt then
-            print(('[br_core] match %d: results already published, not republishing')
-                :format(m.id))
+            print(('[br_core] match %s: results already published, not republishing')
+                :format(BR.MatchTag(m.id)))
         else
             BR.Match.awardPlacements(m)
             BR.Match.publishResults(m)
@@ -694,10 +925,11 @@ function BR.Match.awardPlacements(m)
     if #living > 0 then
         local names = {}
         for _, p in ipairs(living) do names[#names + 1] = p.e.name end
-        print(('[br_core] match %d won by %s'):format(m.id,
+        print(('[br_core] match %s won by %s'):format(BR.MatchTag(m.id),
             table.concat(names, ', ')))
     else
-        print(('[br_core] match %d ended with no survivors'):format(m.id))
+        print(('[br_core] match %s ended with no survivors')
+            :format(BR.MatchTag(m.id)))
     end
 end
 
@@ -766,6 +998,12 @@ function BR.Match.publishResults(m)
             -- `died` is: this is the only journey it makes, and the formula that
             -- reads it should not have to re-derive it from anything.
             voltsPickedUp = e.voltsPickedUp or 0,
+            -- And what they spent in it (#293), which until now was recorded
+            -- nowhere at all: the debit is a conditional write against the
+            -- profile row, so after it settles the only trace is a smaller
+            -- balance. Carried the same way `voltsPickedUp` is, for the same
+            -- reason -- this is the one journey it makes.
+            voltsSpent = e.voltsSpent or 0,
             placement = e.placement,
             -- PLACEMENT 1 IS NOT THE SAME QUESTION AS "DID THEY WIN".
             --
@@ -807,6 +1045,20 @@ function BR.Match.publishResults(m)
         matchId   = m.id,
         mode      = m.mode,
         startedAt = startedAt,
+        -- ═══ AND THE SAME MOMENT ON A CLOCK A RECORD CAN USE (#293) ═══
+        --
+        -- `startedAt` above is the GetGameTimer() reading every duration on
+        -- these rows is measured against, and it is milliseconds since this
+        -- process booted -- so it cannot be turned into a time of day, and it
+        -- was the only start time a match record had.
+        --
+        -- FORWARDED RAW, INCLUDING nil. `startedAt` falls back to `endedAt` a
+        -- few lines up because the durations beside it must not go negative;
+        -- this one must NOT fall back, because a match that never reached
+        -- PLAYING has no start time and inventing one that reads as real is the
+        -- failure #293 asks for this field to avoid. The consumer writes zero
+        -- for absent and says so.
+        startedAtWall = m.startedAtWall,
         endedAt   = endedAt,
         -- How many were in it, for placement-relative scoring: finishing 3rd of
         -- 8 and 3rd of 96 are not the same achievement. Counts the departed --
@@ -835,6 +1087,10 @@ function BR.Match.resetPlayer(src, e)
     -- counter left standing follows the player into their NEXT match and is
     -- banked a second time there. One airdrop, paid twice.
     e.voltsPickedUp = 0
+    -- AND THE OTHER DIRECTION OF THE SAME LEDGER (#293). Left standing, a car
+    -- bought in one warmup would be reported as spending in the next match too,
+    -- and the match after that -- #161 exactly, wearing the newest key.
+    e.voltsSpent = 0
 
     -- THE SQUAD'S REVIVE KEY FOR THIS PLAYER (#219). Per-match like everything
     -- around it, and here for the reason #161 spells out above: this is the one
@@ -864,6 +1120,16 @@ function BR.Match.resetPlayer(src, e)
     -- which is exactly the window a returning cheat would land in.
     e.healthAudit, e.armourAudit = nil, nil
     e.healUntil, e.healthSettleUntil = nil, nil
+
+    -- AND SO ARE THE LEDGER RULE'S TWO. `grantHpTo` / `grantArmourTo` are the
+    -- ceilings a heal authorized (server/inventory.lua, server/ambheal.lua) and
+    -- they are inert without the window above -- but they are cleared beside it
+    -- anyway, so that "what did the server authorize this player" has one
+    -- answer at the start of a match rather than one plus a leftover. The
+    -- resync counter goes with the tally it is printed next to: /brhealth reads
+    -- "counted N hp, resyncs M" as one sentence about one round.
+    e.grantHpTo, e.grantArmourTo = nil, nil
+    e.healthResyncs, e.healthResyncAt = nil, nil
 
     -- Per-match, like the counters above. A stale diedAt would date a
     -- player's next match to their last one's clock and pay them
@@ -961,7 +1227,8 @@ function BR.Match.shortenWarmupIfFull(m)
 
     m.endsAt = cap
     m.shortened = true
-    print(('[br_core] match %d full -- warmup cut to %ds'):format(m.id, M.warmupShortened))
+    print(('[br_core] match %s full -- warmup cut to %ds')
+        :format(BR.MatchTag(m.id), M.warmupShortened))
     BR.Broadcast.state(m, m.state, m.endsAt, { reason = 'lobbyFull' })
 end
 
@@ -1011,8 +1278,8 @@ function BR.Match.tutorialHold(m)
 
     m.endsAt = GetGameTimer() + M.warmupSeconds * 1000
     m.shortened = false
-    print(('[br_core] match %d: the tutorial is over -- warmup starts now (%ds)')
-        :format(m.id, M.warmupSeconds))
+    print(('[br_core] match %s: the tutorial is over -- warmup starts now (%ds)')
+        :format(BR.MatchTag(m.id), M.warmupSeconds))
     BR.Broadcast.state(m, m.state, m.endsAt, { reason = 'tutorialDone' })
 end
 
@@ -1286,7 +1553,8 @@ local function matchTick(m, now)
     if BR.Server.countIn(m) == 0
        and m.state ~= BR.MatchState.ENDED
        and m.state ~= BR.MatchState.CLEANUP then
-        print(('[br_core] match %d: memberless -- dissolving'):format(m.id))
+        print(('[br_core] match %s: memberless -- dissolving')
+            :format(BR.MatchTag(m.id)))
         BR.Match.destroy(m)
         return
     end
@@ -1330,10 +1598,12 @@ local function matchTick(m, now)
             return p.state == BR.PlayerState.OUT
         end) > 0
         if anyDead then
-            print(('[br_core] match %d: everyone is down -- ending'):format(m.id))
+            print(('[br_core] match %s: everyone is down -- ending')
+                :format(BR.MatchTag(m.id)))
             BR.Match.transition(m, BR.MatchState.ENDED)
         else
-            print(('[br_core] match %d: everyone left -- dissolving'):format(m.id))
+            print(('[br_core] match %s: everyone left -- dissolving')
+                :format(BR.MatchTag(m.id)))
             BR.Match.destroy(m)
         end
         return
@@ -1358,7 +1628,8 @@ local function matchTick(m, now)
         -- state transition that will not happen.
         if airborne == 0
            and (BR.Server.aliveCount(m) > 0 or heldForStart(m) > 0) then
-            print(('[br_core] match %d: last player down -- going live'):format(m.id))
+            print(('[br_core] match %s: last player down -- going live')
+                :format(BR.MatchTag(m.id)))
             BR.Match.transition(m, BR.MatchState.PLAYING)
             return
         end
@@ -1420,8 +1691,8 @@ local function matchTick(m, now)
                 m.descent.extended = m.descent.extended + 10000
                 m.endsAt = m.endsAt + 10000
                 BR.Broadcast.state(m, m.state, m.endsAt, { reason = 'descent' })
-                print(('[br_core] match %d: someone is still descending -- holding BUS 10s more')
-                    :format(m.id))
+                print(('[br_core] match %s: someone is still descending -- holding BUS 10s more')
+                    :format(BR.MatchTag(m.id)))
             end
         end
     end
@@ -1510,7 +1781,8 @@ local function matchTick(m, now)
             -- never readied up must not pad the number that decides whether
             -- this match is worth flying.
             if BR.Server.aliveCount(m) < M.MinPlayers(BR.Server.devMode) then
-                print(('[br_core] match %d: not enough players, dissolving'):format(m.id))
+                print(('[br_core] match %s: not enough players, dissolving')
+                    :format(BR.MatchTag(m.id)))
                 BR.Match.destroy(m)
             else
                 -- No duration passed: onEnter(BUS) plans the route and sets
@@ -1843,7 +2115,8 @@ RegisterCommand('brforce', function(_, args)
         -- newest match outright, which is what the command was for.
         local m = BR.Server.latestMatch()
         if m then
-            print(('[br_core] admin dissolved match %d (was %s)'):format(m.id, m.state))
+            print(('[br_core] admin dissolved match %s (was %s)')
+                :format(BR.MatchTag(m.id), m.state))
             BR.Match.destroy(m)
         else
             print('  no match to dissolve')
@@ -1854,7 +2127,8 @@ RegisterCommand('brforce', function(_, args)
     for _, v in pairs(BR.MatchState) do
         if v == target then
             local m = debugTarget()
-            print(('[br_core] admin forced match %d: %s -> %s'):format(m.id, m.state, v))
+            print(('[br_core] admin forced match %s: %s -> %s')
+                :format(BR.MatchTag(m.id), m.state, v))
             BR.Match.transition(m, v)
             return
         end
@@ -1871,7 +2145,8 @@ RegisterCommand('brskip', function()
     end
     if m.endsAt > 0 then
         m.endsAt = GetGameTimer()
-        print(('[br_core] admin skipped to the end of match %d\'s %s'):format(m.id, m.state))
+        print(('[br_core] admin skipped to the end of match %s\'s %s')
+            :format(BR.MatchTag(m.id), m.state))
     else
         print(('  %s has no timer to skip'):format(m.state))
     end

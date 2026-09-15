@@ -121,7 +121,7 @@ end
 ---
 --- server/party.lua namespaces squad ids by match and formats them as text:
 ---
----     local id = ('m%dsq%d'):format(m.id, i)     -- 'm3sq1'
+---     local id = ('m%ssq%d'):format(BR.MatchTag(m.id), i)   -- 'm4a3f1sq1'
 ---
 --- The first version of this function did `matchId * stride + squadId` on that,
 --- which is an arithmetic operation on a non-numeric string. In Lua that does
@@ -142,7 +142,7 @@ end
 --- "squad chat stopped working at range" with nothing in the console.
 --- ==========================================================================
 --- @param matchId integer|nil
---- @param squadId string|nil  as party.lua writes it, e.g. 'm3sq1'
+--- @param squadId string|nil  as party.lua writes it, e.g. 'm4a3f1sq1'
 --- @return integer|nil  nil when this player has no squad radio at all
 local warnedSquadId = false
 function BR.Voice.radioChannel(matchId, squadId)

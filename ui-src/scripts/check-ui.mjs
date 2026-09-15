@@ -608,6 +608,611 @@ for (const name of builtCss) {
 }
 
 // ---------------------------------------------------------------------------
+// R14  Every inbound window message goes through the NUI guard.
+//
+// #281. An external audit found the bridge's `message` listener dispatching
+// anything envelope-shaped from anywhere, and this interface embeds two
+// script-capable iframes -- the player manual and the Ringmaster console, the
+// second of which is deliberately unsandboxed. A page in either could raise a
+// toast, rewrite match state, or send a sequence number so far ahead of Lua's
+// counter that every genuine envelope afterwards was discarded as stale, which
+// froze the whole interface for the session.
+//
+// The fix is bridge/envelope.ts. This rule is here because the fix is one line
+// at a call site: `dispatch(ev.data)` is the shape of the bug and it is also
+// the shape of the obvious thing to write. Deleting the guard would leave every
+// test in scripts/test-envelope.mjs passing over code nothing calls -- which is
+// the failure this project has a name for, and the reason a static gate sits
+// beside a unit test rather than instead of one.
+//
+// THIS RULE AND THAT SUITE ARE A PAIR. The suite MODELS this listener, because
+// there is no DOM to run it in; the model is only honest while the ordering
+// below holds. Change one and change the other.
+//
+// IT CAN FAIL. Put `dispatch(ev.data as WireEnvelope)` back in the listener.
+// ---------------------------------------------------------------------------
+{
+  const NUI = join(SRC, 'bridge', 'nui.ts')
+  const GUARD = join(SRC, 'bridge', 'envelope.ts')
+
+  if (!existsSync(NUI) || !existsSync(GUARD)) {
+    fail('R14 nui-guard', 'src/bridge',
+      'nui.ts or envelope.ts is missing. The window message listener and the'
+      + ' guard in front of it are what this rule is about; if they moved,'
+      + ' point it at the new place rather than letting it pass over nothing.')
+  } else {
+    const body = read(NUI)
+
+    // The listener body, from the addEventListener to the end of the file. The
+    // guard has to be INSIDE it -- importing admit and never calling it there
+    // would satisfy a naive search of the whole file.
+    const at = body.indexOf("addEventListener('message'")
+    if (at === -1) {
+      fail('R14 nui-guard', 'src/bridge/nui.ts',
+        "no window 'message' listener found. This is the NUI receive path; if"
+        + ' it moved, move this rule with it.')
+    } else {
+      const listener = body.slice(at)
+
+      if (!/\badmit\s*\(\s*window\s*,\s*ev\.source\s*,\s*ev\.data\s*\)/.test(listener)) {
+        fail('R14 nui-guard', 'src/bridge/nui.ts',
+          'the message listener does not call admit(window, ev.source, ev.data).'
+          + ' Every inbound message must be judged by bridge/envelope.ts before'
+          + ' a field of it is read -- see #281, and Admin.tsx\'s own listener,'
+          + ' which states the same rule about its origin check.')
+      }
+
+      if (/\bdispatch\s*\(\s*ev\.data\b/.test(listener)) {
+        fail('R14 nui-guard', 'src/bridge/nui.ts',
+          'the message listener dispatches ev.data directly. That is the #281'
+          + ' bug exactly: an embedded page can post that. Dispatch the envelope'
+          + ' admit() returned instead.')
+      }
+    }
+
+    // The sequence gate is the other half, and the half that fixes the denial of
+    // service. A `let lastSeq` back in nui.ts would compile, pass every other
+    // check, and quietly restore the freeze.
+    if (/\blet\s+lastSeq\b/.test(body)) {
+      fail('R14 nui-guard', 'src/bridge/nui.ts',
+        'lastSeq is a local again. It belongs to createSeqGate() in'
+        + ' bridge/envelope.ts, which re-seeds itself after a run of stale'
+        + ' envelopes -- a plain counter cannot, and a forged sequence number'
+        + ' freezes the session permanently (#281).')
+    }
+    for (const call of ['reseed', 'fresh', 'commit']) {
+      if (!body.includes(`seq.${call}(`)) {
+        fail('R14 nui-guard', 'src/bridge/nui.ts',
+          `the dispatcher never calls seq.${call}(). All three are load-bearing:`
+          + ' reseed is the snapshot path, fresh is the stale test, commit is'
+          + ' what keeps an unheard kind from eating a sequence number.')
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// R15  The gun shop menu flag reaches BOTH surfaces it was asked for.
+//
+// Owner, after the first in-match gun shop playtest, two sentences: "hide the
+// squad panel when the menu is open" and "their volts balance is always shown
+// in the bottom right while the menu is open". One fact, two surfaces, four
+// files -- the envelope kind, the router, the Volts selector and the squad
+// slot -- and THREE of the four are silent when they go missing. A kind nobody
+// routes is discarded by the dispatcher with no error (that is exactly how the
+// `squadcue` sounds were dropped for a fortnight); a selector that forgets the
+// flag simply renders null.
+//
+// THE VOLTS HALF IS THE ONE THAT LOOKS ALREADY DONE. `shopPlate` has driven
+// that readout since 2026-08-29, so the balance appears at the warmup shop and
+// the code reads correct -- but the counter takes its own plate DOWN to raise
+// the menu, so the one moment the owner asked about is the one moment
+// `shopPlate` is false. The OR below is the whole fix, and it is one character
+// away from looking untouched.
+//
+// WHAT THIS CANNOT PROVE, said plainly: that Lua ever sends the envelope. The
+// sender is br_core/client/gunshop.lua, which is not this project. A pass here
+// means the page would act on it if it arrived.
+//
+// IT CAN FAIL. Drop `!gunshopMenu` from the squad block, or `s.gunshopMenu`
+// from the selector, or the handler, or the union member.
+// ---------------------------------------------------------------------------
+{
+  const T = join(SRC, 'bridge', 'types.ts')
+  const A = join(SRC, 'App.tsx')
+  const H = join(SRC, 'hud', 'Hud.tsx')
+
+  if (!existsSync(T) || !existsSync(A) || !existsSync(H)) {
+    fail('R15 gunshopmenu', 'src',
+      'types.ts, App.tsx or hud/Hud.tsx is missing. If they moved, move this'
+      + ' rule with them rather than letting it pass over nothing.')
+  } else {
+    if (!/k:\s*'gunshopmenu'/.test(read(T))) {
+      fail('R15 gunshopmenu', 'src/bridge/types.ts',
+        "the Envelope union has no `gunshopmenu` member. Lua sends the kind as a"
+        + ' raw string, so nothing here would fail to compile -- the envelope'
+        + ' would simply arrive and be discarded.')
+    }
+    if (!/useNuiEvent\(\s*'gunshopmenu'/.test(read(A))) {
+      fail('R15 gunshopmenu', 'src/App.tsx',
+        "nothing subscribes to 'gunshopmenu'. An unrouted kind is dropped by the"
+        + ' dispatcher in silence, which presents as "the squad panel does not'
+        + ' hide" and is indistinguishable from Lua never sending it.')
+    }
+
+    const hud = stripComments(read(H))
+
+    // The Volts readout: the flag must be one of the conditions that puts a
+    // balance on screen.
+    // BALANCED PARENS, NOT A LINE MATCH AND NOT A FIXED WINDOW. Both cheaper
+    // spellings were tried and both were wrong: `\)\n` finds nothing in a CRLF
+    // checkout, and a 300-character window from `useUi(` reaches PAST the end
+    // of this selector into `const gunshopMenu = useUi((s) => s.gunshopMenu)`
+    // on the next line -- so the rule passed over a shopVolts selector that had
+    // been reverted, which is the one thing it exists to catch.
+    const selAt = hud.search(/const\s+shopVolts\s*=\s*useUi\(/)
+    let sel = null
+    if (selAt !== -1) {
+      const open = hud.indexOf('(', hud.indexOf('useUi', selAt))
+      let depth = 0
+      for (let i = open; i < hud.length; i++) {
+        if (hud[i] === '(') depth++
+        else if (hud[i] === ')' && --depth === 0) { sel = [null, hud.slice(open, i + 1)]; break }
+      }
+    }
+    if (!sel) {
+      fail('R15 gunshopmenu', 'src/hud/Hud.tsx',
+        'no `const shopVolts = useUi(...)` selector found. That selector is'
+        + ' where "is a balance relevant" is decided; if it was renamed, rename'
+        + ' it here too.')
+    } else if (!/\bs\.gunshopMenu\b/.test(sel[1])) {
+      fail('R15 gunshopmenu', 'src/hud/Hud.tsx',
+        'the shopVolts selector does not read s.gunshopMenu. `shopPlate` alone'
+        + ' is false at a gun shop counter -- the counter lowers its plate to'
+        + ' raise the menu -- so the balance vanishes at exactly the moment the'
+        + ' owner asked for it.')
+    }
+
+    // The squad panel: the flag must gate the block that carries the slot id.
+    const at = hud.indexOf('id={SQUAD_SLOT_ID}')
+    if (at === -1) {
+      fail('R15 gunshopmenu', 'src/hud/Hud.tsx',
+        'the squad slot (id={SQUAD_SLOT_ID}) is gone. screens/PlayerList.tsx'
+        + ' measures that id -- see the note above it -- so this is a bigger'
+        + ' change than this rule; do not delete the rule to make it pass.')
+    } else if (!/!gunshopMenu\s*&&/.test(hud.slice(Math.max(0, at - 300), at))) {
+      fail('R15 gunshopmenu', 'src/hud/Hud.tsx',
+        'the squad slot is not gated on !gunshopMenu. It must go away while the'
+        + ' gun shop menu is up, the same way it already does during the'
+        + ' descent -- one block, two reasons, one panel that comes back.')
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// R16  The inventory names a weapon's ammunition, and ammunition can be put
+//      down.
+//
+// Owner, same report: "for some reason there is no way to drop ammo from my
+// inventory, only weapons?" and "please add an item in the inventory page that
+// shows what type of ammo each weapon takes. like instead of where it says
+// weapon say Medium shells etc".
+//
+// BOTH ARE ONE-EXPRESSION CHANGES THAT REVERT INVISIBLY. `{slot.kind}` renders
+// a perfectly reasonable word, and a strip with no control on it looks
+// finished -- neither reads as missing in a diff, which is how the first one
+// survived to a playtest.
+//
+// THE DROP HALF IS HALF A FEATURE HERE AND THIS RULE SAYS SO. A pool has no
+// slot index (br_core/server/inventory.lua: "Ammo never occupies a slot"), so
+// the request below names a POOL, and the server handler that can act on one
+// is not in this project. This gate proves the page asks. It cannot prove
+// anybody answers.
+//
+// IT CAN FAIL. Put `{slot.kind}` back, or delete the pool drop.
+// ---------------------------------------------------------------------------
+{
+  const f = join(SRC, 'screens', 'InventoryPanel.tsx')
+  if (!existsSync(f)) {
+    fail('R16 inventory', 'src/screens/InventoryPanel.tsx', 'file is missing.')
+  } else {
+    const body = stripComments(read(f))
+
+    if (/\{\s*slot\.kind\s*\}/.test(body)) {
+      fail('R16 inventory', 'src/screens/InventoryPanel.tsx',
+        'a slot still prints `{slot.kind}` bare. A weapon should name the'
+        + " ammunition it takes -- AMMO_LABEL[slot.pool], the same word the"
+        + ' strip at the bottom uses -- and fall back to the kind only when'
+        + ' there is no pool, which is what melee is.')
+    }
+    if (!/AMMO_LABEL\[\s*slot\.pool\s*\]/.test(body)) {
+      fail('R16 inventory', 'src/screens/InventoryPanel.tsx',
+        'no AMMO_LABEL[slot.pool] anywhere. The pool name must come from the'
+        + ' map already in this file, never from a second list written beside'
+        + ' it -- two spellings of "Shells" is the bug this avoids.')
+    }
+    if (!/fetchNui\(\s*CB\.INV_DROP\s*,\s*\{\s*pool\s*\}/.test(body)) {
+      fail('R16 inventory', 'src/screens/InventoryPanel.tsx',
+        'nothing sends CB.INV_DROP with a { pool }. Ammunition has no slot'
+        + ' index, so a pool name is the only address a drop can carry; without'
+        + ' this the strip is read-only and the owner\'s report stands.')
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// R17  The storm card's closing shockwave fires once, runs for two seconds, and
+//      keeps the card's own silhouette.
+//
+// Owner, 2026-09-12: "What I want is a one-time ripple effect that explodes from
+// the border of the card, in the shape of the card, like a shockwave. I want
+// that to happen when the timer changes from 'STORM MOVING IN' to 'STORM CLOSING
+// NOW' and display it for 0.5 seconds."
+//
+// AND, THE SAME DAY, HAVING WATCHED IT: "Shockwave looks good on the timer - can
+// you make it take twice as long?" 500ms -> 1000ms. A second still read too fast,
+// so 1000ms -> 2000ms, and nothing else about it changed either time. Every other
+// assertion below is pinned exactly as strongly as it was.
+//
+// THIS RULE REPLACED THE ONE THAT PINNED A CONTINUOUS RING on the same element,
+// shipped the day before and rejected on sight: "I don't like what we did to the
+// storm timer with the outline." Every assertion below is a way this can quietly
+// turn back into that ring, or into something that looks right in a screenshot
+// and is wrong in a match:
+//
+//   * it loops. `infinite`, or an iteration count above one, and the ripple IS
+//     the rejected ring under a new name.
+//   * it re-fires. `shrinking` is true for the whole closing phase and the storm
+//     envelope lands at 4 Hz, so an element rendered from that flag directly
+//     either sits there permanently or restarts four times a second. The element
+//     has to come from a counter that changes on the EDGE and be keyed by it --
+//     a key change is the only thing that restarts a CSS animation in React.
+//   * it fires on arrival. A `useRef(false)` remembering the previous phase
+//     makes MOUNTING during the closing phase indistinguishable from the
+//     transition into it, and this component remounts mid-match every time the
+//     HUD comes back from the ride. The seed has to be the phase first seen.
+//   * the state swap replays it. The `key` spent one commit on the `relative`
+//     wrapper, for the ring's sake. Left there, running into the storm remounts
+//     the wrapper and replays a one-time effect on an event that is not its
+//     trigger.
+//   * the duration drifts. Two seconds is a number he gave -- the half-second he
+//     gave first, doubled twice -- and the player waits through delay as well as
+//     duration, so both are counted.
+//   * the silhouette. "In the shape of the card" is the card's own corner and
+//     nothing else. A circle, a pill and a softened rectangle are three other
+//     effects, and this card is square.
+//
+// IT CAN FAIL. Add `infinite`, render the span from `shrinking`, seed the ref
+// with `false`, move the key back to the wrapper, change either time, or give
+// the ripple a corner of its own.
+// ---------------------------------------------------------------------------
+{
+  const cssPath = join(SRC, 'index.css')
+  const tsxPath = join(SRC, 'hud', 'StormBar.tsx')
+
+  if (!existsSync(cssPath) || !existsSync(tsxPath)) {
+    fail('R17 storm-shock', 'src/hud/StormBar.tsx',
+      'index.css or hud/StormBar.tsx is missing. If they moved, move this rule'
+      + ' with them rather than letting it pass over nothing.')
+  } else {
+    const css = stripComments(read(cssPath))
+    const tsx = stripComments(read(tsxPath))
+    const rule = (name) => (css.match(new RegExp(`\\.${name}\\s*\\{([^}]*)\\}`)) ?? [])[1] ?? null
+
+    // Every time in an animation shorthand, in ms. `2s` and `2000ms` are the
+    // same two seconds and this rule is about the time, not the spelling.
+    const times = (decl) =>
+      [...decl.matchAll(/(?<![\w.-])(\d+(?:\.\d+)?)(ms|s)(?![\w-])/g)]
+        .map((m) => (m[2] === 's' ? parseFloat(m[1]) * 1000 : parseFloat(m[1])))
+    const corner = (decl) =>
+      (/border-radius\s*:\s*([^;]+)/.exec(decl) ?? [])[1]?.trim() ?? null
+
+    // ── the rejected ring is gone, not parked behind a flag ──
+    if (/storm-ring/.test(css) || /storm-ring/.test(tsx)) {
+      fail('R17 storm-shock', 'src/index.css',
+        '`.storm-ring` is still here. The continuous ring was rejected and'
+        + ' replaced, not retired behind a class -- left in the tree it is one'
+        + ' edit away from being back on the card.')
+    }
+
+    const shock = rule('storm-shock')
+    const hot = rule('panel-hot')
+
+    if (shock == null || hot == null) {
+      fail('R17 storm-shock', 'src/index.css',
+        'one of .storm-shock or .panel-hot is gone. The first is the ripple and'
+        + ' the second is the card whose shape it copies; renaming either means'
+        + ' renaming it here, not deleting the rule.')
+    } else {
+      const anim = (/animation\s*:\s*([^;]+)/.exec(shock) ?? [])[1] ?? ''
+
+      // ── two seconds, start to invisible ──
+      if (!anim) {
+        fail('R17 storm-shock', 'src/index.css',
+          '.storm-shock has no `animation`. A ripple that does not move is a'
+          + ' second border sitting permanently around the card.')
+      } else {
+        const total = times(anim).reduce((a, b) => a + b, 0)
+        if (total !== 2000) {
+          fail('R17 storm-shock', 'src/index.css',
+            `.storm-shock's animation totals ${total}ms of duration plus delay.`
+            + ' The owner watched the 0.5 seconds he first asked for and said'
+            + ' "can you make it take twice as long", then found the second that'
+            + ' made still too fast, so the number is 2000ms -- and a delay is'
+            + ' time the player waits through just as much as the duration is.')
+        }
+
+        // ── once. Not a loop, not two passes ──
+        const counts = anim
+          .replace(/(?<![\w.-])\d+(?:\.\d+)?(?:ms|s)(?![\w-])/g, ' ')
+          .replace(/cubic-bezier\([^)]*\)/g, ' ')
+          .replace(/var\([^)]*\)/g, ' ')
+          .match(/(?<![\w.-])\d+(?:\.\d+)?(?![\w-])/g) ?? []
+        if (/\binfinite\b/.test(anim) || counts.some((n) => Number(n) !== 1)) {
+          fail('R17 storm-shock', 'src/index.css',
+            `.storm-shock animates \`${anim.trim()}\` -- it repeats. "A one-time`
+            + ' ripple" is the request, and a repeating outline on this card is'
+            + ' the effect the owner rejected the day before this replaced it.')
+        }
+
+        // ── it grows and fades, and touches nothing the layout thread reads ──
+        const block = keyframeBlocks(css).find((b) => {
+          const n = (/@keyframes\s+([\w-]+)/.exec(b) ?? [])[1]
+          return n && new RegExp(`(?<![\\w-])${n}(?![\\w-])`).test(anim)
+        })
+        if (!block) {
+          fail('R17 storm-shock', 'src/index.css',
+            '.storm-shock names an animation with no @keyframes in this file.'
+            + ' The element then draws a static outline around the card and'
+            + ' never leaves, which is worse than drawing nothing.')
+        } else {
+          if (!/transform\s*:[^;]*scale\(/.test(block)) {
+            fail('R17 storm-shock', 'src/index.css',
+              'the shockwave does not scale. "Explodes from the border of the'
+              + ' card, in the shape of the card" is a scale on the card\'s own'
+              + ' box; growing it by animating inset or width reflows the'
+              + ' wrapper on every frame of an effect that plays while a wall'
+              + ' is closing.')
+          }
+          if (!/opacity\s*:\s*0(?![\w.])/.test(block)) {
+            fail('R17 storm-shock', 'src/index.css',
+              'the shockwave never reaches opacity 0. A shockwave fades as it'
+              + ' grows, and the final frame is what holds after the 2000ms --'
+              + ' without it the ripple parks permanently around the card.')
+          }
+          const props = [...new Set([...block.matchAll(/([a-z-]+)\s*:/g)].map((m) => m[1]))]
+          const stray = props.filter((p) => p !== 'transform' && p !== 'opacity')
+          if (stray.length) {
+            fail('R17 storm-shock', 'src/index.css',
+              `the shockwave animates ${stray.join(', ')}. Transform and opacity`
+              + ' only, so the browser can composite it without a paint or a'
+              + ' layout pass per frame.')
+          }
+        }
+      }
+
+      // ── the card's silhouette, and the card is square ──
+      const sc = corner(shock)
+      const hc = corner(hot)
+      if (sc == null || hc == null) {
+        fail('R17 storm-shock', 'src/index.css',
+          'no `border-radius` on .storm-shock or .panel-hot. "In the shape of'
+          + ' the card" is a corner the two have to agree on, and a missing one'
+          + ' on either side is an agreement nobody can check.')
+      } else if (sc !== hc) {
+        fail('R17 storm-shock', 'src/index.css',
+          `.storm-shock's corner is ${sc} against the card's ${hc}. The ripple`
+          + ' keeps the card\'s silhouette or it is a different shape expanding'
+          + ' out of it.')
+      } else {
+        const px = /^(\d+(?:\.\d+)?)px$/.exec(sc)
+        if (!px || parseFloat(px[1]) > 4) {
+          fail('R17 storm-shock', 'src/index.css',
+            `the shared corner is ${sc}, which is not square. The storm placard`
+            + ' was restyled square and the owner kept it, so the ripple that'
+            + ' copies it is square too. If the card is meant to round, retune'
+            + ' .panel-hot deliberately and move this bound with it.')
+        }
+      }
+    }
+
+    // ── one shot: mounted from a counter on the edge, keyed by which edge ──
+    const lines = tsx.split('\n')
+    const i = lines.findIndex((l) => l.includes('storm-shock'))
+    if (i === -1) {
+      fail('R17 storm-shock', 'src/hud/StormBar.tsx',
+        'nothing renders the shockwave. The CSS on its own draws nothing, so'
+        + ' this is the whole feature: a `storm-shock` element beside the card,'
+        + ' inside the `relative` wrapper it needs because `.panel-hot` clips'
+        + ' its own overflow.')
+    } else {
+      const el = lines.slice(Math.max(0, i - 2), i + 2).join('\n')
+      if (/\bshrinking\b/.test(el)) {
+        fail('R17 storm-shock', 'src/hud/StormBar.tsx',
+          'the shockwave is rendered from `shrinking`. That flag is true for the'
+          + ' whole closing phase and the storm envelope lands at 4 Hz, so the'
+          + ' ripple would either sit there permanently or restart four times a'
+          + ' second. Mount it from a counter that only moves on the transition.')
+      }
+      if (!/key=\{/.test(el)) {
+        fail('R17 storm-shock', 'src/hud/StormBar.tsx',
+          'the shockwave element carries no `key`. Re-rendering an element does'
+          + ' not restart its CSS animation; remounting it does, and a changed'
+          + ' key is how React is told to remount. Without one the second'
+          + ' transition of a match plays nothing at all.')
+      }
+    }
+
+    // ── mounting mid-phase is not a transition ──
+    if (/useRef\s*(?:<[^>]*>)?\s*\(\s*false\s*\)/.test(tsx)) {
+      fail('R17 storm-shock', 'src/hud/StormBar.tsx',
+        'a `useRef(false)` is remembering the previous phase. Seeded false, a'
+        + ' component that MOUNTS during the closing phase sees the same'
+        + ' false-to-true edge as one that watched the wall start moving -- and'
+        + ' this component remounts mid-match every time the HUD comes back from'
+        + ' the ride. Seed it with the phase first seen.')
+    }
+    if (!/useRef\s*(?:<[^>]*>)?\s*\([^)]*\bshrinking\b[^)]*\)/.test(tsx)) {
+      fail('R17 storm-shock', 'src/hud/StormBar.tsx',
+        'no `useRef` is seeded from `shrinking`. The remembered phase has to'
+        + ' start as the phase this component first saw, or opening the HUD'
+        + ' while the storm is already closing fires a transition that never'
+        + ' happened.')
+    }
+
+    // ── the wrapper holds still, or a state swap replays a one-shot ──
+    if (!/className="relative"/.test(tsx)) {
+      fail('R17 storm-shock', 'src/hud/StormBar.tsx',
+        'the `relative` wrapper is gone. The shockwave is positioned against it,'
+        + ' and it is a sibling of the card rather than a child because'
+        + ' `.panel-hot` is `overflow: hidden` for its cap bar and would clip the'
+        + ' ripple off at the card\'s edge -- the whole distance it travels.')
+    }
+    if (/key=\{[^}]*\}\s+className="relative"|className="relative"\s+key=\{[^}]*\}/.test(tsx)) {
+      fail('R17 storm-shock', 'src/hud/StormBar.tsx',
+        'the state `key` is on the `relative` wrapper. It was there for the ring,'
+        + ' which needed card and ring to remount on the same frame. Left there,'
+        + ' running into the storm remounts the wrapper -- and a remount of the'
+        + ' wrapper replays the shockwave on an event that is not its trigger.'
+        + ' The key belongs on the card, whose hotDrop it exists to replay.')
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// R18  `tscale` never sits beside a size the element declared itself (#159).
+//
+// index.css says it in full beside `.ts`, and five HUD files repeat the warning
+// in their own words, and it was still live in two of them: `.tscale` is
+// `calc(1em * var(--text-scale))`, and 1em is the PARENT's size -- so on an
+// element that declares its own, the declared size is discarded without a
+// warning and the element renders at whatever it happened to inherit.
+//
+// MEASURED, NOT REASONED: a kill feed row in `npm run dev` computed to 11px --
+// the root size -- while its own class asked for 0.8125rem, which is 8.94px at
+// that root. In game at 1080p that is a feed running at 16px against the 13px
+// it declares. Chat's log line had the identical fault one file over.
+//
+// NOTHING ELSE CATCHES THIS. Both spellings are valid CSS, both classes are
+// really applied, the screen looks plausible, and which one wins is decided by
+// stylesheet ORDER -- so it cannot be seen in the markup at all. The fix is the
+// one the stylesheet prescribes: `.ts` with the size handed in as `--fs`.
+//
+// `.micro-label` is the other half, and the other way this bit: it declares a
+// font-size too, and `micro-label tscale` ignored the preference entirely.
+//
+// ═══ IT FAILS ON THE HUD AND WARNS ON THE SCREENS, AND THAT IS A DEBT ═══
+//
+// The same fault is live in twelve places across six lobby screens (Lobby,
+// Settings, PlayerList, Keybinds, Market, Locker). Every one of them is a real
+// text size being discarded, and every fix is a visible size change on a screen
+// nobody reported -- which is a round of its own with the owner looking at it,
+// not a quiet side effect of an audit of the kill feed. So they are counted and
+// named on every build rather than hidden behind an allow-list, and the surfaces
+// drawn over live gameplay, which is where this was measured, hold the line.
+//
+// IT CAN FAIL. Put `text-[0.8125rem]` back beside `tscale` on the kill feed row.
+// ---------------------------------------------------------------------------
+{
+  // className="..." and className={`...`}. Both may span lines: the kill feed's
+  // own class list does, which is why neither pattern excludes newlines.
+  const CLASS_ATTR = [/className="([^"]*)"/g, /className=\{`([^`]*)`\}/g]
+  const LIVE = (r) => r.startsWith('src/hud/') || r.startsWith('src/chat/')
+  const owed = new Map()   // file -> count
+
+  for (const f of files.filter((x) => x.endsWith('.tsx'))) {
+    const body = stripComments(read(f))
+    for (const re of CLASS_ATTR) {
+      re.lastIndex = 0
+      let m
+      while ((m = re.exec(body)) !== null) {
+        const cls = m[1]
+        if (!/\btscale\b/.test(cls)) continue
+        const declared = (cls.match(/\btext-\[[^\]]+\]/) ?? [])[0]
+          ?? (/\bmicro-label\b/.test(cls) ? 'micro-label' : null)
+        if (!declared) continue
+        if (!LIVE(rel(f))) {
+          owed.set(rel(f), (owed.get(rel(f)) ?? 0) + 1)
+          continue
+        }
+        fail('R18 tscale', rel(f),
+          `\`tscale\` sits beside \`${declared}\`, which declares a font size of`
+          + ' its own. `.tscale` multiplies 1em -- the PARENT\'s size -- so that'
+          + ' declaration is silently discarded and the element renders at'
+          + ' whatever it inherits. Use `ts` and pass the size in as `--fs`'
+          + ' (#159); index.css says so where `.ts` is declared.')
+      }
+    }
+  }
+
+  if (owed.size) {
+    const total = [...owed.values()].reduce((a, b) => a + b, 0)
+    warn('R18 tscale', 'src/screens',
+      `${total} more in ${owed.size} screens, each throwing away a declared text`
+      + ` size (#159): ${[...owed].map(([f, n]) => `${f} x${n}`).join(', ')}.`
+      + ' Not failed here because every fix changes a size on screen and that is'
+      + ' a round the owner should see, not a side effect of another one.')
+  }
+}
+
+// ---------------------------------------------------------------------------
+// R19  The kill feed is square, and its ink is the palette's.
+//
+// Owner, 2026-09-11: "can you check the kill feed to make sure it complies with
+// our current UI colors, fonts, and outlines/corners? I don't think it does."
+// It did not, and both faults were the same kind: a value that was right once,
+// left behind by a change to the thing it was copied from.
+//
+//   * the rows rounded their right-hand corners to `var(--r-panel)`, which is
+//     the radius `.panel` carried BEFORE the square restyle the owner kept
+//     ("I like the style"). `.panel` is `border-radius: 0` now, so the override
+//     was the only round corner left on the surface -- and it only applied to
+//     rows that concern YOU, so your own eliminations were a different shape
+//     from everyone else's. The HS chip did the same in miniature with
+//     `rounded-sm`. Both are invisible in a diff of index.css, because neither
+//     lives there.
+//   * the chip's ink was `#0b0c12`, which is --color-royale-bg's value copied
+//     by hand. It stops tracking the moment the token moves.
+//
+// NARROW TO ONE FILE ON PURPOSE. Rounded corners are correct elsewhere in the
+// HUD -- every bar in the interface is `rounded-full` and is meant to be -- so
+// a blanket ban would be wrong. This surface has no bars and no exceptions.
+//
+// IT CAN FAIL. Put back `rounded-sm`, the borderRadius line, or the literal.
+// ---------------------------------------------------------------------------
+{
+  const f = join(SRC, 'hud', 'KillFeed.tsx')
+  if (!existsSync(f)) {
+    fail('R19 killfeed', 'src/hud/KillFeed.tsx', 'file is missing.')
+  } else {
+    const body = stripComments(read(f))
+
+    for (const [needle, what] of [
+      [/\brounded-[\w[\]./-]+/, 'a `rounded-` utility'],
+      [/\bborderRadius\b/, 'an inline `borderRadius`'],
+      [/--r-panel/, 'the --r-panel radius'],
+    ]) {
+      const hit = (body.match(needle) ?? [])[0]
+      if (hit) {
+        fail('R19 killfeed', 'src/hud/KillFeed.tsx',
+          `${what} (\`${hit}\`). The feed is a \`.panel\`, and \`.panel\` has`
+          + ' been `border-radius: 0` since the owner kept the square restyle.'
+          + ' A row that concerns the player is marked with the blade on its'
+          + ' leading edge, not with a second shape.')
+      }
+    }
+
+    const hex = (body.match(/#[0-9a-fA-F]{6}\b/) ?? [])[0]
+    if (hex) {
+      fail('R19 killfeed', 'src/hud/KillFeed.tsx',
+        `the literal ${hex}. Every color this surface draws is in the palette`
+        + ' -- --color-royale-accent, --color-danger, --color-royale-bg -- and a'
+        + ' hand-copied value stops following it, colorblind modes included.')
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Result
 // ---------------------------------------------------------------------------
 if (failures) {

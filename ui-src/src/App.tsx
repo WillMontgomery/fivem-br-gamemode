@@ -130,6 +130,10 @@ export default function App() {
   // The warmup shop's plate, which is the ONLY thing that puts a Volts figure
   // on the HUD. A flag, not a balance -- see the envelope's note.
   useNuiEvent('shopplate', (d) => s.setShopPlate(d.show === true))
+  // The in-match gun shop's scaleform menu. This page cannot see a scaleform,
+  // so the counter has to say so -- and it is one fact answering two of the
+  // owner's requests: the squad panel goes down, the Volts readout stays up.
+  useNuiEvent('gunshopmenu', (d) => s.setGunshopMenu(d.open === true))
   useNuiEvent('players',  (d) => s.setPlayers(d))
   useNuiEvent('report',   (d) => s.setReportResult(d))
   // The Admin tab's availability, and any mint answer. Sent to one player, only

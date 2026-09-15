@@ -64,13 +64,19 @@ that are data rather than logic (see [Testing](testing.md)).
 Four independent seeds per match, each folded with a **different prime**:
 
 ```
-lootSeed    = now + matchId × 15485863
-stormSeed   = now + matchId ×     7919
-busSeed     = now + matchId ×   104729
-airdropSeed = now + matchId ×   1299709
+lootSeed    = now + matchSeq × 15485863
+stormSeed   = now + matchSeq ×     7919
+busSeed     = now + matchSeq ×   104729
+airdropSeed = now + matchSeq ×   1299709
 ```
 
-where `now` is `GetGameTimer()` — milliseconds since the resource started.
+where `now` is `GetGameTimer()` — milliseconds since the resource started, and
+`matchSeq` is the match's **sequence number**: an increment from 1, internal,
+never displayed. It is not the match **id**, which since #291 is a random 28-bit
+draw shown as seven hex characters. All this number has to do is tell two matches
+apart inside one millisecond, and an increment does that exactly as well as a
+random draw — while keeping every layout, storm path and tour reproducible from
+a boot, which a random draw would not.
 Each seed is expanded through SplitMix32 into the four 32-bit state words of an
 xoshiro-style generator (`br_lib/shared/rng.lua`), because Lua's built-in RNG
 is neither portable nor reproducible across runtimes.
@@ -78,25 +84,25 @@ is neither portable nor reproducible across runtimes.
 ### The exact odds of two identical matches
 
 A match is fully determined by its three seeds, so two matches are identical if
-and only if all three collide. Write that out for matches `(t₁, id₁)` and
-`(t₂, id₂)`:
+and only if all three collide. Write that out for matches `(t₁, n₁)` and
+`(t₂, n₂)`, where `n` is the sequence number:
 
 ```
-t₁ + id₁ × 15485863  =  t₂ + id₂ × 15485863
-t₁ + id₁ ×     7919  =  t₂ + id₂ ×     7919
+t₁ + n₁ × 15485863  =  t₂ + n₂ × 15485863
+t₁ + n₁ ×     7919  =  t₂ + n₂ ×     7919
 ```
 
 Subtract the second from the first:
 
 ```
-(id₁ − id₂) × (15485863 − 7919) = 0     ⟹    id₁ = id₂     ⟹    t₁ = t₂
+(n₁ − n₂) × (15485863 − 7919) = 0     ⟹    n₁ = n₂     ⟹    t₁ = t₂
 ```
 
-**So two matches are identical only if they have the same match id at the same
-millisecond.** Match ids are allocated by increment and never reused, so within
-a single server run the probability is *exactly zero* — not small, structurally
-impossible. That is a stronger guarantee than one seed would give, and it is
-what the four different primes buy.
+**So two matches are identical only if they have the same sequence number at
+the same millisecond.** Sequence numbers are allocated by increment and never
+reused, so within a single server run the probability is *exactly zero* — not
+small, structurally impossible. That is a stronger guarantee than one seed would
+give, and it is what the four different primes buy.
 
 **A new subsystem takes a new prime, and the reason is not tidiness.** The
 airdrop (#88) draws its schedule, its landing POI and its contents from
@@ -114,9 +120,9 @@ silently, because a different-but-valid layout is indistinguishable from a
 correct one. `tools/test_airdrop.lua` generates a whole layout, burns an airdrop
 payout, and generates it again, rather than trusting this paragraph.
 
-Across separate server runs, ids restart from the same base, so identity needs
-the same id to be minted at the same millisecond offset. Treating that offset as
-uniform over a 32-bit range gives **≈ 1 in 4.3 × 10⁹**, and in practice far less
+Across separate server runs, sequence numbers restart from the same base, so
+identity needs the same one to be minted at the same millisecond offset.
+Treating that offset as uniform over a 32-bit range gives **≈ 1 in 4.3 × 10⁹**, and in practice far less
 — matches start when players queue, not on a schedule.
 
 For scale, the space the seeds *address* is much larger than the seeds
@@ -305,12 +311,19 @@ water.
 
 ### How much, and where
 
-For each of the **120** POIs — 77 tier 1, 29 tier 2, 14 tier 3 — by tier:
+For each of the **120** POIs — 75 tier 1, 28 tier 2, 13 tier 3, 4 tier 4 — by tier:
 
 ```
-crates(tier)      = 20 | 20 | 24
-floor items(tier) =  5 |  8 | 14
+crates(tier)      = 20 | 20 | 24 | 35
+floor items(tier) =  5 |  8 | 14 | 14
 ```
+
+Tier 4 is the four **golden** POIs (#227): Humane Labs, Kortz Center, Great
+Chaparral and Raton Canyon. Floor loot is flat against tier 3 on purpose — the
+premium is paid in crates and in the rarity mix, because crates carry the loot
+and floor items garnish it. 35 against tier 1's 20 is 1.75×, which puts these
+four back near the 2.4× spread the tier-3 sites had before the 2026-08-05
+flattening; that is the point of them, and there are four rather than fourteen.
 
 Plus 420 roadside filler items along the authored corridors, offset 8–22 m
 perpendicular to the centreline, on one side or the other, never on it.
@@ -358,15 +371,38 @@ rarity ~ weighted(RarityWeights[tier])
 item   ~ uniform(bucket[rarity]), walking DOWN if that bucket is empty
 ```
 
-| Tier | Common | Uncommon | Rare | Epic | Legendary |
-|---|---|---|---|---|---|
-| 1 | 55 | 28 | 13 | 3 | 1 |
-| 2 | 40 | 30 | 20 | 8 | 2 |
-| 3 | 25 | 28 | 27 | 15 | 5 |
+| Tier | Common | Uncommon | Rare | Epic | Legendary | Rare+ |
+|---|---|---|---|---|---|---|
+| 1 | 55 | 28 | 13 | 3 | 1 | 17 |
+| 2 | 40 | 30 | 20 | 8 | 2 | 30 |
+| 3 | 25 | 28 | 27 | 15 | 5 | 47 |
+| 4 | 14 | 23 | 30 | 23 | 10 | 63 |
 
 Crate contents roll at `min(tier + 1, 3)` — one tier hotter than the ground
 around them, which is what makes crossing open ground for one worth the
-exposure.
+exposure. **Tier 4 is the exception: it reads row 4 directly and is not
+bumped.** The clamp is why. It stops at 3, so `tier + 1` at a tier-4 POI lands
+back on row 3 and a golden crate rolls what a tier-2 crate already rolls;
+raising the clamp to 4 instead would hand row 4 to every tier-3 POI as well.
+
+The row 4 numbers are the owner's, 2026-09-08, and the ladder is the point of
+them: rare-or-better runs 17 → 30 → 47 → 63 and legendary 1 → 2 → 5 → 10.
+**Legendary doubling from tier 3 is deliberate, not a typo.**
+
+Measured through the generator, 300k crates per tier — well under the raw
+weights, because ammo is always common, melee stops at uncommon, consumables
+have no rare band and throwables have no legendary one:
+
+| Tier | Item rare+ | Item legendary | Crate glows rare+ | Crate holds a legendary |
+|---|---|---|---|---|
+| 1 | 18.4% | 1.39% | 45.1% | 4.1% |
+| 2 | 29.8% | 3.48% | 64.2% | 10.1% |
+| 3 | 29.8% | 3.48% | 64.2% | 10.1% |
+| 4 | 41.2% | 6.95% | 78.1% | 19.3% |
+
+Tiers 2 and 3 are identical because both clamp to row 3: what separates them is
+the crate count, not the mix. Map-wide the change costs 2456 → 2512 crates and
+813 → 837 floor items.
 
 ---
 

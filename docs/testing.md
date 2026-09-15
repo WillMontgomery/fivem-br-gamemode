@@ -13,10 +13,14 @@ bash tools/verify.sh
 ```
 
 Runs everything below in increasing order of strictness and exits non-zero on
-any failure. It is wired as a **pre-commit hook**, so nothing lands red.
+any failure. It is wired as a **pre-commit hook**, and CI runs it after the UI
+and br_ddb package-owned checks have proved both committed bundles match source.
+Pull requests and `main` are covered remotely; `dev` is guarded locally before
+commit.
 
-Lua 5.4 is required and is not on PATH by default on Windows; the script finds
-it at `$LOCALAPPDATA/Programs/Lua/bin/`.
+Lua 5.4 is required. `verify.sh` finds the ordinary `lua`/`luac` pair,
+Homebrew's keg-only `lua@5.4`, and the standard Windows install path; when
+absent it prints the matching Homebrew, apt, or winget command.
 
 ---
 
@@ -25,7 +29,7 @@ it at `$LOCALAPPDATA/Programs/Lua/bin/`.
 | Stage | What it proves |
 |---|---|
 | **Syntax** | `luac -p` on every `.lua`. FiveM runs Lua 5.4 and so does this, so a pass means the resource will at least load. The floor, not the ceiling. |
-| **Unit tests** | 28 suites, ~10,300 assertions, over the pure shared modules, the server model, the client interaction layer, the subsystems that reach AWS, and — increasingly — the individual server and client files a rule actually lives in. |
+| **Unit tests** | 35 suites, over 10,000 assertions, covering the pure shared modules, server model, client interaction layer, AWS-facing subsystems, and individual files where a rule lives. The run order stays explicit, but `verify.sh` compares it with every `tools/test_*.lua` file and fails if either side has an extra entry — a new suite cannot exist without running in CI. |
 | **Scope gate** | Bans OneSync scope-limited natives from client gameplay code. |
 | **Weapon table** | Re-derives every weapon hash from its name, and requires every weapon and throwable to say explicitly whether a car seat accepts it — a missing `driveby` field reads as "no" and would silently drop a gun out of the drive-by hint. See [Vehicle data overrides](vehicle-data.md). |
 | **Vehicle table** | Re-derives every refused-vehicle hash from its name, signed and unsigned. The refusal list is what keeps aircraft and weaponised vehicles out, including out of the showroom catalogue, so a hash that stopped matching its name would silently stop refusing anything. |
@@ -49,7 +53,7 @@ it at `$LOCALAPPDATA/Programs/Lua/bin/`.
 | **Incident notice surface** | Exactly one sender of the "See something suspicious?" notice, one emitter of the `br:incident:filed` acknowledgement every creation path converges on, one asker of `br:ddb:putIncident`, and no acknowledgement from the corroboration handler. It pins the choke points rather than counting the creation paths, so a new detector is covered on the day it lands (#214). A second announcer would not fail a test nobody wrote — it would quietly tell the offender, which is #93; and a path writing its own row would file cases nobody is ever told about, with every other gate green. |
 | **Timeline entry kinds** | Every match-timeline `kind` the Lua side writes is one `close.js` stores. The two live in different languages in different directories, and a kind added on one side alone is a timeline entry that silently never arrives. |
 | **Secrets** | The only gate that scans the whole repo rather than `resources/`. |
-| **br_ddb bundle** | The committed bundle is the one recorded against the current `js-src/br_ddb`, and the ban rule passes its cases. A sha256 fingerprint in `dist/fingerprint.json`, **not** a rebuild: it catches a source edit nobody rebuilt — which presents as "my change did nothing" with nothing wrong in any log — and it does not prove the bundle is correct or untampered. Refresh it after a real rebuild with `tools/br_ddb_fingerprint.sh`. The rebuild version of this gate needed `node_modules` and therefore never ran once (#218). |
+| **br_ddb bundle** | Locally, the committed bundle is pinned to the current `js-src/br_ddb` source fingerprint so the gate runs without npm. In CI, Node 22 installs the locked dependencies and `npm run check` rebuilds in memory for an exact byte comparison; the fingerprint can no longer bless a stale or unrelated bundle by itself. The ban-rule cases run on both paths when Node is present. |
 | **br_ddb bundle over the wire** | The same question asked of a **box**: `status` reports the bundle actually deployed there, and every absence as `null` rather than as a blank that reads like an answer. The gate above compares two things in this repository; this one compares this repository against what is running. |
 | **Duplicate console commands** | One name, one registration — three collided at once in #137. |
 

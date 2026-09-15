@@ -50,6 +50,7 @@ for _, f in ipairs({
     'shared/enums.lua',
     'shared/geo.lua',        -- BR.Dist, which the blip and the displacement use
     'shared/protocol.lua',   -- BR.Net.RESCUE_BLIP
+    'shared/matchtag.lua',   -- BR.MatchTag; every line here names its match
     'config/match.lua',      -- matchBucketBase
     'config/overrides.lua',
     'config/storm.lua',
@@ -201,9 +202,15 @@ local function tick(n)
 end
 
 --- A match whose bus doors opened one second ago.
+--- `seq` AND `bucket` ARE BOTH ON IT, because both are on a real one (#291).
+--- server/ambulances.lua reads `m.bucket` off the record rather than re-deriving
+--- it, so a fixture without one would place twenty-three ambulances in bucket
+--- nil. These fixtures use `id` as the dense number, so `seq = id` keeps every
+--- `matchBucketBase + N` assertion below saying what it always said.
 local function busMatch(id)
     matches[id] = {
-        id = id, state = BR.MatchState.BUS,
+        id = id, seq = id, state = BR.MatchState.BUS,
+        bucket = BR.Config.Match.matchBucketBase + id,
         route = { timed = true, jumpFrom = fakeTime - 1000 },
     }
     return matches[id]
@@ -1004,7 +1011,7 @@ do
     -- AND THE CONTAINMENT, WHICH IS WHAT MAKES GIVING UP SAFE.
     ok(BR.Config.Match.matchBucketBase + 8 ~= BR.Config.Match.matchBucketBase + 9,
         'a ghost is confined to its own match\'s bucket, and BR.Match.create '
-            .. 'takes matchId + 1 without ever reusing one -- so no later match '
+            .. 'takes matchSeq + 1 without ever reusing one -- so no later match '
             .. 'is ever placed in a bucket a ghost is standing in')
     refuseDelete = 0
 end
@@ -1156,7 +1163,8 @@ do
     -- three times, wearing a different cause each time.
     matches, world, spawnCalls = {}, {}, {}
     BR.Server.matches = matches
-    matches[13] = { id = 13, state = BR.MatchState.PLAYING }   -- no route at all
+    matches[13] = { id = 13, seq = 13, state = BR.MatchState.PLAYING,
+                    bucket = BR.Config.Match.matchBucketBase + 13 }  -- no route
     tick(4)
     ok(BR.Ambulances.count(13) == 23,
         'a PLAYING match with no route record at all still gets all 23 -- '
@@ -1172,6 +1180,51 @@ do
     matches[13].state = BR.MatchState.ENDED
     tick(6)
     ok(liveVehicles() == 0, 'and it tears down like any other', liveVehicles())
+end
+
+-- ---------------------------------------------------------------------------
+describe('the bucket is the match\'s own, not one derived from its id')
+do
+    -- ═══ EVERY FIXTURE ABOVE THIS ONE HAS `seq == id` ═══
+    --
+    -- Which is what a match looked like before #291, and it is why none of them
+    -- can tell `m.bucket` apart from `matchBucketBase + m.id`. Ids are a random
+    -- 20-bit draw now and the bucket comes from `seq`, so the two answers part
+    -- company on every real match -- and this file's own re-derivation, which
+    -- also carried a hardcoded `100` fallback, would have put twenty-three
+    -- ambulances in a bucket forty thousand away from the players.
+    --
+    -- So this block builds the case the others cannot: a small `seq` and a
+    -- realistic id.
+    matches, world, spawnCalls = {}, {}, {}
+    BR.Server.matches = matches
+    local BASE = BR.Config.Match.matchBucketBase
+    matches[0xa3f1] = {
+        id = 0xa3f1, seq = 3, state = BR.MatchState.BUS,
+        bucket = BASE + 3,
+        route = { timed = true, jumpFrom = fakeTime - 1000 },
+    }
+    tick(4)
+
+    ok(BR.Ambulances.count(0xa3f1) == 23,
+        'fixture: a match with a random id still gets its 23',
+        BR.Ambulances.count(0xa3f1))
+
+    local wrong = 0
+    for _, c in ipairs(spawnCalls) do
+        if c.bucket ~= BASE + 3 then wrong = wrong + 1 end
+    end
+    ok(wrong == 0,
+        'every one of them is in the match\'s OWN bucket, matchBucketBase + its '
+            .. 'seq -- not matchBucketBase + its id, which is somewhere else '
+            .. 'entirely and has nobody standing in it',
+        spawnCalls[1] and ('bucket %s, wanted %d, id-derived would be %d')
+            :format(tostring(spawnCalls[1].bucket), BASE + 3, BASE + 0xa3f1))
+
+    matches[0xa3f1].state = BR.MatchState.ENDED
+    tick(6)
+    ok(liveVehicles() == 0, 'and it tears down out of that bucket too',
+        liveVehicles())
 end
 
 -- ---------------------------------------------------------------------------

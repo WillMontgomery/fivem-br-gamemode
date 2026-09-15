@@ -192,8 +192,8 @@ local function enterPhase(m, phase, cx0, cy0, r0, now, waitSec)
     m.stormMoveCued = false
     m.stormStopCued = false
 
-    print(('[br_core] storm: match %d phase %d -- r %.0f -> %.0f, holds %.0fs, shrinks %.0fs (furthest %.0fm), %.1f dps')
-        :format(m.id, phase, r0, p.radius,
+    print(('[br_core] storm: match %s phase %d -- r %.0f -> %.0f, holds %.0fs, shrinks %.0fs (furthest %.0fm), %.1f dps')
+        :format(BR.MatchTag(m.id), phase, r0, p.radius,
                 m.storm.tWait / 1000, m.storm.tShrink / 1000, furthest, p.dps))
     publish(m)
 end
@@ -230,9 +230,11 @@ function BR.Storm.begin(m)
         m.anchor = a
     end
 
-    -- Seeded per match. The id keeps two matches started in the same server
-    -- millisecond (tests do this constantly) from replaying each other.
-    m.stormRng   = BR.Rng(GetGameTimer() + m.id * 7919)
+    -- Seeded per match. The sequence number keeps two matches started in the
+    -- same server millisecond (tests do this constantly) from replaying each
+    -- other. `seq` rather than `id` (#291): the id is a random draw now, and a
+    -- storm path that cannot be reproduced from a boot is one nobody can debug.
+    m.stormRng   = BR.Rng(GetGameTimer() + m.seq * 7919)
     m.stormCarry = {}
 
     -- The free-loot hold is priced for the FURTHEST player's run to the
@@ -267,8 +269,9 @@ function BR.Storm.begin(m)
     local waitSec = math.min(holdSec, cfg.hold.startCapSeconds or holdSec)
 
     local r0 = openingRadius(a.x, a.y)
-    print(('[br_core] storm: match %d homing on %s (%.0f, %.0f) -- opening r %.0f, hold %.0fs (furthest %.0fm)')
-        :format(m.id, tostring(a.name), a.x, a.y, r0, waitSec, furthest))
+    print(('[br_core] storm: match %s homing on %s (%.0f, %.0f) -- opening r %.0f, hold %.0fs (furthest %.0fm)')
+        :format(BR.MatchTag(m.id), tostring(a.name), a.x, a.y, r0, waitSec,
+                furthest))
     enterPhase(m, 1, a.x, a.y, r0, GetGameTimer(), waitSec)
 
     -- A MATCH STARTED UNDER A FREEZE INHERITS IT. Without this, freezing the
@@ -280,8 +283,8 @@ function BR.Storm.begin(m)
         m.storm = BR.BuildStormRecord(1, a.x, a.y, r0, a.x, a.y, r0,
             now, 24 * 60 * 60 * 1000, 1000, 0.0)
         publish(m)
-        print(('[br_core] storm: match %d starts FROZEN (brstormfreeze is on)')
-            :format(m.id))
+        print(('[br_core] storm: match %s starts FROZEN (brstormfreeze is on)')
+            :format(BR.MatchTag(m.id)))
     end
 end
 
@@ -488,7 +491,8 @@ RegisterCommand('brphase', function(_, args)
     -- Enter phase n from wherever the wall is RIGHT NOW, so the jump is
     -- seamless on every client.
     local cx, cy, r = BR.StormAt(m.storm, GetGameTimer())
-    print(('[br_core] admin: match %d storm jumped to phase %d'):format(m.id, n))
+    print(('[br_core] admin: match %s storm jumped to phase %d')
+        :format(BR.MatchTag(m.id), n))
     enterPhase(m, n, cx, cy, r, GetGameTimer())
 end, true)
 

@@ -117,7 +117,6 @@ BR = BR or {}
 BR.Ambulances = {}
 
 local A = BR.Config.Ambulances
-local M = BR.Config.Match
 
 --- A BOOL native's answer, believed correctly.
 ---
@@ -184,8 +183,9 @@ end
 local function begin(m)
     local points = A.Points()
     if #points == 0 then
-        print(('[br_core] ambulances: match %d -- no surveyed points, nothing to '
-               .. 'spawn (BR.Config.Map.AmbulanceSpawns is empty)'):format(m.id))
+        print(('[br_core] ambulances: match %s -- no surveyed points, nothing to '
+               .. 'spawn (BR.Config.Map.AmbulanceSpawns is empty)')
+            :format(BR.MatchTag(m.id)))
         -- A RECORD IS STILL MADE. Without one this runs the empty check on every
         -- pass for the whole match, and -- worse -- `advance` would be re-entered
         -- from scratch the moment somebody authored a point mid-match.
@@ -195,7 +195,13 @@ local function begin(m)
     for i = 1, #points do pending[i] = points[i] end
 
     live[m.id] = {
-        bucket   = (M and M.matchBucketBase or 100) + m.id,
+        -- THE MATCH'S OWN BUCKET, READ OFF THE MATCH (#291). This used to
+        -- re-derive it as `(M and M.matchBucketBase or 100) + m.id`, a second
+        -- copy of BR.Match.create's arithmetic with a hardcoded fallback that
+        -- would silently disagree with the config if it ever fired. Both are
+        -- gone: the bucket now comes from `seq`, is computed once in
+        -- BR.Match.create, and is read from the record here.
+        bucket   = m.bucket,
         pending  = pending,
         next     = 1,
         stations = {},
@@ -226,16 +232,16 @@ local function advance(matchId, rec)
         -- spawnOwned's `forSrc` reads one player's bucket, and at doors-open
         -- there is no player whose bucket is reliably the match's: riders stay
         -- in the communal warmup bucket until `m.hopAt`, and whether that has
-        -- passed depends on the route. The match's own bucket is
-        -- matchBucketBase + matchId and is known without asking anybody.
+        -- passed depends on the route. The match's own bucket is on the match
+        -- record and is known without asking anybody.
         local veh, netId, why = BR.Vehicles.spawnOwned(
             A.Model(), 'automobile',
             p.x, p.y, p.z, p.heading or 0.0, nil, rec.bucket)
 
         if not veh then
             rec.refused = rec.refused + 1
-            print(('[br_core] ambulances: match %d -- %s refused (%s)')
-                :format(matchId, pointName(p), tostring(why)))
+            print(('[br_core] ambulances: match %s -- %s refused (%s)')
+                :format(BR.MatchTag(matchId), pointName(p), tostring(why)))
         else
             rec.stations[#rec.stations + 1] = {
                 id    = p.id,
@@ -256,9 +262,9 @@ local function advance(matchId, rec)
     end
 
     if rec.next > #rec.pending then
-        print(('[br_core] ambulances: match %d -- %d of %d station ambulances up '
+        print(('[br_core] ambulances: match %s -- %d of %d station ambulances up '
                .. 'in bucket %d (%d refused)')
-            :format(matchId, #rec.stations, #rec.pending, rec.bucket,
+            :format(BR.MatchTag(matchId), #rec.stations, #rec.pending, rec.bucket,
                     rec.refused))
     end
 end
@@ -651,7 +657,7 @@ end
 --- symptom is that the server's DeleteEntity succeeds, DoesEntityExist answers
 --- false from then on, and CLIENTS GO ON RENDERING THE VEHICLE. The thread
 --- carries no workaround. This feature is that reproduction almost exactly:
---- twenty-three vehicles, deleted together, in bucket matchBucketBase + matchId.
+--- twenty-three vehicles, deleted together, in the match's own routing bucket.
 ---
 --- IT IS TWO FAILURES WEARING ONE NAME, AND THEY NEED DIFFERENT ANSWERS.
 ---
@@ -666,14 +672,22 @@ end
 ---      re-asking finds this one -- the server's own answer is the thing that is
 ---      wrong -- so it is not answered by retrying. IT IS ANSWERED BY THE
 ---      BUCKET, and that is a property rather than a hope: BR.Match.create takes
----      `BR.Server.matchId + 1` and never reuses a number, so a match's bucket
----      (matchBucketBase + matchId) is used by exactly one match for the
----      server's uptime. A ghost left in bucket 100+N is in a bucket no future
----      match is ever placed in, and every player of match N is moved to the
----      lobby bucket at ENDED -- before this teardown runs -- by
----      BR.Match.sweepHome. So a surviving ghost is unobservable by
----      construction, and "it does not leak into the next match" does not depend
----      on the delete having worked.
+---      `BR.Server.matchSeq + 1` and never reuses a number, so a match's bucket
+---      (matchBucketBase + seq) is used by exactly one match for the server's
+---      uptime. A ghost left in bucket 100+N is in a bucket no future match is
+---      ever placed in, and every player of that match is moved to the lobby
+---      bucket at ENDED -- before this teardown runs -- by BR.Match.sweepHome.
+---      So a surviving ghost is unobservable by construction, and "it does not
+---      leak into the next match" does not depend on the delete having worked.
+---
+---      THE RANDOM MATCH ID (#291) DID NOT WEAKEN THIS, and it is worth saying
+---      why rather than leaving the next reader to check. The bucket was moved
+---      onto `seq` in the same change precisely so this property survived: `seq`
+---      is still a pure increment that is never reused, so the sentence above is
+---      as true as it was. Deriving the bucket from the random id instead would
+---      have broken it -- a redrawn id is refused by the mint, but nothing about
+---      a random number is monotonic, and the argument here needs "never used
+---      twice", not "unguessable".
 ---
 --- SPREAD OVER PASSES, `perTick` at a time, for the reason the creation is: the
 --- same thread that reports the bug is a tight server-side loop over several
@@ -724,8 +738,8 @@ local function teardown(matchId, rec)
     rec.stations = remaining
 
     if #rec.stations == 0 then
-        print(('[br_core] ambulances: match %d -- every station ambulance is gone '
-               .. '(%d pass(es))'):format(matchId, rec.attempts))
+        print(('[br_core] ambulances: match %s -- every station ambulance is gone '
+               .. '(%d pass(es))'):format(BR.MatchTag(matchId), rec.attempts))
         live[matchId] = nil
         return
     end
@@ -740,12 +754,13 @@ local function teardown(matchId, rec)
         for _, s in ipairs(rec.stations) do
             names[#names + 1] = ('%s(%d)'):format(tostring(s.id or '?'), s.veh)
         end
-        print(('[br_core] ambulances: match %d -- %d station ambulance(s) SURVIVED '
+        print(('[br_core] ambulances: match %s -- %d station ambulance(s) SURVIVED '
                .. '%d delete(s) each across %d pass(es) in bucket %d: %s. '
                .. 'citizenfx/fivem#2256; the bucket is never reused and every '
                .. 'player left it at ENDED, so they are unreachable rather than '
                .. 'leaked.')
-            :format(matchId, #rec.stations, maxTries, rec.attempts, rec.bucket,
+            :format(BR.MatchTag(matchId), #rec.stations, maxTries, rec.attempts,
+                    rec.bucket,
                     table.concat(names, ' ')))
         live[matchId] = nil
     end
@@ -1012,15 +1027,15 @@ RegisterCommand('brambulances', function(src)
         any = true
         local s = BR.Ambulances.stats(m.id)
         if not s then
-            print(('[br_core] ambulances: match %d (%s) -- no set yet; doors %s')
-                :format(m.id, tostring(m.state),
+            print(('[br_core] ambulances: match %s (%s) -- no set yet; doors %s')
+                :format(BR.MatchTag(m.id), tostring(m.state),
                         doorsOpen(m) and 'ARE open' or 'are not open'))
             return
         end
-        print(('[br_core] ambulances: match %d (%s) -- %d up of %d planned '
+        print(('[br_core] ambulances: match %s (%s) -- %d up of %d planned '
                .. '(%d built, %d refused) in bucket %d, %d found; %d player(s) '
                .. 'watching%s')
-            :format(m.id, tostring(m.state), s.up, s.planned, s.built,
+            :format(BR.MatchTag(m.id), tostring(m.state), s.up, s.planned, s.built,
                     s.refused, s.bucket, s.found, s.watching,
                     s.tearing and (', tearing down, pass ' .. s.attempts) or ''))
 

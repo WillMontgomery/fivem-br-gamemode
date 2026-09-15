@@ -77,6 +77,13 @@ AddEventHandler('br:ddb:historyResult', function(req, ok, info)
     cb(ok, info or {})
 end)
 
+AddEventHandler('br:ddb:matchResult', function(req, ok, info)
+    local cb = pending[req]
+    if not cb then return end
+    pending[req] = nil
+    cb(ok, info or {})
+end)
+
 --- Resolve a player's license at the moment the match ends.
 ---
 --- READ HERE RATHER THAN TRUSTED FROM THE ROSTER. The roster's `license` field
@@ -186,6 +193,31 @@ local function deltasFor(p, ctx)
         playtimeSec  = math.floor((p.presentMs or r.survivedMs) / 1000),
         soloMatches  = squad and 0 or 1,
         squadMatches = squad and 1 or 0,
+        -- ═══ WHAT THEY SPENT, ACCUMULATING ON THE PROFILE ROW (#293) ═══
+        --
+        -- The owner asked for a BIGGEST SPENDERS board, and a board ranks on an
+        -- attribute of the `sk=profile` row. 03cce2d put this figure on the
+        -- per-match history rows and on br_ddb's HISTORY_NUMBERS and stopped
+        -- there, so every match was recorded and there was no lifetime total to
+        -- rank: the card would have read zero for everybody. This is the line
+        -- that accumulates it, and `voltsSpent` on br_ddb's STATS_ADDS is its
+        -- other half -- a delta the allowlist does not name contributes nothing
+        -- and says nothing about it.
+        --
+        -- ⚠ IT IS STILL NOT AN INPUT TO ANYTHING THE MATCH PAYS. `r` above is
+        -- what BR.Xp.forMatch and BR.Config.marketPayout read, and this is NOT
+        -- in it -- it is a member of the RETURNED deltas, which is the table the
+        -- atomic ADD is built from. Putting it in `r` would pay people for
+        -- shopping and would be invisible until somebody noticed the curve had
+        -- moved.
+        --
+        -- READ OFF THE ROW, ADDING NOTHING TO IT. The amount only ever exists
+        -- at the moment BR.Market.charge's success arm sees DynamoDB accept the
+        -- debit; the roster entry carries the running total and the results row
+        -- carries what it held when the match ended. `historyRowFor` below reads
+        -- the same `p.voltsSpent`, so the per-match record and the career total
+        -- are two readings of one number rather than two derivations.
+        voltsSpent   = p.voltsSpent or 0,
     }, xpEarned
 end
 
@@ -234,7 +266,39 @@ local function historyRowFor(p, ctx, license, endedAt, deltas, xpEarned)
 
         matchId     = ctx.matchId or 0,
         endedAt     = endedAt,
+        -- ═══ WHEN IT STARTED, ON THE SAME CLOCK AS `endedAt` (#293) ═══
+        --
+        -- NOT `ctx.startedAt`, WHICH IS THE OTHER CLOCK. The envelope carries
+        -- both: `startedAt` is GetGameTimer() -- milliseconds since the FXServer
+        -- process booted, which returns to zero on every restart and is what
+        -- every duration on these rows is measured against -- and
+        -- `startedAtWall` is `os.time() * 1000`, stamped in the same transition,
+        -- which is the clock `endedAt` above uses. Only the second one can be
+        -- read as a time of day afterwards, so only the second one is stored,
+        -- and it lands under the name that sits beside `endedAt`.
+        --
+        -- ZERO WHEN THE MATCH NEVER STARTED, and left to read as absent. A
+        -- match dissolved on the warmup pad has no start time; substituting
+        -- `endedAt` would file a zero-length match that never happened, and
+        -- br_ddb coerces an absent number to 0 anyway -- so 0 is the one value
+        -- every reader already has to treat as "not recorded". Every match
+        -- played before this shipped has it, and that is expected.
+        startedAt   = ctx.startedAtWall or 0,
         mode        = tostring(ctx.mode or ''),
+        -- ═══ WHICH SQUAD THEY PLAYED IT WITH (#293) ═══
+        --
+        -- Minted as `m<hex match id>sq<n>` in br_core/server/party.lua, put on every
+        -- results row by publishResults, and read a few lines up by `deltasFor`
+        -- to decide solo-versus-squad XP and payout -- and then dropped here,
+        -- twenty lines later, before the write. It was in the payload, in the
+        -- handler and in a variable, and in no record.
+        --
+        -- ABSENT RATHER THAN EMPTY FOR A SOLO MATCH. `p.squadId` is nil there
+        -- and stays nil; br_ddb writes the empty string for it, which is what
+        -- "this player had no squad" looks like on a row. It is a STRING at the
+        -- far end and deliberately not in HISTORY_NUMBERS, which would coerce
+        -- `m12sq3` to zero.
+        squadId     = p.squadId,
         placement   = p.placement or 0,
         -- How many were in it. Third of eight and third of ninety-six are not
         -- the same achievement, and the placement alone cannot tell them apart.
@@ -248,6 +312,32 @@ local function historyRowFor(p, ctx, license, endedAt, deltas, xpEarned)
         damage      = math.floor(p.damage or 0.0),
         survivedMs  = p.survivedMs or 0,
         xpEarned    = xpEarned,
+        -- ═══ WHAT THEY SPENT IN THE MATCH (#293) ═══
+        --
+        -- The counterpart to `voltsEarned` below, and the owner asked for it by
+        -- name: "The Volts spent per match should be part of the ledger if not
+        -- already... And include spending in the warmup shop as part of the
+        -- match please, since that's going to be a big contributor."
+        --
+        -- IT IS NOT DERIVED FROM ANYTHING HERE, and cannot be. A purchase is a
+        -- conditional debit written straight to the profile row by br_ddb, so
+        -- the only place the amount ever exists is the moment the write is
+        -- accepted -- BR.Market.charge's success arm, which is where the counter
+        -- on the roster entry is moved. This carries what the entry held when
+        -- the match ended and adds nothing to it.
+        --
+        -- IT DOES NOT ENTER THE PAYOUT, AND THAT IS A NARROWER CLAIM THAN IT
+        -- USED TO BE. This said `deltasFor` never sees it. It does now: the same
+        -- `p.voltsSpent` is a member of the deltas so it accumulates on the
+        -- profile row for the BIGGEST SPENDERS board. What it is still not is a
+        -- member of `r`, the table BR.Xp.forMatch and BR.Config.marketPayout
+        -- read -- spending is not an input to what a match earns, and putting it
+        -- there would pay people for shopping.
+        --
+        -- BOTH READ `p.voltsSpent`, so the per-match record and the career total
+        -- are two readings of one number. A history row that disagreed with the
+        -- sum of the career would be two numbers nobody could reconcile.
+        voltsSpent  = p.voltsSpent or 0,
         -- INCLUDES THE LEVEL-UP BONUS, because `deltas.balance` does by the time
         -- this is called -- and because that is the figure the player was shown
         -- on the verdict screen. A record that disagrees with what somebody
@@ -286,6 +376,16 @@ AddEventHandler('br:match:results', function(res)
     -- restart to be lost.
     local history = {}
 
+    -- ═══ AND THE PARTICIPANT LIST FOR THE MATCH'S OWN ROW (br-matches) ═══
+    --
+    -- PROJECTED OFF THE HISTORY ROW RATHER THAN BUILT BESIDE IT. Every figure
+    -- here also goes to br-players a few lines below, and the two records are
+    -- read side by side -- the match page and the profile's match list. Building
+    -- them from one source means they cannot disagree; building them separately
+    -- from `p` and `deltas` would be two derivations of one number, which is how
+    -- the `level`-beside-`xp` column came to be wrong.
+    local participants = {}
+
     for _, p in ipairs(res.players or {}) do
         local license = keyFor(p)
         if not license then
@@ -293,11 +393,16 @@ AddEventHandler('br:match:results', function(res)
         else
             local deltas, xpEarned = deltasFor(p, res)
 
-            -- The level is derived HERE, from the total the store will hold
-            -- after this write, using the same curve the summary screen uses.
-            -- br_ddb stores what we compute rather than computing its own, so
-            -- there is one implementation of the curve rather than two that
-            -- can disagree.
+            -- BOTH ENDS OF THE LEVEL ARE DERIVED HERE AND NEITHER IS STORED
+            -- (#116). The level-up bonus below and the verdict screen both need
+            -- to know which boundaries this match crossed, so the curve is
+            -- evaluated at the lifetime total either side of the write -- but
+            -- the ANSWER is not sent to br_ddb any more. `xp` accumulates
+            -- through an atomic ADD and cannot race; a `level` column beside it
+            -- was the same truth written a second time from a read-modify-write,
+            -- and only the copy could be wrong. It was: 3558 XP stored as
+            -- level 2. Every surface derives it from `xp` at read time already.
+            --
             -- POPULATED AT LAST. This read `BR.Stats.cachedXp` since the day it
             -- was written and nothing ever wrote to that table, so `before` was
             -- always 0 -- and every level below was derived from ONE match's XP
@@ -308,7 +413,7 @@ AddEventHandler('br:match:results', function(res)
             local before = BR.Stats.cachedXp[license] or 0
             local after = before + xpEarned
             local levelBefore = BR.Xp and BR.Xp.levelFor(before) or 1
-            deltas.level = BR.Xp and BR.Xp.levelFor(after) or 1
+            local levelAfter = BR.Xp and BR.Xp.levelFor(after) or 1
             deltas.name = p.name
             deltas.at = endedAt
 
@@ -321,8 +426,8 @@ AddEventHandler('br:match:results', function(res)
             -- same write. A separate one could credit the match and not the
             -- level, and a player who saw "LEVEL 12" and no matching balance
             -- change has no way to tell that from the bonus not existing.
-            if deltas.level > levelBefore and BR.Config.levelBonus then
-                for lvl = levelBefore + 1, deltas.level do
+            if levelAfter > levelBefore and BR.Config.levelBonus then
+                for lvl = levelBefore + 1, levelAfter do
                     deltas.balance = deltas.balance + BR.Config.levelBonus(lvl)
                 end
             end
@@ -386,7 +491,7 @@ AddEventHandler('br:match:results', function(res)
                     xp      = xpEarned,
                     volts   = deltas.balance,
                     -- Where the bar is NOW.
-                    level   = deltas.level,
+                    level   = levelAfter,
                     into    = intoAfter,
                     needed  = math.max(1, spanAfter),
                     -- Where it has to start from, so the fill is the match
@@ -394,7 +499,7 @@ AddEventHandler('br:match:results', function(res)
                     fromLevel  = levelBefore,
                     fromXp     = intoBefore,
                     fromNeeded = math.max(1, spanBefore),
-                    levelUp = deltas.level > levelBefore,
+                    levelUp = levelAfter > levelBefore,
                 })
             end
 
@@ -409,8 +514,38 @@ AddEventHandler('br:match:results', function(res)
             -- settle is gone, see the block below, so `deltas.balance` has one
             -- meaning again; the ordering is kept because the level bonus still
             -- has to be in it.)
-            history[#history + 1] =
-                historyRowFor(p, res, license, endedAt, deltas, xpEarned)
+            local hrow = historyRowFor(p, res, license, endedAt, deltas, xpEarned)
+            history[#history + 1] = hrow
+
+            -- THE SAME NUMBERS, PROJECTED ONTO THE MATCH'S OWN ROW.
+            --
+            -- EXACTLY THE COLUMNS Ringmaster's MatchView DRAWS AND NO OTHERS.
+            -- `xpEarned` is on its ledger interface and no column renders it;
+            -- `name` is resolved from the console's own ringmaster-players
+            -- registry and deliberately never read off a game row. A field here
+            -- that nothing displays is one the next reader has to guess the
+            -- meaning of, and #51 is explicit that nothing on that page should
+            -- be something the owner did not ask for.
+            --
+            -- `won` IS THE WINNER, and there is no separate winner field on the
+            -- item. The page filters this list on it.
+            participants[#participants + 1] = {
+                license     = hrow.license,
+                -- STRING, and absent for a solo match rather than empty here:
+                -- br_ddb writes `String(squadId ?? '')` at the far end, so the
+                -- empty string is what "no squad" looks like on the stored item,
+                -- exactly as it does on the history row.
+                squadId     = hrow.squadId,
+                placement   = hrow.placement,
+                kills       = hrow.kills,
+                downs       = hrow.downs,
+                revives     = hrow.revives,
+                damage      = hrow.damage,
+                survivedMs  = hrow.survivedMs,
+                voltsEarned = hrow.voltsEarned,
+                voltsSpent  = hrow.voltsSpent,
+                won         = hrow.won,
+            }
 
             -- ═══ THE WARMUP SHOP'S BILL IS NO LONGER SETTLED HERE (#224) ═══
             --
@@ -499,10 +634,105 @@ AddEventHandler('br:match:results', function(res)
         TriggerEvent('br:ddb:historyPut', hreq, history)
     end
 
+    -- ═══ ONE ROW FOR THE MATCH ITSELF, ON br-matches ═══
+    --
+    -- WHAT IT IS FOR. The history rows above are one item per PLAYER, each in a
+    -- different partition, with the match id as the trailing component of a sort
+    -- key -- addressable only if you already know the license. So "show me match
+    -- X" had no cheaper shape than a full Scan of br-players with a filter, and
+    -- Ringmaster's lib/matchLedger.ts pays exactly that today: a filter is
+    -- applied after the read, so it costs every profile row and every other
+    -- match's history in the table to answer one question. A row keyed on the
+    -- match turns that into a GetItem.
+    --
+    -- THE KEY IS THE TAG, NOT THE NUMBER. `pk` is the seven hex characters
+    -- BR.MatchTag produces -- the string the game console prints, the string a
+    -- moderator pastes, and the segment Ringmaster's /matches/<tag> URL carries.
+    -- The tag is the thing that has to be unique and the thing that gets looked
+    -- up, so it is the thing the key constraint is written against. The numeric
+    -- id rides along on the item so a reader holding it need not parse the key
+    -- back.
+    --
+    -- THE WRITE IS CONDITIONAL ON THE KEY BEING ABSENT, and that is the point of
+    -- keying on the tag rather than a convenience. `issuedIds` in br_core only
+    -- guarantees an id is unique for the life of one FXServer process; across
+    -- restarts the guarantee is the width of the space and nothing else. A
+    -- reused tag is therefore possible, and without the condition it would
+    -- present as one match's page quietly showing another match's participants,
+    -- discovered weeks later by somebody moderating from it. With the condition
+    -- the game box says so in its own log at the moment it happens. See the
+    -- handler in js-src/br_ddb/src/index.js.
+    --
+    -- IT DOES NOT BACKFILL AND NOTHING WILL. Every match recorded before this
+    -- shipped has history rows and no match row, and Ringmaster keeps its scan
+    -- as the fallback for those. That is a gap that closes by itself as matches
+    -- are played, not a migration.
+    --
+    -- FIRE AND FORGET, LIKE EVERYTHING ELSE IN THIS FILE. A failure is one log
+    -- line -- the same rule BR.Market.setTutorial follows for a write whose loss
+    -- is a missing convenience rather than a missing entitlement. THE TABLE MAY
+    -- NOT EXIST: it is new, and a box deployed ahead of the table gets
+    -- ResourceNotFoundException on every match end. That must cost the record
+    -- and nothing else, which is why nothing here is awaited and nothing can
+    -- raise into the match-end handler.
+    --
+    -- A MATCH WITH NO ID IS NOT WRITTEN AT ALL, rather than filed under
+    -- `0000000`. Zero is the id server/loot.lua reserves for the communal warmup
+    -- pad, and Ringmaster's matchTag refuses it outright for the same reason: a
+    -- row under that key would be this table naming a match after a missing
+    -- value. BR.MatchTag has no nil guard either, so the check below is also
+    -- what keeps a malformed envelope out of a `%07x`.
+    local matchId = math.tointeger(tonumber(res.matchId or 0)) or 0
+    if #participants > 0 and matchId > 0 then
+        local tag = BR.MatchTag(matchId)
+
+        nextReq = nextReq + 1
+        local mreq = nextReq
+        pending[mreq] = function(ok, info)
+            if ok then return end
+            info = info or {}
+            if info.duplicate then
+                -- LOUD, AND NAMED AS THE THING IT IS. This is the only moment a
+                -- reused match name is observable; everything downstream just
+                -- sees a page that disagrees with itself.
+                print(('^1[br_stats] MATCH TAG COLLISION: %s already has a row '
+                    .. 'in br-matches. This match (%d) keeps its history rows '
+                    .. 'and gets no match row; the tag now names two matches.^7')
+                    :format(tag, matchId))
+                return
+            end
+            print(('^3[br_stats] match %s: no row written to br-matches (%s). '
+                .. 'The per-player history is unaffected; Ringmaster falls back '
+                .. 'to its scan for this match.^7')
+                :format(tag, tostring(info.error)))
+        end
+        SetTimeout(8000, function() pending[mreq] = nil end)
+
+        TriggerEvent('br:ddb:matchPut', mreq, {
+            pk           = tag,
+            matchId      = matchId,
+            mode         = tostring(res.mode or ''),
+            -- BOTH STAMPS ARE THE WALL CLOCK, and `endedAt` is the very same
+            -- value every history row above carries -- read once at the top of
+            -- this handler. Two records of one match disagreeing about when it
+            -- ended would be two numbers nobody could reconcile.
+            --
+            -- `startedAt` IS ZERO FOR A MATCH THAT NEVER REACHED PLAYING, which
+            -- is the value every reader already treats as "not recorded" (see
+            -- historyRowFor). Not substituted with `endedAt`: that would file a
+            -- zero-length match that never happened.
+            startedAt    = res.startedAtWall or 0,
+            endedAt      = endedAt,
+            total        = res.total or 0,
+            participants = participants,
+        })
+    end
+
     -- The departed count is called out rather than folded in: it is the number
     -- that used to be silently zero, so it is the one worth being able to read
     -- off the console when checking this works.
     print(('[br_stats] match %s: %d recorded (%d had left), %d skipped (no license), %d history rows in %d batch(es)')
-        :format(tostring(res.matchId), written, left, skipped,
+        :format(tostring(res.matchId and BR.MatchTag(res.matchId)),
+                written, left, skipped,
                 #history, math.ceil(#history / 25)))
 end)

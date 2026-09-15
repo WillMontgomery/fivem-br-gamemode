@@ -275,6 +275,25 @@ BR.Config.ReviveKey = {
     -- this file used to argue and why his sentence retires it.
     reviveHp = 100,
 
+    -- ═══ THE VAN WAILS WHILE SOMEBODY IS HOLDING AT IT ═══
+    --
+    --   "Can you make the ambulance siren turn on while holding the revive key
+    --    at the ambulance?"                      -- owner, 2026-09-12
+    --
+    -- A VEHICLE PROPERTY RATHER THAN A CUE, which is the whole reason it is
+    -- worth doing this way: the engine positions and attenuates a siren for
+    -- everybody in earshot for free, so the six seconds a reviver spends
+    -- standing still in the open are six seconds the neighbourhood can hear.
+    -- That is the owner's own argument from the revive cue ("This will allow
+    -- opponents to hear it which may attract them for combat"), and it is why
+    -- there is no entry in config/audio.lua for this.
+    --
+    -- THE SAME KNOB, SPELLED THE SAME WAY, AS BR.Config.Rescue.siren and
+    -- BR.Config.AmbHeal.siren, and read the same way (`~= false`) so an absent
+    -- key means on. Three features now put a siren on an ambulance and they
+    -- should be switched off by the same word.
+    siren = true,
+
     -- ------------------------------------------------------------------
     -- WHERE THE PLATE HANGS ON THE VAN
     -- ------------------------------------------------------------------

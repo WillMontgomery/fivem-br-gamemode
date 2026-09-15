@@ -806,7 +806,7 @@ end
 
 local function noop() end
 for _, n in ipairs({
-    'ActivatePhysics', 'AddBlipForCoord', 'AddBlipForRadius',
+    'ActivatePhysics', 'AddAmmoToPed', 'AddBlipForCoord', 'AddBlipForRadius',
     'AddTextComponentSubstringPlayerName', 'BeginTextCommandSetBlipName',
     'DeleteEntity', 'DisableControlAction', 'DrawLightWithRange', 'DrawMarker',
     'EndTextCommandSetBlipName', 'FreezeEntityPosition', 'GiveWeaponToPed',
@@ -3768,9 +3768,25 @@ do
        'squad mode with NO squad is silent and was NOT asked for -- which is '
            .. 'the pair that makes it worth interrupting somebody over',
        tostring(nosquad.code) .. '/' .. tostring(nosquad.chosen))
-    ok(type(nosquad.headline) == 'string'
-       and nosquad.headline:lower():find('no squad') ~= nil,
-       'and it says the words "no squad" rather than describing a channel',
+    -- AND IT SAYS NOTHING ON THE HUD EITHER, WHICH IS THE FOURTH AND LAST ROW TO
+    -- GO QUIET -- and the only one that went for a different reason.
+    --
+    -- Owner, 2026-09-11: "'Squad voice: you have no squad' toast should not be a
+    -- thing - this only shows because matchmaking hasn't run yet."
+    --
+    -- THE SENTENCE WAS TRUE AND THE MOMENT WAS WRONG. The three rows above went
+    -- because they were furniture or captions; this one went because it fired in
+    -- the window between WARMUP being broadcast and BR.Party.formSquads granting
+    -- a channel -- so the only row left carrying a headline was describing a
+    -- state that was about to fix itself, every match, to everybody.
+    --
+    -- `== nil` RATHER THAN A QUIETER SENTENCE, for the reason the 'off' row above
+    -- gives: an empty string, a dash or one word would all pass a test written
+    -- the other way round and all still put something on the screen.
+    ok(nosquad.headline == nil,
+       'and it says NOTHING on the HUD -- squad mode with no squad is what every '
+           .. 'client is in until matchmaking runs, so the line was early rather '
+           .. 'than wrong',
        tostring(nosquad.headline))
     ok(type(nosquad.detail) == 'string'
        and nosquad.detail:find('Nearby') ~= nil,
@@ -3980,6 +3996,11 @@ do
     -- this file has shipped exactly that twice.
     nobodyElse()
     standAt(0, 0)
+    -- THE HIGH WATER MARK, so the "nothing was toasted" assertion below is about
+    -- THIS scene. An unbounded backwards scan finds the last toast in the whole
+    -- suite, which is some other block's and is always there -- a test that
+    -- cannot fail in the direction it is pointed.
+    local noSquadFrom = #events
     voiceApply(BR.VoiceMode.SQUAD, nil, nil, 1)
 
     -- THE HUD. The envelope the page draws from has to carry the WORDS, not
@@ -3996,26 +4017,218 @@ do
     ok(type(env) == 'table' and env.silent == true,
        'the HUD envelope says this player is silent',
        type(env) == 'table' and tostring(env.silent) or 'no voice envelope')
-    ok(type(env) == 'table' and type(env.headline) == 'string'
-       and env.headline:lower():find('no squad') ~= nil,
-       'and carries the sentence rather than leaving the page to invent one',
-       type(env) == 'table' and tostring(env.headline) or '-')
 
-    -- THE TOAST, because a HUD line at the bottom of a screen during a fight
-    -- is a line nobody reads. Edge-triggered: it fires when the verdict
-    -- CHANGES, which is when it is news.
-    local toasted = nil
-    for i = #events, 1, -1 do
-        local e = events[i]
-        if e.name == 'br:ui:sendLocal' and e.args[1] == BR.Nui.TOAST then
-            toasted = e.args[2]; break
+    -- AND IT CARRIES NO SENTENCE, WHICH IS THIS ROUND'S CHANGE.
+    --
+    -- This asserted the OPPOSITE for four rounds, and it was right each time --
+    -- until the owner named the moment rather than the words (2026-09-11). The
+    -- verdict still travels on the envelope, because the settings screen and the
+    -- squad panel both read it; what has gone is anything for VoiceNotice.tsx to
+    -- draw.
+    ok(type(env) == 'table' and env.headline == nil
+       and env.status == 'nosquad' and type(env.detail) == 'string',
+       'and carries NO sentence, while still carrying the verdict the settings '
+           .. 'screen reads -- silence on the HUD is not silence on the wire',
+       type(env) == 'table'
+           and (tostring(env.status) .. '/' .. tostring(env.headline))
+           or 'no voice envelope')
+
+    -- AND NOTHING IS TOASTED, WHICH IS THE OWNER'S WORD "should not be a thing".
+    --
+    -- Read from the REAL push rather than from the condition, for the reason the
+    -- 'alone' block gives: the condition is what a later round edits.
+    do
+        local toasted = nil
+        for i = noSquadFrom + 1, #events do
+            local e = events[i]
+            if e.name == 'br:ui:sendLocal' and e.args[1] == BR.Nui.TOAST then
+                toasted = e.args[2]; break
+            end
         end
+        ok(toasted == nil,
+           'and the player is not interrupted at all for a squad matchmaking '
+               .. 'has not built yet',
+           type(toasted) == 'table' and tostring(toasted.text) or 'no toast')
     end
-    ok(type(toasted) == 'table' and type(toasted.text) == 'string'
-       and toasted.text:lower():find('no squad') ~= nil,
-       'and the player is interrupted once, in words, rather than left to '
-           .. 'work silence out for themselves',
-       type(toasted) == 'table' and tostring(toasted.text) or 'no toast')
+
+    -- ═══ AND THE TOAST THAT REPLACES IT, ONCE THE CHANNEL IS UP ═══
+    --
+    -- Owner, 2026-09-11: "How about instead, we show them once matchmaking has
+    -- completed, a success toast: 'Squad voice channel **connected**.'"
+    --
+    -- ONE NEW STRING IN THE WHOLE ROUND AND IT IS HIS, so it is pinned as a
+    -- LITERAL here rather than matched loosely: a sentence rebuilt out of the
+    -- config it came from is a test agreeing with itself, and this project's one
+    -- rule about copy is that the words are the owner's.
+    --
+    -- THE `**` IS NOT IN IT, AND THAT IS DELIBERATE AND WRITTEN DOWN. A toast is
+    -- drawn through ui-src/src/hud/Notices.tsx and KeyText, which understand
+    -- `{key:command}` and `~amount~` and no markdown at all -- and
+    -- br_lib/shared/notice.lua refuses to add any, because a notice may carry a
+    -- player's own name. So the emphasis is the one the surface really has: the
+    -- pre-split `parts` form, whose `b` piece the page draws bold. Asserted as a
+    -- PAIR -- the flat sentence and the split one -- because either alone passes
+    -- while the other is wrong, and the flat one is what the store dedups on.
+    do
+        local CONNECTED = 'Squad voice channel connected.'
+
+        nobodyElse()
+        standAt(0, 0)
+        local before = #events
+        voiceApply(BR.VoiceMode.SQUAD, 30703, { 2, 3 }, 1)
+
+        local function toastsSince(from)
+            local out = {}
+            for i = from + 1, #events do
+                local e = events[i]
+                if e.name == 'br:ui:sendLocal' and e.args[1] == BR.Nui.TOAST then
+                    out[#out + 1] = e.args[2]
+                end
+            end
+            return out
+        end
+
+        local got = toastsSince(before)
+        ok(#got == 1 and got[1].text == CONNECTED,
+           'a squad channel coming up toasts the owner\'s sentence, once, '
+               .. 'verbatim',
+           (#got == 1) and tostring(got[1].text) or ('%d toast(s)'):format(#got))
+
+        ok(#got == 1 and got[1].tone == 'success',
+           'as a SUCCESS -- the row he asked to replace was the complaint, and '
+               .. 'this is the same event read the other way up',
+           (#got == 1) and tostring(got[1].tone) or '-')
+
+        -- THE EMPHASIS, IN THE FORM THE SURFACE CAN DRAW. Three pieces, the
+        -- middle one bold, and flattening them has to give back the sentence
+        -- above -- which is what stops the two representations drifting.
+        local p = (#got == 1) and got[1].parts or nil
+        local flat = ''
+        for _, piece in ipairs(p or {}) do flat = flat .. (piece.t or piece.b) end
+        ok(type(p) == 'table' and #p == 3
+           and p[1].t == 'Squad voice channel ' and p[2].b == 'connected'
+           and p[3].t == '.' and flat == CONNECTED,
+           'with "connected" carried as its own bold piece rather than as `**` '
+               .. 'in the string, because the toast renderer has no markdown -- '
+               .. 'and the pieces flatten back to the same sentence',
+           type(p) == 'table' and ('%d piece(s): %s'):format(#p, flat)
+               or 'no parts')
+
+        -- ═══ ONCE PER CHANNEL, AND THE LATCH IS WHAT DOES IT ═══
+        --
+        -- A BARE SECOND TICK WOULD PROVE NOTHING, and this assertion was written
+        -- that way first. The band in front of pushVoice dedups on
+        -- `talking .. '|' .. st.code`, so repeating a tick with nothing changed
+        -- never reaches the toast at all -- the latch could be deleted and a
+        -- "three more pushes say nothing" test would still pass.
+        --
+        -- SO THE VERDICT IS MADE TO MOVE AND COME BACK, which is a mate leaving
+        -- the squad and rejoining it: 'radio' -> 'alone' -> 'radio', on the SAME
+        -- channel. That defeats the band's key twice, so what is left holding the
+        -- line is the channel latch and nothing else.
+        --
+        -- Driven with raw VOICE_SET pushes rather than voiceApply, which reboots
+        -- br_core and re-derives the join -- a different scene from a mate
+        -- walking away.
+        fire(BR.Net.VOICE_SET, { radio = 30703, mates = {},
+                                 nearbyRange = VR.nearby })
+        BR.Loop.step(BR.Loop.TICK)
+        before = #events
+        fire(BR.Net.VOICE_SET, { radio = 30703, mates = { 2, 3 },
+                                 nearbyRange = VR.nearby })
+        BR.Loop.step(BR.Loop.TICK)
+        ok(#toastsSince(before) == 0,
+           'a mate leaving and rejoining does NOT announce the channel again -- '
+               .. 'the latch is the channel number, so one squad is one '
+               .. 'announcement however its membership moves',
+           ('%d repeat(s)'):format(#toastsSince(before)))
+
+        -- ═══ 'alone' IS NOT A CONNECTED CHANNEL ═══
+        --
+        -- A granted channel with nobody else on it is a squad whose other members
+        -- have not arrived. Announcing a conversation with nobody in it is the
+        -- state the owner has already had removed once, from the other direction.
+        nobodyElse()
+        standAt(0, 0)
+        before = #events
+        voiceApply(BR.VoiceMode.SQUAD, 30703, {}, 1)
+        ok(#toastsSince(before) == 0,
+           'a channel granted with no squadmate on it announces nothing -- '
+               .. '"matchmaking has completed" is a squad, not a channel number',
+           ('%d toast(s)'):format(#toastsSince(before)))
+
+        -- ═══ AND THE NEXT MATCH'S CHANNEL IS NEWS AGAIN ═══
+        --
+        -- The latch is the channel number, so a player who plays four matches is
+        -- told four times and a player whose mate leaves and rejoins is told
+        -- once. Reaching this state needs the channel WITHDRAWN in between, which
+        -- is what the end of a match does.
+        nobodyElse()
+        standAt(0, 0)
+        voiceApply(BR.VoiceMode.SQUAD, nil, nil, 1)
+        before = #events
+        voiceApply(BR.VoiceMode.SQUAD, 40404, { 2 }, 1)
+        local again = toastsSince(before)
+        ok(#again == 1 and again[1].text == CONNECTED,
+           'and a DIFFERENT channel after the last one was withdrawn says it '
+               .. 'again -- one announcement per squad, not one per session',
+           (#again == 1) and tostring(again[1].text)
+               or ('%d toast(s)'):format(#again))
+
+        -- ═══ A CHANNEL WE WERE GIVEN IS NOT A CHANNEL WE ARE ON ═══
+        --
+        -- `radio` is the server's grant and `joined` is what this client last
+        -- asked pma-voice for; client/voice.lua's own header says confusing those
+        -- two cost a week (#150), and "connected" is a claim about the second.
+        --
+        -- THE STATE IS STAGED BY TAKING pma-voice AWAY, which is the real way to
+        -- reach it: applyRadio records nothing while there is nobody to have done
+        -- it, so the grant lands and the join never happens. That is a total voice
+        -- outage, and a green "connected" toast over the top of one is the worst
+        -- possible reading of this feature.
+        -- DRIVEN BY HAND RATHER THAN THROUGH voiceApply, because that helper
+        -- calls pmaReset() and pmaReset() brings the resource back. These are the
+        -- same lines the absent-pma block further down uses.
+        nobodyElse()
+        standAt(0, 0)
+        pmaReset()
+        pma.running = false
+        BR.Voice.pref.solo, BR.Voice.pref.squad = nil, nil
+        fire('onClientResourceStart', 'br_core')
+        BR.State.me.src = 1
+        setVoicePref(BR.VoiceMode.SQUAD)
+
+        -- THE CHANNEL WITHDRAWN, AND THE BAND MADE TO SEE IT WITHDRAWN. Both
+        -- halves are load-bearing: the step is what moves the dedup key off
+        -- 'radio' (without it the push below never reaches the toast and this
+        -- scene asserts nothing at all) and it is also what re-arms the latch, so
+        -- the only thing left refusing the toast is the join test itself.
+        fire(BR.Net.VOICE_SET, { radio = nil, mates = nil,
+                                 nearbyRange = VR.nearby })
+        BR.Loop.step(BR.Loop.TICK)
+
+        before = #events
+        fire(BR.Net.VOICE_SET, { radio = 50505, mates = { 2 },
+                                 nearbyRange = VR.nearby })
+        BR.Loop.step(BR.Loop.TICK)
+        local outage = toastsSince(before)
+        ok(#outage == 0 and BR.Voice.state.radio == 50505
+           and BR.Voice.state.joined ~= 50505,
+           'a channel granted while pma-voice is not running announces nothing '
+               .. '-- being handed a channel is not being on one',
+           ('%d toast(s), granted %s, joined %s')
+               :format(#outage, tostring(BR.Voice.state.radio),
+                       tostring(BR.Voice.state.joined)))
+        pmaReset()
+
+        -- AND THE SCENE GOES BACK, because the assertions below this one are
+        -- about squad-with-no-squad and read the live state rather than building
+        -- their own. A block that leaves a granted channel behind makes the next
+        -- one pass or fail on a machine it never set up.
+        nobodyElse()
+        standAt(0, 0)
+        voiceApply(BR.VoiceMode.SQUAD, nil, nil, 1)
+    end
 
     -- /brvoice, WHICH IS THE COMMAND A PLAYTESTER IS ACTUALLY TOLD TO RUN.
     -- Three separate claims, each ANSWERED rather than left as two numbers to
@@ -5328,6 +5541,122 @@ do
     pressing = nil
     IsDisabledControlJustPressed = realPressed
     BR.Spectate = realSpectate
+end
+
+describe('the scroll wheel belongs to the gun shop menu while it is open')
+do
+    -- "Please disable the scroll wheel as a control for selected inventory slots
+    -- while the shop menu is open" -- the owner, 2026-09-12, #274.
+    --
+    -- ═══ WHY A LONGER LIST IN client/gunshop.lua COULD NOT HAVE DONE IT ═══
+    --
+    -- ScaleformUI holds the menu's input with Controls:ToggleAll(false), which is
+    -- DisableAllControlActions plus a re-enabled whitelist. That stops the ENGINE
+    -- reacting. THIS file is not the engine: it reads the wheel with
+    -- IsDisabledControlJustPressed, which exists precisely to see a control
+    -- somebody has suppressed -- the same asymmetry the spectator block above is
+    -- about. So the wheel went on swapping the gun in the player's hands while
+    -- they were reading a shop screen, and no amount of disabling reaches it.
+    --
+    -- ═══ AND WHY THE GATE IS A LIVE READ RATHER THAN A LATCH ═══
+    --
+    -- The menu closes on paths that are not a clean close -- the player dies, the
+    -- match ends, they walk out of reach, the library's own Back button. A
+    -- boolean set on open and cleared on close would have to be cleared on every
+    -- one of them, and the cost of missing one is a player with no scroll wheel
+    -- for the rest of the match. Asking on the frame has no such cases, and step
+    -- 3 below is that property under test.
+    local realGunshop = BR.Gunshop
+    local shopMenuOpen = false
+    BR.Gunshop = { menuUp = function() return shopMenuOpen end }
+
+    local realPressed = IsDisabledControlJustPressed
+    local pressing = nil
+    function IsDisabledControlJustPressed(_pad, c) return c == pressing end
+
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.State.landed = true
+    fire(BR.Net.INV_SET, {
+        slots = { { id = 'carbinerifle', kind = BR.ItemKind.WEAPON, count = 1 },
+                  { id = 'shield_small', kind = BR.ItemKind.CONSUMABLE,
+                    count = 1 } },
+        ammo = {}, active = 1,
+    })
+
+    local function asked(name)
+        local n = 0
+        for _, s in ipairs(sent) do if s.name == name then n = n + 1 end end
+        return n
+    end
+
+    -- 1. THE BASELINE, and it is load-bearing: a gate that blocks something
+    --    already impossible passes for the wrong reason. With no shop menu up,
+    --    the wheel still cycles the ring exactly as it always has.
+    sent = {}
+    pressing = 15                                    -- WHEEL_UP
+    BR.Loop.step(BR.Loop.FRAME)
+    ok(asked(BR.Net.INV_SELECT) == 1,
+       'with no shop menu up the wheel still cycles the inventory ring',
+       ('%d INV_SELECT'):format(asked(BR.Net.INV_SELECT)))
+
+    -- 2. THE SAME WHEEL, WITH THE COUNTER OPEN.
+    shopMenuOpen = true
+    sent = {}
+    BR.Loop.step(BR.Loop.FRAME)
+    ok(asked(BR.Net.INV_SELECT) == 0,
+       'and the same scroll with the shop menu open changes no slot -- the '
+           .. 'wheel belongs to the menu',
+       ('%d INV_SELECT'):format(asked(BR.Net.INV_SELECT)))
+
+    -- 3. IT HANDS BACK, WITH NOTHING TO RESET. This is the assertion that says
+    --    the gate is a predicate and not a latch: the only thing that changed is
+    --    the answer client/gunshop.lua gives.
+    shopMenuOpen = false
+    sent = {}
+    BR.Loop.step(BR.Loop.FRAME)
+    ok(asked(BR.Net.INV_SELECT) == 1,
+       'and it comes straight back the moment the menu is down, however it went '
+           .. 'down',
+       ('%d INV_SELECT'):format(asked(BR.Net.INV_SELECT)))
+
+    -- 4. A BUILD WITH NO GUN SHOP AT ALL KEEPS ITS WHEEL. The nil-guard fails
+    --    OPEN, deliberately: there is no shop menu to be under, and a player who
+    --    cannot switch slots and cannot see why is the worse way to be wrong.
+    BR.Gunshop = nil
+    sent = {}
+    BR.Loop.step(BR.Loop.FRAME)
+    ok(asked(BR.Net.INV_SELECT) == 1,
+       'and a build where client/gunshop.lua never loaded still has a wheel',
+       ('%d INV_SELECT'):format(asked(BR.Net.INV_SELECT)))
+
+    -- 5. ...AND SO DOES ONE WHOSE GUN SHOP HAS NO SUCH FUNCTION, which is the
+    --    shape a rename takes. The module is guarded as well as the call.
+    BR.Gunshop = {}
+    sent = {}
+    BR.Loop.step(BR.Loop.FRAME)
+    ok(asked(BR.Net.INV_SELECT) == 1,
+       '...and so does one whose BR.Gunshop lost the function to a rename',
+       ('%d INV_SELECT'):format(asked(BR.Net.INV_SELECT)))
+
+    -- 6. THE ENGINE'S OWN WEAPON WHEEL IS STILL HELD DOWN (#134). The gate sits
+    --    below the suppression loop for the reason the spectator gate does: a
+    --    line written one block higher would trade this bug for that one, and
+    --    GTA's wheel over a shop screen is the same class of accident.
+    shopMenuOpen = true
+    BR.Gunshop = { menuUp = function() return shopMenuOpen end }
+    local disabled = {}
+    local realDisable = DisableControlAction
+    function DisableControlAction(_pad, c) disabled[c] = true end
+    BR.Loop.step(BR.Loop.FRAME)
+    DisableControlAction = realDisable
+    ok(disabled[37] == true and disabled[15] == true,
+       'and GTA\'s own weapon wheel is still suppressed underneath the shop '
+           .. 'screen -- #134 is not traded away for #274',
+       ('37 %s, 15 %s'):format(tostring(disabled[37]), tostring(disabled[15])))
+
+    pressing = nil
+    IsDisabledControlJustPressed = realPressed
+    BR.Gunshop = realGunshop
 end
 
 describe('the inventory panel holds the PASSENGER trigger, not just the driver\'s')
@@ -8027,6 +8356,43 @@ do
         resurrect.count = resurrect.count + 1
         resurrect.dictLoadedFirst = anim.loaded
         bodies[1].dead = false
+        -- ...AND IT DOES NOT PUT A FIRE OUT, which is the engine fact the whole
+        -- burning block below turns on. A resurrected ped is standing in the same
+        -- molotov it just died in, still alight, and the flames are a separate
+        -- system from its health.
+    end
+
+    -- ═══ FIRE, MODELLED AS THE THING THAT KEEPS KILLING THE PED ═══
+    --
+    -- The owner's report (2026-09-12): a player knocked into a molotov is
+    -- "repeatedly respawned, then immediately die... basically just infinite
+    -- ragdoll cycles."
+    --
+    -- THE MODEL IS THREE FACTS AND THE MIDDLE ONE IS THE BUG. A ped in the flames
+    -- is on fire; a ped on fire loses health it has not refused; a downed ped has
+    -- five display points of health, so it dies. Written so it CAN fail: the
+    -- `proof ~= true` test in the Wait stub is what makes a client that only
+    -- REPAIRS the corpse cycle forever, which is what shipped.
+    --
+    -- IsEntityOnFire ANSWERS 1/0, deliberately. It is declared BOOL, `0` is truthy
+    -- in Lua, and a reader that took it raw would douse a ped that is not burning
+    -- on every frame of every knock -- the class of defect tools/check_bool_natives
+    -- exists for and the reason dbno.lua has one comparison for all of them.
+    local burning = { lit = false, doused = 0, proof = nil }
+    function IsEntityOnFire(e) return (e == 1 and burning.lit) and 1 or 0 end
+    function StopEntityFire(e)
+        if e ~= 1 then return end
+        burning.lit = false
+        burning.doused = burning.doused + 1
+        note('douse')
+    end
+    --- SET_ENTITY_PROOFS(entity, bullet, FIRE, explosion, collision, melee,
+    --- steam, p7, water). Only the fire argument is recorded, and nil is a third
+    --- answer: "never touched" is not "touched with false".
+    function SetEntityProofs(e, _, fireProof)
+        if e ~= 1 then return end
+        burning.proof = fireProof
+        note('fireproof', fireProof)
     end
 
     -- ---------------------------------------------------------- the labels ---
@@ -8037,7 +8403,15 @@ do
         note('gamertag', text)
         return 900 + tagsMade
     end
-    function RemoveMpGamerTag() end
+    -- COUNTED, not swallowed. "The tag a mate wore while they were alive is
+    -- torn down when they die" is the half of the 2026-09-13 change that cannot
+    -- be seen by looking at what is drawn: an orphaned gamer tag hangs off an
+    -- invisible ped and nothing in the draw list mentions it.
+    local tagsRemoved = 0
+    function RemoveMpGamerTag(h)
+        tagsRemoved = tagsRemoved + 1
+        note('gamertag:remove', h)
+    end
     function SetMpGamerTagVisibility() end
     function IsSphereVisible() return true end
 
@@ -8089,7 +8463,16 @@ do
 
     local threads = {}
     Citizen.CreateThread = function(fn) threads[#threads + 1] = fn end
-    Citizen.Wait = function(ms) note('wait', ms) end
+    Citizen.Wait = function(ms)
+        note('wait', ms)
+        -- TIME PASSING IS WHAT FIRE DOES, and the floor watch is made of waits. A
+        -- body lying in the flames that has not REFUSED fire damage is dead again
+        -- by the next beat -- five display points is nothing -- so the beat after
+        -- a resurrection finds another corpse and resurrects it too. That is the
+        -- cycle, and modelling it here is what lets the fix be measured in
+        -- resurrections rather than in intent.
+        if burning.lit and burning.proof ~= true then bodies[1].dead = true end
+    end
     local function runThreads()
         local i = 1
         while i <= #threads do
@@ -8278,24 +8661,66 @@ do
         'and nothing is drawn over them by hand',
         ('%d hand-drawn name(s)'):format(#drawn))
 
-    -- A DEAD mate is the owner's second sentence: "the playernames thing is
-    -- also true for dead players".
+    -- ═══ A DEAD MATE WEARS NO NAME AT ALL (owner, 2026-09-13) ═══
+    --
+    -- "turn off playernames for dead squadmates. We already have a 3dmarker at
+    -- their position but since their ped is invisible their playername is just
+    -- floating text saying `Xeon [DEAD]`."
+    --
+    -- THE LABEL USED TO BE RIGHT AND THE BODY MOVED OUT FROM UNDER IT. `[DEAD]`
+    -- answered his own 2026-08-05 report and the word is his; what changed is
+    -- that client/natives.lua now drops SetEntityVisible on an OUT player's own
+    -- ped, on his 2026-08-31 instruction -- so the name was hanging over nothing
+    -- and reading as a bug rather than as an answer.
+    --
+    -- MEASURED OUT OF REVIVE REACH, AT 4m, WHICH IS LOAD-BEARING. At the 1.0m
+    -- the rest of this block uses, "no name" would also be true of the BROKEN
+    -- code for a downed mate -- the revive prompt suppresses it -- so an
+    -- assertion made there would pass for a reason that has nothing to do with
+    -- the change. Out of reach, nothing suppresses anything, and the only way to
+    -- draw no name is to have none.
+    bodies[MATE].x = 4.0
     BR.State.roster[2].state = BR.PlayerState.OUT
-    fire(BR.Net.SQUAD_POS, { { src = 2, name = 'Bravo', i = 2, x = 1.0, y = 0.0,
+    fire(BR.Net.SQUAD_POS, { { src = 2, name = 'Bravo', i = 2, x = 4.0, y = 0.0,
                               state = BR.PlayerState.OUT } })
-    tagsMade = 0
+    tagsMade, tagsRemoved = 0, 0
     tickBand()
     drawn = {}
     frame(16)
-    local deadName = lastName()
-    ok(tagsMade == 0 and deadName ~= nil and deadName.text == 'Bravo [DEAD]',
-        'A DEAD MATE IS LABELLED THE SAME WAY, which the owner asked for by name',
-        ('tags %d, drew %s'):format(tagsMade,
-            deadName and tostring(deadName.text) or 'nothing'))
-    ok(deadName ~= nil and deadName.z < 30.0 + HEAD_STANDING,
-        'and below the height a standing head would be at',
-        deadName and ('%.2f vs %.2f'):format(deadName.z, 30.0 + HEAD_STANDING)
-                  or 'nothing was drawn')
+    ok(#drawn == 0,
+        'A DEAD MATE GETS NO OVERHEAD NAME -- their ped is invisible and the '
+        .. 'type-24 marker and the blip carry the position instead',
+        (#drawn > 0) and ('drew %q'):format(tostring(lastName().text))
+                     or 'nothing was drawn, which is the point')
+    ok(tagsMade == 0,
+        'and the engine is not asked for one either -- a gamer tag cannot be '
+        .. 'lowered onto a body, and there is no body to lower it onto',
+        ('the engine was asked for %d tag(s)'):format(tagsMade))
+
+    -- AND THE TAG THEY WERE WEARING WHILE ALIVE IS TORN DOWN, rather than left
+    -- orphaned on an invisible ped. The frame before this one had them ALIVE
+    -- with an engine tag (asserted above), so there is genuinely one to remove.
+    ok(tagsRemoved >= 1,
+        'and the tag they wore while they were alive is removed on the edge '
+        .. 'into OUT, not left hanging off an invisible ped',
+        ('RemoveMpGamerTag called %d time(s)'):format(tagsRemoved))
+
+    -- ═══ AND [DOWN] IS UNTOUCHED, which is the whole scope of the change ═══
+    --
+    -- A DBNO mate is crawling, visible and revivable. Same distance, same
+    -- fixture, one state apart: the name is back.
+    BR.State.roster[2].state = BR.PlayerState.DBNO
+    fire(BR.Net.SQUAD_POS, { { src = 2, name = 'Bravo', i = 2, x = 4.0, y = 0.0,
+                              state = BR.PlayerState.DBNO } })
+    tickBand()
+    drawn = {}
+    frame(16)
+    local downAgain = lastName()
+    ok(downAgain ~= nil and downAgain.text == 'Bravo [DOWN]',
+        'a DOWNED mate at the same distance still gets theirs -- he said dead, '
+        .. 'and a crawling player is not',
+        downAgain and tostring(downAgain.text) or 'nothing was drawn')
+    bodies[MATE].x = 1.0
 
     -- THE REVIVE PROMPT IS THE DUI HALF OF THE SAME SENTENCE.
     BR.State.roster[2].state = BR.PlayerState.DBNO
@@ -8394,6 +8819,98 @@ do
         'a player shot down is knocked down, not resurrected',
         ('resurrects %d, knockdowns %d')
             :format(countOf('resurrect'), countOf('knockdown')))
+
+    -- ====================================================================== --
+    -- 3b. A BODY KNOCKED INTO A FIRE IS RESURRECTED ONCE, NOT THIRTY TIMES
+    -- ====================================================================== --
+    --
+    -- Owner, playtest 2026-09-12: "when dying to a fire, like a molotov, the ped
+    -- doesn't get a chance to crawl because they're caught in the flames and
+    -- repeatedly respawned, then immediately die. This is basically just infinite
+    -- ragdoll cycles."
+    --
+    -- ONE KNOCK, AND THE CYCLE IS ENTIRELY THIS FILE'S. The server refuses a
+    -- second knock three separate ways (canBeDowned requires ALIVE, the death
+    -- report is declined while DBNO, combat.deathcheck skips DBNO), so what the
+    -- owner watched was the floor watch repairing the same corpse once per beat --
+    -- each repair a fresh dying animation over a fresh resurrection, and then
+    -- nothing at all for the remaining hundred and eighteen seconds of the bleed.
+    --
+    -- THE MEASUREMENT IS THE RESURRECTION COUNT, which is the one number that
+    -- separates "the fire was refused" from "the corpse was repaired faster".
+
+    describe('a body in the flames keeps its crawl -- the 2026-09-12 playtest')
+
+    fire(BR.Net.DBNO_SET, { downed = false })
+    runThreads()
+    log = {}
+    burning.lit, burning.proof, burning.doused = true, nil, 0
+    bodies[1].dead = true       -- the molotov killed this ped where it stands
+    bodies[1].prone = false
+    resurrect.count = 0
+
+    fire(BR.Net.DBNO_SET, { downed = true, bleedEndsAt = 60000 })
+    runThreads()
+
+    ok(resurrect.count == 1,
+        'A PED KNOCKED DOWN IN A FIRE IS STOOD UP ONCE, not once per beat of the '
+        .. 'floor watch',
+        ('resurrections: %d'):format(resurrect.count))
+
+    ok(burning.proof == true,
+        'because the fire damage is REFUSED rather than repaired -- the ped is '
+        .. 'fireproof while it is down',
+        tostring(burning.proof))
+
+    ok(burning.doused >= 1 and burning.lit == false,
+        'and the flames already on the body are put out, because a proof does not '
+        .. 'extinguish what is already burning',
+        ('doused %d, still alight %s'):format(burning.doused,
+                                              tostring(burning.lit)))
+
+    -- AND THE CRAWL IS THE POINT OF ALL OF IT. Thirty resurrections is thirty
+    -- restarted dying animations, which is why the owner never saw one.
+    ok(countOf('anim:play') >= 1,
+        'the crawl this whole state exists for is actually tasked',
+        ('poses: %d'):format(countOf('anim:play')))
+
+    -- ...AND IT SURVIVES TIME SPENT LYING IN THE POOL. A molotov burns for twenty
+    -- seconds and the ground re-lights a body lying in it, so the frame loop has
+    -- to hold what the knock asserted.
+    burning.lit = true          -- the pool sets them alight again
+    for _ = 1, 20 do frame(16) end
+    ok(burning.lit == false and bodies[1].dead == false,
+        'a body re-lit by the pool it is lying in is doused again and stays alive',
+        ('alight %s, dead %s'):format(tostring(burning.lit),
+                                      tostring(bodies[1].dead)))
+    ok(resurrect.count == 1,
+        'with no further resurrections at all -- the cycle is gone rather than '
+        .. 'slower',
+        ('resurrections: %d'):format(resurrect.count))
+
+    -- ═══ AND STANDING BACK UP HANDS THE FIRE BACK ═══
+    --
+    -- The same rule as SetPedCanRagdoll in leaveDowned: a revived player must be
+    -- indistinguishable from one who was never downed, and a fireproof survivor
+    -- walking through a molotov would be the downed state leaking into the match.
+    fire(BR.Net.DBNO_SET, { downed = false })
+    runThreads()
+    ok(burning.proof == false,
+        'a revived player is mortal to fire again',
+        tostring(burning.proof))
+
+    -- AND THE FIXTURE IS HANDED BACK THE WAY IT WAS BORROWED. Everything below
+    -- this line continues from the LIVE knock the fall block left standing -- a
+    -- downed player, prone, with no fire anywhere near them -- so the flames are
+    -- put away and the knock is re-established rather than left revived. A block
+    -- that leaves the harness in its own state is a block that breaks the next
+    -- three by accident.
+    burning.lit, burning.proof, burning.doused = false, nil, 0
+    bodies[1].dead = false
+    log = {}
+    fire(BR.Net.DBNO_SET, { downed = true, bleedEndsAt = 60000 })
+    runThreads()
+    bodies[1].prone = true
 
     -- ====================================================================== --
     -- 2. LETTING GO MEANS STOPPING
@@ -8738,6 +9255,209 @@ do
     ok(select(1, loopHealth('squadmates.tags')) == 0,
         'and the loop that does all of this has not thrown once',
         ('errors %s'):format(tostring(select(1, loopHealth('squadmates.tags')))))
+
+    -- ====================================================================== --
+    -- A TEAMMATE IN YOUR OWN PASSENGER SEAT HAS NO BLIP -- owner, 2026-09-11
+    -- ====================================================================== --
+    --
+    --   "Please turn off squad player blips while they're in the same vehicle.
+    --    Let me be clear on this: player 1 and player 2 are in the same vehicle.
+    --    Player 3 can still see blips for both, but player 1 and player 2 cannot
+    --    see a blip for each other. This is because of the sync rate between
+    --    them being a bit off from smooth, but I don't want to fix that at tick
+    --    rate because it's cheaper to turn it off. Then once they get out of the
+    --    vehicles the blip turns back on."
+    --
+    -- ═══ WHY THIS IS A SUITE'S JOB AND NOT A PLAYTEST'S ═══
+    --
+    -- THE RULE IS PER VIEWER, and per-viewer rules are the ones a playtest
+    -- confirms wrong. Two people in a car see what they expect the first time
+    -- somebody drives; the assertion that separates a correct build from a
+    -- global hide is PLAYER 3's screen, which needs a third body, in the right
+    -- place, at the same moment, on a machine nobody is looking at. The wrong
+    -- version reads as "it works" from both seats.
+    --
+    -- AND THE RE-ADD IS INVISIBLE EITHER WAY. A build that removed the blip and
+    -- built a new one on the way out of the car is correct on screen and wrong
+    -- in the one way the owner named -- four AddBlipForCoord calls a second for
+    -- the whole journey -- so the handle is what is counted here.
+
+    describe('a squadmate sharing the viewer\'s vehicle loses their blip')
+
+    -- MODELLED BLIPS, because both claims are about a HANDLE. The suite's
+    -- default AddBlipForCoord is a noop returning nil and DoesBlipExist answers
+    -- false, which is enough for every block above -- none of them asks WHICH
+    -- blip was written to. This one asks twice over: that the right mate's alpha
+    -- moved, and that the handle survived the round trip.
+    local prevBlip = {
+        add    = AddBlipForCoord, exists = DoesBlipExist,
+        alpha  = SetBlipAlpha,    remove = RemoveBlip,
+        coords = SetBlipCoords,   veh    = GetVehiclePedIsIn,
+    }
+    local blipSeq, blipAdds = 0, 0
+    local blipAlive, blipAlpha, blipAtX = {}, {}, {}
+    AddBlipForCoord = function(x)
+        blipSeq, blipAdds = blipSeq + 1, blipAdds + 1
+        blipAlive[blipSeq] = true
+        -- KEYED ON THE COORDINATE, because `blips` is a file local this suite
+        -- cannot see and must not be given a reader for. Each mate below stands
+        -- at their own x, so the beacon's own coordinate is the identity.
+        blipAtX[x] = blipSeq
+        return blipSeq
+    end
+    DoesBlipExist = function(b) return b ~= nil and blipAlive[b] == true end
+    RemoveBlip    = function(b) if b ~= nil then blipAlive[b] = nil end end
+    SetBlipCoords = noop
+    SetBlipAlpha  = function(b, a) blipAlpha[b] = a end
+
+    -- WHERE EVERY PED IN THIS FAKE WORLD IS SITTING. 0 is on foot, which is what
+    -- GET_VEHICLE_PED_IS_IN answers and what the rule's own guard is written
+    -- against -- a squad standing in a field must not hide every dot.
+    --
+    -- PER PED, WHICH THE SUITE'S DEFAULT IS NOT. The global stub ignores its
+    -- argument and answers one number for everybody, so under it every mate
+    -- would share the viewer's seat the moment the viewer had one -- a fixture
+    -- that cannot fail.
+    GetVehiclePedIsIn = function(ped) return (bodies[ped] or {}).veh or 0 end
+
+    local CAR, VAN = 8801, 8802
+
+    -- A SQUAD OF THREE, all of them peds this client can resolve. src 3 was the
+    -- enemy two assertions ago and is enrolled here, because what this rule
+    -- needs is a third SQUADMATE -- the one whose screen tells a per-viewer hide
+    -- apart from a global one.
+    BR.State.me = { src = 1, state = BR.PlayerState.ALIVE, squadId = 'sq1' }
+    BR.State.roster = {
+        [1] = { src = 1, name = 'Me',     squadId = 'sq1',
+                state = BR.PlayerState.ALIVE },
+        [2] = { src = 2, name = 'Bravo',  squadId = 'sq1',
+                state = BR.PlayerState.ALIVE },
+        [3] = { src = 3, name = 'Victor', squadId = 'sq1',
+                state = BR.PlayerState.ALIVE },
+    }
+    local BRAVO_X, VICTOR_X = 1.0, 2.0
+    local SQUAD = {
+        { src = 2, name = 'Bravo',  i = 2, x = BRAVO_X, y = 0.0,
+          state = BR.PlayerState.ALIVE },
+        { src = 3, name = 'Victor', i = 3, x = VICTOR_X, y = 0.0,
+          state = BR.PlayerState.ALIVE },
+    }
+
+    --- One 4 Hz beacon, with the ped resolver warm.
+    ---
+    --- THE TICK IN THE MIDDLE IS LOAD-BEARING. `peds` is filled by the tags
+    --- loop, and the beacon handler reads it -- so a single push on a cold
+    --- resolver answers "not in my car" for everybody, which is the right answer
+    --- for the wrong reason and would pass the first case below while proving
+    --- nothing.
+    local function beacon()
+        fire(BR.Net.SQUAD_POS, SQUAD)
+        tickBand()
+        fire(BR.Net.SQUAD_POS, SQUAD)
+    end
+
+    local function alphaAt(x) return blipAlpha[blipAtX[x]] end
+
+    bodies[1].veh, bodies[MATE].veh, bodies[ENEMY].veh = 0, CAR, CAR
+    beacon()
+
+    ok(BR.Squadmates.pedOf(2) ~= 0 and BR.Squadmates.pedOf(3) ~= 0,
+        'the harness can resolve both squadmates\' peds at all, or every '
+            .. 'assertion below is asserting against a zero',
+        ('pedOf(2) = %s, pedOf(3) = %s')
+            :format(tostring(BR.Squadmates.pedOf(2)),
+                    tostring(BR.Squadmates.pedOf(3))))
+
+    -- ═══ PLAYER 3'S SCREEN, ASSERTED FIRST AND DELIBERATELY ═══
+    --
+    -- Both of the others are in one car and this viewer is not. A global hide --
+    -- "that pair are together, so nobody draws them" -- is the obvious wrong
+    -- implementation, it is what a wire field would have bought, and it is
+    -- invisible from either of the two seats. It fails here.
+    ok(alphaAt(BRAVO_X) == 255 and alphaAt(VICTOR_X) == 255,
+        'a squadmate OUTSIDE the vehicle still sees both of the people in it -- '
+            .. 'the rule is per viewer, not a property of the pair',
+        ('Bravo %s, Victor %s')
+            :format(tostring(alphaAt(BRAVO_X)), tostring(alphaAt(VICTOR_X))))
+
+    local addsBefore = blipAdds
+
+    -- ═══ AND NOW FROM INSIDE THE CAR ═══
+    bodies[1].veh, bodies[MATE].veh, bodies[ENEMY].veh = CAR, CAR, 0
+    beacon()
+    ok(alphaAt(BRAVO_X) == 0,
+        'the mate in MY vehicle is hidden -- his dot is the one that jitters '
+            .. 'and the one I can see out of the window',
+        tostring(alphaAt(BRAVO_X)))
+    ok(alphaAt(VICTOR_X) == 255,
+        'and the squadmate who is NOT in it is untouched, on the same push',
+        tostring(alphaAt(VICTOR_X)))
+
+    -- ═══ TWO CARS IS NOT ONE CAR ═══
+    --
+    -- The test is the HANDLE, not "are we both driving". A build that asked
+    -- IsPedInAnyVehicle of each side and compared the answers would hide a mate
+    -- half a kilometre down the road in a different van -- which is the exact
+    -- dot the blip exists for.
+    bodies[MATE].veh = VAN
+    beacon()
+    ok(alphaAt(BRAVO_X) == 255,
+        'a mate in a DIFFERENT vehicle keeps his blip -- the test is the same '
+            .. 'vehicle, not "both of us are driving something"',
+        tostring(alphaAt(BRAVO_X)))
+
+    -- ═══ AND IT COMES BACK WHEN HE GETS OUT, ON THE SAME BLIP ═══
+    bodies[MATE].veh = CAR
+    beacon()
+    ok(alphaAt(BRAVO_X) == 0, 'back in my car, hidden again')
+    bodies[MATE].veh = 0
+    beacon()
+    ok(alphaAt(BRAVO_X) == 255,
+        'and once he gets out the blip turns back on, which is the owner\'s '
+            .. 'last sentence',
+        tostring(alphaAt(BRAVO_X)))
+
+    -- ═══ NOBODY IN A VEHICLE AT ALL, WHICH IS THE COMMON CASE ═══
+    --
+    -- On foot the native answers 0 for every ped in the world, so a test written
+    -- as "is his vehicle the same as mine" is TRUE for a whole squad standing in
+    -- a field -- every dot in the game gone, in the state players spend most of
+    -- a match in. That is one missing `~= 0` and it is the only case in this
+    -- block where the wrong build is worse than no feature.
+    bodies[1].veh, bodies[MATE].veh, bodies[ENEMY].veh = 0, 0, 0
+    beacon()
+    ok(alphaAt(BRAVO_X) == 255 and alphaAt(VICTOR_X) == 255,
+        'a squad ON FOOT keeps every blip -- 0 is what the native answers for a '
+            .. 'ped in no vehicle, and two of them are not in the same car',
+        ('Bravo %s, Victor %s')
+            :format(tostring(alphaAt(BRAVO_X)), tostring(alphaAt(VICTOR_X))))
+
+    -- THE HALF A SCREENSHOT CANNOT SHOW. Five beacons and four transitions have
+    -- passed over these two blips and neither was rebuilt: hiding is an ALPHA,
+    -- so the handle, its sprite, its squad colour and its legend name all
+    -- survive the ride. A remove-and-re-add build draws the same thing and runs
+    -- AddBlipForCoord four times a second for the length of the journey.
+    ok(blipAdds == addsBefore,
+        'and no blip was ever re-added -- the transition is an alpha on the '
+            .. 'blip that was already there',
+        ('%d add(s) before the first transition, %d after four of them')
+            :format(addsBefore, blipAdds))
+
+    ok(select(1, loopHealth('squadmates.tags')) == 0,
+        'with the tags loop still not having thrown',
+        ('errors %s'):format(tostring(select(1, loopHealth('squadmates.tags')))))
+
+    -- Hand the world back: everybody on foot, the squad dissolved, the blip
+    -- natives back to the suite's own.
+    bodies[1].veh, bodies[MATE].veh, bodies[ENEMY].veh = nil, nil, nil
+    fire(BR.Net.SQUAD_POS, {})
+    tickBand()
+    AddBlipForCoord   = prevBlip.add
+    DoesBlipExist     = prevBlip.exists
+    SetBlipAlpha      = prevBlip.alpha
+    RemoveBlip        = prevBlip.remove
+    SetBlipCoords     = prevBlip.coords
+    GetVehiclePedIsIn = prevBlip.veh
 
     others[3] = nil
 end
@@ -9116,7 +9836,7 @@ do
         -- `tutorial` WAS HERE AND WAS TAKEN BACK OUT (2026-09-06), which is the
         -- second time this table has shrunk and the second time for the same
         -- reason: keeping input keeps ALL of it. The walkthrough's cards held
-        -- the cursor so their Next and Last could be pressed, and every drag
+        -- the cursor so their Next and Previous could be pressed, and every drag
         -- toward a button swung the camera while the cursor made the faded
         -- lobby's invisible buttons clickable. The cards are driven by the arrow
         -- keys now, read in Lua, and take no focus at all.
@@ -10141,35 +10861,69 @@ do
         frames(20)
     end
 
-    -- ------------------------------------------------------- #180, verbatim ---
+    -- ------------------------------------------------- #180, with a glyph ---
     --
-    -- ONE LITERAL, COPIED WHOLE OUT OF THE ISSUE, and deliberately not built by
-    -- concatenation the way the source builds it. A test that assembled the
-    -- sentence the same way the code does would agree with the code about where
-    -- the spaces go, which is exactly the class of miss this compares against --
-    -- the punctuation here is unusual on purpose (the full stop lives INSIDE the
-    -- closing parenthesis) and is the owner's, not a typo to be tidied.
-    local WANT = 'See something suspicious? You can report players by pressing tilde (above TAB on your keyboard.) As a bonus, all accurate reports are rewarded with Volts.'
+    -- ONE LITERAL, STILL COMPARED WHOLE, and deliberately not built by
+    -- concatenation the way the source builds it -- nor by calling BR.KeyToken,
+    -- which is the same mistake one level down. A test that assembled the
+    -- sentence the way the code does would agree with the code about where the
+    -- spaces go, and one that built the hole the way the code does would agree
+    -- with it about the token's shape, which is exactly the class of miss this
+    -- exists to catch.
+    --
+    -- ═══ THE STRING CHANGED ON 2026-09-08, ON THE OWNER'S INSTRUCTION ═══
+    --
+    -- He was looking at this toast: "the 'tab' text predates our existence of
+    -- custom keycaps/glyphs, can you update that?" -- and, asked what else was
+    -- to go, "also 'tilde'". So the word and the parenthetical both came out and
+    -- the sentence names the key with a `{key:}` hole that the page draws as a
+    -- cap.
+    --
+    -- IT IS NOT #180 BEING REVERSED, which is why this assertion moved rather
+    -- than being deleted. #180 replaced a resolved LABEL with a location because
+    -- a label is a name and cannot teach anybody where a key is; a cap resolved
+    -- on the page is both, and it follows a rebind, so the trade #180 named
+    -- stopped existing. The prose either side of the hole is his and is
+    -- unchanged. The full stop that lived INSIDE the closing parenthesis was
+    -- his too and was never a typo -- it went with the parenthesis, because
+    -- there is no longer a bracket for it to sit inside.
+    --
+    -- THE OTHER SENTENCE IN THAT HANDLER STILL SAYS TAB, and must (#177): it is
+    -- an action on the kill prompt, not the player list under another name, so
+    -- there is no command to name and no cap to draw. See below.
+    local WANT = 'See something suspicious? You can report players by pressing {key:brplayers}. As a bonus, all accurate reports are rewarded with Volts.'
 
     events = {}
     fire(BR.Net.REPORT_HINT, { kind = 'exists' })
     local t = toast('report.exists')
     ok(t ~= nil, 'the courtesy notice is raised as a toast')
     ok(t ~= nil and t.text == WANT,
-        'and its text is byte-for-byte what #180 specifies',
+        'and its text is byte-for-byte the sentence the owner approved',
         t and ('got: ' .. tostring(t.text)) or 'no toast')
 
-    -- IT NAMES TILDE WHATEVER THE PLAYER HAS BOUND, which is #180 overriding
-    -- #168 on the owner's call -- the sentence teaches WHERE the key is, which a
-    -- resolved label cannot do. Rebinding the panel and re-pushing the keybind
-    -- table must not move this sentence.
+    -- AND NO LETTER GOT SUBSTITUTED ON THE WAY OUT, which is the mutation that
+    -- keeps every assertion above green and puts #129's bug back: Lua resolving
+    -- `brplayers` off the keybinds envelope and formatting the LABEL into the
+    -- sentence. A composed label is a photograph of the binding at the instant
+    -- the string was built, and this toast is up for twelve seconds.
+    ok(t ~= nil and not t.text:find('tilde') and not t.text:find('F7'),
+        'and it spells no key into the prose, only the command',
+        t and ('got: ' .. tostring(t.text)) or 'no toast')
+
+    -- THE SENTENCE DOES NOT MOVE WHEN THE PLAYER REBINDS, AND THE REASON IS THE
+    -- OPPOSITE OF WHAT IT USED TO BE. It used to be constant because it named
+    -- tilde outright (#180 overriding #168 on the owner's call, to teach WHERE
+    -- the key is). It is constant now because it names the COMMAND: what the
+    -- player sees does follow the rebind, but it follows it on the page, where
+    -- KeyCap re-resolves `brplayers` against the live keybinds list and redraws
+    -- the plate. Lua has nothing left to go stale.
     events = {}
     fire('br:ui:sendLocal', BR.Nui.KEYBINDS, {
         actions = { { command = 'brplayers', key = 'F7', vk = 0x76 } },
     })
     fire(BR.Net.REPORT_HINT, { kind = 'exists' })
     ok((toast('report.exists') or {}).text == WANT,
-        'and it does not follow a rebind of the player-list key')
+        'and a rebind of the player-list key does not rewrite it in Lua')
 
     -- ------------------------------------------ #177 part 2: it says TAB ---
     events = {}
@@ -10762,6 +11516,39 @@ do
             ('an unrecognised squad id (%s) leaves the player unteamed and armed')
                 :format(tostring(bad)),
             ('team %s, gate %s'):format(tostring(t), tostring(s)))
+    end
+
+    -- ==================================================================== --
+    -- 6b. ...AND A HEX MATCH TAG IS NOT AN UNKNOWN, WHICH IS THE WHOLE BUG
+    -- ==================================================================== --
+    --
+    -- #291 made match ids a random 20 bit draw rendered as five hex characters,
+    -- so a squad id went from `m6sq1` to `m0a3f1sq1`. This function was reading
+    -- `^m%d+sq(%d+)$`, which stops matching the moment a tag contains a letter,
+    -- and section 6 above is exactly what then happened to EVERY squadded
+    -- player: unrecognised id, fail open, solo team, squadmates able to shoot
+    -- each other. Owner, 2026-09-11: "Squadmates are now not in a good
+    -- relationship group I guess."
+    --
+    -- THE EXISTING SUITE COULD NOT SEE IT, and the reason is worth keeping. Its
+    -- fixtures build squad ids from small integers, and every decimal digit is
+    -- also a hex digit, so `m7sq1` matched the broken pattern and the tests
+    -- agreed with the defect. Only a tag carrying a LETTER separates the two
+    -- patterns, so only a tag carrying a letter can pin this.
+    for _, id in ipairs({ 'm0a3f1sq1', 'mfffffsq7', 'm0a3f1sq12', 'mabcdesq2' }) do
+        local want = tonumber(id:match('sq(%d+)$'))
+        local t, s = N.teamFor({ src = 1, squadId = id },
+                               { [1] = { src = 1, squadId = id },
+                                 [2] = { src = 2, squadId = id } })
+        ok(t ~= N.SOLO_TEAM,
+            ('a hex match tag (%s) is a real squad, not an unknown'):format(id),
+            ('team %s'):format(tostring(t)))
+        ok(t == 1 + ((want - 1) % 63),
+            ('and it lands on the index the id actually carries (%d)'):format(want),
+            ('team %s, wanted %s'):format(tostring(t), tostring(1 + ((want - 1) % 63))))
+        ok(s == true,
+            'and with a mate present the friendly-fire gate closes',
+            ('gate %s'):format(tostring(s)))
     end
 
     do
@@ -15161,6 +15948,14 @@ do
     -- which is the whole point of the model the report loop watches.
     local gun = { total = {}, clip = {} }
 
+    -- AddAmmoToPed ADDS to the total and leaves the magazine alone. A pickup
+    -- reaches a gun already in the hand through it (see grantAmmo).
+    local savedAddAmmo = AddAmmoToPed
+    function AddAmmoToPed(_, hash, n)
+        local h = BR.NormHash(hash)
+        gun.total[h] = math.max(0, (gun.total[h] or 0) + (n or 0))
+    end
+
     function RemoveAllPedWeapons() gun.total, gun.clip = {}, {} end
     function GiveWeaponToPed(_, hash, ammo)
         local h = BR.NormHash(hash)
@@ -15284,10 +16079,10 @@ do
        ('engine total %s (server still says %d + %d)'):format(
            tostring(gun.total[RH]), RAILGUN.clip, RAILGUN.clip))
 
-    -- ...AND NOT ONLY THROUGH THE SWITCH. reapplyAmmo runs on any INV_SET whose
+    -- ...AND NOT ONLY THROUGH THE SWITCH. grantAmmo runs on any INV_SET whose
     -- ammo went up, and the pool is SHARED -- so picking up a bandage while
-    -- somebody else's sniper ammo landed used to reload the railgun too. Same
-    -- deficit, same subtraction, different door.
+    -- somebody else's sniper ammo landed used to reload the railgun too. It
+    -- adds only the rise now, so the rounds the engine spent stay spent.
     serverSays(1, RAILGUN.clip, RAILGUN.clip + 5)
     ok((gun.total[RH] or 0) == 5,
        'and an unrelated pickup credits only what was actually picked up',
@@ -15477,12 +16272,1132 @@ do
     GiveWeaponToPed     = savedGive
     RemoveAllPedWeapons = savedRemove
     SetPedAmmo          = savedSetAmmo
+    AddAmmoToPed        = savedAddAmmo
     SetAmmoInClip       = savedSetClip
     GetAmmoInPedWeapon  = savedGetAmmo
     GetAmmoInClip       = savedGetClip
     SetCurrentPedWeapon = savedCurrent
     pedWeapon = nil
     fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+end
+
+-- ======================================================================== --
+-- N2. THE COUNTER THAT JITTERED
+-- ======================================================================== --
+--
+-- Owner, 2026-09-09, playtest: "the HUD does update but it's jittery. shooting
+-- from 8 bullets to 7 for example - the value goes down to 5 for example, and
+-- flicks back to 7 quickly."
+--
+-- TWO WRITERS, ONE FIELD, AND BOTH OF THEM HONEST. The report loop reads
+-- GetAmmoInClip and writes `slot.clip` every tick so the counter keeps up with
+-- the trigger; `adopt` then replaces the whole slot table with the server's
+-- payload, magazine included, and pushes THAT. Neither is late. The flicker is
+-- what the interface sees in the gap between them, and there is a gap whenever
+-- the server's split has fallen below the engine's.
+--
+-- IT REALLY CAN FALL BELOW, AND THAT HALF IS SERVER-SIDE. With
+-- Combat.serverAmmo on, an INV_AMMO that reaches the handler BEFORE the
+-- weaponDamageEvent for the same shot is ACCEPTED -- its `was` token still
+-- matches, because the server has not processed the event yet -- and then
+-- spendRound charges the same round a second time. One round of divergence per
+-- racing shot, and it persists, because a RISE is refused at both ends so the
+-- client can never report it back. That is a separate fault and it is not what
+-- this block fixes. What is pinned HERE is the half this file owns: the
+-- interface is never handed a magazine the gun does not have, whatever the
+-- server has come to believe.
+--
+-- WHY THE ASSERTION IS MADE AT PUSH TIME AND NOT AFTERWARDS. pushUi sends the
+-- live slot tables BY REFERENCE, so reading one after the fact reports the
+-- number it ended on and the flicker is invisible -- a suite written that way
+-- agrees with the defect. The recorder below copies both numbers as the
+-- envelope leaves, which is the only moment the two are comparable.
+describe('the counter is never drawn a magazine the gun does not have')
+do
+    local savedGive    = GiveWeaponToPed
+    local savedRemove  = RemoveAllPedWeapons
+    local savedSetAmmo = SetPedAmmo
+    local savedSetClip = SetAmmoInClip
+    local savedGetAmmo = GetAmmoInPedWeapon
+    local savedGetClip = GetAmmoInClip
+    local savedCurrent = SetCurrentPedWeapon
+    local savedHasGot  = HasPedGotWeapon
+
+    -- NO PARACHUTE, AND IT HAS TO BE SAID OUT LOUD. An earlier block leaves
+    -- HasPedGotWeapon answering for a chute it gave a ped of its own, and
+    -- skydive.lua's post-landing sweep believes it: three ticks in, that sweep
+    -- reaches RemoveAllPedWeapons and BR.Inv.reapply, which re-grants the active
+    -- slot from the SERVER's numbers and writes the magazine back up. That is a
+    -- real path and it has its own coverage; here it would simply hide the race
+    -- this block exists to drive, by moving the gun under the assertion.
+    function HasPedGotWeapon() return false end
+
+    -- The same ped model section N uses, and for the same reason: "SetAmmoInClip
+    -- was called with 7" is true of the fix and of the bug.
+    local gun = { total = {}, clip = {} }
+    local savedAddAmmo = AddAmmoToPed
+    function AddAmmoToPed(_, hash, n)
+        local h = BR.NormHash(hash)
+        gun.total[h] = math.max(0, (gun.total[h] or 0) + (n or 0))
+    end
+    function RemoveAllPedWeapons() gun.total, gun.clip = {}, {} end
+    function GiveWeaponToPed(_, hash, ammo)
+        local h = BR.NormHash(hash)
+        gun.total[h] = (gun.total[h] or 0) + (ammo or 0)
+    end
+    function SetPedAmmo(_, hash, n)
+        local h = BR.NormHash(hash)
+        gun.total[h] = math.max(0, n or 0)
+        gun.clip[h]  = math.min(gun.clip[h] or 0, gun.total[h])
+    end
+    function SetAmmoInClip(_, hash, n)
+        local h = BR.NormHash(hash)
+        gun.clip[h] = math.min(math.max(0, n or 0), gun.total[h] or 0)
+    end
+    function GetAmmoInPedWeapon(_, hash) return gun.total[BR.NormHash(hash)] or 0 end
+    function GetAmmoInClip(_, hash) return true, gun.clip[BR.NormHash(hash)] or 0 end
+    function SetCurrentPedWeapon(_, hash) pedWeapon = hash end
+
+    local PISTOL = BR.Config.WeaponById['pistol']
+    local PH     = BR.NormHash(PISTOL.hash)
+
+    -- WHAT THE INTERFACE WAS HANDED, BESIDE WHAT THE GUN HELD AT THAT INSTANT.
+    local drawn = {}
+    AddEventHandler('br:ui:sendLocal', function(kind, p)
+        if kind ~= BR.Nui.INV then return end
+        local s = p and p.slots and p.slots[p.active or 0]
+        if type(s) ~= 'table' or s.id ~= 'pistol' then return end
+        -- BOTH RIGHT-HAND NUMBERS RIDE ALONG for the block below. `reserve` is
+        -- what the BAR draws beside the magazine and the two have to add up;
+        -- `pool` is what the TAB panel draws beside a Drop button and has to stay
+        -- the server's. They are different quantities and the block asserts both.
+        drawn[#drawn + 1] = { said = s.clip, gun = gun.clip[PH],
+                              pool = p.ammo and p.ammo.light,
+                              reserve = p.reserve }
+    end)
+
+    --- Every envelope whose magazine disagreed with the gun, as text.
+    local function disagreed()
+        local out = {}
+        for _, d in ipairs(drawn) do
+            if d.said ~= d.gun then
+                out[#out + 1] = ('drawn %s / gun %s')
+                    :format(tostring(d.said), tostring(d.gun))
+            end
+        end
+        return table.concat(out, ', ')
+    end
+
+    local function serverSays(clip, pool)
+        fire(BR.Net.INV_SET, {
+            slots = { { id = 'pistol', label = 'Pistol', kind = BR.ItemKind.WEAPON,
+                        rarity = 1, count = 1, clip = clip, pool = 'light' } },
+            ammo = { light = pool }, active = 1,
+        })
+    end
+    local function tick(n)
+        for _ = 1, (n or 1) do
+            fakeTime = fakeTime + 100
+            BR.Loop.step(BR.Loop.TICK)
+        end
+    end
+
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.State.landed = true
+    fire(BR.Net.STATE, { state = BR.MatchState.PLAYING })
+
+    serverSays(PISTOL.clip, 20)
+    tick(3)
+    ok(gun.clip[PH] == PISTOL.clip, 'a pistol off the floor starts loaded',
+       tostring(gun.clip[PH]))
+
+    -- THE FIRST WRITER. One round leaves the gun and the tick that follows reads
+    -- it off the ped and pushes what it read.
+    gun.total[PH] = gun.total[PH] - 1
+    gun.clip[PH]  = gun.clip[PH] - 1
+    drawn = {}
+    tick(1)
+    ok(#drawn > 0 and drawn[#drawn].said == gun.clip[PH],
+       'a shot moves the counter without waiting for the server',
+       ('drawn %s, gun %s'):format(
+           tostring(drawn[#drawn] and drawn[#drawn].said), tostring(gun.clip[PH])))
+
+    -- THE SECOND WRITER, IN THE ORDER THAT PRODUCES THE WRONG VALUE. The server
+    -- speaks, and its magazine sits two rounds BELOW the one in the gun -- the
+    -- state the double-charge above leaves it in.
+    local low = gun.clip[PH] - 2
+    drawn = {}
+    serverSays(low, 20)
+
+    -- THE PREMISE IS ASSERTED FIRST, or this could pass by never reaching the
+    -- disagreement it exists to catch.
+    ok(gun.clip[PH] > low,
+       'the gun still holds more than the server believes it does',
+       ('gun %s, server %d'):format(tostring(gun.clip[PH]), low))
+    ok(#drawn > 0, 'and the arriving inventory did push the bar',
+       ('%d envelope(s)'):format(#drawn))
+    ok(disagreed() == '',
+       'THE INTERFACE IS NEVER HANDED A MAGAZINE THE GUN DOES NOT HAVE',
+       disagreed())
+
+    -- ...AND IT DOES NOT SETTLE THERE EITHER. The tick after the INV_SET used to
+    -- be the other half of the flicker: the loop painting the gun's number back
+    -- over the server's. With one authority there is nothing left to paint.
+    drawn = {}
+    tick(2)
+    ok(disagreed() == '', 'nor on the ticks that follow it', disagreed())
+
+    -- THE OTHER DIRECTION, WHICH A FIX THAT SIMPLY IGNORED THE SERVER WOULD
+    -- BREAK. A magazine the server has just PAID FOR -- rounds moved out of the
+    -- reserve -- has to reach the counter, or the engine owning the number would
+    -- mean the number never moves again.
+    drawn = {}
+    -- A PAID RELOAD MOVES ROUNDS: the magazine rises by exactly what the pool
+    -- gives up. This sent a pool of 8 until the grant stopped re-writing the
+    -- whole split, which was the only thing that let nine rounds vanish inside
+    -- a reload and still pass.
+    serverSays(PISTOL.clip, 20 - (PISTOL.clip - low))
+    ok(gun.clip[PH] == PISTOL.clip,
+       'a reload the server paid for lands in the gun',
+       tostring(gun.clip[PH]))
+    ok(drawn[#drawn] and drawn[#drawn].said == PISTOL.clip,
+       'AND THE COUNTER SHOWS IT -- one authority is not a frozen one',
+       ('drawn %s, gun %s'):format(
+           tostring(drawn[#drawn] and drawn[#drawn].said), tostring(gun.clip[PH])))
+    ok(disagreed() == '', 'and the two still agree across the grant', disagreed())
+
+    -- ═══ AND THE PAIR HAS TO ADD UP (owner, 2026-09-12) ═══
+    --
+    -- "I buy 60 rounds for my combat PDW at the shop - the HUD shows 30/60 now. I
+    -- had 0 before." Sixty bought, ninety drawn.
+    --
+    -- THE MAGAZINE ABOVE IS HONEST AND THE RESERVE BESIDE IT DESCRIBES A DIFFERENT
+    -- MOMENT, which is the whole of the bug. Everything above this line asserts
+    -- the LEFT number against the gun; nothing asserted the two TOGETHER, and the
+    -- reserve is the half that goes stale. The engine fills a magazine out of its
+    -- own reserve the moment it is handed ammunition with an empty clip; the
+    -- server is never told, because a reload does not move the TOTAL and
+    -- server/inventory.lua's floor returns on `lost <= 0`. So the bar drew a
+    -- magazine the engine had already loaded next to a reserve that still counted
+    -- those rounds as unspent.
+    --
+    -- DRIVEN THE WAY THE ENGINE DOES IT: the clip goes UP and the total does NOT
+    -- move, because the rounds came out of the gun's own reserve rather than out
+    -- of thin air. That is the one transition `SetPedAmmo` is never called for and
+    -- the one the report loop cannot report, since it is decrease-only on a total
+    -- that did not decrease.
+    do
+        -- Bought into an EMPTY gun: no magazine, sixty loose rounds. EMPTY FOR
+        -- REAL -- fired dry, and the server agrees -- because a purchase no
+        -- longer empties a magazine that has rounds in it, and a gun holding
+        -- twelve would have no load for GTA to do.
+        gun.total[PH], gun.clip[PH] = 0, 0
+        serverSays(0, 0)
+        tick(1)
+        drawn = {}
+        serverSays(0, 60)
+        tick(1)
+        ok(gun.total[PH] == 60,
+           'sixty rounds reach the ped and none of them are in the magazine',
+           ('total %s, clip %s'):format(tostring(gun.total[PH]),
+                                        tostring(gun.clip[PH])))
+
+        -- GTA LOADS THE GUN BY ITSELF. Inside the engine's single number the
+        -- rounds move; the total is untouched.
+        gun.clip[PH] = PISTOL.clip
+        drawn = {}
+        tick(1)
+
+        local d = drawn[#drawn]
+        ok(d ~= nil and d.said == PISTOL.clip,
+           'the counter follows the magazine the engine just filled',
+           tostring(d and d.said))
+        -- THE ASSERTION THAT WAS MISSING. Sixty is what he owns, so the two
+        -- numbers on the plate have to come to sixty and not to seventy-two.
+        ok(d ~= nil and (d.said or 0) + (d.reserve or 0) == 60,
+           'AND THE MAGAZINE PLUS THE RESERVE IS WHAT HE ACTUALLY OWNS',
+           ('%s + %s'):format(tostring(d and d.said), tostring(d and d.reserve)))
+        ok(d ~= nil and d.reserve == 60 - PISTOL.clip,
+           '...so the reserve is the rounds BEHIND the magazine, not the total',
+           tostring(d and d.reserve))
+
+        -- ⚠ AND THE POOL FIGURE IS UNTOUCHED, which is not a detail. The TAB panel
+        -- draws `ammo[pool]` beside a Drop button, and that button puts the WHOLE
+        -- pool on the floor -- server/inventory.lua writes `inv.ammo[pool] = 0` and
+        -- leaves every magazine alone. A fix that rebalanced the map instead of
+        -- sending its own number would show forty-eight under a button that drops
+        -- sixty.
+        ok(d ~= nil and d.pool == 60,
+           'and the POOL the panel draws is still the server\'s, to the round',
+           tostring(d and d.pool))
+
+        -- AND THE MIRROR ITSELF IS NOT REWRITTEN, the other trap here:
+        -- `reserveFor` feeds SetPedAmmo, so a rebalanced pool in `inv.ammo` would
+        -- hand the engine's own reload back to the ped as a smaller grant on the
+        -- next re-apply and compound.
+        local mirror = BR.Inv.local_()
+        ok((mirror.ammo.light or 0) == 60,
+           'the mirror still holds the SERVER\'s reserve, untouched',
+           tostring(mirror.ammo.light))
+
+        -- A SETTLED BOOK NEEDS NO CORRECTION. When the server's magazine and the
+        -- gun's agree the reserve IS the pool, so this cannot be a fix that always
+        -- subtracts a magazine.
+        drawn = {}
+        serverSays(PISTOL.clip, 31)
+        tick(1)
+        local e = drawn[#drawn]
+        ok(e ~= nil and e.said == PISTOL.clip and e.pool == 31
+           and (e.reserve == nil or e.reserve == 31),
+           'and when the two books already agree the reserve is the pool',
+           ('%s / pool %s / reserve %s'):format(tostring(e and e.said),
+               tostring(e and e.pool), tostring(e and e.reserve)))
+    end
+
+    GiveWeaponToPed     = savedGive
+    RemoveAllPedWeapons = savedRemove
+    SetPedAmmo          = savedSetAmmo
+    AddAmmoToPed        = savedAddAmmo
+    SetAmmoInClip       = savedSetClip
+    GetAmmoInPedWeapon  = savedGetAmmo
+    GetAmmoInClip       = savedGetClip
+    SetCurrentPedWeapon = savedCurrent
+    HasPedGotWeapon     = savedHasGot
+    pedWeapon = nil
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+end
+
+-- ======================================================================== --
+-- N3. THE MAGAZINE THAT WAS NEVER OURS TO CHOOSE
+-- ======================================================================== --
+--
+-- Owner, 2026-09-12: "I buy one pack of 12 heavy ammo for it, then the HUD reads
+-- 1/12 ... I fire one round, the gun reloads, and now it shows 1/8. Fire another
+-- - now HUD shows 1/5 ... That's 4 rounds when I paid for 12."
+--
+-- THREE ROUNDS A SHOT, AND `clip = 3` IS WHERE THE THREE COMES FROM.
+-- WEAPON_RAILGUN's magazine is 1. The two numbers never meet in one place, so
+-- neither side errors:
+--
+--   * server/inventory.lua's BR.Inv.reload moves `w.clip - clip` out of the pool
+--     when the magazine reads empty, so THREE rounds leave the heavy pool;
+--   * SetAmmoInClip cannot put three rounds into a one-round magazine. The
+--     engine takes ONE and says nothing;
+--   * the report loop reads the gun and writes that 1 into the mirror, so the
+--     NEXT tick computes `granted` as 1 + the pool -- below what the ped is
+--     actually holding -- and the clamp fires:
+--
+--         if total > granted then SetPedAmmo(ped, hash, granted) end
+--
+--     The ped is written DOWN by two, and the lower number is reported, and the
+--     server debits it. Nobody fired those two rounds.
+--
+-- ═══ WHY EVERY EXISTING BLOCK IN THIS FILE AGREED WITH THE DEFECT ═══
+--
+-- Sections N and N2 model the engine's reload as
+--
+--     gun.clip[h] = math.min(w and w.clip or 0, gun.total[h])
+--
+-- -- the engine's magazine, taken from OUR config. That is the assumption under
+-- test. A harness built that way cannot fail while the config is wrong, because
+-- the model is wrong in exactly the same direction: it is docs/testing.md rule 4
+-- with a gun. THE ENGINE'S MAGAZINE IS ITS OWN NUMBER HERE, authored from
+-- weapons.meta, and `w.clip` is never read by the model below.
+describe('the engine\'s magazine is its own number, not ours')
+do
+    local savedGive    = GiveWeaponToPed
+    local savedRemove  = RemoveAllPedWeapons
+    local savedSetAmmo = SetPedAmmo
+    local savedSetClip = SetAmmoInClip
+    local savedGetAmmo = GetAmmoInPedWeapon
+    local savedGetClip = GetAmmoInClip
+    local savedCurrent = SetCurrentPedWeapon
+    local savedHasGot  = HasPedGotWeapon
+
+    -- NO PARACHUTE, for the reason N2 spells out: an earlier block leaves
+    -- HasPedGotWeapon answering for a chute, and skydive.lua's post-landing
+    -- sweep then re-grants the active slot from the SERVER's numbers in the
+    -- middle of the firing loop below -- which would move the gun under the
+    -- assertion rather than test it.
+    function HasPedGotWeapon() return false end
+
+    local RAILGUN = BR.Config.WeaponById['railgun']
+    local MINIGUN = BR.Config.WeaponById['minigun']
+    local RH = BR.NormHash(RAILGUN.hash)
+    local MH = BR.NormHash(MINIGUN.hash)
+
+    -- `<ClipSize>` on the CWeaponInfo in the stock .meta. NOT BR.Config -- see
+    -- the note above, and tools/check_weapons.lua for where these come from.
+    local ENGINE_MAG = { [RH] = 1, [MH] = 15000 }
+
+    local gun = { total = {}, clip = {} }
+    function RemoveAllPedWeapons() gun.total, gun.clip = {}, {} end
+    function GiveWeaponToPed(_, hash, ammo)
+        local h = BR.NormHash(hash)
+        gun.total[h] = (gun.total[h] or 0) + (ammo or 0)
+    end
+    function SetPedAmmo(_, hash, n)
+        local h = BR.NormHash(hash)
+        gun.total[h] = math.max(0, n or 0)
+        gun.clip[h]  = math.min(gun.clip[h] or 0, gun.total[h])
+    end
+    local savedAddAmmo = AddAmmoToPed
+    function AddAmmoToPed(_, hash, n)
+        local h = BR.NormHash(hash)
+        gun.total[h] = math.max(0, (gun.total[h] or 0) + (n or 0))
+    end
+    -- THE LINE THE WHOLE BLOCK TURNS ON, and it is the engine's real contract:
+    -- a magazine takes what fits and the overflow is not an error and not a
+    -- return value. It is nothing at all.
+    function SetAmmoInClip(_, hash, n)
+        local h = BR.NormHash(hash)
+        local cap = ENGINE_MAG[h] or math.maxinteger
+        gun.clip[h] = math.min(math.max(0, n or 0), gun.total[h] or 0, cap)
+    end
+    function GetAmmoInPedWeapon(_, hash) return gun.total[BR.NormHash(hash)] or 0 end
+    function GetAmmoInClip(_, hash) return true, gun.clip[BR.NormHash(hash)] or 0 end
+    function SetCurrentPedWeapon(_, hash) pedWeapon = hash end
+
+    local function tick(n)
+        for _ = 1, (n or 1) do
+            fakeTime = fakeTime + 100
+            BR.Loop.step(BR.Loop.TICK)
+        end
+    end
+
+    local function serverSays(id, pool, clip, amount)
+        fire(BR.Net.INV_SET, {
+            slots = { { id = id, label = id, kind = BR.ItemKind.WEAPON,
+                        rarity = 5, count = 1, clip = clip, pool = pool } },
+            ammo = { [pool] = amount }, active = 1,
+        })
+        tick(1)
+    end
+
+    local function lastReportTotal()
+        local out = nil
+        for _, s in ipairs(sent) do
+            if s.name == BR.Net.INV_AMMO then out = s.args[1] end
+        end
+        return out and out.total or nil
+    end
+
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.State.landed = true
+    fire(BR.Net.STATE, { state = BR.MatchState.PLAYING })
+
+    -- ── 1. TWELVE ROUNDS, THE WAY HE BOUGHT THEM. One magazine in the gun and
+    --       the rest behind it. TWELVE IS THE CONSTANT, whatever `clip` is: the
+    --       split moves with the config and the holding does not, which is what
+    --       makes this assertion mean the same thing before and after the fix.
+    local OWNED = 12
+    local MAG   = RAILGUN.clip
+    sent = {}
+    serverSays('railgun', 'heavy', MAG, OWNED - MAG)
+    ok(gun.total[RH] == OWNED,
+       'a railgun and twelve heavy rounds put twelve rounds on the ped',
+       ('engine %s, owned %d'):format(tostring(gun.total[RH]), OWNED))
+
+    -- ── 2. AND NOBODY HAS FIRED YET.
+    --
+    --       THIS IS THE WHOLE BUG IN ONE ASSERTION. With `clip = 3` against a
+    --       one-round magazine the ped is written down to 1 + the pool on the
+    --       SECOND tick -- two rounds destroyed, no trigger pulled, nothing in
+    --       the log. Owner: "the available rounds evaporate quickly down to zero
+    --       as I stand there doing nothing."
+    tick(8)
+    ok(gun.total[RH] == OWNED,
+       'A GUN NOBODY FIRED STILL HOLDS EVERY ROUND IT WAS GIVEN',
+       ('engine %s after 8 idle ticks, owned %d'):format(
+           tostring(gun.total[RH]), OWNED))
+
+    -- ...AND THE SERVER IS NOT TOLD OTHERWISE, which is the half that makes the
+    -- loss permanent: the report is decrease-only and the far end subtracts it.
+    local told = lastReportTotal()
+    ok(told == nil or told >= OWNED,
+       'and the server is never told rounds are gone that nobody spent',
+       ('reported %s, owned %d'):format(tostring(told), OWNED))
+
+    -- ── 3. NOW FIRE, AND RELOAD, AND FIRE AGAIN. THE INVARIANT IS THE ONLY
+    --       THING ASSERTED: the holding falls by the rounds fired and by
+    --       nothing else, however many reloads happen in between.
+    --
+    --       The magazine is 1, so this is eight shots and eight reloads -- the
+    --       worst case for a defect that leaks per reload rather than per shot.
+    local fired, leaked = 0, nil
+    for shot = 1, 8 do
+        local h = RH
+        if (gun.total[h] or 0) > 0 then
+            gun.total[h] = gun.total[h] - 1
+            gun.clip[h]  = math.max(0, (gun.clip[h] or 0) - 1)
+            fired = fired + 1
+            -- The engine's own reload, out of the engine's own reserve, up to
+            -- the engine's own magazine. No round is created and none is lost.
+            if gun.clip[h] == 0 then
+                gun.clip[h] = math.min(ENGINE_MAG[h], gun.total[h])
+            end
+        end
+        tick(3)
+        if leaked == nil and gun.total[h] ~= OWNED - fired then
+            leaked = ('after shot %d: engine %s, expected %d')
+                :format(shot, tostring(gun.total[h]), OWNED - fired)
+        end
+    end
+    ok(leaked == nil,
+       'EIGHT SHOTS AND EIGHT RELOADS COST EXACTLY EIGHT ROUNDS',
+       leaked)
+    ok(gun.total[RH] == OWNED - fired,
+       'and the ped ends holding what twelve minus what was fired comes to',
+       ('engine %s, %d - %d'):format(tostring(gun.total[RH]), OWNED, fired))
+
+    local endTold = lastReportTotal()
+    ok(endTold == nil or endTold >= OWNED - fired,
+       'and no report ever claimed fewer rounds left than there were',
+       ('reported %s, actually %d'):format(tostring(endTold), OWNED - fired))
+
+    -- ── 4. THE OTHER DIRECTION, WHICH IS THE MINIGUN AND IS DELIBERATE.
+    --
+    --       WEAPON_MINIGUN's ClipSize is 15000 and we declare 150, because
+    --       `w.clip` is also what BR.Inv.give grants as reserve and what one
+    --       press of the reload key moves. Declaring 15000 would hand a found
+    --       minigun the whole medium cap and empty the pool into one magazine.
+    --
+    --       SO THE CLAIM THAT IT IS SAFE IS TESTED RATHER THAN ASSERTED. The
+    --       engine keeps the whole remaining holding in its own clip, which
+    --       makes `granted` RISE with the reading instead of falling, so the
+    --       clamp that destroyed the railgun's rounds never fires here.
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+    fire(BR.Net.STATE, { state = BR.MatchState.PLAYING })
+    sent = {}
+    local BELT, RESERVE = MINIGUN.clip, 200
+    serverSays('minigun', 'medium', BELT, RESERVE)
+    ok(gun.total[MH] == BELT + RESERVE,
+       'a minigun holds its belt plus its reserve',
+       tostring(gun.total[MH]))
+    ok(gun.clip[MH] == BELT,
+       'and the engine took the whole declared belt, because 150 fits in 15000',
+       tostring(gun.clip[MH]))
+
+    -- The belt runs out, and GTA loads EVERYTHING that is left -- a 15000-round
+    -- magazine has room for all of it. The clip now reads far above `w.clip`.
+    gun.total[MH] = gun.total[MH] - BELT
+    gun.clip[MH]  = math.min(ENGINE_MAG[MH], gun.total[MH])
+    tick(4)
+    ok(gun.clip[MH] == RESERVE,
+       'the engine pulls the whole remainder into one magazine',
+       tostring(gun.clip[MH]))
+    ok(gun.total[MH] == RESERVE,
+       'AND A MAGAZINE BIGGER THAN WE DECLARE COSTS NOTHING -- the belt is '
+           .. 'spent and the reserve is not',
+       ('engine %s, expected %d'):format(tostring(gun.total[MH]), RESERVE))
+
+    GiveWeaponToPed     = savedGive
+    RemoveAllPedWeapons = savedRemove
+    SetPedAmmo          = savedSetAmmo
+    AddAmmoToPed        = savedAddAmmo
+    SetAmmoInClip       = savedSetClip
+    GetAmmoInPedWeapon  = savedGetAmmo
+    GetAmmoInClip       = savedGetClip
+    SetCurrentPedWeapon = savedCurrent
+    HasPedGotWeapon     = savedHasGot
+    pedWeapon = nil
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+end
+
+-- ======================================================================== --
+-- N4. THE PAIR ON THE PLATE, AND WHAT A PURCHASE DOES TO THE GUN
+-- ======================================================================== --
+--
+-- Owner, playtesting dev at a6cbdab:
+--
+--   1. The reserve number jitters while shooting.
+--   2. Combat PDW and 60 SMG rounds: after a few shots it reads 20/29 when it
+--      should read 20/30. 3. After the reload the magazine shows 29.
+--   5. The railgun still shows 1 in the chamber while it is visibly reloading.
+--   7. Buying ammo makes the gun reload on the SECOND purchase, though it
+--      already reloaded on the first.
+--
+-- THREE CAUSES IN client/inventory.lua, ONE PART OF THIS BLOCK EACH:
+--
+--   * The bar's reserve was the SERVER's holding less the ENGINE's magazine.
+--     While shooting the magazine falls every tick and the server's holding
+--     falls only when an INV_SET lands, so the reserve climbed a round a shot
+--     and snapped back. Two moments, one number.
+--   * A rise in the server's numbers re-asserted the server's whole SPLIT onto
+--     the gun. The server's magazine is still 0 after the engine loaded the gun
+--     itself (a reload moves no total, so no report says so), so the second
+--     purchase emptied the magazine and GTA reloaded. The same test compared the
+--     server's new magazine with the ENGINE's old one, so every server-side
+--     reload counted as a "gain" and rewrote the gun with a stale deficit.
+--   * The report loop read nothing at all while IsPedReloading, so a one-round
+--     magazine is never seen empty.
+--
+-- THE SERVER HERE IS A MODEL OF server/inventory.lua's INV_AMMO floor under
+-- serverAmmo, BR.Inv.reload included, and it answers with the payload the
+-- owner's build sent: a purchase into an empty gun leaves the server's magazine
+-- at 0. The client has to survive that payload whatever the server does now.
+--
+-- SECTIONS 4 TO 6 BUY THROUGH `buy`, which is the payload the server sends now:
+-- give() loads an empty magazine as the rounds arrive. On it they drive a
+-- gunfight and a second purchase, a purchase that loads the server's magazine
+-- while GTA reloads the gun, and one landing while the gun is stowed.
+describe('the bar reads one moment, and a purchase adds rounds behind the magazine')
+do
+    local savedGive    = GiveWeaponToPed
+    local savedRemove  = RemoveAllPedWeapons
+    local savedSetAmmo = SetPedAmmo
+    local savedAddAmmo = AddAmmoToPed
+    local savedSetClip = SetAmmoInClip
+    local savedGetAmmo = GetAmmoInPedWeapon
+    local savedGetClip = GetAmmoInClip
+    local savedCurrent = SetCurrentPedWeapon
+    local savedHasGot  = HasPedGotWeapon
+    local savedReload  = IsPedReloading
+
+    -- NO PARACHUTE, for the reason N2 gives.
+    function HasPedGotWeapon() return false end
+
+    -- The ped, as in N: the magazine is part of the total. AddAmmoToPed ADDS to
+    -- the total and leaves the magazine where it is. `lowered` counts every write
+    -- that took rounds OUT of a magazine, because that is what makes GTA reload.
+    -- `underReload` counts every magazine write made while GTA is reloading, and
+    -- `reloadOnAdd` is GTA starting that reload the moment an empty gun is
+    -- handed rounds.
+    local gun = { total = {}, clip = {}, lowered = 0, reloading = false,
+                  underReload = 0, reloadOnAdd = false }
+    function RemoveAllPedWeapons() gun.total, gun.clip = {}, {} end
+    function GiveWeaponToPed(_, hash, ammo)
+        local h = BR.NormHash(hash)
+        gun.total[h] = (gun.total[h] or 0) + (ammo or 0)
+    end
+    function SetPedAmmo(_, hash, n)
+        local h = BR.NormHash(hash)
+        gun.total[h] = math.max(0, n or 0)
+        gun.clip[h]  = math.min(gun.clip[h] or 0, gun.total[h])
+    end
+    function AddAmmoToPed(_, hash, n)
+        local h = BR.NormHash(hash)
+        gun.total[h] = math.max(0, (gun.total[h] or 0) + (n or 0))
+        if gun.reloadOnAdd and (gun.clip[h] or 0) == 0 and gun.total[h] > 0 then
+            gun.reloading = true
+        end
+    end
+    function SetAmmoInClip(_, hash, n)
+        local h = BR.NormHash(hash)
+        local want = math.min(math.max(0, n or 0), gun.total[h] or 0)
+        if want < (gun.clip[h] or 0) then gun.lowered = gun.lowered + 1 end
+        if gun.reloading then gun.underReload = gun.underReload + 1 end
+        gun.clip[h] = want
+    end
+    -- THE AMMO NATIVES ANSWER FOR THE GUN IN THE HAND AND READ 0 FOR ANY OTHER,
+    -- which is what client/inventory.lua's report loop says the engine does for
+    -- a stowed gun. A model that answered with the stowed gun's real numbers
+    -- would let grantAmmo ask the engine and never use its record.
+    local function inHand(h)
+        return type(pedWeapon) == 'number' and BR.NormHash(pedWeapon) == h
+    end
+    function GetAmmoInPedWeapon(_, hash)
+        local h = BR.NormHash(hash)
+        if not inHand(h) then return 0 end
+        return gun.total[h] or 0
+    end
+    function GetAmmoInClip(_, hash)
+        local h = BR.NormHash(hash)
+        if not inHand(h) then return true, 0 end
+        return true, gun.clip[h] or 0
+    end
+    function SetCurrentPedWeapon(_, hash) pedWeapon = hash end
+    function IsPedReloading() return gun.reloading end
+
+    local PDW  = BR.Config.WeaponById['combatpdw']
+    local RAIL = BR.Config.WeaponById['railgun']
+    local PH   = BR.NormHash(PDW.hash)
+    local RH   = BR.NormHash(RAIL.hash)
+
+    local function tick(n)
+        for _ = 1, (n or 1) do
+            fakeTime = fakeTime + 100
+            BR.Loop.step(BR.Loop.TICK)
+        end
+    end
+
+    --- GTA loading an empty gun by itself, out of its own reserve. `w.clip` is
+    --- the engine's magazine for these two; tools/check_weapons.lua keeps it so.
+    local function settle(w)
+        local h = BR.NormHash(w.hash)
+        if (gun.clip[h] or 0) == 0 and (gun.total[h] or 0) > 0 then
+            gun.clip[h] = math.min(w.clip, gun.total[h])
+        end
+    end
+
+    local function shoot(w)
+        local h = BR.NormHash(w.hash)
+        if (gun.total[h] or 0) <= 0 then return false end
+        gun.total[h] = gun.total[h] - 1
+        gun.clip[h]  = math.max(0, (gun.clip[h] or 0) - 1)
+        settle(w)
+        return true
+    end
+
+    local srv = { clip = 0, pool = 0 }
+    local function push(w)
+        fire(BR.Net.INV_SET, {
+            slots = { { id = w.id, label = w.label, kind = BR.ItemKind.WEAPON,
+                        rarity = 3, count = 1, clip = srv.clip, pool = w.ammo } },
+            ammo = { [w.ammo] = srv.pool }, active = 1,
+        })
+    end
+
+    --- Everything the client said since the last answer, applied the way the
+    --- INV_AMMO handler applies it: refused unless `was` is still true, the
+    --- magazine pays first, and an empty magazine over a live pool reloads.
+    local function answer(w)
+        local out = sent
+        sent = {}
+        for _, s in ipairs(out) do
+            local r = s.args[1]
+            if s.name == BR.Net.INV_AMMO and r.was == srv.clip + srv.pool then
+                local lost = srv.clip + srv.pool - r.total
+                if lost > 0 then
+                    srv.clip = srv.clip - lost
+                    if srv.clip < 0 then
+                        srv.pool = math.max(0, srv.pool + srv.clip)
+                        srv.clip = 0
+                    end
+                    if srv.clip <= 0 then
+                        local moved = math.min(w.clip, srv.pool)
+                        srv.clip, srv.pool = moved, srv.pool - moved
+                    end
+                    push(w)
+                end
+            end
+        end
+    end
+
+    --- A purchase, the way give()'s AMMO branch lands one now: into the pool,
+    --- clamped to its cap, and a magazine left empty over rounds that arrived
+    --- loads from them (server/inventory.lua, loadEmpty).
+    local function buy(w, n)
+        local was = srv.pool
+        srv.pool = math.min(BR.Config.AmmoCaps[w.ammo] or 0, srv.pool + n)
+        if srv.pool > was and srv.clip <= 0 then
+            local moved = math.min(w.clip, srv.pool)
+            srv.clip, srv.pool = moved, srv.pool - moved
+        end
+        push(w)
+    end
+
+    --- One round a tick for forty ticks, with a pause every seventh, because a
+    --- player who stops shooting is the moment a mixed-up clamp writes the gun
+    --- down. Returns the first round that went missing, as text, and the
+    --- magazine the gun held once the first one was spent.
+    local function gunfight(w)
+        local h = BR.NormHash(w.hash)
+        local start = gun.total[h] or 0
+        local fired, lost, secondMag = 0, nil, nil
+        for i = 1, 40 do
+            if i % 7 ~= 0 and shoot(w) then fired = fired + 1 end
+            tick(1)
+            answer(w)
+            if lost == nil and gun.total[h] ~= start - fired then
+                lost = ('after %d shots the gun holds %d, expected %d')
+                    :format(fired, gun.total[h], start - fired)
+            end
+            if secondMag == nil and fired == w.clip then
+                secondMag = gun.clip[h]
+            end
+        end
+        return lost, secondMag
+    end
+
+    -- WHAT THE BAR WAS HANDED, BESIDE THE GUN AT THAT INSTANT. Copied as the
+    -- envelope leaves, for the reason N2 gives.
+    local drawn, watching = {}, nil
+    AddEventHandler('br:ui:sendLocal', function(kind, p)
+        if kind ~= BR.Nui.INV or watching == nil then return end
+        local s = p and p.slots and p.slots[p.active or 0]
+        if type(s) ~= 'table' or s.id ~= watching.id then return end
+        local h = BR.NormHash(watching.hash)
+        drawn[#drawn + 1] = { said = s.clip, reserve = p.reserve,
+                              clip = gun.clip[h], total = gun.total[h] }
+    end)
+
+    --- Every plate that was not the gun, as text.
+    local function unequal()
+        local out = {}
+        for _, d in ipairs(drawn) do
+            local behind = (d.total or 0) - (d.clip or 0)
+            if d.said ~= d.clip or d.reserve ~= behind then
+                out[#out + 1] = ('drawn %s/%s, gun %s/%s'):format(
+                    tostring(d.said), tostring(d.reserve),
+                    tostring(d.clip), tostring(behind))
+            end
+        end
+        return table.concat(out, ', ')
+    end
+
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.State.landed = true
+    fire(BR.Net.STATE, { state = BR.MatchState.PLAYING })
+
+    -- ── 1. SIXTY ROUNDS INTO AN EMPTY PDW, AND THEN A GUNFIGHT WITH A WALL.
+    watching = PDW
+    srv.clip, srv.pool = 0, 0
+    push(PDW)
+    tick(1)
+    sent = {}
+    srv.pool = 60
+    push(PDW)
+    settle(PDW)
+    tick(1)
+    answer(PDW)
+    ok(gun.total[PH] == 60 and gun.clip[PH] == PDW.clip,
+       'sixty rounds bought into an empty PDW: a magazine and the rest behind it',
+       ('gun %s/%s'):format(tostring(gun.clip[PH]), tostring(gun.total[PH])))
+
+    drawn = {}
+    local lost, secondMag = gunfight(PDW)
+    ok(lost == nil, 'EVERY ROUND GONE FROM THE PDW IS A ROUND THAT WAS FIRED', lost)
+    ok(secondMag == PDW.clip,
+       'so the magazine after the reload is a whole one, not 29',
+       tostring(secondMag))
+    ok(#drawn > 0 and unequal() == '',
+       'AND EVERY PLATE DRAWN WHILE SHOOTING IS THE GUN AT THAT MOMENT',
+       #drawn > 0 and unequal() or 'nothing was drawn')
+
+    -- ── 2. THE SECOND PURCHASE. The server's magazine is STILL 0: the engine
+    --       loaded the gun itself after the first, and nothing told the server.
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+    fire(BR.Net.STATE, { state = BR.MatchState.PLAYING })
+    sent = {}
+    srv.clip, srv.pool = 0, 0
+    push(PDW)
+    tick(1)
+    srv.pool = 60
+    push(PDW)
+    settle(PDW)
+    tick(2)
+    answer(PDW)
+    ok(gun.clip[PH] == PDW.clip, 'the first purchase loaded the gun',
+       tostring(gun.clip[PH]))
+
+    gun.lowered = 0
+    srv.pool = 120
+    push(PDW)
+    tick(2)
+    answer(PDW)
+    ok(gun.lowered == 0,
+       'THE SECOND PURCHASE TAKES NOTHING OUT OF THE MAGAZINE, so GTA has '
+           .. 'nothing to reload',
+       ('%d write(s) lowered it'):format(gun.lowered))
+    ok(gun.clip[PH] == PDW.clip and gun.total[PH] == 120,
+       'and the sixty bought land behind the magazine',
+       ('gun %s/%s'):format(tostring(gun.clip[PH]), tostring(gun.total[PH])))
+
+    -- THE OTHER DIRECTION: a magazine the SERVER loads as the rounds arrive has
+    -- to reach an empty gun, with no reload for GTA to play.
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+    fire(BR.Net.STATE, { state = BR.MatchState.PLAYING })
+    srv.clip, srv.pool = 0, 0
+    push(PDW)
+    tick(1)
+    srv.clip, srv.pool = PDW.clip, 60 - PDW.clip
+    push(PDW)
+    tick(1)
+    ok(gun.clip[PH] == PDW.clip and gun.total[PH] == 60,
+       'a magazine the server loaded on arrival is in the gun at once',
+       ('gun %s/%s'):format(tostring(gun.clip[PH]), tostring(gun.total[PH])))
+
+    -- ── 3. THE RAILGUN RELOADING.
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+    fire(BR.Net.STATE, { state = BR.MatchState.PLAYING })
+    watching = RAIL
+    srv.clip, srv.pool = RAIL.clip, 11
+    push(RAIL)
+    tick(2)
+    sent = {}
+
+    -- The round leaves and GTA starts the reload. Nothing is in the chamber until
+    -- the animation puts the next round there.
+    gun.total[RH] = gun.total[RH] - 1
+    gun.clip[RH]  = 0
+    gun.reloading = true
+    drawn = {}
+    tick(2)
+    local d = drawn[#drawn]
+    ok(d ~= nil and d.said == 0,
+       'WHILE THE RAILGUN RELOADS THE COUNTER READS AN EMPTY CHAMBER',
+       tostring(d and d.said))
+    ok(d ~= nil and d.reserve == 11, 'with the eleven rounds behind it',
+       tostring(d and d.reserve))
+    local spoke = 0
+    for _, s in ipairs(sent) do
+        if s.name == BR.Net.INV_AMMO then spoke = spoke + 1 end
+    end
+    ok(spoke == 0, 'and nothing is reported to the server mid-reload',
+       ('%d report(s)'):format(spoke))
+
+    gun.clip[RH]  = 1
+    gun.reloading = false
+    drawn = {}
+    tick(2)
+    d = drawn[#drawn]
+    ok(d ~= nil and d.said == 1 and d.reserve == 10,
+       'and when the round is in: one in the chamber and ten behind',
+       d and ('%s/%s'):format(tostring(d.said), tostring(d.reserve)) or 'nothing drawn')
+
+    -- ── 4. THE PAYLOAD THE SERVER SENDS NOW. Sixty rounds into an empty PDW
+    --       arrive as a loaded magazine and thirty behind it, and the gunfight
+    --       and the purchase after it have to hold on those numbers too.
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+    fire(BR.Net.STATE, { state = BR.MatchState.PLAYING })
+    watching = PDW
+    srv.clip, srv.pool = 0, 0
+    push(PDW)
+    tick(1)
+    sent = {}
+    buy(PDW, 60)
+    tick(1)
+    answer(PDW)
+    ok(srv.clip == PDW.clip and gun.clip[PH] == PDW.clip and gun.total[PH] == 60,
+       'sixty rounds the server loaded on arrival are a loaded PDW',
+       ('server %d/%d, gun %s/%s'):format(srv.clip, srv.pool,
+           tostring(gun.clip[PH]), tostring(gun.total[PH])))
+
+    drawn = {}
+    lost, secondMag = gunfight(PDW)
+    ok(lost == nil, 'no round goes missing from a magazine the server loaded', lost)
+    ok(secondMag == PDW.clip, 'and the magazine after the reload is a whole one',
+       tostring(secondMag))
+    ok(#drawn > 0 and unequal() == '',
+       'and every plate drawn while shooting is the gun at that moment',
+       #drawn > 0 and unequal() or 'nothing was drawn')
+
+    gun.lowered = 0
+    local clipWas, totalWas = gun.clip[PH], gun.total[PH]
+    buy(PDW, 60)
+    tick(2)
+    answer(PDW)
+    ok(gun.lowered == 0 and gun.clip[PH] == clipWas
+       and gun.total[PH] == totalWas + 60,
+       'A PURCHASE AFTER THE FIGHT LANDS BEHIND THE MAGAZINE, taking nothing out',
+       ('gun %s/%s, was %s/%s, %d write(s) lowered it'):format(
+           tostring(gun.clip[PH]), tostring(gun.total[PH]),
+           tostring(clipWas), tostring(totalWas), gun.lowered))
+
+    -- ── 5. A PURCHASE THAT LOADS THE SERVER'S MAGAZINE WHILE GTA RELOADS. The
+    --       PDW is fired dry over an empty pool, so the server's magazine is 0
+    --       when sixty rounds arrive and give() loads it: the payload carries the
+    --       load. GTA starts its own reload the moment an empty gun is handed
+    --       rounds, and grantAmmo has to leave the magazine to that animation.
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+    fire(BR.Net.STATE, { state = BR.MatchState.PLAYING })
+    srv.clip, srv.pool = 0, 0
+    push(PDW)
+    tick(1)
+    sent = {}
+    buy(PDW, PDW.clip)
+    tick(1)
+    answer(PDW)
+    for _ = 1, PDW.clip do
+        shoot(PDW)
+        tick(1)
+        answer(PDW)
+    end
+    -- The report of the last round leaves on the loop's own cadence.
+    tick(2)
+    answer(PDW)
+    ok(srv.clip == 0 and srv.pool == 0 and (gun.total[PH] or 0) == 0,
+       'a PDW fired dry over an empty pool, on both sides',
+       ('server %d/%d, gun %s/%s'):format(srv.clip, srv.pool,
+           tostring(gun.clip[PH]), tostring(gun.total[PH])))
+
+    gun.lowered, gun.underReload = 0, 0
+    gun.reloadOnAdd = true
+    drawn = {}
+    buy(PDW, 60)
+    gun.reloadOnAdd = false
+    ok(srv.clip == PDW.clip and gun.reloading,
+       'the server loaded the magazine as the rounds arrived, and GTA is reloading',
+       ('server %d/%d, reloading %s'):format(srv.clip, srv.pool,
+           tostring(gun.reloading)))
+    ok(gun.underReload == 0 and gun.clip[PH] == 0 and gun.total[PH] == 60,
+       'NO MAGAZINE IS WRITTEN UNDER THE RELOAD, and the rounds go behind the '
+           .. 'empty chamber',
+       ('gun %s/%s, %d write(s) under the reload'):format(
+           tostring(gun.clip[PH]), tostring(gun.total[PH]), gun.underReload))
+    tick(1)
+    d = drawn[#drawn]
+    ok(d ~= nil and d.said == 0 and d.reserve == 60,
+       'mid-reload the plate is the empty chamber and sixty behind it',
+       d and ('%s/%s'):format(tostring(d.said), tostring(d.reserve)) or 'nothing drawn')
+
+    gun.clip[PH]  = PDW.clip
+    gun.reloading = false
+    drawn = {}
+    tick(2)
+    answer(PDW)
+    d = drawn[#drawn]
+    ok(gun.lowered == 0 and gun.clip[PH] == PDW.clip and gun.total[PH] == 60,
+       'the reload ends with a whole magazine and every round bought',
+       ('gun %s/%s'):format(tostring(gun.clip[PH]), tostring(gun.total[PH])))
+    ok(d ~= nil and d.said == PDW.clip and d.reserve == 60 - PDW.clip,
+       'AND THE PLATE AFTER THE RELOAD IS THE GUN',
+       d and ('%s/%s'):format(tostring(d.said), tostring(d.reserve)) or 'nothing drawn')
+
+    -- ── 6. A PURCHASE WHILE THE GUN IS STOWED (a seat, a get-in animation). The
+    --       natives read 0 for a gun that is not in the hand, so grantAmmo
+    --       works from the last reading, and the magazine the server loaded on
+    --       arrival still has to reach the gun.
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+    fire(BR.Net.STATE, { state = BR.MatchState.PLAYING })
+    srv.clip, srv.pool = 0, 0
+    push(PDW)
+    tick(1)
+    sent = {}
+    pedWeapon = 0xA2719263   -- WEAPON_UNARMED, what the engine holds instead
+    gun.lowered = 0
+    drawn = {}
+    buy(PDW, 60)
+    ok(gun.clip[PH] == PDW.clip and gun.total[PH] == 60,
+       'the magazine the server loaded reaches the stowed gun',
+       ('gun %s/%s'):format(tostring(gun.clip[PH]), tostring(gun.total[PH])))
+
+    pedWeapon = PDW.hash
+    tick(2)
+    answer(PDW)
+    d = drawn[#drawn]
+    ok(d ~= nil and d.said == PDW.clip and d.reserve == 60 - PDW.clip,
+       'AND BACK IN THE HAND THE PLATE IS A WHOLE MAGAZINE AND THIRTY BEHIND',
+       d and ('%s/%s'):format(tostring(d.said), tostring(d.reserve)) or 'nothing drawn')
+    ok(unequal() == '', 'with no plate along the way that was not the gun',
+       unequal())
+
+    watching = nil
+    GiveWeaponToPed     = savedGive
+    RemoveAllPedWeapons = savedRemove
+    SetPedAmmo          = savedSetAmmo
+    AddAmmoToPed        = savedAddAmmo
+    SetAmmoInClip       = savedSetClip
+    GetAmmoInPedWeapon  = savedGetAmmo
+    GetAmmoInClip       = savedGetClip
+    SetCurrentPedWeapon = savedCurrent
+    HasPedGotWeapon     = savedHasGot
+    IsPedReloading      = savedReload
+    pedWeapon = nil
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+end
+
+-- ======================================================================== --
+-- N3b. /brprobe clips -- THE AUDIT THAT REPLACES THE LOOKUP
+-- ======================================================================== --
+--
+-- The owner asked how our magazine sizes can be validated against GTA's, and
+-- whether there is a source online. Two of the three obvious sources are traps:
+--
+--   * DurtyFree's gta-v-data-dumps weapons.json carries DefaultMaxAmmo, which is
+--     the POOL ceiling, not a magazine. Reading it as one would have "confirmed"
+--     the railgun at 20-something and settled nothing.
+--   * weaponcomponents.meta is authoritative and INCOMPLETE for us: it is silent
+--     on the railgun and on every Mk II, and four of our weapons appear in it
+--     only as an EXTENDED clip, which is not the magazine a found gun arrives
+--     with.
+--
+-- So the answer is a command that asks the engine on the build he is running,
+-- and the thing worth testing about it is the thing that would make it useless:
+-- that it says "ok" for a magazine that is actually wrong.
+describe('/brprobe clips names every magazine that disagrees with the engine')
+do
+    -- Loaded here rather than in the top-level list: probe.lua is a diagnostic
+    -- that spawns crates and reads gfx natives, and every other block in this
+    -- file would pay for those stubs to test none of them. Same shape as
+    -- config/peds.lua and client/locker.lua further down.
+    local chunk, err = loadfile(ROOT .. 'br_core/client/probe.lua')
+    ok(chunk ~= nil, 'client/probe.lua loads', err)
+    if chunk then chunk() end
+
+    local savedWeaponClip = GetWeaponClipSize
+    local savedMaxInClip  = GetMaxAmmoInClip
+
+    -- THE ENGINE, AND IT IS NOT BUILT OUT OF BR.Config. Three real answers and
+    -- silence for everything else, which also exercises the `no reading` path --
+    -- a command that printed a confident 0 for an unanswerable weapon would read
+    -- as "the engine says this gun has no magazine".
+    local TRUTH = {
+        [BR.NormHash(BR.Config.WeaponById['railgun'].hash)] = 1,
+        [BR.NormHash(BR.Config.WeaponById['minigun'].hash)] = 15000,
+        [BR.NormHash(BR.Config.WeaponById['pistol'].hash)]  = 12,
+    }
+    function GetWeaponClipSize(hash) return TRUTH[BR.NormHash(hash)] or 0 end
+    function GetMaxAmmoInClip() return false, 0 end
+
+    --- Run the command and hand back everything it printed.
+    local function run()
+        local from = #logged + 1
+        local safe = pcall(commands['brprobe'], nil, { 'clips' }, '')
+        local out = {}
+        for i = from, #logged do out[#out + 1] = logged[i] end
+        return safe, table.concat(out, '\n')
+    end
+
+    --- The audit's own line for one weapon.
+    local function rowFor(text, id)
+        for row in text:gmatch('[^\n]+') do
+            if row:match('^%s+' .. id .. '%s') then return row end
+        end
+        return nil
+    end
+
+    local safe, text = run()
+    ok(safe, '/brprobe clips does not throw with no weapon in hand')
+
+    -- ── THE THREE VERDICTS, one weapon each.
+    local rail = rowFor(text, 'railgun')
+    ok(rail ~= nil and not rail:find('OVER'),
+       'the railgun agrees with the engine now and is not flagged', rail)
+    local mini = rowFor(text, 'minigun')
+    ok(mini ~= nil and mini:find('under') ~= nil and not mini:find('OVER'),
+       'the minigun reads as UNDER the engine, which is the safe direction',
+       mini)
+    local blind = rowFor(text, 'heavysniper')
+    ok(blind ~= nil and blind:find('no reading') ~= nil,
+       'a weapon nothing will answer for says so rather than printing 0',
+       blind)
+
+    -- ── THE META COLUMN, AND THE HALF OF IT THAT IS BLANK ON PURPOSE.
+    ok(rowFor(text, 'pistol') ~= nil
+       and rowFor(text, 'pistol'):find('12%s+12') ~= nil,
+       'the weaponcomponents.meta column prints beside the engine\'s',
+       rowFor(text, 'pistol'))
+    ok(text:find('EXTENDED clip') ~= nil,
+       'and the weapons it has only an EXTENDED clip for are named, not numbered')
+    ok(rowFor(text, 'combatpdw') ~= nil
+       and not rowFor(text, 'combatpdw'):find('100'),
+       'COMBATPDW_CLIP_03\'s 100 never appears as though it were the default',
+       rowFor(text, 'combatpdw'))
+
+    -- ── AND THE RED. A command that cannot fail is not an audit: the railgun is
+    --    put back to the number that lost the owner eight rounds, and the audit
+    --    has to name it. Restored immediately -- this is the live config table.
+    local RAIL = BR.Config.WeaponById['railgun']
+    local realClip = RAIL.clip
+    RAIL.clip = 3
+    local _, broken = run()
+    RAIL.clip = realClip
+
+    local badRow = rowFor(broken, 'railgun')
+    ok(badRow ~= nil and badRow:find('OVER') ~= nil,
+       'A RAILGUN DECLARED 3 AGAINST A MAGAZINE OF 1 IS NAMED, LOUDLY', badRow)
+    ok(broken:find('railgun %(3 over 1%)') ~= nil,
+       'and the summary line says which weapon and by how much')
+    ok(broken:find('DESTROYS ROUNDS') ~= nil,
+       'and says what it costs, rather than calling it a mismatch')
+    ok(BR.Config.WeaponById['railgun'].clip == realClip,
+       'and the config table is left exactly as it was found',
+       tostring(BR.Config.WeaponById['railgun'].clip))
+
+    GetWeaponClipSize = savedWeaponClip
+    GetMaxAmmoInClip  = savedMaxInClip
 end
 
 -- ======================================================================== --
@@ -15819,6 +17734,83 @@ do
     fire(BR.Net.INV_SET, gain(4, { quiet = false }))
     ok(#plays > 0, 'nor is an explicit false')
 
+    -- ═══ AND THE WHEELS-UP WIPE IS THE OTHER HALF OF THE SAME SENTENCE
+    --     (owner, 2026-09-11) ═══
+    --
+    -- "Any inventory adds/removes when the bus spawns should all be muted."
+    --
+    -- EVERY ASSERTION ABOVE IS ABOUT AN ADD, and a wipe cannot gain -- so the
+    -- flag as it stood could not have silenced the cue he was hearing. The
+    -- REMOVE case makes its noise somewhere else entirely: an emptied bag hands
+    -- the active slot back to melee, which is an active-slot EDGE, which rings
+    -- the SWITCH CLICK. A player who picked anything up on the warmup pad heard
+    -- a swap they did not make at the moment the plane appeared.
+    --
+    -- THE WRONG CASE IS DRIVEN FIRST AND ASSERTED AUDIBLE, for the reason the
+    -- pickup block gives one screen up: a fix that muted the click outright
+    -- would pass a test that only checked the quiet case, and would take the
+    -- slot click out of the whole game.
+    --
+    -- THE PAIR IS CHECKED, NOT ONLY THE COUNT. Both cues route through this one
+    -- stub, so a build that silenced the click and started ringing PICK_UP at a
+    -- wipe instead would keep `#plays` at 1 and be exactly the bug.
+    local function wipe(extra)
+        local d = { slots = {}, ammo = {}, active = 0 }   -- 0 is Loot.meleeSlot
+        for i = 1, 5 do d.slots[i] = false end
+        for k, v in pairs(extra or {}) do d[k] = v end
+        return d
+    end
+
+    local SWITCH = BR.Config.Loot.switchSound
+    ok(type(SWITCH) == 'table' and SWITCH.name ~= nil,
+        'the switch click is a real pair in config/loot.lua, or everything '
+            .. 'below is asserting silence against silence',
+        SWITCH and tostring(SWITCH.name) or 'nothing')
+
+    -- Hold something in slot 1, so the wipe below really is an edge.
+    fire(BR.Net.INV_SET, gain(2))
+    plays = {}
+    fire(BR.Net.INV_SET, wipe())
+    ok(#plays == 1 and plays[1].name == SWITCH.name
+           and plays[1].set == SWITCH.set,
+        'a wipe nobody marked quiet still clicks -- the ordinary slot click is '
+            .. 'untouched',
+        (#plays == 1) and tostring(plays[1].name) or ('%d plays'):format(#plays))
+
+    fire(BR.Net.INV_SET, gain(2))
+    plays = {}
+    fire(BR.Net.INV_SET, wipe({ quiet = true }))
+    ok(#plays == 0,
+        'and the wheels-up wipe, which the server marks quiet, is SILENT -- no '
+            .. 'switch click for a slot that was emptied rather than swapped',
+        #plays)
+
+    -- ...AND 0 IS STILL NOT SILENCE HERE EITHER. Same wire, same trap, second
+    -- reader of the same field.
+    fire(BR.Net.INV_SET, gain(2))
+    plays = {}
+    fire(BR.Net.INV_SET, wipe({ quiet = 0 }))
+    ok(#plays == 1,
+        'while a 0 on the wipe clicks, because 0 is truthy in Lua and `not '
+            .. 'd.quiet` would have muted every slot change in the game', #plays)
+
+    -- ═══ QUIET IS NOT INVISIBLE, AND THE WALKTHROUGH STILL HEARS IT ═══
+    --
+    -- Step 14 of the guided first run advances on `br:inv:slotChanged`, which is
+    -- raised on this same edge, one line under the click. The slot really did
+    -- change; only the sound is being withheld. Muting the branch instead of the
+    -- cue inside it would strand a first-time player on a step they had already
+    -- completed, and nothing about that is audible.
+    local slotEvents = 0
+    AddEventHandler('br:inv:slotChanged', function() slotEvents = slotEvents + 1 end)
+    fire(BR.Net.INV_SET, gain(2))
+    slotEvents, plays = 0, {}
+    fire(BR.Net.INV_SET, wipe({ quiet = true }))
+    ok(slotEvents == 1 and #plays == 0,
+        'a quiet wipe still raises br:inv:slotChanged, so the walkthrough is '
+            .. 'told about a slot change it can see even though nothing rang',
+        ('%d events, %d plays'):format(slotEvents, #plays))
+
     PlaySoundFrontend = savedPlay
 end
 
@@ -16098,6 +18090,188 @@ do
     RegisterCommand          = prev.registerCommand
     math.random              = prev.random
     kvpStore[KVP]            = nil
+end
+
+-- ======================================================================== --
+-- 31. THE PLAYER WHO SET THE WAYPOINT DOES NOT HEAR OUR CUE
+-- ======================================================================== --
+--
+-- THE REQUEST (owner, 2026-09-11): "Whoever sets the waypoint in a squad should
+-- not hear our PlaySoundFrontend as the game already does this"
+--
+-- ═══ WHY THIS IS THE FIRST SUITE TO LOAD client/markers.lua AT ALL ═══
+--
+-- Nothing had ever stood that file up, and the bug is a good argument for why
+-- that had to change: it was a COMMENT. The cue line carried "the server already
+-- excludes the sender, so this cannot fire for your own" -- and
+-- server/markers.lua builds its audience as `{ src }` plus the squad,
+-- deliberately, because a solo player's marker is private and still has to reach
+-- somebody. So the file said the thing that made it correct, the thing was
+-- false, and every reader after that took its word for it.
+--
+-- A PLAYTEST CANNOT SEPARATE THE TWO SOUNDS. GTA's own waypoint blip and
+-- squad.waypoint are both short frontend pings a fraction of a second apart, on
+-- the same gesture; "that sounded a bit doubled" is the entire symptom, and the
+-- fix and the bug are indistinguishable to anybody who is not listening for it.
+--
+-- SO THE WRONG CASE IS DRIVEN AND ASSERTED SILENT, and the right case is asserted
+-- to still sound -- because the squadmates who did NOT place it hear our cue as
+-- the ONLY signal that anything happened, and a fix that muted the cue outright
+-- would be invisible on the placer's screen and total on everybody else's.
+do
+    describe('the waypoint cue is for everyone except the player who placed it')
+
+    local prev = {
+        add = AddBlipForCoord, exists = DoesBlipExist, remove = RemoveBlip,
+        sfx = BR.Sfx.play,
+    }
+
+    -- THE CUE KEY, RECORDED AS A STRING. Every cue test in this project does
+    -- this, and tools/check_cue_sites.lua is what stops the string being one the
+    -- table no longer holds -- the two together are the reason two dead cues were
+    -- found rather than shipped a third time.
+    local cues = {}
+    BR.Sfx.play = function(key) cues[#cues + 1] = key end
+
+    -- Modelled blips, because "quiet" must not have become "absent": the placer
+    -- still gets the blip, the beam and the legend entry. Only the sound goes.
+    local blipSeq, blipsMade = 0, 0
+    AddBlipForCoord = function()
+        blipSeq, blipsMade = blipSeq + 1, blipSeq + 1
+        return blipSeq
+    end
+    DoesBlipExist = function(b) return b ~= nil and b > 0 end
+    RemoveBlip    = noop
+
+    -- THE LEGEND ENTRY IS LEFT AS THE REAL PATH, because "whose marker is this"
+    -- is drawn from the same field the silence is now decided from -- so the name
+    -- going through client/natives.lua's real blipName is worth the one native
+    -- the suite was missing. `BeginTextCommandSetBlipName` and its closer are
+    -- already in the noop list; only this spelling of the middle call was not.
+    local names = {}
+    AddTextComponentString = function(s) names[#names + 1] = s end
+
+    -- The pause map is not open in any of this: placement rides IsWaypointActive
+    -- and every scene below arrives on the WIRE, which is how a marker reaches a
+    -- client whoever placed it.
+    IsWaypointActive        = function() return false end
+    SetWaypointOff          = noop
+    GetFirstBlipInfoId      = function() return 0 end
+    GetNextBlipInfoId       = function() return 0 end
+    GetBlipInfoIdCoord      = function() return { x = 0.0, y = 0.0, z = 0.0 } end
+    GetFinalRenderedCamCoord = function() return { x = 0.0, y = 0.0, z = 0.0 } end
+
+    loadAll({ 'br_core/client/markers.lua' })
+
+    BR.State.me = { src = 1, state = BR.PlayerState.ALIVE, squadId = 'sq1' }
+    BR.State.roster = {
+        [1] = { src = 1, name = 'Me',    squadId = 'sq1' },
+        [2] = { src = 2, name = 'Bravo', squadId = 'sq1' },
+    }
+
+    --- One MARKER_SYNC, and everything it played.
+    local function sync(payload)
+        cues = {}
+        fire(BR.Net.MARKER_SYNC, payload)
+        return cues
+    end
+
+    -- ═══ THE WRONG CASE: MY OWN MARKER, COMING BACK TO ME ═══
+    --
+    -- This is not a hypothetical payload. server/markers.lua puts the sender at
+    -- the head of its own audience, so this is the exact message the placer
+    -- receives, on every placement, in squads and solo alike.
+    local mine = sync({ op = 'set', owner = 1, x = 100.0, y = 200.0, i = 1 })
+    ok(#mine == 0,
+        'the player who placed it hears NOTHING from us -- the engine already '
+            .. 'pinged when the waypoint went down, and two sounds for one '
+            .. 'gesture is the report',
+        (#mine > 0) and table.concat(mine, ',') or 'silent')
+
+    -- ...AND THE MARKER ITSELF IS UNAFFECTED, which is the half that stops the
+    -- fix being applied one level too high. Silence is not absence: the placer
+    -- keeps the blip, its colour and its beam.
+    ok(blipsMade == 1,
+        'while the marker itself is drawn for them exactly as before -- quiet is '
+            .. 'not invisible',
+        ('%d blip(s)'):format(blipsMade))
+
+    -- ═══ AND THE RIGHT CASE: A SQUADMATE'S MARKER STILL SPEAKS ═══
+    --
+    -- For them our cue is the ONLY signal. Nothing on their screen moved, no
+    -- gesture of theirs produced it, and GTA pinged on somebody else's machine.
+    local theirs = sync({ op = 'set', owner = 2, x = 300.0, y = 400.0, i = 2 })
+    ok(#theirs == 1 and theirs[1] == 'squad.waypoint',
+        'a squadmate placing one DOES sound, because for them it is the only '
+            .. 'signal there is',
+        (#theirs > 0) and table.concat(theirs, ',') or 'silent')
+
+    -- ═══ AND THE SECOND CLAIM THAT USED TO BE ON THAT LINE, WRITTEN DOWN AS
+    --     WHAT IT ACTUALLY DOES ═══
+    --
+    -- The cue used to be guarded on `isNew`, over `markers[d.owner] == nil`, with
+    -- "NEW MARKERS ONLY ... a cue for a mate adjusting their own ping is noise"
+    -- beside it. `removeMarker(d.owner)` runs twenty lines earlier and nils that
+    -- entry, so the guard could never be false and a mate dragging their ping
+    -- around re-played the cue every push -- the SECOND false comment in three
+    -- lines, and the reason this block exists at all.
+    --
+    -- THE BEHAVIOUR IS LEFT ALONE AND PINNED HERE HONESTLY. Whether a re-place
+    -- should dedup is the owner's call and nobody has reported it -- a mate
+    -- re-pinging is new information at a new place -- so this asserts what the
+    -- game has always done rather than what the deleted sentence wished it did.
+    -- If he rules the other way, this is the assertion that changes.
+    local again = sync({ op = 'set', owner = 2, x = 305.0, y = 405.0, i = 2 })
+    ok(#again == 1 and again[1] == 'squad.waypoint',
+        'a mate MOVING their own marker sounds again, which is what this has '
+            .. 'always done -- the `isNew` guard that claimed otherwise could '
+            .. 'never be false',
+        (#again > 0) and table.concat(again, ',') or 'silent')
+
+    -- ...and so does one they cleared and placed again.
+    sync({ op = 'clear', owner = 2 })
+    local fresh = sync({ op = 'set', owner = 2, x = 500.0, y = 600.0, i = 2 })
+    ok(#fresh == 1 and fresh[1] == 'squad.waypoint',
+        'as does one they cleared and placed again',
+        (#fresh > 0) and table.concat(fresh, ',') or 'silent')
+
+    -- ═══ AND MINE IS STILL SILENT ON A RE-PLACE, WHICH IS THE PAIR ═══
+    --
+    -- The owner's rule is about the PLACER and it has to survive the gesture he
+    -- actually performs most: dropping a second waypoint to move his own ping.
+    -- Each of those is a fresh engine ping followed by a fresh round trip.
+    local mineAgain = sync({ op = 'set', owner = 1, x = 150.0, y = 250.0, i = 1 })
+    ok(#mineAgain == 0,
+        'and MY OWN marker is silent on a re-place too -- moving a ping is the '
+            .. 'gesture he does most, and each one is another engine ping',
+        (#mineAgain > 0) and table.concat(mineAgain, ',') or 'silent')
+
+    -- ═══ SOLO, WHERE THE ONLY AUDIENCE IS THE PLACER ═══
+    --
+    -- No squad, no member index, and the audience is `{ src }` alone -- so this
+    -- payload is the one the rule has to be right about most, and before the fix
+    -- it was the case where our cue could not possibly have had a listener who
+    -- had not just heard the engine's.
+    local solo = sync({ op = 'set', owner = 1, x = 700.0, y = 800.0, i = nil })
+    ok(#solo == 0,
+        'and in solo -- where the placer is the whole audience -- the marker is '
+            .. 'placed in silence',
+        (#solo > 0) and table.concat(solo, ',') or 'silent')
+
+    -- AND THE TEST IS THE OWNER FIELD, NOT THE SQUAD. A marker from somebody with
+    -- no member index is still somebody else's; a build that keyed the silence on
+    -- `d.i == nil` would mute every solo ping including the ones it should not.
+    local strangerish = sync({ op = 'set', owner = 2, x = 900.0, y = 1000.0,
+                               i = nil })
+    ok(#strangerish == 1,
+        'while a marker with no member index from SOMEBODY ELSE still sounds -- '
+            .. 'the test is whose marker it is, not what colour it is',
+        (#strangerish > 0) and table.concat(strangerish, ',') or 'silent')
+
+    AddBlipForCoord = prev.add
+    DoesBlipExist   = prev.exists
+    RemoveBlip      = prev.remove
+    BR.Sfx.play     = prev.sfx
 end
 
 realPrint(('%s%d passed, %d failed\27[0m')

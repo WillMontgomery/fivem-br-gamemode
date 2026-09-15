@@ -357,8 +357,43 @@ function BR.Native.applyDamage(amount, armourFirst)
 end
 
 --- Normalise the player's health model at match start.
+---
+--- ═══ SetPedMaxHealth IS THE ONE THAT TAKES ON A PLAYER PED ═══
+---
+--- SET_ENTITY_MAX_HEALTH is widely reported not to take effect on a PLAYER ped
+--- -- SET_PED_MAX_HEALTH is the native that does -- and the difference is not
+--- academic here, because SET_ENTITY_HEALTH is documented to CLAMP to max health
+--- on a player ped (it raises max to fit for every other kind of entity). So on
+--- the old pair the line below asked for 200 and got whatever the MODEL's own
+--- maximum happened to be.
+---
+--- AND THE MODEL IS THE PLAYER'S CHOICE. config/peds.lua offers three dozen
+--- ambient models and their model-default maximums are not all 200 -- the
+--- freemode female default of 175 against the male 200 is the best documented of
+--- them. A player on such a model had a health bar that could never fill:
+--- BR.ToDisplayHp maps engine 100..200 onto display 0..100, so a ped clamped at
+--- its own lower maximum reads as a permanently wounded player, a med kit "to
+--- 100" leaves them short, and every damage number in the game is measured
+--- against a span they do not have.
+---
+--- IT WAS ALSO HALF OF A LIVE ANTICHEAT FALSE POSITIVE, which is how it was
+--- found. FiveM's ped health sync node sends no health field at all when its
+--- `isFine` bit is set and the server's parser substitutes `maxHealth` -- a
+--- hardcoded 200 for a ped whose max was never synced. So a player capped below
+--- our ceiling read as exactly 200 on the server every time they were "full",
+--- which the health audit scored as recovery nobody issued, at a fixed size
+--- equal to the distance their ledger sat below the ceiling. Raising the max for
+--- real removes the gap on both sides; shared/health_solve.lua's UNSYNCED clause
+--- is the other half, and it is needed anyway because the server can never tell
+--- a substituted ceiling from a real one.
+---
+--- BOTH NATIVES, AND SetPedMaxHealth FIRST. The entity call is kept because it
+--- costs nothing and is the correct one everywhere else in the engine; the ped
+--- call is the one this line depends on. The health write comes after both, so
+--- it has the ceiling it is asking for.
 function BR.Native.initHealthModel()
     local ped = PlayerPedId()
+    SetPedMaxHealth(ped, BR.Config.Match.maxHealth)
     SetEntityMaxHealth(ped, BR.Config.Match.maxHealth)
     SetEntityHealth(ped, BR.Config.Match.maxHealth)
     SetPedArmour(ped, 0)
@@ -1006,7 +1041,32 @@ function BR.Native.teamFor(me, roster)
     -- is the only place two players can shoot each other anyway, because
     -- separate matches are separate routing buckets and never in each other's
     -- scope.
-    local index = tonumber(squad:match('^m%d+sq(%d+)$'))
+    --
+    -- ═══ %x AND NOT %d, BECAUSE THE MATCH HALF IS HEX AND THIS FAILED OPEN ═══
+    --
+    -- This read `^m%d+sq(%d+)$` until 2026-09-11. #291 made match ids a random
+    -- 20 bit draw rendered as hex (seven characters since 2026-09-12, five
+    -- before it), so a squad id went from
+    -- `m6sq1` to `m0a3f1sq1` and `%d+` stopped matching the moment a tag
+    -- contained a letter.
+    --
+    -- THE FAIL-OPEN BELOW IS WHY NOBODY SAW AN ERROR AND WHY IT WAS SERIOUS.
+    -- An unrecognised id answers SOLO_TEAM, so every player in every squad was
+    -- put on the solo team and squadmates could shoot each other. Owner,
+    -- 2026-09-11: "somehow since we've fixed it we've broke it AGAIN.
+    -- Squadmates are now not in a good relationship group I guess."
+    --
+    -- The note below is exactly right about the risk and exactly what happened:
+    -- "an id in a shape this does not recognise means the squad system moved
+    -- and this function did not." It moved.
+    --
+    -- `%x` covers both spellings, since every decimal digit is a hex digit, so
+    -- this does not care which base a tag is written in. server/voice.lua:157
+    -- was never broken because it anchors on the SUFFIX alone and never reads
+    -- the tag at all, which is the more robust shape; the shape check is kept
+    -- here because the fail-open above depends on recognising a malformed id
+    -- rather than pulling a number out of any string that ends in digits.
+    local index = tonumber(squad:match('^m%x+sq(%d+)$'))
 
     -- FAIL OPEN, ALWAYS. An id in a shape this does not recognise means the
     -- squad system moved and this function did not. The safe answer to that is
@@ -2310,6 +2370,10 @@ function BR.Native.check()
     end)
     probe('GetEntityHealth',         function() return GetEntityHealth(ped) end)
     probe('SetEntityMaxHealth',      function() SetEntityMaxHealth(ped, BR.Config.Match.maxHealth) end)
+    -- THE ONE THAT ACTUALLY MOVES A PLAYER PED'S CEILING -- see initHealthModel.
+    -- A nil binding here would be silent and would give every player on a model
+    -- with a lower default maximum a health bar that cannot fill.
+    probe('SetPedMaxHealth',         function() SetPedMaxHealth(ped, BR.Config.Match.maxHealth) end)
     probe('GetPedArmour',            function() return GetPedArmour(ped) end)
     probe('SetPlayerMaxArmour',      function() SetPlayerMaxArmour(PlayerId(), BR.Config.Match.maxArmour) end)
     probe('SetPlayerHealthRechargeMultiplier', function()
@@ -2421,6 +2485,12 @@ function BR.Native.check()
         -- Harmless on a ped that does not hold the weapon; the point is only
         -- that the name resolves.
         SetAmmoInClip(ped, BR.Config.WeaponById['pistol'].hash, 0)
+    end)
+    -- An ammo purchase adds its rounds behind the magazine with this, rather
+    -- than writing the whole split back and emptying the magazine (owner,
+    -- playtesting a6cbdab). Zero rounds, to a ped that does not hold the weapon.
+    probe('AddAmmoToPed',            function()
+        AddAmmoToPed(ped, BR.Config.WeaponById['pistol'].hash, 0)
     end)
     probe('SetDrawOrigin',           function()
         SetDrawOrigin(0.0, 0.0, -200.0, 0)

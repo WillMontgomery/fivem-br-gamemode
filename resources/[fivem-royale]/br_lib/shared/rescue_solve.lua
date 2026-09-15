@@ -699,7 +699,7 @@ function BR.RescueSynthDestination(fromX, fromY, storm, now, cfg, poly, roads)
 end
 
 --- @param roads table|nil  BR.Config.Map.Roads; passed straight through to the
----                         synthesised destination and used nowhere else here
+---                         synthesized destination and used nowhere else here
 function BR.RescueFreeSpawn(px, py, others, points, storm, now, cfg, poly, roads)
     cfg = cfg or {}
     local reach   = cfg.spawnSearchM or 6000.0
@@ -746,7 +746,7 @@ function BR.RescueFreeSpawn(px, py, others, points, storm, now, cfg, poly, roads
             if (poly == nil) or BR.PointInPolygon(cx, cy, poly) then
                 -- AUTHORED GROUND FIRST, ALWAYS. A surveyed point is somewhere
                 -- the owner stood; open ground is somewhere a ring walk
-                -- guessed. The synthesised one is only reached when the storm
+                -- guessed. The synthesized one is only reached when the storm
                 -- has left no authored point legal.
                 local dest, dist = BR.RescueDestination(points, cx, cy, storm, now, cfg)
                 if not dest then

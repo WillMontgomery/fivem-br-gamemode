@@ -116,6 +116,31 @@ local promptShown = false
 --- them into one variable is how the switch stops being sent.
 local promptFueling = false
 
+--- Did the last payload reach a browser that was actually up?
+---
+--- ═══ THE TWO ABOVE RECORD WHAT WE ASKED FOR. THIS RECORDS WHAT LANDED ═══
+---
+---   "There's a bug in the fuel stations where coming up to the pumps the first
+---    time no DUI shows until you press {interactkey}."   -- owner, 2026-09-12
+---
+--- A DUI is a whole CEF instance and IsDuiAvailable is FALSE for a beat after
+--- CreateDui; a message sent inside that beat is dropped WITHOUT A WORD
+--- (client/dui.lua, and client/bus.lua's jump prompt paid for the same lesson).
+--- On the first approach of a session this file is normally the thing that
+--- CREATES the shared `lootprompt` browser -- `promptPage()` below is reached
+--- from nowhere but here and the draw -- so the very first "show the plate"
+--- payload is handed to a browser that does not exist yet, and the two fields
+--- above then latch, so it is never re-sent. Pressing interact swaps the hint
+--- to "Currently fueling", which is the only other state this plate has; that
+--- second message lands, and the plate appears. Verbatim the report.
+---
+--- STARTS true, WHICH IS NOT A FIDDLE: the plate starts down and the page starts
+--- blank, so the screen already agrees with the two fields above and nothing is
+--- owed. It is what keeps a driver who never goes near a station from building
+--- a CEF instance -- `BR.FuelSolve.plateOwes` answers false for them on every
+--- frame and `promptPage()` is never reached.
+local promptSent = true
+
 --- Last time a pump request went out, for the send cadence.
 local pumpedAt = 0
 
@@ -765,26 +790,26 @@ end
 --- was the safest thing to put on a plate nobody had written copy for; the
 --- reading was the complaint.
 ---
---- ═══ WHY IT IS THE `label` FIELD AND NOT `hint` ═══
+--- ═══ TWO LINES, AND WHICH STRING SITS ON WHICH ═══
 ---
---- The pattern this prompt shares with the crate and the revive is label = the
---- SUBJECT ("Assault Rifle", a teammate's name) and hint = the VERB PHRASE
---- ("Hold to open", "Hold to revive"), so the hint slot is where a sentence of
---- this shape belongs. It goes in `label` anyway, for two reasons:
+---   "please change the format of our DUIs for the gas stations - 'Fuel
+---    Station' on the top line and 'Hold to refuel' on the bottom line"
+---                                          -- owner, 2026-09-11
 ---
----   * `#hint` in br_ui/dui/prompt.html is `text-transform: uppercase`. The
----     owner asked for "Hold to refuel" and that slot can only render
----     "HOLD TO REFUEL", which is not the string they wrote.
----   * `label` is the slot that was showing "6000m" -- the line the complaint is
----     about -- and leaving it empty would put the one thing the plate says in
----     the small dim line under a blank space.
+--- So the subject is now named and the plate is the same shape as the crate and
+--- the revive: `label` is the SUBJECT and `hint` is the VERB PHRASE. The station
+--- name is on every frame; only the hint moves when the key goes down.
 ---
---- There is no subject to put above it, because naming one would be inventing a
---- noun the owner has not written. If they ever give one, it goes in `label` and
---- this string moves down to `hint`; the plate already draws both.
-local PROMPT_LABEL = 'Hold to refuel'
+--- THE BOTTOM LINE RENDERS UPPERCASE. `#hint` in br_ui/dui/prompt.html is
+--- `text-transform: uppercase`, so the plate reads "HOLD TO REFUEL" and
+--- "CURRENTLY FUELING". That is the convention every other prompt in the game
+--- already follows in that slot, and the rule is shared with the loot and revive
+--- prompts -- turning it off here means a per-page opt-out, not an edit to
+--- prompt.html.
+local PROMPT_LABEL = 'Fuel Station'
+local PROMPT_HINT = 'Hold to refuel'
 
---- And what it says while the key is down.
+--- And what the bottom line says while the key is down.
 ---
 ---   "While holding the key, the DUI should change to say 'Currently fueling'"
 ---                                          -- owner, 2026-08-22
@@ -793,44 +818,61 @@ local PROMPT_LABEL = 'Hold to refuel'
 --- this file does not correct the owner's copy to "fuelling", and a future
 --- tidy-up that does is a change to UI text nobody asked for.
 ---
---- THE SAME SLOT AS THE OTHER ONE, AND FOR THE SAME REASON. `#hint` in
---- br_ui/dui/prompt.html is `text-transform: uppercase`, so that slot can only
---- ever render "CURRENTLY FUELING". Both strings live in `label` so both reach
---- the plate as written.
----
 --- IT IS THE CLIENT'S KEY STATE THAT SWITCHES THIS, NOT A SERVER GRANT, and the
 --- owner's wording is why: "WHILE HOLDING THE KEY". A plate that waited for the
 --- server to confirm a grant would lag the keypress by a round trip and would
 --- flicker back to "Hold to refuel" every time a message was dropped. The plate
 --- describes what the player is doing; the ledger describes what they earned.
-local PROMPT_LABEL_FUELING = 'Currently fueling'
+local PROMPT_HINT_FUELING = 'Currently fueling'
 
 --- Show or hide the pump prompt.
 ---
---- SENT ON CHANGE, WHICH IS NOW TWICE PER STOP. The label is a constant, so
---- there is nothing to update between the message that puts the plate up and the
---- one that takes it down.
+--- SENT ON CHANGE. The label is a constant and the hint has two values, so a
+--- stop is three messages at most: up, switched to fueling, down.
 ---
 --- THE KEY CAP STAYS, AND IT IS THE PATTERN RATHER THAN AN ADDITION TO THE
 --- STRING. client/loot.lua and client/dbno.lua both pass `key` beside their
 --- prompt copy, and the page draws it as a badge of its own -- it is not
 --- appended to the sentence and does not change a character of it. Dropping it
 --- would be a change to a thing that works, on a fix that was not about it.
---- NOW THREE MESSAGES PER STOP RATHER THAN TWO: up, switched to fueling, down.
---- The dedupe below is what keeps it to that -- the label only has two values,
+--- The dedupe below is what keeps it to three -- the hint only has two values,
 --- so holding the key for ten seconds sends ONE message, not forty.
 --- @param show boolean
 --- @param fueling boolean|nil  is the interact key down right now?
 local function setPrompt(show, fueling)
     show = (show == true)
     fueling = (fueling == true)
-    -- A HIDDEN PLATE HAS NO LABEL, so `fueling` is not compared while hidden --
-    -- otherwise letting go of the key off a forecourt would send a second hide
-    -- message for a plate that is already down.
-    if promptShown == show and (not show or promptFueling == fueling) then return end
-    promptShown, promptFueling = show, fueling
+    -- THE WHOLE GUARD IS BR.FuelSolve.plateOwes' NOW, INCLUDING THE PART THAT
+    -- WAS ALREADY RIGHT. The hidden-plate rule ("a hidden plate has no label, so
+    -- `fueling` is not compared while hidden") moved there verbatim; what is NEW
+    -- is the third term, `promptSent`, which is the bug. Both halves live in one
+    -- pure function because this file cannot be loaded by any suite in the tree,
+    -- so a rule left here is a rule only a string search can look at -- and a
+    -- string search cannot replay the frames this fault is made of.
+    if not BR.FuelSolve.plateOwes(show, fueling,
+                                  promptShown, promptFueling, promptSent) then
+        return
+    end
 
     local page = promptPage()
+
+    -- ═══ AND THE ANSWER IS RECORDED AGAINST WHAT THE BROWSER CAN HEAR ═══
+    --
+    -- BR.Dui.ready is the false->true edge dui.lua already calls "the one moment
+    -- a message to this page is guaranteed to land" -- it is where that file
+    -- pushes the text-size preference to a new browser, for this exact reason.
+    -- Asking it here costs one latched boolean per frame and turns a dropped
+    -- payload into a retry on the next one: `promptSent` stays false, plateOwes
+    -- keeps answering true, and the first frame the CEF instance answers, the
+    -- plate goes up with its words on it.
+    --
+    -- THE DRAW BELOW IS GATED ON THE SAME QUESTION (BR.Dui.drawWorld's first
+    -- line), so there is no frame where a blank texture is put on screen while
+    -- this waits.
+    local ready = BR.Dui.ready(page)
+    promptShown, promptFueling, promptSent = show, fueling, ready
+    if not ready then return end
+
     if not show then
         BR.Dui.send(page, { t = 'prompt', show = false })
         return
@@ -839,7 +881,8 @@ local function setPrompt(show, fueling)
     local key = BR.Keys and BR.Keys.labelFor and BR.Keys.labelFor('brinteract') or nil
     BR.Dui.send(page, {
         t = 'prompt', show = true,
-        label = fueling and PROMPT_LABEL_FUELING or PROMPT_LABEL,
+        label = PROMPT_LABEL,
+        hint = fueling and PROMPT_HINT_FUELING or PROMPT_HINT,
         key = key,
         ring = false,
     })

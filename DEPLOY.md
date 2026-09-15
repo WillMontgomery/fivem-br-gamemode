@@ -39,11 +39,20 @@ nobody relearns it.
 ```bash
 sudo apt install -y tmux
 sudo cp tools/royale.service tools/royale-watchdog.service tools/royale-watchdog.timer /etc/systemd/system/
+sudo cp tools/royale-logrotate.service tools/royale-logrotate.timer /etc/systemd/system/
+sudo cp tools/royale.logrotate /etc/logrotate.d/royale
 sudo nano /etc/systemd/system/royale.service           # set User= and the paths
 sudo nano /etc/systemd/system/royale-watchdog.service  # same user in runuser -u
+sudo nano /etc/logrotate.d/royale                      # same user in su, same path
 sudo systemctl daemon-reload
-sudo systemctl enable --now royale royale-watchdog.timer
+sudo systemctl enable --now royale royale-watchdog.timer royale-logrotate.timer
 ```
+
+**The user appears in four files and they must agree**: `User=`/`Group=` in
+`royale.service`, `runuser -u` in `royale-watchdog.service`, `runuser -u` in
+`royale-deploy.service`, and `su` in `/etc/logrotate.d/royale`. That is the same
+ownership invariant the crash note below is about, spread across the units that
+each have to honor it.
 
 Day to day:
 
@@ -84,7 +93,51 @@ console, and Ctrl-C shuts the server down.
 > **The costs, each paid:** systemd cannot see a crash inside the session, so
 > `royale-watchdog.timer` checks every 30s — a crash costs under a minute,
 > unattended. The journal gets nothing, so `pipe-pane` mirrors the console to
-> `console.log` (rotation is M9 9e's job).
+> `console.log`, which `royale-logrotate.timer` now rotates.
+
+### The console log, and why it needs rotating
+
+`console.log` is the only record of what the server said, because the journal
+cannot see inside tmux. It used to grow forever and that was written down as an
+accepted cost. An external audit (#287) pointed out the part that makes it more
+than an annoyance: a hostile client can manufacture refusable events as fast as
+it can send packets, and several of those printed a console line each, so the
+growth rate was the attacker's to choose.
+
+Two halves fix it, and they are independent:
+
+* **In the gamemode.** `br_core/server/damage.lua` now prints the first few
+  refusals of each kind per minute and then reports the count of the rest ("412
+  more refusal lines in the last 60s went unprinted"). The lines are still there
+  for diagnosing a bad round -- honest play never approaches the ceiling -- and a
+  flood becomes a bounded number of lines that say how big it is.
+* **On the box.** `tools/royale.logrotate` plus `royale-logrotate.timer` rotate
+  the file daily, or sooner if it passes 4MB, keeping seven compressed
+  generations. Worst case on disk is roughly 7-8MB.
+
+```bash
+sudo logrotate -d /etc/logrotate.d/royale   # dry run: says what it would do
+systemctl list-timers royale-logrotate.timer
+```
+
+The rotation uses `copytruncate`, which is not a style preference: the writer is
+the `cat >>` that `pipe-pane` forked, nothing can tell it to reopen its file, and
+a rename-and-create rotation would leave it writing into the renamed inode with
+`console.log` stuck at zero bytes. The trade is that a few milliseconds of output
+is lost at each rotation.
+
+**4MB is a bound, not a measurement.** Nobody has load-tested any of this
+against a live FXServer at population, and #287 says the same about its own
+numbers. To settle it: `wc -c` the file before and after a full round, multiply
+out, and set `maxsize` to a couple of days of that.
+
+`royale.service` also carries a hardening block now (`NoNewPrivileges`,
+`ProtectSystem=full`, the `Protect*` family, and the accounting switches). Read
+the comment in that file before adding to it: it records which of the audit's
+suggestions were rejected and why, including `MemoryMax` (no measured figure
+exists, and guessing low means an OOM kill mid-round), `PrivateTmp` (it would
+break `tmux attach`), and a dedicated service account (it would mean re-chowning
+the tree whose ownership caused the crash saga above).
 
 ### Deploying
 
@@ -134,7 +187,7 @@ never contained anything (see below).
 
 ### What you need
 
-Two tables in **us-east-2**, and the IAM policy in the Ringmaster repo's
+Three tables in **us-east-2**, and the IAM policy in the Ringmaster repo's
 `docs/aws-setup.md`:
 
 > **The incident-close statement must be widened before this code is deployed.**
@@ -162,6 +215,20 @@ Two tables in **us-east-2**, and the IAM policy in the Ringmaster repo's
 | Table | Partition key | Sort key | Holds |
 |---|---|---|---|
 | `br-players` | `pk` (String) | `sk` (String) | `sk = profile` — matches, wins, kills, XP, level.<br>`sk = purchases` — market items, granted back on join.<br>`sk = match#<endedAt>#<matchId>` — one row per match played. |
+| `br-matches` | `pk` (String) | *none* | One row per finished match, keyed on the seven-character hex tag. Written once at match end by `br_stats`, read by Ringmaster's match page. |
+
+**`br-matches` is a read model and the game only ever writes it**, so the grant is
+`dynamodb:PutItem` for the game box role and `dynamodb:GetItem` for Ringmaster —
+nothing needs `UpdateItem`, `Query` or `Scan` on it. The write is conditional on
+`attribute_not_exists(pk)`: match ids are unique for the life of one FXServer
+process and no longer, so a reused tag is refused at the moment it happens and
+logged as `MATCH TAG COLLISION` rather than silently overwriting another match's
+record. **A missing table is survivable** — `ResourceNotFoundException` costs the
+row, logs one line, and never touches the match or the per-player history.
+
+**Nothing backfills it.** Matches recorded before this shipped have history rows
+and no match row, and Ringmaster keeps its table scan as the fallback for those.
+The gap closes as matches are played.
 
 Purchases are a separate item under the same key deliberately: they are
 irreplaceable, they are read on the connect path where latency strands people on
@@ -179,6 +246,50 @@ would need a backfill pass to be given the attribute.
 The game box needs `GetItem`, `PutItem`, `UpdateItem`, `BatchWriteItem` and
 `Query` on `br-*`. It keeps **read-only** access to `ringmaster-*`, which is the
 console's data.
+
+### A dev box uses `dev-` tables, and cannot reach these
+
+**`sv_devMode` or `br_devMode` being true moves every table `br_ddb` names.** It
+is not a separate setting and there is nothing extra to remember: a dev box is
+already a dev box for the rest of the gamemode, and this follows the same flag.
+A box with neither convar set behaves exactly as it always has.
+
+**It is forced, not defaulted.** On a dev box `br_ddb_table_prefix` and
+`br_ddb_game_prefix` are *ignored*, and `br_ddb` prints which ones it ignored.
+A dev box that writes production tables is a silent failure, because every write
+succeeds, and the realistic way to get there is copying the live box's
+`server.cfg`, which a default-with-override would not stop.
+
+**Create these six before standing a dev box up.** Same region (`us-east-2`),
+same on-demand billing, same key schema as the production table each one shadows:
+
+| Dev table | Partition key | Sort key | Shadows |
+|---|---|---|---|
+| `dev-br-players` | `pk` (String) | `sk` (String) | `br-players` |
+| `dev-br-matches` | `pk` (String) | *none* | `br-matches` |
+| `dev-ringmaster-bans` | `license` (String) | *none* | `ringmaster-bans` |
+| `dev-ringmaster-grants` | `license` (String) | *none* | `ringmaster-grants` |
+| `dev-ringmaster-maintenance` | `id` (String) | *none* | `ringmaster-maintenance` |
+| `dev-ringmaster-incidents` | `incidentId` (String) | *none* | `ringmaster-incidents` |
+
+**They start empty, and two of them being empty is visible.** The dev box reads
+`dev-ringmaster-grants`, so admins granted on the live console are not admins
+there until a row is added; and it reads `dev-ringmaster-bans`, so nobody banned
+on the live server is banned there. That is the price of the dev box never
+naming a production table, and it buys something worth having: **the dev box's
+instance role can be scoped to `dev-*` and nothing else**, which is a guarantee
+no amount of care in the code can match. Scope it that way.
+
+The startup banner on a dev box says what it resolved:
+
+```
+[br_ddb] DEV MODE (sv_devMode=true, br_devMode=true). Table prefixes forced to "dev-".
+[br_ddb]   dev-br-players, dev-br-matches read/write (profile, inventory, stats, history, match rows)
+[br_ddb]   dev-ringmaster-bans, dev-ringmaster-grants, dev-ringmaster-maintenance read-only, dev-ringmaster-incidents append + verdict-read
+[br_ddb]   This box will NOT touch ringmaster-* or br-*. Those are production.
+```
+
+A production box prints no such block, and its `ready` line is unchanged.
 
 > `BatchWriteItem` is a *separate* IAM action from `PutItem` — a policy granting
 > only the latter denies the batch. If match history is the one thing not
@@ -310,10 +421,39 @@ Edit `server.cfg`:
 
 | Setting | Notes |
 |---|---|
-| `sv_licenseKey` | From <https://keymaster.fivem.net>. The server will not start without it. |
+| `sv_licenseKey` | **Not in `server.cfg`.** It lives in `server-identity.cfg` beside it, with `sv_hostname`. See below. |
 | `add_principal` | Uncomment and insert your own license identifier to get admin. |
-| `sv_devMode` / `br_devMode` | **Set both to `false` for production.** They lower the minimum players to start and enable client dev tools. |
+| `sv_devMode` / `br_devMode` | **Set both to `false` for production.** They lower the minimum players to start, enable client dev tools, and move `br_ddb` onto the `dev-` tables (section 2). |
 | `sv_maxclients` | 48 is the free OneSync ceiling — see the note in `server.cfg` before raising it. |
+
+### The identity: `server-identity.cfg`
+
+`sv_hostname` and `sv_licenseKey` are not tracked and are not in `server.cfg`.
+They live in a two-line file `server.cfg` execs, gitignored the same way
+`server.cfg` itself is:
+
+```bash
+printf 'sv_hostname "My Server"\nsv_licenseKey "..."\n' > server-identity.cfg
+chmod 600 server-identity.cfg
+```
+
+**On the Blitz Royale boxes nobody writes that file by hand.**
+`royale-identity.service` writes it at boot: it asks AWS which Elastic IP is
+attached to this instance, maps that address to a server slot, and reads that
+slot's hostname and key out of SSM Parameter Store. `ops/royale-identity` in the
+infradocs repo carries it.
+
+The reason is worth knowing even if you are running this somewhere else:
+**Cfx.re suspends both servers when one license key turns up on two addresses**,
+so the expensive mistake is not a box with no key, it is two boxes with the same
+one, and the healthy server goes down with the one that was wrong. A key a human
+pastes onto a box can be pasted onto a second box. A key derived from the address
+already attached to that box cannot be, because an Elastic IP is associated with
+one instance at a time.
+
+**The server does not start without `sv_licenseKey`**, so a missing or unexec'd
+identity file is loud rather than silent. That is the opposite of `tunables.cfg`
+below, where every value has a committed default and an absent file is harmless.
 
 ### The dev/public split: `tunables.cfg`
 

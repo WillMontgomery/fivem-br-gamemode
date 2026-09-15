@@ -72,6 +72,16 @@ files {
     -- loaded by URL (nui://br_ui/dui/prompt.html) rather than as the ui_page,
     -- so it needs no build step at all.
     'dui/prompt.html',
+    -- ...and the warmup stat board's fallback (#247). Same directory and the
+    -- same reasoning: hand-written, no build step, loaded by URL
+    -- (nui://br_ui/dui/static.html) by br_core/client/board.lua.
+    --
+    -- IT IS HERE RATHER THAN IN br_core BECAUSE THIS RESOURCE HAS THE ui_page.
+    -- FiveM registers the nui scheme for a resource in ResourceUI::Create, and
+    -- br_core declares no ui_page at all; prompt.html has been served from this
+    -- resource since the first DUI, so this is the path known to work rather
+    -- than the one that ought to.
+    'dui/static.html',
 }
 
 dependency 'br_lib'

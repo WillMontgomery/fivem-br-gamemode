@@ -26,6 +26,12 @@ shared_scripts {
     '@br_lib/shared/enums.lua',
     '@br_lib/shared/protocol.lua',
     '@br_lib/shared/names.lua',   -- display-name rules; client and server share them
+    -- BR.MatchTag: how a match id is written down (#291). The id is a number
+    -- everywhere and hex only where a person reads it, and this is the one
+    -- place that conversion happens. Reads nothing at load and calls no native,
+    -- so the position is company rather than a requirement -- it sits beside
+    -- names.lua because both files are about how a thing is spelled on screen.
+    '@br_lib/shared/matchtag.lua',
     -- A toast that names a player, split so the name can be drawn bold and can
     -- never be anything but text. SHARED because both halves of every such
     -- notice are here: server/combat.lua and server/party.lua compose them,
@@ -70,6 +76,13 @@ shared_scripts {
     -- the reset's event name out of here, which is what keeps the surveyed
     -- numbers written down exactly once.
     '@br_lib/config/warmupcrates.lua',
+    -- The stat board (#247): the Ringmaster URL's host, the display it is
+    -- painted on, and the five numbers that align the quad -- three of which are
+    -- nil because they are measured off the prop. BESIDE
+    -- config/warmupcrates.lua because both are about the same patch of island,
+    -- and NO LOAD ORDER AT ALL -- it reads nothing, calls nothing, and defines
+    -- one pure function (BR.BoardUrl) that is called at draw time.
+    '@br_lib/config/board.lua',
     -- AFTER config/loot.lua AND config/weapons.lua, and not merely near them.
     -- It resolves its payout pools at LOAD time out of their rarity buckets and
     -- their id lookups -- including BR.Config.AirdropWeapons, the four explosives
@@ -144,6 +157,27 @@ shared_scripts {
     -- registered before that line would be destroyed by it. Declared here, after
     -- the other feature configs, for a reader.
     '@br_lib/config/shop.lua',
+    -- The IN-MATCH Ammu-Nation gun shop (#274). A DIFFERENT FEATURE FROM THE
+    -- LINE ABOVE and deliberately a different namespace: config/shop.lua is the
+    -- warmup vehicle showroom (BR.Config.Shop, BR.ShopSolve), this is the
+    -- eleven weapon counters (BR.Config.Gunshop, BR.GunshopSolve). Declared
+    -- beside it because a reader who finds one will look for the other.
+    --
+    -- SHARED, for the reason every catalogue here is shared: the server
+    -- arbitrates the purchase from this table and the client has to draw the
+    -- same list of guns and prices, so a catalogue on one side only would put
+    -- the two ends one restart apart from disagreeing about what is on sale.
+    --
+    -- ITS ONLY LOAD-ORDER REQUIREMENT IS enums.lua, which is the universal one
+    -- (its ammo rows are keyed by BR.AmmoType, exactly as config/loot.lua's
+    -- are). In particular it does NOT need to follow config/weapons.lua, and
+    -- that is deliberate rather than lucky: the catalogue is DERIVED from
+    -- BR.Config.Weapons, `gunshop` sorts BEFORE `weapons` in br_lib's own glob,
+    -- and building it at this file's load would therefore produce an empty shop
+    -- with no error anywhere. It is built by BR.Config.Gunshop.build, which
+    -- br_core's own gunshop files call at resource start -- the same shape, and
+    -- the same class of hazard, as config/shop.lua's `register`.
+    '@br_lib/config/gunshop.lua',
     -- The catalogue. SHARED rather than server-only: the server decides what
     -- you own, and the client has to resolve an equipped id into the natives
     -- that actually put it on you. Both sides need the same definitions.
@@ -232,6 +266,16 @@ shared_scripts {
     -- which is also why BR.Rng being 180 lines above it is a readability
     -- choice rather than a dependency.
     '@br_lib/shared/shop_solve.lua',
+    -- The in-match gun shop's solver (#274). A SIBLING OF THE LINE ABOVE, not a
+    -- part of it: BR.GunshopSolve, and it shares no symbol with BR.ShopSolve.
+    --
+    -- LAST, with shop_solve, and for the same reason -- it reads nothing at load
+    -- and every config table it needs at call time, so its position here is a
+    -- readability choice rather than a dependency. The one thing it must be
+    -- AFTER is nothing at all: `minRarity` resolves BR.Rarity when it is called
+    -- rather than caching it, precisely so that this line's position cannot be
+    -- the thing that decides what the shop stocks.
+    '@br_lib/shared/gunshop_solve.lua',
 }
 
 -- main.lua must load first on both sides: it defines the loop registry (client)
@@ -297,6 +341,20 @@ client_scripts {
     -- everything else is call time. It is declared here so the two files that
     -- are about crate props read as a pair.
     'client/warmupcrates.lua',
+    -- The stat board (#247), which is also the scoreboard -- one display, one
+    -- browser, one quad, showing a page that alternates. IT DOES NOT SPAWN THE
+    -- PROP: the display is already in a ymap and this file adopts it with
+    -- GetClosestObjectOfType, the same way client/warmupcrates.lua adopts its
+    -- crates, which is the other reason the two are declared as a pair below.
+    -- AFTER client/dui.lua, and that is a REAL load order rather
+    -- than a reader's: it registers its loop callbacks at load and both of them
+    -- call BR.Dui, so the file that defines that table has to have run. It also
+    -- needs BR.Loop (client/main.lua, first) and BR.State (client/state.lua),
+    -- both of which are already above.
+    --
+    -- BESIDE client/warmupcrates.lua because the two are about the same patch of
+    -- warmup pad, and because both are inert off it.
+    'client/board.lua',
     -- The airdrop's flares: how one is lit, and where they go WHILE THE CRATE
     -- FALLS. It needs client/main.lua for the loop registry and BR.Native
     -- (natives.lua) for the prop scale on the object route, and that is now the
@@ -384,6 +442,64 @@ client_scripts {
     -- that needs no order at all: FiveM fans an event to every handler, and
     -- neither file reads the other's cache.
     'client/revivekey.lua',
+    -- ═══ THE VENDORED MENU LIBRARY, PULLED INTO THIS RESOURCE'S LUA STATE ═══
+    --
+    -- A FiveM resource cannot see another resource's globals and ScaleformUI
+    -- exports nothing, so `@ScaleformUI_Lua/ScaleformUI.lua` is upstream's own
+    -- integration route and the only one there is: the library is a single
+    -- bundled file precisely so it can be included this way.
+    --
+    -- IT IS DECLARED HERE RATHER THAN AT THE TOP OF THE LIST because nothing
+    -- above it uses a menu, and because a reader looking for "why is a 20,000
+    -- line third-party file in br_core" should find it beside the one feature
+    -- that needs it. client/menu.lua and client/gunshop.lua reach its globals at
+    -- CALL time and nil-guard (BR.Menu.available), so this position is a
+    -- reader's convenience rather than a load order.
+    --
+    -- ─────────────────────────────────────────────────────────────────────
+    --  KNOWN COST, FLAGGED RATHER THAN HIDDEN: THE LIBRARY'S ALWAYS-ON
+    --  THREADS NOW RUN TWICE.
+    -- ─────────────────────────────────────────────────────────────────────
+    --
+    -- resources/[scaleformui]/ScaleformUI_Lua/VENDOR.json records under
+    -- `untouched_on_purpose` that this library runs threads from resource start
+    -- whether or not any menu exists -- the main one loops at Citizen.Wait(0)
+    -- calling Warning:Update(), InstructionalButtons:Update() and five more
+    -- every frame. server.cfg.example still `ensure`s ScaleformUI_Lua as its own
+    -- resource, so with this line those threads run in ITS state (where nothing
+    -- uses them, example.lua being commented out by BR-PATCH 1) AND in this one.
+    --
+    -- THE FIX IS ONE LINE AND IT IS NOT TAKEN HERE, because it rests on a claim
+    -- nobody has checked on this box: whether an `@resource/file.lua` include
+    -- resolves for a resource that is present but not STARTED. If it does,
+    -- dropping `ensure ScaleformUI_Lua` from server.cfg.example halves the cost
+    -- and loses nothing -- ScaleformUI_Assets must stay ensured either way,
+    -- since it streams the .gfx movies and owns the minimap overlay handler.
+    -- Guessing wrong means br_core does not start, which is why it is written
+    -- down instead of tried blind.
+    '@ScaleformUI_Lua/ScaleformUI.lua',
+    -- OUR COLORS ON THAT LIBRARY, and the pattern for every menu after this one.
+    -- Tiny by design: two hexes, one HUD index, three constructors. AFTER the
+    -- line above for a reader; it resolves SColor and UIMenu at call time.
+    'client/menu.lua',
+    -- The in-match Ammu-Nation counter (#274): the local clerk, the plate on the
+    -- counter, and the menu behind it.
+    --
+    -- THE SEVENTH CONSUMER OF THE ONE PROMPT BROWSER, declared beside the sixth
+    -- for the reason the lines above give: crate, pump, revive, heal station,
+    -- showroom, revive key, counter.
+    --
+    -- A DIFFERENT FEATURE FROM client/shop.lua AND A DIFFERENT NAMESPACE.
+    -- BR.Gunshop and BR.Config.Gunshop; it shares no symbol with BR.Shop. It
+    -- does deliberately call ACROSS to BR.ShopSolve.priceLine, which is the only
+    -- "N Volts" formatter in the tree, rather than growing a second one.
+    --
+    -- It needs client/main.lua for the loop registry, client/keybinds.lua for
+    -- BR.Keys.on('interact') and BR.Keys.uiScreen, client/dui.lua for the shared
+    -- prompt page and client/natives.lua for BR.Native.keyLabelForCommand -- the
+    -- same four names client/ambheal.lua, client/shop.lua and
+    -- client/revivekey.lua list, all of which are above.
+    'client/gunshop.lua',
     -- The guided first run (#261). AFTER client/main.lua, which is the only
     -- order it needs: it registers a FRAME pass that takes the camera and the
     -- trigger away from a player reading a card, and BR.Loop has to exist for
@@ -480,8 +596,10 @@ server_scripts {
     -- at load time -- and incident_build after combat_solve (in shared_scripts
     -- above), whose enum values it keys its severity table on.
     '@br_lib/shared/evidence_buf.lua',
-    -- THE ONLY config/*.lua THIS RESOURCE LOADS SERVER-SIDE, and the exception
-    -- is deliberate: every other config file is in shared_scripts above and goes
+    -- ONE OF TWO config/*.lua THIS RESOURCE LOADS SERVER-SIDE (the other is
+    -- config/allowlist.lua, beside server/guild.lua, only because no client
+    -- script reads it), and both exceptions are
+    -- deliberate: every other config file is in shared_scripts above and goes
     -- to clients with them. This one is the domain and shortener lists, and a
     -- player holding those knows exactly which host still gets through. Read
     -- lazily by chat_screen.lua, so this ordering is belt to that braces.
@@ -497,6 +615,11 @@ server_scripts {
     -- case gets, and when, is a moderation rule. server/artifacts.lua calls
     -- BR.ArtifactPlan.new() at load time, so this must precede it.
     '@br_lib/shared/artifact_plan.lua',
+    -- BR.GitRef: which commit the served clone is on, for the dev-mode hex under
+    -- the lobby's Settings button. SERVER-ONLY like the files above it, because
+    -- only this side has a filesystem to read, and BEFORE server/lobby.lua, which
+    -- reads it once at load.
+    '@br_lib/shared/gitref.lua',
     'server/main.lua',      -- defines BR.Server and starts the scheduler
     'server/clock.lua',
     -- brtime and brweather: the console's clock and sky. AFTER server/main.lua,
@@ -582,6 +705,12 @@ server_scripts {
     -- ordinary loot entries; the props are built client side like every other
     -- crate's, which is the only shape sv_entityLockdown relaxed allows.
     'server/warmupcrates.lua',
+    -- The warmup stat board's server half (#247), which is one push and no
+    -- logic: on READY, tell a client its own license so its browser can build
+    -- the board's URL. AFTER nothing in particular -- it reads BR.Identity
+    -- (shared) and BR.Net (shared) and touches no server subsystem at all.
+    -- BESIDE server/warmupcrates.lua because both are about the warmup pad.
+    'server/board.lua',
     -- Aerial supply drops. AFTER storm.lua and loot.lua for a reader rather
     -- than for the loader: it asks BR.StormAt where the circle will be when the
     -- crate arrives, and hands the contents to BR.Loot.spawnStack so they
@@ -623,6 +752,22 @@ server_scripts {
     -- and nil-guarded, exactly as the rescue's own back-references are: a
     -- server without a shop must start a bus flight rather than throw.
     'server/shop.lua',
+    -- The in-match Ammu-Nation counter (#274). AFTER market.lua for the reason
+    -- the block above gives -- it charges through BR.Market.charge and reads
+    -- BR.Market.balanceOf, so the market owns the ledger and this file owns no
+    -- copy of it -- and after server/shop.lua for a reader rather than the
+    -- loader: they are siblings and the showroom is the one that has shipped.
+    --
+    -- IT CREATES NO ENTITY AT ALL, which is the difference from the line above:
+    -- the clerk is a client-local ped (there is no ped server setter, and RPC
+    -- creation is incompatible with routing buckets), and the goods are an
+    -- ordinary BR.Inv.give. So the vehicle-creation rule tools/verify.sh
+    -- enforces on server/shop.lua has nothing to say about this file.
+    --
+    -- AT CALL it reaches BR.Roster.get for the sampled position the `atCounter`
+    -- check rules on, and BR.Inv / BR.Loot to hand the goods over. All
+    -- call-time, so the declaration order is the order of the question.
+    'server/gunshop.lua',
     -- Admin scopes, read from the same DynamoDB grants table the console
     -- authorises against, through br_ddb -- never from br_ringmaster, which the
     -- game must not depend on. players.lua and incident.lua both read it, and
@@ -634,6 +779,11 @@ server_scripts {
     -- than for the loader: it asks BR.Grants.holds the question grants.lua
     -- answers, and it is declared below the file that answers it.
     'server/admin.lua',
+    -- The dev-mode join allowlist's Discord role. Loaded into this server state
+    -- alone because nothing else reads it, NOT to keep it from clients: the file
+    -- is in br_lib's `files` glob like every config file, and a role id is not a
+    -- secret. guild.lua reads it at call time, so the order is a reader's.
+    '@br_lib/config/allowlist.lua',
     -- Whether a player is already in our Discord: one authenticated GET to
     -- Discord per connection, cached for that connection. AFTER
     -- @br_lib/shared/identity.lua, and that IS a real order rather than a

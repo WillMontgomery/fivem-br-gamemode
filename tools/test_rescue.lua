@@ -656,7 +656,7 @@ do
     --
     -- Small and far: every point inside it is 1800-2200m from the origin, and
     -- the trip ceiling is 1000m. So NO spawn at the player's feet can reach it
-    -- -- not the surveyed point, and not a synthesised one either, since those
+    -- -- not the surveyed point, and not a synthesized one either, since those
     -- have to be inside the circle too. The walk has to travel, which is the
     -- property this case exists to prove and the one a search that gave up on
     -- its first ring would fail.
@@ -739,7 +739,7 @@ do
         penned and ('(%.0f, %.0f)'):format(penned.x, penned.y))
     ok(pennedDest ~= nil
            and BR.PointInPolygon(pennedDest.x, pennedDest.y, box),
-        'and so is the destination -- a synthesised drop-off cannot be off-map, '
+        'and so is the destination -- a synthesized drop-off cannot be off-map, '
             .. 'even when the nearest one would be',
         pennedDest and ('(%.0f, %.0f)'):format(pennedDest.x, pennedDest.y))
 

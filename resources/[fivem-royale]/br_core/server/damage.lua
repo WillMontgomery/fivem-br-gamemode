@@ -30,9 +30,42 @@ local cfg = BR.Config.Combat or {}
 -- Last shot time per shooter, for the rate-of-fire check. Keyed by src.
 local lastShot = {}
 
--- Explosives in flight, per shooter: thrown[src][item] = timestamp of the last
--- one spent. See BR.Damage.noteThrow for why a timestamp and not a count.
+-- Explosives in flight, per shooter: thrown[src][item] = { <ms>, <ms>, ... },
+-- oldest first. ONE ENTRY PER PROJECTILE the server watched leave the hand, and
+-- an entry is spent when a blast is authorized against it.
+--
+-- A QUEUE RATHER THAN A TIMESTAMP (audit finding 3, 2026-09-08). It held the
+-- time of the LAST throw and BR.Damage.threwRecently answered "was there one in
+-- the window" -- which authenticates a weapon TYPE for thirty seconds rather
+-- than a particular grenade, so one throw covered every explosion the client
+-- cared to claim until the window lapsed. The entries expire exactly as the
+-- timestamp did; what changed is that they are also consumable, so three
+-- stickies are three credits and a fourth blast is refused.
 local thrown = {}
+
+-- The last time each throwable left a player's hand, per shooter, and NOT
+-- consumed by anything.
+--
+-- THE SAME FACT AS `thrown` ABOVE, KEPT FOR A QUESTION THAT MUST NOT SPEND IT.
+-- explosionEvent has to ask "was this player ever issued one of these", and the
+-- credit queue answers a stricter question -- "is there an unspent one" -- whose
+-- answer changes when the damage path spends one. The two events have no
+-- guaranteed order, so asking the strict question there would sometimes cancel
+-- the VISIBLE blast of a grenade whose damage had already been accepted.
+local lastThrow = {}
+
+-- The projectile a blast belongs to, per shooter:
+--   blast[src] = { weapon = <item id>, at = <ms>, victims = { [src] = true },
+--                  n = <count> }
+--
+-- WHY THIS IS ONE RECORD AND NOT A LIST. A player has at most one projectile
+-- landing at a time in any sense that matters here -- the window is a second or
+-- less -- and a list would need pruning on a path that runs once per round of
+-- automatic fire. The one case a list would serve is a cluster of stickies
+-- detonated together, and that is served better anyway: each one is a separate
+-- credit, so the second sticky to catch a victim the first already caught opens
+-- a NEW authorization and pays for it.
+local blast = {}
 
 -- Last applied melee hit, keyed shooter:victim:weapon -> timestamp.
 --
@@ -163,13 +196,67 @@ end
 --- is not the security boundary -- the inventory is. A player can only be here
 --- at all if the server issued them that explosive and watched them spend one;
 --- the window merely stops that credit lasting the whole match.
+---
+--- ...AND IT IS A CREDIT PER PROJECTILE NOW, NOT A STAMP PER WEAPON TYPE. The
+--- expiry argument above is unchanged and still the reason there is no
+--- decrement on detonation: a grenade thrown into the sea produces nothing to
+--- decrement against. What the window could not express is HOW MANY, so one
+--- throw authenticated every blast a client cared to claim for thirty seconds.
+--- Each throw now pushes one entry and each authorized blast spends one.
+---
+--- `n` EXISTS FOR A CALLER THAT DOES NOT YET PASS IT. server/inventory.lua
+--- knows the exact size of the decrease it just accepted (`have - total`) and
+--- calls this once per report; a report that carried two grenades at once would
+--- under-credit by one, and the shape of that failure is an honest blast refused
+--- as NOT_THROWN, which files an incident. It is not reachable today -- the
+--- client's throwable branch reports at 10Hz the moment the count falls and a
+--- GTA throw animation is well over a second -- so the parameter is here to be
+--- passed rather than the file being edited under another change in flight.
 --- @param src integer
 --- @param item string
-function BR.Damage.noteThrow(src, item)
+--- @param n integer|nil  how many left the hand; 1 when the caller does not say
+function BR.Damage.noteThrow(src, item, n)
     if not item then return end
     local t = thrown[src]
     if not t then t = {}; thrown[src] = t end
-    t[item] = GetGameTimer()
+    local q = t[item]
+    if not q then q = {}; t[item] = q end
+
+    local now = GetGameTimer()
+    for _ = 1, math.max(1, math.tointeger(tonumber(n) or 1) or 1) do
+        q[#q + 1] = now
+    end
+
+    local lt = lastThrow[src]
+    if not lt then lt = {}; lastThrow[src] = lt end
+    lt[item] = now
+
+    -- BOUNDED, because an unbounded queue is a way to bank authorizations. It
+    -- cannot overflow from honest play -- a grenade stack is three -- so the cap
+    -- is only ever reached by something the inventory should already have
+    -- refused, and dropping the OLDEST keeps the credits that are about to be
+    -- needed rather than the ones about to expire.
+    local cap = cfg.throwCreditMax or 8
+    while #q > cap do table.remove(q, 1) end
+end
+
+--- Drop the credits that have expired, and hand back what is left.
+---
+--- Pruning on READ rather than on a timer: the queue is at most a few entries
+--- and only two functions look at it, so a scheduler job to age something
+--- nobody is asking about would be work done for its own sake.
+--- @param src integer
+--- @param item string
+--- @return table|nil  the live queue, nil when this player never threw one
+local function liveThrows(src, item)
+    local t = thrown[src]
+    local q = t and t[item]
+    if not q then return nil end
+
+    local grace = liveCfg().explosiveGraceMs or 30000
+    local now = GetGameTimer()
+    while #q > 0 and (now - q[1]) > grace do table.remove(q, 1) end
+    return q
 end
 
 -- Self-inflicted hits, per player: { since, count }.
@@ -204,10 +291,138 @@ end
 --- ctx.threwRecently -- so a grace window bent by /brtestfire has to be
 --- honoured here or `thrown` mode would be the one lever that did nothing.
 function BR.Damage.threwRecently(src, item)
-    local t = thrown[src]
+    local q = liveThrows(src, item)
+    return q ~= nil and #q > 0
+end
+
+--- Spend one throw credit, and say whether there was one to spend.
+---
+--- THE CONSUMING HALF, and the one the security story now rests on. Called
+--- exactly once per projectile the validator authorizes -- never per victim, or
+--- a grenade that caught four people would want four grenades.
+--- @param src integer
+--- @param item string
+--- @return boolean  true when a credit was actually spent
+local function consumeThrow(src, item)
+    local q = liveThrows(src, item)
+    if not q or #q == 0 then return false end
+    table.remove(q, 1)
+    return true
+end
+
+--- Did the server ever watch this player throw one of these, recently?
+---
+--- The old BR.Damage.threwRecently, kept under a name that says it does not
+--- spend anything. Read only by the explosion gate -- see `lastThrow`.
+--- @param src integer
+--- @param item string
+--- @return boolean
+local function threwAtAll(src, item)
+    local t = lastThrow[src]
     local at = t and t[item]
     if not at then return false end
     return (GetGameTimer() - at) <= (liveCfg().explosiveGraceMs or 30000)
+end
+
+--- Is this player carrying one of these anywhere in their inventory?
+---
+--- ANY SLOT, NOT THE ACTIVE ONE. The question the explosion gate asks is
+--- whether the server ever put this explosive in their hands, and a player who
+--- has switched to a rifle since throwing is the ordinary case rather than the
+--- suspicious one. Empty slots are stored as `false`, so the type test is
+--- load-bearing.
+--- @param src integer
+--- @param item string
+--- @return boolean
+local function holdsItem(src, item)
+    local inv = BR.Inv and BR.Inv.of(src)
+    if not inv or not inv.slots then return false end
+    for _, s in ipairs(inv.slots) do
+        if type(s) == 'table' and s.item == item then return true end
+    end
+    return false
+end
+
+--- Count one event against a per-player window, and say whether it is one too
+--- many.
+---
+--- A COUNTER RATHER THAN AN INTERVAL, because none of the things it bounds
+--- arrives at a steady rate: a car explosion is one event, engine fire ticks in
+--- a burst, and a refusal on the second tick of an honest fire would be worse
+--- than the claim it was guarding against. A ceiling over a window lets a real
+--- burst through and still stops a stream.
+--- @param tbl table    the per-player record table
+--- @param src integer
+--- @param windowMs number
+--- @param limit number
+--- @return boolean  true when this one is past the ceiling
+local function overRate(tbl, src, windowMs, limit)
+    local now = GetGameTimer()
+    local r = tbl[src]
+    if not r or (now - r.since) > windowMs then
+        r = { since = now, count = 0 }
+        tbl[src] = r
+    end
+    r.count = r.count + 1
+    return r.count > limit
+end
+
+-- Remote environmental claims and explosions, per player, for those ceilings.
+local envRate, blastRate = {}, {}
+
+-- HOW MUCH OF THE CONSOLE A REFUSAL STREAM MAY HAVE (external audit, #287).
+--
+-- Every ceiling above bounds the WORK a refused event costs. None of them
+-- bounded the LINE it printed, and the line is the expensive half: royale.service
+-- mirrors this console into console.log with `tmux pipe-pane`, so a client
+-- sending explosionEvent as fast as it can was writing to a file on the game box
+-- as fast as it could. The explosion path is the clearest case -- it refuses a
+-- flood as TOO_OFTEN after twelve in five seconds and then printed a line about
+-- every single one.
+--
+-- ONE BUDGET FOR ALL THREE REFUSAL PRINTS, NOT ONE EACH, and that is deliberate:
+-- three separate budgets means three separate allowances, which is three times
+-- the flood for an attacker willing to send three kinds of garbage. The KEY
+-- carries which path and which player, so the first few of each kind still get
+-- through and the overall line rate is bounded once.
+--
+-- The numbers live in BR.LogBudget beside the reasoning that chose them, and are
+-- overridable from BR.Config.Combat if a playtest ever wants a louder console --
+-- the same `cfg.key or default` shape blastMaxPerWindow and envMaxPerWindow
+-- already use, and for the same reason: an unset key reads as the shipped bound
+-- rather than as zero.
+local logBudget = BR.LogBudget.new({
+    windowMs  = cfg.logWindowMs,
+    perKey    = cfg.logPerKey,
+    perWindow = cfg.logPerWindow,
+})
+
+--- Print a refusal line, unless too many like it have already been printed.
+---
+--- FORMATTED LAZILY -- the format string and its arguments are passed through
+--- rather than a finished line -- because under the flood this exists to bound,
+--- the overwhelming majority of calls will not print anything, and building a
+--- string to throw away is the cost we are here to remove.
+--- @param key string    what makes this line the same as another one
+--- @param now number
+--- @param fmt string
+local function sayRefused(key, now, fmt, ...)
+    local printIt, summary = logBudget:admit(key, now)
+    if printIt then print(fmt:format(...)) end
+    -- THE SUMMARY IS NOT OPTIONAL. It is the thing that keeps this a rate limit
+    -- rather than a mute button: "412 more went unprinted" is what tells an
+    -- operator that the quiet console is quiet because it is being attacked.
+    if summary then print(BR.LogBudget.line(summary)) end
+end
+
+--- A number the arithmetic below can survive. Rejects nil, NaN and infinity in
+--- one place, because a position that is any of the three sails through a
+--- distance comparison as false rather than failing.
+--- @param n any
+--- @return boolean
+local function finite(n)
+    n = tonumber(n)
+    return n ~= nil and n == n and n > -math.huge and n < math.huge
 end
 
 --- Everything the validator needs about a shooter/victim pair, from the
@@ -527,6 +742,69 @@ end
 --- as a server event the server has already validated, so the server can
 --- simply count them.
 ---
+--- The magazine the server believes is behind this weapon, right now.
+---
+--- READ BEFORE spendRound RUNS, AND THAT IS THE WHOLE REASON IT EXISTS. The
+--- round is spent once per event, before any victim is resolved, so by the time
+--- BR.ValidateShot reads `ctx.clip` the magazine has ALREADY been charged for
+--- the shot being adjudicated. On the last round of the last magazine that
+--- reads zero -- and an ammunition check on that number refuses the very round
+--- it just took, as a high-severity means-class refusal, against a player who
+--- did nothing but fire their last rocket. weapons.lua names that failure in
+--- its own comment ("NO_AMMO would refuse the last rocket in the tube") and it
+--- is the reason the explosive branch skipped the check entirely rather than
+--- the reason the check was wrong.
+---
+--- nil FOR "NOT APPLICABLE", never 0. An empty active slot is fists, a
+--- throwable has no magazine, and a weapon that is not the one being fired is
+--- somebody else's problem -- none of those are an empty magazine, and
+--- collapsing them onto 0 is what would refuse a thrown grenade for having no
+--- rounds in it.
+--- @param src integer
+--- @param weapon integer  weapon hash from the event
+--- @return integer|nil
+local function heldClipFor(src, weapon)
+    local inv = BR.Inv and BR.Inv.of(src)
+    if not inv then return nil end
+
+    local slot = inv.slots[inv.active]
+    if not slot or slot.kind ~= BR.ItemKind.WEAPON then return nil end
+
+    local w = BR.Config.WeaponById[slot.item]
+    if not w or w.melee or not w.clip then return nil end
+    if BR.NormHash(w.hash) ~= BR.NormHash(weapon) then return nil end
+
+    return slot.clip or 0
+end
+
+--- LOAD THE MAGAZINE GTA HAS ALREADY LOADED, AT THE MOMENT THE GUN IS FIRED.
+---
+--- ═══ A GUN BOUGHT OVER A LIVE POOL FIRED ITS FIRST ROUND INTO A REFUSAL ═══
+---
+--- A gun sold over the counter arrives with `clip = 0`, and a purchase leaves
+--- the pool it lands on alone -- 'a gun sold over the counter arrives empty'
+--- pins both. The engine loads that gun out of the same pool as soon as it is in
+--- the hand, and a reload moves no total, so no report ever says so. The first
+--- shot then reached a server still holding an empty magazine: heldClipFor read
+--- 0, BR.ValidateShot refused it as NO_AMMO, and NO_AMMO is means-class with a
+--- bar of one. An honest player opened a case against himself with the first
+--- round he fired, and spendRound counted it as a dry shot.
+---
+--- SO A SHOT FROM AN EMPTY MAGAZINE OVER A LIVE POOL IS THAT RELOAD, run here
+--- before anything reads the magazine. It is BR.Inv.reload, so it MOVES and mints
+--- nothing, and it runs only when the gun is fired, so the counter still hands a
+--- gun over empty. An empty pool loads nothing and that shot is still NO_AMMO.
+--- @param src integer
+--- @param weapon integer  weapon hash from the event
+local function loadFired(src, weapon)
+    -- nil is every case with no magazine to load. `> 0` and not truthiness:
+    -- 0 IS TRUTHY IN LUA and the empty magazine is the one this is for.
+    local clip = heldClipFor(src, weapon)
+    if clip == nil or clip > 0 then return end
+    local inv = BR.Inv.of(src)
+    BR.Inv.reload(inv, inv.slots[inv.active])
+end
+
 --- Called on EVERY validated shot, hit or miss. A miss still costs a round,
 --- which is the entire difference between counting shots and counting hits.
 --- @param src integer
@@ -654,7 +932,16 @@ function BR.Damage.applyHit(shooter, victim, amount, meta)
     -- victim's own machine a beat before the server said anything about being
     -- downed. So the instruction is clamped to the ledger's downed floor and
     -- the overflow is simply dropped -- there is nothing left for it to hurt.
-    local downing = (hp - toHealth <= 0.0) and BR.Combat.canBeDowned(e)
+    --
+    -- ...AND IT NEEDS THE WEAPON TO DECIDE, since 2026-09-12: a blast kills
+    -- outright rather than knocking. `meta.weapon` is weaponDamageEvent's own
+    -- `weaponType` hash, which is exactly what canBeDowned wants -- NOT
+    -- `meta.explosive`, which is true for a molotov and would take fire down with
+    -- it. The same hash goes to defeat() below so both readings agree; if they
+    -- disagreed, the clamp here would spare the ped for a knock that the call
+    -- down there then refused to make.
+    local downing = (hp - toHealth <= 0.0)
+                    and BR.Combat.canBeDowned(e, meta and meta.weapon)
     if downing then
         toHealth = math.max(0.0, hp - (BR.Config.Match.dbnoHp or 5))
     end
@@ -744,7 +1031,11 @@ function BR.Damage.applyHit(shooter, victim, amount, meta)
         -- NOT eliminate() any more. defeat() is the one place that decides
         -- whether running out of health means down or out, so a knock is
         -- possible from every damage path or from none of them.
-        BR.Combat.defeat(victim, how, shooter)
+        --
+        -- THE HASH, NOT `how`. defeat() asks canBeDowned again and has to reach
+        -- the same answer the clamp above was built on; `how` is already
+        -- 'explosion' for a molotov and would not.
+        BR.Combat.defeat(victim, how, shooter, meta and meta.weapon)
     end
 end
 
@@ -793,8 +1084,16 @@ local function noteAdjudication(shooter, victim, w, ctx, dist, since, why)
     r.reason       = why
     r.dist         = dist
     r.limit        = BR.ShotRangeLimit(w, ecfg)
-    r.since        = since
-    r.floor        = BR.ShotIntervalFloor(w, ecfg)
+    -- ...and the gap that was measured against it. For a new projectile that is
+    -- the gap since the last LAUNCH, which is a different clock from the one
+    -- rifles are timed on -- explosives deliberately do not stamp that one.
+    r.since        = ctx.sinceLaunchMs or since
+    -- THE BOUND THAT ACTUALLY APPLIED TO THIS ROW. An explosive has no impact
+    -- cadence and BR.ShotIntervalFloor still says so; what it has is a LAUNCH
+    -- cadence, and printing a dash for a row that was refused as TOO_FAST would
+    -- make the readout hide the number that decided it -- the exact failure the
+    -- note at the top of this function exists to prevent.
+    r.floor        = BR.ShotIntervalFloor(w, ecfg) or BR.ShotLaunchFloor(w, ecfg)
     r.clip         = ctx.clip
     r.held         = ctx.heldItem
     r.threw        = isTrue(ctx.threwRecently)
@@ -802,6 +1101,173 @@ local function noteAdjudication(shooter, victim, w, ctx, dist, since, why)
     -- lever must still say so after the lever is switched off, or the readout
     -- would launder manufactured refusals into evidence.
     r.forced       = forced and forced.mode or nil
+end
+
+-- How far down a client-supplied target list we are willing to READ.
+--
+-- Separate from the per-weapon ceiling below and doing a different job: the
+-- ceiling bounds how many victims may be HURT, this bounds how much work an
+-- event may cost us before we stop looking. A payload carrying fifty thousand
+-- ids would otherwise be fifty thousand tonumber calls on the hottest path in
+-- the resource, per event, for free -- which is a denial of service that needs
+-- no exploit at all, just a big table.
+local SCAN_MAX = 64
+
+--- The victims an event actually claims, normalised, deduplicated and bounded.
+---
+--- THE LIST IS A CLAIM, NOT A MEASUREMENT. `hitGlobalIds` is composed on the
+--- shooter's machine, and the handler used to walk it with `ipairs` and apply
+--- damage once per entry. Three copies of one victim in one pistol event were
+--- three hits for one round, all measured against the same accepted interval,
+--- because the interval and the round are computed once per EVENT and the
+--- damage was applied once per ENTRY (audit finding 5, 2026-09-08).
+---
+--- NORMALISED FIRST, BECAUSE A DUPLICATE CAN BE SPELT SEVERAL WAYS. `1002` and
+--- `1002.0` are the same ped and different table keys, so a set keyed by the
+--- raw value would deduplicate neither. Anything that is not a whole number is
+--- not a network id and is dropped rather than passed to
+--- NetworkGetEntityFromNetworkId to find out.
+---
+--- DROPPED, NOT REFUSED, and that is the melee precedent rather than a soft
+--- touch. A duplicate arrives with no gap in front of it, so validating it
+--- would refuse it as TOO_FAST -- a countable, means-class refusal -- and if
+--- the engine ever double-reports an honest event that would file anticheat
+--- cases against players for shooting. The second copy is simply not a hit.
+--- THE PER-WEAPON CEILING IS NOT APPLIED HERE, and that is deliberate rather
+--- than an omission. `hitGlobalIds` names ENTITIES, most of which are not
+--- players: a shotgun blast into a car park lists bodywork. Trimming the list
+--- to six entries before anybody has been resolved would let six parked cars
+--- push the one actual victim off the end, so the shot would silently hurt
+--- nobody. The ceiling is counted against RESOLVED PLAYERS in the loop below,
+--- where it means what it says.
+--- @param data table    the event payload
+--- @return table|nil ids  distinct, whole-number net ids, or nil for none
+local function targetsOf(data)
+    local raw = data.hitGlobalIds
+    if type(raw) ~= 'table' then
+        -- hitGlobalIds is the documented-by-usage field; hitGlobalId is the
+        -- singular form some builds send. Read both rather than betting on one.
+        raw = data.hitGlobalId and { data.hitGlobalId } or nil
+    end
+    if not raw then return nil end
+
+    local out, seen = {}, {}
+    for i, v in ipairs(raw) do
+        if i > SCAN_MAX then break end
+        local id = math.tointeger(tonumber(v))
+        if id and id ~= 0 then
+            if seen[id] then
+                BR.Damage.dupeTargets = (BR.Damage.dupeTargets or 0) + 1
+            else
+                seen[id] = true
+                out[#out + 1] = id
+            end
+        end
+    end
+
+    if #out == 0 then return nil end
+    return out
+end
+
+--- The world hurt somebody, or a client says it did.
+---
+--- A HASH IS A CLAIM ABOUT THE CAUSE. This used to be an unconditional exit:
+--- anything in BR.Config.Environmental was counted and returned, uncancelled,
+--- before inventory, state, squad, range, rate or damage value. So a payload
+--- labelled WEAPON_EXPLOSION carrying somebody else's ped and a large damage
+--- figure left through the one door with nothing behind it (audit finding 4).
+---
+--- WHAT IS NOT DONE HERE, AND WHY THAT IS THE POINT. The damage stays the
+--- engine's. There is no ledger of ours behind a fall, so there is no number to
+--- recompute and nothing to apply -- the only lever is CancelEvent, and using it
+--- on a real death means a player who steps off a building walks away. That is a
+--- worse bug than the one being closed, so the rules are bounds on what could
+--- physically have happened and nothing here is strict.
+---
+--- CANCELLATION IS PER EVENT, BECAUSE CancelEvent IS. One implausible victim
+--- refuses the whole payload rather than its own entry -- otherwise a fabricated
+--- target bundled beside a real one would ride in on it.
+--- @param shooter integer
+--- @param env table     the BR.Config.Environmental row the hash resolved to
+--- @param data table    the event payload
+local function handleEnvironmental(shooter, env, data)
+    local ecfg = liveCfg()
+    local ids  = targetsOf(data)
+
+    -- Nothing named, or nothing that resolved to a player: an NPC, a car, a
+    -- lamp post. Never our business, and counted as it always was.
+    if not ids then
+        BR.Damage.envHits = (BR.Damage.envHits or 0) + 1
+        return
+    end
+
+    local a = BR.Roster.get(shooter)
+    local remote, burst = false, false
+    local refused, why = nil, nil
+    local seen = {}
+
+    for _, netId in ipairs(ids) do
+        local victim = playerFromNetId(netId)
+        if victim and not seen[victim] then
+            seen[victim] = true
+
+            -- The rate ceiling is counted once per EVENT and only once a remote
+            -- victim has actually been found, so an ambient blast into scenery
+            -- costs a player nothing at all.
+            if victim ~= shooter and not remote then
+                remote = true
+                burst  = overRate(envRate, shooter, ecfg.envWindowMs or 5000,
+                                  ecfg.envMaxPerWindow or 20)
+            end
+
+            local b = BR.Roster.get(victim)
+            local dist = nil
+            if a and b and a.pos and b.pos then
+                dist = BR.Dist3(a.pos.x, a.pos.y, a.pos.z,
+                                b.pos.x, b.pos.y, b.pos.z)
+            end
+
+            local ok
+            ok, why = BR.EnvDamageAllowed(env, {
+                sameSrc    = victim == shooter,
+                onRoster   = a ~= nil and a.matchId ~= nil,
+                sameMatch  = a ~= nil and b ~= nil and a.matchId ~= nil
+                             and a.matchId == b.matchId,
+                victimLive = b ~= nil and (b.state == BR.PlayerState.ALIVE
+                                        or b.state == BR.PlayerState.DBNO),
+                dist       = dist,
+                amount     = tonumber(data.weaponDamage) or 0,
+                burst      = burst,
+            }, ecfg)
+
+            if not ok then refused = why end
+        end
+    end
+
+    if not refused then
+        BR.Damage.envHits = (BR.Damage.envHits or 0) + 1
+        return
+    end
+
+    BR.Damage.envRefused = (BR.Damage.envRefused or 0) + 1
+
+    -- BEHIND cfg.enforce WITH EVERY OTHER CANCEL IN THIS FILE, so `/brdamage
+    -- off` still backs the whole takeover out in one command without a
+    -- redeploy. A boundary that could not be switched off live would be the one
+    -- thing in here the owner could not undo from the console.
+    if cfg.enforce then CancelEvent() end
+
+    -- The server console, which no player reads. Nothing is shown to the sender
+    -- and no incident is filed -- see BR.EnvRefusal for why these are not
+    -- BR.ShotRefusal values.
+    --
+    -- KEYED ON SHOOTER AND REASON, NOT ON THE CAUSE `env.id`. The cause is the
+    -- weapon hash the sender chose, so keying on it would let one client claim
+    -- eight different environmental causes and buy eight separate allowances --
+    -- exactly the trick the budget is here to refuse.
+    sayRefused(('env:%d:%s'):format(shooter, tostring(refused)), GetGameTimer(),
+        '[br_core] environmental claim refused: %d, %s (%s)',
+        shooter, tostring(env.id), tostring(refused))
 end
 
 AddEventHandler('weaponDamageEvent', function(sender, data)
@@ -836,12 +1302,19 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
     if not fired then
         local env = BR.Config.EnvironmentalFor(data.weaponType)
         if env then
-            -- The world hurt somebody. Not our business, and never a refusal:
-            -- storm, falls and fire have always been the engine's, and an
-            -- exploding car is the same kind of thing (user question,
-            -- 2026-08-08: would NOT_THROWN block ambient explosions? It
-            -- cannot -- those never reach the validator at all).
-            BR.Damage.envHits = (BR.Damage.envHits or 0) + 1
+            -- The world hurt somebody, and the damage stays the engine's:
+            -- storm, falls and fire have always been, and an exploding car is
+            -- the same kind of thing (user question, 2026-08-08: would
+            -- NOT_THROWN block ambient explosions? It cannot -- those never
+            -- reach the validator at all).
+            --
+            -- WHAT IS NEW IS THAT THE LABEL IS NO LONGER PROOF. A hash says
+            -- what the client claims caused the damage; whether the world could
+            -- have done that to that player is a question about positions and
+            -- match state, which the server holds. See handleEnvironmental --
+            -- and note that a hit on the sender's OWN ped is still never
+            -- refused, whatever the hash says.
+            handleEnvironmental(shooter, env, data)
             return
         end
         -- Falls through to the loop below, where it is refused as NO_WEAPON
@@ -857,16 +1330,20 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
     -- three shots. It is also outside the "did we hit a player" test, because
     -- a MISS costs a round too -- that is the whole difference between
     -- counting shots and counting hits.
+    --
+    -- READ FIRST, SPEND SECOND. `heldClipFor` is the magazine as it stood
+    -- BEFORE this event charged for itself, which is the only number an
+    -- ammunition check can honestly be made against -- see its own note.
+    --
+    -- ...AFTER THE LOAD GTA HAS ALREADY DONE. An empty magazine over a live pool
+    -- is one the engine filled before the trigger was pulled. See loadFired.
+    if cfg.serverAmmo then loadFired(shooter, data.weaponType) end
+    local clipBefore = heldClipFor(shooter, data.weaponType)
     if cfg.serverAmmo then
         BR.Damage.spendRound(shooter, data.weaponType)
     end
 
-    -- hitGlobalIds is the documented-by-usage field; hitGlobalId is the
-    -- singular form some builds send. Read both rather than betting on one.
-    local ids = data.hitGlobalIds
-    if type(ids) ~= 'table' then
-        ids = data.hitGlobalId and { data.hitGlobalId } or nil
-    end
+    local ids = targetsOf(data)
     if not ids then return end
 
     -- CADENCE IS PER EVENT, NOT PER VICTIM, and this used to be inside the
@@ -882,13 +1359,79 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
     -- Explosives do not stamp it. A detonation is not a trigger pull, and
     -- letting one set the clock means the next honest rifle round is measured
     -- from the moment your own grenade went off.
-    if not (fired and fired.explosive) then lastShot[shooter] = now end
+    --
+    -- ...WHICH LEFT THEIR CADENCE MEASURED BY NOTHING AT ALL, and that half was
+    -- never intended. `blast[shooter]` is the other clock: it times LAUNCHES
+    -- rather than impacts, so a grenade launcher still cannot cycle in a
+    -- millisecond while one rocket catching four people still costs one shot.
+    local explosive = fired ~= nil and isTrue(fired.explosive)
+    if not explosive then lastShot[shooter] = now end
+
+    -- THE PROJECTILE THIS EVENT MIGHT BELONG TO, resolved once for the event.
+    --
+    -- `sinceLaunch` is nil when the shooter has never launched this weapon --
+    -- which must not read as "0ms ago and therefore too fast", so the first
+    -- rocket of a match has no cadence to fail.
+    local rec, launchOpen, sinceLaunch = nil, false, nil
+    if explosive then
+        rec = blast[shooter]
+        if rec and rec.weapon == fired.id then
+            sinceLaunch = now - rec.at
+            launchOpen  = sinceLaunch <= BR.ShotBlastWindow(fired, liveCfg())
+        end
+    end
+
+    -- ONE EVENT, ONE HIT PER PLAYER, decided on the RESOLVED PLAYER rather than
+    -- on the id that named them.
+    --
+    -- targetsOf has already thrown away repeated ids, which closes the case the
+    -- audit reproduced. This closes the same case one level down: two DIFFERENT
+    -- network ids that both resolve to one src are still one player being hurt
+    -- twice for one round. It costs a table lookup per victim and it means the
+    -- invariant holds however the ids were spelt -- rather than holding because
+    -- the only spelling anybody thought of was caught upstream.
+    --
+    -- ...AND A CEILING ON HOW MANY OF THEM THERE CAN BE. Distinct victims are
+    -- not a fabrication a set can catch, so the count is bounded by what the
+    -- weapon physically reaches (BR.ShotMaxTargets). Counted here rather than
+    -- while reading the list, because most entries in that list are scenery.
+    local hitAlready = {}
+    local hits, maxHits = 0, BR.ShotMaxTargets(fired, liveCfg())
 
     for _, netId in ipairs(ids) do
         local victim = playerFromNetId(netId)
+        if victim and hitAlready[victim] then
+            BR.Damage.dupeTargets = (BR.Damage.dupeTargets or 0) + 1
+            victim = nil
+        elseif victim and hits >= maxHits then
+            -- Dropped rather than refused, for the melee-duplicate reason: an
+            -- honest event that over-reports must not file a case against the
+            -- player who fired it.
+            BR.Damage.cappedTargets = (BR.Damage.cappedTargets or 0) + 1
+            victim = nil
+        end
         if victim then
+            hitAlready[victim] = true
+            hits = hits + 1
             local ctx = contextFor(shooter, victim, data.weaponType)
             if ctx then
+                -- THE MAGAZINE AS IT STOOD BEFORE THIS EVENT SPENT FROM IT, and
+                -- this fixes a live false positive rather than a hole.
+                --
+                -- contextFor reads the slot, and spendRound has already charged
+                -- that slot for the shot being adjudicated. On the LAST round of
+                -- the last magazine -- clip 1, reserve empty -- the read comes
+                -- back 0, so `ctx.clip <= 0` refused the round that had just
+                -- been legitimately fired. NO_AMMO is means-class with a bar of
+                -- one, so an honest player running dry at the end of a fight
+                -- opened an anticheat case on themselves, every time.
+                --
+                -- Reproduced in tools/test_roster.lua before it was fixed. Left
+                -- to contextFor when heldClipFor has no opinion: nil there means
+                -- the active slot is not the weapon that fired, and NOT_HELD is
+                -- the refusal that belongs to that, not NO_AMMO.
+                if clipBefore ~= nil then ctx.clip = clipBefore end
+
                 local dist = 0.0
                 if ctx.posA and ctx.posB then
                     dist = BR.Dist3(ctx.posA.x, ctx.posA.y, ctx.posA.z,
@@ -914,6 +1457,37 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
                         BR.Damage.meleeDupes = (BR.Damage.meleeDupes or 0) + 1
                     else
                         meleeHit[key] = now
+                    end
+                end
+
+                -- WHICH PROJECTILE THIS IMPACT BELONGS TO.
+                --
+                -- Shared: the shooter has a launch still open, it was this
+                -- weapon, it has not already hurt this victim, and it has not
+                -- run out of victims. That is one rocket catching four people,
+                -- and it costs one rocket.
+                --
+                -- Not shared: a NEW projectile, which has to pay -- a round out
+                -- of a magazine the server filled, or a throw credit. The
+                -- SECOND sticky of a cluster to catch a victim the first
+                -- already caught lands here rather than being dropped, which is
+                -- why the victim test is part of "shared" at all: three
+                -- stickies are three credits and should be three hits.
+                local newLaunch = false
+                if explosive then
+                    local shared = launchOpen and rec ~= nil
+                                   and rec.victims[victim] == nil
+                                   and rec.n < maxHits
+                    ctx.blastShared = shared
+                    newLaunch = not shared
+                    if newLaunch then
+                        ctx.sinceLaunchMs = sinceLaunch
+                        -- Only a launcher has a magazine to be empty of. Left
+                        -- unset for a throwable, where nil means "no opinion"
+                        -- and the throw credit is the bound instead.
+                        if fired.clip then
+                            ctx.launchAmmo = clipBefore ~= nil and clipBefore > 0
+                        end
                     end
                 end
 
@@ -949,11 +1523,23 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
                     -- Warmup fistfights would otherwise fill the console with
                     -- lines that mean "the game said no", drowning the ones
                     -- that mean "somebody has a weapon we did not issue".
+                    --
+                    -- ...AND LOUD IS NOT UNBOUNDED (#287). A hostile client can
+                    -- manufacture refusals as fast as it can send packets, and
+                    -- this console is mirrored to a file on the game box. The
+                    -- budget prints the first few of each shooter-and-reason
+                    -- pair per minute and reports the count of the rest, so the
+                    -- false-positive hunt this phase exists for still works --
+                    -- honest play produces a handful of lines, far under the
+                    -- ceiling -- while an attack produces a bounded number of
+                    -- lines that SAY how big it is.
                     if BR.ShotSuspicious[why] or cfg.logHits then
-                        print(('[br_core] shot refused: %d -> %d, %s (%.0fm, %dms)%s')
-                            :format(shooter, victim, tostring(why), dist, since,
-                                    forced and ('   [FORCED ' .. forced.mode
-                                                .. ' -- not filed]') or ''))
+                        sayRefused(('shot:%d:%s'):format(shooter, tostring(why)),
+                            now,
+                            '[br_core] shot refused: %d -> %d, %s (%.0fm, %dms)%s',
+                            shooter, victim, tostring(why), dist, since,
+                            forced and ('   [FORCED ' .. forced.mode
+                                        .. ' -- not filed]') or '')
                     end
 
                     -- A MANUFACTURED REFUSAL IS NOT EVIDENCE OF ANYTHING.
@@ -998,6 +1584,34 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
                         BR.Damage.resync(shooter, victim)
                     end
                 else
+                    -- THE LAUNCH IS PAID FOR HERE, AND NOWHERE ELSE.
+                    --
+                    -- AFTER the verdict, deliberately: a refused blast must not
+                    -- consume a grenade the player still has, or a squadmate
+                    -- walking through your own explosion would eat the credit
+                    -- for it and the next honest one would be refused as
+                    -- NOT_THROWN. The magazine is the exception and is charged
+                    -- upstream by spendRound, because a launcher can MISS and a
+                    -- miss has to cost a round -- the same reason spendRound
+                    -- sits outside this loop at all.
+                    --
+                    -- ONCE PER PROJECTILE, NEVER PER VICTIM. `rec` is replaced
+                    -- rather than reused so the victim ledger starts empty: this
+                    -- is a different grenade.
+                    if newLaunch then
+                        if not fired.clip then
+                            consumeThrow(shooter, fired.id)
+                        end
+                        rec = { weapon = fired.id, at = now, victims = {}, n = 0 }
+                        blast[shooter] = rec
+                        launchOpen, sinceLaunch = true, 0
+                        BR.Damage.launches = (BR.Damage.launches or 0) + 1
+                    end
+                    if explosive and rec then
+                        rec.victims[victim] = true
+                        rec.n = rec.n + 1
+                    end
+
                     -- WHAT THE SERVER THINKS THE HIT WAS WORTH.
                     --
                     -- Recomputed from our own tables and NEVER read off the
@@ -1092,6 +1706,33 @@ local function noteExplosion(owner, ev)
     if not e or not e.matchId then return end
 
     local now = GetGameTimer()
+
+    -- A CEILING ON THE LEDGER ITSELF (external audit, #287). The rate ceiling in
+    -- explosionAllowed bounds how often a player may set one of these off; it
+    -- says nothing about how many records the accepted ones leave behind, and a
+    -- molotov record lives for twenty seconds. See BR.FireLedgerFull for why the
+    -- per-owner share is the load-bearing half and why a full ledger drops the
+    -- NEW record instead of evicting an old one.
+    --
+    -- COUNTED BY WALKING THE TABLE rather than kept in a second per-owner
+    -- counter beside it. `fires` is bounded by the very cap this feeds, the tick
+    -- below already rebuilds the whole table twice a second, and a counter that
+    -- has to be decremented in three places -- the prune, forgetFires, and match
+    -- teardown -- is a counter that goes wrong the first time somebody adds a
+    -- fourth.
+    local mine = 0
+    for _, f in ipairs(fires) do
+        if f.owner == owner then mine = mine + 1 end
+    end
+    local full = BR.FireLedgerFull(#fires, mine, cfg)
+    if full then
+        BR.Damage.firesDropped = (BR.Damage.firesDropped or 0) + 1
+        sayRefused(('fires:%d:%s'):format(owner, full), now,
+            '[br_core] fire ledger full (%s): %d\'s %s is not attributed '
+            .. '(%d held, %d theirs)', full, owner, item, #fires, mine)
+        return
+    end
+
     -- A blast is instantaneous; a molotov keeps burning. Both are the same
     -- record with a different lifetime.
     local life = (item == 'molotov') and (cfg.fireLifeMs or 20000)
@@ -1105,10 +1746,79 @@ local function noteExplosion(owner, ev)
     BR.Damage.explosions = (BR.Damage.explosions or 0) + 1
 end
 
+--- Is this explosion one that could have happened?
+---
+--- THE SECOND ROUTE AROUND THE ADJUDICATOR, and until now the handler below only
+--- read attribution out of it: an explosion nobody was issued, anywhere on the
+--- map, at any rate, was never refused (audit finding 4). Cfx's own OneSync
+--- cookbook is about cancelling exactly this event, and the fields are the ones
+--- it names.
+---
+--- THE BOUNDS ARE WIDE ON PURPOSE. Cancelling an explosion is VISIBLE -- a
+--- grenade that lands and does nothing reads as the game being broken -- so
+--- every rule here is a fact the sender does not control and none of them is
+--- near a plausible value. The ambient blasts the owner asked to keep working
+--- pass all of them: a car going off a cliff is not one of the three types this
+--- gamemode issues, so provenance never applies to it.
+--- @param owner integer
+--- @param ev table
+--- @return boolean ok, string|nil why
+local function explosionAllowed(owner, ev)
+    local ecfg = liveCfg()
+    local e = BR.Roster.get(owner)
+
+    local item = (cfg.explosionTypes or {})[math.tointeger(ev.explosionType) or -1]
+
+    local posOk = finite(ev.posX) and finite(ev.posY) and finite(ev.posZ)
+    local dist  = nil
+    if posOk and e and e.pos then
+        dist = BR.Dist3(e.pos.x, e.pos.y, e.pos.z,
+                        tonumber(ev.posX), tonumber(ev.posY), tonumber(ev.posZ))
+    end
+
+    return BR.ExplosionAllowed({
+        -- LEFT is the one state that means "there is nobody here". A player who
+        -- has just been eliminated may still have something in the air, and
+        -- cancelling that would be a grenade that visibly failed to go off.
+        onRoster = e ~= nil and e.state ~= BR.PlayerState.LEFT,
+        posOk    = posOk,
+        dist     = dist,
+        scale    = tonumber(ev.damageScale),
+        burst    = overRate(blastRate, owner, ecfg.blastWindowRateMs or 5000,
+                            ecfg.blastMaxPerWindow or 12),
+        item     = item,
+        -- Non-consuming, deliberately: see BR.ExplosionAllowed and `lastThrow`.
+        owns     = item ~= nil
+                   and (holdsItem(owner, item) or threwAtAll(owner, item)),
+    }, ecfg)
+end
+
 AddEventHandler('explosionEvent', function(sender, ev)
     if type(ev) ~= 'table' then return end
     local owner = tonumber(sender)
-    if owner then noteExplosion(owner, ev) end
+
+    -- NO SENDER IS NOT A REFUSAL. Source 0 is the server itself and an
+    -- unattributed blast is exactly what BR.Config.Combat.explosionTypes already
+    -- declines to claim -- cancelling those would be this file deciding the
+    -- world may not have weather.
+    if not owner or owner == 0 then return end
+
+    local ok, why = explosionAllowed(owner, ev)
+    if not ok then
+        BR.Damage.blastsRefused = (BR.Damage.blastsRefused or 0) + 1
+        if cfg.enforce then CancelEvent() end
+        -- THE ONE THAT MADE #287 A FINDING. A client can raise this event as
+        -- fast as it can send packets; the rate ceiling refuses everything past
+        -- twelve in five seconds and this line used to be printed about every
+        -- single one of them, straight into console.log. Keyed on owner and
+        -- reason, so the first few of each still name the player who is doing it.
+        sayRefused(('blast:%d:%s'):format(owner, tostring(why)), GetGameTimer(),
+            '[br_core] explosion refused: %d, type %s (%s)',
+            owner, tostring(ev.explosionType), tostring(why))
+        return
+    end
+
+    noteExplosion(owner, ev)
 end)
 
 --- Credit health lost inside somebody's fire to whoever lit it.
@@ -1116,6 +1826,37 @@ end)
 --- Runs off the roster's own 2Hz health sampling, so it sees the same numbers
 --- the storm does and needs no client cooperation. A player whose health did
 --- not move is not burning, whatever they are standing in.
+--- The live fire whose reach this player is inside, or nil.
+---
+--- ONE GEOMETRY, TWO READERS. Attribution asks it of a player who has just lost
+--- health, and the downed burn below asks it of a body that has no health left to
+--- lose -- and both have to mean the same thing by "in the fire", or a molotov
+--- could credit its owner for a kill it was not close enough to accelerate.
+--- @param e table
+--- @return table|nil
+local function fireOver(e)
+    if not e.pos then return nil end
+
+    local r = cfg.fireRadius or 6.0
+    local r2 = r * r
+    for _, f in ipairs(fires) do
+        if f.matchId == e.matchId then
+            local dx, dy = e.pos.x - f.x, e.pos.y - f.y
+            if dx * dx + dy * dy <= r2 and math.abs(e.pos.z - f.z) < 8.0 then
+                return f
+            end
+        end
+    end
+    return nil
+end
+
+-- HOW WIDE A GAP THIS TICK WILL CHARGE A BURNING BODY FOR, in ms. The beat is
+-- 500, so three of them is the ceiling: `burnAt` goes stale whenever the tick
+-- returns early on an empty ledger, and a body that walked out of one molotov and
+-- was knocked into another a minute later must not be charged for the minute.
+-- Anything wider is read as a fresh arrival and costs nothing.
+local BURN_MAX_GAP_MS = 1500
+
 BR.Sched.every(500, 'damage.fires', function()
     if #fires == 0 then return end
 
@@ -1127,9 +1868,6 @@ BR.Sched.every(500, 'damage.fires', function()
     fires = live
     if #fires == 0 then return end
 
-    local r = cfg.fireRadius or 6.0
-    local r2 = r * r
-
     BR.Roster.each(
         function(e) return e.state == BR.PlayerState.ALIVE
                         or e.state == BR.PlayerState.DBNO end,
@@ -1139,46 +1877,88 @@ BR.Sched.every(500, 'damage.fires', function()
             local hp = (e.hp or 100.0) + (e.armour or 0.0)
             local was = e.burnHp
             e.burnHp = hp
+
+            -- ═══ A DOWNED BODY IN THE FLAMES BLEEDS FASTER ═══
+            --
+            -- Owner, playtest 2026-09-12: "their body being on fire should
+            -- accelerate the bleed out."
+            --
+            -- THE HEALTH DELTA CANNOT ANSWER THIS AND NEVER COULD. A downed
+            -- player's hp is pinned at dbnoHp by the ledger (server/combat.lua's
+            -- knock) and their real health IS the bleed clock, so `hp >= was`
+            -- above is true of a burning body on every single tick -- which means
+            -- DBNO has been in this filter, walking past the guard, since the
+            -- ledger was written. What is observable is only WHERE they are, so
+            -- that is what this branch asks, and the seconds it charges are real
+            -- elapsed time rather than a damage number nobody can see.
+            --
+            -- client/dbno.lua is the other half: a downed ped refuses fire damage
+            -- now, so the flames cannot kill it and cannot cycle it through
+            -- resurrections either. The fire moved from the ped to the clock.
+            if e.state == BR.PlayerState.DBNO then
+                local f = fireOver(e)
+                local since = e.burnAt
+                e.burnAt = f and now or nil
+
+                if f and since and (now - since) <= BURN_MAX_GAP_MS then
+                    BR.Combat.burn(src, now - since, f.owner, f.item)
+                end
+                return
+            end
+            e.burnAt = nil
+
             -- Not hurt since the last sample: nothing to attribute. This is
             -- the whole guard -- without it, standing near a burnt-out patch
             -- would credit its owner for a storm death.
             if not was or hp >= was then return end
 
-            for _, f in ipairs(fires) do
-                if f.matchId == e.matchId then
-                    local dx, dy = e.pos.x - f.x, e.pos.y - f.y
-                    local dz = e.pos.z - f.z
-                    if dx * dx + dy * dy <= r2 and math.abs(dz) < 8.0 then
-                        e.lastHitBy = f.owner
-                        e.lastHitAt = now
-                        e.lastHitWeapon = f.item
+            local f = fireOver(e)
+            if f then
+                e.lastHitBy = f.owner
+                e.lastHitAt = now
+                e.lastHitWeapon = f.item
 
-                        -- SELF-HARM IS COUNTED HERE, because there is nowhere
-                        -- else left to count it.
-                        --
-                        -- The repeat guard used to live in the validator, on
-                        -- weaponDamageEvent. It could never fire: dropping
-                        -- three grenades at your own feet raises NO
-                        -- weaponDamageEvent at all (user capture,
-                        -- 2026-08-08 -- the log stayed empty and the player
-                        -- died), exactly like the molotov. Explosions are the
-                        -- only realistic way to hurt yourself, so the one path
-                        -- that could see it was the one path that never ran.
-                        --
-                        -- The damage still cannot be refused -- it is the
-                        -- engine's, applied on the victim's own machine -- but
-                        -- the PATTERN is now visible, which is what the rule
-                        -- was ever about. Blowing yourself up once is a
-                        -- mistake; doing it three times in five seconds is
-                        -- somebody exercising something.
-                        if f.owner == src and BR.Damage.noteSelfHit(src) then
-                            BR.Damage.noteRefusal(src, BR.ShotRefusal.SELF)
-                        end
-                        return
-                    end
+                -- SELF-HARM IS COUNTED HERE, because there is nowhere
+                -- else left to count it.
+                --
+                -- The repeat guard used to live in the validator, on
+                -- weaponDamageEvent. It could never fire: dropping
+                -- three grenades at your own feet raises NO
+                -- weaponDamageEvent at all (user capture,
+                -- 2026-08-08 -- the log stayed empty and the player
+                -- died), exactly like the molotov. Explosions are the
+                -- only realistic way to hurt yourself, so the one path
+                -- that could see it was the one path that never ran.
+                --
+                -- The damage still cannot be refused -- it is the
+                -- engine's, applied on the victim's own machine -- but
+                -- the PATTERN is now visible, which is what the rule
+                -- was ever about. Blowing yourself up once is a
+                -- mistake; doing it three times in five seconds is
+                -- somebody exercising something.
+                if f.owner == src and BR.Damage.noteSelfHit(src) then
+                    BR.Damage.noteRefusal(src, BR.ShotRefusal.SELF)
                 end
             end
         end)
+end)
+
+--- Report what the console budget held back, once a window has closed.
+---
+--- THE FLOOD THAT STOPS IS THE CASE THIS EXISTS FOR. `logBudget:admit` reports a
+--- closing window on the next line that asks to be printed, which covers an
+--- attack still in progress and nothing else: a client that sends fifty thousand
+--- refusable events and then goes quiet would leave the count sitting in the
+--- budget until the next refusal, which might be next match or never. An
+--- operator reading the console after the fact is exactly the person who needs
+--- that number.
+---
+--- A SECOND ENTRY RATHER THAN A LINE INSIDE damage.fires, because that one
+--- returns early when the fire ledger is empty -- which it is during precisely
+--- the attack shapes that have nothing to do with explosions.
+BR.Sched.every(1000, 'damage.logbudget', function()
+    local s = logBudget:sweep(GetGameTimer())
+    if s then print(BR.LogBudget.line(s)) end
 end)
 
 --- Forget a player's fires. Called on disconnect and at match teardown, so a
@@ -1222,9 +2002,19 @@ end, true)
 --- have their first shot refused as too fast.
 --- @param src integer
 function BR.Damage.forget(src)
-    lastShot[src] = nil
-    thrown[src]   = nil
-    selfHits[src] = nil
+    lastShot[src]  = nil
+    thrown[src]    = nil
+    lastThrow[src] = nil
+    selfHits[src]  = nil
+    -- The two rate ledgers, for the same reason everything else here is
+    -- cleared: a recycled server id must not inherit a ceiling somebody else
+    -- filled, or its next holder's first fall is refused as TOO_OFTEN.
+    envRate[src]   = nil
+    blastRate[src] = nil
+    -- ...and the projectile they had in the air. A recycled server id must not
+    -- inherit an open launch authorization: it would hand its next holder one
+    -- free blast, bounded only by the window it was opened in.
+    blast[src]    = nil
     if BR.Damage.forgetFires then BR.Damage.forgetFires(src) end
     for k in pairs(meleeHit) do
         if k:find('^' .. src .. ':') or k:find(':' .. src .. ':') then
@@ -1596,7 +2386,7 @@ RegisterCommand('brtestfire', function(src, args)
         --
         -- THE CLIENT KEEPS ITS ROUNDS, AND THAT IS THE POINT. BR.Inv.push sends
         -- the new numbers, but the client writes ammo onto the ped only when the
-        -- server's number goes UP (client/inventory.lua, reapplyAmmo) -- so the
+        -- server's number goes UP (client/inventory.lua, grantAmmo) -- so the
         -- engine still lets them fire and the shot arrives at a server that
         -- knows better. That is the documented engine/server drift, used on
         -- purpose instead of waited for.

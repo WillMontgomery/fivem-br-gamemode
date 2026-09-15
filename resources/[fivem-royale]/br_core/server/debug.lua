@@ -160,7 +160,8 @@ RegisterCommand('brhelp', function()
     print('  brlootseed <n|off>   pin the loot layout so it repeats between matches')
     print('  brdbno               every downed player: time left, knocker, reviver')
     print('  brdown <id> [by]     knock a player down; says WHY when it refuses')
-    print('  brrevive <id> [by]   pick a downed player back up')
+    print('  brrevive <id> [by]   pick a downed player up, or put an '
+        .. 'eliminated one back in')
     print('  brscatter [radius]   spread everyone out to test OneSync scoping')
     print('  brforce <state>      force a match state transition')
     print('  brskip               end the current timed state immediately')
@@ -195,15 +196,15 @@ RegisterCommand('brstate', function()
     local any = false
     BR.Server.eachMatch(function(m)
         any = true
-        print(('  match %-4d %-8s %-6s bucket %-5d players %-3d alive %-3d squads %-3d endsAt %s')
-            :format(m.id, m.state, m.mode, m.bucket,
+        print(('  match %-5s %-8s %-6s bucket %-5d players %-3d alive %-3d squads %-3d endsAt %s')
+            :format(BR.MatchTag(m.id), m.state, m.mode, m.bucket,
                     BR.Server.countIn(m), BR.Server.aliveCount(m),
                     BR.Server.squadsAlive(m),
                     m.endsAt > 0 and secs(m.endsAt - GetGameTimer()) or '-'))
     end)
     if not any then print('  (no match instances -- lobby is WAITING)') end
     line('-')
-    print(('  minted ids   %d'):format(BR.Server.matchId))
+    print(('  minted ids   %d'):format(BR.Server.matchSeq))
     print(('  devMode      %s'):format(tostring(BR.Server.devMode)))
 
     -- THE DEBUG HOLDS, PRINTED ONLY WHEN THEY ARE ON.
@@ -322,8 +323,10 @@ RegisterCommand('brsquads', function()
             names[#names + 1] = ('%s(%d,%s)'):format(m.e.name, m.src, m.e.state)
         end
 
+        local mid = members[1].e.matchId
         print(('  [%s] match %s  %d/%d still in'):format(
-            tostring(id), tostring(members[1].e.matchId), standing, #members))
+            tostring(id), tostring(mid and BR.MatchTag(mid)),
+            standing, #members))
         print(('      %s'):format(table.concat(names, ', ')))
     end
 
@@ -345,7 +348,7 @@ RegisterCommand('brsquads', function()
     if BR.Server.eachMatch then
         BR.Server.eachMatch(function(m)
             line('-')
-            print(('  match %d (%s)'):format(m.id, tostring(m.state)))
+            print(('  match %s (%s)'):format(BR.MatchTag(m.id), tostring(m.state)))
             for _, l in ipairs(BR.Party.formationReport(m)) do print('  ' .. l) end
         end)
     end
@@ -485,7 +488,12 @@ RegisterCommand('brconfig', function()
 end, RESTRICTED)
 
 RegisterCommand('brloot', function(_, args)
-    local wanted = tonumber(args[1])
+    -- READ AS HEX, because hex is the only form there is (#291). Match ids are
+    -- printed as seven hex characters everywhere, and the argument to this verb
+    -- is somebody copying what the log just said. Parsing it as decimal would
+    -- answer about a DIFFERENT match for any id made only of digits, and about
+    -- no match at all for the other fifteen sixteenths of them.
+    local wanted = BR.MatchFromTag(args[1])
 
     local any = false
     BR.Server.eachMatch(function(m)
@@ -493,11 +501,12 @@ RegisterCommand('brloot', function(_, args)
         any = true
 
         if not m.loot then
-            print(('  match %d: no loot (state %s)'):format(m.id, m.state))
+            print(('  match %s: no loot (state %s)')
+                :format(BR.MatchTag(m.id), m.state))
             return
         end
 
-        header(('loot -- match %d, seed %d'):format(m.id, m.loot.seed))
+        header(('loot -- match %s, seed %d'):format(BR.MatchTag(m.id), m.loot.seed))
 
         local byKind, byRarity, cells, total = {}, {}, 0, 0
         for _, e in pairs(m.loot.items) do
@@ -702,7 +711,7 @@ end, RESTRICTED)
 
 --- Roll the crate table N times and print what came out.
 ---
----   brlootsim [crates] [tier] [seed]
+---   brlootsim [crates] [tier] [seed]      tier 1..4, or 0/omitted for all four
 ---
 --- THE ANSWER TO "IS THERE ENOUGH GUN IN THE CRATES", WITHOUT OPENING A HUNDRED
 --- OF THEM. #127 was reported from a single match -- "disproportionately more
@@ -738,7 +747,7 @@ RegisterCommand('brlootsim', function(_, args)
     local seed = math.tointeger(math.floor(tonumber(args[3]) or 1))
 
     if crates < 1 or crates > 2000000 then
-        print('  usage: brlootsim [crates] [tier] [seed]   (1..2000000 crates)')
+        print('  usage: brlootsim [crates] [tier] [seed]   (1..2000000 crates, tier 1..4)')
         return
     end
 
@@ -756,7 +765,14 @@ RegisterCommand('brlootsim', function(_, args)
         :format((BR.Config.Loot.meleeChance or 0.0) * 100.0,
                 BR.Config.Loot.chestItems.min, BR.Config.Loot.chestItems.max))
 
-    local tiers = (tierArg >= 1 and tierArg <= 3) and { tierArg } or { 1, 2, 3 }
+    -- FOUR TIERS SINCE #227. The golden POIs are a fourth RarityWeights row and
+    -- a fourth chestsPerTier entry, and this command is the project's sanctioned
+    -- way to retune a crate table without opening a hundred crates -- so a sim
+    -- that stopped at 3 would be blind to precisely the row most likely to need
+    -- retuning. Note that it rolls BR.LootChestContents, which means tier 4 here
+    -- is the real tier-4 crate row and not the one-hotter bump the tiers below
+    -- it get; that difference is the feature and this is where you can see it.
+    local tiers = (tierArg >= 1 and tierArg <= 4) and { tierArg } or { 1, 2, 3, 4 }
 
     for _, tier in ipairs(tiers) do
         local rng = BR.Rng(seed + tier)
@@ -929,7 +945,11 @@ RegisterCommand('brgive', function(_, args)
     if not src or not item then
         print('  usage: brgive <serverId> <itemId> [count]')
         print('    itemId is a weapon/throwable id (carbinerifle), a consumable')
-        print('    id (medkit), or an ammo pool (light|smg|medium|shells|heavy)')
+        -- DERIVED, NOT TYPED. This line listed the five pools by hand and went
+        -- stale the moment there were seven of them; BR.Config.AmmoOrder is the
+        -- vocabulary and the only place it should be written down.
+        print(('    id (medkit), or an ammo pool (%s)')
+            :format(table.concat(BR.Config.AmmoOrder, '|')))
         print('    brweapons lists every id; brarm is the one for testing guns')
         return
     end

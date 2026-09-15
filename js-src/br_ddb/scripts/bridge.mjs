@@ -58,6 +58,12 @@ const handlers = new Map()
 let spoolDir = null
 let loaded = null
 
+/** Bumped per `loadIsolated` so each extra load gets a cache-missing URL. */
+let isolatedLoads = 0
+
+/** Every temp spool an isolated load made, so `cleanup` can take them away. */
+const isolatedDirs = []
+
 /**
  * @returns {Promise<object>} the bridge, with its handlers reachable by name
  */
@@ -109,6 +115,92 @@ export async function loadBridge() {
     cleanup,
   }
   return loaded
+}
+
+/**
+ * Load src/index.js a SECOND time, under convars of the caller's choosing.
+ *
+ * ═══ WHY A WHOLE EXTRA LOAD ═══
+ *
+ * The table prefixes are resolved at module scope, once, on load -- which is
+ * exactly the property that makes them cheap on a real server and awkward to
+ * test. `resolvePrefixes` has its own cases in test.mjs and they are the ones
+ * that pin the decision, but a decision the call sites do not use is worth
+ * nothing: the bug this guards against is a `TableName` built from a constant
+ * that no longer means what its name says. So one dev-mode instance is loaded
+ * here and driven the same way the production one is, and the assertions are on
+ * what reached the (stubbed) SDK.
+ *
+ * ═══ HOW IT AVOIDS COLLIDING WITH THE PRODUCTION BRIDGE ═══
+ *
+ *   THE URL CARRIES A QUERY STRING, so Node's module cache treats it as a
+ *   different module and actually re-runs it. `./ban.js` and friends resolve
+ *   WITHOUT the query and stay shared, which is correct -- they are pure, and
+ *   so is the AWS stub, whose `calls` array is the thing being read.
+ *
+ *   THE GLOBALS ARE SWAPPED AND PUT BACK. `on`, `emit` and `GetConvar` are
+ *   whatever the caller asked for only for the duration of the import, so the
+ *   handlers land in this instance's own map and the production bridge's map is
+ *   untouched.
+ *
+ *   IT GETS ITS OWN SPOOL DIRECTORY. src/index.js calls `sweepSpool(0)` at
+ *   module scope; pointed at the production bridge's spool it would delete the
+ *   frame that bridge's artifact cases put there.
+ *
+ * @param {Record<string, string>} convars  convar values for this instance
+ * @returns {Promise<{ handlers: Map, logs: string[], call: Function, dir: string }>}
+ */
+export async function loadIsolated(convars) {
+  if (!HOOKS_SUPPORTED) {
+    throw new Error('node:module register() is unavailable -- needs Node 20.6 or later')
+  }
+  register(new URL('./aws_stub_hooks.mjs', import.meta.url))
+
+  const dir = mkdtempSync(join(tmpdir(), 'br_ddb-iso-'))
+  const CONVARS = { br_artifacts_dir: dir, ...convars }
+  const own = new Map()
+  const ownLogs = []
+
+  const realGetConvar = globalThis.GetConvar
+  const realOn = globalThis.on
+  const realEmit = globalThis.emit
+  const realLog = console.log
+
+  globalThis.GetConvar = (key, fallback) =>
+    Object.hasOwn(CONVARS, key) ? CONVARS[key] : fallback
+  globalThis.on = (name, fn) => own.set(name, fn)
+  globalThis.emit = () => {}
+  console.log = (...args) => ownLogs.push(args.map(String).join(' '))
+
+  try {
+    const url = new URL('../src/index.js', import.meta.url)
+    url.search = `iso=${isolatedLoads++}`
+    await import(url.href)
+  } finally {
+    console.log = realLog
+    globalThis.GetConvar = realGetConvar
+    globalThis.on = realOn
+    globalThis.emit = realEmit
+  }
+
+  isolatedDirs.push(dir)
+
+  /** Invoke one of THIS instance's handlers. Returns the throw, like `call`. */
+  const callOwn = (name, ...args) => {
+    const fn = own.get(name)
+    if (!fn) return new Error(`no handler registered for ${name}`)
+    const quiet = capture()
+    try {
+      fn(...args)
+      return null
+    } catch (e) {
+      return e
+    } finally {
+      quiet()
+    }
+  }
+
+  return { handlers: own, logs: ownLogs, call: callOwn, dir }
 }
 
 function capture() {
@@ -181,4 +273,7 @@ export function lastEmit(name) {
 function cleanup() {
   if (spoolDir) rmSync(spoolDir, { recursive: true, force: true })
   spoolDir = null
+  while (isolatedDirs.length) {
+    rmSync(isolatedDirs.pop(), { recursive: true, force: true })
+  }
 }

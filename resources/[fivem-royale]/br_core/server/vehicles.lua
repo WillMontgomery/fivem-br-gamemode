@@ -1504,8 +1504,9 @@ local DEFAULT_MODEL = 'granger'
 --- in the COMMUNAL WARMUP bucket and will not move to the match's own until
 --- `m.hopAt` -- so `forSrc` would have put twenty-three vehicles somewhere
 --- nobody in the match can see, which is this function's own definition of the
---- same failure as not creating them at all. `bucket` is the match's
---- (matchBucketBase + matchId), known without asking anybody, and it WINS over
+--- same failure as not creating them at all. `bucket` is the match's own
+--- (`m.bucket`, matchBucketBase + its seq), known without asking anybody, and
+--- it WINS over
 --- `forSrc` when both are given because it is the more specific claim.
 ---
 --- @param model string|number

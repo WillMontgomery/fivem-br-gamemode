@@ -166,7 +166,25 @@ export default function InventoryBar({ inv, volts, currency }: {
   currency?: string
 }) {
   const active = inv.slots[inv.active - 1] ?? null
-  const reserve = active?.pool ? (inv.ammo[active.pool] ?? 0) : 0
+  // ═══ THE RESERVE IS SENT, AND THE POOL IS ONLY THE FALLBACK ═══
+  //
+  // Owner, 2026-09-12: "I buy 60 rounds for my combat PDW at the shop - the HUD
+  // shows 30/60 now. I had 0 before." Sixty bought, ninety drawn.
+  //
+  // `inv.ammo[pool]` IS THE SERVER'S RESERVE AND THE MAGAZINE BESIDE IT IS THE
+  // ENGINE'S. The engine fills a clip out of its own reserve the moment it is
+  // handed rounds with an empty magazine, and the server is never told -- a reload
+  // does not move the total its report watches. So these two numbers described
+  // different moments and summed to a holding nobody had.
+  //
+  // `inv.reserve` is the same pair measured at one moment (see uiReserve in
+  // br_core/client/inventory.lua); the pool stays the fallback for an empty hand,
+  // a melee weapon, a spectated bag and any moment the two books already agree.
+  //
+  // `?? ` AND NOT `||`, because 0 is a real reserve -- the last magazine in the
+  // gun -- and `||` would fall back off it to the pool.
+  const reserve = inv.reserve
+    ?? (active?.pool ? (inv.ammo[active.pool] ?? 0) : 0)
 
   return (
     <div className="flex flex-col items-end gap-1">

@@ -111,11 +111,54 @@ end
 
 -- 3. Tiers are real, and radii are sane.
 for _, p in ipairs(POIS) do
-    if p.tier ~= 1 and p.tier ~= 2 and p.tier ~= 3 then
-        fail('%s has tier %s, which is not 1..3', p.id, tostring(p.tier))
+    if p.tier ~= 1 and p.tier ~= 2 and p.tier ~= 3 and p.tier ~= 4 then
+        fail('%s has tier %s, which is not 1..4', p.id, tostring(p.tier))
     end
     if not p.radius or p.radius < 50.0 or p.radius > 500.0 then
         fail('%s has radius %s', p.id, tostring(p.radius))
+    end
+end
+
+-- 3b. THE GOLDEN SET IS EXACTLY THESE FOUR (#227), and it is pinned in BOTH
+--     DIRECTIONS for the same reason BACKCOUNTRY below is.
+--
+--     Tier 4 is the best loot on the map and it is meant to be four specific
+--     places the owner named. The live way to get that wrong is not a typo'd
+--     number, it is the RIGHT number on the WRONG ROW: `chaparral_n` (North
+--     Chaparral), `chaparral_w` (West Chaparral), `raton_n` (North Raton
+--     Canyon) and `kortz_s` (South Kortz Bluffs) are all real ids in the same
+--     table, all tier 1, and all one line away in a search for "chaparral" or
+--     "raton". A checker that only validated the tier NUMBER would pass every
+--     one of those mistakes silently, and the symptom would be 35 crates of
+--     legendary loot appearing at a place nobody chose.
+--
+--     So both halves: a row at tier 4 that is not in this set fails, and a set
+--     member that is not at tier 4 fails. The second half is what survives a
+--     rename or a re-tier -- delete `raton` and the gate says so, rather than
+--     the golden list quietly applying to three POIs.
+local GOLDEN = {}
+for _, id in ipairs({ 'humane', 'kortz', 'raton', 'chaparral' }) do
+    GOLDEN[id] = true
+end
+
+local goldenIds = {}
+for _, p in ipairs(POIS) do
+    if p.tier == 4 and not GOLDEN[p.id] then
+        fail('%s (%s) is tier 4 but is not in the golden set -- a neighbor of '
+             .. 'a golden POI is not a golden POI', p.id, p.name)
+    end
+    if GOLDEN[p.id] then
+        -- Collected in AUTHORED order, not pairs() order, so the report line
+        -- reads the same on every run and can be diffed against the last one.
+        goldenIds[#goldenIds + 1] = p.id
+        if p.tier ~= 4 then
+            fail('golden POI %s is tier %s, not 4', p.id, tostring(p.tier))
+        end
+    end
+end
+for id in pairs(GOLDEN) do
+    if not seen[id] then
+        fail('GOLDEN lists %q, which is not in the POI table', id)
     end
 end
 
@@ -187,17 +230,23 @@ end
 
 -- ------------------------------------------------------------------- report --
 
-local north, tiers = 0, { 0, 0, 0 }
+local north, tiers = 0, { 0, 0, 0, 0 }
 for _, p in ipairs(POIS) do
     if p.y > 500.0 then north = north + 1 end
     tiers[p.tier] = (tiers[p.tier] or 0) + 1
 end
 
 if fails == 0 then
+    -- The tier split is printed on every verify.sh run, which makes the T4
+    -- count the cheapest possible answer to "did I flag the wrong Chaparral":
+    -- it is four, and check 3b above says which four.
     io.write(string.format(
         '\27[32mok\27[0m   %d POIs (%d north of the city, %d backcountry) ' ..
-        'T1/T2/T3 %d/%d/%d\n',
-        #POIS, north, backcountryCount, tiers[1], tiers[2], tiers[3]))
+        'T1/T2/T3/T4 %d/%d/%d/%d\n',
+        #POIS, north, backcountryCount, tiers[1], tiers[2], tiers[3], tiers[4]))
+    io.write(string.format(
+        '     %d golden (tier 4): %s\n', #goldenIds,
+        table.concat(goldenIds, ', ')))
     io.write(string.format(
         '     closest pair %.0fm (%s); backcountry nearest road %.0fm (%s)\n',
         closest, closestPair, roadWorst, roadWorstId))
