@@ -54,10 +54,72 @@ const LOBBY_SUBSCREENS = new Set(['settings', 'locker', 'market', 'help', 'pause
  * what the UI reacts to.
  */
 export default function App() {
-  const s = useUi()
+  // ═══ #319: THE ROOT NO LONGER SUBSCRIBES TO THE WHOLE STORE ═══
+  //
+  // This used to open `const s = useUi()`, which subscribes the component to
+  // EVERY change in the store. The store updates ~10 times a second for the
+  // whole of a match (hud, squad, storm, vehicle, dbno, voice...), so the root
+  // -- the single largest React subtree in the app -- re-rendered on every one
+  // of those payloads, re-running all of the derivation below and reconciling
+  // the entire screen list, when almost none of them change anything the root
+  // actually draws.
+  //
+  // Two moves fix it, and both are here:
+  //
+  //   1. ENVELOPE WRITES GO THROUGH `useUi.getState()`, NOT A SUBSCRIPTION.
+  //      Routing is a write path: a handler takes a payload and calls a setter.
+  //      It never needed to re-render this component. `dispatch` is the store's
+  //      stable, non-subscribing accessor; `dispatch()` returns the CURRENT
+  //      state on every call, so a handler reads and writes live values even
+  //      though the root now re-renders far less often than payloads arrive.
+  //
+  //      THIS IS A CORRECTNESS REQUIREMENT, NOT ONLY PERFORMANCE. useNuiEvent
+  //      holds each handler in a ref it refreshes on render -- so under the old
+  //      whole-store subscription the closures were rebuilt ten times a second
+  //      and a captured `s` was never more than 100ms stale. Once the root
+  //      stops re-rendering on those payloads, a handler that closed over a
+  //      render-scoped `s` would read whatever the store held at the LAST draw
+  //      -- the classic stale-capture bug. Reading through `dispatch()` at call
+  //      time is what makes the reduced re-render safe: see the `focus` handler
+  //      reading chatChannel/chatOpen, and the lobby run's onDone reading
+  //      tutorialGameOn, both of which are live reads a stale `s` would break.
+  //
+  //   2. THE ROOT SUBSCRIBES ONLY TO THE FIELDS IT DRAWS, as primitives. Each
+  //      `useUi((s) => ...)` below returns a string/boolean/(small object),
+  //      compared with Object.is -- so `setHud` at 10 Hz re-renders the root
+  //      only when hud.state / hud.landed / hud.paused actually CHANGE value,
+  //      not on every tick that leaves them equal. That is the performance
+  //      mechanism: fewer, value-gated re-renders of the biggest subtree.
+  //
+  // Chrome/CEF 103: these are plain useSyncExternalStore selector reads (React
+  // 19, bundled) returning primitives -- no useShallow, no structuralSharing,
+  // nothing CEF 103 lacks.
+  const dispatch = useUi.getState
 
-  useNuiEvent('snapshot', (d) => s.hydrate(d))
+  // Fields the ROOT renders, as narrow primitive selectors so the 10 Hz hot
+  // payloads (hud, match) wake the root only on a real change of value.
+  const matchState        = useUi((s) => s.match.state)
+  const matchParticipant  = useUi((s) => s.match.participant)
+  const summary           = useUi((s) => s.summary)
+  const hudState          = useUi((s) => s.hud.state)
+  const hudLanded         = useUi((s) => s.hud.landed)
+  const hudPaused         = useUi((s) => s.hud.paused)
+  const dbnoRiding        = useUi((s) => s.dbno.riding)
+  const frontendUp        = useUi((s) => s.frontendUp)
+  const frontendReason    = useUi((s) => s.frontendReason)
+  const focus             = useUi((s) => s.focus)
+  const leaving           = useUi((s) => s.leaving)
+  const curtain           = useUi((s) => s.curtain)
+  const tutorialRun       = useUi((s) => s.tutorialRun)
+  const tutorialGameRun   = useUi((s) => s.tutorialGameRun)
+  const tutorialDeclineCard = useUi((s) => s.tutorialDeclineCard)
+  // Not drawn, but the warmup effect below reacts to it -- subscribed so the
+  // effect re-runs on the edge that arms the in-game half.
+  const tutorialGameArmed = useUi((s) => s.tutorialGameArmed)
+
+  useNuiEvent('snapshot', (d) => dispatch().hydrate(d))
   useNuiEvent('state',    (d) => {
+    const s = dispatch()
     s.setMatch(d)
     // The result screen lives exactly as long as the teardown does.
     if (d.state === 'waiting') s.setSummary(null)
@@ -68,44 +130,46 @@ export default function App() {
     // "PHASE UNDEFINED" card during warmup).
     if (d.state !== 'playing') s.setStorm(null)
   })
-  useNuiEvent('hud',      (d) => s.setHud(d))
-  useNuiEvent('squad',    (d) => s.setSquad(d))
-  useNuiEvent('party',    (d) => s.setParty(d))
-  useNuiEvent('voice',    (d) => s.setVoice(d))
-  useNuiEvent('inv',      (d) => s.setInv(d))
-  useNuiEvent('storm',    (d) => s.setStorm(d))
+  useNuiEvent('hud',      (d) => dispatch().setHud(d))
+  useNuiEvent('squad',    (d) => dispatch().setSquad(d))
+  useNuiEvent('party',    (d) => dispatch().setParty(d))
+  useNuiEvent('voice',    (d) => dispatch().setVoice(d))
+  useNuiEvent('inv',      (d) => dispatch().setInv(d))
+  useNuiEvent('storm',    (d) => dispatch().setStorm(d))
   // The car under you, in any seat. Lua sends `show: false` on every way of
   // leaving one -- on foot, pulled out, dead, or the vehicle destroyed -- so
   // there is nothing to clear off a state transition the way the storm is.
-  useNuiEvent('vehicle',  (d) => s.setVehicle(d))
-  useNuiEvent('dbno',     (d) => s.setDbno(d))
-  useNuiEvent('spectate', (d) => s.setSpectate(d))
+  useNuiEvent('vehicle',  (d) => dispatch().setVehicle(d))
+  useNuiEvent('dbno',     (d) => dispatch().setDbno(d))
+  useNuiEvent('spectate', (d) => dispatch().setSpectate(d))
   // Your own death, mid-match. Lua owns how long it stays -- it sends `show`
   // false when the window closes, on the same clock that releases the spectate
   // camera -- so there is nothing to time here.
-  useNuiEvent('death',    (d) => s.setDeath(d))
-  useNuiEvent('summary',  (d) => s.setSummary(d))
-  useNuiEvent('lobby',    (d) => s.setLobby(d))
+  useNuiEvent('death',    (d) => dispatch().setDeath(d))
+  useNuiEvent('summary',  (d) => dispatch().setSummary(d))
+  useNuiEvent('lobby',    (d) => dispatch().setLobby(d))
   // One channel, two verbs: an invite arriving, and an invite being taken
   // back. A card that offers to join a party the sender has already left
   // behind is a button that lies.
-  useNuiEvent('invite',   (d) => (d.cancel ? s.clearInvite() : s.setInvite(d)))
-  useNuiEvent('feed',     (d) => s.pushFeed(d))
-  useNuiEvent('chat',     (d) => s.pushChat(d))
-  useNuiEvent('toast',    (d) => s.pushNotice(d))
+  useNuiEvent('invite',   (d) => (d.cancel ? dispatch().clearInvite() : dispatch().setInvite(d)))
+  useNuiEvent('feed',     (d) => dispatch().pushFeed(d))
+  useNuiEvent('chat',     (d) => dispatch().pushChat(d))
+  useNuiEvent('toast',    (d) => dispatch().pushNotice(d))
   // Also consumed by useScreenMetrics (CSS variables); the store copy is for
   // components that need to REASON about the layout -- chat and notices pick
   // their anchor by whether the radar is on screen.
-  useNuiEvent('screen',   (d) => s.setScreen(d))
-  useNuiEvent('leaving',  (d) => s.setLeaving(d.show, d.kind))
+  useNuiEvent('screen',   (d) => dispatch().setScreen(d))
+  useNuiEvent('leaving',  (d) => dispatch().setLeaving(d.show, d.kind))
   // GTA'S OWN MENU IS ON SCREEN AND WE MUST NOT DRAW OVER IT (#122). Lua holds
   // this true for as long as the engine's frontend is up, because Lua is the
   // only thing that can see the frontend at all.
   useNuiEvent('frontend', (d) => {
+    const s = dispatch()
     s.setFrontendUp(d.up === true)
     s.setFrontendReason(d.reason === 'map' ? 'map' : 'menu')
   })
   useNuiEvent('tutorial', (d) => {
+    const s = dispatch()
     s.setTutorialRun(d.run === true)
     if (d.offer !== undefined) s.setTutorialOffer(d.offer === true)
     if (d.offerable !== undefined) s.setTutorialOfferable(d.offerable === true)
@@ -118,31 +182,31 @@ export default function App() {
   // keypress -- see the `tutorialnav` envelope for why this is the one key in
   // the interface that travels as data.
   useNuiEvent('tutorialnav', (d) => {
-    if (typeof d?.seq === 'number') s.setTutorialNav({ dir: d.dir, seq: d.seq })
+    if (typeof d?.seq === 'number') dispatch().setTutorialNav({ dir: d.dir, seq: d.seq })
   })
   // Pushed on every br:ui:ready, not only the first: br_ui restarting
   // mid-match hands CEF a fresh page at default scale, and without a re-push
   // the player's interface would silently revert for the rest of the session.
-  useNuiEvent('settings', (d) => s.setSettings(d))
-  useNuiEvent('locker',   (d) => s.setLocker(d))
-  useNuiEvent('progress', (d) => s.setProgress(d))
-  useNuiEvent('market',   (d) => s.setMarket(d))
+  useNuiEvent('settings', (d) => dispatch().setSettings(d))
+  useNuiEvent('locker',   (d) => dispatch().setLocker(d))
+  useNuiEvent('progress', (d) => dispatch().setProgress(d))
+  useNuiEvent('market',   (d) => dispatch().setMarket(d))
   // The warmup shop's plate, which is the ONLY thing that puts a Volts figure
   // on the HUD. A flag, not a balance -- see the envelope's note.
-  useNuiEvent('shopplate', (d) => s.setShopPlate(d.show === true))
+  useNuiEvent('shopplate', (d) => dispatch().setShopPlate(d.show === true))
   // The in-match gun shop's scaleform menu. This page cannot see a scaleform,
   // so the counter has to say so -- and it is one fact answering two of the
   // owner's requests: the squad panel goes down, the Volts readout stays up.
-  useNuiEvent('gunshopmenu', (d) => s.setGunshopMenu(d.open === true))
-  useNuiEvent('players',  (d) => s.setPlayers(d))
-  useNuiEvent('report',   (d) => s.setReportResult(d))
+  useNuiEvent('gunshopmenu', (d) => dispatch().setGunshopMenu(d.open === true))
+  useNuiEvent('players',  (d) => dispatch().setPlayers(d))
+  useNuiEvent('report',   (d) => dispatch().setReportResult(d))
   // The Admin tab's availability, and any mint answer. Sent to one player, only
   // when the server has decided that player may have it.
-  useNuiEvent('admin',    (d) => s.setAdmin(d))
+  useNuiEvent('admin',    (d) => dispatch().setAdmin(d))
   // Where our Discord is. Sent to EVERY player on br:ready -- an invite is a
   // public address -- and `{}` is a real answer meaning there is none, which is
   // what takes the card back down if an operator clears it and restarts.
-  useNuiEvent('community', (d) => s.setCommunity(d))
+  useNuiEvent('community', (d) => dispatch().setCommunity(d))
   // A SQUADMATE WENT DOWN, OUT, OR CAME BACK UP -- and nothing here was
   // listening. Lua has sent `squadcue` since the squad audio landed and this
   // handler did not exist, so all three sounds were dropped by the router with
@@ -154,15 +218,20 @@ export default function App() {
   // fire-and-forget event with no state any component reads, and routing it
   // through zustand would re-render every subscriber to play a sound.
   useNuiEvent('squadcue', (d) => play(d.cue))
-  useNuiEvent('keybinds', (d) => s.setKeybinds(d.actions, d.raw === true))
+  useNuiEvent('keybinds', (d) => dispatch().setKeybinds(d.actions, d.raw === true))
   // Separate from 'progress' on purpose: a reconnect restores the bar, it
   // does not replay a celebration.
-  useNuiEvent('xp',       (d) => s.awardXp(d))
-  useNuiEvent('earned',   (d) => s.setEarned(d))
+  useNuiEvent('xp',       (d) => dispatch().awardXp(d))
+  useNuiEvent('earned',   (d) => dispatch().setEarned(d))
 
   // Lua owns focus. When it hands focus to chat, the input opens; when it takes
   // focus away, the input closes. The UI never decides this on its own.
   useNuiEvent('focus', (d) => {
+    // FRESH STATE, NOT A CAPTURE. chatChannel and chatOpen are read below, and
+    // the root no longer re-renders on every store change (#319) -- so a `s`
+    // closed over at render time would be stale here. dispatch() is getState:
+    // it returns the live store on every call.
+    const s = dispatch()
     s.setFocus(d.screen, d.tab)
     // RECONCILED AGAINST THE FOCUS STACK, the same way pause.lua reconciles
     // `open` against it and for the same reason: a flag that says the screen
@@ -259,7 +328,10 @@ export default function App() {
   // running (see br_core/client/tutorial.lua) and it has work to do on the way
   // in that the page cannot: the cursor, and the markers over the crates.
   useEffect(() => {
-    if (s.match.state !== 'warmup') return
+    if (matchState !== 'warmup') return
+    // FRESH READ OF THE GUARD FIELDS. The deps below re-run this effect on the
+    // relevant edges; dispatch() reads their live values at run time (#319).
+    const s = dispatch()
     // ARMED, NOT TICKED. This read `tutorialGameOn` -- the CHECKBOX -- which
     // defaults to ticked, so every player who entered warmup on a freshly loaded
     // page started the walkthrough whether or not they had ever seen the lobby
@@ -272,11 +344,11 @@ export default function App() {
     // sitting in the lobby while somebody else's round runs, and starting a HUD
     // walkthrough over a lobby they are still looking at would point every card
     // at nothing.
-    if (s.match.participant === false) return
+    if (matchParticipant === false) return
     s.setTutorialGameArmed(false)
     void fetchNui(CB.TUTORIAL_SET, { game: true })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [s.match.state, s.match.participant, s.tutorialGameArmed, s.tutorialGameRun])
+  }, [matchState, matchParticipant, tutorialGameArmed, tutorialGameRun])
 
   // WARMUP is not a lobby. Players are standing in the world on the warmup pad,
   // so they get the HUD -- an earlier version hid it, which combined with the
@@ -295,11 +367,11 @@ export default function App() {
   // decided until the state machine is back at WAITING, players see won-or-
   // lost and "cleaning up" -- not the find-a-match card pretending a match
   // could form.
-  const tearingDown = s.match.state === 'ended' || s.match.state === 'cleanup'
+  const tearingDown = matchState === 'ended' || matchState === 'cleanup'
   // Participant-gated twice over: Lua only sends a summary to players who
   // were in the round, and this refuses to slam a verdict over a bystander
   // even if a stale summary is somehow still in the store.
-  const showEnd = tearingDown && s.summary !== null && s.match.participant !== false
+  const showEnd = tearingDown && summary !== null && matchParticipant !== false
 
   // NEVER the lobby during teardown -- FOR PARTICIPANTS. The server flips
   // everyone to the LOBBY state the instant the match is decided, but the
@@ -312,8 +384,8 @@ export default function App() {
   // keeps their menu through the whole teardown: the slam is not theirs
   // (no summary is even sent to them), and hiding their lobby left them
   // staring at somebody else's wasted screen.
-  const showLobby = (!tearingDown || !s.match.participant)
-    && (s.match.state === 'waiting' || s.hud.state === 'lobby')
+  const showLobby = (!tearingDown || !matchParticipant)
+    && (matchState === 'waiting' || hudState === 'lobby')
 
   // The bus ride is a cutscene: no vitals, no counters, no kill feed.
   // Notices still render -- "doors open" IS one.
@@ -335,7 +407,7 @@ export default function App() {
   //
   // A ped on the ground is not riding a bus. The cutscene rule is about the
   // flight, and the flight is over.
-  const ridingBus = s.hud.state === 'bus' && !s.hud.landed
+  const ridingBus = hudState === 'bus' && !hudLanded
 
   // ═══ AND THE AMBULANCE IS THE SECOND CUTSCENE (#191) ═══
   //
@@ -384,7 +456,7 @@ export default function App() {
   // IT IS THE SAME BIT, NOT A SECOND TEST. `ridingAmbulance` is what turns the
   // HUD off and what turns this on, passed down rather than re-derived, so the
   // two can never end up disagreeing about whether a ride is happening.
-  const ridingAmbulance = s.dbno.riding === true
+  const ridingAmbulance = dbnoRiding === true
 
   // Whether the vitals strip is on screen -- chat and notices fall back to
   // its position when the radar is hidden, so they need to know.
@@ -414,16 +486,16 @@ export default function App() {
     <>
     <div
       style={{
-        opacity: s.frontendUp ? 0 : 1,
-        pointerEvents: s.frontendUp ? 'none' : undefined,
+        opacity: frontendUp ? 0 : 1,
+        pointerEvents: frontendUp ? 'none' : undefined,
         transition: 'opacity 120ms linear',
       }}
-      aria-hidden={s.frontendUp || undefined}
+      aria-hidden={frontendUp || undefined}
     >
       {/* Always mounted; visibility follows match state so transitions cost no
           mount work mid-fight. Hidden under the pause menu -- the fullscreen
           map does not need our chrome floating over it. */}
-      <Hud visible={hudUp && !s.hud.paused} />
+      <Hud visible={hudUp && !hudPaused} />
       {/* THE AMBULANCE CLOCK, AND IT IS A SIBLING OF THE HUD RATHER THAN A
           CHILD OF IT ON PURPOSE (#191 step 6, owner 2026-08-28).
 
@@ -461,7 +533,7 @@ export default function App() {
           stacked rather than one navigating (user, 2026-08-09). */}
       <Lobby
         visible={showLobby}
-        under={LOBBY_SUBSCREENS.has(s.focus)}
+        under={LOBBY_SUBSCREENS.has(focus)}
       />
       {/* YOUR OWN DEATH, MID-MATCH -- the word only, over a world that is still
           running, for the ~10s before the spectator camera takes the screen.
@@ -499,25 +571,25 @@ export default function App() {
           the lobby as well. This is one of them, and it is the one that means
           the thing this surface is about. */}
       {!tearingDown && <DeathVerdict />}
-      {showEnd && s.summary && <EndScreen summary={s.summary} />}
+      {showEnd && summary && <EndScreen summary={summary} />}
       {/* The voluntary-leave interstitial covers EVERYTHING -- including
           the lobby that mounts underneath it mid-trip -- until Lua says
           the vista is real, then fades out over the waiting menu. Always
           mounted so the exit is a fade, not a pop. */}
-      <LeaveScreen show={s.leaving} kind={s.curtain} />
+      <LeaveScreen show={leaving} kind={curtain} />
       {/* The TAB panel. Lua owns whether it is open -- the `inventory` keybind
           pushes NUI focus and this follows -- so there is no local toggle to
           drift out of agreement with the cursor. Keep-input focus means the
           match keeps running underneath, which is the point: this is a thing
           you do DURING a fight, not a place to hide from one. */}
-      {s.focus === 'inventory' && hudUp && <InventoryPanel />}
+      {focus === 'inventory' && hudUp && <InventoryPanel />}
       {/* Over the WORLD, never the menu: in-match alerts land wherever the
           player is looking, but the lobby has its own feedback (chips
           resolve, panels update) and floating toasts over it read as
           clutter (user call, 2026-08-03). The pause menu is a menu too --
           while it is open, new notices queue in the store and flush on
           unpause (dropped after 30s of waiting). */}
-      {!showLobby && !s.hud.paused && <Notices barsVisible={hudUp} />}
+      {!showLobby && !hudPaused && <Notices barsVisible={hudUp} />}
       {/* LAST, SO IT IS ON TOP OF EVERYTHING. Settings is opaque and full
           screen, and it opens from a keybind mid-match as well as from the
           lobby -- so it has to cover the HUD, not sit under it.
@@ -527,26 +599,26 @@ export default function App() {
           owns the cursor must be the same thing, or they drift apart and the
           player ends up with a menu they cannot click or a cursor over no
           menu. Both routes in ask Lua; neither opens it locally. */}
-      <Page show={s.focus === 'settings'}><Settings /></Page>
+      <Page show={focus === 'settings'}><Settings /></Page>
       {/* The locker is the lobby wearing a different panel: the camera and
           the ped are already there, so this screen is a list and a scrim.
           Same focus rule as everything else. */}
-      <Page show={s.focus === 'locker'}><Locker /></Page>
+      <Page show={focus === 'locker'}><Locker /></Page>
       {/* The market is the third face of the same screen. It has no ped to
           show, so it takes the whole width. */}
-      <Page show={s.focus === 'market'}><Market /></Page>
+      <Page show={focus === 'market'}><Market /></Page>
       {/* ONE PANEL, ONE FOCUS SCREEN. This gate used to read `'players' ||
           'playersReport'`, because report mode pushed a second screen purely to
           give up game input for its note field and the panel would otherwise
           have unmounted the moment it was used. View mode gave up game input
           too in #135, so both modes hold the same focus and the second name is
           gone from here, from the Lua side and from FocusPayload. */}
-      <Page show={s.focus === 'players'}>
+      <Page show={focus === 'players'}>
         <PlayerList />
       </Page>
       {/* The manual, from the lobby. The same component the pause menu
           embeds, in its own frame. */}
-      <Page show={s.focus === 'help'}><Help /></Page>
+      <Page show={focus === 'help'}><Help /></Page>
 
       {/* ═══ THE GUIDED FIRST RUN (#261) ═══
 
@@ -575,7 +647,7 @@ export default function App() {
           worse than the fault itself. */}
       {/* The manual, from the lobby. The same component the pause menu
           embeds, in its own frame. */}
-      <Page show={s.focus === 'help'}><Help /></Page>
+      <Page show={focus === 'help'}><Help /></Page>
 
       {/* ═══ THE GUIDED FIRST RUN (#261) ═══
 
@@ -627,10 +699,10 @@ export default function App() {
           want: the two are never both up (pushing `admin` closes the menu, see
           br_ui/client/pause.lua) and if a focus race ever put them together,
           the menu is the screen with the way out. */}
-      <Page show={s.focus === 'admin'}><Admin /></Page>
+      <Page show={focus === 'admin'}><Admin /></Page>
       {/* The pause menu REPLACES GTA's, so it sits above everything our own
           screens draw and below only the curtain. */}
-      <Page show={s.focus === 'pause'}><PauseMenu /></Page>
+      <Page show={focus === 'pause'}><PauseMenu /></Page>
     </div>
 
       {/* ═══════════════════════════════════════════════════════════════════
@@ -659,21 +731,21 @@ export default function App() {
           different hat. */}
       <div
         style={{
-          opacity: s.frontendUp && !(s.frontendReason === 'map' && s.tutorialGameRun) ? 0 : 1,
+          opacity: frontendUp && !(frontendReason === 'map' && tutorialGameRun) ? 0 : 1,
           pointerEvents:
-            s.frontendUp && !(s.frontendReason === 'map' && s.tutorialGameRun)
+            frontendUp && !(frontendReason === 'map' && tutorialGameRun)
               ? 'none' : undefined,
           transition: 'opacity 120ms linear',
         }}
         aria-hidden={
-          s.frontendUp && !(s.frontendReason === 'map' && s.tutorialGameRun)
+          frontendUp && !(frontendReason === 'map' && tutorialGameRun)
             ? true : undefined
         }
       >
-      {s.tutorialGameRun && (
+      {tutorialGameRun && (
         <TutorialLayer
           steps={GAME_STEPS}
-          screen={s.focus}
+          screen={focus}
           // ═══ ANY SCREEN THE STEP DID NOT ASK FOR TAKES THE CARDS DOWN ═══
           //
           // Owner, 2026-09-05: "if they press ESC through any of this to open
@@ -690,12 +762,12 @@ export default function App() {
           // `none` IS THE BARE HUD. The walkthrough itself takes no focus, so
           // anything else on the stack is genuinely something the player opened
           // over the controls these cards point at.
-          subscreenUp={s.focus !== 'none'}
+          subscreenUp={focus !== 'none'}
           // AND THE CARDS ARE DRIVEN BY THE ARROW KEYS, not by a cursor there
           // is no longer any way to produce. See `keyDriven`.
           keyDriven
           onStep={(id) => {
-            s.setTutorialGameStep(id)
+            dispatch().setTutorialGameStep(id)
 
             // ═══ THE CAMERA FOLLOWS THE CARD ═══
             //
@@ -732,11 +804,13 @@ export default function App() {
             if (id === 'game-timer') void fetchNui(CB.TUTORIAL_SET, { hold: false })
           }}
           onDone={() => {
+            const s = dispatch()
             s.setTutorialGameRun(false)
             s.setTutorialGameStep(null)
             void fetchNui(CB.TUTORIAL_SET, { game: false, done: true })
           }}
           onAbandon={() => {
+            const s = dispatch()
             s.setTutorialGameRun(false)
             s.setTutorialGameStep(null)
             // NO `done`. This fires when a card's anchor has gone, which is a
@@ -753,20 +827,21 @@ export default function App() {
           one card, dismissed, gone. It lives here rather than inside Lobby for
           the reason every other card does: the layer is mounted at the root so a
           screen change cannot unmount the thing explaining the screen. */}
-      {s.tutorialDeclineCard && (
+      {tutorialDeclineCard && (
         <TutorialLayer
           steps={DECLINE_STEPS}
-          screen={s.focus}
-          onDone={() => s.setTutorialDeclineCard(false)}
-          onAbandon={() => s.setTutorialDeclineCard(false)}
+          screen={focus}
+          onDone={() => dispatch().setTutorialDeclineCard(false)}
+          onAbandon={() => dispatch().setTutorialDeclineCard(false)}
         />
       )}
 
-      {s.tutorialRun && (
+      {tutorialRun && (
         <TutorialLayer
-          screen={s.focus}
-          subscreenUp={LOBBY_SUBSCREENS.has(s.focus)}
+          screen={focus}
+          subscreenUp={LOBBY_SUBSCREENS.has(focus)}
           onDone={() => {
+            const s = dispatch()
             s.setTutorialRun(false)
             void fetchNui(CB.TUTORIAL_SET, { run: false })
             // FINISHING THE LOBBY HALF WITH THE BOX TICKED IS WHAT ARMS THE
@@ -775,8 +850,8 @@ export default function App() {
             // agreeing to anything.
             if (s.tutorialGameOn) s.setTutorialGameArmed(true)
           }}
-          onAbandon={() => { s.setTutorialRun(false); void fetchNui(CB.TUTORIAL_SET, { run: false }) }}
-          onStep={s.setTutorialStep}
+          onAbandon={() => { const s = dispatch(); s.setTutorialRun(false); void fetchNui(CB.TUTORIAL_SET, { run: false }) }}
+          onStep={(id) => dispatch().setTutorialStep(id)}
         />
       )}
       </div>

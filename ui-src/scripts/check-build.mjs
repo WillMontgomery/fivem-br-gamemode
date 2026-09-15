@@ -7,7 +7,6 @@ import {
   readFileSync,
   rmSync,
   statSync,
-  writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, extname, join, relative, resolve } from 'node:path'
@@ -17,10 +16,13 @@ import { fileURLToPath } from 'node:url'
  * Rebuild the shipped NUI and prove it is byte-for-byte current without leaving
  * the worktree changed.
  *
- * Normal builds carry a human-facing timestamp and source commit. Those values
- * are intentionally non-deterministic, so the check replaces the committed
- * stamp with a fixed marker and asks Vite to emit the same marker. Everything
- * else must match exactly: JavaScript, CSS, fonts, images, HTML and copied docs.
+ * Normal builds carry a human-facing timestamp and source commit. The checker
+ * extracts that one exact committed stamp and asks Vite to rebuild with the same
+ * value. Using the same compile-time string matters: esbuild's identifier
+ * mangling is character-frequency-sensitive, so compiling with a short fixed
+ * marker and replacing only the visible stamp afterwards can change unrelated
+ * minified names. With the exact committed stamp, every shipped byte must match:
+ * JavaScript, CSS, fonts, images, HTML and copied docs.
  */
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -41,8 +43,6 @@ if (!existsSync(output)) {
 
 const scratch = mkdtempSync(join(tmpdir(), 'br-ui-build-check-'))
 const original = join(scratch, 'original')
-const expected = join(scratch, 'expected')
-const fixedStamp = 'build-check'
 const stampPattern = /built \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \(from [^)]+\)/g
 
 function walk(root, at = root) {
@@ -55,21 +55,17 @@ function walk(root, at = root) {
   return out.sort()
 }
 
-function normalizeCommittedStamp(root) {
-  let replaced = 0
+function committedStamp(root) {
+  const found = []
   for (const file of walk(root)) {
     if (extname(file) !== '.js') continue
-    const path = join(root, file)
-    const source = readFileSync(path, 'utf8')
-    const normalized = source.replace(stampPattern, () => {
-      replaced++
-      return fixedStamp
-    })
-    if (normalized !== source) writeFileSync(path, normalized)
+    const source = readFileSync(join(root, file), 'utf8')
+    for (const match of source.matchAll(stampPattern)) found.push(match[0])
   }
-  if (replaced !== 1) {
-    throw new Error(`expected one committed build stamp, found ${replaced}`)
+  if (found.length !== 1) {
+    throw new Error(`expected one committed build stamp, found ${found.length}`)
   }
+  return found[0]
 }
 
 function compareTrees(wantRoot, gotRoot) {
@@ -93,13 +89,12 @@ function compareTrees(wantRoot, gotRoot) {
 let status = 1
 try {
   cpSync(output, original, { recursive: true })
-  cpSync(original, expected, { recursive: true })
-  normalizeCommittedStamp(expected)
+  const stamp = committedStamp(original)
 
   const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm'
   const built = spawnSync(npm, ['run', 'build'], {
     cwd: uiRoot,
-    env: { ...process.env, BR_BUILD_STAMP: fixedStamp },
+    env: { ...process.env, BR_BUILD_STAMP: stamp },
     stdio: 'inherit',
   })
 
@@ -107,7 +102,7 @@ try {
   if (built.status !== 0) {
     console.error(`br_ui: build failed with status ${built.status}`)
   } else {
-    const differences = compareTrees(expected, output)
+    const differences = compareTrees(original, output)
     if (differences.length === 0) {
       console.log('br_ui: committed bundle matches source')
       status = 0

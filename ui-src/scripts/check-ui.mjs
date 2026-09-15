@@ -1213,6 +1213,190 @@ for (const name of builtCss) {
 }
 
 // ---------------------------------------------------------------------------
+// R20  The root isolates its renders: it never subscribes to the whole store,
+//      and envelope handlers never capture it (#319).
+//
+// App.tsx is the biggest React subtree in the app and the single place every
+// envelope is routed. It used to open `const s = useUi()`, which subscribes the
+// component to EVERY change in the store -- and the store is written ~10 times a
+// second for the whole of a match (hud, squad, storm, vehicle, dbno, voice). So
+// the root re-rendered ten times a second and reconciled the entire screen list
+// on payloads that changed nothing it draws. The fix is two rules working
+// together, and BOTH have to hold or the win is silently lost:
+//
+//   * the root subscribes only to the fields it draws, as narrow selectors, so
+//     `setHud` at 10 Hz wakes it only when a field it renders changes VALUE; and
+//   * envelope writes go through `useUi.getState()` (aliased `dispatch`), the
+//     store's stable non-subscribing accessor, rather than a captured `s`.
+//
+// THE SECOND HALF IS A CORRECTNESS REQUIREMENT, NOT A STYLE PREFERENCE, and it
+// is the subtle one. useNuiEvent holds each handler in a ref it refreshes every
+// render -- so under the old whole-store subscription a handler's captured `s`
+// was rebuilt ten times a second and never more than 100ms stale. The moment the
+// root stops re-rendering on those payloads, a handler closed over a render-scope
+// `const s = useUi(...)` reads whatever the store held at the LAST draw: the
+// classic stale-capture bug. The `focus` handler is where it bites first -- it
+// reads chatChannel/chatOpen live -- so a reversion there is a real defect, not a
+// cosmetic one.
+//
+// THIS RULE CANNOT MEASURE RENDER COUNTS -- there is no React runtime in this
+// process. It pins the SHAPE that produces them: no whole-store hook, no
+// catch-all `s` subscription for handlers to close over, a getState bridge that
+// exists, and a focus handler that reads through it. Each is a way the isolation
+// quietly comes undone in a future edit that looks reasonable in a diff.
+//
+// IT CAN FAIL. Put `const s = useUi()` back, bind `const s = useUi(sel)` at the
+// top for the handlers to use, delete the `dispatch = useUi.getState` bridge, or
+// rewrite the focus handler to read chatChannel/chatOpen off a captured store.
+// ---------------------------------------------------------------------------
+{
+  const f = join(SRC, 'App.tsx')
+  if (!existsSync(f)) {
+    fail('R20 root-isolation', 'src/App.tsx', 'file is missing.')
+  } else {
+    const body = stripComments(read(f))
+
+    // ── no whole-store subscription ──
+    // `useUi()` with no selector subscribes to every field. `useUi.getState()`
+    // is `useUi.getState(` (a `.` after useUi) and `useUi((s) => ...)` opens
+    // with `(`, so neither trips this.
+    if (/\buseUi\(\s*\)/.test(body)) {
+      fail('R20 root-isolation', 'src/App.tsx',
+        'the root calls `useUi()` with no selector -- a whole-store subscription.'
+        + ' It re-renders the biggest subtree in the app ~10x/second during a'
+        + ' match on payloads it does not draw (#319). Subscribe to the fields it'
+        + ' renders with narrow selectors, and route writes through'
+        + ' `useUi.getState()`.')
+    }
+
+    // ── no render-scope `s` for handlers to close over ──
+    // The refactor uses named primitive locals (matchState, focus, ...) and a
+    // `dispatch` bridge; a handler's own `const s = dispatch()` is fine because
+    // it is `= dispatch()`, not `= useUi(`. This bans exactly the binding that
+    // made the envelope handlers stale.
+    if (/\bconst\s+s\s*=\s*useUi\s*\(/.test(body)) {
+      fail('R20 root-isolation', 'src/App.tsx',
+        'a render-scope `const s = useUi(...)` is back. The envelope handlers'
+        + ' close over the component scope, and once the root stops re-rendering'
+        + ' on every store change that `s` is stale by up to a payload'
+        + ' (#319). Read live inside each handler via `dispatch()`'
+        + ' (= useUi.getState), never through a captured subscription.')
+    }
+
+    // ── the stable, non-subscribing write path exists ──
+    if (!/\buseUi\.getState\b/.test(body)) {
+      fail('R20 root-isolation', 'src/App.tsx',
+        'nothing references `useUi.getState`. That is the store\'s stable'
+        + ' non-subscribing accessor and the only correct way for an envelope'
+        + ' handler to read and write without re-subscribing the root (#319).')
+    }
+
+    // ── the focus handler reads live, not from a capture ──
+    // It is the one handler that reads MUTABLE store fields (chatChannel,
+    // chatOpen) rather than only calling setters, so it is where a stale capture
+    // shows first. Locate its body and require a fresh read inside it.
+    const fm = /useNuiEvent\(\s*'focus'[\s\S]*?\n  \}\)/.exec(body)
+    if (!fm) {
+      fail('R20 root-isolation', 'src/App.tsx',
+        "no `useNuiEvent('focus', ...)` handler found. Lua owns focus and this is"
+        + ' where the page follows it; if it moved, point this rule at the new'
+        + ' place rather than letting it pass over nothing.')
+    } else {
+      const handler = fm[0]
+      const readsChat = /\bchat(Open|Channel)\b/.test(handler)
+      const readsLive = /\bdispatch\(\)/.test(handler) || /\buseUi\.getState\(\)/.test(handler)
+      if (readsChat && !readsLive) {
+        fail('R20 root-isolation', 'src/App.tsx',
+          'the focus handler reads chatChannel/chatOpen but never calls'
+          + ' `dispatch()`/`useUi.getState()` -- so it is reading a captured'
+          + ' store. Once the root stops re-rendering on every change (#319)'
+          + ' that capture is stale: an old chatChannel reopens the wrong'
+          + ' channel, an old chatOpen closes an input that is not open. Read'
+          + ' these fresh inside the handler.')
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// R21  The vitals placement is measured on its inputs, not on every render (#319).
+//
+// useVitalsPlacement's layout effect reads three getBoundingClientRect heights
+// to decide whether the health/shield strip sits below the radar or above it.
+// It USED to carry no dependency array, so it ran that measurement after every
+// HUD render -- several times a second while anyone was shooting or speaking --
+// to reach an answer that only moves when the safe zone, the interface size or
+// the viewport does. #319 keyed it on exactly those inputs.
+//
+// This rule fails on the two ways that regresses:
+//   MISSING INVALIDATION -- a dependency dropped from the array, so a real
+//     safe-zone / ui-scale / resize change stops re-measuring and the strip is
+//     left in the wrong place until something unrelated re-renders the HUD;
+//   UNNECESSARY READS -- the array removed entirely (back to every render), or
+//     the decision re-inlined so it no longer flows through the one tested
+//     kernel in vitalsPlacement.ts.
+//
+// The invalidation set has ONE home: PLACEMENT_INPUTS in vitalsPlacement.ts,
+// the dependency array here, and scripts/test-vitals-placement.mjs must agree.
+//
+// IT CAN FAIL. Delete a name from the `[mapBottom, uiScale, viewportTick]`
+// array in Hud.tsx, or drop the array so the effect runs every render again.
+// ---------------------------------------------------------------------------
+{
+  const H = join(SRC, 'hud', 'Hud.tsx')
+  const K = join(SRC, 'hud', 'vitalsPlacement.ts')
+  if (!existsSync(H) || !existsSync(K)) {
+    fail('R21 vitals-invalidation', 'src/hud',
+      'Hud.tsx or vitalsPlacement.ts is missing. If they moved, move this rule'
+      + ' with them -- it is the pair to scripts/test-vitals-placement.mjs.')
+  } else {
+    const hud = stripComments(read(H))
+    const rawHud = read(H)
+    const kernel = read(K)
+
+    if (!/from '\.\/vitalsPlacement'/.test(hud)) {
+      fail('R21 vitals-invalidation', 'src/hud/Hud.tsx',
+        'the placement decision is no longer imported from ./vitalsPlacement.'
+        + ' fitsBelow / roundStrip / nextFit / vitalsLift live there so they'
+        + ' have one definition, tested by scripts/test-vitals-placement.mjs.')
+    }
+    for (const fn of ['fitsBelow(', 'roundStrip(', 'nextFit(', 'vitalsLift(']) {
+      if (!hud.includes(fn)) {
+        fail('R21 vitals-invalidation', 'src/hud/Hud.tsx',
+          `the measurement no longer calls \`${fn}\` from the kernel. Re-inlining`
+          + ' the decision or a guard puts it beyond the one place R21 and the'
+          + ' placement test can check it.')
+      }
+    }
+    if (/>=\s*dropPx/.test(hud) || /getBoundingClientRect\(\)\.height\s*\*\s*100/.test(hud)) {
+      fail('R21 vitals-invalidation', 'src/hud/Hud.tsx',
+        'the fits-below comparison or the sub-pixel rounding is re-inlined in'
+        + ' Hud.tsx. Both belong to vitalsPlacement.ts (fitsBelow / roundStrip),'
+        + ' so a second copy here can drift from the one the test pins.')
+    }
+    if (!/\},\s*\[\s*mapBottom\s*,\s*uiScale\s*,\s*viewportTick\s*\]\s*\)/.test(hud)) {
+      fail('R21 vitals-invalidation', 'src/hud/Hud.tsx',
+        'the measurement layout effect is not keyed on'
+        + ' [mapBottom, uiScale, viewportTick]. A missing name drops a'
+        + ' re-measure (safe zone / interface size / resize); a missing array'
+        + ' means it reads on every render again. See PLACEMENT_INPUTS.')
+    }
+    if (!/R21 INVALIDATION SET/.test(rawHud)) {
+      fail('R21 vitals-invalidation', 'src/hud/Hud.tsx',
+        'the `R21 INVALIDATION SET` marker on the measurement effect is gone.'
+        + ' It is what points a future edit at this rule and PLACEMENT_INPUTS.')
+    }
+    if (!/PLACEMENT_INPUTS\s*=\s*\[\s*'mapBottom'\s*,\s*'uiScale'\s*,\s*'viewportTick'\s*\]/.test(kernel)) {
+      fail('R21 vitals-invalidation', 'src/hud/vitalsPlacement.ts',
+        'PLACEMENT_INPUTS is not exactly [\'mapBottom\', \'uiScale\','
+        + ' \'viewportTick\']. It is the single source for the invalidation set;'
+        + ' the Hud dependency array and test-vitals-placement.mjs read against'
+        + ' it.')
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Result
 // ---------------------------------------------------------------------------
 if (failures) {

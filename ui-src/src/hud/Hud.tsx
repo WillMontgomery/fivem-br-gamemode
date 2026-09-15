@@ -17,6 +17,7 @@ import SpectateHint from './SpectateHint'
 import HitFeedback from './HitFeedback'
 import TalkingBar from './TalkingBar'
 import VoiceNotice from './VoiceNotice'
+import { fitsBelow, roundStrip, nextFit, vitalsLift } from './vitalsPlacement'
 
 /**
  * WHERE THE SQUAD PANEL ENDS, for anything that has to sit below it.
@@ -66,14 +67,26 @@ export const SQUAD_SLOT_ID = 'br-squad-slot'
  * the measurement follows. A hardcoded rem would be a second copy of a number
  * that is already declared once, and it would be the copy that is wrong.
  *
- * ═══ RE-DECIDED, NOT DECIDED ONCE ═══
+ * ═══ RE-DECIDED, NOT DECIDED ONCE -- AND KEYED, NOT EVERY-RENDER (#319) ═══
  *
- * The read runs after EVERY render of the HUD, and the HUD re-renders whenever
- * a screen envelope lands (useScreenMetrics holds the metrics in state). Lua
- * republishes the rectangle the moment the safe zone moves, so a player
- * dragging that slider mid-match watches the strip change places -- which is
- * the requirement, and it is the failure mode a decide-once version would ship
- * with looking perfectly correct on the developer's machine.
+ * The read is re-run whenever, and only whenever, one of the three things the
+ * measurement actually depends on can have changed: the safe-zone/minimap
+ * metric (mapBottom, which is what writes --map-bottom), the interface-size
+ * slider (uiScale, which is what writes --ui-scale and so scales rem), and the
+ * viewport height (a resize, via viewportTick). Those are the complete set --
+ * see vitalsPlacement.ts, PLACEMENT_INPUTS -- because the space probe is sized
+ * --map-bottom and the drop probe and the strip are both rem multiples, and
+ * nothing else feeds any of them.
+ *
+ * It USED to carry no dependency array and run after every render of the HUD.
+ * That was correct but wasteful: the HUD re-renders several times a second
+ * while anyone is shooting or speaking, and each of those renders spent three
+ * getBoundingClientRect reads to reach an answer that had not moved since the
+ * last safe-zone or resolution change. Keying the effect on its real inputs
+ * keeps the SAME answer at every instant -- each input still lands in the same
+ * commit as the CSS variable it drives, so a player dragging the safe-zone or
+ * interface-size slider mid-match still watches the strip change places on that
+ * frame -- while dropping the reads that only ever confirmed nothing changed.
  *
  * DELIBERATELY NOT A ResizeObserver, which is the obvious tool. Its callbacks
  * ride the rendering lifecycle, so they arrive only while frames are being
@@ -82,30 +95,39 @@ export const SQUAD_SLOT_ID = 'br-squad-slot'
  * div whose height was being changed underneath it. That is a property of that
  * browser rather than of CEF, and it is exactly the point: a measurement that
  * cannot be exercised where the work is done is a measurement nobody can check.
- * The render lifecycle can be, and setFit is guarded, so a re-read that finds
+ * The render path can be, and nextFit is guarded, so a re-read that finds
  * nothing new costs one comparison and no render.
  *
- * The window listener is for the harness, where the viewport can change without
- * any envelope arriving. In game a resolution change republishes the rectangle,
- * so that path is already covered.
+ * The window listener (viewportTick) is for the harness, where the viewport can
+ * change without any envelope arriving. In game a resolution change republishes
+ * the rectangle (mapBottom), so that path is doubly covered.
  *
  * The strip's own height is measured too, and only for the chat column: it is
  * published as --vitals-lift so chat can move up by exactly the space the strip
  * took, which is the "bump the chat up" half of the rule.
  */
-function useVitalsPlacement() {
+function useVitalsPlacement(mapBottom: number | undefined, uiScale: number) {
   const stripRef = useRef<HTMLDivElement>(null)
   const spaceRef = useRef<HTMLDivElement>(null)
   const dropRef = useRef<HTMLDivElement>(null)
   // `below` starts true, which is where the strip has always been: until the
   // probes have been read once, nothing moves.
   const [fit, setFit] = useState({ below: true, strip: 0 })
-  // Bumped by a viewport change, purely to force the read below to run again.
-  const [, setTick] = useState(0)
+  // Bumped by a viewport change, purely to force the measurement below to run
+  // again when the window resizes with no envelope behind it (the harness).
+  const [viewportTick, setViewportTick] = useState(0)
 
-  // NO DEPENDENCY ARRAY: this is a measurement of what was just laid out, so it
-  // belongs after every layout. The guard inside setFit is what stops it from
-  // being a render loop -- an unchanged answer returns the same state object.
+  // KEYED ON ITS REAL INPUTS, NOT ON EVERY RENDER (#319). The three reads are a
+  // pure function of mapBottom (--map-bottom), uiScale (rem) and the viewport
+  // height (viewportTick) -- see vitalsPlacement.ts -- so the measurement runs
+  // in exactly the commits where one of those changed and is skipped in the
+  // combat/voice renders that never move it. Each input lands in the same
+  // commit as the CSS variable it drives, so the answer is same-frame identical
+  // to the every-render version. nextFit is still the loop guard: an unchanged
+  // answer returns the same state object and no render follows.
+  //
+  // R21 INVALIDATION SET -- keep in sync with vitalsPlacement.ts PLACEMENT_INPUTS
+  // and check-ui rule R21.
   useLayoutEffect(() => {
     const strip = stripRef.current
     const space = spaceRef.current
@@ -114,33 +136,22 @@ function useVitalsPlacement() {
 
     const spacePx = space.getBoundingClientRect().height
     const dropPx = drop.getBoundingClientRect().height
-    // ROUNDED, AND THAT IS THE LOOP GUARD. This effect runs after every layout
-    // and writes state, so the comparison below is the only thing between it
-    // and an infinite render -- and a raw sub-pixel height that flickered in
-    // its last decimal place would defeat it silently.
-    const stripPx = Math.round(strip.getBoundingClientRect().height * 100) / 100
-    // FITS ⟺ THE STRIP'S LOWER EDGE IS STILL ON THE SCREEN. The strip is
-    // bottom-anchored, so its lower edge IS the anchor: --map-bottom minus
-    // --vitals-drop, measured up from the bottom of the viewport.
-    const below = spacePx >= dropPx
-    setFit((p) => (p.below === below && p.strip === stripPx
-      ? p
-      : { below, strip: stripPx }))
-  })
+    // The strip's own height, rounded to swallow sub-pixel flicker (roundStrip)
+    // so the state-write guard below cannot be defeated into a render loop.
+    const stripPx = roundStrip(strip.getBoundingClientRect().height)
+    const below = fitsBelow(spacePx, dropPx)
+    setFit((p) => nextFit(p, below, stripPx))
+  }, [mapBottom, uiScale, viewportTick])
 
   useEffect(() => {
-    const bump = () => setTick((n) => n + 1)
+    const bump = () => setViewportTick((n) => n + 1)
     window.addEventListener('resize', bump)
     return () => window.removeEventListener('resize', bump)
   }, [])
 
-  // Published for the chat column, which has no other way to know. `calc` with
-  // the gap left symbolic so the two surfaces cannot drift apart.
+  // Published for the chat column, which has no other way to know.
   useLayoutEffect(() => {
-    document.documentElement.style.setProperty(
-      '--vitals-lift',
-      fit.below ? '0px' : `calc(${fit.strip}px + var(--vitals-gap))`,
-    )
+    document.documentElement.style.setProperty('--vitals-lift', vitalsLift(fit))
   }, [fit.below, fit.strip])
 
   return { fit, stripRef, spaceRef, dropRef }
@@ -270,11 +281,22 @@ export default function Hud({ visible }: { visible: boolean }) {
   // re-renders the whole HUD.
   const currency = useUi((s) => s.market.currency ?? 'Volts')
 
-  // Applies the game's resolution and safe zone to CSS variables.
-  useScreenMetrics()
+  // Applies the game's resolution and safe zone to CSS variables, and hands
+  // back the live metrics so the placement effect can key on the one field it
+  // reads through them (mapBottom, which is what --map-bottom is written from).
+  const screen = useScreenMetrics()
+  // The interface-size slider. It multiplies rem (index.css), so it changes the
+  // pixel height of the drop probe (0.85rem) and the strip (1.05rem) -- the two
+  // rem-based inputs to the placement. Read as a scalar rather than the whole
+  // settings object so the HUD only re-renders when the size itself moves, the
+  // same discipline as the voice/currency primitives above.
+  const uiScale = useUi((s) => s.settings.uiScale)
 
-  // Below the radar or above it, re-decided from the real safe zone.
-  const { fit: { below }, stripRef, spaceRef, dropRef } = useVitalsPlacement()
+  // Below the radar or above it, re-decided from the real safe zone -- and
+  // re-measured only when the safe zone (screen.mapBottom), the interface size
+  // (uiScale) or the viewport can have moved it (#319).
+  const { fit: { below }, stripRef, spaceRef, dropRef } =
+    useVitalsPlacement(screen?.mapBottom, uiScale)
 
   // Red only when the storm is actually hurting: dps is 0 during the phase-1
   // free-loot hold, where being outside circle 1 is a rotation problem, not

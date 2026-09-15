@@ -1,6 +1,7 @@
-import { useEffect, useRef } from 'react'
+import { useRef } from 'react'
 import { useUi, selMatch } from '../store'
 import { HotCard, HotTime } from './HotCard'
+import { useCountdownText } from './useCountdownText'
 
 /**
  * Warmup countdown.
@@ -42,28 +43,17 @@ export default function WarmupTimer() {
     && (!tutorialRun || tutorialStep === 'game-timer')
   const endsAt = match.endsAt
 
-  useEffect(() => {
-    if (!showing || !endsAt) return
-    let raf = 0
-
-    const tick = () => {
-      const node = timeRef.current
-      if (node) {
-        // endsAt is a SERVER timestamp; comparing it to the browser's wall
-        // clock directly would be comparing two unrelated origins.
-        const left = Math.max(0, endsAt - (Date.now() + offset))
-        const total = Math.ceil(left / 1000)
-        const next = total >= 60
-          ? `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`
-          : String(total)
-        if (node.textContent !== next) node.textContent = next
-      }
-      raf = requestAnimationFrame(tick)
-    }
-
-    raf = requestAnimationFrame(tick)
-    return () => cancelAnimationFrame(raf)
-  }, [showing, endsAt, offset])
+  // ONE SHARED, DRIFT-CORRECTED SCHEDULER (#319, shared with StormBar). This was
+  // a requestAnimationFrame loop that recomputed the number every frame and
+  // wrote it to `timeRef` only on a change -- the screen ticked once a second
+  // while the loop woke sixty times a second for as long as warmup lasted.
+  // `useCountdownText` arms one timer to the next displayed-second boundary,
+  // recomputes `endsAt - (now + offset)` from the server clock on each wake, and
+  // stops at zero. `showing` is the enable flag, so the timer is torn down the
+  // instant the card hides and re-armed if warmup is re-broadcast earlier (a
+  // full lobby cutting the wait short arrives as an ordinary state rebroadcast
+  // and needs no handling here). Same digits, same immediate reaction, no loop.
+  useCountdownText(timeRef, endsAt, offset, showing)
 
   if (!showing) return null
 

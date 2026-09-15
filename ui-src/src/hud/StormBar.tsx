@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useUi } from '../store'
 import { HotCard, HotTime } from './HotCard'
+import { useCountdownText } from './useCountdownText'
 import type { StormPayload } from '../bridge/types'
 
 /**
@@ -36,34 +37,19 @@ export default function StormBar({ storm }: { storm: StormPayload | null }) {
   const shrinking = storm?.phaseState === 'shrinking'
   const present = storm != null
 
-  useEffect(() => {
-    if (!endsAt) return
-    let raf = 0
-
-    const tick = () => {
-      const node = timeRef.current
-      if (node) {
-        // endsAt is a SERVER timestamp, same contract as the warmup timer --
-        // comparing it to the raw browser clock would be comparing two
-        // unrelated origins.
-        const left = Math.max(0, endsAt - (Date.now() + offset))
-        const total = Math.ceil(left / 1000)
-        const m = Math.floor(total / 60)
-        const sec = total % 60
-        // NO TRAILING `s`, to match the warmup clock (owner's call,
-        // 2026-08-09). Two clocks in the same place on the screen formatting
-        // the same quantity differently is the kind of inconsistency that
-        // reads as a bug even when nobody can say why.
-        const next = m > 0 ? `${m}:${String(sec).padStart(2, '0')}` : `${sec}`
-        // Only touch the DOM when the rendered text actually changes.
-        if (node.textContent !== next) node.textContent = next
-      }
-      raf = requestAnimationFrame(tick)
-    }
-
-    raf = requestAnimationFrame(tick)
-    return () => cancelAnimationFrame(raf)
-  }, [endsAt, offset])
+  // ONE SHARED, DRIFT-CORRECTED SCHEDULER (#319, shared with WarmupTimer). This
+  // used to be a requestAnimationFrame loop that recomputed the number every
+  // frame and wrote it to `timeRef` only when it changed -- so the screen
+  // updated once a second while the loop itself woke sixty times a second,
+  // forever. `useCountdownText` arms ONE timer to the next displayed-second
+  // boundary instead, recomputing `endsAt - (now + offset)` from the
+  // server-corrected clock on each wake and stopping at zero. Same digits, same
+  // immediate reaction to a new `endsAt` or a re-synced `offset`; no perpetual
+  // loop. Called before the early return, like the shockwave hooks below,
+  // because hooks cannot sit under `if (!storm) return`. When `hurting` the
+  // `timeRef` node is not mounted, so the writes are harmless no-ops -- the same
+  // as the old loop, which also ran regardless of which branch was on screen.
+  useCountdownText(timeRef, endsAt, offset)
 
   // THE CLOSING SHOCKWAVE (owner, 2026-09-12): "a one-time ripple effect that
   // explodes from the border of the card, in the shape of the card, like a
