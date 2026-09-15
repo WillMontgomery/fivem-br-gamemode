@@ -964,10 +964,10 @@ do
         .. 'committed default',
         #tuned > 0 and table.concat(tuned, ', ') or nil)
 
-    -- AND IT MUST TURN DEV MODE OFF RATHER THAN LEAVE IT ALONE. Absent is not
-    -- enough: server.cfg.example sets both of these true further down the file,
-    -- and in a .cfg the last line wins. A public cfg that merely stays silent
-    -- would hand back a public server that starts a match with one player in it.
+    -- AND IT MUST TURN DEV MODE OFF RATHER THAN LEAVE IT IMPLICIT. The server
+    -- template supplies the same defaults before the exec, and this file owns
+    -- the final public answer. Explicit values also make migrated older boxes
+    -- converge on the safe state instead of inheriting whatever they last ran.
     ok(set.sv_devMode == 'false' and set.br_devMode == 'false',
         'and it sets both dev-mode convars false rather than leaving them unsaid',
         ('sv_devMode=%s br_devMode=%s')
@@ -982,7 +982,9 @@ do
     -- make impossible to reach by accident.
     local text = slurp('server.cfg.example') or ''
 
-    local execAt = text:find('exec%s+"?tunables%.cfg')
+    local execLine = 'exec "tunables.cfg"'
+    local execAt = text:find(execLine, 1, true)
+    local execEnd = execAt and (execAt + #execLine - 1) or nil
     ok(execAt ~= nil, 'it execs tunables.cfg')
 
     local ensureAt = text:find('\nensure br_')
@@ -995,6 +997,29 @@ do
     ok(text:find('ABOVE', 1, true) ~= nil and text:find('tunables', 1, true) ~= nil,
         'and says out loud that the order matters, where somebody editing '
         .. 'server.cfg will read it')
+
+    -- EVALUATE THE FILES TOGETHER, IN THE ORDER FXServer DOES. Testing each
+    -- example alone stayed green while a later assignment in server.cfg made
+    -- the dev profile a no-op -- every line was right and the composition was
+    -- wrong, which is exactly what a profile test has to see.
+    local function withProfile(path)
+        if not execAt or not execEnd then return {} end
+        local profile = slurp(path) or ''
+        local combined = text:sub(1, execAt - 1)
+            .. profile .. '\n' .. text:sub(execEnd + 1)
+        return cfgConvars(combined)
+    end
+
+    local defaults = cfgConvars(text)
+    local public = withProfile('tunables.public.cfg.example')
+    local dev = withProfile('tunables.dev.cfg.example')
+
+    ok(defaults.sv_devMode == 'false' and defaults.br_devMode == 'false',
+        'with no profile, the server defaults both dev flags false')
+    ok(public.sv_devMode == 'false' and public.br_devMode == 'false',
+        'the public profile leaves both final values false')
+    ok(dev.sv_devMode == 'true' and dev.br_devMode == 'true',
+        'the dev profile leaves both final values true')
 end
 
 -- ----------------------------------------------------------------- result ---

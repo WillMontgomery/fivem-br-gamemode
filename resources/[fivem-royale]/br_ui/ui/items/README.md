@@ -79,50 +79,27 @@ Molotov Cocktail, Tear Gas, Knuckledusters, Fist). **Watch the near-misses** —
 `Heavy Weapons/` also holds a *Compact* Grenade Launcher, a Homing Launcher and
 a Widowmaker, none of which is the weapon we issue.
 
-## The license, which does not exist
+## Why no separate artwork license is carried
 
-**That repository has no license.** There is no `LICENSE` file in its tree and
-the GitHub API reports `"license": null` — verified 2026-08-22, not assumed.
-So this art is **not** licensed to us, and nothing here should be read as
-claiming it is.
+The convenience-mirror repository has no license, and it is not the rights
+holder: all 56 weapon images are renders from the GTA V base game. The owner's
+position, reaffirmed 2026-09-14, is that using those base-game renders inside a
+GTA V gamemode is fair use and requires no separate artwork license. The mirror
+is provenance for the bytes, not the source of permission.
 
-It is used anyway, on the owner's explicit decision. Owner, 2026-08-22:
+That distinction is recorded rather than represented by a made-up license:
 
-> "And yes for the weapon pngs they're GTA's own weapon renders, the repo is a
-> convenience mirror. We can use them."
+* Do not add a `LICENSE` file or a license field claiming the mirror granted
+  rights it does not own. Keep the upstream commit and byte-identity record so
+  the source of each file remains auditable.
+* If the project's position ever changes, every image is a plain PNG keyed by
+  item id and the set can be replaced without changing gameplay code.
 
-The reasoning, in his words, is that the images are **Rockstar's own weapon
-renders** — the repo did not create them and is not the party with anything to
-grant, so its silence on licensing says nothing about the art. This gamemode is
-a GTA V mod that runs only for people who own the game, and it already depends
-on Rockstar's assets everywhere else.
+## `repairkit.png`
 
-This is a **judgement call by the owner, recorded so it is not re-litigated and
-not quietly mistaken for a license.** Two things follow:
-
-* Do not add a `LICENSE` file or a `license` field for this art. There is
-  nothing to put in one, and inventing a field is worse than the honest gap.
-  `tools/verify.sh`'s `vendored third-party` gate — which *does* demand a
-  LICENSE plus `upstream`/`version`/`commit` — scans `resources/**/VENDOR.json`
-  and does not reach this directory. That is why the provenance lives here, in
-  prose, next to the files: a `VENDOR.json` here would look enforced and would
-  not be. See `resources/[voice]/pma-voice/VENDOR.json` for the shape this is
-  imitating.
-* If the position ever changes, the fix is not a license — it is replacing the
-  art. Every file is a plain PNG keyed by item id, so the set can be swapped
-  wholesale without touching a line of code.
-
-## `repairkit.png` — the one file that came from somewhere else
-
-**Supplied by the owner on #228** (2026-09-03), attached to the issue, and
-committed as sent: 476×476 RGBA, 201 KiB, transparent-backed and square, which
-is the shape this file asks for above. It is not recompressed or resized —
-re-encoding the owner's own artwork to save a couple of hundred kilobytes on a
-local-disk `nui://` fetch buys nothing.
-
-**Where he got it, and on what terms, is not recorded here, because nobody has
-told us.** That is a gap in this document rather than a claim about the art: it
-is deliberately *not* described as GTA's own, as public domain, or as licensed,
-and the blob-id check above cannot say anything about it. **The owner should
-fill this paragraph in** — one sentence naming the source is enough, and it is
-the same judgement call, recorded the same way, as the weapon renders above.
+`repairkit.png` was supplied by the owner on #228 (2026-09-03), attached to the
+issue, and committed as sent: 476×476 RGBA, 201 KiB, transparent-backed and
+square. The owner confirmed on 2026-09-14 that it is also GTA V base-game
+artwork, covered by the same fair-use decision above; no separate artwork
+license is required. It is not recompressed or resized because a local-disk
+`nui://` fetch gains nothing from changing the original bytes.

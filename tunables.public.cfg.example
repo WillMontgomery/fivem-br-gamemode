@@ -30,11 +30,11 @@
 # be left on by accident, and the whole point of this file is that copying it
 # over tunables.cfg leaves you with a public server and nothing to remember.
 #
-# It is spelled out here rather than left absent BECAUSE ABSENT IS NOT ENOUGH:
-# server.cfg.example ships with both of these set to true further down the
-# file, and in a .cfg the last line wins. If your server.cfg still has them,
-# delete those two lines -- otherwise they will quietly override these, and this
-# file will have made a public server that starts matches with one player in it.
+# It is spelled out here rather than left absent because this file is the
+# explicit declaration that the box is public-shaped. server.cfg.example now
+# provides the same safe defaults immediately BEFORE the exec, so these lines
+# are the final values and also protect boxes migrated from older templates.
+# There must be no second assignment below the exec.
 # ---------------------------------------------------------------------------
 set sv_devMode false
 set br_devMode false

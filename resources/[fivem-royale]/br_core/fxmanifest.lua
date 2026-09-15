@@ -457,26 +457,14 @@ client_scripts {
     -- reader's convenience rather than a load order.
     --
     -- ─────────────────────────────────────────────────────────────────────
-    --  KNOWN COST, FLAGGED RATHER THAN HIDDEN: THE LIBRARY'S ALWAYS-ON
-    --  THREADS NOW RUN TWICE.
+    --  ONE EXECUTION, IN THIS STATE.
     -- ─────────────────────────────────────────────────────────────────────
     --
-    -- resources/[scaleformui]/ScaleformUI_Lua/VENDOR.json records under
-    -- `untouched_on_purpose` that this library runs threads from resource start
-    -- whether or not any menu exists -- the main one loops at Citizen.Wait(0)
-    -- calling Warning:Update(), InstructionalButtons:Update() and five more
-    -- every frame. server.cfg.example still `ensure`s ScaleformUI_Lua as its own
-    -- resource, so with this line those threads run in ITS state (where nothing
-    -- uses them, example.lua being commented out by BR-PATCH 1) AND in this one.
-    --
-    -- THE FIX IS ONE LINE AND IT IS NOT TAKEN HERE, because it rests on a claim
-    -- nobody has checked on this box: whether an `@resource/file.lua` include
-    -- resolves for a resource that is present but not STARTED. If it does,
-    -- dropping `ensure ScaleformUI_Lua` from server.cfg.example halves the cost
-    -- and loses nothing -- ScaleformUI_Assets must stay ensured either way,
-    -- since it streams the .gfx movies and owns the minimap overlay handler.
-    -- Guessing wrong means br_core does not start, which is why it is written
-    -- down instead of tried blind.
+    -- ScaleformUI_Lua is still `ensure`d before br_core so the external file is
+    -- available in a deterministic order. BR-PATCH 3 in that resource's
+    -- fxmanifest lists ScaleformUI.lua as a file but not as a client_script, so
+    -- starting it creates no second Lua state running the library. This include
+    -- is the one execution, inside the resource whose menu code consumes it.
     '@ScaleformUI_Lua/ScaleformUI.lua',
     -- OUR COLORS ON THAT LIBRARY, and the pattern for every menu after this one.
     -- Tiny by design: two hexes, one HUD index, three constructors. AFTER the

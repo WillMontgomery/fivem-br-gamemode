@@ -6,22 +6,23 @@ fx_version 'cerulean'
 
 games { 'gta5' }
 
--- You can comment example.lua if you don't need it!
-client_scripts {
-    'ScaleformUI.lua',
-    -- BR-PATCH 1: example.lua is upstream's SHOWCASE DEMO and it is not inert.
-    -- Loaded, it starts a thread that draws a green world marker at the player's
-    -- spawn, adds two timer bars, and types "this is a test" onto the minimap
-    -- four seconds in, then runs a forever loop watching for demo hotkeys. That
-    -- is upstream's intent -- the manifest line directly above says to comment
-    -- it out when you do not want it -- but on our server it is a stranger's UI
-    -- appearing on every player's screen for no reason anyone could trace.
-    --
-    -- COMMENTED OUT RATHER THAN DELETED. Deleting the file was the alternative
-    -- and it lost twice over: the demo is the thing the owner evaluated and
-    -- liked, so it is worth keeping one uncomment away for the next look at it,
-    -- and keeping it means this directory stays byte-for-byte the published
-    -- 5.8.1 release except for this block, which is the whole provenance claim
-    -- VENDOR.json makes. Re-enable by uncommenting the line below.
-    -- 'example.lua'
+-- BR-PATCH 3: THIS RESOURCE EXPOSES THE BUNDLE; br_core EXECUTES IT.
+--
+-- FiveM resources have separate Lua states. Starting this resource first does
+-- not make UIMenu/SColor visible inside br_core, so br_core must keep loading
+-- `@ScaleformUI_Lua/ScaleformUI.lua`. Executing the same file here as a
+-- client_script as well would create a second state and a second copy of every
+-- always-on ScaleformUI thread. Listing it as a file keeps the cross-resource
+-- include available while this resource itself runs no library code.
+files {
+    'ScaleformUI.lua'
 }
+
+-- BR-PATCH 1: example.lua is upstream's SHOWCASE DEMO and it is not inert.
+-- Loaded, it starts a thread that draws a green world marker at the player's
+-- spawn, adds two timer bars, and types "this is a test" onto the minimap four
+-- seconds in, then runs a forever loop watching for demo hotkeys. It remains on
+-- disk for reference but is intentionally absent from client_scripts.
+--
+-- To evaluate it again, restore a client_scripts block containing example.lua
+-- on a dev branch; never load the library itself here while br_core includes it.

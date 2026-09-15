@@ -48,20 +48,15 @@
 # same two convars, and either of them being true puts it on dev-br-players,
 # dev-br-matches and the four dev-ringmaster-* tables, with production out of
 # reach. Those six tables have to exist first -- DEPLOY.md section 2 lists them
-# with their keys. Leaving this file's two lines to be overridden by a stale
-# pair in server.cfg therefore costs more than a lobby size now: a box that
-# reads `false` here writes the live server's XP and moderation queue.
+# with their keys.
 #
-# CHECK YOUR server.cfg FOR A SECOND COPY OF THESE TWO LINES, and delete it.
+# server.cfg.example supplies false defaults immediately BEFORE the exec, then
+# this profile flips both values true. That order is the mechanism: no second
+# assignment may appear below `exec "tunables.cfg"`, or the profile becomes a
+# no-op while every line still looks correctly set in isolation.
 #
-# server.cfg.example ships with `set sv_devMode true` and `set br_devMode true`
-# further down the file, BELOW the exec line -- and in a .cfg the last line
-# wins. Leave them there and dev mode stops following this file: copying
-# tunables.public.cfg.example over tunables.cfg would make every other setting
-# public while the box stayed in dev mode, which is the worst of both.
-#
-# So: in the real server.cfg on the box, comment out or delete the sv_devMode
-# and br_devMode lines, and let these two be the only ones.
+# The startup banner prints both convars and br_ddb's resolved prefixes. A dev
+# playtest starts only after all three say dev/true.
 # ---------------------------------------------------------------------------
 set sv_devMode true
 set br_devMode true

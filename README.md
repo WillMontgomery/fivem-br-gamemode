@@ -188,10 +188,10 @@ way and gated by the same checks. They are a pair: the first is the Lua library,
 the second streams the compiled `.gfx` movies it drives, and upstream is explicit
 that neither works alone. **The license is different and the difference matters.**
 ScaleformUI is CC BY-NC-SA 4.0, not MIT: attribution required, share alike, and
-**no commercial use**. The owner decided on 2026-09-08 that our use fits within
-those terms; that decision would need revisiting if this server ever sold
-anything. Nothing in the gamemode calls the library yet -- it is vendored and
-started, and the menus that use it are not written.
+**no commercial use**. The server's use will remain non-commercial, which is the
+boundary the owner chose. The in-match Ammu-Nation counter is the first consumer:
+`ScaleformUI_Lua` starts as an include-only resource, and `br_core` loads the
+bundle into its own Lua state once because FiveM resource globals are isolated.
 
 The UI build project lives in `ui-src/`, **outside** `resources/`, because
 FXServer auto-builds any resource containing a `package.json` using bundled Node
@@ -255,4 +255,15 @@ on them without either being able to call the other:
 
 ## License
 
-Not yet chosen. Until one is added, no permissions are granted beyond viewing.
+A project license is intentionally deferred until the server launches publicly.
+Until then the repository is source-visible but grants no permission to copy,
+redistribute or operate the gamemode; keeping those rights reserved prevents a
+third party from launching the work before Blitz Royale reaches market. Public
+launch is the decision point for the project's distribution terms.
+
+Third-party components retain their own notices. ScaleformUI is used only for
+this non-commercial server within its CC BY-NC-SA terms. The weapon and repair-kit
+images are renders from the GTA V base game; the owner treats their use inside a
+GTA V gamemode as fair use that requires no separate artwork license. The item
+art provenance and that decision are recorded beside the files in
+`ui-src/public/items/README.md`.

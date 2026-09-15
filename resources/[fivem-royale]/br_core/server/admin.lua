@@ -323,8 +323,11 @@ end
 --- through BR.Config.WeaponById, which contains BR.Config.AirdropWeapons, so
 --- the refusal that looked like a gate handed any player an RPG, a grenade
 --- launcher, a railgun or a minigun on request (#232, audited 2026-09-08).
---- server.cfg.example ships with both dev-mode flags `true`, which is what
---- makes that a deployment rather than a hypothetical.
+--- Older server.cfg.example copies shipped with both dev-mode flags `true`,
+--- which made that a deployment rather than a hypothetical. The current
+--- template defaults them false before the tunables profile, but dev mode still
+--- opens this door for every connected client; it remains a build flag and
+--- never substitutes for the grant check below.
 ---
 --- BOTH HALVES, AND `and` RATHER THAN `or`:
 ---
