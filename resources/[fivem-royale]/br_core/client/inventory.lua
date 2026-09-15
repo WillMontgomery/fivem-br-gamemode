@@ -155,18 +155,37 @@ local shown = { id = nil, clip = -1, total = -1 }
 --- removal nor the return is ever a shot, and a tick that wrote or returned sends
 --- no report.
 ---
+--- AMMO ARRIVING MOVES THE HOLD, IT DOES NOT END IT (review of cf3e29f). A
+--- purchase, a pickup or the server's loaded magazine landing between the write
+--- and the next tick used to end the hold, so under the next-frame removal the
+--- rounds were never returned and the next report charged them. Now every round
+--- grantAmmo adds to the gun it adds to `total` as well. Before the write it
+--- keeps the magazine the server loaded as `clip`; after it, it raises `clip` by
+--- what it raised the gun's magazine by. Either way the measure above stays
+--- where it was.
+---
+--- A RELOAD AFTER THE WRITE IS WATCHED THROUGH, NOT ENDED ON. It moves no round
+--- out of the total and no shot lands during one, but it moves the magazine, so
+--- while IsPedReloading reads true the removal is read off the total alone. The
+--- total alone cannot cancel a shot fired before the reload began, so a reload
+--- returns only everything still owed, at once: the engine takes the whole
+--- lowering, and a shot can pass for that only by firing as many rounds as the
+--- lowering took. The hold lets go on the first tick after the reload
+--- (`reloaded`), whose magazine it no longer knows.
+---
 --- ONCE A DRAW, ON FOOT. The write comes only when GTA's fill lands on a ped on
 --- its own feet: seated, getting in, attached (the bus) or under a parachute, the
 --- hold lets go without writing, and a return asks the same. Before the write it
---- lets go on any change in the total, a reload, another slot, DRAW_SETTLE_MS or
---- canArm going false. After it, once `back` reaches `cap`, and without returning
---- on a reload, another slot, a purchase (grantAmmo), the clamp, a total or a
---- magazine that rose, canArm going false, or DRAW_RETURN_MS after the write.
+--- lets go on a change in the total grantAmmo did not make, a reload, another
+--- slot, DRAW_SETTLE_MS or canArm going false. After it, once `back` reaches
+--- `cap`, and without returning on another slot, the end of a reload, the clamp,
+--- a total or magazine that rose for anything but grantAmmo, canArm going false,
+--- or DRAW_RETURN_MS after the write.
 ---
 --- `id` nil is "nothing to hold". A magazine that GTA's fill would not change is
 --- never held, and neither is an empty one: GTA reloading an empty gun is real.
 local drawing = { id = nil, slot = -1, clip = -1, total = -1, at = 0,
-                  lowered = false, cap = 0, back = 0 }
+                  lowered = false, cap = 0, back = 0, reloaded = false }
 local DRAW_SETTLE_MS = 1500
 --- How long the hold watches for the removal after its write. On the next frame
 --- it shows on the next tick; the rest is margin for a hitch.
@@ -586,6 +605,7 @@ local function applyActive(force)
             drawing.id, drawing.slot = slot.id, inv.active
             drawing.clip, drawing.total, drawing.at = clip, total, GetGameTimer()
             drawing.lowered, drawing.cap, drawing.back = false, 0, 0
+            drawing.reloaded = false
         else
             drawing.id = nil
         end
@@ -658,12 +678,19 @@ local function grantAmmo(gain, loadTo)
     local hash = hashOf(slot)
     if not hash or applied ~= hash then return end
 
-    -- A PURCHASE ENDS THE DRAW HOLD. These rounds move the total and the
-    -- magazine it measures against, and are not its to explain. See `drawing`.
-    drawing.id = nil
+    -- AMMO ARRIVING MOVES THE DRAW HOLD, IT DOES NOT END IT (review of cf3e29f).
+    -- Ending it here, between the write and the next tick, left the rounds the
+    -- lowering took unreturned and the next report charged them. The rounds
+    -- added here go into what it measures against, and so does a magazine
+    -- raised below. A hold on another gun or slot ends as before. See `drawing`.
+    local holding = drawing.id == slot.id and drawing.slot == inv.active
+    if not holding then drawing.id = nil end
 
     local ped = PlayerPedId()
-    if gain > 0 then AddAmmoToPed(ped, hash, gain) end
+    if gain > 0 then
+        AddAmmoToPed(ped, hash, gain)
+        if holding then drawing.total = drawing.total + gain end
+    end
 
     local heldOk, held = GetCurrentPedWeapon(ped, true)
     local inHand = yes(heldOk) and BR.NormHash(held) == BR.NormHash(hash)
@@ -695,8 +722,18 @@ local function grantAmmo(gain, loadTo)
     end
 
     local want = loadTo and math.min(loadTo, total) or -1
+    -- BEFORE THE HOLD HAS WRITTEN, the magazine the server loaded is the one to
+    -- keep, whether or not GTA's fill has already put the gun there.
+    if holding and not drawing.lowered then
+        drawing.clip = math.max(drawing.clip, want)
+    end
     if clip < want then
         SetAmmoInClip(ped, hash, want)
+        -- AFTER IT, by what this raised the gun's magazine by, so a shot the
+        -- hold has not yet read still cancels against it.
+        if holding and drawing.lowered then
+            drawing.clip = drawing.clip + (want - clip)
+        end
         clip = want
     end
     -- READ BACK rather than written down where it could be, because this is the
@@ -2222,7 +2259,9 @@ BR.Loop.register(BR.Loop.TICK, 'inv.ammo', function()
     -- WHAT A RELOAD STILL STOPS is everything that writes or reports: the clamp,
     -- the deficit and the report below all reason about rounds LEAVING the gun,
     -- and while rounds are moving between its two halves that is not a question
-    -- to answer. `yes`, because IsPedReloading is a BOOL and 0 IS TRUTHY IN LUA.
+    -- to answer. The one write it lets through is the draw hold returning rounds
+    -- its own lowering took, with AddAmmoToPed, which grantAmmo already adds with
+    -- mid-reload. `yes`, because IsPedReloading is a BOOL and 0 IS TRUTHY IN LUA.
     local reloading = yes(IsPedReloading(ped))
 
     -- THE TOTAL IS THE NUMBER THAT MATTERS. The clip is only the split.
@@ -2276,7 +2315,11 @@ BR.Loop.register(BR.Loop.TICK, 'inv.ammo', function()
         local _, c = GetAmmoInClip(ped, hash)
         c = c or 0
         local onFoot = nil
-        if drawing.id ~= slot.id or drawing.slot ~= inv.active or reloading then
+        -- Before the write a reload ends it; after it, the tick the reload is
+        -- over does, because that magazine is no longer the hold's to read.
+        if drawing.id ~= slot.id or drawing.slot ~= inv.active
+           or (reloading and not drawing.lowered)
+           or (drawing.reloaded and not reloading) then
             drawing.id = nil
         elseif not drawing.lowered then
             if total ~= drawing.total
@@ -2300,13 +2343,26 @@ BR.Loop.register(BR.Loop.TICK, 'inv.ammo', function()
         end
 
         if drawing.id ~= nil and drawing.lowered then
-            local removed = (drawing.total - total) - (drawing.clip - c)
-            if removed < 0 or c > drawing.clip then
-                -- A total or a magazine that ROSE: a purchase, a reload, a fill
-                -- landing again. Not the removal, and never answered with rounds.
+            local owed = drawing.cap - drawing.back
+            local removed, give
+            if reloading then
+                -- A RELOAD MOVES THE MAGAZINE AND NO ROUND OUT OF THE TOTAL, and
+                -- no shot lands during one: the removal is read off the total
+                -- alone, and returned only once all that is owed has gone, so a
+                -- shot fired before the reload began is never handed back.
+                drawing.reloaded = true
+                removed = drawing.total - total
+                give = removed >= owed and owed or 0
+            else
+                removed = (drawing.total - total) - (drawing.clip - c)
+                give = math.min(removed, owed)
+            end
+            if removed < 0 or (not reloading and c > drawing.clip) then
+                -- A total or a magazine that ROSE for a reason grantAmmo did not
+                -- track: a fill landing again, a write we did not make. Not the
+                -- removal, and never answered with rounds.
                 drawing.id = nil
             else
-                local give = math.min(removed, drawing.cap - drawing.back)
                 if give > 0 and onFoot == nil then onFoot = not offFoot(ped) end
                 if give > 0 and not onFoot then
                     drawing.id = nil

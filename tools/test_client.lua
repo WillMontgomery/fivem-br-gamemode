@@ -17820,6 +17820,27 @@ do
             tostring(gun.clip[PH]), tostring(gun.total[PH]), srv.clip[2],
             srv.ammo[SMG], calls.clip, calls.add)
     end
+    --- The lowest PDW total any report since the select in upToWrite carried.
+    local function lowest()
+        local low = math.huge
+        for _, n in ipairs(srv.said) do low = math.min(low, n) end
+        return low
+    end
+    --- GTA's reload, starting before the next tick and `n` ticks long: it moves
+    --- no round out of the total, no shot lands during it, and the magazine
+    --- comes up out of the total as it ends. `first` runs once the reload is
+    --- playing, before its first tick.
+    local function reload(n, first)
+        local left = n
+        IsPedReloading = function() return left > 0 end
+        if first then first() end
+        for _ = 1, n do
+            tick(1)
+            left = left - 1
+        end
+        IsPedReloading = function() return false end
+        gun.clip[PH] = math.min(PDW.clip, gun.total[PH])
+    end
 
     for _, timing in ipairs({ 'call', 'frame', 'none' }) do
         removal = timing
@@ -17939,6 +17960,147 @@ do
            and plate.clip == 25 and plate.reserve == 60,
            say('A PURCHASE AFTER THE CORRECTION ADDS EXACTLY WHAT WAS BOUGHT, and the hold writes no more'),
            gunIs())
+
+        -- ── 6. AMMO ARRIVING BEFORE THE NEXT TICK MOVES WHAT THE HOLD MEASURES
+        --       AGAINST, AND DOES NOT END IT (review of cf3e29f, RV6). Thirty
+        --       rounds bought between the write and the next tick: under 'frame'
+        --       that tick reads B's removal and the purchase together. On cf3e29f
+        --       the purchase ended the hold, the five were never returned, and the
+        --       next report charged them: gun 25/80, server 20/60.
+        wroteOnce = upToWrite()
+        answer()
+        srv.ammo[SMG] = srv.ammo[SMG] + 30
+        push()
+        tick(30)
+        ok(wroteOnce and calls.clip == 1 and calls.add == returns + 1
+           and gun.clip[PH] == 25 and gun.total[PH] == 85
+           and srv.clip[2] == 25 and srv.ammo[SMG] == 60,
+           say('A PURCHASE BETWEEN THE WRITE AND THE NEXT TICK STILL GETS THE REMOVED ROUNDS BACK: 25 of 85'),
+           gunIs())
+        ok(lowest() >= 85,
+           say('and no report charges them as shots'),
+           ('%s, reported %s'):format(gunIs(), table.concat(srv.said, ',')))
+
+        -- ── 7. AND SO DOES A MAGAZINE THE SERVER LOADS IN THAT GAP. Its reload
+        --       loses no round (grantAmmo's loadTo) and raises the gun's magazine
+        --       to 30 over the 25 the hold wrote, which is a magazine that rose
+        --       for a reason the hold was told.
+        wroteOnce = upToWrite()
+        answer()
+        srv.ammo[SMG] = srv.ammo[SMG] - (PDW.clip - srv.clip[2])
+        srv.clip[2] = PDW.clip
+        push()
+        tick(30)
+        ok(wroteOnce and calls.clip == 2 and calls.add == returns
+           and gun.clip[PH] == 30 and gun.total[PH] == 55
+           and srv.clip[2] == 30 and srv.ammo[SMG] == 25 and lowest() >= 55,
+           say('A MAGAZINE THE SERVER LOADS IN THAT GAP READS 30 of 55, the raise and the return both kept'),
+           ('%s, reported %s'):format(gunIs(), table.concat(srv.said, ',')))
+
+        -- ── 8. A RELOAD THAT STARTS IN THAT GAP (review of cf3e29f, RV7). It
+        --       moves no round out of the total and no shot lands during it, so
+        --       the removal is read off the total alone. On cf3e29f the reload
+        --       ended the hold without returning anything: gun 30/50, server 20/30.
+        wroteOnce = upToWrite()
+        reload(2)
+        tick(30)
+        ok(wroteOnce and calls.clip == 1 and calls.add == returns
+           and gun.clip[PH] == 30 and gun.total[PH] == 55
+           and srv.clip[2] + srv.ammo[SMG] == 55 and lowest() >= 55,
+           say('A RELOAD THAT STARTS IN THAT GAP KEEPS 55, and the return comes during it'),
+           ('%s, reported %s'):format(gunIs(), table.concat(srv.said, ',')))
+
+        -- ── 9. AMMO ARRIVING AND A RELOAD STARTING IN THE SAME GAP: a purchase
+        --       then the reload, the reload then a purchase, and the reload key,
+        --       which is GTA's reload with the server's loaded magazine landing
+        --       during it.
+        for _, case in ipairs({
+            { name = 'A PURCHASE AND THEN A RELOAD', during = false, add = 30, load = false },
+            { name = 'A RELOAD AND THEN A PURCHASE', during = true, add = 30, load = false },
+            { name = 'THE RELOAD KEY', during = true, add = 0, load = true },
+        }) do
+            wroteOnce = upToWrite()
+            answer()
+            local function arrive()
+                if case.load then
+                    srv.ammo[SMG] = srv.ammo[SMG] - (PDW.clip - srv.clip[2])
+                    srv.clip[2] = PDW.clip
+                end
+                srv.ammo[SMG] = srv.ammo[SMG] + case.add
+                push()
+            end
+            if case.during then
+                reload(2, arrive)
+            else
+                arrive()
+                reload(2)
+            end
+            tick(30)
+            local want = 55 + case.add
+            ok(wroteOnce and calls.clip == 1
+               and calls.add == returns + (case.add > 0 and 1 or 0)
+               and gun.clip[PH] == 30 and gun.total[PH] == want
+               and srv.clip[2] + srv.ammo[SMG] == want and lowest() >= want,
+               say(('%s IN THAT GAP KEEPS %d'):format(case.name, want)),
+               ('%s, reported %s'):format(gunIs(), table.concat(srv.said, ',')))
+        end
+
+        -- ── 10. A SHOT AND THEN A RELOAD IN THAT GAP. The reload hides the
+        --        magazine half that cancels a shot, so a shot the next tick reads
+        --        with the reload playing is never returned as a removed round:
+        --        under 'none' nothing was taken, and nothing comes back.
+        wroteOnce = upToWrite()
+        gun.total[PH] = gun.total[PH] - 1
+        gun.clip[PH]  = math.max(0, gun.clip[PH] - 1)
+        reload(2)
+        tick(30)
+        ok(wroteOnce and calls.clip == 1 and calls.add == returns
+           and gun.clip[PH] == 30 and gun.total[PH] == 54
+           and srv.clip[2] + srv.ammo[SMG] == 54 and lowest() == 54,
+           say('A SHOT AND THEN A RELOAD IN THAT GAP LEAVES 54, the shot charged once and never returned'),
+           ('%s, reported %s'):format(gunIs(), table.concat(srv.said, ',')))
+
+        -- ── 11. BEFORE THE WRITE A PURCHASE MOVES THE HOLD AS WELL. Thirty rounds
+        --        bought a tick into the draw, before GTA's fill: the magazine still
+        --        goes back to 25 and the rounds go behind it.
+        replay({ 'buy', 'draw', 'fire', 'stow' })
+        select(2)
+        calls.clip, calls.add = 0, 0
+        srv.said = {}
+        tick(1)
+        answer()
+        srv.ammo[SMG] = srv.ammo[SMG] + 30
+        push()
+        tick(30)
+        ok(calls.clip == 1 and calls.add == returns + 1
+           and gun.clip[PH] == 25 and gun.total[PH] == 85
+           and srv.clip[2] == 25 and srv.ammo[SMG] == 60 and lowest() >= 85,
+           say('A PURCHASE BEFORE GTA\'S FILL STILL COMES UP 25 of 85'),
+           ('%s, reported %s'):format(gunIs(), table.concat(srv.said, ',')))
+
+        -- ── 12. A MAGAZINE THE SERVER LOADS BEFORE THE WRITE IS THE ONE THE HOLD
+        --        KEEPS. It lands after GTA's fill and before the tick that would
+        --        write, finds the gun's magazine already at 30 and raises nothing,
+        --        and the hold must not then lower it to the 25 it was drawn with.
+        replay({ 'buy', 'draw', 'fire', 'stow' })
+        select(2)
+        calls.clip, calls.add = 0, 0
+        srv.said = {}
+        tick(REFILL_FRAMES - 1)
+        frame()
+        answer()
+        srv.ammo[SMG] = srv.ammo[SMG] - (PDW.clip - srv.clip[2])
+        srv.clip[2] = PDW.clip
+        push()
+        fakeTime = fakeTime + 100
+        BR.Loop.step(BR.Loop.TICK)
+        answer()
+        tick(30)
+        ok(calls.clip == 0 and calls.add == 0
+           and gun.clip[PH] == 30 and gun.total[PH] == 55
+           and srv.clip[2] == 30 and srv.ammo[SMG] == 25 and lowest() >= 55,
+           say('A MAGAZINE THE SERVER LOADS AFTER GTA\'S FILL STAYS 30 of 55, and the hold writes nothing'),
+           ('%s, reported %s'):format(gunIs(), table.concat(srv.said, ',')))
     end
     draw = nil
 
