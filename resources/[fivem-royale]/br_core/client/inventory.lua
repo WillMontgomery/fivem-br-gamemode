@@ -190,7 +190,9 @@ local drawCount = { writes = 0 }
 --- does not give the chute up was a RemoveAllPedWeapons and a grant a tick.
 ---
 --- Both predate the draw hold above. They are bounded here because a switch
---- storm in a seat is one of the candidates for the hangs that note describes.
+--- storm in a seat is one of the candidates for the hangs that note describes,
+--- and each is now also paced where it starts: see `seatStrip` below, and the
+--- seat pacing in skydive.disarm.
 ---
 --- OFF FOOT, THE SAME WEAPON (FISTS INCLUDED) ON THE SAME PED IS RE-GRANTED AT
 --- MOST ONCE EVERY REGRANT_OFF_FOOT_MS, forced or not. A switch to a different
@@ -1808,6 +1810,70 @@ local function reportStrip(h)
     TriggerServerEvent(BR.Net.INV_STRIPPED, h)
 end
 
+--- ═══ IN A SEAT THE STRIP IS AN EDGE, THEN ONCE A SECOND, THEN ONCE EVERY FIVE ═══
+---
+--- A seat whose mounted gun `isMountedWeapon` cannot vouch for (a turret, a
+--- passenger gun position) and that the engine keeps putting back in the hand
+--- was a RemoveWeaponFromPed and a cleared `applied` every tick for as long as
+--- the player sat there. `regrant` already held the grant that followed to once
+--- a second; this holds the strip itself, where the loop starts. Whether the
+--- engine really re-hands the gun every frame is inferred, not observed.
+---
+--- So in a seat the first strip runs on the tick the weapon is seen, and the
+--- next ones wait SEAT_STRIP_MS each. After SEAT_STRIP_TRIES strips in a row
+--- they wait SEAT_STRIP_BACKOFF_MS instead and ONE console line names the hash,
+--- so a real fight reads in the client log. A tick that does not strip clears
+--- nothing and reports nothing, because nothing was taken.
+---
+--- THE TRIPWIRE IS WEAKER IN A SEAT FOR IT, AND THAT IS STATED: a conjured gun
+--- that comes straight back stays in a seated hand between strips. The defense
+--- was never this file -- server/damage.lua refuses the shots, see
+--- br_core/server/strip.lua -- and on foot nothing waits: the strip still runs
+--- every tick there.
+---
+--- `at` is when the last seated strip ran (nil for never), `streak` how many ran
+--- in a row with the weapon back, `told` whether this streak has printed.
+local seatStrip = { at = nil, streak = 0, told = false }
+local SEAT_STRIP_MS         = 1000
+local SEAT_STRIP_TRIES      = 5
+local SEAT_STRIP_BACKOFF_MS = 5000
+
+--- How long a seated strip waits after the last one.
+--- @return integer
+local function seatStripWait()
+    if seatStrip.streak >= SEAT_STRIP_TRIES then return SEAT_STRIP_BACKOFF_MS end
+    return SEAT_STRIP_MS
+end
+
+--- May the strip check take `h` out of the hand on this tick? Always on foot.
+--- @param h integer|nil  the normalized hash in the hand
+--- @return boolean
+local function mayStrip(h)
+    if not inVehicle() then
+        seatStrip.streak, seatStrip.told = 0, false
+        return true
+    end
+    local now = GetGameTimer()
+    if seatStrip.at and now - seatStrip.at < seatStripWait() then return false end
+    seatStrip.at = now
+    seatStrip.streak = seatStrip.streak + 1
+    if seatStrip.streak == SEAT_STRIP_TRIES and not seatStrip.told then
+        seatStrip.told = true
+        print(('[br_core] inv: a seat kept putting weapon %s back in the hand through %d strips -- stripping every %d ms now')
+            :format(tostring(h), SEAT_STRIP_TRIES, SEAT_STRIP_BACKOFF_MS))
+    end
+    return true
+end
+
+--- A tick whose hand needed no strip. A seated strip that was due and found
+--- nothing to take ends the streak; asked only while one is open, so the
+--- ordinary tick calls nothing.
+local function settleSeatStrip()
+    if seatStrip.streak > 0 and GetGameTimer() - seatStrip.at >= seatStripWait() then
+        seatStrip.streak, seatStrip.told = 0, false
+    end
+end
+
 -- --------------------------------------------------------------------------
 -- Loops
 -- --------------------------------------------------------------------------
@@ -1852,8 +1918,9 @@ BR.Loop.register(BR.Loop.TICK, 'inv.apply', function()
     -- the defence: a cheat that disables this file entirely is still refused
     -- server-side, which is the half that actually matters.
     --
-    -- AND IT IS NO LONGER SILENT. The strip is unchanged -- it still happens on
-    -- the same tick, for the same reason -- but it now also REPORTS, because a
+    -- AND IT IS NO LONGER SILENT. The strip is unchanged on foot -- it still
+    -- happens on the same tick, for the same reason, and in a seat it is paced
+    -- (see `seatStrip`) -- but it now also REPORTS, because a
     -- cheater taking this route used to trip no alarm anywhere at all: the
     -- weapon vanished, they granted themselves another, and nothing was ever
     -- written down. `reportStrip` below is the whole of that addition.
@@ -1880,9 +1947,14 @@ BR.Loop.register(BR.Loop.TICK, 'inv.apply', function()
                 or (wantHash ~= nil and h == wantHash)
                 or isMountedWeapon(h)
             if not allowed then
-                RemoveWeaponFromPed(ped, held)
-                applied = nil          -- force the active slot back on
-                reportStrip(h)
+                -- Paced in a seat, every tick on foot. See `seatStrip`.
+                if mayStrip(h) then
+                    RemoveWeaponFromPed(ped, held)
+                    applied = nil          -- force the active slot back on
+                    reportStrip(h)
+                end
+            else
+                settleSeatStrip()
             end
         end
     end

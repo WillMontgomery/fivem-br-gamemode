@@ -17772,6 +17772,14 @@ end
 -- hundred times in a hundred ticks. On 8691f25, the revert that played clean,
 -- sections 3 and 7 fail the same way. So the unbounded seat loops predate
 -- ecb9170 and do not by themselves explain the hangs; they are bounded anyway.
+--
+-- AND BOTH ARE NOW PACED WHERE THEY START. On 822bfe6 the strip in
+-- client/inventory.lua still called RemoveWeaponFromPed every tick in section
+-- 3's seat, and client/skydive.lua's standing disarm still swept every tick in
+-- section 7's, with RemoveAllPedWeapons and BR.Inv.reapply from its third sweep.
+-- In a seat each now acts on the tick the gun or the chute appears, then at most
+-- once a second, then once every five seconds after five in a row, with ONE
+-- console line. On foot neither changed, and both sections say so.
 describe('a switch is never a loop: a seat, the bus, a canopy, a hand not ours')
 do
     local saved = {
@@ -17780,7 +17788,7 @@ do
         getAmmo = GetAmmoInPedWeapon, getClip = GetAmmoInClip,
         current = SetCurrentPedWeapon, hasGot = HasPedGotWeapon,
         reload = IsPedReloading, attached = IsEntityAttached,
-        chute = GetPedParachuteState,
+        chute = GetPedParachuteState, strip = RemoveWeaponFromPed,
     }
 
     local HP      = BR.Config.WeaponById['heavypistol']
@@ -17789,7 +17797,12 @@ do
     local HALF    = math.floor(HP.clip / 2)
     local MOUNTED = 0xE2822A29   -- VEHICLE_WEAPON_PLAYER_BUZZARD, as #216 uses it
 
-    local calls = { current = 0, clip = 0, give = 0, removeAll = 0 }
+    local calls = { current = 0, clip = 0, give = 0, removeAll = 0,
+                    strip = 0, stripHash = nil }
+    --- client/skydive.lua's own calls, counted apart for section 7: its
+    --- RemoveWeaponFromPed, RemoveAllPedWeapons and SetPedAmmo, and every
+    --- BR.Inv.reapply it asks for.
+    local sky = { removeOne = 0, removeAll = 0, ammo = 0, reapply = 0 }
     --- Was the native called from client/inventory.lua? Level 3 is the caller of
     --- the stub that asked.
     local function mine()
@@ -17797,14 +17810,31 @@ do
         return info ~= nil
             and info.source:find('client/inventory.lua', 1, true) ~= nil
     end
+    --- The same question about client/skydive.lua, at the same level.
+    local function skydives()
+        local info = debug.getinfo(3, 'S')
+        return info ~= nil
+            and info.source:find('client/skydive.lua', 1, true) ~= nil
+    end
 
     local gun = { total = {}, clip = {} }
     local engine = { rebuild = false, handBack = nil }
     local attached, chute = false, BR.Native.ChuteState.NONE
 
     function RemoveAllPedWeapons()
-        if mine() then calls.removeAll = calls.removeAll + 1 end
+        if mine() then
+            calls.removeAll = calls.removeAll + 1
+        elseif skydives() then
+            sky.removeAll = sky.removeAll + 1
+        end
         gun.total, gun.clip = {}, {}
+    end
+    function RemoveWeaponFromPed(_, hash)
+        if mine() then
+            calls.strip, calls.stripHash = calls.strip + 1, hash
+        elseif skydives() then
+            sky.removeOne = sky.removeOne + 1
+        end
     end
     function GiveWeaponToPed(_, hash, ammo)
         if mine() then calls.give = calls.give + 1 end
@@ -17812,6 +17842,7 @@ do
         gun.total[h] = (gun.total[h] or 0) + (ammo or 0)
     end
     function SetPedAmmo(_, hash, n)
+        if skydives() then sky.ammo = sky.ammo + 1 end
         local h = BR.NormHash(hash)
         gun.total[h] = math.max(0, n or 0)
         gun.clip[h]  = math.min(gun.clip[h] or 0, gun.total[h])
@@ -17868,11 +17899,26 @@ do
     end
     local function zero()
         calls.current, calls.clip, calls.give, calls.removeAll = 0, 0, 0, 0
+        calls.strip, calls.stripHash = 0, nil
+        sky.removeOne, sky.removeAll, sky.ammo, sky.reapply = 0, 0, 0, 0
     end
     local function counted()
         return ('SetCurrentPedWeapon %d, SetAmmoInClip %d, GiveWeaponToPed %d, '
-            .. 'RemoveAllPedWeapons %d'):format(calls.current, calls.clip,
-            calls.give, calls.removeAll)
+            .. 'RemoveAllPedWeapons %d, RemoveWeaponFromPed %d'):format(
+            calls.current, calls.clip, calls.give, calls.removeAll, calls.strip)
+    end
+    local function countedSky()
+        return ('skydive: RemoveWeaponFromPed %d, RemoveAllPedWeapons %d, '
+            .. 'SetPedAmmo %d, BR.Inv.reapply %d'):format(sky.removeOne,
+            sky.removeAll, sky.ammo, sky.reapply)
+    end
+    --- How many console lines carry `needle`.
+    local function printed(needle)
+        local n = 0
+        for _, line in ipairs(logged) do
+            if line:find(needle, 1, true) then n = n + 1 end
+        end
+        return n
     end
     local function none()
         return calls.current + calls.clip + calls.give + calls.removeAll == 0
@@ -17941,14 +17987,22 @@ do
        counted())
 
     -- ── 3. A SEAT WHOSE MOUNTED GUN THE ENGINE KEEPS HANDING BACK. The strip
-    --       takes it out of the hand every tick, which is the tripwire and stays;
-    --       what the strip used to buy was a whole grant of the PDW every tick.
+    --       takes it out of the hand on the tick it appears, which is the
+    --       tripwire and stays; then at most once a second, and once every five
+    --       seconds after five in a row, with one console line. What each strip
+    --       used to buy was a whole grant of the PDW every tick.
+    local STRIP_LINE = 'back in the hand through'
     start()
     inVehicle, vehicle, vehicleSeat = true, 77, 0
     vehWeapon = nil
     engine.handBack = MOUNTED
     zero()
-    tick(100)
+    logged = {}
+    tick(1)
+    ok(calls.strip == 1 and calls.stripHash == MOUNTED,
+       'a seat that hands the ped a gun nobody granted is stripped on the first tick',
+       counted())
+    tick(99)
     ok(calls.give <= 11 and calls.removeAll <= 11 and calls.current <= 11
        and calls.clip <= 11,
        'A SEAT THAT KEEPS ARMING THE PED IS RE-GRANTED AT MOST ONCE A SECOND, '
@@ -17956,6 +18010,17 @@ do
        counted())
     ok(calls.give >= 5, 'and it is still re-granted, so the slot comes back',
        counted())
+    ok(calls.strip <= 11,
+       'A SEAT THAT KEEPS HANDING BACK A GUN IS STRIPPED AT MOST ONCE A SECOND, '
+           .. 'not once a tick',
+       counted())
+    zero()
+    tick(600)
+    ok(calls.strip >= 1 and calls.strip <= 13,
+       'and after five strips in a row, once every five seconds', counted())
+    ok(printed(STRIP_LINE) == 1,
+       'and the fight is ONE console line, not one a strip',
+       table.concat(logged, ' | '))
 
     -- ...AND ON FOOT NOTHING WAITS: a hand stripped a moment after a grant is
     -- re-armed on the same tick, as it always was.
@@ -17966,6 +18031,15 @@ do
     tick(1)
     ok(calls.give == 1 and calls.current == 1 and inHand(PH),
        'on foot a stripped hand is re-armed at once', counted())
+    -- ...and a gun the engine puts back every frame is taken out every tick.
+    engine.handBack = MOUNTED
+    zero()
+    logged = {}
+    tick(10)
+    ok(calls.strip == 10 and printed(STRIP_LINE) == 0,
+       'on foot a gun handed back every frame is still stripped every tick, '
+           .. 'and nothing is printed', counted())
+    engine.handBack = nil
 
     -- ── 4. THE BUS. The ped rides attached to the plane (client/bus.lua) and
     --       the server may not have moved this player off WARMUP yet, so the
@@ -18028,34 +18102,38 @@ do
     --       sweeps a landed ped below five metres that still has a parachute,
     --       and from its third sweep takes every weapon and calls BR.Inv.reapply,
     --       which re-grants even an empty hand. A seat that will not give the
-    --       chute up is that every tick. Counted with the bag empty, which is how
-    --       every player lands after the wheels-up wipe, and with a gun up.
-    --       `sweeps` counts skydive's own RemoveAllPedWeapons, so a sweep that
-    --       never ran cannot pass this for the wrong reason.
+    --       chute up was that every tick, and this section used to prove the
+    --       sweep ran on at least 90 of 100 ticks there. In a seat it is now the
+    --       tick the chute is seen, then at most once a second, then once every
+    --       five seconds after five sweeps, with one console line. Counted with
+    --       the bag empty, which is how every player lands after the wheels-up
+    --       wipe, and with a gun up. `sky` counts skydive's own natives by the
+    --       file that called them, so a sweep that never ran cannot pass this
+    --       for the wrong reason.
     -- skydive.lua took its CHUTE from GetHashKey when it loaded, which in this
     -- harness is a number no later block can name. So the ped has every weapon
     -- that is not one of the bag's two guns: skydive only asks about the chute,
     -- and client/inventory.lua only asks about throwables, which neither gun is.
+    -- `chuteHeld` false is the engine finally letting it go, which is how each
+    -- pass below starts from a sweep count of zero.
     local BAG = { [BR.NormHash(HP.hash)] = true, [PH] = true }
     local world = { falling = IsPedFalling, agl = GetEntityHeightAboveGround,
-                    water = IsEntityInWater, remove = RemoveAllPedWeapons }
-    local sweeps = 0
-    -- Counted HERE, not by forwarding to the stub above: that one would see this
-    -- function as its caller and count client/inventory.lua's strips as nobody's.
-    function RemoveAllPedWeapons()
-        if mine() then
-            calls.removeAll = calls.removeAll + 1
-        else
-            sweeps = sweeps + 1
-        end
-        gun.total, gun.clip = {}, {}
-    end
+                    water = IsEntityInWater, reapply = BR.Inv.reapply }
+    local chuteHeld = false
+    local SEAT_LINE = 'kept its parachute through'
     function IsPedFalling() return false end
     function GetEntityHeightAboveGround() return 0.5 end
     function IsEntityInWater() return false end
-    function HasPedGotWeapon(_, hash) return not BAG[BR.NormHash(hash)] end
+    function HasPedGotWeapon(_, hash)
+        return chuteHeld and not BAG[BR.NormHash(hash)]
+    end
+    BR.Inv.reapply = function()
+        sky.reapply = sky.reapply + 1
+        return world.reapply()
+    end
 
     for _, armed in ipairs({ false, true }) do
+        chuteHeld = false
         start()
         inVehicle, vehicle, vehicleSeat = true, 77, 0
         if not armed then
@@ -18063,26 +18141,69 @@ do
                                    active = BR.Config.Loot.meleeSlot or 0,
                                    quiet = true })
         end
+        tick(1)
+        chuteHeld = true
         zero()
-        sweeps = 0
-        tick(100)
+        logged = {}
         local how = armed and 'with the PDW up' or 'with an empty bag'
-        ok(sweeps >= 90,
-           ('the standing disarm really did strip the seat every tick, %s'):format(how),
-           ('%d sweeps'):format(sweeps))
+        tick(1)
+        ok(sky.removeOne == 1 and sky.ammo == 1 and sky.removeAll == 0,
+           ('sitting down with a parachute, the first sweep takes it on that tick, %s')
+               :format(how),
+           countedSky())
+        tick(99)
+        ok(sky.ammo <= 11 and sky.removeOne + sky.removeAll <= 11
+           and sky.reapply <= 11,
+           ('A SEAT THAT KEEPS ITS PARACHUTE IS SWEPT AT MOST ONCE A SECOND, %s')
+               :format(how),
+           countedSky())
+        ok(sky.removeAll >= 1 and sky.reapply >= 1,
+           ('and the sweep still escalates to taking every weapon, %s'):format(how),
+           countedSky())
         ok(calls.removeAll <= 11 and calls.current <= 11 and calls.give <= 11
            and calls.clip <= 11,
            ('A SEAT THAT KEEPS ITS PARACHUTE IS RE-ARMED AT MOST ONCE A SECOND, %s')
                :format(how),
            counted())
+        zero()
+        tick(600)
+        ok(sky.ammo >= 1 and sky.ammo <= 13,
+           ('after five sweeps in a row it waits five seconds between them, %s')
+               :format(how),
+           countedSky())
+        ok(printed(SEAT_LINE) == 1,
+           ('and the fight is ONE console line, not one a sweep, %s'):format(how),
+           table.concat(logged, ' | '))
     end
+
+    -- ...AND ON FOOT THE STANDING DISARM IS WHAT IT WAS: every tick, twice
+    -- politely and then taking every weapon, and silent however long it lasts.
+    chuteHeld = false
+    start()
+    chuteHeld = true
+    zero()
+    logged = {}
+    tick(1)
+    ok(sky.removeOne == 1 and sky.removeAll == 0 and sky.ammo == 1,
+       'on foot the first sweep is the polite one, on the tick the chute is seen',
+       countedSky())
+    tick(2)
+    ok(sky.removeOne == 2 and sky.removeAll == 1,
+       'and the third sweep, two ticks later, takes every weapon', countedSky())
+    tick(97)
+    ok(sky.ammo == 100 and sky.removeAll >= 90 and printed(SEAT_LINE) == 0,
+       'ON FOOT A PARACHUTE THAT STAYS IS STILL SWEPT EVERY TICK, and nothing is printed',
+       countedSky())
+    chuteHeld = false
 
     function HasPedGotWeapon() return false end
     IsPedFalling               = world.falling
     GetEntityHeightAboveGround = world.agl
     IsEntityInWater            = world.water
+    BR.Inv.reapply             = world.reapply
 
     GiveWeaponToPed      = saved.give
+    RemoveWeaponFromPed  = saved.strip
     RemoveAllPedWeapons  = saved.remove
     SetPedAmmo           = saved.setAmmo
     AddAmmoToPed         = saved.addAmmo
