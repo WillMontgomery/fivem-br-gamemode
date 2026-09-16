@@ -514,6 +514,58 @@ for _, v in ipairs(BR.Config.ClassNetExempt) do
     BR.Config.ClassNetExemptByHash[BR.NormHash(v.hash)] = v
 end
 
+--- Models whose own mounted equipment is a thing players are meant to use.
+---
+--- ═══ WHAT THIS IS FOR (owner, 2026-09-15) ═══
+---
+--- The first real prod match produced an anticheat case against a player who
+--- had done nothing but drive a firetruck: 149 weapon strips in fifteen
+--- minutes. The engine hands a ped in the hose seat the truck's water cannon,
+--- client/inventory.lua found a weapon in no inventory slot, took it out of the
+--- hand and reported it, and the engine handed it straight back on the next
+--- tick. The owner: "I want them to be able to use the firehose. That's the
+--- point. We shouldn't get an incident for that."
+---
+--- WHY NOT `isMountedWeapon`, WHICH ALREADY EXISTS FOR EXACTLY THIS. Because it
+--- did not fire. That guard excuses the gun a vehicle is carrying only when
+--- `GetCurrentPedVehicleWeapon` names the SAME hash the ped is holding, and for
+--- this seat the native does not answer -- a case client/inventory.lua's own
+--- header predicted in writing ("a turret, a passenger gun position, a modded
+--- vehicle the native has no opinion about"). An equality with one side missing
+--- cannot be repaired by rewording it.
+---
+--- ═══ THIS IS THE WHOLE MODEL, AND THAT IS THE OWNER'S DECISION ═══
+---
+--- A row here excuses ANY weapon in the hand of ANY ped in that vehicle, which
+--- is broader than the hash-equality guard and is meant to be: the owner was
+--- told the narrower option -- pin it to the model AND the hose's own hash, read
+--- off the case -- and chose the model. "please excuse the full vehicle hash."
+---
+--- SO SAY WHAT IT COSTS. Somebody who conjures a rifle in a trainer and then
+--- sits in a firetruck is holding a weapon this gamemode issues nobody, and
+--- this table hands it back to them. That is one model, it is not a vehicle
+--- anybody reaches by accident in a gunfight, and the half that actually
+--- matters is untouched: br_core/server/damage.lua validates every shot against
+--- the inventory the SERVER holds, inside `weaponDamageEvent`, and refuses one
+--- fired from a weapon it never issued. The strip was always a tripwire in
+--- front of that, never the defence -- see the header of
+--- br_core/server/strip.lua, which says so at length.
+---
+--- KEEP THIS LIST SHORT, AND FOR THIS REASON RATHER THAN TIDINESS. Every row is
+--- a model in which the anticheat is switched off. A vehicle belongs here only
+--- when its mounted equipment is something a player is SUPPOSED to use and the
+--- equality guard cannot see it; an armed vehicle nobody should be firing
+--- belongs in the refused table above instead.
+BR.Config.StripExemptVehicles = {
+    { name = 'firetruk', hash = 0x73920F8E },  -- water cannon, in the hose seat
+}
+
+--- The same list keyed by NORMALISED hash, for BR.NormHash's stated reason.
+BR.Config.StripExemptByHash = {}
+for _, v in ipairs(BR.Config.StripExemptVehicles) do
+    BR.Config.StripExemptByHash[BR.NormHash(v.hash)] = v
+end
+
 --- The whole ruling on one vehicle, from whatever signals the caller can get.
 ---
 --- ═══ THE ONE PLACE THE QUESTION IS ASKED, AND THAT IS LOAD-BEARING ═══

@@ -1719,6 +1719,72 @@ local function isMountedWeapon(h)
     return m ~= nil and m ~= 0 and m == h
 end
 
+--- Is this ped sitting in a vehicle whose equipment they are meant to be using?
+---
+--- ═══ THE BUG THIS EXISTS FOR (owner, 2026-09-15) ═══
+---
+--- A firetruck, fifteen minutes, 149 strips and an anticheat case against
+--- somebody who never touched a weapon. `isMountedWeapon` above was written for
+--- precisely this and did not fire: it excuses the vehicle's gun only when
+--- `GetCurrentPedVehicleWeapon` NAMES it, and for the hose seat that native has
+--- no opinion. That miss is not a new discovery -- the header on that function
+--- names "a turret, a passenger gun position, a modded vehicle the native has no
+--- opinion about" as exactly what it cannot cover, and says this function is the
+--- first place to look if it is ever reported from a seat. It was reported.
+---
+--- ═══ THE MODEL, NOT THE WEAPON, AND THAT IS THE OWNER'S CALL ═══
+---
+--- "please excuse the full vehicle hash. I want them to be able to use the
+--- firehose. That's the point. We shouldn't get an incident for that."
+---
+--- So this is deliberately the thing `isMountedWeapon`'s header argues against
+--- in the general case -- "seated, and the hash is in no catalogue of ours" --
+--- narrowed from EVERY vehicle to a table with one model in it. The difference
+--- between that hole and this one is the size of
+--- BR.Config.StripExemptVehicles, which is why the cost of each row is written
+--- down beside the table rather than here.
+---
+--- TWO READS AND BOTH OF THEM CHEAP, and the order matters for the same reason
+--- it does above: `inVehicle()` is one native and answers false for everybody on
+--- foot, which is almost everybody almost always, so the model lookup is only
+--- paid for by somebody actually sitting in something.
+---
+--- A MODEL THE ENGINE WOULD NOT REPORT IS NOT AN EXEMPTION. `GetEntityModel` on
+--- a stale handle throws, and a handle of 0 is "no vehicle" -- both come back
+--- here as false, which leaves the strip exactly as it was rather than opening
+--- the hand to anything. Same direction `isMountedWeapon` takes for its own
+--- silences.
+--- @return boolean
+local function inStripExemptVehicle()
+    if not inVehicle() then return false end
+
+    local pok, veh = pcall(GetVehiclePedIsIn, PlayerPedId(), false)
+    if not pok or veh == nil or veh == 0 then return false end
+
+    local mok, model = pcall(GetEntityModel, veh)
+    if not mok then return false end
+
+    local m = BR.NormHash(model)
+    -- `m ~= 0` FOR THE REASON THE MOUNTED CHECK TESTS IT: zero is TRUTHY in Lua
+    -- and BR.NormHash(0) is 0 rather than nil, so a native that answered
+    -- "nothing" would otherwise be looked up as a model hash.
+    if m == nil or m == 0 then return false end
+
+    -- THE TABLE IS ASKED FOR RATHER THAN ASSUMED, and this guard is not
+    -- defensive decoration -- it is the difference between an exemption that
+    -- stops working and a tick handler that RAISES. config/vehicles.lua is a
+    -- shared_script and loads before this file today; if it ever did not,
+    -- indexing a nil here would abort the apply loop on every tick a player
+    -- spent in any vehicle, which takes the strip, the active-slot re-apply and
+    -- everything after it down with it. The suite found exactly that, because
+    -- it did not load the config either.
+    --
+    -- SO A MISSING TABLE COSTS THE EXEMPTION, NOT THE LOOP. Same direction
+    -- `isMountedWeapon` takes for an absent native: no opinion is not an excuse.
+    local exempt = BR.Config and BR.Config.StripExemptByHash
+    return exempt ~= nil and exempt[m] ~= nil
+end
+
 --- Tell the server a weapon it never issued was taken out of this ped's hand.
 ---
 --- WHAT THIS IS AND IS NOT. It is a report of something that already happened;
@@ -1810,10 +1876,16 @@ BR.Loop.register(BR.Loop.TICK, 'inv.apply', function()
             -- by config/vehicles.lua, ejected by client/vehrefuse.lua and
             -- detected by server/vehicles.lua -- but it is a VEHICLE problem,
             -- and answering it here filed it as a weapon one.
+            --
+            -- AND NEITHER IS ANYTHING AT ALL IN A FIRETRUCK. `isMountedWeapon`
+            -- could not see the hose -- the native it asks has no opinion about
+            -- that seat -- so the model is asked instead. It is the owner's
+            -- ruling and the wider of the two; see `inStripExemptVehicle`.
             local allowed = h == BR.NormHash(UNARMED)
                 or h == BR.NormHash(BR.Config.Gadgets.PARACHUTE)
                 or (wantHash ~= nil and h == wantHash)
                 or isMountedWeapon(h)
+                or inStripExemptVehicle()
             if not allowed then
                 RemoveWeaponFromPed(ped, held)
                 applied = nil          -- force the active slot back on

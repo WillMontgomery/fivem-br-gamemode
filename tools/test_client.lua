@@ -858,7 +858,14 @@ function GetPedInVehicleSeat(_veh, seat)
     -- empty seat is 0, which is what the engine answers.
     return seat == vehicleSeat and 1 or 0
 end
-function GetEntityModel() return 42 end
+--- The model of whatever `GetVehiclePedIsIn` is answering with.
+---
+--- SETTABLE SINCE THE STRIP EXEMPTION, which is keyed on the model rather than
+--- on the weapon. 42 is the default every case written before that assumed, and
+--- it is in no table this gamemode has -- so an unrelated test that puts a ped
+--- in a vehicle still gets "an ordinary car" and nothing is exempted by accident.
+local vehModel = 42
+function GetEntityModel() return vehModel end
 function GetDisplayNameFromVehicleModel() return 'BALLER' end
 function IsPedDoingDriveby() return false end
 
@@ -1197,6 +1204,12 @@ loadAll({
     'br_lib/shared/world.lua',
     'br_lib/config/match.lua', 'br_lib/config/storm.lua', 'br_lib/config/map.lua',
     'br_lib/config/weapons.lua', 'br_lib/config/loot.lua',
+    -- The vehicle tables, for client/inventory.lua's strip exemption -- the one
+    -- thing on the client that reads them. AFTER geo.lua above, which is the
+    -- manifest's own ordering and for the manifest's own reason: this file calls
+    -- BR.NormHash at LOAD time to build its hash-keyed lookups, and loading it
+    -- any earlier keys every row on nil.
+    'br_lib/config/vehicles.lua',
     -- The catalogue, for the descent block at the bottom: what `trail_ember`
     -- resolves to is the first of the four things the smoke-trail prompt is
     -- made of, and BR.Config.MarketIndex is where that answer lives.
@@ -8170,6 +8183,130 @@ do
 
     -- Leave the world as this block found it.
     inVehicle, vehicle = false, 0
+    vehWeapon, pedWeapon = nil, nil
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.State.landed = true
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+    BR.Loop.step(BR.Loop.TICK)
+    sent, stripped = {}, {}
+end
+
+describe('a firetruck\'s hose is not a conjured weapon either')
+do
+    -- ═══ THE OWNER'S REPORT, 2026-09-15, FROM THE FIRST REAL PROD MATCH ═══
+    --
+    -- A player drove a firetruck for fifteen minutes and drew 149 weapon strips
+    -- and an anticheat case. The block above was written for exactly this shape
+    -- and could not stop it: `isMountedWeapon` excuses the vehicle's gun only
+    -- when `GetCurrentPedVehicleWeapon` NAMES it, and for the hose seat that
+    -- native has no opinion -- so the equality had nothing to compare against.
+    -- client/inventory.lua predicted this in writing before it happened.
+    --
+    -- "please excuse the full vehicle hash. I want them to be able to use the
+    --  firehose. That's the point. We shouldn't get an incident for that."
+    --
+    -- ═══ WHICH MAKES THE HOLE THE THING WORTH TESTING ═══
+    --
+    -- One assertion covers the report. The rest of this block is about what the
+    -- exemption must NOT become: it is keyed on the model, so the risk is that
+    -- it reads as "seated" and switches the anticheat off in every vehicle --
+    -- which is the one-line wrong fix the block above was weighted against, and
+    -- it would pass a suite that only checked the firetruck.
+
+    local FIRETRUK = 0x73920F8E            -- and the gate re-derives this hash
+    local ORDINARY = 42                    -- the stub's own default, in no table
+    local CONJURED = 0x11111111            -- in no table this gamemode has
+    local CARBINE  = 0x83BF0278            -- WEAPON_CARBINERIFLE, issued
+
+    local function reports()
+        local out = {}
+        for _, s in ipairs(sent) do
+            if s.name == BR.Net.INV_STRIPPED then out[#out + 1] = s.args[1] end
+        end
+        return out
+    end
+
+    local function strips(hash)
+        local n = 0
+        for _, h in ipairs(stripped) do if h == hash then n = n + 1 end end
+        return n
+    end
+
+    --- One TICK holding `held`, seated in a vehicle of model `model`.
+    ---
+    --- `vehWeapon = nil` ON EVERY CALL, AND THAT IS THE FIXTURE'S WHOLE POINT.
+    --- It is the firetruck seat reproduced: a native with no opinion, so
+    --- `isMountedWeapon` cannot answer and only the model lookup can. A case
+    --- that set it would be testing the block above again.
+    local function tickIn(model, held)
+        inVehicle, vehicle = true, 77
+        vehModel = model
+        vehWeapon = nil
+        pedWeapon = held
+        sent, stripped = {}, {}
+        fakeTime = fakeTime + 5000
+        BR.Loop.step(BR.Loop.TICK)
+    end
+
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.State.landed = true
+
+    fire(BR.Net.INV_SET, {
+        slots = { { id = 'carbinerifle', kind = BR.ItemKind.WEAPON, clip = 30 } },
+        ammo = {}, active = 1,
+    })
+
+    -- 1. THE REPORT. The hose, in the firetruck, with the native silent.
+    tickIn(FIRETRUK, CONJURED)
+    ok(strips(CONJURED) == 0, 'the hose is not taken out of the hand')
+    ok(#reports() == 0, 'and no unissued-weapon report is sent about it')
+
+    -- 2. THE HOLE, AND IT IS THE REASON THE REST OF THIS BLOCK EXISTS. The same
+    --    hand, the same silent native, an ordinary car. A fix that read
+    --    "seated" rather than "seated in THIS model" passes case 1 and fails
+    --    here, which is the whole difference between the two.
+    tickIn(ORDINARY, CONJURED)
+    ok(strips(CONJURED) == 1,
+        'a conjured weapon in an ordinary car is still stripped',
+        strips(CONJURED))
+    ok(#reports() == 1, 'and still reported')
+
+    -- 3. ON FOOT IS UNCHANGED, with the model left saying firetruck. The seat
+    --    is the condition, not the number sitting in `vehModel` -- and a guard
+    --    that asked the model before asking whether anybody was seated would
+    --    exempt a player standing next to the truck.
+    inVehicle, vehicle = false, 0
+    vehModel = FIRETRUK
+    vehWeapon, pedWeapon = nil, CONJURED
+    sent, stripped = {}, {}
+    fakeTime = fakeTime + 5000
+    BR.Loop.step(BR.Loop.TICK)
+    ok(strips(CONJURED) == 1 and #reports() == 1,
+        'on foot, a firetruck model exempts nothing')
+
+    -- 4. A HANDLE THE ENGINE WOULD NOT ANSWER FOR. `IsPedInAnyVehicle` says yes
+    --    and `GetVehiclePedIsIn` says 0, which is the disagreement a stale
+    --    handle produces. It has to read as "no exemption" rather than as "the
+    --    model is 0 and 0 is not in the table, so carry on" -- both reach the
+    --    same answer today, and only one of them is reasoning.
+    inVehicle, vehicle = true, 0
+    vehModel = FIRETRUK
+    vehWeapon, pedWeapon = nil, CONJURED
+    sent, stripped = {}, {}
+    fakeTime = fakeTime + 5000
+    BR.Loop.step(BR.Loop.TICK)
+    ok(strips(CONJURED) == 1 and #reports() == 1,
+        'a vehicle handle of 0 exempts nothing, whatever the model says')
+
+    -- 5. AND THE ISSUED WEAPON IS STILL UNTOUCHED IN THE EXEMPT SEAT, which is
+    --    what somebody driving to a fight is doing all the way there.
+    tickIn(FIRETRUK, CARBINE)
+    ok(strips(CARBINE) == 0 and #reports() == 0,
+        'the active slot\'s own weapon is untouched in a firetruck')
+
+    -- Leave the world as this block found it.
+    inVehicle, vehicle = false, 0
+    vehModel = ORDINARY
     vehWeapon, pedWeapon = nil, nil
     BR.State.me.state = BR.PlayerState.ALIVE
     BR.State.landed = true

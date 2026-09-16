@@ -227,6 +227,63 @@ for _, v in ipairs(BR.Config.ClassNetExempt or {}) do
     ::nextExempt::
 end
 
+-- --------------------------------------------- the strip-exempt vehicles --
+--
+-- The SECOND allow-shaped list, added 2026-09-15, and the one whose wrong hash
+-- is worst of the three.
+--
+-- A wrong hash in the refused table permits a tank. A wrong hash in the
+-- class-net exemptions pulls somebody out of a troop truck. A wrong hash HERE
+-- switches the unissued-weapon anticheat off inside whatever model the typo
+-- happens to name -- and every symptom of that points the other way. The
+-- firetruck keeps filing the cases this table was added to stop, so it reads as
+-- "the fix did not work"; meanwhile some unrelated car is quietly a place where
+-- a conjured rifle is never taken out of anybody's hand, and an absent incident
+-- looks exactly like a clean server.
+--
+-- Same two forms as the rows above, because the engine reports the signed one.
+local stripExempt = 0
+for _, v in ipairs(BR.Config.StripExemptVehicles or {}) do
+    stripExempt = stripExempt + 1
+
+    if type(v.name) ~= 'string' or v.name == '' then
+        fail('a strip-exempt row has no name to hash')
+        goto nextStripExempt
+    end
+
+    do
+        local want = joaat(v.name)
+        if v.hash ~= want then
+            fail('strip-exempt vehicle %s: hash is 0x%08X, should be 0x%08X',
+                 v.name, v.hash or 0, want)
+        end
+    end
+
+    -- A MODEL IN BOTH LISTS IS A CONTRADICTION AND NOT A PREFERENCE, exactly as
+    -- it is for the class-net exemptions. A refused model is one nobody is left
+    -- sitting in -- client/vehrefuse.lua ejects them -- so an exemption saying
+    -- "the anticheat is off in here" describes a seat that does not exist.
+    if seenName[v.name] then
+        fail('%q is in BOTH the refused table and the strip exemptions. The '
+             .. 'vehicle is ejected, so the seat this exempts is never occupied '
+             .. '-- one of the two rows is wrong.', v.name)
+    end
+
+    if v.hash then
+        if BR.Config.StripExemptByHash[BR.NormHash(v.hash)] == nil then
+            fail('strip-exempt vehicle %s does not resolve from its own hash',
+                 v.name)
+        end
+        if BR.Config.StripExemptByHash[BR.NormHash(signed32(v.hash))] == nil then
+            fail('strip-exempt vehicle %s does not resolve from its SIGNED hash '
+                 .. '0x%08X -- this is the form GetEntityModel reports', v.name,
+                 v.hash)
+        end
+    end
+
+    ::nextStripExempt::
+end
+
 -- A class net with no classes in it is the whole third signal switched off, and
 -- switched off silently: every ruling would still come out of the model table
 -- and every test of the model table would still pass.
@@ -295,10 +352,14 @@ end
 -- ------------------------------------------------------------------- report --
 
 if fails == 0 then
+    -- THE STRIP-EXEMPT COUNT IS PRINTED, NOT ASSUMED. An empty list checks
+    -- nothing and passes, which is the correct outcome for a server that wants
+    -- no exemptions and a silent one for a table somebody emptied by accident.
+    -- The number on this line is what tells those apart.
     io.write(('\27[32mok\27[0m   %d refused vehicle hashes match their names; %d '
         .. 'resolve from both signed and unsigned (%d have the top bit set); '
-        .. '%d class-net exemptions\n')
-        :format(checked, signedChecked, topBit, exempt))
+        .. '%d class-net exemptions; %d strip-exempt\n')
+        :format(checked, signedChecked, topBit, exempt, stripExempt))
 else
     io.write(('\27[31m%d refused-vehicle table problem(s)\27[0m\n'):format(fails))
 end
