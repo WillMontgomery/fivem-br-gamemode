@@ -1270,10 +1270,66 @@ AddEventHandler('br:evidence:closing', function(ev)
     if not ev or ev.matchId == nil then return end
 
     local list = closing[ev.matchId]
+    local stillPending = pendingTimeline[ev.matchId]
     closing[ev.matchId] = nil
     -- A filing whose id never came back has no row to close against.
     pendingTimeline[ev.matchId] = nil
-    if not list then return end
+
+    if not list then
+        -- ═══ THE SILENT RETURN, MADE LOUD (owner, 2026-09-15) ═══
+        --
+        -- A match with no cases in it reaches this line every single round and
+        -- must stay silent, which is why this branch existed without a word in
+        -- it. But the FIRST real prod case took the same exit: an anticheat case
+        -- was filed, the match ended, the console showed the row stuck at "end
+        -- never reported", and `brring` said `closes 0, failed 0` -- the write
+        -- was never attempted, so there was no failure anywhere to read either.
+        -- Nothing in this file, br_ringmaster or br_ddb had printed a character.
+        --
+        -- THE TEST SUITE CANNOT SEE THIS AND THAT IS THE POINT OF THE LINE.
+        -- tools/test_ringmaster.lua drives this whole chain for real -- strips,
+        -- acknowledgement, destroy -- and every case passes, including the
+        -- strip-opened one. So the fault is in something only the live server
+        -- has, and a diagnostic on the box is the only instrument left.
+        --
+        -- IT COSTS A WALK OF THE CASES FILED THIS MATCH, ONCE PER MATCH, and
+        -- only on the branch that was going to return anyway.
+        --
+        -- THE TWO COUNTS ARE TWO DIFFERENT FAULTS, which is why the line carries
+        -- both rather than one total. They come from different maps because a
+        -- case moves between them:
+        --
+        --   `unacked`  still in `pendingTimeline`: filed, and its id never came
+        --              back from br_ringmaster. Nothing to close against.
+        --   `acked`    in `filed`, which `BR.Incident.remember` writes when the
+        --              id DOES come back. Reaching this branch with a non-zero
+        --              one is the stranger fault: every id arrived and the close
+        --              queue is still empty, which means the registration in
+        --              `attachTimeline` never happened for this match.
+        --
+        -- IN THIS BRANCH THEY ARE DISJOINT AND THE FIRST DRAFT GOT IT WRONG. An
+        -- acknowledgement moves the entry out of `pendingTimeline` AND into
+        -- `closing`, so any ack at all would have left a list here and this
+        -- branch would not have run. Counting only `filed` therefore counted
+        -- zero in the one case the line exists for, and printed nothing -- which
+        -- the suite caught, because it asserts the line fires rather than
+        -- assuming the branch does.
+        local acked, unacked = 0, 0
+        for _, ids in pairs(filed[ev.matchId] or {}) do acked = acked + #ids end
+        for _ in pairs(stillPending or {}) do unacked = unacked + 1 end
+
+        local cases = acked + unacked
+
+        if cases > 0 then
+            print(('^3[br_core] match %s ended with %d case(s) filed and none '
+                .. 'queued to close (%d never acknowledged) -- no match-end '
+                .. 'write, so the console will read "end never reported"^7')
+                :format(tostring(BR.MatchTag and BR.MatchTag(ev.matchId)
+                    or ev.matchId), cases, unacked))
+        end
+
+        return
+    end
 
     local endedAt = GetGameTimer()
 

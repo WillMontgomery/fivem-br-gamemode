@@ -2406,6 +2406,9 @@ local function newTimelineWorld()
         incidents = {},   -- br:ringmaster:incident payloads
         closes = {},      -- br:ringmaster:incidentClose payloads
         corroborations = {},
+        -- Every line br_core printed into this world. The close diagnostic is
+        -- the only fault here whose whole expression is a console line.
+        printed = {},
         -- Every TriggerClientEvent this world has seen: { name, target, payload }.
         toClients = {},
         -- The SERVER's inventories, which server/strip.lua cross-checks a
@@ -2442,7 +2445,11 @@ local function newTimelineWorld()
     -- recorded relative to something else.
     env.GetGameTimer = function() return S.now end
     env.GetCurrentResourceName = function() return 'br_core' end
-    env.print = function() end
+    -- KEPT, NOT DISCARDED, SINCE THE CLOSE DIAGNOSTIC. A match that ends with
+    -- cases filed and nothing queued to close is a fault whose ONLY expression
+    -- is a console line, so a suite that threw print away could not tell the
+    -- line firing from the line being deleted.
+    env.print = function(s) S.printed[#S.printed + 1] = tostring(s) end
     env.GetNumPlayerIdentifiers = function(src) return S.licenses[src] and 1 or 0 end
     env.GetPlayerIdentifier = function(src) return S.licenses[src] end
     -- server/chat.lua falls back to this for a roster entry with no name.
@@ -2780,6 +2787,15 @@ local function newTimelineWorld()
 
     function W.lastClose() return S.closes[#S.closes] end
     function W.lastIncident() return S.incidents[#S.incidents] end
+
+    --- Lines this world printed containing `needle`.
+    function W.printedMatching(needle)
+        local out = {}
+        for _, line in ipairs(S.printed) do
+            if line:find(needle, 1, true) then out[#out + 1] = line end
+        end
+        return out
+    end
 
     return W
 end
@@ -3167,6 +3183,88 @@ do
         'without claiming a start it never had', c and tostring(c.matchStartedAt))
     ok(c and c.matchEndsByMs == nil,
         'and without a deadline measured from one', c and tostring(c.matchEndsByMs))
+end
+
+describe('timeline.close-says-so-when-it-does-not-happen')
+do
+    -- ═══ WHY A CONSOLE LINE IS THE FEATURE HERE (owner, 2026-09-15) ═══
+    --
+    -- The first real anticheat case this estate produced never got its match-end
+    -- write. The console showed the row stuck at "end never reported", `brring`
+    -- said `closes 0, failed 0` -- so the write was never even ATTEMPTED, which
+    -- means there was no failure recorded anywhere either -- and neither br_core
+    -- nor br_ringmaster nor br_ddb had printed a character about it.
+    --
+    -- The reason is the branch below: a match whose `closing` list is empty
+    -- returns, and it must, because that is every match nobody was reported in.
+    -- So the one exit the fault takes is the one exit that is SUPPOSED to be
+    -- silent, and the two are told apart by asking whether anything was filed.
+    --
+    -- THESE CASES CANNOT REPRODUCE THE PROD FAULT AND ARE NOT TRYING TO. Every
+    -- other case in this file proves the chain works in one Lua state; whatever
+    -- broke on the box is outside what a sandbox can hold. What is pinned here
+    -- is the INSTRUMENT: that a lost close is audible, and that an ordinary
+    -- quiet match stays quiet.
+
+    local NEEDLE = 'none queued to close'
+
+    -- 1. THE QUIET MATCH, FIRST, BECAUSE IT IS THE ONE THIS COULD RUIN. Nobody
+    --    was reported; the line must not fire. A diagnostic that printed every
+    --    round would be turned off within a week and would take the real signal
+    --    with it.
+    do
+        local W = newTimelineWorld()
+        W.startMatch(7, 1000)
+        W.join(1, 7, 'license:clean', 'Clean')
+        W.at(9000); W.endMatch(7)
+
+        ok(#W.printedMatching(NEEDLE) == 0,
+            'a match nobody was reported in ends without a word about closing')
+    end
+
+    -- 2. FILED, NEVER ACKNOWLEDGED. The id never came back, so there was nothing
+    --    to close against and nothing ever will be. Both numbers are the same
+    --    here, which is the shape that says "the acknowledgement is the problem".
+    do
+        local W = newTimelineWorld()
+        W.startMatch(7, 1000)
+        W.join(1, 7, 'license:cheat', 'Cheater')
+
+        local CONJURED = 0x11111111
+        W.at(2000); W.strip(1, CONJURED)
+        W.at(3000); W.strip(1, CONJURED)
+        -- No W.ack. This is the whole case.
+
+        W.at(9000); W.endMatch(7)
+
+        ok(W.lastClose() == nil, 'an unacknowledged case has no close to send')
+
+        local said = W.printedMatching(NEEDLE)
+        ok(#said == 1, 'and the match end says so, once', #said)
+        ok(said[1] and said[1]:find('1 case(s) filed', 1, true) ~= nil,
+            'naming how many were filed', said[1])
+        ok(said[1] and said[1]:find('(1 never acknowledged)', 1, true) ~= nil,
+            'and that the acknowledgement is what never arrived', said[1])
+    end
+
+    -- 3. AND THE ACKNOWLEDGED CASE IS STILL SILENT, which is the assertion that
+    --    stops this line from being a false alarm on every working match. It
+    --    closes, so there is nothing to report.
+    do
+        local W = newTimelineWorld()
+        W.startMatch(7, 1000)
+        W.join(1, 7, 'license:cheat', 'Cheater')
+
+        local CONJURED = 0x11111111
+        W.at(2000); W.strip(1, CONJURED)
+        W.at(3000); W.strip(1, CONJURED)
+        W.ack(7, 'license:cheat', 'inc-1')
+
+        W.at(9000); W.endMatch(7)
+
+        ok(W.lastClose() ~= nil, 'the acknowledged case closes as it always did')
+        ok(#W.printedMatching(NEEDLE) == 0, 'and prints no warning about itself')
+    end
 end
 
 describe('timeline.close-reads-the-event-not-the-registry')
