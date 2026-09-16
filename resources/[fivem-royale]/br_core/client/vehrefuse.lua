@@ -1,4 +1,16 @@
--- Refusing a vehicle at the door, on the machine of the player opening it.
+-- Refusing a vehicle at the door, on the machine of the player opening it -- and,
+-- since #322, holding the gun off in the ones the owner decided are fine to
+-- drive.
+--
+-- ═══ TWO OUTCOMES, ONE RULING, AND THE RULING IS NOT IN THIS FILE ═══
+--
+-- BR.Config.VehicleRefusalFor says which vehicles are refused and
+-- BR.Config.IsDisarmedVehicle says which are driven with the weapon disabled.
+-- Both live in br_lib/config/vehicles.lua and both are shared with the server.
+-- This file is the client half of what happens NEXT: an ejection for the first
+-- answer, a per-tick DisableVehicleWeapon for the second. They are mutually
+-- exclusive -- a model the second names is allowed by the first -- and the pass
+-- at the bottom is written so that they cannot both fire.
 --
 -- ═══ THE OWNER'S ASK, VERBATIM (2026-08-22, #215) ═══
 --
@@ -244,7 +256,8 @@ local ruled = 0
 
 --- Counters, for /brvehrefuse. Nothing here is sent anywhere.
 local stat = { asked = 0, cached = 0, rejected = 0, ejected = 0,
-               cancelled = 0, hammered = 0, locked = 0, notified = 0 }
+               cancelled = 0, hammered = 0, locked = 0, notified = 0,
+               disarmed = 0, unnamedGun = 0 }
 
 --- Why this gamemode refuses this vehicle, or nil.
 ---
@@ -253,8 +266,16 @@ local stat = { asked = 0, cached = 0, rejected = 0, ejected = 0,
 --- tidy: #191's ambulance needs one exemption in one function, and the moment
 --- this file grew its own copy of the ordering that promise would be false. All
 --- three signals -- model table, type, class -- are described there.
+---
+--- THE MODEL IS RETURNED AS WELL, AND ONLY SO THAT NOTHING READS IT TWICE.
+--- `disarm` below needs the same hash this function has just paid a native for,
+--- and server/vehicles.lua's namesake has returned it for its own callers since
+--- it was written. Handing it back is one value; reading `GetEntityModel` again
+--- on the next line would be a second native on every pass a player spends
+--- seated, which is most of them.
 --- @param veh integer
---- @return string|nil
+--- @return string|nil why
+--- @return integer|nil model
 local function refusalFor(veh)
     local model = modelOf(veh)
     local key = BR.NormHash(model)
@@ -263,7 +284,7 @@ local function refusalFor(veh)
         local hit = rulings[key]
         if hit ~= nil then
             stat.cached = stat.cached + 1
-            return hit or nil
+            return hit or nil, model
         end
     end
 
@@ -282,7 +303,214 @@ local function refusalFor(veh)
         ruled = ruled + 1
     end
 
-    return why
+    return why, model
+end
+
+-- ---------------------------------------------------------------------------
+-- Driving one instead: holding the gun off (#322)
+-- ---------------------------------------------------------------------------
+--
+-- ═══ THE OWNER'S RULING AND WHERE IT IS MADE ═══
+--
+-- "only vehicles refused for being ARMED become drivable." The ruling is
+-- BR.Config's, exactly as the refusal is: BR.Config.IsDisarmedVehicle names the
+-- set and BR.Config.VehicleRefusalFor stops refusing it, so this file learns
+-- both facts by asking rather than by knowing. Nothing below decides anything.
+--
+-- ═══ WHY THIS BELONGS IN THIS FILE ═══
+--
+-- The pass below already has the ped, the seat and the model in hand, and it
+-- already holds the per-model ruling cache. A second file would have had to read
+-- `GetVehiclePedIsIn` and `GetEntityModel` again, every pass, to learn what this
+-- one has already learned -- and would have been a second opinion about which
+-- vehicles the rule covers, which is the thing config/vehicles.lua's header
+-- spends its length preventing.
+--
+-- ═══ IT IS ADVISORY, LIKE EVERYTHING ELSE HERE ═══
+--
+-- The file header's paragraph applies word for word: this runs on the player's
+-- own machine, a modified client never registers the loop, and nothing here
+-- talks to the server. br_core/server/damage.lua validates every shot against
+-- the inventory the SERVER issued and refuses one from a weapon it never handed
+-- out -- that is what actually stops a mounted gun hurting anybody, and it is
+-- unchanged. What this removes is the noise and the desync of a gun that fires,
+-- looks like it hit, and is then refused a round trip later.
+--
+-- ═══ AND THE SEAT THIS CANNOT SEE IS ANSWERED ON THE SERVER, NOT HERE ═══
+--
+-- `GetCurrentPedVehicleWeapon` has no opinion about some gun positions -- the
+-- firetruck's hose is the one this project has measured -- and in one of those
+-- there is no hash to disable, so the gun stays live and the engine puts it in
+-- the player's hand. Before #322 that could not happen in an armed vehicle
+-- because nobody was in the seat for longer than a tenth of a second; now they
+-- sit there all match, in about sixty models, one of which is for sale.
+--
+-- NOTHING HERE PAPERS OVER IT. What that seat used to cost was a high severity
+-- anticheat case against somebody who got into a car -- server/damage.lua
+-- refusing the shots as NO_WEAPON, server/strip.lua filing the stripped hash --
+-- and both of those now ask BR.Vehicles.inDisarmedVehicle and decline to accuse
+-- anybody sitting in a model this ruling disarms. The GUN in such a seat is
+-- still live, which is a gameplay gap and is counted as `unnamed-gun` by
+-- `/brvehrefuse`; it is not an accusation any more.
+
+--- The vehicle weapon this ped's seat currently holds, or nil.
+---
+--- ═══ ASKED THE WAY client/inventory.lua's `isMountedWeapon` ASKS IT, AND THAT
+---     IS DELIBERATE RATHER THAN CONVENIENT ═══
+---
+--- `GetCurrentPedVehicleWeapon` -- BOOL GET_CURRENT_PED_VEHICLE_WEAPON(Ped,
+--- Hash*) -- is the same native, asked of the same ped, for the same hash. So
+--- the seats where this function answers are EXACTLY the seats where the strip's
+--- mounted-weapon guard answers, and the two cannot come apart: a gun this
+--- disables is a gun the anticheat already excuses, by construction and not by
+--- coincidence. The seats where it does NOT answer are the other half, and they
+--- are answered on the server: see the section header above.
+---
+--- FOUR CONDITIONS, ALL IN THE SAFE DIRECTION, THE SAME FOUR THAT FILE LISTS:
+---
+---   1. the native EXISTS and did not throw. pcall'd with no `type(...)` guard
+---      in front of it, because `pcall(nil, ...)` returns false rather than
+---      raising -- the guard and the pcall are the same test, and this file
+---      already deleted one such pair from `lock` for that reason.
+---   2. it ANSWERED. A FiveM BOOL may be `true` or `1`, six shipped instances
+---      say so, and `isTrue` is this file's own normalisation.
+---   3. the hash is a NUMBER. A native that answered prose is no opinion.
+---   4. it is NON-ZERO. A vehicle with no mounted gun answers `0`, and `0` is
+---      TRUTHY in Lua -- without this, "this seat has no gun" would be handed to
+---      DisableVehicleWeapon as a weapon hash.
+---
+--- NOT PUT THROUGH BR.NormHash, and this is the one place in this file where
+--- that is right. Everything else here normalises because it is about to index a
+--- table the config authored positive. This value is going straight back into a
+--- native, in the form that native just produced it in, and rewriting a hash on
+--- its way from the engine to the engine could only make it wrong.
+--- @param ped integer
+--- @return integer|nil
+local function mountedWeaponOf(ped)
+    local pok, answered, hash = pcall(GetCurrentPedVehicleWeapon, ped)
+    if not pok or not isTrue(answered) then return nil end
+    local h = math.tointeger(tonumber(hash))
+    if h == nil or h == 0 then return nil end
+    return h
+end
+
+--- Is the engine holding a gun in this ped's hand that this gamemode issues
+--- NOBODY?
+---
+--- ═══ THE FIRETRUCK SIGNATURE, AND THE COUNTER BELOW MEANS NOTHING WITHOUT IT
+---     ═══
+---
+--- `disarm` is called for ANY seat, by design, so the pass where
+--- `GetCurrentPedVehicleWeapon` names nothing is mostly the ORDINARY DRIVER of a
+--- Technical, an Insurgent or a Caracara: the gun is in the bed and the driver
+--- has no vehicle weapon at all. A counter of "the native named nothing" climbs
+--- ten times a second for the whole time anybody drives one normally, which
+--- makes it unreadable -- and the first version of this file printed it beside a
+--- sentence telling the operator that a climbing number meant a missing table
+--- row.
+---
+--- What the firetruck actually looked like is BOTH HALVES AT ONCE: the vehicle
+--- names no mounted weapon AND the engine has put something in the hand that is
+--- in no row of BR.Config.WeaponByHash. That pair is the seat client/inventory.
+--- lua's `isMountedWeapon` cannot see and the strip fires on, and it is the only
+--- reading that says a model needs an answer of its own.
+---
+--- FOUR CONDITIONS IN THE SAFE DIRECTION, the same four `mountedWeaponOf` above
+--- takes, and "safe" here means NOT COUNTING: a native that is absent, throws,
+--- declines to answer or names nothing leaves the counter where it was. This is
+--- a diagnostic, so a silence that inflates it is worse than a silence that
+--- loses it.
+---
+--- THE PARACHUTE IS NOT A GUN. It is in no weapon row -- client/inventory.lua's
+--- strip excuses it by hash for that reason -- and it is granted on purpose by
+--- client/skydive.lua, so counting it would be counting our own grant.
+--- @param ped integer
+--- @return boolean
+local function unnamedGunInHand(ped)
+    local pok, answered, held = pcall(GetCurrentPedWeapon, ped, true)
+    if not pok or not isTrue(answered) then return false end
+
+    -- `BR.NormHash(0)` IS 0 AND 0 IS TRUTHY, so "no weapon" is tested for rather
+    -- than trusted to be falsy -- the reading this file normalises everything
+    -- else for.
+    local h = BR.NormHash(held)
+    if h == nil or h == 0 then return false end
+
+    local known = BR.Config and BR.Config.WeaponByHash
+    if known == nil then return false end
+    if known[h] ~= nil then return false end
+
+    local gadgets = BR.Config.Gadgets
+    if gadgets and h == BR.NormHash(gadgets.PARACHUTE) then return false end
+
+    return true
+end
+
+--- Hold this vehicle's gun off for the player sitting in it.
+---
+--- ═══ THE ARGUMENT ORDER, FROM THE NATIVE'S OWN DECLARATION ═══
+---
+---     void DISABLE_VEHICLE_WEAPON(BOOL disabled, Hash weaponHash,
+---                                 Vehicle vehicle, Ped owner);
+---
+--- citizenfx/natives, VEHICLE/DisableVehicleWeapon.md, 0xF4FC6A6F67D8D856. THE
+--- FLAG COMES FIRST, which is the opposite of every other native in this file --
+--- `SetVehicleDoorsLocked(veh, state)`, `TaskLeaveVehicle(ped, veh, flags)` --
+--- and is the single most likely thing to be written from memory and be wrong.
+--- Wrong, it is silent: the engine gets a vehicle handle where it wanted a
+--- boolean and a boolean where it wanted a hash, does nothing anybody can see,
+--- and the gun keeps firing. tools/test_vehrefuse.lua asserts the four arguments
+--- positionally for exactly that reason.
+---
+--- `owner` IS THE PED, NOT THE PLAYER INDEX. The native's own note calls this a
+--- ped-specific lock and says the ped need not be in the vehicle or in any
+--- particular seat when it is called.
+---
+--- ═══ NOTHING EVER CALLS IT WITH `false` ═══
+---
+--- There is no re-enable path and there should not be one. The lock is per ped
+--- and per vehicle, so a player who gets out takes nothing with them and leaves
+--- nothing behind for the next occupant that a pass of this loop would not
+--- re-establish. A Cfx report of the `false` call leaving a vehicle unable to
+--- find its weapons again until it is respawned is the other reason: an undo
+--- nobody needs is an undo that can only break something.
+--- @param ped integer
+--- @param veh integer
+--- @param model integer|nil
+local function disarm(ped, veh, model)
+    if not BR.Config.IsDisarmedVehicle(model) then return end
+
+    local hash = mountedWeaponOf(ped)
+    if hash == nil then
+        -- THE SEAT THE NATIVE HAS NO OPINION ABOUT, COUNTED ONLY WHEN THE ENGINE
+        -- HAS ACTUALLY PUT SOMETHING IN THE HAND. There is no hash, so there is
+        -- nothing to disable and this pass is a no-op either way -- but most of
+        -- these passes are an ordinary driver, and counting those made the
+        -- number unreadable. `unnamedGunInHand` is the other half, and the pair
+        -- is the firetruck: a gun the seat will not name, in a hand, in no row
+        -- of ours. See that function for why one half alone says nothing.
+        --
+        -- IT IS A COUNTER AND NOT A FALLBACK. The fallback would be
+        -- BR.Config.StripExemptVehicles, which switches the anticheat off for
+        -- the whole model; see that table's header for what does the work
+        -- instead. This number is what says a model needs one anyway, because it
+        -- is the seat where the gun is live and nothing here can hold it off.
+        if unnamedGunInHand(ped) then
+            stat.unnamedGun = stat.unnamedGun + 1
+        end
+        return
+    end
+
+    -- COUNTED THE WAY `lock` COUNTS, AND THAT IS THE WHOLE POINT OF THE pcall
+    -- BEING HERE RATHER THAN IN `safe`. `safe` answers nil for a native that
+    -- threw AND for one that is not on this build -- in the second case it never
+    -- calls anything at all -- so incrementing after it counted passes that
+    -- never reached the engine, under a readout that says the opposite in as
+    -- many words. `pcall(nil, ...)` returns false rather than raising, which is
+    -- why there is no `type(...)` guard in front of it; the same argument `lock`
+    -- makes about the guard it deleted.
+    local ok = pcall(DisableVehicleWeapon, true, hash, veh, ped)
+    if ok then stat.disarmed = stat.disarmed + 1 end
 end
 
 -- ---------------------------------------------------------------------------
@@ -469,9 +697,60 @@ BR.Loop.register(BR.Loop.TICK, 'vehrefuse.gate', function()
     -- at length and it is right. This file opens nothing against anybody. It
     -- enforces "this vehicle is not allowed to be used during the match", and a
     -- Buzzard with a gunner in the back is being used.
-    if refusalFor(veh) ~= nil then
+    local why, model = refusalFor(veh)
+    if why ~= nil then
         reject(ped, veh, true, GetGameTimer())
+        return
     end
+
+    -- ═══ AND THE VEHICLES #322 LETS THEM KEEP, WITH THE GUN HELD OFF ═══
+    --
+    -- BELOW THE REFUSAL AND AFTER A `return`, so the two can never both run on
+    -- one pass. They are mutually exclusive by the ruling -- an ARMED row of the
+    -- model table leaves BR.Config.VehicleRefusalFor as allowed, so `why` is nil
+    -- for every vehicle `disarm` acts on -- and the `return` says so in code
+    -- rather than leaving it as something a reader has to re-derive.
+    --
+    -- ANY SEAT, for the reason the refusal above is any seat: the gunner's seat
+    -- is the one with the gun in it, and a driver-only disable would switch off
+    -- the only thing nobody was using.
+    --
+    -- ON TICK, WITH THE REST OF THIS FILE, AND THE BAND IS A CONDITIONAL
+    -- DECISION RATHER THAN A SETTLED ONE.
+    --
+    -- THE TWO READINGS, BECAUSE THE SOURCES DISAGREE AND NOBODY HAS MEASURED IT:
+    --
+    --   A LOCK.  citizenfx's page for DisableVehicleWeapon describes a
+    --            ped-specific lock rather than a per-frame suppression. On that
+    --            reading the loop exists only for the OTHER half -- the seat's
+    --            weapon can CHANGE under us, so the hash has to be re-read and
+    --            the new one disabled -- and the exposure is at most one tenth
+    --            of a second of a gun immediately after a switch.
+    --   NOT A    #322 says the opposite in as many words: "the call does not
+    --   LOCK.    persist, so it is a loop, not a one-shot". On that reading the
+    --            gun is live for most of every 100 ms window and TICK is the
+    --            wrong band.
+    --
+    -- SO WHAT THE CHOICE ACTUALLY RESTS ON IS THAT NEITHER READING COSTS A CASE.
+    -- A hit landed in the window is refused by server/damage.lua as
+    -- BR.ShotRefusal.VEHICLE_GUN -- a rule, not a means -- so it is cancelled
+    -- and accuses nobody, and the same is true of the strip report. That is what
+    -- makes the cheap band defensible while the question is open; it was not
+    -- true when this was first written, and the comment that stood here argued
+    -- from the lock reading as though it were established.
+    --
+    -- THE OTHER SIDE IS SMALL TOO, AND SMALLER THAN THIS USED TO CLAIM. FRAME
+    -- costs two natives a frame for a player SEATED IN ONE OF ROUGHLY SIXTY
+    -- MODELS -- not "every player sitting in one" of anything, since the model
+    -- test above turns an ordinary car away for one table lookup.
+    --
+    -- THE PLAYTEST THAT SETTLES IT, and it is one round: sit in a Technical,
+    -- hold the trigger on the mounted gun at another player, and run
+    -- `/brshots VEHICLE_GUN` on the server console. A shot only reaches the
+    -- validator when it HITS somebody, so an empty list means the lock held and
+    -- TICK is right. A column of them means it does not, and this comment is the
+    -- one to come back to: move the `disarm` call to a FRAME registration.
+    disarm(ped, veh, model)
 end)
 
 -- ---------------------------------------------------------------------------
@@ -507,7 +786,32 @@ end
 ---   * whether `TaskLeaveVehicle` with flag 16 is ever declined here at all, and
 ---     so whether ESCALATE_MS's hammer ever fires.
 ---
---- This command answers all three from a real lobby. It prints to the console.
+--- AND #322 ADDED A FOURTH, WHICH IS THE ONE TO READ FIRST AFTER A ROUND IN A
+--- CARACARA.
+---
+---   `disarmed`     passes on which the engine NAMED a gun and the disable was
+---                  CALLED on it and the call reached the native. Not weapons
+---                  proved silent: the native returns nothing, so that is the
+---                  most this side can honestly claim, and it is the same
+---                  honesty `locked` is counted with above. A build without
+---                  DisableVehicleWeapon leaves this at zero rather than
+---                  counting passes that went nowhere.
+---   `unnamed-gun`  passes on which the seat named NOTHING and the engine had
+---                  nevertheless put a weapon in the hand that this gamemode
+---                  issues nobody. BOTH HALVES, because either alone is noise:
+---                  the driver of a Technical has no vehicle weapon and would
+---                  otherwise climb this ten times a second all match. The pair
+---                  is the firetruck, and it is the reading that says a model
+---                  needs an answer of its own -- the gun is live in that seat
+---                  and nothing on this side can hold it off.
+---
+--- NEITHER OF THEM IS THE ANTICHEAT'S ANSWER ANY MORE, and that is worth knowing
+--- before reading them. server/damage.lua and server/strip.lua excuse a hash we
+--- issue nobody from anybody sitting in one of these models, so a seat this
+--- cannot disable files no case either way. These two numbers say whether the
+--- WEAPON works, not whether somebody is accused.
+---
+--- This command answers all four from a real lobby. It prints to the console.
 RegisterCommand('brvehrefuse', function()
     local s = BR.VehRefuse.stats()
     print(('[vehrefuse] asked=%d cached=%d models=%d rejected=%d'):format(
@@ -516,6 +820,8 @@ RegisterCommand('brvehrefuse', function()
         :format(s.cancelled, s.ejected, s.hammered))
     print(('[vehrefuse] locked=%d shown=%d  gate=%s'):format(
         s.locked, s.notified, tostring(enabled())))
+    print(('[vehrefuse] disarmed=%d unnamed-gun=%d'):format(
+        s.disarmed, s.unnamedGun))
 
     local ped = PlayerPedId()
     local veh = GetVehiclePedIsIn and GetVehiclePedIsIn(ped, false) or 0

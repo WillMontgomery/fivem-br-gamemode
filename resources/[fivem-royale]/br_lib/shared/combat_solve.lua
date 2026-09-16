@@ -29,6 +29,7 @@ BR.ShotRefusal = {
     SAME_SQUAD  = 'friendly fire',
     NOT_LIVE    = 'one of them is not alive in this match',
     OTHER_MATCH = 'different matches',
+    VEHICLE_GUN = 'the gun bolted to the vehicle they are sitting in',
 }
 
 --- WHICH REFUSALS ARE ACTUALLY A CHEAT SIGNAL.
@@ -42,6 +43,16 @@ BR.ShotRefusal = {
 ---           urgent: everyone has them at all times, so a warmup scrap now
 ---           produces a dozen NOT_LIVE refusals in seconds and would trip a
 ---           threshold built for people using trainers.
+---
+---           VEHICLE_GUN JOINED THEM WITH #322 AND IT IS THE SAME ARGUMENT.
+---           The owner's ruling drives the armed vehicles with their gun
+---           switched off instead of ejecting the player, and the switch is a
+---           client-side native that can fail to persist, fail to answer for a
+---           turret seat, or be absent from the build. When it does, the engine
+---           puts the vehicle's own gun in an honest player's hand -- in a car
+---           the owner sells in the showroom -- and the hash is in no row of
+---           BR.Config.WeaponByHash, so two landed hits used to be a high
+---           severity case about somebody who bought a Caracara.
 ---   MEANS.  A weapon the server never issued, a magazine it never filled, a
 ---           range or a cadence the weapon does not have. There is no honest
 ---           way to produce these, only a race -- which is why the threshold
@@ -301,7 +312,7 @@ end
 ---
 --- @param shot table  { weapon = <hash>, dist = <number>, sinceLastMs = <number> }
 --- @param ctx table   { heldItem, clip, sameSquad, shooterLive, victimLive,
----                      sameMatch, sameSrc }
+---                      sameMatch, sameSrc, vehicleGun }
 --- @param cfg table   BR.Config.Combat
 --- @return boolean ok, string|nil why
 function BR.ValidateShot(shot, ctx, cfg)
@@ -347,7 +358,27 @@ function BR.ValidateShot(shot, ctx, cfg)
     -- top-bit-set weapon would validate as "not one this gamemode issues",
     -- i.e. half the arsenal would read as a cheat.
     local w = BR.Config.WeaponByHash[BR.NormHash(shot.weapon)]
-    if not w then return false, BR.ShotRefusal.NO_WEAPON end
+    if not w then
+        -- A GUN THE ENGINE BOLTED TO THE CAR IS NOT A GUN SOMEBODY CONJURED
+        -- (#322), and the difference is the whole of this branch. The shot is
+        -- refused either way -- a mounted weapon hash is in no row of our table,
+        -- so there is nothing to validate it against and the damage is
+        -- cancelled. What changes is whether it ACCUSES anybody.
+        --
+        -- ctx.vehicleGun is the server's own read: this shooter is sitting in a
+        -- model BR.Config.IsDisarmedVehicle names, which is the set the owner's
+        -- ruling drives with the gun switched off. The switch is a client-side
+        -- native and this is what its failure looks like from here.
+        --
+        -- WHAT IT COSTS, STATED RATHER THAN DISCOVERED: a weapon this gamemode
+        -- issues NOBODY, fired by somebody seated in one of those ~60 models,
+        -- now files nothing. It still lands no damage, it is still printed under
+        -- `logHits`, and the weapons a trainer actually grants -- this
+        -- gamemode's own arsenal -- are unaffected, because those resolve to a
+        -- row and are refused as NOT_HELD or NO_AMMO with their bar of one.
+        if ctx.vehicleGun then return false, BR.ShotRefusal.VEHICLE_GUN end
+        return false, BR.ShotRefusal.NO_WEAPON
+    end
 
     -- AN EXPLOSION IS NOT A SHOT, and three of the checks below quietly assume
     -- it is. All three would refuse an honest grenade:

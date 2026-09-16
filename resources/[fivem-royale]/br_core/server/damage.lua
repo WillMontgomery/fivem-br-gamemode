@@ -430,8 +430,10 @@ end
 --- @param shooter integer
 --- @param victim integer
 --- @param weapon integer|nil  weapon hash from the event, for the throw check
+--- @param vehicleGun boolean|nil  the shooter is sitting in a vehicle #322
+---                                disarms; read once per event by the caller
 --- @return table|nil
-local function contextFor(shooter, victim, weapon)
+local function contextFor(shooter, victim, weapon, vehicleGun)
     local a = BR.Roster.get(shooter)
     local b = BR.Roster.get(victim)
     if not a or not b then return nil end
@@ -477,6 +479,14 @@ local function contextFor(shooter, victim, weapon)
         rarity      = held and held.rarity or nil,
         threwRecently = (w ~= nil) and BR.Damage.threwRecently(shooter, w.id)
                         or false,
+
+        -- THE VEHICLE'S OWN GUN (#322). Read ONCE PER EVENT by the caller and
+        -- handed in rather than read here, because this function runs per
+        -- VICTIM: a grenade catching twelve people would otherwise pay for
+        -- twelve identical seat reads of the same ped in the same millisecond.
+        -- See `seatedInDisarmed` at the call site for when it is asked at all.
+        vehicleGun  = vehicleGun or false,
+
         posA        = a.pos,
         posB        = b.pos,
     }
@@ -1381,6 +1391,43 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
         end
     end
 
+    -- ═══ IS THE SHOOTER SITTING IN A VEHICLE THIS GAMEMODE DISARMED (#322) ═══
+    --
+    -- The owner's ruling drives the armed vehicles with their gun switched off
+    -- instead of ejecting the player, and the switch is a client-side native
+    -- that can fail to persist, have no opinion about a turret seat, or be
+    -- missing from the build. When it does, the ENGINE puts the car's own gun in
+    -- an honest player's hand -- and that hash is in no row of
+    -- BR.Config.WeaponByHash, so it used to arrive here as a high severity
+    -- NO_WEAPON case against somebody who bought a Caracara in the showroom.
+    --
+    -- ONLY ASKED WHEN THE HASH IS IN NO ROW OF OURS, which is what makes it
+    -- affordable: `fired == nil` is the ONLY state that can produce NO_WEAPON,
+    -- the world's own damage has already returned out above it, and in honest
+    -- play it is close to never. Every real gunfight in the match pays nothing.
+    --
+    -- ONCE PER EVENT AND NOT PER VICTIM. One rocket can list twelve people and
+    -- the shooter is in one seat for all of them, so reading it in `contextFor`
+    -- would multiply the same answer by the size of the blast -- and that loop
+    -- is exactly what a manufactured event chooses the size of.
+    --
+    -- THE ROSTER'S SAMPLED PED, NOT A FRESH GetPlayerPed. server/roster.lua
+    -- carries the reason in as many words: GET_PLAYER_PED is declared `Entity
+    -- GET_PLAYER_PED(char* playerSrc)` and the numeric key answered 0 for every
+    -- player once already. A 0 here reads as "on foot", which is the SAFE
+    -- direction -- the refusal stays NO_WEAPON and still files -- but it would
+    -- be safe by accident and nothing would ever say so.
+    --
+    -- NIL-GUARDED ON THE MODULE, as BR.Shop.refusesUse is: server/vehicles.lua
+    -- owns the citizenfx/fivem#4006 workaround this question cannot be asked
+    -- correctly without, and a build without that file answers "not in one",
+    -- which leaves the anticheat exactly as it was.
+    local seatedInDisarmed = false
+    if fired == nil and BR.Vehicles and BR.Vehicles.inDisarmedVehicle then
+        local s = BR.Roster.get(shooter)
+        seatedInDisarmed = BR.Vehicles.inDisarmedVehicle(s and s.ped)
+    end
+
     -- ONE EVENT, ONE HIT PER PLAYER, decided on the RESOLVED PLAYER rather than
     -- on the id that named them.
     --
@@ -1413,7 +1460,8 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
         if victim then
             hitAlready[victim] = true
             hits = hits + 1
-            local ctx = contextFor(shooter, victim, data.weaponType)
+            local ctx = contextFor(shooter, victim, data.weaponType,
+                                   seatedInDisarmed)
             if ctx then
                 -- THE MAGAZINE AS IT STOOD BEFORE THIS EVENT SPENT FROM IT, and
                 -- this fixes a live false positive rather than a hole.
@@ -1519,6 +1567,20 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
                     -- log over a full match is the signal that enforcement is
                     -- safe to switch on.
                     BR.Damage.refusals = (BR.Damage.refusals or 0) + 1
+
+                    -- ...AND ONE OF THEM IS THE ONLY UNFORGEABLE READING OF
+                    -- WHETHER #322's CLIENT-SIDE DISABLE ACTUALLY HOLDS.
+                    -- VEHICLE_GUN means a mounted weapon got a shot away from a
+                    -- seat this gamemode switched the gun off in, which is
+                    -- either a weapon switch inside one 100 ms pass or a native
+                    -- that did not do what it says. It accuses nobody -- it is a
+                    -- rule, not a means -- so this counter is the whole of the
+                    -- evidence, and a number that climbs during a playtest is
+                    -- the answer to the band question in client/vehrefuse.lua.
+                    if why == BR.ShotRefusal.VEHICLE_GUN then
+                        BR.Damage.vehicleGuns = (BR.Damage.vehicleGuns or 0) + 1
+                    end
+
                     -- ...but a rules refusal is not printed unless asked for.
                     -- Warmup fistfights would otherwise fill the console with
                     -- lines that mean "the game said no", drowning the ones

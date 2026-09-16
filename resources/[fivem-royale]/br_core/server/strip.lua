@@ -74,7 +74,8 @@ local MIN_INTERVAL_MS = 900
 --- player's match changes, exactly as server/damage.lua's refusal record is.
 local seenBy = {}
 
-local stat = { reports = 0, counted = 0, throttled = 0, races = 0 }
+local stat = { reports = 0, counted = 0, throttled = 0, races = 0,
+               vehicleGuns = 0 }
 
 --- Counters, for brdebug-style introspection.
 ---
@@ -84,6 +85,11 @@ local stat = { reports = 0, counted = 0, throttled = 0, races = 0 }
 --- climbs on a healthy server means the client's own filter is not catching a
 --- case it should, and every one of those would otherwise have been a case
 --- opened against an innocent player.
+---
+--- `vehicleGuns` IS THE SECOND ONE, AND IT ARRIVED WITH #322. It counts reports
+--- refused because the reporter was sitting in a vehicle this gamemode drives
+--- with its gun switched off, holding a hash this gamemode issues nobody -- the
+--- engine handing somebody the gun bolted to their own car. See `vehicleGun`.
 function BR.Strip.stats()
     local tracked = 0
     for _ in pairs(seenBy) do tracked = tracked + 1 end
@@ -91,6 +97,7 @@ function BR.Strip.stats()
         tracked = tracked,
         reports = stat.reports, counted = stat.counted,
         throttled = stat.throttled, races = stat.races,
+        vehicleGuns = stat.vehicleGuns,
     }
 end
 
@@ -134,6 +141,105 @@ local function ourWeapon(src, h)
         end
     end
     return false
+end
+
+--- Is this report the engine handing somebody the gun bolted to their own car?
+---
+--- ═══ THE DEFECT (#322), AND IT IS THE FIRETRUCK AGAIN IN A CAR HE SELLS ═══
+---
+--- A firetruck, fifteen minutes, 149 strips and a high severity case against a
+--- player who was using the hose (owner, 2026-09-15). The client half of that is
+--- answered in client/inventory.lua by BR.Config.StripExemptVehicles. What #322
+--- did was make the ARMED rows of the model table DRIVABLE instead of ejecting
+--- the player within one 100 ms pass -- so those seats are occupied now, all
+--- match, and the same failure is reachable in about sixty more models. One of
+--- them is on sale in the showroom for 750 Volts.
+---
+--- The gun is held off on the CLIENT and that is best effort by construction:
+--- the native may not persist between passes, may have no opinion about a turret
+--- seat, and is absent on some builds. Each of those ends with the engine
+--- putting the vehicle's own gun in the hand, our own TICK loop taking it out
+--- ten times a second, and the second report opening a case.
+---
+--- ═══ TWO CONDITIONS, AND THE SECOND ONE IS WHAT KEEPS THIS NARROW ═══
+---
+---   1. THE HASH IS ONE THIS GAMEMODE ISSUES NOBODY. Not "not in their
+---      inventory" -- `ourWeapon` above already asks that -- but in no row of
+---      BR.Config.WeaponByHash at all. Every weapon a trainer is actually worth
+---      granting IS in that table (this gamemode's arsenal is the loot table:
+---      rifles, shotguns, snipers, the RPG, the minigun, the railgun), so a
+---      conjured one is still stripped, still reported and still filed, in a
+---      Technical exactly as on foot. What is excused is a hash with no row
+---      anywhere, which is the shape a VEHICLE_WEAPON_* hash has.
+---   2. THEY ARE SITTING IN A MODEL THE RULING DISARMS. Asked of
+---      server/vehicles.lua, which owns the citizenfx/fivem#4006 workaround --
+---      a bare `GetVehiclePedIsIn` would excuse everybody who had ever driven a
+---      Technical, for the rest of the match.
+---
+--- ═══ WHAT IT COSTS, SAID OUT LOUD ═══
+---
+--- Somebody granting themselves a hash in no table of ours, while seated in one
+--- of those models, produces no case from this path. They also produce no
+--- damage: server/damage.lua refuses a weapon it never issued whatever they are
+--- sitting in, and the weapon is still taken out of their hand on every tick.
+--- The alternative is a case against an honest player for sitting in a car the
+--- owner sold them, which the issue names as its acceptance criterion.
+---
+--- ═══ THIS IS NOT THE ADMIN EXEMPTION WEARING A HAT, AND THE DIFFERENCE IS THE
+---     WHOLE OF WHY IT IS ALLOWED TO EXIST ═══
+---
+--- The exemption the owner deleted below asked WHO SOMEBODY IS: staff were not
+--- reported, which is a hole shaped exactly like the accounts with the most
+--- power. This asks WHAT PRODUCED THE REPORT, in the same way `ourWeapon` above
+--- asks it -- a weapon the server itself put in their inventory is our own two
+--- mirrors disagreeing, and a gun the ENGINE bolts to a seat this gamemode told
+--- the player they may sit in is the same kind of fact. It applies to the owner
+--- and to a first-day player identically, and nobody can put themselves inside
+--- it except by sitting in one of the vehicles the ruling names.
+---
+--- IT IS ASKED AFTER `ourWeapon` AND FOR THE SAME REASON THAT ONE IS CHEAP
+--- FIRST: this is a seat read and that is a walk of five slots.
+--- @param src integer
+--- @param h integer|nil  a normalised hash
+--- @param rec table     this player's record, for the one-per-window memo
+--- @param now integer
+--- @return boolean
+local function vehicleGun(src, h, rec, now)
+    if h == nil then return false end
+    if not (BR.Config and BR.Config.WeaponByHash) then return false end
+    -- A WEAPON WE ISSUE IS NEVER THE CAR'S. It has a row, so the report is about
+    -- a gun somebody could have been given, and that is not this. One table
+    -- index, and it is first because it is the answer for every hash a trainer
+    -- would bother with -- so a flood of those costs a lookup and nothing else.
+    if BR.Config.WeaponByHash[h] ~= nil then return false end
+
+    if not (BR.Vehicles and BR.Vehicles.inDisarmedVehicle) then return false end
+
+    -- ONE SEAT READ PER WINDOW, WHATEVER THE CLIENT SENDS, AND THAT BOUND IS
+    -- OWED RATHER THAN OPTIONAL. A report refused here leaves the throttle
+    -- window CLOSED -- deliberately, for the reason stated at `rec.at` below --
+    -- so this sits on the one path a client may repeat as fast as it can send.
+    -- The race check that shares that path costs a walk of five slots; a seat
+    -- read is up to ten natives, which is a different order of thing to hand
+    -- somebody. Memoised on the player's own record, which is already rebuilt
+    -- on a match change and cleared on disconnect.
+    --
+    -- WHAT THE MEMO COSTS IS UNDER A SECOND OF A STALE ANSWER for a player who
+    -- got out of the car, and the failure is in the direction of the honest
+    -- player: an excuse that outlives the seat by half a second rather than a
+    -- case filed the moment they stepped out.
+    if rec.vehAt ~= nil and now - rec.vehAt < MIN_INTERVAL_MS then
+        return rec.vehAns
+    end
+
+    -- THE ROSTER'S SAMPLED PED, NOT GetPlayerPed(src). server/roster.lua's own
+    -- note: GET_PLAYER_PED takes a STRING, and the numeric key answered 0 for
+    -- every player once already. A 0 here would read as on foot, which files the
+    -- case -- safe, but safe by accident.
+    local e = BR.Roster and BR.Roster.get and BR.Roster.get(src)
+    rec.vehAt  = now
+    rec.vehAns = BR.Vehicles.inDisarmedVehicle(e and e.ped)
+    return rec.vehAns
 end
 
 -- THERE IS NO ADMIN EXEMPTION, AND THE ABSENCE IS DELIBERATE.
@@ -193,6 +299,18 @@ AddEventHandler(BR.Net.INV_STRIPPED, function(weapon)
     -- OUR OWN CODE DISAGREEING WITH ITSELF IS NOT EVIDENCE. See `ourWeapon`.
     if ourWeapon(src, h) then
         stat.races = stat.races + 1
+        return
+    end
+
+    -- NOR IS THE ENGINE HANDING SOMEBODY THE GUN BOLTED TO THEIR OWN CAR (#322).
+    -- Counted rather than filed, and counted separately from `races` because the
+    -- two say different things: a race is our two inventory mirrors disagreeing,
+    -- this is the client-side weapon disable not holding. See `vehicleGun`.
+    --
+    -- THE WINDOW IS LEFT CLOSED, exactly as it is for a race: a refusal that
+    -- costs nothing must not swallow a genuine strip arriving a moment later.
+    if vehicleGun(src, h, rec, now) then
+        stat.vehicleGuns = stat.vehicleGuns + 1
         return
     end
 

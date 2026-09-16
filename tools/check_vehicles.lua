@@ -95,6 +95,11 @@ if next(reasons) == nil then
 end
 
 local seenName, seenHash = {}, {}
+--- [model name] = the `why` on its row, for the strip-exemption check below.
+--- SEPARATE FROM `seenName` rather than stored in it: a row whose `why` is nil
+--- has already failed, and folding the two would make that row invisible to the
+--- duplicate-name check as well.
+local refusedWhy = {}
 local checked, topBit, signedChecked = 0, 0, 0
 
 for _, v in ipairs(BR.Config.RefusedVehicles or {}) do
@@ -109,6 +114,7 @@ for _, v in ipairs(BR.Config.RefusedVehicles or {}) do
         fail('duplicate model name %q', v.name)
     end
     seenName[v.name] = true
+    refusedWhy[v.name] = v.why
 
     do
         local want = joaat(v.name)
@@ -163,9 +169,125 @@ for _, v in ipairs(BR.Config.RefusedVehicles or {}) do
             fail('%s refuses with %q from its signed hash but %q from the table',
                  v.name, tostring(why), tostring(v.why))
         end
+
+        -- ═══ #322: WHICH ROWS ARE DRIVEN WITH THE GUN OFF, ROW BY ROW ═══
+        --
+        -- The owner's ruling is "only vehicles refused for being ARMED become
+        -- drivable", so the disarmed set and the ARMED rows are the SAME SET and
+        -- an equality is the honest way to say it. Asserted in both directions
+        -- on every row, because both directions are a shipped bug:
+        --
+        --   an ARMED row that is not disarmed   is a car that still ejects, and
+        --                                       the ruling did not land.
+        --   a FLIES or TANK row that IS         is a Buzzard or a Rhino that a
+        --                                       player may now drive, which is
+        --                                       the outcome the ruling names and
+        --                                       excludes.
+        --
+        -- IN BOTH HASH FORMS, exactly as everything above is, because the engine
+        -- reports the signed one and a predicate that normalises only one way
+        -- would put the Rhino on the wrong side of this for real.
+        -- `keepRefused` IS THE ONE EXCEPTION AND IT IS READ FROM THE ROW, not
+        -- from a list of names spelled out here. A gate that carried its own
+        -- copy of the seven would pass while the two disagreed, which is the
+        -- failure this whole file exists to make impossible.
+        local wantDisarm = (v.why == BR.Config.VehicleRefusal.ARMED)
+            and v.keepRefused ~= true
+
+        -- AND THE FIELD ONLY MEANS ANYTHING ON AN ARMED ROW. On a FLIES or TANK
+        -- row it is already refused and the field would be a no-op that reads
+        -- like a decision -- the same objection config/vehicles.lua's own header
+        -- makes about an exemption row that never fires.
+        if v.keepRefused ~= nil and v.why ~= BR.Config.VehicleRefusal.ARMED then
+            fail('%s carries keepRefused but is %q, not ARMED -- the field is an '
+                 .. 'exception to the #322 ruling and that ruling never reaches '
+                 .. 'this row, so it is dead and reads like a decision',
+                 v.name, tostring(v.why))
+        end
+        if v.keepRefused ~= nil and v.keepRefused ~= true then
+            fail('%s has keepRefused = %s -- it is true or it is absent, because '
+                 .. 'a false here reads as "considered and allowed" when it is '
+                 .. 'the same as not writing it', v.name, tostring(v.keepRefused))
+        end
+        if BR.Config.IsDisarmedVehicle(v.hash) ~= wantDisarm then
+            fail('%s is %q but IsDisarmedVehicle says %s -- #322 converts the '
+                 .. 'ARMED rows and only the ARMED rows', v.name,
+                 tostring(v.why), tostring(BR.Config.IsDisarmedVehicle(v.hash)))
+        end
+        if BR.Config.IsDisarmedVehicle(signed32(v.hash)) ~= wantDisarm then
+            fail('%s answers #322 differently from its SIGNED hash 0x%08X -- '
+                 .. 'this is the form GetEntityModel reports', v.name, v.hash)
+        end
+
+        -- AND THE RULING END TO END, THROUGH THE FUNCTION THE THREE CALLERS
+        -- ACTUALLY ASK. The predicate above could be right while
+        -- VehicleRefusalFor ignored it, which is the same feature switched off.
+        -- No signals: this is the model table's own verdict, which is all a
+        -- creation-time caller ever has.
+        local ruling = BR.Config.VehicleRefusalFor(v.hash)
+        if wantDisarm then
+            if ruling ~= nil then
+                fail('%s is ARMED in the table but VehicleRefusalFor still '
+                     .. 'refuses it with %q', v.name, tostring(ruling))
+            end
+        elseif ruling ~= v.why then
+            fail('%s is %q in the table but VehicleRefusalFor answers %q',
+                 v.name, tostring(v.why), tostring(ruling))
+        end
     end
 
     ::continue::
+end
+
+-- ------------------------------------------------------- #322, in the whole --
+--
+-- THE LEAK THE ISSUE WAS OPENED ABOUT. `caracara2` carries a mounted gun on an
+-- ordinary Off-road body: no type says so, class 2 is in no net, and it was
+-- permitted by OMISSION -- allowed and armed -- for as long as this table has
+-- existed. Named here rather than left to the loop above because the loop proves
+-- the rows that ARE present are consistent and can say nothing at all about one
+-- that is deleted, and deleting this row restores the leak in silence.
+if not seenName['caracara2'] then
+    fail('`caracara2` is not in the refused table. It carries a mounted gun in '
+         .. 'an ordinary Off-road class, so no type and no class net sees it, '
+         .. 'and without a row it is ALLOWED AND ARMED -- which is the leak '
+         .. '#322 was opened about.')
+elseif refusedWhy['caracara2'] ~= BR.Config.VehicleRefusal.ARMED then
+    fail('`caracara2` is %q rather than ARMED. Under #322 that is the '
+         .. 'difference between a car the gamemode drives with the gun off and '
+         .. 'one it throws the player out of.',
+         tostring(refusedWhy['caracara2']))
+end
+
+-- THE CLASS NET KEEPS ITS ARMED REFUSAL, AND THIS IS THE ASSERTION THE WHOLE
+-- RULING TURNS ON. Class 19 maps to the SAME `why` string the model table's
+-- armed rows carry -- BR.Config.VehicleRefusal.ARMED, character for character --
+-- so an implementation that converted on the reason word instead of on the
+-- signal would pass every row-by-row check above and would quietly make every
+-- unknown piece of military hardware drivable. That is the one outcome the owner
+-- ruled out by name.
+--
+-- A hash in NO row of the table, so only the class net can answer for it.
+do
+    local UNLISTED = 0x0BADF00D
+    if seenHash[UNLISTED] then
+        fail('the class-net probe hash 0x%08X is now a real row -- pick another',
+             UNLISTED)
+    end
+
+    local why, signal = BR.Config.VehicleRefusalFor(UNLISTED, {
+        classOf = function() return 19 end,
+    })
+    if why ~= BR.Config.VehicleRefusal.ARMED or signal ~= 'class' then
+        fail('unlisted class 19 no longer refuses as ARMED by the class net -- '
+             .. 'got %q from %q', tostring(why), tostring(signal))
+    end
+    if BR.Config.IsDisarmedVehicle(UNLISTED) then
+        fail('an unlisted model reads as disarmed. #322 converts rows of the '
+             .. 'model table, which is enumerated; class 19 is the catch-all '
+             .. 'for military hardware nobody wrote down and converting it '
+             .. 'makes an unknown tank drivable.')
+    end
 end
 
 if checked == 0 then
@@ -263,10 +385,28 @@ for _, v in ipairs(BR.Config.StripExemptVehicles or {}) do
     -- it is for the class-net exemptions. A refused model is one nobody is left
     -- sitting in -- client/vehrefuse.lua ejects them -- so an exemption saying
     -- "the anticheat is off in here" describes a seat that does not exist.
-    if seenName[v.name] then
-        fail('%q is in BOTH the refused table and the strip exemptions. The '
-             .. 'vehicle is ejected, so the seat this exempts is never occupied '
-             .. '-- one of the two rows is wrong.', v.name)
+    --
+    -- ═══ EXCEPT FOR AN ARMED ROW, SINCE #322, AND THE EXCEPTION IS NARROW ON
+    --     PURPOSE ═══
+    --
+    -- The owner's ruling made the ARMED rows DRIVABLE rather than ejected, so
+    -- their seats are occupied now and the firetruck failure can happen in one:
+    -- a gun position `GetCurrentPedVehicleWeapon` has no opinion about, where
+    -- nothing is disabled, `isMountedWeapon` misses, and the strip files a case
+    -- against somebody who only got in a car. This table is the documented
+    -- answer to that, so the gate must not stand in front of it.
+    --
+    -- FLIES AND TANK ARE UNCHANGED AND STILL A CONTRADICTION. Those two still
+    -- eject, so the original sentence is still true of them word for word -- and
+    -- keeping the check for them is what stops this exception being read as
+    -- "refused models may be strip-exempt now".
+    if seenName[v.name]
+       and refusedWhy[v.name] ~= BR.Config.VehicleRefusal.ARMED then
+        fail('%q is in BOTH the refused table and the strip exemptions, and it '
+             .. 'is refused for %q rather than being armed. That vehicle is '
+             .. 'still ejected, so the seat this exempts is never occupied -- '
+             .. 'one of the two rows is wrong.', v.name,
+             tostring(refusedWhy[v.name]))
     end
 
     if v.hash then

@@ -116,10 +116,39 @@ local notices = {}
 --- assertion in this file still passes. tools/test_vehdamage.lua counts the same
 --- native for the same reason. So the question asked is the stricter one: A
 --- PLAYER ON FOOT IS NEVER ASKED WHICH VEHICLE THEY ARE IN.
-local reads = { model = 0, class = 0, type = 0, asks = 0 }
+local reads = { model = 0, class = 0, type = 0, asks = 0, gun = 0 }
 
 --- Natives that should throw, by name, to model a stale handle.
 local throws = {}
+
+--- What `GetCurrentPedVehicleWeapon` answers, AS THE PAIR IT REALLY RETURNS.
+---
+--- BOOL GET_CURRENT_PED_VEHICLE_WEAPON(Ped, Hash*) -- two returns in Lua, the
+--- BOOL first and the hash second. Held as two variables rather than one
+--- "does this seat have a gun" flag because the two halves fail separately and
+--- both failures are silent:
+---
+---   `gunBool` DRIVEN THROUGH ALL FOUR SHAPES. A FiveM BOOL answers `true` or
+---   `1`, and `0` is TRUTHY in Lua. A file that wrote `if answered then` would
+---   pass every case where the seat has a gun and would ALSO disable weapon
+---   whatever-the-hash-slot-held on every seat that has none.
+---
+---   `gunHash` OF 0 WITH A TRUE BOOL is the other half: a vehicle with no
+---   mounted gun answers zero, and zero is truthy too.
+local gunBool, gunHash = false, 0
+
+--- What `GetCurrentPedWeapon` answers: what is in the ped's HAND.
+---
+--- A DIFFERENT NATIVE AND A DIFFERENT QUESTION from the pair above, and the
+--- whole of the `unnamed-gun` counter is the two disagreeing. The seat names no
+--- gun AND the engine has put one in the hand that this gamemode issues nobody:
+--- that pair is the firetruck. Either half alone is an ordinary driver -- the
+--- driver of a Technical has no vehicle weapon and is holding their own rifle --
+--- which is what the first version of this counter counted, ten times a second,
+--- all match.
+---
+--- Held as the real pair as well, BOOL first, for the reason `gunBool` is.
+local heldBool, heldHash = true, 0
 
 local function act(kind, ...) acts[#acts + 1] = { kind = kind, ... } end
 
@@ -158,6 +187,30 @@ function GetVehicleType(v)
 end
 
 function GetVehicleDoorLockStatus(v) return vehLock[v] or 1 end
+
+function GetCurrentPedVehicleWeapon(p)
+    reads.gun = reads.gun + 1
+    if throws.gun then error('stale handle') end
+    return gunBool, gunHash
+end
+
+--- DISABLE_VEHICLE_WEAPON(BOOL disabled, Hash weaponHash, Vehicle vehicle,
+--- Ped owner) -- 0xF4FC6A6F67FA663B, citizenfx/natives.
+---
+--- EVERY ARGUMENT IS RECORDED IN ORDER AND ASSERTED POSITIONALLY. The flag comes
+--- FIRST here and LAST-ish in every other vehicle native this file calls, so the
+--- order is the single most likely thing to be written from memory and be wrong
+--- -- and wrong it is completely silent: the engine is handed a vehicle where it
+--- wanted a boolean, does nothing, and the gun keeps firing.
+function DisableVehicleWeapon(disabled, hash, veh, owner)
+    act('disable', disabled, hash, veh, owner)
+end
+
+--- BOOL GET_CURRENT_PED_WEAPON(Ped, Hash*, BOOL) -- the hand, not the seat.
+function GetCurrentPedWeapon(p)
+    if throws.held then error('stale handle') end
+    return heldBool, heldHash
+end
 
 function ClearPedTasksImmediately(p) act('clear', p) end
 function TaskLeaveVehicle(p, v, f) act('leave', p, v, f) end
@@ -200,6 +253,13 @@ for _, f in ipairs({
     -- both of its hash-keyed lookups. The manifest carries the same ordering.
     'br_lib/shared/geo.lua',
     'br_lib/config/vehicles.lua',
+    -- FOR THE `unnamed-gun` COUNTER, WHICH ASKS BR.Config.WeaponByHash WHETHER
+    -- THE THING IN THE HAND IS ONE WE ISSUE. The real arsenal rather than a
+    -- fixture: the counter's whole meaning is "in no row of ours", and a
+    -- hand-built table of two weapons would prove that against a table nobody
+    -- ships. It carries BR.Config.Gadgets with it, which is the parachute the
+    -- counter also has to decline to count.
+    'br_lib/config/weapons.lua',
     'br_core/client/main.lua',      -- the loop registry and BR.State
     'br_core/client/vehrefuse.lua',
 }) do load(f) end
@@ -231,8 +291,13 @@ local function reset()
     entering, myVeh, boolShape = 0, 0, 1
     vehModel, vehClass, vehType, vehLock = {}, {}, {}, {}
     acts, notices = {}, {}
-    reads = { model = 0, class = 0, type = 0, asks = 0 }
+    reads = { model = 0, class = 0, type = 0, asks = 0, gun = 0 }
     throws = {}
+    gunBool, gunHash = false, 0
+    -- AN EMPTY HAND BY DEFAULT: `0` is what the engine answers for no weapon and
+    -- it is TRUTHY in Lua, so this is also the shape that punishes a counter
+    -- written as `if held then`.
+    heldBool, heldHash = true, 0
     BR.State.me.state = BR.PlayerState.ALIVE
     V.reset()
 end
@@ -259,10 +324,27 @@ local function did(kind) return #acted(kind) end
 -- unreadable and, worse, unfalsifiable by inspection.
 local BUZZARD = 0x2F03547B  -- heli, refused by the model table
 local RHINO   = 0x2EA68690  -- tank, refused by the model table
-local ZR3803  = 0xA7DCC35C  -- Nightmare ZR380: Arena War, refused by the table
+local ZR3803  = 0xA7DCC35C  -- Nightmare ZR380: Arena War, ARMED in the table
+local DELUXO  = 0x586765FB  -- hovers, so FLIES; Sports Classics, seen by no net
 local TITAN   = 0x761E2AD3  -- the Battle Bus, which IS refused
 local BARRACKS = 0xCEEA3F4B -- class 19 and exempt from the class net
 local ADDER   = 0xB779A091  -- an ordinary supercar, in no list at all
+-- #322's two: an ARMED row of the model table, which is DRIVEN with its gun
+-- held off rather than refused. `caracara2` is the model the issue was opened
+-- about -- armed, ordinary Off-road class, permitted by omission until it was
+-- written down. `technical` is the same ruling on a row that was always there.
+local CARACARA2 = 0xAF966F3C
+local TECHNICAL = 0x83051506
+--- A vehicle weapon hash. Any non-zero number: what the file does with it is
+--- pass it back to the engine untouched, which is the property asserted.
+local SEAT_GUN = 0x1D6FDE47
+--- VEHICLE_WEAPON_PLAYER_BUZZARD: a REAL mounted-gun hash, and in no row of
+--- BR.Config.WeaponByHash. That is the whole property the `unnamed-gun` counter
+--- tests for, so it is a published hash rather than an invented one.
+local ENGINE_GUN = 0xE2822A29
+--- WEAPON_CARBINERIFLE, which this gamemode DOES issue -- one of its own rows,
+--- so a hand holding it is an ordinary player rather than an engine fault.
+local CARBINE = 0x83BF0278
 
 -- ═══════════════════════════════════════════════════════════════════════════
 describe('before the seat')
@@ -400,10 +482,17 @@ do
     -- Four rejections, three vehicles, three different halves of the rule, and a
     -- repeat of the first. If the sentence varied by ANY of those it would be
     -- telling a cheat which signal caught them -- or, worse, that a case exists.
+    --
+    -- THE ARMED ONE IS THE CLASS NET'S SINCE #322, and it had to be: the model
+    -- table's armed rows are DRIVEN now rather than refused, so a Nightmare
+    -- ZR380 no longer produces a sentence at all. The unlisted class-19 model
+    -- below is the armed half that still ejects, and putting it here means the
+    -- sentence is proved identical across the signal that was added LAST -- the
+    -- one most likely to grow a reason of its own.
     reset()
-    spawn(10, BUZZARD, 15, 'heli')       -- flies
-    spawn(11, RHINO, 19, 'automobile')   -- tank
-    spawn(12, ZR3803, 4, 'automobile')   -- armed, Arena War, ordinary class
+    spawn(10, BUZZARD, 15, 'heli')       -- flies, by the model table
+    spawn(11, RHINO, 19, 'automobile')   -- tank, by the model table
+    spawn(12, 0x0BADF00D, 19, 'automobile')  -- armed, by the class net
 
     local seen = {}
     for _, v in ipairs({ 10, 11, 12, 10 }) do
@@ -681,16 +770,35 @@ do
 end
 
 do
-    -- ARENA WAR, END TO END: ordinary class, ordinary type, refused only because
-    -- the model table names it. Thirty-three of the thirty-six are like this, so
-    -- if the model table were ever dropped in favour of "just use the class" the
-    -- whole roster would come back.
+    -- THE MODEL TABLE ALONE, END TO END: ordinary class, ordinary type, refused
+    -- only because the table names it. If the table were ever dropped in favour
+    -- of "just use the class" this whole shape comes back.
+    --
+    -- A DELUXO RATHER THAN THE ARENA WAR ROW THIS USED TO USE. The Nightmare
+    -- ZR380 is still in the table and still invisible to both nets, but #322
+    -- made the ARMED rows drivable, so it no longer ejects anybody -- see the
+    -- #322 block below, where it is asserted from the other side. The Deluxo is
+    -- the same structural case on the half of the rule that did not move: Sports
+    -- Classics, type `automobile`, and filed under FLIES because it hovers.
     reset()
-    spawn(10, ZR3803, 4, 'automobile')
+    spawn(10, DELUXO, 5, 'automobile')
     myVeh = 10
     tick()
     ok(did('leave') == 1,
-       'a Nightmare ZR380 is refused although no net would see it')
+       'a Deluxo is refused although no net would see it')
+end
+
+do
+    -- AND THE ROW THAT MOVED, FROM THE OTHER SIDE. Same model table, same
+    -- invisibility to both nets, opposite outcome -- because its row says ARMED
+    -- and the owner ruled that armed rows are driven with the gun off.
+    reset()
+    spawn(10, ZR3803, 4, 'automobile')
+    myVeh = 10
+    gunBool, gunHash = true, SEAT_GUN
+    tick()
+    ok(did('leave') == 0, 'a Nightmare ZR380 is not ejected any more', did('leave'))
+    ok(did('disable') == 1, 'its gun is switched off instead', did('disable'))
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -820,6 +928,412 @@ do
         end
     end
     ok(wrong == 0, 'every task is aimed at this player\'s own ped', wrong)
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+describe('driving one with the gun off (#322)')
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- ═══ THE OWNER'S RULING ═══
+--
+--   "only vehicles refused for being ARMED become drivable."
+--
+-- The ruling is BR.Config's and is covered in tools/test_shared.lua under
+-- `vehicles.disarmed`. What is asserted HERE is the four things that exist only
+-- in this file, each of which is silent when it is wrong:
+--
+--   1. THE ARGUMENT ORDER. DisableVehicleWeapon takes the FLAG FIRST, which is
+--      the opposite of every other vehicle native this file calls. Written from
+--      memory and got wrong, the engine is handed a vehicle handle where it
+--      wanted a boolean, does nothing anybody can see, and the gun keeps firing
+--      -- in a car the player is no longer ejected from, so the symptom is a
+--      working weapon rather than an error.
+--   2. THE HASH COMES FROM THE ENGINE AND GOES BACK UNTOUCHED. It is the only
+--      hash in this file not put through BR.NormHash, because it is not going
+--      into a table.
+--   3. THE BOOL IS NORMALISED. `0` is truthy in Lua and this repo has shipped
+--      that six times; here it would mean disabling a weapon on every seat that
+--      has none.
+--   4. IT AND THE EJECTION ARE MUTUALLY EXCLUSIVE. A Buzzard must never be
+--      disarmed instead of emptied, and the negative cases below are the point
+--      of the block.
+do
+    reset()
+    spawn(10, CARACARA2, 2, 'automobile')   -- Off-road: no net sees this model
+    myVeh = 10
+    gunBool, gunHash = true, SEAT_GUN
+    tick()
+
+    ok(did('leave') == 0 and did('clear') == 0,
+       'an armed row of the model table does not eject anybody',
+       ('%d leave, %d clear'):format(did('leave'), did('clear')))
+    ok(#notices == 0, 'and says nothing to the player', #notices)
+    ok(did('lock') == 0, 'and does not lock the doors behind them')
+
+    local d = acted('disable')
+    ok(#d == 1, 'the mounted weapon is disabled', #d)
+    -- POSITIONALLY, ALL FOUR. See the note on the stub.
+    ok(d[1] and d[1][1] == true, 'with the DISABLED FLAG FIRST, and true',
+       d[1] and tostring(d[1][1]))
+    ok(d[1] and d[1][2] == SEAT_GUN,
+       'then the hash the engine itself named, unaltered',
+       d[1] and tostring(d[1][2]))
+    ok(d[1] and d[1][3] == 10, 'then the vehicle', d[1] and tostring(d[1][3]))
+    ok(d[1] and d[1][4] == PED, 'then this player\'s own ped',
+       d[1] and tostring(d[1][4]))
+
+    local s = V.stats()
+    ok(s.disarmed == 1 and s.unnamedGun == 0, 'and it is counted',
+       ('disarmed=%d unnamedGun=%d'):format(s.disarmed, s.unnamedGun))
+end
+
+do
+    -- IT IS A LOOP AND NOT A ONE-SHOT. The call does not persist, and the seat's
+    -- weapon can change under us -- so it is re-asserted on every pass for as
+    -- long as somebody is sitting there.
+    reset()
+    spawn(10, TECHNICAL, 4, 'automobile')
+    myVeh = 10
+    gunBool, gunHash = true, SEAT_GUN
+    tick(4)
+    ok(did('disable') == 4, 'the disable is re-applied on every pass',
+       did('disable'))
+end
+
+do
+    -- AND THE RE-READ IS WHAT MAKES THAT WORTH DOING. A player switching to the
+    -- vehicle's second weapon gets the NEW hash disabled, which a file that
+    -- cached the first one would not do.
+    reset()
+    spawn(10, TECHNICAL, 4, 'automobile')
+    myVeh = 10
+    gunBool, gunHash = true, SEAT_GUN
+    tick()
+    gunHash = 0x4D3C9A11
+    tick()
+
+    local d = acted('disable')
+    ok(#d == 2 and d[1][2] == SEAT_GUN and d[2][2] == 0x4D3C9A11,
+       'a weapon switch mid-seat disables the weapon they switched TO',
+       d[2] and tostring(d[2][2]))
+end
+
+-- ═══ THE NEGATIVES, WHICH ARE THE REASON THIS BLOCK EXISTS ═══
+
+do
+    -- A BUZZARD IS EMPTIED, NOT DISARMED. Disabling a gun does not stop a
+    -- helicopter flying, and an implementation that treated every refusal as
+    -- disarmable would leave a player airborne in a refused aircraft with a
+    -- quiet minigun -- which looks, from the seat, exactly like the feature
+    -- working.
+    reset()
+    spawn(10, BUZZARD, 15, 'heli')
+    myVeh = 10
+    gunBool, gunHash = true, SEAT_GUN
+    tick(3)
+    ok(did('leave') > 0, 'a FLIES refusal still ejects', did('leave'))
+    ok(did('disable') == 0, 'and is never disarmed instead', did('disable'))
+end
+
+do
+    -- A RHINO IS EMPTIED. The owner ruled on this one by name.
+    reset()
+    spawn(10, RHINO, 19, 'automobile')
+    myVeh = 10
+    gunBool, gunHash = true, SEAT_GUN
+    tick(3)
+    ok(did('leave') > 0, 'a TANK refusal still ejects', did('leave'))
+    ok(did('disable') == 0, 'and a tank is never merely disarmed', did('disable'))
+end
+
+do
+    -- ═══ THE ONE THE WHOLE RULING TURNS ON ═══
+    --
+    -- A model in NO row of the table, class 19. The class net refuses it with
+    -- BR.Config.VehicleRefusal.ARMED -- the SAME STRING the model table's armed
+    -- rows carry, character for character. An implementation that decided on the
+    -- reason word rather than on which signal produced it passes every case
+    -- above and quietly makes every unknown piece of military hardware drivable.
+    -- There is no in-game symptom: an absent ejection looks like a clean server.
+    reset()
+    spawn(10, 0x0BADF00D, 19, 'automobile')
+    myVeh = 10
+    gunBool, gunHash = true, SEAT_GUN
+    tick(3)
+    ok(did('leave') > 0,
+       'a class-net ARMED refusal still ejects, although its reason word is '
+           .. 'identical to the rows that do not', did('leave'))
+    ok(did('disable') == 0, 'and is not disarmed', did('disable'))
+end
+
+-- ═══ THE BOOL, AND THE ZERO HASH ═══
+
+do
+    reset()
+    spawn(10, TECHNICAL, 4, 'automobile')
+    myVeh = 10
+    gunBool, gunHash = 1, SEAT_GUN          -- the native answered `number 1`
+    tick()
+    ok(did('disable') == 1, 'a BOOL of 1 is an answer', did('disable'))
+end
+
+for _, shape in ipairs({ 0, false }) do
+    -- `0` IS THE ONE THAT MATTERS. It is TRUTHY in Lua, so a file that wrote
+    -- `if answered then` would take "this seat has no vehicle weapon" for yes
+    -- and disable whatever was in the hash slot.
+    reset()
+    spawn(10, TECHNICAL, 4, 'automobile')
+    myVeh = 10
+    gunBool, gunHash = shape, SEAT_GUN
+    tick(2)
+    ok(did('disable') == 0,
+       ('a BOOL of %s is a refusal to answer, and nothing is disabled')
+           :format(tostring(shape)), did('disable'))
+    ok(V.stats().disarmed == 0,
+       ('and nothing is counted as disarmed (%s)'):format(tostring(shape)),
+       V.stats().disarmed)
+end
+
+do
+    -- A TRUE BOOL AND A ZERO HASH. A vehicle with no mounted gun answers zero,
+    -- and zero is truthy -- so without the explicit test this would hand the
+    -- engine 0 as a weapon hash, forever, on every pass.
+    reset()
+    spawn(10, TECHNICAL, 4, 'automobile')
+    myVeh = 10
+    gunBool, gunHash = true, 0
+    tick(2)
+    ok(did('disable') == 0, 'a hash of 0 is not a weapon', did('disable'))
+end
+
+do
+    -- THE SEAT THE NATIVE HAS NO OPINION ABOUT, WHICH IS THE FIRETRUCK CASE
+    -- WEARING A DIFFERENT MODEL. Nothing is disabled because there is nothing to
+    -- name; the pass must not throw and must not eject.
+    reset()
+    spawn(10, CARACARA2, 2, 'automobile')
+    myVeh = 10
+    throws.gun = true
+    heldBool, heldHash = true, ENGINE_GUN   -- and the engine put it in the hand
+    tick(2)
+    ok(did('disable') == 0, 'a native that throws disables nothing', did('disable'))
+    ok(did('leave') == 0, 'and does not turn into an ejection', did('leave'))
+    ok(V.stats().unnamedGun == 2, 'and is counted', V.stats().unnamedGun)
+end
+
+do
+    -- AND THE NATIVE SIMPLY NOT BEING ON THIS BUILD. `safe` answers nil for an
+    -- absent native exactly as it does for a throwing one, and a nil call here
+    -- would take the whole TICK pass down -- the ejection with it.
+    reset()
+    spawn(10, TECHNICAL, 4, 'automobile')
+    myVeh = 10
+    gunBool, gunHash = true, SEAT_GUN
+    local saved = DisableVehicleWeapon
+    DisableVehicleWeapon = nil
+    local pok = pcall(tick, 2)
+    DisableVehicleWeapon = saved
+    ok(pok, 'a build without DisableVehicleWeapon does not take the pass down')
+
+    -- AND THE COUNTER SAYS SO. This is the assertion the first version did not
+    -- make, and without it the readout was a lie in the one direction it is read
+    -- in: `disarmed` was incremented after a helper that answers nil BOTH for a
+    -- native that threw and for one it never called, under a doc comment
+    -- promising "calls that reached the native". An operator reading
+    -- `disarmed=600` on a build with no DisableVehicleWeapon would have
+    -- concluded the feature was working.
+    ok(V.stats().disarmed == 0,
+       'and nothing is counted as disarmed on a build that has no such native',
+       V.stats().disarmed)
+end
+
+-- ═══ THE `unnamed-gun` COUNTER, WHICH HAS TO MEAN THE FIRETRUCK AND NOT A
+--     DRIVER ═══
+--
+-- `disarm` runs for ANY seat by design, so "the seat named no gun" is the
+-- ORDINARY case: the driver of a Technical, an Insurgent or a Caracara has no
+-- vehicle weapon at all and would climb this counter ten times a second for the
+-- whole time they drive one normally. The first version of this file counted
+-- exactly that and printed it under a line telling the operator that a climbing
+-- number meant a missing StripExemptVehicles row.
+--
+-- What the firetruck actually was is BOTH HALVES AT ONCE: the seat names no gun
+-- AND the engine has put something in the hand that this gamemode issues nobody.
+
+do
+    -- THE ORDINARY DRIVER. Holding a rifle out of this gamemode's own arsenal,
+    -- in a disarmed vehicle whose driving seat names no gun. Nothing to disable,
+    -- nothing to report, and nothing to count.
+    reset()
+    spawn(10, TECHNICAL, 4, 'automobile')
+    myVeh = 10
+    gunBool, gunHash = false, 0
+    heldBool, heldHash = true, CARBINE
+    tick(5)
+    ok(V.stats().unnamedGun == 0,
+       'a driver holding an issued weapon is not the firetruck case',
+       V.stats().unnamedGun)
+end
+
+do
+    -- AND AN EMPTY HAND IS NOT IT EITHER. `0` is TRUTHY in Lua, so a counter
+    -- written as `if held then` counts every pass of every drive.
+    reset()
+    spawn(10, TECHNICAL, 4, 'automobile')
+    myVeh = 10
+    heldBool, heldHash = true, 0
+    tick(5)
+    ok(V.stats().unnamedGun == 0, 'nor is an empty hand', V.stats().unnamedGun)
+end
+
+do
+    -- THE FIRETRUCK. The seat names nothing and the hand holds a hash in no row
+    -- of BR.Config.WeaponByHash, which is the only pair that says this model
+    -- needs an answer of its own.
+    reset()
+    spawn(10, CARACARA2, 2, 'automobile')
+    myVeh = 10
+    gunBool, gunHash = false, 0
+    heldBool, heldHash = true, ENGINE_GUN
+    tick(3)
+    ok(V.stats().unnamedGun == 3,
+       'a gun the seat will not name, in the hand, in no row of ours, is',
+       V.stats().unnamedGun)
+    ok(did('disable') == 0, 'and there is still nothing to disable',
+       did('disable'))
+end
+
+do
+    -- THE PARACHUTE IS IN NO WEAPON ROW AND IS NOT A GUN. client/skydive.lua
+    -- grants it on purpose and client/inventory.lua's strip excuses it by hash;
+    -- counting it here would be counting our own grant as an engine fault.
+    reset()
+    spawn(10, TECHNICAL, 4, 'automobile')
+    myVeh = 10
+    heldBool, heldHash = true, BR.Config.Gadgets.PARACHUTE
+    tick(3)
+    ok(V.stats().unnamedGun == 0, 'nor is the parachute', V.stats().unnamedGun)
+end
+
+do
+    -- A HAND NATIVE THAT THROWS OR DECLINES TO ANSWER COUNTS NOTHING. This is a
+    -- diagnostic, and a silence that INFLATES it is worse than one that loses a
+    -- reading: the number is what an operator would act on.
+    for _, shape in ipairs({ 0, false }) do
+        reset()
+        spawn(10, TECHNICAL, 4, 'automobile')
+        myVeh = 10
+        heldBool, heldHash = shape, ENGINE_GUN
+        tick(2)
+        ok(V.stats().unnamedGun == 0,
+           ('a hand BOOL of %s is no opinion'):format(tostring(shape)),
+           V.stats().unnamedGun)
+    end
+
+    reset()
+    spawn(10, TECHNICAL, 4, 'automobile')
+    myVeh = 10
+    throws.held = true
+    local pok = pcall(tick, 2)
+    ok(pok and V.stats().unnamedGun == 0,
+       'and a hand native that throws does not take the pass down or count')
+end
+
+do
+    -- AN ORDINARY CAR IS NEVER ASKED WHAT IS IN THE HAND EITHER. The model test
+    -- in `disarm` is what keeps both natives off the path of every player in
+    -- every car in the match.
+    reset()
+    spawn(10, ADDER, 7, 'automobile')
+    myVeh = 10
+    heldBool, heldHash = true, ENGINE_GUN
+    tick(5)
+    ok(V.stats().unnamedGun == 0,
+       'an ordinary car counts nothing whatever is in the hand',
+       V.stats().unnamedGun)
+end
+
+-- ═══ WHAT IT COSTS, AND WHEN IT RUNS AT ALL ═══
+
+do
+    -- AN ORDINARY CAR IS NEVER ASKED WHAT GUN IT HAS. This is the assertion that
+    -- fails if the model test is ever dropped out of `disarm` -- two natives per
+    -- pass for every player in every car in the match, on the band this project
+    -- keeps its performance contract in.
+    reset()
+    spawn(10, ADDER, 7, 'automobile')
+    myVeh = 10
+    tick(5)
+    ok(reads.gun == 0, 'an ordinary car is never asked what gun it has', reads.gun)
+    ok(#acts == 0, 'and nothing is done to it at all', #acts)
+end
+
+do
+    -- NOR IS A BARRACKS, WHICH IS CLASS 19 AND ALLOWED. Allowed is not the same
+    -- as disarmed, and the class-net exemption must not become a disable.
+    reset()
+    spawn(10, BARRACKS, 19, 'automobile')
+    myVeh = 10
+    tick(3)
+    ok(reads.gun == 0, 'nor is a Barracks, which is allowed and unarmed', reads.gun)
+end
+
+do
+    -- NOR IS SOMEBODY STILL CLIMBING IN. There is no seat yet, so there is no
+    -- mounted weapon to name and nothing to hold off.
+    reset()
+    spawn(10, CARACARA2, 2, 'automobile')
+    entering, myVeh = 10, 0
+    gunBool, gunHash = true, SEAT_GUN
+    tick(3)
+    ok(did('disable') == 0, 'nor is a player still climbing in', did('disable'))
+    ok(#acts == 0, 'and the entry is not interfered with either', #acts)
+end
+
+do
+    -- IT IS ON THE TICK BAND. Stepping FRAME must do nothing at all -- this file
+    -- registers one callback and it is not there. A FRAME loop would be two
+    -- natives every frame for every player sitting in one of these; TICK's cost
+    -- is a tenth of a second of a gun whose shots server/damage.lua refuses
+    -- anyway.
+    reset()
+    spawn(10, TECHNICAL, 4, 'automobile')
+    myVeh = 10
+    gunBool, gunHash = true, SEAT_GUN
+    BR.Loop.step(BR.Loop.FRAME)
+    BR.Loop.step(BR.Loop.FRAME)
+    ok(did('disable') == 0, 'nothing happens on the FRAME band', did('disable'))
+    tick()
+    ok(did('disable') == 1, 'and one pass of TICK is what does it', did('disable'))
+end
+
+for _, st in ipairs({ BR.PlayerState.BUS, BR.PlayerState.FREEFALL,
+                      BR.PlayerState.DBNO, BR.PlayerState.OUT }) do
+    -- THE SAME GATE THE EJECTION HAS, and it is the same gate on purpose: the
+    -- states this file stands down in are the ones where the gamemode is
+    -- carrying the player or they are past playing, and neither is a state in
+    -- which somebody is working a vehicle turret.
+    reset()
+    spawn(10, TECHNICAL, 4, 'automobile')
+    myVeh = 10
+    gunBool, gunHash = true, SEAT_GUN
+    BR.State.me.state = st
+    tick(3)
+    ok(did('disable') == 0,
+       ('nothing is disarmed in state %s'):format(tostring(st)), did('disable'))
+end
+
+do
+    -- AND WARMUP IS, because the showroom sells the Caracara and the warmup is
+    -- where it is bought and driven.
+    reset()
+    spawn(10, CARACARA2, 2, 'automobile')
+    myVeh = 10
+    gunBool, gunHash = true, SEAT_GUN
+    BR.State.me.state = BR.PlayerState.WARMUP
+    tick()
+    ok(did('disable') == 1, 'but WARMUP disarms, where the Caracara is bought',
+       did('disable'))
 end
 
 do

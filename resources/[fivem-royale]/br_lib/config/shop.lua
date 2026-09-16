@@ -44,7 +44,7 @@
 --
 -- config/vehicles.lua is a list of vehicles the gamemode REFUSES -- anything
 -- that flies or carries built-in weapons -- and every row here is put through
--- BR.Config.IsAllowedVehicle at load. A refused model is dropped from the
+-- BR.Config.VehicleRefusalFor at load. A refused model is dropped from the
 -- catalogue with a line on the console, because the alternative is a car that
 -- stands in the showroom, wears a price, takes somebody's Volts and then cannot
 -- be delivered -- and answer 3 below says a purchase is never refunded.
@@ -1159,19 +1159,43 @@ BR.Config.Shop = {
 --- model the client thinks is sellable and the server does not is a plate on a
 --- car nobody can buy; the other way round is worse.
 ---
---- CALLED, NEVER RUN AT LOAD. GetHashKey is a native and BR.Config.IsAllowedVehicle
---- lives in a sibling config file loaded by the same glob, so neither is
---- reachable while this file is being read. Same reason client/ambheal.lua
---- resolves its model set on first use.
+--- CALLED, NEVER RUN AT LOAD. GetHashKey is a native and
+--- BR.Config.VehicleRefusalFor lives in a sibling config file loaded by the same
+--- glob, so neither is reachable while this file is being read. Same reason
+--- client/ambheal.lua resolves its model set on first use.
+---
+--- ═══ IT ASKS THE RULING, NOT THE TABLE, AND #322 IS WHY THAT DISTINCTION IS
+---     NOW LOAD-BEARING ═══
+---
+--- This used to call BR.Config.IsAllowedVehicle, which is the raw model-table
+--- lookup: is this hash in the refused list. That was the same answer as the
+--- ruling right up until the owner's #322 ruling made an ARMED row drivable
+--- rather than refused -- and the very first row it applies to is one of THIS
+--- CATALOGUE'S. `caracara2` was written into the refused table by #322 because
+--- it carries a mounted gun that no signal in the tree could see, and the
+--- unchanged predicate would have answered "refused" and quietly deleted the
+--- Vapid Caracara 4x4 from the showroom: a car the owner priced at 750 Volts and
+--- placed by hand, gone from the plate list with one line in the console.
+---
+--- BR.Config.VehicleRefusalFor is the one place the question is asked -- its
+--- header says so and names the callers -- so asking it here is what keeps this
+--- end agreeing with the two that eject and detect. NO SIGNALS ARE PASSED, and
+--- there are none to pass: a catalogue row is a model NAME, resolved at load,
+--- with no entity in the world to read a type or a class off. The model table is
+--- the whole of the answer a catalogue can get, which is what it always was.
+---
+--- IT IS STILL A REFUSAL FOR EVERYTHING ELSE. A Buzzard, a Rhino or an
+--- Oppressor in this catalogue is dropped exactly as before -- the ruling leaves
+--- FLIES and TANK alone, and the Oppressors are filed under FLIES.
 --- @param model string
 --- @return string|nil why   nil when the model is fine
 function BR.Config.Shop.refusedReason(model)
-    if not BR.Config.IsAllowedVehicle then return nil end
+    if not BR.Config.VehicleRefusalFor then return nil end
     local ok, hash = pcall(GetHashKey, model)
     if not ok then return 'model name could not be hashed' end
-    local allowed, why = BR.Config.IsAllowedVehicle(hash)
-    if allowed then return nil end
-    return why or 'refused'
+    local why = BR.Config.VehicleRefusalFor(hash)
+    if why == nil then return nil end
+    return why
 end
 
 --- REGISTERED RATHER THAN APPENDED, AND CALLED RATHER THAN RUN AT LOAD.

@@ -9536,6 +9536,236 @@ do
         printedSaying('pistol') or 'no row')
 end
 
+describe('damage.vehicle-gun')
+do
+    -- ═══ THE DEFECT (#322): AN ANTICHEAT CASE FOR SITTING IN A CAR HE SELLS ═══
+    --
+    -- The owner's ruling made the ARMED rows of the model table DRIVABLE, with
+    -- their gun switched off by client/vehrefuse.lua rather than the player
+    -- being thrown out. Before it, nobody was in one of those seats for longer
+    -- than a tenth of a second and none of this was reachable. Now they sit
+    -- there all match.
+    --
+    -- The disable is a CLIENT-SIDE native and it is best effort three ways over:
+    -- it may not persist between passes, it has no opinion about some turret
+    -- seats, and it is absent on some builds. Each of those ends with the engine
+    -- putting the vehicle's own gun in an honest hand -- and a mounted weapon
+    -- hash is in no row of BR.Config.WeaponByHash, so the shot refused as
+    -- NO_WEAPON is means-class, graded `high`, with a bar of TWO. Two landed
+    -- hits in one match opened a case about somebody who bought a Caracara.
+    --
+    -- EVERYTHING HERE GOES THROUGH THE REAL HANDLER AND THE REAL
+    -- server/vehicles.lua, seats and all, because the wiring is the fault: the
+    -- pure function was already right and being asked the wrong question.
+    local PISTOL   = 0x1B06D571
+    local MOUNTED  = 0xE2822A29    -- VEHICLE_WEAPON_PLAYER_BUZZARD: in no row
+    local CARBINE  = 0x83BF0278    -- WEAPON_CARBINERIFLE: one of OURS
+
+    local function twoAlive()
+        reset()
+        queueUp(1, 'A', BR.Mode.SOLO.key)
+        queueUp(2, 'B', BR.Mode.SOLO.key)
+        fakeTime = fakeTime + 300
+        BR.Sched.step(fakeTime)
+        BR.Roster.setState(1, BR.PlayerState.ALIVE)
+        BR.Roster.setState(2, BR.PlayerState.ALIVE)
+        BR.Roster.get(1).squadId = 11
+        BR.Roster.get(2).squadId = 22
+        BR.Roster.get(1).pos = { x = 0.0, y = 0.0, z = 30.0 }
+        BR.Roster.get(2).pos = { x = 10.0, y = 0.0, z = 30.0 }
+        BR.Damage.forget(1)
+        BR.Damage.forgetRefusals(1)
+        BR.Inv.reset(1)
+        BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON,
+                         rarity = 1, count = 1, clip = 12 })
+        BR.Inv.of(1).active = 1
+    end
+
+    local function shoot(weapon)
+        fakeTime = fakeTime + 5000
+        fire('weaponDamageEvent', 1, 1, {
+            damageType = 3, weaponType = weapon or PISTOL, hitComponent = 3,
+            weaponDamage = 26, hitGlobalIds = { 1002 },
+        })
+    end
+
+    --- What the anticheat announced about this player, if anything.
+    ---
+    --- READ OFF THE WIRE RATHER THAN OUT OF A COUNTER, because the wire is what
+    --- costs somebody a case: `br:ringmaster:refusal` is the event
+    --- server/incident.lua turns into a moderation record. A test that read an
+    --- internal tally would pass while the announcement went out anyway.
+    local function announced()
+        return firedOf('br:ringmaster:refusal')[1]
+    end
+
+    -- ═══ ON FOOT, WHICH IS THE OUTCOME THAT MUST NOT MOVE ═══
+    --
+    -- The same hash from a player standing in a field is still a weapon nobody
+    -- issued them, and it still counts. If this case ever goes quiet the guard
+    -- has stopped being about vehicles.
+    -- TWO OF THEM, because NO_WEAPON is the catch-all and carries a bar of TWO
+    -- (BR.ShotBarOverride). One is under the bar and would prove nothing either
+    -- way; the second is the one that opens the case.
+    twoAlive()
+    fired = {}
+    shoot(MOUNTED)
+    printed = {}
+    runCommand('brshots', '1')
+    ok(printedSaying('NO_WEAPON') ~= nil,
+        'a mounted-gun hash from a player on foot is still NO_WEAPON',
+        printedSaying('age') or 'no row')
+    shoot(MOUNTED)
+    local a = announced()
+    ok(a and a.reasons and a.reasons[BR.ShotRefusal.NO_WEAPON] == 2,
+        'and two of them still open an anticheat case',
+        a and tostring(a.reasons[BR.ShotRefusal.NO_WEAPON]) or 'nothing announced')
+
+    -- ═══ AND THE SAME SHOT FROM THE SEAT OF A CAR WE DISARMED ═══
+    twoAlive()
+    fired = {}
+    local refusedBefore = BR.Damage.refusals or 0
+    local countedBefore = BR.Damage.vehicleGuns or 0
+    setModel(7, 'technical')
+    drive(1, 7)
+    shoot(MOUNTED)
+    printed = {}
+    runCommand('brshots', '1')
+    ok(printedSaying('VEHICLE_GUN') ~= nil,
+        'the same hash, fired from a Technical, is the CAR\'s gun',
+        printedSaying('age') or 'no row')
+
+    -- IT IS STILL REFUSED. The excuse is about WHO IS ACCUSED, never about
+    -- whether a weapon we do not issue may hurt somebody.
+    ok((BR.Damage.refusals or 0) == refusedBefore + 1,
+        'the shot is still refused, so nothing is applied to the victim',
+        tostring(BR.Damage.refusals))
+    ok((BR.Damage.vehicleGuns or 0) == countedBefore + 1,
+        'the server counts it, which is the only unforgeable reading of '
+            .. 'whether the client-side disable held',
+        tostring(BR.Damage.vehicleGuns))
+
+    -- FOUR MORE, WELL PAST EVERY BAR IN THE TABLE, AND STILL NOBODY IS ACCUSED.
+    shoot(MOUNTED); shoot(MOUNTED); shoot(MOUNTED); shoot(MOUNTED)
+    ok(announced() == nil,
+        'and five of them in one match open no case at all against the player '
+            .. 'sitting in it',
+        announced() and 'a refusal was announced' or 'nothing announced')
+
+    -- ═══ A PASSENGER IS IN THE VEHICLE TOO, because the gun is in the BED ═══
+    twoAlive()
+    setModel(7, 'technical')
+    drive(1, 7, 2)
+    shoot(MOUNTED)
+    printed = {}
+    runCommand('brshots', '1')
+    ok(printedSaying('VEHICLE_GUN') ~= nil,
+        'and so is the gunner in the back, which is the seat with the gun in it')
+
+    -- ═══ THE THREE WAYS THIS COULD BE A HOLE ═══
+
+    -- 1. A WEAPON WE DO ISSUE IS JUDGED EXACTLY AS BEFORE. Everything a trainer
+    --    is worth granting is in this gamemode's own arsenal, so a guard that
+    --    excused any weapon in the seat would be a sixty-model hiding place.
+    twoAlive()
+    fired = {}
+    setModel(7, 'technical')
+    drive(1, 7)
+    shoot(CARBINE)
+    printed = {}
+    runCommand('brshots', '1')
+    ok(printedSaying('NOT_HELD') ~= nil,
+        'a carbine conjured in that same seat is refused as the means it is',
+        printedSaying('age') or 'no row')
+    local a2 = announced()
+    ok(a2 and a2.reasons and a2.reasons[BR.ShotRefusal.NOT_HELD] == 1,
+        'and opens a case on the first one, with its bar of one',
+        a2 and 'wrong tally' or 'nothing announced')
+
+    -- 2. A REFUSED VEHICLE IS NOT A DISARMED ONE. A Buzzard is EMPTIED by
+    --    client/vehrefuse.lua, so nobody is sitting in one to be excused --
+    --    and an implementation that keyed on "is in some vehicle", or on the
+    --    reason word ARMED rather than on the ruling, passes every case above.
+    twoAlive()
+    setModel(7, 'buzzard')
+    drive(1, 7)
+    shoot(MOUNTED)
+    printed = {}
+    runCommand('brshots', '1')
+    ok(printedSaying('NO_WEAPON') ~= nil,
+        'a Buzzard is not a disarmed vehicle, so the excuse does not apply',
+        printedSaying('age') or 'no row')
+
+    -- 3. NOR IS AN ORDINARY CAR. Allowed is not disarmed.
+    twoAlive()
+    setModel(7, 'granger')
+    drive(1, 7)
+    shoot(MOUNTED)
+    printed = {}
+    runCommand('brshots', '1')
+    ok(printedSaying('NO_WEAPON') ~= nil,
+        'nor is an ordinary car', printedSaying('age') or 'no row')
+
+    -- ═══ WHAT IT COSTS, WHICH IS A REAL DECISION AND NOT A DETAIL ═══
+    --
+    -- The seat read is up to ten server-side natives and it sits in the handler
+    -- for an event a hostile client chooses the size and rate of. Two bounds
+    -- keep it off everything that matters, and both are invisible if only the
+    -- verdict is measured -- so they are measured directly.
+    do
+        local realAsk = GetVehiclePedIsIn
+        local asks = 0
+        GetVehiclePedIsIn = function(...) asks = asks + 1; return realAsk(...) end
+
+        -- 1. A WEAPON WE ISSUE IS NEVER ASKED ABOUT. Every real gunfight in
+        --    every match takes this path, and `fired ~= nil` is what keeps the
+        --    natives off it entirely.
+        twoAlive()
+        setModel(7, 'technical')
+        drive(1, 7)
+        asks = 0
+        shoot(PISTOL)
+        ok(asks == 0,
+            'an ordinary shot from a weapon we issue never asks what the '
+                .. 'shooter is sitting in', asks)
+
+        -- 2. ONCE PER EVENT, NOT ONCE PER VICTIM. One rocket can list a dozen
+        --    people and the shooter is in one seat for all of them -- and that
+        --    list is exactly what a manufactured event chooses the length of.
+        queueUp(3, 'C', BR.Mode.SOLO.key)
+        fakeTime = fakeTime + 300
+        BR.Sched.step(fakeTime)
+        BR.Roster.setState(3, BR.PlayerState.ALIVE)
+        BR.Roster.get(3).squadId = 33
+        BR.Roster.get(3).pos = { x = 11.0, y = 0.0, z = 30.0 }
+        drive(1, 7)
+        asks = 0
+        fakeTime = fakeTime + 5000
+        fire('weaponDamageEvent', 1, 1, {
+            damageType = 3, weaponType = MOUNTED, hitComponent = 3,
+            weaponDamage = 26, hitGlobalIds = { 1002, 1003 },
+        })
+        ok(asks == 1, 'and one event that hits two people asks once', asks)
+
+        GetVehiclePedIsIn = realAsk
+    end
+
+    -- ...AND THE PLAYER WHO GOT OUT IS NOT EXCUSED FOR THE REST OF THE MATCH.
+    -- citizenfx/fivem#4006: server-side GetVehiclePedIsIn goes on naming the
+    -- Technical forever, and `stepOut` models exactly that -- the ped's answer
+    -- is left behind and the seat is emptied.
+    twoAlive()
+    setModel(7, 'technical')
+    drive(1, 7)
+    stepOut(7)
+    shoot(MOUNTED)
+    printed = {}
+    runCommand('brshots', '1')
+    ok(printedSaying('NO_WEAPON') ~= nil,
+        'and a player who got OUT of it is judged on foot again, which is the '
+            .. '#4006 workaround doing its job', printedSaying('age') or 'no row')
+end
+
 describe('damage.brtestfire')
 do
     -- THE LEVER THAT MAKES THE OTHER THREE REASONS FIREABLE ON PURPOSE, and

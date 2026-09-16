@@ -2552,6 +2552,27 @@ local function newTimelineWorld()
     -- server/inventory.lua is needed to answer "is this weapon theirs".
     BRs.Inv = { of = function(src) return S.invs[src] end }
 
+    -- WHO IS SITTING IN A VEHICLE #322 DISARMED, keyed on the PED rather than on
+    -- the src, because that is the argument server/strip.lua passes -- and
+    -- passing the src instead is the bug this stub exists to catch. The real
+    -- BR.Vehicles.inDisarmedVehicle is two seat reads and a model lookup and is
+    -- driven against the real server/vehicles.lua in tools/test_shared.lua
+    -- (`vehicles.detector`), including the citizenfx/fivem#4006 workaround it
+    -- turns on. What is worth asserting HERE is the WIRING: that this file asks
+    -- at all, asks with the right handle, and pairs the answer with the weapon
+    -- table rather than excusing everything in the seat.
+    S.inDisarmed, S.inDisarmedAsks = {}, 0
+    BRs.Vehicles = {
+        inDisarmedVehicle = function(ped)
+            -- COUNTED, because the cost of asking is part of the contract: a
+            -- report refused by this guard leaves the throttle window closed, so
+            -- it sits on the one path a client may repeat as fast as it can
+            -- send, and the real answer is up to ten natives.
+            S.inDisarmedAsks = S.inDisarmedAsks + 1
+            return S.inDisarmed[ped] == true
+        end,
+    }
+
     -- THE ADMIN GRANT. `holds` is genuinely three-valued in server/grants.lua
     -- and server/strip.lua's exemption turns on that, so a stub that collapsed
     -- it to a boolean would test a rule this project does not have.
@@ -2633,6 +2654,11 @@ local function newTimelineWorld()
             -- lobby ped or a corpse -- the hand it is about is not one this
             -- gamemode fills in either state.
             state = BRs.PlayerState.ALIVE,
+            -- THE SAMPLED PED, which is the handle server/strip.lua asks the
+            -- vehicle question with. Deliberately NOT equal to the src: the two
+            -- are different numbers on a real server and a fixture that made
+            -- them equal would pass a file that asked with the wrong one.
+            ped = 1000 + src,
         }
         S.licenses[src] = license
         -- READ, AND NOT AN ADMIN. The default for a joined player, because the
@@ -2646,6 +2672,13 @@ local function newTimelineWorld()
 
     --- This license holds the console grant.
     function W.admin(license) S.grants[license] = true end
+
+    --- This player is sitting in a vehicle the #322 ruling drives with its gun
+    --- switched off.
+    function W.seatedInDisarmed(src, yes)
+        local e = S.roster[src]
+        S.inDisarmed[e and e.ped] = (yes ~= false)
+    end
 
     --- What the SERVER believes is in this player's five slots.
     function W.carrying(src, items)
@@ -4142,6 +4175,112 @@ do
     ok(p and type(p.summary) == 'string' and p.summary:find('2 unissued') ~= nil,
         'and the queue line counts two offences, not four',
         p and tostring(p.summary))
+end
+
+describe('strip.the-cars-own-gun-is-not-evidence')
+do
+    -- ═══ THE SECOND FALSE POSITIVE, AND #322 IS WHAT MADE IT REACHABLE ═══
+    --
+    -- A firetruck, fifteen minutes, 149 strips and a high severity case against
+    -- somebody using the hose (owner, 2026-09-15). The owner's #322 ruling then
+    -- made the ARMED rows of the model table DRIVABLE instead of ejecting the
+    -- player within one 100 ms pass -- so those seats are occupied for whole
+    -- matches now, in about sixty models, one of which is on sale in the
+    -- showroom for 750 Volts.
+    --
+    -- The gun is held off on the CLIENT, and that is best effort by
+    -- construction: the native may not persist between passes, may have no
+    -- opinion about a turret seat, and is absent on some builds. Every one of
+    -- those ends with the ENGINE putting the car's own gun in an honest hand,
+    -- our own TICK loop taking it out ten times a second, and the second report
+    -- opening a case. The issue's acceptance criterion is that it does not.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:driver', 'Driver')
+    W.seatedInDisarmed(1)
+
+    W.at(4000); W.strip(1, CONJURED)
+    W.at(5000); W.strip(1, CONJURED)
+    ok(#W.S.incidents == 0,
+        'a hash we issue nobody, stripped from somebody sitting in a vehicle we '
+            .. 'disarmed, opens no case', #W.S.incidents)
+    ok(W.BR.Strip.stats().vehicleGuns == 2,
+        'and is counted as the engine handing them their own car\'s gun',
+        W.BR.Strip.stats().vehicleGuns)
+
+    -- COUNTED SEPARATELY FROM `races`, because the two say different things: a
+    -- race is our own two inventory mirrors disagreeing, this is the client-side
+    -- weapon disable not holding. An operator reading one as the other would
+    -- chase the wrong bug.
+    ok(W.BR.Strip.stats().races == 0, 'and not as a race',
+        W.BR.Strip.stats().races)
+
+    -- IT DOES NOT COUNT TOWARD THE BAR EITHER, which is the half a guard written
+    -- as "do not announce" would get wrong: the case would open on the next
+    -- genuine strip with the car's gun already in the count.
+    ok(W.BR.Strip.stats().counted == 0, 'and counts toward nothing',
+        W.BR.Strip.stats().counted)
+
+    -- AND A FLOOD BUYS ONE SEAT READ PER WINDOW, NOT ONE PER MESSAGE. A report
+    -- refused here leaves the throttle window CLOSED -- deliberately, so a
+    -- refusal that costs nothing cannot swallow a genuine strip a moment later
+    -- -- which puts this guard on the one path a client can repeat freely. The
+    -- hash lookup is free; the seat read is up to ten natives and is memoised.
+    -- PAST THE PREVIOUS WINDOW, so the first of these twenty genuinely re-reads
+    -- and the other nineteen are the thing being measured.
+    local asksBefore = W.S.inDisarmedAsks
+    W.at(6000)
+    for _ = 1, 20 do W.strip(1, CONJURED) end
+    ok(W.S.inDisarmedAsks == asksBefore + 1,
+        'twenty reports inside one window cost ONE seat read',
+        ('%d -> %d'):format(asksBefore, W.S.inDisarmedAsks))
+    ok(#W.S.incidents == 0, 'and still open no case', #W.S.incidents)
+end
+
+describe('strip.the-seat-excuses-the-cars-gun-and-nothing-else')
+do
+    -- ═══ THE TWO WAYS THIS GUARD COULD BE A HOLE, BOTH ASSERTED ═══
+    --
+    -- Everything a trainer is actually worth granting is in this gamemode's OWN
+    -- arsenal -- it is a battle royale loot table: rifles, shotguns, snipers,
+    -- the RPG, the minigun, the railgun -- so a guard that excused any weapon in
+    -- the seat would hand a cheat a sixty-model hiding place. The hash has to be
+    -- one we issue NOBODY, which is the shape a VEHICLE_WEAPON_* hash has.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+    W.seatedInDisarmed(1)
+    -- Carrying nothing, so the carbine is not theirs by any reading.
+    W.carrying(1, {})
+
+    W.at(4000); W.strip(1, CARBINE)
+    W.at(5000); W.strip(1, CARBINE)
+    ok(#W.S.incidents == 1,
+        'a weapon this gamemode DOES issue is filed from that seat exactly as '
+            .. 'it is on foot', #W.S.incidents)
+    ok(W.BR.Strip.stats().vehicleGuns == 0, 'and is not excused as a car gun',
+        W.BR.Strip.stats().vehicleGuns)
+end
+
+describe('strip.on-foot-is-not-in-a-car')
+do
+    -- AND THE EXCUSE DOES NOT FOLLOW THEM OUT OF THE CAR. This is
+    -- citizenfx/fivem#4006 in the dangerous direction: server-side
+    -- GetVehiclePedIsIn names a vehicle for anybody who has ever driven one, so
+    -- an implementation that read it bare would excuse a player for the rest of
+    -- the match from their first lift. The workaround lives in
+    -- server/vehicles.lua and is asserted against the real thing in
+    -- tools/test_shared.lua; what this pins is that a NO from it files.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+    W.seatedInDisarmed(1, false)
+
+    W.at(4000); W.strip(1, CONJURED)
+    W.at(5000); W.strip(1, CONJURED)
+    ok(#W.S.incidents == 1,
+        'the same hash from a player on foot files exactly as it always did',
+        #W.S.incidents)
 end
 
 describe('strip.flood-is-bounded')

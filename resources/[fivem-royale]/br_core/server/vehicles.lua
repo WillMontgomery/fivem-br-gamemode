@@ -351,7 +351,7 @@ end
 --- refusal silently becoming permission, which is the single failure this file
 --- is least able to notice.
 ---
---- nil IS THE SAFE ANSWER and BR.Config.IsAllowedVehicle takes it as "allowed".
+--- nil IS THE SAFE ANSWER and BR.Config.VehicleRefusalFor takes it as "allowed".
 --- Same polarity that function documents: a model the engine could not report
 --- files nothing, rather than opening a case every time a handle goes bad.
 --- @param entity integer
@@ -1207,6 +1207,55 @@ function BR.Vehicles.ridingIn(ped)
     return nil
 end
 
+--- Is this ped sitting in a vehicle the gamemode DRIVES WITH ITS GUN OFF?
+---
+--- ═══ THE DEFECT THIS EXISTS FOR (#322, and it is a case, not a crash) ═══
+---
+--- The owner's ruling made the ARMED rows of the model table drivable, so a
+--- player now sits in a Technical or a Caracara for a whole match instead of
+--- being emptied out of it within one 100 ms pass. The gun is held off on the
+--- CLIENT (client/vehrefuse.lua), which is best effort by construction -- the
+--- native may not persist between passes, may not answer for a turret seat, and
+--- is simply absent on some builds. Every one of those failures ends with the
+--- engine putting the vehicle's own gun in an honest player's hand.
+---
+--- What that used to cost was nothing, because nobody was ever in the seat. What
+--- it costs now is an ANTICHEAT CASE: the mounted hash is in no row of
+--- BR.Config.WeaponByHash, so a shot from it reads as NO_WEAPON (high, bar of
+--- two) and a strip report reads as a conjured weapon. The issue's acceptance
+--- criterion is that neither happens for sitting in one of these, and this
+--- function is how the two files that file cases ask.
+---
+--- ═══ IT IS THE RULING'S OWN SET AND NOTHING WIDER ═══
+---
+--- BR.Config.IsDisarmedVehicle is the same predicate client/vehrefuse.lua
+--- disables on, so the vehicles excused here are exactly the vehicles this
+--- gamemode switched the gun off in. A Buzzard, a Rhino and every model refused
+--- by the class net answer false: those are still ejected, so nobody is sitting
+--- in one to be excused.
+---
+--- ═══ ASKED THROUGH `ridingIn`, WHICH IS THE #4006 WORKAROUND ═══
+---
+--- A bare `GetVehiclePedIsIn(ped, false) ~= 0` answers a vehicle for anybody who
+--- has ever driven one -- citizenfx/fivem#4006, still open -- and here that is
+--- the DANGEROUS direction: it would excuse the weapon refusals of every player
+--- on the map who once sat in a Technical. `ridingIn` settles it against the
+--- vehicle's own seats, and both callers fail CLOSED on its nil.
+---
+--- A MODEL THE ENGINE WOULD NOT REPORT IS NOT AN EXCUSE. `modelOf` answers nil
+--- for a stale handle and BR.Config.IsDisarmedVehicle answers false for nil, so
+--- a bad read leaves the anticheat exactly as it was.
+--- @param ped integer|nil
+--- @return boolean
+function BR.Vehicles.inDisarmedVehicle(ped)
+    if not (BR.Config and BR.Config.IsDisarmedVehicle) then return false end
+
+    local veh = BR.Vehicles.ridingIn(ped)
+    if veh == nil then return false end
+
+    return BR.Config.IsDisarmedVehicle(modelOf(veh))
+end
+
 --- How far above or below a driver may be and still have hit this player.
 ---
 --- A CAR ON THE BRIDGE OVERHEAD IS NOT RUNNING YOU OVER. The horizontal radius is
@@ -1517,7 +1566,20 @@ local DEFAULT_MODEL = 'granger'
 --- @return number|nil veh, number|nil netId, string|nil why
 function BR.Vehicles.spawnOwned(model, vtype, x, y, z, heading, forSrc, bucket)
     local hash = type(model) == 'number' and model or GetHashKey(model)
-    if BR.Config.IsAllowedVehicle and not BR.Config.IsAllowedVehicle(hash) then
+    -- THE RULING, NOT THE RAW TABLE, AND #322 IS WHY THE TWO ARE NO LONGER THE
+    -- SAME ANSWER. This asked BR.Config.IsAllowedVehicle -- "is this hash in the
+    -- refused list" -- which stopped meaning "this gamemode will not have one"
+    -- the day an ARMED row became drivable with its gun switched off. The
+    -- catalogue in config/shop.lua sells one of those (`caracara2`, 750 Volts)
+    -- and every purchased car is built HERE, so the two must agree or a player
+    -- pays for a Caracara and this function declines to make it -- a purchase
+    -- that succeeds and goods that do not exist, which shop_solve.lua's own
+    -- header calls out as the failure its catalogue check exists to prevent.
+    --
+    -- NO SIGNALS, AND NONE TO GIVE: nothing has been created yet, so there is no
+    -- entity to read a type off. The model table is the whole answer, as it was.
+    if BR.Config.VehicleRefusalFor
+       and BR.Config.VehicleRefusalFor(hash) ~= nil then
         return nil, nil, 'the allowlist refuses that model'
     end
 
@@ -1679,8 +1741,11 @@ local SPAWN_AHEAD_M = 5.0
 ---
 --- ═══ IT SPAWNS ONLY WHAT THE GAMEMODE ALREADY TOLERATES ═══
 ---
---- The model goes through BR.Config.IsAllowedVehicle FIRST, and a refused one is
---- refused HERE, before anything is created.
+--- The model goes through BR.Config.VehicleRefusalFor FIRST, and a refused one
+--- is refused HERE, before anything is created. That is the RULING and not the
+--- raw model table, which stopped being the same answer when #322 made an ARMED
+--- row drivable with its gun switched off: `spawnOwned` below asks the same
+--- function, so this verb cannot refuse a model the purchase path would build.
 ---
 --- THAT PRE-CHECK IS NOW THE ONLY THING THERE IS, AND THE REWRITE IS WHY. The
 --- old note here said a refused model would reach the detector at the top of
@@ -1797,8 +1862,11 @@ RegisterCommand('brcar', function(src, args)
     end
 
     local hash = GetHashKey(model)
-    local allowed, why = BR.Config.IsAllowedVehicle(hash)
-    if not allowed then
+    -- ASKED THE WAY `spawnOwned` BELOW ASKS IT, so this verb cannot refuse a
+    -- model the spawn path would have built. An ARMED row of the model table is
+    -- drivable under #322 and both of them now say so.
+    local why = BR.Config.VehicleRefusalFor(hash)
+    if why ~= nil then
         print(('  REFUSED %s -- %s'):format(model, tostring(why)))
         print('  This gamemode opens a case about that model when a CLIENT puts')
         print('  one in a match, so the console does not get to put one there')

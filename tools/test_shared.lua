@@ -1284,6 +1284,39 @@ do
     ok(why == BR.ShotRefusal.NO_WEAPON,
         'a weapon we never issued is refused', tostring(why))
 
+    -- ═══ ...AND THE SAME HASH FROM A DISARMED VEHICLE'S SEAT IS A DIFFERENT
+    --     THING (#322) ═══
+    --
+    -- The owner's ruling drives the armed vehicles with their gun switched off
+    -- rather than ejecting the player, so a mounted weapon in an honest hand is
+    -- now reachable: the disable is a client-side native that can fail to
+    -- persist or have no opinion about a turret seat. The hash is in no row of
+    -- ours either way, so the shot is REFUSED either way and nothing is applied
+    -- -- what changes is that this one accuses nobody.
+    --
+    -- BOTH DIRECTIONS FROM ONE CONTEXT, because the flag alone proves nothing:
+    -- a version that returned VEHICLE_GUN for every refusal, or that ignored the
+    -- flag, passes half of this.
+    local okVeh, whyVeh = BR.ValidateShot(
+        { weapon = 0xDEADBEEF, dist = 50.0, sinceLastMs = 500 },
+        ctx({ vehicleGun = true }), cfg)
+    ok(okVeh == false and whyVeh == BR.ShotRefusal.VEHICLE_GUN,
+        'the same hash, fired from a seat in a vehicle we disarmed, is the '
+            .. 'CAR\'s gun -- still refused, but not a means', tostring(whyVeh))
+    ok(not BR.ShotSuspicious[BR.ShotRefusal.VEHICLE_GUN]
+        and BR.ShotTier[BR.ShotRefusal.VEHICLE_GUN] == nil,
+        'and it counts toward nothing and grades nothing')
+
+    -- THE FLAG DOES NOT EXCUSE A WEAPON WE DO ISSUE, which is the hole a reader
+    -- would look for: everything a trainer is worth granting is in our own
+    -- arsenal, so a rifle conjured in a Technical must still be refused as the
+    -- means it is.
+    _, why = BR.ValidateShot(
+        { weapon = rifle.hash, dist = 50.0, sinceLastMs = 500 },
+        ctx({ heldItem = 'nothing', vehicleGun = true }), cfg)
+    ok(why == BR.ShotRefusal.NOT_HELD,
+        'a weapon we DO issue is judged the same in that seat', tostring(why))
+
     -- SLACK MUST NOT REFUSE HONEST PLAY, and this is the assertion that
     -- matters most. Roster positions are sampled at 2Hz, so both players can
     -- be ~4.5m stale at a sprint; a shot at the weapon's nominal maximum has
@@ -1779,8 +1812,17 @@ do
 
     -- RULES. Things an HONEST client does constantly; the game simply declines
     -- them. None of these may ever count, and none may ever file an incident.
+    -- VEHICLE_GUN IS A RULE AND IT IS THE ONE WORTH ARGUING ABOUT, because the
+    -- hash behind it is one this gamemode issues NOBODY -- which is the
+    -- definition of a means. What makes it a rule is WHO PRODUCED IT: #322
+    -- drives the armed vehicles with their gun switched off instead of ejecting
+    -- the player, the switch is a client-side native that can fail to persist or
+    -- have no opinion about a turret seat, and when it does the ENGINE puts the
+    -- car's own gun in an honest player's hand. That is the game declining a
+    -- shot, not somebody conjuring a weapon, and filing it opened a high
+    -- severity case against a player for sitting in a car the owner sells.
     local RULES = {
-        'WARMUP', 'SAME_SQUAD', 'NOT_LIVE', 'OTHER_MATCH',
+        'WARMUP', 'SAME_SQUAD', 'NOT_LIVE', 'OTHER_MATCH', 'VEHICLE_GUN',
     }
     -- MEANS. A weapon the server never issued, a magazine it never filled, a
     -- range or cadence the weapon does not have. No honest way to produce one.
@@ -12362,6 +12404,161 @@ do
         'nor one that came back as prose')
 end
 
+-- ------------------------------------- vehicles: driven with the gun off ----
+
+describe('vehicles.disarmed')
+--
+-- ═══ THE OWNER'S RULING (2026-09-16, #322) ═══
+--
+--   "only vehicles refused for being ARMED become drivable."
+--
+-- ═══ THE ASSERTIONS THAT MATTER HERE ARE THE NEGATIVE ONES ═══
+--
+-- A test that a Technical is drivable fails loudly the moment somebody deletes
+-- the feature, which is the cheap direction. What this block is actually for is
+-- the three refusals that must SURVIVE it, because every one of them fails
+-- silently: a Buzzard nobody is thrown out of, a Rhino nobody is thrown out of,
+-- and -- the one the issue was written around -- an unknown piece of military
+-- hardware that the class net caught and a careless implementation released,
+-- because the class net's reason word is the SAME STRING the model table's
+-- armed rows carry. None of those has an in-game symptom that says "the ruling
+-- is too wide". They look like a rule that was never there.
+do
+    local V = BR.Config.VehicleRefusal
+    local R = BR.Config.VehicleRefusalFor
+    local D = BR.Config.IsDisarmedVehicle
+
+    local function sig(t, c, seen)
+        return {
+            typeOf  = t ~= false and function() if seen then seen.type = true end return t end or nil,
+            classOf = c ~= false and function() if seen then seen.class = true end return c end or nil,
+        }
+    end
+
+    local TECHNICAL = 0x83051506  -- armed pick-up, ordinary class, model table
+    local CARACARA2 = 0xAF966F3C  -- armed Off-road, the leak #322 was opened on
+    local APC       = 0x2189D250  -- armed AND class 19: both signals see it
+    local BUZZARD   = 0x2F03547B  -- FLIES, by the model table
+    local OPPRESSOR = 0x7B54A9D3  -- Mk II: armed AND flies, filed under FLIES
+    local RHINO     = 0x2EA68690  -- TANK, by the model table
+    local UNLISTED  = 0x0BADF00D  -- in no row of the model table at all
+
+    -- ═══ THE THREE THAT MUST STILL REFUSE ═══
+
+    ok(R(BUZZARD, sig('heli', 15)) == V.FLIES,
+        'a FLIES refusal is untouched -- disabling a gun does not stop a heli '
+        .. 'flying')
+    ok(R(RHINO, sig('automobile', 19)) == V.TANK,
+        'and a TANK refusal is untouched -- it does not make a Rhino acceptable')
+
+    -- ═══ THE SEVEN ARMED ROWS THAT ARE STILL REFUSED (owner, 2026-09-16) ═══
+    --
+    -- The ruling reads "the ARMED rows", and the ARMED grading turned out to
+    -- carry seven models the owner does not want driven whatever their gun is
+    -- doing: a submarine, two submersible cars, a patrol boat, an AA trailer and
+    -- two cars that leave the ground. `keepRefused` on the row holds them out.
+    --
+    -- THE REASON IS ASSERTED ALONGSIDE, AND THAT IS THE POINT OF THE FIELD. The
+    -- alternative was regrading these to FLIES, and `why` is the sentence
+    -- BR.IncidentBuild.vehicleSummaryOf puts on a moderation record -- so a
+    -- Kosatka filed as "vehicle flies" would be a false statement about a
+    -- player. The row keeps the true reason and the exception is its own field.
+    local KOSATKA = 0x4FAF0D70  -- a submarine, graded ARMED and truthfully so
+    local kw = R(KOSATKA, sig('submarine', 20))
+    ok(kw == V.ARMED,
+        'a keepRefused row still refuses, and still says it is armed rather '
+        .. 'than something it is not', tostring(kw))
+    ok(D(KOSATKA) == false,
+        'and it is not disarmable, so nobody drives the submarine')
+
+    -- THE BASELINE THAT STOPS THE TWO ABOVE PASSING VACUOUSLY. Same grading,
+    -- same table, no exception: if `keepRefused` were read as "every ARMED row"
+    -- this would fail and the ruling would have landed on nothing.
+    ok(D(TECHNICAL) == true,
+        'while an ordinary ARMED row with no exception is still disarmed')
+
+    -- THE ONE THE WHOLE RULING TURNS ON. `V.ARMED` is the same string the class
+    -- net answers with, so an implementation that switched on the REASON rather
+    -- than on the SIGNAL passes every other case in this block and releases
+    -- every unknown tank in the game.
+    local cw, cs = R(UNLISTED, sig('automobile', 19))
+    ok(cw == V.ARMED and cs == 'class',
+        'a class-net ARMED refusal still refuses, with the identical reason word',
+        ('%s / %s'):format(tostring(cw), tostring(cs)))
+    ok(D(UNLISTED) == false,
+        'and an unlisted model is not disarmable -- class 19 is the catch-all '
+        .. 'for hardware nobody wrote down')
+
+    -- AND THE MK II, WHICH IS ARMED AND FLIES AND IS FILED UNDER FLIGHT. The
+    -- model table's own comment says why -- "an Oppressor Mk II over the final
+    -- circle is a problem long before it fires anything" -- and the ruling reads
+    -- the row rather than the vehicle, so that filing decision is what holds the
+    -- hover bike out. If anybody ever regrades those four rows to ARMED they
+    -- become drivable, and this is the case that says so.
+    ok(R(OPPRESSOR, sig(nil, nil)) == V.FLIES, 'an Oppressor Mk II still refuses')
+    ok(D(OPPRESSOR) == false, 'and is not disarmable, because its row says FLIES')
+
+    -- ═══ AND THE ROWS THAT BECOME DRIVABLE ═══
+
+    local tw, ts = R(TECHNICAL, sig('automobile', 4))
+    ok(tw == nil and ts == nil,
+        'an ARMED row of the model table is allowed outright, not half-refused',
+        ('%s / %s'):format(tostring(tw), tostring(ts)))
+    ok(D(TECHNICAL) == true, 'and it is the client that owes it a disable')
+
+    -- THE LEAK ITSELF. It was allowed by OMISSION before #322 -- no row, no type,
+    -- no class -- and is allowed by RULING now. The observable difference is
+    -- this line: something in the tree knows the gun is there.
+    ok(R(CARACARA2, sig('automobile', 2)) == nil, 'and so is the Caracara 4x4')
+    ok(D(CARACARA2) == true,
+        'which is now armed on purpose rather than armed by omission')
+
+    -- BOTH HASH FORMS, because GetEntityModel reports the signed one and a
+    -- predicate that normalised only one way would put every top-bit model on
+    -- the wrong side of the ruling. `caracara2` has the top bit set.
+    ok(D(CARACARA2 - 0x100000000) == true, 'from the signed hash the engine reports')
+    ok(R(CARACARA2 - 0x100000000, sig('automobile', 2)) == nil, 'and so is the ruling')
+    ok(D(RHINO - 0x100000000) == false, 'and a signed Rhino is still not disarmable')
+
+    -- ZERO AND NIL. `0` is TRUTHY in Lua and BR.NormHash(0) is 0 rather than nil,
+    -- so a model the engine could not report must read as an ordinary car here
+    -- exactly as it does in IsAllowedVehicle -- never as a license to disable
+    -- something.
+    ok(D(0) == false, 'model 0 is not disarmable')
+    ok(D(nil) == false, 'and neither is no model at all')
+
+    -- ═══ IT DOES NOT FALL THROUGH TO THE NETS ═══
+    --
+    -- An APC is an ARMED row AND class 19, so it is the model where the two
+    -- signals would disagree. The model table runs first and its answer is the
+    -- answer -- which is what it has always been for this row, and the reason
+    -- the server (which has no `classOf` to pass) and the client cannot come
+    -- apart over it.
+    local seen = {}
+    ok(R(APC, sig('automobile', 19, seen)) == nil,
+        'an APC is an armed row and class 19, and the table rules')
+    ok(not seen.type and not seen.class,
+        'and it costs no native reads to find that out, exactly as a refusal does')
+
+    -- THE SAME SHORT-CIRCUIT, PUT UNDER PRESSURE. A caller that claims a
+    -- Technical is a helicopter gets the row's answer, not the net's.
+    ok(R(TECHNICAL, sig('heli', 19)) == nil,
+        'and a signal that disagrees with the row does not resurrect the refusal')
+
+    -- ═══ THE RAW TABLE PREDICATE IS UNCHANGED, AND THAT IS DELIBERATE ═══
+    --
+    -- BR.Config.IsAllowedVehicle still answers "not allowed" for every row,
+    -- because it is what tools/check_vehicles.lua gates the hashes on -- "asking
+    -- IsAllowedVehicle the question the way the engine will ask it" is how a
+    -- mistyped hex digit is caught, and a predicate that started answering
+    -- "allowed" for the armed rows would take a third of that gate with it.
+    local allowed, why = BR.Config.IsAllowedVehicle(TECHNICAL)
+    ok(allowed == false and why == V.ARMED,
+        'the model table still says a Technical is armed')
+    ok(select(1, BR.Config.IsAllowedVehicle(CARACARA2)) == false,
+        'and the Caracara is in the table, which is what #322 added')
+end
+
 -- ---------------------------------------------------------------------------
 -- The strip payload, which had no coverage at all until 2026-08-22.
 -- ---------------------------------------------------------------------------
@@ -12793,6 +12990,86 @@ do
         S.seats[51] = {}
         ok(V.ridingIn(902) == nil,
             'and an empty vehicle holds nobody, however recently they were in it')
+    end
+
+    -- ═══════════════════════════════════════════════════════════════════════
+    -- BR.Vehicles.inDisarmedVehicle -- AM I SITTING IN ONE #322 DISARMED
+    -- ═══════════════════════════════════════════════════════════════════════
+    --
+    -- TWO ANTICHEAT PATHS RULE ON THIS ANSWER and both EXCUSE something when it
+    -- is yes: server/damage.lua grades a shot from a hash we issue nobody as a
+    -- rule rather than a means, and server/strip.lua declines to file the strip
+    -- report. So a false YES is a hole and a false NO is a case against an
+    -- honest player, and neither shows up anywhere -- an absent incident looks
+    -- exactly like a clean server.
+    --
+    -- IT IS #4006 AGAIN, IN THE DANGEROUS DIRECTION. A bare GetVehiclePedIsIn
+    -- answers a vehicle for anybody who has ever driven one, so the excuse would
+    -- follow a player around on foot for the rest of the match. The stub models
+    -- the bug, so the first case below is the one that fails for a `ridingIn`
+    -- written as the obvious one-liner.
+    do
+        local S = newVehicleServer()
+        local V = S.env.BR.Vehicles
+        local TECHNICAL = 0x83051506   -- ARMED in the model table: disarmed
+        local BUZZARD   = 0x2F03547B   -- FLIES: ejected, never disarmed
+        local ADDER2    = 0xB779A091   -- an ordinary car, in no row at all
+
+        -- SEATED IN ONE. Any seat, because the gun is in the bed and not at the
+        -- wheel -- the same reason client/vehrefuse.lua disarms any seat.
+        S.lastVeh[900] = 60
+        S.seats[60] = { [2] = 900 }
+        S.ents[60] = { model = TECHNICAL }
+        ok(V.inDisarmedVehicle(900) == true,
+            'a passenger in an ARMED row of the model table is in a disarmed '
+                .. 'vehicle', tostring(V.inDisarmedVehicle(900)))
+
+        S.seats[60] = { [-1] = 900 }
+        ok(V.inDisarmedVehicle(900) == true, 'and so is its driver')
+
+        -- GOT OUT. #4006 keeps naming the Technical; the seats are empty.
+        S.seats[60] = {}
+        ok(V.inDisarmedVehicle(900) == false,
+            'a player who GOT OUT is not excused for the rest of the match',
+            tostring(V.inDisarmedVehicle(900)))
+
+        -- A REFUSED-FOR-FLIGHT MODEL IS NOT DISARMED, it is emptied, so nobody
+        -- is sitting in one to be excused. Converting on the reason word rather
+        -- than on the ruling is the mistake that would pass every other case.
+        S.seats[60] = { [-1] = 900 }
+        S.ents[60] = { model = BUZZARD }
+        ok(V.inDisarmedVehicle(900) == false, 'a Buzzard is not disarmed, it is '
+            .. 'emptied', tostring(V.inDisarmedVehicle(900)))
+
+        -- NOR IS AN ORDINARY CAR. Allowed is not disarmed: there is no gun and
+        -- no excuse, so a conjured weapon in a Sultan files exactly as it did.
+        S.ents[60] = { model = ADDER2 }
+        ok(V.inDisarmedVehicle(900) == false, 'nor is an ordinary car')
+
+        -- THE SIGNED HASH, which is the form GetEntityModel actually reports and
+        -- the trap this project has paid for four times. `technical` has the top
+        -- bit set.
+        S.ents[60] = { model = TECHNICAL - 0x100000000 }
+        ok(V.inDisarmedVehicle(900) == true,
+            'and the SIGNED model hash the engine really answers is the same '
+                .. 'vehicle', tostring(V.inDisarmedVehicle(900)))
+
+        -- ON FOOT, AND A HANDLE THAT IS NOBODY. 0 is truthy in Lua.
+        ok(V.inDisarmedVehicle(901) == false, 'a player on foot is not in one')
+        ok(V.inDisarmedVehicle(0) == false, 'ped 0 is nobody')
+        ok(V.inDisarmedVehicle(nil) == false, 'and nil is not an error')
+
+        -- A MODEL THE ENGINE WOULD NOT REPORT IS NOT AN EXCUSE. `modelOf` pcalls
+        -- a native that RAISES on a stale handle, and the safe direction here is
+        -- "not excused" -- the anticheat left exactly as it was.
+        S.ents[60] = { model = TECHNICAL }
+        local realModel = S.env.GetEntityModel
+        S.env.GetEntityModel = function() error('Tried to access invalid entity') end
+        local pok, ans = pcall(V.inDisarmedVehicle, 900)
+        S.env.GetEntityModel = realModel
+        ok(pok and ans == false,
+            'a model read that throws is not an excuse, and does not raise',
+            tostring(pok) .. ' ' .. tostring(ans))
     end
 
     -- An ordinary car costs nothing and files nothing. This is every vehicle in

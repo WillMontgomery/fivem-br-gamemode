@@ -218,6 +218,35 @@ BR.Config.RefusedVehicles = {
     -- turrets and are refused for that.
     { name = 'apc',           why = A, hash = 0x2189D250 },
     { name = 'barrage',       why = A, hash = 0xF34DFB25 },
+    -- THE LEAK #322 WAS OPENED ABOUT, AND IT IS THE SHAPE THIS FILE'S HEADER
+    -- WARNS ABOUT RATHER THAN A NEW KIND OF MISS. The Caracara 4x4 carries a
+    -- mounted gun on an ordinary Off-road body: no type says so, class 2 is not
+    -- in the class net, and nobody had written the name down -- so it was
+    -- ALLOWED AND ARMED, by omission, for as long as this table has existed.
+    -- Absence is permission here and this is what that costs.
+    --
+    -- IT IS WRITTEN DOWN NOW SO THAT IT GOES THROUGH THE RULING DELIBERATELY.
+    -- Under #322 an ARMED row is drivable with its gun held off rather than
+    -- refused, so this row does not take the car away from anybody: it is the
+    -- difference between a gun nobody decided about and a gun this gamemode
+    -- switches off. The owner sells this model in the showroom -- 750 Volts, in
+    -- config/shop.lua -- and it is still for sale, because the shop asks
+    -- BR.Config.VehicleRefusalFor and that function applies the ruling.
+    --
+    -- ⚠ THE PLAIN `caracara` IS NOT HERE AND NOBODY HAS ESTABLISHED WHETHER IT
+    -- SHOULD BE. config/shop.lua records that the two are siblings -- "caracara2
+    -- is 'Caracara 4x4'; plain `caracara` is 'Caracara'" -- and this block
+    -- already writes down why the plain variants of `dune3` and of the Arena War
+    -- contenders are absent, because that boundary is the likeliest error here.
+    -- This one was not re-derived. If the sibling carries the same bed fitting
+    -- it is ALLOWED AND ARMED by omission, which is the leak this very row was
+    -- added for, one model along. It is unchanged by #322 either way -- an
+    -- absent row was always permission -- so this is a question to settle, not a
+    -- regression to hold the change for. WHAT SETTLES IT: spawn a plain
+    -- `caracara`, sit in the bed and pull the trigger. A gun that fires is a row
+    -- here; nothing to fire is a line in this comment saying so, the way the
+    -- `dune3` note says it about `dune` and `dune2`.
+    { name = 'caracara2',     why = A, hash = 0xAF966F3C },
     { name = 'chernobog',     why = A, hash = 0xD6BC7523 },
     -- The Dune FAV, and the only row here whose gun is a WORKSHOP FITTING rather
     -- than part of the stock model -- machine gun, 40mm grenade launcher or
@@ -231,17 +260,17 @@ BR.Config.RefusedVehicles = {
     { name = 'ignus2',        why = A, hash = 0x39085F47 },
     { name = 'insurgent2',    why = A, hash = 0x7B7E56F0 },
     { name = 'insurgent3',    why = A, hash = 0x8D4B7A8A },
-    { name = 'kosatka',       why = A, hash = 0x4FAF0D70 },
-    { name = 'patrolboat',    why = A, hash = 0xEF813606 },
-    { name = 'ruiner2',       why = A, hash = 0x381E10BD },
-    { name = 'scramjet',      why = A, hash = 0xD9F0503D },
-    { name = 'stromberg',     why = A, hash = 0x34DBA661 },
+    { name = 'kosatka',       why = A, hash = 0x4FAF0D70, keepRefused = true },
+    { name = 'patrolboat',    why = A, hash = 0xEF813606, keepRefused = true },
+    { name = 'ruiner2',       why = A, hash = 0x381E10BD, keepRefused = true },
+    { name = 'scramjet',      why = A, hash = 0xD9F0503D, keepRefused = true },
+    { name = 'stromberg',     why = A, hash = 0x34DBA661, keepRefused = true },
     { name = 'tampa3',        why = A, hash = 0xB7D9F7F1 },
     { name = 'technical',     why = A, hash = 0x83051506 },
     { name = 'technical2',    why = A, hash = 0x4662BCBB },
     { name = 'technical3',    why = A, hash = 0x50D4D19F },
-    { name = 'toreador',      why = A, hash = 0x56C8A5EF },
-    { name = 'trailersmall2', why = A, hash = 0x8FD54EBB },
+    { name = 'toreador',      why = A, hash = 0x56C8A5EF, keepRefused = true },
+    { name = 'trailersmall2', why = A, hash = 0x8FD54EBB, keepRefused = true },
     { name = 'vigilante',     why = A, hash = 0xB5EF4C33 },
 
     -- ═══ ARENA WAR, AND WHY IT IS ALL THIRTY-SIX AND NOTHING ELSE ═══
@@ -556,6 +585,42 @@ end
 --- when its mounted equipment is something a player is SUPPOSED to use and the
 --- equality guard cannot see it; an armed vehicle nobody should be firing
 --- belongs in the refused table above instead.
+---
+--- ═══ #322 MADE THE ARMED ROWS OF THAT TABLE OCCUPIABLE, WHICH CHANGES WHAT
+---     "BELONGS HERE" CAN MEAN ═══
+---
+--- It used to be true that a row in both lists was nonsense: a refused vehicle
+--- is one client/vehrefuse.lua empties, so an exemption for it described a seat
+--- nobody sits in. Under the owner's #322 ruling an ARMED row is DRIVEN rather
+--- than emptied, so that seat is real now and the same firetruck failure can
+--- happen in it -- in a gun position `GetCurrentPedVehicleWeapon` has no opinion
+--- about, `isMountedWeapon` misses, nothing is disabled, and the strip fires.
+---
+--- NOTHING WAS ADDED HERE FOR #322, ON PURPOSE, AND SOMETHING ELSE DOES THE WORK
+--- INSTEAD. A row here excuses ANY weapon in ANY seat of that model, which is a
+--- far wider hole than the one it would close -- so the issue's acceptance
+--- criterion ("no unissued-weapon incident is filed for sitting in one of
+--- these") is met on the SERVER, at the two places that actually file:
+---
+---   server/damage.lua   a shot from a hash we issue nobody, by a shooter
+---                       seated in a disarmed model, is BR.ShotRefusal.
+---                       VEHICLE_GUN -- refused, cancelled, and a RULE rather
+---                       than a means, so it counts toward nothing.
+---   server/strip.lua    the same pair on the strip report: counted as
+---                       `vehicleGuns` and never handed to the incident writer.
+---
+--- Both ask BR.Vehicles.inDisarmedVehicle, which is BR.Config.IsDisarmedVehicle
+--- below plus the seat read, so the set excused is exactly the set the ruling
+--- disarms and not one model wider. A weapon this gamemode DOES issue is still
+--- stripped, still reported and still filed, in a Technical exactly as on foot.
+---
+--- WHAT A ROW HERE WOULD STILL BE FOR is the firetruck's own case: equipment the
+--- player is SUPPOSED to use. That is a gameplay ruling from the owner, not an
+--- anticheat patch, and the reading that asks for one is `/brvehrefuse`'s
+--- `unnamed-gun` climbing while somebody sits in a particular model.
+--- tools/check_vehicles.lua now permits the pair for an ARMED row and still
+--- refuses it for FLIES and TANK, so the day he rules on one the fix is one line
+--- and the gate will allow it.
 BR.Config.StripExemptVehicles = {
     { name = 'firetruk', hash = 0x73920F8E },  -- water cannon, in the hose seat
 }
@@ -564,6 +629,73 @@ BR.Config.StripExemptVehicles = {
 BR.Config.StripExemptByHash = {}
 for _, v in ipairs(BR.Config.StripExemptVehicles) do
     BR.Config.StripExemptByHash[BR.NormHash(v.hash)] = v
+end
+
+--- Is this a model the gamemode drives with its gun switched off, instead of
+--- refusing it?
+---
+--- ═══ THE OWNER'S RULING, VERBATIM (2026-09-16, #322) ═══
+---
+---   "only vehicles refused for being ARMED become drivable."
+---
+--- FLIES and TANK are untouched and the reason is the owner's own: switching a
+--- gun off does not stop a Buzzard flying, and it does not make a Rhino
+--- acceptable. The refusal those two produce is the refusal they always were.
+---
+--- ═══ THE ARMED ROWS OF THE MODEL TABLE, AND NOTHING ELSE THAT SAYS "ARMED" ═══
+---
+--- This is the whole of the rule and it is the one thing to get right, because
+--- the class net answers with the SAME STRING: BR.Config.RefusedVehicleClasses
+--- maps class 19 to BR.Config.VehicleRefusal.ARMED, character for character. The
+--- reason word cannot tell the two apart. What tells them apart is which signal
+--- decided, and the two signals are opposites:
+---
+---   the model table  is ENUMERATED. Somebody wrote each of those rows knowing
+---                    what the vehicle was, which weapon it carries and that it
+---                    is a car rather than a gun platform.
+---   class 19         is the CATCH-ALL for military hardware NOBODY WROTE DOWN.
+---                    Converting it would silently make an unknown tank
+---                    drivable, which is precisely what the owner ruled out.
+---
+--- SO THE TABLE IS ASKED DIRECTLY RATHER THAN A `why` BEING HANDED IN. There is
+--- no argument a caller can pass that gets a class-net refusal past this: it
+--- reads the one table whose rows are deliberate, and a model that is not in it
+--- is not in it.
+---
+--- WHAT THIS DOES NOT SAY IS "SAFE". A disarmed vehicle still has its gun; the
+--- disable is applied on the CLIENT, by client/vehrefuse.lua, and a cheat that
+--- stops br_core keeps the weapon. What holds either way is server/damage.lua,
+--- which validates every shot against the inventory the SERVER issued and
+--- refuses one from a weapon it never handed out. This ruling removes noise and
+--- a desync; it was never the thing standing between a mounted gun and a player.
+--- @param hash integer|nil  a model hash, signed or not
+--- @return boolean
+function BR.Config.IsDisarmedVehicle(hash)
+    if hash == nil then return false end
+    local v = BR.Config.RefusedVehicleByHash[BR.NormHash(hash)]
+    if v == nil or v.why ~= BR.Config.VehicleRefusal.ARMED then return false end
+
+    -- `keepRefused` IS AN EXCEPTION TO THE RULING, NOT A FOURTH REASON, AND THE
+    -- DIFFERENCE IS THE MODERATION RECORD. #322 converts the ARMED rows, and it
+    -- turned out that grading is carrying seven models that are armed and that
+    -- the owner still does not want driven: a submarine, two submersible cars, a
+    -- patrol boat, an anti-aircraft trailer, and two cars that leave the ground.
+    --
+    -- THE OBVIOUS FIX WAS TO REGRADE THEM AND IT WOULD HAVE BEEN A LIE. `why` is
+    -- not a symbol: BR.IncidentBuild.vehicleSummaryOf builds the sentence an
+    -- admin reads on a case out of it, so filing a Kosatka under "vehicle flies"
+    -- puts a false statement on a record about a player. There is no honest
+    -- third grade for a submarine among FLIES, ARMED and TANK, and inventing a
+    -- fourth reason would mean every reader of `why` learning a new word for a
+    -- distinction that is not about the vehicle at all.
+    --
+    -- SO THE REASON STAYS TRUE AND THE EXCEPTION IS ITS OWN FIELD. The row still
+    -- says the vehicle has built-in weapons, which it does; this says the ruling
+    -- does not reach it. `deluxo`, `oppressor` and `oppressor2` are the shape
+    -- that did not need one -- they fly AND are armed, and the group comment
+    -- above them files them under flight "because that is the half a player
+    -- would notice first", which is a true sentence either way.
+    return v.keepRefused ~= true
 end
 
 --- The whole ruling on one vehicle, from whatever signals the caller can get.
@@ -592,13 +724,48 @@ end
 --- -- flight, weapons or tank. The two nets can only say "flies" or "armed", and
 --- only for things the table has never heard of.
 ---
+--- ═══ #322 IS EXPRESSED HERE AND THE THREE CALLERS INHERIT IT ═══
+---
+--- An ARMED row of the model table leaves this function as ALLOWED. Not as a
+--- softer refusal, not as a fourth reason -- as nil, the same answer an ordinary
+--- car gets, because under the owner's ruling it IS an ordinary car with a gun
+--- somebody else switches off. That is what makes the three callers agree
+--- without any of them knowing the rule exists: server/vehicles.lua files no
+--- case, client/vehrefuse.lua ejects nobody, config/shop.lua keeps selling the
+--- Caracara, and none of them was edited to say so.
+---
+--- WHO OWES THE DISABLE IS A SEPARATE QUESTION AND HAS A SEPARATE FUNCTION.
+--- BR.Config.IsDisarmedVehicle above answers it, this one calls it, and
+--- client/vehrefuse.lua asks it too -- the same predicate, never a second
+--- reading of "armed and from the table". A third return here was the
+--- alternative and was not taken: only one caller could ever read it, that
+--- caller can ask the predicate for the price of one table lookup and no native
+--- reads at all, and every other caller would be carrying a value it ignores.
+---
+--- IT DOES NOT FALL THROUGH TO THE NETS, AND THAT IS THE CONSERVATIVE
+--- DIRECTION RATHER THAN THE LAZY ONE. A model this table names has never
+--- reached the type or class read -- the return above is why -- so answering
+--- "allowed" here leaves the nets ruling on exactly the set they rule on today.
+--- Falling through would do the opposite: it would newly hand class 19 a verdict
+--- over `apc`, `barrage`, `chernobog`, `halftrack` and the three Scarabs, models
+--- the table decided about on purpose, and it would split the answer in two --
+--- the server has no `classOf` to pass, so it would allow what the client
+--- ejected. "They must answer identically or the same Buzzard is two different
+--- rulings depending on how somebody got into it" is server/vehicles.lua's
+--- sentence and it applies unchanged.
+---
 --- @param model integer|nil   a model hash, signed or not
 --- @param signals table|nil   { typeOf = fun():string|nil, classOf = fun():integer|nil }
 --- @return string|nil why     a BR.Config.VehicleRefusal value; nil when allowed
 --- @return string|nil signal  which signal refused it: 'model', 'type', 'class'
 function BR.Config.VehicleRefusalFor(model, signals)
     local allowed, why = BR.Config.IsAllowedVehicle(model)
-    if not allowed then return why, 'model' end
+    if not allowed then
+        -- #322, and the ONLY place the ruling is applied. Everything this
+        -- function is asked by gets the answer from here.
+        if BR.Config.IsDisarmedVehicle(model) then return nil, nil end
+        return why, 'model'
+    end
 
     signals = signals or {}
 

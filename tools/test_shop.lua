@@ -237,10 +237,18 @@ do
 
     -- ═══ NOT ONE OF THE THIRTEEN IS REFUSED ═══
     --
-    -- The catalogue is put through BR.Config.IsAllowedVehicle at load and a
+    -- The catalogue is put through BR.Config.VehicleRefusalFor at load and a
     -- refused model is DROPPED -- which would be a car he surveyed, priced and
     -- expects to see, silently missing from the pad. Zero rejects is the
     -- assertion; thirteen survivors is the same fact from the other side.
+    --
+    -- AND SINCE #322 IT IS THE RULING RATHER THAN THE RAW TABLE THAT IS ASKED,
+    -- for a reason this row list is the proof of: `caracara2` is IN the refused
+    -- table now -- #322 wrote it there, because it carries a mounted gun no
+    -- signal in the tree could see -- and the owner's ruling makes an armed row
+    -- drivable rather than refused. Against BR.Config.IsAllowedVehicle, which is
+    -- the raw lookup, the Vapid Caracara 4x4 would be dropped from the pad and
+    -- `#rejects` below would be 1. That is the assertion this comment is for.
     local rows, rejects = BR.ShopSolve.catalogue(BR.Config.Shop,
                                                  BR.Config.Shop.refusedReason)
     ok(#rejects == 0,
@@ -1340,16 +1348,28 @@ do
     -- config/vehicles.lua actually refusing a model it actually lists. A stub
     -- that answered "banned" would pass this test with the whole ban list
     -- deleted.
-    local allowed = BR.Config.IsAllowedVehicle(GetHashKey('lazer'))
-    ok(allowed == false,
-        'because BR.Config.IsAllowedVehicle refuses it -- the same one function '
+    ok(BR.Config.VehicleRefusalFor(GetHashKey('lazer')) ~= nil,
+        'because BR.Config.VehicleRefusalFor refuses it -- the same one function '
             .. 'BR.Vehicles.spawnOwned asks')
 
     -- A row for a car that IS allowed must survive, or the check is just a
     -- switch that turns the shop off.
-    ok(BR.Config.IsAllowedVehicle(GetHashKey('sultan')) == true
+    ok(BR.Config.VehicleRefusalFor(GetHashKey('sultan')) == nil
            and frow('runner') ~= nil,
         'and an ordinary car is not caught by it')
+
+    -- ═══ AND THE ONE #322 MOVED, WHICH IS IN THIS CATALOGUE ═══
+    --
+    -- The two predicates disagree about `caracara2` and only about rows like it:
+    -- the raw table says refused (it is armed, and the row is what #322 added),
+    -- the ruling says allowed (it is armed BY THE MODEL TABLE, which is the half
+    -- the owner made drivable). Asserting the disagreement is what stops a later
+    -- edit "simplifying" this back to IsAllowedVehicle and deleting a car from
+    -- the showroom -- a change whose only symptom is an empty parking space.
+    ok(select(1, BR.Config.IsAllowedVehicle(GetHashKey('caracara2'))) == false,
+        'the Caracara IS in the refused table')
+    ok(BR.Config.VehicleRefusalFor(GetHashKey('caracara2')) == nil,
+        'and is sellable anyway, because the ruling is what the shop asks')
 
     -- DUPLICATES, which would otherwise produce two rows selling one item id
     -- and a delivery that could come from either.

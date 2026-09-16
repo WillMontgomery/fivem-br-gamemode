@@ -1707,12 +1707,24 @@ if [ -f "$vehfile_" ]; then
     # AND THE PRE-CHECK ITSELF, which is load-bearing in a way it was not when
     # the verb shipped. While `brcar` used the RPC, a refused model would have
     # reached the `entityCreating` detector anyway and opened a case; the server
-    # setter raises no such event, so BR.Config.IsAllowedVehicle in this file is
-    # now the whole of the boundary. Deleting it would permit a refused model
-    # that NOTHING would notice -- no case, no count, not a line in brvehicles.
-    if ! grep -q 'IsAllowedVehicle' "$vehfile_"; then
+    # setter raises no such event, so the pre-check in this file is now the whole
+    # of the boundary. Deleting it would permit a refused model that NOTHING
+    # would notice -- no case, no count, not a line in brvehicles.
+    #
+    # IT NAMES BR.Config.VehicleRefusalFor BECAUSE THAT IS WHAT THE CODE CALLS,
+    # and the rename is the reason this gate is anchored the way it is. Both call
+    # sites moved off BR.Config.IsAllowedVehicle for #322 -- an ARMED row is
+    # drivable now, so the raw table lookup and the ruling stopped being the same
+    # answer -- and this line went on passing on the strength of the word
+    # appearing in three COMMENTS in the same file. The pre-check could have been
+    # deleted outright with the gate still green.
+    #
+    # SO IT MATCHES A CALL AND NOT A MENTION. `VehicleRefusalFor(` with the paren
+    # cannot be satisfied by prose about what the code used to do, which is
+    # exactly how this gate came to be blind the first time.
+    if ! grep -qE 'BR\.Config\.VehicleRefusalFor[[:space:]]*\(' "$vehfile_"; then
         echo "${RED}FAIL${RST} brcar has lost its allowlist pre-check"
-        echo "     BR.Config.IsAllowedVehicle must be consulted in $vehfile_"
+        echo "     BR.Config.VehicleRefusalFor must be CALLED in $vehfile_"
         echo "     BEFORE anything is created. CreateVehicleServerSetter does"
         echo "     not raise entityCreating, so nothing downstream would catch"
         echo "     a refused model this verb let through."
