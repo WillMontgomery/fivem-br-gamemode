@@ -2814,6 +2814,104 @@ do
     clearWorld()
 end
 
+describe('the crate plate IS drawn at a corpse, which is the caller #321 changes')
+do
+    -- THIS BLOCK IS ABOUT WHOSE PROMPT DISAPPEARS, AND IT EXISTS BECAUSE THAT
+    -- QUESTION HAS ALREADY BEEN ANSWERED WRONGLY ONCE.
+    --
+    -- The #321 gate is proved where it lives, at the bottom of this file: every
+    -- BR.Dui.draw* refuses while this player is DBNO, OUT or in a spectate
+    -- session. What that block cannot say is which caller a playtester will
+    -- actually see change, and the first audit of the callers answered "none of
+    -- them, a downed player was already seeing nothing" -- on the strength of a
+    -- `canLoot` in client/gamerules.lua that decides whether a dead NPC drops
+    -- its gun and is not in the loot prompt's call path at all.
+    --
+    -- It is the other way round, and client/loot.lua is the answer. Its render
+    -- pass has exactly two state gates and BOTH of them admit a corpse:
+    --
+    --   * canSee() reads BR.Config.LootVisibleStates, which lists DBNO and OUT
+    --     deliberately -- a spectator has to see the world's loot, because
+    --     watching somebody loot is most of what spectating is;
+    --   * canTake() is allowed to run ahead of the server's landing report
+    --     (#126), so it falls through to "yes" for anybody whose
+    --     BR.State.landed latch is set -- and that latch stays set for the
+    --     whole match.
+    --
+    -- So the plate was being drawn at a player lying on the floor, and at a
+    -- spectator whose own ped is a corpse in a field while the camera is on
+    -- somebody else three hundred metres away. That is #321's report word for
+    -- word, and it is loot.lua that stops doing it.
+    --
+    -- MEASURED WITH THE GATE OUT OF THE WAY, deliberately. BR.Dui here is still
+    -- the plain stub this fixture installs -- client/dui.lua is not loaded until
+    -- much further down -- so what these assertions see is loot's own two gates
+    -- and nothing else. Composed with the gate block at the bottom, the pair
+    -- says the whole sentence: loot asks for a plate while the player is down,
+    -- and the ask is refused.
+    --
+    -- AND IT RUNS HERE RATHER THAN BESIDE THAT BLOCK because the downed-
+    -- presentation fixture further down replaces GetEntityCoords with its own
+    -- body table for the rest of the file. Up here the loot fixture's world is
+    -- still the one answering, so `pedPos` is where this player is standing.
+
+    local prevWorld, prevEntity = BR.Dui.drawWorld, BR.Dui.drawOnEntity
+    local plates = 0
+    BR.Dui.drawWorld    = function() plates = plates + 1 end
+    BR.Dui.drawOnEntity = function() plates = plates + 1 end
+
+    ok(BR.Config.LootVisibleStates[BR.PlayerState.DBNO] == true
+       and BR.Config.LootVisibleStates[BR.PlayerState.OUT] == true,
+        'loot is visible to a downed player and to an eliminated one -- the '
+            .. 'shared table says so, and the server reads the same rows',
+        'LootVisibleStates no longer admits DBNO and OUT, which makes the '
+            .. 'behaviour below a different story than the one #321 reported')
+
+    bootOn(true, true)
+    clearWorld()
+    pedPos.x, pedPos.y = 0.0, 0.0
+    BR.State.landed = true
+    addEntry('chest', nil, 1.0, 0.0)
+
+    --- Stand at the crate for two frames in one state and count the plates.
+    --- @param state string
+    --- @return integer
+    local function plateFrames(state)
+        BR.State.me.state = state
+        plates = 0
+        frames(2)
+        return plates
+    end
+
+    -- THE BASELINE FIRST, PER THE USUAL RULE: a zero means nothing unless
+    -- something would have been drawn, and a crate that resolves to no target
+    -- looks exactly like a crate that was refused.
+    ok(plateFrames(BR.PlayerState.ALIVE) > 0,
+        'a live player standing at a crate is offered it')
+
+    ok(plateFrames(BR.PlayerState.DBNO) > 0,
+        'and so is a DOWNED one, who cannot press the key the plate names')
+
+    ok(plateFrames(BR.PlayerState.OUT) > 0,
+        'and so is an ELIMINATED one, whose ped is a corpse and whose camera is '
+            .. 'somewhere else entirely')
+
+    -- WHICH OF THE TWO GATES LETS THEM THROUGH, stated rather than left to the
+    -- reader. canTake() consults BR.Config.LootTakeStates first and that table
+    -- lists ALIVE and WARMUP only, so the thing carrying a corpse past it is the
+    -- BR.State.landed escape beside it. Clear the latch and the same downed
+    -- player at the same crate is offered nothing.
+    BR.State.landed = false
+    ok(plateFrames(BR.PlayerState.DBNO) == 0,
+        'and it is the landed latch that admits them, not the take table: '
+            .. 'cleared, the same downed player is offered nothing')
+
+    BR.State.landed = true
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.Dui.drawWorld, BR.Dui.drawOnEntity = prevWorld, prevEntity
+    clearWorld()
+end
+
 -- ------------------------------------------------------------------- voice ---
 --
 -- WHAT THESE TESTS CAN AND CANNOT PROVE, FIRST, BECAUSE SIX ROUNDS OF THIS
@@ -10428,6 +10526,299 @@ do
     ok(BR.Dui.ready(page),
         'a browser that has come up is not un-readied by a later false',
         tostring(BR.Dui.ready(page)))
+end
+
+describe('no DUI reaches a frame while down, out or spectating -- #321')
+do
+    -- THE GATE IS ONE WRAP AT THE BOTTOM OF client/dui.lua, AND THIS BLOCK IS
+    -- THE HALF OF IT THAT CANNOT BE WRITTEN IN THAT FILE.
+    --
+    -- The wrap gates every function already on BR.Dui whose name begins with
+    -- `draw`. A draw added BELOW the wrap would ship ungated and silently --
+    -- there is no way to close that at Lua file scope, and dui.lua's own header
+    -- says so and points here. So this block ENUMERATES BR.Dui after the whole
+    -- file has loaded rather than naming the six draws that exist today: a
+    -- seventh inherits these assertions by existing, and one written below the
+    -- wrap fails them on the commit that adds it.
+    --
+    -- WHAT IS MEASURED IS THE SPRITE, NOT THE GATE. Every assertion counts
+    -- DrawSprite and DrawSpritePoly calls -- the two natives that are the whole
+    -- of "a DUI reached a frame" -- rather than asking whether some predicate
+    -- ran. A test that checked the predicate would pass just as happily on a
+    -- predicate whose answer was thrown away, which is the failure this suite
+    -- has already had twice (see the pma-voice and raw-key notes at the top).
+    --
+    -- AND THE ALIVE BASELINE IS ASSERTED FIRST, PER ENTRY POINT, for the same
+    -- reason. "Nothing was drawn" is worth nothing unless something would have
+    -- been: a draw that is refused because its arguments are wrong looks exactly
+    -- like a draw that is refused because the player is dead. So each entry
+    -- point has to put a sprite on the frame while alive before it is asked to
+    -- stop -- and a draw added later that this block cannot drive fails THAT
+    -- assertion, which tells its author to widen the argument vector below
+    -- rather than letting a vacuous pass through.
+
+    local prev = {
+        DoesEntityExist                  = DoesEntityExist,
+        GetEntityCoords                  = GetEntityCoords,
+        GetEntityModel                   = GetEntityModel,
+        GetEntityForwardVector           = GetEntityForwardVector,
+        GetModelDimensions               = GetModelDimensions,
+        GetOffsetFromEntityInWorldCoords = GetOffsetFromEntityInWorldCoords,
+        GetGameplayCamCoord              = GetGameplayCamCoord,
+        GetAspectRatio                   = GetAspectRatio,
+        GetActiveScreenResolution        = GetActiveScreenResolution,
+        SetDrawOrigin                    = SetDrawOrigin,
+        ClearDrawOrigin                  = ClearDrawOrigin,
+        DrawSprite                       = DrawSprite,
+        DrawSpritePoly                   = DrawSpritePoly,
+        SendDuiMessage                   = SendDuiMessage,
+        SetDuiUrl                        = SetDuiUrl,
+        DestroyDui                       = DestroyDui,
+        IsDuiAvailable                   = IsDuiAvailable,
+        spectate                         = BR.Spectate,
+        state                            = BR.State.me.state,
+    }
+
+    -- THE TWO NATIVES THAT ARE THE ANSWER. Everything else here exists only so
+    -- that a draw can get as far as one of them.
+    local drawn = 0
+    function DrawSprite() drawn = drawn + 1 end
+    function DrawSpritePoly() drawn = drawn + 1 end
+
+    function SetDrawOrigin() end
+    function ClearDrawOrigin() end
+    function GetAspectRatio() return 1.7778 end
+    function GetActiveScreenResolution() return 1920, 1080 end
+    function GetGameplayCamCoord() return { x = 0.0, y = 0.0, z = 5.0 } end
+    -- A vehicle standing flat, nose along +Y, at the origin. levelBasis reads
+    -- the forward vector and nothing else, so this is the whole of a pose.
+    function GetEntityForwardVector() return { x = 0.0, y = 1.0, z = 0.0 } end
+    function GetEntityCoords() return { x = 0.0, y = 0.0, z = 0.0 } end
+    function GetEntityModel() return 424242 end
+    function GetModelDimensions()
+        return { x = -1.0, y = -2.0, z = -0.5 }, { x = 1.0, y = 2.0, z = 1.0 }
+    end
+    -- The identity matrix, which is all drawPanel and drawOnEntity need: what is
+    -- being asserted is whether a corner reaches a poly, not where it lands.
+    function GetOffsetFromEntityInWorldCoords(_, x, y, z)
+        return { x = x, y = y, z = z }
+    end
+    function DoesEntityExist() return true end
+    function IsDuiAvailable() return true end
+
+    -- THE THREE THINGS THAT CAN COUNT AS TEARING A PAGE DOWN, all counted, so
+    -- the "draw-time only" half of #321 is measured rather than described.
+    local sent, pointed, destroyed = 0, 0, 0
+    function SendDuiMessage() sent = sent + 1 end
+    function SetDuiUrl() pointed = pointed + 1 end
+    function DestroyDui() destroyed = destroyed + 1 end
+
+    -- BR.Spectate IS STUBBED, exactly as the voice block above stubs it and for
+    -- the same reason: client/spectate.lua is a camera and is not in loadAll's
+    -- list. The stub is a hazard of its own, and the cross-file name is pinned
+    -- against the real file at the bottom of this block.
+    local spectating = false
+    BR.Spectate = { active = function() return spectating end }
+
+    local page = BR.Dui.page('gate321', 'nui://br_ui/dui/prompt.html', 512, 256)
+    -- LATCHED HERE, BEFORE ANYTHING IS COUNTED. `ready` pushes the text scale on
+    -- the not-ready->ready edge, and that one legitimate SendDuiMessage would
+    -- otherwise land inside the stretch this block asserts is silent.
+    ok(BR.Dui.ready(page), 'the probe page is up, so a refused draw is the '
+        .. 'gate and not a browser that never started')
+    sent, pointed, destroyed = 0, 0, 0
+
+    --- EVERY `draw*` ON BR.Dui, IN A STABLE ORDER SO THE FAILURES READ THE SAME
+    --- WAY TWICE. Enumerated rather than listed: see the block header.
+    local entries = {}
+    for name, fn in pairs(BR.Dui) do
+        if type(fn) == 'function' and name:sub(1, 4) == 'draw' then
+            entries[#entries + 1] = name
+        end
+    end
+    table.sort(entries)
+
+    ok(#entries >= 6, ('all six draw entry points are on BR.Dui -- found %d')
+        :format(#entries), table.concat(entries, ', '))
+
+    --- Drive one entry point for one frame and say how many sprites it emitted.
+    ---
+    --- ONE ARGUMENT VECTOR FOR ALL SIX SIGNATURES, and it is not a coincidence
+    --- that it fits: every draw takes the page first, most take an entity
+    --- second, and everything after that is a metre, a screen fraction or an
+    --- alpha. Entity 1 exists, 1.0 is a legal value for each of the rest, and
+    --- the trailing arguments a shorter signature does not want are simply
+    --- dropped. A future draw that needs something else fails the alive
+    --- baseline rather than passing quietly.
+    --- @param name string
+    --- @return integer
+    local function frame(name)
+        drawn = 0
+        BR.Dui[name](page, 1, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 255)
+        return drawn
+    end
+
+    -- ── 1. ALIVE, WHICH IS THE BASELINE EVERYTHING ELSE IS MEASURED AGAINST ──
+    BR.State.me.state = BR.PlayerState.ALIVE
+    spectating = false
+    for _, name in ipairs(entries) do
+        ok(frame(name) > 0,
+            ('BR.Dui.%s puts a sprite on the frame while the player is alive')
+                :format(name),
+            'nothing was drawn, so every refusal below proves nothing')
+    end
+
+    -- ── 2. THE WARMUP PAD IS UNAFFECTED, which is the acceptance criterion the
+    --      board is the whole of: it is the one DUI a player stares at for a
+    --      minute at a time, and a gate that caught WARMUP would take it away.
+    BR.State.me.state = BR.PlayerState.WARMUP
+    for _, name in ipairs(entries) do
+        ok(frame(name) > 0,
+            ('BR.Dui.%s still draws for a live player on the warmup pad')
+                :format(name))
+    end
+
+    -- ── 3. THE THREE THAT REFUSE ───────────────────────────────────────────
+    --
+    -- DBNO AND OUT ARE STATES; SPECTATING IS NOT. The session case is driven
+    -- from ALIVE on purpose: a spectator is usually OUT as well, and asserting
+    -- it from OUT would pass against a build that never looked at the session at
+    -- all. Held apart, this case can only be the session term.
+    for _, case in ipairs({
+        { name = 'downed',
+          apply = function() BR.State.me.state = BR.PlayerState.DBNO end },
+        { name = 'eliminated',
+          apply = function() BR.State.me.state = BR.PlayerState.OUT end },
+        { name = 'in a spectate session, while otherwise ALIVE',
+          apply = function()
+              BR.State.me.state = BR.PlayerState.ALIVE
+              spectating = true
+          end },
+    }) do
+        case.apply()
+        for _, name in ipairs(entries) do
+            local n = frame(name)
+            ok(n == 0,
+                ('BR.Dui.%s draws nothing while the player is %s')
+                    :format(name, case.name),
+                ('%d sprite(s) reached the frame'):format(n))
+        end
+        spectating = false
+    end
+
+    -- ── 4. AND NOTHING WAS TORN DOWN WHILE IT WAS REFUSING ─────────────────
+    --
+    -- The gate is draw-time only. If it had reached for BR.Dui.destroy or
+    -- SetDuiUrl instead of returning, every assertion above would still be green
+    -- and the revive below would be a browser start.
+    ok(sent == 0 and pointed == 0 and destroyed == 0,
+        'and no page was messaged, re-pointed or destroyed while the draws '
+            .. 'were being refused',
+        ('%d sends, %d SetDuiUrl, %d DestroyDui'):format(sent, pointed,
+            destroyed))
+
+    -- ── 5. THE REVIVE ──────────────────────────────────────────────────────
+    --
+    -- A knock and a revive, in that order, on the same page object. What is
+    -- asserted is that the draws come back AND that they come back on the same
+    -- CEF instance at the same address -- "no reload and no re-navigation" is
+    -- the half of #321 a gate that destroyed pages would fail while looking
+    -- perfectly correct.
+    BR.State.me.state = BR.PlayerState.DBNO
+    local handle, url, ready = page.dui, page.url, page.ready
+    for _, name in ipairs(entries) do frame(name) end
+
+    BR.State.me.state = BR.PlayerState.ALIVE
+    for _, name in ipairs(entries) do
+        ok(frame(name) > 0,
+            ('BR.Dui.%s draws again the first frame after a revive from DBNO')
+                :format(name))
+    end
+    ok(page.dui == handle and page.url == url and page.ready == ready,
+        'on the same browser, at the same address, still ready -- the revive '
+            .. 'costs no page reload and no re-navigation',
+        ('dui %s->%s url %s->%s ready %s->%s'):format(tostring(handle),
+            tostring(page.dui), tostring(url), tostring(page.url),
+            tostring(ready), tostring(page.ready)))
+    ok(sent == 0 and pointed == 0 and destroyed == 0,
+        'and the knock-to-revive round trip sent nothing to the page at all',
+        ('%d sends, %d SetDuiUrl, %d DestroyDui'):format(sent, pointed,
+            destroyed))
+
+    -- ── 6. THE DIRECTION AN UNKNOWN STATE FAILS IN ─────────────────────────
+    --
+    -- PERMISSIVE, AND PINNED HERE BECAUSE IT IS A DECISION RATHER THAN A GAP.
+    -- The gate names the two states that refuse, not the seven that allow, so a
+    -- state nobody has heard of keeps its DUIs. The cost of the other direction
+    -- is a LIVE player with no crate prompt and no board on a client where
+    -- something else has already gone wrong, and nothing on screen saying why.
+    -- If the owner ever rules the other way, this is the assertion that changes.
+    BR.State.me.state = 'a_state_from_a_later_build'
+    ok(frame('drawScreen') > 0,
+        'a state this build has never heard of keeps its DUIs -- the gate names '
+            .. 'what refuses, not what is allowed',
+        'an unknown state silently loses every prompt, which is unreachable '
+            .. 'from a chair')
+
+    -- ── 7. THE COLLABORATORS THAT MAY NOT BE THERE ─────────────────────────
+    --
+    -- A NIL-INDEX HERE WOULD BE WORSE THAN THE BUG. Both reads happen inside a
+    -- FRAME band, so a raise does not lose one prompt -- it takes down every
+    -- draw on the client for the rest of the session. Asserted through pcall
+    -- because "it did not raise" is the actual claim.
+    BR.Spectate = nil
+    BR.State.me.state = BR.PlayerState.ALIVE
+    local okCall, err = pcall(frame, 'drawScreen')
+    ok(okCall and drawn > 0,
+        'a client with no client/spectate.lua draws normally rather than '
+            .. 'raising inside the frame band',
+        tostring(err))
+
+    local realState = BR.State
+    BR.State = nil
+    okCall, err = pcall(frame, 'drawScreen')
+    ok(okCall and drawn > 0,
+        'and so does one that has no BR.State yet -- a client that cannot say '
+            .. 'where it is keeps its prompts',
+        tostring(err))
+    BR.State = realState
+
+    -- ── 8. THE CROSS-FILE NAME, PINNED ON THE REAL SOURCE ──────────────────
+    --
+    -- The gate reaches BR.Spectate.active() out of another file behind a
+    -- nil-guard, and the guard is not optional. But it means a RENAME on the
+    -- other side fails OPEN and in silence: the gate would answer "not
+    -- spectating" forever, every spectator would get their prompts back, and
+    -- every assertion above would still pass against the stub. Same pin, same
+    -- reason, as the voice block's.
+    local specFh = io.open(ROOT .. 'br_core/client/spectate.lua', 'r')
+    local specSrc = specFh and specFh:read('a') or nil
+    if specFh then specFh:close() end
+    ok(type(specSrc) == 'string'
+        and specSrc:find('function BR.Spectate.active', 1, true) ~= nil,
+        'and client/spectate.lua really defines BR.Spectate.active -- the stub '
+            .. 'above would otherwise be the only thing that does',
+        'BR.Spectate.active is not defined where dui.lua reaches for it')
+
+    BR.State.me.state = prev.state
+    BR.Spectate = prev.spectate
+    DoesEntityExist                  = prev.DoesEntityExist
+    GetEntityCoords                  = prev.GetEntityCoords
+    GetEntityModel                   = prev.GetEntityModel
+    GetEntityForwardVector           = prev.GetEntityForwardVector
+    GetModelDimensions               = prev.GetModelDimensions
+    GetOffsetFromEntityInWorldCoords = prev.GetOffsetFromEntityInWorldCoords
+    GetGameplayCamCoord              = prev.GetGameplayCamCoord
+    GetAspectRatio                   = prev.GetAspectRatio
+    GetActiveScreenResolution        = prev.GetActiveScreenResolution
+    SetDrawOrigin                    = prev.SetDrawOrigin
+    ClearDrawOrigin                  = prev.ClearDrawOrigin
+    DrawSprite                       = prev.DrawSprite
+    DrawSpritePoly                   = prev.DrawSpritePoly
+    SendDuiMessage                   = prev.SendDuiMessage
+    SetDuiUrl                        = prev.SetDuiUrl
+    DestroyDui                       = prev.DestroyDui
+    IsDuiAvailable                   = prev.IsDuiAvailable
 end
 
 -- ======================================================================== --

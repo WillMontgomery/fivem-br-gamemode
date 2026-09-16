@@ -1144,6 +1144,177 @@ function BR.Dui.drawOnEntity(page, entity, size, lift, alpha)
     end
 end
 
+-- ---------------------------------------------------------------------------
+-- THE ONE GATE: NOTHING IS DRAWN WHILE THE PLAYER IS DOWN, OUT OR SPECTATING
+-- ---------------------------------------------------------------------------
+--
+-- ═══ THE REPORT (#321) ═══
+--
+-- Every draw above is positioned relative to the CAMERA -- drawWorld projects
+-- through it, the four quads wind their triangles toward it, and drawScreen is
+-- measured in fractions of what it renders. In a spectate session that camera
+-- is wherever the watched player is, and this client's ped is a corpse where it
+-- fell (client/spectate.lua's own note on why the body is not moved), so boards
+-- and prompts come out at distances and angles they were never sized for.
+--
+-- AND THEY DO NOTHING EVEN WHEN THEY LOOK RIGHT. A downed player cannot press
+-- the key the plate names, an eliminated one has no inventory to put a crate
+-- into, and a spectator's keypresses belong to the camera. So the answer is to
+-- stop drawing them rather than to teach six draws a second set of distance
+-- maths for a prompt nobody can use.
+--
+-- ═══ WHY THE GATE IS HERE AND NOT AT THE CALL SITES ═══
+--
+-- Ten files in br_core draw a DUI today -- board, ambheal, bus, fuel, skydive,
+-- loot, shop, gunshop, dbno and revivekey. Ten gates is ten chances to forget,
+-- and the eleventh DUI is coming: this project has added one every couple of
+-- weeks since #131. A gate at the call sites is a gate the next feature ships
+-- without, and nothing goes red when it does. The gate belongs where the draw
+-- is, which is here.
+--
+-- ═══ AND WHY IT IS NOT IN BR.Dui.ready, WHICH IS THE OTHER CHOKEPOINT ═══
+--
+-- Every draw above already opens with `if not BR.Dui.ready(page) then return
+-- end`, so `ready` looks like the free place to put this. IT IS THE WRONG PLACE
+-- AND IT WOULD FAIL QUIETLY. `ready` is a public question about the BROWSER, and
+-- two callers branch on the answer rather than merely obeying it: bus.lua and
+-- skydive.lua draw GTA's own help box when our page is not up. A `ready` that
+-- answered false for a dead player would not suppress those prompts -- it would
+-- SWAP them for the fallback, which is the same sentence, on the same frame, for
+-- the same dead player, in the engine's box instead of ours. board.lua's
+-- /brboard readout prints that answer as the browser's health as well, so a
+-- perfectly healthy page would report itself as 'starting' forever to whoever
+-- was trying to diagnose it.
+--
+-- ═══ DRAW-TIME ONLY: NOTHING IS DESTROYED, STOPPED OR RE-POINTED ═══
+--
+-- The gate returns early and does nothing else. No BR.Dui.destroy, no SetDuiUrl,
+-- no message. A revived player's pages are the same CEF instances on the same
+-- addresses showing the same content, and the first frame after the revive draws
+-- them again with no reload and no re-navigation.
+--
+-- THAT IS A REQUIREMENT AND NOT AN ECONOMY. A DUI is a whole browser, and #247
+-- names the rule outright: refresh via SendDuiMessage or SetDuiUrl, never by
+-- recreating the DUI. Tearing pages down on a knock would mean a browser start
+-- on every revive -- the warmup board would re-fetch the Ringmaster page over
+-- the public internet -- and a page that came back blank for the second that
+-- takes reads as the revive being broken.
+
+--- Is the local player somewhere a DUI has no business being drawn?
+---
+--- ═══ HOW THE STATE IS READ ═══
+---
+--- `BR.State.me.state` is this client's mirror of what the server last said
+--- about this player, and it is the same field client/ambheal.lua,
+--- client/board.lua and client/gamerules.lua already gate on. It DEFAULTS to
+--- LOBBY (client/main.lua) rather than to nil, so the window this has to survive
+--- is not the ordinary one -- it is a br_core loaded without client/main.lua, or
+--- a partial restart, where BR.State itself is missing. board.lua asks it
+--- through the same three-part guard for the same reason.
+---
+--- BR.PlayerState needs no guard of its own: it is br_lib/shared/enums.lua,
+--- which loads before this file in every manifest and which this file already
+--- depends on at LOAD time (`local isTrue = BR.NativeBool`, at the top).
+---
+--- ═══ IT NAMES THE TWO STATES THAT REFUSE, NOT THE SEVEN THAT ALLOW ═══
+---
+--- That direction is the decision, and client/keybinds.lua's map key made the
+--- same call for the same reason -- its header carries the long version. The
+--- short version is that the two mistakes are not the same size:
+---
+---   PERMISSIVE (this). A state nobody here has heard of keeps its DUIs. The
+---   worst case is that #321's bug survives in whatever window produced the
+---   unknown answer -- a prompt drawn at the wrong size for a spectator, which
+---   is what the game did for months, and which a playtester can see and say.
+---
+---   STRICT (an allowlist of the seven). A state nobody here has heard of loses
+---   its DUIs. The worst case is a LIVE player with no crate prompt, no fuel
+---   prompt and no warmup board, on a client where something else has already
+---   gone wrong, with nothing on screen to say why. That is a report of "the
+---   prompts are gone" against the file that draws prompts, and it cannot be
+---   diagnosed from a chair.
+---
+--- So a tenth player state added later draws until somebody decides otherwise,
+--- and a client that cannot say where it is keeps its prompts. Both of those are
+--- deliberate.
+---
+--- ═══ AND THE SPECTATE SESSION, WHICH IS NOT A STATE AT ALL ═══
+---
+--- There is no BR.PlayerState.SPECTATING and there never really was -- the
+--- enum's own header records that it was read in nine places and assigned in
+--- none, and says to gate on the session. It is also possible WHILE out rather
+--- than instead of it, so it has to be asked separately from the two states
+--- above rather than folded in beside them.
+---
+--- NIL-GUARDED IN THREE PARTS, exactly as client/voice.lua asks the identical
+--- question. client/spectate.lua is declared 200 lines below this file in the
+--- manifest, and while that only settles load order, this file must also survive
+--- being loaded WITHOUT it -- the suite does precisely that, and so does any
+--- client assembled by hand. A nil-index here would raise inside a FRAME band
+--- and take every draw on the client down with it, which is a considerably worse
+--- outcome than the bug this gate fixes. The safe answer to "is a camera
+--- running" on a client that cannot say is NO, which is voice.lua's answer too.
+---
+--- NO BOOL NORMALIZATION, AND THAT IS NOT AN OVERSIGHT. Every term here is one
+--- of ours -- two string comparisons and a Lua function that returns `session ~=
+--- nil`. Nothing in this predicate reads a native, so there is no 1/0 to fold.
+--- @return boolean
+local function refused()
+    local st = BR.State and BR.State.me and BR.State.me.state
+    if st == BR.PlayerState.DBNO or st == BR.PlayerState.OUT then
+        return true
+    end
+    if BR.Spectate and BR.Spectate.active and BR.Spectate.active() then
+        return true
+    end
+    return false
+end
+
+-- THE WRAP. Every function already on BR.Dui whose name begins with `draw` is
+-- replaced by a closure that asks the question above and, when the answer is
+-- yes, returns without calling the original -- so not one line below the wrap is
+-- reached, no sprite and no poly is emitted, and the page, its texture and its
+-- address are all untouched.
+--
+-- BY NAME RATHER THAN FROM A LIST, so a draw added later inherits the gate by
+-- being called `draw*` and by being defined above this block -- which is where a
+-- new draw would naturally go anyway, beside the six it resembles.
+--
+-- AND IF ONE IS ADDED BELOW IT ANYWAY, that function ships ungated and silently,
+-- which is the exact failure the call-site gates had. There is no way to close
+-- that at file scope: a __newindex on BR.Dui would catch a late `draw*`, and
+-- would also catch every other assignment this table ever receives, from a table
+-- that other resources are free to read. So it is closed in the SUITE instead --
+-- tools/test_client.lua enumerates BR.Dui after the whole file has loaded and
+-- asserts that every `draw*` key on it draws when alive and refuses in all three
+-- states. A draw added below this line fails that block on the commit that adds
+-- it, which is the earliest anything could.
+--
+-- NAMES COLLECTED FIRST, THEN SWAPPED. Assigning to an EXISTING field during a
+-- `pairs` walk is defined behaviour and creating one is not; collecting first
+-- makes this loop indifferent to which it is doing, for one table built once at
+-- load.
+--
+-- THE RETURN IS PASSED STRAIGHT THROUGH, because one of these has one.
+-- drawNearFace hands back which face it drew on and client/revivekey.lua stores
+-- it for its tuning readout. A refused draw returns nothing, which that caller
+-- already reads as "nothing was drawn" -- it is the same answer the function
+-- gives for a model that has not answered with a box.
+do
+    local draws = {}
+    for name, fn in pairs(BR.Dui) do
+        if type(fn) == 'function' and name:sub(1, 4) == 'draw' then
+            draws[name] = fn
+        end
+    end
+    for name, fn in pairs(draws) do
+        BR.Dui[name] = function(...)
+            if refused() then return end
+            return fn(...)
+        end
+    end
+end
+
 --- Tear a page down. A DUI outlives the resource that made it otherwise.
 --- @param name string
 function BR.Dui.destroy(name)
