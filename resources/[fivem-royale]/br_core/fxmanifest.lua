@@ -323,6 +323,27 @@ client_scripts {
     'client/storm.lua',     -- rendering only; damage lands in state.lua
     'client/markers.lua',   -- pause-map pings: blips + world beams
     'client/dui.lua',       -- browser pages as game textures; loot.lua uses it
+    -- Refusing an aircraft, a tank or an armed vehicle at the door (#215): eject,
+    -- one sentence, lock it behind them. NEEDS client/main.lua for the loop
+    -- registry and NOTHING ELSE AT LOAD TIME -- BR.Notify (client/state.lua) and
+    -- BR.State are both reached at call time, and the ruling comes from
+    -- BR.Config.VehicleRefusalFor, a shared config already loaded above. It is
+    -- ADVISORY -- see its header; the enforcement is server/vehicles.lua and
+    -- always was.
+    --
+    -- ABOVE client/inventory.lua, AND THAT IS A REAL ORDER, THOUGH NOT THE
+    -- LOADER'S. BR.Loop runs a band in the order its callbacks registered, and
+    -- both files register at load, so this line is what puts `vehrefuse.gate`
+    -- ahead of `inv.apply` in every TICK pass. It has to be: in a gun seat that
+    -- names no weapon (the Caracara's, #322) `disarm` takes the hash to switch
+    -- off from the HAND, and inventory.lua's strip empties that hand and puts
+    -- the active slot back on the same pass. Read after it, the hand holds our
+    -- own weapon or the fists and nothing is disabled. tools/test_vehrefuse.lua
+    -- loads the pair in the order this file gives and fails if they swap.
+    --
+    -- It used to sit after client/vehdamage.lua, for a reader: the two act on
+    -- the vehicle a player is climbing into. The pass order outranks that.
+    'client/vehrefuse.lua',
     'client/inventory.lua', -- the inventory mirror; owns every weapon grant
     -- The one-a-session "switch to slot N" notice for a passenger (#206). Reads
     -- BR.Inv.local_() at call time, so it only has to be BELOW main.lua for the
@@ -519,18 +540,6 @@ client_scripts {
     -- after client/fuel.lua, for a reader: fuel.lua is the file that draws the
     -- condition bar this one makes move, and the file that puts the health back.
     'client/vehdamage.lua',
-    -- Refusing an aircraft, a tank or an armed vehicle at the door (#215): eject,
-    -- one sentence, lock it behind them. NEEDS client/main.lua for the loop
-    -- registry and NOTHING ELSE AT LOAD TIME -- BR.Notify (client/state.lua) and
-    -- BR.State are both reached at call time, and the ruling comes from
-    -- BR.Config.VehicleRefusalFor, a shared config already loaded above.
-    --
-    -- Declared HERE, immediately after client/vehdamage.lua, for a reader: these
-    -- two are the pair that act on the vehicle a player is climbing into, they
-    -- ride the same `GetVehiclePedIsEntering` window, and they are the only two
-    -- files that do. It is ADVISORY -- see its header; the enforcement is
-    -- server/vehicles.lua and always was.
-    'client/vehrefuse.lua',
     -- The spectator camera. Needs BR.Keys (keybinds.lua) for the arrows and
     -- BR.Native (natives.lua) for the scoped ped lookup; client/lobbycam.lua
     -- reads BR.Spectate.active() at call time, so load order between the two

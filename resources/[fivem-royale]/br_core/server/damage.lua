@@ -1399,7 +1399,7 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
     -- missing from the build. When it does, the ENGINE puts the car's own gun in
     -- an honest player's hand -- and that hash is in no row of
     -- BR.Config.WeaponByHash, so it used to arrive here as a high severity
-    -- NO_WEAPON case against somebody who bought a Caracara in the showroom.
+    -- NO_WEAPON case against somebody who got into a Technical.
     --
     -- ONLY ASKED WHEN THE HASH IS IN NO ROW OF OURS, which is what makes it
     -- affordable: `fired == nil` is the ONLY state that can produce NO_WEAPON,

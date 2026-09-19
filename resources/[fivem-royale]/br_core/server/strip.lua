@@ -145,15 +145,16 @@ end
 
 --- Is this report the engine handing somebody the gun bolted to their own car?
 ---
---- ═══ THE DEFECT (#322), AND IT IS THE FIRETRUCK AGAIN IN A CAR HE SELLS ═══
+--- ═══ THE DEFECT (#322), AND IT IS THE FIRETRUCK AGAIN IN THE CARS HE RULED
+---     DRIVABLE ═══
 ---
 --- A firetruck, fifteen minutes, 149 strips and a high severity case against a
 --- player who was using the hose (owner, 2026-09-15). The client half of that is
 --- answered in client/inventory.lua by BR.Config.StripExemptVehicles. What #322
 --- did was make the ARMED rows of the model table DRIVABLE instead of ejecting
 --- the player within one 100 ms pass -- so those seats are occupied now, all
---- match, and the same failure is reachable in about sixty more models. One of
---- them is on sale in the showroom for 750 Volts.
+--- match, and the same failure is reachable in about sixty more models. The
+--- Caracara's gun seat is one the owner hit on 2026-09-19.
 ---
 --- The gun is held off on the CLIENT and that is best effort by construction:
 --- the native may not persist between passes, may have no opinion about a turret
@@ -183,7 +184,8 @@ end
 --- damage: server/damage.lua refuses a weapon it never issued whatever they are
 --- sitting in, and the weapon is still taken out of their hand on every tick.
 --- The alternative is a case against an honest player for sitting in a car the
---- owner sold them, which the issue names as its acceptance criterion.
+--- owner ruled they may drive, which the issue names as its acceptance
+--- criterion.
 ---
 --- ═══ THIS IS NOT THE ADMIN EXEMPTION WEARING A HAT, AND THE DIFFERENCE IS THE
 ---     WHOLE OF WHY IT IS ALLOWED TO EXIST ═══
@@ -305,10 +307,19 @@ AddEventHandler(BR.Net.INV_STRIPPED, function(weapon)
     -- NOR IS THE ENGINE HANDING SOMEBODY THE GUN BOLTED TO THEIR OWN CAR (#322).
     -- Counted rather than filed, and counted separately from `races` because the
     -- two say different things: a race is our two inventory mirrors disagreeing,
-    -- this is the client-side weapon disable not holding. See `vehicleGun`.
+    -- this is the engine putting the car's own gun in a hand. See `vehicleGun`.
     --
     -- THE WINDOW IS LEFT CLOSED, exactly as it is for a race: a refusal that
     -- costs nothing must not swallow a genuine strip arriving a moment later.
+    --
+    -- AND IT RETURNS ABOVE EVERYTHING THAT MAKES NOISE. `rec.count`, the
+    -- evidence buffer and the ANTICHEAT line are all below this, so one sitting
+    -- in a disarmed model is no console line, no count and no timeline entry
+    -- however long it lasts. The owner's Caracara printed a line per report and
+    -- counted to eighteen (2026-09-19) because that model was in no row of the
+    -- ruling, not because of this order -- but moving the count above this line
+    -- would give every disarmed model his console, so tools/test_ringmaster.lua
+    -- pins the order.
     if vehicleGun(src, h, rec, now) then
         stat.vehicleGuns = stat.vehicleGuns + 1
         return

@@ -1170,12 +1170,16 @@ BR.Config.Shop = {
 --- This used to call BR.Config.IsAllowedVehicle, which is the raw model-table
 --- lookup: is this hash in the refused list. That was the same answer as the
 --- ruling right up until the owner's #322 ruling made an ARMED row drivable
---- rather than refused -- and the very first row it applies to is one of THIS
---- CATALOGUE'S. `caracara2` was written into the refused table by #322 because
---- it carries a mounted gun that no signal in the tree could see, and the
---- unchanged predicate would have answered "refused" and quietly deleted the
---- Vapid Caracara 4x4 from the showroom: a car the owner priced at 750 Volts and
---- placed by hand, gone from the plate list with one line in the console.
+--- rather than refused. From then on the raw predicate answers "refused" for a
+--- car the gamemode is happy to have, and an armed row put in this catalogue
+--- would quietly vanish from the showroom: a car the owner priced and placed by
+--- hand, gone from the plate list with one line in the console.
+---
+--- #322 THOUGHT THIS CATALOGUE ALREADY HAD ONE, AND IT DID NOT. It wrote
+--- `caracara2` into the refused table as armed; the owner's test on 2026-09-19
+--- showed the armed one is the 6x6 `caracara` and the 4x4 has no weapon. The
+--- row came out and the 4x4 is sold as an ordinary car -- this function is
+--- still right, and simply has no armed row here to be right about today.
 ---
 --- BR.Config.VehicleRefusalFor is the one place the question is asked -- its
 --- header says so and names the callers -- so asking it here is what keeps this

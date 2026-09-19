@@ -218,35 +218,33 @@ BR.Config.RefusedVehicles = {
     -- turrets and are refused for that.
     { name = 'apc',           why = A, hash = 0x2189D250 },
     { name = 'barrage',       why = A, hash = 0xF34DFB25 },
-    -- THE LEAK #322 WAS OPENED ABOUT, AND IT IS THE SHAPE THIS FILE'S HEADER
-    -- WARNS ABOUT RATHER THAN A NEW KIND OF MISS. The Caracara 4x4 carries a
-    -- mounted gun on an ordinary Off-road body: no type says so, class 2 is not
-    -- in the class net, and nobody had written the name down -- so it was
-    -- ALLOWED AND ARMED, by omission, for as long as this table has existed.
-    -- Absence is permission here and this is what that costs.
+    -- ═══ THE CARACARA, AND WHICH OF THE TWO CARRIES THE GUN ═══
     --
-    -- IT IS WRITTEN DOWN NOW SO THAT IT GOES THROUGH THE RULING DELIBERATELY.
-    -- Under #322 an ARMED row is drivable with its gun held off rather than
-    -- refused, so this row does not take the car away from anybody: it is the
-    -- difference between a gun nobody decided about and a gun this gamemode
-    -- switches off. The owner sells this model in the showroom -- 750 Volts, in
-    -- config/shop.lua -- and it is still for sale, because the shop asks
-    -- BR.Config.VehicleRefusalFor and that function applies the ruling.
+    -- `caracara` -- the Vapid Caracara, the 6x6 -- IS THE ARMED ONE: a .50 cal
+    -- turret on the bed. `caracara2` -- the Caracara 4x4, which the showroom
+    -- sells -- has no weapon and is not in this table. #322 had them the other
+    -- way round. It wrote `caracara2` down as ARMED and left `caracara` out, so
+    -- the 4x4 carried a false row and the 6x6 was ALLOWED AND ARMED by
+    -- omission, which is the leak #322 was opened about, one model along.
     --
-    -- ⚠ THE PLAIN `caracara` IS NOT HERE AND NOBODY HAS ESTABLISHED WHETHER IT
-    -- SHOULD BE. config/shop.lua records that the two are siblings -- "caracara2
-    -- is 'Caracara 4x4'; plain `caracara` is 'Caracara'" -- and this block
-    -- already writes down why the plain variants of `dune3` and of the Arena War
-    -- contenders are absent, because that boundary is the likeliest error here.
-    -- This one was not re-derived. If the sibling carries the same bed fitting
-    -- it is ALLOWED AND ARMED by omission, which is the leak this very row was
-    -- added for, one model along. It is unchanged by #322 either way -- an
-    -- absent row was always permission -- so this is a question to settle, not a
-    -- regression to hold the change for. WHAT SETTLES IT: spawn a plain
-    -- `caracara`, sit in the bed and pull the trigger. A gun that fires is a row
-    -- here; nothing to fire is a line in this comment saying so, the way the
-    -- `dune3` note says it about `dune` and `dune2`.
-    { name = 'caracara2',     why = A, hash = 0xAF966F3C },
+    -- SETTLED IN GAME, NOT FROM A WIKI. The owner, on dev at c34bab7
+    -- (2026-09-19): `brcar 1 caracara` answered "caracara (0x4ABEBF23) as
+    -- automobile", and sitting in its gun seat gave him a gun that fired and an
+    -- unissued-weapon case against himself. That is the hash on the row, and
+    -- tools/check_vehicles.lua re-derives it from the name on every commit.
+    --
+    -- NO NET SEES IT, WHICH IS WHY THE ROW IS THE WHOLE ANSWER. An ordinary
+    -- Off-road body: no type says so and the class is not in the class net.
+    -- Under #322 an ARMED row is driven with its gun held off rather than
+    -- refused, so this row takes the truck away from nobody. Its gun seat does
+    -- not name the gun it puts in the hand -- the strip firing there says so --
+    -- and `disarm` in client/vehrefuse.lua says what is switched off in that
+    -- case instead.
+    --
+    -- THE 4x4 IS ABSENT FOR THE REASON THE PLAIN `insurgent` IS: it has no
+    -- weapon. Absence is permission here, so it stays for sale in
+    -- config/shop.lua as the ordinary car it is.
+    { name = 'caracara',      why = A, hash = 0x4ABEBF23 },
     { name = 'chernobog',     why = A, hash = 0xD6BC7523 },
     -- The Dune FAV, and the only row here whose gun is a WORKSHOP FITTING rather
     -- than part of the stock model -- machine gun, 40mm grenade launcher or
@@ -594,7 +592,8 @@ end
 --- nobody sits in. Under the owner's #322 ruling an ARMED row is DRIVEN rather
 --- than emptied, so that seat is real now and the same firetruck failure can
 --- happen in it -- in a gun position `GetCurrentPedVehicleWeapon` has no opinion
---- about, `isMountedWeapon` misses, nothing is disabled, and the strip fires.
+--- about, `isMountedWeapon` misses and the strip fires. That is what the
+--- Caracara's gun seat did (owner, 2026-09-19).
 ---
 --- NOTHING WAS ADDED HERE FOR #322, ON PURPOSE, AND SOMETHING ELSE DOES THE WORK
 --- INSTEAD. A row here excuses ANY weapon in ANY seat of that model, which is a
@@ -614,13 +613,19 @@ end
 --- disarms and not one model wider. A weapon this gamemode DOES issue is still
 --- stripped, still reported and still filed, in a Technical exactly as on foot.
 ---
+--- AND THE GUN IN SUCH A SEAT IS HANDED TO THE DISABLE ANYWAY. Where the seat
+--- names no weapon, client/vehrefuse.lua's `disarm` disables the hash in the
+--- hand when it is in no row of ours -- the same trade server/strip.lua makes --
+--- so a row here is not needed to stop a case in a disarmed model. Whether it
+--- stops the GUN is not settled: nobody has yet sat in the Caracara's gun seat
+--- with this in place and pulled the trigger (#322). Until somebody has, that
+--- is the intent, not a finding.
+---
 --- WHAT A ROW HERE WOULD STILL BE FOR is the firetruck's own case: equipment the
 --- player is SUPPOSED to use. That is a gameplay ruling from the owner, not an
---- anticheat patch, and the reading that asks for one is `/brvehrefuse`'s
---- `unnamed-gun` climbing while somebody sits in a particular model.
---- tools/check_vehicles.lua now permits the pair for an ARMED row and still
---- refuses it for FLIES and TANK, so the day he rules on one the fix is one line
---- and the gate will allow it.
+--- anticheat patch. tools/check_vehicles.lua permits the pair for an ARMED row
+--- and still refuses it for FLIES and TANK, so the day he rules on one the fix
+--- is one line and the gate will allow it.
 BR.Config.StripExemptVehicles = {
     { name = 'firetruk', hash = 0x73920F8E },  -- water cannon, in the hose seat
 }
@@ -731,8 +736,8 @@ end
 --- car gets, because under the owner's ruling it IS an ordinary car with a gun
 --- somebody else switches off. That is what makes the three callers agree
 --- without any of them knowing the rule exists: server/vehicles.lua files no
---- case, client/vehrefuse.lua ejects nobody, config/shop.lua keeps selling the
---- Caracara, and none of them was edited to say so.
+--- case, client/vehrefuse.lua ejects nobody, config/shop.lua would keep selling
+--- an armed row it listed, and none of them was edited to say so.
 ---
 --- WHO OWES THE DISABLE IS A SEPARATE QUESTION AND HAS A SEPARATE FUNCTION.
 --- BR.Config.IsDisarmedVehicle above answers it, this one calls it, and

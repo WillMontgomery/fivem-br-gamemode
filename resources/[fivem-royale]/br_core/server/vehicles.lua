@@ -1570,9 +1570,9 @@ function BR.Vehicles.spawnOwned(model, vtype, x, y, z, heading, forSrc, bucket)
     -- SAME ANSWER. This asked BR.Config.IsAllowedVehicle -- "is this hash in the
     -- refused list" -- which stopped meaning "this gamemode will not have one"
     -- the day an ARMED row became drivable with its gun switched off. The
-    -- catalogue in config/shop.lua sells one of those (`caracara2`, 750 Volts)
-    -- and every purchased car is built HERE, so the two must agree or a player
-    -- pays for a Caracara and this function declines to make it -- a purchase
+    -- catalogue in config/shop.lua asks the ruling too, and every purchased car
+    -- is built HERE, so the two must agree or a player pays for an armed row
+    -- the catalogue listed and this function declines to make it -- a purchase
     -- that succeeds and goods that do not exist, which shop_solve.lua's own
     -- header calls out as the failure its catalogue check exists to prevent.
     --

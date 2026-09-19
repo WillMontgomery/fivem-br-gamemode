@@ -241,21 +241,33 @@ end
 
 -- ------------------------------------------------------- #322, in the whole --
 --
--- THE LEAK THE ISSUE WAS OPENED ABOUT. `caracara2` carries a mounted gun on an
--- ordinary Off-road body: no type says so, class 2 is in no net, and it was
--- permitted by OMISSION -- allowed and armed -- for as long as this table has
--- existed. Named here rather than left to the loop above because the loop proves
--- the rows that ARE present are consistent and can say nothing at all about one
+-- THE LEAK THE ISSUE WAS OPENED ABOUT, AND WHICH CARACARA IT IS. `caracara` --
+-- the 6x6 -- carries a .50 cal turret on an ordinary Off-road body: no type
+-- says so, its class is in no net, and it was permitted by OMISSION -- allowed
+-- and armed -- until the owner sat in its gun seat on 2026-09-19 and the gun
+-- fired.
+-- Named here rather than left to the loop above because the loop proves the
+-- rows that ARE present are consistent and can say nothing at all about one
 -- that is deleted, and deleting this row restores the leak in silence.
-if not seenName['caracara2'] then
-    fail('`caracara2` is not in the refused table. It carries a mounted gun in '
-         .. 'an ordinary Off-road class, so no type and no class net sees it, '
-         .. 'and without a row it is ALLOWED AND ARMED -- which is the leak '
-         .. '#322 was opened about.')
-elseif refusedWhy['caracara2'] ~= BR.Config.VehicleRefusal.ARMED then
-    fail('`caracara2` is %q rather than ARMED. Under #322 that is the '
+if not seenName['caracara'] then
+    fail('`caracara` is not in the refused table. The Vapid Caracara (6x6) '
+         .. 'carries a mounted gun in an ordinary Off-road class, so no type '
+         .. 'and no class net sees it, and without a row it is ALLOWED AND '
+         .. 'ARMED.')
+elseif refusedWhy['caracara'] ~= BR.Config.VehicleRefusal.ARMED then
+    fail('`caracara` is %q rather than ARMED. Under #322 that is the '
          .. 'difference between a car the gamemode drives with the gun off and '
          .. 'one it throws the player out of.',
+         tostring(refusedWhy['caracara']))
+end
+
+-- AND THE 4x4 IS NOT ARMED. #322 wrote `caracara2` down as ARMED with the two
+-- the wrong way round. Drivable either way, so the row changed no behavior --
+-- but a row here is this table saying the car carries a gun, and it does not.
+if seenName['caracara2'] then
+    fail('`caracara2` is in the refused table as %q. The Caracara 4x4 has no '
+         .. 'weapon -- the armed one is `caracara`, the 6x6 -- so the row is '
+         .. 'false and absence is the right answer.',
          tostring(refusedWhy['caracara2']))
 end
 

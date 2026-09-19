@@ -336,22 +336,32 @@ end
 -- unchanged. What this removes is the noise and the desync of a gun that fires,
 -- looks like it hit, and is then refused a round trip later.
 --
--- ═══ AND THE SEAT THIS CANNOT SEE IS ANSWERED ON THE SERVER, NOT HERE ═══
+-- ═══ AND THE SEAT THE NATIVE CANNOT SEE ═══
 --
 -- `GetCurrentPedVehicleWeapon` has no opinion about some gun positions -- the
--- firetruck's hose is the one this project has measured -- and in one of those
--- there is no hash to disable, so the gun stays live and the engine puts it in
--- the player's hand. Before #322 that could not happen in an armed vehicle
--- because nobody was in the seat for longer than a tenth of a second; now they
--- sit there all match, in about sixty models, one of which is for sale.
+-- firetruck's hose was the first this project measured -- and in one of those
+-- the seat names no hash to disable. Before #322 that could not happen in an
+-- armed vehicle because nobody was in the seat for longer than a tenth of a
+-- second; now they sit there all match, in about sixty models.
 --
--- NOTHING HERE PAPERS OVER IT. What that seat used to cost was a high severity
--- anticheat case against somebody who got into a car -- server/damage.lua
--- refusing the shots as NO_WEAPON, server/strip.lua filing the stripped hash --
--- and both of those now ask BR.Vehicles.inDisarmedVehicle and decline to accuse
--- anybody sitting in a model this ruling disarms. The GUN in such a seat is
--- still live, which is a gameplay gap and is counted as `unnamed-gun` by
--- `/brvehrefuse`; it is not an accusation any more.
+-- THE CARACARA'S GUN SEAT READS AS THE SECOND (owner, 2026-09-19). The strip
+-- fired on what he was holding there, and `isMountedWeapon` excuses the hand
+-- whenever the seat names the same gun -- so the seat did not name the gun in
+-- his hand. `/brvehrefuse` is what confirms which way; see its note.
+--
+-- THE ENGINE PUTS THAT GUN IN THE PLAYER'S HAND, AND THE HAND IS WHERE THE HASH
+-- COMES FROM. Where the seat names nothing, `disarm` switches off the hash in
+-- the hand when it is in no row of ours -- see `unnamedGunInHand` for why that,
+-- and only that, is safe to hand back to the engine.
+--
+-- THE ACCUSATION IS ANSWERED ON THE SERVER, AND THE CLIENT STRIP IS NOT
+-- LOOSENED. What that seat used to cost was a high severity anticheat case
+-- against somebody who got into a car -- server/damage.lua refusing the shots
+-- as NO_WEAPON, server/strip.lua filing the stripped hash -- and both of those
+-- ask BR.Vehicles.inDisarmedVehicle and decline to accuse anybody sitting in a
+-- model this ruling disarms. client/inventory.lua still takes the gun out of
+-- the hand and still reports it; #322's review rejected excusing a hash in no
+-- row of ours on this side, and nothing here changes that.
 
 --- The vehicle weapon this ped's seat currently holds, or nil.
 ---
@@ -363,8 +373,9 @@ end
 --- the seats where this function answers are EXACTLY the seats where the strip's
 --- mounted-weapon guard answers, and the two cannot come apart: a gun this
 --- disables is a gun the anticheat already excuses, by construction and not by
---- coincidence. The seats where it does NOT answer are the other half, and they
---- are answered on the server: see the section header above.
+--- coincidence. The seats where it does NOT answer are the other half: the gun
+--- is found in the hand by `unnamedGunInHand` below, and the report the strip
+--- sends about it is dropped on the server. See the section header above.
 ---
 --- FOUR CONDITIONS, ALL IN THE SAFE DIRECTION, THE SAME FOUR THAT FILE LISTS:
 ---
@@ -394,11 +405,10 @@ local function mountedWeaponOf(ped)
     return h
 end
 
---- Is the engine holding a gun in this ped's hand that this gamemode issues
---- NOBODY?
+--- The gun the engine has put in this ped's hand that this gamemode issues
+--- NOBODY, or nil.
 ---
---- ═══ THE FIRETRUCK SIGNATURE, AND THE COUNTER BELOW MEANS NOTHING WITHOUT IT
----     ═══
+--- ═══ THE FIRETRUCK SIGNATURE, AND IT HAS TO MEAN THAT AND NOT A DRIVER ═══
 ---
 --- `disarm` is called for ANY seat, by design, so the pass where
 --- `GetCurrentPedVehicleWeapon` names nothing is mostly the ORDINARY DRIVER of a
@@ -412,38 +422,71 @@ end
 --- What the firetruck actually looked like is BOTH HALVES AT ONCE: the vehicle
 --- names no mounted weapon AND the engine has put something in the hand that is
 --- in no row of BR.Config.WeaponByHash. That pair is the seat client/inventory.
---- lua's `isMountedWeapon` cannot see and the strip fires on, and it is the only
---- reading that says a model needs an answer of its own.
+--- lua's `isMountedWeapon` cannot see and the strip fires on.
 ---
---- FOUR CONDITIONS IN THE SAFE DIRECTION, the same four `mountedWeaponOf` above
---- takes, and "safe" here means NOT COUNTING: a native that is absent, throws,
---- declines to answer or names nothing leaves the counter where it was. This is
---- a diagnostic, so a silence that inflates it is worse than a silence that
---- loses it.
+--- ═══ AND SINCE THE CARACARA IT IS ALSO THE HASH `disarm` SWITCHES OFF ═══
+---
+--- The owner sat in a Caracara's gun seat on 2026-09-19 and the gun fired. The
+--- model was in no row then, so nothing here ran at all -- but the row alone
+--- would not have been enough. The strip fired on what he was holding, which
+--- `isMountedWeapon` excuses whenever the seat names it, so the seat did not
+--- name the gun in his hand and `mountedWeaponOf` would never have handed it to
+--- `disarm`. The hand is where it is read from now.
+---
+--- ═══ AND IT IS READ BEFORE client/inventory.lua's STRIP EMPTIES IT ═══
+---
+--- That strip reads the same hand on the same TICK, takes a hash in no row out
+--- of it and puts the active slot back. Read after it, this finds our own
+--- weapon or the fists and hands `disarm` nothing, every pass. This file is
+--- declared ABOVE inventory.lua in fxmanifest.lua for that reason, which is
+--- what puts `vehrefuse.gate` first in the pass; see the note there.
+---
+--- IN NO ROW OF OURS IS WHAT MAKES IT SAFE TO HAND BACK. A hash this gamemode
+--- issues nobody takes nothing from anybody when it is disabled, and it is the
+--- same trade server/strip.lua's vehicle-gun guard makes about the same hash in
+--- the same seat. A hash that IS one of ours -- an issued rifle, the fists --
+--- is never handed to DisableVehicleWeapon: it is the player's own weapon, not
+--- the car's.
+---
+--- FISTS ARE A ROW. WEAPON_UNARMED is BR.Config.Fists, registered into
+--- WeaponByHash by hand in config/weapons.lua, so the row test declines it and
+--- a second test of the same hash would be one mutation testing calls
+--- unkillable. tools/test_vehrefuse.lua asserts the outcome against the real
+--- arsenal, so the day that row goes this is what fails.
 ---
 --- THE PARACHUTE IS NOT A GUN. It is in no weapon row -- client/inventory.lua's
 --- strip excuses it by hash for that reason -- and it is granted on purpose by
---- client/skydive.lua, so counting it would be counting our own grant.
+--- client/skydive.lua, so switching it off would be switching off our own
+--- grant.
+---
+--- FOUR CONDITIONS IN THE SAFE DIRECTION, the same four `mountedWeaponOf` above
+--- takes, and "safe" here means NOTHING: a native that is absent, throws,
+--- declines to answer or names nothing hands `disarm` no hash, so nothing is
+--- disabled and nothing is counted.
+---
+--- RETURNED AS THE ENGINE REPORTED IT, for the reason `mountedWeaponOf` gives:
+--- it is normalized to index the table and handed back raw, because it is going
+--- straight into a native.
 --- @param ped integer
---- @return boolean
+--- @return integer|nil
 local function unnamedGunInHand(ped)
     local pok, answered, held = pcall(GetCurrentPedWeapon, ped, true)
-    if not pok or not isTrue(answered) then return false end
+    if not pok or not isTrue(answered) then return nil end
 
-    -- `BR.NormHash(0)` IS 0 AND 0 IS TRUTHY, so "no weapon" is tested for rather
-    -- than trusted to be falsy -- the reading this file normalises everything
-    -- else for.
-    local h = BR.NormHash(held)
-    if h == nil or h == 0 then return false end
+    -- `0` IS TRUTHY, so "no weapon" is tested for rather than trusted to be
+    -- falsy -- the reading this file normalizes everything else for.
+    local raw = math.tointeger(tonumber(held))
+    if raw == nil or raw == 0 then return nil end
+    local h = BR.NormHash(raw)
 
     local known = BR.Config and BR.Config.WeaponByHash
-    if known == nil then return false end
-    if known[h] ~= nil then return false end
+    if known == nil then return nil end
+    if known[h] ~= nil then return nil end
 
     local gadgets = BR.Config.Gadgets
-    if gadgets and h == BR.NormHash(gadgets.PARACHUTE) then return false end
+    if gadgets and h == BR.NormHash(gadgets.PARACHUTE) then return nil end
 
-    return true
+    return raw
 end
 
 --- Hold this vehicle's gun off for the player sitting in it.
@@ -466,6 +509,14 @@ end
 --- ped-specific lock and says the ped need not be in the vehicle or in any
 --- particular seat when it is called.
 ---
+--- ═══ ONE CALL, TWO PLACES THE HASH CAN COME FROM ═══
+---
+--- The seat, when `GetCurrentPedVehicleWeapon` names one; the hand, when it
+--- does not and the hand holds a hash in no row of ours. Same call, same
+--- argument order, same band, so the Caracara's gun seat gets exactly the call
+--- a Technical's does. `disarmed` counts both; `unnamed-gun` counts the
+--- second. See `/brvehrefuse`.
+---
 --- ═══ NOTHING EVER CALLS IT WITH `false` ═══
 ---
 --- There is no re-enable path and there should not be one. The lock is per ped
@@ -482,23 +533,22 @@ local function disarm(ped, veh, model)
 
     local hash = mountedWeaponOf(ped)
     if hash == nil then
-        -- THE SEAT THE NATIVE HAS NO OPINION ABOUT, COUNTED ONLY WHEN THE ENGINE
-        -- HAS ACTUALLY PUT SOMETHING IN THE HAND. There is no hash, so there is
-        -- nothing to disable and this pass is a no-op either way -- but most of
-        -- these passes are an ordinary driver, and counting those made the
-        -- number unreadable. `unnamedGunInHand` is the other half, and the pair
-        -- is the firetruck: a gun the seat will not name, in a hand, in no row
-        -- of ours. See that function for why one half alone says nothing.
+        -- THE SEAT THE NATIVE HAS NO OPINION ABOUT, WHICH IS WHAT THE
+        -- CARACARA'S GUN SEAT LOOKED LIKE. The gun is in the hand instead, so
+        -- the hand's hash is the one switched off -- but only a hash in no row
+        -- of ours, which is what `unnamedGunInHand` answers. See that function
+        -- for why nothing wider is safe to hand back.
         --
-        -- IT IS A COUNTER AND NOT A FALLBACK. The fallback would be
-        -- BR.Config.StripExemptVehicles, which switches the anticheat off for
-        -- the whole model; see that table's header for what does the work
-        -- instead. This number is what says a model needs one anyway, because it
-        -- is the seat where the gun is live and nothing here can hold it off.
-        if unnamedGunInHand(ped) then
-            stat.unnamedGun = stat.unnamedGun + 1
-        end
-        return
+        -- MOST OF THESE PASSES ARE AN ORDINARY DRIVER, holding their own rifle,
+        -- nothing, or the parachute. That is nil here, so nothing of theirs is
+        -- disabled and nothing is counted.
+        --
+        -- NOT BR.Config.StripExemptVehicles. That table switches the anticheat
+        -- off for the whole model; this switches off one hash we issue nobody,
+        -- in one seat, and the strip in client/inventory.lua still runs.
+        hash = unnamedGunInHand(ped)
+        if hash == nil then return end
+        stat.unnamedGun = stat.unnamedGun + 1
     end
 
     -- COUNTED THE WAY `lock` COUNTS, AND THAT IS THE WHOLE POINT OF THE pcall
@@ -789,27 +839,40 @@ end
 --- AND #322 ADDED A FOURTH, WHICH IS THE ONE TO READ FIRST AFTER A ROUND IN A
 --- CARACARA.
 ---
----   `disarmed`     passes on which the engine NAMED a gun and the disable was
----                  CALLED on it and the call reached the native. Not weapons
----                  proved silent: the native returns nothing, so that is the
----                  most this side can honestly claim, and it is the same
----                  honesty `locked` is counted with above. A build without
----                  DisableVehicleWeapon leaves this at zero rather than
----                  counting passes that went nowhere.
+---   `disarmed`     passes on which the disable was CALLED on a gun and the
+---                  call reached the native, whichever place the hash came
+---                  from: named by the seat, or read from the hand where the
+---                  seat names nothing. Not weapons proved silent: the native
+---                  returns nothing, so that is the most this side can
+---                  honestly claim, and it is the same honesty `locked` is
+---                  counted with above. A build without DisableVehicleWeapon
+---                  leaves this at zero rather than counting passes that went
+---                  nowhere.
 ---   `unnamed-gun`  passes on which the seat named NOTHING and the engine had
 ---                  nevertheless put a weapon in the hand that this gamemode
----                  issues nobody. BOTH HALVES, because either alone is noise:
+---                  issues nobody -- so the HAND's hash is the one handed to
+---                  the disable. BOTH HALVES, because either alone is noise:
 ---                  the driver of a Technical has no vehicle weapon and would
 ---                  otherwise climb this ten times a second all match. The pair
----                  is the firetruck, and it is the reading that says a model
----                  needs an answer of its own -- the gun is live in that seat
----                  and nothing on this side can hold it off.
+---                  is the firetruck's seam, and on the evidence the Caracara's
+---                  gun seat. A climbing number says the seat will not name its
+---                  gun, NOT that the gun is live: it is the gun being switched
+---                  off from the hand, and it climbs with `disarmed` beside it.
+---
+--- SO, IN THE CARACARA'S GUN SEAT: both climbing together means the hand path
+--- is doing the work. `disarmed` climbing alone means the seat names a gun
+--- after all -- and if the gun still fires, it is naming a different one from
+--- the gun in the hand, which this file does not cover. `unnamed-gun` climbing
+--- while `disarmed` does not means the disable never reached the engine. And a
+--- gun that fires with both climbing means the hand's hash is not the one the
+--- engine wanted, or the lock does not survive a TICK -- see the note at the
+--- `disarm` call site.
 ---
 --- NEITHER OF THEM IS THE ANTICHEAT'S ANSWER ANY MORE, and that is worth knowing
 --- before reading them. server/damage.lua and server/strip.lua excuse a hash we
 --- issue nobody from anybody sitting in one of these models, so a seat this
 --- cannot disable files no case either way. These two numbers say whether the
---- WEAPON works, not whether somebody is accused.
+--- WEAPON was switched off, not whether somebody is accused.
 ---
 --- This command answers all four from a real lobby. It prints to the console.
 RegisterCommand('brvehrefuse', function()

@@ -8450,10 +8450,17 @@ do
     -- that decision lives in server/strip.lua where the filing does. See the
     -- note on case 4.
 
-    local CARACARA2 = 0xAF966F3C           -- ARMED in the model table since #322
+    -- THE 6x6, ARMED IN THE MODEL TABLE SINCE THE OWNER'S TEST (2026-09-19).
+    -- This block was written against `caracara2`, which #322 had wrongly
+    -- listed; the assertions are unchanged, and pointing them at the armed one
+    -- is what keeps "a disarmed vehicle" in their names true.
+    local CARACARA  = 0x4ABEBF23
     local TECHNICAL = 0x83051506           -- ARMED, and was there all along
     local CONJURED  = 0x11111111           -- in no table this gamemode has
     local CARBINE   = 0x83BF0278           -- WEAPON_CARBINERIFLE, issued
+    -- WEAPON_ASSAULTRIFLE: a row of OUR arsenal, and not in this player's
+    -- slots. The weapon a trainer is actually worth granting.
+    local RIFLE     = 0xBFEFFF6D
     -- VEHICLE_WEAPON_PLAYER_BUZZARD: a real mounted-gun hash, in none of this
     -- gamemode's tables, so only the equality can tell it from CONJURED.
     local MOUNTED   = 0xE2822A29
@@ -8496,7 +8503,7 @@ do
     --    match, the engine puts the truck's gun in their hand every tick, and
     --    nothing is stripped and no case is filed. This is `isMountedWeapon`
     --    doing the job it was written for, in a seat that is now occupiable.
-    tickIn(CARACARA2, MOUNTED, MOUNTED)
+    tickIn(CARACARA, MOUNTED, MOUNTED)
     ok(strips(MOUNTED) == 0 and #reports() == 0,
         'no unissued-weapon incident for sitting in a disarmed vehicle',
         ('%d strips, %d reports'):format(strips(MOUNTED), #reports()))
@@ -8509,7 +8516,7 @@ do
     --    nobody, held in the same seat, with the vehicle's own gun named
     --    alongside it -- exactly the case a StripExemptVehicles row would have
     --    excused, and the reason no row was added.
-    tickIn(CARACARA2, CONJURED, MOUNTED)
+    tickIn(CARACARA, CONJURED, MOUNTED)
     ok(strips(CONJURED) == 1 and #reports() == 1,
         'a conjured weapon in that same seat is still stripped and reported',
         ('%d strips, %d reports'):format(strips(CONJURED), #reports()))
@@ -8517,16 +8524,18 @@ do
     -- 3. THE DECISION ITSELF, AS A STRUCTURAL FACT RATHER THAN A BEHAVIOUR.
     --    Case 2 would also pass if the table were keyed wrongly; this says the
     --    row is absent because somebody decided it should be.
-    ok(BR.Config.StripExemptByHash[BR.NormHash(CARACARA2)] == nil,
+    ok(BR.Config.StripExemptByHash[BR.NormHash(CARACARA)] == nil,
         'and the Caracara is NOT strip-exempt -- #322 says not to, because a '
             .. 'row there excuses any weapon in any seat of the model')
     ok(BR.Config.StripExemptByHash[BR.NormHash(TECHNICAL)] == nil,
         'and neither is a Technical')
 
-    -- 4. THE GAP, PINNED RATHER THAN BELIEVED. In a gun position the native has
-    --    no opinion about there is no hash -- nothing for `disarm` to switch off
-    --    and nothing for `isMountedWeapon` to compare -- so the strip fires and
-    --    the report goes out, exactly as they did in the firetruck.
+    -- 4. THE GAP, PINNED RATHER THAN BELIEVED, AND IT IS THE OWNER'S OWN SEAT
+    --    (2026-09-19). In a gun position the native has no opinion about there
+    --    is nothing for `isMountedWeapon` to compare, so the strip fires and
+    --    the report goes out, exactly as they did in the firetruck. client/
+    --    vehrefuse.lua's `disarm` now switches that gun off from the hand, and
+    --    it does so in its own file without touching this strip.
     --
     --    WHAT CHANGED IS WHAT HAPPENS TO THAT REPORT, AND IT CHANGED ON THE
     --    SERVER. #322 made this seat occupiable for whole matches, so the
@@ -8542,16 +8551,37 @@ do
     --    SO THIS LINE IS THE CLIENT HALF STAYING PUT. The weapon still comes out
     --    of the hand, which is what stops the local-damage desync, and no row
     --    was added to BR.Config.StripExemptVehicles to make it stop.
-    tickIn(CARACARA2, MOUNTED, nil)
+    tickIn(CARACARA, MOUNTED, nil)
     ok(strips(MOUNTED) == 1 and #reports() == 1,
         'a seat the native has no opinion about is UNCHANGED by #322 on this '
             .. 'side -- it still strips, and the server decides what to file')
 
     -- 5. AND THE PLAYER'S OWN ISSUED WEAPON IS UNTOUCHED THROUGHOUT, which is
     --    what somebody driving to a fight is holding all the way there.
-    tickIn(CARACARA2, CARBINE, MOUNTED)
+    tickIn(CARACARA, CARBINE, MOUNTED)
     ok(strips(CARBINE) == 0 and #reports() == 0,
         'the active slot\'s own weapon is untouched in a disarmed vehicle')
+
+    -- 6. A CONJURED WEAPON THAT IS ONE OF OURS, IN THE SEAT THAT NAMES NOTHING.
+    --    Since the owner's Caracara, `disarm` switches off the hand's gun where
+    --    the seat names none, and server/strip.lua drops a hash in no row of
+    --    ours from that seat. Neither reaches a hash that IS a row: an assault
+    --    rifle this player does not carry is the weapon a trainer is worth
+    --    granting, and in the Caracara's gun seat it is stripped and reported
+    --    exactly as on foot. #322's review rejected loosening this side, and
+    --    this is that decision holding in the seat the fix was written for.
+    tickIn(CARACARA, RIFLE, nil)
+    ok(strips(RIFLE) == 1 and #reports() == 1,
+        'a conjured rifle of ours is stripped and reported in the Caracara\'s '
+            .. 'gun seat',
+        ('%d strips, %d reports'):format(strips(RIFLE), #reports()))
+    ok(#reports() == 1 and reports()[1] == BR.NormHash(RIFLE),
+        'and the report names the rifle, so the server files it as one',
+        tostring(reports()[1]))
+
+    tickIn(CARACARA, RIFLE, MOUNTED)
+    ok(strips(RIFLE) == 1 and #reports() == 1,
+        'and with the seat naming its own gun alongside, the same')
 
     -- Leave the world as this block found it.
     inVehicle, vehicle = false, 0

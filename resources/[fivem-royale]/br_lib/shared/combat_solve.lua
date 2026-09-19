@@ -50,9 +50,9 @@ BR.ShotRefusal = {
 ---           client-side native that can fail to persist, fail to answer for a
 ---           turret seat, or be absent from the build. When it does, the engine
 ---           puts the vehicle's own gun in an honest player's hand -- in a car
----           the owner sells in the showroom -- and the hash is in no row of
+---           the owner ruled they may drive -- and the hash is in no row of
 ---           BR.Config.WeaponByHash, so two landed hits used to be a high
----           severity case about somebody who bought a Caracara.
+---           severity case about somebody who got into a Technical.
 ---   MEANS.  A weapon the server never issued, a magazine it never filled, a
 ---           range or a cadence the weapon does not have. There is no honest
 ---           way to produce these, only a race -- which is why the threshold

@@ -1820,7 +1820,7 @@ do
     -- have no opinion about a turret seat, and when it does the ENGINE puts the
     -- car's own gun in an honest player's hand. That is the game declining a
     -- shot, not somebody conjuring a weapon, and filing it opened a high
-    -- severity case against a player for sitting in a car the owner sells.
+    -- severity case against a player for sitting in a car the owner allows.
     local RULES = {
         'WARMUP', 'SAME_SQUAD', 'NOT_LIVE', 'OTHER_MATCH', 'VEHICLE_GUN',
     }
@@ -12436,7 +12436,8 @@ do
     end
 
     local TECHNICAL = 0x83051506  -- armed pick-up, ordinary class, model table
-    local CARACARA2 = 0xAF966F3C  -- armed Off-road, the leak #322 was opened on
+    local CARACARA  = 0x4ABEBF23  -- the 6x6: armed Off-road, the owner's test
+    local CARACARA2 = 0xAF966F3C  -- the 4x4: UNARMED, and in no row
     local APC       = 0x2189D250  -- armed AND class 19: both signals see it
     local BUZZARD   = 0x2F03547B  -- FLIES, by the model table
     local OPPRESSOR = 0x7B54A9D3  -- Mk II: armed AND flies, filed under FLIES
@@ -12506,18 +12507,26 @@ do
         ('%s / %s'):format(tostring(tw), tostring(ts)))
     ok(D(TECHNICAL) == true, 'and it is the client that owes it a disable')
 
-    -- THE LEAK ITSELF. It was allowed by OMISSION before #322 -- no row, no type,
-    -- no class -- and is allowed by RULING now. The observable difference is
-    -- this line: something in the tree knows the gun is there.
-    ok(R(CARACARA2, sig('automobile', 2)) == nil, 'and so is the Caracara 4x4')
-    ok(D(CARACARA2) == true,
+    -- THE LEAK ITSELF. It was allowed by OMISSION until the owner sat in its
+    -- gun seat on 2026-09-19 -- no row, no type, no class -- and is allowed by
+    -- RULING now. The observable difference is this line: something in the tree
+    -- knows the gun is there.
+    ok(R(CARACARA, sig('automobile', 9)) == nil, 'and so is the Caracara 6x6')
+    ok(D(CARACARA) == true,
         'which is now armed on purpose rather than armed by omission')
+
+    -- AND THE 4x4 IS AN ORDINARY CAR. #322 wrote it down as ARMED and it has no
+    -- weapon; a false row there disarmed nothing and put a wrong sentence in
+    -- the one table vehicleSummaryOf reads its reasons from.
+    ok(R(CARACARA2, sig('automobile', 9)) == nil and D(CARACARA2) == false,
+        'while the Caracara 4x4 is allowed and owes nobody a disable')
 
     -- BOTH HASH FORMS, because GetEntityModel reports the signed one and a
     -- predicate that normalised only one way would put every top-bit model on
-    -- the wrong side of the ruling. `caracara2` has the top bit set.
-    ok(D(CARACARA2 - 0x100000000) == true, 'from the signed hash the engine reports')
-    ok(R(CARACARA2 - 0x100000000, sig('automobile', 2)) == nil, 'and so is the ruling')
+    -- the wrong side of the ruling. `technical` has the top bit set and
+    -- `caracara` does not, so it is the Technical that is asked.
+    ok(D(TECHNICAL - 0x100000000) == true, 'from the signed hash the engine reports')
+    ok(R(TECHNICAL - 0x100000000, sig('automobile', 4)) == nil, 'and so is the ruling')
     ok(D(RHINO - 0x100000000) == false, 'and a signed Rhino is still not disarmable')
 
     -- ZERO AND NIL. `0` is TRUTHY in Lua and BR.NormHash(0) is 0 rather than nil,
@@ -12555,8 +12564,11 @@ do
     local allowed, why = BR.Config.IsAllowedVehicle(TECHNICAL)
     ok(allowed == false and why == V.ARMED,
         'the model table still says a Technical is armed')
-    ok(select(1, BR.Config.IsAllowedVehicle(CARACARA2)) == false,
-        'and the Caracara is in the table, which is what #322 added')
+    ok(select(1, BR.Config.IsAllowedVehicle(CARACARA)) == false,
+        'and the Caracara 6x6 is in the table, which is what the owner\'s test '
+        .. 'settled')
+    ok(select(1, BR.Config.IsAllowedVehicle(CARACARA2)) == true,
+        'and the 4x4 is not, because it has no gun')
 end
 
 -- ---------------------------------------------------------------------------

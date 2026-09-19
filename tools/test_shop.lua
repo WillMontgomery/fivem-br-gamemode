@@ -242,13 +242,14 @@ do
     -- expects to see, silently missing from the pad. Zero rejects is the
     -- assertion; thirteen survivors is the same fact from the other side.
     --
-    -- AND SINCE #322 IT IS THE RULING RATHER THAN THE RAW TABLE THAT IS ASKED,
-    -- for a reason this row list is the proof of: `caracara2` is IN the refused
-    -- table now -- #322 wrote it there, because it carries a mounted gun no
-    -- signal in the tree could see -- and the owner's ruling makes an armed row
-    -- drivable rather than refused. Against BR.Config.IsAllowedVehicle, which is
-    -- the raw lookup, the Vapid Caracara 4x4 would be dropped from the pad and
-    -- `#rejects` below would be 1. That is the assertion this comment is for.
+    -- AND SINCE #322 IT IS THE RULING RATHER THAN THE RAW TABLE THAT IS ASKED.
+    -- #322 put `caracara2` in the refused table as ARMED, which is what made
+    -- the difference visible on this pad -- and it was the wrong Caracara. The
+    -- 4x4 has no weapon, its row came out on 2026-09-19, and it is on the pad
+    -- because it is in no row at all. The raw-lookup-versus-ruling distinction
+    -- is asserted under "the catalogue is the safety mechanism" below, on a
+    -- fixture row, so it no longer depends on his catalogue carrying an armed
+    -- car.
     local rows, rejects = BR.ShopSolve.catalogue(BR.Config.Shop,
                                                  BR.Config.Shop.refusedReason)
     ok(#rejects == 0,
@@ -1358,18 +1359,31 @@ do
            and frow('runner') ~= nil,
         'and an ordinary car is not caught by it')
 
-    -- ═══ AND THE ONE #322 MOVED, WHICH IS IN THIS CATALOGUE ═══
+    -- ═══ AND THE ROWS #322 MOVED, WHICH THIS CATALOGUE NO LONGER CARRIES ═══
     --
-    -- The two predicates disagree about `caracara2` and only about rows like it:
-    -- the raw table says refused (it is armed, and the row is what #322 added),
-    -- the ruling says allowed (it is armed BY THE MODEL TABLE, which is the half
-    -- the owner made drivable). Asserting the disagreement is what stops a later
-    -- edit "simplifying" this back to IsAllowedVehicle and deleting a car from
-    -- the showroom -- a change whose only symptom is an empty parking space.
-    ok(select(1, BR.Config.IsAllowedVehicle(GetHashKey('caracara2'))) == false,
-        'the Caracara IS in the refused table')
-    ok(BR.Config.VehicleRefusalFor(GetHashKey('caracara2')) == nil,
-        'and is sellable anyway, because the ruling is what the shop asks')
+    -- The two predicates disagree about the ARMED rows of the model table and
+    -- only about those: the raw table says refused, the ruling says allowed
+    -- (the half the owner made drivable). This was asserted on `caracara2`
+    -- until 2026-09-19, when the owner's test showed #322 had written down the
+    -- wrong Caracara: the 4x4 has no weapon and is in no row now, so it is
+    -- sellable by either reading and proves nothing about which one is asked.
+    --
+    -- SO THE DISAGREEMENT IS ASSERTED ON A TECHNICAL, through the same
+    -- catalogue function and the same refusedReason. That is what still stops a
+    -- later edit "simplifying" refusedReason back to IsAllowedVehicle -- a
+    -- change whose only symptom would be an empty parking space the day an
+    -- armed row is put on sale.
+    ok(select(1, BR.Config.IsAllowedVehicle(GetHashKey('caracara2'))) == true
+           and BR.Config.VehicleRefusalFor(GetHashKey('caracara2')) == nil,
+        'the Caracara 4x4 is in no row, so it is sellable by either reading')
+    ok(select(1, BR.Config.IsAllowedVehicle(GetHashKey('technical'))) == false,
+        'a Technical IS in the refused table')
+    local arows, arej = BR.ShopSolve.catalogue({ enabled = true, items = {
+        { id = 't', model = 'technical', price = 1, x = 0.0, y = 0.0, z = 0.0 },
+    } }, BR.Config.Shop.refusedReason)
+    ok(#arows == 1 and #arej == 0,
+        'and is sellable anyway, because the ruling is what the shop asks',
+        #arej > 0 and arej[1].why or nil)
 
     -- DUPLICATES, which would otherwise produce two rows selling one item id
     -- and a delivery that could come from either.

@@ -4185,8 +4185,8 @@ do
     -- somebody using the hose (owner, 2026-09-15). The owner's #322 ruling then
     -- made the ARMED rows of the model table DRIVABLE instead of ejecting the
     -- player within one 100 ms pass -- so those seats are occupied for whole
-    -- matches now, in about sixty models, one of which is on sale in the
-    -- showroom for 750 Volts.
+    -- matches now, in about sixty models, and the Caracara's gun seat is one
+    -- the owner sat in (2026-09-19).
     --
     -- The gun is held off on the CLIENT, and that is best effort by
     -- construction: the native may not persist between passes, may have no
@@ -4281,6 +4281,83 @@ do
     ok(#W.S.incidents == 1,
         'the same hash from a player on foot files exactly as it always did',
         #W.S.incidents)
+end
+
+describe('strip.one-sitting-is-silent')
+do
+    -- ═══ THE OWNER'S CONSOLE, 2026-09-19 ═══
+    --
+    -- He sat in a Caracara's gun seat ONCE, and the server console printed
+    -- "ANTICHEAT: Xeon (1) -- N unissued weapon(s) taken out of the hand this
+    -- match" for N = 2, 3 ... 18, with a case behind it. That model was in no
+    -- row of the ruling, and config/vehicles.lua is where that is fixed. What
+    -- is pinned HERE is the order in server/strip.lua: the car-gun guard
+    -- returns above all four things that made that noise -- the count, the
+    -- evidence buffer, the console line and the event the incident writer
+    -- answers -- so a sitting in any disarmed model, however long, is none of
+    -- them. Move the count above the guard and every disarmed model is his
+    -- console again.
+    --
+    -- EIGHTEEN REPORTS A SECOND APART, each outside the server's throttle, so
+    -- every one of them reaches the guard rather than being dropped in front of
+    -- it. A car gun's hash is in no row of ours, which is what CONJURED is.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:xeon', 'Xeon')
+    W.seatedInDisarmed(1)
+
+    -- THE EVIDENCE BUFFER, WATCHED AT THE DOOR. server/strip.lua reads
+    -- BR.Evidence.noteStrip at call time, so wrapping it here sees every write
+    -- the handler makes and changes none of them.
+    local notes = 0
+    local realNote = W.BR.Evidence.noteStrip
+    W.BR.Evidence.noteStrip = function(...)
+        notes = notes + 1
+        return realNote(...)
+    end
+
+    for i = 1, 18 do
+        W.at(4000 + i * 1000)
+        W.strip(1, CONJURED)
+    end
+
+    ok(#W.printedMatching('ANTICHEAT') == 0,
+        'eighteen reports from one sitting print no ANTICHEAT line',
+        #W.printedMatching('ANTICHEAT'))
+    ok(#W.S.incidents == 0, 'and open no case', #W.S.incidents)
+    ok(#W.S.corroborations == 0, 'and corroborate nothing',
+        #W.S.corroborations)
+    ok(notes == 0, 'and put nothing in the evidence buffer', notes)
+    local st = W.BR.Strip.stats()
+    ok(st.counted == 0, 'and count nothing', st.counted)
+    ok(st.vehicleGuns == 18,
+        'because every one of them is dropped as the car\'s own gun',
+        st.vehicleGuns)
+
+    -- ═══ AND `rec.count` DID NOT MOVE, READ FROM THE ONLY PLACE IT SHOWS ═══
+    --
+    -- The count is private to server/strip.lua. What it decides is not: a case
+    -- opens on the SECOND counted strip, and its queue line carries the count.
+    -- So the same player steps out and conjures twice. Had the eighteen been
+    -- counted, the first of those would already be strip nineteen, it would
+    -- open the case on its own, and the queue line would say twenty.
+    W.seatedInDisarmed(1, false)
+    W.at(30000); W.strip(1, CONJURED)
+    ok(#W.S.incidents == 0,
+        'one conjured weapon after stepping out still opens nothing',
+        #W.S.incidents)
+    W.at(31000); W.strip(1, CONJURED)
+    ok(#W.S.incidents == 1,
+        'and the second opens the case, as on a clean record', #W.S.incidents)
+    local p = W.lastIncident()
+    local summary = p and type(p.summary) == 'string' and p.summary or ''
+    ok(summary:find('2 unissued', 1, true) ~= nil,
+        'with a queue line that counts two, not twenty', summary)
+    ok(#W.printedMatching('ANTICHEAT') == 1,
+        'and one ANTICHEAT line, for the strip that announced',
+        #W.printedMatching('ANTICHEAT'))
+    ok(notes == 2, 'and two entries in the evidence buffer, both off the seat',
+        notes)
 end
 
 describe('strip.flood-is-bounded')

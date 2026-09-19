@@ -9538,7 +9538,7 @@ end
 
 describe('damage.vehicle-gun')
 do
-    -- ═══ THE DEFECT (#322): AN ANTICHEAT CASE FOR SITTING IN A CAR HE SELLS ═══
+    -- ═══ THE DEFECT (#322): AN ANTICHEAT CASE FOR SITTING IN A CAR HE ALLOWS ═══
     --
     -- The owner's ruling made the ARMED rows of the model table DRIVABLE, with
     -- their gun switched off by client/vehrefuse.lua rather than the player
@@ -9552,7 +9552,7 @@ do
     -- putting the vehicle's own gun in an honest hand -- and a mounted weapon
     -- hash is in no row of BR.Config.WeaponByHash, so the shot refused as
     -- NO_WEAPON is means-class, graded `high`, with a bar of TWO. Two landed
-    -- hits in one match opened a case about somebody who bought a Caracara.
+    -- hits in one match opened a case about somebody who got into a Technical.
     --
     -- EVERYTHING HERE GOES THROUGH THE REAL HANDLER AND THE REAL
     -- server/vehicles.lua, seats and all, because the wiring is the fault: the
