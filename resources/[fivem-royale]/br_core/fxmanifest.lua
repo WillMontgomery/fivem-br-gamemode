@@ -209,6 +209,17 @@ shared_scripts {
     -- level 1 with 0/1 XP regardless of what they had actually earned.
     '@br_lib/shared/xp.lua',
     '@br_lib/shared/storm_solve.lua',
+    -- The storm's boundary as a walkable shape: a perimeter, a point at s metres
+    -- along it, and the nearest point to a viewer. client/storm.lua's column
+    -- renderer draws its wall off these instead of off sin and cos, so the walk
+    -- stops knowing that the zone is a circle -- which it still is, and which
+    -- this file is the only thing in the tree that can say otherwise.
+    --
+    -- NO LOAD-ORDER REQUIREMENT: it reads nothing at load, calls no native and
+    -- calls no other module. It sits beside shared/storm_solve.lua because the
+    -- two are about the same zone -- one solves where it is, the other describes
+    -- its outline.
+    '@br_lib/shared/storm_shape.lua',
     '@br_lib/shared/combat_solve.lua',
     -- BR.HealthUnexplainedGain: does the client's ped agree with the server's
     -- health ledger. Pure, and cfg is a parameter, so it has no load-order

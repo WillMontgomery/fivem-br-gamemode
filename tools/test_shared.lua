@@ -18,6 +18,11 @@ for _, f in ipairs({
     'shared/notice.lua',
     'shared/rng.lua',
     'shared/geo.lua',
+    -- BR.StormShape: the zone's outline as a boundary that can be walked in
+    -- metres. Reads nothing at load and calls no native, so it could sit
+    -- anywhere; it is here beside geo.lua because it is the other half of the
+    -- storm renderer's arithmetic.
+    'shared/storm_shape.lua',
     -- BEFORE config/map.lua, whose InBounds wraps it -- and before
     -- shared/storm_solve.lua, which calls InBounds to keep a circle on the map.
     'shared/polygon.lua',
@@ -489,47 +494,6 @@ do
     ok(near(BR.Bearing(0, 0, -10, 0), 270.0, 1e-4), 'Bearing west = 270')
 end
 
-describe('geo.arc')
-do
-    -- The storm wall's correctness rests on these two properties: every sample
-    -- sits exactly on the circle, and the arc is centred on the point nearest
-    -- the player (so the wall appears where they are actually looking).
-    local buf = {}
-    local cx, cy, R = 500.0, -200.0, 1200.0
-    local px, py = 1800.0, -200.0   -- due east of centre
-    local count = BR.ArcPoints(buf, cx, cy, R, px, py, 40, 120.0)
-
-    ok(count == 40, 'ArcPoints returns the requested count')
-
-    local onCircle = true
-    for i = 1, count do
-        if not near(BR.Dist(cx, cy, buf[i].x, buf[i].y), R, 1e-6) then onCircle = false end
-    end
-    ok(onCircle, 'every arc sample lies on the circle')
-
-    -- Player is due east, so the middle sample should be the circle's east point.
-    local mid = buf[(count // 2) + 1]
-    ok(near(mid.x, cx + R, 60.0) and near(mid.y, cy, 60.0),
-        'arc is centred toward the player', ('mid=(%.1f, %.1f)'):format(mid.x, mid.y))
-
-    -- The buffer is reused across frames; a second call must not grow it.
-    local before = #buf
-    BR.ArcPoints(buf, cx, cy, R, px, py, 40, 120.0)
-    ok(#buf == before, 'ArcPoints reuses the buffer (no per-frame allocation)')
-
-    ok(BR.ArcPoints(buf, cx, cy, 0.0, px, py, 40, 120.0) == 0,
-        'ArcPoints draws nothing for a collapsed circle')
-
-    -- Segment width must match the gap between samples, or the cylinders either
-    -- overlap (ugly alpha banding) or leave gaps in the wall.
-    local w = BR.ArcSegmentWidth(R, 40, 120.0)
-    local gap = BR.Dist(buf[1].x, buf[1].y, buf[2].x, buf[2].y)
-    BR.ArcPoints(buf, cx, cy, R, px, py, 40, 120.0)
-    gap = BR.Dist(buf[1].x, buf[1].y, buf[2].x, buf[2].y)
-    ok(near(w, gap, 1e-3), 'segment width matches the sample gap',
-        ('width=%.4f gap=%.4f'):format(w, gap))
-end
-
 describe('geo.path')
 do
     -- The bus position function: server (jump/eject coordinates) and every
@@ -801,6 +765,593 @@ do
     _, _, _, st, _, dps = BR.StormAt(p2, 60000)
     ok(st == BR.StormPhase.HOLDING and dps == 2.0,
         'phase 2 holding deals its authored dps')
+end
+
+-- ---------------------------------------------------------------------------
+-- BR.StormShape: the zone's outline as a boundary that can be WALKED.
+--
+-- The commit that added it changes nothing a player can see. The storm is the
+-- same circle it always was, drawn in the same place; what changed is that the
+-- renderer no longer knows it is a circle. So the whole claim of that commit
+-- rests on the first group below -- that the new walk lands on the points the
+-- old one landed on -- and the whole POINT of it rests on the union2 group,
+-- which nothing in the game calls yet.
+--
+-- WHY A UNION OF TWO DISCS AND NOT A ROUNDED RECTANGLE. The owner named the
+-- proof he wants next (2026-09-21): two storm circles, current and next, barely
+-- overlapping like a Venn diagram, with the safe zone extended to cover both so
+-- that a player who gets to the new destination early is safe there. That shape
+-- is not convex -- its outline has two reflex corners where the circles cross --
+-- and every rounded-rectangle model is convex by construction. Which is why the
+-- shape language is a list of boundary pieces, and why union2 is tested here
+-- before anything draws it.
+-- ---------------------------------------------------------------------------
+
+describe('shape.equivalence')
+do
+    local SS = BR.StormShape
+
+    -- ═══ THE ONE TEST THAT IS THE REFACTOR'S ENTIRE CLAIM ═══
+    --
+    -- The column renderer used to walk ANGLES: slot k stood at
+    -- theta = (k + 0.5) * step with step = 2*pi/slots, drawn at
+    -- (cx + cos(theta)*r, cy + sin(theta)*r). It now walks METRES of arc length
+    -- through this module. If the two walks land on different points then the
+    -- wall moved, and the refactor is wrong rather than this test.
+    --
+    -- At a phase-2 radius, off a real map centre, at the slot count the shipping
+    -- slotArc of 30m actually produces there rather than a round number.
+    local cx, cy, R = 500.0, -200.0, 1200.0
+    local shape = SS.circle(cx, cy, R)
+    local slots = math.floor((2.0 * math.pi * R) / 30.0 + 0.5)
+    local ds = SS.perimeter(shape) / slots
+    local step = (2.0 * math.pi) / slots
+
+    local function oldWalk(k)
+        local theta = (k + 0.5) * step
+        return cx + math.cos(theta) * R, cy + math.sin(theta) * R
+    end
+
+    local worst, worstK = 0.0, 0
+    for k = 0, slots - 1 do
+        local ox, oy = oldWalk(k)
+        local nx, ny = SS.pointAtArc(shape, (k + 0.5) * ds)
+        local d = BR.Dist(ox, oy, nx, ny)
+        if d > worst then worst, worstK = d, k end
+    end
+    ok(worst < 1e-9,
+        'every slot of the arc-length walk lands where the angular walk put it',
+        ('%d slots, worst %.3e m at slot %d'):format(slots, worst, worstK))
+
+    -- AND FOR THE SLOT INDICES THAT RUN OFF EITHER END, which is the case the
+    -- old walk got for free: cos and sin accept any angle and wrap, so
+    -- `first + i` was allowed to go negative or past `slots` and nothing broke.
+    -- An arc walk indexed off the end of its piece table is a nil, so the wrap
+    -- had to move inside pointAtArc -- and it has to agree with the free one.
+    local offEnd = 0.0
+    for _, k in ipairs({ -1, -2, -37, -slots, -slots - 4, slots, slots + 1,
+                         slots + 96, slots * 3 + 5 }) do
+        local ox, oy = oldWalk(k)
+        local nx, ny = SS.pointAtArc(shape, (k + 0.5) * ds)
+        offEnd = math.max(offEnd, BR.Dist(ox, oy, nx, ny))
+    end
+    ok(offEnd < 1e-9,
+        'and so does a slot index that runs off either end of the ring',
+        ('worst %.3e m'):format(offEnd))
+end
+
+describe('shape.circle')
+do
+    local SS = BR.StormShape
+    local cx, cy, R = -1200.0, 3400.0, 900.0
+    local shape = SS.circle(cx, cy, R)
+    local P = SS.perimeter(shape)
+
+    ok(near(P, 2.0 * math.pi * R, 1e-9), 'the perimeter of a circle is 2*pi*r',
+        ('%.6f'):format(P))
+
+    -- Constant arc length between columns is the property the whole wall rests
+    -- on: uneven spacing is either a gap in the curtain or an alpha-doubled
+    -- bright seam, which is what set overlap = 1.05 in the first place.
+    local N = 240
+    local ds = P / N
+    local minGap, maxGap = math.huge, 0.0
+    local px, py = SS.pointAtArc(shape, -0.5 * ds)
+    for k = 0, N - 1 do
+        local nx, ny = SS.pointAtArc(shape, (k + 0.5) * ds)
+        local g = BR.Dist(px, py, nx, ny)
+        if g < minGap then minGap = g end
+        if g > maxGap then maxGap = g end
+        px, py = nx, ny
+    end
+    ok(near(minGap, maxGap, 1e-9),
+        'consecutive points at a constant ds are a constant distance apart',
+        ('min %.9f max %.9f'):format(minGap, maxGap))
+    ok(maxGap <= ds + 1e-12,
+        'and that distance never exceeds ds -- a chord is shorter than its arc',
+        ('%.9f vs ds %.9f'):format(maxGap, ds))
+
+    -- THE WRAP, IN BOTH DIRECTIONS AND BY MORE THAN ONE LAP.
+    local ax, ay = SS.pointAtArc(shape, -17.0)
+    local bx, by = SS.pointAtArc(shape, P - 17.0)
+    ok(near(ax, bx, 1e-9) and near(ay, by, 1e-9),
+        'a negative s wraps to the far end of the boundary')
+    ax, ay = SS.pointAtArc(shape, P * 3.0 + 42.0)
+    bx, by = SS.pointAtArc(shape, 42.0)
+    ok(near(ax, bx, 1e-9) and near(ay, by, 1e-9),
+        'and three laps past the end wrap back to the same point')
+    ax, ay = SS.pointAtArc(shape, P)
+    bx, by = SS.pointAtArc(shape, 0.0)
+    ok(near(ax, bx, 1e-9) and near(ay, by, 1e-9),
+        'and s exactly at the perimeter is s = 0, not a nil piece')
+
+    -- The outward normal: unit length, and pointing away from the centre.
+    local badLen, badDir = 0, 0
+    for k = 0, 71 do
+        local x, y, nx, ny = SS.pointAtArc(shape, (k / 72.0) * P)
+        if not near(math.sqrt(nx * nx + ny * ny), 1.0, 1e-9) then
+            badLen = badLen + 1
+        end
+        -- Radially out from the centre, so the dot with (point - centre) is r.
+        if not near((x - cx) * nx + (y - cy) * ny, R, 1e-6) then
+            badDir = badDir + 1
+        end
+    end
+    ok(badLen == 0, 'the outward normal is a unit vector everywhere', badLen)
+    ok(badDir == 0, 'and points away from the centre everywhere', badDir)
+
+    -- nearestArc round-trips: the point it names is the nearest boundary point.
+    local function roundTrip(qx, qy, expect, label)
+        local s = SS.nearestArc(shape, qx, qy)
+        local bx2, by2 = SS.pointAtArc(shape, s)
+        ok(near(BR.Dist(qx, qy, bx2, by2), expect, 1e-6), label,
+            ('got %.6f expected %.6f at s=%.4f'):format(
+                BR.Dist(qx, qy, bx2, by2), expect, s))
+        return bx2, by2
+    end
+
+    roundTrip(cx + R + 250.0, cy, 250.0,
+        'nearestArc round-trips for a point outside')
+    roundTrip(cx, cy - (R - 80.0), 80.0,
+        'and for a point inside')
+    roundTrip(cx + R, cy, 0.0,
+        'and for a point exactly on the boundary')
+
+    -- ═══ THE EXACT CENTRE HAS NO NEAREST POINT, AND MUST STILL ANSWER ═══
+    --
+    -- Every boundary point ties, and the angle the answer is derived from is
+    -- atan2(0, 0). A shape that threw here would take a frame's draw call down
+    -- with it for a circle collapsing onto the viewer, which is the last phase
+    -- of every match.
+    local bx3, by3 = roundTrip(cx, cy, R,
+        'and for a point at the exact centre, where every answer ties')
+    ok(near(BR.Dist(cx, cy, bx3, by3), R, 1e-6),
+        'the centre is answered with a point genuinely on the boundary')
+
+    -- Signed distance.
+    ok(near(SS.distance(shape, cx, cy), -R, 1e-9), 'distance is -r at the centre')
+    ok(near(SS.distance(shape, cx + R, cy), 0.0, 1e-9),
+        'zero on the boundary')
+    ok(near(SS.distance(shape, cx, cy + R + 33.0), 33.0, 1e-9),
+        'and positive outside, by the metres it is out')
+    ok(SS.distance(shape, cx + R - 1.0, cy) < 0.0,
+        'a metre inside the edge is still inside')
+
+    -- inset: what pays the renderer's edgeInset debt.
+    local ins = SS.inset(shape, 6.0)
+    ok(near(SS.perimeter(ins), 2.0 * math.pi * (R - 6.0), 1e-9),
+        'inset shrinks the boundary by the metres asked for',
+        ('%.6f'):format(SS.perimeter(ins)))
+    ok(SS.distance(ins, cx + R - 6.0, cy) <= 1e-9,
+        'so the drawn edge sits inside the logical one, never outside it')
+
+    -- AND NEVER A NEGATIVE RADIUS. An inset larger than the shape must leave a
+    -- boundary that can still be walked -- every consumer would otherwise need
+    -- its own special case, and the one that forgot would divide by zero in a
+    -- per-frame draw call. One metre is the floor the shipping 'solid' path
+    -- already uses (math.max(1.0, r - edgeInset)).
+    local flat = SS.inset(SS.circle(0.0, 0.0, 2.0), 600.0)
+    ok(near(SS.perimeter(flat), 2.0 * math.pi, 1e-9),
+        'an inset larger than the shape floors at a one metre radius',
+        ('%.6f'):format(SS.perimeter(flat)))
+    local fx, fy = SS.pointAtArc(flat, 12345.0)
+    ok(fx == fx and fy == fy and near(BR.Dist(0.0, 0.0, fx, fy), 1.0, 1e-9),
+        'and can still be walked rather than answering nan',
+        ('(%.6f, %.6f)'):format(fx, fy))
+end
+
+describe('shape.union2')
+do
+    local SS = BR.StormShape
+
+    --- The union's true signed distance, from the two discs, computed here so
+    --- the assertions below do not read the answer out of the thing they test.
+    local function minSdf(x1, y1, r1, x2, y2, r2, px, py)
+        return math.min(BR.Dist(px, py, x1, y1) - r1,
+                        BR.Dist(px, py, x2, y2) - r2)
+    end
+
+    -- ══════════════════════════ CASE 1: ONE CONTAINS THE OTHER ══════════════
+    do
+        local one = SS.union2(0.0, 0.0, 1000.0, 200.0, 0.0, 300.0)
+        ok(#one.pieces == 1 and near(one.P, 2.0 * math.pi * 1000.0, 1e-9),
+            'a disc that swallows the other IS the shape: one arc',
+            ('%d pieces, P %.4f'):format(#one.pieces, one.P))
+
+        local other = SS.union2(200.0, 0.0, 300.0, 0.0, 0.0, 1000.0)
+        ok(#other.pieces == 1 and near(other.P, 2.0 * math.pi * 1000.0, 1e-9),
+            'and it does not matter which way round the two are given')
+
+        -- Internal tangency: d + r2 == r1 exactly. The crossing arithmetic
+        -- below would take a square root of zero here; this case never reaches
+        -- it.
+        local tang = SS.union2(0.0, 0.0, 1000.0, 700.0, 0.0, 300.0)
+        ok(#tang.pieces == 1 and near(tang.P, 2.0 * math.pi * 1000.0, 1e-9),
+            'circles touching from the inside are the containing disc, whole',
+            ('%d pieces'):format(#tang.pieces))
+
+        -- ═══ CASE 4, HALF OF IT: IDENTICAL CIRCLES ═══
+        --
+        -- d = 0, so the centre line has no direction and every step of the
+        -- overlap arithmetic would divide by it. Decided by the containment
+        -- comparison instead, before anything is divided.
+        local same = SS.union2(50.0, -50.0, 400.0, 50.0, -50.0, 400.0)
+        ok(#same.pieces == 1 and near(same.P, 2.0 * math.pi * 400.0, 1e-9),
+            'two identical circles are one circle, with nothing divided by zero',
+            ('%d pieces, P %.4f'):format(#same.pieces, same.P))
+        local sx, sy = SS.pointAtArc(same, 123.0)
+        ok(sx == sx and sy == sy, 'and it can be walked without producing nan')
+    end
+
+    -- ══════════════════════════ CASE 2: THEY OVERLAP ════════════════════════
+    --
+    -- The Venn case, and the reason this module exists. Numbers at storm scale:
+    -- a 900m circle and a 700m circle whose centres are 1300m apart, which is a
+    -- pair the solver's breakout budget can legitimately produce.
+    local x1, y1, r1 = 0.0, 0.0, 900.0
+    local x2, y2, r2 = 1300.0, 0.0, 700.0
+    local u = SS.union2(x1, y1, r1, x2, y2, r2)
+    do
+        ok(#u.pieces == 2, 'two overlapping discs make a boundary of two arcs',
+            #u.pieces)
+
+        -- THE PERIMETER IS THE TWO OUTER ARCS AND NOT THE TWO CIRCUMFERENCES,
+        -- which is the difference between a union and two circles drawn on top
+        -- of each other. Computed here from the half-angle at each centre.
+        local d = BR.Dist(x1, y1, x2, y2)
+        local a = (d * d + r1 * r1 - r2 * r2) / (2.0 * d)
+        local expect = r1 * (2.0 * math.pi - 2.0 * math.acos(a / r1))
+                     + r2 * (2.0 * math.pi - 2.0 * math.acos((d - a) / r2))
+        ok(near(u.P, expect, 1e-6),
+            'the perimeter is the two OUTER arcs',
+            ('%.6f expected %.6f'):format(u.P, expect))
+        ok(u.P < 2.0 * math.pi * (r1 + r2) - 1.0,
+            'and is strictly less than the two full circumferences',
+            ('%.4f vs %.4f'):format(u.P, 2.0 * math.pi * (r1 + r2)))
+
+        -- Every point of the walk is ON the union's outline: on one circle, and
+        -- not swallowed by the other.
+        local h = math.sqrt(r1 * r1 - a * a)
+        local N, offOutline = 600, 0.0
+        for k = 0, N - 1 do
+            local px, py = SS.pointAtArc(u, (k + 0.5) * u.P / N)
+            local v = math.abs(minSdf(x1, y1, r1, x2, y2, r2, px, py))
+            if v > offOutline then offOutline = v end
+        end
+        ok(offOutline < 1e-6, 'every walked point lies on the union outline',
+            ('worst %.3e m off'):format(offOutline))
+
+        -- THE TWO CROSSINGS ARE ON THE BOUNDARY, AND THE INTERIOR ARCS ARE NOT.
+        -- The crossings are where the outline turns back on itself -- the two
+        -- reflex corners that rule out any convex shape language.
+        ok(near(minSdf(x1, y1, r1, x2, y2, r2, x1 + a, h), 0.0, 1e-6)
+            and near(minSdf(x1, y1, r1, x2, y2, r2, x1 + a, -h), 0.0, 1e-6),
+            'both crossings sit exactly on the outline')
+
+        -- Circle 1's interior arc is the part facing circle 2; its midpoint is
+        -- the point of circle 1 nearest the other centre, and it is swallowed.
+        local m1x = x1 + r1
+        local m2x = x2 - r2
+        ok(minSdf(x1, y1, r1, x2, y2, r2, m1x, 0.0) < -1.0
+            and minSdf(x1, y1, r1, x2, y2, r2, m2x, 0.0) < -1.0,
+            'while the midpoints of the two interior arcs are strictly inside',
+            ('%.3f / %.3f'):format(
+                minSdf(x1, y1, r1, x2, y2, r2, m1x, 0.0),
+                minSdf(x1, y1, r1, x2, y2, r2, m2x, 0.0)))
+
+        local nearestM1 = SS.nearestArc(u, m1x, 0.0)
+        local bx, by = SS.pointAtArc(u, nearestM1)
+        ok(BR.Dist(m1x, 0.0, bx, by) > 1.0,
+            'so no point of the walk ever stands on an interior arc',
+            ('nearest boundary point is %.3f m away'):format(
+                BR.Dist(m1x, 0.0, bx, by)))
+
+        -- INSIDE EITHER DISC IS INSIDE THE UNION, over a grid that straddles
+        -- both and the lens between them.
+        local wrongSign = 0
+        for i = -12, 26 do
+            for j = -12, 12 do
+                local px, py = i * 100.0, j * 100.0
+                local either = BR.Dist(px, py, x1, y1) <= r1
+                           or BR.Dist(px, py, x2, y2) <= r2
+                if either ~= (SS.distance(u, px, py) <= 0.0) then
+                    wrongSign = wrongSign + 1
+                end
+            end
+        end
+        ok(wrongSign == 0,
+            'a point inside either disc is inside the union, everywhere on a grid',
+            wrongSign)
+
+        -- AND THE SIGNED DISTANCE IS THE MINIMUM OF THE TWO, EVERYWHERE.
+        local wrongVal = 0
+        for i = -12, 26 do
+            for j = -12, 12 do
+                local px, py = i * 100.0, j * 100.0
+                if not near(SS.distance(u, px, py),
+                            minSdf(x1, y1, r1, x2, y2, r2, px, py), 1e-9) then
+                    wrongVal = wrongVal + 1
+                end
+            end
+        end
+        ok(wrongVal == 0, 'and equals the min of the two disc distances', wrongVal)
+
+        -- ═══ WHERE THAT MINIMUM IS NOT THE TRUE DISTANCE, PINNED ON PURPOSE ═══
+        --
+        -- Strictly inside the LENS where the discs overlap, a disc's own nearest
+        -- circle point can be one the other disc has swallowed, so it is not on
+        -- the union's outline at all and the minimum reads SHALLOWER than the
+        -- truth. Never deeper: nothing can be told it is safely inside when it
+        -- is not, and every consumer that reads the magnitude reads it from
+        -- outside. The exact answer inside is a walk to nearestArc, which is why
+        -- these two functions are not redundant.
+        --
+        -- Two unit discs one metre apart, at the midpoint of their lens.
+        local lens = SS.union2(0.0, 0.0, 1.0, 1.0, 0.0, 1.0)
+        local approx = SS.distance(lens, 0.5, 0.0)
+        local exactS = SS.nearestArc(lens, 0.5, 0.0)
+        local ex, ey = SS.pointAtArc(lens, exactS)
+        local exact = BR.Dist(0.5, 0.0, ex, ey)
+        ok(near(approx, -0.5, 1e-9),
+            'inside the lens, distance() reads the min of the two discs',
+            ('%.9f'):format(approx))
+        ok(near(exact, math.sqrt(0.75), 1e-6),
+            'while the walk finds the outline where it really is',
+            ('%.9f expected %.9f'):format(exact, math.sqrt(0.75)))
+        ok(exact > -approx,
+            'so the minimum errs shallow, which is the safe direction')
+
+        -- ═══ THE WALK IS CONSTANT ACROSS THE REFLEX JOIN ═══
+        --
+        -- Arc length spacing is constant by construction; what has to be true of
+        -- the JOIN is that arc 1 ends exactly where arc 2 begins, so the walk
+        -- neither doubles up nor opens a gap where one arc hands over to the
+        -- other. A wall does not survive a gap at the corner.
+        local join = u.pieces[2].s0
+        local jx0, jy0 = SS.pointAtArc(u, join - 1e-7)
+        local jx1, jy1 = SS.pointAtArc(u, join)
+        ok(BR.Dist(jx0, jy0, jx1, jy1) < 1e-5,
+            'arc 1 ends exactly where arc 2 begins',
+            ('%.3e m apart'):format(BR.Dist(jx0, jy0, jx1, jy1)))
+        ok(near(math.abs(jy1), h, 1e-6),
+            'and the handover happens at a crossing, not mid-arc',
+            ('%.6f expected %.6f'):format(math.abs(jy1), h))
+
+        -- No step of a constant-ds walk is ever longer than ds, including the
+        -- two that straddle the corners. They are SHORTER there, because a
+        -- straight line across a corner is shorter than the way round it -- the
+        -- same thing a rounded rectangle's corners will do, and the reason this
+        -- is stated as a ceiling rather than as an equality.
+        --
+        -- MEASURED AS A FRACTION OF ds RATHER THAN IN METRES, because a chord is
+        -- always fractionally shorter than its own arc and that shortfall grows
+        -- with ds: it is about 0.2mm in 15m here and would swamp any absolute
+        -- tolerance loose enough to pass at storm scale. The two corners fall
+        -- short by tens of percent, so one percent tells them apart from the
+        -- curvature with three orders of magnitude to spare.
+        local N2 = 400
+        local ds2 = u.P / N2
+        local over, corners = 0, 0
+        local pxw, pyw = SS.pointAtArc(u, -0.5 * ds2)
+        for k = 0, N2 - 1 do
+            local nx, ny = SS.pointAtArc(u, (k + 0.5) * ds2)
+            local g = BR.Dist(pxw, pyw, nx, ny)
+            if g > ds2 + 1e-9 then over = over + 1 end
+            if g < ds2 * 0.99 then corners = corners + 1 end
+            pxw, pyw = nx, ny
+        end
+        ok(over == 0, 'no step of the walk is ever longer than ds', over)
+        ok(corners == 2,
+            'and the only two that are shorter are the two reflex corners',
+            corners)
+    end
+
+    -- ══════════════════════════ CASE 3: THEY ARE DISJOINT ═══════════════════
+    --
+    -- TWO COMPONENTS, AND THAT IS CORRECT RATHER THAN A BUG. The safe zone is
+    -- two islands and the gap between them is not safe. The solver already
+    -- produces this pair: a breakout separates the circles entirely and caps the
+    -- gap between their edges at gapMax times the predecessor's radius.
+    do
+        local far = SS.union2(0.0, 0.0, 400.0, 2000.0, 0.0, 300.0)
+        ok(#far.pieces == 2
+            and near(far.P, 2.0 * math.pi * (400.0 + 300.0), 1e-9),
+            'disjoint discs keep both whole circumferences',
+            ('%d pieces, P %.4f'):format(#far.pieces, far.P))
+
+        local left, right = 0, 0
+        for k = 0, 199 do
+            local px = SS.pointAtArc(far, (k + 0.5) * far.P / 200)
+            if px < 1000.0 then left = left + 1 else right = right + 1 end
+        end
+        ok(left > 0 and right > 0,
+            'and the walk visits both components',
+            ('%d / %d'):format(left, right))
+
+        ok(SS.distance(far, 1000.0, 0.0) > 0.0,
+            'a point in the gap between them is OUTSIDE the safe zone',
+            ('%.3f'):format(SS.distance(far, 1000.0, 0.0)))
+        ok(SS.distance(far, 0.0, 0.0) < 0.0
+            and SS.distance(far, 2000.0, 0.0) < 0.0,
+            'while the middle of each island is inside')
+
+        -- ═══ CASE 4, THE OTHER HALF: EXTERNAL TANGENCY ═══
+        --
+        -- d == r1 + r2, so the two circles touch at one point and the
+        -- half-chord is zero. It degenerates to the disjoint case, which is why
+        -- nothing has to divide by that zero to find out it was one.
+        local touch = SS.union2(0.0, 0.0, 400.0, 700.0, 0.0, 300.0)
+        ok(#touch.pieces == 2
+            and near(touch.P, 2.0 * math.pi * 700.0, 1e-9),
+            'circles touching from the outside stay two whole circles',
+            ('%d pieces, P %.4f'):format(#touch.pieces, touch.P))
+        local tx, ty = SS.pointAtArc(touch, touch.P * 0.37)
+        ok(tx == tx and ty == ty,
+            'and are walked without a nan from the zero half-chord')
+    end
+
+    -- INSET, OVER A UNION. Each disc shrinks, which is not quite the true
+    -- erosion -- near the join the eroded union is a little wider than the union
+    -- of the eroded discs -- and it errs INWARD, the same direction distance()
+    -- errs and the safe one for the only thing inset is used for.
+    do
+        local ins = SS.inset(u, 25.0)
+        ok(#ins.pieces == 2, 'insetting a union leaves a union', #ins.pieces)
+        ok(ins.P < u.P, 'and a shorter boundary',
+            ('%.4f vs %.4f'):format(ins.P, u.P))
+        local worstOut = 0.0
+        for k = 0, 199 do
+            local px, py = SS.pointAtArc(ins, (k + 0.5) * ins.P / 200)
+            local v = SS.distance(u, px, py)
+            if v > worstOut then worstOut = v end
+        end
+        ok(worstOut <= 1e-9,
+            'and no point of the inset boundary sits outside the original',
+            ('worst %.3e m out'):format(worstOut))
+    end
+end
+
+-- nearestArc's answer is IN THE DOMAIN pointAtArc promises, on every shape.
+--
+-- FOUND IN REVIEW, NOT BY A TEST, WHICH IS WHY THIS ONE EXISTS. The endpoint
+-- branch of nearestArc considers `pc.s0 + pc.len`, and on the LAST piece that
+-- sum is the perimeter -- the same vertex the walk calls 0. Which spelling won
+-- came down to the last bits of two floating-point reconstructions of one
+-- point, so it fired on 15 of 3721 grid points of one union and on none of the
+-- circle grids at all. The union below is the one it was found on.
+--
+-- It was never live: the only caller turns the answer into a slot index and
+-- hands it back to pointAtArc, which wraps. It is pinned because the file
+-- promises [0, P) to every caller, and the first consumer to use the answer for
+-- a piece lookup rather than a point is the one who would have paid.
+describe('shape.nearestArc range')
+do
+    local SS = BR.StormShape
+
+    local shapes = {
+        { name = 'circle',   s = SS.circle(0.0, 0.0, 1200.0) },
+        { name = 'union2',   s = SS.union2(0.0, 0.0, 900.0, 1300.0, 0.0, 700.0) },
+        { name = 'disjoint', s = SS.union2(0.0, 0.0, 400.0, 2000.0, 0.0, 300.0) },
+        { name = 'capsule',  s = SS.capsule(-300.0, 0.0, 300.0, 0.0, 250.0) },
+    }
+
+    for _, e in ipairs(shapes) do
+        local worst, worstAt = -1.0, nil
+        for gx = -30, 30 do
+            for gy = -30, 30 do
+                local px, py = gx * 70.0, gy * 70.0
+                local t = SS.nearestArc(e.s, px, py)
+                if t < 0.0 or t >= e.s.P then
+                    if t > worst then worst, worstAt = t, ('%.1f,%.1f'):format(px, py) end
+                end
+            end
+        end
+        ok(worst < 0.0,
+            ('%s: every nearestArc answer is in [0, P)'):format(e.name),
+            worstAt and ('P=%.9f returned %.9f at %s'):format(e.s.P, worst, worstAt)
+                    or 'no out-of-domain answer on a 61x61 grid')
+    end
+
+    -- And the exact point review found, named rather than left to the grid.
+    local u = SS.union2(0.0, 0.0, 900.0, 1300.0, 0.0, 700.0)
+    local t = SS.nearestArc(u, 291.9, 97.3)
+    ok(t >= 0.0 and t < u.P, 'the point review found is in the domain',
+        ('P=%.9f returned %.9f'):format(u.P, t))
+end
+
+describe('shape.capsule')
+do
+    -- THE ONLY SHAPE HERE WITH STRAIGHT RUNS IN IT, AND NOTHING DRAWS IT.
+    --
+    -- The shape language is two piece kinds, an arc and a segment, because that
+    -- is what a rounded rectangle and a capsule need and the Venn union does
+    -- not. The segment half of the walk therefore has no caller at all -- so it
+    -- is driven here, rather than shipped untested behind a promise that the
+    -- rounded rectangle will exercise it one day.
+    local SS = BR.StormShape
+    local cap = SS.capsule(0.0, 0.0, 300.0, 0.0, 80.0)
+
+    ok(#cap.pieces == 4, 'a capsule is two runs and two caps', #cap.pieces)
+    ok(near(cap.P, 2.0 * 300.0 + 2.0 * math.pi * 80.0, 1e-9),
+        'its perimeter is both runs plus a full turn of the cap radius',
+        ('%.6f'):format(cap.P))
+
+    -- Every point of the walk is exactly r from the axis SEGMENT, which is what
+    -- a capsule is, and the normal points away from that axis.
+    local offShape, inward = 0.0, 0
+    for k = 0, 399 do
+        local px, py, nx, ny = SS.pointAtArc(cap, (k + 0.5) * cap.P / 400)
+        local t = BR.Clamp(px, 0.0, 300.0)
+        local d = BR.Dist(px, py, t, 0.0)
+        offShape = math.max(offShape, math.abs(d - 80.0))
+        if (px - t) * nx + py * ny <= 0.0 then inward = inward + 1 end
+    end
+    ok(offShape < 1e-9,
+        'every walked point is exactly the cap radius from the axis',
+        ('worst %.3e m'):format(offShape))
+    ok(inward == 0,
+        'and every outward normal points away from the axis, runs included',
+        inward)
+
+    -- Constant spacing across a run, and across the seam where a run meets a
+    -- cap: a capsule's joins are smooth, so unlike the union's reflex corners
+    -- there is no shortfall to allow for anywhere.
+    local N = 240
+    local ds = cap.P / N
+    local minGap, maxGap = math.huge, 0.0
+    local px, py = SS.pointAtArc(cap, -0.5 * ds)
+    for k = 0, N - 1 do
+        local nx, ny = SS.pointAtArc(cap, (k + 0.5) * ds)
+        local g = BR.Dist(px, py, nx, ny)
+        minGap, maxGap = math.min(minGap, g), math.max(maxGap, g)
+        px, py = nx, ny
+    end
+    ok(maxGap <= ds + 1e-9 and minGap > ds - 0.01,
+        'the walk keeps its spacing across the runs and the seams',
+        ('min %.6f max %.6f ds %.6f'):format(minGap, maxGap, ds))
+
+    -- nearestArc finds the perpendicular foot on a run, not the nearer cap.
+    local s = SS.nearestArc(cap, 150.0, -5000.0)
+    local fx, fy = SS.pointAtArc(cap, s)
+    ok(near(fx, 150.0, 1e-6) and near(fy, -80.0, 1e-6),
+        'nearestArc drops a perpendicular onto a straight run',
+        ('(%.4f, %.4f)'):format(fx, fy))
+    -- ...and the cap's endpoint when the foot falls off the end of the run.
+    s = SS.nearestArc(cap, -5000.0, 0.0)
+    fx, fy = SS.pointAtArc(cap, s)
+    ok(near(fx, -80.0, 1e-6) and near(fy, 0.0, 1e-6),
+        'and the cap itself when the foot would fall off the end',
+        ('(%.4f, %.4f)'):format(fx, fy))
+
+    -- AND IT REFUSES THE TWO QUESTIONS IT CANNOT HONESTLY ANSWER. A boundary
+    -- that is not a union of discs has no signed distance here and no inset: the
+    -- first non-disc shape is the rounded rectangle, whose signed distance is a
+    -- real function somebody has to write, and a silent approximation is how
+    -- that would never get written.
+    ok(not (pcall(SS.distance, cap, 0.0, 0.0)),
+        'a shape with straight runs refuses distance() rather than guessing')
+    ok(not (pcall(SS.inset, cap, 5.0)),
+        'and refuses inset() rather than offsetting a run it cannot offset')
 end
 
 describe('combat.melee')
@@ -5746,7 +6297,13 @@ local SANDBOX_LIB = {
     'br_lib/config/loot.lua',
     'br_lib/config/audio.lua', 'br_lib/config/peds.lua',
     'br_lib/config/market.lua', 'br_lib/shared/xp.lua',
-    'br_lib/shared/storm_solve.lua', 'br_lib/shared/combat_solve.lua',
+    'br_lib/shared/storm_solve.lua',
+    -- BR.StormShape, which client/storm.lua's column renderer walks its wall
+    -- along. Without it the /brwallstyle path indexes a nil the moment a sandbox
+    -- draws a frame -- and BR.Loop.step pcalls its callbacks, so that arrives as
+    -- a line in C.prints rather than as a red test.
+    'br_lib/shared/storm_shape.lua',
+    'br_lib/shared/combat_solve.lua',
     'br_lib/shared/loot_gen.lua',
 }
 
@@ -13593,8 +14150,14 @@ do
         env.ClearWeatherTypePersist  = function() end
         env.SetRainLevel             = function() end
 
-        env.DrawMarker = function(_, x, y, z)
-            C.markers[#C.markers + 1] = { x = x, y = y, z = z }
+        -- The wall. SCALE AND ALPHA ARE RECORDED TOO, not just the position:
+        -- the column path's two oldest debts were an alpha it passed raw (so the
+        -- fade-in clock did nothing) and a radius it never inset, and neither is
+        -- visible in a coordinate.
+        env.DrawMarker = function(_, x, y, z, _, _, _, _, _, _, sx, _, sz,
+                                  _, _, _, a)
+            C.markers[#C.markers + 1] =
+                { x = x, y = y, z = z, sx = sx, sz = sz, a = a }
         end
         env.GetGroundZFor_3dCoord = function() return false, 0.0 end
 
@@ -13947,6 +14510,133 @@ do
            'every column stands on the arc the CAMERA is looking at, not the '
            .. 'arc above the corpse',
            ('north %d / east %d of %d'):format(north, east, #C.markers))
+    end
+
+    -- ═══ AND IN THE ENDGAME THERE IS NO VIEWER IN IT AT ALL ═══
+    --
+    -- The window above exists because a 2000m ring is 418 slots and maxDraw is
+    -- 80. At the shipping phase radii the full-ring counts run roughly 545, 335,
+    -- 199, 109, 54, 23, 8 -- so from phase 5 down the whole boundary fits and
+    -- there is nothing left to choose. That is the half of #225 the wall could
+    -- never answer before: the endgame, which is where people actually fight and
+    -- where the report came from, stops being viewer-relative entirely.
+    do
+        local C = newStormClient()
+        C.env.BR.State.me.state = C.env.BR.PlayerState.OUT
+        C.env.BR.Storm.wallStyle = 'columns'
+        -- ═══ AND THE RADIUS IS CHOSEN SO THAT THIS CAN FAIL ═══
+        --
+        -- 350m is 72 slots after the inset: over the 48 rr.segments floor, so
+        -- the old window did not cover it, and under maxDraw, so the new branch
+        -- does. At the harness's own 200m the two agree on all 48 slots and this
+        -- test could not tell them apart -- a window whose width reaches the slot
+        -- count draws the same ring, just starting somewhere else.
+        C.env.BR.State.storm.r0 = 350.0
+        C.env.BR.State.storm.r1 = 350.0
+        C.pedAt = pt(360.0, 0.0)          -- corpse just outside, due EAST
+        C.spectate(pt(0.0, 360.0))        -- watched just outside, due NORTH
+        C.frame()
+
+        local quads = { 0, 0, 0, 0 }
+        for _, m in ipairs(C.markers) do
+            local i = (m.x >= 0.0 and 1 or 3) + (m.y >= 0.0 and 0 or 1)
+            quads[i] = quads[i] + 1
+        end
+        ok(C.errored() == nil, 'the full-ring path runs clean', C.errored())
+        ok(#C.markers == 72, 'the whole boundary is drawn, every slot of it',
+           #C.markers)
+        ok(quads[1] > 0 and quads[2] > 0 and quads[3] > 0 and quads[4] > 0,
+           'in all four quadrants, not just the one the camera is looking at',
+           table.concat(quads, '/'))
+
+        -- THE PROOF IT NO LONGER ASKS: move the viewer to the far side and the
+        -- wall must be the same wall, marker for marker and in the same order.
+        local was = {}
+        for i, m in ipairs(C.markers) do was[i] = ('%.6f,%.6f'):format(m.x, m.y) end
+        local D = newStormClient()
+        D.env.BR.State.me.state = D.env.BR.PlayerState.OUT
+        D.env.BR.Storm.wallStyle = 'columns'
+        D.env.BR.State.storm.r0 = 350.0
+        D.env.BR.State.storm.r1 = 350.0
+        D.pedAt = pt(-3000.0, -3000.0)
+        D.frame()
+        local same = #D.markers == #was
+        if same then
+            for i, m in ipairs(D.markers) do
+                if ('%.6f,%.6f'):format(m.x, m.y) ~= was[i] then same = false end
+            end
+        end
+        ok(same, 'and a viewer 4km away on the far side gets the identical wall',
+           ('%d vs %d markers'):format(#D.markers, #was))
+
+        -- ═══ THE edgeInset DEBT, WHICH THIS PATH NEVER PAID ═══
+        --
+        -- It placed columns at exactly r, so the logical edge -- the one that
+        -- damages -- sat inside the visible curtain. That is the live report
+        -- edgeInset exists for: "20ft inside" while the HUD correctly said
+        -- outside. The shipping 'solid' path has inset since that report landed.
+        local inset = C.env.BR.Config.Storm.render.edgeInset
+        local worst = 0.0
+        for _, m in ipairs(C.markers) do
+            worst = math.max(worst,
+                math.abs(math.sqrt(m.x * m.x + m.y * m.y) - (350.0 - inset)))
+        end
+        ok(worst < 1e-6,
+           'every column stands edgeInset INSIDE the logical edge, as solid does',
+           ('worst %.4f m off %.1f'):format(worst, 350.0 - inset))
+
+        -- AND GLUED TO THE WORLD RATHER THAN HUNG OFF THE VIEWER'S OWN z. The
+        -- ground probe this path used to make returns garbage for unloaded
+        -- cells, which at wall distances is most of the time, so the fallback --
+        -- the viewer's z -- is what actually ran and the wall rode the camera.
+        ok(C.markers[1].z == -100.0,
+           'and on the fixed base below sea level, not on a ground probe',
+           tostring(C.markers[1].z))
+    end
+
+    -- ═══ THE alphaScale DEBT, THE OTHER ONE ═══
+    --
+    -- The column path passed rr.alpha raw, so the phase-1 fade-in clock did
+    -- nothing there: the map ring would fade in over the hold's last ten seconds
+    -- while the curtain popped into existence beside it at full strength. Both
+    -- arrive together now, which is the user call of 2026-08-04.
+    do
+        local C = newStormClient()
+        C.env.BR.Storm.wallStyle = 'columns'
+        C.pedAt = pt(0.0, 0.0)
+        local rr = C.env.BR.Config.Storm.render
+        local rec = C.env.BR.State.storm
+        rec.phase = 1                     -- the free-loot hold, where the fade is
+        local fadeMs = rr.fadeInSec * 1000.0
+
+        -- Before the fade window opens, no wall at all.
+        rec.tStart = C.now - (rec.tWait - (fadeMs + 5000))
+        C.frame()
+        ok(#C.markers == 0,
+           'no curtain before the fade window opens', #C.markers)
+
+        -- Halfway through it, half strength. Within a point of half rather than
+        -- exactly it: C.frame() advances the clock 16ms before the callback
+        -- runs, and pinning the rounding of a fade would be a test of the
+        -- harness's step size.
+        rec.tStart = C.now - (rec.tWait - fadeMs * 0.5)
+        C.frame()
+        local a = C.markers[1] and C.markers[1].a
+        ok(a ~= nil and math.abs(a - rr.alpha * 0.5) <= 1.0,
+           'and half the alpha halfway through the fade, as the map ring has',
+           tostring(a))
+        ok(a ~= nil and a < rr.alpha,
+           'rather than the authored alpha, which is what it used to pass raw',
+           tostring(a))
+
+        -- And full strength once the shrink is under way.
+        local D = newStormClient()
+        D.env.BR.Storm.wallStyle = 'columns'
+        D.pedAt = pt(0.0, 0.0)
+        D.frame()
+        ok(D.markers[1] and D.markers[1].a == rr.alpha,
+           'while a phase-2 hold draws it at the authored alpha',
+           D.markers[1] and tostring(D.markers[1].a))
     end
 
     -- ═══════════════════════════════════════════════════════════════════════

@@ -97,12 +97,6 @@ end
 
 -- ------------------------------------------------------------------- wall ---
 
--- Ground height under the nearest wall point, cached: GetGroundZFor_3dCoord
--- (the underscore is real -- FiveM keeps it when a native name segment starts
--- with a digit) is slow and returns garbage for unloaded cells, so it is
--- sampled once per second and the previous answer is reused between samples.
-local groundZ, groundAt = nil, 0
-
 BR.Loop.register(BR.Loop.FRAME, 'storm.wall', function()
     local rec = activeRecord()
     if not rec then return end
@@ -127,9 +121,9 @@ BR.Loop.register(BR.Loop.FRAME, 'storm.wall', function()
     -- the wall must behave like a THING IN THE WORLD, not an effect around
     -- the player.
     --
-    --   * Columns stand on quantized angles derived from the circle alone
-    --     (slot arc length / radius). The old arc was centred on the
-    --     player's own bearing, so every step the player took slid the
+    --   * Columns stand on fixed slots of BOUNDARY, one per slotArc metres of
+    --     arc length, derived from the zone alone. The old arc was centred on
+    --     the player's own bearing, so every step the player took slid the
     --     whole colonnade around the circumference with them -- "really
     --     jarring" was the polite version.
     --   * No proximity gate. The old |dist - r| cut-off made a 300m-tall
@@ -165,55 +159,108 @@ BR.Loop.register(BR.Loop.FRAME, 'storm.wall', function()
         return
     end
 
-    -- THE VIEWER, AND THIS IS THE ONLY PATH IN THIS CALLBACK THAT NEEDS ONE.
+    -- ═══ A WALK ALONG A BOUNDARY, IN METRES, NOT A LOOP AROUND A CIRCLE ═══
     --
-    -- The shipping wall is 'solid' and returned above without asking where
-    -- anybody is, which is exactly why the curtain was the one storm surface
-    -- that DID agree across both screens in #225. The column renderer is the
-    -- /brwallstyle A/B fallback and it is viewer-relative twice over -- it
-    -- centres its arc on the viewer's bearing to the circle and probes the
-    -- ground under the viewer -- so a spectator would otherwise get a
-    -- colonnade hung off their corpse's bearing, standing on their corpse's
-    -- terrain, on a wall they are looking at from somewhere else entirely.
+    -- Every number below was ALREADY arc length: `slots` was the circumference
+    -- over slotArc, the column width was `r * step`, and visArc and want were
+    -- metres. What they were not is SPELLED that way, so every line of the walk
+    -- knew the boundary was a circle. Asking br_lib/shared/storm_shape.lua the
+    -- same three questions -- how long is the boundary, where is it at s metres,
+    -- and where along it is the viewer -- leaves the arithmetic identical and
+    -- stops it depending on the shape:
     --
-    -- Reading it here rather than at the top of the callback also keeps the
-    -- shipping path free of a per-frame GetEntityCoords it never used.
-    local p = viewpoint()
-    local dist = BR.Dist(p.x, p.y, cx, cy)
-    local base = math.atan(p.y - cy, p.x - cx)
+    --   step = (2*pi) / slots      becomes   ds = P / slots, metres per slot
+    --   w = (r * step) * overlap   collapses to   w = ds * overlap
+    --
+    -- and the second line is the one worth noticing: the column width stops
+    -- mentioning the radius at all. A slot is a slot of BOUNDARY, whatever the
+    -- boundary happens to be doing there.
+    --
+    -- THE SHAPE IS A CIRCLE, BUILT FROM THE LIVE RECORD EVERY FRAME. It is the
+    -- same circle 'solid' draws above, and this file has no other source of a
+    -- shape: nothing here or anywhere else in the game can ask the storm for one
+    -- that is not a circle. The generality is the library's, and it is proved by
+    -- tools/test_shared.lua rather than by anything a player can reach.
+    local SS = BR.StormShape
 
-    -- Column fallback keeps the per-arc ground probe: short columns must
-    -- meet the terrain they stand on.
-    local now = GetGameTimer()
-    if now - groundAt > rr.groundCacheSec * 1000 then
-        groundAt = now
-        local nearX = cx + math.cos(base) * r
-        local nearY = cy + math.sin(base) * r
-        local okZ, gz = GetGroundZFor_3dCoord(nearX, nearY, p.z + 50.0, false)
-        groundZ = okZ and gz or nil
+    -- ═══ edgeInset, WHICH THIS PATH NEVER PAID ═══
+    --
+    -- It placed its columns at exactly r, so the logical edge -- the one that
+    -- damages -- sat inside the visible curtain. That is the live report
+    -- edgeInset exists for ("20ft inside" while the HUD correctly said outside),
+    -- and it would have come straight back the first time anybody typed
+    -- /brwallstyle. The shipping path has inset since the day the report landed;
+    -- this is that same one line, spelled for a shape.
+    local shape = SS.inset(SS.circle(cx, cy, r), rr.edgeInset or 0.0)
+
+    local P = SS.perimeter(shape)
+    local slots = math.max(rr.segments, math.floor(P / rr.slotArc + 0.5))
+    local ds = P / slots
+    local w = ds * (rr.overlap or 1.05)
+
+    -- ═══ WHEN THE WHOLE BOUNDARY FITS, DRAW IT AND NEVER ASK WHERE ANYBODY IS ═══
+    --
+    -- At the shipping phase radii the full-ring slot counts run roughly 545,
+    -- 335, 199, 109, 54, 23, 8, so from phase 5 down the entire boundary is
+    -- under maxDraw and there is nothing left to choose. Windowing there bought
+    -- nothing and cost the thing #225 was filed about: a viewer-relative wall,
+    -- which for a spectator means a colonnade hung off their corpse's bearing on
+    -- a wall they are looking at from somewhere else entirely. The endgame is
+    -- where people actually fight and where that report came from, and it is now
+    -- the case with no viewer in it at all.
+    --
+    -- Above maxDraw a window is still the only affordable answer, and it still
+    -- has to know which stretch of boundary the viewer is looking at. Reading
+    -- the viewer HERE rather than at the top of the callback keeps it off the
+    -- shipping path, which never wanted it, and off the endgame, which no longer
+    -- does.
+    local first, drawn
+    if slots <= rr.maxDraw then
+        first, drawn = 0, slots
+    else
+        local p = viewpoint()
+        -- visArc and want carry over verbatim. The one substitution is
+        -- (dist - r), which was a circle's signed distance written out by hand.
+        local off = SS.distance(shape, p.x, p.y)
+        local visArc = math.max(rr.wallVisDist, math.abs(off) * 2.0)
+        local want = math.floor((visArc * 2.0) / rr.slotArc + 0.5)
+        drawn = math.min(slots, math.min(rr.maxDraw, math.max(rr.segments, want)))
+        -- What replaces `base = math.atan(p.y - cy, p.x - cx)`: the same
+        -- question, asked of a boundary instead of of a circle.
+        first = math.floor(SS.nearestArc(shape, p.x, p.y) / ds)
+              - math.floor(drawn / 2)
     end
-    local zBase = (groundZ or (p.z - rr.fallbackZDrop)) - 50.0
 
-    -- Column fallback: fixed angular slots derived from the circle alone,
-    -- so the colonnade stands still as the player moves.
-    local slots = math.max(rr.segments,
-        math.floor((2.0 * math.pi * r) / rr.slotArc + 0.5))
-    local step = (2.0 * math.pi) / slots
-    local w = (r * step) * (rr.overlap or 1.05)
-
-    local visArc = math.max(rr.wallVisDist, math.abs(dist - r) * 2.0)
-    local want = math.floor((visArc * 2.0) / rr.slotArc + 0.5)
-    local drawn = math.min(slots, math.min(rr.maxDraw, math.max(rr.segments, want)))
-    local k0 = math.floor(base / step)
-
-    local first = k0 - math.floor(drawn / 2)
+    -- ═══ GLUED TO THE WORLD, NOT TO THE VIEWER, AS THE SHIPPING PATH IS ═══
+    --
+    -- These columns used to stand on a ground probe: GetGroundZFor_3dCoord under
+    -- the single point of the circle nearest the viewer, cached for a second,
+    -- falling back to the viewer's own z minus fallbackZDrop when it missed. Two
+    -- more reads of "where is the viewer" for a wall that must look the same on
+    -- every screen -- and the probe returns garbage for unloaded cells, which at
+    -- wall distances is most of the time, so the fallback is what actually ran
+    -- and the wall rode the camera. 'solid' settled this on 2026-08-03 with a
+    -- fixed base below sea level and triple height, ocean floor to above
+    -- Chiliad. Taking those same two numbers is what lets the probe, its cache
+    -- and the viewpoint() read above all go away.
+    --
+    -- AND alphaScale, THE OTHER DEBT THIS PATH NEVER PAID: it passed rr.alpha
+    -- raw, so the phase-1 fade-in clock did nothing here. The map ring would
+    -- fade in over the hold's last ten seconds while the curtain popped into
+    -- existence beside it at full strength.
+    --
+    -- `first + i` may still run negative or past `slots`, exactly as it always
+    -- could. The wrap that used to come free from cos/sin now lives inside
+    -- pointAtArc -- the one thing about this walk that had to be written down
+    -- rather than inherited. Without it an off-end index does not error: it
+    -- lands on the last piece's far end and stacks markers on one seam.
     for i = 0, drawn - 1 do
-        local theta = (first + i + 0.5) * step
+        local mx, my = SS.pointAtArc(shape, (first + i + 0.5) * ds)
         DrawMarker(1,
-            cx + math.cos(theta) * r, cy + math.sin(theta) * r, zBase,
+            mx, my, -100.0,
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-            w, w, rr.height + 50.0,
-            col.r, col.g, col.b, rr.alpha,
+            w, w, rr.height * 3.0 + 50.0,
+            col.r, col.g, col.b, math.floor(rr.alpha * alphaScale),
             false, false, 2, false, nil, nil, false)
     end
 end)

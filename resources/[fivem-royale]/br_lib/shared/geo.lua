@@ -1,9 +1,16 @@
 -- Geometry and math helpers shared by server and client.
 --
--- Everything here is allocation-free where it plausibly runs per frame: the storm
--- renderer calls ArcPoints() every frame, so it writes into a caller-supplied
--- buffer rather than returning a fresh table. Per-frame table churn shows up as
--- GC stutter, not as average frame cost, which makes it hard to spot later.
+-- Everything here is allocation-free where it plausibly runs per frame: a helper
+-- that writes into a caller-supplied buffer rather than returning a fresh table.
+-- Per-frame table churn shows up as GC stutter, not as average frame cost, which
+-- makes it hard to spot later.
+--
+-- THE STORM WALL USED TO BE THE EXAMPLE HERE AND IS NOT ANY MORE. BR.ArcPoints
+-- and BR.ArcSegmentWidth lived below for exactly that, sampling the arc nearest
+-- the player out of a chord width. The wall walks a shape by arc length now
+-- (shared/storm_shape.lua, #326) and nothing called either of them, so both went
+-- with the walk they belonged to rather than staying as a second spelling of the
+-- same math for somebody to pick by mistake.
 
 BR = BR or {}
 
@@ -89,56 +96,6 @@ end
 --- @return number heading  degrees, 0 = north, counter-clockwise
 function BR.GtaHeading(bearing)
     return (360.0 - bearing) % 360.0
-end
-
---- Sample points along the arc of a circle nearest to (px, py).
----
---- This is what makes the storm wall affordable. Drawing the full circle would
---- need hundreds of markers at large radii; we only ever draw the slice the
---- player can actually see, so cost is constant regardless of circle size.
----
---- Writes { x, y } pairs into `buf` and returns the number of points written.
---- `buf` is reused across frames by the caller.
----
---- @param buf table         reusable output buffer of {x=,y=} tables
---- @param cx number         circle centre x
---- @param cy number         circle centre y
---- @param radius number     circle radius
---- @param px number         player x
---- @param py number         player y
---- @param segments integer  number of points to emit
---- @param spanDeg number    total arc width in degrees, centred on the player
---- @return integer count
-function BR.ArcPoints(buf, cx, cy, radius, px, py, segments, spanDeg)
-    if radius <= 0.0 then return 0 end
-
-    -- Angle from the circle centre toward the player. The nearest point on the
-    -- circle lies along this bearing, so we centre the arc there.
-    local mid = math.atan(py - cy, px - cx)
-    local span = math.rad(spanDeg)
-    local step = span / (segments - 1)
-    local start = mid - span * 0.5
-
-    for i = 1, segments do
-        local a = start + step * (i - 1)
-        local p = buf[i]
-        if not p then
-            p = {}
-            buf[i] = p
-        end
-        p.x = cx + cos(a) * radius
-        p.y = cy + sin(a) * radius
-    end
-
-    return segments
-end
-
---- Chord length between adjacent arc samples, used as marker width so the
---- cylinders butt together without overlapping. Overlapping alpha bands are the
---- single ugliest artifact of the marker-wall technique.
-function BR.ArcSegmentWidth(radius, segments, spanDeg)
-    local step = math.rad(spanDeg) / (segments - 1)
-    return 2.0 * radius * sin(step * 0.5)
 end
 
 --- Where a two-leg bus route puts the bus at time t.
