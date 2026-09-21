@@ -1315,13 +1315,59 @@ local function boostReport(w)
             (w.excludedFrames or 0) > 0
                 and ('   EXCLUDED on %d frames (BR.Config.Boost.excludeClasses)')
                     :format(w.excludedFrames) or ''))
+    -- ═══ THE TWO GATES THE OWNER ADDED ON 2026-09-21 ═══
+    --
+    -- "boost only work if the engine is on and fuel is >=5%". Both are refusals
+    -- that look exactly like every other one from the driver's seat -- the meter
+    -- sits still and nothing happens -- so the numbers behind them have to be on
+    -- the page, not only in the verdict. The tank is printed first because the
+    -- chain asks it first: a dry tank stalls the car, so an empty one trips both
+    -- rows and only the fuel one is the cause.
+    print(('  fuel                 %s   (needs %.1f%%, BR.Fuel.levelPct)')
+        :format(w.fuelPctMin == nil
+            and ((w.fuelUnknown or 0) > 0
+                and ('no tank modelled for it on %d frames'):format(w.fuelUnknown)
+                or 'not measured')
+            or (('%.1f%% at its lowest%s'):format(w.fuelPctMin,
+                (w.lowFuelFrames or 0) > 0
+                    and ('   BELOW on %d frames'):format(w.lowFuelFrames) or '')),
+            w.minFuelPct or 0.0))
+    -- "ON EVERY FRAME WE LOOKED" HAS TO BE FALSE WHEN WE DID NOT LOOK, and on a
+    -- bicycle we deliberately do not: the engine gate is not applied to a class
+    -- that has no engine (BR.Config.Boost.enginelessClasses). Without this branch
+    -- the row would report a passing engine on a vehicle that has none, which is
+    -- the readout inventing a measurement it never took.
+    print(('  engine running       %s%s')
+        :format((w.enginelessFrames or 0) > 0
+                and ('NOT ASKED on %d frames -- class %s has no engine '
+                     .. '(BR.Config.Boost.enginelessClasses)')
+                    :format(w.enginelessFrames, tostring(w.class))
+            or (w.engineOffFrames or 0) == 0 and 'on every frame we looked'
+            or ('OFF on %d frames'):format(w.engineOffFrames),
+            (w.engineUnreadable or 0) > 0
+                and ('   [IS_VEHICLE_ENGINE_ON could not be asked on %d -- the '
+                     .. 'gate is not being enforced there]')
+                    :format(w.engineUnreadable) or ''))
     rule()
     print('  THE LOOP')
     print(('  wanted to boost      %s')
         :format((w.wantFrames or 0) == 0 and 'on NO frame'
             or ('on %d of %d frames'):format(w.wantFrames, w.frames or 0)))
-    print(('  refused: dry latch %d   meter empty %d')
-        :format(w.dryFrames or 0, w.emptyFrames or 0))
+    print(('  refused: dry latch %d   meter empty %d   gate latch %d')
+        :format(w.dryFrames or 0, w.emptyFrames or 0, w.gatedFrames or 0))
+    -- ═══ THE THIRD LATCH, WHICH THE TWO GATES ABOVE INTRODUCED ═══
+    --
+    -- A gate that stops a LIVE boost latches, exactly as an emptied meter does, so
+    -- the boost does not come back until the key is released. That is the one
+    -- refusal on this page a player can be sitting inside without ever having seen
+    -- the meter move, and before the latch existed the same circumstance was a
+    -- stutter of ramp-restarts that measured +57 mph against a +30 mph spec.
+    -- Printed only when it happened, because zero occasions is the normal case.
+    if (w.gateStops or 0) > 0 then
+        print(('  gate stopped a live boost %d time(s)%s')
+            :format(w.gateStops, w.gateLatch == true
+                and '   STILL LATCHED: let go, then press again' or ''))
+    end
     rule()
     print('  THE PUSH')
     print(('  push() ran           %s')

@@ -541,6 +541,13 @@ client_scripts {
     -- pushBars asks BR.Boost.meter() for the third bar in the vehicle envelope,
     -- so the file that answers is declared above the file that asks. It reaches
     -- it at call time and nil-guards, so the loader does not care.
+    --
+    -- THE PAIR NOW READS BOTH WAYS AND NEITHER DIRECTION IS A LOAD ORDER (owner,
+    -- 2026-09-21). boost.lua asks BR.Fuel.levelPct whether the tank is above
+    -- BR.Config.Boost.minFuelPct, which is the same number fuel.lua rounds into
+    -- the fuel bar -- deliberately one reading rather than two. Both calls are at
+    -- CALL time and both are nil-guarded, so the order below stays a reader's
+    -- preference and cannot be made wrong by either half.
     'client/boost.lua',
     'client/fuel.lua',
     -- How breakable a car is: the four handling multipliers, written on this

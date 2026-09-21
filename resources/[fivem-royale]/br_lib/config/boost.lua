@@ -93,6 +93,32 @@ BR.Config.Boost = {
     --- of "burn fuel faster" as a thing distinct from "go faster".
     fuelMultiplier = 1.5,
 
+    --- ═══ AND A BOOST NEEDS SOMETHING IN THE TANK ═══
+    ---
+    ---   "make the vehicle boost only work if the engine is on and fuel is
+    ---    >=5%"                                     -- owner, 2026-09-21
+    ---
+    --- THE PERCENTAGE IS THE ONE ON THE VITALS BAR, which is the only fuel
+    --- number the driver can actually see. br_core/client/boost.lua reads it
+    --- through BR.Fuel.levelPct, and client/fuel.lua draws the bar by rounding
+    --- that same value to a whole percent -- so the gate and the gauge cannot
+    --- describe two different tanks. The alternative was GetVehicleFuelLevel,
+    --- which is LITRES of a per-model tank rather than a fraction of one, and a
+    --- boost that refuses while the bar says 40% would be a worse bug than the
+    --- one this gate closes.
+    ---
+    --- AT OR ABOVE, NOT ABOVE. The owner wrote ">=", so a tank at exactly 5%
+    --- boosts; a threshold written as `>` is the classic off-by-one and
+    --- tools/test_boost.lua pins both sides of the line.
+    ---
+    --- THE ENGINE HALF OF THE SAME SENTENCE HAS NO NUMBER and is therefore not
+    --- a key here: "the engine is running" is IS_VEHICLE_ENGINE_ON and nothing
+    --- about it is tunable.
+    ---
+    --- REVERSIBLE IN ONE LINE, like the two tables below: 0 is a gate that never
+    --- refuses, because no percentage is below zero.
+    minFuelPct = 5.0,
+
     --- ═══ AIRCRAFT ARE OUT, AND IT IS A KEY COLLISION RATHER THAN A TASTE CALL
     ---     ═══
     ---
@@ -211,6 +237,36 @@ BR.Config.Boost = {
     excludeClasses = {
         [15] = true,   -- helicopters
         [16] = true,   -- planes
+    },
+
+    --- ═══ AND THE ENGINE GATE DOES NOT APPLY TO A VEHICLE THAT HAS NO ENGINE
+    ---     ═══
+    ---
+    --- 13 is CYCLES, from GET_VEHICLE_CLASS: every bicycle in the game. They are
+    --- deliberately NOT in excludeClasses -- the owner said "the vehicle", shift
+    --- does nothing on a BMX, and a boosted bicycle is a perfectly good thing to
+    --- have in a battle royale. A bicycle has no ignition, though, so
+    --- "the engine is on" is not a question about one.
+    ---
+    --- WRITTEN AGAINST AN UNCONFIRMED NATIVE ANSWER, AND THAT IS THE REASON THIS
+    --- TABLE EXISTS RATHER THAN THE GATE SIMPLY BEING TRUSTED. Nobody has
+    --- established what IS_VEHICLE_ENGINE_ON answers for a cycle, and it cannot
+    --- be established from here: a real answer needs the game, and the suite
+    --- stubs GET_VEHICLE_CLASS. If the native answers nil or raises then
+    --- client/boost.lua's fail-open path already covers it and this table changes
+    --- nothing; if it answers a plain `false` then the fail-open path does not
+    --- apply and, without this, every bicycle would silently lose the boost while
+    --- /brboostwhy told the rider to start an engine a bicycle does not have. The
+    --- carve-out is what turns an open question into a harmless one.
+    ---
+    --- THE FUEL GATE IS NOT AFFECTED and must not be added to. It reads the same
+    --- percentage the vitals bar draws, so it cannot disagree with the gauge
+    --- whatever client/fuel.lua models for a cycle.
+    ---
+    --- REVERSIBLE IN ONE LINE, like the two tables around it: empty this and the
+    --- engine gate applies to everything again.
+    enginelessClasses = {
+        [13] = true,   -- cycles: bicycles, which have no ignition at all
     },
 
     --- ═══ THE ENGINE CONTROLS WE HOLD DOWN WHILE THE BOOST KEY IS HELD ═══

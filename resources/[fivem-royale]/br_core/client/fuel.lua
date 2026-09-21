@@ -473,6 +473,64 @@ function BR.Fuel.drivingAtFullHealth()
     return healthPct(veh) >= 99.95, veh
 end
 
+--- A tank fraction as a percentage of a tank, 0..100.
+---
+--- ═══ ONE CONVERSION, SO NOTHING CAN DISAGREE ABOUT WHAT "5%" MEANS ═══
+---
+--- The bar below and BR.Fuel.levelPct beside it are the same expression called
+--- twice, and that is the whole reason this is a function rather than two copies
+--- of a clamp and a multiply. The bar is this value ROUNDED to a whole percent
+--- because a bar cannot draw a fraction; nothing else rounds it.
+---
+--- AN UNKNOWN TANK READS FULL, NOT EMPTY, and the `or 1.0` is where that
+--- happens. This is the gap between sitting down and the server's answer
+--- arriving, and a bar that flashed empty for a tenth of a second every time
+--- somebody got into a car would be read as the car being dry.
+--- @param frac number|nil
+--- @return number  0..100
+local function pctOf(frac)
+    return BR.FuelSolve.clamp(frac or 1.0, 1.0) * 100.0
+end
+
+--- What the fuel bar is showing for one vehicle, as a percentage.
+---
+--- ═══ EXPORTED BECAUSE A SECOND OPINION ABOUT THE TANK WOULD BE A BUG ═══
+---
+--- br_core/client/boost.lua refuses to boost below BR.Config.Boost.minFuelPct,
+--- and the owner named that threshold as a percentage of the gauge -- so the
+--- gate has to read the gauge rather than re-derive it. GetVehicleFuelLevel
+--- would have been the obvious reach and it is the wrong number twice over: it
+--- is LITRES of a per-model tank rather than a fraction of one, and it is
+--- whatever `applyLevel` last wrote plus whatever the engine has burned since.
+--- A boost that refused while the bar read 40% would be a worse bug than the one
+--- that gate closes.
+---
+--- UNROUNDED, WHICH IS THE ONE PLACE THIS AND THE BAR DIVERGE AND IT IS
+--- DELIBERATE. The threshold is the owner's number, not the bar's pixel: at 4.6%
+--- the bar draws 5 and this answers 4.6, so the boost refuses while the gauge
+--- reads the threshold. Half a percent either side of one line is the whole of
+--- the disagreement, and rounding here instead would make a tank at 4.9% boost,
+--- which is not what ">=5%" says.
+---
+--- NIL MEANS "NO TANK IS BEING MODELLED HERE", NOT "EMPTY". The fuel feature is
+--- switched off, or the vehicle is not networked -- the Battle Bus -- so it has
+--- no ledger entry on the server and no bar on this screen either. A caller must
+--- read that as "this gate does not apply", because reading it as empty would
+--- turn a feature switch into a boost that mysteriously does nothing.
+--- @param veh integer|nil
+--- @return number|nil  0..100, or nil when there is no gauge to read
+function BR.Fuel.levelPct(veh)
+    if not enabled() then return nil end
+    if not veh or veh == 0 then return nil end
+    local nid = netOf(veh)
+    if nid == nil then return nil end
+    local rec = known[nid]
+    -- `rec.f` OF ZERO HAS TO SURVIVE THIS, and `0 or 1.0` is 0 in Lua because 0
+    -- is truthy -- which is the one time in this project that works in our
+    -- favour. An empty tank must read 0 and not "unknown, so full".
+    return pctOf(rec and rec.f or nil)
+end
+
 --- Tell the interface what to draw, on change only.
 ---
 --- ═══ TWO BARS, NO WORDS ═══
@@ -495,11 +553,10 @@ local function pushBars(veh, fuelFrac)
     local health, fuel, boost = 0, 0, 0
     if show then
         health = math.floor(healthPct(veh) + 0.5)
-        -- AN UNKNOWN TANK READS FULL, NOT EMPTY. This is the gap between
-        -- sitting down and the server's answer arriving, and a bar that flashed
-        -- empty for a tenth of a second every time somebody got into a car
-        -- would be read as the car being dry.
-        fuel = math.floor(BR.FuelSolve.clamp(fuelFrac or 1.0, 1.0) * 100.0 + 0.5)
+        -- THE SAME CONVERSION BR.Fuel.levelPct HANDS THE BOOST GATE, rounded
+        -- here and only here. See pctOf, which also carries the "an unknown tank
+        -- reads full, not empty" rule this line used to state for itself.
+        fuel = math.floor(pctOf(fuelFrac) + 0.5)
         -- ═══ THE THIRD BAR RIDES THIS ENVELOPE RATHER THAN OPENING A SECOND ═══
         --
         --   "Good call - I meant to ask for a Boost bar."  -- owner, 2026-08-22

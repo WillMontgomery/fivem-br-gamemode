@@ -177,6 +177,53 @@ local run = {
 --- part-charged meter spends exactly what is there, which is the spec.
 local dry = false
 
+--- Did a gate take a LIVE boost away, with the key still down?
+---
+--- ═══ A SIBLING OF `dry` AND NOT A SECOND USE OF IT. THE MEASUREMENTS FIRST,
+---     BECAUSE THEY ARE WHY IT EXISTS ═══
+---
+--- The two gates further down are live for the whole boost, so either can stop a
+--- boost that is already running: the engine is shot out, or the tank crosses the
+--- line mid-burn. Without a latch the key is still down on the very next frame
+--- and `want` is true again, so THE PRESS PATH RUNS A SECOND TIME UNDER ONE HOLD
+--- -- and the press path re-samples `base` from the speed the car has NOW, which
+--- is the speed the interrupted boost had already given it. Driven on the shipped
+--- frame callback from 20.0 m/s, against a spec of +30 mph:
+---
+---     steady burn                     +13.41 m/s   (+30 mph, which is the spec)
+---     one 1-frame cut at frame 70     +20.71 m/s   (+46 mph)
+---     one 1-frame cut every 40        +25.43 m/s   (+57 mph)
+---
+--- Nothing bounded it: every interruption raised the ceiling again. The press
+--- path's own comment states the rule this breaks, in its own words -- re-reading
+--- the base per frame "would make the target chase the car and the boost would
+--- have no ceiling at all". A resumed boost is that re-read, once per
+--- interruption, and an engine that flickers or a fuel reading riding the 5
+--- percent line is enough to ask for it on purpose.
+---
+--- AND THE SAME FLICKER WAS THE STUTTER `dry`'s OWN NOTE DESCRIBES. Twenty frames
+--- of alternation produced 0 impulses -- each restart begins the ramp at zero,
+--- asks for nothing on its first frame and is stopped on the next -- while the
+--- meter still drained from 100 to 88.4. It sent 10 BOOST_SET on and 10 off in
+--- those 20 frames, and the server throttles starts only, so every accepted edge
+--- is a broadcast to every other client; locally it started and stopped 170
+--- particle effects. "A held key producing an endless stutter of ramp-restarts
+--- and no acceleration at all" is the sentence above, and this was it.
+---
+--- ═══ WHY IT IS NOT SIMPLY `dry` ═══
+---
+--- Reusing `dry` would fix all of that and would cost the readout the one thing
+--- the readout is for. "The meter emptied" and "the car stopped qualifying" are
+--- different facts with different answers -- "wait six seconds" against "your
+--- engine cut out, or you are sitting on the fuel line" -- and the verdict ladder
+--- has a rung for each. One flag for two meanings is a flag that makes
+--- /brboostwhy name the wrong cause, which is the wasted playtest round that
+--- ladder exists to prevent.
+---
+--- CLEARED ON THE RELEASE AND ONLY ON THE RELEASE, exactly as `dry` is and for
+--- the same reason: "let go and press again" is the fix that adds no number.
+local gated = false
+
 -- ---------------------------------------------------------------------------
 -- THE TRACE
 --
@@ -444,6 +491,145 @@ local function flamesAllOff()
 end
 
 -- ---------------------------------------------------------------------------
+-- What the car itself has to be doing
+--
+-- ═══ TWO GATES, ONE SENTENCE ═══
+--
+--   "make the vehicle boost only work if the engine is on and fuel is >=5%"
+--                                              -- owner, 2026-09-21
+--
+-- Both are read here and consumed by one clause of `want` in the frame callback
+-- below, which is what makes them live for the whole boost rather than only at
+-- the press. Neither of them does anything to the car: the refusal is the
+-- absence of a push, exactly as a released key is.
+-- ---------------------------------------------------------------------------
+
+--- Is this vehicle's engine actually running?
+---
+--- ═══ A COASTING CAR MUST NOT BOOST ═══
+---
+--- IS_VEHICLE_ENGINE_ON IS DECLARED BOOL, and in this project that is a sentence
+--- with a history rather than a footnote: a native declared BOOL answers `1` on
+--- some builds and `true` on others, `0` is truthy in Lua, and this repository
+--- has shipped that confusion seven times. The answer goes through BR.NativeBool
+--- like every other BOOL read in this file, so a build that says `0` for a dead
+--- engine REFUSES the boost instead of allowing it. The pair is already here:
+--- four files call SetVehicleEngineOn, and client/fuel.lua's own ignition block
+--- is the one that turns an engine back on after a refuel.
+---
+--- A BUILD THAT CANNOT ANSWER GETS THE BOOST, NOT A DEAD FEATURE. An unbound
+--- native, a raise, or a nil would otherwise refuse every boost on that client
+--- for ever, with precisely the "boost does nothing, meter stays at 100" symptom
+--- the ladder at the bottom of this file exists to take apart. `engineUnreadable`
+--- is what stops that being silent: a gate nobody is enforcing is a fact about
+--- the build, and the readout says it rather than leaving it to be deduced.
+--- @param veh integer
+--- @return boolean
+local function engineRunning(veh)
+    if IsVehicleEngineOn == nil then
+        note('engineUnreadable')
+        return true
+    end
+    local ok, on = pcall(IsVehicleEngineOn, veh)
+    if not ok or on == nil then
+        note('engineUnreadable')
+        return true
+    end
+    return isTrue(on)
+end
+
+--- Is this a class of vehicle that HAS an engine for the gate above to be about?
+---
+--- ═══ A BICYCLE HAS NO ENGINE, AND THE GATE MUST NOT ASK ABOUT ONE ═══
+---
+--- BR.Config.Boost.excludeClasses holds 15 and 16 only, so class 13 -- CYCLES,
+--- every bicycle in the game -- reaches the gates today, and is meant to: the
+--- owner said "the vehicle", boats are deliberately in, and shift does nothing on
+--- a BMX. But there is no ignition on a BMX either.
+---
+--- WRITTEN AGAINST AN UNCONFIRMED NATIVE ANSWER, AND THE CARVE-OUT IS PRECISELY
+--- WHAT MAKES THAT HARMLESS. If IS_VEHICLE_ENGINE_ON answers nil or raises for a
+--- cycle then engineRunning()'s fail-open path already covers it and this changes
+--- nothing. If it answers a plain `false` then the fail-open path does NOT apply,
+--- and every bicycle on the server would silently lose the boost while
+--- /brboostwhy told the player to start the engine on a bicycle. Nothing in this
+--- tree can settle which it is -- a real answer needs the game, and the suite
+--- stubs GetVehicleClass -- so the gate is simply not applied to a class that has
+--- no engine, and the question stops mattering either way. That is the difference
+--- between an uncertainty and a class of vehicle quietly losing a feature.
+---
+--- THE FUEL GATE IS DELIBERATELY UNTOUCHED. It reads the same percentage the
+--- vitals bar draws, whatever client/fuel.lua models for a cycle, so the gate and
+--- the gauge agree about a bicycle exactly as they agree about a Bison.
+--- @param veh integer
+--- @return boolean
+local function hasEngine(veh)
+    local none = C.enginelessClasses
+    if type(none) ~= 'table' then return true end
+    local ok, class = pcall(GetVehicleClass, veh)
+    if not ok then return true end
+    class = math.tointeger(tonumber(class))
+    if class == nil then return true end
+    return none[class] ~= true
+end
+
+--- Is there at least `minPct` of a tank left, on the gauge the driver reads?
+---
+--- ═══ THE NUMBER ON THE BAR, AND DELIBERATELY NOT A SECOND OPINION ═══
+---
+--- BR.Fuel.levelPct IS THE VITALS BAR'S OWN VALUE. client/fuel.lua holds the
+--- server's fraction for this vehicle's network id, exports it through that one
+--- function, and draws the fuel bar by rounding the very same expression -- so
+--- there is one fuel number on this client and both the gauge and this gate are
+--- reading it. GetVehicleFuelLevel was the obvious reach and it is the wrong
+--- number twice over: it is LITRES of a per-model tank rather than a fraction of
+--- one, and it holds whatever fuel.lua's gauge pass last wrote plus whatever the
+--- engine has burned since. A boost that refused while the bar read 40% would be
+--- a worse bug than the one this gate closes.
+---
+--- AN UNANSWERED TANK READS FULL rather than empty, and that rule is fuel.lua's
+--- rather than ours: between sitting down and the server's answer arriving there
+--- is no number at all, and a boost that refused for a tenth of a second every
+--- time somebody got into a car would be reported as the boost being broken. The
+--- boost inherits it for free by asking that file instead of the engine.
+---
+--- NIL IS NOT EMPTY, SO NIL PASSES. It means no tank is being modelled for this
+--- vehicle -- the fuel feature is switched off, or the vehicle is not networked,
+--- which is the Battle Bus and the one case this file already documents as
+--- "gets the push and no flames". Refusing there would turn a feature switch
+--- into a boost that mysteriously does nothing, which is the whole class of bug
+--- #203 was. Counted, for the same reason `engineUnreadable` is.
+--- @param veh integer
+--- @param minPct number
+--- @return boolean
+local function fuelAbove(veh, minPct)
+    local read = BR.Fuel and BR.Fuel.levelPct
+    if type(read) ~= 'function' then
+        note('fuelUnknown')
+        return true
+    end
+    local ok, pct = pcall(read, veh)
+    -- A READING OF ZERO HAS TO SURVIVE THIS LINE, and it does only because `0` is
+    -- truthy in Lua -- `0.0 or nil` is 0.0. That is the one place in this project
+    -- where the trap works in our favour, and it is written down because the
+    -- obvious tidy-up of an `and`/`or` chain is what would turn an empty tank
+    -- into "no reading, so full" and let a dry car boost.
+    pct = ok and tonumber(pct) or nil
+    -- `pct ~= pct` IS THE NaN TEST, and it is the only one Lua has.
+    if pct == nil or pct ~= pct then
+        note('fuelUnknown')
+        return true
+    end
+    -- THE LOWEST READING OF THE WINDOW, WHICH IS THE ONE THE VERDICT WANTS. A
+    -- boost refused at 3% and then taken at 60% after a fill is two facts, and
+    -- the refusal is the one somebody ran /brboostwhy to understand.
+    if trace and (trace.fuelPctMin == nil or pct < trace.fuelPctMin) then
+        trace.fuelPctMin = pct
+    end
+    return pct >= minPct
+end
+
+-- ---------------------------------------------------------------------------
 -- The push
 -- ---------------------------------------------------------------------------
 
@@ -635,8 +821,11 @@ BR.Loop.register(BR.Loop.FRAME, 'boost.drive', function(dtMs)
     -- cause: /brboostwhy samples the raw natives itself alongside this, so the two
     -- disagreeing names the fault as keybinds.lua's rather than this file's.
     if held then note('heldFrames') end
-    -- THE DRY LATCH CLEARS ON THE RELEASE AND ONLY ON THE RELEASE. See `dry`.
-    if not held then dry = false end
+    -- BOTH LATCHES CLEAR ON THE RELEASE AND ONLY ON THE RELEASE. See `dry` and
+    -- `gated`. They are cleared together and on the same frame because they are
+    -- the same bargain -- a fresh boost needs a fresh press -- and kept apart
+    -- because the readout has to say which of the two happened.
+    if not held then dry, gated = false, false end
 
     -- ═══ THE IDLE PATH IS TWO LOCALS AND A SUBTRACTION, AND THIS BAND IS WHY ═══
     --
@@ -734,21 +923,102 @@ BR.Loop.register(BR.Loop.FRAME, 'boost.drive', function(dtMs)
         for i = 1, #sc do DisableControlAction(0, sc[i], true) end
     end
 
-    local want = driving and held and not dry and budget > 0.0
+    -- ═══ THE TANK AND THE ENGINE, ASKED EVERY FRAME AND NOT ONCE AT THE PRESS
+    --     ═══
+    --
+    --   "make the vehicle boost only work if the engine is on and fuel is >=5%"
+    --                                              -- owner, 2026-09-21
+    --
+    -- A RUNNING BOOST STOPS THE MOMENT EITHER GOES FALSE, and that is the
+    -- decision this block is mostly about, because both of them can: the engine
+    -- is shot out under #213's destructible cars, or the tank crosses the line
+    -- mid-burn. They feed `want`, which is re-derived every frame, so such a
+    -- boost ends through the same stop() a released key goes through -- flames
+    -- out, the stop announced so other screens agree, the meter no longer
+    -- charged, and nothing whatsoever done to the car.
+    --
+    -- "FINISH THE BURN YOU STARTED" WAS THE ALTERNATIVE AND IT IS WRONG HERE FOR
+    -- TWO SEPARATE REASONS. Every other clause in this chain is already live --
+    -- the seat, the class, the key, the meter -- so a pair of gates that only
+    -- applied at the press would be the only ones a driver could get behind and
+    -- stay behind, which is the kind of asymmetry that gets rediscovered as a
+    -- bug. And the visible half is worse than the arithmetic half: flames out of
+    -- the tailpipes of an engine that is off does not read as "a boost finishing
+    -- its burn", it reads as a separate bug about flames.
+    --
+    -- THE TANK IS ASKED BEFORE THE ENGINE, AND THE ORDER IS LOAD-BEARING. A dry
+    -- tank STALLS the car -- fuel.lua writes a zero level and GTA's own fuel
+    -- system cuts the engine, which is that file's whole reason for existing --
+    -- so an empty car fails both gates at once. Asking the tank first is what
+    -- lets the ladder below tell a player to find a station instead of telling
+    -- them to start an engine that cannot start.
+    --
+    -- ONLY WHEN WE ARE ALREADY DRIVING SOMETHING THAT MAY BOOST, so the idle path
+    -- above pays nothing and a car we have already refused is not asked two more
+    -- questions about.
+    --
+    -- AND THE SUPPRESSION ABOVE IS DELIBERATELY NOT NARROWED BY EITHER OF THEM.
+    -- A player holding the key in a car with a dead engine is still holding the
+    -- key, and GTA does not consult our gates before pitching their car -- which
+    -- is the argument BR.Config.Boost.suppressControls already makes about
+    -- `want` itself.
+    --
+    -- AND THE ENGINE HALF IS NOT ASKED OF A VEHICLE THAT HAS NO ENGINE. Class 13
+    -- is CYCLES and a bicycle has no ignition; see hasEngine(). The fuel half is
+    -- asked of everything, because it reads the bar rather than the engine.
+    local fuelOk, engineOn = true, true
+    if driving then
+        fuelOk = fuelAbove(veh, tonumber(C.minFuelPct) or 0.0)
+        if not fuelOk then note('lowFuelFrames') end
+        if hasEngine(veh) then
+            engineOn = engineRunning(veh)
+            if not engineOn then note('engineOffFrames') end
+        else
+            note('enginelessFrames')
+        end
+    end
+
+    local want = driving and held and fuelOk and engineOn
+                 and not dry and not gated and budget > 0.0
     if trace then
         if want then note('wantFrames') end
-        -- THE TWO REFUSALS THAT ARE NOT THE SEAT, SEPARATED. A held key in the
-        -- driver's seat that still does not boost is either a latched dry meter
-        -- or an empty one, and they want different answers -- the first is
-        -- "let go and press again", the second is "wait six seconds".
+        -- THE THREE REFUSALS THAT ARE NOT THE SEAT, SEPARATED. A held key in the
+        -- driver's seat that still does not boost is a latched dry meter, an
+        -- empty one, or a gate that took a live boost away -- and all three want
+        -- different answers: "let go and press again", "wait six seconds", and
+        -- "your engine cut out or you are on the fuel line, so let go and press
+        -- again". Two of them share the answer and none of them share the cause,
+        -- which is why `gated` is its own flag rather than a second use of `dry`.
         if driving and held and dry then note('dryFrames') end
         if driving and held and not dry and budget <= 0.0 then note('emptyFrames') end
+        if driving and held and gated then note('gatedFrames') end
     end
     budget = BR.BoostSolve.step(
         budget, dtMs, want == true, C.capacityMs, C.rechargeMs)
 
     if not want then
-        if run.on then stop(true) end
+        if run.on then
+            -- ═══ A GATE THAT STOPS A LIVE BOOST LATCHES. See `gated` ═══
+            --
+            -- ONLY UNDER A HELD KEY, and the asymmetry is the whole point: a
+            -- release is the player's own stop and clears both latches on the
+            -- next frame anyway, so latching there would be a boost that needed
+            -- two presses. A key that is still down is the case where the press
+            -- path would otherwise run a second time and re-sample the base
+            -- speed off the boost it is replacing.
+            --
+            -- EVERY REASON `want` CAN GO FALSE UNDER A HELD KEY IS THE SAME FACT
+            -- HERE, which is why this is not a list of the two gates: the tank,
+            -- the engine, stepping out of the seat and a class that stopped
+            -- qualifying all mean the car stopped being one this may push, and
+            -- all of them recover under the same hold. The meter running out is
+            -- NOT one of them -- that path is below, and it sets `dry`.
+            if held then
+                gated = true
+                note('gateStops')
+            end
+            stop(true)
+        end
         return
     end
 
@@ -895,8 +1165,17 @@ function BR.Boost.facts()
         capacityMs = C and tonumber(C.capacityMs) or 0.0,
         addMps     = C and tonumber(C.addMps) or 0.0,
         rampMs     = C and tonumber(C.rampMs) or 0.0,
+        -- THE THRESHOLD, SO THE FUEL RUNG CAN QUOTE IT RATHER THAN RESTATE IT.
+        -- A verdict that said "below 5%" while the config had been moved to 10
+        -- would send the next round looking in the wrong place.
+        minFuelPct = C and tonumber(C.minFuelPct) or 0.0,
         running    = run.on == true,
         dryLatch   = dry == true,
+        -- TRUE RIGHT NOW RATHER THAN OVER THE WINDOW, which is what makes it the
+        -- guard on the gate rung: a driver who stalled, let go and then boosted
+        -- properly has a `gateStops` count and no latch, and must not be told the
+        -- stall was the answer. A driver who is still stuck has both.
+        gateLatch  = gated == true,
         forceCalls = forceCalls,
         forceOk    = forceOk,
         forceErr   = forceErr,
@@ -979,7 +1258,7 @@ function BR.Boost.verdict(f)
     -- counts the seat and nothing else -- the exclusion is applied afterwards, so
     -- a player at the controls of a helicopter has a non-zero seat count and
     -- would sail past a rung that only asked about the seat. It did: a plane
-    -- reached rung 3 and came out as `no-want`, which is the ladder's own word
+    -- reached the meter rung and came out as `no-want`, which is the ladder's own word
     -- for "this should not be possible" and would have sent the next round
     -- looking for a bug that was not there.
     --
@@ -1003,7 +1282,76 @@ function BR.Boost.verdict(f)
             .. 'seat of it. Boost is the driver\'s, by the spec.'
     end
 
-    -- ── RUNG 3: DID THE LOOP DECIDE TO SPEND? ─────────────────────────────
+    -- ── RUNG 3: WAS THE CAR ITSELF IN A STATE THAT MAY BOOST? ─────────────
+    --
+    --   "make the vehicle boost only work if the engine is on and fuel is >=5%"
+    --                                              -- owner, 2026-09-21
+    --
+    -- BOTH ARE GUARDED ON `wantFrames` FOR THE CLASS RUNG'S REASON: a driver who
+    -- stalled for a moment, or coasted the last of a tank onto a forecourt and
+    -- filled up, and then boosted properly must not be told the tank was the
+    -- answer.
+    --
+    -- THE TANK IS ASKED BEFORE THE ENGINE BECAUSE THE CHAIN ASKS IT FIRST, and
+    -- the chain asks it first because a dry tank STALLS the car. An empty car
+    -- fails both gates, and 'engine-off' would send that player to start an
+    -- engine that cannot start -- which is exactly the wasted round this ladder
+    -- exists to prevent. So the engine rung below genuinely means "the tank is
+    -- fine and the engine is still not running".
+    -- ═══ AND THE ONE FAILURE THE GATES THEMSELVES INTRODUCED, WHICH IS THE ONLY
+    --     RUNG HERE NOT GUARDED ON `wantFrames == 0` ═══
+    --
+    -- The two rungs below are about a boost that NEVER STARTED, so a window in
+    -- which the loop wanted to boost at all is not theirs. This one is the
+    -- opposite case and could not be reached by that guard: a gate stopped a
+    -- boost that WAS running, which means at least one frame wanted it. Before
+    -- this rung existed a flickering engine came out as `already-ahead` -- the
+    -- car was going faster than a ramp that had just restarted at zero, which is
+    -- true and is not the cause -- and sent the next round to the impulse.
+    --
+    -- GUARDED ON THE LATCH STILL BEING SET rather than on a count, because a
+    -- count cannot tell "it stopped and I am stuck" from "it stopped, I let go,
+    -- and then it boosted fine". `gateLatch` is true only while the boost is
+    -- still refusing under this hold, which is the case somebody ran /brboostwhy
+    -- to understand.
+    if n('gateStops') > 0 and f.gateLatch == true then
+        return 'gate-tripped',
+            ('Key seen, driving, and a gate took a LIVE boost away %d time(s) '
+            .. 'while the key stayed down. The engine read OFF on %d frames and '
+            .. 'the fuel gauge read below the line on %d. A gate that stops a '
+            .. 'running boost latches, exactly as an emptied meter does, so it '
+            .. 'will not come back under this hold: let go, then press again. '
+            .. 'The latch is what stops a resumed boost re-sampling its base '
+            .. 'speed off the boost it replaced, which measured +57 mph against '
+            .. 'a +30 mph spec. If the engine and the tank were both fine on '
+            .. 'your screen then the fault is one of those two reads rather than '
+            .. 'the boost -- engineRunning() and fuelAbove() in '
+            .. 'br_core/client/boost.lua.')
+            :format(n('gateStops'), n('engineOffFrames'), n('lowFuelFrames'))
+    end
+    if n('lowFuelFrames') > 0 and n('wantFrames') == 0 then
+        return 'fuel-low',
+            ('Key seen, driving, and the fuel gauge read %.1f%% at its lowest '
+            .. 'against the %.1f%% BR.Config.Boost.minFuelPct asks for, on %d '
+            .. 'frames. The boost is refusing on purpose. That percentage is the '
+            .. 'same one the fuel bar draws -- BR.Fuel.levelPct in '
+            .. 'br_core/client/fuel.lua -- so if the bar disagrees with it, the '
+            .. 'bug is that reading and not the boost. Otherwise: fill up.')
+            :format(tonumber(f.fuelPctMin) or 0.0,
+                    tonumber(f.minFuelPct) or 0.0, n('lowFuelFrames'))
+    end
+    if n('engineOffFrames') > 0 and n('wantFrames') == 0 then
+        return 'engine-off',
+            ('Key seen, driving, the tank is above the line, and '
+            .. 'IS_VEHICLE_ENGINE_ON read OFF on %d frames. A coasting car does '
+            .. 'not boost, by the spec. Start the engine. If it is running on '
+            .. 'your screen then the fault is that read rather than the boost -- '
+            .. 'engineRunning() in br_core/client/boost.lua, and %d frames could '
+            .. 'not ask the native at all.')
+            :format(n('engineOffFrames'), n('engineUnreadable'))
+    end
+
+    -- ── RUNG 4: DID THE LOOP DECIDE TO SPEND? ─────────────────────────────
     if n('wantFrames') == 0 then
         if n('emptyFrames') > 0 then
             return 'meter-empty',
@@ -1022,7 +1370,7 @@ function BR.Boost.verdict(f)
             .. 'paste this whole readout.'
     end
 
-    -- ── RUNG 4: DID THE PUSH RUN, AND DID THE ENGINE ACCEPT IT? ───────────
+    -- ── RUNG 5: DID THE PUSH RUN, AND DID THE ENGINE ACCEPT IT? ───────────
     if n('pushFrames') == 0 then
         return 'no-push',
             'The loop wanted to boost on ' .. n('wantFrames') .. ' frames and '
@@ -1050,7 +1398,7 @@ function BR.Boost.verdict(f)
             .. 'spec\'s "never slow the car down". Boost from a lower speed.'
     end
 
-    -- ── RUNG 5: DID THE CAR ACTUALLY GO FASTER? ───────────────────────────
+    -- ── RUNG 6: DID THE CAR ACTUALLY GO FASTER? ───────────────────────────
     --
     -- THE THRESHOLD IS DELIBERATELY LOW AND THE MIDDLE IS DELIBERATELY NAMED.
     -- Drag, gradient, gearing and a driver who lifted off all take a bite out of
