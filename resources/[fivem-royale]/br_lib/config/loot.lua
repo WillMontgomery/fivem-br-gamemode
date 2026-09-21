@@ -104,9 +104,12 @@ BR.Config.Consumables = {
     },
     {
         id = 'bandage', label = 'Bandage', plural = 'Bandages', rarity = R.COMMON,
-        -- The small medical crate: reads as "a bit of health" on the floor
-        -- without being mistaken for the full kit (user-sourced, 2026-08-05).
-        kind = BR.ItemKind.CONSUMABLE, prop = 'xm_prop_smug_crate_s_medical',
+        -- The shop first-aid box: the smallest medical thing on the floor, and
+        -- the one that reads as "a bit of health" rather than as a full kit
+        -- (owner, 2026-09-21). It took the medical crate below until then, and
+        -- the two swapped: the crate is the bigger object and the med kit is
+        -- the bigger heal, so the sizes now agree with the healing.
+        kind = BR.ItemKind.CONSUMABLE, prop = 'v_ret_ta_firstaid',
         useMs = 4000, maxStack = 3, carryMax = 3,
         health = 15, healthCap = 75,   -- bandages cannot finish the job
         -- HEALING COMES OUT OF CRATES, never off the floor (user call,
@@ -117,9 +120,19 @@ BR.Config.Consumables = {
         chestOnly = true,
     },
     {
-        id = 'medkit', label = 'Med Kit', plural = 'Med Kits', rarity = R.EPIC,
-        -- The med bag: visibly the bigger of the two.
-        kind = BR.ItemKind.CONSUMABLE, prop = 'xm_prop_x17_bag_med_01a',
+        id = 'medkit', label = 'Med Kit', plural = 'Med Kits', rarity = R.UNCOMMON,
+        -- The medical crate, which the bandage used to carry: visibly the
+        -- bigger of the two on the floor, which is the right way round for the
+        -- one that heals to full (owner, 2026-09-21).
+        --
+        -- UNCOMMON RATHER THAN EPIC, AND IT IS A LOOT-RATE CHANGE, NOT A LABEL.
+        -- This row IS in BR.Config.Consumables, so its rarity decides which
+        -- bucket it sits in and BR.Config.RarityWeights decides how often that
+        -- bucket is rolled: at a tier 1 POI, epic is 4 and uncommon is 28. A
+        -- full heal is meaningfully easier to find in low-tier areas than it
+        -- was, deliberately. The CPR kit below reads as the opposite case: its
+        -- rarity is a label because it is in no bucket at all.
+        kind = BR.ItemKind.CONSUMABLE, prop = 'xm_prop_smug_crate_s_medical',
         useMs = 8000, maxStack = 3, carryMax = 3,
         health = 100, healthCap = 100,
         chestOnly = true,
@@ -313,7 +326,13 @@ BR.Config.Consumables = {
         -- they loot hard. A prize, not a staple, which is what a free full repair
         -- should be.
         id = 'repairkit', label = 'Repair Kit', plural = 'Repair Kits',
-        rarity = R.LEGENDARY,
+        -- RARE RATHER THAN LEGENDARY (owner, 2026-09-21), which is blue in the
+        -- palette and is what its icon is tinted by. Like the med kit above and
+        -- unlike the CPR kit below, this row is in BR.Config.Consumables, so the
+        -- change is a loot rate and not a label: legendary is weighted 0 at POI
+        -- tiers 1 to 3 and 10 at tier 4, so a repair kit was a golden-POI find
+        -- and is now findable anywhere, at 13 to 30 depending on tier.
+        rarity = R.RARE,
         -- ═══ THE PROP IS THE OWNER'S OWN PICK, AND IT IS THE FIRST ONE IN THIS
         --     FILE THAT MIGHT NOT BE ON THE BUILD ═══
         --
@@ -394,7 +413,11 @@ BR.Config.Consumables = {
 --- (BR.Net.RESCUE_CALL) and validates its own conditions. A `useMs` here would
 --- be a channel nothing can start.
 BR.Config.CprKit = {
-    id = 'cprkit', label = 'CPR Kit', plural = 'CPR Kits', rarity = BR.Rarity.LEGENDARY,
+    -- RARE RATHER THAN LEGENDARY (owner, 2026-09-21), AND HERE THAT IS A LABEL
+    -- AND NOTHING ELSE. This table is in no rarity bucket -- see the block above
+    -- -- so no world roll reads this field. What it does decide is the colour
+    -- the inventory tints its icon with, which is rare blue.
+    id = 'cprkit', label = 'CPR Kit', plural = 'CPR Kits', rarity = BR.Rarity.RARE,
     kind = BR.ItemKind.CONSUMABLE, prop = 'xm_prop_x17_bag_med_01a',
     maxStack = 1, carryMax = 1,
     chestOnly = true,

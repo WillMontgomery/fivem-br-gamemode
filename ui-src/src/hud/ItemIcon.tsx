@@ -37,7 +37,14 @@ type DrawnIcon = 'shield' | 'health' | 'ammo' | 'missing'
 /** Consumable id -> drawn icon. Ids come from br_lib/config/loot.lua. */
 const CONSUMABLE_ICON: Record<string, DrawnIcon> = {
   minishield: 'shield', shield: 'shield',
-  bandage: 'health', medkit: 'health',
+  // THE THREE HEALING ITEMS SHARE ONE CROSS, AND THE COLOUR IS WHAT SEPARATES
+  // THEM. Owner, 2026-09-21: the CPR kit should draw "the same plus used for
+  // bandage and medkit". It was missing from this map, so it fell to the
+  // `missing` placeholder and rendered as a slashed empty frame -- the one
+  // symbol in the set that means "a picture failed", on an item whose picture
+  // was never authored. The rarity tint below is what tells the three apart:
+  // common grey, uncommon green, rare blue.
+  bandage: 'health', medkit: 'health', cprkit: 'health',
 }
 
 /**
