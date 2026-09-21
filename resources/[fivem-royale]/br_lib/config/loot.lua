@@ -125,13 +125,15 @@ BR.Config.Consumables = {
         -- bigger of the two on the floor, which is the right way round for the
         -- one that heals to full (owner, 2026-09-21).
         --
-        -- UNCOMMON RATHER THAN EPIC, AND IT IS A LOOT-RATE CHANGE, NOT A LABEL.
-        -- This row IS in BR.Config.Consumables, so its rarity decides which
-        -- bucket it sits in and BR.Config.RarityWeights decides how often that
-        -- bucket is rolled: at a tier 1 POI, epic is 4 and uncommon is 28. A
-        -- full heal is meaningfully easier to find in low-tier areas than it
-        -- was, deliberately. The CPR kit below reads as the opposite case: its
-        -- rarity is a label because it is in no bucket at all.
+        -- STILL EPIC, AND THE REQUEST TO MAKE IT UNCOMMON IS BACKED OUT UNTIL
+        -- THE OWNER HAS SEEN WHAT IT COSTS (2026-09-21). The Shield is the
+        -- UNCOMMON consumable and the RARE bucket is deliberately EMPTY, so a
+        -- RARE roll falls through to the Shield -- the owner's own 2026-08-17
+        -- buff, and the whole of why a crate holds one about a third of the
+        -- time. Putting the Med Kit into UNCOMMON shares that band with it and
+        -- putting anything into RARE stops the fall-through entirely. Doing
+        -- both took the Shield from 33% to 8.7% of crates. tools/test_shared.lua
+        -- was written to catch exactly this and did.
         kind = BR.ItemKind.CONSUMABLE, prop = 'xm_prop_smug_crate_s_medical',
         useMs = 8000, maxStack = 3, carryMax = 3,
         health = 100, healthCap = 100,
@@ -326,13 +328,11 @@ BR.Config.Consumables = {
         -- they loot hard. A prize, not a staple, which is what a free full repair
         -- should be.
         id = 'repairkit', label = 'Repair Kit', plural = 'Repair Kits',
-        -- RARE RATHER THAN LEGENDARY (owner, 2026-09-21), which is blue in the
-        -- palette and is what its icon is tinted by. Like the med kit above and
-        -- unlike the CPR kit below, this row is in BR.Config.Consumables, so the
-        -- change is a loot rate and not a label: legendary is weighted 0 at POI
-        -- tiers 1 to 3 and 10 at tier 4, so a repair kit was a golden-POI find
-        -- and is now findable anywhere, at 13 to 30 depending on tier.
-        rarity = R.RARE,
+        -- STILL LEGENDARY, AND THE REQUEST TO MAKE IT RARE IS BACKED OUT FOR
+        -- THE REASON ON THE MED KIT ABOVE (2026-09-21). LEGENDARY is the one
+        -- band that intercepts nothing: a repair kit in RARE takes every RARE
+        -- roll that used to fall through to the Shield.
+        rarity = R.LEGENDARY,
         -- ═══ THE PROP IS THE OWNER'S OWN PICK, AND IT IS THE FIRST ONE IN THIS
         --     FILE THAT MIGHT NOT BE ON THE BUILD ═══
         --

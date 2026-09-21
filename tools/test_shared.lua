@@ -3084,23 +3084,51 @@ do
         end
     end
 
+    -- ═══ ONE IN FIVE, AND IT USED TO BE ONE IN THREE (owner, 2026-09-21) ═══
+    --
+    -- The Shield's share is a FALL-THROUGH EFFECT, not a weight of its own: the
+    -- RARE bucket is empty, a RARE roll walks down into UNCOMMON, and until now
+    -- the Shield was the only thing there. Moving the Med Kit to UNCOMMON put a
+    -- second item in that band, BR.LootPickOfRarity picks uniformly inside one,
+    -- and the Shield's share halved: 33% to 18.4% of crates, measured.
+    --
+    -- THE OWNER WAS SHOWN THAT NUMBER AND CHOSE IT. He asked for the Med Kit to
+    -- be uncommon and green; the cost was put to him as 1 in 3 becoming 1 in
+    -- 5.4, with the alternative of re-weighting the band to keep both, and he
+    -- took the drop. So this bound moved BY DECISION rather than by a test being
+    -- made to pass, which is the only reason a 2026-08-17 ruling's number is
+    -- allowed to move at all.
+    --
+    -- IT STILL HAS A BOUND, and the bound is still the point: anything that
+    -- puts a THIRD item in UNCOMMON, or fills the RARE bucket and kills the
+    -- fall-through entirely, lands outside it and fails here rather than being
+    -- rediscovered in a playtest. Filling RARE alone would take this to 8.7%.
     local rate = withShield / math.max(1, crates)
-    ok(rate > 0.22 and rate < 0.38,
-        'a crate holds a Shield about one time in three',
+    ok(rate > 0.14 and rate < 0.24,
+        'a crate holds a Shield about one time in five',
         ('%.1f%% of %d crates (1 in %.1f)')
             :format(rate * 100, crates, crates / math.max(1, withShield)))
 
     -- AND IT IS STILL THE UNCOMMON ITEM IT IS AUTHORED AS. The rate above is
     -- reached by which rarity BANDS the Shield owns (BR.LootPickOfRarity picks
-    -- uniformly inside a band), so a future edit that moves it back to RARE --
-    -- or that authors a new UNCOMMON consumable beside it, halving its share --
+    -- uniformly inside a band), so a future edit that moves it to another band
     -- fails this rather than the arithmetic being rediscovered from a playtest.
     ok(BR.Config.ConsumableById['shield'].rarity == BR.Rarity.UNCOMMON,
         'the Shield owns the UNCOMMON consumable band',
         tostring(BR.Config.ConsumableById['shield'].rarity))
-    ok(#BR.Config.ConsumablesByRarity[BR.Rarity.UNCOMMON] == 1,
-        'and owns it alone',
-        ('%d items in the band'):format(#BR.Config.ConsumablesByRarity[BR.Rarity.UNCOMMON]))
+
+    -- IT SHARES THE BAND WITH THE MED KIT AND WITH NOTHING ELSE. This asserted
+    -- `== 1` until 2026-09-21 and the count is the load-bearing part, not the
+    -- number: each item added here divides the band's rolls again, so a third
+    -- one takes the Shield to about one crate in eight. Naming the two also
+    -- means an edit that swaps WHICH two fails here.
+    local unc = BR.Config.ConsumablesByRarity[BR.Rarity.UNCOMMON]
+    local uncIds = {}
+    for _, c in ipairs(unc) do uncIds[#uncIds + 1] = c.id end
+    table.sort(uncIds)
+    ok(#unc == 2 and uncIds[1] == 'medkit' and uncIds[2] == 'shield',
+        'and shares it with the Med Kit alone',
+        table.concat(uncIds, ', '))
 
     -- HEALING WAS NOT COLLATERAL. Widening the Shield's band takes its share
     -- from the other consumables, so the consumable kind weight was raised to
@@ -4510,9 +4538,15 @@ do
         ok(#(BR.Config.ConsumablesByRarity[BR.Rarity.RARE] or {}) == 0,
            'the RARE bucket is still empty, so a RARE roll still falls through '
                .. 'to the Shield -- the owner asked for that on 2026-08-17')
-        local epic = BR.Config.ConsumablesByRarity[BR.Rarity.EPIC] or {}
-        ok(#epic == 1 and epic[1].id == 'medkit',
-           'and the Med Kit still has EPIC to itself')
+        -- EPIC IS EMPTY NOW, AND THAT IS THE MED KIT HAVING MOVED DOWN RATHER
+        -- THAN THE REPAIR KIT HAVING MOVED UP. The owner made the Med Kit
+        -- uncommon on 2026-09-21; the repair kit did not move and must not.
+        -- An empty EPIC means an EPIC roll walks down past RARE into UNCOMMON,
+        -- which is where the Shield and the Med Kit now are, so a repair kit
+        -- put into EPIC or RARE would intercept that walk as well as the RARE
+        -- one. Both bands stay empty for the same single reason.
+        ok(#(BR.Config.ConsumablesByRarity[BR.Rarity.EPIC] or {}) == 0,
+           'and EPIC is empty, so an EPIC roll walks down to the Shield band too')
 
         -- ═══ IT IS A CHANNEL WITH A BAR, WHICH REVERSED THE FIRST BUILD ═══
         --
