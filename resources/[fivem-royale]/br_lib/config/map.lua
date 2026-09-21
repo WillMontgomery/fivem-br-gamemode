@@ -278,10 +278,10 @@ BR.Config.Map.POIs = {
 
     -- Vinewood and the hills
     { id = 'vinewood',    name = 'Vinewood Bowl',    x =   700.0, y =  1200.0, z = 350.0, radius = 220.0, tier = 3 },
-    { id = 'vinehills',   name = 'Vinewood Hills',   x =  -100.0, y =   500.0, z = 130.0, radius = 260.0, tier = 1 },
+    { id = 'vinehills',   name = 'Vinewood Hills',   x =  -336.2, y =   289.3, z = 130.0, radius = 260.0, tier = 1 },
     { id = 'observatory', name = 'Galileo Observatory', x = -410.0, y = 1200.0, z = 330.0, radius = 200.0, tier = 2 },
     { id = 'casino',      name = 'Diamond Casino',   x =   925.0, y =    46.0, z =  80.0, radius = 220.0, tier = 3 },
-    { id = 'landact',     name = 'Land Act Dam',     x =  1660.0, y =   -30.0, z = 110.0, radius = 200.0, tier = 1 },
+    { id = 'landact',     name = 'Land Act Dam',     x =  1616.8, y =   367.8, z = 110.0, radius = 200.0, tier = 1 },
     { id = 'ulsa',        name = 'ULSA Campus',      x = -1750.0, y =   350.0, z =  60.0, radius = 220.0, tier = 1 },
 
     -- The west coast
@@ -301,7 +301,7 @@ BR.Config.Map.POIs = {
     { id = 'harmony',     name = 'Harmony',          x =   700.0, y =  2700.0, z =  42.0, radius = 200.0, tier = 2 },
     { id = 'sandy',       name = 'Sandy Shores',     x =  1900.0, y =  3700.0, z =  32.0, radius = 320.0, tier = 3 },
     { id = 'stab',        name = 'Stab City',        x =    85.0, y =  3690.0, z =  39.0, radius = 200.0, tier = 2 },
-    { id = 'galilee',     name = 'Galilee',          x =  1380.0, y =  4360.0, z =  42.0, radius = 200.0, tier = 1 },
+    { id = 'galilee',     name = 'Galilee',          x =  1337.2, y =  4446.4, z =  42.0, radius = 200.0, tier = 1 },
     -- The equestrian estate east of Vinewood. Spelled "La Fuente Blanca" in
     -- game; the request said "Le Fuerta Blanca" and this is the place it
     -- means. Tier 1 (green): a walled compound with a big house and stables,
@@ -322,15 +322,15 @@ BR.Config.Map.POIs = {
     -- the whole northern third of the map was a place you crossed rather than
     -- fought over. These are deliberately tier 1 -- sparse and worth stopping
     -- at, not a reason to skip Sandy Shores.
-    { id = 'chiliad_n',   name = 'Chiliad North Face', x =   150.0, y =  6350.0, z = 320.0, radius = 240.0, tier = 1 },
+    { id = 'chiliad_n',   name = 'Chiliad North Face', x =   401.8, y =  6457.1, z = 320.0, radius = 240.0, tier = 1 },
     { id = 'chiliad_trail', name = 'Chiliad Trailhead', x =   -80.0, y =  4900.0, z = 250.0, radius = 220.0, tier = 1 },
     { id = 'cassidy',     name = 'Cassidy Creek',    x = -1000.0, y =  4400.0, z =  50.0, radius = 240.0, tier = 1 },
     { id = 'tataviam',    name = 'Tataviam Mountains', x =  2600.0, y =  2100.0, z = 150.0, radius = 240.0, tier = 1 },
-    { id = 'braddock',    name = 'Braddock Pass',    x =  2050.0, y =  4550.0, z =  40.0, radius = 220.0, tier = 1 },
+    { id = 'braddock',    name = 'Braddock Pass',    x =  2141.3, y =  4826.4, z =  40.0, radius = 220.0, tier = 1 },
     { id = 'altruist',    name = 'Altruist Camp',    x = -1150.0, y =  4900.0, z = 220.0, radius = 200.0, tier = 2 },
     { id = 'northchum',   name = 'North Chumash',    x = -2600.0, y =  3100.0, z =  10.0, radius = 220.0, tier = 1 },
     { id = 'catfish',     name = 'Catfish View',     x =  2750.0, y =  3350.0, z =  35.0, radius = 220.0, tier = 1 },
-    { id = 'sanchianski', name = 'San Chianski Range', x =  3200.0, y =  2400.0, z =  60.0, radius = 240.0, tier = 1 },
+    { id = 'sanchianski', name = 'San Chianski Range', x =  3400.0, y =  3234.7, z =  60.0, radius = 240.0, tier = 1 },
 
     -- The eastern desert
     { id = 'penitentiary', name = 'Bolingbroke Penitentiary', x = 1690.0, y = 2565.0, z = 45.0, radius = 260.0, tier = 3 },
@@ -355,7 +355,7 @@ BR.Config.Map.POIs = {
     { id = 'strawberry',  name = 'Strawberry',       x =   100.0, y = -1500.0, z =  30.0, radius = 220.0, tier = 1 },
     { id = 'davis',       name = 'Davis',            x =   400.0, y = -2150.0, z =  20.0, radius = 220.0, tier = 1 },
     { id = 'elysianfields', name = 'Elysian Fields', x =   750.0, y = -2350.0, z =  10.0, radius = 200.0, tier = 1 },
-    { id = 'puertodelsol', name = 'Puerto Del Sol',  x = -1100.0, y = -1850.0, z =   5.0, radius = 220.0, tier = 1 },
+    { id = 'puertodelsol', name = 'Puerto Del Sol',  x =  -605.7, y = -1587.7, z =   5.0, radius = 220.0, tier = 1 },
     { id = 'burton',      name = 'Burton',           x =  -450.0, y =  -600.0, z =  35.0, radius = 200.0, tier = 1 },
     { id = 'westvinewood', name = 'West Vinewood',   x =  -350.0, y =  -200.0, z =  45.0, radius = 200.0, tier = 1 },
     { id = 'alta',        name = 'Alta',             x =   300.0, y =  -300.0, z =  60.0, radius = 200.0, tier = 1 },
@@ -414,7 +414,7 @@ BR.Config.Map.POIs = {
     { id = 'gordo_s',     name = 'Mount Gordo South Face', x = 2650.0, y = 4950.0, z = 130.0, radius = 220.0, tier = 1 },
     { id = 'senora_n',    name = 'North Senora Flats', x = 2500.0, y =  4300.0, z =  40.0, radius = 240.0, tier = 2 },
     { id = 'mthaan',      name = 'Mount Haan',       x =  3100.0, y =  4500.0, z = 110.0, radius = 220.0, tier = 2 },
-    { id = 'eastbeach',   name = 'East Coast Bluffs', x = 3791.9, y =  4461.7, z =  30.0, radius = 200.0, tier = 1 },
+    { id = 'eastbeach',   name = 'East Coast Bluffs', x = 3651.6, y =  4428.5, z =  30.0, radius = 200.0, tier = 1 },
 
     -- TWENTY-ONE MORE GREEN, OUT OF A LIST OF TWENTY-FIVE COORDINATES.
     --
@@ -474,7 +474,7 @@ BR.Config.Map.POIs = {
     { id = 'senora_w',    name = 'Grand Senora West', x =   879.0, y =  3394.6, z =  55.0, radius = 200.0, tier = 1 },
     { id = 'grapeseed_n', name = 'North Grapeseed Fields', x = 2055.6, y = 5183.5, z = 70.0, radius = 200.0, tier = 1 },
     { id = 'procopio_e',  name = 'Procopio Bluffs',   x =  1994.0, y =  6179.7, z =  35.0, radius = 200.0, tier = 1 },
-    { id = 'cove_n',      name = 'North Cove Point',  x =   688.0, y =  6645.4, z =  25.0, radius = 200.0, tier = 1 },
+    { id = 'cove_n',      name = 'North Cove Point',  x =   173.8, y =  6813.1, z =  25.0, radius = 200.0, tier = 1 },
     { id = 'chaparral_w', name = 'West Chaparral',    x =  -714.4, y =  2409.6, z =  75.0, radius = 200.0, tier = 1 },
     { id = 'kortz_s',     name = 'South Kortz Bluffs', x = -2176.2, y =  -402.6, z =  45.0, radius = 200.0, tier = 1 },
     { id = 'richman_n',   name = 'North Richman Hills', x = -1237.8, y =  674.6, z = 110.0, radius = 200.0, tier = 1 },
