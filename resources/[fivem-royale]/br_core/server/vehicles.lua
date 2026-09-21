@@ -252,6 +252,9 @@ local stat = {
     -- players are sitting out a dwell right now, which is the number that says
     -- the sampler is watching rather than that it has decided.
     occupied = 0, dwelling = 0,
+    -- #329's four, and they are a diagnostic rather than a finding: none of them
+    -- is evidence about anybody. See the armament report section below.
+    probeReports = 0, probes = 0, probesBad = 0, probeThrottled = 0,
 }
 
 --- Counters, for brdebug-style introspection. Printed by `brvehicles`.
@@ -290,6 +293,14 @@ function BR.Vehicles.stats()
         -- anticheat one and is printed under its own heading for that reason.
         roadkills = stat.roadkills, roadkillLooks = stat.roadkillLooks,
         driving   = stat.driving,
+        -- #329's armament reports. READ AS A RATIO RATHER THAN AS A LEVEL:
+        -- `probes` against `probesBad` says whether clients and this server agree
+        -- about who is sitting where, and a `probesBad` that climbs on its own is
+        -- a timing or a lockdown question rather than an anticheat one -- nothing
+        -- here is filed about anybody. `reports` is everything that arrived.
+        probeReports   = stat.probeReports,   probes = stat.probes,
+        probesBad      = stat.probesBad,
+        probeThrottled = stat.probeThrottled,
     }
 end
 
@@ -1245,16 +1256,280 @@ end
 --- A MODEL THE ENGINE WOULD NOT REPORT IS NOT AN EXCUSE. `modelOf` answers nil
 --- for a stale handle and BR.Config.IsDisarmedVehicle answers false for nil, so
 --- a bad read leaves the anticheat exactly as it was.
+---
+--- ═══ #329: THE AUTHORED TABLE IS THE FLOOR AND THE ENGINE CAN ONLY ADD ═══
+---
+--- The table was incomplete twice in three days, and each gap was both an armed
+--- vehicle and a case against its driver -- so the shooter's own client now
+--- reports what the engine says about the vehicle it is in, and that report is
+--- kept on their roster entry by the handler below. What it can do here is
+--- bounded to one direction on purpose:
+---
+---   THE TABLE ANSWERS FIRST. A model BR.Config.IsDisarmedVehicle names is
+---   excused whether a report has arrived or not, so nothing regresses and a
+---   client cannot take an excuse AWAY from anybody -- including itself.
+---   THE REPORT IS PER PLAYER. It is read off the roster entry the caller already
+---   holds, never out of a table keyed on the model, because one liar would then
+---   poison the answer for everybody in the match.
+---   IT IS CHECKED AGAINST THE VEHICLE THEY ARE IN NOW. The handle, the model and
+---   the match all have to match the report, so a fact about the Technical
+---   somebody was in does not follow them into the next car or the next round.
+---
+--- THE ENTRY IS A PARAMETER RATHER THAN A LOOKUP because both callers already
+--- hold it -- server/damage.lua's `s` and server/strip.lua's `e` -- and this
+--- function is given a PED, which no reverse index maps back to a source. A
+--- caller that passes none gets exactly the pre-#329 answer, which is the
+--- conservative direction: the table, and nothing else.
 --- @param ped integer|nil
+--- @param entry table|nil  that player's roster entry, for their own report
 --- @return boolean
-function BR.Vehicles.inDisarmedVehicle(ped)
+function BR.Vehicles.inDisarmedVehicle(ped, entry)
     if not (BR.Config and BR.Config.IsDisarmedVehicle) then return false end
 
     local veh = BR.Vehicles.ridingIn(ped)
     if veh == nil then return false end
 
-    return BR.Config.IsDisarmedVehicle(modelOf(veh))
+    local model = modelOf(veh)
+    if BR.Config.IsDisarmedVehicle(model) then return true end
+
+    -- THE RECORD'S EXISTENCE IS THE CLAIM, and there is no `armed = false` for the
+    -- same reason there is none on the wire: silence is the authored table's
+    -- answer, which is the one above. A report that was REFUSED leaves the
+    -- throttle clock beside this and nothing in it.
+    local p = entry and entry.vehProbe
+    local a = p and p.armed
+    if a == nil then return false end
+
+    -- THE SAME VEHICLE, THE SAME MODEL, THE SAME MATCH. The handle alone would be
+    -- enough until the engine recycled one; the model is free here because the
+    -- line above already paid for it, and two identical cars parked side by side
+    -- are exactly what the handle catches while the model cannot. BR.NormHash on
+    -- both sides for the reason everything in this tree normalizes: the engine
+    -- reports a model hash SIGNED.
+    if a.veh ~= veh then return false end
+    if a.model ~= BR.NormHash(model) then return false end
+    if a.matchId ~= entry.matchId then return false end
+    return true
 end
+
+-- ---------------------------------------------------------------------------
+-- The armament report, and the one rule about believing it (#329)
+-- ---------------------------------------------------------------------------
+--
+-- ═══ WHY THERE IS A MESSAGE HERE AT ALL ═══
+--
+-- DOES_VEHICLE_HAVE_WEAPONS and IS_TURRET_SEAT are CLIENT-ONLY, exactly as
+-- GetVehicleClass is -- config/vehicles.lua explains at length why the server
+-- settles for GetVehicleType -- so the only machine that can ask whether the
+-- vehicle a player is sitting in carries a gun is that player's own. The owner
+-- settled the design question on 2026-09-21: "Being client-side doesn't matter to
+-- me for this - there's simply no other means of performing this function."
+--
+-- ═══ WHAT BELIEVING A LIE COSTS, WRITTEN DOWN RATHER THAN DISCOVERED ═══
+--
+-- KEPT PER PLAYER, ON THEIR OWN ROSTER ENTRY, AND THAT IS THE WHOLE SECURITY
+-- SHAPE. A cache keyed on the model hash would have been cheaper and shared, and
+-- one forged report would then have excused that model for EVERYBODY in the
+-- match. Per player, a lie reaches the liar and nobody else.
+--
+-- AND WHAT THE LIAR BUYS IS A MISSING CASE, NOT AN EXPLOIT. The only thing this
+-- fact changes is whether a shot from a weapon this gamemode issues NOBODY is
+-- refused as BR.ShotRefusal.VEHICLE_GUN or as NO_WEAPON -- refused either way, no
+-- damage applied either way, by br_core/server/damage.lua's validation against
+-- the inventory the SERVER issued. The difference is a moderation record. The
+-- owner accepted that trade for this feature; nothing else in the tree reads
+-- this report, and nothing should.
+--
+-- ═══ AND IT IS CHECKED LIKE EVERY OTHER CLIENT CLAIM ═══
+--
+-- The shape is server/boost.lua's, which faces the same problem -- a client
+-- naming a vehicle -- and answers it the same way: resolve the network id to the
+-- server's OWN entity, then ask the VEHICLE who is in that seat rather than
+-- asking the ped what it is in (citizenfx/fivem#4006, the bug this whole file is
+-- built around). A report that does not match is dropped and counted, and says so
+-- once per player per match.
+--
+-- THE WHOLE RULING IS CONSULTED ON THIS SIDE TOO, and that is what keeps the
+-- owner's rulings the owner's: a report about a vehicle the gamemode REFUSES is
+-- dropped (those are emptied, not driven, and a forged one would buy an excuse in
+-- a stolen Buzzard), and so is one about a model BR.Config.StripExemptVehicles
+-- names (the firetruck, whose hose is the point). So a client cannot reach a
+-- vehicle the owner has already ruled on, whatever it sends.
+--
+-- "THE WHOLE RULING" MEANS `refusalFor`, WITH THE TYPE SIGNAL, AND NOT THE MODEL
+-- TABLE ALONE. The guard was written asking BR.Config.VehicleRefusalFor with no
+-- signals, which made the sentence above false for exactly one client: a modified
+-- one sitting in an armed aircraft the model table does not name. `GetVehicleType`
+-- is readable here -- it is only `GetVehicleClass` that is not -- so there is no
+-- reason for this side to ask a narrower question than either detector above does.
+
+--- The floor on the gap between two armament reports from one player.
+---
+--- SAME JOB AS MIN_INTERVAL_MS ABOVE AND DELIBERATELY THE SAME NUMBER. An honest
+--- client sends one of these every REPORT_EVERY_MS (2000, client/vehrefuse.lua)
+--- while sitting in an armed car, so it never meets this at all; what it bounds is
+--- a client sending them as fast as it can, which costs three natives, two table
+--- lookups and a write each.
+---
+--- WRITTEN ON ARRIVAL RATHER THAN ON ACCEPTANCE, which is the opposite of
+--- server/strip.lua's window and the difference is worth being exact about. There,
+--- a refused report must not swallow a genuine strip arriving a moment later,
+--- because the strip is EVIDENCE. Here the message is a fact about a vehicle that
+--- the sender repeats on a cadence anyway, so the safe direction is to bound every
+--- arrival -- and the only player a dropped one can cost anything is the sender.
+local PROBE_MIN_MS = 900
+
+--- Drop an armament report, and say so once per player per match.
+---
+--- COUNTED ALWAYS, PRINTED ONCE. A console line per refused message is an
+--- amplifier on a path a client chooses the rate of -- the objection
+--- server/strip.lua makes about its own ANTICHEAT line -- and the first one says
+--- everything the tenth thousand would.
+---
+--- IT IS NOT AN ACCUSATION AND THE WORDING SAYS SO. The overwhelmingly likely
+--- cause is timing: this server's copy of who is in which seat is up to a roster
+--- sample behind the client's, so a report sent on the pass the seat was taken can
+--- arrive before this side agrees anybody is sitting there. Nothing is filed.
+--- @param src integer
+--- @param e table   the player's roster entry
+--- @param p table   their probe record, for the one-line-per-match memo
+--- @param why string
+local function refuseProbe(src, e, p, why)
+    stat.probesBad = stat.probesBad + 1
+    if p.logged == e.matchId then return end
+    p.logged = e.matchId
+    print(('[br_core] vehicle armament report from %s (%d) does not match this '
+           .. 'server\'s view (%s) -- ignored, nothing filed')
+        :format(e.name or ('src ' .. src), src, why))
+end
+
+RegisterNetEvent(BR.Net.VEH_ARMED)
+AddEventHandler(BR.Net.VEH_ARMED, function(d)
+    local src = source
+    stat.probeReports = stat.probeReports + 1
+    if type(d) ~= 'table' then return end
+
+    -- MUST BE A LIVE PLAYER IN A MATCH, the same gate the rest of this file and
+    -- server/strip.lua's report handler keep: outside a match there is nothing
+    -- for this fact to be about and no round for it to expire with.
+    local e = BR.Roster and BR.Roster.get and BR.Roster.get(src)
+    if not e or not LIVE[e.state] or e.matchId == nil then return end
+
+    local now = GetGameTimer()
+
+    -- THE RECORD IS THE PLAYER'S OWN AND LIVES ON THEIR ENTRY, so it dies with
+    -- them -- no sweep, and nothing left behind for whoever holds this server id
+    -- next, which is the failure every other per-source table in this file is
+    -- cleared on `playerDropped` to avoid.
+    local p = e.vehProbe
+    if p == nil then
+        p = {}
+        e.vehProbe = p
+    end
+
+    -- ONE PER WINDOW, CHECKED BEFORE ANYTHING TOUCHES THE ENGINE. See
+    -- PROBE_MIN_MS for why the clock is stamped on arrival rather than on a
+    -- report being believed.
+    if p.at ~= nil and now - p.at < PROBE_MIN_MS then
+        stat.probeThrottled = stat.probeThrottled + 1
+        return
+    end
+    p.at = now
+
+    -- A NETWORK ID AND A SEAT, OR NOTHING. `math.tointeger` answers nil for a
+    -- float, a string and a table, and ZERO IS TESTED FOR EXPLICITLY because `0`
+    -- is truthy in Lua -- it is what the engine answers for a vehicle it does not
+    -- network, so a client naming it is naming nothing.
+    local netId = math.tointeger(tonumber(d.netId))
+    if netId == nil or netId == 0 then
+        return refuseProbe(src, e, p, 'no network id')
+    end
+    -- THE SEAT RANGE IS THE ONE client/vehrefuse.lua WALKS: -1 (the driving seat)
+    -- through CABIN_SEATS. Bounded here so a seat index out of the wire cannot be
+    -- handed to a native as an arbitrary number.
+    local seat = math.tointeger(tonumber(d.seat))
+    if seat == nil or seat < -1 or seat > CABIN_SEATS then
+        return refuseProbe(src, e, p, 'seat out of range')
+    end
+
+    -- THE SERVER'S OWN ENTITY FOR THAT ID, and `entityFrom` answers 0 for an
+    -- absent native, a throw and an id naming nothing.
+    local veh = entityFrom(NetworkGetEntityFromNetworkId, netId)
+    if veh == 0 then
+        return refuseProbe(src, e, p, 'no such vehicle here')
+    end
+
+    -- THE ROSTER'S SAMPLED PED, NOT GetPlayerPed(src). server/roster.lua's note:
+    -- GET_PLAYER_PED is declared to take a STRING and the numeric key answered 0
+    -- for every player once already. A 0 here is refused rather than compared,
+    -- because `entityFrom` answers 0 for an empty seat too and the two would
+    -- match.
+    local ped = math.tointeger(tonumber(e.ped)) or 0
+    if ped == 0 then
+        return refuseProbe(src, e, p, 'no ped for this player yet')
+    end
+
+    -- ═══ THE CHECK ITSELF: THE VEHICLE IS ASKED, NEVER THE PED ═══
+    --
+    -- citizenfx/fivem#4006 -- server-side GetVehiclePedIsIn answers the vehicle a
+    -- ped was LAST in -- is why. One native settles the whole claim: seat `seat`
+    -- of the vehicle THIS SERVER resolved holds THIS player's ped, or the report
+    -- is about somebody else's car, a seat they are not in, or nothing at all.
+    if entityFrom(GetPedInVehicleSeat, veh, seat) ~= ped then
+        return refuseProbe(src, e, p, 'that seat does not hold this player')
+    end
+
+    -- ═══ AND THE OWNER'S OWN RULINGS, WHICH A REPORT MAY NOT REACH PAST ═══
+    --
+    -- A REFUSED MODEL IS EMPTIED, NOT DRIVEN. The honest client never reports one
+    -- -- its probe runs below its own refusal -- so this is here for the modified
+    -- one, and what it stops is an excuse for the mounted gun of a stolen Buzzard.
+    --
+    -- ASKED THROUGH `refusalFor`, WHICH SUPPLIES `typeOf`, AND THAT IS THE WHOLE
+    -- POINT OF THIS GUARD. It once called BR.Config.VehicleRefusalFor with NO
+    -- signals, under a comment claiming that was "all this side can read anyway".
+    -- That was false and this file is where the proof is: `classOf` is client-only,
+    -- but `GetVehicleType` is not -- `vehicleType` above reads it, `refusalFor`
+    -- passes it, and `stat.byType` exists to COUNT the aircraft the model table
+    -- missed and the type caught. With no signals the guard blocked model-table
+    -- refusals only, so a modified client sitting in an armed aircraft nobody wrote
+    -- down was believed, and its mounted-gun shots filed as VEHICLE_GUN instead of
+    -- NO_WEAPON -- the exact thing the header above promises cannot happen ("a
+    -- client cannot reach a vehicle the owner has already ruled on, whatever it
+    -- sends"). An honest client never reaches this line, because its own class-net
+    -- refusal returns above its probe; the gap was reachable only by the client
+    -- this guard is for.
+    --
+    -- IT HANDS BACK THE MODEL, so there is no second `modelOf` read here. One
+    -- native, and the type read behind it is paid for only when the model table has
+    -- already said "allowed" -- see `refusalFor`.
+    local why, model = refusalFor(veh)
+    if model == nil then
+        return refuseProbe(src, e, p, 'the model would not read')
+    end
+    if why ~= nil then
+        return refuseProbe(src, e, p, 'that model is refused, not driven')
+    end
+    -- AND THE FIRETRUCK. Its hose IS a vehicle weapon and the owner ruled that
+    -- using it is not an incident; the exemption is the authored table's, and a
+    -- report must not be a second route to a model it names.
+    local exempt = BR.Config.StripExemptByHash
+    if exempt and exempt[BR.NormHash(model)] ~= nil then
+        return refuseProbe(src, e, p, 'that model is exempt by hand')
+    end
+
+    -- ═══ BELIEVED, AND ONLY ABOUT THIS VEHICLE IN THIS MATCH ═══
+    --
+    -- ONE WRITE OF ONE TABLE, WHICH IS WHY THERE IS NO `armed = true` FLAG. The
+    -- record's EXISTENCE is the claim -- exactly as the message's existence is --
+    -- so there is no half-written state for a reader to interpret and no `false`
+    -- for anybody to send. A refused report reaches neither this line nor a
+    -- retraction: it leaves the clock above stamped and this untouched, so a lie
+    -- cannot take away an excuse that was earned.
+    p.armed = { veh = veh, model = BR.NormHash(model),
+                seat = seat, matchId = e.matchId }
+    stat.probes = stat.probes + 1
+end)
 
 --- How far above or below a driver may be and still have hit this player.
 ---

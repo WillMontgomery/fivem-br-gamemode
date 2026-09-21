@@ -2465,6 +2465,13 @@ local function newTimelineWorld()
         -- it prints when a report hint goes out.
         'br_lib/shared/matchtag.lua',
         'br_lib/shared/combat_solve.lua',
+        -- THE REAL SCHEDULER, because server/strip.lua registers a job into it at
+        -- load time -- the one that reports what the console budget held back once
+        -- a window closes with nothing arriving to close it. A stub would have let
+        -- the file load; it would not have let that line be asserted. `step` takes
+        -- the clock as a parameter, so `W.tick` below drives it off S.now exactly
+        -- as tools/test_sched.lua does.
+        'br_lib/shared/sched.lua',
         -- THE REAL WEAPON TABLE, not a stub. weaponFacts() decides whether a kill
         -- gets painted red as an unissued weapon, and a stub would let that
         -- logic pass against a table shaped the way the test author imagined.
@@ -2562,6 +2569,15 @@ local function newTimelineWorld()
     -- at all, asks with the right handle, and pairs the answer with the weapon
     -- table rather than excusing everything in the seat.
     S.inDisarmed, S.inDisarmedAsks = {}, 0
+    -- WHICH VEHICLE SOMEBODY IS SITTING IN, which is a DIFFERENT question from the
+    -- one above and is asked by #330's fold: one sitting is one occurrence, and
+    -- "the same sitting" is the same HANDLE rather than "still in something". Keyed
+    -- on the ped for the reason `inDisarmed` is, and counted for the reason that
+    -- one is: the fold sits on a path a client may repeat freely, so the real seat
+    -- walk has to be memoised and a test that could not see the reads could not
+    -- say so. The real BR.Vehicles.ridingIn is the citizenfx/fivem#4006 workaround
+    -- and is driven against the real server/vehicles.lua in tools/test_shared.lua.
+    S.ridingIn, S.ridingInAsks = {}, 0
     BRs.Vehicles = {
         inDisarmedVehicle = function(ped)
             -- COUNTED, because the cost of asking is part of the contract: a
@@ -2570,6 +2586,10 @@ local function newTimelineWorld()
             -- send, and the real answer is up to ten natives.
             S.inDisarmedAsks = S.inDisarmedAsks + 1
             return S.inDisarmed[ped] == true
+        end,
+        ridingIn = function(ped)
+            S.ridingInAsks = S.ridingInAsks + 1
+            return S.ridingIn[ped]
         end,
     }
 
@@ -2675,10 +2695,34 @@ local function newTimelineWorld()
 
     --- This player is sitting in a vehicle the #322 ruling drives with its gun
     --- switched off.
+    ---
+    --- THE HANDLE MOVES WITH THE ANSWER, because nobody is in a disarmed vehicle
+    --- and on foot at the same time: a fixture that set one without the other would
+    --- be a world the server cannot be in, and #330's fold reads the handle.
     function W.seatedInDisarmed(src, yes)
         local e = S.roster[src]
-        S.inDisarmed[e and e.ped] = (yes ~= false)
+        local seated = (yes ~= false)
+        S.inDisarmed[e and e.ped] = seated
+        S.ridingIn[e and e.ped] = seated and (2000 + src) or nil
     end
+
+    --- This player is sitting in a vehicle NOBODY HAS SAID IS DISARMED -- the
+    --- turret seat of #330 as it reaches this server today.
+    ---
+    --- THE GAP BETWEEN THIS AND `seatedInDisarmed` IS THE WHOLE OF #330. The model
+    --- is in no row of the ruling and no armament report has arrived for it, so the
+    --- car-gun guard cannot excuse the strip -- and before the fold, every second
+    --- of sitting there was another offence, another console line and another
+    --- number on the case.
+    --- @param veh integer|nil  the handle; nil puts them back on foot
+    function W.seatedIn(src, veh)
+        local e = S.roster[src]
+        S.inDisarmed[e and e.ped] = false
+        S.ridingIn[e and e.ped] = veh
+    end
+
+    --- One scheduler pass at the current clock, for the jobs br_core registers.
+    function W.tick() BRs.Sched.step(S.now) end
 
     --- What the SERVER believes is in this player's five slots.
     function W.carrying(src, items)
@@ -3533,6 +3577,11 @@ end
 -- A weapon this gamemode has never heard of. Nothing in br_lib/config/weapons
 -- carries this hash, which is the whole point of it.
 local CONJURED = 0x11111111
+-- A SECOND one it has never heard of, because #330's fold is per GUN as well as
+-- per seat: the same hash coming back is the engine re-handing one weapon, and a
+-- different one appearing in the same seat is a different event. Both are asserted
+-- against the real table below rather than assumed.
+local CONJURED2 = 0x22222222
 -- ...and one it issues, by the hash the engine reports for it.
 local CARBINE = 0x83BF0278
 
@@ -4358,6 +4407,54 @@ do
         #W.printedMatching('ANTICHEAT'))
     ok(notes == 2, 'and two entries in the evidence buffer, both off the seat',
         notes)
+end
+
+-- THE FOLD THAT WAS TESTED HERE IS GONE, AND SO IS ITS SUITE (#330, review).
+--
+-- `strip.one-seat-is-one-occurrence` asserted that 200 reports from one seat
+-- counted once and filed nothing. It passed, and it was codifying a hole: the
+-- fold keyed on "seated in any vehicle, holding a hash in no row of
+-- WeaponByHash", which is a Sultan and a WEAPON_APPISTOL, and it held for the
+-- whole match. The suite could not tell its own fixture from a trainer user.
+-- The reasoning is written out in server/strip.lua where the fold used to be.
+-- The console half of #330 is still tested, by the log-budget groups below.
+
+describe('strip.the-flood-that-stops-is-still-reported')
+do
+    -- THE CASE THE SCHEDULED SWEEP EXISTS FOR, and server/damage.lua's argument for
+    -- the same job: `admit` reports a closing window on the next line that asks to
+    -- be printed, which covers an attack still in progress and nothing else. A
+    -- client that floods and then goes quiet would leave the number sitting in the
+    -- budget until the next strip -- next match, or never -- and the operator
+    -- reading the console afterwards is exactly the person who needs it.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+
+    for i = 1, 30 do
+        W.at(3000 + i * 1000)
+        W.strip(1, CONJURED)
+    end
+    ok(#W.printedMatching('went unprinted') == 0,
+        'nothing is reported while the window is still open',
+        #W.printedMatching('went unprinted'))
+
+    -- AND NOT A WORD MORE FROM THIS CLIENT. The scheduler is what closes it.
+    W.at(40000); W.tick()
+    ok(#W.printedMatching('went unprinted') == 0,
+        'a tick inside the window closes nothing',
+        #W.printedMatching('went unprinted'))
+
+    W.at(70000); W.tick()
+    local said = W.printedMatching('went unprinted')
+    ok(#said == 1, 'a tick past the window reports what it held, once', #said)
+    ok(said[1] and said[1]:find('26 more strip line', 1, true) ~= nil,
+        'with the count the flood would otherwise have taken with it', said[1])
+
+    W.at(71000); W.tick()
+    ok(#W.printedMatching('went unprinted') == 1,
+        'and reports it once only, however long the console stays quiet',
+        #W.printedMatching('went unprinted'))
 end
 
 describe('strip.flood-is-bounded')

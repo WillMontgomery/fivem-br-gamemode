@@ -366,9 +366,18 @@ function BR.ValidateShot(shot, ctx, cfg)
         -- cancelled. What changes is whether it ACCUSES anybody.
         --
         -- ctx.vehicleGun is the server's own read: this shooter is sitting in a
-        -- model BR.Config.IsDisarmedVehicle names, which is the set the owner's
-        -- ruling drives with the gun switched off. The switch is a client-side
-        -- native and this is what its failure looks like from here.
+        -- vehicle whose gun this gamemode holds off rather than ejecting them
+        -- from. The switch is a client-side native and this is what its failure
+        -- looks like from here.
+        --
+        -- SINCE #329 THAT SET HAS TWO SOURCES AND THE FLAG'S MEANING FOLLOWS THE
+        -- WIDER ONE. It is a model BR.Config.IsDisarmedVehicle names -- the
+        -- owner's authored ruling, which still decides which vehicles are refused
+        -- outright -- OR one the ENGINE told that shooter's own client was armed,
+        -- kept per player on their roster entry by server/vehicles.lua. The second
+        -- exists because the authored list was incomplete twice in three days and
+        -- each gap accused whoever drove the vehicle. It can only ADD: a model the
+        -- table names is excused whether a report arrived or not.
         --
         -- WHAT IT COSTS, STATED RATHER THAN DISCOVERED: a weapon this gamemode
         -- issues NOBODY, fired by somebody seated in one of those ~60 models,

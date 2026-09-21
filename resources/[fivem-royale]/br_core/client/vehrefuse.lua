@@ -12,6 +12,14 @@
 -- exclusive -- a model the second names is allowed by the first -- and the pass
 -- at the bottom is written so that they cannot both fire.
 --
+-- #329 ADDED A THIRD SOURCE FOR THE SECOND ANSWER AND NONE AT ALL FOR THE FIRST.
+-- The engine is now asked whether the vehicle a player is actually sitting in has
+-- weapons, because a hand-written list of models was incomplete twice in three
+-- days and each gap was both an armed vehicle AND a case filed against its
+-- driver. WHICH VEHICLES ARE REFUSED IS STILL ENTIRELY AUTHORED -- nothing the
+-- engine says can eject anybody, or stop this file ejecting them. See the section
+-- above `seatOf`.
+--
 -- ═══ THE OWNER'S ASK, VERBATIM (2026-08-22, #215) ═══
 --
 --   "Yeah incidents do happen when stealing a heli from zancudo. I do have to
@@ -171,6 +179,65 @@ local NOTIFY_COOLDOWN_MS = 4000
 --- 128 is generous: it is distinct MODELS this player has tried to get into.
 local MAX_RULINGS = 128
 
+--- The highest seat index this file will look for a player in.
+---
+--- -1 THROUGH 8, WHICH IS THE RANGE client/driveby.lua's `seatOf` WALKS, and its
+--- note says why: there is no native that answers "which seat am I in", the
+--- engine only answers "who is in seat N", and eight is past the largest seat
+--- count in the base game. A ped in seat 9 or beyond -- the back of a coach --
+--- reads as "no seat we can name", which switches the whole of #329's probe off
+--- for them and leaves the authored table answering, exactly as it does today.
+--- br_core/server/vehicles.lua's CABIN_SEATS states the same limit for the same
+--- reason and refuses a report naming a seat past it.
+---
+--- NOT SHARED WITH driveby.lua's COPY, and the reason is the manifest rather
+--- than taste: client/vehrefuse.lua is declared BEFORE client/driveby.lua, so
+--- BR.DriveBy does not exist when this file loads, and a loop that reached for a
+--- function from a file declared later would be one manifest edit away from
+--- silently never probing anything. `isTrue` above is per-file for the same
+--- class of reason.
+local MAX_SEAT = 8
+
+--- How long between two armament reports about the same seat.
+---
+--- IT IS A REPEAT RATHER THAN AN EDGE, AND THAT IS NOT BELT-AND-BRACES. The
+--- server checks the report against ITS OWN seat read, and the server's copy of
+--- a player's seat arrives up to a roster sample behind the client's -- so the
+--- one report sent on the pass the seat is taken can land before the far end
+--- agrees anybody is sitting there, and a single edge that arrives early is a
+--- suppression lost for the whole of that occupancy. The cost of repeating is
+--- one message every two seconds from a player sitting in an armed car; the cost
+--- of not repeating is an anticheat case about them.
+---
+--- THERE IS NO ACKNOWLEDGEMENT AND THIS IS WHY. The far end answers nothing (the
+--- report is evidence, not a request), so the client cannot know whether one
+--- landed. A fixed cadence is what that leaves.
+local REPORT_EVERY_MS = 2000
+
+--- How many passes of one occupancy will read DOES_VEHICLE_HAVE_WEAPONS before
+--- this file gives up and lets the authored table answer alone.
+---
+--- ═══ A READ THAT DID NOT ANSWER IS NOT AN ANSWER ═══
+---
+--- The probe below LATCHES what the engine said, so that an ordinary car costs
+--- nothing for the rest of the match. `safe` exists in this file precisely because
+--- these two natives may not be on this build and may throw on a stale handle --
+--- so the read can come back having reached nothing at all, and latching THAT as
+--- "this vehicle has no gun" is the worst outcome available here: the player who
+--- sat down on the pass where the handle was mid-migration gets no disarm and no
+--- report for as long as they stay in that vehicle. That is the exact symptom
+--- #329 exists to remove, made silent. So a read that did not answer is retried
+--- on the next pass, and only a read that answered latches.
+---
+--- WHICH IS ONLY SAFE WITH A CEILING ON IT. A native that is not on this build
+--- never starts answering, and an unbounded retry would be a pcall'd native every
+--- 100 ms for every player in every vehicle in the match, for the whole match.
+--- FIVE PASSES IS HALF A SECOND at TICK -- long enough for an ownership migration
+--- or a stale handle to settle, and five reads is the entire cost of a build that
+--- does not have the native. After the fifth, this occupancy is settled and costs
+--- nothing more, exactly as one the engine answered "no" for does.
+local PROBE_TRIES = 5
+
 -- ---------------------------------------------------------------------------
 -- Reading a world that lies in three different ways
 -- ---------------------------------------------------------------------------
@@ -195,6 +262,33 @@ local function safe(fn, ...)
     local ok, v = pcall(fn, ...)
     if not ok then return nil end
     return v
+end
+
+--- The same call `safe` makes, with the one thing `safe` throws away: WHETHER THE
+--- CALL REACHED THE ENGINE AT ALL.
+---
+--- `safe` folds "no such native on this build", "the handle was stale and it
+--- threw" and "the engine said no" into one nil, and for every other caller in
+--- this file that is the right shape -- all of them want no opinion to read as
+--- "not refused". #329's probe is the one caller the fold is a bug for, because it
+--- LATCHES the answer for the whole occupancy: a throw latched as a no is a gun
+--- left live and nothing said about it. See PROBE_TRIES.
+---
+--- A CALL THAT RETURNED IS AN ANSWER, EVEN WHEN WHAT IT RETURNED WAS nil. The only
+--- two outcomes counted as silence are the two where the engine was never asked:
+--- there is no such function, and the call threw. What an answer MEANS is
+--- `isTrue`'s question and not this one.
+---
+--- NOT `safe` REWRITTEN IN TERMS OF THIS ONE, which was written and then undone:
+--- `safe` is read on every pass by every player in a vehicle, and a call frame per
+--- native read to save four lines is the wrong trade in this file.
+--- @return boolean answered  the native exists and did not throw
+--- @return any|nil
+local function tried(fn, ...)
+    if type(fn) ~= 'function' then return false, nil end
+    local ok, v = pcall(fn, ...)
+    if not ok then return false, nil end
+    return true, v
 end
 
 --- This vehicle's model hash, or nil.
@@ -257,7 +351,14 @@ local ruled = 0
 --- Counters, for /brvehrefuse. Nothing here is sent anywhere.
 local stat = { asked = 0, cached = 0, rejected = 0, ejected = 0,
                cancelled = 0, hammered = 0, locked = 0, notified = 0,
-               disarmed = 0, unnamedGun = 0 }
+               disarmed = 0, unnamedGun = 0,
+               -- #329's five. See the section on asking the vehicle.
+               probed = 0, engineArmed = 0, turretSeat = 0, reported = 0,
+               -- Reads of DOES_VEHICLE_HAVE_WEAPONS that reached no engine at
+               -- all: no such native, or a handle that threw. It is the number
+               -- that tells a silent build from a match of ordinary cars, which
+               -- is the one thing this process cannot infer. See PROBE_TRIES.
+               armedSilent = 0 }
 
 --- Why this gamemode refuses this vehicle, or nil.
 ---
@@ -525,11 +626,39 @@ end
 --- re-establish. A Cfx report of the `false` call leaving a vehicle unable to
 --- find its weapons again until it is respawned is the other reason: an undo
 --- nobody needs is an undo that can only break something.
+--- ═══ AND SINCE #329 THERE ARE TWO WAYS IN, ONE AUTHORED AND ONE MEASURED ═══
+---
+--- `BR.Config.IsDisarmedVehicle(model)` is the owner's ruling and is unchanged:
+--- the ARMED rows of the model table, keepRefused excepted. `armed` and `turret`
+--- are what the ENGINE said about the vehicle this player is actually sitting in,
+--- and they exist because the table was incomplete twice in three days -- the
+--- Caracara on 2026-09-19 and another stock model on 2026-09-21, which the owner
+--- deliberately did not name so that nothing could be fixed by writing one more
+--- row. See `engineProbe` below for which native answers which question, what it
+--- costs, and what has not been confirmed in game.
+---
+--- EITHER OF THE TWO ENGINE ANSWERS IS ENOUGH, WHICH IS AN `or` ON PURPOSE.
+--- Neither native's return value is documented on its own page, so the safe shape
+--- is one where a single surprising answer does not switch the feature off: a
+--- vehicle the engine calls armed is disarmed even if the seat denies being a
+--- turret (the Ruiner 2000 family fires from the driving seat), and a seat the
+--- engine calls a turret is disarmed even if the vehicle-level question answered
+--- nothing (which is also what a build missing the native looks like).
+---
+--- WHAT BOUNDS IT IS STILL AUTHORED. `engineProbe` never answers yes for a model
+--- BR.Config.StripExemptVehicles names -- the firetruck, whose hose the owner
+--- ruled is the point ("I want them to be able to use the firehose") -- and it is
+--- not reached at all for a vehicle BR.Config.VehicleRefusalFor refuses, because
+--- the pass returns above it. So this widens the set of vehicles whose gun is
+--- held off; it cannot touch the set that is refused, and it cannot touch the one
+--- model the owner exempted by hand.
 --- @param ped integer
 --- @param veh integer
 --- @param model integer|nil
-local function disarm(ped, veh, model)
-    if not BR.Config.IsDisarmedVehicle(model) then return end
+--- @param armed boolean   the engine says this VEHICLE carries weapons (#329)
+--- @param turret boolean  the engine says this SEAT is a turret (#329)
+local function disarm(ped, veh, model, armed, turret)
+    if not (BR.Config.IsDisarmedVehicle(model) or armed or turret) then return end
 
     local hash = mountedWeaponOf(ped)
     if hash == nil then
@@ -561,6 +690,345 @@ local function disarm(ped, veh, model)
     -- makes about the guard it deleted.
     local ok = pcall(DisableVehicleWeapon, true, hash, veh, ped)
     if ok then stat.disarmed = stat.disarmed + 1 end
+end
+
+-- ---------------------------------------------------------------------------
+-- Asking the vehicle instead of the list (#329)
+-- ---------------------------------------------------------------------------
+--
+-- ═══ ONE MISSING ROW WAS THREE BUGS, WHICH IS WHY THIS IS NOT ONE MORE ROW ═══
+--
+-- BR.Config.IsDisarmedVehicle answers three different questions in three files:
+-- what this file disarms, what server/vehicles.lua reports as `ctx.vehicleGun`,
+-- and -- through that flag -- whether br_lib/shared/combat_solve.lua reads an
+-- unknown weapon hash as the car's gun or as an accusation. So a stock model
+-- nobody wrote down is armed AND files a case against whoever drives it. The
+-- owner reported the second such model on 2026-09-21 and withheld its name for
+-- exactly this reason: "I'm not going to give you that vehicle's name because I
+-- don't want you to hardcode anything with this."
+--
+-- ═══ SO POLICY STAYS AUTHORED AND FACT COMES FROM THE ENGINE ═══
+--
+-- WHICH VEHICLES THIS GAMEMODE REFUSES, which it lets you drive with the gun
+-- switched off, and which it leaves alone are the OWNER'S RULINGS and are not
+-- derived here. config/vehicles.lua keeps every row, every `why`, every
+-- keepRefused exception and its gate in tools/check_vehicles.lua.
+--
+-- WHETHER A GIVEN VEHICLE HAS A GUN IS A FACT, and the engine knows it better
+-- than a hand-written list does. Two natives, neither of which appeared anywhere
+-- in this repository before this change -- they were never considered rather than
+-- tried and rejected:
+--
+--   DOES_VEHICLE_HAVE_WEAPONS(vehicle)      0x25ECB9F8017D98E0
+--   IS_TURRET_SEAT(vehicle, seatIndex)      0xE33FFA906CE74880
+--
+-- BOTH ARE ASKED, FOR DIFFERENT QUESTIONS, AND MIXING THEM UP IS THE MISTAKE
+-- AVAILABLE HERE:
+--
+--   DOES_VEHICLE_HAVE_WEAPONS  "is this vehicle armed at all", and it is
+--                              agnostic about HOW the weapon is worked. It is
+--                              what the report to the server carries, because a
+--                              Ruiner 2000, a Toreador, a Stromberg and a
+--                              Scramjet all fire from the DRIVING seat -- a
+--                              turret test alone would go on accusing that whole
+--                              family of drivers.
+--   IS_TURRET_SEAT             "does THIS seat have a gun", which is precisely
+--                              the question GetCurrentPedVehicleWeapon has no
+--                              opinion about in the Caracara's gun seat and the
+--                              firetruck's hose seat -- the seam that makes both
+--                              `isMountedWeapon` and `disarm` fail there. It is
+--                              an extra signal for the DISARM, and it is NOT
+--                              sent to the server.
+--
+-- ═══ WHAT HAS NOT BEEN CONFIRMED IN GAME, AND HOW THIS SURVIVES IT ═══
+--
+-- NEITHER DOC PAGE DESCRIBES ITS RETURN VALUE. Both are declared BOOL, so both
+-- go through `isTrue` -- a FiveM BOOL answers `true` or `1` and `0` is truthy in
+-- Lua, which this project has shipped six times -- and both are read through
+-- `safe`, so an absent native, a throw or prose all read as "no opinion" rather
+-- than as yes.
+--
+-- THREE THINGS A PLAYTEST HAS TO SETTLE and nothing here pretends to know:
+--
+--   * whether DOES_VEHICLE_HAVE_WEAPONS is true for vehicles carrying equipment
+--     nobody would call a weapon -- the firetruck's hose is the known one and it
+--     is excluded by hand below, but a police car's spike strip would be the
+--     same shape. If it over-answers, the cost is a gun hash being handed to
+--     DisableVehicleWeapon in a vehicle that has none, which the engine ignores.
+--   * whether IS_TURRET_SEAT is true for the DRIVING seat of a car whose gun the
+--     driver fires. Everything here is written on the assumption that it is not.
+--   * whether either answers at all on this build. `/brvehrefuse` prints
+--     `armed-silent`, which counts the reads that reached no engine at all --
+--     absent native, or a handle that threw -- and THAT is the answer to this one.
+--     It used to be read off `probed` climbing with the other two at zero, which
+--     was wrong in both directions: that is also what a match full of ordinary
+--     cars looks like.
+--
+-- ═══ WHAT IT COSTS PER PASS, WHICH IS THE CONTRACT THIS BAND KEEPS ═══
+--
+-- ASKED ONCE PER OCCUPANCY, NOT ONCE PER PASS. The answers are properties of the
+-- vehicle and the seat, so they are latched and the latch is checked against the
+-- handle AND THE MODEL for free -- both were read on this pass already. An
+-- ordinary car costs THREE natives on the first pass somebody at its wheel sits in
+-- it -- the vehicle-level question, one seat read, and the
+-- seat question -- rising to twelve for a passenger, because the seats are walked
+-- until one answers and there is no native that asks the other way round. Then
+-- NOTHING for the rest of the match, because "this vehicle has no gun in any seat"
+-- is a complete answer and the latch says so.
+--
+-- A READ THAT DID NOT ANSWER IS NOT AN OCCUPANCY'S ANSWER, and that is the one
+-- thing that can cost more than the paragraph above. PROBE_TRIES bounds it at five
+-- passes -- half a second at TICK -- so a build without the native pays five reads
+-- for an occupancy instead of one, and a handle that was stale for a pass or two
+-- gets the disarm and the report it is owed instead of silence for as long as the
+-- player stays seated.
+--
+-- A vehicle that DID answer costs one native a pass after that: seat state is the
+-- one thing that can change without the handle changing, and a player who
+-- shuffles into the gun seat of a car they drove in must be re-asked. That one
+-- native is `GetPedInVehicleSeat` on the latched seat, which is a confirmation
+-- rather than a search.
+--
+-- A model the authored table already names is not probed at all. It is already
+-- disarmed, the server already excuses it, and there is nothing a report could
+-- add -- which is also what makes this change unable to alter how a listed
+-- vehicle behaves.
+
+--- Which seat this ped is in, by asking the vehicle rather than the ped.
+---
+--- There is no native that answers "which seat am I in"; the engine only answers
+--- "who is in seat N". nil means no seat this file can name -- see MAX_SEAT --
+--- and every caller reads that as "do not probe", never as seat 0.
+--- @param veh integer
+--- @param ped integer
+--- @return integer|nil
+local function seatOf(veh, ped)
+    for i = -1, MAX_SEAT do
+        if safe(GetPedInVehicleSeat, veh, i) == ped then return i end
+    end
+    return nil
+end
+
+--- What the engine last said about the vehicle this player is sitting in.
+---
+--- ONE SLOT, for the reason `pending` above is one slot: there is one local ped
+--- and it is in one vehicle.
+---
+--- ═══ KEYED ON THE HANDLE AND THE MODEL TOGETHER, BECAUSE A HANDLE IS NOT A
+---     VEHICLE ═══
+---
+--- ENTITY HANDLES ARE RECYCLED. Sit in an armed vehicle holding handle 10, get
+--- out, let that vehicle be deleted, and the engine will hand 10 to the next thing
+--- it creates -- which can be a plain Adder, in the same seat, a second later.
+--- Keyed on the handle alone this latch answers "armed" for that Adder WITHOUT THE
+--- ENGINE EVER HAVING BEEN ASKED ABOUT IT, and the far end cannot catch the
+--- mistake: server/vehicles.lua reads the model off the vehicle IT resolved, so
+--- its handle, model and match checks all pass and the report is believed.
+---
+--- THE MODEL COSTS NOTHING TO KEY ON. `refusalFor` has already read it on this
+--- pass and hands it to the probe; it is the same hash `disarm` is given.
+---
+--- IT IS NOT ENOUGH ON ITS OWN AND IS NOT MEANT TO BE. Two vehicles of the same
+--- model can share a recycled handle, and that pair is indistinguishable from here
+--- -- which costs nothing, because the answer for the second one is the answer for
+--- the first. What ends an occupancy properly is the gate: it calls `clearProbe`
+--- wherever it calls `clearPending`, so getting out is the end of the measurement
+--- and sitting down again is a new one.
+---
+--- `answered` IS SEPARATE FROM `armed` AND `turret` BECAUSE A READ THAT DID NOT
+--- HAPPEN IS NOT A READ THAT SAID NO. Only a read that reached the engine latches;
+--- `tries` bounds how many passes of one occupancy may try, which is PROBE_TRIES
+--- and the whole argument is there. Together they also keep "nothing has been
+--- asked yet" distinguishable from "asked and told no" -- the same reason `rulings`
+--- stores `false` rather than nil.
+local probe = { veh = 0, model = nil, tries = 0, answered = false, seat = nil,
+                armed = false, turret = false, sentAt = nil }
+
+--- Nothing has been asked about any vehicle.
+local function clearProbe()
+    probe.veh, probe.model, probe.tries, probe.answered = 0, nil, 0, false
+    probe.seat, probe.armed, probe.turret, probe.sentAt = nil, false, false, nil
+end
+
+--- Tell the server the engine calls this vehicle armed.
+---
+--- ONLY THE ARMED HALF TRAVELS, and only as a positive. The far end may add
+--- armament to the authored table's answer and may never remove it, so there is
+--- nothing for a "no" to mean there: silence IS the table's answer. The seat rides
+--- along because it is what the server validates the claim with -- see
+--- BR.Net.VEH_ARMED in br_lib/shared/protocol.lua.
+---
+--- THE NETWORK ID, NOT THE HANDLE. A handle is a name only this machine uses. `0`
+--- is what the engine answers for a vehicle it does not network -- the Battle Bus,
+--- #191's rescue ambulance -- and a report naming one would be a report about a
+--- vehicle the server has never heard of, so it is not sent. Nobody drives either
+--- of those two, and the player in them is not in a state this loop runs in.
+--- THE CLOCK IS READ HERE AND NOT PASSED IN, which is one native rather than a
+--- style choice: called with `GetGameTimer()` at the site, every player sitting in
+--- an ordinary car would pay for it on every pass to reach a function that returns
+--- on its first line. Both guards above it are table reads.
+--- @param veh integer
+local function report(veh)
+    if not probe.armed then return end
+    -- NO SEAT, NO REPORT. The server's whole check is "is this ped really in that
+    -- seat of that vehicle", so a claim that cannot name a seat cannot be checked
+    -- and would be dropped on arrival. See MAX_SEAT for whose seat this is.
+    if probe.seat == nil then return end
+
+    local now = GetGameTimer()
+    if probe.sentAt ~= nil and now - probe.sentAt < REPORT_EVERY_MS then return end
+
+    local nid = math.tointeger(tonumber(safe(NetworkGetNetworkIdFromEntity, veh)))
+    -- ZERO IS EXPLICIT, for the reason every other zero in this file is: `0` is
+    -- truthy in Lua.
+    if nid == nil or nid == 0 then return end
+
+    probe.sentAt = now
+    stat.reported = stat.reported + 1
+    TriggerServerEvent(BR.Net.VEH_ARMED, { netId = nid, seat = probe.seat })
+end
+
+--- Find which seat this player is in and ask the engine about it.
+---
+--- THE WALK IS WHAT COSTS THE TEN NATIVES, so this is called on a fresh occupancy
+--- and on a real seat change and at no other time. `sentAt` is cleared with it: a
+--- player who has just moved into the gun seat is a NEW claim, not a repeat of the
+--- old one, and must not wait out a cadence window opened by the seat they left.
+---
+--- A FILE-LOCAL FUNCTION AND NOT A CLOSURE INSIDE `engineProbe`, which is where it
+--- was first written: that would allocate one per pass for every player sitting in
+--- a vehicle in the match, on the band this project keeps its performance contract
+--- in, for a function whose two arguments it already has.
+--- @param ped integer
+--- @param veh integer
+local function askSeat(ped, veh)
+    probe.seat, probe.turret, probe.sentAt = seatOf(veh, ped), false, nil
+    if probe.seat == nil then return end
+    probe.turret = isTrue(safe(IsTurretSeat, veh, probe.seat))
+    if probe.turret then stat.turretSeat = stat.turretSeat + 1 end
+end
+
+--- Ask the engine about the vehicle this player is in, at most once per
+--- occupancy, and report an armed one to the server.
+---
+--- @param ped integer
+--- @param veh integer
+--- @param model integer|nil
+--- @return boolean armed   the engine says this vehicle carries weapons
+--- @return boolean turret  the engine says this seat is a turret
+local function engineProbe(ped, veh, model)
+    -- ═══ THE TWO AUTHORED ANSWERS THAT STOP THIS BEFORE ANY NATIVE ═══
+    --
+    -- A MODEL THE RULING ALREADY NAMES needs nothing from the engine: `disarm`
+    -- runs for it either way and server/vehicles.lua already excuses it, so a
+    -- probe could only cost natives and a report nobody reads. It is also what
+    -- guarantees this change cannot alter how a listed vehicle behaves.
+    if BR.Config.IsDisarmedVehicle(model) then return false, false end
+
+    -- AND THE FIRETRUCK, WHICH IS THE CASE THAT PROVES POLICY IS STILL THE
+    -- OWNER'S. Its hose IS a vehicle weapon, so the engine will say so -- and
+    -- c58745f settled that using a firehose is not an incident and not something
+    -- to switch off ("I want them to be able to use the firehose. That's the
+    -- point."). A version of this that disarmed it because the engine said it was
+    -- armed would be a regression wearing a fix's clothes. BR.Config's own table
+    -- is what excludes it, so the day the owner rules on a second such vehicle
+    -- the change is one row there and nothing here.
+    local exempt = BR.Config and BR.Config.StripExemptByHash
+    if model == nil or (exempt and exempt[BR.NormHash(model)] ~= nil) then
+        return false, false
+    end
+
+    -- ═══ A FRESH OCCUPANCY IS A NEW HANDLE OR A NEW MODEL UNDER THE OLD ONE ═══
+    --
+    -- THE MODEL IS HALF THE KEY AND THAT IS THE CORRECTNESS HALF: see `probe` for
+    -- the Adder that inherited an armed claim from whatever held handle 10 before
+    -- it. Both values were read on this pass already, so the key is two table
+    -- comparisons and no natives.
+    if probe.veh ~= veh or probe.model ~= model then
+        clearProbe()
+        probe.veh, probe.model = veh, model
+        stat.probed = stat.probed + 1
+    end
+
+    if not probe.answered and probe.tries < PROBE_TRIES then
+        -- ═══ ASKED UNTIL IT ANSWERS, AND PROBE_TRIES TIMES AT MOST ═══
+        --
+        -- THE VEHICLE FIRST, because it is one native and it is the answer the
+        -- server is told about. `tried` says whether the call reached the engine at
+        -- all -- an absent native and a throwing handle did not -- and `isTrue`
+        -- says what a call that did reach it MEANT: `1` is yes, `0` is no, and `0`
+        -- is truthy in Lua.
+        --
+        -- ONLY AN ANSWER LATCHES. Anything else leaves `answered` false and the
+        -- next pass asks again, up to PROBE_TRIES, which is where the argument for
+        -- both halves of that is written.
+        probe.tries = probe.tries + 1
+        local answered, v = tried(DoesVehicleHaveWeapons, veh)
+        if answered then
+            probe.answered = true
+            probe.armed = isTrue(v)
+            if probe.armed then stat.engineArmed = stat.engineArmed + 1 end
+        else
+            -- COUNTED, BECAUSE IT IS THE ONE THING THIS PROCESS CANNOT INFER. A
+            -- `probed` that climbs with `engine-armed` at zero is ALSO what a match
+            -- full of ordinary cars looks like, so without this number
+            -- /brvehrefuse cannot tell a build where the native is silent from one
+            -- where every car really was unarmed.
+            stat.armedSilent = stat.armedSilent + 1
+        end
+
+        -- THE SEAT IS ASKED ABOUT EVEN WHEN THE VEHICLE SAID NO. It is the half
+        -- that sees the Caracara's gun seat, and reading it only after a yes would
+        -- make the whole probe rest on one undocumented return value.
+        --
+        -- ONCE THE SEAT HAS A NAME THE WALK IS NOT PAID FOR AGAIN HERE. A retry
+        -- exists for the read that did not answer; re-walking a seat an earlier
+        -- pass already named would cost ten natives and count the same turret
+        -- twice. The seat-change branch below is what watches it after that.
+        if probe.seat == nil then askSeat(ped, veh) end
+    elseif not probe.armed and not probe.turret then
+        -- NO GUN IN THIS VEHICLE, so no seat of it can matter and there is nothing
+        -- to confirm. Zero natives, for the whole time a player spends in an
+        -- ordinary car.
+        --
+        -- THIS IS ALSO WHERE A SILENT BUILD SETTLES, once PROBE_TRIES is spent: the
+        -- authored table is the whole answer then, which is the pre-#329 behavior
+        -- and the honest floor. `armed-silent` in the readout is what says that is
+        -- what happened, rather than leaving an operator to guess from a zero.
+        --
+        -- IT IS AN INFERENCE ABOUT AN UNCONFIRMED NATIVE and worth naming as one:
+        -- it assumes a vehicle the engine calls unarmed has no turret seat. If
+        -- that is ever false, the cost is a gun in a seat this never asks about,
+        -- in a vehicle the engine denied -- which is exactly today's behavior.
+        return false, false
+    elseif probe.seat ~= nil
+        and safe(GetPedInVehicleSeat, veh, probe.seat) ~= ped then
+        -- THE SEAT CHANGED WITHOUT THE VEHICLE CHANGING. A player who drives a
+        -- Technical to a fight and then shuffles into the bed is in a different
+        -- seat of the same handle, and the turret answer is about the seat. One
+        -- native a pass confirms the latched one still holds this ped; only a
+        -- failure pays for the walk again.
+        --
+        -- THE VEHICLE-LEVEL ANSWER IS NOT RE-ASKED, because it is a property of
+        -- the vehicle and nobody changed vehicles.
+        askSeat(ped, veh)
+    end
+    -- AND A LATCHED OCCUPANCY WHOSE SEAT COULD NOT BE NAMED FALLS THROUGH ALL
+    -- THREE, deliberately: there is no seat state to confirm, so re-walking ten
+    -- natives a pass would buy nothing. A player who later shuffles from the back
+    -- of a coach into a seat this file can name is not re-asked until they change
+    -- vehicle -- the same limit server/vehicles.lua's `ridingIn` states for seats
+    -- past the eighth, and for the same reason.
+    --
+    -- WHICH IS ALSO THE LIMIT OF THE RETRY ABOVE, AND IT IS A SMALLER THING THAN
+    -- IT LOOKS. A seat walk that THREW on a pass where the vehicle question
+    -- answered leaves this occupancy with no seat, so no report -- but the GUN is
+    -- still held off, because `armed` carries the disarm on its own, and the
+    -- confirmation branch re-walks the moment a later read disagrees. What is lost
+    -- is the server's excuse for a shot, not a live weapon.
+
+    report(veh)
+    return probe.armed, probe.turret
 end
 
 -- ---------------------------------------------------------------------------
@@ -704,8 +1172,17 @@ local function enabled()
 end
 
 BR.Loop.register(BR.Loop.TICK, 'vehrefuse.gate', function()
+    -- ═══ THE PROBE IS CLEARED WHEREVER THE PENDING EJECTION IS ═══
+    --
+    -- ALL THREE OF THESE ARE "THIS PLAYER IS NOT SITTING IN ANYTHING", and an
+    -- occupancy that has ended is not a fact about the next one. Without this the
+    -- latch outlived dismounts, deaths and match boundaries -- `BR.VehRefuse.reset`
+    -- calls `clearProbe` too, but nothing in `resources/` calls that function, so
+    -- the only real clear is this one. See `probe` for what a latch that outlives
+    -- its vehicle costs when the engine reissues the handle.
     if not enabled() then
         clearPending()
+        clearProbe()
         return
     end
 
@@ -729,6 +1206,7 @@ BR.Loop.register(BR.Loop.TICK, 'vehrefuse.gate', function()
     -- ═══ THEN: THE SEAT, FOR THE ENTRIES THE WINDOW ABOVE DID NOT CATCH ═══
     if not isTrue(IsPedInAnyVehicle(ped, false)) then
         clearPending()
+        clearProbe()
         return
     end
 
@@ -736,6 +1214,7 @@ BR.Loop.register(BR.Loop.TICK, 'vehrefuse.gate', function()
     -- ZERO IS EXPLICIT for the reason it is explicit twenty lines up.
     if veh == 0 then
         clearPending()
+        clearProbe()
         return
     end
 
@@ -800,7 +1279,15 @@ BR.Loop.register(BR.Loop.TICK, 'vehrefuse.gate', function()
     -- validator when it HITS somebody, so an empty list means the lock held and
     -- TICK is right. A column of them means it does not, and this comment is the
     -- one to come back to: move the `disarm` call to a FRAME registration.
-    disarm(ped, veh, model)
+    --
+    -- ═══ AND SINCE #329 THE ENGINE IS ASKED ABOUT THE ONES NOBODY WROTE DOWN ═══
+    --
+    -- BELOW THE REFUSAL FOR THE REASON `disarm` IS: a vehicle this gamemode
+    -- refuses has already returned, so the probe can only ever widen the set whose
+    -- GUN is held off and can never touch the set that is EMPTIED. See the section
+    -- above `seatOf` for which native answers which question and what it costs.
+    local armed, turret = engineProbe(ped, veh, model)
+    disarm(ped, veh, model, armed, turret)
 end)
 
 -- ---------------------------------------------------------------------------
@@ -811,6 +1298,7 @@ end)
 function BR.VehRefuse.reset()
     rulings, ruled = {}, 0
     clearPending()
+    clearProbe()
     for k in pairs(stat) do stat[k] = 0 end
 end
 
@@ -885,6 +1373,21 @@ RegisterCommand('brvehrefuse', function()
         s.locked, s.notified, tostring(enabled())))
     print(('[vehrefuse] disarmed=%d unnamed-gun=%d'):format(
         s.disarmed, s.unnamedGun))
+    -- #329's FIVE, AND `armed-silent` IS THE ONE THAT ANSWERS THE BUILD QUESTION.
+    -- `probed` counts OCCUPANCIES the engine was asked about at all, and it was
+    -- once claimed here that a `probed` climbing with `engine-armed` at zero meant
+    -- the natives were not answering. IT DOES NOT: that is also what a match full
+    -- of ordinary cars looks like. `armed-silent` counts the reads of
+    -- DOES_VEHICLE_HAVE_WEAPONS that reached no engine at all -- absent native, or
+    -- a handle that threw -- so it climbing is the answer, and it climbing at up to
+    -- PROBE_TRIES per occupancy is what a build without the native looks like.
+    -- `reported` is how many times the server was told; it climbs on the
+    -- REPORT_EVERY_MS cadence while somebody sits in an armed car, so it is
+    -- expected to outrun `engine-armed`.
+    print(('[vehrefuse] probed=%d engine-armed=%d turret-seat=%d reported=%d '
+           .. 'armed-silent=%d')
+        :format(s.probed, s.engineArmed, s.turretSeat, s.reported,
+                s.armedSilent))
 
     local ped = PlayerPedId()
     local veh = GetVehiclePedIsIn and GetVehiclePedIsIn(ped, false) or 0
@@ -894,5 +1397,15 @@ RegisterCommand('brvehrefuse', function()
                     tostring(classOf(veh)),
                     tostring(safe(GetVehicleDoorLockStatus, veh)),
                     tostring(refusalFor(veh))))
+        -- THE ENGINE'S OWN TWO ANSWERS FOR THE SEAT THIS PLAYER IS IN, read
+        -- fresh rather than out of the latch: the question an operator is asking
+        -- here is what the natives say right now, and printing the latch would
+        -- answer a different one. Both are BOOL, so both go through `isTrue`.
+        local seat = seatOf(veh, ped)
+        print(('[vehrefuse] this vehicle: seat=%s engine-armed=%s turret=%s')
+            :format(tostring(seat),
+                    tostring(isTrue(safe(DoesVehicleHaveWeapons, veh))),
+                    tostring(seat ~= nil
+                        and isTrue(safe(IsTurretSeat, veh, seat)) or nil)))
     end
 end, false)

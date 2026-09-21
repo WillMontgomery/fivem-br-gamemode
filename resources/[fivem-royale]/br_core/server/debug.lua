@@ -1322,6 +1322,18 @@ RegisterCommand('brstrips', function()
         :format(s.reports, s.counted))
     print(('  refused        %d throttled, %d our own weapon')
         :format(s.throttled, s.races))
+    -- THE TWO NUMBERS THAT SAY A SEAT IS BEHIND IT, AND NEITHER WAS READABLE HERE
+    -- UNTIL #330. `stats()` has returned `vehicleGuns` since #322 and this command
+    -- never printed it, which left the one counter that distinguishes "the seat
+    -- guard fired" from "the strip was counted" invisible to the operator -- the
+    -- number this hunt wanted first.
+    --
+    -- ZERO HERE WHILE COUNTED STRIPS CLIMB IS #329'S ARMAMENT REPORT NOT ARRIVING,
+    -- not a player offending: the engine never told this server that the seat was
+    -- armed, so the guard above the counter could not fire. /brvehicles says
+    -- whether any report arrived at all.
+    print(('  seats          %d excused as the car\'s own gun')
+        :format(s.vehicleGuns or 0))
     print(('  tracking       %d player(s) with a count this match')
         :format(s.tracked))
     -- THE LIMIT, PRINTED WHERE SOMEBODY READING THE NUMBERS WILL SEE IT. A zero
@@ -1364,6 +1376,17 @@ RegisterCommand('brvehicles', function()
         :format(s.dwelling))
     print(('  tracking       %d player(s) with a count this match')
         :format(s.tracked))
+
+    -- #329: THE ENGINE'S OWN ANSWER ABOUT WHAT IS ARMED, WHICH ONLY A CLIENT CAN
+    -- GIVE. Nothing here is a finding about anybody -- a believed report only ever
+    -- decides whether a shot from a weapon this gamemode issues nobody is refused
+    -- as the car's gun or as a conjured one. `arrived` climbing with `believed` at
+    -- zero means this server and the clients disagree about who is sitting where,
+    -- which is a timing or a lockdown question rather than an anticheat one. The
+    -- client half of the same picture is `/brvehrefuse`.
+    print(('  armed reports  %d arrived, %d believed, %d refused, %d throttled')
+        :format(s.probeReports or 0, s.probes or 0,
+                s.probesBad or 0, s.probeThrottled or 0))
 
     -- THE TWO NUMBERS THAT MEAN SOMETHING IS WRONG SOMEWHERE ELSE, each with
     -- the fix named beside it, because neither is fixed in server/vehicles.lua.

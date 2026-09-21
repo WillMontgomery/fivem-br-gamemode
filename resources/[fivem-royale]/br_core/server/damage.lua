@@ -1422,10 +1422,17 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
     -- owns the citizenfx/fivem#4006 workaround this question cannot be asked
     -- correctly without, and a build without that file answers "not in one",
     -- which leaves the anticheat exactly as it was.
+    --
+    -- THE ENTRY IS PASSED AS WELL AS THE PED, AND #329 IS WHY. That function now
+    -- reads the shooter's OWN armament report -- what the engine on their machine
+    -- said about the vehicle they are in -- and it is kept on their roster entry
+    -- rather than in a table keyed on the model, so that one liar cannot excuse a
+    -- model for the whole match. The entry this line already holds is where it
+    -- lives; without it the answer is the authored table's, which is what it was.
     local seatedInDisarmed = false
     if fired == nil and BR.Vehicles and BR.Vehicles.inDisarmedVehicle then
         local s = BR.Roster.get(shooter)
-        seatedInDisarmed = BR.Vehicles.inDisarmedVehicle(s and s.ped)
+        seatedInDisarmed = BR.Vehicles.inDisarmedVehicle(s and s.ped, s)
     end
 
     -- ONE EVENT, ONE HIT PER PLAYER, decided on the RESOLVED PLAYER rather than

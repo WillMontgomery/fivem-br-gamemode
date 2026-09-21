@@ -68,7 +68,13 @@ local LIVE = {
 --- gets recorded rather than bounding what an attacker can force.
 local MIN_INTERVAL_MS = 900
 
---- Per-source counters. [src] = { matchId, count, reports, at }
+
+--- Per-source counters.
+---
+---   the count      { matchId, count, reports, at } -- what has been counted, how
+---                  many announcements it has produced, and when the throttle
+---                  window opened.
+---   one memo       { vehAt, vehAns } for `vehicleGun`, one seat read per window.
 ---
 --- BOUNDED BY WHO IS CONNECTED. Cleared on disconnect and rebuilt when the
 --- player's match changes, exactly as server/damage.lua's refusal record is.
@@ -90,6 +96,13 @@ local stat = { reports = 0, counted = 0, throttled = 0, races = 0,
 --- refused because the reporter was sitting in a vehicle this gamemode drives
 --- with its gun switched off, holding a hash this gamemode issues nobody -- the
 --- engine handing somebody the gun bolted to their own car. See `vehicleGun`.
+---
+--- `held` IS THE THIRD AND IT ARRIVED WITH #330. It counts reports folded into a
+--- sitting already counted -- the same gun, the same seat, still in the hand --
+--- and `vehicleGuns` is the number that says how often #329's armament report is
+--- doing its job. One that stays at zero while counted strips climb is a seat the
+--- engine has told this server nothing about, which is the probe failing rather
+--- than a player offending.
 function BR.Strip.stats()
     local tracked = 0
     for _ in pairs(seenBy) do tracked = tracked + 1 end
@@ -100,6 +113,77 @@ function BR.Strip.stats()
         vehicleGuns = stat.vehicleGuns,
     }
 end
+
+--- The console budget this file's one line spends from.
+---
+--- ═══ #330: ONE SEAT, HUNDREDS OF LINES, AND NOTHING BETWEEN THEM ═══
+---
+--- Every counted strip from the second onward printed a line, at up to one every
+--- MIN_INTERVAL_MS, straight into the console that royale.service pipes to a file
+--- on the game box with `tmux pipe-pane`. The rate ceiling bounded the WORK and
+--- not the LOG, which is the finding BR.LogBudget was written for (#287) -- and
+--- the cadence note below this records giving up the bound in as many words.
+---
+--- WHAT IS BOUNDED IS THE CONSOLE AND NOTHING ELSE, which is what keeps this
+--- clear of the owner's 2026-08-20 ruling -- "each subsequent should show as
+--- corroboration from system". That ruling is about the MODERATION RECORD and it
+--- is untouched: every counted strip still notes evidence and still raises
+--- `br:core:stripped`, so the case still receives every one of them. An operator's
+--- screen and a moderation record are different artifacts with different limits.
+---
+--- AND THE SUMMARY IS WHY THIS IS A RATE LIMIT RATHER THAN A MUTE. A console that
+--- is quiet because it is being flooded is the worse of the two bugs; "26 more
+--- strip lines went unprinted" is the sentence that tells an operator which of the
+--- two they are looking at. It is not optional -- see `sayStrip`.
+---
+--- ITS OWN INSTANCE, NOT server/damage.lua's, AND THAT IS THE OPPOSITE OF WHAT
+--- THAT FILE ARGUES FOR ITS OWN THREE PRINTS. One budget there means three kinds
+--- of garbage do not buy three allowances, and it holds because all three sit
+--- behind one event a client can manufacture. This line sits behind a different
+--- one, and a shared allowance would let a shot flood spend the last line of the
+--- strip diagnostic -- blinding the operator to the OTHER attack. The key carries
+--- the player, so one offender cannot spend another's allowance either.
+---
+--- THE SAME KNOBS AS damage.lua's, so a playtest that wants a louder console
+--- turns both up from one place, and an unset key reads as the shipped bound
+--- rather than as zero.
+local logCfg = (BR.Config and BR.Config.Combat) or {}
+local logBudget = BR.LogBudget.new({
+    windowMs  = logCfg.logWindowMs,
+    perKey    = logCfg.logPerKey,
+    perWindow = logCfg.logPerWindow,
+})
+
+--- Print a strip line, unless too many like it have already been printed.
+---
+--- FORMATTED LAZILY -- the format string and its arguments rather than a finished
+--- line -- for server/damage.lua's `sayRefused` reason: under the flood this
+--- exists to bound most calls print nothing, and building a string to throw away
+--- is the cost being removed.
+--- @param key string   what makes this line the same as another one
+--- @param now number
+--- @param fmt string
+local function sayStrip(key, now, fmt, ...)
+    local printIt, summary = logBudget:admit(key, now)
+    if printIt then print(fmt:format(...)) end
+    -- THE SUMMARY IS NOT OPTIONAL. Without it a flood that keeps going never
+    -- reports how much it held back, which is the whole feature.
+    if summary then print(BR.LogBudget.line(summary, 'strip')) end
+end
+
+--- Report what the console budget held back, once a window has closed.
+---
+--- THE FLOOD THAT STOPS IS THE CASE THIS EXISTS FOR, and it is server/damage.lua's
+--- argument for the same job, one window later: `admit` reports a closing window on
+--- the next line that asks to be printed, which covers an attack still in progress
+--- and nothing else. A client that floods and then goes quiet would leave the
+--- number sitting in the budget until the next strip -- which may be next match or
+--- never -- and an operator reading the console afterwards is exactly the person
+--- who needs it.
+BR.Sched.every(1000, 'strip.logbudget', function()
+    local s = logBudget:sweep(GetGameTimer())
+    if s then print(BR.LogBudget.line(s, 'strip')) end
+end)
 
 --- Is this hash a weapon the SERVER believes this player is carrying?
 ---
@@ -238,11 +322,47 @@ local function vehicleGun(src, h, rec, now)
     -- note: GET_PLAYER_PED takes a STRING, and the numeric key answered 0 for
     -- every player once already. A 0 here would read as on foot, which files the
     -- case -- safe, but safe by accident.
+    --
+    -- THE ENTRY GOES WITH THE PED SINCE #329. That function reads this player's
+    -- own armament report -- the engine's answer about the vehicle they are
+    -- sitting in, which no server-side native can ask -- and keeps it on their
+    -- roster entry so a forged one reaches nobody else. Without the entry the
+    -- answer is the authored model table's, exactly as it was before.
     local e = BR.Roster and BR.Roster.get and BR.Roster.get(src)
     rec.vehAt  = now
-    rec.vehAns = BR.Vehicles.inDisarmedVehicle(e and e.ped)
+    rec.vehAns = BR.Vehicles.inDisarmedVehicle(e and e.ped, e)
     return rec.vehAns
 end
+
+-- THE SITTING FOLD THAT WAS HERE, AND WHY IT IS NOT (#330, review 2026-09-21).
+--
+-- #330 asked for "a burst of identical refusals from one shooter in one seat is
+-- one event", and a `heldInSeat` fold was written for it: same seat, same hash,
+-- no row in WeaponByHash, inside a three second gap, counted once per sitting.
+-- It worked, and it opened a hole wider than the bug.
+--
+-- ANY VEHICLE COUNTS AS A SEAT, AND MOST OF GTA'S ARSENAL IS IN NO ROW OF OUR
+-- TABLE. So a player sat in a Sultan, granted themselves one WEAPON_APPISTOL and
+-- kept it: the first report counted, every later one folded, the count stayed at
+-- one, and one is below the bar of two. No ANTICHEAT line, no br:core:stripped,
+-- no case, for the whole match. Before the fold that player was filed in about
+-- two seconds. That is this detector's TARGET -- "a player granting themselves a
+-- rifle in a menu tripped no alarm anywhere" is the reason it exists -- not its
+-- false positive.
+--
+-- AND THE FOLD COULD NOT BE NARROWED INTO SAFETY. The narrow version is "seated
+-- in a vehicle the engine says is armed", which is #329's fact, and a report
+-- carrying it has already been excused by `vehicleGun` above, so a fold gated on
+-- it can never fire. The next ring out is "seated in anything", which is the
+-- hole. There is no ring between them.
+--
+-- SO THE TWO HALVES OF #330 ARE FIXED IN TWO PLACES, one each. The console
+-- volume is bounded by the log budget below, which is what the report was about.
+-- The turret filing a case at all is #329's: when the engine's armament report
+-- arrives, `vehicleGun` excuses the seat before anything here counts. If that
+-- report does not arrive the case is filed, which is the behaviour this file had
+-- before either change and is a signal the probe failed rather than a silence
+-- somebody has to notice.
 
 -- THERE IS NO ADMIN EXEMPTION, AND THE ABSENCE IS DELIBERATE.
 --
@@ -343,10 +463,11 @@ AddEventHandler(BR.Net.INV_STRIPPED, function(weapon)
     -- closed -- so a genuine strip arriving a moment later is still recorded
     -- rather than swallowed by a refusal that cost nothing.
     --
-    -- WHAT THAT LEAVES UNBOUNDED IS BOUNDED ELSEWHERE. The one path a client
-    -- can repeat freely is the race check, a walk of five slots. It does not
-    -- reach the evidence buffer, the incident writer or the wire. (The admin
-    -- exemption used to be the second such path; it is gone.)
+    -- WHAT THAT LEAVES UNBOUNDED IS BOUNDED ELSEWHERE. The paths a client can
+    -- repeat freely are the race check -- a walk of five slots -- and, since #330,
+    -- the fold: a table index and a memoised seat read. Neither reaches the
+    -- evidence buffer, the incident writer or the wire. (The admin exemption used
+    -- to be a third such path; it is gone.)
     rec.at = now
     rec.count = rec.count + 1
     stat.counted = stat.counted + 1
@@ -394,12 +515,25 @@ AddEventHandler(BR.Net.INV_STRIPPED, function(weapon)
     -- corroboration frames and nine total; and the timeline is RAM either way,
     -- so no volume of strips adds a DynamoDB write to the two this case was
     -- always going to cost.
+    --
+    -- AND SINCE #330 THE BOUND IT GAVE UP IS GIVEN UP FOR THE RECORD ONLY. The
+    -- ruling above is what the CASE receives and it is untouched -- every counted
+    -- strip still announces. The CONSOLE is bounded separately by `logBudget`,
+    -- which prints the first few and says how many it held. What counts as an
+    -- OFFENCE is deliberately not bounded here: see the block above `logBudget`
+    -- for the fold that was tried and withdrawn.
     if rec.count < 2 then return end
     rec.reports = rec.reports + 1
 
     local name = e.name or ('src ' .. src)
-    print(('[br_core] ANTICHEAT: %s (%d) -- %d unissued weapon(s) taken out of the hand this match')
-        :format(name, src, rec.count))
+    -- THROUGH THE BUDGET SINCE #330, AND THE EVENT BELOW IS NOT. See `logBudget`:
+    -- the console is bounded, the moderation record is not, and the summary line
+    -- keeps the count of what went unprinted so a quiet console cannot be mistaken
+    -- for a quiet server. KEYED ON THE PLAYER, so the first few lines of every
+    -- offender get through and one flood cannot spend somebody else's allowance.
+    sayStrip(('strip:%d'):format(src), now,
+        '[br_core] ANTICHEAT: %s (%d) -- %d unissued weapon(s) taken out of the hand this match',
+        name, src, rec.count)
 
     -- HANDED OVER, NOT FILED HERE. server/incident.lua decides whether this
     -- opens a case or corroborates one that already exists -- it is the file

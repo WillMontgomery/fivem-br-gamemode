@@ -100,6 +100,20 @@ local vehClass = {}
 local vehType = {}
 --- [veh] = door lock status
 local vehLock = {}
+--- [veh] = what DOES_VEHICLE_HAVE_WEAPONS answers for it (#329)
+---
+--- HELD PER VEHICLE AND DEFAULTING TO nil, which `isTrue` reads as no. A native
+--- that has no opinion, is missing from the build or throws must be
+--- indistinguishable from "this car has no gun" as far as the OUTCOME goes, and
+--- distinguishable in the counters -- which is what the blocks below assert.
+local vehArmed = {}
+--- [veh][seat] = what IS_TURRET_SEAT answers for that seat (#329)
+local vehTurret = {}
+--- [veh][seat] = the ped sitting in it. The engine only answers "who is in seat
+--- N", which is why the file under test has to walk them.
+local vehSeats = {}
+--- [veh] = network id, as NetworkGetNetworkIdFromEntity answers it
+local vehNetId = {}
 
 --- Everything the file did to the world this run, in order.
 local acts = {}
@@ -120,7 +134,18 @@ local notices = {}
 --- `held` COUNTS `GetCurrentPedWeapon` for the same reason, one native along:
 --- an ordinary car must never be asked what is in the hand, and since the hand
 --- became a source of hashes to disable that is a count, not an outcome.
-local reads = { model = 0, class = 0, type = 0, asks = 0, gun = 0, held = 0 }
+---
+--- `armed`, `turret` AND `seat` ARE #329's THREE, AND THEY ARE THE WHOLE COST
+--- STORY OF THE PROBE. The file asks the engine once per OCCUPANCY and not once
+--- per pass, and there is no outcome that changes when it asks ten times as
+--- often -- the answers are the same. So the only way a probe that re-walks
+--- eleven natives every pass, for every player in every car in the match, is
+--- visible at all is by counting.
+local reads = { model = 0, class = 0, type = 0, asks = 0, gun = 0, held = 0,
+                armed = 0, turret = 0, seat = 0 }
+
+--- Everything the file told the server, in order. [n] = { name, payload }
+local sent = {}
 
 --- Natives that should throw, by name, to model a stale handle.
 local throws = {}
@@ -217,6 +242,60 @@ function GetCurrentPedWeapon(p)
     return heldBool, heldHash
 end
 
+--- BOOL DOES_VEHICLE_HAVE_WEAPONS(Vehicle) -- 0x25ECB9F8017D98E0 (#329).
+---
+--- "IS THIS VEHICLE ARMED AT ALL", agnostic about how the weapon is worked, and
+--- the only one of the two whose answer is sent to the server. Its doc page does
+--- not describe its return value, so the fixture drives it through all four BOOL
+--- shapes and through absence and a throw.
+function DoesVehicleHaveWeapons(v)
+    reads.armed = reads.armed + 1
+    if throws.armed then error('stale handle') end
+    return vehArmed[v]
+end
+
+--- BOOL IS_TURRET_SEAT(Vehicle, int seatIndex) -- 0xE33FFA906CE74880 (#329).
+---
+--- "DOES THIS SEAT HAVE A GUN", which is the question GetCurrentPedVehicleWeapon
+--- has no opinion about in the Caracara's gun seat. THE SEAT INDEX IS THE SECOND
+--- ARGUMENT and it is recorded rather than ignored: a file that passed the ped,
+--- or the vehicle twice, would answer about the wrong seat and look identical.
+function IsTurretSeat(v, seat)
+    reads.turret = reads.turret + 1
+    if throws.turret then error('stale handle') end
+    return (vehTurret[v] or {})[seat]
+end
+
+--- Ped GET_PED_IN_VEHICLE_SEAT(Vehicle, int seatIndex).
+---
+--- THE ENGINE ANSWERS "WHO IS IN SEAT N" AND NEVER "WHICH SEAT AM I IN", which is
+--- why the file under test walks them. Answers 0 for an empty seat, and 0 is
+--- truthy in Lua.
+function GetPedInVehicleSeat(v, seat)
+    reads.seat = reads.seat + 1
+    if throws.seat then error('stale handle') end
+    return (vehSeats[v] or {})[seat] or 0
+end
+
+--- int NETWORK_GET_NETWORK_ID_FROM_ENTITY(Entity).
+---
+--- 0 IS A REAL ANSWER -- it is what the engine says for a vehicle it does not
+--- network -- so a vehicle with no row here is one no report may name.
+function NetworkGetNetworkIdFromEntity(v)
+    if throws.netId then error('not networked') end
+    return vehNetId[v] or 0
+end
+
+--- TriggerServerEvent, CAPTURED RATHER THAN SWALLOWED (#329).
+---
+--- The no-op at the top of this file stands where the rest of the FiveM shims
+--- are, which is above `sent`; this replaces it before any test runs. What the
+--- client TELLS THE SERVER is half of #329, and a suite that dropped it would
+--- assert the disarm and say nothing about the suppression.
+function TriggerServerEvent(name, payload)
+    sent[#sent + 1] = { name = name, payload = payload }
+end
+
 function ClearPedTasksImmediately(p) act('clear', p) end
 function TaskLeaveVehicle(p, v, f) act('leave', p, v, f) end
 function SetVehicleDoorsLocked(v, s)
@@ -257,6 +336,12 @@ for _, f in ipairs({
     -- BEFORE config/vehicles.lua, which calls BR.NormHash at LOAD time to build
     -- both of its hash-keyed lookups. The manifest carries the same ordering.
     'br_lib/shared/geo.lua',
+    -- FOR BR.Net.VEH_ARMED (#329), WHICH IS THE NAME ON THE WIRE. Loaded rather
+    -- than stubbed for protocol.lua's own stated reason -- "magic strings
+    -- scattered across files are how client and server quietly stop agreeing" --
+    -- and because a suite that made the name up would pass while the two ends
+    -- named two different events.
+    'br_lib/shared/protocol.lua',
     'br_lib/config/vehicles.lua',
     -- FOR THE `unnamed-gun` COUNTER, WHICH ASKS BR.Config.WeaponByHash WHETHER
     -- THE THING IN THE HAND IS ONE WE ISSUE. The real arsenal rather than a
@@ -306,8 +391,10 @@ end
 local function reset()
     entering, myVeh, boolShape = 0, 0, 1
     vehModel, vehClass, vehType, vehLock = {}, {}, {}, {}
-    acts, notices = {}, {}
-    reads = { model = 0, class = 0, type = 0, asks = 0, gun = 0, held = 0 }
+    vehArmed, vehTurret, vehSeats, vehNetId = {}, {}, {}, {}
+    acts, notices, sent = {}, {}, {}
+    reads = { model = 0, class = 0, type = 0, asks = 0, gun = 0, held = 0,
+              armed = 0, turret = 0, seat = 0 }
     throws = {}
     gunBool, gunHash = false, 0
     -- AN EMPTY HAND BY DEFAULT: `0` is what the engine answers for no weapon and
@@ -319,11 +406,26 @@ local function reset()
 end
 
 --- Put a vehicle in the world.
+---
+--- THE PLAYER IS IN THE DRIVING SEAT OF IT BY DEFAULT, AND NETWORKED. Both are
+--- #329's doing and both are the ordinary case rather than a convenience: seat -1
+--- is where a player who presses F ends up, and a vehicle with no network id is
+--- one no report can name -- so a fixture that left both empty would make every
+--- probe assertion below pass for the wrong reason. `seatPed` moves them.
 local function spawn(veh, model, class, vtype)
     vehModel[veh] = model
     vehClass[veh] = class or 4          -- Muscle: an ordinary car
     vehType[veh] = vtype or 'automobile'
     vehLock[veh] = 1                    -- VEHICLELOCK_UNLOCKED
+    vehSeats[veh] = { [-1] = PED }
+    vehNetId[veh] = 900 + veh
+end
+
+--- Move the player into one seat of a vehicle, and out of every other.
+--- @param veh integer
+--- @param seat integer  -1 is the driving seat
+local function seatPed(veh, seat)
+    vehSeats[veh] = { [seat] = PED }
 end
 
 --- Every act of one kind, in order.
@@ -1494,6 +1596,757 @@ do
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
+describe('asking the engine which vehicles are armed (#329)')
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- ═══ THE OWNER'S REPORT, AND WHY THERE IS NO MODEL NAME IN THIS BLOCK ═══
+--
+-- A second stock vehicle turned up on 2026-09-21 whose weapons were not disabled
+-- and which filed an incident against its own driver, three days after the
+-- Caracara did the same thing. He withheld its name on purpose: "I'm not going to
+-- give you that vehicle's name because I don't want you to hardcode anything with
+-- this."
+--
+-- SO THE MODEL USED BELOW IS ONE THAT IS IN NO ROW OF ANYTHING, and every block
+-- asserts that as part of the outcome rather than assuming it. That assertion IS
+-- the owner's requirement: a suite that named a real model would pass just as
+-- well against a fix that added a row, which is the fix he ruled out.
+--
+-- ═══ WHICH NATIVE ANSWERS WHICH QUESTION, WHICH IS THE THING TO GET RIGHT ═══
+--
+--   DOES_VEHICLE_HAVE_WEAPONS  the VEHICLE. It is what the report to the server
+--                              carries, and the reason is the Ruiner 2000 family:
+--                              those fire from the DRIVING seat, so a turret test
+--                              alone would go on accusing every one of them.
+--   IS_TURRET_SEAT             the SEAT. It is what sees the Caracara's gun seat,
+--                              where GetCurrentPedVehicleWeapon has no opinion,
+--                              and it is deliberately NOT on the wire.
+--
+-- A file that swapped them would pass a suite that only asserted "the gun is
+-- switched off", so the two are driven independently below -- armed with no
+-- turret, a turret with no armament, and each with the other absent.
+--
+-- ═══ AND WHAT THIS SUITE CANNOT SETTLE ═══
+--
+-- Whether either native answers as assumed on a real build. Their doc pages
+-- describe no return value, the fixture is this file's own, and a stub cannot
+-- disagree with the engine. `/brvehrefuse` prints `probed` beside `engine-armed`
+-- and `turret-seat` for exactly that reason; the report names it as a playtest
+-- question rather than pretending at it here.
+
+--- A model in NO row of anything: not refused, not disarmed, not strip-exempt.
+---
+--- WHICH IS THE PROPERTY, NOT THE VALUE. Every block below asserts it holds
+--- before asserting what happens, so the day somebody "fixes" a case here by
+--- writing a row this stops being the test it was.
+local MYSTERY = 0x5EC0FFEE
+--- The firetruck, the one model the owner exempted BY HAND: its hose IS a vehicle
+--- weapon and using it is not an incident (c58745f).
+local FIRETRUK = 0x73920F8E
+--- What one full walk of the seats costs in GetPedInVehicleSeat reads.
+---
+--- -1 THROUGH MAX_SEAT, which is ten -- the range client/driveby.lua's `seatOf`
+--- walks and the range server/vehicles.lua refuses a report outside. Written out
+--- because a walk that found nobody is the expensive case, and the cost of it
+--- happening every pass is invisible in every outcome.
+local MAX_SEAT_WALK = 10
+
+do
+    -- THE SHAPE THE OWNER REPORTED, IN A MODEL NOBODY WROTE DOWN: the engine says
+    -- the vehicle is armed, the seat is a turret, and GetCurrentPedVehicleWeapon
+    -- names nothing -- so the gun is in the hand, which is where the Caracara's
+    -- was.
+    reset()
+    spawn(10, MYSTERY, 9, 'automobile')      -- Off-road: no type, no class net
+    myVeh = 10
+    seatPed(10, 0)
+    vehArmed[10] = true
+    vehTurret[10] = { [-1] = false, [0] = true }
+    gunBool, gunHash = false, 0              -- the seat names nothing
+    heldBool, heldHash = true, ENGINE_GUN    -- and the engine put it in the hand
+    tick()
+
+    ok(BR.Config.IsDisarmedVehicle(MYSTERY) == false
+       and BR.Config.VehicleRefusalFor(MYSTERY) == nil
+       and BR.Config.StripExemptByHash[BR.NormHash(MYSTERY)] == nil,
+       'the model is in no authored row of any kind -- which is the requirement')
+
+    local d = acted('disable')
+    ok(#d == 1 and d[1][1] == true and d[1][2] == ENGINE_GUN
+           and d[1][3] == 10 and d[1][4] == PED,
+       'the gun is switched off anyway, with the same four arguments', #d)
+    ok(did('leave') == 0 and did('clear') == 0 and did('lock') == 0
+       and #notices == 0,
+       'and nothing about it ejects anybody or says anything -- the probe can '
+           .. 'only widen the DISARM, never the refusal')
+
+    ok(#sent == 1 and sent[1].name == BR.Net.VEH_ARMED,
+       'and the server is told, on BR.Net.VEH_ARMED', #sent)
+    local p = sent[1] and sent[1].payload or {}
+    ok(p.netId == 910, 'by network id and not by the local handle',
+       tostring(p.netId))
+    ok(p.seat == 0, 'naming the seat, which is what the far end validates with',
+       tostring(p.seat))
+    ok(p.turret == nil and p.armed == nil and p.model == nil,
+       'and nothing else: the seat\'s turret answer stays on this machine, and '
+           .. 'the message\'s existence is the armed claim')
+
+    local s = V.stats()
+    ok(s.probed == 1 and s.engineArmed == 1 and s.turretSeat == 1
+       and s.reported == 1, 'and all four counters say so',
+       ('probed=%d armed=%d turret=%d reported=%d')
+           :format(s.probed, s.engineArmed, s.turretSeat, s.reported))
+end
+
+do
+    -- ═══ THE FAMILY A TURRET TEST ALONE WOULD KEEP ACCUSING ═══
+    --
+    -- A Ruiner 2000, a Toreador, a Stromberg and a Scramjet all fire from the
+    -- DRIVING seat, so IS_TURRET_SEAT answers no for the only seat anybody is in.
+    -- DOES_VEHICLE_HAVE_WEAPONS is what covers them, and this is the case that
+    -- fails if somebody keys the report on the seat instead of the vehicle.
+    reset()
+    spawn(10, MYSTERY, 4, 'automobile')
+    myVeh = 10
+    vehArmed[10] = true
+    vehTurret[10] = { [-1] = false }
+    gunBool, gunHash = true, SEAT_GUN        -- a driver gun the seat DOES name
+    tick()
+
+    ok(did('disable') == 1 and acted('disable')[1][2] == SEAT_GUN,
+       'a driver-operated gun is switched off from the seat\'s own hash',
+       did('disable'))
+    ok(#sent == 1 and sent[1].payload.seat == -1,
+       'and the report names the driving seat', #sent)
+    ok(V.stats().turretSeat == 0,
+       'with the turret answer a flat no -- which is why it is not what the '
+           .. 'report keys on', V.stats().turretSeat)
+end
+
+do
+    -- ═══ THE NEGATIVE THAT KEEPS THE SUPPRESSION FROM BECOMING UNCONDITIONAL ═══
+    --
+    -- An unlisted vehicle the engine says is NOT armed must go on accusing its
+    -- driver exactly as it does today. Without this, "suppress when the engine
+    -- says armed" and "suppress always" look identical in every other block.
+    reset()
+    spawn(10, MYSTERY, 4, 'automobile')
+    myVeh = 10
+    gunBool, gunHash = true, SEAT_GUN
+    heldBool, heldHash = true, ENGINE_GUN
+    tick(3)
+
+    ok(reads.armed == 1, 'the engine IS asked about it', reads.armed)
+    ok(did('disable') == 0,
+       'and its answer of no leaves the gun alone', did('disable'))
+    ok(#sent == 0,
+       'and tells the server nothing, so the shot still files as NO_WEAPON',
+       #sent)
+end
+
+do
+    -- A TURRET SEAT IN A VEHICLE THE VEHICLE-LEVEL QUESTION DID NOT ANSWER.
+    -- Either native answering is enough for the DISARM -- neither return value is
+    -- documented, so a single surprising answer must not switch the feature off --
+    -- and this is also what a build with DOES_VEHICLE_HAVE_WEAPONS missing looks
+    -- like. The REPORT is a different question and stays silent.
+    reset()
+    spawn(10, MYSTERY, 9, 'automobile')
+    myVeh = 10
+    vehArmed[10] = nil                       -- no opinion
+    vehTurret[10] = { [-1] = true }
+    gunBool, gunHash = true, SEAT_GUN
+    tick()
+
+    ok(did('disable') == 1, 'a turret seat alone switches the gun off',
+       did('disable'))
+    ok(#sent == 0,
+       'and sends nothing: only the armed half of the answer travels', #sent)
+end
+
+do
+    -- ═══ THE FIRETRUCK, WHICH IS THE CASE THAT PROVES POLICY IS STILL AUTHORED
+    --     (c58745f, owner 2026-09-15) ═══
+    --
+    -- Its hose IS a vehicle weapon, so the engine will say so, and the owner ruled
+    -- that using it is the point: "I want them to be able to use the firehose.
+    -- That's the point. We shouldn't get an incident for that." A version of this
+    -- feature that disarmed it because the engine called it armed would be a
+    -- regression wearing a fix's clothes, and there is no in-game symptom beyond a
+    -- hose that stops working.
+    reset()
+    spawn(10, FIRETRUK, 18, 'automobile')
+    myVeh = 10
+    vehArmed[10] = true
+    vehTurret[10] = { [-1] = true }
+    gunBool, gunHash = true, SEAT_GUN
+    heldBool, heldHash = true, ENGINE_GUN
+    tick(3)
+
+    ok(BR.Config.StripExemptByHash[BR.NormHash(FIRETRUK)] ~= nil
+       and BR.Config.VehicleRefusalFor(FIRETRUK) == nil,
+       'the firetruck is exempt by hand and is not a refused model')
+    ok(did('disable') == 0, 'and it is never disarmed', did('disable'))
+    ok(#sent == 0, 'and never reported', #sent)
+    ok(reads.armed == 0 and reads.turret == 0,
+       'and the engine is not even asked -- the authored table answers first',
+       ('armed=%d turret=%d'):format(reads.armed, reads.turret))
+end
+
+do
+    -- ═══ A LISTED MODEL BEHAVES EXACTLY AS IT DID BEFORE ANY OF THIS ═══
+    --
+    -- The ruling already disarms it and server/vehicles.lua already excuses it, so
+    -- there is nothing a probe could add and nothing a report could change. Not
+    -- asking is what makes that true by construction rather than by coincidence.
+    reset()
+    spawn(10, CARACARA, 9, 'automobile')
+    myVeh = 10
+    vehArmed[10] = true
+    vehTurret[10] = { [-1] = true }
+    gunBool, gunHash = true, SEAT_GUN
+    tick(3)
+
+    ok(did('disable') == 3, 'a listed model is disarmed on every pass, as before',
+       did('disable'))
+    ok(reads.armed == 0 and reads.turret == 0 and reads.seat == 0,
+       'and the engine is never asked about it at all',
+       ('armed=%d turret=%d seat=%d')
+           :format(reads.armed, reads.turret, reads.seat))
+    ok(#sent == 0, 'and nothing is reported about it', #sent)
+end
+
+do
+    -- A REFUSED MODEL IS STILL EMPTIED, AND IS NEVER PROBED. The probe sits BELOW
+    -- the refusal's `return`, so a Buzzard cannot become a vehicle we merely
+    -- disarm however loudly the engine agrees it is armed.
+    reset()
+    spawn(10, BUZZARD, 15, 'heli')
+    myVeh = 10
+    vehArmed[10] = true
+    vehTurret[10] = { [-1] = true }
+    tick(3)
+
+    ok(did('leave') > 0, 'a FLIES refusal still ejects', did('leave'))
+    ok(did('disable') == 0, 'and is never disarmed instead', did('disable'))
+    ok(reads.armed == 0 and #sent == 0,
+       'and the engine is not asked and the server is not told',
+       ('armed=%d sent=%d'):format(reads.armed, #sent))
+end
+
+-- ═══ WHAT IT COSTS, WHICH IS THE ONLY WAY A PER-PASS PROBE IS VISIBLE ═══
+
+do
+    -- AN ORDINARY CAR IS ASKED ONCE AND THEN NEVER AGAIN. "This vehicle has no
+    -- gun in any seat" is a complete answer, so the latch spends nothing for the
+    -- rest of the match -- and a version that re-walked the seats every pass
+    -- would produce identical outcomes in every block above.
+    reset()
+    spawn(10, ADDER, 7, 'automobile')
+    myVeh = 10
+    tick(5)
+
+    ok(reads.armed == 1,
+       'five passes in an ordinary car ask the vehicle-level question once',
+       reads.armed)
+    ok(reads.seat == 1,
+       'and walk the seats once, stopping at the driving seat', reads.seat)
+    ok(reads.turret == 1, 'and ask about that one seat once', reads.turret)
+    ok(V.stats().probed == 1, 'one occupancy, one probe', V.stats().probed)
+    ok(#acts == 0, 'and nothing is done to the car', #acts)
+end
+
+do
+    -- A VEHICLE THAT DID ANSWER COSTS ONE NATIVE A PASS AFTER THAT, and that one
+    -- is a CONFIRMATION rather than a search: seat state is the only thing that
+    -- can change without the handle changing.
+    reset()
+    spawn(10, MYSTERY, 9, 'automobile')
+    myVeh = 10
+    vehArmed[10] = true
+    tick(5)
+
+    ok(reads.armed == 1, 'the vehicle is asked once, not five times', reads.armed)
+    ok(reads.seat == 5, 'and the latched seat is confirmed once a pass',
+       reads.seat)
+    ok(reads.turret == 1, 'and the seat question is not re-asked', reads.turret)
+end
+
+do
+    -- ...AND A SEAT CHANGE INSIDE THE SAME VEHICLE IS RE-ASKED. A player who
+    -- drives a Technical to a fight and then shuffles into the bed is in a
+    -- different seat of the same handle, and the turret answer is about the seat.
+    -- THE SEAT INDEX IS THE SECOND ARGUMENT, and this is where a file that passed
+    -- the wrong one fails: the two seats answer differently on purpose.
+    reset()
+    spawn(10, MYSTERY, 9, 'automobile')
+    myVeh = 10
+    vehArmed[10] = true
+    vehTurret[10] = { [-1] = false, [0] = true }
+    gunBool, gunHash = true, SEAT_GUN
+    tick()
+    ok(V.stats().turretSeat == 0, 'the driving seat is no turret',
+       V.stats().turretSeat)
+
+    seatPed(10, 0)
+    tick()
+    ok(V.stats().turretSeat == 1,
+       'and moving to the gun seat is asked about again', V.stats().turretSeat)
+    ok(reads.turret == 2, 'which is a second read and not a cached one',
+       reads.turret)
+end
+
+-- ═══ THE BOOL SHAPES, FOR BOTH NATIVES, BECAUSE NEITHER DOC PAGE SAYS ═══
+
+for _, shape in ipairs({ true, 1 }) do
+    reset()
+    spawn(10, MYSTERY, 4, 'automobile')
+    myVeh = 10
+    vehArmed[10] = shape
+    gunBool, gunHash = true, SEAT_GUN
+    tick()
+    ok(did('disable') == 1 and #sent == 1,
+       ('DOES_VEHICLE_HAVE_WEAPONS answering %s is a yes'):format(tostring(shape)),
+       did('disable'))
+end
+
+for _, shape in ipairs({ 0, false }) do
+    -- `0` IS THE ONE THAT MATTERS: it is TRUTHY in Lua, so a probe written as
+    -- `if DoesVehicleHaveWeapons(veh) then` would report every car in the match as
+    -- armed and hand the anticheat a blanket excuse. This project has shipped the
+    -- truthiness version of this six times.
+    reset()
+    spawn(10, MYSTERY, 4, 'automobile')
+    myVeh = 10
+    vehArmed[10] = shape
+    gunBool, gunHash = true, SEAT_GUN
+    tick(2)
+    ok(did('disable') == 0 and #sent == 0,
+       ('DOES_VEHICLE_HAVE_WEAPONS answering %s is a no'):format(tostring(shape)),
+       ('%d disables, %d sent'):format(did('disable'), #sent))
+end
+
+for _, shape in ipairs({ 0, false }) do
+    reset()
+    spawn(10, MYSTERY, 4, 'automobile')
+    myVeh = 10
+    vehTurret[10] = { [-1] = shape }
+    gunBool, gunHash = true, SEAT_GUN
+    tick(2)
+    ok(did('disable') == 0,
+       ('IS_TURRET_SEAT answering %s is a no'):format(tostring(shape)),
+       did('disable'))
+end
+
+do
+    reset()
+    spawn(10, MYSTERY, 4, 'automobile')
+    myVeh = 10
+    vehTurret[10] = { [-1] = 1 }
+    gunBool, gunHash = true, SEAT_GUN
+    tick()
+    ok(did('disable') == 1, 'and IS_TURRET_SEAT answering 1 is a yes',
+       did('disable'))
+end
+
+-- ═══ A BUILD WITHOUT THEM, AND A HANDLE THAT HAS GONE STALE ═══
+
+do
+    -- NEITHER NATIVE ON THIS BUILD. `safe` answers nil for an absent native
+    -- exactly as it does for a throwing one, and a nil call would take the whole
+    -- TICK pass down -- the ejection with it.
+    reset()
+    spawn(10, MYSTERY, 4, 'automobile')
+    myVeh = 10
+    gunBool, gunHash = true, SEAT_GUN
+    local a, t = DoesVehicleHaveWeapons, IsTurretSeat
+    DoesVehicleHaveWeapons, IsTurretSeat = nil, nil
+    local before = gateErrors()
+    tick(2)
+    DoesVehicleHaveWeapons, IsTurretSeat = a, t
+
+    ok(gateErrors() == before,
+       'a build with neither native does not take the pass down',
+       gateErrors() - before)
+    ok(did('disable') == 0 and #sent == 0,
+       'and nothing is disabled and nothing is claimed',
+       ('%d disables, %d sent'):format(did('disable'), #sent))
+    ok(V.stats().probed == 1,
+       'while `probed` still climbs -- one occupancy, asked about',
+       V.stats().probed)
+    -- AND `probed` IS NOT WHAT SAYS THE NATIVE IS SILENT, which this block used to
+    -- claim in as many words. A `probed` of one with `engine-armed` at zero is also
+    -- what one ordinary car looks like. `armed-silent` counts the reads that
+    -- reached no engine at all, and it is the only number here that separates the
+    -- two.
+    ok(V.stats().armedSilent == 2 and V.stats().engineArmed == 0,
+       'and `armed-silent` is what tells an operator the native is not answering '
+           .. 'rather than every car being unarmed',
+       ('silent=%d armed=%d')
+           :format(V.stats().armedSilent, V.stats().engineArmed))
+end
+
+for _, which in ipairs({ 'armed', 'turret', 'seat', 'netId' }) do
+    -- A STALE HANDLE THROWS RATHER THAN ANSWERING, which is the shape this file's
+    -- `safe` exists for. Each of the four natives is thrown separately: a pcall
+    -- around the wrong one looks identical while the pass is fine.
+    reset()
+    spawn(10, MYSTERY, 4, 'automobile')
+    myVeh = 10
+    vehArmed[10] = true
+    gunBool, gunHash = true, SEAT_GUN
+    throws[which] = true
+    local before = gateErrors()
+    tick(2)
+    ok(gateErrors() == before,
+       ('a %s native that throws does not take the pass down'):format(which),
+       gateErrors() - before)
+    ok(did('leave') == 0,
+       ('nor does it turn into an ejection (%s)'):format(which), did('leave'))
+end
+
+-- ═══ AND A READ THAT DID NOT ANSWER IS NOT AN ANSWER OF "NO" ═══
+--
+-- THE WORST SHAPE THIS FEATURE HAD. `probe.asked` was set before either native was
+-- read and `isTrue(safe(...))` folded "threw, or is not on this build" into the
+-- same `false` as "answered no", so one bad pass latched "no gun" for the WHOLE
+-- occupancy: no disarm and no report for as long as the player stayed in that
+-- vehicle, which is precisely the symptom #329 exists to remove, now silent and
+-- with `probed` climbing so the readout said "asked, the car was unarmed".
+--
+-- IT IS THE EXPECTED CASE AND NOT AN EXOTIC ONE. `safe` exists in the file under
+-- test because these natives "may not exist on this build and may throw on a stale
+-- handle"; an ownership migration or a handle that goes stale for a tenth of a
+-- second is enough, and the player pays for the whole time they stay seated.
+
+--- How many passes of one occupancy may read DOES_VEHICLE_HAVE_WEAPONS.
+---
+--- WRITTEN OUT HERE FOR MAX_SEAT_WALK's REASON: the bound is a cost contract with
+--- no outcome to show it, so an unbounded retry -- a pcall'd native every pass for
+--- every player in every vehicle, forever -- would pass every other assertion in
+--- this file.
+local PROBE_TRIES = 5
+
+do
+    -- ONE THROWING PASS, THEN A HEALTHY ONE. The reviewer's reproduction of the
+    -- defect was one throwing pass followed by twenty healthy passes, which
+    -- produced armed-reads=1, disables=0, sent=0.
+    reset()
+    spawn(10, MYSTERY, 9, 'automobile')
+    myVeh = 10
+    vehArmed[10] = true
+    gunBool, gunHash = true, SEAT_GUN
+
+    throws.armed = true
+    tick()
+    ok(reads.armed == 1 and did('disable') == 0 and #sent == 0,
+       'the pass whose read threw disarms nothing and reports nothing, which is '
+           .. 'all a pass that learned nothing can do',
+       ('armed=%d disables=%d sent=%d')
+           :format(reads.armed, did('disable'), #sent))
+    ok(V.stats().armedSilent == 1 and V.stats().engineArmed == 0,
+       'and it is counted as silence rather than as an answer of no',
+       ('silent=%d armed=%d')
+           :format(V.stats().armedSilent, V.stats().engineArmed))
+
+    throws.armed = nil
+    tick()
+    ok(reads.armed == 2, 'the next pass asks the engine again', reads.armed)
+    ok(did('disable') == 1 and #sent == 1,
+       'and the gun goes off and the server is told, in the SAME occupancy -- '
+           .. 'without this the player keeps a live gun and an incident for as '
+           .. 'long as they stay in the car',
+       ('disables=%d sent=%d'):format(did('disable'), #sent))
+    ok(V.stats().probed == 1 and V.stats().engineArmed == 1,
+       'which is one occupancy that answered late, not two',
+       ('probed=%d armed=%d')
+           :format(V.stats().probed, V.stats().engineArmed))
+end
+
+do
+    -- ...AND THE RETRY IS BOUNDED, WHICH IS THE OTHER HALF OF THE SAME FIX. A
+    -- native that is not on this build never starts answering, so "ask again next
+    -- pass" with no ceiling is a native call every 100 ms for every player in every
+    -- vehicle for the whole match. Five passes is half a second at TICK: long
+    -- enough for a migration to settle, and five reads is the entire cost of a
+    -- build without the native.
+    reset()
+    spawn(10, MYSTERY, 9, 'automobile')
+    myVeh = 10
+    vehArmed[10] = true
+    gunBool, gunHash = true, SEAT_GUN
+    throws.armed = true
+    local before = gateErrors()
+    tick(20)
+
+    ok(reads.armed == PROBE_TRIES,
+       'twenty passes of a native that always throws read it five times and then '
+           .. 'stop asking', reads.armed)
+    ok(V.stats().armedSilent == PROBE_TRIES and V.stats().probed == 1,
+       'all five counted as silence, against the one occupancy',
+       ('silent=%d probed=%d')
+           :format(V.stats().armedSilent, V.stats().probed))
+    ok(gateErrors() == before, 'and none of them took the pass down',
+       gateErrors() - before)
+    ok(did('disable') == 0 and #sent == 0,
+       'a vehicle nothing ever answered about is left to the authored table, '
+           .. 'which is the pre-#329 floor',
+       ('disables=%d sent=%d'):format(did('disable'), #sent))
+end
+
+do
+    -- ═══ AND `/brvehrefuse` TELLS THE TWO APART, WHICH IS WHY THE COUNTER IS
+    --     THERE AT ALL ═══
+    --
+    -- "The natives are silent on this build" and "every car in this match really
+    -- was unarmed" are the same picture in `probed` and `engine-armed`, and only a
+    -- live lobby can settle which one is happening. So the readout has to carry the
+    -- silence itself rather than leave an operator to infer it from a zero.
+    --
+    -- THE GLOBAL `print` IS BORROWED FOR THE CALL. The command resolves it when it
+    -- runs, so this reads the real line the operator would see.
+    local function readout()
+        local lines, saved = {}, print
+        print = function(m) lines[#lines + 1] = m end
+        local okc = pcall(commands.brvehrefuse)
+        print = saved
+        return okc, table.concat(lines, '\n')
+    end
+
+    reset()
+    spawn(10, MYSTERY, 9, 'automobile')
+    myVeh = 10
+    vehArmed[10] = true
+    throws.armed = true
+    tick(20)
+    local okc, silent = readout()
+    ok(okc and silent:find('armed%-silent=5') ~= nil,
+       'a build whose native never answers prints the silence', silent)
+
+    reset()
+    spawn(10, ADDER, 7, 'automobile')
+    myVeh = 10
+    tick(20)
+    local okd, ordinary = readout()
+    ok(okd and ordinary:find('armed%-silent=0') ~= nil
+       and ordinary:find('probed=1') ~= nil,
+       'and an ordinary car prints the same one probe with no silence in it',
+       ordinary)
+end
+
+-- ═══ A HANDLE IS NOT A VEHICLE, WHICH IS WHAT THE LATCH IS KEYED ON ═══
+
+do
+    -- ═══ A RECYCLED HANDLE CARRYING A STALE ARMED CLAIM INTO ANOTHER VEHICLE ═══
+    --
+    -- Entity handles are REISSUED. Sit in the armed vehicle holding handle 10, get
+    -- out, let that vehicle be deleted, and the engine can hand 10 to a plain
+    -- Adder. Keyed on the handle alone, the latch answers "armed" for the Adder
+    -- with the engine never asked about it -- and THE SERVER CANNOT CATCH THAT: it
+    -- reads the model off the vehicle it resolved itself, so its handle, model,
+    -- seat and match checks all pass and the report is believed.
+    --
+    -- THE RECYCLE HAPPENS BETWEEN TWO PASSES HERE, with no pass in between where
+    -- the player is seen on foot, and that is deliberate: a dismount and a remount
+    -- inside one 100 ms window is invisible to the gate, so the KEY is the half of
+    -- the fix that has to hold. The block below is the other half.
+    reset()
+    spawn(10, MYSTERY, 9, 'automobile')
+    myVeh = 10
+    vehArmed[10] = true
+    vehTurret[10] = { [-1] = true }
+    gunBool, gunHash = true, SEAT_GUN
+    tick()
+    ok(#sent == 1 and did('disable') == 1,
+       'the armed vehicle holding handle 10 is disarmed and reported',
+       ('sent=%d disables=%d'):format(#sent, did('disable')))
+
+    -- THE SAME HANDLE, ANOTHER VEHICLE: an ordinary supercar in no row of
+    -- anything, which the engine says has no weapons and no turret seat.
+    spawn(10, ADDER, 7, 'automobile')
+    vehArmed[10], vehTurret[10] = nil, nil
+    acts, sent = {}, {}
+    -- PAST THE REPORT CADENCE, so the report half of this is visible too: a stale
+    -- armed latch does not only disarm the wrong car, it goes on TELLING THE
+    -- SERVER about it every two seconds, and the server believes it.
+    tick(25)
+
+    ok(reads.armed == 2,
+       'the engine is asked about the vehicle that holds the handle NOW',
+       reads.armed)
+    ok(did('disable') == 0 and #sent == 0,
+       'and the Adder is neither disarmed nor reported armed',
+       ('disables=%d sent=%d'):format(did('disable'), #sent))
+    ok(V.stats().probed == 2 and V.stats().engineArmed == 1,
+       'which is a second occupancy, measured rather than remembered',
+       ('probed=%d armed=%d')
+           :format(V.stats().probed, V.stats().engineArmed))
+end
+
+do
+    -- ...AND LEAVING THE VEHICLE ENDS THE MEASUREMENT.
+    --
+    -- `clearProbe` was reachable from nothing but BR.VehRefuse.reset, and that
+    -- function has NO CALLER anywhere in `resources/` -- only this suite -- so the
+    -- latch outlived dismounts, deaths and match boundaries. The gate clears it
+    -- wherever it clears `pending`, which is every place it has established that
+    -- this player is not sitting in anything.
+    reset()
+    spawn(10, MYSTERY, 9, 'automobile')
+    myVeh = 10
+    vehArmed[10] = true
+    tick()
+    ok(reads.armed == 1 and V.stats().probed == 1 and #sent == 1,
+       'one occupancy, one read, one report',
+       ('armed=%d probed=%d sent=%d')
+           :format(reads.armed, V.stats().probed, #sent))
+
+    myVeh = 0                            -- out of the car and standing beside it
+    tick()
+    myVeh = 10                           -- and back into the same one
+    tick()
+
+    ok(reads.armed == 2 and V.stats().probed == 2,
+       'getting out and back in is a new occupancy and is asked about again',
+       ('armed=%d probed=%d'):format(reads.armed, V.stats().probed))
+    ok(#sent == 2,
+       'and reported at once, rather than waiting out a cadence window opened '
+           .. 'before they got out', #sent)
+end
+
+-- ═══ WHEN THE SERVER IS TOLD, AND HOW OFTEN ═══
+
+do
+    -- IT IS A REPEAT, NOT AN EDGE, and the reason is the far end: this server's
+    -- copy of who is in which seat is up to a roster sample behind the client's,
+    -- so a single report sent on the pass the seat was taken can arrive before the
+    -- server agrees anybody is sitting there -- and a lost edge is a suppression
+    -- lost for the whole occupancy.
+    reset()
+    spawn(10, MYSTERY, 4, 'automobile')
+    myVeh = 10
+    vehArmed[10] = true
+    tick()
+    ok(#sent == 1, 'the first pass in the seat reports once', #sent)
+
+    tick(19)                         -- 1900 ms later
+    ok(#sent == 1, 'and nineteen more passes do not repeat it', #sent)
+    tick()                           -- 2000 ms
+    ok(#sent == 2, 'the cadence repeats it after two seconds', #sent)
+    ok(sent[2].payload.netId == 910 and sent[2].payload.seat == -1,
+       'naming the same vehicle and seat')
+end
+
+do
+    -- A VEHICLE THE ENGINE DOES NOT NETWORK CANNOT BE REPORTED, because the id is
+    -- the only name the two machines share. `0` is what the engine answers for
+    -- one, and `0` is truthy in Lua. The GUN is still switched off: that half
+    -- needs no server at all.
+    reset()
+    spawn(10, MYSTERY, 4, 'automobile')
+    myVeh = 10
+    vehNetId[10] = 0
+    vehArmed[10] = true
+    gunBool, gunHash = true, SEAT_GUN
+    tick(2)
+    ok(#sent == 0, 'a vehicle with no network id is not reported', #sent)
+    ok(did('disable') == 2, 'and its gun is still held off', did('disable'))
+end
+
+do
+    -- A SEAT THIS FILE CANNOT NAME. Seats past MAX_SEAT -- the back of a coach --
+    -- are not walked, so there is no seat index to validate a report with and none
+    -- is sent. server/vehicles.lua's CABIN_SEATS states the same limit. The
+    -- vehicle-level answer still holds the gun off.
+    reset()
+    spawn(10, MYSTERY, 4, 'automobile')
+    myVeh = 10
+    seatPed(10, 9)
+    vehArmed[10] = true
+    gunBool, gunHash = true, SEAT_GUN
+    tick()
+    ok(reads.turret == 0, 'no seat named, no seat question asked', reads.turret)
+    ok(#sent == 0, 'and nothing reported', #sent)
+    ok(did('disable') == 1, 'and the gun is still switched off', did('disable'))
+
+    -- AND IT IS A SETTLED ANSWER RATHER THAN A FAILED ONE, which is a COST
+    -- assertion and has no outcome to show it: there is no seat state to confirm,
+    -- so a version that treated "no seat" as "ask again" would walk ten natives
+    -- every pass for as long as somebody rode in the back of a coach, and every
+    -- other assertion in this block would still pass.
+    tick(4)
+    ok(reads.armed == 1, 'the vehicle is not re-asked on later passes',
+       reads.armed)
+    ok(reads.seat == MAX_SEAT_WALK,
+       'and the seats are walked exactly once', reads.seat)
+end
+
+do
+    -- MOVING INTO THE GUN SEAT IS A NEW CLAIM AND IS SENT AT ONCE. The cadence
+    -- clock is cleared with the seat, so a player who shuffles into a turret does
+    -- not wait out the remainder of a window opened by the seat they left.
+    reset()
+    spawn(10, MYSTERY, 9, 'automobile')
+    myVeh = 10
+    vehArmed[10] = true
+    vehTurret[10] = { [-1] = false, [0] = true }
+    tick()
+    ok(#sent == 1 and sent[1].payload.seat == -1,
+       'the driving seat is reported first', #sent)
+
+    seatPed(10, 0)
+    tick()
+    ok(#sent == 2 and sent[2].payload.seat == 0,
+       'and the gun seat is reported on the very next pass, not two seconds '
+           .. 'later', #sent)
+end
+
+do
+    -- NOBODY IS REPORTED WHILE STILL CLIMBING IN. There is no seat yet, the
+    -- refusal half of this file has not ruled, and a report about a vehicle
+    -- somebody has not sat down in is a claim the far end would refuse anyway.
+    reset()
+    spawn(10, MYSTERY, 4, 'automobile')
+    entering, myVeh = 10, 0
+    vehArmed[10] = true
+    tick(3)
+    ok(#sent == 0 and reads.armed == 0,
+       'a player at the door reports nothing and asks nothing',
+       ('%d sent, %d asked'):format(#sent, reads.armed))
+end
+
+for _, st in ipairs({ BR.PlayerState.BUS, BR.PlayerState.FREEFALL,
+                      BR.PlayerState.OUT }) do
+    -- AND THE GATE THE WHOLE FILE KEEPS. A spectator is OUT and the bus is
+    -- carrying people; neither is a state in which anybody is working a turret,
+    -- and a report from one would be a message per player per two seconds for a
+    -- lobby full of people who are not playing.
+    reset()
+    spawn(10, MYSTERY, 4, 'automobile')
+    myVeh = 10
+    vehArmed[10] = true
+    BR.State.me.state = st
+    tick(3)
+    ok(#sent == 0 and reads.armed == 0,
+       ('nothing is asked or reported in state %s'):format(tostring(st)),
+       ('%d sent, %d asked'):format(#sent, reads.armed))
+end
+
+do
+    -- THE DIAGNOSTIC STILL RUNS, and it reads both new natives on whatever the
+    -- player is in. A nil-index in a command nobody runs in a test is a crash on a
+    -- live server at the moment somebody is trying to diagnose this very feature.
+    reset()
+    spawn(10, MYSTERY, 4, 'automobile')
+    myVeh = 10
+    vehArmed[10] = true
+    tick()
+    ok(pcall(commands.brvehrefuse), '/brvehrefuse prints the probe readout')
+    seatPed(10, 9)
+    ok(pcall(commands.brvehrefuse), 'and in a seat it cannot name')
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
 describe('the hand is read before client/inventory.lua empties it (#322)')
 -- ═══════════════════════════════════════════════════════════════════════════
 --
@@ -1667,6 +2520,552 @@ do
        'and neither callback threw on any of these passes',
        ('inv.apply=%s vehrefuse.gate=%s'):format(
            tostring(errorsOf('inv.apply')), tostring(errorsOf('vehrefuse.gate'))))
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+describe('the far end keeps the report per player (#329)')
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- ═══ WHY THE REAL br_core/server/vehicles.lua IS LOADED HERE ═══
+--
+-- Because the half that decides what an armament report is WORTH is on the
+-- server, and it is not the sort of thing a pure function can be extracted from:
+-- the whole of it is a client claim checked against natives, a roster entry and
+-- two authored tables. The client half above could be perfect while this side
+-- believed anybody about anything.
+--
+-- THE THREE PROPERTIES THAT HAVE NO IN-GAME SYMPTOM UNTIL THEY ARE WRONG:
+--
+--   1. IT IS PER PLAYER. The fact lives on the reporter's own roster entry, not
+--      in a table keyed on the model, so one liar excuses themselves and nobody
+--      else. A shared cache would pass every other assertion in this block and
+--      would hand the whole match an anticheat excuse for one forged message.
+--   2. IT MAY ONLY ADD. A model BR.Config.IsDisarmedVehicle names is excused
+--      whether a report arrived or not, so nothing regresses and no client can
+--      take an excuse away from anybody -- including itself.
+--   3. IT IS CHECKED, NOT BELIEVED. The vehicle is resolved from the network id
+--      on THIS side and asked who is in that seat -- citizenfx/fivem#4006 is why
+--      the ped is never asked what it is in -- and a mismatch is dropped.
+--
+-- AND IT KEEPS THE OWNER'S RULINGS THE OWNER'S: a report about a model the
+-- gamemode refuses, or about the one model exempted by hand, is refused here too,
+-- so a modified client cannot reach either of them from this direction.
+do
+    --- A loaded server/vehicles.lua and the levers to drive it.
+    local function newServer()
+        -- ITS OWN BR, SET BEFORE ANY FILE LOADS. `BR = BR or {}` at the top of
+        -- every file in this project would otherwise find the OUTER one through
+        -- __index and the two halves of this suite would share a module table.
+        local S = { now = 50000, roster = {}, seats = {}, lastVeh = {},
+                    models = {}, types = {}, ids = {}, prints = {},
+                    handlers = {} }
+        local env = setmetatable({ BR = {} }, { __index = _G })
+        env._G = env
+
+        env.GetGameTimer = function() return S.now end
+        env.print = function(m) S.prints[#S.prints + 1] = m end
+        env.GetCurrentResourceName = function() return 'br_core' end
+        env.RegisterNetEvent = function() end
+        env.RegisterCommand  = function() end
+        -- COUNTED RATHER THAN SWALLOWED: the owner's rule for this file is "don't
+        -- stop them, simply file an incident", so a cancel appearing in it is a
+        -- behavior change and this suite should say so.
+        S.cancels = 0
+        env.CancelEvent = function() S.cancels = S.cancels + 1 end
+        env.Citizen = { CreateThread = function() end, Wait = function() end,
+                        SetTimeout = function() end }
+        env.AddEventHandler = function(n, fn)
+            S.handlers[n] = S.handlers[n] or {}
+            table.insert(S.handlers[n], fn)
+        end
+        env.TriggerEvent = function() end
+
+        -- THE ENTITY, AS A SERVER WOULD ANSWER FOR IT.
+        env.GetEntityModel = function(h) return S.models[h] end
+        -- ═══ THE TYPE, PER VEHICLE, BECAUSE THIS SIDE CAN READ IT ═══
+        --
+        -- `GetVehicleType` IS NOT CLIENT-ONLY. `GetVehicleClass` -- the 0-22 enum
+        -- -- is the one that is, and the two get confused: it is the type that
+        -- catches an aircraft the model table does not name, which is what
+        -- `stat.byType` exists to count. A stub answering one constant cannot tell
+        -- a guard that asks with the type signal from one that asks with no
+        -- signals at all, and the second of those was a hole a modified client
+        -- could drive an armed helicopter through.
+        env.GetVehicleType = function(h) return S.types[h] or 'automobile' end
+        env.DoesEntityExist = function() return false end
+        env.GetEntityType = function() return 0 end
+        env.GetEntityPopulationType = function() return 5 end
+        env.NetworkGetEntityOwner = function() return nil end
+
+        -- ═══ THE TWO SEAT NATIVES, AND THE FIRST ONE LIES ON PURPOSE ═══
+        --
+        -- citizenfx/fivem#4006, still OPEN: server-side GetVehiclePedIsIn answers
+        -- the vehicle a ped was LAST in when it is in none. Modelling that
+        -- faithfully is the whole value of the stub -- a version answering 0 for a
+        -- ped on foot would pass a `ridingIn` written as a bare read of it, and
+        -- the armament check leans on `ridingIn` for every answer it gives.
+        env.GetVehiclePedIsIn = function(ped) return S.lastVeh[ped] or 0 end
+        env.GetPedInVehicleSeat = function(veh, seat)
+            return (S.seats[veh] or {})[seat] or 0
+        end
+        -- THE ONE NATIVE THE REPORT IS RESOLVED THROUGH. An id naming nothing
+        -- answers 0, which is what the engine does and what `entityFrom` reads as
+        -- "no such entity".
+        env.NetworkGetEntityFromNetworkId = function(id) return S.ids[id] or 0 end
+
+        env.BR.Roster = {
+            get = function(s) return S.roster[s] end,
+            licenseOf = function(s)
+                local r = S.roster[s]
+                return r and r.license or nil
+            end,
+            -- The roadkill ledger registers a scheduler job at LOAD time, so
+            -- without these two the file cannot load at all. It is driven in
+            -- tools/test_roster.lua against the real roster; what it needs here is
+            -- only to not explode.
+            each = function(pred, fn)
+                for s, e in pairs(S.roster) do
+                    if not pred or pred(e) then fn(s, e) end
+                end
+            end,
+            sampleIntervalMs = function() return 250 end,
+        }
+
+        for _, f in ipairs({
+            'br_lib/shared/enums.lua', 'br_lib/shared/protocol.lua',
+            'br_lib/shared/geo.lua', 'br_lib/shared/sched.lua',
+            'br_lib/config/match.lua', 'br_lib/config/vehicles.lua',
+            'br_core/server/vehicles.lua',
+        }) do
+            local chunk, err = loadfile(ROOT .. f, 't', env)
+            if not chunk then
+                realPrint('\27[31mload error\27[0m ' .. f .. ': ' .. tostring(err))
+                os.exit(1)
+            end
+            local okc, e2 = pcall(chunk)
+            if not okc then
+                realPrint('\27[31mrun error\27[0m ' .. f .. ': ' .. tostring(e2))
+                os.exit(1)
+            end
+        end
+
+        S.env = env
+        S.stats = function() return env.BR.Vehicles.stats() end
+
+        --- Put a player in the match, in a seat of a vehicle.
+        ---
+        --- THE ROSTER ENTRY IS KEPT ACROSS A MOVE, AND THAT IS THE WHOLE POINT OF
+        --- THIS FIXTURE. The armament report lives ON that entry, so a `sit` that
+        --- built a fresh table every call would silently wipe it -- and every
+        --- assertion about a report NOT following somebody into the next car would
+        --- pass whether the code checked anything or not.
+        ---
+        --- AND A PED IS IN ONE SEAT. The old seat is cleared, because the check on
+        --- the far side is a seat read: a fixture that left them in both would
+        --- accept a report about the car they just got out of.
+        function S.sit(src, veh, seat, model)
+            local ped = 100 + src
+            local e = S.roster[src]
+            if e == nil then
+                e = { src = src, name = 'P' .. src, matchId = 1, ped = ped,
+                      license = 'license:p' .. src,
+                      state = env.BR.PlayerState.ALIVE }
+                S.roster[src] = e
+            end
+            e.ped = ped
+
+            for _, seats in pairs(S.seats) do
+                for s, p in pairs(seats) do
+                    if p == ped then seats[s] = nil end
+                end
+            end
+
+            S.models[veh] = model
+            S.ids[900 + veh] = veh
+            S.seats[veh] = S.seats[veh] or {}
+            S.seats[veh][seat] = ped
+            -- citizenfx/fivem#4006's stale answer, which is what the file under
+            -- test has to refute with the seat read.
+            S.lastVeh[ped] = veh
+            return ped
+        end
+
+        --- Deliver one BR.Net.VEH_ARMED from this player.
+        function S.report(src, payload)
+            env.source = src
+            for _, fn in ipairs(S.handlers[env.BR.Net.VEH_ARMED] or {}) do
+                fn(payload)
+            end
+        end
+
+        --- Is this player excused, asked the way both accusers ask?
+        function S.excused(src)
+            local e = S.roster[src]
+            return env.BR.Vehicles.inDisarmedVehicle(e and e.ped, e)
+        end
+
+        return S
+    end
+
+    do
+        -- AN UNLISTED MODEL, NO REPORT: exactly the pre-#329 answer, which is the
+        -- floor everything else is measured from.
+        local S = newServer()
+        S.sit(1, 10, -1, MYSTERY)
+
+        -- THE SAME ASSERTION THE CLIENT BLOCK OPENS WITH, MADE AGAINST THIS
+        -- SANDBOX'S OWN CONFIG: the model is in no authored row, which is the
+        -- owner's requirement rather than a detail of the fixture. A suite that
+        -- skipped it here would pass against a fix that wrote a row.
+        ok(S.env.BR.Config.IsDisarmedVehicle(MYSTERY) == false
+           and S.env.BR.Config.VehicleRefusalFor(MYSTERY) == nil,
+           'the model is in no authored row on this side either')
+
+        ok(S.excused(1) == false,
+           'an unlisted model with no report is not excused',
+           tostring(S.excused(1)))
+
+        -- ...AND ONE REPORT LATER IT IS.
+        S.report(1, { netId = 910, seat = -1 })
+        ok(S.excused(1) == true,
+           'and the engine\'s own answer, reported and checked, excuses it',
+           tostring(S.excused(1)))
+        ok(S.stats().probes == 1 and S.stats().probesBad == 0,
+           'counted as believed rather than as refused',
+           ('probes=%d bad=%d'):format(S.stats().probes, S.stats().probesBad))
+        ok(#S.prints == 0, 'and nothing is printed about it', #S.prints)
+    end
+
+    do
+        -- ═══ THE PROPERTY THE WHOLE DESIGN TURNS ON: PER PLAYER, NOT PER MODEL ═══
+        --
+        -- Two players in two vehicles of the SAME model. One reports; the other
+        -- must be unaffected. A cache keyed on the model hash would be cheaper,
+        -- would pass every other assertion in this block, and would mean one
+        -- forged message excused that model for everybody in the match.
+        local S = newServer()
+        S.sit(1, 10, -1, MYSTERY)
+        S.sit(2, 11, -1, MYSTERY)
+        S.report(1, { netId = 910, seat = -1 })
+
+        ok(S.excused(1) == true, 'the player who reported is excused')
+        ok(S.excused(2) == false,
+           'and the player beside them in the same model is NOT',
+           tostring(S.excused(2)))
+    end
+
+    do
+        -- A REPORT ABOUT A VEHICLE THIS SERVER DOES NOT AGREE THEY ARE IN. The
+        -- claim names a real vehicle -- somebody else's -- and the check is the
+        -- seat read on THIS side, never the client's word.
+        local S = newServer()
+        S.sit(1, 10, -1, MYSTERY)
+        S.sit(2, 11, -1, MYSTERY)
+        S.report(1, { netId = 911, seat = -1 })
+
+        ok(S.excused(1) == false, 'naming another player\'s car excuses nothing',
+           tostring(S.excused(1)))
+        ok(S.stats().probes == 0 and S.stats().probesBad == 1,
+           'and is counted as refused', ('probes=%d bad=%d')
+               :format(S.stats().probes, S.stats().probesBad))
+        ok(#S.prints == 1 and S.prints[1]:find('does not match', 1, true) ~= nil,
+           'and says so once, in words that accuse nobody',
+           S.prints[1] or 'nothing printed')
+    end
+
+    do
+        -- A REPORT NAMING A SEAT THEY ARE NOT IN. The seat is the validation key,
+        -- so this is the same check one argument along -- and a file that dropped
+        -- the seat and walked the vehicle itself would accept it.
+        local S = newServer()
+        S.sit(1, 10, 0, MYSTERY)         -- really in the gun seat
+        S.report(1, { netId = 910, seat = -1 })
+        ok(S.excused(1) == false, 'claiming the driving seat from the gun seat '
+           .. 'excuses nothing', tostring(S.excused(1)))
+        ok(S.stats().probesBad == 1, 'and is refused', S.stats().probesBad)
+    end
+
+    for _, bad in ipairs({
+        { name = 'nothing at all',   payload = nil },
+        { name = 'a string',         payload = 'armed' },
+        { name = 'no network id',    payload = { seat = -1 } },
+        { name = 'a zero id',        payload = { netId = 0, seat = -1 } },
+        { name = 'an unknown id',    payload = { netId = 12345, seat = -1 } },
+        { name = 'no seat',          payload = { netId = 910 } },
+        { name = 'a float seat',     payload = { netId = 910, seat = 0.5 } },
+        { name = 'a seat past the cabin',
+          payload = { netId = 910, seat = 99 } },
+        { name = 'a seat below the driver',
+          payload = { netId = 910, seat = -2 } },
+    }) do
+        -- EVERY SHAPE A CLIENT CAN CHOOSE TO SEND. `math.tointeger` answers nil
+        -- for a float, a string and a table, and ZERO IS TESTED FOR EXPLICITLY
+        -- because `0` is truthy in Lua -- it is what the engine answers for a
+        -- vehicle it does not network, so a client naming it is naming nothing.
+        local S = newServer()
+        S.sit(1, 10, -1, MYSTERY)
+        S.report(1, bad.payload)
+        ok(S.excused(1) == false,
+           ('a report carrying %s excuses nothing'):format(bad.name),
+           tostring(S.excused(1)))
+        ok(S.stats().probes == 0,
+           ('and is never believed (%s)'):format(bad.name), S.stats().probes)
+    end
+
+    do
+        -- A PLAYER WITH NO PED SAMPLED YET. `entityFrom` answers 0 for an empty
+        -- seat as well, so a 0 ped compared rather than refused would match every
+        -- empty seat in the world.
+        local S = newServer()
+        S.sit(1, 10, -1, MYSTERY)
+        S.roster[1].ped = 0
+        S.report(1, { netId = 910, seat = -1 })
+        ok(S.stats().probes == 0, 'a player with no ped is not believed',
+           S.stats().probes)
+    end
+
+    do
+        -- ═══ THE PROBE MAY ONLY ADD ARMAMENT AND NEVER CLEAR IT ═══
+        --
+        -- A listed model is excused with no report at all, and goes on being
+        -- excused while a report about a DIFFERENT vehicle sits on the entry. The
+        -- authored table answers first and its yes is final, so there is no
+        -- message a client can send that takes an excuse away from anybody.
+        local S = newServer()
+        S.sit(1, 10, -1, MYSTERY)
+        S.sit(1, 11, -1, CARACARA)       -- the same player, now in a listed one
+        S.lastVeh[101] = 11
+        ok(S.excused(1) == true,
+           'a listed model is excused with no report at all',
+           tostring(S.excused(1)))
+
+        S.report(1, { netId = 910, seat = -1 })   -- about the car they left
+        ok(S.excused(1) == true,
+           'and a stale report about another vehicle does not unexcuse it',
+           tostring(S.excused(1)))
+    end
+
+    do
+        -- AND A BELIEVED REPORT DOES NOT FOLLOW THEM INTO THE NEXT CAR. The
+        -- handle, the model and the match all have to match the vehicle they are
+        -- in NOW -- otherwise a fact about the Technical somebody was in would
+        -- excuse the Adder they are in next.
+        local S = newServer()
+        S.sit(1, 10, -1, MYSTERY)
+        S.report(1, { netId = 910, seat = -1 })
+        ok(S.excused(1) == true, 'excused in the car that was reported')
+
+        S.sit(1, 12, -1, ADDER)
+        S.lastVeh[101] = 12
+        ok(S.excused(1) == false,
+           'and not in the ordinary car they got into afterwards',
+           tostring(S.excused(1)))
+
+        -- ...NOR IN A SECOND CAR OF THE SAME MODEL, WHICH IS THE ASSERTION THE
+        -- HANDLE CHECK IS THE ONLY THING THAT PASSES. Two identical cars parked
+        -- side by side agree on the model, so a record compared on the model alone
+        -- would carry an excuse from one into the other -- and the honest client
+        -- reports the new one within two seconds anyway, so nothing is lost by
+        -- being exact about which vehicle was measured.
+        S.sit(1, 13, -1, MYSTERY)
+        S.lastVeh[101] = 13
+        ok(S.excused(1) == false,
+           'nor in a second car of the same model they have not reported',
+           tostring(S.excused(1)))
+        -- PAST THE WINDOW, because the report about the first car opened it. An
+        -- honest client's cadence is two seconds and the floor here is 900ms, so
+        -- this is the same wait a real one does.
+        S.now = S.now + 1000
+        S.report(1, { netId = 913, seat = -1 })
+        ok(S.excused(1) == true, 'until they report that one too')
+    end
+
+    do
+        -- A RECYCLED HANDLE IS NOT THE SAME VEHICLE. The model is compared as well
+        -- as the handle, and it costs nothing because the line above already read
+        -- it for the authored table.
+        local S = newServer()
+        S.sit(1, 10, -1, MYSTERY)
+        S.report(1, { netId = 910, seat = -1 })
+        S.models[10] = ADDER             -- same handle, different vehicle
+        ok(S.excused(1) == false,
+           'a handle that has been recycled under the report is not excused',
+           tostring(S.excused(1)))
+    end
+
+    do
+        -- A MATCH CHANGE VOIDS IT, exactly as every other per-player record in
+        -- this file is rebuilt on one: a fact about last round is not a fact.
+        local S = newServer()
+        S.sit(1, 10, -1, MYSTERY)
+        S.report(1, { netId = 910, seat = -1 })
+        S.roster[1].matchId = 2
+        ok(S.excused(1) == false, 'a report from the previous match is not read',
+           tostring(S.excused(1)))
+    end
+
+    do
+        -- ONE PER WINDOW. An honest client sends one every two seconds; what this
+        -- bounds is one sending them as fast as it can, and the clock is stamped
+        -- on ARRIVAL so a flood of lies is bounded too.
+        local S = newServer()
+        S.sit(1, 10, -1, MYSTERY)
+        S.report(1, { netId = 910, seat = -1 })
+        S.report(1, { netId = 910, seat = -1 })
+        ok(S.stats().probeThrottled == 1,
+           'a second report inside the window is throttled',
+           S.stats().probeThrottled)
+        ok(S.excused(1) == true, 'and the first one still stands')
+
+        S.now = S.now + 900
+        S.report(1, { netId = 910, seat = -1 })
+        ok(S.stats().probes == 2, 'and the window reopens', S.stats().probes)
+        ok(S.stats().probeReports == 3, 'with everything that arrived counted',
+           S.stats().probeReports)
+    end
+
+    do
+        -- ═══ THE OWNER'S OWN RULINGS, WHICH NO REPORT MAY REACH PAST ═══
+        --
+        -- A REFUSED MODEL IS EMPTIED, NOT DRIVEN. The honest client never reports
+        -- one -- its probe sits below the refusal -- so this is for the modified
+        -- one, and what it stops is an excuse for the mounted gun of a stolen
+        -- Buzzard.
+        local S = newServer()
+        S.sit(1, 10, -1, BUZZARD)
+        S.report(1, { netId = 910, seat = -1 })
+        ok(S.excused(1) == false, 'a refused model is not excused by a report',
+           tostring(S.excused(1)))
+        ok(S.stats().probesBad == 1, 'the report is refused', S.stats().probesBad)
+    end
+
+    do
+        -- ═══ AND AN ARMED AIRCRAFT THE MODEL TABLE DOES NOT NAME ═══
+        --
+        -- THE GUARD ABOVE WAS ASKED WITH NO SIGNALS AT ALL, under a comment saying
+        -- that was "all this side can read anyway". It is not: `GetVehicleType` is
+        -- readable on the server -- only `GetVehicleClass` is not -- and it is the
+        -- signal that catches the aircraft config/vehicles.lua has not got a row
+        -- for. So the guard blocked model-table refusals only, and a modified
+        -- client sitting in an unlisted armed helicopter passed every check this
+        -- handler makes: the model resolves, the seat holds its ped, the ruling
+        -- comes back nil. Its report was BELIEVED, which relabels its mounted-gun
+        -- shots from NO_WEAPON to VEHICLE_GUN -- a moderation record quietly not
+        -- filed.
+        --
+        -- AN HONEST CLIENT NEVER REACHES IT, which is what makes this the guard's
+        -- whole job rather than a corner: client/vehrefuse.lua's own class net
+        -- refuses a helicopter and returns ABOVE its probe, so the only sender that
+        -- can get here is the one the guard exists for.
+        local S = newServer()
+        S.sit(1, 10, -1, MYSTERY)
+        S.types[10] = 'heli'
+
+        ok(S.env.BR.Config.VehicleRefusalFor(MYSTERY) == nil,
+           'the model table has no row for it, which is the requirement')
+        ok(S.env.BR.Config.VehicleRefusalFor(MYSTERY, {
+               typeOf = function() return 'heli' end,
+           }) == S.env.BR.Config.VehicleRefusal.FLIES,
+           'and the TYPE is what rules on it -- the signal this side can read')
+
+        S.report(1, { netId = 910, seat = -1 })
+        ok(S.excused(1) == false,
+           'a report about an aircraft the table missed excuses nothing',
+           tostring(S.excused(1)))
+        ok(S.stats().probes == 0 and S.stats().probesBad == 1,
+           'and is refused rather than believed',
+           ('probes=%d bad=%d'):format(S.stats().probes, S.stats().probesBad))
+        ok(S.stats().byType == 1,
+           'counted where every other type-caught refusal is counted, which is '
+               .. 'the proof the signal was passed at all', S.stats().byType)
+    end
+
+    do
+        -- AND THE FIRETRUCK. Its hose IS a vehicle weapon and the owner ruled that
+        -- using it is not an incident; the exemption is the authored table's, and a
+        -- report must not become a second route to a model it names.
+        local S = newServer()
+        S.sit(1, 10, -1, FIRETRUK)
+        S.report(1, { netId = 910, seat = -1 })
+        ok(S.excused(1) == false,
+           'the model exempted by hand is not reachable by report',
+           tostring(S.excused(1)))
+        ok(S.stats().probesBad == 1, 'that report is refused too',
+           S.stats().probesBad)
+    end
+
+    do
+        -- A CALLER THAT PASSES NO ENTRY GETS THE PRE-#329 ANSWER, which is the
+        -- conservative direction: the authored table and nothing else. Both real
+        -- callers hold the entry already -- server/damage.lua's `s` and
+        -- server/strip.lua's `e` -- and a build where one of them did not would
+        -- lose the widening rather than gain a hole.
+        local S = newServer()
+        local ped = S.sit(1, 10, -1, MYSTERY)
+        S.report(1, { netId = 910, seat = -1 })
+        ok(S.env.BR.Vehicles.inDisarmedVehicle(ped) == false,
+           'asked with no roster entry, the table is the whole answer',
+           tostring(S.env.BR.Vehicles.inDisarmedVehicle(ped)))
+        ok(S.env.BR.Vehicles.inDisarmedVehicle(nil, S.roster[1]) == false,
+           'and nil is not an error')
+    end
+
+    do
+        -- THE CONSOLE LINE IS PRINTED ONCE PER PLAYER PER MATCH, and counted every
+        -- time. A line per refused message is an amplifier on a path a client
+        -- chooses the rate of -- server/strip.lua's own objection about its
+        -- ANTICHEAT line -- and the first says everything the ten thousandth would.
+        local S = newServer()
+        S.sit(1, 10, -1, MYSTERY)
+        for i = 1, 5 do
+            S.now = S.now + 1000
+            S.report(1, { netId = 999, seat = -1 })
+        end
+        ok(S.stats().probesBad == 5, 'five refusals are all counted',
+           S.stats().probesBad)
+        ok(#S.prints == 1, 'and one line is printed', #S.prints)
+
+        S.roster[1].matchId = 2
+        S.now = S.now + 1000
+        S.report(1, { netId = 999, seat = -1 })
+        ok(#S.prints == 2, 'and one more in the next match', #S.prints)
+    end
+
+    do
+        -- NOTHING IS BELIEVED FROM SOMEBODY OUTSIDE A MATCH. The gate the rest of
+        -- this file keeps: a lobby ped and a corpse are outside any round, so there
+        -- is nothing for the fact to be about and nothing for it to expire with.
+        for _, st in ipairs({ 'LOBBY', 'OUT', 'DBNO' }) do
+            local S = newServer()
+            S.sit(1, 10, -1, MYSTERY)
+            S.roster[1].state = S.env.BR.PlayerState[st]
+            S.report(1, { netId = 910, seat = -1 })
+            ok(S.stats().probes == 0,
+               ('a report from a %s player is not believed'):format(st),
+               S.stats().probes)
+        end
+
+        local S = newServer()
+        S.sit(1, 10, -1, MYSTERY)
+        S.roster[1].matchId = nil
+        S.report(1, { netId = 910, seat = -1 })
+        ok(S.stats().probes == 0, 'nor is one from a player in no match',
+           S.stats().probes)
+    end
+
+    do
+        -- AND NOTHING IN THIS PATH CANCELS ANYTHING OR FILES ANYTHING. The owner's
+        -- rule for this file is "don't stop them, simply file an incident", and an
+        -- armament report is neither: it decides how a refused shot is LABELLED.
+        local S = newServer()
+        S.sit(1, 10, -1, MYSTERY)
+        S.report(1, { netId = 910, seat = -1 })
+        ok(S.cancels == 0, 'no CancelEvent', S.cancels)
+        ok(S.stats().counted == 0 and S.stats().occupied == 0,
+           'and no refused-vehicle count either',
+           ('counted=%d occupied=%d')
+               :format(S.stats().counted, S.stats().occupied))
+    end
 end
 
 realPrint(('\n\27[32m%d passed\27[0m'):format(pass))

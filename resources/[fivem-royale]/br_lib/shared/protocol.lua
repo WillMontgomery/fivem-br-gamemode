@@ -786,6 +786,34 @@ BR.Net = {
     -- completion, which the server's own seat guard will have cancelled first.
     VEH_FIX         = 'br:veh:fix',
 
+    -- C->S  { netId = integer, seat = integer } (#329)
+    --
+    -- "THE ENGINE ON MY MACHINE SAYS THE VEHICLE I AM SITTING IN HAS WEAPONS."
+    -- The message's EXISTENCE is the claim; there is no `armed = false` and no
+    -- retraction, because the far end may only ever ADD armament to what
+    -- BR.Config's authored table already says. A client that stops sending
+    -- leaves the table's answer standing, which is the answer that shipped.
+    --
+    -- WHY THE CLIENT AT ALL. DOES_VEHICLE_HAVE_WEAPONS and IS_TURRET_SEAT are
+    -- both client-only, exactly as GetVehicleClass is, so this is the only place
+    -- the question can be asked -- the owner settled it on 2026-09-21: "Being
+    -- client-side doesn't matter to me for this - there's simply no other means
+    -- of performing this function."
+    --
+    -- THE TWO FIELDS ARE THE VALIDATION KEY, NOT THE PAYLOAD. The server
+    -- resolves `netId` to its own entity and checks that `seat` of it really
+    -- holds this player's ped, so a report about somebody else's car, or about a
+    -- seat the sender is not in, is dropped. The seat's own turret answer stays
+    -- on the client: the server acts on whether the VEHICLE is armed, and the
+    -- seat question only decides what the client switches off.
+    --
+    -- WHAT BELIEVING IT COSTS, STATED RATHER THAN DISCOVERED. Kept PER PLAYER,
+    -- on their own roster entry, so a forged report reaches nobody else -- and
+    -- what it buys the forger is a shot that is refused either way, filed as
+    -- BR.ShotRefusal.VEHICLE_GUN instead of NO_WEAPON. A missing case, not an
+    -- exploit. See br_core/server/vehicles.lua where the report is accepted.
+    VEH_ARMED       = 'br:veh:armed',
+
     -- Vehicle boost. The CLIENT owns the meter, the push and its own flames --
     -- a twitch input cannot wait for a round trip -- so these two carry only
     -- what a client cannot do for itself.
