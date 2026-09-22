@@ -439,6 +439,18 @@ for _, f in ipairs({
     -- party.lua's formation report asks it which of the two homes the live
     -- maxSquadSize came from. A nil there would make that answer untestable.
     'br_lib/config/overrides.lua',
+    -- THE STORM'S BOUNDARY AS A SHAPE, AND WITHOUT IT THIS WHOLE SUITE DIES.
+    --
+    -- br_core/server/storm.lua's damage tick asks BR.StormShape for the union of
+    -- the current circle and the next one (#328). br_core/fxmanifest.lua declares
+    -- this file in shared_scripts, so the real server state has it; a state that
+    -- loads storm.lua without it gets a nil BR.StormShape on the first damage
+    -- pass, and BR.Sched.step pcalls its jobs -- so the tick does not error
+    -- loudly, it goes silently missing and every ledger read comes back nil.
+    -- Measured: 11 FAIL lines across match.storm and storm.vehicles, then a hard
+    -- stop comparing two nils. Declared here in fxmanifest order, beside
+    -- storm_solve.lua, which it sits next to there for the same reason.
+    'br_lib/shared/storm_shape.lua',
     'br_lib/shared/storm_solve.lua',
     -- The CPR kit (#191). AFTER shared/storm_solve.lua, which BR.RescueDestination
     -- calls to solve the circle forward to the ambulance's arrival, and AFTER

@@ -387,11 +387,80 @@ BR.Sched.every(1000, 'storm.damage', function(dt)
         -- OUTSIDE the solved radius -- a base allowance plus ~0.7s of wall
         -- travel -- so a player standing at the visible curtain is always
         -- genuinely safe (live reports: hurt while 20-50ft inside the wall).
+        --
+        -- UNCHANGED BY THE UNION BELOW, and it means the same thing it always
+        -- did: the cushion is metres of slack OUTSIDE the edge of the safe
+        -- zone, whatever shape that edge is. It is the same three clocks and
+        -- the same wall speed; nothing about a second circle makes any of them
+        -- agree better.
         local margin = 10.0
         if st == BR.StormPhase.SHRINKING then
             margin = margin
                 + ((rec.r0 - rec.r1) / math.max(rec.tShrink / 1000.0, 1.0)) * 0.7
         end
+
+        -- ═══ THE SAFE ZONE IS BOTH CIRCLES, NOT ONLY THE ONE THE WALL IS ON ═══
+        --
+        --   "take for example 2 storm circles (current and next) which are
+        --    barely overlapping - like a venn diagram. We should extend the
+        --    safezone to cover both circles, so if a player gets to the new
+        --    destination early they are safe. That logic also doesn't exist
+        --    today."                                     -- owner, 2026-09-21
+        --
+        -- THE FAILURE IT PREVENTS. A player who read the map, saw the purple
+        -- ring and ran to it before the wall set off was billed for the whole
+        -- trip and billed again for standing in the destination. That is the
+        -- storm punishing the one thing it exists to force, and it was worst on
+        -- exactly the phases the breakout was built to create -- the ones where
+        -- the next circle barely overlaps the current one or does not overlap
+        -- it at all.
+        --
+        -- ═══ WHY THIS IS SAFE TO SHIP: ON AN ORDINARY PHASE IT IS A NO-OP ═══
+        --
+        -- The next circle is normally NESTED inside the current one, and the
+        -- union of a circle with a circle inside it IS the outer circle --
+        -- union2 returns precisely that, by its first case, so the set of
+        -- players this tick hurts is the same set it hurt yesterday. The rule
+        -- only has an effect when the circles are NOT nested, which is the case
+        -- the owner is describing and the only case BR.NextStormCentre's
+        -- breakout can produce.
+        --
+        -- TWO DISJOINT CIRCLES ARE TWO SAFE ISLANDS WITH AN UNSAFE GAP BETWEEN
+        -- THEM, and that is the intended reading rather than a case wanting its
+        -- own rule: "the far circle should be safe, that's fine" (owner, same
+        -- day). A player who has crossed to the far circle has earned it.
+        --
+        -- IT HOLDS FOR THE WHOLE PHASE, holding and shrinking both, and it is
+        -- self-closing: the two circles converge as the sweep runs and the
+        -- union collapses onto the one circle exactly when the sweep ends.
+        --
+        -- BUILT ONCE PER TICK, NOT ONCE PER PLAYER. The zone is a function of
+        -- the record and the clock and of nothing a player carries, so it
+        -- belongs out here rather than inside the roster walk, where sixty
+        -- players would each rebuild the same two discs.
+        --
+        -- ═══ THE FINAL PHASE'S DESTINATION IS A POINT, AND A POINT IS NOT A
+        --     SECOND CIRCLE TO REACH ═══
+        --
+        -- config/storm.lua's phases[8] closes on `radius = 0.0`. This block used
+        -- to say that union2 floored it at one metre and that one metre inside a
+        -- cushion of ten changed nothing a player could stand in. It changed two
+        -- things. A one-metre disc more than about 35 metres from the current
+        -- circle's centre is a SEPARATE COMPONENT, and phase 8's reachable offset
+        -- is up to 60 metres (r 40 plus gapMax half of it) -- so the wall drew a
+        -- 4.8m wide, 950m tall pillar on the exact point everyone was fighting
+        -- over, and this rule sheltered an eleven-metre bubble on it for the whole
+        -- sweep: a safe island detached from the wall in the endgame, which is the
+        -- failure `server.collapse` exists to prevent at the other end of the
+        -- phase.
+        --
+        -- union2 NOW REFUSES A DISC WITH NO RADIUS, so neither happens and the two
+        -- files cannot disagree about whether that disc exists -- they are looking
+        -- at the same constructor. Its header argues the decision. On phase 8 this
+        -- reads exactly `r + margin` against the travelling wall, which is what it
+        -- read before #328, and the destination is sheltered when the wall
+        -- actually arrives on it rather than for the minute beforehand.
+        local zone = BR.StormShape.union2(cx, cy, r, rec.cx1, rec.cy1, rec.r1)
 
         -- Capped so a long scheduler stall (or a test jumping the clock)
         -- cannot land one apocalyptic tick.
@@ -410,7 +479,19 @@ BR.Sched.every(1000, 'storm.damage', function(dt)
             function(src, e)
                 if not e.pos then return end   -- not sampled yet (OneSync warning covers why)
 
-                if BR.Dist(e.pos.x, e.pos.y, cx, cy) <= r + margin then
+                -- A SIGNED DISTANCE AGAINST THE ZONE, WHICH IS WHAT `<= r +
+                -- margin` ALWAYS WAS. distance() is negative inside and
+                -- positive outside, so the radius is simply folded into the
+                -- shape and the comparison is the same comparison.
+                --
+                -- IT READS THE SIGN AND A MAGNITUDE FROM OUTSIDE, WHICH IS
+                -- WHERE IT IS EXACT. distance() is the minimum of the two disc
+                -- distances, so it understates DEPTH strictly inside the lens
+                -- where the two discs overlap -- never the other way, and never
+                -- anywhere out here. Its header carries the numbers. This line
+                -- asks only whether a player is further outside than the
+                -- cushion allows, and that answer is exact.
+                if BR.StormShape.distance(zone, e.pos.x, e.pos.y) <= margin then
                     -- Inside: the ledger re-seeds from sampled reality next
                     -- time they are caught out.
                     e.stormHp  = nil

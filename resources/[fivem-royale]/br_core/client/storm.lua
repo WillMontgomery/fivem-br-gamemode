@@ -102,7 +102,15 @@ BR.Loop.register(BR.Loop.FRAME, 'storm.wall', function()
     if not rec then return end
 
     local cx, cy, r, stt, msLeft = solveNow(rec)
-    if r <= 1.0 then return end   -- a collapsed circle has no wall to draw
+    -- A COLLAPSED ZONE HAS NO WALL TO DRAW, and the zone is two circles now, so
+    -- both of them have to be gone. In the shipping case that is the same test
+    -- it always was: the final phase closes on a zero-radius target, so r and
+    -- rec.r1 reach the floor together and this returns exactly when it used to.
+    -- The pair matters on the admin path, where `brphase 1` from a collapsed
+    -- wall gives a record whose CURRENT circle is a point and whose target is
+    -- 2600m -- one test on r alone would draw no wall at all for that whole
+    -- sweep.
+    if r <= 1.0 and rec.r1 <= 1.0 then return end
 
     -- NO WALL BEFORE ANYTHING HAS HAPPENED. During the free-loot hold the
     -- "circle" is the whole map, and a purple ring around the horizon
@@ -135,25 +143,94 @@ BR.Loop.register(BR.Loop.FRAME, 'storm.wall', function()
     local rr = cfg.render
     local col = rr.colour
 
-    if BR.Storm.wallStyle == 'solid' then
+    local SS = BR.StormShape
+
+    -- ═══ edgeInset, WHICH THE COLUMN PATH NEVER PAID ═══
+    --
+    -- It placed its columns at exactly r, so the logical edge -- the one that
+    -- damages -- sat inside the visible curtain. That is the live report
+    -- edgeInset exists for ("20ft inside" while the HUD correctly said outside),
+    -- and it would have come straight back the first time anybody typed
+    -- /brwallstyle. The shipping path has inset since the day the report landed;
+    -- this is that same one line, spelled for a shape.
+    local shape = SS.inset(
+        SS.union2(cx, cy, r, rec.cx1, rec.cy1, rec.r1), rr.edgeInset or 0.0)
+    local discs = shape.discs
+
+    -- ═══ THE RENDERER IS A PROPERTY OF THE SHAPE, NOT A SETTING ═══
+    --
+    -- 'solid' draws the whole boundary as ONE cylinder and 'columns' walks it in
+    -- 30m slots, and the honest reading is that each is right for a different
+    -- shape rather than one being the default. Making 'columns' the global default
+    -- for #328 fixed the union and paid for it on every phase that nests, which
+    -- is 60 to 90 percent of them: the column walk is capped at maxDraw 80, so
+    -- measured off the real config the fraction of the ring actually drawn ran
+    -- phase 1 15 percent, phase 2 24, phase 3 40, phase 4 64, and only from phase
+    -- 5 down 100. At phase 2 a player at the centre saw an 86 degree window of
+    -- 950m-tall curtain STOPPING IN MID-AIR at both ends with nothing behind
+    -- them. Phases 1 to 4 are roughly 15 minutes of a 22 minute match, and the
+    -- owner has already reacted to this exact class of thing once: a 300m-tall
+    -- curtain popping out of existence past 300m "read as a render bug".
+    --
+    -- THE NUMBER OF DISCS IS THE TEST, and it is exact rather than a heuristic.
+    -- union2 routes the nested case through StormShape.circle, so a shape with one
+    -- disc IS a single circle -- which is what a cylinder draws perfectly and what
+    -- the owner chose on 2026-08-03. Two discs is a union no cylinder can
+    -- describe, and the walk draws it without knowing it is one.
+    --
+    -- ═══ CHOSEN PER FRAME, AND IT BARELY EVER CHANGES ITS MIND ═══
+    --
+    -- The obvious worry about deciding this per frame is the wall visibly changing
+    -- texture under the player. Sampled 1000 times across a whole phase: a NESTED
+    -- phase never swaps at all -- the target is inside the current circle from
+    -- the first frame to the last, so it is one cylinder for the entire phase. A
+    -- BREAKOUT swaps exactly ONCE, at the very end of the sweep, when the shrinking
+    -- circle finally swallows the target and the union collapses. Both renderers
+    -- are describing the SAME RING at that instant, because the union at the
+    -- moment of containment IS the current circle, so the geometry is continuous
+    -- across the swap and only the texture changes. `wall.default` pins both
+    -- counts.
+    --
+    -- /brwallstyle STILL OVERRIDES IT, both ways, because the A/B is how the
+    -- column geometry gets judged on real hardware and it is the one command that
+    -- puts a bad night back on known ground without a deploy.
+    local style = BR.Storm.wallStyle
+    if style ~= 'solid' and style ~= 'columns' then
+        style = (#discs <= 1) and 'solid' or 'columns'
+    end
+
+    if style == 'solid' then
         -- ONE marker: the entire zone as a single giant vertical cylinder.
         -- Its side surface IS the wall -- continuous, identical from every
         -- angle and distance, no columns to count or watch slide.
+        --
+        -- IT DRAWS ONE DISC, AND THAT IS WHY IT IS NOT THE DEFAULT ON A UNION.
+        -- A DrawMarker type 1 is a cylinder, so this path is a circle by
+        -- construction: forced onto a shape with two discs it paints the first
+        -- one and says nothing about the second, which on a phase that broke out
+        -- means a curtain straight through a player standing safely in the next
+        -- circle. Auto-selection above never sends a union here; a hand-typed
+        -- /brwallstyle solid may, deliberately, because that lie is exactly the
+        -- known ground the A/B is measured against.
+        --
+        -- IT READS THE DISC RATHER THAN r, which is what lets the shape choose.
+        -- The disc is already inset (StormShape.inset rebuilt the circle at
+        -- r - edgeInset, floored at one metre) so this is byte-for-byte the
+        -- `math.max(1.0, r - edgeInset)` it replaces on every ordinary phase --
+        -- and on the admin path where `brphase 1` targets a circle bigger than
+        -- the collapsed one it is in, union2 returns the TARGET circle and this
+        -- now draws the wall that actually exists instead of a one-metre stub.
         --
         -- GLUED TO THE WORLD, NOT THE PED: a fixed base below sea level and
         -- triple height (user call, 2026-08-03), spanning ocean floor to
         -- above Chiliad. The old ground-probe fallback hung the curtain off
         -- the viewer's own z whenever the probe missed -- which at wall
         -- distances is most of the time -- so the wall rode the camera.
-        --
-        -- Drawn edgeInset INSIDE the logical radius: the marker's soft
-        -- surface reads fatter than its scale, and the logical edge (which
-        -- is what damages) must never sit inside the visible curtain.
-        local vr = math.max(1.0, r - (rr.edgeInset or 0.0))
+        local disc = discs[1]
         DrawMarker(1,
-            cx, cy, -100.0,
+            disc.x, disc.y, -100.0,
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-            vr * 2.0, vr * 2.0, rr.height * 3.0 + 50.0,
+            disc.r * 2.0, disc.r * 2.0, rr.height * 3.0 + 50.0,
             col.r, col.g, col.b, math.floor(rr.alpha * alphaScale),
             false, false, 2, false, nil, nil, false)
         return
@@ -176,27 +253,95 @@ BR.Loop.register(BR.Loop.FRAME, 'storm.wall', function()
     -- mentioning the radius at all. A slot is a slot of BOUNDARY, whatever the
     -- boundary happens to be doing there.
     --
-    -- THE SHAPE IS A CIRCLE, BUILT FROM THE LIVE RECORD EVERY FRAME. It is the
-    -- same circle 'solid' draws above, and this file has no other source of a
-    -- shape: nothing here or anywhere else in the game can ask the storm for one
-    -- that is not a circle. The generality is the library's, and it is proved by
-    -- tools/test_shared.lua rather than by anything a player can reach.
-    local SS = BR.StormShape
-
-    -- ═══ edgeInset, WHICH THIS PATH NEVER PAID ═══
+    -- ═══ AND THE SHAPE IS A UNION NOW, WHICH IS WHY THIS PATH SHIPS (#328) ═══
     --
-    -- It placed its columns at exactly r, so the logical edge -- the one that
-    -- damages -- sat inside the visible curtain. That is the live report
-    -- edgeInset exists for ("20ft inside" while the HUD correctly said outside),
-    -- and it would have come straight back the first time anybody typed
-    -- /brwallstyle. The shipping path has inset since the day the report landed;
-    -- this is that same one line, spelled for a shape.
-    local shape = SS.inset(SS.circle(cx, cy, r), rr.edgeInset or 0.0)
-
+    -- It used to be a circle built from the live record every frame, with a note
+    -- saying nothing in the game could ask the storm for anything else. Something
+    -- can: the safe zone is the current circle PLUS the one the wall is closing
+    -- toward, so that a player who gets to the new destination early is safe
+    -- there (owner, 2026-09-21). The walk below does not change by a character
+    -- for it -- it asks how long the boundary is, where it is at s metres, and
+    -- where along it the viewer is standing, and a two-arc union answers all
+    -- three exactly as one arc did.
+    --
+    -- ON AN ORDINARY PHASE IT DRAWS THE IDENTICAL CIRCLE. The next circle is
+    -- normally nested inside the current one, and union2's first case returns
+    -- the containing circle itself, so every marker lands where it landed
+    -- before. The wall only changes shape on a phase that broke out, which is
+    -- the phase where the old wall was lying.
     local P = SS.perimeter(shape)
     local slots = math.max(rr.segments, math.floor(P / rr.slotArc + 0.5))
     local ds = P / slots
-    local w = ds * (rr.overlap or 1.05)
+
+    -- ═══ A SLOT GRID PER COMPONENT, BECAUSE A WINDOW MUST STAY ON ONE ISLAND ═══
+    --
+    -- A disjoint union is TWO closed loops. `first` runs negative and the walk
+    -- used to wrap modulo the whole perimeter, which is honest for one loop --
+    -- a circle, or the Venn case where arc 1 ends exactly where arc 2 begins --
+    -- and a lie for two: arc length 0 is on the current circle and arc length P1
+    -- is on the next one, kilometres away.
+    --
+    -- MEASURED, phase-4 geometry, current r520 at the origin, next r260 at
+    -- (1040, 0), viewer at (560, 0): 48 markers drawn, 24 on the near circle
+    -- covering bearings 2 to 79 degrees ONLY, and 24 dumped on the far circle
+    -- behind the player, with no curtain at all immediately clockwise of them.
+    -- Swept round the near circle in 5 degree steps, 32 of 72 viewer bearings
+    -- showed a broken colonnade at phase 4 and 17 of 72 at phase 3. The nested
+    -- and Venn cases measured 0 of 72, which is why the suite was green: they are
+    -- single loops, and until tools/test_storm.lua's `wall.window` block they were
+    -- the only shapes anything drove through this branch at all.
+    --
+    -- So a component gets its own slot count and its own metres per slot, both
+    -- derived from the shape's own ds. Single-component shapes -- every nested
+    -- phase, every Venn -- come out at exactly `slots` and `ds`, marker for
+    -- marker, which is what makes this not a change to the shipping wall.
+    local comps = SS.components(shape)
+
+    --- Slots on one component, and the metres each one covers.
+    local function slotsIn(c)
+        local n = math.max(1, math.floor(c.len / ds + 0.5))
+        return n, c.len / n
+    end
+
+    --- `n` columns from slot `first` of component `c`.
+    ---
+    --- ═══ GLUED TO THE WORLD, NOT TO THE VIEWER, AS THE SHIPPING PATH IS ═══
+    ---
+    --- These columns used to stand on a ground probe: GetGroundZFor_3dCoord under
+    --- the single point of the circle nearest the viewer, cached for a second,
+    --- falling back to the viewer's own z minus fallbackZDrop when it missed. Two
+    --- more reads of "where is the viewer" for a wall that must look the same on
+    --- every screen -- and the probe returns garbage for unloaded cells, which at
+    --- wall distances is most of the time, so the fallback is what actually ran
+    --- and the wall rode the camera. 'solid' settled this on 2026-08-03 with a
+    --- fixed base below sea level and triple height, ocean floor to above
+    --- Chiliad. Taking those same two numbers is what lets the probe, its cache
+    --- and a second viewpoint() read all go away.
+    ---
+    --- AND alphaScale, THE OTHER DEBT THIS PATH NEVER PAID: it passed rr.alpha
+    --- raw, so the phase-1 fade-in clock did nothing here. The map ring would
+    --- fade in over the hold's last ten seconds while the curtain popped into
+    --- existence beside it at full strength.
+    ---
+    --- `first + i` still runs negative and past the count, exactly as it always
+    --- could. It is wrapped MODULO THE COMPONENT'S OWN SLOT COUNT here, so an
+    --- off-end slot comes round to the other side of the island it is drawing
+    --- rather than jumping to the other island. StormShape.pointAtComponent wraps
+    --- the metres the same way, for the same reason and one level down.
+    local function columns(c, first, n)
+        local cslots, cds = slotsIn(c)
+        local w = cds * (rr.overlap or 1.05)
+        for i = 0, n - 1 do
+            local mx, my = SS.pointAtComponent(shape, c,
+                ((first + i) % cslots + 0.5) * cds)
+            DrawMarker(1,
+                mx, my, -100.0,
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                w, w, rr.height * 3.0 + 50.0,
+                col.r, col.g, col.b, math.floor(rr.alpha * alphaScale),
+                false, false, 2, false, nil, nil, false)
+        end
+    end
 
     -- ═══ WHEN THE WHOLE BOUNDARY FITS, DRAW IT AND NEVER ASK WHERE ANYBODY IS ═══
     --
@@ -214,65 +359,76 @@ BR.Loop.register(BR.Loop.FRAME, 'storm.wall', function()
     -- the viewer HERE rather than at the top of the callback keeps it off the
     -- shipping path, which never wanted it, and off the endgame, which no longer
     -- does.
-    local first, drawn
     if slots <= rr.maxDraw then
-        first, drawn = 0, slots
-    else
-        local p = viewpoint()
-        -- visArc and want carry over verbatim. The one substitution is
-        -- (dist - r), which was a circle's signed distance written out by hand.
-        local off = SS.distance(shape, p.x, p.y)
-        local visArc = math.max(rr.wallVisDist, math.abs(off) * 2.0)
-        local want = math.floor((visArc * 2.0) / rr.slotArc + 0.5)
-        drawn = math.min(slots, math.min(rr.maxDraw, math.max(rr.segments, want)))
-        -- What replaces `base = math.atan(p.y - cy, p.x - cx)`: the same
-        -- question, asked of a boundary instead of of a circle.
-        first = math.floor(SS.nearestArc(shape, p.x, p.y) / ds)
-              - math.floor(drawn / 2)
+        -- EVERY COMPONENT, EVERY SLOT. Both islands of a disjoint pair get their
+        -- full colonnade here, because nothing is being rationed.
+        for i = 1, #comps do
+            local n = slotsIn(comps[i])
+            columns(comps[i], 0, n)
+        end
+        return
     end
 
-    -- ═══ GLUED TO THE WORLD, NOT TO THE VIEWER, AS THE SHIPPING PATH IS ═══
+    local p = viewpoint()
+    -- visArc and want carry over verbatim. The one substitution is
+    -- (dist - r), which was a circle's signed distance written out by hand.
+    local off = SS.distance(shape, p.x, p.y)
+    local visArc = math.max(rr.wallVisDist, math.abs(off) * 2.0)
+    local want = math.floor((visArc * 2.0) / rr.slotArc + 0.5)
+    local drawn = math.min(slots, math.min(rr.maxDraw, math.max(rr.segments, want)))
+
+    -- What replaces `base = math.atan(p.y - cy, p.x - cx)`: the same question,
+    -- asked of a boundary instead of of a circle -- and then asked which LOOP the
+    -- answer is on, so the whole budget is spent on the edge that is about to
+    -- hurt the viewer.
     --
-    -- These columns used to stand on a ground probe: GetGroundZFor_3dCoord under
-    -- the single point of the circle nearest the viewer, cached for a second,
-    -- falling back to the viewer's own z minus fallbackZDrop when it missed. Two
-    -- more reads of "where is the viewer" for a wall that must look the same on
-    -- every screen -- and the probe returns garbage for unloaded cells, which at
-    -- wall distances is most of the time, so the fallback is what actually ran
-    -- and the wall rode the camera. 'solid' settled this on 2026-08-03 with a
-    -- fixed base below sea level and triple height, ocean floor to above
-    -- Chiliad. Taking those same two numbers is what lets the probe, its cache
-    -- and the viewpoint() read above all go away.
-    --
-    -- AND alphaScale, THE OTHER DEBT THIS PATH NEVER PAID: it passed rr.alpha
-    -- raw, so the phase-1 fade-in clock did nothing here. The map ring would
-    -- fade in over the hold's last ten seconds while the curtain popped into
-    -- existence beside it at full strength.
-    --
-    -- `first + i` may still run negative or past `slots`, exactly as it always
-    -- could. The wrap that used to come free from cos/sin now lives inside
-    -- pointAtArc -- the one thing about this walk that had to be written down
-    -- rather than inherited. Without it an off-end index does not error: it
-    -- lands on the last piece's far end and stacks markers on one seam.
-    for i = 0, drawn - 1 do
-        local mx, my = SS.pointAtArc(shape, (first + i + 0.5) * ds)
-        DrawMarker(1,
-            mx, my, -100.0,
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-            w, w, rr.height * 3.0 + 50.0,
-            col.r, col.g, col.b, math.floor(rr.alpha * alphaScale),
-            false, false, 2, false, nil, nil, false)
-    end
+    -- THE FAR ISLAND SIMPLY GETS NO COLUMNS WHILE THE VIEWER IS AT THE NEAR ONE,
+    -- and that is honest rather than a compromise: it is kilometres away, it is
+    -- not the edge anybody is about to walk into, and it gets its own full window
+    -- the moment a viewer is nearest to it. What it must never do is take half the
+    -- curtain off the ground the viewer is standing on.
+    local s = SS.nearestArc(shape, p.x, p.y)
+    local c = SS.componentAt(shape, s)
+    local cslots, cds = slotsIn(c)
+    drawn = math.min(drawn, cslots)
+    columns(c, math.floor((s - c.s0) / cds) - math.floor(drawn / 2), drawn)
 end)
 
--- Which renderer draws the wall. 'solid' is the shipping default (user call,
--- 2026-08-03); /brwallstyle flips to the column renderer live for A/B if the
--- giant-marker geometry ever misbehaves on some hardware.
+-- Which renderer draws the wall, and /brwallstyle overrides it live.
+--
+-- ═══ THERE IS NO DEFAULT RENDERER ANY MORE: THE SHAPE PICKS ONE ═══
+--
+-- `nil` means "ask the shape", and the wall callback does: one disc draws
+-- 'solid', two draw 'columns'. That is a property of the thing being drawn rather
+-- than a setting, which is the whole point -- both previous answers were wrong for
+-- half the match.
+--
+-- 'solid' was the shipping default from 2026-08-03 (user call) and it is still the
+-- better-looking wall for a circle: one marker, continuous, identical from every
+-- angle, nothing to watch slide. It cannot draw a union -- a DrawMarker type 1 is
+-- a cylinder -- so #328 moved the default to 'columns', and that paid for the
+-- union with a visual regression on every phase that nests. The column walk is
+-- capped at maxDraw, so off the real config it drew 15 percent of the ring at
+-- phase 1, 24 at phase 2, 40 at phase 3, 64 at phase 4, and only 100 from phase 5
+-- down: roughly 15 minutes of a 22 minute match spent looking at a curtain that
+-- stops in mid-air with no wall behind it. Choosing per frame gives the nested
+-- phases the identical cylinder they had before 2026-09-21 and the union a
+-- renderer that can actually draw it.
+--
+-- BOTH PATHS STAY, AND THE OVERRIDE CYCLES THROUGH THREE STATES -- automatic,
+-- forced solid, forced columns -- so the two can still be compared on real
+-- hardware and a bad night can be put back on known ground without a deploy. The
+-- third state matters: with only two, there would be no way back to the shape's
+-- own choice once a session had typed the command.
 BR.Storm = BR.Storm or {}
-BR.Storm.wallStyle = 'solid'
+BR.Storm.wallStyle = nil
 RegisterCommand('brwallstyle', function()
-    BR.Storm.wallStyle = BR.Storm.wallStyle == 'solid' and 'columns' or 'solid'
-    print(('[br_core] storm wall style: %s'):format(BR.Storm.wallStyle))
+    local s = BR.Storm.wallStyle
+    if s == 'solid' then s = 'columns'
+    elseif s == 'columns' then s = nil
+    else s = 'solid' end
+    BR.Storm.wallStyle = s
+    print(('[br_core] storm wall style: %s'):format(s or 'auto'))
 end, false)
 
 -- ----------------------------------------------------- blips, FX, envelope ---
@@ -576,8 +732,37 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
     -- envelope, the direction blip, the grade and the sky -- is measured from
     -- here, so this one substitution is most of the fix.
     local p, from = viewpoint()
-    local dist = BR.Dist(p.x, p.y, cx, cy)
-    local edge = dist - r   -- positive = outside
+
+    -- ═══ THE SAFE ZONE IS BOTH CIRCLES, AND THIS IS THE ONE LINE THAT SAYS SO ═══
+    --
+    --   "take for example 2 storm circles (current and next) which are barely
+    --    overlapping - like a venn diagram. We should extend the safezone to
+    --    cover both circles, so if a player gets to the new destination early
+    --    they are safe."                                  -- owner, 2026-09-21
+    --
+    -- `edge` was `dist - r`: a circle's signed distance, written out by hand.
+    -- It becomes the signed distance to the UNION of the current circle and the
+    -- one the wall is closing toward, and the four readouts measured off it
+    -- follow at once -- the HUD's metres, the screen grade, the sky, and the
+    -- pair of crossing cues. Every one of them now agrees with what
+    -- server/storm.lua actually bills for, which is the property that matters:
+    -- a player who reached the next circle early is told they are safe because
+    -- they are, rather than being shown a red screen and a thunderstorm over
+    -- ground the server is not charging them for.
+    --
+    -- ON AN ORDINARY PHASE IT IS THE SAME NUMBER IT ALWAYS WAS. The next circle
+    -- is normally nested inside the current one and the union of a circle with
+    -- a circle inside it IS the outer circle, so this reads `dist - r` on every
+    -- phase that did not break out. That is what makes it shippable.
+    --
+    -- THE SIGN IS EXACT EVERYWHERE AND THE MAGNITUDE IS EXACT FROM OUTSIDE,
+    -- which is all of what is read here. StormShape.distance understates depth
+    -- strictly inside the lens where two circles overlap (its header carries
+    -- the numbers), so a player deep in an overlap may be told they are 300m
+    -- inside rather than 400m. `caught` reads the sign, and the metres on the
+    -- HUD are a countdown to safety that only a player OUTSIDE is reading.
+    local zone = BR.StormShape.union2(cx, cy, r, rec.cx1, rec.cy1, rec.r1)
+    local edge = BR.StormShape.distance(zone, p.x, p.y)   -- positive = outside
 
     -- Screen FX track being outside AND the storm actually hurting right now
     -- (dps is 0 for everyone during the phase-1 free-loot hold -- the solver
@@ -735,6 +920,34 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
     -- report -- engine blip handles are recycled, so another system
     -- removing a stale handle can delete ours) heals within 100ms
     -- instead of a refresh period.
+    --
+    -- ═══ IT STILL AIMS AT THE NEXT CIRCLE, NOT AT THE UNION (#328) ═══
+    --
+    -- The safe zone is both circles now, so it is worth writing down why this
+    -- one arrow is NOT measured against the zone the line above builds. It
+    -- already aims at the half of that zone the whole rule exists to reward
+    -- reaching. Asking the shape for its nearest boundary point instead would
+    -- put the arrow on the CURRENT circle's edge on every ordinary nested phase
+    -- -- which is nearly every phase -- and that is the opposite direction from
+    -- the purple ring the player is being asked to rotate to. It would also
+    -- overturn the call this block was built on (2026-08-04): outside the TARGET
+    -- is exactly when guidance matters, because during the phase-1 hold
+    -- "outside the current circle" is impossible.
+    --
+    -- THE BREAKOUT IS THE CASE TO CHECK, AND IT ALREADY READS RIGHT. A player
+    -- standing safely in the current circle of a barely-overlapping or
+    -- separated pair is outside the target, so they get the arrow, and it points
+    -- across at the island they have to reach. That is the guidance the union
+    -- rule makes worth following rather than a warning it makes redundant: the
+    -- storm has stopped charging them for the trip, and the arrow still tells
+    -- them where the trip goes.
+    --
+    -- AND NOTHING FLIPS. A nearest-point-on-the-union arrow would swap islands
+    -- as a player crossed the middle of a disjoint pair, aiming first one way and
+    -- then the other for a step in any direction, with the storm's own
+    -- destination on neither side of the swap. One destination has no such seam.
+    -- tools/test_storm.lua pins the choice so it cannot be quietly "made
+    -- consistent" later.
     local tx, ty, tr = rec.cx1, rec.cy1, rec.r1
     local distT = BR.Dist(p.x, p.y, tx, ty)
     if distT > tr then
@@ -786,6 +999,11 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
     solved = {
         phase = rec.phase, st = st, endsAt = endsAt,
         cx = cx, cy = cy, r = r, dps = dps,
+        -- THE ZONE RIDES ALONG so the frame band below can measure against it
+        -- without rebuilding it. Same argument as the circle above: the shape
+        -- moves and closes slowly enough that a 100ms-old one is wrong by
+        -- centimetres, and the thing that moves fast is the player.
+        zone = zone,
         px = p.x, py = p.y,
         -- Whether the frame job has anything to do at all. Inside the circle
         -- it costs one boolean test per frame and nothing else.
@@ -829,7 +1047,10 @@ BR.Loop.register(BR.Loop.FRAME, 'storm.edge', function()
     -- point on the FRAME band too, so the metres still count down smoothly as
     -- the watched player runs, rather than stepping at the feed's 4 Hz.
     local p = viewpoint()
-    local edge = BR.Dist(p.x, p.y, solved.cx, solved.cy) - solved.r
+    -- THE SAME ZONE THE TICK BAND BUILT, measured against the position this
+    -- frame. `- solved.r` used to stand here, which was the circle's signed
+    -- distance written out by hand; the shape carries the radius now.
+    local edge = BR.StormShape.distance(solved.zone, p.x, p.y)
     if math.floor(edge + 0.5) == lastEdgeShown then return end
 
     -- The bearing home is read from the same position, so the arrow and the

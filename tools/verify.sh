@@ -477,6 +477,36 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
     # one, a detached sha -- and every unreadable case are walked here without a
     # .git anywhere. A wrong parse shows a stale hex that looks right, which no
     # playtest would ever catch.
+    # test_storm.lua is the twelfth suite to load a real SERVER file and the
+    # eighth to load a CLIENT one, and it is the first to load one of each --
+    # because the rule it pins has to hold on both sides of the wire or it is
+    # worse than not holding at all. The safe zone is the current circle UNION
+    # the next one (#328, owner 2026-09-21), so a player who runs to the purple
+    # ring early is safe when they get there. The server decides that and the
+    # client draws it, and if the two disagree the game shows a red screen and a
+    # thunderstorm over ground nothing is charging for.
+    #
+    # WHY IT IS NOT A BLOCK IN test_shared.lua, which already holds two storm
+    # subjects: those two are the GEOMETRY (BR.StormShape, proved against all
+    # four of union2's cases) and the #225 VIEWPOINT sandbox. This is the rule
+    # they exist to serve, and the storm had outgrown a corner of that file.
+    #
+    # ITS FIRST BLOCK IS THE ONE THAT MAKES THE CHANGE SHIPPABLE, and it is a
+    # 441-point grid sweep rather than a handful of coordinates: with the next
+    # circle NESTED inside the current one -- which is every phase that did not
+    # break out, which is most of them -- the union IS the current circle, and
+    # the set of players billed must be the same set the old `BR.Dist(...) <= r
+    # + margin` billed, point for point. A change that only looked right on a
+    # Venn diagram passes everything else in the file and fails that.
+    #
+    # THE REST IS WHAT NO PLAYTEST CAN REACH. A breakout is a random roll, 0% at
+    # phase 1 ramping to 85% at phase 8, and the interesting geometry is the tail
+    # of it. The symptom of getting it wrong is DAMAGE THAT SHOULD NOT HAVE
+    # HAPPENED, which from inside a match is indistinguishable from having
+    # misjudged where the wall was -- and the disjoint case has to be observed
+    # from inside the gap between two safe islands, which is a place a player
+    # spends six seconds in and never on purpose.
+    #
     # ORDER STAYS EXPLICIT because docs/testing.md records it and the slowest,
     # broadest suites deliberately come after the cheap pure checks. Completeness
     # is discovered, though: a new test_*.lua that nobody adds here is now a red
@@ -487,6 +517,7 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
         tools/test_loop.lua
         tools/test_sched.lua
         tools/test_roster.lua
+        tools/test_storm.lua
         tools/test_stats.lua
         tools/test_ringmaster.lua
         tools/test_artifacts.lua

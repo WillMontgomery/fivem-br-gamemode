@@ -56,6 +56,19 @@
 -- clockwise case, which would have sent the next reader looking for a bug in
 -- union2 that is not there.
 --
+-- ═══ AND A BOUNDARY IS A LIST OF COMPONENTS, NOT ONE LOOP ═══
+--
+-- A disjoint union2 is TWO closed loops. That is not a curiosity: the solver
+-- really produces it, and it is the difference between a wall and two walls
+-- kilometres apart. Every query below answers for the whole boundary, which is
+-- right for a perimeter, a signed distance and a nearest point -- and wrong for
+-- anything that walks a WINDOW of it, because arc length 0 and arc length P1 are
+-- on different islands and a window that straddles the seam draws half its
+-- columns behind the viewer. So the shape carries its component ranges,
+-- components() and componentAt() hand them out, and pointAtComponent() wraps
+-- inside one instead of around both. seal() and pointAtComponent() carry the
+-- measured numbers.
+--
 -- ═══ THE CUMULATIVE TABLE IS BUILT ONCE, AT CONSTRUCTION ═══
 --
 -- Every query below is answered off one number per piece -- the arc length at
@@ -168,22 +181,55 @@ end
 --- named by a constructor below, so there is no door anywhere -- in the game or
 --- in a test -- through which a raw piece list can arrive unvalidated.
 ---
+--- ═══ IT ALSO GROUPS THE PIECES INTO COMPONENTS, AND THAT IS NOT BOOKKEEPING ═══
+---
+--- A boundary is not always ONE closed loop. A disjoint union2 is two, and the
+--- difference is kilometres wide: arc length 0 is on one circle and arc length
+--- P1 is on the other. Anything that walks a WINDOW of the boundary -- which is
+--- the column renderer, above maxDraw -- has to stay inside one loop, because a
+--- window that straddles the seam spends half its budget on the island the
+--- viewer is not standing on and leaves a hole in the curtain in front of them.
+---
+--- Measured before this existed, on phase-4 geometry (current r520 at the
+--- origin, next r260 at 1040m, viewer at 560, 0): 48 markers drawn, 24 on the
+--- near circle covering bearings 2 to 79 degrees only, and 24 dumped on the far
+--- circle behind the player, with no curtain at all immediately clockwise of
+--- them. Swept round the near circle in 5 degree steps, 32 of 72 viewer bearings
+--- showed a broken colonnade at phase 4 and 17 of 72 at phase 3. The nested and
+--- Venn cases are single loops and measured 0 of 72, which is why no test caught
+--- it: they are the only shapes the suite drives through the windowed branch.
+---
+--- A piece begins a new component when it is marked `newComponent`; every other
+--- piece extends the one before it. That is general rather than a special case
+--- for union2: a shape with a hole in it, or two rounded rectangles, says so the
+--- same way.
+---
 --- @param pieces table       array of arc/seg pieces, in boundary order
 --- @param discs table|nil    { { x, y, r }, ... } this shape is the union of
 --- @return table shape
 local function seal(pieces, discs)
     local keep, P = {}, 0.0
+    local comps = {}
     for _, pc in ipairs(pieces or {}) do
         -- A zero-length piece is not a boundary, and left in the list it would
         -- be selected by the scan below only for s exactly at its start -- the
         -- one index where its own length would then divide.
         if pc and pc.len > 0.0 then
             pc.s0 = P
+            -- THE FIRST SURVIVING PIECE ALWAYS OPENS A COMPONENT, whatever it is
+            -- marked. A dropped zero-length piece must not be able to take the
+            -- shape's only component range with it.
+            if #comps == 0 or pc.newComponent then
+                comps[#comps + 1] = { s0 = P, len = 0.0 }
+            end
+            local c = comps[#comps]
+            c.len = c.len + pc.len
+            pc.comp = #comps
             P = P + pc.len
             keep[#keep + 1] = pc
         end
     end
-    return { pieces = keep, P = P, discs = discs }
+    return { pieces = keep, P = P, discs = discs, comps = comps }
 end
 
 --- Which piece holds arc length s, and how far along that piece it is.
@@ -287,8 +333,52 @@ end
 --- there. tools/test_shared.lua checks that claim the other way round, by
 --- proving the interior arcs are NOT on the boundary.
 ---
+--- ═══ A DISC WITH NO RADIUS IS NOT A DISC, AND PHASE 8 IS WHY THAT IS WRITTEN
+---     DOWN HERE RATHER THAN IN EITHER CONSUMER ═══
+---
+--- The final phase closes on a ZERO-RADIUS target: config/storm.lua's phases[8]
+--- has `radius = 0.0`, and that is the point everyone is fighting over. Floored
+--- at MIN_RADIUS it became a one-metre disc, and a one-metre disc more than about
+--- 35 metres from the current circle's centre is DISJOINT from it -- a second
+--- component, on a shape whose first component is the wall. Phase 8's reachable
+--- offset is up to 60 metres (r 40 plus gapMax 0.5 of it), so that is not a
+--- corner, it is most of the phase.
+---
+--- WHAT IT COST. The column renderer draws a component, so it painted a 4.8m
+--- wide, 950m tall purple pillar standing on the exact final point -- measured
+--- off the real config: the shape's perimeter is 220m, the slot floor is 48, so
+--- ds is 4.6m and the height is render.height * 3 + 50. The damage rule paid for
+--- the same disc the other way round, sheltering an eleven-metre bubble (one
+--- metre of disc plus ten of cushion) on the destination for the whole sweep --
+--- a safe island detached from the wall in the endgame, which is precisely the
+--- failure `server.collapse` exists to prevent at the other end of the phase.
+---
+--- SO NEITHER GETS IT, AND THE DECISION LIVES HERE SO THEY CANNOT DISAGREE.
+--- server/storm.lua and client/storm.lua both build their zone with this one
+--- call; deciding it in the constructor is the only place where "does that disc
+--- exist" has a single answer. The point is still sheltered when the wall
+--- actually arrives on it: r reaches the floor, the shape is a one-metre circle,
+--- and the ten-metre cushion around it is the same shelter `r + margin` with r at
+--- zero always gave.
+---
+--- THE TEST IS ON WHAT THE CALLER ASKED FOR, NOT ON THE STORED RADIUS, because
+--- radius() has already clamped the second. `> 0.0` and not `> MIN_RADIUS`: a
+--- caller that genuinely wants a one-metre disc gets one (test_shared.lua's lens
+--- block builds two of them to pin distance()'s understatement inside an
+--- overlap), and only a radius of nothing at all is nothing at all.
+---
 --- @return table shape
 function BR.StormShape.union2(x1, y1, r1, x2, y2, r2)
+    local has1, has2 = (r1 or 0.0) > 0.0, (r2 or 0.0) > 0.0
+    if has1 and not has2 then return BR.StormShape.circle(x1, y1, r1) end
+    if has2 and not has1 then return BR.StormShape.circle(x2, y2, r2) end
+    -- NEITHER, which is the collapsed wall standing on its own target: BR.StormAt
+    -- answers (cx1, cy1, 0) at FINISHED and the record's target is the same
+    -- point, so the two centres agree and picking the first is picking the wall.
+    -- radius() floors it, so this is the one-metre circle the contained case used
+    -- to return for the same arguments.
+    if not has1 then return BR.StormShape.circle(x1, y1, 0.0) end
+
     r1, r2 = radius(r1), radius(r2)
     local discs = {
         { x = x1 + 0.0, y = y1 + 0.0, r = r1 },
@@ -304,11 +394,17 @@ function BR.StormShape.union2(x1, y1, r1, x2, y2, r2)
     if d + r1 <= r2 + EPS then return BR.StormShape.circle(x2, y2, r2) end
 
     -- Disjoint, or touching at exactly one point. Two components.
+    --
+    -- AND THE SECOND ONE SAYS SO, which is the whole of Defect 1's fix at this
+    -- end. Both arcs are whole circles and they do not chain: the first ends
+    -- where it began, and the second begins kilometres away. seal() reads the
+    -- mark and gives the shape two component ranges, so a window walker can ask
+    -- which loop it is standing on instead of wrapping modulo a perimeter that
+    -- spans both.
+    local far = arc(x2, y2, r2, 0.0, TAU)
+    far.newComponent = true
     if d >= r1 + r2 - EPS then
-        return seal({
-            arc(x1, y1, r1, 0.0, TAU),
-            arc(x2, y2, r2, 0.0, TAU),
-        }, discs)
+        return seal({ arc(x1, y1, r1, 0.0, TAU), far }, discs)
     end
 
     -- A proper overlap. `a` is how far along the centre line from circle 1 the
@@ -341,6 +437,64 @@ end
 --- @return number
 function BR.StormShape.perimeter(shape)
     return shape and shape.P or 0.0
+end
+
+--- The separate CLOSED LOOPS the boundary is made of, in boundary order.
+---
+--- Each is `{ s0, len }`: where the loop starts in the shape's own arc length and
+--- how many metres of it there are. A circle, a capsule and an overlapping union2
+--- have one; a disjoint union2 has two. See seal()'s header for why the
+--- distinction is load-bearing rather than descriptive.
+---
+--- @return table  { { s0 = number, len = number }, ... }
+function BR.StormShape.components(shape)
+    return (shape and shape.comps) or {}
+end
+
+--- Which component holds arc length `s`, and its index.
+---
+--- `s` IS WRAPPED HERE, for the same reason pointAtArc wraps it: the one caller
+--- gets this from nearestArc and hands it straight on, and a value at or
+--- fractionally over P must land on the last component rather than on nothing.
+---
+--- @param shape table
+--- @param s number   metres along the boundary; any real number
+--- @return table|nil component, integer index
+function BR.StormShape.componentAt(shape, s)
+    local comps = shape and shape.comps
+    local P = shape and shape.P or 0.0
+    if not comps or #comps == 0 or P <= 0.0 then return nil, 0 end
+    s = s % P
+    for i = 1, #comps do
+        local c = comps[i]
+        if s < c.s0 + c.len then return c, i end
+    end
+    -- Only reachable where the floating-point sum of the component lengths lands
+    -- under the total, the same seam pieceAtArc documents.
+    return comps[#comps], #comps
+end
+
+--- The boundary point at `t` metres along ONE COMPONENT, and the outward normal.
+---
+--- ═══ THE WRAP IS MODULO THE COMPONENT, NOT MODULO THE PERIMETER ═══
+---
+--- This exists for exactly one reason, and it is the one pointAtArc exists for
+--- spelled at the next level up. pointAtArc's `s % P` is honest for ONE closed
+--- loop: a circle, or the Venn case where arc 1 ends where arc 2 begins. On a
+--- DISJOINT union it is a lie -- arc length 0 is on the near circle and arc
+--- length P1 is on the far one -- so a window that indexed off the end of its
+--- component did not wrap round to the other side of the island it was drawing.
+--- It jumped to the other island, kilometres away, and left a hole in the
+--- curtain where the viewer was standing. So the component wrap lives here, in
+--- this file, where no caller can forget it either.
+---
+--- @param shape table
+--- @param c table     a component from components() / componentAt()
+--- @param t number    metres along that component; any real number
+--- @return number x, number y, number nx, number ny
+function BR.StormShape.pointAtComponent(shape, c, t)
+    if not c or c.len <= 0.0 then return BR.StormShape.pointAtArc(shape, t) end
+    return BR.StormShape.pointAtArc(shape, c.s0 + (t % c.len))
 end
 
 --- The boundary point at arc length `s`, and the OUTWARD unit normal there.
@@ -499,6 +653,13 @@ end
 --- Radii floor at one metre, as everything here does, so an inset larger than
 --- the shape leaves a boundary that can still be walked instead of a shape with
 --- no length. See MIN_RADIUS.
+---
+--- AN INSET THAT EATS ONE DISC OF A UNION LEAVES THE OTHER, rather than leaving a
+--- one-metre pillar beside it. `c.r - metres` goes to zero or below and union2
+--- reads that as a disc that is not there -- see its header, which is where the
+--- decision is argued. It errs INWARD, which is the direction this whole function
+--- is allowed to err in, and it is what stops the renderer's own six metres of
+--- edgeInset from manufacturing a component the storm never had.
 ---
 --- @return table shape
 function BR.StormShape.inset(shape, metres)
