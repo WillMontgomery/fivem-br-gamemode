@@ -885,6 +885,60 @@ BR.Config.Bus = {
 
     -- Spacing of the route breadcrumbs drawn on the map and minimap.
     crumbSpacing = 350.0,
+
+    -- ═══ HOW THE FLIGHT PATH IS DRAWN ON THE MAP AND MINIMAP (#342) ═══
+    --
+    -- Owner, 2026-09-22: "can you make the path 3x thicker and turn it from
+    -- white to our signature blue?" Both knobs used to be bare literals in
+    -- client/bus.lua's draw call, which is the last place he would look for
+    -- values he tunes by eye.
+    --
+    -- ⚠ client/survey.lua HAS ITS OWN THREE, AND THEY NO LONGER MATCH. Its
+    -- ROUTE_COLOUR/ROUTE_RADAR_W/ROUTE_MAP_W were copied from the bus's old
+    -- 0/16/16 precisely because those were the values proven to render here, and
+    -- this change moves the bus's without touching the dev tool's. That is
+    -- deliberate -- the two lines can never be on the map at once (survey.lua
+    -- refuses to arm while BR.BusLine.drawn()), so nothing forces them to agree --
+    -- but the comment over there still calls them the bus's, and it is now wrong.
+    --
+    -- THE WIDTHS ARE THE EASY HALF. SET_GPS_CUSTOM_ROUTE_RENDER takes a radar
+    -- width and a map width as plain ints and documents no upper bound, so 48 is
+    -- 3x the 16 the line shipped at and nothing more. WHETHER 48 READS AS A BOLD
+    -- LINE OR AS A SMEAR is a playtest fact these numbers cannot be right about.
+    routeRadarW  = 48,
+    routeMapW    = 48,
+
+    -- THE COLOUR IS NOT AN RGB, AND THAT IS THE WHOLE OF routeColour.
+    --
+    -- START_GPS_CUSTOM_ROUTE takes a HUD COLOUR INDEX -- a slot in the game's own
+    -- palette -- and no stock slot is our #22d3ee. So the cyan has to be LOADED
+    -- INTO a slot first, with REPLACE_HUD_COLOUR_WITH_RGBA, and that replacement
+    -- is GLOBAL AND LASTS THE WHOLE CLIENT SESSION: there is no native that
+    -- undoes it, and everything else that draws with the slot changes with it.
+    -- Picking the slot is therefore the entire risk of this change.
+    --
+    -- 224 IS HUD_COLOUR_PLACEHOLDER_01, the first of ten consecutive slots
+    -- (224-233) that the game's own HUD colour enum names PLACEHOLDER_01..10 and
+    -- ships as plain white. Rockstar naming a slot a placeholder is the strongest
+    -- evidence obtainable that no vanilla HUD element reads it -- which is the
+    -- only property that matters here. An index picked because it "looked free"
+    -- would repaint whatever does draw with it, for the rest of the session,
+    -- somewhere nobody thought to check.
+    --
+    -- NOT 0, AND NOT BY A NARROW MARGIN. 0 is HUD_COLOUR_PURE_WHITE: it is what
+    -- the flight path shipped drawn in, it is what a great deal of the vanilla
+    -- HUD is drawn in, and it is client/survey.lua's ROUTE_COLOUR -- the other
+    -- caller of these same singular, handle-less natives. Replacing 0 would turn
+    -- the survey overlay and much of the interface cyan for the session, from a
+    -- change nobody would connect to the bus.
+    routeColour  = 224,
+
+    -- Our signature blue: `--color-royale-accent`, #22d3ee, authored in
+    -- ui-src/src/index.css and retyped here because a HUD colour cannot be
+    -- expressed any other way. Opaque; the route line has no reason to be
+    -- anything else. (tools/test_client.lua reads the hex back out of that
+    -- stylesheet and compares, so a restyle cannot leave this behind.)
+    routeRgba    = { r = 34, g = 211, b = 238, a = 255 },
 }
 
 BR.Config.Drop = {

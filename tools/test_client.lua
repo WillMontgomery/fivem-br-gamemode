@@ -7061,13 +7061,35 @@ do
     Citizen.SetTimeout   = function() end
 
     for _, n in ipairs({
-        'StartGpsCustomRoute', 'AddPointToGpsCustomRoute',
-        'SetGpsCustomRouteRender', 'ClearGpsCustomRoute', 'SetVehicleEngineOn',
+        'AddPointToGpsCustomRoute', 'ClearGpsCustomRoute', 'SetVehicleEngineOn',
         'SetPedIntoVehicle', 'SetBlockingOfNonTemporaryEvents',
         'AttachEntityToEntity', 'DetachEntity', 'SetCamActive',
         'RenderScriptCams', 'DestroyCam', 'SetCamCoord', 'PointCamAtCoord',
         'ControlLandingGear', 'SetEntityInvincible', 'SetEntityVisible',
     }) do _G[n] = noop end
+
+    -- THE THREE THAT PAINT THE MAP LINE ARE RECORDED RATHER THAN NOOPED (#342),
+    -- AND IT IS THEIR ARGUMENTS THAT MATTER RATHER THAN THE FACT THEY WERE CALLED.
+    --
+    -- Our signature blue is not a HUD colour, so drawing the route in it is TWO
+    -- calls: one loads the RGB into a HUD colour slot, the other draws the route
+    -- from a slot. IF THOSE TWO INDICES EVER STOP BEING THE SAME NUMBER the line
+    -- comes up in whatever the game ships in the slot that was asked for -- white,
+    -- as it happens -- while the replacement quietly repaints a slot nothing
+    -- draws. From a chair that is "the blue didn't work", and in a diff it is two
+    -- present calls with two plausible arguments. Nothing but a comparison of the
+    -- two recorded indices can tell them apart, which is why they are recorded.
+    local painted, drawnFrom, rendered = {}, {}, {}
+    function ReplaceHudColourWithRgba(idx, r, g, b, a)
+        painted[#painted + 1] = { idx = idx, r = r, g = g, b = b, a = a }
+    end
+    function StartGpsCustomRoute(hudColour, onFoot, follow)
+        drawnFrom[#drawnFrom + 1] = { colour = hudColour, onFoot = onFoot,
+                                      follow = follow }
+    end
+    function SetGpsCustomRouteRender(toggle, radarW, mapW)
+        rendered[#rendered + 1] = { toggle = toggle, radarW = radarW, mapW = mapW }
+    end
     function CreateVehicle() return 258 end
     function CreatePed() return 259 end
     function CreateCamWithParams() return 7 end
@@ -7458,6 +7480,108 @@ do
     local gone = said()
     ok(gone and gone.show == false, 'and leaving the plane takes the box away',
         gone and tostring(gone.show) or 'nothing was sent')
+
+    -- ═══════════════════════════════════════════════════════════════════════
+    -- THE LINE ON THE MAP: 3x THICKER, AND OUR OWN BLUE -- #342
+    -- ═══════════════════════════════════════════════════════════════════════
+    --
+    -- Owner, 2026-09-22: "can you make the path 3x thicker and turn it from white
+    -- to our signature blue?"
+    --
+    -- RIDING THIS BLOCK'S FIXTURE RATHER THAN STANDING UP ITS OWN, because this is
+    -- the block that loads client/bus.lua and puts a published route under it --
+    -- the `board()` above has already drawn the line once through the recording
+    -- stubs at the top of the block. Its own `describe` so a failure names the
+    -- map line rather than the jump prompt.
+    --
+    -- WHAT NONE OF THIS CAN SEE: whether 48 reads as a bold line or as a smear
+    -- across the pause map, and whether #22d3ee holds up over the satellite tiles
+    -- and the storm's purple. Both are playtest facts and the issue says so.
+    describe('the flight path is drawn 3x thicker, in our own blue -- #342')
+
+    local shipped = drawnFrom[#drawnFrom]
+    local loaded  = painted[#painted]
+    local widths  = rendered[#rendered]
+
+    ok(widths and widths.radarW == 48 and widths.mapW == 48,
+        'the path is 3x thicker on BOTH axes -- 48 where it shipped at 16',
+        widths and ('radar %s, map %s'):format(tostring(widths.radarW),
+            tostring(widths.mapW))
+            or 'SetGpsCustomRouteRender was never called at all')
+
+    -- OUR BLUE, READ BACK OUT OF index.css RATHER THAN TYPED HERE. test_gunshop
+    -- makes this same argument over the same document, and it is what makes the
+    -- assertion survive him restyling the interface: a hex spelled in this file
+    -- would only ever guard whatever the accent was on the day it was typed.
+    local accent
+    do
+        local fh = io.open('ui-src/src/index.css', 'r')
+        if fh then
+            accent = fh:read('a'):lower()
+                :match('%-%-color%-royale%-accent:%s*#(%x%x%x%x%x%x)')
+            fh:close()
+        end
+    end
+    ok(accent ~= nil,
+        'the signature accent is still authored in index.css, so the comparison '
+            .. 'below is against something real rather than against nothing',
+        tostring(accent))
+    local wantR = accent and tonumber(accent:sub(1, 2), 16)
+    local wantG = accent and tonumber(accent:sub(3, 4), 16)
+    local wantB = accent and tonumber(accent:sub(5, 6), 16)
+    ok(loaded and loaded.r == wantR and loaded.g == wantG and loaded.b == wantB
+        and loaded.a == 255,
+        'and the RGB loaded into the HUD slot IS that colour, opaque -- not an '
+            .. 'approximation of it retyped from memory',
+        loaded and ('loaded %s,%s,%s,%s; index.css says %s,%s,%s'):format(
+            tostring(loaded.r), tostring(loaded.g), tostring(loaded.b),
+            tostring(loaded.a), tostring(wantR), tostring(wantG),
+            tostring(wantB))
+            or 'no HUD colour was replaced at all')
+
+    -- ⚠ THE ONE THAT IS INVISIBLE IN REVIEW, and the reason both calls are
+    -- recorded instead of merely counted. A blue loaded into one slot and a route
+    -- drawn from another is a WHITE LINE plus a repainted palette entry nobody is
+    -- looking at, from a diff in which both calls are present and both arguments
+    -- look fine.
+    ok(loaded and shipped and loaded.idx == shipped.colour,
+        'and the route is drawn from the VERY SLOT the colour was loaded into',
+        (loaded and shipped)
+            and ('loaded into %s, route drawn from %s'):format(
+                tostring(loaded.idx), tostring(shipped.colour))
+            or 'one of the two calls never happened')
+
+    -- AND THE SLOT IS ONE THE GAME ITSELF DECLARES SPARE, which is the only
+    -- evidence obtainable that no vanilla HUD element reads it: replacing a HUD
+    -- colour is global and nothing undoes it, so an index chosen because it
+    -- "looked free" repaints whatever does draw with it for the whole session.
+    ok(shipped and shipped.colour ~= 0,
+        'never HUD colour 0 -- pure white, a great deal of the vanilla HUD, and '
+            .. "client/survey.lua's own ROUTE_COLOUR",
+        shipped and tostring(shipped.colour))
+    ok(shipped and shipped.colour >= 224 and shipped.colour <= 233,
+        "and it is one of the ten slots the game's own HUD colour enum names "
+            .. 'HUD_COLOUR_PLACEHOLDER_01..10',
+        shipped and tostring(shipped.colour))
+
+    -- THE REPLACEMENT IS A SESSION FACT, NOT A PER-DRAW ONE. It is global, nothing
+    -- undoes it, and the record is republished more than once a match -- the warmup
+    -- preview, the timed flight, `brforce warmup` on top of a live one. A
+    -- republished route is the cheapest proof that the second draw does not go
+    -- back and rewrite the same four bytes into the same palette entry.
+    local paintsBefore, drawsBefore = #painted, #drawnFrom
+    fire(BR.Net.BUS_ROUTE, {
+        points = { { x = 0.0, y = 0.0, z = 500.0 },
+                   { x = 400.0, y = 0.0, z = 500.0 } },
+        heading = 0.0,
+    })
+    ok(#drawnFrom == drawsBefore + 1,
+        'a republished route draws the line again',
+        ('%d draws, was %d'):format(#drawnFrom, drawsBefore))
+    ok(#painted == paintsBefore,
+        'and does NOT load the colour a second time -- the slot is written once '
+            .. 'per client session, not once per draw',
+        ('%d replacements, was %d'):format(#painted, paintsBefore))
 
     fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
     BR.Loop.step(BR.Loop.TICK)

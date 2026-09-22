@@ -106,6 +106,42 @@ local function clearCrumbs()
     end
 end
 
+--- OUR SIGNATURE BLUE IS NOT A HUD COLOUR, SO IT HAS TO BE LOADED INTO ONE.
+---
+--- StartGpsCustomRoute takes a HUD COLOUR INDEX, not an RGB -- one more property
+--- of the same singular, handle-less native family the section below is about --
+--- and no stock slot is #22d3ee. REPLACE_HUD_COLOUR_WITH_RGBA is what puts our
+--- own bytes behind an index, and it is GLOBAL AND FOR THE REST OF THE CLIENT
+--- SESSION: no native undoes it, so whatever else draws with that index changes
+--- with it. Which slot we took, and why 224 is safe to take, is argued where the
+--- number lives -- BR.Config.Bus.routeColour in br_lib/config/map.lua.
+---
+--- ONE FUNCTION RATHER THAN A REPLACE CALL BESIDE A DRAW CALL, and that shape is
+--- the point. The failure this arrangement forecloses is two indices drifting
+--- apart -- the blue loaded into one slot, the route drawn from another -- which
+--- on screen is "the blue didn't work" while both calls sit there looking
+--- correct, and which nothing in review would catch. There is one expression for
+--- the slot, so the route cannot ask for a slot the colour did not go into.
+---
+--- ONCE PER SESSION, NOT ONCE PER DRAW. The slot's contents have nothing to do
+--- with any particular route, and drawCrumbs runs more than once a match -- the
+--- warmup preview, then the timed flight, then `brforce warmup` republishing the
+--- preview on top of a live one -- so a replacement wired into the draw would
+--- rewrite the same four bytes into the same palette entry several times over for
+--- no effect. Lazily rather than at file load: this file is read while the client
+--- is still on the loading screen, and nothing needs the slot until there is a
+--- route to draw with it.
+local colourLoaded = false
+local function routeHudColour()
+    local slot = BR.Config.Bus.routeColour
+    if not colourLoaded then
+        colourLoaded = true
+        local c = BR.Config.Bus.routeRgba
+        ReplaceHudColourWithRgba(slot, c.r, c.g, c.b, c.a)
+    end
+    return slot
+end
+
 --- IS THE BUS LINE ON THE MAP RIGHT NOW?
 ---
 --- READ BY client/survey.lua, WHICH DRAWS ON THE SAME SURFACE. There is exactly
@@ -157,11 +193,16 @@ local function drawCrumbs()
         line[#line + 1] = pts[#pts]
     end
 
-    StartGpsCustomRoute(0, true, true)   -- hud colour 0 (pure white)
+    -- The colour and the two widths all live in BR.Config.Bus now: they are what
+    -- the owner tunes by eye, and a literal inside a draw call is the last place
+    -- he would find them. routeHudColour() loads our blue into its slot on the
+    -- first draw of the session and answers with that same slot -- see its note.
+    StartGpsCustomRoute(routeHudColour(), true, true)
     for _, p in ipairs(line) do
         AddPointToGpsCustomRoute(p.x, p.y, p.z or 200.0)
     end
-    SetGpsCustomRouteRender(true, 16, 16)   -- radar + map line thickness
+    SetGpsCustomRouteRender(true, BR.Config.Bus.routeRadarW,
+                                  BR.Config.Bus.routeMapW)
     routeDrawn = true
     crumbCount = #line
 end
