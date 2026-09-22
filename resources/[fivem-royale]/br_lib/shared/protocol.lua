@@ -186,6 +186,29 @@ BR.Net = {
     STORM_SYNC      = 'br:storm:sync',       -- S->C  full storm record (also mirrored to GlobalState)
     STORM_DAMAGE    = 'br:storm:damage',     -- S->C  { amount, targetHp }
 
+    -- S->C  { cx, cy, r } -- where circle 1 IS, published the moment the match
+    -- forms and before any storm exists.
+    --
+    -- ═══ IT IS NOT A SECOND STORM RECORD, AND IT MUST NEVER GROW INTO ONE ═══
+    --
+    -- A record is a TIMELINE: BR.StormAt solves it against the synced clock and
+    -- the answer changes every millisecond. This is one circle, standing still,
+    -- with no clock in it at all -- because nothing is happening to it yet. The
+    -- storm still starts at PLAYING, on the same schedule, and STORM_SYNC is
+    -- still the only thing that can hurt anybody. Putting a tStart in here would
+    -- invite a client to solve a phase off it, and the first symptom of that
+    -- would be two walls disagreeing about where the edge is.
+    --
+    -- THE SERVER DRAWS IT AT WARMUP RATHER THAN AT PLAYING (#327, owner
+    -- 2026-09-21), so the numbers on this wire ARE the numbers phase 1 will
+    -- close on -- the same draw off the same stream, moved earlier. That is what
+    -- makes the preview honest rather than an approximation of the anchor.
+    --
+    -- THE CLIENT DROPS IT WHEN STORM_SYNC ARRIVES. The real record draws its own
+    -- blips and its own wall, and two purple rings on one map is how a player
+    -- learns not to trust either.
+    STORM_PREVIEW   = 'br:storm:preview',    -- S->C  { cx, cy, r } -- circle 1, before the storm
+
     -- S->C  { c = cue } -- "play this interface cue, in your own head".
     --
     -- ═══ WHY A MATCH-WIDE CUE NEEDS A MESSAGE AT ALL ═══

@@ -7,6 +7,11 @@
 -- (m.storm / m.stormRng / m.stormCarry): two concurrent matches run two
 -- independent storms, each published only to its own audience.
 --
+-- AND ONE FIELD THAT EXISTS BEFORE THE STORM DOES. m.stormFirst is circle 1,
+-- drawn at WARMUP so the map can show it through warmup and the bus (#327), and
+-- spent by enterPhase the moment phase 1 begins. It is not a record and carries
+-- no clock: see BR.Net.STORM_PREVIEW for what that distinction is protecting.
+--
 -- AUTHORITY, stated plainly. The server cannot write a ped's health, so the
 -- visible hurt is applied client-side on instruction (STORM_DAMAGE). But the
 -- server keeps its own ledger of what the storm SHOULD have done to each
@@ -115,6 +120,66 @@ local function cueStopOnce(m, st)
     BR.Broadcast.toMatch(m, BR.Net.SFX_CUE, { c = STOP_CUE })
 end
 
+--- Seed this match's storm stream, IF IT HAS NOT ALREADY BEEN SEEDED.
+---
+--- ═══ EXACTLY ONCE PER MATCH, AND THE `if` IS THE WHOLE POINT ═══
+---
+--- The sequence number keeps two matches started in the same server millisecond
+--- (tests do this constantly) from replaying each other. `seq` rather than `id`
+--- (#291): the id is a random draw now, and a storm path that cannot be
+--- reproduced from a boot is one nobody can debug.
+---
+--- WHAT THE GUARD PREVENTS, now that there are two callers. Circle 1 is drawn at
+--- WARMUP (#327) and the rest of the match is drawn from the same stream as it
+--- runs, so a second seed anywhere would RESTART the sequence -- phase 2 would
+--- then be handed the value phase 1 already used, and every phase after it would
+--- shift by one. Nothing a player could see would look broken; the storm would
+--- simply stop being the storm the preview promised, and it would take a
+--- side-by-side walk of two matches to notice.
+--- @param m table
+local function seedRng(m)
+    if m.stormRng then return end
+    m.stormRng = BR.Rng(GetGameTimer() + m.seq * 7919)
+end
+
+--- Draw the centre the given phase closes on, off this match's storm stream.
+---
+--- ═══ ONE DRAW SITE, BECAUSE TWO WOULD HAVE TO AGREE FOREVER ═══
+---
+--- Circle 1 is drawn at WARMUP and phases 2 and up are drawn at phase entry, and
+--- both must hand BR.NextStormCentre byte-for-byte identical arguments -- the
+--- edge-hug floor, the containment slack, the breakout budget, the map bounds.
+--- Spelled at two call sites, the day somebody tunes `edgeHugPhases` is the day
+--- the preview quietly stops matching the circle it is previewing. Spelled once,
+--- they cannot disagree.
+---
+--- THE FINAL PHASES HUG THE RIM: the next centre sits within edgeHugM of the
+--- current circle's circumference, so endgames resolve as a run to a place rather
+--- than a shuffle in the middle. Earlier phases roam the whole containment slack
+--- (edgeBiasMax 1.0). Phase 1 is never one of them, which is why the preview can
+--- be drawn from the anchor alone.
+---
+--- The breakout budget rides along: it lets a phase's circle leave the current
+--- one, and enterPhase's sweep pricing is what keeps that fair -- the furthest
+--- player's run to the TARGET's edge sets the wall's travel time, so a circle
+--- that moved further simply takes longer to close.
+--- @param m table
+--- @param phase integer
+--- @param cx0 number     the circle being shrunk from
+--- @param cy0 number
+--- @param r0 number
+--- @return number, number, boolean  centre, and whether it broke out
+local function drawCentre(m, phase, cx0, cy0, r0)
+    local p = cfg.phases[phase]
+    local minDist = 0.0
+    if phase > #cfg.phases - (cfg.edgeHugPhases or 0) then
+        minDist = math.max(0.0, (r0 - p.radius) - (cfg.edgeHugM or 0.0))
+    end
+    return BR.NextStormCentre(m.stormRng, cx0, cy0, r0,
+        p.radius, cfg.edgeBiasMax, cfg.mapAABB, minDist,
+        BR.StormBreakoutFor(cfg, phase))
+end
+
 --- Build and publish the record that shrinks toward phases[phase], starting
 --- from the given circle. The next centre is drawn HERE, at phase entry, so
 --- players see where to rotate for the whole hold.
@@ -136,21 +201,36 @@ end
 local function enterPhase(m, phase, cx0, cy0, r0, now, waitSec)
     local p = cfg.phases[phase]
 
-    -- The FINAL phases hug the rim: the next centre sits within edgeHugM of
-    -- the current circle's circumference, so endgames resolve as a run to a
-    -- place rather than a shuffle in the middle. Earlier phases roam the
-    -- whole containment slack (edgeBiasMax 1.0).
-    local minDist = 0.0
-    if phase > #cfg.phases - (cfg.edgeHugPhases or 0) then
-        minDist = math.max(0.0, (r0 - p.radius) - (cfg.edgeHugM or 0.0))
+    -- ═══ PHASE 1 CONSUMES A DRAW ALREADY MADE; EVERY OTHER PHASE MAKES ONE ═══
+    --
+    --   "just determine circle 1's location upon the first player in the match
+    --    completing matchmaking"                      -- owner, 2026-09-21 (#327)
+    --
+    -- BR.Storm.drawFirstCircle took the FIRST value off this match's stream back
+    -- at WARMUP, so that the map could show players where they were dropping
+    -- toward. Nothing about the storm moved for it: this is the same draw, off the
+    -- same stream, with the same arguments, made earlier -- so phase 1 must now
+    -- SPEND that value rather than roll a second one.
+    --
+    -- THE FAILURE A SECOND ROLL CAUSES IS SILENT AND IT IS NOT PHASE 1'S. Drawing
+    -- again here would advance the stream one extra step, so phase 1 would land
+    -- somewhere the preview never promised AND phases 2 through 8 would each
+    -- inherit the value belonging to the phase before them. Every circle would
+    -- still be legal, on the map, and correctly nested; the match would simply not
+    -- be the match. tools/test_storm.lua's `first.stream` block walks a whole
+    -- match's centres down both paths and is what makes that impossible to ship.
+    --
+    -- NIL'D AS IT IS SPENT, so it cannot be spent twice -- `brphase 1` an hour
+    -- into a match re-enters phase 1 and draws a fresh centre from wherever the
+    -- wall is standing, which is what it has always done.
+    local cx1, cy1, brokeOut
+    local pre = (phase == 1) and m.stormFirst or nil
+    if pre then
+        m.stormFirst = nil
+        cx1, cy1, brokeOut = pre.cx, pre.cy, pre.brokeOut
+    else
+        cx1, cy1, brokeOut = drawCentre(m, phase, cx0, cy0, r0)
     end
-    -- The breakout budget rides along: it lets this phase's circle leave the
-    -- current one, and the sweep pricing immediately below is what keeps that
-    -- fair -- the furthest player's run to the TARGET's edge sets the wall's
-    -- travel time, so a circle that moved further simply takes longer to close.
-    local cx1, cy1, brokeOut = BR.NextStormCentre(m.stormRng, cx0, cy0, r0,
-        p.radius, cfg.edgeBiasMax, cfg.mapAABB, minDist,
-        BR.StormBreakoutFor(cfg, phase))
 
     -- Price the sweep for the furthest player's run to the target's edge --
     -- THIS match's players only.
@@ -215,6 +295,89 @@ local function openingRadius(ax, ay)
     return r + (cfg.openMargin or 200.0)
 end
 
+--- What a client is told about circle 1 before the storm exists: one circle,
+--- standing still, with no clock in it.
+--- @param m table
+--- @return table|nil
+local function previewPayload(m)
+    local f = m.stormFirst
+    if not f then return nil end
+    return { cx = f.cx, cy = f.cy, r = f.r }
+end
+
+--- Draw circle 1 the moment the match forms, and tell the room where it is.
+---
+--- ═══ THE EARLIEST INSTANT THE ANSWER EXISTS (#327, owner 2026-09-21) ═══
+---
+---   "We don't need to change where the circle goes - just determine circle 1's
+---    location upon the first player in the match completing matchmaking, and
+---    show the blip starting from then."
+---
+--- NOTHING ABOUT THE STORM MOVES FOR THIS. The problem #327 opened with was that
+--- a preview drawn from the ANCHOR would be a lie -- phase 1's real centre is
+--- rolled with the whole map as slack, so it can land nowhere near the anchor. The
+--- owner's answer dissolves that rather than solving it: make the draw happen
+--- earlier and the preview shows the real circle 1 because it IS circle 1. The
+--- schedule, the radii, the solver, the damage rule and the hold pricing are all
+--- untouched; only the timing of one draw changed.
+---
+--- CALLED FROM THE WARMUP BRANCH OF BR.Match.onEnter, immediately after
+--- BR.Bus.plan(m) -- which is what picks m.anchor, and is therefore the earliest
+--- moment everything phase 1 needs is on the table: the anchor, the opening radius
+--- of it, and cfg.phases[1].radius.
+---
+--- ═══ IT TOUCHES THE STREAM, SO IT REFUSES TO RUN TWICE ═══
+---
+--- The guard is on m.stormRng rather than on m.stormFirst, and that is deliberate:
+--- the thing that must happen once is not "store a circle", it is "advance the
+--- sequence". enterPhase nils m.stormFirst as it spends it, so a guard on the
+--- circle would let a second call through after PLAYING began and quietly reroll
+--- the rest of the match from a fresh seed.
+---
+--- NO ANCHOR MEANS NO PREVIEW AND NO SEED. `brforce warmup` on an empty box can
+--- reach this before a route exists; BR.Storm.begin still draws for itself in that
+--- case, exactly as it did before this function existed.
+--- @param m table
+function BR.Storm.drawFirstCircle(m)
+    if not m or not m.anchor then return end
+    if m.stormRng then return end
+
+    seedRng(m)
+
+    local a  = m.anchor
+    local r0 = openingRadius(a.x, a.y)
+    local cx1, cy1, brokeOut = drawCentre(m, 1, a.x, a.y, r0)
+    -- THREE FIELDS AND NOT FOUR. The opening radius this was drawn against is
+    -- deliberately not kept: BR.Storm.begin recomputes it from the same anchor
+    -- (which nothing can change between here and there -- BR.Bus.plan sets it once)
+    -- so a stored copy would be a second source of truth with no reader.
+    -- `brokeOut` IS read: enterPhase lifts the sweep's time ceiling for a phase
+    -- whose circle left its predecessor, and that fact is decided by the draw.
+    m.stormFirst = { cx = cx1, cy = cy1, r = cfg.phases[1].radius,
+                     brokeOut = brokeOut }
+
+    print(('[br_core] storm: match %s circle 1 drawn at warmup -- (%.0f, %.0f) r %.0f, off anchor %s')
+        :format(BR.MatchTag(m.id), cx1, cy1, cfg.phases[1].radius,
+                tostring(a.name)))
+    BR.Broadcast.toMatch(m, BR.Net.STORM_PREVIEW, previewPayload(m))
+end
+
+--- A late joiner needs the circle the room has been looking at.
+---
+--- The same shape as BR.Bus.sendPreview and called from the same two places in
+--- server/party.lua, for the same reason: a player attached to a match that is
+--- already in WARMUP receives no transition, so nothing else would ever tell them.
+--- Silent once PLAYING starts, because enterPhase has spent the circle by then and
+--- late joining is WARMUP-only anyway.
+--- @param m table
+--- @param src integer
+function BR.Storm.sendPreview(m, src)
+    local payload = m and previewPayload(m)
+    if payload then
+        TriggerClientEvent(BR.Net.STORM_PREVIEW, src, payload)
+    end
+end
+
 --- Start a match's storm. Called when it goes PLAYING: the clock starts at
 --- the last landing and the first circle is on the map immediately (user
 --- call, 2026-08-02) -- the free-loot time is phase 1's 120s wait, not a
@@ -230,11 +393,12 @@ function BR.Storm.begin(m)
         m.anchor = a
     end
 
-    -- Seeded per match. The sequence number keeps two matches started in the
-    -- same server millisecond (tests do this constantly) from replaying each
-    -- other. `seq` rather than `id` (#291): the id is a random draw now, and a
-    -- storm path that cannot be reproduced from a boot is one nobody can debug.
-    m.stormRng   = BR.Rng(GetGameTimer() + m.seq * 7919)
+    -- SEEDED HERE ONLY IF WARMUP DID NOT ALREADY DO IT (#327). Circle 1 is drawn
+    -- the moment the match forms, and that draw is what seeds the stream; this
+    -- call is the fallback for the routes that never had a warmup. Reseeding
+    -- would restart the sequence and hand phase 2 the value phase 1 already
+    -- spent -- see seedRng's header for why that failure is invisible.
+    seedRng(m)
     m.stormCarry = {}
 
     -- The free-loot hold is priced for the FURTHEST player's run to the
@@ -244,6 +408,17 @@ function BR.Storm.begin(m)
     -- is in the circle, why is the timer four minutes?"). Anyone inside the
     -- target pays nothing; only the overshoot beyond its edge buys time.
     -- LOBBY bystanders are not participants and never lengthen the hold.
+    --
+    -- ═══ IT STILL MEASURES TO THE ANCHOR, AND THAT IS A DECISION NOW (#327) ═══
+    --
+    -- m.stormFirst is sitting right here with circle 1's real centre in it, so
+    -- this could be made exact for the first time. It deliberately is not. #327
+    -- read this line as evidence that phase 1 OUGHT to be pinned to the anchor,
+    -- and the owner answered by moving the draw instead -- "we don't need to
+    -- change where the circle goes" -- which leaves the pricing exactly as
+    -- authored. Rewriting it here would change how long every match's free-loot
+    -- hold lasts, on a commit whose whole claim is that nothing about the storm
+    -- moved. If it should be exact, that is its own issue and its own playtest.
     local furthest = 0.0
     BR.Roster.each(
         function(e) return e.matchId == m.id and BR.Server.isInMatch(e.state) end,

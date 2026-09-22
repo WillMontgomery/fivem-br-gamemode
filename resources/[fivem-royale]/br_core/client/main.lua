@@ -795,6 +795,11 @@ BR.State = {
     squad    = {},   -- array of serverIds
     party    = nil,  -- persistent party, pushed by the server; survives a match
     storm    = nil,  -- the published storm record; solved locally via BR.StormAt
+    -- Circle 1, known from the moment the match forms and shown through warmup
+    -- and the bus (#327): { cx, cy, r }, one still circle with NO clock in it.
+    -- Deliberately not merged into `storm` above -- BR.StormAt cannot read this
+    -- and nothing that can hurt a player may ever be solved from it.
+    stormPreview = nil,
     alive    = 0,
     squadsAlive = 0,
     -- MY OWN FEET, ON MY OWN SCREEN. Set by client/skydive.lua the frame the

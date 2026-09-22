@@ -216,6 +216,13 @@ end
 -- holds. Either start order ends with the same sky.
 local skyName, skyBlend = nil, nil
 
+--- What applyIsland last APPLIED, or nil if it has not run yet. Declared up here
+--- with the sky claim because the 'br:world:ask' handler below answers with both,
+--- and a handler closing over a local that is declared later closes over a GLOBAL
+--- of the same name instead -- which reads nil forever and looks like the
+--- announcement simply never happening. See sayWorld for what it is for.
+local islandApplied = nil
+
 --- @param name string @param blend number  seconds; 0 snaps
 local function wantSky(name, blend)
     skyName, skyBlend = name, blend
@@ -224,7 +231,40 @@ end
 
 AddEventHandler('br:world:ask', function()
     if skyName then TriggerEvent('br:world:island', skyName, skyBlend) end
+    -- The same answer for the same start-order reason, on the other announcement
+    -- this file makes. See sayWorld.
+    if islandApplied ~= nil then TriggerEvent('br:env:world', islandApplied) end
 end)
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- AND THE SWAP ITSELF IS ANNOUNCED, NOT ONLY THE SKY OVER IT (#327)
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- ENABLING THE HEIST ISLAND HIDES LOS SANTOS. That is the R* mechanic this whole
+-- file is built around, so the instant applyIsland(false) runs is the instant San
+-- Andreas becomes the world -- and it is a real named moment that nothing outside
+-- this resource could previously see.
+--
+-- br_core's storm now needs it. The owner asked for circle 1's wall to show "from
+-- when the San Andreas map is loaded" (2026-09-21), and a preview curtain 950m tall
+-- drawn over Los Santos while the camera is still on the island is a curtain in a
+-- world that is switched off.
+--
+-- WHY IT CANNOT BE INFERRED FROM THE MATCH STATE, which is what br_core would
+-- otherwise have to do. wantIsland flips at BUS, but applyIsland does NOT: the loop
+-- below holds the swap until the rendered camera is clear of the island, or until
+-- the bus's release cue arrives a few seconds into the ascent. So the state
+-- transition and the actual swap are seconds apart, every flight, and the gap is
+-- exactly the interval in which the guess would be wrong.
+--
+-- SAID FROM applyIsland AND NOWHERE ELSE, so it reports what was APPLIED rather
+-- than what was wanted -- the two disagree for as long as the deferral lasts, which
+-- is the entire point of the announcement.
+--- @param on boolean  is the lobby island the world right now?
+local function sayWorld(on)
+    islandApplied = on
+    TriggerEvent('br:env:world', on)
+end
 
 --- Flip the island's existence. This is the same switch the Cayo heist flips;
 --- everything else (scenarios, path nodes, ambient audio zones) rides along so
@@ -243,6 +283,11 @@ local function applyIsland(on)
     SetDeepOceanScaler(on and 0.0 or 1.0)
 
     print(('[br_environment] Cayo Perico %s'):format(on and 'enabled' or 'disabled'))
+
+    -- SAID HERE, ONCE THE SWITCH HAS ACTUALLY BEEN THROWN. br_core's storm draws
+    -- circle 1's preview wall off this, and it is the difference between a world
+    -- that is loaded and a match state that says it ought to be.
+    sayWorld(on)
 
     -- THE WEATHER CHOREOGRAPHY (user call, 2026-08-04). The island lives
     -- under OVERCAST: a hazy horizon is what makes the mid-flight world

@@ -682,6 +682,10 @@ AddEventHandler(BR.Net.SNAPSHOT, function(payload)
     S.alive        = payload.alive or 0
     S.squadsAlive  = payload.squadsAlive or 0
     S.storm        = payload.storm
+    -- Circle 1 before the storm exists (#327). Assigned rather than defaulted,
+    -- because nil is the answer from PLAYING onward and a reconnect mid-match
+    -- must not resurrect a preview the real record has replaced.
+    S.stormPreview = payload.stormPreview
 
     -- A snapshot supersedes anything queued, so it resets the sequence rather
     -- than being discarded as stale. Otherwise a client that reconnects, or
@@ -2249,6 +2253,24 @@ end, false)
 RegisterNetEvent(BR.Net.STORM_SYNC)
 AddEventHandler(BR.Net.STORM_SYNC, function(rec)
     S.storm = rec
+    -- THE REAL RECORD ENDS THE PREVIEW, and it ends it here in the mirror rather
+    -- than only in the renderer's gate. The first record arrives at PLAYING and
+    -- draws its own two blips and its own wall; the preview it stood in for has
+    -- nothing left to say, and two purple rings on one map is how a player learns
+    -- not to trust either (#327).
+    S.stormPreview = nil
+end)
+
+-- Circle 1, published at WARMUP, before any storm exists (#327).
+--
+-- IT IS A CIRCLE AND NOT A RECORD, which is why it lands in its own field rather
+-- than in S.storm: BR.StormAt would happily be handed this and would answer
+-- nonsense, and client/storm.lua's whole damage-adjacent readout hangs off
+-- S.storm. Keeping them apart means there is no line anywhere that can mistake a
+-- preview for a wall that hurts.
+RegisterNetEvent(BR.Net.STORM_PREVIEW)
+AddEventHandler(BR.Net.STORM_PREVIEW, function(circle)
+    S.stormPreview = circle
 end)
 
 -- The server said the storm hurt us; hurt the ped it can see. This handler

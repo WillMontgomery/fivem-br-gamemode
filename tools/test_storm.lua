@@ -5,6 +5,21 @@
 --    both circles, so if a player gets to the new destination early they are
 --    safe. That logic also doesn't exist today."      -- owner, 2026-09-21 (#328)
 --
+-- AND, SINCE #327, WHEN CIRCLE 1 IS DRAWN AND WHO IS SHOWN IT.
+--
+--   "We don't need to change where the circle goes - just determine circle 1's
+--    location upon the first player in the match completing matchmaking, and show
+--    the blip starting from then. Show the marker (or arc now as it may be)
+--    starting from when the San Andreas map is loaded."  -- owner, same day
+--
+-- THE TWO SUBJECTS BELONG IN ONE FILE because they are the same three files and,
+-- in the wall's case, the same renderer: the preview curtain IS the union wall
+-- handed a single circle and a lower alpha. The `first.*` blocks are the timing
+-- invariant -- one seed per match, phase 1 spends the first value -- and the
+-- `preview.*` blocks are what a player is shown and, more importantly, what they
+-- are NOT shown: no damage, no HUD card, nothing beside the real wall at PLAYING,
+-- and nothing left on the map when a warmup ends without a match.
+--
 -- ═══ WHY THIS IS ITS OWN SUITE ═══
 --
 -- The storm had one corner of tools/test_shared.lua and has outgrown it. That
@@ -141,7 +156,7 @@ end
 local function newStormServer()
     local env = newSandbox()
     local S = { now = 1000000, roster = {}, out = {}, prints = {},
-                matches = {}, bled = {}, defeated = {} }
+                matches = {}, bled = {}, defeated = {}, sent = {} }
 
     env.GetGameTimer = function() return S.now end
     env.print = function(...)
@@ -163,7 +178,15 @@ local function newStormServer()
 
     loadInto(env, SANDBOX_LIB)
 
-    env.BR.Broadcast = { toMatch = function() end }
+    -- EVERY MATCH-WIDE SEND IS RECORDED, not swallowed. STORM_SYNC is the record
+    -- and nothing below reads it, but STORM_PREVIEW (#327) is the whole of the
+    -- warmup half of this feature: a publish that never happens and a publish that
+    -- happens with the wrong circle in it look identical from a match instance.
+    env.BR.Broadcast = {
+        toMatch = function(_, event, payload)
+            S.sent[#S.sent + 1] = { event = event, payload = payload }
+        end,
+    }
     env.BR.Server = {
         devMode = false,
         eachMatch = function(fn)
@@ -252,6 +275,25 @@ local function newStormServer()
         return e.stormHp ~= nil
     end
 
+    --- The last match-wide send of one event, or nil.
+    --- @param event string
+    function S.lastSent(event)
+        for i = #S.sent, 1, -1 do
+            if S.sent[i].event == event then return S.sent[i].payload end
+        end
+        return nil
+    end
+
+    --- How many times one event was sent to the match.
+    --- @param event string
+    function S.countSent(event)
+        local n = 0
+        for _, s in ipairs(S.sent) do
+            if s.event == event then n = n + 1 end
+        end
+        return n
+    end
+
     --- Anything the scheduler swallowed. A job that threw is a job that did
     --- nothing, and a suite reading a nil ledger would call that "safe".
     function S.errored()
@@ -275,7 +317,8 @@ local function pt(x, y, z) return { x = x, y = y, z = z or 30.0 } end
 local function newStormClient()
     local env = newSandbox()
     local C = { now = 1000000, envelopes = {}, blips = {}, markers = {},
-                prints = {}, cmds = {}, sfx = {}, pedAt = pt(0.0, 0.0) }
+                prints = {}, cmds = {}, sfx = {}, pedAt = pt(0.0, 0.0),
+                handlers = {} }
 
     env.GetGameTimer = function() return C.now end
     env.print = function(...)
@@ -287,7 +330,17 @@ local function newStormClient()
     env.GetHashKey        = function(s) return #tostring(s) end
     env.PlayerId          = function() return 0 end
     env.GetPlayerServerId = function() return 1 end
-    env.AddEventHandler   = function() end
+    -- HANDLERS ARE KEPT, NOT DROPPED, so C.fire can drive them. #327's preview
+    -- wall waits for br_environment to say the Cayo lobby island has actually
+    -- been torn down, and that arrives as a plain client event from another Lua
+    -- state -- so a harness that swallows AddEventHandler cannot reach the one
+    -- condition the wall is gated on, and would prove the gate by never opening
+    -- it. Stored as a list per name: several handlers for one event is ordinary.
+    env.AddEventHandler   = function(name, fn)
+        local list = C.handlers[name]
+        if not list then list = {} C.handlers[name] = list end
+        list[#list + 1] = fn
+    end
     env.RegisterNetEvent  = function() end
     env.RegisterCommand   = function(name, fn) C.cmds[name] = fn end
     env.TriggerServerEvent = function() end
@@ -353,12 +406,20 @@ local function newStormClient()
 
     loadInto(env, { 'br_core/client/main.lua' })
     env.BR.Native = env.BR.Native or {}
-    env.BR.Native.radiusBlip = function(h, x, y)
+    -- The radius, colour and alpha are recorded as well as the position: #327's
+    -- preview ring is a radius blip like the other two and is told apart from
+    -- them by WHICH CIRCLE it is on, which needs the radius to be readable.
+    env.BR.Native.radiusBlip = function(h, x, y, r, colour, alpha, name)
         if h and C.blips[h] and C.blips[h].exists then
             C.blips[h].x, C.blips[h].y = x, y
+            C.blips[h].r, C.blips[h].colour = r, colour
+            C.blips[h].alpha, C.blips[h].name = alpha, name
             return h
         end
-        return newBlip('radius', x, y)
+        local nh = newBlip('radius', x, y)
+        C.blips[nh].r, C.blips[nh].colour = r, colour
+        C.blips[nh].alpha, C.blips[nh].name = alpha, name
+        return nh
     end
     env.BR.Native.blipName = function(h, name)
         if C.blips[h] then C.blips[h].name = name end
@@ -412,6 +473,21 @@ local function newStormClient()
         return nil
     end
 
+    --- Every radius ring currently on the map.
+    function C.rings()
+        local out = {}
+        for _, b in pairs(C.blips) do
+            if b.exists and b.kind == 'radius' then out[#out + 1] = b end
+        end
+        return out
+    end
+
+    --- Deliver a client event to the handlers this file registered for it.
+    --- @param name string
+    function C.fire(name, ...)
+        for _, fn in ipairs(C.handlers[name] or {}) do fn(...) end
+    end
+
     function C.errored()
         for _, line in ipairs(C.prints) do
             if line:find('error', 1, true) then return line end
@@ -421,6 +497,73 @@ local function newStormClient()
 
     C.env = env
     return C
+end
+
+-- ---------------------------------------------------------------------------
+-- A WHOLE MATCH'S PHASE CENTRES, which is the only way to see #327's invariant.
+-- ---------------------------------------------------------------------------
+
+--- Run one match from its storm's first record to its last, and report every
+--- phase's target circle in order.
+---
+--- ═══ THE PHASE JOB IS RE-ENABLED HERE, AND ONLY HERE ═══
+---
+--- Every other block in this file stands it down, because it authors a NEW record
+--- the moment a shrink finishes and would replace the specific pair of circles
+--- those blocks set up. This block wants exactly that: the whole chain, each phase
+--- drawn from the one before it off the match's own stream.
+---
+--- NO PLAYERS. The roster is emptied first, because an empty one makes the hold and
+--- the sweep pricing constant -- so the only thing the walk can depend on is the
+--- stream, which is the thing under test. (Positions never enter the centre draw;
+--- they set tWait and tShrink. Emptying the roster means a failure cannot be
+--- blamed on that.)
+---
+--- @param anchor table      the POI circle 1 is drawn off
+--- @param predraw boolean   run BR.Storm.drawFirstCircle at WARMUP first (#327's
+---                          path), or go straight to PLAYING (the path that
+---                          shipped before it, byte for byte -- nothing in
+---                          BR.Storm.begin's seed-and-draw fallback changed)
+--- @return table  { phases = { [n] = { cx, cy, r } }, first, rngAfterDraw, S }
+local function walkMatch(anchor, predraw)
+    local S = newStormServer()
+    local env = S.env
+    S.roster[1] = nil
+    S.match.storm = nil
+    S.match.anchor = { x = anchor.x, y = anchor.y, name = anchor.name }
+    env.BR.Sched.setEnabled('storm.phase', true)
+
+    local first, rngAfterDraw = nil, nil
+    if predraw then
+        S.match.state = env.BR.MatchState.WARMUP
+        env.BR.Storm.drawFirstCircle(S.match)
+        local f = S.match.stormFirst
+        first = f and { cx = f.cx, cy = f.cy, r = f.r } or nil
+        rngAfterDraw = S.match.stormRng
+        S.match.state = env.BR.MatchState.PLAYING
+    end
+
+    local phases, seen = {}, {}
+    local function note()
+        local rec = S.match.storm
+        if not rec or seen[rec.phase] then return end
+        seen[rec.phase] = true
+        phases[rec.phase] = { cx = rec.cx1, cy = rec.cy1, r = rec.r1 }
+    end
+
+    env.BR.Storm.begin(S.match)
+    note()
+
+    local last = #env.BR.Config.Storm.phases
+    local guard = 0
+    while not seen[last] and guard < 4000 do
+        guard = guard + 1
+        S.now = S.now + 30000
+        env.BR.Sched.step(S.now)
+        note()
+    end
+
+    return { phases = phases, first = first, rngAfterDraw = rngAfterDraw, S = S }
 end
 
 -- ---------------------------------------------------------------------------
@@ -1357,6 +1500,482 @@ do
             .. 'inside the cushion')
     ok(T.hurts(0.0, 0.0) == true,
         'and the ground the wall came from is not')
+end
+
+-- ---------------------------------------------------------------------------
+describe('first.stream')
+do
+    -- ═══ THE INVARIANT THE WHOLE OF #327 STANDS ON ═══
+    --
+    --   "We don't need to change where the circle goes - just determine circle 1's
+    --    location upon the first player in the match completing matchmaking"
+    --                                               -- owner, 2026-09-21
+    --
+    -- Circle 1 used to be drawn at PLAYING, inside enterPhase, off a stream seeded
+    -- one line earlier. It is now drawn at WARMUP so the map can show it. The
+    -- owner's instruction is that NOTHING ABOUT THE STORM MOVES for that: the same
+    -- draw, off the same stream, with the same arguments, made earlier.
+    --
+    -- ═══ WHY THE COMPARISON IS TWO LIVE PATHS AND NOT A GOLDEN LIST ═══
+    --
+    -- BR.Storm.begin's seed-and-draw is still there, untouched, as the fallback for
+    -- the routes that never had a warmup -- so the code that shipped before #327 is
+    -- still executable, and `walkMatch(anchor, false)` IS it. Both runs hold the
+    -- clock and the sequence number still, so both seed identically; the only
+    -- difference between them is WHEN the first value comes off the stream. Hard
+    -- coding the eight centres instead would have pinned the config as much as the
+    -- rule, and would go red the next time a phase radius is tuned.
+    --
+    -- ═══ WHAT GETTING IT WRONG LOOKS LIKE, WHICH IS WHY THIS IS THE FIRST BLOCK ═══
+    --
+    -- Every wrong answer here is a LEGAL storm. Reseed at begin and phase 2 is
+    -- handed the value phase 1 already spent; draw again at phase entry and all
+    -- eight shift by one. Every circle is still on the map, still correctly nested,
+    -- still the right radius on the right schedule, and no playtest can tell -- the
+    -- match is simply not the match, and circle 1 is not the circle the whole room
+    -- spent warmup looking at.
+    local ANCHOR = { x = 150.0, y = -900.0, name = 'Test' }
+    local warm = walkMatch(ANCHOR, true)
+    local cold = walkMatch(ANCHOR, false)
+    local N = #warm.S.env.BR.Config.Storm.phases
+
+    ok(warm.S.errored() == nil, 'the warmup-draw match runs clean',
+        warm.S.errored())
+    ok(cold.S.errored() == nil, 'and so does the one that draws at begin',
+        cold.S.errored())
+
+    local counted = 0
+    for n = 1, N do if warm.phases[n] and cold.phases[n] then counted = counted + 1 end end
+    ok(counted == N,
+        ('both matches actually walked all %d phases'):format(N), counted)
+
+    -- PHASE BY PHASE, AND PHASE 1 IS INCLUDED DELIBERATELY. The brief only asks
+    -- that phases 2 and up be unchanged, because phase 1 is the one being moved --
+    -- but moving it must not move it either: the same value off the same stream
+    -- lands in the same place, so the honest assertion is that ALL of them match.
+    local wrong, firstWrong = 0, nil
+    for n = 1, N do
+        local a, b = warm.phases[n], cold.phases[n]
+        if not (a and b and a.cx == b.cx and a.cy == b.cy and a.r == b.r) then
+            wrong = wrong + 1
+            firstWrong = firstWrong or n
+        end
+    end
+    ok(wrong == 0,
+        ('every one of the %d phase centres is bit for bit what it is with the '
+            .. 'draw left at begin'):format(N),
+        firstWrong and ('first disagreement at phase ' .. firstWrong
+            .. (': warmup (%.4f, %.4f) vs begin (%.4f, %.4f)'):format(
+                warm.phases[firstWrong] and warm.phases[firstWrong].cx or 0/0,
+                warm.phases[firstWrong] and warm.phases[firstWrong].cy or 0/0,
+                cold.phases[firstWrong] and cold.phases[firstWrong].cx or 0/0,
+                cold.phases[firstWrong] and cold.phases[firstWrong].cy or 0/0)) or nil)
+
+    -- AND PHASE 1 TAKES THE FIRST VALUE, which is the other half of the same
+    -- sentence: the circle published at warmup must be the circle phase 1 actually
+    -- closes on, or the preview is an illustration rather than the truth.
+    ok(warm.first ~= nil, 'the warmup draw produced a circle')
+    ok(warm.first and warm.phases[1]
+        and warm.first.cx == warm.phases[1].cx
+        and warm.first.cy == warm.phases[1].cy
+        and warm.first.r  == warm.phases[1].r,
+        'the circle shown during warmup IS phase 1 -- same centre, same radius',
+        warm.first and warm.phases[1] and
+            ('preview (%.4f, %.4f) r %.1f vs phase 1 (%.4f, %.4f) r %.1f'):format(
+                warm.first.cx, warm.first.cy, warm.first.r,
+                warm.phases[1].cx, warm.phases[1].cy, warm.phases[1].r) or nil)
+
+    -- ═══ SEEDED EXACTLY ONCE, ASSERTED ON THE OBJECT AND NOT ON ITS OUTPUT ═══
+    --
+    -- The walk above catches a reseed by its consequences. This catches it by
+    -- IDENTITY, which is worth having separately: a reseed that happened to be
+    -- handed the same millisecond would produce a stream that agrees for a while,
+    -- and rawequal cannot be fooled by that.
+    local W = walkMatch(ANCHOR, true)
+    ok(W.rngAfterDraw ~= nil, 'the warmup draw is what seeds the stream')
+    ok(rawequal(W.rngAfterDraw, W.S.match.stormRng),
+        'and BR.Storm.begin does not replace it -- one seed per match, not two')
+
+    -- SPENT, AND SPENT ONCE. enterPhase nils the stored circle as it consumes it,
+    -- so there is nothing left for a later `brphase 1` to spend twice.
+    ok(W.S.match.stormFirst == nil,
+        'phase 1 spends the pre-drawn circle rather than leaving it lying about')
+end
+
+-- ---------------------------------------------------------------------------
+describe('first.once')
+do
+    -- ═══ THE DRAW REFUSES TO HAPPEN TWICE, AND THE CLOCK MOVES BETWEEN TRIES ═══
+    --
+    -- ONE CALLER EXISTS TODAY and it cannot fire twice: BR.Match.transition returns
+    -- immediately when `from == state`, so onEnter(WARMUP) runs once per match, and
+    -- `brwarmupfreeze off` -- the one thing that looks like it re-enters warmup --
+    -- only rebroadcasts the state and resets the clock. The guard is therefore not
+    -- protecting against a bug that exists; it is protecting a PUBLIC function on
+    -- BR.Storm whose second caller would advance the stream, hand every phase the
+    -- value belonging to the phase before it, and look exactly like a working
+    -- storm. That is the failure first.stream describes, arriving from a direction
+    -- nobody was watching.
+    --
+    -- THE CLOCK IS ADVANCED BETWEEN THE TWO CALLS ON PURPOSE. The seed is
+    -- GetGameTimer() plus the sequence number, so a second call at the SAME
+    -- millisecond would reseed to the identical stream and redraw the identical
+    -- circle -- a test with a still clock would pass whether the guard existed or
+    -- not, which is a test that proves nothing.
+    local ANCHOR = { x = 150.0, y = -900.0, name = 'Test' }
+    local S = newStormServer()
+    local env = S.env
+    S.roster[1] = nil
+    S.match.storm = nil
+    S.match.state = env.BR.MatchState.WARMUP
+    S.match.anchor = { x = ANCHOR.x, y = ANCHOR.y, name = ANCHOR.name }
+
+    env.BR.Storm.drawFirstCircle(S.match)
+    local once = S.match.stormFirst
+    local rng  = S.match.stormRng
+    ok(once ~= nil, 'the first call draws')
+
+    S.now = S.now + 5000
+    env.BR.Storm.drawFirstCircle(S.match)
+
+    ok(rawequal(rng, S.match.stormRng),
+        'a second call five seconds later does not reseed the stream')
+    ok(S.match.stormFirst and once
+        and S.match.stormFirst.cx == once.cx
+        and S.match.stormFirst.cy == once.cy,
+        'and does not move circle 1',
+        S.match.stormFirst and once and
+            ('was (%.4f, %.4f), now (%.4f, %.4f)'):format(
+                once.cx, once.cy, S.match.stormFirst.cx, S.match.stormFirst.cy)
+            or nil)
+    ok(S.countSent(env.BR.Net.STORM_PREVIEW) == 1,
+        'and the room is told once, not twice',
+        S.countSent(env.BR.Net.STORM_PREVIEW))
+
+    -- AND THE MATCH THAT FOLLOWS IS STILL THE MATCH. The guard is only worth
+    -- having if it protects the stream, so the walk is what proves it did.
+    local twice = walkMatch(ANCHOR, true)
+    ok(twice.phases[2] ~= nil and S.match.stormFirst ~= nil
+        and twice.phases[1].cx == S.match.stormFirst.cx,
+        'the doubly-asked match still draws the same phase 1 as a singly-asked one')
+end
+
+-- ---------------------------------------------------------------------------
+describe('first.fallback')
+do
+    -- ═══ `brforce playing` FROM NOTHING STILL WORKS, AND IT IS NOT AN AFTERTHOUGHT ═══
+    --
+    -- That route skips warmup entirely, so BR.Bus.plan never ran, there is no route
+    -- and no anchor -- and therefore nothing to draw circle 1 off. BR.Storm.begin
+    -- picks a POI and draws for itself, exactly as it did before #327, and that is
+    -- the path a developer uses a dozen times an evening. A preview it cannot show
+    -- must not cost it a storm.
+    local S = newStormServer()
+    local env = S.env
+    S.match.anchor = nil
+    S.match.storm  = nil
+    S.match.state  = env.BR.MatchState.WARMUP
+
+    -- WARMUP WITH NO ROUTE DRAWS NOTHING AND SEEDS NOTHING, which matters: a seed
+    -- taken here would be a seed begin must not take again, off an anchor that does
+    -- not exist yet.
+    env.BR.Storm.drawFirstCircle(S.match)
+    ok(S.match.stormFirst == nil, 'no anchor, no circle')
+    ok(S.match.stormRng == nil, 'and no seed either')
+    ok(S.countSent(env.BR.Net.STORM_PREVIEW) == 0, 'and nothing published')
+
+    S.match.state = env.BR.MatchState.PLAYING
+    env.BR.Storm.begin(S.match)
+    ok(S.match.anchor ~= nil, 'begin picks a POI -- any POI beats no storm')
+    ok(S.match.stormRng ~= nil, 'and seeds the stream itself')
+    ok(S.match.storm ~= nil and S.match.storm.phase == 1,
+        'and phase 1 is on the map')
+    ok(S.match.storm ~= nil
+        and near(S.match.storm.r1, env.BR.Config.Storm.phases[1].radius, 0.001),
+        'closing on the authored phase-1 radius, drawn here rather than consumed')
+    ok(S.errored() == nil, 'and the forced start runs clean', S.errored())
+end
+
+-- ---------------------------------------------------------------------------
+describe('first.wire')
+do
+    -- ═══ WHAT CROSSES THE WIRE IS A CIRCLE, NOT A SECOND STORM RECORD ═══
+    --
+    -- The temptation is to publish something BR.StormAt could read, because every
+    -- other storm message is exactly that. A record is a TIMELINE and this is one
+    -- still circle: a tStart in here would invite a client to solve a phase off it,
+    -- and the first symptom would be two walls disagreeing about where the edge is
+    -- while only one of them can hurt anybody.
+    local S = newStormServer()
+    local env = S.env
+    S.match.storm = nil
+    S.match.state = env.BR.MatchState.WARMUP
+
+    env.BR.Storm.drawFirstCircle(S.match)
+    local p = S.lastSent(env.BR.Net.STORM_PREVIEW)
+    ok(p ~= nil, 'warmup publishes circle 1 to the room')
+    ok(p and S.match.stormFirst and p.cx == S.match.stormFirst.cx
+        and p.cy == S.match.stormFirst.cy,
+        'and publishes the circle it actually drew')
+    ok(p and near(p.r, env.BR.Config.Storm.phases[1].radius, 0.001),
+        'at the authored phase-1 radius', p and tostring(p.r))
+    ok(p and p.tStart == nil and p.tWait == nil and p.tShrink == nil
+        and p.dps == nil and p.cx1 == nil and p.phase == nil,
+        'and there is no clock, no dps and no second circle in it -- nothing a '
+            .. 'client could mistake for a record')
+
+    -- THE LATE JOINER GETS THEIR OWN COPY, because a player attached to a match
+    -- already in WARMUP receives no transition and nothing else would ever tell
+    -- them. Same shape as BR.Bus.sendPreview, called from the same two places.
+    local before = #S.out
+    env.BR.Storm.sendPreview(S.match, 7)
+    local direct = S.out[#S.out]
+    ok(#S.out == before + 1 and direct.event == env.BR.Net.STORM_PREVIEW
+        and direct.target == 7,
+        'a late joiner is sent the circle directly')
+    ok(direct and direct.payload and direct.payload.cx == p.cx,
+        'and it is the same circle the room got')
+
+    -- AND IT GOES QUIET ONCE THE STORM IS REAL. enterPhase spends the circle, so
+    -- there is nothing left to send and STORM_SYNC is the honest answer from then
+    -- on. A late joiner cannot arrive here anyway -- late joining is WARMUP only --
+    -- which is precisely why a stale send would never be noticed.
+    S.match.state = env.BR.MatchState.PLAYING
+    env.BR.Storm.begin(S.match)
+    local after = #S.out
+    env.BR.Storm.sendPreview(S.match, 7)
+    ok(#S.out == after, 'nothing is sent once phase 1 has spent the circle')
+end
+
+-- ---------------------------------------------------------------------------
+describe('preview.harmless')
+do
+    -- ═══ A PREVIEW CANNOT HURT ANYBODY, AND THAT IS STRUCTURAL ═══
+    --
+    -- The storm's damage tick requires PLAYING and a published record, and a match
+    -- in warmup has neither -- m.stormFirst is a circle on a match instance, not a
+    -- record, and nothing reads it but enterPhase. Asserted rather than assumed
+    -- because the whole of #327 is new surface arriving before the storm exists,
+    -- and "the preview does not damage" is the one property whose failure would
+    -- kill people during the free-loot hold of a round nobody had started.
+    local S = newStormServer()
+    local env = S.env
+    S.match.storm = nil
+    S.match.state = env.BR.MatchState.WARMUP
+    env.BR.Storm.drawFirstCircle(S.match)
+    ok(S.match.stormFirst ~= nil, 'the match has a previewed circle 1')
+
+    local e = S.roster[1]
+    -- Ten kilometres from it, which is outside anything on the map.
+    e.pos = { x = 9000.0, y = 9000.0, z = 30.0 }
+    e.stormHp = nil
+    local sends = #S.out
+    S.tick(); S.tick(); S.tick()
+
+    ok(e.stormHp == nil, 'and standing 10km from it costs nothing')
+    ok(#S.out == sends, 'no STORM_DAMAGE is sent')
+    ok(next(S.defeated) == nil, 'and nobody is defeated by a circle on a map')
+    ok(S.errored() == nil, 'the warmup ticks run clean', S.errored())
+end
+
+-- ---------------------------------------------------------------------------
+describe('preview.ring')
+do
+    -- ═══ THE PURPLE RING, FROM THE MOMENT IT IS DRAWN THROUGH WARMUP AND THE BUS ═══
+    --
+    --   "show the blip starting from then"               -- owner, 2026-09-21
+    --
+    -- One radius blip on circle 1, in the colour the game already uses for "the
+    -- circle you are being asked to rotate to". It is the only storm thing on the
+    -- map before PLAYING, and the two states it belongs to are the whole of its
+    -- lifetime -- there is no teardown to get wrong, because the gate IS the
+    -- teardown.
+    local C = newStormClient()
+    local env = C.env
+    env.BR.State.storm = nil
+    env.BR.State.match.state = env.BR.MatchState.WARMUP
+    env.BR.State.me.state    = env.BR.PlayerState.WARMUP
+    env.BR.State.stormPreview = { cx = 800.0, cy = -1200.0, r = 2600.0 }
+
+    C.tick(2)
+    local rings = C.rings()
+    ok(C.errored() == nil, 'the warmup ticks run clean', C.errored())
+    ok(#rings == 1, 'exactly one ring on the map during warmup', #rings)
+    local ring = rings[1]
+    ok(ring and near(ring.x, 800.0, 0.001) and near(ring.y, -1200.0, 0.001),
+        'on circle 1')
+    ok(ring and near(ring.r, 2600.0, 0.001), 'at circle 1\'s radius',
+        ring and tostring(ring.r))
+    ok(ring and ring.colour == env.BR.Config.Storm.blip.nextColour,
+        'in the purple the "Next Safe Zone" ring already uses -- 27, reused '
+            .. 'rather than a second colour for the same meaning',
+        ring and tostring(ring.colour))
+    ok(ring and ring.name ~= nil,
+        'and it has a legend entry, like every blip this project makes')
+
+    -- NOT REBUILT. It never moves and never resizes, so it is created once: the
+    -- remove-and-re-add cadence the storm's own rings need exists because their
+    -- radius changes every frame of a shrink, and paying it here would be blip
+    -- churn for a circle that is standing still.
+    local handle = nil
+    for h, b in pairs(C.blips) do if b == ring then handle = h end end
+    C.tick(20)
+    ok(C.blips[handle] and C.blips[handle].exists and #C.rings() == 1,
+        'and twenty ticks later it is still the same one blip, not the twentieth')
+
+    -- THE BUS KEEPS IT. Riding is exactly when the ring is being read.
+    env.BR.State.match.state = env.BR.MatchState.BUS
+    env.BR.State.me.state    = env.BR.PlayerState.BUS
+    C.tick(2)
+    ok(#C.rings() == 1, 'the ring survives the flight', #C.rings())
+
+    -- AND PLAYING TAKES IT AWAY, because the real record draws its own two rings
+    -- and two purple circles on one map is how a player learns to trust neither.
+    env.BR.State.match.state = env.BR.MatchState.PLAYING
+    C.tick(2)
+    ok(#C.rings() == 0, 'and PLAYING clears it', #C.rings())
+end
+
+-- ---------------------------------------------------------------------------
+describe('preview.ends')
+do
+    -- ═══ A MATCH THAT ENDS DURING WARMUP LEAVES NOTHING BEHIND ═══
+    --
+    -- Warmup can end without a storm ever existing: everybody walks off the pad,
+    -- or the round is cancelled. No STORM_SYNC is ever published on that path, so
+    -- anything waiting for the record to clean up after it would wait forever --
+    -- and a purple ring left on the map in the lobby is the kind of thing that
+    -- survives a whole session.
+    local C = newStormClient()
+    local env = C.env
+    env.BR.State.storm = nil
+    env.BR.State.match.state = env.BR.MatchState.WARMUP
+    env.BR.State.me.state    = env.BR.PlayerState.WARMUP
+    env.BR.State.stormPreview = { cx = 0.0, cy = 0.0, r = 2600.0 }
+    C.tick(2)
+    ok(#C.rings() == 1, 'a ring is up during warmup')
+
+    env.BR.State.match.state = env.BR.MatchState.ENDED
+    C.tick(2)
+    ok(#C.rings() == 0, 'ENDED takes it down without a record ever existing')
+
+    -- AND THE WAY HOME. A player swept back to the lobby shares the match state
+    -- with nobody, but a bystander at the warmup pad shares it with a match they
+    -- are not in -- which is the read that used to put storm blips on their pause
+    -- map at the vista menu.
+    local B = newStormClient()
+    B.env.BR.State.storm = nil
+    B.env.BR.State.match.state = B.env.BR.MatchState.WARMUP
+    B.env.BR.State.me.state    = B.env.BR.PlayerState.LOBBY
+    B.env.BR.State.stormPreview = { cx = 0.0, cy = 0.0, r = 2600.0 }
+    B.tick(2)
+    ok(#B.rings() == 0, 'and a LOBBY bystander never gets one at all')
+
+    -- THE MIRROR DROPS IT TOO, which is the other half of the same teardown:
+    -- client/state.lua nils the field when STORM_SYNC lands. Driven here as the
+    -- field going away, because that is what the renderer can see of it.
+    local D = newStormClient()
+    D.env.BR.State.storm = nil
+    D.env.BR.State.match.state = D.env.BR.MatchState.BUS
+    D.env.BR.State.me.state    = D.env.BR.PlayerState.BUS
+    D.env.BR.State.stormPreview = { cx = 0.0, cy = 0.0, r = 2600.0 }
+    D.tick(2)
+    ok(#D.rings() == 1, 'a ring is up on the bus')
+    D.env.BR.State.stormPreview = nil
+    D.tick(2)
+    ok(#D.rings() == 0, 'and dropping the field alone takes it down')
+end
+
+-- ---------------------------------------------------------------------------
+describe('preview.wall')
+do
+    -- ═══ THE WALL WAITS FOR THE WORLD, WHICH ANOTHER RESOURCE OWNS ═══
+    --
+    --   "Show the marker (or arc now as it may be) starting from when the San
+    --    Andreas map is loaded"                         -- owner, 2026-09-21
+    --
+    -- That moment has a name. br_environment/client/ipl.lua's wantIsland is
+    -- `state ~= PLAYING and state ~= BUS`, so the Cayo lobby island comes down on
+    -- the BUS transition -- but applyIsland does NOT run on that transition. It is
+    -- deferred until the rendered camera is clear of the island, or until the bus's
+    -- own release cue a few seconds into the ascent. Enabling the heist island
+    -- HIDES Los Santos, so for those seconds a curtain drawn over the mainland is a
+    -- curtain in a world that is switched off. So ipl.lua says when the swap has
+    -- actually applied and this listens.
+    local function wallClient(state, said)
+        local C = newStormClient()
+        local env = C.env
+        env.BR.State.storm = nil
+        env.BR.State.match.state = state
+        env.BR.State.me.state    = env.BR.PlayerState.BUS
+        env.BR.State.stormPreview = { cx = 400.0, cy = 0.0, r = 2600.0 }
+        if said ~= nil then C.fire('br:env:world', said) end
+        C.frame()
+        return C
+    end
+
+    local MS = newStormClient().env.BR.MatchState
+
+    ok(#wallClient(MS.BUS, false).markers > 0,
+        'the island is gone and the bus is flying, so there is a wall')
+    ok(#wallClient(MS.BUS, true).markers == 0,
+        'the island is still the world, so there is not -- even though the match '
+            .. 'state says BUS')
+    ok(#wallClient(MS.WARMUP, true).markers == 0,
+        'and standing on the pad, with the island still the world, there is nothing')
+
+    -- THE GATE IS THE WORLD AND NOT THE FLIGHT, and this is the assertion that
+    -- says which. "From when the San Andreas map is loaded" is the owner's
+    -- condition, so a warmup in which the mainland is somehow already the world
+    -- gets the wall -- the wall follows the ground it is standing on, not the state
+    -- machine. The game cannot currently reach that: ipl.lua's wantIsland only
+    -- releases the island at BUS or PLAYING. Pinned anyway, because the tempting
+    -- "simplification" is to replace the whole announcement with a BUS test, and
+    -- that is the thing #327 specifically moved away from.
+    ok(#wallClient(MS.WARMUP, false).markers > 0,
+        'and a warmup that somehow already has Los Santos loaded gets the wall -- '
+            .. 'the condition is the map, not the phase of the match')
+
+    -- THE FALLBACK, AND IT ONLY ANSWERS WHEN NOBODY ELSE DOES. If br_environment
+    -- never speaks -- it is not running, or has not reached its first
+    -- announcement -- the match state answers instead, because a preview is not
+    -- worth a hard dependency between two resources.
+    ok(#wallClient(MS.BUS, nil).markers > 0,
+        'with br_environment silent the BUS state alone raises the wall')
+    ok(#wallClient(MS.WARMUP, nil).markers == 0,
+        'and silence during warmup still draws nothing')
+
+    -- PLAYING IS THE REAL WALL'S, AND THE PREVIEW MUST NOT BE BESIDE IT.
+    ok(#wallClient(MS.PLAYING, false).markers == 0,
+        'PLAYING draws no preview wall -- the record draws its own')
+
+    -- ═══ IT IS THE SHIPPING RENDERER, HANDED A CIRCLE AND A LOWER ALPHA ═══
+    --
+    -- One disc means one cylinder, which is the wall the owner chose for a circle
+    -- on 2026-08-03 and the only one that holds up at bus altitude. The assertions
+    -- are the numbers that prove it went through drawWall rather than through a
+    -- second renderer written beside it: the edgeInset the column path once failed
+    -- to pay, the fixed base below sea level, and the alpha.
+    local C = wallClient(MS.BUS, false)
+    local rr = C.env.BR.Config.Storm.render
+    ok(#C.markers == 1, 'a circle draws ONE marker, not a colonnade', #C.markers)
+    local m = C.markers[1]
+    ok(m and near(m.x, 400.0, 0.001) and near(m.y, 0.0, 0.001),
+        'centred on circle 1')
+    ok(m and near(m.sx, (2600.0 - (rr.edgeInset or 0.0)) * 2.0, 0.001),
+        'at circle 1\'s diameter less the edgeInset every wall in this file pays',
+        m and tostring(m.sx))
+    ok(m and near(m.z, -100.0, 0.001),
+        'glued to the world below sea level, not hung off the camera')
+    ok(m and m.a == math.floor(rr.alpha * (rr.previewAlpha or 0.5)),
+        'and fainter than a wall that is actually doing something',
+        m and tostring(m.a))
+    ok(C.errored() == nil, 'the preview wall runs clean', C.errored())
+
+    -- AND IT SAYS NOTHING TO THE INTERFACE. The HUD storm card is driven off the
+    -- record; a preview that pushed an envelope would put a phase counter and a
+    -- "storm closing" clock on screen for a storm that does not exist.
+    ok(C.last() == nil, 'and no HUD envelope is pushed for a preview')
 end
 
 print(('\n\27[32m%d passed\27[0m'):format(pass))

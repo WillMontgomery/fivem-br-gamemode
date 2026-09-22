@@ -537,6 +537,20 @@ function BR.Match.onEnter(m, state, from)
         -- study the route on the map and pick their drop.
         BR.Bus.plan(m)
 
+        -- ...and circle 1 is drawn on the line after it, for the same reason
+        -- and off the anchor plan() just picked (#327, owner 2026-09-21: "just
+        -- determine circle 1's location upon the first player in the match
+        -- completing matchmaking"). A player studying the route wants to know
+        -- which end of it the storm is already homing on.
+        --
+        -- ORDER IS A REQUIREMENT, NOT A PREFERENCE: plan() is what sets
+        -- m.anchor, and drawFirstCircle does nothing at all without one.
+        --
+        -- IT IS THE SEED, TOO. This is now the only place a normal match's storm
+        -- stream is created; BR.Storm.begin seeds only for the routes that never
+        -- had a warmup.
+        BR.Storm.drawFirstCircle(m)
+
         -- The world is stocked NOW too, for the same reason in reverse:
         -- players land during BUS, not at PLAYING, so loot generated at the
         -- state flip would appear under the feet of whoever got down first.

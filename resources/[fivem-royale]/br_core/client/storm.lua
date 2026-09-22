@@ -39,6 +39,31 @@ local function activeRecord()
     return BR.State.storm
 end
 
+--- Circle 1 before the storm exists, gated on the two states it belongs to.
+---
+--- ═══ THE MIRROR IMAGE OF activeRecord, AND THE GATE IS THE TEARDOWN ═══
+---
+--- WARMUP and BUS, and nothing else. The preview is a preview: it must not be on
+--- screen during PLAYING beside the real wall it was standing in for, and it must
+--- not survive a match ending. Both of those are this one test rather than a
+--- lifecycle to get right -- the state has already moved on by the time anything
+--- could draw a stale circle, exactly as activeRecord relies on for the record.
+--- client/state.lua ALSO drops the field when STORM_SYNC arrives, which is belt to
+--- this brace: either alone is enough.
+---
+--- AND GATED ON MY OWN STATE, for the reason activeRecord is: a LOBBY bystander
+--- shares the match state without being in the match, and they were the ones
+--- getting storm blips on their pause map at the vista menu.
+--- @return table|nil  { cx, cy, r }
+local function previewCircle()
+    local pv = BR.State.stormPreview
+    if not pv then return nil end
+    local ms = BR.State.match.state
+    if ms ~= BR.MatchState.WARMUP and ms ~= BR.MatchState.BUS then return nil end
+    if BR.State.me.state == BR.PlayerState.LOBBY then return nil end
+    return pv
+end
+
 --- Solve the record right now, in one place, so every consumer in this file
 --- agrees on the circle down to the millisecond.
 local function solveNow(rec)
@@ -97,32 +122,31 @@ end
 
 -- ------------------------------------------------------------------- wall ---
 
-BR.Loop.register(BR.Loop.FRAME, 'storm.wall', function()
-    local rec = activeRecord()
-    if not rec then return end
-
-    local cx, cy, r, stt, msLeft = solveNow(rec)
-    -- A COLLAPSED ZONE HAS NO WALL TO DRAW, and the zone is two circles now, so
-    -- both of them have to be gone. In the shipping case that is the same test
-    -- it always was: the final phase closes on a zero-radius target, so r and
-    -- rec.r1 reach the floor together and this returns exactly when it used to.
-    -- The pair matters on the admin path, where `brphase 1` from a collapsed
-    -- wall gives a record whose CURRENT circle is a point and whose target is
-    -- 2600m -- one test on r alone would draw no wall at all for that whole
-    -- sweep.
-    if r <= 1.0 and rec.r1 <= 1.0 then return end
-
-    -- NO WALL BEFORE ANYTHING HAS HAPPENED. During the free-loot hold the
-    -- "circle" is the whole map, and a purple ring around the horizon
-    -- announced nothing but its own existence. The curtain FADES IN across
-    -- the hold's last seconds, at full strength as the shrink begins.
-    local alphaScale = 1.0
-    if rec.phase == 1 and stt == BR.StormPhase.HOLDING then
-        local fadeMs = (cfg.render.fadeInSec or 10.0) * 1000.0
-        if msLeft > fadeMs then return end
-        alphaScale = 1.0 - (msLeft / fadeMs)
-    end
-
+--- Draw a curtain on the boundary of `zone`, at `alphaScale` of full strength.
+---
+--- ═══ ONE WALL RENDERER, AND #327 IS WHY IT IS A FUNCTION NOW ═══
+---
+--- This was the body of the storm.wall callback. It became a function the day the
+--- game had a SECOND thing to draw a wall on: circle 1, previewed during the bus
+--- ride before any storm exists (owner, 2026-09-21 -- "show the marker (or arc now
+--- as it may be) starting from when the San Andreas map is loaded"). A preview wall
+--- is this renderer handed a circle and a lower alpha, and writing a second one
+--- would have meant two files' worth of the things this one already knows: that the
+--- curtain sits edgeInset metres inside the logical edge, that a cylinder cannot
+--- draw a union, that the column walk is arc length and not angle, that a window
+--- must stay on one component, and that the whole thing must be glued to the world
+--- rather than to the viewer.
+---
+--- IT TAKES THE ZONE UNINSET AND INSETS IT ITSELF, so no caller can forget to --
+--- which is the live report edgeInset exists for ("20ft inside" while the HUD
+--- correctly said outside).
+---
+--- NOTHING HERE READS THE RECORD, THE CLOCK OR THE MATCH STATE. Every one of those
+--- is the caller's business, and that is what makes the same pixels available to a
+--- preview that has no record and no clock at all.
+--- @param zone table        a BR.StormShape
+--- @param alphaScale number 0..1
+local function drawWall(zone, alphaScale)
     -- FIXED SLOTS AROUND THE CIRCLE, ALWAYS DRAWN.
     --
     -- Two lessons from the first live walls, both about the same illusion:
@@ -153,8 +177,7 @@ BR.Loop.register(BR.Loop.FRAME, 'storm.wall', function()
     -- and it would have come straight back the first time anybody typed
     -- /brwallstyle. The shipping path has inset since the day the report landed;
     -- this is that same one line, spelled for a shape.
-    local shape = SS.inset(
-        SS.union2(cx, cy, r, rec.cx1, rec.cy1, rec.r1), rr.edgeInset or 0.0)
+    local shape = SS.inset(zone, rr.edgeInset or 0.0)
     local discs = shape.discs
 
     -- ═══ THE RENDERER IS A PROPERTY OF THE SHAPE, NOT A SETTING ═══
@@ -392,6 +415,36 @@ BR.Loop.register(BR.Loop.FRAME, 'storm.wall', function()
     local cslots, cds = slotsIn(c)
     drawn = math.min(drawn, cslots)
     columns(c, math.floor((s - c.s0) / cds) - math.floor(drawn / 2), drawn)
+end
+
+BR.Loop.register(BR.Loop.FRAME, 'storm.wall', function()
+    local rec = activeRecord()
+    if not rec then return end
+
+    local cx, cy, r, stt, msLeft = solveNow(rec)
+    -- A COLLAPSED ZONE HAS NO WALL TO DRAW, and the zone is two circles now, so
+    -- both of them have to be gone. In the shipping case that is the same test
+    -- it always was: the final phase closes on a zero-radius target, so r and
+    -- rec.r1 reach the floor together and this returns exactly when it used to.
+    -- The pair matters on the admin path, where `brphase 1` from a collapsed
+    -- wall gives a record whose CURRENT circle is a point and whose target is
+    -- 2600m -- one test on r alone would draw no wall at all for that whole
+    -- sweep.
+    if r <= 1.0 and rec.r1 <= 1.0 then return end
+
+    -- NO WALL BEFORE ANYTHING HAS HAPPENED. During the free-loot hold the
+    -- "circle" is the whole map, and a purple ring around the horizon
+    -- announced nothing but its own existence. The curtain FADES IN across
+    -- the hold's last seconds, at full strength as the shrink begins.
+    local alphaScale = 1.0
+    if rec.phase == 1 and stt == BR.StormPhase.HOLDING then
+        local fadeMs = (cfg.render.fadeInSec or 10.0) * 1000.0
+        if msLeft > fadeMs then return end
+        alphaScale = 1.0 - (msLeft / fadeMs)
+    end
+
+    drawWall(BR.StormShape.union2(cx, cy, r, rec.cx1, rec.cy1, rec.r1),
+        alphaScale)
 end)
 
 -- Which renderer draws the wall, and /brwallstyle overrides it live.
@@ -430,6 +483,132 @@ RegisterCommand('brwallstyle', function()
     BR.Storm.wallStyle = s
     print(('[br_core] storm wall style: %s'):format(s or 'auto'))
 end, false)
+
+-- --------------------------------------------------------------- preview ---
+--
+-- ═══ CIRCLE 1, BEFORE THE STORM (#327) ═══
+--
+--   "just determine circle 1's location upon the first player in the match
+--    completing matchmaking, and show the blip starting from then. Show the
+--    marker (or arc now as it may be) starting from when the San Andreas map is
+--    loaded."                                          -- owner, 2026-09-21
+--
+-- TWO VIEWS OF ONE FACT, ON TWO DIFFERENT CLOCKS, and the two clocks are the
+-- whole reason this is two callbacks rather than one:
+--
+--   * THE MAP BLIP runs from the moment the circle is published -- which is the
+--     moment the match forms -- through warmup and the bus. Warmup is when
+--     players study the route and argue about where to drop, and this is the
+--     other half of that argument.
+--   * THE WALL runs from when San Andreas is actually the world. During warmup
+--     the player is standing on Cayo Perico, seven kilometres offshore, and Los
+--     Santos is not merely unstreamed there -- it is DISABLED, because enabling
+--     the heist island hides the mainland (see br_environment/client/ipl.lua).
+--     A 950m curtain drawn over Los Santos while the camera is on the island is
+--     a curtain in a world that does not exist yet.
+--
+-- IT IS THE SAME RENDERER THE REAL WALL USES, handed a circle and a lower alpha.
+-- See drawWall's header for why that is a requirement and not a saving.
+--
+-- NOTHING HERE CAN HURT ANYBODY, and that is structural rather than careful.
+-- Storm damage is the server's, applied through client/state.lua on instruction,
+-- and the server does not begin the storm until PLAYING. This file draws; the
+-- preview is two draw calls and a blip handle.
+
+--- Has br_environment said the Cayo lobby island is gone, and what did it say?
+---
+--- nil = IT HAS NOT SPOKEN, which is a different answer from "the island is on"
+--- and the difference is the fallback below.
+local islandSaid = nil
+
+--- Is the world San Andreas right now?
+---
+--- ═══ ANOTHER RESOURCE OWNS THIS FACT, SO IT IS ASKED AND NOT GUESSED ═══
+---
+--- br_environment/client/ipl.lua flips the island on the BUS transition, but NOT
+--- at the instant of it: applyIsland is deferred until the rendered camera is
+--- genuinely clear of the island, or until the bus's own release cue a few seconds
+--- into the ascent says the overcast haze is covering the swap. Guessing the moment
+--- from the match state would therefore be wrong by seconds every flight, in the
+--- direction that shows a wall over a world that is still switched off.
+---
+--- So ipl.lua announces, and this listens. br_environment is a different Lua state
+--- and client events cross resources -- the existing 'br:world:ask' /
+--- 'br:world:island' pair goes the same road, and its header explains why.
+---
+--- ═══ THE MATCH STATE IS THE FALLBACK, AND IT ONLY ANSWERS WHEN NOBODY ELSE DOES ═══
+---
+--- If br_environment is not running -- or has not reached its first announcement --
+--- nothing will ever tell us, and a preview is not worth a hard dependency between
+--- two resources. So an unheard-from world falls back to the match state, where BUS
+--- is the transition the island is torn down on.
+---
+--- THE FALLBACK IS NOT CONSULTED ONCE br_environment HAS SPOKEN, deliberately. A
+--- resource that is announcing its swaps is the authority on them, and second-
+--- guessing it from the state would put the wall back exactly where the event
+--- exists to move it from. What that costs, stated plainly: a single announcement
+--- lost between the two resources costs one flight its preview wall. It cannot cost
+--- a match anything -- the real storm has no part of this.
+--- @return boolean
+local function mainlandLoaded()
+    if islandSaid ~= nil then return islandSaid == false end
+    return BR.State.match.state == BR.MatchState.BUS
+end
+
+AddEventHandler('br:env:world', function(island)
+    islandSaid = island and true or false
+end)
+
+--- The purple ring on the big map. ONE BLIP, NEVER REBUILT.
+---
+--- Radius blips cannot be resized in place, which is why the storm's own two are
+--- rebuilt on a cadence -- their radius changes every frame of a shrink. This one
+--- never moves and never resizes for as long as it exists, so it is created once
+--- and left alone. Re-asserted only when the handle has stopped existing: engine
+--- blip handles are recycled, so another system removing a stale handle can delete
+--- ours (a live "no blip at all in squads" report), and a 10 Hz existence check
+--- heals that within 100ms.
+local previewBlip = nil
+
+local function clearPreviewBlip()
+    if previewBlip then RemoveBlip(previewBlip) previewBlip = nil end
+end
+
+BR.Loop.register(BR.Loop.TICK, 'storm.preview', function()
+    local pv = previewCircle()
+    if not pv then
+        clearPreviewBlip()
+        return
+    end
+    -- WRAPPED, AND IT HAS TO BE. DoesBlipExist answers 0 for "no" as readily as
+    -- false, and 0 IS TRUTHY IN LUA, so the bare read returns early for a blip
+    -- that has been destroyed and the ring never comes back for the rest of
+    -- warmup. tools/check_bool_natives.lua caught this against its baseline;
+    -- airdrop.lua wraps the same native the same way.
+    if previewBlip and BR.NativeTruthy(DoesBlipExist(previewBlip)) then return end
+
+    -- PURPLE, AND THE SAME PURPLE. blip.nextColour is 27, which is what the
+    -- "Next Safe Zone" ring has always used -- purple is already this game's word
+    -- for "the circle you are being asked to rotate to", so this reuses it rather
+    -- than introducing a second colour for the same meaning (#327 says so
+    -- outright). The legend entry is that same ring's, for the same reason: this
+    -- IS the next safe zone, published earlier.
+    previewBlip = BR.Native.radiusBlip(previewBlip, pv.cx, pv.cy, pv.r,
+        cfg.blip.nextColour, cfg.blip.nextAlpha, 'Next Safe Zone')
+end)
+
+BR.Loop.register(BR.Loop.FRAME, 'storm.previewWall', function()
+    local pv = previewCircle()
+    if not pv then return end
+    if not mainlandLoaded() then return end
+
+    -- A CIRCLE, WHICH IS WHY IT GETS THE CYLINDER. drawWall asks the shape which
+    -- renderer to use and a one-disc shape answers 'solid' -- one continuous
+    -- marker, identical from every angle, which is the right wall for a circle and
+    -- the only one that holds up from bus altitude.
+    drawWall(BR.StormShape.circle(pv.cx, pv.cy, pv.r),
+        cfg.render.previewAlpha or 0.5)
+end)
 
 -- ----------------------------------------------------- blips, FX, envelope ---
 
@@ -1069,4 +1248,11 @@ end)
 AddEventHandler('onResourceStop', function(res)
     if res ~= GetCurrentResourceName() then return end
     teardown()
+    -- NOT PART OF teardown(), and that is not an oversight. teardown runs on
+    -- every tick that has no storm record -- which is all of warmup -- so a
+    -- preview blip cleared there would be removed and re-added ten times a
+    -- second, which is exactly the blip churn the refresh cadence exists to
+    -- avoid. Its lifetime is the state gate in `storm.preview`; a resource stop
+    -- is the one moment no callback will ever run again to do it.
+    clearPreviewBlip()
 end)

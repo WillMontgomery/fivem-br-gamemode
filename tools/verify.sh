@@ -507,6 +507,15 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
     # from inside the gap between two safe islands, which is a place a player
     # spends six seconds in and never on purpose.
     #
+    # IT ALSO HOLDS #327'S TIMING INVARIANT, which is the one property in the storm
+    # whose failure is completely invisible. Circle 1 is drawn at WARMUP now, so the
+    # map can show players where they are dropping toward -- and the stream it comes
+    # off must be seeded once and consumed once, or phase 2 inherits the value phase
+    # 1 already spent and every circle after it shifts by one. Every wrong answer is
+    # a legal storm: right radii, right schedule, correctly nested, on the map. The
+    # `first.stream` block walks a whole match's centres down both code paths and is
+    # the only thing that can tell them apart.
+    #
     # ORDER STAYS EXPLICIT because docs/testing.md records it and the slowest,
     # broadest suites deliberately come after the cheap pure checks. Completeness
     # is discovered, though: a new test_*.lua that nobody adds here is now a red

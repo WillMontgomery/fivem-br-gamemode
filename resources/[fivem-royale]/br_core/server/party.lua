@@ -1142,6 +1142,9 @@ function BR.Party.lateJoin(src, m)
     -- the line below -- at the one moment there is most to look at.
     if m.mode ~= BR.Mode.SQUAD.key then
         if BR.Bus and BR.Bus.sendPreview then BR.Bus.sendPreview(m, src) end
+        -- The route and circle 1 are one glance on the pause map, so they arrive
+        -- together: the room saw both when warmup began (#327).
+        if BR.Storm and BR.Storm.sendPreview then BR.Storm.sendPreview(m, src) end
         return
     end
 
@@ -1267,6 +1270,7 @@ function BR.Party.lateJoin(src, m)
     -- needs their own copy to plan a drop with, and an empty inventory bar
     -- rather than whatever the last match left on their screen.
     if BR.Bus and BR.Bus.sendPreview then BR.Bus.sendPreview(m, src) end
+    if BR.Storm and BR.Storm.sendPreview then BR.Storm.sendPreview(m, src) end
     if BR.Inv and BR.Inv.reset then BR.Inv.reset(src) end
 
     print(('[br_core] %s (%d) late-joined warmup on %s'):format(entry.name, src, target))

@@ -271,6 +271,13 @@ BR.Config.Storm = {
         -- The wall FADES IN across the last N seconds of the phase-1 hold,
         -- instead of popping into existence when the shrink starts.
         fadeInSec      = 10.0,
+        -- The PREVIEW wall's share of `alpha` -- circle 1 drawn during the bus
+        -- ride, before any storm exists (#327). The same renderer, the same
+        -- colour, deliberately fainter: it marks a place the storm is going to
+        -- be, and it must not read as a wall that is already doing something.
+        -- Half is the starting point and the number most likely to move after a
+        -- playtest from actual bus altitude.
+        previewAlpha   = 0.5,
         groundCacheSec = 1.0,    -- GetGroundZFor_3dCoord is slow; sample once per second
         fallbackZDrop  = 150.0,  -- if ground Z is unavailable, anchor below the camera
     },

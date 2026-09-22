@@ -223,15 +223,26 @@ end
 --- The match view one player should hold: their own instance, or the lobby's
 --- WAITING idle.
 --- @param src integer
---- @return table match, integer alive, integer squadsAlive, table|nil storm
+--- @return table match, integer alive, integer squadsAlive, table|nil storm,
+---         table|nil stormPreview
 local function viewFor(src)
     local m = BR.Server.matchOf(src)
     if m then
+        -- THE PREVIEW RIDES THE SNAPSHOT for the same reason the record does: a
+        -- br_ui restart or a reconnect mid-WARMUP must get circle 1 back, and
+        -- STORM_PREVIEW is a one-shot announcement made at the moment the match
+        -- formed (#327). Sent as the raw field -- one circle, no clock -- and nil
+        -- from PLAYING onward, because enterPhase has spent it by then and `storm`
+        -- above is the honest answer from that moment on.
         return { state = m.state, mode = m.mode, endsAt = m.endsAt },
-               BR.Server.aliveCount(m), BR.Server.squadsAlive(m), m.storm
+               BR.Server.aliveCount(m), BR.Server.squadsAlive(m), m.storm,
+               m.stormFirst
+                   and { cx = m.stormFirst.cx, cy = m.stormFirst.cy,
+                         r = m.stormFirst.r }
+                   or nil
     end
     return { state = BR.MatchState.WAITING, mode = BR.Mode.SOLO.key, endsAt = 0 },
-           0, 0, nil
+           0, 0, nil, nil
 end
 
 --- Everything a client needs to rebuild its mirror from nothing.
@@ -250,21 +261,22 @@ function BR.Broadcast.snapshot(src)
     local now    = GetGameTimer()
 
     local function payloadFor(target)
-        local match, alive, squadsAlive, storm = viewFor(target)
+        local match, alive, squadsAlive, storm, stormPreview = viewFor(target)
         return {
-            seq         = seq,
-            roster      = roster,
-            match       = match,
-            alive       = alive,
-            squadsAlive = squadsAlive,
-            serverNow   = now,
-            storm       = storm,
+            seq          = seq,
+            roster       = roster,
+            match        = match,
+            alive        = alive,
+            squadsAlive  = squadsAlive,
+            serverNow    = now,
+            storm        = storm,
+            stormPreview = stormPreview,
             -- Both are the receiver's OWN view and both are why a mid-match
             -- br_ui restart recovers rather than showing an empty bar over a
             -- player holding a rifle. Loot rides the existing subscription --
             -- re-sending the cells they already had, not the whole map.
-            inv         = BR.Inv and BR.Inv.publicFor(target) or nil,
-            loot        = BR.Loot and BR.Loot.viewFor(target) or nil,
+            inv          = BR.Inv and BR.Inv.publicFor(target) or nil,
+            loot         = BR.Loot and BR.Loot.viewFor(target) or nil,
         }
     end
 
