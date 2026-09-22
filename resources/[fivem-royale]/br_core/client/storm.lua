@@ -51,6 +51,19 @@ end
 --- client/state.lua ALSO drops the field when STORM_SYNC arrives, which is belt to
 --- this brace: either alone is enough.
 ---
+--- ═══ AND THIS IS THE **PUBLISHED FIELD'S** GATE, WHICH IS NOT THE WALL'S ANY MORE
+---     (#340) ═══
+---
+--- Two callers read this and only one still reads it alone. The map RING stops here,
+--- because storm.state's own `nextBlip` draws the same circle in the same purple from
+--- the record the instant one exists, so extending the ring would be two purple rings
+--- on one circle. The WALL goes through previewWallCircle, which starts with this
+--- function and then covers the PLAYING stretch off the record -- because the real
+--- wall is suppressed for most of the phase-1 hold and the owner was looking at an
+--- empty horizon. THE CONSTRAINT IN THE PARAGRAPH ABOVE IS UNCHANGED AND IS WHY THE
+--- WALL'S EXTENSION IS A HANDOFF: it ends as the real wall fades in, on the real
+--- wall's own clock, so the two are never both on screen at strength.
+---
 --- AND GATED ON MY OWN STATE, for the reason activeRecord is: a LOBBY bystander
 --- shares the match state without being in the match, and they were the ones
 --- getting storm blips on their pause map at the vista menu.
@@ -327,7 +340,12 @@ end
 -- Latched for the session in the same shape as `fade`: a texture handle plus the two
 -- names the draw call needs. `tex` is the handle the read-back gate asks about, and
 -- `txd`/`name` are what DrawSpritePoly is actually passed.
-local ramp = { tex = nil, txd = nil, name = nil }
+--
+-- AND THE v RANGE, WHICH IS A PROPERTY OF THE TEXTURE AND NOT OF THE QUAD (#341).
+-- `v0`/`v1` are the half-texel inset the draw maps the wall's bottom and top to; they
+-- are computed from the height the texture was ACTUALLY built at, so the quad cannot
+-- inset by a row count the texture does not have. buildRamp's tail argues them.
+local ramp = { tex = nil, txd = nil, name = nil, v0 = nil, v1 = nil }
 
 --- The fade's alpha multiplier at height `z`, with the ramp pinned to GROUND LEVEL.
 ---
@@ -533,6 +551,58 @@ local function buildRamp(fc, zb, zt)
     -- finalization through COMMIT_RUNTIME_TEXTURE to take effect".
     CommitRuntimeTexture(tex)
 
+    -- ═══ THE HALF-TEXEL INSET, AND WHY IT LIVES HERE RATHER THAN IN THE DRAW (#341)
+    --     ═══
+    --
+    --   "Wall is correct hue, smooth but there is a very tiny line at the top of it.
+    --    the gradient looks great though."          -- the owner, 2026-09-22, #341
+    --
+    -- THE QUAD USED TO MAP ITS TOP EDGE TO v = EXACTLY 1.0, which is the boundary of
+    -- the texture rather than the centre of its last row. A bilinear sample at v = 1.0
+    -- lands halfway between row h-1 and the row AFTER it -- and if the sampler's
+    -- address mode is REPEAT rather than CLAMP_TO_EDGE, the row after row 255 is row
+    -- 0, the fully opaque bottom of the ramp. MEASURED THROUGH THIS BAKE at the
+    -- shipping 8x256: row 255 holds alpha 0 and row 254 holds 1, so the ramp itself
+    -- reaches nothing at the top -- but a wrapping sampler reads 127 at v = 1.0 and
+    -- falls back to 0 by v = 255.5/256, which over a span of 1000 m is a 1.95 m band
+    -- at the very top of the wall rising to HALF the base opacity. A very tiny line at
+    -- the top of it.
+    --
+    -- SO v RUNS CENTRE-TO-CENTRE: 0.5/h to (h-0.5)/h. Those two coordinates are the
+    -- exact centres of row 0 and row h-1, so the bottom samples baseAlpha and the top
+    -- samples topAlpha with no filtering across a wrap boundary under EITHER address
+    -- mode. That is what makes this the right fix without knowing which mode the
+    -- native's sampler uses -- a fact no Lua in this estate can read, and the one
+    -- thing about #341 only a playtest can confirm.
+    --
+    -- ═══ WHAT THE GAME'S OWN CALL SITE SAYS, AND WHY IT IS NOT A COUNTER-EXAMPLE ═══
+    --
+    -- DRAW_SPRITE_POLY exists for Deadline's trailing lights, and the decompiled
+    -- fm_mission_controller emits it with v 0f and 1f against "Deadline_Trail_01" -- the
+    -- full range, boundary included, exactly what this wall used to do. That is worth
+    -- writing down because it looks at first like proof the sampler clamps.
+    --
+    -- IT IS NOT, AND THE DIFFERENCE IS WHAT THE TEXTURE HOLDS AT ITS EDGES. A trail
+    -- glow is transparent along BOTH of its long edges, so a wrap there blends nothing
+    -- into nothing and is invisible whichever mode is in force. Our ramp is deliberately
+    -- OPAQUE at one edge and clear at the other -- that asymmetry is the fade -- which
+    -- is precisely the texture shape that makes a wrap show. So the game's call site is
+    -- evidence that v = 1.0 is ORDINARY, not that it is safe for this texture.
+    --
+    -- THE BOTTOM IS INSET TOO, SYMMETRICALLY, AND IT NEVER SHOWED -- for two reasons
+    -- worth writing down rather than one. Row 0 is already opaque, so wrapping onto
+    -- row 255 there DARKENS the edge by half instead of brightening it; and the wall's
+    -- bottom half-texel is z -150.0 to -148.05, a hundred and fifty metres
+    -- underground, where the skirt exists precisely so that nobody can look at it.
+    -- Either alone would have hidden it. It is inset anyway: the asymmetry would
+    -- otherwise be a thing the next reader has to rediscover, and rampBaseZ is exactly
+    -- the config knob that could one day raise that edge into daylight.
+    --
+    -- WHAT IT COSTS THE RAMP is half a row of resolution at each end -- the v-to-z
+    -- mapping is compressed by 1/256 of the span, 3.9 m over 1000 -- and the endpoints
+    -- still land on baseAlpha and topAlpha exactly, which is the property that matters.
+    ramp.v0, ramp.v1 = 0.5 / h, (h - 0.5) / h
+
     ramp.tex, ramp.txd, ramp.name = tex, txdName, texName
     return true
 end
@@ -668,6 +738,13 @@ local function drawStrip(shape, alphaScale)
     -- stacking more of them.
     local gradient = fade.path == 'gradient'
     local gDict, gTex = ramp.txd, ramp.name
+    -- THE INSET v RANGE COMES OFF THE TEXTURE, NOT OFF THE CONFIG, and it is read
+    -- WITHOUT an `or` default on purpose -- unlike every other number in this
+    -- function. A default of 0.0/1.0 here would be the #341 defect spelled as a
+    -- fallback: silent, invisible in review, and reachable the day buildRamp grows a
+    -- path that forgets to set them. `gradient` is only true after buildRamp returned
+    -- true, and buildRamp sets these before it does.
+    local gV0, gV1 = ramp.v0, ramp.v1
     local bands = gradient and 1 or math.max(1, math.floor(fc.bands or 3))
     local quadPolys = 2 * bands
     sayFade(bands, quadPolys)
@@ -760,24 +837,28 @@ local function drawStrip(shape, alphaScale)
     ---     identical columns. The u axis carries no information at all; giving it a
     ---     constant in the interior means no clamp rule, wrap rule or bilinear edge
     ---     case can reach the result.
-    ---   * `v` spans 0 at the wall's BOTTOM to 1 at its top, and v = 0 is the
-    ---     texture's first row -- so row 0 holds the base alpha. buildRamp's header
-    ---     has the convention and where in this tree it is already relied on.
+    ---   * `v` spans the wall's BOTTOM to its top, and v = 0 is the texture's first
+    ---     row -- so row 0 holds the base alpha. buildRamp's header has the convention
+    ---     and where in this tree it is already relied on. It runs gV0 to gV1 -- the
+    ---     CENTRES of the first and last rows -- rather than 0.0 to 1.0, and that half
+    ---     texel is #341: the bright hairline the owner saw along the top edge is a
+    ---     sampler reading across the wrap boundary at v = 1.0. buildRamp's tail has
+    ---     the measurement and what each address mode does with it.
     local function gradientQuad(ax, ay, bx, by, out, av)
         if out then
             DrawSpritePoly(ax, ay, zb, bx, by, zb, ax, ay, zt,
                 cr, cg, cb, av, gDict, gTex,
-                0.5, 0.0, 1.0,  0.5, 0.0, 1.0,  0.5, 1.0, 1.0)
+                0.5, gV0, 1.0,  0.5, gV0, 1.0,  0.5, gV1, 1.0)
             DrawSpritePoly(bx, by, zb, bx, by, zt, ax, ay, zt,
                 cr, cg, cb, av, gDict, gTex,
-                0.5, 0.0, 1.0,  0.5, 1.0, 1.0,  0.5, 1.0, 1.0)
+                0.5, gV0, 1.0,  0.5, gV1, 1.0,  0.5, gV1, 1.0)
         else
             DrawSpritePoly(ax, ay, zt, bx, by, zb, ax, ay, zb,
                 cr, cg, cb, av, gDict, gTex,
-                0.5, 1.0, 1.0,  0.5, 0.0, 1.0,  0.5, 0.0, 1.0)
+                0.5, gV1, 1.0,  0.5, gV0, 1.0,  0.5, gV0, 1.0)
             DrawSpritePoly(ax, ay, zt, bx, by, zt, bx, by, zb,
                 cr, cg, cb, av, gDict, gTex,
-                0.5, 1.0, 1.0,  0.5, 1.0, 1.0,  0.5, 0.0, 1.0)
+                0.5, gV1, 1.0,  0.5, gV1, 1.0,  0.5, gV0, 1.0)
         end
     end
 
@@ -1225,6 +1306,58 @@ local function drawWall(zone, alphaScale)
     columns(c, math.floor((s - c.s0) / cds) - math.floor(drawn / 2), drawn)
 end
 
+-- ═══ ONE FADE CLOCK, READ IN BOTH DIRECTIONS (#340) ═══
+--
+--   "After match goes to playing, before the first storm move, the storm border
+--    cannot be seen anywhere. Doesn't seem to draw during this time. The storm circle
+--    should draw the entire time from while in bus to when it moves. Make sure it
+--    fades in just like before."                   -- the owner, 2026-09-22, #340
+--
+-- TWO GATES THAT DID NOT MEET. previewCircle stops the instant the match goes PLAYING,
+-- and the real wall is deliberately suppressed for all of the phase-1 hold except its
+-- last fadeInSec -- so from the bus doors closing until ten seconds before the first
+-- shrink there was no curtain anywhere, which is most of the early match. Both gates
+-- were right about their own half and neither knew about the other.
+--
+-- THE FIX IS NOT A SECOND CLOCK. The map ring and the 3D curtain already share this
+-- countdown (user call, 2026-08-04), and a preview fading out on a clock of its own
+-- would be a third thing to keep in step -- one that could drift out of agreement
+-- with the wall the day fadeInSec moved. So this is the ONE number both walls read:
+-- how much of the REAL wall is showing. The preview draws one minus it.
+--
+-- WHICH MAKES THE HANDOFF STRUCTURAL RATHER THAN CAREFUL, and that is the whole
+-- reason it is spelled as a share. The preview is at full strength exactly while the
+-- real wall is suppressed, thins as the real wall rises, and is gone at the instant
+-- the real wall reaches full -- so the two can neither both be absent (the defect)
+-- nor both be at full strength (the constraint previewCircle's header states: the
+-- preview "must not be on screen during PLAYING beside the real wall it was standing
+-- in for"). There is nothing to tune out of agreement, because there is one value.
+--
+-- A fadeInSec OF ZERO IS ANSWERED HERE TOO, and it used to be a nan. The old spelling
+-- tested `msLeft > fadeMs` and then divided by fadeMs, so a zero divided 0 by 0 on the
+-- one frame that got through and handed the draw a nan alpha -- an invisible wall with
+-- nothing in the console, which is the silent failure this file is written against.
+-- Zero now means "no fade window": the wall is suppressed for the whole hold and
+-- arrives at full strength with the shrink, and the preview covers the whole hold.
+--
+-- AND msLeft == fadeMs RETURNS 0 RATHER THAN DRAWING AT 0. The old test was strict, so
+-- the boundary frame drew a whole wall's worth of triangles at alpha 0. Identical on
+-- screen, one frame of geometry cheaper, and it means "the real wall is showing" and
+-- "the preview has started thinning" are the same instant rather than adjacent ones.
+--- @param rec table     the storm record
+--- @param st string     the phase state solveNow reported
+--- @param msLeft number ms until that phase state changes
+--- @return number       0..1 of the real wall; 1 minus this is the preview's
+local function wallShare(rec, st, msLeft)
+    if rec.phase ~= 1 or st ~= BR.StormPhase.HOLDING then return 1.0 end
+    local fadeMs = (cfg.render.fadeInSec or 10.0) * 1000.0
+    if fadeMs <= 0.0 then return 0.0 end
+    if msLeft >= fadeMs then return 0.0 end
+    local w = 1.0 - msLeft / fadeMs
+    if w < 0.0 then return 0.0 elseif w > 1.0 then return 1.0 end
+    return w
+end
+
 BR.Loop.register(BR.Loop.FRAME, 'storm.wall', function()
     local rec = activeRecord()
     if not rec then return end
@@ -1244,12 +1377,13 @@ BR.Loop.register(BR.Loop.FRAME, 'storm.wall', function()
     -- "circle" is the whole map, and a purple ring around the horizon
     -- announced nothing but its own existence. The curtain FADES IN across
     -- the hold's last seconds, at full strength as the shrink begins.
-    local alphaScale = 1.0
-    if rec.phase == 1 and stt == BR.StormPhase.HOLDING then
-        local fadeMs = (cfg.render.fadeInSec or 10.0) * 1000.0
-        if msLeft > fadeMs then return end
-        alphaScale = 1.0 - (msLeft / fadeMs)
-    end
+    --
+    -- AND WHAT STANDS IN FOR IT UNTIL THEN IS #327'S PREVIEW, held on screen by the
+    -- other side of this same number (#340). Suppressing the whole-map ring is still
+    -- right -- it told players nothing -- but "suppressed" used to mean "nothing at
+    -- all", and the owner was looking at an empty horizon for most of the early match.
+    local alphaScale = wallShare(rec, stt, msLeft)
+    if alphaScale <= 0.0 then return end
 
     drawWall(BR.StormShape.union2(cx, cy, r, rec.cx1, rec.cy1, rec.r1),
         alphaScale)
@@ -1499,13 +1633,18 @@ end
 --   * THE MAP BLIP runs from the moment the circle is published -- which is the
 --     moment the match forms -- through warmup and the bus. Warmup is when
 --     players study the route and argue about where to drop, and this is the
---     other half of that argument.
+--     other half of that argument. It ENDS at PLAYING, and hands off to the
+--     record's own purple ring rather than stopping: see the note above
+--     storm.preview for why extending it would be the worse bug.
 --   * THE WALL runs from when San Andreas is actually the world. During warmup
 --     the player is standing on Cayo Perico, seven kilometres offshore, and Los
 --     Santos is not merely unstreamed there -- it is DISABLED, because enabling
 --     the heist island hides the mainland (see br_environment/client/ipl.lua).
 --     A 950m curtain drawn over Los Santos while the camera is on the island is
---     a curtain in a world that does not exist yet.
+--     a curtain in a world that does not exist yet. It runs THROUGH PLAYING and
+--     into the real wall's fade-in now (#340), which is the third stretch and
+--     the one previewWallCircle exists for -- the owner had an empty horizon
+--     from the bus doors closing until ten seconds before the first shrink.
 --
 -- IT IS THE SAME RENDERER THE REAL WALL USES, handed a circle and a lower alpha.
 -- See drawWall's header for why that is a requirement and not a saving.
@@ -1549,10 +1688,23 @@ local islandSaid = nil
 --- exists to move it from. What that costs, stated plainly: a single announcement
 --- lost between the two resources costs one flight its preview wall. It cannot cost
 --- a match anything -- the real storm has no part of this.
+---
+--- ═══ AND THE FALLBACK IS BUS **OR LATER**, WHICH IT HAD TO BECOME (#340) ═══
+---
+--- It was BUS alone, and that was complete while the preview's own state gate was BUS
+--- alone: the two agreed, so the second test could not narrow anything the first had
+--- not already. The preview now extends into PLAYING while the real wall is still
+--- suppressed, and a BUS-only fallback would have withheld exactly that new stretch
+--- on any box where br_environment is silent -- the whole fix missing, on the one
+--- deployment shape that has no way to notice. PLAYING is the safest possible entry
+--- to add: ipl.lua's wantIsland is `state ~= PLAYING and state ~= BUS`, so PLAYING is
+--- a state in which the mainland is the world by that resource's own rule, and the
+--- players are standing on it.
 --- @return boolean
 local function mainlandLoaded()
     if islandSaid ~= nil then return islandSaid == false end
-    return BR.State.match.state == BR.MatchState.BUS
+    local ms = BR.State.match.state
+    return ms == BR.MatchState.BUS or ms == BR.MatchState.PLAYING
 end
 
 AddEventHandler('br:env:world', function(island)
@@ -1579,6 +1731,22 @@ local function clearPreviewBlip()
     previewBlip = removeBlips(previewBlip)
 end
 
+-- ═══ THE RING DOES **NOT** EXTEND INTO PLAYING, AND THE WALL DOES (#340) ═══
+--
+-- The 3D curtain had a gap to close and the map did not, which is worth stating
+-- because the two look like one symptom and #340 reported them as one. The moment
+-- STORM_SYNC lands, storm.state's own `nextBlip` draws rec.cx1/cy1/r1 -- which during
+-- phase 1 IS circle 1, because server/storm.lua's enterPhase SPENDS the warmup draw
+-- rather than rolling a second one -- in the same purple, at the same alpha, under the
+-- same "Next Safe Zone" legend, as the same shape through the same zoneShape. So the
+-- ring the preview was showing is already handed over, with no gap: storm.preview is
+-- registered ahead of storm.state, so the tick that takes the preview down is the same
+-- tick that puts the record's ring up.
+--
+-- EXTENDING THE RING WOULD THEREFORE BE THE BUG client/state.lua ALREADY GUARDS: two
+-- purple radius blips on one circle, which is how a player learns not to trust either
+-- (#327). Measured against that, "nothing on either map" in #340 is not what is
+-- happening -- the wall was the whole defect.
 BR.Loop.register(BR.Loop.TICK, 'storm.preview', function()
     local pv = previewCircle()
     if not pv then
@@ -1603,8 +1771,67 @@ BR.Loop.register(BR.Loop.TICK, 'storm.preview', function()
         cfg.blip.nextColour, cfg.blip.nextAlpha, 'Next Safe Zone')
 end)
 
-BR.Loop.register(BR.Loop.FRAME, 'storm.previewWall', function()
+--- Circle 1 for the preview WALL, over every stretch it now spans, with its share of
+--- previewAlpha.
+---
+--- ═══ THE SAME CIRCLE FROM TWO SOURCES, BECAUSE ONLY ONE OF THEM STILL HAS IT ═══
+---
+--- WARMUP and BUS read BR.State.stormPreview, which is what they always did. PLAYING
+--- cannot: client/state.lua nils that field the moment STORM_SYNC arrives, and it
+--- should keep doing so -- the field is the belt to the state gate's brace, and a
+--- preview that outlived the record it was standing in for is the failure #327 wrote
+--- both guards against.
+---
+--- SO PLAYING READS THE RECORD'S OWN TARGET, AND IT IS THE SAME CIRCLE RATHER THAN A
+--- COPY OF IT. server/storm.lua's enterPhase spends m.stormFirst -- the circle drawn
+--- at warmup and published as the preview -- as phase 1's target rather than rolling a
+--- second one (#327, and tools/test_storm.lua's `first.stream` is what makes that
+--- impossible to break quietly). So rec.cx1/cy1/r1 during phase 1 IS what the bus was
+--- shown, to the bit, from the source that still holds it. A LATE JOINER GETS IT FOR
+--- FREE by the same token: somebody who attached after the preview event went out has
+--- no field to read and the record all the same.
+---
+--- ═══ NOT activeRecord(), AND THAT IS THE ONE PLACE THE TWO MUST DIFFER ═══
+---
+--- activeRecord admits ENDED on purpose: the colour grade, the rain and the vignette
+--- have to outlive the transition or the last thing a player sees is the weather being
+--- switched off (2026-08-06). The preview must NOT -- its own header says it must not
+--- survive a match ending, and a two-player playtest reaches exactly that case, a
+--- match decided inside the phase-1 hold, where the record is still phase 1 HOLDING
+--- and would otherwise put a purple circle under the verdict slam. So this tests
+--- PLAYING by name, and the LOBBY gate is repeated rather than inherited for the same
+--- reason it exists in both functions already: a bystander at the vista menu shares
+--- the match state without being in the match.
+---
+--- THE SHARE IS wallShare's COMPLEMENT AND IS NOT COMPUTED HERE. `w >= 1.0` is one
+--- test doing two jobs -- everything that is not the phase-1 hold, and the hold's fade
+--- window once it has completed -- which is why the handoff cannot be half-written.
+--- @return table|nil circle  { cx, cy, r }
+--- @return number alphaScale
+local function previewWallCircle()
+    local base = cfg.render.previewAlpha or 0.5
+
+    -- WARMUP AND BUS, UNCHANGED, at the bus's own alpha -- so nothing pops at the
+    -- BUS -> PLAYING boundary either: the same circle carries on at the same strength.
     local pv = previewCircle()
+    if pv then return pv, base end
+
+    if BR.State.match.state ~= BR.MatchState.PLAYING then return nil end
+    if BR.State.me.state == BR.PlayerState.LOBBY then return nil end
+    local rec = BR.State.storm
+    -- A COLLAPSED TARGET IS NOT A CIRCLE TO STAND IN FOR, the same test storm.wall
+    -- makes on rec.r1 and BR.StormShape.circle's own one-metre floor would otherwise
+    -- quietly answer with a one-metre ring.
+    if not rec or rec.r1 <= 1.0 then return nil end
+
+    local _, _, _, st, msLeft = solveNow(rec)
+    local w = wallShare(rec, st, msLeft)
+    if w >= 1.0 then return nil end
+    return { cx = rec.cx1, cy = rec.cy1, r = rec.r1 }, base * (1.0 - w)
+end
+
+BR.Loop.register(BR.Loop.FRAME, 'storm.previewWall', function()
+    local pv, alphaScale = previewWallCircle()
     if not pv then return end
     if not mainlandLoaded() then return end
 
@@ -1631,8 +1858,13 @@ BR.Loop.register(BR.Loop.FRAME, 'storm.previewWall', function()
     -- what leaves /brwallstyle as the only thing in the game that can ask for a
     -- marker -- and it can still point one at the preview, because the A/B baseline
     -- has to be reachable from both walls.
-    drawWall(BR.StormShape.circle(pv.cx, pv.cy, pv.r),
-        cfg.render.previewAlpha or 0.5)
+    --
+    -- AND THE ALPHA IS THE CALLER'S NOW, NOT A CONSTANT READ HERE (#340). It is
+    -- previewAlpha through the whole bus ride and the whole suppressed hold, and
+    -- previewAlpha's own fade-out across the handoff; previewWallCircle owns the
+    -- arithmetic because it owns the clock. One circle, one renderer, one height, and
+    -- an alpha that only ever moves when the real wall's is moving the other way.
+    drawWall(BR.StormShape.circle(pv.cx, pv.cy, pv.r), alphaScale)
 end)
 
 -- ----------------------------------------------------- blips, FX, envelope ---

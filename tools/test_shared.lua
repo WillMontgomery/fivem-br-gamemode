@@ -14699,28 +14699,109 @@ do
     -- nothing there: the map ring would fade in over the hold's last ten seconds
     -- while the curtain popped into existence beside it at full strength. Both
     -- arrive together now, which is the user call of 2026-08-04.
+    --
+    -- ═══ AND WHAT "BEFORE THE FADE WINDOW" MEANS CHANGED UNDER IT (#340) ═══
+    --
+    -- THIS USED TO BE ONE ASSERTION READING `#C.markers == 0`, and it was right when it
+    -- was written. The owner has overturned the consequence, not the suppression:
+    -- "the storm circle should draw the entire time from while in bus to when it moves"
+    -- (2026-09-22, #340). The record's wall is still suppressed for all of the phase-1
+    -- hold but its last fadeInSec -- that has not changed and is still asserted below --
+    -- while #327's preview now stands in for it, so an EMPTY frame there is the defect
+    -- rather than the contract.
+    --
+    -- SO IT SPLITS IN TWO RATHER THAN RELAXING, and nothing was dropped: the old claim
+    -- is made verbatim about its old subject, with the preview callback switched off,
+    -- and the preview standing in for it is asserted at the same instant with the
+    -- callback back on. Please do not "restore" the single test.
+    --
+    -- AND THE TWO GATES THE OLD TEST WAS ALSO CARRYING ARE NOW EXPLICIT, because they
+    -- are untouched by the owner's change and both are reachable through the new
+    -- stretch: a LOBBY bystander must get nothing, and nothing may outlive the verdict.
+    --
+    -- A FRESH CLIENT PER MOMENT, WHICH IS NOT TIDINESS. This harness's C.frame does NOT
+    -- clear C.markers -- it accumulates -- so with two walls in play `markers[1]` is
+    -- whatever the earliest frame drew. Measured while writing this: the halfway-alpha
+    -- assertion below went on passing off a PREVIEW marker left over from the
+    -- suppressed frame, which happens to read the same 55. A green test reading the
+    -- wrong wall is how this suite has gone green over a real defect before.
     do
-        local C = newStormClient()
-        C.env.BR.Storm.wallStyle = 'columns'
-        C.pedAt = pt(0.0, 0.0)
-        local rr = C.env.BR.Config.Storm.render
-        local rec = C.env.BR.State.storm
-        rec.phase = 1                     -- the free-loot hold, where the fade is
+        local rr = newStormClient().env.BR.Config.Storm.render
         local fadeMs = rr.fadeInSec * 1000.0
 
-        -- Before the fade window opens, no wall at all.
-        rec.tStart = C.now - (rec.tWait - (fadeMs + 5000))
-        C.frame()
-        ok(#C.markers == 0,
-           'no curtain before the fade window opens', #C.markers)
+        --- A phase-1 hold on the column path, `msLeft` from its end, one frame drawn.
+        ---
+        --- The 16 ms C.frame advances the clock by is added in HERE, so `msLeft` is what
+        --- the renderer actually solves. It used to be absorbed by a tolerance on the
+        --- alpha instead, which worked and hid which side of a boundary a frame landed.
+        local function holdAt(msLeft, prep)
+            local C = newStormClient()
+            C.env.BR.Storm.wallStyle = 'columns'
+            C.pedAt = pt(0.0, 0.0)
+            local rec = C.env.BR.State.storm
+            rec.phase = 1                 -- the free-loot hold, where the fade is
+            rec.tStart = (C.now + 16) - (rec.tWait - msLeft)
+            if prep then prep(C) end
+            C.frame()
+            return C
+        end
 
-        -- Halfway through it, half strength. Within a point of half rather than
-        -- exactly it: C.frame() advances the clock 16ms before the callback
-        -- runs, and pinning the rounding of a fade would be a test of the
-        -- harness's step size.
-        rec.tStart = C.now - (rec.tWait - fadeMs * 0.5)
-        C.frame()
-        local a = C.markers[1] and C.markers[1].a
+        local function brightest(C)
+            local m = nil
+            for _, k in ipairs(C.markers) do
+                if m == nil or k.a > m then m = k.a end
+            end
+            return m
+        end
+        local function noPreview(C)
+            if not C.env.BR.Loop.setEnabled('storm.previewWall', false) then
+                error('no storm.previewWall callback to disable -- the name moved')
+            end
+        end
+
+        -- Before the fade window opens, no wall OF THE RECORD'S at all.
+        local S = holdAt(fadeMs + 5000, noPreview)
+        ok(#S.markers == 0,
+           'no curtain of the record\'s own before the fade window opens', #S.markers)
+
+        -- And the preview standing in for it, at previewAlpha's share of the same
+        -- authored alpha -- fainter, because it marks a place the storm is going to be.
+        local P = holdAt(fadeMs + 5000)
+        local pWant = math.floor(rr.alpha * (rr.previewAlpha or 0.5))
+        ok(#P.markers > 0 and brightest(P) == pWant and pWant < rr.alpha,
+           'while #327\'s preview stands in for it there, at previewAlpha\'s share of '
+           .. 'the authored alpha -- the empty frame this block used to assert is the '
+           .. 'gap #340 reported',
+           ('%d markers, brightest %s, wanted %d of %d'):format(
+               #P.markers, tostring(brightest(P)), pWant, rr.alpha))
+
+        -- A LOBBY BYSTANDER SHARES THE MATCH STATE WITHOUT BEING IN THE MATCH, and was
+        -- the report the gate was written for: storm blips on their pause map at the
+        -- vista menu. Asked at the one moment only the preview can answer.
+        local L = holdAt(fadeMs + 5000, function(C)
+            C.env.BR.State.me.state = C.env.BR.PlayerState.LOBBY
+        end)
+        ok(#L.markers == 0 and #L.polys == 0,
+           'a LOBBY bystander still gets no curtain at all through that stretch',
+           ('%d markers, %d polys'):format(#L.markers, #L.polys))
+
+        -- AND NOTHING SURVIVES A MATCH ENDING. activeRecord admits ENDED on purpose --
+        -- the grade and the rain must outlive the transition -- so a preview that
+        -- reused it would draw a circle under the verdict slam, and a match decided
+        -- inside the phase-1 hold is a two-player playtest away.
+        local E = holdAt(fadeMs + 5000, function(C)
+            C.env.BR.State.match.state = C.env.BR.MatchState.ENDED
+        end)
+        ok(#E.markers == 0 and #E.polys == 0,
+           'and a match that ends inside the phase-1 hold takes it down with it, '
+           .. 'though the record is still phase 1 and still HOLDING',
+           ('%d markers, %d polys'):format(#E.markers, #E.polys))
+
+        -- Halfway through the window, half strength. THE PREVIEW IS OFF FOR THIS ONE:
+        -- both walls are legitimately in frame there, fading opposite ways on the one
+        -- clock, and this assertion is about the record's.
+        local H = holdAt(fadeMs * 0.5, noPreview)
+        local a = H.markers[1] and H.markers[1].a
         ok(a ~= nil and math.abs(a - rr.alpha * 0.5) <= 1.0,
            'and half the alpha halfway through the fade, as the map ring has',
            tostring(a))

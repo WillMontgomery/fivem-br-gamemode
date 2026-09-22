@@ -803,6 +803,31 @@ local function newStormClient()
         env.BR.Loop.step(env.BR.Loop.FRAME)
     end
 
+    --- Silence the #327 preview wall, leaving only the record's own curtain in frame.
+    ---
+    --- ═══ NEEDED SINCE #340, AND ONLY INSIDE THE FADE WINDOW ═══
+    ---
+    --- The preview now holds circle 1 on screen through the whole phase-1 hold and
+    --- fades out as the real wall fades in, so for the hold's last fadeInSec there are
+    --- legitimately TWO walls in one frame at two different alphas. An assertion about
+    --- "the alpha depends on height and on nothing else" reads their union as one wall
+    --- whose alpha varies along its length, which is the picket fence -- a false red on
+    --- a renderer that is doing exactly what it was asked to.
+    ---
+    --- THROUGH BR.Loop.setEnabled RATHER THAN BY MATCHING GEOMETRY, because that is the
+    --- production switch (`/brloop disable storm.previewWall`) and the mechanism the M4
+    --- authority drill already turns. Telling the two walls apart by radius would work
+    --- today and would quietly stop working the first time a phase-1 target happened to
+    --- sit on the opening circle.
+    ---
+    --- THE HANDOFF ITSELF IS ASSERTED WITH BOTH WALLS RUNNING, in `preview.handoff`.
+    --- Nothing is being muted here that is not proved there.
+    function C.recordWallOnly()
+        if not env.BR.Loop.setEnabled('storm.previewWall', false) then
+            error('no storm.previewWall callback to disable -- the name moved')
+        end
+    end
+
     function C.last() return C.envelopes[#C.envelopes] end
 
     function C.arrow()
@@ -2131,6 +2156,10 @@ do
     -- two commits to pay: it passed rr.alpha raw, so the map ring faded in over the
     -- hold's last ten seconds while the curtain popped into existence beside it.
     local F = newStormClient()
+    -- THE RECORD'S WALL ALONE. Halfway through the phase-1 fade-in the #340 preview is
+    -- also in frame, fading out on the other side of the same clock; both walls are
+    -- correct and their union is not one wall, which is all C.recordWallOnly says.
+    F.recordWallOnly()
     local frec = F.record(1, 0.0, 0.0, 2600.0, 400.0, 0.0, 1600.0, 600000, 60000, 0.5)
     F.pedAt = pt(0.0, 0.0, 30.0)
     frec.tStart = F.now - (frec.tWait - rr.fadeInSec * 1000.0 * 0.5)
@@ -2203,8 +2232,27 @@ do
     -- A textured quad's gradient is the texture plus the mapping onto it, so a test
     -- that only read the alpha could not tell a faded wall from a flat one -- the
     -- alpha is deliberately uniform here. What makes this wall a fade is that v runs
-    -- 0 at the bottom edge to 1 at the top, on every quad, with u pinned in the
-    -- texture's interior. The texture's own contents are asserted in wall.ramp.
+    -- bottom edge to top, on every quad, with u pinned in the texture's interior. The
+    -- texture's own contents are asserted in wall.ramp.
+    --
+    -- ═══ AND v IS INSET BY HALF A TEXEL AT BOTH ENDS, WHICH IS #341 ═══
+    --
+    --   "smooth but there is a very tiny line at the top of it"  -- the owner, #341
+    --
+    -- v = EXACTLY 1.0 IS THE WRAP BOUNDARY, not the centre of the last row. A bilinear
+    -- sample there straddles row rampH-1 and the row after it, and under a REPEAT
+    -- address mode the row after row 255 is row 0 -- the fully opaque bottom of the
+    -- ramp. Measured through the shipping bake: alpha 127 at v = 1.0 falling to 0 by
+    -- v = 255.5/256, which over this wall's 1000 m span is a 1.95 m band at the very
+    -- top reading half the base opacity. A very tiny line at the top of it.
+    --
+    -- SO THE EXPECTATION IS THE ROW CENTRES, COMPUTED FROM rampH RATHER THAN WRITTEN
+    -- OUT. A literal 0.001953125 here would pass while production hard-coded the same
+    -- literal against a retuned rampH, which is the same class of bug one level down.
+    -- BOTH ENDS ARE PINNED: the bottom never showed the defect -- row 0 is opaque
+    -- already, so wrapping there darkens rather than brightens, and the wall's bottom
+    -- half texel is 150 m underground -- so an inset applied to the top alone would
+    -- look complete and leave the asymmetry for the next reader to rediscover.
     --
     -- w = 1.0 IS CHECKED BECAUSE IT WAS 0.0 IN THE DEAD VERSION OF THIS RENDERER,
     -- read off a reference that called the component ignored. Every proven call site
@@ -2219,6 +2267,8 @@ do
     -- about for the winding. Measured: with this block reading one client, mutating
     -- the outward branch's u, v and w every one survived the suite.
     local uvBad, uvSeen, uvFaces = nil, 0, 0
+    local uvH = math.max(2, math.floor(fd.rampH or 256))
+    local vBot, vTop = 0.5 / uvH, (uvH - 0.5) / uvH
     local UVC = newStormClient()
     UVC.record(5, 0.0, 0.0, 260.0, 60.0, 0.0, 120.0, 600000, 60000, 2.9)
     for _, where in ipairs({ pt(80.0, 40.0, 30.0), pt(420.0, 380.0, 30.0) }) do
@@ -2235,24 +2285,69 @@ do
             end
             for j = 1, 3 do
                 uvSeen = uvSeen + 1
-                local want = (t[j].z == sp.baseZ) and 0.0 or 1.0
+                local want = (t[j].z == sp.baseZ) and vBot or vTop
                 if t[j].u ~= 0.5 then
                     uvBad = uvBad or ('u %s, wanted 0.5'):format(tostring(t[j].u))
                 elseif t[j].w ~= 1.0 then
                     uvBad = uvBad or ('w %s, wanted 1.0'):format(tostring(t[j].w))
                 elseif t[j].v ~= want then
-                    uvBad = uvBad or ('v %s at z %.1f, wanted %.1f'):format(
-                        tostring(t[j].v), t[j].z, want)
+                    uvBad = uvBad or ('v %.9f at z %.1f, wanted %.9f'):format(
+                        t[j].v, t[j].z, want)
                 end
             end
         end
     end
     ok(uvFaces == 2 and uvSeen > 0 and uvBad == nil,
         'and every vertex of both windings -- seen from inside the circle and from '
-            .. 'outside it -- maps v 0 to the wall\'s bottom and v 1 to its top, with '
-            .. 'u pinned at 0.5 and w at 1.0 as every proven DrawSpritePoly call in '
-            .. 'this tree passes them',
-        uvBad or ('%d vertices across %d faces, all mapped'):format(uvSeen, uvFaces))
+            .. 'outside it -- maps the wall\'s bottom to the CENTRE of the ramp\'s '
+            .. 'first row and its top to the centre of the last, with u pinned at 0.5 '
+            .. 'and w at 1.0 as every proven DrawSpritePoly call in this tree passes '
+            .. 'them',
+        uvBad or ('%d vertices across %d faces, all mapped, v %.9f to %.9f'):format(
+            uvSeen, uvFaces, vBot, vTop))
+
+    -- AND NEITHER END IS THE WRAP BOUNDARY, WHICH IS THE CLAIM ITSELF. The assertion
+    -- above pins the exact numbers; this one pins what they are FOR, so that a
+    -- "simplification" back to 0.0 and 1.0 fails on a line that says why rather than
+    -- only on an arithmetic mismatch. Half a texel is the minimum inset that puts a
+    -- bilinear kernel entirely inside the texture, so anything less is the defect
+    -- partially applied.
+    local uvLo, uvHi = math.huge, -math.huge
+    for _, t in ipairs(UVC.polys) do
+        for j = 1, 3 do
+            if t[j].v < uvLo then uvLo = t[j].v end
+            if t[j].v > uvHi then uvHi = t[j].v end
+        end
+    end
+    ok(uvLo >= 0.5 / uvH - 1e-12 and uvHi <= 1.0 - 0.5 / uvH + 1e-12
+        and uvLo > 0.0 and uvHi < 1.0,
+        'so no vertex sits on the texture\'s wrap boundary at all: v = 1.0 filters onto '
+            .. 'row 0 under a REPEAT sampler, which is the thin bright line #341 '
+            .. 'reported along the top edge, and half a texel is the least that keeps '
+            .. 'the whole bilinear kernel inside the ramp',
+        ('v spans %.9f to %.9f, need [%.9f, %.9f]'):format(
+            uvLo, uvHi, 0.5 / uvH, 1.0 - 0.5 / uvH))
+
+    -- ═══ AND THE TOP EDGE IS ONE NUMBER, NOT TWO THAT AGREE ═══
+    --
+    -- #341's other candidate was geometric: two triangles whose shared top vertices
+    -- disagree by a float would leave a sliver between them. They cannot -- both take
+    -- the same `zt` local with no arithmetic on it -- so this is asserted with `==` on
+    -- the config's own value rather than with a tolerance, exactly as the shared
+    -- vertical seams are. A tolerance here would pass on the bug it exists to exclude.
+    local zTop, zBot, zStray = 0, 0, nil
+    for _, t in ipairs(UVC.polys) do
+        for j = 1, 3 do
+            if t[j].z == sp.topZ then zTop = zTop + 1
+            elseif t[j].z == sp.baseZ then zBot = zBot + 1
+            else zStray = zStray or ('a vertex at z %.17g'):format(t[j].z) end
+        end
+    end
+    ok(zStray == nil and zTop > 0 and zBot > 0,
+        'and every vertex of the gradient wall sits exactly on baseZ or exactly on '
+            .. 'topZ -- bit-equal, not near -- so the top edge is one number and no '
+            .. 'float sliver can open along it',
+        zStray or ('%d on topZ, %d on baseZ, none between'):format(zTop, zBot))
 
     -- AND IT IS THE RAMP TEXTURE IT IS DRAWN WITH, not some other slot. A quad
     -- pointed at a texture that does not exist draws nothing at all, which is the
@@ -2273,6 +2368,7 @@ do
     -- planes with none missing, one alpha per plane uniform round the ring, and the
     -- ramp falling as the wall rises.
     local B = bandedClient()
+    B.recordWallOnly()
     B.record(1, 0.0, 0.0, 2600.0, 400.0, 0.0, 1600.0, 600000, 60000, 0.5)
     B.pedAt = pt(0.0, 0.0, 30.0)
     local brec = B.env.BR.State.storm
@@ -2866,6 +2962,89 @@ do
     end
     ok(nonMono == 0, 'and it never rises on the way up', monoAt)
 
+    -- ═══ #341: WHICH OF THE FOUR CANDIDATES THE BAKE ITSELF RULES OUT ═══
+    --
+    --   "smooth but there is a very tiny line at the top of it"  -- the owner, #341
+    --
+    -- Two of the four hypotheses were claims about the TEXTURE, and this is the
+    -- measurement that answers both, kept as an assertion rather than as a paragraph
+    -- because a retune of the ramp is exactly what would quietly bring either back.
+    --
+    --   * ROUNDING AT THE LAST ROW. `floor(rampAlpha * 255 + 0.5)` at t = 1.0 with
+    --     topAlpha 0 has to give 0 and not 1, and the rows under it have to be dark
+    --     too -- a top row of 0 above a row of 40 would still read as an edge.
+    --   * A COARSE MIP LEVEL averaging the top rows upward. Every mip level's top
+    --     texel is an average of the top rows of THIS ramp, so if the top rows are
+    --     dark no level of any chain can put a bright pixel at the top of the wall.
+    --     (What a coarse LOD would actually do is flatten the WHOLE wall, and the
+    --     owner's report is the opposite -- "the gradient looks great though".)
+    --
+    -- SO THE TOP EIGHTH OF THE RAMP IS ASSERTED DARK, which is 32 rows and 125 m of
+    -- wall -- far more than the artifact's thickness, so it cannot pass by accident.
+    -- BRIGHT is a quarter of full opacity, the same number the wrap model below calls
+    -- bright, so the two assertions are two halves of one argument rather than two
+    -- thresholds that happen to sit near each other.
+    local BRIGHT = 64
+    local topDark, topWorst = true, 0
+    for y = H - math.floor(H / 8), H - 1 do
+        local a = tex.px[y][0].a
+        if a > topWorst then topWorst = a end
+        if a >= BRIGHT then topDark = false end
+    end
+    ok(tex.px[H - 1][0].a == 0 and topDark,
+        'the ramp reaches exactly zero at its last row and no row in its top eighth '
+            .. 'reaches a quarter of full opacity -- so neither rounding at the last '
+            .. 'row nor a mip level averaging the top rows can be the bright line #341 '
+            .. 'reported',
+        ('row %d reads %d, worst of the top %d rows %d against %d'):format(
+            H - 1, tex.px[H - 1][0].a, math.floor(H / 8), topWorst, BRIGHT))
+
+    -- ═══ AND THE ONE THAT IS LEFT, MODELLED: A SAMPLER THAT WRAPS ═══
+    --
+    -- The address mode is a property of the native's sampler and NO LUA IN THIS ESTATE
+    -- CAN READ IT -- said plainly, because it is the one thing about #341 that only a
+    -- playtest confirms. What can be stated exactly is the consequence, so both address
+    -- modes are modelled here over the real baked rows: at v = 1.0 a REPEAT sampler is
+    -- bright and a CLAMP sampler is not, and at the v the wall actually uses BOTH are
+    -- dark. That is what makes the inset the correct fix without knowing the answer.
+    local function bilinear(v, wrap)
+        local c = v * H - 0.5
+        local i0 = math.floor(c)
+        local f = c - i0
+        local function at(i)
+            if wrap then i = i % H
+            elseif i < 0 then i = 0
+            elseif i > H - 1 then i = H - 1 end
+            return tex.px[i][0].a
+        end
+        return at(i0) * (1.0 - f) + at(i0 + 1) * f
+    end
+    local vTopIn = (H - 0.5) / H
+    local vBotIn = 0.5 / H
+    ok(bilinear(1.0, true) >= BRIGHT and bilinear(1.0, false) < 1
+        and bilinear(vTopIn, true) < 1 and bilinear(vTopIn, false) < 1,
+        'and a bilinear sample at v = 1.0 reads half-opaque under a REPEAT address mode '
+            .. 'and nothing under CLAMP, while the half-texel-inset v the wall now uses '
+            .. 'reads nothing under EITHER -- which is why the inset is right without '
+            .. 'knowing which mode this native\'s sampler uses',
+        ('v 1.0: wrap %.1f, clamp %.1f | v %.9f: wrap %.1f, clamp %.1f'):format(
+            bilinear(1.0, true), bilinear(1.0, false), vTopIn,
+            bilinear(vTopIn, true), bilinear(vTopIn, false)))
+
+    -- AND WHY THE BOTTOM NEVER SHOWED IT, which is the question the fix has to answer
+    -- to be trustworthy: a wrap at v = 0 reads row H-1 alongside row 0, so it DARKENS
+    -- the edge by about half instead of brightening it -- and it does so at z -150,
+    -- which is the underground skirt. Two independent reasons, either sufficient; the
+    -- inset is applied there anyway, because rampBaseZ is exactly the knob that could
+    -- one day raise that edge into daylight.
+    ok(bilinear(0.0, true) < bilinear(0.0, false)
+        and bilinear(vBotIn, true) == 255 and bilinear(vBotIn, false) == 255,
+        'while a wrap at the BOTTOM edge darkens rather than brightens -- which, with '
+            .. 'that edge 150 m underground, is why only the top of the wall was ever '
+            .. 'reported',
+        ('v 0.0: wrap %.1f against clamp %.1f; inset %.1f'):format(
+            bilinear(0.0, true), bilinear(0.0, false), bilinear(vBotIn, true)))
+
     -- ═══ THE STEPS ARE GONE, AND THIS IS THE ASSERTION THAT SAYS SO ═══
     --
     -- The defect was three visible steps. What makes a ramp smooth is that no
@@ -2908,6 +3087,34 @@ do
             .. 'have given away 18 percent of the wall nobody can see',
         ('row %d reads %d; measured from baseZ it would read %d'):format(
             cityRow, atCity, unpinned))
+
+    -- ═══ AND THE INSET IS COMPUTED FROM THE HEIGHT THE TEXTURE WAS BUILT AT ═══
+    --
+    -- A HALF TEXEL OF 256 WRITTEN OUT AS A LITERAL would pass every assertion in this
+    -- file at the shipping config and be wrong the day rampH moved -- which is the same
+    -- class of defect as #341 itself, one level up: a v that no longer lands on a row
+    -- centre. So a client with a DIFFERENT rampH is stood up and the drawn v range has
+    -- to have moved with it. 64 rather than 256, which is coarse enough that a stale
+    -- 1/512 inset lands four rows inside the texture and is unmistakable.
+    local small = newStormClient()
+    small.env.BR.Config.Storm.render.strip.fade.rampH = 64
+    small.frame()
+    local sH = 64
+    local sWant0, sWant1 = 0.5 / sH, (sH - 0.5) / sH
+    local sLo, sHi = math.huge, -math.huge
+    for _, t in ipairs(small.polys) do
+        for j = 1, 3 do
+            if t[j].v < sLo then sLo = t[j].v end
+            if t[j].v > sHi then sHi = t[j].v end
+        end
+    end
+    ok(small.rt.tex and small.rt.tex.h == sH
+        and math.abs(sLo - sWant0) < 1e-12 and math.abs(sHi - sWant1) < 1e-12,
+        'and a client built at a different rampH insets by ITS half texel, not by a '
+            .. 'literal 1/512 -- the inset is a property of the texture, so it moves '
+            .. 'when the texture does',
+        ('%d rows, v %.9f to %.9f, wanted %.9f to %.9f'):format(
+            small.rt.tex and small.rt.tex.h or -1, sLo, sHi, sWant0, sWant1))
 
     -- ═══ BUILT ONCE PER RESOURCE START, NOT PER FRAME ═══
     --
@@ -3709,9 +3916,20 @@ do
     ok(#wallClient(MS.WARMUP, nil).polys == 0,
         'and silence during warmup still draws nothing')
 
-    -- PLAYING IS THE REAL WALL'S, AND THE PREVIEW MUST NOT BE BESIDE IT.
+    -- ═══ PLAYING WITH NO RECORD YET DRAWS NOTHING, WHICH IS WHAT IS LEFT OF THIS
+    --     ASSERTION SINCE #340 ═══
+    --
+    -- It used to read "PLAYING draws no preview wall" flat out, and that is no longer
+    -- the rule: the preview now extends into PLAYING while the real wall is suppressed,
+    -- and `preview.handoff` walks that whole stretch. What survives, and matters, is
+    -- the moment BETWEEN the transition and the first STORM_SYNC -- a client that has
+    -- gone PLAYING and has no record must draw nothing rather than fall back to the
+    -- stale published field. `wallClient` leaves BR.State.storm nil, which is that
+    -- moment exactly.
     ok(#wallClient(MS.PLAYING, false).polys == 0,
-        'PLAYING draws no preview wall -- the record draws its own')
+        'PLAYING with no record yet draws nothing -- the preview\'s PLAYING stretch '
+            .. 'reads the record, so a client between the transition and the first '
+            .. 'STORM_SYNC has nothing to read and draws nothing')
 
     -- ═══ IT IS THE SHIPPING RENDERER, HANDED A CIRCLE AND A LOWER ALPHA ═══
     --
@@ -3806,6 +4024,359 @@ do
     -- record; a preview that pushed an envelope would put a phase counter and a
     -- "storm closing" clock on screen for a storm that does not exist.
     ok(C.last() == nil, 'and no HUD envelope is pushed for a preview')
+end
+
+-- ---------------------------------------------------------------------------
+describe('preview.handoff')
+do
+    -- ═══ FROM THE BUS TO THE FIRST MOVE, WITHOUT A GAP (#340) ═══
+    --
+    --   "After match goes to playing, before the first storm move, the storm border
+    --    cannot be seen anywhere. Doesn't seem to draw during this time. The storm
+    --    circle should draw the entire time from while in bus to when it moves. Make
+    --    sure it fades in just like before."       -- the owner, 2026-09-22, #340
+    --
+    -- ═══ WHY THIS BLOCK WALKS A TIMELINE INSTEAD OF ASSERTING TWO STATES ═══
+    --
+    -- BECAUSE BOTH ENDS WERE ALREADY GREEN WHILE THE DEFECT SHIPPED. `preview.wall`
+    -- proved the bus has a wall and `wall.strip` proved the fade-in reaches full
+    -- strength, and the hole was the two minutes between them -- which no assertion
+    -- about either end can see. This suite has now been green over a real defect three
+    -- times (a wall 33 m outside the boundary, a test comparing one point with itself,
+    -- UV mutations surviving because the test client only ever stood inside the circle)
+    -- and every one of them was a gap between two true statements.
+    --
+    -- SO THE PROPERTY IS CONTINUITY AND IT IS ASSERTED AS ONE: the clock is driven from
+    -- the bus, through the PLAYING transition, down the whole phase-1 hold, across the
+    -- fade window and into the shrink, and at EVERY step something is on screen. A
+    -- renderer that drew nothing for one frame anywhere in there fails, wherever that
+    -- frame is.
+    --
+    -- ═══ AND THE SECOND PROPERTY IS THAT NEITHER WALL POPS ═══
+    --
+    -- Continuity alone would be satisfied by the preview cutting out at full strength
+    -- as the real wall cut in at nothing -- which is a flicker, not a handoff. So the
+    -- walk also reads each wall's alpha at every step and asserts three things about
+    -- the pair: that the preview only ever falls and the real wall only ever rises,
+    -- that neither moves further in one step than the clock can carry it, and that
+    -- their two shares SUM TO ONE inside the fade window. The third is the real claim.
+    -- One clock read in two directions is what makes it hold; two clocks would drift
+    -- and this is the assertion that would catch them.
+    --
+    -- THE TWO WALLS ARE TOLD APART BY WHICH CIRCLE THEIR CORNERS STAND ON, not by their
+    -- alpha -- an alpha is what is under test here, so reading it to decide which wall
+    -- it belongs to would be circular. The record below nests circle 1 well inside the
+    -- opening circle, so the two boundaries are 1400 m apart at their closest and the
+    -- classification cannot be ambiguous.
+
+    local proto = newStormClient()
+    local MS, PS = proto.env.BR.MatchState, proto.env.BR.PlayerState
+    local rr = proto.env.BR.Config.Storm.render
+    local INSET = rr.edgeInset or 0.0
+    local FADE = (rr.fadeInSec or 10.0) * 1000.0
+    -- FULL is the live wall's alpha and PREV the preview's share of it, both as the
+    -- renderer rounds them, so every expectation below is the config's own arithmetic.
+    local FULL = math.floor(rr.alpha + 0.5)
+    local PREV = math.floor(rr.alpha * (rr.previewAlpha or 0.5) + 0.5)
+
+    -- The opening circle (the whole map) and circle 1 nested inside it.
+    local OCX, OCY, OR = 0.0, 0.0, 4000.0
+    local CCX, CCY, CR = 500.0, 0.0, 1600.0
+    local WAIT, SHRINK = 120000, 60000
+
+    --- Which wall each triangle of the last frame belongs to, and at what alpha.
+    ---
+    --- Returns two records, `{ n, alpha, mixed }`. `n` is 0 for a wall that is not on
+    --- screen at all, which is what lets the walk treat absence as alpha 0 and measure
+    --- a pop as an ordinary step. `mixed` is set when one wall's triangles disagree
+    --- about their alpha -- the picket-fence invariant, asked per wall, which is how it
+    --- survives two walls being legitimately in one frame.
+    local function walls(C)
+        local pv = { n = 0, alpha = 0, mixed = nil }
+        local rw = { n = 0, alpha = 0, mixed = nil }
+        local stray = nil
+        for _, t in ipairs(C.polys) do
+            local v = t[1]
+            local dP = math.sqrt((v.x - CCX) ^ 2 + (v.y - CCY) ^ 2)
+            local dR = math.sqrt((v.x - OCX) ^ 2 + (v.y - OCY) ^ 2)
+            local w
+            if math.abs(dP - (CR - INSET)) < 1e-6 then w = pv
+            elseif math.abs(dR - (OR - INSET)) < 1e-6 then w = rw
+            else
+                stray = stray or ('a triangle at (%.3f, %.3f) is on neither circle')
+                    :format(v.x, v.y)
+            end
+            if w then
+                if w.n == 0 then w.alpha = t.a
+                elseif w.alpha ~= t.a then
+                    w.mixed = w.mixed or ('%d and %d'):format(w.alpha, t.a)
+                end
+                w.n = w.n + 1
+            end
+        end
+        return pv, rw, stray
+    end
+
+    --- Put the phase-1 hold exactly `msLeft` from its end and draw one frame.
+    ---
+    --- THE 16 ms C.frame ADVANCES THE CLOCK BY IS ADDED IN HERE, so `msLeft` is what
+    --- the renderer actually solves rather than what it would have solved a frame ago.
+    --- Getting that wrong would shift every boundary assertion below by one frame and
+    --- read as an off-by-one in the production clock.
+    local function holdAt(C, msLeft)
+        C.env.BR.State.storm.tStart = (C.now + 16) - (WAIT - msLeft)
+        C.frame()
+        return walls(C)
+    end
+
+    --- A client on the bus, with the mainland loaded and circle 1 published.
+    local function busClient()
+        local C = newStormClient()
+        local env = C.env
+        env.BR.State.storm = nil
+        env.BR.State.match.state = MS.BUS
+        env.BR.State.me.state    = PS.BUS
+        env.BR.State.stormPreview = { cx = CCX, cy = CCY, r = CR }
+        -- br_environment says the Cayo island is gone, which is the preview wall's own
+        -- gate; fired rather than left to the fallback so this block is testing the
+        -- handoff and not mainlandLoaded.
+        C.fire('br:env:world', false)
+        C.pedAt = pt(0.0, 0.0, 30.0)
+        return C
+    end
+
+    --- The PLAYING transition, spelled the way client/state.lua's STORM_SYNC handler
+    --- spells it: the record arrives AND the preview field is dropped. Driven by hand
+    --- because this harness loads the renderer and not the mirror -- and dropping the
+    --- field is the half that matters, since it is what makes the PLAYING preview read
+    --- the record instead.
+    local function goPlaying(C)
+        C.env.BR.State.match.state = MS.PLAYING
+        C.env.BR.State.me.state    = PS.ALIVE
+        C.record(1, OCX, OCY, OR, CCX, CCY, CR, WAIT, SHRINK, 0.5)
+        C.env.BR.State.stormPreview = nil
+        C.fire(C.env.BR.Net.STORM_SYNC)
+    end
+
+    -- ─── the bus, which is the only stretch that already worked ───
+    local C = busClient()
+    C.frame()
+    local bp, br, bs = walls(C)
+    ok(bs == nil and bp.n > 0 and br.n == 0 and bp.alpha == PREV,
+        'on the bus the preview wall stands on circle 1 at previewAlpha, and the '
+            .. 'record\'s wall is not in frame at all',
+        bs or ('preview %d tris at %d, real %d tris; wanted alpha %d'):format(
+            bp.n, bp.alpha, br.n, PREV))
+
+    -- ─── the transition itself, which is where the wall used to vanish ───
+    goPlaying(C)
+    local tp, tr = holdAt(C, WAIT)
+    ok(tp.n == bp.n and tp.alpha == bp.alpha and tr.n == 0 and tp.mixed == nil,
+        'and the frame after the match goes PLAYING draws the SAME circle at the SAME '
+            .. 'alpha from the record\'s own target -- the defect was this frame drawing '
+            .. 'nothing, and an equal-but-different circle would be a pop',
+        ('%d tris at %d against the bus\'s %d at %d'):format(
+            tp.n, tp.alpha, bp.n, bp.alpha))
+
+    -- AND IT IS THE RECORD IT READ, NOT A STALE FIELD. The field is gone -- the mirror
+    -- nils it on STORM_SYNC -- so a preview still drawing off BR.State.stormPreview
+    -- would have drawn nothing here, and this is the assertion that says the source
+    -- moved rather than that the gate opened.
+    ok(C.env.BR.State.stormPreview == nil and tp.n > 0,
+        'with BR.State.stormPreview already dropped, so the PLAYING preview is reading '
+            .. 'rec.cx1/cy1/r1 -- which IS circle 1, because enterPhase spends the '
+            .. 'warmup draw rather than rolling a second one')
+
+    -- ─── the whole hold, step by step, with nothing allowed to be empty ───
+    --
+    -- COARSE THROUGH THE SUPPRESSED STRETCH AND FINE THROUGH THE FADE WINDOW, because
+    -- the two are asking different questions: the first is "is anything on screen at
+    -- all" over two minutes, the second is "does either wall jump" over ten seconds.
+    local steps = {}
+    for ms = WAIT, FADE + 1, -2000 do steps[#steps + 1] = ms end
+    steps[#steps + 1] = FADE + 1
+    for ms = FADE, 0, -250 do steps[#steps + 1] = ms end
+
+    local W = busClient()
+    goPlaying(W)
+    local empty, strayAt, mixedAt = nil, nil, nil
+    local jumped, nonMono = nil, nil
+    local sumBad, windowSteps = nil, 0
+    local lastP, lastR = PREV, 0
+    -- THE MOST EITHER ALPHA MAY MOVE IN ONE STEP is what the clock can carry over that
+    -- step plus a level for the rounding, so a genuine pop -- 0 to 55, or 55 to 0 --
+    -- fails while the intended ramp passes. Priced off the step, not guessed.
+    for i, ms in ipairs(steps) do
+        local prev, real, stray = holdAt(W, ms)
+        local gap = (i > 1) and (steps[i - 1] - ms) or 0
+        local room = math.ceil(FULL * gap / FADE) + 1
+        if stray then strayAt = strayAt or ('at %d ms: %s'):format(ms, stray) end
+        if prev.n == 0 and real.n == 0 then
+            empty = empty or ('%d ms into the hold, nothing is drawn at all'):format(ms)
+        end
+        if prev.mixed or real.mixed then
+            mixedAt = mixedAt or ('at %d ms one wall reads %s'):format(
+                ms, prev.mixed or real.mixed)
+        end
+        if prev.alpha > lastP or real.alpha < lastR then
+            nonMono = nonMono or
+                ('at %d ms preview %d->%d, real %d->%d'):format(
+                    ms, lastP, prev.alpha, lastR, real.alpha)
+        end
+        if math.abs(prev.alpha - lastP) > room
+            or math.abs(real.alpha - lastR) > room then
+            jumped = jumped or ('at %d ms preview %d->%d, real %d->%d, room %d')
+                :format(ms, lastP, prev.alpha, lastR, real.alpha, room)
+        end
+        -- THE SHARES SUM TO ONE INSIDE THE WINDOW, which is the one-clock claim. The
+        -- tolerance is the two roundings and nothing else: one level of FULL plus one
+        -- level of PREV.
+        if ms < FADE and ms > 0 then
+            windowSteps = windowSteps + 1
+            local s = real.alpha / FULL + prev.alpha / PREV
+            if math.abs(s - 1.0) > 1.0 / FULL + 1.0 / PREV then
+                sumBad = sumBad or ('at %d ms the shares sum to %.4f'):format(ms, s)
+            end
+        end
+        lastP, lastR = prev.alpha, real.alpha
+    end
+
+    ok(empty == nil and strayAt == nil and #steps > 50,
+        'and across the whole hold -- the bus\'s circle through two minutes of '
+            .. 'suppression, the fade window, and out the other side -- there is a wall '
+            .. 'on screen at every single step, which is the gap #340 reported',
+        empty or strayAt or ('%d steps, none empty'):format(#steps))
+    ok(mixedAt == nil,
+        'each wall\'s alpha is uniform round its own ring at every step, so two walls '
+            .. 'in one frame never read as one wall that stripes along its length',
+        mixedAt)
+    ok(nonMono == nil,
+        'the preview only ever thins and the real wall only ever strengthens: the '
+            .. 'handoff runs one way',
+        nonMono)
+    ok(jumped == nil,
+        'and neither moves further in a step than the fade clock can carry it -- a '
+            .. 'preview that cut out, or a wall that cut in, fails here',
+        jumped)
+    ok(sumBad == nil and windowSteps > 30,
+        'inside the fade window the two shares sum to one, to the two roundings: the '
+            .. 'real wall\'s share of render.alpha plus the preview\'s share of '
+            .. 'previewAlpha. That is ONE clock read in both directions, and it is what '
+            .. 'a second clock would fail',
+        sumBad or ('%d steps in the window, all summing to 1'):format(windowSteps))
+
+    -- ─── and the far end: the preview is gone the moment the wall is whole ───
+    local ep, er = holdAt(W, 0)
+    ok(ep.n == 0 and er.n > 0 and er.alpha == FULL,
+        'when the hold ends the real wall is at full render.alpha and the preview is '
+            .. 'off screen entirely -- the constraint previewCircle\'s header states, '
+            .. 'kept: no preview beside the wall it was standing in for',
+        ('preview %d tris, real %d tris at %d against %d'):format(
+            ep.n, er.n, er.alpha, FULL))
+
+    -- AND IT STAYS GONE. A frame further into the shrink is the case a gate written as
+    -- "not yet full" rather than "the hold is over" would get wrong, and the symptom --
+    -- a faint second ring parked on circle 1 while the wall closes onto it -- is
+    -- precisely what the map's purple ring is for.
+    -- READ AS "NOTHING ON CIRCLE 1", not as the two-wall split: five seconds into the
+    -- shrink the record's own circle has left the opening radius, so `walls` can no
+    -- longer name it -- which is exactly why the claim is spelled against circle 1's
+    -- boundary and the total.
+    local sp2 = holdAt(W, -5000)
+    ok(sp2.n == 0 and #W.polys > 0,
+        'and five seconds into the shrink the preview is still gone while the wall '
+            .. 'closes on the circle it was standing in for',
+        ('%d triangles on circle 1, %d polys in frame'):format(sp2.n, #W.polys))
+
+    -- ─── the two gates that exist for real reasons, both still shut ───
+    --
+    -- A LOBBY BYSTANDER SHARES THE MATCH STATE WITHOUT BEING IN THE MATCH, and used to
+    -- get storm blips at the vista menu. The new PLAYING stretch is a new way into the
+    -- same failure, so it is asked at a moment only the new code can answer: mid-hold,
+    -- where the real wall is suppressed and the preview is all there is.
+    local L = busClient()
+    goPlaying(L)
+    L.env.BR.State.me.state = PS.LOBBY
+    local lp, lr = holdAt(L, WAIT * 0.5)
+    ok(lp.n == 0 and lr.n == 0 and #L.polys == 0,
+        'a LOBBY bystander gets nothing at all through the new PLAYING stretch, which '
+            .. 'is the vista-menu report the gate was written for',
+        ('%d preview, %d real, %d polys'):format(lp.n, lr.n, #L.polys))
+
+    -- AND NOTHING SURVIVES A MATCH ENDING. activeRecord admits ENDED on purpose -- the
+    -- grade and the rain have to outlive the transition or the last thing a player sees
+    -- is the weather switching off -- so a preview that reused activeRecord would draw
+    -- a purple circle under the verdict slam. A two-player playtest reaches exactly
+    -- this: a match decided inside the phase-1 hold, record still phase 1, still
+    -- HOLDING.
+    local E = busClient()
+    goPlaying(E)
+    local hp = holdAt(E, WAIT * 0.5)
+    E.env.BR.State.match.state = MS.ENDED
+    local xp, xr = holdAt(E, WAIT * 0.5)
+    ok(hp.n > 0 and xp.n == 0 and xr.n == 0,
+        'and a match that ENDS inside the phase-1 hold takes the preview down with it, '
+            .. 'though the record is still phase 1 and still HOLDING -- which is why '
+            .. 'this tests PLAYING by name instead of reusing activeRecord',
+        ('%d tris while playing, %d preview and %d real once ENDED'):format(
+            hp.n, xp.n, xr.n))
+
+    -- ─── a collapsed target is not a circle to stand in for ───
+    --
+    -- BR.StormShape.circle FLOORS ITS RADIUS AT ONE METRE (storm_shape.lua argues the
+    -- floor), so a phase-1 target of zero would not draw nothing -- it would draw a
+    -- one-metre purple ring, a dot on the ground with no meaning. storm.wall makes the
+    -- same test on rec.r1 one screen up, and the reason to make it here as well is the
+    -- asymmetry: a reader who found the guard on one wall and not the other would
+    -- reasonably conclude the shape handles it.
+    --
+    -- THE SHIPPING CONFIG CANNOT REACH THIS, said plainly rather than implied:
+    -- phases[1].radius is 2600 and every route into phase 1 goes through enterPhase
+    -- with it, including `brphase 1`. It is a guard against a config, and this is a
+    -- hand-built record because that is the only thing that can reach it.
+    local Z = busClient()
+    Z.env.BR.State.match.state = MS.PLAYING
+    Z.env.BR.State.me.state    = PS.ALIVE
+    Z.record(1, OCX, OCY, OR, CCX, CCY, 0.0, WAIT, SHRINK, 0.5)
+    Z.env.BR.State.stormPreview = nil
+    local zp = holdAt(Z, WAIT * 0.5)
+    ok(zp.n == 0 and #Z.polys == 0,
+        'a phase-1 record whose target has collapsed draws no preview at all, rather '
+            .. 'than the one-metre ring BR.StormShape.circle\'s radius floor would '
+            .. 'otherwise hand it',
+        ('%d tris on circle 1, %d polys in frame'):format(zp.n, #Z.polys))
+
+    -- ─── and the fallback reaches the new stretch, which is the easiest thing to
+    --     leave behind ───
+    --
+    -- mainlandLoaded's fallback was BUS ALONE, which was complete while the preview
+    -- itself was BUS alone. On a box where br_environment is not running -- or has not
+    -- reached its first announcement -- a BUS-only fallback would withhold the ENTIRE
+    -- #340 stretch and nothing would say so: the bus would have its wall, the fade-in
+    -- would arrive on time, and the two minutes between them would be empty again.
+    -- Every other client in this block fires the announcement, so this is the only
+    -- assertion that can see it.
+    local S = newStormClient()
+    S.env.BR.State.storm = nil
+    S.env.BR.State.match.state = MS.BUS
+    S.env.BR.State.me.state    = PS.BUS
+    S.env.BR.State.stormPreview = { cx = CCX, cy = CCY, r = CR }
+    S.pedAt = pt(0.0, 0.0, 30.0)
+    S.frame()
+    local fbBus = walls(S)
+    goPlaying(S)
+    local fbHold = holdAt(S, WAIT * 0.5)
+    ok(fbBus.n > 0 and fbHold.n > 0 and fbHold.alpha == PREV,
+        'with br_environment silent throughout, the match state alone carries the '
+            .. 'preview from the bus into the PLAYING hold -- a BUS-only fallback would '
+            .. 'have withheld the whole of #340 on any box that is not running it',
+        ('%d tris on the bus, %d at %d mid-hold'):format(
+            fbBus.n, fbHold.n, fbHold.alpha))
+
+    ok(C.errored() == nil and W.errored() == nil and E.errored() == nil
+        and S.errored() == nil,
+        'and the handoff runs clean on every client in this block',
+        C.errored() or W.errored() or E.errored() or S.errored())
 end
 
 -- ---------------------------------------------------------------------------

@@ -583,6 +583,15 @@ BR.Config.Storm = {
                 -- samples u 0.5, which is the middle of eight identical columns, so
                 -- no edge filtering or clamp rule can enter into it. 256 TALL is one
                 -- row per alpha level, which is every level the format has.
+                --
+                -- THE v AXIS CARRIES INFORMATION AND SO CANNOT BE PINNED LIKE u, which
+                -- is why it took a defect to protect. The draw runs v from the centre
+                -- of row 0 to the centre of row rampH-1 -- half a texel in at each end
+                -- -- instead of 0.0 to 1.0: an edge coordinate of exactly 1.0 filters
+                -- across the wrap boundary and a REPEAT sampler reads the opaque
+                -- bottom row there, which is the thin bright line #341 reported along
+                -- the top of the wall. Changing rampH moves the inset with it; the
+                -- client computes it from the height it actually built.
                 txd        = 'br_storm_ramp',
                 texture    = 'ramp',
                 rampW      = 8,
