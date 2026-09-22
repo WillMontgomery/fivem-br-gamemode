@@ -32,6 +32,21 @@
 -- Nothing here re-tests union2. Its cases, its arc-length walk and its signed
 -- distance belong to storm_shape.lua and are driven in test_shared.lua.
 --
+-- ═══ WITH ONE EXCEPTION, AND IT IS DELIBERATE: THE ROUNDED RECTANGLE (#335) ═══
+--
+--   "The storm border does draw still, and everything is circular. Can you make the
+--    storms squircles instead to prove our new logic?"      -- owner, 2026-09-22
+--
+-- The `square.*` blocks hold both halves of that: the SHAPE's own geometry -- its
+-- piece list, its signed distance and its erosion -- and the MAP that reads it, which
+-- is client/storm.lua's three rings and the squareness knob they are drawn from.
+-- Those two belong together rather than one file apart. The map's whole content is a
+-- claim about what the shape is, and the only reason the shape exists is the map and
+-- the wall that will follow it; a proof split across two suites is a proof whose two
+-- halves can stop agreeing without either going red. union2 appears there only where
+-- the map has to answer for it -- two fills for a breakout, one for a nested phase --
+-- and not for its cases or its walk, which are still test_shared.lua's.
+--
 -- ═══ THE PROPERTY THAT MAKES THE CHANGE SHIPPABLE IS THE FIRST BLOCK ═══
 --
 -- On an ordinary phase the next circle is NESTED inside the current one, and the
@@ -527,6 +542,32 @@ local function newStormClient()
         C.blips[nh].alpha, C.blips[nh].name = alpha, name
         return nh
     end
+    -- ═══ AND THE AREA BLIP, WHICH IS THE OTHER FILLED MAP PRIMITIVE (#335) ═══
+    --
+    -- Recorded with its FULL width and height and its rotation, not a radius,
+    -- because those are the three things the box can be wrong about: the wrong size
+    -- (half-extent passed where the native wants the whole span), the wrong shape,
+    -- or left spinning with the camera. `kind` is 'area' rather than 'radius', so
+    -- C.rings() cannot see one and every existing assertion about "how many rings
+    -- are on the map" still means what it meant -- which is what makes a squareness
+    -- of zero provable rather than assumed.
+    env.BR.Native.areaBlip = function(h, x, y, w, hh, rot, colour, alpha, name)
+        if h and C.blips[h] and C.blips[h].exists then
+            C.blips[h].x, C.blips[h].y = x, y
+            C.blips[h].w, C.blips[h].h, C.blips[h].rot = w, hh, rot
+            C.blips[h].colour, C.blips[h].alpha, C.blips[h].name =
+                colour, alpha, name
+            return h
+        end
+        local nh = newBlip('area', x, y)
+        C.blips[nh].w, C.blips[nh].h, C.blips[nh].rot = w, hh, rot
+        C.blips[nh].colour, C.blips[nh].alpha, C.blips[nh].name =
+            colour, alpha, name
+        return nh
+    end
+    env.BR.Native.blipHiddenOnLegend = function(h, hidden)
+        if C.blips[h] then C.blips[h].hidden = hidden and true or false end
+    end
     env.BR.Native.blipName = function(h, name)
         if C.blips[h] then C.blips[h].name = name end
     end
@@ -585,6 +626,16 @@ local function newStormClient()
         local out = {}
         for _, b in pairs(C.blips) do
             if b.exists and b.kind == 'radius' then out[#out + 1] = b end
+        end
+        return out
+    end
+
+    --- Every AREA box currently on the map (#335). Separate from C.rings on
+    --- purpose: "no box has appeared" is half of what a squareness of zero claims.
+    function C.boxes()
+        local out = {}
+        for _, b in pairs(C.blips) do
+            if b.exists and b.kind == 'area' then out[#out + 1] = b end
         end
         return out
     end
@@ -2839,6 +2890,874 @@ do
     -- record; a preview that pushed an envelope would put a phase counter and a
     -- "storm closing" clock on screen for a storm that does not exist.
     ok(C.last() == nil, 'and no HUD envelope is pushed for a preview')
+end
+
+-- ---------------------------------------------------------------------------
+describe('square.geometry')
+do
+    -- ═══ THE ROUNDED RECTANGLE, AND WHY ITS PROOF IS IN THIS FILE ═══
+    --
+    --   "The storm border does draw still, and everything is circular. Can you make
+    --    the storms squircles instead to prove our new logic?"  -- owner, 2026-09-22
+    --
+    -- This file's header says the geometry of a shape belongs to test_shared.lua and
+    -- that nothing here re-tests union2. The rounded rectangle is the exception and
+    -- it is a deliberate one: the thing it exists FOR -- the map primitives, the
+    -- squareness knob and the three rings that read them -- is client/storm.lua's and
+    -- is asserted below. Splitting one shape's proof across two suites is how the two
+    -- halves stop agreeing about what the shape is, and the signed distance is the
+    -- half the other half is built on.
+    --
+    -- ═══ EVERY CLAIM HERE IS MEASURED AGAINST SOMETHING INDEPENDENT ═══
+    --
+    -- The suite has been green over a wall drawn 33 metres outside the boundary that
+    -- damages, because the assertion sampled the quad CORNERS -- which
+    -- pointAtComponent puts on the boundary by construction whatever the walk does
+    -- between them (#336). So nothing below checks the closed form against itself:
+    --
+    --   * the PERIMETER is checked against 2*(hx-cr) + ... written out by hand, not
+    --     against a sum of the piece lengths the constructor produced;
+    --   * the SIGNED DISTANCE is checked against a brute-force sweep of the WALKED
+    --     boundary -- pointAtArc, which knows nothing about `box` -- and separately
+    --     for SIGN against the six-piece union predicate, which is a different
+    --     formulation of the same shape;
+    --   * the INSET is checked as distance(inset(s, m), p) == distance(s, p) - m,
+    --     which is what exact erosion MEANS and is false for any approximation.
+    local SS = newStormClient().env.BR.StormShape
+
+    -- ── the piece list ─────────────────────────────────────────────────────
+    local HX, HY, CR = 400.0, 260.0, 90.0
+    local rr = SS.roundedRect(1200.0, -300.0, HX, HY, CR)
+
+    local wantP = 2.0 * (2.0 * (HX - CR)) + 2.0 * (2.0 * (HY - CR))
+        + 2.0 * math.pi * CR
+    ok(#rr.pieces == 8 and near(SS.perimeter(rr), wantP, 1e-9),
+        'four runs and four quarter arcs, and the perimeter is the four straight '
+            .. 'spans plus one whole circle of the corner radius',
+        ('%d pieces, P %.9f against %.9f'):format(#rr.pieces,
+            SS.perimeter(rr), wantP))
+
+    -- FOUR SEGS AND FOUR ARCS, IN THAT ALTERNATION. A shape that happened to emit
+    -- eight pieces of the wrong kinds would satisfy the count above.
+    local kinds = {}
+    for i, pc in ipairs(rr.pieces) do kinds[i] = pc.kind end
+    ok(table.concat(kinds, ',') == 'seg,arc,seg,arc,seg,arc,seg,arc',
+        'alternating run and corner, starting on a run',
+        table.concat(kinds, ','))
+
+    -- ONE CLOSED LOOP. A rounded rectangle is convex; two components would mean the
+    -- walk had been handed a shape with a hole or an island in it.
+    ok(#SS.components(rr) == 1 and #SS.runs(rr, 1) == 8,
+        'one component, and runs() hands out all eight pieces of it -- which is what '
+            .. 'puts a wall vertex on every corner rather than a chord across it')
+
+    -- ── the boundary closes, corner by corner ──────────────────────────────
+    --
+    -- ASKED FROM BOTH SIDES OF EVERY JOIN, which is the only way a walk can be
+    -- caught bridging one. Piece i's far end and piece i+1's near start are two
+    -- different reconstructions of one point -- an arc centre and a segment
+    -- endpoint at each of the eight joins -- so a constructor that got a corner
+    -- centre or a sweep wrong shows up here as a gap, and nowhere else.
+    --
+    -- THE NANOMETRE IS NOT A TOLERANCE, IT IS WHICH PIECE ANSWERS. pieceAtArc
+    -- selects on `s < pc.s0 + pc.len`, so an s of exactly `pc.s0 + pc.len` is
+    -- already piece i+1 at t = 0 -- which means asking for the join twice, once
+    -- with the modulo and once without, asks the SAME piece both times and compares
+    -- a point with itself. The first draft of this block did exactly that and
+    -- survived a mutation that walked the top run backwards. Stepping back a
+    -- nanometre is what puts the first read on piece i.
+    local worstJoin = 0.0
+    for i = 1, #rr.pieces do
+        local pc = rr.pieces[i]
+        local ax, ay = SS.pointAtArc(rr, pc.s0 + pc.len - 1e-9)
+        local bx, by = SS.pointAtArc(rr, (pc.s0 + pc.len) % rr.P)
+        local d = math.sqrt((ax - bx) ^ 2 + (ay - by) ^ 2)
+        if d > worstJoin then worstJoin = d end
+    end
+    ok(worstJoin < 1e-6,
+        'every piece ends exactly where the next one begins, all eight joins',
+        ('worst join gap %.12g m'):format(worstJoin))
+
+    -- ═══ AND EVERY OUTWARD NORMAL REALLY POINTS OUT ═══
+    --
+    -- Interior on the LEFT is the convention the whole file rides on: the wall picks
+    -- which face of each quad the viewer is shown from the tangent turned ninety
+    -- degrees, so a run walked the wrong way round is a stretch of curtain that is
+    -- invisible from outside and a hole from inside. THAT IS NOT A POSITION ERROR, so
+    -- no comparison of points can see it -- a reversed run stands on the same two
+    -- endpoints.
+    --
+    -- JUDGED WITH distance(), which is the independent formulation again: step half a
+    -- metre along the reported normal and the signed distance must rise by half a
+    -- metre; step against it and it must fall by the same. That pins three things at
+    -- once -- the point is ON the boundary, the normal is a unit vector, and it points
+    -- at the outside -- and it is false for a reversed run, a clockwise sweep or a
+    -- normal off by any angle at all.
+    local STEP = 0.5
+    local worstOut, worstIn = 0.0, 0.0
+    for i = 1, 2000 do
+        local x, y, nx, ny = SS.pointAtArc(rr, rr.P * (i - 1) / 2000)
+        local dOut = SS.distance(rr, x + nx * STEP, y + ny * STEP)
+        local dIn = SS.distance(rr, x - nx * STEP, y - ny * STEP)
+        if math.abs(dOut - STEP) > worstOut then worstOut = math.abs(dOut - STEP) end
+        if math.abs(dIn + STEP) > worstIn then worstIn = math.abs(dIn + STEP) end
+    end
+    ok(worstOut < 1e-9 and worstIn < 1e-9,
+        'half a metre along every outward normal is half a metre outside, and half a '
+            .. 'metre against it is half a metre inside -- so the points are on the '
+            .. 'boundary and the normals face the way the wall\'s winding assumes',
+        ('worst out %.12g, worst in %.12g'):format(worstOut, worstIn))
+
+    -- ── the signed distance, against a sweep of the walked boundary ────────
+    --
+    -- The brute force asks pointAtArc for 20000 boundary points and takes the
+    -- nearest. That is an entirely different route to the answer from `box`: it goes
+    -- through the piece list, the arcs' own centres and the segments' endpoints. A
+    -- closed form that disagreed with the shape it claims to describe cannot hide
+    -- between the two.
+    local NSWEEP = 20000
+    local bx, by = {}, {}
+    for i = 1, NSWEEP do
+        bx[i], by[i] = SS.pointAtArc(rr, rr.P * (i - 1) / NSWEEP)
+    end
+    local function nearestOnWalk(px, py)
+        local best = math.huge
+        for i = 1, NSWEEP do
+            local d = (px - bx[i]) ^ 2 + (py - by[i]) ^ 2
+            if d < best then best = d end
+        end
+        return math.sqrt(best)
+    end
+
+    -- THE INDEPENDENT CONTAINMENT TEST: the six-piece decomposition. A rounded
+    -- rectangle is two crossed rectangles plus four corner discs, which is the
+    -- picture the MAP deliberately does not draw -- and as a predicate it mentions
+    -- none of distance()'s arithmetic, so it is a real second opinion about the sign.
+    local IX, IY = HX - CR, HY - CR
+    local function insideByPieces(px, py)
+        local dx, dy = math.abs(px - 1200.0), math.abs(py + 300.0)
+        if dx <= HX and dy <= IY then return true end
+        if dx <= IX and dy <= HY then return true end
+        local qx, qy = dx - IX, dy - IY
+        return (qx * qx + qy * qy) <= CR * CR
+    end
+
+    -- The walk's own resolution is the floor on how well the two can agree: 20000
+    -- points around a 2000m boundary is a tenth of a metre apart, so the brute force
+    -- overstates by up to half of that near a corner. 0.05 is that bound, not a
+    -- tolerance picked until it passed.
+    local worstMag, worstAt, signBad, nOut, nIn, nEdge = 0.0, nil, 0, 0, 0, 0
+    for gi = 0, 90 do
+        for gj = 0, 90 do
+            local px = 1200.0 - 700.0 + gi * (1400.0 / 90.0)
+            local py = -300.0 - 560.0 + gj * (1120.0 / 90.0)
+            local d = SS.distance(rr, px, py)
+            -- THE SWEEP ANSWERS AN UNSIGNED DISTANCE -- it is the nearest boundary
+            -- point and knows nothing about which side of it the sample is on -- so
+            -- the magnitudes are what get compared and the SIGN is the separate
+            -- assertion below, against a separate formulation. Comparing the signed
+            -- value against an unsigned one would read every interior point as being
+            -- wrong by twice its depth.
+            local mag = math.abs(math.abs(d) - nearestOnWalk(px, py))
+            if mag > worstMag then worstMag, worstAt = mag, { px, py } end
+            local want = insideByPieces(px, py)
+            -- The sign is only asked where the two formulations cannot disagree by
+            -- rounding: a point within a millimetre of the boundary is on it.
+            if math.abs(d) > 1e-3 then
+                if (d < 0.0) ~= want then signBad = signBad + 1 end
+                if want then nIn = nIn + 1 else nOut = nOut + 1 end
+            else
+                nEdge = nEdge + 1
+            end
+        end
+    end
+    ok(nIn > 500 and nOut > 500,
+        'the grid actually straddles the boundary rather than sampling one side',
+        ('%d inside, %d outside, %d on it'):format(nIn, nOut, nEdge))
+    ok(signBad == 0,
+        'the sign agrees with the six-piece union predicate at every sampled point '
+            .. '-- a second formulation of the shape, not a rearrangement of this one',
+        ('%d disagreements'):format(signBad))
+    ok(worstMag < 0.05,
+        'and the magnitude agrees with a brute-force sweep of the WALKED boundary, '
+            .. 'inside and out, to the walk\'s own resolution',
+        ('worst %.6f m at (%.1f, %.1f)'):format(worstMag,
+            worstAt and worstAt[1] or 0, worstAt and worstAt[2] or 0))
+
+    -- THE FOUR PLACES THE CLOSED FORM COULD BE WRONG BY A WHOLE REGION, pinned by
+    -- hand so a failure names which one. A corner reads sqrt(2)*cr - cr outside its
+    -- own arc centre; an edge reads the flat offset; the centre reads the nearest
+    -- edge and NOT the nearest corner.
+    ok(near(SS.distance(rr, 1200.0 + HX, -300.0), 0.0, 1e-9)
+        and near(SS.distance(rr, 1200.0, -300.0 + HY), 0.0, 1e-9),
+        'zero on the middle of both straight edges')
+    ok(near(SS.distance(rr, 1200.0 + IX + CR / math.sqrt(2.0),
+        -300.0 + IY + CR / math.sqrt(2.0)), 0.0, 1e-9),
+        'zero on the 45-degree point of a corner arc, which is the one place a box '
+            .. 'and a rounded box differ most')
+    ok(near(SS.distance(rr, 1200.0, -300.0), -HY, 1e-9),
+        'the centre is the NEARER half-extent deep, not the further one',
+        tostring(SS.distance(rr, 1200.0, -300.0)))
+    ok(near(SS.distance(rr, 1200.0 + HX + 37.0, -300.0), 37.0, 1e-9),
+        'and straight out from an edge is the flat offset')
+
+    -- ── a rounded rect whose corner radius IS its half-extent is a circle ──
+    --
+    -- The continuity the squareness knob rides on: at squareness 0 the shape the
+    -- config would ask for is geometrically the circle the game has always drawn.
+    -- Asserted as a distance field over a grid rather than as a perimeter, because
+    -- two shapes can have the same perimeter and not be the same shape.
+    local R = 520.0
+    local circ = SS.circle(90.0, 40.0, R)
+    local sq0 = SS.roundedRect(90.0, 40.0, R, R, R)
+    local worstEq = 0.0
+    for gi = 0, 80 do
+        for gj = 0, 80 do
+            local px, py = 90.0 - 800.0 + gi * 20.0, 40.0 - 800.0 + gj * 20.0
+            local d = math.abs(SS.distance(circ, px, py) - SS.distance(sq0, px, py))
+            if d > worstEq then worstEq = d end
+        end
+    end
+    ok(worstEq == 0.0 and near(SS.perimeter(sq0), SS.perimeter(circ), 1e-9),
+        'corner radius equal to the half-extent IS the circle, to the bit, in the '
+            .. 'signed distance as well as the perimeter',
+        ('worst delta %.17g'):format(worstEq))
+
+    -- AND ITS PIECE LIST IS FOUR ARCS AND NO RUNS, WHICH IS THE REGRESSION. The
+    -- four runs are zero length there, seg() answers nil for a run with no
+    -- direction, and seal() reads its list with ipairs -- which STOPS AT THE FIRST
+    -- NIL. Written as one eight-element table constructor this shape sealed to a
+    -- boundary of ZERO pieces: no perimeter, no point at s, a wall that drew nothing
+    -- while distance() went on answering correctly off the box. That is not a corner
+    -- case -- it is every inset larger than the shape, which is the collapsed
+    -- endgame plus render.edgeInset.
+    ok(#sq0.pieces == 4 and SS.perimeter(sq0) > 0.0,
+        'a degenerate rounded rect is four arcs and still has a perimeter -- a nil '
+            .. 'run must not truncate the piece list',
+        ('%d pieces, P %.6f'):format(#sq0.pieces, SS.perimeter(sq0)))
+
+    -- ── the inset ──────────────────────────────────────────────────────────
+    --
+    -- EXACT, which is a stronger claim than the union's and is asserted as such:
+    -- eroding by m moves the whole signed distance field by exactly m. The union
+    -- case cannot pass this (it errs inward near the join, deliberately) and neither
+    -- can any approximation of a rounded rect, so this assertion is the difference
+    -- between "we shrank it" and "we eroded it".
+    local M = 6.0
+    local ins = SS.inset(rr, M)
+    local worstIns = 0.0
+    for gi = 0, 90 do
+        for gj = 0, 90 do
+            local px = 1200.0 - 700.0 + gi * (1400.0 / 90.0)
+            local py = -300.0 - 560.0 + gj * (1120.0 / 90.0)
+            -- PLUS M, NOT MINUS. Shrinking a shape moves every signed distance
+            -- OUTWARD: a point that was 100 m inside is 94 m inside once the edge has
+            -- come 6 m toward it, and a point outside is further out. The sign of this
+            -- relation is the whole content of the assertion -- an inset written as a
+            -- dilation would satisfy any comparison that got it the wrong way round.
+            local d = math.abs((SS.distance(rr, px, py) + M)
+                - SS.distance(ins, px, py))
+            if d > worstIns then worstIns = d end
+        end
+    end
+    ok(ins.kind == 'roundedRect' and worstIns < 1e-9,
+        'an inset rounded rect is a rounded rect whose whole distance field has '
+            .. 'moved by exactly the metres asked for',
+        ('worst delta %.12g m'):format(worstIns))
+
+    -- THE EDGE INSET THE WALL ACTUALLY PAYS, read off the live config rather than
+    -- hard-coded, so a change to render.edgeInset cannot leave this passing about a
+    -- number the game stopped using.
+    local eInset = newStormClient().env.BR.Config.Storm.render.edgeInset
+    local live = SS.inset(SS.roundedRect(0.0, 0.0, 950.0, 950.0, 400.0), eInset)
+    ok(near(SS.distance(live, 950.0 - eInset, 0.0), 0.0, 1e-9),
+        'the wall\'s own edgeInset puts the drawn edge exactly that far inside the '
+            .. 'boundary that damages',
+        ('inset %.1f m'):format(eInset))
+
+    -- AN INSET LARGER THAN THE SHAPE LEAVES SOMETHING WALKABLE, for the reason
+    -- MIN_RADIUS exists: a boundary with no length has no point at s, and the
+    -- consumer that forgot would divide by zero in a per-frame draw call. The
+    -- collapsed endgame reaches this every match.
+    local eaten = SS.inset(SS.roundedRect(0.0, 0.0, 2.0, 2.0, 1.0), 40.0)
+    ok(eaten.kind == 'roundedRect' and #eaten.pieces > 0
+        and SS.perimeter(eaten) > 0.0,
+        'an inset that eats the whole shape leaves a boundary that can still be '
+            .. 'walked, not a shape with no length',
+        ('%d pieces, P %.6f'):format(#eaten.pieces, SS.perimeter(eaten)))
+
+    -- ── a kind with no implementation still errors ─────────────────────────
+    --
+    -- The whole point of dispatching on `kind`. A shape that quietly inherited the
+    -- disc-union answer would read SHALLOWER than the truth, and the damage test
+    -- reads the sign of it.
+    local cap = SS.capsule(0.0, 0.0, 100.0, 0.0, 30.0)
+    local okD = pcall(SS.distance, cap, 0.0, 0.0)
+    local okI = pcall(SS.inset, cap, 6.0)
+    local okM = pcall(SS.mapPrimitives, cap)
+    ok(not okD and not okI and not okM,
+        'a kind with no signed distance, erosion or map primitive errors on all '
+            .. 'three rather than being answered as something else',
+        ('distance %s, inset %s, mapPrimitives %s'):format(
+            tostring(okD), tostring(okI), tostring(okM)))
+    ok(pcall(SS.distance, rr, 0.0, 0.0) and pcall(SS.inset, rr, 1.0)
+        and pcall(SS.distance, SS.union2(0, 0, 100, 150, 0, 100), 0, 0)
+        and pcall(SS.distance, circ, 0, 0),
+        'and every kind that does have one answers without throwing')
+end
+
+-- ---------------------------------------------------------------------------
+describe('square.map')
+do
+    -- ═══ WHAT THE MAP IS HANDED, AND WHAT IT IS NOT ═══
+    --
+    -- mapPrimitives is the seam between a shape and the two filled primitives GTA's
+    -- minimap has. Everything asserted here is about the DESCRIPTORS -- the client
+    -- half is `square.off` and `square.on` below -- because the descriptor is where
+    -- the decision lives: one box per component rather than the exact six pieces,
+    -- which is a call about doubled alpha and not about geometry.
+    local SS = newStormClient().env.BR.StormShape
+
+    local c = SS.circle(300.0, -120.0, 950.0)
+    local cp = SS.mapPrimitives(c)
+    ok(#cp == 1 and cp[1].kind == 'radius'
+        and cp[1].cx == 300.0 and cp[1].cy == -120.0 and cp[1].r == 950.0,
+        'a circle is one radius descriptor carrying its own centre and radius -- '
+            .. 'which is what makes squareness 0 the call it replaced',
+        ('%d prims, %s'):format(#cp, cp[1] and cp[1].kind))
+
+    local rp = SS.mapPrimitives(SS.roundedRect(10.0, 20.0, 400.0, 260.0, 90.0))
+    ok(#rp == 1 and rp[1].kind == 'area'
+        and rp[1].cx == 10.0 and rp[1].cy == 20.0
+        and rp[1].w == 800.0 and rp[1].h == 520.0 and rp[1].rot == 0.0,
+        'a rounded rect is ONE area descriptor, the FULL span in each axis, and an '
+            .. 'explicit rotation of zero -- the native spins with the camera '
+            .. 'without one',
+        ('%d prims, w %s h %s rot %s'):format(#rp,
+            tostring(rp[1].w), tostring(rp[1].h), tostring(rp[1].rot)))
+
+    -- ONE, NOT SIX. The six-piece decomposition is exact and has regions of one, two
+    -- and three overlapping fills -- and overlapping blip fills composite in
+    -- creation order, which is what made the purple ring read as flashing when the
+    -- blue disc was recreated over it. This assertion is the decision, so that
+    -- putting the six back is a deliberate act with a red test in front of it.
+    ok(#rp == 1,
+        'and not the exact six-piece decomposition, which would band its own seams')
+
+    -- THE BOX IS THE TIGHT BOUNDING BOX, over-reporting only at the corners and
+    -- attained on all four edges. Measured against the WALKED boundary, so a box
+    -- built off the wrong extents is caught either way round: too small clips the
+    -- shape, too large is a ring further out than the zone.
+    local rr = SS.roundedRect(10.0, 20.0, 400.0, 260.0, 90.0)
+    local pr = rp[1]
+    local halfW, halfH = pr.w * 0.5, pr.h * 0.5
+    local outsideBox, maxX, maxY = 0, 0.0, 0.0
+    for i = 1, 4000 do
+        local px, py = SS.pointAtArc(rr, rr.P * (i - 1) / 4000)
+        local dx, dy = math.abs(px - pr.cx), math.abs(py - pr.cy)
+        if dx > halfW + 1e-9 or dy > halfH + 1e-9 then
+            outsideBox = outsideBox + 1
+        end
+        if dx > maxX then maxX = dx end
+        if dy > maxY then maxY = dy end
+    end
+    ok(outsideBox == 0 and near(maxX, halfW, 1e-6) and near(maxY, halfH, 1e-6),
+        'the box contains the whole boundary and is touched by it on all four '
+            .. 'sides -- generous at the corners by construction, tight everywhere '
+            .. 'else',
+        ('%d points outside, reach %.6f/%.6f against %.6f/%.6f'):format(
+            outsideBox, maxX, maxY, halfW, halfH))
+
+    -- A UNION OF TWO DISCS IS TWO RADIUS DESCRIPTORS, IN ARC ORDER. This is what
+    -- ships today for a broken-out phase, and the order matters: blips draw in
+    -- creation order, so the list IS the layering.
+    local vp = SS.mapPrimitives(SS.union2(0.0, 0.0, 600.0, 900.0, 0.0, 500.0))
+    ok(#vp == 2 and vp[1].kind == 'radius' and vp[2].kind == 'radius'
+        and vp[1].r == 600.0 and vp[2].r == 500.0
+        and vp[2].cx == 900.0,
+        'an overlapping union is two radius descriptors in boundary order',
+        ('%d prims'):format(#vp))
+    local dp = SS.mapPrimitives(SS.union2(0.0, 0.0, 200.0, 2000.0, 0.0, 200.0))
+    ok(#dp == 2, 'and so is a disjoint one -- two islands, two fills',
+        ('%d prims'):format(#dp))
+    -- THE NESTED CASE COLLAPSES TO ONE, because union2 returns the containing circle
+    -- itself. That is nearly every phase, and it is why nothing on an ordinary phase
+    -- draws a second ring.
+    local np = SS.mapPrimitives(SS.union2(0.0, 0.0, 600.0, 50.0, 0.0, 100.0))
+    ok(#np == 1 and np[1].r == 600.0,
+        'a nested union is one descriptor: the containing circle, which is the shape')
+
+    -- ═══ ONLY TWO KINDS EXIST, ACROSS EVERY SHAPE THE FILE CAN BUILD ═══
+    --
+    -- The materialiser in client/storm.lua spells exactly 'radius' and 'area' and
+    -- draws nothing for anything else, deliberately -- a descriptor rendered as the
+    -- nearer-looking primitive would be a ring in the wrong place. So a third kind
+    -- has to be red HERE, before it can be silently undrawn there.
+    local every = {
+        SS.circle(0.0, 0.0, 100.0),
+        SS.roundedRect(0.0, 0.0, 100.0, 80.0, 20.0),
+        SS.roundedRect(0.0, 0.0, 100.0, 100.0, 100.0),
+        SS.union2(0.0, 0.0, 600.0, 900.0, 0.0, 500.0),
+        SS.union2(0.0, 0.0, 200.0, 2000.0, 0.0, 200.0),
+        SS.union2(0.0, 0.0, 600.0, 50.0, 0.0, 100.0),
+    }
+    local strange = nil
+    for _, sh in ipairs(every) do
+        for _, p in ipairs(SS.mapPrimitives(sh)) do
+            if p.kind ~= 'radius' and p.kind ~= 'area' then strange = p.kind end
+        end
+    end
+    ok(strange == nil,
+        'every shape the file can build emits only the two primitives the minimap '
+            .. 'actually has',
+        tostring(strange))
+
+    -- FRESH TABLES. The answer is walked by the client and handed to natives; a
+    -- caller that could write through it into the shape would be editing the
+    -- geometry the damage test measures against.
+    local sh = SS.circle(5.0, 6.0, 700.0)
+    local a = SS.mapPrimitives(sh)
+    a[1].r = -1.0
+    a[1].kind = 'nonsense'
+    local b = SS.mapPrimitives(sh)
+    ok(b[1].r == 700.0 and b[1].kind == 'radius' and a ~= b,
+        'and the list is a copy, so nothing can write back into the shape through it')
+end
+
+-- ---------------------------------------------------------------------------
+describe('square.off')
+do
+    -- ═══ THE PROPERTY THAT MAKES THIS SHIPPABLE, AND IT IS MEASURED ═══
+    --
+    -- config/storm.lua ships squareness at 0, and at 0 the three rings must be the
+    -- blips they were before mapPrimitives existed: the same native, the same
+    -- centre, the same radius, the same color, the same alpha, the same legend
+    -- entry. Asserted with `==` against the RECORD'S OWN NUMBERS and the live config,
+    -- not against a second run of the same code -- a materialiser that dropped the
+    -- alpha would pass any comparison of itself with itself.
+    local C = newStormClient()
+    local cfgS = C.env.BR.Config.Storm
+    ok(cfgS.squareness == 0.0,
+        'the knob ships at zero, so this is the shipping path and not a test-only one',
+        tostring(cfgS.squareness))
+
+    C.record(2, 400.0, -250.0, 1600.0, 900.0, -100.0, 950.0, 600000, 60000, 2.0)
+    C.tick(2)
+
+    ok(#C.boxes() == 0,
+        'no area blip exists at all -- the box path is not merely unused, it is '
+            .. 'unreached',
+        ('%d boxes'):format(#C.boxes()))
+
+    local cur, nxt
+    for _, b in ipairs(C.rings()) do
+        if b.r == 1600.0 then cur = b elseif b.r == 950.0 then nxt = b end
+    end
+    ok(#C.rings() == 2 and cur and nxt,
+        'exactly two rings, one per circle, told apart by their radius',
+        ('%d rings'):format(#C.rings()))
+    ok(cur and cur.x == 400.0 and cur.y == -250.0 and cur.r == 1600.0
+        and cur.colour == cfgS.blip.currentColour
+        and cur.alpha == cfgS.blip.currentAlpha
+        and cur.name == 'Safe Zone',
+        'the current ring is the identical radiusBlip call: centre, radius, color, '
+            .. 'alpha and legend entry, argument for argument',
+        cur and ('(%s, %s) r %s color %s alpha %s %q'):format(cur.x, cur.y, cur.r,
+            tostring(cur.colour), tostring(cur.alpha), tostring(cur.name)))
+    ok(nxt and nxt.x == 900.0 and nxt.y == -100.0 and nxt.r == 950.0
+        and nxt.colour == cfgS.blip.nextColour
+        and nxt.alpha == cfgS.blip.nextAlpha
+        and nxt.name == 'Next Safe Zone',
+        'and so is the target ring, in the purple this game already means by "the '
+            .. 'circle you are being asked to rotate to"',
+        nxt and ('(%s, %s) r %s color %s alpha %s %q'):format(nxt.x, nxt.y, nxt.r,
+            tostring(nxt.colour), tostring(nxt.alpha), tostring(nxt.name)))
+    ok(cur and cur.hidden == nil and nxt and nxt.hidden == nil,
+        'and neither is hidden on the legend -- a one-piece zone has nothing to hide')
+    ok(C.errored() == nil, 'the map runs clean at squareness zero', C.errored())
+
+    -- ═══ THE ONE NUMBER THAT MOVED, RECORDED RATHER THAN DISCOVERED ═══
+    --
+    -- BR.StormShape.circle floors its radius at MIN_RADIUS, so a zone that has closed
+    -- BELOW a metre -- the last seconds of phase 8 -- now asks for a 1 m ring where
+    -- the old call passed the raw sub-metre value. Both are invisible on a map where
+    -- the whole city is a few hundred pixels, and the wall's own 'solid' path has
+    -- floored its drawn radius the same way since 2026-08-03. It is asserted so that
+    -- "byte for byte" is a measured claim with its one exception written down, rather
+    -- than a phrase in a commit message.
+    local D = newStormClient()
+    D.record(8, 0.0, 0.0, 0.4, 0.0, 0.0, 0.0, 600000, 60000, 6.7)
+    D.tick(2)
+    local sub = D.rings()[1]
+    ok(#D.rings() == 1 and sub and sub.r == 1.0,
+        'a sub-metre zone draws at the MIN_RADIUS floor, which is the one argument '
+            .. 'this change does not pass through unchanged',
+        sub and tostring(sub.r))
+end
+
+-- ---------------------------------------------------------------------------
+describe('square.on')
+do
+    -- ═══ WHAT TURNING THE KNOB ON ACTUALLY DRAWS ═══
+    --
+    -- The owner turns this on when he wants to look at it, so what he gets has to be
+    -- known before he does. At squareness 0.5 each ring is ONE area blip spanning
+    -- 2r by 2r, world-aligned, in the same color and alpha as the circle it
+    -- replaced -- and no radius blip anywhere, because a zone drawn as both would be
+    -- two overlapping fills and the doubled alpha this whole decomposition avoids.
+    local C = newStormClient()
+    local cfgS = C.env.BR.Config.Storm
+    cfgS.squareness = 0.5
+    C.record(2, 400.0, -250.0, 1600.0, 900.0, -100.0, 950.0, 600000, 60000, 2.0)
+    C.tick(2)
+
+    ok(#C.rings() == 0 and #C.boxes() == 2,
+        'two boxes and no rings: one primitive per zone, not one of each',
+        ('%d rings, %d boxes'):format(#C.rings(), #C.boxes()))
+
+    local cur, nxt
+    for _, b in ipairs(C.boxes()) do
+        if b.w == 3200.0 then cur = b elseif b.w == 1900.0 then nxt = b end
+    end
+    ok(cur and cur.x == 400.0 and cur.y == -250.0
+        and cur.w == 3200.0 and cur.h == 3200.0 and cur.rot == 0.0
+        and cur.colour == cfgS.blip.currentColour
+        and cur.alpha == cfgS.blip.currentAlpha
+        and cur.name == 'Safe Zone',
+        'the current zone is a 2r by 2r world-aligned box in the ring\'s own color, '
+            .. 'alpha and legend entry',
+        cur and ('(%s, %s) %sx%s rot %s'):format(cur.x, cur.y, cur.w, cur.h,
+            tostring(cur.rot)))
+    ok(nxt and nxt.w == 1900.0 and nxt.h == 1900.0 and nxt.rot == 0.0
+        and nxt.name == 'Next Safe Zone',
+        'and so is the target zone', nxt and tostring(nxt.w))
+    ok(C.errored() == nil, 'the map runs clean at squareness 0.5', C.errored())
+
+    -- THE CORNER RADIUS IS WHAT THE KNOB MOVES, AND THE BOX IS NOT. A box is the
+    -- bounding box either way, so the map looks the same at 0.1 and at 1.0 -- said
+    -- here because it is the first thing that will look like a bug when he dials it.
+    -- What changes is the WALL and the damage boundary, which is #335's other half.
+    local H = newStormClient()
+    H.env.BR.Config.Storm.squareness = 1.0
+    H.record(2, 0.0, 0.0, 500.0, 0.0, 0.0, 500.0, 600000, 60000, 2.0)
+    H.tick(2)
+    local hard = H.boxes()[1]
+    ok(hard and hard.w == 1000.0 and hard.h == 1000.0,
+        'a squareness of 1.0 draws the same bounding box a 0.1 does -- the dial '
+            .. 'moves the corner radius, and the map box never had corners',
+        hard and tostring(hard.w))
+    local SS = H.env.BR.StormShape
+    ok(SS.roundedRect(0, 0, 500, 500, 500 * (1.0 - 0.1)).box.cr == 450.0
+        and SS.roundedRect(0, 0, 500, 500, 500 * (1.0 - 1.0)).box.cr == 1.0,
+        'and the shape it moves is real: cr 450 at 0.1, floored to MIN_RADIUS at 1.0')
+
+    -- ═══ THE MATERIALISER DOES NOT COUNT, AND THIS IS WHERE THAT IS PROVED ═══
+    --
+    -- Nothing in the game hands a multi-primitive shape to a ring today, so the
+    -- branch that names the first piece and hides the rest would otherwise ship
+    -- untested -- and it is the whole reason the descriptor list is a list. So the
+    -- pure function the materialiser reads is replaced with one that answers TWO
+    -- descriptors, which is exactly the seam the design says is the only thing that
+    -- ever changes, and the live blip job is driven through it.
+    local T = newStormClient()
+    local realMap = T.env.BR.StormShape.mapPrimitives
+    T.env.BR.StormShape.mapPrimitives = function(shape)
+        local base = realMap(shape)
+        if #base == 1 and base[1].kind == 'radius' then
+            return {
+                base[1],
+                { kind = 'area', cx = base[1].cx + 10.0, cy = base[1].cy,
+                  w = 40.0, h = 40.0, rot = 0.0 },
+            }
+        end
+        return base
+    end
+    -- ONE ZONE ON THE MAP, WHICH IS WHAT MAKES THE COUNTS READABLE. A target radius
+    -- of zero is the collapsed final phase, and the blip job draws no target ring for
+    -- it (`rec.r1 > 1.0`) -- so every blip below belongs to the current zone and
+    -- "one legend entry per zone" is a count rather than a grouping.
+    T.record(2, 0.0, 0.0, 800.0, 0.0, 0.0, 0.0, 600000, 60000, 2.0)
+    T.tick(2)
+    local named, hidden = 0, 0
+    for _, b in pairs(T.blips) do
+        if b.exists and (b.kind == 'radius' or b.kind == 'area') then
+            if b.name then named = named + 1 end
+            if b.hidden then hidden = hidden + 1 end
+        end
+    end
+    ok(#T.rings() == 1 and #T.boxes() == 1,
+        'a two-descriptor zone becomes two blips, one of each kind, from the same '
+            .. 'materialiser with nothing added to it',
+        ('%d rings, %d boxes'):format(#T.rings(), #T.boxes()))
+    ok(named == 1 and hidden == 1,
+        'the first piece carries the legend entry and every other piece is hidden '
+            .. 'from it -- one row per zone, not one per primitive',
+        ('%d named, %d hidden'):format(named, hidden))
+    ok(T.errored() == nil, 'and a multi-primitive zone runs clean', T.errored())
+
+    -- AND A SHAPE THAT SHRINKS BACK TO ONE PRIMITIVE TAKES ITS SURPLUS BLIP WITH IT.
+    -- A handle list that kept growing would leave dead fills on the map for the rest
+    -- of the match, which is the failure mode the old "create the target ring once"
+    -- bug had in the other direction.
+    T.env.BR.StormShape.mapPrimitives = realMap
+    T.record(2, 0.0, 0.0, 700.0, 0.0, 0.0, 0.0, 600000, 60000, 2.0)
+    T.tick(3)
+    ok(#T.boxes() == 0 and #T.rings() == 1,
+        'and dropping back to one descriptor removes the surplus blip rather than '
+            .. 'leaving it on the map',
+        ('%d rings, %d boxes'):format(#T.rings(), #T.boxes()))
+
+    -- ═══ A ZONE IS INTACT ONLY IF EVERY PIECE OF IT IS ═══
+    --
+    -- The preview ring is the one blip in this file whose rebuild is gated on
+    -- EXISTENCE rather than on a cadence -- it never moves and never resizes, so it
+    -- is created once and only re-asserted when the handle has stopped existing
+    -- (engine blip handles are recycled, so another system removing a stale one can
+    -- delete ours: a live "no blip at all in squads" report). A multi-piece zone
+    -- makes that check a question about ALL of them, and asking about the first only
+    -- would leave a zone drawn with a hole in it and heal nothing, because the
+    -- re-assert is gated on the answer.
+    --
+    -- DRIVEN THROUGH THE SAME SEAM, and the SECOND piece is the one destroyed --
+    -- destroying the first would pass either spelling.
+    local P = newStormClient()
+    local pEnv = P.env
+    local pReal = pEnv.BR.StormShape.mapPrimitives
+    pEnv.BR.StormShape.mapPrimitives = function(shape)
+        local base = pReal(shape)
+        if #base == 1 and base[1].kind == 'radius' then
+            return {
+                base[1],
+                { kind = 'area', cx = base[1].cx, cy = base[1].cy,
+                  w = 20.0, h = 20.0, rot = 0.0 },
+            }
+        end
+        return base
+    end
+    pEnv.BR.State.storm = nil
+    pEnv.BR.State.match.state = pEnv.BR.MatchState.WARMUP
+    pEnv.BR.State.me.state    = pEnv.BR.PlayerState.WARMUP
+    pEnv.BR.State.stormPreview = { cx = 0.0, cy = 0.0, r = 2600.0 }
+    P.tick(2)
+    ok(#P.rings() == 1 and #P.boxes() == 1,
+        'the preview zone is drawn as both of its pieces')
+
+    local box = P.boxes()[1]
+    local boxHandle = nil
+    for h, b in pairs(P.blips) do if b == box then boxHandle = h end end
+    pEnv.RemoveBlip(boxHandle)
+    ok(#P.boxes() == 0, 'something else has deleted the second piece of it')
+    P.tick(2)
+    ok(#P.rings() == 1 and #P.boxes() == 1,
+        'and the next tick puts the whole zone back -- the existence check asks '
+            .. 'about every piece, not about the first one it finds',
+        ('%d rings, %d boxes'):format(#P.rings(), #P.boxes()))
+
+    -- ═══ AND A ZONE THAT DREW NOTHING MUST NOT LATCH ═══
+    --
+    -- The materialiser draws only the two primitives the minimap has and nothing for
+    -- anything else, so a descriptor it does not recognise produces no handles at all.
+    -- Handing back an empty LIST there would be worse than handing back nothing: an
+    -- empty table is truthy, so the callers' `or not curBlip` retry would stop being a
+    -- retry and the zone would have no ring on it for the rest of the match -- the
+    -- missing-blip failure this file has already had once, rebuilt out of the fix.
+    local N = newStormClient()
+    local nReal = N.env.BR.StormShape.mapPrimitives
+    N.env.BR.StormShape.mapPrimitives = function()
+        return { { kind = 'something the minimap has not got' } }
+    end
+    N.record(2, 0.0, 0.0, 900.0, 0.0, 0.0, 0.0, 600000, 60000, 2.0)
+    N.tick(2)
+    ok(#N.rings() == 0 and #N.boxes() == 0 and N.errored() == nil,
+        'an unrecognised descriptor draws nothing and throws nothing')
+    N.env.BR.StormShape.mapPrimitives = nReal
+    N.tick(2)
+    ok(#N.rings() == 1,
+        'and the zone comes back on the next cadence rather than staying empty -- '
+            .. 'nothing drawn is nil, not an empty list',
+        ('%d rings'):format(#N.rings()))
+
+    -- ═══ AND HALF A ZONE IS WORSE THAN NONE OF IT ═══
+    --
+    -- A ring is read as the edge, so a zone drawn with one of its pieces missing is a
+    -- boundary in the WRONG PLACE rather than a missing one. This starts from a zone
+    -- that IS on the map -- so the assertion is about the old handle being torn down
+    -- too, not merely about the new one not appearing -- and then asks for one good
+    -- descriptor and one the minimap has not got.
+    ok(#N.rings() == 1, 'a whole zone is on the map to begin with')
+    N.env.BR.StormShape.mapPrimitives = function(shape)
+        local base = nReal(shape)
+        return { base[1], { kind = 'still not a primitive' } }
+    end
+    -- A radius move past the one-metre threshold is what asks the blip job to rebuild.
+    N.record(2, 0.0, 0.0, 600.0, 0.0, 0.0, 0.0, 600000, 60000, 2.0)
+    N.tick(2)
+    ok(#N.rings() == 0 and #N.boxes() == 0,
+        'a zone that can only be drawn in part is drawn not at all, and the blip it '
+            .. 'replaced goes with it rather than staying on the map as a boundary in '
+            .. 'the wrong place',
+        ('%d rings, %d boxes'):format(#N.rings(), #N.boxes()))
+    ok(N.errored() == nil, 'and a partial zone throws nothing', N.errored())
+
+    -- AND THE PIECE THAT IS NO LONGER ASKED FOR GOES TOO, which is a different
+    -- handle from the one that failed. Starting from a zone that really is two blips,
+    -- the SECOND descriptor then stops being drawable -- so slot 2's old handle was
+    -- never handed to a wrapper and nothing but this cleanup will take it off the map.
+    -- Without it the player is left looking at a lone box with no ring, which is the
+    -- wrong-place boundary again wearing the other shape.
+    N.env.BR.StormShape.mapPrimitives = function(shape)
+        local base = nReal(shape)
+        return {
+            base[1],
+            { kind = 'area', cx = base[1].cx, cy = base[1].cy,
+              w = 30.0, h = 30.0, rot = 0.0 },
+        }
+    end
+    N.record(2, 0.0, 0.0, 500.0, 0.0, 0.0, 0.0, 600000, 60000, 2.0)
+    N.tick(2)
+    ok(#N.rings() == 1 and #N.boxes() == 1,
+        'a two-piece zone is on the map to begin with',
+        ('%d rings, %d boxes'):format(#N.rings(), #N.boxes()))
+    N.env.BR.StormShape.mapPrimitives = function(shape)
+        local base = nReal(shape)
+        return { base[1], { kind = 'gone from the primitive list' } }
+    end
+    N.record(2, 0.0, 0.0, 400.0, 0.0, 0.0, 0.0, 600000, 60000, 2.0)
+    N.tick(2)
+    ok(#N.rings() == 0 and #N.boxes() == 0,
+        'and losing the second piece takes the second piece\'s own blip off the map, '
+            .. 'not just the one the failure was on',
+        ('%d rings, %d boxes'):format(#N.rings(), #N.boxes()))
+end
+
+-- ---------------------------------------------------------------------------
+describe('square.native')
+do
+    -- ═══ THE REAL BR.Native.areaBlip, NOT THE HARNESS STUB ═══
+    --
+    -- Every block above drives the stub, which is right for asserting what the storm
+    -- ASKED FOR. This one loads the real client/natives.lua and asserts the call
+    -- SEQUENCE, because two of the three things that can be wrong about an area blip
+    -- are in that sequence rather than in the arguments: a missing SET_BLIP_ROTATION
+    -- leaves the box spinning with the camera (the native's own doc says so), and a
+    -- bare DoesBlipExist deletes a recycled handle that belongs to somebody else.
+    local env = newSandbox()
+    local L = {}
+    env.AddBlipForArea = function(x, y, z, w, h)
+        L[#L + 1] = { 'AddBlipForArea', x, y, z, w, h }
+        return 41
+    end
+    env.AddBlipForRadius = function() return 42 end
+    env.SetBlipRotation = function(b, r)
+        L[#L + 1] = { 'SetBlipRotation', b, r, math.type(r) }
+    end
+    env.SetBlipColour   = function(b, c) L[#L + 1] = { 'SetBlipColour', b, c } end
+    env.SetBlipAlpha    = function(b, a) L[#L + 1] = { 'SetBlipAlpha', b, a } end
+    env.SetBlipHighDetail = function(b, v)
+        L[#L + 1] = { 'SetBlipHighDetail', b, v }
+    end
+    env.SetBlipHiddenOnLegend = function(b, v)
+        L[#L + 1] = { 'SetBlipHiddenOnLegend', b, v }
+    end
+    env.RemoveBlip = function(b) L[#L + 1] = { 'RemoveBlip', b } end
+    -- ZERO FOR "NO", WHICH IS THE WHOLE POINT OF THIS BLOCK. A FiveM native declared
+    -- BOOL may answer 1/0, and 0 IS TRUTHY IN LUA. tools/check_bool_natives.lua
+    -- counts the bare reads in this file and has caught this exact native here
+    -- before; this asserts the consequence rather than the spelling.
+    env.DoesBlipExist = function() return 0 end
+    env.BeginTextCommandSetBlipName = function() end
+    env.AddTextComponentString = function(s) L[#L + 1] = { 'name', s } end
+    env.EndTextCommandSetBlipName = function() end
+    env.RegisterCommand = function() end
+    env.AddEventHandler = function() end
+    env.Citizen = { CreateThread = function() end, Wait = function() end,
+                    SetTimeout = function() end }
+    loadInto(env, { 'br_lib/shared/enums.lua', 'br_core/client/natives.lua' })
+
+    ok(type(env.BR.Native.areaBlip) == 'function'
+        and type(env.BR.Native.blipHiddenOnLegend) == 'function',
+        'the real natives file exposes both new wrappers')
+
+    local h = env.BR.Native.areaBlip(99, 10.0, 20.0, 400.0, 300.0, 0.0,
+        3, 80, 'Safe Zone')
+    local seq = {}
+    for i, e in ipairs(L) do seq[i] = e[1] end
+    ok(table.concat(seq, ',') ==
+        'AddBlipForArea,SetBlipRotation,SetBlipColour,SetBlipAlpha,'
+        .. 'SetBlipHighDetail,name',
+        'the box is created, then stopped from spinning, then colored, faded and '
+            .. 'named -- in that order and with nothing missing',
+        table.concat(seq, ','))
+    ok(h == 41 and L[1][2] == 10.0 and L[1][3] == 20.0 and L[1][4] == 0.0
+        and L[1][5] == 400.0 and L[1][6] == 300.0,
+        'and it is handed the centre, a z of zero, and the FULL width and height',
+        ('(%s, %s, %s) %sx%s'):format(tostring(L[1][2]), tostring(L[1][3]),
+            tostring(L[1][4]), tostring(L[1][5]), tostring(L[1][6])))
+
+    -- SET_BLIP_ROTATION TAKES AN INT. The float spelling is a different native
+    -- (_SET_BLIP_SQUARED_ROTATION), so passing a float here is passing the wrong
+    -- type to the right hash.
+    ok(L[2][2] == 41 and L[2][3] == 0 and L[2][4] == 'integer',
+        'the rotation is an integer, because SET_BLIP_ROTATION is the int native '
+            .. 'and the float one is a different hash',
+        ('%s (%s)'):format(tostring(L[2][3]), tostring(L[2][4])))
+
+    -- THE RATCHET'S OWN BUG, ASSERTED AS A CONSEQUENCE. DoesBlipExist answered 0 --
+    -- "this handle is gone" -- so nothing may be removed. Read bare, 0 is truthy and
+    -- this would remove handle 99, which the engine has already recycled to somebody
+    -- else's blip.
+    local removed = false
+    for _, e in ipairs(L) do if e[1] == 'RemoveBlip' then removed = true end end
+    ok(not removed,
+        'a previous handle the engine says is GONE is not removed -- 0 means no, and '
+            .. '0 is truthy in Lua',
+        removed and 'RemoveBlip was called on a dead handle' or nil)
+
+    -- AND THE LEGEND WRAPPER REFUSES A DEAD HANDLE THE SAME WAY, for the same
+    -- reason: SetBlipHiddenOnLegend on a recycled handle hides somebody else's blip
+    -- from the pause menu.
+    local before = #L
+    env.BR.Native.blipHiddenOnLegend(41, true)
+    ok(#L == before,
+        'and hiding a dead handle on the legend does nothing at all')
+
+    -- WITH A LIVE HANDLE IT DOES BOTH THINGS. Otherwise the two assertions above
+    -- would pass on a wrapper that simply never calls anything.
+    env.DoesBlipExist = function() return 1 end
+    L = {}
+    env.BR.Native.areaBlip(41, 0.0, 0.0, 10.0, 10.0, 90.0, 3, 80, nil)
+    local seq2 = {}
+    for i, e in ipairs(L) do seq2[i] = e[1] end
+    ok(seq2[1] == 'RemoveBlip' and L[1][2] == 41,
+        'a LIVE previous handle is removed first, because an area blip cannot be '
+            .. 'resized in place either',
+        table.concat(seq2, ','))
+    L = {}
+    env.BR.Native.blipHiddenOnLegend(41, true)
+    ok(#L == 1 and L[1][1] == 'SetBlipHiddenOnLegend' and L[1][2] == 41
+        and L[1][3] == true,
+        'and a live handle really is hidden',
+        ('%d calls'):format(#L))
+
+    -- ASKED WITH A TRUTHY NON-BOOLEAN, which is the only version of this assertion
+    -- that can fail. Handed `true` both the guarded and the unguarded spelling pass
+    -- it on unchanged, so the first draft of this block proved nothing: it survived a
+    -- mutation that dropped the normalisation entirely. A FiveM BOOL parameter is not
+    -- a Lua truth test, and `1` is exactly the shape a caller reading another
+    -- native's answer would arrive with.
+    L = {}
+    env.BR.Native.blipHiddenOnLegend(41, 1)
+    ok(#L == 1 and L[1][3] == true,
+        'and a TRUTHY NON-BOOLEAN is normalised to a real boolean before it reaches '
+            .. 'the native, rather than handed on as a 1',
+        ('passed %s (%s)'):format(tostring(L[1] and L[1][3]),
+            type(L[1] and L[1][3])))
+    L = {}
+    env.BR.Native.blipHiddenOnLegend(41, nil)
+    ok(#L == 1 and L[1][3] == false,
+        'and so is the other direction -- nil asks for "not hidden", not for nothing',
+        ('passed %s (%s)'):format(tostring(L[1] and L[1][3]),
+            type(L[1] and L[1][3])))
 end
 
 print(('\n\27[32m%d passed\27[0m'):format(pass))

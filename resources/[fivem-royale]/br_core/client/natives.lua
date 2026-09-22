@@ -498,6 +498,92 @@ function BR.Native.radiusBlip(existing, x, y, radius, colour, alpha, name)
     return blip
 end
 
+--- A FILLED RECTANGLE on the map, which is the only other filled primitive there
+--- is (#335).
+---
+--- ═══ WHY THIS EXISTS AT ALL ═══
+---
+--- The storm's zone stopped being a circle. There is no native that strokes or
+--- fills an arbitrary outline on the minimap or the pause map -- the two filled
+--- primitives are ADD_BLIP_FOR_RADIUS and this one, and the only route to a real
+--- polygon is authoring a Scaleform .gfx and shipping it through
+--- ADD_MINIMAP_OVERLAY, in an estate that streams no assets at all. So a shape
+--- that is not a disc is drawn as boxes, and br_lib/shared/storm_shape.lua's
+--- mapPrimitives decides how, beside the geometry, where the error is in metres.
+---
+--- `_ADD_BLIP_FOR_AREA`, 0xCE5D0E5E315DB238, HUD/AddBlipForArea.md:
+--- `Blip _ADD_BLIP_FOR_AREA(float x, float y, float z, float width, float height)`
+--- -- read out of citizenfx/natives, not remembered. FiveM drops the leading
+--- underscore for the Lua name, the same way `_DRAW_SPRITE_POLY_2` is
+--- `DrawSpritePoly_2` in client/storm.lua; it keeps an underscore only before a
+--- digit, which is what GetGroundZFor_3dCoord's probe note records.
+---
+--- ═══ THE ROTATION IS NOT OPTIONAL, AND THE DOC IS WHERE THAT COMES FROM ═══
+---
+--- AddBlipForArea's own documentation says to call SET_BLIP_ROTATION
+--- (0xF87683CDF73C3F6E) "to make the blip not rotate along with the camera" --
+--- so an area blip left alone SPINS on the minimap as the player turns, which is
+--- the one failure that would read as a rendering bug rather than as a missing
+--- call. Every caller wants a world-aligned box, so the call lives here and no
+--- caller can forget it. The descriptor still carries the angle, because a shape
+--- that is not axis-aligned is a shape away rather than a rewrite.
+---
+--- ═══ WHAT IS UNVERIFIED, SAID HERE RATHER THAN DISCOVERED IN A PLAYTEST ═══
+---
+--- SetBlipAlpha and SetBlipHighDetail are called because that is what the radius
+--- rings do and this has to look like them. NEITHER IS CONFIRMED TO WORK ON AN
+--- AREA BLIP: the native's own doc demonstrates alpha only as a value packed into
+--- SET_BLIP_COLOUR (0xFF00FF80), and area blips are known to take a different
+--- visibility path -- SET_BLIP_AS_SHORT_RANGE does not work on them and
+--- IS_BLIP_ON_MINIMAP always answers true (citizenfx/fivem#3973, reproduced in
+--- vanilla GTA V). We call neither of those two. If the box turns out to draw at
+--- full opacity the answer is the packed color, and /brnativecheck is where the
+--- bindings themselves are proved.
+--- @param existing integer|nil  previous handle; area blips cannot be resized
+---                              in place either, so it is removed and re-added
+--- @param x number              centre
+--- @param y number
+--- @param w number              full width, not a half-extent
+--- @param h number              full height
+--- @param rot number|nil        degrees; nil is 0, which is world-aligned
+--- @param colour integer
+--- @param alpha integer
+--- @param name string|nil       legend entry
+--- @return integer blip
+function BR.Native.areaBlip(existing, x, y, w, h, rot, colour, alpha, name)
+    -- WRAPPED, FOR THE REASON THE WHOLE RATCHET EXISTS. DoesBlipExist is declared
+    -- BOOL and answers 0 for "no", and 0 IS TRUTHY IN LUA -- so the bare read
+    -- removes a handle the engine has already recycled, which since handles ARE
+    -- recycled means removing somebody else's blip. tools/check_bool_natives.lua
+    -- counts the bare reads in this file and the number may only go down.
+    if existing and BR.NativeTruthy(DoesBlipExist(existing)) then
+        RemoveBlip(existing)
+    end
+    local blip = AddBlipForArea(x, y, 0.0, w, h)
+    SetBlipRotation(blip, math.floor((rot or 0.0) + 0.5))
+    SetBlipColour(blip, colour)
+    SetBlipAlpha(blip, alpha)
+    SetBlipHighDetail(blip, true)
+    if name then BR.Native.blipName(blip, name) end
+    return blip
+end
+
+--- Keep a blip off the pause-menu legend. SET_BLIP_HIDDEN_ON_LEGEND,
+--- 0x54318C915D27E4CE, verified against HUD/SetBlipHiddenOnLegend.md.
+---
+--- THE ANSWER TO ONE ZONE BEING SEVERAL BLIPS. blipName's header is emphatic that
+--- every blip we make needs a name, and it is right -- an unnamed blip inherits
+--- whatever GTA calls that sprite. But a zone drawn as three primitives is ONE
+--- thing to a player, and naming all three puts "Safe Zone" in the legend three
+--- times. So the first piece is named and the rest are hidden, which is a
+--- different answer from leaving them unnamed rather than a loophole in that rule.
+--- @param blip integer
+--- @param hidden boolean
+function BR.Native.blipHiddenOnLegend(blip, hidden)
+    if not blip or not BR.NativeTruthy(DoesBlipExist(blip)) then return end
+    SetBlipHiddenOnLegend(blip, hidden and true or false)
+end
+
 -- -------------------------------------------------------------- prop scale ---
 
 --- One axis vector of a transform matrix, renormalised to length k.
@@ -2459,6 +2545,27 @@ function BR.Native.check()
     end)
     probe('AddBlipForRadius',        function()
         local b = AddBlipForRadius(0.0, 0.0, 0.0, 100.0)
+        RemoveBlip(b)
+    end)
+    -- THE OTHER FILLED MAP PRIMITIVE (#335), AND THE ROTATION WITH IT. Its Lua
+    -- name is the underscore-stripped one, which is the half of the binding no
+    -- document can settle -- the hash is in citizenfx/natives and the SPELLING
+    -- FiveM exposes it under is not. A nil binding here would be silent in the
+    -- worst way: the storm's map ring is created on a 4 Hz cadence inside a
+    -- pcall'd job, so the rings would simply stop appearing. The two calls are
+    -- probed together because a box that draws and then spins with the camera is
+    -- the same finding as a box that does not draw.
+    probe('AddBlipForArea',          function()
+        local b = AddBlipForArea(0.0, 0.0, 0.0, 100.0, 100.0)
+        SetBlipRotation(b, 0)
+        RemoveBlip(b)
+    end)
+    -- Named on the legend once per zone, hidden on every other piece of it -- so a
+    -- nil binding here is a pause menu with the same entry in it three times
+    -- rather than a missing ring.
+    probe('SetBlipHiddenOnLegend',   function()
+        local b = AddBlipForRadius(0.0, 0.0, 0.0, 100.0)
+        SetBlipHiddenOnLegend(b, true)
         RemoveBlip(b)
     end)
     -- Dead squadmates keep a dimmed blip; a nil here would leave every

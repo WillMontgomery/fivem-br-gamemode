@@ -238,6 +238,35 @@ BR.Config.Storm = {
     -- false = bypass armour and hit health directly (PUBG behaviour).
     damageArmourFirst = false,
 
+    -- ═══ HOW SQUARE THE ZONE IS, AND IT SHIPS AT ZERO (#335) ═══
+    --
+    --   "The storm border does draw still, and everything is circular. Can you make
+    --    the storms squircles instead to prove our new logic?"   -- owner, 2026-09-22
+    --
+    -- 0 IS A CIRCLE AND IS NOT AN APPROXIMATION OF ONE. At zero the client asks
+    -- storm_shape.lua for BR.StormShape.circle, exactly as it did before this knob
+    -- existed, and the map gets the one radius descriptor that materialises into the
+    -- identical BR.Native.radiusBlip call with the identical arguments.
+    -- tools/test_storm.lua's `square.off` block asserts that against the record's own
+    -- numbers rather than trusting it.
+    --
+    -- ABOVE ZERO THE ZONE IS A ROUNDED RECTANGLE of half-extent `r` in both axes
+    -- with a corner radius of `r * (1 - squareness)`, so the dial runs from a circle
+    -- to a square that CONTAINS it -- a 1.0 square is 4r^2 where the circle was
+    -- pi*r^2, about 27 percent more ground. That is deliberate rather than
+    -- overlooked: keeping the area equal would shrink the zone's reach in the axes,
+    -- and where circles go and how big they are is #335's own "not in scope". Dial
+    -- it and look at it; the number to change afterwards is this one.
+    --
+    -- WHAT IT REACHES TODAY IS THE MAP AND ONLY THE MAP. The two map rings and the
+    -- #327 preview ring are drawn from this; the WALL and the DAMAGE TEST still
+    -- measure the union of two circles, because the union of two rounded rectangles
+    -- is not expressible in the arc-and-segment model and #335 has not settled which
+    -- way to pay for that. So a squareness above zero shows square rings over a round
+    -- wall until that half lands. Left at zero, nothing in the game can tell this
+    -- knob exists.
+    squareness = 0.0,
+
     -- Rendering. A single giant sphere is not an option: marker type 28 is
     -- literally MarkerTypeDebugSphere, markers have no distance parameter, and
     -- huge scale values produce broken geometry with no depth sorting.

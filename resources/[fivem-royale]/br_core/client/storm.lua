@@ -1036,6 +1036,189 @@ RegisterCommand('brwallstyle', function()
         or 'not settled yet -- no strip has drawn this session'))
 end, false)
 
+-- ------------------------------------------------------------- map blips ---
+--
+-- ═══ A ZONE IS A SHAPE ON THE MAP TOO, NOT A RADIUS (#335) ═══
+--
+-- The three rings this file draws -- the current circle, the target circle and
+-- #327's warmup preview of circle 1 -- were each one BR.Native.radiusBlip call on
+-- an (x, y, r). That is the same assumption the wall carried before #326 walked a
+-- boundary instead of a circumference, one level down: the MAP knew the storm was
+-- round.
+--
+-- So each ring is now a BR.StormShape, storm_shape.lua turns it into an ordered
+-- list of primitives, and this materialises them. What that buys is that the map
+-- does not have to be told what kind of shape it is drawing, and the day the
+-- rounded rectangle's map box is worth decomposing into six pieces -- which needs
+-- somebody to measure whether overlapping blip fills really compound, two minutes
+-- in game -- nothing here changes.
+--
+-- ═══ AND AT squareness 0 IT IS THE CALL IT REPLACED, ARGUMENT FOR ARGUMENT ═══
+--
+-- A circle's only primitive is `{ kind = 'radius', cx, cy, r }` and that path is
+-- the same BR.Native.radiusBlip(existing, cx, cy, r, colour, alpha, name) the three
+-- rings were making. config/storm.lua ships squareness at 0, so that is what runs;
+-- tools/test_storm.lua's `square.off` asserts it against the record rather than
+-- leaving it as a claim.
+--
+-- THE ONE NUMBER THAT MOVED, and it moved because MIN_RADIUS is a decision this
+-- estate already made: BR.StormShape.circle floors its radius at one metre, so a
+-- zone whose radius has closed BELOW a metre -- the last seconds of phase 8 -- now
+-- asks for a 1m ring where it used to ask for the raw sub-metre value. Both are
+-- invisible on a map where the whole city is a few hundred pixels, the wall's own
+-- 'solid' path has floored its drawn radius the same way since 2026-08-03, and
+-- storm_shape.lua's header argues the floor. Recorded here because "byte for byte"
+-- was a claim worth measuring, and this is what the measurement found.
+
+--- A zone circle as the SHAPE the map and the wall should draw it as.
+---
+--- The squareness knob is read here and nowhere else in this file, so there is one
+--- answer to "what shape is the storm" per call site rather than three.
+---
+--- ZERO RETURNS THE CIRCLE ITSELF rather than a rounded rectangle with a corner
+--- radius equal to its half-extent. The two are the same geometry -- storm_shape's
+--- own tests pin that their signed distances agree to the bit -- but they are not
+--- the same MAP: a circle's primitive is a radius blip and a rounded rectangle's is
+--- a box, so routing zero through the general shape would have drawn today's rings
+--- as squares. Zero has to be the circle for the no-op to be a no-op.
+--- @param cx number
+--- @param cy number
+--- @param r number
+--- @return table shape
+local function zoneShape(cx, cy, r)
+    local sq = cfg.squareness or 0.0
+    if sq <= 0.0 then return BR.StormShape.circle(cx, cy, r) end
+    if sq > 1.0 then sq = 1.0 end
+    -- HALF-EXTENT r, CORNER RADIUS r * (1 - squareness): a circle at 0 and a square
+    -- that contains it at 1. config/storm.lua argues the area that costs.
+    return BR.StormShape.roundedRect(cx, cy, r, r, r * (1.0 - sq))
+end
+
+--- Remove every blip in `list`. Returns nil, so a caller can write
+--- `curBlip = removeBlips(curBlip)` and not have two statements to keep in step.
+--- @param list table|nil
+--- @return nil
+local function removeBlips(list)
+    if not list then return nil end
+    for i = 1, #list do RemoveBlip(list[i]) end
+    return nil
+end
+
+--- Is every blip in `list` still there?
+---
+--- ALL OF THEM, NOT THE FIRST. A zone can be several blips and the engine recycles
+--- handles, so another system removing a stale handle can delete any one of ours (a
+--- live "no blip at all in squads" report). Asking about the first only would leave
+--- a zone drawn with a hole in it and heal nothing, because the re-assert is gated
+--- on this answer.
+---
+--- WRAPPED, AND IT HAS TO BE. DoesBlipExist answers 0 for "no" as readily as false,
+--- and 0 IS TRUTHY IN LUA, so the bare read reports a destroyed blip as present and
+--- the ring never comes back for the rest of the match.
+--- tools/check_bool_natives.lua caught that exact shape here before.
+--- @param list table|nil
+--- @return boolean
+local function blipsLive(list)
+    if not list or #list == 0 then return false end
+    for i = 1, #list do
+        if not BR.NativeTruthy(DoesBlipExist(list[i])) then return false end
+    end
+    return true
+end
+
+--- Draw `shape` on the map, reusing `existing`'s handles where the counts line up.
+---
+--- ═══ IT DOES NOT KNOW HOW MANY PRIMITIVES IT IS DRAWING ═══
+---
+--- One for a circle, two for a union of two discs, one for a rounded rectangle, and
+--- six for the rounded rectangle's exact decomposition if that ever becomes the
+--- right picture. Every one of those is a change to what a constructor in
+--- storm_shape.lua writes into `prims` and to nothing in this file, which is the
+--- whole reason the descriptor list exists instead of a boolean.
+---
+--- ═══ THE LEGEND GETS ONE ENTRY PER ZONE ═══
+---
+--- The first primitive carries the name; every other one is hidden on the legend.
+--- blipName's header in client/natives.lua is emphatic that every blip needs a name
+--- -- an unnamed blip inherits whatever GTA calls that sprite, which is how the loot
+--- markers announced themselves as a heist -- and a zone drawn as three boxes is
+--- still one thing to a player, so three "Safe Zone" rows would be worse than one.
+--- Hiding is the answer to that rather than an exception to the rule.
+---
+--- HANDLES ARE REUSED POSITIONALLY, which is what keeps the shipping single-ring
+--- case to one remove-and-re-add instead of a rebuild of the list. A shape with
+--- FEWER primitives than last time has its surplus handles removed at the end; one
+--- with more creates the new ones from nil, which is what radiusBlip does with no
+--- previous handle anyway.
+--- @param existing table|nil  the handle list from the previous call
+--- @param shape table         a BR.StormShape
+--- @param colour integer
+--- @param alpha integer
+--- @param name string         legend entry, applied to the first primitive
+--- @return table  the new handle list
+local function mapBlips(existing, shape, colour, alpha, name)
+    local prims = BR.StormShape.mapPrimitives(shape)
+    -- INDEXED BY PRIMITIVE, NOT APPENDED, so slot i always means primitive i. That is
+    -- what makes handle reuse positional in the first place, and appending would
+    -- quietly re-pair the list with the wrong descriptors the moment one of them drew
+    -- nothing.
+    local out, whole = {}, true
+    for i = 1, #prims do
+        local pr = prims[i]
+        local legend = (i == 1) and name or nil
+        local h
+        if pr.kind == 'radius' then
+            h = BR.Native.radiusBlip(existing and existing[i], pr.cx, pr.cy, pr.r,
+                colour, alpha, legend)
+        elseif pr.kind == 'area' then
+            h = BR.Native.areaBlip(existing and existing[i],
+                pr.cx, pr.cy, pr.w, pr.h, pr.rot, colour, alpha, legend)
+        end
+        -- NO `else`, AND NO FALLBACK PRIMITIVE. mapPrimitives is the only thing that
+        -- produces these and it spells both kinds; drawing an unrecognised descriptor
+        -- as the nearer-looking of the two would put a ring on the map in the wrong
+        -- place, which is a confident lie about where it is safe to stand.
+        -- tools/test_storm.lua asserts that every shape the file can build emits only
+        -- these two, so a third one is red before it is drawn.
+        if h then
+            if i > 1 then BR.Native.blipHiddenOnLegend(h, true) end
+            out[i] = h
+        else
+            whole = false
+        end
+    end
+
+    -- EVERY OLD HANDLE NO WRAPPER TOOK OVER, which is both the surplus of a shape
+    -- that shrank and the slot of a descriptor that drew nothing. The two wrappers
+    -- remove the handle they are HANDED, so a non-nil out[i] is the receipt for
+    -- existing[i] and the rest are ours to clean up. Without this a zone that lost a
+    -- primitive would leave a dead fill on the map for the remainder of the match.
+    if existing then
+        for i = 1, #existing do
+            if not out[i] then RemoveBlip(existing[i]) end
+        end
+    end
+
+    -- ═══ A ZONE IS DRAWN WHOLE OR NOT AT ALL ═══
+    --
+    -- Half a zone on the map is worse than none of it: it is a boundary in the wrong
+    -- place rather than a missing one, and a player reads a ring as the edge. So a
+    -- partial draw is torn down and reported as nothing.
+    --
+    -- AND NOTHING IS `nil`, NOT AN EMPTY LIST. An empty table is truthy, so handing
+    -- one back would turn the callers' `or not curBlip` from a retry into a latch and
+    -- the zone would have no ring for the rest of the match -- the missing-blip
+    -- failure this file has already had once, rebuilt out of the fix for it.
+    if not whole then
+        for i = 1, #prims do
+            if out[i] then RemoveBlip(out[i]) end
+        end
+        return nil
+    end
+    if #out == 0 then return nil end
+    return out
+end
+
 -- --------------------------------------------------------------- preview ---
 --
 -- ═══ CIRCLE 1, BEFORE THE STORM (#327) ═══
@@ -1111,7 +1294,7 @@ AddEventHandler('br:env:world', function(island)
     islandSaid = island and true or false
 end)
 
---- The purple ring on the big map. ONE BLIP, NEVER REBUILT.
+--- The purple ring on the big map. NEVER REBUILT WHILE IT IS INTACT.
 ---
 --- Radius blips cannot be resized in place, which is why the storm's own two are
 --- rebuilt on a cadence -- their radius changes every frame of a shrink. This one
@@ -1120,10 +1303,15 @@ end)
 --- blip handles are recycled, so another system removing a stale handle can delete
 --- ours (a live "no blip at all in squads" report), and a 10 Hz existence check
 --- heals that within 100ms.
+---
+--- A HANDLE LIST RATHER THAN A HANDLE, because a zone is however many primitives
+--- its shape has (#335). At the shipping squareness of 0 that is a list of one and
+--- the ring is the same blip it always was; blipsLive is what makes the existence
+--- check above ask about all of them.
 local previewBlip = nil
 
 local function clearPreviewBlip()
-    if previewBlip then RemoveBlip(previewBlip) previewBlip = nil end
+    previewBlip = removeBlips(previewBlip)
 end
 
 BR.Loop.register(BR.Loop.TICK, 'storm.preview', function()
@@ -1132,12 +1320,13 @@ BR.Loop.register(BR.Loop.TICK, 'storm.preview', function()
         clearPreviewBlip()
         return
     end
-    -- WRAPPED, AND IT HAS TO BE. DoesBlipExist answers 0 for "no" as readily as
-    -- false, and 0 IS TRUTHY IN LUA, so the bare read returns early for a blip
-    -- that has been destroyed and the ring never comes back for the rest of
-    -- warmup. tools/check_bool_natives.lua caught this against its baseline;
-    -- airdrop.lua wraps the same native the same way.
-    if previewBlip and BR.NativeTruthy(DoesBlipExist(previewBlip)) then return end
+    -- EVERY PIECE OF IT, AND THE READ IS WRAPPED. DoesBlipExist answers 0 for "no"
+    -- as readily as false, and 0 IS TRUTHY IN LUA, so the bare read returns early
+    -- for a blip that has been destroyed and the ring never comes back for the rest
+    -- of warmup. tools/check_bool_natives.lua caught this against its baseline;
+    -- airdrop.lua wraps the same native the same way, and blipsLive is where both
+    -- that and "a zone may be more than one blip" now live.
+    if blipsLive(previewBlip) then return end
 
     -- PURPLE, AND THE SAME PURPLE. blip.nextColour is 27, which is what the
     -- "Next Safe Zone" ring has always used -- purple is already this game's word
@@ -1145,7 +1334,7 @@ BR.Loop.register(BR.Loop.TICK, 'storm.preview', function()
     -- than introducing a second colour for the same meaning (#327 says so
     -- outright). The legend entry is that same ring's, for the same reason: this
     -- IS the next safe zone, published earlier.
-    previewBlip = BR.Native.radiusBlip(previewBlip, pv.cx, pv.cy, pv.r,
+    previewBlip = mapBlips(previewBlip, zoneShape(pv.cx, pv.cy, pv.r),
         cfg.blip.nextColour, cfg.blip.nextAlpha, 'Next Safe Zone')
 end)
 
@@ -1217,8 +1406,10 @@ local function pushStorm(edge)
 end
 
 local function clearBlips()
-    if curBlip then RemoveBlip(curBlip) curBlip = nil end
-    if nextBlip then RemoveBlip(nextBlip) nextBlip = nil end
+    curBlip  = removeBlips(curBlip)
+    nextBlip = removeBlips(nextBlip)
+    -- THE ARROW IS NOT A ZONE and stays a bare handle: it is one sprite at one
+    -- point, not a shape, so it has no primitive list to walk.
     if dirBlip then RemoveBlip(dirBlip) dirBlip = nil end
     lastBlipR = -1.0
 end
@@ -1627,26 +1818,26 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
             if fading then
                 local a = math.floor(cfg.blip.currentAlpha
                     * (1.0 - msLeft / fadeMs) + 0.5)
-                curBlip = BR.Native.radiusBlip(curBlip, cx, cy, r,
+                curBlip = mapBlips(curBlip, zoneShape(cx, cy, r),
                     cfg.blip.currentColour, a, 'Safe Zone')
                 lastBlipR = r
-                if nextBlip then RemoveBlip(nextBlip) nextBlip = nil end
+                nextBlip = removeBlips(nextBlip)
             elseif curBlip then
-                RemoveBlip(curBlip) curBlip = nil lastBlipR = -1.0
+                curBlip = removeBlips(curBlip) lastBlipR = -1.0
             end
         elseif math.abs(r - lastBlipR) > 1.0 or not curBlip then
             lastBlipR = r
-            curBlip = BR.Native.radiusBlip(curBlip, cx, cy, r,
+            curBlip = mapBlips(curBlip, zoneShape(cx, cy, r),
                 cfg.blip.currentColour, cfg.blip.currentAlpha, 'Safe Zone')
             -- REBUILT TOGETHER, ALWAYS IN THIS ORDER. The target ring used to
             -- be created once and left alone -- so every current-circle
             -- rebuild landed ON TOP of it, then the next phase put it back on
             -- top, and the purple ring read as flashing on the map. Blips
             -- draw in creation order; recreating both keeps purple above.
-            if nextBlip then RemoveBlip(nextBlip) nextBlip = nil end
+            nextBlip = removeBlips(nextBlip)
         end
         if not nextBlip and rec.r1 > 1.0 then
-            nextBlip = BR.Native.radiusBlip(nil, rec.cx1, rec.cy1, rec.r1,
+            nextBlip = mapBlips(nil, zoneShape(rec.cx1, rec.cy1, rec.r1),
                 cfg.blip.nextColour, cfg.blip.nextAlpha, 'Next Safe Zone')
         end
 

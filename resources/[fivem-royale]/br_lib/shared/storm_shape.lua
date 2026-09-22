@@ -37,6 +37,27 @@
 --   a rounded rect      four segments and four arcs
 --   a capsule           two segments and two arcs
 --
+-- ═══ AND THE ROUNDED RECTANGLE SHIPS NOW, WHICH IS NOT A REVERSAL ═══
+--
+-- roundedRect() exists below (#335 -- "Can you make the storms squircles instead
+-- to prove our new logic?"), and the section above is still the reason this file
+-- is a piece list. The rejected design was a rounded rectangle AS THE SHAPE
+-- LANGUAGE -- one convex box that every zone had to be expressed in, which the
+-- Venn union cannot be. What ships is a rounded rectangle as ONE OF THE SHAPES
+-- THE LIST CAN HOLD, beside the union, each with its own signed distance. That is
+-- the difference between a language and a vocabulary entry, and it is why nothing
+-- above had to be unpicked to add it.
+--
+-- ═══ EVERY SHAPE CARRIES ITS `kind`, AND THE QUERIES DISPATCH ON THAT ═══
+--
+-- distance() and inset() used to ask whether the shape had a `discs` list and
+-- error when it did not. That test was right while every shape in the file was a
+-- union of discs and becomes a trap the moment one is not: a shape that grew a
+-- disc list for some unrelated reason -- a bounding disc, a broad-phase cull --
+-- would silently start being MEASURED as the union of it. So the shape names
+-- itself, the queries switch on the name, and a kind with no implementation
+-- still errors. See distance().
+--
 -- ═══ THE SWEEP IS SIGNED, WHICH IS WHAT MAKES A PIECE SELF-DESCRIBING ═══
 --
 -- Interior on the LEFT is the convention, as it is for the surveyed boundary in
@@ -173,9 +194,26 @@ end
 
 --- Seal a piece list into a shape: the cumulative-length table and the total.
 ---
---- `discs` is the shape's containment test when it has one -- the list of discs
---- it is the union of. A shape that is not a union of discs carries none, and
---- distance() and inset() say so rather than guessing (see their headers).
+--- ═══ WHAT `meta` CARRIES, AND WHY NONE OF IT IS DERIVED FROM THE PIECES ═══
+---
+--- `kind` names the shape. Every constructor sets its own, and distance() and
+--- inset() switch on it -- so a constructor that forgets is a shape with no
+--- signed distance, which errors the first time anything measures it rather than
+--- being quietly measured as something else.
+---
+--- `meta.discs` is the shape's containment test when it HAS one -- the list of
+--- discs it is the union of. `meta.box` is the rounded rectangle's equivalent:
+--- centre, outer half-extents and corner radius. Either one is the arithmetic
+--- distance() and inset() are exact from, which is why it is recorded here rather
+--- than reconstructed from the piece list later. Reconstructing it would mean
+--- reading four arc centres back out and hoping they still mean what they meant.
+---
+--- `meta.prims` is the MAP's draw list, and it is deliberately a SEPARATE field
+--- from `discs` rather than an extra entry in it. `discs` means "this shape is
+--- exactly the union of these discs" and is the contract the two queries are
+--- built on; a rounded rectangle is not the union of its corner discs, so a map
+--- piece parked in there would turn distance()'s honest error() into a silently
+--- shallow answer. See mapPrimitives().
 ---
 --- PRIVATE, AND THE PIECE BUILDERS ABOVE ARE TOO. Every shape that exists is
 --- named by a constructor below, so there is no door anywhere -- in the game or
@@ -205,9 +243,11 @@ end
 --- same way.
 ---
 --- @param pieces table       array of arc/seg pieces, in boundary order
---- @param discs table|nil    { { x, y, r }, ... } this shape is the union of
+--- @param kind string        this shape's name, for the query dispatch
+--- @param meta table|nil     { discs = ..., box = ..., prims = ... }, all optional
 --- @return table shape
-local function seal(pieces, discs)
+local function seal(pieces, kind, meta)
+    meta = meta or {}
     local keep, P = {}, 0.0
     local comps = {}
     for _, pc in ipairs(pieces or {}) do
@@ -229,7 +269,11 @@ local function seal(pieces, discs)
             keep[#keep + 1] = pc
         end
     end
-    return { pieces = keep, P = P, discs = discs, comps = comps }
+    return {
+        pieces = keep, P = P, comps = comps,
+        kind = kind,
+        discs = meta.discs, box = meta.box, prims = meta.prims,
+    }
 end
 
 --- Which piece holds arc length s, and how far along that piece it is.
@@ -255,9 +299,14 @@ end
 --- @return table shape
 function BR.StormShape.circle(cx, cy, r)
     r = radius(r)
-    return seal(
-        { arc(cx, cy, r, 0.0, TAU) },
-        { { x = cx + 0.0, y = cy + 0.0, r = r } })
+    return seal({ arc(cx, cy, r, 0.0, TAU) }, 'circle', {
+        discs = { { x = cx + 0.0, y = cy + 0.0, r = r } },
+        -- ONE RADIUS BLIP, WHICH IS WHAT THE MAP HAS ALWAYS DRAWN. This descriptor
+        -- is the reason a squareness of zero is a no-op rather than a near-no-op:
+        -- the client materialises it into the same BR.Native.radiusBlip call the
+        -- three rings were making before mapPrimitives existed.
+        prims = { { kind = 'radius', cx = cx + 0.0, cy = cy + 0.0, r = r } },
+    })
 end
 
 --- A capsule: a segment with a radius. Two straight runs and two end caps.
@@ -269,6 +318,20 @@ end
 --- branch untested behind a promise that the rounded rectangle will exercise it
 --- one day. Delete this the day a shape with straight runs actually ships and can
 --- carry those tests instead.
+---
+--- THAT DAY IS CLOSE AND IS NOT HERE. roundedRect below has straight runs and the
+--- game can build one, so the seg branch now has a caller that is not a stand-in
+--- -- but only at a squareness the config ships at zero, so on a live client this
+--- is still the only shape in the file with a seg in it. Deleting the capsule is
+--- one config value and its own commit away; doing it in the same change that
+--- introduces the shape replacing it would leave the seg branch untested in
+--- between.
+---
+--- NO MAP PRIMITIVE AND NO SIGNED DISTANCE, deliberately. Nothing draws a capsule
+--- on the minimap or measures a player against one, and inventing either would be
+--- inventing a claim rather than recording one. mapPrimitives(), distance() and
+--- inset() all error on this kind, which is exactly what should happen the first
+--- time somebody tries to ship it.
 ---
 --- Walked counter-clockwise, so the interior stays on the left: out along the
 --- RIGHT of the axis, a half turn about the far end, back along the other side,
@@ -289,7 +352,7 @@ function BR.StormShape.capsule(x0, y0, x1, y1, r)
         arc(x1, y1, r, a, pi),
         seg(x1 - rx * r, y1 - ry * r, x0 - rx * r, y0 - ry * r),
         arc(x0, y0, r, a + pi, pi),
-    })
+    }, 'capsule')
 end
 
 --- The UNION OF TWO DISCS, which is the whole point of this file.
@@ -384,6 +447,26 @@ function BR.StormShape.union2(x1, y1, r1, x2, y2, r2)
         { x = x1 + 0.0, y = y1 + 0.0, r = r1 },
         { x = x2 + 0.0, y = y2 + 0.0, r = r2 },
     }
+    -- ═══ TWO RADIUS BLIPS, AND THE MAP HAS NO BETTER ANSWER THAN THAT ═══
+    --
+    -- A union of two discs is exactly two filled discs on the map, so this
+    -- descriptor pair is not an approximation of anything -- it is the shape, and
+    -- it is what the two rings already drew before mapPrimitives existed.
+    --
+    -- THE OVERLAP IS THE ONE THING IT COSTS, and it is the reason nothing here
+    -- tries to be cleverer. Where the two fills cross, the later one composites
+    -- over the earlier, so a Venn lens reads darker than either disc -- the same
+    -- doubling that made the purple ring "read as flashing" when the blue current
+    -- disc was recreated over it (client/storm.lua's blip block carries that
+    -- record). There is no overlap-free partition of a Venn union into primitives
+    -- the minimap has: no native strokes or fills an arbitrary outline, and the
+    -- only alternative is drawing ONE of the two discs, which is a confident lie
+    -- about where it is safe to stand on exactly the phase this shape exists for.
+    -- Two honest fills with a darker lens is the least wrong thing available.
+    local prims = {
+        { kind = 'radius', cx = discs[1].x, cy = discs[1].y, r = r1 },
+        { kind = 'radius', cx = discs[2].x, cy = discs[2].y, r = r2 },
+    }
 
     local dx, dy = x2 - x1, y2 - y1
     local d = sqrt(dx * dx + dy * dy)
@@ -404,7 +487,8 @@ function BR.StormShape.union2(x1, y1, r1, x2, y2, r2)
     local far = arc(x2, y2, r2, 0.0, TAU)
     far.newComponent = true
     if d >= r1 + r2 - EPS then
-        return seal({ arc(x1, y1, r1, 0.0, TAU), far }, discs)
+        return seal({ arc(x1, y1, r1, 0.0, TAU), far }, 'union2',
+            { discs = discs, prims = prims })
     end
 
     -- A proper overlap. `a` is how far along the centre line from circle 1 the
@@ -428,7 +512,142 @@ function BR.StormShape.union2(x1, y1, r1, x2, y2, r2)
     return seal({
         arc(x1, y1, r1, l1, ccwSweep(l1, r1a)),
         arc(x2, y2, r2, r2a, ccwSweep(r2a, l2)),
-    }, discs)
+    }, 'union2', { discs = discs, prims = prims })
+end
+
+--- A ROUNDED RECTANGLE: a rectangle grown by a disc. Four runs, four quarter arcs.
+---
+--- ═══ THE SHAPE THE OWNER ASKED FOR, AND WHY IT IS THIS ONE (#335) ═══
+---
+---   "The storm border does draw still, and everything is circular. Can you make
+---    the storms squircles instead to prove our new logic?"   -- owner, 2026-09-22
+---
+--- A squircle proper is `|x/a|^n + |y/b|^n = 1`, and this file cannot express it: it
+--- walks arcs and segments, and a superellipse is neither for any n -- save the one
+--- degenerate case, n = 2 with a = b, which is the circle we already had. A
+--- ROUNDED RECTANGLE reads as a squircle, and it is EXACT here -- four straight
+--- runs and four quarter arcs, which is the shape the header has listed as one of
+--- the four this piece model was built for since the day it was written.
+---
+--- `hx` and `hy` ARE THE OUTER HALF-EXTENTS, not the inner rectangle's. So the
+--- shape spans `2 * hx` by `2 * hy` whatever `cr` is, and `cr` only decides how
+--- much of the corner is cut off -- which is the parameterisation both the signed
+--- distance and inset() want, and the one that makes `cr == hx == hy` a circle of
+--- radius hx rather than a shape three times the size.
+---
+--- ═══ COUNTER-CLOCKWISE, INTERIOR ON THE LEFT, STARTING AT THE RIGHT EDGE ═══
+---
+--- Right edge going up, top-right corner, top edge going left, top-left corner,
+--- left edge going down, bottom-left corner, bottom edge going right, bottom-right
+--- corner -- and the last arc ends exactly where the first run begins. Each run's
+--- right of travel is the outward normal (+x, +y, -x, -y in that order) and each
+--- arc is swept positively about its own corner centre, so every piece's own
+--- `out` is already correct and pointAtArc needs to know nothing about which shape
+--- it is walking. tools/test_storm.lua checks the chain the honest way: it asks
+--- every piece boundary for its point twice, from each side, and compares.
+---
+--- ═══ THE CORNER RADIUS FLOORS AT MIN_RADIUS, IT DOES NOT COLLAPSE TO ZERO ═══
+---
+--- A hard-cornered rectangle is `cr = 0`, and it is the one value this cannot
+--- take: arc() floors every radius at MIN_RADIUS, so a `cr` of zero would become
+--- four one-metre arcs whose endpoints are NOT the corners the runs were built
+--- for, and the boundary would stop chaining. Four one-metre corners on a shape
+--- drawn in 30-metre slots is invisible -- the wall's own quads are metres wide --
+--- and it errs INWARD, which is the direction this file is allowed to err in. The
+--- alternative was a branch that emits four pieces instead of eight, tested by
+--- nothing, reached only at a config extreme.
+---
+--- SO `hx` AND `hy` ARE RAISED TO `cr` RATHER THAN `cr` BEING CUT TO THEM. An
+--- inset that eats the straight runs leaves a shape that is still walkable -- a
+--- circle of radius cr -- for the same reason MIN_RADIUS exists at all. Cutting cr
+--- down instead would let an over-large inset produce a rectangle with corners
+--- SHARPER than the shape it came from, which is the one thing an erosion can
+--- never do.
+---
+--- @param cx number   centre
+--- @param cy number
+--- @param hx number   OUTER half-extent in x
+--- @param hy number   OUTER half-extent in y
+--- @param cr number   corner radius, floored at MIN_RADIUS and capped at min(hx,hy)
+--- @return table shape
+function BR.StormShape.roundedRect(cx, cy, hx, hy, cr)
+    cx, cy = cx + 0.0, cy + 0.0
+    cr = radius(cr)
+    hx = max(radius(hx), cr)
+    hy = max(radius(hy), cr)
+    -- The INNER rectangle: the corner-arc centres sit on its four corners.
+    local ix, iy = hx - cr, hy - cr
+
+    -- ═══ APPENDED ONE AT A TIME, BECAUSE A DEGENERATE RUN IS `nil` AND A TABLE
+    ---    CONSTRUCTOR WITH A HOLE IN IT TRUNCATES ═══
+    --
+    -- seg() returns nil for a run of no length, which is right -- a run with no
+    -- direction has no normal -- and seal() reads its list with ipairs, which STOPS
+    -- AT THE FIRST NIL. Written as one eight-element constructor this shape
+    -- therefore sealed to a boundary of ZERO pieces the moment either half-extent
+    -- reached the corner radius, which is not a corner case: it is `cr == hx`, the
+    -- circle this shape becomes at zero squareness, and it is every inset larger
+    -- than the shape (the collapsed endgame plus render.edgeInset lands exactly
+    -- there). A shape with no perimeter has no point at s, so the wall silently drew
+    -- nothing and distance() answered off the box, which is still correct -- the
+    -- worst possible combination, a curtain that is simply absent with the damage
+    -- rule unchanged.
+    --
+    -- FOUND BY MEASURING THE PERIMETER RATHER THAN BY READING THE CODE, which is
+    -- why tools/test_storm.lua now asserts the piece count and the perimeter of the
+    -- degenerate case rather than only of the pretty one.
+    local pieces = {}
+    local function push(pc)
+        if pc then pieces[#pieces + 1] = pc end
+    end
+    push(seg(cx + hx, cy - iy, cx + hx, cy + iy))
+    push(arc(cx + ix, cy + iy, cr, 0.0, pi * 0.5))
+    push(seg(cx + ix, cy + hy, cx - ix, cy + hy))
+    push(arc(cx - ix, cy + iy, cr, pi * 0.5, pi * 0.5))
+    push(seg(cx - hx, cy + iy, cx - hx, cy - iy))
+    push(arc(cx - ix, cy - iy, cr, pi, pi * 0.5))
+    push(seg(cx - ix, cy - hy, cx + ix, cy - hy))
+    push(arc(cx + ix, cy - iy, cr, pi * 1.5, pi * 0.5))
+
+    return seal(pieces, 'roundedRect', {
+        box = { cx = cx, cy = cy, hx = hx, hy = hy, cr = cr },
+        -- ═══ ONE AREA BLIP FOR THE WHOLE SHAPE, NOT SIX PRIMITIVES ═══
+        --
+        -- A rounded rectangle is exactly two crossed rectangles plus four corner
+        -- discs, and drawing that on the map would be the exact decomposition and
+        -- the wrong picture. Overlapping blip fills COMPOUND: the later one
+        -- composites over the earlier in creation order, which is what made the
+        -- purple next-circle ring "read as flashing" when the blue current disc
+        -- was recreated on top of it (client/storm.lua's blip block). Six pieces
+        -- have regions of one, two AND three layers -- the discs sit inside the
+        -- rectangles by construction, so there is no overlap-free partition to
+        -- find -- and the wall itself is the thing that already got dark bands
+        -- from doubled alpha and was rewritten to escape them (#336). The shape
+        -- would show its own seams.
+        --
+        -- SO THE MAP GETS HARD CORNERS AND THE WALL KEEPS THE ROUNDING. The box is
+        -- a `w x h` rectangle that CONTAINS the rounded rect, so it over-reports
+        -- by cr * (sqrt(2) - 1) at the four corners and is exact everywhere else.
+        -- That is the one place in this file that errs OUTWARD, and it is the
+        -- minimap rather than the damage test: 82 cm on a 2m corner radius, at a
+        -- map scale where the whole zone is a few hundred pixels. Drawing the
+        -- INNER box instead would be mean by the same amount along every straight
+        -- edge, which is four long lies instead of four short ones.
+        --
+        -- ONE ENTRY, AND THE MATERIALISER DOES NOT KNOW THAT. It walks whatever
+        -- list it is handed and names the first piece, so putting the six-piece
+        -- decomposition back the day overlapping fills are measured NOT to
+        -- compound is a change to these lines and to nothing else.
+        prims = { {
+            kind = 'area',
+            cx = cx, cy = cy, w = hx * 2.0, h = hy * 2.0,
+            -- AXIS ALIGNED, AND THE ZERO IS LOAD-BEARING RATHER THAN A DEFAULT.
+            -- _ADD_BLIP_FOR_AREA's own documentation says to set the rotation or
+            -- the blip turns with the camera, so 0 is a value this shape is
+            -- asserting and the client passes on, not a field left empty.
+            rot = 0.0,
+        } },
+    })
 end
 
 -- ----------------------------------------------------------------- queries ---
@@ -660,6 +879,60 @@ function BR.StormShape.nearestArc(shape, px, py)
     return (P and P > 0.0) and (bestS % P) or bestS
 end
 
+--- The MINIMAP PRIMITIVES this shape is drawn as, in draw order.
+---
+--- Each is one blip the client will create:
+---
+---   { kind = 'radius', cx, cy, r }            a filled disc
+---   { kind = 'area',   cx, cy, w, h, rot }    a filled rectangle, rot in degrees
+---
+--- ═══ THIS IS THE MAP'S ANSWER, AND IT IS NOT THE BOUNDARY ═══
+---
+--- GTA has two filled minimap primitives and nothing else. ADD_BLIP_FOR_RADIUS
+--- fills a disc, _ADD_BLIP_FOR_AREA fills a rectangle, and SET_RADIUS_BLIP_EDGE
+--- draws a disc as an outline -- with no equivalent for an area blip. NO NATIVE
+--- STROKES OR FILLS AN ARBITRARY POLYGON on the minimap or the pause map. The only
+--- route to one is a custom Scaleform .gfx through ADD_MINIMAP_OVERLAY and
+--- CALL_MINIMAP_SCALEFORM_FUNCTION, which means authoring and shipping a Flash
+--- asset in an estate that streams none -- and it attaches to the MINIMAP movie,
+--- so its pause-map coverage is unverified on top of that.
+---
+--- So the map is an approximation for any shape that is not a disc, and the place
+--- that decides HOW is the constructor, beside the shape it is approximating,
+--- where the error can be stated in metres. This function only hands the list on.
+---
+--- ═══ READ OFF `prims`, WRITTEN AT CONSTRUCTION, NEVER OFF `discs` ═══
+---
+--- Same recorded-at-seal pattern `discs` uses, and a separate field for the reason
+--- seal()'s header gives: `discs` is a promise that the shape IS the union of them,
+--- which distance() and inset() are exact from. A rounded rectangle's map box is
+--- not that promise and must not be able to be mistaken for it.
+---
+--- A SHAPE WHOSE KIND RECORDS NO PRIMITIVES HAS NO ANSWER HERE, and it errors for
+--- the same reason distance() does. Returning an empty list would be worse than the
+--- error in the one way that matters: an empty list draws NOTHING, so the first
+--- shape to reach the map without a descriptor would take the safe-zone ring off
+--- every player's map and say nothing at all about it.
+---
+--- Fresh tables, so a caller cannot write back into the shape through the answer.
+--- @param shape table
+--- @return table  { { kind = string, ... }, ... } in draw order
+function BR.StormShape.mapPrimitives(shape)
+    local prims = shape and shape.prims
+    if not prims then
+        error('StormShape.mapPrimitives: no map primitives recorded for a shape '
+            .. 'of kind ' .. tostring(shape and shape.kind) .. ', and there is no '
+            .. 'native that fills an arbitrary outline to fall back to')
+    end
+    local out = {}
+    for i = 1, #prims do
+        local p = prims[i]
+        out[i] = { kind = p.kind, cx = p.cx, cy = p.cy, r = p.r,
+                   w = p.w, h = p.h, rot = p.rot }
+    end
+    return out
+end
+
 --- Signed distance to the boundary. Negative inside, positive outside.
 ---
 --- ═══ THE MINIMUM OF THE DISC DISTANCES, NOT A WALK OF THE PIECES ═══
@@ -680,26 +953,71 @@ end
 --- at a point inside a union, walk to nearestArc and measure -- that is what
 --- makes these two functions different rather than redundant.
 ---
---- A shape with no disc list -- one built piece by piece -- has no answer here.
---- Returning a guess would be worse than the error: the first non-disc shape is
---- the rounded rectangle, whose signed distance is a real function somebody has
---- to write, and a silent approximation is how it would never get written.
+--- ═══ AND THE ROUNDED RECTANGLE IS EXACT EVERYWHERE, INSIDE INCLUDED ═══
+---
+--- The standard rounded-box signed distance, in the shape's own parameters:
+--- subtract the INNER rectangle's half-extents from the absolute offset, and the
+--- answer is the length of that clamped to the positive quadrant, plus the deepest
+--- negative coordinate when both are negative, minus the corner radius. One
+--- expression covering all nine regions -- four corners, four edges, the interior
+--- -- with no case split to get wrong, and no understatement anywhere. It joins the
+--- single circle in being exact inside as well as out; the UNION is the one case
+--- here that understates depth, and anything wanting the truth inside one still has
+--- to walk to nearestArc.
+---
+--- ═══ THE DISPATCH IS ON `kind`, NOT ON WHETHER `discs` IS THERE ═══
+---
+--- This used to be `if not shape.discs then error(...)`, which was right while
+--- every shape here was a union of discs and is a trap the moment one is not: any
+--- shape that grew a disc list for an unrelated reason -- a bounding disc, a
+--- broad-phase cull, a decomposition recorded for the renderer -- would silently
+--- start being MEASURED as the union of it, and the answer would be wrong in the
+--- unsafe direction with nothing to notice. Keying on the shape's own name means a
+--- new kind gets a real function or an error, and never an inherited one.
+---
+--- A KIND WITH NO IMPLEMENTATION STILL ERRORS, and that is the point of the whole
+--- arrangement rather than an unfinished branch. The capsule has no signed distance
+--- because nothing has ever needed one; the day something does, this error is what
+--- makes somebody write it instead of shipping a bounding disc that reads shallow.
 ---
 --- @return number  metres, negative inside
 function BR.StormShape.distance(shape, px, py)
-    local discs = shape and shape.discs
-    if not discs then
-        error('StormShape.distance: this shape is not a union of discs, and '
-            .. 'a boundary made of straight runs needs its own signed distance')
+    local kind = shape and shape.kind
+
+    if kind == 'circle' or kind == 'union2' then
+        local discs = shape.discs
+        local best = huge
+        for i = 1, #discs do
+            local c = discs[i]
+            local ddx, ddy = px - c.x, py - c.y
+            local d = sqrt(ddx * ddx + ddy * ddy) - c.r
+            if d < best then best = d end
+        end
+        return best
     end
-    local best = huge
-    for i = 1, #discs do
-        local c = discs[i]
-        local ddx, ddy = px - c.x, py - c.y
-        local d = sqrt(ddx * ddx + ddy * ddy) - c.r
-        if d < best then best = d end
+
+    if kind == 'roundedRect' then
+        local b = shape.box
+        -- Offset from the centre, folded into the first quadrant -- the shape is
+        -- symmetric in both axes, so one corner's arithmetic answers for all four.
+        local qx = abs(px - b.cx) - (b.hx - b.cr)
+        local qy = abs(py - b.cy) - (b.hy - b.cr)
+        -- OUTSIDE THE INNER RECTANGLE IN A GIVEN AXIS, that axis contributes; inside
+        -- it, it does not. Both positive is a corner and the length is the distance
+        -- to the arc centre; one positive is an edge and the length collapses to that
+        -- one term. Both negative is the interior, where `length` is zero and the
+        -- second term carries the answer.
+        local ex = (qx > 0.0) and qx or 0.0
+        local ey = (qy > 0.0) and qy or 0.0
+        local outside = sqrt(ex * ex + ey * ey)
+        local inside = (qx > qy) and qx or qy
+        if inside > 0.0 then inside = 0.0 end
+        return outside + inside - b.cr
     end
-    return best
+
+    error('StormShape.distance: no signed distance for a shape of kind '
+        .. tostring(kind) .. ' -- a guess here would be read as a fact by the '
+        .. 'damage test, so the kind gets a real function or nothing')
 end
 
 --- The same shape, shrunk by `metres`.
@@ -730,18 +1048,50 @@ end
 --- is allowed to err in, and it is what stops the renderer's own six metres of
 --- edgeInset from manufacturing a component the storm never had.
 ---
+--- ═══ FOR A ROUNDED RECTANGLE IT IS EXACT, AND IT IS THE SAME ONE SUBTRACTION
+---     THREE TIMES ═══
+---
+--- Eroding a rounded box by m gives a rounded box with both half-extents AND the
+--- corner radius smaller by m, exactly -- the straight edges move in by m because
+--- they are straight, and the corner arcs keep their centres and lose m of radius.
+--- No approximation, unlike the union case above.
+---
+--- WHAT THE FLOORS DO TO THAT, said here because the arithmetic hides it: an m
+--- larger than `cr` would want a SHARP corner, and roundedRect floors the corner
+--- radius at MIN_RADIUS instead -- a one-metre round on a corner that should be
+--- square, which is the inward error the constructor argues for. An m larger than a
+--- half-extent leaves that extent at MIN_RADIUS as well, so a shape eaten by its own
+--- inset is a small walkable shape rather than nothing, exactly as the circle case
+--- has always been.
+---
+--- THE DISPATCH IS ON `kind` FOR THE REASON distance() GIVES, and the two must stay
+--- keyed the same way: the wall measures its own inset shape, so a kind that one of
+--- them answers for and the other does not is a renderer drawing a boundary it
+--- cannot then ask questions about.
+---
 --- @return table shape
 function BR.StormShape.inset(shape, metres)
-    local discs = shape and shape.discs
-    if not discs then
-        error('StormShape.inset: this shape is not a union of discs, and '
-            .. 'offsetting a straight run is a different algorithm')
-    end
+    local kind = shape and shape.kind
     metres = metres or 0.0
-    if #discs == 1 then
-        local c = discs[1]
-        return BR.StormShape.circle(c.x, c.y, c.r - metres)
+
+    if kind == 'circle' or kind == 'union2' then
+        local discs = shape.discs
+        if #discs == 1 then
+            local c = discs[1]
+            return BR.StormShape.circle(c.x, c.y, c.r - metres)
+        end
+        local a, b = discs[1], discs[2]
+        return BR.StormShape.union2(a.x, a.y, a.r - metres,
+            b.x, b.y, b.r - metres)
     end
-    local a, b = discs[1], discs[2]
-    return BR.StormShape.union2(a.x, a.y, a.r - metres, b.x, b.y, b.r - metres)
+
+    if kind == 'roundedRect' then
+        local b = shape.box
+        return BR.StormShape.roundedRect(b.cx, b.cy,
+            b.hx - metres, b.hy - metres, b.cr - metres)
+    end
+
+    error('StormShape.inset: no erosion for a shape of kind ' .. tostring(kind)
+        .. ' -- offsetting a straight run is a different algorithm from shrinking '
+        .. 'a radius, and the wall draws whatever this hands back')
 end
