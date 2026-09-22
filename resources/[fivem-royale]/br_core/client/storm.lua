@@ -238,59 +238,265 @@ end
 -- round, and neither is a number this file decides alone: both are in
 -- config/storm.lua's `strip` table.
 --
--- ═══ DRAW_POLY CANNOT DO IT, AND WHAT CAN NEEDS AN ASSET WE DO NOT SHIP ═══
+-- ═══ DRAW_POLY CANNOT DO IT, AND THE TEXTURE IT NEEDS IS ONE WE MAKE ═══
 --
 -- DRAW_POLY takes one colour and one alpha for a whole triangle, so a gradient
--- inside a quad is not expressible in it at any triangle count. Exactly one native
--- can: `_DRAW_SPRITE_POLY_2` (0x736D7AA1B750856B), Rockstar's own
--- DRAW_TEXTURED_POLY_WITH_THREE_COLOURS, which takes a colour AND AN ALPHA PER
--- VERTEX -- a real bottom-to-top ramp at today's triangle count, for nothing. It is
--- a GTA V client native, it is registered in FiveM with 32 arguments, and it is
--- callable from Lua. Its RGB are FLOATS on a 0-255 scale and its `w` components are
--- ignored, both from R*'s own commands_graphics.sch rather than from memory.
+-- inside a quad is not expressible in it at any triangle count. Stacking flat quads
+-- is the only thing it can do, and three of them read as THREE VISIBLE STEPS --
+-- which is the owner's playtest verdict on the first attempt and the defect this
+-- version exists to fix.
 --
--- IT IS A TEXTURED POLY, AND THAT IS WHAT STOPS IT BEING THE DEFAULT. The vertex
--- colours tint a texture, so it needs a dictionary and a texture name, and a
--- textured poly with no texture draws nothing. RESEARCH FOUND NO STOCK FLAT-WHITE
--- TEXTURE ANYWHERE: every shipped resource that draws textured polys either streams
--- its own .ytd (l2k_gps3d's `chevrons`, blitz outrun's `blitz_outrun` -- which is a
--- translucent quad wall, the closest analogue there is) or points the native at a
--- DUI's runtime texture. Rockstar's own use is tapered laser-beam art, not white.
--- `deadline`, which the native's documentation names, is requested by nobody at all.
--- THIS ESTATE SHIPS NO STREAMED ASSETS, so the one thing the gradient needs is the
--- one thing we have not got.
+-- ═══ WHAT THE FIRST ATTEMPT GOT WRONG, WRITTEN OUT SO IT IS NOT RE-DERIVED ═══
 --
--- There is also no working call site for the native anywhere in public code -- 15
--- hits, all of them type stubs -- so even with a texture it would be unproven. And
--- what an unproven draw call costs here is THE WHOLE WALL: a native that silently
--- draws nothing leaves the storm with no curtain, which is the failure the owner has
--- now reported twice.
+-- It concluded that a smooth fade was impossible in this estate, on two facts that
+-- are both TRUE: there is no stock flat-white texture in the game, and this estate
+-- ships no streamed assets. The error was believing those two closed the question.
 --
--- SO THE BANDED PATH IS THE WALL AND THE GRADIENT WAITS FOR A TEXTURE. Bands are
--- plain DRAW_POLY quads stacked up the wall, each flat at its own alpha: it cannot
--- fail, it costs `bands` times the polys, and it shows steps rather than a smooth
--- ramp. The gradient is fully wired and one config value away -- name a resident
--- dictionary in `fade.dict` and set `fade.prefer`, and this file requests it, waits
--- for it and uses it -- so the day a texture exists the fade improves without a
--- commit. config/storm.lua's `fade` table carries all of it.
+-- A TEXTURE DOES NOT HAVE TO BE STREAMED. FiveM builds one in memory --
+-- CREATE_RUNTIME_TXD, CREATE_RUNTIME_TEXTURE, SET_RUNTIME_TEXTURE_PIXEL,
+-- COMMIT_RUNTIME_TEXTURE -- with no .ytd, no stream folder, no manifest entry and no
+-- RequestStreamedTextureDict anywhere near it. The no-streamed-assets rule is not
+-- bent by this; it is not touched by it.
+--
+-- AND THE PROOF WAS ALREADY IN THIS REPO. br_core/client/dui.lua:144 creates a
+-- runtime TXD, :145 builds a runtime texture from a CEF surface, and :410 and :1131
+-- hand that dict/texture pair straight to DrawSpritePoly as world-space quads. It
+-- has been in production since #236. `grep -c RequestStreamedTextureDict dui.lua`
+-- is 0. client/natives.lua already probes both CreateRuntimeTxd (:2845) and
+-- DrawSpritePoly (:3038) at boot.
+--
+-- ═══ SO THE RAMP IS BAKED, NOT INTERPOLATED, AND THE UNPROVEN NATIVE IS GONE ═══
+--
+-- `_DRAW_SPRITE_POLY_2` -- the per-vertex-alpha native the first attempt was built
+-- around, with no working call site anywhere in public code -- is not used here any
+-- more and nothing in this file mentions it. Baking the ramp into the texture's own
+-- 256 alpha levels means the ordinary single-colour DRAW_SPRITE_POLY is enough, so
+-- the wall now draws through a native this codebase has been shipping for months.
+--
+-- THAT IS ALSO CHEAPER AND MORE EXPRESSIVE AT THE SAME TIME. 2 polys per quad rather
+-- than 6, because the gradient is not approximated by stacking; and the ramp can
+-- have a KINK in it, which per-vertex alpha could not express at any cost -- see
+-- rampAlpha below, which holds the wall at full strength until ground level and only
+-- then begins to thin.
+--
+-- ═══ THE ONE THING THIS DESIGN GUESSES: PREMULTIPLIED OR STRAIGHT ═══
+--
+-- The texture is written as PREMULTIPLIED GREY, r = g = b = a. The only proven
+-- DrawSpritePoly path in this tree is dui.lua's, whose source is a CEF surface, and
+-- CEF surfaces are premultiplied -- so that is the blend this native is known to
+-- work with HERE, and matching it is the closest thing to evidence available without
+-- a frame buffer.
+--
+-- WHITE-WITH-ALPHA WOULD BE THE BACKWARDS GUESS: under a premultiplied blend
+-- (255, 255, 255, a) contributes full colour at every height regardless of a, which
+-- is an opaque white haze over the top of the wall -- a visibly broken fade, not a
+-- subtle one. Premultiplied grey under a STRAIGHT blend is the benign error in the
+-- other direction: the colour is scaled by the ramp as well as the alpha, so the
+-- fade comes out roughly squared -- steeper than authored, thinner at the top, still
+-- a smooth bottom-to-top fade.
+--
+-- HOW A READER TELLS WHICH ONE THEY ARE LOOKING AT, since only eyes can: under a
+-- premultiplied blend the purple keeps its hue all the way up and simply gets more
+-- see-through. Under a straight blend the purple also gets DARKER as it rises, so
+-- the top of the wall reads as a dim smudge shading toward black before it
+-- disappears. If it is the second and the top is too thin, raise fade.topAlpha.
 --
 -- ═══ AND WHAT NO TEST HERE CAN SEE ═══
 --
--- Code can establish that the native EXISTS, that a dictionary loaded, and that a
--- call did not throw. It cannot establish that anything appeared on screen, or that
--- a texture tinted to the colour it was given rather than to its own. Those are
--- playtest-only, and the symptom of each is recorded on the fade config so that
--- whoever looks at the wall knows which one they are looking at.
-local fade = { path = nil, rung = nil, tries = 0, said = false }
+-- Code can establish that the natives exist, that the texture was created and read
+-- back at the size asked for, and that the draw calls carry the geometry, UVs and
+-- alphas intended. It cannot establish that a pixel appeared, nor which blend the
+-- pipeline used. Those are playtest-only, so the symptom of each is written down
+-- above and the console line below names which path is running.
+local fade = { path = nil, rung = nil, said = false }
 
---- Is the per-vertex native even in this build's native table?
+--- Is the textured-poly native in this build's native table?
 ---
 --- A FiveM client exposes natives as globals, so an unimplemented one is `nil`
---- rather than a function that fails -- which makes this the one half of the
---- question that is answerable without drawing anything.
+--- rather than a function that fails -- which makes this answerable without drawing
+--- anything. This is the native dui.lua has shipped since #236, so a build without
+--- it has bigger problems than the wall; it is checked anyway, because the cost of
+--- being wrong is a pcall'd frame callback and no curtain at all.
 --- @return boolean
-local function gradientNativeExists()
-    return type(_G.DrawSpritePoly_2) == 'function'
+local function spritePolyExists()
+    return type(_G.DrawSpritePoly) == 'function'
+end
+
+-- ═══ THE RUNTIME RAMP: BUILT ONCE, READ BACK BEFORE IT IS TRUSTED ═══
+--
+-- Latched for the session in the same shape as `fade`: a texture handle plus the two
+-- names the draw call needs. `tex` is the handle the read-back gate asks about, and
+-- `txd`/`name` are what DrawSpritePoly is actually passed.
+local ramp = { tex = nil, txd = nil, name = nil }
+
+--- The fade's alpha multiplier at height `z`, with the ramp pinned to GROUND LEVEL.
+---
+--- ═══ THE GEOMETRY'S BOTTOM IS NOT THE RAMP'S BOTTOM, AND THAT WAS A BUG ═══
+---
+--- The strip stands on baseZ (-150) so that no gap can open under the curtain on a
+--- slope -- the underground skirt is load-bearing and stays. But a ramp measured
+--- from baseZ spends its first 15 percent below the lowest ground this config admits
+--- (2.0, from the map's own POI table), which is resolution spent where nobody can
+--- look and, worse, a wall that is not full strength at a player's FEET.
+---
+--- MEASURED, on the 3-band fallback before this function existed: the bottom band's
+--- centre sampled the ramp at t 0.1667 and drew at alpha 92 where render.alpha says
+--- 110. The curtain was 16 percent fainter at eye level than the config asked for,
+--- on every shape, in every phase, and nothing said so.
+---
+--- So alpha is FLAT at baseAlpha from baseZ up to rampBaseZ, and ramps to topAlpha
+--- between rampBaseZ and topZ. BOTH PATHS USE THIS ONE FUNCTION -- the gradient
+--- bakes it into the texture's rows, the bands sample it at their own centres -- so
+--- the fallback is an approximation of the same curve rather than a different one,
+--- and the fix lands on both.
+--- @param fc table    cfg.render.strip.fade
+--- @param zb number   the geometry's bottom
+--- @param zt number   the geometry's top
+--- @param z number    the height to evaluate at
+--- @return number     0..1 multiplier on render.alpha
+local function rampAlpha(fc, zb, zt, z)
+    local a0 = fc.baseAlpha or 1.0
+    local a1 = fc.topAlpha or 0.0
+    -- CLAMPED INTO THE GEOMETRY, because a rampBaseZ under the wall's own bottom
+    -- would put the flat section outside the span entirely and a rampBaseZ at or
+    -- above the top would divide by zero or by a negative -- a nan alpha, which is
+    -- an invisible wall with nothing in the console.
+    local z0 = fc.rampBaseZ or 0.0
+    if z0 < zb then z0 = zb end
+    if z0 >= zt then return a0 end
+    if z <= z0 then return a0 end
+    if z >= zt then return a1 end
+    return a0 + (a1 - a0) * ((z - z0) / (zt - z0))
+end
+
+--- Bake the ramp into a runtime texture, once per resource start.
+---
+--- ═══ WHY THE PIXELS ARE GREY AND NOT WHITE: r = g = b = a ═══
+---
+--- Premultiplied, matching the one proven DrawSpritePoly source in this tree (a CEF
+--- surface, which is premultiplied). The long note above has the reasoning and what
+--- each blend looks like if the guess is wrong.
+---
+--- ═══ ROW 0 IS THE BOTTOM OF THE WALL, WHICH IS NOT OBVIOUS ═══
+---
+--- v = 0 is the FIRST row of a texture, not the last -- the ordinary D3D convention,
+--- and this tree already depends on it: dui.lua's drawQuad documents `a` as "the
+--- texture's top-left corner" and gives it UV (0, 0), and the warmup board and the
+--- crate labels render right side up in production off exactly that. The draw below
+--- gives the wall's BOTTOM v = 0, so the wall's bottom samples row 0 and row 0 must
+--- hold baseAlpha. The texture is therefore stored bottom-of-wall first, which looks
+--- upside down if you picture it as a picture of the wall.
+---
+--- IF THIS IS WRONG THE FAILURE IS UNMISTAKABLE rather than subtle: the wall would
+--- be transparent at the ground and solid at 850 m, a purple ceiling with no base.
+---
+--- ═══ AND THE CURVE GOES IN THE TEXTURE, NOT IN THE UVs ═══
+---
+--- v maps linearly to world z, so the ramp's kink at ground level has to be carried
+--- by the ROWS. That is the whole reason a baked texture beats a per-vertex alpha:
+--- the flat-then-falling curve is just what the rows say, at no cost.
+--- @param fc table   cfg.render.strip.fade
+--- @param zb number  the geometry's bottom
+--- @param zt number  the geometry's top
+--- @return boolean ok, string|nil why
+local function buildRamp(fc, zb, zt)
+    if ramp.tex then return true end
+
+    -- NAMED ONE AT A TIME so the rung can say WHICH native is missing. A build with
+    -- DrawSpritePoly but no runtime-texture natives is not a build anybody has, and
+    -- the console line is free.
+    local need = {
+        { 'CreateRuntimeTxd',        _G.CreateRuntimeTxd },
+        { 'CreateRuntimeTexture',    _G.CreateRuntimeTexture },
+        { 'SetRuntimeTexturePixel',  _G.SetRuntimeTexturePixel },
+        { 'CommitRuntimeTexture',    _G.CommitRuntimeTexture },
+    }
+    for i = 1, #need do
+        if type(need[i][2]) ~= 'function' then
+            return false, ('%s is not in this build'):format(need[i][1])
+        end
+    end
+
+    local w = math.max(1, math.floor(fc.rampW or 8))
+    local h = math.max(2, math.floor(fc.rampH or 256))
+
+    --- One creation attempt under a name suffix.
+    ---
+    --- ═══ THE SUFFIX GOES ON THE DICTIONARY TOO, AND THAT IS THE POINT ═══
+    ---
+    --- CREATE_RUNTIME_TEXTURE returns nothing if the name is already taken, which is
+    --- the documented restart hazard: a br_core restart in the same client session
+    --- loses our Lua handle while the engine keeps the texture. But FiveM's own
+    --- RuntimeAssetNatives.cpp refuses one level HIGHER than that -- CREATE_RUNTIME_TXD
+    --- only builds its backing dictionary when the streaming slot has no handle yet,
+    --- so the second call for a name that already exists yields a TXD object with no
+    --- dictionary and EVERY CreateTexture on it returns nothing, whatever the texture
+    --- is called. Suffixing only the texture name would therefore retry into the same
+    --- wall. Both names move together.
+    local function attempt(suffix)
+        local txdName = (fc.txd or 'br_storm_ramp') .. suffix
+        local texName = (fc.texture or 'ramp') .. suffix
+        local txd = CreateRuntimeTxd(txdName)
+        if not BR.NativeTruthy(txd) then return nil end
+        local tex = CreateRuntimeTexture(txd, texName, w, h)
+        if not BR.NativeTruthy(tex) then return nil end
+        return tex, txdName, texName
+    end
+
+    local tex, txdName, texName = attempt('')
+    if not tex then
+        -- ONE RETRY, NOT A LOOP. A name that is taken stays taken for the session, so
+        -- a second distinct name is the whole of the remedy; a third would only be
+        -- reached if something other than the name is wrong, and then bands is the
+        -- honest answer rather than more names.
+        tex, txdName, texName = attempt('_b')
+    end
+    if not tex then
+        return false, 'CreateRuntimeTexture returned nothing under either name'
+    end
+
+    -- ═══ THE GATE IS A READ-BACK, NOT A HANDLE ═══
+    --
+    -- HasStreamedTextureDictLoaded -- what this file used to ask -- is the wrong
+    -- question for a slot with no backing .ytd and would answer no forever. A truthy
+    -- handle is necessary and not sufficient: it says the call returned something,
+    -- not that a surface exists behind it. GET_RUNTIME_TEXTURE_WIDTH agreeing with
+    -- the width we asked for is the cheapest statement available that the texture is
+    -- really there. (Read out of citizenfx/fivem ext/native-decls/
+    -- GetRuntimeTextureWidth.md: `int GET_RUNTIME_TEXTURE_WIDTH(long tex)`, "Gets the
+    -- width of the specified runtime texture.")
+    -- AND IF THE READ-BACK ITSELF IS MISSING the gate degrades to the handle alone,
+    -- which is weaker -- so it is RECORDED rather than quietly accepted. The console
+    -- line says which gate ran, because "the wall is there" and "the wall is probably
+    -- there" are different claims and only one of them was checked.
+    if type(_G.GetRuntimeTextureWidth) == 'function' then
+        local got = GetRuntimeTextureWidth(tex)
+        if got ~= w then
+            return false, ('the ramp texture read back %s px wide, not %d')
+                :format(tostring(got), w)
+        end
+        ramp.verified = true
+    else
+        ramp.verified = false
+    end
+
+    -- ROWS ARE THE RAMP. Every column is identical -- the width exists only so the
+    -- u axis is not degenerate -- so this is h distinct values written w times.
+    for y = 0, h - 1 do
+        local t = y / (h - 1)
+        local v = math.floor(rampAlpha(fc, zb, zt, zb + (zt - zb) * t) * 255.0 + 0.5)
+        if v < 0 then v = 0 elseif v > 255 then v = 255 end
+        for x = 0, w - 1 do
+            SetRuntimeTexturePixel(tex, x, y, v, v, v, v)
+        end
+    end
+    -- NOTHING IS ON THE GPU UNTIL THIS LINE. SET_RUNTIME_TEXTURE_PIXEL writes a CPU
+    -- backing buffer and the decl says so outright: the change "requires
+    -- finalization through COMMIT_RUNTIME_TEXTURE to take effect".
+    CommitRuntimeTexture(tex)
+
+    ramp.tex, ramp.txd, ramp.name = tex, txdName, texName
+    return true
 end
 
 --- Announce the fade path ONCE, naming the rung and what it costs.
@@ -317,53 +523,43 @@ end
 
 --- Pick a fade path, at most once per resource start.
 ---
---- BOUNDED, AND THE BOUND IS THE FALLBACK CONDITION. A texture dictionary that
---- never arrives must not be re-requested for the rest of the session: that is a
---- request every frame forever, which is its own bug. `requestFrames` frames of
---- asking and then the answer is no.
+--- SETTLED ON THE FIRST FRAME AND NEVER RE-ASKED. There is nothing to wait for any
+--- more: the ramp is built in memory rather than requested from the streamer, so it
+--- either exists by the end of this call or it never will. The old version polled
+--- RequestStreamedTextureDict for 300 frames because a streamed dictionary arrives
+--- late; a runtime texture does not arrive at all, it is made.
 ---
---- WHILE IT IS UNDECIDED THE WALL DRAWS BANDED, so the first seconds of a flight
---- are a wall rather than nothing.
+--- EVERY RUNG NAMES ITSELF, because "give me a way to know whether it fellback" is a
+--- standing requirement and a fallback whose reason is unknown is barely better than
+--- a silent one.
 --- @param fc table   cfg.render.strip.fade
-local function resolveFade(fc)
+--- @param zb number  the geometry's bottom
+--- @param zt number  the geometry's top
+local function resolveFade(fc, zb, zt)
     if fade.path then return end
 
-    if (fc.prefer or 'bands') ~= 'gradient' then
+    if (fc.prefer or 'gradient') ~= 'gradient' then
         fade.path, fade.rung = 'bands', 'config prefers bands'
         return
     end
-    if not gradientNativeExists() then
-        fade.path, fade.rung = 'bands', 'DrawSpritePoly_2 not in this build'
+    if not spritePolyExists() then
+        fade.path, fade.rung = 'bands', 'DrawSpritePoly is not in this build'
         return
     end
 
-    -- A TEXTURE IS NOT OPTIONAL, which is the finding rather than a guess: the
-    -- native tints a texture, and a textured poly with no texture draws nothing. So
-    -- an unnamed dictionary is a fallback condition and not a rung to try -- the
-    -- alternative is a config typo costing the whole wall silently.
-    local dict, tex = fc.dict, fc.texture
-    if dict == nil or dict == '' or tex == nil or tex == '' then
-        fade.path = 'bands'
-        fade.rung = 'gradient wants a texture and fade.dict/fade.texture are unset'
+    local built, why = buildRamp(fc, zb, zt)
+    if not built then
+        fade.path, fade.rung = 'bands', why or 'the runtime ramp could not be built'
         return
     end
 
-    if BR.NativeTruthy(HasStreamedTextureDictLoaded(dict)) then
-        fade.path, fade.rung = 'gradient', ('dict %s, texture %s'):format(dict, tex)
-        return
-    end
-
-    fade.tries = fade.tries + 1
-    if fade.tries > (fc.requestFrames or 300) then
-        fade.path = 'bands'
-        fade.rung = ('dict %s never loaded in %d frames')
-            :format(dict, fc.requestFrames or 300)
-        return
-    end
-    -- `false` FOR p1, which is what the game's own calls pass for its own
-    -- dictionaries -- the same precedent client/gunshop.lua copies for the weapon
-    -- icon dicts, and for the same reason.
-    RequestStreamedTextureDict(dict, false)
+    fade.path = 'gradient'
+    fade.rung = ('runtime ramp %s:%s, %dx%d, no streamed asset, %s')
+        :format(ramp.txd, ramp.name,
+            math.max(1, math.floor(fc.rampW or 8)),
+            math.max(2, math.floor(fc.rampH or 256)),
+            ramp.verified and 'width read back'
+                or 'width read-back native absent, handle trusted')
 end
 
 --- @param shape table       an inset BR.StormShape
@@ -397,18 +593,38 @@ local function drawStrip(shape, alphaScale)
     end
     local step = math.sqrt(8.0 * rmin * (sp.chordM or 2.0))
 
+    -- ═══ THE SPAN IS READ BEFORE THE FADE, BECAUSE THE FADE IS BAKED FROM IT ═══
+    --
+    -- These two used to be read further down, next to the walk. The ramp texture is
+    -- built from the SPAN -- the flat section runs from zb to rampBaseZ and the slope
+    -- from there to zt -- so the span has to exist before the path is resolved, not
+    -- after. It is latched for the session with the texture, which is correct for a
+    -- config read once at boot and would be a live bug the day baseZ or topZ became
+    -- something the game changes mid-match. Nothing does that today.
+    --
+    -- A WALL WITH NO HEIGHT IS NOT A WALL, and the reason to say so here rather than
+    -- trust the config is that the fade DIVIDES by the span. A topZ at or under baseZ
+    -- would make every alpha a nan, and a nan alpha is an invisible wall with nothing
+    -- in the console -- the silent failure this whole file is written against. Drawing
+    -- nothing at all is the honest answer to a wall of no height, and refusing BEFORE
+    -- the ramp is baked also keeps a nan out of the texture, where it would be latched
+    -- for the rest of the session.
+    local zb, zt = sp.baseZ or -150.0, sp.topZ or 850.0
+    if zt <= zb then return end
+
     -- ═══ WHICH FADE PATH, AND IT IS SETTLED BEFORE THE BUDGET IS DIVIDED ═══
     --
     -- Because it CHANGES WHAT A QUAD COSTS. A banded quad is `bands` stacked
     -- quads, so it is 2 * bands polys and not 2, and a budget that priced every
     -- quad at two triangles would stop being a poly ceiling the moment the fade
-    -- turned on. Dividing by the real cost is what keeps maxPolys meaning polys.
+    -- fell back. Dividing by the real cost is what keeps maxPolys meaning polys.
     local fc = sp.fade or {}
-    resolveFade(fc)
+    resolveFade(fc, zb, zt)
     -- A GRADIENT QUAD IS ONE BAND, WHICH IS THE POINT OF IT: the ramp lives inside
-    -- the two triangles instead of being approximated by stacking more of them.
+    -- the texture the two triangles are drawn with, instead of being approximated by
+    -- stacking more of them.
     local gradient = fade.path == 'gradient'
-    local gDict, gTex = fc.dict, fc.texture
+    local gDict, gTex = ramp.txd, ramp.name
     local bands = gradient and 1 or math.max(1, math.floor(fc.bands or 3))
     local quadPolys = 2 * bands
     sayFade(bands, quadPolys)
@@ -429,31 +645,27 @@ local function drawStrip(shape, alphaScale)
 
     local p = viewpoint()
     local vx, vy = p.x, p.y
-    local zb, zt = sp.baseZ or -150.0, sp.topZ or 850.0
-    -- A WALL WITH NO HEIGHT IS NOT A WALL, and the reason to say so here rather than
-    -- trust the config is that the fade DIVIDES by the span. A topZ at or under baseZ
-    -- would make every band alpha a nan, and a nan alpha is an invisible wall with
-    -- nothing in the console -- the silent failure this whole file is written
-    -- against. Drawing nothing at all is the honest answer to a wall of no height.
-    if zt <= zb then return end
     local cr, cg, cb = col.r, col.g, col.b
     local alpha = rr.alpha * alphaScale
 
-    -- ═══ THE RAMP IS LINEAR IN z ACROSS THE WHOLE WALL, AND THAT IS A LIMIT
-    --     RATHER THAN A PREFERENCE ═══
+    -- ═══ THE RAMP HAS A KINK IN IT, AND ONLY ONE OF THE TWO PATHS DRAWS IT EXACTLY
+    --     -- WHICH IS THE WHOLE DIFFERENCE BETWEEN THEM ═══
     --
-    -- One colour per VERTEX can express a straight line and nothing else, so a
-    -- wall that is solid to head height and only then begins to fade needs a KINK,
-    -- which needs a second stacked quad, which is twice the polys on the one path
-    -- that was supposed to be free. So the fade is two numbers -- how strong at the
-    -- bottom, how strong at the top -- and the ramp between them is straight.
+    -- rampAlpha is the curve: flat at baseAlpha from the wall's bottom up to ground
+    -- level, then falling to topAlpha at the top. The GRADIENT has it baked row by
+    -- row into the texture, so what it draws is the curve. The BANDS sample it at
+    -- each band's own centre and hold that value flat across the band, so what they
+    -- draw is a staircase approximation of the same curve -- which is exactly why the
+    -- owner saw three steps, and exactly why both paths can be compared.
     --
-    -- Both paths approximate the SAME ramp, which is what makes them comparable:
-    -- the gradient draws it exactly, and the bands sample it at their own centres.
-    local a0 = alpha * (fc.baseAlpha or 1.0)
-    local a1 = alpha * (fc.topAlpha or 0.0)
-    local function alphaAt(t)
-        local v = math.floor(a0 + (a1 - a0) * t + 0.5)
+    -- THE BANDS SAMPLE AT THE CENTRE RATHER THAN AT THE BOTTOM EDGE, deliberately: a
+    -- flat band is closest to the curve it replaces when it takes the curve's value
+    -- halfway along, and sampling the bottom edge instead would leave the TOP band at
+    -- a non-zero alpha and give the wall a hard cut-off line at 850 m where there is
+    -- currently nothing to see. Centre sampling is not what made the base too faint;
+    -- the ramp starting 150 m underground was, and rampAlpha is where that is fixed.
+    local function alphaAtZ(z)
+        local v = math.floor(alpha * rampAlpha(fc, zb, zt, z) + 0.5)
         if v < 0 then v = 0 elseif v > 255 then v = 255 end
         return v
     end
@@ -480,43 +692,49 @@ local function drawStrip(shape, alphaScale)
     --- THE SHARED HORIZONTAL EDGES ARE THE SAME NUMBERS, for the same reason the
     --- vertical ones are: band i's top z is band i+1's bottom z, carried in a
     --- variable rather than recomputed from i.
-    --- The gradient spelling of one quad: two triangles, alpha per VERTEX.
+    --- The gradient spelling of one quad: two triangles, ONE alpha, and the ramp in
+    --- the texture.
     ---
-    --- ═══ THE ARGUMENT LIST IS FROM citizenfx/natives AND R*'s OWN HEADER ═══
+    --- ═══ THE ARGUMENT LIST IS THE ONE dui.lua HAS BEEN SHIPPING SINCE #236 ═══
     ---
-    --- 32 arguments: nine position floats, then (red, green, blue, alpha) for each of
-    --- the three vertices, then the dictionary and texture, then nine UVW floats.
-    --- TWO DETAILS THAT WOULD OTHERWISE BE WRONG BY DEFAULT, both from Rockstar's
-    --- commands_graphics.sch rather than inferred:
+    --- 25 arguments: nine position floats, then ONE (r, g, b, a) for the whole
+    --- triangle, then the dictionary and texture, then nine UVW floats. Copied off
+    --- the four working call sites at dui.lua:410 and :1131 rather than off a
+    --- reference, which is the point of using this native instead of the per-vertex
+    --- one -- the spelling is not a guess here.
     ---
-    ---   * THE RGB ARE FLOATS ON A 0-255 SCALE, not the 0-1 the word "float" invites
-    ---     and not the ints DRAW_POLY takes. Passed as 0-1 the wall would be black.
-    ---   * THE `w` COMPONENT OF EVERY UV IS IGNORED. It is passed as zero rather
-    ---     than as something meaningful, so nobody reads a meaning into it later.
+    --- THE RGB ARE PLAIN 0-255 INTS, exactly as DRAW_POLY takes them, so the colour
+    --- needs no conversion and gets none.
     ---
-    --- The UVs map the quad corner to corner, which for the flat texture this wants
-    --- is arbitrary -- and is written out properly anyway, because the day the
-    --- texture is not flat the mapping is the difference between a tint and a smear.
-    local function gradientQuad(ax, ay, bx, by, out, a0v, a1v)
-        local fr, fg, fb = cr + 0.0, cg + 0.0, cb + 0.0
+    --- ═══ THE UVs, AND EVERY ONE OF THE THREE IS A DECISION ═══
+    ---
+    ---   * `w = 1.0`, not 0.0. Every proven call in dui.lua passes 1.0 per vertex.
+    ---     The earlier dormant version of this function passed 0.0, which was read
+    ---     off a reference saying the component is ignored -- but "ignored" is a
+    ---     claim about a native nothing in this tree had ever successfully called,
+    ---     and the working call sites are better evidence than the claim.
+    ---   * `u = 0.5` at every vertex, so every sample lands in the middle of eight
+    ---     identical columns. The u axis carries no information at all; giving it a
+    ---     constant in the interior means no clamp rule, wrap rule or bilinear edge
+    ---     case can reach the result.
+    ---   * `v` spans 0 at the wall's BOTTOM to 1 at its top, and v = 0 is the
+    ---     texture's first row -- so row 0 holds the base alpha. buildRamp's header
+    ---     has the convention and where in this tree it is already relied on.
+    local function gradientQuad(ax, ay, bx, by, out, av)
         if out then
-            DrawSpritePoly_2(ax, ay, zb, bx, by, zb, ax, ay, zt,
-                fr, fg, fb, a0v, fr, fg, fb, a0v, fr, fg, fb, a1v,
-                gDict, gTex,
-                0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0)
-            DrawSpritePoly_2(bx, by, zb, bx, by, zt, ax, ay, zt,
-                fr, fg, fb, a0v, fr, fg, fb, a1v, fr, fg, fb, a1v,
-                gDict, gTex,
-                1.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+            DrawSpritePoly(ax, ay, zb, bx, by, zb, ax, ay, zt,
+                cr, cg, cb, av, gDict, gTex,
+                0.5, 0.0, 1.0,  0.5, 0.0, 1.0,  0.5, 1.0, 1.0)
+            DrawSpritePoly(bx, by, zb, bx, by, zt, ax, ay, zt,
+                cr, cg, cb, av, gDict, gTex,
+                0.5, 0.0, 1.0,  0.5, 1.0, 1.0,  0.5, 1.0, 1.0)
         else
-            DrawSpritePoly_2(ax, ay, zt, bx, by, zb, ax, ay, zb,
-                fr, fg, fb, a1v, fr, fg, fb, a0v, fr, fg, fb, a0v,
-                gDict, gTex,
-                0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 0.0)
-            DrawSpritePoly_2(ax, ay, zt, bx, by, zt, bx, by, zb,
-                fr, fg, fb, a1v, fr, fg, fb, a1v, fr, fg, fb, a0v,
-                gDict, gTex,
-                0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0)
+            DrawSpritePoly(ax, ay, zt, bx, by, zb, ax, ay, zb,
+                cr, cg, cb, av, gDict, gTex,
+                0.5, 1.0, 1.0,  0.5, 0.0, 1.0,  0.5, 0.0, 1.0)
+            DrawSpritePoly(ax, ay, zt, bx, by, zt, bx, by, zb,
+                cr, cg, cb, av, gDict, gTex,
+                0.5, 1.0, 1.0,  0.5, 1.0, 1.0,  0.5, 0.0, 1.0)
         end
     end
 
@@ -525,7 +743,11 @@ local function drawStrip(shape, alphaScale)
         local out = (vx - (ax + bx) * 0.5) * nx
             + (vy - (ay + by) * 0.5) * ny >= 0.0
         if gradient then
-            gradientQuad(ax, ay, bx, by, out, alphaAt(0.0), alphaAt(1.0))
+            -- THE SINGLE ALPHA IS render.alpha TIMES THE PHASE CLOCK AND NOTHING
+            -- ELSE. The ramp is already in the texture, so multiplying it in here as
+            -- well would square it -- a wall that fades to nothing by about 300 m.
+            gradientQuad(ax, ay, bx, by, out,
+                math.max(0, math.min(255, math.floor(alpha + 0.5))))
             return
         end
         local h = (zt - zb) / bands
@@ -535,7 +757,7 @@ local function drawStrip(shape, alphaScale)
             -- the wall is exactly the config's top and not a rounding of it -- the
             -- same reason the closing quad of a loop reuses the stored first point.
             local z1 = (i == bands) and zt or (z0 + h)
-            local av = alphaAt(((z0 + z1) * 0.5 - zb) / (zt - zb))
+            local av = alphaAtZ((z0 + z1) * 0.5)
             if out then
                 DrawPoly(ax, ay, z0, bx, by, z0, ax, ay, z1, cr, cg, cb, av)
                 DrawPoly(bx, by, z0, bx, by, z1, ax, ay, z1, cr, cg, cb, av)

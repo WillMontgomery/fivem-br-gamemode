@@ -514,9 +514,12 @@ end
 --- `_ADD_BLIP_FOR_AREA`, 0xCE5D0E5E315DB238, HUD/AddBlipForArea.md:
 --- `Blip _ADD_BLIP_FOR_AREA(float x, float y, float z, float width, float height)`
 --- -- read out of citizenfx/natives, not remembered. FiveM drops the leading
---- underscore for the Lua name, the same way `_DRAW_SPRITE_POLY_2` is
---- `DrawSpritePoly_2` in client/storm.lua; it keeps an underscore only before a
---- digit, which is what GetGroundZFor_3dCoord's probe note records.
+--- underscore for the Lua name, the same way `_DRAW_SPRITE_POLY_2` would be
+--- `DrawSpritePoly_2`; it keeps an underscore only before a digit, which is what
+--- GetGroundZFor_3dCoord's probe note records. (That native is no longer called
+--- anywhere in this tree -- the storm wall's fade was rebuilt on the ordinary
+--- DrawSpritePoly plus a runtime texture -- so it survives here as a spelling
+--- example and not as a pointer to a call site.)
 ---
 --- ═══ THE ROTATION IS NOT OPTIONAL, AND THE DOC IS WHERE THAT COMES FROM ═══
 ---

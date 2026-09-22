@@ -252,6 +252,52 @@ local function backFacing(C, v)
     return n
 end
 
+--- The fade's alpha multiplier at height `z`, WRITTEN OUT A SECOND TIME.
+---
+--- ═══ DELIBERATELY NOT THE PRODUCTION FUNCTION, WHICH IS LOCAL ANYWAY ═══
+---
+--- This is the curve the config describes, spelled from the config's own fields: flat
+--- at baseAlpha from the geometry's bottom up to rampBaseZ, then straight to topAlpha
+--- at the top. Every alpha assertion below is against THIS rather than against a
+--- literal, so retuning baseAlpha, topAlpha or rampBaseZ retunes the suite instead of
+--- turning it red -- and a production change that alters the SHAPE of the curve still
+--- goes red, because this spelling does not follow it.
+---
+--- THE KINK IS THE WHOLE POINT OF IT. A ramp measured from baseZ spends its first 15
+--- percent below the lowest ground the config admits, which is what made the wall at a
+--- player's feet draw at alpha 92 where render.alpha says 110.
+--- @param fd table    the fade config
+--- @param zb number   the geometry's bottom
+--- @param zt number   the geometry's top
+--- @param z number
+--- @return number     0..1
+local function rampMul(fd, zb, zt, z)
+    local a0 = fd.baseAlpha or 1.0
+    local a1 = fd.topAlpha or 0.0
+    local z0 = fd.rampBaseZ or 0.0
+    if z0 < zb then z0 = zb end
+    if z0 >= zt then return a0 end
+    if z <= z0 then return a0 end
+    if z >= zt then return a1 end
+    return a0 + (a1 - a0) * ((z - z0) / (zt - z0))
+end
+
+--- Which fade path a client actually settled on, and how many bands that means.
+---
+--- ASKED OF THE CLIENT RATHER THAN OF THE CONFIG, because the answer is a runtime
+--- ladder: the gradient needs a runtime texture, and a client whose stubs refused one
+--- is genuinely drawing the fallback. A suite that read `prefer` instead would assert
+--- gradient geometry against a banded wall and blame the renderer.
+--- @param C table
+--- @return string path, integer bands
+local function fadeOf(C)
+    local path = C.env.BR.Storm and C.env.BR.Storm.fadePath
+    if path == 'gradient' then return 'gradient', 1 end
+    local fd = C.env.BR.Config.Storm.render.strip.fade or {}
+    return 'bands', math.max(1, math.floor(fd.bands or 3))
+end
+
+
 -- ---------------------------------------------------------------------------
 -- The server: the real br_core/server/storm.lua behind the smallest roster,
 -- match list and combat surface that can hold it up.
@@ -497,6 +543,134 @@ local function newStormClient()
             r = r, g = g, b = b, a = a,
         }
     end
+
+    -- ═══ AND THE TEXTURED POLY, WHICH IS THE SHIPPING WALL SINCE THE RAMP ═══
+    --
+    -- RECORDED INTO THE SAME C.polys AS DrawPoly, ON PURPOSE. Every geometry claim
+    -- in this file -- shared seams, closure, winding, two islands, the poly budget --
+    -- is a claim about the triangles and is true of the wall whichever native drew
+    -- them. Splitting the record in two would have meant either duplicating those
+    -- assertions or quietly losing them on the path that actually ships.
+    --
+    -- THE UVs AND THE TEXTURE NAMES ARE KEPT TOO, because on this path they are where
+    -- the fade LIVES: the alpha is one number for the whole triangle and the ramp is
+    -- in the texture, so a test that only read `a` could not tell a faded wall from a
+    -- flat one. `sprite` is what tells the two records apart when that matters.
+    env.DrawSpritePoly = function(x1, y1, z1, x2, y2, z2, x3, y3, z3,
+                                  r, g, b, a, txd, tex,
+                                  u1, v1, w1, u2, v2, w2, u3, v3, w3)
+        C.polys[#C.polys + 1] = {
+            { x = x1, y = y1, z = z1, u = u1, v = v1, w = w1 },
+            { x = x2, y = y2, z = z2, u = u2, v = v2, w = w2 },
+            { x = x3, y = y3, z = z3, u = u3, v = v3, w = w3 },
+            r = r, g = g, b = b, a = a,
+            txd = txd, tex = tex, sprite = true,
+        }
+    end
+
+    -- ═══ THE RUNTIME TEXTURE NATIVES, MODELLED RATHER THAN SWALLOWED ═══
+    --
+    -- A stub that returned a handle and dropped the pixels would let every claim about
+    -- the ramp pass without a ramp existing, which is precisely the failure mode this
+    -- suite has twice shipped over. So the store is real: pixels are kept, commits are
+    -- counted, and the two REFUSALS the engine actually performs are modelled, because
+    -- they are what the fallback ladder is built against.
+    --
+    -- THE DUPLICATE-NAME REFUSAL IS COPIED FROM FiveM's OWN SOURCE, not guessed.
+    -- code/components/extra-natives-five/src/RuntimeAssetNatives.cpp: CreateTexture
+    -- returns nullptr when the name is already in the dictionary, AND -- the half that
+    -- matters more -- CREATE_RUNTIME_TXD only builds its backing dictionary when the
+    -- streaming slot has no handle yet, so a second call for an existing TXD NAME
+    -- yields an object whose every CreateTexture returns nullptr whatever the texture
+    -- is called. That is the restart hazard, and it is why a retry has to move the
+    -- dictionary name and not just the texture name.
+    --
+    -- C.rt is the dial: `refuseTex` fails named textures, `widthLie` makes the
+    -- read-back disagree, and `preTxd` pretends a dictionary already exists -- which is
+    -- what a br_core restart in the same client session looks like from here.
+    C.rt = { byHandle = {}, txds = {}, texs = {}, next = 500,
+             refuseTex = {}, widthLie = nil, preTxd = {} }
+    env.CreateRuntimeTxd = function(name)
+        local h = C.rt.next
+        C.rt.next = h + 1
+        local dead = C.rt.txds[name] ~= nil or C.rt.preTxd[name] == true
+        C.rt.txds[name] = true
+        C.rt.byHandle[h] = { kind = 'txd', name = name, dead = dead }
+        return h
+    end
+    env.CreateRuntimeTexture = function(txd, name, w, h)
+        local d = C.rt.byHandle[txd]
+        if not d or d.kind ~= 'txd' then
+            error('CreateRuntimeTexture on a handle that is not a runtime txd')
+        end
+        if d.dead then return nil end
+        local key = d.name .. ':' .. name
+        if C.rt.texs[key] or C.rt.refuseTex[name] then return nil end
+        local th = C.rt.next
+        C.rt.next = th + 1
+        local t = { kind = 'tex', txd = d.name, name = name, w = w, h = h,
+                    px = {}, written = 0, commits = 0, committedAfter = nil }
+        C.rt.texs[key] = t
+        C.rt.byHandle[th] = t
+        C.rt.tex = t
+        -- HOW MANY TEXTURES HAVE EVER BEEN MADE, which is a different question from
+        -- how many times one texture was written. A rebuild loop that re-enters this
+        -- native every frame lands on a FRESH texture each time -- the retry suffix
+        -- sees the old name taken -- so a test watching the first texture's pixel
+        -- count would see it sit still and call that "built once". Measured: with
+        -- only that check, removing both latches survived the suite.
+        C.rt.made = (C.rt.made or 0) + 1
+        return th
+    end
+    env.SetRuntimeTexturePixel = function(tex, x, y, r, g, b, a)
+        local t = C.rt.byHandle[tex]
+        if not t or t.kind ~= 'tex' then
+            error('SetRuntimeTexturePixel on a handle that is not a runtime texture')
+        end
+        if x < 0 or y < 0 or x >= t.w or y >= t.h then
+            error(('SetRuntimeTexturePixel outside the texture: %d,%d in %dx%d')
+                :format(x, y, t.w, t.h))
+        end
+        t.px[y] = t.px[y] or {}
+        t.px[y][x] = { r = r, g = g, b = b, a = a }
+        t.written = t.written + 1
+    end
+    env.CommitRuntimeTexture = function(tex)
+        local t = C.rt.byHandle[tex]
+        if not t or t.kind ~= 'tex' then
+            error('CommitRuntimeTexture on a handle that is not a runtime texture')
+        end
+        t.commits = t.commits + 1
+        -- HOW MANY PIXELS EXISTED WHEN THE COMMIT HAPPENED. A commit before the writes
+        -- uploads a blank texture and is invisible in every other measure.
+        t.committedAfter = t.written
+    end
+    env.GetRuntimeTextureWidth = function(tex)
+        if C.rt.widthLie ~= nil then return C.rt.widthLie end
+        local t = C.rt.byHandle[tex]
+        if not t or t.kind ~= 'tex' then
+            error('GetRuntimeTextureWidth on a handle that is not a runtime texture')
+        end
+        return t.w
+    end
+
+    -- ═══ THE STREAMING NATIVES, STUBBED SO THAT ZERO CALLS IS PROVABLE ═══
+    --
+    -- Nothing in the wall should touch these any more: the ramp is built in memory and
+    -- this estate ships no streamed assets, which is the rule the whole design is
+    -- arranged around. Left UNDEFINED, a regression that reintroduced a streamed
+    -- dictionary would surface as a pcall'd error line -- true, but indistinguishable
+    -- from any other throw. Counted instead, so "the wall requests no texture
+    -- dictionary from the streamer" is a claim with an assertion under it.
+    C.streamed = {}
+    env.RequestStreamedTextureDict = function(d)
+        C.streamed[#C.streamed + 1] = tostring(d)
+    end
+    env.HasStreamedTextureDictLoaded = function(d)
+        C.streamed[#C.streamed + 1] = 'has:' .. tostring(d)
+        return false
+    end
+
     env.GetGroundZFor_3dCoord = function() return false, 0.0 end
 
     -- Blips are tagged by the native that made them, so the way-home arrow can
@@ -654,6 +828,19 @@ local function newStormClient()
     end
 
     C.env = env
+    return C
+end
+
+--- A client pinned to the banded fallback before it has drawn a frame.
+---
+--- THE PATH IS LATCHED ON THE FIRST FRAME, so this has to happen before one. Setting
+--- `prefer` is the config's own way in and is what the owner would type; refusing the
+--- texture in the stubs is the other way and is tested separately, because "the
+--- operator asked for bands" and "the texture could not be built" are different rungs
+--- and the console line has to be able to tell them apart.
+local function bandedClient()
+    local C = newStormClient()
+    C.env.BR.Config.Storm.render.strip.fade.prefer = 'bands'
     return C
 end
 
@@ -1627,15 +1814,7 @@ do
     local sp = rr.strip
     local SS = base.env.BR.StormShape
 
-    -- THE FADE IS READ FROM THE REAL CONFIG, NOT ASSUMED. The shipping path is the
-    -- banded one, so every assertion below is against banded geometry -- and the
-    -- band count is what a quad's poly cost is a multiple of, so the budget and
-    -- count assertions all carry it rather than hard-coding two triangles a quad.
-    -- Reading it here means raising `fade.bands` retunes this suite instead of
-    -- turning it red.
     local fd = sp.fade or {}
-    local nBands = math.max(1, math.floor(fd.bands or 3))
-    local quadPolys = 2 * nBands
 
     -- ═══ A CIRCLE, FROM INSIDE IT ═══
     --
@@ -1657,6 +1836,25 @@ do
         'and emits whole quads -- two triangles each, never an odd one',
         #C.polys)
     ok(#C.markers == 0, 'with no 3d marker anywhere in the frame', #C.markers)
+
+    -- ═══ THE BAND COUNT IS ASKED OF THE RUNNING CLIENT, NOT OF THE CONFIG ═══
+    --
+    -- The shipping path is the GRADIENT, which is one band -- the ramp lives in a
+    -- texture, so a quad is two triangles and the wall is smooth anyway. The banded
+    -- path is the fallback and has its own block below.
+    --
+    -- ASKED RATHER THAN ASSUMED, because the path is a runtime ladder: a client that
+    -- could not build the runtime texture really is drawing bands, and every count and
+    -- budget assertion here is a multiple of whatever it settled on. Hard-coding either
+    -- answer would make this block assert one path's geometry against the other path's
+    -- wall and blame the walk for the mismatch.
+    local fadePath, nBands = fadeOf(C)
+    local quadPolys = 2 * nBands
+    ok(fadePath == 'gradient' and nBands == 1,
+        'the shipping wall is the baked-ramp gradient -- one band, two triangles a '
+            .. 'quad, and the smoothness is in the texture rather than in the count',
+        ('%s at %d band(s); rung %s'):format(fadePath, nBands,
+            tostring(C.env.BR.Storm and C.env.BR.Storm.fadeRung)))
 
     local q = quadsOf(C)
     -- EVERY STEP CARRIES THE CONFIGURED NUMBER OF BANDS, and the count comes out of
@@ -1951,28 +2149,235 @@ do
             .. 'along it',
         varies or ('%d bands, each uniform round the ring'):format(perBand))
 
-    local monotone, lowest = true, byBand[1]
-    for bi = 2, nBands do
-        if byBand[bi] > byBand[bi - 1] then monotone = false end
-    end
-    ok(monotone and byBand[nBands] < lowest,
-        'and it falls as the wall rises, bottom band strongest -- which is the fade '
-            .. 'the height depends on',
-        table.concat(byBand, ' > '))
+    -- ═══ AND ON THE GRADIENT THE ALPHA CARRIES THE CLOCK AND NOTHING ELSE ═══
+    --
+    -- The ramp is in the TEXTURE on this path, so the draw's own alpha is the phase
+    -- clock by itself -- and that division of labour is worth an assertion of its own,
+    -- because the obvious way to write it wrong is to multiply the ramp in here as
+    -- well. That would SQUARE the fade: a wall that thinned out by about 300 m instead
+    -- of 850, which looks like a tuning problem rather than a bug and would have the
+    -- owner reaching for topAlpha.
+    local wantAlpha = math.floor(rr.alpha * 0.5 + 0.5)
+    ok(byBand[1] ~= nil and byBand[1] == wantAlpha,
+        'the gradient\'s single alpha is render.alpha times the phase-1 fade-in clock '
+            .. 'and nothing else -- the ramp is in the texture, so multiplying it in '
+            .. 'here too would square the fade',
+        ('%s against %d'):format(tostring(byBand[1]), wantAlpha))
 
-    -- THE RAMP'S OWN ARITHMETIC, against the config rather than against a literal:
-    -- the bottom band samples the ramp at its own centre, so at half the phase-1
-    -- fade its alpha is alpha * 0.5 * the ramp there.
-    local function rampAt(t)
-        local a0 = (fd.baseAlpha or 1.0)
-        local a1 = (fd.topAlpha or 0.0)
-        return a0 + (a1 - a0) * t
+    -- AND IT IS THE CLOCK, NOT A CONSTANT: a wall with no fade-in clock on it draws at
+    -- full strength. Without this the assertion above passes on a renderer that
+    -- ignores alphaScale entirely and happens to have been handed 0.5.
+    --
+    -- PHASE 2 RATHER THAN PHASE 1, because the fade-in clock only exists in phase 1 --
+    -- a phase-1 record whose hold has not reached its last fadeInSec draws no wall at
+    -- all, which would make this pass for the wrong reason.
+    local G = newStormClient()
+    G.record(2, 0.0, 0.0, 1600.0, 400.0, 0.0, 950.0, 600000, 60000, 1.25)
+    G.pedAt = pt(0.0, 0.0, 30.0)
+    G.frame()
+    local fullA = quadsOf(G)[1] and quadsOf(G)[1].bands[1].alpha
+    ok(fullA == math.floor(rr.alpha + 0.5) and fullA > wantAlpha,
+        'and off the fade-in clock it is render.alpha itself -- so the halving above '
+            .. 'is the clock and not a constant',
+        ('%s at full against %d halfway'):format(tostring(fullA), wantAlpha))
+
+    -- ═══ THE FADE ITSELF, WHICH ON THIS PATH IS THE v COORDINATE ═══
+    --
+    -- A textured quad's gradient is the texture plus the mapping onto it, so a test
+    -- that only read the alpha could not tell a faded wall from a flat one -- the
+    -- alpha is deliberately uniform here. What makes this wall a fade is that v runs
+    -- 0 at the bottom edge to 1 at the top, on every quad, with u pinned in the
+    -- texture's interior. The texture's own contents are asserted in wall.ramp.
+    --
+    -- w = 1.0 IS CHECKED BECAUSE IT WAS 0.0 IN THE DEAD VERSION OF THIS RENDERER,
+    -- read off a reference that called the component ignored. Every proven call site
+    -- in dui.lua passes 1.0, and "ignored" is a claim about a native nothing in this
+    -- tree had ever successfully called.
+    -- ═══ FROM BOTH SIDES, FOR THE SAME REASON THE WINDING IS CHECKED FROM BOTH ═══
+    --
+    -- The renderer emits one of two vertex orders depending on which side of the wall
+    -- the viewer is on, and each order carries its own nine UVs. A viewer INSIDE the
+    -- circle only ever exercises the inward spelling, so a UV error in the outward
+    -- branch is invisible from there -- exactly the asymmetry this file already warns
+    -- about for the winding. Measured: with this block reading one client, mutating
+    -- the outward branch's u, v and w every one survived the suite.
+    local uvBad, uvSeen, uvFaces = nil, 0, 0
+    local UVC = newStormClient()
+    UVC.record(5, 0.0, 0.0, 260.0, 60.0, 0.0, 120.0, 600000, 60000, 2.9)
+    for _, where in ipairs({ pt(80.0, 40.0, 30.0), pt(420.0, 380.0, 30.0) }) do
+        UVC.pedAt = where
+        UVC.frame()
+        if #UVC.polys == 0 then
+            uvBad = uvBad or 'a viewer position drew no wall at all'
+        else
+            uvFaces = uvFaces + 1
+        end
+        for _, t in ipairs(UVC.polys) do
+            if not t.sprite then
+                uvBad = uvBad or 'a gradient frame emitted a plain untextured poly'
+            end
+            for j = 1, 3 do
+                uvSeen = uvSeen + 1
+                local want = (t[j].z == sp.baseZ) and 0.0 or 1.0
+                if t[j].u ~= 0.5 then
+                    uvBad = uvBad or ('u %s, wanted 0.5'):format(tostring(t[j].u))
+                elseif t[j].w ~= 1.0 then
+                    uvBad = uvBad or ('w %s, wanted 1.0'):format(tostring(t[j].w))
+                elseif t[j].v ~= want then
+                    uvBad = uvBad or ('v %s at z %.1f, wanted %.1f'):format(
+                        tostring(t[j].v), t[j].z, want)
+                end
+            end
+        end
     end
-    local wantBottom = rr.alpha * 0.5 * rampAt(0.5 / nBands)
-    ok(byBand[1] ~= nil and math.abs(byBand[1] - wantBottom) <= 2.0,
-        'and the whole ramp is scaled by the phase-1 fade-in clock, as the map ring '
-            .. 'is: half strength halfway through the hold\'s last seconds',
-        ('bottom band %d against %.1f'):format(byBand[1] or -1, wantBottom))
+    ok(uvFaces == 2 and uvSeen > 0 and uvBad == nil,
+        'and every vertex of both windings -- seen from inside the circle and from '
+            .. 'outside it -- maps v 0 to the wall\'s bottom and v 1 to its top, with '
+            .. 'u pinned at 0.5 and w at 1.0 as every proven DrawSpritePoly call in '
+            .. 'this tree passes them',
+        uvBad or ('%d vertices across %d faces, all mapped'):format(uvSeen, uvFaces))
+
+    -- AND IT IS THE RAMP TEXTURE IT IS DRAWN WITH, not some other slot. A quad
+    -- pointed at a texture that does not exist draws nothing at all, which is the
+    -- failure the owner has reported twice and the one a suite can still catch.
+    local tex1 = C.polys[1]
+    ok(tex1 and tex1.txd == C.rt.tex.txd and tex1.tex == C.rt.tex.name,
+        'drawn with the runtime ramp this client actually built, by dictionary and '
+            .. 'texture name',
+        tex1 and ('%s:%s against %s:%s'):format(tostring(tex1.txd),
+            tostring(tex1.tex), C.rt.tex.txd, C.rt.tex.name))
+
+    -- ═══ THE BANDED FALLBACK'S OWN GEOMETRY, WHICH IS STILL REACHABLE ═══
+    --
+    -- The steps are the defect, so the fallback is not the wall -- but it is what
+    -- runs on a client whose runtime texture could not be built, and a fallback
+    -- nobody exercises is a fallback nobody can trust. Everything the banded path
+    -- alone claims is asserted here: the configured number of stacked quads, band
+    -- planes with none missing, one alpha per plane uniform round the ring, and the
+    -- ramp falling as the wall rises.
+    local B = bandedClient()
+    B.record(1, 0.0, 0.0, 2600.0, 400.0, 0.0, 1600.0, 600000, 60000, 0.5)
+    B.pedAt = pt(0.0, 0.0, 30.0)
+    local brec = B.env.BR.State.storm
+    brec.tStart = B.now - (brec.tWait - rr.fadeInSec * 1000.0 * 0.5)
+    B.frame()
+
+    local bPath, bBands = fadeOf(B)
+    ok(B.errored() == nil and bPath == 'bands'
+        and bBands == math.max(1, math.floor(fd.bands or 3)),
+        'a client that prefers bands draws the configured stack instead, and says so',
+        ('%s at %d bands; rung %s'):format(bPath, bBands,
+            tostring(B.env.BR.Storm.fadeRung)))
+
+    local bq = quadsOf(B)
+    local bShort = nil
+    for i, qd in ipairs(bq) do
+        if #qd.bands ~= bBands then bShort = bShort or i end
+    end
+    ok(#bq > 0 and bShort == nil and #bq * bBands * 2 == #B.polys,
+        'every banded quad is the configured number of stacked quads -- an off-by-one '
+            .. 'in the band loop shortens the wall by a third and leaves the seams, '
+            .. 'the winding and the closure all still correct',
+        ('%d quads x %d bands x 2 against %d polys; first short %s'):format(
+            #bq, bBands, #B.polys, tostring(bShort)))
+
+    -- THE BAND PLANES, AND THE SET OF THEM RATHER THAN MEMBERSHIP OF IT: a fade whose
+    -- bands only reached halfway up puts every vertex on a legal-looking plane and
+    -- leaves the top of the wall missing.
+    local bPlanes, bStray, bN = {}, 0, 0
+    local bLo, bHi = math.huge, -math.huge
+    for _, t in ipairs(B.polys) do
+        for j = 1, 3 do bPlanes[t[j].z] = true end
+    end
+    local bh = (sp.topZ - sp.baseZ) / bBands
+    for z in pairs(bPlanes) do
+        bN = bN + 1
+        if z < bLo then bLo = z end
+        if z > bHi then bHi = z end
+        local k = (z - sp.baseZ) / bh
+        if math.abs(k - math.floor(k + 0.5)) > 1e-6 then bStray = bStray + 1 end
+    end
+    ok(bN == bBands + 1 and bStray == 0 and bLo == sp.baseZ and bHi == sp.topZ,
+        'and its band planes run from the config\'s base to the config\'s top with '
+            .. 'none missing and none off the grid',
+        ('%d planes for %d bands, %d off-grid, span %.1f to %.1f'):format(
+            bN, bBands, bStray, bLo, bHi))
+
+    local bByBand, bPer, bVaries = {}, 0, nil
+    for _, qd in ipairs(bq) do
+        for bi, b in ipairs(qd.bands) do
+            if bByBand[bi] == nil then bByBand[bi] = b.alpha bPer = bPer + 1
+            elseif bByBand[bi] ~= b.alpha then
+                bVaries = bVaries or ('band %d reads %d and %d'):format(
+                    bi, bByBand[bi], b.alpha)
+            end
+        end
+    end
+    ok(bPer == bBands and bVaries == nil,
+        'its alpha depends on height and on nothing else -- every band reads the same '
+            .. 'all the way round, so a fade up the wall cannot become a stripe along '
+            .. 'it',
+        bVaries or ('%d bands, each uniform round the ring'):format(bPer))
+
+    local bMono = true
+    for bi = 2, bBands do
+        if bByBand[bi] >= bByBand[bi - 1] then bMono = false end
+    end
+    ok(bMono and bBands > 1,
+        'and it falls strictly as the wall rises, bottom band strongest',
+        table.concat(bByBand, ' > '))
+
+    -- ═══ THE RAMP'S OWN ARITHMETIC, AND THE NUMBER THAT WAS WRONG ═══
+    --
+    -- The bottom band samples the curve at its own CENTRE, so its alpha is the phase
+    -- clock times the ramp there. What makes this assertion worth having is which
+    -- curve: measured before the ramp was pinned to ground level, the bottom band of
+    -- a 3-band wall drew at alpha 92 where render.alpha says 110, because the ramp
+    -- started at baseZ and spent its first 150 m underground. rampMul above is the
+    -- pinned curve, so this goes red if the pinning is undone.
+    local bCentre = sp.baseZ + bh * 0.5
+    local wantBottom = rr.alpha * 0.5 * rampMul(fd, sp.baseZ, sp.topZ, bCentre)
+    ok(bByBand[1] ~= nil and math.abs(bByBand[1] - wantBottom) <= 1.0,
+        'and the bottom band reads the ramp pinned to GROUND level, not to the '
+            .. 'geometry\'s underground base -- the difference is a curtain that is '
+            .. 'full strength at a player\'s feet instead of 16 percent faint',
+        ('bottom band %s against %.1f at z %.1f'):format(
+            tostring(bByBand[1]), wantBottom, bCentre))
+
+    -- ═══ AND THE FALLBACK'S BAND COUNT IS CAPPED BY GEOMETRY, NOT BY FRAME RATE ═══
+    --
+    -- This is the config's "do not raise fade.bands" written as something that can go
+    -- red. A banded quad costs 2 * bands polys, so maxPolys rations QUADS to pay for
+    -- the bands -- and the ring goes polygonal. Measured through this renderer on the
+    -- widest shape the game can build, a fully separated 2600 + 1600 breakout: 3 bands
+    -- sags 1.98 m, 6 sags 7.25, 8 sags 12.49, 12 sags 28.97 and 16 sags 49.84, which
+    -- with the 6 m inset stands the curtain 56 metres inside the boundary that
+    -- damages. That is the "20ft inside" report again, nine times over, bought with
+    -- smoothness on the path that is supposed to be the ugly one.
+    --
+    -- SO THIS GOES RED THE MOMENT SOMEBODY RAISES THE BAND COUNT, deliberately, and
+    -- the fix when it does is to leave the band count alone -- the gradient is where
+    -- smoothness comes from now, and it is free.
+    local BS = bandedClient()
+    BS.record(2, 0.0, 0.0, 2600.0, 4400.0, 0.0, 1600.0, 600000, 60000, 1.25)
+    BS.pedAt = pt(0.0, 0.0, 30.0)
+    BS.frame()
+    local bSag = 0.0
+    for _, qd in ipairs(quadsOf(BS)) do
+        local mx, my = (qd.a.x + qd.b.x) * 0.5, (qd.a.y + qd.b.y) * 0.5
+        local d0 = math.sqrt(mx * mx + my * my)
+        local d1 = math.sqrt((mx - 4400.0) ^ 2 + my * my)
+        local r, d = 2600.0, d0
+        if math.abs(d1 - 1600.0) < math.abs(d0 - 2600.0) then r, d = 1600.0, d1 end
+        local sag = (r - rr.edgeInset) - d
+        if sag > bSag then bSag = sag end
+    end
+    ok(#BS.polys > 0 and bSag <= sp.chordM + 1e-6,
+        'and even the banded fallback stays inside chordM at the configured band '
+            .. 'count -- raising fade.bands spends quads on smoothness and walks the '
+            .. 'curtain back inside the boundary that damages',
+        ('worst sag %.2f m at %d bands, %d polys of %d'):format(
+            bSag, bBands, #BS.polys, sp.maxPolys))
 
     -- ═══ TWO ISLANDS ARE TWO STRIPS, AND NOTHING SPANS THE GAP ═══
     --
@@ -2206,6 +2611,45 @@ do
         ('worst sag %.3f m against %.1f, at %s'):format(worstSag, sp.chordM,
             tostring(sagAt)))
 
+    -- ═══ AND ON THE WIDEST SHAPES IN THE GAME, WHICH IS WHERE #337 WAS HIDING ═══
+    --
+    -- The sweep above drives NESTED circles, which is exactly the set of shapes the
+    -- poly ceiling never reached -- so it went green for two commits over a real
+    -- override. Measured at the time: a disjoint 2600 + 1600 wanted 166 quads for two
+    -- metres of sag and was rationed to 127, so the true worst sag on the two widest
+    -- shapes in the game was 5.09 m against a chordM of 2.0. The budget was silently
+    -- deciding the SHAPE of the wall.
+    --
+    -- THE GRADIENT CLOSES IT WITHOUT A NEW KNOB, which is the point of asserting it
+    -- here rather than raising maxPolys: a gradient quad is 2 polys instead of 6, so
+    -- the per-loop share triples and the rationing simply stops happening. This is the
+    -- assertion that would notice the day somebody lowers maxPolys, raises fade.bands,
+    -- or makes the banded path the default again.
+    local W = newStormClient()
+    W.record(2, 0.0, 0.0, 2600.0, 4400.0, 0.0, 1600.0, 600000, 60000, 1.25)
+    W.pedAt = pt(0.0, 0.0, 30.0)
+    W.frame()
+    local wideSag, wideAt = 0.0, nil
+    for _, qd in ipairs(quadsOf(W)) do
+        local mx, my = (qd.a.x + qd.b.x) * 0.5, (qd.a.y + qd.b.y) * 0.5
+        -- WHICH DISC THIS QUAD BELONGS TO. A disjoint union is two whole circles, so
+        -- the nearer centre is the one whose arc this chord is cutting.
+        local d0 = math.sqrt(mx * mx + my * my)
+        local d1 = math.sqrt((mx - 4400.0) ^ 2 + my * my)
+        local r, d = 2600.0, d0
+        if math.abs(d1 - 1600.0) < math.abs(d0 - 2600.0) then r, d = 1600.0, d1 end
+        local sag = (r - rr.edgeInset) - d
+        if sag > wideSag then
+            wideSag, wideAt = sag, ('r %.0f'):format(r)
+        end
+    end
+    ok(#W.polys > 0 and wideSag <= sp.chordM + 1e-6,
+        'and the widest shape the game can build -- a fully separated phase-2 '
+            .. 'breakout -- is inside chordM too, so nothing is rationed anywhere and '
+            .. 'the budget is no longer deciding how round the wall is (#337)',
+        ('worst sag %.3f m against %.1f at %s, in %d polys of %d'):format(
+            wideSag, sp.chordM, tostring(wideAt), #W.polys, sp.maxPolys))
+
     -- ═══ THE BUDGET, WHICH IS A CEILING AND NOT A HOPE ═══
     --
     -- The per-loop share is maxPolys / 2 / loops, taken BEFORE roundness is
@@ -2244,6 +2688,395 @@ do
             .. 'octagon roundness alone would settle for',
         ('%d polys, %d quads against a floor of %d'):format(endPolys,
             endPolys / quadPolys, sp.minSeg))
+end
+
+-- ---------------------------------------------------------------------------
+describe('wall.ramp')
+do
+    -- ═══ THE BAKED ALPHA RAMP, WHICH IS WHY THE WALL IS SMOOTH ═══
+    --
+    --   the 3-band wall "reads as three visible steps"   -- the owner, playtested
+    --
+    -- Three stacked flat quads are three steps, and no amount of tuning makes a
+    -- staircase a ramp. The fix is not more bands -- that rations quads and makes the
+    -- ring polygonal instead, which trades a visible defect for a worse invisible one
+    -- (see the note beside maxPolys). The fix is to stop approximating: bake the ramp
+    -- into a RUNTIME TEXTURE's own 256 alpha levels and let the sampler interpolate.
+    --
+    -- NO STREAMED ASSET IS INVOLVED, which is the finding the first attempt missed.
+    -- CreateRuntimeTxd plus CreateRuntimeTexture needs no .ytd, no stream folder and
+    -- no manifest entry, and br_core/client/dui.lua has been feeding exactly such a
+    -- texture to DrawSpritePoly in production since #236.
+    --
+    -- WHAT THIS BLOCK CAN AND CANNOT SEE. It can prove the texture was created at the
+    -- size asked for, that every pixel was written, that the writes were committed
+    -- afterwards, that the rows hold the intended curve, and that the fallback ladder
+    -- names each rung it climbs. It CANNOT prove a pixel appeared on screen, and it
+    -- cannot prove whether the blend is premultiplied or straight -- the one guess in
+    -- the design. client/storm.lua's header says what each looks like.
+
+    local base = newStormClient()
+    local sp = base.env.BR.Config.Storm.render.strip
+    local fd = sp.fade
+    local rr = base.env.BR.Config.Storm.render
+    local W = math.max(1, math.floor(fd.rampW or 8))
+    local H = math.max(2, math.floor(fd.rampH or 256))
+
+    local C = newStormClient()
+    C.frame()
+    local tex = C.rt.tex
+
+    ok(C.errored() == nil, 'the gradient wall runs clean', C.errored())
+    ok(tex ~= nil, 'a runtime texture is created')
+    ok(tex and tex.txd == fd.txd and tex.name == fd.texture,
+        'under the dictionary and texture names the config asks for',
+        tex and ('%s:%s against %s:%s'):format(tex.txd, tex.name,
+            tostring(fd.txd), tostring(fd.texture)))
+    ok(tex and tex.w == W and tex.h == H,
+        'at the configured size -- 8 wide so the u axis is not degenerate, 256 tall '
+            .. 'so there is one row per alpha level the format has',
+        tex and ('%dx%d against %dx%d'):format(tex.w, tex.h, W, H))
+
+    -- ═══ NOT ONE STREAMED DICTIONARY, WHICH IS THE ESTATE RULE ═══
+    --
+    -- HasStreamedTextureDictLoaded is also the WRONG QUESTION for a slot with no
+    -- backing .ytd -- it would answer no forever -- so the old gate could never have
+    -- opened on a runtime texture even if somebody had pointed it at one.
+    ok(#C.streamed == 0,
+        'and the wall asks the streamer for nothing at all: no dictionary requested, '
+            .. 'none waited on, so the no-streamed-assets rule is untouched',
+        table.concat(C.streamed, ', '))
+
+    -- ═══ EVERY PIXEL WRITTEN, AND COMMITTED AFTER THE WRITES AND NOT BEFORE ═══
+    --
+    -- SET_RUNTIME_TEXTURE_PIXEL writes a CPU backing buffer; the decl says the change
+    -- "requires finalization through COMMIT_RUNTIME_TEXTURE to take effect". A commit
+    -- issued before the writes uploads a blank texture, and a blank texture is a wall
+    -- that draws nothing -- invisible to every other measure here, which is why the
+    -- harness records how many pixels existed at commit time.
+    ok(tex and tex.written == W * H,
+        'every pixel of the ramp is written',
+        tex and ('%d of %d'):format(tex.written, W * H))
+    ok(tex and tex.commits == 1 and tex.committedAfter == W * H,
+        'and committed exactly once, after the last write -- a commit before the '
+            .. 'writes uploads a blank texture and draws an invisible wall',
+        tex and ('%d commits, %d pixels present at commit'):format(
+            tex.commits, tostring(tex.committedAfter)))
+
+    -- ═══ PREMULTIPLIED GREY: r = g = b = a ON EVERY PIXEL ═══
+    --
+    -- The one guess in the design, and it is the safe direction. The proven
+    -- DrawSpritePoly source in this tree is a CEF surface, which is premultiplied, so
+    -- this matches the blend the native is known to work with here. White-with-alpha
+    -- would be the backwards guess: under a premultiplied blend (255, 255, 255, a)
+    -- contributes full colour at every height whatever a is, which is an opaque white
+    -- haze over the top of the wall. Premultiplied grey under a STRAIGHT blend merely
+    -- comes out steeper than authored, which is a fade either way.
+    local notGrey, greyAt = 0, nil
+    for y = 0, H - 1 do
+        for x = 0, W - 1 do
+            local p = tex and tex.px[y] and tex.px[y][x]
+            if not p or p.r ~= p.a or p.g ~= p.a or p.b ~= p.a then
+                notGrey = notGrey + 1
+                greyAt = greyAt or ('row %d col %d'):format(y, x)
+            end
+        end
+    end
+    ok(notGrey == 0,
+        'every pixel is premultiplied grey -- r = g = b = a -- which is the blend the '
+            .. 'only proven DrawSpritePoly path in this tree feeds',
+        greyAt or ('%d pixels off-grey'):format(notGrey))
+
+    -- AND EVERY COLUMN IS THE SAME, because the width exists only to keep the u axis
+    -- non-degenerate. A ramp that varied across u would fade ALONG the wall as well
+    -- as up it, which is the picket fence arriving through the texture.
+    local colBad = nil
+    for y = 0, H - 1 do
+        local first = tex and tex.px[y] and tex.px[y][0]
+        for x = 1, W - 1 do
+            local p = tex and tex.px[y] and tex.px[y][x]
+            if not p or not first or p.a ~= first.a then
+                colBad = colBad or ('row %d col %d'):format(y, x)
+            end
+        end
+    end
+    ok(colBad == nil,
+        'and every column of a row is identical, so the fade runs up the wall and '
+            .. 'never along it',
+        colBad)
+
+    -- ═══ THE CURVE ITSELF, ROW BY ROW, AGAINST THE CONFIG'S OWN ARITHMETIC ═══
+    --
+    -- v = 0 IS THE FIRST ROW, not the last -- the ordinary D3D convention, and this
+    -- tree already relies on it: dui.lua's drawQuad documents `a` as the texture's
+    -- top-left and gives it UV (0, 0), and the warmup board renders right side up in
+    -- production off exactly that. The draw gives the wall's BOTTOM v = 0, so row 0
+    -- must hold the base alpha. If this were inverted the wall would be transparent at
+    -- the ground and solid at 850 m, which is unmistakable rather than subtle.
+    local rowBad, rowsChecked = nil, 0
+    for y = 0, H - 1 do
+        local z = sp.baseZ + (sp.topZ - sp.baseZ) * (y / (H - 1))
+        local want = math.floor(rampMul(fd, sp.baseZ, sp.topZ, z) * 255.0 + 0.5)
+        local got = tex and tex.px[y] and tex.px[y][0] and tex.px[y][0].a
+        rowsChecked = rowsChecked + 1
+        if got ~= want then
+            rowBad = rowBad or ('row %d (z %.1f) holds %s, wanted %d'):format(
+                y, z, tostring(got), want)
+        end
+    end
+    ok(rowsChecked == H and rowBad == nil,
+        'every row holds the ramp the config describes, evaluated at that row\'s own '
+            .. 'world height -- row 0 is the BOTTOM of the wall, which is the texture '
+            .. 'convention dui.lua already ships against',
+        rowBad or ('%d rows, all matching'):format(rowsChecked))
+
+    local row0 = tex and tex.px[0] and tex.px[0][0] and tex.px[0][0].a
+    local rowN = tex and tex.px[H - 1] and tex.px[H - 1][0] and tex.px[H - 1][0].a
+    ok(row0 == math.floor((fd.baseAlpha or 1.0) * 255.0 + 0.5)
+        and rowN == math.floor((fd.topAlpha or 0.0) * 255.0 + 0.5)
+        and row0 > rowN,
+        'the bottom row is baseAlpha and the top row is topAlpha, in that order -- an '
+            .. 'inverted ramp is a purple ceiling with no base',
+        ('row 0 %s, row %d %s'):format(tostring(row0), H - 1, tostring(rowN)))
+
+    local nonMono, monoAt = 0, nil
+    for y = 1, H - 1 do
+        local a, b = tex.px[y - 1][0].a, tex.px[y][0].a
+        if b > a then
+            nonMono = nonMono + 1
+            monoAt = monoAt or ('row %d rises from %d to %d'):format(y, a, b)
+        end
+    end
+    ok(nonMono == 0, 'and it never rises on the way up', monoAt)
+
+    -- ═══ THE STEPS ARE GONE, AND THIS IS THE ASSERTION THAT SAYS SO ═══
+    --
+    -- The defect was three visible steps. What makes a ramp smooth is that no
+    -- neighbouring pair of levels jumps far enough to read as an edge: across the
+    -- sloping part of the curve this ramp moves by at most one alpha level per row,
+    -- 256 rows over a 1000 m wall. The 3-band fallback moves by 43 levels at each of
+    -- its two seams, which is the staircase the owner saw. Asserted as a ratio so it
+    -- survives a retune of baseAlpha.
+    local worstJump = 0
+    for y = 1, H - 1 do
+        local d = tex.px[y - 1][0].a - tex.px[y][0].a
+        if d > worstJump then worstJump = d end
+    end
+    local bandJump = math.floor(255.0 * ((fd.baseAlpha or 1.0) - (fd.topAlpha or 0.0))
+        / math.max(1, math.floor(fd.bands or 3)) + 0.5)
+    ok(worstJump <= 2 and worstJump * 10 < bandJump,
+        'no two adjacent levels of the baked ramp differ by more than a level or two, '
+            .. 'against the 3-band fallback\'s 40-odd at every seam -- which is the '
+            .. 'difference between a fade and the three steps that were reported',
+        ('worst jump %d levels against the banded path\'s %d'):format(
+            worstJump, bandJump))
+
+    -- ═══ AND THE NUMBER THE PINNED DOMAIN ACTUALLY BUYS ═══
+    --
+    -- The geometry stands on baseZ (-150) so no gap can open under the curtain on a
+    -- slope. The RAMP starts at ground level instead, and this is what the difference
+    -- is worth where players actually are. City ground is around 30.
+    --
+    -- `unpinned` is the OLD curve spelled out, so this assertion is a comparison
+    -- between two designs rather than a restatement of the current one -- it goes red
+    -- if production reverts to measuring the ramp from the geometry's base, which is
+    -- a change that rampMul alone would follow silently if rampBaseZ simply vanished.
+    local cityRow = math.floor((30.0 - sp.baseZ) / (sp.topZ - sp.baseZ) * (H - 1) + 0.5)
+    local atCity = tex.px[cityRow][0].a
+    local unpinned = math.floor(255.0
+        * (1.0 - (30.0 - sp.baseZ) / (sp.topZ - sp.baseZ)) + 0.5)
+    ok(atCity >= 240 and atCity - unpinned >= 30,
+        'at city ground the ramp is still within a few levels of full strength, where '
+            .. 'a ramp measured from the geometry\'s underground base would already '
+            .. 'have given away 18 percent of the wall nobody can see',
+        ('row %d reads %d; measured from baseZ it would read %d'):format(
+            cityRow, atCity, unpinned))
+
+    -- ═══ BUILT ONCE PER RESOURCE START, NOT PER FRAME ═══
+    --
+    -- 2048 pixel writes are cheap once and ruinous at 60 Hz. The latch is the same one
+    -- that makes the console line appear once.
+    local before = tex.written
+    local madeBefore = C.rt.made
+    C.frame() C.frame() C.frame()
+    ok(tex.written == before and tex.commits == 1
+        and C.rt.made == madeBefore and C.rt.made == 1,
+        'and three more frames neither rewrite it, recommit it, nor make a second one '
+            .. '-- 2048 pixel writes are cheap once and ruinous at 60 Hz, and runtime '
+            .. 'textures cannot be destroyed once created',
+        ('%d writes, %d commits, %d textures ever made'):format(
+            tex.written, tex.commits, C.rt.made))
+
+    -- ═══ THE ANNOUNCEMENT, WHICH IS THE OWNER'S ONLY WAY TO KNOW ═══
+    --
+    --   "give me a way to know whether it fellback."   -- the owner, 2026-09-22
+    local said, saidN = nil, 0
+    for _, line in ipairs(C.prints) do
+        if line:find('storm wall fade', 1, true) then
+            saidN = saidN + 1
+            said = said or line
+        end
+    end
+    ok(saidN == 1 and said and said:find('gradient', 1, true),
+        'the wall says which path it took, once per resource start and not per frame',
+        ('%d lines: %s'):format(saidN, tostring(said)))
+    ok(said and said:find('runtime ramp', 1, true)
+        and said:find(tostring(fd.txd), 1, true),
+        'and the rung names the runtime ramp it built, so "did it fall back" is '
+            .. 'answerable from the console alone',
+        tostring(said))
+
+    -- AND IT SAYS WHICH GATE RAN. The read-back is what separates "the texture is
+    -- there" from "the call returned something", so a build missing
+    -- GetRuntimeTextureWidth gets a weaker gate -- and has to say so rather than
+    -- reporting the same line as a verified one.
+    ok(said and said:find('width read back', 1, true),
+        'and names the read-back as the gate that actually ran',
+        tostring(said))
+
+    local noRead = newStormClient()
+    noRead.env.GetRuntimeTextureWidth = nil
+    noRead.frame()
+    ok(noRead.env.BR.Storm.fadePath == 'gradient'
+        and noRead.env.BR.Storm.fadeRung:find('handle trusted', 1, true),
+        'a build without the read-back native still gets the gradient, and the '
+            .. 'console line admits the gate was the handle alone',
+        tostring(noRead.env.BR.Storm.fadeRung))
+
+    -- AND /brwallstyle REPEATS IT AT ANY TIME, which is the command the owner reaches
+    -- for while looking at the wall.
+    local mark = #C.prints
+    C.cmds.brwallstyle()
+    local reported = nil
+    for i = mark + 1, #C.prints do
+        if C.prints[i]:find('storm wall fade', 1, true) then reported = C.prints[i] end
+    end
+    ok(reported and reported:find('gradient', 1, true)
+        and reported:find('runtime ramp', 1, true),
+        '/brwallstyle reports the path and the rung on demand',
+        tostring(reported))
+
+    -- ═══ A WALL WITH NO HEIGHT BAKES NOTHING, WHICH IS WHY THE GUARD MOVED ═══
+    --
+    -- The span check used to sit below the fade resolution. It had to move above it,
+    -- because the ramp is baked FROM the span: a topZ at or under baseZ divides by
+    -- zero or by a negative, and a nan written into the texture is latched there for
+    -- the rest of the session -- an invisible wall with nothing in the console, on
+    -- every frame after, with no way back short of a restart. Refusing first means the
+    -- bad config costs a missing wall rather than a poisoned texture.
+    local flat = newStormClient()
+    flat.env.BR.Config.Storm.render.strip.topZ =
+        flat.env.BR.Config.Storm.render.strip.baseZ
+    flat.frame()
+    ok(#flat.polys == 0 and flat.rt.tex == nil and flat.errored() == nil,
+        'a wall of no height draws nothing AND bakes no texture -- the span guard runs '
+            .. 'before the ramp, so a bad config cannot latch a nan into a texture '
+            .. 'that outlives it',
+        ('%d polys, texture %s'):format(#flat.polys,
+            flat.rt.tex and 'baked' or 'none'))
+
+    -- ═══ THE LADDER, RUNG BY RUNG, EACH ONE NAMED ═══
+    --
+    -- A fallback whose reason is unknown is barely better than a silent one: the owner
+    -- has to be able to tell "you asked for bands" from "the texture would not build"
+    -- from "this build has no such native". Each rung below is a separate client with
+    -- one thing broken, and each asserts BOTH that the wall still drew and that the
+    -- console said why.
+    local function rung(C2)
+        C2.frame()
+        local line = nil
+        for _, l in ipairs(C2.prints) do
+            if l:find('storm wall fade', 1, true) then line = l end
+        end
+        return (C2.env.BR.Storm or {}).fadePath, (C2.env.BR.Storm or {}).fadeRung,
+            line, #C2.polys
+    end
+
+    local p1, r1, l1, n1 = rung(bandedClient())
+    ok(p1 == 'bands' and r1 == 'config prefers bands' and n1 > 0
+        and l1 and l1:find('banded', 1, true),
+        'prefer = bands falls back on request, draws a wall anyway, and says it was '
+            .. 'asked to',
+        ('%s / %s / %d polys'):format(tostring(p1), tostring(r1), n1))
+
+    local noNative = newStormClient()
+    noNative.env.DrawSpritePoly = nil
+    local p2, r2, _, n2 = rung(noNative)
+    ok(p2 == 'bands' and r2 and r2:find('DrawSpritePoly', 1, true) and n2 > 0,
+        'a build without DrawSpritePoly bands instead of drawing nothing, and names '
+            .. 'the missing native',
+        ('%s / %s / %d polys'):format(tostring(p2), tostring(r2), n2))
+
+    local noTxd = newStormClient()
+    noTxd.env.CreateRuntimeTexture = nil
+    local p3, r3, _, n3 = rung(noTxd)
+    ok(p3 == 'bands' and r3 and r3:find('CreateRuntimeTexture', 1, true) and n3 > 0,
+        'and a build without the runtime-texture natives says which one is missing',
+        ('%s / %s / %d polys'):format(tostring(p3), tostring(r3), n3))
+
+    -- THE TEXTURE REFUSED UNDER BOTH NAMES. This is the rung that matters most,
+    -- because a truthy handle is the thing it would be easiest to trust: the wall must
+    -- band rather than draw two triangles pointed at a texture that is not there.
+    local refused = newStormClient()
+    refused.rt.refuseTex[fd.texture] = true
+    refused.rt.refuseTex[fd.texture .. '_b'] = true
+    local p4, r4, _, n4 = rung(refused)
+    ok(p4 == 'bands' and r4 and r4:find('either name', 1, true) and n4 > 0,
+        'a texture refused under both names bands rather than drawing quads pointed at '
+            .. 'nothing -- which is the failure that costs the whole curtain',
+        ('%s / %s / %d polys'):format(tostring(p4), tostring(r4), n4))
+
+    -- THE READ-BACK GATE. A handle that came back truthy while no surface exists is
+    -- exactly what the width check is for, so a lying width must reach bands.
+    local lying = newStormClient()
+    lying.rt.widthLie = 4
+    local p5, r5, _, n5 = rung(lying)
+    ok(p5 == 'bands' and r5 and r5:find('read back', 1, true) and n5 > 0,
+        'and a texture whose width reads back wrong is not trusted either: the gate is '
+            .. 'a read-back, not a handle',
+        ('%s / %s / %d polys'):format(tostring(p5), tostring(r5), n5))
+
+    -- ═══ RESTART SAFETY, AND THE SUFFIX HAS TO MOVE THE DICTIONARY TOO ═══
+    --
+    -- A br_core restart in the same client session loses our Lua handles while the
+    -- engine keeps the texture. FiveM's RuntimeAssetNatives.cpp refuses at the
+    -- DICTIONARY level: CREATE_RUNTIME_TXD only builds its backing dictionary when the
+    -- streaming slot has no handle yet, so the second call for an existing TXD name
+    -- yields an object on which EVERY CreateTexture returns nothing, whatever the
+    -- texture is called. A retry that suffixed only the texture name would therefore
+    -- retry straight back into the same wall -- and would look correct in review.
+    local restarted = newStormClient()
+    restarted.rt.preTxd[fd.txd] = true
+    restarted.frame()
+    local rPath = restarted.env.BR.Storm.fadePath
+    local rTex = restarted.rt.tex
+    ok(rPath == 'gradient' and rTex ~= nil and #restarted.polys > 0,
+        'a dictionary name already taken -- a br_core restart in the same session -- '
+            .. 'still reaches the gradient on the retry',
+        ('%s, texture %s'):format(tostring(rPath),
+            rTex and (rTex.txd .. ':' .. rTex.name) or 'none'))
+    ok(rTex and rTex.txd ~= fd.txd and rTex.txd:find('_b', 1, true)
+        and rTex.name ~= fd.texture,
+        'and the retry moves the DICTIONARY name and not just the texture name, '
+            .. 'because the engine refuses one level above the texture',
+        rTex and ('%s:%s against %s:%s'):format(rTex.txd, rTex.name,
+            tostring(fd.txd), tostring(fd.texture)))
+    ok(restarted.env.BR.Storm.fadeRung
+        and restarted.env.BR.Storm.fadeRung:find('_b', 1, true),
+        'and the console line names the suffixed slot it actually ended up on',
+        tostring(restarted.env.BR.Storm.fadeRung))
+
+    -- AND A SECOND RESTART, where both names are taken, is bands rather than a wall
+    -- pointed at nothing. One retry, not a loop: a third name would only help if
+    -- something other than the name were wrong.
+    local twice = newStormClient()
+    twice.rt.preTxd[fd.txd] = true
+    twice.rt.preTxd[fd.txd .. '_b'] = true
+    local p6, r6, _, n6 = rung(twice)
+    ok(p6 == 'bands' and r6 and r6:find('either name', 1, true) and n6 > 0,
+        'and with both names taken it bands -- one retry, not an endless supply of '
+            .. 'names',
+        ('%s / %s / %d polys'):format(tostring(p6), tostring(r6), n6))
 end
 
 -- ---------------------------------------------------------------------------
@@ -2871,19 +3704,30 @@ do
     -- it. Checked against the config's own arithmetic rather than against a second
     -- drawn wall, because a second wall would be asserting the renderer against
     -- itself.
+    -- ASKED OF THE PATH THE PREVIEW ACTUALLY TOOK. On the shipping gradient the ramp
+    -- is in the texture and the draw's alpha is previewAlpha's share of render.alpha
+    -- outright; on the banded fallback it is that share sampled per band. Either way
+    -- the claim is the same one -- previewAlpha scales the WHOLE ramp rather than just
+    -- the bottom of it -- so the expectation is computed per path instead of the
+    -- assertion being dropped on one of them.
     local pfd = psp.fade or {}
-    local pBandsN = math.max(1, math.floor(pfd.bands or 3))
+    local pPath, pBandsN = fadeOf(C)
     local pAlpha = rr.alpha * (rr.previewAlpha or 0.5)
-    local pa0 = pAlpha * (pfd.baseAlpha or 1.0)
-    local pa1 = pAlpha * (pfd.topAlpha or 0.0)
-    local wantP = math.floor(pa0 + (pa1 - pa0) * (0.5 / pBandsN) + 0.5)
+    local wantP
+    if pPath == 'gradient' then
+        wantP = math.floor(pAlpha + 0.5)
+    else
+        local ph = (psp.topZ - psp.baseZ) / pBandsN
+        wantP = math.floor(pAlpha
+            * rampMul(pfd, psp.baseZ, psp.topZ, psp.baseZ + ph * 0.5) + 0.5)
+    end
     local pBands = quadsOf(C)[1] and quadsOf(C)[1].bands
     ok(pBands and #pBands == pBandsN and pBands[1].alpha == wantP
         and pBands[1].alpha < rr.alpha,
         'and fainter than a wall that is actually doing something -- previewAlpha '
-            .. 'scales the whole ramp, band for band',
-        ('bottom band %s against %d, live wall full strength %d'):format(
-            pBands and tostring(pBands[1].alpha), wantP, rr.alpha))
+            .. 'scales the whole ramp, not just the bottom of it',
+        ('%s path, bottom %s against %d, live wall full strength %d'):format(
+            pPath, pBands and tostring(pBands[1].alpha), wantP, rr.alpha))
     ok(C.errored() == nil, 'the preview wall runs clean', C.errored())
 
     -- AND IT SAYS NOTHING TO THE INTERFACE. The HUD storm card is driven off the

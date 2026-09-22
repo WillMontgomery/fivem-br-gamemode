@@ -420,7 +420,7 @@ BR.Config.Storm = {
             -- shape can talk its way past it. Where the real per-frame ceiling sits
             -- is a resmon question, not a derivation.
             --
-            -- ═══ 1024 RATHER THAN 256, AND THE FADE IS ONLY HALF THE REASON ═══
+            -- ═══ 1024 RATHER THAN 256, AND IT IS NOW THE NUMBER THAT CLOSES #337 ═══
             --
             -- A BANDED QUAD IS `fade.bands` QUADS, so it costs 2 * bands polys and
             -- not 2. At 256 the banded wall would have been rationed to 21 quads a
@@ -435,12 +435,40 @@ BR.Config.Storm = {
             -- The suite never saw it because its sag block drives nested circles,
             -- which are the shapes the ceiling never reached.
             --
-            -- At 1024 nothing is rationed on the gradient path (worst 332 polys, and
-            -- every shape inside chordM), and the banded path at 3 bands peaks at
-            -- 888 with one shape trimmed to 2.88 m of sag. Measured polys per frame,
-            -- gradient / 3 bands: phase 1 nested 162 / 486, phase 2 nested 126 / 378,
-            -- phase 3 nested 98 / 294, phase 4 nested 72 / 216, phase 5 nested
-            -- 52 / 156, phase 8 point 48 / 144, the widest Venn 332 / 888.
+            -- ═══ LEAVE IT HERE. RAISING IT IS NOT THE SMOOTHNESS KNOB, AND LOWERING
+            ---    IT PUTS THE WALL BACK INSIDE THE BOUNDARY ═══
+            --
+            -- The shipping path is the GRADIENT, which is 2 polys per quad flat --
+            -- the ramp lives in a texture, so smoothness costs no triangles at all.
+            -- Measured through this renderer: the widest shape in the game wants 332
+            -- polys against this 1024, every shape stays inside chordM, and NOTHING
+            -- IS RATIONED ANYWHERE. That is what closes #337's silent chordM override
+            -- as a side effect rather than as a fix: there is no longer a shape the
+            -- budget reaches.
+            --
+            -- SO THERE IS NOTHING TO BUY BY RAISING IT, and the banded fallback is
+            -- the reason not to lower it OR to raise `fade.bands`. Measured through
+            -- the renderer on the widest shape in the game, a fully separated
+            -- 2600 + 1600 breakout -- worst sag, and how far inside the damaging
+            -- boundary that puts the curtain once edgeInset is added:
+            --
+            --     3 bands   148 quads   888 polys    1.98 m sag    7.98 m inside
+            --     6 bands    84 quads  1008 polys    7.25 m sag   13.25 m inside
+            --     8 bands    64 quads  1024 polys   12.49 m sag   18.49 m inside
+            --    12 bands    42 quads  1008 polys   28.97 m sag   34.97 m inside
+            --    16 bands    32 quads  1024 polys   49.84 m sag   55.84 m inside
+            --
+            -- At 16 the 2600m ring is a 32-gon and the wall stands 56 metres inside
+            -- the edge that damages -- the live "20ft inside" complaint again, nine
+            -- times over, on a curtain that says it is safe to stand at it. The band
+            -- count is capped by GEOMETRY, not by frame rate, and this is where that
+            -- cap is written down. Past 3 the budget starts trimming quads rather
+            -- than the fade getting smoother.
+            --
+            -- Measured polys per frame, gradient / 3 bands: phase 1 nested 162 / 486,
+            -- phase 2 nested 126 / 378, phase 3 nested 98 / 294, phase 4 nested
+            -- 72 / 216, phase 5 nested 52 / 156, phase 8 point 48 / 144, the widest
+            -- Venn 332 / 888.
             maxPolys = 1024,
 
             -- ═══ THE FADE, WHICH IS WHAT LETS THE WALL BE AS TALL AS THE MARKER ═══
@@ -449,89 +477,116 @@ BR.Config.Storm = {
             --    3dmarker? if so, just make it the same height as the marker was."
             --   "go with the fallback if no stock texture works. but give me a way
             --    to know whether it fellback."          -- the owner, 2026-09-22
+            --   the 3-band wall "reads as three visible steps"
+            --                                           -- the owner, playtested
             --
-            -- TWO PATHS, AND THE DEFAULT IS THE ONE THAT CANNOT FAIL.
+            -- TWO PATHS, AND THE DEFAULT IS NOW THE SMOOTH ONE.
             --
+            --   'gradient'  ONE quad, two `DRAW_SPRITE_POLY` triangles, textured with
+            --               an alpha ramp baked into a RUNTIME texture at boot. The
+            --               gradient comes out of the texture's own 256 alpha levels,
+            --               so it is smooth by construction and costs 2 polys a quad
+            --               -- the same as a wall with no fade at all.
             --   'bands'     stacked plain DRAW_POLY quads, each flat at its own
-            --               alpha. Always works, costs `bands` times the polys, and
-            --               SHOWS STEPS rather than a smooth ramp -- which is the
-            --               banding #336 escaped, so it is a fallback and not a
-            --               plan.
-            --   'gradient'  `_DRAW_SPRITE_POLY_2` (0x736D7AA1B750856B), Rockstar's
-            --               DRAW_TEXTURED_POLY_WITH_THREE_COLOURS, which takes a
-            --               colour AND AN ALPHA PER VERTEX: a real gradient at
-            --               today's triangle count, for nothing.
+            --               alpha. Cannot fail, costs `bands` times the polys, and
+            --               SHOWS STEPS -- which is the defect the owner playtested,
+            --               so it is a fallback and not a plan.
             --
-            -- THE GRADIENT IS NOT THE DEFAULT BECAUSE IT NEEDS A TEXTURE WE DO NOT
-            -- SHIP, and that is a finding rather than a caution. The native is real
-            -- -- a GTA V client native, registered in FiveM with 32 arguments,
-            -- callable from Lua -- but it is a TEXTURED poly, so the vertex colours
-            -- tint something, and a textured poly with no texture draws nothing.
+            -- ═══ WHAT THE PREVIOUS VERSION OF THIS BLOCK GOT WRONG, BECAUSE THE
+            ---     DEAD END IS EASY TO RE-DERIVE ═══
             --
-            -- THERE IS NO STOCK FLAT-WHITE TEXTURE. Every shipped resource that
-            -- draws textured polys either streams its own .ytd (l2k_gps3d's
-            -- `chevrons`; blitz outrun's `blitz_outrun`, which is a translucent quad
-            -- wall and the closest analogue in existence) or points the native at a
-            -- DUI's runtime texture. Rockstar's own use is tapered laser-beam art.
-            -- `deadline`, which the native's own documentation names, is requested by
-            -- nobody at all. THIS ESTATE SHIPS NO STREAMED ASSETS, so the one thing
-            -- the gradient needs is the one thing we have not got -- and there is no
-            -- working call site for the native anywhere in public code either, so it
-            -- would be unproven even with a texture.
+            -- It said the gradient was impossible here, and the two facts it rested
+            -- on were both TRUE: there is no stock flat-white texture in the game
+            -- (every resource that draws textured polys streams its own .ytd or
+            -- points the native at a DUI), and this estate ships no streamed assets.
             --
-            -- WHAT THAT COSTS IF IT IS WRONG IS THE WHOLE WALL. A native that
-            -- silently draws nothing leaves the storm with no curtain at all, which
-            -- is the failure the owner has now reported twice -- and NO TEST IN THIS
-            -- TREE CAN SEE IT, because a suite can prove a call was made and cannot
-            -- prove a pixel appeared. So the wall ships on bands.
+            -- WHAT IT MISSED IS THAT A TEXTURE DOES NOT HAVE TO BE STREAMED. FiveM
+            -- makes one at RUNTIME -- CREATE_RUNTIME_TXD, CREATE_RUNTIME_TEXTURE,
+            -- SET_RUNTIME_TEXTURE_PIXEL, COMMIT_RUNTIME_TEXTURE -- with no .ytd, no
+            -- stream folder, no manifest entry and no RequestStreamedTextureDict. The
+            -- no-streamed-assets rule is untouched by it. And the proof was already
+            -- in this repo the whole time: br_core/client/dui.lua builds a runtime
+            -- texture from a CEF surface and feeds it straight to DrawSpritePoly as
+            -- world-space quads, and has been doing so in production for months. It
+            -- greps zero for RequestStreamedTextureDict.
             --
-            -- THE GRADIENT IS FULLY WIRED AND WAITING FOR A TEXTURE. Name a resident
-            -- dictionary and texture below and set prefer = 'gradient': the wall
-            -- requests the dictionary, waits requestFrames for it, uses it if it
-            -- arrives and bands if it does not. Two ways to get a texture, neither of
-            -- them free: add a 1x1 white .ytd to a resource's stream folder, which
-            -- ends this estate's no-streamed-assets rule, or bake the ramp into a DUI
-            -- and draw it with the single-colour DRAW_TEXTURED_POLY instead.
+            -- So the previous note's error was not either fact. It was concluding
+            -- that "no stock texture" plus "we stream nothing" closed the question,
+            -- when the third option -- make the texture ourselves, in memory -- was
+            -- shipping one directory away. Do not re-derive the dead end.
+            --
+            -- ═══ AND THE NATIVE CHANGED WITH IT ═══
+            --
+            -- The gradient used to be spelled `_DRAW_SPRITE_POLY_2`, which takes an
+            -- alpha PER VERTEX and has no working call site anywhere in public code.
+            -- It is gone. Baking the ramp into the texture means the ordinary
+            -- single-colour `DRAW_SPRITE_POLY` is enough -- the native dui.lua has
+            -- been shipping since #236 -- so the one unproven thing in the design is
+            -- no longer in it. Per-vertex alpha could only express a straight line
+            -- anyway; a texture can hold any curve, which is what pays for the kink
+            -- at ground level below.
             --
             -- READ THE LINE THE WALL PRINTS on its first frame; /brwallstyle reports
-            -- the same thing at any time. Two failures look identical from here and
-            -- only your eyes tell them apart: the wall MISSING entirely means the
-            -- native drew nothing, and the wall in the WRONG COLOUR means the texture
-            -- tinted it instead of the other way round.
+            -- the same thing at any time, and it now names whether the runtime ramp
+            -- was actually built and why not if it was not.
             fade = {
-                prefer     = 'bands',
+                prefer     = 'gradient',
 
-                -- HOW MANY STACKED QUADS THE BANDED PATH USES, and this is the
-                -- smoothness-against-polys dial. Each band multiplies the wall's
-                -- poly count: at 3 the phase-1 ring is 486 polys a frame and the
-                -- ramp shows as three steps, at 6 it is 972 and twice as smooth.
-                -- Raise maxPolys with it or the budget will start trimming quads
-                -- and the ring will go polygonal instead.
+                -- HOW MANY STACKED QUADS THE **FALLBACK** USES, and it is not the
+                -- smoothness dial any more -- the gradient is smooth for free, and
+                -- this number is only reached when the runtime texture could not be
+                -- built at all.
+                --
+                -- DO NOT RAISE IT. Each band multiplies the wall's poly count, and
+                -- maxPolys then rations QUADS to pay for them: measured, 16 bands
+                -- draws the widest shape as a 32-gon whose chords stand 55.84 m
+                -- inside the damaging boundary. That is the "20ft inside" complaint
+                -- again, nine times over, traded for smoothness on the path that is
+                -- supposed to be the ugly one. The table beside maxPolys has every
+                -- band count measured.
                 bands      = 3,
 
-                -- THE RAMP, AS TWO MULTIPLIERS ON render.alpha: full strength at
-                -- baseZ, nothing at topZ. A straight line is all that one colour per
-                -- vertex can express -- a wall that stayed solid to head height and
-                -- only then faded would need a kink in it, which needs a second
-                -- stacked quad and twice the polys on the one path that was supposed
-                -- to be free. Raise topAlpha if the wall looks decapitated from the
-                -- ground; lower baseAlpha if the base reads as a solid block.
+                -- THE RAMP, AS TWO MULTIPLIERS ON render.alpha: full strength at the
+                -- bottom, nothing at the top. Raise topAlpha if the wall looks
+                -- decapitated from the ground; lower baseAlpha if the base reads as a
+                -- solid block.
                 baseAlpha  = 1.0,
                 topAlpha   = 0.0,
 
-                -- The texture the gradient path tints, and BOTH ARE EMPTY BECAUSE NO
-                -- STOCK ONE EXISTS -- see above. Empty is read as "band", not as "try
-                -- it and see": a textured poly with no texture draws nothing, so
-                -- treating an unset dictionary as something to attempt would let a
-                -- config typo cost the whole wall in silence.
+                -- ═══ WHERE THE RAMP STARTS, AND IT IS THE GROUND, NOT baseZ ═══
                 --
-                -- requestFrames is how long the wall waits for a NAMED dictionary
-                -- before giving up and banding. A dictionary that never arrives is a
-                -- fallback, not a request every frame forever -- 300 frames is about
-                -- five seconds, and the answer is latched for the session.
-                dict          = '',
-                texture       = '',
-                requestFrames = 300,
+                -- The geometry's bottom is strip.baseZ, which is -150 so that no gap
+                -- can open under the curtain on a slope. The RAMP must not start
+                -- there. The lowest ground this config admits anywhere is 2.0, so a
+                -- ramp measured from baseZ spends its first 15 percent underground
+                -- where nobody can see it -- and the wall at a player's FEET then
+                -- draws at 85 percent of render.alpha rather than at render.alpha.
+                -- Measured on the 3-band fallback before this existed: alpha 92 where
+                -- the config says 110.
+                --
+                -- So alpha is held FLAT at baseAlpha from baseZ up to here, and only
+                -- then ramps to topAlpha at topZ. The underground skirt stays, the
+                -- ramp gets the whole visible wall, and the curtain is full strength
+                -- at eye level. This is the kink a per-vertex alpha could not express
+                -- and a baked texture holds for nothing.
+                --
+                -- Raise it to keep the wall solid to rooftop height before it starts
+                -- to thin; it cannot go below baseZ and is clamped there if it does.
+                rampBaseZ  = 0.0,
+
+                -- THE RUNTIME TEXTURE. These are names, not assets: nothing is
+                -- streamed and no file exists. br_core/client/storm.lua creates the
+                -- dictionary, bakes rampH rows of alpha into the texture and commits
+                -- it once, then gates the gradient path on reading the width back.
+                --
+                -- 8 WIDE RATHER THAN 1 so the u axis is not degenerate -- the draw
+                -- samples u 0.5, which is the middle of eight identical columns, so
+                -- no edge filtering or clamp rule can enter into it. 256 TALL is one
+                -- row per alpha level, which is every level the format has.
+                txd        = 'br_storm_ramp',
+                texture    = 'ramp',
+                rampW      = 8,
+                rampH      = 256,
             },
         },
     },
