@@ -122,6 +122,549 @@ end
 
 -- ------------------------------------------------------------------- wall ---
 
+--- Draw the boundary of `shape` as ONE CONTINUOUS SURFACE, at `alphaScale` of
+--- full strength. `shape` is already inset; drawWall owns that.
+---
+--- ═══ A WALL IS A SURFACE, NOT A ROW OF TUBES (#336) ═══
+---
+---   "what you just drew is not a wall - it's a bunch of circles which are the
+---    wrong height and you're still using 3dmarkers..... I thought you were
+---    going to research ways to not do that."   -- the owner, 2026-09-22, #336
+---
+--- THE STRIPING WAS NEVER A TUNING FAILURE, and that is why this is a third
+--- renderer rather than a fourth value of `overlap`. A DrawMarker type 1 is a
+--- translucent CYLINDER. Seen from outside, a translucent cylinder is brightest
+--- at its silhouette edges, where the line of sight passes through the most
+--- surface, and dimmest through the middle -- so every column contributes two
+--- bright vertical lines, and eighty of them in a row are a picket fence.
+--- config/storm.lua already recorded the other half of it beside `overlap`:
+--- widen the columns until they meet and the doubled alpha where they cross bands
+--- the wall dark instead. There is no value between the two, because two
+--- overlapping translucent tubes are not one surface. Tuning them is the thing
+--- that has already failed twice.
+---
+--- So each consecutive PAIR of walk points is one quad -- two DRAW_POLY
+--- triangles -- from a fixed bottom z to a config top z. Uniform alpha, no
+--- seams, and a height this file chooses rather than one a cylinder's scale
+--- happens to produce.
+---
+--- ═══ ONE WINDING PER QUAD, AND THE TEST IS PER QUAD RATHER THAN PER FRAME ═══
+---
+--- DRAW_POLY is SINGLE SIDED. Its own doc: "Only one side of the drawn triangle
+--- is visible", the visible face being the one the cross product points toward.
+--- PolyZone emits FOUR polys per edge to cover both windings and copying that is
+--- exactly wrong here -- two coincident translucent surfaces double the alpha,
+--- which is the banding this whole change exists to escape. So a quad is emitted
+--- ONCE, wound so that its visible face is the side the viewer is standing on.
+---
+--- The obvious spelling of that is one signed distance per frame: outside the
+--- zone wind everything outward, inside wind everything inward. IT IS WRONG IN
+--- TWO PLACES, both of which the shipping shapes reach.
+---
+---   * THE FAR SIDE OF THE RING. A viewer outside the zone is outside the near
+---     wall and, looking across the circle, on the INSIDE of the far one. One
+---     winding for the whole frame makes the far rim face away and vanish, so a
+---     circle reads as a half arc with nothing behind it -- the mid-air stop that
+---     #328 already paid for once.
+---   * THE SECOND ISLAND. A viewer standing inside the next circle of a broken-out
+---     phase is INSIDE the zone, so the per-frame rule winds the current circle
+---     inward too -- and the rim nearest them, the one they are about to walk
+---     into, is the rim that disappears. Invisible from one side and a missing
+---     wall from the other, which is the failure mode the issue names.
+---
+--- So each quad asks the question for itself, with one dot product against its
+--- own plane: the quad is vertical and its normal is horizontal, so the viewer's
+--- z never enters and a spectator in a helicopter gets the same faces as a ped.
+--- RIGHT OF TRAVEL IS OUTWARD, by storm_shape.lua's interior-on-the-left
+--- convention -- the same convention seg's `nx, ny` and arc's `out` carry -- so
+--- the outward normal of a quad is just its own tangent turned ninety degrees.
+---
+--- ═══ CALL ORDER, WHICH TURNS OUT NOT TO BE A DECISION ═══
+---
+--- "Intersecting triangles are not supported: They overlap in the order they were
+--- called", so the far side of the ring composites through the near side in CALL
+--- ORDER rather than by depth. The reason nothing here sorts is that EVERY QUAD IS
+--- EMITTED WITH THE SAME `colour` AND THE SAME ALPHA: src-over compositing of two
+--- identical values is symmetric in the two draws, so no ordering of wall quads
+--- against other wall quads can change a pixel. Sorting a hundred quads per frame
+--- would buy exactly nothing.
+---
+--- THAT IS A CLAIM ABOUT THE BLEND AND ONLY A PLAYTEST CAN SETTLE IT. It holds for
+--- ordinary src-over alpha and it does not hold if DRAW_POLY blends additively or
+--- writes depth, and no primary source says which. If it turns out to be additive
+--- the symptom is specific and recognisable -- a bright band across the middle of
+--- the zone where the near and far walls overlap on screen -- and the answer is to
+--- drop the quads whose face is the inward one from outside the zone, not to sort.
+---
+--- WHAT ORDER CANNOT FIX, AND WHAT MAKES IT ACCEPTABLE ANYWAY, is the number of
+--- layers a sight line crosses. Across the middle of the ring that is two, near
+--- wall then far wall, and the alpha doubles there -- which is precisely what the
+--- shipping 'solid' cylinder already does, because a sight line across a cylinder
+--- crosses its side surface twice as well. The strip is no denser than the wall
+--- the owner chose on 2026-08-03. PolyZone's both-windings idiom would have made
+--- it four.
+---
+--- ═══ THE SHARED EDGE IS THE SAME NUMBERS, NOT TWO AGREEING ANSWERS ═══
+---
+--- Quad i ends where quad i+1 begins, and the walk REUSES the stored point rather
+--- than asking the shape for it twice. The last quad of a loop closes onto the
+--- stored FIRST point for the same reason.
+---
+--- AND THIS IS NOT ABOUT A VISIBLE SEAM, said plainly because the tempting version
+--- of this paragraph claims a hairline and it would be a lie. Measured: rebuilding
+--- a component's closing point instead of reusing it lands somewhere else on 11
+--- percent of whole-metre radii between 20 and 2600, and the worst disagreement
+--- anywhere is 3.5e-12 metres. Computing a Venn crossing from arc 1's far end and
+--- from arc 2's near start -- two different centres, which is the worst case this
+--- file has -- disagrees by 4.9e-13. Picometres are not an artifact.
+---
+--- WHAT IT BUYS IS THAT THE INVARIANT IS STRUCTURAL. "Neighbours share an edge" is
+--- either true by construction or true by two expressions continuing to match, and
+--- the second is a thing a later rewrite can quietly stop doing -- a walk
+--- reorganised to emit per PIECE rather than per component is the obvious one, and
+--- it is where the two-centre case above lives. Reuse costs nothing, so the
+--- invariant is spelled the way it is meant and tools/test_storm.lua asserts it
+--- with `==` rather than a tolerance.
+-- ═══ THE FADE, AND WHY IT IS A LADDER THIS FILE CLIMBS AT RUNTIME (#336) ═══
+--
+--   "are you able to make the wall fade bottom to top like the 3dmarker? if so,
+--    just make it the same height as the marker was."      -- the owner, 2026-09-22
+--
+-- The fade is what pays for the height. The columns stood 950 metres tall -- base
+-- -100, scaleZ render.height * 3 + 50 -- and topped out at world z 850 over a city
+-- whose ground is around 30, which is half of "the wrong height". A wall whose top
+-- FADES TO NOTHING can be that tall without towering, because the part that
+-- towered is not drawn. So the height follows the fade and not the other way
+-- round, and neither is a number this file decides alone: both are in
+-- config/storm.lua's `strip` table.
+--
+-- ═══ DRAW_POLY CANNOT DO IT, AND WHAT CAN NEEDS AN ASSET WE DO NOT SHIP ═══
+--
+-- DRAW_POLY takes one colour and one alpha for a whole triangle, so a gradient
+-- inside a quad is not expressible in it at any triangle count. Exactly one native
+-- can: `_DRAW_SPRITE_POLY_2` (0x736D7AA1B750856B), Rockstar's own
+-- DRAW_TEXTURED_POLY_WITH_THREE_COLOURS, which takes a colour AND AN ALPHA PER
+-- VERTEX -- a real bottom-to-top ramp at today's triangle count, for nothing. It is
+-- a GTA V client native, it is registered in FiveM with 32 arguments, and it is
+-- callable from Lua. Its RGB are FLOATS on a 0-255 scale and its `w` components are
+-- ignored, both from R*'s own commands_graphics.sch rather than from memory.
+--
+-- IT IS A TEXTURED POLY, AND THAT IS WHAT STOPS IT BEING THE DEFAULT. The vertex
+-- colours tint a texture, so it needs a dictionary and a texture name, and a
+-- textured poly with no texture draws nothing. RESEARCH FOUND NO STOCK FLAT-WHITE
+-- TEXTURE ANYWHERE: every shipped resource that draws textured polys either streams
+-- its own .ytd (l2k_gps3d's `chevrons`, blitz outrun's `blitz_outrun` -- which is a
+-- translucent quad wall, the closest analogue there is) or points the native at a
+-- DUI's runtime texture. Rockstar's own use is tapered laser-beam art, not white.
+-- `deadline`, which the native's documentation names, is requested by nobody at all.
+-- THIS ESTATE SHIPS NO STREAMED ASSETS, so the one thing the gradient needs is the
+-- one thing we have not got.
+--
+-- There is also no working call site for the native anywhere in public code -- 15
+-- hits, all of them type stubs -- so even with a texture it would be unproven. And
+-- what an unproven draw call costs here is THE WHOLE WALL: a native that silently
+-- draws nothing leaves the storm with no curtain, which is the failure the owner has
+-- now reported twice.
+--
+-- SO THE BANDED PATH IS THE WALL AND THE GRADIENT WAITS FOR A TEXTURE. Bands are
+-- plain DRAW_POLY quads stacked up the wall, each flat at its own alpha: it cannot
+-- fail, it costs `bands` times the polys, and it shows steps rather than a smooth
+-- ramp. The gradient is fully wired and one config value away -- name a resident
+-- dictionary in `fade.dict` and set `fade.prefer`, and this file requests it, waits
+-- for it and uses it -- so the day a texture exists the fade improves without a
+-- commit. config/storm.lua's `fade` table carries all of it.
+--
+-- ═══ AND WHAT NO TEST HERE CAN SEE ═══
+--
+-- Code can establish that the native EXISTS, that a dictionary loaded, and that a
+-- call did not throw. It cannot establish that anything appeared on screen, or that
+-- a texture tinted to the colour it was given rather than to its own. Those are
+-- playtest-only, and the symptom of each is recorded on the fade config so that
+-- whoever looks at the wall knows which one they are looking at.
+local fade = { path = nil, rung = nil, tries = 0, said = false }
+
+--- Is the per-vertex native even in this build's native table?
+---
+--- A FiveM client exposes natives as globals, so an unimplemented one is `nil`
+--- rather than a function that fails -- which makes this the one half of the
+--- question that is answerable without drawing anything.
+--- @return boolean
+local function gradientNativeExists()
+    return type(_G.DrawSpritePoly_2) == 'function'
+end
+
+--- Announce the fade path ONCE, naming the rung and what it costs.
+---
+--- ONCE PER RESOURCE START, NOT PER FRAME. This is the owner's only way to know
+--- the wall fell back -- "give me a way to know whether it fellback", 2026-09-22 --
+--- and a line per frame at 60 Hz would bury the console it is meant to inform.
+--- The latch is what makes it one line; BR.Storm.fadePath is what makes it
+--- available afterwards, which is what /brwallstyle reads.
+local function sayFade(bands, quadPolys)
+    if fade.said then return end
+    fade.said = true
+    BR.Storm = BR.Storm or {}
+    BR.Storm.fadePath = fade.path
+    BR.Storm.fadeRung = fade.rung
+    if fade.path == 'gradient' then
+        print(('[br_core] storm wall fade: gradient, %s, %d polys per quad')
+            :format(fade.rung, quadPolys))
+    else
+        print(('[br_core] storm wall fade: banded, %s, %d bands, %d polys per quad')
+            :format(fade.rung, bands, quadPolys))
+    end
+end
+
+--- Pick a fade path, at most once per resource start.
+---
+--- BOUNDED, AND THE BOUND IS THE FALLBACK CONDITION. A texture dictionary that
+--- never arrives must not be re-requested for the rest of the session: that is a
+--- request every frame forever, which is its own bug. `requestFrames` frames of
+--- asking and then the answer is no.
+---
+--- WHILE IT IS UNDECIDED THE WALL DRAWS BANDED, so the first seconds of a flight
+--- are a wall rather than nothing.
+--- @param fc table   cfg.render.strip.fade
+local function resolveFade(fc)
+    if fade.path then return end
+
+    if (fc.prefer or 'bands') ~= 'gradient' then
+        fade.path, fade.rung = 'bands', 'config prefers bands'
+        return
+    end
+    if not gradientNativeExists() then
+        fade.path, fade.rung = 'bands', 'DrawSpritePoly_2 not in this build'
+        return
+    end
+
+    -- A TEXTURE IS NOT OPTIONAL, which is the finding rather than a guess: the
+    -- native tints a texture, and a textured poly with no texture draws nothing. So
+    -- an unnamed dictionary is a fallback condition and not a rung to try -- the
+    -- alternative is a config typo costing the whole wall silently.
+    local dict, tex = fc.dict, fc.texture
+    if dict == nil or dict == '' or tex == nil or tex == '' then
+        fade.path = 'bands'
+        fade.rung = 'gradient wants a texture and fade.dict/fade.texture are unset'
+        return
+    end
+
+    if BR.NativeTruthy(HasStreamedTextureDictLoaded(dict)) then
+        fade.path, fade.rung = 'gradient', ('dict %s, texture %s'):format(dict, tex)
+        return
+    end
+
+    fade.tries = fade.tries + 1
+    if fade.tries > (fc.requestFrames or 300) then
+        fade.path = 'bands'
+        fade.rung = ('dict %s never loaded in %d frames')
+            :format(dict, fc.requestFrames or 300)
+        return
+    end
+    -- `false` FOR p1, which is what the game's own calls pass for its own
+    -- dictionaries -- the same precedent client/gunshop.lua copies for the weapon
+    -- icon dicts, and for the same reason.
+    RequestStreamedTextureDict(dict, false)
+end
+
+--- @param shape table       an inset BR.StormShape
+--- @param alphaScale number 0..1
+local function drawStrip(shape, alphaScale)
+    local rr = cfg.render
+    -- EVERY NUMBER BELOW HAS AN `or` DEFAULT AND THIS IS WHY. A config without a
+    -- `strip` table is the one shape of failure that would be silent: the FRAME
+    -- callback is pcall'd, so indexing nil would lose the whole wall and leave one
+    -- line in the console rather than a crash anybody notices.
+    local sp = rr.strip or {}
+    local col = rr.colour
+    local SS = BR.StormShape
+
+    local comps = SS.components(shape)
+    local nComp = #comps
+    if nComp == 0 then return end
+
+    -- ═══ ROUNDNESS SETS THE STEP, AND THE BUDGET OVERRULES IT ═══
+    --
+    -- Sag goes as ds^2 / 8r, so the step that keeps a quad within chordM of the
+    -- arc it replaces is sqrt(8 * r * chordM). The SMALLEST disc is the binding
+    -- one: a tighter circle needs a shorter step for the same sag, and taking the
+    -- larger disc's step would draw the small one as a polygon. A shape with no
+    -- disc list leaves rmin infinite, the step infinite and every loop on the
+    -- minSeg floor, which is a coarse wall rather than a crash.
+    local rmin = math.huge
+    local discs = shape.discs or {}
+    for i = 1, #discs do
+        if discs[i].r < rmin then rmin = discs[i].r end
+    end
+    local step = math.sqrt(8.0 * rmin * (sp.chordM or 2.0))
+
+    -- ═══ WHICH FADE PATH, AND IT IS SETTLED BEFORE THE BUDGET IS DIVIDED ═══
+    --
+    -- Because it CHANGES WHAT A QUAD COSTS. A banded quad is `bands` stacked
+    -- quads, so it is 2 * bands polys and not 2, and a budget that priced every
+    -- quad at two triangles would stop being a poly ceiling the moment the fade
+    -- turned on. Dividing by the real cost is what keeps maxPolys meaning polys.
+    local fc = sp.fade or {}
+    resolveFade(fc)
+    -- A GRADIENT QUAD IS ONE BAND, WHICH IS THE POINT OF IT: the ramp lives inside
+    -- the two triangles instead of being approximated by stacking more of them.
+    local gradient = fade.path == 'gradient'
+    local gDict, gTex = fc.dict, fc.texture
+    local bands = gradient and 1 or math.max(1, math.floor(fc.bands or 3))
+    local quadPolys = 2 * bands
+    sayFade(bands, quadPolys)
+
+    -- THE BUDGET IS DIVIDED BEFORE ROUNDNESS IS CONSULTED, so no shape can talk
+    -- its way past it: two loops of a disjoint phase-2 breakout would each like
+    -- upwards of seventy quads, and this is what stops the pair costing 380 polys
+    -- on a frame. The share is a ceiling, not a target -- a loop that is round
+    -- enough with fewer takes fewer.
+    --
+    -- THE FLOOR OF 3 IS THE ONE PLACE THE CEILING IS NOT ABSOLUTE, said here so
+    -- nobody has to work it out: a triangle is the least a closed loop can be, so
+    -- past 42 loops the floor wins and the total creeps over maxPolys. union2 makes
+    -- one loop or two and nothing else in the game builds a shape, so that is a
+    -- note for whoever adds the third constructor rather than a live hole.
+    local per = math.max(3,
+        math.floor(math.floor((sp.maxPolys or 1024) / quadPolys) / nComp))
+
+    local p = viewpoint()
+    local vx, vy = p.x, p.y
+    local zb, zt = sp.baseZ or -150.0, sp.topZ or 850.0
+    -- A WALL WITH NO HEIGHT IS NOT A WALL, and the reason to say so here rather than
+    -- trust the config is that the fade DIVIDES by the span. A topZ at or under baseZ
+    -- would make every band alpha a nan, and a nan alpha is an invisible wall with
+    -- nothing in the console -- the silent failure this whole file is written
+    -- against. Drawing nothing at all is the honest answer to a wall of no height.
+    if zt <= zb then return end
+    local cr, cg, cb = col.r, col.g, col.b
+    local alpha = rr.alpha * alphaScale
+
+    -- ═══ THE RAMP IS LINEAR IN z ACROSS THE WHOLE WALL, AND THAT IS A LIMIT
+    --     RATHER THAN A PREFERENCE ═══
+    --
+    -- One colour per VERTEX can express a straight line and nothing else, so a
+    -- wall that is solid to head height and only then begins to fade needs a KINK,
+    -- which needs a second stacked quad, which is twice the polys on the one path
+    -- that was supposed to be free. So the fade is two numbers -- how strong at the
+    -- bottom, how strong at the top -- and the ramp between them is straight.
+    --
+    -- Both paths approximate the SAME ramp, which is what makes them comparable:
+    -- the gradient draws it exactly, and the bands sample it at their own centres.
+    local a0 = alpha * (fc.baseAlpha or 1.0)
+    local a1 = alpha * (fc.topAlpha or 0.0)
+    local function alphaAt(t)
+        local v = math.floor(a0 + (a1 - a0) * t + 0.5)
+        if v < 0 then v = 0 elseif v > 255 then v = 255 end
+        return v
+    end
+
+    --- One quad of the strip, from (ax, ay) to (bx, by), bottom z to top z.
+    ---
+    --- The outward winding is (A_bot, B_bot, A_top) and (B_bot, B_top, A_top):
+    --- take the first triangle's edges as (B_bot - A_bot) and (A_top - A_bot) and
+    --- their cross product is (t.y, -t.x, 0) times the height, which is the right
+    --- of travel and therefore outward. The inward face is each of those two
+    --- triangles wound in reverse, which negates the cross product and nothing
+    --- else -- the geometry is the same surface either way, and only which side
+    --- of it exists changes.
+    ---
+    --- ═══ THE BANDS STACK INSIDE ONE QUAD, SO THE WINDING TEST IS STILL ONE
+    ---     DOT PRODUCT ═══
+    ---
+    --- Every band of a quad is the same vertical plane with the same tangent, so
+    --- the face the viewer is shown is decided once for the quad and not once per
+    --- band. That matters beyond tidiness: a per-band test could in principle
+    --- disagree between bands of one quad and show the viewer a wall with holes in
+    --- it, and there is no geometry in which that would be right.
+    ---
+    --- THE SHARED HORIZONTAL EDGES ARE THE SAME NUMBERS, for the same reason the
+    --- vertical ones are: band i's top z is band i+1's bottom z, carried in a
+    --- variable rather than recomputed from i.
+    --- The gradient spelling of one quad: two triangles, alpha per VERTEX.
+    ---
+    --- ═══ THE ARGUMENT LIST IS FROM citizenfx/natives AND R*'s OWN HEADER ═══
+    ---
+    --- 32 arguments: nine position floats, then (red, green, blue, alpha) for each of
+    --- the three vertices, then the dictionary and texture, then nine UVW floats.
+    --- TWO DETAILS THAT WOULD OTHERWISE BE WRONG BY DEFAULT, both from Rockstar's
+    --- commands_graphics.sch rather than inferred:
+    ---
+    ---   * THE RGB ARE FLOATS ON A 0-255 SCALE, not the 0-1 the word "float" invites
+    ---     and not the ints DRAW_POLY takes. Passed as 0-1 the wall would be black.
+    ---   * THE `w` COMPONENT OF EVERY UV IS IGNORED. It is passed as zero rather
+    ---     than as something meaningful, so nobody reads a meaning into it later.
+    ---
+    --- The UVs map the quad corner to corner, which for the flat texture this wants
+    --- is arbitrary -- and is written out properly anyway, because the day the
+    --- texture is not flat the mapping is the difference between a tint and a smear.
+    local function gradientQuad(ax, ay, bx, by, out, a0v, a1v)
+        local fr, fg, fb = cr + 0.0, cg + 0.0, cb + 0.0
+        if out then
+            DrawSpritePoly_2(ax, ay, zb, bx, by, zb, ax, ay, zt,
+                fr, fg, fb, a0v, fr, fg, fb, a0v, fr, fg, fb, a1v,
+                gDict, gTex,
+                0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0)
+            DrawSpritePoly_2(bx, by, zb, bx, by, zt, ax, ay, zt,
+                fr, fg, fb, a0v, fr, fg, fb, a1v, fr, fg, fb, a1v,
+                gDict, gTex,
+                1.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        else
+            DrawSpritePoly_2(ax, ay, zt, bx, by, zb, ax, ay, zb,
+                fr, fg, fb, a1v, fr, fg, fb, a0v, fr, fg, fb, a0v,
+                gDict, gTex,
+                0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 0.0)
+            DrawSpritePoly_2(ax, ay, zt, bx, by, zt, bx, by, zb,
+                fr, fg, fb, a1v, fr, fg, fb, a1v, fr, fg, fb, a0v,
+                gDict, gTex,
+                0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0)
+        end
+    end
+
+    local function quad(ax, ay, bx, by)
+        local nx, ny = by - ay, -(bx - ax)
+        local out = (vx - (ax + bx) * 0.5) * nx
+            + (vy - (ay + by) * 0.5) * ny >= 0.0
+        if gradient then
+            gradientQuad(ax, ay, bx, by, out, alphaAt(0.0), alphaAt(1.0))
+            return
+        end
+        local h = (zt - zb) / bands
+        local z0 = zb
+        for i = 1, bands do
+            -- THE LAST BAND TAKES zt ITSELF rather than `zb + i * h`, so the top of
+            -- the wall is exactly the config's top and not a rounding of it -- the
+            -- same reason the closing quad of a loop reuses the stored first point.
+            local z1 = (i == bands) and zt or (z0 + h)
+            local av = alphaAt(((z0 + z1) * 0.5 - zb) / (zt - zb))
+            if out then
+                DrawPoly(ax, ay, z0, bx, by, z0, ax, ay, z1, cr, cg, cb, av)
+                DrawPoly(bx, by, z0, bx, by, z1, ax, ay, z1, cr, cg, cb, av)
+            else
+                DrawPoly(ax, ay, z1, bx, by, z0, ax, ay, z0, cr, cg, cb, av)
+                DrawPoly(ax, ay, z1, bx, by, z1, bx, by, z0, cr, cg, cb, av)
+            end
+            z0 = z1
+        end
+    end
+
+    -- ═══ ONE CLOSED STRIP PER COMPONENT, AND NEVER A QUAD BETWEEN THEM ═══
+    --
+    -- A disjoint union is TWO closed loops, and a strip that walked the shape's
+    -- own arc length straight through the seam would bridge them with a single
+    -- kilometre-long quad across the unsafe gap -- a wall where there is no
+    -- boundary, and the most confident possible lie about where it is safe to
+    -- stand. The component walk from #328's window fix is what prevents it, used
+    -- here for the same reason one level up: pointAtComponent wraps inside ONE
+    -- loop, so the closing quad of each strip lands on its own first point.
+    --
+    -- AND THERE IS NO WINDOW. The whole boundary is drawn on every frame, at every
+    -- phase, for every shape, because roundness rather than column width sets the
+    -- count -- so nothing here asks where the viewer is standing except the one
+    -- dot product that picks a face. The wall that stops in mid-air, the colonnade
+    -- that rides the camera and the curtain hung off a spectator's corpse are all
+    -- the same bug, and this is the first renderer that cannot have it.
+    for ci = 1, nComp do
+        local c = comps[ci]
+        -- ═══ THE WALK STEPS THE RUNS, NOT THE COMPONENT, AND A VENN WAIST IS WHY
+        --     (the defect this replaced put the curtain OUTSIDE the wall) ═══
+        --
+        -- The step above is priced off CURVATURE -- sag is ds^2 / 8r -- and that
+        -- rule is blind to precisely one thing: a CORNER, where the curvature is
+        -- infinite and no step satisfies the bound. A Venn union is ONE component
+        -- made of two arcs meeting at two reflex crossings, `c.len` is not a
+        -- multiple of the step, so stepping the component at uniform arc length
+        -- put one quad astride each crossing and bridged it with a straight chord
+        -- across the notch. THE NOTCH CUTS INWARD, SO THAT CHORD LANDED OUTSIDE
+        -- THE SHAPE -- the curtain drawn beyond the boundary that damages.
+        --
+        -- MEASURED THROUGH THIS RENDERER, as signed distance from the UNINSET
+        -- damaging boundary, worst case over the reachable separation range for
+        -- each shipping phase pair. -6.00 m is the correct answer everywhere: the
+        -- curtain sitting exactly render.edgeInset inside the logical edge.
+        --
+        --     2600 + 1600   stepping the component +33.11 m   stepping runs -6.00 m
+        --     1600 +  950                          +23.71 m                 -6.00 m
+        --      950 +  520                          +15.84 m                 -6.00 m
+        --      520 +  260                           +9.35 m                 -6.00 m
+        --      260 +  110                           +3.66 m                 -6.00 m
+        --
+        -- 57 of 235 sampled reachable Venn geometries put the curtain outside the
+        -- server's ten-metre damage cushion and none of them do now, so on the
+        -- owner's "barely
+        -- overlapping, like a venn diagram" -- the exact geometry #328 exists for
+        -- -- a wedge up to 33 metres deep at each waist was being billed dps while
+        -- drawn well inside the purple curtain. That is the live "20ft inside"
+        -- report edgeInset exists for, INVERTED and about five times larger.
+        --
+        -- CIRCLES AND DISJOINT PAIRS NEVER HAD IT, which is why nothing caught it:
+        -- a circle's component is one piece, and a disjoint pair's two components
+        -- are a whole circle each, so neither has an interior boundary to step
+        -- over. Only one of the two Venn crossings showed, too, and the other
+        -- escaped by accident -- union2 opens the component AT the left crossing,
+        -- so arc length 0 already lands on it.
+        --
+        -- AND IT COSTS NOTHING. The same n is split between the runs by length, so
+        -- the five cases above close at 127, 102, 82, 60 and 45 quads before and
+        -- after -- identical counts, identical budget, a wall inside the boundary.
+        local runs = SS.runs(shape, ci)
+        local nRuns = math.max(1, #runs)
+        local n = math.max(nRuns, math.max(3,
+            math.min(per, math.max(sp.minSeg or 24,
+                math.ceil(c.len / step)))))
+
+        -- WHERE EACH RUN ENDS, AS A POINT INDEX, and it is CUMULATIVE rather than
+        -- a share handed to each run separately. Rounding each run's own share
+        -- independently does not have to sum to n -- so the budget above, which is
+        -- a hard ceiling, would be decided by rounding. Rounding the running total
+        -- instead and then clamping it monotone (at least one quad per run, and
+        -- enough left for the runs after it) makes the total exactly n by
+        -- construction.
+        local edge = { [0] = 0 }
+        local cum = 0.0
+        for i = 1, nRuns do
+            cum = cum + (runs[i] and runs[i].len or c.len)
+            local k = math.floor(n * cum / c.len + 0.5)
+            local lo, hi = edge[i - 1] + 1, n - (nRuns - i)
+            if k < lo then k = lo end
+            if k > hi then k = hi end
+            edge[i] = k
+        end
+
+        local fx, fy = SS.pointAtComponent(shape, c, 0.0)
+        local ax, ay = fx, fy
+        for i = 1, nRuns do
+            local t0 = runs[i] and runs[i].t0 or 0.0
+            local rlen = runs[i] and runs[i].len or c.len
+            local cnt = edge[i] - edge[i - 1]
+            for j = 1, cnt do
+                local bx, by
+                if i == nRuns and j == cnt then
+                    -- THE CLOSING QUAD TAKES THE STORED FIRST POINT. `n * cds` is
+                    -- not always `c.len` in doubles, and pointAtComponent's wrap
+                    -- then lands a hair before or after the start rather than on
+                    -- it: measured, 11 percent of whole-metre radii between 20 and
+                    -- 2600, worst 3.5e-12 metres. That is picometres and invisible
+                    -- -- the reason to reuse the point is that the shared edge is
+                    -- then the same numbers by construction instead of two
+                    -- expressions that happen to agree. See the header.
+                    bx, by = fx, fy
+                else
+                    -- AT j == cnt THIS IS THE RUN BOUNDARY ITSELF, which is the
+                    -- whole point: `t0 + rlen` is the arc length of the crossing,
+                    -- and pieceAtArc answers it as the NEXT piece at t = 0. The
+                    -- two pieces' reconstructions of that one point differ by
+                    -- 4.9e-13 metres (see the header), so which of them answers is
+                    -- not a visible decision -- but it is a deterministic one, and
+                    -- the vertex is ON the corner either way rather than past it.
+                    bx, by = SS.pointAtComponent(shape, c, t0 + rlen * j / cnt)
+                end
+                quad(ax, ay, bx, by)
+                ax, ay = bx, by
+            end
+        end
+    end
+end
+
 --- Draw a curtain on the boundary of `zone`, at `alphaScale` of full strength.
 ---
 --- ═══ ONE WALL RENDERER, AND #327 IS WHY IT IS A FUNCTION NOW ═══
@@ -130,12 +673,13 @@ end
 --- game had a SECOND thing to draw a wall on: circle 1, previewed during the bus
 --- ride before any storm exists (owner, 2026-09-21 -- "show the marker (or arc now
 --- as it may be) starting from when the San Andreas map is loaded"). A preview wall
---- is this renderer handed a circle and a lower alpha, and writing a second one
---- would have meant two files' worth of the things this one already knows: that the
---- curtain sits edgeInset metres inside the logical edge, that a cylinder cannot
---- draw a union, that the column walk is arc length and not angle, that a window
---- must stay on one component, and that the whole thing must be glued to the world
---- rather than to the viewer.
+--- is this renderer handed a circle and a lower alpha, and
+--- writing a second one would have meant two files' worth of the things this one
+--- already knows: that the curtain sits edgeInset metres inside the logical edge,
+--- that a cylinder cannot draw a union, that a strip's edges are shared and not
+--- recomputed, that a walk of a boundary is arc length and not angle, that a
+--- window must stay on one component, and that the whole thing must be glued to
+--- the world rather than to the viewer.
 ---
 --- IT TAKES THE ZONE UNINSET AND INSETS IT ITSELF, so no caller can forget to --
 --- which is the live report edgeInset exists for ("20ft inside" while the HUD
@@ -147,7 +691,10 @@ end
 --- @param zone table        a BR.StormShape
 --- @param alphaScale number 0..1
 local function drawWall(zone, alphaScale)
-    -- FIXED SLOTS AROUND THE CIRCLE, ALWAYS DRAWN.
+    -- FIXED SLOTS AROUND THE CIRCLE, ALWAYS DRAWN. Both lessons below were learnt
+    -- on the marker paths and are kept BECAUSE the marker paths are still the A/B
+    -- baseline; the strip inherits both by construction and the second outright,
+    -- since it draws the whole boundary on every frame.
     --
     -- Two lessons from the first live walls, both about the same illusion:
     -- the wall must behave like a THING IN THE WORLD, not an effect around
@@ -180,46 +727,40 @@ local function drawWall(zone, alphaScale)
     local shape = SS.inset(zone, rr.edgeInset or 0.0)
     local discs = shape.discs
 
-    -- ═══ THE RENDERER IS A PROPERTY OF THE SHAPE, NOT A SETTING ═══
+    -- ═══ THE STRIP IS THE WALL, AND THE TWO MARKER PATHS ARE THE BASELINE ═══
     --
-    -- 'solid' draws the whole boundary as ONE cylinder and 'columns' walks it in
-    -- 30m slots, and the honest reading is that each is right for a different
-    -- shape rather than one being the default. Making 'columns' the global default
-    -- for #328 fixed the union and paid for it on every phase that nests, which
-    -- is 60 to 90 percent of them: the column walk is capped at maxDraw 80, so
-    -- measured off the real config the fraction of the ring actually drawn ran
-    -- phase 1 15 percent, phase 2 24, phase 3 40, phase 4 64, and only from phase
-    -- 5 down 100. At phase 2 a player at the centre saw an 86 degree window of
-    -- 950m-tall curtain STOPPING IN MID-AIR at both ends with nothing behind
-    -- them. Phases 1 to 4 are roughly 15 minutes of a 22 minute match, and the
-    -- owner has already reacted to this exact class of thing once: a 300m-tall
-    -- curtain popping out of existence past 300m "read as a render bug".
+    -- The renderer used to be a property of the shape, because each of the two
+    -- marker paths was right for a different one: 'solid' is seamless and can only
+    -- draw a circle, 'columns' draws any shape and stripes. The strip has neither
+    -- limit -- it walks the same boundary the columns do and it is one continuous
+    -- surface while doing it -- so there is nothing left for the shape to choose
+    -- between. It is the default for every shape, which is every shape it can
+    -- draw.
     --
-    -- THE NUMBER OF DISCS IS THE TEST, and it is exact rather than a heuristic.
-    -- union2 routes the nested case through StormShape.circle, so a shape with one
-    -- disc IS a single circle -- which is what a cylinder draws perfectly and what
-    -- the owner chose on 2026-08-03. Two discs is a union no cylinder can
-    -- describe, and the walk draws it without knowing it is one.
+    -- BOTH MARKER PATHS STAY REACHABLE, and 'solid' is the one that matters: it is
+    -- the only other seamless wall in the game and therefore the A/B baseline the
+    -- strip has to be judged against on real hardware. 'columns' stays because it
+    -- is the striping itself, and being able to put the fence back beside the
+    -- surface in one command is how the comparison gets settled without a deploy.
     --
-    -- ═══ CHOSEN PER FRAME, AND IT BARELY EVER CHANGES ITS MIND ═══
-    --
-    -- The obvious worry about deciding this per frame is the wall visibly changing
-    -- texture under the player. Sampled 1000 times across a whole phase: a NESTED
-    -- phase never swaps at all -- the target is inside the current circle from
-    -- the first frame to the last, so it is one cylinder for the entire phase. A
-    -- BREAKOUT swaps exactly ONCE, at the very end of the sweep, when the shrinking
-    -- circle finally swallows the target and the union collapses. Both renderers
-    -- are describing the SAME RING at that instant, because the union at the
-    -- moment of containment IS the current circle, so the geometry is continuous
-    -- across the swap and only the texture changes. `wall.default` pins both
-    -- counts.
-    --
-    -- /brwallstyle STILL OVERRIDES IT, both ways, because the A/B is how the
-    -- column geometry gets judged on real hardware and it is the one command that
-    -- puts a bad night back on known ground without a deploy.
+    -- NO CALLER MAY STATE A PREFERENCE ANY MORE, and the parameter that let one is
+    -- gone rather than left unused. Exactly one ever did: the #327 preview asked for
+    -- the cylinder because it is looked at from the bus, which cruises at 500 and
+    -- climbs to 892 over the Chiliad massif (config/map.lua), and the strip's top
+    -- was a config 400 set for a player standing on the ground -- the whole wall
+    -- underneath the flight. The owner has since refused markers for the preview
+    -- too ("don't use a marker for the bus preview either", 2026-09-22), and the
+    -- answer was to raise the strip to the marker's own 850 and fade its top out.
+    -- So /brwallstyle is now the ONLY thing in the game that can ask for a marker,
+    -- which is what the A/B needed it to be all along.
     local style = BR.Storm.wallStyle
-    if style ~= 'solid' and style ~= 'columns' then
-        style = (#discs <= 1) and 'solid' or 'columns'
+    if style ~= 'solid' and style ~= 'columns' and style ~= 'strip' then
+        style = 'strip'
+    end
+
+    if style == 'strip' then
+        drawStrip(shape, alphaScale)
+        return
     end
 
     if style == 'solid' then
@@ -232,9 +773,11 @@ local function drawWall(zone, alphaScale)
         -- construction: forced onto a shape with two discs it paints the first
         -- one and says nothing about the second, which on a phase that broke out
         -- means a curtain straight through a player standing safely in the next
-        -- circle. Auto-selection above never sends a union here; a hand-typed
-        -- /brwallstyle solid may, deliberately, because that lie is exactly the
-        -- known ground the A/B is measured against.
+        -- circle. Nothing reaches this path by default any more -- the strip is the
+        -- wall and the #327 preview asks for the cylinder by name on a shape that
+        -- is always one disc -- so the only way to see that lie is to type
+        -- /brwallstyle, which is deliberate: it is exactly the known ground the
+        -- A/B is measured against.
         --
         -- IT READS THE DISC RATHER THAN r, which is what lets the shape choose.
         -- The disc is already inset (StormShape.inset rebuilt the circle at
@@ -449,39 +992,48 @@ end)
 
 -- Which renderer draws the wall, and /brwallstyle overrides it live.
 --
--- ═══ THERE IS NO DEFAULT RENDERER ANY MORE: THE SHAPE PICKS ONE ═══
+-- ═══ THREE RENDERERS, AND THE STRIP IS THE WALL (#336) ═══
 --
--- `nil` means "ask the shape", and the wall callback does: one disc draws
--- 'solid', two draw 'columns'. That is a property of the thing being drawn rather
--- than a setting, which is the whole point -- both previous answers were wrong for
--- half the match.
+-- `nil` is automatic and automatic is 'strip': the boundary as one continuous
+-- quad surface. It has neither of the limits that made the other two a choice --
+-- it draws every shape the walk produces, and it does not stripe -- so there is
+-- nothing left for the shape to decide.
 --
--- 'solid' was the shipping default from 2026-08-03 (user call) and it is still the
--- better-looking wall for a circle: one marker, continuous, identical from every
--- angle, nothing to watch slide. It cannot draw a union -- a DrawMarker type 1 is
--- a cylinder -- so #328 moved the default to 'columns', and that paid for the
--- union with a visual regression on every phase that nests. The column walk is
--- capped at maxDraw, so off the real config it drew 15 percent of the ring at
--- phase 1, 24 at phase 2, 40 at phase 3, 64 at phase 4, and only 100 from phase 5
--- down: roughly 15 minutes of a 22 minute match spent looking at a curtain that
--- stops in mid-air with no wall behind it. Choosing per frame gives the nested
--- phases the identical cylinder they had before 2026-09-21 and the union a
--- renderer that can actually draw it.
+--   'strip'    DRAW_POLY quad strip. The wall.
+--   'solid'    ONE DrawMarker type 1. Seamless, a circle by construction, and
+--              therefore the A/B BASELINE: the only other continuous wall the
+--              game has ever drawn, and the one the owner picked on 2026-08-03.
+--              Forced onto a union it paints the first disc and lies about the
+--              second, which is known ground rather than a second bug.
+--   'columns'  the same cylinder walked in slotArc slots. This is the picket
+--              fence from the 2026-09-22 report, kept because being able to put
+--              the fence back beside the surface in one command is how the
+--              comparison actually gets settled.
 --
--- BOTH PATHS STAY, AND THE OVERRIDE CYCLES THROUGH THREE STATES -- automatic,
--- forced solid, forced columns -- so the two can still be compared on real
--- hardware and a bad night can be put back on known ground without a deploy. The
--- third state matters: with only two, there would be no way back to the shape's
--- own choice once a session had typed the command.
+-- FOUR STATES, SO THE CYCLE REACHES ALL THREE AND COMES BACK. With three there
+-- would be no way back to automatic once a session had typed the command, and
+-- with two the strip would be unreachable by name -- which matters the day
+-- automatic changes again.
 BR.Storm = BR.Storm or {}
 BR.Storm.wallStyle = nil
 RegisterCommand('brwallstyle', function()
     local s = BR.Storm.wallStyle
     if s == 'solid' then s = 'columns'
-    elseif s == 'columns' then s = nil
+    elseif s == 'columns' then s = 'strip'
+    elseif s == 'strip' then s = nil
     else s = 'solid' end
     BR.Storm.wallStyle = s
-    print(('[br_core] storm wall style: %s'):format(s or 'auto'))
+    print(('[br_core] storm wall style: %s'):format(s or 'auto (strip)'))
+    -- AND THE FADE PATH BESIDE IT, because this is the command the owner reaches
+    -- for when he is looking at the wall, and "did the gradient fall back" is a
+    -- question about the wall. It is reported rather than cycled: the path is
+    -- decided once per resource start off config and what the streamer did, and a
+    -- command that re-decided it mid-session would make the console line above it a
+    -- lie. `nil` means no strip has drawn yet, which on the marker styles it never
+    -- will.
+    print(('[br_core] storm wall fade: %s'):format(BR.Storm.fadeRung
+        and ('%s (%s)'):format(BR.Storm.fadePath, BR.Storm.fadeRung)
+        or 'not settled yet -- no strip has drawn this session'))
 end, false)
 
 -- --------------------------------------------------------------- preview ---
@@ -602,10 +1154,29 @@ BR.Loop.register(BR.Loop.FRAME, 'storm.previewWall', function()
     if not pv then return end
     if not mainlandLoaded() then return end
 
-    -- A CIRCLE, WHICH IS WHY IT GETS THE CYLINDER. drawWall asks the shape which
-    -- renderer to use and a one-disc shape answers 'solid' -- one continuous
-    -- marker, identical from every angle, which is the right wall for a circle and
-    -- the only one that holds up from bus altitude.
+    -- ═══ THE SAME RENDERER AND THE SAME HEIGHT AS THE LIVE WALL ═══
+    --
+    --   "don't use a marker for the bus preview either."   -- the owner, 2026-09-22
+    --
+    -- THIS ASKED FOR THE CYLINDER UNTIL THE FADE EXISTED, and the reasoning was
+    -- sound rather than lazy: the strip's top was a fixed world z of 400 set for a
+    -- player standing on the ground, and the bus cruises at 500 and climbs to 892
+    -- to clear the Chiliad massif (config/map.lua's bus.altitude and the leg-4
+    -- waypoints) -- so from the one place this wall is ever looked at, the strip was
+    -- entirely BELOW the viewer and read as nothing at all. The cylinder spanned
+    -- -100 to 850 and was the only wall in the file tall enough to see from a plane.
+    --
+    -- THE ANSWER WAS TO RAISE THE WALL, NOT TO KEEP THE MARKER. render.strip.topZ
+    -- is 850 now -- the marker's own top, to the metre -- and its last metres are
+    -- drawn at fade.topAlpha, which is nothing. So the flight passes THROUGH the
+    -- fade rather than over a band on the ground half a kilometre below, and the
+    -- preview needs no height of its own: one wall, one height, two alphas. A
+    -- preview-specific top was drafted and then deleted for exactly that reason.
+    --
+    -- SO NO PREFERENCE IS PASSED AT ALL. Every caller now takes the strip, which is
+    -- what leaves /brwallstyle as the only thing in the game that can ask for a
+    -- marker -- and it can still point one at the preview, because the A/B baseline
+    -- has to be reachable from both walls.
     drawWall(BR.StormShape.circle(pv.cx, pv.cy, pv.r),
         cfg.render.previewAlpha or 0.5)
 end)

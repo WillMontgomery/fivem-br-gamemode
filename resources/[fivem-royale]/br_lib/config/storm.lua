@@ -240,8 +240,33 @@ BR.Config.Storm = {
 
     -- Rendering. A single giant sphere is not an option: marker type 28 is
     -- literally MarkerTypeDebugSphere, markers have no distance parameter, and
-    -- huge scale values produce broken geometry with no depth sorting. Instead we
-    -- draw only the arc nearest the player, out of type-1 vertical cylinders.
+    -- huge scale values produce broken geometry with no depth sorting.
+    --
+    -- ═══ THE WALL IS A QUAD STRIP. THE MARKERS ARE THE A/B BASELINE (#336) ═══
+    --
+    -- Two marker renderers shipped before this and both are still reachable
+    -- behind /brwallstyle, but neither is the wall any more:
+    --
+    --   'solid'    ONE type-1 cylinder whose side surface is the whole curtain.
+    --              Seamless, and a circle by construction, so it cannot draw the
+    --              union of two discs the safe zone became in #328.
+    --   'columns'  the same cylinder walked along the boundary in slotArc slots.
+    --              Draws any shape and STRIPES, which is what #336 is about.
+    --
+    -- The striping was never a tuning failure. A translucent cylinder seen from
+    -- outside is brightest at its silhouette edges, where the line of sight
+    -- passes through the most surface, and dimmest through the middle -- so every
+    -- column contributes two bright vertical lines, and eighty in a row are a
+    -- picket fence ("a bunch of circles which are the wrong height", the owner,
+    -- 2026-09-22). The `overlap` note below records the other half of it: widen
+    -- the columns until they meet and the doubled alpha where they cross bands the
+    -- wall dark instead. There is no value between the two, because two
+    -- overlapping translucent tubes are not one surface.
+    --
+    -- So the shipping renderer is 'strip': the boundary as one continuous quad
+    -- strip, two DRAW_POLY triangles per pair of walk points. Everything from
+    -- `segments` down to `fallbackZDrop` belongs to the two marker paths and is
+    -- left exactly as it was, so the A/B compares like with like.
     render = {
         segments       = 48,     -- MINIMUM columns drawn (and the floor on slot count)
         maxDraw        = 80,     -- ceiling on columns per frame, near or far
@@ -280,6 +305,206 @@ BR.Config.Storm = {
         previewAlpha   = 0.5,
         groundCacheSec = 1.0,    -- GetGroundZFor_3dCoord is slow; sample once per second
         fallbackZDrop  = 150.0,  -- if ground Z is unavailable, anchor below the camera
+
+        -- ═══ THE QUAD STRIP, WHICH IS THE WALL (#336) ═══
+        --
+        -- A strip picks its own bottom and top instead of inheriting a cylinder's
+        -- scale, and that is half of what the owner reported: the columns stood
+        -- `height * 3 + 50` metres tall from a base of -100, so their tops were at
+        -- world z 850 and the wall reached into the sky over a city whose ground
+        -- is around 30.
+        strip = {
+            -- THE BOTTOM, AND IT IS FIXED ON PURPOSE.
+            --
+            -- A strip's bottom edge is a hard line, so any ground that pokes above
+            -- it shows as a lit band of terrain THROUGH the wall -- a gap under the
+            -- curtain on every slope. The obvious fix is a ground probe per point,
+            -- and that is exactly what was removed: GetGroundZFor_3dCoord returns
+            -- garbage for unloaded cells, which at wall distances is most of the
+            -- time, so the fallback (the viewer's own z) is what actually ran and
+            -- the wall rode the camera. One probe per boundary point per frame is
+            -- not affordable either.
+            --
+            -- So the bottom goes under everything instead. The lowest ground this
+            -- config admits anywhere is 2.0 (the map's own POI table, 120 places
+            -- with an authored z), and 'solid' has stood on -100 since 2026-08-03
+            -- with no gap ever reported. 150 metres below sea level keeps that and
+            -- adds margin for the sea bed, and the extra quad area costs nothing
+            -- because it is underground.
+            baseZ    = -150.0,
+
+            -- THE TOP, AND THE FADE IS WHAT PAYS FOR IT.
+            --
+            --   "are you able to make the wall fade bottom to top like the
+            --    3dmarker? if so, just make it the same height as the marker
+            --    was."                              -- the owner, 2026-09-22
+            --
+            -- 850 IS THE MARKER'S OWN TOP, read off the call rather than guessed:
+            -- client/storm.lua's cylinder stands at z -100 with a scaleZ of
+            -- `render.height * 3 + 50`, and render.height is 300, so it is 950
+            -- metres tall and tops out at world z 850. This is that number.
+            --
+            -- A fixed top used to be a trade with no right answer -- it cannot both
+            -- stay off the sky over a city whose ground is around 30 and still be
+            -- above a player on Mount Chiliad at 780 -- and 400 was where that
+            -- trade was opened. THE FADE DISSOLVES IT: the top of the wall is drawn
+            -- at `fade.topAlpha`, which is nothing at all, so the height that used
+            -- to tower is the height that is invisible. Chiliad's summit is inside
+            -- the wall again and the city sees a curtain that thins out above the
+            -- rooftops.
+            --
+            -- THE PREVIEW USES THIS SAME NUMBER, deliberately, and that is the
+            -- other thing the fade bought. The #327 bus preview asked for the
+            -- cylinder because the bus cruises at 500 and climbs to 892 over the
+            -- Chiliad massif (config/map.lua), and a wall topping out at 400 was
+            -- entirely below the only viewpoint it is ever seen from. At 850 the
+            -- flight passes THROUGH the fade instead of over a band on the ground,
+            -- so the preview needs no height of its own -- one wall, one height,
+            -- two alphas.
+            --
+            -- Yours to dial between playtests, as it always was. Lower it if the
+            -- wall still reads as a tower from the city; raise it if the northern
+            -- high ground looks like it has no wall at all.
+            topZ     = 850.0,
+
+            -- HOW ROUND THE STRIP HAS TO BE, in metres of chord sag: the most a
+            -- flat quad is allowed to cut the corner off the arc it replaces.
+            --
+            -- THIS IS WHY THE STRIP DRAWS THE WHOLE BOUNDARY WHERE THE COLUMNS
+            -- COULD NOT. A column has to be about as wide as its spacing or the
+            -- colonnade gaps, so slotArc pins the count and maxDraw then rations
+            -- it -- 15 percent of the ring at phase 1, a curtain stopping in
+            -- mid-air. A quad SHARES both of its vertical edges with its
+            -- neighbours, so it may be as long as roundness allows and the surface
+            -- is still continuous. Sag goes as ds^2 / 8r, so the step is
+            -- sqrt(8 * r * chordM) and a 2600m circle closes in about 80 quads at
+            -- two metres of sag, which nobody can see from inside it.
+            chordM   = 2.0,
+
+            -- The floor on quads per closed loop, for the endgame circles where
+            -- the sag rule would happily draw a 40m ring as an octagon.
+            minSeg   = 24,
+
+            -- THE CEILING ON POLYS PER FRAME, ALL LOOPS TOGETHER, and it is a hard
+            -- one: the per-loop count is the budget divided by the number of loops
+            -- AND BY WHAT A QUAD COSTS, before roundness is even consulted, so no
+            -- shape can talk its way past it. Where the real per-frame ceiling sits
+            -- is a resmon question, not a derivation.
+            --
+            -- ═══ 1024 RATHER THAN 256, AND THE FADE IS ONLY HALF THE REASON ═══
+            --
+            -- A BANDED QUAD IS `fade.bands` QUADS, so it costs 2 * bands polys and
+            -- not 2. At 256 the banded wall would have been rationed to 21 quads a
+            -- loop, which is a 2600m ring drawn as a 21-gon: the budget would have
+            -- been deciding the SHAPE of the wall rather than capping its cost.
+            --
+            -- AND 256 WAS ALREADY BINDING BEFORE THE FADE EXISTED, which is worth
+            -- knowing on its own. Measured at the shipping radii: a Venn or disjoint
+            -- 2600 + 1600 wants 166 quads for two metres of sag and got 127, so the
+            -- worst sag on those shapes was 5.09 m against a chordM of 2.0 -- the
+            -- roundness rule quietly overruled on the two widest shapes in the game.
+            -- The suite never saw it because its sag block drives nested circles,
+            -- which are the shapes the ceiling never reached.
+            --
+            -- At 1024 nothing is rationed on the gradient path (worst 332 polys, and
+            -- every shape inside chordM), and the banded path at 3 bands peaks at
+            -- 888 with one shape trimmed to 2.88 m of sag. Measured polys per frame,
+            -- gradient / 3 bands: phase 1 nested 162 / 486, phase 2 nested 126 / 378,
+            -- phase 3 nested 98 / 294, phase 4 nested 72 / 216, phase 5 nested
+            -- 52 / 156, phase 8 point 48 / 144, the widest Venn 332 / 888.
+            maxPolys = 1024,
+
+            -- ═══ THE FADE, WHICH IS WHAT LETS THE WALL BE AS TALL AS THE MARKER ═══
+            --
+            --   "are you able to make the wall fade bottom to top like the
+            --    3dmarker? if so, just make it the same height as the marker was."
+            --   "go with the fallback if no stock texture works. but give me a way
+            --    to know whether it fellback."          -- the owner, 2026-09-22
+            --
+            -- TWO PATHS, AND THE DEFAULT IS THE ONE THAT CANNOT FAIL.
+            --
+            --   'bands'     stacked plain DRAW_POLY quads, each flat at its own
+            --               alpha. Always works, costs `bands` times the polys, and
+            --               SHOWS STEPS rather than a smooth ramp -- which is the
+            --               banding #336 escaped, so it is a fallback and not a
+            --               plan.
+            --   'gradient'  `_DRAW_SPRITE_POLY_2` (0x736D7AA1B750856B), Rockstar's
+            --               DRAW_TEXTURED_POLY_WITH_THREE_COLOURS, which takes a
+            --               colour AND AN ALPHA PER VERTEX: a real gradient at
+            --               today's triangle count, for nothing.
+            --
+            -- THE GRADIENT IS NOT THE DEFAULT BECAUSE IT NEEDS A TEXTURE WE DO NOT
+            -- SHIP, and that is a finding rather than a caution. The native is real
+            -- -- a GTA V client native, registered in FiveM with 32 arguments,
+            -- callable from Lua -- but it is a TEXTURED poly, so the vertex colours
+            -- tint something, and a textured poly with no texture draws nothing.
+            --
+            -- THERE IS NO STOCK FLAT-WHITE TEXTURE. Every shipped resource that
+            -- draws textured polys either streams its own .ytd (l2k_gps3d's
+            -- `chevrons`; blitz outrun's `blitz_outrun`, which is a translucent quad
+            -- wall and the closest analogue in existence) or points the native at a
+            -- DUI's runtime texture. Rockstar's own use is tapered laser-beam art.
+            -- `deadline`, which the native's own documentation names, is requested by
+            -- nobody at all. THIS ESTATE SHIPS NO STREAMED ASSETS, so the one thing
+            -- the gradient needs is the one thing we have not got -- and there is no
+            -- working call site for the native anywhere in public code either, so it
+            -- would be unproven even with a texture.
+            --
+            -- WHAT THAT COSTS IF IT IS WRONG IS THE WHOLE WALL. A native that
+            -- silently draws nothing leaves the storm with no curtain at all, which
+            -- is the failure the owner has now reported twice -- and NO TEST IN THIS
+            -- TREE CAN SEE IT, because a suite can prove a call was made and cannot
+            -- prove a pixel appeared. So the wall ships on bands.
+            --
+            -- THE GRADIENT IS FULLY WIRED AND WAITING FOR A TEXTURE. Name a resident
+            -- dictionary and texture below and set prefer = 'gradient': the wall
+            -- requests the dictionary, waits requestFrames for it, uses it if it
+            -- arrives and bands if it does not. Two ways to get a texture, neither of
+            -- them free: add a 1x1 white .ytd to a resource's stream folder, which
+            -- ends this estate's no-streamed-assets rule, or bake the ramp into a DUI
+            -- and draw it with the single-colour DRAW_TEXTURED_POLY instead.
+            --
+            -- READ THE LINE THE WALL PRINTS on its first frame; /brwallstyle reports
+            -- the same thing at any time. Two failures look identical from here and
+            -- only your eyes tell them apart: the wall MISSING entirely means the
+            -- native drew nothing, and the wall in the WRONG COLOUR means the texture
+            -- tinted it instead of the other way round.
+            fade = {
+                prefer     = 'bands',
+
+                -- HOW MANY STACKED QUADS THE BANDED PATH USES, and this is the
+                -- smoothness-against-polys dial. Each band multiplies the wall's
+                -- poly count: at 3 the phase-1 ring is 486 polys a frame and the
+                -- ramp shows as three steps, at 6 it is 972 and twice as smooth.
+                -- Raise maxPolys with it or the budget will start trimming quads
+                -- and the ring will go polygonal instead.
+                bands      = 3,
+
+                -- THE RAMP, AS TWO MULTIPLIERS ON render.alpha: full strength at
+                -- baseZ, nothing at topZ. A straight line is all that one colour per
+                -- vertex can express -- a wall that stayed solid to head height and
+                -- only then faded would need a kink in it, which needs a second
+                -- stacked quad and twice the polys on the one path that was supposed
+                -- to be free. Raise topAlpha if the wall looks decapitated from the
+                -- ground; lower baseAlpha if the base reads as a solid block.
+                baseAlpha  = 1.0,
+                topAlpha   = 0.0,
+
+                -- The texture the gradient path tints, and BOTH ARE EMPTY BECAUSE NO
+                -- STOCK ONE EXISTS -- see above. Empty is read as "band", not as "try
+                -- it and see": a textured poly with no texture draws nothing, so
+                -- treating an unset dictionary as something to attempt would let a
+                -- config typo cost the whole wall in silence.
+                --
+                -- requestFrames is how long the wall waits for a NAMED dictionary
+                -- before giving up and banding. A dictionary that never arrives is a
+                -- fallback, not a request every frame forever -- 300 frames is about
+                -- five seconds, and the answer is latched for the session.
+                dict          = '',
+                texture       = '',
+                requestFrames = 300,
+            },
+        },
     },
 
     -- Screen treatment while outside the circle. postFX pack names are the most

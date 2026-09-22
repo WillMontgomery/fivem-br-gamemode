@@ -14130,7 +14130,7 @@ do
         local C = {
             now = 100000,
             envelopes = {}, weather = {}, tc = {}, blips = {},
-            markers = {}, prints = {},
+            markers = {}, polys = {}, prints = {},
             pedAt = pt(0.0, 0.0),
         }
 
@@ -14192,6 +14192,38 @@ do
                                   _, _, _, a)
             C.markers[#C.markers + 1] =
                 { x = x, y = y, z = z, sx = sx, sz = sz, a = a }
+        end
+
+        -- ═══ AND DRAW_POLY, WHICH THIS HARNESS DID NOT HAVE AND NEEDED (#336) ═══
+        --
+        -- THE WALL IS A QUAD STRIP BY DEFAULT NOW, and this sandbox stubbed only
+        -- DrawMarker -- so every frame this file stepped, the storm.wall callback
+        -- reached DRAW_POLY, hit an "attempt to call a nil value", AND THE HARNESS
+        -- SWALLOWED IT: BR.Loop.step pcalls its callbacks, so the failure arrived as
+        -- one line in C.prints that nothing here reads. The wall silently did not
+        -- draw, for the whole suite.
+        --
+        -- WHAT THAT COST WAS A CONCLUSION, not an assertion. The blocks below that
+        -- test the wall all force `wallStyle = 'columns'` first, so none of them was
+        -- passing because nothing drew -- checked deliberately, and the answer is
+        -- reassuring. What was wrong is the belief that no suite but test_storm.lua
+        -- reaches the strip: this one reaches it on every frame of every viewpoint
+        -- block, and reached it as an exception. And the way that belief was arrived
+        -- at was by putting `error()` at the top of drawStrip and watching the suites
+        -- stay green -- which is the SAME HOLE, since a swallowed throw is exactly
+        -- what green looked like.
+        --
+        -- RECORDED RATHER THAN DISCARDED, so the `errored()` assertions in this file
+        -- mean what they say on the default renderer too. Positions only: every claim
+        -- about the strip's geometry belongs to tools/test_storm.lua, which has the
+        -- band and winding helpers for it.
+        env.DrawPoly = function(x1, y1, z1, x2, y2, z2, x3, y3, z3, r, g, b, a)
+            C.polys[#C.polys + 1] = {
+                { x = x1, y = y1, z = z1 },
+                { x = x2, y = y2, z = z2 },
+                { x = x3, y = y3, z = z3 },
+                r = r, g = g, b = b, a = a,
+            }
         end
         env.GetGroundZFor_3dCoord = function() return false, 0.0 end
 
@@ -14512,6 +14544,39 @@ do
         ok(#C.envelopes > before and near(e.edgeDistance, 710.0, 0.5),
            'the watched player moving 10m moves the readout 10m, per frame',
            e and e.edgeDistance)
+    end
+
+    -- ═══ THE DEFAULT RENDERER ACTUALLY RUNS HERE, WHICH IS NOT A GIVEN (#336) ═══
+    --
+    -- This block exists because the stub above was missing and NOTHING NOTICED. The
+    -- wall has been a quad strip by default since #336, this sandbox stubbed only
+    -- DrawMarker, and BR.Loop.step pcalls its callbacks -- so every frame every
+    -- viewpoint block below stepped, the wall threw "attempt to call a nil value" and
+    -- the harness swallowed it into C.prints. The wall silently did not draw, for the
+    -- whole file.
+    --
+    -- THE BLOCKS THAT TEST THE WALL ALL FORCE 'columns' FIRST, so none of them was
+    -- passing for that reason -- checked rather than assumed. What was wrong was the
+    -- belief that no suite but test_storm.lua reaches the strip at all, and the way
+    -- that belief was reached: `error()` at the top of drawStrip, suites still green.
+    -- A swallowed throw looks exactly like green, so that experiment was the same
+    -- hole measuring itself.
+    --
+    -- SO THIS IS THE ASSERTION THAT HAD TO EXIST: on the SHIPPING renderer, with
+    -- nothing forced, the wall draws and runs clean. It is deliberately not about the
+    -- strip's geometry -- that is tools/test_storm.lua's subject, with the helpers for
+    -- it. It is about the harness being able to tell that the wall ran at all.
+    do
+        local C = newStormClient()
+        C.pedAt = pt(100.0, 0.0)
+        C.frame()
+        ok(C.errored() == nil,
+           'with nothing forced, the shipping wall renderer runs clean in this '
+           .. 'sandbox -- a missing native here is a swallowed pcall, not a red test',
+           C.errored())
+        ok(#C.polys > 0 and #C.polys % 2 == 0 and #C.markers == 0,
+           'and it is the quad strip that drew: whole triangles, no 3d marker',
+           ('%d polys, %d markers'):format(#C.polys, #C.markers))
     end
 
     -- ═══ AND THE COLUMN WALL, THE THIRD READ ═══

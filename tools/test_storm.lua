@@ -147,6 +147,96 @@ local function near(a, b, tol)
     return a ~= nil and math.abs(a - b) <= (tol or 1e-6)
 end
 
+--- Every BAND the last frame emitted: two triangles, one footprint, one alpha.
+---
+--- ASKED WITHOUT ASSUMING A WINDING, deliberately: the outward face is
+--- (A_bot, B_bot, A_top) and the inward face is that reversed, so the only
+--- thing both spellings agree on is the vertex SET. A appears twice in the
+--- first triangle (bottom and top) and B once, which names them without the
+--- test having to know which face it is looking at -- so a winding bug cannot
+--- hide inside the helper that is supposed to catch it.
+---
+--- ═══ A BAND IS NOT A QUAD SINCE THE FADE (#336) ═══
+---
+--- The wall fades bottom to top, and the fallback path spells that as
+--- `fade.bands` stacked quads per walk step, each flat at its own alpha --
+--- because DRAW_POLY has one alpha for a whole triangle and cannot ramp. So the
+--- triangles now arrive in groups of 2 * bands per step, not 2, and a helper
+--- that still paired them would hand every assertion below a footprint that is
+--- half a band wide. Bands first, then quadsOf groups them.
+local function bandsOf(C)
+    local out = {}
+    for i = 1, #C.polys - 1, 2 do
+        local t = C.polys[i]
+        local twice, once
+        for j = 1, 3 do
+            local v, n = t[j], 0
+            for k = 1, 3 do
+                if t[k].x == v.x and t[k].y == v.y then n = n + 1 end
+            end
+            if n == 2 then twice = v else once = v end
+        end
+        local lo, hi = math.huge, -math.huge
+        for _, tri in ipairs({ C.polys[i], C.polys[i + 1] }) do
+            for j = 1, 3 do
+                if tri[j].z < lo then lo = tri[j].z end
+                if tri[j].z > hi then hi = tri[j].z end
+            end
+        end
+        out[#out + 1] = { a = twice, b = once, z0 = lo, z1 = hi,
+                          alpha = C.polys[i].a,
+                          t1 = C.polys[i], t2 = C.polys[i + 1] }
+    end
+    return out
+end
+
+--- The WALK STEPS the last frame emitted: the bands of one step, grouped.
+---
+--- GROUPED BY FOOTPRINT RATHER THAN BY COUNTING TO `bands`, so the helper does
+--- not have to be told the config value it is meant to be checking. Every band
+--- of a step stands on the same two boundary points -- that is what makes them
+--- bands of one quad rather than separate quads -- so a run of equal footprints
+--- IS a step, and the count of them is a thing the tests can then assert on
+--- instead of assume.
+local function quadsOf(C)
+    local out = {}
+    for _, b in ipairs(bandsOf(C)) do
+        local last = out[#out]
+        if last and last.a.x == b.a.x and last.a.y == b.a.y
+            and last.b.x == b.b.x and last.b.y == b.b.y then
+            last.bands[#last.bands + 1] = b
+            if b.z0 < last.z0 then last.z0 = b.z0 end
+            if b.z1 > last.z1 then last.z1 = b.z1 end
+        else
+            out[#out + 1] = { a = b.a, b = b.b, z0 = b.z0, z1 = b.z1,
+                              bands = { b } }
+        end
+    end
+    return out
+end
+
+--- Does this triangle's visible face point at `v`? The visible side is the one
+--- the cross product points toward, so this is that cross product dotted with
+--- the line of sight. A vertical quad has a horizontal normal, so the viewer's
+--- own z falls out of the arithmetic -- which is the reason a spectator in a
+--- helicopter sees the same faces as a ped on the ground.
+local function faces(t, v)
+    local ax, ay, az = t[2].x - t[1].x, t[2].y - t[1].y, t[2].z - t[1].z
+    local bx, by, bz = t[3].x - t[1].x, t[3].y - t[1].y, t[3].z - t[1].z
+    local nx, ny, nz = ay * bz - az * by, az * bx - ax * bz, ax * by - ay * bx
+    return (v.x - t[1].x) * nx + (v.y - t[1].y) * ny
+         + ((v.z or 0.0) - t[1].z) * nz > 0.0
+end
+
+--- How many of the last frame's triangles show the viewer their back.
+local function backFacing(C, v)
+    local n = 0
+    for _, t in ipairs(C.polys) do
+        if not faces(t, v) then n = n + 1 end
+    end
+    return n
+end
+
 -- ---------------------------------------------------------------------------
 -- The server: the real br_core/server/storm.lua behind the smallest roster,
 -- match list and combat surface that can hold it up.
@@ -317,8 +407,8 @@ local function pt(x, y, z) return { x = x, y = y, z = z or 30.0 } end
 local function newStormClient()
     local env = newSandbox()
     local C = { now = 1000000, envelopes = {}, blips = {}, markers = {},
-                prints = {}, cmds = {}, sfx = {}, pedAt = pt(0.0, 0.0),
-                handlers = {} }
+                polys = {}, prints = {}, cmds = {}, sfx = {},
+                pedAt = pt(0.0, 0.0), handlers = {} }
 
     env.GetGameTimer = function() return C.now end
     env.print = function(...)
@@ -375,6 +465,22 @@ local function newStormClient()
     env.DrawMarker = function(_, x, y, z, _, _, _, _, _, _, sx, _, sz,
                               _, _, _, a)
         C.markers[#C.markers + 1] = { x = x, y = y, z = z, sx = sx, sz = sz, a = a }
+    end
+    -- ═══ AND THE QUAD STRIP, WHICH IS THE WALL SINCE #336 ═══
+    --
+    -- EVERY VERTEX IS KEPT, IN ORDER, because the geometry is the only thing a
+    -- test can see and every claim the strip makes is a claim about it: that
+    -- neighbouring quads share an edge to the last bit, that the winding the
+    -- viewer is shown faces them, that the strip closes, and that two islands
+    -- are two strips. A poly recorded as a centre and a width could not carry
+    -- any of those.
+    env.DrawPoly = function(x1, y1, z1, x2, y2, z2, x3, y3, z3, r, g, b, a)
+        C.polys[#C.polys + 1] = {
+            { x = x1, y = y1, z = z1 },
+            { x = x2, y = y2, z = z2 },
+            { x = x3, y = y3, z = z3 },
+            r = r, g = g, b = b, a = a,
+        }
     end
     env.GetGroundZFor_3dCoord = function() return false, 0.0 end
 
@@ -461,6 +567,7 @@ local function newStormClient()
     function C.frame()
         C.now = C.now + 16
         C.markers = {}
+        C.polys = {}
         env.BR.Loop.step(env.BR.Loop.FRAME)
     end
 
@@ -1013,66 +1120,93 @@ end
 -- ---------------------------------------------------------------------------
 describe('wall.default')
 do
-    -- ═══ THE RENDERER IS CHOSEN BY THE SHAPE, NOT BY A GLOBAL DEFAULT ═══
+    -- ═══ THE DEFAULT IS THE QUAD STRIP, AND NOTHING DRAWS A MARKER ANY MORE ═══
     --
-    -- Both global defaults were wrong for half the match. 'solid' is one
-    -- DrawMarker type 1 -- a cylinder, and therefore a circle by construction --
-    -- so left as the default after #328 it paints a curtain straight through a
-    -- player standing safely in the next circle. 'columns' draws any shape but is
-    -- capped at maxDraw 80, so on the phases that NEST (60 to 90 percent of them)
-    -- it drew 15 percent of the ring at phase 1, 24 at phase 2, 40 at phase 3 and
-    -- 64 at phase 4: a curtain stopping in mid-air with no wall behind it, for
-    -- roughly 15 minutes of a 22 minute match. The owner has reacted to exactly
-    -- that once already, when a 300m curtain vanishing past 300m "read as a render
-    -- bug".
+    -- Three global defaults have now been wrong. 'solid' is one DrawMarker type 1 --
+    -- a cylinder, and therefore a circle by construction -- so left as the default
+    -- after #328 it paints a curtain straight through a player standing safely in
+    -- the next circle. 'columns' draws any shape but is capped at maxDraw 80, so on
+    -- the phases that NEST (60 to 90 percent of them) it drew 15 percent of the ring
+    -- at phase 1, 24 at phase 2, 40 at phase 3 and 64 at phase 4: a curtain stopping
+    -- in mid-air. And deciding between the two per shape, which is what #328 settled
+    -- on, still leaves every union looking like a picket fence -- which is the
+    -- report this block now pins:
     --
-    -- union2 routes the nested case through StormShape.circle, so the NUMBER OF
-    -- DISCS in the shape exactly identifies "this union is a single circle". One
-    -- disc draws solid, two draw columns, decided per frame.
+    --   "what you just drew is not a wall - it's a bunch of circles which are the
+    --    wrong height and you're still using 3dmarkers..... I thought you were
+    --    going to research ways to not do that."     -- the owner, 2026-09-22, #336
+    --
+    -- SO THE ASSERTION IS THE LITERAL WORDS: no 3d markers. Not "fewer", not "only
+    -- on a circle" -- none, on either shape, on the automatic path. The shape has
+    -- nothing left to choose between because the strip has neither limit.
     local C = newStormClient()
     ok(C.env.BR.Storm.wallStyle == nil,
-        'there is no global default renderer: nil means ask the shape',
+        'there is still no global default in the variable: nil is automatic',
         tostring(C.env.BR.Storm.wallStyle))
 
-    -- A NESTED PHASE GETS THE CYLINDER IT HAD BEFORE 2026-09-21, and gets it at
-    -- the inset radius, which is the one number that made this a regression
-    -- rather than a preference.
     local inset = C.env.BR.Config.Storm.render.edgeInset
     C.record(2, 0.0, 0.0, 350.0, 100.0, 0.0, 150.0, 600000, 60000, 4.0)
     C.pedAt = pt(0.0, 0.0)
     C.frame()
-    ok(#C.markers == 1,
-        'a nested phase is ONE cylinder -- the whole ring, not 64 percent of it',
-        #C.markers)
-    local m = C.markers[1]
+    ok(#C.markers == 0 and #C.polys > 0,
+        'a nested phase draws the quad strip and not one 3d marker',
+        ('%d markers, %d polys'):format(#C.markers, #C.polys))
+
+    -- AND SO DOES A UNION, which is the shape that used to be the fence.
+    C.record(2, 0.0, 0.0, 200.0, 360.0, 0.0, 200.0, 600000, 60000, 4.0)
+    C.frame()
+    ok(#C.markers == 0 and #C.polys > 0,
+        'and so does a union -- the shape that used to get the colonnade',
+        ('%d markers, %d polys'):format(#C.markers, #C.polys))
+
+    -- /brwallstyle REACHES ALL THREE AND COMES BACK TO AUTOMATIC. The A/B is how
+    -- the strip gets judged against the only other seamless wall the game has ever
+    -- drawn, and it is the one command that puts a bad night back on known ground
+    -- without a deploy. FOUR STATES, not three: with three there would be no way
+    -- back to automatic once a session had typed it, and with two the strip could
+    -- not be named at all -- which matters the day automatic changes again.
+    ok(C.cmds.brwallstyle ~= nil, '/brwallstyle is still registered')
+    C.cmds.brwallstyle()
+    ok(C.env.BR.Storm.wallStyle == 'solid', 'and forces the single cylinder',
+        tostring(C.env.BR.Storm.wallStyle))
+    C.cmds.brwallstyle()
+    ok(C.env.BR.Storm.wallStyle == 'columns', 'then forces the marker walk',
+        tostring(C.env.BR.Storm.wallStyle))
+    C.cmds.brwallstyle()
+    ok(C.env.BR.Storm.wallStyle == 'strip', 'then names the quad strip outright',
+        tostring(C.env.BR.Storm.wallStyle))
+    C.cmds.brwallstyle()
+    ok(C.env.BR.Storm.wallStyle == nil, 'then hands the choice back to automatic',
+        tostring(C.env.BR.Storm.wallStyle))
+
+    -- A FORCED 'solid' IS STILL THE CYLINDER IT WAS ON 2026-08-03, at the inset
+    -- radius, on the fixed base below sea level. That is what makes it a BASELINE
+    -- rather than dead code: the A/B is only worth typing if the thing on the other
+    -- side of the switch has not drifted.
+    local S = newStormClient()
+    S.env.BR.Storm.wallStyle = 'solid'
+    S.record(2, 0.0, 0.0, 350.0, 100.0, 0.0, 150.0, 600000, 60000, 4.0)
+    S.pedAt = pt(0.0, 0.0)
+    S.frame()
+    ok(#S.markers == 1 and #S.polys == 0,
+        'a forced solid is ONE cylinder and no polys at all', #S.markers)
+    local m = S.markers[1]
     ok(m ~= nil and near(m.x, 0.0, 1e-9) and near(m.y, 0.0, 1e-9)
         and near(m.sx, (350.0 - inset) * 2.0, 1e-9),
         'centred on the circle and edgeInset inside the logical edge, exactly as '
             .. 'it was on 2026-08-03',
         m and ('%.3f, %.3f, scale %.3f'):format(m.x, m.y, m.sx))
 
-    -- AND A UNION GETS THE WALK, because no cylinder can draw two islands.
-    C.record(2, 0.0, 0.0, 200.0, 360.0, 0.0, 200.0, 600000, 60000, 4.0)
-    C.frame()
-    ok(#C.markers > 40,
-        'while a union that no cylinder can describe gets the column walk',
-        #C.markers)
-
-    -- /brwallstyle STILL OVERRIDES IT, AND CYCLES BACK TO AUTOMATIC. The A/B is
-    -- how the column geometry gets judged on real hardware and it is the one
-    -- command that puts a bad night back on known ground without a deploy -- and
-    -- with only two states there would be no way back to the shape's own choice
-    -- once a session had typed it.
-    ok(C.cmds.brwallstyle ~= nil, '/brwallstyle is still registered')
-    C.cmds.brwallstyle()
-    ok(C.env.BR.Storm.wallStyle == 'solid', 'and forces the single cylinder',
-        tostring(C.env.BR.Storm.wallStyle))
-    C.cmds.brwallstyle()
-    ok(C.env.BR.Storm.wallStyle == 'columns', 'then forces the boundary walk',
-        tostring(C.env.BR.Storm.wallStyle))
-    C.cmds.brwallstyle()
-    ok(C.env.BR.Storm.wallStyle == nil, 'then hands the choice back to the shape',
-        tostring(C.env.BR.Storm.wallStyle))
+    -- AND A FORCED 'columns' IS STILL THE FENCE, which is the other half of the
+    -- comparison: the owner has to be able to put the thing he reported back on
+    -- screen beside the thing that replaced it.
+    local K = newStormClient()
+    K.env.BR.Storm.wallStyle = 'columns'
+    K.record(2, 0.0, 0.0, 200.0, 360.0, 0.0, 200.0, 600000, 60000, 4.0)
+    K.pedAt = pt(0.0, 0.0)
+    K.frame()
+    ok(#K.markers > 40 and #K.polys == 0,
+        'a forced columns is still the marker walk it always was', #K.markers)
 
     -- ═══ AND IT BARELY EVER CHANGES ITS MIND, WHICH IS THE COST OF DECIDING
     --     PER FRAME ═══
@@ -1137,8 +1271,14 @@ do
     -- each, against a ceiling of 80. Below that ceiling the walk draws every
     -- slot and asks nothing about where the viewer is, so these assertions are
     -- about the shape rather than about the camera.
+    --
+    -- FORCED TO 'columns' SINCE #336, because automatic is the quad strip now. This
+    -- block is the MARKER WALK's proof that it lands on a union's boundary, and the
+    -- marker walk is the A/B baseline's other half -- so it has to keep holding for
+    -- the sessions that type the command, which is the only way anybody reaches it.
     local C = newStormClient()
     C.record(2, 0.0, 0.0, 200.0, 360.0, 0.0, 200.0, 600000, 60000, 4.0)
+    C.env.BR.Storm.wallStyle = 'columns'
     C.pedAt = pt(0.0, 0.0)
     C.frame()
 
@@ -1392,6 +1532,667 @@ do
     ok(dgap <= nds * 1.5,
         'in one unbroken run, which is what it was doing correctly all along',
         ('widest %.1f m against ds %.1f'):format(dgap, nds))
+end
+
+-- ---------------------------------------------------------------------------
+describe('wall.strip')
+do
+    -- ═══ THE WALL IS A SURFACE NOW, AND GEOMETRY IS ALL A TEST CAN SEE ═══
+    --
+    --   "what you just drew is not a wall - it's a bunch of circles which are the
+    --    wrong height and you're still using 3dmarkers..... I thought you were
+    --    going to research ways to not do that."     -- the owner, 2026-09-22, #336
+    --
+    -- The striping was never a tuning failure: a DrawMarker type 1 is a translucent
+    -- CYLINDER, brightest at its silhouette edges where the sight line crosses the
+    -- most surface, so eighty in a row are a picket fence -- and widening them until
+    -- they meet doubles the alpha where they cross and bands the wall dark instead.
+    -- config/storm.lua recorded both halves of that beside `overlap`. So the wall is
+    -- a QUAD STRIP: each consecutive pair of walk points is one quad, two DRAW_POLY
+    -- triangles, from a fixed bottom z to a config top z.
+    --
+    -- EVERY ASSERTION BELOW IS ABOUT THE EMITTED TRIANGLES, because that is the only
+    -- thing a suite can look at -- there is no frame buffer here. Four of the claims
+    -- are invisible in any single screenshot and would each cost a playtest:
+    --
+    --   * a shared edge that is two AGREEING answers rather than the same numbers
+    --     is an invariant nothing holds. It is NOT a visible seam, and saying so
+    --     is the point: measured, rebuilding a loop's closing point instead of
+    --     reusing it lands elsewhere on 11 percent of whole-metre radii between 20
+    --     and 2600, and the worst disagreement anywhere is 3.5e-12 metres. What
+    --     the `==` below buys is that the next rewrite of the walk cannot quietly
+    --     stop sharing -- emitting per PIECE rather than per component computes a
+    --     Venn crossing from two different centres, and that is the door.
+    --   * DRAW_POLY is single sided, so the wrong winding is INVISIBLE from one side
+    --     and a missing wall from the other. Both sides are checked.
+    --   * a strip that walked the shape's own arc length through a disjoint seam
+    --     would bridge two islands with one kilometre-long quad across the unsafe
+    --     gap -- a wall where there is no boundary.
+    --   * the poly count is the one thing that can quietly make the wall too
+    --     expensive to ship, and it scales with the shape.
+
+    local base = newStormClient()
+    local rr = base.env.BR.Config.Storm.render
+    local sp = rr.strip
+    local SS = base.env.BR.StormShape
+
+    -- THE FADE IS READ FROM THE REAL CONFIG, NOT ASSUMED. The shipping path is the
+    -- banded one, so every assertion below is against banded geometry -- and the
+    -- band count is what a quad's poly cost is a multiple of, so the budget and
+    -- count assertions all carry it rather than hard-coding two triangles a quad.
+    -- Reading it here means raising `fade.bands` retunes this suite instead of
+    -- turning it red.
+    local fd = sp.fade or {}
+    local nBands = math.max(1, math.floor(fd.bands or 3))
+    local quadPolys = 2 * nBands
+
+    -- ═══ A CIRCLE, FROM INSIDE IT ═══
+    --
+    -- OFF THE AXIS AND OFF THE CENTRE, DELIBERATELY. The obvious viewer positions
+    -- for a circle centred on the origin are (0, 0) and somewhere due east, and
+    -- both are degenerate for nearestArc -- the centre ties every boundary point
+    -- and answers arc length 0, and due east IS arc length 0. A renderer that
+    -- rotated its walk to start at the viewer would then produce the identical
+    -- geometry from both places and pass the world-anchored test below while being
+    -- exactly the #225 bug. Two different bearings is what makes that test able to
+    -- fail.
+    local C = newStormClient()
+    C.record(5, 0.0, 0.0, 260.0, 60.0, 0.0, 120.0, 600000, 60000, 2.9)
+    C.pedAt = pt(80.0, 40.0, 30.0)
+    C.frame()
+
+    ok(C.errored() == nil, 'the strip runs clean on a circle', C.errored())
+    ok(#C.polys > 0 and #C.polys % 2 == 0,
+        'and emits whole quads -- two triangles each, never an odd one',
+        #C.polys)
+    ok(#C.markers == 0, 'with no 3d marker anywhere in the frame', #C.markers)
+
+    local q = quadsOf(C)
+    -- EVERY STEP CARRIES THE CONFIGURED NUMBER OF BANDS, and the count comes out of
+    -- the geometry rather than being handed to the helper. A fade that lost a band
+    -- at the top or bottom of the wall -- an off-by-one in the band loop, which is
+    -- the obvious way to write it wrong -- leaves the strip continuous, the seams
+    -- shared and the winding correct, and shortens the wall by a third.
+    local shortBand = nil
+    for i, qd in ipairs(q) do
+        if #qd.bands ~= nBands then shortBand = shortBand or i end
+    end
+    ok(#q * nBands * 2 == #C.polys and shortBand == nil,
+        'every quad reconstructs from its bands, and every band from its two '
+            .. 'triangles',
+        ('%d quads x %d bands x 2 against %d polys; first short quad %s'):format(
+            #q, nBands, #C.polys, tostring(shortBand)))
+
+    -- THE SHARED EDGE IS THE SAME NUMBERS, NOT TWO AGREEING ANSWERS. Bit-for-bit
+    -- equality is the whole point: two floating-point reconstructions of one
+    -- boundary point agree to about a millimetre, and a millimetre of overlap is a
+    -- bright hairline at every seam while a millimetre of gap is a dark one. `==`
+    -- rather than a tolerance is what makes this test able to tell the difference.
+    local seams, firstSeam = 0, nil
+    for i = 2, #q do
+        local prev, cur = q[i - 1], q[i]
+        if prev.b.x ~= cur.a.x or prev.b.y ~= cur.a.y then
+            seams = seams + 1
+            firstSeam = firstSeam or ('quad %d ends %.9f,%.9f, quad %d begins '
+                .. '%.9f,%.9f'):format(i - 1, prev.b.x, prev.b.y, i,
+                    cur.a.x, cur.a.y)
+        end
+    end
+    ok(seams == 0,
+        'consecutive quads share their edge to the last bit -- no gap and no '
+            .. 'overlap between neighbours, anywhere in the strip',
+        firstSeam or ('%d of %d seams split'):format(seams, #q - 1))
+
+    -- AND THE STRIP CLOSES. The last quad takes the STORED first point rather than
+    -- asking the shape for arc length c.len, which wraps to zero and answers
+    -- correctly -- but answers it by rebuilding the point. One rebuilt seam per ring
+    -- is one hairline per ring, on every circle in the game.
+    ok(#q > 0 and q[#q].b.x == q[1].a.x and q[#q].b.y == q[1].a.y,
+        'and the strip closes on a circle, onto the identical first point',
+        #q > 0 and ('%.9f,%.9f vs %.9f,%.9f'):format(q[#q].b.x, q[#q].b.y,
+            q[1].a.x, q[1].a.y) or nil)
+
+    -- ═══ AND SWEPT ACROSS RADII, BECAUSE BIT EXACTNESS IS NOT AN ANECDOTE ═══
+    --
+    -- The two assertions above hold on ONE radius, and whether a rebuilt point
+    -- lands on the stored one is decided by the last bits of `n * (len / n)`
+    -- against `len` -- which is true at most radii and false at about one in nine.
+    -- Measured with the strip's own quad count: 293 of the 2581 whole-metre radii
+    -- between 20 and 2600 are ones where rebuilding lands somewhere else. So a
+    -- single radius proves nothing about the construction, and a sweep does.
+    local W2 = newStormClient()
+    W2.pedAt = pt(37.0, 61.0, 30.0)
+    local splitAt, openAt, swept = nil, nil, 0
+    for R = 30, 2600, 7 do
+        W2.record(2, 0.0, 0.0, R + 0.0, 0.0, 0.0, R * 0.4, 600000, 60000, 2.0)
+        W2.frame()
+        local wq = quadsOf(W2)
+        swept = swept + 1
+        for i = 2, #wq do
+            if wq[i - 1].b.x ~= wq[i].a.x or wq[i - 1].b.y ~= wq[i].a.y then
+                splitAt = splitAt or R
+            end
+        end
+        if #wq == 0 or wq[#wq].b.x ~= wq[1].a.x or wq[#wq].b.y ~= wq[1].a.y then
+            openAt = openAt or R
+        end
+    end
+    ok(swept > 350 and splitAt == nil and openAt == nil,
+        'and that holds at every radius from 30 to 2600: no seam splits and every '
+            .. 'ring closes, which is what makes the shared edge a construction '
+            .. 'rather than a coincidence at one radius',
+        ('%d radii swept; first split at %s, first open ring at %s'):format(swept,
+            tostring(splitAt), tostring(openAt)))
+
+    -- EVERY POINT IS USED BY EXACTLY TWO QUADS, which is what "one closed strip"
+    -- means when said about the emitted geometry rather than about the loop that
+    -- emitted it. A duplicated quad or a doubled-back walk passes the seam test
+    -- above and fails this.
+    local uses, distinct = {}, 0
+    for _, qd in ipairs(q) do
+        for _, p in ipairs({ qd.a, qd.b }) do
+            local k = ('%.17g,%.17g'):format(p.x, p.y)
+            if not uses[k] then uses[k] = 0 distinct = distinct + 1 end
+            uses[k] = uses[k] + 1
+        end
+    end
+    local shared = 0
+    for _, n in pairs(uses) do if n == 2 then shared = shared + 1 end end
+    ok(distinct == #q and shared == distinct,
+        'and every corner belongs to exactly two quads: one closed strip, not a '
+            .. 'walk that doubled back or drew a quad twice',
+        ('%d distinct corners for %d quads, %d shared by two'):format(distinct,
+            #q, shared))
+
+    -- ═══ THE WINDING, FROM INSIDE ═══
+    ok(#C.polys > 0 and backFacing(C, C.pedAt) == 0,
+        'from inside the circle every triangle shows the viewer its visible face',
+        ('%d of %d triangles back-facing'):format(backFacing(C, C.pedAt),
+            #C.polys))
+
+    -- ═══ AND FROM OUTSIDE, WHICH IS THE HALF A ONE-SIDED SURFACE GETS WRONG ═══
+    --
+    -- A single signed distance per frame would pass the test above and fail this
+    -- one HALF WAY ROUND: a viewer outside the zone is outside the near wall and,
+    -- looking across the circle, on the INSIDE of the far one. One winding for the
+    -- whole frame makes the far rim face away and vanish, so the circle reads as a
+    -- half arc with nothing behind it -- the mid-air stop #328 already paid for.
+    local O = newStormClient()
+    O.record(5, 0.0, 0.0, 260.0, 60.0, 0.0, 120.0, 600000, 60000, 2.9)
+    O.pedAt = pt(420.0, 380.0, 30.0)     -- outside, and on a different bearing
+    O.frame()
+    ok(O.errored() == nil, 'the strip runs clean from outside', O.errored())
+    ok(#O.polys == #C.polys and backFacing(O, O.pedAt) == 0,
+        'and from outside it, every triangle faces the viewer too -- including the '
+            .. 'far rim, which is the half a per-frame signed distance loses',
+        ('%d of %d triangles back-facing'):format(backFacing(O, O.pedAt),
+            #O.polys))
+
+    -- THE WINDINGS REALLY DID FLIP, which is worth asserting separately: a renderer
+    -- that emitted BOTH windings would satisfy every facing test in this block and
+    -- be the doubled alpha the whole change exists to escape.
+    local flipped = 0
+    for i = 1, #C.polys do
+        local a, b = C.polys[i], O.polys[i]
+        if a[1].x ~= b[1].x or a[1].y ~= b[1].y or a[1].z ~= b[1].z then
+            flipped = flipped + 1
+        end
+    end
+    ok(flipped > 0,
+        'and the two frames are not the same triangles: the winding flipped where '
+            .. 'the viewer changed sides, rather than both being drawn',
+        ('%d of %d triangles wound differently'):format(flipped, #C.polys))
+
+    -- THE GEOMETRY ITSELF NEVER MOVED, THOUGH. #225 was a wall hung off the
+    -- viewer -- a colonnade centred on a spectator's corpse's bearing -- and the
+    -- strip must not reintroduce it by the back door. The SURFACE is world-anchored;
+    -- only which of its two faces exists depends on where anybody stands.
+    local sameCorners = #C.polys == #O.polys
+    if sameCorners then
+        local ca, oa = quadsOf(C), quadsOf(O)
+        for i = 1, #ca do
+            if ca[i].a.x ~= oa[i].a.x or ca[i].a.y ~= oa[i].a.y
+                or ca[i].b.x ~= oa[i].b.x or ca[i].b.y ~= oa[i].b.y then
+                sameCorners = false
+            end
+        end
+    end
+    ok(sameCorners,
+        'and the surface is the identical surface from both places -- corner for '
+            .. 'corner, glued to the world and not to the camera')
+
+    -- ═══ AND ALL THE WAY ROUND, BOTH SIDES, BECAUSE ONE VIEWPOINT IS AN ANECDOTE ═══
+    local badIn, badOut = 0, 0
+    for deg = 0, 350, 10 do
+        local a = math.rad(deg)
+        local W = newStormClient()
+        W.record(5, 0.0, 0.0, 260.0, 60.0, 0.0, 120.0, 600000, 60000, 2.9)
+        W.pedAt = pt(math.cos(a) * 150.0, math.sin(a) * 150.0, 30.0)
+        W.frame()
+        if #W.polys == 0 or backFacing(W, W.pedAt) > 0 then badIn = badIn + 1 end
+        W.pedAt = pt(math.cos(a) * 700.0, math.sin(a) * 700.0, 30.0)
+        W.frame()
+        if #W.polys == 0 or backFacing(W, W.pedAt) > 0 then badOut = badOut + 1 end
+    end
+    ok(badIn == 0 and badOut == 0,
+        'swept round in 10 degree steps, from inside and from outside, no viewer '
+            .. 'position is shown the back of a single triangle',
+        ('%d of 36 inside, %d of 36 outside'):format(badIn, badOut))
+
+    -- ═══ THE HEIGHT, WHICH WAS HALF THE REPORT AND IS NOW THE FADE'S ANSWER ═══
+    --
+    -- The columns stood `height * 3 + 50` tall from a base of -100, so their tops
+    -- were at world z 850 and the wall reached into the sky over a city whose ground
+    -- is around 30 -- "the wrong height". The strip topped out at 400 for a while,
+    -- which was a trade with no right answer: a fixed top cannot both stay off the
+    -- sky over the city and be above a player on Chiliad at 780.
+    --
+    -- THE FADE DISSOLVED THE TRADE, and the owner said so: "are you able to make the
+    -- wall fade bottom to top like the 3dmarker? if so, just make it the same height
+    -- as the marker was" (2026-09-22). So the top IS the marker's top, and the last
+    -- metres of it are drawn at fade.topAlpha, which is nothing.
+    --
+    -- THE BOTTOM GOES UNDER EVERYTHING, because a strip's bottom edge is a hard
+    -- line and any ground above it shows as a lit band of terrain through the wall.
+    -- The alternative is a ground probe per boundary point per frame, which is not
+    -- affordable and was removed for exactly that reason -- GetGroundZFor_3dCoord
+    -- returns garbage for unloaded cells, so the fallback (the viewer's own z) is
+    -- what actually ran and the wall rode the camera.
+    --
+    -- ASSERTED AGAINST THE MAP CONFIG'S OWN GROUND, not against a number typed
+    -- twice: BR.Config.Map.POIs is 120 authored places with a z, and it is the only
+    -- statement anywhere in the tree about how low and how high the ground the wall
+    -- crosses actually goes.
+    local loPoi, hiPoi, named = math.huge, -math.huge, 0
+    for _, poi in ipairs(base.env.BR.Config.Map.POIs) do
+        if poi.z then
+            named = named + 1
+            if poi.z < loPoi then loPoi = poi.z end
+            if poi.z > hiPoi then hiPoi = poi.z end
+        end
+    end
+    ok(named > 100 and sp.baseZ < loPoi and sp.baseZ < 0.0,
+        'the strip\'s bottom is below the lowest ground the config admits, and '
+            .. 'below sea level: no gap can open under the wall on a slope',
+        ('base %.1f against the lowest of %d authored POI heights, %.1f'):format(
+            sp.baseZ, named, loPoi))
+    -- 850 IS THE MARKER'S OWN TOP, DERIVED HERE RATHER THAN TYPED. The cylinder
+    -- stands at -100 with a scaleZ of `render.height * 3 + 50`, so asserting against
+    -- that arithmetic is what makes this test able to notice if either number moves.
+    -- It is also the one assertion that would catch the height being matched off a
+    -- mis-read of the marker call: dropping the `* 3` gives 350 and a top of 250,
+    -- which is a plausible-looking number and the wrong one.
+    local markerTop = -100.0 + (rr.height * 3.0 + 50.0)
+    ok(sp.topZ > sp.baseZ and near(sp.topZ, markerTop, 1e-9),
+        'and its top is exactly where the marker\'s was -- which is what the fade '
+            .. 'bought, since the metres that used to tower are drawn at nothing',
+        ('%.1f against the marker\'s %.1f, a %.1fm wall'):format(
+            sp.topZ, markerTop, sp.topZ - sp.baseZ))
+
+    -- ═══ EVERY VERTEX ON A BAND PLANE, AND THE PLANES ARE THE WHOLE WALL ═══
+    --
+    -- This used to read "every vertex is on baseZ or topZ", which was right when a
+    -- quad was one quad and is now the assertion that cannot fail for the wrong
+    -- reason: a banded wall has bands + 1 planes, and a fade that stopped short --
+    -- bands that only reached halfway up, or a band height computed off the wrong
+    -- span -- would put every vertex on a legal-looking plane and leave the top of
+    -- the wall missing. So the SET of planes is checked against the span, not just
+    -- membership of it.
+    local planes, stray = {}, 0
+    for _, t in ipairs(C.polys) do
+        for j = 1, 3 do planes[t[j].z] = (planes[t[j].z] or 0) + 1 end
+    end
+    local nPlanes, loZ, hiZ = 0, math.huge, -math.huge
+    for z in pairs(planes) do
+        nPlanes = nPlanes + 1
+        if z < loZ then loZ = z end
+        if z > hiZ then hiZ = z end
+    end
+    local h = (sp.topZ - sp.baseZ) / nBands
+    for z in pairs(planes) do
+        local k = (z - sp.baseZ) / h
+        if math.abs(k - math.floor(k + 0.5)) > 1e-6 then stray = stray + 1 end
+    end
+    ok(nPlanes == nBands + 1 and stray == 0
+        and loZ == sp.baseZ and hiZ == sp.topZ,
+        'and every vertex sits on one of the band planes, which run from the '
+            .. 'config\'s base to the config\'s top with none missing -- the wall is '
+            .. 'exactly as tall as the config says, everywhere',
+        ('%d planes for %d bands, %d off-grid, span %.1f to %.1f'):format(
+            nPlanes, nBands, stray, loZ, hiZ))
+
+    -- AND THE alphaScale CLOCK REACHES IT, which is the debt the column path took
+    -- two commits to pay: it passed rr.alpha raw, so the map ring faded in over the
+    -- hold's last ten seconds while the curtain popped into existence beside it.
+    local F = newStormClient()
+    local frec = F.record(1, 0.0, 0.0, 2600.0, 400.0, 0.0, 1600.0, 600000, 60000, 0.5)
+    F.pedAt = pt(0.0, 0.0, 30.0)
+    frec.tStart = F.now - (frec.tWait - rr.fadeInSec * 1000.0 * 0.5)
+    F.frame()
+    -- ═══ ONE ALPHA PER HEIGHT, NOT ONE ALPHA FULL STOP ═══
+    --
+    -- This block used to assert a single alpha across the whole surface, and the
+    -- reasoning was exactly right at the time: a varying alpha is what banding IS,
+    -- so the striping #336 escaped would have come straight back through the alpha.
+    -- The owner then asked for a variation ON PURPOSE -- "make the wall fade bottom
+    -- to top like the 3dmarker" -- so the invariant moves rather than goes away.
+    --
+    -- WHAT MUST STILL BE TRUE is that the alpha depends on NOTHING BUT HEIGHT. A
+    -- surface whose alpha varies along the wall is the picket fence; a surface whose
+    -- alpha varies up it is the fade. So: one alpha per band plane, the same at every
+    -- point of the ring, monotone decreasing upward, and the whole ramp scaled by the
+    -- phase-1 fade-in clock -- which is the debt the column path took two commits to
+    -- pay, since it passed rr.alpha raw and the curtain popped into existence beside
+    -- a map ring that was fading in properly.
+    local byBand, perBand, varies = {}, 0, nil
+    for _, qd in ipairs(quadsOf(F)) do
+        for bi, b in ipairs(qd.bands) do
+            if byBand[bi] == nil then byBand[bi] = b.alpha perBand = perBand + 1
+            elseif byBand[bi] ~= b.alpha then
+                varies = varies or ('band %d reads %d and %d'):format(
+                    bi, byBand[bi], b.alpha)
+            end
+        end
+    end
+    ok(perBand == nBands and varies == nil,
+        'the alpha depends on height and on nothing else: every band reads the same '
+            .. 'all the way round, so a fade up the wall can never become a stripe '
+            .. 'along it',
+        varies or ('%d bands, each uniform round the ring'):format(perBand))
+
+    local monotone, lowest = true, byBand[1]
+    for bi = 2, nBands do
+        if byBand[bi] > byBand[bi - 1] then monotone = false end
+    end
+    ok(monotone and byBand[nBands] < lowest,
+        'and it falls as the wall rises, bottom band strongest -- which is the fade '
+            .. 'the height depends on',
+        table.concat(byBand, ' > '))
+
+    -- THE RAMP'S OWN ARITHMETIC, against the config rather than against a literal:
+    -- the bottom band samples the ramp at its own centre, so at half the phase-1
+    -- fade its alpha is alpha * 0.5 * the ramp there.
+    local function rampAt(t)
+        local a0 = (fd.baseAlpha or 1.0)
+        local a1 = (fd.topAlpha or 0.0)
+        return a0 + (a1 - a0) * t
+    end
+    local wantBottom = rr.alpha * 0.5 * rampAt(0.5 / nBands)
+    ok(byBand[1] ~= nil and math.abs(byBand[1] - wantBottom) <= 2.0,
+        'and the whole ramp is scaled by the phase-1 fade-in clock, as the map ring '
+            .. 'is: half strength halfway through the hold\'s last seconds',
+        ('bottom band %d against %.1f'):format(byBand[1] or -1, wantBottom))
+
+    -- ═══ TWO ISLANDS ARE TWO STRIPS, AND NOTHING SPANS THE GAP ═══
+    --
+    -- Phase-4 breakout geometry, the pair the solver really produces: current r520
+    -- at the origin, next r260 at 1040m, so the two rims are 260m apart with UNSAFE
+    -- GROUND between them (gapMax is 0.5 and 260 is exactly half of 520). A strip
+    -- that walked the shape's own arc length would join arc length P1 to arc length
+    -- 0 with one quad a kilometre wide across that gap: a wall where there is no
+    -- boundary, and the most confident possible lie about where it is safe to stand.
+    local R0, R1, SEP = 520.0, 260.0, 1040.0
+    local D = newStormClient()
+    D.record(4, 0.0, 0.0, R0, SEP, 0.0, R1, 600000, 60000, 2.2)
+    D.pedAt = pt(300.0, 0.0, 30.0)
+    D.frame()
+    local dq = quadsOf(D)
+
+    local function island(p)
+        return (math.sqrt((p.x - SEP) ^ 2 + p.y ^ 2)
+            < math.sqrt(p.x * p.x + p.y * p.y)) and 2 or 1
+    end
+
+    local bridges, longest = 0, 0.0
+    local perIsland = { 0, 0 }
+    for _, qd in ipairs(dq) do
+        local ia, ib = island(qd.a), island(qd.b)
+        if ia ~= ib then bridges = bridges + 1 end
+        perIsland[ia] = perIsland[ia] + 1
+        longest = math.max(longest,
+            math.sqrt((qd.a.x - qd.b.x) ^ 2 + (qd.a.y - qd.b.y) ^ 2))
+    end
+    ok(D.errored() == nil, 'the strip runs clean on two islands', D.errored())
+    ok(bridges == 0,
+        'not one quad bridges the two islands -- no wall is drawn across the '
+            .. 'unsafe gap between them',
+        ('%d bridging quads, longest quad %.1f m against a %.0f m gap'):format(
+            bridges, longest, SEP - R0 - R1))
+    ok(perIsland[1] > 0 and perIsland[2] > 0,
+        'and both islands get a strip: two walls, because the zone is two places',
+        ('%d quads / %d quads'):format(perIsland[1], perIsland[2]))
+
+    -- EACH ISLAND'S STRIP CLOSES ON ITSELF, which is the disjoint case's version of
+    -- the closure test above: two loops, each shut, rather than one loop shut
+    -- through the gap.
+    local closedLoops = 0
+    for want = 1, 2 do
+        local first, last, run, broken = nil, nil, 0, false
+        for _, qd in ipairs(dq) do
+            if island(qd.a) == want then
+                run = run + 1
+                if not first then first = qd.a
+                elseif last.x ~= qd.a.x or last.y ~= qd.a.y then broken = true end
+                last = qd.b
+            end
+        end
+        if run > 0 and not broken and last.x == first.x and last.y == first.y then
+            closedLoops = closedLoops + 1
+        end
+    end
+    ok(closedLoops == 2,
+        'and each of the two strips is a closed loop in its own right, walked end '
+            .. 'to end with no break in it',
+        ('%d of 2 closed'):format(closedLoops))
+
+    -- AND THE WINDING IS RIGHT ON BOTH OF THEM AT ONCE, which is where a per-frame
+    -- signed distance fails the other way round. A viewer standing INSIDE the next
+    -- circle is inside the zone, so one winding for the whole frame turns the
+    -- current circle inward as well -- and the rim nearest them, the one they are
+    -- about to walk into, is the rim that disappears.
+    local I = newStormClient()
+    I.record(4, 0.0, 0.0, R0, SEP, 0.0, R1, 600000, 60000, 2.2)
+    I.pedAt = pt(SEP, 0.0, 30.0)         -- dead centre of the FAR island
+    I.frame()
+    ok(I.errored() == nil and #I.polys > 0 and backFacing(I, I.pedAt) == 0,
+        'a viewer inside one island is shown a face of every triangle of BOTH -- '
+            .. 'including the island they are outside of and running toward',
+        ('%d of %d back-facing'):format(backFacing(I, I.pedAt), #I.polys))
+
+    -- ═══ A VENN UNION IS ONE LOOP, AND NO CORNER LEAVES THE BOUNDARY ═══
+    --
+    -- Two overlapping discs have a boundary with two REFLEX corners where the
+    -- circles cross, and it is one closed loop. Every quad corner has to stand on
+    -- that outline: a corner on an INTERIOR arc -- the half of each circle the other
+    -- one swallowed -- would be strictly inside the other disc and read negative,
+    -- which is a wall through the middle of the safe zone.
+    local V = newStormClient()
+    V.record(3, 0.0, 0.0, 400.0, 500.0, 0.0, 400.0, 600000, 60000, 1.7)
+    V.pedAt = pt(250.0, 0.0, 30.0)
+    V.frame()
+    local venn = SS.inset(SS.union2(0.0, 0.0, 400.0, 500.0, 0.0, 400.0),
+        rr.edgeInset)
+    local offShape, offAt = 0.0, nil
+    for _, qd in ipairs(quadsOf(V)) do
+        for _, p in ipairs({ qd.a, qd.b }) do
+            local d = math.abs(SS.distance(venn, p.x, p.y))
+            if d > offShape then offShape, offAt = d, ('%.1f,%.1f'):format(p.x, p.y) end
+        end
+    end
+    ok(V.errored() == nil and #V.polys > 0, 'the strip runs clean on a Venn union',
+        V.errored())
+    ok(offShape < 1e-6,
+        'and every corner of it stands on the boundary of the INSET union: none in '
+            .. 'the lens, none off the shape',
+        ('worst %.9f m at %s'):format(offShape, tostring(offAt)))
+    ok(backFacing(V, V.pedAt) == 0,
+        'with a visible face at every triangle across both reflex corners',
+        ('%d of %d back-facing'):format(backFacing(V, V.pedAt), #V.polys))
+
+    -- ═══ AND THE CURTAIN BETWEEN THE CORNERS, WHICH IS WHERE IT WENT OUTSIDE ═══
+    --
+    -- THE ASSERTION ABOVE CANNOT FAIL, and that is why this one exists. It measures
+    -- `qd.a` and `qd.b` -- the quad CORNERS -- and pointAtComponent puts those on the
+    -- boundary BY CONSTRUCTION, whatever the walk does between them. So it passed
+    -- while this suite's own Venn case had the curtain 12.45 metres outside the true
+    -- boundary, and it would pass again for the same reason.
+    --
+    -- WHAT THE WALK DID. The step is priced off curvature -- sag is ds^2 / 8r -- and
+    -- that is blind to a CORNER, where the curvature is infinite and no step
+    -- satisfies the bound. A Venn union is ONE component of two arcs meeting at two
+    -- reflex crossings, and `c.len` is not a multiple of the step, so one quad
+    -- straddled each crossing and bridged it with a straight chord across the notch.
+    -- THE NOTCH CUTS INWARD, SO THE CHORD LANDED OUTSIDE THE SHAPE: the curtain drawn
+    -- beyond the boundary that damages, which is the live "20ft inside" report
+    -- edgeInset exists for, INVERTED and about five times larger.
+    --
+    -- MEASURED THROUGH THIS RENDERER, as signed distance from the UNINSET damaging
+    -- boundary, worst case over the reachable separation range per shipping phase
+    -- pair. -6.00 m is the right answer everywhere -- the curtain exactly edgeInset
+    -- inside the logical edge:
+    --
+    --     2600 + 1600   stepping the component +33.11 m   stepping runs -6.00 m
+    --     1600 +  950                          +23.71 m                 -6.00 m
+    --      950 +  520                          +15.84 m                 -6.00 m
+    --      520 +  260                           +9.35 m                 -6.00 m
+    --      260 +  110                           +3.66 m                 -6.00 m
+    --
+    -- 57 of 235 sampled reachable Venn geometries put the curtain outside the
+    -- server's ten-metre damage cushion, and 0 of 235 do now. Both counts are a
+    -- sampled sweep of the whole overlap range, 48 separations per pair, and the
+    -- excursions above are the worst of a 400-separation sweep at 64 interior
+    -- samples per quad. Circles and disjoint pairs measured -6.00 m
+    -- throughout, both before and after, which is why nothing caught it: a circle's
+    -- component is one piece and a disjoint pair's two components are a whole circle
+    -- each, so neither has an interior boundary to step over.
+    --
+    -- SO THIS SAMPLES THE SPAN, NOT THE ENDS, at shipping radii and at the separation
+    -- that was worst -- and it asserts the sign as well as the size. A wall drawn
+    -- OUTSIDE the damaging boundary is the failure; being a little further inside than
+    -- edgeInset asked for never is.
+    local function excursionOn(phase, r0, r1, sep, samples)
+        local E = newStormClient()
+        E.record(phase, 0.0, 0.0, r0, sep, 0.0, r1, 600000, 60000, 2.0)
+        E.pedAt = pt(r0 * 0.5, 0.0, 30.0)
+        E.frame()
+        local zone = SS.union2(0.0, 0.0, r0, sep, 0.0, r1)
+        local worst, at, nqd = -math.huge, nil, 0
+        for _, qd in ipairs(quadsOf(E)) do
+            nqd = nqd + 1
+            for k = 0, samples do
+                local t = k / samples
+                local x = qd.a.x + (qd.b.x - qd.a.x) * t
+                local y = qd.a.y + (qd.b.y - qd.a.y) * t
+                local d = SS.distance(zone, x, y)
+                if d > worst then worst, at = d, ('%.1f,%.1f'):format(x, y) end
+            end
+        end
+        return worst, nqd, at, E
+    end
+
+    -- THE PAIRS ARE NAMED BY RADIUS AND DRIVEN AT PHASE 2 OR LATER, deliberately:
+    -- the phase number reaches this geometry only through the phase-1 fade-in gate,
+    -- which draws NOTHING for most of the hold -- so a 2600 + 1600 case recorded as
+    -- phase 1 would run clean by drawing no wall at all, which is the shape of hole
+    -- this block exists to close. The separations are the worst reachable ones, found
+    -- by sweeping the whole overlap range for each pair.
+    local VENN = {
+        { 2, 2600.0, 1600.0, 3392.0 },
+        { 2, 1600.0,  950.0, 1932.5 },
+        { 3,  950.0,  520.0, 1171.0 },
+        { 4,  520.0,  260.0,  583.7 },
+        { 5,  260.0,  110.0,  284.2 },
+    }
+    local worstOut, outAt, cleanRuns = -math.huge, nil, 0
+    for _, v in ipairs(VENN) do
+        local e, nqd, at, E = excursionOn(v[1], v[2], v[3], v[4], 24)
+        if E.errored() == nil and nqd > 0 then cleanRuns = cleanRuns + 1 end
+        if e > worstOut then worstOut, outAt = e, ('%.0f+%.0f at %s'):format(
+            v[2], v[3], tostring(at)) end
+    end
+    -- INSIDE BY ABOUT edgeInset, which is the whole claim: no sampled point of any
+    -- quad is outside the damaging boundary, and the curtain sits the inset's worth
+    -- within it. The tolerance is a millimetre rather than exact because the inset of
+    -- a union shrinks each disc, which near a reflex corner pulls a hair further in
+    -- than a true erosion would -- inward, which is the safe direction.
+    ok(cleanRuns == #VENN and worstOut <= -(rr.edgeInset or 0.0) + 1e-3,
+        'and no point BETWEEN two corners leaves the damaging boundary either, on '
+            .. 'every shipping phase pair at its worst reachable separation -- the '
+            .. 'curtain is edgeInset inside the edge, not 33 metres outside it',
+        ('%d of %d ran clean; worst signed distance %+0.2f m against %+0.2f, at %s')
+            :format(cleanRuns, #VENN, worstOut, -(rr.edgeInset or 0.0),
+                tostring(outAt)))
+
+    -- ═══ ROUNDNESS: A QUAD MAY BE LONG, BUT NOT LONG ENOUGH TO SHOW ═══
+    --
+    -- This is why the strip draws the WHOLE boundary where the columns could not. A
+    -- column must be about as wide as its spacing or the colonnade gaps, so slotArc
+    -- pins the count and maxDraw then rations it -- 15 percent of the ring at phase
+    -- 1. A quad SHARES both vertical edges with its neighbours, so it may be as long
+    -- as roundness allows. Sag goes as ds^2 / 8r, and chordM is the ceiling on it.
+    local worstSag, sagAt = 0.0, nil
+    for _, ph in ipairs(base.env.BR.Config.Storm.phases) do
+        if ph.radius > 50.0 then
+            local E = newStormClient()
+            E.record(2, 0.0, 0.0, ph.radius, 0.0, 0.0, ph.radius * 0.5,
+                600000, 60000, 2.0)
+            E.pedAt = pt(0.0, 0.0, 30.0)
+            E.frame()
+            local r = ph.radius - rr.edgeInset
+            for _, qd in ipairs(quadsOf(E)) do
+                local mx, my = (qd.a.x + qd.b.x) * 0.5, (qd.a.y + qd.b.y) * 0.5
+                local sag = r - math.sqrt(mx * mx + my * my)
+                if sag > worstSag then
+                    worstSag, sagAt = sag, ('r %.0f'):format(ph.radius)
+                end
+            end
+        end
+    end
+    ok(worstSag <= sp.chordM + 1e-6,
+        'no quad cuts more than chordM off the arc it replaces, on any shipping '
+            .. 'phase radius -- a 2600m ring closes in about 80 quads and nobody '
+            .. 'standing inside it can see the corners',
+        ('worst sag %.3f m against %.1f, at %s'):format(worstSag, sp.chordM,
+            tostring(sagAt)))
+
+    -- ═══ THE BUDGET, WHICH IS A CEILING AND NOT A HOPE ═══
+    --
+    -- The per-loop share is maxPolys / 2 / loops, taken BEFORE roundness is
+    -- consulted, so no shape can talk its way past it. The worst real case is a
+    -- phase-2 breakout that separated: two loops of 2600 and 1600 metres of radius
+    -- would each like upwards of seventy quads, which unbudgeted is 380 polys.
+    local worstPolys, worstWhere = 0, nil
+    local function budget(label, phase, r0, sep, r1)
+        local E = newStormClient()
+        E.record(phase, 0.0, 0.0, r0, sep, 0.0, r1, 600000, 60000, 2.0)
+        E.pedAt = pt(0.0, 0.0, 30.0)
+        E.frame()
+        if #E.polys > worstPolys then worstPolys, worstWhere = #E.polys, label end
+        return #E.polys
+    end
+    for i, ph in ipairs(base.env.BR.Config.Storm.phases) do
+        -- The nested case, which is 60 to 90 percent of phases: union2 returns the
+        -- containing circle, so this is one loop at the phase radius.
+        budget(('phase %d nested'):format(i), i,
+            math.max(ph.radius, 1.0), 0.0, math.max(ph.radius * 0.4, 1.0))
+    end
+    budget('phase 2 disjoint', 2, 2600.0, 4400.0, 1600.0)
+    budget('phase 4 disjoint', 4, 520.0, 1040.0, 260.0)
+    ok(worstPolys <= sp.maxPolys,
+        'the worst frame any shipping geometry can produce stays inside the stated '
+            .. 'poly budget',
+        ('%d polys at %s, ceiling %d'):format(worstPolys, tostring(worstWhere),
+            sp.maxPolys))
+    -- AND THE ENDGAME STILL HAS A WALL. Phase 8 closes on a zero-radius target and
+    -- union2 refuses a disc with no radius at all, so the shape is the wall circle
+    -- alone -- 34 metres of it after the inset, where the sag rule would draw an
+    -- octagon and minSeg is what stops it.
+    local endPolys = budget('phase 8 point', 8, 40.0, 55.0, 0.0)
+    ok(endPolys == sp.minSeg * quadPolys,
+        'and the endgame circle is drawn at the minSeg floor rather than as the '
+            .. 'octagon roundness alone would settle for',
+        ('%d polys, %d quads against a floor of %d'):format(endPolys,
+            endPolys / quadPolys, sp.minSeg))
 end
 
 -- ---------------------------------------------------------------------------
@@ -1916,12 +2717,19 @@ do
 
     local MS = newStormClient().env.BR.MatchState
 
-    ok(#wallClient(MS.BUS, false).markers > 0,
+    -- MEASURED IN POLYS, NOT MARKERS, AND THAT IS THE SECOND HALF OF #336. The
+    -- preview asked for the cylinder until the fade existed, and the owner has since
+    -- refused that too: "don't use a marker for the bus preview either"
+    -- (2026-09-22). So every gate below counts triangles, and `preview.strip` under
+    -- this block asserts that the marker count is zero -- which is what makes a
+    -- quietly reinstated `'solid'` preference fail here rather than in a screenshot
+    -- taken from a plane.
+    ok(#wallClient(MS.BUS, false).polys > 0,
         'the island is gone and the bus is flying, so there is a wall')
-    ok(#wallClient(MS.BUS, true).markers == 0,
+    ok(#wallClient(MS.BUS, true).polys == 0,
         'the island is still the world, so there is not -- even though the match '
             .. 'state says BUS')
-    ok(#wallClient(MS.WARMUP, true).markers == 0,
+    ok(#wallClient(MS.WARMUP, true).polys == 0,
         'and standing on the pad, with the island still the world, there is nothing')
 
     -- THE GATE IS THE WORLD AND NOT THE FLIGHT, and this is the assertion that
@@ -1932,7 +2740,7 @@ do
     -- releases the island at BUS or PLAYING. Pinned anyway, because the tempting
     -- "simplification" is to replace the whole announcement with a BUS test, and
     -- that is the thing #327 specifically moved away from.
-    ok(#wallClient(MS.WARMUP, false).markers > 0,
+    ok(#wallClient(MS.WARMUP, false).polys > 0,
         'and a warmup that somehow already has Los Santos loaded gets the wall -- '
             .. 'the condition is the map, not the phase of the match')
 
@@ -1940,36 +2748,91 @@ do
     -- never speaks -- it is not running, or has not reached its first
     -- announcement -- the match state answers instead, because a preview is not
     -- worth a hard dependency between two resources.
-    ok(#wallClient(MS.BUS, nil).markers > 0,
+    ok(#wallClient(MS.BUS, nil).polys > 0,
         'with br_environment silent the BUS state alone raises the wall')
-    ok(#wallClient(MS.WARMUP, nil).markers == 0,
+    ok(#wallClient(MS.WARMUP, nil).polys == 0,
         'and silence during warmup still draws nothing')
 
     -- PLAYING IS THE REAL WALL'S, AND THE PREVIEW MUST NOT BE BESIDE IT.
-    ok(#wallClient(MS.PLAYING, false).markers == 0,
+    ok(#wallClient(MS.PLAYING, false).polys == 0,
         'PLAYING draws no preview wall -- the record draws its own')
 
     -- ═══ IT IS THE SHIPPING RENDERER, HANDED A CIRCLE AND A LOWER ALPHA ═══
     --
-    -- One disc means one cylinder, which is the wall the owner chose for a circle
-    -- on 2026-08-03 and the only one that holds up at bus altitude. The assertions
-    -- are the numbers that prove it went through drawWall rather than through a
-    -- second renderer written beside it: the edgeInset the column path once failed
-    -- to pay, the fixed base below sea level, and the alpha.
+    --   "don't use a marker for the bus preview either."   -- the owner, 2026-09-22
+    --
+    -- THE PREVIEW USED TO ASK FOR THE CYLINDER BY NAME, and the reasoning was sound:
+    -- the bus cruises at 500 and climbs to 892 over the Chiliad massif, and a strip
+    -- topping out at 400 was entirely below the only viewpoint the preview is ever
+    -- seen from. The answer turned out to be raising the wall rather than keeping the
+    -- marker -- topZ is the marker's own 850 now and its last metres fade to nothing
+    -- -- so the preview takes the same renderer AND the same height as the live wall,
+    -- and the preview-specific top that was drafted for it was deleted.
+    --
+    -- THE ASSERTIONS ARE THE NUMBERS THAT PROVE IT WENT THROUGH drawWall rather than
+    -- through a second renderer written beside it: no marker at all, the edgeInset
+    -- the column path once failed to pay, the live wall's own two z planes, and the
+    -- alpha.
     local C = wallClient(MS.BUS, false)
     local rr = C.env.BR.Config.Storm.render
-    ok(#C.markers == 1, 'a circle draws ONE marker, not a colonnade', #C.markers)
-    local m = C.markers[1]
-    ok(m and near(m.x, 400.0, 0.001) and near(m.y, 0.0, 0.001),
-        'centred on circle 1')
-    ok(m and near(m.sx, (2600.0 - (rr.edgeInset or 0.0)) * 2.0, 0.001),
-        'at circle 1\'s diameter less the edgeInset every wall in this file pays',
-        m and tostring(m.sx))
-    ok(m and near(m.z, -100.0, 0.001),
-        'glued to the world below sea level, not hung off the camera')
-    ok(m and m.a == math.floor(rr.alpha * (rr.previewAlpha or 0.5)),
-        'and fainter than a wall that is actually doing something',
-        m and tostring(m.a))
+    local psp = rr.strip
+    ok(#C.markers == 0 and #C.polys > 0,
+        'the preview is the quad strip and not one marker anywhere',
+        ('%d markers, %d polys'):format(#C.markers, #C.polys))
+
+    -- ON CIRCLE 1, AND AT ITS RADIUS LESS THE INSET. Read off the geometry rather
+    -- than off a marker's scale: every quad corner is edgeInset inside circle 1's
+    -- own rim, which is the same claim the cylinder's diameter used to make.
+    local worstR, nq = 0.0, 0
+    for _, qd in ipairs(quadsOf(C)) do
+        for _, v in ipairs({ qd.a, qd.b }) do
+            nq = nq + 1
+            local d = math.sqrt((v.x - 400.0) ^ 2 + v.y ^ 2)
+            local off = math.abs(d - (2600.0 - (rr.edgeInset or 0.0)))
+            if off > worstR then worstR = off end
+        end
+    end
+    ok(nq > 0 and worstR < 1e-6,
+        'centred on circle 1, at its radius less the edgeInset every wall in this '
+            .. 'file pays',
+        ('%d corners, worst %.9f m off'):format(nq, worstR))
+
+    -- THE SAME HEIGHT AS THE LIVE WALL, DELIBERATELY, and asserted against the live
+    -- config rather than against a preview value -- because there is no preview
+    -- value, and the assertion is what stops one reappearing. A preview-specific top
+    -- would pass every other test in this block.
+    local pLo, pHi = math.huge, -math.huge
+    for _, t in ipairs(C.polys) do
+        for j = 1, 3 do
+            if t[j].z < pLo then pLo = t[j].z end
+            if t[j].z > pHi then pHi = t[j].z end
+        end
+    end
+    ok(pLo == psp.baseZ and pHi == psp.topZ,
+        'spanning the live wall\'s own base and top -- one wall, one height, two '
+            .. 'alphas, because the fade is what makes a taller preview unnecessary',
+        ('%.1f to %.1f against %.1f to %.1f'):format(pLo, pHi,
+            psp.baseZ, psp.topZ))
+
+    -- AND FAINTER, WHICH IS THE ONE THING THE PREVIEW DOES DIFFERENTLY. It marks a
+    -- place the storm is GOING to be and must not read as a wall already doing
+    -- something, so previewAlpha scales the whole fade ramp -- not just the bottom of
+    -- it. Checked against the config's own arithmetic rather than against a second
+    -- drawn wall, because a second wall would be asserting the renderer against
+    -- itself.
+    local pfd = psp.fade or {}
+    local pBandsN = math.max(1, math.floor(pfd.bands or 3))
+    local pAlpha = rr.alpha * (rr.previewAlpha or 0.5)
+    local pa0 = pAlpha * (pfd.baseAlpha or 1.0)
+    local pa1 = pAlpha * (pfd.topAlpha or 0.0)
+    local wantP = math.floor(pa0 + (pa1 - pa0) * (0.5 / pBandsN) + 0.5)
+    local pBands = quadsOf(C)[1] and quadsOf(C)[1].bands
+    ok(pBands and #pBands == pBandsN and pBands[1].alpha == wantP
+        and pBands[1].alpha < rr.alpha,
+        'and fainter than a wall that is actually doing something -- previewAlpha '
+            .. 'scales the whole ramp, band for band',
+        ('bottom band %s against %d, live wall full strength %d'):format(
+            pBands and tostring(pBands[1].alpha), wantP, rr.alpha))
     ok(C.errored() == nil, 'the preview wall runs clean', C.errored())
 
     -- AND IT SAYS NOTHING TO THE INTERFACE. The HUD storm card is driven off the

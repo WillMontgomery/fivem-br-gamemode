@@ -474,6 +474,75 @@ function BR.StormShape.componentAt(shape, s)
     return comps[#comps], #comps
 end
 
+--- The PIECES of component `ci`, as offsets along that component.
+---
+--- Each is `{ t0, len }`: where the piece begins in the COMPONENT's own arc
+--- length -- the units pointAtComponent takes -- and how many metres of it there
+--- are. A circle's only component has one run; an overlapping union2's has two,
+--- and the join between them is a reflex corner.
+---
+--- ═══ THIS EXISTS BECAUSE A CORNER IS NOT A CURVE, AND A WALK THAT STEPS AT
+---     UNIFORM ARC LENGTH CANNOT KNOW THE DIFFERENCE ═══
+---
+--- A renderer that replaces the boundary with straight chords prices its step off
+--- CURVATURE: chord sag is ds^2 / 8r, so a step of sqrt(8 * r * sag) keeps every
+--- chord within sag of the arc it replaces. That rule is sound and it is blind to
+--- exactly one thing -- a corner, where the curvature is infinite and the sag
+--- bound does not hold at any step at all. A Venn union's component is two arcs
+--- meeting at two reflex crossings, `c.len` is not a multiple of the step, so one
+--- chord straddles each crossing and bridges it. THE NOTCH CUTS INWARD, SO THAT
+--- CHORD LANDS OUTSIDE THE SHAPE.
+---
+--- Measured through the real renderer, as signed distance from the uninset
+--- damaging boundary, worst case over the reachable separation range for each
+--- shipping phase pair -- and the clean value is -6.00 m, which is the curtain
+--- sitting exactly render.edgeInset inside the logical edge where it belongs:
+---
+---     2600 + 1600   stepping uniformly +33.11 m    forcing the corner -6.00 m
+---     1600 +  950                      +23.71 m                      -6.00 m
+---      950 +  520                      +15.84 m                      -6.00 m
+---      520 +  260                       +9.35 m                      -6.00 m
+---      260 +  110                       +3.66 m                      -6.00 m
+---
+--- A sweep of 235 reachable Venn geometries put 57 of them outside the server's
+--- ten-metre damage cushion, and none of them after, so on the owner's "barely
+--- overlapping, like a venn diagram" -- the exact geometry #328 exists for -- a
+--- wedge up to 33 metres deep at each waist was being billed dps while drawn well
+--- inside the purple curtain.
+--- That is the live "20ft inside" report edgeInset exists for, INVERTED and about
+--- five times larger. Circles and disjoint pairs never had it: they measure
+--- -6.00 m either way, because a circle's component is one piece and a disjoint
+--- pair's two components are a whole circle each, so neither has an interior
+--- boundary to step over.
+---
+--- SO THE FIX IS A VERTEX AT EVERY RUN BOUNDARY, and that is a question about the
+--- PIECE LIST rather than about the perimeter -- which is why it is answered here
+--- and not in the renderer. It costs nothing: the walker splits the SAME point
+--- count between the runs by length, and the five cases above close at 127, 102,
+--- 82, 60 and 45 quads before and after.
+---
+--- @param shape table
+--- @param ci number    a component index, as components() orders them
+--- @return table  { { t0 = number, len = number }, ... } in boundary order
+function BR.StormShape.runs(shape, ci)
+    local out = {}
+    local pcs = shape and shape.pieces
+    local comps = shape and shape.comps
+    if not pcs or not comps or not comps[ci] then return out end
+    local base = comps[ci].s0
+    for i = 1, #pcs do
+        local pc = pcs[i]
+        -- KEYED ON THE PIECE'S OWN COMPONENT MARK, not on an arc-length range.
+        -- seal() writes `pc.comp` while it is grouping, so this is the same answer
+        -- it recorded rather than a second derivation of it off two floating-point
+        -- sums that agree to picometres and decide a boundary case between them.
+        if pc.comp == ci then
+            out[#out + 1] = { t0 = pc.s0 - base, len = pc.len }
+        end
+    end
+    return out
+end
+
 --- The boundary point at `t` metres along ONE COMPONENT, and the outward normal.
 ---
 --- ═══ THE WRAP IS MODULO THE COMPONENT, NOT MODULO THE PERIMETER ═══
