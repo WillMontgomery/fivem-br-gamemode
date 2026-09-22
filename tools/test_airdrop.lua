@@ -91,10 +91,28 @@ local A = BR.Config.Airdrop
 
 describe('config: the owner\'s numbers')
 do
-    eq(A.perMatch, 1, 'exactly one airdrop per match')
-    eq(A.chance, 1.0, 'and it happens, by default')
+    -- TWO (owner, 2026-09-22: "increase to 2 airdrops per match"). Pinned as a
+    -- literal, because every count assertion in the server half below is
+    -- measuring this number's consequences and a silent 1 would make all of them
+    -- agree with each other about the wrong thing.
+    eq(A.perMatch, 2, 'two airdrops per match')
+    eq(A.chance, 1.0, 'and both happen, by default')
     eq(A.insideBy, 250.0, 'the landing point is 250m inside the circle')
-    eq(A.maxPhase, 4, 'no airdrops past storm stage 4')
+
+    -- ═══ NO STORM-PHASE CAP, AND `false` IS THE ONLY WAY TO SAY SO ═══
+    --
+    -- Owner, 2026-09-22: "remove our phase restriction for airdrops". The trap
+    -- this pins is that BR.AirdropPhaseCap defaults a MISSING value to 4, so nil
+    -- -- or the config line deleted -- re-imposes the cap it was asked to remove.
+    -- `== false` rather than a falsiness test for exactly that reason: nil is
+    -- falsy and nil is a cap at 4.
+    ok(A.maxPhase == false,
+        'the phase cap is explicitly off, not merely absent',
+        ('got %s'):format(tostring(A.maxPhase)))
+    ok(BR.AirdropPhaseCap(A.maxPhase) == nil,
+        'and the one place that reads it agrees there is no cap')
+    ok(BR.AirdropStormOk({ phase = 8 }, A.maxPhase),
+        'so the last storm phase in the game is early enough for a drop')
     eq(A.blipSprite, 161, 'blip type 161')
     -- TWICE THE SIZE (owner, 2026-08-22: "The blip needs to be 2x larger
     -- please."). 1.2 is what they saw and asked to double.
@@ -712,6 +730,30 @@ do
     ok(BR.AirdropStormOk({ phase = 4 }, 4), 'phase 4 is fine -- "past 4" is 5')
     ok(not BR.AirdropStormOk({ phase = 5 }, 4), 'phase 5 is past the cap')
     ok(not BR.AirdropStormOk({ phase = 8 }, 4), 'and so is the last phase')
+
+    -- ═══ AND THE CAP CAN BE TURNED OFF, WHICH IS A VALUE AND NOT AN ABSENCE
+    --     (owner, 2026-09-22: "remove our phase restriction for airdrops") ═══
+    --
+    -- THE WHOLE POINT OF THESE SIX LINES IS THAT nil AND false DIFFER. `A.maxPhase
+    -- or 4` was the shape this used to be written in, in four places, and under
+    -- it every way of saying "no cap" that a reader would reach for first --
+    -- deleting the line, writing nil -- produced a cap at stage 4 instead.
+    eq(BR.AirdropPhaseCap(4), 4, 'a number is the cap it says it is')
+    eq(BR.AirdropPhaseCap(2), 2, 'whatever number that is')
+    eq(BR.AirdropPhaseCap(nil), 4,
+        'a MISSING value still defaults to stage 4, so an old config is unchanged')
+    ok(BR.AirdropPhaseCap(false) == nil, 'and false -- only false -- is no cap')
+
+    ok(BR.AirdropStormOk({ phase = 5 }, false), 'phase 5 passes with no cap')
+    ok(BR.AirdropStormOk({ phase = 8 }, false), 'and so does the last phase')
+    ok(not BR.AirdropStormOk({ phase = 5 }, nil),
+        'while nil is still a cap at 4 -- a deleted line does not disable it')
+
+    -- NO STORM RECORD IS STILL NO DROP, CAP OR NO CAP. It is a different refusal
+    -- -- siting cannot solve the margin against a record that is not there -- and
+    -- with the cap off it is the ONLY way the gate says no.
+    ok(not BR.AirdropStormOk(nil, false),
+        'and a missing record is refused even with no cap, for its own reason')
 end
 
 -- =========================================================================
@@ -2253,6 +2295,32 @@ end
 
 local function tick() jobs['airdrop.tick']() end
 
+--- Cut a freshly-begun match down to ONE drop, due now.
+---
+--- ═══ `perMatch` IS 2 SINCE 2026-09-22, AND MOST BLOCKS BELOW ARE ABOUT ONE
+---     DROP'S LIFECYCLE ═══
+---
+--- The gate, the descent, the landing, the expiry, the re-checks: every one of
+--- those is a property of a single drop, and a second entry sitting in `pending`
+--- is noise that every count in every one of those blocks would otherwise have to
+--- carry. This was `m.airdrop.pending[1].dueAt = gameMs` in sixteen places, which
+--- is the same line with the spare left in.
+---
+--- IT MOVES NO RNG. BR.Airdrop.begin takes every draw for every scheduled drop
+--- before a single assertion here runs, so removing an entry afterwards cannot
+--- change what anything rolls -- every seeded expectation below still holds.
+---
+--- THE BLOCKS THAT ARE ABOUT THE COUNT DO NOT CALL THIS. See 'server: two drops
+--- are scheduled, not one', which is the block that would go red at perMatch = 1.
+--- @param m table
+--- @return table  the one pending entry, now due
+local function onlyDrop(m)
+    local st = m.airdrop
+    for i = #st.pending, 2, -1 do table.remove(st.pending, i) end
+    st.pending[1].dueAt = gameMs
+    return st.pending[1]
+end
+
 --- Put a player on top of the drop that has just been sited, so the 200m gate
 --- opens on the next tick.
 ---
@@ -2293,12 +2361,127 @@ do
     local m = newMatch(1)
     BR.Airdrop.begin(m)
     ok(m.airdrop ~= nil, 'a match gets airdrop state')
-    eq(#m.airdrop.pending, 1, 'exactly one drop is scheduled')
+    eq(#m.airdrop.pending, 2, 'two drops are scheduled')
     eq(#m.airdrop.live, 0, 'and nothing is in flight yet')
 
-    local p = m.airdrop.pending[1]
-    ok(p.dueAt >= gameMs + A.minDelayMs, 'due no sooner than minDelayMs')
-    ok(p.dueAt <= gameMs + A.maxDelayMs, 'and no later than maxDelayMs')
+    -- EVERY ONE OF THEM IS INSIDE THE WINDOW, not just the first. Each draws its
+    -- own delay, so this is `perMatch` assertions rather than one.
+    for i, p in ipairs(m.airdrop.pending) do
+        eq(p.n, i, ('drop %d carries its own number'):format(i))
+        ok(p.dueAt >= gameMs + A.minDelayMs,
+            ('drop %d is due no sooner than minDelayMs'):format(i))
+        ok(p.dueAt <= gameMs + A.maxDelayMs,
+            ('and drop %d no later than maxDelayMs'):format(i))
+    end
+end
+
+-- ═══ THE 2026-09-22 ASK, AS THE ONE BLOCK THAT CANNOT PASS AT perMatch = 1 ═══
+--
+-- Owner: "remove our phase restriction for airdrops and increase to 2 airdrops
+-- per match". Everything above measures the config value; this drives the real
+-- scheduler and the real tick with the real config and counts crates.
+--
+-- IT IS SEPARATE FROM 'server: scheduling' ON PURPOSE. That block reads the
+-- schedule; this one follows both drops all the way to the ground, because "two
+-- are scheduled" and "two land" are different claims and only the second is what
+-- the owner asked for.
+
+describe('server: two drops are scheduled, not one')
+do
+    reset()
+    local m = newMatch(1)
+    BR.Airdrop.begin(m)
+    eq(#m.airdrop.pending, 2, 'the automatic path schedules two')
+
+    -- BOTH DUE AT ONCE, so one tick sites both and the block is about the count
+    -- rather than about the clock. Their real delays are independent draws minutes
+    -- apart; which one is announced first is not a property worth pinning.
+    for _, p in ipairs(m.airdrop.pending) do p.dueAt = gameMs end
+    tick()
+
+    eq(#m.airdrop.waiting, 2, 'and both are sited and announced')
+    eq(#m.airdrop.pending, 0, 'with nothing left in the queue')
+    eq(m.airdrop.sent, 2, 'the match has spent two drops, not one')
+    eq(#notices, 2, 'and the match was told twice')
+
+    local a, b = m.airdrop.waiting[1].rec, m.airdrop.waiting[2].rec
+    ok(a.n ~= b.n, 'each on its own drop number', ('%s vs %s'):format(a.n, b.n))
+    ok(m.airdrop.waiting[1].items ~= m.airdrop.waiting[2].items,
+        'and its own payout rather than a shared table')
+
+    -- ═══ AND BOTH ACTUALLY ARRIVE ═══
+    --
+    -- Two players, one standing on each, because the 200m gate is per drop: a
+    -- squad that walks to one of them must not be handed the other.
+    standAt(m.id * 100 + 1, a.x, a.y, 0.0)
+    standAt(m.id * 100 + 2, b.x, b.y, 0.0)
+    gameMs = gameMs + 1000
+    tick()
+    eq(#m.airdrop.live, 2, 'both arm')
+    eq(#m.airdrop.waiting, 0, 'and neither is left waiting')
+
+    -- ceil, NOT `+ FLIGHT`, AND IT IS NOT FUSSINESS. FLIGHT is fractional (the
+    -- crate flares out over the last 25 feet), BR.Rng truncates a non-integer
+    -- seed to ZERO, and `reset()` only ever adds to gameMs -- so one fractional
+    -- advance here would seed every match in every block below this one
+    -- identically, and 'server: the airdrop draws from its own RNG stream' would
+    -- go red for reasons that have nothing to do with the airdrop's prime.
+    gameMs = gameMs + math.ceil(FLIGHT) + 1000
+    tick()
+    eq(#m.airdrop.live, 0, 'both finish their descent')
+    local crates = 0
+    for _, s in ipairs(spawned) do
+        if s.stack and s.stack.item == 'airdrop' then crates = crates + 1 end
+    end
+    eq(crates, 2, 'and the match gets two crates on the ground')
+end
+
+describe('server: the two drops are never sited on one POI')
+do
+    -- ═══ ONE MATCH PROVES NOTHING HERE, AND THIS SUITE HAS PAID FOR THAT ONCE
+    --     ALREADY ═══
+    --
+    -- BR.AirdropPickSiteIn draws uniformly with no memory, so two drops on one
+    -- POI is a collision of about one in the number of qualifying candidates --
+    -- a hundred-odd, so a single seed agrees with a filtered table and an
+    -- unfiltered one roughly 99% of the time. That is exactly how the collision
+    -- reached 2026-08-28 undetected: every seed the suite happened to use was one
+    -- of the 99, until the surveyed boundary trimmed eight POIs and moved one of
+    -- them onto the 1.
+    --
+    -- SO IT IS DRIVEN OVER SEEDS, AND THE NUMBER IS CHOSEN TO FAIL WITHOUT THE
+    -- FILTER. At ~1% a hundred and fifty matches expect a handful of collisions,
+    -- so switching the filter off in trySite turns this block red -- which is the
+    -- only evidence that it is testing the filter rather than testing luck.
+    --
+    -- ONE reset AND ONE tick FOR ALL OF THEM. The tick walks every match, the
+    -- filter is per match, and resetting a hundred and fifty times would push the
+    -- harness clock two billion milliseconds forward for every block below.
+    reset()
+    local MATCHES = 150
+    for id = 1, MATCHES do
+        local s = newMatch(id)
+        BR.Airdrop.begin(s)
+        for _, p in ipairs(s.airdrop.pending) do p.dueAt = gameMs end
+    end
+    tick()
+
+    local sited, both, dupes = 0, 0, {}
+    for id = 1, MATCHES do
+        local w = matches[id].airdrop.waiting
+        sited = sited + #w
+        if #w == 2 then
+            both = both + 1
+            if w[1].rec.poi == w[2].rec.poi then
+                dupes[#dupes + 1] = ('match %d: both on %s')
+                    :format(id, tostring(w[1].rec.poi))
+            end
+        end
+    end
+    eq(both, MATCHES, 'every match sited both of its drops')
+    eq(sited, MATCHES * 2, 'and nothing was left waiting for a point')
+    ok(#dupes == 0, 'and no match put its two drops on the same POI',
+        ('%d collision(s), e.g. %s'):format(#dupes, dupes[1] or '-'))
 end
 
 describe('server: the probability, and the draws it must burn either way')
@@ -2312,11 +2495,34 @@ do
     BR.Airdrop.begin(a)
     eq(#a.airdrop.pending, 0, 'chance 0 schedules no drop')
 
-    -- ...and 1.0 schedules one.
+    -- ...and 1.0 schedules every one of them.
     A.chance = 1.0
     local b = newMatch(1)
     BR.Airdrop.begin(b)
-    eq(#b.airdrop.pending, 1, 'chance 1 schedules one')
+    eq(#b.airdrop.pending, A.perMatch, 'chance 1 schedules all of them')
+
+    -- ═══ AND THE ROLL IS PER DROP, NOT ONE ROLL GATING THE LOT ═══
+    --
+    -- Which matters only now that `perMatch` is above one. A single roll for the
+    -- whole match would make `chance` mean "does this match get airdrops", and
+    -- the config says it means "does this drop happen" -- so a probability
+    -- between the two must be able to produce a match with ONE drop, which a
+    -- shared roll can never do. Driven over enough matches to see all three
+    -- outcomes rather than asserted from the loop's shape.
+    A.chance = 0.5
+    local counts = { [0] = 0, 0, 0 }
+    for id = 1, 200 do
+        local s = newMatch(id)
+        BR.Airdrop.begin(s)
+        local n = #s.airdrop.pending
+        counts[n] = (counts[n] or 0) + 1
+    end
+    ok(counts[1] > 0,
+        'a half chance can give a match exactly one of its two drops',
+        ('0: %d, 1: %d, 2: %d'):format(counts[0], counts[1], counts[2]))
+    ok(counts[0] > 0 and counts[2] > 0,
+        'and still reaches none and both',
+        ('0: %d, 2: %d'):format(counts[0], counts[2]))
 
     -- AND BOTH BURNED THE SAME NUMBER OF DRAWS. Same match id, same clock, so
     -- the same seed -- if the delay draw were skipped when the roll failed, the
@@ -2354,9 +2560,18 @@ do
     -- BR.Airdrop.begin, filling `pending` -- and the tick sites out of `pending`
     -- and nowhere else. So this block has to prove two things at once: the verb
     -- ignores the cap, AND the cap still binds everything that is not the verb.
+    --
+    -- ═══ `perMatch` IS PINNED AT ONE HERE, WHATEVER THE CONFIG SAYS ═══
+    --
+    -- It read `eq(A.perMatch, 1)` until 2026-09-22, when the owner raised the real
+    -- value to two -- and this block is about a verb that must ignore whatever
+    -- number is there, not about the number. Pinning it keeps "the queue is empty
+    -- and the verb works anyway" one `now` away instead of three, which is the
+    -- property being tested; 'server: two drops are scheduled, not one' is where
+    -- the real value is measured.
     reset()
-    eq(A.perMatch, 1, 'the match limit is still one, and is not raised to fix '
-                      .. 'this -- that would give every match more drops')
+    local realPerMatch = A.perMatch
+    A.perMatch = 1
 
     local m = newMatch(1)
     BR.Airdrop.begin(m)
@@ -2451,9 +2666,11 @@ do
     -- many times the console was used on the last one.
     local auto = newMatch(2)
     BR.Airdrop.begin(auto)
-    eq(#auto.airdrop.pending, 1,
+    eq(#auto.airdrop.pending, A.perMatch,
         'a new match still schedules exactly perMatch drops on its own')
     eq(auto.airdrop.sent or 0, 0, 'having announced none of them yet')
+
+    A.perMatch = realPerMatch
 end
 
 describe('server: enabled')
@@ -2471,7 +2688,7 @@ do
     reset()
     local m = newMatch(1)
     BR.Airdrop.begin(m)
-    m.airdrop.pending[1].dueAt = gameMs
+    onlyDrop(m)
     tick()
 
     -- ═══ THE ANNOUNCEMENT COMES FIRST, AND NOTHING IS FLYING ═══
@@ -2584,7 +2801,7 @@ do
     away.storm = BR.BuildStormRecord(1, poi.x, poi.y, 2600.0,
         poi.x, poi.y, 100.0, gameMs, 0, FLIGHT, 1.0)
     BR.Airdrop.begin(away)
-    away.airdrop.pending[1].dueAt = gameMs
+    onlyDrop(away)
     tick()
     eq(#published, 0,
         'a circle that will have collapsed by the time the crate arrives sends '
@@ -2596,7 +2813,7 @@ do
     toward.storm = BR.BuildStormRecord(1, poi.x, poi.y, 100.0,
         poi.x, poi.y, 2600.0, gameMs, 0, FLIGHT, 1.0)
     BR.Airdrop.begin(toward)
-    toward.airdrop.pending[1].dueAt = gameMs
+    onlyDrop(toward)
     tick()
     eq(#published, 1,
         'and a circle that will be roomy on arrival is used even though it is '
@@ -2614,11 +2831,19 @@ do
     BR.Airdrop.begin(m)
     local mine = m.airdrop.rng:float()
 
-    --- The value the airdrop's own stream should be at after begin's two draws.
+    --- The value the airdrop's own stream should be at after begin's draws.
+    ---
+    --- TWO PER SCHEDULED DROP, WHICH IS WHY THIS LOOPS. begin takes a chance roll
+    --- and a delay for each of `perMatch` entries, unconditionally -- so raising
+    --- perMatch from 1 to 2 on 2026-09-22 moved every later draw in the airdrop
+    --- stream by two places. Written against the config rather than against a
+    --- fixed two, so the next change to that number lands here as well.
     local function afterBegin(prime)
         local r = BR.Rng(gameMs + m.id * prime)
-        r:float()
-        r:int(A.minDelayMs, A.maxDelayMs)
+        for _ = 1, (math.tointeger(A.perMatch) or 1) do
+            r:float()
+            r:int(A.minDelayMs, A.maxDelayMs)
+        end
         return r:float()
     end
 
@@ -2629,23 +2854,79 @@ do
     end
 end
 
-describe('server: past storm stage 4 is a deliberate zero')
+-- ═══ THE OTHER HALF OF THE 2026-09-22 ASK: NO PHASE GATES A DROP ═══
+--
+-- Owner: "remove our phase restriction for airdrops". This block was 'server:
+-- past storm stage 4 is a deliberate zero' and it asserted the exact opposite of
+-- what it asserts now, which is the honest way to record a rule being removed --
+-- the old expectation is gone rather than left passing against a cap somebody
+-- re-imposed by writing nil.
+--
+-- IT DRIVES THE REAL CONFIG. A phase 5 storm and a phase 8 storm, with A.maxPhase
+-- untouched, so this block is red the moment the cap comes back by any route.
+
+describe('server: no storm phase refuses a drop')
 do
+    for _, phase in ipairs({ 5, 6, 8 }) do
+        reset()
+        local m = newMatch(1, 2600.0, phase)
+        BR.Airdrop.begin(m)
+        onlyDrop(m)
+        tick()
+
+        eq(#published, 1,
+            ('a drop is sited and announced in phase %d'):format(phase))
+        eq(#m.airdrop.waiting, 1, 'and is waiting for a player like any other')
+        ok(m.airdrop.outcome == nil,
+            'with no deliberate zero recorded, because nothing refused it')
+
+        -- AND IT REACHES THE GROUND. "Not refused at siting" is not the claim;
+        -- tryArm re-asks the same gate every second while the drop waits, so a
+        -- cap that only came back at the arm would pass every assertion above.
+        local rec = somebodyTurnsUp(m)
+        gameMs = gameMs + 1000
+        tick()
+        eq(#m.airdrop.live, 1, 'it arms in a late phase too')
+        -- ceil, for the reason spelled out in 'server: two drops are scheduled'.
+        gameMs = gameMs + math.ceil(FLIGHT) + 1000
+        tick()
+        ok((m.airdrop.landed or {})[rec.n] ~= nil,
+            ('and a phase %d crate is on the ground'):format(phase))
+
+        local said = false
+        for _, l in ipairs(logs) do
+            if l:find('past stage', 1, true) then said = true end
+        end
+        ok(not said, 'and no log line claims a stage refused anything')
+    end
+end
+
+describe('server: a cap still binds when one is configured')
+do
+    -- THE MECHANISM IS KEPT EVEN THOUGH THE VALUE IS OFF. `maxPhase` is a knob
+    -- the owner can put back (config/airdrop.lua says how), and a knob nothing
+    -- exercises is a knob that has quietly stopped working by the time anybody
+    -- reaches for it. So this sets it by hand and asserts the old behaviour --
+    -- which also means the block above is measuring the CONFIG rather than a
+    -- gate that has been deleted.
     reset()
+    local real = A.maxPhase
+    A.maxPhase = 4
     local m = newMatch(1, 2600.0, 5)
     BR.Airdrop.begin(m)
-    m.airdrop.pending[1].dueAt = gameMs
+    onlyDrop(m)
     tick()
 
-    eq(#published, 0, 'nothing is published past the phase cap')
+    eq(#published, 0, 'nothing is published past a configured cap')
     eq(#m.airdrop.pending, 0, 'and the schedule is dropped rather than retried')
     eq(#m.airdrop.live, 0, 'so this match gets no airdrop at all')
 
     local said = false
     for _, l in ipairs(logs) do
-        if l:find('past stage', 1, true) then said = true end
+        if l:find('past stage 4', 1, true) then said = true end
     end
-    ok(said, 'and the log says why, rather than the match silently getting none')
+    ok(said, 'and the log names the cap that refused it')
+    A.maxPhase = real
 end
 
 describe('server: no POI qualifies -- wait, never bend')
@@ -2656,7 +2937,7 @@ do
     m.storm = BR.BuildStormRecord(1, -6000.0, -6000.0, 400.0,
         -6000.0, -6000.0, 400.0, gameMs, 24 * 60 * 60 * 1000, 1000, 1.0)
     BR.Airdrop.begin(m)
-    m.airdrop.pending[1].dueAt = gameMs
+    onlyDrop(m)
     tick()
 
     eq(#published, 0, 'nothing is published')
@@ -2700,7 +2981,7 @@ do
     one.storm = BR.BuildStormRecord(1, lsia.x, lsia.y, A.insideBy + 1.0,
         lsia.x, lsia.y, A.insideBy + 1.0, gameMs, 24 * 60 * 60 * 1000, 1000, 1.0)
     BR.Airdrop.begin(one)
-    one.airdrop.pending[1].dueAt = gameMs
+    onlyDrop(one)
     tick()
     eq(#published, 1, 'a circle with exactly one qualifying POI commits')
     eq(published[1].payload.poi, 'lsia', 'onto that POI')
@@ -2720,7 +3001,7 @@ do
     reset()
     local m = newMatch(1)
     BR.Airdrop.begin(m)
-    m.airdrop.pending[1].dueAt = gameMs
+    onlyDrop(m)
     tick()
     -- Somebody is standing on it, so the 200m gate opens on the next tick and
     -- this block is about the LANDING rather than about the gate.
@@ -2826,7 +3107,7 @@ do
     reset()
     local m = newMatch(1)
     BR.Airdrop.begin(m)
-    m.airdrop.pending[1].dueAt = gameMs
+    onlyDrop(m)
     tick()
     local rec = published[1].payload
     eq(#m.airdrop.waiting, 1, 'the drop is sited and waiting')
@@ -2906,7 +3187,7 @@ do
     reset()
     local m = newMatch(1)
     BR.Airdrop.begin(m)
-    m.airdrop.pending[1].dueAt = gameMs
+    onlyDrop(m)
     tick()
     local rec = somebodyTurnsUp(m)
     gameMs = gameMs + 1000
@@ -2934,7 +3215,7 @@ do
     reset()
     local m = newMatch(1)
     BR.Airdrop.begin(m)
-    m.airdrop.pending[1].dueAt = gameMs
+    onlyDrop(m)
     tick()
     local rec = published[1].payload
 
@@ -2958,7 +3239,7 @@ do
     reset()
     local m = newMatch(1)
     BR.Airdrop.begin(m)
-    m.airdrop.pending[1].dueAt = gameMs
+    onlyDrop(m)
     tick()
     eq(#m.airdrop.waiting, 1, 'sited and waiting')
 
@@ -2979,15 +3260,24 @@ do
     -- self-correcting -- a point outside the circle is a point nobody is near.
     -- It is not, and the block below this one is why: the drop is ANNOUNCED at
     -- siting, so a blip stands over the point telling the match to run at it.
+    --
+    -- THE CAP IS SET BY HAND HERE SINCE 2026-09-22, because the shipped config has
+    -- none. What this block tests is the re-check MECHANISM, and that survives the
+    -- value being off. The phase to test used to be `(A.maxPhase or 4) + 1`, which
+    -- is the trap in miniature: with `maxPhase = false` it reads 5 and the block
+    -- would have gone on asserting against a cap that is not in force.
+    -- 'server: no storm phase refuses a drop' is what measures the real config.
     reset()
+    local real = A.maxPhase
+    A.maxPhase = 4
     local m = newMatch(1)
     BR.Airdrop.begin(m)
-    m.airdrop.pending[1].dueAt = gameMs
+    onlyDrop(m)
     tick()
     local rec = published[1].payload
     eq(#m.airdrop.waiting, 1, 'sited while the storm was early enough')
 
-    m.storm.phase = (A.maxPhase or 4) + 1
+    m.storm.phase = BR.AirdropPhaseCap(A.maxPhase) + 1
     standAt(101, rec.x, rec.y, 0.0)
     gameMs = gameMs + 1000
     tick()
@@ -2995,6 +3285,32 @@ do
     eq(#m.airdrop.waiting, 0, 'the drop is abandoned instead')
     eq(#spawned, 0, 'and nothing lands')
     ok(m.airdrop.outcome ~= nil, 'and the match records why')
+    A.maxPhase = real
+end
+
+describe('server: with no cap, a storm that turns over does not abandon the drop')
+do
+    -- THE SAME SETUP AS THE BLOCK ABOVE, WITH THE SHIPPED CONFIG. A drop can wait
+    -- as long as `blipMaxMs` allows, which is longer than a storm phase, so "the
+    -- storm moved on while somebody walked" is the ordinary case rather than a
+    -- corner -- and until 2026-09-22 it was the case that took the drop away from
+    -- them. The margin can still abandon it; the phase cannot.
+    reset()
+    local m = newMatch(1)
+    BR.Airdrop.begin(m)
+    onlyDrop(m)
+    tick()
+    local rec = published[1].payload
+    eq(#m.airdrop.waiting, 1, 'sited in phase 1')
+
+    -- A HELD circle, so the margin has no opinion and the phase is the only thing
+    -- that changed between the siting and the arm.
+    m.storm.phase = 8
+    standAt(101, rec.x, rec.y, 0.0)
+    gameMs = gameMs + 1000
+    tick()
+    eq(#m.airdrop.live, 1, 'the player who walked there still gets their drop')
+    ok(m.airdrop.outcome == nil, 'and nothing is recorded as refused')
 end
 
 describe('server: the margin is re-checked when the wait ends')
@@ -3010,7 +3326,7 @@ do
     reset()
     local m = newMatch(1)
     BR.Airdrop.begin(m)
-    m.airdrop.pending[1].dueAt = gameMs
+    onlyDrop(m)
     tick()
     local rec = published[1].payload
     eq(#m.airdrop.waiting, 1, 'sited under the circle that was showing')
@@ -3046,7 +3362,7 @@ do
     m.storm = BR.BuildStormRecord(2, poi.x - 1000.0, poi.y, 2600.0,
         poi.x, poi.y, 950.0, gameMs, 0, 600000, 1.0)
     BR.Airdrop.begin(m)
-    m.airdrop.pending[1].dueAt = gameMs
+    onlyDrop(m)
     local sitedAt = gameMs
     tick()
     local rec = published[1] and published[1].payload
@@ -3104,7 +3420,7 @@ do
     reset()
     local m = newMatch(1)
     BR.Airdrop.begin(m)
-    m.airdrop.pending[1].dueAt = gameMs
+    onlyDrop(m)
     m.state = BR.MatchState.ENDED
     tick()
     eq(#published, 0, 'a finished match does not commit a drop')
@@ -3176,7 +3492,7 @@ do
     local m = newMatch(1)
     m.storm = nil
     BR.Airdrop.begin(m)
-    m.airdrop.pending[1].dueAt = gameMs
+    onlyDrop(m)
     tick()
     eq(#published, 0, 'siting cannot be answered without a storm record')
     eq(#m.airdrop.pending, 0, 'and the drop is cancelled rather than retried forever')

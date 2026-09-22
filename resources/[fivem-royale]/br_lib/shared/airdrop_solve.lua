@@ -441,13 +441,43 @@ function BR.AirdropTightest(circles)
     return best
 end
 
---- Is the storm early enough for a drop? "No airdrops past storm stage 4."
+--- What phase cap is actually in force, or nil for none.
+---
+--- ═══ THE ONE PLACE `4` IS WRITTEN, BECAUSE THE FALLBACK IS THE TRAP ═══
+---
+--- `A.maxPhase or 4` was written in four places -- here and three log lines in
+--- server/airdrop.lua -- and every one of them turned a MISSING value into a cap
+--- at stage 4. So the day the owner asked for the restriction removed
+--- (2026-09-22), deleting the config line or setting it to nil would have
+--- re-imposed exactly the cap it was meant to lift, silently, in four places at
+--- once.
+---
+--- SO "NO CAP" IS `false`, AND IT IS SAID ONCE. nil still means 4 -- a config
+--- that has never heard of this field keeps the behaviour it always had -- and
+--- disabling is a value somebody typed on purpose. Every reader asks this
+--- function rather than defaulting for itself, which is what makes that true in
+--- one place instead of four.
+--- @param maxPhase integer|false|nil
+--- @return integer|nil  the cap, or nil when there is none
+function BR.AirdropPhaseCap(maxPhase)
+    if maxPhase == false then return nil end
+    return maxPhase or 4
+end
+
+--- Is the storm early enough for a drop?
+---
+--- NO STORM RECORD IS STILL NO DROP, AND THAT IS NOT THE CAP. Siting solves the
+--- 250m margin against circles read off the record, so a nil record cannot be
+--- answered at all -- this refuses it whether or not a cap is in force, and
+--- server/airdrop.lua's log line says which of the two refused.
 --- @param storm table|nil   the published storm record
---- @param maxPhase integer|nil
+--- @param maxPhase integer|false|nil
 --- @return boolean
 function BR.AirdropStormOk(storm, maxPhase)
     if not storm then return false end
-    return (storm.phase or 0) <= (maxPhase or 4)
+    local cap = BR.AirdropPhaseCap(maxPhase)
+    if not cap then return true end
+    return (storm.phase or 0) <= cap
 end
 
 -- ---------------------------------------------------------------------------

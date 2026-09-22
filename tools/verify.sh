@@ -151,9 +151,11 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
     #
     # test_airdrop.lua is the third suite here to load a server file rather than
     # a pure module, and it is worth the stubs for the same reason
-    # test_artifacts.lua is: the rules under test -- exactly one drop a match,
-    # never inside 250m of the wall, never past storm stage 4 -- take a whole
+    # test_artifacts.lua is: the rules under test -- two drops a match, never
+    # inside 250m of the wall, and no storm phase refusing one -- take a whole
     # match each to observe in the game and are wrong for weeks otherwise.
+    # Two of those three changed on 2026-09-22 with the phase cap; the list is
+    # here to be read, so it is worth keeping true.
     # test_fuel.lua is the fourth suite here to load a real server file, and it
     # is its own rather than a block inside test_roster because the property
     # worth pinning spans three layers: the pure solver, the tank size DERIVED

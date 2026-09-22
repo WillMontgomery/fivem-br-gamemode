@@ -252,7 +252,7 @@ end
 --- them up immediately, and the render loop re-asserts them every frame the
 --- window is open -- so a blip lost to anything at all (another resource
 --- sweeping blips, a handle that went bad, a teardown that raced an arrival)
---- comes back on the next frame instead of leaving the match's one airdrop
+--- comes back on the next frame instead of leaving one of the match's airdrops
 --- unfindable.
 ---
 --- 161 IS A REGULAR SPRITE AND A COORD BLIP IS THE RIGHT CARRIER FOR IT.
@@ -1236,8 +1236,8 @@ end)
 
 --- What this client currently believes about the match's airdrop.
 ---
---- WRITTEN BECAUSE A SILENT FAILURE HERE COSTS A WHOLE ROUND. An airdrop
---- happens once per match, the blip lives about ninety seconds, and when the
+--- WRITTEN BECAUSE A SILENT FAILURE HERE COSTS A WHOLE ROUND. A match gets
+--- `perMatch` airdrops, the blip lives about ninety seconds, and when the
 --- owner reported "I randomly got a notification for airdrop, but didn't see it
 --- on the map" there was nothing on any screen or in any log that could tell
 --- "the record never arrived" apart from "the blip was made and removed" apart

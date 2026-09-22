@@ -71,14 +71,27 @@ local R = BR.Rarity
 BR.Config.Airdrop = {
     enabled = true,
 
-    -- EXACTLY ONE PER MATCH, NO MORE AND NO LESS (owner, 2026-08-21), and both
-    -- halves of that sentence are a number here rather than a hardcoded truth.
+    -- TWO PER MATCH (owner, 2026-09-22: "remove our phase restriction for
+    -- airdrops and increase to 2 airdrops per match"). It was one, and it was
+    -- one because the owner asked for exactly one on 2026-08-21 -- which is why
+    -- it was always a number here rather than a hardcoded truth.
     --
     -- `perMatch` is how many are SCHEDULED. `chance` is rolled once per
-    -- scheduled drop, so a value below 1.0 is a probability that the match gets
-    -- one at all -- which the owner asked for explicitly. At 1.0 the roll
-    -- always passes and the match always gets exactly `perMatch`, subject to
-    -- the siting rule below.
+    -- scheduled drop -- PER DROP, not once gating all of them -- so a value
+    -- below 1.0 is an independent probability for each, and a match can get
+    -- one, both or neither. At 1.0 every roll passes and the match always gets
+    -- exactly `perMatch`, subject to the siting rule below.
+    --
+    -- ═══ THE TWO ARE SCHEDULED INDEPENDENTLY, WHICH IS WHERE THE DELAY WINDOW
+    --     BECOMES A TUNING KNOB IT WAS NOT BEFORE ═══
+    --
+    -- Each drop draws its own delay uniformly from [minDelayMs, maxDelayMs], so
+    -- nothing spaces them: two drops can come due seconds apart or four minutes
+    -- apart, and the order they are announced in is the order the draws fell.
+    -- They cannot be sited on the same POI (see `insideBy` and the filter in
+    -- server/airdrop.lua), but they CAN be a few hundred metres apart. If the
+    -- owner wants them spread, that is a change to this pair of numbers or a new
+    -- one, not something the scheduler does on its own today.
     --
     -- ═══ IT CAPS THE AUTOMATIC PATH ONLY (owner, 2026-08-23) ═══
     --
@@ -91,7 +104,7 @@ BR.Config.Airdrop = {
     -- `<poiId>`) manufacture their own entries and are deliberately not counted
     -- against it. DO NOT RAISE THIS NUMBER TO GET MORE MANUAL DROPS: every one
     -- added here is one more drop every match gets on its own.
-    perMatch = 1,
+    perMatch = 2,
     chance   = 1.0,
 
     -- WHEN. Measured from the moment the match goes PLAYING, drawn uniformly.
@@ -295,9 +308,9 @@ BR.Config.Airdrop = {
     -- (0x5927F96A78577363.) citizenfx/natives records the range as "0 to 0xFFFF
     -- (higher values will result in 0xFFFF) as it is actually stored as a 16-bit
     -- value". 1000 is well inside that and comfortably past the 195m the highest
-    -- part of a drop is ever seen from -- generous rather than tuned, because
-    -- there is exactly one crate and one canopy per match and for thirty
-    -- seconds.
+    -- part of a drop is ever seen from -- generous rather than tuned, because a
+    -- drop is one crate and one canopy for thirty seconds, `perMatch` times in a
+    -- match.
     --
     -- IT IS APPLIED TO THE PLANE TOO, at the same value and for the same
     -- sentence: the run-in begins 540m out and the aircraft the owner is meant
@@ -546,9 +559,13 @@ BR.Config.Airdrop = {
     --
     -- The same documentation records a hard limit of FIVE simultaneous granular
     -- vehicles including the player's, and says that spending them on max
-    -- priority leaves fewer engines for ordinary traffic. We spend exactly one,
-    -- for at most `planeTrailMs` past the release, once per match. That is the
-    -- cheapest possible version of this bet.
+    -- priority leaves fewer engines for ordinary traffic. We spend ONE PER DROP,
+    -- for at most `planeTrailMs` past the release -- so `perMatch` (2) automatic
+    -- drops plus however many times the console was used, and two of them can
+    -- overlap if two drops arm within the trail's fifteen seconds. Each aircraft
+    -- is built by client/airdrop.lua per drop record and gets this call on its own
+    -- handle; nothing here is once-per-match. Even the concurrent worst case
+    -- spends two of the five, which is still the cheap version of this bet.
     --
     -- ─── AND ESSENTIALLY NOBODY USES IT, WHICH CUTS BOTH WAYS ───
     --
@@ -605,9 +622,9 @@ BR.Config.Airdrop = {
     -- two share ONE clock deliberately: BR.AirdropExpired is the single
     -- question, so the blip going out and the drop being abandoned are the same
     -- instant rather than two timers that can disagree. The drop is counted as
-    -- SPENT rather than retried -- the match has already been told one is
-    -- coming, and a second announcement naming a second place would read as two
-    -- airdrops when the owner asked for exactly one.
+    -- SPENT rather than retried -- the match has already been told this one is
+    -- coming, and re-announcing it somewhere else would read as an extra airdrop
+    -- on top of the `perMatch` the match is entitled to.
     --
     -- ═══ THE 250m MARGIN IS RE-CHECKED WHEN THE WAIT ENDS, AND THIS BLOCK USED
     --     TO ARGUE THAT IT SHOULD NOT BE ═══
@@ -673,10 +690,21 @@ BR.Config.Airdrop = {
     -- would be the same failure wearing a smaller number.
     --
     -- So when nothing qualifies the drop WAITS (retryEveryMs) and re-asks,
-    -- because the circle is usually mid-shrink and the answer changes. If the
-    -- phase cap below passes with nothing ever qualifying, this match gets no
-    -- airdrop and the server log says exactly why. That is a deliberate
-    -- zero, not a silent failure.
+    -- because the circle is usually mid-shrink and the answer changes. A drop
+    -- that never finds a point gets no airdrop, and the server log says exactly
+    -- why. That is a deliberate zero, not a silent failure.
+    --
+    -- ═══ THE PHASE CAP USED TO BE WHAT ENDED THAT WAIT, AND IT IS OFF NOW ═══
+    --
+    -- Until 2026-09-22 a drop that never found a point was closed out by the cap
+    -- below: the storm eventually passed stage 4, the next re-ask answered
+    -- 'phase' instead of 'wait', and the match recorded its zero with a reason.
+    -- With the cap disabled the only things that end the re-ask are a POI
+    -- qualifying and the match itself ending, so a drop that never fits simply
+    -- retries at `retryEveryMs` until the verdict. It costs one draw-free POI
+    -- scan every five seconds -- BR.AirdropPickSiteIn burns no RNG when nothing
+    -- qualifies -- but /brairdrop will show it as pending with no `outcome`
+    -- line, because nothing ever decided against it. See the cap below.
     --
     -- In practice the default delay lands during phase 1 or 2, where the radius
     -- is 2600m or more and dozens of POIs qualify, so the zero should be rare.
@@ -690,30 +718,60 @@ BR.Config.Airdrop = {
     -- number.
     insideBy = 250.0,
 
-    -- NO AIRDROPS PAST STORM STAGE 4 (owner). Read against the published
-    -- record's phase at the moment the drop is committed.
+    -- ═══ THERE IS NO STORM-PHASE CAP (owner, 2026-09-22: "remove our phase
+    --     restriction for airdrops") ═══
+    --
+    -- ─── TO PUT IT BACK, WRITE A NUMBER HERE. THAT IS THE WHOLE OF IT. ───
+    --
+    --   maxPhase = 4,      the value this shipped with until 2026-09-22: drops
+    --                      are refused once the published record reads phase 5.
+    --   maxPhase = false,  no cap. Every phase is early enough.
+    --
+    -- A DELETED LINE IS NOT A DISABLED CAP, WHICH IS THE ONLY TRAP IN HERE.
+    -- Every reader of this field defaults a MISSING one to 4 -- `maxPhase = nil`,
+    -- or the line removed altogether, quietly re-imposes stage 4 rather than
+    -- lifting the restriction. `false` is the only way to say "no cap", and it is
+    -- a deliberate value rather than an absence for exactly that reason. The one
+    -- place that default lives is BR.AirdropPhaseCap in
+    -- br_lib/shared/airdrop_solve.lua; there is no `or 4` anywhere else.
+    --
+    -- ═══ WHAT THE CAP WAS FOR, AND WHAT CARRIES THAT WEIGHT NOW ═══
+    --
+    -- It was the owner's own earlier number, and this block used to argue for it
+    -- on the grounds that late phases are self-limiting anyway: phase 4's target
+    -- radius is 520m and the margin is 250m, so a qualifying POI has to sit in a
+    -- 270m disc, and at this map's density that is usually empty. That argument
+    -- is unchanged and it is now the ONLY thing holding a late drop back -- the
+    -- 250m margin, re-asked against every circle the drop could land under (see
+    -- `insideBy` and `armWithin`). A drop in phase 6 is not refused for being in
+    -- phase 6; it is refused because nothing fits inside the wall.
+    --
+    -- SO THE SAFETY PROPERTY IS THE MARGIN, NOT THE PHASE. If a playtest turns up
+    -- late drops landing somewhere a squad cannot survive reaching, `insideBy` is
+    -- the number that answers it. Re-imposing this cap would only hide the cases
+    -- the margin already refuses, and it would do it by taking the drop away from
+    -- whoever walked to the blip.
+    --
+    -- AND IT WAS ALSO THE WAIT'S TERMINATOR. A drop that never finds a
+    -- qualifying POI used to be closed out by the cap; now it re-asks until the
+    -- match ends. See `insideBy` above for what that costs.
     --
     -- ═══ "SPAWN BEFORE THE BEGINNING OF PHASE 3?" -- ASKED, AND ANSWERED NO
-    --     (owner, 2026-08-23) ═══
+    --     (owner, 2026-08-23), AND THE ANSWER IS KEPT HERE ═══
     --
     -- It was the second half of their proposal for drops landing outside the
-    -- circle, and it treats the symptom rather than the cause. The cause was
-    -- that the margin was solved once and never re-asked while the drop waited
-    -- (see `armWithin`); a phase cap does not touch that -- a drop sited in
-    -- phase 2 can still sit for four minutes and land in phase 4.
+    -- circle, and it treated the symptom rather than the cause: the cause was a
+    -- margin solved once and never re-asked while the drop waited (see
+    -- `armWithin`), which a phase cap does not touch -- a drop sited in phase 2
+    -- can still sit for four minutes and land in phase 4. It would also have cost
+    -- most matches their airdrop: the schedule draws from 3m30 to 7m00 after
+    -- PLAYING and phase 3 begins somewhere around 280-660 seconds in, so "before
+    -- phase 3" refuses a large slice of that window outright.
     --
-    -- AND IT WOULD COST MOST MATCHES THEIR AIRDROP. The schedule draws
-    -- uniformly from 3m30 to 7m00 after PLAYING, and phase 3 begins somewhere
-    -- around 280-660 seconds in (config/storm.lua: phase 1 holds 120-180s and
-    -- sweeps 40-240s, phase 2 holds 120s and sweeps up to 120s). A cap at "before
-    -- phase 3" would refuse a large slice of that window outright.
-    --
-    -- LATE PHASES ARE ALREADY SELF-LIMITING, which is the reason none of that is
-    -- needed. Phase 4's target radius is 520m and the margin is 250m, so a
-    -- qualifying POI has to sit in a 270m disc; at this map's density that is
-    -- usually empty, the drop waits, and the match gets its deliberate zero. The
-    -- cap stays at the owner's own earlier number.
-    maxPhase = 4,
+    -- Written down rather than deleted with the cap, because it is a TIGHTER cap
+    -- than the one just removed and it is the shape the question tends to come
+    -- back in.
+    maxPhase = false,
 
     -- ------------------------------------------------------------------
     -- WHAT IS IN IT

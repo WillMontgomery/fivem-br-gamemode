@@ -199,11 +199,17 @@ end
 ---   'sited'  -- published and announced. The blip is up; nothing is flying.
 ---   'wait'   -- nothing qualifies YET. The caller leaves it pending and asks
 ---               again in retryEveryMs. A circle mid-shrink is a genuinely
----               different question a few seconds later, so this terminates on
----               its own rather than spinning: either a POI comes inside the
----               margin, or the phase cap below closes the window.
----   'phase'  -- past storm stage 4. This match gets no drop, and the log says
----               so. See config/airdrop.lua for why neither rule is bent.
+---               different question a few seconds later, so the re-ask is
+---               progress rather than a spin -- but WITH THE PHASE CAP OFF
+---               (2026-09-22) it is no longer bounded. The cap used to close the
+---               window on a drop that never fit; now a POI qualifying, or the
+---               match ending, are the only two ways out. It costs one RNG-free
+---               POI scan per retryEveryMs and leaves the drop pending with no
+---               `outcome` to print, because nothing decided against it.
+---   'phase'  -- the storm gate refused: past the cap if one is configured, or no
+---               published storm record at all, which is the only way to get this
+---               while `maxPhase = false`. This match gets no drop, and the log
+---               says which. See config/airdrop.lua for why neither rule is bent.
 ---
 --- NO RNG IS BURNED ON A 'wait'. BR.AirdropPickSite draws nothing when there
 --- are no candidates, so the payout a match eventually gets does not depend on
@@ -214,8 +220,16 @@ end
 --- @return string outcome
 local function trySite(m, p, now)
     if not BR.AirdropStormOk(m.storm, A.maxPhase) then
-        print(('[br_core] airdrop: match %s gets none -- storm is past stage %d')
-            :format(BR.MatchTag(m.id), A.maxPhase or 4))
+        -- WHICH OF THE TWO REFUSED. BR.AirdropStormOk says no to a missing
+        -- record as well as to a late phase, and since the cap can be off
+        -- (config/airdrop.lua: `maxPhase = false`) the missing record is the only
+        -- way to get here on the default config. A line naming a stage 4 that is
+        -- not in force is how a playtest chases the wrong bug.
+        local cap = BR.AirdropPhaseCap(A.maxPhase)
+        print(('[br_core] airdrop: match %s gets none -- %s')
+            :format(BR.MatchTag(m.id),
+                    cap and ('storm is past stage %d'):format(cap)
+                        or 'there is no published storm record to site against'))
         return 'phase'
     end
 
@@ -251,11 +265,21 @@ local function trySite(m, p, now)
     -- ═══ NO TWO CONCURRENT DROPS ON THE SAME POI ═══
     --
     -- `brairdrop now` may be run any number of times in a match (owner,
-    -- 2026-08-23), and BR.AirdropPickSiteIn draws uniformly from the qualifying
-    -- POIs with no memory of what it drew last time. So two manual drops could
-    -- be sited on the SAME POI -- two crates on one point, two blips on top of
-    -- each other, and one player walking there arming both at once, which is
-    -- exactly what the block below the arm gate promises cannot happen.
+    -- 2026-08-23), and SINCE 2026-09-22 THE AUTOMATIC PATH SCHEDULES TWO
+    -- (`perMatch`), so this is the ordinary case rather than a console one.
+    -- BR.AirdropPickSiteIn draws uniformly from the qualifying POIs with no
+    -- memory of what it drew last time. So two drops could be sited on the SAME
+    -- POI -- two crates on one point, two blips on top of each other, and one
+    -- player walking there arming both at once, which is exactly what the block
+    -- below the arm gate promises cannot happen.
+    --
+    -- IT IS CONCURRENT DROPS ONLY, AND `landed` IS DELIBERATELY NOT IN THE LIST
+    -- BELOW. A crate already on the ground is ordinary loot with ordinary rules,
+    -- and the second scheduled drop may be minutes behind the first, so the two
+    -- can share a POI in sequence -- one crate beside another's husk. Nothing
+    -- collides (the drop numbers differ, so neither client entry replaces the
+    -- other) and nobody arms two at once. Whether a squad should be sent back to
+    -- the same place twice is a playtest question, not a correctness one.
     --
     -- IT WAS ALWAYS REACHABLE AND HAD SIMPLY NOT BEEN DRAWN. With a hundred-odd
     -- candidates the collision is a fraction of a percent per pair of drops, so
@@ -264,9 +288,10 @@ local function trySite(m, p, now)
     -- of those seeds onto a collision. The table changed; the defect did not.
     --
     -- Filtered rather than retried, so no RNG is burned on a redraw -- and the
-    -- filter is SKIPPED ENTIRELY when nothing is out, which is every automatic
-    -- drop. `perMatch` is 1, so the ordinary path passes the identical table to
-    -- the identical rng and every existing seed still lands where it did.
+    -- filter is SKIPPED ENTIRELY when nothing is out, which is still every
+    -- match's FIRST drop. The second one is filtered whenever the first is still
+    -- waiting or in flight, which is the point: it passes a table one POI
+    -- shorter to the same rng, and that is the mechanism that keeps them apart.
     local pois = BR.Config.Map.POIs
     local taken = nil
     for _, list in ipairs({ m.airdrop.waiting or {}, m.airdrop.live or {} }) do
@@ -306,9 +331,9 @@ local function trySite(m, p, now)
     local items = BR.AirdropPayout(m.airdrop.rng, A)
 
     -- SPENT AT THE ANNOUNCEMENT, not at the landing. The match has now been told
-    -- an airdrop is coming; if nobody comes and it expires, that WAS this
-    -- match's airdrop. A retry would announce a second one somewhere else, which
-    -- reads as two airdrops in a match the owner asked to have exactly one.
+    -- this airdrop is coming; if nobody comes and it expires, that WAS one of
+    -- this match's drops. A retry would announce it again somewhere else, which
+    -- reads as an extra airdrop on top of the `perMatch` the match is owed.
     m.airdrop.waiting[#m.airdrop.waiting + 1] = {
         rec = rec, items = items,
         -- The nearest anybody has actually got, for the diagnostic. This is the
@@ -436,10 +461,15 @@ local function tryArm(m, w, now)
     end
 
     if not BR.AirdropStormOk(m.storm, A.maxPhase) then
-        w.why = ('the storm went past stage %d while it waited')
-            :format(A.maxPhase or 4)
-        print(('[br_core] airdrop: match %s drop %d abandoned -- storm went past stage %d while it waited (closest was %s)')
-            :format(BR.MatchTag(m.id), rec.n, A.maxPhase or 4,
+        -- SAME TWO REASONS AS THE SITING GATE, AND THE SAME RULE ABOUT NAMING A
+        -- CAP THAT IS NOT IN FORCE. `w.why` is what /brairdrop prints back, so it
+        -- is the sentence a playtest reads.
+        local cap = BR.AirdropPhaseCap(A.maxPhase)
+        w.why = cap
+            and ('the storm went past stage %d while it waited'):format(cap)
+            or 'the match lost its storm record while it waited'
+        print(('[br_core] airdrop: match %s drop %d abandoned -- %s (closest was %s)')
+            :format(BR.MatchTag(m.id), rec.n, w.why,
                     w.closest < math.huge and ('%.0fm'):format(w.closest)
                                            or 'nobody in the match'))
         return 'expired'
@@ -602,12 +632,14 @@ BR.Sched.every(1000, 'airdrop.tick', function()
                 table.remove(st.waiting, i)
                 st.live[#st.live + 1] = w
             elseif outcome == 'expired' then
-                -- NO CRATE, EVER, FOR THIS MATCH (owner, 2026-08-22: "if nobody
+                -- NO CRATE FOR THIS DROP, EVER (owner, 2026-08-22: "if nobody
                 -- goes to the area where the drop is ready to happen within the
                 -- allotted time, then no drop should happen"). The entry is
                 -- dropped and NOT returned to `pending`: `sent` was already
-                -- counted at the announcement, so the one-per-match rule reads
-                -- this as spent rather than retrying somewhere else.
+                -- counted at the announcement, so `perMatch` reads this one as
+                -- spent rather than retrying it somewhere else. The match's OTHER
+                -- scheduled drop is untouched -- it has its own entry, its own
+                -- delay and its own gate.
                 --
                 -- NOTHING IS SENT TO THE CLIENTS. Their blip expires off the
                 -- same record and the same clock at the same instant -- see
