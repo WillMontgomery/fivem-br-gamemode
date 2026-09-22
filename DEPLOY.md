@@ -48,6 +48,31 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now royale royale-watchdog.timer royale-logrotate.timer
 ```
 
+**That `enable --now` line is the public box. The dev box does not enable
+`royale`, on purpose** -- `systemctl is-enabled royale` there says `disabled`,
+which is the install rather than a step somebody missed. Enabling it would bring
+dev up on whatever tree was last synced, and a box that exists to test a branch
+wants the tree somebody asked for, so on dev the game comes up when something
+*deploys*, not at boot. Enable the timers there and leave `royale` alone:
+
+```bash
+sudo systemctl enable --now royale-watchdog.timer royale-logrotate.timer
+```
+
+`disabled` governs boot and nothing else, so `sudo systemctl restart royale` and
+`royale-deploy`'s own restart work on dev exactly as they do on the public box.
+Two things deploy to dev today: **`/dev start`** in Discord
+(WillMontgomery/blitz-bot#25), which starts the instance and runs `royale-deploy`
+over SSM, and **`blitz-deploy-at-boot`**, a dev-box-only unit in the infradocs
+repo at `ops/devbox/`, which runs `royale-deploy` once per boot.
+
+**On dev, `royale-watchdog` fails every 30 seconds while the game is down, and
+that is expected.** `royale-watchdog.service` carries `Requisite=royale.service`,
+which fails the unit immediately when royale is not active. That is deliberate:
+a watchdog that starts a stopped server is not a watchdog, it is an enable. A
+failed `systemctl status royale-watchdog` on a dev box nothing has deployed to
+yet is not a fault to chase.
+
 **The user appears in four files and they must agree**: `User=`/`Group=` in
 `royale.service`, `runuser -u` in `royale-watchdog.service`, `runuser -u` in
 `royale-deploy.service`, and `su` in `/etc/logrotate.d/royale`. That is the same
@@ -163,6 +188,14 @@ relaunches what is already on disk; it does not pull. `Restart=always` means a
 crash respawns automatically, and if starting also pulled, a crash at 3am would
 silently deploy whatever happened to be on `main` at that moment, so the server
 that came back would not be the one that went down.
+
+**That argument is about crashes, not boots**, which is how the dev box can have
+a boot-time deploy without it applying there. Nothing starts the game at boot on
+dev, so `blitz-deploy-at-boot` runs `royale-deploy` once per boot to bring it up:
+one deploy, because somebody started the box. A crash-restart deploy is the
+unattended one that can repeat in a loop and swap the code out from under the
+server that just went down. Either way `royale-deploy` has no `[Install]` section
+and is never enabled, on any box.
 
 **Two clones live on the box, with different jobs.**
 `/opt/misc/fivem-br-gamemode` is the checkout you `git pull` by hand — it is

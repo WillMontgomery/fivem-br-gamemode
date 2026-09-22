@@ -16,6 +16,14 @@
 # Known benign race: during a deploy's restart the session is briefly absent,
 # and a tick landing in that window issues a second restart. systemd serialises
 # restarts of the same unit, so the effect is a log line, not a double bounce.
+#
+# ON DEV THIS UNIT FAILS EVERY 30 SECONDS WHILE THE GAME IS DOWN, AND THAT IS
+# EXPECTED. royale is deliberately not enabled on the dev box, so from boot
+# until something deploys it is inactive, and the Requisite= below fails this
+# unit immediately rather than starting anything. That is the design working:
+# a watchdog that starts a stopped server is not a watchdog, it is an enable.
+# A column of failed royale-watchdog runs in `systemctl status` on dev is not a
+# fault to chase -- the question is whether anything has deployed yet.
 
 [Unit]
 Description=Restart royale if its tmux session has died

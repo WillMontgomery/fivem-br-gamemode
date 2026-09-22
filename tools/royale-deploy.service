@@ -31,6 +31,24 @@
 # Splitting it costs nothing and keeps both behaviours: this unit is the
 # deploy, `systemctl restart royale` is the restart, and a crash is just a
 # restart. Same convenience, one command either way.
+#
+# A BOOT IS NOT A CRASH RESTART, WHICH IS HOW THE DEV BOX CAN HAVE A BOOT-TIME
+# CALLER WITHOUT ANY OF THE ABOVE GIVING WAY. On dev royale is deliberately not
+# enabled (see royale.service), so nothing starts the game at boot, and a
+# dev-box-only unit in the infradocs repo -- ops/devbox/blitz-deploy-at-boot --
+# runs this deploy once per boot to bring it up. `/dev start` in Discord
+# (WillMontgomery/blitz-bot#25) does the same thing over SSM after starting the
+# instance. Neither contradicts the rule above, because the rule is about
+# royale.service's Restart=always: there the DEPLOY IS TRIGGERED BY THE CRASH,
+# unattended, able to repeat in a loop, and the server that comes back is not
+# the one that went down. A boot is none of that. It happens because somebody
+# started or rebooted the box, it happens once, and there is no crashed server
+# whose code it has to match.
+#
+# THAT IS NOT A LICENSE TO ENABLE THIS UNIT, ON ANY BOX. What dev enables is a
+# separate unit that starts this one; this unit still has no [Install] section
+# of its own and is still never enabled. Prod has no boot-time caller at all:
+# prod enables royale at boot and comes back on the code already on disk.
 
 [Unit]
 Description=Deploy FiveM Royale from origin/main and restart it
@@ -85,3 +103,6 @@ SyslogIdentifier=royale-deploy
 
 # Deliberately NO [Install] section. There is nothing to enable: this unit
 # should never run on boot, only when a human (or, later, Ringmaster) asks.
+# Dev is not an exception to that even though a deploy does run at boot there:
+# what boots dev is a separate unit which starts this one, and the enable lives
+# on that unit. See the boot-versus-crash note at the top of this file.

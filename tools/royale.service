@@ -9,6 +9,20 @@
 #   sudo systemctl daemon-reload
 #   sudo systemctl enable --now royale royale-watchdog.timer royale-logrotate.timer
 #
+# THAT `enable` LINE IS THE PUBLIC BOX. THE DEV BOX DOES NOT ENABLE royale, on
+# purpose: `systemctl is-enabled royale` there says `disabled`, and that is the
+# install rather than a step somebody missed. Enabling it would bring dev up on
+# whatever tree was last synced, and a box that exists to test a branch wants
+# the tree somebody asked for -- so on dev the game comes up when something
+# DEPLOYS, not at boot. `disabled` governs boot and nothing else, so
+# `systemctl restart royale` and royale-deploy's own restart work there exactly
+# as they do here. On dev, enable the timers and leave this unit alone:
+#
+#   sudo systemctl enable --now royale-watchdog.timer royale-logrotate.timer
+#
+# DEPLOY.md says what deploys to dev. royale-watchdog.service says why a
+# failing watchdog on a dev box nothing has deployed to yet is expected.
+#
 # THE CRASH HISTORY, WITH THE CORRECTED DIAGNOSIS (2026-08-11). Three failure
 # modes were chased across two days, and the writeups blamed the wrong things
 # twice, so here is the record straight:
