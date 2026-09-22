@@ -765,7 +765,20 @@ export function startMockDriver(): void {
   // numbers wrong in the harness would make the bar read correctly and animate
   // like nothing in the game.
   let vBoost = 100, vBoosting = false
+  // AND IT RIDES AS A PASSENGER FOR A STRETCH OF EVERY MINUTE (#333), because
+  // otherwise the one-bar strip cannot be looked at anywhere but a live server
+  // with two people in one car. A passenger is sent no condition and no boost,
+  // so this harness has to be able to send neither -- and the thing actually
+  // worth an eye is the TRANSITION, the row going from three pills to one and
+  // back without a gap opening where the other two were.
+  //
+  // TWELVE SECONDS IN SIXTY, and the fraction is the point: long enough to read
+  // the short strip, short enough that the three-bar animation this loop was
+  // written for is still what the harness mostly shows.
+  let vTick = 0
   window.setInterval(() => {
+    vTick += 1
+    const riding = (vTick % 240) >= 192
     if (vFilling) {
       vFuel = Math.min(100, vFuel + 2.5)
       vHealth = Math.min(100, vHealth + 2.5)
@@ -784,12 +797,16 @@ export function startMockDriver(): void {
     }
     emit({
       k: 'vehicle',
-      d: {
-        show: true,
-        health: Math.round(vHealth),
-        fuel: Math.round(vFuel),
-        boost: Math.round(vBoost),
-      },
+      d: riding
+        // OMITTED, NOT ZEROED, exactly as client/fuel.lua omits them. A 0 here
+        // would draw two empty pills and test nothing.
+        ? { show: true, fuel: Math.round(vFuel) }
+        : {
+            show: true,
+            health: Math.round(vHealth),
+            fuel: Math.round(vFuel),
+            boost: Math.round(vBoost),
+          },
     })
   }, 250)
 

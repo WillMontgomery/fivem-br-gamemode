@@ -185,6 +185,53 @@ if vehicle then
              'an empty tank is the one number a driver most needs, and a blank '
              .. 'beside a caption reads as the number having failed')
     end
+
+    -- ═══ THE STRIP'S SHAPE IS A FILTER, AND SINCE #333 THAT IS LOAD-BEARING ═══
+    --
+    -- Condition and boost are sent only to the DRIVER, because they are read
+    -- from client-only natives and a passenger's copy of them is a different
+    -- number wearing the same caption. A passenger's payload therefore has no
+    -- `health` and no `boost` key, and this filter is the whole of what turns
+    -- that into a shorter strip.
+    --
+    -- WHAT THIS CATCHES is the two tidier-looking spellings, both of which put
+    -- the hole back: rendering every bar and blanking the absent ones leaves
+    -- two empty pills in a three-pill frame, and holding their width with
+    -- `visibility` leaves a gap where the strip used to reach. Either reads as
+    -- the HUD having broken, which is a worse bug than the one #333 fixed.
+    if not vehicle:find('.filter(', 1, true)
+        or not vehicle:find("typeof b.value === 'number'", 1, true) then
+        fail('the vehicle strip no longer drops a bar it was sent no value for',
+             'a passenger is sent no condition and no boost (#333), so the '
+             .. 'filter is what makes their strip one pill wide instead of one '
+             .. 'pill and two holes')
+    end
+
+    -- AND THE TWO DRIVER-ONLY BARS ARE STILL LISTED UNCONDITIONALLY. The list
+    -- is what a DRIVER gets; the filter is what a passenger's payload does to
+    -- it. Deleting an entry would take the bar away from everybody.
+    for _, field in ipairs({ 'health', 'boost' }) do
+        if not vehicle:find('value: vehicle.' .. field, 1, true) then
+            fail(('the %s bar is no longer listed in the strip'):format(field),
+                 'hiding it from a passenger is the payload\'s job, not this '
+                 .. 'list\'s -- a driver still gets all three')
+        end
+    end
+
+    -- ═══ AND NO SEAT TEST LIVES IN THIS FILE ═══
+    --
+    -- There is no `driving` flag on the payload and there must be no branch
+    -- here that wants one. The rule is "draw the bars you were given", so the
+    -- absence of a number is the only thing that hides a bar. A flag beside the
+    -- numbers is a pair that can disagree, and the disagreement draws a stale
+    -- condition reading that nothing on this machine can vouch for.
+    for _, banned in ipairs({ 'vehicle.driving', 'vehicle.seat', 'vehicle.isDriver' }) do
+        if vehicle:find(banned, 1, true) then
+            fail('the vehicle strip has grown a seat test of its own',
+                 'Lua decides which bars a seat is sent (#333); this file draws '
+                 .. 'what it was given. Found: ' .. banned)
+        end
+    end
 end
 
 -- ══════════════════════════════════════════════ the bundle is the game ═══

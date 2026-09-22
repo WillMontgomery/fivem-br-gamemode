@@ -2135,6 +2135,250 @@ do
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
+describe('bars.driverOnly')
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- ═══ THE REPORT AND THE ANSWER (#333) ═══
+--
+-- The vehicle condition bar read differently for the driver and the passenger
+-- of one car, and it was not a bug in the bar. Condition is the worst of
+-- GetVehicleBodyHealth, GetVehicleEngineHealth and GetVehiclePetrolTankHealth
+-- -- three CLIENT natives, called by whoever is looking at the bar against
+-- their own machine's copy of the entity. The two seats were computing two
+-- unrelated numbers and wearing one caption. client/fuel.lua had already
+-- written down that nothing will ever reconcile them: "Every vehicle-health
+-- native is client-only, so the server cannot answer it and never will."
+--
+--   "vehicle cosmetic condition isn't synced either, by nature of netcode, so
+--    why don't we just hide the condition and boost bars for non-drivers?"
+--                                                  -- owner, 2026-09-21
+--
+-- SO THE BARS ARE HIDDEN BECAUSE THE NUMBER IS NOT KNOWABLE OFF THE OWNER'S
+-- CLIENT, NOT BECAUSE A PASSENGER HAS NO USE FOR IT. The second reading is the
+-- one a reader arrives at alone and it ends with the bars being restored as a
+-- courtesy, so it is stated here, in the solver and at the call site.
+--
+-- THE FUEL BAR STAYS FOR EVERY SEAT AND THAT IS THE POINT OF THE SPLIT. Fuel is
+-- this gamemode's own number rather than the engine's: the server keeps one
+-- ledger per vehicle and client/fuel.lua writes it onto every occupant's copy,
+-- so one car has one tank reading. Condition has no ledger and cannot be given
+-- one.
+--
+-- ═══ WHY THIS BLOCK IS EXECUTED WHERE blips.seat's CLIENT HALF IS TEXT ═══
+--
+-- The same bargain as the block above, one step further along. The DECISION and
+-- the DEDUPE both live in br_lib, because this rule is not one answer -- it is
+-- three payload shapes and the two transitions between them, and a transition
+-- is exactly what a string search cannot replay. The defect that needs a
+-- transition to see is a passenger still wearing the condition number they had
+-- at the wheel a moment earlier, which is a dedupe that skipped a field on the
+-- grounds that the field had gone away.
+do
+    local BARS  = BR.FuelSolve.bars
+    local MOVED = BR.FuelSolve.barsMoved
+
+    ok(type(BARS) == 'function' and type(MOVED) == 'function',
+       'BR.FuelSolve.bars and BR.FuelSolve.barsMoved exist')
+
+    -- Peds are opaque handles; distinct non-zero numbers is the whole model,
+    -- the same as blips.seat above.
+    local ME, OTHER = 101, 202
+
+    --- One readable line out of a payload, for a failure message.
+    local function shape(p)
+        return ('show=%s health=%s fuel=%s boost=%s'):format(
+            tostring(p.show), tostring(p.health),
+            tostring(p.fuel), tostring(p.boost))
+    end
+
+    -- ═══ THE DRIVER GETS ALL THREE ═══
+    local drv = BARS(true, ME, ME, 87.4, 41.6, 62.0)
+    ok(drv.show == true, 'a driver is shown the strip', shape(drv))
+    ok(drv.health == 87 and drv.fuel == 42 and drv.boost == 62,
+       'with all three bars on it, each rounded to the whole percent a bar can '
+           .. 'actually draw', shape(drv))
+
+    -- ═══ THE PASSENGER GETS THE FUEL BAR, AND GETS THE DRIVER'S OWN NUMBER ═══
+    local pax = BARS(true, OTHER, ME, 87.4, 41.6, 62.0)
+    ok(pax.show == true,
+       'a passenger is shown the strip too -- it is two of the bars that are '
+           .. "the driver's, not the strip", shape(pax))
+    ok(pax.fuel == 42,
+       'and the fuel bar reads exactly what the driver\'s reads, because the '
+           .. 'tank is one server-side ledger rather than a local native',
+       shape(pax))
+
+    -- ═══ ABSENT, NOT ZERO, AND THE DIFFERENCE IS A WRECKED CAR ═══
+    --
+    -- Zero is a real condition reading: it is a car about to stop. A sentinel
+    -- would make "hide this bar" and "this car is finished" the same payload,
+    -- and the interface draws the bars it is GIVEN rather than branching on a
+    -- flag, so an absent field is the only spelling that cannot be mistaken.
+    ok(pax.health == nil,
+       'the passenger is sent no condition at all -- not a zero, not a blank, '
+           .. 'no field', shape(pax))
+    ok(pax.boost == nil,
+       'and no boost either, named in the same sentence of the same instruction',
+       shape(pax))
+
+    -- ═══ A PLAYER ON FOOT STILL GETS NOTHING ═══
+    local foot = BARS(false, nil, nil, nil, nil, nil)
+    ok(foot.show == false, 'a player on foot is shown no strip', shape(foot))
+    ok(foot.health == nil and foot.boost == nil,
+       'and carries neither driver-only bar out of the car with them',
+       shape(foot))
+
+    -- AND `inSeat` IS AHEAD OF THE SEAT TEST, so a stale vehicle handle that
+    -- still answers cannot put a strip on a walking player's screen.
+    local ghost = BARS(false, ME, ME, 87.4, 41.6, 62.0)
+    ok(ghost.show == false and ghost.health == nil,
+       'even when every number is still answering -- being out of the seat '
+           .. 'outranks being the last person in it', shape(ghost))
+
+    -- ═══ AN EMPTY DRIVER'S SEAT IS NOT YOU, AND `0` IS TRUTHY IN LUA ═══
+    --
+    -- 0 is what every entity-returning native answers for "there isn't one", so
+    -- an empty seat and an unreadable own-ped both arrive as 0. Compared
+    -- without the explicit zero tests they are EQUAL, and every passenger in a
+    -- driverless car would be handed the driver's two bars.
+    ok(BARS(true, 0, 0, 87.4, 41.6, 62.0).health == nil,
+       'an empty seat and an unreadable ped do not make a driver of each other')
+    ok(BARS(true, 0, ME, 87.4, 41.6, 62.0).health == nil,
+       'a passenger in a driverless car gets the fuel bar and nothing else')
+    ok(BARS(true, ME, 0, 87.4, 41.6, 62.0).health == nil,
+       'and neither does an own-ped read that came back as nothing')
+    ok(BARS(true, nil, ME, 87.4, 41.6, 62.0).health == nil,
+       'nor a seat read that failed outright and was cleared to nil')
+
+    -- ═══ THE TRANSITIONS, WHICH ARE THE HALF NO TEXT GATE CAN SEE ═══
+    --
+    -- The driver gets out and the passenger shuffles across, or the other way
+    -- about. Both directions have to put a message on the wire, and the message
+    -- has to carry the NEW shape -- a push that went out without dropping the
+    -- old field would leave the number on screen.
+    ok(MOVED(drv, pax) == true,
+       'driver to passenger is a push')
+    ok(MOVED(drv, pax) == true and pax.health == nil and pax.boost == nil,
+       'and the payload it sends has no condition and no boost in it, so the '
+           .. 'bars come down in the same message rather than in some later one')
+    ok(MOVED(pax, drv) == true,
+       'passenger to driver is a push as well, and it carries both bars back')
+
+    -- ═══ A FIELD THAT STOPS BEING SENT IS A CHANGE ═══
+    --
+    -- This is the mutation the dedupe exists to survive, written out as a
+    -- payload pair rather than inferred. `want.health and sent.health ~=
+    -- want.health` reads tidier and answers FALSE here -- so no push goes out,
+    -- and a player who just slid out of the driver's seat keeps their last
+    -- condition reading for the rest of the drive with nothing coming to
+    -- correct it.
+    ok(MOVED({ show = true, health = 87, fuel = 42, boost = 62 },
+             { show = true, fuel = 42 }) == true,
+       'a field that stops being sent is a change, not an absence of one')
+    ok(MOVED({ show = true, fuel = 42 },
+             { show = true, health = 87, fuel = 42, boost = 62 }) == true,
+       'and a field that starts being sent is one too')
+
+    -- ONE FIELD AT A TIME, BECAUSE THE TWO ALWAYS VANISH TOGETHER IN PRACTICE
+    -- AND THAT IS WHAT LETS THE BUG HIDE. With both gone, a comparison that
+    -- skips a vanished `health` is still rescued by the `boost` line beside it,
+    -- and the file passes its own suite while carrying the defect. Each field
+    -- is therefore asked on its own, where nothing can cover for it.
+    ok(MOVED({ show = true, health = 87, fuel = 42 },
+             { show = true, fuel = 42 }) == true,
+       'a vanished condition is a change on its own, with no other field moving')
+    ok(MOVED({ show = true, fuel = 42, boost = 62 },
+             { show = true, fuel = 42 }) == true,
+       'and a vanished boost is a change on its own too')
+
+    -- AND `show` ON ITS OWN, WHICH IS A DRY CAR YOU GET OUT OF. Both payloads
+    -- read `fuel = 0` -- an empty tank in the seat, and no tank at all on foot
+    -- -- so `show` is the only field that moves, and it is the one the page
+    -- keys the whole strip on. Nothing else would take it down.
+    ok(MOVED({ show = true, fuel = 0 }, { show = false, fuel = 0 }) == true,
+       'stepping out of a car with an empty tank still takes the strip down')
+
+    -- ═══ AND THE QUIET THE CHANNEL WAS BUILT FOR IS STILL QUIET ═══
+    ok(MOVED(drv, BARS(true, ME, ME, 87.4, 41.6, 62.0)) == false,
+       'a driver whose numbers have not moved pushes nothing')
+    ok(MOVED(pax, BARS(true, OTHER, ME, 99.0, 41.6, 0.0)) == false,
+       'and a passenger pushes nothing while only the bars they cannot see are '
+           .. 'moving -- which is most of a drive, and is the traffic this '
+           .. 'change removes')
+    ok(MOVED(pax, BARS(true, OTHER, ME, 87.4, 12.0, 62.0)) == true,
+       'but a passenger whose tank moved is still told about it')
+
+    -- THE FIRST PAYLOAD OF A SESSION ALWAYS GOES OUT. `lastBars` starts empty
+    -- and an empty table is not a payload, so it must not dedupe against one.
+    ok(MOVED({}, foot) == true,
+       'the first push of a session is never deduped away')
+
+    -- ═══ AND THE CLIENT ASKS ALL OF THIS RATHER THAN CARRYING ITS OWN COPY ═══
+    --
+    -- client/fuel.lua cannot be executed here, so this half is TEXT -- but what
+    -- it pins is not a rule, it is that the rule is still being ASKED FOR.
+    local fh = io.open(ROOT .. 'br_core/client/fuel.lua', 'r')
+    ok(fh ~= nil, 'client/fuel.lua is readable')
+    if fh then
+        local src = fh:read('a'); fh:close()
+        local code = src:gsub('%-%-%[%[.-%]%]', ' '):gsub('%-%-[^\n]*', '')
+
+        ok(code:find('BR.FuelSolve.bars(', 1, true) ~= nil
+           and code:find('BR.FuelSolve.barsMoved(', 1, true) ~= nil,
+           'the push asks the solver for the payload and for the dedupe, rather '
+               .. 'than keeping a second copy of either where nothing can run it')
+
+        -- THE SEAT TEST IS THE TICK'S OWN, PASSED IN. A second read inside the
+        -- push would be a second native on the band and, worse, a second answer
+        -- that could disagree with the blips about who is driving.
+        ok(code:find('pushBars(veh, rec.f, driver, ped)', 1, true) ~= nil,
+           'and the seat the tick already read is handed to it')
+
+        -- AND A FAILED READ IS CLEARED BEFORE IT GETS THERE. pcall's second
+        -- return is the error message when the call raised, and it is now fed
+        -- to two rules rather than one. A string compares unequal to every ped
+        -- handle, so an uncleared error resolves to "not the driver" by luck --
+        -- which is the right answer until somebody writes the next rule the
+        -- other way round.
+        ok(code:find('if not okSeat then driver = nil end', 1, true) ~= nil,
+           'a seat read that raised is cleared to nil rather than left holding '
+               .. 'an error message')
+        local body = code:match('local function pushBars.-\nend')
+        ok(body ~= nil, 'the push is findable',
+           'reshape this gate with the function rather than deleting it')
+        if body then
+            ok(body:find('GetPedInVehicleSeat', 1, true) == nil,
+               'the push does not read the seat a second time for itself',
+               body)
+            ok(body:find('PlayerPedId', 1, true) == nil,
+               'and does not re-read the ped either -- one answer, one tick',
+               body)
+        end
+
+        -- ═══ THE REASON SURVIVES IN THE FILE ═══
+        --
+        -- Pinned because of how this change gets undone: not by somebody
+        -- disagreeing with it, but by somebody reading a passenger who cannot
+        -- repair a car and putting the bar back as a kindness. The issue number
+        -- is the thread back to why that is not a kindness.
+        ok(src:find('#333', 1, true) ~= nil,
+           'and the file still points at the issue that took the two bars away')
+    end
+
+    -- THE OWNER'S OWN SENTENCE, KEPT WHERE THE RULE IS. A quotation is not
+    -- prose that gets reworded, so pinning it costs nothing and it is the one
+    -- line that says whose decision this was.
+    local fs = io.open(ROOT .. 'br_lib/shared/fuel_solve.lua', 'r')
+    if fs then
+        local solve = fs:read('a'); fs:close()
+        ok(solve:find('hide the condition and boost bars for non-drivers',
+                      1, true) ~= nil,
+           'the solver carries the instruction it implements, in the words it '
+               .. 'was given in')
+    end
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
 describe('pump.cues.completion')
 -- ═══════════════════════════════════════════════════════════════════════════
 --

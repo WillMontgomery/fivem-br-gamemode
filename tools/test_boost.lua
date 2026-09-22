@@ -1381,10 +1381,19 @@ ok(fuelSrc:find('function BR.Fuel.levelPct', 1, true) ~= nil,
    'client/fuel.lua exports the reading the gate asks for')
 ok(fuelSrc:find('local function pctOf', 1, true) ~= nil,
    'and the fraction-to-percentage conversion is one function')
-ok(fuelSrc:find('fuel = math.floor(pctOf(', 1, true) ~= nil,
-   'the vitals bar is that function rounded to a whole percent')
+ok(fuelSrc:find('fuel = pctOf(', 1, true) ~= nil,
+   'the vitals bar is that same function')
+-- THE ROUNDING MOVED AND THE PROPERTY DID NOT (#333). It used to read
+-- `fuel = math.floor(pctOf(...))` here; the whole payload is now built by
+-- BR.FuelSolve.bars, which rounds every bar to the whole percent a bar can
+-- draw, because two of the three fields are sent only to the driver and the
+-- dedupe that decides whether to send them had to move with them. What this
+-- gate cares about is unchanged: the bar and the gate read ONE conversion, and
+-- only the bar rounds it.
+ok(fuelSrc:find('BR.FuelSolve.bars(', 1, true) ~= nil,
+   'and it is rounded where the rest of the payload is decided')
 ok(fuelSrc:find('return pctOf(', 1, true) ~= nil,
-   'and BR.Fuel.levelPct is that same function unrounded -- one expression, '
+   'while BR.Fuel.levelPct is that same function unrounded -- one expression, '
    .. 'called twice, so the gauge and the gate cannot describe two tanks')
 
 realPrint(('\n\27[32m%d passed\27[0m'):format(pass))

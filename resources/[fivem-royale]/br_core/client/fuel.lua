@@ -399,7 +399,17 @@ end
 -- ---------------------------------------------------------------------------
 
 --- What the interface was last told, so an unchanged readout is not re-sent.
-local lastBars = { show = nil, health = -1, fuel = -1, boost = -1 }
+---
+--- THE WHOLE PAYLOAD RATHER THAN FOUR FIELDS WITH SENTINELS IN THEM, and the
+--- reason is #333: two of those fields are now ABSENT from a passenger's
+--- payload, and a table pre-seeded with -1 cannot tell "absent" from "the
+--- sentinel". BR.FuelSolve.barsMoved does the comparing; this only has to hold
+--- what went out.
+---
+--- EMPTY IS NOT A PAYLOAD, so the first push of a session always goes out:
+--- `show` is nil here and is false or true in anything BR.FuelSolve.bars
+--- builds.
+local lastBars = {}
 
 --- How healthy a vehicle is, 0..100.
 ---
@@ -533,30 +543,66 @@ end
 
 --- Tell the interface what to draw, on change only.
 ---
---- ═══ TWO BARS, NO WORDS ═══
+--- ═══ THE STRIP IS EVERY SEAT'S. TWO OF ITS THREE BARS ARE THE DRIVER'S ═══
 ---
 ---   "We need to develop some new health bars, using the same graphical style
 ---    as the existing ones. They should be for vehicle health and fuel level,
 ---    which are shown on all players' screens while in a vehicle, regardless of
 ---    which seat they're in."   -- owner, 2026-08-21
+---   "vehicle cosmetic condition isn't synced either, by nature of netcode, so
+---    why don't we just hide the condition and boost bars for non-drivers?"
+---                              -- owner, 2026-09-21, #333
 ---
---- ANY SEAT: nothing below asks who is driving. A passenger reads the same two
---- bars the driver does.
+--- THE SECOND NARROWS THE FIRST, AND THE REASON IS ALREADY WRITTEN IN THIS FILE
+--- ABOVE BR.Fuel.drivingAtFullHealth: every vehicle-health native is
+--- client-only, so the server cannot answer it and never will. `healthPct` is
+--- three of those natives read against THIS machine's copy of the entity, so
+--- the driver's bar was computed from the driver's copy and the passenger's
+--- from theirs, and nothing anywhere reconciled them. The passenger's bar was
+--- not a stale version of the driver's. It was a second, unrelated reading
+--- presented as the same fact.
 ---
---- ROUNDED BEFORE COMPARING, because a bar cannot show a fraction and float
---- churn would defeat the dedupe -- the same reason client/state.lua floors
---- stamina before it pushes it.
+--- HIDDEN BECAUSE THERE IS NO NUMBER TO SHOW THEM, NOT BECAUSE A PASSENGER HAS
+--- NO USE FOR ONE. Say it that way round or the next reader puts the bars back:
+--- a passenger who cannot repair the car looks like a passenger who does not
+--- need to know its condition, which is a courtesy to restore. It is not one.
+--- There is nothing to restore -- a passenger cannot be told the truth about
+--- this number by any machine in this project.
+---
+--- THE FUEL BAR STAYS FOR EVERY SEAT AND THAT IS THE POINT OF THE SPLIT. Fuel
+--- is this gamemode's own number rather than the engine's: the server keeps one
+--- ledger per vehicle, `applyLevel` writes it onto each occupant's copy and
+--- reasserts it against a client that overwrites its own, so every occupant of
+--- one car is looking at one value. The condition bar has no such ledger and
+--- cannot be given one.
+---
+--- ═══ THE SEAT TEST IS THE TICK'S OWN, PASSED IN RATHER THAN REPEATED ═══
+---
+--- The caller already reads GetPedInVehicleSeat(veh, -1) once a tick for the
+--- station blips, guarded and never cached. Reading it again here would be a
+--- second native on the band and, worse, a second answer that could disagree
+--- with the first about who is driving.
+---
+--- ═══ THE DECISION AND THE DEDUPE ARE BOTH IN br_lib ═══
+---
+--- This function cannot be loaded by a suite -- tools/test_fuel.lua's
+--- `prompt.copy` block says so at length -- and the rule has three payload
+--- shapes and two transitions between them. A string search cannot replay a
+--- transition, and the transitions are the half that can ship a stale number.
+--- See BR.FuelSolve.bars and BR.FuelSolve.barsMoved, which own both.
 --- @param veh integer|nil  nil when the player is not in one
 --- @param fuelFrac number|nil
-local function pushBars(veh, fuelFrac)
-    local show = veh ~= nil
-    local health, fuel, boost = 0, 0, 0
-    if show then
-        health = math.floor(healthPct(veh) + 0.5)
-        -- THE SAME CONVERSION BR.Fuel.levelPct HANDS THE BOOST GATE, rounded
-        -- here and only here. See pctOf, which also carries the "an unknown tank
-        -- reads full, not empty" rule this line used to state for itself.
-        fuel = math.floor(pctOf(fuelFrac) + 0.5)
+--- @param driver integer|nil  the ped in seat -1, from the caller's own read
+--- @param ped integer|nil     this player's ped, from that same tick
+local function pushBars(veh, fuelFrac, driver, ped)
+    local health, fuel, boost
+    if veh ~= nil then
+        health = healthPct(veh)
+        -- THE SAME CONVERSION BR.Fuel.levelPct HANDS THE BOOST GATE. See pctOf,
+        -- which also carries the "an unknown tank reads full, not empty" rule
+        -- this line used to state for itself. The rounding moved out with the
+        -- rest of the payload; BR.FuelSolve.bars does it now.
+        fuel = pctOf(fuelFrac)
         -- ═══ THE THIRD BAR RIDES THIS ENVELOPE RATHER THAN OPENING A SECOND ═══
         --
         --   "Good call - I meant to ask for a Boost bar."  -- owner, 2026-08-22
@@ -569,20 +615,25 @@ local function pushBars(veh, fuelFrac)
         --
         -- NIL-GUARDED so the boost being switched off, or its file failing to
         -- load, costs a bar rather than the whole strip.
-        boost = math.floor(
-            ((BR.Boost and BR.Boost.meter and BR.Boost.meter()) or 100.0) + 0.5)
+        boost = (BR.Boost and BR.Boost.meter and BR.Boost.meter()) or 100.0
     end
 
-    if show == lastBars.show and health == lastBars.health
-       and fuel == lastBars.fuel and boost == lastBars.boost then
-        return
-    end
-    lastBars.show, lastBars.health, lastBars.fuel, lastBars.boost =
-        show, health, fuel, boost
+    -- READ FOR A PASSENGER AND THEN DROPPED, DELIBERATELY. Gating the three
+    -- health natives and the meter read on the seat would save four calls on a
+    -- 10 Hz band -- and would buy them with a second copy of the driver rule,
+    -- living in the one file nothing in this tree can execute. One rule in one
+    -- place is worth four native calls a tick.
+    local want = BR.FuelSolve.bars(veh ~= nil, driver, ped, health, fuel, boost)
+    if not BR.FuelSolve.barsMoved(lastBars, want) then return end
 
-    TriggerEvent('br:ui:sendLocal', BR.Nui.VEHICLE, {
-        show = show, health = health, fuel = fuel, boost = boost,
-    })
+    -- THE TABLE THAT WENT OUT IS THE TABLE THAT IS REMEMBERED, and nothing
+    -- downstream writes to a payload: br_ui/client/nui.lua hands it to `send`,
+    -- which encodes it for the page. Never mutate `lastBars` in place -- it is
+    -- the record of what the interface is actually showing, and the next
+    -- payload replaces it whole.
+    lastBars = want
+
+    TriggerEvent('br:ui:sendLocal', BR.Nui.VEHICLE, want)
 end
 
 -- ---------------------------------------------------------------------------
@@ -1012,6 +1063,17 @@ BR.Loop.register(BR.Loop.TICK, 'fuel.apply', function()
     -- stale between this tick and the last, and a raise here would take the
     -- whole 10 Hz band with it.
     local okSeat, driver = pcall(GetPedInVehicleSeat, veh, -1)
+
+    -- ═══ A FAILED READ IS NOT A DRIVER ═══
+    --
+    -- pcall's second return is the ERROR MESSAGE when the call raised, and this
+    -- one answer now feeds TWO rules -- the blips below and, through pushBars,
+    -- which bars the strip draws (#333). A string compares unequal to every ped
+    -- handle, so an uncleared error would resolve to "not the driver" by luck
+    -- rather than on purpose, and the day one of those rules is written the
+    -- other way round it would resolve to the wrong thing silently.
+    if not okSeat then driver = nil end
+
     if okSeat and BR.FuelSolve.blipsVisibleTo(
             driver, ped, BR.State.me, BR.State.roster,
             BR.Squadmates and BR.Squadmates.pedOf)
@@ -1044,12 +1106,12 @@ BR.Loop.register(BR.Loop.TICK, 'fuel.apply', function()
         -- SHOWN WHILE THE ANSWER IS IN FLIGHT, with the tank reading full --
         -- see pushBars. The alternative is a strip that appears a fraction of a
         -- second after the door shuts, which reads as the HUD stuttering.
-        pushBars(veh, nil)
+        pushBars(veh, nil, driver, ped)
         return
     end
 
     applyLevel(veh, rec.f)
-    pushBars(veh, rec.f)
+    pushBars(veh, rec.f, driver, ped)
 end)
 
 --- The pump: horn suppression, the hold, and the prompt.

@@ -105,26 +105,60 @@ export interface HudPayload {
  * A CHANNEL OF ITS OWN RATHER THAN TWO MORE FIELDS ON HudPayload, and the
  * reason is the dedupe at the far end: client/state.lua's HUD push compares
  * every field and returns early when none moved, which is what keeps it quiet
- * for a player standing still. Both numbers below move continuously while
+ * for a player standing still. The numbers below move continuously while
  * driving, so folding them in would make that comparison always true and turn
  * the whole HUD envelope into an unconditional 10 Hz push, for a readout that
  * only exists between one door and the next.
+ *
+ * #333 DOES NOT WEAKEN THAT ARGUMENT, IT NARROWS THE TRAFFIC. Two of the three
+ * numbers are now sent only to the driver, so a passenger's channel carries one
+ * continuously moving value instead of three and goes quiet entirely in a
+ * parked car. Nothing was moved onto HudPayload to achieve it.
+ *
+ * TWO FIELDS ARE OPTIONAL AND THEIR ABSENCE IS THE MESSAGE. There is no
+ * `driving` flag beside them -- the same one-field shape AdminPayload and
+ * CommunityPayload argue for, and for the same reason: a boolean next to a
+ * number is a pair that can disagree, and a stale 87 sitting behind a false
+ * flag is one careless reader away from being drawn.
  */
 export interface VehiclePayload {
   /**
    * False the moment the ped is out of a vehicle -- on foot, pulled out, dead,
    * or the car destroyed under them. Lua treats all of those as the same fact,
    * so there is one flag rather than a transition per way of leaving.
+   *
+   * STILL "IN A SEAT", NOT "AT THE WHEEL". A passenger's strip is shown; it is
+   * shorter. See `health`.
    */
   show: boolean
   /**
-   * Condition, 0..100.
+   * Condition, 0..100. PRESENT ONLY FOR THE DRIVER.
    *
    * THE WORST OF GTA'S THREE HEALTH POOLS -- body, engine and petrol tank --
    * not the body alone. A pristine shell with a 200-point engine is a car about
    * to stop, and a bar reading the body would show full right up until it did.
+   *
+   * ═══ ABSENT FOR A PASSENGER BECAUSE THE NUMBER IS NOT KNOWABLE OFF THE
+   *     OWNER'S CLIENT (#333) ═══
+   *
+   *   "vehicle cosmetic condition isn't synced either, by nature of netcode, so
+   *    why don't we just hide the condition and boost bars for non-drivers?"
+   *                                                  -- the owner, 2026-09-21
+   *
+   * All three pools are CLIENT-ONLY natives, read by whoever is looking at the
+   * bar against their own copy of the entity. The driver's number came from the
+   * driver's copy and the passenger's from theirs, and nothing reconciled them,
+   * so the two seats of one car read differently. There is no server answer to
+   * fall back on: br_core/client/fuel.lua's own note is that every
+   * vehicle-health native is client-only, so the server cannot answer it and
+   * never will.
+   *
+   * HIDDEN BECAUSE THERE IS NOTHING TRUE TO SHOW, NOT BECAUSE A PASSENGER HAS
+   * NO USE FOR IT. The second reading is the one a reader arrives at alone, and
+   * it ends with the bar being put back as a courtesy. There is no number to
+   * put back.
    */
-  health: number
+  health?: number
   /**
    * Tank, 0..100.
    *
@@ -138,10 +172,17 @@ export interface VehiclePayload {
    * screen is denominated in metres to compare it against and the condition bar
    * three millimetres away is already 0..100. hud/VehicleBars.tsx carries the
    * argument in full.
+   *
+   * THE ONE BAR EVERY SEAT GETS, AND THAT IS THE POINT OF THE SPLIT ABOVE.
+   * Fuel is this gamemode's own number rather than the engine's: the server
+   * keeps one metre ledger per vehicle and client/fuel.lua writes it onto each
+   * occupant's copy, reasserting it against a client that overwrites its own.
+   * Every occupant of one car is looking at one value, which is exactly what
+   * `health` has no way to be. So this field is never optional.
    */
   fuel: number
   /**
-   * Boost meter, 0..100.
+   * Boost meter, 0..100. PRESENT ONLY FOR THE DRIVER.
    *
    *   "Good call - I meant to ask for a Boost bar."  -- the owner, 2026-08-22
    *
@@ -154,12 +195,12 @@ export interface VehiclePayload {
    * `fuel` is a percentage and metres everywhere else: a bar cannot show a unit
    * without a caption beside it.
    *
-   * DRAWN FOR EVERY SEAT, like the two beside it -- a passenger sees the
-   * driver's meter. That is not a decision so much as the absence of one: the
-   * strip is shown to whoever is aboard, and carving an exception for one of its
-   * three bars would be the odd thing to do.
+   * ABSENT FOR A PASSENGER, IN THE SAME SENTENCE OF THE SAME INSTRUCTION THAT
+   * TOOK THE CONDITION BAR AWAY (#333, quoted under `health`). It travels with
+   * its neighbour rather than on an argument of its own, and a strip that lost
+   * one of the two and kept the other would be answering half a request.
    */
-  boost: number
+  boost?: number
 }
 
 export interface StormPayload {

@@ -6,9 +6,17 @@ import type { VehiclePayload } from '../bridge/types'
  *
  * `value` IS ALLOWED TO BE undefined so that a bar backed by an OPTIONAL field
  * on VehiclePayload can be listed unconditionally and simply not render until
- * the payload carries it. That is the seam #203's boost bar arrives through:
+ * the payload carries it. That is the seam #203's boost bar arrived through:
  * one more entry in `bars` below, reading `vehicle.boost`, with no branch
  * anywhere in this file.
+ *
+ * #333 IS THAT SEAM CARRYING WEIGHT RATHER THAN CONVENIENCE. Condition and
+ * boost are sent only to the DRIVER, so for a passenger those two fields are
+ * simply not on the payload and the filter below drops their pills. There is
+ * still no seat test in this file and no branch: the strip draws what it was
+ * given, and Lua decides what a seat is given. A `vehicle.driving` flag here
+ * would be a second opinion about the same fact, and the day it disagreed with
+ * the payload it would draw a number nobody could vouch for.
  */
 type VehicleBar = {
   /** React key, and the tooltip. Distinct from `label`, which is the caption. */
@@ -28,6 +36,30 @@ type VehicleBar = {
  *    as the existing ones. They should be for vehicle health and fuel level,
  *    which are shown on all players' screens while in a vehicle, regardless of
  *    which seat they're in."   -- the owner, 2026-08-21
+ *   "vehicle cosmetic condition isn't synced either, by nature of netcode, so
+ *    why don't we just hide the condition and boost bars for non-drivers?"
+ *                              -- the owner, 2026-09-21, #333
+ *
+ * THE SECOND NARROWS THE FIRST TO ONE BAR FOR A PASSENGER, AND THE TWO HIDDEN
+ * BARS ARE HIDDEN FOR DIFFERENT REASONS. Saying so matters, because the whole
+ * point of writing this down is to stop somebody putting them back, and a
+ * reader who checks one stated reason and finds it false has grounds to
+ * distrust the paragraph and restore both.
+ *
+ *   CONDITION CANNOT BE TOLD TO A PASSENGER TRUTHFULLY. It is three
+ *   client-only natives read against each machine's own copy of the car, so
+ *   the driver's bar and the passenger's were two unrelated readings wearing
+ *   one label. That is the owner's "by nature of netcode".
+ *
+ *   BOOST WAS TRUTHFUL AND USELESS. The meter is the local player's own budget
+ *   -- VehiclePayload says so in its own words, PER PLAYER, NOT PER VEHICLE --
+ *   so a passenger's number was honest about them. It is hidden because a
+ *   passenger cannot boost, and because the owner named it in the same
+ *   sentence. If that ever changes, this bar can come back on its own and the
+ *   condition bar still cannot.
+ *
+ * The argument in full, and why fuel is different, is on VehiclePayload.
+ * NOTHING IN THIS FILE ASKS ABOUT A SEAT -- see the `value` note above.
  *
  * ═══ THE SAME BAR, NOT A BAR THAT LOOKS THE SAME ═══
  *
@@ -94,10 +126,20 @@ type VehicleBar = {
  * there are two of them or four, so the caption treatment can be copied rather
  * than re-measured. Two bars come to 18.05rem, which is where this already was.
  *
+ * THAT IS ALSO WHAT MAKES A PASSENGER'S ONE-BAR STRIP A LAYOUT RATHER THAN A
+ * GAP (#333), and it is worth stating because the failure it avoids is the
+ * ugly one. A 9rem pill in a 27rem frame, or two empty slots where the other
+ * bars were, would read as the HUD having broken. Neither can happen here: the
+ * absent bars are FILTERED OUT rather than blanked, so the row is 9rem exactly
+ * -- one pill, no gutter, since `gap` only applies between siblings -- and the
+ * column is `items-end` (Hud.tsx), so what is left stays flush with the right
+ * edge of the inventory bar below it. The strip shrinks toward its anchor
+ * instead of leaving a hole where it used to reach.
+ *
  * NO VERTICAL COST. The bars are siblings in one row, so a third widens the
- * strip and does not grow the column at all: the row is 1.05rem tall with two
- * and 1.05rem tall with three. Measured at 1280x720, the three-bar strip is
- * 298px wide under a 357px inventory bar and the column is unchanged.
+ * strip and does not grow the column at all: the row is 1.05rem tall with one,
+ * with two and with three. Measured at 1280x720, the three-bar strip is 298px
+ * wide under a 357px inventory bar and the column is unchanged.
  *
  * ═══ WHY THE BOTTOM RIGHT ═══
  *
@@ -146,6 +188,11 @@ export default function VehicleBars({ vehicle }: { vehicle: VehiclePayload | nul
       // Lua sends the WORST of body, engine and petrol-tank health rather than
       // the body alone, because a pristine shell with a dying engine is a car
       // about to stop -- see healthPct in client/fuel.lua.
+      //
+      // AND IT SENDS IT ONLY TO THE DRIVER (#333). Those are client-only
+      // natives read per machine, so a passenger's reading was a different
+      // number with the same caption on it. Undefined here is that absence, and
+      // the filter below is what turns it into one fewer pill.
       title: 'Vehicle condition',
       label: 'Condition',
       value: vehicle.health,
@@ -175,6 +222,9 @@ export default function VehicleBars({ vehicle }: { vehicle: VehiclePayload | nul
       // anyway: the strip is "things that matter while you are in a car", and
       // a player has no reason to care which side of that line a number is on.
       //
+      // DRIVER-ONLY SINCE #333, named in the same sentence as the condition
+      // bar. Same mechanism, same undefined, one fewer pill.
+      //
       // It arrives as one more entry and no branch, which is exactly the seam
       // the `value?: number` rule above was written for. The boost feature
       // originally added a third sibling by hand to avoid colliding with this
@@ -190,6 +240,13 @@ export default function VehicleBars({ vehicle }: { vehicle: VehiclePayload | nul
   return (
     <div className="flex gap-[3px] items-stretch h-[1.05rem]">
       {bars
+        /* THIS FILTER IS THE WHOLE OF "A PASSENGER SEES ONE BAR" (#333). It
+           used to be a guard against a payload that had not arrived yet; it is
+           now the layout rule as well, so it stays a filter. Rendering the
+           absent bars as empty pills, or holding their width with
+           `visibility`, is precisely the failure the header describes -- a hole
+           where the strip used to reach. A filtered row is 9rem wide and flush
+           right, which is a shape rather than a gap. */
         .filter((b) => typeof b.value === 'number' && isFinite(b.value))
         .map((b) => (
           <div key={b.title} className="w-[9rem]" title={b.title}>

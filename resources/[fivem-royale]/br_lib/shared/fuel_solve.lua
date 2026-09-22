@@ -531,3 +531,161 @@ function BR.FuelSolve.blipsVisibleTo(driver, ped, me, roster, pedOf)
     end
     return false
 end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- WHAT THE VEHICLE STRIP IS TOLD, AND WHICH OF ITS BARS A PASSENGER IS NOT SENT
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- Here for the reason blipsVisibleTo above is here: br_core/client/fuel.lua
+-- cannot be loaded by any suite in this tree, so a rule left inside it is
+-- pinned by a string search and by nothing else. This rule has three payload
+-- shapes and two transitions between them, and the transitions are the half
+-- that matters -- a string search cannot replay one.
+
+--- Round a bar reading to the whole percent a bar can actually draw.
+---
+--- ROUNDED HERE RATHER THAN AT THE CALL SITE, because rounding is what makes
+--- the dedupe below work: a bar cannot show a fraction, and float churn in the
+--- third decimal place would push a new payload every tick for a readout that
+--- has not visibly moved. client/state.lua floors stamina before it pushes it
+--- for the same reason.
+---
+--- NaN IS NOT A READING. `v ~= v` is the only NaN test Lua has, and it is here
+--- because math.floor of a NaN is not a number a bar can be drawn from either.
+--- @param v number|nil
+--- @return number
+local function wholePct(v)
+    v = tonumber(v)
+    if v == nil or v ~= v then return 0 end
+    return math.floor(v + 0.5)
+end
+
+--- WHAT THE VEHICLE STRIP DRAWS FOR THE OCCUPANT OF ONE SEAT.
+---
+--- ═══ THE CONDITION AND BOOST BARS ARE THE DRIVER'S. THE FUEL BAR IS
+---     EVERYONE'S ═══
+---
+---   "We need to develop some new health bars... shown on all players' screens
+---    while in a vehicle, regardless of which seat they're in."
+---                                                  -- owner, 2026-08-21, #195
+---   "vehicle cosmetic condition isn't synced either, by nature of netcode, so
+---    why don't we just hide the condition and boost bars for non-drivers?"
+---                                                  -- owner, 2026-09-21, #333
+---
+--- ═══ THE SECOND NARROWS THE FIRST BECAUSE THE NUMBER IS NOT KNOWABLE OFF THE
+---     OWNER'S CLIENT ═══
+---
+--- The condition bar was reported reading differently for the driver and the
+--- passenger of one car, and it was not a bug in the bar. `healthPct` in
+--- client/fuel.lua is the worst of GetVehicleBodyHealth, GetVehicleEngineHealth
+--- and GetVehiclePetrolTankHealth -- three CLIENT natives, called by whoever is
+--- looking at the bar, against that machine's own copy of the entity. The
+--- driver's number comes from the driver's copy and the passenger's from
+--- theirs, and nothing reconciles them. client/fuel.lua already records why
+--- nothing ever will: "Every vehicle-health native is client-only, so the
+--- server cannot answer it and never will."
+---
+--- So the passenger's bar was not a stale version of the driver's. It was a
+--- second, unrelated reading presented as the same fact.
+---
+--- ═══ HIDDEN BECAUSE THERE IS NO NUMBER TO SHOW THEM, NOT BECAUSE A PASSENGER
+---     HAS NO USE FOR ONE ═══
+---
+--- That distinction is the whole of this rule and it is written down because
+--- the other reading is the one a reader arrives at by themselves: a passenger
+--- who cannot repair the car looks like a passenger who does not need to know
+--- its condition, and anybody who reaches that conclusion will eventually put
+--- the bar back as a courtesy. There is nothing to put back. A passenger cannot
+--- be told the truth about this number by any machine in this project.
+---
+--- THE BOOST BAR IS HIDDEN IN THE SAME SENTENCE OF THE SAME INSTRUCTION, and it
+--- goes with its neighbour rather than on its own argument.
+---
+--- ═══ THE FUEL BAR STAYS FOR EVERY SEAT, AND THAT IS NOT AN INCONSISTENCY ═══
+---
+--- Fuel is this gamemode's own number rather than the engine's. The server
+--- keeps one metre ledger per vehicle and pushes it to every client that asks;
+--- client/fuel.lua's `applyLevel` writes that one value onto each occupant's
+--- copy of the car and reasserts it against a client that overwrites its own.
+--- Every occupant of one car is therefore looking at the same reading, which is
+--- exactly what the condition bar has no way to be.
+---
+--- ═══ THE TWO BARS ARE ABSENT, NOT ZERO ═══
+---
+--- A passenger's payload has no `health` and no `boost` key at all, and the
+--- interface draws the bars it was given rather than branching on a seat flag
+--- it would have to be told about separately. That is the shape AdminPayload
+--- and CommunityPayload already use -- "there is no boolean beside it that
+--- could disagree with it" -- and it is the one that cannot drift: a flag
+--- saying "not driving" next to a stale 87 is a bug waiting for one careless
+--- reader, and there is no such pair here.
+---
+--- A SENTINEL WOULD HAVE BEEN WORSE THAN EITHER. Zero is a real condition
+--- reading -- it is a wrecked car -- so "0 means hide" and "0 means about to
+--- explode" would be the same payload.
+---
+--- @param inSeat boolean      is this player in a vehicle seat at all
+--- @param driver integer|nil  the ped in seat -1; 0 or nil when that seat is empty
+--- @param ped integer|nil     this player's own ped
+--- @param health number|nil   condition 0..100, unrounded
+--- @param fuel number|nil     tank 0..100, unrounded
+--- @param boost number|nil    boost meter 0..100, unrounded
+--- @return table payload      what the interface is told, ready to send
+function BR.FuelSolve.bars(inSeat, driver, ped, health, fuel, boost)
+    -- NOT IN A SEAT IS THE WHOLE STRIP DOWN, and `fuel` is still sent because
+    -- the interface's field is not optional: there is no tank to describe, so
+    -- it describes nothing, and `show` is what the strip is actually keyed on.
+    if inSeat ~= true then return { show = false, fuel = 0 } end
+
+    local out = { show = true, fuel = wholePct(fuel) }
+
+    -- ZERO IS TESTED EXPLICITLY, TWICE, AND `0` IS TRUTHY IN LUA. The same trap
+    -- blipsVisibleTo opens with, for the same reason: these are ENTITY handles,
+    -- and 0 is what every entity-returning native answers for "there isn't
+    -- one". Without these two lines an empty driver's seat (0) and an
+    -- unreadable own-ped (0) would compare EQUAL to each other, and a passenger
+    -- sitting in a driverless car would be handed the driver's two bars by the
+    -- `driver == ped` test.
+    if not driver or driver == 0 then return out end
+    if not ped or ped == 0 then return out end
+    if driver ~= ped then return out end
+
+    out.health = wholePct(health)
+    out.boost  = wholePct(boost)
+    return out
+end
+
+--- HAS THE STRIP CHANGED SINCE THE LAST PAYLOAD WENT OUT?
+---
+--- ═══ A FIELD THAT STOPS BEING SENT IS A CHANGE, AND THAT IS THE ONE RULE
+---     HERE WORTH WRITING A FUNCTION FOR ═══
+---
+--- The dedupe this replaces compared four fields that were always numbers.
+--- Two of them are now ABSENT for a passenger, so the comparison has to treat
+--- nil as a value rather than as "nothing to compare". Every plausible tidier
+--- spelling gets this wrong in the same direction:
+--- `want.health and sent.health ~= want.health` skips the field precisely when
+--- it has just disappeared, and a driver who slides into the passenger seat
+--- keeps their own last condition reading on screen for the rest of the drive,
+--- with no further push coming to correct it.
+---
+--- `~=` ON RAW FIELDS IS NIL-SAFE IN LUA and needs no guard: nil ~= 87 is true,
+--- nil ~= nil is false. Both are the answers this wants.
+---
+--- THE WHOLE PAYLOAD IS COMPARED RATHER THAN THE INPUTS, so there is exactly
+--- one place that decides what "the same strip" means, and it is the table that
+--- was actually sent.
+---
+--- @param sent table|nil  the last payload handed to the interface
+--- @param want table|nil  the payload built for this tick
+--- @return boolean moved  true when a message has to go out
+function BR.FuelSolve.barsMoved(sent, want)
+    -- NOTHING HAS BEEN SENT YET, which is the first tick of a session. An empty
+    -- table is not a payload and must not dedupe against one.
+    if type(sent) ~= 'table' or type(want) ~= 'table' then return true end
+    if sent.show   ~= want.show   then return true end
+    if sent.health ~= want.health then return true end
+    if sent.fuel   ~= want.fuel   then return true end
+    if sent.boost  ~= want.boost  then return true end
+    return false
+end
