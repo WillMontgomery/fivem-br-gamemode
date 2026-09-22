@@ -587,6 +587,35 @@ BR.Config.Storm = {
                 texture    = 'ramp',
                 rampW      = 8,
                 rampH      = 256,
+
+                -- ═══ HOW MANY NAMES THE RAMP MAY PROBE BEFORE IT GIVES UP ═══
+                --
+                -- RUNTIME TEXTURES CANNOT BE DESTROYED -- there is no counterpart to
+                -- CREATE_RUNTIME_TEXTURE -- so every br_core restart in one client
+                -- session strands the texture the previous start made and has to take
+                -- a fresh name. The client tries the plain name, then `_2`, `_3`, and
+                -- so on, and both the dictionary and the texture name carry the
+                -- suffix: FiveM refuses at the DICTIONARY level (see the note in
+                -- client/storm.lua), so moving only the texture name retries into the
+                -- same refusal.
+                --
+                -- THIS WAS ONE RETRY AND THAT WAS TOO FEW. The third restart of a
+                -- session landed on the banded wall, which inside a playtest loop
+                -- reads as the fade having regressed rather than as a slot collision.
+                --
+                -- THE BOUND IS THE POINT OF THE NUMBER. A client whose
+                -- runtime-texture support is broken refuses every name, and an
+                -- unbounded probe would spin rather than fall back to bands. 32 costs
+                -- at most 256 KiB of stranded texture (8 x 256 x 4 bytes is 8 KiB a
+                -- restart) before the fallback, which is more restarts than any
+                -- playtest performs and still well clear of the client's own ceiling
+                -- on live runtime textures. Failed probes are nearly free -- the
+                -- refusal happens before a texture is allocated.
+                --
+                -- Read the attempt number off the line the wall prints, or
+                -- /brwallstyle: "attempt 5 of 32" means br_core has started five
+                -- times this session.
+                nameTries  = 32,
             },
         },
     },

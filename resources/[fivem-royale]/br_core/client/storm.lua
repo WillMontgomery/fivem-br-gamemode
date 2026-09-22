@@ -443,17 +443,55 @@ local function buildRamp(fc, zb, zt)
         return tex, txdName, texName
     end
 
-    local tex, txdName, texName = attempt('')
-    if not tex then
-        -- ONE RETRY, NOT A LOOP. A name that is taken stays taken for the session, so
-        -- a second distinct name is the whole of the remedy; a third would only be
-        -- reached if something other than the name is wrong, and then bands is the
-        -- honest answer rather than more names.
-        tex, txdName, texName = attempt('_b')
+    -- ═══ THE NAME IS PROBED FROM A COUNTER, BECAUSE ONE RETRY WAS NOT ENOUGH ═══
+    --
+    -- Every br_core restart in the same client session loses our Lua handle while the
+    -- engine keeps the slot, so each start has to find a name nobody has taken yet.
+    -- This used to be one retry -- the plain name, then `_b`, then bands -- and that
+    -- put the THIRD restart of a session on the banded wall. The owner restarts
+    -- br_core repeatedly inside a twenty-minute round, so the third one would have
+    -- shown him three steps again and read as the fade regressing. The console rung
+    -- said so, but only to somebody watching the console at that moment.
+    --
+    -- SO IT COUNTS UP INSTEAD: the plain name first (a fresh client gets the clean
+    -- one), then `_2`, `_3`, and so on. Nothing persists across a restart, so each
+    -- start re-probes from the beginning and lands on the first free slot.
+    --
+    -- ═══ AND EVERY SUCCESSFUL CREATION LEAKS ITS PREDECESSOR. SAID OUT LOUD ═══
+    --
+    -- RUNTIME TEXTURES CANNOT BE DESTROYED. There is no counterpart to
+    -- CREATE_RUNTIME_TEXTURE, so the texture a previous br_core start made stays
+    -- resident for the life of the client with nothing pointing at it. That is
+    -- precisely why the name is taken and precisely why this counter exists -- the
+    -- leak is the mechanism, not a side effect of it.
+    --
+    -- WHAT IT COSTS IS 8 KiB A RESTART: 8 x 256 pixels at 4 bytes is 8192 bytes
+    -- exactly. That is what makes a counter affordable where a one-shot retry was
+    -- protecting nothing worth protecting. A FAILED attempt is cheaper still -- it
+    -- leaks only an empty TXD wrapper, because the refusal happens before any texture
+    -- is allocated -- so re-probing a dozen taken names costs nothing measurable.
+    --
+    -- ═══ BOUNDED, SO A BROKEN CLIENT STILL REACHES THE FALLBACK ═══
+    --
+    -- The loop must not be "keep trying until one works": a client whose
+    -- runtime-texture support is genuinely broken refuses EVERY name, and an unbounded
+    -- probe would spin instead of banding. `nameTries` is the bound and it is a config
+    -- value so the number is visible. At 32 the arithmetic is 256 KiB of leaked
+    -- texture before the fallback, which is far more restarts than a playtest does and
+    -- still well clear of the client's own runtime-texture ceiling.
+    local tries = math.max(1, math.floor(fc.nameTries or 32))
+    local tex, txdName, texName
+    local used = 0
+    for i = 1, tries do
+        used = i
+        tex, txdName, texName = attempt(i == 1 and '' or ('_' .. i))
+        if tex then break end
     end
     if not tex then
-        return false, 'CreateRuntimeTexture returned nothing under either name'
+        return false, ('CreateRuntimeTexture returned nothing under %d names')
+            :format(tries)
     end
+    ramp.tries = used
 
     -- ═══ THE GATE IS A READ-BACK, NOT A HANDLE ═══
     --
@@ -554,12 +592,17 @@ local function resolveFade(fc, zb, zt)
     end
 
     fade.path = 'gradient'
-    fade.rung = ('runtime ramp %s:%s, %dx%d, no streamed asset, %s')
+    -- THE ATTEMPT NUMBER IS IN THE LINE, and it is the one number here that says
+    -- something about the SESSION rather than about the build: attempt 1 is a fresh
+    -- client, attempt 5 means br_core has started five times and four 8 KiB textures
+    -- are stranded behind it. That is how a leak gets noticed before it matters.
+    fade.rung = ('runtime ramp %s:%s, %dx%d, no streamed asset, %s, attempt %d of %d')
         :format(ramp.txd, ramp.name,
             math.max(1, math.floor(fc.rampW or 8)),
             math.max(2, math.floor(fc.rampH or 256)),
             ramp.verified and 'width read back'
-                or 'width read-back native absent, handle trusted')
+                or 'width read-back native absent, handle trusted',
+            ramp.tries or 0, math.max(1, math.floor(fc.nameTries or 32)))
 end
 
 --- @param shape table       an inset BR.StormShape

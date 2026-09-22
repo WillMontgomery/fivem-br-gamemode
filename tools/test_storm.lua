@@ -591,6 +591,19 @@ local function newStormClient()
     C.rt = { byHandle = {}, txds = {}, texs = {}, next = 500,
              refuseTex = {}, widthLie = nil, preTxd = {} }
     env.CreateRuntimeTxd = function(name)
+        -- ═══ THE RUNAWAY GUARD, WHICH IS WHAT MAKES THE BOUND TESTABLE ═══
+        --
+        -- The name probe must be bounded or a client that refuses every name spins
+        -- instead of falling back to bands. A test cannot assert that directly: with
+        -- the bound removed the production loop never returns, so the suite would HANG
+        -- rather than go red, and a hanging suite is indistinguishable from a slow one.
+        -- So the harness imposes a ceiling far above any legitimate bound and throws
+        -- through it. The frame callback is pcall'd, so the throw becomes a print that
+        -- C.errored() matches -- a red test, promptly.
+        C.rt.txdCalls = (C.rt.txdCalls or 0) + 1
+        if C.rt.txdCalls > 500 then
+            error('runaway runtime-txd name probe: the attempt loop has no bound')
+        end
         local h = C.rt.next
         C.rt.next = h + 1
         local dead = C.rt.txds[name] ~= nil or C.rt.preTxd[name] == true
@@ -605,6 +618,10 @@ local function newStormClient()
         end
         if d.dead then return nil end
         local key = d.name .. ':' .. name
+        -- `refuseAllTex` is a client whose runtime-texture support is broken outright,
+        -- which is the shape the attempt bound exists for: no name it tries will ever
+        -- work, so the only correct end is the banded fallback.
+        if C.rt.refuseAllTex then return nil end
         if C.rt.texs[key] or C.rt.refuseTex[name] then return nil end
         local th = C.rt.next
         C.rt.next = th + 1
@@ -3014,17 +3031,33 @@ do
         'and a build without the runtime-texture natives says which one is missing',
         ('%s / %s / %d polys'):format(tostring(p3), tostring(r3), n3))
 
-    -- THE TEXTURE REFUSED UNDER BOTH NAMES. This is the rung that matters most,
-    -- because a truthy handle is the thing it would be easiest to trust: the wall must
-    -- band rather than draw two triangles pointed at a texture that is not there.
+    -- ═══ THE TEXTURE REFUSED UNDER EVERY NAME, WHICH IS THE BOUND'S OWN RUNG ═══
+    --
+    -- This is the rung that matters most, because a truthy handle is the thing it would
+    -- be easiest to trust: the wall must band rather than draw two triangles pointed at
+    -- a texture that is not there. It is also the case a client with genuinely broken
+    -- runtime-texture support presents, so it is what the bound exists for -- an
+    -- unbounded probe would spin here instead of falling back.
+    local NT = math.max(1, math.floor(fd.nameTries or 32))
     local refused = newStormClient()
-    refused.rt.refuseTex[fd.texture] = true
-    refused.rt.refuseTex[fd.texture .. '_b'] = true
+    refused.rt.refuseAllTex = true
     local p4, r4, _, n4 = rung(refused)
-    ok(p4 == 'bands' and r4 and r4:find('either name', 1, true) and n4 > 0,
-        'a texture refused under both names bands rather than drawing quads pointed at '
-            .. 'nothing -- which is the failure that costs the whole curtain',
+    ok(p4 == 'bands' and r4 and r4:find(('%d names'):format(NT), 1, true) and n4 > 0,
+        'a texture refused under every name it may try bands rather than drawing quads '
+            .. 'pointed at nothing -- which is the failure that costs the whole curtain',
         ('%s / %s / %d polys'):format(tostring(p4), tostring(r4), n4))
+
+    -- AND IT STOPPED AT THE BOUND rather than probing past it. The harness throws after
+    -- 500 probes so that a bound removed entirely is a red test rather than a hang, but
+    -- that ceiling is far above any legitimate value -- this is the assertion that
+    -- notices a bound merely raised or ignored.
+    ok(refused.rt.txdCalls == NT and refused.errored() == nil,
+        'and it made exactly nameTries probes getting there: the loop is bounded, so a '
+            .. 'client whose runtime-texture support is broken reaches the fallback '
+            .. 'instead of spinning',
+        ('%s probes against a bound of %d; %s'):format(
+            tostring(refused.rt.txdCalls), NT,
+            tostring(refused.errored())))
 
     -- THE READ-BACK GATE. A handle that came back truthy while no surface exists is
     -- exactly what the width check is for, so a lying width must reach bands.
@@ -3039,43 +3072,82 @@ do
     -- ═══ RESTART SAFETY, AND THE SUFFIX HAS TO MOVE THE DICTIONARY TOO ═══
     --
     -- A br_core restart in the same client session loses our Lua handles while the
-    -- engine keeps the texture. FiveM's RuntimeAssetNatives.cpp refuses at the
-    -- DICTIONARY level: CREATE_RUNTIME_TXD only builds its backing dictionary when the
-    -- streaming slot has no handle yet, so the second call for an existing TXD name
-    -- yields an object on which EVERY CreateTexture returns nothing, whatever the
+    -- engine keeps the texture -- runtime textures cannot be destroyed, so the slot
+    -- stays taken for the life of the client. FiveM's RuntimeAssetNatives.cpp refuses
+    -- at the DICTIONARY level: CREATE_RUNTIME_TXD only builds its backing dictionary
+    -- when the streaming slot has no handle yet, so the second call for an existing TXD
+    -- name yields an object on which EVERY CreateTexture returns nothing, whatever the
     -- texture is called. A retry that suffixed only the texture name would therefore
     -- retry straight back into the same wall -- and would look correct in review.
+    --
+    -- ═══ AND THE NAME COUNTS UP, BECAUSE ONE RETRY PUT RESTART 3 ON BANDS ═══
+    --
+    -- This was the plain name then `_b` then bands, which meant the THIRD br_core start
+    -- of a client session drew the stepped wall. That lands inside the owner's playtest
+    -- loop -- he restarts br_core repeatedly within one round -- and reads as the fade
+    -- having regressed rather than as a slot collision. So the probe counts: the plain
+    -- name, `_2`, `_3`, up to nameTries.
+    --
+    -- THE SWEEP IS WHAT MAKES "IT COUNTS" PROVABLE. Asserting one restart only proves
+    -- there is a second name; a renderer that stopped advancing after `_2` -- the exact
+    -- shape of the bug being fixed -- would pass that and fail here.
+    local deepest, deepBad = 0, nil
+    for taken = 0, 6 do
+        local R = newStormClient()
+        -- `taken` previous starts have already claimed their slots.
+        R.rt.preTxd[fd.txd] = taken >= 1 or nil
+        for k = 2, taken do R.rt.preTxd[fd.txd .. '_' .. k] = true end
+        R.frame()
+        local rt = R.rt.tex
+        local wantTxd = (taken == 0) and fd.txd or (fd.txd .. '_' .. (taken + 1))
+        local wantTex = (taken == 0) and fd.texture
+            or (fd.texture .. '_' .. (taken + 1))
+        if R.env.BR.Storm.fadePath ~= 'gradient' or #R.polys == 0 then
+            deepBad = deepBad or ('%d taken: fell back to %s'):format(
+                taken, tostring(R.env.BR.Storm.fadePath))
+        elseif not rt or rt.txd ~= wantTxd or rt.name ~= wantTex then
+            deepBad = deepBad or ('%d taken: landed on %s, wanted %s:%s'):format(
+                taken, rt and (rt.txd .. ':' .. rt.name) or 'nothing',
+                wantTxd, wantTex)
+        elseif not R.env.BR.Storm.fadeRung:find(
+                ('attempt %d of'):format(taken + 1), 1, true) then
+            deepBad = deepBad or ('%d taken: rung says %s'):format(
+                taken, R.env.BR.Storm.fadeRung)
+        else
+            deepest = taken + 1
+        end
+    end
+    ok(deepBad == nil and deepest == 7,
+        'seven consecutive br_core starts in one client session each take the next '
+            .. 'free name -- dictionary and texture together -- and every one of them '
+            .. 'reaches the gradient, where one retry put the third on bands',
+        deepBad or ('advanced through %d attempts'):format(deepest))
+
+    -- AND THE CONSOLE LINE CARRIES THE ATTEMPT NUMBER, which is how a leak gets
+    -- noticed: attempt 5 means four 8 KiB textures are stranded behind this one.
     local restarted = newStormClient()
     restarted.rt.preTxd[fd.txd] = true
+    for k = 2, 4 do restarted.rt.preTxd[fd.txd .. '_' .. k] = true end
     restarted.frame()
-    local rPath = restarted.env.BR.Storm.fadePath
     local rTex = restarted.rt.tex
-    ok(rPath == 'gradient' and rTex ~= nil and #restarted.polys > 0,
-        'a dictionary name already taken -- a br_core restart in the same session -- '
-            .. 'still reaches the gradient on the retry',
-        ('%s, texture %s'):format(tostring(rPath),
-            rTex and (rTex.txd .. ':' .. rTex.name) or 'none'))
-    ok(rTex and rTex.txd ~= fd.txd and rTex.txd:find('_b', 1, true)
-        and rTex.name ~= fd.texture,
-        'and the retry moves the DICTIONARY name and not just the texture name, '
-            .. 'because the engine refuses one level above the texture',
-        rTex and ('%s:%s against %s:%s'):format(rTex.txd, rTex.name,
-            tostring(fd.txd), tostring(fd.texture)))
-    ok(restarted.env.BR.Storm.fadeRung
-        and restarted.env.BR.Storm.fadeRung:find('_b', 1, true),
-        'and the console line names the suffixed slot it actually ended up on',
-        tostring(restarted.env.BR.Storm.fadeRung))
+    ok(rTex and rTex.txd == fd.txd .. '_5' and rTex.name == fd.texture .. '_5'
+        and restarted.env.BR.Storm.fadeRung:find('attempt 5 of ' .. NT, 1, true),
+        'and the rung names the attempt it landed on and the bound it had, so the '
+            .. 'stranded-texture count is readable from the console',
+        ('%s / %s'):format(rTex and (rTex.txd .. ':' .. rTex.name) or 'none',
+            tostring(restarted.env.BR.Storm.fadeRung)))
 
-    -- AND A SECOND RESTART, where both names are taken, is bands rather than a wall
-    -- pointed at nothing. One retry, not a loop: a third name would only help if
-    -- something other than the name were wrong.
-    local twice = newStormClient()
-    twice.rt.preTxd[fd.txd] = true
-    twice.rt.preTxd[fd.txd .. '_b'] = true
-    local p6, r6, _, n6 = rung(twice)
-    ok(p6 == 'bands' and r6 and r6:find('either name', 1, true) and n6 > 0,
-        'and with both names taken it bands -- one retry, not an endless supply of '
-            .. 'names',
+    -- AND A SESSION THAT EXHAUSTS THE BOUND still bands rather than spinning. Same end
+    -- as the broken-client rung above, reached the other way: here every name is taken
+    -- rather than every creation refused.
+    local exhausted = newStormClient()
+    exhausted.rt.preTxd[fd.txd] = true
+    for k = 2, NT do exhausted.rt.preTxd[fd.txd .. '_' .. k] = true end
+    local p6, r6, _, n6 = rung(exhausted)
+    ok(p6 == 'bands' and r6 and r6:find(('%d names'):format(NT), 1, true) and n6 > 0
+        and exhausted.errored() == nil,
+        'and a session that has used every name the bound allows falls back to bands '
+            .. 'rather than probing forever',
         ('%s / %s / %d polys'):format(tostring(p6), tostring(r6), n6))
 end
 
