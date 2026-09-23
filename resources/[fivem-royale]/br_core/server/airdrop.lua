@@ -33,19 +33,24 @@
 -- ═══ AND THE MATCH'S TWO DROPS HAPPEN ONE AFTER THE OTHER, NEVER TOGETHER ═══
 --
 -- Owner, 2026-09-22: "please make sure both of the airdrops can never be armed or
--- live at the same time during the match." `perMatch` is 2 with two independent
--- delay draws, so nothing sequenced them. The schedule now announces at most one
--- drop at a time and the second waits for the first to reach the ground or end
--- without a crate -- see holdingDrop, which is where "resolved" is defined and
--- where the bound on how long a drop may hold the match is argued. The delays
--- themselves are untouched: the second one is DEFERRED, not re-drawn.
+-- live at the same time during the match." And 2026-09-23, after the first
+-- version put both on his screen in the first match he played: "fire the first
+-- one. once it's been opened, the next cannot drop for the next 3 minutes. if
+-- the first one times out, the 2nd cannot drop for the next 3 minutes." See
+-- holdingDrop for the rule and BR.AirdropResolvedAt for what "opened" and
+-- "times out" each mean. The delays themselves are untouched: the second one is
+-- DEFERRED, not re-drawn.
 --
 -- AND IF NOBODY COMES, THE MATCH GETS NONE (owner, 2026-08-22: "if nobody goes
 -- to the area where the drop is ready to happen within the allotted time, then
 -- no drop should happen"). "The allotted time" is the blip's own ceiling, and
 -- the drop is abandoned at exactly the instant the blip goes out -- one clock,
--- one question (BR.AirdropExpired), so a blip marking a crate that is never
--- coming is not a state this can reach. It counts as SPENT rather than retried.
+-- one question (BR.AirdropExpired). It counts as SPENT rather than retried.
+--
+-- NOT SO WHEN THE WALL ABANDONS IT. tryArm also gives a waiting drop up when the
+-- storm moves off it, before its ceiling, and sends nothing -- so that blip does
+-- mark a crate that is never coming, until the ceiling. holdingDrop counts on
+-- exactly that (#355).
 --
 -- WHY THE CRATE IS A LOOT REGISTRY ENTRY RATHER THAN A NEW OBJECT.
 --
@@ -302,10 +307,11 @@ local function trySite(m, p, now)
     -- of those seeds onto a collision. The table changed; the defect did not.
     --
     -- Filtered rather than retried, so no RNG is burned on a redraw -- and the
-    -- filter is SKIPPED ENTIRELY when nothing is out, which is still every
-    -- match's FIRST drop. The second one is filtered whenever the first is still
-    -- waiting or in flight, which is the point: it passes a table one POI
-    -- shorter to the same rng, and that is the mechanism that keeps them apart.
+    -- filter is SKIPPED ENTIRELY when nothing is out, which is every scheduled
+    -- drop now: the schedule never announces one while another is out. A console
+    -- drop sited beside one that is still waiting or in flight passes a table one
+    -- POI shorter to the same rng, and that is the mechanism that keeps them
+    -- apart.
     local pois = BR.Config.Map.POIs
     local taken = nil
     for _, list in ipairs({ m.airdrop.waiting or {}, m.airdrop.live or {} }) do
@@ -355,6 +361,11 @@ local function trySite(m, p, now)
         closest = math.huge,
     }
     m.airdrop.sent = (m.airdrop.sent or 0) + 1
+    -- KEPT FOR THE WHOLE MATCH, whatever becomes of it. holdingDrop asks every
+    -- drop the match was ever shown, including one the wall took off the server's
+    -- lists while its blip was still on every screen (#355).
+    m.airdrop.announced = m.airdrop.announced or {}
+    m.airdrop.announced[#m.airdrop.announced + 1] = rec
 
     BR.Broadcast.toMatch(m, BR.Net.AIRDROP_SYNC, rec)
 
@@ -558,9 +569,10 @@ function BR.Airdrop.begin(m)
     -- ═══ FOUR STAGES NOW, BECAUSE THE ANNOUNCEMENT AND THE DESCENT SPLIT ═══
     --
     --   pending  scheduled, not yet sited. No POI, nothing on any screen. A
-    --            second entry sits here through the first drop's whole life
-    --            since #355, because `dueAt` is now the earliest it may be
-    --            announced rather than the moment it is -- see holdingDrop.
+    --            second entry sits here through the first drop's whole life and
+    --            `nextDropAfterMs` past it since #355, because `dueAt` is now the
+    --            earliest it may be announced rather than the moment it is --
+    --            see holdingDrop.
     --   waiting  SITED AND ANNOUNCED. The blip is up and the match has been
     --            told -- but nothing is flying, because the drop is waiting for
     --            somebody to come within `armWithin` of it (owner, 2026-08-22).
@@ -569,19 +581,24 @@ function BR.Airdrop.begin(m)
     --   landed   on the ground, sealed, keyed by drop number so an open can find
     --            the record and stamp `tOpen` on it.
     --
+    -- AND ONE LIST ACROSS ALL OF THEM: `announced`, every record the match has
+    -- been shown, in order. It is what the sequencing gate reads, because a drop
+    -- leaving the stages above is not the same as it leaving the screen (#355).
+    --
     -- `outcome` IS WHY THERE IS NO CRATE, when there is no crate. A match that
     -- showed a blip and produced nothing reads as a bug in a playtest, and
     -- /brairdrop has to be able to say "nobody came within 200m; the closest
     -- anybody got was 340m" rather than shrugging.
     local st = {
         -- `seq`, not `id`: see BR.Loot.begin (#291).
-        rng     = BR.Rng(now + m.seq * 1299709),
-        pending = {},
-        waiting = {},
-        live    = {},
-        landed  = {},
-        sent    = 0,
-        outcome = nil,
+        rng       = BR.Rng(now + m.seq * 1299709),
+        pending   = {},
+        waiting   = {},
+        live      = {},
+        landed    = {},
+        announced = {},
+        sent      = 0,
+        outcome   = nil,
     }
 
     local lo = A.minDelayMs or 210000
@@ -628,61 +645,75 @@ end
 -- "where is the crate now", on every client, for free.
 
 --- The drop that is HOLDING the match, or nil when the schedule is free to
---- announce the next one.
+--- announce the next one -- and, with it, the moment it lets go.
 ---
---- ═══ #355: "PLEASE MAKE SURE BOTH OF THE AIRDROPS CAN NEVER BE ARMED OR LIVE
----     AT THE SAME TIME DURING THE MATCH" (owner, 2026-09-22) ═══
+--- ═══ #355, SECOND VERSION (owner, 2026-09-23): "fire the first one. once it's
+---     been opened, the next cannot drop for the next 3 minutes. if the first one
+---     times out, the 2nd cannot drop for the next 3 minutes." ═══
 ---
---- `perMatch` is 2 and the two delays are INDEPENDENT uniform draws over
---- [3m30, 7m00], so nothing sequenced them and two drops could arm seconds apart:
---- two aircraft, two crates falling, one squad asked to be in two places.
+--- A drop holds the schedule from its announcement until it is opened or times
+--- out, and then for `nextDropAfterMs` more. BR.AirdropResolvedAt is where the
+--- two moments are defined and BR.AirdropHoldsUntil adds the three minutes; this
+--- only asks every drop the match has been shown.
 ---
---- ─── WHAT "RESOLVED" MEANS: THE DROP HAS LEFT `waiting` AND `live` ───
+--- ─── WHY THE FIRST VERSION DID NOT HOLD IN A REAL MATCH ───
 ---
---- The crate is on the ground, or there is never going to be one. Stated as the
---- two stages rather than as a timer because those ARE the two the owner named --
---- `waiting` is the announced blip and `live` is armed and in the air -- and
---- because every way out of them is already bounded:
+--- It read "resolved" off this file's own lists -- a drop was done once it had
+--- left `waiting` and `live` -- and announced the next one on that very tick. The
+--- player's screen disagreed in two places:
 ---
----   `waiting` ends at BR.AirdropExpired, which is tStart + blipMaxMs.
----   `live`    ends at tLand, which the arm fixed at tArm + the flight.
+---   LANDED     the sealed crate's blip stays up until it is opened plus a
+---              minute, or `blipMaxMs` from the arm. `landed` is not in trySite's
+---              POI filter, so the next drop could be sited on the crate's own
+---              POI, and whoever stood at the crate armed it on the next tick --
+---              about one match in ten with one player and a small circle, in
+---              simulation; the second blip beside the first was most of them.
+---   ABANDONED  when the wall moves off a waiting drop, tryArm drops it and sends
+---              nothing, so every client keeps its blip until the ceiling -- and
+---              the next drop was announced beside it on the same tick. A match
+---              with one player runs the storm at its minimum shrink times, so
+---              the wall moving under a waiting drop is the common case there too.
 ---
---- So a drop can hold the match for at most `blipMaxMs + planeLeadMs +
---- BR.AirdropFallMs` -- about 269 seconds -- and a block can never outlast that.
---- THAT IS THE TERMINATOR #343 TOOK AWAY, restored here rather than by putting
---- the phase cap back.
+--- The sweep that shipped it held the storm still for a day and counted
+--- `#waiting + #live`, so it could reach neither. Both are now asked in the
+--- record's own terms -- the ones client/airdrop.lua tears a drop down by.
 ---
---- LANDED IS DELIBERATELY NOT IN THE LIST, and trySite's POI filter made the same
---- call for the same reason: a crate on the ground is ordinary loot with ordinary
---- rules. Waiting for it to be OPENED would let a crate nobody wants block the
---- second drop; waiting for its blip to go out would stretch the block to
---- `tArm + blipMaxMs + blipAfterOpenMs` -- nine minutes from the announcement in
---- the worst case, which is most of a match and would usually spend #343's second
---- drop on nothing. What that costs is that a sealed crate's blip can still be up
---- while a second drop is announced, which is two objectives rather than two
---- drops.
+--- ─── WHY ALL OF `announced`, NOT JUST `waiting` AND `live` ───
+---
+--- A drop the wall abandoned is on no list here and still holds the match until
+--- its blip's ceiling; a landed one is in `landed` until the match ends and is done
+--- long before. So the question is asked of every record the match was shown, and
+--- the latest release wins.
+---
+--- STILL BOUNDED, which is what #343 needs. Every unopened record reaches its
+--- ceiling, so no drop holds the schedule forever -- at worst `blipMaxMs` for
+--- the wait, the flight, `blipMaxMs` from the arm and `nextDropAfterMs`.
 ---
 --- A DROP IN `pending` HOLDS NOTHING, which is what closes #343's other finding
 --- here. Removing the phase cap took the retry loop's terminator away, so a drop
 --- that never finds a qualifying POI now re-asks until the match ends -- but it
---- has never been announced, so it cannot block the other one. Both simply sit in
---- `pending` failing the same POI scan against the same circles, which is the
---- pre-existing wait rather than a new block.
+--- has never been announced, has no timeout, and cannot block the other one. Both
+--- simply sit in `pending` failing the same POI scan against the same circles.
 ---
 --- FORCED DROPS COUNT. /brairdrop calls trySite directly and is not gated by this
 --- -- the owner's 2026-08-23 ruling that the verb overrides the match limit
---- stands -- but a manual drop sitting in `waiting` does hold the schedule,
---- because the rule is about what the match is looking at and not about which
---- code path announced it.
+--- stands -- but a manual drop does hold the schedule, because the rule is about
+--- what the match is looking at and not about which code path announced it.
 --- @param st table   m.airdrop
+--- @param now number
 --- @return table|nil rec
-local function holdingDrop(st)
+--- @return number|nil untilAt  math.huge while it has been neither opened nor
+---                              timed out
+local function holdingDrop(st, now)
     if not st then return nil end
-    local w = (st.waiting or {})[1]
-    if w then return w.rec end
-    local l = (st.live or {})[1]
-    if l then return l.rec end
-    return nil
+    local holder, untilAt = nil, nil
+    for _, rec in ipairs(st.announced or {}) do
+        local at = BR.AirdropHoldsUntil(rec, now, A)
+        if now < at and (not untilAt or at > untilAt) then
+            holder, untilAt = rec, at
+        end
+    end
+    return holder, untilAt
 end
 
 BR.Sched.every(1000, 'airdrop.tick', function()
@@ -725,12 +756,15 @@ BR.Sched.every(1000, 'airdrop.tick', function()
                 -- counted at the announcement, so `perMatch` reads this one as
                 -- spent rather than retrying it somewhere else. The match's OTHER
                 -- scheduled drop keeps its own entry, its own delay and its own
-                -- gate -- and this is the moment it stops being deferred, because
-                -- an expiry is a resolution (#355, holdingDrop).
+                -- gate, and stays deferred until this one's blip is gone and
+                -- `nextDropAfterMs` more (#355, holdingDrop).
                 --
-                -- NOTHING IS SENT TO THE CLIENTS. Their blip expires off the
-                -- same record and the same clock at the same instant -- see
-                -- BR.AirdropExpired, which is the one question both sides ask.
+                -- NOTHING IS SENT TO THE CLIENTS. When this is the blip's own
+                -- ceiling, their blip expires off the same record and the same
+                -- clock at the same instant -- see BR.AirdropExpired. When it is
+                -- the wall or the storm record, it does NOT: the blip stays up to
+                -- that same ceiling, which is why holdingDrop counts this drop
+                -- as timing out there rather than here.
                 table.remove(st.waiting, i)
                 -- WHY, IN THE ABANDONER'S OWN WORDS. There are three ways a
                 -- waiting drop ends without landing now -- nobody came, the
@@ -747,8 +781,8 @@ BR.Sched.every(1000, 'airdrop.tick', function()
         end
 
         -- ─── ONE AT A TIME (#355) ─── the schedule may not announce a second drop
-        -- while the first is still on the match's screens. See holdingDrop above
-        -- for what "still" means and why it is bounded.
+        -- until the first has been opened or timed out and `nextDropAfterMs` has
+        -- passed. See holdingDrop above for both moments and why it is bounded.
         --
         -- IT GATES THE SITING, NOT THE ARM, and that is not a looser reading of
         -- the owner's sentence. Gating only the arm would let both drops be SITED
@@ -756,8 +790,9 @@ BR.Sched.every(1000, 'airdrop.tick', function()
         -- to ever arm -- it would sit over a POI telling the match to run there
         -- until its blip expired, and all the players would see is an airdrop that
         -- never came. A blip that cannot be delivered is worse than a drop that
-        -- has not been announced yet. So the second drop waits SILENTLY, which
-        -- also makes "never armed or live together" true by construction.
+        -- has not been announced yet. So the second drop waits SILENTLY -- and
+        -- since the first one's blip is gone before the three minutes are up,
+        -- nothing of it is on anybody's screen when the second one appears.
         --
         -- THE SECOND DELAY IS DEFERRED, NEVER RE-DRAWN. `dueAt` is untouched: it
         -- becomes the EARLIEST this drop may be announced rather than the moment
@@ -776,7 +811,7 @@ BR.Sched.every(1000, 'airdrop.tick', function()
         -- here rather than left to the direction of a loop.
         local i = 1
         while i <= #st.pending do
-            if holdingDrop(st) then break end
+            if holdingDrop(st, now) then break end
             local p = st.pending[i]
             local removed = false
             if now >= p.dueAt
@@ -895,14 +930,19 @@ RegisterCommand('brairdrop', function(_, args)
         -- be past its own delay and still silent, because another drop is holding
         -- the match -- and "due 90s ago, nothing on screen" reads exactly like the
         -- stuck retry loop #343 left behind. The holder is named so the two
-        -- states cannot be confused from a chair.
-        local held = holdingDrop(st)
+        -- states cannot be confused from a chair, and so is how long it has left
+        -- once that is known.
+        local held, heldUntil = holdingDrop(st, now)
         for _, p in ipairs(st.pending) do
+            local why = ''
+            if held and now >= p.dueAt then
+                why = (' -- DEFERRED, drop %d holds the match %s'):format(held.n,
+                    heldUntil < math.huge
+                        and ('for %.0fs more'):format((heldUntil - now) / 1000)
+                        or 'until it is opened or times out')
+            end
             print(('    drop %d due in %.0fs%s'):format(p.n,
-                (p.dueAt - now) / 1000,
-                (held and now >= p.dueAt)
-                    and (' -- DEFERRED, drop %d holds the match'):format(held.n)
-                    or ''))
+                (p.dueAt - now) / 1000, why))
         end
 
         -- THE GATE, WITH BOTH NUMBERS. "Waiting" on its own cannot be told from
@@ -1044,6 +1084,9 @@ RegisterCommand('brairdrop', function(_, args)
     -- than counting), `sent = n` would quietly turn a counter into a high-water
     -- mark and overstate the total.
     st.sent = (st.sent or 0) + 1
+    -- ON SCREEN, SO IT HOLDS THE SCHEDULE like any other drop (holdingDrop).
+    st.announced = st.announced or {}
+    st.announced[#st.announced + 1] = rec
     BR.Broadcast.toMatch(m, BR.Net.AIRDROP_SYNC, rec)
     BR.Server.notify(BR.Server.audience(m), A.notifyText, 'info')
     print(('  sited drop %d on %s (%.0f, %.0f) -- it waits for a player within '

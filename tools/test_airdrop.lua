@@ -128,6 +128,11 @@ do
     -- the same playtest deleted the auto-open, so "never opened" is reachable.
     eq(A.blipAfterOpenMs, 60000, 'the blip lives a minute past the open')
     eq(A.blipMaxMs, 240000, 'and four minutes past the announcement regardless')
+    -- THREE MINUTES (owner, 2026-09-23: "once it's been opened, the next cannot
+    -- drop for the next 3 minutes. if the first one times out, the 2nd cannot
+    -- drop for the next 3 minutes").
+    eq(A.nextDropAfterMs, 180000,
+        'the next drop waits three minutes after the last is opened or times out')
     ok(A.blipLingerMs == nil,
         'and the old land-relative linger is GONE rather than left to rot')
 
@@ -2384,6 +2389,65 @@ do
         'no amount of clock skew in that direction expires a drop')
 end
 
+describe('sequencing: "opened" and "timed out", read off the record (#355)')
+do
+    -- ═══ TWO MOMENTS, AND WHICH ONE EACH DROP GETS ═══
+    --
+    -- Owner, 2026-09-23: "once it's been opened, the next cannot drop for the
+    -- next 3 minutes. if the first one times out, the 2nd cannot drop for the
+    -- next 3 minutes." Hand-built records and a hand-built config, so every
+    -- number below is the arithmetic and not whatever the config says today.
+    local cfg = { blipMaxMs = 240000, blipAfterOpenMs = 60000,
+                  nextDropAfterMs = 180000 }
+
+    -- SITED AND NEVER ARMED: nobody came, or the wall moved off it. Either way
+    -- the blip is up until `blipMaxMs` after the announcement.
+    local sited = { n = 1, tStart = 1000.0 }
+    eq(BR.AirdropResolvedAt(sited, 241000, cfg), nil,
+        'a drop nobody armed still holds at its ceiling')
+    eq(BR.AirdropResolvedAt(sited, 241001, cfg), 241000,
+        'and a millisecond later it has timed out -- AT the ceiling, not at the '
+        .. 'moment somebody noticed')
+    eq(BR.AirdropHoldsUntil(sited, 241001, cfg), 421000,
+        'and holds the schedule three minutes past it')
+    eq(BR.AirdropHoldsUntil(sited, 5000, cfg), math.huge,
+        'while it has not timed out, it holds with no end')
+
+    -- LANDED AND NEVER OPENED: the ceiling restarted at the arm, so that is where
+    -- it times out -- not at the announcement's ceiling, and not at the landing.
+    local landed = { n = 1, tStart = 1000.0, tArm = 100000.0,
+                     tRelease = 112000.0, tLand = 129000.0 }
+    eq(BR.AirdropResolvedAt(landed, 130000, cfg), nil,
+        'a crate that has just landed still holds -- that was the first version')
+    eq(BR.AirdropResolvedAt(landed, 241001, cfg), nil,
+        'and it is not timed out by the announcement\'s ceiling')
+    eq(BR.AirdropResolvedAt(landed, 340001, cfg), 340000,
+        'it times out blipMaxMs after the ARM')
+    ok(not BR.AirdropExpired(landed, 340000, cfg)
+       and BR.AirdropExpired(landed, 340001, cfg),
+        'which is the same instant every client takes it off the map')
+
+    -- OPENED: the moment itself, not the end of the blip's last minute.
+    local opened = { n = 1, tStart = 1000.0, tArm = 100000.0,
+                     tRelease = 112000.0, tLand = 129000.0, tOpen = 150000.0 }
+    eq(BR.AirdropResolvedAt(opened, 150000, cfg), 150000,
+        'an opened crate is done the moment it is opened')
+    eq(BR.AirdropHoldsUntil(opened, 150000, cfg), 330000,
+        'and holds the schedule three minutes from the open')
+
+    -- OPENED AFTER IT TIMED OUT: the open, which is later.
+    local late = { n = 1, tStart = 1000.0, tArm = 100000.0,
+                   tRelease = 112000.0, tLand = 129000.0, tOpen = 400000.0 }
+    eq(BR.AirdropResolvedAt(late, 400000, cfg), 400000,
+        'a crate opened after its timeout answers the open')
+
+    -- The config's absence is not zero.
+    eq(BR.AirdropHoldsUntil(opened, 150000, {}), 330000,
+        'with no config the three minutes are still three minutes')
+    eq(BR.AirdropHoldsUntil(nil, 150000, cfg), -math.huge,
+        'and a missing record holds nothing')
+end
+
 -- =========================================================================
 -- PART B -- the server
 -- =========================================================================
@@ -2452,11 +2516,56 @@ local function clearRoster()
     roster = {}
 end
 
+--- [m][n] = the record as the wire last carried it -- what a CLIENT holds.
+---
+--- ═══ `published` CANNOT ANSWER THAT, AND #355 SHIPPED ON THE DIFFERENCE ═══
+---
+--- `payload` is the server's own table, and the server keeps writing to it after
+--- sending -- tArm, tLand, tOpen -- so reading an old entry reads the record as it
+--- is NOW, not as the match was shown it. A copy taken at the send is what the
+--- client actually has, and BR.AirdropExpired over that copy is exactly the rule
+--- client/airdrop.lua tears a drop down by. See onScreen.
+local views = {}
+
 BR.Broadcast = {
     toMatch = function(m, event, payload)
         published[#published + 1] = { m = m, event = event, payload = payload }
+        if event == BR.Net.AIRDROP_SYNC and type(payload) == 'table' then
+            local snap = {}
+            for k, v in pairs(payload) do snap[k] = v end
+            views[m] = views[m] or {}
+            views[m][snap.n] = snap
+        end
     end,
 }
+
+--- Every drop this match's players have on their screens at `now`, oldest first.
+---
+--- ═══ WHAT THE OWNER SEES, NOT WHAT THE SERVER'S LISTS SAY ═══
+---
+--- The 2026-09-22 sweep asserted `#waiting + #live <= 1` on every tick of 120
+--- matches and was green, and the first real match put two drops on the owner's
+--- screen. The server's lists are not the screen: a crate that has LANDED keeps
+--- its blip until a minute after it is opened, or four minutes after the arm if
+--- nobody opens it, and a drop the server ABANDONS when the wall moves off it is
+--- never re-sent, so every client keeps its blip to the ceiling. Both were
+--- "resolved" to the server and both were still in front of the player. This
+--- replays the wire instead.
+--- @param m table
+--- @param now number
+--- @return table[] recs
+--- @return integer armed  how many of them have been sent an aircraft
+local function onScreen(m, now)
+    local out, armed = {}, 0
+    for _, rec in pairs(views[m] or {}) do
+        if now >= rec.tStart and not BR.AirdropExpired(rec, now, A) then
+            out[#out + 1] = rec
+            if BR.AirdropArmed(rec) then armed = armed + 1 end
+        end
+    end
+    table.sort(out, function(a, b) return a.tStart < b.tStart end)
+    return out, armed
+end
 
 BR.Loot = {
     spawnStack = function(m, stack, x, y, z, from)
@@ -2541,6 +2650,7 @@ end
 local function reset()
     matches = {}
     published, notices, spawned, logs = {}, {}, {}, {}
+    views = {}
     clearRoster()
     gameMs = gameMs + 10000000
 end
@@ -2563,7 +2673,8 @@ local function tick() jobs['airdrop.tick']() end
 --- change what anything rolls -- every seeded expectation below still holds.
 ---
 --- THE BLOCKS THAT ARE ABOUT THE COUNT DO NOT CALL THIS. See 'server: two drops
---- are scheduled, not one', which is the block that would go red at perMatch = 1.
+--- a match, the second three minutes after the first is opened', which is the
+--- block that would go red at perMatch = 1.
 --- @param m table
 --- @return table  the one pending entry, now due
 local function onlyDrop(m)
@@ -2678,6 +2789,179 @@ do
     end
 end
 
+-- =========================================================================
+-- #355 -- ONE DROP AT A TIME
+-- =========================================================================
+--
+-- Owner, 2026-09-22: "please make sure both of the airdrops can never be armed or
+-- live at the same time during the match." The first version counted a drop as
+-- done once it had left `waiting` and `live`, was swept over 120 matches with the
+-- invariant checked on every tick, and put both drops on the owner's screen in the
+-- first match he played (2026-09-23, on 489ca6e: "Both airdrops armed at the same
+-- time on the same match, first time").
+--
+-- THAT SWEEP COULD NOT FAIL THE WAY THE MATCH DID. It held the storm still for a
+-- day and asserted the server's lists rather than the screen. The first two blocks
+-- below are the two ways it happens, each driven through the real tick and read
+-- off the wire with onScreen -- and each went red against the code that shipped.
+--
+-- The rule that replaces it (owner, 2026-09-23): "fire the first one. once it's
+-- been opened, the next cannot drop for the next 3 minutes. if the first one times
+-- out, the 2nd cannot drop for the next 3 minutes."
+
+--- The owner's three minutes, as his number rather than as the config's. The
+--- config is pinned to it in PART A; spelling it here as well means a code path
+--- that ignored `nextDropAfterMs` and a config that lost it both go red.
+local HOLD = 180000
+
+describe('server: #355 as he saw it -- a landed crate is still on his screen')
+do
+    -- ═══ ONE PLAYER, A SMALL CIRCLE, AND THE SECOND DROP ALREADY DUE ═══
+    --
+    -- He was alone, and a match with one player runs the storm at its minimum
+    -- shrink times (server/storm.lua prices a shrink by the furthest player's run,
+    -- and one player inside the circle costs nothing) -- so by the time a drop is
+    -- due the circle is small and few POIs fit in it. This one holds exactly one,
+    -- which makes the case a certainty rather than a draw: drop 2 has nowhere to
+    -- go but the POI drop 1's crate is sitting on, and `landed` is deliberately
+    -- not in trySite's POI filter.
+    reset()
+    local m = newMatch(1)
+    local lsia = BR.Config.Map.GetPOI('lsia')
+    local justOne = A.insideBy / BR.StormUnit(0, 1).inradius + 1.0
+    m.storm = BR.BuildStormRecord(1, lsia.x, lsia.y, justOne,
+        lsia.x, lsia.y, justOne, gameMs, 24 * 60 * 60 * 1000, 1000, 1.0)
+    BR.Airdrop.begin(m)
+    for _, p in ipairs(m.airdrop.pending) do p.dueAt = gameMs end
+    tick()
+    local first = m.airdrop.waiting[1] and m.airdrop.waiting[1].rec
+    ok(first ~= nil and first.poi == 'lsia', 'drop 1 is sited on the one POI that fits')
+
+    -- He walks to it, it arms, it lands, and he is standing on the crate.
+    standAt(m.id * 100 + 1, lsia.x, lsia.y, 0.0)
+    gameMs = gameMs + 1000
+    tick()
+    gameMs = gameMs + FLIGHT_MS
+    tick()
+    eq(#spawned, 1, 'drop 1 lands, sealed, beside him')
+
+    -- ═══ THE FAILURE ═══
+    --
+    -- The shipped rule announced drop 2 on the landing tick -- onto lsia -- and
+    -- the next tick sent its aircraft, because he was standing there. The first
+    -- crate was unopened under its own blip the whole time: both armed.
+    local worst, worstArmed = 0, 0
+    for _ = 1, 60 do
+        gameMs = gameMs + 1000
+        tick()
+        local recs, armed = onScreen(m, gameMs)
+        if #recs > worst then worst = #recs end
+        if armed > worstArmed then worstArmed = armed end
+    end
+    eq(worstArmed, 1, 'never two ARMED drops on his screen at once')
+    eq(worst, 1, 'nor two drops of any kind')
+    eq(#m.airdrop.pending, 1, 'drop 2 is still in the queue, unannounced')
+
+    -- ═══ HE NEVER OPENS IT, SO IT TIMES OUT -- WHEN ITS BLIP DOES ═══
+    --
+    -- `blipMaxMs` after the ARM, which is when every client takes the crate off
+    -- the map. Not at the landing, which is the rule that failed; and not never,
+    -- which would let a crate nobody wants hold the second drop all match.
+    local out = math.tointeger(first.tArm + A.blipMaxMs)
+    gameMs = out
+    tick()
+    eq(#onScreen(m, gameMs), 1, 'at its ceiling the crate is still marked')
+    gameMs = out + 1
+    tick()
+    eq(#onScreen(m, gameMs), 0, 'a millisecond later its blip is gone')
+    eq(#m.airdrop.pending, 1, 'and drop 2 still waits')
+
+    gameMs = out + HOLD - 1
+    tick()
+    eq(#m.airdrop.pending, 1, 'a millisecond short of three minutes, still waiting')
+    eq(#notices, 1, 'and the match has been told about one drop')
+
+    gameMs = out + HOLD
+    tick()
+    eq(#m.airdrop.pending, 0, 'three minutes after the timeout, drop 2 is announced')
+    eq(#notices, 2, 'and the match is told')
+    local second = m.airdrop.waiting[1] and m.airdrop.waiting[1].rec
+    ok(second ~= nil and second.n ~= first.n, 'as the other drop, not a retry')
+
+    -- Still on lsia, and he is still there -- so it arms, and it is the only one.
+    gameMs = gameMs + 1000
+    tick()
+    local recs, armed = onScreen(m, gameMs)
+    eq(armed, 1, 'drop 2 arms on his screen alone')
+    eq(#recs, 1, 'with nothing else marked')
+end
+
+describe('server: #355 as he saw it -- the wall moves off a drop and its blip stays up')
+do
+    -- ═══ THE OTHER LEAK, AND WITH ONE PLAYER THE COMMONER OF THE TWO ═══
+    --
+    -- tryArm re-asks the margin every tick against the circle the storm is
+    -- closing toward, and when a new phase moves that circle off a waiting drop it
+    -- abandons the drop and SENDS NOTHING. Every client keeps the blip to its
+    -- ceiling. The shipped rule counted the abandonment as done and announced drop
+    -- 2 beside it on the same tick. With one player the storm turns over at its
+    -- minimum shrink times, so a new phase arriving under a waiting drop is
+    -- routine rather than rare.
+    reset()
+    local m = newMatch(1)
+    BR.Airdrop.begin(m)
+    for _, p in ipairs(m.airdrop.pending) do p.dueAt = gameMs end
+    tick()
+    local first = m.airdrop.waiting[1].rec
+
+    -- The next phase closes on the far side of the map.
+    local far, farD = nil, -1.0
+    for _, p in ipairs(BR.Config.Map.POIs) do
+        local d = BR.Dist(p.x, p.y, first.x, first.y)
+        if d > farD and BR.LootPlaceable(p.x, p.y) then far, farD = p, d end
+    end
+    m.storm = BR.BuildStormRecord(2, far.x, far.y, 1500.0, far.x, far.y, 1500.0,
+        gameMs, 24 * 60 * 60 * 1000, 1000, 1.0)
+    gameMs = gameMs + 1000
+    tick()
+    ok(m.airdrop.outcome ~= nil and m.airdrop.outcome.n == first.n
+       and m.airdrop.outcome.why:find('wall', 1, true) ~= nil,
+        'the server abandons drop 1 when the wall moves off it',
+        m.airdrop.outcome and m.airdrop.outcome.why)
+    eq(#m.airdrop.waiting, 0, 'and it is on none of the server\'s lists')
+
+    local recs = onScreen(m, gameMs)
+    ok(recs[1] ~= nil and recs[1].n == first.n,
+        'but every client still shows it, because nothing was sent')
+    eq(#recs, 1, 'so drop 2 is not announced beside it')
+
+    -- ═══ SO IT TIMES OUT AT ITS CEILING, NOT AT THE ABANDONMENT ═══
+    --
+    -- Counting from the abandonment would free the schedule three minutes later
+    -- -- a minute BEFORE the stale blip goes -- and the second drop would appear
+    -- beside it anyway. So every five seconds from here to the end of the hold:
+    -- one drop on screen at most, and drop 2 still waiting.
+    local out = math.tointeger(first.tStart + A.blipMaxMs)
+    local worst = #recs
+    while gameMs + 5000 < out + HOLD do
+        gameMs = gameMs + 5000
+        tick()
+        local n = #onScreen(m, gameMs)
+        if n > worst then worst = n end
+    end
+    eq(worst, 1, 'never two on screen from the abandonment to the end of the hold')
+    gameMs = out + HOLD - 1
+    tick()
+    eq(#m.airdrop.pending, 1,
+        'still held a millisecond short of three minutes past its ceiling')
+    gameMs = out + HOLD
+    tick()
+    eq(#m.airdrop.pending, 0, 'and announced on the tick they run out')
+    local now = onScreen(m, gameMs)
+    ok(#now == 1 and now[1].n ~= first.n, 'alone on the screen',
+        ('%d on screen'):format(#now))
+end
+
 -- ═══ THE 2026-09-22 ASK, AS THE ONE BLOCK THAT CANNOT PASS AT perMatch = 1 ═══
 --
 -- Owner: "remove our phase restriction for airdrops and increase to 2 airdrops
@@ -2689,24 +2973,17 @@ end
 -- are scheduled" and "two land" are different claims and only the second is what
 -- the owner asked for.
 
-describe('server: two drops a match, ONE AT A TIME')
+describe('server: two drops a match, the second three minutes after the first is opened')
 do
-    -- ═══ #355: "PLEASE MAKE SURE BOTH OF THE AIRDROPS CAN NEVER BE ARMED OR LIVE
-    --     AT THE SAME TIME DURING THE MATCH" (owner, 2026-09-22) ═══
-    --
-    -- This block used to force both entries due, tick once, and assert that BOTH
-    -- were sited -- which was the defect, written down as a requirement. The claim
-    -- it exists for is unchanged and is still the owner's 2026-09-22 ask from
-    -- #343: two drops happen and two crates reach the ground. What changed is that
-    -- they happen in SEQUENCE.
+    -- "fire the first one. once it's been opened, the next cannot drop for the
+    -- next 3 minutes" (owner, 2026-09-23).
     reset()
     local m = newMatch(1)
     BR.Airdrop.begin(m)
     eq(#m.airdrop.pending, 2, 'the automatic path schedules two')
 
     -- BOTH DUE AT ONCE, which is the case the gate exists for: the two delays are
-    -- independent draws over a 210-second window, so landing in the same second is
-    -- about a 1-in-200 match and was not something the code refused.
+    -- independent draws over a 210-second window.
     for _, p in ipairs(m.airdrop.pending) do p.dueAt = gameMs end
     tick()
 
@@ -2719,78 +2996,76 @@ do
     local itemsA = m.airdrop.waiting[1].items
     eq(a.n, 1, 'the lower-numbered drop goes first when both come due together')
 
-    -- ═══ IT STAYS DEFERRED FOR AS LONG AS THE FIRST IS OUT ═══
-    --
-    -- Twenty retries, which is a hundred seconds -- comfortably inside the four
-    -- minutes the first drop's blip gets, so nothing has resolved yet.
+    -- Twenty re-asks, a hundred seconds: nothing about the first has resolved.
     for _ = 1, 20 do
         gameMs = gameMs + (A.retryEveryMs or 5000)
         tick()
     end
     eq(#m.airdrop.pending, 1, 'twenty re-asks later it has still not been sited')
-    eq(#m.airdrop.waiting, 1, 'the first drop is still the only one announced')
     eq(#notices, 1, 'and the match has still only been told once')
 
     -- ═══ AND /brairdrop SAYS WHY ═══
     --
     -- "drop 2 due 100s ago" with nothing on screen is indistinguishable from the
-    -- unbounded retry loop #343 left behind, and this file's whole rule is that a
-    -- playtest must never have to guess which of two states it is looking at.
-    local before = #logs
-    commands['brairdrop'](0, {}, '')
-    local said = false
-    for i = before + 1, #logs do
-        if logs[i]:find('DEFERRED, drop 1 holds the match', 1, true) then
-            said = true
-        end
+    -- unbounded retry loop #343 left behind.
+    local function status()
+        local before = #logs
+        commands['brairdrop'](0, {}, '')
+        return table.concat(logs, ' | ', before + 1, #logs)
     end
-    ok(said, 'and /brairdrop names the drop that is holding the schedule',
-        table.concat(logs, ' | ', before + 1, #logs))
+    local said = status()
+    ok(said:find('DEFERRED, drop 1 holds the match until it is opened or times out',
+        1, true) ~= nil,
+        'and /brairdrop names the drop holding the schedule, and what frees it', said)
 
-    -- ═══ AND `dueAt` WAS NEVER TOUCHED: DEFERRED, NOT RE-DRAWN ═══
-    --
-    -- Re-drawing a delay off the first drop's resolution would push the second one
-    -- another 3m30 to 7m00 out -- usually past the end of the match -- and would
-    -- make the number of values taken off the airdrop's RNG stream depend on where
-    -- players walked, which shifts every payout downstream of it.
-    -- Nil-safe, so a mutation that lets both drops out leaves this block's later
-    -- assertions -- and every block after it -- running rather than crashing the
-    -- suite on a queue that is empty.
+    -- DEFERRED, NOT RE-DRAWN. Nil-safe, so a mutation that lets both out leaves
+    -- the rest of the block running rather than indexing an empty queue.
     ok(m.airdrop.pending[1] ~= nil
        and m.airdrop.pending[1].dueAt == a.tStart,
         'the second drop\'s own due time is exactly where begin() put it',
         m.airdrop.pending[1] and tostring(m.airdrop.pending[1].dueAt))
 
-    -- IN FLIGHT IS STILL "OUT". The crate has left the aircraft; the second drop
-    -- may not be announced on top of it.
+    -- In flight holds it.
     standAt(m.id * 100 + 1, a.x, a.y, 0.0)
     gameMs = gameMs + 1000
     tick()
     eq(#m.airdrop.live, 1, 'the first drop arms')
-    eq(#m.airdrop.waiting, 0, 'and leaves the blip queue')
     eq(#m.airdrop.pending, 1, 'the second is still deferred while it is falling')
-    eq(#notices, 1, 'and still unannounced')
 
-    -- ═══ THE CRATE REACHES THE GROUND, AND THAT IS "RESOLVED" ═══
-    --
-    -- FLIGHT_MS, NOT FLIGHT, AND IT IS NOT FUSSINESS. FLIGHT is fractional (the
-    -- crate flares out over the last 25 feet) and `reset()` only ever adds to
-    -- gameMs, so one fractional advance here leaves the clock fractional for
-    -- every block below this one. BR.Rng refuses such a seed outright now, so the
-    -- next match begun below would take the suite down with a named error rather
-    -- than quietly seeding zero -- which is the improvement, and not a reason to
-    -- go back to spelling it `+ FLIGHT`.
+    -- ═══ AND LANDED HOLDS IT, WHICH IS WHERE THE FIRST VERSION LET GO ═══
     gameMs = gameMs + FLIGHT_MS + 1000
     tick()
     eq(#m.airdrop.live, 0, 'the first drop finishes its descent')
-    eq(#m.airdrop.waiting, 1,
-        'and the second is announced on the very tick the first one lands')
+    eq(#m.airdrop.pending, 1,
+        'and the second is STILL deferred -- a sealed crate under its blip is not done')
+    eq(#notices, 1, 'and still unannounced')
+
+    -- ═══ THE OPEN STARTS THE THREE MINUTES ═══
+    local opened = gameMs
+    BR.Airdrop.opened(m, a.n)
+    gameMs = opened + A.blipAfterOpenMs + 1
+    tick()
+    eq(#onScreen(m, gameMs), 0, 'a minute after the open the first blip is gone')
+    eq(#m.airdrop.pending, 1, 'and the second still waits')
+    said = status()
+    ok(said:find(('DEFERRED, drop 1 holds the match for %.0fs more')
+        :format((opened + HOLD - gameMs) / 1000), 1, true) ~= nil,
+        'and /brairdrop says how long is left, now that it is known', said)
+
+    gameMs = opened + HOLD - 1
+    tick()
+    eq(#m.airdrop.pending, 1, 'a millisecond short of three minutes, still waiting')
+    gameMs = opened + HOLD
+    tick()
+    eq(#m.airdrop.waiting, 1, 'three minutes after the open, the second is announced')
     eq(#m.airdrop.pending, 0, 'with nothing left in the queue')
     eq(m.airdrop.sent, 2, 'the match has now spent two drops')
-    eq(#notices, 2, 'and has been told twice, minutes apart rather than at once')
+    eq(#notices, 2, 'and has been told twice')
 
     local second = m.airdrop.waiting[1]
     local b = second and second.rec or a
+    eq(b.tStart, opened + HOLD,
+        'on the very tick the three minutes ran out, not a retry later')
     ok(a.n ~= b.n, 'each on its own drop number', ('%s vs %s'):format(a.n, b.n))
     ok(second ~= nil and itemsA ~= second.items,
         'and its own payout rather than a shared table')
@@ -2810,21 +3085,13 @@ do
     eq(crates, 2, 'so the match still gets two crates on the ground')
 end
 
-describe('server: an EXPIRY resolves a drop too, and that is the terminator')
+describe('server: nobody comes -- the first times out, and the three minutes run from there')
 do
-    -- ═══ THE SECOND DROP MAY NOT BE BLOCKED FOREVER, WHICH IS #343's OTHER
-    --     FINDING ═══
-    --
-    -- Removing the phase cap took away the retry loop's only terminator, so a drop
-    -- that never finds a qualifying POI re-asks until the match ends. If a drop
-    -- could hold the schedule forever the second one would never happen -- so
-    -- "resolved" is defined over `waiting` and `live`, both of which are bounded:
-    -- a waiting drop dies at BR.AirdropExpired and a live one lands at tLand.
-    --
-    -- NOBODY COMES, which is the case the owner ruled on (2026-08-22: "if nobody
-    -- goes to the area where the drop is ready to happen within the allotted time,
-    -- then no drop should happen"). The first drop is spent on nothing, and the
-    -- second must still get its turn.
+    -- "if the first one times out, the 2nd cannot drop for the next 3 minutes"
+    -- (owner, 2026-09-23). A drop nobody came to times out when its blip does:
+    -- `blipMaxMs` after the announcement, which is also the instant the server
+    -- abandons it (owner, 2026-08-22: "if nobody goes to the area where the drop
+    -- is ready to happen within the allotted time, then no drop should happen").
     reset()
     local m = newMatch(1)
     BR.Airdrop.begin(m)
@@ -2833,151 +3100,299 @@ do
     eq(#m.airdrop.waiting, 1, 'one drop is announced')
     eq(#m.airdrop.pending, 1, 'and one is deferred behind it')
     clearRoster()
+    local a = m.airdrop.waiting[1].rec
 
-    -- One millisecond short of the ceiling: still holding.
-    gameMs = gameMs + A.blipMaxMs
+    local out = math.tointeger(a.tStart + A.blipMaxMs)
+    gameMs = out
     tick()
     eq(#m.airdrop.waiting, 1, 'at the four-minute ceiling it is still out')
-    eq(#m.airdrop.pending, 1, 'so the second drop is still deferred')
 
-    gameMs = gameMs + 1
+    gameMs = out + 1
     tick()
-    eq(#m.airdrop.waiting, 1,
-        'a millisecond later the first is abandoned and the second takes its '
-        .. 'place in the same tick')
-    eq(#m.airdrop.pending, 0, 'with nothing left deferred')
-    ok(m.airdrop.waiting[1] ~= nil and m.airdrop.waiting[1].rec.n == 2,
-        'and it is the other drop, not a retry',
-        m.airdrop.waiting[1] and tostring(m.airdrop.waiting[1].rec.n))
+    eq(#m.airdrop.waiting, 0, 'a millisecond later it is abandoned')
+    eq(#m.airdrop.pending, 1,
+        'and the second is NOT announced in its place -- that was the first version')
     ok(m.airdrop.outcome ~= nil and m.airdrop.outcome.n == 1,
         'the abandoned one still records why there was no crate',
         m.airdrop.outcome and m.airdrop.outcome.why)
 
-    -- THE BOUND, STATED AS ARITHMETIC. A drop cannot hold the match longer than
-    -- its blip ceiling plus a whole flight, so a deferral cannot outlast that
-    -- either -- which is the terminator the phase cap used to be.
-    ok((A.blipMaxMs or 240000) + FLIGHT < 300000,
-        'the worst a drop can hold the schedule is under five minutes',
-        ('%.0fs'):format(((A.blipMaxMs or 240000) + FLIGHT) / 1000))
+    gameMs = out + HOLD - 1
+    tick()
+    eq(#m.airdrop.pending, 1, 'a millisecond short of three minutes, still waiting')
+    gameMs = out + HOLD
+    tick()
+    eq(#m.airdrop.pending, 0, 'three minutes after the timeout it goes')
+    ok(m.airdrop.waiting[1] ~= nil and m.airdrop.waiting[1].rec.n == 2,
+        'and it is the other drop, not a retry',
+        m.airdrop.waiting[1] and tostring(m.airdrop.waiting[1].rec.n))
+
+    -- ═══ THE BOUND, STATED AS ARITHMETIC ═══
+    --
+    -- Every unopened record reaches its ceiling, so no drop holds the schedule
+    -- forever -- the terminator #343 needs. The worst case is a drop somebody
+    -- reaches at the last second and then never opens: the whole wait, the
+    -- flight, the whole ceiling again from the arm, and the three minutes.
+    local worstHold = A.blipMaxMs + FLIGHT + A.blipMaxMs + (A.nextDropAfterMs or HOLD)
+    ok(worstHold < 12 * 60 * 1000,
+        'the longest one drop can hold the schedule is under twelve minutes',
+        ('%.0fs'):format(worstHold / 1000))
 end
 
-describe('server: never two drops out at once, swept over matches')
+describe('server: a crate opened after it timed out starts the three minutes again')
 do
-    -- ═══ ONE MATCH PROVES NOTHING: TWO DROPS COLLIDE ABOUT ONE MATCH IN A
-    --     HUNDRED ═══
-    --
-    -- The two delays are independent uniform draws over a 210-second window, so
-    -- the overlap that #355 forbids needs them within a drop's lifetime of each
-    -- other -- common enough to matter and rare enough that a single seed says
-    -- nothing. This suite has already shipped an assertion that passed on one
-    -- match while the code under test was deleted.
-    --
-    -- SO THE WHOLE MATCH IS DRIVEN, TICK BY TICK, FOR EVERY ONE OF THEM, and the
-    -- invariant is checked on every tick rather than at the end -- an overlap that
-    -- lasts three seconds is still an overlap.
-    --
-    -- ═══ BOTH REGIMES, AND THE MUTATION PASS IS WHY ═══
-    --
-    -- Half these matches have somebody standing on every drop and half have nobody
-    -- at all, because the two stages a drop can be out in have opposite worst
-    -- cases and a sweep that covers one covers almost none of the other:
-    --
-    --   SOMEBODY COMES  -- the drop leaves `waiting` on the next tick and spends
-    --                      its life `live`, 29 seconds of it. Overlap needs the
-    --                      second drop due inside that.
-    --   NOBODY COMES    -- the drop sits in `waiting` for the full four minutes,
-    --                      which is longer than the whole 210-second spread the
-    --                      two delays are drawn from, so without the gate an
-    --                      overlap is very nearly certain.
-    --
-    -- Driven with players only, this block passed a mutation that made `waiting`
-    -- stop holding the schedule: one tick of exposure per match against a
-    -- 210-second spread is a 0.5% chance, and 120 matches found none of it.
+    -- THE LITERAL READING, on purpose: "once it's been opened, the next cannot
+    -- drop for the next 3 minutes". The open re-sends the record and its blip
+    -- comes back for a minute, so a hold still counting from the timeout could
+    -- announce the second drop underneath it.
     reset()
-    local MATCHES = 120
-    local SECONDS = 760
-    --- Does anybody in this match ever walk to a drop?
-    local function attended(id) return (id % 2) == 1 end
+    local m = newMatch(1)
+    BR.Airdrop.begin(m)
+    for _, p in ipairs(m.airdrop.pending) do p.dueAt = gameMs end
+    tick()
+    local a = m.airdrop.waiting[1].rec
+    standAt(m.id * 100 + 1, a.x, a.y, 0.0)
+    gameMs = gameMs + 1000
+    tick()
+    gameMs = gameMs + FLIGHT_MS
+    tick()
+    clearRoster()
+    eq(#spawned, 1, 'drop 1 lands and nobody opens it')
+
+    local out = math.tointeger(a.tArm + A.blipMaxMs)
+    gameMs = out + 60000
+    tick()
+    eq(#onScreen(m, gameMs), 0, 'it has timed out and its blip is gone')
+
+    local late = gameMs
+    BR.Airdrop.opened(m, a.n)
+    eq(#onScreen(m, gameMs), 1, 'somebody opens it late, and its blip is back')
+
+    gameMs = out + HOLD
+    tick()
+    eq(#m.airdrop.pending, 1,
+        'so three minutes from the timeout no longer frees the schedule')
+    gameMs = late + HOLD - 1
+    tick()
+    eq(#m.airdrop.pending, 1, 'nor a millisecond short of three from the open')
+    gameMs = late + HOLD
+    tick()
+    eq(#m.airdrop.pending, 0, 'three minutes from the open does')
+end
+
+describe('server: a drop that never found a POI holds nothing, and has no timeout')
+do
+    -- "Fire the first one": a drop that has never been announced has not been
+    -- fired, is on nobody's screen, and has nothing to be opened or to time out.
+    -- It re-asks until a POI fits or the match ends (#343), and whichever of the
+    -- two is sited first is the first one.
+    reset()
+    local m = newMatch(1)
+    m.storm = BR.BuildStormRecord(1, -6000.0, -6000.0, 400.0,
+        -6000.0, -6000.0, 400.0, gameMs, 24 * 60 * 60 * 1000, 1000, 1.0)
+    BR.Airdrop.begin(m)
+    for _, p in ipairs(m.airdrop.pending) do p.dueAt = gameMs end
+    for _ = 1, 60 do
+        gameMs = gameMs + (A.retryEveryMs or 5000)
+        tick()
+    end
+    eq(#m.airdrop.pending, 2, 'five minutes of re-asking and both are still queued')
+    eq(#published, 0, 'with nothing announced')
+
+    local poi = BR.Config.Map.GetPOI('lsia')
+    m.storm = BR.BuildStormRecord(1, poi.x, poi.y, 2600.0,
+        poi.x, poi.y, 2600.0, gameMs, 24 * 60 * 60 * 1000, 1000, 1.0)
+    gameMs = gameMs + (A.retryEveryMs or 5000)
+    tick()
+    eq(#m.airdrop.waiting, 1, 'the moment a POI fits, one is announced')
+    eq(#m.airdrop.pending, 1,
+        'and it holds the other -- all that waiting started no clock')
+end
+
+describe('server: never two drops on his screen, swept over matches with a MOVING storm')
+do
+    -- ═══ THE SWEEP THAT SHIPPED COULD NOT FAIL THE WAY THE MATCH DID ═══
+    --
+    -- 120 matches, every tick, `#waiting + #live <= 1` -- under a storm held still
+    -- for a day, with a player teleported onto each blip. A held storm never
+    -- moves off a waiting drop, so the wall leak was unreachable; and the
+    -- invariant was the server's lists, so the landing leak was asserted as
+    -- correct. This one moves the storm phase by phase the way server/storm.lua
+    -- does, walks one player to each blip at a speed, opens some crates and
+    -- leaves others, and checks the SCREEN on every tick.
+    --
+    -- HALF AT ONE PLAYER'S PACING AND HALF AT A FULL LOBBY'S. server/storm.lua
+    -- prices each shrink by the furthest player's run to the next circle, so a
+    -- player alone inside it gets `shrinkPace.minSeconds` and a lobby with a
+    -- straggler gets the authored ceiling. The owner was alone.
+    --
+    -- THE STORM HERE IS A MODEL OF server/storm.lua's enterPhase, not the file:
+    -- the same config, the same centre draw and the same record, with the pricing
+    -- reduced to its two extremes. What this block asserts does not depend on
+    -- where the circles go -- only that they MOVE under a waiting drop, which is
+    -- the thing the old sweep could not do.
+    reset()
+    local SC = BR.Config.Storm
+    local MATCHES, SECONDS = 72, 1500
+    local minShrink = (SC.shrinkPace and SC.shrinkPace.minSeconds) or 40.0
+
+    local function enterPhase(m, phase, cx0, cy0, r0, waitSec)
+        local p = SC.phases[phase]
+        local minDist = 0.0
+        if phase > #SC.phases - (SC.edgeHugPhases or 0) then
+            minDist = math.max(0.0, (r0 - p.radius) - (SC.edgeHugM or 0.0))
+        end
+        local cx1, cy1, brokeOut = BR.NextStormCentre(m.sweep.rng, cx0, cy0, r0,
+            p.radius, SC.edgeBiasMax, SC.mapAABB, minDist,
+            BR.StormBreakoutFor(SC, phase))
+        local shrink = p.shrink
+        if brokeOut then
+            shrink = shrink * ((SC.breakout and SC.breakout.shrinkFactor) or 1.0)
+        end
+        if m.sweep.alone then shrink = minShrink end
+        m.storm = BR.BuildStormRecord(phase, cx0, cy0, r0, cx1, cy1, p.radius,
+            gameMs, (waitSec or p.wait) * 1000, shrink * 1000, p.dps, m.sweep.seed)
+    end
+
+    --- One player: to the blip, then onto the crate, then opens it -- or not.
+    local function walk(m)
+        local sw, st = m.sweep, m.airdrop
+        local goal
+        if sw.comes and st.waiting[1] then goal = st.waiting[1].rec end
+        if not goal and st.live[1] then goal = st.live[1].rec end
+        -- ONLY WHILE ITS BLIP IS UP. Opening a crate after it timed out brings
+        -- the blip back for a minute, and if the second drop is out by then that
+        -- is two on screen -- a real and separate edge, pinned in its own block
+        -- above, and not what this sweep is measuring.
+        if not goal and sw.opens then
+            for _, r in ipairs(st.announced or {}) do
+                if st.landed[r.n] == r and not r.tOpen
+                   and not BR.AirdropExpired(r, gameMs, A) then
+                    goal = r
+                end
+            end
+        end
+        if not goal then return end
+        local d = BR.Dist(sw.x, sw.y, goal.x, goal.y)
+        local step = math.min(d, sw.speed)
+        if d > 0.0 then
+            sw.x = sw.x + (goal.x - sw.x) / d * step
+            sw.y = sw.y + (goal.y - sw.y) / d * step
+        end
+        standAt(m.id * 100 + 1, sw.x, sw.y, 0.0)
+        if st.landed[goal.n] == goal and d - step < 2.0 then
+            sw.openAt = sw.openAt or (gameMs + 3000)
+            if gameMs >= sw.openAt then
+                BR.Airdrop.opened(m, goal.n)
+                sw.openAt = nil
+            end
+        end
+    end
+
+    local SPEEDS = { 6.0, 12.0, 30.0 }   -- on foot, sprinting, in a car
     for id = 1, MATCHES do
-        BR.Airdrop.begin(newMatch(id))
+        local m = newMatch(id)
+        local rng = BR.Rng(id * 104729)
+        local anchor = rng:pick(BR.Config.Map.POIs)
+        m.sweep = {
+            rng = BR.Rng(id * 7919), seed = id * 7919,
+            alone = (id % 2) == 1,
+            speed = SPEEDS[id % 3 + 1],
+            opens = (id % 4) ~= 0,
+            comes = (id % 7) ~= 0,
+            x = anchor.x, y = anchor.y,
+        }
+        enterPhase(m, 1, anchor.x, anchor.y, SC.radius0 or 3500.0,
+            m.sweep.alone and 60 or 180)
+        BR.Airdrop.begin(m)
     end
 
     -- ═══ AND THE SWEEP IS REALLY A SWEEP (#346) ═══
-    --
-    -- The schedule is seeded off `GetGameTimer() + seq * 1299709`, which here is
-    -- gameMs -- so a clock advanced by a FRACTIONAL constant used to give every
-    -- match below it seed 0, identical delays, and a hundred-and-twenty-match
-    -- sweep that was one match copied. BR.Rng refuses a fractional seed now and
-    -- FLIGHT_MS keeps this clock whole, so this assertion is a second lock on a
-    -- door that is already shut. It stays: it is cheap, it names the property in
-    -- the place that depends on it, and it is the assertion that would have
-    -- caught the original defect. Counted rather than trusted.
     ok(math.tointeger(gameMs) ~= nil,
         'the harness clock is an integer here, so the matches seed differently',
         tostring(gameMs))
-    local seen, distinct = {}, 0
+    local keys, distinct = {}, 0
     for id = 1, MATCHES do
         local key = ('%d|%d'):format(matches[id].airdrop.pending[1].dueAt,
                                      matches[id].airdrop.pending[2].dueAt)
-        if not seen[key] then seen[key] = true distinct = distinct + 1 end
+        if not keys[key] then keys[key] = true distinct = distinct + 1 end
     end
     ok(distinct > MATCHES / 2,
         'and their schedules really are different draws, not one repeated',
         ('%d distinct of %d'):format(distinct, MATCHES))
 
-    local worstOut, overlapTicks, everTwoSent = 0, 0, 0
-    local waitTicks, liveTicks = 0, 0
+    local worst, worstArmed, listOverlap = 0, 0, 0
     for _ = 1, SECONDS do
         gameMs = gameMs + 1000
-        -- Whoever is needed to open the 200m gate, wherever it is this second --
-        -- in the attended half of the matches only.
-        for id = 1, MATCHES do
-            local w = matches[id].airdrop.waiting[1]
-            if w and attended(id) then
-                standAt(id * 100 + 1, w.rec.x, w.rec.y, 0.0)
+        for _, m in ipairs(matches) do
+            local _, _, _, phase = BR.StormAt(m.storm, gameMs)
+            if phase == BR.StormPhase.FINISHED and m.storm.phase < #SC.phases then
+                enterPhase(m, m.storm.phase + 1, m.storm.cx1, m.storm.cy1,
+                    m.storm.r1)
             end
+            walk(m)
         end
         tick()
-        for id = 1, MATCHES do
-            local st = matches[id].airdrop
-            local out = #st.waiting + #st.live
-            if out > worstOut then worstOut = out end
-            if out > 1 then overlapTicks = overlapTicks + 1 end
-            waitTicks = waitTicks + #st.waiting
-            liveTicks = liveTicks + #st.live
+        for _, m in ipairs(matches) do
+            local recs, armed = onScreen(m, gameMs)
+            if #recs > worst then worst = #recs end
+            if armed > worstArmed then worstArmed = armed end
+            if #m.airdrop.waiting + #m.airdrop.live > 1 then
+                listOverlap = listOverlap + 1
+            end
         end
     end
+
+    eq(worstArmed, 1, 'never two ARMED drops on a screen at once')
+    eq(worst, 1, 'nor two drops of any kind, on any tick of any match')
+    eq(listOverlap, 0, 'and the server never has two out either')
+
+    -- ═══ THE SPACING, READ OFF THE WIRE RATHER THAN OFF THE RULE ═══
+    --
+    -- Each announcement against the drop before it, with "opened" and "timed
+    -- out" written out here from the record rather than asked of
+    -- BR.AirdropResolvedAt -- asking the rule whether the rule held is how a
+    -- mutation that breaks both sides stays green.
+    local early, both = {}, 0
+    local fate = { opened = 0, unopened = 0, nobody = 0, wall = 0 }
     for id = 1, MATCHES do
-        if (matches[id].airdrop.sent or 0) >= 2 then
-            everTwoSent = everTwoSent + 1
+        local list = {}
+        for _, rec in pairs(views[matches[id]] or {}) do list[#list + 1] = rec end
+        table.sort(list, function(x, y) return x.tStart < y.tStart end)
+        if #list >= 2 then both = both + 1 end
+        for i = 2, #list do
+            local prev = list[i - 1]
+            local done = prev.tOpen or ((prev.tArm or prev.tStart) + A.blipMaxMs)
+            if list[i].tStart < done + HOLD then
+                early[#early + 1] = ('match %d: drop %d %.0fs after drop %d was done')
+                    :format(id, list[i].n, (list[i].tStart - done) / 1000, prev.n)
+            end
+        end
+        for _, rec in ipairs(list) do
+            if rec.tOpen then fate.opened = fate.opened + 1
+            elseif rec.tArm then fate.unopened = fate.unopened + 1 end
         end
     end
-
-    eq(worstOut, 1,
-        'over 120 matches and 760 seconds each, never more than one drop is '
-        .. 'announced or in the air')
-    eq(overlapTicks, 0, 'and not for a single tick')
-
-    -- AND THE SWEEP ACTUALLY EXERCISED THE GATE, rather than passing because no
-    -- match ever got as far as its second drop.
-    ok(everTwoSent > MATCHES * 0.8,
-        'while nearly every match still announced both of its drops',
-        ('%d of %d'):format(everTwoSent, MATCHES))
-
-    -- BOTH STAGES WERE OCCUPIED FOR A LONG TIME, which is what makes the two
-    -- assertions above statements about `waiting` AND about `live` rather than
-    -- about whichever one this fixture happened to spend its seconds in.
-    ok(waitTicks > 10000,
-        'drops spent thousands of ticks announced and unarmed', waitTicks)
-    ok(liveTicks > 500, 'and hundreds of ticks in the air', liveTicks)
-
-    local crates = 0
-    for _, s in ipairs(spawned) do
-        if s.stack and s.stack.item == 'airdrop' then crates = crates + 1 end
+    for _, line in ipairs(logs) do
+        if line:find('EXPIRED at', 1, true) then fate.nobody = fate.nobody + 1 end
+        if line:find('the wall moved off it', 1, true) then fate.wall = fate.wall + 1 end
     end
-    ok(crates > MATCHES / 2,
-        'and the attended half of the matches got their crates',
-        ('%d crates over %d matches'):format(crates, MATCHES))
+    ok(#early == 0, 'no drop is announced sooner than three minutes after the one '
+        .. 'before it was opened or timed out',
+        ('%d early, e.g. %s'):format(#early, early[1] or '-'))
+
+    -- ═══ AND EVERY WAY A DROP ENDS WAS ACTUALLY REACHED ═══
+    --
+    -- The invariant above is only worth something if the sweep walked through
+    -- each of the four ways the first drop can let go -- otherwise it is a
+    -- statement about whichever one this fixture happened to produce.
+    ok(fate.opened > 0, 'drops were opened', fate.opened)
+    ok(fate.unopened > 0, 'drops landed and were never opened', fate.unopened)
+    ok(fate.nobody > 0, 'drops timed out with nobody coming', fate.nobody)
+    ok(fate.wall > 0,
+        'and the wall moved off waiting drops -- the leak the old sweep could not reach',
+        fate.wall)
+    ok(both > MATCHES / 3, 'while plenty of matches still announced both drops',
+        ('%d of %d'):format(both, MATCHES))
 end
 
 describe('server: two CONCURRENT drops are never sited on one POI')
@@ -3147,8 +3562,8 @@ do
     -- value to two -- and this block is about a verb that must ignore whatever
     -- number is there, not about the number. Pinning it keeps "the queue is empty
     -- and the verb works anyway" one `now` away instead of three, which is the
-    -- property being tested; 'server: two drops are scheduled, not one' is where
-    -- the real value is measured.
+    -- property being tested; 'server: two drops a match, the second three minutes
+    -- after the first is opened' is where the real value is measured.
     reset()
     local realPerMatch = A.perMatch
     A.perMatch = 1
@@ -4124,6 +4539,23 @@ do
 
     -- Arming when there is nothing waiting is not an error.
     commands['brairdrop'](0, { 'arm' }, '')
+
+    -- ═══ AND IT HOLDS THE SCHEDULE LIKE ANY OTHER DROP (#355) ═══
+    --
+    -- The verb is never refused, but what it puts on the map is on the map: a
+    -- scheduled drop that comes due while this crate is still marked waits for
+    -- it exactly as it would for one of its own.
+    for _, p in ipairs(m.airdrop.pending) do p.dueAt = gameMs end
+    tick()
+    eq(#m.airdrop.waiting, 0, 'a scheduled drop due beside it is not announced')
+    local opened = gameMs
+    BR.Airdrop.opened(m, published[1].payload.n)
+    gameMs = opened + HOLD - 1
+    tick()
+    eq(#m.airdrop.waiting, 0, 'nor a millisecond short of three minutes after the open')
+    gameMs = opened + HOLD
+    tick()
+    eq(#m.airdrop.waiting, 1, 'and is, three minutes after it')
 
     -- A NAME THAT IS NOT A POI CHANGES NOTHING.
     reset()

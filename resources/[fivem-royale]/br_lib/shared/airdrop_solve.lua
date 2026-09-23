@@ -1572,9 +1572,13 @@ end
 ---
 --- NO min() WITH THE CEILING, deliberately. A crate opened at 3m55 keeps its
 --- blip to 4m55, five seconds past the nominal ceiling, because the owner's
---- sentence attaches the 4 minutes to "if unopened". A crate opened LATER than
---- the ceiling cannot extend anything, because the record is already gone (see
---- BR.AirdropExpired) and there is nothing left to re-announce it to.
+--- sentence attaches the 4 minutes to "if unopened".
+---
+--- A CRATE OPENED LATER THAN THE CEILING DOES BRING ITS BLIP BACK, for the minute.
+--- This said the record was gone by then and there was nothing to re-announce it
+--- to; the client's copy is, but the server keeps `landed[n]` for the match and
+--- BR.Airdrop.opened re-sends it, and a re-send the client no longer holds is
+--- simply held again. #355's sequencing counts that open (BR.AirdropResolvedAt).
 --- @param rec table|nil
 --- @param cfg table|nil  BR.Config.Airdrop
 --- @return number
@@ -1635,4 +1639,87 @@ end
 function BR.AirdropExpired(rec, now, cfg)
     if not rec then return true end
     return now > BR.AirdropBlipEndsAt(rec, cfg)
+end
+
+-- ---------------------------------------------------------------------------
+-- One drop at a time (#355)
+-- ---------------------------------------------------------------------------
+--
+-- Owner, 2026-09-23, after the first version of this failed its playtest ("Both
+-- airdrops armed at the same time on the same match, first time"): "fire the
+-- first one. once it's been opened, the next cannot drop for the next 3 minutes.
+-- if the first one times out, the 2nd cannot drop for the next 3 minutes."
+--
+-- ═══ WHY THE FIRST VERSION FAILED: IT ASKED THE SERVER'S LISTS, NOT THE SCREEN
+--     ═══
+--
+-- It called a drop resolved once it left `waiting` and `live` -- landed, or
+-- abandoned -- and announced the next one on that tick. Neither is gone from the
+-- player's screen:
+--
+--   LANDED     the sealed crate keeps its blip until it is opened plus a minute,
+--              or `blipMaxMs` after the arm. And the next drop may be sited on the
+--              very POI the crate is sitting on, so the player standing at it can
+--              arm the second aircraft a second after the first crate lands.
+--   ABANDONED  when the wall moves off a waiting drop the server drops it and
+--              sends nothing, so every client keeps the blip to its ceiling while
+--              the next drop is announced beside it.
+--
+-- The 2026-09-22 sweep counted `#waiting + #live` under a storm held still for a
+-- day, so it could see neither. Both are asked below in terms of the record and
+-- the clock -- the same terms the client's teardown uses -- so the rule cannot
+-- disagree with what is drawn.
+
+--- The moment this drop stopped holding the match, or nil while it still does.
+---
+--- ═══ "OPENED" OR "TIMED OUT", AND WHICH MOMENT EACH ONE IS ═══
+---
+---   opened      `tOpen`. The crate is a husk and its blip has a minute left.
+---   timed out   BR.AirdropBlipEndsAt of an UNOPENED record, once it has passed:
+---               the instant the blip goes out on every client. That is
+---                 (tArm or tStart) + blipMaxMs
+---               so `blipMaxMs` after the ARM for a crate that landed and was
+---               never opened, and after the ANNOUNCEMENT for one that never
+---               armed -- whether nobody came or the wall moved off it. The server
+---               gives up on the wall case early, but it tells nobody, so the
+---               blip is up until the ceiling and the ceiling is when it is gone.
+---
+--- ONE PREDICATE, THE CLIENT'S OWN. BR.AirdropExpired is what client/airdrop.lua
+--- tears a drop down by, so "timed out" here and "gone from the screen" there are
+--- the same instant by construction.
+---
+--- A CRATE OPENED AFTER IT TIMED OUT answers its `tOpen`, which is later. That is
+--- the owner's sentence read literally -- "once it's been opened, the next cannot
+--- drop for the next 3 minutes" -- and it is also what the wire does: the open
+--- re-sends the record, and the blip comes back for its minute.
+--- @param rec table|nil
+--- @param now number
+--- @param cfg table|nil  BR.Config.Airdrop
+--- @return number|nil
+function BR.AirdropResolvedAt(rec, now, cfg)
+    if not rec then return nil end
+    if rec.tOpen then return rec.tOpen end
+    if BR.AirdropExpired(rec, now, cfg) then
+        return BR.AirdropBlipEndsAt(rec, cfg)
+    end
+    return nil
+end
+
+--- The earliest the schedule may announce another drop, as far as this one is
+--- concerned: `nextDropAfterMs` past BR.AirdropResolvedAt. math.huge while the
+--- drop is still waiting, falling, or on the ground unopened with its blip up.
+---
+--- BOUNDED, because every unopened record reaches its ceiling -- the most a drop
+--- can hold the schedule is `blipMaxMs` for the wait, the flight, `blipMaxMs`
+--- again from the arm, and then `nextDropAfterMs`. A drop that never found a POI
+--- was never announced and never gets here. A missing record holds nothing.
+--- @param rec table|nil
+--- @param now number
+--- @param cfg table|nil  BR.Config.Airdrop
+--- @return number
+function BR.AirdropHoldsUntil(rec, now, cfg)
+    if not rec then return -math.huge end
+    local at = BR.AirdropResolvedAt(rec, now, cfg)
+    if not at then return math.huge end
+    return at + ((cfg or {}).nextDropAfterMs or 180000)
 end

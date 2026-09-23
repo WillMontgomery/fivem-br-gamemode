@@ -86,26 +86,25 @@ BR.Config.Airdrop = {
     --     BECOMES A TUNING KNOB IT WAS NOT BEFORE ═══
     --
     -- Each drop draws its own delay uniformly from [minDelayMs, maxDelayMs], so
-    -- nothing spaces them: two drops can come due seconds apart or four minutes
-    -- apart. They CAN be a few hundred metres apart. If the owner wants them
-    -- spread, that is a change to this pair of numbers or a new one, not something
-    -- the scheduler does on its own today.
+    -- the draws alone do not space them: two drops can come due seconds apart or
+    -- four minutes apart. They CAN be a few hundred metres apart. What spaces them
+    -- is `nextDropAfterMs` below, not this pair.
     --
-    -- ═══ BUT THEY ARE NEVER OUT AT THE SAME TIME (#355) ═══
+    -- ═══ AND THE SECOND WAITS FOR THE FIRST TO BE OPENED OR TIME OUT, THEN
+    --     THREE MINUTES MORE (#355) ═══
     --
     -- Owner, 2026-09-22: "please make sure both of the airdrops can never be armed
-    -- or live at the same time during the match." Two independent draws over a
-    -- 210-second window put them seconds apart often enough to matter, so the
-    -- scheduler announces at most one at a time and the second waits for the first
-    -- to reach the ground or end without a crate.
+    -- or live at the same time during the match." And after the first attempt at
+    -- that failed its playtest, 2026-09-23: "fire the first one. once it's been
+    -- opened, the next cannot drop for the next 3 minutes. if the first one times
+    -- out, the 2nd cannot drop for the next 3 minutes." See `nextDropAfterMs`.
     --
     -- THESE TWO NUMBERS STILL MEAN WHAT THEY SAY, because the second drop's draw
     -- is DEFERRED rather than re-drawn: its delay becomes the EARLIEST it may be
     -- announced instead of the moment it is. Re-drawing off the first drop's
     -- resolution would push it another 3m30 to 7m00 out -- usually past the end of
     -- the match -- and would make the airdrop's RNG consumption depend on where
-    -- players walked. See holdingDrop in server/airdrop.lua, which is where the
-    -- rule and its bound live.
+    -- players walked. See holdingDrop in server/airdrop.lua.
     --
     -- ═══ IT CAPS THE AUTOMATIC PATH ONLY (owner, 2026-08-23) ═══
     --
@@ -126,6 +125,32 @@ BR.Config.Airdrop = {
     -- endgame coin flip, late enough that everyone has landed and armed up.
     minDelayMs = 210000,   -- 3m30
     maxDelayMs = 420000,   -- 7m00
+
+    -- ═══ HOW LONG THE NEXT DROP WAITS AFTER THE LAST ONE IS DONE (owner,
+    --     2026-09-23) ═══
+    --
+    -- "once it's been opened, the next cannot drop for the next 3 minutes. if the
+    -- first one times out, the 2nd cannot drop for the next 3 minutes."
+    --
+    -- THE CLOCK STARTS AT ONE OF TWO MOMENTS, and BR.AirdropResolvedAt in
+    -- br_lib/shared/airdrop_solve.lua is the one place that decides which:
+    --
+    --   OPENED     `tOpen`, the moment a player opened the crate.
+    --   TIMED OUT  the moment its blip goes out unopened -- `blipMaxMs` after the
+    --              arm if it landed and nobody opened it, `blipMaxMs` after the
+    --              announcement if it never armed. That second case is nobody
+    --              coming AND the wall moving off it: the server gives up on the
+    --              latter early, but nothing tells the clients, so the blip is
+    --              still up until the ceiling and that is when it is gone.
+    --
+    -- Until one of them happens the first drop holds the schedule however long it
+    -- takes, which is bounded: an unopened drop always reaches its ceiling. A drop
+    -- that never found a POI at all was never announced, never "fired", and holds
+    -- nothing -- it has no timeout and simply keeps re-asking.
+    --
+    -- NOT A GAP BETWEEN DUE TIMES. The second drop's own delay above still applies
+    -- too; it is announced at whichever of the two is later.
+    nextDropAfterMs = 180000,   -- 3m00
 
     -- HOW OFTEN THE SITING RULE IS RE-ASKED once the drop is due. See
     -- BR.AirdropSite: a circle mid-shrink is a different question five seconds
@@ -798,6 +823,13 @@ BR.Config.Airdrop = {
     -- waiting for a POI has never been announced, and the sequencing gate only
     -- asks about drops that HAVE been -- so both simply sit in the queue failing
     -- the same scan. See holdingDrop in server/airdrop.lua.
+    --
+    -- BUT THE SEQUENCING PUSHES THE SECOND DROP LATER, and later is where this
+    -- block's argument bites. Since 2026-09-23 it waits for the first to be
+    -- opened or time out and then `nextDropAfterMs` more, which lands it phases
+    -- after the first -- the phases where a 250m margin often has nothing to fit
+    -- in. A match that loses its second drop that way loses it here, not to the
+    -- gate.
     --
     -- ═══ "SPAWN BEFORE THE BEGINNING OF PHASE 3?" -- ASKED, AND ANSWERED NO
     --     (owner, 2026-08-23), AND THE ANSWER IS KEPT HERE ═══
