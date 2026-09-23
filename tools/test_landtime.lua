@@ -262,6 +262,58 @@ local function touchDown()
     ped.agl, ped.speed = 0.4, 0.0
 end
 
+--- The parachute task's freefall, AS THE ENGINE ANSWERS FOR IT. IS_PED_ON_FOOT
+--- is TRUE here -- measured live, 2026-08-04, and pinned in test_client's descent
+--- block -- and that one fact is why #245 was reopened. IsPedFalling has never been
+--- measured inside the task, so it is left at the worse of its two answers:
+--- false, which leaves nothing in the old landing test that could tell this ped
+--- from one standing in a field.
+local function inFreefall()
+    ped.cs, ped.falling = CS.ON_BACK, false
+    ped.onFoot, ped.inWater, ped.inAir = true, false, true
+    ped.agl, ped.speed = 400.0, 50.0
+    ped.hasChute, ped.ammo = true, 1
+end
+
+--- Down on its feet with the task gone: `cs -1`, as the owner's line ended.
+local function downFromFreefall()
+    ped.cs, ped.falling = CS.NONE, false
+    ped.onFoot, ped.inWater, ped.inAir = true, false, false
+    ped.agl, ped.speed = 1.0, 0.0
+end
+
+--- Was DROP_LANDED ever sent?
+local function reported()
+    for _, s in ipairs(sent) do
+        if s.name == BR.Net.DROP_LANDED then return true end
+    end
+    return false
+end
+
+--- THE SERVER, AS FAR AS ONE LANDING GOES: it agrees on the tick after a
+--- DROP_LANDED reaches it, and without one its stuck-lander net promotes a player
+--- who has held one altitude for stuckLanderMs (server/match.lua). Both are the
+--- real sources of `server` on the line, so a landing the client never reports is
+--- rescued here exactly as it was on 2026-09-23, rather than never ending.
+---
+--- `promotedAt` is when it did, on the harness clock. NOT the line's `server`:
+--- that is an offset from contact, and on a line with no contact the base IS the
+--- promotion, so it reads 0 exactly when the net was all there was.
+--- @param n integer  ticks
+--- @param downAt integer|nil  when the ped came to rest; nil while still falling
+local promotedAt = nil
+local function serve(n, downAt)
+    for _ = 1, n do
+        tick()
+        if BR.State.me.state == BR.PlayerState.FREEFALL
+           and (reported() or (downAt and fakeTime - downAt
+                                  >= BR.Config.Match.stuckLanderMs)) then
+            BR.State.me.state = BR.PlayerState.ALIVE
+            promotedAt = fakeTime
+        end
+    end
+end
+
 --- Reset between scenarios, the way a new round does.
 local function reset()
     fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
@@ -273,6 +325,7 @@ local function reset()
     ped.hasChute, ped.ammo = false, 0
     ticks(2)
     logged, sent, events = {}, {}, {}
+    promotedAt = nil
 end
 
 -- ------------------------------------------------------- the readout exists ---
@@ -447,6 +500,157 @@ do
             .. 'native', l)
     ok(field(l, 'ui') == promoted,
         'so what the player waited for was the server, start to finish', l)
+end
+
+-- ------------------------------------- the drop the latch could not see ---
+--
+-- The owner, 2026-09-23, the only player in the match, down on his feet:
+--
+--   [br_core] landtime contact NEVER (ms after contact): detect n/a report n/a
+--   server 0 ui 0 | NEVER TRUE: seen,nopen,nfall,gnd | seen n/a nopen n/a
+--   nfall n/a gnd n/a foot n/a airb n/a | cs nil>-1 aglMax 0.0 spdMax 0.0
+--   descent n/a
+--
+-- `seen` is the drop latch, and the ruler starts on it: no contact, no stamp and
+-- no maximum is taken until it is armed. So that whole line is ONE fact -- the
+-- latch never armed -- and the latch armed only on IS_PED_ON_FOOT answering
+-- false, which the parachute task's freefall never does. Nothing about it is
+-- solo: no line of the drop path counts players.
+
+describe('a drop ridden to the ground in freefall is a landing (the owner, 2026-09-23)')
+do
+    reset()
+    jump()
+    inFreefall()
+    serve(40)                       -- four seconds of freefall, never pulled
+
+    ok(BR.State.landed == false and not reported(),
+        'NOT A LANDING IN MID-AIR, on-foot and not-falling though the ped reads '
+            .. '-- the false DROP_LANDED the latch exists to stop')
+
+    downFromFreefall()
+    local contactAt = fakeTime + 100
+    serve(90, contactAt)
+
+    local l = lastLine()
+    ok(l ~= nil, 'the landing is printed', table.concat(logged, '\n'))
+    ok(field(l, 'detect') == '0' and not has(l, 'contact NEVER'),
+        'AND IT IS DETECTED ON CONTACT -- the owner read `contact NEVER` and '
+            .. '`NEVER TRUE: seen` here', l)
+    ok(BR.State.landed == true and field(l, 'report') == '0',
+        'so the HUD comes up and the report leaves on the tick the feet do', l)
+    ok(promotedAt ~= nil
+       and promotedAt - contactAt < BR.Config.Match.stuckLanderMs,
+        'and the server is TOLD, not rescued five seconds later by its '
+            .. 'stuck-lander net',
+        ('promoted %s ms after contact'):format(
+            promotedAt and tostring(promotedAt - contactAt) or 'never'))
+end
+
+describe('an open canopy the engine still calls on-foot is a landing too')
+do
+    -- UNMEASURED, AND THAT IS WHY IT IS HERE. Nobody has read IS_PED_ON_FOOT
+    -- under an open canopy on this build; the one indirect reading (#131, the
+    -- trail prompt that failed twice behind a `not IsPedOnFoot` gate) says it may
+    -- well be true there too. If it is, the old latch never armed on ANY drop.
+    reset()
+    jump()
+    inFreefall()
+    serve(20)
+    ped.cs, ped.falling, ped.onFoot = CS.OPEN, false, true
+    ped.agl, ped.speed = 300.0, 14.0
+    serve(20)
+    ok(BR.State.landed == false and not reported(),
+        'not a landing under the canopy, whatever on-foot answers there')
+
+    touchDown()
+    local contactAt = fakeTime + 100
+    serve(90, contactAt)
+
+    local l = lastLine()
+    ok(field(l, 'detect') == '0' and has(l, 'detected on contact'),
+        'and the landing is found on contact', l)
+end
+
+describe('the in-air veto cannot strand a player who is down')
+do
+    -- THE VETO IS THE NEW WAY TO GET THIS WRONG, and a player it strands is
+    -- worse off than one it misses: the machine stays armed on the ground, with
+    -- detach dead and the floor loaded. So each of the readings it takes is
+    -- given its worst answer on the ground, one at a time, and the landing must
+    -- still be found.
+    local cases = {
+        { 'on its feet, with IsEntityInAir still saying air',
+          function() touchDown(); ped.inAir, ped.agl = true, 1.0 end },
+        { 'on a roof the height probe measures past, to the street below',
+          function() touchDown(); ped.agl = 40.0 end },
+        { 'in the sea, with IsEntityInAir saying air and the height to the seabed',
+          function()
+              ped.cs, ped.falling, ped.onFoot = CS.NONE, false, false
+              ped.inWater, ped.inAir = true, true
+              ped.agl, ped.speed = 30.0, 1.0
+          end },
+    }
+    for _, c in ipairs(cases) do
+        reset()
+        jump()
+        underCanopy()
+        serve(20)
+        c[2]()
+        serve(3)
+        ok(BR.State.landed == true and reported(),
+            'a landing ' .. c[1], lastLine() or table.concat(logged, '\n'))
+    end
+
+    -- AND THE FIRST OF THOSE SAYS SO ON THE LINE. The ruler times from the same
+    -- IsEntityInAir, so a landing it never agreed to is exactly the reading
+    -- `seen but never down` exists for.
+    reset()
+    jump()
+    underCanopy()
+    serve(20)
+    cases[1][2]()
+    serve(40)
+    local l = lastLine()
+    ok(has(l, 'contact NEVER') and has(l, 'seen but never down'),
+        'with IsEntityInAir named as the reading that never let go', l)
+end
+
+describe('a drop that never leaves the ground says so, and measures nothing')
+do
+    -- THE SOLO-ARTIFACT READING, now distinguishable from a blind latch. A record
+    -- open over a ped that was never in the air cannot arm the latch -- correctly
+    -- -- and the line must say that, not name three clauses it never asked.
+    reset()
+    jump()
+    downFromFreefall()
+    local restAt = fakeTime
+    serve(90, restAt)
+
+    local l = lastLine()
+    ok(has(l, 'NEVER TRUE: seen -- nopen,nfall,gnd were not asked'),
+        'THE ONE CLAUSE THAT FAILED IS NAMED, and the three never asked are said '
+            .. 'to be unasked', l)
+    ok(has(l, 'aglMax n/a spdMax n/a'),
+        'AND THE MAXIMA MEASURED NOTHING, SO THEY SAY n/a -- `0.0` was read as '
+            .. '"no fall was seen"', l)
+end
+
+describe('a latch that armed over a ped the physics never put down says that instead')
+do
+    reset()
+    jump()
+    underCanopy()
+    serve(20)
+    -- Held in the air: stuck on something the collision does not count, so the
+    -- server's net (a still altitude) is what ends it.
+    ped.speed = 0.0
+    serve(90, fakeTime)
+
+    local l = lastLine()
+    ok(has(l, 'seen but never down -- nopen,nfall,gnd were not asked'),
+        'the armed latch is not reported as a clause that never came true', l)
+    ok(not has(l, 'NEVER TRUE'), 'so no clause is blamed at all', l)
 end
 
 -- ------------------------------------------------------------ the debounce ---

@@ -111,6 +111,11 @@ end
 --   detect small, ui large        stage 4. The consumer.
 --   contact NEVER                 the physics never said we were down. That is
 --                                 a reading about IsEntityInAir, not a landing.
+--                                 The verdict says which of two it is:
+--     NEVER TRUE: seen -- ...     the drop latch never armed, and the ruler
+--                                 starts on that same latch, so nothing after
+--                                 it was measured -- aglMax and spdMax n/a.
+--     seen but never down         armed, and IsEntityInAir never let go.
 --
 -- THE CLOCK IS LEGITIMATE HERE and this is the one place in the project where
 -- that needs saying. GetGameTimer is frame-stamped -- see the long TIMING block
@@ -129,7 +134,9 @@ BR.Skydive = BR.Skydive or {}
 ---   nopen  cs ~= OPENING       -- the canopy is not mid-deploy
 ---   nfall  not IsPedFalling    -- the ped is not in a falling state
 ---   gnd    grounded            -- on foot, in water, or the canopy-still-attached
----                                 fallback (cs OPEN, agl < 2, speed < 2)
+---                                 fallback (cs OPEN, agl < 2, speed < 2) --
+---                                 and not overruled by the physics and the
+---                                 height both saying we are in the air
 local LAND_CLAUSES = { 'seen', 'nopen', 'nfall', 'gnd' }
 
 --- Print even an unfinished record after this long, rather than never. A
@@ -154,6 +161,7 @@ local landTime = {
     serverAt = nil,                      -- 3: our mirror left FREEFALL/GLIDE/BUS
     uiAt = nil,                          -- 4: the HUD would draw the bar
     sawAir = false,                      -- the server called us airborne at least once
+    armed = false,                       -- the drop latch (`seen`) armed at least once
     csContact = nil, csLast = nil,
     aglMax = 0.0, spdMax = 0.0,
     at = {},                             -- clause -> first stamp it was true
@@ -198,6 +206,16 @@ function BR.Skydive.landLine(r)
         -- ASKED -- and a readout that reports an unasked question as a failed
         -- one is a readout that sends somebody after the wrong clause.
         verdict = 'ended in a vehicle seat -- the landing test was not reached'
+    elseif at.seen == nil then
+        -- THE SAME RULE, FOR THE SAME REASON, ONE CLAUSE EARLIER. The sampler
+        -- stamps nothing until the latch is armed AND the ped is touching, so a
+        -- record with no stamp at all never ASKED nopen, nfall or gnd -- and
+        -- `NEVER TRUE: seen,nopen,nfall,gnd` read, on 2026-09-23, as four
+        -- failures when it was one. `armed` says which one. It holds when the
+        -- branch fired as well: that is a landing IsEntityInAir never agreed to.
+        verdict = r.armed
+            and 'seen but never down -- nopen,nfall,gnd were not asked'
+            or  'NEVER TRUE: seen -- nopen,nfall,gnd were not asked'
     elseif #never > 0 then
         verdict = 'NEVER TRUE: ' .. table.concat(never, ',')
     elseif r.branchAt and r.contactAt and r.branchAt <= r.contactAt then
@@ -217,10 +235,19 @@ function BR.Skydive.landLine(r)
         verdict = 'held by ' .. tostring(held)
     end
 
+    -- THE TWO MAXIMA ARE TAKEN FROM THE FIRST STAMPED SAMPLE ONWARD, NOT FROM
+    -- THE DOOR, so with no stamp they measured nothing -- and `aglMax 0.0
+    -- spdMax 0.0` was read as "the detector never saw a fall" (#245). `n/a`,
+    -- the way `descent` already refuses a number it cannot know.
+    local function peak(v)
+        if at.seen == nil then return 'n/a' end
+        return ('%.1f'):format(v or 0.0)
+    end
+
     -- `descent` rather than `fall`: `nfall` is a column on the same line, and a
     -- reader grepping this readout for one must not land inside the other.
     return ('[br_core] landtime %s (ms after contact): detect %s report %s server %s ui %s | %s'
-        .. ' | seen %s nopen %s nfall %s gnd %s foot %s airb %s | cs %s>%s aglMax %.1f spdMax %.1f descent %s')
+        .. ' | seen %s nopen %s nfall %s gnd %s foot %s airb %s | cs %s>%s aglMax %s spdMax %s descent %s')
         :format(
             r.contactAt and 'contact' or 'contact NEVER',
             off(r.branchAt), off(r.reportAt), off(r.serverAt), off(r.uiAt),
@@ -228,7 +255,7 @@ function BR.Skydive.landLine(r)
             off(at.seen), off(at.nopen), off(at.nfall), off(at.gnd),
             off(at.foot), off(at.airb),
             tostring(r.csContact), tostring(r.csLast),
-            r.aglMax or 0.0, r.spdMax or 0.0,
+            peak(r.aglMax), peak(r.spdMax),
             (r.contactAt and r.exitAt and r.exitAt > 0)
                 and tostring(r.contactAt - r.exitAt) or 'n/a')
 end
@@ -263,6 +290,7 @@ local function landOpen(now)
     L.contactAt, L.branchAt, L.reportAt = nil, nil, nil
     L.serverAt, L.uiAt = nil, nil
     L.sawAir = false
+    L.armed = false
     L.via = nil
     L.csContact, L.csLast = nil, nil
     L.aglMax, L.spdMax = 0.0, 0.0
@@ -312,6 +340,11 @@ local function landSample(ped, cs, agl, seen, grounded)
 
     local now = GetGameTimer()
     L.csLast = cs
+    -- ABOVE THE CONTACT GATE, because everything below it waits for `seen`: a
+    -- latch that never armed leaves no contact, no stamp and no maximum, and
+    -- without this the line cannot tell that from a ped that armed and was
+    -- simply never down (#245, 2026-09-23 -- the same four `n/a`s, both ways).
+    if seen then L.armed = true end
 
     local touching = isTrue(IsEntityInWater(ped))
                   or not isTrue(IsEntityInAir(ped))
@@ -1263,7 +1296,25 @@ BR.Loop.register(BR.Loop.TICK, 'skydive.state', function()
     -- descent is invincible as the last net, but the chute is the fix.
     local agl = GetEntityHeightAboveGround(ped)
     local airborne = not isTrue(IsPedOnFoot(ped)) and not isTrue(IsEntityInWater(ped))
-    if airborne and agl > 3.0 then airborneSeen = true end
+
+    -- THE LATCH ASKS THE PHYSICS TOO, AND WITHOUT IT A DROP WITH NO CANOPY WAS
+    -- NEVER A LANDING AT ALL (#245).
+    --
+    -- `airborne` is a question about the ped's TASK, and IS_PED_ON_FOOT is TRUE
+    -- through the parachute task's freefall on this build -- measured live,
+    -- 2026-08-04, and the reason the glider prompt below has no on-foot gate. So
+    -- this latch could only ever arm under an open canopy, and whether the native
+    -- says "off foot" even there has never been measured. A player who rode the
+    -- freefall to the ground never armed it: the landing branch could not fire,
+    -- no report left, the HUD waited, and the server's stuck-lander net ended the
+    -- drop five seconds later. The owner's line for exactly that, 2026-09-23:
+    -- `contact NEVER ... NEVER TRUE: seen,nopen,nfall,gnd ... cs nil>-1`.
+    --
+    -- IsEntityInAir is the collision underneath us, which no ped task owns -- the
+    -- same ground truth the landtime ruler already times from. Water is ground,
+    -- as everywhere else in this file.
+    local inAir = isTrue(IsEntityInAir(ped)) and not isTrue(IsEntityInWater(ped))
+    if (airborne or inAir) and agl > 3.0 then airborneSeen = true end
     -- The floor's band has a BOTTOM as well as a top: below ~3m a chute
     -- can do nothing, and firing there is pure harm -- the vehicle-entry
     -- animation reads as "airborne at ground level" for a beat (not on
@@ -1316,6 +1367,18 @@ BR.Loop.register(BR.Loop.TICK, 'skydive.state', function()
     if not grounded and cs == BR.Native.ChuteState.OPEN
        and agl < 2.0 and GetEntitySpeed(ped) < 2.0 then
         grounded = true
+    end
+    -- ...AND ON FOOT IS NOT ON THE GROUND WHILE THE PHYSICS AND THE HEIGHT BOTH
+    -- SAY WE ARE IN THE AIR (#245). The latch above now arms in freefall, where
+    -- IS_PED_ON_FOOT is true, and nothing else in this test asks about the
+    -- ground: a freefall that read not-falling for one tick would be a landing
+    -- in mid-air -- the false DROP_LANDED the latch was written to stop
+    -- (2026-08-04). BOTH readings have to agree before on-foot is overruled, so
+    -- neither can strand a player on the ground alone: a standing ped reads about
+    -- a metre whatever IsEntityInAir says, and a roof the height probe measures
+    -- past still has collision under it.
+    if grounded and inAir and agl >= 2.0 then
+        grounded = false
     end
     -- ONE LINE ABOVE THE PREDICATE, FROM THE PREDICATE'S OWN VALUES (#245).
     -- Anywhere else and the ruler could disagree with the thing it measures --
