@@ -284,6 +284,63 @@ local lastSaid = {}
 --- that has happened is a question about a case, and cases live in this file.
 local chatCount = {}
 
+-- ---------------------------------------------------------------------------
+-- What a repeat does while the first case is still in the post (#332)
+-- ---------------------------------------------------------------------------
+--
+-- THE MAP EVERY PRODUCER ASKS IS `filed`, AND `filed` ONLY LEARNS ABOUT A CASE
+-- WHEN ITS ID COMES BACK. `BR.Incident.remember` is its one writer and the
+-- acknowledgement handler is its one caller, so between the moment a case is SENT
+-- and the moment DynamoDB has accepted it `priorFor` answers empty -- and every
+-- counted strip arriving in that gap opened another case. Thirty strips with the
+-- id still outstanding was twenty-nine cases about one player in one match, which
+-- is the owner's "multiple incidents for one occurrence" in a second place, paid
+-- for in DynamoDB writes instead of console lines.
+--
+-- IT IS A RACE AND NOT A VOLUME, WHICH IS WHY `BR.LogBudget` IS NOT THE TOOL FOR
+-- IT. A budget would make the twenty-nine quiet and still write every one of
+-- them; the thing that has to change is what gets SENT, and the fact neither
+-- `filed` nor `lastSaid` holds is that a case for this player is already on its
+-- way. So that is what this records.
+--
+-- [matchKey] = { [license] = { at, held } }
+--
+--   at    when the case was sent, for the expiry below.
+--   held  the newest corroboration that arrived while it was in flight, or nil.
+--         ONE SLOT, NEWEST WINS, which is `corroborate`'s rule below and holds
+--         for the same reason: `count` and `seq` are running totals, so the
+--         newest note says everything the ones it replaced said. A queue per
+--         player would keep several copies of one sentence, and a lifetime to
+--         manage them, to say nothing more.
+--
+-- NOT `pendingTimeline` FURTHER DOWN, WHICH LOOKS EXACTLY LIKE THIS AND IS NOT.
+-- That map answers "which filing is waiting for an id to close against"; it is
+-- written only for a payload whose match the registry knows about, and
+-- server/players.lua's report path writes it too. Reusing it would let the close
+-- registration's guards decide filing policy -- one table answering two
+-- questions, which is the shape #329 was.
+local inFlight = {}
+
+--- How long a sent case is believed to still be on its way.
+---
+--- LONGER THAN AN ACKNOWLEDGEMENT CAN TAKE, and that number is not this file's to
+--- pick freely. br_ringmaster/server/incident.lua allows br_ddb eight seconds to
+--- answer and retries five times with one, two, four and eight seconds between
+--- the attempts, so the last acknowledgement that can still arrive is about
+--- fifty-five seconds after the first one went out. Sixty is that, rounded up: a
+--- slow write is never mistaken for a lost one.
+---
+--- AND IT EXPIRES RATHER THAN LATCHING FOR THE MATCH, which is the one judgement
+--- call here and it is made on the side of the record. When the write is genuinely
+--- lost -- br_ddb absent, the table unreachable, five attempts spent -- nothing
+--- ever comes back, and a latch with no expiry would mean this player's offences
+--- reach no case at all for the rest of the round. Past the window the next one
+--- files again, which is the behaviour this file had before #332 and is the only
+--- path by which a link that recovers mid-match still gets the case written. The
+--- cost of being wrong in this direction is a second row; the cost of being wrong
+--- in the other is the record.
+local FILING_IN_FLIGHT_MS = 60000
+
 --- Send a corroboration, unless it would only repeat the one before it.
 ---
 --- THE ONE CALLER SHAPE: every corroboration this file raises goes through here,
@@ -328,6 +385,71 @@ local function corroborate(ev)
     rec.held = ev
 end
 
+--- Is a case for this player already on its way to the database?
+---
+--- CALLED AFTER `priorFor` AND NOT INSTEAD OF IT. An acknowledged case is the
+--- better answer -- the corroboration can go out at once and name a row that
+--- exists -- so this is only ever asked when there is no id to point at yet.
+---
+--- @param matchId any
+--- @param license string|nil
+--- @param corro table|nil  the corroboration to release against the id when it
+---                         lands; nil from a producer that does not corroborate
+--- @return boolean  true when this event must not open a second case
+local function filingInFlight(matchId, license, corro)
+    if license == nil then return false end
+    local m = inFlight[key(matchId)]
+    local rec = m and m[license]
+    if not rec then return false end
+
+    -- EXPIRED IS NOT IN FLIGHT. See FILING_IN_FLIGHT_MS. Dropped here on the way
+    -- past rather than swept on a timer, which is this file's promise to itself.
+    if GetGameTimer() - rec.at >= FILING_IN_FLIGHT_MS then
+        m[license] = nil
+        return false
+    end
+
+    if corro ~= nil then rec.held = corro end
+    return true
+end
+
+--- Note that a case has been sent and its id is not back yet.
+local function filingSent(matchId, license)
+    if license == nil then return end
+    local k = key(matchId)
+    local m = inFlight[k]
+    if not m then
+        m = {}
+        inFlight[k] = m
+    end
+    m[license] = { at = GetGameTimer() }
+end
+
+--- An id came back for this player: release whatever was waiting on it.
+---
+--- ANY ID ENDS THE WAIT, NOT ONLY THE ONE THIS FILING PRODUCED, and there is no
+--- token on the acknowledgement to tell them apart anyway. It is also the right
+--- answer: `remember` has just written the id into `filed`, so from this line on
+--- `priorFor` answers for this player and every later event corroborates rather
+--- than filing. The latch's whole job is to cover the gap before that is true.
+---
+--- THE HELD NOTE GOES OUT THROUGH `corroborate` LIKE ANY OTHER, so the repeat
+--- rule and the match-end flush apply to it unchanged -- and `rec == nil` there
+--- means the first corroboration on a fresh case never waits, which is exactly
+--- what this one is.
+local function filingLanded(matchId, license, incidentId)
+    if license == nil then return end
+    local m = inFlight[key(matchId)]
+    local rec = m and m[license]
+    if not rec then return end
+    m[license] = nil
+
+    if rec.held ~= nil and incidentId ~= nil then
+        rec.held.incidentId = incidentId
+        corroborate(rec.held)
+    end
+end
+
 --- A match is over: send what its cases were still holding, and forget them.
 ---
 --- WHY THE FLUSH IS NOT OPTIONAL. A throttle that only fires on arrival drops
@@ -365,6 +487,118 @@ local function flushAndForget(matchId)
             TriggerEvent('br:ringmaster:corroborate', rec.held)
         end
     end
+end
+
+-- ---------------------------------------------------------------------------
+-- A decline says itself once (#331)
+-- ---------------------------------------------------------------------------
+--
+-- ALL FOUR BUILDERS BELOW MAY REFUSE TO BUILD A PAYLOAD, AND THE REFUSAL PRINTED
+-- ONCE PER EVENT. For the realistic one -- `no license` -- that is a line per
+-- counted offence for the whole match, at up to one every 900ms, with nothing
+-- between it and the console royale.service pipes to a file with `tmux pipe-pane`.
+-- The owner met it as a licenseless connection filling the screen (#331).
+--
+-- ═══ IT IS NOT A BUDGET, AND THAT IS THE DECISION WORTH ARGUING ═══
+--
+-- #330 put server/strip.lua's ANTICHEAT line through BR.LogBudget and that was
+-- right: there the lines differ, the magnitude IS the finding, and "26 more went
+-- unprinted" is the sentence an operator needs. This line is the other shape. A
+-- connection's identifiers are fixed when it connects and FiveM never adds one
+-- afterwards, so `no license` is ONE unchanging fact about ONE connection -- the
+-- second line says nothing the first did not, and a budget would still print
+-- three of them in every sixty-second window for as long as the offender keeps
+-- going. What the fault warrants is loud once, with the reason, and then quiet.
+--
+-- AND THE TWO SENTENCES ARE NOT INTERCHANGEABLE. A budget says "we are choosing
+-- not to repeat ourselves". What is true here is "this connection cannot be
+-- attributed to a person, so nothing can be filed about it at all" -- which is
+-- also why it wants to be loud the first time rather than merely quieter.
+--
+-- ═══ IT IS THE PRINT THAT IS BOUNDED AND NOTHING ELSE ═══
+--
+-- The builder is still called on every event, so a license that DOES resolve
+-- mid-match files the case on the next offence -- which is reachable, because
+-- BR.Roster.licenseOf re-reads the natives every time it has no answer cached.
+-- Quieting the console must never quiet the record: see the fold that was written
+-- for #330 and withdrawn in server/strip.lua, which bought a shorter console by
+-- never filing at all.
+--
+-- [matchKey] = { slots = { [subject|kind|why] = suppressed }, held, kinds, worst,
+--                worstHeld }
+--
+-- THE FOUR AGGREGATES ARE BR.LogBudget's OWN, kept as it keeps them -- incremented
+-- on arrival rather than derived by walking `slots` at the end. Same reason: a
+-- `worst` chosen by iterating a hash would differ run to run, and this project's
+-- rule is to never build a value that way.
+local declined = {}
+
+--- Say why nothing could be filed, once per subject, kind and reason per match.
+---
+--- KEYED ON THE LICENSE WHEN THERE IS ONE AND ON THE SERVER ID WHEN THERE IS NOT,
+--- because the case this exists for is the one with no license -- and then the
+--- server id is the only handle an operator has for going and looking at the
+--- connection. Ids are recycled within the minute, so a slot reused inside one
+--- match inherits the silence and costs one line; the map is dropped at teardown,
+--- which is what bounds that to the round it happened in.
+---
+--- THE REASON IS PART OF THE KEY, for `corroborate`'s reason above: a DIFFERENT
+--- finding is not a repeat. `no license` and `not a countable refusal` are two
+--- different faults, and an operator wants to hear the second one even after the
+--- first has gone quiet.
+--- @param kind string     which producer declined
+--- @param ev table        the announcement it declined
+--- @param why string|nil  what the builder answered
+local function sayNotFiled(kind, ev, why)
+    local who = ev.license or (ev.src ~= nil and ('src ' .. tostring(ev.src)))
+        or '?'
+    local k = key(ev.matchId)
+    local m = declined[k]
+    if not m then
+        m = { slots = {}, held = 0, kinds = 0, worst = nil, worstHeld = 0 }
+        declined[k] = m
+    end
+
+    local slot = ('%s|%s|%s'):format(tostring(who), kind, tostring(why))
+    local n = m.slots[slot]
+    if n ~= nil then
+        -- SAID ALREADY, SO COUNTED RATHER THAN DROPPED. The number goes out at
+        -- the teardown below: a decline that goes silent is how #287 happened.
+        n = n + 1
+        m.slots[slot] = n
+        m.held = m.held + 1
+        if n == 1 then m.kinds = m.kinds + 1 end
+        if n > m.worstHeld then m.worst, m.worstHeld = slot, n end
+        return
+    end
+    m.slots[slot] = 0
+
+    print(('^3[br_core] %s incident NOT filed for %s (%s): %s -- said once per '
+            .. 'subject and reason this match^7')
+        :format(kind, tostring(ev.name), tostring(who), tostring(why)))
+end
+
+--- A match is over: say how much the declines above held back, and forget them.
+---
+--- THE SHAPE IS BR.LogBudget.line's DELIBERATELY -- a total, how many kinds it
+--- covers, and the worst single one -- so the two things on this console that
+--- report suppression read alike. There is no window in it because a MATCH is the
+--- unit here, which is the unit the silence is scoped to.
+---
+--- THE `nomatch` BUCKET IS NOT FLUSHED, exactly as `lastSaid`'s is not: no
+--- teardown ever comes for the match a console `brrefuse` is not in, and
+--- `onResourceStart` is what empties it.
+--- @param matchId any
+local function flushDeclines(matchId)
+    local k = key(matchId)
+    local m = declined[k]
+    if not m then return end
+    declined[k] = nil
+    if m.held == 0 then return end
+
+    print(('^3[br_core] %d more incident decline(s) this match went unprinted -- '
+            .. '%d kind(s), worst %s x%d^7')
+        :format(m.held, m.kinds, tostring(m.worst), m.worstHeld))
 end
 
 -- ---------------------------------------------------------------------------
@@ -410,22 +644,35 @@ AddEventHandler('br:ringmaster:refusal', function(ev)
     -- minutes -- so it is the one least likely to be held, and it is routed
     -- through the same door anyway so that "a corroboration is throttled" is a
     -- property of this file rather than of two of its three handlers.
+    --
+    -- BUILT BEFORE IT IS KNOWN WHETHER THERE IS A CASE TO HANG IT ON, because
+    -- since #332 there are two ways it can be one: against a case already
+    -- acknowledged, or against one still on its way. The alternative is the same
+    -- literal written twice, which is how the two come to disagree about `reason`.
+    local corro = {
+        matchId    = ev.matchId,
+        license    = ev.license,
+        name       = ev.name,
+        seq        = ev.seq,
+        count      = ev.count,
+        reason     = ev.reason,
+        reasons    = ev.reasons,
+        severity   = ev.severity,
+        at         = ev.at,
+    }
+
     local prior = BR.Incident.priorFor(ev.matchId, ev.license)
     if #prior > 0 then
-        corroborate({
-            incidentId = prior[#prior],
-            matchId    = ev.matchId,
-            license    = ev.license,
-            name       = ev.name,
-            seq        = ev.seq,
-            count      = ev.count,
-            reason     = ev.reason,
-            reasons    = ev.reasons,
-            severity   = ev.severity,
-            at         = ev.at,
-        })
+        corro.incidentId = prior[#prior]
+        corroborate(corro)
         return
     end
+
+    -- A CASE FOR THIS PLAYER IS ALREADY IN THE POST (#332). It has no id yet, so
+    -- there is nothing to point at until the acknowledgement lands -- and opening
+    -- a second one meanwhile is the bug that issue is about. `filingInFlight`
+    -- keeps this note and releases it against the id that comes back.
+    if filingInFlight(ev.matchId, ev.license, corro) then return end
 
     -- EVIDENCE IS ATTACHED AT FILING TIME, NOT LATER. The buffer is discarded
     -- when the match ends, so "we will fetch it when an admin opens the case" is
@@ -439,8 +686,13 @@ AddEventHandler('br:ringmaster:refusal', function(ev)
         -- nothing with no trace of having tried. `no license` is the realistic
         -- case and it is worth a line: it means somebody tripped the threshold
         -- and cannot be recorded.
-        print(('^3[br_core] incident NOT filed for %s: %s^7')
-            :format(tostring(ev.name), tostring(why)))
+        --
+        -- LOUD ONCE, SINCE #331. See `sayNotFiled`: the realistic reason cannot
+        -- change for a connection, so the second line said nothing the first did
+        -- not, and the number it holds back goes out at the teardown. The OTHER
+        -- reason this builder can answer -- `not a countable refusal` -- is part
+        -- of the key, so it still gets a line of its own if it ever arrives.
+        sayNotFiled('shot', ev, why)
         return
     end
 
@@ -455,6 +707,10 @@ AddEventHandler('br:ringmaster:refusal', function(ev)
     -- once and costs no extra write.
     BR.Incident.attachTimeline(payload, records)
 
+    -- NOTED BEFORE THE SEND AND NOT AFTER IT, so a handler on the other side of
+    -- that event that somehow reached this one back could not find a gap. See
+    -- `inFlight`.
+    filingSent(ev.matchId, ev.license)
     TriggerEvent('br:ringmaster:incident', payload)
 end)
 
@@ -495,50 +751,70 @@ end)
 AddEventHandler('br:core:stripped', function(ev)
     if type(ev) ~= 'table' then return end
 
+    -- SAME CHANNEL, SAME REASONING as the refusal doubling above: the case is
+    -- already durable, so "it is still happening" may ride the lossy event
+    -- channel, and `seq` travels so the console can tell a dropped corroboration
+    -- from a quiet match.
+    --
+    -- THIS IS THE PRODUCER THE OWNER'S 2026-08-22 SCREENSHOT WAS OF, and the one
+    -- the throttle above was written for: `reason` and `severity` are both
+    -- constants here, so a run of strips is a run of notes that differ in nothing
+    -- but a counter, arriving at whatever rate MIN_INTERVAL_MS lets a strip be
+    -- counted at. Every one of them still reaches the case -- `count` is
+    -- cumulative and the timeline gets each strip in full -- but they no longer
+    -- each get a row of their own.
+    --
+    -- BUILT ABOVE THE BRANCH SINCE #332, for the reason the refusal one is: the
+    -- case it attaches to may be an acknowledged one or one still on its way.
+    local corro = {
+        matchId    = ev.matchId,
+        license    = ev.license,
+        name       = ev.name,
+        seq        = ev.seq,
+        count      = ev.count,
+        -- THE TAXONOMY'S OWN SENTENCE, which reads "weapon is not one this
+        -- gamemode issues" -- true of a strip word for word. It is not
+        -- claiming a shot was refused: `count` is the number of strips and
+        -- the case's summary says so.
+        reason     = BR.ShotRefusal.NO_WEAPON,
+        severity   = BR.ShotTier[BR.ShotRefusal.NO_WEAPON],
+        at         = ev.at,
+    }
+
     local prior = BR.Incident.priorFor(ev.matchId, ev.license)
     if #prior > 0 then
-        -- SAME CHANNEL, SAME REASONING as the refusal doubling above: the case
-        -- is already durable, so "it is still happening" may ride the lossy
-        -- event channel, and `seq` travels so the console can tell a dropped
-        -- corroboration from a quiet match.
-        --
-        -- THIS IS THE PRODUCER THE OWNER'S 2026-08-22 SCREENSHOT WAS OF, and the
-        -- one the throttle above was written for: `reason` and `severity` are
-        -- both constants here, so a run of strips is a run of notes that differ
-        -- in nothing but a counter, arriving at whatever rate MIN_INTERVAL_MS
-        -- lets a strip be counted at. Every one of them still reaches the case
-        -- -- `count` is cumulative and the timeline gets each strip in full --
-        -- but they no longer each get a row of their own.
-        corroborate({
-            incidentId = prior[#prior],
-            matchId    = ev.matchId,
-            license    = ev.license,
-            name       = ev.name,
-            seq        = ev.seq,
-            count      = ev.count,
-            -- THE TAXONOMY'S OWN SENTENCE, which reads "weapon is not one this
-            -- gamemode issues" -- true of a strip word for word. It is not
-            -- claiming a shot was refused: `count` is the number of strips and
-            -- the case's summary says so.
-            reason     = BR.ShotRefusal.NO_WEAPON,
-            severity   = BR.ShotTier[BR.ShotRefusal.NO_WEAPON],
-            at         = ev.at,
-        })
+        corro.incidentId = prior[#prior]
+        corroborate(corro)
         return
     end
+
+    -- ═══ THE STRIP THAT ARRIVES WHILE THE FIRST CASE IS STILL IN THE POST ═══
+    --
+    -- THIS IS THE PRODUCER #332 WAS MEASURED ON, and the arithmetic is the whole
+    -- issue: MIN_INTERVAL_MS lets a strip be counted about once a second, the
+    -- acknowledgement is a DynamoDB round trip, and `filed` learns nothing until
+    -- it lands -- so every strip in that gap read `#prior == 0` and opened
+    -- another case. The offence is still counted, still on the evidence timeline
+    -- and still on the case that lands; what it no longer does is buy a row of
+    -- its own. See `inFlight`.
+    if filingInFlight(ev.matchId, ev.license, corro) then return end
 
     local records = BR.Evidence and BR.Evidence.forLicense(ev.license) or {}
 
     local payload, why = BR.IncidentBuild.fromStrip(ev, records)
     if not payload then
-        print(('^3[br_core] strip incident NOT filed for %s: %s^7')
-            :format(tostring(ev.name), tostring(why)))
+        -- ONCE PER SUBJECT PER MATCH SINCE #331. This is the line the owner
+        -- watched a licenseless connection fill the console with, at one per
+        -- counted strip for the whole round; `sayNotFiled` holds the rest and the
+        -- teardown says how many. Nothing about what gets FILED moves.
+        sayNotFiled('strip', ev, why)
         return
     end
 
     payload.priorIncidentIds = prior
     BR.Incident.attachTimeline(payload, records)
 
+    filingSent(ev.matchId, ev.license)
     TriggerEvent('br:ringmaster:incident', payload)
 end)
 
@@ -645,6 +921,14 @@ AddEventHandler('br:core:chatrefused', function(ev)
     local prior = BR.Incident.priorFor(ev.matchId, ev.license)
     if #prior > 0 then return end
 
+    -- AND A CASE STILL IN THE POST IS A CASE (#332). See `inFlight`.
+    --
+    -- NOTHING IS HELD FOR IT, which is not a shortcut but the rule directly above
+    -- applied: this producer does not corroborate at all, so there is nothing for
+    -- the acknowledgement to release. The refused line is in the evidence buffer
+    -- either way and `n` above has already counted it.
+    if filingInFlight(ev.matchId, ev.license, nil) then return end
+
     local records = BR.Evidence and BR.Evidence.forLicense(ev.license) or {}
 
     local payload, why = BR.IncidentBuild.fromChat({
@@ -661,8 +945,13 @@ AddEventHandler('br:core:chatrefused', function(ev)
         channel = ev.channel,
     }, records)
     if not payload then
-        print(('^3[br_core] chat incident NOT filed for %s: %s^7')
-            :format(tostring(ev.name), tostring(why)))
+        -- ONCE PER SUBJECT AND REASON PER MATCH SINCE #331. `no license` cannot
+        -- reach this -- the guard at the top of the handler already returned --
+        -- so what this says is `not a chat refusal reason`, which means
+        -- server/chat.lua screened on a word BR.IncidentBuild.CHAT_REASON has no
+        -- row for. That is a bug on our side rather than a fact about a
+        -- connection, and it repeats per message until somebody fixes it.
+        sayNotFiled('chat', ev, why)
         return
     end
 
@@ -684,6 +973,7 @@ AddEventHandler('br:core:chatrefused', function(ev)
         BR.Incident.attachTimeline(payload, records)
     end
 
+    filingSent(ev.matchId, ev.license)
     TriggerEvent('br:ringmaster:incident', payload)
 end)
 
@@ -714,82 +1004,96 @@ end)
 AddEventHandler('br:core:vehicle', function(ev)
     if type(ev) ~= 'table' then return end
 
+    -- SAME CHANNEL, SAME REASONING as the two above: the case is already durable,
+    -- so "it is still happening" may ride the lossy event channel, and `seq`
+    -- travels so the console can tell a dropped corroboration from a quiet match.
+    --
+    -- AND THE THROTTLE ABOVE BARELY TOUCHES THIS ONE, which is a property of
+    -- `ev.why` rather than a special case written for it: the two halves of the
+    -- owner's vehicle rule are different strings, so a jet after a tank is a
+    -- change of finding and goes out at once. Only a player repeatedly climbing
+    -- into the SAME kind of refused vehicle folds -- which is the one case where
+    -- the rows really would have been identical.
+    --
+    -- BUILT ABOVE THE BRANCH SINCE #332, exactly as the other two are: the case
+    -- this attaches to may be an acknowledged one or one still on its way.
+    local corro = {
+        matchId    = ev.matchId,
+        license    = ev.license,
+        name       = ev.name,
+        seq        = ev.seq,
+        count      = ev.count,
+        -- ═══ THIS DETECTOR'S OWN WORDS, NOT THE SHOT TAXONOMY'S ═══
+        --
+        -- THIS LINE USED TO READ `BR.ShotRefusal.NO_WEAPON` AND THAT WAS THE
+        -- BUG the owner reported on 2026-08-22: "when getting in an
+        -- unauthorized vehicle, the incident is described in ringmaster as an
+        -- unauthorized weapon". It was borrowed verbatim from the strip
+        -- handler above, along with the rest of this block, on the reasoning
+        -- that it was "the closest true statement in an enum that is about
+        -- shots". It is not a true statement at all here: that enum value IS
+        -- the sentence "weapon is not one this gamemode issues", and the
+        -- console prints `reason` straight onto the case's timeline -- see
+        -- Ringmaster's src/app/api/ingest/route.ts, which composes the note
+        -- as `N refusals this match · last: <reason> · worst: <severity>`.
+        -- So every corroboration on a vehicle case described it as a weapon
+        -- finding, in the one place on the page that says what is STILL
+        -- happening.
+        --
+        -- `ev.why` IS THE FIELD THAT ALREADY EXISTS FOR THIS. config/
+        -- vehicles.lua's BR.Config.VehicleRefusal values -- "vehicle flies",
+        -- "vehicle has built-in weapons" -- are the two halves of the owner's
+        -- rule in the owner's words, and server/vehicles.lua already puts the
+        -- one that tripped on the wire. It is the same string
+        -- BR.IncidentBuild.vehicleSummaryOf builds the case's own summary
+        -- from, so the case and its corroborations now say the same thing
+        -- rather than two different ones.
+        --
+        -- NOT DEFAULTED, DELIBERATELY. A `why` that never arrived leaves this
+        -- nil, the field does not travel, and the console's note drops the
+        -- `last:` clause entirely -- which is honest. A fallback of
+        -- NO_WEAPON here would reintroduce exactly the sentence this line
+        -- exists to stop.
+        reason     = ev.why,
+        -- THE TIER IS STILL READ FROM THE TAXONOMY, and that is not the same
+        -- borrowing. `severity` is 'high'/'normal'/'low' -- a triage hint,
+        -- with no prose in it and nothing to mis-describe -- and it is read
+        -- from the same place BR.IncidentBuild.fromVehicle reads it, so the
+        -- corroborations cannot grade the finding differently from the case
+        -- they attach to.
+        severity   = BR.ShotTier[BR.ShotRefusal.NO_WEAPON],
+        at         = ev.at,
+    }
+
     local prior = BR.Incident.priorFor(ev.matchId, ev.license)
     if #prior > 0 then
-        -- SAME CHANNEL, SAME REASONING as the two above: the case is already
-        -- durable, so "it is still happening" may ride the lossy event channel,
-        -- and `seq` travels so the console can tell a dropped corroboration from
-        -- a quiet match.
-        --
-        -- AND THE THROTTLE ABOVE BARELY TOUCHES THIS ONE, which is a property of
-        -- `ev.why` rather than a special case written for it: the two halves of
-        -- the owner's vehicle rule are different strings, so a jet after a tank
-        -- is a change of finding and goes out at once. Only a player repeatedly
-        -- climbing into the SAME kind of refused vehicle folds -- which is the
-        -- one case where the rows really would have been identical.
-        corroborate({
-            incidentId = prior[#prior],
-            matchId    = ev.matchId,
-            license    = ev.license,
-            name       = ev.name,
-            seq        = ev.seq,
-            count      = ev.count,
-            -- ═══ THIS DETECTOR'S OWN WORDS, NOT THE SHOT TAXONOMY'S ═══
-            --
-            -- THIS LINE USED TO READ `BR.ShotRefusal.NO_WEAPON` AND THAT WAS THE
-            -- BUG the owner reported on 2026-08-22: "when getting in an
-            -- unauthorized vehicle, the incident is described in ringmaster as an
-            -- unauthorized weapon". It was borrowed verbatim from the strip
-            -- handler above, along with the rest of this block, on the reasoning
-            -- that it was "the closest true statement in an enum that is about
-            -- shots". It is not a true statement at all here: that enum value IS
-            -- the sentence "weapon is not one this gamemode issues", and the
-            -- console prints `reason` straight onto the case's timeline -- see
-            -- Ringmaster's src/app/api/ingest/route.ts, which composes the note
-            -- as `N refusals this match · last: <reason> · worst: <severity>`.
-            -- So every corroboration on a vehicle case described it as a weapon
-            -- finding, in the one place on the page that says what is STILL
-            -- happening.
-            --
-            -- `ev.why` IS THE FIELD THAT ALREADY EXISTS FOR THIS. config/
-            -- vehicles.lua's BR.Config.VehicleRefusal values -- "vehicle flies",
-            -- "vehicle has built-in weapons" -- are the two halves of the owner's
-            -- rule in the owner's words, and server/vehicles.lua already puts the
-            -- one that tripped on the wire. It is the same string
-            -- BR.IncidentBuild.vehicleSummaryOf builds the case's own summary
-            -- from, so the case and its corroborations now say the same thing
-            -- rather than two different ones.
-            --
-            -- NOT DEFAULTED, DELIBERATELY. A `why` that never arrived leaves this
-            -- nil, the field does not travel, and the console's note drops the
-            -- `last:` clause entirely -- which is honest. A fallback of
-            -- NO_WEAPON here would reintroduce exactly the sentence this line
-            -- exists to stop.
-            reason     = ev.why,
-            -- THE TIER IS STILL READ FROM THE TAXONOMY, and that is not the same
-            -- borrowing. `severity` is 'high'/'normal'/'low' -- a triage hint,
-            -- with no prose in it and nothing to mis-describe -- and it is read
-            -- from the same place BR.IncidentBuild.fromVehicle reads it, so the
-            -- corroborations cannot grade the finding differently from the case
-            -- they attach to.
-            severity   = BR.ShotTier[BR.ShotRefusal.NO_WEAPON],
-            at         = ev.at,
-        })
+        corro.incidentId = prior[#prior]
+        corroborate(corro)
         return
     end
+
+    -- AND A CASE STILL IN THE POST IS A CASE (#332). server/vehicles.lua counts at
+    -- the same 900ms the strip detector does, so a player climbing in and out of
+    -- refused vehicles reaches this file faster than DynamoDB answers -- the same
+    -- arithmetic, and the same fix. See `inFlight`.
+    if filingInFlight(ev.matchId, ev.license, corro) then return end
 
     local records = BR.Evidence and BR.Evidence.forLicense(ev.license) or {}
 
     local payload, why = BR.IncidentBuild.fromVehicle(ev, records)
     if not payload then
-        print(('^3[br_core] vehicle incident NOT filed for %s: %s^7')
-            :format(tostring(ev.name), tostring(why)))
+        -- ONCE PER SUBJECT AND REASON PER MATCH SINCE #331, for the reason the
+        -- strip line is: `no license` is the only thing this can answer, it cannot
+        -- change while the connection lasts, and server/vehicles.lua announces
+        -- every refused vehicle from the second onward.
+        sayNotFiled('vehicle', ev, why)
         return
     end
 
     payload.priorIncidentIds = prior
     BR.Incident.attachTimeline(payload, records)
 
+    filingSent(ev.matchId, ev.license)
     TriggerEvent('br:ringmaster:incident', payload)
 end)
 
@@ -1048,6 +1352,12 @@ end
 AddEventHandler('br:incident:filed', function(ack)
     if type(ack) ~= 'table' then return end
     local first = BR.Incident.remember(ack.matchId, ack.subjectLicense, ack.incidentId)
+    -- THE ROW EXISTS AND HAS A NAME, SO THE WAIT IS OVER (#332). Anything that
+    -- arrived while it was in flight goes out now, against the id that came back.
+    -- Ordered after `remember` because that is the line which makes `priorFor`
+    -- answer for this player, and before the notice because the notice walks the
+    -- whole match.
+    filingLanded(ack.matchId, ack.subjectLicense, ack.incidentId)
     if first then
         announceReporting(ack.matchId, ack.subjectLicense, ack.reporterLicense)
     end
@@ -1070,14 +1380,28 @@ AddEventHandler('br:match:destroyed', function(ev)
     -- COUNT -- see the throttle's header for why it is the only one whose loss
     -- would cost anything.
     flushAndForget(ev.matchId)
+    -- AND WHAT THE DECLINES HELD BACK (#331), which is the number that keeps this
+    -- from being a mute button.
+    flushDeclines(ev.matchId)
     filed[ev.matchId] = nil
     chatCount[key(ev.matchId)] = nil
+    -- A FILING STILL IN FLIGHT AT TEARDOWN CANNOT BE RELEASED, and there is
+    -- nothing honest to do with a note that has no case to name. It is dropped
+    -- rather than sent, exactly as `pendingTimeline` is dropped below -- and the
+    -- match-end diagnostic there already says how many ids never came back, which
+    -- is the same fault reported once rather than twice.
+    inFlight[key(ev.matchId)] = nil
 end)
 
 AddEventHandler('onResourceStart', function(name)
     if name == GetCurrentResourceName() then
         filed = {}
         openBy = {}
+        -- INCLUDING THEIR `nomatch` BUCKETS, which no teardown reaches: a
+        -- `brrefuse` from the console files outside a match, and both of these
+        -- key it under the sentinel exactly as `filed` does.
+        inFlight = {}
+        declined = {}
         -- INCLUDING THE `nomatch` BUCKET, which nothing else empties. See
         -- `lastSaid`: it is the only bucket a teardown never reaches.
         lastSaid = {}

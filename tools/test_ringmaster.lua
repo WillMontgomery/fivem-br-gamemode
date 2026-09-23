@@ -3765,6 +3765,369 @@ do
         'and nothing was dropped, so the record says so')
 end
 
+describe('strip.one-occurrence-while-the-ack-is-in-flight')
+do
+    -- ═══ #332: THE WINDOW BETWEEN SENDING A CASE AND KNOWING ITS NAME ═══
+    --
+    -- Every case in this file up to here calls `W.ack` before its run, which is
+    -- how the defect stayed hidden: `filed` is written by the acknowledgement
+    -- handler and by nothing else, so with no ack every counted strip read
+    -- `#prior == 0` and emitted another `br:ringmaster:incident`. Thirty strips
+    -- was twenty-nine cases about one player in one match.
+    --
+    -- THIRTY STRIPS AND NO ACK, WHICH IS EXACTLY WHAT `strip.the-flood-that-stops`
+    -- below already drives -- it asserts the console lines and never counted the
+    -- cases, which is the shape of test this issue was found by.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+
+    for i = 1, 30 do
+        W.at(2000 + i * 1000)
+        W.strip(1, CONJURED)
+    end
+
+    ok(#W.S.incidents == 1, 'thirty strips with the id outstanding open ONE case',
+        #W.S.incidents)
+
+    -- AND THE OFFENCES ARE NOT DROPPED ON THE FLOOR, which is the half a case
+    -- count on its own cannot tell from a mute button. Every one of the thirty was
+    -- counted by the detector and written into the evidence buffer before it got
+    -- here, so the record has all of them whatever the case count does.
+    ok(W.BR.Strip.stats().counted == 30,
+        'while all thirty are still counted as offences',
+        W.BR.Strip.stats().counted)
+
+    -- NOTHING WENT OUT AS A CORROBORATION YET, and that is honest rather than
+    -- lossy: there is no id to name until the acknowledgement lands.
+    ok(#W.S.corroborations == 0,
+        'and nothing claims to corroborate a case that has no name yet',
+        #W.S.corroborations)
+
+    -- THE ID COMES BACK, AND THE ONE THAT WAS WAITING GOES OUT AGAINST IT.
+    W.at(33000)
+    W.ack(7, 'license:cheat', 'inc-1')
+
+    ok(#W.S.corroborations == 1,
+        'the acknowledgement releases exactly one held note', #W.S.corroborations)
+    local c = W.S.corroborations[1]
+    ok(c and c.incidentId == 'inc-1', 'against the case that actually landed',
+        c and tostring(c.incidentId))
+    -- THE COUNT IS WHY ONE SLOT IS ENOUGH. `count` is cumulative, so the newest
+    -- note says everything the twenty-eight it replaced would have said.
+    ok(c and c.count == 30,
+        'carrying the cumulative count, so nothing it replaced is lost',
+        c and tostring(c.count))
+
+    -- AND THE PER-OFFENCE TIMING IS STILL WRITTEN DOWN IN FULL, on the timeline
+    -- rather than in a corroboration row -- which is the trade the throttle above
+    -- already makes and the reason a dropped row costs nothing.
+    W.at(500000); W.endMatch(7)
+    local opened = ofKind(W.lastIncident() and W.lastIncident().matchTimeline,
+        'weapon_strip')
+    local close = W.lastClose()
+    local closed = ofKind(close and close.matchTimeline, 'weapon_strip')
+    ok(#opened == 2, 'the two that rode the PutItem are on the case as filed',
+        #opened)
+    ok(#closed == 28, 'and the other twenty-eight are on the close', #closed)
+    ok(#opened + #closed == 30,
+        'so the record holds every one of the thirty, once each',
+        #opened + #closed)
+end
+
+describe('strip.the-in-flight-window-is-swept-not-sampled')
+do
+    -- ═══ EVERY ARRIVAL COUNT AND EVERY ACK POSITION, NOT ONE OF EACH ═══
+    --
+    -- The defect is a race, so the interesting variable is HOW MANY events land
+    -- inside the window and WHERE the acknowledgement falls among them. A single
+    -- fixture picks one point of that space and a latch that only held the first
+    -- repeat would pass it.
+    --
+    -- THE CLOCK ADVANCES BY WHOLE MILLISECONDS ON PURPOSE (#346): every `W.at`
+    -- below is an integer, because this project has a truncation bug that turns a
+    -- fractional sweep into one repeated case.
+    for extra = 1, 30 do
+        local W = newTimelineWorld()
+        W.startMatch(7, 1000)
+        W.join(1, 7, 'license:cheat', 'Cheater')
+
+        W.at(2000); W.strip(1, CONJURED)   -- counted, announced to nobody
+        W.at(3000); W.strip(1, CONJURED)   -- the case is sent
+        for i = 1, extra do
+            W.at(3000 + i * 1000)
+            W.strip(1, CONJURED)
+        end
+
+        ok(#W.S.incidents == 1,
+            ('%d strips inside the window are still one case'):format(extra + 2),
+            #W.S.incidents)
+    end
+
+    -- AND WHEREVER THE ACKNOWLEDGEMENT FALLS. Before the repeats, among them, or
+    -- after all of them -- the case count is one in every case, and what changes
+    -- is only whether a repeat corroborates immediately or waits for the id.
+    for at = 0, 6 do
+        local W = newTimelineWorld()
+        W.startMatch(7, 1000)
+        W.join(1, 7, 'license:cheat', 'Cheater')
+
+        W.at(2000); W.strip(1, CONJURED)
+        W.at(3000); W.strip(1, CONJURED)
+        for i = 1, 6 do
+            if i == at then W.ack(7, 'license:cheat', 'inc-1') end
+            W.at(3000 + i * 1000)
+            W.strip(1, CONJURED)
+        end
+        if at == 0 then W.ack(7, 'license:cheat', 'inc-1') end
+
+        ok(#W.S.incidents == 1,
+            ('an ack arriving before repeat %d still leaves one case'):format(at),
+            #W.S.incidents)
+        -- EVERY REPEAT IS STILL COUNTED AS AN OFFENCE, whichever side of the
+        -- acknowledgement it landed on. This is the assertion that would fail if
+        -- the latch were ever moved up into the detector.
+        ok(W.BR.Strip.stats().counted == 8,
+            'and all eight offences are counted',
+            W.BR.Strip.stats().counted)
+    end
+end
+
+describe('strip.a-lost-acknowledgement-does-not-silence-the-round')
+do
+    -- ═══ THE OPEN QUESTION ON #332, ANSWERED ON THE SIDE OF THE RECORD ═══
+    --
+    -- If the write is genuinely lost -- br_ddb absent, the table unreachable, five
+    -- attempts spent -- no id ever comes back. A latch with no expiry would then
+    -- mean this player's offences reach no case at all for the rest of the round,
+    -- which is a hole shaped exactly like the fold #330 withdrew.
+    --
+    -- SO IT EXPIRES. Past FILING_IN_FLIGHT_MS the next offence files again, which
+    -- is the behaviour this file had before #332 and the only path by which a link
+    -- that recovers mid-match still gets a case written.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+
+    W.at(2000); W.strip(1, CONJURED)
+    W.at(3000); W.strip(1, CONJURED)
+    ok(#W.S.incidents == 1, 'the case is sent', #W.S.incidents)
+
+    -- INSIDE THE WINDOW, AND STILL ONE. Sixty seconds is longer than any
+    -- acknowledgement that can still arrive: br_ringmaster allows br_ddb eight
+    -- seconds an attempt and backs off 1, 2, 4 and 8 between five of them.
+    W.at(62000); W.strip(1, CONJURED)
+    ok(#W.S.incidents == 1, 'a strip inside the window opens nothing',
+        #W.S.incidents)
+
+    -- PAST IT, AND THE OFFENCE FILES RATHER THAN VANISHING.
+    W.at(64000); W.strip(1, CONJURED)
+    ok(#W.S.incidents == 2,
+        'a strip past the window files again rather than going unrecorded',
+        #W.S.incidents)
+end
+
+describe('strip.the-latch-is-per-player')
+do
+    -- ONE OFFENDER CANNOT SPEND ANOTHER'S FILING, which is the same property
+    -- server/strip.lua's log budget key carries and for the same reason: the two
+    -- players are two cases and a latch keyed any wider would lose one of them.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:one', 'One')
+    W.join(2, 7, 'license:two', 'Two')
+
+    W.at(2000); W.strip(1, CONJURED)
+    W.at(3000); W.strip(1, CONJURED)
+    ok(#W.S.incidents == 1, 'the first player files', #W.S.incidents)
+
+    W.at(4000); W.strip(2, CONJURED)
+    W.at(5000); W.strip(2, CONJURED)
+    ok(#W.S.incidents == 2,
+        'and the second files too, with the first id still outstanding',
+        #W.S.incidents)
+end
+
+describe('strip.a-second-acknowledgement-releases-nothing-twice')
+do
+    -- A DUPLICATE ACKNOWLEDGEMENT IS A REAL THING AND NOT A HYPOTHETICAL. The
+    -- write path in br_ringmaster retries with a stable token precisely so that a
+    -- lost ANSWER cannot double-file: br_ddb then answers `duplicate`, and the
+    -- doorbell rings again for a row that was already durable. So this handler can
+    -- be called twice with the same id.
+    --
+    -- THE HELD NOTE MUST GO OUT ONCE. A second copy of it is a second row on a
+    -- moderation record saying a thing happened twice when it happened once, and
+    -- the 30-second repeat rule would hide the defect for the first half minute --
+    -- which is why the second acknowledgement below is deliberately outside it.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+
+    W.at(2000); W.strip(1, CONJURED)
+    W.at(3000); W.strip(1, CONJURED)
+    W.at(4000); W.strip(1, CONJURED)   -- held against the id still in flight
+
+    W.at(5000); W.ack(7, 'license:cheat', 'inc-1')
+    ok(#W.S.corroborations == 1, 'the first acknowledgement releases the note',
+        #W.S.corroborations)
+
+    W.at(60000); W.ack(7, 'license:cheat', 'inc-1')
+    ok(#W.S.corroborations == 1,
+        'and a duplicate one, past the repeat window, releases it again zero times',
+        #W.S.corroborations)
+end
+
+describe('strip.the-latch-does-not-outlive-the-match')
+do
+    -- THE REASON `filed` IS DROPPED AT TEARDOWN IS THE REASON THIS IS. Filing
+    -- policy is deliberately per match -- three rounds of cheating are three things
+    -- worth telling an admin about -- so a latch that survived the teardown would
+    -- silence the next round for a player whose id never came back in this one.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+
+    W.at(2000); W.strip(1, CONJURED)
+    W.at(3000); W.strip(1, CONJURED)
+    ok(#W.S.incidents == 1, 'a case is sent and never acknowledged',
+        #W.S.incidents)
+
+    W.at(9000); W.endMatch(7)
+
+    -- The same player, the next round, well inside FILING_IN_FLIGHT_MS of the
+    -- filing above -- so only the match changing can be what lets this file.
+    W.startMatch(8, 10000)
+    W.join(1, 8, 'license:cheat', 'Cheater')
+    W.at(11000); W.strip(1, CONJURED)
+    W.at(12000); W.strip(1, CONJURED)
+    ok(#W.S.incidents == 2, 'and the next match files its own case',
+        #W.S.incidents)
+
+    -- AND THE BUCKET IS ACTUALLY EMPTIED, WHICH THE CASE ABOVE CANNOT SAY. The
+    -- latch is keyed by match, so a new id would file whether the teardown cleared
+    -- anything or not -- the map would simply grow for the life of the process,
+    -- which is the failure `filed`'s own teardown exists to prevent and the one
+    -- server/incident.lua records as invisible to any test.
+    --
+    -- SO THE ID IS HELD CONSTANT HERE AS AN INSTRUMENT, not as a scenario. Match
+    -- ids climb on a real server; reusing one is the only way to ask this file
+    -- whether the teardown dropped the record or merely stopped reading it.
+    W.at(20000); W.endMatch(8)
+    W.startMatch(8, 21000)
+    W.join(1, 8, 'license:cheat', 'Cheater')
+    W.at(22000); W.strip(1, CONJURED)
+    W.at(23000); W.strip(1, CONJURED)
+    ok(#W.S.incidents == 3, 'because the teardown drops the latch rather than '
+        .. 'leaving it for the process to carry', #W.S.incidents)
+end
+
+describe('strip.every-producer-pair-is-latched')
+do
+    -- ═══ ALL THREE CORROBORATING PRODUCERS, IN BOTH DIRECTIONS ═══
+    --
+    -- The three anticheat handlers read `priorFor` identically and each one had the
+    -- race. Testing one of them and describing the other two is how a fix ships
+    -- half applied, so this drives every ordered pair: one producer opens the case,
+    -- another arrives before the id comes back, and there is still one case.
+    local FIRES = {
+        shot = function(W, at)
+            W.env.TriggerEvent('br:ringmaster:refusal', {
+                src = 1, name = 'Cheater', license = 'license:cheat', matchId = 7,
+                count = 8, windowMs = 4000,
+                reason = W.BR.ShotRefusal.NO_WEAPON,
+                reasons = { [W.BR.ShotRefusal.NO_WEAPON] = 8 },
+                severity = 'high', seq = 1, at = at,
+            })
+        end,
+        -- TWO STRIPS, because the owner's bar is two and a single one announces
+        -- nothing -- so a pair driven with one would exercise no handler at all.
+        strip = function(W, at)
+            W.at(at - 1000); W.strip(1, CONJURED)
+            W.at(at); W.strip(1, CONJURED)
+        end,
+        vehicle = function(W, at)
+            W.vehicle(1, 7, 'license:cheat', 'Cheater', 2, 1,
+                W.BR.Config.VehicleRefusal.FLIES)
+        end,
+    }
+    -- ORDERED, BECAUSE THE PROJECT'S RULE IS TO NEVER ITERATE A HASH: a pairing
+    -- built from pairs() would differ run to run and a failure would not reproduce.
+    local ORDER = { 'shot', 'strip', 'vehicle' }
+
+    for _, opener in ipairs(ORDER) do
+        for _, repeater in ipairs(ORDER) do
+            local W = newTimelineWorld()
+            W.startMatch(7, 1000)
+            W.join(1, 7, 'license:cheat', 'Cheater')
+
+            W.at(3000); FIRES[opener](W, 3000)
+            ok(#W.S.incidents == 1,
+                ('a %s opens the case'):format(opener), #W.S.incidents)
+
+            W.at(6000); FIRES[repeater](W, 6000)
+            ok(#W.S.incidents == 1,
+                ('and a %s before the id comes back opens no second one')
+                    :format(repeater), #W.S.incidents)
+        end
+    end
+end
+
+describe('vehicle.crosses-kinds-into-a-filing-in-flight')
+do
+    -- ONE PLAYER, ONE ROUND, ONE RECORD -- and the gap before the id comes back is
+    -- where that rule used to break across kinds as well as within one. A refused
+    -- vehicle arriving while a strip case is in the post opened a second case
+    -- about the same player in the same match.
+    local W = newTimelineWorld()
+    local V = W.BR.Config.VehicleRefusal
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+
+    W.at(2000); W.strip(1, CONJURED)
+    W.at(3000); W.strip(1, CONJURED)
+    ok(#W.S.incidents == 1, 'the strip case is sent', #W.S.incidents)
+
+    W.at(4000); W.vehicle(1, 7, 'license:cheat', 'Cheater', 2, 1, V.FLIES)
+    ok(#W.S.incidents == 1, 'the refused vehicle opens no second case',
+        #W.S.incidents)
+
+    -- AND IT IS THE VEHICLE'S OWN WORDS THAT LAND, not the strip's, which is the
+    -- assertion that says the held note is the one the producer built rather than
+    -- a reconstruction.
+    W.at(5000); W.ack(7, 'license:cheat', 'inc-1')
+    local c = W.S.corroborations[1]
+    ok(c ~= nil and c.incidentId == 'inc-1',
+        'it corroborates the case that landed', c and tostring(c.incidentId))
+    ok(c and c.reason == V.FLIES,
+        'in the detector\'s own words rather than the shot taxonomy\'s',
+        c and tostring(c.reason))
+end
+
+describe('chat.a-repeat-while-the-ack-is-in-flight')
+do
+    -- THE ONE PRODUCER THAT DOES NOT CORROBORATE (#244) IS LATCHED ANYWAY, because
+    -- the thing being prevented is a second CASE and that is common to all four.
+    -- Nothing is held for it: there is no corroboration to release, and the
+    -- refused line is in the evidence buffer either way.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:spam', 'Spammer')
+
+    W.at(2000); W.say(1, 'join my server at example.com')
+    ok(#W.S.incidents == 1, 'the first refused line files', #W.S.incidents)
+
+    W.at(3000); W.say(1, 'really, example.com')
+    W.at(4000); W.say(1, 'come on, example.com')
+    ok(#W.S.incidents == 1, 'and repeats before the id comes back file nothing',
+        #W.S.incidents)
+
+    W.at(5000); W.ack(7, 'license:spam', 'inc-1')
+    ok(#W.S.corroborations == 0,
+        'with nothing held to release, which is this path\'s own rule',
+        #W.S.corroborations)
+end
+
 describe('strip.the-doubling-rule-is-gone')
 do
     -- ═══ THE CADENCE THE OWNER REPLACED, PINNED SO IT DOES NOT COME BACK ═══
@@ -4776,6 +5139,255 @@ do
 
     ok(#W.S.incidents == 0, 'no license, no case', #W.S.incidents)
     ok(#W.S.corroborations == 0, 'and nothing to corroborate either')
+end
+
+-- The needle every case below reads the console with.
+local DECLINE = 'incident NOT filed'
+local DECLINE_HELD = 'incident decline(s) this match went unprinted'
+
+describe('decline.a-licenseless-connection-says-so-once')
+do
+    -- ═══ #331: THE LINE THE OWNER WATCHED FILL A CONSOLE ═══
+    --
+    -- A licenseless connection in a live match is counted by server/strip.lua like
+    -- anybody else, and `BR.IncidentBuild.fromStrip` then declines every single
+    -- one of them with `no license`. Nothing calls `BR.Incident.remember`, so
+    -- `priorFor` stays empty, so the throttled corroboration branch is never
+    -- reached -- the decline printed once per counted strip for the whole match,
+    -- at up to one every 900ms, with nothing between it and the console.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, nil, 'Ghost')
+
+    for i = 1, 30 do
+        W.at(2000 + i * 1000)
+        W.strip(1, CONJURED)
+    end
+
+    local said = W.printedMatching(DECLINE)
+    ok(#said == 1, 'thirty declines are ONE line', #said)
+    ok(said[1] and said[1]:find('no license', 1, true) ~= nil,
+        'and it says which fault it is rather than that it is being quiet',
+        said[1])
+    -- THE SERVER ID IS ON IT BECAUSE IT IS THE ONLY HANDLE LEFT. With no license
+    -- there is no name for the connection that outlives the minute, and an
+    -- operator reading this has to be able to go and look at the slot.
+    ok(said[1] and said[1]:find('src 1', 1, true) ~= nil,
+        'naming the connection by the only handle it has', said[1])
+
+    -- ═══ AND THE DETECTOR IS UNTOUCHED, WHICH IS THE HALF THAT MATTERS ═══
+    --
+    -- A quieter console that also counts fewer offences is the worse of the two
+    -- bugs -- it is what the fold withdrawn from server/strip.lua bought. Only the
+    -- PRINT is bounded: every strip is still counted, and the builder is still
+    -- called on every one of them.
+    ok(W.BR.Strip.stats().counted == 30,
+        'all thirty strips are still counted as offences',
+        W.BR.Strip.stats().counted)
+    ok(#W.S.incidents == 0, 'and none of them could be filed, as before',
+        #W.S.incidents)
+
+    -- THE NUMBER IT HELD BACK GOES OUT AT THE TEARDOWN. A decline that goes
+    -- silent is how #287 happened.
+    ok(#W.printedMatching(DECLINE_HELD) == 0,
+        'nothing is claimed about the total while the match is running',
+        #W.printedMatching(DECLINE_HELD))
+
+    W.at(500000); W.endMatch(7)
+    local held = W.printedMatching(DECLINE_HELD)
+    ok(#held == 1, 'the match end reports what was held back, once', #held)
+    -- TWENTY-EIGHT, NOT TWENTY-NINE, AND THE MISSING ONE IS THE OWNER'S BAR. The
+    -- first strip is counted and announced to nobody, so twenty-nine reach this
+    -- file: one printed and twenty-eight held. Twenty-nine lines is exactly what
+    -- this console produced before #331.
+    ok(held[1] and held[1]:find('28 more', 1, true) ~= nil,
+        'with the count the silence would otherwise have taken with it', held[1])
+end
+
+describe('decline.a-license-that-resolves-still-files')
+do
+    -- ═══ THE HOLE THIS FIX MUST NOT OPEN, ASSERTED DIRECTLY ═══
+    --
+    -- BR.Roster.licenseOf caches only an ANSWER: while it has none it re-reads the
+    -- natives on every call. So a connection whose license becomes readable is a
+    -- connection whose next offence can be filed -- and a memo that sat around
+    -- `fromStrip` instead of around the print would have made that unreachable for
+    -- the rest of the match. This is the case that fails if the guard ever moves.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, nil, 'Ghost')
+
+    W.at(2000); W.strip(1, CONJURED)
+    W.at(3000); W.strip(1, CONJURED)
+    ok(#W.S.incidents == 0, 'nothing files while there is nobody to file against',
+        #W.S.incidents)
+    ok(#W.printedMatching(DECLINE) == 1, 'and the console says so once',
+        #W.printedMatching(DECLINE))
+
+    -- FiveM answers for the connection now.
+    W.S.licenses[1] = 'license:late'
+
+    W.at(4000); W.strip(1, CONJURED)
+    ok(#W.S.incidents == 1,
+        'the next offence files, because only the PRINT was ever bounded',
+        #W.S.incidents)
+    local p = W.lastIncident()
+    ok(p and p.subjectLicense == 'license:late',
+        'against the license that finally resolved',
+        p and tostring(p.subjectLicense))
+
+    -- AND ONE DECLINE THAT WAS SAID IS NOT A DECLINE THAT WAS HELD. The tally
+    -- exists to report SILENCE; a match whose only decline was printed has no
+    -- silence to report, and a line here would be the false alarm the diagnostic
+    -- must not be.
+    W.at(500000); W.endMatch(7)
+    ok(#W.printedMatching(DECLINE_HELD) == 0,
+        'and the teardown says nothing about a decline it already printed',
+        #W.printedMatching(DECLINE_HELD))
+end
+
+describe('decline.a-different-fault-is-not-a-repeat')
+do
+    -- THE RULE `corroborate` ALREADY STATES, APPLIED TO A DECLINE: a change of
+    -- finding never waits. Four producers and several reasons between them, and an
+    -- operator wants to hear the second fault even after the first has gone quiet.
+    --
+    -- FIRED AT THE HANDLERS DIRECTLY, which is the split `W.vehicle` already makes:
+    -- what is under test is what server/incident.lua does with an announcement it
+    -- cannot build a payload from, not when the detectors choose to send one.
+    local W = newTimelineWorld()
+    local V = W.BR.Config.VehicleRefusal
+    W.startMatch(7, 1000)
+    W.join(1, 7, nil, 'Ghost')
+
+    -- 1. A STRIP, TWICE. One line.
+    W.at(2000); W.strip(1, CONJURED)
+    W.at(3000); W.strip(1, CONJURED)
+    ok(#W.printedMatching(DECLINE) == 1, 'the strip decline says itself once',
+        #W.printedMatching(DECLINE))
+
+    -- 2. A REFUSED VEHICLE FOR THE SAME CONNECTION. Same subject, same reason,
+    --    DIFFERENT producer -- and a second line, because an operator reading
+    --    "strip" learns nothing about the vehicle path having tripped too.
+    W.at(4000); W.vehicle(1, 7, nil, 'Ghost', 2, 1, V.FLIES)
+    W.at(5000); W.vehicle(1, 7, nil, 'Ghost', 3, 2, V.FLIES)
+    local said = W.printedMatching(DECLINE)
+    ok(#said == 2, 'and the vehicle decline gets its own', #said)
+    ok(said[2] and said[2]:find('vehicle incident', 1, true) ~= nil,
+        'named for the producer that declined', said[2])
+
+    -- 3. A REFUSED SHOT, TWICE. server/damage.lua announces at the bar and again
+    --    at every doubling, so this one repeats for a licenseless connection too.
+    for i, seq in ipairs({ 1, 2 }) do
+        W.env.TriggerEvent('br:ringmaster:refusal', {
+            src = 1, name = 'Ghost', license = nil, matchId = 7,
+            count = 8 * i, windowMs = 4000,
+            reason = W.BR.ShotRefusal.NO_WEAPON,
+            reasons = { [W.BR.ShotRefusal.NO_WEAPON] = 8 * i },
+            severity = 'high', seq = seq, at = 5000 + i * 1000,
+        })
+    end
+    ok(#W.printedMatching(DECLINE) == 3, 'so does the shot decline, once for two',
+        #W.printedMatching(DECLINE))
+
+    -- 4. AND A CHAT REFUSAL WITH A REASON NO ROW EXISTS FOR, which is the only
+    --    thing that path can decline for -- its own `no license` guard returns
+    --    before the builder. It is a bug on our side rather than a fact about a
+    --    connection, and it wants saying once too.
+    W.env.TriggerEvent('br:core:chatrefused', {
+        name = 'Ghost', license = 'license:ghost', matchId = 7,
+        reason = 'a reason nothing has a row for', text = 'hello',
+        channel = W.BR.ChatChannel.GLOBAL, at = 7000,
+    })
+    W.env.TriggerEvent('br:core:chatrefused', {
+        name = 'Ghost', license = 'license:ghost', matchId = 7,
+        reason = 'a reason nothing has a row for', text = 'hello again',
+        channel = W.BR.ChatChannel.GLOBAL, at = 8000,
+    })
+    local all = W.printedMatching(DECLINE)
+    ok(#all == 4, 'four faults, four lines, and no fifth for the repeat', #all)
+    ok(all[4] and all[4]:find('chat incident', 1, true) ~= nil,
+        'the chat one among them', all[4])
+
+    -- AND THE TALLY COUNTS EVERY REPEAT ACROSS ALL FOUR, which is the number that
+    -- says the console is quiet rather than the server being quiet.
+    -- AND THE TALLY COUNTS THE REPEATS AND NOTHING ELSE. Three of them: the second
+    -- vehicle announcement, the second shot report and the second chat line. The
+    -- two strips are only one decline, because the first strip is counted and
+    -- announced to nobody.
+    W.at(500000); W.endMatch(7)
+    local held = W.printedMatching(DECLINE_HELD)
+    ok(#held == 1, 'one tally at the teardown', #held)
+    ok(held[1] and held[1]:find('3 more', 1, true) ~= nil,
+        'holding the vehicle, shot and chat repeats', held[1])
+    ok(held[1] and held[1]:find('3 kind(s)', 1, true) ~= nil,
+        'and saying how many different faults they were between them', held[1])
+end
+
+describe('decline.is-per-connection')
+do
+    -- TWO LICENSELESS CONNECTIONS ARE TWO FAULTS. A memo keyed any wider would
+    -- mean the second one never printed at all -- and with no license the server
+    -- id is the only thing telling them apart.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, nil, 'GhostOne')
+    W.join(2, 7, nil, 'GhostTwo')
+
+    W.at(2000); W.strip(1, CONJURED)
+    W.at(3000); W.strip(1, CONJURED)
+    W.at(4000); W.strip(2, CONJURED)
+    W.at(5000); W.strip(2, CONJURED)
+
+    local said = W.printedMatching(DECLINE)
+    ok(#said == 2, 'a line each', #said)
+    ok(said[1] and said[1]:find('src 1', 1, true) ~= nil, 'for the first', said[1])
+    ok(said[2] and said[2]:find('src 2', 1, true) ~= nil, 'and the second', said[2])
+
+    -- AND THE LICENSE IS WHAT KEYS IT WHEN THERE IS ONE, which the two cases above
+    -- cannot say because neither connection has one. The chat announcement is the
+    -- producer that proves it: `br:core:chatrefused` carries no `src` at all -- see
+    -- server/chat.lua -- so a key that only ever read the server id would fold two
+    -- named players into one line and never mention the second.
+    W.env.TriggerEvent('br:core:chatrefused', {
+        name = 'One', license = 'license:one', matchId = 7,
+        reason = 'a reason nothing has a row for', text = 'hi',
+        channel = W.BR.ChatChannel.GLOBAL, at = 6000,
+    })
+    W.env.TriggerEvent('br:core:chatrefused', {
+        name = 'Two', license = 'license:two', matchId = 7,
+        reason = 'a reason nothing has a row for', text = 'hi',
+        channel = W.BR.ChatChannel.GLOBAL, at = 7000,
+    })
+    local all = W.printedMatching(DECLINE)
+    ok(#all == 4, 'so two named players get a line each as well', #all)
+    ok(all[3] and all[3]:find('license:one', 1, true) ~= nil,
+        'keyed on the license the announcement carried', all[3])
+    ok(all[4] and all[4]:find('license:two', 1, true) ~= nil,
+        'and on the other one', all[4])
+end
+
+describe('decline.a-clean-match-says-nothing')
+do
+    -- THE ASSERTION THAT STOPS THE TALLY BEING A FALSE ALARM EVERY ROUND. A
+    -- diagnostic that printed on every match end would be ignored within a week
+    -- and would take the real signal with it -- which is the argument the close
+    -- diagnostic above already makes for itself.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+
+    W.at(2000); W.strip(1, CONJURED)
+    W.at(3000); W.strip(1, CONJURED)
+    W.ack(7, 'license:cheat', 'inc-1')
+    W.at(4000); W.strip(1, CONJURED)
+
+    W.at(500000); W.endMatch(7)
+    ok(#W.printedMatching(DECLINE) == 0,
+        'a match where everything could be filed declines nothing',
+        #W.printedMatching(DECLINE))
+    ok(#W.printedMatching(DECLINE_HELD) == 0, 'and holds nothing back either',
+        #W.printedMatching(DECLINE_HELD))
 end
 
 describe('vehicle.crosses-kinds-with-the-strip-path')
