@@ -16591,6 +16591,39 @@ function MinimapOverlays:Load()
 end
 
 Citizen.CreateThread(function()
+    -- ═══ BR-PATCH 5: THIS THREAD MAY NOT ASK FOR THE OVERLAY AT JOIN ═══
+    --
+    -- ADD_MINIMAP_OVERLAY racing RELOAD_MAP_STORE crashes gta-streaming-five.dll
+    -- (citizenfx/fivem#4167, open and unmerged). Nothing between here and that
+    -- native tested whether there was a session: Load() fires
+    -- ScUI:AddMinimapOverlay, ScaleformUI_Assets' loader.lua answers it by calling
+    -- AddMinimapOverlay, and because isLoaded can never turn true (BR-PATCH 2 below
+    -- says why) this thread reached that within 500ms of br_core starting, on every
+    -- client, every join.
+    --
+    -- WHY IT MATTERS MORE ON THIS SERVER THAN ON MOST: an in-game logout here
+    -- re-mints a token and signs the player straight back in, which is a deliberate
+    -- feature the owner likes -- so join is re-run in ordinary play and this race is
+    -- reachable without a cold boot. A crash on login is worse than any minimap
+    -- feature is good.
+    --
+    -- THE OTHER HALF OF THIS PATCH IS A DELETION in initializeScaleforms() above,
+    -- which called Load() eagerly for everyone. Gating only this thread would have
+    -- left that one racing, and deleting only that one would have left this thread
+    -- making the same call half a second later.
+    --
+    -- THE WINDOW IS A GUESS AND IS LABELLED AS ONE. #4167 publishes no safe window
+    -- and its own thread says only "wait until the session is up". Six passes of the
+    -- 500ms idle below is three seconds, picked to match the settle window
+    -- br_core/client/mapoverlay.lua waits out before OUR call. If a crash is ever
+    -- seen on this path, this number is the first thing to raise and the second is
+    -- whether waiting is the right mechanism at all.
+    --
+    -- AND 0 IS TRUTHY IN LUA, which is why brYes compares rather than tests. Both
+    -- natives are declared BOOL, and a build that answers 0 would satisfy a bare
+    -- `if` -- the whole gate gone with nothing anywhere to see it go.
+    local brHeld = 0
+    local function brYes(v) return v ~= nil and v ~= false and v ~= 0 end
     while true do
         Wait(0)
         if ScaleformUI.Scaleforms.MinimapOverlays.isLoaded then
@@ -16629,7 +16662,15 @@ Citizen.CreateThread(function()
             -- minimapHandle, isLoaded turns true by itself and cursor polling
             -- resumes within 500ms with nothing further to change here.
             if ScaleformUI.Scaleforms.MinimapOverlays.overlay == 0 then
-                ScaleformUI.Scaleforms.MinimapOverlays:Load()
+                -- BR-PATCH 5: the session gate. See the head of this thread.
+                if brYes(NetworkIsGameInProgress()) and brYes(IsMinimapRendering()) then
+                    brHeld = brHeld + 1
+                else
+                    brHeld = 0
+                end
+                if brHeld >= 6 then
+                    ScaleformUI.Scaleforms.MinimapOverlays:Load()
+                end
             end
             Wait(500)
         end
@@ -18718,7 +18759,16 @@ local function initializeScaleforms()
     ScaleformUI.Scaleforms._radioMenu = Scaleform.RequestWidescreen("radiomenu")
     ScaleformUI.Scaleforms._pauseMenu = PauseMenu.New()
     ScaleformUI.Scaleforms._pauseMenu:Load()
-    ScaleformUI.Scaleforms.MinimapOverlays:Load()
+    -- BR-PATCH 5: the MinimapOverlays:Load() that stood here is GONE. It ran
+    -- unconditionally at resource start for every client, and Load() reaches
+    -- AddMinimapOverlay -- which racing RELOAD_MAP_STORE crashes
+    -- gta-streaming-five.dll (citizenfx/fivem#4167, open and unmerged). Nothing on
+    -- that path checked NetworkIsGameInProgress or IsMinimapRendering.
+    --
+    -- NOTHING NEEDED IT. The retry thread below acquires the handle on its own, the
+    -- Add*OverlayToMap functions each call Load() on demand, and no resource on this
+    -- server asks for an overlay at join. The thread's copy of the call carries the
+    -- session gate; see the rest of this patch there.
 end
 
 Citizen.CreateThread(function()

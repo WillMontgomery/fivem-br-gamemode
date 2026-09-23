@@ -1775,6 +1775,497 @@ do
             .. 'zero, which is what #346 does to an unfloored one')
 end
 
+-- ---------------------------------------------------------------------------
+describe('blob.stitch')
+do
+    -- ═══ TWO OVERLAPPING BLOBS ARE ONE LOOP, NOT TWO BOUNDARIES (#356) ═══
+    --
+    --   "current/next storm circles, while overlapping, were actually drawn as 2
+    --    separate circles instead of one conjoined."      -- owner, 2026-09-22
+    --
+    -- blobUnion used to concatenate both piece lists and re-stamp the arc length,
+    -- so the stretch of each boundary that ran INSIDE the other was drawn. #328
+    -- removed exactly that for circles -- union2 computes the crossings and drops
+    -- the swallowed arcs -- and #344 handed it back for blobs, announced it, and
+    -- pinned the wrong behaviour in the suite on purpose so that the fix would go
+    -- red. Measured on the phase-2 overlap in the issue: 2 components and 14.1% of
+    -- the boundary inside the other shape.
+    --
+    -- ═══ THE CLAIM IS NOT "ONE COMPONENT". IT IS "THE RIGHT LOOP" ═══
+    --
+    -- A single component is easy to produce and easy to produce wrongly -- keeping
+    -- the swallowed runs instead of the outer ones is also one loop, and on a map it
+    -- would look plausible. So the assertions below are about the SET the loop
+    -- encloses, tested two independent ways: every walked point is on the boundary
+    -- of one part and inside neither, and the polygon's own inside/outside verdict
+    -- agrees with the signed distance across a grid. The signed distance is not a
+    -- tautology here -- it is a maximum over supporting half-planes and never
+    -- touches the piece walk.
+    local SS = BR.StormShape
+    local P1, P2, SEP = 2600.0, 1600.0, 3392.0
+    local unit = SS.blobUnit(12345, 2, BLOB_OPTS)
+    local z = SS.zone(0.0, 0.0, P1, SEP, 0.0, P2, unit)
+
+    ok(z.kind == 'blobUnion' and #SS.components(z) == 1,
+        'the issue\'s own phase-2 overlap is ONE closed loop',
+        ('%s, %d component(s)'):format(tostring(z.kind), #SS.components(z)))
+    ok(z.parts ~= nil and #z.parts == 2,
+        'and it still carries both parts, which is what keeps distance() and '
+            .. 'inset() the minimum over them and therefore unchanged',
+        z.parts and #z.parts or 'none')
+
+    --- What fraction of a shape's walked boundary is strictly inside the shape?
+    ---
+    --- THE MEASURE THE ISSUE QUOTES, and it is zero for a correct union: a point on
+    --- the outline of a union cannot be in its interior. Sampled at the MIDPOINT of
+    --- each step rather than at the step, so a point that is on a piece boundary by
+    --- construction cannot answer this by being exactly on the edge.
+    local function interiorPct(shape)
+        local total, inside = 0, 0
+        local per = SS.perimeter(shape)
+        for _, c in ipairs(SS.components(shape)) do
+            local n = math.max(64, math.floor(3000 * c.len / per + 0.5))
+            for k = 0, n - 1 do
+                local x, y = SS.pointAtComponent(shape, c, c.len * (k + 0.5) / n)
+                total = total + 1
+                if SS.distance(shape, x, y) < -1e-6 then inside = inside + 1 end
+            end
+        end
+        return 100.0 * inside / total, total
+    end
+
+    local pct, sampled = interiorPct(z)
+    ok(pct == 0.0,
+        'and NOT ONE METRE of it is inside the safe zone, where the concatenated '
+            .. 'boundary put 14.1% -- which is #328\'s claim, restored for blobs',
+        ('%.3f%% of %d sampled points'):format(pct, sampled))
+
+    -- ═══ AND IT CLOSES, WHICH A STITCH IS THE FIRST THING TO GET WRONG ═══
+    --
+    -- Two runs joined at two crossings is a closed loop only if each run's end is
+    -- the next one's start. The crossing on A is found by bisection and the same
+    -- point on B by nearestArc, so the seam is where two different derivations have
+    -- to agree -- asserted to the millimetre CROSS_TOL bounds it to, on every
+    -- consecutive pair of pieces rather than only at the two joins, because a piece
+    -- list that chains everywhere else and breaks at the seam is the failure.
+    --- A piece's own two endpoints, out of its own parameters.
+    ---
+    --- ═══ NOT pointAtArc, WHICH WOULD COMPARE ONE POINT WITH ITSELF ═══
+    ---
+    --- The first spelling of this check asked pointAtArc for the arc length at the
+    --- end of piece i and at the start of piece i+1 -- and those are the SAME NUMBER
+    --- in a sealed shape, so pieceAtArc's `s < pc.s0 + pc.len` sends both reads to
+    --- piece i+1 at t = 0. It reported a gap of exactly zero for every shape, and it
+    --- went on reporting zero with the bisection tolerance loosened by three orders of
+    --- magnitude. A test that cannot fail is not evidence, and this suite has shipped
+    --- one before -- so the endpoints are reconstructed from each piece's OWN
+    --- parameters, which is the only way the two sides of a seam are two readings.
+    local function pieceEnds(pc)
+        if pc.kind == 'arc' then
+            local t0, t1 = pc.a0, pc.a0 + pc.sweep
+            return pc.cx + math.cos(t0) * pc.r, pc.cy + math.sin(t0) * pc.r,
+                   pc.cx + math.cos(t1) * pc.r, pc.cy + math.sin(t1) * pc.r
+        end
+        return pc.x0, pc.y0, pc.x1, pc.y1
+    end
+
+    local worstGap, gapAt = 0.0, nil
+    for i = 1, #z.pieces do
+        local _, _, ax, ay = pieceEnds(z.pieces[i])
+        local bx, by = pieceEnds(z.pieces[(i % #z.pieces) + 1])
+        local g = math.sqrt((ax - bx) ^ 2 + (ay - by) ^ 2)
+        if g > worstGap then worstGap, gapAt = g, i end
+    end
+    ok(worstGap < 1e-3,
+        'every piece of the stitched loop ends where the next one begins, the seam '
+            .. 'between the two boundaries included',
+        ('worst gap %.9f m after piece %s of %d')
+            :format(worstGap, tostring(gapAt), #z.pieces))
+
+    -- ═══ THE LOOP ENCLOSES THE UNION, ASKED OF THE POLYGON AND NOT OF THE SHAPE ═══
+    --
+    -- An even-odd crossing count over a dense walk is a completely different
+    -- question from a signed distance, and this is the assertion that catches a loop
+    -- made of the WRONG runs: keeping the swallowed stretches also closes, also has
+    -- every point on one part's boundary, and encloses the symmetric difference
+    -- instead of the union. Points within a tolerance band of the boundary are
+    -- skipped, because the polygon is a chord approximation there and the disagreement
+    -- would be about sampling rather than about the set.
+    local poly = walkPoly(z, 6000)
+    local bad, tested, firstBad = 0, 0, nil
+    for ix = 0, 90 do
+        for iy = 0, 90 do
+            local x = -P1 * 1.2 + (SEP + 2.4 * P1) * ix / 90
+            local y = -P1 * 1.2 + (2.4 * P1) * iy / 90
+            local truth = SS.distance(z, x, y)
+            if math.abs(truth) > 6.0 then
+                local _, inPoly = walkProbe(poly, x, y)
+                tested = tested + 1
+                if inPoly ~= (truth < 0.0) then
+                    bad = bad + 1
+                    firstBad = firstBad or ('%.0f, %.0f (d %.2f)'):format(x, y, truth)
+                end
+            end
+        end
+    end
+    ok(bad == 0,
+        'and the region the loop encloses IS the union, by an even-odd count that '
+            .. 'shares nothing with the signed distance it is checked against',
+        ('%d of %d grid points disagree%s'):format(bad, tested,
+            firstBad and (', first at ' .. firstBad) or ''))
+
+    -- ═══ NESTED AND DISJOINT MUST NOT HAVE MOVED ═══
+    --
+    -- Only the properly-overlapping branch was allowed to change. A nested pair is
+    -- still the containing blob and a separated pair is still TWO components -- the
+    -- second one by name, because two islands kilometres apart stitched into one
+    -- loop would bridge them with a quad across open sea, which is the failure a
+    -- stitch that fired too eagerly would produce.
+    local nested = SS.zone(0.0, 0.0, P1, 100.0, 0.0, P2, unit)
+    ok(nested.kind == 'blob' and #SS.components(nested) == 1,
+        'a nested pair is still the containing blob, one loop, no union at all',
+        ('%s, %d component(s)'):format(tostring(nested.kind),
+            #SS.components(nested)))
+
+    local apart = SS.zone(0.0, 0.0, P1, 6000.0, 0.0, P2, unit)
+    ok(apart.kind == 'blobUnion' and #SS.components(apart) == 2,
+        'and a DISJOINT pair is still two islands -- the gap between them is not '
+            .. 'safe and the walk must not cross it',
+        ('%s, %d component(s)'):format(tostring(apart.kind),
+            #SS.components(apart)))
+    local apartPct = interiorPct(apart)
+    ok(apartPct == 0.0,
+        'with nothing of either island inside the other, which it never had',
+        ('%.3f%%'):format(apartPct))
+
+    -- ═══ THE CONTAINMENT COLLAPSE, DRIVEN DIRECTLY BECAUSE zone() CANNOT REACH IT ═══
+    --
+    -- blobUnion also answers the case where one blob has swallowed the other without
+    -- their circles nesting: it returns the containing blob. MEASURED, that does not
+    -- happen through zone() at the shipping radii -- 21,070 reachable geometries over
+    -- seven phase pairs and ten seeds produced none -- because zone()'s own
+    -- circle-space nesting test fires first at every separation where it could. It IS
+    -- reachable through inset(), which erodes both parts and can eat a sliver thinner
+    -- than the erosion, so the branch is real and it is driven here rather than left
+    -- as scaffolding nothing calls.
+    --
+    -- AND THE POINT OF IT IS THE MEASURE BELOW. Without the collapse this pair is two
+    -- components, one of them inside the other in its ENTIRETY -- worse than the
+    -- overlap #356 exists to fix, not better.
+    local big   = SS.blob(0.0, 0.0, 1000.0, unit)
+    local small = SS.blob(120.0, 0.0, 300.0, unit)
+    local swallowed = SS.blobUnion(big, small)
+    ok(swallowed == big,
+        'a blob entirely inside another collapses to the container, which is the '
+            .. 'same shape the union is and has the same signed distance everywhere',
+        tostring(swallowed and swallowed.kind))
+    ok(SS.blobUnion(small, big) == big,
+        'and the argument order does not matter')
+
+    -- ═══ AND A PIECE THAT ONCE OPENED A COMPONENT MUST NOT OPEN ONE AGAIN ═══
+    --
+    -- The two-component spelling MARKS b's first piece with `newComponent`, and the
+    -- stitch REUSES whole pieces rather than copying them -- so a shape that was
+    -- concatenated once and stitched later would carry that mark into the stitched
+    -- loop, and seal() would cut the single boundary into two components at the seam.
+    -- One loop's worth of geometry, drawn as two islands, on a zone whose halves
+    -- overlap.
+    --
+    -- NOT REACHABLE THROUGH zone(), WHICH IS WHY IT IS DRIVEN HERE: every caller in
+    -- the game builds fresh blobs each frame, so no piece table is ever handed to
+    -- blobUnion twice. blobUnion is public, inset() calls it, and "nothing reaches it
+    -- today" is not a property anything can check -- so the mark is cleared on the way
+    -- through subPiece and this is what proves the clearing happens.
+    local far = SS.blob(9000.0, 0.0, 400.0, unit)
+    local twoComp = SS.blobUnion(big, far)
+    ok(#SS.components(twoComp) == 2 and far.pieces[1].newComponent == true,
+        'a disjoint pair marks the second boundary as its own component, which is what '
+            .. 'leaves the mark on the piece',
+        ('%d components, mark %s'):format(#SS.components(twoComp),
+            tostring(far.pieces[1].newComponent)))
+    -- A SHALLOW OVERLAP ON PURPOSE, so that almost all of `far` survives the stitch
+    -- and its FIRST piece -- the one carrying the mark -- is one of the whole pieces
+    -- reused rather than a split that would get a fresh table anyway.
+    local reused = SS.blobUnion(SS.blob(9600.0, 0.0, 300.0, unit), far)
+    ok(#SS.components(reused) == 1,
+        'and the same piece list stitched afterwards is ONE loop -- the stale mark is '
+            .. 'cleared rather than inherited',
+        ('%s, %d components'):format(tostring(reused.kind),
+            #SS.components(reused)))
+
+    -- THE DISTANCE ARGUMENT, MEASURED RATHER THAN ASSERTED FROM THE HEADER: for
+    -- A inside B the signed distance to B is at most the signed distance to A
+    -- everywhere, so the minimum over the parts IS B's. If that were false the
+    -- collapse would be moving the damage boundary.
+    local worstDiff = 0.0
+    for ix = 0, 60 do
+        for iy = 0, 60 do
+            local x = -1400.0 + 2800.0 * ix / 60
+            local y = -1400.0 + 2800.0 * iy / 60
+            local mn = math.min(SS.distance(big, x, y), SS.distance(small, x, y))
+            local d = math.abs(mn - SS.distance(big, x, y))
+            if d > worstDiff then worstDiff = d end
+        end
+    end
+    ok(worstDiff == 0.0,
+        'and the minimum over the two parts is the container\'s at every point, so '
+            .. 'collapsing cannot move what distance() answers',
+        ('worst difference %.12f m'):format(worstDiff))
+end
+
+-- ---------------------------------------------------------------------------
+describe('blob.stitch.sweep')
+do
+    -- ═══ EVERY REACHABLE OVERLAP, NOT THE ONE IN THE ISSUE ═══
+    --
+    -- A stitch that works on one geometry and fails on a bearing is a stitch that
+    -- fails in a match, and the interesting cases are the tails: almost nested, and
+    -- almost tangent. So this sweeps every shipping phase pair across the whole
+    -- reachable separation range on several seeds and asserts the ONE property that
+    -- has to hold for all of them -- no boundary inside the zone -- plus that the
+    -- answer is a single loop wherever the two really do cross.
+    --
+    -- A SEED SWEEP IS #346's TRAP AND THE SEEDS HERE ARE INTEGERS. BR.Rng runs its
+    -- argument through math.tointeger and falls back to ZERO when that fails, so a
+    -- sweep built on `i / 3` or on a scaled float would secretly be one seed
+    -- repeated -- and this block would report full coverage of a single shape.
+    local SS = BR.StormShape
+    local phases = BR.Config.Storm.phases
+
+    local worst, worstTag = 0.0, ''
+    local ones, twos, blobs, cases = 0, 0, 0, 0
+    for p = 1, #phases - 1 do
+        local r1, r2 = phases[p].radius, phases[p + 1].radius
+        if r2 > 0.0 then
+            for s = 1, 6 do
+                local seed = s * 5501
+                local unit = SS.blobUnit(seed, p, BLOB_OPTS)
+                for i = 1, 24 do
+                    local d = (r1 - r2) + ((r1 + r2) - (r1 - r2)) * i / 25
+                    local z = SS.zone(0.0, 0.0, r1, d, 0.0, r2, unit)
+                    cases = cases + 1
+                    local nc = #SS.components(z)
+                    if z.kind == 'blob' then blobs = blobs + 1
+                    elseif nc == 1 then ones = ones + 1
+                    else twos = twos + 1 end
+
+                    local per, total, inside = SS.perimeter(z), 0, 0
+                    for _, c in ipairs(SS.components(z)) do
+                        local n = math.max(48, math.floor(900 * c.len / per + 0.5))
+                        for k = 0, n - 1 do
+                            local x, y = SS.pointAtComponent(z, c,
+                                c.len * (k + 0.5) / n)
+                            total = total + 1
+                            if SS.distance(z, x, y) < -1e-6 then
+                                inside = inside + 1
+                            end
+                        end
+                    end
+                    local pct = 100.0 * inside / total
+                    if pct > worst then
+                        worst = pct
+                        worstTag = ('r %.0f/%.0f d %.0f seed %d, %d loop(s)')
+                            :format(r1, r2, d, seed, nc)
+                    end
+                end
+            end
+        end
+    end
+
+    ok(cases > 800 and ones > 0 and twos > 0,
+        'the sweep reaches both answers: stitched overlaps and separated islands',
+        ('%d cases -- %d one-loop, %d two-loop, %d collapsed to one blob')
+            :format(cases, ones, twos, blobs))
+
+    -- ═══ THE BOUND, AND WHY IT IS NOT ZERO ═══
+    --
+    -- The crossing hunt is a scan with an exact Lipschitz refinement, and the one
+    -- thing it cannot resolve is a TANGENCY: as the lens closes to nothing the two
+    -- crossings converge, the refinement's own interval test stops being satisfiable,
+    -- and the answer falls back to two components. That is the right failure -- the
+    -- error it leaves shrinks with the lens that caused it -- and this is the number
+    -- that bounds it. MEASURED at 0.067% worst over 14,400 geometries, on a pair
+    -- 5 m short of touching; the concatenated boundary this replaced measured 14.1%
+    -- on an ordinary overlap and 35.3% on a swallowed pair.
+    --
+    -- IF THIS EVER RISES, the scan is the suspect and not the stitch: CROSS_PER_PIECE
+    -- and the refinement budget in storm_shape.lua are the two numbers, and their
+    -- costs are recorded beside them.
+    ok(worst < 0.2,
+        'and no shape in the sweep draws more than a fifth of a percent of its '
+            .. 'boundary inside the safe zone -- the residue is tangency alone',
+        ('worst %.3f%% at %s'):format(worst, worstTag))
+end
+
+-- ---------------------------------------------------------------------------
+describe('shape.polyline')
+do
+    -- ═══ THE BOUNDARY AS A POINT LIST, WHICH IS WHAT THE MAP FILLS (#350) ═══
+    --
+    --   "seems every storm is still a circle."             -- owner, 2026-09-22
+    --
+    -- The map drew a radius blip at `r` while the wall drew a blob, and the map is
+    -- the only place the shape is visible at an early phase: at phase 1 the nine
+    -- corners are 1815 m apart along the boundary. ADD_AREA_OVERLAY fills an
+    -- arbitrary polygon on the radar and the pause map (#347), and it takes a flat
+    -- point list per contour, which is what this produces.
+    local SS = BR.StormShape
+    local unit = SS.blobUnit(12345, 1, BLOB_OPTS)
+
+    --- Worst distance from a chord's MIDPOINT to the real boundary.
+    ---
+    --- The midpoint is where a chord cuts deepest, and the measure is the signed
+    --- distance to the shape the walk was following -- so this is the sag the price
+    --- claims to bound, on a circle, a blob and a stitched union alike. A spelling
+    --- like "r minus the distance to the centre" would name a CIRCLE and would
+    --- report the jitter draw on anything else.
+    local function worstSag(shape, pts)
+        local w = 0.0
+        for i = 1, #pts do
+            local a, b = pts[i], pts[(i % #pts) + 1]
+            local d = math.abs(SS.distance(shape,
+                (a.x + b.x) * 0.5, (a.y + b.y) * 0.5))
+            if d > w then w = d end
+        end
+        return w
+    end
+
+    local b = SS.blob(-1200.0, 3400.0, 2600.0, unit)
+    local cols = SS.polyline(b, 8.0)
+    ok(#cols == 1 and #cols[1] > 18,
+        'a blob is ONE contour, of more points than it has runs',
+        ('%d contour(s), %d points'):format(#cols, cols[1] and #cols[1] or 0))
+    ok(worstSag(b, cols[1]) <= 8.0 + 1e-9,
+        'and no chord of it cuts further inside the boundary than the sag it was '
+            .. 'priced for',
+        ('worst %.3f m against 8.0'):format(worstSag(b, cols[1])))
+
+    -- ═══ THE SAG IS A PRICE AND NOT A COINCIDENCE, SO IT IS SWEPT ═══
+    --
+    -- A walker that ignored its argument and emitted a fixed count would satisfy the
+    -- single assertion above on the one radius it was tuned at. Every combination
+    -- below has to honour its own bound, and the point count has to MOVE with it.
+    local counts = {}
+    for _, sag in ipairs({ 1.0, 2.0, 8.0, 20.0 }) do
+        local n = 0
+        local worst = 0.0
+        for _, r in ipairs({ 110.0, 260.0, 950.0, 2600.0 }) do
+            local sh = SS.blob(0.0, 0.0, r, unit)
+            local pl = SS.polyline(sh, sag)
+            n = n + #pl[1]
+            worst = math.max(worst, worstSag(sh, pl[1]))
+        end
+        counts[#counts + 1] = n
+        ok(worst <= sag + 1e-9,
+            ('every radius honours a %.0f m sag budget'):format(sag),
+            ('worst %.3f m'):format(worst))
+    end
+    ok(counts[1] > counts[2] and counts[2] > counts[3] and counts[3] > counts[4],
+        'and a tighter budget really does buy more points -- the price is read, not '
+            .. 'a fixed count that happens to pass',
+        table.concat({ tostring(counts[1]), tostring(counts[2]),
+                       tostring(counts[3]), tostring(counts[4]) }, ' > '))
+
+    -- ═══ A VERTEX AT EVERY RUN BOUNDARY, WHICH IS #339's LANDMINE ON THIS PATH ═══
+    --
+    -- The sag rule is blind to a CORNER: curvature is infinite there and the bound
+    -- holds at no step at all. On a stitched union the two crossings are REFLEX, so a
+    -- chord that straddled one would land OUTSIDE the shape -- a fill covering ground
+    -- the storm is billing. Every run starting on a point is what prevents it, and
+    -- this is the assertion: the run boundaries are a subset of the emitted points.
+    local z = SS.zone(0.0, 0.0, 2600.0, 3392.0, 0.0, 1600.0,
+        SS.blobUnit(12345, 2, BLOB_OPTS))
+    local zc = SS.polyline(z, 8.0)
+    ok(#zc == 1, 'a stitched overlap is ONE contour, so the map fills it once',
+        ('%d contour(s)'):format(#zc))
+
+    local missing, checked = 0, 0
+    for ci, c in ipairs(SS.components(z)) do
+        for _, rn in ipairs(SS.runs(z, ci)) do
+            checked = checked + 1
+            local rx, ry = SS.pointAtComponent(z, c, rn.t0)
+            local hit = false
+            for _, p in ipairs(zc[ci]) do
+                if math.abs(p.x - rx) < 1e-6 and math.abs(p.y - ry) < 1e-6 then
+                    hit = true break
+                end
+            end
+            if not hit then missing = missing + 1 end
+        end
+    end
+    ok(missing == 0,
+        'and every run boundary is one of the emitted points, so no chord bridges a '
+            .. 'corner -- the reflex crossings of a stitched union included',
+        ('%d of %d run starts missing'):format(missing, checked))
+
+    -- AND THE CONTOUR BEGINS WHERE THE COMPONENT BEGINS, which pins the walk's PHASE
+    -- as well as its vertex set. Without it a walker that emitted each run's END
+    -- instead of its START passes everything above -- the run boundaries are all still
+    -- there, carried by the previous run -- while handing the movie a different
+    -- polygon from the one the wall's own first quad stands on. Same shape, different
+    -- vertices, and nothing to tell them apart on the day one of them is wrong.
+    local phaseOff = 0.0
+    for ci, c in ipairs(SS.components(z)) do
+        local ox, oy = SS.pointAtComponent(z, c, 0.0)
+        local p1 = zc[ci][1]
+        phaseOff = math.max(phaseOff,
+            math.sqrt((p1.x - ox) ^ 2 + (p1.y - oy) ^ 2))
+    end
+    ok(phaseOff < 1e-9,
+        'and each contour starts where its own component starts, so the polygon '
+            .. 'is the walk the wall makes and not a rotation of it',
+        ('worst %.12f m off'):format(phaseOff))
+    ok(worstSag(z, zc[1]) <= 8.0 + 1e-9,
+        'so the stitched union honours the same budget a single blob does, reflex '
+            .. 'corners and all -- which is the measurement a bridged corner fails',
+        ('worst %.3f m'):format(worstSag(z, zc[1])))
+
+    -- A DISJOINT PAIR IS TWO CONTOURS, which is what the caller turns into two
+    -- ADD_AREA_OVERLAY calls: one filled polygon cannot be two islands.
+    local apart = SS.polyline(
+        SS.zone(0.0, 0.0, 2600.0, 9000.0, 0.0, 1600.0,
+            SS.blobUnit(12345, 2, BLOB_OPTS)), 8.0)
+    ok(#apart == 2 and #apart[1] >= 3 and #apart[2] >= 3,
+        'a disjoint zone is TWO contours, each a polygon in its own right',
+        ('%d contours of %d and %d points'):format(#apart,
+            #apart[1], apart[2] and #apart[2] or 0))
+
+    -- ═══ maxPoints IS A CEILING ON THE STRING AND IT IS OBEYED EXACTLY ═══
+    --
+    -- The Scaleform string-parameter cap is unmeasured, so this is the only lever on
+    -- the length -- and a ceiling that was approximately obeyed would be no bound at
+    -- all. It floors at one point per run, because a contour with fewer points than
+    -- corners is not the shape any more.
+    local nRuns = #SS.runs(b, 1)
+    for _, cap in ipairs({ 96, 48, 24, nRuns, 4, 1 }) do
+        local pl = SS.polyline(b, 1.0, cap)
+        local n = #pl[1]
+        ok(n <= math.max(cap, nRuns) and n >= nRuns,
+            ('a ceiling of %d yields at most that and never fewer than one point '
+                .. 'per run'):format(cap),
+            ('%d points, %d runs'):format(n, nRuns))
+    end
+    ok(#SS.polyline(b, 1.0, 0)[1] == #SS.polyline(b, 1.0)[1],
+        'and a ceiling of zero is no ceiling, exactly as nil is')
+
+    -- A CIRCLE STILL WALKS, which is the shape a collapsed zone and a squareness of
+    -- zero both hand this -- one run, no corners, and the sag rule is all there is.
+    local circ = SS.circle(100.0, -200.0, 500.0)
+    local cp = SS.polyline(circ, 2.0)
+    ok(#cp == 1 and #cp[1] > 3 and worstSag(circ, cp[1]) <= 2.0 + 1e-9,
+        'a circle walks too, at the sag it was priced for',
+        ('%d points, worst %.3f m'):format(#cp[1], worstSag(circ, cp[1])))
+
+    -- AND THE FINAL PHASE'S COLLAPSE DOES NOT THROW. The zone closes onto a point and
+    -- every radius floors at MIN_RADIUS, so the contour is tiny rather than absent --
+    -- the caller drops anything under three points rather than handing the movie a
+    -- string it cannot close.
+    local tiny = SS.polyline(SS.circle(0.0, 0.0, 0.0), 8.0)
+    ok(#tiny == 1 and #tiny[1] >= 1,
+        'a collapsed zone still answers with a contour instead of throwing',
+        ('%d point(s)'):format(#tiny[1]))
+end
+
 describe('combat.melee')
 do
     -- MELEE IS VALIDATED LIKE ANYTHING ELSE, and needed two fields to be.
@@ -15218,8 +15709,27 @@ do
             C.pedAt = pt(0.0, 0.0)
             local rec = C.env.BR.State.storm
             rec.phase = 1                 -- the free-loot hold, where the fade is
-            rec.tStart = (C.now + 16) - (rec.tWait - msLeft)
             if prep then prep(C) end
+            -- ═══ #351'S ENTRY RAMP IS ARMED AND SPENT BEFORE THE FRAME THAT COUNTS ═══
+            --
+            -- The preview wall ramps up over render.fadeInSec from the first frame the
+            -- mainland is the world -- "the storm wall popped in, didn't fade in", the
+            -- owner from the bus -- so ONE frame here would read the ramp's own zero
+            -- and report the empty screen #340 was about as though it were still the
+            -- contract. The clock is pushed past the window and the record re-aimed at
+            -- the same msLeft, so what is finally drawn is the moment this block asked
+            -- for, at the preview's settled strength.
+            --
+            -- AND THE TWO BUFFERS ARE EMPTIED BEFORE THAT FRAME, because this harness's
+            -- C.frame accumulates -- which is the exact trap the note above this `do`
+            -- block records: an assertion reading `markers[1]` off an earlier frame
+            -- passed while measuring the wrong wall. Clearing is what the block's own
+            -- "a fresh client per moment" rule was buying, done in one place.
+            rec.tStart = (C.now + 16) - (rec.tWait - msLeft)
+            C.frame()
+            C.now = C.now + math.floor(fadeMs)
+            rec.tStart = (C.now + 16) - (rec.tWait - msLeft)
+            C.markers, C.polys = {}, {}
             C.frame()
             return C
         end

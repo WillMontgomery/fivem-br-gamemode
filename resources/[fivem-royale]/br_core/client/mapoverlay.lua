@@ -1,19 +1,20 @@
--- The shared minimap overlay handle, and one filled polygon drawn through it.
+-- The shared minimap overlay handle, and the filled polygons drawn through it.
 --
--- ═══ THIS IS A SPIKE (#347) AND THE SCOPE IS THE POINT ═══
+-- ═══ THE SPIKE SAID YES, SO THIS HAS A CALLER NOW (#347 -> #350) ═══
 --
--- ONE QUESTION: does ADD_AREA_OVERLAY actually fill a polygon on the radar and
--- on the pause map? Nobody ships that method -- across GitHub the only hits are
--- ScaleformUI itself, its docs and its C# demo -- so it is answered by drawing
--- one hard-coded shape and looking at it (/brmaparea, client/debug.lua), not by
--- building on the assumption that it works.
+-- The one question was whether ADD_AREA_OVERLAY actually fills a polygon on the
+-- radar and on the pause map -- nobody ships that method, and across GitHub the
+-- only hits are ScaleformUI itself, its docs and its C# demo. It was answered by
+-- drawing one hard-coded concave shape through it and looking at it (/brmaparea,
+-- client/debug.lua): the arrowhead drew on the big map AND on the minimap with its
+-- notch intact.
 --
--- SO THERE IS DELIBERATELY NO STORM INTEGRATION HERE. No shape walking, no
--- per-phase wiring, no rebuild cadence, no sibling of storm.lua's mapBlips.
--- Nothing in the gamemode calls this file. If the spike says yes, the caller is
--- written then; if it says no, this file and its command are deleted and the
--- fallback is a DUI raster into ADD_SCALED_OVERLAY -- same handle, same movie,
--- and proven in production by somebody else.
+-- So the storm draws its real boundary here. client/storm.lua's `storm.map`
+-- callback owns WHAT is drawn and WHEN -- the shape walk, the rebuild cadence, the
+-- suppression rules, the radius-blip fallback -- and this file still owns only the
+-- handle, the indices and the marshalling. THE DIVISION IS THE SAME ONE THE SPIKE
+-- HAD, because it is the one that survives the fallback: a client whose gate never
+-- opens gets radius blips from storm.lua and this file simply never draws.
 --
 -- ═══ THE HANDLE IS NOT OURS TO CREATE ═══
 --
@@ -52,12 +53,15 @@
 -- `MinimapOverlays.isLoaded` is NOT the test -- it is permanently false in this
 -- vendored copy and the BR-PATCH 2 note in ScaleformUI.lua says why.
 --
--- HONESTY ABOUT WHAT THAT GATE BUYS, THOUGH: ScaleformUI's own thread calls
--- MinimapOverlays:Load() at br_core's start and retries at 2 Hz until the
--- handle arrives, so ADD_MINIMAP_OVERLAY has already been called once per
--- client, at join, today, with no gate at all -- and that is vendored code this
--- project does not patch. The gate keeps OUR call off the race. It cannot move
--- theirs, and the spike is not the place to try.
+-- WHAT THAT GATE BOUGHT, AND WHAT #348 THEN FIXED BESIDE IT: this gate keeps OUR
+-- call off the race and could never move ScaleformUI's, which called
+-- MinimapOverlays:Load() at br_core's start and retried at 2 Hz with no session
+-- test at all -- so ADD_MINIMAP_OVERLAY ran once per client, at join, ungated, and
+-- in-game logout re-auth re-runs join in ordinary play. That is vendored code and
+-- it now carries BR-PATCH 5 gating both of its own calls on the same two
+-- conditions this file waits for. The two gates are deliberately separate: theirs
+-- is in their file because it is their call, and neither one can be deleted on the
+-- strength of the other.
 
 BR = BR or {}
 BR.MapOverlay = {}
@@ -108,6 +112,7 @@ local state = {
     asked   = false,    -- the event has been fired at least once
     askedAt = 0,        -- GetGameTimer() of the last fire
     ours    = {},       -- the movie indices we added, in the order we added them
+    chars   = 0,        -- coordinate characters in the last setAreas push
     why     = 'not started',
 }
 
@@ -297,6 +302,97 @@ function BR.MapOverlay.addArea(points, colour)
     return index, ('added at movie index %d'):format(index)
 end
 
+--- The `a` to ASK FOR so the fill renders at `want` of 255.
+---
+--- ═══ THE MOVIE'S ALPHA IS NOT LINEAR BELOW 100, AND IT COMPOUNDS ═══
+---
+--- Two things in the movie read the same parameter. `Colourise` sets
+--- `mc._alpha = a / 255 * 100`, which is a Flash 0-100 percentage, and
+--- `beginFill(0xFFFFFF, a)` takes `a` as a Flash 0-100 alpha as well. Above 100
+--- Flash clamps the fill term, so the opacity is just `a / 255`; BELOW 100 THE TWO
+--- MULTIPLY -- `(a / 255) * (a / 100)` -- and a = 50 renders near 10% where a
+--- reader of the parameter would expect 20%. Read out of the disassembled movie,
+--- recorded on #347.
+---
+--- So this inverts it. At or above 100 the answer is `want` itself. Below, solving
+--- `(a / 255) * (a / 100) = want / 255` gives `a = 10 * sqrt(want)`, and the two
+--- branches agree at exactly 100 so there is no step in the middle.
+---
+--- WHY INVERT IT RATHER THAN JUST STAYING ABOVE 100. The zone fills are asked for
+--- at the alphas the radius blips already use -- 80 for the safe zone, 110 for the
+--- target -- so that the overlay and the blip fallback are the same picture at the
+--- same strength. 80 is in the compounding region, and "stay above 100" would mean
+--- the fill was a THIRD of the way more opaque than the map it replaces, which is a
+--- change nobody asked for dressed up as a workaround.
+--- @param want integer  0-255, as a blip alpha is
+--- @return integer      0-255, for ADD_AREA_OVERLAY's `a`
+function BR.MapOverlay.areaAlpha(want)
+    want = want or 255
+    if want < 0 then want = 0 elseif want > 255 then want = 255 end
+    if want >= 100 then return math.floor(want + 0.5) end
+    return math.floor(10.0 * math.sqrt(want) + 0.5)
+end
+
+--- Replace EVERYTHING this file has drawn with one filled area per entry.
+---
+--- ═══ REMOVE AND RE-ADD IS THE ONLY WAY A GEOMETRY CHANGES ═══
+---
+--- An area cannot be moved, rotated or resized in place -- addArea's header has the
+--- whole argument -- so a shrinking zone is a rebuild, and a rebuild is every one of
+--- our clips removed and every one added again. That is why this takes the WHOLE
+--- content rather than one area at a time: with one call per rebuild there is no
+--- moment at which the movie holds half of last tick's zone and half of this one,
+--- and the index bookkeeping stays the single ascending list removeAll() is written
+--- for. THE CALLER RATE-LIMITS IT. Nothing here is safe to run per frame.
+---
+--- ═══ AND A ZONE IS DRAWN WHOLE OR NOT AT ALL ═══
+---
+--- The same rule client/storm.lua's mapBlips makes, for the same reason: half a zone
+--- is a boundary in the WRONG place rather than a missing one, and a player reads a
+--- filled edge as the edge. So a partial push is torn down and reported as nothing,
+--- which is also what puts the caller back on the radius-blip fallback.
+---
+--- @param areas table  { { points = { { x, y }, ... }, colour = { r, g, b, a } }, ... }
+---                     `colour.a` is the LINEAR 0-255 alpha; see areaAlpha
+--- @return integer drawn   areas now in the movie, 0 if nothing was drawn
+--- @return integer chars   characters of coordinate string pushed, for the cap hunt
+function BR.MapOverlay.setAreas(areas)
+    BR.MapOverlay.removeAll()
+    state.chars = 0
+    if type(areas) ~= 'table' or #areas == 0 then return 0, 0 end
+    if not BR.MapOverlay.ready() then return 0, 0 end
+
+    local whole = true
+    for i = 1, #areas do
+        local ar = areas[i]
+        local col = ar.colour or {}
+        local idx = BR.MapOverlay.addArea(ar.points, {
+            r = col.r, g = col.g, b = col.b,
+            a = BR.MapOverlay.areaAlpha(col.a),
+        })
+        if idx then
+            -- THE LENGTH OF THE STRING THAT WENT OUT, WHICH IS THE ONE UNMEASURED
+            -- RISK ON THIS PATH. There is no documented cap on a Scaleform string
+            -- parameter, which is not the same as there not being one: the #347
+            -- spike's coordinates were about 70 characters and a real boundary is
+            -- over a thousand. If a shape ever comes out GARBLED rather than absent,
+            -- this number is the first suspect and BR.MapOverlay.report() is where to
+            -- read it. Counted from the same marshaller that did the pushing, so it
+            -- cannot drift from what was actually sent.
+            state.chars = state.chars + #BR.Native.minimapAreaString(ar.points)
+        else
+            whole = false
+        end
+    end
+
+    if not whole then
+        BR.MapOverlay.removeAll()
+        state.chars = 0
+        return 0, 0
+    end
+    return #state.ours, state.chars
+end
+
 --- Remove everything this file added, and nothing else.
 ---
 --- HIGHEST INDEX FIRST, because REM_OVERLAY splices: removing index 2 of
@@ -340,6 +436,7 @@ function BR.MapOverlay.report()
         asked   = state.asked,
         frames  = state.frames,
         areas   = #state.ours,
+        chars   = state.chars,
         next    = nextIndex(),
     }
 end

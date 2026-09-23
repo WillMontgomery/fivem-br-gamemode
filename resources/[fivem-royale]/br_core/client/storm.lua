@@ -1666,6 +1666,245 @@ local function mapBlips(existing, shape, colour, alpha, name)
     return out
 end
 
+-- ------------------------------------------------------- the filled shape ---
+--
+-- ═══ THE MAP STOPS BEING A CIRCLE (#350) ═══
+--
+--   "seems every storm is still a circle."               -- owner, 2026-09-22
+--
+-- The wall has been a blob since #344 and the MAP was still a radius blip at `r`.
+-- That is not a cosmetic gap, it is where the whole feature is visible: at phase 1
+-- the nine corners are 1815 m apart along the boundary and a player on the ground
+-- sees a few hundred metres of it, so the shape only reads from above. Corner
+-- spacing by radius: 2600 -> 1815 m, 950 -> 663, 260 -> 182, 110 -> 77.
+--
+-- ADD_AREA_OVERLAY fills an arbitrary polygon on the radar AND on the pause map --
+-- #347 spiked it and the concave arrowhead drew on both with its notch intact --
+-- so the two zones the map draws are filled polygons of the real boundary now, and
+-- the radius blips above are what a client falls back to.
+--
+-- ═══ THE FALLBACK IS NOT OPTIONAL AND IT IS NOT A SECOND IMPLEMENTATION ═══
+--
+-- The overlay sits behind a readiness gate that can refuse: the handle comes from
+-- another resource, the movie has to be resident, and the gate deliberately waits
+-- out the #4167 streaming race that #348 is about. A client that never gets a
+-- handle must still see a zone on its map, so mapFilled() is one switch read in
+-- both directions -- exactly one of the two paths draws, and the blips are already
+-- written and already tested.
+--
+-- ═══ WHAT IT DRAWS: THE SAME TWO ZONES, AT THE SAME TWO ALPHAS ═══
+--
+-- The safe zone (what the blue ring marked) and the target (what the purple ring
+-- marks), under the same suppression rule -- the whole-map phase-1 hold shows the
+-- target only -- and the target pushed LAST so it draws over the zone, which is the
+-- ordering the two blips already had.
+--
+-- BOTH IN THE WALL'S OWN PURPLE, AND THAT IS THE ONE VISIBLE CHANGE. An overlay
+-- takes an RGB and a blip takes a palette index; `blip.currentColour = 3` is GTA's
+-- blip blue and nothing on this path can ask the engine what that is in RGB. So the
+-- layering survives -- faint zone, stronger target -- in one hue rather than two.
+-- config/storm.lua's `overlay` block says so and is where a blue would go back.
+
+--- How many areas the overlay is currently showing for us.
+local overlayShown = 0
+local lastOverlayAt = 0
+local overlayKey = nil
+local overlaySaid = false
+
+--- Is the overlay drawing the zones right now? Then the radius blips must not.
+---
+--- READ BY THE TWO BLIP SITES ABOVE AND WRITTEN IN EXACTLY ONE PLACE -- the count
+--- setAreas came back with. A boolean of its own beside it would be a second
+--- expression of one fact, which is the mistake client/mapoverlay.lua's own header
+--- talks itself out of twice.
+--- @return boolean
+local function mapFilled()
+    return overlayShown > 0
+end
+
+--- The wall's own purple, at `alpha` of 255 on the linear scale a blip uses.
+---
+--- BR.MapOverlay.areaAlpha is what turns that into the parameter the movie wants,
+--- because the movie's alpha compounds below 100 -- its header has the arithmetic.
+--- Done there rather than here so that every caller of setAreas gets it.
+--- @param alpha number
+--- @return table  { r, g, b, a }
+local function fillColour(alpha)
+    local c = cfg.render.colour or {}
+    return { r = c.r or 255, g = c.g or 255, b = c.b or 255,
+             a = math.floor((alpha or 255) + 0.5) }
+end
+
+--- WHAT the overlay should be showing, as numbers, and its own key.
+---
+--- ═══ THE PLAN IS CHEAP AND THE WALK IS NOT, WHICH IS WHY THEY ARE TWO CALLS ═══
+---
+--- An area cannot be resized in place, so every change is every clip removed and
+--- every clip re-added with a kilobyte of coordinates marshalled through a Scaleform
+--- string -- and the rebuild is therefore rate-limited. This runs at the tick rate
+--- and the walk runs at the rebuild rate, which is what keeps a zone that has not
+--- moved from paying for a boundary walk ten times a second all match: building the
+--- contours first and then deciding not to send them would be the cost without the
+--- change.
+---
+--- THE KEY IS BUILT FROM THE INPUTS, not from the output, and it is everything
+--- overlayFill below reads: the solved circle, the target, the seed, the phase and
+--- the alpha, to the metre and the alpha step. During the phase-1 hold every one of
+--- those is constant, so the whole hold costs ONE push.
+--- @return table|nil plan
+--- @return string|nil key
+local function overlayPlan()
+    local ov = cfg.overlay or {}
+    if ov.enabled == false then return nil end
+
+    -- WARMUP AND THE BUS: circle 1, published the moment the match formed (#327),
+    -- and it wears phase 1's shape because that is the circle phase 1 will spend.
+    local pv = previewCircle()
+    if pv then
+        return { pv = pv },
+            ('p|%.0f|%.0f|%.0f|%d'):format(pv.cx, pv.cy, pv.r,
+                math.floor(pv.seed or 0))
+    end
+
+    local rec = activeRecord()
+    if not rec then return nil end
+    local cx, cy, r, st, msLeft = solveNow(rec)
+    if r <= 1.0 and rec.r1 <= 1.0 then return nil end
+
+    -- THE SAFE ZONE IS SUPPRESSED FOR THE WHOLE-MAP PHASE-1 HOLD and ramped in on
+    -- the wall's own share, exactly as the ring above is -- wallShare, one number
+    -- read by the curtain, the ring and this.
+    local share = wallShare(rec, st, msLeft)
+    local wholeMap = rec.phase == 1 and st == BR.StormPhase.HOLDING
+    local zoneA = cfg.blip.currentAlpha
+    if wholeMap then zoneA = cfg.blip.currentAlpha * share end
+
+    return { rec = rec, cx = cx, cy = cy, r = r, zoneA = zoneA },
+        ('r|%d|%.0f|%.0f|%.0f|%.0f|%.0f|%.0f|%d|%d'):format(
+            rec.phase, cx, cy, r, rec.cx1, rec.cy1, rec.r1,
+            math.floor(rec.seed or 0), math.floor(zoneA + 0.5))
+end
+
+--- The plan's contours, ready for BR.MapOverlay.setAreas.
+--- @param plan table  from overlayPlan
+--- @return table|nil areas
+local function overlayFill(plan)
+    local ov = cfg.overlay or {}
+    local out = {}
+    local function push(shape, alpha)
+        local cols = BR.StormShape.polyline(shape, ov.chordM, ov.maxPoints)
+        for i = 1, #cols do
+            -- A CONTOUR UNDER THREE POINTS IS NOT A POLYGON, and the movie would be
+            -- handed a coordinate string it cannot close. Reachable only on a shape
+            -- whose runs have collapsed -- the last seconds of the final sweep --
+            -- where BR.MapOverlay.addArea would refuse it anyway; dropped here so
+            -- that "drawn whole or not at all" is not tripped by a zone that has
+            -- genuinely run out of geometry.
+            if #cols[i] >= 3 then
+                out[#out + 1] = { points = cols[i], colour = fillColour(alpha) }
+            end
+        end
+    end
+
+    if plan.pv then
+        local pv = plan.pv
+        push(BR.StormShape.blob(pv.cx, pv.cy, pv.r, BR.StormUnit(pv.seed, 1)),
+            cfg.blip.nextAlpha)
+    else
+        local rec = plan.rec
+        -- THE SAFE ZONE, WHICH IS THE SHAPE THE WALL IS DRAWN ON -- BR.StormZone, the
+        -- one spelling of "what is safe right now", so the fill and the curtain cannot
+        -- disagree about where the edge is.
+        if plan.zoneA > 0.0 then
+            push(BR.StormZone(rec, plan.cx, plan.cy, plan.r), plan.zoneA)
+        end
+        -- AND THE TARGET, LAST, SO IT DRAWS OVER THE ZONE.
+        if rec.r1 > 1.0 then
+            push(BR.StormShape.blob(rec.cx1, rec.cy1, rec.r1,
+                BR.StormUnit(rec.seed, rec.phase)), cfg.blip.nextAlpha)
+        end
+    end
+
+    if #out == 0 then return nil end
+    return out
+end
+
+BR.Loop.register(BR.Loop.TICK, 'storm.map', function()
+    -- LOADED AFTER THIS FILE, SO IT IS ASKED FOR AT RUNTIME AND NEVER AT LOAD.
+    -- br_core's manifest puts client/mapoverlay.lua well after client/storm.lua,
+    -- which is deliberate -- it needs client/natives.lua -- so BR.MapOverlay does
+    -- not exist while this file is being read. It always exists by the first tick.
+    if not BR.MapOverlay then return end
+
+    local plan, key = overlayPlan()
+    if not plan then
+        -- NOTHING TO SHOW, SO NOTHING IS LEFT ON THE MAP. Between matches, in the
+        -- lobby, and while the overlay is switched off, this is what takes the fills
+        -- down -- and it puts the blips back in charge on the same tick, because
+        -- mapFilled() is one number.
+        if overlayShown > 0 then
+            BR.MapOverlay.removeAll()
+            overlayShown = 0
+        end
+        overlayKey = nil
+        return
+    end
+
+    -- THE GATE IS STEPPED ONLY WHILE SOMETHING WANTS AN OVERLAY. Stepping it costs
+    -- a cross-resource event at 2 Hz until the handle arrives, so a client sitting
+    -- in the lobby with no zone to draw should not be paying it -- and the settle
+    -- window starting at warmup rather than at join is also what keeps our own call
+    -- furthest from the #4167 race.
+    if not BR.MapOverlay.step() then return end
+
+    local now = GetGameTimer()
+    local hz = cfg.overlay.rebuildHz or 2
+    if hz <= 0 then return end
+    if key == overlayKey and overlayShown > 0 then return end
+    if (now - lastOverlayAt) < (1000.0 / hz) then return end
+    lastOverlayAt = now
+
+    -- THE WALK HAPPENS HERE AND NOWHERE EARLIER, which is the whole reason the plan
+    -- and the fill are two functions: every gate above this line is cheap, so a tick
+    -- on which nothing has moved costs a handful of comparisons instead of a boundary
+    -- walk per contour.
+    local areas = overlayFill(plan)
+    if not areas then
+        -- THE PLAN WANTED SOMETHING AND THE GEOMETRY HAD NOTHING LEFT -- the final
+        -- sweep's last seconds, where every contour has collapsed under three points.
+        -- Treated as "no fill", so the radius blips take the map and the key does not
+        -- latch on a push that never happened.
+        if overlayShown > 0 then
+            BR.MapOverlay.removeAll()
+            overlayShown = 0
+        end
+        overlayKey = nil
+        return
+    end
+
+    local drawn, chars = BR.MapOverlay.setAreas(areas)
+    overlayShown = drawn
+    -- A REFUSED PUSH DOES NOT LATCH. Clearing the key means the next tick tries
+    -- again rather than believing the map is already showing this geometry, and
+    -- mapFilled() is false in the meantime so the blips carry the map.
+    overlayKey = (drawn > 0) and key or nil
+
+    -- ONCE, AND IT NAMES THE CHARACTER COUNT. The Scaleform string-parameter cap is
+    -- the one unmeasured risk on this path: there is no documented limit, the spike's
+    -- coordinates were about 70 characters and a real boundary is several hundred to
+    -- over a thousand. If a shape ever draws GARBLED rather than absent this is the
+    -- first number to look at, and config/storm.lua's `overlay.maxPoints` is the
+    -- lever. Said once per session in the same shape as the wall's fade line, because
+    -- a rebuild happens twice a second and a line per rebuild is a log nobody reads.
+    if drawn > 0 and not overlaySaid then
+        overlaySaid = true
+        local pts = 0
+        for i = 1, #areas do pts = pts + #areas[i].points end
+        print(('[br_core] storm map overlay: %d area(s), %d points, %d coord chars')
+            :format(drawn, pts, chars))
+    end
+end)
+
 -- --------------------------------------------------------------- preview ---
 --
 -- ═══ CIRCLE 1, BEFORE THE STORM (#327) ═══
@@ -1759,6 +1998,71 @@ AddEventHandler('br:env:world', function(island)
     islandSaid = island and true or false
 end)
 
+-- ═══ AND IT ARRIVES RATHER THAN APPEARING (#351) ═══
+--
+--   "When the map loaded in (while in bus), the storm wall popped in, didn't fade
+--    in."                                              -- owner, 2026-09-22
+--
+-- #340 gave the preview wall its whole life -- warmup, the bus, and the suppressed
+-- phase-1 hold -- and its fade OUT, which is one minus the real wall's share. What
+-- it never had is an entry: the instant br_environment says the mainland is the
+-- world, this callback starts drawing at the full previewAlpha on its first frame,
+-- five hundred metres in front of a bus.
+--
+-- ═══ NOT A SECOND CLOCK, WHICH IS #340'S WHOLE POINT ═══
+--
+-- The window is render.fadeInSec -- the SAME number the curtain fades in over and
+-- the map ring fades in over -- so there is one fade length in this file and the
+-- preview now reads it at both ends of its life: in over fadeInSec when the world
+-- arrives, out over fadeInSec as the real wall rises. Retuning that one value
+-- retunes all four. What is new here is a TIMESTAMP, not a duration, and it is the
+-- one thing the existing clock cannot supply: nothing about the phase-1 countdown
+-- knows when the mainland streamed in.
+--
+-- ═══ AND IT DOES NOT CHANGE WHEN THE WALL STARTS DRAWING ═══
+--
+-- The ramp is anchored on the first frame mainlandLoaded() is true, which is the
+-- frame this callback would have drawn on anyway -- so the wall begins at exactly
+-- the moment it began before, at nothing instead of at full.
+--
+-- RE-ARMED WHENEVER THE MAINLAND IS NOT THE WORLD, and that is not only for the
+-- next match. br_environment puts the Cayo island back for every state that is not
+-- BUS or PLAYING, so a second match in one session would otherwise inherit a
+-- finished ramp and pop exactly as before -- and if the island ever came back
+-- mid-flight, the wall coming back should arrive the same way it did the first time.
+local worldAt = nil
+
+--- How much of the preview's own strength has arrived. 0 before the world arrived,
+--- 1 once a whole fade window has passed since it did.
+---
+--- ═══ FOUR LINES, AND EVERY ONE OF THEM IS THE ONLY THING THAT ANSWERS ITS CASE ═══
+---
+--- It had two more. A `held <= 0.0` early return and an `ms <= 0.0` early return both
+--- came out because each was a SECOND answer to a case something else already
+--- answered, and a second answer is a line that can be deleted with nothing going
+--- red:
+---
+---   * A ZERO WINDOW is answered by `held >= ms`, which is true for every held time
+---     once ms is zero -- so fadeInSec of 0 means full strength with no division
+---     performed at all, rather than a guard in front of one.
+---   * A CLOCK THAT WENT BACKWARDS returns a negative share, and the CALLER already
+---     draws nothing at or below zero. Clamping here as well would be the same
+---     decision made twice, in two places, either of which could later move.
+---
+--- THE UNARMED CASE IS THE FIRST FRAME, NOT A GUARD, and the caller reads this BEFORE
+--- it stamps worldAt for exactly that reason: a nil anchor IS the pass on which the
+--- mainland has just become the world. Stamped first, this branch would be
+--- unreachable and could be replaced with `return 1.0` -- the pop straight back, with
+--- nothing to notice.
+--- @return number
+local function entryShare()
+    if not worldAt then return 0.0 end
+    local ms = (cfg.render.fadeInSec or 10.0) * 1000.0
+    local held = GetGameTimer() - worldAt
+    if held >= ms then return 1.0 end
+    return held / ms
+end
+
 --- The purple ring on the big map. NEVER REBUILT WHILE IT IS INTACT.
 ---
 --- Radius blips cannot be resized in place, which is why the storm's own two are
@@ -1797,7 +2101,11 @@ end
 -- happening -- the wall was the whole defect.
 BR.Loop.register(BR.Loop.TICK, 'storm.preview', function()
     local pv = previewCircle()
-    if not pv then
+    -- AND IT STANDS DOWN WHEN THE OVERLAY HAS THE SHAPE (#350). The filled polygon
+    -- of circle 1's real boundary is the same ring this draws, done properly, so a
+    -- radius blip beside it would be a second edge in a different place. See
+    -- mapFilled, which is the one switch both map paths read.
+    if not pv or mapFilled() then
         clearPreviewBlip()
         return
     end
@@ -1887,9 +2195,35 @@ local function previewWallCircle()
 end
 
 BR.Loop.register(BR.Loop.FRAME, 'storm.previewWall', function()
+    -- THE WORLD GATE IS FIRST NOW, BECAUSE IT IS WHAT ARMS THE ENTRY RAMP (#351).
+    -- It was second, below the storm's own gate, and the two are pure predicates in
+    -- either order -- the wall draws when both pass. What the order buys is that the
+    -- ramp is re-armed on EVERY path where the mainland is not the world, including
+    -- the ones where there is no circle to preview: between matches previewWallCircle
+    -- answers nil, and a ramp cleared only inside that branch would never clear.
+    if not mainlandLoaded() then
+        worldAt = nil
+        return
+    end
+
     local pv, alphaScale = previewWallCircle()
     if not pv then return end
-    if not mainlandLoaded() then return end
+
+    -- ═══ READ THE RAMP, THEN ARM IT, AND THAT ORDER IS THE POINT ═══
+    --
+    -- On the frame the mainland becomes the world there is no anchor yet, so the share
+    -- is zero and this returns -- and the stamp below is what makes every later frame
+    -- measure from THIS one. Stamping first would give the same zero (a held time of
+    -- 0), and it would make entryShare's own unarmed branch unreachable: dead code
+    -- that could be replaced with `return 1.0` and put the pop straight back, with
+    -- nothing to notice.
+    --
+    -- AND NOTHING IS DRAWN AT ZERO, which is the reading wallShare's header argues for
+    -- its own boundary: a whole wall's worth of triangles at alpha 0 is identical on
+    -- screen and a frame of geometry dearer.
+    local entry = entryShare()
+    if not worldAt then worldAt = GetGameTimer() end
+    if entry <= 0.0 then return end
 
     -- ═══ THE SAME RENDERER AND THE SAME HEIGHT AS THE LIVE WALL ═══
     --
@@ -1927,8 +2261,15 @@ BR.Loop.register(BR.Loop.FRAME, 'storm.previewWall', function()
     -- is phase 1's target by definition. A BLOB rather than the zone union: the
     -- preview is ONE circle, which is what it has always been, and there is no
     -- second circle to extend it toward until the storm exists.
+    --
+    -- AND alphaScale IS MULTIPLIED BY THE ENTRY RAMP (#351), which is the only thing
+    -- #351 changed: one number, at the one place the alpha is finally spent, so the
+    -- handoff arithmetic previewWallCircle owns is untouched. The two ramps are
+    -- independent by construction -- the entry runs once when the world arrives and
+    -- has completed long before the hold's last fadeInSec, where the handoff takes
+    -- over -- and their product can never exceed either.
     drawWall(BR.StormShape.blob(pv.cx, pv.cy, pv.r, BR.StormUnit(pv.seed, 1)),
-        alphaScale)
+        alphaScale * entry)
 end)
 
 -- ----------------------------------------------------- blips, FX, envelope ---
@@ -2366,24 +2707,42 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
     -- brisk while shrinking, lazy while holding, and only when the radius
     -- moved enough to see.
     local gt = GetGameTimer()
-    -- The blip fade window shares the wall's fade clock: the map ring and
-    -- the 3D curtain arrive together (user call, 2026-08-04).
-    local fadeMs  = (cfg.render.fadeInSec or 10.0) * 1000.0
+    -- ═══ THE MAP RING READS THE WALL'S OWN FADE CLOCK, NOT A COPY OF IT ═══
+    --
+    -- The map ring and the 3D curtain arrive together (user call, 2026-08-04), and
+    -- until #350 that was TWO SPELLINGS of one fade: `msLeft <= fadeMs` and
+    -- `1 - msLeft / fadeMs` written out here beside wallShare's own identical
+    -- arithmetic. Two spellings of one number are two things that can stop agreeing
+    -- -- and this copy did not carry wallShare's fadeInSec-of-zero answer either, so
+    -- it was right about that case by accident rather than by rule. There is one
+    -- share now, and the overlay in storm.map reads the same one.
+    local share = wallShare(rec, st, msLeft)
     local wholeMap = rec.phase == 1 and st == BR.StormPhase.HOLDING
-    local fading   = wholeMap and msLeft <= fadeMs
+    local fading   = wholeMap and share > 0.0
     local hz = (st == BR.StormPhase.SHRINKING or fading)
         and cfg.blip.refreshHzShrinking or cfg.blip.refreshHzHolding
     if gt - lastBlipAt >= 1000 / hz then
         lastBlipAt = gt
+        -- ═══ THE BLIPS ARE THE FALLBACK NOW, AND ONE OR THE OTHER DRAWS (#350) ═══
+        --
+        -- When the minimap overlay is filling the real boundary, these rings have to
+        -- come DOWN: a filled polygon and a filled disc of the same zone on the same
+        -- map are two boundaries, and a player reads whichever one is nearer. The
+        -- radius reset is what makes the ring come back whole if the overlay ever
+        -- stops -- lastBlipR of -1 cannot match any radius, so the next pass redraws
+        -- rather than deciding the circle has not moved.
+        if mapFilled() then
+            curBlip  = removeBlips(curBlip)
+            nextBlip = removeBlips(nextBlip)
+            lastBlipR = -1.0
         -- The CURRENT circle is not drawn while it is still the whole map
         -- (phase-1 hold): a ring around all of Los Santos on every map told
         -- players nothing... until the wall starts fading in, when its map
         -- ring fades in WITH it -- alpha ramped on the same countdown the
         -- curtain uses, so neither pops.
-        if wholeMap then
+        elseif wholeMap then
             if fading then
-                local a = math.floor(cfg.blip.currentAlpha
-                    * (1.0 - msLeft / fadeMs) + 0.5)
+                local a = math.floor(cfg.blip.currentAlpha * share + 0.5)
                 curBlip = mapBlips(curBlip, zoneShape(cx, cy, r),
                     cfg.blip.currentColour, a, 'Safe Zone')
                 lastBlipR = r
@@ -2402,7 +2761,7 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
             -- draw in creation order; recreating both keeps purple above.
             nextBlip = removeBlips(nextBlip)
         end
-        if not nextBlip and rec.r1 > 1.0 then
+        if not nextBlip and rec.r1 > 1.0 and not mapFilled() then
             nextBlip = mapBlips(nil, zoneShape(rec.cx1, rec.cy1, rec.r1),
                 cfg.blip.nextColour, cfg.blip.nextAlpha, 'Next Safe Zone')
         end

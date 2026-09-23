@@ -753,6 +753,63 @@ BR.Config.Storm = {
         currentAlpha       = 80,
         nextAlpha          = 110,
     },
+
+    -- ═══ THE REAL SHAPE ON BOTH MAPS, AS A FILLED POLYGON (#350) ═══
+    --
+    --   "seems every storm is still a circle."             -- owner, 2026-09-22
+    --
+    -- The wall has been a blob since #344 and the map was still drawing the circle
+    -- it replaced -- which is the only place the shape is visible at an early phase,
+    -- because at phase 1 the nine corners are 1815 m apart along the boundary and a
+    -- player on the ground sees a few hundred metres of it.
+    --
+    -- ScaleformUI_Assets' MINIMAP_LOADER.gfx fills an arbitrary polygon through
+    -- ADD_AREA_OVERLAY, on the radar and on the pause map both, and #347 spiked it
+    -- and looked at it. So the two rings are filled polygons of the real boundary
+    -- when the overlay is available, and the radius blips above when it is not --
+    -- the fallback is not optional, because the overlay sits behind a readiness gate
+    -- that can refuse (client/mapoverlay.lua, and the #4167 crash #348 is about).
+    --
+    -- THE COLOUR IS render.colour, THE WALL'S OWN PURPLE, AND THAT IS ONE VISIBLE
+    -- CHANGE. The overlay takes an RGB and a blip takes a palette index, and there
+    -- is no bridge between them -- `currentColour = 3` is GTA's blip blue and
+    -- nothing on this path can ask the engine what that is in RGB. So both fills are
+    -- the storm's purple at the two alphas above, which is the layering the two
+    -- rings already had (faint safe zone, stronger target) in one hue instead of
+    -- two. If the blue is wanted back it is one RGB in this block.
+    overlay = {
+        enabled   = true,
+        -- Metres of sag allowed between the drawn polygon and the real boundary.
+        --
+        -- EIGHT IS ABOUT A PIXEL ON THE PAUSE MAP, where the whole 8 km landmass
+        -- spans a few hundred pixels. MEASURED at the shipping shape config: a
+        -- phase-1 blob closes in 35 points and 577 characters at 8 m, 59 points and
+        -- 973 at 2 m, 28 points and 459 at 20 m. Worth a playtest on the RADAR,
+        -- which is zoomed in far enough for 8 m to be several pixels -- though at
+        -- phase 1 the boundary between two corners is very nearly straight anyway.
+        chordM    = 8.0,
+        -- Hard ceiling on points per contour, and it is a ceiling on the STRING.
+        --
+        -- The Scaleform string-parameter cap is UNMEASURED -- there is no documented
+        -- limit, which is not the same as there being none. The spike's coordinates
+        -- were about 70 characters and a real boundary is several hundred to over a
+        -- thousand, so IF A SHAPE EVER DRAWS GARBLED RATHER THAN ABSENT, this is the
+        -- number to lower: it is the only lever on the length. 96 is headroom over
+        -- what chordM actually asks for (35 to 69 points at the shipping phases), so
+        -- today it never bites. BR.MapOverlay.report().chars is where to read the
+        -- length that actually went out, and client/storm.lua prints it once.
+        maxPoints = 96,
+        -- Rebuilds per second while the zone is moving.
+        --
+        -- An area cannot be resized in place, so every change is REM_OVERLAY plus
+        -- ADD_AREA_OVERLAY per contour with a kilobyte of coordinates marshalled
+        -- through a Scaleform string -- an order of magnitude more work than the
+        -- radius blips' own remove-and-re-add, which is why this is slower than
+        -- blip.refreshHzShrinking rather than equal to it. On a map where the whole
+        -- city is a few hundred pixels, half a second of a shrink is under a pixel
+        -- of movement.
+        rebuildHz = 2,
+    },
 }
 
 --- Total planned match length in seconds. Phase 1's wait is the free-loot

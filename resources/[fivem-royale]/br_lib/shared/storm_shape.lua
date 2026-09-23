@@ -1169,7 +1169,387 @@ function BR.StormShape.zone(x1, y1, r1, x2, y2, r2, unit)
                                    BR.StormShape.blob(x2, y2, r2, unit))
 end
 
---- Two shapes as one boundary of two components. Their union, drawn as both.
+-- ═══ STITCHING TWO OVERLAPPING BOUNDARIES INTO ONE LOOP (#356) ═══
+--
+--   "current/next storm circles, while overlapping, were actually drawn as 2
+--    separate circles instead of one conjoined."       -- owner, 2026-09-22
+--
+-- blobUnion used to concatenate both boundaries whatever they were doing, which
+-- is exactly right for a DISJOINT pair and a visible defect for an overlapping
+-- one: the stretch of each boundary that runs inside the other is drawn, so the
+-- curtain stands in the middle of the safe zone. Measured on a phase-2 overlap
+-- (2600 and 1600, centres 3392 apart): union2 on circles drew 1 component and
+-- 0.0% of the boundary inside the other shape, blobUnion on blobs drew 2 and
+-- 14.1%. #328 removed that for circles and #344 handed it back for blobs.
+--
+-- ═══ AND IT IS NOT A BOOLEAN UNION, BECAUSE A BLOB IS CONVEX ═══
+--
+-- A blob is the convex hull of N equal discs, so it is convex, and two convex
+-- bodies that properly overlap cross at exactly TWO points: A n B is convex, so
+-- dA n B is a single connected run, and therefore so is its complement. The
+-- union's boundary is then A's boundary outside B followed by B's boundary
+-- outside A, joined at the two crossings -- two contiguous runs, one loop. No
+-- polygon clipping, no crossing list, no even-odd classification.
+--
+-- WHICH WAY ROUND THE JOIN GOES falls out of both boundaries being walked
+-- counter-clockwise with the interior on the left: at the crossing where A
+-- ENTERS B, B is LEAVING A, and at the other one it is the other way about. Two
+-- unit discs 1.0 apart is the whole proof in four numbers -- A enters B at -60
+-- degrees and that point is where B leaves A, at 240 -- and it is checked at
+-- runtime rather than trusted, see stitch().
+--
+-- ═══ NOTHING HERE TOUCHES WHAT distance() ANSWERS, AND THAT IS DELIBERATE ═══
+--
+-- The signed distance to a union is the minimum over its parts, which holds for
+-- any two shapes at all, and `parts` is handed to seal() unchanged. So this is a
+-- change to the WALK and to nothing else: the damage tick, the HUD readout and
+-- the way-home arrow all read the same numbers they read before it.
+
+--- Metres of tolerance on a crossing located by bisection.
+---
+--- A MILLIMETRE, WHICH IS NINE ORDERS BELOW ANYTHING THAT READS IT. The wall is
+--- drawn in 30 m slots and sits six metres inside the logical edge; the map fill
+--- is sampled at metres of chord error. What the tolerance actually bounds is the
+--- positional gap at the seam -- A's kept run ends at a point found by bisection
+--- and B's kept run starts at that same point found by nearestArc -- so a
+--- millimetre there is a millimetre of skew on one quad and nothing else.
+local CROSS_TOL = 1e-3
+
+--- Uniform scan samples per boundary piece when hunting for the crossings.
+---
+--- ═══ FOUR IS NOT A GUESS ABOUT WHETHER IT IS ENOUGH, BECAUSE THE REFINEMENT
+---     BELOW ANSWERS THAT EXACTLY ═══
+---
+--- A uniform scan on its own can only find a lens longer than its own step -- at
+--- phase 2 that step is about 200 m of a 10 km boundary -- so the density would be
+--- a bet on how shallow an overlap the game can reach. MEASURED, with no
+--- refinement: at four samples per piece the worst two-component answer over
+--- 14,400 reachable geometries still drew 1.20% of its boundary inside the safe
+--- zone, and quadrupling the density to sixteen bought that down to 0.067% at 2.4
+--- times the cost per frame. Both numbers are a density hoping to be lucky.
+---
+--- So this is the cost/benefit floor and refineCrossings is the correctness: the
+--- scan is cheap and coarse, and every interval that COULD still hide a lens is
+--- subdivided until it provably cannot. The seed -- the point of A's boundary
+--- nearest B's centre, always strictly inside B for two properly overlapping
+--- circles, since proper overlap is |r1-r2| < d < r1+r2 and that is exactly the
+--- condition for |r1 - d| < r2 -- is what usually makes the refinement unnecessary
+--- rather than what makes the scan sufficient.
+local CROSS_PER_PIECE = 4
+
+--- Ceiling on extra signed distances the refinement may spend per crossing hunt.
+---
+--- A BOUND ON WORK, NOT A BOUND ON CORRECTNESS: the refinement is written to stop
+--- on its own when no interval can hide a lens, and in the ordinary overlap it
+--- spends nothing at all -- an interval with a negative endpoint is already
+--- bracketing a crossing and one with two large positive endpoints is provably
+--- clear. What this exists for is the pathological shape nobody has drawn yet,
+--- where the loop is the thing running in a per-frame build. Spending it out lands
+--- on the two-component boundary, which is the picture that shipped before #356.
+local CROSS_REFINE_MAX = 48
+
+--- One piece cut down to the stretch between `t0` and `t1` metres along itself.
+---
+--- THE WHOLE PIECE IS HANDED BACK AS ITSELF, not copied, for the reason
+--- blobUnion's header gives about re-stamping: a zone is rebuilt every frame and
+--- copying 2N tables to keep a bookkeeping nothing reads alive is paying for
+--- tidiness with garbage. `newComponent` is cleared on the way through, because a
+--- piece that once opened a component must not open one here by inheritance.
+--- @return table|nil
+local function subPiece(pc, t0, t1)
+    local L = t1 - t0
+    if L <= 0.0 then return nil end
+    if t0 <= 0.0 and L >= pc.len then
+        pc.newComponent = nil
+        return pc
+    end
+    if pc.kind == 'arc' then
+        -- Radians per metre, SIGNED, so a clockwise arc stays clockwise and its
+        -- `out` normal keeps pointing the way it pointed.
+        local perM = pc.sweep / pc.len
+        return arc(pc.cx, pc.cy, pc.r, pc.a0 + perM * t0, perM * L)
+    end
+    local x0, y0 = pieceAt(pc, t0)
+    local x1, y1 = pieceAt(pc, t1)
+    return seg(x0, y0, x1, y1)
+end
+
+--- The pieces of `shape` from arc length `s0` forward for `len` metres.
+---
+--- INDEXED BY PIECE RATHER THAN WALKED BY ARC LENGTH, and the bound is what makes
+--- that the right choice: stepping s forward by what each piece had left over can
+--- stall on a piece whose remainder is a picometre, and a stall in a per-frame
+--- build is a hung client rather than a wrong picture. One lap of the piece table
+--- is the most any slice can need, so that is the loop.
+--- @return table  pieces, in boundary order, ends split
+local function sliceOf(shape, s0, len)
+    local pcs = shape.pieces
+    local n = #pcs
+    local out = {}
+    if n == 0 or len <= 0.0 then return out end
+    local pc0, t0 = pieceAtArc(shape, s0 % shape.P)
+    local i0 = 1
+    for i = 1, n do if pcs[i] == pc0 then i0 = i break end end
+    local left = len
+    for k = 0, n do
+        if left <= 0.0 then break end
+        local pc = pcs[((i0 - 1 + k) % n) + 1]
+        local from = (k == 0) and t0 or 0.0
+        local avail = pc.len - from
+        if avail > 0.0 then
+            local use = (avail < left) and avail or left
+            local p = subPiece(pc, from, from + use)
+            if p then out[#out + 1] = p end
+            left = left - use
+        end
+    end
+    return out
+end
+
+--- The radius of the smallest circle about `shape`'s OWN centre that contains it.
+---
+--- The furthest corner disc, plus the corner radius. ONE SQUARE ROOT, because the
+--- comparison between the corners is made on squared lengths -- this runs before
+--- every stitch attempt and the whole reason it exists is to be cheaper than the
+--- thing it decides not to do.
+---
+--- WHAT IT IS FOR: two shapes whose bounding circles do not reach each other
+--- cannot possibly cross, and a disjoint pair is the common case on a breakout
+--- phase. Without this rejection the scan below runs its full seventy-odd signed
+--- distances to prove what one subtraction already knew -- MEASURED at 0.33 ms per
+--- zone build on a disjoint phase-2 pair against 0.08 before, which is a fifth of
+--- a 60 fps frame spent on two islands that were never going to touch.
+local function boundRadius(shape)
+    local h = shape and shape.hull
+    if not h then
+        local d = shape and shape.discs and shape.discs[1]
+        return d and d.r or 0.0
+    end
+    local m = shape.blob
+    local cx, cy = m.cx, m.cy
+    local worst = 0.0
+    for i = 1, #h.cs do
+        local dx, dy = h.cs[i].x - cx, h.cs[i].y - cy
+        local q = dx * dx + dy * dy
+        if q > worst then worst = q end
+    end
+    return sqrt(worst) + h.cr
+end
+
+--- Is `shape` entirely inside `other`? EXACT, and it is convexity that makes it so.
+---
+--- A blob is the convex hull of N equal discs and a circle is one disc, so the
+--- shape is inside a CONVEX `other` exactly when every one of those discs is --
+--- the hull of points in a convex set is in that set. A disc is inside when its
+--- centre is at least its own radius deep, which is one signed distance per
+--- corner. Nine reads at the shipping corner count, and a disjoint pair fails on
+--- the first.
+---
+--- ═══ WHY THIS IS ASKED AT ALL, WHEN zone() ALREADY TESTS NESTING ═══
+---
+--- zone()'s test is in CIRCLE space, deliberately -- storm_solve.lua's own nesting
+--- rule, so that "did this phase break out" has one answer everywhere. A blob
+--- reaches 1.03 to 1.06 of its circle and dents in to about 0.85 of it, so a pair
+--- that is not nested as circles can be nested as blobs. MEASURED over the
+--- shipping phase pairs on four seeds, sweeping the whole reachable separation
+--- range: it happens, and the two-component drawing of it put up to 35.3% of the
+--- boundary inside the safe zone -- worse than the overlap this round is fixing,
+--- because the swallowed shape's boundary is inside in its ENTIRETY.
+---
+--- AND COLLAPSING IT CHANGES NOTHING distance() ANSWERS. For A inside B the
+--- signed distance to B is at most the signed distance to A everywhere, so the
+--- minimum over the parts IS B's -- inside, outside and on either boundary. The
+--- same argument makes inset() agree, because erosion preserves inclusion.
+local function convexInside(shape, other)
+    local h = shape and shape.hull
+    if h then
+        for i = 1, #h.cs do
+            if BR.StormShape.distance(other, h.cs[i].x, h.cs[i].y) > -h.cr then
+                return false
+            end
+        end
+        return true
+    end
+    local d = shape and shape.discs and shape.discs[1]
+    if not d then return false end
+    return BR.StormShape.distance(other, d.x, d.y) <= -d.r
+end
+
+--- The arc length in (lo, hi) where `f` changes sign, to CROSS_TOL metres.
+---
+--- `negAtLo` says which side of the bracket is inside, so one function serves both
+--- crossings rather than two spellings of the same halving. BOUNDED BY COUNT AS
+--- WELL AS BY WIDTH: the width test is what normally ends it, in about eighteen
+--- passes of a two-hundred-metre bracket, and the count is what stops a bracket
+--- whose endpoints disagree with f -- a nan, a degenerate shape -- from spinning
+--- inside a per-frame build.
+local function bisectCross(fn, lo, hi, negAtLo)
+    for _ = 1, 60 do
+        if (hi - lo) <= CROSS_TOL then break end
+        local mid = (lo + hi) * 0.5
+        if (fn(mid) < 0.0) == negAtLo then lo = mid else hi = mid end
+    end
+    return (lo + hi) * 0.5
+end
+
+--- Where `a`'s boundary enters `b` and where it leaves again, in a's arc length.
+---
+--- Both nil when the two boundaries do not cross transversally in exactly one
+--- place each way -- disjoint, nested, tangent, or a lens too small for the scan.
+--- @return number|nil sIn   arc length where a's boundary ENTERS b
+--- @return number|nil sOut  arc length where it LEAVES b
+local function crossings(a, b)
+    local P = a.P
+    if P <= 0.0 or not b or (b.P or 0.0) <= 0.0 then return nil end
+    local function f(s)
+        local x, y = BR.StormShape.pointAtArc(a, s)
+        return BR.StormShape.distance(b, x, y)
+    end
+
+    -- The uniform grid, with the seed inserted at its own place in arc order so
+    -- that the sign-change scan below is one pass over a sorted list.
+    local n = max(8, #a.pieces * CROSS_PER_PIECE)
+    local step = P / n
+    local bc = BR.StormShape.discFor(b)
+    local seed = BR.StormShape.nearestArc(a, bc.x, bc.y) % P
+    local at = math.floor(seed / step) + 1
+    local ss = {}
+    for i = 1, n do
+        ss[#ss + 1] = step * (i - 1)
+        if i == at then ss[#ss + 1] = seed end
+    end
+
+    local vs = {}
+    for i = 1, #ss do vs[i] = f(ss[i]) end
+
+    -- ═══ AND THEN EVERY INTERVAL THAT COULD STILL HIDE A LENS IS SPLIT ═══
+    --
+    -- `f` IS 1-LIPSCHITZ IN ARC LENGTH, which is what makes this exact rather than
+    -- a finer guess: a signed distance is 1-Lipschitz in the point, and a point on
+    -- a boundary moves at most one metre per metre of arc length. So across an
+    -- interval of width w with endpoint values p and q, every value inside is at
+    -- least max(p - t, q - (w - t)), whose own minimum over t is (p + q - w) / 2.
+    --
+    -- Therefore: p + q >= w PROVES there is no crossing inside, for any shape, at
+    -- any scale. An interval that fails that test is subdivided; one that passes is
+    -- finished. Both endpoints must be positive to be asked at all -- an interval
+    -- with a negative end is already bracketing a crossing, and the scan below will
+    -- find it.
+    --
+    -- WHICH IS WHY THE SAMPLE DENSITY ABOVE IS A COST DECISION AND NOT A
+    -- CORRECTNESS ONE. In the ordinary overlap this loop evaluates nothing: the
+    -- intervals near the crossings have a negative end and the rest are far enough
+    -- out that one subtraction clears them. It earns its keep at near-tangency,
+    -- where the lens is shorter than the step and the old answer was to draw two
+    -- loops and hope nobody looked at the waist.
+    local spent = 0
+    local i = 1
+    while i <= #ss and spent < CROSS_REFINE_MAX do
+        local j = (i % #ss) + 1
+        local w = ss[j] + ((j == 1) and P or 0.0) - ss[i]
+        if vs[i] >= 0.0 and vs[j] >= 0.0 and (vs[i] + vs[j]) < w then
+            local mid = ss[i] + w * 0.5
+            spent = spent + 1
+            -- INSERTED RATHER THAN RECURSED, so the scan below stays one pass over
+            -- one ordered list and `i` is not advanced -- the left half is re-tested
+            -- on the next turn of this same loop, and the right half after it.
+            --
+            -- NOT WRAPPED BACK INTO [0, P). The last interval is the one that
+            -- straddles arc length zero, so its midpoint is legitimately past P, and
+            -- past P is exactly where it has to sit for the list to stay ascending.
+            -- Every consumer wraps: f through pointAtArc, and bisectCross's answer
+            -- through crossings' own return.
+            table.insert(ss, i + 1, mid)
+            table.insert(vs, i + 1, f(mid))
+        else
+            i = i + 1
+        end
+    end
+
+    -- EXACTLY ONE OF EACH, OR NOTHING. Convexity says a proper overlap has one
+    -- entry and one exit; anything else is a shape this cannot stitch honestly --
+    -- a tangency counted twice, or a scan that landed on a boundary value -- and
+    -- the two-component fallback is a picture rather than a guess.
+    local m = #ss
+    local sIn, sOut, nIn, nOut = nil, nil, 0, 0
+    for ia = 1, m do
+        local ib = (ia % m) + 1
+        local lo = ss[ia]
+        local hi = ss[ib] + ((ib == 1) and P or 0.0)
+        if vs[ia] >= 0.0 and vs[ib] < 0.0 then
+            nIn = nIn + 1
+            sIn = bisectCross(f, lo, hi, false)
+        elseif vs[ia] < 0.0 and vs[ib] >= 0.0 then
+            nOut = nOut + 1
+            sOut = bisectCross(f, lo, hi, true)
+        end
+    end
+    if nIn ~= 1 or nOut ~= 1 then return nil end
+    return sIn % P, sOut % P
+end
+
+--- The two boundaries as ONE closed loop, or nil when they do not properly cross.
+---
+--- A's boundary outside B, then B's boundary outside A. THE PRIMS AND THE PARTS
+--- ARE THE SAME ONES THE TWO-COMPONENT SPELLING HANDS SEAL, so nothing downstream
+--- can tell the two apart except by walking -- which is the only thing that
+--- changed.
+---
+--- ═══ BOTH KEPT RUNS ARE CHECKED AT THEIR MIDPOINT, AND THAT IS NOT BELT AND
+---     BRACES ═══
+---
+--- Which crossing is the entry and which the exit is an argument about winding
+--- (see the header), and an argument is a thing that can be wrong. A run kept on
+--- the wrong side of it would be the OPPOSITE of the defect being fixed -- the
+--- swallowed stretches drawn and the outer ones dropped -- and it would look
+--- plausible on a map. Two signed distances say which side the runs are really on,
+--- and a disagreement falls back to the two-component boundary instead of drawing
+--- a loop nobody can account for.
+--- @return table|nil shape
+local function stitch(a, b)
+    -- THE BOUNDING CIRCLES FIRST. One subtraction answers every disjoint pair,
+    -- which on a breakout phase is most of them -- see boundRadius.
+    local ac, bc = BR.StormShape.discFor(a), BR.StormShape.discFor(b)
+    local dx, dy = bc.x - ac.x, bc.y - ac.y
+    if sqrt(dx * dx + dy * dy) > boundRadius(a) + boundRadius(b) then return nil end
+
+    local sIn, sOut = crossings(a, b)
+    if not sIn then return nil end
+
+    local Pa, Pb = a.P, b.P
+    -- FROM WHERE IT LEAVES B, FORWARD TO WHERE IT ENTERS B. The set of A's
+    -- boundary inside B is one connected run, so its complement is the one run
+    -- this names -- which is why no classification of the pieces is needed.
+    local la = (sIn - sOut) % Pa
+    if la <= 0.0 then return nil end
+
+    local xIn,  yIn  = BR.StormShape.pointAtArc(a, sIn)
+    local xOut, yOut = BR.StormShape.pointAtArc(a, sOut)
+    -- THE CROSSINGS ARE POINTS ON BOTH BOUNDARIES, so B's parameters are read off
+    -- them exactly rather than searched for a second time: nearestArc is exact
+    -- from the piece list, and the point it is handed is already on B.
+    local tOut = BR.StormShape.nearestArc(b, xIn, yIn)
+    local tIn  = BR.StormShape.nearestArc(b, xOut, yOut)
+    local lb = (tIn - tOut) % Pb
+    if lb <= 0.0 then return nil end
+
+    local mx, my = BR.StormShape.pointAtArc(a, sOut + la * 0.5)
+    if BR.StormShape.distance(b, mx, my) < 0.0 then return nil end
+    local nx, ny = BR.StormShape.pointAtArc(b, tOut + lb * 0.5)
+    if BR.StormShape.distance(a, nx, ny) < 0.0 then return nil end
+
+    local pieces = sliceOf(a, sOut, la)
+    local bs = sliceOf(b, tOut, lb)
+    for i = 1, #bs do pieces[#pieces + 1] = bs[i] end
+    if #pieces < 2 then return nil end
+
+    local prims = {}
+    for _, p in ipairs(a.prims or {}) do prims[#prims + 1] = p end
+    for _, p in ipairs(b.prims or {}) do prims[#prims + 1] = p end
+    return seal(pieces, 'blobUnion', { parts = { a, b }, prims = prims })
+end
+
+--- Two shapes as ONE boundary where they overlap, and two where they do not.
 ---
 --- ═══ THE PARTS ARE KEPT FOR distance() AND inset() AND FOR NOTHING ELSE ═══
 ---
@@ -1182,8 +1562,25 @@ end
 --- inset() read `hull`, `box` and `discs`, which the stamping does not touch.
 --- NOTHING MAY WALK A PART: no perimeter, no pointAtArc, no nearestArc. Walk the
 --- union, which is what the renderer does.
+---
+--- ═══ ONE COMPONENT WHEN THEY CROSS, TWO WHEN THEY DO NOT (#356) ═══
+---
+--- stitch() above is the overlapping case and returns nil for every other one, so
+--- the concatenation below is now what DISJOINT means rather than what a union
+--- means. A disjoint pair must keep both components: they are kilometres apart,
+--- the gap between them is not safe, and a strip that walked through the seam
+--- would bridge them with one quad across the sea.
 --- @return table shape
 function BR.StormShape.blobUnion(a, b)
+    local one = stitch(a, b)
+    if one then return one end
+
+    -- ONE BLOB SWALLOWED THE OTHER, WHICH IS zone()'s NESTED CASE ARRIVING LATE.
+    -- Asked only once stitch() has declined, so the ordinary overlap never pays
+    -- for it and a disjoint pair pays one signed distance. See convexInside.
+    if convexInside(a, b) then return b end
+    if convexInside(b, a) then return a end
+
     local pieces = {}
     for _, pc in ipairs(a.pieces) do pieces[#pieces + 1] = pc end
     local first = true
@@ -1521,20 +1918,27 @@ end
 ---   { kind = 'radius', cx, cy, r }            a filled disc
 ---   { kind = 'area',   cx, cy, w, h, rot }    a filled rectangle, rot in degrees
 ---
---- ═══ THIS IS THE MAP'S ANSWER, AND IT IS NOT THE BOUNDARY ═══
+--- ═══ THIS IS THE MAP'S FALLBACK NOW, AND IT IS NOT THE BOUNDARY (#347, #350) ═══
 ---
 --- GTA has two filled minimap primitives and nothing else. ADD_BLIP_FOR_RADIUS
 --- fills a disc, _ADD_BLIP_FOR_AREA fills a rectangle, and SET_RADIUS_BLIP_EDGE
---- draws a disc as an outline -- with no equivalent for an area blip. NO NATIVE
---- STROKES OR FILLS AN ARBITRARY POLYGON on the minimap or the pause map. The only
---- route to one is a custom Scaleform .gfx through ADD_MINIMAP_OVERLAY and
---- CALL_MINIMAP_SCALEFORM_FUNCTION, which means authoring and shipping a Flash
---- asset in an estate that streams none -- and it attaches to the MINIMAP movie,
---- so its pause-map coverage is unverified on top of that.
+--- draws a disc as an outline -- with no equivalent for an area blip. No NATIVE
+--- strokes or fills an arbitrary polygon on either map.
 ---
---- So the map is an approximation for any shape that is not a disc, and the place
---- that decides HOW is the constructor, beside the shape it is approximating,
---- where the error can be stated in metres. This function only hands the list on.
+--- WHAT THIS PARAGRAPH USED TO SAY NEXT WAS THAT THE ONLY ROUTE TO ONE WOULD BE
+--- AUTHORING A SCALEFORM ASSET, AND THAT WAS WRONG: the estate already ships one.
+--- ScaleformUI_Assets' MINIMAP_LOADER.gfx carries ADD_AREA_OVERLAY, it is already
+--- streamed on every client, and #347's spike drew a concave arrowhead through it
+--- on the radar AND on the pause map, notch intact. polyline() below is the
+--- boundary for that path.
+---
+--- SO THIS IS THE FALLBACK RATHER THAN THE ANSWER, and it stays exactly as it was
+--- because it has to: the overlay lives behind a readiness gate that can refuse
+--- (client/mapoverlay.lua, and the crash #348 is about), and a client that never
+--- gets a handle must still see a zone on its map. The map is an approximation for
+--- any shape that is not a disc, the place that decides HOW is the constructor,
+--- beside the shape it is approximating, where the error can be stated in metres,
+--- and this function only hands the list on.
 ---
 --- ═══ READ OFF `prims`, WRITTEN AT CONSTRUCTION, NEVER OFF `discs` ═══
 ---
@@ -1564,6 +1968,122 @@ function BR.StormShape.mapPrimitives(shape)
         local p = prims[i]
         out[i] = { kind = p.kind, cx = p.cx, cy = p.cy, r = p.r,
                    w = p.w, h = p.h, rot = p.rot }
+    end
+    return out
+end
+
+--- THE BOUNDARY AS FLAT POINT LISTS, one per component -- the map's real answer.
+---
+--- ═══ WHAT THIS IS FOR, AND WHY IT IS NOT mapPrimitives (#350) ═══
+---
+---   "seems every storm is still a circle."               -- owner, 2026-09-22
+---
+--- The wall is a blob and has been since #344, but at phase 1 the nine corners are
+--- 1815 m apart along the boundary and a player sees a few hundred metres of it, so
+--- from the ground it reads as a circle. Corner spacing by radius: 2600 -> 1815 m,
+--- 950 -> 663, 260 -> 182, 110 -> 77. THE MAP IS THE ONLY PLACE THE SHAPE IS
+--- VISIBLE AT AN EARLY PHASE, and the map was drawing the circle the blob replaced.
+---
+--- ADD_AREA_OVERLAY fills an arbitrary polygon on the radar and on the pause map
+--- (#347, spiked and looked at). It takes a flat list of world points per contour,
+--- so this is the shape of the answer: one list per COMPONENT, because the movie
+--- closes each contour and an overlapping zone stitched into one loop is one call
+--- while two islands are two.
+---
+--- ═══ PRICED OFF CURVATURE, PER RUN, WHICH IS THE WALL'S OWN RULE ═══
+---
+--- Chord sag is ds^2 / 8r, so a step of sqrt(8 * r * maxChordError) keeps every
+--- chord within maxChordError of the arc it replaces. Priced PER RUN off the run's
+--- own radius, not once for the shape, for the reason client/storm.lua's strip
+--- carries at length: a blob is short sharply-curved corner arcs joined by long flat
+--- runs, a straight run needs no subdivision at all, and one step split by LENGTH
+--- starves the corners that need the points.
+---
+--- AND A VERTEX AT EVERY RUN BOUNDARY, WHICH THE SAG RULE CANNOT GIVE. At a corner
+--- the curvature is infinite and the bound does not hold at any step -- so a walk
+--- that stepped uniformly would bridge each reflex crossing of a stitched union with
+--- one chord, and THE NOTCH CUTS INWARD, so that chord lands outside the shape. That
+--- is #339's measured landmine on the wall and it is the same landmine here: the fill
+--- would cover ground the storm is billing. Every run starts on a point.
+---
+--- ═══ maxPoints IS A CEILING ON THE STRING, NOT ON THE PICTURE ═══
+---
+--- The Scaleform string-parameter cap is UNMEASURED. The spike's coordinates were
+--- about 70 characters and a real boundary is over a thousand, so if a shape comes
+--- out garbled rather than absent that cap is the first suspect -- and the only
+--- lever against it is fewer points. Nil or zero means no ceiling. When the ceiling
+--- bites, the budget is shared out by what each run ASKED FOR rather than by length,
+--- and every run keeps at least one point, so the corners lose accuracy before the
+--- outline loses its shape.
+---
+--- @param shape table
+--- @param maxChordError number|nil  metres of sag allowed; defaults to 1 m
+--- @param maxPoints number|nil      ceiling per component; nil or 0 for none
+--- @return table  { { { x = number, y = number }, ... }, ... } one list per component
+function BR.StormShape.polyline(shape, maxChordError, maxPoints)
+    local out = {}
+    local comps = BR.StormShape.components(shape)
+    local sag = maxChordError or 0.0
+    if sag <= 0.0 then sag = 1.0 end
+    local cap = maxPoints or 0
+
+    for ci = 1, #comps do
+        local c = comps[ci]
+        local runs = BR.StormShape.runs(shape, ci)
+        local nRuns = #runs
+        local pts = {}
+        out[ci] = pts
+
+        -- WHAT EACH RUN ASKS FOR, and a straight run asks for one: a chord of a
+        -- straight line cuts nothing off it however long the run is.
+        local want, total = {}, 0
+        for i = 1, nRuns do
+            local rn = runs[i]
+            local k = 1
+            if rn.r and rn.r > 0.0 then
+                k = max(1, math.ceil(rn.len / sqrt(8.0 * rn.r * sag)))
+            end
+            want[i] = k
+            total = total + k
+        end
+
+        if nRuns > 0 and total > 0 then
+            local n = total
+            if cap > 0 and n > cap then n = cap end
+            if n < nRuns then n = nRuns end
+
+            -- CUMULATIVE EDGES, ROUNDED ON THE RUNNING TOTAL, which is what makes
+            -- the count come to exactly `n` by construction rather than by luck:
+            -- rounding each run's own share independently does not have to sum. The
+            -- clamp keeps it monotone -- one point minimum per run, and enough left
+            -- for the runs after it. The same arithmetic the strip uses, for the same
+            -- reason, and when n == total every edge is already an integer so each run
+            -- is handed back precisely what it asked for.
+            local edge = { [0] = 0 }
+            local cum = 0
+            for i = 1, nRuns do
+                cum = cum + want[i]
+                local k = math.floor(n * cum / total + 0.5)
+                local lo, hi = edge[i - 1] + 1, n - (nRuns - i)
+                if k < lo then k = lo end
+                if k > hi then k = hi end
+                edge[i] = k
+            end
+
+            for i = 1, nRuns do
+                local rn = runs[i]
+                local cnt = edge[i] - edge[i - 1]
+                -- FROM THE RUN'S START, AND NOT INCLUDING ITS END. The next run's
+                -- first point IS this run's end, and the movie closes the contour --
+                -- so a point at the end as well would be a duplicate vertex at every
+                -- corner and a zero-length edge in the fill.
+                for j = 0, cnt - 1 do
+                    local x, y = BR.StormShape.pointAtComponent(shape, c,
+                        rn.t0 + rn.len * j / cnt)
+                    pts[#pts + 1] = { x = x, y = y }
+                end
+            end
+        end
     end
     return out
 end

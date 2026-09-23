@@ -646,10 +646,53 @@ local function newStormClient()
         return pt(C.pedAt.x, C.pedAt.y, C.pedAt.z)
     end
 
-    -- The HUD envelope is the only wire this file speaks on.
+    -- ═══ THE MINIMAP OVERLAY MOVIE, MODELLED THE WAY IT REALLY BEHAVES (#350) ═══
+    --
+    -- The map draws the storm's real boundary as a filled polygon now, through the
+    -- shared MINIMAP_LOADER handle. Modelled rather than swallowed, for the reason
+    -- the runtime-texture store above is: a stub that accepted every push and kept
+    -- nothing would let "the map is the shape" pass with no shape anywhere.
+    --
+    -- SO `overlays` IS THE MOVIE'S OWN ARRAY AND REM_OVERLAY SPLICES IT. That is the
+    -- one thing a caller can get wrong on a handle it does not own -- removing index
+    -- 2 of { 2, 3 } shifts 3 down to 2 -- and it is only a real test if the harness
+    -- shifts too. `refuseAdd` and `refuseRemove` are the two refusals the engine
+    -- actually performs, which is what the radius-blip fallback exists for.
+    C.mm = {
+        inGame = true, drawn = true, loaded = true,
+        handle = 7,             -- what ScaleformUI_Assets answers with
+        overlays = {},          -- the movie's array: ours and ScaleformUI's together
+        asks = 0, display = nil,
+        refuseAdd = false, refuseRemove = false,
+        -- HOW MANY ADDS TO LET THROUGH BEFORE REFUSING, which is a different refusal
+        -- from `refuseAdd` and the one that matters: a zone drawn WHOLE or not at all
+        -- is only a claim when some of it got through. With every add refused there is
+        -- nothing to tear down, so the teardown is unobservable.
+        allowAdds = nil,
+        adds = 0,
+    }
+    env.NetworkIsGameInProgress  = function() return C.mm.inGame end
+    env.IsMinimapRendering       = function() return C.mm.drawn end
+    env.HasMinimapOverlayLoaded  = function(h)
+        return C.mm.loaded and h == C.mm.handle
+    end
+    env.SetMinimapOverlayDisplay = function(h, a, b, c, d, e)
+        C.mm.display = { h, a, b, c, d, e }
+    end
+
+    -- The HUD envelope, and the one cross-resource ask this file makes.
     env.TriggerEvent = function(name, key, payload)
         if name == 'br:ui:sendLocal' and key == env.BR.Nui.STORM then
             C.envelopes[#C.envelopes + 1] = payload
+        elseif name == 'ScUI:AddMinimapOverlay' then
+            -- ScaleformUI_Assets' loader.lua: one handle for the whole client,
+            -- handed back through a callback, synchronously once it is up. Counted,
+            -- because "it does not ask until the session has settled" is an
+            -- assertion about this number.
+            C.mm.asks = C.mm.asks + 1
+            if C.mm.handle ~= nil and type(key) == 'function' then
+                key(C.mm.handle)
+            end
         end
     end
 
@@ -903,6 +946,43 @@ local function newStormClient()
     env.BR.Native.blipName = function(h, name)
         if C.blips[h] then C.blips[h].name = name end
     end
+    -- ═══ AND THE THREE OVERLAY WRAPPERS (#350) ═══
+    --
+    -- THE COORDINATE FORMAT IS COPIED, NOT REACHED FOR, and that is deliberate: the
+    -- movie splits on ',' then on ':' and takes two decimals, which is
+    -- BR.Native.minimapAreaString's contract and tools/test_client.lua's subject.
+    -- What THIS suite asserts about it is the LENGTH, because the Scaleform
+    -- string-parameter cap is the one unmeasured risk on the path -- so the stub has
+    -- to produce a string of the real size rather than a token.
+    env.BR.Native.minimapAreaString = function(points)
+        local parts = {}
+        for i = 1, #points do
+            parts[i] = ('%.2f:%.2f'):format(points[i].x, points[i].y)
+        end
+        return table.concat(parts, ',')
+    end
+    env.BR.Native.minimapAreaOverlay = function(h, points, outline, r, g, b, a)
+        if C.mm.refuseAdd then return false end
+        if h ~= C.mm.handle then return false end
+        if type(points) ~= 'table' or #points < 3 then return false end
+        C.mm.adds = C.mm.adds + 1
+        if C.mm.allowAdds ~= nil and C.mm.adds > C.mm.allowAdds then return false end
+        C.mm.overlays[#C.mm.overlays + 1] = {
+            points = points, outline = outline, r = r, g = g, b = b, a = a,
+            chars = #env.BR.Native.minimapAreaString(points),
+        }
+        return true
+    end
+    env.BR.Native.minimapRemoveOverlay = function(h, index)
+        if C.mm.refuseRemove then return false end
+        if h ~= C.mm.handle then return false end
+        if type(index) ~= 'number' or index < 0 then return false end
+        if C.mm.overlays[index + 1] == nil then return false end
+        -- IT SPLICES. Every index above the one removed shifts DOWN by one, which is
+        -- the whole reason client/mapoverlay.lua removes highest-first.
+        table.remove(C.mm.overlays, index + 1)
+        return true
+    end
     -- The sky is a CLAIM made through client/world.lua, which this suite does
     -- not load: stubbed rather than stood up, because nothing here asserts on
     -- the weather and the resolver has its own suite.
@@ -910,7 +990,11 @@ local function newStormClient()
     env.BR.World.want = function() end
     env.BR.Sfx = { play = function(cue) C.sfx[#C.sfx + 1] = cue end }
 
-    loadInto(env, { 'br_core/client/storm.lua' })
+    -- IN MANIFEST ORDER: client/mapoverlay.lua comes AFTER client/storm.lua in
+    -- br_core's fxmanifest, which is why storm.lua asks for BR.MapOverlay at runtime
+    -- and never at load. Loading it in the other order here would prove a
+    -- dependency the game does not have.
+    loadInto(env, { 'br_core/client/storm.lua', 'br_core/client/mapoverlay.lua' })
 
     env.BR.State.match.state = env.BR.MatchState.PLAYING
     env.BR.State.me.state    = env.BR.PlayerState.ALIVE
@@ -944,6 +1028,28 @@ local function newStormClient()
         env.BR.Loop.step(env.BR.Loop.FRAME)
     end
 
+    --- Run #351's entry ramp to completion, so a block that is not about the ramp
+    --- sees the preview wall at its settled strength.
+    ---
+    --- ═══ TWO FRAMES AND A CLOCK JUMP, AND THE FIRST FRAME IS THE POINT ═══
+    ---
+    --- The preview wall used to draw at full previewAlpha on the first frame the
+    --- mainland was the world -- "the storm wall popped in, didn't fade in", the
+    --- owner from the bus. It ramps now, over render.fadeInSec, ANCHORED ON THAT
+    --- SAME FRAME: the first pass arms the ramp and draws nothing, which is why a
+    --- block asserting the wall's geometry or its alpha has to come through here
+    --- instead of calling C.frame() once.
+    ---
+    --- THE JUMP IS SAFE FOR A BLOCK THAT DRIVES THE RECORD, because every one of
+    --- them sets tStart relative to C.now at the moment it wants a reading rather
+    --- than once at the start -- see preview.handoff's holdAt.
+    function C.settlePreview()
+        C.frame()
+        C.now = C.now
+            + math.floor((env.BR.Config.Storm.render.fadeInSec or 10.0) * 1000.0)
+        C.frame()
+    end
+
     --- Silence the #327 preview wall, leaving only the record's own curtain in frame.
     ---
     --- ═══ NEEDED SINCE #340, AND ONLY INSIDE THE FADE WINDOW ═══
@@ -968,6 +1074,26 @@ local function newStormClient()
             error('no storm.previewWall callback to disable -- the name moved')
         end
     end
+
+    --- Tick until the overlay gate is ready, or say it never was.
+    ---
+    --- THE GATE IS DELIBERATELY SLOW: three seconds of both session tests holding,
+    --- then ten more consenting passes of HasMinimapOverlayLoaded -- because
+    --- ADD_MINIMAP_OVERLAY racing RELOAD_MAP_STORE crashes the streaming DLL
+    --- (citizenfx/fivem#4167). At 1500 ms a tick that is about a dozen ticks, and it
+    --- only advances while something actually wants an overlay, so a caller has to
+    --- set its record or its preview up FIRST.
+    --- @return boolean
+    function C.overlayReady()
+        for _ = 1, 40 do
+            if env.BR.MapOverlay.ready() then return true end
+            C.tick(1)
+        end
+        return env.BR.MapOverlay.ready()
+    end
+
+    --- Every filled area currently in the movie, in the movie's own order.
+    function C.areas() return C.mm.overlays end
 
     function C.last() return C.envelopes[#C.envelopes] end
 
@@ -1222,20 +1348,26 @@ do
     local zone = zoneOf(env, rec)
     local probe = shapeProbe(env, zone)
 
-    -- ═══ AND THIS IS THE ONE CASE WHERE THE DAMAGE AND THE WALL PART COMPANY
-    ---     (#344) ═══
+    -- ═══ AND THE DAMAGE AND THE WALL AGREE AGAIN (#356) ═══
     --
-    -- Two overlapping BLOBS are not expressible in the arc-and-segment model
-    -- without a real boolean union, so the zone is both shapes as two components
-    -- and the wall draws both boundaries -- curtain visible inside the safe zone,
-    -- which config/storm.lua's `shape` block announces. THE DAMAGE IS STILL EXACT,
-    -- because a signed distance to a union is the minimum of the two whatever the
-    -- two are, and that is what this block asserts: the billed set is still the
-    -- complement of the union plus its cushion, to the point.
+    -- This block used to assert TWO components here, by name, because two
+    -- overlapping blobs were concatenated rather than stitched -- curtain drawn
+    -- inside the safe zone, announced in config/storm.lua and asserted the wrong
+    -- way round on purpose so that the stitch would turn it red. The stitch has
+    -- landed: both boundaries are one loop, and it is the KIND that carries the
+    -- union rather than the component count.
+    --
+    -- THE DAMAGE DID NOT MOVE, WHICH IS THE POINT OF LEAVING THIS BLOCK WHERE IT
+    -- IS. A signed distance to a union is the minimum over its parts whatever the
+    -- parts are, `parts` is unchanged, and every `S.hurts` below answers exactly
+    -- what it answered before. Measured directly as well: distance() is
+    -- bit-identical across 1.5 million points on 750 reachable geometries.
     ok(zone.kind == 'blobUnion'
-        and #env.BR.StormShape.components(zone) == 2,
-        'an overlapping breakout is two components -- the union is not stitched, '
-            .. 'and it says so', tostring(zone.kind))
+        and #env.BR.StormShape.components(zone) == 1,
+        'an overlapping breakout is ONE stitched loop -- the two boundaries are '
+            .. 'joined at their crossings (#356)',
+        ('%s, %d component(s)'):format(tostring(zone.kind),
+            #env.BR.StormShape.components(zone)))
 
     ok(S.hurts(900.0, 0.0) == false,
         'a player who got to the new destination early is SAFE at its centre, '
@@ -1550,10 +1682,35 @@ do
         'and the middle of the NEXT shape reads INSIDE too, where the circle rule '
             .. 'read 400m OUTSIDE',
         ('%s against %.2f'):format(tostring(edgeAt(900.0, 0.0)), probe(900.0, 0.0)))
-    ok(edgeAt(450.0, 0.0) < 0.0
-        and near(edgeAt(450.0, 0.0), probe(450.0, 0.0), 0.5),
-        'the lens between them reads inside from the nearer rim',
-        ('%s against %.2f'):format(tostring(edgeAt(450.0, 0.0)), probe(450.0, 0.0)))
+    -- ═══ THE LENS IS THE ONE PLACE THE MAGNITUDE IS DELIBERATELY SHALLOW ═══
+    --
+    -- Strictly inside an overlap, distance() is the minimum over the PARTS, and a
+    -- part's own nearest boundary point can be one the other part has swallowed --
+    -- so the magnitude understates the depth. distance()'s header has always said
+    -- so; what changed with #356 is that the probe stopped sharing the
+    -- understatement. It walks the boundary, the boundary is one stitched loop with
+    -- nothing inside the zone any more, so it now answers the TRUTH: 137 m at the
+    -- waist against the 61 m the readout gives.
+    --
+    -- SO THE CLAIM IS SPLIT RATHER THAN LOOSENED, and the half that matters is
+    -- kept exact. The SIGN is what the grade, the sky and the two cues read, and it
+    -- is asserted below across the whole sweep. The magnitude is asserted to be
+    -- inside, to be no DEEPER than the truth -- shallow is the safe direction,
+    -- nothing can be told it is safely inside when it is not -- and to be exactly
+    -- the minimum over the parts, which is what the function claims to be rather
+    -- than what a walk of the outline would give.
+    local lens, lensTruth = edgeAt(450.0, 0.0), probe(450.0, 0.0)
+    local lensMin = math.huge
+    for _, part in ipairs(zone.parts or { zone }) do
+        local d = env.BR.StormShape.distance(part, 450.0, 0.0)
+        if d < lensMin then lensMin = d end
+    end
+    ok(lens ~= nil and lens < 0.0 and lens >= lensTruth - 1e-6
+        and near(lens, lensMin, 1e-6),
+        'the lens between them reads inside, at the minimum over the parts, which '
+            .. 'is SHALLOWER than the walked truth and never deeper',
+        ('%s, parts min %.2f, walked truth %.2f')
+            :format(tostring(lens), lensMin, lensTruth))
     ok(edgeAt(0.0, 700.0) > 0.0
         and near(edgeAt(0.0, 700.0), probe(0.0, 700.0), 0.5),
         'and off the side of the pair, inside neither, it reads positive',
@@ -1778,25 +1935,35 @@ do
     -- the zone is a pair of blobs.
     --
     -- THE LIVE QUESTION AT THE SAME SAMPLE POINTS IS THE COMPONENT COUNT, and it is
-    -- worth more than the old one. One loop is a single clean silhouette; two is the
-    -- overlapping-union artifact config/storm.lua announces, drawn as two whole
-    -- boundaries with curtain inside the safe zone. So this is what keeps that
-    -- artifact off every ordinary phase: a nested phase is ONE loop from its first
-    -- frame to its last, and a breakout is two until the sweep swallows the target.
+    -- worth more than the old one. One loop is a single clean silhouette; two is a
+    -- pair of ISLANDS, which is the honest picture for a zone whose two halves do
+    -- not touch and was, until #356, also what an OVERLAPPING pair got -- two whole
+    -- boundaries with curtain inside the safe zone.
+    --
+    -- ═══ SO THE THREE CASES ARE NOW SEPARATED, AND THE MIDDLE ONE IS THE FIX ═══
+    --
+    -- A nested phase is one loop throughout, as it always was. An overlapping
+    -- breakout is now one loop throughout as well -- that assertion read `two` here
+    -- on purpose so that the stitch would turn it red (#356). A DISJOINT breakout is
+    -- still two until the sweep brings the halves together, and that case is
+    -- asserted by name for exactly one reason: the stitch must not have eaten it.
+    -- Two islands kilometres apart drawn as one loop would bridge them with a quad
+    -- across the sea.
     local function loopsAcross(phase, cx0, cy0, r0, cx1, cy1, r1, waitMs, shrinkMs)
         local E = newStormClient()
         local SS = E.env.BR.StormShape
         local ei = E.env.BR.Config.Storm.render.edgeInset
         local rec = E.record(phase, cx0, cy0, r0, cx1, cy1, r1, waitMs, shrinkMs, 2.0)
-        local flips, prev, total = 0, nil, waitMs + shrinkMs
+        local flips, prev, first, total = 0, nil, nil, waitMs + shrinkMs
         for k = 0, 400 do
             local sx, sy, sr = E.env.BR.StormAt(rec, rec.tStart + total * (k / 400))
             local n = #SS.components(
                 SS.inset(E.env.BR.StormZone(rec, sx, sy, sr), ei))
             if prev ~= nil and n ~= prev then flips = flips + 1 end
+            first = first or n
             prev = n
         end
-        return flips, prev
+        return flips, prev, first
     end
 
     local nFlips, nEnd = loopsAcross(2, 0, 0, 2600, 400, 0, 1600, 120000, 120000)
@@ -1805,11 +1972,21 @@ do
             .. 'ordinary phase ever shows the overlapping-union artifact',
         ('%d changes, ends on %d loop(s)'):format(nFlips, nEnd))
 
-    local bFlips, bEnd = loopsAcross(4, 0, 0, 950, 1350, 0, 520, 75000, 187500)
-    ok(bFlips == 1 and bEnd == 1,
-        'and a breakout is two loops until the sweep swallows the target, changing '
-            .. 'exactly once and ending on one',
-        ('%d changes, ends on %d loop(s)'):format(bFlips, bEnd))
+    -- r 950 at the origin closing on r 520 at 1350: 1350 is inside 950 + 520, so
+    -- the two boundaries genuinely cross at the first frame.
+    local bFlips, bEnd, bFirst = loopsAcross(4, 0, 0, 950, 1350, 0, 520, 75000, 187500)
+    ok(bFlips == 0 and bFirst == 1 and bEnd == 1,
+        'and an OVERLAPPING breakout is one stitched loop from its first frame to '
+            .. 'its last -- this is the assertion #356 inverted',
+        ('%d changes, %d loop(s) to %d'):format(bFlips, bFirst, bEnd))
+
+    -- r 950 at the origin closing on r 260 at 1800: 1800 is well past 950 + 260, so
+    -- these are two islands with open ground between them.
+    local dFlips, dEnd, dFirst = loopsAcross(5, 0, 0, 950, 1800, 0, 260, 60000, 150000)
+    ok(dFlips == 1 and dFirst == 2 and dEnd == 1,
+        'and a DISJOINT breakout is still two islands until the sweep brings them '
+            .. 'together, changing exactly once',
+        ('%d changes, %d loop(s) to %d'):format(dFlips, dFirst, dEnd))
 
     -- A FORCED 'solid' ON A UNION STILL DRAWS ONE DISC, which is the known lie
     -- the A/B is measured against rather than a second bug: it is only reachable
@@ -1856,23 +2033,20 @@ do
         C.errored())
     ok(#C.markers > 40, 'and draws a wall', #C.markers)
 
-    -- ═══ EVERY MARKER IS ON ONE PART'S BOUNDARY, AND SOME OF THEM ARE INSIDE THE
-    ---     OTHER -- WHICH IS #344'S ONE ANNOUNCED ARTIFACT ═══
+    -- ═══ EVERY MARKER IS ON THE UNION'S BOUNDARY, AND NONE OF THEM IS INSIDE THE
+    ---     SAFE ZONE -- #328'S CLAIM, BACK FOR BLOBS (#356) ═══
     --
-    -- This assertion used to be "the signed distance to the union is zero at every
-    -- marker", which carried two claims at once: a wall in the right place, and no
-    -- wall drawn through the middle of the safe zone. Two overlapping DISCS make
-    -- both true, because union2 computes the crossings and drops the swallowed
-    -- arcs. Two overlapping BLOBS cannot be stitched in the arc-and-segment model,
-    -- so the zone is both shapes whole and the second claim is deliberately false
-    -- here: the stretches of each boundary that run inside the other ARE drawn.
+    -- Both halves of this used to be one assertion -- "the signed distance to the
+    -- union is zero at every marker" -- which is true for two overlapping DISCS
+    -- because union2 computes the crossings and drops the swallowed arcs. #344 made
+    -- it false for blobs, which were concatenated instead of stitched, so the claim
+    -- was split and the interior runs were asserted to EXIST, by name, so that the
+    -- day the union was stitched this block would go red rather than quietly keep a
+    -- weaker claim than it could have.
     --
-    -- SO THE TWO CLAIMS ARE SPLIT RATHER THAN WEAKENED. Every marker is exactly on
-    -- the boundary of ONE part -- nothing is off the shape, which is the claim that
-    -- catches a wall in the wrong place -- and the interior runs are then asserted
-    -- to EXIST, by name, so that the day somebody implements the boolean union this
-    -- block goes red and gets its stronger assertion back instead of quietly
-    -- keeping a weaker one.
+    -- THAT DAY IS #356 AND THE STRONGER CLAIM IS BACK, kept as two assertions
+    -- because the two failures they catch are different: a wall in the wrong place,
+    -- and a wall inside the zone. `interior` is now asserted to be ZERO.
     local worst, worstAt = 0.0, nil
     local interior = 0
     for _, m in ipairs(C.markers) do
@@ -1887,11 +2061,15 @@ do
     ok(worst < 1e-6,
         "every column stands on ONE part's boundary -- none off the shape",
         ('worst %.6f m at %s'):format(worst, tostring(worstAt)))
-    ok(interior > 0,
-        'and the overlap really does draw curtain inside the safe zone, which is '
-            .. 'the artifact config/storm.lua announces -- when a boolean union '
-            .. 'lands, this is the assertion that has to be turned back round',
-        ('%d of %d columns inside the other part'):format(interior, #C.markers))
+    -- MEASURED AGAINST THE SIGNED DISTANCE, WHICH IS SHALLOW IN THE LENS AND THAT
+    -- IS WHY THIS IS AN HONEST TEST. distance() understates depth strictly inside an
+    -- overlap, so if anything it UNDER-reports how far inside a stray column is; a
+    -- column on a swallowed arc still reads comfortably negative, which is what the
+    -- pre-#356 spelling of this block measured at 44 of 72.
+    ok(interior == 0,
+        'and NOTHING is drawn inside the safe zone -- the swallowed stretches of '
+            .. 'both boundaries are gone, which is #328 restored for blobs',
+        ('%d of %d columns inside the zone'):format(interior, #C.markers))
 
     -- AND IT WRAPS BOTH CIRCLES. A wall that quietly fell back to the current
     -- circle would pass the test above -- a circle's own boundary is a subset of
@@ -2904,14 +3082,18 @@ do
     V.pedAt = pt(250.0, 0.0, 30.0)
     V.frame()
     local venn = SS.inset(zoneOf(V.env, vrec), rr.edgeInset)
-    -- ═══ ON ONE PART'S BOUNDARY, AND THE LENS IS #344'S ANNOUNCED ARTIFACT ═══
+    -- ═══ ON ONE PART'S BOUNDARY, AND NOTHING IN THE LENS (#356) ═══
     --
     -- Two overlapping DISCS are one closed loop with the swallowed arcs dropped, so
-    -- this used to be one assertion carrying two claims: nothing off the shape, and
-    -- nothing in the lens. Two overlapping BLOBS cannot be stitched in the
-    -- arc-and-segment model, so the second claim is deliberately false and is
-    -- asserted the other way round below -- see wall.union, which carries the same
-    -- split and the same note about turning it back when a boolean union lands.
+    -- this was one assertion carrying two claims: nothing off the shape, and nothing
+    -- in the lens. #344 made the second false for blobs, which were concatenated
+    -- rather than stitched, and it was asserted the other way round below on purpose
+    -- so that the stitch would turn it red -- see wall.union, which carries the same
+    -- split and the same note. #356 stitched it, so `inLens` is zero now.
+    --
+    -- THE TWO ASSERTIONS STAY SEPARATE, because they still catch different failures:
+    -- a corner off the outline is a wall in the wrong place, and a corner in the lens
+    -- is a wall through the middle of the safe zone.
     local offShape, offAt = 0.0, nil
     local inLens = 0
     for _, qd in ipairs(quadsOf(V)) do
@@ -2928,10 +3110,10 @@ do
         "and every corner of it stands on ONE part's INSET boundary: none off the "
             .. 'shape',
         ('worst %.9f m at %s'):format(offShape, tostring(offAt)))
-    ok(inLens > 0,
-        'with curtain inside the lens, which is the artifact config/storm.lua '
-            .. 'announces and the assertion to invert the day the union is stitched',
-        ('%d corners inside the other part'):format(inLens))
+    ok(inLens == 0,
+        'and NOTHING of it is inside the lens: the swallowed arcs of both blobs are '
+            .. 'gone and the strip is one loop over two reflex corners (#356)',
+        ('%d of the corners are inside the zone'):format(inLens))
     ok(backFacing(V, V.pedAt) == 0,
         'with a visible face at every triangle across both reflex corners',
         ('%d of %d back-facing'):format(backFacing(V, V.pedAt), #V.polys))
@@ -4412,8 +4594,26 @@ do
     -- map before PLAYING, and the two states it belongs to are the whole of its
     -- lifetime -- there is no teardown to get wrong, because the gate IS the
     -- teardown.
+    --
+    -- ═══ THIS IS THE FALLBACK PATH NOW, AND IT IS PINNED AS ONE (#350) ═══
+    --
+    -- The map fills circle 1's real boundary through the minimap overlay when it can,
+    -- and the ring below is what a client that cannot gets instead. So this block
+    -- runs with ScaleformUI_Assets ANSWERING NOTHING -- handle nil, which is the
+    -- shape of that resource not being started -- rather than with the overlay
+    -- happening to be slower than the ticks it drives.
+    --
+    -- BECAUSE THE FALLBACK IS THE HALF THAT CAN ROT UNWATCHED. The overlay is what
+    -- anybody looks at, and a client whose gate never opens is one nobody will ever
+    -- play on deliberately: the blip path has to keep working on evidence rather
+    -- than on the fact that it used to. `map.overlay` owns the other direction.
+    --
+    -- The harness already defaults to no handle; it is spelled out here because every
+    -- assertion in this block depends on it and a reader should not have to go and
+    -- find that out.
     local C = newStormClient()
     local env = C.env
+    C.mm.handle = nil
     env.BR.State.storm = nil
     env.BR.State.match.state = env.BR.MatchState.WARMUP
     env.BR.State.me.state    = env.BR.PlayerState.WARMUP
@@ -4532,7 +4732,11 @@ do
         env.BR.State.me.state    = env.BR.PlayerState.BUS
         env.BR.State.stormPreview = { cx = 400.0, cy = 0.0, r = 2600.0 }
         if said ~= nil then C.fire('br:env:world', said) end
-        C.frame()
+        -- THE ENTRY RAMP IS RUN OUT HERE (#351). Every gate below is about WHETHER
+        -- there is a wall, not about how it arrives, and on the first frame after the
+        -- world loads the answer is legitimately "nothing yet" -- see C.settlePreview.
+        -- The ramp itself is `preview.entry`'s subject.
+        C.settlePreview()
         return C
     end
 
@@ -4832,6 +5036,12 @@ do
         -- handoff and not mainlandLoaded.
         C.fire('br:env:world', false)
         C.pedAt = pt(0.0, 0.0, 30.0)
+        -- AND #351'S ENTRY RAMP IS ALREADY SPENT BEFORE THE WALK STARTS. This block
+        -- is about the HANDOFF -- one clock read in two directions -- and the entry is
+        -- a different ramp on a different anchor that has completed long before the
+        -- hold's last fadeInSec. Leaving it running would put a third alpha curve
+        -- inside assertions whose whole content is that there are exactly two.
+        C.settlePreview()
         return C
     end
 
@@ -5052,7 +5262,11 @@ do
     S.env.BR.State.me.state    = PS.BUS
     S.env.BR.State.stormPreview = { cx = CCX, cy = CCY, r = CR }
     S.pedAt = pt(0.0, 0.0, 30.0)
-    S.frame()
+    -- #351'S RAMP RUNS OUT ON THE FALLBACK PATH TOO, and that is worth having in this
+    -- assertion rather than beside it: the ramp is armed by mainlandLoaded(), so a
+    -- ramp that only ever completed when br_environment spoke would leave a
+    -- permanently invisible wall on exactly the deployment shape this block exists for.
+    S.settlePreview()
     local fbBus = walls(S)
     goPlaying(S)
     local fbHold = holdAt(S, WAIT * 0.5)
@@ -5935,6 +6149,647 @@ do
         'and so is the other direction -- nil asks for "not hidden", not for nothing',
         ('passed %s (%s)'):format(tostring(L[1] and L[1][3]),
             type(L[1] and L[1][3])))
+end
+
+-- ---------------------------------------------------------------------------
+describe('map.overlay')
+do
+    -- ═══ THE MAP DRAWS THE REAL SHAPE, AND EXACTLY ONE PATH DRAWS IT (#350) ═══
+    --
+    --   "seems every storm is still a circle."            -- owner, 2026-09-22
+    --
+    -- The wall has been a blob since #344 and the map was a radius blip at `r`, which
+    -- is where the whole feature is visible: at phase 1 the nine corners are 1815 m
+    -- apart along the boundary, so a player on the ground sees a stretch that reads
+    -- as an arc of a circle. #347 proved ADD_AREA_OVERLAY fills an arbitrary polygon
+    -- on the radar AND the pause map, so the two zones are filled boundaries now.
+    --
+    -- ═══ WHAT THIS BLOCK IS FOR IS THE SWITCH, NOT THE POLYGON ═══
+    --
+    -- The polygon is `shape.polyline`'s subject in tools/test_shared.lua, proved
+    -- against its sag bound, its run boundaries and the region it encloses. What can
+    -- only be tested HERE is the pair of paths: that the fill replaces the blips
+    -- rather than joining them, that a refusal anywhere puts the blips back, and that
+    -- the suppression rules and the fade clock the rings obey are the ones the fills
+    -- obey -- because those are two spellings away from being two behaviours.
+    local function mapClient(phase, cx0, cy0, r0, cx1, cy1, r1, waitMs, shrinkMs)
+        local C = newStormClient()
+        C.mm.handle = 7
+        C.pedAt = pt(0.0, 0.0)
+        C.record(phase, cx0, cy0, r0, cx1, cy1, r1, waitMs, shrinkMs, 2.0)
+        return C
+    end
+
+    -- ─── before the gate opens, the blips carry the map ───
+    --
+    -- THIS IS THE ORDER THE GAME ALWAYS PLAYS IN. The gate deliberately waits out
+    -- three seconds of session plus ten consenting passes, so every match starts with
+    -- the rings and swaps to the fills a few seconds in. A first tick that drew
+    -- nothing at all would be a map with no safe zone on it for that whole stretch.
+    local C = mapClient(2, 0.0, 0.0, 800.0, 300.0, 0.0, 400.0, 600000, 60000)
+    C.tick(1)
+    ok(#C.areas() == 0 and #C.rings() > 0,
+        'before the readiness gate opens the map is radius blips and no fill at all',
+        ('%d areas, %d rings'):format(#C.areas(), #C.rings()))
+
+    ok(C.overlayReady(), 'the gate opens once the session has settled')
+    C.tick(2)
+    ok(C.errored() == nil, 'and the map callback runs clean', C.errored())
+
+    -- ─── and then exactly one of the two paths is drawing ───
+    ok(#C.areas() == 2,
+        'a nested phase fills TWO areas: the safe zone and the target inside it, '
+            .. 'which is the pair the two rings were',
+        ('%d areas'):format(#C.areas()))
+    ok(#C.rings() == 0 and #C.boxes() == 0,
+        'and NOT ONE radius blip is left beside them -- a fill and a disc of the '
+            .. 'same zone would be two boundaries, and a player reads the nearer',
+        ('%d rings, %d boxes'):format(#C.rings(), #C.boxes()))
+
+    -- ─── the fill is on the real boundary, and the real boundary is not a circle ───
+    --
+    -- MEASURED AGAINST BR.StormZone, which is what the WALL draws -- so this is also
+    -- the assertion that the map and the curtain cannot disagree about the edge. And
+    -- the radial spread is what makes it a test of #350 rather than of the plumbing:
+    -- every point of a CIRCLE is the same distance from the centre, so a fill that
+    -- had quietly kept drawing one would pass the first measure and fail this.
+    local SS = C.env.BR.StormShape
+    local rec = C.env.BR.State.storm
+    local zone = C.env.BR.StormZone(rec, rec.cx0, rec.cy0, rec.r0)
+    local worstOff, lo, hi = 0.0, math.huge, 0.0
+    for _, p in ipairs(C.areas()[1].points) do
+        local d = math.abs(SS.distance(zone, p.x, p.y))
+        if d > worstOff then worstOff = d end
+        local rad = math.sqrt((p.x - rec.cx0) ^ 2 + (p.y - rec.cy0) ^ 2)
+        lo, hi = math.min(lo, rad), math.max(hi, rad)
+    end
+    ok(worstOff < 1e-6,
+        'every point of the fill is ON the zone the wall is drawn on, to a micron',
+        ('worst %.9f m off'):format(worstOff))
+    ok((hi - lo) > 1.0,
+        'and the boundary is genuinely not a circle: its distance from the centre '
+            .. 'varies with the bearing, which is the whole of what #350 is about',
+        ('radius runs %.1f to %.1f m'):format(lo, hi))
+
+    -- ─── the colour and the alpha ───
+    --
+    -- THE ALPHA IS THE ONE PIECE OF ARITHMETIC ON THIS PATH THAT IS NOT OBVIOUS. The
+    -- movie sets `mc._alpha = a / 255 * 100` AND passes the same `a` to beginFill as a
+    -- Flash 0-100 alpha, so below 100 the two COMPOUND and a = 50 renders near 10%.
+    -- The fills are asked for at the alphas the blips use, so 80 has to be inverted
+    -- through areaAlpha rather than passed through -- otherwise the safe zone reads a
+    -- third fainter than the disc it replaced.
+    local blip = C.env.BR.Config.Storm.blip
+    local col  = C.env.BR.Config.Storm.render.colour
+    local MO   = C.env.BR.MapOverlay
+    local zf, tf = C.areas()[1], C.areas()[2]
+    ok(zf.r == col.r and zf.g == col.g and zf.b == col.b
+        and tf.r == col.r and tf.g == col.g and tf.b == col.b,
+        'both fills are the wall\'s own purple out of render.colour',
+        ('%d,%d,%d'):format(zf.r, zf.g, zf.b))
+    ok(zf.a == MO.areaAlpha(blip.currentAlpha)
+        and tf.a == MO.areaAlpha(blip.nextAlpha),
+        'at the two blip alphas, each inverted through the movie\'s compounding',
+        ('%d and %d from %d and %d'):format(zf.a, tf.a,
+            blip.currentAlpha, blip.nextAlpha))
+    ok(zf.a ~= blip.currentAlpha and zf.a > blip.currentAlpha,
+        'and the inversion really moved the safe zone\'s alpha -- 80 is inside the '
+            .. 'compounding region, so passing it through would draw a third faint',
+        ('%d from %d'):format(zf.a, blip.currentAlpha))
+    ok(MO.areaAlpha(110) == 110 and MO.areaAlpha(255) == 255,
+        'while an alpha at or above 100 is already linear and is passed through')
+    ok(MO.areaAlpha(80) == 89,
+        'the inverse is 10 * sqrt(want): 80 of 255 comes back as 89, which renders '
+            .. '(89/255) * (89/100) = the 80/255 that was asked for',
+        tostring(MO.areaAlpha(80)))
+    ok(MO.areaAlpha(-5) == 0 and MO.areaAlpha(400) == 255,
+        'and it is clamped at both ends')
+
+    -- ─── the target is drawn LAST, so it is on top ───
+    --
+    -- The movie renders its clips in push order, which is why the two rings were
+    -- recreated in a fixed order too: the purple target read as flashing on the map
+    -- when the safe zone's rebuild landed on top of it.
+    local tr = 0.0
+    for _, p in ipairs(tf.points) do
+        tr = math.max(tr, math.sqrt((p.x - rec.cx1) ^ 2 + (p.y - rec.cy1) ^ 2))
+    end
+    ok(tr < rec.r0 and tr > rec.r1 * 0.5,
+        'the second fill is the TARGET, pushed after the zone so it draws over it',
+        ('reaches %.0f m from the target centre, target r %.0f'):format(tr, rec.r1))
+
+    -- ─── the phase-1 hold shows the target ONLY, on the wall's own clock ───
+    --
+    -- The safe zone during the phase-1 hold is the whole map, and a purple wash over
+    -- all of Los Santos says nothing -- which is exactly why the blue ring is
+    -- suppressed there. The fill obeys the same rule from the same number: wallShare,
+    -- which is also what the curtain and the ring read. THIS IS THE ASSERTION A
+    -- SECOND SPELLING OF THE FADE WOULD FAIL.
+    local H = mapClient(1, 0.0, 0.0, 6000.0, 400.0, 0.0, 2600.0, 120000, 120000)
+    ok(H.overlayReady(), 'a phase-1 client reaches the gate too')
+    local FADE = (H.env.BR.Config.Storm.render.fadeInSec or 10.0) * 1000.0
+    local function holdFills(C2, msLeft)
+        C2.env.BR.State.storm.tStart = (C2.now + 1500) - (120000 - msLeft)
+        C2.tick(1)
+        return C2.areas()
+    end
+    local deep = holdFills(H, 60000)
+    ok(#deep == 1,
+        'deep in the phase-1 hold only circle 1 is filled -- the whole-map safe zone '
+            .. 'is suppressed exactly as its ring is',
+        ('%d area(s)'):format(#deep))
+
+    local inFade = holdFills(H, FADE * 0.5)
+    ok(#inFade == 2,
+        'and inside the fade window the safe zone arrives, on the same countdown the '
+            .. 'curtain uses',
+        ('%d area(s)'):format(#inFade))
+    local zoneA = nil
+    for _, ar in ipairs(inFade) do
+        if ar.a ~= MO.areaAlpha(blip.nextAlpha) then zoneA = ar.a end
+    end
+    ok(zoneA ~= nil and zoneA < MO.areaAlpha(blip.currentAlpha) and zoneA > 0,
+        'at part strength rather than at full, so it fades in instead of popping',
+        ('%s against %d at full'):format(tostring(zoneA),
+            MO.areaAlpha(blip.currentAlpha)))
+
+    -- ─── a disjoint breakout is one fill per island ───
+    --
+    -- ONE ADD_AREA_OVERLAY PER CONTOUR, because a single filled polygon cannot be two
+    -- islands -- and since #356 an OVERLAPPING pair is one contour, so the count is
+    -- the honest question about which case the zone is in.
+    local D = mapClient(4, 0.0, 0.0, 950.0, 2400.0, 0.0, 260.0, 600000, 60000)
+    ok(D.overlayReady() and D.errored() == nil, 'a disjoint breakout reaches the gate')
+    D.tick(2)
+    ok(#D.areas() == 3,
+        'a disjoint zone is two fills, plus the target: one call per contour',
+        ('%d areas'):format(#D.areas()))
+
+    local V = mapClient(4, 0.0, 0.0, 950.0, 1100.0, 0.0, 520.0, 600000, 60000)
+    ok(V.overlayReady() and V.errored() == nil, 'an overlapping breakout too')
+    V.tick(2)
+    ok(#V.areas() == 2,
+        'while an OVERLAPPING zone is ONE fill for the pair -- which is #356 arriving '
+            .. 'on the map, and is why the lens does not read darker than the rest',
+        ('%d areas'):format(#V.areas()))
+
+    -- ─── a refused push is torn down whole, and the blips come back ───
+    --
+    -- HALF A ZONE IS WORSE THAN NONE OF IT: a fill that is missing a contour is a
+    -- boundary in the wrong place rather than a missing one. So a refusal takes the
+    -- whole push down and mapFilled() goes false, which is what hands the map back to
+    -- the rings -- the two paths being one switch is what makes that automatic.
+    local R = mapClient(4, 0.0, 0.0, 950.0, 2400.0, 0.0, 260.0, 600000, 60000)
+    ok(R.overlayReady(), 'the refusal client reaches the gate')
+    R.tick(2)
+    ok(#R.areas() == 3 and #R.rings() == 0, 'and is filling before the refusal',
+        ('%d areas, %d rings'):format(#R.areas(), #R.rings()))
+    R.mm.refuseAdd = true
+    R.env.BR.State.storm.r0 = 900.0          -- move it, so a rebuild is due
+    R.tick(3)
+    ok(#R.areas() == 0,
+        'a refused ADD leaves NOTHING of the fill behind, not the contours that '
+            .. 'happened to get through',
+        ('%d areas'):format(#R.areas()))
+    ok(#R.rings() > 0,
+        'and the radius blips take the map back on their own next cadence -- the '
+            .. 'fallback is the same switch, not a second code path',
+        ('%d rings'):format(#R.rings()))
+    R.mm.refuseAdd = false
+    R.env.BR.State.storm.r0 = 880.0
+    R.tick(3)
+    ok(#R.areas() == 3 and #R.rings() == 0,
+        'and when the engine stops refusing, the fill comes back and the blips go',
+        ('%d areas, %d rings'):format(#R.areas(), #R.rings()))
+
+    -- ─── and a PARTIAL push is the case the rule is actually for ───
+    --
+    -- Every add refused leaves nothing to tear down, so it cannot tell a teardown from
+    -- a no-op. This lets the FIRST contour through and refuses the rest: the movie
+    -- holds one island of a two-island zone at the moment the second is declined, and
+    -- what must be on the map afterwards is NOTHING -- one island is a boundary in the
+    -- wrong place, and the blips draw the whole thing instead.
+    R.mm.allowAdds = R.mm.adds + 1
+    R.env.BR.State.storm.r0 = 860.0
+    R.tick(3)
+    ok(#R.areas() == 0,
+        'a push that got PART of the way through is torn down whole -- the contour '
+            .. 'that succeeded does not stay on the map on its own',
+        ('%d areas'):format(#R.areas()))
+    ok(#R.rings() > 0,
+        'and the blips take it back, so the player sees a whole zone either way',
+        ('%d rings'):format(#R.rings()))
+    R.mm.allowAdds = nil
+
+    -- ─── the rebuild is rate-limited, and keyed on the geometry ───
+    --
+    -- An area cannot be resized in place, so every change is every clip removed and
+    -- every clip re-added with a kilobyte of coordinates marshalled through a
+    -- Scaleform string. A rebuild per tick on a zone that has not moved would be that
+    -- cost for nothing, all match.
+    local S = mapClient(2, 0.0, 0.0, 800.0, 300.0, 0.0, 400.0, 600000, 60000)
+    ok(S.overlayReady(), 'the cadence client reaches the gate')
+    S.tick(2)
+    local before = S.areas()[1]
+
+    -- AND NOT EVEN WALKED. The rebuild test is keyed on the INPUTS so that a tick on
+    -- which nothing moved costs a few comparisons, not a boundary walk per contour
+    -- that is then thrown away -- which is what building the contours first and
+    -- deciding afterwards would be, ten times a second, all match. Counted at
+    -- polyline, the one thing every contour on this path is walked through.
+    local realPolyline = S.env.BR.StormShape.polyline
+    local walks = 0
+    S.env.BR.StormShape.polyline = function(...)
+        walks = walks + 1
+        return realPolyline(...)
+    end
+    S.tick(12)
+    S.env.BR.StormShape.polyline = realPolyline
+    ok(S.areas()[1] == before,
+        'a zone that has not moved is not rebuilt, however many ticks pass -- the '
+            .. 'same table is still in the movie',
+        S.areas()[1] == before and 'same' or 'replaced')
+    ok(walks == 0,
+        'and its boundary is not even walked on those ticks -- the plan is compared '
+            .. 'before any contour is built',
+        ('%d walks in 12 ticks'):format(walks))
+    S.env.BR.State.storm.r0 = 700.0
+    S.tick(2)
+    ok(S.areas()[1] ~= before and #S.areas() == 2,
+        'and a zone that HAS moved is rebuilt, whole',
+        ('%d areas'):format(#S.areas()))
+
+    -- ─── the character count, which is the one unmeasured risk ───
+    --
+    -- There is no documented cap on a Scaleform string parameter, which is not the
+    -- same as there not being one: the #347 spike's coordinates were about 70
+    -- characters and a real boundary is several hundred to over a thousand. If a shape
+    -- ever draws GARBLED rather than absent, this is the number to look at -- so it is
+    -- reported, and `overlay.maxPoints` is the lever that bounds it.
+    local rep = S.env.BR.MapOverlay.report()
+    local sent = 0
+    for _, ar in ipairs(S.areas()) do sent = sent + ar.chars end
+    ok(rep.chars == sent and rep.chars > 0,
+        'the overlay reports the coordinate characters it actually pushed, counted '
+            .. 'from the same marshaller that pushed them',
+        ('%d reported, %d in the movie'):format(rep.chars, sent))
+
+    local cfgOv = S.env.BR.Config.Storm.overlay
+    local capped = 0
+    for _, ar in ipairs(S.areas()) do capped = math.max(capped, #ar.points) end
+    ok(capped <= cfgOv.maxPoints,
+        'and no contour exceeds the configured point ceiling, which is what bounds '
+            .. 'that string',
+        ('%d points against a ceiling of %d'):format(capped, cfgOv.maxPoints))
+
+    -- ─── and the whole thing has an off switch that leaves the blips working ───
+    local O = newStormClient()
+    O.mm.handle = 7
+    O.env.BR.Config.Storm.overlay.enabled = false
+    O.pedAt = pt(0.0, 0.0)
+    O.record(2, 0.0, 0.0, 800.0, 300.0, 0.0, 400.0, 600000, 60000, 2.0)
+    O.tick(20)
+    ok(#O.areas() == 0 and #O.rings() > 0 and O.errored() == nil,
+        'overlay.enabled = false draws no fill, asks the movie for nothing and '
+            .. 'leaves the map exactly as it was before #350',
+        ('%d areas, %d rings, %d asks'):format(#O.areas(), #O.rings(), O.mm.asks))
+    O.env.BR.Config.Storm.overlay.enabled = true
+end
+
+-- ---------------------------------------------------------------------------
+describe('preview.entry')
+do
+    -- ═══ THE PREVIEW WALL ARRIVES RATHER THAN APPEARING (#351) ═══
+    --
+    --   "When the map loaded in (while in bus), the storm wall popped in, didn't fade
+    --    in."                                            -- owner, 2026-09-22
+    --
+    -- #340 gave the preview wall its whole life and its fade OUT -- one minus the real
+    -- wall's share. It never had an entry: the instant br_environment said the
+    -- mainland was the world, the curtain drew at full previewAlpha on its first
+    -- frame, five hundred metres in front of a bus.
+    --
+    -- ═══ WHAT IS ASSERTED IS THAT IT IS THE SAME CLOCK ═══
+    --
+    -- #340's whole point is one fade length read in two directions, so the ramp reuses
+    -- render.fadeInSec rather than introducing a window of its own -- and the test
+    -- that matters is not "it ramps" but "it ramps over THAT number". Every
+    -- expectation below is derived from the config, so retuning fadeInSec retunes the
+    -- block; a second constant in the production file would fail it.
+    local proto = newStormClient()
+    local MS, PS = proto.env.BR.MatchState, proto.env.BR.PlayerState
+    local rr = proto.env.BR.Config.Storm.render
+    local FADE = (rr.fadeInSec or 10.0) * 1000.0
+
+    --- The brightest triangle in the last frame, or nil for an empty one.
+    local function brightest(C)
+        local m = nil
+        for _, t in ipairs(C.polys) do
+            if m == nil or t.a > m then m = t.a end
+        end
+        return m
+    end
+
+    local function busClient()
+        local C = newStormClient()
+        local env = C.env
+        env.BR.State.storm = nil
+        env.BR.State.match.state = MS.BUS
+        env.BR.State.me.state    = PS.BUS
+        env.BR.State.stormPreview = { cx = 500.0, cy = 0.0, r = 1600.0 }
+        C.pedAt = pt(0.0, 0.0, 30.0)
+        return C
+    end
+
+    -- ─── the world is not the world yet: nothing, exactly as before ───
+    local A = busClient()
+    A.fire('br:env:world', true)          -- the Cayo island is still up
+    A.frame()
+    A.frame()
+    ok(#A.polys == 0,
+        'with the island still the world there is no wall at all, which is the gate '
+            .. '#351 was told not to move',
+        ('%d polys'):format(#A.polys))
+
+    -- ─── the first frame the world arrives arms the ramp and draws nothing ───
+    --
+    -- AND THAT IS NOT A CHANGE TO WHEN IT STARTS. The ramp is anchored on the frame
+    -- this callback would have drawn on anyway, so the wall begins at exactly the
+    -- moment it began before -- at nothing instead of at full. One frame of geometry
+    -- at alpha zero is identical on screen and a frame's worth of triangles dearer,
+    -- which is the reading wallShare's header already argues for its own boundary.
+    local B = busClient()
+    B.fire('br:env:world', false)
+    B.frame()
+    ok(#B.polys == 0,
+        'the first frame with the mainland loaded draws nothing: the ramp is at zero',
+        ('%d polys'):format(#B.polys))
+
+    -- ─── and then it rises, monotonically, over exactly fadeInSec ───
+    local settled = busClient()
+    settled.fire('br:env:world', false)
+    settled.settlePreview()
+    local FULL = brightest(settled)
+    ok(FULL ~= nil and FULL > 0,
+        'a settled preview wall has an alpha to compare against',
+        tostring(FULL))
+
+    local seen, rising, over = {}, true, nil
+    local prev = -1
+    local E = busClient()
+    E.fire('br:env:world', false)
+    E.frame()                              -- arms
+    for k = 1, 10 do
+        E.now = E.now + math.floor(FADE / 10)
+        E.frame()
+        local a = brightest(E) or 0
+        seen[#seen + 1] = a
+        if a < prev then rising = false end
+        if a > FULL then over = over or ('%d at step %d'):format(a, k) end
+        prev = a
+    end
+    ok(rising,
+        'the preview wall only ever gets brighter across the window -- a ramp that '
+            .. 'dipped would read as a flicker',
+        table.concat({ tostring(seen[1]), tostring(seen[3]), tostring(seen[6]),
+                       tostring(seen[10]) }, ' -> '))
+    ok(over == nil,
+        'and never brighter than the strength it settles at, so previewAlpha is '
+            .. 'still the ceiling',
+        over)
+    ok(seen[1] > 0 and seen[1] < FULL,
+        'it is genuinely part-strength a tenth of the way in, which is the thing the '
+            .. 'owner did not see',
+        ('%d against %d at full'):format(seen[1], FULL))
+    ok(seen[#seen] == FULL,
+        'and it is at full exactly one fade window after the world arrived -- the '
+            .. 'SAME window the curtain and the map ring fade in over',
+        ('%d against %d'):format(seen[#seen], FULL))
+
+    -- ═══ AND THE BOUNDARY FRAME ITSELF IS FULL, NOT ONE STEP SHORT ═══
+    --
+    -- Held EXACTLY equal to the window, which is the one instant a strict comparison
+    -- and an inclusive one disagree -- the same boundary wallShare's header pins for
+    -- its own clock, and the reason that one is spelled `msLeft >= fadeMs`. A tenth-
+    -- step sweep never lands on it, so it is asked for directly.
+    local Bnd = busClient()
+    Bnd.fire('br:env:world', false)
+    Bnd.frame()                            -- arms; worldAt is this frame's timer
+    local armedAt = Bnd.now
+    Bnd.now = armedAt + math.floor(FADE) - 16   -- C.frame adds the last 16 ms
+    Bnd.frame()
+    ok(Bnd.now - armedAt == math.floor(FADE) and brightest(Bnd) == FULL,
+        'the frame at exactly one window is already at full strength, rather than a '
+            .. 'step short of it',
+        ('held %d of %d, brightest %s'):format(Bnd.now - armedAt, math.floor(FADE),
+            tostring(brightest(Bnd))))
+
+    -- ─── the ramp is armed by the world, not by the announcement ───
+    --
+    -- mainlandLoaded falls back to the match state when br_environment is silent, and
+    -- a ramp that only completed on the announced path would leave a permanently
+    -- invisible preview wall on any box not running that resource -- which is the
+    -- deployment shape with no way to notice.
+    local S = busClient()
+    S.settlePreview()
+    ok(brightest(S) == FULL,
+        'with br_environment silent the match state arms the ramp and it completes',
+        tostring(brightest(S)))
+
+    -- ─── it re-arms when the mainland stops being the world ───
+    --
+    -- The island comes back for every state that is not BUS or PLAYING, so a ramp
+    -- that latched would let the SECOND match of a session pop exactly as the first
+    -- one did -- and nothing would report it, because the first match looked right.
+    local Rr = busClient()
+    Rr.fire('br:env:world', false)
+    Rr.settlePreview()
+    ok(brightest(Rr) == FULL, 'a ramp that has completed is at full')
+    Rr.fire('br:env:world', true)           -- the island is back: between matches
+    Rr.frame()
+    ok(#Rr.polys == 0, 'and the wall is gone with the world')
+    Rr.fire('br:env:world', false)          -- and the next match's mainland arrives
+    Rr.frame()
+    ok(#Rr.polys == 0,
+        'the ramp is ARMED AGAIN rather than latched, so the next match\'s first '
+            .. 'frame is at nothing too',
+        ('%d polys'):format(#Rr.polys))
+    Rr.now = Rr.now + math.floor(FADE)
+    Rr.frame()
+    ok(brightest(Rr) == FULL, 'and it rises to full over the window a second time',
+        tostring(brightest(Rr)))
+
+    -- ─── and it does NOT re-arm at the BUS -> PLAYING handoff ───
+    --
+    -- Which is the one transition it must sit still through. The preview spans the bus
+    -- AND the suppressed phase-1 hold (#340), the world does not change underneath it,
+    -- and a ramp that restarted there would put the pop back in the exact place #340
+    -- removed a gap from.
+    local P = busClient()
+    P.fire('br:env:world', false)
+    P.settlePreview()
+    P.env.BR.State.match.state = MS.PLAYING
+    P.env.BR.State.me.state    = PS.ALIVE
+    P.record(1, 0.0, 0.0, 6000.0, 500.0, 0.0, 1600.0, 120000, 60000, 0.5)
+    P.env.BR.State.stormPreview = nil
+    P.frame()
+    ok(brightest(P) == FULL,
+        'the frame after the match goes PLAYING is at the same strength the bus was '
+            .. '-- the entry ramp does not restart at the handoff',
+        tostring(brightest(P)))
+
+    -- ─── a zero window is not a nan ───
+    --
+    -- wallShare answers fadeInSec of 0 rather than dividing by it, because a nan alpha
+    -- is an invisible wall with nothing in the console. The entry ramp is the same
+    -- arithmetic and answers it the same way: no window means full strength at once.
+    local Z = busClient()
+    Z.env.BR.Config.Storm.render.fadeInSec = 0.0
+    Z.fire('br:env:world', false)
+    Z.frame()                              -- the world arrives; the ramp is armed
+    Z.frame()
+    local za = brightest(Z)
+    ok(za ~= nil and za == za and za == FULL,
+        'fadeInSec of zero means no ramp at all -- full strength on the frame after '
+            .. 'the world arrives, and not a nan',
+        tostring(za))
+
+    -- ═══ AND THE ONE CASE THAT IS ACTUALLY A 0/0 ═══
+    --
+    -- A zero window with a zero held time. Reachable in the game by two frames landing
+    -- in the same millisecond, which at the framerates this wall is looked at from is
+    -- not exotic -- and `held >= ms` is the only thing standing between that and a
+    -- nan alpha, which is an invisible wall with nothing in the console. Forced here
+    -- by winding the clock back by exactly the step C.frame adds.
+    local Z2 = busClient()
+    Z2.env.BR.Config.Storm.render.fadeInSec = 0.0
+    Z2.fire('br:env:world', false)
+    Z2.frame()
+    Z2.now = Z2.now - 16                   -- so the next frame lands on the same ms
+    Z2.frame()
+    local za2 = brightest(Z2)
+    ok(za2 ~= nil and za2 == za2 and za2 == FULL,
+        'a zero window read on the very millisecond it was armed is full strength, '
+            .. 'not a nan out of zero over zero',
+        tostring(za2))
+    Z2.env.BR.Config.Storm.render.fadeInSec = rr.fadeInSec
+    Z.env.BR.Config.Storm.render.fadeInSec = rr.fadeInSec
+
+    -- ─── and a clock that went backwards is nothing, not a negative alpha ───
+    --
+    -- GetGameTimer is monotonic in the game, so this is not a defect being guarded
+    -- against -- it is the SHAPE of the arithmetic being pinned. The share is
+    -- multiplied into a draw alpha, and a negative multiplier is the class of fault
+    -- that shows up as an invisible wall with nothing in the console.
+    local Bk = busClient()
+    Bk.fire('br:env:world', false)
+    Bk.settlePreview()
+    ok(brightest(Bk) == FULL, 'a settled wall before the clock is wound back')
+    Bk.now = Bk.now - math.floor(FADE * 2.0)
+    Bk.frame()
+    ok(#Bk.polys == 0,
+        'and a clock that has gone backwards draws nothing rather than a negative '
+            .. 'alpha',
+        ('%d polys, brightest %s'):format(#Bk.polys, tostring(brightest(Bk))))
+end
+
+-- ---------------------------------------------------------------------------
+describe('patch.minimap')
+do
+    -- ═══ THE VENDORED CALL THAT CRASHES THE STREAMING DLL (#348) ═══
+    --
+    -- ADD_MINIMAP_OVERLAY racing RELOAD_MAP_STORE crashes gta-streaming-five.dll
+    -- (citizenfx/fivem#4167, open and unmerged), and ScaleformUI called it at join
+    -- with no gate at all: initializeScaleforms() ran MinimapOverlays:Load()
+    -- unconditionally at resource start, and the retry thread below it called Load()
+    -- again at 2 Hz whenever the handle was still 0 -- which, because isLoaded can
+    -- never turn true in this vendored copy, is from resource start. Load() fires
+    -- ScUI:AddMinimapOverlay and loader.lua answers it with the native.
+    --
+    -- IT MATTERS MORE HERE THAN ON MOST SERVERS because an in-game logout on this
+    -- project re-mints a token and signs the player back in -- a deliberate feature --
+    -- so join is re-run in ordinary play and the race needs no cold boot.
+    --
+    -- ═══ WHY A TEXT ASSERTION AND NOT A DRIVEN ONE ═══
+    --
+    -- The patch is two changes inside a 20,000-line vendored bundle that this suite
+    -- does not load and should not: standing that file up would mean stubbing most of
+    -- ScaleformUI to assert one `if`. What can rot is the PATCH, at the next upstream
+    -- bump -- and verify.sh's vendored gate only checks that a BR-PATCH marker is
+    -- declared, not that it still does anything. So this reads the file and asserts
+    -- the two facts the patch consists of. The patch log carries the rest.
+    -- Read from the repository root, the same place every loadfile in this file
+    -- resolves from -- so a suite run from anywhere else fails loudly here rather
+    -- than passing four assertions over a nil.
+    local VPATH = 'resources/[scaleformui]/ScaleformUI_Lua/ScaleformUI.lua'
+    local f = io.open(VPATH, 'r')
+    ok(f ~= nil, 'the vendored bundle is where the patch log says it is', VPATH)
+    if f then
+        local src = f:read('a')
+        f:close()
+
+        local init = src:match('local function initializeScaleforms%(%)(.-)\nend\n')
+        ok(init ~= nil, 'initializeScaleforms is still findable',
+            init and 'found' or 'the function signature moved')
+
+        --- The same text with every line comment taken out.
+        ---
+        --- THE PATCH IS A DELETION AND IT LEAVES A COMMENT SAYING SO, which names the
+        --- call it removed -- so a search of the raw body finds the very sentence
+        --- explaining that the call is gone. Only CODE counts here.
+        local function codeOnly(text)
+            local out = {}
+            for line in (text .. '\n'):gmatch('([^\n]*)\n') do
+                if not line:match('^%s*%-%-') then out[#out + 1] = line end
+            end
+            return table.concat(out, '\n')
+        end
+
+        local initCode = init and codeOnly(init) or ''
+        ok(init ~= nil and not initCode:match('MinimapOverlays:Load%(%)'),
+            'initializeScaleforms no longer calls MinimapOverlays:Load() -- the eager '
+                .. 'ungated AddMinimapOverlay at join is gone (BR-PATCH 5)',
+            initCode:match('MinimapOverlays:Load%(%)') or 'absent from the code')
+        ok(initCode:match('_pauseMenu:Load%(%)') ~= nil,
+            'and the rest of initializeScaleforms is untouched, which is what makes '
+                .. 'the line above a deletion rather than a moved function',
+            initCode:match('_pauseMenu:Load%(%)') or 'the pause menu load is gone too')
+
+        -- AND THE RETRY THREAD'S OWN COPY IS GATED. Removing the eager call alone
+        -- fixes nothing: this thread reaches the same native within 500ms of start.
+        ok(src:match('BR%-PATCH 5') ~= nil,
+            'the patch marker is in the file, which is what ties it to the log')
+        -- THE WHOLE GATE AS ONE EXPRESSION, not the two native names somewhere in the
+        -- file. `if true then` in front of the Load() leaves both names sitting in the
+        -- counter above it, so a search for the names alone passes over a patch that
+        -- has been neutered -- which is exactly what a bad rebase at the next upstream
+        -- bump would leave behind.
+        local code = codeOnly(src)
+        ok(code:match('if brYes%(NetworkIsGameInProgress%(%)%)'
+            .. ' and brYes%(IsMinimapRendering%(%)%) then') ~= nil,
+            'the retry tests both session conditions as one gate before asking for '
+                .. 'the overlay')
+        ok(code:match('if brHeld >= 6 then\n%s*ScaleformUI%.Scaleforms%.'
+            .. 'MinimapOverlays:Load%(%)') ~= nil,
+            'and the Load() itself is behind the held counter, not beside it',
+            code:match('if brHeld[^\n]*') or 'the counter guard is gone')
+
+        -- 0 IS TRUTHY IN LUA and both natives are declared BOOL, so a bare `if` on
+        -- either would be the whole gate gone with nothing to see. The patch compares.
+        ok(src:match('brYes') ~= nil
+            and src:match('v ~= nil and v ~= false and v ~= 0') ~= nil,
+            'through a comparison rather than a bare truth test, because 0 is truthy '
+                .. 'in Lua and both natives are declared BOOL')
+
+        -- AND THE DELAY IS LABELLED A GUESS WHERE IT IS WRITTEN. #4167 publishes no
+        -- safe window, so any number here is one -- and the next person to read it
+        -- should be told that by the source rather than by an issue.
+        ok(src:match('BR%-PATCH 5.-[Gg][Uu][Ee][Ss][Ss]') ~= nil
+            or src:match('[Gg][Uu][Ee][Ss][Ss].-#4167') ~= nil
+            or src:match('#4167.-[Gg][Uu][Ee][Ss][Ss]') ~= nil,
+            'and the window it waits is called a guess in the source, because #4167 '
+                .. 'publishes no safe one')
+    end
 end
 
 print(('\n\27[32m%d passed\27[0m'):format(pass))
