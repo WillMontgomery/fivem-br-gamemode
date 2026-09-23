@@ -3178,6 +3178,13 @@ do
     -- THE TWO ASSERTIONS STAY SEPARATE, because they still catch different failures:
     -- a corner off the outline is a wall in the wrong place, and a corner in the lens
     -- is a wall through the middle of the safe zone.
+    --
+    -- "IN THE LENS" IS DEEPER THAN A MILLIMETRE, which is storm_shape.lua's
+    -- CROSS_TOL: the two seam corners stand where bisection put the crossing, and
+    -- bisection stops within a millimetre of it, on either side. Found by the
+    -- varying corner count -- this record's phase-3 shape became a hexagon whose
+    -- seam landed 0.23 mm inside the other part, a stitch exactly as correct as the
+    -- one before. A swallowed arc is metres deep, so the claim loses nothing.
     local offShape, offAt = 0.0, nil
     local inLens = 0
     for _, qd in ipairs(quadsOf(V)) do
@@ -3185,7 +3192,7 @@ do
             local own = partAt(V.env, venn, p.x, p.y)
             local d = math.abs(SS.distance(own, p.x, p.y))
             if d > offShape then offShape, offAt = d, ('%.1f,%.1f'):format(p.x, p.y) end
-            if SS.distance(venn, p.x, p.y) < -1e-6 then inLens = inLens + 1 end
+            if SS.distance(venn, p.x, p.y) < -1e-3 then inLens = inLens + 1 end
         end
     end
     ok(V.errored() == nil and #V.polys > 0, 'the strip runs clean on a Venn union',
@@ -4180,6 +4187,61 @@ do
             .. 'away',
         ('worst %d polys of %d'):format(worstPolys, budget))
 
+    -- ═══ AND EVERY CORNER COUNT, PINNED, BECAUSE THE SEEDS ABOVE ONLY SAMPLE THEM ═══
+    --
+    -- Twenty-eight seeded phases draw most counts and promise none. A triangle is
+    -- the fewest runs and the biggest corner arcs; a dodecagon is the most runs and
+    -- the tightest arcs, and so the most quads -- the one that could run the budget
+    -- out. So each count is drawn on a big phase and a small one, through the same
+    -- four geometries, by pinning the count in the config the frame reads.
+    local shapeCfg = env.BR.Config.Storm.shape
+    local shippedCorners = shapeCfg.corners
+    local cFrames, cDrew, cOff, cOffAt, cPolys, cPolysAt = 0, 0, 0.0, nil, 0, nil
+    for n = 3, 12 do
+        shapeCfg.corners = n
+        for _, i in ipairs({ 2, 6 }) do
+            local r0, r1 = phases[i].radius, phases[i + 1].radius
+            for _, sep in ipairs({ (r0 - r1) * 0.4, r0 * 0.95,
+                                   r0 + r1 + r0 * 0.5, 0.0 }) do
+                local rec = C.record(i, 0.0, 0.0, r0, sep, 0.0, r1, 600000, 60000, 2.0)
+                rec.seed = 7001 * n + i
+                C.pedAt = pt(r0 * 0.3, 0.0, 30.0)
+                C.frame()
+                cFrames = cFrames + 1
+                if #C.polys > 0 then cDrew = cDrew + 1 end
+                if #C.polys > cPolys then
+                    cPolys, cPolysAt = #C.polys, ('%d corners, phase %d'):format(n, i)
+                end
+                local drawn = SS.inset(zoneOf(env, rec), rr.edgeInset or 0.0)
+                for _, qd in ipairs(quadsOf(C)) do
+                    for _, v in ipairs({ qd.a, qd.b }) do
+                        local d = math.abs(SS.distance(partAt(env, drawn, v.x, v.y),
+                            v.x, v.y))
+                        if d > cOff then
+                            cOff, cOffAt = d, ('%d corners, phase %d, sep %.0f')
+                                :format(n, i, sep)
+                        end
+                    end
+                end
+                if env.BR.StormUnit(rec.seed, rec.phase).n ~= n then
+                    cOffAt, cOff = ('%d corners asked, %d drawn'):format(n,
+                        env.BR.StormUnit(rec.seed, rec.phase).n), math.huge
+                end
+            end
+        end
+    end
+    shapeCfg.corners = shippedCorners
+    ok(C.errored() == nil and cFrames == 80 and cDrew == cFrames,
+        'every corner count from three to twelve draws a wall on a big phase and a '
+            .. 'small one, in all four geometries, and none of the 80 frames threw',
+        C.errored() or ('%d of %d drew'):format(cDrew, cFrames))
+    ok(cOff < 1e-6,
+        'and every quad corner of every count stands on the shape the record describes',
+        ('worst %.3e m off, at %s'):format(cOff, tostring(cOffAt)))
+    ok(cPolys <= budget,
+        'inside the poly budget at every count, the dodecagon\'s extra runs included',
+        ('worst %d polys of %d, at %s'):format(cPolys, budget, tostring(cPolysAt)))
+
     -- AND THE COLLAPSED END OF THE LAST PHASE, walked in metres rather than sampled:
     -- the radius runs 40 to 0 and passes through the sizes where the corner arcs no
     -- longer survive the inset and then the shape itself does not. Every one of those
@@ -4288,6 +4350,51 @@ do
         ('and the signed distance agrees at all %d probes, to the bit -- the wall '
             .. 'and the ledger cannot be measuring different shapes'):format(probes),
         ('worst %.3e m'):format(worstD))
+
+    -- ═══ AND THE SAME CORNER COUNT, ON EVERY PHASE OF SIXTY MATCHES ═══
+    --
+    -- The count is drawn now, and a count drawn off anything but the record -- the
+    -- process's own random stream, the clock -- is a triangle on one side of the
+    -- wire and a hexagon on the other. One record proves one draw; this is sixty
+    -- matches of seven phases, compared corner for corner. The seeds are distinct
+    -- integers and asserted so: #346's fractional seed would make this sixty copies
+    -- of one match.
+    local sweep, seenSeed, badSeed = {}, {}, nil
+    for i = 1, 60 do
+        local s = i * 104723 + 5
+        if math.tointeger(s) == nil or seenSeed[s] then badSeed = badSeed or s end
+        seenSeed[s] = true
+        sweep[i] = s
+    end
+    ok(badSeed == nil, 'the sixty seeds are distinct integers', tostring(badSeed))
+    local drawnCounts, nCounts, apart, compared = {}, 0, nil, 0
+    for _, s in ipairs(sweep) do
+        for p = 1, 7 do
+            local su = senv.BR.StormUnit(s, p)
+            local cu = cenv.BR.StormUnit(s, p)
+            compared = compared + 1
+            local same = su.n == cu.n and su.cr == cu.cr
+            for i = 1, math.min(su.n, cu.n) do
+                if su.cs[i].x ~= cu.cs[i].x or su.cs[i].y ~= cu.cs[i].y then
+                    same = false
+                end
+            end
+            if not same then
+                apart = apart or ('seed %d phase %d: server %d corners, client %d')
+                    :format(s, p, su.n, cu.n)
+            end
+            if not drawnCounts[su.n] then
+                drawnCounts[su.n], nCounts = true, nCounts + 1
+            end
+        end
+    end
+    ok(apart == nil,
+        ('the server and the client draw the same corner count and the same corners, '
+            .. 'to the bit, on all %d phases'):format(compared),
+        apart)
+    ok(nCounts == 10,
+        'and those phases really do vary: every count from three to twelve is among them',
+        ('%d distinct counts'):format(nCounts))
 
     -- ═══ AND THE SHAPE REALLY DEPENDS ON THE SEED ═══
     --
@@ -6819,6 +6926,44 @@ do
         ('worst %.6f m off'):format(nWorst))
     ok(targetClip._x == nil and targetClip._width == nil,
         'while the target, which does not move, is never touched at all')
+
+    -- ─── a triangle and a dodecagon are placed exactly as the sweep above is ───
+    --
+    -- Placement rests on the zone mid-sweep being the starting zone moved and
+    -- scaled, which holds because the unit is fixed for the whole phase -- the count
+    -- is drawn per phase, never per tick. Nothing in the arithmetic reads the count,
+    -- and this is where that is shown rather than argued, at the two ends of the
+    -- range: a triangle's bounding box sits furthest off its own centre, which is
+    -- the point the movie scales the clip about, and a dodecagon is the most points.
+    for _, want in ipairs({ 3, 12 }) do
+        local T, trec = sweepClient(2, 1000.0, 2600.0, 1400.0, 1600.0, 120000,
+            -700.0, -300.0)
+        -- BOUNDED, so a config that can no longer draw this count fails here by name
+        -- rather than hanging the suite looking for one.
+        local seed
+        for s = 1, 2000 do
+            if T.env.BR.StormUnit(s, 2).n == want then seed = s break end
+        end
+        ok(seed ~= nil,
+            ('the shipping config draws %d corners on some phase 2 of 2000 matches')
+                :format(want))
+        trec.seed = seed or 1
+        T.overlayReady()
+        T.tick(2)
+        local tAdds, tClip, tPlaced = T.mm.adds, T.areas()[1], T.mm.placed
+        startSweep(T, trec)
+        local tWorst, tTicks = 0.0, 0
+        realTicks(T, 600, function()
+            tTicks = tTicks + 1
+            if tTicks % 10 == 0 then tWorst = math.max(tWorst, offZone(T, trec, 1)) end
+        end)
+        ok(T.errored() == nil and T.mm.adds == tAdds and T.areas()[1] == tClip
+                and T.mm.placed - tPlaced >= tTicks and tWorst < 1e-3,
+            ('a %d-corner zone is placed on every tick of its sweep, never rebuilt, and '
+                .. 'the map shows it on the moving zone to a millimetre'):format(want),
+            T.errored() or ('seed %d: %d adds, %d placements over %d ticks, worst %.6f m')
+                :format(trec.seed, T.mm.adds - tAdds, T.mm.placed - tPlaced, tTicks, tWorst))
+    end
 
     -- ─── a breakout's union cannot be placed, so it is rebuilt when it shows ───
     --

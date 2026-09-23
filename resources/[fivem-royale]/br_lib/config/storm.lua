@@ -280,7 +280,7 @@ BR.Config.Storm = {
     -- nor round. Left at zero, nothing in the game can tell this knob exists.
     squareness = 0.0,
 
-    -- ═══ EVERY PHASE IS A RANDOM SHAPE, AND THESE ARE ITS TWO DIALS (#344) ═══
+    -- ═══ EVERY PHASE IS A RANDOM SHAPE, AND THESE ARE ITS DIALS (#344) ═══
     --
     --   "ship something that will draw random shaped storm walls for each phase,
     --    still matching our approximate positioning and size rules, circles are
@@ -291,15 +291,30 @@ BR.Config.Storm = {
     -- reports -- so the WALL and the DAMAGE BOUNDARY are both that shape and the
     -- hold/sweep timing is untouched. br_lib/shared/storm_shape.lua's blob()
     -- carries the geometry and BR.StormZone is the one place it is asked for.
+    -- Since 2026-09-23 the corner count is drawn per phase as well.
     --
-    -- MEASURED AT THIS CONFIG, over 20000 draws (tools/test_shared.lua's
-    -- `blob.measure` block re-measures it rather than trusting this note):
+    -- MEASURED AT THIS CONFIG, 20000 draws per count (tools/test_shared.lua's
+    -- `blob.measure` block re-measures it rather than trusting this note). Area is
+    -- 0.900 of the circle at every count, exactly, because it is scaled to be:
     --
-    --     area             0.898 of the circle it replaces
-    --     max extent       1.050 of r on average, 1.117 worst
-    --     min/max radius   0.808 on average, 0.686 worst
-    --     corner radius    0.391 of r on average, 0.187 worst
-    --     convex first try 87.5 percent, worst case 3 attempts, never concave
+    --     corners   max extent     min/max radius   corner radius   first try
+    --               mean  worst    mean  worst      mean  worst
+    --        3      1.10  1.15     0.71  0.56       0.66  0.54        66%
+    --        4      1.06  1.15     0.77  0.59       0.66  0.51        99.5%
+    --        5      1.05  1.15     0.80  0.65       0.62  0.45       100%
+    --        6      1.05  1.15     0.81  0.66       0.58  0.38       100%
+    --        7      1.05  1.14     0.82  0.68       0.53  0.32       100%
+    --        8      1.05  1.14     0.82  0.70       0.48  0.26        99.8%
+    --        9      1.05  1.14     0.82  0.72       0.43  0.24        94%
+    --       10      1.04  1.14     0.83  0.72       0.41  0.22        74%
+    --       11      1.03  1.14     0.84  0.71       0.40  0.19        45%
+    --       12      1.02  1.14     0.86  0.73       0.40  0.18        22%
+    --
+    -- First try is the share of draws kept on the first attempt. At three and four
+    -- corners every miss is a draw that reached past `reach` -- neither ever came
+    -- out concave -- and from five up every miss is a concave one, which is the
+    -- collapse #344 measured past nine. None went deeper than four attempts of six,
+    -- and none was ever kept concave.
     --
     -- min/max radius is the "is it a circle" measure -- 1.00 would be one. At 0.81
     -- the radius varies by a fifth, which on the 2600 m phase is a boundary running
@@ -331,23 +346,40 @@ BR.Config.Storm = {
     --
     --   THE SHAPE CHANGES AT A PHASE BOUNDARY. Each phase draws its own blob, so at
     --   the instant one phase hands over to the next the wall is standing still and
-    --   changes its lumps. Morphing between two shapes instead would mean
-    --   interpolating two convex polygons, which is not convex in general, and the
-    --   exact signed distance and inset both require convex.
+    --   changes its lumps -- and with the corner count drawn per phase, possibly
+    --   from a triangle to a dozen sides. Morphing between two shapes instead
+    --   would mean interpolating two convex polygons, which is not convex in
+    --   general, and the exact signed distance and inset both require convex.
     --
     -- PHASE 8 IS RADIUS 0 AND STAYS A POINT, as it always has: a shape with no
     -- radius is not a shape, and a point is not a circle.
     shape = {
-        -- HOW MANY CORNERS. 9 is the owner's measurement: 7 gives away too much
-        -- area (0.84), 11 and 13 are rounder AND far more often concave (at 13 the
-        -- first draw fails four times in five), so the retry does most of the work
-        -- and the shape it retries into is tamer.
+        -- HOW MANY CORNERS, DRAWN PER PHASE, and these are the odds.
         --
+        --   "We're able to reliably draw squircle storms, but what about random
+        --    other shapes of various vertices?"          -- the owner, 2026-09-23
+        --
+        -- Each phase rolls its count off the match's storm seed, so a match runs
+        -- through several polygons and the next match through different ones. The
+        -- weights are relative: 2 is twice as likely as 1, and a count left out is
+        -- never drawn.
+        --
+        -- THREE TO TWELVE, AND THE LOW HALF COUNTS DOUBLE. From seven up every
+        -- count reads as the same thing from above -- a lumpy near-circle, which is
+        -- the complaint -- and three to six are the ones that read as a named
+        -- shape. Weighted this way just over half the phases are a triangle,
+        -- square, pentagon or hexagon. Past twelve the first draw is concave most of
+        -- the time and the retry does all the work.
+        --
+        -- A NUMBER HERE IS ONE COUNT ON EVERY PHASE, which is how #344 shipped (9).
         -- BELOW 3 IS NOT A POLYGON AND IS THE WAY BACK TO CIRCLES -- the whole game
         -- draws exactly what it drew before #344. That is a deliberate edit and not
         -- a default: #335 shipped its shape behind a knob at zero and nothing in the
         -- game ever drew it, which is the mistake this block is not repeating.
-        corners     = 9,
+        corners     = {
+            [3] = 2, [4] = 2, [5] = 2, [6] = 2,
+            [7] = 1, [8] = 1, [9] = 1, [10] = 1, [11] = 1, [12] = 1,
+        },
 
         -- HOW FAR EACH CORNER'S RADIUS WANDERS, as a fraction of r, SYMMETRICALLY
         -- about it -- so r * (1 + j * U(-1, 1)) and not r * (1 - 2j * U(0, 1)).
@@ -362,13 +394,17 @@ BR.Config.Storm = {
         -- unmistakably not a circle and the retry is still rare.
         jitter      = 0.13,
 
-        -- HOW FAR A CORNER MAY SLIDE AROUND THE RING, as a fraction of its own
-        -- slot. Bounded at 0.5 by geometry rather than by taste: at half a slot two
-        -- neighbours can reach the same angle and the corner ORDER can swap, which
-        -- would turn a convex draw into a self-crossing one. 0.3 leaves the order
-        -- decided by construction, so the walk is counter-clockwise without being
-        -- sorted.
-        angleJitter = 0.3,
+        -- HOW FAR A CORNER MAY SLIDE AROUND THE RING, in degrees, either way.
+        --
+        -- DEGREES AND NOT A FRACTION OF THE SLOT, because the slot is no longer one
+        -- size: #344's 0.3 of a slot was 12 degrees at nine corners and 36 at
+        -- three, which drifts two corners of a triangle 72 degrees together and put
+        -- the storm's own centre outside the shape on one draw in twenty-two.
+        -- Nine degrees is exactly 0.3 of a twelve-corner slot, and storm_shape.lua
+        -- caps the slide there on any count whatever is typed here -- the value
+        -- #344 measured as keeping the corners in order. Higher is a less regular
+        -- polygon and more often redrawn.
+        slideDeg    = 9,
 
         -- HOW ROUND THE CORNERS ARE, as a fraction of the tightest corner's own
         -- allowance (the shorter adjacent half-edge, turned into a radius by the
@@ -381,6 +417,31 @@ BR.Config.Storm = {
         -- and the erosion exact rather than nearly so -- storm_shape.lua's blob
         -- section argues it at length, and the measurement above is of what ships.
         round       = 0.85,
+
+        -- HOW BIG EVERY SHAPE IS, as a fraction of the circle's area. Every draw is
+        -- scaled to exactly this, so a triangle phase plays the size a twelve-sided
+        -- one does. 0.90 is what #344's nine corners measured, so nothing plays
+        -- smaller or larger than what shipped before the count varied -- left
+        -- unscaled, three corners measured 0.29 and twelve 0.94.
+        area        = 0.90,
+
+        -- HOW FAR PAST r ANY SHAPE MAY REACH, as a multiple of it. A draw that would
+        -- reach further once scaled to `area` is redrawn tamer, like a concave one.
+        --
+        -- THIS IS THE TRADE AGAINST `area`, AND IT IS PAID IN SHARPNESS. A triangle
+        -- that covers ninety percent of the circle and still reaches no further
+        -- than this has to be a rounded one: raise it and triangles get pointier
+        -- and push further past the radius every placement rule measures from;
+        -- lower it and they round off toward a lumpy circle. 1.15 sits between
+        -- #344's nine-corner worst as it shipped (1.117) and the same shape's worst
+        -- once held to `area` (1.158 over 20000 draws), so no count reaches past r
+        -- further than a shape that has already shipped.
+        --
+        -- MEASURED AT 1.15: triangles keep a min/max radius of 0.71 on average
+        -- (0.57 at the sharpest) and pass first try 65 percent of the time. At
+        -- 1.20 they sharpen to about 0.68 and pass 90 percent; at 1.12, 0.73 and
+        -- 45 percent. Four corners and up barely notice any of the three.
+        reach       = 1.15,
     },
 
     -- Rendering. A single giant sphere is not an option: marker type 28 is

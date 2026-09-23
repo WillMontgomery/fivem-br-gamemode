@@ -1419,7 +1419,24 @@ local function walkProbe(poly, px, py)
     return math.sqrt(best), inside
 end
 
-local BLOB_OPTS = { corners = 9, jitter = 0.13, angleJitter = 0.3, round = 0.85 }
+-- NINE CORNERS, PINNED, for the blocks whose subject is the geometry rather than
+-- the count: a fixed count keeps their piece arithmetic literal. The slide is
+-- #344's own 0.3 of a nine-corner slot, spelled in the degrees it is now given in.
+local BLOB_OPTS = { corners = 9, jitter = 0.13, slideDeg = 12, round = 0.85,
+                    area = 0.90, reach = 1.15 }
+
+-- EVERY COUNT THE GAME CAN DRAW, for the blocks whose claim has to hold on all of
+-- them. Three to twelve is the shipping range; a claim proved on nine alone is a
+-- claim about the one shape #344 already measured.
+local BLOB_COUNTS = { 3, 4, 5, 6, 7, 8, 9, 10, 11, 12 }
+
+--- BLOB_OPTS with `n` corners.
+local function blobOpts(n)
+    local o = {}
+    for k, v in pairs(BLOB_OPTS) do o[k] = v end
+    o.corners = n
+    return o
+end
 
 describe('blob.geometry')
 do
@@ -1500,10 +1517,16 @@ do
     -- as 'no shape' and hands back a CIRCLE, so a generator that gave up after one
     -- attempt would ship circles on whichever phases happened to draw concave -- the
     -- exact thing #344 exists to remove, on one phase in eight, silently.
+    --
+    -- EVERY COUNT FROM THREE TO TWELVE, ninety draws each. The top of that range is
+    -- where concavity lives -- a twelve-corner first draw is concave four times in
+    -- five -- and the bottom is where a triangle's corners crowd, so a sweep of nine
+    -- alone would be a sweep of the one count #344 already cleared.
     local concave, worstSeed = 0, nil
-    local deepest, nils = 1, 0
+    local deepest, nils, badPieces = 1, 0, nil
     for seed = 1, 900 do
-        local uu = SS.blobUnit(seed * 7 + 1, (seed % 8) + 1, BLOB_OPTS)
+        local want = BLOB_COUNTS[(seed % #BLOB_COUNTS) + 1]
+        local uu = SS.blobUnit(seed * 7 + 1, (seed % 8) + 1, blobOpts(want))
         if uu == nil then
             nils = nils + 1
         else
@@ -1520,6 +1543,11 @@ do
                     break
                 end
             end
+            local bb = SS.blob(0.0, 0.0, 800.0, uu)
+            if n ~= want or #bb.pieces ~= 2 * want or #bb.comps ~= 1 then
+                badPieces = badPieces or ('asked %d, got %d corners, %d pieces, %d loops')
+                    :format(want, n, #bb.pieces, #bb.comps)
+            end
         end
     end
     ok(nils == 0,
@@ -1527,9 +1555,13 @@ do
             .. 'drawn on whichever phases the first draw happened to fail',
         nils)
     ok(concave == 0,
-        'not one of 900 draws ships a concave polygon -- the retry is what makes '
-            .. 'that true, and a concave one breaks every exactness claim below',
+        'not one of 900 draws across three to twelve corners ships a concave polygon '
+            .. '-- the retry is what makes that true, and a concave one breaks every '
+            .. 'exactness claim below',
         worstSeed and ('first concave at seed index ' .. worstSeed) or nil)
+    ok(badPieces == nil,
+        'and every count is the count it was asked for: N segs and N arcs in one loop, '
+            .. 'a triangle and a dodecagon alike', badPieces)
     ok(deepest > 1 and deepest < 6,
         'and the retry really is being exercised, without ever reaching the '
             .. 'no-jitter last resort',
@@ -1541,6 +1573,11 @@ do
     -- circles, which is the documented way back.
     ok(SS.blobUnit(1, 1, { corners = 2 }) == nil,
         'fewer than three corners is no shape at all -- the config off switch')
+    ok(SS.blobUnit(1, 1, { corners = { [2] = 5 } }) == nil
+            and SS.blobUnit(1, 1, { corners = {} }) == nil
+            and SS.blobUnit(1, 1, { corners = { [3] = 0, [5] = 0 } }) == nil,
+        'and so is a weight table with nothing on three corners or more -- the same '
+            .. 'off switch in the table spelling')
     ok(SS.zone(0.0, 0.0, 500.0, 0.0, 0.0, 300.0, nil).kind == 'circle',
         'and a nil unit takes the zone back to the pre-#344 disc union')
 
@@ -1569,10 +1606,15 @@ do
     -- dense WALK of the same boundary, which shares none of that arithmetic. Grid
     -- spacing and walk resolution are chosen so the walk's own error -- the sag of
     -- its chords -- is under a millimetre.
+    --
+    -- THE TWELVE SEEDS WALK THE COUNTS, three to twelve and round again, so the
+    -- wedge test is asked of a triangle's 135-degree turns as well as a dodecagon's
+    -- thirty.
     local worst, worstAt, checked = 0.0, nil, 0
     local worstSign = 0
     for seed = 1, 12 do
-        local u = SS.blobUnit(seed * 31, (seed % 8) + 1, BLOB_OPTS)
+        local u = SS.blobUnit(seed * 31, (seed % 8) + 1,
+            blobOpts(BLOB_COUNTS[((seed - 1) % #BLOB_COUNTS) + 1]))
         local b = SS.blob(300.0, -450.0, 620.0, u)
         local poly = walkPoly(b, 24000)
         for gx = -13, 13 do
@@ -1592,7 +1634,8 @@ do
         end
     end
     ok(worstSign == 0,
-        'the sign is right at every one of ' .. checked .. ' probes across 12 seeds',
+        'the sign is right at every one of ' .. checked .. ' probes across 12 seeds '
+            .. 'and every corner count',
         worstSign)
     ok(worst < 0.01,
         'and the magnitude is the true distance to the boundary, inside as well as '
@@ -1631,11 +1674,15 @@ do
     -- Eroding a convex body by d subtracts d from its support function, which for
     -- this shape is exactly `cr - d` with every corner centre unmoved -- so every
     -- point of the eroded boundary is exactly d inside the original.
+    --
+    -- EVERY COUNT, and the deepest inset is sized off the draw's own corner: a
+    -- dodecagon's corner can be a quarter of a triangle's, and an inset past it is
+    -- the inscribed-circle fallback below rather than an erosion.
     local worst, at = 0.0, nil
-    for seed = 1, 8 do
-        local u = SS.blobUnit(seed * 101, seed, BLOB_OPTS)
+    for seed = 1, #BLOB_COUNTS do
+        local u = SS.blobUnit(seed * 101, (seed % 8) + 1, blobOpts(BLOB_COUNTS[seed]))
         local b = SS.blob(-800.0, 250.0, 900.0, u)
-        for _, m in ipairs({ 1.0, 6.0, 40.0, 200.0 }) do
+        for _, m in ipairs({ 1.0, 6.0, 40.0, math.min(200.0, 0.8 * 900.0 * u.cr) }) do
             local ins = SS.inset(b, m)
             ok(ins.kind == 'blob', 'an erosion within the corner radius is a blob',
                 tostring(ins.kind))
@@ -1695,59 +1742,184 @@ describe('blob.measure')
 do
     local SS = BR.StormShape
 
-    -- ═══ WHAT THE SHIPPING CONFIG ACTUALLY DRAWS ═══
+    -- ═══ WHAT THE SHIPPING CONFIG ACTUALLY DRAWS, COUNT BY COUNT ═══
     --
-    -- These are the numbers config/storm.lua's `shape` block quotes, re-measured
+    -- These are the numbers config/storm.lua's `shape` table quotes, re-measured
     -- here rather than trusted -- so tuning the config retunes this block's report
-    -- and a change that quietly made the shape rounder, bigger or more often
-    -- concave goes red. The bounds are deliberately loose enough to survive a
-    -- jitter tweak inside the measured band and tight enough that a circle, or a
-    -- shape that lost a fifth of its area, fails.
+    -- and a change that quietly made a shape rounder, bigger, smaller or more often
+    -- concave goes red. Measured PER COUNT, because the counts disagree about
+    -- everything but the area: a triangle is the sharpest shape and the one pushed
+    -- furthest out, a dodecagon the roundest and the most often redrawn, and an
+    -- average over the mix would hide either end behind the middle.
     local cfg = BR.Config.Storm.shape
-    ok(cfg and cfg.corners and cfg.corners >= 3,
-        'the shipping config asks for a real polygon, not the off switch',
-        cfg and tostring(cfg.corners))
 
-    local N = 600
-    local sumArea, sumExt, sumRatio = 0.0, 0.0, 0.0
-    local maxExt, minRatio, firstTry, deepest = 0.0, 1.0, 0, 1
-    for s = 1, N do
-        local u = SS.blobUnit(s * 977 + 3, (s % 8) + 1, cfg)
-        if u.tries == 1 then firstTry = firstTry + 1 end
-        if u.tries > deepest then deepest = u.tries end
-        -- Area by the shoelace of a dense walk of the unit shape at a big radius,
-        -- so the walk's own chord loss is negligible against it.
-        local b = SS.blob(0.0, 0.0, 1000.0, u)
-        local poly = walkPoly(b, 3600)
+    --- The shipping config with the count pinned.
+    local function shipped(n, over)
+        local o = {}
+        for k, v in pairs(cfg) do o[k] = v end
+        o.corners = n
+        for k, v in pairs(over or {}) do o[k] = v end
+        return o
+    end
+
+    --- The unit's area as a fraction of the unit circle's, by Steiner's formula
+    --- recomputed here from the unit's own centres and radius.
+    local function steiner(u)
+        local poly, per = 0.0, 0.0
+        for i = 1, u.n do
+            local a, b = u.cs[i], u.cs[(i % u.n) + 1]
+            poly = poly + (a.x * b.y - b.x * a.y)
+            per = per + math.sqrt((b.x - a.x) ^ 2 + (b.y - a.y) ^ 2)
+        end
+        return (0.5 * poly + per * u.cr + math.pi * u.cr * u.cr) / math.pi
+    end
+
+    --- The same area by the shoelace of a dense WALK, which shares nothing with the
+    --- formula but the piece list -- walked at a big radius so the chords' own loss
+    --- is negligible against it.
+    local function walked(u)
+        local poly = walkPoly(SS.blob(0.0, 0.0, 1000.0, u), 3600)
         local area, j = 0.0, #poly
         for i = 1, #poly do
             area = area + (poly[j].x * poly[i].y - poly[i].x * poly[j].y)
             j = i
         end
-        area = math.abs(area) * 0.5 / (math.pi * 1000.0 * 1000.0)
-        sumArea = sumArea + area
-        sumExt = sumExt + u.extent
-        sumRatio = sumRatio + u.inradius / u.extent
-        maxExt = math.max(maxExt, u.extent)
-        minRatio = math.min(minRatio, u.inradius / u.extent)
+        return math.abs(area) * 0.5 / (math.pi * 1000.0 * 1000.0)
     end
 
-    local area, ext, ratio = sumArea / N, sumExt / N, sumRatio / N
-    ok(area > 0.86 and area < 0.94,
-        ('area is about 0.90 of the circle it replaces (%.3f)'):format(area),
-        ('%.4f over %d draws'):format(area, N))
-    ok(ext > 1.02 and ext < 1.09 and maxExt < 1.16,
-        ('max extent stays within a few percent of r (mean %.3f, worst %.3f)')
-            :format(ext, maxExt),
-        ('mean %.4f, worst %.4f'):format(ext, maxExt))
-    ok(ratio > 0.78 and ratio < 0.90 and minRatio > 0.65,
-        ('min/max radius is about 0.84 -- unmistakably not a circle (%.3f)')
-            :format(ratio),
-        ('mean %.4f, worst %.4f'):format(ratio, minRatio))
-    ok(firstTry > N * 0.75 and deepest <= 4,
-        ('the convexity retry is rare and shallow: %d of %d convex first try, '
-            .. 'worst %d attempts'):format(firstTry, N, deepest),
-        ('%d / %d first try, deepest %d'):format(firstTry, N, deepest))
+    -- THE CENTRE'S GUARANTEED DEPTH, derived from the two knobs the way the header
+    -- in storm_shape.lua argues it: the most of a `reach` disc that lies beyond a
+    -- line at depth d from the centre, held against `area`. Bisected here rather
+    -- than typed, so a retune of either knob moves the bound with it.
+    local R, A = cfg.reach, cfg.area * math.pi
+    local lo, hi = 0.0, R
+    for _ = 1, 80 do
+        local d = 0.5 * (lo + hi)
+        local held = math.pi * R * R
+            - (R * R * math.acos(d / R) - d * math.sqrt(R * R - d * d))
+        if held < A then lo = d else hi = d end
+    end
+    local DEPTH = lo
+
+    local PER, WALKED = 150, 20
+    local rows = {}
+    local areaErr, areaErrAt, walkErr, walkErrAt = 0.0, nil, 0.0, nil
+    local overReach, shallow, sixth, lowFirst = nil, nil, nil, nil
+    for _, n in ipairs(BLOB_COUNTS) do
+        local row = { n = n, ext = 0.0, maxExt = 0.0, ratio = 0.0, minRatio = 1.0,
+                      minInr = math.huge, first = 0, deepest = 1 }
+        local walkSum = 0.0
+        for s = 1, PER do
+            local u = SS.blobUnit(s * 977 + 3, (s % 8) + 1, shipped(n))
+            local e = math.abs(steiner(u) - cfg.area)
+            if e > areaErr then areaErr, areaErrAt = e, ('%d corners'):format(n) end
+            if s <= WALKED then walkSum = walkSum + walked(u) end
+            row.ext = row.ext + u.extent / PER
+            row.maxExt = math.max(row.maxExt, u.extent)
+            row.ratio = row.ratio + (u.inradius / u.extent) / PER
+            row.minRatio = math.min(row.minRatio, u.inradius / u.extent)
+            row.minInr = math.min(row.minInr, u.inradius)
+            if u.tries == 1 then row.first = row.first + 1 end
+            row.deepest = math.max(row.deepest, u.tries)
+        end
+        local we = math.abs(walkSum / WALKED - cfg.area)
+        if we > walkErr then walkErr, walkErrAt = we, ('%d corners'):format(n) end
+        if row.maxExt > cfg.reach + 1e-12 then
+            overReach = overReach or ('%d corners reach %.4f'):format(n, row.maxExt)
+        end
+        if row.minInr <= DEPTH then
+            shallow = shallow or ('%d corners, centre %.4f deep'):format(n, row.minInr)
+        end
+        if row.deepest >= 6 then sixth = sixth or ('%d corners'):format(n) end
+        if row.first < PER * 0.1 then
+            lowFirst = lowFirst or ('%d corners, %d of %d'):format(n, row.first, PER)
+        end
+        rows[n] = row
+    end
+
+    local report = {}
+    for _, n in ipairs(BLOB_COUNTS) do
+        local r = rows[n]
+        report[#report + 1] = ('%d: ext %.3f/%.3f ratio %.3f/%.3f first %d/%d deep %d')
+            :format(n, r.ext, r.maxExt, r.ratio, r.minRatio, r.first, PER, r.deepest)
+    end
+    report = table.concat(report, '; ')
+
+    -- ═══ THE SAME SIZE AT EVERY COUNT, WHICH IS THE WHOLE POINT OF THE SCALING ═══
+    --
+    -- Unscaled, three corners measured 0.29 of the circle and twelve 0.94: a
+    -- triangle phase would play a third the size of its neighbours.
+    ok(areaErr < 1e-9,
+        ('every draw of every count is exactly %.2f of the circle it replaces, by '
+            .. 'Steiner\'s formula off the unit\'s own centres'):format(cfg.area),
+        ('worst %.3e off, at %s'):format(areaErr, tostring(areaErrAt)))
+    ok(walkErr < 0.003,
+        'and a dense walk of the boundary agrees, at every count -- the scaling is '
+            .. 'of the shape that is drawn, not of a number beside it',
+        ('worst mean off by %.5f, at %s'):format(walkErr, tostring(walkErrAt)))
+
+    -- ═══ AND NO FURTHER PAST r THAN `reach`, WHICH IS WHAT HOLDING AREA COSTS ═══
+    ok(overReach == nil,
+        ('no draw of any count reaches past %.2f of r, the triangles included -- '
+            .. 'the ones holding area pushes furthest out'):format(cfg.reach),
+        overReach or report)
+    ok(rows[3].ext > rows[12].ext + 0.03,
+        'and that bound is doing work: at the same area a triangle reaches measurably '
+            .. 'further than a dodecagon',
+        ('%.3f against %.3f'):format(rows[3].ext, rows[12].ext))
+
+    -- ═══ NOT A CIRCLE AT ANY COUNT, AND NOT THE SAME SHAPE AT EVERY COUNT ═══
+    local roundest = 0.0
+    for _, n in ipairs(BLOB_COUNTS) do roundest = math.max(roundest, rows[n].ratio) end
+    ok(roundest < 0.90,
+        'min/max radius stays under 0.90 at every count -- the dodecagon, the '
+            .. 'roundest of them, included',
+        report)
+    ok(rows[3].ratio < rows[6].ratio and rows[6].ratio < rows[12].ratio
+            and rows[12].ratio - rows[3].ratio > 0.1,
+        'and fewer corners is visibly sharper: a triangle, a hexagon and a dodecagon '
+            .. 'measure in that order, a tenth apart end to end',
+        ('%.3f, %.3f, %.3f'):format(rows[3].ratio, rows[6].ratio, rows[12].ratio))
+
+    -- ═══ THE CENTRE IS INSIDE, BY AT LEAST WHAT THE THEOREM PROMISES ═══
+    ok(shallow == nil,
+        ('every shape of every count has its own centre at least %.3f of r deep, '
+            .. 'the bound `area` and `reach` guarantee between them'):format(DEPTH),
+        shallow)
+
+    -- ═══ THE RETRY HOLDS AT BOTH ENDS OF THE RANGE ═══
+    --
+    -- At twelve corners most first draws are concave and at three a third reach too
+    -- far, so both ends lean on the retry, and neither may lean on it all the way
+    -- to the no-jitter last resort -- a regular polygon is a legal answer and a
+    -- dull one.
+    ok(sixth == nil and lowFirst == nil,
+        'no count needs the no-jitter last resort, and every count keeps at least a '
+            .. 'tenth of its draws first try',
+        sixth or lowFirst or report)
+    local triFree = 0
+    for s = 1, PER do
+        local u = SS.blobUnit(s * 977 + 3, (s % 8) + 1,
+            shipped(3, { reach = math.huge }))
+        if u.tries == 1 then triFree = triFree + 1 end
+    end
+    ok(triFree == PER and rows[3].first < PER,
+        'and a triangle\'s redraws are ALL reach -- with the reach lifted every one '
+            .. 'passes first time, because a triangle cannot be concave',
+        ('%d of %d first try with no reach, %d with it'):format(triFree, PER,
+            rows[3].first))
+
+    -- ═══ AND A REACH NOTHING CAN MEET STILL DRAWS A SHAPE, NEVER A CIRCLE ═══
+    --
+    -- A regular triangle at ninety percent of the circle reaches 1.004 of r, so a
+    -- reach of 1.0 is unsatisfiable at three corners. The last attempt is accepted
+    -- however far it reaches for exactly this: a nil here is BR.StormZone drawing
+    -- circles, on whichever phases drew three corners, because of a typo.
+    local stuck = SS.blobUnit(4242, 2, shipped(3, { reach = 1.0 }))
+    ok(stuck ~= nil and stuck.tries == 6 and stuck.n == 3 and stuck.extent > 1.0,
+        'a reach no triangle can meet ends on the regular triangle of the last attempt '
+            .. 'rather than on no shape at all',
+        stuck and ('%d tries, extent %.4f'):format(stuck.tries, stuck.extent) or 'nil')
 
     -- ═══ AND THE SAME SEED IS THE SAME SHAPE, WHICH THE WHOLE DESIGN RESTS ON ═══
     --
@@ -1773,6 +1945,168 @@ do
     ok(frac.cr == a.cr,
         'a fractional seed floors to the integer one rather than collapsing to '
             .. 'zero, which is what #346 does to an unfloored one')
+end
+
+-- ---------------------------------------------------------------------------
+describe('blob.count')
+do
+    -- ═══ THE CORNER COUNT IS DRAWN, PER PHASE, OFF THE SEED (2026-09-23) ═══
+    --
+    --   "We're able to reliably draw squircle storms, but what about random other
+    --    shapes of various vertices?"                   -- the owner, 2026-09-23
+    --
+    -- Three claims, each of which fails silently. The config asks for a RANGE and
+    -- not one count -- a config reverted to `corners = 9` draws perfectly good
+    -- storms that are all the shape the owner called out. The draw FOLLOWS THE
+    -- WEIGHTS -- a roll against a misordered bucket list still draws every count,
+    -- just not as often as the table says. And the count comes off the MATCH'S SEED
+    -- AND THE PHASE -- a count keyed on the phase alone is deterministic, agrees on
+    -- both sides of the wire, and is the same sequence of polygons in every match.
+    local SS = BR.StormShape
+    local cfg = BR.Config.Storm.shape
+
+    --- `n` distinct integer seeds, asserted as such: BR.Rng refuses a fractional
+    --- seed outright (#346), and a sweep whose seeds collapsed onto each other
+    --- would report the spread of one draw many times.
+    local function seeds(n, mul, add)
+        local out, seen, bad = {}, {}, nil
+        for i = 1, n do
+            local s = i * mul + add
+            if math.tointeger(s) == nil or seen[s] then bad = bad or tostring(s) end
+            seen[s] = true
+            out[i] = s
+        end
+        ok(bad == nil, ('the %d seeds swept are distinct integers'):format(n), bad)
+        return out
+    end
+
+    local offered, share, total = {}, {}, 0.0
+    ok(type(cfg.corners) == 'table',
+        'the shipping config offers a TABLE of counts rather than one count on every '
+            .. 'phase, which is what #344 shipped and what the owner asked past',
+        tostring(cfg.corners))
+    if type(cfg.corners) == 'table' then
+        for c, w in pairs(cfg.corners) do
+            if (tonumber(w) or 0) > 0 then
+                offered[#offered + 1] = c
+                total = total + w
+            end
+        end
+        for _, c in ipairs(offered) do share[c] = cfg.corners[c] / total end
+    end
+    table.sort(offered)
+    ok(#offered >= 6 and offered[1] == 3 and offered[#offered] == 12,
+        'and it runs from a triangle to twelve corners',
+        table.concat(offered, ','))
+
+    -- ═══ THE DRAW FOLLOWS THE WEIGHTS ═══
+    --
+    -- 10,500 phases: the standard error on a seventh is 0.0034, so a two-point
+    -- tolerance is six of them -- wide enough never to flake and narrow enough that
+    -- a count drawn at the wrong weight, or a bucket list read out of order, fails.
+    local S1 = seeds(1500, 7919, 11)
+    local hist, drawn = {}, 0
+    for _, s in ipairs(S1) do
+        for p = 1, 7 do
+            local u = SS.blobUnit(s, p, cfg)
+            hist[u.n] = (hist[u.n] or 0) + 1
+            drawn = drawn + 1
+        end
+    end
+    local worstOff, worstC, stray = 0.0, nil, nil
+    for c, k in pairs(hist) do
+        if not share[c] then
+            stray = stray or ('%d corners drawn %d times'):format(c, k)
+        end
+    end
+    for _, c in ipairs(offered) do
+        local off = math.abs((hist[c] or 0) / drawn - share[c])
+        if off > worstOff then worstOff, worstC = off, c end
+    end
+    ok(stray == nil,
+        'no count the table does not offer is ever drawn', stray)
+    ok(worstOff < 0.02,
+        ('every count is drawn in proportion to its weight, over %d phases')
+            :format(drawn),
+        ('worst: %s corners off by %.4f'):format(tostring(worstC), worstOff))
+
+    -- ═══ OFF THE SEED: THE SAME PHASE OF DIFFERENT MATCHES IS DIFFERENT POLYGONS ═══
+    local S2 = seeds(400, 104729, 3)
+    local atPhase = {}
+    for _, s in ipairs(S2) do atPhase[SS.blobUnit(s, 3, cfg).n] = true end
+    local distinct = 0
+    for _ in pairs(atPhase) do distinct = distinct + 1 end
+    ok(distinct == #offered,
+        'phase 3 of 400 different matches draws every count on offer -- the count '
+            .. 'comes off the match\'s seed, not off the phase alone',
+        ('%d distinct counts of %d'):format(distinct, #offered))
+
+    -- ═══ AND OFF THE PHASE: ONE MATCH IS A RUN OF DIFFERENT POLYGONS ═══
+    --
+    -- Two weighted draws agree with probability sum(w^2) -- 0.11 at the shipping
+    -- weights -- so neighbouring phases should differ nearly nine times in ten. A
+    -- count keyed on the seed alone would never differ at all.
+    local S3 = seeds(200, 15485863, 7)
+    local neighbours, changed = 0, 0
+    for _, s in ipairs(S3) do
+        for p = 1, 6 do
+            neighbours = neighbours + 1
+            if SS.blobUnit(s, p, cfg).n ~= SS.blobUnit(s, p + 1, cfg).n then
+                changed = changed + 1
+            end
+        end
+    end
+    ok(changed > neighbours * 0.8,
+        'and one match changes its count from phase to phase nearly nine times in ten',
+        ('%d of %d neighbouring phases differ'):format(changed, neighbours))
+
+    -- ═══ ONE SPELLING, ONE SHAPE ═══
+    --
+    -- The count is rolled even when there is one to choose from, so `9` and
+    -- `{ [9] = 1 }` sit at the same place in the stream and are the same shape --
+    -- and a weight is relative, so `{ [9] = 5 }` is too.
+    local asNumber = SS.blobUnit(8675309, 4, blobOpts(9))
+    local asTable = SS.blobUnit(8675309, 4, blobOpts({ [9] = 1 }))
+    local asHeavy = SS.blobUnit(8675309, 4, blobOpts({ [9] = 5 }))
+    ok(asNumber.n == 9 and asTable.n == 9 and asNumber.cr == asTable.cr
+            and asNumber.cs[1].x == asTable.cs[1].x and asHeavy.cr == asTable.cr
+            and asHeavy.cs[4].y == asTable.cs[4].y,
+        'a count and a one-entry weight table are the same shape, at any weight')
+
+    -- AND A PHASE THAT DRAWS NINE FROM A WIDER TABLE IS THAT SAME NINE, which is
+    -- the property the roll-it-anyway rule buys the owner: retuning the weights
+    -- changes which count a phase draws, never what a given count looks like there.
+    local wide, same, differ = blobOpts({ [9] = 1, [12] = 1 }), 0, 0
+    for _, s in ipairs(seeds(40, 6007, 13)) do
+        local u = SS.blobUnit(s, 4, wide)
+        if u.n == 9 then
+            local pinned = SS.blobUnit(s, 4, blobOpts(9))
+            if pinned.cr == u.cr and pinned.cs[2].x == u.cs[2].x then
+                same = same + 1
+            else
+                differ = differ + 1
+            end
+        end
+    end
+    ok(same > 5 and differ == 0,
+        'and a phase that draws nine out of { 9, 12 } draws the very nine a pinned 9 '
+            .. 'draws -- the roll is taken whether or not there is a choice',
+        ('%d the same, %d different'):format(same, differ))
+
+    -- ═══ AND THE RING IS TURNED, SO A TRIANGLE DOES NOT ALWAYS POINT EAST ═══
+    --
+    -- Corner one sits in slot one, so without the turn every triangle in every match
+    -- has a corner within the slide of due east. Twelve thirty-degree sectors, and a
+    -- triangle's first corner has to have landed in every one of them.
+    local sectors, hit = {}, 0
+    for _, s in ipairs(seeds(240, 3571, 1)) do
+        local c = SS.blobUnit(s, 2, blobOpts(3)).cs[1]
+        local k = math.floor((math.atan(c.y, c.x) % (2.0 * math.pi)) / (math.pi / 6.0))
+        if not sectors[k] then sectors[k], hit = true, hit + 1 end
+    end
+    ok(hit == 12,
+        'and 240 triangles point every way round the compass, not all one way',
+        ('%d of 12 sectors'):format(hit))
 end
 
 -- ---------------------------------------------------------------------------
@@ -2029,24 +2363,32 @@ do
     -- argument through math.tointeger and falls back to ZERO when that fails, so a
     -- sweep built on `i / 3` or on a scaled float would secretly be one seed
     -- repeated -- and this block would report full coverage of a single shape.
+    --
+    -- EVERY CORNER COUNT ON EVERY PHASE PAIR, ten seeds a pair and each on its own
+    -- count. The stitch rests on two convex homothets crossing exactly twice, and a
+    -- triangle's long flat sides are where two of them run nearest to parallel --
+    -- the case a scan tuned on nine corners would be likeliest to miss.
     local SS = BR.StormShape
     local phases = BR.Config.Storm.phases
 
     local worst, worstTag = 0.0, ''
     local ones, twos, blobs, cases = 0, 0, 0, 0
+    local countsSeen, oneLoopCounts = {}, {}
     for p = 1, #phases - 1 do
         local r1, r2 = phases[p].radius, phases[p + 1].radius
         if r2 > 0.0 then
-            for s = 1, 6 do
+            for s = 1, #BLOB_COUNTS do
                 local seed = s * 5501
-                local unit = SS.blobUnit(seed, p, BLOB_OPTS)
+                local n = BLOB_COUNTS[((s + p) % #BLOB_COUNTS) + 1]
+                countsSeen[n] = true
+                local unit = SS.blobUnit(seed, p, blobOpts(n))
                 for i = 1, 24 do
                     local d = (r1 - r2) + ((r1 + r2) - (r1 - r2)) * i / 25
                     local z = SS.zone(0.0, 0.0, r1, d, 0.0, r2, unit)
                     cases = cases + 1
                     local nc = #SS.components(z)
                     if z.kind == 'blob' then blobs = blobs + 1
-                    elseif nc == 1 then ones = ones + 1
+                    elseif nc == 1 then ones, oneLoopCounts[n] = ones + 1, true
                     else twos = twos + 1 end
 
                     local per, total, inside = SS.perimeter(z), 0, 0
@@ -2064,8 +2406,8 @@ do
                     local pct = 100.0 * inside / total
                     if pct > worst then
                         worst = pct
-                        worstTag = ('r %.0f/%.0f d %.0f seed %d, %d loop(s)')
-                            :format(r1, r2, d, seed, nc)
+                        worstTag = ('r %.0f/%.0f d %.0f seed %d, %d corners, %d loop(s)')
+                            :format(r1, r2, d, seed, n, nc)
                     end
                 end
             end
@@ -2076,6 +2418,16 @@ do
         'the sweep reaches both answers: stitched overlaps and separated islands',
         ('%d cases -- %d one-loop, %d two-loop, %d collapsed to one blob')
             :format(cases, ones, twos, blobs))
+    local unstitched = {}
+    for _, c in ipairs(BLOB_COUNTS) do
+        if not (countsSeen[c] and oneLoopCounts[c]) then
+            unstitched[#unstitched + 1] = tostring(c)
+        end
+    end
+    ok(#unstitched == 0,
+        'and every corner count from three to twelve is stitched into one loop '
+            .. 'somewhere in it, so the bound below is a claim about all of them',
+        'never stitched: ' .. table.concat(unstitched, ','))
 
     -- ═══ THE BOUND, AND WHY IT IS NOT ZERO ═══
     --

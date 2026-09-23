@@ -711,7 +711,7 @@ end
 -- one seed in however many), and an erosion past the smallest radius is not a
 -- hull of discs at all. So the fraction is applied to the TIGHTEST corner's
 -- allowance and that one radius is used everywhere. Measured over 20000 draws at
--- the shipping config, the shape family is the one #344 measured: area 0.898 of
+-- #344's nine corners, the shape family is the one #344 measured: area 0.898 of
 -- the circle, max extent 1.050 of r, min/max radius 0.808, against its 0.88 to
 -- 0.89 / 1.03 to 1.06 / 0.79 to 0.85 across the same jitter band. The cost of the
 -- exactness is that the roundness varies more between draws, because the tightest
@@ -720,16 +720,80 @@ end
 -- ═══ CONVEXITY IS NOT GUARANTEED AND IS ENFORCED, NOT HOPED FOR ═══
 --
 -- Radii jittered about r can put a corner inside the line between its
--- neighbours: at the shipping N=9, jitter 0.13, 2491 of 20000 draws came out
--- concave on the first attempt. A concave polygon breaks both exactness claims
--- above -- the support-function argument IS convexity -- so a draw that fails
--- the test is redrawn from the SAME stream at a reduced jitter, and the last
--- attempt uses no jitter at all, which is a regular polygon and convex by
+-- neighbours: at N=9, jitter 0.13, 2491 of 20000 draws came out concave on the
+-- first attempt, and at twelve corners it is most of them. A concave polygon
+-- breaks both exactness claims above -- the support-function argument IS
+-- convexity -- and so does #356's stitch, which joins two overlapping blobs at
+-- their TWO crossings: two homothets of one convex shape cross at most twice,
+-- and two of a concave one can cross as often as they like. So a draw that fails
+-- the test is redrawn from the SAME stream with both jitters reduced, and the
+-- last attempt uses no jitter at all, which is a regular polygon and convex by
 -- construction. The loop therefore always ends on a convex shape and always
--- consumes a deterministic number of values. Over those 20000 draws the deepest
--- it ever went was attempt 3, and 54 draws needed even that.
+-- consumes a deterministic number of values.
 local BLOB_TRIES    = 6
 local BLOB_FALLOFF  = 0.75
+
+-- ═══ THE CORNER COUNT IS DRAWN TOO, AND THREE THINGS HAD TO MOVE WITH IT ═══
+--
+--   "We're able to reliably draw squircle storms, but what about random other
+--    shapes of various vertices?"                   -- the owner, 2026-09-23
+--
+-- #344 shipped every phase at nine corners, and nine corners at 0.13 of jitter
+-- reads from above as a lumpy rounded square -- every storm a relative of the
+-- same shape. The count is now the FIRST value off the phase's own stream, so a
+-- match is a run of different polygons and the client and the server still
+-- derive the same one. Nine was safe for reasons that stop being true on either
+-- side of it, and each has a knob in config/storm.lua's `shape` block:
+--
+--   AREA FALLS WITH THE COUNT. The generator as #344 left it measured 0.29 of the
+--   circle at three corners against 0.90 at nine, so a triangle phase would play
+--   a third the size of a nine-corner one. Every draw is now SCALED to `area` of
+--   the circle it replaces, exactly -- the Steiner formula below, not a walk.
+--
+--   AND HOLDING AREA PUSHES THE CORNERS OUT, which is the trade. Held to ninety
+--   percent of the circle and nothing else, a triangle reaches 1.13 of r on
+--   average and 1.29 at worst (1.44 and 2.03 with #344's slide, below), and r is
+--   what every placement rule treats as the bound. So a draw that would reach
+--   past `reach` once scaled is REJECTED like a concave one and redrawn tamer.
+--   That keeps both numbers at once and pays in sharpness alone, because sharper
+--   at a fixed area means further out: held to 1.15, a triangle's min/max radius
+--   is 0.71 on average and 0.57 at the sharpest, against 0.82 at nine corners.
+--
+--   AND A THREE-CORNER SLOT IS 120 DEGREES WIDE. #344's slide was a fraction of
+--   the slot, which on a triangle lets two corners drift 72 degrees closer and
+--   puts the centre OUTSIDE the shape -- 179 of 4000 draws. The slide is in
+--   degrees now, the same on every count, so a triangle wanders as far round the
+--   ring as a dodecagon does rather than four times as far.
+--
+-- WHY THE REACH IS A REJECTION AND NOT A CORRECTION. The last attempt is a regular
+-- polygon, which at the shipping rounding reaches 1.004 of r at three corners and
+-- less above it -- so the loop still always ends on a shape inside every bound,
+-- and a draw is never bent into one it did not come out as. Shrinking an
+-- over-reaching draw instead would hand back a triangle phase that plays small,
+-- which is the defect the area rule exists to remove.
+--
+-- THE CENTRE IS INSIDE, AND THAT IS NOW A THEOREM RATHER THAN A HOPE. A convex
+-- shape that misses its own centre lies in a half-plane, and the most of a disc
+-- of radius `reach` a half-plane holds is half of it -- 0.66 of the circle at
+-- 1.15, against the 0.90 every shape is scaled to. Worked through the circular
+-- segment, the centre is at least 0.33 of r deep in every shape that ships, and
+-- measured it is never less than 0.65. #350's in-place map fill and #352's
+-- headcount both lean on it.
+--
+-- BLOB_MAX_CORNERS is only how far up a weight table is read, twice the top of
+-- the shipping range. A count up there is legal and a poor bargain: measured, a
+-- twenty-corner draw ends on the last attempt's regular polygon four times in five.
+local BLOB_MAX_CORNERS = 24
+
+-- ═══ THE SLIDE IS STILL BOUNDED BY THE SLOT, BUT ONLY AS A BACKSTOP ═══
+--
+-- At half a slot two neighbours can reach the same angle and the corner ORDER can
+-- swap, which would turn a convex draw into a self-crossing one. The shipping
+-- slide never reaches this -- nine degrees is 0.3 of a twelve-corner slot and less
+-- of every smaller one -- so it binds only on a config asking for more corners or
+-- more slide than ships, and there it is the value #344 measured as leaving the
+-- order decided by construction.
+local BLOB_SLIDE_SLOT = 0.3
 
 -- HOW SHARP A CORNER MAY BE, in radians of exterior turn, at both ends.
 --
@@ -739,7 +803,7 @@ local BLOB_FALLOFF  = 0.75
 -- "all the way round" (see its header), the corner's own tangent length runs away
 -- as the turn goes to nothing, and a boundary piece of no length is dropped by
 -- seal() leaving a shape whose pieces no longer chain. Three degrees on a
--- nine-corner polygon whose mean turn is forty is a guard rather than a
+-- twelve-corner polygon whose mean turn is thirty is a guard rather than a
 -- constraint: it rejects the degenerate draw and nothing else.
 --
 -- The upper bound is the same statement at the other end -- a corner that turns
@@ -864,21 +928,32 @@ end
 local blobCache, blobCacheN = {}, 0
 local BLOB_CACHE_MAX = 64
 
---- One attempt at a unit blob, off `rng`. nil when the draw is not convex.
+--- One attempt at a unit blob, off `rng`. nil when the draw is not convex, or
+--- reaches past `reach` once it is scaled to `area`.
 ---
 --- Every draw takes exactly 2N values off the stream WHETHER OR NOT IT SUCCEEDS,
 --- which is what makes a retry deterministic rather than a fork: the client and
 --- the server reject the same attempt at the same point and arrive at the same
---- shape. The convexity test therefore runs AFTER all 2N values are drawn.
-local function blobAttempt(rng, n, jitter, angJitter, round)
+--- shape. Both tests therefore run AFTER all 2N values are drawn.
+--- @param slide number   radians a corner may slide round the ring
+--- @param rot number     radians the whole draw is turned by
+--- @param area number    the fraction of the unit circle's area to scale to
+--- @param reach number   the furthest the scaled boundary may reach from the centre
+local function blobAttempt(rng, n, jitter, slide, round, rot, area, reach)
     local slot = TAU / n
+    if slide > slot * BLOB_SLIDE_SLOT then slide = slot * BLOB_SLIDE_SLOT end
     local vs = {}
     for i = 1, n do
         -- THE ANGLE STAYS IN ITS OWN SLOT, which is what stops two corners
         -- swapping places: at +-0.3 of a slot no draw can reach its neighbour's,
         -- so the corner order is the slot order and the walk is counter-clockwise
         -- without having to be sorted.
-        local a = (i - 1) * slot + slot * angJitter * (rng:float() * 2.0 - 1.0)
+        --
+        -- AND THE WHOLE RING IS TURNED, by one angle drawn with the count. Without
+        -- it corner one of every shape sits due east give or take the slide, so
+        -- every triangle in every match points the same way and every square is
+        -- the same diamond -- one shape per count rather than a family of them.
+        local a = rot + (i - 1) * slot + slide * (rng:float() * 2.0 - 1.0)
         -- SYMMETRIC ABOUT 1, NOT INWARD FROM IT (#344, measured). Radii drawn in
         -- [1 - 2j, 1] cost 28 to 41 percent of the circle's area, because a polygon
         -- inscribed in a circle has already given some up and the corner rounding
@@ -943,12 +1018,34 @@ local function blobAttempt(rng, n, jitter, angJitter, round)
         if (p.ex * c.ey - p.ey * c.ex) <= 0.0 then return nil end
     end
 
+    -- ═══ SCALED TO `area` OF THE CIRCLE, EXACTLY ═══
+    --
+    -- A convex polygon grown by a disc of radius cr has area A + P * cr + pi * cr^2
+    -- -- its own area, a strip of width cr along every edge, and the corner arcs,
+    -- whose sweeps sum to one whole turn (Steiner's formula). So the area is three
+    -- terms of arithmetic on numbers already in hand, and scaling the centres and
+    -- the radius by one factor keeps the shape a hull of equal discs: nothing the
+    -- header claims exact stops being so.
+    local poly, per = 0.0, 0.0
+    for i = 1, n do
+        local a, b = cs[i], cs[(i % n) + 1]
+        poly = poly + (a.x * b.y - b.x * a.y)
+        per = per + a.elen
+    end
+    local k = sqrt(area * pi / (0.5 * poly + per * cr + pi * cr * cr))
+    for i = 1, n do
+        cs[i].x, cs[i].y = cs[i].x * k, cs[i].y * k
+    end
+    stampNormals(cs)
+    cr = cr * k
+
     local extent = 0.0
     for i = 1, n do
         local c = cs[i]
         local e = sqrt(c.x * c.x + c.y * c.y) + cr
         if e > extent then extent = e end
     end
+    if extent > reach then return nil end
     return {
         n = n, cr = cr, cs = cs, jitter = jitter,
         -- WHAT THE SHAPE MEASURES, normalised, recorded here because every
@@ -989,40 +1086,89 @@ end
 --- circles: BR.StormZone hands a nil unit to union2 and the game draws exactly
 --- what it drew before #344. That is a value somebody has to type -- #335 shipped
 --- its shape behind a knob at zero and nothing in the game ever drew it, which is
---- the mistake this file is not repeating -- so the shipping config is 9 corners
---- and the off switch is a deliberate edit.
+--- the mistake this file is not repeating -- so the shipping config weights three
+--- to twelve corners and the off switch is a deliberate edit.
+---
+--- `corners` IS A COUNT OR A TABLE OF WEIGHTS. A number is that many corners on
+--- every phase; a table `{ [3] = 2, [4] = 2, ... }` is drawn from, per phase, in
+--- proportion to the weights. A table with no positive weight at three or more
+--- is the off switch in that spelling, exactly as a number below three is.
 ---
 --- @param seed number|nil     the match's storm seed (server/storm.lua's seedRng)
 --- @param phase number|nil    1-based phase index
---- @param opts table|nil      { corners, jitter, angleJitter, round }
+--- @param opts table|nil      { corners, jitter, slideDeg, round, area, reach }
 --- @return table|nil unit     { n, cr, cs, extent, inradius, tries }
 function BR.StormShape.blobUnit(seed, phase, opts)
     opts = opts or {}
-    local n = math.floor(opts.corners or 9)
-    if n < 3 then return nil end
-    local jitter    = opts.jitter or 0.13
-    local angJitter = opts.angleJitter or 0.3
-    local round     = opts.round or 0.85
+    -- THE COUNTS ON OFFER, ascending, and their weights. Read in a fixed order
+    -- rather than with pairs(), whose order is not defined and would hand the
+    -- client and the server the same roll against differently ordered buckets.
+    local want = opts.corners or 9
+    local counts, weights, total = {}, {}, 0.0
+    if type(want) == 'table' then
+        for c = 3, BLOB_MAX_CORNERS do
+            local w = tonumber(want[c]) or 0.0
+            if w > 0.0 then
+                counts[#counts + 1], weights[#weights + 1] = c, w
+                total = total + w
+            end
+        end
+    else
+        local c = math.floor(tonumber(want) or 0)
+        if c >= 3 then counts[1], weights[1], total = c, 1.0, 1.0 end
+    end
+    if total <= 0.0 then return nil end
+
+    local jitter = opts.jitter or 0.13
+    local slide  = (opts.slideDeg or 9.0) * pi / 180.0
+    local round  = opts.round or 0.85
+    local area   = opts.area or 0.90
+    local reach  = opts.reach or 1.15
 
     local s = math.tointeger(math.floor(seed or 0)) or 0
     local p = math.tointeger(math.floor(phase or 0)) or 0
 
-    local key = ('%d|%d|%d|%.6f|%.6f|%.6f'):format(s, p, n, jitter, angJitter, round)
+    local spec = {}
+    for i = 1, #counts do spec[i] = ('%d:%.6f'):format(counts[i], weights[i]) end
+    local key = ('%d|%d|%s|%.6f|%.6f|%.6f|%.6f|%.6f'):format(s, p,
+        table.concat(spec, ','), jitter, slide, round, area, reach)
     local hit = blobCache[key]
     if hit then return hit end
 
     local rng = BR.Rng(s * 1000003 + p * 7919 + 17)
-    local j = jitter
+
+    -- ═══ THE COUNT AND THE TURN ARE THE FIRST TWO VALUES, ALWAYS ═══
+    --
+    -- Drawn off the phase's own stream, which is the match's storm seed and the
+    -- phase index and nothing else, so the client and the server roll the same
+    -- count exactly as they draw the same corners. TAKEN EVEN WHEN THERE IS ONE
+    -- COUNT TO CHOOSE FROM, so that everything after them sits at the same place
+    -- in the stream however `corners` is spelled: `9` and `{ [9] = 1 }` are the
+    -- same shape rather than two neighbouring draws.
+    local roll = rng:float() * total
+    local n = counts[#counts]
+    for i = 1, #counts do
+        roll = roll - weights[i]
+        if roll < 0.0 then n = counts[i] break end
+    end
+    local rot = rng:float() * TAU
+
+    local j, sl = jitter, slide
     local unit
     for attempt = 1, BLOB_TRIES do
-        -- THE LAST ATTEMPT HAS NO JITTER, so it is a regular polygon and cannot
-        -- fail the convexity test. That is what makes this loop terminate on a
-        -- shape rather than on a nil, and it is why nothing downstream has a
-        -- "there is no shape" branch to get wrong.
-        if attempt == BLOB_TRIES then j = 0.0 end
-        unit = blobAttempt(rng, n, j, angJitter, round)
+        -- THE LAST ATTEMPT HAS NO JITTER AT ALL, radial or angular, so it is a
+        -- regular polygon: convex by construction, and inside `reach` at any count
+        -- the shipping rounding allows (see the section header). That is what makes
+        -- this loop terminate on a shape rather than on a nil, and it is why
+        -- nothing downstream has a "there is no shape" branch to get wrong. So it
+        -- is also accepted however far it reaches -- a config asking for a reach a
+        -- regular polygon cannot meet at its area gets the regular polygon, never
+        -- a circle.
+        local last = attempt == BLOB_TRIES
+        if last then j, sl = 0.0, 0.0 end
+        unit = blobAttempt(rng, n, j, sl, round, rot, area, last and huge or reach)
         if unit then unit.tries = attempt break end
-        j = j * BLOB_FALLOFF
+        j, sl = j * BLOB_FALLOFF, sl * BLOB_FALLOFF
     end
 
     if blobCacheN >= BLOB_CACHE_MAX then blobCache, blobCacheN = {}, 0 end
@@ -1039,7 +1185,8 @@ end
 --- shape is that radius times a unit blob, so a shrinking phase is a shrinking
 --- scale factor and the whole hold/sweep timing machinery is untouched. `r` stays
 --- the number every placement rule is written in -- d_max, the nesting check, the
---- survey -- and the blob's own reach is 1.03 to 1.06 of it (measured, #344),
+--- survey -- and the blob's own reach is 1.02 to 1.10 of it on average and never
+--- past `reach`, 1.15, at any corner count (measured, and bounded by the retry),
 --- which is what "approximate positioning and size rules" bought.
 ---
 --- ═══ BELOW A FEW METRES IT IS A CIRCLE, AND THAT IS MIN_RADIUS's ARGUMENT ═══
@@ -1119,6 +1266,16 @@ end
 ---   shipping phase pairs, sweeping the whole offset range on four seeds each: it
 ---   happens on about a tenth of the offsets and only near the containment limit,
 ---   and the worst sliver is 61 m at 2600 -> 1600, then 70, 48, 27, 15 and 7 m.
+---
+---   WITH THE COUNT DRAWN, THE TRIANGLES ARE THE WORST OF IT. Computed exactly off
+---   the two support functions at 2600 -> 1600, 600 draws a count, the centre
+---   drawn uniformly over the slack as NextStormCentre draws it: at nine corners,
+---   as #344 shipped them and as they ship now alike, a sliver passes 50 m on about
+---   4 percent of phase changes and 95 to 100 m at the 99th percentile; at three,
+---   9 percent and 159 m. The most any shape CAN give up is
+---   the slack times one minus its inradius -- 233 m at nine corners, 324 m at
+---   three. Unscaled the triangle was 66 percent and 1081 m, which is the area rule
+---   earning its keep a second time.
 ---
 ---   THAT IS NOT A LOSS AGAINST TODAY, IT IS GRACE DECLINED. Today's nested target
 ---   is a disc strictly inside a disc and adds nothing at all, so the pre-safe
@@ -1349,7 +1506,7 @@ end
 ---
 --- zone()'s test is in CIRCLE space, deliberately -- storm_solve.lua's own nesting
 --- rule, so that "did this phase break out" has one answer everywhere. A blob
---- reaches 1.03 to 1.06 of its circle and dents in to about 0.85 of it, so a pair
+--- reaches up to 1.15 of its circle and dents in to about 0.85 of it, so a pair
 --- that is not nested as circles can be nested as blobs. MEASURED over the
 --- shipping phase pairs on four seeds, sweeping the whole reachable separation
 --- range: it happens, and the two-component drawing of it put up to 35.3% of the

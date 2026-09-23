@@ -4353,47 +4353,69 @@ do
     -- A FIXED SEED, so the dent and the bulge are this block's own rather than
     -- whatever the suite's clock deals. Found by walking rays out from the centre:
     -- circle 1 is convex, so each ray crosses the boundary once.
-    local SEED = 352
-    m = heldMatch(1, 180, SEED)
-    local zone = BR.StormZone(m.storm, CX, CY, R1)
-    local function wallAt(th)
-        local lo, hi = 0.0, 2.0 * R1
-        for _ = 1, 60 do
-            local mid = 0.5 * (lo + hi)
-            if BR.StormShape.distance(zone, CX + mid * math.cos(th),
-                    CY + mid * math.sin(th)) <= 0 then lo = mid else hi = mid end
+    --
+    -- AND THEN A TRIANGLE, which is where a radius test is most wrong: held to the
+    -- same area as every other count, its three sides dent furthest in and its three
+    -- corners reach furthest out, up to 1.15 r. The first seed whose circle 1 draws
+    -- three corners.
+    local TRI
+    for s = 1, 2000 do
+        if BR.StormUnit(s, 1).n == 3 then TRI = s break end
+    end
+    ok(TRI ~= nil, 'the shipping config draws a triangle circle 1 in 2000 matches')
+    TRI = TRI or 1
+    for _, SEED in ipairs({ 352, TRI }) do
+        local label = ('%d corners (seed %d)'):format(BR.StormUnit(SEED, 1).n, SEED)
+        m = heldMatch(1, 180, SEED)
+        local zone = BR.StormZone(m.storm, CX, CY, R1)
+        local function wallAt(th)
+            local lo, hi = 0.0, 2.0 * R1
+            for _ = 1, 60 do
+                local mid = 0.5 * (lo + hi)
+                if BR.StormShape.distance(zone, CX + mid * math.cos(th),
+                        CY + mid * math.sin(th)) <= 0 then lo = mid else hi = mid end
+            end
+            return lo
         end
-        return lo
-    end
-    local dentTh, dentR, bulgeTh, bulgeR = 0.0, math.huge, 0.0, -math.huge
-    for k = 0, 719 do
-        local th = k * math.pi / 360.0
-        local w = wallAt(th)
-        if w < dentR then dentTh, dentR = th, w end
-        if w > bulgeR then bulgeTh, bulgeR = th, w end
-    end
-    local dR = 0.5 * (dentR + R1)
-    local dx, dy = CX + dR * math.cos(dentTh), CY + dR * math.sin(dentTh)
-    local bR = 0.5 * (bulgeR + R1)
-    local bx, by = CX + bR * math.cos(bulgeTh), CY + bR * math.sin(bulgeTh)
-    ok(BR.Dist(dx, dy, CX, CY) < R1 and BR.StormShape.distance(zone, dx, dy) > 0
-        and BR.Dist(bx, by, CX, CY) > R1 and BR.StormShape.distance(zone, bx, by) <= 0,
-        'this circle 1 dents in and bulges out, so there is a spot inside its radius '
-            .. 'and outside its wall, and one the other way round',
-        ('wall from %.0f to %.0f against r %.0f'):format(dentR, bulgeR, R1))
+        local dentTh, dentR, bulgeTh, bulgeR = 0.0, math.huge, 0.0, -math.huge
+        for k = 0, 719 do
+            local th = k * math.pi / 360.0
+            local w = wallAt(th)
+            if w < dentR then dentTh, dentR = th, w end
+            if w > bulgeR then bulgeTh, bulgeR = th, w end
+        end
+        local dR = 0.5 * (dentR + R1)
+        local dx, dy = CX + dR * math.cos(dentTh), CY + dR * math.sin(dentTh)
+        local bR = 0.5 * (bulgeR + R1)
+        local bx, by = CX + bR * math.cos(bulgeTh), CY + bR * math.sin(bulgeTh)
+        ok(BR.Dist(dx, dy, CX, CY) < R1 and BR.StormShape.distance(zone, dx, dy) > 0
+            and BR.Dist(bx, by, CX, CY) > R1
+            and BR.StormShape.distance(zone, bx, by) <= 0,
+            label .. ': this circle 1 dents in and bulges out, so there is a spot inside '
+                .. 'its radius and outside its wall, and one the other way round',
+            ('wall from %.0f to %.0f against r %.0f'):format(dentR, bulgeR, R1))
 
-    setPos(1, dx, dy)
-    sent = {}
-    tick1()
-    ok(m.stormHoldCapped ~= true and left(m) > CAP,
-        'a solo player in the dent -- inside the radius, outside the wall -- is not '
-            .. 'inside circle 1, and the hold is not cut (#349 in airdrop siting)',
-        ('%.0fs left'):format(left(m) / 1000))
-    setPos(1, bx, by)
-    tick1()
-    ok(m.stormHoldCapped == true and left(m) == CAP,
-        'and on the bulge -- outside the radius, inside the wall -- they are, and it is',
-        ('%.0fs left'):format(left(m) / 1000))
+        setPos(1, dx, dy)
+        sent = {}
+        tick1()
+        ok(m.stormHoldCapped ~= true and left(m) > CAP,
+            label .. ': a solo player in the dent -- inside the radius, outside the wall '
+                .. '-- is not inside circle 1, and the hold is not cut (#349 in airdrop '
+                .. 'siting)',
+            ('%.0fs left'):format(left(m) / 1000))
+        setPos(1, bx, by)
+        tick1()
+        ok(m.stormHoldCapped == true and left(m) == CAP,
+            label .. ': and on the bulge -- outside the radius, inside the wall -- they '
+                .. 'are, and it is',
+            ('%.0fs left'):format(left(m) / 1000))
+        if SEED == TRI then
+            ok(R1 - dentR > 100.0 and bulgeR - R1 > 100.0,
+                'and on the triangle the radius is wrong by over a hundred metres both '
+                    .. 'ways -- the case the shape test exists for',
+                ('dent %.0f m in, bulge %.0f m out'):format(R1 - dentR, bulgeR - R1))
+        end
+    end
 
     -- ─── 75% of the LIVING, and a glider counts where they are ───
     m = heldMatch(5, 180)

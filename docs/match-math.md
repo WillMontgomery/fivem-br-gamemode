@@ -312,45 +312,64 @@ Everything above is about where the circles GO. Since #344 the wall itself is
 corners, scaled by whatever radius the solver reports.
 
 ```
-9 corners at slot angles jittered by ±0.3 of a slot
+corners     3 to 12, drawn per phase: 3–6 at weight 2, 7–12 at weight 1
+turn        the whole ring rotated by U(0, 360°)
+angles      each corner slid by up to ±9° within its slot
 radii       r × (1 + 0.13 × U(−1, 1))        -- symmetric about r, not inward
 corners     filleted at 0.85 of the tightest corner's allowance
-shape       convex hull of the 9 corner discs
+shape       convex hull of the corner discs
+area        scaled to exactly 0.90 of the circle's
+reach       redrawn if it would reach past 1.15 r
 ```
 
-The radius is still `r` and every placement rule above still uses it. Measured
-over 20 000 draws at the shipping config:
+The radius is still `r` and every placement rule above still uses it. Every
+count covers the same ground — 0.90 of the circle, which is what #344's fixed
+nine corners measured — so a triangle phase plays the same size as a
+dodecagon. What holding the area costs is reach: a triangle held to 0.90 of the
+circle has to push its corners out, so any draw that would reach past 1.15 `r`
+is redrawn, and the triangles that survive are rounded ones. Measured over
+20 000 draws per count at the shipping config:
 
-| | |
-|---|---|
-| area | 0.898 of the circle it replaces |
-| max extent | 1.050 of `r` on average, 1.117 worst |
-| min/max radius | 0.808 — a fifth of variation, so a 600 m lump at phase 1 |
-| convex first try | 87.5%, worst case 3 attempts, never concave |
+| corners | max extent (mean / worst) | min/max radius (mean / worst) | kept first try |
+|---|---|---|---|
+| 3 | 1.10 / 1.15 | 0.71 / 0.56 | 66% |
+| 4 | 1.06 / 1.15 | 0.77 / 0.59 | 99.5% |
+| 6 | 1.05 / 1.15 | 0.81 / 0.66 | 100% |
+| 9 | 1.05 / 1.14 | 0.82 / 0.72 | 94% |
+| 12 | 1.02 / 1.14 | 0.86 / 0.73 | 22% |
 
 Convexity is not guaranteed by the draw and is **enforced**: a concave polygon
-is redrawn from the same deterministic stream at a lower jitter, and the last
-attempt uses no jitter at all. Both the exact signed distance and the exact
-erosion the renderer depends on are only exact for a convex shape.
+is redrawn from the same deterministic stream with both jitters lowered, and
+the last attempt uses no jitter at all. Both the exact signed distance and the
+exact erosion the renderer depends on are only exact for a convex shape, and so
+is the two-crossing stitch that joins an overlapping pair. No draw at any count
+needed more than four attempts of six.
 
 **The shape is derived, not sent.** The record carries the match's storm seed
 and the phase index; the client's wall and the server's damage tick both build
-the shape from those two numbers through one shared function. Nothing about the
+the shape — its corner count included — from those two numbers through one
+shared function. Nothing about the
 geometry crosses the wire, and a wall drawn from a different derivation than the
 one being billed would be a lie with no bound on its size.
 
-Two things it costs, both deliberate:
+This section used to list two costs of the shapes. Both were paid off and
+validated in game on 2026-09-23, and are kept here as history so nobody
+re-derives the dead ends:
 
-* **the map still draws a circle.** No GTA native fills an arbitrary outline on
-  the minimap or the pause map, so the two rings stay radius blips at `r` —
-  over-reporting by about a sixth of `r` where the shape dents in. The wall is
-  drawn on the real boundary, so the curtain is never the thing that misleads.
-* **an overlapping breakout draws both boundaries.** The union of two blobs is
-  not expressible as arcs and segments without a real boolean union, so a phase
-  whose two circles cross draws each shape whole and shows curtain inside the
-  safe zone. The damage stays exact — a signed distance to a union is the
-  minimum of the two — so it is a drawing defect rather than a gameplay one.
-  Nested and disjoint, which are every other phase, are exact.
+* **the map used to draw a circle.** No GTA native fills an arbitrary outline,
+  so the rings were radius blips at `r`, over-reporting by about a sixth of `r`
+  where the shape dents in. The vendored `MINIMAP_LOADER.gfx` turned out to
+  carry `ADD_AREA_OVERLAY`, which fills a real concave polygon on both the radar
+  and the pause map (#347, #350). A single blob is moved and resized in place as
+  it shrinks rather than rebuilt; a merged shape is rebuilt only once it has
+  moved far enough to see. Radius blips remain the fallback for a client whose
+  overlay never becomes ready.
+* **an overlapping breakout used to draw both boundaries**, showing curtain
+  inside the safe zone. A blob is convex, so two that overlap cross at exactly
+  two points and each boundary's run inside the other is one connected piece;
+  `blobUnion` joins the outside runs at the crossings into one loop (#356). The
+  damage was always exact — a signed distance to a union is the minimum of the
+  two — so this was only ever a drawing defect.
 
 ---
 
