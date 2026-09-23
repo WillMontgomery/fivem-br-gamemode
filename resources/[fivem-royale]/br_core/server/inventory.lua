@@ -922,6 +922,71 @@ local function liveInv(src)
     return BR.Inv.of(src)
 end
 
+--- Is a channel running, and -- if a slot is named -- is it this one?
+---
+--- ═══ DRINKING IT IS A COMMITMENT (#271, owner 2026-09-23) ═══
+---
+---   "I don't think the answer here is to make half-shields (or any
+---    consumables) but rather to lock switching between selected slots while a
+---    consumable is actively being consumed."
+---
+--- THE HOLE THIS CLOSES was not the partial effect and was not the free
+--- interruption; both are his and both survive. It was that the two met. A
+--- channel applies its effect in slices as the bar fills (2026-08-05), the
+--- COMPLETION is what spends the item, and a keypress could end the channel
+--- between those two facts -- so the slices were banked, the item was not
+--- spent, and the next press re-read its baseline off the health just gained.
+--- Press, tap a slot, press again: one shield taking a player 0 -> 50 -> 100
+--- and still sitting in the bag (owner's repro, 2026-09-23).
+---
+--- SO THE INTERRUPTION ITSELF IS WHAT MOVED, not the bookkeeping. Nothing here
+--- anchors a ledger, resumes a channel or remembers what a previous press
+--- delivered: while a channel runs, THE HANDS DO NOT CHANGE and THE SLOT DOES
+--- NOT MOVE, which leaves nothing for a second press to build on.
+---
+--- ═══ THE FOUR DOORS, WHICH IS EVERY ONE A KEYPRESS COULD REACH ═══
+---
+--- Each of these used to end a channel for nothing, and each is now refused
+--- for as long as one runs:
+---
+---   INV_SELECT -- the slot keys, the scroll wheel and the panel's own click.
+---                 It cleared `inv.using` outright, for any slot.
+---   INV_SWAP   -- a panel drag TOUCHING the channelled slot. It never cleared
+---                 the channel itself; it moved the stack out from under it and
+---                 the tick loop's slot-identity guard did the rest.
+---   INV_RELOAD -- the reload key, which cleared `inv.using` on any reload that
+---                 moved a round.
+---   INV_DROP   -- the panel's Drop on the channelled slot. It cost the player
+---                 the item, so it was the expensive door, but it was a door.
+---
+--- A SWAP OR A DROP OF SOME OTHER SLOT IS STILL ALLOWED, and that is why this
+--- takes a slot rather than answering one question. Neither one touches the
+--- channel -- the identity guard reads `inv.slots[u.slot]` and nothing else --
+--- so refusing them would be a rule with no hole under it, and rearranging a
+--- bag is not "what my hands are doing".
+---
+--- ═══ WHAT IS DELIBERATELY STILL ABLE TO END A CHANNEL ═══
+---
+--- The remaining cancels are facts about the world rather than presses, and
+--- every one of them either costs the player more than it pays or banks
+--- nothing at all: taking fire (`useCancelOnDamage`), going down, dying,
+--- leaving the match, the shop car's seat rule -- which has no partial effect
+--- to bank -- and the repair kit's driving-seat rule, which does. See the note
+--- above the tick loop for the one that is still worth something.
+---
+--- THERE IS THEREFORE NO WAY FOR A PLAYER TO CANCEL A CHANNEL ON PURPOSE any
+--- more. An eight-second med kit started in the open is eight seconds the
+--- player is committed to and unarmed for. That is a gameplay change and it is
+--- the point of his sentence, not a side effect of it.
+--- @param inv table
+--- @param slot integer|nil  narrow it to one slot; nil asks about any channel
+--- @return boolean
+local function channelled(inv, slot)
+    local u = inv.using
+    if not u then return false end
+    return slot == nil or u.slot == slot
+end
+
 RegisterNetEvent(BR.Net.INV_SELECT)
 AddEventHandler(BR.Net.INV_SELECT, function(d)
     local src = source
@@ -935,6 +1000,27 @@ AddEventHandler(BR.Net.INV_SELECT, function(d)
     if not slot or slot < MELEE_SLOT or slot > SLOTS then return end
     if inv.active == slot then return end
 
+    -- ═══ NOT WHILE SOMETHING IS BEING DRUNK (#271) ═══
+    --
+    -- This is the door the exploit was found through, and it used to read
+    -- `inv.using = nil` a few lines below with a note saying why: "switching
+    -- weapons interrupts a consumable: both are 'what my hands are doing', and
+    -- letting a med kit finish while a rifle comes up would be a free heal
+    -- mid-fight."
+    --
+    -- THAT SENTENCE IS STILL TRUE AND IS NOW SATISFIED FROM THE OTHER SIDE. The
+    -- med kit does not finish while a rifle comes up, because the rifle does not
+    -- come up. See `channelled` for the owner's ruling and for the other three
+    -- doors that had the same shape.
+    --
+    -- SILENTLY, AND WITHOUT A PUSH. The client's `active` is only ever written
+    -- by an INV_SET (client/inventory.lua's push handler is the one writer), so
+    -- refusing here leaves the bar, the panel and the ped's weapon exactly where
+    -- they already agreed they were -- there is nothing to correct and nothing to
+    -- re-send. What a refused key should LOOK like is a copy decision and is not
+    -- made here.
+    if channelled(inv) then return end
+
     inv.active = slot
     -- THE PLAYER HAS NOW CHOSEN, and this is the only line in the file that may
     -- say so (#155). It is what makes a hand-picked slot 0 different from the
@@ -943,10 +1029,6 @@ AddEventHandler(BR.Net.INV_SELECT, function(d)
     -- and then holstering it deliberately has to read the same as holstering
     -- straight away.
     inv.choseActive = true
-    -- Switching weapons interrupts a consumable: both are "what my hands are
-    -- doing", and letting a med kit finish while a rifle comes up would be a
-    -- free heal mid-fight.
-    inv.using = nil
     BR.Inv.push(src)
 end)
 
@@ -960,6 +1042,21 @@ AddEventHandler(BR.Net.INV_SWAP, function(d)
     local to   = math.tointeger(d.to)
     if not from or not to or from == to then return end
     if from < 1 or from > SLOTS or to < 1 or to > SLOTS then return end
+
+    -- ═══ AND THIS ONE NEVER TOUCHED `inv.using` AT ALL (#271) ═══
+    --
+    -- Which is why the issue's line reference for it pointed at nothing: a swap
+    -- does not cancel a channel, it moves the stack OUT of the slot the channel
+    -- names, and the tick loop's slot-identity guard cancels on the next pass.
+    -- Same banked slices, same unspent item, one drag instead of a keypress. A
+    -- fix written only into INV_SELECT would have left the panel open.
+    --
+    -- NARROWED TO THE SLOTS THAT ACTUALLY MATTER. `from` and `to` are both
+    -- asked because the swap writes both ends -- dragging the channelled stack
+    -- away and dragging something else on top of it are the same hole -- and a
+    -- drag between two other slots is left alone: the identity guard reads
+    -- `inv.slots[u.slot]`, so there is nothing for it to notice.
+    if channelled(inv, from) or channelled(inv, to) then return end
 
     inv.slots[from], inv.slots[to] = inv.slots[to], inv.slots[from]
     -- The ACTIVE SLOT INDEX does not move. The player selected a position on
@@ -1030,10 +1127,22 @@ AddEventHandler(BR.Net.INV_DROP, function(d)
     local slot = math.tointeger(d.slot)
     if not slot then return end
 
+    -- ═══ AND YOU CANNOT PUT DOWN WHAT YOU ARE DRINKING (#271) ═══
+    --
+    -- This used to cancel the channel after the take -- `if inv.using and
+    -- inv.using.slot == slot then inv.using = nil end` -- which banked the
+    -- slices and put the item on the floor. It is the most expensive of the four
+    -- doors, because the player loses the stack to pick it up again, and it is
+    -- still a door. Refused ABOVE the take, so nothing leaves the bag for a drop
+    -- that is not going to happen.
+    --
+    -- ONLY THIS SLOT. The pool branch above returns before it gets here and a
+    -- drop of any other slot is untouched; see `channelled`.
+    if channelled(inv, slot) then return end
+
     local stack = BR.Inv.take(src, slot)
     if not stack then return end
 
-    if inv.using and inv.using.slot == slot then inv.using = nil end
     BR.Loot.dropForPlayer(src, stack)
     BR.Inv.push(src)
 end)
@@ -1076,14 +1185,28 @@ AddEventHandler(BR.Net.INV_RELOAD, function()
     local inv = liveInv(src)
     if not inv then return end
 
+    -- ═══ AND NOT WITH A KIT IN YOUR HANDS (#271) ═══
+    --
+    -- This is the third door, and the issue found it: reloading used to clear
+    -- `inv.using` below, on the same argument the slot switch made and with the
+    -- same hole under it -- the magazine went in, the channel ended, and the
+    -- slices the bar had already applied stayed on the player.
+    --
+    -- ABOVE BR.Inv.reload, SO NO ROUND MOVES EITHER. A refusal that reloaded
+    -- first and declined afterwards would be a free magazine per press for as
+    -- long as a channel ran, which is the shape of all four ammo bugs the note
+    -- above this handler is about.
+    --
+    -- WHAT IT COSTS A LEGITIMATE PLAYER, and it is not nothing: a player who
+    -- starts a bandage with a half-empty rifle cannot top the magazine up while
+    -- it runs. The key is still one press away the moment the bar lands, and
+    -- "your hands are full" is the whole of why the channel is a commitment.
+    if channelled(inv) then return end
+
     -- SLOT ZERO IS FISTS and holds nothing; every other index is checked by
     -- BR.Inv.reload, which refuses anything that is not a magazined weapon.
     if BR.Inv.reload(inv, inv.slots[inv.active]) <= 0 then return end
 
-    -- Reloading interrupts a consumable, exactly as a slot switch does: both are
-    -- "what my hands are doing", and letting a med kit finish while a magazine
-    -- goes in would be a free heal mid-fight.
-    inv.using = nil
     BR.Inv.push(src)
 end)
 
@@ -1329,15 +1452,26 @@ AddEventHandler(BR.Net.INV_USE, function(d)
     -- kept too), it is what "in progress" means, and it is the owner's ruling
     -- twice over.
     --
-    -- AND IT IS RE-PRESSABLE, WHICH IS THIS CHANNEL'S EXISTING CONTRACT RATHER
-    -- THAN ANYTHING THE KIT INTRODUCED (#271). Press, tap a slot, press again:
-    -- the effect is granted a second time and no item is ever spent. Every
-    -- channelled consumable in this file behaves that way, the med kit included
-    -- -- `hp0` is re-read from the roster each time a channel opens (see
-    -- `inv.using` below), so a partial heal that already landed becomes the next
-    -- channel's baseline, and INV_SELECT/INV_SWAP clear `inv.using` with no
-    -- cooldown at all. It is tracked as #271 and it is the owner's call; nothing
-    -- about it is specific to this item, so nothing here tries to close it.
+    -- ═══ AND IT IS NO LONGER RE-PRESSABLE, BECAUSE IT CAN NO LONGER BE PUT
+    --     DOWN (#271, owner 2026-09-23) ═══
+    --
+    -- Press, tap a slot, press again used to grant the effect a second time and
+    -- spend nothing: the slices were kept, and `hp0` below is re-read from the
+    -- roster at every open, so a partial heal that had already landed became the
+    -- next channel's baseline. One shield took a player 0 -> 50 -> 100 and
+    -- stayed in the bag. It was never the kit's: every channelled consumable in
+    -- this file had it.
+    --
+    -- THE BASELINES BELOW ARE UNCHANGED, AND DELIBERATELY SO. Anchoring them
+    -- per player and target -- so a re-press RESUMED rather than restarted --
+    -- was the other way to close this and was not the ruling: "I don't think the
+    -- answer here is to make half-shields (or any consumables) but rather to
+    -- lock switching between selected slots while a consumable is actively being
+    -- consumed." So a channel still measures from where it started, still slices
+    -- as the bar fills, and still costs nothing when the world interrupts it --
+    -- and a player can no longer interrupt it themselves. The four keypresses
+    -- that could are refused where they arrive; `channelled` is the rule and
+    -- carries the enumeration.
     inv.using = {
         slot   = slot,
         item   = s.item,
@@ -1604,6 +1738,12 @@ end)
 -- --------------------------------------------------------------------------
 
 --- Cancel an in-progress use, audibly.
+---
+--- ⚠ EVERY CALLER IS A RULE ABOUT THE WORLD, AND A NEW ONE MUST BE TOO (#271).
+--- A cancel banks whatever the slices have already applied and leaves the item
+--- in the bag, so calling this from anything a player can press is the free
+--- effect loop rebuilt. The four presses that used to reach it are refused at
+--- their handlers; see `channelled`.
 --- @param src integer
 --- @param why string
 function BR.Inv.cancelUse(src, why)
@@ -1637,9 +1777,28 @@ end
 -- WHAT AN INTERRUPTION LEAVES BEHIND IS NOT NOTHING, and that is deliberate: a
 -- cancelled med kit keeps the health its partials already applied, and a
 -- cancelled repair keeps the vehicle health its slices already granted. The item
--- comes back; the effect that was already delivered does not. That is what makes
--- a re-press worth something for every consumable in this file, which is #271
--- and is the owner's call rather than this loop's; see the note at INV_USE.
+-- comes back; the effect that was already delivered does not.
+--
+-- ═══ WHICH IS WHY NOTHING THE PLAYER PRESSES CAN CANCEL ONE ANY MORE (#271) ═══
+--
+-- Banked slices plus an unspent item is a free effect the moment the player
+-- chooses when the interruption happens. The owner closed that by taking the
+-- choice away rather than by auditing the slices -- `channelled`, above
+-- INV_SELECT, carries the ruling and the four doors -- so every cancel LEFT in
+-- this loop is one the player does not control, and each is here on its own
+-- argument:
+--
+--   OUT OF THE MATCH, DOWNED OR DEAD costs them the whole inventory.
+--   TAKING FIRE costs them health, and is an attacker's decision.
+--   THE SHOP CAR'S SEAT RULE banks nothing -- a car is not a partial effect.
+--
+-- ONE IS STILL WORTH SOMETHING AND IS NAMED SO NOBODY READS #271 AS AIRTIGHT:
+-- the repair kit's driving-seat rule below. Stepping out of the seat at 4.9s
+-- cancels the channel, the car keeps the slices, and the kit is still in the
+-- bag. It cannot be refused the way a keypress can -- the guard exists because
+-- the player really is no longer driving the car the kit was aimed at, and a
+-- server cannot decline to let somebody leave a vehicle. It is slower than the
+-- old loop by the length of two door animations and it is not closed.
 BR.Sched.every(250, 'inv.use', function()
     local now = GetGameTimer()
 
@@ -1695,17 +1854,29 @@ BR.Sched.every(250, 'inv.use', function()
             -- costs a player who does it under fire the rest of their channel.
             -- An `ignoresDamage` item has no such brake.
             --
-            -- IT IS A BRAKE ON AN OPEN ROAD, THOUGH, AND THE ROAD IS #271. The
-            -- re-press loop -- press, tap a slot, press again, effect granted
-            -- again, item never spent -- is this channel's existing contract for
-            -- EVERY consumable here, not something this row opened: INV_SELECT
-            -- and INV_SWAP clear `inv.using` with no cooldown, and INV_USE
-            -- re-reads `hp0` from the roster on each open, so a med kit's
-            -- partial heal becomes the next press's baseline and is farmed the
-            -- same way. Taking `ignoresDamage` off this row would narrow one
-            -- entry to it and fix none of it, and the owner has ruled on the
-            -- flag itself. #271 is where the loop is tracked and whose call it
-            -- is.
+            -- IT WAS A BRAKE ON AN OPEN ROAD, AND #271 CLOSED THE ROAD -- BUT
+            -- THIS BRANCH IS NOW THE FASTEST THING LEFT ON IT. The re-press loop
+            -- -- press, tap a slot, press again, effect granted again, item never
+            -- spent -- was this channel's contract for EVERY consumable here
+            -- rather than anything this row opened, and it is closed at the four
+            -- keypresses that reached it (`channelled`, above INV_SELECT).
+            --
+            -- SO THE DIRECTION OF THE ARGUMENT HAS INVERTED, which is worth
+            -- writing down because the note above still reads the old way. A
+            -- cancel is what banks a partial effect, so a channel that CAN be
+            -- cancelled is the one with a re-press road left -- and an
+            -- `ignoresDamage` item no longer has one at all, while an item
+            -- without the flag keeps this branch.
+            --
+            -- IT IS A NARROW ROAD AND THE TEST BELOW IS WHY. The comparison is
+            -- against `u.hp0`, the health this channel STARTED from, so a
+            -- health consumable's own partials raise the ped above the line as
+            -- the bar fills: late in a med kit only a hit big enough to undo
+            -- everything gained so far still cancels, and a hit that big has
+            -- taken more than the bank is worth. An armour-only channel has no
+            -- such cover and can be cancelled by a point of health damage at any
+            -- moment -- but it still takes somebody else's trigger, and armour
+            -- soaks first. Left as it is on those grounds rather than overlooked.
             if L.useCancelOnDamage and not (c and c.ignoresDamage)
                 and (e.hp or 0) < (u.hp0 or 0) then
                 BR.Inv.cancelUse(src, 'Interrupted.')

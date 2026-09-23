@@ -7156,6 +7156,400 @@ do
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
+describe('inv.channellock')
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+--   "I don't think the answer here is to make half-shields (or any
+--    consumables) but rather to lock switching between selected slots while a
+--    consumable is actively being consumed."      -- owner, 2026-09-23
+--
+--   "shield from 0 to 50, switched slots at 20, switched back, got 50 more"
+--                                                 -- owner's repro, 2026-09-23
+--
+-- ═══ WHAT THE BUG WAS MADE OF, BECAUSE NEITHER HALF IS A BUG ═══
+--
+-- A channel applies its effect in SLICES as the bar fills (owner, 2026-08-05:
+-- applying it all at the end made an 8s med kit look like nothing happening
+-- followed by a jump), and the COMPLETION is what spends the item -- so an
+-- interrupted use deliberately costs nothing and there is no refund path.
+-- Both of those are rulings and both survive here.
+--
+-- #271 was that a KEYPRESS could land between them. The slices were banked, the
+-- item was not spent, and INV_USE re-reads its baseline off the roster at every
+-- open, so the health just gained became the next channel's floor. One item,
+-- the full effect, as many times as the player pressed.
+--
+-- ═══ WHAT THIS BLOCK PROVES, AND THE ONE ASSERTION THAT IS THE POINT ═══
+--
+-- `exploitLoop` IS THE BUG, RUN. Not a model of it and not its arithmetic: one
+-- item, and six rounds of press -> climb to one tick short of the bar -> switch
+-- away -> switch back -> press again, through the real net handlers and the real
+-- 250ms tick. Two numbers come out and both are properties rather than
+-- magnitudes: how much effect the server offered in total, and how many items it
+-- spent. With the guard reverted the first climbs to the item's CAP and the
+-- second is zero.
+--
+-- IT DRIVES THE PED, WHICH IS WHY IT CAN SEE THE RE-ANCHOR AT ALL. `land()`
+-- walks GetPedArmour/GetEntityHealth up to whatever the server last told the
+-- client to become, because that is what a client does -- and the roster samples
+-- the ped, so `e.armour`/`e.hp` follow and the NEXT press anchors on them. A
+-- loop that left the stubs alone would re-run the first channel six times from
+-- zero and pass with the fix reverted.
+--
+-- EVERY CLOCK ADVANCE IS A WHOLE 250ms (#346). BR.Rng truncates a fractional
+-- seed to zero, so a harness clock that drifts off the tick boundary can quietly
+-- turn a sweep into one seed; nothing here is seeded, but the discipline is free
+-- and the next block along inherits the clock.
+do
+    local LIGHT = BR.AmmoType.LIGHT
+
+    --- Run #271's loop against one consumable, once, and report what it got.
+    ---
+    --- The interruption is the owner's own: switch to another slot, switch back.
+    --- The other three doors are separate fixtures below, because two of them
+    --- (the swap and the drop) MOVE the stack when they are not refused, which
+    --- would end the loop rather than feed it.
+    --- @param item string     a consumable id
+    --- @param rounds integer  how many times to try to farm the one item
+    local function exploitLoop(item, rounds)
+        local c = BR.Config.ConsumableById[item]
+        lootMatch()
+        BR.Inv.reset(1)
+        BR.Inv.give(1, { item = item, kind = BR.ItemKind.CONSUMABLE,
+                         rarity = c.rarity or 1, count = 1 })
+        BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON,
+                         rarity = 1, count = 1, clip = 12 })
+        local inv = BR.Inv.of(1)
+        inv.active = 1
+
+        -- THE PED THIS STARTS FROM. A sample BELOW the ledger is always believed
+        -- (server/roster.lua's health rule), so one pass is enough to put a hurt
+        -- player on the books; a rise has to be authorized, which is exactly
+        -- what the channel's own grant ceiling does.
+        pedArmour[1001] = 0
+        pedHealth[1001] = c.health and BR.ToEngineHp(25.0) or nil
+        fakeTime = fakeTime + 250
+        BR.Sched.step(fakeTime)
+
+        local e = BR.Roster.get(1)
+        local got = {
+            opened = 0, spent = 0,
+            hp0 = e.hp or 0, armour0 = e.armour or 0,
+            hp = e.hp or 0, armour = e.armour or 0,
+        }
+
+        --- What a client does with an INV_EFFECT: become the target.
+        --- FLOORED so the ped never overshoots the ceiling the server
+        --- authorized -- the ledger rule refuses an unexplained rise outright,
+        --- and a stub that overshot would be testing the audit instead.
+        local function land()
+            for _, s in ipairs(eventsOf(BR.Net.INV_EFFECT)) do
+                local p = s.args[1]
+                if p.armour then
+                    got.armour = math.max(got.armour, p.armour)
+                    pedArmour[1001] = math.floor(p.armour)
+                end
+                if p.health then
+                    got.hp = math.max(got.hp, p.health)
+                    pedHealth[1001] = BR.ToEngineHp(math.floor(p.health))
+                end
+            end
+            sent = {}
+        end
+
+        for _ = 1, rounds do
+            local before = inv.slots[1] and inv.slots[1].count or 0
+            if not inv.using then
+                sent = {}
+                fire(BR.Net.INV_USE, 1, { slot = 1 })
+                if inv.using then got.opened = got.opened + 1 end
+            end
+
+            local u = inv.using
+            while u and fakeTime + 250 < u.endsAt do
+                fakeTime = fakeTime + 250
+                BR.Sched.step(fakeTime)
+                land()
+            end
+
+            -- SWITCH AWAY, SWITCH BACK, one tick short of the bar landing.
+            fire(BR.Net.INV_SELECT, 1, { slot = 2 })
+            fire(BR.Net.INV_SELECT, 1, { slot = 1 })
+
+            fakeTime = fakeTime + 250
+            BR.Sched.step(fakeTime)
+            land()
+
+            local after = inv.slots[1] and inv.slots[1].count or 0
+            if after < before then got.spent = got.spent + (before - after) end
+        end
+        return got
+    end
+
+    -- ── the shield, which is the repro ────────────────────────────────────
+    local shield = BR.Config.ConsumableById['shield']
+    local got = exploitLoop('shield', 6)
+    ok(got.spent == 1,
+        'the exploit loop spends the shield EXACTLY ONCE -- six presses, one '
+            .. 'item; with the lock reverted it is spent nought times and the '
+            .. 'player keeps it',
+        ('spent %d'):format(got.spent))
+    ok(got.opened == 1,
+        'and only one channel is ever opened, because the first one cannot be '
+            .. 'put down',
+        ('opened %d'):format(got.opened))
+    ok(got.armour <= got.armour0 + shield.armour + 0.001,
+        'and the whole loop delivers ONE shield\'s worth of armour and no more '
+            .. '-- this is the assertion #271 is about, and it fails at the '
+            .. 'item\'s CAP with the lock reverted',
+        ('reached %.2f from %.2f, one item is worth %.2f')
+            :format(got.armour, got.armour0, shield.armour))
+    ok(got.armour >= got.armour0 + shield.armour - 0.001,
+        '...and the full amount, so the bound is not being met by delivering '
+            .. 'nothing',
+        ('reached %.2f'):format(got.armour))
+
+    -- ── and the med kit, which is where it was found ──────────────────────
+    --
+    -- SAME MECHANISM, DIFFERENT SHAPE OF WINNING. A med kit's `health` is 100
+    -- against a `healthCap` of 100, so its slices SATURATE at full health
+    -- before the bar lands -- the banked partial IS the whole item. So the
+    -- number that catches it here is the item count: a free full heal.
+    --
+    -- NO UPPER BOUND AND NO CHANNEL COUNT HERE, because neither can fail: the
+    -- cap clamps every target the reverted loop offers, and a player at full is
+    -- refused a second press before it opens. Asserting them would be two
+    -- sentences that pass with the lock gone.
+    local medkit = BR.Config.ConsumableById['medkit']
+    got = exploitLoop('medkit', 6)
+    ok(got.spent == 1,
+        'the same loop against a med kit spends it exactly once too -- with the '
+            .. 'lock reverted, a full heal for nothing',
+        ('spent %d'):format(got.spent))
+    ok(got.hp >= math.min(medkit.healthCap, got.hp0 + medkit.health) - 0.001,
+        'and it still heals what one med kit is worth',
+        ('reached %.2f from %.2f'):format(got.hp, got.hp0))
+
+    -- ── a bandage, because `healthCap` is what hid the climb above ────────
+    --
+    -- 15 points against a cap of 75, so nothing saturates and the runaway is
+    -- visible in the SAME number the shield's is: one bandage walking a player
+    -- from 25 to the cap, fifteen points at a time, is what the reverted guard
+    -- does here.
+    local bandage = BR.Config.ConsumableById['bandage']
+    got = exploitLoop('bandage', 6)
+    ok(got.spent == 1, 'and a bandage, once',
+        ('spent %d'):format(got.spent))
+    ok(got.hp <= got.hp0 + bandage.health + 0.001,
+        'for one bandage\'s fifteen points and not a climb to its cap',
+        ('reached %.2f from %.2f, one bandage is worth %.2f')
+            :format(got.hp, got.hp0, bandage.health))
+
+    -- ── the four doors, each on its own ───────────────────────────────────
+    --
+    -- Every one of these ENDED a channel before #271, and each has to be
+    -- refused separately: they are four handlers, and a fix written into one is
+    -- a fix two thirds of players walk around. The stack is slot 1 throughout
+    -- and the HAND is slot 2, which is the only shape that reaches the reload
+    -- door at all -- the reload key reads `inv.slots[inv.active]` and a
+    -- consumable cannot be reloaded, so the channel has to have been started
+    -- from the panel with a gun up.
+
+    --- A live shield channel on slot 1, `short` ms short of landing (one tick
+    --- by default), with a half-empty pistol in the hand and slots 3 and 4 free.
+    --- @param short integer|nil  a whole multiple of 250
+    local function nearlyDone(short)
+        short = short or 250
+        lootMatch()
+        BR.Inv.reset(1)
+        BR.Inv.give(1, { item = 'shield', kind = BR.ItemKind.CONSUMABLE,
+                         rarity = shield.rarity or 2, count = 1 })
+        BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON,
+                         rarity = 1, count = 1, clip = 12 })
+        local inv = BR.Inv.of(1)
+        inv.active = 2
+        inv.slots[2].clip = 1
+        inv.ammo[LIGHT] = 60
+        pedArmour[1001] = 0
+        pedHealth[1001] = nil
+        fakeTime = fakeTime + 250
+        BR.Sched.step(fakeTime)
+        sent = {}
+        fire(BR.Net.INV_USE, 1, { slot = 1 })
+        local u = inv.using
+        while u and fakeTime + short < u.endsAt do
+            fakeTime = fakeTime + 250
+            BR.Sched.step(fakeTime)
+        end
+        return inv
+    end
+
+    local inv = nearlyDone()
+    ok(inv.using ~= nil and #eventsOf(BR.Net.INV_EFFECT) >= 1,
+        'precondition: a channel is one tick from landing and has already put '
+            .. 'slices on the player')
+
+    fire(BR.Net.INV_SELECT, 1, { slot = 3 })
+    ok(inv.using ~= nil, 'INV_SELECT cannot end a channel',
+        'the channel was cancelled by a slot key')
+    ok(inv.active == 2,
+        'and does not move the hand either, so nothing needs re-syncing',
+        ('active %d'):format(inv.active))
+
+    inv = nearlyDone()
+    fire(BR.Net.INV_SWAP, 1, { from = 1, to = 4 })
+    ok(inv.slots[1] and inv.slots[1].item == 'shield' and inv.slots[4] == false,
+        'INV_SWAP cannot drag the channelled stack out of its slot -- which is '
+            .. 'how a panel drag used to end a channel WITHOUT touching '
+            .. '`inv.using` at all: the tick loop\'s slot-identity guard did it',
+        ('1:%s 4:%s'):format(tostring(inv.slots[1] and inv.slots[1].item),
+            tostring(inv.slots[4] and inv.slots[4].item)))
+    sent = {}
+    fakeTime = fakeTime + 250
+    BR.Sched.step(fakeTime)
+    local landed = eventsOf(BR.Net.INV_EFFECT)
+    landed = landed[#landed] and landed[#landed].args[1]
+    ok(landed and not landed.partial and inv.slots[1] == false,
+        'and the channel it protected went on to land and spend the item -- '
+            .. 'asserted on the COMPLETION payload, because "slot 1 is empty" '
+            .. 'is also what a successful drag leaves behind',
+        tostring(landed and landed.partial))
+
+    -- THE SAME HOLE FROM THE OTHER END, on its own fixture: the two directions
+    -- of one drag undo each other, so a single fixture firing both would repair
+    -- the damage the first one did and pass with the guard gone.
+    inv = nearlyDone()
+    BR.Inv.give(1, { item = 'sawnoff', kind = BR.ItemKind.WEAPON,
+                     rarity = 1, count = 1, clip = 8 })
+    local onto = nil
+    for i = 2, BR.Config.Loot.slots do
+        if inv.slots[i] and inv.slots[i].item == 'sawnoff' then onto = i end
+    end
+    ok(onto ~= nil, 'precondition: a gun to drag onto the channelled slot',
+        tostring(onto))
+    fire(BR.Net.INV_SWAP, 1, { from = onto, to = 1 })
+    ok(inv.slots[1] and inv.slots[1].item == 'shield',
+        '...nor drop something else on top of it',
+        tostring(inv.slots[1] and inv.slots[1].item))
+
+    inv = nearlyDone()
+    fire(BR.Net.INV_RELOAD, 1, {})
+    ok(inv.using ~= nil, 'INV_RELOAD cannot end a channel')
+    ok(inv.slots[2].clip == 1 and inv.ammo[LIGHT] == 60,
+        'and not one round moves for the press -- the refusal is ABOVE '
+            .. 'BR.Inv.reload, so a key held through an 8s channel is not a '
+            .. 'magazine per press',
+        ('clip %s reserve %s'):format(tostring(inv.slots[2].clip),
+            tostring(inv.ammo[LIGHT])))
+
+    inv = nearlyDone()
+    sent = {}
+    fire(BR.Net.INV_DROP, 1, { slot = 1 })
+    ok(inv.using ~= nil, 'INV_DROP cannot end a channel')
+    ok(inv.slots[1] and inv.slots[1].count == 1,
+        'and the stack stays in the bag -- the expensive door, because the '
+            .. 'player used to pay an item to bank the slices, but a door',
+        tostring(inv.slots[1] and inv.slots[1].count))
+
+    -- ── ...AND THE LOCK IS THE CHANNEL'S SLOT, NOT THE WHOLE BAG ──────────
+    --
+    -- A swap or a drop that does not touch the channelled slot cannot end the
+    -- channel -- the identity guard reads `inv.slots[u.slot]` and nothing else
+    -- -- so refusing them would be a rule with no hole under it. Rearranging a
+    -- bag is not "what my hands are doing".
+    --- A second gun somewhere that is not the channelled slot, and where.
+    local function spare(i)
+        BR.Inv.give(1, { item = 'sawnoff', kind = BR.ItemKind.WEAPON,
+                         rarity = 1, count = 1, clip = 8 })
+        for at = 2, BR.Config.Loot.slots do
+            if i.slots[at] and i.slots[at].item == 'sawnoff' then return at end
+        end
+        return nil
+    end
+
+    inv = nearlyDone()
+    local elsewhere = spare(inv)
+    ok(elsewhere ~= nil and elsewhere ~= 1, 'precondition: a second gun, not '
+        .. 'in the channelled slot', tostring(elsewhere))
+    fire(BR.Net.INV_SWAP, 1, { from = elsewhere, to = 5 })
+    ok(inv.slots[5] and inv.slots[5].item == 'sawnoff',
+        'a swap between two OTHER slots still works mid-channel',
+        tostring(inv.slots[5] and inv.slots[5].item))
+    ok(inv.using ~= nil, 'and the channel does not notice it')
+
+    -- ITS OWN FIXTURE, AND THE SLOT IS ONE THAT HOLDS SOMETHING. A drop aimed at
+    -- an empty slot is refused and allowed by the same observation -- nothing
+    -- moves either way -- so a shared fixture whose swap had just been refused
+    -- would assert this against an empty square and pass with the narrowing gone.
+    inv = nearlyDone()
+    local other = spare(inv)
+    ok(other ~= nil and inv.slots[other] ~= false,
+        'precondition: another slot with something in it', tostring(other))
+    fire(BR.Net.INV_DROP, 1, { slot = other })
+    ok(inv.slots[other] == false, 'and so does a drop of another slot',
+        tostring(inv.slots[other] and inv.slots[other].item))
+    ok(inv.using ~= nil, 'which the channel also does not notice')
+
+    -- ── the legitimate paths, which are the whole reason this is a lock and
+    --    not a cooldown ─────────────────────────────────────────────────────
+    --
+    -- A CLEAN USE IS UNTOUCHED. Nothing about the timing, the slices or the
+    -- debit moved; the only new sentence in the file is "not while you are
+    -- drinking".
+    inv = nearlyDone()
+    fakeTime = fakeTime + 250
+    BR.Sched.step(fakeTime)
+    local final = eventsOf(BR.Net.INV_EFFECT)
+    final = final[#final] and final[#final].args[1]
+    ok(inv.using == nil and inv.slots[1] == false,
+        'an uninterrupted use still lands and still spends the item')
+    ok(final and not final.partial and final.armour == shield.armour,
+        'for exactly what the item is worth, measured from where it started',
+        tostring(final and final.armour))
+    fire(BR.Net.INV_SELECT, 1, { slot = 1 })
+    ok(inv.active == 1,
+        'and the moment it lands, the slot keys answer again -- the lock is the '
+            .. 'channel\'s and lasts exactly as long as it does',
+        ('active %d'):format(inv.active))
+
+    -- AND A GENUINELY INTERRUPTED USE STILL COSTS NOTHING, which is the other
+    -- ruling and the reason there is no refund path anywhere in the file. Taking
+    -- fire is the interruption a player does not control; it keeps the slices it
+    -- earned and it keeps the item.
+    --
+    -- A SECOND SHORT OF THE END, NOT A TICK. One tick short, the step that
+    -- carries the hit also crosses `endsAt`, so a build that ignored the hit
+    -- would finish the channel and `using == nil` would pass for the wrong
+    -- reason.
+    inv = nearlyDone(1000)
+    local banked = eventsOf(BR.Net.INV_EFFECT)
+    banked = banked[#banked] and banked[#banked].args[1].armour or 0
+    ok(banked > 0 and banked < shield.armour,
+        'precondition: the slices are part-way up', ('%.2f'):format(banked))
+    pedHealth[1001] = BR.ToEngineHp(40.0)
+    sent = {}
+    fakeTime = fakeTime + 250
+    BR.Sched.step(fakeTime)
+    ok(inv.using == nil, 'being shot still interrupts a channel')
+
+    -- PAST WHERE THE BAR WOULD HAVE LANDED, so a channel that survived the hit
+    -- has had every chance to pay out before anything is counted.
+    fakeTime = fakeTime + 1000
+    BR.Sched.step(fakeTime)
+    ok(inv.slots[1] and inv.slots[1].count == 1,
+        'and it costs the player nothing -- the item is still in the bag',
+        tostring(inv.slots[1] and inv.slots[1].count))
+    local paid = false
+    for _, s in ipairs(eventsOf(BR.Net.INV_EFFECT)) do
+        if not s.args[1].partial then paid = true end
+    end
+    ok(not paid,
+        'with no completion payload, so the shield they did not finish is not '
+            .. 'paid out')
+    pedHealth[1001] = nil
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
 describe('inv.repairkit')
 -- ═══════════════════════════════════════════════════════════════════════════
 --
@@ -7475,19 +7869,31 @@ do
     ok(#eventsOf(BR.Net.VEH_FIX) == 0,
         'and nothing arrives after it -- one kit, one channel, one car')
 
-    -- ── an interrupted channel costs nothing ──────────────────────────────
+    -- ── an interrupted channel costs nothing, but the player cannot be the
+    --    one who interrupts it (#271) ──────────────────────────────────────
     --
-    -- THE GENERAL CONTRACT, WHICH THIS ITEM REJOINED. A slot switch is the
-    -- commonest way any channel dies -- INV_SELECT clears `inv.using` outright
-    -- -- and for one day it cost a legendary item, because the press had already
-    -- paid. It costs nothing now, and the repair the slices already granted is
-    -- kept, exactly as a cancelled med kit keeps its partial heal. The owner has
-    -- ruled on this twice; a build that "fixed" it by refunding the health or by
-    -- withholding it until completion would be undoing "because it's in
+    -- THE GENERAL CONTRACT, WHICH THIS ITEM REJOINED, IS UNCHANGED: an
+    -- interruption costs nothing and keeps the repair the slices already
+    -- granted, exactly as a cancelled med kit keeps its partial heal. The owner
+    -- has ruled on that twice; a build that "fixed" it by refunding the health
+    -- or by withholding it until completion would be undoing "because it's in
     -- progress".
+    --
+    -- WHAT MOVED IS WHO MAY INTERRUPT. A slot switch used to be the commonest
+    -- way any channel died, and banking the slices for a keypress is the free
+    -- effect loop of #271 -- so the switch is refused for as long as the channel
+    -- runs (owner, 2026-09-23) and the cancel is driven here by LEAVING THE
+    -- DRIVING SEAT, which is a rule about the world rather than a press.
     BR.Inv.reset(1)
     BR.Inv.give(1, { item = 'repairkit', kind = BR.ItemKind.CONSUMABLE,
                      rarity = kit.rarity, count = 1 })
+    BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON,
+                     rarity = 1, count = 1, clip = 12 })
+    -- THE KIT IN HAND, as the use key leaves it. The pistol's arrival armed
+    -- slot 2, and a select of the slot already up returns before any rule is
+    -- asked -- so without this line the refusal below is asserted against a
+    -- keypress that was never a switch.
+    BR.Inv.of(1).active = 1
     drive(1, VEH)
     sent = {}
     t0 = fakeTime
@@ -7497,8 +7903,22 @@ do
     local partway = #eventsOf(BR.Net.VEH_FIX)
     ok(partway >= 1, 'precondition: a slice has already landed')
 
+    local activeWas = BR.Inv.of(1).active
     fire(BR.Net.INV_SELECT, 1, { slot = 2 })
-    ok(BR.Inv.of(1).using == nil, 'switching slots mid-channel cancels the use')
+    ok(BR.Inv.of(1).using ~= nil,
+        'switching slots mid-channel is REFUSED rather than cancelling the use '
+            .. '-- a keypress that banked the slices and kept the kit is #271')
+    ok(BR.Inv.of(1).active == activeWas,
+        'and the hands do not change either, so there is nothing to re-sync',
+        ('active %s, was %s'):format(tostring(BR.Inv.of(1).active),
+            tostring(activeWas)))
+
+    stepOut(VEH)
+    fakeTime = t0 + 500
+    BR.Sched.step(fakeTime)
+    ok(BR.Inv.of(1).using == nil,
+        'leaving the driving seat still cancels it -- that guard is a fact '
+            .. 'about the world and is not gated on anything')
     ok(BR.Inv.of(1).slots[1] and BR.Inv.of(1).slots[1].count == 1,
         'and the kit is STILL THERE -- "any other consumable doesn\'t get '
             .. 'removed until the progress bar is full"',
@@ -11771,9 +12191,15 @@ do
        '...and works again the moment their feet are on the ground',
        tostring(inv.slots[1].clip))
 
-    -- IT INTERRUPTS A CONSUMABLE, exactly as a slot switch does. Both are what
-    -- the player's hands are doing, and a med kit finishing while a magazine
-    -- goes in would be a free heal mid-fight.
+    -- IT IS REFUSED WHILE A CONSUMABLE IS GOING DOWN, exactly as a slot switch
+    -- is (#271). It used to INTERRUPT the channel, on the argument that both are
+    -- what the player's hands are doing -- which is still true and is now
+    -- answered from the other side: the magazine does not go in, so the channel
+    -- is not banked and the item is not left unspent.
+    --
+    -- AND NO ROUND MOVES, which is the half a `using == nil` assertion alone
+    -- would not notice. The refusal sits ABOVE BR.Inv.reload, so a player
+    -- mashing the key through an 8s channel is not handed a magazine per press.
     inv = armed(0, 60)
     -- A SHIELD RATHER THAN A MED KIT: the harness's peds stand at full health,
     -- and INV_USE refuses a heal that would do nothing before it ever starts
@@ -11789,8 +12215,17 @@ do
     fire(BR.Net.INV_USE, 1, { slot = medSlot })
     ok(inv.using ~= nil, 'the shield potion is going down')
     inv.active = 1
+    local clipWas, poolWas = inv.slots[1].clip, inv.ammo[MED]
     fire(BR.Net.INV_RELOAD, 1, {})
-    ok(inv.using == nil, 'and a reload interrupts it, like a slot switch does')
+    ok(inv.using ~= nil,
+       'and a reload is refused rather than interrupting it, like a slot '
+           .. 'switch is')
+    ok(inv.slots[1].clip == clipWas and inv.ammo[MED] == poolWas,
+       'and not one round moves for the press that was refused',
+       ('clip %s->%s reserve %s->%s'):format(tostring(clipWas),
+           tostring(inv.slots[1].clip), tostring(poolWas),
+           tostring(inv.ammo[MED])))
+    inv.using = nil
 
     -- THE PUSH. The split is the server's own arithmetic and the client has no
     -- other way to learn it -- a reload nobody is told about is a magazine the
