@@ -536,10 +536,12 @@ export default function Hud({ visible }: { visible: boolean }) {
 
                 THE COLUMN GROWS UPWARD from the bottom safe edge, which is free
                 here in a way it is not on the left: the kill feed is the only
-                thing above, and it hangs off --hud-top + 5rem at the TOP of the
-                screen. At 1280x720 the strip adds about 17px to a column whose
-                top edge sits around y=600; the feed's lowest row is up near
-                y=190 with eight entries. They do not meet.
+                thing above, and it lives in the counters' column at the TOP of
+                the screen -- it used to be read off --hud-top + 5rem here, which
+                is the constant #269 deleted, and the clearance never depended on
+                it. Measured at 1280x720 with eight entries: the feed's lowest
+                row ends at y=300 and this column's top edge sits at y=599, the
+                strip included. They do not meet.
 
                 RENDERS null WHEN THERE IS NO VEHICLE, so the column is exactly
                 what it was before for a player on foot -- see VehicleBars. */}
