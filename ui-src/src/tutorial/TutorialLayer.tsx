@@ -39,20 +39,27 @@
  * and never blocks one.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import { fetchNui } from '../bridge/nui'
 import { useUi } from '../store'
 import AnnotationCard from './AnnotationCard'
+import {
+  BAND, centred, place, sameBox, type CardBox, type Rect,
+} from './cardPlacement'
 import { LOBBY_STEPS, type Step } from './steps'
 
-/** Card size, kept in step with .tut-card so edge-avoidance can do arithmetic. */
-const CARD_W = 304
-const CARD_H = 172
-/** How far the card sits off its subject. */
-const GAP = 18
-/** Never closer than this to the viewport edge. */
-const MARGIN = 16
+/**
+ * THE CARD'S SIZE IS NOT HERE, AND THAT IS THE FIX (#358).
+ *
+ * It was: `CARD_W = 304`, `CARD_H = 172`, described as "kept in step with
+ * .tut-card". They were not, and could not be -- `.tut-card` is `19rem` against
+ * a root font size that runs from 11px to 28px, so 304 was 19 x 16 and correct
+ * only at 1080p with the interface slider at 1. The card is MEASURED now, from
+ * the mounted element, and the clamps take that measurement as an argument. See
+ * cardPlacement.ts for the arithmetic and the whole reckoning, and `cardUp`
+ * below for where the measuring happens.
+ */
 
 /**
  * The four staged kill-feed rows.
@@ -181,8 +188,6 @@ const DEMO_FEED = [
  * token can reintroduce the hook along with the need for one.
  */
 
-type Rect = { x: number; y: number; w: number; h: number }
-
 /**
  * The box that actually clips an anchor, or null when nothing does.
  *
@@ -250,15 +255,6 @@ function sameRect(a: Rect | null, b: Rect | null): boolean {
 }
 
 /**
- * Where the card goes, and which way it faces.
- *
- * PREFERRED SIDE FIRST, THEN WHATEVER FITS. Right of the subject reads best for
- * the lobby's left-hand column; a target near the right edge flips to the left,
- * and one that fits neither goes below. The returned vector points FROM the
- * card TOWARD the subject, which is what the arrival animation and the beak
- * both consume.
- */
-/**
  * How many identical frames make a target "settled" enough to place a card at.
  *
  * FIVE, which is ~83ms at 60fps -- long enough to outlast a panel's mount
@@ -286,53 +282,6 @@ const SETTLE_DEADLINE = 40
  * advanced long before it appears.
  */
 const STUCK_MS = 45000
-
-/**
- * Where the CENTRE of an unanchored card sits, as a fraction of the viewport.
- *
- * See `Step.place`. Fractions rather than pixels because the card's own height
- * moves with the player's interface scale, and a pixel authored here would be
- * right at one setting only.
- */
-const BAND = { half: 0.64, quarter: 0.80 }
-
-/**
- * How much room a card always leaves below itself.
- *
- * Owner, 2026-09-07: "step 12/18 card should never touch the bottom of the
- * screen." MARGIN is the general edge gap and is small enough that a card
- * anchored to the inventory bar -- which is ITSELF at the bottom -- was pushed
- * flat against the edge. This is the floor for the vertical clamp only, so the
- * horizontal gap is unchanged.
- */
-const FLOOR = 72
-
-function place(r: Rect, vw: number, vh: number) {
-  let left = r.x + r.w + GAP
-  let fromX = -1
-  let fromY = 0
-
-  if (left + CARD_W > vw - MARGIN) {
-    left = r.x - CARD_W - GAP
-    fromX = 1
-  }
-  // Neither side fits -- a wide target on a narrow viewport. Go underneath and
-  // point up, which is the only remaining direction that cannot cover it.
-  if (left < MARGIN) {
-    left = Math.min(Math.max(r.x + r.w / 2 - CARD_W / 2, MARGIN), vw - CARD_W - MARGIN)
-    fromX = 0
-    fromY = -1
-  }
-
-  const wantTop = fromY === -1 ? r.y + r.h + GAP : r.y + r.h / 2 - CARD_H / 2
-  // FLOOR, NOT MARGIN, ON THE BOTTOM. A card anchored to the inventory bar sits
-  // against the bottom of the screen otherwise -- the bar is already there --
-  // and two consecutive cards on the same anchor landed at visibly different
-  // heights because one of them hit the clamp and the other did not.
-  const top = Math.min(Math.max(wantTop, MARGIN), Math.max(vh - CARD_H - FLOOR, MARGIN))
-
-  return { left, top, fromX, fromY }
-}
 
 export type TutorialLayerProps = {
   /** Which sub-screen is on top, so `screen`-scoped steps can run. */
@@ -1204,8 +1153,81 @@ export default function TutorialLayer(p: TutorialLayerProps) {
   // to the control the PREVIOUS card was about.
   //
   // A TARGETLESS CARD SKIPS THE RECT TEST, because it has none by design.
-  if (!step || waitingForScreen || waitingForMap || settledFor !== step.id) return null
-  if (step.target !== undefined && rect === null) return null
+  //
+  // ONE BOOLEAN RATHER THAN TWO EARLY RETURNS, because the measurement below has
+  // to know whether the card is mounted and a hook cannot live after a `return`.
+  // A second copy of the condition could drift from this one, and the two
+  // disagreeing would mean measuring a card that is not there or never measuring
+  // one that is.
+  const cardUp = step !== undefined
+    && !waitingForScreen && !waitingForMap
+    && settledFor === step.id
+    && (step.target === undefined || rect !== null)
+
+  // ── the card's own size, measured ───────────────────────────────────────
+  //
+  // ═══ MEASURED, NEVER PREDICTED (#358) ═══
+  //
+  // Real players reported tutorial steps drawing off the screen at 4K. The card
+  // is `19rem` wide against a root font size that clamps between 11px and 28px,
+  // and the clamps below used to read a hard-coded 304 -- which is 19 x 16, and
+  // so was the truth at 1080p and a 228px under-measure at 2160p. The full
+  // reckoning is in cardPlacement.ts; this is the half that has to touch a real
+  // layout.
+  //
+  // BEFORE PAINT, WHICH IS WHY THIS IS useLayoutEffect. The card must exist to
+  // be measured, so the first commit of a new step places it from no measurement
+  // at all -- as a point against its subject (see `metrics`). A layout effect
+  // runs after that commit and before the browser paints, and the state it sets
+  // is flushed in the same frame, so the corrected placement is what is drawn.
+  // An ordinary useEffect here would trade an off-screen card for a card that
+  // visibly jumps, which is a new bug rather than a fix.
+  //
+  // offsetWidth / offsetHeight, NOT getBoundingClientRect. The card arrives on a
+  // `scale(0.86)` keyframe (index.css, tutIn) and a client rect includes
+  // transforms, so measuring the animating box would report 86% of the card and
+  // re-introduce exactly the under-measure this fixes, with a different cause.
+  // The offset* pair is the layout box and ignores transforms, and it is stable
+  // across the whole arrival: nothing in the landing animation touches layout.
+  const cardRef = useRef<HTMLDivElement | null>(null)
+  // THE MEASUREMENT IS KEPT BETWEEN STEPS, DELIBERATELY. Clearing it per step
+  // would make every card's first commit an unmeasured one; the previous card's
+  // box is the same width and close on height, so it is the best possible seed
+  // for the commit that is about to be corrected anyway. Only the very first card
+  // of a session has no measurement to start from.
+  const [card, setCard] = useState<CardBox | null>(null)
+  // Bumped by a viewport change, purely to force the measurement to run again.
+  // It also gives an UNANCHORED card a re-render on resize, which it never had:
+  // the latch keys on the viewport, and a card with no target has no measure
+  // loop to re-render it, so one placed before a resolution change kept a
+  // placement computed against the old screen.
+  const [viewportTick, setViewportTick] = useState(0)
+  const uiScale = useUi((st) => st.settings.uiScale)
+  const textScale = useUi((st) => st.settings.textScale)
+  const stepId = step?.id
+
+  useEffect(() => {
+    const bump = () => setViewportTick((n) => n + 1)
+    window.addEventListener('resize', bump)
+    return () => window.removeEventListener('resize', bump)
+  }, [])
+
+  // R22 INVALIDATION SET -- keep in sync with cardPlacement.ts CARD_INPUTS and
+  // check-ui rule R22.
+  useLayoutEffect(() => {
+    const el = cardRef.current
+    if (el === null) return
+    // THE ROOT FONT SIZE IS READ, NOT COMPUTED, and it is read here because the
+    // gaps are rem multiples too -- see GAP_REM. Nothing in this project knows
+    // that a rem is 1.481vh, that it is clamped at both ends, or that the
+    // interface slider multiplies it; the same call screens/PlayerList.tsx makes
+    // for the same reason.
+    const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16
+    const next = { w: el.offsetWidth, h: el.offsetHeight, rem }
+    setCard((prev) => (sameBox(prev, next) ? prev : next))
+  }, [cardUp, stepId, uiScale, textScale, viewportTick])
+
+  if (!cardUp || !step) return null
 
   // ── where the card goes, decided ONCE per step ──────────────────────────
   //
@@ -1220,38 +1242,24 @@ export default function TutorialLayer(p: TutorialLayerProps) {
   // prose slightly off its subject. So the placement is computed on the first
   // frame the target is measurable and then held.
   //
-  // KEYED ON THE STEP AND THE VIEWPORT. A resize genuinely invalidates it --
-  // the whole point of `place` is that a card cannot be pushed off screen --
-  // so the latch is dropped when either changes, and only then.
+  // KEYED ON THE STEP, THE VIEWPORT AND THE CARD'S MEASURED BOX. A resize
+  // genuinely invalidates it -- the whole point of `place` is that a card cannot
+  // be pushed off screen -- and so does the measurement arriving, which is the
+  // frame that corrects the placement the card was mounted at. The latch is
+  // dropped when one of the three changes, and only then.
   const vw = window.innerWidth
   const vh = window.innerHeight
-  const latchKey = `${step.id}|${vw}x${vh}`
+  const box = card === null ? 'unmeasured' : `${card.w}x${card.h}@${card.rem}`
+  const latchKey = `${step.id}|${vw}x${vh}|${box}`
   if (placedRef.current?.key !== latchKey) {
     placedRef.current = {
       key: latchKey,
-      // IN ITS BAND, CENTRED, ARRIVING FROM NOWHERE IN PARTICULAR.
-      //
-      // Owner, 2026-09-07: "step 11 and any other step that currently draws in
-      // the middle center of the screen should be moved to the lower 1/3 in the
-      // middle." Dead centre is where a card about the WORLD does the most
-      // damage -- it sits exactly over the four crates it is telling the player
-      // to go and look at. Low and centred is where a game puts a subtitle, and
-      // it leaves the middle of the screen to the thing being described.
-      //
-      // CLAMPED, so a tall card on a short viewport cannot be pushed off the
-      // bottom -- the same floor `place` applies to an anchored one.
-      //
-      // The arrival vector is zero: a card with no subject has no direction to
-      // be thrown from, so it simply scales up in place.
+      // Both branches take the measured box and neither knows its size. See
+      // cardPlacement.ts -- `centred` carries the owner's lower-third rule and
+      // `place` the side-preference and the clamps.
       at: rect === null
-        ? {
-            left: (vw - CARD_W) / 2,
-            top: Math.min(vh * BAND[step.place ?? 'half'] - CARD_H / 2,
-                          Math.max(vh - CARD_H - FLOOR, MARGIN)),
-            fromX: 0,
-            fromY: 0,
-          }
-        : place(rect, vw, vh),
+        ? centred(card, vw, vh, BAND[step.place ?? 'half'])
+        : place(rect, card, vw, vh),
     }
   }
   const { left, top, fromX, fromY } = placedRef.current.at
@@ -1306,6 +1314,9 @@ export default function TutorialLayer(p: TutorialLayerProps) {
       )}
       <AnnotationCard
         key={step.id}
+        // THE HANDLE THE MEASUREMENT READS. See `cardUp` above: the size of this
+        // element is the one thing the placement cannot be told in advance.
+        ref={cardRef}
         title={step.title}
         // VERBATIM. The script's prose goes to the card exactly as written --
         // `{key:…}`, `[[Esc]]` and `~Volts~` are the renderer's to resolve, not

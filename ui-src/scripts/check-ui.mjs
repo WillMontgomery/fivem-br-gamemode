@@ -1397,6 +1397,105 @@ for (const name of builtCss) {
 }
 
 // ---------------------------------------------------------------------------
+// R22  A tutorial card is MEASURED, never predicted (#358).
+//
+// TutorialLayer.tsx held the card's size as pixels -- `CARD_W = 304`, commented
+// as "kept in step with .tut-card" -- while .tut-card is `19rem` against a root
+// font size that clamps between 11px and 28px. 304 is 19 x 16, so every edge
+// clamp was correct at 1080p and under-measured by 228px at 2160p: real players
+// reported tutorial steps drawing off the screen. The size is read off the
+// mounted element now and cardPlacement.ts takes it as an argument.
+//
+// This rule fails on the four ways that regresses:
+//   A REINTRODUCED CONSTANT -- any CARD_W / CARD_H in the layer, which is the
+//     original bug by its original name;
+//   THE ARITHMETIC RE-INLINED -- the clamps no longer flowing through the one
+//     kernel scripts/test-card-placement.mjs can exercise;
+//   MEASURED WITH A CLIENT RECT -- getBoundingClientRect includes transforms and
+//     the card arrives on a scale(0.86) keyframe, so it reports 86% of the card.
+//     offsetWidth/offsetHeight are the layout box and ignore the animation;
+//   MISSING INVALIDATION -- a name dropped from the layout effect's dependency
+//     array, so a resize, a slider or a new step stops re-measuring; or
+//     useLayoutEffect downgraded to useEffect, which measures after the paint
+//     and trades an off-screen card for one that visibly jumps.
+//
+// The invalidation set has ONE home: CARD_INPUTS in cardPlacement.ts, the
+// dependency array in the layer, and scripts/test-card-placement.mjs must agree.
+//
+// IT CAN FAIL. Put `const CARD_W = 304` back in TutorialLayer.tsx, or delete a
+// name from the `[cardUp, stepId, uiScale, textScale, viewportTick]` array.
+// ---------------------------------------------------------------------------
+{
+  const L = join(SRC, 'tutorial', 'TutorialLayer.tsx')
+  const K = join(SRC, 'tutorial', 'cardPlacement.ts')
+  if (!existsSync(L) || !existsSync(K)) {
+    fail('R22 card-measured', 'src/tutorial',
+      'TutorialLayer.tsx or cardPlacement.ts is missing. If they moved, move this'
+      + ' rule with them -- it is the pair to scripts/test-card-placement.mjs.')
+  } else {
+    const layer = stripComments(read(L))
+    const rawLayer = read(L)
+    const kernel = read(K)
+
+    if (/const\s+CARD_[WH]\s*=/.test(layer)) {
+      fail('R22 card-measured', 'src/tutorial/TutorialLayer.tsx',
+        'the card size is a constant again. .tut-card is 19rem against a root'
+        + ' font size that runs 11px..28px, so a pixel here is right at one'
+        + ' resolution and one interface scale. Measure the element (#358).')
+    }
+    if (!/from '\.\/cardPlacement'/.test(layer)) {
+      fail('R22 card-measured', 'src/tutorial/TutorialLayer.tsx',
+        'the placement arithmetic is no longer imported from ./cardPlacement.'
+        + ' place / centred / sameBox live there so they have one definition,'
+        + ' tested by scripts/test-card-placement.mjs.')
+    }
+    for (const fn of ['place(', 'centred(', 'sameBox(']) {
+      if (!layer.includes(fn)) {
+        fail('R22 card-measured', 'src/tutorial/TutorialLayer.tsx',
+          `the layer no longer calls \`${fn}\` from the kernel. Re-inlining a`
+          + ' clamp puts it beyond the one place R22 and the card-placement test'
+          + ' can check it.')
+      }
+    }
+    if (!/place\(\s*rect\s*,\s*card\s*,/.test(layer) || !/centred\(\s*card\s*,/.test(layer)) {
+      fail('R22 card-measured', 'src/tutorial/TutorialLayer.tsx',
+        'the arithmetic is not being handed the MEASURED box (`card`). A literal'
+        + ' at the call site is the retired constant wearing a different hat --'
+        + ' the kernel cannot tell the difference, and neither can the test.')
+    }
+    if (!/offsetWidth/.test(layer) || !/offsetHeight/.test(layer)) {
+      fail('R22 card-measured', 'src/tutorial/TutorialLayer.tsx',
+        'the card is not measured with offsetWidth/offsetHeight. A client rect'
+        + ' includes transforms and the card arrives on a scale(0.86) keyframe,'
+        + ' so it would report 86% of the card -- the same under-measure with a'
+        + ' new cause.')
+    }
+    if (!/\},\s*\[\s*cardUp\s*,\s*stepId\s*,\s*uiScale\s*,\s*textScale\s*,\s*viewportTick\s*\]\s*\)/.test(layer)) {
+      fail('R22 card-measured', 'src/tutorial/TutorialLayer.tsx',
+        'the measurement layout effect is not keyed on'
+        + ' [cardUp, stepId, uiScale, textScale, viewportTick]. A missing name'
+        + ' drops a re-measure (a card mounting, a new step, either slider, a'
+        + ' resize) and the card keeps a placement computed for a different box.'
+        + ' See CARD_INPUTS.')
+    }
+    if (!/R22 INVALIDATION SET[\s\S]{0,200}?useLayoutEffect\(/.test(rawLayer)) {
+      fail('R22 card-measured', 'src/tutorial/TutorialLayer.tsx',
+        'the `R22 INVALIDATION SET` marker is gone, or the measurement is no'
+        + ' longer a useLayoutEffect. It must run before the browser paints or'
+        + ' the card is drawn at the placement it had before it was measured,'
+        + ' and then jumps.')
+    }
+    if (!/CARD_INPUTS\s*=\s*\[\s*'cardUp'\s*,\s*'stepId'\s*,\s*'uiScale'\s*,\s*'textScale'\s*,\s*'viewportTick'\s*\]/.test(kernel)) {
+      fail('R22 card-measured', 'src/tutorial/cardPlacement.ts',
+        'CARD_INPUTS is not exactly [\'cardUp\', \'stepId\', \'uiScale\','
+        + ' \'textScale\', \'viewportTick\']. It is the single source for the'
+        + ' invalidation set; the layer\'s dependency array and'
+        + ' test-card-placement.mjs read against it.')
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Result
 // ---------------------------------------------------------------------------
 if (failures) {

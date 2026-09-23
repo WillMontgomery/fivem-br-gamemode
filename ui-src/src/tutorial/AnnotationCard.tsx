@@ -44,9 +44,13 @@
  * preference the same way every other surface takes it. That is what makes the
  * settings walkthrough possible: the card the player is reading resizes under
  * them as they drag the slider, which is the demonstration.
+ *
+ * WHICH IS WHY THE LAYER MEASURES THIS ELEMENT RATHER THAN COMPUTING IT (#358).
+ * A card with no size of its own has no size anybody else can predict either --
+ * `ref` below is how the placement arithmetic finds out. See cardPlacement.ts.
  */
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type Ref } from 'react'
 
 import Btn from '../ui/Btn'
 import { KeyCap } from '../ui/KeyCap'
@@ -166,6 +170,14 @@ function emphasise(text: string): React.ReactNode[] {
 }
 
 export type CardProps = {
+  /**
+   * The card's own element, for the layer that has to know how big it is.
+   *
+   * Its edge-avoidance used to hold the size as pixels and was wrong everywhere
+   * except 1080p (#358). The element is the only honest source, so it is handed
+   * over rather than described. Same shape as hud/HotCard.tsx's `HotTime`.
+   */
+  ref?: Ref<HTMLDivElement>
   title: string
   body: string
   /** 1-based, for the "3 of 9" line. */
@@ -237,6 +249,7 @@ export default function AnnotationCard(p: CardProps) {
 
   return (
     <div
+      ref={p.ref}
       // `panel interactive tscale` -- THE PROJECT'S OWN VOCABULARY, and two of
       // those three are load-bearing rather than cosmetic:
       //
