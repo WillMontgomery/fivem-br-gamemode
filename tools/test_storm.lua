@@ -5368,6 +5368,157 @@ do
 end
 
 -- ---------------------------------------------------------------------------
+describe('hold.cut')
+do
+    -- ═══ THE PHASE-1 HOLD CUT TO 1:30, AS A CLIENT SEES IT (#352) ═══
+    --
+    -- The server cuts the hold by publishing the record again with the same tStart
+    -- and a shorter tWait (server/storm.lua's capFirstHold). Two things on this side
+    -- have to follow it, and neither was written for a hold that changes length
+    -- half-way through:
+    --
+    --   THE COUNTDOWN. The page derives its digits from the endsAt this file sends,
+    --   on a 4 Hz beat -- so the first tick that solves the new record has to send
+    --   it, or the old countdown sits on screen for a beat as it shortens.
+    --
+    --   THE #340 HANDOFF. The preview wall thins as the real one rises, both read
+    --   off the record's own clock through wallShare. The preview has to hold until
+    --   the last fadeInSec of the CUT hold and hand over there -- not where the old
+    --   hold would have ended, a minute and a half later.
+    --
+    -- AND SINCE THE MATCH GOES LIVE AT 65% LANDED, SOME OF IT IS STILL IN THE AIR
+    -- WHEN THESE RECORDS ARRIVE. So this client is gliding, not standing.
+    local C = newStormClient()
+    local env = C.env
+    local MS, PS = env.BR.MatchState, env.BR.PlayerState
+    local rr = env.BR.Config.Storm.render
+    local INSET = rr.edgeInset or 0.0
+    local FADE = (rr.fadeInSec or 10.0) * 1000.0
+    local FULL = math.floor(rr.alpha + 0.5)
+    local PREV = math.floor(rr.alpha * (rr.previewAlpha or 0.5) + 0.5)
+    local OCX, OCY, OR = 0.0, 0.0, 4000.0
+    local CCX, CCY, CR = 500.0, 0.0, 1600.0
+    local WAIT, SHRINK = 180000, 60000
+    local CUT = env.BR.Config.Storm.hold.capSeconds * 1000.0
+
+    local PSS = env.BR.StormShape
+    local UNIT1 = env.BR.StormUnit(nil, 1)
+    local PREVIEW_SHAPE = PSS.inset(PSS.blob(CCX, CCY, CR, UNIT1), INSET)
+    local REAL_SHAPE = PSS.inset(PSS.zone(OCX, OCY, OR, CCX, CCY, CR, UNIT1), INSET)
+
+    --- Each wall's triangle count and alpha in the last frame, told apart by which
+    --- shape their corners stand on -- `preview.handoff`'s method, for its reason.
+    local function walls()
+        local pv, rw, stray = { n = 0, alpha = 0 }, { n = 0, alpha = 0 }, nil
+        for _, t in ipairs(C.polys) do
+            local v = t[1]
+            local w
+            if math.abs(PSS.distance(PREVIEW_SHAPE, v.x, v.y)) < 1e-6 then w = pv
+            elseif math.abs(PSS.distance(REAL_SHAPE, v.x, v.y)) < 1e-6 then w = rw
+            else stray = stray or ('(%.2f, %.2f) is on neither'):format(v.x, v.y) end
+            if w then
+                if w.n > 0 and w.alpha ~= t.a then stray = stray or 'a wall stripes' end
+                w.alpha, w.n = t.a, w.n + 1
+            end
+        end
+        return pv, rw, stray
+    end
+
+    -- On the bus, then live, gliding: the record arrives with the full priced hold.
+    env.BR.State.storm = nil
+    env.BR.State.match.state = MS.BUS
+    env.BR.State.me.state    = PS.BUS
+    env.BR.State.stormPreview = { cx = CCX, cy = CCY, r = CR }
+    C.fire('br:env:world', false)
+    C.pedAt = pt(0.0, 0.0, 400.0)
+    C.settlePreview()
+    env.BR.State.match.state = MS.PLAYING
+    env.BR.State.me.state    = PS.GLIDE
+    local rec0 = C.record(1, OCX, OCY, OR, CCX, CCY, CR, WAIT, SHRINK, 0.5)
+    env.BR.State.stormPreview = nil
+    C.fire(env.BR.Net.STORM_SYNC)
+    C.tick(1)
+    local T0 = rec0.tStart
+    ok(C.last() and C.last().endsAt == T0 + WAIT,
+        'the envelope carries the priced hold\'s end first',
+        C.last() and tostring(C.last().endsAt))
+    C.frame()
+    local bp, br = walls()
+    ok(bp.n > 0 and bp.alpha == PREV and br.n == 0,
+        'and a gliding player at the new, earlier PLAYING has the preview wall at '
+            .. 'previewAlpha and no real wall -- the bus\'s view, carried on',
+        ('preview %d at %d, real %d'):format(bp.n, bp.alpha, br.n))
+
+    -- ─── the cut lands a tenth of a second after the last envelope ───
+    local pushes = #C.envelopes
+    C.now = C.now + 100
+    local cutWait = (C.now - T0) + CUT
+    env.BR.State.storm = {
+        phase = 1, seed = rec0.seed,
+        cx0 = OCX, cy0 = OCY, r0 = OR, cx1 = CCX, cy1 = CCY, r1 = CR,
+        tStart = T0, tWait = cutWait, tShrink = SHRINK, dps = 0.5,
+    }
+    C.fire(env.BR.Net.STORM_SYNC)
+    C.now = C.now + 100
+    env.BR.Loop.step(env.BR.Loop.TICK)
+    ok(#C.envelopes == pushes + 1 and C.last().endsAt == T0 + cutWait,
+        'and the first tick that solves the cut sends its endsAt, 200ms after the '
+            .. 'last envelope rather than on the next 4 Hz beat',
+        ('%d new envelopes, endsAt %s against %s'):format(#C.envelopes - pushes,
+            tostring(C.last() and C.last().endsAt), tostring(T0 + cutWait)))
+
+    -- ─── and the handoff follows the cut hold, frame by frame ───
+    --
+    -- The record is left alone from here and the CLOCK moves, which is how a match
+    -- actually runs. `at(msLeft)` puts the frame's own solve exactly msLeft from the
+    -- cut hold's end, counting the 16 ms C.frame adds.
+    local cutEnd = T0 + cutWait
+    local function at(msLeft)
+        C.now = cutEnd - msLeft - 16
+        C.frame()
+        return walls()
+    end
+    local steps = {}
+    for ms = CUT, FADE + 1, -2000 do steps[#steps + 1] = ms end
+    for ms = FADE, 0, -250 do steps[#steps + 1] = ms end
+
+    local empty, stray, nonMono, sumBad, inWindow = nil, nil, nil, nil, 0
+    local lastP, lastR = PREV, 0
+    for _, ms in ipairs(steps) do
+        local pv, rw, s = at(ms)
+        stray = stray or (s and ('at %d ms %s'):format(ms, s))
+        if pv.n == 0 and rw.n == 0 then empty = empty or ms end
+        if pv.alpha > lastP or rw.alpha < lastR then
+            nonMono = nonMono or ('at %d ms preview %d->%d, real %d->%d')
+                :format(ms, lastP, pv.alpha, lastR, rw.alpha)
+        end
+        if ms < FADE and ms > 0 then
+            inWindow = inWindow + 1
+            local sum = rw.alpha / FULL + pv.alpha / PREV
+            if math.abs(sum - 1.0) > 1.0 / FULL + 1.0 / PREV then
+                sumBad = sumBad or ('at %d ms the shares sum to %.4f'):format(ms, sum)
+            end
+        end
+        lastP, lastR = pv.alpha, rw.alpha
+    end
+    local firstP, firstR = at(CUT)
+    ok(firstP.alpha == PREV and firstR.n == 0 and empty == nil and stray == nil,
+        'from the cut to the end of the hold there is a wall at every step, and the '
+            .. 'preview is at previewAlpha until the fade window -- the cut moved nothing '
+            .. 'on screen', stray or (empty and ('empty at %d ms'):format(empty)))
+    ok(nonMono == nil and sumBad == nil and inWindow > 30,
+        'and across the CUT hold\'s last fadeInSec the preview thins as the wall rises, '
+            .. 'their shares summing to one: the one-clock handoff, on the new clock',
+        nonMono or sumBad)
+    local endP, endR = at(0)
+    ok(endP.n == 0 and endR.alpha == FULL,
+        'the handoff completes where the cut hold ends -- a minute and a half before '
+            .. 'the priced one would have',
+        ('preview %d tris, real at %d'):format(endP.n, endR.alpha))
+    ok(C.errored() == nil, 'and runs clean', C.errored())
+end
+
+-- ---------------------------------------------------------------------------
 describe('square.geometry')
 do
     -- ═══ THE ROUNDED RECTANGLE, AND WHY ITS PROOF IS IN THIS FILE ═══

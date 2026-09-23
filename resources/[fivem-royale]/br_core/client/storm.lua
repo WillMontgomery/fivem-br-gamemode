@@ -3054,9 +3054,17 @@ end)
 
 -- A new record means the "next circle" moved: force the blips to rebuild so
 -- the old target ring never lingers on the map.
+--
+-- AND IT MEANS A NEW COUNTDOWN, WHICH IS SENT ON THE FIRST TICK THAT SOLVES IT
+-- RATHER THAN ON THE NEXT 4 Hz ENVELOPE BEAT (#352). The server cuts the phase-1
+-- hold to 1:30 by publishing a record with a shorter wait, and the page derives
+-- its digits from the `endsAt` this file forwards -- so a throttled push would
+-- leave up to a quarter of a second of the old countdown on screen at the one
+-- moment somebody is watching it change.
 AddEventHandler(BR.Net.STORM_SYNC, function()
     clearBlips()
     lastBlipAt = 0
+    lastPush = 0
 end)
 
 AddEventHandler('onResourceStop', function(res)

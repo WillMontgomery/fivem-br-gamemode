@@ -308,6 +308,27 @@ function BR.ClassifyDescent(prevZ, prevAt, z, at, threshold)
     return rate >= (threshold or 0.7) and 'falling' or 'still'
 end
 
+--- Is `n` at least `pct` percent of `total`? (#352)
+---
+--- ONE RULE FOR BOTH OF THE OWNER'S THRESHOLDS -- 65% landed takes a match live,
+--- 75% inside circle 1 cuts the first hold -- so the two cannot round differently.
+---
+--- IN WHOLE NUMBERS, NOT A FRACTION OF A HEADCOUNT. `n * 100 >= pct * total` is
+--- the smallest n with n / total >= pct / 100, which is a ceiling: 65% of 3 is
+--- 1.95 and asks for 2, 75% of 2 is 1.5 and asks for both. Nothing is rounded, so
+--- nothing can round the wrong way.
+---
+--- AN EMPTY HEADCOUNT IS NEVER ENOUGH. `0 * 100 >= pct * 0` is true, and it would
+--- read "nobody is in the match" as "everybody has landed".
+--- @param n integer       how many qualify
+--- @param total integer   how many are counted
+--- @param pct integer     a whole percent, 0..100
+--- @return boolean
+function BR.AtLeastPercent(n, total, pct)
+    if not total or total <= 0 then return false end
+    return (n or 0) * 100 >= (pct or 100) * total
+end
+
 --- WHICH FACE OF A BOX A POINT IS NEAREST TO, IN THE BOX'S OWN AXES.
 ---
 --- ═══ "A DUI THAT SHOWS ON THE NEAREST FACE OF THE VEHICLE" ═══

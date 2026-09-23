@@ -48,7 +48,7 @@ off. The Battle Bus flies an authored tour over Los Santos and everyone skydives
 out wherever they choose. On the ground there is loot: weapons, ammo, shields,
 throwables and chests scattered across 120 points of interest and along the
 highways between them, streamed to each client cell by cell as they move. When
-the last player lands, the match goes live and the storm starts — a shrinking
+65% of players land, the match goes live and the storm starts — a shrinking
 circle homed on a point of interest near the flight path, with a rendered wall,
 map circles, screen effects and server-authoritative damage. Squad members who
 run out of health go down rather than dying outright: they crawl, a bleed clock

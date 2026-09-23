@@ -524,6 +524,10 @@ function BR.Bus.landingNotices(m)
             -- returned; the sticky flag, the dedup key and the withdrawal above
             -- are the reason the old four-second version was replaced and they
             -- all stay.
+            --
+            -- ⚠ #352 MADE IT INEXACT, AND THE WORDING IS STILL HIS TO CHANGE. The
+            -- match now starts once 65% have landed (server/match.lua), not all of
+            -- them. The sentence is kept verbatim rather than rewritten here.
             BR.Server.notify(src,
                 'The match will start once all players have landed.', 'info',
                 { key = 'bus.landing', sticky = true })

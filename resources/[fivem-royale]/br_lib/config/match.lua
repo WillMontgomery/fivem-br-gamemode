@@ -1917,6 +1917,16 @@ end
 BR.Config.Match.descendRate  = 0.7      -- m/s; below this is not descending
 BR.Config.Match.stuckLanderMs = 5000    -- held at one altitude this long -> ALIVE
 
+--- How much of the match has to be on the ground before it goes live (#352).
+---
+---   "when >=65% of players have landed we move to PLAYING"
+---                                                  -- owner, 2026-09-22
+---
+--- A WHOLE PERCENT, compared in whole numbers by BR.AtLeastPercent, so ">= 65%"
+--- means exactly that at every lobby size: 1 of 1, 2 of 2, 2 of 3, 13 of 20. The
+--- route timer is still the ceiling behind it -- see the BUS branch of matchTick.
+BR.Config.Match.goLiveLandedPct = 65
+
 --- Spectating (#192).
 BR.Config.Spectate = {
     -- WHAT A DEAD PLAYER MAY SEE ONCE THEIR WHOLE SQUAD IS OUT.

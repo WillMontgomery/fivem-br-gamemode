@@ -4015,6 +4015,520 @@ do
     BR.Config.Storm.edgeBiasMax = savedBias
 end
 
+describe('match.goLiveAt65')
+do
+    -- ═══ BUS -> PLAYING AT 65% LANDED, WITH THE ROUTE AS THE CEILING (#352) ═══
+    --
+    --   "when >=65% of players have landed we move to PLAYING"
+    --                                                  -- owner, 2026-09-22
+    --
+    -- Four things are pinned here and each is a way the rule could be right in a
+    -- two-player playtest and wrong in a lobby: WHAT a landing is (the roster's
+    -- FREEFALL/GLIDE -> ALIVE edge, by report or by the stuck-lander net), WHO the
+    -- 65% is of (whoever the match still carries), HOW it rounds (never -- whole
+    -- numbers), and that the route timer still ends a flight nobody lands from.
+    local savedMin = BR.Config.Match.minToStart
+    local PS, MS = BR.PlayerState, BR.MatchState
+
+    --- `n` solo players, flown to the open doors. Nobody has jumped.
+    local function toDoors(n)
+        reset()
+        BR.Server.devMode = true
+        BR.Config.Match.minToStart = 1
+        for i = 1, n do queueUp(i, 'P' .. i, BR.Mode.SOLO.key) end
+        fakeTime = fakeTime + 300
+        BR.Sched.step(fakeTime)
+        fakeTime = mendsAt() + 1
+        BR.Sched.step(fakeTime)
+        local m = theMatch()
+        local r = BR.Bus.active(m)
+        fakeTime = r.jumpFrom + 1000
+        return m, r
+    end
+
+    --- Move the clock with every airborne player GENUINELY FALLING, so the
+    --- stuck-lander net (five seconds at one altitude) promotes nobody this block
+    --- did not mean it to. `still` names the ones holding an altitude on purpose.
+    local z = {}
+    local function step(ms, still)
+        BR.Roster.each(
+            function(e)
+                return e.state == PS.FREEFALL or e.state == PS.GLIDE
+            end,
+            function(src)
+                if not (still and still[src]) then
+                    z[src] = (z[src] or 900.0) - 20.0 * ms / 1000.0
+                    setPos(src, 100.0 * src, 0.0, z[src])
+                end
+            end)
+        fakeTime = fakeTime + ms
+        BR.Sched.step(fakeTime)
+    end
+
+    -- ─── the arithmetic, at the lobby sizes a playtest reaches first ───
+    --
+    -- WRITTEN OUT AS LITERALS, because the rule is a sentence of the owner's and
+    -- these are what it means: 65% of 3 is 1.95 and that is 2, a 1v1 waits for
+    -- both, a solo goes on its only landing.
+    local anchors = {
+        { 65, 1, 1 }, { 65, 2, 2 }, { 65, 3, 2 }, { 65, 4, 3 },
+        { 65, 20, 13 }, { 65, 24, 16 },
+        { 75, 1, 1 }, { 75, 2, 2 }, { 75, 3, 3 }, { 75, 4, 3 }, { 75, 24, 18 },
+    }
+    local wrong = nil
+    for _, t in ipairs(anchors) do
+        local pct, total, need = t[1], t[2], t[3]
+        if not BR.AtLeastPercent(need, total, pct)
+           or BR.AtLeastPercent(need - 1, total, pct) then
+            wrong = wrong or ('%d%% of %d should need exactly %d'):format(pct, total, need)
+        end
+    end
+    ok(wrong == nil,
+        'at least 65% (and 75%) is a ceiling in whole numbers: 2 of 3, both of 2, '
+            .. '13 of 20 -- at least, not more than', wrong)
+
+    -- AND ONE THRESHOLD PER HEADCOUNT, swept: false below it, true from it on, and
+    -- true at everybody. An empty headcount is never enough, which is the one
+    -- place `0 * 100 >= pct * 0` would say otherwise.
+    local sweepBad = nil
+    for pct = 0, 100 do
+        if BR.AtLeastPercent(0, 0, pct) then
+            sweepBad = sweepBad or ('nobody counted passes at %d%%'):format(pct)
+        end
+        for total = 1, 48 do
+            local was = false
+            for n = 0, total do
+                local now = BR.AtLeastPercent(n, total, pct)
+                if was and not now then
+                    sweepBad = sweepBad or ('%d%% of %d: %d passes, %d does not')
+                        :format(pct, total, n - 1, n)
+                end
+                was = now
+            end
+            if not was then
+                sweepBad = sweepBad or ('%d%% of %d: everybody is not enough')
+                    :format(pct, total)
+            end
+        end
+    end
+    ok(sweepBad == nil,
+        'swept over every lobby to 48 and every percent: one threshold each, and '
+            .. 'nobody at all never passes', sweepBad)
+
+    -- ─── two of three down takes it live, with the third still falling ───
+    local m, r = toDoors(3)
+    for i = 1, 3 do fire(BR.Net.BUS_JUMP, i) end
+    fire(BR.Net.DROP_LANDED, 1)
+    step(300)
+    ok(m.state == MS.BUS, 'one of three down is 33%, and the flight goes on')
+    fire(BR.Net.DROP_LANDED, 2)
+    step(300)
+    ok(m.state == MS.PLAYING and fakeTime < r.tEnd,
+        'the second of three down is 67% -- past 65 -- and the match goes live, '
+            .. 'long before the route runs out',
+        ('%s, %.0fs before the route end'):format(tostring(m.state),
+            (r.tEnd - fakeTime) / 1000))
+    ok(BR.Roster.get(3).state == PS.FREEFALL,
+        'with the third still in the air and left there: going live snaps nobody '
+            .. 'to ALIVE', tostring(BR.Roster.get(3).state))
+
+    -- ─── exactly 65% is enough ───
+    m = toDoors(20)
+    for i = 1, 20 do fire(BR.Net.BUS_JUMP, i) end
+    for i = 1, 12 do fire(BR.Net.DROP_LANDED, i) end
+    step(300)
+    ok(m.state == MS.BUS, '12 of 20 is 60%, and it holds')
+    fire(BR.Net.DROP_LANDED, 13)
+    step(300)
+    ok(m.state == MS.PLAYING, '13 of 20 is exactly 65%, and that is enough')
+
+    -- ─── the net's landing counts, with no report from the player at all ───
+    --
+    -- #245 found the client's landing report had likely never been detected before
+    -- its fix, so every landing arrived through this net. A rule that read the
+    -- report instead of the roster would have waited on the route every time.
+    m = toDoors(3)
+    for i = 1, 3 do fire(BR.Net.BUS_JUMP, i) end
+    fire(BR.Net.DROP_LANDED, 1)
+    setPos(2, 200.0, 0.0, 30.0)          -- 2 is down, and its report is lost
+    local wentLive = nil
+    for i = 1, 40 do
+        step(250, { [2] = true })
+        if m.state == MS.PLAYING then wentLive = i break end
+    end
+    local e2 = BR.Roster.get(2)
+    ok(e2.state == PS.ALIVE and e2.landedAt ~= nil,
+        'the stuck-lander net promotes 2 without a report, and that is a landing',
+        ('%s, landedAt %s'):format(tostring(e2.state), tostring(e2.landedAt)))
+    ok(wentLive ~= nil and BR.Roster.get(3).state == PS.FREEFALL,
+        'and it is what takes the match live -- 2 of 3, with 3 still falling',
+        ('state %s after %s steps'):format(tostring(m.state), tostring(wentLive)))
+
+    -- ─── 65% of who is STILL here ───
+    --
+    -- Two of four down is 50%. The other two are in the air when one of them goes;
+    -- two of the three left is 67%. Frozen at boarding, the lobby would be asked
+    -- for a landing from somebody who no longer exists.
+    for _, how in ipairs({ 'disconnects', 'leaves the match' }) do
+        m = toDoors(4)
+        for i = 1, 4 do fire(BR.Net.BUS_JUMP, i) end
+        fire(BR.Net.DROP_LANDED, 1)
+        fire(BR.Net.DROP_LANDED, 2)
+        step(300)
+        local held = m.state == MS.BUS
+        if how == 'disconnects' then leave(4) else fire(BR.Net.MATCH_LEAVE, 4) end
+        step(300)
+        ok(held and m.state == MS.PLAYING,
+            ('2 of 4 holds; then one of the fallers %s, and 2 of the 3 left goes '
+                .. 'live'):format(how),
+            ('held %s, then %s'):format(tostring(held), tostring(m.state)))
+    end
+
+    -- ─── whoever has not jumped is put out, as the route's end would ───
+    m = toDoors(3)
+    fire(BR.Net.BUS_JUMP, 1)
+    fire(BR.Net.BUS_JUMP, 2)
+    fire(BR.Net.DROP_LANDED, 1)
+    fire(BR.Net.DROP_LANDED, 2)
+    sent = {}
+    step(300)
+    local forced = false
+    for _, s in ipairs(eventsOf(BR.Net.BUS_JUMP_OK)) do
+        if s.target == 3 and s.args[1].forced then forced = true end
+    end
+    ok(m.state == MS.PLAYING and BR.Roster.get(3).state == PS.FREEFALL and forced,
+        'two of three down goes live with the third still aboard, and the rider is '
+            .. 'put out where the bus is, with the forced exit the route end gives',
+        ('%s, rider %s, forced %s'):format(tostring(m.state),
+            tostring(BR.Roster.get(3).state), tostring(forced)))
+
+    -- ─── the route is still the ceiling when nobody lands at all ───
+    m, r = toDoors(3)
+    fakeTime = r.tEnd + 600
+    BR.Sched.step(fakeTime)
+    local down = BR.Server.countIn(m, function(p) return p.landedAt ~= nil end)
+    ok(m.state == MS.BUS and down == 0,
+        'three riders who never jump are put out at the route end, and nobody is down')
+    fakeTime = mendsAt() + 1
+    BR.Sched.step(fakeTime)
+    ok(m.state == MS.PLAYING,
+        'and the route timer takes the match live with nobody landed at all -- the '
+            .. 'backstop idlers and ghosts cannot outlast', tostring(m.state))
+
+    -- ─── a landing belongs to its flight ───
+    reset()
+    BR.Server.devMode = true
+    BR.Config.Match.minToStart = 1
+    for i = 1, 3 do queueUp(i, 'P' .. i, BR.Mode.SOLO.key) end
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    BR.Roster.get(1).landedAt = 1   -- as if the last match had stamped them
+    BR.Roster.get(2).landedAt = 1
+    fakeTime = mendsAt() + 1
+    BR.Sched.step(fakeTime)
+    m = theMatch()
+    local cleared = BR.Roster.get(1).landedAt == nil and BR.Roster.get(2).landedAt == nil
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    ok(cleared and m.state == MS.BUS,
+        'a landing stamped on an earlier flight is cleared at wheels-up, so nobody '
+            .. 'still aboard is counted as down',
+        ('cleared %s, state %s'):format(tostring(cleared), tostring(m.state)))
+
+    BR.Config.Match.minToStart = savedMin
+end
+
+describe('match.storm.holdCap')
+do
+    -- ═══ 75% INSIDE CIRCLE 1 CUTS THE HOLD TO 1:30, ONCE AND FOR GOOD (#352) ═══
+    --
+    --   "When >=75% are within the circle, the time is 1:30 till the storm moves"
+    --                                                  -- owner, 2026-09-22
+    --
+    -- Most of this block stands the rule up against a HAND-BUILT phase-1 record,
+    -- so the numbers are the test's own: a 3:00 hold, circle 1 where the test puts
+    -- it, and players the test places. The last part drives the whole flight
+    -- instead, because the case that opened #352 is a real one -- a solo drop,
+    -- inside circle 1, told three minutes.
+    local savedMin = BR.Config.Match.minToStart
+    local SC = BR.Config.Storm
+    local R1 = SC.phases[1].radius
+    local CX, CY = 1000.0, 2000.0
+    local FAR = 60000.0
+    local CAP = SC.hold.capSeconds * 1000.0
+
+    --- `n` solo players in a PLAYING match whose storm is a hand-built phase-1
+    --- hold of `waitS` seconds on circle 1 at (CX, CY). Everybody starts far
+    --- outside it, so nothing has latched on the way in.
+    local function heldMatch(n, waitS, seed)
+        reset()
+        BR.Server.devMode = true
+        BR.Config.Match.minToStart = 1
+        for i = 1, n do queueUp(i, 'H' .. i, BR.Mode.SOLO.key) end
+        fakeTime = fakeTime + 300
+        BR.Sched.step(fakeTime)
+        for i = 1, n do setPos(i, FAR + i, FAR) end
+        fakeTime = fakeTime + 1000
+        BR.Sched.step(fakeTime)
+        forceState(BR.MatchState.PLAYING)
+        local m = theMatch()
+        m.storm = BR.BuildStormRecord(1, CX, CY, 9000.0, CX, CY, R1,
+            fakeTime, waitS * 1000.0, 240000.0, SC.phases[1].dps,
+            seed or m.stormSeed)
+        return m
+    end
+
+    local function tick1()
+        fakeTime = fakeTime + 1000
+        BR.Sched.step(fakeTime)
+    end
+    local function left(m) return m.storm.tStart + m.storm.tWait - fakeTime end
+
+    -- ─── below 75% nothing moves; at 75% it is cut, on that tick, to everybody ───
+    local m = heldMatch(4, 180)
+    setPos(1, CX, CY)
+    setPos(2, CX + 100.0, CY)
+    sent = {}
+    tick1()
+    local before = left(m)
+    ok(m.stormHoldCapped ~= true and before > CAP + 60000
+        and #eventsOf(BR.Net.STORM_SYNC) == 0,
+        'two of four inside circle 1 is 50%: the hold is left exactly as priced',
+        ('%.0fs left, %d syncs'):format(before / 1000, #eventsOf(BR.Net.STORM_SYNC)))
+
+    setPos(3, CX - 100.0, CY)
+    sent = {}
+    tick1()
+    ok(m.stormHoldCapped == true and left(m) == CAP,
+        'three of four is 75%, and what is left of the hold is cut to exactly 1:30',
+        ('%.3fs left'):format(left(m) / 1000))
+    local syncs = eventsOf(BR.Net.STORM_SYNC)
+    local agree = #syncs == 4
+    for _, s in ipairs(syncs) do
+        local rec = s.args[1]
+        if rec.tWait ~= m.storm.tWait or rec.tStart ~= m.storm.tStart then agree = false end
+    end
+    ok(agree,
+        'published on the SAME tick to all four, carrying the cut -- the HUD derives '
+            .. 'its digits from the record, so a beat of the old one is the hitch',
+        ('%d syncs'):format(#syncs))
+
+    -- ─── and it never comes back ───
+    setPos(1, FAR, FAR)
+    setPos(2, FAR, FAR)
+    setPos(3, FAR, FAR)
+    local waitAfter = m.storm.tWait
+    sent = {}
+    for _ = 1, 10 do tick1() end
+    ok(m.storm.tWait == waitAfter and #eventsOf(BR.Net.STORM_SYNC) == 0
+        and left(m) == CAP - 10000,
+        'everybody walks back out and the cut stands: no republish, the countdown '
+            .. 'carries on down from 1:30 rather than jumping back up',
+        ('%.0fs left, %d syncs'):format(left(m) / 1000, #eventsOf(BR.Net.STORM_SYNC)))
+
+    -- THE LATCH IS ON THE MATCH. `brphase 1` re-enters phase 1 with the authored
+    -- two-minute wait, and nobody is inside anything now -- only the latch can
+    -- hold that hold to 1:30, and it does so before the record is ever sent.
+    sent = {}
+    runCommand('brphase', '1')
+    local phaseSyncs = eventsOf(BR.Net.STORM_SYNC)
+    ok(left(m) == CAP and #phaseSyncs == 4 and phaseSyncs[1].args[1].tWait == CAP,
+        'and a phase-1 hold re-entered after the lobby has left is held to 1:30 '
+            .. 'too, in the first record sent -- the latch, not whoever is standing where',
+        ('%.0fs left, %d syncs'):format(left(m) / 1000, #phaseSyncs))
+
+    -- ─── it only ever shortens ───
+    m = heldMatch(2, 60)
+    setPos(1, CX, CY)
+    setPos(2, CX, CY + 50.0)
+    sent = {}
+    tick1()
+    ok(m.stormHoldCapped == true and left(m) == 59000
+        and #eventsOf(BR.Net.STORM_SYNC) == 0,
+        'a hold already under 1:30 is left alone with everybody inside: the cap '
+            .. 'never lengthens one', ('%.0fs left'):format(left(m) / 1000))
+
+    -- ─── inside is the SHAPE, and a radius disagrees with it both ways ───
+    --
+    -- A FIXED SEED, so the dent and the bulge are this block's own rather than
+    -- whatever the suite's clock deals. Found by walking rays out from the centre:
+    -- circle 1 is convex, so each ray crosses the boundary once.
+    local SEED = 352
+    m = heldMatch(1, 180, SEED)
+    local zone = BR.StormZone(m.storm, CX, CY, R1)
+    local function wallAt(th)
+        local lo, hi = 0.0, 2.0 * R1
+        for _ = 1, 60 do
+            local mid = 0.5 * (lo + hi)
+            if BR.StormShape.distance(zone, CX + mid * math.cos(th),
+                    CY + mid * math.sin(th)) <= 0 then lo = mid else hi = mid end
+        end
+        return lo
+    end
+    local dentTh, dentR, bulgeTh, bulgeR = 0.0, math.huge, 0.0, -math.huge
+    for k = 0, 719 do
+        local th = k * math.pi / 360.0
+        local w = wallAt(th)
+        if w < dentR then dentTh, dentR = th, w end
+        if w > bulgeR then bulgeTh, bulgeR = th, w end
+    end
+    local dR = 0.5 * (dentR + R1)
+    local dx, dy = CX + dR * math.cos(dentTh), CY + dR * math.sin(dentTh)
+    local bR = 0.5 * (bulgeR + R1)
+    local bx, by = CX + bR * math.cos(bulgeTh), CY + bR * math.sin(bulgeTh)
+    ok(BR.Dist(dx, dy, CX, CY) < R1 and BR.StormShape.distance(zone, dx, dy) > 0
+        and BR.Dist(bx, by, CX, CY) > R1 and BR.StormShape.distance(zone, bx, by) <= 0,
+        'this circle 1 dents in and bulges out, so there is a spot inside its radius '
+            .. 'and outside its wall, and one the other way round',
+        ('wall from %.0f to %.0f against r %.0f'):format(dentR, bulgeR, R1))
+
+    setPos(1, dx, dy)
+    sent = {}
+    tick1()
+    ok(m.stormHoldCapped ~= true and left(m) > CAP,
+        'a solo player in the dent -- inside the radius, outside the wall -- is not '
+            .. 'inside circle 1, and the hold is not cut (#349 in airdrop siting)',
+        ('%.0fs left'):format(left(m) / 1000))
+    setPos(1, bx, by)
+    tick1()
+    ok(m.stormHoldCapped == true and left(m) == CAP,
+        'and on the bulge -- outside the radius, inside the wall -- they are, and it is',
+        ('%.0fs left'):format(left(m) / 1000))
+
+    -- ─── 75% of the LIVING, and a glider counts where they are ───
+    m = heldMatch(5, 180)
+    for i = 1, 3 do setPos(i, CX + 10.0 * i, CY) end
+    tick1()
+    local heldAtFive = m.stormHoldCapped ~= true
+    BR.Combat.eliminate(5, 'fall', nil)
+    tick1()
+    ok(heldAtFive and m.stormHoldCapped == true and left(m) == CAP,
+        'three of five inside is 60% and holds; one of the outside two dies, and '
+            .. 'three of the four still living is 75% -- the dead are counted nowhere',
+        ('held %s, then %.0fs left'):format(tostring(heldAtFive), left(m) / 1000))
+
+    m = heldMatch(4, 180)
+    setPos(1, CX, CY)
+    setPos(2, CX + 50.0, CY)
+    setPos(3, CX - 50.0, CY, 400.0)
+    BR.Roster.setState(3, BR.PlayerState.GLIDE)
+    tick1()
+    ok(m.stormHoldCapped == true and left(m) == CAP,
+        'two standing inside and one gliding down over circle 1, of four: 75%',
+        ('%.0fs left'):format(left(m) / 1000))
+
+    -- ─── never into a warning the client has committed to ───
+    local savedCap = SC.hold.capSeconds
+    SC.hold.capSeconds = 5.0
+    m = heldMatch(1, 180)
+    setPos(1, CX, CY)
+    tick1()
+    local floorMs = math.max((SC.phases[1].warn or 0) * 1000.0,
+                             (SC.render.fadeInSec or 0) * 1000.0)
+    SC.hold.capSeconds = savedCap
+    ok(left(m) == floorMs,
+        'a cap tuned under the warning stops at it -- phases[1].warn or the wall\'s '
+            .. 'fade-in window, whichever is longer -- rather than cutting into either',
+        ('%.0fs left, floor %.0fs'):format(left(m) / 1000, floorMs / 1000))
+
+    -- ─── not while brstormfreeze holds the storm ───
+    m = heldMatch(1, 180)
+    runCommand('brstormfreeze')
+    local frozenWait = m.storm.tWait
+    setPos(1, CX, CY)
+    sent = {}
+    tick1()
+    ok(m.storm.tWait == frozenWait and frozenWait >= 60 * 60 * 1000
+        and #eventsOf(BR.Net.STORM_SYNC) == 0,
+        'a frozen storm is a phase-1 hold of a day, and the cap does not thaw it by '
+            .. 'the back door', ('%.0fs held'):format(m.storm.tWait / 1000))
+    runCommand('brstormfreeze', 'off')
+
+    -- ─── the airdrop's soonest delay is past the longest hold ───
+    --
+    -- So no automatic drop is ever sited against a phase-1 hold the cap could still
+    -- shorten -- which is what makes starting the drop clock at an earlier PLAYING
+    -- safe (see the note at BR.Airdrop.begin's call in server/match.lua).
+    ok(BR.Config.Airdrop.minDelayMs >= SC.hold.startCapSeconds * 1000.0,
+        'the soonest automatic airdrop is due after the longest phase-1 hold has ended',
+        ('%.0fs against %.0fs'):format(BR.Config.Airdrop.minDelayMs / 1000,
+                                       SC.hold.startCapSeconds))
+
+    -- ─── the case that opened #352: a solo drop inside circle 1, swept ───
+    --
+    -- Landed on the far side of circle 1 from the anchor, half a radius in -- inside
+    -- the wall whatever its lumps, and as far from the anchor as circle 1 allows, so
+    -- the anchor-priced hold is as long as a player inside it can be charged. Every
+    -- match must go live on the landing and send ONE first record, already cut.
+    local mismatch, flashed, cut, trials = nil, nil, 0, 0
+    for trial = 1, 40 do
+        reset()
+        fakeTime = fakeTime + 7777 * trial
+        BR.Server.devMode = true
+        BR.Config.Match.minToStart = 1
+        queueUp(1, 'Owner', BR.Mode.SOLO.key)
+        fakeTime = fakeTime + 300
+        BR.Sched.step(fakeTime)
+        local sm = theMatch()
+        local f, a = sm.stormFirst, sm.anchor
+        local ux, uy = f.cx - a.x, f.cy - a.y
+        local ul = math.sqrt(ux * ux + uy * uy)
+        if ul < 1.0 then ux, uy, ul = 1.0, 0.0, 1.0 end
+        local px = f.cx + ux / ul * 0.5 * f.r
+        local py = f.cy + uy / ul * 0.5 * f.r
+        local inside = BR.StormShape.distance(
+            BR.StormShape.blob(f.cx, f.cy, f.r, BR.StormUnit(sm.stormSeed, 1)),
+            px, py) <= 0
+
+        fakeTime = mendsAt() + 1
+        BR.Sched.step(fakeTime)
+        local sr = BR.Bus.active(sm)
+        fakeTime = sr.jumpFrom + 1000
+        fire(BR.Net.BUS_JUMP, 1)
+        setPos(1, px, py, 30.0)
+        fakeTime = fakeTime + 300
+        BR.Sched.step(fakeTime)
+        fire(BR.Net.DROP_LANDED, 1)
+        sent = {}
+        fakeTime = fakeTime + 300
+        BR.Sched.step(fakeTime)
+
+        -- What BR.Storm.begin prices, spelled from the config: the furthest run past
+        -- circle 1's radius from the ANCHOR, floored, capped, capped again.
+        local H = SC.hold
+        local run = math.max(0.0, BR.Dist(px, py, a.x, a.y) - R1)
+        local priced = math.min(BR.Clamp(run / H.metersPerSec, H.minSeconds,
+            H.maxSeconds), H.startCapSeconds)
+        local want = math.min(priced, H.capSeconds) * 1000.0
+        local firsts = {}
+        for _, s in ipairs(eventsOf(BR.Net.STORM_SYNC)) do
+            if s.target == 1 then firsts[#firsts + 1] = s.args[1] end
+        end
+        trials = trials + 1
+        if priced > H.capSeconds then cut = cut + 1 end
+        if not inside or sm.state ~= BR.MatchState.PLAYING or not sm.storm
+           or math.abs(sm.storm.tWait - want) > 1.0 then
+            mismatch = mismatch or ('trial %d: inside %s, %s, tWait %s against %.0f')
+                :format(trial, tostring(inside), tostring(sm.state),
+                        tostring(sm.storm and sm.storm.tWait), want)
+        end
+        if #firsts ~= 1 or math.abs(firsts[1].tWait - want) > 1.0 then
+            flashed = flashed or ('trial %d: %d records to the player, first %s')
+                :format(trial, #firsts, tostring(firsts[1] and firsts[1].tWait))
+        end
+    end
+    ok(mismatch == nil and cut >= 5,
+        'forty solo drops, each standing inside circle 1: every one goes live on its '
+            .. 'landing and waits at most 1:30 -- and the ones priced past it by the '
+            .. 'anchor are cut to exactly 1:30',
+        mismatch or ('%d of %d were priced past 1:30'):format(cut, trials))
+    ok(flashed == nil,
+        'and each is sent ONE first record, already cut -- never the priced three '
+            .. 'minutes and then 1:30 a second later', flashed)
+
+    BR.Config.Match.minToStart = savedMin
+end
+
 describe('match.storm.movecue')
 do
     -- ═══════════════════════════════════════════════════════════════════════

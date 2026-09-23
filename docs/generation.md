@@ -227,16 +227,22 @@ converging on the middle. Containment beats the bias: the solver's `minDist`
 is `slack − 250`, so a circle that cannot both hug the edge and stay inside
 gives up the edge.
 
-**Timing.** The first hold is priced for the furthest player's run to the
-first circle's *edge*:
+**Timing.** The first hold is priced for the furthest player's run past the
+first circle's radius, measured from the match *anchor*:
 
 ```
 hold = clamp(furthest_distance_to_edge / metersPerSec, minSeconds, maxSeconds)
        then capped at startCapSeconds (180)
+       then cut to capSeconds (90) the first moment capInsidePct (75%) of the
+       living players are inside circle 1's shape -- latched, shorten-only
 ```
 
-so the wall always moves within three minutes whatever the drop spread, and a
-player already inside the target pays nothing. Every later shrink is priced
+so the wall always moves within three minutes whatever the drop spread. Circle
+1 is drawn at warmup with the whole opening circle as slack, so its centre can
+sit kilometres off the anchor and a player standing inside it can still be
+priced the full three minutes; the 75% cut is what bounds that (#352). The
+match itself goes live when 65% of its players have landed, or when the route
+runs out, whichever is first. Every later shrink is priced
 the same way — `clamp(furthest-to-target-edge / 9, 40s, authored)` — which is
 what stops a fast circle being unsurvivable from the far side.
 

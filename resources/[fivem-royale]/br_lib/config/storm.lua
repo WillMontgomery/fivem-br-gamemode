@@ -145,6 +145,21 @@ BR.Config.Storm = {
                                  -- not three (user call, 2026-08-04)
         maxSeconds      = 300.0, -- cap on the TOTAL priced budget
         startCapSeconds = 180.0, -- cap on the stationary wait alone
+
+        -- ═══ AND ONCE THE LOBBY IS IN, THE WAIT IS AT MOST 1:30 (#352) ═══
+        --
+        --   "When >=75% are within the circle, the time is 1:30 till the storm
+        --    moves"                                       -- owner, 2026-09-22
+        --
+        -- The pricing above measures to the ANCHOR, and circle 1 can be drawn
+        -- kilometres off it, so a lobby standing inside circle 1 could still be
+        -- priced the full three minutes -- the solo playtest that opened this. The
+        -- first moment capInsidePct of the living players are inside circle 1's
+        -- SHAPE, the rest of the hold is cut to capSeconds, and that is latched:
+        -- it only ever shortens and never comes back. server/storm.lua's
+        -- capFirstHold is the rule; a whole percent, like goLiveLandedPct.
+        capInsidePct    = 75,
+        capSeconds      = 90.0,
     },
 
     -- Playable bounds, describing the LAND we want fights to happen on.

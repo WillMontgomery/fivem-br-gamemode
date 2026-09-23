@@ -1,8 +1,8 @@
 -- The match state machine -- PER INSTANCE.
 --
---   (queue clears the gate) ──► WARMUP ──(timer)──► BUS ──(route done)──► PLAYING
---                                                                            │
---                    (destroyed) ◄──(timer)── CLEANUP ◄──(timer)── ENDED ◄───┘
+--   (queue clears the gate) ──► WARMUP ──(timer)──► BUS ──(65% landed, or route done)──► PLAYING
+--                                                                                          │
+--                    (destroyed) ◄──(timer)── CLEANUP ◄──(timer)── ENDED ◄─────────────────┘
 --
 -- PARALLEL MATCHES (user call, 2026-08-04). There is no global "the match":
 -- BR.Server.matches holds any number of concurrent instances, each with its
@@ -559,10 +559,12 @@ function BR.Match.onEnter(m, state, from)
     elseif state == BR.MatchState.BUS then
         m.descent = nil     -- fresh per flight: the descent-grace bookkeeping
         m.landCheck = nil   -- and the stuck-lander bookkeeping runs here too
-        -- One "waiting on the others" notice per player per flight.
+        -- One "waiting on the others" notice per player per flight -- and one
+        -- landing (#352): a stamp left from the last match would count somebody
+        -- as down before they have left the aircraft.
         BR.Roster.each(
             function(e) return e.matchId == m.id end,
-            function(_, e) e.landNotice = nil end)
+            function(_, e) e.landNotice = nil e.landedAt = nil end)
 
         -- The flight decides how long BUS lasts, so the deadline is set HERE
         -- -- transition() broadcasts it right after onEnter returns, as the
@@ -653,6 +655,11 @@ function BR.Match.onEnter(m, state, from)
         -- Anyone somehow still aboard goes out the door first -- brforce can
         -- reach PLAYING mid-flight, and a player left in the BUS state would
         -- be invisible and frozen with the match running around them.
+        --
+        -- AND SINCE #352 THE ORDINARY PATH REACHES IT TOO. 65% of the match on
+        -- the ground takes it live while the route may still have a way to fly,
+        -- so whoever has not jumped by then is put out where the bus is -- the
+        -- same forced exit the end of the route gives them, only sooner.
         BR.Bus.ejectAll(m)
 
         -- WARMUP only. Players who rode the bus are FREEFALL or GLIDE right
@@ -722,9 +729,10 @@ function BR.Match.onEnter(m, state, from)
         -- bus never ran. Never overwrite a count the bus already took.
         m.startSquads = m.startSquads or BR.Server.squadsAlive(m)
 
-        -- The storm clock starts NOW -- the last landing, not the bus timer
-        -- -- and the first circle goes on every map immediately so rotation
-        -- decisions start with the looting (user call, 2026-08-02).
+        -- The storm clock starts NOW -- the landing that put 65% of the match
+        -- on the ground (#352), or the bus timer if that never came -- and the
+        -- first circle goes on every map immediately so rotation decisions
+        -- start with the looting (user call, 2026-08-02).
         BR.Storm.begin(m)
 
         -- The airdrop schedule is drawn HERE, after the storm, and that order
@@ -732,6 +740,14 @@ function BR.Match.onEnter(m, state, from)
         -- where the circle will be when the crate arrives, so there has to be
         -- a record to ask. Nothing is committed yet -- this only decides
         -- whether this match gets one and when it becomes due.
+        --
+        -- ITS DELAYS COUNT FROM THIS LINE, AND #352 MOVED THE LINE EARLIER. That
+        -- is the reading config/airdrop.lua already gives them ("measured from the
+        -- moment the match goes PLAYING"), and the storm clock starts on the line
+        -- above, so the two still start together. What cannot happen is a drop
+        -- sited against a hold the #352 cap later shortens: the soonest delay,
+        -- minDelayMs, is past the longest phase-1 hold, startCapSeconds, and
+        -- tools/test_roster.lua's `match.storm.holdCap` holds the pair.
         if BR.Airdrop then BR.Airdrop.begin(m) end
 
         -- ═══ THE ROUND IS ON, AND IT SAYS SO ═══
@@ -1625,11 +1641,11 @@ local function matchTick(m, now)
 
     if m.state == BR.MatchState.BUS then
         -- The drop ends when the LAST player is down -- not when the route
-        -- timer says so. Everyone jumped early and landed? The match goes
-        -- live now instead of waiting out an empty flight. The endsAt timer
-        -- below stays as the CEILING: a client that crashes mid-fall never
-        -- reports a landing, and one ghost must not hold 47 players in the
-        -- pre-match state forever.
+        -- timer says so -- and since #352 sooner than that, see below. Everyone
+        -- jumped early and landed? The match goes live now instead of waiting
+        -- out an empty flight. The endsAt timer below stays as the CEILING: a
+        -- client that crashes mid-fall never reports a landing, and one ghost
+        -- must not hold 47 players in the pre-match state forever.
         local airborne = BR.Server.countIn(m, function(p)
             return p.state == BR.PlayerState.BUS
                 or p.state == BR.PlayerState.FREEFALL
@@ -1644,6 +1660,41 @@ local function matchTick(m, now)
            and (BR.Server.aliveCount(m) > 0 or heldForStart(m) > 0) then
             print(('[br_core] match %s: last player down -- going live')
                 :format(BR.MatchTag(m.id)))
+            BR.Match.transition(m, BR.MatchState.PLAYING)
+            return
+        end
+
+        -- ═══ OR ONCE 65% OF THE MATCH IS DOWN (#352) ═══
+        --
+        --   "when >=65% of players have landed we move to PLAYING"
+        --                                                -- owner, 2026-09-22
+        --
+        -- "LANDED" IS THE ROSTER'S OWN EDGE, FREEFALL or GLIDE to ALIVE, which
+        -- BR.Roster.setState stamps as `landedAt` -- so the client's report and
+        -- the stuck-lander net below count alike, and a report that arrives late
+        -- counts when it arrives. A player who landed and has since been knocked
+        -- down or killed (#144's hold) landed; one who died in the air did not,
+        -- and the rule above is still what takes that match live.
+        --
+        -- 65% OF WHO IS STILL IN IT, NOT OF WHO BOARDED. countIn is everyone the
+        -- match still carries -- a disconnect leaves the roster, a leaver is
+        -- detached -- so a lobby that loses players mid-flight is asked for 65% of
+        -- the people left, never of people who are gone. Frozen at boarding, three
+        -- leavers out of four would have the last player needing three landings
+        -- that cannot happen, and only the route timer would end it.
+        --
+        -- IN WHOLE NUMBERS (BR.AtLeastPercent): 65% of 3 is 2, a 1v1 still waits
+        -- for both, and a solo match goes live on its only landing -- which the
+        -- rule above already did, and this one agrees with.
+        --
+        -- THE ROUTE TIMER BELOW IS STILL THE CEILING, so nobody who never jumps,
+        -- idles aboard or disconnects can hold a match on the bus past it -- and
+        -- anybody still aboard when this fires is put out by onEnter(PLAYING).
+        local total  = BR.Server.countIn(m)
+        local landed = BR.Server.countIn(m, function(p) return p.landedAt ~= nil end)
+        if BR.AtLeastPercent(landed, total, M.goLiveLandedPct or 100) then
+            print(('[br_core] match %s: %d of %d landed -- going live')
+                :format(BR.MatchTag(m.id), landed, total))
             BR.Match.transition(m, BR.MatchState.PLAYING)
             return
         end

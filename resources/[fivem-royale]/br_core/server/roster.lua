@@ -159,6 +159,17 @@ local function newEntry(src)
         diedAt     = nil,
         leftAt     = nil,
 
+        -- WHEN THEY LANDED ON THIS FLIGHT (#352), on the same clock. Stamped by
+        -- setState on the one edge that IS a landing -- FREEFALL or GLIDE to ALIVE
+        -- -- whichever of the two paths made it: the client's report or the
+        -- stuck-lander net. The BUS tick counts these to decide whether 65% of the
+        -- match is down, and it is cleared at wheels-up, which is the only moment
+        -- it can start to matter.
+        --
+        -- IN NEITHER ALLOWLIST, for diedAt's reason: nothing live outside this
+        -- resource reads it.
+        landedAt   = nil,
+
         -- THEIR PED IS DEAD AND THEIR MATCH IS NOT OVER (#144). Set when a
         -- player is killed before their match reaches PLAYING, cleared by the
         -- revive on that transition. It is the reason `state == DEAD` and
@@ -846,6 +857,16 @@ function BR.Roster.setState(src, state, cause)
 
     local from = entry.state
     entry.state = state
+
+    -- A LANDING IS THIS EDGE AND NOTHING ELSE (#352). Stamped here rather than in
+    -- the DROP_LANDED handler because that report is the least reliable message in
+    -- the project -- #245 found it had likely never arrived before its fix -- and
+    -- the stuck-lander net in server/match.lua reaches the same edge without it.
+    -- One choke point means a landing counts however late, and by whichever path.
+    if state == BR.PlayerState.ALIVE
+       and (from == BR.PlayerState.FREEFALL or from == BR.PlayerState.GLIDE) then
+        entry.landedAt = GetGameTimer()
+    end
 
     -- The bucket rides the state, from the single choke point every state
     -- change already passes through.

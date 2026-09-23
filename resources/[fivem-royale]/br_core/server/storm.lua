@@ -197,6 +197,109 @@ local function drawCentre(m, phase, cx0, cy0, r0)
         BR.StormBreakoutFor(cfg, phase))
 end
 
+--- How many of this match's living players there are, and how many of them are
+--- standing inside circle 1 (#352).
+---
+--- ═══ INSIDE THE SHAPE, NOT INSIDE THE RADIUS ═══
+---
+--- Circle 1 has been a blob since #344 and its boundary dents in by up to a
+--- quarter of r, so a radius test counts people standing outside the wall -- the
+--- defect #349 fixed in airdrop siting. BR.StormZone handed circle 1 as its own
+--- current circle is phase 1's blob at (cx1, cy1, r1), nested in itself: the same
+--- boundary the bus preview draws and the wall ends its first sweep on.
+---
+--- LIVING IS BR.Server.isInMatch: standing, downed, or still in the air. A glider
+--- over circle 1 is counted where they are, and the dead are counted nowhere --
+--- which is how "75% of living players" moves as people die. A player the sampler
+--- has no position for is living and not inside, because inside is a thing to
+--- be shown rather than assumed.
+--- @param m table
+--- @param rec table   a phase-1 record
+--- @return integer living, integer inside
+local function circleOneHeadcount(m, rec)
+    local zone = BR.StormZone(rec, rec.cx1, rec.cy1, rec.r1)
+    local living, inside = 0, 0
+    BR.Roster.each(
+        function(e) return e.matchId == m.id and BR.Server.isInMatch(e.state) end,
+        function(_, e)
+            living = living + 1
+            if e.pos and BR.StormShape.distance(zone, e.pos.x, e.pos.y) <= 0 then
+                inside = inside + 1
+            end
+        end)
+    return living, inside
+end
+
+--- Cut the phase-1 hold to 1:30 the first moment the lobby is in (#352).
+---
+---   "When >=75% are within the circle, the time is 1:30 till the storm moves"
+---                                                      -- owner, 2026-09-22
+---
+--- ═══ ASKED EVERY TICK OF THE HOLD, AND LATCHED THE FIRST TIME IT IS TRUE ═══
+---
+--- Players move, and a countdown that jumped back up when somebody stepped out
+--- would be worse than one that was long to begin with. So `m.stormHoldCapped` is
+--- set once and nothing clears it but the instance going away: after that, every
+--- phase-1 hold this match has -- including one `brphase 1` or a thaw re-enters --
+--- is held to the cap whoever is standing where.
+---
+--- IT ONLY EVER SHORTENS. The record is rebuilt only when more than the cap is
+--- left, with the same tStart, so a hold already under 1:30 -- the one-minute floor
+--- a lobby landing inside prices at -- is left exactly as it was.
+---
+--- AND NEVER INTO A WARNING THE CLIENT HAS COMMITTED TO. What is left is never cut
+--- below the wall's own fade-in window (render.fadeInSec, which the curtain and
+--- the #340 preview hand off across) or phases[1].warn, whichever is longer --
+--- so a cap tuned under them cannot cut the fade short or skip the warning. (No
+--- client code reads `warn` yet; the fade window and the 4 s pip are the live
+--- ones.) At the shipping 90 s neither binds, and the cap only fires with more
+--- than 90 s left, so no countdown on screen is ever inside one when it moves.
+---
+--- PUBLISHED ON THE TICK THAT CUTS IT, because the HUD derives its digits from
+--- the record: a beat of the old countdown after the cut is the hitch this is
+--- written to avoid. `quiet` is for enterPhase alone, which is about to publish
+--- the record it has just built -- and asking there is what gives the solo drop
+--- that opened #352 a first record that already says 1:30.
+---
+--- NOT WHILE brstormfreeze HOLDS THE STORM. The freeze is a phase-1 record with a
+--- day of hold, and cutting it to 1:30 would thaw it by the back door.
+--- @param m table
+--- @param now number
+--- @param quiet boolean|nil  build the record but leave publishing to the caller
+local function capFirstHold(m, now, quiet)
+    local rec = m.storm
+    if not rec or rec.phase ~= 1 then return end
+    if BR.Storm.isFrozen and BR.Storm.isFrozen() then return end
+    local _, _, _, st, msLeft = BR.StormAt(rec, now)
+    if st ~= BR.StormPhase.HOLDING then return end
+
+    local H = cfg.hold
+    if not m.stormHoldCapped then
+        local living, inside = circleOneHeadcount(m, rec)
+        if not BR.AtLeastPercent(inside, living, H.capInsidePct or 100) then
+            return
+        end
+        m.stormHoldCapped = true
+        print(('[br_core] storm: match %s -- %d of %d inside circle 1, the hold is capped at %.0fs')
+            :format(BR.MatchTag(m.id), inside, living, H.capSeconds or 0))
+    end
+
+    -- The schedule numbers take the dev time scale like every hold does; the fade
+    -- window is drawn in real seconds on the client, so it does not.
+    local floorMs = math.max((cfg.phases[1].warn or 0) * 1000.0 * timeScale,
+                             (cfg.render.fadeInSec or 0) * 1000.0)
+    local capMs = math.max((H.capSeconds or 0) * 1000.0 * timeScale, floorMs)
+    if msLeft <= capMs then return end
+
+    local elapsed = now - rec.tStart
+    m.storm = BR.BuildStormRecord(rec.phase, rec.cx0, rec.cy0, rec.r0,
+        rec.cx1, rec.cy1, rec.r1, rec.tStart, elapsed + capMs,
+        rec.tShrink, rec.dps, rec.seed)
+    print(('[br_core] storm: match %s phase 1 hold cut from %.0fs to %.0fs left')
+        :format(BR.MatchTag(m.id), msLeft / 1000, capMs / 1000))
+    if not quiet then publish(m) end
+end
+
 --- Build and publish the record that shrinks toward phases[phase], starting
 --- from the given circle. The next centre is drawn HERE, at phase entry, so
 --- players see where to rotate for the whole hold.
@@ -293,6 +396,11 @@ local function enterPhase(m, phase, cx0, cy0, r0, now, waitSec)
     -- four of them rather than for the ordinary one only.
     m.stormMoveCued = false
     m.stormStopCued = false
+
+    -- BEFORE THE FIRST PUBLISH, NOT ON THE TICK AFTER IT (#352). A lobby that goes
+    -- live already inside circle 1 -- a solo drop, always -- would otherwise be
+    -- sent the priced hold and then, a second later, 1:30.
+    if phase == 1 then capFirstHold(m, now, true) end
 
     print(('[br_core] storm: match %s phase %d -- r %.0f -> %.0f, holds %.0fs, shrinks %.0fs (furthest %.0fm), %.1f dps')
         :format(BR.MatchTag(m.id), phase, r0, p.radius,
@@ -418,10 +526,10 @@ function BR.Storm.sendPreview(m, src)
     end
 end
 
---- Start a match's storm. Called when it goes PLAYING: the clock starts at
---- the last landing and the first circle is on the map immediately (user
---- call, 2026-08-02) -- the free-loot time is phase 1's 120s wait, not a
---- separate pre-phase.
+--- Start a match's storm. Called when it goes PLAYING: the clock starts when
+--- 65% of the match is down (#352) and the first circle is on the map
+--- immediately (user call, 2026-08-02) -- the free-loot time is phase 1's
+--- wait, not a separate pre-phase.
 --- @param m table
 function BR.Storm.begin(m)
     local a = m.anchor
@@ -459,6 +567,13 @@ function BR.Storm.begin(m)
     -- authored. Rewriting it here would change how long every match's free-loot
     -- hold lasts, on a commit whose whole claim is that nothing about the storm
     -- moved. If it should be exact, that is its own issue and its own playtest.
+    --
+    -- AND THIS IS WHERE #352's THREE MINUTES CAME FROM. Circle 1 is drawn with the
+    -- whole opening circle as slack, so its centre can sit eight kilometres off the
+    -- anchor: a solo player standing dead centre in it was priced past the cap one
+    -- match in five. The pricing is still left alone. capFirstHold, run inside
+    -- enterPhase below, is what answers it -- a lobby 75% inside circle 1 waits
+    -- 1:30 at most, whatever this line priced.
     local furthest = 0.0
     BR.Roster.each(
         function(e) return e.matchId == m.id and BR.Server.isInMatch(e.state) end,
@@ -563,6 +678,10 @@ local DAMAGEABLE = {
 BR.Sched.every(1000, 'storm.phase', function()
     BR.Server.eachMatch(function(m)
         if m.state ~= BR.MatchState.PLAYING or not m.storm then return end
+
+        -- FIRST, so a hold cut on this tick is the record the rest of the tick
+        -- reads (#352). It only acts during phase 1's hold.
+        capFirstHold(m, GetGameTimer())
 
         local rec = m.storm
         local _, _, _, st = BR.StormAt(rec, GetGameTimer())
