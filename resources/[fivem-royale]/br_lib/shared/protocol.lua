@@ -207,7 +207,12 @@ BR.Net = {
     -- THE CLIENT DROPS IT WHEN STORM_SYNC ARRIVES. The real record draws its own
     -- blips and its own wall, and two purple rings on one map is how a player
     -- learns not to trust either.
-    STORM_PREVIEW   = 'br:storm:preview',    -- S->C  { cx, cy, r } -- circle 1, before the storm
+    --
+    -- `seed` IS THE SHAPE (#344). Every phase draws a random shape and no geometry
+    -- crosses the wire, so the preview carries the same integer the record will --
+    -- otherwise the bus watches a circle turn into phase 1's blob as one wall fades
+    -- into the other.
+    STORM_PREVIEW   = 'br:storm:preview',    -- S->C  { cx, cy, r, seed } -- circle 1, before the storm
 
     -- S->C  { c = cue } -- "play this interface cue, in your own head".
     --

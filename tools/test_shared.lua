@@ -1354,6 +1354,427 @@ do
         'and refuses inset() rather than offsetting a run it cannot offset')
 end
 
+-- ---------------------------------------------------------------------------
+-- THE BLOB: a jittered convex polygon with rounded corners, which is the shape
+-- every storm phase wears since #344.
+--
+--   "ship something that will draw random shaped storm walls for each phase,
+--    still matching our approximate positioning and size rules, circles are not
+--    allowed."                                        -- the owner, 2026-09-22
+--
+-- FOUR SEPARATE CLAIMS, AND EACH ONE HAS ITS OWN BLOCK, because they fail
+-- independently and three of them fail silently:
+--
+--   blob.geometry   the boundary is what it says it is -- N segs and N arcs, a
+--                   closed chain, convex, normals outward
+--   blob.distance   the signed distance is EXACT, inside and out, checked against
+--                   a dense walk of the boundary rather than against itself
+--   blob.inset      the erosion is EXACT: every point of the eroded boundary is
+--                   exactly `metres` inside the original
+--   blob.measure    what the shipping config actually draws, as the numbers
+--                   config/storm.lua quotes, over a sweep of seeds
+--
+-- WHY THE EXACTNESS MATTERS ENOUGH TO PROVE TWICE. The client draws the wall and
+-- the server does the damage; both ask distance() and one of them asks inset()
+-- first. A signed distance that is approximate is a wall that is a lie by however
+-- much, in a place a player is standing.
+-- ---------------------------------------------------------------------------
+
+--- A dense polygon of the boundary, walked rather than computed.
+---
+--- Deliberately NOT built from the hull arithmetic distance() uses: it steps
+--- pointAtArc, which is the piece walk, so the two derivations share nothing but
+--- the piece list. `shape.equivalence` above is what pins the walk itself.
+local function walkPoly(shape, n)
+    local out = {}
+    for k = 0, n - 1 do
+        local x, y = BR.StormShape.pointAtArc(shape, shape.P * k / n)
+        out[#out + 1] = { x = x, y = y }
+    end
+    return out
+end
+
+--- The unsigned distance from (px, py) to a walked polygon, and whether it is in.
+local function walkProbe(poly, px, py)
+    local n = #poly
+    local best, inside, j = math.huge, false, n
+    for i = 1, n do
+        local a, b = poly[i], poly[j]
+        local ex, ey = b.x - a.x, b.y - a.y
+        local el = ex * ex + ey * ey
+        local t = 0.0
+        if el > 0.0 then
+            t = ((px - a.x) * ex + (py - a.y) * ey) / el
+            if t < 0.0 then t = 0.0 elseif t > 1.0 then t = 1.0 end
+        end
+        local qx, qy = px - (a.x + ex * t), py - (a.y + ey * t)
+        local d = qx * qx + qy * qy
+        if d < best then best = d end
+        if ((a.y > py) ~= (b.y > py))
+            and (px < (b.x - a.x) * (py - a.y) / (b.y - a.y) + a.x) then
+            inside = not inside
+        end
+        j = i
+    end
+    return math.sqrt(best), inside
+end
+
+local BLOB_OPTS = { corners = 9, jitter = 0.13, angleJitter = 0.3, round = 0.85 }
+
+describe('blob.geometry')
+do
+    local SS = BR.StormShape
+
+    local u = SS.blobUnit(4242, 3, BLOB_OPTS)
+    ok(u ~= nil and u.n == 9 and #u.cs == 9,
+        'a unit blob is the corner count it was asked for',
+        u and ('%d corners, %d centres'):format(u.n, #u.cs))
+    ok(u.cr > 0.0 and u.extent > 0.0 and u.inradius > 0.0,
+        'and carries its corner radius and its own two measurements',
+        ('cr %.4f extent %.4f inradius %.4f'):format(u.cr, u.extent, u.inradius))
+
+    local CX, CY, R = -1200.0, 3400.0, 950.0
+    local b = SS.blob(CX, CY, R, u)
+
+    ok(b.kind == 'blob' and #b.pieces == 18 and #b.comps == 1,
+        'placed and scaled it is N segs and N arcs, in one closed loop',
+        ('%s, %d pieces, %d components'):format(tostring(b.kind), #b.pieces,
+            #b.comps))
+
+    -- THE ARCS ARE ALL ONE RADIUS, which is the property the exact signed distance
+    -- and the exact erosion both rest on -- see storm_shape.lua's blob section.
+    local arcs, lo, hi = 0, math.huge, 0.0
+    for _, pc in ipairs(b.pieces) do
+        if pc.kind == 'arc' then
+            arcs = arcs + 1
+            lo, hi = math.min(lo, pc.r), math.max(hi, pc.r)
+        end
+    end
+    ok(arcs == 9 and near(lo, hi, 1e-9) and near(lo, R * u.cr, 1e-9),
+        'every corner arc has the SAME radius, and it is the unit radius scaled',
+        ('%d arcs, %.9f to %.9f, want %.9f'):format(arcs, lo, hi, R * u.cr))
+
+    -- THE CHAIN CLOSES, asked the honest way: every piece boundary answered twice,
+    -- once from each side, and compared. This is the test roundedRect's header
+    -- names, run on a shape whose corner arcs are placed by a bisector rather than
+    -- by a right angle.
+    local worstJoin = 0.0
+    local run = 0.0
+    for i = 1, #b.pieces do
+        run = run + b.pieces[i].len
+        local ax, ay = SS.pointAtArc(b, run - 1e-9)
+        local bx, by = SS.pointAtArc(b, run + 1e-9)
+        worstJoin = math.max(worstJoin, BR.Dist(ax, ay, bx, by))
+    end
+    ok(worstJoin < 1e-6,
+        'and the boundary chains: each piece ends exactly where the next begins',
+        ('worst join %.3e m'):format(worstJoin))
+
+    -- OUTWARD NORMALS, unit length and genuinely outward -- stepping along one
+    -- leaves the shape and stepping back along it enters.
+    local badLen, badDir = 0, 0
+    for k = 0, 359 do
+        local x, y, nx, ny = SS.pointAtArc(b, b.P * k / 360)
+        if not near(math.sqrt(nx * nx + ny * ny), 1.0, 1e-9) then
+            badLen = badLen + 1
+        end
+        if SS.distance(b, x + nx * 5.0, y + ny * 5.0) <= 0.0
+            or SS.distance(b, x - nx * 5.0, y - ny * 5.0) >= 0.0 then
+            badDir = badDir + 1
+        end
+    end
+    ok(badLen == 0, 'the outward normal is a unit vector everywhere', badLen)
+    ok(badDir == 0, 'and points out of the shape everywhere', badDir)
+
+    -- ═══ CONVEX, AND NEVER NOT CONVEX, WHICH IS THE ONE THING THE GENERATOR MAY
+    ---     NOT SHIP ═══
+    --
+    -- Radii jittered about r can put a corner inside the line between its
+    -- neighbours, and a concave draw breaks BOTH exactness claims -- the signed
+    -- distance is a maximum over supporting constraints, which IS convexity. The
+    -- generator tests and redraws, so this sweeps enough seeds to have caught
+    -- several concave draws if any could get through.
+    --
+    -- IT ALSO COUNTS THE DRAWS THAT CAME BACK WITH NOTHING, in the same loop and
+    -- tolerantly, because that failure hides behind this one: blob() reads a nil unit
+    -- as 'no shape' and hands back a CIRCLE, so a generator that gave up after one
+    -- attempt would ship circles on whichever phases happened to draw concave -- the
+    -- exact thing #344 exists to remove, on one phase in eight, silently.
+    local concave, worstSeed = 0, nil
+    local deepest, nils = 1, 0
+    for seed = 1, 900 do
+        local uu = SS.blobUnit(seed * 7 + 1, (seed % 8) + 1, BLOB_OPTS)
+        if uu == nil then
+            nils = nils + 1
+        else
+            if uu.tries > deepest then deepest = uu.tries end
+            local n = uu.n
+            for i = 1, n do
+                local p = uu.cs[((i - 2) % n) + 1]
+                local c = uu.cs[i]
+                local q = uu.cs[(i % n) + 1]
+                local cr = (c.x - p.x) * (q.y - c.y) - (c.y - p.y) * (q.x - c.x)
+                if cr <= 0.0 then
+                    concave = concave + 1
+                    worstSeed = worstSeed or seed
+                    break
+                end
+            end
+        end
+    end
+    ok(nils == 0,
+        'not one of 900 draws hands back nothing at all -- a nil unit is a circle, '
+            .. 'drawn on whichever phases the first draw happened to fail',
+        nils)
+    ok(concave == 0,
+        'not one of 900 draws ships a concave polygon -- the retry is what makes '
+            .. 'that true, and a concave one breaks every exactness claim below',
+        worstSeed and ('first concave at seed index ' .. worstSeed) or nil)
+    ok(deepest > 1 and deepest < 6,
+        'and the retry really is being exercised, without ever reaching the '
+            .. 'no-jitter last resort',
+        ('deepest attempt %d of 6'):format(deepest))
+
+
+    -- FEWER THAN THREE CORNERS IS THE OFF SWITCH, and it has to be nil rather than
+    -- a degenerate shape: BR.StormZone hands nil to union2 and the game draws
+    -- circles, which is the documented way back.
+    ok(SS.blobUnit(1, 1, { corners = 2 }) == nil,
+        'fewer than three corners is no shape at all -- the config off switch')
+    ok(SS.zone(0.0, 0.0, 500.0, 0.0, 0.0, 300.0, nil).kind == 'circle',
+        'and a nil unit takes the zone back to the pre-#344 disc union')
+
+    -- A SUB-METRE CORNER IS A CIRCLE, which is MIN_RADIUS's argument extended: at
+    -- that size the whole shape is smaller than one quad of the wall drawing it.
+    -- The threshold is the unit's OWN corner fraction rather than a literal: the
+    -- corner radius is `r * u.cr`, so the radius at which it would be floored up to
+    -- MIN_RADIUS and stop meeting the runs it was built for is 1 / u.cr -- a couple
+    -- of metres at the shipping config, and a different couple for every draw.
+    ok(SS.blob(0.0, 0.0, 0.9 / u.cr, u).kind == 'circle',
+        'and a zone of a couple of metres is a circle rather than a boundary whose '
+            .. 'corner arcs no longer meet the runs they were built for',
+        ('%.3f m'):format(0.9 / u.cr))
+    ok(SS.blob(0.0, 0.0, 1.5 / u.cr, u).kind == 'blob',
+        'while a metre either side of that is still a real shape')
+end
+
+describe('blob.distance')
+do
+    local SS = BR.StormShape
+
+    -- ═══ EXACT, INSIDE AND OUT, AGAINST A DIFFERENT DERIVATION ═══
+    --
+    -- distance() is a maximum over supporting constraints: the edge half-planes and
+    -- the corner discs whose wedge holds the direction to the point. The check is a
+    -- dense WALK of the same boundary, which shares none of that arithmetic. Grid
+    -- spacing and walk resolution are chosen so the walk's own error -- the sag of
+    -- its chords -- is under a millimetre.
+    local worst, worstAt, checked = 0.0, nil, 0
+    local worstSign = 0
+    for seed = 1, 12 do
+        local u = SS.blobUnit(seed * 31, (seed % 8) + 1, BLOB_OPTS)
+        local b = SS.blob(300.0, -450.0, 620.0, u)
+        local poly = walkPoly(b, 24000)
+        for gx = -13, 13 do
+            for gy = -13, 13 do
+                local px, py = 300.0 + gx * 60.0, -450.0 + gy * 60.0
+                local mine = SS.distance(b, px, py)
+                local mag, inside = walkProbe(poly, px, py)
+                local want = inside and -mag or mag
+                checked = checked + 1
+                if (mine < 0.0) ~= inside then worstSign = worstSign + 1 end
+                local e = math.abs(mine - want)
+                if e > worst then
+                    worst, worstAt = e, ('seed %d at (%.0f, %.0f)'):format(
+                        seed, px, py)
+                end
+            end
+        end
+    end
+    ok(worstSign == 0,
+        'the sign is right at every one of ' .. checked .. ' probes across 12 seeds',
+        worstSign)
+    ok(worst < 0.01,
+        'and the magnitude is the true distance to the boundary, inside as well as '
+            .. 'out -- checked against a dense walk, not against itself',
+        ('worst %.6f m, %s'):format(worst, tostring(worstAt)))
+
+    -- THE CENTRE READS THE INRADIUS, which is the number the unit records and the
+    -- one the map's own error is quoted against.
+    local u = SS.blobUnit(999, 2, BLOB_OPTS)
+    local b = SS.blob(0.0, 0.0, 1000.0, u)
+    ok(near(SS.distance(b, 0.0, 0.0), -u.inradius * 1000.0, 1e-6),
+        "the depth at the centre is the unit's own inradius, scaled",
+        ('%.6f against %.6f'):format(SS.distance(b, 0.0, 0.0),
+            -u.inradius * 1000.0))
+
+    -- AND THE FURTHEST THE BOUNDARY REACHES IS THE RECORDED EXTENT, which is what
+    -- "still matching our approximate size rules" is measured against.
+    local far = 0.0
+    for k = 0, 3599 do
+        local x, y = SS.pointAtArc(b, b.P * k / 3600)
+        far = math.max(far, math.sqrt(x * x + y * y))
+    end
+    ok(near(far, u.extent * 1000.0, 0.5),
+        "and the furthest it reaches is the unit's own extent, scaled",
+        ('%.4f against %.4f'):format(far, u.extent * 1000.0))
+end
+
+describe('blob.inset')
+do
+    local SS = BR.StormShape
+
+    -- ═══ THE EROSION IS EXACT, WHICH IS WHY THE WALL MAY BE MEASURED ═══
+    --
+    -- drawWall insets the zone and then asks the result questions, so an
+    -- approximate erosion is a curtain drawn somewhere nobody can then measure.
+    -- Eroding a convex body by d subtracts d from its support function, which for
+    -- this shape is exactly `cr - d` with every corner centre unmoved -- so every
+    -- point of the eroded boundary is exactly d inside the original.
+    local worst, at = 0.0, nil
+    for seed = 1, 8 do
+        local u = SS.blobUnit(seed * 101, seed, BLOB_OPTS)
+        local b = SS.blob(-800.0, 250.0, 900.0, u)
+        for _, m in ipairs({ 1.0, 6.0, 40.0, 200.0 }) do
+            local ins = SS.inset(b, m)
+            ok(ins.kind == 'blob', 'an erosion within the corner radius is a blob',
+                tostring(ins.kind))
+            for k = 0, 719 do
+                local x, y = SS.pointAtArc(ins, ins.P * k / 720)
+                local e = math.abs(SS.distance(b, x, y) + m)
+                if e > worst then
+                    worst, at = e, ('seed %d, %.0f m'):format(seed, m)
+                end
+            end
+        end
+    end
+    ok(worst < 1e-6,
+        'every point of the eroded boundary is exactly the inset inside the '
+            .. 'original, at every inset and every seed',
+        ('worst %.3e m, %s'):format(worst, tostring(at)))
+
+    -- IT IS NOT A SMALLER BLOB, and that distinction is the whole of the erosion:
+    -- blob(r - m) pulls its corner centres toward the middle as well, which is a
+    -- shape a sixth smaller rather than one eroded by six metres.
+    local u = SS.blobUnit(55, 4, BLOB_OPTS)
+    local b = SS.blob(0.0, 0.0, 600.0, u)
+    local eroded = SS.inset(b, 60.0)
+    local scaled = SS.blob(0.0, 0.0, 540.0, u)
+    local diff = 0.0
+    for k = 0, 359 do
+        local x, y = SS.pointAtArc(eroded, eroded.P * k / 360)
+        diff = math.max(diff, math.abs(SS.distance(scaled, x, y)))
+    end
+    ok(diff > 1.0,
+        'and an eroded blob is NOT the same shape as a smaller one, which is the '
+            .. 'mistake the support-function argument exists to rule out',
+        ('worst separation %.3f m'):format(diff))
+
+    -- AN INSET DEEPER THAN THE CORNER RADIUS FALLS BACK INWARD, never outward: the
+    -- inscribed circle is a subset of the true erosion, which is the direction this
+    -- file is allowed to err in.
+    -- SIZED OFF THE UNIT, not off a literal: the fallback is reached when
+    -- `r * u.cr - m` drops under MIN_RADIUS, and u.cr is a different number every
+    -- draw. 6.5 / u.cr leaves half a metre of corner after the six-metre inset.
+    local tiny = SS.blob(0.0, 0.0, 6.5 / u.cr, u)
+    local eaten = SS.inset(tiny, 6.0)
+    ok(eaten.kind == 'circle',
+        'an erosion past the corner radius hands back the inscribed circle',
+        tostring(eaten.kind))
+    local outermost = -math.huge
+    for k = 0, 179 do
+        local x, y = SS.pointAtArc(eaten, eaten.P * k / 180)
+        outermost = math.max(outermost, SS.distance(tiny, x, y))
+    end
+    ok(outermost <= -6.0 + 1e-6,
+        'and it is INSIDE the true erosion everywhere, never outside it',
+        ('worst %+0.4f against %+0.1f'):format(outermost, -6.0))
+end
+
+describe('blob.measure')
+do
+    local SS = BR.StormShape
+
+    -- ═══ WHAT THE SHIPPING CONFIG ACTUALLY DRAWS ═══
+    --
+    -- These are the numbers config/storm.lua's `shape` block quotes, re-measured
+    -- here rather than trusted -- so tuning the config retunes this block's report
+    -- and a change that quietly made the shape rounder, bigger or more often
+    -- concave goes red. The bounds are deliberately loose enough to survive a
+    -- jitter tweak inside the measured band and tight enough that a circle, or a
+    -- shape that lost a fifth of its area, fails.
+    local cfg = BR.Config.Storm.shape
+    ok(cfg and cfg.corners and cfg.corners >= 3,
+        'the shipping config asks for a real polygon, not the off switch',
+        cfg and tostring(cfg.corners))
+
+    local N = 600
+    local sumArea, sumExt, sumRatio = 0.0, 0.0, 0.0
+    local maxExt, minRatio, firstTry, deepest = 0.0, 1.0, 0, 1
+    for s = 1, N do
+        local u = SS.blobUnit(s * 977 + 3, (s % 8) + 1, cfg)
+        if u.tries == 1 then firstTry = firstTry + 1 end
+        if u.tries > deepest then deepest = u.tries end
+        -- Area by the shoelace of a dense walk of the unit shape at a big radius,
+        -- so the walk's own chord loss is negligible against it.
+        local b = SS.blob(0.0, 0.0, 1000.0, u)
+        local poly = walkPoly(b, 3600)
+        local area, j = 0.0, #poly
+        for i = 1, #poly do
+            area = area + (poly[j].x * poly[i].y - poly[i].x * poly[j].y)
+            j = i
+        end
+        area = math.abs(area) * 0.5 / (math.pi * 1000.0 * 1000.0)
+        sumArea = sumArea + area
+        sumExt = sumExt + u.extent
+        sumRatio = sumRatio + u.inradius / u.extent
+        maxExt = math.max(maxExt, u.extent)
+        minRatio = math.min(minRatio, u.inradius / u.extent)
+    end
+
+    local area, ext, ratio = sumArea / N, sumExt / N, sumRatio / N
+    ok(area > 0.86 and area < 0.94,
+        ('area is about 0.90 of the circle it replaces (%.3f)'):format(area),
+        ('%.4f over %d draws'):format(area, N))
+    ok(ext > 1.02 and ext < 1.09 and maxExt < 1.16,
+        ('max extent stays within a few percent of r (mean %.3f, worst %.3f)')
+            :format(ext, maxExt),
+        ('mean %.4f, worst %.4f'):format(ext, maxExt))
+    ok(ratio > 0.78 and ratio < 0.90 and minRatio > 0.65,
+        ('min/max radius is about 0.84 -- unmistakably not a circle (%.3f)')
+            :format(ratio),
+        ('mean %.4f, worst %.4f'):format(ratio, minRatio))
+    ok(firstTry > N * 0.75 and deepest <= 4,
+        ('the convexity retry is rare and shallow: %d of %d convex first try, '
+            .. 'worst %d attempts'):format(firstTry, N, deepest),
+        ('%d / %d first try, deepest %d'):format(firstTry, N, deepest))
+
+    -- ═══ AND THE SAME SEED IS THE SAME SHAPE, WHICH THE WHOLE DESIGN RESTS ON ═══
+    --
+    -- The client draws the wall and the server does the damage, from this one
+    -- integer plus the phase index. Asserted as a property of blobUnit here; that
+    -- the two SIDES really call it the same way is tools/test_storm.lua's
+    -- `blob.agree`.
+    local a = SS.blobUnit(123456, 5, cfg)
+    local bsame = SS.blobUnit(123456, 5, cfg)
+    ok(a.cr == bsame.cr and a.cs[1].x == bsame.cs[1].x,
+        'the same seed and phase give the same shape')
+    local other = SS.blobUnit(123456, 6, cfg)
+    ok(other.cr ~= a.cr or other.cs[1].x ~= a.cs[1].x,
+        'and the next phase of the same match is a different one')
+    local elsewhere = SS.blobUnit(123457, 5, cfg)
+    ok(elsewhere.cr ~= a.cr or elsewhere.cs[1].x ~= a.cs[1].x,
+        'and so is the same phase of the next match')
+
+    -- A FRACTIONAL SEED IS #346 AND IS FLOORED HERE. BR.Rng runs its argument
+    -- through math.tointeger and falls back to ZERO when that fails, so an
+    -- unfloored fractional seed would be seed 0 for every match alike.
+    local frac = SS.blobUnit(123456.7, 5, cfg)
+    ok(frac.cr == a.cr,
+        'a fractional seed floors to the integer one rather than collapsing to '
+            .. 'zero, which is what #346 does to an unfloored one')
+end
+
 describe('combat.melee')
 do
     -- MELEE IS VALIDATED LIKE ANYTHING ELSE, and needed two fields to be.
@@ -14346,6 +14767,25 @@ do
 
     local REDMIST = BR.Config.Storm.fx.timecycle
 
+    -- ═══ THE METRES COME OFF THE SHAPE, NOT OFF THE RADIUS (#344) ═══
+    --
+    -- Every phase is a random shape now, so "900 m out from a 200 m circle reads
+    -- 700 m outside" names a circle nothing draws any more: the depth at a bearing
+    -- is whatever this phase's blob reaches there, and a literal here would be
+    -- asserting the jitter draw rather than the client.
+    --
+    -- THE TEETH ARE UNMOVED, AND THEY WERE NEVER THE MAGNITUDE. Every case in this
+    -- block turns on WHICH BODY the readout is measured from -- the corpse where a
+    -- spectator fell, or the player they are watching -- and those two answers are
+    -- hundreds of metres apart whatever shape the zone is. So the expectation is
+    -- computed from the record the client is really holding, at the point the case
+    -- means, and asserting the wrong body still fails by hundreds of metres.
+    local function edgeFrom(C, x, y)
+        local rec = C.env.BR.State.storm
+        return C.env.BR.StormShape.distance(
+            C.env.BR.StormZone(rec, rec.cx0, rec.cy0, rec.r0), x, y)
+    end
+
     -- A LIVING PLAYER IS UNCHANGED, and that is half the point of the fix.
     do
         local C = newStormClient()
@@ -14354,8 +14794,10 @@ do
 
         local e = C.last()
         ok(C.errored() == nil, 'the storm callbacks run clean', C.errored())
-        ok(e ~= nil and near(e.edgeDistance, 700.0, 0.5),
-           'a living player 900m out from a 200m circle reads 700m outside',
+        ok(e ~= nil and near(e.edgeDistance, edgeFrom(C, 900.0, 0.0), 0.5)
+           and e.edgeDistance > 600.0,
+           'a living player 900m out from a 200m zone reads their own distance '
+           .. 'outside it',
            e and e.edgeDistance)
         ok(C.arrow() ~= nil, 'and gets the way-home arrow')
         ok(C.weather[#C.weather] == 'THUNDER', 'and a thunderstorm',
@@ -14375,9 +14817,11 @@ do
 
         local e = C.last()
         ok(C.errored() == nil, 'the spectating pass runs clean', C.errored())
-        ok(e ~= nil and near(e.edgeDistance, -200.0, 0.5),
-           'the HUD counts metres from the WATCHED player -- 200m inside, '
-           .. 'where they are actually standing -- not 700m out at the corpse',
+        ok(e ~= nil and near(e.edgeDistance, edgeFrom(C, 0.0, 0.0), 0.5)
+           and e.edgeDistance < 0.0,
+           'the HUD counts metres from the WATCHED player -- INSIDE, '
+           .. 'where they are actually standing -- not hundreds of metres out at '
+           .. 'the corpse',
            e and e.edgeDistance)
         ok(C.arrow() == nil,
            'and there is no way-home arrow, because the person on screen is '
@@ -14400,9 +14844,10 @@ do
         C.tick(3)
 
         local e = C.last()
-        ok(e ~= nil and near(e.edgeDistance, 700.0, 0.5),
-           'the readout is the watched player 700m outside, not the corpse '
-           .. 'safe at the centre', e and e.edgeDistance)
+        ok(e ~= nil and near(e.edgeDistance, edgeFrom(C, 900.0, 0.0), 0.5)
+           and e.edgeDistance > 600.0,
+           'the readout is the watched player hundreds of metres outside, not the '
+           .. 'corpse safe at the centre', e and e.edgeDistance)
         ok(C.arrow() ~= nil, 'the way-home arrow appears for them')
         ok(C.weather[#C.weather] == 'THUNDER',
            'the sky over the shot goes thunderous',
@@ -14447,9 +14892,10 @@ do
         C.tick(3)
 
         local e = C.last()
-        ok(e ~= nil and near(e.edgeDistance, 700.0, 0.5),
+        ok(e ~= nil and near(e.edgeDistance, edgeFrom(C, 900.0, 0.0), 0.5)
+           and e.edgeDistance > 600.0,
            'an OUT viewer in a session reads the WATCHED player, not their own '
-           .. 'ped, which is safely inside the circle',
+           .. 'ped, which is safely inside the zone',
            e and e.edgeDistance)
         ok(C.weather[#C.weather] == 'THUNDER',
            'and keeps the sky over the shot -- the session decides this, and no '
@@ -14490,7 +14936,8 @@ do
         C.tick(3)
 
         local e = C.last()
-        ok(e ~= nil and near(e.edgeDistance, 700.0, 0.5),
+        ok(e ~= nil and near(e.edgeDistance, edgeFrom(C, 900.0, 0.0), 0.5)
+           and e.edgeDistance > 600.0,
            'a LIVING viewer keeps their own distance while spectating',
            e and e.edgeDistance)
         ok(C.weather[#C.weather] == 'THUNDER',
@@ -14509,7 +14956,8 @@ do
         local e = C.last()
         ok(C.errored() == nil,
            'a session with no eased point yet does not throw', C.errored())
-        ok(e ~= nil and near(e.edgeDistance, 700.0, 0.5),
+        ok(e ~= nil and near(e.edgeDistance, edgeFrom(C, 900.0, 0.0), 0.5)
+           and e.edgeDistance > 600.0,
            'it falls back to the ped rather than measuring from nothing',
            e and e.edgeDistance)
     end
@@ -14526,7 +14974,8 @@ do
         local watched = pt(900.0, 0.0)
         C.spectate(watched)
         C.tick(1)
-        ok(near(C.last().edgeDistance, 700.0, 0.5),
+        ok(near(C.last().edgeDistance, edgeFrom(C, 900.0, 0.0), 0.5)
+           and C.last().edgeDistance > 600.0,
            'the tick band sets the baseline at the watched player',
            C.last().edgeDistance)
 
@@ -14541,7 +14990,9 @@ do
         watched.x = 910.0
         C.frame()
         local e = C.last()
-        ok(#C.envelopes > before and near(e.edgeDistance, 710.0, 0.5),
+        ok(#C.envelopes > before
+           and near(e.edgeDistance, edgeFrom(C, 910.0, 0.0), 0.5)
+           and near(e.edgeDistance - edgeFrom(C, 900.0, 0.0), 10.0, 0.05),
            'the watched player moving 10m moves the readout 10m, per frame',
            e and e.edgeDistance)
     end
@@ -14642,8 +15093,26 @@ do
             quads[i] = quads[i] + 1
         end
         ok(C.errored() == nil, 'the full-ring path runs clean', C.errored())
-        ok(#C.markers == 72, 'the whole boundary is drawn, every slot of it',
-           #C.markers)
+        -- THE COUNT IS THE SHAPE'S OWN, NOT A LITERAL (#344). slots is the inset
+        -- boundary's perimeter over slotArc, floored at rr.segments -- and the
+        -- perimeter of a blob is not 2 * pi * r, so 72 named a circle. What the
+        -- assertion is for is unchanged and is asserted as itself: the count is over
+        -- the 48-slot floor (so the old window did not cover it) and under maxDraw
+        -- (so the full-ring branch does), and EVERY slot is drawn.
+        local zone = C.env.BR.StormZone(C.env.BR.State.storm, 0.0, 0.0, 350.0)
+        local drawn = C.env.BR.StormShape.inset(zone,
+            C.env.BR.Config.Storm.render.edgeInset)
+        local crr = C.env.BR.Config.Storm.render
+        local wantSlots = math.max(crr.segments, math.floor(
+            C.env.BR.StormShape.perimeter(drawn) / crr.slotArc + 0.5))
+        ok(wantSlots > crr.segments and wantSlots < crr.maxDraw,
+           'the radius still lands between the slot floor and the draw ceiling, '
+           .. 'which is what makes this case able to fail',
+           ('%d slots, floor %d, ceiling %d'):format(wantSlots, crr.segments,
+               crr.maxDraw))
+        ok(#C.markers == wantSlots,
+           'the whole boundary is drawn, every slot of it',
+           ('%d of %d'):format(#C.markers, wantSlots))
         ok(quads[1] > 0 and quads[2] > 0 and quads[3] > 0 and quads[4] > 0,
            'in all four quadrants, not just the one the camera is looking at',
            table.concat(quads, '/'))
@@ -14674,15 +15143,24 @@ do
         -- damages -- sat inside the visible curtain. That is the live report
         -- edgeInset exists for: "20ft inside" while the HUD correctly said
         -- outside. The shipping 'solid' path has inset since that report landed.
+        --
+        -- MEASURED AGAINST THE SHAPE SINCE #344, both ways round: every column is
+        -- exactly on the drawn boundary, and the drawn boundary is exactly edgeInset
+        -- inside the one that damages. `r - inset` would be naming a circle.
         local inset = C.env.BR.Config.Storm.render.edgeInset
-        local worst = 0.0
+        local worst, outermost = 0.0, -math.huge
         for _, m in ipairs(C.markers) do
             worst = math.max(worst,
-                math.abs(math.sqrt(m.x * m.x + m.y * m.y) - (350.0 - inset)))
+                math.abs(C.env.BR.StormShape.distance(drawn, m.x, m.y)))
+            outermost = math.max(outermost,
+                C.env.BR.StormShape.distance(zone, m.x, m.y))
         end
         ok(worst < 1e-6,
-           'every column stands edgeInset INSIDE the logical edge, as solid does',
-           ('worst %.4f m off %.1f'):format(worst, 350.0 - inset))
+           'every column stands on the drawn boundary',
+           ('worst %.4f m off it'):format(worst))
+        ok(near(outermost, -inset, 1e-6),
+           'and that boundary is edgeInset INSIDE the logical edge, as solid does',
+           ('worst %.4f against %.1f'):format(outermost, -inset))
 
         -- AND GLUED TO THE WORLD RATHER THAN HUNG OFF THE VIEWER'S OWN z. The
         -- ground probe this path used to make returns garbage for unloaded

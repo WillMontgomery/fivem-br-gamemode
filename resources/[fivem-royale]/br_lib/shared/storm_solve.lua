@@ -21,7 +21,14 @@ BR = BR or {}
 ---     tWait,              -- ms held static before shrinking
 ---     tShrink,            -- ms spent interpolating
 ---     dps,                -- damage per second outside the circle
+---     seed,               -- the match's storm seed: what SHAPE this is (#344)
 ---   }
+---
+--- `seed` IS ON THE WIRE BECAUSE THE SHAPE CANNOT BE. Every phase is a random
+--- shape now, the client draws the wall and the server does the damage, and
+--- neither sends geometry -- so both derive the shape from this one integer plus
+--- the phase index. See BR.StormZone below, which is the only spelling of that
+--- derivation anywhere, and BR.StormShape.blobUnit, which is where it happens.
 
 --- Solve the storm at a given time.
 ---
@@ -73,6 +80,47 @@ function BR.StormAt(rec, now)
            BR.StormPhase.SHRINKING,
            rec.tShrink - shrinkElapsed,
            rec.dps
+end
+
+--- THE SHAPE THIS PHASE WEARS, as a unit blob to be scaled by the solver's radius.
+---
+--- One line, and it is the reason the client's wall and the server's damage test
+--- cannot disagree: both reach it, so there is no second spelling of "which shape
+--- is this" to drift. The knobs live in config/storm.lua's `shape` block and a
+--- corner count below three is the documented way back to circles.
+--- @param seed number|nil    the record's seed (server/storm.lua's seedRng)
+--- @param phase number|nil   1-based phase index
+--- @return table|nil unit
+function BR.StormUnit(seed, phase)
+    return BR.StormShape.blobUnit(seed, phase,
+        BR.Config and BR.Config.Storm and BR.Config.Storm.shape)
+end
+
+--- THE SAFE ZONE at a solved moment: this phase's shape at (cx, cy, r), union the
+--- one it is closing toward.
+---
+--- ═══ THE ONE PLACE THE ZONE IS BUILT, WHICH IS WHAT MAKES THE WALL HONEST ═══
+---
+--- Three callers used to spell `BR.StormShape.union2(cx, cy, r, rec.cx1, rec.cy1,
+--- rec.r1)` out by hand -- the client's wall, the client's HUD readout and the
+--- server's damage tick. That was already three chances to disagree while the
+--- shape was a circle, and it becomes a correctness hole the moment the shape is
+--- DRAWN FROM A SEED (#344): a caller that forgot the unit would measure a circle
+--- against a wall drawn as a blob, and the symptom is damage taken where the
+--- curtain says it is safe. So the derivation lives here and the callers ask for
+--- the zone rather than assembling one.
+---
+--- @param rec table|nil    the published storm record
+--- @param cx number        the CURRENT centre, as BR.StormAt reports it
+--- @param cy number
+--- @param r number         the CURRENT radius
+--- @return table shape
+function BR.StormZone(rec, cx, cy, r)
+    if not rec then
+        return BR.StormShape.circle(cx or 0.0, cy or 0.0, r or 0.0)
+    end
+    return BR.StormShape.zone(cx, cy, r, rec.cx1, rec.cy1, rec.r1,
+        BR.StormUnit(rec.seed, rec.phase))
 end
 
 --- Pick the match anchor: the POI the whole storm sequence homes on.
@@ -346,10 +394,22 @@ end
 --- @param waitMs number
 --- @param shrinkMs number
 --- @param dps number
+--- @param seed number|nil    the match's storm seed -- WHAT SHAPE THIS PHASE IS
 --- @return table
-function BR.BuildStormRecord(phase, cx0, cy0, r0, cx1, cy1, r1, now, waitMs, shrinkMs, dps)
+---
+--- ═══ THE SEED DEFAULTS TO ZERO, AND ZERO IS A REAL SEED ═══
+---
+--- Every production path passes the match's own (server/storm.lua's enterPhase is
+--- the only one), so this default is for a record built by hand: a test, or a
+--- console. It is 0 rather than nil because nil would mean "no shape", and "no
+--- shape" means circles -- so a caller that forgot the seed would quietly ship the
+--- exact thing #344 exists to remove, with a green suite behind it. Seed 0 is an
+--- ordinary stream and draws an ordinary blob, so a hand-built record is measured
+--- against the same kind of shape the game draws.
+function BR.BuildStormRecord(phase, cx0, cy0, r0, cx1, cy1, r1, now, waitMs, shrinkMs, dps, seed)
     return {
         phase   = phase,
+        seed    = math.tointeger(math.floor(seed or 0)) or 0,
         cx0     = cx0 + 0.0,
         cy0     = cy0 + 0.0,
         r0      = r0 + 0.0,

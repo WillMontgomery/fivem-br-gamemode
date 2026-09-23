@@ -236,10 +236,15 @@ local function viewFor(src)
         -- above is the honest answer from that moment on.
         return { state = m.state, mode = m.mode, endsAt = m.endsAt },
                BR.Server.aliveCount(m), BR.Server.squadsAlive(m), m.storm,
-               m.stormFirst
-                   and { cx = m.stormFirst.cx, cy = m.stormFirst.cy,
-                         r = m.stormFirst.r }
-                   or nil
+               -- ASKED FOR RATHER THAN REBUILT (#344). This used to spell the
+               -- table out here, which was a second copy of server/storm.lua's
+               -- previewPayload -- and the day that payload grew a field, only one
+               -- of the two grew it: the room would see phase 1's shape and a
+               -- client reconnecting mid-warmup would see a circle. One function,
+               -- so they cannot disagree. Unguarded on purpose: br_core loads both
+               -- files always, and a sandbox that omits the storm should fail
+               -- loudly rather than quietly send half a preview.
+               BR.Storm.previewPayload(m)
     end
     return { state = BR.MatchState.WAITING, mode = BR.Mode.SOLO.key, endsAt = 0 },
            0, 0, nil, nil

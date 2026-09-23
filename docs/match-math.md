@@ -305,6 +305,53 @@ bearing toward the previous centre, which is dry by induction from the anchor.
 Without this, 210 of 600 sampled draws off a coastal centre landed in open
 water.
 
+### The shape of the wall
+
+Everything above is about where the circles GO. Since #344 the wall itself is
+**not a circle**: each phase draws a jittered convex polygon with rounded
+corners, scaled by whatever radius the solver reports.
+
+```
+9 corners at slot angles jittered by ±0.3 of a slot
+radii       r × (1 + 0.13 × U(−1, 1))        -- symmetric about r, not inward
+corners     filleted at 0.85 of the tightest corner's allowance
+shape       convex hull of the 9 corner discs
+```
+
+The radius is still `r` and every placement rule above still uses it. Measured
+over 20 000 draws at the shipping config:
+
+| | |
+|---|---|
+| area | 0.898 of the circle it replaces |
+| max extent | 1.050 of `r` on average, 1.117 worst |
+| min/max radius | 0.808 — a fifth of variation, so a 600 m lump at phase 1 |
+| convex first try | 87.5%, worst case 3 attempts, never concave |
+
+Convexity is not guaranteed by the draw and is **enforced**: a concave polygon
+is redrawn from the same deterministic stream at a lower jitter, and the last
+attempt uses no jitter at all. Both the exact signed distance and the exact
+erosion the renderer depends on are only exact for a convex shape.
+
+**The shape is derived, not sent.** The record carries the match's storm seed
+and the phase index; the client's wall and the server's damage tick both build
+the shape from those two numbers through one shared function. Nothing about the
+geometry crosses the wire, and a wall drawn from a different derivation than the
+one being billed would be a lie with no bound on its size.
+
+Two things it costs, both deliberate:
+
+* **the map still draws a circle.** No GTA native fills an arbitrary outline on
+  the minimap or the pause map, so the two rings stay radius blips at `r` —
+  over-reporting by about a sixth of `r` where the shape dents in. The wall is
+  drawn on the real boundary, so the curtain is never the thing that misleads.
+* **an overlapping breakout draws both boundaries.** The union of two blobs is
+  not expressible as arcs and segments without a real boolean union, so a phase
+  whose two circles cross draws each shape whole and shows curtain inside the
+  safe zone. The damage stays exact — a signed distance to a union is the
+  minimum of the two — so it is a drawing defect rather than a gameplay one.
+  Nested and disjoint, which are every other phase, are exact.
+
 ---
 
 ## 4. Loot

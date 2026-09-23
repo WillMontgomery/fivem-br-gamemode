@@ -693,18 +693,11 @@ local function drawStrip(shape, alphaScale)
 
     -- ═══ ROUNDNESS SETS THE STEP, AND THE BUDGET OVERRULES IT ═══
     --
-    -- Sag goes as ds^2 / 8r, so the step that keeps a quad within chordM of the
-    -- arc it replaces is sqrt(8 * r * chordM). The SMALLEST disc is the binding
-    -- one: a tighter circle needs a shorter step for the same sag, and taking the
-    -- larger disc's step would draw the small one as a polygon. A shape with no
-    -- disc list leaves rmin infinite, the step infinite and every loop on the
-    -- minSeg floor, which is a coarse wall rather than a crash.
-    local rmin = math.huge
-    local discs = shape.discs or {}
-    for i = 1, #discs do
-        if discs[i].r < rmin then rmin = discs[i].r end
-    end
-    local step = math.sqrt(8.0 * rmin * (sp.chordM or 2.0))
+    -- Sag goes as ds^2 / 8r, so the step that keeps a quad within chordM of the arc
+    -- it replaces is sqrt(8 * r * chordM). That is priced PER RUN below, off the run
+    -- radius StormShape.runs hands out -- see the note at the walk, which carries
+    -- the two things this used to get wrong and the metres each one cost.
+    local chordM = sp.chordM or 2.0
 
     -- ═══ THE SPAN IS READ BEFORE THE FADE, BECAUSE THE FADE IS BAKED FROM IT ═══
     --
@@ -914,11 +907,11 @@ local function drawStrip(shape, alphaScale)
         -- ═══ THE WALK STEPS THE RUNS, NOT THE COMPONENT, AND A VENN WAIST IS WHY
         --     (the defect this replaced put the curtain OUTSIDE the wall) ═══
         --
-        -- The step above is priced off CURVATURE -- sag is ds^2 / 8r -- and that
-        -- rule is blind to precisely one thing: a CORNER, where the curvature is
-        -- infinite and no step satisfies the bound. A Venn union is ONE component
-        -- made of two arcs meeting at two reflex crossings, `c.len` is not a
-        -- multiple of the step, so stepping the component at uniform arc length
+        -- The step is priced off CURVATURE -- sag is ds^2 / 8r -- and that rule is
+        -- blind to precisely one thing: a CORNER, where the curvature is infinite
+        -- and no step satisfies the bound. A Venn union is ONE component made of
+        -- two arcs meeting at two reflex crossings, `c.len` is not a multiple of
+        -- the step, so stepping the component at uniform arc length
         -- put one quad astride each crossing and bridged it with a straight chord
         -- across the notch. THE NOTCH CUTS INWARD, SO THAT CHORD LANDED OUTSIDE
         -- THE SHAPE -- the curtain drawn beyond the boundary that damages.
@@ -949,14 +942,51 @@ local function drawStrip(shape, alphaScale)
         -- escaped by accident -- union2 opens the component AT the left crossing,
         -- so arc length 0 already lands on it.
         --
-        -- AND IT COSTS NOTHING. The same n is split between the runs by length, so
-        -- the five cases above close at 127, 102, 82, 60 and 45 quads before and
-        -- after -- identical counts, identical budget, a wall inside the boundary.
+        -- AND IT COST NOTHING. With one step and a split by length, the five cases
+        -- above closed at 127, 102, 82, 60 and 45 quads before and after -- identical
+        -- counts, identical budget, a wall inside the boundary. #344 then replaced
+        -- that split as well; the block below is why, and what it costs is fewer
+        -- quads rather than more.
         local runs = SS.runs(shape, ci)
         local nRuns = math.max(1, #runs)
+
+        -- ═══ AND EACH RUN IS PRICED OFF ITS OWN CURVATURE, WHICH IS THE OTHER HALF
+        --     OF #339's FIRST LANDMINE ═══
+        --
+        -- There used to be ONE step for the whole component, priced off
+        -- `shape.discs`, and the budget was then split between the runs BY LENGTH.
+        -- Both halves of that were wrong the moment the storm stopped being round:
+        --
+        --   * a shape with no disc list left the step at infinity, so every loop
+        --     fell back to the minSeg floor of 24 quads and sagged tens of metres
+        --     inside the boundary that damages;
+        --   * and splitting by length starves exactly the runs that need the points.
+        --     A blob is nine short, sharply curved corner arcs joined by nine long
+        --     flat runs. A straight run needs ONE quad however long it is -- a chord
+        --     of a straight line cuts nothing off it -- and by length it was taking
+        --     three fifths of the budget. MEASURED: a phase-5 zone, r 260 with a 98 m
+        --     corner radius, drew 4.99 m of sag against a chordM of 2.0, because each
+        --     corner got one quad where the sag rule wanted two.
+        --
+        -- So `want` is what each run actually asks for, and it is a CEILING taken
+        -- per run rather than once at the end: a run that asks for 2.4 quads and is
+        -- handed 2 sags 44 percent over the bound, which is precisely the failure
+        -- above spelled in rounding. Summed, that total is the component's own count
+        -- -- so n is derived from roundness instead of from the perimeter, and the
+        -- split below then hands each run back exactly what it asked for.
+        local want, total = {}, 0
+        for i = 1, nRuns do
+            local rn = runs[i]
+            local k = 1
+            if rn and rn.r and rn.r > 0.0 then
+                k = math.max(1, math.ceil(rn.len / math.sqrt(8.0 * rn.r * chordM)))
+            end
+            want[i] = k
+            total = total + k
+        end
+
         local n = math.max(nRuns, math.max(3,
-            math.min(per, math.max(sp.minSeg or 24,
-                math.ceil(c.len / step)))))
+            math.min(per, math.max(sp.minSeg or 24, total))))
 
         -- WHERE EACH RUN ENDS, AS A POINT INDEX, and it is CUMULATIVE rather than
         -- a share handed to each run separately. Rounding each run's own share
@@ -965,11 +995,17 @@ local function drawStrip(shape, alphaScale)
         -- instead and then clamping it monotone (at least one quad per run, and
         -- enough left for the runs after it) makes the total exactly n by
         -- construction.
+        --
+        -- WEIGHTED BY `want`, NOT BY LENGTH, which is what makes the paragraph above
+        -- true: when n equals the sum of `want` every cumulative total is already an
+        -- integer, so each run is handed back precisely the count it asked for. The
+        -- minSeg floor spreads the surplus proportionally and the poly budget takes
+        -- its share back the same way.
         local edge = { [0] = 0 }
-        local cum = 0.0
+        local cum = 0
         for i = 1, nRuns do
-            cum = cum + (runs[i] and runs[i].len or c.len)
-            local k = math.floor(n * cum / c.len + 0.5)
+            cum = cum + want[i]
+            local k = math.floor(n * cum / total + 0.5)
             local lo, hi = edge[i - 1] + 1, n - (nRuns - i)
             if k < lo then k = lo end
             if k > hi then k = hi end
@@ -1071,7 +1107,6 @@ local function drawWall(zone, alphaScale)
     -- /brwallstyle. The shipping path has inset since the day the report landed;
     -- this is that same one line, spelled for a shape.
     local shape = SS.inset(zone, rr.edgeInset or 0.0)
-    local discs = shape.discs
 
     -- ═══ THE STRIP IS THE WALL, AND THE TWO MARKER PATHS ARE THE BASELINE ═══
     --
@@ -1125,20 +1160,27 @@ local function drawWall(zone, alphaScale)
         -- /brwallstyle, which is deliberate: it is exactly the known ground the
         -- A/B is measured against.
         --
-        -- IT READS THE DISC RATHER THAN r, which is what lets the shape choose.
-        -- The disc is already inset (StormShape.inset rebuilt the circle at
-        -- r - edgeInset, floored at one metre) so this is byte-for-byte the
+        -- IT READS THE SHAPE RATHER THAN r, which is what lets the shape choose.
+        -- The shape is already inset (StormShape.inset rebuilt it at r - edgeInset,
+        -- floored at one metre) so this is byte-for-byte the
         -- `math.max(1.0, r - edgeInset)` it replaces on every ordinary phase --
         -- and on the admin path where `brphase 1` targets a circle bigger than
-        -- the collapsed one it is in, union2 returns the TARGET circle and this
-        -- now draws the wall that actually exists instead of a one-metre stub.
+        -- the collapsed one it is in, the zone constructor returns the TARGET and
+        -- this now draws the wall that actually exists instead of a one-metre stub.
+        --
+        -- ASKED FOR, NOT INDEXED -- #339's SECOND LANDMINE. This line was
+        -- `discs[1]`, which is a nil index on any shape with no disc list: one
+        -- console command on any phase of any match, from the moment the storm
+        -- stopped being round. StormShape.discFor names the disc per kind, which
+        -- for a blob is the circle it replaced -- exactly the cylinder this path
+        -- drew before #344 and therefore exactly the A/B baseline it exists to be.
         --
         -- GLUED TO THE WORLD, NOT THE PED: a fixed base below sea level and
         -- triple height (user call, 2026-08-03), spanning ocean floor to
         -- above Chiliad. The old ground-probe fallback hung the curtain off
         -- the viewer's own z whenever the probe missed -- which at wall
         -- distances is most of the time -- so the wall rode the camera.
-        local disc = discs[1]
+        local disc = SS.discFor(shape)
         DrawMarker(1,
             disc.x, disc.y, -100.0,
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
@@ -1385,8 +1427,14 @@ BR.Loop.register(BR.Loop.FRAME, 'storm.wall', function()
     local alphaScale = wallShare(rec, stt, msLeft)
     if alphaScale <= 0.0 then return end
 
-    drawWall(BR.StormShape.union2(cx, cy, r, rec.cx1, rec.cy1, rec.r1),
-        alphaScale)
+    -- ═══ THE SHAPE COMES FROM THE RECORD'S SEED, NOT FROM THIS FILE (#344) ═══
+    --
+    -- BR.StormZone is the one spelling of "what shape is the storm right now", and
+    -- the server's damage tick makes the identical call off the identical record.
+    -- Nothing about the shape is on the wire but the seed, so a second spelling
+    -- here would be a wall drawn somewhere the server is not billing -- the "20ft
+    -- inside" report with no bound on how far.
+    drawWall(BR.StormZone(rec, cx, cy, r), alphaScale)
 end)
 
 -- Which renderer draws the wall, and /brwallstyle overrides it live.
@@ -1806,7 +1854,14 @@ end)
 --- THE SHARE IS wallShare's COMPLEMENT AND IS NOT COMPUTED HERE. `w >= 1.0` is one
 --- test doing two jobs -- everything that is not the phase-1 hold, and the hold's fade
 --- window once it has completed -- which is why the handoff cannot be half-written.
---- @return table|nil circle  { cx, cy, r }
+--- ═══ AND IT CARRIES THE SEED, BECAUSE IT IS PHASE 1'S SHAPE (#344) ═══
+---
+--- Both sources have it -- the published preview payload and the record -- and it
+--- is the same integer in both, for the same reason the circle is the same circle:
+--- enterPhase spends the warmup draw rather than rolling a second one. So the bus
+--- is shown the shape phase 1 will actually wear, and the handoff stays a handoff
+--- instead of a circle turning into a blob as one fades into the other.
+--- @return table|nil circle  { cx, cy, r, seed }
 --- @return number alphaScale
 local function previewWallCircle()
     local base = cfg.render.previewAlpha or 0.5
@@ -1827,7 +1882,8 @@ local function previewWallCircle()
     local _, _, _, st, msLeft = solveNow(rec)
     local w = wallShare(rec, st, msLeft)
     if w >= 1.0 then return nil end
-    return { cx = rec.cx1, cy = rec.cy1, r = rec.r1 }, base * (1.0 - w)
+    return { cx = rec.cx1, cy = rec.cy1, r = rec.r1, seed = rec.seed },
+        base * (1.0 - w)
 end
 
 BR.Loop.register(BR.Loop.FRAME, 'storm.previewWall', function()
@@ -1864,7 +1920,15 @@ BR.Loop.register(BR.Loop.FRAME, 'storm.previewWall', function()
     -- previewAlpha's own fade-out across the handoff; previewWallCircle owns the
     -- arithmetic because it owns the clock. One circle, one renderer, one height, and
     -- an alpha that only ever moves when the real wall's is moving the other way.
-    drawWall(BR.StormShape.circle(pv.cx, pv.cy, pv.r), alphaScale)
+    --
+    -- AND THE SHAPE IS PHASE 1'S, not a circle (#344). The phase index is written
+    -- as a literal 1 rather than read off a record because the bus has no record at
+    -- all -- the preview exists precisely for the stretch before one -- and circle 1
+    -- is phase 1's target by definition. A BLOB rather than the zone union: the
+    -- preview is ONE circle, which is what it has always been, and there is no
+    -- second circle to extend it toward until the storm exists.
+    drawWall(BR.StormShape.blob(pv.cx, pv.cy, pv.r, BR.StormUnit(pv.seed, 1)),
+        alphaScale)
 end)
 
 -- ----------------------------------------------------- blips, FX, envelope ---
@@ -2199,7 +2263,12 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
     -- the numbers), so a player deep in an overlap may be told they are 300m
     -- inside rather than 400m. `caught` reads the sign, and the metres on the
     -- HUD are a countdown to safety that only a player OUTSIDE is reading.
-    local zone = BR.StormShape.union2(cx, cy, r, rec.cx1, rec.cy1, rec.r1)
+    --
+    -- AND IT IS A SHAPE NOW (#344), through the same BR.StormZone the wall and the
+    -- server's damage tick use. That is what keeps the HUD's metres, the grade, the
+    -- sky and the two crossing cues describing the curtain the player can see
+    -- rather than a circle nothing draws any more.
+    local zone = BR.StormZone(rec, cx, cy, r)
     local edge = BR.StormShape.distance(zone, p.x, p.y)   -- positive = outside
 
     -- Screen FX track being outside AND the storm actually hurting right now

@@ -1,11 +1,18 @@
 -- The storm's boundary as a WALKABLE SHAPE rather than as a radius.
 --
--- Nothing in the game asks this file for anything but a circle, and that is
--- deliberate: the storm draws exactly what it drew before this file existed.
--- What changes is that the renderer no longer KNOWS it is drawing a circle. It
--- asks for a perimeter, walks it in metres, and asks where the boundary is
--- nearest a point -- three questions a circle answers and so does everything
--- below.
+-- EVERY PHASE IS A RANDOM SHAPE NOW (#344), and that is what this file was
+-- built for:
+--
+--   "ship something that will draw random shaped storm walls for each phase,
+--    still matching our approximate positioning and size rules, circles are not
+--    allowed."                                      -- the owner, 2026-09-22
+--
+-- The shape is blob() below: a jittered convex polygon with rounded corners,
+-- which is N segments and N arcs -- the piece model this file has walked since
+-- the day it was written. The renderer does not know it is drawing anything in
+-- particular. It asks for a perimeter, walks it in metres, and asks where the
+-- boundary is nearest a point -- three questions a circle answers and so does
+-- everything below.
 --
 -- ═══ WHY A LIST OF PIECES AND NOT A ROUNDED RECTANGLE ═══
 --
@@ -244,7 +251,7 @@ end
 ---
 --- @param pieces table       array of arc/seg pieces, in boundary order
 --- @param kind string        this shape's name, for the query dispatch
---- @param meta table|nil     { discs = ..., box = ..., prims = ... }, all optional
+--- @param meta table|nil     { discs, box, hull, parts, prims }, all optional
 --- @return table shape
 local function seal(pieces, kind, meta)
     meta = meta or {}
@@ -273,6 +280,13 @@ local function seal(pieces, kind, meta)
         pieces = keep, P = P, comps = comps,
         kind = kind,
         discs = meta.discs, box = meta.box, prims = meta.prims,
+        -- `hull` is the blob's equivalent of `box`: the corner-disc centres and
+        -- the one corner radius, which is the arithmetic its exact signed
+        -- distance and its exact erosion are both written in. `parts` is a
+        -- two-component union's, and the two are deliberately different fields
+        -- for the reason `discs` and `prims` are -- see the note above, and
+        -- blobUnion's, which says what a part may and may not be asked.
+        hull = meta.hull, parts = meta.parts, blob = meta.blob,
     }
 end
 
@@ -650,7 +664,606 @@ function BR.StormShape.roundedRect(cx, cy, hx, hy, cr)
     })
 end
 
+-- ------------------------------------------------- the blob, which is the wall ---
+--
+-- ═══ A JITTERED CONVEX POLYGON WITH ROUNDED CORNERS (#344) ═══
+--
+--   "ship something that will draw random shaped storm walls for each phase,
+--    still matching our approximate positioning and size rules, circles are not
+--    allowed."                                        -- the owner, 2026-09-22
+--
+-- N corners at jittered angles and jittered radii, each corner rounded by an
+-- arc: N segs and N arcs, which is the piece model above and not an extension of
+-- it. What is new is that the shape is DRAWN FROM A SEED rather than from a
+-- centre and a radius, and that both halves of the game have to derive the same
+-- one -- see blobUnit.
+--
+-- ═══ IT IS THE CONVEX HULL OF N EQUAL DISCS, AND THAT IS THE WHOLE TRICK ═══
+--
+-- A rounded polygon can be written two ways and only one of them is exact to
+-- compute with. Written as "a polygon whose corners are cut off and filleted"
+-- every query is a case analysis over nine regions per corner. Written as the
+-- CONVEX HULL OF THE CORNER DISCS -- equivalently the polygon of their centres
+-- grown by the corner radius -- three things fall out at once, all exact:
+--
+--   THE SIGNED DISTANCE. For a convex body the signed distance is the supremum
+--   over unit directions of (<p, u> - h(u)), where h is the support function.
+--   For a hull of equal discs h(u) = max_i(<c_i, u>) + cr, so that supremum is
+--   reached either on an EDGE normal or radially from the one corner whose
+--   angular wedge holds the direction to p -- which is a max over the same 2N
+--   pieces the boundary is made of. Exact inside as well as out, unlike the
+--   disc union's understatement, and no region test to get wrong.
+--
+--   THE EROSION. Shrinking a convex body by d subtracts d from its support
+--   function, and for this shape that is exactly `cr - d` with every centre left
+--   where it was. One subtraction, and it is the true erosion rather than an
+--   approximation of it -- which matters because the wall draws the eroded shape
+--   and then asks it questions (see inset()).
+--
+--   THE CURVATURE. Every arc on the boundary has radius `cr`, so the tightest
+--   curvature the renderer has to resolve is one number rather than a search.
+--
+-- ONE RADIUS FOR EVERY CORNER, AND THAT IS WHY. The rule #344 describes is 0.85
+-- of the SHORTER ADJACENT HALF-EDGE, which is a per-corner number on a jittered
+-- polygon -- and a hull of UNEQUAL discs loses all three properties above: its
+-- outer tangents are no longer parallel to the centre polygon's edges, a small
+-- disc can be swallowed by the hull of its neighbours (an acos out of domain, on
+-- one seed in however many), and an erosion past the smallest radius is not a
+-- hull of discs at all. So the fraction is applied to the TIGHTEST corner's
+-- allowance and that one radius is used everywhere. Measured over 20000 draws at
+-- the shipping config, the shape family is the one #344 measured: area 0.898 of
+-- the circle, max extent 1.050 of r, min/max radius 0.808, against its 0.88 to
+-- 0.89 / 1.03 to 1.06 / 0.79 to 0.85 across the same jitter band. The cost of the
+-- exactness is that the roundness varies more between draws, because the tightest
+-- corner decides it for all of them -- not that it is a different shape.
+--
+-- ═══ CONVEXITY IS NOT GUARANTEED AND IS ENFORCED, NOT HOPED FOR ═══
+--
+-- Radii jittered about r can put a corner inside the line between its
+-- neighbours: at the shipping N=9, jitter 0.13, 2491 of 20000 draws came out
+-- concave on the first attempt. A concave polygon breaks both exactness claims
+-- above -- the support-function argument IS convexity -- so a draw that fails
+-- the test is redrawn from the SAME stream at a reduced jitter, and the last
+-- attempt uses no jitter at all, which is a regular polygon and convex by
+-- construction. The loop therefore always ends on a convex shape and always
+-- consumes a deterministic number of values. Over those 20000 draws the deepest
+-- it ever went was attempt 3, and 54 draws needed even that.
+local BLOB_TRIES    = 6
+local BLOB_FALLOFF  = 0.75
+
+-- HOW SHARP A CORNER MAY BE, in radians of exterior turn, at both ends.
+--
+-- The lower bound is a convexity test: a turn at or below zero is a reflex corner.
+-- It is a small POSITIVE number rather than zero because a corner that turns by a
+-- nanoradian is convex and useless -- `ccwSweep` reads an exactly zero sweep as
+-- "all the way round" (see its header), the corner's own tangent length runs away
+-- as the turn goes to nothing, and a boundary piece of no length is dropped by
+-- seal() leaving a shape whose pieces no longer chain. Three degrees on a
+-- nine-corner polygon whose mean turn is forty is a guard rather than a
+-- constraint: it rejects the degenerate draw and nothing else.
+--
+-- The upper bound is the same statement at the other end -- a corner that turns
+-- by nearly half a turn is a spike -- and it is not reachable at any N this ships
+-- with. Kept because it costs one comparison and because the arithmetic below
+-- divides by sin of half the interior angle, which is what a spike sends to zero.
+--
+-- ═══ AND IT IS ONE OF THREE, WHICH IS WORTH KNOWING BEFORE DELETING ANY OF THEM
+--     ═══
+--
+-- Concavity is caught here, AND by `cr > 0` (a reflex corner's tangent limit comes
+-- out negative, so the minimum does), AND by the cross-product test on the corner
+-- CENTRES further down. Measured by removing each in turn: every one of the three
+-- is individually redundant and the suite stays green, and removing all three at
+-- once puts concave shapes through and turns tools/test_shared.lua's `blob.*`
+-- blocks red on six assertions. That is defence in depth rather than three
+-- mistakes -- each one guards a different failure at its own step -- but a reader
+-- who deletes one and sees a green suite has learnt nothing about whether it was
+-- load-bearing.
+local BLOB_MIN_TURN = 0.05
+
+--- The outward normal and the length of each edge of a closed centre polygon.
+---
+--- Stamped ONTO the centre list rather than returned beside it, because every
+--- query below wants the normal of "edge i" keyed the same way the centres are:
+--- edge i runs from centre i to centre i+1, and its normal is the RIGHT of that
+--- travel, which is outward for a counter-clockwise polygon. Interior on the
+--- left, as everything in this file is.
+--- @param cs table   { { x, y }, ... } counter-clockwise
+--- @return boolean   false if any edge has no length, so no normal
+local function stampNormals(cs)
+    local n = #cs
+    for i = 1, n do
+        local a, b = cs[i], cs[(i % n) + 1]
+        local dx, dy = b.x - a.x, b.y - a.y
+        local len = sqrt(dx * dx + dy * dy)
+        if len <= 0.0 then return false end
+        a.ex, a.ey, a.elen = dx / len, dy / len, len
+        a.nx, a.ny = dy / len, -dx / len
+    end
+    return true
+end
+
+--- Signed distance to the convex hull of equal discs `{ cs, cr }`.
+---
+--- THE MAXIMUM OF THE SUPPORTING CONSTRAINTS, which is the header's argument
+--- spelled out: for each edge, the distance to the line the boundary segment lies
+--- on; for each corner, the radial distance to its disc, but ONLY where the
+--- direction from that disc's centre falls inside the corner's own angular wedge
+--- -- between the two adjacent edge normals -- because outside that wedge the
+--- disc is not what bounds the shape and its radial distance is an understatement.
+---
+--- A POINT AT A CORNER CENTRE IS ANSWERED BY THE EDGES, not by the arc, and that
+--- is why the length test does not need a special case after it. The disc is
+--- tangent to both adjacent edge lines, so both of them report exactly `-cr`
+--- there, which is the true answer.
+---
+--- Negative inside, positive outside, exact everywhere. Checked against a dense
+--- walk of the boundary in tools/test_shared.lua rather than against itself.
+local function hullDistance(h, px, py)
+    local cs, cr = h.cs, h.cr
+    local n = #cs
+    local best = -huge
+    for i = 1, n do
+        local a = cs[i]
+        local d = (px - a.x) * a.nx + (py - a.y) * a.ny - cr
+        if d > best then best = d end
+    end
+    for i = 1, n do
+        local c = cs[i]
+        local p = cs[((i - 2) % n) + 1]
+        local ddx, ddy = px - c.x, py - c.y
+        local len = sqrt(ddx * ddx + ddy * ddy)
+        if len > 0.0
+            and (p.nx * ddy - p.ny * ddx) >= 0.0
+            and (ddx * c.ny - ddy * c.nx) >= 0.0 then
+            local d = len - cr
+            if d > best then best = d end
+        end
+    end
+    return best
+end
+
+--- The hull of equal discs as a boundary: N straight runs and N corner arcs.
+---
+--- Walked counter-clockwise from the first edge, so every run's right of travel
+--- is its outward normal and every arc is swept positively about its own corner
+--- centre -- which is what lets pointAtArc stay ignorant of the shape it is
+--- walking. The chain closes by construction: run i ends at `c_{i+1} + cr * n_i`
+--- and the arc at corner i+1 begins at exactly that angle.
+--- @param cs table    corner-disc centres, counter-clockwise, normals stamped
+--- @param cr number    the one corner radius
+--- @param meta table
+local function hullOf(cs, cr, meta)
+    local n = #cs
+    local pieces = {}
+    local function push(pc) if pc then pieces[#pieces + 1] = pc end end
+    for i = 1, n do
+        local a, b = cs[i], cs[(i % n) + 1]
+        local nx, ny = a.nx, a.ny
+        push(seg(a.x + nx * cr, a.y + ny * cr, b.x + nx * cr, b.y + ny * cr))
+        local a0 = atan(ny, nx)
+        local a1 = atan(b.ny, b.nx)
+        push(arc(b.x, b.y, cr, a0, ccwSweep(a0, a1)))
+    end
+    meta.hull = { cs = cs, cr = cr }
+    return seal(pieces, 'blob', meta)
+end
+
+-- ═══ THE UNIT BLOB IS MEMOISED, AND THE CACHE IS BOUNDED ═══
+--
+-- Every frame of the wall, every tick of the HUD and every tick of the server's
+-- damage pass ask for the SAME unit -- one seed, one phase -- so building it each
+-- time is a generator, a convexity test and up to six retries of garbage per
+-- call. Keyed on the seed, the phase and every knob that changes the answer, so a
+-- config edit between two calls cannot be served a stale shape.
+--
+-- FLUSHED WHOLE RATHER THAN EVICTED. A server runs matches for days and each one
+-- brings a fresh seed, so an unbounded table here is a slow leak. Dropping the
+-- whole table at a ceiling costs one rebuild per phase per live match on the
+-- frame after the flush, which is microseconds, and it cannot grow.
+local blobCache, blobCacheN = {}, 0
+local BLOB_CACHE_MAX = 64
+
+--- One attempt at a unit blob, off `rng`. nil when the draw is not convex.
+---
+--- Every draw takes exactly 2N values off the stream WHETHER OR NOT IT SUCCEEDS,
+--- which is what makes a retry deterministic rather than a fork: the client and
+--- the server reject the same attempt at the same point and arrive at the same
+--- shape. The convexity test therefore runs AFTER all 2N values are drawn.
+local function blobAttempt(rng, n, jitter, angJitter, round)
+    local slot = TAU / n
+    local vs = {}
+    for i = 1, n do
+        -- THE ANGLE STAYS IN ITS OWN SLOT, which is what stops two corners
+        -- swapping places: at +-0.3 of a slot no draw can reach its neighbour's,
+        -- so the corner order is the slot order and the walk is counter-clockwise
+        -- without having to be sorted.
+        local a = (i - 1) * slot + slot * angJitter * (rng:float() * 2.0 - 1.0)
+        -- SYMMETRIC ABOUT 1, NOT INWARD FROM IT (#344, measured). Radii drawn in
+        -- [1 - 2j, 1] cost 28 to 41 percent of the circle's area, because a polygon
+        -- inscribed in a circle has already given some up and the corner rounding
+        -- takes more. Jittering about the radius costs about a tenth and buys back
+        -- the extent. Measured on this generator by making the change and
+        -- re-running: area 0.690 of the circle against 0.898, and max extent down
+        -- to 0.93 of r -- a zone a fifth smaller everywhere, which is a gameplay
+        -- change rather than a shape one.
+        local rad = 1.0 + jitter * (rng:float() * 2.0 - 1.0)
+        vs[i] = { x = cos(a) * rad, y = sin(a) * rad }
+    end
+    if not stampNormals(vs) then return nil end
+
+    -- The exterior turn at each corner, which is both the convexity test and the
+    -- sweep of the arc that will round it.
+    for i = 1, n do
+        local p = vs[((i - 2) % n) + 1]
+        local c = vs[i]
+        local t = atan(p.ex * c.ey - p.ey * c.ex, p.ex * c.ex + p.ey * c.ey)
+        if t < BLOB_MIN_TURN or t > pi - BLOB_MIN_TURN then return nil end
+        c.turn = t
+    end
+
+    -- THE CORNER RADIUS: the given fraction of the TIGHTEST corner's allowance.
+    -- A corner may be filleted with a circle tangent to both its edges at a
+    -- distance of `t` from the vertex, where t = cr / tan(theta/2) and theta is
+    -- the interior angle; t must fit inside both adjacent half-edges or two
+    -- corners would eat each other's straight run. So each corner's own ceiling
+    -- is (shorter adjacent half-edge) * tan(theta/2), and one radius for all of
+    -- them means the smallest ceiling decides -- see the section header.
+    local cr = huge
+    for i = 1, n do
+        local p = vs[((i - 2) % n) + 1]
+        local c = vs[i]
+        local halfMin = 0.5 * ((p.elen < c.elen) and p.elen or c.elen)
+        local lim = halfMin * math.tan((pi - c.turn) * 0.5)
+        if lim < cr then cr = lim end
+    end
+    cr = cr * round
+    if not (cr > 0.0) then return nil end
+
+    -- The corner-disc centres: inward along each bisector, far enough in that the
+    -- disc is tangent to both edges. cr / sin(theta/2) is that distance, and the
+    -- bisector is the sum of the two unit vectors toward the neighbours.
+    local cs = {}
+    for i = 1, n do
+        local p = vs[((i - 2) % n) + 1]
+        local c = vs[i]
+        local bx, by = c.ex - p.ex, c.ey - p.ey
+        local bl = sqrt(bx * bx + by * by)
+        if bl <= 0.0 then return nil end
+        local d = cr / sin((pi - c.turn) * 0.5)
+        cs[i] = { x = c.x + bx / bl * d, y = c.y + by / bl * d }
+    end
+    -- The centre polygon is the vertex polygon pulled in by cr, so it is convex
+    -- whenever that one is and no disc can be swallowed. Asserted rather than
+    -- assumed, because everything downstream is exact only if it holds.
+    if not stampNormals(cs) then return nil end
+    for i = 1, n do
+        local p = cs[((i - 2) % n) + 1]
+        local c = cs[i]
+        if (p.ex * c.ey - p.ey * c.ex) <= 0.0 then return nil end
+    end
+
+    local extent = 0.0
+    for i = 1, n do
+        local c = cs[i]
+        local e = sqrt(c.x * c.x + c.y * c.y) + cr
+        if e > extent then extent = e end
+    end
+    return {
+        n = n, cr = cr, cs = cs, jitter = jitter,
+        -- WHAT THE SHAPE MEASURES, normalised, recorded here because every
+        -- consumer that wants to compare the blob with the circle it replaced
+        -- would otherwise re-derive it: the furthest the boundary reaches, and
+        -- the nearest it comes. `inradius` is read off the signed distance at the
+        -- centre, which IS the distance to the nearest boundary point.
+        extent = extent,
+        inradius = -hullDistance({ cs = cs, cr = cr }, 0.0, 0.0),
+    }
+end
+
+--- THE UNIT BLOB for one match seed and one phase: a shape of radius 1 at the
+--- origin, to be scaled by whatever radius the solver reports.
+---
+--- ═══ DETERMINISM IS A CORRECTNESS REQUIREMENT HERE, NOT A NICETY ═══
+---
+--- The client draws the wall and the server does the damage. They do not exchange
+--- the shape -- there is no per-frame traffic in this design and there is not
+--- going to be -- so they derive it, from the seed the record carries and the
+--- phase index. If they disagree by a metre the wall is a lie by a metre, and the
+--- symptom is damage taken at a place the curtain says is safe: the exact report
+--- edgeInset exists for, with no bound on it. tools/test_storm.lua walks both
+--- paths and compares, the way `first.stream` already does for the centres.
+---
+--- SEEDED OFF THE MATCH SEED AND THE PHASE, and mixed rather than added, so that
+--- two adjacent phases of one match are unrelated draws instead of neighbouring
+--- states of one stream.
+---
+--- INTEGER, AND THAT IS #346. BR.Rng runs its argument through math.tointeger and
+--- falls back to ZERO when that fails, so a fractional seed is silently seed 0 --
+--- every match the same shape, with nothing to notice. Floored here, once, where
+--- both callers pass through.
+---
+--- ═══ nil IS THE OFF SWITCH AND IS SPELLED IN THE CONFIG, NOT HERE ═══
+---
+--- Fewer than three corners is not a polygon, and it is the one way back to
+--- circles: BR.StormZone hands a nil unit to union2 and the game draws exactly
+--- what it drew before #344. That is a value somebody has to type -- #335 shipped
+--- its shape behind a knob at zero and nothing in the game ever drew it, which is
+--- the mistake this file is not repeating -- so the shipping config is 9 corners
+--- and the off switch is a deliberate edit.
+---
+--- @param seed number|nil     the match's storm seed (server/storm.lua's seedRng)
+--- @param phase number|nil    1-based phase index
+--- @param opts table|nil      { corners, jitter, angleJitter, round }
+--- @return table|nil unit     { n, cr, cs, extent, inradius, tries }
+function BR.StormShape.blobUnit(seed, phase, opts)
+    opts = opts or {}
+    local n = math.floor(opts.corners or 9)
+    if n < 3 then return nil end
+    local jitter    = opts.jitter or 0.13
+    local angJitter = opts.angleJitter or 0.3
+    local round     = opts.round or 0.85
+
+    local s = math.tointeger(math.floor(seed or 0)) or 0
+    local p = math.tointeger(math.floor(phase or 0)) or 0
+
+    local key = ('%d|%d|%d|%.6f|%.6f|%.6f'):format(s, p, n, jitter, angJitter, round)
+    local hit = blobCache[key]
+    if hit then return hit end
+
+    local rng = BR.Rng(s * 1000003 + p * 7919 + 17)
+    local j = jitter
+    local unit
+    for attempt = 1, BLOB_TRIES do
+        -- THE LAST ATTEMPT HAS NO JITTER, so it is a regular polygon and cannot
+        -- fail the convexity test. That is what makes this loop terminate on a
+        -- shape rather than on a nil, and it is why nothing downstream has a
+        -- "there is no shape" branch to get wrong.
+        if attempt == BLOB_TRIES then j = 0.0 end
+        unit = blobAttempt(rng, n, j, angJitter, round)
+        if unit then unit.tries = attempt break end
+        j = j * BLOB_FALLOFF
+    end
+
+    if blobCacheN >= BLOB_CACHE_MAX then blobCache, blobCacheN = {}, 0 end
+    blobCache[key] = unit
+    blobCacheN = blobCacheN + 1
+    return unit
+end
+
+--- A unit blob placed at (cx, cy) and scaled to radius `r`.
+---
+--- ═══ SCALED, WHICH IS WHY THE SOLVER DID NOT HAVE TO CHANGE ═══
+---
+--- BR.StormAt reports a centre and a radius and knows nothing about this; the
+--- shape is that radius times a unit blob, so a shrinking phase is a shrinking
+--- scale factor and the whole hold/sweep timing machinery is untouched. `r` stays
+--- the number every placement rule is written in -- d_max, the nesting check, the
+--- survey -- and the blob's own reach is 1.03 to 1.06 of it (measured, #344),
+--- which is what "approximate positioning and size rules" bought.
+---
+--- ═══ BELOW A FEW METRES IT IS A CIRCLE, AND THAT IS MIN_RADIUS's ARGUMENT ═══
+---
+--- Every radius this file builds floors at MIN_RADIUS, so a corner radius under a
+--- metre would be floored up and the corner arcs would no longer meet the runs
+--- they were built for -- a boundary that does not chain. That happens at about
+--- six metres of zone radius, which is the last few seconds of the final sweep,
+--- where the whole shape is smaller than one quad of the wall that draws it. A
+--- two-metre circle is a point at the storm's own resolution, and a point is not
+--- a circle -- the same reading union2's header gives phase 8.
+--- @param cx number
+--- @param cy number
+--- @param r number
+--- @param unit table   from blobUnit
+--- @return table shape
+function BR.StormShape.blob(cx, cy, r, unit)
+    cx, cy, r = cx + 0.0, cy + 0.0, radius(r)
+    if not unit or (r * unit.cr) < MIN_RADIUS then
+        return BR.StormShape.circle(cx, cy, r)
+    end
+    local cs = {}
+    for i = 1, unit.n do
+        local c = unit.cs[i]
+        cs[i] = { x = cx + c.x * r, y = cy + c.y * r }
+    end
+    -- A CENTRE POLYGON WITH AN EDGE OF NO LENGTH IS NOT WALKABLE, and the circle is
+    -- the same answer the radius floor above gives for the same reason. The unit's
+    -- own convexity test makes this unreachable -- two adjacent centres would have
+    -- to coincide -- so it is the guard for a unit that arrived from somewhere this
+    -- file does not control, not a case the generator produces.
+    if not stampNormals(cs) then return BR.StormShape.circle(cx, cy, r) end
+    return hullOf(cs, r * unit.cr, {
+        blob = { cx = cx, cy = cy, r = r, unit = unit },
+        -- ═══ ONE RADIUS BLIP, AND THE MAP HAS NO BETTER ANSWER THAN THAT ═══
+        --
+        -- No native fills an arbitrary outline on the minimap or the pause map --
+        -- mapPrimitives' header has the whole search -- so a blob cannot be drawn
+        -- as itself there. The ring is the CIRCLE THE BLOB REPLACED, which is the
+        -- ring the map has always drawn, at the radius the solver reports: it is
+        -- exact in the directions the blob reaches r, over-reports by
+        -- (1 - inradius/r) of it where the blob dents in, and under-reports by
+        -- (extent/r - 1) where it bulges out. Measured at the shipping config, 0.15r
+        -- and 0.05r on average -- so on one phase-1 draw a 2600 m ring over a
+        -- boundary running 2206 to 2789 metres out, and on phase 7 a 40 m ring over
+        -- one running 34 to 42.
+        --
+        -- THE WALL IS THE AUTHORITY AND IT IS DRAWN AT THE REAL BOUNDARY, so a
+        -- player who can see the curtain is never misled by this; the ring is for
+        -- deciding a rotation from the pause map, where a few percent of a
+        -- kilometre is a pixel. Drawing the INSCRIBED circle instead would never
+        -- over-report and would shrink every ring on every map by a fifth, which
+        -- is a change to how the whole game reads for a case the curtain already
+        -- answers. Left at r, and named here so the decision can be argued with.
+        prims = { { kind = 'radius', cx = cx, cy = cy, r = r } },
+    })
+end
+
+--- The SAFE ZONE as one shape: two blobs, or the one that contains the other.
+---
+--- ═══ THE SAME FOUR CASES union2 HAS, DECIDED THE SAME WAY, AND ONE OF THEM IS
+---     NO LONGER EXACT ═══
+---
+--- The zone is the current shape UNION the one the wall is closing toward, so
+--- that a player who reaches the new destination early is safe there (#328). For
+--- two DISCS that union is exact in the arc-and-segment model -- union2 computes
+--- the two crossings and stitches the outer arcs. For two BLOBS it is not: two
+--- convex rounded polygons can cross up to 2N times, and stitching that is a real
+--- boolean union and a separate piece of work.
+---
+--- SO THIS ROUND PAYS FOR IT IN ONE PLACE ONLY, AND IT IS NAMED HERE:
+---
+---   NESTED (the common case, every phase that did not break out) -- the zone is
+---   the CONTAINING blob, one closed loop, and its signed distance is exact
+---   everywhere. What it gives up is that the target blob's bulges can poke out of
+---   the current blob's dents, so those slivers are not pre-safe. Measured over the
+---   shipping phase pairs, sweeping the whole offset range on four seeds each: it
+---   happens on about a tenth of the offsets and only near the containment limit,
+---   and the worst sliver is 61 m at 2600 -> 1600, then 70, 48, 27, 15 and 7 m.
+---
+---   THAT IS NOT A LOSS AGAINST TODAY, IT IS GRACE DECLINED. Today's nested target
+---   is a disc strictly inside a disc and adds nothing at all, so the pre-safe
+---   ground #328 buys in this case is already nothing. The wall is drawn on the
+---   boundary that damages either way, so nothing is ever told it is safe where it
+---   is not -- which is the direction that matters.
+---
+---   DISJOINT -- two closed loops, kilometres apart, exact. The gap between them
+---   is not safe, which is the reading union2's header argues.
+---
+---   OVERLAPPING (a breakout whose circles cross) -- BOTH BOUNDARIES ARE DRAWN,
+---   so the stretches of each that run inside the other are drawn too. That is
+---   the artifact #328 removed for circles, back for exactly this case: a wall
+---   visible inside the safe zone. The DAMAGE IS STILL EXACT -- the signed
+---   distance to a union is the minimum of the two, which holds for any two
+---   shapes -- so it is a drawing defect and not a gameplay one. It is announced
+---   in config/storm.lua as well as here rather than left to be discovered.
+---
+--- THE CONTAINMENT TEST IS IN CIRCLE SPACE, deliberately, and not in blob space.
+--- It is the solver's own nesting rule (`d + r2 <= r1`), the same three
+--- comparisons with the same nanometre of slack union2 makes, so "did this phase
+--- break out" has one answer in this file and in storm_solve.lua. Testing the
+--- blobs instead would make the number of loops on screen depend on a jitter
+--- draw, so a phase could be one wall or two for reasons no config explains.
+---
+--- A DISC WITH NO RADIUS IS STILL NOT A DISC. Phase 8 closes on radius 0 and the
+--- test is on what the caller asked for, exactly as union2's is -- so the final
+--- phase is one shape closing onto a point, never a shape plus a pillar standing
+--- on the destination.
+---
+--- @param unit table|nil   nil is the off switch: union2, and the pre-#344 game
+--- @return table shape
+function BR.StormShape.zone(x1, y1, r1, x2, y2, r2, unit)
+    if not unit then
+        return BR.StormShape.union2(x1, y1, r1, x2, y2, r2)
+    end
+    local has1, has2 = (r1 or 0.0) > 0.0, (r2 or 0.0) > 0.0
+    if has1 and not has2 then return BR.StormShape.blob(x1, y1, r1, unit) end
+    if has2 and not has1 then return BR.StormShape.blob(x2, y2, r2, unit) end
+    if not has1 then return BR.StormShape.circle(x1, y1, 0.0) end
+
+    local dx, dy = x2 - x1, y2 - y1
+    local d = sqrt(dx * dx + dy * dy)
+    if d + r2 <= r1 + EPS then return BR.StormShape.blob(x1, y1, r1, unit) end
+    if d + r1 <= r2 + EPS then return BR.StormShape.blob(x2, y2, r2, unit) end
+
+    return BR.StormShape.blobUnion(BR.StormShape.blob(x1, y1, r1, unit),
+                                   BR.StormShape.blob(x2, y2, r2, unit))
+end
+
+--- Two shapes as one boundary of two components. Their union, drawn as both.
+---
+--- ═══ THE PARTS ARE KEPT FOR distance() AND inset() AND FOR NOTHING ELSE ═══
+---
+--- seal() stamps each piece with its arc length and its component index, so the
+--- pieces handed in here are re-stamped into THIS shape's arc length and the
+--- parts' own `P`, `comps` and `s0` values are left describing a boundary that is
+--- no longer theirs. That is deliberate rather than overlooked -- copying 2N piece
+--- tables per zone build, every frame, to keep two bookkeepings alive when only
+--- one is ever read would be paying for tidiness with garbage. distance() and
+--- inset() read `hull`, `box` and `discs`, which the stamping does not touch.
+--- NOTHING MAY WALK A PART: no perimeter, no pointAtArc, no nearestArc. Walk the
+--- union, which is what the renderer does.
+--- @return table shape
+function BR.StormShape.blobUnion(a, b)
+    local pieces = {}
+    for _, pc in ipairs(a.pieces) do pieces[#pieces + 1] = pc end
+    local first = true
+    for _, pc in ipairs(b.pieces) do
+        -- THE SECOND BOUNDARY SAYS SO, which is the whole of what components are
+        -- for: a strip that walked straight through the seam would bridge the two
+        -- loops with one quad across the gap between them.
+        if first then pc.newComponent = true first = false end
+        pieces[#pieces + 1] = pc
+    end
+    local prims = {}
+    for _, p in ipairs(a.prims or {}) do prims[#prims + 1] = p end
+    for _, p in ipairs(b.prims or {}) do prims[#prims + 1] = p end
+    return seal(pieces, 'blobUnion', { parts = { a, b }, prims = prims })
+end
+
+--- Is there anything left of `part` after eroding it by `metres`?
+---
+--- The inscribed radius is the answer: a convex shape eroded by more than the
+--- radius of the largest disc that fits inside it is empty. Asked of a UNION's
+--- parts, so that a component the storm never had cannot be manufactured by the
+--- renderer's own six metres of edgeInset -- union2's header argues the decision
+--- for discs and this is the same one for blobs.
+local function survivesInset(part, metres)
+    local h = part and part.hull
+    if h then
+        local m = part.blob
+        return (-hullDistance(h, m.cx, m.cy) - metres) > 0.0
+    end
+    local d = part and part.discs and part.discs[1]
+    return d ~= nil and (d.r - metres) > 0.0
+end
+
 -- ----------------------------------------------------------------- queries ---
+
+--- The ONE DISC a path that can only draw a disc should draw this shape as.
+---
+--- ═══ IT IS A LIE FOR EVERYTHING BUT A CIRCLE, AND THE CALLER IS THE LIE ═══
+---
+--- There is exactly one such path: /brwallstyle's 'solid' renderer, a single
+--- DrawMarker type 1 whose side surface is the whole curtain. A cylinder is a
+--- circle by construction, so forced onto any other shape it paints a disc and
+--- says nothing about the rest -- which is known ground rather than a defect,
+--- because that path exists to be the A/B baseline the real wall is judged
+--- against and nothing reaches it without somebody typing the command.
+---
+--- IT EXISTS BECAUSE THAT PATH INDEXED `discs[1]` DIRECTLY, which is #339's second
+--- landmine: a nil index and a dead frame callback on any shape with no disc list,
+--- reachable by one console command on every phase of every match once the storm
+--- stopped being round.
+---
+--- The blob answers with the circle it replaced -- its own centre and the radius
+--- the solver reported -- which is the disc a cylinder was drawing before #344 and
+--- therefore exactly the baseline the A/B wants.
+--- @return table  { x, y, r }
+function BR.StormShape.discFor(shape)
+    local kind = shape and shape.kind
+    if kind == 'circle' or kind == 'union2' then
+        local d = shape.discs[1]
+        return { x = d.x, y = d.y, r = d.r }
+    end
+    if kind == 'blob' then
+        local m = shape.blob
+        return { x = m.cx, y = m.cy, r = m.r }
+    end
+    if kind == 'blobUnion' then
+        return BR.StormShape.discFor(shape.parts[1])
+    end
+    if kind == 'roundedRect' then
+        local b = shape.box
+        -- THE INSCRIBED DISC, so the cylinder cannot stand outside the shape it is
+        -- standing in for. Every other reading of a rectangle as a disc is either
+        -- outside it in the axes or outside it at the corners.
+        return { x = b.cx, y = b.cy, r = (b.hx < b.hy) and b.hx or b.hy }
+    end
+    error('StormShape.discFor: no single disc stands in for a shape of kind '
+        .. tostring(kind) .. ' -- the one caller draws a cylinder, and inventing '
+        .. 'a radius for a shape nobody has decided that for is a wall in the '
+        .. 'wrong place rather than a missing one')
+end
 
 --- Total length of the boundary, in metres. Sums every component.
 --- @return number
@@ -740,9 +1353,30 @@ end
 --- count between the runs by length, and the five cases above close at 127, 102,
 --- 82, 60 and 45 quads before and after.
 ---
+--- ═══ AND EACH RUN CARRIES ITS OWN CURVATURE, WHICH IS #339's FIRST LANDMINE ═══
+---
+--- `r` is the run's radius of curvature: the arc's radius, or nil for a straight
+--- run, which needs no subdivision at all because a chord of a straight line cuts
+--- nothing off it.
+---
+--- The renderer used to price ONE step for the whole component -- off `shape.discs`,
+--- which is no number at all for a shape with no disc list: the minimum stayed at
+--- math.huge, the step was infinite, and every loop fell back to the `minSeg` floor
+--- and sagged tens of metres inside the boundary it was drawn on.
+---
+--- READING THE TIGHTEST CURVATURE OF THE WHOLE SHAPE FIXES THAT AND IS STILL NOT
+--- ENOUGH, which is worth writing down because it was tried. A blob is short,
+--- sharply curved corner arcs joined by long flat runs -- so a single step and a
+--- budget split by LENGTH hands most of the points to the straight runs, which need
+--- one each, and starves the arcs that need several. MEASURED THROUGH THE RENDERER
+--- at the shipping config: a phase-5 zone (r 260, corner radius 98) came out at
+--- 4.99 m of sag against a chordM of 2.0, because each corner got one quad where it
+--- needed two. So the step is priced PER RUN, off this number, and the budget is
+--- split by what each run asked for rather than by how long it is.
+---
 --- @param shape table
 --- @param ci number    a component index, as components() orders them
---- @return table  { { t0 = number, len = number }, ... } in boundary order
+--- @return table  { { t0 = number, len = number, r = number|nil }, ... }
 function BR.StormShape.runs(shape, ci)
     local out = {}
     local pcs = shape and shape.pieces
@@ -756,7 +1390,8 @@ function BR.StormShape.runs(shape, ci)
         -- it recorded rather than a second derivation of it off two floating-point
         -- sums that agree to picometres and decide a boundary case between them.
         if pc.comp == ci then
-            out[#out + 1] = { t0 = pc.s0 - base, len = pc.len }
+            out[#out + 1] = { t0 = pc.s0 - base, len = pc.len,
+                              r = (pc.kind == 'arc') and pc.r or nil }
         end
     end
     return out
@@ -996,6 +1631,38 @@ function BR.StormShape.distance(shape, px, py)
         return best
     end
 
+    -- ═══ AND THE BLOB IS EXACT EVERYWHERE, INSIDE INCLUDED ═══
+    --
+    -- The maximum of the supporting constraints -- see hullDistance, which is
+    -- where the argument is written down. It joins the single circle and the
+    -- rounded rectangle in being exact inside as well as out.
+    if kind == 'blob' then
+        return hullDistance(shape.hull, px, py)
+    end
+
+    -- ═══ AND A TWO-COMPONENT UNION IS THE MINIMUM OF ITS PARTS, WHICH IS EXACT
+    --     FOR ANY TWO SHAPES AT ALL ═══
+    --
+    -- A point is inside a union exactly when it is inside one of the parts, so the
+    -- minimum gets the SIGN right everywhere and the MAGNITUDE right everywhere
+    -- outside and on the boundary -- which is every place any consumer reads the
+    -- magnitude. THAT IS WHY THE DAMAGE RULE IS STILL EXACT on an overlapping
+    -- breakout whose WALL is not (zone()'s header names the artifact): the server
+    -- asks only whether a player is further outside than the cushion allows.
+    --
+    -- Strictly inside an overlap it understates DEPTH for the same reason the disc
+    -- union does -- a part's own nearest boundary point can be one the other part
+    -- has swallowed -- never the other way, so nothing can be told it is safely
+    -- inside when it is not.
+    if kind == 'blobUnion' then
+        local best = huge
+        for i = 1, #shape.parts do
+            local d = BR.StormShape.distance(shape.parts[i], px, py)
+            if d < best then best = d end
+        end
+        return best
+    end
+
     if kind == 'roundedRect' then
         local b = shape.box
         -- Offset from the centre, folded into the first quadrant -- the shape is
@@ -1089,6 +1756,75 @@ function BR.StormShape.inset(shape, metres)
         local b = shape.box
         return BR.StormShape.roundedRect(b.cx, b.cy,
             b.hx - metres, b.hy - metres, b.cr - metres)
+    end
+
+    -- ═══ FOR A BLOB IT IS ONE SUBTRACTION AND IT IS THE TRUE EROSION ═══
+    --
+    -- Eroding a convex body by d subtracts d from its support function, and this
+    -- shape's support function is `max_i <c_i, u> + cr` -- so the eroded shape is
+    -- the SAME CORNER CENTRES with `cr - d`. Every straight run moves in by d
+    -- because it is straight, every corner arc keeps its centre and loses d of
+    -- radius, and there is nothing to approximate. Not a scaled-down blob: a blob
+    -- of radius r - d would pull its corner centres toward the middle as well,
+    -- which is a smaller shape rather than an eroded one.
+    --
+    -- WHEN THE CORNERS ARE EATEN, THE INSCRIBED CIRCLE IS THE ANSWER. An erosion
+    -- deeper than the corner radius wants the centre polygon shrunk too, which is
+    -- a polygon offset and a different algorithm -- so instead this hands back the
+    -- circle inscribed in the eroded shape, centred where the blob was built. That
+    -- is a SUBSET of the true erosion, so it errs INWARD, which is the direction
+    -- this whole function is allowed to err in. It is reachable at about 34 m of
+    -- zone radius against the renderer's six of edgeInset: the last seconds of the
+    -- final sweep, where the shape is smaller than one quad of the wall drawing it.
+    if kind == 'blob' then
+        local h, m = shape.hull, shape.blob
+        local cr = h.cr - metres
+        if cr >= MIN_RADIUS then
+            -- FRESH CENTRE TABLES, because stampNormals writes onto them and the
+            -- shape being eroded is still live -- the wall insets the zone the HUD
+            -- is measuring against on the same frame.
+            local cs = {}
+            for i = 1, #h.cs do
+                cs[i] = { x = h.cs[i].x, y = h.cs[i].y }
+            end
+            stampNormals(cs)
+            return hullOf(cs, cr, {
+                blob = { cx = m.cx, cy = m.cy, r = m.r - metres, unit = m.unit },
+                prims = { { kind = 'radius', cx = m.cx, cy = m.cy,
+                            r = m.r - metres } },
+            })
+        end
+        return BR.StormShape.circle(m.cx, m.cy,
+            -hullDistance(h, m.cx, m.cy) - metres)
+    end
+
+    -- ═══ AND A UNION ERODES ITS PARTS, WHICH IS union2's OWN COMPROMISE ═══
+    --
+    -- Near the join the eroded union is a little wider than the union of the
+    -- eroded parts, so this errs INWARD exactly as the disc union's inset does --
+    -- the drawn boundary may pull a little further inside the logical edge where
+    -- two components meet, and can never sit outside it.
+    --
+    -- A PART EATEN BY THE INSET LEAVES THE OTHER, rather than a one-metre stub
+    -- beside it, for the reason union2's header argues: a component the storm never
+    -- had is worse than a boundary drawn slightly small.
+    if kind == 'blobUnion' then
+        local kept = {}
+        for i = 1, #shape.parts do
+            local part = shape.parts[i]
+            if survivesInset(part, metres) then
+                kept[#kept + 1] = BR.StormShape.inset(part, metres)
+            end
+        end
+        if #kept == 0 then
+            -- Both parts eaten, which is a zone smaller than the renderer's own
+            -- edgeInset -- the collapsed endgame. The first part's remnant is a
+            -- boundary that can still be walked, which is what MIN_RADIUS exists
+            -- to guarantee and what a collapsed zone has always been.
+            return BR.StormShape.inset(shape.parts[1], metres)
+        end
+        if #kept == 1 then return kept[1] end
+        return BR.StormShape.blobUnion(kept[1], kept[2])
     end
 
     error('StormShape.inset: no erosion for a shape of kind ' .. tostring(kind)

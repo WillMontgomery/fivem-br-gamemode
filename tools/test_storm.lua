@@ -297,6 +297,147 @@ local function fadeOf(C)
     return 'bands', math.max(1, math.floor(fd.bands or 3))
 end
 
+-- ---------------------------------------------------------------------------
+-- MEASURING A SHAPE WITHOUT ASKING THE SHAPE (#344)
+--
+-- Every phase is a random shape now, so the numbers this file used to write out
+-- by hand -- "500 m inside a 500 m circle", "five metres outside the far island"
+-- -- name a circle that nothing draws any more. Two choices were available and
+-- only one of them keeps the teeth:
+--
+--   Call BR.StormShape.distance and assert against its own answer. That turns
+--   every geometry assertion below into a tautology: a shape that is the wrong
+--   shape entirely still passes, as long as the server and the client agree about
+--   it, and the whole point of most of these blocks is WHERE the boundary is.
+--
+--   Derive the same answer a DIFFERENT WAY, and assert against that. Which is
+--   what these two helpers do: they walk the boundary -- pointAtComponent, the
+--   piece list, the arc-length machinery -- and answer from the polygon that walk
+--   produces. StormShape.distance never touches the walk; it is a maximum over
+--   supporting half-planes and corner discs. So the two agreeing is evidence.
+--
+-- The remaining shared assumption is the walk itself, and that is pinned
+-- independently: tools/test_shared.lua's `shape.equivalence` proves the walk
+-- lands where the old angular one did, and its `blob.*` blocks prove the walked
+-- boundary and the signed distance agree to 1e-6 on a grid.
+-- ---------------------------------------------------------------------------
+
+--- A closure that answers the signed distance to `shape`: negative inside.
+---
+--- ONE DENSE POLYGON PER COMPONENT, and the answer is the MINIMUM over them --
+--- which is what a union is, and is also why the components cannot be merged into
+--- one polygon: two overlapping loops even-odd out to their symmetric difference,
+--- so the lens of an overlapping breakout would read as outside.
+---
+--- Magnitude from the nearest point on a SEGMENT of the polygon rather than from
+--- the nearest vertex: a vertex is up to half the sampling step away from the true
+--- foot, which at these perimeters is metres, and the assertions below are written
+--- to half a metre. Sign from an even-odd crossing count.
+--- @param steps number|nil   points around the whole boundary
+local function shapeProbe(env, shape, steps)
+    local SS = env.BR.StormShape
+    local P = SS.perimeter(shape)
+    local total = steps or math.max(720, math.min(6000, math.floor(P / 2.0)))
+    local polys = {}
+    for _, c in ipairs(SS.components(shape)) do
+        local n = math.max(64, math.floor(total * c.len / P + 0.5))
+        local pts = {}
+        for k = 0, n - 1 do
+            local x, y = SS.pointAtComponent(shape, c, c.len * k / n)
+            pts[#pts + 1] = { x = x, y = y }
+        end
+        polys[#polys + 1] = pts
+    end
+    return function(px, py)
+        local best = math.huge
+        for _, pts in ipairs(polys) do
+            local n = #pts
+            local d2, inside = math.huge, false
+            local j = n
+            for i = 1, n do
+                local a, b = pts[i], pts[j]
+                local ex, ey = b.x - a.x, b.y - a.y
+                local el = ex * ex + ey * ey
+                local t = 0.0
+                if el > 0.0 then
+                    t = ((px - a.x) * ex + (py - a.y) * ey) / el
+                    if t < 0.0 then t = 0.0 elseif t > 1.0 then t = 1.0 end
+                end
+                local qx, qy = px - (a.x + ex * t), py - (a.y + ey * t)
+                local dd = qx * qx + qy * qy
+                if dd < d2 then d2 = dd end
+                if ((a.y > py) ~= (b.y > py))
+                    and (px < (b.x - a.x) * (py - a.y) / (b.y - a.y) + a.x) then
+                    inside = not inside
+                end
+                j = i
+            end
+            local d = math.sqrt(d2)
+            if inside then d = -d end
+            if d < best then best = d end
+        end
+        return best
+    end
+end
+
+--- A point `m` metres outside the boundary of `shape` at arc length `s`.
+---
+--- Negative `m` is inside. This is what replaces "the centre plus r plus five" in
+--- every block that wanted a point a known distance off the edge: on a shape whose
+--- radius depends on the bearing, that arithmetic names a point whose distance from
+--- the boundary is not the number in the test's own name. Walked rather than
+--- computed, for the reason shapeProbe is.
+local function offBoundary(env, shape, s, m)
+    local x, y, nx, ny = env.BR.StormShape.pointAtArc(shape, s)
+    return x + nx * m, y + ny * m
+end
+
+--- Which PART of a two-component zone a quad or a marker is standing on.
+---
+--- ASKED AS "WHOSE BOUNDARY IS IT ON", NOT "WHOSE CENTRE IS IT NEARER" (#344). The
+--- centre test is exact for two discs and wrong for two blobs: a point on the far
+--- side of the bigger shape can be nearer the smaller shape's centre than its own.
+--- Every drawn point is on one part's boundary to a picometre, so the part whose
+--- boundary it is nearest is the part it came from. A single-component shape is its
+--- own part.
+local function partAt(env, shape, x, y)
+    if not shape.parts then return shape end
+    local best, pick = math.huge, shape
+    for _, p in ipairs(shape.parts) do
+        local d = math.abs(env.BR.StormShape.distance(p, x, y))
+        if d < best then best, pick = d, p end
+    end
+    return pick
+end
+
+--- How far a quad's chord cuts inside the boundary it replaces, in metres.
+---
+--- The chord's MIDPOINT is the deepest point of the cut, and the depth there is the
+--- signed distance to the shape the walk was following -- the same measure on a
+--- circle, a union and a blob alike. The old spelling was
+--- `(r - edgeInset) - dist(midpoint, centre)`, which names a CIRCLE: on a shape
+--- whose radius depends on the bearing it measures the jitter draw and reports
+--- hundreds of metres of sag on a wall that is inside chordM.
+---
+--- MEASURED AGAINST ITS OWN PART on a two-component zone, because the union's own
+--- distance is the minimum of the two -- so a quad of one component that legitimately
+--- runs inside the other would read as hundreds of metres of sag rather than as the
+--- overlap artifact it is.
+local function sagOf(env, shape, qd)
+    local mx, my = (qd.a.x + qd.b.x) * 0.5, (qd.a.y + qd.b.y) * 0.5
+    return -env.BR.StormShape.distance(partAt(env, shape, qd.a.x, qd.a.y), mx, my)
+end
+
+--- The zone a client's own record describes, at the moment it is holding.
+---
+--- Built through the production BR.StormZone, because "which shape is this" is not
+--- what these blocks test -- `blob.agree` is what pins that the two sides derive
+--- the same one. What they test is what the wall, the HUD and the ledger DO with
+--- it, so they need the shape in hand to measure against.
+local function zoneOf(env, rec)
+    return env.BR.StormZone(rec, rec.cx0, rec.cy0, rec.r0)
+end
+
 
 -- ---------------------------------------------------------------------------
 -- The server: the real br_core/server/storm.lua behind the smallest roster,
@@ -958,38 +1099,81 @@ describe('server.nested')
 do
     -- ═══ THE PROPERTY THAT MAKES THIS CHANGE SHIPPABLE ═══
     --
-    -- A nested next circle must leave the damaged set EXACTLY as it is today,
-    -- and "exactly" is the word that needed a grid rather than a handful of
-    -- points. The union of a circle with a circle inside it IS the outer circle,
-    -- so every point on the map has to get the same verdict from the new rule
-    -- that `BR.Dist(e.pos.x, e.pos.y, cx, cy) <= r + margin` gave it -- inside
-    -- the inner circle, in the annulus between them, in the cushion, and far out
-    -- in the sea.
+    -- A nested next circle must leave the damaged set as the ONE SHAPE the wall
+    -- draws, and "exactly" is the word that needed a grid rather than a handful of
+    -- points: every point on the map has to get the verdict the shape's own
+    -- boundary gives it -- inside the inner circle, in the annulus between them,
+    -- in the cushion, and far out in the sea.
     --
     -- A change that only looked right on a Venn diagram would pass every other
     -- block in this file and fail here, which is the point of putting it first.
+    --
+    -- ═══ WHAT #344 CHANGED ABOUT THIS BLOCK, AND WHAT IT DID NOT ═══
+    --
+    -- Until every phase became a random shape, the claim here was that the billed
+    -- set is EXACTLY the set `BR.Dist(...) > r + margin` billed -- because the
+    -- union of a disc with a disc inside it IS the outer disc, so the #328 rule
+    -- was a no-op on a nested phase. It is not a no-op any more: the zone is the
+    -- containing BLOB, whose radius varies with the bearing, so the circle rule
+    -- and the shape rule genuinely disagree in a band around the old rim.
+    --
+    -- SO THE SHIPPABILITY PROPERTY MOVED RATHER THAN WEAKENED, and it is now three
+    -- claims instead of one:
+    --
+    --   * the billed set is the complement of the shape plus its cushion, at every
+    --     point of the grid, measured by walking the boundary rather than by
+    --     asking the function that decides it (see shapeProbe);
+    --   * the zone is ONE closed loop -- a nested phase draws one silhouette, which
+    --     is what keeps the overlapping-union artifact off every ordinary phase;
+    --   * and every disagreement with the old circle rule lies INSIDE THE BAND the
+    --     shape's own measurements allow. That is the assertion that would catch a
+    --     shape which is the right kind and the wrong size: nothing may be billed
+    --     inside the blob's own inradius, and nothing may be spared outside its own
+    --     extent.
     local S = newStormServer()
+    local env = S.env
     local CX, CY, R = 0.0, 0.0, 1000.0
     -- Nested with room to spare: the target's rim sits 300m inside the current
     -- one, so the annulus between them is wide enough to be sampled.
-    S.record(2, CX, CY, R, 300.0, 0.0, 400.0, 600000, 60000, 2.0)
+    local rec = S.record(2, CX, CY, R, 300.0, 0.0, 400.0, 600000, 60000, 2.0)
     local MARGIN = 10.0   -- a HOLDING phase pays the base cushion and no travel
 
-    -- THE OLD RULE, SPELLED OUT RATHER THAN CALLED. `BR.Dist(...) <= r + margin`
-    -- meant SAFE, so the point was billed exactly when that was false.
+    local zone = zoneOf(env, rec)
+    local probe = shapeProbe(env, zone)
+    local unit = env.BR.StormUnit(rec.seed, rec.phase)
+
+    ok(zone.kind == 'blob' and #env.BR.StormShape.components(zone) == 1,
+        'a nested phase is ONE shape and one closed loop, not two',
+        ('%s, %d components'):format(tostring(zone.kind),
+            #env.BR.StormShape.components(zone)))
+
+    -- THE OLD RULE, SPELLED OUT RATHER THAN CALLED, so the band assertion below
+    -- has something to compare against.
     local function billedByTheCircleRule(x, y)
         return (math.sqrt((x - CX) * (x - CX) + (y - CY) * (y - CY))
                 > R + MARGIN)
     end
 
     local checked, wrong, firstWrong = 0, 0, nil
+    local outsideBand, firstBand = 0, nil
     for x = -1250, 1250, 125 do
         for y = -1250, 1250, 125 do
             checked = checked + 1
-            if S.hurts(x + 0.0, y + 0.0)
-               ~= billedByTheCircleRule(x + 0.0, y + 0.0) then
+            local billed = S.hurts(x + 0.0, y + 0.0)
+            if billed ~= (probe(x + 0.0, y + 0.0) > MARGIN) then
                 wrong = wrong + 1
                 firstWrong = firstWrong or ('(%d, %d)'):format(x, y)
+            end
+            if billed ~= billedByTheCircleRule(x + 0.0, y + 0.0) then
+                -- A disagreement is only allowed between the blob's nearest and
+                -- furthest reach, plus the cushion at the outer end.
+                local rad = math.sqrt(x * x + y * y)
+                if rad < unit.inradius * R
+                    or rad > unit.extent * R + MARGIN then
+                    outsideBand = outsideBand + 1
+                    firstBand = firstBand or ('(%d, %d) at radius %.0f'):format(
+                        x, y, rad)
+                end
             end
         end
     end
@@ -997,16 +1181,29 @@ do
         S.errored())
     ok(checked == 441, 'the sweep covers the grid it claims to', checked)
     ok(wrong == 0,
-        'a nested next circle leaves the damaged set exactly as the circle rule '
-            .. 'left it, at every point of a 441-point sweep',
+        'a nested next circle leaves the damaged set exactly as the SHAPE leaves '
+            .. 'it, at every point of a 441-point sweep',
         firstWrong and ('first disagreement at ' .. firstWrong) or nil)
+    ok(outsideBand == 0,
+        'and every point where it disagrees with the old circle rule lies between '
+            .. "the blob's own inradius and its own extent -- the shape moved the "
+            .. 'boundary, it did not move the zone',
+        firstBand and ('first stray at ' .. firstBand) or nil)
 
     -- AND THE THREE POINTS BY NAME, so a failure above says something even if
-    -- the grid arithmetic is what broke.
+    -- the grid arithmetic is what broke. The middle and the far sea are the same
+    -- two points they always were -- 1500 is outside the widest reach this shape
+    -- family has -- and the annulus point is taken off the boundary itself, 20 m
+    -- in, because "800 m east" is inside this blob on some bearings and outside it
+    -- on others.
     ok(S.hurts(0.0, 0.0) == false, 'the middle of both circles is safe')
-    ok(S.hurts(800.0, 0.0) == false,
-        'the annulus between the two rims is safe -- it is inside the current '
-            .. 'circle, which the union contains')
+    local ax, ay = offBoundary(env, zone, zone.P * 0.37, -20.0)
+    ok(math.sqrt(ax * ax + ay * ay) > 400.0,
+        'the sampled annulus point really is outside the target circle',
+        ('%.0f m from the centre'):format(math.sqrt(ax * ax + ay * ay)))
+    ok(S.hurts(ax, ay) == false,
+        'the annulus between the target rim and the wall is safe -- it is inside '
+            .. 'the current shape, which the zone is')
     ok(S.hurts(1500.0, 0.0) == true, 'and well outside the current circle hurts')
 end
 
@@ -1019,34 +1216,49 @@ do
     -- is standing outside the current one, and today that is billed every second
     -- -- the storm punishing the one thing it exists to force.
     local S = newStormServer()
+    local env = S.env
     -- r 500 each, centres 900 apart: a proper overlap with a narrow lens.
-    S.record(2, 0.0, 0.0, 500.0, 900.0, 0.0, 500.0, 600000, 60000, 2.0)
+    local rec = S.record(2, 0.0, 0.0, 500.0, 900.0, 0.0, 500.0, 600000, 60000, 2.0)
+    local zone = zoneOf(env, rec)
+    local probe = shapeProbe(env, zone)
 
-    ok(S.hurts(1300.0, 0.0) == false,
-        'a player who got to the new destination early is SAFE there, where the '
-            .. 'circle rule billed them 800m outside')
-    ok(S.hurts(0.0, 0.0) == false, 'and the current circle is still safe')
+    -- ═══ AND THIS IS THE ONE CASE WHERE THE DAMAGE AND THE WALL PART COMPANY
+    ---     (#344) ═══
+    --
+    -- Two overlapping BLOBS are not expressible in the arc-and-segment model
+    -- without a real boolean union, so the zone is both shapes as two components
+    -- and the wall draws both boundaries -- curtain visible inside the safe zone,
+    -- which config/storm.lua's `shape` block announces. THE DAMAGE IS STILL EXACT,
+    -- because a signed distance to a union is the minimum of the two whatever the
+    -- two are, and that is what this block asserts: the billed set is still the
+    -- complement of the union plus its cushion, to the point.
+    ok(zone.kind == 'blobUnion'
+        and #env.BR.StormShape.components(zone) == 2,
+        'an overlapping breakout is two components -- the union is not stitched, '
+            .. 'and it says so', tostring(zone.kind))
+
+    ok(S.hurts(900.0, 0.0) == false,
+        'a player who got to the new destination early is SAFE at its centre, '
+            .. 'where the circle rule billed them 400m outside')
+    ok(S.hurts(0.0, 0.0) == false, 'and the current shape is still safe')
     ok(S.hurts(450.0, 0.0) == false,
         'and the lens where the two overlap is safe from both directions')
 
     -- OUTSIDE BOTH IS STILL OUTSIDE. The union adds ground, it does not stop
-    -- being a boundary: a point off the side of the pair, inside neither disc,
+    -- being a boundary: a point off the side of the pair, inside neither shape,
     -- is billed exactly as it always was.
     ok(S.hurts(0.0, 700.0) == true,
-        'off the side of the pair, inside neither circle, still hurts')
+        'off the side of the pair, inside neither shape, still hurts')
     ok(S.hurts(1400.0, 900.0) == true, 'and so does past the far one')
 
     -- THE WHOLE PLANE, AGAINST THE GEOMETRY. The predicate is "inside one of the
-    -- two discs, or within the cushion of one of them", which is the signed
-    -- distance to the union written out by hand -- an independent spelling of
-    -- the rule rather than a call to the function under test.
+    -- two shapes, or within the cushion of one of them", walked off the boundary
+    -- rather than read out of the function that decides it.
     local MARGIN = 10.0
     local checked, wrong, firstWrong = 0, 0, nil
     for x = -800, 2200, 150 do
         for y = -1000, 1000, 125 do
-            local d1 = math.sqrt(x * x + y * y) - 500.0
-            local d2 = math.sqrt((x - 900.0) * (x - 900.0) + y * y) - 500.0
-            local expect = math.min(d1, d2) > MARGIN
+            local expect = probe(x + 0.0, y + 0.0) > MARGIN
             checked = checked + 1
             if S.hurts(x + 0.0, y + 0.0) ~= expect then
                 wrong = wrong + 1
@@ -1059,6 +1271,25 @@ do
         ('the billed set is the complement of the union plus its cushion, at '
             .. 'every one of %d points'):format(checked),
         firstWrong and ('first disagreement at ' .. firstWrong) or nil)
+
+    -- AND THE MINIMUM IS WHAT MAKES THAT TRUE, so it is asserted as a minimum:
+    -- the zone's own distance is the smaller of the two parts' everywhere, which is
+    -- the property that survives any shape at all.
+    local notMin = 0
+    for x = -800, 2200, 200 do
+        for y = -1000, 1000, 200 do
+            local a = env.BR.StormShape.distance(zone.parts[1], x + 0.0, y + 0.0)
+            local b = env.BR.StormShape.distance(zone.parts[2], x + 0.0, y + 0.0)
+            local want = (a < b) and a or b
+            if not near(env.BR.StormShape.distance(zone, x + 0.0, y + 0.0),
+                        want, 1e-9) then
+                notMin = notMin + 1
+            end
+        end
+    end
+    ok(notMin == 0,
+        "the union's signed distance is the minimum of its parts', everywhere",
+        notMin)
 end
 
 -- ---------------------------------------------------------------------------
@@ -1159,16 +1390,33 @@ do
     -- is the piece that did not exist before this change: a cushion applied only
     -- to the current circle would hurt a player a metre outside the destination
     -- they had just run to.
+    -- ═══ AND THE POINTS ARE TAKEN OFF THE BOUNDARY NOW, NOT OFF THE RADIUS ═══
+    --
+    -- "Five metres outside the far island" used to be `1200 + 300 + 5` on the
+    -- centre line. On a shape whose radius depends on the bearing that arithmetic
+    -- names a point which is five metres outside NOTHING -- it can be sixty metres
+    -- inside the blob or eighty outside it -- so a cushion assertion written that
+    -- way would be measuring the jitter draw. offBoundary walks to the boundary and
+    -- steps off it, so the number in the test's own name is the distance it means.
     local S = newStormServer()
-    S.record(2, 0.0, 0.0, 400.0, 1200.0, 0.0, 300.0, 600000, 60000, 2.0)
+    local env = S.env
+    local rec = S.record(2, 0.0, 0.0, 400.0, 1200.0, 0.0, 300.0, 600000, 60000, 2.0)
+    local zone = zoneOf(env, rec)
+    local comps = env.BR.StormShape.components(zone)
+    ok(#comps == 2, 'the disjoint pair really is two components', #comps)
 
-    ok(S.hurts(1505.0, 0.0) == false,
+    -- Component 2 is the FAR island: blobUnion appends the target's loop second.
+    local far = comps[2]
+    local fx, fy = offBoundary(env, zone, far.s0 + far.len * 0.5, 5.0)
+    ok(S.hurts(fx, fy) == false,
         'five metres outside the FAR island is inside the cushion')
-    ok(S.hurts(1525.0, 0.0) == true,
+    fx, fy = offBoundary(env, zone, far.s0 + far.len * 0.5, 25.0)
+    ok(S.hurts(fx, fy) == true,
         'and twenty-five metres outside it is not -- the cushion is ten metres, '
             .. 'not a licence')
-    ok(S.hurts(-405.0, 0.0) == false,
-        'the same five metres outside the CURRENT circle is still safe, exactly '
+    local nx, ny = offBoundary(env, zone, comps[1].len * 0.5, 5.0)
+    ok(S.hurts(nx, ny) == false,
+        'the same five metres outside the CURRENT shape is still safe, exactly '
             .. 'as it always was')
 
     -- AND THE TRAVEL TERM STILL RIDES A SHRINK. The cushion grows by ~0.7s of
@@ -1181,12 +1429,22 @@ do
     -- 10 + 100 * 0.7 = 80 metres for the whole sweep. A 1s hold in front of it,
     -- and each probe is taken 6000ms into the phase -- 5000ms into the sweep,
     -- half way, where the radius is 1500.
-    T.record(2, 0.0, 0.0, 2000.0, 0.0, 0.0, 1000.0, 1000.0, 10000.0, 2.0)
-    T.at(6000); ok(T.hurts(1550.0, 0.0) == false,
+    local trec = T.record(2, 0.0, 0.0, 2000.0, 0.0, 0.0, 1000.0,
+        1000.0, 10000.0, 2.0)
+    -- THE SHAPE AT THE MOMENT OF THE PROBE, which is the travelling wall rather
+    -- than the record's opening circle: r 1500, centre unmoved.
+    local moving = T.env.BR.StormZone(trec, 0.0, 0.0, 1500.0)
+    local function offMoving(m)
+        return offBoundary(T.env, moving, moving.P * 0.21, m)
+    end
+    local x1, y1 = offMoving(50.0)
+    local x2, y2 = offMoving(150.0)
+    local x3, y3 = offMoving(70.0)
+    T.at(6000); ok(T.hurts(x1, y1) == false,
         'fifty metres outside a wall doing 100 m/s is inside the moving cushion')
-    T.at(6000); ok(T.hurts(1650.0, 0.0) == true,
+    T.at(6000); ok(T.hurts(x2, y2) == true,
         'a hundred and fifty metres outside it is not')
-    T.at(6000); ok(T.hurts(1570.0, 0.0) == false,
+    T.at(6000); ok(T.hurts(x3, y3) == false,
         'and seventy metres out is still inside it, which the base ten-metre '
             .. 'cushion alone would have billed')
     ok(T.errored() == nil, 'the shrinking pass runs clean', T.errored())
@@ -1260,7 +1518,10 @@ do
     -- at all -- which reads as the storm being broken rather than as the rule
     -- working.
     local C = newStormClient()
-    C.record(2, 0.0, 0.0, 500.0, 900.0, 0.0, 500.0, 600000, 60000, 4.0)
+    local env = C.env
+    local rec = C.record(2, 0.0, 0.0, 500.0, 900.0, 0.0, 500.0, 600000, 60000, 4.0)
+    local zone = zoneOf(env, rec)
+    local probe = shapeProbe(env, zone)
 
     local function edgeAt(x, y)
         C.pedAt = pt(x, y)
@@ -1269,29 +1530,43 @@ do
         return e and e.edgeDistance
     end
 
-    ok(near(edgeAt(0.0, 0.0), -500.0, 0.5),
-        'the middle of the current circle reads 500m inside',
-        edgeAt(0.0, 0.0))
-    ok(near(edgeAt(900.0, 0.0), -500.0, 0.5),
-        'and the middle of the NEXT circle reads 500m inside too, where the '
-            .. 'circle rule read 400m OUTSIDE', edgeAt(900.0, 0.0))
-    ok(near(edgeAt(450.0, 0.0), -50.0, 0.5),
+    -- ═══ THE METRES COME OFF THE SHAPE NOW, NOT OFF A RADIUS (#344) ═══
+    --
+    -- "The middle of a 500 m circle reads 500 m inside" was a fact about a circle.
+    -- The zone is a blob, so the depth at its centre is its INRADIUS -- a number
+    -- the jitter draw decides -- and a literal here would be asserting the draw.
+    -- The probe walks the boundary for it, which is a different derivation from the
+    -- one the client uses, so the two agreeing is still evidence.
+    --
+    -- THE TEETH ARE UNMOVED, and they were never the magnitude. Every case below
+    -- turns on WHICH PART of the zone is measured: the middle of the NEXT shape
+    -- reads INSIDE, where the pre-#328 circle rule read 400 m outside, and no
+    -- current-circle-only implementation can produce that whatever the shape is.
+    ok(near(edgeAt(0.0, 0.0), probe(0.0, 0.0), 0.5),
+        'the middle of the current shape reads its own depth inside',
+        ('%s against %.2f'):format(tostring(edgeAt(0.0, 0.0)), probe(0.0, 0.0)))
+    ok(edgeAt(900.0, 0.0) < 0.0
+        and near(edgeAt(900.0, 0.0), probe(900.0, 0.0), 0.5),
+        'and the middle of the NEXT shape reads INSIDE too, where the circle rule '
+            .. 'read 400m OUTSIDE',
+        ('%s against %.2f'):format(tostring(edgeAt(900.0, 0.0)), probe(900.0, 0.0)))
+    ok(edgeAt(450.0, 0.0) < 0.0
+        and near(edgeAt(450.0, 0.0), probe(450.0, 0.0), 0.5),
         'the lens between them reads inside from the nearer rim',
-        edgeAt(450.0, 0.0))
-    ok(near(edgeAt(0.0, 700.0), 200.0, 0.5),
+        ('%s against %.2f'):format(tostring(edgeAt(450.0, 0.0)), probe(450.0, 0.0)))
+    ok(edgeAt(0.0, 700.0) > 0.0
+        and near(edgeAt(0.0, 700.0), probe(0.0, 700.0), 0.5),
         'and off the side of the pair, inside neither, it reads positive',
-        edgeAt(0.0, 700.0))
+        ('%s against %.2f'):format(tostring(edgeAt(0.0, 700.0)), probe(0.0, 700.0)))
     ok(C.errored() == nil, 'the client storm callbacks run clean', C.errored())
 
     -- THE SIGN IS THE PART THE GRADE AND THE SKY READ, so it is asserted as a
-    -- sign rather than only as a magnitude, on a sweep that crosses both discs
+    -- sign rather than only as a magnitude, on a sweep that crosses both shapes
     -- and the gap. A nested-only implementation gets the left half of this right
     -- and the right half backwards.
     local wrongSign, firstWrong = 0, nil
     for x = -800, 1800, 100 do
-        local d1 = math.abs(x) - 500.0
-        local d2 = math.abs(x - 900.0) - 500.0
-        local expectInside = math.min(d1, d2) < 0.0
+        local expectInside = probe(x + 0.0, 0.0) < 0.0
         local got = edgeAt(x + 0.0, 0.0)
         if (got ~= nil and got < 0.0) ~= expectInside then
             wrongSign = wrongSign + 1
@@ -1299,7 +1574,7 @@ do
         end
     end
     ok(wrongSign == 0,
-        'and the sign is negative inside EITHER circle and positive outside '
+        'and the sign is negative inside EITHER shape and positive outside '
             .. 'both, all the way across',
         firstWrong and ('first wrong at x = ' .. firstWrong) or nil)
 
@@ -1322,10 +1597,14 @@ do
     C.pedAt = pt(1590.0, 0.0)
     C.frame()
     local moved = C.last() and C.last().edgeDistance
-    ok(near(held, 200.0, 0.5),
-        'the tick band measures 200m from the NEXT circle, not 1100m from the '
-            .. 'current one', tostring(held))
-    ok(near(moved, 190.0, 0.5),
+    -- THE NUMBER IS THE FAR SHAPE'S, WHICH IS THE WHOLE TEST. At (1600, 0) the
+    -- current shape is about 1100 m away and the target about 200: a frame band
+    -- reading the old circle would be off by nine hundred metres, which no shape
+    -- change can disguise.
+    ok(held ~= nil and near(held, probe(1600.0, 0.0), 0.5) and held < 400.0,
+        'the tick band measures off the NEXT shape, not 1100m from the current one',
+        ('%s against %.2f'):format(tostring(held), probe(1600.0, 0.0)))
+    ok(moved ~= nil and near(moved, held - 10.0, 0.05),
         'and a frame that walks 10m toward it moves the readout 10m, against '
             .. 'the same union', ('%s -> %s'):format(tostring(held),
             tostring(moved)))
@@ -1488,17 +1767,23 @@ do
     ok(#K.markers > 40 and #K.polys == 0,
         'a forced columns is still the marker walk it always was', #K.markers)
 
-    -- ═══ AND IT BARELY EVER CHANGES ITS MIND, WHICH IS THE COST OF DECIDING
-    --     PER FRAME ═══
+    -- ═══ AND HOW MANY LOOPS THE WALL DRAWS ACROSS A WHOLE PHASE, WHICH IS THE
+    --     PROPERTY #344 MADE LOAD-BEARING ═══
     --
-    -- A renderer chosen from the shape can in principle swap under the player
-    -- mid-phase, and a wall that changes texture while somebody is looking at it
-    -- is exactly the class of thing that gets reported as a render bug. Sampled
-    -- across a whole phase: a NESTED phase never swaps -- the target is inside the
-    -- current circle from the first frame to the last -- and a BREAKOUT swaps once,
-    -- at the very end of the sweep, where the shrinking circle finally swallows the
-    -- target and both renderers are describing the same ring anyway.
-    local function discsAcross(phase, cx0, cy0, r0, cx1, cy1, r1, waitMs, shrinkMs)
+    -- THIS USED TO COUNT `discs` AND ASK WHETHER THE RENDERER SWAPPED. Nothing
+    -- chooses a renderer from the shape any more -- the strip draws every shape, and
+    -- /brwallstyle is the only thing left that can ask for a marker -- so that
+    -- question was answered by construction while its DERIVATION had quietly stopped
+    -- describing the shipping wall: it counted the discs of a union of CIRCLES, and
+    -- the zone is a pair of blobs.
+    --
+    -- THE LIVE QUESTION AT THE SAME SAMPLE POINTS IS THE COMPONENT COUNT, and it is
+    -- worth more than the old one. One loop is a single clean silhouette; two is the
+    -- overlapping-union artifact config/storm.lua announces, drawn as two whole
+    -- boundaries with curtain inside the safe zone. So this is what keeps that
+    -- artifact off every ordinary phase: a nested phase is ONE loop from its first
+    -- frame to its last, and a breakout is two until the sweep swallows the target.
+    local function loopsAcross(phase, cx0, cy0, r0, cx1, cy1, r1, waitMs, shrinkMs)
         local E = newStormClient()
         local SS = E.env.BR.StormShape
         local ei = E.env.BR.Config.Storm.render.edgeInset
@@ -1506,25 +1791,25 @@ do
         local flips, prev, total = 0, nil, waitMs + shrinkMs
         for k = 0, 400 do
             local sx, sy, sr = E.env.BR.StormAt(rec, rec.tStart + total * (k / 400))
-            local n = #SS.inset(
-                SS.union2(sx, sy, sr, rec.cx1, rec.cy1, rec.r1), ei).discs
+            local n = #SS.components(
+                SS.inset(E.env.BR.StormZone(rec, sx, sy, sr), ei))
             if prev ~= nil and n ~= prev then flips = flips + 1 end
             prev = n
         end
         return flips, prev
     end
 
-    local nFlips, nEnd = discsAcross(2, 0, 0, 2600, 400, 0, 1600, 120000, 120000)
+    local nFlips, nEnd = loopsAcross(2, 0, 0, 2600, 400, 0, 1600, 120000, 120000)
     ok(nFlips == 0 and nEnd == 1,
-        'a nested phase is one cylinder from its first frame to its last -- the '
-            .. 'renderer never swaps under the player',
-        ('%d swaps, ends on %d disc(s)'):format(nFlips, nEnd))
+        'a nested phase is ONE closed loop from its first frame to its last -- no '
+            .. 'ordinary phase ever shows the overlapping-union artifact',
+        ('%d changes, ends on %d loop(s)'):format(nFlips, nEnd))
 
-    local bFlips, bEnd = discsAcross(4, 0, 0, 950, 1350, 0, 520, 75000, 187500)
+    local bFlips, bEnd = loopsAcross(4, 0, 0, 950, 1350, 0, 520, 75000, 187500)
     ok(bFlips == 1 and bEnd == 1,
-        'and a breakout swaps exactly once, at the end of the sweep where the '
-            .. 'union collapses and both renderers draw the same ring',
-        ('%d swaps, ends on %d disc(s)'):format(bFlips, bEnd))
+        'and a breakout is two loops until the sweep swallows the target, changing '
+            .. 'exactly once and ending on one',
+        ('%d changes, ends on %d loop(s)'):format(bFlips, bEnd))
 
     -- A FORCED 'solid' ON A UNION STILL DRAWS ONE DISC, which is the known lie
     -- the A/B is measured against rather than a second bug: it is only reachable
@@ -1557,35 +1842,56 @@ do
     -- marker walk is the A/B baseline's other half -- so it has to keep holding for
     -- the sessions that type the command, which is the only way anybody reaches it.
     local C = newStormClient()
-    C.record(2, 0.0, 0.0, 200.0, 360.0, 0.0, 200.0, 600000, 60000, 4.0)
+    local env = C.env
+    local rec = C.record(2, 0.0, 0.0, 200.0, 360.0, 0.0, 200.0, 600000, 60000, 4.0)
     C.env.BR.Storm.wallStyle = 'columns'
     C.pedAt = pt(0.0, 0.0)
     C.frame()
 
     local SS = C.env.BR.StormShape
     local inset = C.env.BR.Config.Storm.render.edgeInset
-    local want = SS.inset(SS.union2(0.0, 0.0, 200.0, 360.0, 0.0, 200.0), inset)
+    local want = SS.inset(zoneOf(env, rec), inset)
 
     ok(C.errored() == nil, 'the column renderer runs clean on a union',
         C.errored())
     ok(#C.markers > 40, 'and draws a wall', #C.markers)
 
-    -- EVERY MARKER IS ON THE UNION'S BOUNDARY, AND THAT ONE TEST CARRIES TWO
-    -- CLAIMS. A boundary point of a union sits on one circle and outside or on
-    -- the other, so the signed distance to the union is zero there. A marker on
-    -- an INTERIOR arc -- the half of each circle the other one swallowed -- would
-    -- be strictly inside the other disc and come out NEGATIVE. So this rules out
-    -- both a wall in the wrong place and a wall drawn through the middle of the
-    -- safe zone.
+    -- ═══ EVERY MARKER IS ON ONE PART'S BOUNDARY, AND SOME OF THEM ARE INSIDE THE
+    ---     OTHER -- WHICH IS #344'S ONE ANNOUNCED ARTIFACT ═══
+    --
+    -- This assertion used to be "the signed distance to the union is zero at every
+    -- marker", which carried two claims at once: a wall in the right place, and no
+    -- wall drawn through the middle of the safe zone. Two overlapping DISCS make
+    -- both true, because union2 computes the crossings and drops the swallowed
+    -- arcs. Two overlapping BLOBS cannot be stitched in the arc-and-segment model,
+    -- so the zone is both shapes whole and the second claim is deliberately false
+    -- here: the stretches of each boundary that run inside the other ARE drawn.
+    --
+    -- SO THE TWO CLAIMS ARE SPLIT RATHER THAN WEAKENED. Every marker is exactly on
+    -- the boundary of ONE part -- nothing is off the shape, which is the claim that
+    -- catches a wall in the wrong place -- and the interior runs are then asserted
+    -- to EXIST, by name, so that the day somebody implements the boolean union this
+    -- block goes red and gets its stronger assertion back instead of quietly
+    -- keeping a weaker one.
     local worst, worstAt = 0.0, nil
+    local interior = 0
     for _, m in ipairs(C.markers) do
-        local d = math.abs(SS.distance(want, m.x, m.y))
-        if d > worst then worst, worstAt = d, ('%.1f, %.1f'):format(m.x, m.y) end
+        local best = math.huge
+        for _, part in ipairs(want.parts) do
+            local d = math.abs(SS.distance(part, m.x, m.y))
+            if d < best then best = d end
+        end
+        if best > worst then worst, worstAt = best, ('%.1f, %.1f'):format(m.x, m.y) end
+        if SS.distance(want, m.x, m.y) < -1e-6 then interior = interior + 1 end
     end
     ok(worst < 1e-6,
-        'every column stands on the boundary of the INSET union -- none in the '
-            .. 'lens, none off the shape',
+        "every column stands on ONE part's boundary -- none off the shape",
         ('worst %.6f m at %s'):format(worst, tostring(worstAt)))
+    ok(interior > 0,
+        'and the overlap really does draw curtain inside the safe zone, which is '
+            .. 'the artifact config/storm.lua announces -- when a boolean union '
+            .. 'lands, this is the assertion that has to be turned back round',
+        ('%d of %d columns inside the other part'):format(interior, #C.markers))
 
     -- AND IT WRAPS BOTH CIRCLES. A wall that quietly fell back to the current
     -- circle would pass the test above -- a circle's own boundary is a subset of
@@ -1611,20 +1917,29 @@ do
     -- columns on the inset circle for the phases where a viewer has typed
     -- /brwallstyle columns.
     local D = newStormClient()
-    D.record(2, 0.0, 0.0, 350.0, 100.0, 0.0, 150.0, 600000, 60000, 4.0)
+    local drec = D.record(2, 0.0, 0.0, 350.0, 100.0, 0.0, 150.0, 600000, 60000, 4.0)
     D.env.BR.Storm.wallStyle = 'columns'
     D.pedAt = pt(0.0, 0.0)
     D.frame()
-    local off = 0.0
+    -- MEASURED AGAINST THE INSET SHAPE, not against `r - inset`: the radius is
+    -- bearing-dependent now, so a circle's arithmetic here would be measuring the
+    -- jitter draw. The claim is unchanged -- every column is exactly on the drawn
+    -- boundary, which is exactly edgeInset inside the logical one.
+    local dwant = D.env.BR.StormShape.inset(zoneOf(D.env, drec), inset)
+    local off, live = 0.0, -math.huge
     for _, m in ipairs(D.markers) do
-        off = math.max(off, math.abs(
-            math.sqrt(m.x * m.x + m.y * m.y) - (350.0 - inset)))
+        off = math.max(off, math.abs(D.env.BR.StormShape.distance(dwant, m.x, m.y)))
+        live = math.max(live, D.env.BR.StormShape.distance(
+            zoneOf(D.env, drec), m.x, m.y))
     end
     ok(#D.markers > 40 and off < 1e-6,
-        'and a nested next circle draws the current circle exactly, edgeInset '
-            .. 'inside the logical edge as it always did',
-        ('%d markers, worst %.6f m off %.1f'):format(#D.markers, off,
-            350.0 - inset))
+        'and a nested next circle draws ONE shape exactly, edgeInset inside the '
+            .. 'logical edge as it always did',
+        ('%d markers, worst %.6f m off the inset boundary'):format(#D.markers, off))
+    ok(near(live, -inset, 1e-6),
+        'and the furthest out any column stands is exactly edgeInset inside the '
+            .. 'boundary that damages',
+        ('%.6f against %.1f'):format(live, -inset))
 end
 
 -- ---------------------------------------------------------------------------
@@ -1665,10 +1980,10 @@ do
     -- really produces this pair -- a breakout caps the gap at gapMax (0.5) times
     -- the predecessor's radius, and 260 is exactly half of 520.
     local R0, R1, SEP = 520.0, 260.0, 1040.0
-    C.record(4, 0.0, 0.0, R0, SEP, 0.0, R1, 600000, 60000, 2.2)
+    local wrec = C.record(4, 0.0, 0.0, R0, SEP, 0.0, R1, 600000, 60000, 2.2)
     C.env.BR.Storm.wallStyle = 'columns'
 
-    local shape = SS.inset(SS.union2(0.0, 0.0, R0, SEP, 0.0, R1), rr.edgeInset)
+    local shape = SS.inset(zoneOf(C.env, wrec), rr.edgeInset)
     local P = SS.perimeter(shape)
     local slots = math.max(rr.segments, math.floor(P / rr.slotArc + 0.5))
     local ds = P / slots
@@ -1704,9 +2019,18 @@ do
     end
 
     --- Which of the two islands a column is standing on.
+    ---
+    --- ASKED AS "WHOSE BOUNDARY IS IT ON", NOT "WHOSE CENTRE IS IT NEARER" (#344).
+    --- The centre test is exact for two discs and wrong for two blobs: a column on
+    --- the far side of the near island stands up to 1.11 * R0 out, which is nearer
+    --- the FAR centre than its own, so five of forty-eight columns were reported on
+    --- the wrong island by a test that was measuring the shape rather than the
+    --- window. Every column is on one part's boundary to a picometre, so the part it
+    --- is nearest is the part it is on.
     local function onFarIsland(m)
-        return math.sqrt((m.x - SEP) ^ 2 + m.y ^ 2)
-             < math.sqrt(m.x * m.x + m.y * m.y)
+        local a = math.abs(SS.distance(shape.parts[1], m.x, m.y))
+        local b = math.abs(SS.distance(shape.parts[2], m.x, m.y))
+        return b < a
     end
 
     -- ═══ THE REPRODUCTION, BY NAME ═══
@@ -1781,29 +2105,28 @@ do
     -- 1600m phase-2 circle is 334 slots, far over the ceiling, so it is windowed
     -- too -- and it has to be windowed identically.
     local D = newStormClient()
-    D.record(2, 0.0, 0.0, 1600.0, 400.0, 0.0, 950.0, 600000, 60000, 1.25)
+    local nrec = D.record(2, 0.0, 0.0, 1600.0, 400.0, 0.0, 950.0, 600000, 60000, 1.25)
     D.env.BR.Storm.wallStyle = 'columns'
     -- Far enough OUTSIDE that the window widens past the ceiling rather than
     -- resting on the rr.segments floor: visArc is twice the distance out, so 600m
     -- outside the inset rim is where `want` first reaches maxDraw.
     D.pedAt = pt(2200.0, 0.0)
     D.frame()
-    local nested = SS.inset(SS.union2(0.0, 0.0, 1600.0, 400.0, 0.0, 950.0),
-        rr.edgeInset)
+    local nested = SS.inset(zoneOf(D.env, nrec), rr.edgeInset)
     local nslots = math.max(rr.segments,
         math.floor(SS.perimeter(nested) / rr.slotArc + 0.5))
     local nds = SS.perimeter(nested) / nslots
     local worstRing = 0.0
     for _, m in ipairs(D.markers) do
-        worstRing = math.max(worstRing, math.abs(
-            math.sqrt(m.x * m.x + m.y * m.y) - (1600.0 - rr.edgeInset)))
+        worstRing = math.max(worstRing,
+            math.abs(SS.distance(nested, m.x, m.y)))
     end
     ok(nslots > rr.maxDraw and #D.markers == rr.maxDraw,
         'a nested phase-2 circle is windowed at exactly maxDraw, as it always was',
         ('%d slots, %d drawn'):format(nslots, #D.markers))
     ok(worstRing < 1e-6,
-        'and every one of its columns is on the inset circle',
-        ('worst %.6f m off %.1f'):format(worstRing, 1600.0 - rr.edgeInset))
+        'and every one of its columns is on the inset boundary',
+        ('worst %.6f m off it'):format(worstRing))
     local dgap = 0.0
     for i = 2, #D.markers do
         local a, b = D.markers[i - 1], D.markers[i]
@@ -2472,17 +2795,14 @@ do
     -- the fix when it does is to leave the band count alone -- the gradient is where
     -- smoothness comes from now, and it is free.
     local BS = bandedClient()
-    BS.record(2, 0.0, 0.0, 2600.0, 4400.0, 0.0, 1600.0, 600000, 60000, 1.25)
+    local brec = BS.record(2, 0.0, 0.0, 2600.0, 4400.0, 0.0, 1600.0,
+        600000, 60000, 1.25)
     BS.pedAt = pt(0.0, 0.0, 30.0)
     BS.frame()
+    local bShape = SS.inset(zoneOf(BS.env, brec), rr.edgeInset)
     local bSag = 0.0
     for _, qd in ipairs(quadsOf(BS)) do
-        local mx, my = (qd.a.x + qd.b.x) * 0.5, (qd.a.y + qd.b.y) * 0.5
-        local d0 = math.sqrt(mx * mx + my * my)
-        local d1 = math.sqrt((mx - 4400.0) ^ 2 + my * my)
-        local r, d = 2600.0, d0
-        if math.abs(d1 - 1600.0) < math.abs(d0 - 2600.0) then r, d = 1600.0, d1 end
-        local sag = (r - rr.edgeInset) - d
+        local sag = sagOf(BS.env, bShape, qd)
         if sag > bSag then bSag = sag end
     end
     ok(#BS.polys > 0 and bSag <= sp.chordM + 1e-6,
@@ -2502,14 +2822,18 @@ do
     -- boundary, and the most confident possible lie about where it is safe to stand.
     local R0, R1, SEP = 520.0, 260.0, 1040.0
     local D = newStormClient()
-    D.record(4, 0.0, 0.0, R0, SEP, 0.0, R1, 600000, 60000, 2.2)
+    local drec = D.record(4, 0.0, 0.0, R0, SEP, 0.0, R1, 600000, 60000, 2.2)
     D.pedAt = pt(300.0, 0.0, 30.0)
     D.frame()
     local dq = quadsOf(D)
+    local dShape = SS.inset(zoneOf(D.env, drec), rr.edgeInset)
 
+    -- WHICH ISLAND, BY WHOSE BOUNDARY IT IS ON (#344). The centre test this used to
+    -- make is exact for two discs and reports the wrong island for two blobs: a
+    -- point on the far side of the near shape stands up to 1.11 * R0 out, which is
+    -- nearer the FAR centre than its own.
     local function island(p)
-        return (math.sqrt((p.x - SEP) ^ 2 + p.y ^ 2)
-            < math.sqrt(p.x * p.x + p.y * p.y)) and 2 or 1
+        return (partAt(D.env, dShape, p.x, p.y) == dShape.parts[2]) and 2 or 1
     end
 
     local bridges, longest = 0, 0.0
@@ -2576,24 +2900,38 @@ do
     -- one swallowed -- would be strictly inside the other disc and read negative,
     -- which is a wall through the middle of the safe zone.
     local V = newStormClient()
-    V.record(3, 0.0, 0.0, 400.0, 500.0, 0.0, 400.0, 600000, 60000, 1.7)
+    local vrec = V.record(3, 0.0, 0.0, 400.0, 500.0, 0.0, 400.0, 600000, 60000, 1.7)
     V.pedAt = pt(250.0, 0.0, 30.0)
     V.frame()
-    local venn = SS.inset(SS.union2(0.0, 0.0, 400.0, 500.0, 0.0, 400.0),
-        rr.edgeInset)
+    local venn = SS.inset(zoneOf(V.env, vrec), rr.edgeInset)
+    -- ═══ ON ONE PART'S BOUNDARY, AND THE LENS IS #344'S ANNOUNCED ARTIFACT ═══
+    --
+    -- Two overlapping DISCS are one closed loop with the swallowed arcs dropped, so
+    -- this used to be one assertion carrying two claims: nothing off the shape, and
+    -- nothing in the lens. Two overlapping BLOBS cannot be stitched in the
+    -- arc-and-segment model, so the second claim is deliberately false and is
+    -- asserted the other way round below -- see wall.union, which carries the same
+    -- split and the same note about turning it back when a boolean union lands.
     local offShape, offAt = 0.0, nil
+    local inLens = 0
     for _, qd in ipairs(quadsOf(V)) do
         for _, p in ipairs({ qd.a, qd.b }) do
-            local d = math.abs(SS.distance(venn, p.x, p.y))
+            local own = partAt(V.env, venn, p.x, p.y)
+            local d = math.abs(SS.distance(own, p.x, p.y))
             if d > offShape then offShape, offAt = d, ('%.1f,%.1f'):format(p.x, p.y) end
+            if SS.distance(venn, p.x, p.y) < -1e-6 then inLens = inLens + 1 end
         end
     end
     ok(V.errored() == nil and #V.polys > 0, 'the strip runs clean on a Venn union',
         V.errored())
     ok(offShape < 1e-6,
-        'and every corner of it stands on the boundary of the INSET union: none in '
-            .. 'the lens, none off the shape',
+        "and every corner of it stands on ONE part's INSET boundary: none off the "
+            .. 'shape',
         ('worst %.9f m at %s'):format(offShape, tostring(offAt)))
+    ok(inLens > 0,
+        'with curtain inside the lens, which is the artifact config/storm.lua '
+            .. 'announces and the assertion to invert the day the union is stitched',
+        ('%d corners inside the other part'):format(inLens))
     ok(backFacing(V, V.pedAt) == 0,
         'with a visible face at every triangle across both reflex corners',
         ('%d of %d back-facing'):format(backFacing(V, V.pedAt), #V.polys))
@@ -2639,12 +2977,22 @@ do
     -- that was worst -- and it asserts the sign as well as the size. A wall drawn
     -- OUTSIDE the damaging boundary is the failure; being a little further inside than
     -- edgeInset asked for never is.
+    --
+    -- ═══ AND IT IS THE BLOB ZONE BEING MEASURED AGAINST SINCE #344 ═══
+    --
+    -- The one line that changed is the shape: the zone this compares the curtain
+    -- with is the one the record really describes, not a pair of circles. The
+    -- measure is still the UNION's own signed distance rather than the part a quad
+    -- came from, deliberately -- the question is whether any drawn point is outside
+    -- THE BOUNDARY THAT DAMAGES, and an overlapping pair's damaging boundary is the
+    -- union. A quad that legitimately runs through the lens is deep inside it, which
+    -- a maximum ignores.
     local function excursionOn(phase, r0, r1, sep, samples)
         local E = newStormClient()
-        E.record(phase, 0.0, 0.0, r0, sep, 0.0, r1, 600000, 60000, 2.0)
+        local erec = E.record(phase, 0.0, 0.0, r0, sep, 0.0, r1, 600000, 60000, 2.0)
         E.pedAt = pt(r0 * 0.5, 0.0, 30.0)
         E.frame()
-        local zone = SS.union2(0.0, 0.0, r0, sep, 0.0, r1)
+        local zone = zoneOf(E.env, erec)
         local worst, at, nqd = -math.huge, nil, 0
         for _, qd in ipairs(quadsOf(E)) do
             nqd = nqd + 1
@@ -2703,14 +3051,13 @@ do
     for _, ph in ipairs(base.env.BR.Config.Storm.phases) do
         if ph.radius > 50.0 then
             local E = newStormClient()
-            E.record(2, 0.0, 0.0, ph.radius, 0.0, 0.0, ph.radius * 0.5,
-                600000, 60000, 2.0)
+            local erec = E.record(2, 0.0, 0.0, ph.radius, 0.0, 0.0,
+                ph.radius * 0.5, 600000, 60000, 2.0)
             E.pedAt = pt(0.0, 0.0, 30.0)
             E.frame()
-            local r = ph.radius - rr.edgeInset
+            local drawn = SS.inset(zoneOf(E.env, erec), rr.edgeInset)
             for _, qd in ipairs(quadsOf(E)) do
-                local mx, my = (qd.a.x + qd.b.x) * 0.5, (qd.a.y + qd.b.y) * 0.5
-                local sag = r - math.sqrt(mx * mx + my * my)
+                local sag = sagOf(E.env, drawn, qd)
                 if sag > worstSag then
                     worstSag, sagAt = sag, ('r %.0f'):format(ph.radius)
                 end
@@ -2739,21 +3086,16 @@ do
     -- assertion that would notice the day somebody lowers maxPolys, raises fade.bands,
     -- or makes the banded path the default again.
     local W = newStormClient()
-    W.record(2, 0.0, 0.0, 2600.0, 4400.0, 0.0, 1600.0, 600000, 60000, 1.25)
+    local wrec2 = W.record(2, 0.0, 0.0, 2600.0, 4400.0, 0.0, 1600.0,
+        600000, 60000, 1.25)
     W.pedAt = pt(0.0, 0.0, 30.0)
     W.frame()
+    local wShape = SS.inset(zoneOf(W.env, wrec2), rr.edgeInset)
     local wideSag, wideAt = 0.0, nil
     for _, qd in ipairs(quadsOf(W)) do
-        local mx, my = (qd.a.x + qd.b.x) * 0.5, (qd.a.y + qd.b.y) * 0.5
-        -- WHICH DISC THIS QUAD BELONGS TO. A disjoint union is two whole circles, so
-        -- the nearer centre is the one whose arc this chord is cutting.
-        local d0 = math.sqrt(mx * mx + my * my)
-        local d1 = math.sqrt((mx - 4400.0) ^ 2 + my * my)
-        local r, d = 2600.0, d0
-        if math.abs(d1 - 1600.0) < math.abs(d0 - 2600.0) then r, d = 1600.0, d1 end
-        local sag = (r - rr.edgeInset) - d
+        local sag = sagOf(W.env, wShape, qd)
         if sag > wideSag then
-            wideSag, wideAt = sag, ('r %.0f'):format(r)
+            wideSag, wideAt = sag, ('%.1f,%.1f'):format(qd.a.x, qd.a.y)
         end
     end
     ok(#W.polys > 0 and wideSag <= sp.chordM + 1e-6,
@@ -3384,7 +3726,8 @@ do
     -- THE SAME CONSTRUCTOR AND GET THE SAME ANSWER. That is what this block pins:
     -- not merely that the pillar is gone, but that the wall and the ledger cannot
     -- disagree about whether that disc exists.
-    local SS = newStormClient().env.BR.StormShape
+    local penv = newStormClient().env
+    local SS = penv.BR.StormShape
 
     local z = SS.union2(0.0, 0.0, 40.0, 55.0, 0.0, 0.0)
     ok(#(z.discs or {}) == 1 and #SS.components(z) == 1,
@@ -3394,6 +3737,21 @@ do
     ok(near(SS.distance(z, 55.0, 0.0), 15.0, 1e-9),
         'and the point itself reads 15m OUTSIDE that circle, which is where it is',
         SS.distance(z, 55.0, 0.0))
+
+    -- ═══ AND THE SHAPE CONSTRUCTOR MAKES THE SAME REFUSAL (#344) ═══
+    --
+    -- The two arms above are union2's, which is the disc path and the way back to
+    -- circles; the shipping zone is a blob and has to refuse the empty target for
+    -- the same reason -- otherwise the pillar comes back wearing a different shape.
+    local bz = SS.zone(0.0, 0.0, 40.0, 55.0, 0.0, 0.0,
+        penv.BR.StormUnit(0, 8))
+    ok(bz.kind == 'blob' and #SS.components(bz) == 1,
+        'the blob zone refuses it too: one shape, one loop, no pillar on the '
+            .. 'destination', ('%s, %d components'):format(tostring(bz.kind),
+            #SS.components(bz)))
+    ok(SS.distance(bz, 55.0, 0.0) > 0.0,
+        'and the point is still OUTSIDE the wall that has not reached it',
+        SS.distance(bz, 55.0, 0.0))
 
     -- THE COLLAPSED WALL STILL HAS A BOUNDARY TO WALK. Once the sweep ends,
     -- BR.StormAt answers the target at radius zero and the record's target is the
@@ -3443,14 +3801,19 @@ do
     ok(S.errored() == nil, 'the phase-8 damage pass runs clean', S.errored())
 
     local E = newStormClient()
-    E.record(8, 0.0, 0.0, 40.0, 55.0, 0.0, 0.0, 600000, 60000, 6.7)
+    local erec = E.record(8, 0.0, 0.0, 40.0, 55.0, 0.0, 0.0, 600000, 60000, 6.7)
     E.pedAt = pt(55.0, 0.0)
     E.tick(2)
     local e = E.last() and E.last().edgeDistance
-    ok(near(e, 15.0, 0.5),
-        'and the HUD reads 15m OUTSIDE there, agreeing with the ledger rather '
+    -- THE METRES ARE THE SHAPE'S, not `55 - 40`: the wall's reach at that bearing is
+    -- whatever this phase's blob reaches there. What the assertion is for is the
+    -- SIGN and the agreement with the ledger -- a one-metre disc on the destination
+    -- would have read NEGATIVE here, sheltering a player the server is billing.
+    local pprobe = shapeProbe(E.env, zoneOf(E.env, erec))
+    ok(e ~= nil and e > 0.0 and near(e, pprobe(55.0, 0.0), 0.5),
+        'and the HUD reads OUTSIDE there, agreeing with the ledger rather '
             .. 'than sheltering them in a one-metre disc',
-        tostring(e))
+        ('%s against %.2f'):format(tostring(e), pprobe(55.0, 0.0)))
 
     -- AND ONCE THE WALL ARRIVES, THE POINT IS SHELTERED BY THE CUSHION, which is
     -- the whole reason dropping the disc costs nothing: `r + margin` with r at the
@@ -3464,6 +3827,276 @@ do
             .. 'inside the cushion')
     ok(T.hurts(0.0, 0.0) == true,
         'and the ground the wall came from is not')
+end
+
+-- ---------------------------------------------------------------------------
+describe('blob.frames')
+do
+    -- ═══ IT HAS TO DRAW, ON EVERY PHASE, FOR EVERY SEED, AND THAT IS ITS OWN
+    ---     ASSERTION (#344) ═══
+    --
+    --   "ship something that will draw random shaped storm walls for each phase"
+    --
+    -- The owner's ask is something he can look at, and a shape that throws on frame
+    -- one is worse than a circle. Every callback in client/storm.lua is pcall'd by
+    -- BR.Loop.step, so a throw is a line in the console and an ABSENT wall -- which
+    -- is exactly the failure this suite has shipped over before (the whole viewpoint
+    -- file drew nothing for months because DrawPoly was unstubbed).
+    --
+    -- SO THIS IS A BREADTH SWEEP AND NOT A GEOMETRY ONE. Every shipping phase, four
+    -- seeds each, and four geometries per phase -- nested, barely overlapping,
+    -- disjoint, and collapsed onto the target -- through the real frame callback.
+    -- What it asserts is only what breadth can assert: it ran clean, it drew
+    -- something, everything it drew is on the shape, and it stayed inside the poly
+    -- budget. The exact geometry is `wall.strip`'s and `blob.distance`'s business.
+    --
+    -- ONE CLIENT, RE-RECORDED, because standing up a sandbox loads the real files
+    -- and this sweep is 128 frames. The record is what varies, which is what varies
+    -- in a match.
+    local C = newStormClient()
+    local env = C.env
+    local SS = env.BR.StormShape
+    local rr = env.BR.Config.Storm.render
+    local phases = env.BR.Config.Storm.phases
+
+    local frames, drew, worstOff, worstAt = 0, 0, 0.0, nil
+    local worstPolys, budget = 0, rr.strip.maxPolys or 1024
+    for i = 1, #phases do
+        local r0 = phases[i].radius
+        if r0 > 0.0 then
+            local r1 = (phases[i + 1] and phases[i + 1].radius) or 0.0
+            for s = 1, 4 do
+                local seed = s * 60013 + i
+                -- Nested, barely overlapping, fully separated, and collapsed onto
+                -- the target -- the four shapes the solver can hand the renderer.
+                for _, sep in ipairs({ (r0 - r1) * 0.4, r0 * 0.95,
+                                       r0 + r1 + r0 * 0.5, 0.0 }) do
+                    -- PHASE INDEX 2 OR LATER ON THE WIRE, whatever the radius pair:
+                    -- phase 1's hold suppresses the wall by design, so a phase-1
+                    -- record would let this sweep pass by drawing nothing at all.
+                    local rec = C.record(math.max(2, i), 0.0, 0.0, r0,
+                        sep, 0.0, r1, 600000, 60000, 2.0)
+                    rec.seed = seed
+                    C.pedAt = pt(r0 * 0.3, 0.0, 30.0)
+                    C.frame()
+                    frames = frames + 1
+                    if #C.polys > 0 then drew = drew + 1 end
+                    if #C.polys > worstPolys then worstPolys = #C.polys end
+                    local drawn = SS.inset(zoneOf(env, rec), rr.edgeInset or 0.0)
+                    for _, qd in ipairs(quadsOf(C)) do
+                        for _, v in ipairs({ qd.a, qd.b }) do
+                            local own = partAt(env, drawn, v.x, v.y)
+                            local d = math.abs(SS.distance(own, v.x, v.y))
+                            if d > worstOff then
+                                worstOff = d
+                                worstAt = ('phase %d seed %d sep %.0f'):format(
+                                    i, seed, sep)
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    ok(C.errored() == nil,
+        ('%d frames across every phase, four seeds and four geometries each, and '
+            .. 'not one of them threw'):format(frames), C.errored())
+    ok(frames == 112 and drew == frames,
+        'every single frame drew a wall -- none of them silently drew nothing',
+        ('%d of %d frames drew'):format(drew, frames))
+    ok(worstOff < 1e-6,
+        'and every corner of every one of them stands on the shape the record '
+            .. 'describes',
+        ('worst %.3e m off, at %s'):format(worstOff, tostring(worstAt)))
+    ok(worstPolys <= budget,
+        'inside the poly budget throughout, so nothing is rationed and nothing runs '
+            .. 'away',
+        ('worst %d polys of %d'):format(worstPolys, budget))
+
+    -- AND THE COLLAPSED END OF THE LAST PHASE, walked in metres rather than sampled:
+    -- the radius runs 40 to 0 and passes through the sizes where the corner arcs no
+    -- longer survive the inset and then the shape itself does not. Every one of those
+    -- frames still has to draw, because the wall is on top of the last fight in the
+    -- match when it does.
+    local endFrames, endDrew = 0, 0
+    local last = phases[#phases - 1] and phases[#phases - 1].radius or 40.0
+    local function endFrame(rr0)
+        local rec = C.record(8, 0.0, 0.0, rr0, 12.0, 0.0, 0.0, 600000, 60000, 6.7)
+        rec.seed = 4242
+        C.pedAt = pt(0.0, 0.0, 30.0)
+        C.frame()
+        return #C.polys
+    end
+    for k = 0, 39 do
+        endFrames = endFrames + 1
+        if endFrame(last * (1.0 - k / 40.0)) > 0 then endDrew = endDrew + 1 end
+    end
+    ok(C.errored() == nil and endDrew == endFrames,
+        'and the final sweep draws a wall at every radius from 40 metres down to a '
+            .. 'metre, through both circle fallbacks',
+        ('%d of %d frames, %s'):format(endDrew, endFrames, tostring(C.errored())))
+
+    -- AND AT RADIUS NOTHING IT DRAWS NOTHING, which is the storm.wall callback's own
+    -- `r <= 1 and rec.r1 <= 1` gate and not a shape decision. Pinned beside the sweep
+    -- above so the two cannot be confused: the wall is absent because the zone has
+    -- collapsed, not because the shape ran out of boundary to walk.
+    ok(endFrame(0.0) == 0 and C.errored() == nil,
+        'and a zone collapsed onto its own target draws no wall at all, cleanly',
+        tostring(C.errored()))
+end
+
+-- ---------------------------------------------------------------------------
+describe('blob.agree')
+do
+    -- ═══ THE CLIENT DRAWS THE WALL AND THE SERVER DOES THE DAMAGE, SO THEY HAVE TO
+    ---     DERIVE THE SAME SHAPE (#344) ═══
+    --
+    -- Nothing about the shape is on the wire. The record carries one integer -- the
+    -- match's storm seed -- and both halves build the shape from it plus the phase
+    -- index. If they disagree by a metre the wall is a lie by a metre, and the
+    -- symptom is damage taken at a place the curtain says is safe: the exact live
+    -- report edgeInset exists for, with no bound on how far.
+    --
+    -- SO THIS IS THE SHAPE'S `first.stream`: two separate Lua states, the real
+    -- production call in each, compared point for point rather than reasoned about.
+    -- The server state has no client file in it and the client state has no server
+    -- file, so nothing is shared between them but br_lib.
+    local W = walkMatch({ x = 1000.0, y = -1500.0, name = 'Agree' }, true)
+    local senv = W.S.env
+    local rec = W.S.match.storm
+    ok(rec ~= nil and rec.seed ~= nil and rec.seed == W.S.match.stormSeed
+        and rec.seed ~= 0,
+        "the published record carries the match's own storm seed",
+        ('%s against %s'):format(tostring(rec and rec.seed),
+            tostring(W.S.match.stormSeed)))
+
+    local prev = W.S.lastSent(senv.BR.Net.STORM_PREVIEW)
+    ok(prev ~= nil and prev.seed == W.S.match.stormSeed,
+        'and so does the warmup preview, so the bus is shown the shape phase 1 '
+            .. 'will actually wear',
+        ('%s against %s'):format(tostring(prev and prev.seed),
+            tostring(W.S.match.stormSeed)))
+
+    -- ═══ THE SAME BOUNDARY IN BOTH STATES, TO THE BIT ═══
+    local C = newStormClient()
+    local cenv = C.env
+    local CX, CY, R = 700.0, -200.0, 1300.0
+    -- A record the two states share: the SAME seed and phase the server published,
+    -- against a breakout pair, which is the case with two components in it.
+    local shared = {
+        phase = rec.phase, seed = rec.seed,
+        cx0 = CX, cy0 = CY, r0 = R,
+        cx1 = CX + 2400.0, cy1 = CY, r1 = 800.0,
+        tStart = 0, tWait = 600000, tShrink = 60000, dps = 2.0,
+    }
+    local sz = senv.BR.StormZone(shared, CX, CY, R)
+    local cz = cenv.BR.StormZone(shared, CX, CY, R)
+    ok(sz.kind == cz.kind and #sz.pieces == #cz.pieces
+        and near(sz.P, cz.P, 0.0),
+        'the two states build the same kind of shape, the same pieces and the same '
+            .. 'perimeter, exactly',
+        ('%s/%d/%.9f against %s/%d/%.9f'):format(sz.kind, #sz.pieces, sz.P,
+            cz.kind, #cz.pieces, cz.P))
+
+    local worstPt, worstD, probes = 0.0, 0.0, 0
+    for k = 0, 719 do
+        local s = sz.P * k / 720
+        local ax, ay = senv.BR.StormShape.pointAtArc(sz, s)
+        local bx, by = cenv.BR.StormShape.pointAtArc(cz, s)
+        worstPt = math.max(worstPt, math.abs(ax - bx), math.abs(ay - by))
+    end
+    for gx = -10, 10 do
+        for gy = -10, 10 do
+            local px, py = CX + gx * 260.0, CY + gy * 260.0
+            probes = probes + 1
+            worstD = math.max(worstD, math.abs(
+                senv.BR.StormShape.distance(sz, px, py)
+                - cenv.BR.StormShape.distance(cz, px, py)))
+        end
+    end
+    ok(worstPt == 0.0,
+        'and every one of 720 points of the boundary is the identical coordinate',
+        ('worst %.3e m'):format(worstPt))
+    ok(worstD == 0.0,
+        ('and the signed distance agrees at all %d probes, to the bit -- the wall '
+            .. 'and the ledger cannot be measuring different shapes'):format(probes),
+        ('worst %.3e m'):format(worstD))
+
+    -- ═══ AND THE SHAPE REALLY DEPENDS ON THE SEED ═══
+    --
+    -- Both sides agreeing is worth nothing if both sides ignore the seed. A
+    -- different seed has to be a different shape, or a derivation that dropped it
+    -- would pass every assertion above.
+    local other = { }
+    for k, v in pairs(shared) do other[k] = v end
+    other.seed = rec.seed + 1
+    local oz = cenv.BR.StormZone(other, CX, CY, R)
+    local moved = 0.0
+    for k = 0, 359 do
+        local s = cz.P * k / 360
+        local ax, ay = cenv.BR.StormShape.pointAtArc(cz, s)
+        local bx, by = cenv.BR.StormShape.pointAtArc(oz, s)
+        moved = math.max(moved, math.sqrt((ax - bx) ^ 2 + (ay - by) ^ 2))
+    end
+    ok(moved > 10.0,
+        'the next seed along is a visibly different shape, so the seed is really '
+            .. 'being read rather than defaulted on both sides',
+        ('worst point moves %.1f m'):format(moved))
+
+    -- AND THE PHASE INDEX IS THE OTHER HALF OF IT, which is what "a random shape
+    -- for EACH PHASE" means -- one shape per match would pass everything above.
+    local nextPhase = {}
+    for k, v in pairs(shared) do nextPhase[k] = v end
+    nextPhase.phase = shared.phase + 1
+    local pz = cenv.BR.StormZone(nextPhase, CX, CY, R)
+    local pmoved = 0.0
+    for k = 0, 359 do
+        local s = cz.P * k / 360
+        local ax, ay = cenv.BR.StormShape.pointAtArc(cz, s)
+        local bx, by = cenv.BR.StormShape.pointAtArc(pz, s)
+        pmoved = math.max(pmoved, math.sqrt((ax - bx) ^ 2 + (ay - by) ^ 2))
+    end
+    ok(pmoved > 10.0,
+        'and the next PHASE of the same match is a different shape again',
+        ('worst point moves %.1f m'):format(pmoved))
+
+    -- ═══ END TO END: WHAT THE HUD SAYS AND WHAT THE LEDGER BILLS ═══
+    --
+    -- The assertions above compare the shape. This compares the two PRODUCTION
+    -- READOUTS through their own call sites -- the client's storm.state tick and the
+    -- server's damage pass -- on one record, at points chosen off the boundary
+    -- itself. A side that spelled the derivation differently would show up here even
+    -- if it happened to agree about the kind and the perimeter.
+    local S2 = newStormServer()
+    local r2 = S2.record(3, CX, CY, R, CX + 2400.0, CY, 800.0, 600000, 60000, 2.0)
+    r2.seed = rec.seed
+    local zone2 = S2.env.BR.StormZone(r2, CX, CY, R)
+    local C2 = newStormClient()
+    local cr2 = C2.record(3, CX, CY, R, CX + 2400.0, CY, 800.0, 600000, 60000, 2.0)
+    cr2.seed = rec.seed
+
+    local disagree = 0
+    for _, off in ipairs({ -60.0, -5.0, 5.0, 40.0 }) do
+        for k = 0, 11 do
+            local px, py = offBoundary(S2.env, zone2, zone2.P * k / 12, off)
+            local billed = S2.hurts(px, py)
+            C2.pedAt = pt(px, py)
+            C2.tick(2)
+            local e = C2.last() and C2.last().edgeDistance
+            -- The client's metres and the server's cushion are different questions,
+            -- so the comparison is the one thing they must agree on: a player the
+            -- server bills is one the client is telling to run.
+            if billed ~= (e ~= nil and e > 10.0) then disagree = disagree + 1 end
+        end
+    end
+    ok(disagree == 0,
+        'and at 48 points taken off the boundary itself, every player the server '
+            .. 'bills is one the client is showing as outside the cushion',
+        ('%d disagreements'):format(disagree))
+    ok(S2.errored() == nil and C2.errored() == nil,
+        'with both passes clean',
+        tostring(S2.errored()) .. ' / ' .. tostring(C2.errored()))
 end
 
 -- ---------------------------------------------------------------------------
@@ -3709,6 +4342,31 @@ do
     local after = #S.out
     env.BR.Storm.sendPreview(S.match, 7)
     ok(#S.out == after, 'nothing is sent once phase 1 has spent the circle')
+
+    -- ═══ AND THE JOIN SNAPSHOT SENDS THE SAME PAYLOAD, WHICH IS A SOURCE-LEVEL
+    ---     ASSERTION BECAUSE THIS SUITE CANNOT REACH THE SNAPSHOT (#344) ═══
+    --
+    -- server/broadcast.lua's viewFor puts this circle in the snapshot, so a br_ui
+    -- restart or a reconnect mid-warmup gets it back. It used to build its own copy
+    -- of the table, and the day the payload grew the SEED only one of the two copies
+    -- grew it: the room saw phase 1's shape and a reconnecting client saw a circle.
+    --
+    -- WHY IT IS A GREP AND NOT A BEHAVIOUR TEST, said plainly. Nothing in this suite
+    -- stands up broadcast.lua -- it wants the whole roster, the lobby and the match
+    -- list behind it -- and a mutation that reinstated the second copy passed every
+    -- assertion in this file. The gap was the DUPLICATION rather than a missing
+    -- field, so the fix was to delete the second spelling and this is what holds it
+    -- deleted. tools/test_matchexit.lua reads a production file the same way and for
+    -- the same reason.
+    local bf = io.open(RES .. 'br_core/server/broadcast.lua', 'r')
+    local bsrc = bf and bf:read('a') or ''
+    if bf then bf:close() end
+    ok(bsrc ~= '' and bsrc:find('BR.Storm.previewPayload(m)', 1, true) ~= nil,
+        'the join snapshot asks server/storm.lua for the preview payload',
+        ('%d bytes read'):format(#bsrc))
+    ok(bsrc ~= '' and bsrc:find('m.stormFirst.r', 1, true) == nil,
+        'and does not build a second copy of it, which is how the seed would have '
+            .. 'been dropped from exactly one of the two sends')
 end
 
 -- ---------------------------------------------------------------------------
@@ -3957,19 +4615,36 @@ do
     -- ON CIRCLE 1, AND AT ITS RADIUS LESS THE INSET. Read off the geometry rather
     -- than off a marker's scale: every quad corner is edgeInset inside circle 1's
     -- own rim, which is the same claim the cylinder's diameter used to make.
+    --
+    -- ═══ AND CIRCLE 1 IS PHASE 1'S SHAPE NOW, NOT A CIRCLE (#344) ═══
+    --
+    -- Which is the whole reason the preview carries a seed: the bus is shown the
+    -- shape phase 1 will actually wear, so the handoff is a crossfade between two
+    -- alphas rather than a circle turning into a blob halfway through it. The
+    -- expectation is built from phase 1's own unit -- the same derivation the client
+    -- makes from the published field -- because the claim being asserted is that the
+    -- preview went through drawWall on the shape the record will carry, and any
+    -- other shape here would be the defect rather than a different spelling.
+    local PSS = C.env.BR.StormShape
+    local pwant = PSS.inset(
+        PSS.blob(400.0, 0.0, 2600.0, C.env.BR.StormUnit(nil, 1)),
+        rr.edgeInset or 0.0)
     local worstR, nq = 0.0, 0
     for _, qd in ipairs(quadsOf(C)) do
         for _, v in ipairs({ qd.a, qd.b }) do
             nq = nq + 1
-            local d = math.sqrt((v.x - 400.0) ^ 2 + v.y ^ 2)
-            local off = math.abs(d - (2600.0 - (rr.edgeInset or 0.0)))
+            local off = math.abs(PSS.distance(pwant, v.x, v.y))
             if off > worstR then worstR = off end
         end
     end
     ok(nq > 0 and worstR < 1e-6,
-        'centred on circle 1, at its radius less the edgeInset every wall in this '
-            .. 'file pays',
+        "centred on circle 1, on phase 1's own shape, at the edgeInset every wall "
+            .. 'in this file pays',
         ('%d corners, worst %.9f m off'):format(nq, worstR))
+    ok(pwant.kind == 'blob',
+        'and that shape is a blob rather than a circle -- a preview that drew a '
+            .. 'circle would pop into a different outline across the handoff',
+        tostring(pwant.kind))
 
     -- THE SAME HEIGHT AS THE LIVE WALL, DELIBERATELY, and asserted against the live
     -- config rather than against a preview value -- because there is no preview
@@ -4063,11 +4738,16 @@ do
     -- One clock read in two directions is what makes it hold; two clocks would drift
     -- and this is the assertion that would catch them.
     --
-    -- THE TWO WALLS ARE TOLD APART BY WHICH CIRCLE THEIR CORNERS STAND ON, not by their
+    -- THE TWO WALLS ARE TOLD APART BY WHICH SHAPE THEIR CORNERS STAND ON, not by their
     -- alpha -- an alpha is what is under test here, so reading it to decide which wall
     -- it belongs to would be circular. The record below nests circle 1 well inside the
-    -- opening circle, so the two boundaries are 1400 m apart at their closest and the
-    -- classification cannot be ambiguous.
+    -- opening circle, so the two boundaries are well over a kilometre apart at their
+    -- closest and the classification cannot be ambiguous.
+    --
+    -- BY SHAPE AND NOT BY RADIUS SINCE #344: both walls are blobs, so "is this corner
+    -- CR - inset from circle 1's centre" is no longer a question about circle 1 -- it
+    -- is a question about the jitter draw, and it answered NO for every corner, which
+    -- read as neither wall being on screen at all.
 
     local proto = newStormClient()
     local MS, PS = proto.env.BR.MatchState, proto.env.BR.PlayerState
@@ -4084,6 +4764,18 @@ do
     local CCX, CCY, CR = 500.0, 0.0, 1600.0
     local WAIT, SHRINK = 120000, 60000
 
+    -- THE TWO SHAPES THE TWO WALLS DRAW, built once. Phase 1's unit for both: the
+    -- preview reads the published field (no seed, so seed 0) and the record below is
+    -- built by hand (BR.BuildStormRecord's own default, also 0), which is the same
+    -- agreement the game has between the preview payload and the record. The real
+    -- wall's zone is the opening circle union circle 1, which nests, so it is one
+    -- shape -- exactly as it is in a match.
+    local PSS = proto.env.BR.StormShape
+    local UNIT1 = proto.env.BR.StormUnit(nil, 1)
+    local PREVIEW_SHAPE = PSS.inset(PSS.blob(CCX, CCY, CR, UNIT1), INSET)
+    local REAL_SHAPE = PSS.inset(
+        PSS.zone(OCX, OCY, OR, CCX, CCY, CR, UNIT1), INSET)
+
     --- Which wall each triangle of the last frame belongs to, and at what alpha.
     ---
     --- Returns two records, `{ n, alpha, mixed }`. `n` is 0 for a wall that is not on
@@ -4097,13 +4789,11 @@ do
         local stray = nil
         for _, t in ipairs(C.polys) do
             local v = t[1]
-            local dP = math.sqrt((v.x - CCX) ^ 2 + (v.y - CCY) ^ 2)
-            local dR = math.sqrt((v.x - OCX) ^ 2 + (v.y - OCY) ^ 2)
             local w
-            if math.abs(dP - (CR - INSET)) < 1e-6 then w = pv
-            elseif math.abs(dR - (OR - INSET)) < 1e-6 then w = rw
+            if math.abs(PSS.distance(PREVIEW_SHAPE, v.x, v.y)) < 1e-6 then w = pv
+            elseif math.abs(PSS.distance(REAL_SHAPE, v.x, v.y)) < 1e-6 then w = rw
             else
-                stray = stray or ('a triangle at (%.3f, %.3f) is on neither circle')
+                stray = stray or ('a triangle at (%.3f, %.3f) is on neither shape')
                     :format(v.x, v.y)
             end
             if w then

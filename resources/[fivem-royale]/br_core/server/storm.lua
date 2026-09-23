@@ -136,10 +136,27 @@ end
 --- shift by one. Nothing a player could see would look broken; the storm would
 --- simply stop being the storm the preview promised, and it would take a
 --- side-by-side walk of two matches to notice.
+---
+--- ═══ THE SEED IS KEPT NOW, NOT JUST SPENT (#344) ═══
+---
+--- Every phase draws a random SHAPE as well as a centre, and the client has to
+--- derive the same shape from the same seed -- so the integer goes on the record
+--- and out on the wire (BR.BuildStormRecord's `seed`, BR.StormZone's derivation).
+--- It is the same number the stream was built from, kept rather than recomputed,
+--- because a second `GetGameTimer() + m.seq * 7919` a millisecond later is a
+--- different number and the client would draw a different wall from the one the
+--- damage rule is billing.
+---
+--- AND IT IS FLOORED TO AN INTEGER, which is #346: BR.Rng runs its argument through
+--- math.tointeger and falls back to ZERO when that fails, so a fractional seed is
+--- silently seed 0 -- every match the same storm, with nothing to notice.
+--- GetGameTimer returns whole milliseconds in the game and a test harness can hand
+--- back whatever it likes.
 --- @param m table
 local function seedRng(m)
     if m.stormRng then return end
-    m.stormRng = BR.Rng(GetGameTimer() + m.seq * 7919)
+    m.stormSeed = math.tointeger(math.floor(GetGameTimer() + m.seq * 7919)) or 0
+    m.stormRng = BR.Rng(m.stormSeed)
 end
 
 --- Draw the centre the given phase closes on, off this match's storm stream.
@@ -261,9 +278,14 @@ local function enterPhase(m, phase, cx0, cy0, r0, now, waitSec)
     local shrinkSec = BR.Clamp(furthest / cfg.shrinkPace.metersPerSec,
         cfg.shrinkPace.minSeconds, ceiling)
 
+    -- THE SEED RIDES ALONG, WHICH IS WHAT MAKES THE WALL A SHAPE (#344). It is the
+    -- match's own storm seed, unchanged every phase -- the phase INDEX is the other
+    -- half of the derivation, and the record already carries that. seedRng has
+    -- always run before any route into a phase, so this is never nil in the game;
+    -- BR.BuildStormRecord's header says what a missing one would mean.
     m.storm = BR.BuildStormRecord(phase, cx0, cy0, r0, cx1, cy1, p.radius,
         now, (waitSec or p.wait) * 1000 * timeScale,
-        shrinkSec * 1000 * timeScale, p.dps)
+        shrinkSec * 1000 * timeScale, p.dps, m.stormSeed)
 
     -- ARMED FOR THIS PHASE'S SWEEP. Every route into a phase comes through
     -- here -- the first one, the next one, `brphase`, and the thaw -- so this
@@ -299,11 +321,29 @@ end
 --- standing still, with no clock in it.
 --- @param m table
 --- @return table|nil
-local function previewPayload(m)
-    local f = m.stormFirst
+--- THE SEED IS IN IT, because the preview is a WALL as well as a ring (#327, #340)
+--- and every wall is a shape now (#344). Without it the bus would be shown a circle
+--- that changes into phase 1's blob as the real wall fades in over it -- two
+--- different shapes on one circle, across a handoff written to be seamless. It is
+--- the same seed the record will carry, so the preview curtain IS phase 1's wall.
+---
+--- ═══ PUBLIC, BECAUSE THE SNAPSHOT SENDS THE SAME THING AND USED TO SPELL IT
+---     ITSELF ═══
+---
+--- server/broadcast.lua's viewFor puts this circle in the join snapshot, so a
+--- br_ui restart or a reconnect mid-warmup gets it back. It built its own copy of
+--- the table, which was two spellings of one payload -- and the day the payload
+--- grew a field (#344's seed) only one of them grew it: the room saw phase 1's
+--- shape and a reconnecting client saw a circle. So there is one function and the
+--- snapshot calls it.
+--- @param m table
+--- @return table|nil
+function BR.Storm.previewPayload(m)
+    local f = m and m.stormFirst
     if not f then return nil end
-    return { cx = f.cx, cy = f.cy, r = f.r }
+    return { cx = f.cx, cy = f.cy, r = f.r, seed = m.stormSeed }
 end
+local previewPayload = BR.Storm.previewPayload
 
 --- Draw circle 1 the moment the match forms, and tell the room where it is.
 ---
@@ -456,7 +496,7 @@ function BR.Storm.begin(m)
     if BR.Storm.isFrozen and BR.Storm.isFrozen() then
         local now = GetGameTimer()
         m.storm = BR.BuildStormRecord(1, a.x, a.y, r0, a.x, a.y, r0,
-            now, 24 * 60 * 60 * 1000, 1000, 0.0)
+            now, 24 * 60 * 60 * 1000, 1000, 0.0, m.stormSeed)
         publish(m)
         print(('[br_core] storm: match %s starts FROZEN (brstormfreeze is on)')
             :format(BR.MatchTag(m.id)))
@@ -629,13 +669,27 @@ BR.Sched.every(1000, 'storm.damage', function(dt)
         -- failure `server.collapse` exists to prevent at the other end of the
         -- phase.
         --
-        -- union2 NOW REFUSES A DISC WITH NO RADIUS, so neither happens and the two
-        -- files cannot disagree about whether that disc exists -- they are looking
-        -- at the same constructor. Its header argues the decision. On phase 8 this
-        -- reads exactly `r + margin` against the travelling wall, which is what it
-        -- read before #328, and the destination is sheltered when the wall
+        -- The constructor NOW REFUSES A DISC WITH NO RADIUS, so neither happens and
+        -- the two files cannot disagree about whether that disc exists -- they are
+        -- looking at the same constructor. Its header argues the decision. On phase
+        -- 8 this reads exactly `r + margin` against the travelling wall, which is
+        -- what it read before #328, and the destination is sheltered when the wall
         -- actually arrives on it rather than for the minute beforehand.
-        local zone = BR.StormShape.union2(cx, cy, r, rec.cx1, rec.cy1, rec.r1)
+        --
+        -- ═══ AND THE ZONE IS A SHAPE, NOT A PAIR OF CIRCLES (#344) ═══
+        --
+        -- BR.StormZone is the same call client/storm.lua's wall and HUD make, off
+        -- the same record and the same solved circle, so what this bills for is
+        -- exactly the boundary the player is looking at. That is not a tidiness
+        -- claim: the shape is derived from the record's seed rather than sent, so
+        -- one side spelling the derivation differently is a wall in the wrong place
+        -- with nothing on the wire to contradict it.
+        --
+        -- EXACT ON AN OVERLAPPING BREAKOUT TOO, which is the one case the WALL is
+        -- not: a signed distance to a union is the minimum of the two, which holds
+        -- for any two shapes. StormShape.distance's header carries that and
+        -- config/storm.lua's `shape` block announces the drawing artifact.
+        local zone = BR.StormZone(rec, cx, cy, r)
 
         -- Capped so a long scheduler stall (or a test jumping the clock)
         -- cannot land one apocalyptic tick.
@@ -796,8 +850,10 @@ RegisterCommand('brstormfreeze', function(_, args)
             -- A day of holding. Long enough that no session outlives it, and
             -- still a real number rather than an infinity that would poison
             -- every subtraction the clients do with it.
+            -- THE SEED SURVIVES A FREEZE, so the wall keeps the shape it was
+            -- standing in rather than reverting to a circle for the whole freeze.
             m.storm = BR.BuildStormRecord(phase, cx, cy, r, cx, cy, r,
-                now, 24 * 60 * 60 * 1000, 1000, 0.0)
+                now, 24 * 60 * 60 * 1000, 1000, 0.0, m.storm.seed)
             publish(m)
         end
         touched = touched + 1

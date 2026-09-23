@@ -258,14 +258,115 @@ BR.Config.Storm = {
     -- and where circles go and how big they are is #335's own "not in scope". Dial
     -- it and look at it; the number to change afterwards is this one.
     --
-    -- WHAT IT REACHES TODAY IS THE MAP AND ONLY THE MAP. The two map rings and the
-    -- #327 preview ring are drawn from this; the WALL and the DAMAGE TEST still
-    -- measure the union of two circles, because the union of two rounded rectangles
-    -- is not expressible in the arc-and-segment model and #335 has not settled which
-    -- way to pay for that. So a squareness above zero shows square rings over a round
-    -- wall until that half lands. Left at zero, nothing in the game can tell this
-    -- knob exists.
+    -- WHAT IT REACHES IS THE MAP AND ONLY THE MAP. The two map rings and the #327
+    -- preview ring are drawn from this, and nothing else is: the WALL and the DAMAGE
+    -- TEST take their shape from the `shape` block below instead (#344). So a
+    -- squareness above zero shows square rings over a wall that is neither square
+    -- nor round. Left at zero, nothing in the game can tell this knob exists.
     squareness = 0.0,
+
+    -- ═══ EVERY PHASE IS A RANDOM SHAPE, AND THESE ARE ITS TWO DIALS (#344) ═══
+    --
+    --   "ship something that will draw random shaped storm walls for each phase,
+    --    still matching our approximate positioning and size rules, circles are
+    --    not allowed."                                -- the owner, 2026-09-22
+    --
+    -- The shape is a jittered convex polygon with rounded corners, drawn from the
+    -- match's storm seed and the phase index, scaled by whatever radius the solver
+    -- reports -- so the WALL and the DAMAGE BOUNDARY are both that shape and the
+    -- hold/sweep timing is untouched. br_lib/shared/storm_shape.lua's blob()
+    -- carries the geometry and BR.StormZone is the one place it is asked for.
+    --
+    -- MEASURED AT THIS CONFIG, over 20000 draws (tools/test_shared.lua's
+    -- `blob.measure` block re-measures it rather than trusting this note):
+    --
+    --     area             0.898 of the circle it replaces
+    --     max extent       1.050 of r on average, 1.117 worst
+    --     min/max radius   0.808 on average, 0.686 worst
+    --     corner radius    0.391 of r on average, 0.187 worst
+    --     convex first try 87.5 percent, worst case 3 attempts, never concave
+    --
+    -- min/max radius is the "is it a circle" measure -- 1.00 would be one. At 0.81
+    -- the radius varies by a fifth, which on the 2600 m phase is a boundary running
+    -- between about 2200 and 2800 metres out: a 600 m lump, unmistakable from the
+    -- ground and from the map.
+    --
+    -- ═══ WHAT IT COSTS, SAID HERE RATHER THAN LEFT TO BE DISCOVERED ═══
+    --
+    --   THE MAP STILL DRAWS A CIRCLE. No GTA native fills an arbitrary outline on
+    --   the minimap or the pause map (storm_shape.lua's mapPrimitives has the whole
+    --   search, including the Scaleform route and why it is not taken), so the two
+    --   rings stay radius blips at r. The ring is exact where the blob reaches r,
+    --   over-reports by about a sixth of r where it dents in and under-reports by a
+    --   twentieth where it bulges -- measured on one phase-1 draw, a boundary running
+    --   2206 to 2789 metres out against a 2600 metre ring. The WALL is drawn on the
+    --   real boundary, so a player who can see the curtain is never misled by the
+    --   ring; it is the pause map's rotation aid, where a sixth of a kilometre is a
+    --   few pixels.
+    --
+    --   AN OVERLAPPING BREAKOUT DRAWS BOTH BOUNDARIES. The union of two blobs is
+    --   not expressible in the arc-and-segment model without a real boolean union,
+    --   which is its own piece of work, so on a phase whose two circles CROSS the
+    --   wall draws each shape whole and the stretches that run inside the other are
+    --   drawn too: curtain visible inside the safe zone. THE DAMAGE IS STILL EXACT
+    --   -- a signed distance to a union is the minimum of the two, which holds for
+    --   any shapes -- so it is a drawing defect, not a gameplay one. Nested (every
+    --   phase that did not break out) and disjoint (a breakout that separated
+    --   entirely) are both exact and single-silhouette.
+    --
+    --   THE SHAPE CHANGES AT A PHASE BOUNDARY. Each phase draws its own blob, so at
+    --   the instant one phase hands over to the next the wall is standing still and
+    --   changes its lumps. Morphing between two shapes instead would mean
+    --   interpolating two convex polygons, which is not convex in general, and the
+    --   exact signed distance and inset both require convex.
+    --
+    -- PHASE 8 IS RADIUS 0 AND STAYS A POINT, as it always has: a shape with no
+    -- radius is not a shape, and a point is not a circle.
+    shape = {
+        -- HOW MANY CORNERS. 9 is the owner's measurement: 7 gives away too much
+        -- area (0.84), 11 and 13 are rounder AND far more often concave (at 13 the
+        -- first draw fails four times in five), so the retry does most of the work
+        -- and the shape it retries into is tamer.
+        --
+        -- BELOW 3 IS NOT A POLYGON AND IS THE WAY BACK TO CIRCLES -- the whole game
+        -- draws exactly what it drew before #344. That is a deliberate edit and not
+        -- a default: #335 shipped its shape behind a knob at zero and nothing in the
+        -- game ever drew it, which is the mistake this block is not repeating.
+        corners     = 9,
+
+        -- HOW FAR EACH CORNER'S RADIUS WANDERS, as a fraction of r, SYMMETRICALLY
+        -- about it -- so r * (1 + j * U(-1, 1)) and not r * (1 - 2j * U(0, 1)).
+        -- Inward-only jitter costs 28 to 41 percent of the circle's area, measured,
+        -- because the polygon and the corner rounding have each taken some already;
+        -- jittering about r costs a tenth and keeps the extent near r, which is what
+        -- lets every placement rule keep using r as the bound.
+        --
+        -- THIS IS THE DIAL TO TURN AFTER A PLAYTEST. Higher is lumpier and more
+        -- often concave (0.20 fails one draw in two at 9 corners); lower reads
+        -- rounder. 0.12 to 0.15 is the measured band where the shape is
+        -- unmistakably not a circle and the retry is still rare.
+        jitter      = 0.13,
+
+        -- HOW FAR A CORNER MAY SLIDE AROUND THE RING, as a fraction of its own
+        -- slot. Bounded at 0.5 by geometry rather than by taste: at half a slot two
+        -- neighbours can reach the same angle and the corner ORDER can swap, which
+        -- would turn a convex draw into a self-crossing one. 0.3 leaves the order
+        -- decided by construction, so the walk is counter-clockwise without being
+        -- sorted.
+        angleJitter = 0.3,
+
+        -- HOW ROUND THE CORNERS ARE, as a fraction of the tightest corner's own
+        -- allowance (the shorter adjacent half-edge, turned into a radius by the
+        -- corner's angle). 1.0 would put two fillets tangent to each other and
+        -- leave no straight run between them; 0.85 keeps a fifteen percent run on
+        -- every edge. Lower it for a shape that reads as a polygon, raise it toward
+        -- 1.0 for one that reads as a smooth lump.
+        --
+        -- ONE RADIUS FOR ALL THE CORNERS, which is what makes the signed distance
+        -- and the erosion exact rather than nearly so -- storm_shape.lua's blob
+        -- section argues it at length, and the measurement above is of what ships.
+        round       = 0.85,
+    },
 
     -- Rendering. A single giant sphere is not an option: marker type 28 is
     -- literally MarkerTypeDebugSphere, markers have no distance parameter, and
