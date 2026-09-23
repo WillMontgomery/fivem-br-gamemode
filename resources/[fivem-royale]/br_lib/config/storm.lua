@@ -799,15 +799,36 @@ BR.Config.Storm = {
         -- today it never bites. BR.MapOverlay.report().chars is where to read the
         -- length that actually went out, and client/storm.lua prints it once.
         maxPoints = 96,
-        -- Rebuilds per second while the zone is moving.
+        -- Metres the zone's boundary must be able to have moved before a zone that
+        -- can only be REBUILT is rebuilt (#350).
         --
-        -- An area cannot be resized in place, so every change is REM_OVERLAY plus
-        -- ADD_AREA_OVERLAY per contour with a kilobyte of coordinates marshalled
-        -- through a Scaleform string -- an order of magnitude more work than the
-        -- radius blips' own remove-and-re-add, which is why this is slower than
-        -- blip.refreshHzShrinking rather than equal to it. On a map where the whole
-        -- city is a few hundred pixels, half a second of a shrink is under a pixel
-        -- of movement.
+        -- A zone that is one blob -- every phase that did not break out -- is never
+        -- rebuilt for moving at all: it is placed, see client/storm.lua. This is for
+        -- the rest, a breakout's union above all, where the only way to move the
+        -- fill is REM_OVERLAY plus ADD_AREA_OVERLAY and every one of those is the
+        -- work #350's hitch was traced to.
+        --
+        -- EQUAL TO chordM, AND THAT IS THE ARGUMENT FOR THE NUMBER. The fill is
+        -- already allowed to sit chordM off the boundary between its points; a
+        -- boundary that has drifted less than that is inside the error the drawing
+        -- was accepted with. MEASURED on breakout sweeps (phases 3 and 5 to 7) at
+        -- the real 100 ms tick: 2.00 rebuilds a second on every one before this,
+        -- 0.62 to 1.65 after. The price is the fill lagging the zone by up to 7.5 m
+        -- between rebuilds where it lagged 1.9 to 5.6 m -- still under the 11.7 m a
+        -- phase-1 sweep lagged at 2 Hz on the build the owner signed off.
+        -- Raising it is the lever if a late-game breakout still hitches; the price
+        -- is the fill stepping further on the radar, where 8 m is several pixels.
+        moveM     = 8.0,
+        -- The CEILING on rebuilds per second, whatever asks for one.
+        --
+        -- Every rebuild is REM_OVERLAY plus ADD_AREA_OVERLAY per contour with a
+        -- kilobyte of coordinates marshalled through a Scaleform string -- an order of
+        -- magnitude more work than the radius blips' own remove-and-re-add, which is
+        -- why this is slower than blip.refreshHzShrinking rather than equal to it.
+        -- Until #350 this was also the RATE: the map rebuilt twice a second for every
+        -- second the storm moved. Now moveM decides when a moving zone is rebuilt, and
+        -- this only stops a fast breakout, or the phase-1 fade stepping its alpha,
+        -- from asking more often than this.
         rebuildHz = 2,
     },
 }

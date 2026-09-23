@@ -675,13 +675,25 @@ end
 --- dangerous -- the fill is drawn before the stroke block and does not depend
 --- on it -- it just builds an empty clip and lies to the next reader.
 ---
---- AN AREA CANNOT BE MOVED, ROTATED OR RESIZED AFTERWARDS. The vendored
---- wrapper refuses all three on an area "due to their vector boundaries"
---- (ScaleformUI.lua:16855, :16868, :16883), and the movie has no method that
---- would do it either. Every geometry change is a remove and a re-add, which is
---- why there is no update function here and must not be one.
+--- AN AREA CAN BE MOVED AND RESIZED, BUT ONLY IF IT WAS DRAWN AROUND ITS OWN
+--- CENTRE. This file used to say it could be neither, and that no update
+--- function "must" ever exist here; #350 found that wrong by reading the movie's
+--- bytecode. UPDATE_OVERLAY_POSITION and UPDATE_OVERLAY_SIZE_OR_SCALE simply set
+--- the area clip's position and size. The vendored wrapper refuses all three
+--- transforms on an area "due to their vector boundaries" (ScaleformUI.lua:16855,
+--- :16868, :16883) because IT draws areas in world coordinates -- where a resize
+--- scales the shape about the world origin and flings it across the map. That is
+--- a property of how the wrapper draws, not of the movie. Rotation is still not
+--- done, because nothing here needs it.
+---
+--- So `points` is one of two things. A shape that is rebuilt on change goes out in
+--- WORLD coordinates, as it always did. A shape that is PLACED is pushed relative to
+--- its own centre and then moved and scaled every tick through
+--- BR.MapOverlay.placeArea, which is what took a shrinking storm off the
+--- remove-and-re-add path that hitched the client once a second.
 --- @param handle integer|nil
---- @param points table    array of { x, y } in WORLD coordinates
+--- @param points table    array of { x, y }: world coordinates for a rebuilt shape,
+---                        centre-relative for one BR.MapOverlay.placeArea will move
 --- @param outline boolean
 --- @param r integer
 --- @param g integer

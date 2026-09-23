@@ -1711,6 +1711,16 @@ local lastOverlayAt = 0
 local overlayKey = nil
 local overlaySaid = false
 
+--- WHERE the zone on the map is, as the moving circle it was last made to match.
+---
+--- nil while nothing is drawn. `cx, cy, r` is the solved circle the drawn zone
+--- agrees with -- the one it was built at, or the one it was last placed at -- and
+--- `ext` is the unit blob's reach, which turns a change of radius into the furthest
+--- any point of the boundary can have moved. `fit` is there only when the zone went
+--- out as ONE blob drawn about its own centre, and holds what placing it needs: the
+--- radius it was drawn at and its width and height at that radius.
+local overlayAt = nil
+
 --- Is the overlay drawing the zones right now? Then the radius blips must not.
 ---
 --- READ BY THE TWO BLIP SITES ABOVE AND WRITTEN IN EXACTLY ONE PLACE -- the count
@@ -1739,18 +1749,24 @@ end
 ---
 --- ═══ THE PLAN IS CHEAP AND THE WALK IS NOT, WHICH IS WHY THEY ARE TWO CALLS ═══
 ---
---- An area cannot be resized in place, so every change is every clip removed and
---- every clip re-added with a kilobyte of coordinates marshalled through a Scaleform
---- string -- and the rebuild is therefore rate-limited. This runs at the tick rate
---- and the walk runs at the rebuild rate, which is what keeps a zone that has not
---- moved from paying for a boundary walk ten times a second all match: building the
---- contours first and then deciding not to send them would be the cost without the
---- change.
+--- A rebuild is every clip removed and every clip re-added with a kilobyte of
+--- coordinates marshalled through a Scaleform string, so it is rate-limited. This
+--- runs at the tick rate and the walk runs at the rebuild rate, which is what keeps a
+--- zone that has not moved from paying for a boundary walk ten times a second all
+--- match: building the contours first and then deciding not to send them would be the
+--- cost without the change.
 ---
---- THE KEY IS BUILT FROM THE INPUTS, not from the output, and it is everything
---- overlayFill below reads: the solved circle, the target, the seed, the phase and
---- the alpha, to the metre and the alpha step. During the phase-1 hold every one of
---- those is constant, so the whole hold costs ONE push.
+--- ═══ THE KEY IS WHAT THE MOVING CIRCLE CANNOT CHANGE (#350) ═══
+---
+--- It is built from the inputs, not from the output: the phase, the target, the seed
+--- and the alpha step. It used to carry the solved circle as well, to the metre, and
+--- that one field is why the map rebuilt TWICE A SECOND FOR EVERY SECOND THE STORM
+--- MOVED -- measured at the real 100 ms tick, every shrink but the last one's. That
+--- was the only client work with the hitch's signature: none while the storm holds,
+--- all of it while it moves. So the circle is held beside the key now, in overlayAt,
+--- and what a change of it costs is decided in storm.map rather than by the key --
+--- usually a placement, sometimes nothing, and a rebuild only when the picture needs
+--- one.
 --- @return table|nil plan
 --- @return string|nil key
 local function overlayPlan()
@@ -1780,17 +1796,39 @@ local function overlayPlan()
     if wholeMap then zoneA = cfg.blip.currentAlpha * share end
 
     return { rec = rec, cx = cx, cy = cy, r = r, zoneA = zoneA },
-        ('r|%d|%.0f|%.0f|%.0f|%.0f|%.0f|%.0f|%d|%d'):format(
-            rec.phase, cx, cy, r, rec.cx1, rec.cy1, rec.r1,
+        ('r|%d|%.0f|%.0f|%.0f|%d|%d'):format(
+            rec.phase, rec.cx1, rec.cy1, rec.r1,
             math.floor(rec.seed or 0), math.floor(zoneA + 0.5))
 end
 
---- The plan's contours, ready for BR.MapOverlay.setAreas.
+--- The plan's contours, ready for BR.MapOverlay.setAreas, and whether the zone among
+--- them can be PLACED from now on instead of rebuilt.
+---
+--- ═══ ONE BLOB IS A SIMILARITY OF EVERY LATER ONE, SO IT IS DRAWN ABOUT ITS CENTRE ═══
+---
+--- On every phase that did not break out the safe zone is ONE blob --
+--- BR.StormShape.zone returns the containing one -- and a blob is `c + r * unit`: the
+--- same unit shape, moved and scaled. The solver only moves c and changes r, so the
+--- zone at any later moment of the sweep is the zone drawn now, translated and
+--- uniformly scaled, EXACTLY -- not approximately -- and the containment that makes it
+--- one blob holds for the whole sweep, because both circles interpolate linearly.
+--- So that zone is pushed with its points relative to its own centre, and
+--- BR.MapOverlay.placeArea can then move and scale it in the movie with two property
+--- writes instead of a rebuild. placeArea's header has why the centre is the whole
+--- trick: the movie scales a clip about its origin, and for these points that origin
+--- is the zone's centre.
+---
+--- ASKED OF THE SHAPE, NOT RE-DERIVED. `zone.blob` is what BR.StormShape.blob records
+--- about itself; a union of two, a circle below MIN_RADIUS and every other shape carry
+--- none, so they go out in world coordinates exactly as before and are rebuilt when
+--- they move. Testing the circles here instead would be a second spelling of the
+--- containment rule BR.StormShape.zone already owns.
 --- @param plan table  from overlayPlan
 --- @return table|nil areas
+--- @return table|nil fit  { cx, cy, r, w, h } when areas[1] can be placed
 local function overlayFill(plan)
     local ov = cfg.overlay or {}
-    local out = {}
+    local out, fit = {}, nil
     local function push(shape, alpha)
         local cols = BR.StormShape.polyline(shape, ov.chordM, ov.maxPoints)
         for i = 1, #cols do
@@ -1816,7 +1854,29 @@ local function overlayFill(plan)
         -- one spelling of "what is safe right now", so the fill and the curtain cannot
         -- disagree about where the edge is.
         if plan.zoneA > 0.0 then
-            push(BR.StormZone(rec, plan.cx, plan.cy, plan.r), plan.zoneA)
+            local zone = BR.StormZone(rec, plan.cx, plan.cy, plan.r)
+            push(zone, plan.zoneA)
+            local b = zone.blob
+            -- EXACTLY ONE CONTOUR, AND IT IS THE FIRST AREA. A blob is one closed loop,
+            -- so this is the ordinary case; it is tested rather than assumed because
+            -- `fit` promises placeArea slot 1, and slot 1 must be this contour.
+            if b and #out == 1 then
+                local pts = out[1].points
+                local x0, x1, y0, y1 = math.huge, -math.huge, math.huge, -math.huge
+                for i = 1, #pts do
+                    local x, y = pts[i].x - b.cx, pts[i].y - b.cy
+                    pts[i] = { x = x, y = y }
+                    if x < x0 then x0 = x end
+                    if x > x1 then x1 = x end
+                    if y < y0 then y0 = y end
+                    if y > y1 then y1 = y end
+                end
+                -- THE EXTENTS ARE WHAT _width AND _height WILL MEAN. The movie measures
+                -- the clip's bounds and sets its scale from them, so a placement asks for
+                -- these times the scale -- and the blob contains its own centre, so the
+                -- clip's origin is inside these bounds whatever the movie counts.
+                fit = { cx = b.cx, cy = b.cy, r = b.r, w = x1 - x0, h = y1 - y0 }
+            end
         end
         -- AND THE TARGET, LAST, SO IT DRAWS OVER THE ZONE.
         if rec.r1 > 1.0 then
@@ -1826,7 +1886,22 @@ local function overlayFill(plan)
     end
 
     if #out == 0 then return nil end
-    return out
+    return out, fit
+end
+
+--- The furthest any point of the drawn zone can be from the zone now.
+---
+--- A blob is `c + r * unit` and no point of the unit is further than `ext` from its
+--- origin, so between two solved circles a boundary point moves at most |dc| + ext *
+--- |dr|. That bounds a UNION too: the target never moves during a phase, so the union's
+--- boundary moves no further than the part of it that does. It is a bound read off the
+--- two circles, not a walk, which is what lets it run on every tick of a sweep.
+--- @param at table   overlayAt
+--- @param plan table from overlayPlan
+--- @return number metres
+local function overlayDrift(at, plan)
+    local dx, dy = plan.cx - at.cx, plan.cy - at.cy
+    return math.sqrt(dx * dx + dy * dy) + at.ext * math.abs(plan.r - at.r)
 end
 
 BR.Loop.register(BR.Loop.TICK, 'storm.map', function()
@@ -1846,7 +1921,7 @@ BR.Loop.register(BR.Loop.TICK, 'storm.map', function()
             BR.MapOverlay.removeAll()
             overlayShown = 0
         end
-        overlayKey = nil
+        overlayKey, overlayAt = nil, nil
         return
     end
 
@@ -1857,10 +1932,47 @@ BR.Loop.register(BR.Loop.TICK, 'storm.map', function()
     -- furthest from the #4167 race.
     if not BR.MapOverlay.step() then return end
 
-    local now = GetGameTimer()
-    local hz = cfg.overlay.rebuildHz or 2
+    local ov = cfg.overlay
+    local hz = ov.rebuildHz or 2
     if hz <= 0 then return end
-    if key == overlayKey and overlayShown > 0 then return end
+
+    -- ═══ THE SAME PICTURE, SO THE QUESTION IS ONLY WHAT THE CIRCLE DID (#350) ═══
+    if key == overlayKey and overlayShown > 0 then
+        local at = overlayAt
+        -- NOTHING MOVED: every hold, and the whole preview. A handful of comparisons.
+        if plan.pv or (plan.cx == at.cx and plan.cy == at.cy and plan.r == at.r) then
+            return
+        end
+
+        -- ONE BLOB, DRAWN ABOUT ITS CENTRE: PLACE IT. overlayFill has why this is
+        -- exact rather than close. The zone is asked for again rather than assumed
+        -- still to be one blob, because the last seconds of the final sweep turn it
+        -- into a circle below MIN_RADIUS -- a different shape, which is a rebuild.
+        if at.fit then
+            local b = BR.StormZone(plan.rec, plan.cx, plan.cy, plan.r).blob
+            if b then
+                local s = b.r / at.fit.r
+                if BR.MapOverlay.placeArea(1, b.cx, b.cy, at.fit.w * s, at.fit.h * s) then
+                    at.cx, at.cy, at.r = plan.cx, plan.cy, plan.r
+                    return
+                end
+            end
+            -- Refused, or no longer one blob. Either way what the map shows is not
+            -- the zone any more, and only a rebuild below can make it so.
+
+        -- ANYTHING ELSE MOVES ONLY BY BEING REBUILT, so it is rebuilt when the change
+        -- would show and not before. `moveM` is the drawn polygon's own chord
+        -- tolerance: a boundary that has drifted less than the fill was already
+        -- allowed to sag has not moved anywhere a player can point to.
+        elseif overlayDrift(at, plan) < (ov.moveM or 8.0) then
+            return
+        end
+    end
+
+    -- AND NEVER FASTER THAN rebuildHz, WHATEVER ASKED. This is the ceiling that
+    -- holds when everything above says yes -- a breakout sweeping fast enough to
+    -- cross moveM every tick, or a phase-1 fade stepping its alpha every tick.
+    local now = GetGameTimer()
     if (now - lastOverlayAt) < (1000.0 / hz) then return end
     lastOverlayAt = now
 
@@ -1868,7 +1980,7 @@ BR.Loop.register(BR.Loop.TICK, 'storm.map', function()
     -- and the fill are two functions: every gate above this line is cheap, so a tick
     -- on which nothing has moved costs a handful of comparisons instead of a boundary
     -- walk per contour.
-    local areas = overlayFill(plan)
+    local areas, fit = overlayFill(plan)
     if not areas then
         -- THE PLAN WANTED SOMETHING AND THE GEOMETRY HAD NOTHING LEFT -- the final
         -- sweep's last seconds, where every contour has collapsed under three points.
@@ -1878,16 +1990,31 @@ BR.Loop.register(BR.Loop.TICK, 'storm.map', function()
             BR.MapOverlay.removeAll()
             overlayShown = 0
         end
-        overlayKey = nil
+        overlayKey, overlayAt = nil, nil
         return
     end
 
     local drawn, chars = BR.MapOverlay.setAreas(areas)
+    -- A ZONE DRAWN ABOUT ITS CENTRE IS DRAWN AT THE WORLD'S ORIGIN until it is placed,
+    -- so it is placed in the same tick -- the calls queue behind the adds -- and a
+    -- refusal takes the whole push down, for the reason setAreas tears down a partial
+    -- one: a zone in the wrong place is worse than none, and none is what hands the
+    -- map back to the radius blips.
+    if drawn > 0 and fit and not BR.MapOverlay.placeArea(1, fit.cx, fit.cy) then
+        BR.MapOverlay.removeAll()
+        drawn = 0
+    end
     overlayShown = drawn
     -- A REFUSED PUSH DOES NOT LATCH. Clearing the key means the next tick tries
     -- again rather than believing the map is already showing this geometry, and
     -- mapFilled() is false in the meantime so the blips carry the map.
     overlayKey = (drawn > 0) and key or nil
+    overlayAt = nil
+    if drawn > 0 then
+        local unit = plan.rec and BR.StormUnit(plan.rec.seed, plan.rec.phase)
+        overlayAt = { cx = plan.cx, cy = plan.cy, r = plan.r,
+                      ext = unit and unit.extent or 1.0, fit = fit }
+    end
 
     -- ONCE, AND IT NAMES THE CHARACTER COUNT. The Scaleform string-parameter cap is
     -- the one unmeasured risk on this path: there is no documented limit, the spike's
@@ -1895,7 +2022,7 @@ BR.Loop.register(BR.Loop.TICK, 'storm.map', function()
     -- over a thousand. If a shape ever draws GARBLED rather than absent this is the
     -- first number to look at, and config/storm.lua's `overlay.maxPoints` is the
     -- lever. Said once per session in the same shape as the wall's fade line, because
-    -- a rebuild happens twice a second and a line per rebuild is a log nobody reads.
+    -- a rebuild can happen twice a second and a line per rebuild is a log nobody reads.
     if drawn > 0 and not overlaySaid then
         overlaySaid = true
         local pts = 0

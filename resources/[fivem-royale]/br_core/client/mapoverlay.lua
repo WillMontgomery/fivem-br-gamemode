@@ -112,7 +112,9 @@ local state = {
     asked   = false,    -- the event has been fired at least once
     askedAt = 0,        -- GetGameTimer() of the last fire
     ours    = {},       -- the movie indices we added, in the order we added them
+    set     = {},       -- the indices the last setAreas added, in ITS order; see placeArea
     chars   = 0,        -- coordinate characters in the last setAreas push
+    moves   = 0,        -- areas placed in place rather than rebuilt, all session
     why     = 'not started',
 }
 
@@ -266,15 +268,14 @@ end
 
 --- Fill one polygon on the radar and the pause map.
 ---
---- THERE IS NO UPDATE FUNCTION AND THERE MUST NOT BE ONE. An area cannot be
---- moved, rotated or resized in place: the vendored wrapper refuses all three
---- on an area "due to their vector boundaries" (ScaleformUI.lua:16855, :16868,
---- :16883) and the movie has no method that would do it either. A geometry
---- change is removeArea() followed by addArea(), and a caller that wants to
---- animate one has to be written knowing that.
+--- A SHAPE CANNOT BE EDITED, ONLY REPLACED. There is no method that changes an
+--- area's points, so a boundary that changes SHAPE is removeAll() followed by an
+--- add. A boundary that only MOVES AND SCALES is a different case and is not a
+--- rebuild at all -- placeArea below has why, and what it needs from the caller.
 ---
---- @param points table  at least 3 { x = number, y = number } in WORLD coords,
----                      in order around the outline; the movie closes it
+--- @param points table  at least 3 { x = number, y = number } in WORLD coords --
+---                      or about an origin the caller will placeArea into the
+---                      world -- in order around the outline; the movie closes it
 --- @param colour table  { r, g, b, a } -- a is 0-255
 --- @return integer|nil index  the movie's own zero-based index, or nil
 --- @return string     why
@@ -335,15 +336,29 @@ end
 
 --- Replace EVERYTHING this file has drawn with one filled area per entry.
 ---
---- ═══ REMOVE AND RE-ADD IS THE ONLY WAY A GEOMETRY CHANGES ═══
+--- ═══ REMOVE AND RE-ADD IS THE ONLY WAY A SHAPE CHANGES ═══
 ---
---- An area cannot be moved, rotated or resized in place -- addArea's header has the
---- whole argument -- so a shrinking zone is a rebuild, and a rebuild is every one of
---- our clips removed and every one added again. That is why this takes the WHOLE
---- content rather than one area at a time: with one call per rebuild there is no
---- moment at which the movie holds half of last tick's zone and half of this one,
---- and the index bookkeeping stays the single ascending list removeAll() is written
---- for. THE CALLER RATE-LIMITS IT. Nothing here is safe to run per frame.
+--- An area's points cannot be edited -- addArea's header has the argument -- so a
+--- zone that changes shape is a rebuild, and a rebuild is every one of our clips
+--- removed and every one added again. That is why this takes the WHOLE content
+--- rather than one area at a time: with one call per rebuild there is no moment at
+--- which the movie holds half of last tick's zone and half of this one, and the
+--- index bookkeeping stays the single ascending list removeAll() is written for.
+---
+--- ═══ AND IT IS THE EXPENSIVE CALL, AND THE SUSPECT IN #350's HITCH ═══
+---
+---   "there's a major client perf issue once per second which only happens while
+---    the storm is actively in motion."                   -- owner, 2026-09-23
+---
+--- Every area pushed is, inside the movie, three new MovieClips, a split of the
+--- whole coordinate string, a lineTo per point and two Debug.Log calls, the first of
+--- which concatenates the entire argument list -- all in compiled bytecode we do not
+--- rebuild. Until #350's fix this ran twice a second for as long as the storm moved
+--- and never while it held, which made it the only work in the client with the
+--- hitch's signature. What a push costs in FRAME TIME was never measurable from
+--- here; that it was the thing to stop doing was. So the caller calls this as RARELY
+--- as the picture allows and moves what it can with placeArea instead. Nothing here
+--- is safe to run per frame.
 ---
 --- ═══ AND A ZONE IS DRAWN WHOLE OR NOT AT ALL ═══
 ---
@@ -371,6 +386,7 @@ function BR.MapOverlay.setAreas(areas)
             a = BR.MapOverlay.areaAlpha(col.a),
         })
         if idx then
+            state.set[#state.set + 1] = idx
             -- THE LENGTH OF THE STRING THAT WENT OUT, WHICH IS THE ONE UNMEASURED
             -- RISK ON THIS PATH. There is no documented cap on a Scaleform string
             -- parameter, which is not the same as there not being one: the #347
@@ -413,6 +429,10 @@ end
 --- ready(), and an empty loop already answers 0. A guard here would be a third
 --- place saying what the phase says.
 function BR.MapOverlay.removeAll()
+    -- NOTHING OF THE LAST SET IS PLACEABLE ONCE THIS HAS RUN, including a clip whose
+    -- removal was refused: it is still in the movie, but it is no longer the area a
+    -- caller's slot number meant.
+    state.set = {}
     table.sort(state.ours, function(a, b) return a > b end)
     local removed, kept = 0, {}
     for i = 1, #state.ours do
@@ -426,6 +446,75 @@ function BR.MapOverlay.removeAll()
     return removed
 end
 
+--- Move one area of the last setAreas, and optionally resize it, WITHOUT rebuilding
+--- it (#350).
+---
+--- ═══ THE MOVIE CAN DO THIS. IT IS THE WRAPPER THAT REFUSES ═══
+---
+--- Read out of the disassembled MINIMAP_LOADER.gfx, and recorded on #350:
+---
+---   UPDATE_OVERLAY_POSITION(id, x, y)       overlays[id].txdLoader._x = x
+---                                           overlays[id].txdLoader._y = 0 - y
+---   UPDATE_OVERLAY_SIZE_OR_SCALE(id, w, h)  if (overlays[id].isScaled) _xscale/_yscale
+---                                           else _width = w, _height = h
+---
+--- An AreaOverlay never sets `isScaled`, so an area takes the _width branch, and its
+--- txdLoader is the one clip both of its fills live in. ScaleformUI refuses both
+--- calls on an area "due to their vector boundaries", and for the polygons IT draws
+--- that refusal is correct: they are drawn in WORLD coordinates, so the clip's origin
+--- is the world's origin and a resize scales the shape about (0, 0) -- a zone at the
+--- airport would shrink toward the middle of the ocean. Drawn about its OWN centre
+--- instead, the clip's origin is that centre, and the same two writes move and scale
+--- the polygon in place. That is the whole contract, and it is the CALLER's half: this
+--- function cannot tell which way the points were drawn.
+---
+--- ═══ WHAT IT COSTS, WHICH IS THE REASON IT EXISTS ═══
+---
+--- Two property writes per call and nothing else: no clip is made or destroyed, no
+--- string is split and nothing is logged. ADD_AREA_OVERLAY's handler, the AreaOverlay
+--- constructor and its createPolygon are 2,070 bytes of bytecode with two loops over
+--- the points; these two handlers are 210 bytes with none.
+---
+--- ═══ A REFUSAL IS ANSWERED, NOT SWALLOWED ═══
+---
+--- The same BOOL read addArea relies on, for the same reason: a refused open followed
+--- by pushes commits somebody else's call. An area that could not be placed is still
+--- in the movie, wherever it was drawn -- so `false` means the caller's picture is
+--- now wrong, and the caller must rebuild or tear it down.
+---
+--- @param slot integer   1 = the first area the last setAreas pushed
+--- @param x number       world x for the area's local origin
+--- @param y number       world y -- NOT negated; the movie does it, as addArea's does
+--- @param w number|nil   width in world metres; nil leaves the size alone
+--- @param h number|nil   height in world metres
+--- @return boolean placed
+function BR.MapOverlay.placeArea(slot, x, y, w, h)
+    if not BR.MapOverlay.ready() then return false end
+    local index = state.set[slot]
+    if not index then return false end
+
+    if not BR.Native.minimapMethod(state.handle, 'UPDATE_OVERLAY_POSITION') then
+        return false
+    end
+    ScaleformMovieMethodAddParamInt(index)
+    ScaleformMovieMethodAddParamFloat(x + 0.0)
+    ScaleformMovieMethodAddParamFloat(y + 0.0)
+    EndScaleformMovieMethod()
+
+    if w and h then
+        if not BR.Native.minimapMethod(state.handle, 'UPDATE_OVERLAY_SIZE_OR_SCALE') then
+            return false
+        end
+        ScaleformMovieMethodAddParamInt(index)
+        ScaleformMovieMethodAddParamFloat(w + 0.0)
+        ScaleformMovieMethodAddParamFloat(h + 0.0)
+        EndScaleformMovieMethod()
+    end
+
+    state.moves = state.moves + 1
+    return true
+end
+
 --- What this file currently believes, for /brmaparea to print.
 --- @return table
 function BR.MapOverlay.report()
@@ -437,6 +526,7 @@ function BR.MapOverlay.report()
         frames  = state.frames,
         areas   = #state.ours,
         chars   = state.chars,
+        moves   = state.moves,
         next    = nextIndex(),
     }
 end

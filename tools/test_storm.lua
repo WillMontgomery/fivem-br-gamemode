@@ -670,6 +670,20 @@ local function newStormClient()
         -- nothing to tear down, so the teardown is unobservable.
         allowAdds = nil,
         adds = 0,
+        -- ═══ AND PLACEMENT (#350), WHICH IS TWO METHODS OF THE SAME MOVIE ═══
+        --
+        -- UPDATE_OVERLAY_POSITION and UPDATE_OVERLAY_SIZE_OR_SCALE, reached through
+        -- BR.Native.minimapMethod and the push natives like any other method -- so
+        -- the stub below receives a method NAME and its parameters and plays the
+        -- handler the disassembly shows, rather than trusting a Lua wrapper to say
+        -- what it did. `refusePlace` is the engine declining to open either one;
+        -- `calls` counts every method opened on the handle, adds and removes
+        -- included, which is the number #350 is about.
+        refusePlace = false,
+        refuseMethod = {},      -- [name] = true refuses that one method only
+        placed = 0,
+        calls = 0,
+        open = nil,
     }
     env.NetworkIsGameInProgress  = function() return C.mm.inGame end
     env.IsMinimapRendering       = function() return C.mm.drawn end
@@ -966,6 +980,7 @@ local function newStormClient()
         if h ~= C.mm.handle then return false end
         if type(points) ~= 'table' or #points < 3 then return false end
         C.mm.adds = C.mm.adds + 1
+        C.mm.calls = C.mm.calls + 1
         if C.mm.allowAdds ~= nil and C.mm.adds > C.mm.allowAdds then return false end
         C.mm.overlays[#C.mm.overlays + 1] = {
             points = points, outline = outline, r = r, g = g, b = b, a = a,
@@ -978,10 +993,79 @@ local function newStormClient()
         if h ~= C.mm.handle then return false end
         if type(index) ~= 'number' or index < 0 then return false end
         if C.mm.overlays[index + 1] == nil then return false end
+        C.mm.calls = C.mm.calls + 1
         -- IT SPLICES. Every index above the one removed shifts DOWN by one, which is
         -- the whole reason client/mapoverlay.lua removes highest-first.
         table.remove(C.mm.overlays, index + 1)
         return true
+    end
+
+    -- ═══ THE GENERIC METHOD PATH, AND THE TWO HANDLERS IT CAN REACH (#350) ═══
+    --
+    -- Open, push, end -- the four-step Scaleform call natives.lua's header describes,
+    -- modelled as a pending call that END dispatches by NAME. Anything this stub does
+    -- not know is an error rather than a silent success, so a new method on this path
+    -- arrives here as a red line and not as a test that passed over nothing.
+    env.BR.Native.minimapMethod = function(h, method)
+        if not h or h ~= C.mm.handle then return false end
+        if C.mm.refusePlace or C.mm.refuseMethod[method] then return false end
+        C.mm.open = { method = method, params = {} }
+        return true
+    end
+    local function push(v)
+        if not C.mm.open then error('a parameter pushed with no method open') end
+        local p = C.mm.open.params
+        p[#p + 1] = v
+    end
+    env.ScaleformMovieMethodAddParamInt   = push
+    env.ScaleformMovieMethodAddParamFloat = push
+    env.EndScaleformMovieMethod = function()
+        local call = C.mm.open
+        C.mm.open = nil
+        if not call then error('END with no method open') end
+        C.mm.calls = C.mm.calls + 1
+        local p = call.params
+        local ov = C.mm.overlays[(p[1] or -1) + 1]
+        if not ov then error(('%s on index %s, which is not in the movie')
+            :format(call.method, tostring(p[1]))) end
+        -- AS THE BYTECODE HAS THEM, recorded on #350:
+        --   UPDATE_OVERLAY_POSITION       txdLoader._x = x;  txdLoader._y = 0 - y
+        --   UPDATE_OVERLAY_SIZE_OR_SCALE  isScaled ? _xscale/_yscale : _width/_height
+        -- and an AreaOverlay has no isScaled.
+        if call.method == 'UPDATE_OVERLAY_POSITION' then
+            ov._x, ov._y = p[2], 0 - p[3]
+        elseif call.method == 'UPDATE_OVERLAY_SIZE_OR_SCALE' then
+            ov._width, ov._height = p[2], p[3]
+        else
+            error('the harness movie has no handler for ' .. tostring(call.method))
+        end
+        C.mm.placed = C.mm.placed + 1
+    end
+
+    --- WHERE THE MAP DRAWS ONE AREA, in world coordinates, after whatever the movie
+    --- has been told to do to its clip.
+    ---
+    --- Flash's own arithmetic, one step at a time: the polygon is drawn at (x, -y) in
+    --- the clip; `_width` sets the x scale so the clip's bounds come out that wide,
+    --- and likewise `_height`; the clip then sits at (_x, _y); and world y is the
+    --- negation of Flash y. Nothing here knows what storm.lua MEANT -- it is the
+    --- movie's reading of the calls, which is what the map shows.
+    function C.shown(ov)
+        local x0, x1, y0, y1 = math.huge, -math.huge, math.huge, -math.huge
+        for _, q in ipairs(ov.points) do
+            local fy = 0 - q.y
+            x0, x1 = math.min(x0, q.x), math.max(x1, q.x)
+            y0, y1 = math.min(y0, fy), math.max(y1, fy)
+        end
+        local sx = ov._width and (ov._width / (x1 - x0)) or 1.0
+        local sy = ov._height and (ov._height / (y1 - y0)) or 1.0
+        local out = {}
+        for i, q in ipairs(ov.points) do
+            local fx = q.x * sx + (ov._x or 0.0)
+            local fy = (0 - q.y) * sy + (ov._y or 0.0)
+            out[i] = { x = fx, y = 0 - fy }
+        end
+        return out
     end
     -- The sky is a CLAIM made through client/world.lua, which this suite does
     -- not load: stubbed rather than stood up, because nothing here asserts on
@@ -6213,19 +6297,27 @@ do
     -- the radial spread is what makes it a test of #350 rather than of the plumbing:
     -- every point of a CIRCLE is the same distance from the centre, so a fill that
     -- had quietly kept drawing one would pass the first measure and fail this.
+    --
+    -- READ OFF C.shown, WHICH IS WHERE THE MOVIE PUTS IT, and not off the points that
+    -- were pushed. Since #350 a one-blob zone goes out about its own centre and is
+    -- then placed, so the pushed points are not world coordinates at all -- and this
+    -- zone happens to be centred on the origin, where the two readings agree. The
+    -- assertion has to be about what the map shows or it would pass over a zone that
+    -- was never placed.
     local SS = C.env.BR.StormShape
     local rec = C.env.BR.State.storm
     local zone = C.env.BR.StormZone(rec, rec.cx0, rec.cy0, rec.r0)
     local worstOff, lo, hi = 0.0, math.huge, 0.0
-    for _, p in ipairs(C.areas()[1].points) do
+    local shownPts = C.areas()[1] and C.shown(C.areas()[1]) or {}
+    for _, p in ipairs(shownPts) do
         local d = math.abs(SS.distance(zone, p.x, p.y))
         if d > worstOff then worstOff = d end
         local rad = math.sqrt((p.x - rec.cx0) ^ 2 + (p.y - rec.cy0) ^ 2)
         lo, hi = math.min(lo, rad), math.max(hi, rad)
     end
-    ok(worstOff < 1e-6,
+    ok(#shownPts >= 3 and worstOff < 1e-6,
         'every point of the fill is ON the zone the wall is drawn on, to a micron',
-        ('worst %.9f m off'):format(worstOff))
+        ('%d points, worst %.9f m off'):format(#shownPts, worstOff))
     ok((hi - lo) > 1.0,
         'and the boundary is genuinely not a circle: its distance from the centre '
             .. 'varies with the bearing, which is the whole of what #350 is about',
@@ -6403,6 +6495,7 @@ do
         walks = walks + 1
         return realPolyline(...)
     end
+    local callsHeld = S.mm.calls
     S.tick(12)
     S.env.BR.StormShape.polyline = realPolyline
     ok(S.areas()[1] == before,
@@ -6413,11 +6506,39 @@ do
         'and its boundary is not even walked on those ticks -- the plan is compared '
             .. 'before any contour is built',
         ('%d walks in 12 ticks'):format(walks))
-    S.env.BR.State.storm.r0 = 700.0
+    ok(S.mm.calls == callsHeld,
+        'and the movie is not called at all while it holds -- not a rebuild, not a '
+            .. 'placement',
+        ('%d method calls in 12 ticks'):format(S.mm.calls - callsHeld))
+
+    -- A ONE-BLOB ZONE THAT HAS MOVED IS PLACED, NOT REBUILT (#350). This record is
+    -- nested -- the target sits inside -- so the zone is one blob, and moving the
+    -- current circle is a translation and a scale of the one already in the movie.
+    local addsHeld = S.mm.adds
+    S.env.BR.State.storm.cx0, S.env.BR.State.storm.r0 = 60.0, 700.0
     S.tick(2)
-    ok(S.areas()[1] ~= before and #S.areas() == 2,
-        'and a zone that HAS moved is rebuilt, whole',
-        ('%d areas'):format(#S.areas()))
+    ok(S.areas()[1] == before and S.mm.adds == addsHeld and #S.areas() == 2,
+        'and a one-blob zone that HAS moved is the same clip, moved -- nothing was '
+            .. 'added',
+        ('%s, %d adds'):format(S.areas()[1] == before and 'same' or 'replaced',
+            S.mm.adds - addsHeld))
+    local movedZone = S.env.BR.StormZone(S.env.BR.State.storm, 60.0, 0.0, 700.0)
+    local movedOff = S.areas()[1] and 0.0 or math.huge
+    for _, p in ipairs(S.areas()[1] and S.shown(S.areas()[1]) or {}) do
+        movedOff = math.max(movedOff,
+            math.abs(S.env.BR.StormShape.distance(movedZone, p.x, p.y)))
+    end
+    ok(movedOff < 1e-6,
+        'and the map shows it ON the moved zone, to a micron -- the placement is the '
+            .. 'movie\'s own arithmetic applied to the calls, not a claim',
+        ('worst %.9f m off'):format(movedOff))
+
+    -- AND A NEW PICTURE IS STILL A REBUILD. The target moving is a different key.
+    S.env.BR.State.storm.cx1 = 250.0
+    S.tick(2)
+    ok(S.areas()[1] ~= before and #S.areas() == 2 and S.mm.adds == addsHeld + 2,
+        'while a new target is a rebuild, whole -- both areas replaced',
+        ('%d areas, %d adds'):format(#S.areas(), S.mm.adds - addsHeld))
 
     -- ─── the character count, which is the one unmeasured risk ───
     --
@@ -6454,6 +6575,267 @@ do
             .. 'leaves the map exactly as it was before #350',
         ('%d areas, %d rings, %d asks'):format(#O.areas(), #O.rings(), O.mm.asks))
     O.env.BR.Config.Storm.overlay.enabled = true
+end
+
+-- ---------------------------------------------------------------------------
+describe('map.motion')
+do
+    -- ═══ A MOVING STORM IS NOT A REBUILD TWICE A SECOND (#350) ═══
+    --
+    --   "there's a major client perf issue once per second which only happens while
+    --    the storm is actively in motion."                 -- owner, 2026-09-23
+    --
+    -- The map rebuilt its fills whenever the solved circle changed by a metre, capped
+    -- at rebuildHz -- so every second of every sweep but the slowest paid two
+    -- REM_OVERLAY/ADD_AREA_OVERLAY rounds, and no second of any hold paid one. That is
+    -- the hitch's signature exactly, and nothing else in the client has it.
+    --
+    -- ═══ WHY THIS BLOCK HAS ITS OWN CLOCK ═══
+    --
+    -- C.tick moves 1500 ms, which clears every throttle in the file -- what the
+    -- blocks above want, and exactly what hid the rate: at 1500 ms a tick, "at most
+    -- twice a second" and "every tick" are the same number, so nothing above could
+    -- have gone red if the ceiling vanished. The loop thread is `step; Wait(100)`, so
+    -- this steps the TICK band 100 ms at a time, which is what the game does.
+    local function sweepClient(phase, cx0, r0, cx1, r1, shrinkMs, cy0, cy1)
+        local C = newStormClient()
+        C.mm.handle = 7
+        C.pedAt = pt(cx0, cy0 or 0.0)
+        local rec = C.record(phase, cx0, cy0 or 0.0, r0, cx1, cy1 or 0.0, r1,
+            600000, shrinkMs, 2.0)
+        rec.seed = 424242
+        return C, rec
+    end
+
+    --- Start the record's sweep NOW, on the harness clock.
+    local function startSweep(C, rec) rec.tStart = C.now - rec.tWait end
+
+    --- `n` passes of the TICK band, 100 ms apart, calling `each` after every one.
+    local function realTicks(C, n, each)
+        for _ = 1, n do
+            C.now = C.now + 100
+            C.env.BR.Loop.step(C.env.BR.Loop.TICK)
+            if each then each() end
+        end
+    end
+
+    --- The worst distance from what the map SHOWS of area `i` to the zone right now.
+    ---
+    --- AN AREA THAT IS NOT THERE IS INFINITELY FAR OFF, rather than an index error: a
+    --- regression that loses the fill should fail every assertion that reads it, not
+    --- stop the suite at the first one and hide the rest.
+    local function offZone(C, rec, i)
+        if not C.areas()[i] then return math.huge end
+        local cx, cy, r = C.env.BR.StormAt(rec, C.env.BR.Clock.now())
+        local zone = C.env.BR.StormZone(rec, cx, cy, r)
+        local worst = 0.0
+        for _, p in ipairs(C.shown(C.areas()[i])) do
+            worst = math.max(worst,
+                math.abs(C.env.BR.StormShape.distance(zone, p.x, p.y)))
+        end
+        return worst
+    end
+
+    -- ─── a nested sweep is PLACED, start to finish, and never rebuilt ───
+    --
+    -- Phase-2 sizes, and a centre off the world's origin in BOTH axes on purpose: a
+    -- zone pushed in WORLD coordinates and then placed at its centre would land a
+    -- kilometre off, and a y the movie negated twice would land on the wrong side of
+    -- the equator -- and a centre on the origin, or on y = 0, hides each of those.
+    local N, nrec = sweepClient(2, 1000.0, 2600.0, 1400.0, 1600.0, 120000,
+        -700.0, -300.0)
+    ok(N.overlayReady(), 'the nested-sweep client reaches the gate')
+    N.tick(2)
+    local zoneClip, targetClip = N.areas()[1], N.areas()[2]
+    local adds0, placed0 = N.mm.adds, N.mm.placed
+    startSweep(N, nrec)
+    local nWorst, nTicks = 0.0, 0
+    realTicks(N, 1200, function()
+        nTicks = nTicks + 1
+        if nTicks % 10 == 0 then nWorst = math.max(nWorst, offZone(N, nrec, 1)) end
+    end)
+    ok(N.errored() == nil, 'the whole sweep runs clean', N.errored())
+    ok(N.mm.adds == adds0 and N.areas()[1] == zoneClip and N.areas()[2] == targetClip,
+        'two minutes of a nested sweep add NOTHING to the movie -- the same two clips '
+            .. 'are there at the end as at the start',
+        ('%d adds over %d ticks'):format(N.mm.adds - adds0, nTicks))
+    ok(N.mm.placed - placed0 >= nTicks,
+        'because the zone was PLACED instead, on the ticks it moved',
+        ('%d placement calls over %d ticks'):format(N.mm.placed - placed0, nTicks))
+    ok(nWorst < 1e-3,
+        'and what the map shows is ON the moving zone the whole way, to a millimetre '
+            .. '-- not the metres a twice-a-second rebuild lagged by',
+        ('worst %.6f m off'):format(nWorst))
+    ok(targetClip._x == nil and targetClip._width == nil,
+        'while the target, which does not move, is never touched at all')
+
+    -- ─── a breakout's union cannot be placed, so it is rebuilt when it shows ───
+    --
+    -- A union of the moving blob and the still target is not a scaled copy of any
+    -- earlier one, so the only way to move it is a rebuild. What bounds those is
+    -- moveM: a rebuild only once the boundary may have drifted that far. Two things
+    -- are asserted and they check each other -- the COUNT, against the drift the
+    -- sweep actually covers, and the ERROR, measured off the map against the zone
+    -- with nothing of the bound's arithmetic in it. A bound that under-read the drift
+    -- would pass the first and fail the second.
+    local ov = N.env.BR.Config.Storm.overlay
+    local B, brec = sweepClient(6, 0.0, 260.0, 300.0, 110.0, 120000)
+    ok(B.overlayReady(), 'the breakout client reaches the gate')
+    B.tick(2)
+    ok(#B.areas() == 2 and B.env.BR.StormZone(brec, 0.0, 0.0, 260.0).blob == nil,
+        'and it is the overlapping case: one union contour plus the target, and the '
+            .. 'union is not one blob',
+        ('%d areas'):format(#B.areas()))
+    startSweep(B, brec)
+    local bAdds0 = B.mm.adds
+    local bWorst, bRebuilds, lastAdds = 0.0, 0, B.mm.adds
+    realTicks(B, 1200, function()
+        if B.mm.adds > lastAdds then bRebuilds, lastAdds = bRebuilds + 1, B.mm.adds end
+        if #B.areas() > 0 then bWorst = math.max(bWorst, offZone(B, brec, 1)) end
+    end)
+    local unit = B.env.BR.StormUnit(brec.seed, brec.phase)
+    local drift = math.abs(brec.cx1 - brec.cx0) + unit.extent * math.abs(brec.r0 - brec.r1)
+    local most = math.floor(drift / ov.moveM) + 1
+    ok(B.errored() == nil, 'the breakout sweep runs clean', B.errored())
+    ok(bRebuilds > 0 and bRebuilds <= most,
+        'a breakout is rebuilt only as often as its boundary moves moveM -- here at '
+            .. 'most once per ' .. ov.moveM .. ' m of a sweep that covers the drift '
+            .. 'below, where the metre key rebuilt it every half second',
+        ('%d rebuilds (%d adds), at most %d for %.0f m of drift over %d s')
+            :format(bRebuilds, B.mm.adds - bAdds0, most, drift, 120))
+    ok(bWorst < ov.moveM,
+        'and between rebuilds the map is never further from the zone than moveM -- '
+            .. 'measured off the map, so a drift bound that under-read would show here',
+        ('worst %.2f m off, moveM %.1f'):format(bWorst, ov.moveM))
+
+    -- ─── and rebuildHz is the ceiling whatever asks ───
+    --
+    -- moveM at ZERO makes every tick of a sweep ask for a rebuild, so the only thing
+    -- left between the map and ten rebuilds a second is the ceiling -- which is the
+    -- one assertion here that would have held on the old code and must still hold.
+    local F, frec = sweepClient(6, 0.0, 260.0, 300.0, 110.0, 60000)
+    F.env.BR.Config.Storm.overlay.moveM = 0.0
+    ok(F.overlayReady(), 'the ceiling client reaches the gate')
+    F.tick(2)
+    startSweep(F, frec)
+    local gaps, lastAt, fAdds = {}, nil, F.mm.adds
+    realTicks(F, 100, function()
+        if F.mm.adds > fAdds then
+            fAdds = F.mm.adds
+            if lastAt then gaps[#gaps + 1] = F.now - lastAt end
+            lastAt = F.now
+        end
+    end)
+    local minGap = math.huge
+    for _, g in ipairs(gaps) do minGap = math.min(minGap, g) end
+    local floorMs = 1000.0 / ov.rebuildHz
+    ok(#gaps >= 5 and minGap >= floorMs,
+        'with moveM out of the way, rebuilds still come no closer together than '
+            .. '1 / rebuildHz',
+        ('%d rebuilds in 10 s, closest %s ms apart, floor %.0f ms'):format(
+            #gaps + 1, tostring(minGap), floorMs))
+
+    -- ─── a placement the engine refuses leaves NO zone, never a misplaced one ───
+    --
+    -- The zone goes out about its own centre, so until it is placed it sits on the
+    -- world's origin. A refused placement at the moment of drawing must therefore take
+    -- the push down whole, exactly as a refused add does -- and hand the map to the
+    -- radius blips.
+    local P, prec = sweepClient(2, 1000.0, 2600.0, 1600.0, 1600.0, 120000)
+    P.mm.refusePlace = true
+    ok(P.overlayReady(), 'the refusal client reaches the gate')
+    P.tick(3)
+    ok(#P.areas() == 0 and #P.rings() > 0,
+        'a zone that could not be placed as it was drawn is taken down whole, and the '
+            .. 'blips carry the map',
+        ('%d areas, %d rings'):format(#P.areas(), #P.rings()))
+    P.mm.refusePlace = false
+    P.tick(3)
+    ok(#P.areas() == 2 and #P.rings() == 0 and offZone(P, prec, 1) < 1e-6,
+        'and once the engine accepts it, the fill is back and on the zone',
+        ('%d areas, %d rings'):format(#P.areas(), #P.rings()))
+
+    -- AND ONE REFUSED MID-SWEEP IS REBUILT, NOT LEFT BEHIND. The clip cannot follow
+    -- the zone any more, so the next rebuild draws it again -- which then cannot be
+    -- placed either, so it comes down and the blips take over.
+    startSweep(P, prec)
+    realTicks(P, 5)
+    P.mm.refusePlace = true
+    realTicks(P, 20)
+    ok(#P.areas() == 0 and #P.rings() > 0 and P.errored() == nil,
+        'a placement refused mid-sweep ends with no fill rather than a stale one',
+        ('%d areas, %d rings'):format(#P.areas(), #P.rings()))
+
+    -- AND HALF A PLACEMENT IS A REFUSAL TOO. The resize is a second method; if the
+    -- engine opens the move and declines the resize, pushing the resize's parameters
+    -- anyway would push them into whatever the engine has open -- natives.lua's
+    -- header has why that is somebody else's call corrupted rather than a no-op. The
+    -- harness throws on a push with nothing open, so that shows here as an error.
+    -- What must happen instead is the fallback: the zone is rebuilt, the rebuild's
+    -- own placement needs no resize, and the map stays on the zone at rebuild pace.
+    local Q, qrec = sweepClient(2, 1000.0, 2600.0, 1400.0, 1600.0, 120000,
+        -700.0, -300.0)
+    ok(Q.overlayReady(), 'the half-refusal client reaches the gate')
+    Q.tick(2)
+    Q.mm.refuseMethod.UPDATE_OVERLAY_SIZE_OR_SCALE = true
+    startSweep(Q, qrec)
+    local qWorst, qAdds = 0.0, Q.mm.adds
+    realTicks(Q, 100, function()
+        if #Q.areas() > 0 then qWorst = math.max(qWorst, offZone(Q, qrec, 1)) end
+    end)
+    ok(Q.errored() == nil and #Q.areas() == 2 and Q.mm.adds > qAdds
+            and qWorst < Q.env.BR.Config.Storm.overlay.moveM,
+        'a refused resize is answered: nothing is pushed at nothing, and the zone '
+            .. 'falls back to rebuilds that keep it on the map',
+        Q.errored() or ('%d areas, %d adds, worst %.2f m off')
+            :format(#Q.areas(), Q.mm.adds - qAdds, qWorst))
+
+    -- ─── a removal the engine refuses must not steal the slot ───
+    --
+    -- A refused REM_OVERLAY leaves the old clip in the movie -- the engine's refusal,
+    -- and mapoverlay.lua keeps it on its books so the indices stay true. What it must
+    -- NOT do is let a placement land on it: slot 1 means the zone the LAST push drew,
+    -- so a leftover from an earlier push is invisible to placeArea.
+    local K, krec = sweepClient(2, 1000.0, 2600.0, 1400.0, 1600.0, 120000,
+        -700.0, -300.0)
+    ok(K.overlayReady(), 'the leftover client reaches the gate')
+    K.tick(2)
+    K.mm.refuseRemove = true
+    krec.cx1 = 1350.0                  -- a new target: a new key, so a rebuild
+    K.tick(2)
+    K.mm.refuseRemove = false
+    ok(#K.areas() == 4,
+        'the refused removals left the old pair behind, and the new pair went on top',
+        ('%d areas'):format(#K.areas()))
+    startSweep(K, krec)
+    realTicks(K, 50)
+    ok(K.errored() == nil and offZone(K, krec, 3) < 1e-6,
+        'and the zone that follows the storm is the NEW one -- the leftover is not '
+            .. 'what slot 1 names',
+        K.errored() or ('new zone %.3f m off'):format(offZone(K, krec, 3)))
+
+    -- ─── the last seconds of the final sweep ───
+    --
+    -- The zone stops being a blob below MIN_RADIUS and then runs out of polygon
+    -- altogether. storm.map asks the shape every tick rather than assuming it is still
+    -- one blob, and this is the sweep where assuming would index a nil.
+    local L, lrec = sweepClient(8, 500.0, 40.0, 520.0, 0.0, 30000)
+    ok(L.overlayReady(), 'the final-sweep client reaches the gate')
+    L.tick(2)
+    startSweep(L, lrec)
+    local lWorst = 0.0
+    realTicks(L, 320, function()
+        local cx, cy, r = L.env.BR.StormAt(lrec, L.env.BR.Clock.now())
+        if #L.areas() > 0 and L.env.BR.StormZone(lrec, cx, cy, r).blob then
+            lWorst = math.max(lWorst, offZone(L, lrec, 1))
+        end
+    end)
+    ok(L.errored() == nil and #L.areas() == 0,
+        'the final sweep closes to nothing without an error, and leaves no fill behind',
+        L.errored() or ('%d areas'):format(#L.areas()))
+    ok(lWorst < 1e-3,
+        'and the fill was on the zone for every tick it was still one blob',
+        ('worst %.6f m off'):format(lWorst))
 end
 
 -- ---------------------------------------------------------------------------
