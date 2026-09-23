@@ -658,6 +658,13 @@ end
 --- ONE MESSAGE, ONE DIRECTION, AND IT ARRIVES LATE ON PURPOSE. The answer lives
 --- on the profile row, so it cannot be known at connect; until it arrives the
 --- lobby offers nothing, which is better than offering and withdrawing.
+---
+--- ONCE PER CONNECT IS NO LONGER THE ONLY TIME IT ARRIVES (#353). The console can
+--- re-send it -- `brtutorialreset <id>`, in server/market.lua -- which is how the
+--- guided first run is re-run at a player without a fresh account. So this
+--- handler is written to be idempotent and to be believed whenever it fires:
+--- everything it touches is assigned from `data`, nothing is accumulated, and the
+--- `offering == on` early return in BR.Tutorial.offer makes a repeat push free.
 RegisterNetEvent(BR.Net.TUTORIAL_OFFER)
 AddEventHandler(BR.Net.TUTORIAL_OFFER, function(data)
     local may = type(data) == 'table' and data.offer == true

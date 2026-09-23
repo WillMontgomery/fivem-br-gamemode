@@ -470,6 +470,269 @@ do
        'offerable = ' .. tostring(published('offerable')))
 end
 
+-- ---------------------------------------------------------------------------
+-- PUTTING THE OFFER BACK FROM THE CONSOLE (#353)
+--
+-- ═══ WHAT THE TOOL IS FOR ═══
+--
+-- Owner, 2026-09-22: "can you make a server command which clears the tutorial
+-- completed status for a given player and shows the toggle in the lobby? I want
+-- to test something cause our players told us the tutorial is broken on 4k
+-- displays and has steps which display outside the bounds of the screen."
+--
+-- Reproducing that took a fresh account per attempt, because both answers to the
+-- offer are terminal and the profile row is read once per connect.
+--
+-- ═══ WHY THIS BLOCK IS LAST, AND THE ORDER IS LOAD-BEARING AGAIN ═══
+--
+-- It loads the real br_core/server/market.lua into the state the client half is
+-- already in, which is the only way to assert the property the tool actually
+-- sells: that the SERVER clearing the account's answer is what the CLIENT then
+-- publishes as an offer. Two suites could each hold their own half and neither
+-- could hold the join -- which is where the last three bugs in this feature were
+-- (a fact written and nobody consulting it).
+--
+-- BUT BR.Net.TUTORIAL_DECLINE IS ONE STRING, and both halves handle it:
+-- 'br:tutorial:decline' is a client event in client/tutorial.lua and a net event
+-- in server/market.lua. In the game those are separate Lua states facing opposite
+-- directions; here they share one handler table, so from the load below a
+-- client-side decline gesture ALSO runs the server's writer. Every block that
+-- fires one is above this line. Anything added below it is driving both sides.
+-- ---------------------------------------------------------------------------
+
+describe('tutorial.reset')
+do
+    -- ── what server/market.lua needs and the client half never did ───────
+    local fetchAnswers = true
+    _G.GetResourceState        = function() return 'started' end
+    _G.GetNumPlayerIdentifiers = function() return 1 end
+    _G.GetPlayerIdentifier     = function(src) return 'license:p' .. tostring(src) end
+    _G.GetPlayerName           = function(src) return 'Player' .. tostring(src) end
+
+    --- Every envelope that left for a client.
+    ---
+    --- IT DELIVERS TUTORIAL_OFFER RATHER THAN ONLY RECORDING IT. The client's
+    --- handler is registered in this state already, so handing the envelope
+    --- over is what makes `published('offer')` an assertion about the server's
+    --- write rather than about the fixture. The raw list is kept as well, so a
+    --- block can tell "nothing was sent" from "something was sent and the
+    --- client declined to act on it".
+    local toClient = {}
+    _G.TriggerClientEvent = function(evt, src, d)
+        toClient[#toClient + 1] = { evt = evt, src = src, d = d }
+        if evt == BR.Net.TUTORIAL_OFFER then TriggerEvent(evt, d) end
+    end
+
+    --- The roster, as server/market.lua consumes it: two functions.
+    local entries = {}
+    BR.Roster = {
+        get = function(src) return entries[src] end,
+        licenseOf = function(src)
+            local e = entries[src]
+            return e and e.license or nil
+        end,
+    }
+
+    --- What each stored profile row's `tutorial` field holds.
+    local rows = {}
+
+    --- Every write that reached br_ddb, so "the row is untouched" is assertable.
+    local dbWrites = {}
+    AddEventHandler('br:ddb:tutorialSet', function(_, lic, state)
+        dbWrites[#dbWrites + 1] = { license = lic, state = state }
+    end)
+
+    -- THE BRIDGE, ANSWERING SYNCHRONOUSLY. `fetchAnswers` is what makes the
+    -- not-loaded-yet branch reachable: the inventory read is one round trip on
+    -- join, so the command can be typed at a player whose answer is still in
+    -- flight, and that is a refusal rather than a clear.
+    AddEventHandler('br:ddb:inventoryFetch', function(req, lic)
+        if not fetchAnswers then return end
+        TriggerEvent('br:ddb:inventoryResult', req,
+                     { balance = 0, xp = 0, owned = {}, equipped = {},
+                       tutorial = rows[lic] or '' }, {})
+    end)
+
+    for _, f in ipairs({
+        'br_lib/shared/identity.lua',   -- BR.Identity, which market.lua keys on
+        'br_lib/shared/xp.lua',         -- BR.Xp; BR.Market.push evaluates the curve
+        'br_lib/config/market.lua',     -- BR.Config.MarketIndex and defaultItem
+        'br_core/server/market.lua',
+    }) do
+        local chunk, err = loadfile(ROOT .. f)
+        if not chunk then
+            realPrint('\27[31mload error\27[0m ' .. f .. ': ' .. tostring(err))
+            os.exit(1)
+        end
+        chunk()
+    end
+
+    local function licOf(src) return 'license:p' .. tostring(src) end
+
+    --- Connect one player whose stored row already says `answer`.
+    ---
+    --- THROUGH THE REAL LOAD PATH rather than by poking `inv`, which is
+    --- test_volts.lua's rule for this same file: the cache is a file-local, and
+    --- `clearTutorial` refuses while `loaded` is false, so going around the
+    --- fetch would go around the guard.
+    local function join(src, answer)
+        entries[src] = { src = src, license = licOf(src),
+                         name = 'Player' .. tostring(src) }
+        rows[licOf(src)] = answer
+        BR.Market.load(src)
+    end
+
+    --- How many offers have been sent to one player since the last wipe.
+    local function offersTo(src)
+        local n = 0
+        for _, m in ipairs(toClient) do
+            if m.evt == BR.Net.TUTORIAL_OFFER and m.src == src then n = n + 1 end
+        end
+        return n
+    end
+
+    --- Everything the console has been told since the last wipe.
+    ---
+    --- ASSERTED RATHER THAN EYEBALLED, because for a testing tool the console
+    --- line IS the interface. A refusal that clears nothing and says nothing is
+    --- indistinguishable from a command that worked, and this one is typed by
+    --- hand at a server id that FiveM recycles.
+    local mark = 0
+    local function said(pat)
+        for i = mark + 1, #logged do
+            if logged[i]:find(pat, 1, true) then return logged[i] end
+        end
+    end
+
+    local function wipe()
+        toClient, dbWrites = {}, {}
+        mark = #logged
+    end
+
+    ok(commands.brtutorialreset ~= nil, 'the server command is registered')
+
+    -- ═══ AN ACCOUNT THAT FINISHED IT IS NOT OFFERED IT, WHICH IS THE START ═══
+    join(7, 'done')
+    ok(published('offer') == false and published('offerable') == false,
+       'a connect on a row that says done offers nothing',
+       ('offer = %s offerable = %s')
+           :format(tostring(published('offer')), tostring(published('offerable'))))
+    ok(BR.Market.tutorialOf(licOf(7)) == 'done',
+       'and the session cache holds that answer, which is what the warmup hold '
+       .. 'is refused against')
+
+    -- ═══ THE TOOL. CLEARING IS WHAT THE CLIENT IS TOLD, WITHOUT A RECONNECT ═══
+    --
+    -- This is the whole assertion. Everything else in this block bounds it.
+    wipe()
+    commands.brtutorialreset(0, { '7' })
+
+    ok(BR.Market.tutorialOf(licOf(7)) == '',
+       'CLEARING MOVES THE FACT THE SERVER ITSELF READS -- BR.Roster.setTutorialGame '
+       .. 'asks tutorialOf before it grants the warmup hold, so a client-only '
+       .. 'reset would put the cards back over a hold still being refused',
+       ('tutorialOf = %q'):format(tostring(BR.Market.tutorialOf(licOf(7)))))
+    ok(offersTo(7) == 1,
+       'and one offer goes out to that player -- the connect\'s own message, '
+       .. 're-sent, rather than a second event shaped like a reset',
+       ('sent %d'):format(offersTo(7)))
+    ok(published('offer') == true and published('offerable') == true,
+       'AND THE CLIENT PUBLISHES BOTH -- the lobby toggle is back above Ready up '
+       .. 'and the account is offerable again, on the same connection',
+       ('offer = %s offerable = %s')
+           :format(tostring(published('offer')), tostring(published('offerable'))))
+
+    -- ═══ AND THE ROW IS NOT WRITTEN, WHICH IS THE TOOL'S ONE LIMIT ═══
+    --
+    -- br_ddb's `br:ddb:tutorialSet` refuses any state but 'declined' and 'done'
+    -- before it builds an expression, so there is no way to say '' to the
+    -- database from Lua. This pins that the code does not pretend otherwise: a
+    -- write that was attempted and silently refused would leave the console
+    -- claiming a persistence this has not got.
+    ok(#dbWrites == 0,
+       'NOTHING IS WRITTEN TO THE PROFILE ROW -- this lasts for the connection, '
+       .. 'and the command says so at the console rather than implying more',
+       ('%d write(s)'):format(#dbWrites))
+    ok(said('a reconnect undoes this') ~= nil,
+       'AND THE CONSOLE IS TOLD THAT, in the same breath as the success -- a tool '
+       .. 'that silently needed a reconnect would be worse than no tool')
+    ok(said('Player7 (7)') ~= nil,
+       'and the success names who it landed on, because the id was typed by hand',
+       tostring(said('brtutorialreset')))
+
+    -- ═══ IT CLEARS THE PLAYER IT WAS GIVEN AND NOBODY ELSE ═══
+    --
+    -- FiveM recycles server ids and a console command is typed by hand, so the
+    -- cost of targeting the wrong row is a stranger's account being put back
+    -- into a walkthrough. Two players, both finished, one named.
+    wipe()
+    join(8, 'done')
+    wipe()
+    commands.brtutorialreset(0, { '8' })
+
+    ok(BR.Market.tutorialOf(licOf(8)) == '', 'the named player is cleared')
+    ok(BR.Market.tutorialOf(licOf(7)) == '',
+       'and 7 is still clear from its own run -- this is the control for the next '
+       .. 'assertion, not an effect')
+    -- ONE ENVELOPE, ADDRESSED. `offersTo(7) == 0` alone would pass a broadcast:
+    -- -1 is every client in FiveM and it is one character away from `src`, so
+    -- the address is asserted rather than merely the absence of a second copy.
+    ok(#toClient == 1 and toClient[1].evt == BR.Net.TUTORIAL_OFFER
+       and toClient[1].src == 8,
+       'AND NOBODY ELSE IS TOLD ANYTHING -- one offer, addressed to 8, so a '
+       .. 'command aimed at one player cannot put the walkthrough in front of a '
+       .. 'lobby full of them',
+       ('%d envelope(s), first to %s'):format(#toClient,
+           tostring(toClient[1] and toClient[1].src)))
+    ok(offersTo(7) == 0, 'and 7 hears nothing out of it',
+       ('sent %d to 7'):format(offersTo(7)))
+
+    -- ═══ AN UNKNOWN PLAYER IS REFUSED, AND REFUSED BEFORE ANYTHING MOVES ═══
+    wipe()
+    commands.brtutorialreset(0, { '99' })
+    ok(#toClient == 0,
+       'A SERVER ID NOBODY IS HOLDING CLEARS NOTHING AND SENDS NOTHING -- the '
+       .. 'roster-entry test is brgive\'s, and it answers brgive\'s question: is '
+       .. 'this a player, or just a number',
+       ('%d envelope(s) sent'):format(#toClient))
+    ok(said('no roster entry for 99') ~= nil,
+       'AND IT SAYS SO, NAMING THE ID -- the refusal is brgive\'s line, word for '
+       .. 'word, so the person typing this reads the same sentence they already '
+       .. 'know from every other command that names a player',
+       tostring(logged[#logged]))
+
+    -- AND NO ARGUMENT AT ALL IS THE SAME REFUSAL. A bare command that fell
+    -- through to `tonumber(nil)` and cleared something would be the worst
+    -- version of this tool.
+    wipe()
+    commands.brtutorialreset(0, {})
+    ok(#toClient == 0, 'and so is no server id at all',
+       ('%d envelope(s) sent'):format(#toClient))
+    ok(said('usage: brtutorialreset <serverId>') ~= nil,
+       'which prints the usage instead, including what it does NOT do',
+       tostring(logged[#logged]))
+
+    -- ═══ A PROFILE STILL IN FLIGHT IS REFUSED RATHER THAN CLEARED ═══
+    --
+    -- The seeded stub exists so a purchase during the round trip has something
+    -- to be refused against, and it carries `tutorial = nil`. Clearing it would
+    -- be undone by the fetch landing a moment later -- the offer would appear,
+    -- then vanish, with the console having said it worked.
+    fetchAnswers = false
+    wipe()
+    join(9, 'done')
+    commands.brtutorialreset(0, { '9' })
+    ok(#toClient == 0,
+       'A PLAYER WHOSE INVENTORY READ HAS NOT COME BACK IS REFUSED -- clearing '
+       .. 'the seeded stub would be overwritten by the fetch, which is this '
+       .. 'tool\'s one unaffordable silent failure',
+       ('%d envelope(s) sent'):format(#toClient))
+    ok(said('has no loaded profile yet') ~= nil,
+       'and says which, and what to read it with, rather than reporting success',
+       tostring(logged[#logged]))
+    fetchAnswers = true
+end
+
 -- ------------------------------------------------------------------ report ---
 
 if fail > 0 then
@@ -478,5 +741,6 @@ if fail > 0 then
 end
 realPrint(('\27[32mok\27[0m   %d assertions: finishing spends the account\'s '
     .. 'offer, so does a first match nobody took it into, abandoning does '
-    .. 'neither, and /brtutorial still outranks all three')
+    .. 'neither, /brtutorial still outranks all three, and brtutorialreset puts '
+    .. 'the offer back for one named player without writing a row')
     :format(pass))

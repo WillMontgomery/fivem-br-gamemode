@@ -874,3 +874,116 @@ AddEventHandler(BR.Net.TUTORIAL_DECLINE, function()
         :format(src))
     BR.Market.setTutorial(lic, 'declined')
 end)
+
+-- ---------------------------------------------------------------------------
+-- Putting the offer back, for testing (#353)
+-- ---------------------------------------------------------------------------
+
+--- Put an account back where it started with the offer, for this session.
+---
+--- ═══ WHY THERE IS A TOOL FOR THIS AT ALL ═══
+---
+--- Owner, 2026-09-22: "can you make a server command which clears the tutorial
+--- completed status for a given player and shows the toggle in the lobby? I want
+--- to test something cause our players told us the tutorial is broken on 4k
+--- displays and has steps which display outside the bounds of the screen."
+---
+--- Both answers are terminal and the row is read once per connect, so every
+--- attempt at reproducing that report needed a fresh account. This is the tool
+--- that ends that, and nothing in the game reads it.
+---
+--- ═══ IT CLEARS THE CACHE AND RE-PUSHES. IT DOES NOT WRITE THE ROW ═══
+---
+--- Not `setTutorial(license, '')`, because there is no way to say '' to the
+--- database from here: br_ddb's `br:ddb:tutorialSet` refuses any state but
+--- 'declined' and 'done' before it builds an expression, and widening it means
+--- editing js-src/br_ddb/src and rebuilding the bundle -- which
+--- tools/br_ddb_fingerprint.sh pins and which no box here can currently rebuild
+--- (that script's own header says why).
+---
+--- SO THE LIMIT IS REAL, AND THE COMMAND SAYS IT OUT LOUD. This lasts for the
+--- player's current connection: their next connect reads the row, which still
+--- says what it said, and the offer is gone again. A tool that needed a
+--- reconnect without admitting it would be worse than no tool.
+---
+--- ═══ THE CACHE IS NOT COSMETIC, WHICH IS THE HALF THAT SURPRISES ═══
+---
+--- `entry.tutorial` is consulted long after the connect: BR.Roster.setTutorialGame
+--- asks BR.Market.tutorialOf before granting the warmup hold, and refuses an
+--- account that has already answered. So clearing only the CLIENT's mirror --
+--- which is all the client's own /brtutorial does -- puts the cards back and
+--- leaves the in-game half's hold refused on any box not in dev mode.
+---
+--- KEYED OFF THIS FILE'S OWN `licenseOf`, not BR.Roster's. They agree today, and
+--- this one is the key `inv` is actually stored under -- so the entry cleared and
+--- the entry `push` reads cannot come apart.
+--- @param src integer
+--- @return string|nil  what the account used to say, or nil with no loaded profile
+function BR.Market.clearTutorial(src)
+    local lic = licenseOf[src]
+    local entry = lic and inv[lic]
+    if not entry or not entry.loaded then return nil end
+
+    local was = type(entry.tutorial) == 'string' and entry.tutorial or ''
+    entry.tutorial = ''
+
+    -- THE CONNECT'S OWN MESSAGE, RE-SENT. The client's TUTORIAL_OFFER handler
+    -- already turns one boolean into both the account's standing and the lobby
+    -- checkbox, and the page already draws that toggle off them -- so there is
+    -- nothing new to send and no new copy to write. A reset-shaped event would
+    -- be a second way to say what this one already says.
+    TriggerClientEvent(BR.Net.TUTORIAL_OFFER, src, { offer = true })
+    return was
+end
+
+--- `brtutorialreset <serverId>` -- let one player take the walkthrough again.
+---
+--- BY SERVER ID, which is what every command here that names a player takes --
+--- brgive, brarm, brvolts, brxpsim -- and the roster-entry test is brgive's,
+--- answering brgive's question: is this a player, or just a number.
+---
+--- RESTRICTED RATHER THAN CONSOLE-ONLY. brvolts and brprofile refuse a client
+--- because they read and write a stored row; this writes nothing persistent, so
+--- it carries the br.admin ACE like brgive and brdown do.
+---
+--- DEV-GATED BY CONSTRUCTION, like every command in this project --
+--- shared/devgate.lua wraps RegisterCommand once. Nothing extra here: a second
+--- check would be a second mechanism for a rule that already holds.
+RegisterCommand('brtutorialreset', function(_, args)
+    local target = tonumber(args and args[1])
+    if not target then
+        print('  usage: brtutorialreset <serverId>')
+        print('    clears that player\'s tutorial answer and puts the lobby')
+        print('    toggle back, so the walkthrough can be run again without a')
+        print('    fresh account')
+        print('    THIS SESSION ONLY -- the stored profile row is not changed, so')
+        print('    a reconnect brings their old answer back and this has to be')
+        print('    run again')
+        return
+    end
+
+    local entry = BR.Roster.get(target)
+    if not entry then
+        print(('  no roster entry for %d'):format(target))
+        return
+    end
+
+    -- NO PROFILE, NO CLEAR, AND IT SAYS WHICH. The inventory read is one round
+    -- trip on join, so this can be typed at a player whose answer has not
+    -- arrived yet -- and clearing the seeded stub would be overwritten by the
+    -- fetch a moment later. That is the one failure this tool cannot afford to
+    -- have quietly.
+    local was = BR.Market.clearTutorial(target)
+    if not was then
+        print(('  brtutorialreset: %s (%d) has no loaded profile yet -- their '
+            .. 'inventory read has not come back. brprofile reads it.')
+            :format(entry.name or '?', target))
+        return
+    end
+
+    print(('[br_core] brtutorialreset: %s (%d) answered %s and is offerable '
+           .. 'again -- the toggle is above Ready up in their lobby')
+        :format(entry.name or '?', target,
+                was == '' and 'nothing yet' or ('\'' .. was .. '\'')))
+    print('  the stored row is untouched, so a reconnect undoes this')
+end, true)
