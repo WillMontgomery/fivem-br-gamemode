@@ -1604,3 +1604,139 @@ RegisterCommand('brdrivers', function()
         end
     end
 end, false)
+
+-- ---------------------------------------------------------- map area spike ---
+--
+-- ═══ DOES ADD_AREA_OVERLAY ACTUALLY FILL A POLYGON? (#347) ═══
+--
+-- The answer is a look at the map, not a test. MINIMAP_LOADER.gfx is already
+-- streamed by ScaleformUI_Assets and already carries the method; what nobody
+-- ships is a CALLER, so the risk is not "will the wrapper compile" but "does
+-- that method do anything at all on this build". This draws one hard-coded
+-- shape through it and prints everything needed to tell one failure from
+-- another. client/mapoverlay.lua has the rest of the argument.
+--
+-- ═══ WHY THIS SHAPE AND NOT A BOX ═══
+--
+-- A CONCAVE one, because "it worked" and "it drew a blob" have to be
+-- distinguishable at a glance. This is an arrowhead pointing NORTH with a deep
+-- V bitten out of its southern edge, and the apex of that bite sits on Legion
+-- Square. If the movie fills the polygon it was given, the bite is there. If it
+-- fills a bounding shape instead, the same four points come out as a triangle
+-- with a straight bottom -- a different picture, not a subtler one.
+--
+-- WORLD COORDINATES, PASSED STRAIGHT THROUGH. The movie negates y itself, so
+-- these are the numbers /brcoords prints and not a map-space conversion.
+-- Legion Square is BR.Config.Map.POIs' `downtown` row, 200, -900 -- taken from
+-- the config rather than remembered, because "look here" is only useful if the
+-- place named is the place drawn. The other three are that point plus an offset
+-- and are not named after neighbourhoods on purpose: the shape is 900m across
+-- either way and what it lands on is for the person looking to report.
+local MAP_AREA = {
+    { x =  200.0, y =  -300.0 },   -- tip, 600m NORTH of Legion Square
+    { x =  650.0, y = -1200.0 },   -- east wing, 450m east and 300m south
+    { x =  200.0, y =  -900.0 },   -- THE NOTCH -- Legion Square itself, and the
+                                   -- reflex vertex that makes this concave
+    { x = -250.0, y = -1200.0 },   -- west wing, 450m west and 300m south
+}
+
+-- MAGENTA, WHICH GTA'S MAP PALETTE DOES NOT CONTAIN. A debug fill has one job
+-- -- to be unmistakable -- so it deliberately does not follow the rule the
+-- in-game menus follow about staying inside the game's own colours. Alpha is
+-- 0-255 here and the movie divides it by 255 for the clip, so 170 is about two
+-- thirds opaque: enough to read as a fill, transparent enough that the roads
+-- underneath can be checked against where the shape is supposed to be.
+local MAP_AREA_COLOUR = { r = 255, g = 0, b = 255, a = 170 }
+
+--- How many frames to wait for the readiness gate before giving up.
+---
+--- The gate spends three seconds of that on purpose (its own settle window), so
+--- this has to be comfortably longer than three seconds of frames or the command
+--- would report a timeout that is really the gate working as designed. 1800 is
+--- half a minute at 60fps and a whole one at 30.
+local MAP_AREA_FRAMES = 1800
+
+local function mapAreaReport()
+    local r = BR.MapOverlay.report()
+    print(('  phase %s -- %s'):format(r.phase, r.why))
+    print(('  handle %s   asked %s   loaded frames %d')
+        :format(tostring(r.handle), tostring(r.asked), r.frames))
+    print(('  ours %d   next movie index %d'):format(r.areas, r.next))
+end
+
+RegisterCommand('brmaparea', function()
+    if not BR.MapOverlay then
+        print('[br_core] brmaparea: client/mapoverlay.lua is not loaded')
+        return
+    end
+
+    Citizen.CreateThread(function()
+        print('--- brmaparea: ADD_AREA_OVERLAY spike (#347) ---')
+
+        -- The gate is stepped by hand here rather than by a loop callback,
+        -- because nothing in the gamemode wants it and a spike should leave
+        -- nothing running behind it.
+        local last
+        for _ = 1, MAP_AREA_FRAMES do
+            local ready, why = BR.MapOverlay.step()
+            if ready then break end
+            if why ~= last then
+                last = why
+                print(('  %s'):format(why))
+            end
+            Citizen.Wait(0)
+        end
+
+        if not BR.MapOverlay.ready() then
+            print('  GAVE UP -- the overlay never became ready:')
+            mapAreaReport()
+            return
+        end
+
+        -- Running it twice replaces rather than stacks, which also exercises the
+        -- only way an area's geometry can ever change: remove, then add again.
+        local cleared = BR.MapOverlay.removeAll()
+        if cleared > 0 then
+            print(('  removed %d area(s) from the previous run first'):format(cleared))
+        end
+
+        local index, why = BR.MapOverlay.addArea(MAP_AREA, MAP_AREA_COLOUR)
+        if not index then
+            print(('  FAILED -- %s'):format(why))
+            mapAreaReport()
+            return
+        end
+
+        -- THE EXACT STRING THAT WENT OUT, AND ITS LENGTH. If the shape on the map
+        -- is garbled rather than absent, the first suspect is this string being
+        -- truncated by the engine on its way into the movie -- there is no
+        -- documented length cap on a Scaleform string parameter, which is not
+        -- the same as there not being one. Printed so the picture and the input
+        -- can be compared instead of guessed at.
+        local sent = BR.Native.minimapAreaString(MAP_AREA)
+        print(('  %s'):format(why))
+        print(('  %d points, colour %d,%d,%d alpha %d, outline false')
+            :format(#MAP_AREA, MAP_AREA_COLOUR.r, MAP_AREA_COLOUR.g,
+                    MAP_AREA_COLOUR.b, MAP_AREA_COLOUR.a))
+        print(('  coords param (%d chars): %s'):format(#sent, sent))
+        mapAreaReport()
+        print('  LOOK AT: downtown Los Santos on the pause map. A magenta')
+        print('  arrowhead pointing north, roughly 900m across, with a V notch')
+        print('  cut into its bottom edge whose point is on Legion Square.')
+        print('  Then stand on Legion Square and look at the radar: the two')
+        print('  wings of that notch should meet at a point under you.')
+        print('  "brmapareaoff" removes it.')
+    end)
+end, false)
+
+RegisterCommand('brmapareaoff', function()
+    if not BR.MapOverlay then
+        print('[br_core] brmapareaoff: client/mapoverlay.lua is not loaded')
+        return
+    end
+    -- OURS ONLY, NEVER CLEAR_ALL. The handle is shared with ScaleformUI and
+    -- CLEAR_ALL would take its overlays with it -- see client/mapoverlay.lua.
+    print(('[br_core] brmapareaoff: removed %d area(s)')
+        :format(BR.MapOverlay.removeAll()))
+    mapAreaReport()
+end, false)

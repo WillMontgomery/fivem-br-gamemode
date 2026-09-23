@@ -594,6 +594,22 @@ client_scripts {
     -- BR.Native.radiusBlip and BR.Native.blipName; BR.Dist comes from
     -- @br_lib/shared/geo.lua, already loaded above.
     'client/survey.lua',
+    -- THE #347 SPIKE, AND IT IS HERE BECAUSE ITS ONE CALLER IS THE NEXT LINE.
+    -- It holds the shared minimap overlay handle and draws a filled polygon
+    -- through it; /brmaparea in client/debug.lua is the only thing that asks.
+    -- Beside survey.lua and probe.lua for the reason their notes give -- a
+    -- throwaway that MEASURES something, which nothing in the gamemode calls.
+    --
+    -- It needs client/natives.lua for BR.Native.minimapAreaOverlay and
+    -- BR.NativeTruthy (@br_lib/shared/enums.lua), both far above. It reads
+    -- ScaleformUI's own overlay bookkeeping to count the movie's array, but with
+    -- rawget at CALL time, so the include at line 500 is company rather than an
+    -- order. It registers NO loop callback and starts NO thread: stepped by hand
+    -- from the command, it costs nothing until somebody types it.
+    --
+    -- WHEN #347 IS ANSWERED THIS LINE GOES, one way or the other -- either the
+    -- real caller replaces it or the file is deleted with the command.
+    'client/mapoverlay.lua',
     'client/debug.lua',
 }
 

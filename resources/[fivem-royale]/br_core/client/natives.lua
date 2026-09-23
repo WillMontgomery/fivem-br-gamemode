@@ -587,6 +587,144 @@ function BR.Native.blipHiddenOnLegend(blip, hidden)
     SetBlipHiddenOnLegend(blip, hidden and true or false)
 end
 
+-- ---------------------------------------------------------- minimap overlay ---
+--
+-- ═══ THE THIRD FILLED MAP PRIMITIVE, AND THE ONLY ARBITRARY ONE (#347) ═══
+--
+-- areaBlip above is the second, and its header is honest that a shape which is
+-- not a disc gets drawn as boxes because nothing strokes or fills an outline.
+-- That is true of the BLIP natives and it is not true of the minimap MOVIE:
+-- the MINIMAP_LOADER.gfx this project already streams through
+-- ScaleformUI_Assets is not Rockstar's stock overlay loader, and it carries an
+-- ADD_AREA_OVERLAY method that fills a polygon.
+--
+-- These are the marshalling half of that, and nothing else. They do not own a
+-- handle, a zone, an index or a cadence -- client/mapoverlay.lua owns the
+-- handle and the indices, and #347 is a SPIKE, so there is no caller in the
+-- gamemode at all yet. What lives here is the part that is the same for every
+-- future caller: the method names, the parameter order, and the one BOOL that
+-- decides whether pushing parameters is safe.
+--
+-- ═══ WHY THE OPEN'S RETURN VALUE IS LOAD-BEARING ═══
+--
+-- A Scaleform call is four steps: open a method, push parameters, end. The push
+-- natives take no handle and name no method -- they push onto whatever the
+-- engine currently has OPEN. So a refused open followed by six pushes does not
+-- push six parameters at nothing; it pushes them at whatever was open before,
+-- and END_SCALEFORM_MOVIE_METHOD then commits that. Reading the open's answer
+-- is the difference between a no-op and corrupting somebody else's call.
+--
+-- The MINIMAP_LOADER method names, parameter order and arity below were read
+-- out of the movie's own bytecode (its DefineFunction2 records), not out of the
+-- Lua wrapper that calls them, because the wrapper is what a spike is supposed
+-- to doubt. What they are is recorded in #347.
+
+--- Open a method on the minimap overlay movie, and say whether it opened.
+---
+--- CALL_MINIMAP_SCALEFORM_FUNCTION, 0x4C89C0ED, `BOOL f(int miniMap, char*
+--- fnName)`. See the essay above for why the BOOL is not decoration.
+---
+--- BR.NativeTruthy IS WRITTEN OUT rather than using this file's `isTrue` alias,
+--- which is the stricter BR.NativeBool. Both refuse numeric 0, which is the
+--- hazard -- 0 IS TRUTHY IN LUA, and a bare `if CallMinimapScaleformFunction()`
+--- would push into a method the engine has just refused to open. The wider
+--- policy is named here deliberately: this is a brand-new binding on an
+--- unusual movie and "anything but nil, false and 0" is the reading that does
+--- not turn an unexpected return SHAPE into a silent refusal to draw.
+--- @param handle integer|nil  the overlay handle from client/mapoverlay.lua
+--- @param method string
+--- @return boolean opened
+function BR.Native.minimapMethod(handle, method)
+    if not handle or handle == 0 then return false end
+    if type(method) ~= 'string' or method == '' then return false end
+    return BR.NativeTruthy(CallMinimapScaleformFunction(handle, method))
+end
+
+--- The movie's own spelling of a polygon: "x:y,x:y,x:y".
+---
+--- Split on ',' then on ':' inside the movie, so the separators are not
+--- negotiable and neither is the pair order. Two decimals because that is what
+--- the vendored wrapper sends and a metre of map is far below one pixel of
+--- radar; the point of matching it is that a future caller reading this file
+--- and a reader of ScaleformUI.lua see the same string.
+---
+--- THE y IS NOT NEGATED HERE. The movie negates it itself -- its polygon walk
+--- is moveTo(pt[0], 0 - pt[1]) -- because Flash's y axis runs the other way
+--- from the world's. Doing it in both places is a shape mirrored about the
+--- equator, drawn confidently, in the wrong half of the map.
+--- @param points table  array of { x = number, y = number }
+--- @return string
+function BR.Native.minimapAreaString(points)
+    local parts = {}
+    for i = 1, #points do
+        local p = points[i]
+        parts[i] = ('%.2f:%.2f'):format(p.x, p.y)
+    end
+    return table.concat(parts, ',')
+end
+
+--- Fill a polygon on the radar and the pause map.
+---
+--- ADD_AREA_OVERLAY(coords, hasOutline, r, g, b, a) -- six parameters, in that
+--- order, string then bool then four ints.
+---
+--- `outline` IS FALSE AT EVERY CALL SITE AND THAT IS NOT A PREFERENCE. The
+--- movie's AreaOverlay constructor calls its own createPolygon with 6
+--- arguments where createPolygon declares 11, so the stroke's thickness
+--- argument is undefined and its lineStyle draws nothing. Passing true is not
+--- dangerous -- the fill is drawn before the stroke block and does not depend
+--- on it -- it just builds an empty clip and lies to the next reader.
+---
+--- AN AREA CANNOT BE MOVED, ROTATED OR RESIZED AFTERWARDS. The vendored
+--- wrapper refuses all three on an area "due to their vector boundaries"
+--- (ScaleformUI.lua:16855, :16868, :16883), and the movie has no method that
+--- would do it either. Every geometry change is a remove and a re-add, which is
+--- why there is no update function here and must not be one.
+--- @param handle integer|nil
+--- @param points table    array of { x, y } in WORLD coordinates
+--- @param outline boolean
+--- @param r integer
+--- @param g integer
+--- @param b integer
+--- @param a integer       0-255; the movie divides by 255 for the clip's alpha
+--- @return boolean sent
+function BR.Native.minimapAreaOverlay(handle, points, outline, r, g, b, a)
+    if type(points) ~= 'table' or #points < 3 then return false end
+    if not BR.Native.minimapMethod(handle, 'ADD_AREA_OVERLAY') then return false end
+    ScaleformMovieMethodAddParamTextureNameString(BR.Native.minimapAreaString(points))
+    ScaleformMovieMethodAddParamBool(outline and true or false)
+    ScaleformMovieMethodAddParamInt(math.floor(r))
+    ScaleformMovieMethodAddParamInt(math.floor(g))
+    ScaleformMovieMethodAddParamInt(math.floor(b))
+    ScaleformMovieMethodAddParamInt(math.floor(a))
+    EndScaleformMovieMethod()
+    return true
+end
+
+--- Remove one overlay from the movie, by the movie's own zero-based index.
+---
+--- REM_OVERLAY SPLICES. The movie does `overlays[id].Clear()` and then
+--- `overlays.splice(id, 1)`, so every index above the one removed SHIFTS DOWN
+--- BY ONE. A caller holding more than one index must remove highest first and
+--- must renumber whatever it keeps -- client/mapoverlay.lua is where that
+--- bookkeeping lives, because it is the thing that knows what it added.
+---
+--- CLEAR_ALL EXISTS IN THE MOVIE AND IS NOT WRAPPED HERE, ON PURPOSE. The
+--- handle is shared with ScaleformUI, whose own overlays live in the same
+--- array; clearing it would delete theirs, and their `minimaps` table would go
+--- on reporting overlays that are no longer in the movie. There is no call for
+--- which that is the right answer, so there is no function for it.
+--- @param handle integer|nil
+--- @param index integer  zero-based, as the movie counts
+--- @return boolean sent
+function BR.Native.minimapRemoveOverlay(handle, index)
+    if type(index) ~= 'number' or index < 0 then return false end
+    if not BR.Native.minimapMethod(handle, 'REM_OVERLAY') then return false end
+    ScaleformMovieMethodAddParamInt(math.floor(index))
+    EndScaleformMovieMethod()
+    return true
+end
+
 -- -------------------------------------------------------------- prop scale ---
 
 --- One axis vector of a transform matrix, renormalised to length k.
@@ -2571,6 +2709,75 @@ function BR.Native.check()
         SetBlipHiddenOnLegend(b, true)
         RemoveBlip(b)
     end)
+    -- ═══ THE MINIMAP OVERLAY MOVIE (#347), PROBED WITHOUT BEING DRIVEN ═══
+    --
+    -- Every other probe here either reads something or writes a value it is
+    -- about to write anyway. These CANNOT be exercised that way and the reason
+    -- is the one written over BR.Native.minimapMethod: the push natives have no
+    -- handle and name no method, they push onto whatever is currently OPEN. A
+    -- probe that opened a method to see whether it opens would either have to
+    -- end it -- committing a call with parameters chosen by a diagnostic -- or
+    -- leave it open for whatever runs next. So these prove the BINDING, the way
+    -- the Mumble transmit natives above do and for the same reason: a nil here
+    -- is worth knowing about, and calling it is not free.
+    --
+    -- A nil in any of them is the silent kind. ADD_AREA_OVERLAY is the only
+    -- route this project has to a filled shape that is not a disc or a box, and
+    -- a missing binding would not throw anywhere useful -- the zone would
+    -- simply never appear.
+    probe('CallMinimapScaleformFunction', function()
+        return CallMinimapScaleformFunction ~= nil
+    end)
+    probe('ScaleformMovieMethodAddParamTextureNameString', function()
+        return ScaleformMovieMethodAddParamTextureNameString ~= nil
+    end)
+    probe('ScaleformMovieMethodAddParamBool', function()
+        return ScaleformMovieMethodAddParamBool ~= nil
+    end)
+    probe('ScaleformMovieMethodAddParamInt', function()
+        return ScaleformMovieMethodAddParamInt ~= nil
+    end)
+    probe('EndScaleformMovieMethod', function()
+        return EndScaleformMovieMethod ~= nil
+    end)
+    probe('SetMinimapOverlayDisplay', function()
+        return SetMinimapOverlayDisplay ~= nil
+    end)
+    -- THE TWO GATES THAT KEEP US OFF THE CRASH, PLUS THE LOADED TEST -- AND ALL
+    -- THREE REPORT THEIR VALUE, which is why they are rows rather than probes.
+    --
+    -- Adding an overlay while the engine is still reloading the map store takes
+    -- gta-streaming-five.dll down (citizenfx/fivem#4167, open), and this project
+    -- reaches join more often than most: an in-game logout re-mints a token and
+    -- signs back in, which re-runs the whole arrival. client/mapoverlay.lua will
+    -- not ask for the handle until both gates have been true for a few seconds,
+    -- so what those gates actually answer in the lobby is worth reading once.
+    --
+    -- HAS_MINIMAP_OVERLAY_LOADED IS ASKED ABOUT HANDLE 0, which is the whole
+    -- point: 0 is not an overlay, so a working native answers "no" and a missing
+    -- one answers nil -- and the SHAPE of that "no" is the thing to read, since
+    -- 0 is truthy in Lua. The live handle is reported by /brmaparea instead,
+    -- because asking for one here would make a diagnostic add an overlay.
+    --
+    -- `isLoaded` on the vendored wrapper is NOT the thing to read -- it is
+    -- permanently false in this copy, and the BR-PATCH 2 note in
+    -- ScaleformUI.lua explains why and why it was left alone.
+    do
+        local ok, detail = pcall(function()
+            local inGame = NetworkIsGameInProgress()
+            local drawn  = IsMinimapRendering()
+            local loaded = HasMinimapOverlayLoaded(0)
+            return ('session=%s (%s), minimap=%s (%s), loaded(0)=%s (%s)')
+                :format(tostring(inGame), type(inGame),
+                        tostring(drawn),  type(drawn),
+                        tostring(loaded), type(loaded))
+        end)
+        results[#results + 1] = {
+            name   = 'minimap overlay gates',
+            ok     = ok,
+            detail = ok and detail or tostring(detail),
+        }
+    end
     -- Dead squadmates keep a dimmed blip; a nil here would leave every
     -- eliminated mate looking alive on the minimap.
     probe('SetBlipAlpha',            function()

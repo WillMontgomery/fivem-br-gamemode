@@ -19944,6 +19944,477 @@ do
     BR.Sfx.play     = prev.sfx
 end
 
+-- ==========================================================================
+-- THE MINIMAP AREA OVERLAY: HANDLE LIFECYCLE AND ARGUMENT MARSHALLING (#347)
+-- ==========================================================================
+--
+-- WHAT IS TESTABLE HERE AND WHAT IS NOT, SAID FIRST.
+--
+-- #347 asks whether MINIMAP_LOADER.gfx's ADD_AREA_OVERLAY really fills a
+-- polygon on the radar and the pause map. NO LUA PROCESS CAN ANSWER THAT. The
+-- movie is compiled Flash running inside the engine, and "a magenta arrowhead
+-- appeared over downtown Los Santos" is a thing a person sees. That half is
+-- /brmaparea's job and it is why the spike exists.
+--
+-- What IS testable is everything on this side of the native boundary, and it is
+-- worth testing because every one of these is a way to send a call that looks
+-- fine and does nothing:
+--
+--   * the right method name, the right parameters, in the right ORDER and the
+--     right TYPES -- the movie's own bytecode declares
+--     ADD_AREA_OVERLAY(coords, hasOutline, r, g, b, a), and a swapped pair
+--     there is a shape that draws in the wrong colour or not at all;
+--   * a REFUSED open not pushing parameters into the void. The push natives
+--     take no handle and name no method; they push onto whatever the engine has
+--     open, so six pushes after a refused open are six parameters handed to
+--     somebody else's call;
+--   * the same refusal when the engine answers NUMERIC ZERO, which is TRUTHY
+--     IN LUA. This project has shipped that fault six times and the gate in
+--     tools/check_bool_natives.lua exists because of it;
+--   * the crash gate holding. ADD_MINIMAP_OVERLAY racing RELOAD_MAP_STORE
+--     crashes gta-streaming-five.dll (citizenfx/fivem#4167) and this gamemode
+--     re-runs join whenever somebody logs out in game, so the gate is reachable
+--     in normal play. A gate that can only be verified by NOT crashing is a
+--     gate nobody can verify; driven from here, "it refused" is an assertion;
+--   * never calling AddMinimapOverlay from br_core, which would resolve the
+--     movie's path against br_core and look for a file that is not there;
+--   * never calling CLEAR_ALL on a handle shared with ScaleformUI.
+do
+    describe('minimap area overlay (#347)')
+
+    -- ---- the engine side, driveable ----------------------------------------
+    --
+    -- `open` is what CallMinimapScaleformFunction answers and it is a VARIABLE
+    -- rather than a constant for the reason the keyboard block at the top of
+    -- this file gives about IsRawKeyDown: a FiveM native declared BOOL does not
+    -- have to hand Lua a boolean, and the shape is a dimension of the test
+    -- matrix. `0` is in that matrix on purpose.
+    local mm = {
+        inGame = true, rendering = true, loaded = true,
+        handle = 7,          -- what ScaleformUI_Assets answers with
+        open   = true,       -- what the engine says about opening a method
+        asks   = 0,          -- times ScUI:AddMinimapOverlay was fired
+        adds   = 0,          -- times AddMinimapOverlay was called -- must stay 0
+        display = 0,         -- SetMinimapOverlayDisplay writes
+        log    = {},         -- every marshalling call, in order
+    }
+
+    local prev = {
+        gameTimer = GetGameTimer,
+        scaleform = rawget(_G, 'ScaleformUI'),
+    }
+    local clock = 0
+    function GetGameTimer() return clock end
+
+    function NetworkIsGameInProgress() return mm.inGame end
+    function IsMinimapRendering() return mm.rendering end
+    function HasMinimapOverlayLoaded(h)
+        mm.loadedArg = h
+        return mm.loaded
+    end
+    function SetMinimapOverlayDisplay(h, x, y, w, hh, a)
+        mm.display = mm.display + 1
+        mm.displayArgs = { h, x, y, w, hh, a }
+    end
+    --- THE ONE THAT MUST NEVER BE CALLED FROM br_core. It is stubbed rather than
+    --- left absent so that calling it is a FAILING ASSERTION instead of an
+    --- "attempt to call a nil value" that reads like a harness gap.
+    function AddMinimapOverlay(path)
+        mm.adds = mm.adds + 1
+        mm.addPath = path
+        return 99
+    end
+    function CallMinimapScaleformFunction(h, method)
+        mm.log[#mm.log + 1] = { op = 'open', handle = h, method = method }
+        return mm.open
+    end
+    function ScaleformMovieMethodAddParamTextureNameString(s)
+        mm.log[#mm.log + 1] = { op = 'str', v = s }
+    end
+    function ScaleformMovieMethodAddParamBool(b)
+        mm.log[#mm.log + 1] = { op = 'bool', v = b }
+    end
+    function ScaleformMovieMethodAddParamInt(i)
+        mm.log[#mm.log + 1] = { op = 'int', v = i }
+    end
+    function ScaleformMovieMethodAddParamFloat(f)
+        mm.log[#mm.log + 1] = { op = 'float', v = f }
+    end
+    function EndScaleformMovieMethod()
+        mm.log[#mm.log + 1] = { op = 'end' }
+    end
+
+    -- ScaleformUI_Assets' loader.lua, modelled: one handle for the whole
+    -- client, cached, handed back through a callback. `handle = nil` models the
+    -- case where nobody answers at all, which is what happens if that resource
+    -- is not started.
+    AddEventHandler('ScUI:AddMinimapOverlay', function(cb)
+        mm.asks = mm.asks + 1
+        if mm.handle then cb(mm.handle) end
+    end)
+
+    --- The marshalling log as one readable line, so a wrong ORDER fails with a
+    --- message that shows the order rather than a bare false.
+    local function sig()
+        local out = {}
+        for _, e in ipairs(mm.log) do
+            if e.op == 'open' then out[#out + 1] = 'open(' .. tostring(e.method) .. ')'
+            elseif e.op == 'end' then out[#out + 1] = 'end'
+            else out[#out + 1] = e.op .. '=' .. tostring(e.v) end
+        end
+        return table.concat(out, ' ')
+    end
+    local function clearLog() mm.log = {} end
+
+    -- ---- the modules -------------------------------------------------------
+    --
+    -- THE REAL client/natives.lua, WHICH NO OTHER BLOCK IN THIS FILE LOADS. The
+    -- header up top says why it is normally stubbed -- loading it would pull in
+    -- the ray-cast and the DUI for no gain -- and that argument does not survive
+    -- here: the marshalling under test IS in that file, and a copy of it written
+    -- into this harness would agree with itself and prove nothing.
+    --
+    -- It declares `BR.Native = {}` at the top, so the harness's stub table is
+    -- put back ON TOP afterwards rather than replaced. Nothing below this block
+    -- needs either, but a suite that quietly disarmed the fixtures for whatever
+    -- gets appended next is the failure this file's RAW_KEYBOARD note is about.
+    local fakeNative = BR.Native
+    loadAll({ 'br_core/client/natives.lua', 'br_core/client/mapoverlay.lua' })
+    local realNative = BR.Native
+    for k, v in pairs(fakeNative) do realNative[k] = v end
+
+    -- ═══ THE COORDINATE STRING, WHICH IS THE MOVIE'S ONLY INPUT FORMAT ═══
+    --
+    -- The movie does coords.split(',') and then split(':') on each piece, so
+    -- both separators and the pair order are the movie's and not ours.
+    local tri = {
+        { x = 100.0, y = -200.5 },
+        { x = -300.25, y = 400.0 },
+        { x = 0.0, y = 0.0 },
+    }
+    ok(BR.Native.minimapAreaString(tri) == '100.00:-200.50,-300.25:400.00,0.00:0.00',
+        'the coords parameter is x:y pairs, comma separated, two decimals, in order',
+        BR.Native.minimapAreaString(tri))
+
+    -- AND THE SIGN OF y IS NOT TOUCHED HERE. The movie negates it itself --
+    -- moveTo(pt[0], 0 - pt[1]) -- because Flash's y axis runs the other way from
+    -- the world's. Negating on both sides is a shape mirrored about the equator,
+    -- drawn confidently, in the wrong half of the map, and the only place that
+    -- decision is visible is this assertion.
+    ok(BR.Native.minimapAreaString({ { x = 1.0, y = -2.0 } }) == '1.00:-2.00',
+        'a negative world y is passed through NEGATIVE -- the movie negates it',
+        BR.Native.minimapAreaString({ { x = 1.0, y = -2.0 } }))
+
+    -- ═══ THE WRAPPER'S OWN GUARDS, WHICH ARE WHERE THE NIL HANDLE STOPS ═══
+    --
+    -- Nothing above this layer is trusted to have a handle: 0 is the engine's
+    -- "no such overlay" and nil is "nobody has answered yet", and either one
+    -- reaching CallMinimapScaleformFunction is a method opened on nothing
+    -- followed by parameters pushed at nothing. The guard lives at the boundary
+    -- so the callers do not each have to carry one.
+    clearLog()
+    ok(BR.Native.minimapMethod(nil, 'ADD_AREA_OVERLAY') == false
+            and BR.Native.minimapMethod(0, 'ADD_AREA_OVERLAY') == false
+            and BR.Native.minimapMethod(7, '') == false
+            and #mm.log == 0,
+        'a nil handle, a 0 handle and an empty method name are all refused '
+            .. 'without the native being called at all', sig())
+
+    -- ═══ THE CRASH GATE, DRIVEN ═══
+    clock = 1000
+    mm.inGame = false
+    local ready, why = BR.MapOverlay.step()
+    ok(not ready and why:find('NetworkIsGameInProgress'),
+        'with no session the gate refuses and names NetworkIsGameInProgress', why)
+    ok(mm.asks == 0,
+        'and it has not asked ScaleformUI_Assets for the handle yet -- that call '
+            .. 'is the one that races RELOAD_MAP_STORE (citizenfx/fivem#4167)',
+        ('asks=%d'):format(mm.asks))
+    local idx, addWhy = BR.MapOverlay.addArea(tri, { r = 1, g = 2, b = 3, a = 4 })
+    -- THE REASON IS ASSERTED, NOT JUST THE REFUSAL. Without a handle the call
+    -- would be refused one layer down anyway -- BR.Native.minimapMethod guards
+    -- against a nil handle -- so "it returned nil" is true whether the readiness
+    -- gate exists or not. Naming the gate is what makes this a test of the gate.
+    ok(idx == nil and #mm.log == 0 and addWhy:find('not ready'),
+        'and addArea refuses on the READINESS gate rather than incidentally on a '
+            .. 'missing handle, without opening a method', addWhy)
+
+    mm.inGame, mm.rendering = true, false
+    local _, why2 = BR.MapOverlay.step()
+    ok(why2:find('IsMinimapRendering'),
+        'a session with no radar on screen is refused too, and named separately',
+        why2)
+
+    -- BOTH GATES UP -- and the settle clock starts from the frame they agree,
+    -- not from the resource starting.
+    mm.rendering = true
+    local _, why3 = BR.MapOverlay.step()
+    ok(why3:find('settling') and mm.asks == 0,
+        'the frame both gates agree starts a settle wait and still asks nothing',
+        why3)
+
+    clock = clock + 2999
+    local ready4 = BR.MapOverlay.step()
+    ok(not ready4 and mm.asks == 0,
+        'one millisecond short of the settle window is still not ready',
+        select(2, BR.MapOverlay.step()))
+
+    -- A GATE DROPPING OUT RESTARTS THE CLOCK. Join can happen again -- this
+    -- gamemode re-runs it on an in-game logout -- so "it was ready a minute ago"
+    -- is not a reason to skip the wait.
+    mm.inGame = false
+    BR.MapOverlay.step()
+    mm.inGame = true
+    BR.MapOverlay.step()
+    clock = clock + 2999
+    ok(not BR.MapOverlay.step() and mm.asks == 0,
+        'a gate dropping out and coming back restarts the settle clock',
+        select(2, BR.MapOverlay.step()))
+
+    -- ═══ THE HANDLE ═══
+    clock = clock + 3000
+    mm.handle = nil                     -- ScaleformUI_Assets not started
+    local ready5, why5 = BR.MapOverlay.step()
+    ok(not ready5 and why5:find('ScUI:AddMinimapOverlay') and mm.asks >= 1,
+        'past the settle window it asks for the handle, and says so while nobody '
+            .. 'answers', why5)
+    ok(mm.adds == 0,
+        'and it NEVER calls AddMinimapOverlay itself -- that path resolves '
+            .. 'against br_core and would look for br_core/files/MINIMAP_LOADER.gfx',
+        ('AddMinimapOverlay called %d time(s) with %s')
+            :format(mm.adds, tostring(mm.addPath)))
+
+    -- IT RETRIES, BUT NOT PER FRAME. The answer comes from another resource, so
+    -- asking once would stick forever if ScaleformUI_Assets were slow or absent
+    -- -- and asking every frame is the exact fault the vendored library's
+    -- BR-PATCH 2 removed from its own copy of this wait.
+    local asksBefore = mm.asks
+    for _ = 1, 30 do BR.MapOverlay.step() end
+    ok(mm.asks == asksBefore,
+        'thirty frames inside the retry window fire the event no further times '
+            .. '-- the vendored library shipped a version of this wait that fired '
+            .. 'a cross-resource event every frame for the whole session',
+        ('asks went %d -> %d over 30 steps'):format(asksBefore, mm.asks))
+
+    clock = clock + 500
+    BR.MapOverlay.step()
+    ok(mm.asks == asksBefore + 1,
+        'and past the retry window it asks again -- an event with no listener is '
+            .. 'silence, so one unanswered ask cannot be the end of it',
+        ('asks went %d -> %d'):format(asksBefore, mm.asks))
+
+    -- ═══ -1 AND 0 ARE NOT HANDLES ═══
+    --
+    -- -1 is loader.lua's OWN "not created yet" sentinel -- the variable it
+    -- guards on -- and 0 is the engine's "no such overlay". Either one stored as
+    -- a handle would send every method call afterwards into nothing, silently,
+    -- and BR.Native.minimapMethod's own 0 guard would not catch the -1.
+    mm.handle = -1
+    clock = clock + 500
+    BR.MapOverlay.step()
+    ok(BR.MapOverlay.report().handle == nil,
+        'loader.lua\'s own -1 sentinel is not accepted as a handle',
+        tostring(BR.MapOverlay.report().handle))
+
+    mm.handle = 0
+    clock = clock + 500
+    BR.MapOverlay.step()
+    ok(BR.MapOverlay.report().handle == nil,
+        'and neither is 0, the engine\'s "no such overlay"',
+        tostring(BR.MapOverlay.report().handle))
+
+    mm.handle = 7
+    clock = clock + 500
+    BR.MapOverlay.step()
+
+    -- ═══ THE MOVIE BEING RESIDENT, AND STAYING RESIDENT ═══
+    --
+    -- `MinimapOverlays.isLoaded` is permanently false in this vendored copy, so
+    -- the test is HasMinimapOverlayLoaded plus a few frames of it agreeing.
+    mm.loaded = false
+    local ready6, why6 = BR.MapOverlay.step()
+    ok(not ready6 and why6:find('HasMinimapOverlayLoaded'),
+        'a handle that is not loaded yet is waited on by name', why6)
+
+    -- ZERO IS THE SHAPE THAT MATTERS. HasMinimapOverlayLoaded is declared BOOL
+    -- and 0 is truthy in Lua, so a bare read would call this loaded.
+    mm.loaded = 0
+    ok(not BR.MapOverlay.step(),
+        'and a NUMERIC ZERO from that BOOL native still means not loaded',
+        select(2, BR.MapOverlay.step()))
+
+    -- AND THE FRAME COUNT IS PINNED, not just "eventually". "Loaded" is the
+    -- movie being resident, which is not the same as the movie having run its
+    -- INITIALISE and built CONTENT.minimap -- a method called before that pushes
+    -- parameters at a clip that does not exist yet. The number is a judgement
+    -- call; asserting it is what makes changing it a decision.
+    mm.loaded = 1
+    local stepsToReady = 0
+    for n = 1, 40 do
+        if BR.MapOverlay.step() then stepsToReady = n break end
+    end
+    ok(stepsToReady == 10 and BR.MapOverlay.ready(),
+        'the movie has to keep saying loaded for ten frames before anything is '
+            .. 'drawn -- resident is not the same as INITIALISE having run',
+        ('ready after %d step(s)'):format(stepsToReady))
+    ok(mm.display == 1 and mm.displayArgs[1] == 7,
+        'SetMinimapOverlayDisplay is written exactly once, on our handle',
+        ('%d write(s)'):format(mm.display))
+
+    -- AND ONCE IS ENFORCED BY THE PHASE, NOT BY A FLAG BESIDE IT. There is no
+    -- `displayed` boolean: the phase turns 'ready' on the same pass as the write
+    -- and step() short-circuits on it afterwards, so the write is once because
+    -- the function is entered once in that state.
+    --
+    -- READY IS THEREFORE STICKY, and this asserts that rather than wishing
+    -- otherwise. Dropping the session does NOT walk it back -- the call the gate
+    -- protects is the handle acquisition, which is already done -- and a gate that
+    -- re-armed here would make ready() flap every time the radar leaves the
+    -- screen for a cutscene.
+    mm.inGame = false
+    local stillReady, stillWhy = BR.MapOverlay.step()
+    mm.inGame = true
+    ok(stillReady and stillWhy == 'ready' and mm.display == 1,
+        'ready is sticky and the display is not written again -- one write, kept '
+            .. 'by the phase rather than by a second flag that could disagree '
+            .. 'with it', ('ready=%s, %d write(s), phase %s')
+            :format(tostring(stillReady), mm.display, BR.MapOverlay.report().phase))
+
+    -- ═══ THE MARSHALLING ═══
+    clearLog()
+    local i1, w1 = BR.MapOverlay.addArea(tri, { r = 255, g = 0, b = 255, a = 170 })
+    ok(i1 == 0,
+        'the first area lands at the movie index 0 -- ADD_AREA_OVERLAY returns '
+            .. 'nothing, so the index is the array LENGTH BEFORE the push', w1)
+    ok(sig() == 'open(ADD_AREA_OVERLAY) '
+            .. 'str=100.00:-200.50,-300.25:400.00,0.00:0.00 '
+            .. 'bool=false int=255 int=0 int=255 int=170 end',
+        'ADD_AREA_OVERLAY gets exactly six parameters -- string, bool, then R G B '
+            .. 'A as ints -- in the order the movie declares them', sig())
+
+    -- OUTLINE IS FALSE AND THAT IS NOT A STYLE CHOICE. The movie's AreaOverlay
+    -- constructor calls its own createPolygon with 6 arguments where
+    -- createPolygon declares 11, so the stroke's thickness is undefined and
+    -- lineStyle draws nothing. A caller that passed true would be asking for a
+    -- stroke this movie cannot draw.
+    local outlineSent
+    for _, e in ipairs(mm.log) do if e.op == 'bool' then outlineSent = e.v end end
+    ok(outlineSent == false,
+        'the outline flag goes out FALSE -- the movie\'s stroke is broken as '
+            .. 'shipped and asking for it would only lie to the next reader',
+        tostring(outlineSent))
+
+    -- ═══ A REFUSED OPEN PUSHES NOTHING ═══
+    clearLog()
+    mm.open = false
+    local i2, w2 = BR.MapOverlay.addArea(tri, { r = 1, g = 2, b = 3, a = 4 })
+    ok(i2 == nil and sig() == 'open(ADD_AREA_OVERLAY)',
+        'when the engine REFUSES to open the method, not one parameter is pushed '
+            .. 'and EndScaleformMovieMethod is not called -- the pushes would '
+            .. 'land on whatever call was open before', sig())
+    ok(w2:find('refused'), 'and the caller is told why', w2)
+
+    -- AND THE SAME FOR NUMERIC ZERO, WHICH IS THE WHOLE RATCHET.
+    clearLog()
+    mm.open = 0
+    local i3 = BR.MapOverlay.addArea(tri, { r = 1, g = 2, b = 3, a = 4 })
+    ok(i3 == nil and sig() == 'open(ADD_AREA_OVERLAY)',
+        'a NUMERIC ZERO from CallMinimapScaleformFunction is a refusal too -- 0 '
+            .. 'is TRUTHY in Lua and a bare read would push six parameters into '
+            .. 'a method the engine just declined to open', sig())
+
+    -- A NUMBER 1 IS A YES, on a build that answers numbers rather than booleans.
+    clearLog()
+    mm.open = 1
+    local i4 = BR.MapOverlay.addArea(tri, { r = 10, g = 20, b = 30, a = 40 })
+    ok(i4 == 1 and sig():find('int=40 end'),
+        'and a NUMERIC ONE is a yes, so a number-shaped build still draws', sig())
+
+    ok(select(1, BR.MapOverlay.addArea({ { x = 0.0, y = 0.0 } }, {})) == nil,
+        'fewer than three points is refused -- two points is not a polygon',
+        select(2, BR.MapOverlay.addArea({ { x = 0.0, y = 0.0 } }, {})))
+
+    -- AND THE WRAPPER REFUSES IT TOO, not just the caller above it. The movie
+    -- walks moveTo then lineTo then closes the shape back onto the first point,
+    -- so two points is a line drawn twice and one point is a fill of nothing --
+    -- neither errors anywhere, which is why the check has to be on both sides of
+    -- the boundary rather than only in whoever happens to be calling today.
+    clearLog()
+    local two = { { x = 0.0, y = 0.0 }, { x = 1.0, y = 1.0 } }
+    ok(BR.Native.minimapAreaOverlay(7, two, false, 1, 2, 3, 4) == false
+            and #mm.log == 0,
+        'BR.Native.minimapAreaOverlay refuses two points BEFORE opening the '
+            .. 'method, so a caller that skipped its own check cannot half-send '
+            .. 'a degenerate shape', sig())
+
+    -- ═══ REM_OVERLAY SPLICES, SO REMOVAL RUNS HIGHEST FIRST ═══
+    --
+    -- The movie does overlays.splice(id, 1), which shifts every higher index
+    -- down by one. Removing 0 before 1 would leave the second call deleting a
+    -- clip that is no longer ours -- and on a shared handle, that clip could be
+    -- ScaleformUI's.
+    clearLog()
+    mm.open = true
+    local removed = BR.MapOverlay.removeAll()
+    ok(removed == 2 and sig() == 'open(REM_OVERLAY) int=1 end open(REM_OVERLAY) int=0 end',
+        'removeAll sends REM_OVERLAY highest index FIRST, because the movie '
+            .. 'splices and every index above the one removed shifts down', sig())
+
+    clearLog()
+    ok(BR.MapOverlay.removeAll() == 0 and #mm.log == 0,
+        'and a second removeAll sends nothing -- it forgot what it removed',
+        sig())
+
+    -- ═══ A REFUSED REMOVAL IS REMEMBERED, NOT FORGOTTEN ═══
+    --
+    -- The clip is still in the movie if the engine declined to open REM_OVERLAY,
+    -- so dropping it from the list would make the next index too low -- and on a
+    -- handle shared with ScaleformUI, a too-low index is a later REM_OVERLAY
+    -- deleting one of THEIRS.
+    local i6 = BR.MapOverlay.addArea(tri, { r = 1, g = 2, b = 3, a = 4 })
+    mm.open = false
+    ok(BR.MapOverlay.removeAll() == 0,
+        'a removeAll the engine refuses removes nothing', tostring(i6))
+    mm.open = true
+    clearLog()
+    ok(BR.MapOverlay.removeAll() == 1
+            and sig() == ('open(REM_OVERLAY) int=%d end'):format(i6),
+        'and the index it could not remove is still on the list afterwards, so '
+            .. 'the next attempt removes OUR clip rather than a lower one that is '
+            .. 'no longer ours', sig())
+
+    -- ═══ THE INDEX IS THE MOVIE'S WHOLE ARRAY, NOT OURS ═══
+    --
+    -- ScaleformUI's own overlays live in the same array. Nothing in this project
+    -- adds one today, which is exactly why the arithmetic has to be right now:
+    -- the day a menu adds a sized overlay is not a day anybody will remember
+    -- this file exists.
+    ScaleformUI = { Scaleforms = { MinimapOverlays = { minimaps = { {}, {}, {} } } } }
+    clearLog()
+    local i5 = BR.MapOverlay.addArea(tri, { r = 1, g = 2, b = 3, a = 4 })
+    ok(i5 == 3,
+        'with three ScaleformUI overlays already in the movie, ours lands at '
+            .. 'index 3 rather than 0', tostring(i5))
+    BR.MapOverlay.removeAll()
+
+    -- ═══ CLEAR_ALL IS NEVER SENT, AND THERE IS NO WRAPPER FOR IT ═══
+    local sawClearAll = false
+    for _, e in ipairs(mm.log) do
+        if e.op == 'open' and e.method == 'CLEAR_ALL' then sawClearAll = true end
+    end
+    ok(not sawClearAll and BR.Native.minimapClearAll == nil,
+        'CLEAR_ALL is never sent and has no wrapper -- the handle is shared with '
+            .. 'ScaleformUI and clearing it would delete their overlays too')
+
+    ok(mm.adds == 0,
+        'and across the whole block AddMinimapOverlay was never called from '
+            .. 'br_core', ('%d call(s)'):format(mm.adds))
+
+    GetGameTimer = prev.gameTimer
+    ScaleformUI  = prev.scaleform
+    BR.Native    = fakeNative
+end
+
 realPrint(('%s%d passed, %d failed\27[0m')
     :format(fail == 0 and '\27[32m' or '\27[31m', pass, fail))
 os.exit(fail == 0 and 0 or 1)
