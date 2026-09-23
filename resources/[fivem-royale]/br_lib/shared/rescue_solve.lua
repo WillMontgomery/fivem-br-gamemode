@@ -184,40 +184,83 @@ end
 --- NO RECORD IS THE ONE CASE WITH NO CONSTRAINT -- an empty list. Before the
 --- server publishes a storm there is nothing to be inside of, and refusing every
 --- pre-storm rescue for that would be a rule with no circle behind it.
+---
+--- ═══ AND NEITHER OF THEM IS A CIRCLE ANY MORE (#349) ═══
+---
+--- #344 made every phase a blob whose boundary dents INWARD of the radius the
+--- solver reports -- 0.152 r on average, 0.255 r at worst. `BR.InCircle` against
+--- the radius therefore qualifies destinations that are OUTSIDE the wall wherever
+--- it dents, with no margin here to absorb any of it, and the ambulance delivers
+--- the player into the storm it just exempted them from. That is the ride the
+--- owner reported on 2026-08-28 -- "the destination was not inside the PURPLE
+--- storm circle" -- reachable again by a different route.
+---
+--- So each entry carries the phase's SHAPE, derived from this record's own seed
+--- and phase index through BR.StormUnit, which is the one derivation the client's
+--- wall and the server's damage tick also reach. `r` stays on the entry because
+--- the log lines and the trip arithmetic still read it.
+---
+--- BOTH ENTRIES WEAR THE SAME UNIT, because both circles belong to the same
+--- published phase -- exactly the pair BR.StormZone builds, with the same unit
+--- applied to both halves.
+---
+--- A NON-POSITIVE RADIUS GETS NO SHAPE. config/storm.lua's phase 8 really is
+--- `radius = 0.0`, and a zero circle refuses every point -- which the comment
+--- above calls the honest answer. BR.StormShape floors every radius it builds at
+--- one metre, so a shape there would quietly admit a one-metre disc instead.
 --- @param storm table|nil   the published storm record
 --- @param eta number        server ms the ambulance is expected to arrive
---- @return table[]  array of { x, y, r }; EMPTY when no storm is published
+--- @return table[]  array of { x, y, r, shape }; EMPTY when no storm is published
 function BR.RescueCircles(storm, eta)
     if not storm then return {} end
 
+    local unit = BR.StormUnit(storm.seed, storm.phase)
+
+    local out = {}
+    local function add(x, y, r)
+        local e = { x = x + 0.0, y = y + 0.0, r = r + 0.0 }
+        if e.r > 0.0 then
+            e.shape = BR.StormShape.blob(e.x, e.y, e.r, unit)
+        end
+        out[#out + 1] = e
+    end
+
     local cx, cy, r = BR.StormAt(storm, eta)
-    local out = { { x = cx + 0.0, y = cy + 0.0, r = r + 0.0 } }
+    add(cx, cy, r)
 
     -- The purple one. Guarded on the FIELD rather than on its value, so a
     -- collapsed final circle refuses everything instead of quietly dropping the
     -- rule at the phase it matters most.
     if type(storm.r1) == 'number' then
-        out[#out + 1] = {
-            x = (storm.cx1 or 0.0) + 0.0,
-            y = (storm.cy1 or 0.0) + 0.0,
-            r = storm.r1 + 0.0,
-        }
+        add(storm.cx1 or 0.0, storm.cy1 or 0.0, storm.r1)
     end
     return out
 end
 
---- Is (x, y) inside every one of these circles?
+--- Is (x, y) inside every one of these boundaries?
 ---
 --- AN EMPTY LIST ANSWERS TRUE, which is what makes "no storm published" mean
 --- "no constraint" rather than "nothing qualifies" -- the same convention
 --- BR.AirdropInside uses, and for the same reason.
---- @param circles table[]  array of { x, y, r }
+---
+--- MEASURED ON THE SHAPE WHEN THE ENTRY CARRIES ONE (#349) -- see
+--- BR.RescueCircles, which is the only thing in the game that builds one of these
+--- lists. There is no margin in this rule: a destination has to be inside, and
+--- `distance <= 0` is inside on the same boundary the wall is drawn on.
+---
+--- AN ENTRY WITH NO SHAPE IS A BARE CIRCLE AND IS MEASURED AS ONE, which is not a
+--- second rule to drift from the first: `d - r <= 0` is `BR.InCircle`, exactly, so
+--- the zero-radius entry and every hand-built list in the suite answer what they
+--- always answered.
+--- @param circles table[]  array of { x, y, r, shape }
 --- @param x number
 --- @param y number
 --- @return boolean
 function BR.RescueInside(circles, x, y)
     for _, c in ipairs(circles or {}) do
-        if not BR.InCircle(x, y, c.x or 0.0, c.y or 0.0, c.r or 0.0) then
+        if c.shape then
+            if BR.StormShape.distance(c.shape, x, y) > 0.0 then return false end
+        elseif not BR.InCircle(x, y, c.x or 0.0, c.y or 0.0, c.r or 0.0) then
             return false
         end
     end

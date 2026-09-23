@@ -54,6 +54,10 @@ loadAll({
     -- airdrop-only items out of every bucket loot.lua has already built.
     'br_lib/config/airdrop.lua',
     'br_lib/shared/storm_solve.lua',
+    -- BR.StormShape. Siting measures the phase's real boundary rather than its
+    -- radius (#349), so BR.AirdropLandingCircles cannot build an entry without
+    -- the file that draws the blob.
+    'br_lib/shared/storm_shape.lua',
     'br_lib/shared/loot_gen.lua',
     'br_lib/shared/airdrop_solve.lua',
 })
@@ -97,7 +101,7 @@ do
     -- agree with each other about the wrong thing.
     eq(A.perMatch, 2, 'two airdrops per match')
     eq(A.chance, 1.0, 'and both happen, by default')
-    eq(A.insideBy, 250.0, 'the landing point is 250m inside the circle')
+    eq(A.insideBy, 250.0, 'the landing point is 250m inside the wall')
 
     -- ═══ NO STORM-PHASE CAP, AND `false` IS THE ONLY WAY TO SAY SO ═══
     --
@@ -804,6 +808,235 @@ do
     ok(not BR.AirdropInside(BR.AirdropLandingCircles(nil, 0.0, A, 0),
             0.0, 0.0, A.insideBy),
         'and it is radius 0, so no point on the map qualifies without a storm')
+
+    -- AND IT CARRIES NO SHAPE, which is not bookkeeping: BR.StormShape floors
+    -- every radius it builds at one metre, so a shape here would quietly turn the
+    -- zero circle that refuses everything into a one-metre disc that does not.
+    ok(BR.AirdropLandingCircles(nil, 0.0, A, 0)[1].shape == nil,
+        'a zero-radius boundary is left as the zero circle it is')
+
+    -- ONE NUMBER BEHIND BOTH QUESTIONS. BR.AirdropDepth is what the abandonment
+    -- log line reads, and a second expression for "how far outside" is how a
+    -- playtest gets told a distance that disagrees with the refusal.
+    local agree = true
+    for _, m in ipairs({ 0.0, 1.0, 250.0, 999.0, 1000.0, 1500.0 }) do
+        for d = 0, 1200, 37 do
+            if BR.AirdropInside(one, d + 0.0, 0.0, m)
+               ~= (BR.AirdropDepth(one, d + 0.0, 0.0) <= -m) then
+                agree = false
+            end
+        end
+    end
+    ok(agree, 'the predicate and the depth are the same arithmetic, at every '
+        .. 'margin and every distance')
+    ok(BR.AirdropDepth({}, 0.0, 0.0) == -math.huge,
+        'and no boundaries at all is unbounded depth, which is why an empty '
+        .. 'list answers true')
+end
+
+describe('siting: the margin is measured on the WALL, not on the radius')
+do
+    -- ═══ #349: TWO SYSTEMS WENT ON REASONING IN CIRCLE SPACE AFTER #344 ═══
+    --
+    -- Every phase is a blob and its boundary DENTS INWARD of the radius the
+    -- solver reports -- 0.152 r on average and 0.255 r at worst at the shipping
+    -- `corners 9, jitter 0.13`. "Inside the circle of radius r, minus 250m"
+    -- therefore passes points that are OUTSIDE THE ACTUAL WALL wherever the dent
+    -- is deeper than the margin, and at phase 1 the dent is 395m against 250.
+    --
+    -- A crate there invites the match into the storm for it, and the HUD tells
+    -- them they are taking damage while they stand on the objective.
+    local R1 = 2600.0
+    local rec = BR.BuildStormRecord(1, 0.0, 0.0, R1, 0.0, 0.0, R1,
+        0.0, 24 * 60 * 60 * 1000, 1000, 4242)
+    local circles = BR.AirdropLandingCircles(rec, 0.0, A, A.blipMaxMs)
+
+    -- ═══ EVERY ENTRY CARRIES ONE, AND THIS IS THE LINE THAT CATCHES THE DEFECT
+    --     COMING BACK ═══
+    --
+    -- A builder that forgets the shape hands back entries that are measured as
+    -- discs -- silently, in the unsafe direction, with every other assertion in
+    -- this file still green. That is exactly how #349 survived #344.
+    local shaped, blobs = 0, 0
+    for _, c in ipairs(circles) do
+        if c.shape then shaped = shaped + 1 end
+        if c.shape and c.shape.kind == 'blob' then blobs = blobs + 1 end
+    end
+    eq(shaped, #circles, 'every landing boundary carries a shape')
+    eq(blobs, #circles, 'and at the shipping config every one of them is a blob')
+
+    -- IT IS THIS SEED AND THIS PHASE, derived through BR.StormUnit rather than
+    -- compared against a copy of the generator -- so a change to how a blob is
+    -- built moves both sides of this together. Asked of a DIFFERENT phase index
+    -- as well, because "it is a blob" would pass the lines above while being the
+    -- wrong wall.
+    local unit  = BR.StormUnit(rec.seed, rec.phase)
+    local other = BR.StormUnit(rec.seed, rec.phase + 1)
+    local mine  = BR.StormShape.blob(0.0, 0.0, R1, unit)
+    local wrong = BR.StormShape.blob(0.0, 0.0, R1, other)
+    local same, differs = true, false
+    for i = 1, 360 do
+        local a = math.rad(i)
+        local px, py = math.cos(a) * R1 * 0.9, math.sin(a) * R1 * 0.9
+        local got = BR.StormShape.distance(circles[1].shape, px, py)
+        if not near(got, BR.StormShape.distance(mine, px, py), 1e-9) then
+            same = false
+        end
+        if math.abs(got - BR.StormShape.distance(wrong, px, py)) > 1.0 then
+            differs = true
+        end
+    end
+    ok(same, 'and it is the record\'s own seed and phase, to the nanometre')
+    ok(differs, 'and demonstrably not the next phase\'s shape')
+
+    -- ═══ THE DENT, FOUND RATHER THAN ASSERTED ═══
+    --
+    -- Walk the circle the OLD rule drew its limit on -- `r - insideBy` from the
+    -- centre, the locus of points it accepted by a hair -- and ask the wall where
+    -- they are. The deepest answer is how far outside the boundary a crate could
+    -- have been sited.
+    --
+    -- HALF A METRE INSIDE THAT LIMIT, because exactly on it is a knife edge: the
+    -- radius rule is inclusive and `sqrt(x*x + y*y) - r` lands a few nanometres
+    -- either side of -250 depending on the bearing, so half the probes would be
+    -- refused by the rule this block is measuring AGAINST rather than by the wall.
+    local ring = R1 - A.insideBy - 0.5
+    local worstOut, worstAt = -math.huge, nil
+    for i = 0, 3599 do
+        local a  = (math.pi * 2.0 * i) / 3600
+        local px = math.cos(a) * ring
+        local py = math.sin(a) * ring
+        local d  = BR.StormShape.distance(circles[1].shape, px, py)
+        if d > worstOut then worstOut, worstAt = d, { x = px, y = py } end
+    end
+    ok(worstOut > 0.0,
+        'the old rule\'s own limit runs OUTSIDE this phase\'s wall somewhere',
+        ('worst %.0fm outside'):format(worstOut))
+    ok(BR.AirdropInside({ { x = 0.0, y = 0.0, r = R1 } },
+            worstAt.x, worstAt.y, A.insideBy),
+        'a radius comparison accepts that point -- 250m inside a circle of 2600')
+    ok(not BR.AirdropInside(circles, worstAt.x, worstAt.y, A.insideBy),
+        'and the rule refuses it, because the wall is not there')
+
+    -- ═══ STRICTLY STRONGER THAN THE DAMAGE TEST, NEVER WEAKER ═══
+    --
+    -- The zone the server damages on is this shape UNION the one it is closing
+    -- toward, so it CONTAINS each entry -- which is why these entries are blobs
+    -- and not BR.StormZone: unioning them would let the third entry imply the
+    -- first two and collapse the soonest/latest window. The consequence worth
+    -- pinning is the direction of the error: a crate may be refused a place a
+    -- player could stand unharmed, and can never be sited where the wall hurts.
+    local brk = BR.BuildStormRecord(2, 0.0, 0.0, 2000.0, 2600.0, 0.0, 900.0,
+        0.0, 24 * 60 * 60 * 1000, 1000, 77)
+    local zone = BR.StormZone(brk, brk.cx0, brk.cy0, brk.r0)
+    local bc   = BR.AirdropLandingCircles(brk, 0.0, A, A.blipMaxMs)
+    local everWeaker, everStricter = false, false
+    for gx = -3200, 3200, 80 do
+        for gy = -3200, 3200, 80 do
+            local accepted = BR.AirdropInside(bc, gx + 0.0, gy + 0.0, A.insideBy)
+            local zd = BR.StormShape.distance(zone, gx + 0.0, gy + 0.0)
+            if accepted and zd > -A.insideBy then everWeaker = true end
+            if not accepted and zd <= -A.insideBy then everStricter = true end
+        end
+    end
+    ok(not everWeaker,
+        'nothing the siting rule accepts is less than the margin inside the '
+        .. 'zone the damage tick measures')
+    ok(everStricter,
+        'and it really is strictly stronger rather than the same rule twice')
+
+    -- ═══ AND THE WINDOW HAS NOT COLLAPSED, WHICH IS WHAT USING THE ZONE WOULD
+    --     COST ═══
+    --
+    -- A signed distance to a superset is never larger, and the zone CONTAINS the
+    -- circle the storm is shrinking toward -- which is the third entry. So if the
+    -- soonest and latest entries were zones, the third one would imply both of
+    -- them and the three-instant rule the 2026-08-23 playtest bought would quietly
+    -- become "inside the next circle", with nothing in this file noticing. The
+    -- mutation pass proved that: swapping blob for BR.StormZone left the suite
+    -- green until this assertion existed.
+    --
+    -- THE WITNESS IS A BREAKOUT. `brk` closes from r2000 at the origin onto r900
+    -- at 2600, so a point 250m inside the NEXT circle can be well outside the
+    -- CURRENT one -- and a crate there would land in the wall and sit in it until
+    -- the sweep caught up.
+    local ahead = { x = 3000.0, y = 0.0 }
+    ok(BR.AirdropInside({ { x = brk.cx1, y = brk.cy1, r = brk.r1 } },
+            ahead.x, ahead.y, A.insideBy),
+        'fixture: the witness is 250m inside the circle being closed toward')
+    ok(not BR.AirdropInside({ { x = brk.cx0, y = brk.cy0, r = brk.r0 } },
+            ahead.x, ahead.y, 0.0),
+        '...and outside the one standing now')
+    ok(not BR.AirdropInside(bc, ahead.x, ahead.y, A.insideBy),
+        'so the rule refuses it -- each entry is one INSTANT, measured on the '
+        .. 'boundary standing at that instant, never on the union')
+end
+
+describe('siting: the real map, swept over seeds')
+do
+    -- ═══ ONE SEED IS ONE SHAPE, AND THIS SUITE HAS SHIPPED AN ASSERTION THAT
+    --     PASSED ON ONE MATCH WHILE THE CODE UNDER TEST WAS DELETED ═══
+    --
+    -- The dent's depth and its bearing are drawn per match and per phase, so a
+    -- single record is a single shape and proves nothing about the rule. Every
+    -- number below is measured over 200 seeds against the shipped POI table.
+    --
+    -- SEEDED EXPLICITLY, off a counter rather than off the harness clock -- see
+    -- #346: BR.Rng truncates a FRACTIONAL seed to zero, and `gameMs` here goes
+    -- fractional the first time a test advances it by a whole flight.
+    local POIs = BR.Config.Map.POIs
+    local SEEDS = 200
+
+    -- ═══ "OUTSIDE THE WALL" IS MEASURED INDEPENDENTLY OF THE RULE ═══
+    --
+    -- Through BR.StormShape directly, never through BR.AirdropDepth: asking the
+    -- rule whether the rule is right is how a mutation that deletes the shape
+    -- from both sides leaves this block green. The mutation pass found exactly
+    -- that.
+    local acceptedOutside, exposedSeeds = 0, 0
+    local circleN, shapeN, lost = 0, 0, 0
+    for s = 1, SEEDS do
+        local r = BR.BuildStormRecord(1, 0.0, 0.0, 2600.0, 0.0, 0.0, 2600.0,
+            0.0, 24 * 60 * 60 * 1000, 1000, s * 7919)
+        local cs = BR.AirdropLandingCircles(r, 0.0, A, A.blipMaxMs)
+        local disc = { { x = 0.0, y = 0.0, r = 2600.0 } }
+        local wall = BR.StormShape.blob(0.0, 0.0, 2600.0,
+            BR.StormUnit(r.seed, r.phase))
+        local exposed = false
+        for _, p in ipairs(POIs) do
+            local byRadius = BR.AirdropInside(disc, p.x, p.y, A.insideBy)
+            local byWall   = BR.AirdropInside(cs, p.x, p.y, A.insideBy)
+            local outside  = BR.StormShape.distance(wall, p.x, p.y) > 0.0
+            if byRadius then circleN = circleN + 1 end
+            if byWall then
+                shapeN = shapeN + 1
+                -- THE PROPERTY. Anything this rule accepts is inside the wall.
+                if outside then acceptedOutside = acceptedOutside + 1 end
+            elseif byRadius then
+                lost = lost + 1
+            end
+            if byRadius and outside then exposed = true end
+        end
+        if exposed then exposedSeeds = exposedSeeds + 1 end
+    end
+
+    eq(acceptedOutside, 0,
+        'over 200 seeds, not one POI the rule accepts is outside the wall')
+    ok(exposedSeeds > 0,
+        'and the radius comparison really did put POIs outside it -- this is a '
+        .. 'defect that was reachable, not a hypothetical',
+        ('%d of %d seeds'):format(exposedSeeds, SEEDS))
+    ok(lost > 0 and shapeN > 0,
+        'the wall costs candidates without starving the drop',
+        ('circle %d, wall %d, lost %d'):format(circleN, shapeN, lost))
+
+    -- WHAT THAT COSTS AS A FRACTION, pinned loosely because it is a measurement
+    -- and not a requirement: about a tenth of the candidate POIs at phase 1. If
+    -- this ever reads like a quarter, `insideBy` is being asked to do something
+    -- the radius used to hide and wants the owner rather than a retune.
+    ok(lost < circleN * 0.25,
+        'and the cost is a tenth of the candidates, not a quarter',
+        ('%.1f%%'):format(100.0 * lost / math.max(1, circleN)))
 end
 
 describe('siting: the window is the gate\'s own deadline')
@@ -822,22 +1055,38 @@ do
 
     -- THE TWO ENDPOINTS BOUND EVERYTHING BETWEEN THEM, and that is convexity
     -- rather than sampling: inside one published record the centre and the
-    -- radius are both LINEAR in time, so |P - C(t)| - r(t) is convex and a
-    -- convex function that is <= 0 at both ends is <= 0 across the interval.
-    -- This drives a real shrink and checks the claim at a hundred instants.
+    -- radius are both LINEAR in time, so the signed distance to the boundary is
+    -- convex in t, and a convex function that is <= -250 at both ends is <= -250
+    -- across the interval. This drives a real shrink and checks the claim at a
+    -- hundred instants.
+    --
+    -- ═══ AND THE ARGUMENT SURVIVED THE SHAPE (#349), WHICH IS WHY THIS BLOCK
+    --     MEASURES THE WALL AND NOT THE RADIUS ═══
+    --
+    -- For a circle it was a norm of an affine function minus an affine one. For a
+    -- blob it is BR.StormShape's hull distance: the MAXIMUM of the supporting
+    -- constraints, each of which is affine in the centre and the radius and
+    -- therefore affine in t -- so it is a max of convex functions and convex for
+    -- the same reason, more directly than before. This check used to solve the
+    -- inner instants as circles, which is a claim about a boundary the game does
+    -- not have and can differ either way: the blob bulges to 1.046 r as well as
+    -- denting to 0.848.
     local shrinking = BR.BuildStormRecord(2, 0.0, 0.0, 2000.0,
-        900.0, 0.0, 800.0, 0.0, 0, 600000, 1.0)
+        900.0, 0.0, 800.0, 0.0, 0, 600000, 1.0, 913)
     local flight = (A.planeLeadMs or 0) + A.descentMs
     local circles = BR.AirdropLandingCircles(shrinking, 0.0, A, 300000)
+    local sUnit = BR.StormUnit(shrinking.seed, shrinking.phase)
 
-    local held2 = true
+    local held2, everTested = true, false
     for _, p in ipairs({ { x = 700.0, y = 0.0 }, { x = 900.0, y = 0.0 },
                          { x = 800.0, y = 100.0 }, { x = 300.0, y = 0.0 } }) do
         if BR.AirdropInside(circles, p.x, p.y, A.insideBy) then
+            everTested = true
             for i = 0, 100 do
                 local t = flight + (300000 * i / 100)
                 local cx, cy, r = BR.StormAt(shrinking, t)
-                if BR.Dist(p.x, p.y, cx, cy) > r - A.insideBy then
+                local at = BR.StormShape.blob(cx, cy, r, sUnit)
+                if BR.StormShape.distance(at, p.x, p.y) > -A.insideBy then
                     held2 = false
                 end
             end
@@ -845,6 +1094,9 @@ do
     end
     ok(held2,
         'a point that clears both ends of the window clears every instant in it')
+    -- AND SOMETHING ACTUALLY QUALIFIED, because a window with no qualifying point
+    -- in it would pass the line above by vacuum.
+    ok(everTested, 'at least one of the four probes cleared the window at all')
 end
 
 describe('siting: the owner\'s "only spawn within the NEXT circle"')
@@ -2349,6 +2601,57 @@ end
 --- drop that never arrived.
 local FLIGHT = (A.planeLeadMs or 0) + BR.AirdropFallMs(A)
 
+--- ═══ THE SAME SPAN ROUNDED UP, AND THE ONLY ONE THE CLOCK MAY TAKE (#346) ═══
+---
+--- Advancing the clock by FLIGHT itself is the wrong line, and it is the wrong
+--- line expensively. FLIGHT is fractional, GetGameTimer() here IS gameMs, and the
+--- airdrop schedule seeds off `GetGameTimer() + seq * 1299709` -- so one raw
+--- advance left the clock fractional for the rest of the file, and BR.Rng used
+--- to answer a fractional seed with seed ZERO and no complaint. Every match
+--- created below such an advance drew the same stream: a sweep over a hundred
+--- seeds was one seed run a hundred times, green and worth nothing.
+---
+--- BR.Rng now refuses a seed it cannot use, so that mistake is loud. This
+--- constant is how the clock stays integral in the first place, in one place
+--- rather than at a ceil per call site.
+---
+--- FLIGHT ITSELF STAYS EXACT, because it is also a real duration: the landing
+--- circles are solved from it, and a rounded span there would move the answer
+--- being checked rather than the clock checking it.
+local FLIGHT_MS = math.ceil(FLIGHT)
+
+describe('the harness: BR.Rng refuses the seed this file used to hide (#346)')
+do
+    -- ═══ THE CONTRACT FLIGHT_MS EXISTS TO KEEP, ASSERTED RATHER THAN TRUSTED ═══
+    --
+    -- Every sweep below leans on BR.Rng refusing a seed it cannot use, and a
+    -- refusal nothing asserts is a refusal somebody deletes -- at which point
+    -- this file goes back to seeding a hundred matches identically and saying so
+    -- nowhere. The other rng properties live in tools/test_shared.lua; this one
+    -- is here because it is THIS suite's constraint that the clock stay whole.
+    local raised, why = pcall(BR.Rng, 1.5)
+    ok(not raised, 'a fractional seed raises rather than quietly becoming seed 0')
+    ok(type(why) == 'string' and why:find('integer representation', 1, true) ~= nil,
+        'and the error says what was wrong with the seed', tostring(why))
+
+    -- EITHER SIDE OF ZERO, which is where truncation was least visible: a
+    -- truncating BR.Rng agreed with seed 0 for both of these and nothing looked
+    -- wrong, because seed 0 is a perfectly serviceable stream.
+    ok(not (pcall(BR.Rng, 0.25)) and not (pcall(BR.Rng, -0.5)),
+        'on both sides of zero, where the old fallback was invisible')
+
+    -- AND A WHOLE FLOAT IS STILL A SEED. Not a detail: GetGameTimer is a native,
+    -- and a runtime that hands whole milliseconds back as 4.0 must keep working.
+    local whole, fromFloat = pcall(BR.Rng, 4.0)
+    ok(whole, 'a float with no fractional part is still accepted')
+    ok(whole and fromFloat:next() == BR.Rng(4):next(),
+        'and seeds identically to the integer it equals')
+
+    -- nil is refused too. Nothing on this project passes one; the old `or 0`
+    -- covered it by accident rather than on purpose.
+    ok(not (pcall(BR.Rng, nil)), 'and nil is not a seed')
+end
+
 describe('server: the job is registered once')
 do
     ok(jobs['airdrop.tick'] ~= nil, 'airdrop.tick exists')
@@ -2386,57 +2689,298 @@ end
 -- are scheduled" and "two land" are different claims and only the second is what
 -- the owner asked for.
 
-describe('server: two drops are scheduled, not one')
+describe('server: two drops a match, ONE AT A TIME')
 do
+    -- ═══ #355: "PLEASE MAKE SURE BOTH OF THE AIRDROPS CAN NEVER BE ARMED OR LIVE
+    --     AT THE SAME TIME DURING THE MATCH" (owner, 2026-09-22) ═══
+    --
+    -- This block used to force both entries due, tick once, and assert that BOTH
+    -- were sited -- which was the defect, written down as a requirement. The claim
+    -- it exists for is unchanged and is still the owner's 2026-09-22 ask from
+    -- #343: two drops happen and two crates reach the ground. What changed is that
+    -- they happen in SEQUENCE.
     reset()
     local m = newMatch(1)
     BR.Airdrop.begin(m)
     eq(#m.airdrop.pending, 2, 'the automatic path schedules two')
 
-    -- BOTH DUE AT ONCE, so one tick sites both and the block is about the count
-    -- rather than about the clock. Their real delays are independent draws minutes
-    -- apart; which one is announced first is not a property worth pinning.
+    -- BOTH DUE AT ONCE, which is the case the gate exists for: the two delays are
+    -- independent draws over a 210-second window, so landing in the same second is
+    -- about a 1-in-200 match and was not something the code refused.
     for _, p in ipairs(m.airdrop.pending) do p.dueAt = gameMs end
     tick()
 
-    eq(#m.airdrop.waiting, 2, 'and both are sited and announced')
-    eq(#m.airdrop.pending, 0, 'with nothing left in the queue')
-    eq(m.airdrop.sent, 2, 'the match has spent two drops, not one')
-    eq(#notices, 2, 'and the match was told twice')
+    eq(#m.airdrop.waiting, 1, 'only ONE of them is announced')
+    eq(#m.airdrop.pending, 1, 'and the other is still in the queue')
+    eq(m.airdrop.sent, 1, 'the match has spent one drop so far')
+    eq(#notices, 1, 'and has been told about one drop, not two')
 
-    local a, b = m.airdrop.waiting[1].rec, m.airdrop.waiting[2].rec
-    ok(a.n ~= b.n, 'each on its own drop number', ('%s vs %s'):format(a.n, b.n))
-    ok(m.airdrop.waiting[1].items ~= m.airdrop.waiting[2].items,
-        'and its own payout rather than a shared table')
+    local a = m.airdrop.waiting[1].rec
+    local itemsA = m.airdrop.waiting[1].items
+    eq(a.n, 1, 'the lower-numbered drop goes first when both come due together')
 
-    -- ═══ AND BOTH ACTUALLY ARRIVE ═══
+    -- ═══ IT STAYS DEFERRED FOR AS LONG AS THE FIRST IS OUT ═══
     --
-    -- Two players, one standing on each, because the 200m gate is per drop: a
-    -- squad that walks to one of them must not be handed the other.
+    -- Twenty retries, which is a hundred seconds -- comfortably inside the four
+    -- minutes the first drop's blip gets, so nothing has resolved yet.
+    for _ = 1, 20 do
+        gameMs = gameMs + (A.retryEveryMs or 5000)
+        tick()
+    end
+    eq(#m.airdrop.pending, 1, 'twenty re-asks later it has still not been sited')
+    eq(#m.airdrop.waiting, 1, 'the first drop is still the only one announced')
+    eq(#notices, 1, 'and the match has still only been told once')
+
+    -- ═══ AND /brairdrop SAYS WHY ═══
+    --
+    -- "drop 2 due 100s ago" with nothing on screen is indistinguishable from the
+    -- unbounded retry loop #343 left behind, and this file's whole rule is that a
+    -- playtest must never have to guess which of two states it is looking at.
+    local before = #logs
+    commands['brairdrop'](0, {}, '')
+    local said = false
+    for i = before + 1, #logs do
+        if logs[i]:find('DEFERRED, drop 1 holds the match', 1, true) then
+            said = true
+        end
+    end
+    ok(said, 'and /brairdrop names the drop that is holding the schedule',
+        table.concat(logs, ' | ', before + 1, #logs))
+
+    -- ═══ AND `dueAt` WAS NEVER TOUCHED: DEFERRED, NOT RE-DRAWN ═══
+    --
+    -- Re-drawing a delay off the first drop's resolution would push the second one
+    -- another 3m30 to 7m00 out -- usually past the end of the match -- and would
+    -- make the number of values taken off the airdrop's RNG stream depend on where
+    -- players walked, which shifts every payout downstream of it.
+    -- Nil-safe, so a mutation that lets both drops out leaves this block's later
+    -- assertions -- and every block after it -- running rather than crashing the
+    -- suite on a queue that is empty.
+    ok(m.airdrop.pending[1] ~= nil
+       and m.airdrop.pending[1].dueAt == a.tStart,
+        'the second drop\'s own due time is exactly where begin() put it',
+        m.airdrop.pending[1] and tostring(m.airdrop.pending[1].dueAt))
+
+    -- IN FLIGHT IS STILL "OUT". The crate has left the aircraft; the second drop
+    -- may not be announced on top of it.
     standAt(m.id * 100 + 1, a.x, a.y, 0.0)
-    standAt(m.id * 100 + 2, b.x, b.y, 0.0)
     gameMs = gameMs + 1000
     tick()
-    eq(#m.airdrop.live, 2, 'both arm')
-    eq(#m.airdrop.waiting, 0, 'and neither is left waiting')
+    eq(#m.airdrop.live, 1, 'the first drop arms')
+    eq(#m.airdrop.waiting, 0, 'and leaves the blip queue')
+    eq(#m.airdrop.pending, 1, 'the second is still deferred while it is falling')
+    eq(#notices, 1, 'and still unannounced')
 
-    -- ceil, NOT `+ FLIGHT`, AND IT IS NOT FUSSINESS. FLIGHT is fractional (the
-    -- crate flares out over the last 25 feet), BR.Rng truncates a non-integer
-    -- seed to ZERO, and `reset()` only ever adds to gameMs -- so one fractional
-    -- advance here would seed every match in every block below this one
-    -- identically, and 'server: the airdrop draws from its own RNG stream' would
-    -- go red for reasons that have nothing to do with the airdrop's prime.
-    gameMs = gameMs + math.ceil(FLIGHT) + 1000
+    -- ═══ THE CRATE REACHES THE GROUND, AND THAT IS "RESOLVED" ═══
+    --
+    -- FLIGHT_MS, NOT FLIGHT, AND IT IS NOT FUSSINESS. FLIGHT is fractional (the
+    -- crate flares out over the last 25 feet) and `reset()` only ever adds to
+    -- gameMs, so one fractional advance here leaves the clock fractional for
+    -- every block below this one. BR.Rng refuses such a seed outright now, so the
+    -- next match begun below would take the suite down with a named error rather
+    -- than quietly seeding zero -- which is the improvement, and not a reason to
+    -- go back to spelling it `+ FLIGHT`.
+    gameMs = gameMs + FLIGHT_MS + 1000
     tick()
-    eq(#m.airdrop.live, 0, 'both finish their descent')
+    eq(#m.airdrop.live, 0, 'the first drop finishes its descent')
+    eq(#m.airdrop.waiting, 1,
+        'and the second is announced on the very tick the first one lands')
+    eq(#m.airdrop.pending, 0, 'with nothing left in the queue')
+    eq(m.airdrop.sent, 2, 'the match has now spent two drops')
+    eq(#notices, 2, 'and has been told twice, minutes apart rather than at once')
+
+    local second = m.airdrop.waiting[1]
+    local b = second and second.rec or a
+    ok(a.n ~= b.n, 'each on its own drop number', ('%s vs %s'):format(a.n, b.n))
+    ok(second ~= nil and itemsA ~= second.items,
+        'and its own payout rather than a shared table')
+
+    -- ═══ AND BOTH ACTUALLY ARRIVE, WHICH IS WHAT #343 ASKED FOR ═══
+    standAt(m.id * 100 + 1, b.x, b.y, 0.0)
+    gameMs = gameMs + 1000
+    tick()
+    eq(#m.airdrop.live, 1, 'the second drop arms')
+    gameMs = gameMs + FLIGHT_MS + 1000
+    tick()
+    eq(#m.airdrop.live, 0, 'and finishes its descent')
     local crates = 0
     for _, s in ipairs(spawned) do
         if s.stack and s.stack.item == 'airdrop' then crates = crates + 1 end
     end
-    eq(crates, 2, 'and the match gets two crates on the ground')
+    eq(crates, 2, 'so the match still gets two crates on the ground')
 end
 
-describe('server: the two drops are never sited on one POI')
+describe('server: an EXPIRY resolves a drop too, and that is the terminator')
+do
+    -- ═══ THE SECOND DROP MAY NOT BE BLOCKED FOREVER, WHICH IS #343's OTHER
+    --     FINDING ═══
+    --
+    -- Removing the phase cap took away the retry loop's only terminator, so a drop
+    -- that never finds a qualifying POI re-asks until the match ends. If a drop
+    -- could hold the schedule forever the second one would never happen -- so
+    -- "resolved" is defined over `waiting` and `live`, both of which are bounded:
+    -- a waiting drop dies at BR.AirdropExpired and a live one lands at tLand.
+    --
+    -- NOBODY COMES, which is the case the owner ruled on (2026-08-22: "if nobody
+    -- goes to the area where the drop is ready to happen within the allotted time,
+    -- then no drop should happen"). The first drop is spent on nothing, and the
+    -- second must still get its turn.
+    reset()
+    local m = newMatch(1)
+    BR.Airdrop.begin(m)
+    for _, p in ipairs(m.airdrop.pending) do p.dueAt = gameMs end
+    tick()
+    eq(#m.airdrop.waiting, 1, 'one drop is announced')
+    eq(#m.airdrop.pending, 1, 'and one is deferred behind it')
+    clearRoster()
+
+    -- One millisecond short of the ceiling: still holding.
+    gameMs = gameMs + A.blipMaxMs
+    tick()
+    eq(#m.airdrop.waiting, 1, 'at the four-minute ceiling it is still out')
+    eq(#m.airdrop.pending, 1, 'so the second drop is still deferred')
+
+    gameMs = gameMs + 1
+    tick()
+    eq(#m.airdrop.waiting, 1,
+        'a millisecond later the first is abandoned and the second takes its '
+        .. 'place in the same tick')
+    eq(#m.airdrop.pending, 0, 'with nothing left deferred')
+    ok(m.airdrop.waiting[1] ~= nil and m.airdrop.waiting[1].rec.n == 2,
+        'and it is the other drop, not a retry',
+        m.airdrop.waiting[1] and tostring(m.airdrop.waiting[1].rec.n))
+    ok(m.airdrop.outcome ~= nil and m.airdrop.outcome.n == 1,
+        'the abandoned one still records why there was no crate',
+        m.airdrop.outcome and m.airdrop.outcome.why)
+
+    -- THE BOUND, STATED AS ARITHMETIC. A drop cannot hold the match longer than
+    -- its blip ceiling plus a whole flight, so a deferral cannot outlast that
+    -- either -- which is the terminator the phase cap used to be.
+    ok((A.blipMaxMs or 240000) + FLIGHT < 300000,
+        'the worst a drop can hold the schedule is under five minutes',
+        ('%.0fs'):format(((A.blipMaxMs or 240000) + FLIGHT) / 1000))
+end
+
+describe('server: never two drops out at once, swept over matches')
+do
+    -- ═══ ONE MATCH PROVES NOTHING: TWO DROPS COLLIDE ABOUT ONE MATCH IN A
+    --     HUNDRED ═══
+    --
+    -- The two delays are independent uniform draws over a 210-second window, so
+    -- the overlap that #355 forbids needs them within a drop's lifetime of each
+    -- other -- common enough to matter and rare enough that a single seed says
+    -- nothing. This suite has already shipped an assertion that passed on one
+    -- match while the code under test was deleted.
+    --
+    -- SO THE WHOLE MATCH IS DRIVEN, TICK BY TICK, FOR EVERY ONE OF THEM, and the
+    -- invariant is checked on every tick rather than at the end -- an overlap that
+    -- lasts three seconds is still an overlap.
+    --
+    -- ═══ BOTH REGIMES, AND THE MUTATION PASS IS WHY ═══
+    --
+    -- Half these matches have somebody standing on every drop and half have nobody
+    -- at all, because the two stages a drop can be out in have opposite worst
+    -- cases and a sweep that covers one covers almost none of the other:
+    --
+    --   SOMEBODY COMES  -- the drop leaves `waiting` on the next tick and spends
+    --                      its life `live`, 29 seconds of it. Overlap needs the
+    --                      second drop due inside that.
+    --   NOBODY COMES    -- the drop sits in `waiting` for the full four minutes,
+    --                      which is longer than the whole 210-second spread the
+    --                      two delays are drawn from, so without the gate an
+    --                      overlap is very nearly certain.
+    --
+    -- Driven with players only, this block passed a mutation that made `waiting`
+    -- stop holding the schedule: one tick of exposure per match against a
+    -- 210-second spread is a 0.5% chance, and 120 matches found none of it.
+    reset()
+    local MATCHES = 120
+    local SECONDS = 760
+    --- Does anybody in this match ever walk to a drop?
+    local function attended(id) return (id % 2) == 1 end
+    for id = 1, MATCHES do
+        BR.Airdrop.begin(newMatch(id))
+    end
+
+    -- ═══ AND THE SWEEP IS REALLY A SWEEP (#346) ═══
+    --
+    -- The schedule is seeded off `GetGameTimer() + seq * 1299709`, which here is
+    -- gameMs -- so a clock advanced by a FRACTIONAL constant used to give every
+    -- match below it seed 0, identical delays, and a hundred-and-twenty-match
+    -- sweep that was one match copied. BR.Rng refuses a fractional seed now and
+    -- FLIGHT_MS keeps this clock whole, so this assertion is a second lock on a
+    -- door that is already shut. It stays: it is cheap, it names the property in
+    -- the place that depends on it, and it is the assertion that would have
+    -- caught the original defect. Counted rather than trusted.
+    ok(math.tointeger(gameMs) ~= nil,
+        'the harness clock is an integer here, so the matches seed differently',
+        tostring(gameMs))
+    local seen, distinct = {}, 0
+    for id = 1, MATCHES do
+        local key = ('%d|%d'):format(matches[id].airdrop.pending[1].dueAt,
+                                     matches[id].airdrop.pending[2].dueAt)
+        if not seen[key] then seen[key] = true distinct = distinct + 1 end
+    end
+    ok(distinct > MATCHES / 2,
+        'and their schedules really are different draws, not one repeated',
+        ('%d distinct of %d'):format(distinct, MATCHES))
+
+    local worstOut, overlapTicks, everTwoSent = 0, 0, 0
+    local waitTicks, liveTicks = 0, 0
+    for _ = 1, SECONDS do
+        gameMs = gameMs + 1000
+        -- Whoever is needed to open the 200m gate, wherever it is this second --
+        -- in the attended half of the matches only.
+        for id = 1, MATCHES do
+            local w = matches[id].airdrop.waiting[1]
+            if w and attended(id) then
+                standAt(id * 100 + 1, w.rec.x, w.rec.y, 0.0)
+            end
+        end
+        tick()
+        for id = 1, MATCHES do
+            local st = matches[id].airdrop
+            local out = #st.waiting + #st.live
+            if out > worstOut then worstOut = out end
+            if out > 1 then overlapTicks = overlapTicks + 1 end
+            waitTicks = waitTicks + #st.waiting
+            liveTicks = liveTicks + #st.live
+        end
+    end
+    for id = 1, MATCHES do
+        if (matches[id].airdrop.sent or 0) >= 2 then
+            everTwoSent = everTwoSent + 1
+        end
+    end
+
+    eq(worstOut, 1,
+        'over 120 matches and 760 seconds each, never more than one drop is '
+        .. 'announced or in the air')
+    eq(overlapTicks, 0, 'and not for a single tick')
+
+    -- AND THE SWEEP ACTUALLY EXERCISED THE GATE, rather than passing because no
+    -- match ever got as far as its second drop.
+    ok(everTwoSent > MATCHES * 0.8,
+        'while nearly every match still announced both of its drops',
+        ('%d of %d'):format(everTwoSent, MATCHES))
+
+    -- BOTH STAGES WERE OCCUPIED FOR A LONG TIME, which is what makes the two
+    -- assertions above statements about `waiting` AND about `live` rather than
+    -- about whichever one this fixture happened to spend its seconds in.
+    ok(waitTicks > 10000,
+        'drops spent thousands of ticks announced and unarmed', waitTicks)
+    ok(liveTicks > 500, 'and hundreds of ticks in the air', liveTicks)
+
+    local crates = 0
+    for _, s in ipairs(spawned) do
+        if s.stack and s.stack.item == 'airdrop' then crates = crates + 1 end
+    end
+    ok(crates > MATCHES / 2,
+        'and the attended half of the matches got their crates',
+        ('%d crates over %d matches'):format(crates, MATCHES))
+end
+
+describe('server: two CONCURRENT drops are never sited on one POI')
 do
     -- ═══ ONE MATCH PROVES NOTHING HERE, AND THIS SUITE HAS PAID FOR THAT ONCE
     --     ALREADY ═══
@@ -2454,21 +2998,32 @@ do
     -- so switching the filter off in trySite turns this block red -- which is the
     -- only evidence that it is testing the filter rather than testing luck.
     --
-    -- ONE reset AND ONE tick FOR ALL OF THEM. The tick walks every match, the
-    -- filter is per match, and resetting a hundred and fifty times would push the
-    -- harness clock two billion milliseconds forward for every block below.
+    -- ═══ AND SINCE #355 THE CONSOLE IS THE ONLY WAY TO GET TWO AT ONCE ═══
+    --
+    -- This block used to force both scheduled entries due and tick, because the
+    -- automatic path would site both. It no longer will -- that is the whole of
+    -- #355 -- so the collision it guards against is now reachable only through
+    -- `/brairdrop now`, which the owner ruled may be run any number of times per
+    -- match (2026-08-23) and which is deliberately not gated. The filter is
+    -- therefore still live code on the path that can still reach it, and this
+    -- drives that path instead of a path that cannot.
+    --
+    -- NO TICK AT ALL, which is what lets a hundred and fifty matches share one
+    -- reset: the verb sites synchronously, so nothing has to be wound forward and
+    -- the harness clock does not move.
     reset()
     local MATCHES = 150
+    local sited, both, dupes = 0, 0, {}
+    local pairSeen, layouts = {}, 0
     for id = 1, MATCHES do
+        -- Appended last, so BR.Server.latestMatch() is this one and the verb acts
+        -- on it. Each match seeds off its own `seq`, which is the sweep.
         local s = newMatch(id)
         BR.Airdrop.begin(s)
-        for _, p in ipairs(s.airdrop.pending) do p.dueAt = gameMs end
-    end
-    tick()
+        commands['brairdrop'](0, { 'now' }, '')
+        commands['brairdrop'](0, { 'now' }, '')
 
-    local sited, both, dupes = 0, 0, {}
-    for id = 1, MATCHES do
-        local w = matches[id].airdrop.waiting
+        local w = s.airdrop.waiting
         sited = sited + #w
         if #w == 2 then
             both = both + 1
@@ -2476,12 +3031,37 @@ do
                 dupes[#dupes + 1] = ('match %d: both on %s')
                     :format(id, tostring(w[1].rec.poi))
             end
+            local key = tostring(w[1].rec.poi) .. '\0' .. tostring(w[2].rec.poi)
+            if not pairSeen[key] then pairSeen[key] = true layouts = layouts + 1 end
         end
     end
-    eq(both, MATCHES, 'every match sited both of its drops')
+    eq(both, MATCHES, 'every match put two concurrent drops out by hand')
     eq(sited, MATCHES * 2, 'and nothing was left waiting for a point')
     ok(#dupes == 0, 'and no match put its two drops on the same POI',
         ('%d collision(s), e.g. %s'):format(#dupes, dupes[1] or '-'))
+
+    -- ═══ AND THE SWEEP PROVES ITS OWN INDEPENDENCE (#346) ═══
+    --
+    -- A hundred and fifty matches are a hundred and fifty draws only if they
+    -- really seed differently, and this file shipped a clock that could stop them
+    -- doing so. The schedule seeds off `GetGameTimer() + seq * 1299709`, BR.Rng
+    -- used to answer a fractional seed with seed ZERO, and one `+ FLIGHT` advance
+    -- made every match created after it the SAME match. Those three advances
+    -- happened to sit below every sweep in this file, so nothing here was actually
+    -- flattened -- but the next sweep written below one of them would have been,
+    -- in silence, and the line above is exactly the shape that hides it: one lucky
+    -- seed asserted a hundred and fifty times, still green with the filter gone.
+    --
+    -- THE COLLISION COUNT CANNOT SEE IT AND THE POIs CAN. A collapsed pool draws
+    -- one POI pair over and over; a real sweep draws a great many. Counted, not
+    -- assumed, and the clock asserted alongside it because that is the input the
+    -- count is really about.
+    ok(math.tointeger(gameMs) ~= nil,
+        'the harness clock is whole here, so these matches seed differently',
+        tostring(gameMs))
+    ok(layouts > MATCHES / 2,
+        'and the sweep drew that many layouts rather than repeating one',
+        ('%d distinct POI pairs over %d matches'):format(layouts, MATCHES))
 end
 
 describe('server: the probability, and the draws it must burn either way')
@@ -2773,10 +3353,21 @@ do
         'while the server is holding all of them')
 
     -- The landing point obeys the rule the owner set, checked against the
-    -- circle solved for the ARRIVAL time rather than for now.
+    -- BOUNDARY solved for the ARRIVAL time rather than for now.
+    --
+    -- MEASURED ON THE WALL AND NOT ON THE RADIUS (#349). `BR.Dist <= r - insideBy`
+    -- is no longer the rule and is no longer even implied by it: the blob bulges
+    -- to 1.046 r as well as denting to 0.848, so a point the rule accepts can sit
+    -- further from the centre than the radius allows. Left as arithmetic about a
+    -- circle this was true by luck of the seed and would have gone red on the next
+    -- shape the config drew.
     local cx, cy, r = BR.StormAt(m.storm, rec.tLand)
-    ok(BR.Dist(rec.x, rec.y, cx, cy) <= r - A.insideBy,
-        'the landing point is at least 250m inside the circle it will arrive in')
+    local atArrival = { { x = cx, y = cy, r = r,
+        shape = BR.StormShape.blob(cx, cy, r,
+            BR.StormUnit(m.storm.seed, m.storm.phase)) } }
+    ok(BR.AirdropInside(atArrival, rec.x, rec.y, A.insideBy),
+        'the landing point is at least 250m inside the wall it will arrive in',
+        ('%+.0fm'):format(BR.AirdropDepth(atArrival, rec.x, rec.y)))
 
     -- And everyone in the match is told, in the owner's words.
     eq(#notices, 1, 'one notification')
@@ -2888,7 +3479,7 @@ do
         tick()
         eq(#m.airdrop.live, 1, 'it arms in a late phase too')
         -- ceil, for the reason spelled out in 'server: two drops are scheduled'.
-        gameMs = gameMs + math.ceil(FLIGHT) + 1000
+        gameMs = gameMs + FLIGHT_MS + 1000
         tick()
         ok((m.airdrop.landed or {})[rec.n] ~= nil,
             ('and a phase %d crate is on the ground'):format(phase))
@@ -2973,18 +3564,50 @@ do
     tick()
     eq(#published, 1, 'and it commits as soon as the circle cooperates')
 
-    -- ONE POI, AND IT IS THAT ONE. A circle just wide enough for a single POI
+    -- ONE POI, AND IT IS THAT ONE. A zone just wide enough for a single POI
     -- proves the selection is the margin rule rather than "something nearby".
+    --
+    -- ═══ AND THE RADIUS IS SOLVED OFF THE SHAPE RATHER THAN GUESSED (#349) ═══
+    --
+    -- `insideBy + 1` used to do it, and the arithmetic was a circle's: a disc of
+    -- radius 251 holds the POI at its own centre 251m inside and holds nothing
+    -- else at all. A BLOB of radius 251 holds NOTHING 250m inside -- its boundary
+    -- dents to 0.848 of the radius at this record's seed, so even a POI standing
+    -- on the centre needs 250/0.848 = 295m before the margin fits. Left at 251
+    -- this block asserted `#published == 1` against a rule that now publishes
+    -- nothing, which is the assertion failing rather than the code.
+    --
+    -- SO THE NUMBER IS READ OFF THE UNIT THE RECORD WILL ACTUALLY WEAR. A config
+    -- edit to `corners` or `jitter` moves the dent and retunes this with it,
+    -- instead of quietly turning the block into a test of zero POIs.
     reset()
     local one = newMatch(2)
     local lsia = BR.Config.Map.GetPOI('lsia')
-    one.storm = BR.BuildStormRecord(1, lsia.x, lsia.y, A.insideBy + 1.0,
-        lsia.x, lsia.y, A.insideBy + 1.0, gameMs, 24 * 60 * 60 * 1000, 1000, 1.0)
+    -- Seed 0 is what BR.BuildStormRecord defaults to, and zero is a real seed.
+    local unit = BR.StormUnit(0, 1)
+    local justOne = A.insideBy / unit.inradius + 1.0
+    one.storm = BR.BuildStormRecord(1, lsia.x, lsia.y, justOne,
+        lsia.x, lsia.y, justOne, gameMs, 24 * 60 * 60 * 1000, 1000, 1.0)
+
+    -- SAID OUT LOUD, because "exactly one" is the block's whole claim and
+    -- `#published == 1` would hold just as well if a dozen qualified.
+    eq(#BR.AirdropSitesIn(BR.Config.Map.POIs,
+        BR.AirdropLandingCircles(one.storm, gameMs, A, A.blipMaxMs),
+        A.insideBy, BR.LootPlaceable), 1,
+        'exactly one POI on the whole map clears this boundary by the margin')
+
     BR.Airdrop.begin(one)
     onlyDrop(one)
     tick()
-    eq(#published, 1, 'a circle with exactly one qualifying POI commits')
+    eq(#published, 1, 'a zone with exactly one qualifying POI commits')
     eq(published[1].payload.poi, 'lsia', 'onto that POI')
+
+    -- AND A DISC OF THE SAME RADIUS WOULD HAVE HELD IT AT 251, which is the
+    -- 44-metre gap between the rule that shipped and the rule the wall draws.
+    ok(BR.AirdropInside({ { x = lsia.x, y = lsia.y, r = A.insideBy + 1.0 } },
+        lsia.x, lsia.y, A.insideBy),
+        'a bare circle of radius 251 does hold its own centre 250m inside -- '
+        .. 'the margin did not change, the boundary did')
 end
 
 describe('server: landing leaves a SEALED crate, not an open one')
@@ -3011,7 +3634,7 @@ do
 
     eq(#spawned, 0, 'nothing is on the ground while it is still falling')
 
-    gameMs = gameMs + FLIGHT
+    gameMs = gameMs + FLIGHT_MS
     tick()
 
     eq(#m.airdrop.live, 0, 'the drop is no longer in flight')
@@ -3202,7 +3825,7 @@ do
     eq(#m.airdrop.live, 1, 'an empty map does not un-arm it')
     eq(rec.tLand, tLand, 'and does not move the landing time')
 
-    gameMs = gameMs + FLIGHT
+    gameMs = gameMs + FLIGHT_MS
     tick()
     eq(#spawned, 1, 'the crate arrives regardless -- it had already left')
 end
@@ -3346,8 +3969,17 @@ do
     -- landing and /brairdrop printing "nobody came" for all three is how a
     -- playtest goes after the wrong bug.
     ok(m.airdrop.outcome
-       and tostring(m.airdrop.outcome.why):find('circle moved off it', 1, true),
-        'and the outcome names the circle rather than blaming the players',
+       and tostring(m.airdrop.outcome.why):find('wall moved off it', 1, true),
+        'and the outcome names the wall rather than blaming the players',
+        m.airdrop.outcome and m.airdrop.outcome.why)
+    -- AND THE NUMBER IN IT IS THE ONE THE REFUSAL USED. This line said "Xm from a
+    -- circle of r Y" -- arithmetic that stopped being the test at #349 and that a
+    -- playtest would have subtracted to conclude the comparison was broken. The
+    -- sign is the whole point of the sentence, so it is in the string.
+    ok(m.airdrop.outcome
+       and tostring(m.airdrop.outcome.why)
+               :find('positive is outside it', 1, true),
+        'and it reports a signed distance to the boundary, legibly',
         m.airdrop.outcome and m.airdrop.outcome.why)
 end
 
@@ -3369,28 +4001,44 @@ do
     ok(rec ~= nil, 'a POI still qualifies')
 
     if rec then
+        -- ON THE WALL, NOT ON THE RADIUS (#349) -- see the note in 'server: the
+        -- drop commits, publishes and announces'. A blob bulges past its own
+        -- radius as well as denting inside it, so `BR.Dist <= r - insideBy` is
+        -- neither the rule nor implied by it.
+        local unit = BR.StormUnit(m.storm.seed, m.storm.phase)
+        local function boundaryAt(cx, cy, r)
+            return { { x = cx, y = cy, r = r,
+                shape = BR.StormShape.blob(cx, cy, r, unit) } }
+        end
+
         -- THE POINT CLEARS THE DEADLINE, not merely the soonest landing.
         local late = sitedAt + A.blipMaxMs + FLIGHT
-        local cx, cy, r = BR.StormAt(m.storm, late)
-        ok(BR.Dist(rec.x, rec.y, cx, cy) <= r - A.insideBy,
-            'it is still 250m inside the circle at the LATEST landing the gate allows')
+        local lx, ly, lr = BR.StormAt(m.storm, late)
+        ok(BR.AirdropInside(boundaryAt(lx, ly, lr), rec.x, rec.y, A.insideBy),
+            'it is still 250m inside the wall at the LATEST landing the gate allows')
         -- ...AND THE NEXT CIRCLE, which is the owner's own half of the proposal.
-        ok(BR.Dist(rec.x, rec.y, m.storm.cx1, m.storm.cy1)
-           <= m.storm.r1 - A.insideBy,
-            'and 250m inside the circle the storm is shrinking toward')
+        ok(BR.AirdropInside(
+                boundaryAt(m.storm.cx1, m.storm.cy1, m.storm.r1),
+                rec.x, rec.y, A.insideBy),
+            'and 250m inside the one the storm is shrinking toward')
     end
 
-    -- AND THE RULE REALLY IS STRICTER. The single circle the old code asked
+    -- AND THE RULE REALLY IS STRICTER. The single boundary the old code asked
     -- about accepts points this one refuses; if that ever stops being true the
     -- window has quietly become decoration.
-    local sx, sy, sr = BR.StormAt(m.storm, sitedAt + FLIGHT)
-    local before = BR.AirdropSites(BR.Config.Map.POIs, sx, sy, sr,
+    --
+    -- BOTH SIDES MEASURE THE SAME BOUNDARY (#349), so what this isolates is the
+    -- WINDOW and nothing else. Comparing the shaped window against an unshaped
+    -- circle would confound two effects and could come out the wrong way on some
+    -- seed: a blob bulges past its own radius as well as denting inside it, so the
+    -- shape gains candidates in some directions while losing them in others.
+    local window = BR.AirdropLandingCircles(m.storm, sitedAt, A, A.blipMaxMs)
+    local before = BR.AirdropSitesIn(BR.Config.Map.POIs, { window[1] },
         A.insideBy, BR.LootPlaceable)
-    local after = BR.AirdropSitesIn(BR.Config.Map.POIs,
-        BR.AirdropLandingCircles(m.storm, sitedAt, A, A.blipMaxMs),
+    local after = BR.AirdropSitesIn(BR.Config.Map.POIs, window,
         A.insideBy, BR.LootPlaceable)
     ok(#after < #before,
-        'the window refuses candidates the single circle accepted',
+        'the window refuses candidates the soonest landing alone accepted',
         ('%d vs %d'):format(#after, #before))
     ok(#after > 0, 'without refusing all of them')
 end
@@ -3469,7 +4117,7 @@ do
     eq(#m.airdrop.live, 1, 'which the arm verb starts by hand')
     eq(#published, 2, 're-announcing the same record')
 
-    gameMs = gameMs + FLIGHT
+    gameMs = gameMs + FLIGHT_MS
     tick()
     eq(#spawned, 1, 'and it lands sealed on arrival like any other')
     eq(spawned[1].stack.kind, 'chest', 'as a container')
@@ -3496,6 +4144,24 @@ do
     tick()
     eq(#published, 0, 'siting cannot be answered without a storm record')
     eq(#m.airdrop.pending, 0, 'and the drop is cancelled rather than retried forever')
+
+    -- ═══ AND BOTH OF THEM GO IN ONE TICK, WHICH IS WHAT #355's GATE MUST NOT
+    --     CHANGE ═══
+    --
+    -- The gate stops a second drop being ANNOUNCED while the first is out. A
+    -- refusal announces nothing, so it must not hold the queue either -- otherwise
+    -- a match with no storm record would shed its two scheduled drops one tick
+    -- apart for no reason, and the 'phase' outcome that explains the zero would be
+    -- overwritten by the second one on its way past.
+    reset()
+    local two = newMatch(2)
+    two.storm = nil
+    BR.Airdrop.begin(two)
+    for _, p in ipairs(two.airdrop.pending) do p.dueAt = gameMs end
+    eq(#two.airdrop.pending, 2, 'two drops are queued')
+    tick()
+    eq(#two.airdrop.pending, 0, 'and both are refused in the same tick')
+    eq(#two.airdrop.waiting, 0, 'with nothing announced')
 end
 
 describe('server: flare projectiles do not replicate, and nothing else changes')

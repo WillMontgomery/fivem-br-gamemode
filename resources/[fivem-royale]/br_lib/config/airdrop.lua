@@ -87,11 +87,25 @@ BR.Config.Airdrop = {
     --
     -- Each drop draws its own delay uniformly from [minDelayMs, maxDelayMs], so
     -- nothing spaces them: two drops can come due seconds apart or four minutes
-    -- apart, and the order they are announced in is the order the draws fell.
-    -- They cannot be sited on the same POI (see `insideBy` and the filter in
-    -- server/airdrop.lua), but they CAN be a few hundred metres apart. If the
-    -- owner wants them spread, that is a change to this pair of numbers or a new
-    -- one, not something the scheduler does on its own today.
+    -- apart. They CAN be a few hundred metres apart. If the owner wants them
+    -- spread, that is a change to this pair of numbers or a new one, not something
+    -- the scheduler does on its own today.
+    --
+    -- ═══ BUT THEY ARE NEVER OUT AT THE SAME TIME (#355) ═══
+    --
+    -- Owner, 2026-09-22: "please make sure both of the airdrops can never be armed
+    -- or live at the same time during the match." Two independent draws over a
+    -- 210-second window put them seconds apart often enough to matter, so the
+    -- scheduler announces at most one at a time and the second waits for the first
+    -- to reach the ground or end without a crate.
+    --
+    -- THESE TWO NUMBERS STILL MEAN WHAT THEY SAY, because the second drop's draw
+    -- is DEFERRED rather than re-drawn: its delay becomes the EARLIEST it may be
+    -- announced instead of the moment it is. Re-drawing off the first drop's
+    -- resolution would push it another 3m30 to 7m00 out -- usually past the end of
+    -- the match -- and would make the airdrop's RNG consumption depend on where
+    -- players walked. See holdingDrop in server/airdrop.lua, which is where the
+    -- rule and its bound live.
     --
     -- ═══ IT CAPS THE AUTOMATIC PATH ONLY (owner, 2026-08-23) ═══
     --
@@ -716,6 +730,29 @@ BR.Config.Airdrop = {
     -- `armWithin` above and BR.AirdropLandingCircles. Raising or lowering this
     -- one number still tunes all of them together, which is why it is still one
     -- number.
+    --
+    -- ═══ AND IT IS MEASURED ON THE WALL RATHER THAN ON THE RADIUS (#349) ═══
+    --
+    -- THE NUMBER DID NOT MOVE HERE EITHER, and that is a measurement rather than
+    -- a preference. #344 made every phase a blob whose boundary dents INWARD of
+    -- the radius the solver reports -- 0.152 r on average, 0.255 r at worst -- so
+    -- "250m inside a circle of radius r" was passing points OUTSIDE the wall
+    -- wherever the dent was deeper than 250m. Over 1500 simulated storm sequences
+    -- against the shipped POI table, 435 of them had at least one such POI at
+    -- phase 1 and the worst was 339m outside the boundary; phase 2 had 20, worst
+    -- 83m; phase 3 down, the margin covers the dent and there were none.
+    --
+    -- WHAT THE TRUE BOUNDARY COSTS, measured the same way, is candidates and not
+    -- drops: the qualifying POI count falls by 9% at phase 1, 11% at phase 2 and
+    -- 15% at phase 3, and the number of sequences where NOTHING qualified moved
+    -- from 0 to 4 of 1500 at phase 3 and from 718 to 888 at phase 4. Phase 5 and
+    -- later were already zero under both rules -- a 260m circle cannot hold a
+    -- 250m margin however it is shaped.
+    --
+    -- SO 250 STILL READS THE SAME AND IS LEFT ALONE. It was never the thing
+    -- holding a late drop back; the radius was, and still is. If a playtest wants
+    -- late drops to happen more often, this is the wrong knob -- the honest ones
+    -- are the phase radii in config/storm.lua and the shape's own `jitter`.
     insideBy = 250.0,
 
     -- ═══ THERE IS NO STORM-PHASE CAP (owner, 2026-09-22: "remove our phase
@@ -755,6 +792,12 @@ BR.Config.Airdrop = {
     -- AND IT WAS ALSO THE WAIT'S TERMINATOR. A drop that never finds a
     -- qualifying POI used to be closed out by the cap; now it re-asks until the
     -- match ends. See `insideBy` above for what that costs.
+    --
+    -- THAT WAIT CANNOT BLOCK THE OTHER DROP, which is the only place it would have
+    -- become worse than a wasted POI scan once #355 sequenced the two. A drop
+    -- waiting for a POI has never been announced, and the sequencing gate only
+    -- asks about drops that HAVE been -- so both simply sit in the queue failing
+    -- the same scan. See holdingDrop in server/airdrop.lua.
     --
     -- ═══ "SPAWN BEFORE THE BEGINNING OF PHASE 3?" -- ASKED, AND ANSWERED NO
     --     (owner, 2026-08-23), AND THE ANSWER IS KEPT HERE ═══

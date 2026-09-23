@@ -25,10 +25,35 @@ local Rng = {}
 Rng.__index = Rng
 
 --- Create a deterministic generator from an integer seed.
+---
+--- A seed with no integer representation is REFUSED, not rounded (#346). This
+--- line used to read `math.tointeger(seed) or 0`, and the `or 0` did real
+--- damage: a fractional seed became seed ZERO in silence, so a sweep whose clock
+--- had drifted fractional was one seed run a hundred times -- green, and proving
+--- nothing. tools/test_airdrop.lua was exactly that for an unknown while.
+---
+--- There is no honest value to substitute. Every other guard in this project has
+--- one (fall back to the authored value, skip the crate); a generator that
+--- quietly ignores the seed it was handed has failed the only thing this file
+--- exists to do, and a caller that can degrade should check its own seed and
+--- degrade -- shop_solve.lua's paint roll is the shape.
+---
+--- It is barely new strictness, either: the mask below cannot take a fractional
+--- number and Lua raises "number has no integer representation" on it. The
+--- `or 0` was swallowing the language's own error.
+---
+--- A WHOLE FLOAT STILL PASSES, since math.tointeger(2.0) is 2, so a native that
+--- hands milliseconds back as 2.0 costs nothing. Level 2 puts the traceback on
+--- the caller rather than on this line.
 --- @param seed integer
 --- @return table
 function BR.Rng(seed)
-    seed = math.tointeger(seed) or 0
+    local whole = math.tointeger(seed)
+    if whole == nil then
+        error(('BR.Rng: seed must have an integer representation, got %s (%s)')
+            :format(tostring(seed), type(seed)), 2)
+    end
+    seed = whole
 
     -- SplitMix32 to expand a single seed into the four state words. Seeding all
     -- four from the raw value directly produces poor early output.

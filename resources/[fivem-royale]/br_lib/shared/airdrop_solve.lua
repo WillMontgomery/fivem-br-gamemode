@@ -215,6 +215,12 @@ end
 --- still the honest way to ask "would this point be safe at that instant", which
 --- is what every test of the margin actually wants to say.
 ---
+--- A CIRCLE IS ALL IT IS, deliberately: this takes a centre and a radius and has
+--- no record to derive a shape from, so it measures a disc. Nothing in the game
+--- reaches it -- the server sites against BR.AirdropLandingCircles, which carries
+--- the phase's real boundary (#349) -- and giving this one a shape would need a
+--- seed and a phase, which is BR.AirdropLandingCircles by another name.
+---
 --- Returned in AUTHORED POI ORDER, never a pairs() walk: the caller picks from
 --- this with a seeded rng and a payout must replay identically from a seed.
 ---
@@ -311,7 +317,57 @@ end
 -- phase; the circle after it has not been drawn and may break out anywhere. That
 -- is what the re-check at the ARM is for -- see br_core/server/airdrop.lua.
 
---- Is (x, y) at least `margin` metres inside every one of these circles?
+--- How far outside the TIGHTEST of these boundaries (x, y) is. Negative inside.
+---
+--- The maximum of the per-boundary signed distances: a point is `d` metres inside
+--- all of them exactly when this answers -d. One number, so "does it clear the
+--- margin" and "by how much did it miss" are the same arithmetic rather than two
+--- expressions that can disagree in a log line.
+---
+--- ═══ IT MEASURES THE SHAPE WHEN THERE IS ONE, AND THAT IS #349 ═══
+---
+--- Every phase is a BLOB now (#344) and its boundary dents INWARD of the radius
+--- the solver reports -- 0.152 r on average and 0.255 r at worst at the shipping
+--- `corners 9, jitter 0.13`. A radius comparison therefore passes points that are
+--- outside the actual wall wherever the dent is deeper than the margin, and at
+--- phase 1 the dent is 395 m against a 250 m margin. Measured on the real POI
+--- table over 1500 simulated storm sequences: 435 of them had at least one POI
+--- that `d <= r - 250` accepted and the wall did not, the worst of them 339 m
+--- OUTSIDE the boundary. A crate there invites the match into the storm for it and
+--- the HUD reports damage while they stand on the objective.
+---
+--- So the entry carries the phase's shape (BR.AirdropLandingCircles builds it) and
+--- this measures that. Exact for a blob, a disc union and a rounded rect alike,
+--- and derived from the same seed and phase the damage tick's own zone is.
+---
+--- AN ENTRY WITH NO SHAPE IS A BARE CIRCLE AND IS MEASURED AS ONE. That is not a
+--- second spelling of the test to drift from the first: `d - r` IS the signed
+--- distance to a circle, exactly, and BR.EdgeDistance is the name geo.lua already
+--- gives it. The single-circle helpers above and every hand-built list in the
+--- suite arrive this way, and "one circle" is still the honest way to ask what the
+--- margin means -- see BR.AirdropSites. What must not happen is an entry that
+--- carries a shape being measured as a circle anyway, which is why the shape wins
+--- whenever it is there rather than being one of two options a caller selects.
+---
+--- @param circles table[]  array of { x, y, r, shape }
+--- @param x number
+--- @param y number
+--- @return number  metres; -math.huge when there are no boundaries at all
+function BR.AirdropDepth(circles, x, y)
+    local worst = -math.huge
+    for _, c in ipairs(circles or {}) do
+        local d
+        if c.shape then
+            d = BR.StormShape.distance(c.shape, x, y)
+        else
+            d = BR.EdgeDistance(x, y, c.x or 0.0, c.y or 0.0, c.r or 0.0)
+        end
+        if d > worst then worst = d end
+    end
+    return worst
+end
+
+--- Is (x, y) at least `margin` metres inside every one of these boundaries?
 ---
 --- INCLUSIVE AT BOTH ENDS, which is the rule BR.AirdropSites has always had: a
 --- point exactly `margin` inside the rim qualifies, and so does a POI standing
@@ -319,21 +375,16 @@ end
 ---
 --- NO EARLY RETURN FOR A NEGATIVE REACH, for the reason the single-circle
 --- version recorded when a mutation pass showed the guard could not be killed: a
---- distance is never negative, so the comparison already refuses everything once
---- a circle is narrower than the margin.
---- @param circles table[]  array of { x, y, r }
+--- signed distance from inside is never more negative than the radius, so the
+--- comparison already refuses everything once a boundary is narrower than the
+--- margin.
+--- @param circles table[]  array of { x, y, r, shape }
 --- @param x number
 --- @param y number
 --- @param margin number|nil
 --- @return boolean
 function BR.AirdropInside(circles, x, y, margin)
-    local m = margin or 0.0
-    for _, c in ipairs(circles or {}) do
-        if BR.Dist(x, y, c.x or 0.0, c.y or 0.0) > (c.r or 0.0) - m then
-            return false
-        end
-    end
-    return true
+    return BR.AirdropDepth(circles, x, y) <= -(margin or 0.0)
 end
 
 --- Every POI that clears all of `circles` by `margin`.
@@ -347,7 +398,7 @@ end
 --- circle is small, and the caller's job is to wait or to skip rather than to
 --- bend one of them.
 --- @param pois table[]        BR.Config.Map.POIs
---- @param circles table[]     array of { x, y, r }
+--- @param circles table[]     array of { x, y, r, shape }
 --- @param margin number
 --- @param placeable function|nil  (x, y) -> boolean; BR.LootPlaceable
 --- @return table[] candidates
@@ -390,11 +441,39 @@ end
 --- map. That is the right answer -- a drop cannot promise a margin against a
 --- circle nobody has published -- and the server refuses earlier anyway
 --- (BR.AirdropStormOk).
+---
+--- ═══ EVERY ENTRY CARRIES THE PHASE'S SHAPE, AND NOT THE ZONE (#349) ═══
+---
+--- `r` is still the number the solver reports and still what the log lines read,
+--- but the MARGIN is measured against the boundary the wall is actually drawn on
+--- -- this phase's blob at that centre and radius, derived from the record's own
+--- seed and phase index, which is the single derivation BR.StormUnit exists to be.
+--- Attached here, once, because the entry is the thing that gets measured a
+--- hundred-odd times per retry and the shape is the same for all of them.
+---
+--- IT IS `blob`, NOT `BR.StormZone`, AND THE DIFFERENCE IS THE WHOLE WINDOW. The
+--- zone is this phase's shape UNION the one it is closing toward, which is the
+--- right answer to "is this point taking damage" and the wrong one to ask three
+--- times: the third entry below IS the circle being closed toward, the union
+--- contains it, and a signed distance to a superset is never larger -- so
+--- unioning the first two entries would make the third one imply them both and
+--- the soonest/latest window would collapse into "inside the next circle",
+--- silently deleting the rule the 2026-08-23 playtest bought. Each entry is one
+--- INSTANT and is measured on the boundary standing at that instant.
+---
+--- THAT MAKES THIS RULE STRICTLY STRONGER THAN THE DAMAGE TEST, never weaker: the
+--- zone contains each of these shapes, so 250 m inside one of them is at least
+--- 250 m inside the zone. A crate can be refused for a place a player could stand
+--- unharmed; one can never be sited where the wall would hurt.
+---
+--- A NON-POSITIVE RADIUS GETS NO SHAPE, so the nil-storm case and phase 8's
+--- `radius = 0.0` are measured as the zero circles they are rather than as the
+--- one-metre shape BR.StormShape's own MIN_RADIUS floor would build from them.
 --- @param storm table|nil   the published storm record
 --- @param now number
 --- @param cfg table|nil     BR.Config.Airdrop
 --- @param waitMs number|nil
---- @return table[]  array of { x, y, r }
+--- @return table[]  array of { x, y, r, shape }
 function BR.AirdropLandingCircles(storm, now, cfg, waitMs)
     cfg = cfg or {}
     -- THE WHOLE FLIGHT, WHICH IS LONGER THAN `descentMs` SINCE THE FLARE. The
@@ -405,9 +484,18 @@ function BR.AirdropLandingCircles(storm, now, cfg, waitMs)
     local soonest = now + flight
     local latest  = soonest + (waitMs or 0)
 
+    -- ONE UNIT FOR THE WHOLE LIST, because every entry describes the same phase
+    -- of the same match -- which is exactly what BR.StormZone does with the pair
+    -- it builds. A per-entry derivation would be the same answer three times.
+    local unit = storm and BR.StormUnit(storm.seed, storm.phase) or nil
+
     local out = {}
     local function add(x, y, r)
-        out[#out + 1] = { x = x + 0.0, y = y + 0.0, r = r + 0.0 }
+        local e = { x = x + 0.0, y = y + 0.0, r = r + 0.0 }
+        if e.r > 0.0 then
+            e.shape = BR.StormShape.blob(e.x, e.y, e.r, unit)
+        end
+        out[#out + 1] = e
     end
 
     local ax, ay, ar = BR.StormAt(storm, soonest)

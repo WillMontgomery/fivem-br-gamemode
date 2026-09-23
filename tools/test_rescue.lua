@@ -54,6 +54,10 @@ for _, f in ipairs({
     'config/overrides.lua',
     'config/storm.lua',
     'shared/storm_solve.lua',
+    -- BR.StormShape. The destination rule measures the phase's real boundary
+    -- rather than its radius (#349), so the suite cannot drive BR.RescueCircles
+    -- without the file that draws the blob.
+    'shared/storm_shape.lua',
     'config/map.lua',
     'config/loot.lua',
     -- BR.LootLabel, which server/inventory.lua's public projection calls on
@@ -101,6 +105,29 @@ local R = BR.Config.Rescue
 --- ceiling cannot bite, and the ceiling gets its own block below -- against the
 --- SHIPPED number, which is the one thing that block is for.
 local RFAR = setmetatable({ maxTripM = math.huge }, { __index = R })
+
+--- Is (x, y) inside ONE of a record's boundaries, measured the way the rule does?
+---
+--- ═══ FIXTURE SANITY CANNOT BE WRITTEN IN CIRCLE SPACE ANY MORE (#349) ═══
+---
+--- Several blocks below establish "this point IS inside that circle" so that their
+--- real assertion cannot pass for the wrong reason. BR.InCircle is the wrong
+--- question for that now: the phase's boundary dents to 0.848 of the radius and
+--- bulges to 1.046 of it, so a point can be inside the circle and outside the wall
+--- or the other way round -- and a premise measured on the radius would quietly
+--- stop being true of the rule it is a premise for, which is this suite's
+--- signature failure wearing a new hat.
+---
+--- ONE BOUNDARY, NOT THE ZONE, because what these premises are about is WHICH of a
+--- record's two circles admits the point. BR.RescueInside asks about both at once
+--- and would answer the question the block is trying to decompose.
+--- @param storm table   the record, for its seed and phase
+--- @return boolean
+local function insideBoundary(storm, cx, cy, r, x, y)
+    return BR.StormShape.distance(
+        BR.StormShape.blob(cx, cy, r, BR.StormUnit(storm.seed, storm.phase)),
+        x, y) <= 0.0
+end
 
 -- ---------------------------------------------------------------------------
 describe('eta')
@@ -265,8 +292,8 @@ do
     -- testing what it claims to. Without this the assertion below could pass for
     -- the wrong reason -- a point that was never eligible at all.
     local cx, cy, r = BR.StormAt(storm, 0)
-    ok(BR.InCircle(doomed.x, doomed.y, cx, cy, r),
-        'the doomed point IS inside the circle at the moment of dispatch',
+    ok(insideBoundary(storm, cx, cy, r, doomed.x, doomed.y),
+        'the doomed point IS inside the wall at the moment of dispatch',
         ('r now %.0f, point at %.0f'):format(r, doomed.x))
 
     -- ...and by the time an ambulance drives there from 2000m out, it is not.
@@ -402,11 +429,12 @@ do
     -- really is inside the circle StormAt answers, at its own arrival time.
     local eta = BR.RescueDriveMs(BR.Dist(0.0, 0.0, tempting.x, tempting.y), R)
     local cx, cy, r = BR.StormAt(storm, eta)
-    ok(BR.InCircle(tempting.x, tempting.y, cx, cy, r),
-        'the tempting point IS inside the circle BR.StormAt answers on arrival '
+    ok(insideBoundary(storm, cx, cy, r, tempting.x, tempting.y),
+        'the tempting point IS inside the boundary BR.StormAt answers on arrival '
             .. '-- during a hold that is the CURRENT circle',
         ('r %.0f at (%.0f, %.0f)'):format(r, cx, cy))
-    ok(not BR.InCircle(tempting.x, tempting.y, storm.cx1, storm.cy1, storm.r1),
+    ok(not insideBoundary(storm, storm.cx1, storm.cy1, storm.r1,
+            tempting.x, tempting.y),
         '...and is nowhere near the purple one, which has broken out')
 
     local d = BR.RescueDestination({ tempting, purple }, 0.0, 0.0, storm, 0, RFAR)
@@ -455,6 +483,152 @@ do
                             0.0, 0.0, collapsed, 0, RFAR) == nil,
         'a zero-radius purple circle refuses every point rather than quietly '
             .. 'dropping the rule at the phase it matters most')
+
+    -- AND IT REALLY IS THE ZERO CIRCLE THAT DOES IT. BR.StormShape floors every
+    -- radius it builds at one metre, so a shape on that entry would turn "refuses
+    -- everything" into "admits a one-metre disc" -- which is the phase the comment
+    -- above says it matters most at.
+    local cz = BR.RescueCircles(collapsed, 0)
+    ok(cz[2] ~= nil and cz[2].r == 0.0 and cz[2].shape == nil,
+        'the collapsed purple circle carries no shape, so it stays a zero circle')
+end
+
+-- ---------------------------------------------------------------------------
+describe('destination.theWallNotTheRadius')
+do
+    -- ═══ #349: THE RULE WENT ON READING A CIRCLE AFTER #344 MADE IT A BLOB ═══
+    --
+    -- Every phase is a blob whose boundary DENTS INWARD of the radius the solver
+    -- reports -- 0.152 r on average and 0.255 r at worst at the shipping config.
+    -- There is no margin in this rule at all, so every metre of that dent is
+    -- exposure: `BR.InCircle` against r qualifies destinations that are OUTSIDE
+    -- the wall, and the ambulance delivers the player into the storm it just
+    -- exempted them from. That is the ride the owner reported on 2026-08-28,
+    -- reachable again by a different route.
+    local storm = {
+        phase = 2, seed = 4242,
+        cx0 = 0.0, cy0 = 0.0, r0 = 1600.0,
+        cx1 = 0.0, cy1 = 0.0, r1 = 1600.0,
+        tStart = 0, tWait = 10 * 60 * 1000, tShrink = 1000, dps = 2.0,
+    }
+    local circles = BR.RescueCircles(storm, 0)
+
+    -- EVERY ENTRY CARRIES ONE, which is the line that catches the defect coming
+    -- back: a builder that forgets the shape hands back entries measured as
+    -- discs, silently, in the unsafe direction.
+    local shaped, blobs = 0, 0
+    for _, c in ipairs(circles) do
+        if c.shape then shaped = shaped + 1 end
+        if c.shape and c.shape.kind == 'blob' then blobs = blobs + 1 end
+    end
+    ok(shaped == #circles, 'both arrival boundaries carry a shape', shaped)
+    ok(blobs == #circles,
+        'and at the shipping config both of them are blobs', blobs)
+
+    -- IT IS THE RECORD'S OWN SEED AND PHASE, through BR.StormUnit -- the one
+    -- derivation the client's wall and the server's damage tick also reach.
+    local mine  = BR.StormShape.blob(0.0, 0.0, 1600.0,
+        BR.StormUnit(storm.seed, storm.phase))
+    local wrong = BR.StormShape.blob(0.0, 0.0, 1600.0,
+        BR.StormUnit(storm.seed, storm.phase + 1))
+    local same, differs = true, false
+    for i = 1, 360 do
+        local a = math.rad(i)
+        local px, py = math.cos(a) * 1400.0, math.sin(a) * 1400.0
+        local got = BR.StormShape.distance(circles[1].shape, px, py)
+        if math.abs(got - BR.StormShape.distance(mine, px, py)) > 1e-9 then
+            same = false
+        end
+        if math.abs(got - BR.StormShape.distance(wrong, px, py)) > 1.0 then
+            differs = true
+        end
+    end
+    ok(same, 'measured against this seed and this phase, to the nanometre')
+    ok(differs, 'and demonstrably not the next phase\'s shape')
+
+    -- ═══ THE DENT, FOUND RATHER THAN ASSERTED ═══
+    --
+    -- Walk the rim the old rule accepted -- a hair inside r -- and ask the wall
+    -- where those points are. The deepest answer is a destination the ambulance
+    -- would have driven to, outside the wall.
+    local worstOut, worstAt = -math.huge, nil
+    for i = 0, 3599 do
+        local a  = (math.pi * 2.0 * i) / 3600
+        local px = math.cos(a) * 1599.0
+        local py = math.sin(a) * 1599.0
+        local d  = BR.StormShape.distance(circles[1].shape, px, py)
+        if d > worstOut then worstOut, worstAt = d, { x = px, y = py } end
+    end
+    ok(worstOut > 0.0,
+        'the old rule\'s own rim runs OUTSIDE this phase\'s wall somewhere',
+        ('worst %.0fm outside'):format(worstOut))
+    ok(BR.InCircle(worstAt.x, worstAt.y, 0.0, 0.0, 1600.0),
+        'a radius comparison accepts that point -- it is inside r')
+    ok(not BR.RescueInside(circles, worstAt.x, worstAt.y),
+        'and the rule refuses it, because the wall is not there')
+
+    -- ...AND IT IS THE DESTINATION THAT CHANGES, not just a predicate. The dented
+    -- point is NEARER than the one deep inside, so the shortest-route rule would
+    -- take it if the filter let it through.
+    local outside = { id = 'in_the_dent', x = worstAt.x, y = worstAt.y }
+    local inside  = { id = 'really_inside', x = 0.0, y = 300.0 }
+    ok(BR.Dist(0.0, 0.0, outside.x, outside.y)
+       > BR.Dist(0.0, 0.0, inside.x, inside.y),
+        'fixture sanity: the safe point is the nearer of the two here')
+    local chosen = BR.RescueDestination({ outside, inside }, 0.0, 0.0,
+        storm, 0, RFAR)
+    ok(chosen ~= nil and chosen.id == 'really_inside',
+        'the dented point is not a destination at all', chosen and chosen.id)
+    ok(BR.RescueDestination({ outside }, 0.0, 0.0, storm, 0, RFAR) == nil,
+        'and with nothing else on the list the kit refuses rather than '
+            .. 'delivering into the wall')
+    -- AND IT IS THE WALL DOING IT, not the trip band. RFAR lifts the distance cap
+    -- and a nil storm is "no constraint", so the same point is a perfectly good
+    -- destination the moment the boundary is not asked about.
+    local unconstrained = BR.RescueDestination({ outside }, 0.0, 0.0,
+        nil, 0, RFAR)
+    ok(unconstrained ~= nil and unconstrained.id == 'in_the_dent',
+        'the same point is chosen with no storm published, so the refusal is '
+            .. 'the boundary rather than the trip band')
+
+    -- ═══ SWEPT OVER SEEDS, BECAUSE ONE SEED IS ONE SHAPE ═══
+    --
+    -- The dent's depth and bearing are drawn per match and per phase, so a single
+    -- record proves nothing about the rule. The property is that nothing this
+    -- rule admits is outside the wall; the counter-property is that the radius
+    -- comparison really did admit such points, so this is a defect that was
+    -- reachable rather than a hypothesis.
+    local admittedOutside, exposedSeeds, SEEDS = 0, 0, 200
+    for s = 1, SEEDS do
+        local rec = {
+            phase = 2, seed = s * 7919,
+            cx0 = 0.0, cy0 = 0.0, r0 = 1600.0,
+            cx1 = 0.0, cy1 = 0.0, r1 = 1600.0,
+            tStart = 0, tWait = 10 * 60 * 1000, tShrink = 1000, dps = 2.0,
+        }
+        local cs = BR.RescueCircles(rec, 0)
+        local exposed = false
+        for i = 0, 179 do
+            local a  = (math.pi * 2.0 * i) / 180
+            local px = math.cos(a) * 1599.0
+            local py = math.sin(a) * 1599.0
+            local outsideWall =
+                BR.StormShape.distance(cs[1].shape, px, py) > 0.0
+            if BR.RescueInside(cs, px, py) and outsideWall then
+                admittedOutside = admittedOutside + 1
+            end
+            if BR.InCircle(px, py, 0.0, 0.0, 1600.0) and outsideWall then
+                exposed = true
+            end
+        end
+        if exposed then exposedSeeds = exposedSeeds + 1 end
+    end
+    ok(admittedOutside == 0,
+        'over 200 seeds, not one point the rule admits is outside the wall',
+        admittedOutside)
+    ok(exposedSeeds > SEEDS / 2,
+        'while the radius comparison admitted points outside it on most seeds',
+        ('%d of %d'):format(exposedSeeds, SEEDS))
 end
 
 -- ---------------------------------------------------------------------------
@@ -804,8 +978,12 @@ do
     ok(s2 ~= nil and d2 ~= nil,
         'a circle with every surveyed point outside it still yields a ride',
         s2 and d2 and d2.id)
-    ok(d2 ~= nil and BR.InCircle(d2.x, d2.y, 0.0, 0.0, 300.0),
-        '...and the built destination is INSIDE that circle -- never rejecting '
+    -- MEASURED THE WAY THE SOLVER MEASURED IT (#349). BR.InCircle against 300
+    -- would be a different boundary from the one that chose this point: the phase
+    -- 8 blob bulges to 1.046 r, so a legitimately-inside destination can sit
+    -- further from the centre than the radius and fail an assertion about a disc.
+    ok(d2 ~= nil and BR.RescueInside(BR.RescueCircles(late, 0), d2.x, d2.y),
+        '...and the built destination is INSIDE that boundary -- never rejecting '
             .. 'does not mean delivering into the storm',
         d2 and ('(%.0f, %.0f)'):format(d2.x, d2.y))
 
@@ -1087,9 +1265,23 @@ do
         tStart = 0, tWait = 10 * 60 * 1000, tShrink = 1000, dps = 1.0,
     }
     local pulled = BR.RescueSynthDestination(0.0, 0.0, tight, 0, R, nil, south)
-    ok(pulled ~= nil and BR.InCircle(pulled.x, pulled.y, 0.0, 200.0, 220.0),
-        'a corridor outside the arrival circle does not drag the drop-off out '
+    -- ═══ ASKED OF THE BOUNDARY, NOT OF A RADIUS (#349) ═══
+    --
+    -- This read BR.InCircle against r0, and a blob is not its own circle: the
+    -- boundary bulges to 1.046 of the radius where it is not denting inward, so a
+    -- legitimately-inside point 228m from the centre of a 220m zone failed an
+    -- assertion measuring a disc. The rule is "inside the zone", so the check is
+    -- the solver's own -- and a score-then-filter implementation would still fail
+    -- it, because the corridor at y = -150 is 350m from this centre and no
+    -- boundary of radius 220 reaches it.
+    ok(pulled ~= nil
+       and BR.RescueInside(BR.RescueCircles(tight, 0), pulled.x, pulled.y),
+        'a corridor outside the arrival zone does not drag the drop-off out '
             .. 'of it -- the preference ranks, it does not admit',
+        pulled and ('(%.0f, %.0f)'):format(pulled.x, pulled.y))
+    ok(pulled ~= nil and pulled.y > 0.0,
+        '...so it stays on the circle\'s own side of the ring rather than '
+            .. 'walking south to the corridor',
         pulled and ('(%.0f, %.0f)'):format(pulled.x, pulled.y))
 
     -- AND IT IS STILL MARKED, because the client resolves the height of one of
