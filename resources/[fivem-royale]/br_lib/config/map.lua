@@ -883,8 +883,17 @@ BR.Config.Bus = {
     camDistance  = 44.0,
     camHeight    = 13.0,
 
-    -- Spacing of the route breadcrumbs drawn on the map and minimap.
-    crumbSpacing = 350.0,
+    -- ⚠ THERE IS NO crumbSpacing ANY MORE, AND A METRE FIGURE HERE WOULD BE A LIE
+    -- (#345). It spaced the route's BREADCRUMB BLIPS -- a dot every 350m by arc
+    -- length, placed by AddBlipForCoord -- and those dots were deleted, not
+    -- reimplemented: they "read as scattered debris" (user call, 2026-08-04) and
+    -- became the one solid GPS route the section below styles. The key kept its
+    -- comment and lost its only reader in the same commit, and nothing has read it
+    -- since. What replaced it cannot be told a distance either: drawCrumbs walks
+    -- #route.points and draws them, so the spacing is wherever the SERVER's sampler
+    -- put points -- under a metre at the start of the ground roll, ~870m across a
+    -- long leg, ~150m averaged over 400 planned tours -- and no figure here could
+    -- mean 350 of anything.
 
     -- ═══ HOW THE FLIGHT PATH IS DRAWN ON THE MAP AND MINIMAP (#342) ═══
     --
@@ -899,7 +908,8 @@ BR.Config.Bus = {
     -- this change moves the bus's without touching the dev tool's. That is
     -- deliberate -- the two lines can never be on the map at once (survey.lua
     -- refuses to arm while BR.BusLine.drawn()), so nothing forces them to agree --
-    -- but the comment over there still calls them the bus's, and it is now wrong.
+    -- and #345 settled it that way on the dev tool's side: a survey overlay is
+    -- read for coordinates, so it keeps the thin white line and says why.
     --
     -- THE WIDTHS ARE THE EASY HALF. SET_GPS_CUSTOM_ROUTE_RENDER takes a radar
     -- width and a map width as plain ints and documents no upper bound, so 48 is

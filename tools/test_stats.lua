@@ -106,6 +106,12 @@ for _, f in ipairs({
     -- BR.MatchTag and BR.MatchFromTag; br_core/server/debug.lua's brloot names
     -- matches with the first and reads its argument with the second.
     'br_lib/shared/matchtag.lua',
+    -- BR.ShopSolve.priceLine, which both reward toasts now spell their figure
+    -- with (#357). LOADED HERE BECAUSE br_stats' MANIFEST LOADS IT: a harness
+    -- that stubbed the formatter instead would pass while the manifest was
+    -- missing the line, and the toast would arrive on a live server with the
+    -- figure replaced by nothing at all.
+    'br_lib/shared/shop_solve.lua',
     'br_stats/server/awards.lua',
 }) do
     local chunk, err = loadfile(ROOT .. f)
@@ -1210,6 +1216,143 @@ do
     online = { [9] = { 'steam:110000100000009' } }
     sent = {}
     ok(finish(9) == nil, 'a connection with no license is not paid')
+end
+
+describe('the reward toasts spell a figure the way the store screen does (#357)')
+-- ---------------------------------------------------------------------------
+do
+    -- ═══ ONE NUMBER, ONE SPELLING, WHEREVER IT IS DRAWN ═══
+    --
+    -- The page has grouped its thousands since it existed (toLocaleString) and the
+    -- Lua composing these two sentences did not, so a four-figure award read
+    -- `12,500` on the store screen and `12500` in the toast over it -- one number
+    -- with two spellings in one session. Both toasts now build their figure with
+    -- BR.ShopSolve.priceLine, the one "N Volts" formatter in the tree, instead of
+    -- a `%d` of their own.
+    --
+    -- THE TWO HALVES ARE PINNED DIFFERENTLY BECAUSE ONLY ONE AMOUNT CAN BE MOVED.
+    -- The tutorial reward is configured, so it can be driven past a thousand and
+    -- the comma read off the rendered sentence. The report bounty is a file-local
+    -- constant at 100 that no test can raise, so grouping cannot be shown on its
+    -- text at all; what is pinned there is that the sentence is built out of
+    -- priceLine's answer. Grouping itself is that function's own suite's job
+    -- (tools/test_shop.lua) and is not asserted twice.
+
+    -- ═══ AND THE RESOURCE HAS TO ACTUALLY BE GIVEN THE FORMATTER ═══
+    --
+    -- Every assertion below runs in a harness that loaded shop_solve.lua itself,
+    -- so all of them would stay green with the manifest line missing and the
+    -- toast would reach a live player with `attempt to call a nil value` in place
+    -- of the sentence. THE MANIFEST IS THE HALF NO HARNESS CAN OBSERVE, so it is
+    -- read as text -- the same trick test_client.lua uses on index.css to stop a
+    -- restyle leaving the Lua behind.
+    do
+        local h = io.open(ROOT .. 'br_stats/fxmanifest.lua', 'r')
+        local man = h and h:read('a') or ''
+        if h then h:close() end
+        ok(man:find("'@br_lib/shared/shop_solve.lua',", 1, true) ~= nil,
+            "br_stats' manifest loads the formatter its toasts now call")
+    end
+
+    --- Fire BR.Net.TUTORIAL_DONE as player `src`; the pay request, or nil.
+    local function finish(src)
+        local before = #asked
+        source = src
+        TriggerEvent(BR.Net.TUTORIAL_DONE)
+        source = nil
+        for i = before + 1, #asked do
+            if asked[i].name == 'br:ddb:awardPay' then return asked[i] end
+        end
+        return nil
+    end
+
+    --- The text of the last NOTIFY sent to `src`, or nil.
+    local function toastTo(src)
+        local out
+        for _, m in ipairs(sent) do
+            if m.name == BR.Net.NOTIFY and m.src == src then out = m end
+        end
+        return out and out.payload and out.payload.text or nil
+    end
+
+    -- ---- the tutorial toast, at an amount with a thousand in it ------------
+    --
+    -- 2500 AND NOT 12500. br_ddb refuses any single award over AWARD_MAX (5000) as
+    -- a caller bug -- config/market.lua says so over tutorialReward -- and a
+    -- sentence asserted at an amount the database would reject is a sentence
+    -- nobody can be shown. 2500 is inside that bound and over a thousand, which is
+    -- the only property that makes this assertion worth writing: at the configured
+    -- 500 it would have passed before this change and after it.
+    local configured = BR.Config.Market.tutorialReward
+    reset()
+    BR.Config.Market.tutorialReward = 2500
+    online = { [11] = { 'license:dddddddd' } }
+
+    local req = finish(11)
+    TriggerEvent('br:ddb:awardPayResult', req.args[1], true,
+                 { paid = true, balance = 2500 })
+
+    local tutorial = toastTo(11)
+    ok(tutorial and tutorial:find('2,500 Volts', 1, true) ~= nil,
+        'the tutorial toast groups its thousands', tutorial)
+    ok(tutorial and tutorial:find('2500', 1, true) == nil,
+        'and the ungrouped spelling appears nowhere in the sentence', tutorial)
+    -- THE COLOUR MARKS STILL WRAP BOTH WORDS (owner, 2026-09-07). priceLine hands
+    -- back the figure and the currency as one phrase, so the tildes go round the
+    -- pair -- which is where they already were, with the comma now inside them.
+    ok(tutorial and tutorial:find('~2,500 Volts~', 1, true) ~= nil,
+        'inside the tildes the page paints', tutorial)
+    BR.Config.Market.tutorialReward = configured
+
+    -- ---- the report toast, whose bounty no test can move ------------------
+    --
+    -- A SPY RATHER THAN A SECOND GROUPING ASSERTION. priceLine is swapped for
+    -- something answering a string no formatter would produce; if the sentence
+    -- carries it, the sentence was built from priceLine's answer, and a `%d` put
+    -- back here fails this line without any amount having to change. Its arguments
+    -- are recorded too, because the wrong ones also produce a sentence.
+    local realPriceLine = BR.ShopSolve.priceLine
+    local saw
+    BR.ShopSolve.priceLine = function(price, currency)
+        saw = { price = price, currency = currency }
+        return '<<priced>>'
+    end
+
+    reset()
+    online[3] = { ALICE }
+    sweepWith(BANNED)
+    answerAll('br:ddb:awardPay', true, { paid = true, balance = 100 })
+    local spied = toastTo(3)
+
+    BR.ShopSolve.priceLine = realPriceLine
+
+    ok(spied and spied:find('<<priced>>', 1, true) ~= nil,
+        "the report toast spells its figure with priceLine, not with a '%d' of "
+            .. 'its own', spied)
+    ok(saw and saw.currency == 'Volts',
+        'handing it the currency name from config, so the word stays spelled in '
+            .. 'one place', saw and tostring(saw.currency))
+
+    -- AND THE PROSE AROUND THE FIGURE IS UNCHANGED, TO THE CHARACTER. The spy
+    -- above says nothing about what a player reads, so the same flow runs once
+    -- more untouched. The expectation takes the amount from the payment rather
+    -- than typing 100 -- the bounty has been retuned twice and the block above
+    -- argues about why one copy of it is the limit -- and takes the figure from
+    -- the formatter, because the WORDING is what this line guards.
+    reset()
+    online[3] = { ALICE }
+    sweepWith(BANNED)
+    local paid = askedFor('br:ddb:awardPay')[1]
+    answerAll('br:ddb:awardPay', true, { paid = true, balance = paid.args[4] })
+    local rendered = toastTo(3)
+    ok(saw and saw.price == paid.args[4],
+        'for the bounty that is actually paid', saw and tostring(saw.price))
+    ok(rendered == ("You've been gifted %s for reporting a player, who has now "
+            .. 'been banned. Thanks for your help!')
+            :format(BR.ShopSolve.priceLine(paid.args[4],
+                        BR.Config.Market.currency)),
+        'and through the real formatter the sentence is the one #168 words',
+        rendered)
 end
 
 describe('brloot.matchArg')

@@ -248,8 +248,15 @@ end
 --- them.
 local function tell(src, word)
     TriggerClientEvent(BR.Net.NOTIFY, src, {
-        text = ("You've been gifted %d Volts for reporting a player, who has now been %s. Thanks for your help!")
-            :format(AWARD_VOLTS, word),
+        -- THE FIGURE AND THE WORD COME FROM BR.ShopSolve.priceLine (#357), which
+        -- br_core's manifest calls the only "N Volts" formatter in the tree. This
+        -- sentence used to build its own with `%d` and a typed-out currency name,
+        -- so a four-figure bounty would have read `1500 Volts` here and `1,500`
+        -- on the store screen -- one number with two spellings, in one session.
+        -- Routed rather than taught to group, so there is still only one of them.
+        text = ("You've been gifted %s for reporting a player, who has now been %s. Thanks for your help!")
+            :format(BR.ShopSolve.priceLine(AWARD_VOLTS,
+                        BR.Config.Market.currency or 'Volts'), word),
         tone = 'success',
         -- Keyed so two rewards landing in the same sweep replace rather than
         -- stack; `ms` because this is news, not a state that persists.
@@ -551,10 +558,14 @@ AddEventHandler(BR.Net.TUTORIAL_DONE, function()
         TriggerEvent('br:market:tutorialDone', license)
 
         -- THE AMOUNT IS WRAPPED FOR THE CURRENCY'S COLOUR (owner, 2026-09-07).
-        -- The page paints anything inside `~...~`; see KeyText.
+        -- The page paints anything inside `~...~`; see KeyText. The tildes go
+        -- OUTSIDE priceLine's whole phrase, which is where they already were:
+        -- figure and word are coloured together, and the formatter never learns
+        -- about a markup it is not the only caller of (#357).
         TriggerClientEvent(BR.Net.NOTIFY, src, {
-            text = ("You've been gifted ~%d %s~ for finishing the tutorial. Good luck out there!")
-                :format(amount, (BR.Config.Market.currency or 'Volts')),
+            text = ("You've been gifted ~%s~ for finishing the tutorial. Good luck out there!")
+                :format(BR.ShopSolve.priceLine(amount,
+                            BR.Config.Market.currency or 'Volts')),
             tone = 'success',
             key  = 'tutorial.reward',
             ms   = 10000,

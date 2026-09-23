@@ -128,14 +128,26 @@ BR.Survey = BR.Survey or {}
 --- have to land a pixel-perfect click to finish.
 local CLOSE_M = 250.0
 
---- The route's HUD colour, and its radar and map line thicknesses. ALL THREE ARE
---- bus.lua's, UNCHANGED AND DELIBERATELY SO: 0 is pure white and 16/16 is what
---- the flight path is drawn at, which makes them the only values in this project
---- proven to render on this build. The HUD colour enum is not otherwise verified
---- here, and guessing an index to get a prettier line risks landing on purple,
---- which belongs to the storm alone (user call, 2026-08-04). The survey line and
---- the bus line can never be up at the same time -- see the refusal above -- so
---- sharing a colour costs nothing.
+--- The route's HUD colour, and its radar and map line thicknesses. ALL THREE WERE
+--- bus.lua's; SINCE #342 THEY DELIBERATELY ARE NOT. The flight path now draws at
+--- 48/48 in HUD slot 224 with our cyan loaded into it, this stays 0 -- pure white
+--- -- and 16/16, and nothing forces the two to agree: the survey line and the bus
+--- line can never be up at the same time, see the refusal above.
+---
+--- THIN IS THE FEATURE HERE. This overlay is read for coordinates, against a 250m
+--- close tolerance, so a line that covers its own vertices defeats the tool; 48 is
+--- arithmetic on the owner's "3x" that no playtest has yet called a bold line
+--- rather than a smear. 16/16 is still the pair with rendering evidence behind it
+--- on this build.
+---
+--- AND THE CYAN IS NOT AN INDEX TO COPY. bus.lua's `routeHudColour` loads it into
+--- slot 224 with ReplaceHudColourWithRgba -- globally, for the rest of the client
+--- session, undone by no native -- and returns the slot it wrote, so that drawing
+--- from a slot the colour never went into is impossible. A dev tool does not get a
+--- second call site for that, and 0 is the index #342 could not take precisely
+--- because this file reads it. Guessing some other index to get a prettier line
+--- still risks landing on purple, which belongs to the storm alone (user call,
+--- 2026-08-04). BR.Config.Bus carries the other half of this note.
 local ROUTE_COLOUR    = 0
 local ROUTE_RADAR_W   = 16
 local ROUTE_MAP_W     = 16

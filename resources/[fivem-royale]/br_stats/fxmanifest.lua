@@ -41,6 +41,15 @@ server_scripts {
     -- The payout table. Currency is earned here and nowhere else, and what a
     -- match pays lives beside what things cost so the two stay calibrated.
     '@br_lib/config/market.lua',
+    -- BR.ShopSolve.priceLine: the ONE "N Volts" formatter in the tree, borrowed
+    -- rather than copied (#357). The two reward toasts in awards.lua spell a
+    -- figure at a player, and every other figure in the game -- the page's via
+    -- toLocaleString, the Lua's via this -- groups its thousands; a `%d` here was
+    -- how one number came to have two spellings in one session. THE SAME REACH
+    -- ACROSS NAMESPACES br_core's manifest argues for at this file, for the same
+    -- reason: a second formatter is the failure, not the import. It reads nothing
+    -- at load, so its position in this list is readability only.
+    '@br_lib/shared/shop_solve.lua',
     '@br_lib/shared/xp.lua',        -- the curve; must load before persist
     'server/persist.lua',           -- br:match:results -> DynamoDB
     -- #168: Volts for an accurate report, paid when the verdict lands. The
