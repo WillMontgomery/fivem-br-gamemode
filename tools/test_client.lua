@@ -11817,9 +11817,11 @@ do
     -- his too and was never a typo -- it went with the parenthesis, because
     -- there is no longer a bracket for it to sit inside.
     --
-    -- THE OTHER SENTENCE IN THAT HANDLER STILL SAYS TAB, and must (#177): it is
-    -- an action on the kill prompt, not the player list under another name, so
-    -- there is no command to name and no cap to draw. See below.
+    -- THE OTHER SENTENCE IN THAT HANDLER NAMES A DIFFERENT COMMAND, and it is a
+    -- different action rather than the player list under another name (#177): the
+    -- kill prompt borrows one press of the INVENTORY key, so its hole is
+    -- `brinventory`. It used to say the word TAB on the argument that there was
+    -- no binding to resolve, which was wrong about the borrow. See below.
     local WANT = 'See something suspicious? You can report players by pressing {key:brplayers}. As a bonus, all accurate reports are rewarded with Volts.'
 
     events = {}
@@ -11854,14 +11856,77 @@ do
     ok((toast('report.exists') or {}).text == WANT,
         'and a rebind of the player-list key does not rewrite it in Lua')
 
-    -- ------------------------------------------ #177 part 2: it says TAB ---
+    -- -------------------- #177 part 2: it draws the INVENTORY key ---
+    --
+    -- IT USED TO SAY THE WORD TAB, on the argument that the corroboration was an
+    -- action with no binding behind it. It has one: the press is a borrow of the
+    -- inventory action (BR.Keys.claim('inventory', ...) answering
+    -- br:report:armCorroborate), and `brinventory` is a row BR.Keys.push sends
+    -- the page -- so the hole resolves and the word was both undrawn AND stale
+    -- for anybody who had moved their inventory key.
+    local NUDGE = 'Suspect cheating? Press {key:brinventory} to report Karl.'
+
     events = {}
     fire(BR.Net.REPORT_HINT, { kind = 'killer', name = 'Karl' })
     local nudge = toast('report.nudge')
     ok(nudge ~= nil, 'the kill prompt is raised')
-    ok(nudge ~= nil and nudge.text == 'Suspect cheating? Press TAB to report Karl.',
-        'and it names TAB, not the player-list key',
+    ok(nudge ~= nil and nudge.text == NUDGE,
+        'and it names the inventory key as a hole, not the word TAB',
         nudge and ('got: ' .. tostring(nudge.text)) or 'no toast')
+
+    -- AND IT IS STILL A DIFFERENT ACTION FROM THE PANEL'S. Naming a command
+    -- rather than a letter is not the same as naming the SAME command: the two
+    -- sentences offer two verbs and #177 exists because they are not one.
+    ok(nudge ~= nil and nudge.text:find('brplayers', 1, true) == nil,
+        'and it is not the player-list command under a glyph',
+        nudge and ('got: ' .. tostring(nudge.text)) or 'no toast')
+
+    -- NO LETTER GOT SUBSTITUTED ON THE WAY OUT, which is the mutation that keeps
+    -- the assertion above green and puts the reported bug straight back: the word
+    -- TAB, or a label resolved off the keybinds envelope, sitting in the prose.
+    ok(nudge ~= nil and not nudge.text:find('TAB', 1, true)
+        and not nudge.text:find('Tab', 1, true),
+        'and it spells no key into the prose, only the command',
+        nudge and ('got: ' .. tostring(nudge.text)) or 'no toast')
+
+    -- ═══ THE HOLE IS IN A `t` PART, WHICH IS THE HALF THAT GETS SUBSTITUTED ═══
+    --
+    -- This sentence names a PLAYER as well as a key, so it travels split
+    -- (BR.Notice.line) and the page renders `b` parts as plain text on purpose --
+    -- a player called `{key:brptt}` must get nine characters, not a plate. That
+    -- makes WHICH part the token lands in the whole of whether it draws: in a `t`
+    -- it goes through KeyText, in a `b` it would render as literal braces in the
+    -- middle of the owner's sentence and every assertion above would still pass.
+    do
+        local tokenInT, tokenInB = false, false
+        for _, p in ipairs((nudge or {}).parts or {}) do
+            if type(p.t) == 'string' and p.t:find('{key:brinventory}', 1, true) then
+                tokenInT = true
+            end
+            if type(p.b) == 'string' and p.b:find('{key:', 1, true) then
+                tokenInB = true
+            end
+        end
+        ok(tokenInT and not tokenInB,
+            'and the hole rides in a prose part, where KeyText will see it')
+        -- The name is still marked, so the bold rule did not get traded away for
+        -- the glyph: three parts, and the middle one is Karl.
+        ok(#((nudge or {}).parts or {}) == 3
+            and ((nudge or {}).parts or {})[2].b == 'Karl',
+            'and the killer is still a marked name beside it')
+    end
+
+    -- AND LUA DOES NOT REWRITE IT WHEN THE INVENTORY KEY MOVES, for the same
+    -- reason the courtesy notice does not: what the player sees follows the
+    -- rebind on the PAGE, where KeyCap re-resolves the command. A composed
+    -- string is a photograph, and this prompt is up for ten seconds.
+    events = {}
+    fire('br:ui:sendLocal', BR.Nui.KEYBINDS, {
+        actions = { { command = 'brinventory', key = 'I', vk = 0x49 } },
+    })
+    fire(BR.Net.REPORT_HINT, { kind = 'killer', name = 'Karl' })
+    ok((toast('report.nudge') or {}).text == NUDGE,
+        'and a rebind of the inventory key does not rewrite it in Lua')
 
     -- THAT PROMPT ARMED THE KEY, so let it time out before the key assertions
     -- below start from a known state. Leaving it live is how the first draft of

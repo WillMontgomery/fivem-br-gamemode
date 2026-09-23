@@ -294,6 +294,44 @@ function BR.ShopSolve.nameOf(row)
     return tostring(row.model or '')
 end
 
+--- A whole number with its thousands separated: 12500 becomes '12,500'.
+---
+--- ═══ THE PAGE HAS GROUPED SINCE IT EXISTED, AND LUA NEVER DID ═══
+---
+--- Every figure the INTERFACE draws goes through `toLocaleString()` -- the
+--- inventory bar's Volts, the store screen's balance and every price on its
+--- shelf, the end screen's award, the XP bar. Every figure LUA composes was
+--- bare, because priceLine below is where they are all built and it formatted
+--- with `%d`. So one purchase showed a player the same number twice, grouped on
+--- the store screen and ungrouped in the toast over it (owner, 2026-09-22
+--- playtest). The missing comma is where it showed; the defect is that one
+--- number had two representations.
+---
+--- HERE, BECAUSE THIS IS WHERE THE ONE "N Volts" FORMATTER ALREADY IS.
+--- br_core/fxmanifest.lua calls priceLine "the only 'N Volts' formatter in the
+--- tree", and the Ammu-Nation counter crosses namespaces to reach it rather than
+--- growing a second one -- so grouping it once covers the price plate over a
+--- car, the counter's menu rows and both shops' purchase and shortfall toasts,
+--- and there is no second place for the rule to drift to.
+---
+--- THE SIGN IS HELD OUT OF THE SCAN rather than trusted to the pattern. `%d+`
+--- anchored at the start does not match past a `-`, so a negative would be
+--- returned ungrouped and silently. Nothing in this game hands priceLine a
+--- negative and none of its four callers can produce one; it costs one
+--- concatenation not to depend on that.
+local function grouped(n)
+    local s = tostring(math.abs(n))
+    local k
+    -- ONE GROUP PER PASS, FROM THE RIGHT. `%d+` takes the longest run that still
+    -- leaves three digits behind it, so each pass moves a comma one group
+    -- leftward and the loop stops when the head is too short to split again --
+    -- the comma inserted last pass is what blocks the next match.
+    repeat
+        s, k = s:gsub('^(%d+)(%d%d%d)', '%1,%2')
+    until k == 0
+    return (n < 0 and '-' or '') .. s
+end
+
 --- The plate's second line: the price, then what the currency is called.
 ---
 --- ═══ THE WORD COMES FROM CONFIG, NOT FROM HERE ═══
@@ -309,16 +347,19 @@ end
 --- constant, AND a client file nobody would think to grep -- so the caller
 --- passes it in and this function never spells it.
 ---
---- NO CURRENCY, NO WORD. A caller that cannot resolve the name gets the bare
---- number back rather than the price followed by nothing or by a placeholder.
+--- NO CURRENCY, NO WORD. A caller that cannot resolve the name gets the figure
+--- back on its own rather than the price followed by nothing or by a placeholder.
+--- It is still grouped: the word is what is missing, not the formatting.
 --- @param price number|nil
 --- @param currency string|nil
 --- @return string
 function BR.ShopSolve.priceLine(price, currency)
     local n = math.floor(tonumber(price) or 0)
     local word = type(currency) == 'string' and currency or ''
-    if word == '' then return tostring(n) end
-    return ('%d %s'):format(n, word)
+    -- `%s` AND NOT `%d` NOW, because `grouped` hands back a string -- see it for
+    -- why the separator belongs in this function and not at the four call sites.
+    if word == '' then return grouped(n) end
+    return ('%s %s'):format(grouped(n), word)
 end
 
 --- What the purchase toast says: his sentence, then his balance sentence.

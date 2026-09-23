@@ -115,11 +115,15 @@ local myState = nil
 --- HOW LONG THE KILL PROMPT STANDS, in milliseconds (#177).
 ---
 --- ONE NUMBER FOR THE TOAST AND FOR THE KEY, and that is the entire reason it is
---- a constant rather than two literals. The prompt tells the player to press
---- TAB; br_core holds TAB for exactly as long as this says. Two numbers would
+--- a constant rather than two literals. The prompt offers the inventory key;
+--- br_core borrows that key for exactly as long as this says. Two numbers would
 --- eventually differ, and every way they can differ is bad: a key that stops
 --- working while the sentence offering it is still on screen, or a key that
 --- swallows an inventory press seconds after the reason for it has faded.
+---
+--- IT IS THE SAME KEY IN BOTH HALVES BY CONSTRUCTION NOW, not by both of them
+--- happening to say TAB: the sentence names `brinventory` and the claim is on the
+--- `inventory` action, so a rebind moves the offer and the borrow together.
 local NUDGE_MS = 10000
 
 --- Reconcile the focus stack to the state the page asked for.
@@ -383,8 +387,7 @@ end)
     -- that is a world-anchored interaction ring for a key being HELD, and this
     is a piece of news.
 
-    ═══ ONE DRAWS THE PLAYER-LIST KEY, THE OTHER SAYS TAB, AND THAT IS NOT A
-        BUG ═══
+    ═══ THEY NAME TWO DIFFERENT KEYS, AND THAT IS NOT A BUG ═══
 
     Read the two sentences below together and they look like a contradiction that
     somebody forgot to reconcile. They are not. They are DIFFERENT ACTIONS that
@@ -395,14 +398,17 @@ end)
              against anybody in the match. It is the panel's own latch
              (`brplayers`) -- tilde by default and rebindable, which is why the
              sentence draws it rather than spelling it.
-      TAB    on the kill prompt, CORROBORATES the case that already exists
-             against the player who just killed you, in one press, with no panel
-             involved at all (BR.Net.REPORT_CORROBORATE).
+      the inventory key    on the kill prompt, CORROBORATES the case that already
+             exists against the player who just killed you, in one press, with no
+             panel involved at all (BR.Net.REPORT_CORROBORATE). TAB by default,
+             because that is the inventory's default -- see below for why this
+             sentence names `brinventory` and not a key of its own.
 
     Reconciling them would mean deleting one of the two actions. If a future
     issue reads this as an inconsistency, it is reading two verbs as one.
 
-    ═══ THE FIRST ONE NAMES ITS KEY AGAIN, AS A GLYPH; THE SECOND NEVER CAN ═══
+    ═══ BOTH NAME THEIR KEY AS A GLYPH, AND THE SECOND ONE TOOK A ROUND LONGER
+        THAN IT SHOULD HAVE ═══
 
     #168 argued -- correctly, for what it was solving -- that a prompt must name
     the key the player actually has bound, because this project shipped a prompt
@@ -440,20 +446,50 @@ end)
     sentence keeps its own full stop, after the glyph. Not one other word of
     either sentence moved.
 
-    #177 OVERRIDES #168 FOR THE SECOND SENTENCE, for a different and stronger
-    reason, AND NONE OF THE ABOVE TOUCHES IT: TAB here is not the player list
-    under another name, it is a separate action that lives on the kill prompt
-    and nowhere else. There is no binding to resolve, so there is no command for
-    a token to name and no cap for the page to draw -- a `{key:...}` hole there
+    THE SECOND SENTENCE ARGUED ITSELF OUT OF THE SAME FIX, AND THE ARGUMENT WAS
+    WRONG ON A FACT. What stood here said: "TAB here is not the player list under
+    another name, it is a separate action that lives on the kill prompt and
+    nowhere else. There is no binding to resolve, so there is no command for a
+    token to name and no cap for the page to draw -- a `{key:...}` hole there
     would name a command that does not exist, and KeyCap would draw the unbound
-    dash over an action that works perfectly. It stays the word TAB.
+    dash over an action that works perfectly. It stays the word TAB."
+
+    Every clause of that is true except the middle one, which is the load-bearing
+    one. THERE IS A BINDING, AND THE ACTION IS ALREADY DEFINED IN TERMS OF IT.
+    The press does not arrive on a key of its own: `br:report:armCorroborate`,
+    twenty lines below, is answered in br_core/client/keybinds.lua by
+    `BR.Keys.claim('inventory', ...)` -- it BORROWS one press of the inventory
+    action, which is registered there as `tap('inventory', 'brinventory', ...)`
+    with TAB as its default. Every row in BR.Keys.bindings is pushed to the page
+    by BR.Keys.push, so `brinventory` is in the very list KeyCap resolves a hole
+    against. There was a command to name the whole time.
+
+    SO THE WORD WAS NOT ONLY UNDRAWN, IT WAS STALE -- which is #129's bug sitting
+    inside the one sentence that had reasoned its way out of the fix for it. A
+    player who moved their inventory off TAB was told to press a key that does
+    nothing on the verdict screen, while the key that actually corroborates went
+    unnamed; the prompt named the DEFAULT of a binding rather than the binding.
+    Owner reported the missing glyph on 2026-09-22; the stale half came with it
+    and neither is visible from a box where nobody has rebound anything.
+
+    `{key:brinventory}` FIXES BOTH AT ONCE and is the same mechanism as the first
+    sentence: the page resolves the command against the live list, so the prompt
+    draws the key this player's inventory is on, redraws it if they rebind while
+    it is up, and draws `--` if they have cleared it -- which is honest, because a
+    cleared inventory key is a corroboration they cannot make. NOT ONE OTHER WORD
+    MOVED. The word TAB became the hole; the rest of the sentence is his.
+
+    AND IT NAMES THE INVENTORY DELIBERATELY, NOT AS A CONVENIENT PROXY. The two
+    are the same key because #177 chose to borrow rather than spend a fourth
+    binding on one press a player makes once a round, and keybinds.lua says so
+    where the claim is made. If the corroboration is ever given a binding of its
+    own, this token names THAT command and nothing else here changes.
 
     So `pressPhrase()` and the `myKey` mirror that fed it are still gone and must
-    stay gone. The first sentence has no use for them -- resolving the command on
-    the page is strictly better than resolving a label in Lua, because the page
-    can redraw and a composed string cannot -- and the second has nothing for
-    them to resolve. Read #180 before touching the first line and #177 before
-    touching the second.
+    stay gone. Resolving the command on the page is strictly better than
+    resolving a label in Lua, because the page can redraw and a composed string
+    cannot -- and that is now the answer for both sentences rather than one. Read
+    #180 before touching the first line and #177 before touching the second.
 ]]
 
 RegisterNetEvent(BR.Net.REPORT_HINT)
@@ -493,7 +529,21 @@ AddEventHandler(BR.Net.REPORT_HINT, function(d)
         -- it goes through the same hole unmarked -- see br_lib/shared/notice.lua
         -- for why the marking is at the call site rather than inferred.
         local name = type(d.name) == 'string' and d.name ~= '' and d.name or nil
-        local line = BR.Notice.line('Suspect cheating? Press TAB to report %s.',
+        -- BR.KeyToken RATHER THAN THE WORD TAB, for the same reason the sentence
+        -- above names `brplayers` -- and the block at the top of this handler is
+        -- where the correction is argued, including why the old note claiming
+        -- there was no command to name was wrong about `brinventory`.
+        --
+        -- THE HOLE IS IN THE FORMAT STRING, WHICH IS SAFE AND IS WHY IT GOES
+        -- THERE. BR.Notice.line understands `%s` and `%%` and nothing else, so
+        -- braces are literal prose to it: the token rides through into a `t`
+        -- part, which is the half that goes through KeyText on the page. The `%s`
+        -- beside it stays the NAME hole, and a name never meets a substitution
+        -- -- see Notices.tsx for why a player called `{key:brptt}` gets nine
+        -- characters drawn rather than a plate.
+        local line = BR.Notice.line(
+            'Suspect cheating? Press ' .. BR.KeyToken('brinventory')
+                .. ' to report %s.',
             name and BR.Notice.who(name) or 'them')
         local flat, parts = BR.Notice.wire(line)
         TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST, {

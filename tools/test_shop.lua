@@ -3011,6 +3011,20 @@ do
     ok(BR.ShopSolve.boughtToast(shipped, 0, 'Volts')
            :find('is: ~0 Volts~%.') ~= nil,
         'a balance of nothing still reads as a number rather than as a blank')
+    -- THE SURFACE THE DEFECT WAS REPORTED ON, at a balance big enough to show
+    -- it. The store screen behind this toast draws the same figure through
+    -- `toLocaleString()`; a toast that disagreed with the screen under it about
+    -- the same number is what the owner saw on 2026-09-22.
+    ok(BR.ShopSolve.boughtToast(shipped, 12500, 'Volts')
+           :find('is: ~12,500 Volts~%.') ~= nil,
+        'and the purchase toast groups its balance, like the screen behind it',
+        BR.ShopSolve.boughtToast(shipped, 12500, 'Volts'))
+    -- THE MARK STILL WRAPS THE WHOLE FIGURE, separator included. The tildes are
+    -- what the page paints in the currency's color, and a comma left outside
+    -- them would be one uncolored character in the middle of a colored number.
+    ok(BR.ShopSolve.boughtToast(shipped, 12500, 'Volts')
+           :find('~12,500 Volts~', 1, true) ~= nil,
+        'with the separator inside the color mark rather than beside it')
 
     -- THE CURRENCY WORD IS NOT IN EITHER STRING. config/market.lua spells it
     -- once; the toast gets it through priceLine like the plate does.
@@ -3062,6 +3076,42 @@ do
     ok(BR.ShopSolve.priceLine(750, nil) == '750',
         'and with no currency name to be had it stays a bare number rather '
             .. 'than trailing an empty word')
+
+    -- ═══ AND ITS THOUSANDS ARE SEPARATED, BECAUSE THE PAGE'S ALWAYS WERE ═══
+    --
+    -- Owner, 2026-09-22 playtest: the purchase toast showed the new balance as a
+    -- bare number. Every figure the INTERFACE draws has gone through
+    -- `toLocaleString()` since it existed -- the inventory bar's Volts, the store
+    -- screen's balance and its shelf prices, the end screen's award -- so one
+    -- purchase showed a player the same number twice, grouped on the screen and
+    -- ungrouped in the toast over it. The comma is where it showed; the defect
+    -- was one number with two representations.
+    --
+    -- ASSERTED ON priceLine RATHER THAN ONLY ON THE TOAST, because this is the
+    -- only "N Volts" formatter in the tree (br_core/fxmanifest.lua says so, and
+    -- the Ammu-Nation counter crosses namespaces to reach it). Every surface that
+    -- shows a figure inherits this, which is the point of fixing it here.
+    ok(BR.ShopSolve.priceLine(1000, 'Volts') == '1,000 Volts',
+        'a four-figure price is grouped, as every figure on the page already is')
+    ok(BR.ShopSolve.priceLine(12500, 'Volts') == '12,500 Volts',
+        'and so is the five-figure balance the owner was actually looking at')
+    ok(BR.ShopSolve.priceLine(1234567, 'Volts') == '1,234,567 Volts',
+        'and a seven-figure one takes both separators, not just the first')
+    ok(BR.ShopSolve.priceLine(999, 'Volts') == '999 Volts',
+        'three figures take none -- the loop stops when the head cannot split')
+    ok(BR.ShopSolve.priceLine(1500, nil) == '1,500',
+        'and the no-currency answer is grouped too: the WORD is what is '
+            .. 'missing there, not the formatting')
+    -- THE SIGN IS NOT SWALLOWED AND NOT GROUPED INTO. `%d+` anchored at the
+    -- start does not match past a `-`, so a negative left to the pattern would
+    -- come back ungrouped and silently. No caller can produce one; it is pinned
+    -- because "no caller can" is the kind of claim that stops being true.
+    ok(BR.ShopSolve.priceLine(-12500, 'Volts') == '-12,500 Volts',
+        'and a negative keeps its sign outside the separators')
+    -- AND THE FLOOR STILL HAPPENS FIRST, so grouping never sees a fraction --
+    -- which would put a comma in the wrong place counting from a decimal point.
+    ok(BR.ShopSolve.priceLine(12500.9, 'Volts') == '12,500 Volts',
+        'and a fractional figure is floored before it is grouped')
 
     -- ═══ THE WORD IS NOT IN THE CLIENT FILE ═══
     --

@@ -397,6 +397,75 @@ do
     end
 end
 
+do
+    local players = readLua('br_ui/client/players.lua')
+    if players then
+        -- ═══ BOTH REPORT SENTENCES, COUNTED SEPARATELY ═══
+        --
+        -- They are two different actions offered by one feature -- the panel's
+        -- own key opens the player list, the kill prompt's borrows one press of
+        -- the INVENTORY key to corroborate -- so each names its own command and
+        -- `BR.KeyToken` appearing in the file is satisfied by either alone.
+        if not players:find("BR%.KeyToken%('brplayers'%)") then
+            fail('the report courtesy notice does not name its key as a hole',
+                 'it is up for twelve seconds and #180 made it the sentence '
+                 .. 'that teaches a new player where the key is')
+        end
+        if not players:find("BR%.KeyToken%('brinventory'%)") then
+            fail('the kill prompt does not name its key as a hole',
+                 'it spelled the word TAB until 2026-09-22 on the argument that '
+                 .. 'the corroboration had no binding to resolve -- it borrows '
+                 .. 'the inventory action, so `brinventory` is the command, and '
+                 .. 'the literal was stale for anyone who had moved that key')
+        end
+
+        -- AND THE WORD IS GONE, which is the mutation that keeps both assertions
+        -- above green while putting the reported bug back: a token added beside
+        -- the literal rather than in place of it.
+        if players:find('[Pp]ress TAB') then
+            fail('the kill prompt still spells TAB into its prose',
+                 'the key it names is whatever the inventory is bound to; the '
+                 .. 'word is only its default and goes stale on a rebind')
+        end
+    end
+end
+
+-- ═══════════════════════ a hole names a command that actually exists ══════
+
+do
+    -- ═══ THE FAILURE THIS CATCHES DRAWS A DASH, NOT AN ERROR ═══
+    --
+    -- KeyCap resolves a hole against the pushed keybinds list BY COMMAND NAME,
+    -- and a command no row carries simply matches nothing -- so the cap falls to
+    -- its unbound `--` over an action that works perfectly. Nothing throws,
+    -- nothing logs, and the sentence still renders. That is the shape of the bug
+    -- the kill prompt's old comment reasoned FROM, in reverse: it assumed there
+    -- was no command to name, when `brinventory` was registered all along.
+    --
+    -- ONLY LITERAL ARGUMENTS ARE CHECKED. voice.lua names its command through
+    -- PTT_COMMAND, which this cannot follow without executing Lua -- and that
+    -- surface already has its own assertions above.
+    local registrars = readLua('br_core/client/keybinds.lua')
+    if registrars then
+        for _, rel in ipairs({ 'br_ui/client/players.lua',
+                               'br_core/client/natives.lua',
+                               'br_core/client/voice.lua' }) do
+            local src = readLua(rel)
+            if src then
+                for cmd in src:gmatch("BR%.KeyToken%(%s*'([%w_]+)'%s*%)") do
+                    if not registrars:find("'" .. cmd .. "'", 1, true) then
+                        fail(('%s names the command %q, which keybinds.lua does '
+                              .. 'not register'):format(rel, cmd),
+                             'no row carries it, so KeyCap matches nothing and '
+                             .. 'draws the unbound dash over a working action -- '
+                             .. 'silently, in the middle of the owner\'s sentence')
+                    end
+                end
+            end
+        end
+    end
+end
+
 -- ═════════════════════════════════ the surfaces still call the component ══
 
 do
