@@ -394,9 +394,10 @@ local function enterPhase(m, phase, cx0, cy0, r0, now, waitSec, mo)
     -- 5). BR.StormSweepPrice reads the wall this record will draw and bill and
     -- answers how many metres per sweep the furthest player's straight run to the
     -- destination has to cover to stay inside it -- the distance itself wherever the
-    -- wall does not outrun that, and never less. The record it reads is this phase's
-    -- own, built with a placeholder sweep: the wall's shape at a fraction of the
-    -- sweep does not depend on how long the sweep lasts.
+    -- wall does not outrun that, and never less. A player already outside is priced
+    -- to be kept no further out than the old blend would have left them. The record
+    -- it reads is this phase's own, built with a placeholder sweep: the wall's shape
+    -- at a fraction of the sweep does not depend on how long the sweep lasts.
     local probe = BR.BuildStormRecord(phase, cx0, cy0, r0, cx1, cy1, p.radius,
         now, 0.0, 1000.0, p.dps, m.stormSeed, mo)
     local stood = {}

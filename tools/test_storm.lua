@@ -5352,6 +5352,187 @@ do
 end
 
 -- ---------------------------------------------------------------------------
+describe('price.outside')
+do
+    -- ═══ A PLAYER ALREADY OUTSIDE THE ZONE IS PRICED ON THE WALL TOO (#344) ═══
+    --
+    -- The price used to stop at the wall of the zone the phase starts in: a player a
+    -- millimeter outside it was priced on the bare distance, and the morph can need
+    -- 1.3 times that. The round's final review knocked a runner who started 0.5 m
+    -- out for 136 HP, 65 m out of the wall -- and the players that hole catches are
+    -- ordinary ones: riding the last sweep's wall, inside the ten-meter cushion, the
+    -- last sweep's stragglers. The blend held a player who started `e` meters out
+    -- within (1 - t) e of it, running at the distance's pace, and that is what the
+    -- price promises them now, on the wall itself.
+    --
+    -- The same walk as price.run -- whole matches through the real server, every
+    -- phase nested -- with players stood 0.5, 5 and 40 m OUTSIDE the zone every next
+    -- phase starts in. First the seam, then the runners, each at the pace the price
+    -- allows them alone: the slowest it lets anybody go, which is where a price that
+    -- fell short shows. (A faster runner is held too on a nested phase, and
+    -- price.run's walk runs a whole lobby at 9 m/s.)
+    local NP, G = 24, 400
+    local OUT = { 0.5, 5.0, 40.0 }
+    local sweeps, worst, where = 0, -math.huge, nil
+    local seamWorst, seamWhere, seamAsked, seamLong = 0.0, nil, 0, 0
+    for k = 1, 6 do
+        local S = newStormServer()
+        local env = S.env
+        local SS = env.BR.StormShape
+        local cfg = env.BR.Config.Storm
+        cfg.breakout.chanceStart, cfg.breakout.chanceEnd = 0.0, 0.0
+        S.roster[1] = nil
+        S.match.storm = nil
+        S.match.seq = 80 + k
+        S.match.anchor = { x = 1000.0, y = -1500.0, name = 'Out' }
+        env.BR.Sched.setEnabled('storm.phase', true)
+        S.match.state = env.BR.MatchState.WARMUP
+        env.BR.Storm.drawFirstCircle(S.match)
+        S.match.state = env.BR.MatchState.PLAYING
+        env.BR.Storm.begin(S.match)
+
+        --- The outward normal of a shape at a point of its edge, off its own signed
+        --- distance.
+        local function normal(D, x, y)
+            local h = 0.05
+            local gx = SS.distance(D, x + h, y) - SS.distance(D, x - h, y)
+            local gy = SS.distance(D, x, y + h) - SS.distance(D, x, y - h)
+            local gl = math.sqrt(gx * gx + gy * gy)
+            return gx / gl, gy / gl
+        end
+
+        --- Stand the roster OUTSIDE this record's target -- the zone the next phase
+        --- starts in -- by 0.5, 5 and 40 m in turn, and hand back where they stood
+        --- and how far out each one really is.
+        local function stand(rec)
+            local D = env.BR.StormTarget(rec)
+            local P = SS.perimeter(D)
+            local at = {}
+            for i = 1, NP do
+                local x, y = SS.pointAtArc(D, P * (i - 0.5) / NP)
+                local nx, ny = normal(D, x, y)
+                local e = OUT[(i - 1) % #OUT + 1]
+                x, y = x + nx * e, y + ny * e
+                S.roster[i] = { matchId = 1, name = 'O' .. i, hp = 100.0,
+                                state = env.BR.PlayerState.ALIVE,
+                                pos = { x = x, y = y, z = 30.0 } }
+                at[i] = { x = x, y = y, e = SS.distance(D, x, y) }
+            end
+            return at
+        end
+
+        --- NO SEAM AT THE WALL: a millimeter either side of the zone the phase
+        --- starts in, the same run -- to a meter, past the two parts in a thousand the
+        --- price's own sampling and refinement leave between neighboring points.
+        local function seam(rec)
+            local Z = env.BR.StormWall(rec, 0.0)
+            local P = SS.perimeter(Z)
+            for i = 1, 16 do
+                local x, y = SS.pointAtArc(Z, P * (i - 0.5) / 16)
+                local nx, ny = normal(Z, x, y)
+                local inR = env.BR.StormSweepRun(rec, x - nx * 1e-3, y - ny * 1e-3)
+                local outR = env.BR.StormSweepRun(rec, x + nx * 1e-3, y + ny * 1e-3)
+                local d = SS.distance(env.BR.StormTarget(rec), x, y)
+                if d > 1.0 then
+                    seamAsked = seamAsked + 1
+                    if inR > 1.05 * d then seamLong = seamLong + 1 end
+                    local apart = math.abs(outR - inR) - 0.002 * inR
+                    if apart > seamWorst then
+                        seamWorst = apart
+                        seamWhere = ('match %d phase %d: %.1f m a millimeter inside, %.1f '
+                            .. 'outside, %.1f to the destination'):format(k, rec.phase,
+                            inR, outR, d)
+                    end
+                end
+            end
+        end
+
+        --- Every runner of one sweep, at their own priced pace: how much further outside
+        --- the zone the damage tick bills than (1 - t) e they ever are, on the better
+        --- of the two lines the price reads.
+        local function run(rec, at)
+            sweeps = sweeps + 1
+            local D = env.BR.StormTarget(rec)
+            local zs = {}
+            for i = 1, G do
+                local t = i / G
+                zs[i] = env.BR.StormZone(rec, env.BR.Lerp(rec.cx0, rec.cx1, t),
+                    env.BR.Lerp(rec.cy0, rec.cy1, t), env.BR.Lerp(rec.r0, rec.r1, t), t, 1.0)
+            end
+            local function line(q, pace, tx, ty, L)
+                local C = env.BR.Dist(q.x, q.y, tx, ty)
+                local ux, uy = (tx - q.x) / C, (ty - q.y) / C
+                local over, at = -math.huge, 0.0
+                for i = 1, G do
+                    local t = i / G
+                    local s = math.min(pace * t, L)
+                    local o = SS.distance(zs[i], q.x + ux * s, q.y + uy * s)
+                        - (1.0 - t) * q.e
+                    if o > over then over, at = o, t end
+                end
+                return over, at
+            end
+            local dks = D.hull and D.hull.ks or SS.discHull(D.discs)
+            for _, q in ipairs(at) do
+                -- METERS PER SWEEP: run / T is the pace, and t the sweep fraction.
+                local pace = env.BR.StormSweepRun(rec, q.x, q.y)
+                local nx, ny = rec.cx1, rec.cy1
+                if rec.r1 > 0.0 then nx, ny = SS.pointAtArc(D, SS.nearestArc(D, q.x, q.y)) end
+                local L = env.BR.Dist(q.x, q.y, nx, ny)
+                if L > 0.5 then
+                    local o, when = line(q, pace, nx, ny, L)
+                    local C = env.BR.Dist(q.x, q.y, rec.cx1, rec.cy1)
+                    if rec.r1 > 0.0 and C > 0.0 then
+                        local Lc = SS.lineEntry(dks, q.x, q.y, (rec.cx1 - q.x) / C,
+                            (rec.cy1 - q.y) / C, 0.0)
+                        if Lc then
+                            local oc, wc = line(q, pace, rec.cx1, rec.cy1, Lc)
+                            if oc < o then o, when = oc, wc end
+                        end
+                    end
+                    if o > worst then
+                        worst = o
+                        where = ('match %d phase %d, %.1f m out at the start, %.0f m from the '
+                            .. 'destination priced at %.0f, at %.2f of the sweep'):format(k,
+                            rec.phase, q.e, L, pace, when)
+                    end
+                end
+            end
+        end
+
+        local rec = S.match.storm
+        local seen = { [rec.phase] = true }
+        local at = stand(rec)
+        local last = #cfg.phases
+        local guard = 0
+        while not seen[last] and guard < 4000 do
+            guard = guard + 1
+            S.now = S.now + 30000
+            env.BR.Sched.step(S.now)
+            rec = S.match.storm
+            if rec and not seen[rec.phase] then
+                seen[rec.phase] = true
+                seam(rec)
+                run(rec, at)
+                at = stand(rec)
+            end
+        end
+    end
+    ok(seamAsked >= 60 and seamLong >= 5 and seamWorst < 1.0,
+        'a millimeter outside the zone a phase starts in is priced as a millimeter inside '
+            .. 'it, where the morph makes the run longer than the distance too: no seam at '
+            .. 'the wall',
+        ('%d points, %d with a run over 1.05 times the distance; worst %.2f m apart, %s')
+            :format(seamAsked, seamLong, seamWorst, tostring(seamWhere)))
+    ok(sweeps >= 30, ('the walk ran %d sweeps'):format(sweeps), sweeps)
+    ok(worst <= 1.0,
+        'and a runner at their priced pace who started outside it was never further out '
+            .. 'of the zone the damage tick bills than the blend would have left them, '
+            .. '(1 - t) of where they started',
+        ('worst %.2f m over, %s'):format(worst, tostring(where)))
+end
+
+-- ---------------------------------------------------------------------------
 describe('zone.cache')
 do
     -- ═══ A ZONE'S SHAPE IS BUILT ONCE, AND NEVER PER FRAME OR PER TICK ═══

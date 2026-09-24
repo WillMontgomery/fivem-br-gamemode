@@ -809,8 +809,10 @@ end
 --
 -- WHILE THE WALL WAS A BLEND, THE DISTANCE WAS THE RUN, EXACTLY. (1 - t) Z0 + t D
 -- holds (1 - t) P + t N for every P in Z0 and N in D, so a player running straight at
--- the destination's nearest point at d / T stood inside the blend at every instant,
--- and 52a7caa's d / 9 caught nobody who ran.
+-- the destination's nearest point at d / T stood inside the blend at every instant.
+-- (52a7caa priced the circle's distance -- next center less next radius -- which fell
+-- short of the drawn shape's, so its own price setter was caught; the distance to the
+-- real shape is #344's.)
 --
 -- THE MORPH DOES NOT HOLD THAT RUNNER. Every corner travels to ITS partner, which is
 -- not the point of the destination nearest anybody, so parts of the wall arrive over
@@ -833,8 +835,29 @@ end
 -- player runs at a destination, and the two the round's review measured. A player
 -- standing on the very edge of the wall with the nearest point off to the side has a
 -- line that runs along the wall, which the wall leaves at once; the line in toward
--- the centre does not. A player outside the zone the phase starts in is in the storm
--- already, and is priced on the distance as before.
+-- the centre does not.
+--
+-- ═══ A PLAYER ALREADY OUTSIDE IS HELD AS THE BLEND HELD THEM ═══
+--
+-- A player `e` meters outside the zone the phase starts in is in the storm already
+-- and cannot be kept inside it. They used to be priced on the bare distance, and that
+-- was a seam a millimeter wide: the morph can need 1.3 times the distance, so a
+-- player 0.5 m out was priced 146 m short of one 0.5 mm in, and their run left them
+-- 65 m out of the wall. That is the phase-5 runner above: the round's final review
+-- found them 0.5 m out, still knocked for 136 HP. And the players the seam caught are
+-- ordinary ones -- a 4 Hz sample of somebody riding the last sweep's wall lands
+-- either side of it, the 10 m cushion bills nobody for their first ten meters, and
+-- the last sweep's stragglers are who this price is for. Running at d / T, the blend
+-- kept them within (1 - t) e of it, so the cushion covered every one who started
+-- inside it. That is the promise now, on the wall itself: lo(t) is where the line
+-- first comes within (1 - t) e of the safe zone -- the zone grown by that much, which
+-- is every corner radius grown by it. At e = 0 it is the inside player's rule
+-- exactly, so there is no seam; at t = 1 it is the destination's edge, so the run is
+-- never less than the line; and on a nested phase a faster runner is held too,
+-- because the grown zone is still convex and still holds the destination.
+--
+-- (That phase-5 runner is priced 634 m now, past the phase's 60 s ceiling, where no
+-- price protects anybody. docs/match-math.md has how often a sweep reaches it.)
 --
 -- A BREAKOUT reads the same lines against the wall union the destination. There a
 -- runner who outpaces the wall's front can be ahead of it in the gap; the price
@@ -854,6 +877,13 @@ end
 -- players within PRICE_SLACK of the roughest gave the all-refined price in 320 lobbies
 -- of 320. Pricing sixty players costs 18 ms on average and 74 at worst, once a phase,
 -- on the server only -- the client never prices anything.
+--
+-- AND FOR PLAYERS ALREADY OUTSIDE, over 200 matches: 24 points of every sweep's start
+-- zone pushed 0.5 m and 5 m out, each priced alone and run at 9 m/s straight at the
+-- nearest point or the center. Not one was billed on the better line, where 6, 6, 5
+-- and 3 sweeps of phases 2 to 5 billed one on the distance's price; on the nearest
+-- point's line alone, the nested sweeps with a billed runner 0.5 m out fell from 69,
+-- 66, 46 and 19 to 0, 3, 5 and 1, which is what a player just inside already saw.
 local PRICE_STEPS = 48      -- even samples across the sweep
 local PRICE_T0 = 1e-4       -- where the geometric run toward the start stops
 local PRICE_TAIL = 0.7      -- its ratio
@@ -897,12 +927,15 @@ local function priceOf(rec, e)
 end
 
 --- Where along one line the safe zone begins, given the wall's corner list: no
---- further than `L`, where the line is inside the destination.
-local function loAlong(pr, ks, px, py, ux, uy, L)
+--- further than `L`, where the line is inside the destination. `grow` is the margin a
+--- player who started outside is allowed at this instant -- the zone grown by it,
+--- which is every radius of both corner lists grown by it (lineEntry).
+local function loAlong(pr, ks, px, py, ux, uy, L, grow)
     local SS = BR.StormShape
-    local s = SS.lineEntry(ks, px, py, ux, uy, PRICE_TOL)
+    local tol = PRICE_TOL + grow
+    local s = SS.lineEntry(ks, px, py, ux, uy, tol)
     if pr.apart then
-        local sd = SS.lineEntry(pr.dks, px, py, ux, uy, PRICE_TOL)
+        local sd = SS.lineEntry(pr.dks, px, py, ux, uy, tol)
         if sd and (not s or sd < s) then s = sd end
     end
     if not s or s > L then s = L end
@@ -910,8 +943,9 @@ local function loAlong(pr, ks, px, py, ux, uy, L)
 end
 
 --- run(P, Q) for one line: from (px, py) along (ux, uy) to where it is inside the
---- destination, `L` metres on. Refined when `refine`.
-local function lineRun(e, pr, px, py, ux, uy, L, refine)
+--- destination, `L` metres on, for a player `out` m outside the zone the phase
+--- starts in -- 0 inside it -- who is held to (1 - t) out of it. Refined when `refine`.
+local function lineRun(e, pr, px, py, ux, uy, L, out, refine)
     local SS = BR.StormShape
     local function wallAt(t) return SS.morphHull(e.src, e.dst, t, pr.keep) end
     local ts = priceTimes()
@@ -922,7 +956,7 @@ local function lineRun(e, pr, px, py, ux, uy, L, refine)
             ks = wallAt(ts[k])
             pr.ks[k] = ks
         end
-        vals[k] = loAlong(pr, ks, px, py, ux, uy, L) / ts[k]
+        vals[k] = loAlong(pr, ks, px, py, ux, uy, L, (1.0 - ts[k]) * out) / ts[k]
         if vals[k] > best then best = vals[k] end
     end
     if not refine then return best end
@@ -941,7 +975,9 @@ local function lineRun(e, pr, px, py, ux, uy, L, refine)
         return a < b
     end)
     local g = 0.5 * (math.sqrt(5.0) - 1.0)
-    local function f(t) return loAlong(pr, wallAt(t), px, py, ux, uy, L) / t end
+    local function f(t)
+        return loAlong(pr, wallAt(t), px, py, ux, uy, L, (1.0 - t) * out) / t
+    end
     for i = 1, math.min(2, #peaks) do
         local k = peaks[i]
         local a = (k > 1) and ts[k - 1] or 0.5 * ts[k]
@@ -973,14 +1009,15 @@ local function runOf(rec, e, px, py, refine)
     local d
     if r1 > 0.0 then d = SS.distance(pr.D, px, py) else d = BR.Dist(px, py, rec.cx1, rec.cy1) end
     if d <= 0.0 then return 0.0 end
-    if SS.distance(pr.zone0, px, py) > PRICE_TOL then return d end
+    -- OUTSIDE THE ZONE THE PHASE STARTS IN, by this much: see the section note.
+    local out = math.max(0.0, SS.distance(pr.zone0, px, py))
 
     -- STRAIGHT AT THE NEAREST POINT.
     local nx, ny = rec.cx1, rec.cy1
     if r1 > 0.0 then nx, ny = SS.pointAtArc(pr.D, SS.nearestArc(pr.D, px, py)) end
     local L = BR.Dist(px, py, nx, ny)
     if not (L > 0.0) then return d end
-    local best = lineRun(e, pr, px, py, (nx - px) / L, (ny - py) / L, L, refine)
+    local best = lineRun(e, pr, px, py, (nx - px) / L, (ny - py) / L, L, out, refine)
 
     -- AND STRAIGHT AT THE CENTRE, as far as the destination's edge.
     local C = BR.Dist(px, py, rec.cx1, rec.cy1)
@@ -988,7 +1025,7 @@ local function runOf(rec, e, px, py, refine)
         local ux, uy = (rec.cx1 - px) / C, (rec.cy1 - py) / C
         local Lc = SS.lineEntry(pr.dks, px, py, ux, uy, 0.0)
         if Lc and Lc > 0.0 and Lc < best then
-            local v = lineRun(e, pr, px, py, ux, uy, Lc, refine)
+            local v = lineRun(e, pr, px, py, ux, uy, Lc, out, refine)
             if v < best then best = v end
         end
     end
@@ -997,8 +1034,8 @@ end
 
 --- The metres per sweep a straight run from (px, py) to the destination must be
 --- PRICED AT so that the wall never catches the runner: see the section note. 0
---- inside the destination; the distance to it for a player outside the zone the
---- phase starts in.
+--- inside the destination. A player outside the zone the phase starts in is priced
+--- so that they are never further outside than the blend would have left them.
 --- @param rec table     a record for the phase being priced -- its tShrink is not read
 --- @param px number
 --- @param py number

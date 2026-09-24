@@ -269,7 +269,8 @@ wall that will chase them:
 
 ```
 lo(t)     = how far along a straight line from the player the safe zone begins
-            at sweep fraction t
+            at sweep fraction t -- for a player e meters outside the zone the
+            phase starts in, where the line comes within (1 − t)·e of it
 run       = min over two lines of ( max over the sweep of lo(t) / t )    -- 0 inside it
 furthest  = max over in-match players of run
 shrinkSec = clamp(furthest / 9.0, 40, ceiling)
@@ -292,10 +293,13 @@ priced at `d / 9` knocked the runner it was priced for (139 HP at phase 5, in th
 round's review). So the run reads the wall itself — `lo(t) / t` is the pace that
 keeps the line's entry into the safe zone behind the runner — along the two lines
 a player runs at a destination: straight at its nearest point, and straight at its
-centre as far as its edge. A player outside the zone the phase starts in is in the
-storm already and is priced on the distance. `BR.StormSweepRun` reads the wall at
-62 instants and refines the maxima of the players who could set the price; its
-measured error and cost are in storm_solve.lua.
+centre as far as its edge. A player already `e` meters outside the zone the phase
+starts in is priced to stay within `(1 − t)·e` of it — what the blend gave them — so
+one just outside is priced as one just inside. (It used to be the bare distance, a
+seam a millimeter wide: the 139 HP runner above had started 0.5 m out. They are
+priced 634 m now, past phase 5's 60-second ceiling.) `BR.StormSweepRun` reads the
+wall at 62 instants and refines the maxima of the players who could set the price;
+its measured error and cost are in storm_solve.lua.
 
 **What #344 cost the pacing, measured rather than argued.** The zones keep their
 phase's area, but a 3:1 zone is longer than its circle was, so the furthest run
