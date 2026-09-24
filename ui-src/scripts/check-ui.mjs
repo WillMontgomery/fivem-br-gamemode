@@ -1496,6 +1496,68 @@ for (const name of builtCss) {
 }
 
 // ---------------------------------------------------------------------------
+// R23  Chat empties as the match enters CLEANUP, through the tested kernel (#365).
+//
+// Owner, 2026-09-23: "clear all text chat history client-side on match
+// cleanup". Nothing ever emptied `chat`, so the last match's lines were the
+// first thing the next warmup drew. store/chatClear.ts decides what the log
+// holds after a state payload, and scripts/test-chat-clear.mjs pins that
+// decision -- but only this can see that setMatch actually asks it.
+//
+// This rule fails on the ways the wiring comes undone:
+//   NOT ASKED -- the `chat:` line gone from setMatch, or the import with it;
+//   ASKED WRONG -- the arguments swapped, or `was` read after the write, so the
+//     edge compares the new state with itself and never fires;
+//   RE-INLINED -- a literal or a filter in place of the kernel's answer, which
+//     is a clear the test cannot reach.
+//
+// IT CAN FAIL. Delete the `chat: chatAfterState(...)` line from setMatch, or
+// swap `was` and `match.state` in it.
+// ---------------------------------------------------------------------------
+{
+  const S = join(SRC, 'store', 'index.ts')
+  const K = join(SRC, 'store', 'chatClear.ts')
+  if (!existsSync(S) || !existsSync(K)) {
+    fail('R23 chat-clear', 'src/store',
+      'index.ts or chatClear.ts is missing. If they moved, move this rule with'
+      + ' them -- it is the pair to scripts/test-chat-clear.mjs.')
+  } else {
+    const store = stripComments(read(S))
+
+    if (!/import\s*\{\s*chatAfterState\s*\}\s*from\s*'\.\/chatClear'/.test(store)) {
+      fail('R23 chat-clear', 'src/store/index.ts',
+        'chatAfterState is no longer imported from ./chatClear. It is the one'
+        + ' definition of when the log empties, tested by'
+        + ' scripts/test-chat-clear.mjs.')
+    }
+
+    const sm = /\n  setMatch:\s*\(match\)\s*=>\s*\{[\s\S]*?\n  \},/.exec(store)
+    if (!sm) {
+      fail('R23 chat-clear', 'src/store/index.ts',
+        'no `setMatch: (match) => { ... }` found. It is where a state payload'
+        + ' lands; if it moved, point this rule at the new place rather than'
+        + ' letting it pass over nothing.')
+    } else {
+      const body = sm[0]
+      if (!/const\s+was\s*=\s*get\(\)\.match\.state/.test(body)
+          || body.indexOf('const was') > body.indexOf('set(')) {
+        fail('R23 chat-clear', 'src/store/index.ts',
+          'setMatch does not read `was` from get().match.state before it writes.'
+          + ' Read after the write, the previous state is the new one and the'
+          + ' edge into CLEANUP never fires.')
+      }
+      if (!/\bchat:\s*chatAfterState\(\s*was\s*,\s*match\.state\s*,\s*get\(\)\.chat\s*\)/.test(body)) {
+        fail('R23 chat-clear', 'src/store/index.ts',
+          'setMatch does not write `chat: chatAfterState(was, match.state,'
+          + ' get().chat)`. Without it the log is never emptied at CLEANUP; with'
+          + ' anything else in its place the clear is one the test cannot see'
+          + ' (#365).')
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Result
 // ---------------------------------------------------------------------------
 if (failures) {

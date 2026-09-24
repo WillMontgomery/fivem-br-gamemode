@@ -523,8 +523,9 @@ export default function App() {
           match is decided -- a lingering kill-chatter log under the verdict
           slam reads as UI debris -- and it does NOT render under the lobby
           menu either: last round's log bleeding through the find-a-match
-          card was just noise. The store keeps the messages; it is only
-          unmounted, and remounts blank-slate clean at the next warmup. */}
+          card was just noise. Unmounting alone did not empty it: the store
+          kept every line and the next warmup drew them. The store now drops
+          them as the match enters CLEANUP (#365, store/chatClear.ts). */}
       {!tearingDown && !showLobby && <Chat barsVisible={hudUp} />}
       {/* THE LOBBY STEPS ASIDE FOR ITS SUB-SCREENS rather than sitting behind
           them. The locker's scrim only covers the left half (the right half

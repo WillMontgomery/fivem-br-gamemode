@@ -20,6 +20,7 @@ import type {
   AdminPayload, CommunityPayload, VehiclePayload,
 } from '../bridge/types'
 import { applySettings, DEFAULT_SETTINGS } from '../settings/apply'
+import { chatAfterState } from './chatClear'
 
 /** Kill feed and chat are capped so a long match cannot grow the DOM forever. */
 const FEED_MAX = 8
@@ -74,6 +75,7 @@ export interface UiState {
   death: DeathPayload | null
   summary: SummaryPayload | null
   feed: FeedEntry[]
+  /** Every channel's lines, oldest first. Emptied as a match enters CLEANUP. */
   chat: ChatMessage[]
   /** The on-screen notice stack: party events, action results, match alerts.
    *  Newest last; each expires on its own timer. `ms` is that timer, kept on
@@ -883,12 +885,16 @@ export const useUi = create<UiState>((set, get) => {
   // down, or a row with no license) would show the previous match's reward and
   // animate its bar. #91 asks for exactly the opposite: no award and no Volts
   // line rather than a celebration of something never written.
+  // AND CHAT GOES AT CLEANUP (#365), on the edge the same way. Every channel,
+  // this page's copy only -- see chatClear.ts for why CLEANUP and not ENDED.
   setMatch: (match) => {
-    const fresh = match.state === 'warmup' && get().match.state !== 'warmup'
+    const was = get().match.state
+    const fresh = match.state === 'warmup' && was !== 'warmup'
     set({
       match,
       ...(match.serverNow ? { clockOffset: match.serverNow - Date.now() } : {}),
       ...(fresh ? { noticeLog: [], earned: null, earnedStaged: false } : {}),
+      chat: chatAfterState(was, match.state, get().chat),
     })
   },
   // Unpausing flushes the notice queue: whatever arrived under the pause
