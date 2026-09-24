@@ -81,6 +81,16 @@ local function growthAt(rec, elapsed)
     return BR.Clamp(g0 + elapsed / ms, 0.0, 1.0)
 end
 
+--- How long a record's growth window is, in ms: see growMs. The map hands a
+--- breakout's union over across it, and back across the same length of time before
+--- the storm moves (client/storm.lua's overlayPlan), so there is one spelling of it.
+--- @param rec table
+--- @return number ms
+function BR.StormGrowMs(rec)
+    if not rec then return 0.0 end
+    return growMs(rec)
+end
+
 --- Solve the storm at a given time.
 ---
 --- @param rec table|nil   the published storm record
@@ -465,12 +475,12 @@ end
 --- finder refuses -- is the whole union too, for the same reason. The wall and the
 --- damage tick both come through here, so even then they agree.
 ---
---- THE MAP DOES NOT DRAW THE GROWTH: it shows the zone the phase started in under
---- the destination's fill -- whose union is what the growth ends on -- because
---- drawing the front would mean rebuilding the overlay while it moves, the hitch
---- 52a7caa removed. Once the zone has grown it shows the union itself, drawn at the
---- phase's one rebuild and shown by alpha. client/storm.lua's overlayFill says so
---- where it is decided.
+--- THE MAP DOES NOT DRAW THE FRONT, because drawing it would mean rebuilding the
+--- overlay while it moves, the hitch 52a7caa removed. It fades the union the growth
+--- ends on -- drawn at the phase's one rebuild -- in over the zone the phase started
+--- in by `g`, with alpha writes alone, so the destination's new ground comes onto the
+--- map over the same twenty seconds rather than in one tick. client/storm.lua's
+--- overlayPlan says so where it is decided.
 ---
 --- @param rec table|nil    the published storm record
 --- @param cx number        the CURRENT centre, as BR.StormAt reports it

@@ -138,13 +138,15 @@ BR.Config.Storm = {
     -- the hold itself, so it is always over before the wall moves, and a dev time
     -- scale that shortens the hold shortens it too. A destination wholly apart from
     -- the zone still appears at once: the far island is fine as it is. 0 is the old
-    -- pop.
+    -- pop, on the wall and on the map.
     --
-    -- THE MAP DOES NOT DRAW THE FRONT. It shows the zone the phase started in under
-    -- the destination's own fill -- the ground the growth ends on -- because a
-    -- moving front on the map would be the overlay rebuilt while it moves, which is
-    -- the hitch 52a7caa removed (#350). Once the zone has grown, the union is the
-    -- zone's fill for the rest of the hold, shown by alpha, never rebuilt.
+    -- THE MAP DOES NOT DRAW THE FRONT, because a moving front on the map would be the
+    -- overlay rebuilt while it moves, which is the hitch 52a7caa removed (#350). It
+    -- fades the union -- the ground the growth ends on, drawn at the phase's one
+    -- rebuild -- in over the zone the phase started in across these same seconds, and
+    -- hands it back across the hold's last `seconds` before the storm moves: alpha
+    -- writes to clips already in the movie, never a rebuild (client/storm.lua's
+    -- overlayPlan).
     --
     -- MEASURED over 680 conjoined breakouts (200 matches, phases 2 to 7, every one
     -- forced to break out): the destination reaches 1.0 to 1.3 of its own radius

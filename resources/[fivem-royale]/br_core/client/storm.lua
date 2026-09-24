@@ -1800,14 +1800,17 @@ end
 -- one polygon and never needs rebuilding -- 52a7caa's switch to the nominal-radius
 -- blips for a moving union is gone, and those blips are what a REFUSED placement or
 -- alpha write hands the map to instead. A CONJOINED GROWTH (storm_solve.lua's
--- BR.StormZone) is not drawn either: for its twenty seconds the map shows the zone
--- the phase started in under the destination's fill -- the union the growth ends on
--- -- because drawing its front would be a rebuild on a motion cadence.
+-- BR.StormZone) does not have its front drawn either -- that would be a rebuild on a
+-- motion cadence -- but it does not pop: see below.
 --
 -- AND WHILE IT STANDS STILL, THE UNION IS THE ZONE'S FILL, as 52a7caa painted it:
--- the same rebuild draws it in place, and the stretch of the hold that does not move
--- -- after a conjoined zone has grown, the whole hold of one that does not touch --
--- shows it in place of the zone's keyframe, by alpha (overlayFill).
+-- the same rebuild draws it in place, and the hold shows it in place of the zone's
+-- keyframe, by alpha (overlayFill). HANDED OVER GRADUALLY, BOTH WAYS (#344): across a
+-- conjoined zone's growth the union fades in as the zone's keyframe fades out, by
+-- the growth's own `g`, and across the same length of time before the storm moves it
+-- is handed back -- so the destination's new ground comes onto the map over the
+-- twenty seconds the owner asked the zone to grow in, and leaves the zone's fill
+-- before the sweep rather than in its first tick. overlayPlan's `unionShare`.
 
 --- How many areas the overlay is currently showing for us.
 local overlayShown = 0
@@ -1864,7 +1867,7 @@ local function clearMapOverlay()
 end
 
 --- Hand a MOVING picture the engine has refused to the ordinary map blips, for the
---- rest of the sweep.
+--- rest of the sweep -- or of the conjoined growth it was refused in.
 ---
 --- A refused placement or alpha write leaves a clip in the movie that no longer
 --- matches the storm, and the only thing that could fix it while the storm moves is a
@@ -1875,7 +1878,8 @@ end
 local function startMovingFallback(key)
     if movingFallbackKey ~= key then
         BR.Loop.hitchMark(
-            'storm.map.fallback', 'once when a refusal mid-sweep hands the map to blips')
+            'storm.map.fallback',
+            'once when a refusal mid-sweep or mid-growth hands the map to blips')
     end
     movingFallbackKey = key
     clearMapOverlay()
@@ -2046,13 +2050,37 @@ local function overlayPlan()
     if nokeys then
         key = key .. ('|nk|%d|%d'):format(math.floor(zoneA + 0.5), done)
     end
+    -- ═══ HOW MUCH OF A BREAKOUT'S ZONE FILL IS ITS UNION (#344) ═══
+    --
+    --   "if they're conjoined, today the border pops suddenly to cover the whole
+    --    area. instead it should grow over a period of 20s to include that new area
+    --    instead of popping."                         -- the owner, 2026-09-23
+    --
+    -- The union is the zone's fill while a breakout holds, and it used to come in with
+    -- one alpha write the tick the growth ended and go out with one the tick the sweep
+    -- began: the destination's new ground jumped on the map at both ends of the hold,
+    -- while the damage tick took it in over twenty seconds. So it is a SHARE, the
+    -- zone's keyframe carrying the rest -- 0 to 1 by the growth's own `g` while a
+    -- conjoined zone grows, and 1 to 0 across the same window again before the storm
+    -- moves. Alpha writes to clips already in the movie, none of them a rebuild
+    -- (52a7caa). A disjoint destination is the far island the owner is content to see
+    -- appear at once, so its union is whole from the hold's start; and a growth of no
+    -- length is the old switch at both ends, as `grow.seconds = 0` always was.
+    local unionShare = 0.0
+    if apart and st == BR.StormPhase.HOLDING then
+        unionShare = growing and g or 1.0
+        local win = BR.StormGrowMs(rec)
+        if win > 0.0 then
+            unionShare = math.min(unionShare, BR.Clamp(msLeft / win, 0.0, 1.0))
+        end
+    end
     return {
         rec = rec, cx = cx, cy = cy, r = r, t = t,
         m = BR.StormMorphFrame(rec, t),
         state = st, zoneA = zoneA, nokeys = nokeys, done = done,
         growing = growing and true or false,
-        -- A BREAKOUT'S UNION, standing still: see overlayFill.
-        union = apart and st == BR.StormPhase.HOLDING and not growing,
+        -- A BREAKOUT'S UNION, standing still: see overlayFill, and above.
+        unionShare = unionShare,
     }, key
 end
 
@@ -2075,9 +2103,9 @@ end
 --- the destination for the whole phase, while the wall and the damage tick read one
 --- safe zone. So the rebuild also draws the union in place -- the zone the phase
 --- starts in and the destination, stitched, two islands when they do not touch --
---- and applyFrames shows it in place of the zone's keyframe for exactly the stretch
---- of the hold that stands still: after a conjoined zone has finished growing, and
---- for the whole hold of one that does not touch. It never moves, so it is shown and
+--- and applyFrames shows it in place of the zone's keyframe while the storm holds --
+--- handed over from the keyframe as a conjoined zone grows, and back to it before
+--- the storm moves (overlayPlan's `unionShare`). It never moves, so it is shown and
 --- hidden by alpha alone; the sweep hides it and the keyframes carry the moving part.
 --- @param plan table  from overlayPlan
 --- @return table|nil areas
@@ -2224,10 +2252,19 @@ end
 --- @return boolean ok
 local function applyFrames(at, plan, first)
     local alphas = (not at.fixed) and crossfade(at.frames, plan.m, plan.zoneA) or nil
-    -- A BREAKOUT STANDING STILL SHOWS ITS UNION in place of the zone's keyframe.
-    local union = at.union and plan.union
-    if union and alphas then
-        for i = 1, #alphas do alphas[i] = 0.0 end
+    -- A BREAKOUT STANDING STILL SHOWS ITS UNION in place of the zone's keyframe: its
+    -- share of the zone's alpha, and the keyframe the rest -- the rest as the two
+    -- COMPOSITE, which is 1 - (1 - a)(1 - b) for two fills of one color, so the zone
+    -- the phase started in, under both, stays at the zone's own strength the whole
+    -- way through a handover, and only the new ground changes.
+    local share = at.union and (plan.unionShare or 0.0) or 0.0
+    local ua = math.floor(share * plan.zoneA + 0.5)
+    if share > 0.0 and alphas then
+        local u = ua / 255.0
+        for i = 1, #alphas do
+            local a = alphas[i] / 255.0
+            alphas[i] = (u < 1.0) and 255.0 * math.max(0.0, (a - u) / (1.0 - u)) or 0.0
+        end
     end
     local resize = first or stormBisectMode ~= 'mapnoresize'
     local placeTrace, alphaTrace = nil, nil
@@ -2259,7 +2296,7 @@ local function applyFrames(at, plan, first)
         -- keyframe up that can -- V(1) at the latest, which always does -- until it
         -- carries no more than POKE_SHARE of the two of them. From the top down, so a
         -- share handed on is never handed back.
-        if n >= 2 and not union and at.frames[n].m >= 1.0 then
+        if n >= 2 and share <= 0.0 and at.frames[n].m >= 1.0 then
             local pokes = {}
             local function poke(i)
                 if pokes[i] == nil then
@@ -2322,7 +2359,8 @@ local function applyFrames(at, plan, first)
         end
         if a ~= nil and (first or a ~= f.a) then
             alphaTrace = alphaTrace or BR.Loop.hitchBegin('storm.map.alpha',
-                '10 Hz while the storm is SHRINKING; the phase-1 fade; a keyframe hidden')
+                '10 Hz while the storm is SHRINKING or a breakout union is handed over; '
+                    .. 'the phase-1 fade; a keyframe hidden')
             if not BR.MapOverlay.alphaArea(f.slot, a) then
                 ok = false
                 break
@@ -2331,10 +2369,10 @@ local function applyFrames(at, plan, first)
         end
     end
     if ok and at.union then
-        local ua = union and math.floor(plan.zoneA + 0.5) or 0
         if first or ua ~= at.union.a then
             alphaTrace = alphaTrace or BR.Loop.hitchBegin('storm.map.alpha',
-                '10 Hz while the storm is SHRINKING; the phase-1 fade; a keyframe hidden')
+                '10 Hz while the storm is SHRINKING or a breakout union is handed over; '
+                    .. 'the phase-1 fade; a keyframe hidden')
             for _, slot in ipairs(at.union.slots) do
                 if not BR.MapOverlay.alphaArea(slot, ua) then
                     ok = false
@@ -2447,10 +2485,12 @@ BR.Loop.register(BR.Loop.TICK, 'storm.map', function()
 
     -- Once a refusal mid-sweep has selected the blip fallback, stay there for the
     -- rest of that sweep. At FINISHED or on a new record the exact picture is
-    -- allowed back; drawing it once is not the recurring moving-path hitch.
+    -- allowed back; drawing it once is not the recurring moving-path hitch. A
+    -- CONJOINED GROWTH IS MOTION TOO under 52a7caa's rule, and its union is handed
+    -- over by alpha writes that can be refused, so it is held to the same.
+    local moving = plan.state == BR.StormPhase.SHRINKING or plan.growing
     if movingFallbackKey
-            and (key ~= movingFallbackKey
-                or plan.state ~= BR.StormPhase.SHRINKING) then
+            and (key ~= movingFallbackKey or not moving) then
         movingFallbackKey = nil
     end
     if movingFallbackKey then
@@ -2482,7 +2522,7 @@ BR.Loop.register(BR.Loop.TICK, 'storm.map', function()
         -- REFUSED. What the movie shows is not the storm any more. While it moves,
         -- the blips carry the map to the end of the sweep rather than a rebuild on a
         -- motion cadence; standing still, it is drawn again below.
-        if plan.state == BR.StormPhase.SHRINKING then
+        if moving then
             startMovingFallback(key)
             return
         end
@@ -2537,7 +2577,7 @@ BR.Loop.register(BR.Loop.TICK, 'storm.map', function()
     -- sweep is handed to the blips instead, and the next still moment draws it.
     overlayKey = (drawn > 0) and key or nil
     overlayAt = at
-    if drawn == 0 and plan.state == BR.StormPhase.SHRINKING then
+    if drawn == 0 and moving then
         startMovingFallback(key)
     end
 

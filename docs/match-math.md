@@ -514,12 +514,17 @@ two convex shapes is the corner list of their boundaries' runs inside each other
 and the union is the stitch every breakout already uses — so the damage tick, the
 HUD and the wall bill, read and draw `G` exactly, off one clock. It starts as `Z`
 and ends on `Z ∪ D`, and only ever grows. A destination wholly apart from the zone
-still appears at once. The map shows `Z` under the destination's own fill for
-those twenty seconds: drawing the front would be a rebuild on a motion cadence.
-Once the zone stands still it shows the union `Z ∪ D` as the zone's fill, with the
-destination over it, as a static breakout hold always was — drawn at the phase's
-one rebuild and shown by alpha, so the old zone's edge does not run across the
-destination for the rest of the phase.
+still appears at once. The map does not draw the front — that would be a rebuild
+on a motion cadence — but it does not pop either. The union `Z ∪ D`, drawn at the
+phase's one rebuild, fades in as the zone's fill across those twenty seconds while
+`Z`'s own fill fades out, alpha writes alone, composited so that `Z` keeps the
+zone's strength and only the new ground comes in. Standing still it is the zone's
+fill, with the destination over it, as a static breakout hold always was, so the
+old zone's edge does not run across the destination for the rest of the phase; and
+it is handed back to `Z`'s fill the same way across the hold's last twenty seconds,
+so the sweep does not start with a jump either. It used to switch in one tick at
+each end: 0.18 of opacity at once on the new ground, on all 80 breakout records of
+40 matches, where no tick now moves it by more than 0.002.
 
 **What airdrop siting stands on changed with it.** The wall's support function
 used to be affine in `t`, which made "clears both ends of the window, clears every

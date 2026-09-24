@@ -5982,16 +5982,20 @@ do
             .. 'nanosecond -- it arrives on the union rather than popping onto it',
         ('%.3e m'):format(endErr))
 
-    -- ─── the MAP stands still through all of it, and shows the union after ───
+    -- ─── the MAP hands the union over across the growth, by alpha alone ───
     --
     -- The front moving on the map would be the overlay rebuilt while it moves -- the
-    -- hitch 52a7caa removed -- so the map shows the zone the phase started in under
-    -- the destination's own fill, whose union is where the growth ends. Asserted as
-    -- no Scaleform traffic at all while the zone grows. THE MOMENT IT HAS GROWN it
-    -- stands still, and the union the damage tick now bills as one safe zone is the
-    -- zone's fill (#344's review: without it the old zone's edge ran across the
-    -- destination for the rest of the phase) -- two alpha writes, the union shown and
-    -- the zone's keyframe hidden, and nothing added.
+    -- hitch 52a7caa removed -- so the map does not draw it. The union the growth ends
+    -- on is in the movie from the phase's one rebuild, and it used to come onto the
+    -- zone's fill with one alpha write the tick the growth ended: the destination's
+    -- new ground jumped on the map, the pop the owner asked the growth to remove
+    -- (#344's final review). So across the growth the union fades in as the zone's
+    -- keyframe fades out, by g -- alpha writes and nothing else, no add, no remove, no
+    -- placement -- and no tick moves the map at a point of the new ground by more than
+    -- a step, while the zone the phase started in keeps its own strength under both.
+    -- THE MOMENT IT HAS GROWN the union the damage tick bills as one safe zone is the
+    -- zone's fill, the keyframe hidden. Then the same the other way, across the
+    -- hold's last twenty seconds, so nothing jumps when the storm moves either.
     local M = newStormClient()
     M.mm.handle = 7
     M.record(3, 0.0, 0.0, 1600.0, 1500.0, 0.0, 950.0, 90000, 90000, 1.7)
@@ -6000,42 +6004,155 @@ do
     local mrec = M.env.BR.State.storm
     mrec.tStart = M.now
     M.tick(1)
-    local calls, adds = M.mm.calls, M.mm.adds
-    for _ = 1, 180 do
-        M.now = M.now + 100
-        M.env.BR.Loop.step(M.env.BR.Loop.TICK)
+
+    --- How opaque the map is at one point: every area the movie shows there,
+    --- composited the way two fills of one color are.
+    local function opacityAt(x, y)
+        local keep = 1.0
+        for _, ov in ipairs(M.areas()) do
+            local o = M.opacity(ov)
+            if o > 0.0 then
+                local poly, inside = M.shown(ov), false
+                local j = #poly
+                for i = 1, #poly do
+                    local a, b = poly[j], poly[i]
+                    if ((b.y > y) ~= (a.y > y))
+                            and (x < (a.x - b.x) * (y - b.y) / (a.y - b.y) + b.x) then
+                        inside = not inside
+                    end
+                    j = i
+                end
+                if inside then keep = keep * (1.0 - o) end
+            end
+        end
+        return 1.0 - keep
     end
-    local fill = M.zoneFill()
-    local fillOff = 0.0
-    for _, p in ipairs(fill and M.shown(fill) or {}) do
-        fillOff = math.max(fillOff, math.abs(SS.distance(Z, p.x, p.y)))
+    -- THE NEW GROUND is the far probe, deep in D and outside Z; THE OLD is a point
+    -- deep in Z and well clear of D.
+    local ox, oy = -800.0, 0.0
+    ok(SS.distance(Z, ox, oy) < -100.0 and SS.distance(D, ox, oy) > 100.0,
+        'a point of the zone the phase started in, well clear of the destination')
+    local blipA = M.env.BR.Config.Storm.blip.currentAlpha
+    local zoneO = blipA / 255
+
+    --- `n` passes of the TICK band 100 ms apart: the largest step the map takes at the
+    --- new ground in one of them, and how far the old ground ever strays from the
+    --- zone's own strength.
+    local function ticks(n)
+        local prev, step, stray = opacityAt(far.x, far.y), 0.0, 0.0
+        for _ = 1, n do
+            M.now = M.now + 100
+            M.env.BR.Loop.step(M.env.BR.Loop.TICK)
+            local o = opacityAt(far.x, far.y)
+            step = math.max(step, math.abs(o - prev))
+            prev = o
+            local _, _, _, st = M.env.BR.StormAt(mrec, M.env.BR.Clock.now())
+            if st == M.env.BR.StormPhase.HOLDING then
+                stray = math.max(stray, math.abs(opacityAt(ox, oy) - zoneO))
+            end
+        end
+        return step, stray, prev
     end
-    ok(M.mm.calls == calls and fillOff < 1e-6 and #M.areas() == 4 and #M.union() == 1,
-        'across the growth the map sends the movie nothing: it shows the zone the phase '
-            .. 'started in, and the destination over it -- the ground the growth ends on',
-        ('%d calls, zone fill %.3e m off Z, %d areas'):format(M.mm.calls - calls, fillOff,
-            #M.areas()))
-    for _ = 1, 10 do
-        M.now = M.now + 100
-        M.env.BR.Loop.step(M.env.BR.Loop.TICK)
+
+    local calls, adds, placed, faded = M.mm.calls, M.mm.adds, M.mm.placed, M.mm.faded
+    local newAt0 = opacityAt(far.x, far.y)
+    local step, stray, newAt1 = ticks(190)
+    local kfShown = 0
+    for _, kf in ipairs(M.keyframes()) do
+        if M.opacity(kf) > 0.0 then kfShown = kfShown + 1 end
     end
+    ok(M.mm.adds == adds and M.mm.placed == placed
+            and M.mm.calls - calls == M.mm.faded - faded and M.mm.faded > faded
+            and #M.areas() == 4 and #M.union() == 1,
+        'across the growth the map adds, removes and places nothing: every call it makes '
+            .. 'is an alpha write to a clip already in the movie',
+        ('%d adds, %d placements, %d other calls, %d alpha writes, %d areas'):format(
+            M.mm.adds - adds, M.mm.placed - placed,
+            (M.mm.calls - calls) - (M.mm.faded - faded), M.mm.faded - faded, #M.areas()))
+    ok(step <= 0.01 and newAt1 - newAt0 >= 0.1 and stray <= 0.01,
+        'and the destination\'s new ground comes onto the zone\'s fill a step at a time '
+            .. 'across the twenty seconds -- no tick moves it by a hundredth -- while the '
+            .. 'zone the phase started in stays at the zone\'s own strength under both',
+        ('largest step %.4f, %.4f -> %.4f, old ground off by %.4f at worst'):format(
+            step, newAt0, newAt1, stray))
     local U = SS.blobUnion(env.BR.StormWall(rec, 0.0), env.BR.StormTarget(rec))
     local grownFill, grownO = M.zoneFill()
     local unionOff = 0.0
     for _, p in ipairs(grownFill and M.shown(grownFill) or {}) do
         unionOff = math.max(unionOff, math.abs(SS.distance(U, p.x, p.y)))
     end
-    local kfShown = 0
-    for _, kf in ipairs(M.keyframes()) do
-        if M.opacity(kf) > 0.0 then kfShown = kfShown + 1 end
+    ok(grownFill == M.union()[1] and unionOff < 1e-6 and kfShown == 0
+            and near(grownO, zoneO, 0.5 / 255),
+        'and once it has grown the union is the zone\'s fill -- on Z union D, at the '
+            .. 'safe zone\'s alpha, the keyframe hidden -- with nothing added',
+        ('union fill %.3e m off, %d keyframes showing, %.4f'):format(unionOff, kfShown,
+            grownO))
+
+    -- ─── and handed back before the storm moves, so the sweep starts without a jump ───
+    local addsB, placedB = M.mm.adds, M.mm.placed
+    local stepB, strayB = ticks(694)
+    local _, _, _, stB, msB = M.env.BR.StormAt(mrec, M.env.BR.Clock.now())
+    local unionO = 0.0
+    for _, u in ipairs(M.union()) do unionO = math.max(unionO, M.opacity(u)) end
+    ok(stB == M.env.BR.StormPhase.HOLDING and msB <= 100.0 and unionO < 1.0 / 255
+            and M.mm.adds == addsB and M.mm.placed == placedB
+            and stepB <= 0.01 and strayB <= 0.01,
+        'across the hold\'s last twenty seconds the union is handed back to the zone\'s '
+            .. 'keyframe the same way, by alpha alone, and is gone as the storm moves',
+        ('%s, %.0f ms left, union at %.4f, %d adds, %d placements, step %.4f, old ground '
+            .. 'off by %.4f'):format(tostring(stB), msB, unionO, M.mm.adds - addsB,
+            M.mm.placed - placedB, stepB, strayB))
+    local stepS = ticks(30)
+    ok(stepS <= 0.01 and M.mm.adds == addsB,
+        'and the sweep\'s first three seconds move the new ground by no more than a step '
+            .. 'a tick, where the union used to drop out of the zone\'s fill in one',
+        ('largest step %.4f, %d adds'):format(stepS, M.mm.adds - addsB))
+
+    -- ─── a refusal mid-growth is motion's, and hands the map to the blips ───
+    --
+    -- The handover is alpha writes now, and the engine can refuse one. The growth is
+    -- motion under 52a7caa's rule, so a refusal there is handled as one mid-sweep: the
+    -- blips carry the map to the end of the growth rather than a rebuild on a motion
+    -- cadence, and the picture is drawn again the moment the zone stands still.
+    local Q = newStormClient()
+    Q.mm.handle = 7
+    Q.record(3, 0.0, 0.0, 1600.0, 1500.0, 0.0, 950.0, 90000, 90000, 1.7)
+    local qrec = Q.env.BR.State.storm
+    qrec.seed = seed
+    ok(Q.overlayReady(), 'the refusal client reaches the gate')
+    qrec.tStart = Q.now
+    Q.tick(1)
+    for _ = 1, 50 do
+        Q.now = Q.now + 100
+        Q.env.BR.Loop.step(Q.env.BR.Loop.TICK)
     end
-    local blipA = M.env.BR.Config.Storm.blip.currentAlpha
-    ok(M.mm.calls == calls + 2 and M.mm.adds == adds and grownFill == M.union()[1]
-            and unionOff < 1e-6 and kfShown == 0 and near(grownO, blipA / 255, 0.5 / 255),
-        'and once it has grown, two alpha writes make the union the zone\'s fill -- on Z '
-            .. 'union D, at the safe zone\'s alpha, the keyframe hidden -- with nothing added',
-        ('%d calls, %d adds, union fill %.3e m off, %d keyframes showing, %.4f'):format(
-            M.mm.calls - calls, M.mm.adds - adds, unionOff, kfShown, grownO))
+    local qAdds = Q.mm.adds
+    Q.mm.refuseMethod['SET_OVERLAY_ALPHA'] = true
+    local qRings, qMid = 0, 0
+    for _ = 1, 120 do
+        Q.now = Q.now + 100
+        Q.env.BR.Loop.step(Q.env.BR.Loop.TICK)
+        if #Q.rings() > 0 then qRings = qRings + 1 end
+        qMid = qMid + 1
+    end
+    local _, _, _, _, _, _, _, qg = Q.env.BR.StormAt(qrec, Q.env.BR.Clock.now())
+    ok(qg < 1.0 and Q.mm.adds == qAdds and qRings >= qMid - 1 and Q.errored() == nil,
+        'an alpha write refused while the zone grows hands the map to the blips for the '
+            .. 'rest of the growth, with nothing added while it grows',
+        ('g %.3f, %d adds, rings on %d of %d ticks'):format(qg, Q.mm.adds - qAdds, qRings,
+            qMid))
+    Q.mm.refuseMethod['SET_OVERLAY_ALPHA'] = nil
+    for _ = 1, 50 do
+        Q.now = Q.now + 100
+        Q.env.BR.Loop.step(Q.env.BR.Loop.TICK)
+    end
+    local qFill, qO = Q.zoneFill()
+    ok(Q.mm.adds > qAdds and qFill == Q.union()[1] and near(qO, zoneO, 0.5 / 255)
+            and #Q.rings() == 0,
+        'and once it has grown the picture is drawn again, the union the zone\'s fill',
+        ('%d adds, union %s, %.4f, %d rings'):format(Q.mm.adds - qAdds,
+            tostring(qFill == Q.union()[1]), qO, #Q.rings()))
+    ok(Q.errored() == nil, 'and the refusal client runs clean', Q.errored())
     ok(M.errored() == nil, 'and runs clean', M.errored())
 end
 
