@@ -631,6 +631,249 @@ function BR.StormWallSpeed(rec)
     return best / T
 end
 
+-- ═══ THE SWEEP IS PRICED ON THE WALL'S OWN ARRIVAL, NOT ON A DISTANCE (#344) ═══
+--
+-- server/storm.lua prices every sweep for the furthest player's run -- the authored
+-- `shrink` is only a ceiling -- so that "a straggler two kilometres out gets their
+-- run". That promise is about the wall that will actually chase them.
+--
+-- WHILE THE WALL WAS A BLEND, THE DISTANCE WAS THE RUN, EXACTLY. (1 - t) Z0 + t D
+-- holds (1 - t) P + t N for every P in Z0 and N in D, so a player running straight at
+-- the destination's nearest point at d / T stood inside the blend at every instant,
+-- and 52a7caa's d / 9 caught nobody who ran.
+--
+-- THE MORPH DOES NOT HOLD THAT RUNNER. Every corner travels to ITS partner, which is
+-- not the point of the destination nearest anybody, so parts of the wall arrive over
+-- a player sooner than their distance says. The review of this round priced a phase-5
+-- sweep by distance and knocked the runner it was priced for: 139 HP, running at
+-- 9 m/s straight at the destination from the moment the wall set off. So the price
+-- reads the wall:
+--
+--   run(P, Q) = the largest, over the sweep, of lo(t) / t
+--
+-- where lo(t) is how far along the straight line from P toward a point Q of the
+-- destination the safe zone begins at sweep fraction t. A runner who covers
+-- run(P, Q) metres per sweep keeps lo(t) behind them, so they are inside at every
+-- instant; and on a nested phase so is a faster one, because they stand between that
+-- point and the destination, the zone is convex and it holds the destination. It is
+-- never less than the length of the line, which is lo(1).
+--
+-- TWO LINES, AND THE PRICE IS THE BETTER OF THEM: straight at the destination's
+-- nearest point, and straight at its centre as far as its edge -- the two ways a
+-- player runs at a destination, and the two the round's review measured. A player
+-- standing on the very edge of the wall with the nearest point off to the side has a
+-- line that runs along the wall, which the wall leaves at once; the line in toward
+-- the centre does not. A player outside the zone the phase starts in is in the storm
+-- already, and is priced on the distance as before.
+--
+-- A BREAKOUT reads the same lines against the wall union the destination. There a
+-- runner who outpaces the wall's front can be ahead of it in the gap; the price
+-- covers the one who keeps with it, as the blend's did.
+--
+-- READ AT 62 INSTANTS -- 48 even steps and 14 more in toward the start, where the
+-- maximum sits whenever a corner sets off faster than the blend would -- with where
+-- each line meets the zone found exactly (BR.StormShape.lineEntry), and the two best
+-- local maxima of the players who could set the price refined by golden section.
+--
+-- MEASURED over 5,472 players across 280 sweeps of 40 matches, against the zone the
+-- damage tick bills at 1,000 instants: a runner at the priced pace on the better line
+-- is never more than 0.23 m outside on a nested phase, at half as fast again too; on
+-- a breakout one who holds exactly to it can get up to 10 m ahead of the wall's front
+-- into the gap, which the moving cushion covers. The run is longer than the distance
+-- for 11.5% of players, 1.48 times it at the 99th percentile. Refining only the
+-- players within PRICE_SLACK of the roughest gave the all-refined price in 320 lobbies
+-- of 320. Pricing sixty players costs 18 ms on average and 74 at worst, once a phase,
+-- on the server only -- the client never prices anything.
+local PRICE_STEPS = 48      -- even samples across the sweep
+local PRICE_T0 = 1e-4       -- where the geometric run toward the start stops
+local PRICE_TAIL = 0.7      -- its ratio
+local PRICE_REFINE = 18     -- golden-section steps per refined maximum
+local PRICE_TOL = 1e-3      -- metres: a line that comes this close has arrived
+local PRICE_SLACK = 1.5     -- a player whose rough price is within this factor of the
+                            -- lobby's roughest is refined before the price is set
+
+--- The sweep fractions the price reads the wall at, ascending. Built once.
+local priceTs = nil
+local function priceTimes()
+    if priceTs then return priceTs end
+    local tail, t = {}, 1.0 / PRICE_STEPS
+    while t * PRICE_TAIL > PRICE_T0 do
+        t = t * PRICE_TAIL
+        tail[#tail + 1] = t
+    end
+    local ts = {}
+    for i = #tail, 1, -1 do ts[#ts + 1] = tail[i] end
+    for k = 1, PRICE_STEPS do ts[#ts + 1] = k / PRICE_STEPS end
+    priceTs = ts
+    return ts
+end
+
+--- What the price keeps on a record: the wall's corner list at each sample, built on
+--- first use, and the destination and the start zone it measures against.
+local function priceOf(rec, e)
+    local pr = e.price
+    if pr then return pr end
+    local SS = BR.StormShape
+    local D = BR.StormTarget(rec)
+    pr = { ks = {}, D = D,
+           dks = (D.hull and D.hull.ks) or SS.discHull(D.discs or {}),
+           zone0 = BR.StormZone(rec, rec.cx0, rec.cy0, rec.r0, 0.0, 1.0),
+           keep = e.nested and e.keep or nil,
+           -- ON A BREAKOUT THE DESTINATION IS ITS OWN PART, and a line may reach it
+           -- before it reaches the wall. A destination of no radius is no part.
+           apart = (not e.nested) and (rec.r1 or 0.0) > 0.0 }
+    e.price = pr
+    return pr
+end
+
+--- Where along one line the safe zone begins, given the wall's corner list: no
+--- further than `L`, where the line is inside the destination.
+local function loAlong(pr, ks, px, py, ux, uy, L)
+    local SS = BR.StormShape
+    local s = SS.lineEntry(ks, px, py, ux, uy, PRICE_TOL)
+    if pr.apart then
+        local sd = SS.lineEntry(pr.dks, px, py, ux, uy, PRICE_TOL)
+        if sd and (not s or sd < s) then s = sd end
+    end
+    if not s or s > L then s = L end
+    return s
+end
+
+--- run(P, Q) for one line: from (px, py) along (ux, uy) to where it is inside the
+--- destination, `L` metres on. Refined when `refine`.
+local function lineRun(e, pr, px, py, ux, uy, L, refine)
+    local SS = BR.StormShape
+    local function wallAt(t) return SS.morphHull(e.src, e.dst, t, pr.keep) end
+    local ts = priceTimes()
+    local vals, best = {}, L
+    for k = 1, #ts do
+        local ks = pr.ks[k]
+        if not ks then
+            ks = wallAt(ts[k])
+            pr.ks[k] = ks
+        end
+        vals[k] = loAlong(pr, ks, px, py, ux, uy, L) / ts[k]
+        if vals[k] > best then best = vals[k] end
+    end
+    if not refine then return best end
+
+    -- THE TWO BEST LOCAL MAXIMA, refined. Ties go to the earlier sample, so the order
+    -- the refinement runs in -- and so the answer -- is fixed.
+    local peaks = {}
+    for k = 1, #ts do
+        local v = vals[k]
+        if v > L and (k == 1 or v >= vals[k - 1]) and (k == #ts or v > vals[k + 1]) then
+            peaks[#peaks + 1] = k
+        end
+    end
+    table.sort(peaks, function(a, b)
+        if vals[a] ~= vals[b] then return vals[a] > vals[b] end
+        return a < b
+    end)
+    local g = 0.5 * (math.sqrt(5.0) - 1.0)
+    local function f(t) return loAlong(pr, wallAt(t), px, py, ux, uy, L) / t end
+    for i = 1, math.min(2, #peaks) do
+        local k = peaks[i]
+        local a = (k > 1) and ts[k - 1] or 0.5 * ts[k]
+        local b = ts[k + 1] or 1.0
+        local c, h = b - g * (b - a), a + g * (b - a)
+        local fc, fh = f(c), f(h)
+        for _ = 1, PRICE_REFINE do
+            if fc > fh then
+                b, h, fh = h, c, fc
+                c = b - g * (b - a)
+                fc = f(c)
+            else
+                a, c, fc = c, h, fh
+                h = a + g * (b - a)
+                fh = f(h)
+            end
+        end
+        if fc > best then best = fc end
+        if fh > best then best = fh end
+    end
+    return best
+end
+
+--- run(P): the better of the two lines. See the section note.
+local function runOf(rec, e, px, py, refine)
+    local SS = BR.StormShape
+    local pr = priceOf(rec, e)
+    local r1 = rec.r1 or 0.0
+    local d
+    if r1 > 0.0 then d = SS.distance(pr.D, px, py) else d = BR.Dist(px, py, rec.cx1, rec.cy1) end
+    if d <= 0.0 then return 0.0 end
+    if SS.distance(pr.zone0, px, py) > PRICE_TOL then return d end
+
+    -- STRAIGHT AT THE NEAREST POINT.
+    local nx, ny = rec.cx1, rec.cy1
+    if r1 > 0.0 then nx, ny = SS.pointAtArc(pr.D, SS.nearestArc(pr.D, px, py)) end
+    local L = BR.Dist(px, py, nx, ny)
+    if not (L > 0.0) then return d end
+    local best = lineRun(e, pr, px, py, (nx - px) / L, (ny - py) / L, L, refine)
+
+    -- AND STRAIGHT AT THE CENTRE, as far as the destination's edge.
+    local C = BR.Dist(px, py, rec.cx1, rec.cy1)
+    if r1 > 0.0 and C > 0.0 then
+        local ux, uy = (rec.cx1 - px) / C, (rec.cy1 - py) / C
+        local Lc = SS.lineEntry(pr.dks, px, py, ux, uy, 0.0)
+        if Lc and Lc > 0.0 and Lc < best then
+            local v = lineRun(e, pr, px, py, ux, uy, Lc, refine)
+            if v < best then best = v end
+        end
+    end
+    return best
+end
+
+--- The metres per sweep a straight run from (px, py) to the destination must be
+--- PRICED AT so that the wall never catches the runner: see the section note. 0
+--- inside the destination; the distance to it for a player outside the zone the
+--- phase starts in.
+--- @param rec table     a record for the phase being priced -- its tShrink is not read
+--- @param px number
+--- @param py number
+--- @return number metres per sweep
+function BR.StormSweepRun(rec, px, py)
+    if not rec then return 0.0 end
+    local e = infoOf(rec)
+    if not e then
+        -- THE PRE-#344 OFF SWITCH: two circles, and the blend's own answer.
+        return math.max(0.0, BR.Dist(px, py, rec.cx1, rec.cy1) - (rec.r1 or 0.0))
+    end
+    return runOf(rec, e, px, py, true)
+end
+
+--- The furthest run in a lobby: the largest BR.StormSweepRun over `points`, which is
+--- what server/storm.lua prices a sweep at.
+---
+--- REFINED ONLY WHERE IT CAN MATTER. Every player's price is read off the shared
+--- samples first, and only those within PRICE_SLACK of the roughest are refined -- a
+--- refinement builds the wall afresh at every instant it reads, and only the largest
+--- answer sets the price.
+--- @param rec table
+--- @param points table   { { x, y }, ... }
+--- @return number metres per sweep
+function BR.StormSweepPrice(rec, points)
+    local best = 0.0
+    if not rec then return best end
+    local e = infoOf(rec)
+    local rough, top = {}, 0.0
+    for i = 1, #points do
+        local p = points[i]
+        if e then rough[i] = runOf(rec, e, p.x, p.y, false)
+        else rough[i] = BR.StormSweepRun(rec, p.x, p.y) end
+        if rough[i] > top then top = rough[i] end
+    end
+    for i = 1, #points do
+        local v = rough[i]
+        if e and v > 0.0 and v * PRICE_SLACK >= top then
+            v = runOf(rec, e, points[i].x, points[i].y, true)
+        end
+        if v > best then best = v end
+    end
+    return best
+end
+
 --- THE WALL AT SWEEP FRACTION `t`, AS A RECORD CAN CARRY IT: the `mo` a freeze, a
 --- thaw or a same-phase `brphase` starts its record from. See the record's header.
 ---

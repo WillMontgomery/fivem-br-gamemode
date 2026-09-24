@@ -2268,6 +2268,14 @@ end
 --- @param cx number   the solver's circle at t, recorded on the shape
 --- @return table shape
 function BR.StormShape.morph(src, dst, t, keep, cx, cy, r)
+    return hullShape(BR.StormShape.morphHull(src, dst, t, keep), cx, cy, r)
+end
+
+--- The moving wall's CORNER LIST at sweep fraction `t`: what morph() builds its shape
+--- from, without the pieces -- for a caller that asks the wall's signed distance at
+--- many instants and never draws it (storm_solve.lua's sweep price, #344).
+--- @return table|nil ks
+function BR.StormShape.morphHull(src, dst, t, keep)
     local s = 1.0 - t
     local md = {}
     for i = 1, #src do
@@ -2280,7 +2288,7 @@ function BR.StormShape.morph(src, dst, t, keep, cx, cy, r)
         for i = 1, #keep do md[#md + 1] = keep[i] end
         ks = discHull(md)
     end
-    return hullShape(ks, cx, cy, r)
+    return ks
 end
 
 --- How far every disc of a list pokes out of a convex shape, at the worst. See
@@ -2346,6 +2354,64 @@ end
 --- @return number
 function BR.StormShape.hullDistance(ks, px, py)
     return hullDistance({ ks = ks }, px, py)
+end
+
+--- How far along the ray from (px, py) in the unit direction (ux, uy) it first comes
+--- within `tol` of a corner list -- 0 when it starts there, nil when it never does.
+--- EXACT: the ray against every arc and every run of the list grown by `tol`, which
+--- is the same corner list with every radius `tol` larger (#344's sweep price).
+---
+--- ═══ WHY NOT MARCH IT ═══
+---
+--- Stepping along the ray by the signed distance never overshoots, and it crawls
+--- where the ray grazes the boundary: the distance falls off as the square of what
+--- is left, so a runner riding the edge of the wall -- which is exactly where the
+--- price is decided -- took hundreds of steps and still read as never arriving. A
+--- convex boundary meets a line at most twice, and the first time is one of these.
+--- @return number|nil metres
+function BR.StormShape.lineEntry(ks, px, py, ux, uy, tol)
+    tol = tol or 0.0
+    if not ks or #ks == 0 then return nil end
+    if hullDistance({ ks = ks }, px, py) <= tol then return 0.0 end
+    local best = huge
+    local m = #ks
+    for i = 1, m do
+        local k, q = ks[i], ks[(i % m) + 1]
+        local R = k.rho + tol
+        -- THE ARC, radius R about the corner's centre, entered where the ray first
+        -- meets that circle -- if the point it meets it at faces one of the corner's
+        -- own normals.
+        if R > 0.0 then
+            local wx, wy = px - k.x, py - k.y
+            local b = ux * wx + uy * wy
+            local disc = b * b - (wx * wx + wy * wy - R * R)
+            if disc >= 0.0 then
+                local s = -b - sqrt(disc)
+                if s >= 0.0 and s < best then
+                    local dx, dy = wx + ux * s, wy + uy * s
+                    if inRange(k, dx, dy) then best = s end
+                end
+            end
+        end
+        -- THE RUN to the next corner, on the line whose outward normal is this
+        -- corner's last one, entered only from outside it.
+        local nu = ux * k.c1 + uy * k.s1
+        if nu < 0.0 then
+            local s = (k.h1 + tol - (px * k.c1 + py * k.s1)) / nu
+            if s >= 0.0 and s < best then
+                local ex, ey = k.x + R * k.c1, k.y + R * k.s1
+                local Rq = q.rho + tol
+                local sx, sy = q.x + Rq * q.c0, q.y + Rq * q.s0
+                -- Along the run, counter-clockwise: the normal turned a quarter left.
+                local tx, ty = -k.s1, k.c1
+                local along = (px + ux * s - ex) * tx + (py + uy * s - ey) * ty
+                local span = (sx - ex) * tx + (sy - ey) * ty
+                if along >= -EPS and along <= span + EPS then best = s end
+            end
+        end
+    end
+    if best == huge then return nil end
+    return best
 end
 
 --- The furthest a bare corner list reaches from (ox, oy). See reachOf.

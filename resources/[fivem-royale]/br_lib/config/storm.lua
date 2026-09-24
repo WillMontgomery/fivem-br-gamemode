@@ -158,11 +158,13 @@ BR.Config.Storm = {
     },
 
     -- SHRINK TIME IS PRICED PER PHASE, like the hold: at each phase entry
-    -- the furthest in-match player's run to the TARGET circle's edge sets
-    -- the wall's travel time -- everyone already inside means the sweep
-    -- takes only minSeconds and the game moves on (the "extra minutes for
+    -- the furthest in-match player's run to the TARGET's wall sets the
+    -- wall's travel time -- everyone already inside means the sweep takes
+    -- only minSeconds and the game moves on (the "extra minutes for
     -- gameplay to really begin" complaint); a far straggler gets time to
-    -- run. The authored per-phase shrink value is the CEILING.
+    -- run. The authored per-phase shrink value is the CEILING. The run is
+    -- read off the moving wall itself (#344), which a corner-to-corner morph
+    -- can make longer than the distance: BR.StormSweepRun.
     shrinkPace = {
         metersPerSec = 9.0,   -- same assumed cross-map speed as the hold
         minSeconds   = 40.0,  -- even an uncontested sweep takes this long

@@ -5492,6 +5492,154 @@ do
     ok(monotonic, 'and the chance never falls as the phases progress')
 end
 
+describe('storm.price')
+do
+    -- ═══ THE SWEEP IS PRICED ON THE MOVING WALL, AND THE SAMPLING IS HONEST (#344) ═══
+    --
+    -- BR.StormSweepRun reads the wall at 62 instants and refines the best maxima; the
+    -- claim is that this is the largest lo(t) / t the wall really has, on the better
+    -- of the two lines -- straight at the nearest point, and at the centre as far as
+    -- the destination's edge. Asked here against a dense walk that shares none of the
+    -- sampling: 1,000 instants of BR.StormZone -- the zone the damage tick bills --
+    -- each line's first meeting with it found on that zone's own corner list.
+    --
+    -- TEN PLACED PHASES, and two players PINNED from a measurement over 11,520 where
+    -- the maximum falls between the samples -- 1.6 and 0.9 percent over them alone,
+    -- which is what the refinement is for. Their records are written to the bit.
+    local SS = BR.StormShape
+    local phases = BR.Config.Storm.phases
+    local under, where, n, outran = 0.0, nil, 0, 0
+    local G = 1000
+    local cases = {}
+    for i = 1, 10 do
+        local seed = i * 4099 + 17
+        local PH = 2 + (i % 5)
+        local R0, R1 = phases[PH - 1].radius, phases[PH].radius
+        local nx, ny = placeZone(BR.Rng(i * 31), seed, PH, 0.0, 0.0, R0, R1, 1.0, nil, nil, nil)
+        cases[#cases + 1] = { rec = BR.BuildStormRecord(PH, 0.0, 0.0, R0, nx, ny, R1,
+            0, 0, 1000, 1.0, seed) }
+    end
+    cases[#cases + 1] = {
+        rec = BR.BuildStormRecord(6, 0x1.cb604b470045ep+10, -0x1.edc7d2c2eb0eep+9, 260.0,
+            0x1.cf7c890d61ad8p+10, -0x1.f0ef0f2c77b7p+9, 110.0, 0, 0, 1000, 1.0, 54008242),
+        at = { { x = 0x1.9ff4eb614aba7p+10, y = -0x1.dde11bd41c1f4p+9 } } }
+    cases[#cases + 1] = {
+        rec = BR.BuildStormRecord(6, 0x1.5be013f74f4e7p+11, -0x1.5b4d25bc943dfp+7, 260.0,
+            0x1.5be013f74f4e7p+11, -0x1.5b4d25bc943dfp+7, 110.0, 0, 0, 1000, 1.0, 15008125),
+        at = { { x = 0x1.4070a40a18367p+11, y = -0x1.141206293d5dfp+8 } } }
+    for _, cs in ipairs(cases) do
+        local rec = cs.rec
+        local nx, ny = rec.cx1, rec.cy1
+        local Z, D = BR.StormWall(rec, 0.0), BR.StormTarget(rec)
+        local zks = {}
+        for k = 1, G do
+            local t = k / G
+            zks[k] = BR.StormZone(rec, BR.Lerp(rec.cx0, nx, t), BR.Lerp(rec.cy0, ny, t),
+                BR.Lerp(rec.r0, rec.r1, t), t, 1.0).hull.ks
+        end
+        --- The dense maximum of lo(t) / t along one line, `L` metres long.
+        local function dense(px, py, tx, ty, L)
+            local C = BR.Dist(px, py, tx, ty)
+            local ux, uy = (tx - px) / C, (ty - py) / C
+            local best = L
+            for k = 1, G do
+                local s = SS.lineEntry(zks[k], px, py, ux, uy, 1e-3)
+                if not s or s > L then s = L end
+                if s / (k / G) > best then best = s / (k / G) end
+            end
+            return best
+        end
+        -- Sixteen players on a placed phase: eight on the wall the phase starts from
+        -- -- where the wall sets off on top of them -- and eight inside it.
+        local stood = cs.at
+        if not stood then
+            stood = {}
+            local P = SS.perimeter(Z)
+            for j = 1, 8 do
+                local x, y = SS.pointAtArc(Z, P * (j - 0.5) / 8)
+                stood[#stood + 1] = { x = x, y = y }
+                stood[#stood + 1] = { x = x * 0.6 + nx * 0.2, y = y * 0.6 + ny * 0.2 }
+            end
+        end
+        for _, q in ipairs(stood) do
+            local d = SS.distance(D, q.x, q.y)
+            if d > 1.0 then
+                n = n + 1
+                local ex, ey = SS.pointAtArc(D, SS.nearestArc(D, q.x, q.y))
+                local want = dense(q.x, q.y, ex, ey, BR.Dist(q.x, q.y, ex, ey))
+                local C = BR.Dist(q.x, q.y, nx, ny)
+                local Lc = SS.lineEntry(D.hull.ks, q.x, q.y, (nx - q.x) / C, (ny - q.y) / C, 0.0)
+                if Lc then want = math.min(want, dense(q.x, q.y, nx, ny, Lc)) end
+                local got = BR.StormSweepRun(rec, q.x, q.y)
+                if got > d * 1.01 then outran = outran + 1 end
+                local u = (want - got) / want
+                if u > under then
+                    under = u
+                    where = ('phase %d player %.0f,%.0f: %.2f against %.2f')
+                        :format(rec.phase, q.x, q.y, got, want)
+                end
+            end
+        end
+    end
+    ok(n >= 120 and outran > 0,
+        ('of %d players, the wall outruns the distance for %d -- the price is not the '
+            .. 'distance'):format(n, outran), ('%d players, %d outrun'):format(n, outran))
+    ok(under <= 0.002,
+        'and the price is never more than 0.2% under a dense walk of the zone the damage '
+            .. 'tick bills', ('%.4f%% under, %s'):format(100 * under, tostring(where)))
+
+    -- ─── BR.StormShape.lineEntry, the exact meeting the price stands on ───
+    --
+    -- Against a march along each ray by the signed distance, bisected where it first
+    -- comes within the tolerance: rays aimed at shapes of every kind of corner and
+    -- rays thrown anywhere, from inside, from outside, and from nearly on the edge.
+    local R = BR.Rng(77)
+    local worst, rays, wrongMiss = 0.0, 0, 0
+    for s = 1, 60 do
+        local u = SS.blobUnit(s, (s % 7) + 1, BR.Config.Storm.shape, phases)
+        local ks = SS.blob(100.0, -50.0, 300.0 + 5.0 * (s % 40), u).hull.ks
+        for j = 1, 20 do
+            local px = 100.0 + (R:float() * 2.0 - 1.0) * 1500.0
+            local py = -50.0 + (R:float() * 2.0 - 1.0) * 1500.0
+            local a = R:float() * 2.0 * math.pi
+            if j % 2 == 0 then
+                a = math.atan(-50.0 - py + (R:float() - 0.5) * 600.0,
+                    100.0 - px + (R:float() - 0.5) * 600.0)
+            end
+            local ux, uy = math.cos(a), math.sin(a)
+            local e = SS.lineEntry(ks, px, py, ux, uy, 1e-3)
+            local b = nil
+            if SS.hullDistance(ks, px, py) <= 1e-3 then b = 0.0 else
+                local st = 0.0
+                while st < 4000.0 do
+                    local d = SS.hullDistance(ks, px + ux * st, py + uy * st)
+                    if d <= 1e-3 then b = st break end
+                    st = st + math.max(0.02, d * 0.9)
+                end
+                if b and b > 0.0 then
+                    local lo, hi = math.max(0.0, b - 0.05), b
+                    for _ = 1, 50 do
+                        local mid = 0.5 * (lo + hi)
+                        if SS.hullDistance(ks, px + ux * mid, py + uy * mid) <= 1e-3 then
+                            hi = mid
+                        else
+                            lo = mid
+                        end
+                    end
+                    b = hi
+                end
+            end
+            rays = rays + 1
+            if (e == nil) ~= (b == nil) then wrongMiss = wrongMiss + 1
+            elseif e then worst = math.max(worst, math.abs(e - b)) end
+        end
+    end
+    ok(wrongMiss == 0 and worst < 1e-6,
+        ('and where %d rays first come within a millimetre of a zone is exact -- against a '
+            .. 'march along each, it never misses and never differs'):format(rays),
+        ('%d disagreed on whether, worst %.3e m'):format(wrongMiss, worst))
+end
+
 describe('storm.water')
 do
     -- THE STORM MUST NOT CLOSE ON OPEN OCEAN.

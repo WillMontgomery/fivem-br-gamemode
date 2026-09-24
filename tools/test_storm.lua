@@ -5154,6 +5154,138 @@ do
 end
 
 -- ---------------------------------------------------------------------------
+describe('price.run')
+do
+    -- ═══ THE SWEEP IS PRICED ON THE WALL THAT WILL CHASE THE RUNNER (#344) ═══
+    --
+    --   "A straggler two kilometres out? They get their run."   -- server/storm.lua
+    --
+    -- The morph moves every corner to its own partner, so part of the wall can arrive
+    -- over a player sooner than their distance to the destination says, and a sweep
+    -- priced at distance / 9 caught the runner it was priced for -- 139 HP at phase 5
+    -- in the round's review. Whole matches through the REAL server, with players
+    -- standing on the edge of the zone every next phase starts in, so the price is set
+    -- by somebody the wall starts on top of. Each runs at 9 m/s from the instant the
+    -- wall sets off, straight at the destination's nearest point or straight at its
+    -- centre, whichever keeps them in -- the two runs the price reads -- and is asked
+    -- at 400 instants of every sweep the price did not cap whether the zone the damage
+    -- tick bills still holds them.
+    local NP, G = 24, 400
+    local sweeps, capped, worst, where = 0, 0, -math.huge, nil
+    for k = 1, 8 do
+        local S = newStormServer()
+        local env = S.env
+        local SS = env.BR.StormShape
+        local cfg = env.BR.Config.Storm
+        -- EVERY PHASE NESTED, which is where the price is a promise: a breakout's gap
+        -- is ground nobody is safe on until the wall crosses it.
+        cfg.breakout.chanceStart, cfg.breakout.chanceEnd = 0.0, 0.0
+        local V = cfg.shrinkPace.metersPerSec
+        S.roster[1] = nil
+        S.match.storm = nil
+        S.match.seq = 60 + k
+        S.match.anchor = { x = 1000.0, y = -1500.0, name = 'Run' }
+        env.BR.Sched.setEnabled('storm.phase', true)
+        S.match.state = env.BR.MatchState.WARMUP
+        env.BR.Storm.drawFirstCircle(S.match)
+        S.match.state = env.BR.MatchState.PLAYING
+        env.BR.Storm.begin(S.match)
+
+        --- Stand the roster on the edge of this record's target -- the zone the next
+        --- phase starts in -- and hand back where they stood.
+        local function stand(rec)
+            local D = env.BR.StormTarget(rec)
+            local P = SS.perimeter(D)
+            local at = {}
+            for i = 1, NP do
+                local x, y = SS.pointAtArc(D, P * (i - 0.5) / NP)
+                S.roster[i] = { matchId = 1, name = 'R' .. i, hp = 100.0,
+                                state = env.BR.PlayerState.ALIVE,
+                                pos = { x = x, y = y, z = 30.0 } }
+                at[i] = { x = x, y = y }
+            end
+            return at
+        end
+
+        --- Every runner of one sweep the price did not cap, against the billed zone.
+        local function run(rec, at)
+            local T = rec.tShrink / 1000.0
+            if T >= cfg.phases[rec.phase].shrink - 1e-6 then
+                capped = capped + 1
+                return
+            end
+            sweeps = sweeps + 1
+            local D = env.BR.StormTarget(rec)
+            local zs = {}
+            for i = 1, G do
+                local t = i / G
+                zs[i] = env.BR.StormZone(rec, env.BR.Lerp(rec.cx0, rec.cx1, t),
+                    env.BR.Lerp(rec.cy0, rec.cy1, t), env.BR.Lerp(rec.r0, rec.r1, t), t, 1.0)
+            end
+            --- The furthest outside one straight line at 9 m/s ever is, and when.
+            local function line(q, tx, ty, L)
+                local C = env.BR.Dist(q.x, q.y, tx, ty)
+                local ux, uy = (tx - q.x) / C, (ty - q.y) / C
+                local out, at = -math.huge, 0.0
+                for i = 1, G do
+                    local s = math.min(V * T * i / G, L)
+                    local o = SS.distance(zs[i], q.x + ux * s, q.y + uy * s)
+                    if o > out then out, at = o, i / G end
+                end
+                return out, at
+            end
+            local dks = D.hull and D.hull.ks or SS.discHull(D.discs)
+            for _, q in ipairs(at) do
+                local nx, ny = rec.cx1, rec.cy1
+                if rec.r1 > 0.0 then nx, ny = SS.pointAtArc(D, SS.nearestArc(D, q.x, q.y)) end
+                local L = env.BR.Dist(q.x, q.y, nx, ny)
+                if L > 0.5 then
+                    local o, when = line(q, nx, ny, L)
+                    local C = env.BR.Dist(q.x, q.y, rec.cx1, rec.cy1)
+                    if rec.r1 > 0.0 and C > 0.0 then
+                        local Lc = SS.lineEntry(dks, q.x, q.y, (rec.cx1 - q.x) / C,
+                            (rec.cy1 - q.y) / C, 0.0)
+                        if Lc then
+                            local oc, wc = line(q, rec.cx1, rec.cy1, Lc)
+                            if oc < o then o, when = oc, wc end
+                        end
+                    end
+                    if o > worst then
+                        worst = o
+                        where = ('match %d phase %d at %.2f of a %.1f s sweep, %.0f m '
+                            .. 'from the destination'):format(k, rec.phase, when, T, L)
+                    end
+                end
+            end
+        end
+
+        local rec = S.match.storm
+        local seen = { [rec.phase] = true }
+        local at = stand(rec)
+        local last = #cfg.phases
+        local guard = 0
+        while not seen[last] and guard < 4000 do
+            guard = guard + 1
+            S.now = S.now + 30000
+            env.BR.Sched.step(S.now)
+            rec = S.match.storm
+            if rec and not seen[rec.phase] then
+                seen[rec.phase] = true
+                run(rec, at)
+                at = stand(rec)
+            end
+        end
+    end
+    ok(sweeps >= 20,
+        ('the walk priced %d sweeps below their ceiling off runners at the edge (%d '
+            .. 'capped)'):format(sweeps, capped), sweeps)
+    ok(worst <= 0.5,
+        'and not one runner at 9 m/s was ever outside the zone the damage tick bills: '
+            .. 'the sweep is priced on the moving wall, not on the distance',
+        ('worst %.2f m outside, %s'):format(worst, tostring(where)))
+end
+
+-- ---------------------------------------------------------------------------
 describe('zone.cache')
 do
     -- ═══ A ZONE'S SHAPE IS BUILT ONCE, AND NEVER PER FRAME OR PER TICK ═══

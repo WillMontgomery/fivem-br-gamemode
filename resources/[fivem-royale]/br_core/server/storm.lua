@@ -327,7 +327,9 @@ end
 ---
 --- THE WALL'S TRAVEL TIME IS PRICED HERE TOO, every phase (user call,
 --- 2026-08-04): the furthest in-match player's run to the TARGET's wall, at
---- shrinkPace speed, floored at minSeconds and ceilinged by the authored value.
+--- shrinkPace speed, floored at minSeconds and ceilinged by the authored value --
+--- the run the moving wall actually allows, which a morph can make longer than
+--- the distance (#344).
 --- Everyone already inside the target? The sweep is quick and the game moves on.
 --- A straggler two kilometres out? They get their run. This replaced phase 1's
 --- hold-payback scheme -- pricing the shrink directly is the same fairness
@@ -379,33 +381,31 @@ local function enterPhase(m, phase, cx0, cy0, r0, now, waitSec, mo)
         cx1, cy1, brokeOut = drawCentre(m, phase, cx0, cy0, r0, mo)
     end
 
-    -- ═══ PRICE THE SWEEP FOR THE FURTHEST PLAYER'S RUN TO THE TARGET'S WALL ═══
+    -- ═══ PRICE THE SWEEP FOR THE FURTHEST PLAYER'S RUN, AGAINST THE WALL ITSELF ═══
     --
-    -- THIS match's players only, and measured to the destination's REAL boundary
-    -- (#344) -- the wall the sweep ends on, as #364 did for the hold. It used to be
-    -- `distance to the next centre - nextRadius`, which on a 3:1 zone charges a
-    -- player standing off its long side a run to a circle nothing draws, and lets one
-    -- off its end ride free. Inside the shape costs nothing. Phase 8's destination is
-    -- a point, and the run is to the point.
-    local target = nil
-    if p.radius > 0.0 then
-        target = BR.StormTarget({ seed = m.stormSeed, phase = phase,
-                                  cx1 = cx1, cy1 = cy1, r1 = p.radius })
-    end
-    local furthest = 0.0
+    -- THIS match's players only, run to the destination's REAL boundary (#344) --
+    -- the wall the sweep ends on, as #364 did for the hold. Inside the shape costs
+    -- nothing. Phase 8's destination is a point, and the run is to the point.
+    --
+    -- AND PRICED ON THE MOVING WALL, NOT ON THE DISTANCE. The wall morphs corner to
+    -- corner, and a corner heading for its own partner can arrive over a player
+    -- sooner than their distance to the destination says: a sweep priced at distance
+    -- / 9 knocked the very runner it was priced for (#344's review, 139 HP at phase
+    -- 5). BR.StormSweepPrice reads the wall this record will draw and bill and
+    -- answers how many metres per sweep the furthest player's straight run to the
+    -- destination has to cover to stay inside it -- the distance itself wherever the
+    -- wall does not outrun that, and never less. The record it reads is this phase's
+    -- own, built with a placeholder sweep: the wall's shape at a fraction of the
+    -- sweep does not depend on how long the sweep lasts.
+    local probe = BR.BuildStormRecord(phase, cx0, cy0, r0, cx1, cy1, p.radius,
+        now, 0.0, 1000.0, p.dps, m.stormSeed, mo)
+    local stood = {}
     BR.Roster.each(
         function(e) return e.matchId == m.id and BR.Server.isInMatch(e.state) end,
         function(_, e)
-            if e.pos then
-                local d
-                if target then
-                    d = BR.StormShape.distance(target, e.pos.x, e.pos.y)
-                else
-                    d = BR.Dist(e.pos.x, e.pos.y, cx1, cy1)
-                end
-                if d > furthest then furthest = d end
-            end
+            if e.pos then stood[#stood + 1] = { x = e.pos.x, y = e.pos.y } end
         end)
+    local furthest = BR.StormSweepPrice(probe, stood)
     -- A BREAKOUT BUYS A LONGER SWEEP.
     --
     -- The authored per-phase `shrink` is the ceiling on travel time, and it was

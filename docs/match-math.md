@@ -264,10 +264,14 @@ rather than the match.
 ### How long a shrink actually takes
 
 The authored `shrink` is a **ceiling**, not the duration. The real figure is
-priced off the furthest player's run to the wall the sweep ends on:
+priced off the furthest player's run to the wall the sweep ends on, against the
+wall that will chase them:
 
 ```
-furthest  = max over in-match players of (distance to the target's wall)   -- 0 inside it
+lo(t)     = how far along a straight line from the player the safe zone begins
+            at sweep fraction t
+run       = min over two lines of ( max over the sweep of lo(t) / t )    -- 0 inside it
+furthest  = max over in-match players of run
 shrinkSec = clamp(furthest / 9.0, 40, ceiling)
 ```
 
@@ -277,9 +281,21 @@ time up to the ceiling. The wall is the destination's **real boundary** (#344,
 as #364 did for the hold): it used to be `distance to next centre − nextRadius`,
 which on a stretched zone charges a player off its long side a run to a circle
 nothing draws and lets one off its end ride free. Phase 8's destination is a
-point, and the run is to the point. Measured over 1000 simulated matches with the
-players inside the current zone, the mean price moved by under 2 s at every
-phase.
+point, and the run is to the point.
+
+**Priced on the moving wall, not on the distance** (#344). While the wall was the
+blend `(1 − t)·Z0 + t·D`, a player running straight at the destination's nearest
+point at `d / T` stood inside it at every instant, so the distance was the run to
+the metre. The corner-to-corner morph moves each corner to its own partner, so
+parts of the wall reach a player sooner than their distance says, and a sweep
+priced at `d / 9` knocked the runner it was priced for (139 HP at phase 5, in the
+round's review). So the run reads the wall itself — `lo(t) / t` is the pace that
+keeps the line's entry into the safe zone behind the runner — along the two lines
+a player runs at a destination: straight at its nearest point, and straight at its
+centre as far as its edge. A player outside the zone the phase starts in is in the
+storm already and is priced on the distance. `BR.StormSweepRun` reads the wall at
+62 instants and refines the maxima of the players who could set the price; its
+measured error and cost are in storm_solve.lua.
 
 ### Where the next zone goes
 
