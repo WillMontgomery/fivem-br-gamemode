@@ -19397,6 +19397,475 @@ do
 end
 
 -- ---------------------------------------------------------------------------
+describe('#11 -- the use emote is the channel, and nothing else')
+-- ---------------------------------------------------------------------------
+--
+-- "while using a heal, ideally we should have the ped play an emote"
+-- (owner, 2026-09-23), and the issue's third bullet: it "must follow that same
+-- state, not run on its own timer".
+--
+-- EVERY ENDING IS DRIVEN, the dbno.cpr suite's discipline, because an emote
+-- that survives any one of them is a player bandaging thin air for the rest of
+-- the match. The CLIP is read out of the config rather than spelled here: which
+-- clip is the owner's one-line swap (BR.Config.UseEmotes' `use`) and this block
+-- is about WHEN, so it must survive him making it. Whether the names exist is
+-- /brnativecheck's job, and section 15 drives that.
+do
+    local saved = {}
+    local NATIVES = { 'DoesAnimDictExist', 'HasAnimDictLoaded', 'RequestAnimDict',
+                      'RemoveAnimDict', 'TaskPlayAnim', 'StopAnimTask',
+                      'IsEntityPlayingAnim', 'GetAnimDuration' }
+    for _, n in ipairs(NATIVES) do saved[n] = _G[n] end
+    local savedCitizen = Citizen
+    -- ON ITS FEET. An earlier block leaves this answering OPEN, and a ped under
+    -- a canopy is off its feet -- which section 13 is about, and which would
+    -- otherwise quietly make every section here a test of an idle ped.
+    local savedChute = GetPedParachuteState
+    function GetPedParachuteState() return -1 end
+
+    -- ONLY OUR DICTIONARIES ARE MODELED HERE. client/dbno.lua is loaded by an
+    -- earlier block and poses its own ped through these same natives; anything
+    -- that is not a use-emote dictionary goes to whatever stub was there before,
+    -- so the log below is this feature's and nobody else's.
+    local OURS = {}
+    for _, row in pairs(BR.Config.UseEmotes) do
+        for _, e in ipairs(row) do OURS[e.dict] = true end
+    end
+    local function theirs(name, d, ...)
+        if OURS[d] then return false end
+        local f = saved[name]
+        return true, f and f(d, ...)
+    end
+
+    -- ── the streamer and the ped ─────────────────────────────────────────────
+    --
+    -- THE BOOLS ANSWER 1/0, NOT true/false. 0 is truthy in Lua, so a raw read of
+    -- any of these would task a clip that never streamed -- which is section 11
+    -- failing rather than a separate test.
+    local A = { exists = {}, loaded = {}, pending = {}, stream = 0,
+                playing = nil, durations = {}, log = {} }
+    local function note(...) A.log[#A.log + 1] = { ... } end
+    function DoesAnimDictExist(d)
+        local was, v = theirs('DoesAnimDictExist', d)
+        if was then return v end
+        return A.exists[d] and 1 or 0
+    end
+    function HasAnimDictLoaded(d)
+        local was, v = theirs('HasAnimDictLoaded', d)
+        if was then return v end
+        if A.loaded[d] then return 1 end
+        local p = A.pending[d]
+        if p ~= nil then
+            if p <= 0 then A.loaded[d], A.pending[d] = true, nil return 1 end
+            A.pending[d] = p - 1
+        end
+        return 0
+    end
+    function RequestAnimDict(d)
+        if theirs('RequestAnimDict', d) then return end
+        note('request', d)
+        A.pending[d] = A.stream
+    end
+    -- A RELEASE IS MODELED AS THE WORST CASE: the dictionary leaves memory at
+    -- once. A running task keeps playing -- ox_lib and dpemotes both lean on that
+    -- -- but anything that needs it loaded again has to ask again.
+    function RemoveAnimDict(d)
+        if theirs('RemoveAnimDict', d) then return end
+        note('remove', d)
+        A.loaded[d], A.pending[d] = nil, nil
+    end
+    function TaskPlayAnim(ped, d, c, bi, bo, dur, flag, rate, lx, ly, lz)
+        if not OURS[d] then
+            if saved.TaskPlayAnim then
+                return saved.TaskPlayAnim(ped, d, c, bi, bo, dur, flag, rate, lx, ly, lz)
+            end
+            return
+        end
+        note('task', d, c, { ped = ped, bi = bi, bo = bo, dur = dur, flag = flag,
+                             rate = rate, lx = lx, ly = ly, lz = lz })
+        -- Tasking a clip whose dictionary is not resident plays nothing.
+        if A.loaded[d] then A.playing = d .. '/' .. c end
+    end
+    function StopAnimTask(ped, d, c, speed)
+        if not OURS[d] then
+            if saved.StopAnimTask then return saved.StopAnimTask(ped, d, c, speed) end
+            return
+        end
+        note('stop', d, c, ped)
+        if A.playing == d .. '/' .. c then A.playing = nil end
+    end
+    function IsEntityPlayingAnim(ped, d, c, flag)
+        if not OURS[d] then
+            return saved.IsEntityPlayingAnim and saved.IsEntityPlayingAnim(ped, d, c, flag)
+        end
+        return A.playing == (d .. '/' .. c) and 1 or 0
+    end
+    function GetAnimDuration(d, c)
+        return A.loaded[d] and (A.durations[d .. '/' .. c] or 0.0) or 0.0
+    end
+
+    local function count(kind)
+        local n = 0
+        for _, e in ipairs(A.log) do if e[1] == kind then n = n + 1 end end
+        return n
+    end
+    local function last(kind)
+        for i = #A.log, 1, -1 do if A.log[i][1] == kind then return A.log[i] end end
+    end
+    local function reset()
+        A.log, A.playing, A.stream = {}, nil, 0
+        A.loaded, A.pending = {}, {}
+    end
+
+    local function pick(kind)
+        local row = BR.Config.UseEmotes[kind]
+        return row[row.use]
+    end
+    local BANDAGE, MEDKIT, SHIELD = pick('bandage'), pick('medkit'), pick('shield')
+    for _, p in ipairs({ BANDAGE, MEDKIT, SHIELD }) do A.exists[p.dict] = true end
+
+    local function tick(ms)
+        fakeTime = fakeTime + (ms or 100)
+        BR.Loop.step(BR.Loop.TICK)
+    end
+    local function ticks(n, ms) for _ = 1, n do tick(ms) end end
+
+    --- The push the server sends: `item` in slot 1, in hand, and -- when
+    --- `channel` -- a channel open on it, with a fresh `endsAt` as the server's
+    --- own clock would give it.
+    local function push(item, n, channel)
+        local slots = { false, false, false, false, false }
+        if item then
+            slots[1] = { id = item, kind = BR.ItemKind.CONSUMABLE, rarity = 1,
+                         count = n or 1 }
+        end
+        local using = nil
+        if channel then
+            using = { slot = 1, endsAt = fakeTime + 4000, ms = 4000 }
+        end
+        fire(BR.Net.INV_SET, { slots = slots, ammo = {}, active = 1,
+                               using = using, quiet = true })
+    end
+
+    --- client/inventory.lua's own resource-stop handler, and only it. Firing the
+    --- event would also run every other file's teardown in the middle of the
+    --- suite.
+    local function invStop(res)
+        for _, fn in ipairs(handlers['onClientResourceStop'] or {}) do
+            local info = debug.getinfo(fn, 'S')
+            if info.source:find('client/inventory.lua', 1, true) then fn(res) end
+        end
+    end
+
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.State.landed = true
+    inVehicle = false
+    fire(BR.Net.STATE, { state = BR.MatchState.PLAYING })
+
+    -- ── 1. THE PRESS IS A REQUEST; NOTHING PLAYS UNTIL THE SERVER SAYS YES ───
+    push('bandage', 2, false)
+    reset()
+    sent = {}
+    for _, fn in ipairs(BR.Keys.listeners['use'] or {}) do fn(true) end
+    ticks(5)
+    local asked = 0
+    for _, m in ipairs(sent) do if m.name == BR.Net.INV_USE then asked = asked + 1 end end
+    ok(asked == 1, 'the use key sends the request', tostring(asked))
+    ok(#A.log == 0,
+       'and with the request out and no channel back, the ped is not touched -- '
+           .. 'a refused use (full health, a downed player) must play nothing',
+       tostring(#A.log))
+
+    -- ── 2. THE SERVER CONFIRMS: IT STREAMS, THEN IT PLAYS ────────────────────
+    push('bandage', 2, true)
+    tick()
+    ok(count('request') == 1 and last('request')[2] == BANDAGE.dict
+       and count('task') == 0,
+       'the INV_SET that opens the channel asks for the bandage\'s dictionary '
+           .. 'first, and tasks nothing it does not have',
+       ('%d request(s), %d task(s)'):format(count('request'), count('task')))
+    tick()
+    local t = last('task')
+    ok(t and t[2] == BANDAGE.dict and t[3] == BANDAGE.clip
+       and A.playing == BANDAGE.dict .. '/' .. BANDAGE.clip,
+       'and the next pass puts the bandage\'s clip on the ped',
+       tostring(A.playing))
+
+    -- ═══ UPPER BODY, BECAUSE THE CHANNEL HAS NEVER HELD THE LEGS ═══
+    local o = t and t[4] or {}
+    local f = o.flag or 0
+    ok(f & 16 ~= 0 and f & 32 ~= 0,
+       'AF_UPPERBODY and AF_SECONDARY: the arms play it and the legs keep '
+           .. 'walking, because a player could always move while healing',
+       tostring(f))
+    ok(f & 1 ~= 0 and o.dur == -1,
+       'looping, until something stops it -- the clip has no length of its own '
+           .. 'to end on', ('flag %d, duration %s'):format(f, tostring(o.dur)))
+    ok(f & 1024 == 0 and o.lx == false and o.ly == false and o.lz == false,
+       'and neither thing known to stop a clip replicating: not '
+           .. 'AF_OVERRIDE_PHYSICS (fivem#3733), and no position locks',
+       ('flag %d'):format(f))
+    ok(o.ped == PlayerPedId(), 'on OUR ped', tostring(o.ped))
+
+    -- ═══ RELEASED ON THE LINE AFTER THE TASK ═══
+    local taskAt, removeAt = nil, nil
+    for i, e in ipairs(A.log) do
+        if e[1] == 'task' and not taskAt then taskAt = i end
+        if e[1] == 'remove' and e[2] == BANDAGE.dict then removeAt = i end
+    end
+    ok(taskAt ~= nil and removeAt == taskAt + 1,
+       'and the dictionary is released as soon as the clip is tasked, which is '
+           .. 'what ox_lib and dpemotes both do', ('task at %s, remove at %s')
+           :format(tostring(taskAt), tostring(removeAt)))
+
+    -- ── 3. NOT ITS OWN TIMER ─────────────────────────────────────────────────
+    --
+    -- Twenty seconds past `endsAt` with no word from the server. A clip hung
+    -- off the channel's length would have stopped at four; this one is the
+    -- channel, and the channel is still open.
+    ticks(200)
+    ok(A.playing ~= nil and count('stop') == 0,
+       'twenty seconds past the channel\'s own endsAt, with no INV_SET, it is '
+           .. 'still playing -- the clock is `inv.using`, not a timer',
+       tostring(A.playing))
+    ok(count('task') == 1,
+       'and a clip the engine reports as playing is never re-tasked',
+       tostring(count('task')))
+
+    -- ── 4. COMPLETION ────────────────────────────────────────────────────────
+    push('bandage', 1, false)
+    tick()
+    local st = last('stop')
+    ok(st and st[2] == BANDAGE.dict and st[3] == BANDAGE.clip
+       and st[4] == PlayerPedId() and A.playing == nil,
+       'the INV_SET that closes the channel takes that clip off that ped',
+       tostring(A.playing))
+    local before = #A.log
+    ticks(20)
+    ok(#A.log == before,
+       'and the passes after it touch nothing -- no stop repeated, no request',
+       ('%d native call(s)'):format(#A.log - before))
+
+    --- Open a channel on `item` and run it until the clip is on the ped.
+    local function running(item)
+        reset()
+        push(item, 2, true)
+        ticks(2)
+        return A.playing
+    end
+
+    -- ── 5. A CANCEL: THE CHANNEL ENDS AND THE ITEM IS STILL IN THE SLOT ──────
+    --
+    -- A hit (`useCancelOnDamage`) or the seat rule. The slot is unchanged, so
+    -- only `using` going can be what stops it.
+    running('bandage')
+    push('bandage', 2, false)
+    tick()
+    ok(A.playing == nil and count('stop') == 1,
+       'a canceled channel, item still in the slot, stops it all the same',
+       tostring(A.playing))
+
+    -- ── 6. KNOCKED DOWN: BEFORE THE SERVER'S SWEEP HAS SAID SO ───────────────
+    running('bandage')
+    BR.State.me.state = BR.PlayerState.DBNO
+    tick()
+    ok(A.playing == nil and count('stop') == 1,
+       'the delta that downs the player stops it on the next pass, while '
+           .. '`using` still stands -- the crawl is not left fighting a bandage',
+       tostring(A.playing))
+    ticks(20)
+    ok(count('task') == 1,
+       'and it is not put back while they are down, channel or no channel',
+       tostring(count('task')))
+    BR.State.me.state = BR.PlayerState.ALIVE
+    push('bandage', 2, false)
+    tick()
+
+    -- ── 7. DEAD ──────────────────────────────────────────────────────────────
+    running('bandage')
+    BR.State.me.state = BR.PlayerState.OUT
+    tick()
+    ok(A.playing == nil and count('stop') == 1, 'dying stops it',
+       tostring(A.playing))
+    BR.State.me.state = BR.PlayerState.ALIVE
+    push('bandage', 2, false)
+    tick()
+
+    -- ── 8. THE MATCH ENDING UNDER IT ─────────────────────────────────────────
+    running('bandage')
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+    tick()
+    ok(A.playing == nil and count('stop') == 1,
+       'teardown empties the mirror, and the emptied mirror stops it',
+       tostring(A.playing))
+    fire(BR.Net.STATE, { state = BR.MatchState.PLAYING })
+
+    -- ── 9. A RESOURCE STOP, THE ONE ENDING THE LOOP CANNOT SEE ───────────────
+    running('bandage')
+    invStop('some_other_resource')
+    ok(A.playing ~= nil, 'another resource stopping is not ours to act on',
+       tostring(A.playing))
+    invStop('br_core')
+    ok(A.playing == nil and count('stop') == 1,
+       '`restart br_core` mid-kit takes the clip off, because nothing is left '
+           .. 'running to do it afterwards', tostring(A.playing))
+    push('bandage', 2, false)
+    tick()
+
+    -- ── 10. EACH KIND ITS OWN CLIP, AND AN ITEM WITH NONE PLAYS NOTHING ──────
+    ok(running('medkit') == MEDKIT.dict .. '/' .. MEDKIT.clip,
+       'a med kit plays the medkit row', tostring(A.playing))
+    push('medkit', 2, false) tick()
+    ok(running('shield') == SHIELD.dict .. '/' .. SHIELD.clip,
+       'a shield plays the shield row', tostring(A.playing))
+    push('shield', 2, false) tick()
+    ok(running('minishield') == SHIELD.dict .. '/' .. SHIELD.clip,
+       'and so does the small one -- one kind, two sizes', tostring(A.playing))
+    push('minishield', 2, false) tick()
+    running('repairkit')
+    ok(#A.log == 0,
+       'the repair kit names no emote and gets none -- it is used from the '
+           .. 'driver\'s seat', tostring(#A.log))
+    push('repairkit', 1, false) tick()
+
+    -- ── 11. STREAMING IS BOUNDED, AND 0 IS NOT "LOADED" ──────────────────────
+    reset()
+    A.stream = math.huge                            -- this build never delivers
+    push('bandage', 2, true)
+    ticks(30)                                       -- three seconds
+    ok(count('request') == 1 and count('task') == 0,
+       'a dictionary that never streams is asked for once and never tasked -- '
+           .. 'HasAnimDictLoaded answering 0 is a no, whatever Lua thinks of 0',
+       ('%d request(s), %d task(s)'):format(count('request'), count('task')))
+    ok(count('remove') == 1,
+       'and past the budget the request is released rather than left out',
+       tostring(count('remove')))
+    ticks(50)
+    ok(count('request') == 1,
+       'and this channel does not ask again -- it plays without a clip',
+       tostring(count('request')))
+    A.stream = 0
+    push('bandage', 2, true)                        -- a new channel, a new endsAt
+    ticks(2)
+    ok(A.playing ~= nil,
+       'while the NEXT channel tries afresh, and gets its clip',
+       tostring(A.playing))
+    push('bandage', 2, false) tick()
+
+    reset()
+    A.exists[BANDAGE.dict] = nil
+    push('bandage', 2, true)
+    ticks(10)
+    ok(count('request') == 0 and count('task') == 0,
+       'a dictionary the build does not have is never requested at all',
+       ('%d request(s)'):format(count('request')))
+    A.exists[BANDAGE.dict] = true
+    push('bandage', 2, false) tick()
+
+    -- ── 12. THE ENGINE DROPS IT: PUT BACK, ONCE A SECOND AND NO FASTER ───────
+    running('bandage')
+    A.playing = nil                                 -- a vault, the holster
+    ticks(5)
+    ok(count('task') == 1,
+       'a dropped clip is not re-tasked on every pass', tostring(count('task')))
+    ticks(8)
+    ok(count('task') == 2 and A.playing ~= nil,
+       'and is put back within about a second, so the channel stays visible',
+       tostring(count('task')))
+    push('bandage', 2, false) tick()
+
+    -- ── 13. OFF ITS FEET ─────────────────────────────────────────────────────
+    running('bandage')
+    inVehicle = true
+    tick()
+    ok(A.playing == nil,
+       'sitting down in a car mid-heal takes the standing clip off',
+       tostring(A.playing))
+    inVehicle = false
+    ticks(3)
+    ok(A.playing ~= nil,
+       'and stepping out with the channel still running brings it back',
+       tostring(A.playing))
+
+    -- ── 14. AND THE LEGS ARE STILL THE PLAYER'S ──────────────────────────────
+    --
+    -- #11 asked for no movement lock and the emote brought none: a frame with a
+    -- channel running disables no movement control.
+    frame()
+    local held = {}
+    for _, c in ipairs({ 21, 22, 30, 31, 32, 33, 34, 35 }) do
+        if disabled[c] then held[#held + 1] = c end
+    end
+    ok(#held == 0,
+       'mid-heal, sprint, jump and every move axis are still live',
+       table.concat(held, ', '))
+    push('bandage', 2, false) tick()
+
+    -- ── 15. /brnativecheck ASKS THE BUILD ABOUT WHATEVER `use` PICKS ─────────
+    Citizen = { Wait = function() end, CreateThread = function() end,
+                SetTimeout = function() end }
+    reset()
+    A.durations[BANDAGE.dict .. '/' .. BANDAGE.clip] = 3.2
+    A.durations[MEDKIT.dict .. '/' .. MEDKIT.clip] = 5.0
+    -- ...and the shield's clip is not in its dictionary on this "build".
+    local rows = BR.Inv.emoteCheck()
+    local by = {}
+    for _, r in ipairs(rows) do by[r.name] = r end
+    ok(#rows == 3 and by['use emote: bandage'] and by['use emote: medkit']
+       and by['use emote: shield'],
+       'one row per kind', tostring(#rows))
+    local b = by['use emote: bandage'] or {}
+    ok(b.ok == true and tostring(b.detail):find(BANDAGE.dict, 1, true) ~= nil
+       and tostring(b.detail):find(BANDAGE.clip, 1, true) ~= nil,
+       'a dictionary that exists with the clip in it passes, and the row names '
+           .. 'both so the owner can see what was checked', tostring(b.detail))
+    local sh = by['use emote: shield'] or {}
+    ok(sh.ok == false,
+       'a clip the dictionary does not have FAILS -- TaskPlayAnim would have '
+           .. 'played nothing, silently', tostring(sh.detail))
+    A.exists[MEDKIT.dict] = nil
+    local gone = nil
+    for _, r in ipairs(BR.Inv.emoteCheck()) do
+        if r.name == 'use emote: medkit' then gone = r end
+    end
+    ok(gone and gone.ok == false,
+       'and so does a dictionary the build does not have',
+       tostring(gone and gone.detail))
+    A.exists[MEDKIT.dict] = true
+    A.stream = math.huge
+    local slow = nil
+    for _, r in ipairs(BR.Inv.emoteCheck()) do
+        if r.name == 'use emote: bandage' then slow = r end
+    end
+    ok(slow and slow.ok == false,
+       'and one that never streams fails too -- the wait is bounded, and ends '
+           .. 'on a clock that is not moving', tostring(slow and slow.detail))
+    local asks, lets = 0, 0
+    for _, e in ipairs(A.log) do
+        if e[1] == 'request' then asks = asks + 1 end
+        if e[1] == 'remove' then lets = lets + 1 end
+    end
+    ok(asks > 0 and lets == asks,
+       'every dictionary the check asks for, it lets go of',
+       ('%d asked, %d released'):format(asks, lets))
+
+    -- ...AND THE COMMAND REALLY PRINTS THEM. Asserted on the source because the
+    -- check itself calls a hundred natives this harness does not model; the
+    -- defect it guards is a row source that quietly stops being read.
+    local nfh = io.open(ROOT .. 'br_core/client/natives.lua', 'r')
+    local nsrc = nfh and nfh:read('a') or ''
+    if nfh then nfh:close() end
+    local body = nsrc:match('function BR%.Native%.check%(%)(.-)\nend\n') or ''
+    ok(body:find('BR.Inv.emoteCheck()', 1, true) ~= nil,
+       'BR.Native.check() -- what /brnativecheck prints -- appends these rows')
+
+    Citizen = savedCitizen
+    GetPedParachuteState = savedChute
+    for _, n in ipairs(NATIVES) do _G[n] = saved[n] end
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+end
+
+-- ---------------------------------------------------------------------------
 describe('a silent delivery, and a noisy pickup')
 -- ---------------------------------------------------------------------------
 --

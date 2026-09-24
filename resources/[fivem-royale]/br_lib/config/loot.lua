@@ -31,6 +31,9 @@ BR.Config.Consumables = {
         kind = BR.ItemKind.CONSUMABLE, prop = 'prop_bodyarmour_02',
         useMs = 3000, maxStack = 6,
         armour = 25, armourCap = 50,   -- small potions only take you to half shield
+        -- What the ped does while it is drunk (#11). The same kind as the
+        -- Shield below; see BR.Config.UseEmotes.
+        emote = 'shield',
 
         -- HALF SIZE ON THE GROUND (owner, 2026-08-17: "can we make small
         -- shields literally spawn as a smaller prop? like same prop but
@@ -101,6 +104,7 @@ BR.Config.Consumables = {
         kind = BR.ItemKind.CONSUMABLE, prop = 'prop_bodyarmour_06',
         useMs = 5000, maxStack = 3,
         armour = 50, armourCap = 100,
+        emote = 'shield',
     },
     {
         id = 'bandage', label = 'Bandage', plural = 'Bandages', rarity = R.COMMON,
@@ -112,6 +116,7 @@ BR.Config.Consumables = {
         kind = BR.ItemKind.CONSUMABLE, prop = 'v_ret_ta_firstaid',
         useMs = 4000, maxStack = 3, carryMax = 3,
         health = 15, healthCap = 75,   -- bandages cannot finish the job
+        emote = 'bandage',
         -- HEALING COMES OUT OF CRATES, never off the floor (user call,
         -- 2026-08-06). Health is the resource a fight is fought with, so
         -- finding it should cost the exposure of standing at a container --
@@ -137,6 +142,7 @@ BR.Config.Consumables = {
         kind = BR.ItemKind.CONSUMABLE, prop = 'xm_prop_smug_crate_s_medical',
         useMs = 8000, maxStack = 3, carryMax = 3,
         health = 100, healthCap = 100,
+        emote = 'medkit',
         chestOnly = true,
     },
     {
@@ -424,6 +430,114 @@ BR.Config.CprKit = {
     kind = BR.ItemKind.CONSUMABLE, prop = 'xm_prop_x17_bag_med_01a',
     maxStack = 1, carryMax = 1,
     chestOnly = true,
+}
+
+--- ═══ WHAT A HEAL LOOKS LIKE FROM ACROSS THE STREET (#11) ═══
+---
+---   "while using a heal, ideally we should have the ped play an emote but not
+---    sure which one."                             -- owner, 2026-09-23
+---
+--- The issue's own sentence is the requirement: someone healing behind cover
+--- should be a thing you can catch them doing. So each pick below is judged by
+--- what it looks like to ANOTHER player, and client/inventory.lua plays it on
+--- the user's ped for exactly as long as `inv.using` stands -- see `emote`
+--- there for every way that ends.
+---
+--- ═══ ONE ROW PER KIND, AND A CONSUMABLE NAMES ITS KIND WITH `emote` ═══
+---
+--- A POSITIVE OPT-IN ON THE ROW, the `repairVeh` / `ignoresDamage` shape: an
+--- item without the field plays nothing. That is the repair kit (it is used
+--- from the driver's seat, where a standing clip has nowhere to go), the shop
+--- car, and the CPR kit, which has no channel at all. Both shields share a
+--- kind, because what an enemy needs to read off the ped is "putting a shield
+--- on", not which size.
+---
+--- ═══ `use` IS THE ONE LINE TO EDIT ═══
+---
+--- Each row holds three clips and `use` picks the one that plays; the other two
+--- are alternates, kept so a swap is that number and nothing else.
+--- /brnativecheck probes whichever entry `use` points at -- the dictionary
+--- exists and the clip is in it -- so a swap is checked the same way the default
+--- was. What no probe can say is whether it LOOKS right, and that is the
+--- playtest.
+---
+--- ═══ EVERY PAIR IS A STOCK CLIP A SHIPPED RESOURCE ALREADY PLAYS ═══
+---
+--- Nothing is guessed, and nothing needs a custom asset. Read 2026-09-23:
+---
+---   overextended/ox_inventory, data/items.lua  -- `bandage` plays
+---       missheistdockssetup1clipboard@idle_a / idle_a at flag 49, `armour`
+---       plays clothingshirt / try_shirt_positive_d.
+---   qbcore-framework/qb-ambulancejob, client/wounding.lua -- UseBandage plays
+---       weed_inspecting_high_base_inspector at flags 49 for 4000ms with
+---       disableMovement = false, and UseIfaks (their first-aid kit) plays
+---       mp_suicide / pill, also at 49.
+---   andristum/dpemotes, Client/AnimationList.lua -- `mechanic` is
+---       mini@repair / fixing_a_ped with EmoteLoop and EmoteMoving, `medic2` is
+---       amb@medic@standing@tendtodead@base / base, `adjust` is
+---       missmic4 / michael_tux_fidget with EmoteMoving, `notepad` is
+---       missheistdockssetup1clipboard@base / base with both, and `drink` is
+---       mp_player_inteat@pnq / loop with EmoteMoving.
+---
+--- EmoteMoving is dpemotes' word for "should only play on the upperbody" (its
+--- own comment on `notepad`), and Client/Emote.lua turns it into flag 51: 49
+--- plus hold-last-frame, where 49 is the upper-body, walk-while-it-plays flag
+--- this gamemode uses. So a clip marked that way, or played at 49 by ox or qb,
+--- has already been seen on a walking ped by a great many players. `medic2` is
+--- neither, and is an alternate for that reason.
+---
+--- ALL NINE PAIRS ARE IN THE GAME'S OWN LIST, dict and clip both: checked
+--- against DurtyFree/gta-v-data-dumps' animDictsCompact.json on the same day.
+--- That is a dump of somebody else's build, so /brnativecheck is still the word
+--- on ours.
+BR.Config.UseEmotes = {
+    -- FOUR SECONDS FOR FIFTEEN HEALTH, and the smallest thing a player does.
+    -- ox_inventory's bandage, which is a clipboard idle: something held up at
+    -- chest height with the head down over it. ox puts a rolled sock in the
+    -- hand for it -- a bandage -- and without one it is still the thing an enemy
+    -- needs from twenty meters: busy hands, eyes not on the street.
+    bandage = {
+        use = 1,
+        { dict = 'missheistdockssetup1clipboard@idle_a', clip = 'idle_a' },
+        -- qb-ambulancejob's bandage, at this gamemode's own four seconds.
+        { dict = 'anim@amb@business@weed@weed_inspecting_high_dry@',
+          clip = 'weed_inspecting_high_base_inspector' },
+        -- dpemotes' `notepad`, without its notepad: the same hands, looping.
+        { dict = 'missheistdockssetup1clipboard@base', clip = 'base' },
+    },
+
+    -- EIGHT SECONDS TO FULL, and the biggest commitment in the bag, so it gets
+    -- the biggest silhouette: the mechanic's lean into an engine bay, both
+    -- hands working, head down. It is the one of the three that should read
+    -- from the far side of a street, and dpemotes already ships it looping on a
+    -- walking ped, which is what eight seconds of it needs.
+    medkit = {
+        use = 1,
+        { dict = 'mini@repair', clip = 'fixing_a_ped' },
+        -- What GTA's paramedics do over a body: the dict carries the name of
+        -- the CODE_HUMAN_MEDIC_TEND_TO_DEAD scenario, which is dpemotes'
+        -- `medic`. Nobody ships it walking, so look at it before choosing it.
+        { dict = 'amb@medic@standing@tendtodead@base', clip = 'base' },
+        -- qb-ambulancejob's first-aid kit. ⚠ dpemotes files this very clip as
+        -- `fallover3`: it is the pill-overdose clip and it ends in a collapse,
+        -- which qb cuts off at three seconds. Looped for eight, it will be seen.
+        { dict = 'mp_suicide', clip = 'pill' },
+    },
+
+    -- THREE OR FIVE SECONDS, AND THE ITEM ON THE FLOOR IS BODY ARMOR.
+    -- ox_inventory's vest: by its name the clothes-shop "try it on, like it"
+    -- beat, hands on the chest -- "putting something on", which is what the
+    -- prop says.
+    shield = {
+        use = 1,
+        { dict = 'clothingshirt', clip = 'try_shirt_positive_d' },
+        -- dpemotes' `adjust`: Michael fidgeting with his tuxedo. The same read.
+        { dict = 'missmic4', clip = 'michael_tux_fidget' },
+        -- dpemotes' `drink`, which is the genre's read instead: this file calls
+        -- them potions, and Fortnite's shield is drunk. (By its name the dict is
+        -- GTA Online's interaction-menu snack, its own heal from the bag.)
+        { dict = 'mp_player_inteat@pnq', clip = 'loop' },
+    },
 }
 
 BR.Config.ConsumableById = {}

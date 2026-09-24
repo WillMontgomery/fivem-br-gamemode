@@ -1265,6 +1265,278 @@ AddEventHandler(BR.Net.INV_EFFECT, function(d)
 end)
 
 -- --------------------------------------------------------------------------
+-- The use emote (#11)
+-- --------------------------------------------------------------------------
+
+--- ═══ THE PED SHOWS THE CHANNEL, FOR EXACTLY AS LONG AS THE CHANNEL RUNS ═══
+---
+---   "while using a heal, ideally we should have the ped play an emote but not
+---    sure which one."                             -- owner, 2026-09-23
+---
+--- WHICH clip is config/loot.lua's, with its sources (BR.Config.UseEmotes).
+--- This is WHEN.
+---
+--- ═══ `inv.using` IS THE WHOLE CLOCK, AND THERE IS NO OTHER ═══
+---
+--- #11's third bullet: the animation "must follow that same state, not run on
+--- its own timer". So nothing here compares `endsAt` or `ms` with a clock, and
+--- nothing starts or stops on an event. A TICK pass asks one question -- should
+--- this ped be healing right now -- and makes the ped agree. The server opens a
+--- channel with an INV_SET carrying `using` and closes EVERY one with an INV_SET
+--- that does not: the completion, a hit (`useCancelOnDamage`), the shop car's
+--- seat rule, the repair kit's, and the LIVE guard for going down, dying or
+--- leaving. Each ending it has, and any it grows, reaches this pass the same way
+--- -- the CPR emote's lesson in client/dbno.lua: "cleanup written once per
+--- ending is cleanup that will be missed in the twelfth".
+---
+--- THREE THINGS END IT BEFORE THAT INV_SET LANDS, AND EACH IS THE SAME STATE
+--- SEEN FROM THIS SIDE:
+---
+---   * THE PLAYER STATE LEAVING ALIVE/WARMUP, which is server/inventory.lua's
+---     LIVE table read off the delta that says so rather than off the pass that
+---     sweeps the channel 250ms later. A knocked player's crawl starts on that
+---     same delta, and this clip is on the SECONDARY slot (below): a primary
+---     task does not replace it, so it must be taken off, not overwritten.
+---     canArm() is not this question -- `landed` keeps it true while downed.
+---   * clearLocal() at teardown, which empties `inv.using` itself.
+---   * THE PED LEAVING ITS FEET: a seat, a door being opened, an attachment, a
+---     chute. The server does not refuse a heal in a car, so the channel runs on
+---     and the clip comes back when they step out -- a standing clip on a seated
+---     ped is arms through the steering wheel.
+---
+--- ...AND ONE IT CANNOT SEE, A RESOURCE STOP, which has its own handler below.
+---
+--- ═══ UPPER BODY, BECAUSE THE CHANNEL HAS NEVER HELD THE LEGS ═══
+---
+--- Nothing on either side of the wire stops a player moving while a channel
+--- runs: inv.controls disables no movement control for it, and the server's
+--- tick loop cancels on damage, state and seat, never on distance. #11 did not
+--- ask for that to change and this does not change it. 49 is AF_LOOPING (1) |
+--- AF_UPPERBODY (16) | AF_SECONDARY (32), per citizenfx/natives TaskPlayAnim.md:
+--- the arms play the clip while the legs keep their own task, and the loop
+--- holds a short clip across an eight-second kit. It is the flag ox_lib's
+--- progress bar defaults to and the one qb-ambulancejob passes for this exact
+--- job with movement left on.
+---
+--- NOT 1024, and the three lock flags are false. client/dbno.lua's networking
+--- block has the first (citizenfx/fivem#3733: AF_OVERRIDE_PHYSICS desyncs the
+--- ped for everybody else); the Cfx thread "[ANIMATION] Sync this ffss" is the
+--- second -- locks set true, and other players saw a ped standing still.
+local EMOTE_FLAG = 49
+
+--- HOW LONG A DICTIONARY MAY TAKE TO STREAM before this channel goes without.
+---
+--- NO WAIT IS EVER PAID FOR IT. The pass requests, returns, and looks again ten
+--- times a second, so nothing yields inside a loop callback and there is no
+--- loop to leave running. What bounds it is this number: past it the request is
+--- released and the channel plays no clip, rather than asking forever. ox_lib's
+--- requestAnimDict makes the same two moves -- DoesAnimDictExist before asking,
+--- and a timeout after -- because a name the build does not have is a request
+--- that never completes.
+local EMOTE_LOAD_MS = 2000
+
+--- HOW OFTEN A CLIP THE ENGINE DROPPED IS PUT BACK.
+---
+--- A secondary clip is not guaranteed to survive what the legs and hands do in
+--- the meantime -- the holster when the kit comes up, a vault, a stumble -- and
+--- a channel whose pose fell off is a channel nobody else can see. So a tasked
+--- clip is looked at once a second and re-tasked if the engine says it is gone.
+--- Once a second and not every pass, because re-tasking restarts the clip and a
+--- ped that restarts it ten times a second is doing a different animation.
+local EMOTE_RETASK_MS = 1000
+
+-- What this file has put on the ped. `ped` is non-zero from the first task
+-- until the stop, whatever the watchdog last thought, so the stop is never
+-- skipped on a false "not playing". `askedAt` is set while a dictionary request
+-- of ours is out. `spent` is the `endsAt` of a channel that gave up on its clip
+-- -- used as the channel's NAME, never compared with a clock.
+local emote = { dict = nil, clip = nil, ped = 0, taskedAt = 0,
+                askedAt = nil, spent = nil }
+
+--- The entry `use` points at for a kind, or nil. One reader for the tick and
+--- the probe, so the clip /brnativecheck vouches for is the clip that plays.
+--- @param kind string|nil
+--- @return table|nil  { dict = string, clip = string }
+local function emotePick(kind)
+    local row = kind and BR.Config.UseEmotes and BR.Config.UseEmotes[kind]
+    local pick = type(row) == 'table' and row[row.use] or nil
+    if type(pick) ~= 'table' or type(pick.dict) ~= 'string'
+       or type(pick.clip) ~= 'string' then
+        return nil
+    end
+    return pick
+end
+
+--- The clip this ped should be playing right now, or nil. See the note above
+--- EMOTE_FLAG for why each line is here.
+--- @return table|nil
+local function emoteWanted()
+    local u = inv.using
+    if type(u) ~= 'table' then return nil end
+
+    local st = BR.State.me and BR.State.me.state
+    if st ~= BR.PlayerState.ALIVE and st ~= BR.PlayerState.WARMUP then
+        return nil
+    end
+
+    -- THE SLOT NAMES THE ITEM. `using` carries no item id on purpose (see
+    -- BR.Inv.publicFor), and the slot cannot change under a channel: every
+    -- keypress that could move it is refused while one runs (#271).
+    local s = inv.slots[u.slot]
+    local c = type(s) == 'table' and BR.Config.ConsumableById[s.id] or nil
+    local pick = emotePick(c and c.emote)
+    if not pick then return nil end
+
+    if u.endsAt ~= nil and emote.spent == u.endsAt then return nil end
+    if offFoot(PlayerPedId()) then return nil end
+    return pick
+end
+
+--- Take it off the ped and let go of the dictionary. Called on nearly every
+--- pass with nothing to do, and touches no native then.
+local function stopEmote()
+    if emote.ped ~= 0 then
+        -- StopAnimTask names the clip, so it can only ever stop OURS -- the
+        -- crawl a knock-down just started is left alone, which ClearPedTasks
+        -- would not do. It is the call ox_lib and qb-ambulancejob end theirs
+        -- with. 8.0 because the end is a fact the server just stated: a player
+        -- knocked down mid-bandage is not seen finishing the gesture.
+        StopAnimTask(emote.ped, emote.dict, emote.clip, 8.0)
+    end
+    if emote.askedAt ~= nil then RemoveAnimDict(emote.dict) end
+    emote.dict, emote.clip, emote.ped, emote.askedAt = nil, nil, 0, nil
+end
+
+--- This channel plays without a clip, and the console says why, once.
+--- @param why string
+local function spendEmote(why)
+    print(('[br_core] inventory: use emote %s / %s %s -- this channel plays '
+           .. 'without it'):format(tostring(emote.dict), tostring(emote.clip), why))
+    stopEmote()
+    emote.spent = inv.using and inv.using.endsAt or nil
+end
+
+BR.Loop.register(BR.Loop.TICK, 'inv.emote', function()
+    local want = emoteWanted()
+    if not want then stopEmote() return end
+
+    local ped = PlayerPedId()
+
+    -- A DIFFERENT CLIP OR A DIFFERENT PED IS A DIFFERENT EMOTE. Neither happens
+    -- inside one channel today; both are cheap to be right about. The new one is
+    -- started on the NEXT pass, never the one that stopped the old: ox_lib yields
+    -- a frame after its own StopAnimTask, "otherwise the StopAnimTask is
+    -- cancelled", and a pass costs nothing to wait.
+    if emote.dict ~= nil and (emote.dict ~= want.dict or emote.clip ~= want.clip
+                              or (emote.ped ~= 0 and emote.ped ~= ped)) then
+        stopEmote()
+        return
+    end
+    emote.dict, emote.clip = want.dict, want.clip
+
+    local now = GetGameTimer()
+    if emote.ped == ped then
+        if now - emote.taskedAt < EMOTE_RETASK_MS then return end
+        -- IsEntityPlayingAnim is a BOOL native: through `yes`, never bare.
+        if yes(IsEntityPlayingAnim(ped, want.dict, want.clip, 3)) then
+            emote.taskedAt = now
+            return
+        end
+        -- Dropped by the engine. Fall through and put it back.
+    end
+
+    if not yes(HasAnimDictLoaded(want.dict)) then
+        if emote.askedAt == nil then
+            if not yes(DoesAnimDictExist(want.dict)) then
+                spendEmote('is not a dictionary on this build')
+                return
+            end
+            RequestAnimDict(want.dict)
+            emote.askedAt = now
+        elseif now - emote.askedAt >= EMOTE_LOAD_MS then
+            spendEmote(('did not stream in %dms'):format(EMOTE_LOAD_MS))
+        end
+        return
+    end
+
+    -- 3.0 in is ox_lib's: the arms were doing something else a moment ago.
+    -- -1 is "until something stops it", and the only thing that does is the
+    -- stop above.
+    TaskPlayAnim(ped, want.dict, want.clip, 3.0, 8.0, -1, EMOTE_FLAG, 0.0,
+                 false, false, false)
+    -- RELEASED THE MOMENT IT IS TASKED. A running task holds what it plays, so
+    -- this only stops the dictionary outliving the clip -- ox_lib's progress bar
+    -- and dpemotes both do exactly this, on the line after the task.
+    RemoveAnimDict(want.dict)
+    emote.ped, emote.taskedAt, emote.askedAt = ped, now, nil
+end)
+
+-- THE ONE ENDING THE LOOP CANNOT COVER, because the loop is what stops. A
+-- `restart br_core` mid-kit would otherwise leave a looping clip on the ped
+-- with nothing left running to take it off. client/dbno.lua's CPR has the same
+-- handler for the same reason.
+AddEventHandler('onClientResourceStop', function(res)
+    if res ~= GetCurrentResourceName() then return end
+    stopEmote()
+end)
+
+--- THE USE EMOTES, AS /brnativecheck ROWS -- ONE PER KIND, FOR THE ENTRY `use`
+--- POINTS AT (#11).
+---
+--- A name this repo cannot test: no dictionary can be opened from a desk, and a
+--- wrong one fails in silence -- TaskPlayAnim on a clip that is not there plays
+--- nothing and throws nothing. So each row asks the build both halves: that the
+--- dictionary exists, and that the clip is IN it -- asked as GetAnimDuration,
+--- whose zero is read as "no such clip" and whose length is printed, so a real
+--- clip shows up as a believable number of seconds. Whatever `use` picks is what
+--- is checked, so an owner's swap is probed like the default was.
+---
+--- It WAITS, boundedly, for the dictionary, which is why it lives behind a
+--- console command and not in a loop callback -- client/dbno.lua's brcrawl
+--- streams the same way. The wait is counted rather than timed, so it ends even
+--- on a clock that is not moving.
+--- @return table array of { name, ok, detail }
+function BR.Inv.emoteCheck()
+    local kinds = {}
+    for kind in pairs(BR.Config.UseEmotes or {}) do kinds[#kinds + 1] = kind end
+    table.sort(kinds)
+
+    local rows = {}
+    for _, kind in ipairs(kinds) do
+        local pick = emotePick(kind)
+        local ran, good, detail = pcall(function()
+            if not pick then return false, 'nothing at `use`' end
+            local name = pick.dict .. ' / ' .. pick.clip
+            if not yes(DoesAnimDictExist(pick.dict)) then
+                return false, name .. ' -- no such dictionary on this build'
+            end
+            RequestAnimDict(pick.dict)
+            local waited = 0
+            while not yes(HasAnimDictLoaded(pick.dict)) and waited < EMOTE_LOAD_MS do
+                Citizen.Wait(50)
+                waited = waited + 50
+            end
+            if not yes(HasAnimDictLoaded(pick.dict)) then
+                RemoveAnimDict(pick.dict)
+                return false, ('%s -- did not stream in %dms'):format(name, EMOTE_LOAD_MS)
+            end
+            local len = tonumber(GetAnimDuration(pick.dict, pick.clip)) or 0
+            RemoveAnimDict(pick.dict)
+            if len <= 0 then
+                return false, name .. ' -- the dictionary has no clip of that name'
+            end
+            return true, ('%s (%.2fs)'):format(name, len)
+        end)
+        rows[#rows + 1] = {
+            name   = 'use emote: ' .. kind,
+            ok     = ran and good == true,
+            detail = ran and tostring(detail) or tostring(good),
+        }
+    end
+    return rows
+end
+
+-- --------------------------------------------------------------------------
 -- Input
 -- --------------------------------------------------------------------------
 

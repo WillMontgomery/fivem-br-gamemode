@@ -2685,6 +2685,34 @@ function BR.Native.check()
     probe('TaskPlayAnim',            function()
         return HasAnimDictLoaded('move_injured_ground')
     end)
+    -- THE USE EMOTE'S OTHER BINDINGS (#11). client/inventory.lua's `inv.emote`
+    -- pass calls every one of these while a heal runs; a nil in any of them
+    -- throws there, and five throws suspend the pass -- with a looping clip left
+    -- on the ped if it was StopAnimTask. The two that end something are proved
+    -- without being called: a real StopAnimTask or RemoveAnimDict mid-heal
+    -- would be the probe ending the emote.
+    probe('StopAnimTask',            function() assert(StopAnimTask, 'nil') end)
+    probe('RemoveAnimDict',          function() assert(RemoveAnimDict, 'nil') end)
+    probe('DoesAnimDictExist',       function()
+        return DoesAnimDictExist('move_injured_ground')
+    end)
+    probe('IsEntityPlayingAnim',     function()
+        return IsEntityPlayingAnim(ped, 'move_injured_ground', 'front_loop', 3)
+    end)
+    probe('GetAnimDuration',         function() assert(GetAnimDuration, 'nil') end)
+    -- ...AND THE CLIPS THEMSELVES, one row per kind: the dictionary exists and
+    -- the clip is in it. BR.Inv.emoteCheck says how, config/loot.lua's
+    -- BR.Config.UseEmotes says what. A MISSING CHECK IS A FAILED ROW, not an
+    -- absent one: rows that vanish quietly when a file is renamed would read as
+    -- nothing to report, which is the one thing this command must never say.
+    if BR.Inv and BR.Inv.emoteCheck then
+        for _, r in ipairs(BR.Inv.emoteCheck()) do results[#results + 1] = r end
+    else
+        results[#results + 1] = {
+            name = 'use emotes', ok = false,
+            detail = 'BR.Inv.emoteCheck is missing -- client/inventory.lua did not load',
+        }
+    end
     probe('GetEntityHealth',         function() return GetEntityHealth(ped) end)
     probe('SetEntityMaxHealth',      function() SetEntityMaxHealth(ped, BR.Config.Match.maxHealth) end)
     -- THE ONE THAT ACTUALLY MOVES A PLAYER PED'S CEILING -- see initHealthModel.

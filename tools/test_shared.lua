@@ -6148,6 +6148,93 @@ do
     ok(BR.Config.ConsumableById['medkit'] ~= nil, 'consumable lookup is built')
 
     -- ═══════════════════════════════════════════════════════════════════════
+    -- What a heal looks like (#11)
+    -- ═══════════════════════════════════════════════════════════════════════
+    --
+    --   "while using a heal, ideally we should have the ped play an emote but
+    --    not sure which one."                     -- owner, 2026-09-23
+    --
+    -- THE SHAPE, NOT THE PICK. `use` is the owner's one line to edit, so no
+    -- assertion here names which entry it points at -- only that it points at
+    -- one, that each kind carries a default and two alternates to swap to, and
+    -- that every heal in the bag names a kind that exists. A misspelled kind is
+    -- the silent failure: client/inventory.lua finds no row and the ped plays
+    -- nothing, which looks exactly like the feature before it was built.
+    do
+        local E = BR.Config.UseEmotes
+        ok(type(E) == 'table', 'the emote table exists')
+
+        local bad = {}
+        for _, kind in ipairs({ 'bandage', 'medkit', 'shield' }) do
+            local row = E and E[kind]
+            if type(row) ~= 'table' then
+                bad[#bad + 1] = kind .. ': no row'
+            else
+                if #row ~= 3 then
+                    bad[#bad + 1] = ('%s: %d clips, not a default and two '
+                                     .. 'alternates'):format(kind, #row)
+                end
+                if math.type(row.use) ~= 'integer' or row.use < 1
+                   or row.use > #row then
+                    bad[#bad + 1] = kind .. ': `use` points at nothing'
+                end
+                local seen = {}
+                for i, e in ipairs(row) do
+                    if type(e.dict) ~= 'string' or e.dict == ''
+                       or type(e.clip) ~= 'string' or e.clip == '' then
+                        bad[#bad + 1] = ('%s[%d]: dict and clip must both be '
+                                         .. 'named'):format(kind, i)
+                    else
+                        local k = e.dict .. '/' .. e.clip
+                        if seen[k] then
+                            bad[#bad + 1] = ('%s[%d]: the same clip as [%d] -- an '
+                                             .. 'alternate that is not one')
+                                            :format(kind, i, seen[k])
+                        end
+                        seen[k] = i
+                    end
+                end
+            end
+        end
+        ok(#bad == 0,
+           'bandage, med kit and shield each hold a default and two alternates, '
+               .. 'every one a named dict and clip, and `use` picks one of them',
+           table.concat(bad, '; '))
+
+        -- EVERY HEAL NAMES A KIND, AND EVERY NAME IS A KIND. A row that moves
+        -- health or armor is exactly what #11 is about; anything else naming a
+        -- kind that does not exist is a typo the client would read as "none".
+        local unnamed, dangling = {}, {}
+        local rows = {}
+        for _, c in ipairs(BR.Config.Consumables) do rows[#rows + 1] = c end
+        rows[#rows + 1] = BR.Config.CprKit
+        for _, c in ipairs(rows) do
+            if (c.health or c.armour) and c.emote == nil then
+                unnamed[#unnamed + 1] = c.id
+            end
+            if c.emote ~= nil and not (E and E[c.emote]) then
+                dangling[#dangling + 1] = c.id .. ' -> ' .. tostring(c.emote)
+            end
+        end
+        ok(#unnamed == 0,
+           'every consumable that heals or shields names what the ped does '
+               .. 'while it is used', table.concat(unnamed, ', '))
+        ok(#dangling == 0, 'and every name it gives is a row in the table',
+           table.concat(dangling, ', '))
+
+        local C = BR.Config.ConsumableById
+        ok(C['minishield'].emote == 'shield' and C['shield'].emote == 'shield',
+           'both shields are one kind -- the read is "putting a shield on", not '
+               .. 'which size')
+
+        -- ...AND THE TWO THAT MUST PLAY NOTHING. The repair kit is used from
+        -- the driver's seat, where a standing clip has nowhere to go; the CPR
+        -- kit has no channel at all.
+        ok(C['repairkit'].emote == nil and BR.Config.CprKit.emote == nil,
+           'the repair kit and the CPR kit name no emote')
+    end
+
+    -- ═══════════════════════════════════════════════════════════════════════
     -- The repair kit (#228)
     -- ═══════════════════════════════════════════════════════════════════════
     --
