@@ -8007,12 +8007,6 @@ do
             .. 'player used to pay an item to bank the slices, but a door',
         tostring(inv.slots[1] and inv.slots[1].count))
 
-    -- ── ...AND THE LOCK IS THE CHANNEL'S SLOT, NOT THE WHOLE BAG ──────────
-    --
-    -- A swap or a drop that does not touch the channelled slot cannot end the
-    -- channel -- the identity guard reads `inv.slots[u.slot]` and nothing else
-    -- -- so refusing them would be a rule with no hole under it. Rearranging a
-    -- bag is not "what my hands are doing".
     --- A second gun somewhere that is not the channelled slot, and where.
     local function spare(i)
         BR.Inv.give(1, { item = 'sawnoff', kind = BR.ItemKind.WEAPON,
@@ -8023,10 +8017,69 @@ do
         return nil
     end
 
+    -- ── ...NOR CHANGE WHAT IS IN THE HAND FROM THE PANEL ──────────────────
+    --
+    --   "we should also prevent them from changing slots mid-use."
+    --                                                 -- owner, 2026-09-23
+    --
+    -- The channel here was opened from the panel with the pistol up, so the
+    -- hand (slot 2) is not the channeled slot, and a swap or a drop on it
+    -- ends nothing. What it did was change what the hand holds with the bar
+    -- running: the client brings up whatever is in the active slot. Each end
+    -- of a drag on its own fixture, for the reason given above.
+    --
+    -- SILENT, AND NO PUSH. The panel moves nothing until an INV_SET says so,
+    -- so a refusal leaves it where it already was.
+    inv = nearlyDone()
+    local third = spare(inv)
+    ok(inv.active == 2 and inv.slots[2].item == 'pistol' and third ~= nil
+       and third ~= 2,
+        'precondition: the pistol in the hand and a second gun elsewhere',
+        ('active %s spare %s'):format(tostring(inv.active), tostring(third)))
+    sent = {}
+    fire(BR.Net.INV_SWAP, 1, { from = third, to = 2 })
+    ok(inv.slots[2] and inv.slots[2].item == 'pistol'
+       and inv.slots[third] and inv.slots[third].item == 'sawnoff',
+        'INV_SWAP cannot drag another gun into the hand mid-channel -- it used '
+            .. 'to come straight up with the bar running',
+        ('2:%s %s:%s'):format(tostring(inv.slots[2] and inv.slots[2].item),
+            tostring(third),
+            tostring(inv.slots[third] and inv.slots[third].item)))
+    ok(#eventsOf(BR.Net.INV_SET) == 0 and #eventsOf(BR.Net.NOTIFY) == 0,
+        'and says nothing and sends nothing, as a refused slot key does')
+    ok(inv.using ~= nil and inv.active == 2, 'with the channel running on')
+
+    inv = nearlyDone()
+    fire(BR.Net.INV_SWAP, 1, { from = 2, to = 4 })
+    ok(inv.slots[2] and inv.slots[2].item == 'pistol' and inv.slots[4] == false,
+        '...nor drag the gun in the hand away, which emptied it',
+        ('2:%s 4:%s'):format(tostring(inv.slots[2] and inv.slots[2].item),
+            tostring(inv.slots[4] and inv.slots[4].item)))
+
+    -- THE DROP KEY SENDS THE SLOT IN HAND, so this door is a keypress as well
+    -- as the panel's button.
+    inv = nearlyDone()
+    sent = {}
+    fire(BR.Net.INV_DROP, 1, { slot = inv.active })
+    ok(inv.slots[2] and inv.slots[2].item == 'pistol',
+        'INV_DROP cannot put down the gun in the hand mid-channel either',
+        tostring(inv.slots[2] and inv.slots[2].item))
+    ok(#eventsOf(BR.Net.INV_SET) == 0 and #eventsOf(BR.Net.NOTIFY) == 0,
+        'and that refusal is silent too')
+    ok(inv.using ~= nil, 'with the channel running on')
+
+    -- ── ...AND THE LOCK IS THE CHANNEL'S SLOT AND THE HAND, NOT THE BAG ───
+    --
+    -- A swap or a drop that touches neither the channelled slot nor the hand
+    -- cannot end the channel -- the identity guard reads `inv.slots[u.slot]`
+    -- and nothing else -- and cannot change what is in the hand, so refusing
+    -- them would be a rule with no hole under it. Rearranging a bag is not
+    -- "what my hands are doing".
     inv = nearlyDone()
     local elsewhere = spare(inv)
-    ok(elsewhere ~= nil and elsewhere ~= 1, 'precondition: a second gun, not '
-        .. 'in the channelled slot', tostring(elsewhere))
+    ok(elsewhere ~= nil and elsewhere ~= 1 and elsewhere ~= inv.active,
+        'precondition: a second gun, not in the channelled slot or the hand',
+        tostring(elsewhere))
     fire(BR.Net.INV_SWAP, 1, { from = elsewhere, to = 5 })
     ok(inv.slots[5] and inv.slots[5].item == 'sawnoff',
         'a swap between two OTHER slots still works mid-channel',
@@ -8268,6 +8321,14 @@ do
         ('2:%s 3:%s active %s'):format(
             tostring(inv.slots[2] and inv.slots[2].item),
             tostring(inv.slots[3] and inv.slots[3].item), tostring(inv.active)))
+    -- AND THE PANEL CANNOT MOVE IT THERE AFTERWARDS: a drag from where it
+    -- landed onto the empty slot in hand is the same gun coming up mid-use.
+    fire(BR.Net.INV_SWAP, 1, { from = 3, to = 2 })
+    ok(inv.slots[2] == false and inv.slots[3]
+       and inv.slots[3].item == 'carbinerifle' and inv.using ~= nil,
+        'nor can a drag put it into the empty hand while the bar runs',
+        ('2:%s 3:%s'):format(tostring(inv.slots[2] and inv.slots[2].item),
+            tostring(inv.slots[3] and inv.slots[3].item)))
 
     -- ── PROBE 2: A FULL BAG, AND THE HAND ON A GUN ────────────────────────
     inv = fullBag(2)

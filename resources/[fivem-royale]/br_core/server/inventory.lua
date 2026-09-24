@@ -1061,10 +1061,12 @@ end
 ---                 the item, so it was the expensive door, but it was a door.
 ---
 --- A SWAP OR A DROP OF SOME OTHER SLOT IS STILL ALLOWED, and that is why this
---- takes a slot rather than answering one question. Neither one touches the
---- channel -- the identity guard reads `inv.slots[u.slot]` and nothing else --
---- so refusing them would be a rule with no hole under it, and rearranging a
---- bag is not "what my hands are doing".
+--- takes a slot rather than answering one question. Given one, it is true for
+--- the channeled slot AND THE SLOT IN HAND (below) and nothing else. A swap or
+--- a drop anywhere else touches neither the channel -- the identity guard reads
+--- `inv.slots[u.slot]` and nothing else -- nor the hand, so refusing it would
+--- be a rule with no hole under it, and rearranging a bag is not "what my
+--- hands are doing".
 ---
 --- ═══ AND NOTHING HANDED TO THEM MOVES THE HAND (owner, 2026-09-23) ═══
 ---
@@ -1078,9 +1080,18 @@ end
 --- pickup stays on the floor and a purchase waits for the bar to end -- both in
 --- silence, as a refused key is.
 ---
---- THAT CLOSES THE FULL BAG TOO. It was the last door: a grant with nowhere
---- else to go swapped out the hand, or slot 1 on fists, and when that was the
---- channeled slot the stack left and the identity guard ended the channel.
+--- THAT CLOSES THE FULL BAG TOO. It was a grant's last door: a grant with
+--- nowhere else to go swapped out the hand, or slot 1 on fists, and when that
+--- was the channeled slot the stack left and the identity guard ended the
+--- channel.
+---
+--- AND THE PANEL CANNOT CHANGE THE HAND EITHER. When the panel's Use opened the
+--- channel with a gun up, the hand is not the channeled slot, and a drag onto
+--- it or a Drop on it -- the Drop key sends the slot in hand -- changed what
+--- the hand held while the bar ran: the client brings up whatever is in the
+--- active slot, or empties the hand. Neither ended the channel, so a test of
+--- the channeled slot alone let both through. A slot asked about here is held
+--- if it is either one.
 ---
 --- ═══ WHAT IS DELIBERATELY STILL ABLE TO END A CHANNEL ═══
 ---
@@ -1097,12 +1108,13 @@ end
 --- player is committed to and unarmed for. That is a gameplay change and it is
 --- the point of his sentence, not a side effect of it.
 --- @param inv table
---- @param slot integer|nil  narrow it to one slot; nil asks about any channel
+--- @param slot integer|nil  ask about one slot: true for the channeled slot and
+---                          for the slot in hand; nil asks about any channel
 --- @return boolean
 channelled = function(inv, slot)
     local u = inv.using
     if not u then return false end
-    return slot == nil or u.slot == slot
+    return slot == nil or u.slot == slot or inv.active == slot
 end
 
 RegisterNetEvent(BR.Net.INV_SELECT)
@@ -1169,11 +1181,13 @@ AddEventHandler(BR.Net.INV_SWAP, function(d)
     -- Same banked slices, same unspent item, one drag instead of a keypress. A
     -- fix written only into INV_SELECT would have left the panel open.
     --
-    -- NARROWED TO THE SLOTS THAT ACTUALLY MATTER. `from` and `to` are both
-    -- asked because the swap writes both ends -- dragging the channelled stack
-    -- away and dragging something else on top of it are the same hole -- and a
-    -- drag between two other slots is left alone: the identity guard reads
-    -- `inv.slots[u.slot]`, so there is nothing for it to notice.
+    -- NARROWED TO THE SLOTS THAT ACTUALLY MATTER: the channeled slot and the
+    -- hand. `from` and `to` are both asked because the swap writes both ends --
+    -- dragging the channelled stack away and dragging something else on top of
+    -- it are the same hole, and a drag with the hand at either end changes what
+    -- it holds mid-use -- and a drag between two other slots is left alone: the
+    -- identity guard reads `inv.slots[u.slot]` and the hand holds what it held,
+    -- so there is nothing to notice.
     if channelled(inv, from) or channelled(inv, to) then return end
 
     inv.slots[from], inv.slots[to] = inv.slots[to], inv.slots[from]
@@ -1254,8 +1268,11 @@ AddEventHandler(BR.Net.INV_DROP, function(d)
     -- still a door. Refused ABOVE the take, so nothing leaves the bag for a drop
     -- that is not going to happen.
     --
-    -- ONLY THIS SLOT. The pool branch above returns before it gets here and a
-    -- drop of any other slot is untouched; see `channelled`.
+    -- THE CHANNELED SLOT AND THE HAND. The Drop key sends the slot in hand, and
+    -- when the channel was opened from the panel with a gun up that is not the
+    -- channeled slot: dropping it would empty the hand mid-use. The pool branch
+    -- above returns before it gets here and a drop of any other slot is
+    -- untouched; see `channelled`.
     if channelled(inv, slot) then return end
 
     local stack = BR.Inv.take(src, slot)

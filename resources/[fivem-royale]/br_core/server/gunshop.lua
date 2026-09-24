@@ -410,10 +410,14 @@ end
 --- @return boolean handled  false when the buyer is mid-channel with nowhere
 ---                          but the hand to put it, and the handover must wait
 local function deliver(src, row)
+    -- HANDLED, NOT WAITED ON. A row with no stack has none when the bar ends
+    -- either, and anything falsy here reads as `busy` to handOver, which would
+    -- queue it again on every pass for the life of the server, logging a
+    -- channel that is not there.
     if type(row.stack) ~= 'table' then
         print(('^3[br_core] gunshop: "%s" has no stack to hand over^7')
             :format(tostring(row.id)))
-        return
+        return true
     end
 
     -- ═══ A COPY, BECAUSE row.stack IS THE CATALOGUE'S OWN TABLE ═══

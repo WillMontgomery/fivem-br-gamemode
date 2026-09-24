@@ -3355,6 +3355,44 @@ do
         ok(held(inv, 'carbinerifle') == 0 and #dropped == 0 and onShelf() == before,
             'and for a buyer who left the server with the bar still running')
 
+        -- ═══ A ROW WITH NO STACK IS NOT A BUYER WHO IS BUSY ═══
+        --
+        -- deliver()'s config-error arm has nothing to hand over now or when a
+        -- bar ends, so it answers handled. Read as `busy`, handOver queued it
+        -- on whenFree, ran it on the next pass, failed the same way and queued
+        -- it again -- every 250ms for the life of the server, with a console
+        -- line saying the buyer was mid-channel. The catalogue is memoised, so
+        -- this is the row the counter reads, emptied for this case and put
+        -- back.
+        do
+            local row = S.rowById(select(1, G.build()), 'carbinerifle')
+            local queued = 0
+            local realWhenFree = realInv.whenFree
+            realInv.whenFree = function(...)
+                queued = queued + 1
+                return realWhenFree(...)
+            end
+            local shelved = row.stack
+            row.stack = nil
+            reset()
+            player(105)
+            local okc, err = pcall(function()
+                buy(105, 'carbinerifle')
+                tickAt(clock + 250)
+                tickAt(clock + 250)
+            end)
+            row.stack = shelved
+            realInv.whenFree = realWhenFree
+            if not okc then error(err, 0) end
+            ok(#charged == 1, 'precondition: the purchase was paid for',
+                #charged)
+            ok(queued == 0,
+                'a row with no stack to hand over is not queued for the end '
+                    .. 'of a channel the buyer is not in', queued)
+            ok(held(realInv.of(105), 'carbinerifle') == 0 and #dropped == 0,
+                'and nothing is handed over or dropped')
+        end
+
         BR.Inv = stubInv
     end
 end
