@@ -117,7 +117,8 @@ end
 --- the number the case itself already has.
 local subjects = {}
 
---- Reporters whose case has been sent to be written but not yet acknowledged.
+--- Reporters owed on a case that has been sent to be written but not yet
+--- acknowledged.
 ---
 --- [matchId] = { [targetLicense] = { reporterLicense, ... } }
 ---
@@ -126,28 +127,18 @@ local subjects = {}
 --- seconds later on `br:incident:filed`, and this is the table that joins the
 --- two.
 ---
---- THAT ACKNOWLEDGEMENT NOW CARRIES `reporterLicense` TOO (#180), which makes
---- this queue a SECOND route to a fact the envelope states directly -- and
---- saying so is the point of this paragraph. The field was added for the
---- courtesy notice's audience, in server/incident.lua, and the reward pairing
---- was deliberately left on this queue rather than moved in the same change:
---- collapsing them is a change to who gets paid, on the path a playtest of the
---- Volts loop is about to walk, and it belongs in its own commit with its own
---- assertions. Whoever does it deletes this table, `awaitAck`, `takeAck` and
---- the FIFO approximation below -- the ack pairs exactly and the approximation
---- stops being needed.
+--- THAT ACKNOWLEDGEMENT NOW CARRIES `reporterLicense` TOO (#180), and it cannot
+--- replace this queue. It names the reporter who OPENED the case; since #360 a
+--- report that arrives while a case about the same player is in flight is held
+--- behind it as a corroboration, and that reporter is owed on the same id
+--- without being on the envelope at all.
 ---
---- A QUEUE PER SUBJECT, NOT A SINGLE SLOT. Two reporters submitting inside the
---- acknowledgement window both see an empty `prior` and both open a case; that
---- race is documented below and accepted. A single slot would drop one of them,
---- and the person dropped would be the one who reported first.
----
---- FIFO, and the pairing is therefore approximate: if two acknowledgements
---- cross, reporter A may be recorded against reporter B's row. Both rows are
---- about the same player in the same match and both resolve together, so the
---- reward lands either way -- and the alternative, threading a token through
---- br_ringmaster and br_ddb purely to make an already-duplicated case tidy, is
---- more machinery than the outcome is worth.
+--- THE WHOLE QUEUE IS OWED ON THE ONE ID THAT LANDS (#360). It used to be
+--- popped one reporter per acknowledgement, because two reporters inside the
+--- window each opened a case of their own and there were two ids to share out.
+--- The latch in server/incident.lua holds one case per player in flight, so
+--- everybody queued behind a subject -- the opener, and every held reporter --
+--- is waiting on that one case.
 local awaiting = {}
 
 local function awaitAck(matchId, license, reporter)
@@ -165,12 +156,13 @@ local function awaitAck(matchId, license, reporter)
     q[#q + 1] = reporter
 end
 
---- Whoever is next in line for this subject's case, or nil.
+--- Everybody waiting on this subject's case, emptied, or nil.
 local function takeAck(matchId, license)
     local m = awaiting[matchId]
     local q = m and m[license]
     if not q or #q == 0 then return nil end
-    return table.remove(q, 1)
+    m[license] = nil
+    return q
 end
 
 --- Say that somebody is owed for a case, once it is real.
@@ -921,85 +913,99 @@ AddEventHandler(BR.Net.REPORT_SUBMIT, function(data)
         -- a second case beside the anticheat's, about the same player, in the
         -- same match, and left an admin to notice they were the same person.
         --
-        -- THE RACE IS REAL AND IS ACCEPTED, exactly as it is on the anticheat
-        -- path. `remember` runs on the DynamoDB acknowledgement, which is
-        -- seconds away, so two reporters submitting inside that window both see
-        -- an empty `prior` and both file. The rule that #143 actually demands --
-        -- one report per reporter per target -- is decided synchronously above
-        -- and cannot race; this half is a de-duplication of CASES and is
-        -- allowed to be best-effort, because the console can merge two rows and
-        -- cannot un-file one that was never written.
+        -- ═══ AND A CASE STILL IN THE POST IS A CASE (#360) ═══
+        --
+        -- THIS PARAGRAPH USED TO SAY THE RACE WAS REAL AND ACCEPTED: `remember`
+        -- runs on the DynamoDB acknowledgement, seconds away, so two reporters
+        -- inside that window both saw an empty `prior` and both filed, and so did
+        -- a report and an anticheat filing about the same player. The owner,
+        -- 2026-09-23: "one case, never 2." So the report path now reads the
+        -- same in-flight latch the four anticheat producers do (#332), after
+        -- `priorFor` and not instead of it, and notes its own send into it.
+        -- Whichever arrives first opens the case; a report arriving behind it
+        -- is held as a corroboration and goes out against the id that lands.
+        --
+        -- The rule that #143 actually demands -- one report per reporter per
+        -- target -- is decided synchronously above and never raced.
         local prior = BR.Incident and BR.Incident.priorFor(me.matchId, t.license) or {}
         local s = subjectIn(me.matchId, t.license)
         local accepted = true
         s.reports = s.reports + 1
 
+        -- BUILT BEFORE IT IS KNOWN WHICH CASE IT HANGS ON (#360), for the reason
+        -- server/incident.lua builds its anticheat notes above the branch: it may
+        -- go out now against an acknowledged case or later against one still on
+        -- its way, and one literal written twice is how the two would come to
+        -- disagree. `seq` is the NEXT number rather than a moved one, because a
+        -- report that opens a case below is not a corroboration and spends none.
+        local corro = {
+            matchId    = me.matchId,
+            license    = t.license,
+            name       = t.name,
+            seq        = s.seq + 1,
+            -- HOW MANY REPORTS THIS PLAYER HAS NOW DRAWN, which is the
+            -- number an admin actually wants: the anticheat's `count` is
+            -- refused shots, and the analogue for a report is people.
+            count      = s.reports,
+            -- The category, matching the `category` field on the incident
+            -- this is being appended to, so the two read in the same
+            -- vocabulary.
+            reason     = t.category,
+            -- WHO SAID IT, AND THE ONLY REASON THESE TWO FIELDS EXIST.
+            -- Owner, reading his own corroboration on a case: "when I
+            -- personally corroborate something it doesn't credit me". It
+            -- never could -- the name was not stored, not dropped in
+            -- transit, and never put on the wire at all.
+            --
+            -- THE ANTICHEAT MUST KEEP SENDING NEITHER, and that is what
+            -- makes their absence mean something. The three corroborations
+            -- server/incident.lua raises each build their own literal and
+            -- none of them carries a reporter, so the console can read "no
+            -- reporter" as "the system did this" rather than as "we did not
+            -- look" -- the same test IncidentDetail already makes about a
+            -- case's filer. Adding a fallback here would destroy that.
+            --
+            -- NEITHER CAN BE MISSING ON THIS PATH. `reporter` is
+            -- BR.Identity.qualified, which is never the empty string, and a
+            -- submission with no license was refused far above this line
+            -- before a single target was resolved. `me.name` is the roster's
+            -- own field, which is `GetPlayerName(src) or 'Unknown'`.
+            --
+            -- THE FIELD NAMES ARE THE FILING ENVELOPE'S, not new vocabulary:
+            -- BR.IncidentBuild.fromReport is handed `reporterLicense` and
+            -- `reporterName` a few lines below this branch.
+            reporterLicense = reporter,
+            reporterName    = me.name,
+            -- NO SEVERITY, for the reason BR.IncidentBuild.fromReport
+            -- gives: a human's category is not a measurement, and grading
+            -- it here would invent confidence that does not exist.
+            --
+            -- AND ADDING ONE WOULD DELETE SOMEBODY'S REPORT, which is a
+            -- second reason and a much more expensive one. The console
+            -- stores this row's sentence ending in a `worst: <severity>`
+            -- clause when a severity travels, and it FOLDS a run of
+            -- corroborations into one line reading "happened 20 times in 10
+            -- minutes". `foldable` in Ringmaster's
+            -- src/lib/corroborationText.ts refuses a person's row on two
+            -- tests: an absent reporter, and `gradesSeverity`, which is a
+            -- test for that clause. The second is the only one that reaches
+            -- the rows ALREADY in the owner's table -- every corroboration
+            -- stored before `reporterLicense` existed arrived as
+            -- `byLicense: null, byName: 'System'`, a person's identical to
+            -- the anticheat's, and nobody is going to hand-edit DynamoDB. A
+            -- severity on this literal makes all of them foldable at once.
+            --
+            -- SO THE ABSENCE IS PINNED RATHER THAN TRUSTED.
+            -- tools/test_roster.lua asserts it on both human paths and
+            -- asserts that an anticheat corroboration DOES carry one, so
+            -- adding a severity here is a red suite today instead of a
+            -- deleted report months from now.
+        }
+
         if #prior > 0 then
-            s.seq = s.seq + 1
-            TriggerEvent('br:ringmaster:corroborate', {
-                incidentId = prior[#prior],
-                matchId    = me.matchId,
-                license    = t.license,
-                name       = t.name,
-                seq        = s.seq,
-                -- HOW MANY REPORTS THIS PLAYER HAS NOW DRAWN, which is the
-                -- number an admin actually wants: the anticheat's `count` is
-                -- refused shots, and the analogue for a report is people.
-                count      = s.reports,
-                -- The category, matching the `category` field on the incident
-                -- this is being appended to, so the two read in the same
-                -- vocabulary.
-                reason     = t.category,
-                -- WHO SAID IT, AND THE ONLY REASON THESE TWO FIELDS EXIST.
-                -- Owner, reading his own corroboration on a case: "when I
-                -- personally corroborate something it doesn't credit me". It
-                -- never could -- the name was not stored, not dropped in
-                -- transit, and never put on the wire at all.
-                --
-                -- THE ANTICHEAT MUST KEEP SENDING NEITHER, and that is what
-                -- makes their absence mean something. The three corroborations
-                -- server/incident.lua raises each build their own literal and
-                -- none of them carries a reporter, so the console can read "no
-                -- reporter" as "the system did this" rather than as "we did not
-                -- look" -- the same test IncidentDetail already makes about a
-                -- case's filer. Adding a fallback here would destroy that.
-                --
-                -- NEITHER CAN BE MISSING ON THIS PATH. `reporter` is
-                -- BR.Identity.qualified, which is never the empty string, and a
-                -- submission with no license was refused far above this line
-                -- before a single target was resolved. `me.name` is the roster's
-                -- own field, which is `GetPlayerName(src) or 'Unknown'`.
-                --
-                -- THE FIELD NAMES ARE THE FILING ENVELOPE'S, not new vocabulary:
-                -- BR.IncidentBuild.fromReport is handed `reporterLicense` and
-                -- `reporterName` a few lines below this branch.
-                reporterLicense = reporter,
-                reporterName    = me.name,
-                -- NO SEVERITY, for the reason BR.IncidentBuild.fromReport
-                -- gives: a human's category is not a measurement, and grading
-                -- it here would invent confidence that does not exist.
-                --
-                -- AND ADDING ONE WOULD DELETE SOMEBODY'S REPORT, which is a
-                -- second reason and a much more expensive one. The console
-                -- stores this row's sentence ending in a `worst: <severity>`
-                -- clause when a severity travels, and it FOLDS a run of
-                -- corroborations into one line reading "happened 20 times in 10
-                -- minutes". `foldable` in Ringmaster's
-                -- src/lib/corroborationText.ts refuses a person's row on two
-                -- tests: an absent reporter, and `gradesSeverity`, which is a
-                -- test for that clause. The second is the only one that reaches
-                -- the rows ALREADY in the owner's table -- every corroboration
-                -- stored before `reporterLicense` existed arrived as
-                -- `byLicense: null, byName: 'System'`, a person's identical to
-                -- the anticheat's, and nobody is going to hand-edit DynamoDB. A
-                -- severity on this literal makes all of them foldable at once.
-                --
-                -- SO THE ABSENCE IS PINNED RATHER THAN TRUSTED.
-                -- tools/test_roster.lua asserts it on both human paths and
-                -- asserts that an anticheat corroboration DOES carry one, so
-                -- adding a severity here is a red suite today instead of a
-                -- deleted report months from now.
-            })
+            s.seq = corro.seq
+            corro.incidentId = prior[#prior]
+            TriggerEvent('br:ringmaster:corroborate', corro)
 
             -- CORROBORATORS ARE PAID TOO, AND THAT IS THE WHOLE POINT (#168).
             -- The limit is five players or three submissions a match, so a
@@ -1020,6 +1026,29 @@ AddEventHandler(BR.Net.REPORT_SUBMIT, function(data)
             print(('[br_core] report: %s corroborates case %s about %s (report %d, seq %d)%s')
                 :format(tostring(me.name), tostring(prior[#prior]),
                         tostring(t.name), s.reports, s.seq,
+                        earns and '' or ' -- unpaid'))
+        elseif BR.Incident and BR.Incident.reportInFlight
+            and BR.Incident.reportInFlight(me.matchId, t.license, corro) then
+            -- HELD, AND NUMBERED NOW. `seq` and `s.reports` move as they would
+            -- with the id in hand, and server/incident.lua sends this exact
+            -- literal the moment the acknowledgement names the case.
+            --
+            -- WHAT IT DOES NOT BRING is this report's own evidence snapshot, which
+            -- no corroboration does. The case carries the one taken when it was
+            -- filed, under a minute earlier; kills and refused lines after that
+            -- reach it on the close, and chat the subject sent in between reaches
+            -- no row at all.
+            s.seq = corro.seq
+
+            -- PAID ON THE SAME ACKNOWLEDGEMENT, because that is when the id this
+            -- corroborator is owed on exists. `awaiting` is drained whole when it
+            -- lands, so a reporter queued here is paid beside whoever opened it.
+            if earns then
+                awaitAck(me.matchId, t.license, reporter)
+            end
+
+            print(('[br_core] report: %s corroborates the case in flight about %s (report %d, seq %d)%s')
+                :format(tostring(me.name), tostring(t.name), s.reports, s.seq,
                         earns and '' or ' -- unpaid'))
         else
             -- HOISTED so the timeline can be built from the SAME records the
@@ -1072,6 +1101,12 @@ AddEventHandler(BR.Net.REPORT_SUBMIT, function(data)
                 -- reporter field depends on this.
                 if earns then
                     awaitAck(me.matchId, t.license, reporter)
+                end
+                -- AND THE LATCH, BEFORE THE EMIT FOR THE SAME REASON (#360): from
+                -- this line until the id lands, an anticheat filing or another
+                -- reporter about this player is held behind this case.
+                if BR.Incident and BR.Incident.filingSent then
+                    BR.Incident.filingSent(me.matchId, t.license)
                 end
                 TriggerEvent('br:ringmaster:incident', payload)
             else
@@ -1126,9 +1161,10 @@ end)
 -- other. Neither has to know the other exists.
 --
 -- NOTHING HAPPENS FOR AN ANTICHEAT FILING. `takeAck` answers nil when no report
--- opened this case, so a machine-opened incident registers no debt -- correct,
--- because there is nobody to pay. A human who later corroborates it is claimed
--- on the corroboration path above, against this same id.
+-- is queued on this case, so a machine-opened incident registers no debt of its
+-- own -- correct, because there is nobody to pay. A human who corroborates it is
+-- claimed on the corroboration path above, against this same id -- or here, when
+-- they reported while it was still in flight and were held behind it (#360).
 --
 -- AND NOTHING HAPPENS FOR A CASE AN ADMIN OPENED (#168 self-dealing), by the
 -- same mechanism and deliberately not by a second test here. The submit path
@@ -1140,8 +1176,9 @@ end)
 -- `earnsRewards`.
 AddEventHandler('br:incident:filed', function(ack)
     if type(ack) ~= 'table' then return end
-    local reporter = takeAck(ack.matchId, ack.subjectLicense)
-    if reporter then claimReward(ack.incidentId, reporter, ack.matchId) end
+    for _, reporter in ipairs(takeAck(ack.matchId, ack.subjectLicense) or {}) do
+        claimReward(ack.incidentId, reporter, ack.matchId)
+    end
 end)
 
 --[[

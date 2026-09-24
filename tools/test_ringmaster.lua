@@ -2394,7 +2394,14 @@ end
 --- surface that holds up the announcement tests. This one needs the evidence
 --- half as well, and loading it into that world would change what those cases
 --- run against.
-local function newTimelineWorld()
+---
+--- `opts.reports` ADDS THE REPORT PATH (#360), server/players.lua in its manifest
+--- place, for the cases that need a player's report and an anticheat filing in
+--- one world. Opt-in for the reason above: every other case here runs against
+--- the surface it was written against.
+--- @param opts table|nil  { reports = boolean }
+local function newTimelineWorld(opts)
+    opts = opts or {}
     local env = setmetatable({}, { __index = function(_, k) return SANDBOX_STD[k] end })
     env._G = env
 
@@ -2406,6 +2413,8 @@ local function newTimelineWorld()
         incidents = {},   -- br:ringmaster:incident payloads
         closes = {},      -- br:ringmaster:incidentClose payloads
         corroborations = {},
+        -- br:report:claim payloads: who is owed for a report, against which id.
+        claims = {},
         -- Every line br_core printed into this world. The close diagnostic is
         -- the only fault here whose whole expression is a console line.
         printed = {},
@@ -2604,11 +2613,40 @@ local function newTimelineWorld()
         end,
     }
 
+    -- THE REPORT PATH'S OWN NEEDS, only when it is loaded. BR.Rng mints the row
+    -- tokens a report names its target by; `departedIn` is the second half of
+    -- the player list; and `licenseOf` caches onto the entry the way the real
+    -- one does, because the submit path reads the license off the listed entry
+    -- rather than asking again.
+    if opts.reports then
+        local chunk, err = loadfile(ROOT .. 'br_lib/shared/rng.lua', 't', env)
+        if not chunk then
+            realPrint('\27[31msandbox load error\27[0m rng.lua: ' .. tostring(err))
+            os.exit(1)
+        end
+        chunk()
+        BRs.Roster.departedIn = function() return {} end
+        BRs.Roster.licenseOf = function(src)
+            local e = S.roster[src]
+            if e and S.licenses[src] then e.license = S.licenses[src] end
+            return S.licenses[src]
+        end
+        -- A SECOND CATEGORY, so a case can tell the one a reporter picked from
+        -- the default every unknown value falls back to.
+        BRs.Config.isReportCategory = function(c)
+            return c == 'cheating' or c == 'abusive_chat'
+        end
+        -- THE CAPABILITY THE REWARD RULE ASKS FOR, answered by the same stub
+        -- row as the console grant: `W.admin` then makes a reporter who could
+        -- resolve the case they file, which is who #168 does not pay.
+        BRs.Grants.RESOLVE_INCIDENTS = BRs.Grants.CONSOLE
+    end
+
     -- IN MANIFEST ORDER. evidence.lua at br_core/fxmanifest.lua:114, incident.lua
     -- at :138, strip.lua below it -- the same order the server loads them, which
     -- is the order that decides whether the close reads a full buffer or an
     -- empty one.
-    for _, f in ipairs({
+    local serverFiles = {
         'br_core/server/evidence.lua',
         -- chat.lua sits between them in br_core/fxmanifest.lua and so it sits
         -- between them here. It is the DETECTOR for the chat screen, the way
@@ -2617,7 +2655,10 @@ local function newTimelineWorld()
         'br_core/server/chat.lua',
         'br_core/server/incident.lua',
         'br_core/server/strip.lua',
-    }) do
+    }
+    -- players.lua sits directly above incident.lua in the manifest.
+    if opts.reports then table.insert(serverFiles, 3, 'br_core/server/players.lua') end
+    for _, f in ipairs(serverFiles) do
         local chunk, err = loadfile(ROOT .. f, 't', env)
         if not chunk then
             realPrint('\27[31msandbox load error\27[0m ' .. f .. ': ' .. tostring(err))
@@ -2635,8 +2676,40 @@ local function newTimelineWorld()
     env.AddEventHandler('br:ringmaster:corroborate', function(p)
         S.corroborations[#S.corroborations + 1] = p
     end)
+    env.AddEventHandler('br:report:claim', function(p)
+        S.claims[#S.claims + 1] = p
+    end)
 
     local W = { env = env, BR = BRs, S = S }
+
+    --- One panel report, through the REAL server/players.lua (#360).
+    ---
+    --- THE TOKEN IS READ OFF THE LIST THE PANEL WOULD HAVE BEEN SENT, the way
+    --- tools/test_roster.lua's report cases take it, so the target is named by
+    --- the handle a client actually holds. `source` is set rather than passed,
+    --- for the reason `W.strip` gives. Only in a world built with `reports`.
+    function W.report(src, subjectName, category)
+        local id
+        for _, row in ipairs(BRs.Players.listFor(src) or {}) do
+            if row.name == subjectName then id = row.id end
+        end
+        env.source = src
+        env.TriggerEvent(BRs.Net.REPORT_SUBMIT, {
+            targets = { { id = id, category = category or 'cheating' } },
+        })
+        env.source = nil
+    end
+
+    --- The answer the last report from this player got.
+    function W.reportResult(src)
+        for i = #S.toClients, 1, -1 do
+            local c = S.toClients[i]
+            if c.name == BRs.Net.REPORT_RESULT and c.target == src then
+                return c.payload
+            end
+        end
+        return nil
+    end
 
     function W.at(t) S.now = t end
 
@@ -4126,6 +4199,291 @@ do
     ok(#W.S.corroborations == 0,
         'with nothing held to release, which is this path\'s own rule',
         #W.S.corroborations)
+end
+
+--- A match with one suspect and three players who can report them.
+local function newReportWorld()
+    local W = newTimelineWorld({ reports = true })
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+    W.join(2, 7, 'license:ayla', 'Ayla')
+    W.join(3, 7, 'license:cass', 'Cass')
+    W.join(4, 7, 'license:dev', 'Dev')
+    return W
+end
+
+describe('report.held-behind-an-anticheat-case-in-flight')
+do
+    -- ═══ #360: THE ONE PRODUCER #332 DID NOT LATCH ═══
+    --
+    -- server/players.lua emits `br:ringmaster:incident` too, and until #360 it
+    -- neither read the in-flight latch nor wrote it -- so a report arriving while
+    -- an anticheat case about the same player was still in the post opened a
+    -- second case. The owner, 2026-09-23: "one case, never 2."
+    local W = newReportWorld()
+
+    W.at(2000); W.strip(1, CONJURED)
+    W.at(3000); W.strip(1, CONJURED)
+    ok(#W.S.incidents == 1, 'the strip case is sent', #W.S.incidents)
+
+    W.at(4000); W.report(2, 'Cheater', 'abusive_chat')
+    ok(#W.S.incidents == 1,
+        'a report before the id comes back opens no second case', #W.S.incidents)
+    ok(#W.S.corroborations == 0,
+        'and claims to corroborate nothing while the case has no name',
+        #W.S.corroborations)
+    local r = W.reportResult(2)
+    ok(r ~= nil and r.ok == true and r.filed == 1,
+        'and the reporter is told what a reporter who opened a case is told',
+        r and (tostring(r.ok) .. '/' .. tostring(r.filed)))
+
+    W.at(5000); W.ack(7, 'license:cheat', 'inc-1')
+    ok(#W.S.corroborations == 1, 'the acknowledgement releases the report',
+        #W.S.corroborations)
+
+    -- ═══ WHAT A REPORT CARRIES, WHICH IS WHAT MUST NOT BE LOST ═══
+    --
+    -- The same literal an ordinary corroboration sends -- who said it and what
+    -- they picked -- against the id that landed. Its own evidence snapshot is
+    -- the one thing it does not bring, as no corroboration does; the case has
+    -- the snapshot taken at its own filing a second earlier.
+    local c = W.S.corroborations[1]
+    ok(c ~= nil and c.incidentId == 'inc-1', 'against the case that landed',
+        c and tostring(c.incidentId))
+    ok(c ~= nil and c.reporterLicense == 'license:ayla' and c.reporterName == 'Ayla',
+        'naming who made the report', c and tostring(c.reporterName))
+    ok(c ~= nil and c.reason == 'abusive_chat',
+        'in the category they picked, not the default', c and tostring(c.reason))
+    ok(c ~= nil and c.license == 'license:cheat' and c.count == 1 and c.seq == 2,
+        'about the subject, as the first report and the first corroboration',
+        c and (tostring(c.count) .. '/' .. tostring(c.seq)))
+    ok(c ~= nil and c.severity == nil,
+        'and with no severity, so the console never folds a person out of it',
+        c and tostring(c.severity))
+
+    -- PAID LIKE ANY OTHER CORROBORATOR (#168), on the id that now exists.
+    local claim = W.S.claims[1]
+    ok(#W.S.claims == 1 and claim.license == 'license:ayla'
+        and claim.incidentId == 'inc-1',
+        'and the reporter is owed on that case', #W.S.claims)
+
+    -- A DUPLICATE ACKNOWLEDGEMENT RELEASES NOTHING TWICE AND PAYS NOBODY TWICE.
+    W.at(40000); W.ack(7, 'license:cheat', 'inc-1')
+    ok(#W.S.corroborations == 1 and #W.S.claims == 1,
+        'a duplicate acknowledgement sends and pays nothing again',
+        #W.S.corroborations .. '/' .. #W.S.claims)
+
+    -- AND THE NEXT REPORT CORROBORATES AT ONCE, NUMBERED AFTER THE HELD ONE.
+    -- The held report spent its number when it was accepted; a counter that
+    -- only moved on release would hand this one the same `seq`.
+    W.at(41000); W.report(3, 'Cheater')
+    local c2 = W.S.corroborations[2]
+    ok(c2 ~= nil and c2.seq == 3 and c2.count == 2,
+        'the next report is numbered after the held one rather than over it',
+        c2 and (tostring(c2.seq) .. '/' .. tostring(c2.count)))
+end
+
+describe('report.every-producer-in-both-orders')
+do
+    -- ═══ A REPORT AND EACH OF THE FOUR ANTICHEAT PRODUCERS, BOTH WAYS ROUND ═══
+    --
+    -- Whichever arrives first opens the case and the other lands on it. Driven
+    -- for every producer rather than one, because #332's every-producer-pair
+    -- case is what stops a latch shipping half applied.
+    local FIRES = {
+        shot = function(W, at)
+            W.env.TriggerEvent('br:ringmaster:refusal', {
+                src = 1, name = 'Cheater', license = 'license:cheat', matchId = 7,
+                count = 8, windowMs = 4000,
+                reason = W.BR.ShotRefusal.NO_WEAPON,
+                reasons = { [W.BR.ShotRefusal.NO_WEAPON] = 8 },
+                severity = 'high', seq = 1, at = at,
+            })
+        end,
+        strip = function(W, at)
+            W.at(at - 1000); W.strip(1, CONJURED)
+            W.at(at); W.strip(1, CONJURED)
+        end,
+        vehicle = function(W, at)
+            W.vehicle(1, 7, 'license:cheat', 'Cheater', 2, 1,
+                W.BR.Config.VehicleRefusal.FLIES)
+        end,
+        chat = function(W, at)
+            W.say(1, 'join my server at example.com')
+        end,
+    }
+    local ORDER = { 'shot', 'strip', 'vehicle', 'chat' }
+
+    for _, kind in ipairs(ORDER) do
+        -- THE REPORT FIRST.
+        local W = newReportWorld()
+        W.at(3000); W.report(2, 'Cheater')
+        ok(#W.S.incidents == 1 and W.S.incidents[1].kind == 'report',
+            ('a report opens the case (then a %s)'):format(kind), #W.S.incidents)
+
+        W.at(6000); FIRES[kind](W, 6000)
+        ok(#W.S.incidents == 1,
+            ('and a %s before the id comes back opens no second one'):format(kind),
+            #W.S.incidents)
+
+        -- THE ANTICHEAT'S NOTE LANDS ON THE REPORT'S CASE -- except chat's,
+        -- which never corroborates (#244) -- and the reporter is paid for it.
+        W.at(7000); W.ack(7, 'license:cheat', 'inc-1')
+        local want = kind == 'chat' and 0 or 1
+        ok(#W.S.corroborations == want
+            and (want == 0 or W.S.corroborations[1].incidentId == 'inc-1'),
+            ('the held %s goes out against the report\'s case'):format(kind),
+            #W.S.corroborations)
+        ok(#W.S.claims == 1 and W.S.claims[1].license == 'license:ayla',
+            ('and the reporter who opened it is owed (%s)'):format(kind),
+            #W.S.claims)
+
+        -- THE ANTICHEAT FIRST.
+        local X = newReportWorld()
+        X.at(3000); FIRES[kind](X, 3000)
+        ok(#X.S.incidents == 1, ('a %s opens the case'):format(kind),
+            #X.S.incidents)
+
+        X.at(6000); X.report(2, 'Cheater')
+        ok(#X.S.incidents == 1,
+            ('and a report before the id comes back opens no second one (%s)')
+                :format(kind), #X.S.incidents)
+    end
+end
+
+describe('report.two-reporters-inside-the-window-are-one-case')
+do
+    -- ═══ "NEVER 2" COVERS TWO PEOPLE AS WELL AS TWO KINDS ═══
+    --
+    -- Before #360 this was documented as a race and accepted: two reporters
+    -- submitting inside the acknowledgement window both saw an empty `prior`
+    -- and both opened a case. Three here, so the held side holds more than one.
+    local W = newReportWorld()
+
+    W.at(3000); W.report(2, 'Cheater')
+    W.at(4000); W.report(3, 'Cheater')
+    W.at(4500); W.report(4, 'Cheater')
+    ok(#W.S.incidents == 1,
+        'three reporters inside the window open one case', #W.S.incidents)
+
+    W.at(5000); W.ack(7, 'license:cheat', 'inc-1')
+
+    -- TWO ROWS, NOT ONE. Two strangers naming the same player is the most
+    -- valuable thing this feature produces, and the throttle that folds a
+    -- machine's identical notes would delete one of them.
+    ok(#W.S.corroborations == 2,
+        'the two held reports go out as two rows, not folded into one',
+        #W.S.corroborations)
+    local a, b = W.S.corroborations[1], W.S.corroborations[2]
+    ok(a ~= nil and b ~= nil and a.reporterName == 'Cass' and b.reporterName == 'Dev',
+        'oldest first, each naming its own reporter',
+        (a and tostring(a.reporterName) or 'nil') .. ',' .. (b and tostring(b.reporterName) or 'nil'))
+    ok(a ~= nil and b ~= nil and a.seq == 2 and b.seq == 3 and b.count == 3,
+        'and numbered as the second and third reports',
+        a and b and (a.seq .. ',' .. b.seq .. '/' .. b.count))
+
+    -- ALL THREE ARE OWED ON THE ONE CASE. The queue used to be popped one per
+    -- acknowledgement, which was right when each of them had an id of their own.
+    local owed = {}
+    for _, cl in ipairs(W.S.claims) do
+        if cl.incidentId == 'inc-1' then owed[#owed + 1] = cl.license end
+    end
+    table.sort(owed)
+    ok(table.concat(owed, ',') == 'license:ayla,license:cass,license:dev',
+        'and all three reporters are owed on the case that landed',
+        table.concat(owed, ','))
+end
+
+describe('report.a-held-admin-is-not-paid')
+do
+    -- #168's self-dealing rule holds on the held path as it does on the other
+    -- two: the report is held and lands exactly as anybody's does, and the only
+    -- difference is that no claim is queued for it.
+    local W = newReportWorld()
+    W.admin('license:cass')
+
+    W.at(3000); W.report(2, 'Cheater')
+    W.at(4000); W.report(3, 'Cheater')
+    W.at(5000); W.ack(7, 'license:cheat', 'inc-1')
+
+    local c = W.S.corroborations[1]
+    ok(c ~= nil and c.reporterLicense == 'license:cass',
+        'an admin\'s held report still lands on the case',
+        c and tostring(c.reporterLicense))
+    ok(#W.S.claims == 1 and W.S.claims[1].license == 'license:ayla',
+        'and only the player who opened it is owed', #W.S.claims)
+end
+
+describe('report.a-strip-does-not-overwrite-a-held-report')
+do
+    -- THE ANTICHEAT'S HELD NOTE IS ONE SLOT, NEWEST WINS, because its count is
+    -- cumulative. A report has no count to supersede it by, so it is held beside
+    -- that slot rather than in it -- or the next strip would erase who said it.
+    local W = newReportWorld()
+
+    W.at(2000); W.strip(1, CONJURED)
+    W.at(3000); W.strip(1, CONJURED)
+    W.at(4000); W.report(2, 'Cheater')
+    W.at(5000); W.strip(1, CONJURED)
+    W.at(6000); W.strip(1, CONJURED)
+    ok(#W.S.incidents == 1, 'one case', #W.S.incidents)
+
+    W.at(7000); W.ack(7, 'license:cheat', 'inc-1')
+    local report, strip = nil, nil
+    for _, c in ipairs(W.S.corroborations) do
+        if c.reporterLicense == 'license:ayla' then report = c
+        elseif c.reporterLicense == nil then strip = c end
+    end
+    ok(#W.S.corroborations == 2, 'the strips and the report each reach the case',
+        #W.S.corroborations)
+    ok(report ~= nil and report.incidentId == 'inc-1',
+        'and the report is still the report, naming who made it')
+    ok(strip ~= nil and strip.count == 4,
+        'beside the strips\' note at its cumulative count',
+        strip and tostring(strip.count))
+end
+
+describe('report.a-held-report-outlives-a-lost-filing')
+do
+    -- ═══ #332 LETS A HELD STRIP GO WITH A LOST WRITE; A REPORT CANNOT GO ═══
+    --
+    -- Past FILING_IN_FLIGHT_MS the next offence files again and whatever the lost
+    -- filing was holding is dropped -- harmless for a strip, whose next note
+    -- carries the cumulative count. A report has no next note. So it rides the
+    -- next case this player's events send.
+    local W = newReportWorld()
+
+    W.at(2000); W.strip(1, CONJURED)
+    W.at(3000); W.strip(1, CONJURED)   -- sent, and never acknowledged
+    W.at(4000); W.report(2, 'Cheater')
+    ok(#W.S.incidents == 1, 'the report is held behind the case in flight',
+        #W.S.incidents)
+
+    W.at(64000); W.strip(1, CONJURED)
+    ok(#W.S.incidents == 2,
+        'past the window the next strip files again, as #332 decided',
+        #W.S.incidents)
+
+    W.at(65000); W.ack(7, 'license:cheat', 'inc-2')
+    local c = W.S.corroborations[1]
+    ok(c ~= nil and c.incidentId == 'inc-2' and c.reporterLicense == 'license:ayla',
+        'and the report held behind the lost one lands on the case that did',
+        c and tostring(c.incidentId))
+    ok(#W.S.claims == 1 and W.S.claims[1].incidentId == 'inc-2',
+        'with the reporter owed on it', #W.S.claims)
+
+    -- AND WHEN NOTHING ELSE IS FILED BEFORE THE MATCH ENDS, IT SAYS SO. There
+    -- is no case to put it on and nothing honest to write; the console line is
+    -- the only trace that a person's report reached no row.
+    local X = newReportWorld()
+    X.at(2000); X.strip(1, CONJURED)
+    X.at(3000); X.strip(1, CONJURED)
+    X.at(4000); X.report(2, 'Cheater')
+    X.at(9000); X.endMatch(7)
+    local said = X.printedMatching('report not filed for Cheater')
+    ok(#said == 1 and said[1]:find('Ayla', 1, true) ~= nil,
+        'a report held behind a case that never landed is named at match end',
+        said[1] or 'nothing printed')
 end
 
 describe('strip.the-doubling-rule-is-gone')

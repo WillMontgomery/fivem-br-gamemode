@@ -13869,10 +13869,18 @@ do
         qRow and nRow and (qRow.id .. ' / ' .. nRow.id) or 'nil')
 
     -- Cass has reported nobody, so this submission is clean.
+    --
+    -- AYLA'S CASE IS STILL IN FLIGHT, SO CASS'S REPORT IS HELD BEHIND IT (#360)
+    -- and goes out when the id lands -- which is why the acknowledgement is
+    -- fired here, keyed on QUINN. A report misattributed to the newcomer would
+    -- not be released by it: it would have opened a case of its own, under the
+    -- stranger's license, and the assertion below reads that too.
     fired, sent = {}, {}
     fire(BR.Net.REPORT_SUBMIT, 3, {
         targets = { { id = tokenFor(3, 'Quinn'), category = 'cheating' } },
     })
+    fire('br:incident:filed', nil,
+        { incidentId = 'inc-departed-1', matchId = m.id, subjectLicense = licQuinn })
     local corr = firedOf('br:ringmaster:corroborate')[1]
     local inc2 = firedOf('br:ringmaster:incident')[1]
     local named = (corr and corr.license) or (inc2 and inc2.subjectLicense)

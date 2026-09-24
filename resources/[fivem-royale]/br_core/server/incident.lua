@@ -303,15 +303,31 @@ local chatCount = {}
 -- `filed` nor `lastSaid` holds is that a case for this player is already on its
 -- way. So that is what this records.
 --
--- [matchKey] = { [license] = { at, held } }
+-- [matchKey] = { [license] = { at, held, reports } }
 --
---   at    when the case was sent, for the expiry below.
---   held  the newest corroboration that arrived while it was in flight, or nil.
---         ONE SLOT, NEWEST WINS, which is `corroborate`'s rule below and holds
---         for the same reason: `count` and `seq` are running totals, so the
---         newest note says everything the ones it replaced said. A queue per
---         player would keep several copies of one sentence, and a lifetime to
---         manage them, to say nothing more.
+--   at       when the case was sent, for the expiry below.
+--   held     the newest corroboration that arrived while it was in flight, or
+--            nil. ONE SLOT, NEWEST WINS, which is `corroborate`'s rule below and
+--            holds for the same reason: `count` and `seq` are running totals, so
+--            the newest note says everything the ones it replaced said. A queue
+--            per player would keep several copies of one sentence, and a
+--            lifetime to manage them, to say nothing more.
+--   reports  every player's report that arrived while it was in flight, oldest
+--            first, or nil (#360). A LIST AND NOT THE SLOT ABOVE, because the
+--            slot's argument does not hold for a person: a report carries no
+--            running total for a newer one to supersede, and a strip landing
+--            after a report would otherwise overwrite who said it. See
+--            `corroborate` on why two humans are never folded into one row.
+--
+-- ═══ A PLAYER'S REPORT IS LATCHED TOO (#360) ═══
+--
+-- server/players.lua emits `br:ringmaster:incident` as well, and until #360 it
+-- did not write this map or read it -- so a report and an anticheat filing about
+-- the same player inside the window opened two cases, and so did two reporters.
+-- The owner, 2026-09-23: "one case, never 2." The report path now notes its send
+-- through `BR.Incident.filingSent` and asks `BR.Incident.reportInFlight` after
+-- `priorFor`, in the order the four producers here do, so either kind can open
+-- the case and every other one lands on it.
 --
 -- NOT `pendingTimeline` FURTHER DOWN, WHICH LOOKS EXACTLY LIKE THIS AND IS NOT.
 -- That map answers "which filing is waiting for an id to close against"; it is
@@ -385,6 +401,30 @@ local function corroborate(ev)
     rec.held = ev
 end
 
+--- The record of a case for this player still on its way, or nil.
+--- @param matchId any
+--- @param license string|nil
+--- @return table|nil
+local function inFlightFor(matchId, license)
+    if license == nil then return nil end
+    local m = inFlight[key(matchId)]
+    local rec = m and m[license]
+    if not rec then return nil end
+
+    -- EXPIRED IS NOT IN FLIGHT. See FILING_IN_FLIGHT_MS. Dropped here on the way
+    -- past rather than swept on a timer, which is this file's promise to itself.
+    --
+    -- UNLESS A PERSON IS WAITING ON IT (#360). A held strip is superseded by the
+    -- next one, which files again with the cumulative count; a held report has
+    -- no next one, so the record stays for `filingSent` to carry its reports
+    -- onto whichever case this player's next event sends.
+    if GetGameTimer() - rec.at >= FILING_IN_FLIGHT_MS then
+        if rec.reports == nil then m[license] = nil end
+        return nil
+    end
+    return rec
+end
+
 --- Is a case for this player already on its way to the database?
 ---
 --- CALLED AFTER `priorFor` AND NOT INSTEAD OF IT. An acknowledged case is the
@@ -397,19 +437,26 @@ end
 ---                         lands; nil from a producer that does not corroborate
 --- @return boolean  true when this event must not open a second case
 local function filingInFlight(matchId, license, corro)
-    if license == nil then return false end
-    local m = inFlight[key(matchId)]
-    local rec = m and m[license]
+    local rec = inFlightFor(matchId, license)
     if not rec then return false end
-
-    -- EXPIRED IS NOT IN FLIGHT. See FILING_IN_FLIGHT_MS. Dropped here on the way
-    -- past rather than swept on a timer, which is this file's promise to itself.
-    if GetGameTimer() - rec.at >= FILING_IN_FLIGHT_MS then
-        m[license] = nil
-        return false
-    end
-
     if corro ~= nil then rec.held = corro end
+    return true
+end
+
+--- The same question from server/players.lua, for a player's report (#360).
+---
+--- ITS OWN FUNCTION RATHER THAN A FLAG ON `filingInFlight`, because what it
+--- keeps is different: every report goes on `reports` and nothing replaces it.
+---
+--- @param matchId any
+--- @param license string|nil
+--- @param corro table  the report's corroboration, released against the id
+--- @return boolean  true when the report was held and must not open a case
+function BR.Incident.reportInFlight(matchId, license, corro)
+    local rec = inFlightFor(matchId, license)
+    if not rec then return false end
+    rec.reports = rec.reports or {}
+    rec.reports[#rec.reports + 1] = corro
     return true
 end
 
@@ -422,8 +469,14 @@ local function filingSent(matchId, license)
         m = {}
         inFlight[k] = m
     end
-    m[license] = { at = GetGameTimer() }
+    -- THE REPORTS AN EXPIRED FILING WAS HOLDING RIDE THIS ONE (#360). A record
+    -- still here is one `inFlightFor` kept past its window for exactly that.
+    local old = m[license]
+    m[license] = { at = GetGameTimer(), reports = old and old.reports }
 end
+
+--- The report path notes its own sends through the same function (#360).
+BR.Incident.filingSent = filingSent
 
 --- An id came back for this player: release whatever was waiting on it.
 ---
@@ -437,6 +490,11 @@ end
 --- rule and the match-end flush apply to it unchanged -- and `rec == nil` there
 --- means the first corroboration on a fresh case never waits, which is exactly
 --- what this one is.
+---
+--- THE REPORTS DO NOT GO THROUGH `corroborate` (#360), for the reason its own
+--- header gives: a person pressing a key is not a loop, and folding two humans'
+--- reports into one row would be destroying evidence. Each goes out as its own
+--- row, oldest first, exactly as it would have with the id already in hand.
 local function filingLanded(matchId, license, incidentId)
     if license == nil then return end
     local m = inFlight[key(matchId)]
@@ -444,9 +502,14 @@ local function filingLanded(matchId, license, incidentId)
     if not rec then return end
     m[license] = nil
 
-    if rec.held ~= nil and incidentId ~= nil then
+    if incidentId == nil then return end
+    if rec.held ~= nil then
         rec.held.incidentId = incidentId
         corroborate(rec.held)
+    end
+    for _, r in ipairs(rec.reports or {}) do
+        r.incidentId = incidentId
+        TriggerEvent('br:ringmaster:corroborate', r)
     end
 end
 
@@ -1390,6 +1453,17 @@ AddEventHandler('br:match:destroyed', function(ev)
     -- rather than sent, exactly as `pendingTimeline` is dropped below -- and the
     -- match-end diagnostic there already says how many ids never came back, which
     -- is the same fault reported once rather than twice.
+    --
+    -- A PLAYER'S REPORT IS NOT DROPPED IN SILENCE (#360). Before the latch it
+    -- would have opened a case of its own; held behind one whose id never came
+    -- back, it reaches no case at all, and this line is the only trace of it.
+    for _, rec in pairs(inFlight[key(ev.matchId)] or {}) do
+        for _, r in ipairs(rec.reports or {}) do
+            print(('^3[br_core] report not filed for %s: held behind a case whose '
+                    .. 'id never came back (reported by %s)^7')
+                :format(tostring(r.name), tostring(r.reporterName)))
+        end
+    end
     inFlight[key(ev.matchId)] = nil
 end)
 
