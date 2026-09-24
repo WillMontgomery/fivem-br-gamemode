@@ -124,6 +124,39 @@ BR.Config.Storm = {
         minRadius   = 0.0,
     },
 
+    -- ═══ A CONJOINED ZONE GROWS INTO ITS DESTINATION, IT DOES NOT POP (#344) ═══
+    --
+    --   "when the storm finishes moving and the next phase is opened, if they're
+    --    conjoined, today the border pops suddenly to cover the whole area. instead
+    --    it should grow over a period of 20s to include that new area instead of
+    --    popping."                                     -- the owner, 2026-09-23
+    --
+    -- On a breakout whose destination OVERLAPS the zone the wall stands in, the safe
+    -- zone grows from that zone to the two of them together across the first
+    -- `seconds` of the hold -- wall, damage and HUD all at once, off one clock
+    -- (BR.StormAt's eighth answer; BR.StormZone has the geometry). Never longer than
+    -- the hold itself, so it is always over before the wall moves, and a dev time
+    -- scale that shortens the hold shortens it too. A destination wholly apart from
+    -- the zone still appears at once: the far island is fine as it is. 0 is the old
+    -- pop.
+    --
+    -- THE MAP DOES NOT DRAW THE FRONT. It shows the zone the phase started in under
+    -- the destination's own fill -- the ground the growth ends on -- because a
+    -- moving front on the map would be the overlay rebuilt while it moves, which is
+    -- the hitch 52a7caa removed (#350).
+    --
+    -- MEASURED over 680 conjoined breakouts (200 matches, phases 2 to 7, every one
+    -- forced to break out): the destination reaches 1.0 to 1.3 of its own radius
+    -- outside the zone on average and 3.5 at worst, so across twenty seconds the front
+    -- moves 81 m/s on average at phase 2 (163 at worst), 62 at phase 3, 31 at 4, 17 at
+    -- 5, 7 at 6 and 2 at 7. It is exact -- not one of 5.2 million sampled points on the
+    -- wrong side, and its distance from outside off by 1e-9 m at worst -- and it only
+    -- ever grows. The wall's zone costs 0.17 ms a frame during a growth, against 0.08
+    -- for the whole union, inset included.
+    grow = {
+        seconds = 20.0,
+    },
+
     -- SHRINK TIME IS PRICED PER PHASE, like the hold: at each phase entry
     -- the furthest in-match player's run to the TARGET circle's edge sets
     -- the wall's travel time -- everyone already inside means the sweep
@@ -364,14 +397,15 @@ BR.Config.Storm = {
     --
     --   LONG ZONES ARE LONGER THAN THE OLD DIAMETERS -- see point 2 at the top.
     --
-    --   THE MAP DOES NOT MORPH YET. #350 moves and scales the zone's fill in place,
-    --   which is exact only while the zone is one shape -- so the map draws the zone
-    --   in the shape it set out in for the whole sweep, and takes the target's once,
-    --   when the sweep finishes. Mid-sweep the fill and the curtain disagree by the
-    --   morph; the target's own fill, drawn on top, is the new shape all phase.
+    --   THE MAP'S MORPH IS A CROSSFADE. The map may not re-draw a polygon while the
+    --   storm moves (#350, 52a7caa), so it shows the wall's morph by placing and fading
+    --   shapes it drew while the storm stood still -- exact at both ends of a sweep,
+    --   a blend of them in between (`overlay.keyframes` below has the numbers).
     --
     --   A UNIT COSTS ABOUT TWO MILLISECONDS TO BUILD -- 1.7 on average, 5 at the
-    --   99th percentile, in plain Lua 5.4 -- and is built once per zone per match.
+    --   99th percentile, in plain Lua 5.4 -- and is built once per zone per match: the
+    --   client builds every zone of a match ahead of need, one a tick, from the moment
+    --   the warmup preview publishes the seed (client/storm.lua's storm.units).
     --
     -- PHASE 8 IS RADIUS 0 AND STAYS A POINT, as it always has: a shape with no
     -- radius is not a shape, and a point is not a circle.
@@ -923,14 +957,51 @@ BR.Config.Storm = {
         -- kilobyte of coordinates marshalled through a Scaleform string -- an order of
         -- magnitude more work than the radius blips' own remove-and-re-add, which is
         -- why this is slower than blip.refreshHzShrinking rather than equal to it.
-        -- A moving one-blob zone never rebuilds: it is placed. A moving conjoined or
-        -- disjoint union cannot be transformed as one clip, so it uses the existing
-        -- nominal-radius map-blip fallback for the sweep instead of rebuilding at all
-        -- (#350). Those rings are approximate guidance for the seeded blob; the exact
-        -- fill returns when static. This ceiling remains for static picture changes:
-        -- phase edges, target changes, the phase-1 fade, and a refused placement
-        -- falling back to a fresh clip.
+        -- A MOVING STORM NEVER REBUILDS (#350, 52a7caa): its keyframes are placed and
+        -- faded (#344), a breakout's included, and a placement or fade the engine
+        -- refuses hands the rest of the sweep to the nominal-radius map blips. So a
+        -- phase is ONE rebuild, when its record arrives, and this ceiling is for what
+        -- else can ask while the storm stands still: a target edited by a dev command,
+        -- a first sight, or a refused picture drawn again.
         rebuildHz = 2,
+
+        -- ═══ HOW MANY KEYFRAMES THE MAP CROSSFADES A SWEEP THROUGH (#344) ═══
+        --
+        -- The wall morphs corner to corner, and on the map that morph is the solver's
+        -- circle times one moving unit shape -- so the map draws that shape at a few
+        -- points of the morph and fades from one to the next as the storm moves,
+        -- without redrawing anything (client/storm.lua has the argument). 1 is the
+        -- sweep's two ends alone: EXACT at both, and a blend of them in between. More
+        -- adds keyframes between them, ADDED DURING THE HOLD one every keyframeGapMs and
+        -- never while the storm moves.
+        --
+        -- MEASURED over 150 matches' nested sweeps, the two-sided distance in metres
+        -- from the keyframe nearest the morph's own point to the wall itself -- worst
+        -- [mean] across each sweep. At the sweep's two ends it is zero. A pause-map
+        -- pixel is about 8 m.
+        --
+        --     phase    keyframes 1    2            4            8
+        --       2       724 [206]    424 [111]    212 [58]     174 [31]
+        --       3       616 [144]    425 [78]     288 [43]     246 [24]
+        --       4       373 [84]     203 [46]     134 [25]     123 [14]
+        --       5       177 [48]     110 [27]      57 [14]      52 [8]
+        --       6       101 [23]      61 [13]      36 [7]       17 [4]
+        --       7        38 [9]       27 [6]       17 [3]       16 [2]
+        --
+        -- From four keyframes up, the worst of them is where the wall rests on its
+        -- destination for part of the sweep -- the wall there is the hull of the moving
+        -- shape AND the destination, and the destination's own fill is drawn over the
+        -- keyframe in that stretch. Against the moving shape alone, eight keyframes are
+        -- within 120 m at worst at phase 2 and 43 m at phase 4.
+        --
+        -- IT SHIPS AT 1 BECAUSE EACH EXTRA KEYFRAME IS AN ADD_AREA_OVERLAY, which is the
+        -- call #350's hitch was traced to. It is spent while the storm stands still and
+        -- a couple of seconds apart, but its frame cost inside the movie cannot be
+        -- measured off the game box: /brstormhitch reset during a hold, read
+        -- storm.map.keyframe, and raise this if it is well under the 34 ms threshold.
+        keyframes = 1,
+        -- Milliseconds between two keyframes added during a hold.
+        keyframeGapMs = 2000,
     },
 }
 

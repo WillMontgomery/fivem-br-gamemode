@@ -774,7 +774,7 @@ BR.Sched.every(1000, 'storm.damage', function(dt)
         if m.state ~= BR.MatchState.PLAYING or not m.storm then return end
 
         local rec = m.storm
-        local cx, cy, r, st, _, dps, t = BR.StormAt(rec, now)
+        local cx, cy, r, st, _, dps, t, g = BR.StormAt(rec, now)
         if dps <= 0 then return end
 
         -- THE EDGE CUSHION. During a shrink the wall moves METRES PER SECOND
@@ -874,7 +874,10 @@ BR.Sched.every(1000, 'storm.damage', function(dt)
         -- what the wall's own frame passes, so the shape billed is the shape drawn
         -- -- and a morph is a corner list like any other, with an exact signed
         -- distance rather than a bound on one (storm_shape.lua's morph section).
-        local zone = BR.StormZone(rec, cx, cy, r, t)
+        -- `g` likewise: a conjoined zone GROWS into its destination across the
+        -- hold's first seconds instead of popping (#344), and the ground billed is
+        -- the ground the wall has grown over, at this tick.
+        local zone = BR.StormZone(rec, cx, cy, r, t, g)
 
         -- Capped so a long scheduler stall (or a test jumping the clock)
         -- cannot land one apocalyptic tick.
@@ -1035,13 +1038,17 @@ RegisterCommand('brstormfreeze', function(_, args)
     BR.Server.eachMatch(function(m)
         if not m.storm then return end
         local live = m.storm
-        local cx, cy, r, _, _, _, t = BR.StormAt(live, now)
+        local cx, cy, r, _, _, _, t, g = BR.StormAt(live, now)
         local phase = live.phase
         -- THE OUTLINE THE WALL IS STANDING IN, as far as it had morphed -- every
         -- moving disc and the destination disc it is heading for. Carried into the
         -- frozen record and out of it again, so neither end of a freeze snaps the
-        -- wall back to the zone it set out from.
-        local mo = BR.StormMorphAt(live, t)
+        -- wall back to the zone it set out from. AND, INTO A FREEZE, HOW FAR A
+        -- CONJOINED ZONE HAD GROWN into its destination (#344): the frozen record keeps
+        -- the target, so a freeze mid-growth neither shrinks the zone back nor grows it
+        -- twice. Not into the thaw, which draws a new destination with a growth of its
+        -- own ahead of it.
+        local mo = BR.StormMorphAt(live, t, (not thaw) and g or nil)
 
         if thaw then
             -- Re-enter the phase we were in, from where the wall is now.

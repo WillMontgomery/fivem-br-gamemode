@@ -58,11 +58,12 @@ end
 --- because storm.state's own `nextBlip` draws the same circle in the same purple from
 --- the record the instant one exists, so extending the ring would be two purple rings
 --- on one circle. The WALL goes through previewWallCircle, which starts with this
---- function and then covers the PLAYING stretch off the record -- because the real
---- wall is suppressed for most of the phase-1 hold and the owner was looking at an
---- empty horizon. THE CONSTRAINT IN THE PARAGRAPH ABOVE IS UNCHANGED AND IS WHY THE
---- WALL'S EXTENSION IS A HANDOFF: it ends as the real wall fades in, on the real
---- wall's own clock, so the two are never both on screen at strength.
+--- function and then covers phase 1 off the record: the owner was looking at an empty
+--- horizon for most of the early match (#340), and since #344's second round circle
+--- 1's wall is phase 1's DESTINATION wall, drawn beside the opening zone's through the
+--- hold and the sweep as every later phase shows its two. It is no longer standing in
+--- for the real wall, so the paragraph above is about the preview FIELD and this
+--- gate, and the wall's own life is previewWallCircle's.
 ---
 --- AND GATED ON MY OWN STATE, for the reason activeRecord is: a LOBBY bystander
 --- shares the match state without being in the match, and they were the ones
@@ -1348,48 +1349,81 @@ local function drawWall(zone, alphaScale)
     columns(c, math.floor((s - c.s0) / cds) - math.floor(drawn / 2), drawn)
 end
 
--- ═══ ONE FADE CLOCK, READ IN BOTH DIRECTIONS (#340) ═══
+-- ═══ PHASE 1 DRAWS TWO WALLS THROUGH ITS HOLD, AND NOTHING RESETS (#344) ═══
 --
---   "After match goes to playing, before the first storm move, the storm border
---    cannot be seen anywhere. Doesn't seem to draw during this time. The storm circle
---    should draw the entire time from while in bus to when it moves. Make sure it
---    fades in just like before."                   -- the owner, 2026-09-22, #340
+--   "phase 1 preview only draws until the storm starts moving, then the border
+--    resets from the outside of the map and works in. not sure this is how we should
+--    do it, but perhaps we should draw 2 walls like we do with every other phase."
+--                                                     -- the owner, 2026-09-23
 --
--- TWO GATES THAT DID NOT MEET. previewCircle stops the instant the match goes PLAYING,
--- and the real wall is deliberately suppressed for all of the phase-1 hold except its
--- last fadeInSec -- so from the bus doors closing until ten seconds before the first
--- shrink there was no curtain anywhere, which is most of the early match. Both gates
--- were right about their own half and neither knew about the other.
+-- UNTIL THIS, THE HOLD WAS ONE WALL HANDED OFF TO ANOTHER. The opening zone's wall was
+-- suppressed for the whole free-loot hold except its last fadeInSec, and #327's circle
+-- 1 stood in for it and faded out as it faded in (#340) -- so ten seconds before the
+-- first sweep the curtain on the horizon swapped from circle 1 to the ring round the
+-- whole map, and the sweep then brought that ring back in from the edge. That is the
+-- reset he saw.
 --
--- THE FIX IS NOT A SECOND CLOCK. The map ring and the 3D curtain already share this
--- countdown (user call, 2026-08-04), and a preview fading out on a clock of its own
--- would be a third thing to keep in step -- one that could drift out of agreement
--- with the wall the day fadeInSec moved. So this is the ONE number both walls read:
--- how much of the REAL wall is showing. The preview draws one minus it.
+-- NOW BOTH ARE DRAWN, the way every later phase shows its zone and its destination:
 --
--- WHICH MAKES THE HANDOFF STRUCTURAL RATHER THAN CAREFUL, and that is the whole
--- reason it is spelled as a share. The preview is at full strength exactly while the
--- real wall is suppressed, thins as the real wall rises, and is gone at the instant
--- the real wall reaches full -- so the two can neither both be absent (the defect)
--- nor both be at full strength (the constraint previewCircle's header states: the
--- preview "must not be on screen during PLAYING beside the real wall it was standing
--- in for"). There is nothing to tune out of agreement, because there is one value.
+--   THE OPENING ZONE'S WALL from the first instant of the PLAYING hold, fading in over
+--   fadeInSec from the record's own start (wallRamp) -- one clock, as #351's entry
+--   ramp is -- and moving off from exactly where it already stands when the sweep
+--   begins. Zone 0 is the map disc, so it is a clean ring just past the farthest map
+--   corner. This reverses the 2026-08-04 call to hide that ring through the hold: the
+--   owner's words above ask for it.
 --
--- A fadeInSec OF ZERO IS ANSWERED HERE TOO, and it used to be a nan. The old spelling
--- tested `msLeft > fadeMs` and then divided by fadeMs, so a zero divided 0 by 0 on the
--- one frame that got through and handed the draw a nan alpha -- an invisible wall with
--- nothing in the console, which is the silent failure this file is written against.
--- Zero now means "no fade window": the wall is suppressed for the whole hold and
--- arrives at full strength with the shrink, and the preview covers the whole hold.
+--   CIRCLE 1'S WALL through the whole hold AND the sweep, at previewAlpha, fading out
+--   over the sweep's last fadeInSec as the moving wall lands on it -- at the end of
+--   the sweep they are the same boundary -- and gone at FINISHED
+--   (previewWallCircle).
 --
--- AND msLeft == fadeMs RETURNS 0 RATHER THAN DRAWING AT 0. The old test was strict, so
--- the boundary frame drew a whole wall's worth of triangles at alpha 0. Identical on
--- screen, one frame of geometry cheaper, and it means "the real wall is showing" and
--- "the preview has started thinning" are the same instant rather than adjacent ones.
+-- THE MAP KEEPS ITS OWN CLOCK, and wallShare below is that clock and nothing else now:
+-- the whole-map zone fill and its fallback ring stay suppressed through the hold and
+-- fade in across its last fadeInSec, exactly as they did. A purple wash over all of
+-- Los Santos on the map still says nothing; a wall on the horizon says where the edge
+-- of the storm is.
+
+--- How much of the opening zone's wall is showing: 0 at the first instant of phase
+--- 1's hold, 1 once fadeInSec of it has passed, and 1 for every other phase and
+--- state. The record's own clock -- `tWait - msLeft` is how long the hold has run --
+--- so every screen agrees and a joiner mid-hold sees it at once at full strength.
+---
+--- A fadeInSec OF ZERO IS NO RAMP, answered before anything divides by it: a nan
+--- alpha is an invisible wall with nothing in the console.
 --- @param rec table     the storm record
 --- @param st string     the phase state solveNow reported
 --- @param msLeft number ms until that phase state changes
---- @return number       0..1 of the real wall; 1 minus this is the preview's
+--- @return number       0..1
+local function wallRamp(rec, st, msLeft)
+    if rec.phase ~= 1 or st ~= BR.StormPhase.HOLDING then return 1.0 end
+    local fadeMs = (cfg.render.fadeInSec or 10.0) * 1000.0
+    local held = (rec.tWait or 0.0) - msLeft
+    if held >= fadeMs then return 1.0 end
+    if held <= 0.0 then return 0.0 end
+    return held / fadeMs
+end
+
+-- ═══ ONE FADE CLOCK FOR THE MAP (#340) ═══
+--
+-- The map ring and the map's zone fill share this countdown (user call, 2026-08-04):
+-- during phase 1's hold the whole-map zone is suppressed on the map, and it fades in
+-- across the hold's last fadeInSec, at full strength as the shrink begins. It used to
+-- be the 3D curtain's clock too, and #327's circle-1 wall was its complement; since
+-- #344's second round the curtain has its own ramp (wallRamp, above) and circle 1's
+-- wall stands beside it rather than in for it, so this is the MAP's number alone.
+--
+-- A fadeInSec OF ZERO IS ANSWERED HERE TOO, and it used to be a nan. The old spelling
+-- tested `msLeft > fadeMs` and then divided by fadeMs, so a zero divided 0 by 0 on the
+-- one frame that got through -- a nan alpha, which is the silent failure this file is
+-- written against. Zero now means "no fade window": the zone is suppressed for the
+-- whole hold and arrives at full strength with the shrink.
+--
+-- AND msLeft == fadeMs RETURNS 0 RATHER THAN DRAWING AT 0: identical on the map, and it
+-- keeps "the zone is showing" one instant rather than two adjacent ones.
+--- @param rec table     the storm record
+--- @param st string     the phase state solveNow reported
+--- @param msLeft number ms until that phase state changes
+--- @return number       0..1 of the map's zone fill and ring
 local function wallShare(rec, st, msLeft)
     if rec.phase ~= 1 or st ~= BR.StormPhase.HOLDING then return 1.0 end
     local fadeMs = (cfg.render.fadeInSec or 10.0) * 1000.0
@@ -1412,7 +1446,7 @@ BR.Loop.register(BR.Loop.FRAME, 'storm.wall', function()
     local rec = activeRecord()
     if not rec then return end
 
-    local cx, cy, r, stt, msLeft, _, t = solveNow(rec)
+    local cx, cy, r, stt, msLeft, _, t, g = solveNow(rec)
     -- A COLLAPSED ZONE HAS NO WALL TO DRAW, and the zone is two circles now, so
     -- both of them have to be gone. In the shipping case that is the same test
     -- it always was: the final phase closes on a zero-radius target, so r and
@@ -1423,16 +1457,10 @@ BR.Loop.register(BR.Loop.FRAME, 'storm.wall', function()
     -- sweep.
     if r <= 1.0 and rec.r1 <= 1.0 then return end
 
-    -- NO WALL BEFORE ANYTHING HAS HAPPENED. During the free-loot hold the
-    -- "circle" is the whole map, and a purple ring around the horizon
-    -- announced nothing but its own existence. The curtain FADES IN across
-    -- the hold's last seconds, at full strength as the shrink begins.
-    --
-    -- AND WHAT STANDS IN FOR IT UNTIL THEN IS #327'S PREVIEW, held on screen by the
-    -- other side of this same number (#340). Suppressing the whole-map ring is still
-    -- right -- it told players nothing -- but "suppressed" used to mean "nothing at
-    -- all", and the owner was looking at an empty horizon for most of the early match.
-    local alphaScale = wallShare(rec, stt, msLeft)
+    -- THE OPENING WALL ARRIVES RATHER THAN APPEARING, over the hold's first
+    -- fadeInSec -- and stays. circle 1's wall is drawn beside it by storm.previewWall
+    -- (the section note above wallRamp has why there are two).
+    local alphaScale = wallRamp(rec, stt, msLeft)
     if alphaScale <= 0.0 then return end
 
     -- ═══ THE SHAPE COMES FROM THE RECORD'S SEED, NOT FROM THIS FILE (#344) ═══
@@ -1449,7 +1477,12 @@ BR.Loop.register(BR.Loop.FRAME, 'storm.wall', function()
     -- target's shape exactly as it arrives on the target's circle, and the next
     -- phase's hold starts from that same shape -- the snap at the end of every
     -- sweep was the two zones sharing one.
-    drawWall(BR.StormZone(rec, cx, cy, r, t), alphaScale)
+    --
+    -- AND IT GROWS HERE: `g` is how far a conjoined zone has grown into its
+    -- destination across the start of the hold, the same number the damage tick
+    -- passes, so the curtain spreads over the destination exactly as the billing
+    -- does rather than popping out to it.
+    drawWall(BR.StormZone(rec, cx, cy, r, t, g), alphaScale)
 end)
 
 -- Which renderer draws the wall, and /brwallstyle overrides it live.
@@ -1707,7 +1740,7 @@ end
 -- both directions -- exactly one of the two paths draws, and the blips are already
 -- written and already tested.
 --
--- ═══ WHAT IT DRAWS: THE SAME TWO ZONES, AT THE SAME TWO ALPHAS ═══
+-- ═══ WHAT IT DRAWS: THE MOVING ZONE, AND THE DESTINATION OVER IT ═══
 --
 -- The safe zone (what the blue ring marked) and the target (what the purple ring
 -- marks), under the same suppression rule -- the whole-map phase-1 hold shows the
@@ -1719,22 +1752,71 @@ end
 -- blip blue and nothing on this path can ask the engine what that is in RGB. So the
 -- layering survives -- faint zone, stronger target -- in one hue rather than two.
 -- config/storm.lua's `overlay` block says so and is where a blue would go back.
+--
+-- ═══ AND THE MORPH, WITHOUT ONE REBUILD WHILE THE STORM MOVES (#344) ═══
+--
+--   "the circles still overlap when they are different shapes."
+--   "should we make the moving storm morph to match the shape of the destination
+--    shape?"                                          -- the owner, 2026-09-23
+--
+-- The wall morphs corner to corner every frame. The map cannot re-draw a polygon while
+-- the storm moves: REM_OVERLAY and ADD_AREA_OVERLAY on a motion cadence is exactly
+-- what the owner traced #350's once-a-second hitch to, and 52a7caa is his rule that
+-- it must not happen. What the movie CAN do to a polygon it already has is move it,
+-- scale it and fade it -- UPDATE_OVERLAY_POSITION, UPDATE_OVERLAY_SIZE_OR_SCALE and
+-- SET_OVERLAY_ALPHA, three handlers with no loop and no string between them (the
+-- disassembly is recorded on #344). No handler edits a polygon's points, so the
+-- morph can never be one clip.
+--
+-- IT DOES NOT NEED TO BE. Every corner of the moving wall is the solver's circle
+-- times one unit shape, V(m) -- storm_solve.lua's "the wall in its own moving frame"
+-- has the two lines of algebra -- with V(0) the zone the wall leaves and V(1) the one
+-- it closes on. So each phase-edge rebuild, which already happens while the storm
+-- stands still, draws those two KEYFRAMES about their own origin instead of one zone,
+-- plus the destination in world coordinates; and every tick of the sweep PLACES the
+-- keyframes on the solver's circle and CROSSFADES them by m. No add, no remove, from
+-- the first frame of the sweep to the last:
+--
+--   HOLDING     V(0) on the zone, at the zone's alpha; V(1) at nothing.
+--   SHRINKING   both on the solver's circle, V(0) at (1 - m) of it and V(1) at m.
+--               At most six property writes a tick, against the two #350 placed.
+--   FINISHED    V(1) at full, on the destination's own circle -- which IS the
+--               destination, so the sweep's end needs no rebuild at all, and a
+--               phase has ONE rebuild, where it used to have two.
+--
+-- EXACT AT BOTH ENDS AND A BLEND IN BETWEEN, with one pair. `overlay.keyframes` adds
+-- more V(k/K) between them -- ADDed during the HOLD, one every keyframeGapMs, never
+-- while the storm moves -- and the crossfade runs between whichever two bracket m, so
+-- the map comes within tens of metres of the wall's own morph instead of hundreds.
+-- It ships at one pair until the owner has read those adds' cost off his hitch
+-- markers: they are the call #350 traced. config/storm.lua has the measured error
+-- by phase and pair count.
+--
+-- A BREAKOUT IS NO DIFFERENT. The moving part is the same keyframes and the
+-- destination is its own fill on top, so the union is never drawn as one polygon
+-- and never needs rebuilding -- 52a7caa's switch to the nominal-radius blips for a
+-- moving union is gone, and those blips are what a REFUSED placement or alpha write
+-- hands the map to instead. A CONJOINED GROWTH (storm_solve.lua's BR.StormZone) is
+-- not drawn either: for its twenty seconds the map shows the zone the phase started
+-- in under the destination's fill -- the union the growth ends on -- because drawing
+-- its front would be a rebuild on a motion cadence.
 
 --- How many areas the overlay is currently showing for us.
 local overlayShown = 0
 local lastOverlayAt = 0
 local overlayKey = nil
 local overlaySaid = false
-local movingUnionFallbackKey = nil
+local movingFallbackKey = nil
 local mapBlipsDirty = false
 
---- WHERE the zone on the map is, as the moving circle it was last made to match.
+--- WHAT THE MOVIE HOLDS FOR THE CURRENT PICTURE, and where each piece of it was put.
 ---
---- nil while nothing is drawn. `cx, cy, r` is the solved circle the drawn zone
---- agrees with -- the one it was built at, or the one it was last placed at.
---- `fit` is there only when the zone went out as ONE blob drawn about its own
---- centre, and holds what placing it needs: the radius it was drawn at and its
---- width and height at that radius.
+--- nil while nothing is drawn. `frames` are the zone's keyframes in increasing m --
+--- V(m) drawn about the origin (BR.StormKeyframe) -- each with the slot it went out
+--- in, the radius it was drawn at, its width and height there, and the circle and the
+--- alpha it was last given. `pending` is the m of every keyframe still to be ADDed,
+--- one per keyframeGapMs, during a hold. `fixed` marks a picture that is never faded:
+--- the #327 preview, and the `mapnokeys` bisect.
 local overlayAt = nil
 
 --- Publish whether a custom fill is currently on the map.
@@ -1763,21 +1845,21 @@ local function clearMapOverlay()
     overlayKey, overlayAt = nil, nil
 end
 
---- Hand one moving non-similar union to the ordinary map blips.
+--- Hand a MOVING picture the engine has refused to the ordinary map blips, for the
+--- rest of the sweep.
 ---
---- A conjoined/disjoint pair cannot be moved by translating or scaling one
---- polygon: one half moves while its target stays fixed, so its outline changes
---- shape. Rebuilding that outline was the one path left with #350's reported
---- signature -- only while moving, and about once a second. The nominal-radius
---- blips already exist as the overlay's refusal fallback and update without the
---- Scaleform polygon marshalling. They are approximate guidance for a seeded blob;
---- the exact 3D wall and server damage shape are untouched.
-local function startMovingUnionFallback(key)
-    if movingUnionFallbackKey ~= key then
+--- A refused placement or alpha write leaves a clip in the movie that no longer
+--- matches the storm, and the only thing that could fix it while the storm moves is a
+--- rebuild -- #350's hitch. The nominal-radius blips already exist as the overlay's
+--- fallback and update without any polygon marshalling. They are approximate
+--- guidance for a seeded shape; the 3D wall and the server's damage are untouched,
+--- and the exact fill comes back the moment the storm stands still.
+local function startMovingFallback(key)
+    if movingFallbackKey ~= key then
         BR.Loop.hitchMark(
-            'storm.map.fallback', 'once when a moving union hands the map to blips')
+            'storm.map.fallback', 'once when a refusal mid-sweep hands the map to blips')
     end
-    movingUnionFallbackKey = key
+    movingFallbackKey = key
     clearMapOverlay()
     -- Also force the mid-join case, where there was no custom fill whose state
     -- transition could set the dirty bit.
@@ -1787,9 +1869,9 @@ end
 --- Is the overlay drawing the zones right now? Then the radius blips must not.
 ---
 --- READ BY THE TWO BLIP SITES ABOVE AND WRITTEN IN EXACTLY ONE PLACE -- the count
---- setAreas came back with. A boolean of its own beside it would be a second
---- expression of one fact, which is the mistake client/mapoverlay.lua's own header
---- talks itself out of twice.
+--- setAreas came back with, and each keyframe added after it. A boolean of its own
+--- beside it would be a second expression of one fact, which is the mistake
+--- client/mapoverlay.lua's own header talks itself out of twice.
 --- @return boolean
 local function mapFilled()
     return overlayShown > 0
@@ -1799,13 +1881,88 @@ end
 ---
 --- BR.MapOverlay.areaAlpha is what turns that into the parameter the movie wants,
 --- because the movie's alpha compounds below 100 -- its header has the arithmetic.
---- Done there rather than here so that every caller of setAreas gets it.
+--- Done there rather than here so that every caller of setAreas gets it. A keyframe
+--- goes out at 255, where there is nothing to compound, because it is FADED
+--- afterwards (BR.MapOverlay.alphaArea), and that write is linear only for an area
+--- added at full strength.
 --- @param alpha number
 --- @return table  { r, g, b, a }
 local function fillColour(alpha)
     local c = cfg.render.colour or {}
     return { r = c.r or 255, g = c.g or 255, b = c.b or 255,
              a = math.floor((alpha or 255) + 0.5) }
+end
+
+--- The m of every keyframe a record's map draws: the two ends at the rebuild, and
+--- the ones in between, in the order they are added across the hold.
+---
+--- FURTHEST FIRST -- a half, then the quarters, then the eighths -- so a hold too
+--- short to add them all still spreads what it did add across the sweep rather than
+--- bunching it at one end. A destination of no radius is ONE keyframe: the last
+--- zone shrinks onto its point without changing shape (BR.StormMorphFrame), and a
+--- wall that starts as a point is only ever the destination's.
+--- @param rec table
+--- @param K integer   config overlay.keyframes: 1 is the two ends alone
+--- @return table ends, table pending
+local function keyframeMs(rec, K)
+    if (rec.r1 or 0.0) <= 0.0 then return { 0.0 }, {} end
+    if (rec.r0 or 0.0) <= 0.0 then return { 1.0 }, {} end
+    local pending = {}
+    K = math.floor(tonumber(K) or 1)
+    if K > 1 then
+        local taken = { [0] = true, [K] = true }
+        for _ = 1, K - 1 do
+            local best, bestGap = nil, -1
+            for j = 1, K - 1 do
+                if not taken[j] then
+                    local gap = math.huge
+                    for q in pairs(taken) do
+                        local d = math.abs(q - j)
+                        if d < gap then gap = d end
+                    end
+                    if gap > bestGap then best, bestGap = j, gap end
+                end
+            end
+            taken[best] = true
+            pending[#pending + 1] = best / K
+        end
+    end
+    return { 0.0, 1.0 }, pending
+end
+
+--- One keyframe, ready for the movie: V(m) drawn about the origin at the radius the
+--- solver reports when the morph is at m -- the size it is seen at, so its chords
+--- sag no more than chordM when it is at full strength -- as ONE contour, with the
+--- width and height placeArea scales it by. nil when the shape has no polygon left.
+--- @param rec table
+--- @param m number
+--- @return table|nil  { m, r, w, h, points }
+local function keyframe(rec, m)
+    local ov = cfg.overlay or {}
+    local rDraw = BR.StormMorphRadius(rec, m)
+    if not (rDraw > 0.0) then return nil end
+    local shape = BR.StormKeyframe(rec, m, rDraw)
+    if not shape then return nil end
+    local cols = BR.StormShape.polyline(shape, ov.chordM, ov.maxPoints)
+    -- EXACTLY ONE CONTOUR: a keyframe is one convex hull, and the slot a placement
+    -- names must be this whole contour. Under three points it is not a polygon --
+    -- reachable only once the shape has run out of geometry.
+    if #cols ~= 1 or #cols[1] < 3 then return nil end
+    local pts = cols[1]
+    local x0, x1, y0, y1 = math.huge, -math.huge, math.huge, -math.huge
+    for i = 1, #pts do
+        local x, y = pts[i].x, pts[i].y
+        if x < x0 then x0 = x end
+        if x > x1 then x1 = x end
+        if y < y0 then y0 = y end
+        if y > y1 then y1 = y end
+    end
+    -- THE EXTENTS ARE WHAT _width AND _height WILL MEAN. The movie measures the
+    -- clip's bounds and sets its scale from them, so a placement asks for these times
+    -- the scale -- about the clip's ORIGIN, which is the frame's centre, and which
+    -- every keyframe holds: V(0) and V(1) hold their own centres, and a blend of
+    -- partners that each face one way faces that way too.
+    return { m = m, r = rDraw, w = x1 - x0, h = y1 - y0, points = pts }
 end
 
 --- WHAT the overlay should be showing, as numbers, and its own key.
@@ -1819,17 +1976,14 @@ end
 --- match: building the contours first and then deciding not to send them would be the
 --- cost without the change.
 ---
---- ═══ THE KEY IS WHAT THE MOVING CIRCLE CANNOT CHANGE (#350) ═══
+--- ═══ THE KEY IS THE RECORD'S GEOMETRY AND NOTHING THAT MOVES (#350, #344) ═══
 ---
---- It is built from the inputs, not from the output: the phase, the target, the seed
---- and the alpha step. It used to carry the solved circle as well, to the metre, and
---- that one field is why the map rebuilt TWICE A SECOND FOR EVERY SECOND THE STORM
---- MOVED -- measured at the real 100 ms tick, every shrink but the last one's. That
---- was the only client work with the hitch's signature: none while the storm holds,
---- all of it while it moves. So the circle is held beside the key now, in overlayAt,
---- and what a change of it costs is decided in storm.map rather than by the key --
---- usually a placement, sometimes nothing, and for a moving non-similar union the
---- ordinary map-blip fallback instead of a recurring polygon rebuild.
+--- The phase, the seed, both circles and a carried outline: what the pictures are
+--- drawn FROM. The solved circle, the sweep fraction and the phase-1 fade's alpha are
+--- all held beside it instead -- in overlayAt -- and are what a tick places and fades.
+--- So a record is drawn once, whatever the storm does under it. (The `mapnokeys`
+--- bisect puts the alpha and the sweep's end back in the key, because that is how
+--- 52a7caa drew them: by rebuilding.)
 --- @return table|nil plan
 --- @return string|nil key
 local function overlayPlan()
@@ -1847,96 +2001,56 @@ local function overlayPlan()
 
     local rec = activeRecord()
     if not rec then return nil end
-    local cx, cy, r, st, msLeft = solveNow(rec)
+    local cx, cy, r, st, msLeft, _, t = solveNow(rec)
     if r <= 1.0 and rec.r1 <= 1.0 then return nil end
 
     -- THE SAFE ZONE IS SUPPRESSED FOR THE WHOLE-MAP PHASE-1 HOLD and ramped in on
-    -- the wall's own share, exactly as the ring above is -- wallShare, one number
-    -- read by the curtain, the ring and this.
-    local share = wallShare(rec, st, msLeft)
-    local wholeMap = rec.phase == 1 and st == BR.StormPhase.HOLDING
+    -- the map's own share, exactly as the ring above is -- wallShare, one number
+    -- read by the ring and this.
     local zoneA = cfg.blip.currentAlpha
-    if wholeMap then zoneA = cfg.blip.currentAlpha * share end
-
-    -- ═══ THE SHAPE THE MAP DRAWS THE ZONE IN: THE ONE IT SET OUT IN, UNTIL THE
-    --     WALL ARRIVES ═══
-    --
-    -- The wall morphs the current zone into the target corner to corner across the
-    -- sweep, and the map does not yet: a morph is a new shape every tick, and #350
-    -- moves and scales one fill in place, which is exact only while the shape holds
-    -- still -- rebuilding it while the storm moves is the hitch 52a7caa removed. So
-    -- the map draws the zone the record started in, moved and scaled with the
-    -- solver's circle (BR.StormStartShape), the whole way, and takes the target's
-    -- shape ONCE, when the sweep is FINISHED and the wall stands on the target in
-    -- exactly that shape. #344's rendering stage is where the map learns the morph.
-    --
-    -- AT FINISHED AND NOT A SECOND LATER, WHEN THE NEXT RECORD ARRIVES, because a
-    -- breakout is drawn as a union of the zone and its target until the two circles
-    -- coincide -- which is the instant the sweep ends -- and in the old shape that
-    -- union then collapses to the old shape alone: a boundary jump on the map with
-    -- the wall standing still, and a fill claiming ground the wall has just left. In
-    -- the target's shape it collapses to the target, which is where the wall is. The
-    -- switch is in the key, so it is the one rebuild of a sweep that has stopped --
-    -- and the next record's own rebuild draws the same zone again under a new target.
-    local done = (st == BR.StormPhase.FINISHED) and 1 or 0
-
-    return {
-        rec = rec, cx = cx, cy = cy, r = r,
-        state = st, zoneA = zoneA, m = done,
-    },
-        ('r|%d|%.0f|%.0f|%.0f|%d|%d|%d'):format(
-            rec.phase, rec.cx1, rec.cy1, rec.r1,
-            math.floor(rec.seed or 0), math.floor(zoneA + 0.5), done)
-end
-
---- The zone the MAP draws for a plan: the record's starting zone moved and scaled
---- with the solver's circle until the sweep is over, and the arrived zone after.
---- See overlayPlan for why the map does not draw the morph the wall does.
---- @param plan table  from overlayPlan
---- @return table shape
-local function mapZone(plan)
-    if plan.m >= 1 then
-        return BR.StormZone(plan.rec, plan.cx, plan.cy, plan.r, 1.0)
+    if rec.phase == 1 and st == BR.StormPhase.HOLDING then
+        zoneA = cfg.blip.currentAlpha * wallShare(rec, st, msLeft)
     end
-    return BR.StormStartShape(plan.rec, plan.cx, plan.cy, plan.r)
+
+    local nokeys = stormBisectMode == 'mapnokeys'
+    local done = (st == BR.StormPhase.FINISHED) and 1 or 0
+    local mo = rec.mo
+    local key = ('r|%d|%d|%.0f|%.0f|%.0f|%.0f|%.0f|%.0f|%s'):format(
+        rec.phase, math.floor(rec.seed or 0), rec.cx0, rec.cy0, rec.r0,
+        rec.cx1, rec.cy1, rec.r1, mo and ('%.6f'):format(mo.t or 0.0) or '-')
+    if nokeys then
+        key = key .. ('|nk|%d|%d'):format(math.floor(zoneA + 0.5), done)
+    end
+    return {
+        rec = rec, cx = cx, cy = cy, r = r, t = t,
+        m = BR.StormMorphFrame(rec, t),
+        state = st, zoneA = zoneA, nokeys = nokeys, done = done,
+    }, key
 end
 
---- The plan's contours, ready for BR.MapOverlay.setAreas, and whether the zone among
---- them can be PLACED from now on instead of rebuilt.
+--- The plan's contours, ready for BR.MapOverlay.setAreas: the zone's keyframes first,
+--- drawn about the origin, then the destination in world coordinates, LAST so it
+--- draws on top -- with the keyframes' records and the ones still to be added.
 ---
---- ═══ ONE BLOB IS A SIMILARITY OF EVERY LATER ONE, SO IT IS DRAWN ABOUT ITS CENTRE ═══
+--- THE PREVIEW is circle 1 alone, in world coordinates: it never moves.
 ---
---- On every phase that did not break out the map's zone is ONE blob -- the target
---- lies inside the starting zone by its real shape, so BR.StormStartShape returns
---- that zone alone -- and a blob is `c + r * unit`: the same unit shape, moved and
---- scaled. The solver only moves c and changes r, so the zone at any later moment of
---- the sweep is the zone drawn now, translated and uniformly scaled, EXACTLY -- not
---- approximately. So that zone is pushed with its points relative to its own centre,
---- and BR.MapOverlay.placeArea can then move and scale it in the movie with two
---- property writes instead of a rebuild. placeArea's header has why the centre is
---- the whole trick: the movie scales a clip about its origin, and for these points
---- that origin is the zone's centre.
----
---- ASKED OF THE SHAPE, NOT RE-DERIVED. `zone.blob` is what BR.StormShape.blob records
---- about itself; a union of two, a circle below MIN_RADIUS and every other shape carry
---- none, so they go out in world coordinates while static and use map blips while
---- moving. Testing the record here instead would be a second spelling of the
---- nesting rule storm_solve.lua already owns.
+--- `mapnokeys` is ONE keyframe at the zone's own alpha -- V(0), or V(1) once the sweep
+--- is FINISHED -- and never faded: 52a7caa's picture, placed as it was, which is what
+--- makes it the A/B baseline for everything the crossfade adds.
 --- @param plan table  from overlayPlan
 --- @return table|nil areas
---- @return table|nil fit  { cx, cy, r, w, h } when areas[1] can be placed
+--- @return table|nil frames
+--- @return table|nil pending
 local function overlayFill(plan)
     local ov = cfg.overlay or {}
-    local out, fit = {}, nil
-    local function push(shape, alpha)
+    local out = {}
+    local function pushWorld(shape, alpha)
         local cols = BR.StormShape.polyline(shape, ov.chordM, ov.maxPoints)
         for i = 1, #cols do
             -- A CONTOUR UNDER THREE POINTS IS NOT A POLYGON, and the movie would be
-            -- handed a coordinate string it cannot close. Reachable only on a shape
-            -- whose runs have collapsed -- the last seconds of the final sweep --
-            -- where BR.MapOverlay.addArea would refuse it anyway; dropped here so
-            -- that "drawn whole or not at all" is not tripped by a zone that has
-            -- genuinely run out of geometry.
+            -- handed a coordinate string it cannot close. Dropped here so that "drawn
+            -- whole or not at all" is not tripped by a zone that has genuinely run out
+            -- of geometry.
             if #cols[i] >= 3 then
                 out[#out + 1] = { points = cols[i], colour = fillColour(alpha) }
             end
@@ -1945,54 +2059,170 @@ local function overlayFill(plan)
 
     if plan.pv then
         local pv = plan.pv
-        push(BR.StormShape.blob(pv.cx, pv.cy, pv.r, BR.StormUnit(pv.seed, 1)),
+        pushWorld(BR.StormShape.blob(pv.cx, pv.cy, pv.r, BR.StormUnit(pv.seed, 1)),
             cfg.blip.nextAlpha)
-    else
-        local rec = plan.rec
-        -- THE SAFE ZONE, WHICH IS THE SHAPE THE WALL IS DRAWN ON -- BR.StormZone, the
-        -- one spelling of "what is safe right now", so the fill and the curtain cannot
-        -- disagree about where the edge is.
-        if plan.zoneA > 0.0 then
-            -- ═══ AT THE PLAN'S OWN SWEEP FRACTION, AND THAT IS THE WHOLE OF #350 ═══
-            --
-            -- 0 until the sweep is over and 1 once it is -- overlayPlan has why. The
-            -- wall morphs every frame; the map does not, because placing below is
-            -- exact only while the zone is ONE shape moved and scaled, and a morphing
-            -- zone is a new shape every tick -- a rebuild every tick, the work #350
-            -- removed. The target fill drawn over it has been the new shape all phase.
-            local zone = mapZone(plan)
-            push(zone, plan.zoneA)
-            local b = zone.blob
-            -- EXACTLY ONE CONTOUR, AND IT IS THE FIRST AREA. A blob is one closed loop,
-            -- so this is the ordinary case; it is tested rather than assumed because
-            -- `fit` promises placeArea slot 1, and slot 1 must be this contour.
-            if b and #out == 1 then
-                local pts = out[1].points
-                local x0, x1, y0, y1 = math.huge, -math.huge, math.huge, -math.huge
-                for i = 1, #pts do
-                    local x, y = pts[i].x - b.cx, pts[i].y - b.cy
-                    pts[i] = { x = x, y = y }
-                    if x < x0 then x0 = x end
-                    if x > x1 then x1 = x end
-                    if y < y0 then y0 = y end
-                    if y > y1 then y1 = y end
-                end
-                -- THE EXTENTS ARE WHAT _width AND _height WILL MEAN. The movie measures
-                -- the clip's bounds and sets its scale from them, so a placement asks for
-                -- these times the scale -- and the blob contains its own centre, so the
-                -- clip's origin is inside these bounds whatever the movie counts.
-                fit = { cx = b.cx, cy = b.cy, r = b.r, w = x1 - x0, h = y1 - y0 }
-            end
-        end
-        -- AND THE TARGET, LAST, SO IT DRAWS OVER THE ZONE.
-        if rec.r1 > 1.0 then
-            push(BR.StormShape.blob(rec.cx1, rec.cy1, rec.r1,
-                BR.StormUnit(rec.seed, rec.phase)), cfg.blip.nextAlpha)
-        end
+        if #out == 0 then return nil end
+        return out, {}, {}
     end
 
+    local rec = plan.rec
+    local frames = {}
+    local ms, pending
+    if plan.nokeys then
+        pending = {}
+        local m = (plan.done == 1) and 1.0 or 0.0
+        if (rec.r1 or 0.0) <= 0.0 then m = 0.0 end
+        if (rec.r0 or 0.0) <= 0.0 then m = 1.0 end
+        ms = (plan.zoneA > 0.0) and { m } or {}
+    else
+        ms, pending = keyframeMs(rec, ov.keyframes)
+    end
+    for _, m in ipairs(ms) do
+        local f = keyframe(rec, m)
+        if f then
+            out[#out + 1] = { points = f.points,
+                              colour = fillColour(plan.nokeys and plan.zoneA or 255) }
+            f.slot = #out
+            frames[#frames + 1] = f
+        end
+    end
+    -- AND THE TARGET, LAST, SO IT DRAWS OVER THE ZONE. It never moves, and it is
+    -- the destination's own shape where it stands -- BR.StormTarget, the shape the
+    -- wall ends on and the damage tick shelters.
+    if rec.r1 > 1.0 then pushWorld(BR.StormTarget(rec), cfg.blip.nextAlpha) end
+
     if #out == 0 then return nil end
-    return out, fit
+    return out, frames, pending
+end
+
+--- Each keyframe's alpha for a morph fraction `m`: the two that bracket it share
+--- `A` between them, the nearer one more, and every other is at nothing. At an m a
+--- keyframe was drawn for, that one alone is at full.
+--- @param frames table
+--- @param m number
+--- @param A number
+--- @return table  one alpha per frame, 0-255
+local function crossfade(frames, m, A)
+    local out = {}
+    local n = #frames
+    for i = 1, n do out[i] = 0.0 end
+    if n == 0 then return out end
+    if n == 1 or m <= frames[1].m then out[1] = A return out end
+    if m >= frames[n].m then out[n] = A return out end
+    for i = 1, n - 1 do
+        local lo, hi = frames[i], frames[i + 1]
+        if m >= lo.m and m <= hi.m then
+            local span = hi.m - lo.m
+            local f = (span > 0.0) and ((m - lo.m) / span) or 1.0
+            out[i], out[i + 1] = (1.0 - f) * A, f * A
+            return out
+        end
+    end
+    return out
+end
+
+--- Put the picture where the plan says: every keyframe that is showing on the
+--- solver's circle, and every alpha that changed. `first` is the tick the picture
+--- was drawn on, when every keyframe is placed and every alpha written whatever it is
+--- -- a clip that has just been added sits on the world's origin at full strength
+--- until then.
+---
+--- ═══ ONLY WHAT CHANGED, SO A HOLD COSTS NOTHING ═══
+---
+--- A keyframe is placed when the circle it was last given is not this one, and only
+--- while it is showing -- one at nothing is placed on the tick it starts to show. An
+--- alpha is written when its whole value changed. So a hold is no calls at all, a
+--- sweep is at most three a keyframe, and the phase-1 fade is one a tick.
+---
+--- false on a refusal: the movie's picture is then not the storm's, and the caller
+--- decides what to do about it.
+--- @param at table     overlayAt
+--- @param plan table
+--- @param first boolean
+--- @return boolean ok
+local function applyFrames(at, plan, first)
+    local alphas = (not at.fixed) and crossfade(at.frames, plan.m, plan.zoneA) or nil
+    local resize = first or stormBisectMode ~= 'mapnoresize'
+    local placeTrace, alphaTrace = nil, nil
+    local ok = true
+    for i = 1, #at.frames do
+        local f = at.frames[i]
+        local a = alphas and math.floor(alphas[i] + 0.5) or nil
+        local showing = (a == nil) or a > 0
+        if first or (showing and (f.x ~= plan.cx or f.y ~= plan.cy or f.s ~= plan.r)) then
+            placeTrace = placeTrace or BR.Loop.hitchBegin(
+                resize and 'storm.map.place' or 'storm.map.position',
+                resize and '10 Hz position + resize while the storm is SHRINKING'
+                    or '10 Hz position only; #350 resize bisect')
+            local s = plan.r / f.r
+            if not BR.MapOverlay.placeArea(f.slot, plan.cx, plan.cy,
+                    resize and (f.w * s) or nil, resize and (f.h * s) or nil) then
+                ok = false
+                break
+            end
+            f.x, f.y = plan.cx, plan.cy
+            -- Keep the last DRAWN radius while resize is suppressed. That makes
+            -- returning to normal catch the clip up on the next tick instead of
+            -- believing the stale size is current.
+            if resize then f.s = plan.r end
+        end
+        if a ~= nil and (first or a ~= f.a) then
+            alphaTrace = alphaTrace or BR.Loop.hitchBegin('storm.map.alpha',
+                '10 Hz while the storm is SHRINKING; the phase-1 fade; a keyframe hidden')
+            if not BR.MapOverlay.alphaArea(f.slot, a) then
+                ok = false
+                break
+            end
+            f.a = a
+        end
+    end
+    BR.Loop.hitchEnd(placeTrace)
+    BR.Loop.hitchEnd(alphaTrace)
+    return ok
+end
+
+--- Add the next keyframe of the hold, if one is due. HOLDING ONLY, and one per
+--- keyframeGapMs: an add is the call #350 traced, so it is spent where the storm
+--- stands still and spread out, and a sweep is only ever placed and faded.
+---
+--- THE NEW CLIP IS HIDDEN ON THE TICK IT IS ADDED, as a rebuild's are, and placed
+--- the first tick it shows. A refused add stops the adding for this record; a
+--- refused hide leaves a keyframe on the world's origin at full strength, which is a
+--- picture in the wrong place, so it takes the whole picture down for a rebuild.
+--- @param plan table
+--- @return boolean ok
+local function appendKeyframe(plan)
+    local at = overlayAt
+    if not at or at.fixed or #at.pending == 0 then return true end
+    if plan.state ~= BR.StormPhase.HOLDING then return true end
+    local now = GetGameTimer()
+    if (now - at.appendAt) < ((cfg.overlay or {}).keyframeGapMs or 2000) then
+        return true
+    end
+    at.appendAt = now
+    local m = table.remove(at.pending, 1)
+    local trace = BR.Loop.hitchBegin('storm.map.keyframe',
+        'keyframes - 1 adds per hold, one per keyframeGapMs; never while moving')
+    local ok = true
+    local f = keyframe(plan.rec, m)
+    if f then
+        local slot = BR.MapOverlay.appendArea(f.points, fillColour(255))
+        if not slot then
+            at.pending = {}
+        elseif BR.MapOverlay.alphaArea(slot, 0) then
+            f.slot, f.a = slot, 0
+            local at2 = #at.frames + 1
+            for i = 1, #at.frames do
+                if at.frames[i].m > m then at2 = i break end
+            end
+            table.insert(at.frames, at2, f)
+            setOverlayShown(overlayShown + 1)
+        else
+            ok = false
+        end
+    end
+    BR.Loop.hitchEnd(trace)
+    return ok
 end
 
 BR.Loop.register(BR.Loop.TICK, 'storm.map', function()
@@ -2012,7 +2242,7 @@ BR.Loop.register(BR.Loop.TICK, 'storm.map', function()
 
     local plan, key = overlayPlan()
     if not plan then
-        movingUnionFallbackKey = nil
+        movingFallbackKey = nil
         -- NOTHING TO SHOW, SO NOTHING IS LEFT ON THE MAP. Between matches, in the
         -- lobby, and while the overlay is switched off, this is what takes the fills
         -- down -- and it puts the blips back in charge on the same tick, because
@@ -2027,22 +2257,22 @@ BR.Loop.register(BR.Loop.TICK, 'storm.map', function()
         return
     end
 
-    -- KEEP THE EXISTING POLYGONS BUT SEND NO MOVEMENT, RESIZE OR REBUILD CALLS.
-    -- If `mapoff` and this mode both remove the hitch, the presence of the fill
-    -- is innocent and the live Scaleform update traffic is the useful boundary.
+    -- KEEP THE EXISTING POLYGONS BUT SEND NO MOVEMENT, RESIZE, FADE OR REBUILD
+    -- CALLS. If `mapoff` and this mode both remove the hitch, the presence of the
+    -- fill is innocent and the live Scaleform update traffic is the useful boundary.
     -- A client entering this mode before its first fill is allowed one build so
     -- there is something resident to freeze.
     if stormBisectMode == 'mapfreeze' and overlayShown > 0 then return end
 
-    -- Once a moving union has selected the blip fallback, stay there for the rest
-    -- of that sweep. At FINISHED or on a new record the exact static polygon is
-    -- allowed back; rebuilding it once is not the recurring moving-path hitch.
-    if movingUnionFallbackKey
-            and (key ~= movingUnionFallbackKey
+    -- Once a refusal mid-sweep has selected the blip fallback, stay there for the
+    -- rest of that sweep. At FINISHED or on a new record the exact picture is
+    -- allowed back; drawing it once is not the recurring moving-path hitch.
+    if movingFallbackKey
+            and (key ~= movingFallbackKey
                 or plan.state ~= BR.StormPhase.SHRINKING) then
-        movingUnionFallbackKey = nil
+        movingFallbackKey = nil
     end
-    if movingUnionFallbackKey and stormBisectMode ~= 'mapfreeze' then
+    if movingFallbackKey then
         clearMapOverlay()
         return
     end
@@ -2058,74 +2288,40 @@ BR.Loop.register(BR.Loop.TICK, 'storm.map', function()
     local hz = ov.rebuildHz or 2
     if hz <= 0 then return end
 
-    -- ═══ THE SAME PICTURE, SO THE QUESTION IS ONLY WHAT THE CIRCLE DID (#350) ═══
-    if key == overlayKey and overlayShown > 0 then
-        local at = overlayAt
-        -- NOTHING MOVED: every hold, and the whole preview. A handful of comparisons.
-        if plan.pv or (plan.cx == at.cx and plan.cy == at.cy and plan.r == at.r) then
+    -- ═══ THE SAME PICTURE: PLACE AND FADE IT, AND ADD A KEYFRAME IF ONE IS DUE ═══
+    --
+    -- Every hold, every sweep and every finished phase of one record lands here, and
+    -- none of it adds or removes a clip -- but a keyframe added in a hold. What a
+    -- tick costs is applyFrames' business: nothing while the storm stands still.
+    if key == overlayKey and overlayShown > 0 and overlayAt then
+        if plan.pv then return end
+        if applyFrames(overlayAt, plan, false) and appendKeyframe(plan) then
             return
         end
-
-        -- ONE BLOB, DRAWN ABOUT ITS CENTRE: PLACE IT. overlayFill has why this is
-        -- exact rather than close. The zone is asked for again rather than assumed
-        -- still to be one blob, because the last seconds of the final sweep turn it
-        -- into a circle below MIN_RADIUS -- a different shape, which is a rebuild.
-        if at.fit then
-            local b = mapZone(plan).blob
-            if b then
-                local s = b.r / at.fit.r
-                local resize = stormBisectMode ~= 'mapnoresize'
-                local trace = BR.Loop.hitchBegin(
-                    resize and 'storm.map.place' or 'storm.map.position',
-                    resize and '10 Hz position + resize while a nested storm is SHRINKING'
-                        or '10 Hz position only; #350 resize bisect')
-                local placed = BR.MapOverlay.placeArea(
-                    1, b.cx, b.cy,
-                    resize and (at.fit.w * s) or nil,
-                    resize and (at.fit.h * s) or nil)
-                BR.Loop.hitchEnd(trace)
-                if placed then
-                    at.cx, at.cy = plan.cx, plan.cy
-                    -- Keep the last DRAWN radius while resize is suppressed. That
-                    -- makes returning to normal catch the clip up on the next tick
-                    -- instead of believing the stale size is current.
-                    if resize then at.r = plan.r end
-                    return
-                end
-            end
-            -- Refused, or no longer one blob. Either way what the map shows is not
-            -- the zone any more, and only a rebuild below can make it so.
-
-        -- A CONJOINED OR DISJOINT UNION CANNOT BE PLACED. One blob moves and
-        -- shrinks while the target stays fixed, so the merged outline is not a
-        -- translation or a scale of its previous frame. Rebuilding it was the
-        -- reported hitch: REM_OVERLAY plus every ADD_AREA_OVERLAY, 0.62--1.65
-        -- times a second only while this exact border moved. Use the already
-        -- supported nominal-radius blip fallback for the moving interval instead.
-        else
-            if plan.state == BR.StormPhase.SHRINKING
-                    and stormBisectMode ~= 'mapfreeze' then
-                startMovingUnionFallback(key)
-                return
-            end
-            if stormBisectMode == 'mapnoresize' then return end
+        -- REFUSED. What the movie shows is not the storm any more. While it moves,
+        -- the blips carry the map to the end of the sweep rather than a rebuild on a
+        -- motion cadence; standing still, it is drawn again below.
+        if plan.state == BR.StormPhase.SHRINKING then
+            startMovingFallback(key)
+            return
         end
+        clearMapOverlay()
     end
 
     -- AND NEVER FASTER THAN rebuildHz, WHATEVER ASKED. This is the ceiling that
-    -- holds when everything above says yes -- a phase edge, a changed target, a
-    -- phase-1 fade stepping its alpha, or a refused placement falling back.
+    -- holds when everything above says yes -- a phase edge, a changed target, or a
+    -- refused picture being drawn again.
     local now = GetGameTimer()
     if (now - lastOverlayAt) < (1000.0 / hz) then return end
     lastOverlayAt = now
 
     -- THE WALK HAPPENS HERE AND NOWHERE EARLIER, which is the whole reason the plan
     -- and the fill are two functions: every gate above this line is cheap, so a tick
-    -- on which nothing has moved costs a handful of comparisons instead of a boundary
-    -- walk per contour.
-    local rebuildTrace = BR.Loop.hitchBegin(
-        'storm.map.rebuild', '<=2 Hz; static picture, phase, alpha, or placement recovery')
-    local areas, fit = overlayFill(plan)
+    -- on which nothing has changed costs a handful of comparisons instead of a
+    -- boundary walk per contour.
+    local rebuildTrace = BR.Loop.hitchBegin('storm.map.rebuild',
+        '<= rebuildHz; once per record, or a first sight, or a refusal redrawn')
+    local areas, frames, pending = overlayFill(plan)
     if not areas then
         -- THE PLAN WANTED SOMETHING AND THE GEOMETRY HAD NOTHING LEFT -- the final
         -- sweep's last seconds, where every contour has collapsed under three points.
@@ -2136,36 +2332,31 @@ BR.Loop.register(BR.Loop.TICK, 'storm.map', function()
         return
     end
 
-    -- A CLIENT WHICH JOINS MID-SWEEP HAS NO `overlayAt` TO CLASSIFY. overlayFill
-    -- has now answered the same question without sending anything to Scaleform:
-    -- no fit means the moving picture is a non-similar union. Take the fallback
-    -- before setAreas, so even that first frame pays no polygon rebuild.
-    if plan.state == BR.StormPhase.SHRINKING and not fit
-            and stormBisectMode ~= 'mapfreeze' then
-        startMovingUnionFallback(key)
-        BR.Loop.hitchEnd(rebuildTrace)
-        return
-    end
-
     local drawn, chars = BR.MapOverlay.setAreas(areas)
-    -- A ZONE DRAWN ABOUT ITS CENTRE IS DRAWN AT THE WORLD'S ORIGIN until it is placed,
-    -- so it is placed in the same tick -- the calls queue behind the adds -- and a
-    -- refusal takes the whole push down, for the reason setAreas tears down a partial
-    -- one: a zone in the wrong place is worse than none, and none is what hands the
-    -- map back to the radius blips.
-    if drawn > 0 and fit and not BR.MapOverlay.placeArea(1, fit.cx, fit.cy) then
-        BR.MapOverlay.removeAll()
-        drawn = 0
+    local at = nil
+    if drawn > 0 then
+        at = { frames = frames, pending = pending, appendAt = now,
+               fixed = (plan.pv ~= nil) or plan.nokeys }
+        -- A KEYFRAME IS DRAWN AT THE WORLD'S ORIGIN AT FULL STRENGTH until it is
+        -- placed and faded, so both happen in the same tick -- the calls queue behind
+        -- the adds -- and a refusal takes the whole push down, for the reason setAreas
+        -- tears down a partial one: a zone in the wrong place is worse than none, and
+        -- none is what hands the map back to the radius blips.
+        if not plan.pv and not applyFrames(at, plan, true) then
+            BR.MapOverlay.removeAll()
+            drawn, at = 0, nil
+        end
     end
     setOverlayShown(drawn)
     -- A REFUSED PUSH DOES NOT LATCH. Clearing the key means the next tick tries
     -- again rather than believing the map is already showing this geometry, and
-    -- mapFilled() is false in the meantime so the blips carry the map.
+    -- mapFilled() is false in the meantime so the blips carry the map. EXCEPT WHILE
+    -- THE STORM MOVES, where trying again is a rebuild on a motion cadence: that
+    -- sweep is handed to the blips instead, and the next still moment draws it.
     overlayKey = (drawn > 0) and key or nil
-    overlayAt = nil
-    if drawn > 0 then
-        overlayAt = { cx = plan.cx, cy = plan.cy, r = plan.r,
-                      fit = fit }
+    overlayAt = at
+    if drawn == 0 and plan.state == BR.StormPhase.SHRINKING then
+        startMovingFallback(key)
     end
 
     -- ONCE, AND IT NAMES THE CHARACTER COUNT. The Scaleform string-parameter cap is
@@ -2174,7 +2365,7 @@ BR.Loop.register(BR.Loop.TICK, 'storm.map', function()
     -- over a thousand. If a shape ever draws GARBLED rather than absent this is the
     -- first number to look at, and config/storm.lua's `overlay.maxPoints` is the
     -- lever. Said once per session in the same shape as the wall's fade line, because
-    -- a rebuild can happen twice a second and a line per rebuild is a log nobody reads.
+    -- a line per rebuild is a log nobody reads.
     if drawn > 0 and not overlaySaid then
         overlaySaid = true
         local pts = 0
@@ -2193,18 +2384,21 @@ end)
 --   normal       shipping path
 --   mapoff       no custom Scaleform fill; ordinary map blips take over
 --   mapfreeze    keep the fill resident but send no live map updates
---   mapnoresize  move a nested fill but do not resize it
+--   mapnoresize  move and fade the fill but do not resize it
+--   mapnokeys    one keyframe, placed, never faded: 52a7caa's traffic (#344)
 --   walloff      skip the shaped 3D wall
 --
--- The sequence distinguishes four materially different costs: merely having the
+-- The sequence distinguishes five materially different costs: merely having the
 -- overlay resident, updating it at all, the size/re-tessellation call specifically,
--- and the per-frame shaped wall. Every change starts a new correlation window so
--- samples from two modes cannot be mixed accidentally.
+-- the crossfade's alpha writes and extra clip (mapnokeys against normal), and the
+-- per-frame shaped wall. Every change starts a new correlation window so samples
+-- from two modes cannot be mixed accidentally.
 local stormBisectModes = {
     normal      = 'shipping storm rendering',
     mapoff      = 'custom map fill removed; fallback blips active',
-    mapfreeze   = 'map fill resident; movement, resize and rebuilds frozen',
-    mapnoresize = 'nested map fill moves; resize call suppressed',
+    mapfreeze   = 'map fill resident; movement, resize, fades and rebuilds frozen',
+    mapnoresize = 'map fill moves and fades; resize call suppressed',
+    mapnokeys   = 'one keyframe placed, no alpha writes, sweep end rebuilt (52a7caa traffic)',
     walloff     = 'shaped 3D storm wall suppressed',
 }
 
@@ -2228,11 +2422,11 @@ RegisterCommand('brstormbisect', function(_, args)
     if mode == 'status' then
         print(('[br_core] storm bisect: %s -- %s')
             :format(stormBisectMode, stormBisectModes[stormBisectMode]))
-        print('  modes: normal | mapoff | mapfreeze | mapnoresize | walloff')
+        print('  modes: normal | mapoff | mapfreeze | mapnoresize | mapnokeys | walloff')
         return
     end
     if not BR.Storm.setBisectMode(mode) then
-        print('  usage: brstormbisect <normal|mapoff|mapfreeze|mapnoresize|walloff> [hitchMs]')
+        print('  usage: brstormbisect <normal|mapoff|mapfreeze|mapnoresize|mapnokeys|walloff> [hitchMs]')
         return
     end
 
@@ -2269,10 +2463,12 @@ end, false)
 --     Santos is not merely unstreamed there -- it is DISABLED, because enabling
 --     the heist island hides the mainland (see br_environment/client/ipl.lua).
 --     A 950m curtain drawn over Los Santos while the camera is on the island is
---     a curtain in a world that does not exist yet. It runs THROUGH PLAYING and
---     into the real wall's fade-in now (#340), which is the third stretch and
---     the one previewWallCircle exists for -- the owner had an empty horizon
---     from the bus doors closing until ten seconds before the first shrink.
+--     a curtain in a world that does not exist yet. It runs THROUGH PLAYING now,
+--     the whole of phase 1's hold and its sweep (#340, then #344's second round),
+--     which is the stretch previewWallCircle exists for: first because the owner
+--     had an empty horizon from the bus doors closing until ten seconds before the
+--     first shrink, and now because circle 1 is phase 1's destination wall, drawn
+--     beside the opening zone's until the sweep lands on it.
 --
 -- IT IS THE SAME RENDERER THE REAL WALL USES, handed a circle and a lower alpha.
 -- See drawWall's header for why that is a requirement and not a saving.
@@ -2321,8 +2517,8 @@ local islandSaid = nil
 ---
 --- It was BUS alone, and that was complete while the preview's own state gate was BUS
 --- alone: the two agreed, so the second test could not narrow anything the first had
---- not already. The preview now extends into PLAYING while the real wall is still
---- suppressed, and a BUS-only fallback would have withheld exactly that new stretch
+--- not already. The preview now extends through phase 1 of PLAYING, and a BUS-only
+--- fallback would have withheld exactly that new stretch
 --- on any box where br_environment is silent -- the whole fix missing, on the one
 --- deployment shape that has no way to notice. PLAYING is the safest possible entry
 --- to add: ipl.lua's wantIsland is `state ~= PLAYING and state ~= BUS`, so PLAYING is
@@ -2344,21 +2540,21 @@ end)
 --   "When the map loaded in (while in bus), the storm wall popped in, didn't fade
 --    in."                                              -- owner, 2026-09-22
 --
--- #340 gave the preview wall its whole life -- warmup, the bus, and the suppressed
--- phase-1 hold -- and its fade OUT, which is one minus the real wall's share. What
--- it never had is an entry: the instant br_environment says the mainland is the
--- world, this callback starts drawing at the full previewAlpha on its first frame,
--- five hundred metres in front of a bus.
+-- #340 gave the preview wall its whole life -- warmup, the bus, and phase 1 -- and a
+-- fade OUT at the end of it (previewWallCircle). What it never had is an entry: the
+-- instant br_environment says the mainland is the world, this callback started
+-- drawing at the full previewAlpha on its first frame, five hundred metres in front
+-- of a bus.
 --
 -- ═══ NOT A SECOND CLOCK, WHICH IS #340'S WHOLE POINT ═══
 --
--- The window is render.fadeInSec -- the SAME number the curtain fades in over and
+-- The window is render.fadeInSec -- the SAME number the opening wall fades in over and
 -- the map ring fades in over -- so there is one fade length in this file and the
--- preview now reads it at both ends of its life: in over fadeInSec when the world
--- arrives, out over fadeInSec as the real wall rises. Retuning that one value
--- retunes all four. What is new here is a TIMESTAMP, not a duration, and it is the
--- one thing the existing clock cannot supply: nothing about the phase-1 countdown
--- knows when the mainland streamed in.
+-- preview reads it at both ends of its life: in over fadeInSec when the world
+-- arrives, out over fadeInSec as the sweep's wall lands on it. Retuning that one
+-- value retunes all of them. What is new here is a TIMESTAMP, not a duration, and it
+-- is the one thing the existing clock cannot supply: nothing about the phase-1
+-- countdown knows when the mainland streamed in.
 --
 -- ═══ AND IT DOES NOT CHANGE WHEN THE WALL STARTS DRAWING ═══
 --
@@ -2500,16 +2696,32 @@ end)
 --- reason it exists in both functions already: a bystander at the vista menu shares
 --- the match state without being in the match.
 ---
---- THE SHARE IS wallShare's COMPLEMENT AND IS NOT COMPUTED HERE. `w >= 1.0` is one
---- test doing two jobs -- everything that is not the phase-1 hold, and the hold's fade
---- window once it has completed -- which is why the handoff cannot be half-written.
+--- ═══ PHASE 1 DRAWS TWO WALLS, SO THIS ONE STAYS UNTIL THE OTHER ARRIVES (#344) ═══
+---
+--- Circle 1's wall used to hand OFF to the opening wall -- wallShare's complement,
+--- gone as the opening ring faded in over the hold's last seconds -- and then the
+--- sweep brought that ring in from the map's edge: the reset the owner saw. The
+--- opening wall now stands from the start of the hold (storm.wall's wallRamp), and
+--- this one stands beside it, exactly as every later phase shows the zone and the
+--- destination, through the whole hold AND the whole sweep:
+---
+---   HOLDING     at previewAlpha, the strength the bus saw it at, so nothing changes
+---               at the BUS -> PLAYING boundary either;
+---   SHRINKING   at previewAlpha until the sweep's last fadeInSec, then thinning to
+---               nothing as the moving wall lands on it -- at the end of the sweep
+---               the two are the same boundary, and one of them is enough;
+---   FINISHED    gone, with the moving wall standing on it at full strength.
+---
+--- ONE FADE LENGTH STILL, render.fadeInSec, read by this, by the opening wall's ramp
+--- and by the map -- so there is nothing to tune out of step.
+---
 --- ═══ AND IT CARRIES THE SEED, BECAUSE IT IS PHASE 1'S SHAPE (#344) ═══
 ---
 --- Both sources have it -- the published preview payload and the record -- and it
 --- is the same integer in both, for the same reason the circle is the same circle:
 --- enterPhase spends the warmup draw rather than rolling a second one. So the bus
---- is shown the shape phase 1 will actually wear, and the handoff stays a handoff
---- instead of a circle turning into a blob as one fades into the other.
+--- is shown the shape phase 1 will actually wear, and it is the destination the
+--- sweep's wall arrives on, to the bit.
 --- @return table|nil circle  { cx, cy, r, seed }
 --- @return number alphaScale
 local function previewWallCircle()
@@ -2525,14 +2737,21 @@ local function previewWallCircle()
     local rec = BR.State.storm
     -- A COLLAPSED TARGET IS NOT A CIRCLE TO STAND IN FOR, the same test storm.wall
     -- makes on rec.r1 and BR.StormShape.circle's own one-metre floor would otherwise
-    -- quietly answer with a one-metre ring.
-    if not rec or rec.r1 <= 1.0 then return nil end
+    -- quietly answer with a one-metre ring. And it is circle 1: phase 1's alone.
+    if not rec or rec.phase ~= 1 or rec.r1 <= 1.0 then return nil end
 
     local _, _, _, st, msLeft = solveNow(rec)
-    local w = wallShare(rec, st, msLeft)
-    if w >= 1.0 then return nil end
-    return { cx = rec.cx1, cy = rec.cy1, r = rec.r1, seed = rec.seed },
-        base * (1.0 - w)
+    local share = 1.0
+    if st == BR.StormPhase.SHRINKING then
+        -- THE SWEEP'S LAST fadeInSec, thinning onto the arriving wall. A zero window
+        -- is no thinning, answered before anything divides by it.
+        local fadeMs = (cfg.render.fadeInSec or 10.0) * 1000.0
+        if msLeft < fadeMs then share = msLeft / fadeMs end
+    elseif st ~= BR.StormPhase.HOLDING then
+        return nil
+    end
+    if share <= 0.0 then return nil end
+    return { cx = rec.cx1, cy = rec.cy1, r = rec.r1, seed = rec.seed }, base * share
 end
 
 BR.Loop.register(BR.Loop.FRAME, 'storm.previewWall', function()
@@ -2591,24 +2810,23 @@ BR.Loop.register(BR.Loop.FRAME, 'storm.previewWall', function()
     -- has to be reachable from both walls.
     --
     -- AND THE ALPHA IS THE CALLER'S NOW, NOT A CONSTANT READ HERE (#340). It is
-    -- previewAlpha through the whole bus ride and the whole suppressed hold, and
-    -- previewAlpha's own fade-out across the handoff; previewWallCircle owns the
-    -- arithmetic because it owns the clock. One circle, one renderer, one height, and
-    -- an alpha that only ever moves when the real wall's is moving the other way.
+    -- previewAlpha through the whole bus ride, phase 1's hold and its sweep, and
+    -- thins over the sweep's last fadeInSec as the moving wall lands on it;
+    -- previewWallCircle owns the arithmetic because it owns the clock. One circle,
+    -- one renderer, one height.
     --
     -- AND THE SHAPE IS PHASE 1'S, not a circle (#344). The phase index is written
     -- as a literal 1 rather than read off a record because the bus has no record at
     -- all -- the preview exists precisely for the stretch before one -- and circle 1
-    -- is phase 1's target by definition. A BLOB rather than the zone union: the
-    -- preview is ONE circle, which is what it has always been, and there is no
-    -- second circle to extend it toward until the storm exists.
+    -- is phase 1's target by definition. A BLOB rather than the zone union: this is
+    -- the destination's wall, ONE shape, and the zone's wall is storm.wall's.
     --
     -- AND alphaScale IS MULTIPLIED BY THE ENTRY RAMP (#351), which is the only thing
     -- #351 changed: one number, at the one place the alpha is finally spent, so the
-    -- handoff arithmetic previewWallCircle owns is untouched. The two ramps are
-    -- independent by construction -- the entry runs once when the world arrives and
-    -- has completed long before the hold's last fadeInSec, where the handoff takes
-    -- over -- and their product can never exceed either.
+    -- arithmetic previewWallCircle owns is untouched. The two ramps are independent
+    -- by construction -- the entry runs once when the world arrives and has completed
+    -- long before the sweep's last fadeInSec, where the thinning takes over -- and
+    -- their product can never exceed either.
     drawWall(BR.StormShape.blob(pv.cx, pv.cy, pv.r, BR.StormUnit(pv.seed, 1)),
         alphaScale * entry)
 end)
@@ -2631,6 +2849,32 @@ local solved = nil
 --- The last whole metre we told the interface, so a push only happens when
 --- the number a player can actually read has changed.
 local lastEdgeShown = nil
+
+--- The destination, and the destination eroded by 25 m, for the "this way" blip
+--- (#344): what it shows against and where it sits.
+---
+--- BUILT ONCE PER RECORD. The destination never changes during a phase -- not its
+--- shape, not its corners, not where it is -- so both are asked of the record's own
+--- geometry once and reused every tick; a record is whole-table-assigned everywhere
+--- in the game, and the fields are compared as well in case one is edited in place.
+--- The erosion is exact (BR.StormShape.inset), so every point of `inner`'s boundary
+--- is 25 m inside the destination's, to the rounding.
+local wayFor = setmetatable({}, { __mode = 'k' })
+
+--- @param rec table
+--- @return table  { target, inner }
+local function wayHome(rec)
+    local w = wayFor[rec]
+    if w and w.cx1 == rec.cx1 and w.cy1 == rec.cy1 and w.r1 == rec.r1
+            and w.seed == rec.seed and w.phase == rec.phase then
+        return w
+    end
+    local target = BR.StormTarget(rec)
+    w = { cx1 = rec.cx1, cy1 = rec.cy1, r1 = rec.r1, seed = rec.seed, phase = rec.phase,
+          target = target, inner = BR.StormShape.inset(target, 25.0) }
+    wayFor[rec] = w
+    return w
+end
 
 --- Send the storm envelope. One builder, both bands.
 local function pushStorm(edge, marker, expected)
@@ -2896,7 +3140,7 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
     end
 
     local now = BR.Clock.now()
-    local cx, cy, r, st, msLeft, dps, t = solveNow(rec)
+    local cx, cy, r, st, msLeft, dps, t, g = solveNow(rec)
 
     -- ═══ FIVE SECONDS BEFORE THE WALL SETS OFF ═══
     --
@@ -2954,8 +3198,8 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
     -- server's damage tick use. That is what keeps the HUD's metres, the grade, the
     -- sky and the two crossing cues describing the curtain the player can see
     -- rather than a circle nothing draws any more -- at the same sweep fraction the
-    -- wall morphs by.
-    local zone = BR.StormZone(rec, cx, cy, r, t)
+    -- wall morphs by, and the same growth a conjoined zone spreads by.
+    local zone = BR.StormZone(rec, cx, cy, r, t, g)
     local edge = BR.StormShape.distance(zone, p.x, p.y)   -- positive = outside
     BR.Loop.hitchContext(rec.phase, st, edge > 0)
 
@@ -3054,15 +3298,18 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
     -- brisk while shrinking, lazy while holding, and only when the radius
     -- moved enough to see.
     local gt = GetGameTimer()
-    -- ═══ THE MAP RING READS THE WALL'S OWN FADE CLOCK, NOT A COPY OF IT ═══
+    -- ═══ THE MAP RING READS THE MAP'S OWN FADE CLOCK, NOT A COPY OF IT ═══
     --
-    -- The map ring and the 3D curtain arrive together (user call, 2026-08-04), and
-    -- until #350 that was TWO SPELLINGS of one fade: `msLeft <= fadeMs` and
+    -- The map ring and the map's zone fill arrive together (user call, 2026-08-04),
+    -- and until #350 that was TWO SPELLINGS of one fade: `msLeft <= fadeMs` and
     -- `1 - msLeft / fadeMs` written out here beside wallShare's own identical
     -- arithmetic. Two spellings of one number are two things that can stop agreeing
     -- -- and this copy did not carry wallShare's fadeInSec-of-zero answer either, so
     -- it was right about that case by accident rather than by rule. There is one
-    -- share now, and the overlay in storm.map reads the same one.
+    -- share now, and the overlay in storm.map reads the same one. (The 3D curtain has
+    -- its own ramp since #344's second round -- wallRamp -- because phase 1 draws the
+    -- opening wall from the start of the hold; the map still waits for the last
+    -- fadeInSec, where a purple wash over the whole map would say nothing.)
     local share = wallShare(rec, st, msLeft)
     local wholeMap = rec.phase == 1 and st == BR.StormPhase.HOLDING
     local fading   = wholeMap and share > 0.0
@@ -3085,9 +3332,9 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
             lastBlipR = -1.0
         -- The CURRENT circle is not drawn while it is still the whole map
         -- (phase-1 hold): a ring around all of Los Santos on every map told
-        -- players nothing... until the wall starts fading in, when its map
-        -- ring fades in WITH it -- alpha ramped on the same countdown the
-        -- curtain uses, so neither pops.
+        -- players nothing... until the hold's last fadeInSec, when its map ring
+        -- fades in -- alpha ramped on the map's own countdown, the one the zone
+        -- fill reads, so it does not pop.
         elseif wholeMap then
             if fading then
                 local a = math.floor(cfg.blip.currentAlpha * share + 0.5)
@@ -3117,7 +3364,7 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
     end
 
     -- "RUN THIS WAY", on the minimap -- whenever outside the PURPLE
-    -- TARGET circle, not just the current wall (user call, 2026-08-04:
+    -- TARGET, not just the current wall (user call, 2026-08-04:
     -- during the whole phase-1 hold "outside the current circle" is
     -- impossible -- it is the entire map -- but outside the target is
     -- exactly when guidance matters). The blip sits at the NEAREST
@@ -3135,48 +3382,63 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
     -- removing a stale handle can delete ours) heals within 100ms
     -- instead of a refresh period.
     --
-    -- ═══ IT STILL AIMS AT THE NEXT CIRCLE, NOT AT THE UNION (#328) ═══
+    -- ═══ ON THE DESTINATION'S REAL BORDER, NOT ITS RADIUS (#344) ═══
     --
-    -- The safe zone is both circles now, so it is worth writing down why this
-    -- one arrow is NOT measured against the zone the line above builds. It
+    --   "it seems our "Safe zone - this way" blip is still drawn based on
+    --    diameter, not storm border."                 -- the owner, 2026-09-23
+    --
+    -- It showed when the player was further than r1 from the target's centre and
+    -- sat at r1 - 25 m along the line to it -- a circle's answer, and on a 3:1
+    -- zone a player standing off its long side was told to run to a ring nothing
+    -- draws, while one off its end was already inside it. So both halves read the
+    -- destination's own shape now (wayHome): it shows EXACTLY when the player is
+    -- outside the destination's real boundary, and it sits 25 m inside that
+    -- boundary at the point nearest them -- the destination eroded by 25 m, its
+    -- nearest point -- and points there. A destination thinner than 50 m erodes to
+    -- its inscribed point, and phase 8's point is its own answer.
+    --
+    -- ═══ IT STILL AIMS AT THE DESTINATION, NOT AT THE UNION (#328) ═══
+    --
+    -- The safe zone is both zones on a breakout, so it is worth writing down why
+    -- this one arrow is NOT measured against the zone the line above builds. It
     -- already aims at the half of that zone the whole rule exists to reward
-    -- reaching. Asking the shape for its nearest boundary point instead would
-    -- put the arrow on the CURRENT circle's edge on every ordinary nested phase
-    -- -- which is nearly every phase -- and that is the opposite direction from
-    -- the purple ring the player is being asked to rotate to. It would also
-    -- overturn the call this block was built on (2026-08-04): outside the TARGET
-    -- is exactly when guidance matters, because during the phase-1 hold
-    -- "outside the current circle" is impossible.
+    -- reaching. Asking the zone for its nearest boundary point instead would put
+    -- the arrow on the CURRENT zone's edge on every ordinary nested phase -- which
+    -- is nearly every phase -- and that is the opposite direction from the purple
+    -- destination the player is being asked to rotate to. It would also overturn
+    -- the call this block was built on (2026-08-04): outside the TARGET is exactly
+    -- when guidance matters, because during the phase-1 hold "outside the current
+    -- circle" is impossible.
     --
     -- THE BREAKOUT IS THE CASE TO CHECK, AND IT ALREADY READS RIGHT. A player
-    -- standing safely in the current circle of a barely-overlapping or
-    -- separated pair is outside the target, so they get the arrow, and it points
-    -- across at the island they have to reach. That is the guidance the union
-    -- rule makes worth following rather than a warning it makes redundant: the
-    -- storm has stopped charging them for the trip, and the arrow still tells
-    -- them where the trip goes.
+    -- standing safely in the current zone of a barely-overlapping or separated
+    -- pair is outside the target, so they get the arrow, and it points across at
+    -- the island they have to reach. That is the guidance the union rule makes
+    -- worth following rather than a warning it makes redundant: the storm has
+    -- stopped charging them for the trip, and the arrow still tells them where the
+    -- trip goes.
     --
-    -- AND NOTHING FLIPS. A nearest-point-on-the-union arrow would swap islands
-    -- as a player crossed the middle of a disjoint pair, aiming first one way and
-    -- then the other for a step in any direction, with the storm's own
-    -- destination on neither side of the swap. One destination has no such seam.
+    -- AND NOTHING FLIPS. A nearest-point-on-the-union arrow would swap islands as a
+    -- player crossed the middle of a disjoint pair, aiming first one way and then
+    -- the other for a step in any direction, with the storm's own destination on
+    -- neither side of the swap. One destination has no such seam -- and it is
+    -- convex, so the nearest point on it moves smoothly as the player does.
     -- tools/test_storm.lua pins the choice so it cannot be quietly "made
     -- consistent" later.
-    local tx, ty, tr = rec.cx1, rec.cy1, rec.r1
-    local distT = BR.Dist(p.x, p.y, tx, ty)
-    if distT > tr then
-        local inv = 1.0 / math.max(distT, 1.0)
-        local sx = tx + (p.x - tx) * inv * math.max(tr - 25.0, 0.0)
-        local sy = ty + (p.y - ty) * inv * math.max(tr - 25.0, 0.0)
-        -- AN ARROW THAT POINTS AT THE CIRCLE (user call, 2026-08-04,
+    local way = wayHome(rec)
+    if BR.StormShape.distance(way.target, p.x, p.y) > 0.0 then
+        local SS = BR.StormShape
+        local sx, sy = SS.pointAtArc(way.inner, SS.nearestArc(way.inner, p.x, p.y))
+        -- AN ARROW THAT POINTS AT THE DESTINATION (user call, 2026-08-04,
         -- overturning the earlier "no rotatable arrow" finding): sprite
         -- 11 is a directional arrow per the FiveM blip reference, and
-        -- SetBlipRotation aims it. The bearing is player -> target
-        -- centre. 2x scale, and NO SetBlipFlashes -- the sprite blinks
-        -- on its own, and stacking our flash on top of that left it
-        -- invisible half the time (both user calls, 2026-08-04).
+        -- SetBlipRotation aims it. The bearing is player -> the point the
+        -- blip sits on, the place to head for. 2x scale, and NO
+        -- SetBlipFlashes -- the sprite blinks on its own, and stacking our
+        -- flash on top of that left it invisible half the time (both user
+        -- calls, 2026-08-04).
         local rot = math.floor(
-            BR.GtaHeading(BR.Bearing(p.x, p.y, tx, ty)) + 0.5) % 360
+            BR.GtaHeading(BR.Bearing(p.x, p.y, sx, sy)) + 0.5) % 360
         if not dirBlip or not DoesBlipExist(dirBlip) then
             dirBlip = AddBlipForCoord(sx, sy, 0.0)
             SetBlipSprite(dirBlip, 11)
@@ -3272,6 +3534,40 @@ BR.Loop.register(BR.Loop.FRAME, 'storm.edge', function()
     solved.px, solved.py = p.x, p.y
     pushStorm(edge, 'storm.ui.edge',
         'per-frame check; sends only on a whole-metre change outside')
+end)
+
+-- ═══ EVERY ZONE'S SHAPE, BUILT AHEAD OF NEED, ONE A TICK (#344) ═══
+--
+-- A zone's shape costs about two milliseconds to build -- 1.7 on average, 5 at the
+-- 99th percentile and 22 at the worst measured, in plain Lua -- and zone z cannot be
+-- built without zone z-1, because each is fitted inside the one before. Left to the
+-- first frame that needs it, every phase edge pays one build inside a frame, and a
+-- client that joins mid-match pays the whole chain at once. So the moment a seed is
+-- known -- the warmup preview publishes it, or the first storm record carries it --
+-- every zone of the match is built here, ONE PER TICK, in order, so that each finds
+-- its parent already built and costs one unit. Warmup is minutes long; eight ticks
+-- are under a second. A zone already built is skipped without a mark, so each build
+-- is exactly one 'storm.unit.build' for /brstormhitch.
+local warm = { seed = nil, next = 1 }
+
+BR.Loop.register(BR.Loop.TICK, 'storm.units', function()
+    local rec = activeRecord()
+    local pv = previewCircle()
+    local seed = (rec and rec.seed) or (pv and pv.seed)
+    if seed == nil then return end
+    if warm.seed ~= seed then warm.seed, warm.next = seed, 1 end
+    local n = #(cfg.phases or {})
+    while warm.next <= n do
+        local z = warm.next
+        warm.next = z + 1
+        if not BR.StormShape.blobUnitReady(seed, z, cfg.shape, cfg.phases) then
+            local trace = BR.Loop.hitchBegin('storm.unit.build',
+                'once per zone per match, one a tick; a joiner builds its chain here')
+            BR.StormUnit(seed, z)
+            BR.Loop.hitchEnd(trace)
+            return
+        end
+    end
 end)
 
 -- A new record means the "next circle" moved: force the blips to rebuild so

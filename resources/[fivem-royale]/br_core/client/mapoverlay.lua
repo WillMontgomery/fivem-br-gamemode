@@ -115,6 +115,7 @@ local state = {
     set     = {},       -- the indices the last setAreas added, in ITS order; see placeArea
     chars   = 0,        -- coordinate characters in the last setAreas push
     moves   = 0,        -- areas placed in place rather than rebuilt, all session
+    fades   = 0,        -- alpha writes to areas already in the movie, all session
     why     = 'not started',
 }
 
@@ -521,6 +522,74 @@ function BR.MapOverlay.placeArea(slot, x, y, w, h)
     return true
 end
 
+--- Fade one area of the last setAreas, WITHOUT rebuilding it (#344).
+---
+--- ═══ ONE PROPERTY WRITE, READ OUT OF THE SAME DISASSEMBLY ═══
+---
+---   SET_OVERLAY_ALPHA(id, a)   overlays[id].A = a * 100 / 255
+---                              overlays[id].txdLoader._alpha = a * 100 / 255
+---
+--- 70 bytes of bytecode with one convertValue call and no loop -- the same class of
+--- handler as the two placeArea sends, and nothing like ADD_AREA_OVERLAY's 2,070.
+--- It writes the clip `txdLoader` whose alpha Colourise set when the area was added.
+---
+--- ═══ LINEAR ONLY FOR AN AREA ADDED AT FULL STRENGTH ═══
+---
+--- An area's FILL keeps the alpha it was added with -- beginFill took it, and nothing
+--- rewrites the drawing -- and areaAlpha's header has how that compounds below 100.
+--- This rewrites only the clip's _alpha, so the opacity it produces is `a / 255`
+--- exactly when the area went in at 255: the fill is then opaque and the clip's
+--- alpha is the only term left. The caller adds at 255 anything it means to fade.
+---
+--- A refusal is answered, as placeArea's is: the area is still in the movie at
+--- whatever alpha it had, so `false` means the caller's picture is wrong.
+--- @param slot integer   1 = the first area the last setAreas pushed
+--- @param a number       0-255, linear
+--- @return boolean written
+function BR.MapOverlay.alphaArea(slot, a)
+    if not BR.MapOverlay.ready() then return false end
+    local index = state.set[slot]
+    if not index then return false end
+    if not BR.Native.minimapMethod(state.handle, 'SET_OVERLAY_ALPHA') then
+        return false
+    end
+    a = math.floor((a or 0) + 0.5)
+    if a < 0 then a = 0 elseif a > 255 then a = 255 end
+    ScaleformMovieMethodAddParamInt(index)
+    ScaleformMovieMethodAddParamInt(a)
+    EndScaleformMovieMethod()
+    state.fades = state.fades + 1
+    return true
+end
+
+--- Add ONE more area after the last setAreas, without removing anything (#344).
+---
+--- ═══ FOR A PICTURE THAT GROWS WHILE IT STANDS STILL, AND ONLY THEN ═══
+---
+--- An add is the expensive call -- setAreas has the argument -- and this is an add.
+--- What it saves is the REMOVE-AND-RE-ADD of everything already there: the storm
+--- map uses it to add the extra shapes of a sweep one at a time across a HOLD, a
+--- couple of seconds apart, so the sweep itself has everything it needs already in
+--- the movie and is never asked to add anything. Never call it while the storm
+--- moves; client/storm.lua does not.
+---
+--- THE NEW AREA IS THE NEXT SLOT, so placeArea and alphaArea reach it like any
+--- other. A refusal adds nothing and changes no slot.
+--- @param points table
+--- @param colour table   { r, g, b, a } -- a is the LINEAR 0-255 alpha; see areaAlpha
+--- @return integer|nil slot
+function BR.MapOverlay.appendArea(points, colour)
+    colour = colour or {}
+    local idx = BR.MapOverlay.addArea(points, {
+        r = colour.r, g = colour.g, b = colour.b,
+        a = BR.MapOverlay.areaAlpha(colour.a),
+    })
+    if not idx then return nil end
+    state.set[#state.set + 1] = idx
+    state.chars = state.chars + #BR.Native.minimapAreaString(points)
+    return #state.set
+end
+
 --- What this file currently believes, for /brmaparea to print.
 --- @return table
 function BR.MapOverlay.report()
@@ -533,6 +602,7 @@ function BR.MapOverlay.report()
         areas   = #state.ours,
         chars   = state.chars,
         moves   = state.moves,
+        fades   = state.fades,
         next    = nextIndex(),
     }
 end

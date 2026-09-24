@@ -296,6 +296,11 @@ local function seal(pieces, kind, meta)
         -- for the reason `discs` and `prims` are -- see the note above, and
         -- blobUnion's, which says what a part may and may not be asked.
         hull = meta.hull, parts = meta.parts, blob = meta.blob,
+        -- `meet` is an INTERSECTION's two shapes (BR.StormShape.intersect), kept so
+        -- its erosion is the intersection of theirs -- exact, where eroding the
+        -- corner list it came out as would have to chord the arcs beside its
+        -- crossings. See inset().
+        meet = meta.meet,
     }
 end
 
@@ -2006,6 +2011,24 @@ function BR.StormShape.blobUnit(seed, zone, opts, phases)
     return unit
 end
 
+--- Is this zone's unit already built? Asked WITHOUT building it or promoting it, so
+--- a caller spreading the builds out -- client/storm.lua derives one zone per tick
+--- ahead of need -- can tell a cache hit from the two milliseconds a build costs.
+--- The same arguments as blobUnit, and the same answer for zone 0 and the off switch.
+--- @return boolean
+function BR.StormShape.blobUnitReady(seed, zone, opts, phases)
+    opts = opts or NO_OPTS
+    local sp = specs[opts]
+    if not sp or not specStill(sp, opts) or sp.gen ~= blobGen then return false end
+    if not sp.counts then return true end
+    local z = math.tointeger(math.floor(zone or 0)) or 0
+    if z <= 0 then return true end
+    local s = math.tointeger(math.floor(seed or 0)) or 0
+    local ch = chainOf(sp.chains, phases)
+    local bySeed = ch and ch.units[s]
+    return (bySeed and bySeed[z]) ~= nil
+end
+
 -- ═══ THE MORPH: ONE ZONE'S SHAPE BECOMING THE NEXT ONE'S, CORNER TO CORNER ═══
 --
 --   "I don't think blending is right here - it still doesn't do what I want. I
@@ -2974,6 +2997,250 @@ function BR.StormShape.blobUnion(a, b)
     return seal(pieces, 'blobUnion', { parts = { a, b }, prims = prims })
 end
 
+-- ═══ A CONJOINED ZONE GROWS INTO ITS DESTINATION INSTEAD OF POPPING (#344) ═══
+--
+--   "when the storm finishes moving and the next phase is opened, if they're
+--    conjoined, today the border pops suddenly to cover the whole area. instead it
+--    should grow over a period of 20s to include that new area instead of popping."
+--                                                     -- the owner, 2026-09-23
+--
+-- The safe zone of a breakout is the zone Z the wall starts as UNION the
+-- destination D, and it used to be that from the first frame of the phase. Where
+-- the two overlap it now grows from Z to Z union D instead:
+--
+--   G(s) = Z  union  (D  intersect  Z_s)        Z_s = Z grown by s metres
+--
+-- with s running from 0 to S across the growth, S being how far the furthest point
+-- of D is outside Z. So the part of D the wall has taken in is exactly the part
+-- within s of Z: a front that spreads out of Z across D at one speed everywhere, and
+-- that ends on Z union D exactly, because D is inside Z_S. The destination itself
+-- never changes -- it is only ever intersected.
+--
+-- ═══ EVERY PIECE OF IT IS EXACT, AND DAMAGE READS THE SAME CORNER LISTS ═══
+--
+--   Z_s IS A CORNER LIST. Growing a convex body by s adds s to its support function
+--   everywhere, which is every corner's radius plus s and every normal where it was
+--   (dilate).
+--
+--   D INTERSECT Z_s IS A CORNER LIST. The intersection of two convex shapes is
+--   convex, and its boundary is the runs of each boundary inside the other, joined
+--   at the crossings -- found exactly by crossings(), the stitch's own intersector.
+--   Each arc of those runs is a corner with its own radius and range of normals,
+--   and each joint where the direction turns is a SHARP corner spanning the turn
+--   (cornersOf). So its signed distance is hullDistance, exact inside and out.
+--
+--   AND G IS A UNION OF TWO CONVEX PARTS, which is what blobUnion already is: one
+--   stitched loop to draw, the minimum of two exact signed distances to bill. Its
+--   magnitude is exact from outside and understates depth only inside, the way every
+--   union here does -- never the unsafe way.
+--
+-- S IS EXACT TOO: D is the hull of its discs and the signed distance to Z is convex,
+-- so its maximum over D is at a disc -- the centre's distance plus the radius, which
+-- is fitOf.
+
+--- A corner list grown by `s`: every radius plus s, every normal where it was.
+--- EXACT, because that is what adding s to a support function is. Fresh tables.
+--- @param ks table
+--- @param s number   metres, >= 0
+--- @return table ks
+local function dilate(ks, s)
+    local out = {}
+    for i = 1, #ks do
+        local k = ks[i]
+        out[i] = corner(k.x, k.y, k.rho + s, k.a0, k.a1, k.c0, k.s0, k.c1, k.s1)
+    end
+    return out
+end
+
+--- The outward-normal angle a piece of a convex boundary starts and ends on.
+local function normalsOf(pc)
+    if pc.kind == 'arc' then return pc.a0, pc.a0 + pc.sweep end
+    local a = atan(pc.ny, pc.nx)
+    return a, a
+end
+
+--- A closed CONVEX loop of pieces, walked counter-clockwise, as a corner list.
+---
+--- AN ARC IS A CORNER: its centre, its radius and the normals it sweeps. A JOINT
+--- WHERE THE DIRECTION TURNS IS A SHARP CORNER at the joint, spanning the turn --
+--- which is every crossing of two boundaries and every sharp corner of either. A
+--- joint that turns by less than ANGLE_EPS is a run continuing into its tangent
+--- arc, and adds nothing.
+---
+--- THE RANGES ARE ONE CHAIN. Each corner starts on the normal the one before it
+--- ended on, to the bit, and the chain is checked to close on one whole turn --
+--- the property every query of a corner list reads. A turn the wrong way is a dent,
+--- and a loop that does not close is not a convex boundary: both hand back nil.
+--- @param pieces table
+--- @return table|nil ks
+local function cornersOf(pieces)
+    local n = #pieces
+    if n == 0 then return nil end
+    local raw = {}
+    for i = 1, n do
+        local p, q = pieces[i], pieces[(i % n) + 1]
+        if p.kind == 'arc' then
+            if p.out < 0.0 then return nil end
+            raw[#raw + 1] = { x = p.cx, y = p.cy, rho = p.r, turn = p.sweep }
+        end
+        local _, pe = normalsOf(p)
+        local qs = normalsOf(q)
+        local turn = ((qs - pe + pi) % TAU) - pi
+        if turn > ANGLE_EPS then
+            local x, y = pieceAt(p, p.len)
+            raw[#raw + 1] = { x = x, y = y, rho = 0.0, turn = turn }
+        elseif turn < -1e-9 then
+            return nil
+        end
+    end
+    if #raw == 0 then return nil end
+    -- Anchored on the first piece's own starting normal, so the angles mean what the
+    -- piece said rather than what a sum of turns drifted to.
+    local a = normalsOf(pieces[1])
+    if pieces[1].kind ~= 'arc' then
+        -- The first raw corner is the joint AFTER a run, so the chain starts on
+        -- that run's normal.
+        a = select(2, normalsOf(pieces[1]))
+    end
+    local start = a
+    local ks = {}
+    for i = 1, #raw do
+        local r = raw[i]
+        ks[i] = corner(r.x, r.y, r.rho, a, a + r.turn)
+        a = a + r.turn
+    end
+    if abs((a - start) - TAU) > 1e-6 then return nil end
+    return ks
+end
+
+--- A point inside a convex corner list: the mean of the points each corner touches
+--- the boundary at, half way round its normals -- a mean of boundary points of a
+--- convex set, which is inside it.
+local function innerPoint(ks)
+    local sx, sy = 0.0, 0.0
+    for i = 1, #ks do
+        local k = ks[i]
+        local mid = 0.5 * (k.a0 + k.a1)
+        sx = sx + k.x + k.rho * cos(mid)
+        sy = sy + k.y + k.rho * sin(mid)
+    end
+    return sx / #ks, sy / #ks
+end
+
+--- THE INTERSECTION OF TWO CONVEX SHAPES, as a corner list shape. EXACT.
+---
+--- The runs of A's boundary inside B, and of B's inside A, in the order a walk of
+--- the intersection meets them: from each place A goes INTO B, forward along A to
+--- where it comes out -- which is where B goes into A -- and forward along B from
+--- there to where A next goes in. crossings() hands them over alternating, and each
+--- run is checked at its midpoint to be inside the other shape, for the reason
+--- stitch() checks its own: a winding argument is a thing that can be wrong.
+---
+--- WHEN THE BOUNDARIES NEVER MEET the answer is whichever shape is inside the other,
+--- itself -- or nothing, for two that are apart. A touch this cannot read, or a run
+--- on the wrong side, is `nil` and a reason, and the caller decides what that means.
+--- @param a table   a corner-list shape (kind 'blob')
+--- @param b table   a corner-list shape
+--- @return table|nil shape
+--- @return string why   'crossed', 'a', 'b', 'apart', or why it could not
+function BR.StormShape.intersect(a, b)
+    if not (a and a.hull and b and b.hull) then return nil, 'not two corner lists' end
+    local xs, met = crossings(a, b)
+    if not xs then
+        if met then return nil, 'touch' end
+        if insideWhole(a, b) then return a, 'a' end
+        if insideWhole(b, a) then return b, 'b' end
+        return nil, 'apart'
+    end
+    -- START ON AN ENTRY, so the list reads entry, exit, entry, exit ... and each
+    -- entry with the exit after it names one run of A inside B.
+    if not xs[1].into then
+        local first = table.remove(xs, 1)
+        xs[#xs + 1] = first
+    end
+    local Pa, Pb = a.P, b.P
+    local nx = #xs
+    local pieces = {}
+    for k = 1, nx, 2 do
+        local sIn, sOut = xs[k].s, xs[k + 1].s
+        local la = (sOut - sIn) % Pa
+        if la <= 0.0 then return nil, 'empty run' end
+        local tFrom = xs[k + 1].t
+        local tTo = xs[(k + 1) % nx + 1].t
+        local lb = (tTo - tFrom) % Pb
+        if lb <= 0.0 then return nil, 'empty run' end
+
+        -- A MICROMETRE OF SLACK, which is CROSS_SAME: a run that lies along the other
+        -- boundary is on it, not outside it.
+        local mx, my = BR.StormShape.pointAtArc(a, sIn + la * 0.5)
+        if BR.StormShape.distance(b, mx, my) > CROSS_SAME then return nil, 'wrong side' end
+        local qx, qy = BR.StormShape.pointAtArc(b, tFrom + lb * 0.5)
+        if BR.StormShape.distance(a, qx, qy) > CROSS_SAME then return nil, 'wrong side' end
+
+        local as = sliceOf(a, sIn, la)
+        for i = 1, #as do pieces[#pieces + 1] = as[i] end
+        local bs = sliceOf(b, tFrom, lb)
+        for i = 1, #bs do pieces[#pieces + 1] = bs[i] end
+    end
+    local ks = cornersOf(pieces)
+    if not ks then return nil, 'not a convex loop' end
+    -- NAMED BY A POINT INSIDE IT, because deepPoint and the inset's survival test
+    -- read the named centre as a candidate for the deepest point -- and neither
+    -- shape's own centre is promised to be inside their intersection. The radius
+    -- and the map descriptor are the first shape's: the destination's, which is
+    -- the only caller's `a`.
+    local x, y = innerPoint(ks)
+    local ab = a.blob or {}
+    return hullOf(ks, {
+        blob = { cx = x, cy = y, r = ab.r or 0.0 },
+        prims = a.prims or {},
+        meet = { a, b },
+    }), 'crossed'
+end
+
+--- A convex corner-list shape grown by `s` metres, as a shape. EXACT.
+--- @param shape table   a corner-list shape
+--- @param s number
+--- @return table shape
+function BR.StormShape.dilate(shape, s)
+    local m = shape.blob or {}
+    return hullOf(dilate(shape.hull.ks, s), {
+        blob = { cx = m.cx, cy = m.cy, r = (m.r or 0.0) + s, unit = m.unit },
+        prims = { { kind = 'radius', cx = m.cx, cy = m.cy, r = radius((m.r or 0.0) + s) } },
+    })
+end
+
+--- THE ZONE `z` GROWN `s` METRES INTO THE DESTINATION `d`: z union (d intersect z_s).
+--- See the section header. Both are convex corner-list shapes, and neither is
+--- touched -- the parts of the answer are fresh.
+---
+--- `s` of nothing is `z` itself, and a destination wholly inside z_s is the whole
+--- union: the two ends of the growth, which are the zone before it and the zone
+--- after it exactly. nil when the intersection cannot be built -- a touch this file
+--- does not read -- and the caller decides what that means (BR.StormZone takes the
+--- whole union, which errs toward the player).
+--- @param z table   the zone the phase started in
+--- @param d table   the destination
+--- @param s number  metres grown
+--- @return table|nil shape
+function BR.StormShape.grown(z, d, s)
+    if not (s > 0.0) then return z end
+    local zs = BR.StormShape.dilate(z, s)
+    local part, why = BR.StormShape.intersect(d, zs)
+    if not part then
+        -- NOTHING OF THE DESTINATION IS WITHIN s YET: the zone as it stands. Only a
+        -- pair that does not overlap at all gets here, and BR.StormZone does not ask.
+        if why == 'apart' then return z end
+        return nil
+    end
+    -- THE DESTINATION HOLDS ALL OF z_s -- a target that swallows the zone it breaks
+    -- out of -- so the part taken in is z_s itself, and z_s holds z. (A destination
+    -- wholly inside z_s is the other nesting: the part is the destination, and the
+    -- union below is the whole of the growth's end.)
+    if part == zs then return zs end
+    return BR.StormShape.blobUnion(z, part)
+end
+
 --- A point inside a hull shape, and how deep it is there.
 ---
 --- The deeper of two candidates: the shape's own centre, and the mean of its corner
@@ -3704,6 +3971,22 @@ function BR.StormShape.inset(shape, metres)
     -- shape's centre: a morphing wall is named by the solver's circle, whose centre
     -- nothing puts inside it, and a one-metre circle there would be outside the wall.
     if kind == 'blob' then
+        -- ═══ AN INTERSECTION ERODES AS THE INTERSECTION OF ITS TWO ERODED SHAPES ═══
+        --
+        -- A disc of radius d fits inside A intersect B exactly when it fits inside
+        -- both, so (A intersect B) eroded by d IS (A eroded) intersect (B eroded) --
+        -- two exact erosions and one exact intersection. The corner list the
+        -- intersection came out as would erode too, but its crossings are sharp
+        -- corners beside arcs, which is the one case erode() hands to the chords:
+        -- MEASURED on growing zones, a millisecond and a half a frame where this is a
+        -- tenth of that. A pair that will not intersect after eroding -- one eroded
+        -- to its inscribed circle -- falls through to the ordinary path.
+        if shape.meet then
+            local a = BR.StormShape.inset(shape.meet[1], metres)
+            local b = BR.StormShape.inset(shape.meet[2], metres)
+            local cut = BR.StormShape.intersect(a, b)
+            if cut then return cut end
+        end
         local h, m = shape.hull, shape.blob
         local ks = erode(h.ks, metres) or erode(chorded(h.ks, CHORD_SAG), metres)
         if ks then

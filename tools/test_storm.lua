@@ -434,8 +434,22 @@ end
 --- what these blocks test -- `blob.agree` is what pins that the two sides derive
 --- the same one. What they test is what the wall, the HUD and the ledger DO with
 --- it, so they need the shape in hand to measure against.
+---
+--- PAST ITS GROWTH. A conjoined destination is grown into across the hold's first
+--- `grow.seconds` (#344), and `g` left out reads as the whole of it: the union the
+--- growth ends on, which is what every block reading this is about. A block that
+--- measures a client or a server against it moves its record past the growth first
+--- (C.grown, S.grown); `grow.*` is where the growth itself is asserted.
 local function zoneOf(env, rec)
     return env.BR.StormZone(rec, rec.cx0, rec.cy0, rec.r0)
+end
+
+--- The growth window of a record, in ms: how far to move its start back so that a
+--- block about the union a conjoined phase GROWS into (#344) reads that union from
+--- its first pass. The same arithmetic storm_solve.lua's growMs does.
+local function growWindow(env, rec)
+    local sec = env.BR.Config.Storm.grow and env.BR.Config.Storm.grow.seconds or 0.0
+    return math.min(sec * 1000.0, rec.tWait)
 end
 
 
@@ -551,6 +565,16 @@ local function newStormServer()
     --- makes the moment exact.
     function S.at(ms)
         S.match.storm.tStart = S.now + 1000.0 - ms
+    end
+
+    --- Move the live record PAST ITS GROWTH (#344): a conjoined destination is
+    --- grown into across the hold's first grow.seconds, and a block about the union
+    --- that growth ends on has to be billed against the union from its first pass.
+    --- The hold these blocks set up is minutes long, so nothing else moves.
+    function S.grown()
+        local rec = S.match.storm
+        rec.tStart = rec.tStart - growWindow(env, rec)
+        return rec
     end
 
     --- Stand the one player at (x, y) and run a pass. True if the storm billed
@@ -684,6 +708,7 @@ local function newStormClient()
         refusePlace = false,
         refuseMethod = {},      -- [name] = true refuses that one method only
         placed = 0,
+        faded = 0,              -- SET_OVERLAY_ALPHA calls handled (#344)
         calls = 0,
         open = nil,
     }
@@ -1030,18 +1055,36 @@ local function newStormClient()
         local ov = C.mm.overlays[(p[1] or -1) + 1]
         if not ov then error(('%s on index %s, which is not in the movie')
             :format(call.method, tostring(p[1]))) end
-        -- AS THE BYTECODE HAS THEM, recorded on #350:
+        -- AS THE BYTECODE HAS THEM, recorded on #350 and #344:
         --   UPDATE_OVERLAY_POSITION       txdLoader._x = x;  txdLoader._y = 0 - y
         --   UPDATE_OVERLAY_SIZE_OR_SCALE  isScaled ? _xscale/_yscale : _width/_height
+        --   SET_OVERLAY_ALPHA             A = convertValue(a) = a * 100 / 255, and
+        --                                 txdLoader._alpha = the same
         -- and an AreaOverlay has no isScaled.
         if call.method == 'UPDATE_OVERLAY_POSITION' then
             ov._x, ov._y = p[2], 0 - p[3]
+            C.mm.placed = C.mm.placed + 1
         elseif call.method == 'UPDATE_OVERLAY_SIZE_OR_SCALE' then
             ov._width, ov._height = p[2], p[3]
+            C.mm.placed = C.mm.placed + 1
+        elseif call.method == 'SET_OVERLAY_ALPHA' then
+            ov.A = p[2] * 100 / 255
+            ov._alpha = ov.A
+            C.mm.faded = C.mm.faded + 1
         else
             error('the harness movie has no handler for ' .. tostring(call.method))
         end
-        C.mm.placed = C.mm.placed + 1
+    end
+
+    --- HOW OPAQUE ONE AREA RENDERS, 0..1, by the movie's own arithmetic: the fill's
+    --- alpha is the one it was ADDED with, a Flash 0-100 percentage clamped at 100,
+    --- and the clip's `_alpha` is what Colourise set from that same parameter until a
+    --- SET_OVERLAY_ALPHA rewrote it. They multiply. MapOverlay.areaAlpha's header has
+    --- the add-time half; the rewrite is #344's.
+    function C.opacity(ov)
+        local fill = math.min(ov.a, 100) / 100
+        local clip = (ov._alpha or (ov.a / 255 * 100)) / 100
+        return fill * clip
     end
 
     --- WHERE THE MAP DRAWS ONE AREA, in world coordinates, after whatever the movie
@@ -1099,6 +1142,15 @@ local function newStormClient()
     end
     C.record(2, 0.0, 0.0, 200.0, 0.0, 0.0, 200.0, 600000, 60000, 4.0)
 
+    --- Move the live record PAST ITS GROWTH (#344), as S.grown does for the server:
+    --- for a block about the union a conjoined phase grows into, drawn and read from
+    --- its first frame. The holds here are minutes long, so nothing else moves.
+    function C.grown()
+        local rec = env.BR.State.storm
+        rec.tStart = rec.tStart - growWindow(env, rec)
+        return rec
+    end
+
     --- TICK passes 1.5s apart, which clears the 250ms envelope throttle.
     function C.tick(n)
         for _ = 1, (n or 1) do
@@ -1128,7 +1180,7 @@ local function newStormClient()
     ---
     --- THE JUMP IS SAFE FOR A BLOCK THAT DRIVES THE RECORD, because every one of
     --- them sets tStart relative to C.now at the moment it wants a reading rather
-    --- than once at the start -- see preview.handoff's holdAt.
+    --- than once at the start -- see preview.twowalls' both().
     function C.settlePreview()
         C.frame()
         C.now = C.now
@@ -1138,14 +1190,14 @@ local function newStormClient()
 
     --- Silence the #327 preview wall, leaving only the record's own curtain in frame.
     ---
-    --- ═══ NEEDED SINCE #340, AND ONLY INSIDE THE FADE WINDOW ═══
+    --- ═══ NEEDED SINCE #340, AND THROUGH ALL OF PHASE 1 SINCE #344 ═══
     ---
-    --- The preview now holds circle 1 on screen through the whole phase-1 hold and
-    --- fades out as the real wall fades in, so for the hold's last fadeInSec there are
-    --- legitimately TWO walls in one frame at two different alphas. An assertion about
-    --- "the alpha depends on height and on nothing else" reads their union as one wall
-    --- whose alpha varies along its length, which is the picket fence -- a false red on
-    --- a renderer that is doing exactly what it was asked to.
+    --- Circle 1's wall stands beside the opening zone's through the whole of phase 1 --
+    --- its hold and its sweep -- so there are legitimately TWO walls in one frame at two
+    --- different alphas. An assertion about "the alpha depends on height and on nothing
+    --- else" reads their union as one wall whose alpha varies along its length, which is
+    --- the picket fence -- a false red on a renderer that is doing exactly what it was
+    --- asked to.
     ---
     --- THROUGH BR.Loop.setEnabled RATHER THAN BY MATCHING GEOMETRY, because that is the
     --- production switch (`/brloop disable storm.previewWall`) and the mechanism the M4
@@ -1153,7 +1205,7 @@ local function newStormClient()
     --- today and would quietly stop working the first time a phase-1 target happened to
     --- sit on the opening circle.
     ---
-    --- THE HANDOFF ITSELF IS ASSERTED WITH BOTH WALLS RUNNING, in `preview.handoff`.
+    --- THE TWO WALLS ARE ASSERTED TOGETHER, and each alone, in `preview.twowalls`.
     --- Nothing is being muted here that is not proved there.
     function C.recordWallOnly()
         if not env.BR.Loop.setEnabled('storm.previewWall', false) then
@@ -1180,6 +1232,29 @@ local function newStormClient()
 
     --- Every filled area currently in the movie, in the movie's own order.
     function C.areas() return C.mm.overlays end
+
+    --- The ZONE's fill as the map shows it (#344): of the keyframes -- the areas added
+    --- at full strength so that they can be faded -- the one at the greatest opacity,
+    --- and that opacity. nil when none is showing.
+    function C.zoneFill()
+        local best, bestO = nil, 0.0
+        for _, ov in ipairs(C.mm.overlays) do
+            if ov.a == 255 then
+                local o = C.opacity(ov)
+                if o > bestO then best, bestO = ov, o end
+            end
+        end
+        return best, bestO
+    end
+
+    --- The keyframes in the movie (#344), in the movie's order.
+    function C.keyframes()
+        local out = {}
+        for _, ov in ipairs(C.mm.overlays) do
+            if ov.a == 255 then out[#out + 1] = ov end
+        end
+        return out
+    end
 
     function C.last() return C.envelopes[#C.envelopes] end
 
@@ -1431,6 +1506,9 @@ do
     local env = S.env
     -- r 500 each, centres 900 apart: a proper overlap with a narrow lens.
     local rec = S.record(2, 0.0, 0.0, 500.0, 900.0, 0.0, 500.0, 600000, 60000, 2.0)
+    -- PAST ITS GROWTH: the union below is what an overlapping destination is grown
+    -- into across the hold's first seconds (#344), and `server.grow` bills the growth.
+    S.grown()
     local zone = zoneOf(env, rec)
     local probe = shapeProbe(env, zone)
 
@@ -1738,6 +1816,7 @@ do
     local C = newStormClient()
     local env = C.env
     local rec = C.record(2, 0.0, 0.0, 500.0, 900.0, 0.0, 500.0, 600000, 60000, 4.0)
+    C.grown()     -- the union the growth ends on (#344); `grow.agree` has the growth
     local zone = zoneOf(env, rec)
     local probe = shapeProbe(env, zone)
 
@@ -1864,52 +1943,80 @@ end
 -- ---------------------------------------------------------------------------
 describe('client.arrow')
 do
-    -- ═══ THE WAY-HOME ARROW STILL AIMS AT THE NEXT CIRCLE, AND THAT IS A
-    --     DECISION RATHER THAN AN OVERSIGHT ═══
+    -- ═══ THE WAY-HOME ARROW AIMS AT THE DESTINATION'S REAL BORDER (#344), AND STILL
+    --     AT THE DESTINATION RATHER THAN THE UNION (#328) ═══
     --
-    -- It sits at the nearest safe point just inside the TARGET's edge, whenever
-    -- the viewer is outside that target (user call, 2026-08-04: during the
-    -- phase-1 hold "outside the current circle" is impossible, and outside the
-    -- target is exactly when guidance matters).
+    --   "it seems our "Safe zone - this way" blip is still drawn based on diameter,
+    --    not storm border."                             -- the owner, 2026-09-23
     --
-    -- The instinct after #328 is to measure it against the union like the edge.
-    -- That would point it at the CURRENT circle's rim on every ordinary nested
-    -- phase, which is away from the ring the player is being asked to rotate to,
-    -- and on a disjoint pair it would swap islands as they crossed the middle.
-    -- This block is what makes that change fail rather than ship.
+    -- It showed when the player was further than r1 from the target's centre and sat
+    -- at r1 - 25 along the line to it: a circle's answer, on a destination that is a
+    -- shape stretched up to 3:1. Now it shows EXACTLY when the player is outside the
+    -- destination's real boundary, sits 25 m inside that boundary at the point nearest
+    -- them, and points there.
+    --
+    -- AND IT STILL AIMS AT THE DESTINATION, NOT THE UNION. The instinct after #328 is to
+    -- measure it against the union like the edge; that would point it at the CURRENT
+    -- zone's rim on every ordinary nested phase, away from the destination the player
+    -- is being asked to rotate to, and on a disjoint pair it would swap islands as they
+    -- crossed the middle. This block is what makes that change fail rather than ship.
     local C = newStormClient()
-    -- Disjoint: current r 400 at the origin, target r 300 at 1200m.
-    C.record(2, 0.0, 0.0, 400.0, 1200.0, 0.0, 300.0, 600000, 60000, 4.0)
+    local env = C.env
+    local SS = env.BR.StormShape
+    -- Disjoint: current r 400 at the origin, target r 300 at 1200 m.
+    local rec = C.record(2, 0.0, 0.0, 400.0, 1200.0, 0.0, 300.0, 600000, 60000, 4.0)
+    local target = env.BR.StormTarget(rec)
+    local inner = SS.inset(target, 25.0)
 
-    -- Standing safely in the CURRENT circle, outside the target.
+    --- Where the arrow should be for a player at (x, y), asked a DIFFERENT way from the
+    --- renderer: walk the eroded destination's boundary densely and take the nearest.
+    local function nearestOnInner(x, y)
+        local P = SS.perimeter(inner)
+        local best, bx, by = math.huge, nil, nil
+        for k = 0, 4000 do
+            local qx, qy = SS.pointAtArc(inner, P * k / 4000)
+            local d = (qx - x) ^ 2 + (qy - y) ^ 2
+            if d < best then best, bx, by = d, qx, qy end
+        end
+        return bx, by, math.sqrt(best)
+    end
+
+    -- Standing safely in the CURRENT zone, outside the target.
     C.pedAt = pt(0.0, 0.0)
     C.tick(2)
     local a = C.arrow()
     ok(a ~= nil,
-        'a player safe in the current circle of a separated pair still gets the '
-            .. 'arrow, because the destination is still somewhere else')
-    -- 1200 - (300 - 25) = 925, on the near side of the target's rim. The
-    -- union's own nearest boundary point from here is at NEGATIVE x, so this
-    -- number is what tells the two apart.
-    ok(a ~= nil and near(a.x, 925.0, 0.5) and near(a.y, 0.0, 0.5),
-        'and it points ACROSS THE GAP at the target rim, not back at the '
-            .. 'current circle behind them',
-        a and ('%s, %s'):format(tostring(a.x), tostring(a.y)))
+        'a player safe in the current zone of a separated pair still gets the arrow, '
+            .. 'because the destination is still somewhere else')
+    local wx, wy, wd = nearestOnInner(0.0, 0.0)
+    ok(a ~= nil and near(SS.distance(target, a.x, a.y), -25.0, 1e-6)
+            and math.sqrt((a.x - wx) ^ 2 + (a.y - wy) ^ 2) < 1.0
+            and near(math.sqrt(a.x ^ 2 + a.y ^ 2), wd, 0.5),
+        'and it sits 25 m inside the destination\'s REAL boundary, at the point of it '
+            .. 'nearest the player -- ACROSS THE GAP, not back at the current zone '
+            .. 'behind them',
+        a and ('(%.2f, %.2f), %.6f m from the border; walked nearest (%.2f, %.2f)')
+            :format(a.x, a.y, SS.distance(target, a.x, a.y), wx, wy))
+    local wantRot = a and (math.floor(env.BR.GtaHeading(
+        env.BR.Bearing(0.0, 0.0, a.x, a.y)) + 0.5) % 360)
+    ok(a ~= nil and a.rot == wantRot,
+        'and it points AT that point -- the place to head for, not the centre',
+        a and ('%s against %s'):format(tostring(a.rot), tostring(wantRot)))
     ok(C.last() ~= nil and C.last().edgeDistance < 0.0,
         'while the edge readout says they are safe where they stand -- the two '
             .. 'answer different questions on purpose',
         C.last() and C.last().edgeDistance)
 
-    -- AND IT GOES AWAY ON ARRIVAL, not on becoming safe. A player who crosses
-    -- to the far island is inside the target, so there is nothing left to guide
-    -- them to.
+    -- AND IT GOES AWAY ON ARRIVAL, not on becoming safe. A player who crosses to the
+    -- far island is inside the target, so there is nothing left to guide them to.
     C.pedAt = pt(1200.0, 0.0)
     C.tick(2)
-    ok(C.arrow() == nil, 'reaching the destination takes the arrow away')
+    ok(SS.distance(target, 1200.0, 0.0) < 0.0 and C.arrow() == nil,
+        'reaching the destination takes the arrow away')
 
-    -- NO FLIP IN THE MIDDLE. Walked across the gap, the arrow keeps naming one
-    -- place: every sample is on the target's near rim, monotonically closer,
-    -- and never once on the circle behind.
+    -- NO FLIP IN THE MIDDLE. Walked across the gap, the arrow keeps naming one place:
+    -- every sample is on the eroded destination, the point of it nearest the walker,
+    -- and never once on the zone behind.
     local D = newStormClient()
     D.record(2, 0.0, 0.0, 400.0, 1200.0, 0.0, 300.0, 600000, 60000, 4.0)
     local flips, lastX = 0, nil
@@ -1917,14 +2024,61 @@ do
         D.pedAt = pt(x + 0.0, 0.0)
         D.tick(1)
         local b = D.arrow()
-        if not b or not near(b.x, 925.0, 0.5) then flips = flips + 1 end
+        local nx, ny = nearestOnInner(x + 0.0, 0.0)
+        if not b or math.abs(SS.distance(target, b.x, b.y) + 25.0) > 1e-6
+                or math.sqrt((b.x - nx) ^ 2 + (b.y - ny) ^ 2) > 1.0 then
+            flips = flips + 1
+        end
         lastX = b and b.x or nil
     end
     ok(flips == 0,
-        'and walking the whole gap never makes it change its mind about which '
-            .. 'island it is naming',
-        ('%d samples off the target rim, last at %s'):format(flips,
-            tostring(lastX)))
+        'and walking the whole gap never makes it change its mind about which island '
+            .. 'it is naming',
+        ('%d samples off the destination, last at %s'):format(flips, tostring(lastX)))
+
+    -- ═══ EXACTLY WHEN OUTSIDE THE REAL BORDER, ON A LONG DESTINATION ═══
+    --
+    -- The radius rule's failure is a long shape: players all the same distance from
+    -- its centre are inside it off its ends and outside it off its sides. So they are
+    -- stood round a stretched destination on one circle about its centre, and the
+    -- arrow must be there for exactly those outside it -- and sit 25 m inside it.
+    local L = newStormClient()
+    local lrec = L.record(2, 0.0, 0.0, 2600.0, 300.0, 200.0, 1600.0, 600000, 60000, 1.25)
+    local seed = nil
+    for s = 1, 400 do
+        local u = L.env.BR.StormUnit(s, 2)
+        if u.kind == 'polygon' and u.stretch >= 2.5 then seed = s break end
+    end
+    ok(seed ~= nil, 'the shipping config draws a zone stretched past 2.5:1 on some seed')
+    lrec.seed = seed or 1
+    local ltarget = L.env.BR.StormTarget(lrec)
+    local ring = 1600.0
+    local shown, wrong, off, inside = 0, 0, 0.0, 0
+    for k = 0, 71 do
+        local ang = k * math.pi / 36
+        local x, y = 300.0 + ring * math.cos(ang), 200.0 + ring * math.sin(ang)
+        L.pedAt = pt(x, y)
+        L.tick(1)
+        local out = SS.distance(ltarget, x, y) > 0.0
+        local b = L.arrow()
+        if out ~= (b ~= nil) then wrong = wrong + 1 end
+        if not out then inside = inside + 1 end
+        if b then
+            shown = shown + 1
+            off = math.max(off, math.abs(SS.distance(ltarget, b.x, b.y) + 25.0))
+        end
+    end
+    ok(wrong == 0 and shown > 0 and inside > 0,
+        'players on one circle about a stretched destination get the arrow exactly '
+            .. 'when they are outside its real border -- some of them are inside it at '
+            .. 'that distance and some are not, which the radius rule could not tell',
+        ('%d wrong of 72; %d shown, %d inside'):format(wrong, shown, inside))
+    ok(off < 1e-6,
+        'and every arrow sits 25 m inside that border, to a micrometre',
+        ('worst %.3e m off'):format(off))
+    ok(C.errored() == nil and D.errored() == nil and L.errored() == nil,
+        'and the arrow runs clean on every client here',
+        C.errored() or D.errored() or L.errored())
 end
 
 -- ---------------------------------------------------------------------------
@@ -2127,6 +2281,7 @@ do
     local C = newStormClient()
     local env = C.env
     local rec = C.record(2, 0.0, 0.0, 200.0, 360.0, 0.0, 200.0, 600000, 60000, 4.0)
+    C.grown()     -- the union the growth ends on (#344); `grow.agree` has the growth
     C.env.BR.Storm.wallStyle = 'columns'
     C.pedAt = pt(0.0, 0.0)
     C.frame()
@@ -2265,6 +2420,8 @@ do
     -- the predecessor's radius, and 260 is exactly half of 520.
     local R0, R1, SEP = 520.0, 260.0, 1040.0
     local wrec = C.record(4, 0.0, 0.0, R0, SEP, 0.0, R1, 600000, 60000, 2.2)
+    -- past its growth (#344): the union a conjoined destination is grown into
+    C.grown()
     C.env.BR.Storm.wallStyle = 'columns'
 
     local shape = SS.inset(zoneOf(C.env, wrec), rr.edgeInset)
@@ -2390,6 +2547,9 @@ do
     -- too -- and it has to be windowed identically.
     local D = newStormClient()
     local nrec = D.record(2, 0.0, 0.0, 1600.0, 400.0, 0.0, 950.0, 600000, 60000, 1.25)
+    -- PAST ITS GROWTH (#344): this hand-placed pair is not nested by real shape at
+    -- this seed, and the zone this block measures is the one its growth ends on.
+    D.grown()
     D.env.BR.Storm.wallStyle = 'columns'
     -- Far enough OUTSIDE that the window widens past the ceiling rather than
     -- resting on the rr.segments floor: visArc is twice the distance out, so 600m
@@ -2763,13 +2923,15 @@ do
     -- two commits to pay: it passed rr.alpha raw, so the map ring faded in over the
     -- hold's last ten seconds while the curtain popped into existence beside it.
     local F = newStormClient()
-    -- THE RECORD'S WALL ALONE. Halfway through the phase-1 fade-in the #340 preview is
-    -- also in frame, fading out on the other side of the same clock; both walls are
-    -- correct and their union is not one wall, which is all C.recordWallOnly says.
+    -- THE RECORD'S WALL ALONE. Through phase 1 the #340 preview -- circle 1's wall --
+    -- is in frame beside it (#344 draws both); both walls are correct and their union
+    -- is not one wall, which is all C.recordWallOnly says.
     F.recordWallOnly()
     local frec = F.record(1, 0.0, 0.0, 2600.0, 400.0, 0.0, 1600.0, 600000, 60000, 0.5)
     F.pedAt = pt(0.0, 0.0, 30.0)
-    frec.tStart = F.now - (frec.tWait - rr.fadeInSec * 1000.0 * 0.5)
+    -- HALF WAY UP THE OPENING WALL'S RAMP, which runs over the hold's FIRST fadeInSec
+    -- since #344 (storm.wall's wallRamp). C.frame adds its 16 ms before it draws.
+    frec.tStart = F.now - rr.fadeInSec * 1000.0 * 0.5
     F.frame()
     -- ═══ ONE ALPHA PER HEIGHT, NOT ONE ALPHA FULL STOP ═══
     --
@@ -2822,8 +2984,8 @@ do
     -- ignores alphaScale entirely and happens to have been handed 0.5.
     --
     -- PHASE 2 RATHER THAN PHASE 1, because the fade-in clock only exists in phase 1 --
-    -- a phase-1 record whose hold has not reached its last fadeInSec draws no wall at
-    -- all, which would make this pass for the wrong reason.
+    -- and a phase-1 record is on it for the first fadeInSec of every hold, which is
+    -- the moment a block like this one builds its record.
     local G = newStormClient()
     G.record(2, 0.0, 0.0, 1600.0, 400.0, 0.0, 950.0, 600000, 60000, 1.25)
     G.pedAt = pt(0.0, 0.0, 30.0)
@@ -2979,7 +3141,8 @@ do
     B.record(1, 0.0, 0.0, 2600.0, 400.0, 0.0, 1600.0, 600000, 60000, 0.5)
     B.pedAt = pt(0.0, 0.0, 30.0)
     local brec = B.env.BR.State.storm
-    brec.tStart = B.now - (brec.tWait - rr.fadeInSec * 1000.0 * 0.5)
+    -- HALF WAY UP THE OPENING WALL'S RAMP: the hold's first fadeInSec (#344).
+    brec.tStart = B.now - rr.fadeInSec * 1000.0 * 0.5
     B.frame()
 
     local bPath, bBands = fadeOf(B)
@@ -3081,6 +3244,8 @@ do
     local BS = bandedClient()
     local brec = BS.record(2, 0.0, 0.0, 2600.0, 4400.0, 0.0, 1600.0,
         600000, 60000, 1.25)
+    -- past its growth (#344): the union a conjoined destination is grown into
+    BS.grown()
     BS.pedAt = pt(0.0, 0.0, 30.0)
     BS.frame()
     local bShape = SS.inset(zoneOf(BS.env, brec), rr.edgeInset)
@@ -3185,6 +3350,8 @@ do
     -- which is a wall through the middle of the safe zone.
     local V = newStormClient()
     local vrec = V.record(3, 0.0, 0.0, 400.0, 500.0, 0.0, 400.0, 600000, 60000, 1.7)
+    -- past its growth (#344): the union a conjoined destination is grown into
+    V.grown()
     V.pedAt = pt(250.0, 0.0, 30.0)
     V.frame()
     local venn = SS.inset(zoneOf(V.env, vrec), rr.edgeInset)
@@ -3383,6 +3550,8 @@ do
     local W = newStormClient()
     local wrec2 = W.record(2, 0.0, 0.0, 2600.0, 4400.0, 0.0, 1600.0,
         600000, 60000, 1.25)
+    -- past its growth (#344): the union a conjoined destination is grown into
+    W.grown()
     W.pedAt = pt(0.0, 0.0, 30.0)
     W.frame()
     local wShape = SS.inset(zoneOf(W.env, wrec2), rr.edgeInset)
@@ -4185,8 +4354,11 @@ do
                         frames = frames + 1
                         if #C.polys > 0 then drew = drew + 1 end
                         if #C.polys > worstPolys then worstPolys = #C.polys end
-                        local cx, cy, r, _, _, _, t = env.BR.StormAt(rec, C.now)
-                        local drawn = SS.inset(env.BR.StormZone(rec, cx, cy, r, t),
+                        -- AND THE GROWTH THE SOLVER REPORTS (#344): an overlapping
+                        -- pair's first frames are a zone GROWING into its destination,
+                        -- and what was drawn has to stand on that zone too.
+                        local cx, cy, r, _, _, _, t, g = env.BR.StormAt(rec, C.now)
+                        local drawn = SS.inset(env.BR.StormZone(rec, cx, cy, r, t, g),
                             rr.edgeInset or 0.0)
                         for _, qd in ipairs(quadsOf(C)) do
                             for _, v in ipairs({ qd.a, qd.b }) do
@@ -4248,7 +4420,11 @@ do
                 if #C.polys > cPolys then
                     cPolys, cPolysAt = #C.polys, ('%d corners, phase %d'):format(n, i)
                 end
-                local drawn = SS.inset(zoneOf(env, rec), rr.edgeInset or 0.0)
+                -- At the solver's own `t` and `g`, as above: this record is one frame
+                -- into its hold, and an overlapping pair is growing (#344).
+                local zcx, zcy, zr, _, _, _, zt, zg = env.BR.StormAt(rec, C.now)
+                local drawn = SS.inset(env.BR.StormZone(rec, zcx, zcy, zr, zt, zg),
+                    rr.edgeInset or 0.0)
                 for _, qd in ipairs(quadsOf(C)) do
                     for _, v in ipairs({ qd.a, qd.b }) do
                         local d = math.abs(SS.distance(partAt(env, drawn, v.x, v.y),
@@ -4798,12 +4974,16 @@ do
             a.tStart = M.now - a.tWait - a.tShrink - 5000
             M.env.BR.State.storm = a
             M.tick(2)
-            local A = M.areas()[1] and M.shown(M.areas()[1]) or {}
+            -- THE KEYFRAME THAT SHOWS (#344): the map draws the moving zone as keyframes
+            -- faded into one another, and at a phase's two ends exactly one of them is
+            -- at full -- the destination's shape as a sweep finishes, the zone's own as
+            -- a hold begins.
+            local A = M.zoneFill() and M.shown(M.zoneFill()) or {}
             b.tStart = M.now + 20000
             M.env.BR.State.storm = b
             M.fire(M.env.BR.Net.STORM_SYNC)
             M.tick(2)
-            local B = M.areas()[1] and M.shown(M.areas()[1]) or {}
+            local B = M.zoneFill() and M.shown(M.zoneFill()) or {}
             mapPairs = mapPairs + 1
             local w = apart(A, B)
             if w > mapJump then
@@ -5004,11 +5184,15 @@ do
             .. 'frame, with the HUD and the map ticking beside it',
         C.errored() or ('%s, %d of %d frames drew'):format(tostring(st), drew, frames))
     -- ZONE 3 IS FITTED INSIDE ZONE 2, WHICH IS FITTED INSIDE ZONE 1 (#344 round 2), so
-    -- a client that has never drawn this match builds the chain up to the target once:
-    -- three zones for phase 3, and never a fourth however many frames ask.
-    ok(b.units - units0 <= 3 and b.pairings - merges0 <= 1,
-        ('and across %d frames and %d ticks it built at most the THREE zones of the '
-            .. 'chain and ONE pairing of their corners'):format(frames, math.floor(frames / 6)),
+    -- a client that has never drawn this match builds the chain up to the target once
+    -- -- and since the rendering stage it builds EVERY zone of the match ahead of need,
+    -- one a tick (storm.units), so the whole chain once each, and never another
+    -- however many frames ask.
+    local nZones = #env.BR.Config.Storm.phases
+    ok(b.units - units0 <= nZones and b.pairings - merges0 <= 1,
+        ('and across %d frames and %d ticks it built at most the %d zones of the '
+            .. 'match, once each, and ONE pairing of their corners')
+            :format(frames, math.floor(frames / 6), nZones),
         ('%d units, %d pairings'):format(b.units - units0, b.pairings - merges0))
 
     local S = newStormServer()
@@ -5114,6 +5298,451 @@ do
             .. 'morph of a morph, which is why the discs are carried and not two circles',
         ('worst %.3e m'):format(diff(pre, current(re, S.now + 1000), px, py, pr)))
     ok(S.errored() == nil, 'and all of it runs clean', S.errored())
+end
+
+-- ---------------------------------------------------------------------------
+describe('agree.sweep')
+do
+    -- ═══ THE WALL A PLAYER SEES IS THE BOUNDARY THE SERVER BILLS, MID-MORPH (#344) ═══
+    --
+    -- The server and the client each build the zone from the record and the clock, and
+    -- nothing about the shape crosses the wire -- so the claim worth pinning is that,
+    -- at the same instant, the curtain the client draws stands edgeInset inside the
+    -- boundary the server's damage tick bills against, and that the server bills a
+    -- point exactly when the client's HUD says it is outside. Asked on a nested
+    -- phase-2 sweep, where the wall is a morph of two zones, and across phase 1's hold
+    -- and sweep, where the opening zone's wall stands from the start of the hold.
+    --
+    -- FAR FROM THE EDGE for the billing half: the server's cushion (#366's) is not this
+    -- block's subject, so only points more than 200 m either side of the boundary are
+    -- asked, where no cushion changes the answer.
+    local function pair(phase, cx0, r0, cx1, r1, waitMs, shrinkMs, dps, want)
+        local S = newStormServer()
+        local C = newStormClient()
+        local srec = S.record(phase, cx0, 0.0, r0, cx1, 0.0, r1, waitMs, shrinkMs, dps)
+        local seed = 31337
+        srec.seed = seed
+        while want and not want(S.env, srec) do seed = seed + 1 srec.seed = seed end
+        local crec = C.record(phase, cx0, 0.0, r0, cx1, 0.0, r1, waitMs, shrinkMs, dps)
+        crec.seed = seed
+        C.recordWallOnly()
+        return S, srec, C, crec
+    end
+
+    --- Put both at `ms` into the record's timeline; return the server's zone there.
+    local function at(S, srec, C, crec, ms)
+        S.at(ms)
+        crec.tStart = (C.now + 1500) - ms
+        local cx, cy, r, _, _, _, t, g = S.env.BR.StormAt(srec, S.now + 1000)
+        return S.env.BR.StormZone(srec, cx, cy, r, t, g), t
+    end
+
+    local function check(label, S, srec, C, crec, moments, box)
+        local SSs = S.env.BR.StormShape
+        local inset = C.env.BR.Config.Storm.render.edgeInset
+        local wallOff, billBad, asked = 0.0, nil, 0
+        for _, ms in ipairs(moments) do
+            -- THE WALL, drawn at exactly this instant, against the SERVER's zone.
+            local zone = at(S, srec, C, crec, ms)
+            crec.tStart = (C.now + 16) - ms
+            C.frame()
+            for _, qd in ipairs(quadsOf(C)) do
+                wallOff = math.max(wallOff,
+                    math.abs(SSs.distance(zone, qd.a.x, qd.a.y) + inset))
+            end
+            -- THE BILLING, against the client's own HUD, far from the edge.
+            local R = S.env.BR.Rng(ms + 11)
+            for _ = 1, 24 do
+                local x = box[1] + (box[2] - box[1]) * R:float()
+                local y = box[3] + (box[4] - box[3]) * R:float()
+                at(S, srec, C, crec, ms)
+                C.pedAt = pt(x, y)
+                C.tick(1)
+                local e = C.last() and C.last().edgeDistance
+                if e and math.abs(e) > 200.0 then
+                    asked = asked + 1
+                    S.at(ms)
+                    local billed = S.hurts(x, y)
+                    local _, _, _, _, _, dps = S.env.BR.StormAt(srec, S.now)
+                    if billed ~= (e > 0.0 and dps > 0.0) then
+                        billBad = billBad or ('%s at %d ms: HUD %.1f, billed %s')
+                            :format(label, ms, e, tostring(billed))
+                    end
+                end
+            end
+        end
+        return wallOff, billBad, asked
+    end
+
+    -- ─── a nested phase-2 sweep: the wall is a morph of two zones ───
+    local S, srec, C, crec = pair(2, 0.0, 2600.0, 700.0, 1600.0, 20000, 120000, 1.25,
+        function(env, rec) return env.BR.StormNested(rec) end)
+    local moments = { 5000, 32000, 50000, 80000, 110000, 135000 }
+    local off, bad, asked = check('phase 2', S, srec, C, crec, moments,
+        { -3000.0, 3500.0, -3000.0, 3000.0 })
+    ok(off < 1e-6,
+        'at every moment of a nested sweep the client\'s curtain stands edgeInset inside '
+            .. 'exactly the boundary the server bills -- the morph included',
+        ('worst %.3e m'):format(off))
+    ok(bad == nil and asked > 60 and S.errored() == nil and C.errored() == nil,
+        'and the server bills a point exactly when the client\'s HUD says it is outside',
+        bad or S.errored() or C.errored() or ('%d asked'):format(asked))
+
+    -- ─── phase 1: the opening zone's wall through the hold, then the sweep ───
+    --
+    -- The hold is the free-loot rule's: dps 0 everywhere, so nothing is billed -- and
+    -- the wall stands on the opening zone the whole time, which is the ring the sweep
+    -- then carries in.
+    local S1, srec1, C1, crec1 = pair(1, 0.0, 6000.0, 600.0, 2600.0, 60000, 120000, 0.5)
+    local m1 = { 15000, 45000, 70000, 100000, 150000, 179000 }
+    local off1, bad1, asked1 = check('phase 1', S1, srec1, C1, crec1, m1,
+        { -5000.0, 5000.0, -5000.0, 5000.0 })
+    ok(off1 < 1e-6,
+        'and across phase 1\'s hold and sweep the opening wall stands edgeInset inside the '
+            .. 'boundary the server bills, from the hold\'s first seconds to the end',
+        ('worst %.3e m'):format(off1))
+    ok(bad1 == nil and asked1 > 60 and S1.errored() == nil and C1.errored() == nil,
+        'with nobody billed through the free-loot hold, and exactly the HUD\'s outside once '
+            .. 'the sweep is under way',
+        bad1 or S1.errored() or C1.errored() or ('%d asked'):format(asked1))
+end
+
+-- ---------------------------------------------------------------------------
+describe('grow.agree')
+do
+    -- ═══ A CONJOINED ZONE GROWS INTO ITS DESTINATION, AND EVERYTHING AGREES (#344) ═══
+    --
+    --   "when the storm finishes moving and the next phase is opened, if they're
+    --    conjoined, today the border pops suddenly to cover the whole area. instead it
+    --    should grow over a period of 20s to include that new area instead of
+    --    popping."                                        -- the owner, 2026-09-23
+    --
+    -- The safe zone of a breakout whose destination D overlaps the zone Z the wall
+    -- stands in is Z union (D intersect Z grown by s), with s running from 0 to S --
+    -- the furthest D reaches outside Z -- across the hold's first grow.seconds. What
+    -- makes it shippable is that the SERVER bills it, the CLIENT'S HUD reads it and the
+    -- WALL draws it, off one record and one clock, and this block asks all three at the
+    -- same instants.
+    --
+    -- ═══ THE EXPECTATION IS DERIVED WITHOUT THE ZONE ═══
+    --
+    -- Every probe point is chosen DEEP inside D and OUTSIDE Z by some d: for such a
+    -- point the grown zone's edge is the grown boundary of Z, so it is outside by
+    -- exactly d - s until s reaches d, and inside after. That is arithmetic on the two
+    -- shapes' own signed distances and the clock -- never BR.StormZone -- so a growth
+    -- that ran at the wrong speed, in the wrong place, or popped, reads as a wrong
+    -- number here.
+    local S = newStormServer()
+    local env = S.env
+    local SS = env.BR.StormShape
+    local rec = S.record(3, 0.0, 0.0, 1600.0, 1500.0, 0.0, 950.0, 90000, 90000, 1.7)
+    local seed = 13579
+    rec.seed = seed
+    while not (env.BR.StormOverlaps(rec)) or select(2, env.BR.StormOverlaps(rec)) < 400.0 do
+        seed = seed + 1
+        rec.seed = seed
+    end
+    local _, reach = env.BR.StormOverlaps(rec)
+    local Z = env.BR.StormWall(rec, 0.0)
+    local D = env.BR.StormTarget(rec)
+    local Tg = math.min(env.BR.Config.Storm.grow.seconds * 1000.0, rec.tWait)
+    ok(Tg == 20000.0 and reach > 400.0,
+        'the shipping growth is twenty seconds, on a pair whose destination reaches far '
+            .. 'outside the zone it overlaps',
+        ('%.0f ms, S %.1f m'):format(Tg, reach))
+
+    -- PROBES: deep in D -- deeper than they are outside Z, which is what keeps the
+    -- grown edge nearest them on Z's grown boundary -- and spread across the growth's
+    -- first two fifths, which is about as far out as a point that deep can be.
+    local probes = {}
+    local R = env.BR.Rng(97)
+    local tries = 0
+    while #probes < 8 and tries < 50000 do
+        tries = tries + 1
+        local x = rec.cx1 + (R:float() * 2.0 - 1.0) * rec.r1 * 1.6
+        local y = rec.cy1 + (R:float() * 2.0 - 1.0) * rec.r1 * 1.6
+        local d = SS.distance(Z, x, y)
+        local dd = SS.distance(D, x, y)
+        local band = (#probes + 0.5) / 8.0 * 0.4
+        if d > 40.0 and dd < -(d + 5.0) and math.abs(d / reach - band) < 0.03 then
+            probes[#probes + 1] = { x = x, y = y, d = d }
+        end
+    end
+    ok(#probes == 8, 'eight probe points deep in the destination, outside the zone, '
+            .. 'spread across the growth',
+        ('%d found, the last at d %.1f of S %.1f'):format(#probes,
+            probes[#probes] and probes[#probes].d or 0.0, reach))
+
+    -- ─── the SERVER: each probe is billed until the front passes it, then never ───
+    local MARGIN = 10.0
+    local wrongBill, monotone, freed = nil, true, 0
+    for _, q in ipairs(probes) do
+        local wasSafe = false
+        for tau = 0, 20000, 1000 do
+            S.at(tau)
+            local billed = S.hurts(q.x, q.y)
+            local s = reach * math.min(tau / Tg, 1.0)
+            -- Outside the grown zone by d - s until the front reaches it; the server
+            -- bills past the cushion. At the growth's end the zone is the whole union.
+            local want = (q.d - s) > MARGIN
+            if tau >= Tg then want = false end
+            if billed ~= want and math.abs((q.d - s) - MARGIN) > 1e-6 then
+                wrongBill = wrongBill or ('probe d %.1f at %d ms: billed %s, front at %.1f')
+                    :format(q.d, tau, tostring(billed), s)
+            end
+            if billed and wasSafe then monotone = false end
+            if not billed then wasSafe = true end
+        end
+        if wasSafe then freed = freed + 1 end
+    end
+    ok(wrongBill == nil and S.errored() == nil,
+        'the server bills every probe exactly while the growing front is more than the '
+            .. 'cushion short of it -- the ground is taken in at one speed, from the zone '
+            .. 'out, over twenty seconds',
+        wrongBill or S.errored())
+    ok(monotone and freed == #probes,
+        'and once a probe is taken in it stays safe: the growth never gives ground back, '
+            .. 'and by its end it has taken all of them',
+        ('%d of %d freed'):format(freed, #probes))
+
+    -- AND THE POP IS GONE: at the first second of the hold a point in the destination
+    -- well outside the zone is still billed, where it used to be safe from the start.
+    local far = probes[#probes]
+    S.at(0)
+    ok(S.hurts(far.x, far.y) == true,
+        'a second into the phase the far end of the destination is still storm, where '
+            .. 'the old union made it safe at once',
+        ('d %.1f'):format(far.d))
+
+    -- ─── the CLIENT'S HUD reads the same number at the same instants ───
+    local C = newStormClient()
+    C.record(3, 0.0, 0.0, 1600.0, 1500.0, 0.0, 950.0, 90000, 90000, 1.7)
+    local crec = C.env.BR.State.storm
+    crec.seed = seed
+    local hudBad, agreeBad = nil, nil
+    for _, q in ipairs(probes) do
+        for tau = 0, 20000, 2500 do
+            crec.tStart = (C.now + 1500) - tau
+            C.pedAt = pt(q.x, q.y)
+            C.tick(1)
+            local e = C.last() and C.last().edgeDistance
+            local s = reach * math.min(tau / Tg, 1.0)
+            if s < q.d then
+                if not e or math.abs(e - (q.d - s)) > 1e-6 then
+                    hudBad = hudBad or ('probe d %.1f at %d ms: HUD %s, wanted %.6f')
+                        :format(q.d, tau, tostring(e), q.d - s)
+                end
+            elseif not e or e > 0.0 then
+                hudBad = hudBad or ('probe d %.1f at %d ms: HUD %s, wanted inside')
+                    :format(q.d, tau, tostring(e))
+            end
+            -- AND THE SERVER, at the SAME instant, bills exactly when the HUD says the
+            -- player is past the cushion.
+            S.at(tau)
+            local billed = S.hurts(q.x, q.y)
+            if e and billed ~= (e > MARGIN) then
+                agreeBad = agreeBad or ('probe d %.1f at %d ms: HUD %.3f, billed %s')
+                    :format(q.d, tau, e, tostring(billed))
+            end
+        end
+    end
+    ok(hudBad == nil and C.errored() == nil,
+        'the HUD reads each probe d - s metres outside while the front is short of it, '
+            .. 'and inside after -- the same growth, on the client\'s own solve',
+        hudBad or C.errored())
+    ok(agreeBad == nil,
+        'and at every instant the server bills exactly the probes the HUD shows past the '
+            .. 'cushion: wall, readout and damage are one zone through the growth',
+        agreeBad)
+
+    -- ─── the WALL draws the front ───
+    --
+    -- Half way through the growth, the curtain stands on the grown zone -- every
+    -- corner on its inset boundary -- and some of it stands OUTSIDE the zone the phase
+    -- started in, which is the front a popped union or a stalled growth would not have.
+    crec.tStart = (C.now + 16) - Tg * 0.5
+    C.pedAt = pt(rec.cx1, rec.cy1)
+    C.frame()
+    local cx, cy, r, _, _, _, t, g = C.env.BR.StormAt(crec, C.env.BR.Clock.now())
+    local grown = SS.inset(C.env.BR.StormZone(crec, cx, cy, r, t, g),
+        C.env.BR.Config.Storm.render.edgeInset)
+    local offG, beyond = 0.0, 0
+    for _, qd in ipairs(quadsOf(C)) do
+        for _, v in ipairs({ qd.a, qd.b }) do
+            offG = math.max(offG, math.abs(SS.distance(partAt(C.env, grown, v.x, v.y),
+                v.x, v.y)))
+            if SS.distance(Z, v.x, v.y) > 1.0 then beyond = beyond + 1 end
+        end
+    end
+    ok(g > 0.45 and g < 0.55 and offG < 1e-6 and beyond > 0,
+        'half way through, the wall stands on the grown zone to a micron, and part of '
+            .. 'it is out beyond the zone the phase started in: the front, drawn',
+        ('g %.3f, %.3e m off, %d corners beyond'):format(g, offG, beyond))
+
+    -- ─── and the grown zone is the WHOLE union exactly as it ends ───
+    local endZone = env.BR.StormZone(rec, rec.cx0, rec.cy0, rec.r0, 0.0, 1.0 - 1e-9)
+    local popped = SS.blobUnion(env.BR.StormWall(rec, 0.0), env.BR.StormTarget(rec))
+    local endErr = 0.0
+    for gx = -12, 12 do
+        for gy = -12, 12 do
+            local px, py = rec.cx1 + gx * 150.0, gy * 150.0
+            endErr = math.max(endErr,
+                math.abs(SS.distance(endZone, px, py) - SS.distance(popped, px, py)))
+        end
+    end
+    ok(endErr < 1e-4,
+        'at the end of the growth the zone is Z union D to the rounding of the last '
+            .. 'nanosecond -- it arrives on the union rather than popping onto it',
+        ('%.3e m'):format(endErr))
+
+    -- ─── the MAP stands still through all of it ───
+    --
+    -- The front moving on the map would be the overlay rebuilt while it moves -- the
+    -- hitch 52a7caa removed -- so the map shows the zone the phase started in under
+    -- the destination's own fill, whose union is where the growth ends. Asserted as
+    -- no Scaleform traffic at all across the twenty seconds.
+    local M = newStormClient()
+    M.mm.handle = 7
+    M.record(3, 0.0, 0.0, 1600.0, 1500.0, 0.0, 950.0, 90000, 90000, 1.7)
+    M.env.BR.State.storm.seed = seed
+    ok(M.overlayReady(), 'the map client reaches the gate')
+    local mrec = M.env.BR.State.storm
+    mrec.tStart = M.now
+    M.tick(1)
+    local calls = M.mm.calls
+    for _ = 1, 200 do
+        M.now = M.now + 100
+        M.env.BR.Loop.step(M.env.BR.Loop.TICK)
+    end
+    local fill = M.zoneFill()
+    local fillOff = 0.0
+    for _, p in ipairs(fill and M.shown(fill) or {}) do
+        fillOff = math.max(fillOff, math.abs(SS.distance(Z, p.x, p.y)))
+    end
+    ok(M.mm.calls == calls and fillOff < 1e-6 and #M.areas() == 3,
+        'across the growth the map sends the movie nothing: it shows the zone the phase '
+            .. 'started in, and the destination over it -- the ground the growth ends on',
+        ('%d calls, zone fill %.3e m off Z'):format(M.mm.calls - calls, fillOff))
+    ok(M.errored() == nil, 'and runs clean', M.errored())
+end
+
+-- ---------------------------------------------------------------------------
+describe('grow.freeze')
+do
+    -- ═══ A FREEZE MID-GROWTH NEITHER SHRINKS THE ZONE BACK NOR GROWS IT TWICE ═══
+    --
+    -- brstormfreeze replaces the record with one that starts where the storm stands,
+    -- and keeps the target; its thaw does the same again. Each is a new record with a
+    -- new start, so without carrying how far the growth had got (mo.g) the zone would
+    -- snap back to where the phase began the instant either command landed.
+    local S = newStormServer()
+    local env = S.env
+    local SS = env.BR.StormShape
+    env.BR.Server.devMode = true
+    S.match.stormRng = env.BR.Rng(4242)
+    local rec = S.record(3, 0.0, 0.0, 1600.0, 1500.0, 0.0, 950.0, 90000, 90000, 1.7)
+    local seed = 13579
+    rec.seed = seed
+    while not (env.BR.StormOverlaps(rec)) do seed = seed + 1 rec.seed = seed end
+    S.match.stormSeed = seed
+    local function zoneAt(r, now)
+        local cx, cy, rr, _, _, _, t, g = env.BR.StormAt(r, now)
+        return env.BR.StormZone(r, cx, cy, rr, t, g), g
+    end
+    local function diff(a, b)
+        local worst = 0.0
+        for gx = -12, 12 do
+            for gy = -12, 12 do
+                local px, py = 750.0 + gx * 150.0, gy * 150.0
+                worst = math.max(worst,
+                    math.abs(SS.distance(a, px, py) - SS.distance(b, px, py)))
+            end
+        end
+        return worst
+    end
+
+    S.now = rec.tStart + 8000
+    local before, g0 = zoneAt(rec, S.now)
+    S.cmds.brstormfreeze(0, {})
+    local frz = S.match.storm
+    local held, gh = zoneAt(frz, S.now)
+    ok(frz ~= rec and frz.mo and near(frz.mo.g, g0, 1e-12) and near(gh, g0, 1e-12)
+            and diff(before, held) < 1e-6,
+        'a freeze eight seconds into the growth carries how far it had got, and the zone '
+            .. 'it holds is the zone that stood there',
+        ('g %.4f carried as %s, worst %.3e m'):format(g0, tostring(frz.mo and frz.mo.g),
+            diff(before, held)))
+
+    -- AND IT GOES ON GROWING THROUGH THE FREEZE, off the frozen record's own clock:
+    -- the freeze holds the storm, and the growth is not the storm moving.
+    S.now = S.now + 5000
+    local _, gf = zoneAt(frz, S.now)
+    ok(near(gf, g0 + 5000.0 / 20000.0, 1e-12),
+        'the frozen zone carries on growing from where it had got to',
+        ('g %.4f five seconds later'):format(gf))
+
+    -- THE THAW DRAWS A NEW DESTINATION -- it re-enters the phase from where the storm
+    -- stands, as enterPhase always has -- so it has a growth of its own ahead of it
+    -- and carries none: a growth carried onto a different destination would pop part
+    -- of it into the safe zone at once.
+    S.cmds.brstormfreeze(0, { 'off' })
+    local th = S.match.storm
+    local _, gt = zoneAt(th, S.now)
+    ok(th ~= frz and (th.mo == nil or th.mo.g == nil) and gt == 0.0,
+        'and the thaw, which draws a new destination, starts its growth afresh',
+        ('thawed g %s'):format(tostring(gt)))
+    ok(S.errored() == nil, 'and runs clean', S.errored())
+end
+
+-- ---------------------------------------------------------------------------
+describe('unit.warm')
+do
+    -- ═══ EVERY ZONE OF THE MATCH IS BUILT AHEAD OF NEED, ONE A TICK (#344) ═══
+    --
+    -- A zone's shape costs about two milliseconds to build, and each is fitted inside
+    -- the one before it, so left to the first frame that needs it a phase edge pays one
+    -- inside a frame and a joiner pays the whole chain. The client builds the chain the
+    -- moment it knows the seed -- the warmup preview publishes it -- one zone per tick,
+    -- each marked for /brstormhitch.
+    local C = newStormClient()
+    local env = C.env
+    local MS, PS = env.BR.MatchState, env.BR.PlayerState
+    env.BR.State.storm = nil
+    env.BR.State.match.state = MS.WARMUP
+    env.BR.State.me.state    = PS.WARMUP or PS.ALIVE
+    env.BR.State.stormPreview = { cx = 0.0, cy = 0.0, r = 2600.0, seed = 777001 }
+    env.BR.Loop.hitchStart(34)
+    local b = env.BR.StormShape.builds
+    local n = #env.BR.Config.Storm.phases
+    local perTick, u0 = {}, b.units
+    for i = 1, n + 4 do
+        local before = b.units
+        C.now = C.now + 100
+        env.BR.Loop.step(env.BR.Loop.TICK)
+        perTick[i] = b.units - before
+    end
+    local most = 0
+    for _, k in ipairs(perTick) do most = math.max(most, k) end
+    local row = nil
+    for _, rw in ipairs(env.BR.Loop.hitchStats().rows) do
+        if rw.name == 'storm.unit.build' then row = rw end
+    end
+    ok(b.units - u0 == n and most == 1,
+        'the warmup preview\'s seed has every zone of the match built, one per tick, in '
+            .. 'order -- each finding its parent already built',
+        ('%d built, at most %d a tick'):format(b.units - u0, most))
+    ok(row ~= nil and row.events == n,
+        'and each build is one storm.unit.build mark, and nothing is marked once they '
+            .. 'are all built',
+        row and ('%d marks'):format(row.events) or 'no row')
+    local ready = true
+    for z = 1, n do
+        if not env.BR.StormShape.blobUnitReady(777001, z, env.BR.Config.Storm.shape,
+                env.BR.Config.Storm.phases) then ready = false end
+    end
+    ok(ready and C.errored() == nil,
+        'so by the time the match goes live every zone the wall will ask for is ready',
+        C.errored())
 end
 
 -- ---------------------------------------------------------------------------
@@ -5805,8 +6434,8 @@ do
     --     ASSERTION SINCE #340 ═══
     --
     -- It used to read "PLAYING draws no preview wall" flat out, and that is no longer
-    -- the rule: the preview now extends into PLAYING while the real wall is suppressed,
-    -- and `preview.handoff` walks that whole stretch. What survives, and matters, is
+    -- the rule: circle 1's wall extends through phase 1 of PLAYING, beside the opening
+    -- wall since #344, and `preview.twowalls` walks that whole stretch. What survives, and matters, is
     -- the moment BETWEEN the transition and the first STORM_SYNC -- a client that has
     -- gone PLAYING and has no record must draw nothing rather than fall back to the
     -- stale published field. `wallClient` leaves BR.State.storm nil, which is that
@@ -5929,53 +6558,39 @@ do
 end
 
 -- ---------------------------------------------------------------------------
-describe('preview.handoff')
+describe('preview.twowalls')
 do
-    -- ═══ FROM THE BUS TO THE FIRST MOVE, WITHOUT A GAP (#340) ═══
+    -- ═══ FROM THE BUS TO THE END OF PHASE 1, TWO WALLS AND NO GAP (#340, #344) ═══
     --
-    --   "After match goes to playing, before the first storm move, the storm border
-    --    cannot be seen anywhere. Doesn't seem to draw during this time. The storm
-    --    circle should draw the entire time from while in bus to when it moves. Make
-    --    sure it fades in just like before."       -- the owner, 2026-09-22, #340
+    --   "The storm circle should draw the entire time from while in bus to when it
+    --    moves. Make sure it fades in just like before."  -- the owner, 2026-09-22, #340
+    --   "phase 1 preview only draws until the storm starts moving, then the border
+    --    resets from the outside of the map and works in. not sure this is how we
+    --    should do it, but perhaps we should draw 2 walls like we do with every other
+    --    phase."                                          -- the owner, 2026-09-23, #344
+    --
+    -- #340 closed a gap with a HANDOFF: circle 1's wall stood in for the suppressed
+    -- opening wall through the hold and faded out as it faded in over the hold's last
+    -- seconds -- and then the sweep brought that opening ring in from the map's edge,
+    -- which is the reset #344 reports. So phase 1 draws BOTH now: the opening zone's
+    -- wall from the start of the hold, ramping in over its first fadeInSec, and circle
+    -- 1's wall beside it through the hold and the sweep, thinning over the sweep's last
+    -- fadeInSec as the moving wall lands on it.
     --
     -- ═══ WHY THIS BLOCK WALKS A TIMELINE INSTEAD OF ASSERTING TWO STATES ═══
     --
-    -- BECAUSE BOTH ENDS WERE ALREADY GREEN WHILE THE DEFECT SHIPPED. `preview.wall`
-    -- proved the bus has a wall and `wall.strip` proved the fade-in reaches full
-    -- strength, and the hole was the two minutes between them -- which no assertion
-    -- about either end can see. This suite has now been green over a real defect three
-    -- times (a wall 33 m outside the boundary, a test comparing one point with itself,
-    -- UV mutations surviving because the test client only ever stood inside the circle)
-    -- and every one of them was a gap between two true statements.
+    -- BECAUSE BOTH ENDS WERE ALREADY GREEN WHILE #340 SHIPPED. The hole was the two
+    -- minutes between two true statements, so the clock is driven from the bus,
+    -- through the PLAYING transition, down the whole hold, across the start of the
+    -- sweep and to its end, and at EVERY step something is on screen and neither wall
+    -- moves further than its own clock can carry it.
     --
-    -- SO THE PROPERTY IS CONTINUITY AND IT IS ASSERTED AS ONE: the clock is driven from
-    -- the bus, through the PLAYING transition, down the whole phase-1 hold, across the
-    -- fade window and into the shrink, and at EVERY step something is on screen. A
-    -- renderer that drew nothing for one frame anywhere in there fails, wherever that
-    -- frame is.
+    -- ═══ THE TWO WALLS ARE MEASURED ONE AT A TIME ═══
     --
-    -- ═══ AND THE SECOND PROPERTY IS THAT NEITHER WALL POPS ═══
-    --
-    -- Continuity alone would be satisfied by the preview cutting out at full strength
-    -- as the real wall cut in at nothing -- which is a flicker, not a handoff. So the
-    -- walk also reads each wall's alpha at every step and asserts three things about
-    -- the pair: that the preview only ever falls and the real wall only ever rises,
-    -- that neither moves further in one step than the clock can carry it, and that
-    -- their two shares SUM TO ONE inside the fade window. The third is the real claim.
-    -- One clock read in two directions is what makes it hold; two clocks would drift
-    -- and this is the assertion that would catch them.
-    --
-    -- THE TWO WALLS ARE TOLD APART BY WHICH SHAPE THEIR CORNERS STAND ON, not by their
-    -- alpha -- an alpha is what is under test here, so reading it to decide which wall
-    -- it belongs to would be circular. The record below nests circle 1 well inside the
-    -- opening circle, so the two boundaries are well over a kilometre apart at their
-    -- closest and the classification cannot be ambiguous.
-    --
-    -- BY SHAPE AND NOT BY RADIUS SINCE #344: both walls are blobs, so "is this corner
-    -- CR - inset from circle 1's centre" is no longer a question about circle 1 -- it
-    -- is a question about the jitter draw, and it answered NO for every corner, which
-    -- read as neither wall being on screen at all.
-
+    -- Each step is drawn twice at the same moment, once with each wall's callback
+    -- switched off through BR.Loop.setEnabled -- the production switch -- because at
+    -- the end of the sweep they stand on the SAME boundary, where no classification
+    -- by shape can tell them apart and a classification by alpha would be circular.
     local proto = newStormClient()
     local MS, PS = proto.env.BR.MatchState, proto.env.BR.PlayerState
     local rr = proto.env.BR.Config.Storm.render
@@ -5991,61 +6606,53 @@ do
     local CCX, CCY, CR = 500.0, 0.0, 1600.0
     local WAIT, SHRINK = 120000, 60000
 
-    -- THE TWO SHAPES THE TWO WALLS DRAW, built once. Seed 0 for both: the preview
-    -- reads the published field (no seed) and the record below is built by hand
-    -- (BR.BuildStormRecord's own default, also 0), which is the same agreement the
-    -- game has between the preview payload and the record. The preview is circle 1,
-    -- so ZONE 1's shape. The real wall's zone is the opening circle -- ZONE 0, in its
-    -- own shape since each zone keeps one -- union circle 1, which nests, so it is one
-    -- shape, exactly as it is in a match.
+    -- CIRCLE 1'S SHAPE, which the preview draws: zone 1 at seed 0 -- the published
+    -- field carries no seed and the record below is built by hand with
+    -- BR.BuildStormRecord's own default, the agreement the game has between the
+    -- preview payload and the record.
     local PSS = proto.env.BR.StormShape
-    local UNIT0 = proto.env.BR.StormUnit(nil, 0)
-    local UNIT1 = proto.env.BR.StormUnit(nil, 1)
-    local PREVIEW_SHAPE = PSS.inset(PSS.blob(CCX, CCY, CR, UNIT1), INSET)
-    local REAL_SHAPE = PSS.inset(
-        PSS.zone(OCX, OCY, OR, CCX, CCY, CR, UNIT0, UNIT1), INSET)
+    local PREVIEW_SHAPE = PSS.inset(PSS.blob(CCX, CCY, CR, proto.env.BR.StormUnit(nil, 1)),
+        INSET)
 
-    --- Which wall each triangle of the last frame belongs to, and at what alpha.
-    ---
-    --- Returns two records, `{ n, alpha, mixed }`. `n` is 0 for a wall that is not on
-    --- screen at all, which is what lets the walk treat absence as alpha 0 and measure
-    --- a pop as an ordinary step. `mixed` is set when one wall's triangles disagree
-    --- about their alpha -- the picket-fence invariant, asked per wall, which is how it
-    --- survives two walls being legitimately in one frame.
-    local function walls(C)
-        local pv = { n = 0, alpha = 0, mixed = nil }
-        local rw = { n = 0, alpha = 0, mixed = nil }
-        local stray = nil
+    --- One wall's triangles in the last frame: how many, at what alpha, whether they
+    --- agree about it, and the furthest any corner stands off `shape`.
+    local function wall(C, shape)
+        local w = { n = 0, alpha = 0, mixed = nil, off = 0.0 }
         for _, t in ipairs(C.polys) do
-            local v = t[1]
-            local w
-            if math.abs(PSS.distance(PREVIEW_SHAPE, v.x, v.y)) < 1e-6 then w = pv
-            elseif math.abs(PSS.distance(REAL_SHAPE, v.x, v.y)) < 1e-6 then w = rw
-            else
-                stray = stray or ('a triangle at (%.3f, %.3f) is on neither shape')
-                    :format(v.x, v.y)
+            if w.n == 0 then w.alpha = t.a
+            elseif w.alpha ~= t.a then
+                w.mixed = w.mixed or ('%d and %d'):format(w.alpha, t.a)
             end
-            if w then
-                if w.n == 0 then w.alpha = t.a
-                elseif w.alpha ~= t.a then
-                    w.mixed = w.mixed or ('%d and %d'):format(w.alpha, t.a)
-                end
-                w.n = w.n + 1
+            w.n = w.n + 1
+            if shape then
+                w.off = math.max(w.off, math.abs(PSS.distance(shape, t[1].x, t[1].y)))
             end
         end
-        return pv, rw, stray
+        return w
     end
 
-    --- Put the phase-1 hold exactly `msLeft` from its end and draw one frame.
+    --- Put the phase-1 record `ms` from the end of its hold -- negative is that far
+    --- into the sweep -- and draw each wall alone, at the same moment.
     ---
-    --- THE 16 ms C.frame ADVANCES THE CLOCK BY IS ADDED IN HERE, so `msLeft` is what
-    --- the renderer actually solves rather than what it would have solved a frame ago.
-    --- Getting that wrong would shift every boundary assertion below by one frame and
-    --- read as an off-by-one in the production clock.
-    local function holdAt(C, msLeft)
-        C.env.BR.State.storm.tStart = (C.now + 16) - (WAIT - msLeft)
+    --- THE 16 ms C.frame ADVANCES THE CLOCK BY IS ADDED IN HERE, so `ms` is what the
+    --- renderer actually solves rather than what it would have solved a frame ago.
+    --- @return table preview, table real  each from wall()
+    local function both(C, ms)
+        local L = C.env.BR.Loop
+        local rec = C.env.BR.State.storm
+        local function place() rec.tStart = (C.now + 16) - (WAIT - ms) end
+        L.setEnabled('storm.wall', false)
+        place()
         C.frame()
-        return walls(C)
+        local pv = wall(C, PREVIEW_SHAPE)
+        L.setEnabled('storm.wall', true)
+        L.setEnabled('storm.previewWall', false)
+        place()
+        C.frame()
+        local cx, cy, r, _, _, _, t, g = C.env.BR.StormAt(rec, C.env.BR.Clock.now())
+        local rw = wall(C, PSS.inset(C.env.BR.StormZone(rec, cx, cy, r, t, g), INSET))
+        L.setEnabled('storm.previewWall', true)
+        return pv, rw
     end
 
     --- A client on the bus, with the mainland loaded and circle 1 published.
@@ -6058,23 +6665,18 @@ do
         env.BR.State.stormPreview = { cx = CCX, cy = CCY, r = CR }
         -- br_environment says the Cayo island is gone, which is the preview wall's own
         -- gate; fired rather than left to the fallback so this block is testing the
-        -- handoff and not mainlandLoaded.
+        -- walls and not mainlandLoaded.
         C.fire('br:env:world', false)
         C.pedAt = pt(0.0, 0.0, 30.0)
-        -- AND #351'S ENTRY RAMP IS ALREADY SPENT BEFORE THE WALK STARTS. This block
-        -- is about the HANDOFF -- one clock read in two directions -- and the entry is
-        -- a different ramp on a different anchor that has completed long before the
-        -- hold's last fadeInSec. Leaving it running would put a third alpha curve
-        -- inside assertions whose whole content is that there are exactly two.
+        -- AND #351'S ENTRY RAMP IS ALREADY SPENT BEFORE THE WALK STARTS: it is a
+        -- different ramp on a different anchor, over long before anything below.
         C.settlePreview()
         return C
     end
 
     --- The PLAYING transition, spelled the way client/state.lua's STORM_SYNC handler
-    --- spells it: the record arrives AND the preview field is dropped. Driven by hand
-    --- because this harness loads the renderer and not the mirror -- and dropping the
-    --- field is the half that matters, since it is what makes the PLAYING preview read
-    --- the record instead.
+    --- spells it: the record arrives AND the preview field is dropped, which is what
+    --- makes the PLAYING preview read the record instead.
     local function goPlaying(C)
         C.env.BR.State.match.state = MS.PLAYING
         C.env.BR.State.me.state    = PS.ALIVE
@@ -6086,226 +6688,273 @@ do
     -- ─── the bus, which is the only stretch that already worked ───
     local C = busClient()
     C.frame()
-    local bp, br, bs = walls(C)
-    ok(bs == nil and bp.n > 0 and br.n == 0 and bp.alpha == PREV,
-        'on the bus the preview wall stands on circle 1 at previewAlpha, and the '
-            .. 'record\'s wall is not in frame at all',
-        bs or ('preview %d tris at %d, real %d tris; wanted alpha %d'):format(
-            bp.n, bp.alpha, br.n, PREV))
+    local bp = wall(C, PREVIEW_SHAPE)
+    ok(bp.n > 0 and bp.alpha == PREV and bp.off < 1e-6,
+        'on the bus the preview wall stands on circle 1 at previewAlpha',
+        ('preview %d tris at %d, %.3e m off circle 1'):format(bp.n, bp.alpha, bp.off))
 
     -- ─── the transition itself, which is where the wall used to vanish ───
     goPlaying(C)
-    local tp, tr = holdAt(C, WAIT)
-    ok(tp.n == bp.n and tp.alpha == bp.alpha and tr.n == 0 and tp.mixed == nil,
-        'and the frame after the match goes PLAYING draws the SAME circle at the SAME '
-            .. 'alpha from the record\'s own target -- the defect was this frame drawing '
-            .. 'nothing, and an equal-but-different circle would be a pop',
+    local tp, tr = both(C, WAIT)
+    ok(tp.n == bp.n and tp.alpha == bp.alpha and tp.off < 1e-6 and tp.mixed == nil,
+        'and the frame after the match goes PLAYING draws the SAME circle-1 wall at '
+            .. 'the SAME alpha from the record\'s own target -- the defect was this '
+            .. 'frame drawing nothing, and an equal-but-different circle would be a pop',
         ('%d tris at %d against the bus\'s %d at %d'):format(
             tp.n, tp.alpha, bp.n, bp.alpha))
-
-    -- AND IT IS THE RECORD IT READ, NOT A STALE FIELD. The field is gone -- the mirror
-    -- nils it on STORM_SYNC -- so a preview still drawing off BR.State.stormPreview
-    -- would have drawn nothing here, and this is the assertion that says the source
-    -- moved rather than that the gate opened.
     ok(C.env.BR.State.stormPreview == nil and tp.n > 0,
         'with BR.State.stormPreview already dropped, so the PLAYING preview is reading '
             .. 'rec.cx1/cy1/r1 -- which IS circle 1, because enterPhase spends the '
             .. 'warmup draw rather than rolling a second one')
+    ok(tr.alpha < math.ceil(FULL * 32 / FADE) + 1,
+        'while the OPENING wall is only starting to arrive: it ramps in from the '
+            .. 'start of the hold rather than popping onto the horizon (#344)',
+        ('%d tris at %d'):format(tr.n, tr.alpha))
 
-    -- ─── the whole hold, step by step, with nothing allowed to be empty ───
+    -- ─── the whole of phase 1, step by step, with nothing allowed to be empty ───
     --
-    -- COARSE THROUGH THE SUPPRESSED STRETCH AND FINE THROUGH THE FADE WINDOW, because
-    -- the two are asking different questions: the first is "is anything on screen at
-    -- all" over two minutes, the second is "does either wall jump" over ten seconds.
+    -- FINE ACROSS THE THREE WINDOWS THAT MOVE -- the hold's first fadeInSec, where the
+    -- opening wall ramps in; the sweep's first seconds, where nothing may reset; the
+    -- sweep's last fadeInSec, where circle 1's wall thins onto the arriving one -- and
+    -- coarse across the long stretches between, which ask only that something is on
+    -- screen.
     local steps = {}
-    for ms = WAIT, FADE + 1, -2000 do steps[#steps + 1] = ms end
-    steps[#steps + 1] = FADE + 1
-    for ms = FADE, 0, -250 do steps[#steps + 1] = ms end
+    for ms = WAIT, WAIT - FADE, -250 do steps[#steps + 1] = ms end
+    for ms = WAIT - FADE - 2000, 2000, -2000 do steps[#steps + 1] = ms end
+    for ms = 1000, -3000, -250 do steps[#steps + 1] = ms end
+    for ms = -5000, -(SHRINK - FADE), -2000 do steps[#steps + 1] = ms end
+    for ms = -(SHRINK - FADE), -SHRINK + 250, -250 do steps[#steps + 1] = ms end
 
     local W = busClient()
     goPlaying(W)
-    local empty, strayAt, mixedAt = nil, nil, nil
-    local jumped, nonMono = nil, nil
-    local sumBad, windowSteps = nil, 0
+    local empty, offAt, mixedAt, jumped = nil, nil, nil, nil
+    local rampBad, prevBad, thinBad, fullBad = nil, nil, nil, nil
+    local ramped, thinned = 0, 0
     local lastP, lastR = PREV, 0
-    -- THE MOST EITHER ALPHA MAY MOVE IN ONE STEP is what the clock can carry over that
-    -- step plus a level for the rounding, so a genuine pop -- 0 to 55, or 55 to 0 --
-    -- fails while the intended ramp passes. Priced off the step, not guessed.
     for i, ms in ipairs(steps) do
-        local prev, real, stray = holdAt(W, ms)
+        local pv, rw = both(W, ms)
         local gap = (i > 1) and (steps[i - 1] - ms) or 0
+        -- THE MOST EITHER ALPHA MAY MOVE IN ONE STEP is what its clock can carry over
+        -- that step plus a level for the rounding, so a genuine pop fails while the
+        -- intended ramps pass. Priced off the step, not guessed.
         local room = math.ceil(FULL * gap / FADE) + 1
-        if stray then strayAt = strayAt or ('at %d ms: %s'):format(ms, stray) end
-        if prev.n == 0 and real.n == 0 then
-            empty = empty or ('%d ms into the hold, nothing is drawn at all'):format(ms)
+        if pv.n == 0 and rw.n == 0 then
+            empty = empty or ('%d ms from the hold\'s end, nothing is drawn'):format(ms)
         end
-        if prev.mixed or real.mixed then
-            mixedAt = mixedAt or ('at %d ms one wall reads %s'):format(
-                ms, prev.mixed or real.mixed)
+        if pv.off > 1e-6 or rw.off > 1e-6 then
+            offAt = offAt or ('at %d ms a wall is %.3e m off its shape'):format(
+                ms, math.max(pv.off, rw.off))
         end
-        if prev.alpha > lastP or real.alpha < lastR then
-            nonMono = nonMono or
-                ('at %d ms preview %d->%d, real %d->%d'):format(
-                    ms, lastP, prev.alpha, lastR, real.alpha)
+        if pv.mixed or rw.mixed then
+            mixedAt = mixedAt or ('at %d ms one wall reads %s'):format(ms,
+                pv.mixed or rw.mixed)
         end
-        if math.abs(prev.alpha - lastP) > room
-            or math.abs(real.alpha - lastR) > room then
+        if math.abs(pv.alpha - lastP) > room or math.abs(rw.alpha - lastR) > room then
             jumped = jumped or ('at %d ms preview %d->%d, real %d->%d, room %d')
-                :format(ms, lastP, prev.alpha, lastR, real.alpha, room)
+                :format(ms, lastP, pv.alpha, lastR, rw.alpha, room)
         end
-        -- THE SHARES SUM TO ONE INSIDE THE WINDOW, which is the one-clock claim. The
-        -- tolerance is the two roundings and nothing else: one level of FULL plus one
-        -- level of PREV.
-        if ms < FADE and ms > 0 then
-            windowSteps = windowSteps + 1
-            local s = real.alpha / FULL + prev.alpha / PREV
-            if math.abs(s - 1.0) > 1.0 / FULL + 1.0 / PREV then
-                sumBad = sumBad or ('at %d ms the shares sum to %.4f'):format(ms, s)
+        -- THE OPENING WALL: the hold's first fadeInSec is a ramp on the record's own
+        -- clock, to the rounding, and it is full strength from then until the end.
+        local held = WAIT - ms
+        if held < FADE then
+            ramped = ramped + 1
+            local want = rr.alpha * held / FADE
+            if math.abs(rw.alpha - want) > 1.0 then
+                rampBad = rampBad or ('%d ms into the hold at %d, wanted %.1f')
+                    :format(held, rw.alpha, want)
+            end
+        elseif rw.alpha ~= FULL then
+            fullBad = fullBad or ('%d ms from the hold\'s end the opening wall is at %d')
+                :format(ms, rw.alpha)
+        end
+        -- CIRCLE 1'S WALL: previewAlpha through the hold and the sweep, until the
+        -- sweep's last fadeInSec, and then thinning on that same clock.
+        local left = SHRINK + ms
+        if left >= FADE then
+            if pv.alpha ~= PREV or pv.n == 0 then
+                prevBad = prevBad or ('%d ms from the hold\'s end circle 1 is %d tris at %d')
+                    :format(ms, pv.n, pv.alpha)
+            end
+        else
+            thinned = thinned + 1
+            local want = rr.alpha * (rr.previewAlpha or 0.5) * left / FADE
+            if math.abs(pv.alpha - want) > 1.0 then
+                thinBad = thinBad or ('%d ms before the sweep ends circle 1 is at %d, '
+                    .. 'wanted %.1f'):format(left, pv.alpha, want)
             end
         end
-        lastP, lastR = prev.alpha, real.alpha
+        lastP, lastR = pv.alpha, rw.alpha
     end
 
-    ok(empty == nil and strayAt == nil and #steps > 50,
-        'and across the whole hold -- the bus\'s circle through two minutes of '
-            .. 'suppression, the fade window, and out the other side -- there is a wall '
-            .. 'on screen at every single step, which is the gap #340 reported',
-        empty or strayAt or ('%d steps, none empty'):format(#steps))
-    ok(mixedAt == nil,
-        'each wall\'s alpha is uniform round its own ring at every step, so two walls '
-            .. 'in one frame never read as one wall that stripes along its length',
-        mixedAt)
-    ok(nonMono == nil,
-        'the preview only ever thins and the real wall only ever strengthens: the '
-            .. 'handoff runs one way',
-        nonMono)
+    ok(empty == nil and #steps > 100,
+        'across the whole of phase 1 -- the transition, the hold, the sweep -- there is '
+            .. 'a wall on screen at every single step, which is the gap #340 reported',
+        empty or ('%d steps, none empty'):format(#steps))
+    ok(offAt == nil and mixedAt == nil,
+        'every corner of both walls stands on the shape that wall draws, and each '
+            .. 'wall\'s alpha is uniform round its own ring at every step',
+        offAt or mixedAt)
+    ok(rampBad == nil and fullBad == nil and ramped > 30,
+        'the opening wall rises over the hold\'s FIRST fadeInSec, on the record\'s own '
+            .. 'clock, and is at full render.alpha from then to the end of the sweep',
+        rampBad or fullBad)
+    ok(prevBad == nil,
+        'circle 1\'s wall stays at previewAlpha through the whole hold AND the sweep '
+            .. '-- it stands beside the opening wall now, not in for it (#344)',
+        prevBad)
+    ok(thinBad == nil and thinned > 30,
+        'and thins over the sweep\'s last fadeInSec, on the sweep\'s own clock, as the '
+            .. 'moving wall arrives on it',
+        thinBad)
     ok(jumped == nil,
-        'and neither moves further in a step than the fade clock can carry it -- a '
-            .. 'preview that cut out, or a wall that cut in, fails here',
+        'and neither wall moves further in a step than its clock can carry it -- a '
+            .. 'wall that cut in or out, anywhere in phase 1, fails here',
         jumped)
-    ok(sumBad == nil and windowSteps > 30,
-        'inside the fade window the two shares sum to one, to the two roundings: the '
-            .. 'real wall\'s share of render.alpha plus the preview\'s share of '
-            .. 'previewAlpha. That is ONE clock read in both directions, and it is what '
-            .. 'a second clock would fail',
-        sumBad or ('%d steps in the window, all summing to 1'):format(windowSteps))
 
-    -- ─── and the far end: the preview is gone the moment the wall is whole ───
-    local ep, er = holdAt(W, 0)
-    ok(ep.n == 0 and er.n > 0 and er.alpha == FULL,
-        'when the hold ends the real wall is at full render.alpha and the preview is '
-            .. 'off screen entirely -- the constraint previewCircle\'s header states, '
-            .. 'kept: no preview beside the wall it was standing in for',
-        ('preview %d tris, real %d tris at %d against %d'):format(
-            ep.n, er.n, er.alpha, FULL))
+    -- ─── NOTHING RESETS WHEN THE SWEEP STARTS, which is the whole of #344's ask ───
+    --
+    -- One frame before the sweep and one frame into it: circle 1's wall is the same
+    -- triangles to the bit, and the opening wall's corners have moved no further than
+    -- the fastest corner of the morph can carry them in the time between -- rather
+    -- than jumping from circle 1 out to the map's edge, which is what the owner saw.
+    local R = busClient()
+    goPlaying(R)
+    local rrec = R.env.BR.State.storm
+    local function corners()
+        local pts = {}
+        for _, q in ipairs(quadsOf(R)) do pts[#pts + 1] = { x = q.a.x, y = q.a.y } end
+        return pts
+    end
+    --- One wall alone at `ms` from the hold's end, and the inset zone at that moment.
+    local function eachAt(ms, off)
+        local L = R.env.BR.Loop
+        L.setEnabled(off, false)
+        rrec.tStart = (R.now + 16) - (WAIT - ms)
+        R.frame()
+        L.setEnabled(off, true)
+        local cx, cy, r, _, _, _, t, g = R.env.BR.StormAt(rrec, R.env.BR.Clock.now())
+        return corners(), PSS.inset(R.env.BR.StormZone(rrec, cx, cy, r, t, g), INSET)
+    end
+    local preBefore = eachAt(16, 'storm.wall')
+    local realBefore, shapeBefore = eachAt(16, 'storm.previewWall')
+    local preAfter = eachAt(-16, 'storm.wall')
+    local realAfter, shapeAfter = eachAt(-16, 'storm.previewWall')
+    local same = #preBefore == #preAfter and #preBefore > 0
+    for i = 1, #preBefore do
+        if not preAfter[i] or preAfter[i].x ~= preBefore[i].x
+                or preAfter[i].y ~= preBefore[i].y then
+            same = false
+        end
+    end
+    -- HOW FAR THE BOUNDARY MOVED, both ways: every corner of each frame against the
+    -- other frame's shape. Corners are resampled along a boundary as it changes, so
+    -- they are not the same POINTS twice -- the boundary is what must not have jumped.
+    local moved = 0.0
+    for _, p in ipairs(realAfter) do
+        moved = math.max(moved, math.abs(PSS.distance(shapeBefore, p.x, p.y)))
+    end
+    for _, p in ipairs(realBefore) do
+        moved = math.max(moved, math.abs(PSS.distance(shapeAfter, p.x, p.y)))
+    end
+    -- THE BOUND IS THE MORPH'S OWN: its fastest disc, times the 32 ms between the two.
+    local bound = R.env.BR.StormWallSpeed(rrec) * 0.032 + 1e-6
+    ok(same,
+        'across the first frame of the sweep circle 1\'s wall is the same triangles to '
+            .. 'the bit -- it does not move, fade or reset',
+        ('%d corners before, %d after'):format(#preBefore, #preAfter))
+    ok(#realBefore > 0 and #realAfter > 0 and moved <= bound,
+        'and the opening wall carries on from exactly where it stood, moving no further '
+            .. 'than the morph\'s fastest corner can in that time -- no reset to the '
+            .. 'map\'s edge and back',
+        ('%.4f m against %.4f m'):format(moved, bound))
 
-    -- AND IT STAYS GONE. A frame further into the shrink is the case a gate written as
-    -- "not yet full" rather than "the hold is over" would get wrong, and the symptom --
-    -- a faint second ring parked on circle 1 while the wall closes onto it -- is
-    -- precisely what the map's purple ring is for.
-    -- READ AS "NOTHING ON CIRCLE 1", not as the two-wall split: five seconds into the
-    -- shrink the record's own circle has left the opening radius, so `walls` can no
-    -- longer name it -- which is exactly why the claim is spelled against circle 1's
-    -- boundary and the total.
-    local sp2 = holdAt(W, -5000)
-    ok(sp2.n == 0 and #W.polys > 0,
-        'and five seconds into the shrink the preview is still gone while the wall '
-            .. 'closes on the circle it was standing in for',
-        ('%d triangles on circle 1, %d polys in frame'):format(sp2.n, #W.polys))
+    -- ─── and at FINISHED the two are one ───
+    --
+    -- The moving wall has arrived on circle 1, at full strength and on circle 1's own
+    -- shape, and circle 1's wall is gone: one wall on one boundary, which is what the
+    -- next phase starts from.
+    local fp, fr = both(W, -SHRINK - 1000)
+    ok(fp.n == 0 and fr.n > 0 and fr.alpha == FULL and wall(W, PREVIEW_SHAPE).off < 1e-6,
+        'when the sweep finishes circle 1\'s wall is gone and the moving wall stands on '
+            .. 'circle 1 at full strength, in circle 1\'s shape',
+        ('preview %d tris, real %d tris at %d, %.3e m off circle 1'):format(
+            fp.n, fr.n, fr.alpha, wall(W, PREVIEW_SHAPE).off))
 
     -- ─── the two gates that exist for real reasons, both still shut ───
     --
     -- A LOBBY BYSTANDER SHARES THE MATCH STATE WITHOUT BEING IN THE MATCH, and used to
-    -- get storm blips at the vista menu. The new PLAYING stretch is a new way into the
-    -- same failure, so it is asked at a moment only the new code can answer: mid-hold,
-    -- where the real wall is suppressed and the preview is all there is.
+    -- get storm blips at the vista menu.
     local L = busClient()
     goPlaying(L)
     L.env.BR.State.me.state = PS.LOBBY
-    local lp, lr = holdAt(L, WAIT * 0.5)
-    ok(lp.n == 0 and lr.n == 0 and #L.polys == 0,
-        'a LOBBY bystander gets nothing at all through the new PLAYING stretch, which '
-            .. 'is the vista-menu report the gate was written for',
-        ('%d preview, %d real, %d polys'):format(lp.n, lr.n, #L.polys))
+    local lp, lr = both(L, WAIT * 0.5)
+    ok(lp.n == 0 and lr.n == 0,
+        'a LOBBY bystander gets neither wall through the PLAYING hold, which is the '
+            .. 'vista-menu report the gate was written for',
+        ('%d preview, %d real'):format(lp.n, lr.n))
 
-    -- AND NOTHING SURVIVES A MATCH ENDING. activeRecord admits ENDED on purpose -- the
-    -- grade and the rain have to outlive the transition or the last thing a player sees
-    -- is the weather switching off -- so a preview that reused activeRecord would draw
-    -- a purple circle under the verdict slam. A two-player playtest reaches exactly
-    -- this: a match decided inside the phase-1 hold, record still phase 1, still
-    -- HOLDING.
+    -- AND THE PREVIEW DOES NOT SURVIVE A MATCH ENDING. activeRecord admits ENDED on
+    -- purpose -- the grade, the rain and the zone's own wall outlive the transition, as
+    -- they do in every phase -- so a preview that reused activeRecord would stand a
+    -- second wall under the verdict slam. A two-player playtest reaches exactly this: a
+    -- match decided inside the phase-1 hold, record still phase 1, still HOLDING.
     local E = busClient()
     goPlaying(E)
-    local hp = holdAt(E, WAIT * 0.5)
+    local hp = both(E, WAIT * 0.5)
     E.env.BR.State.match.state = MS.ENDED
-    local xp, xr = holdAt(E, WAIT * 0.5)
-    ok(hp.n > 0 and xp.n == 0 and xr.n == 0,
-        'and a match that ENDS inside the phase-1 hold takes the preview down with it, '
-            .. 'though the record is still phase 1 and still HOLDING -- which is why '
-            .. 'this tests PLAYING by name instead of reusing activeRecord',
+    local xp, xr = both(E, WAIT * 0.5)
+    ok(hp.n > 0 and xp.n == 0 and xr.n > 0,
+        'and a match that ENDS inside the phase-1 hold takes circle 1\'s wall down with '
+            .. 'it, though the record is still phase 1 and still HOLDING -- which is why '
+            .. 'the preview tests PLAYING by name -- while the zone\'s own wall stays, as '
+            .. 'it does at the end of every phase',
         ('%d tris while playing, %d preview and %d real once ENDED'):format(
             hp.n, xp.n, xr.n))
 
-    -- ─── a collapsed target is not a circle to stand in for ───
+    -- ─── a collapsed target is not a circle to stand beside ───
     --
-    -- BR.StormShape.circle FLOORS ITS RADIUS AT ONE METRE (storm_shape.lua argues the
-    -- floor), so a phase-1 target of zero would not draw nothing -- it would draw a
-    -- one-metre purple ring, a dot on the ground with no meaning. storm.wall makes the
-    -- same test on rec.r1 one screen up, and the reason to make it here as well is the
-    -- asymmetry: a reader who found the guard on one wall and not the other would
-    -- reasonably conclude the shape handles it.
-    --
-    -- THE SHIPPING CONFIG CANNOT REACH THIS, said plainly rather than implied:
-    -- phases[1].radius is 2600 and every route into phase 1 goes through enterPhase
-    -- with it, including `brphase 1`. It is a guard against a config, and this is a
-    -- hand-built record because that is the only thing that can reach it.
+    -- BR.StormShape.circle FLOORS ITS RADIUS AT ONE METRE, so a phase-1 target of zero
+    -- would draw a one-metre purple ring rather than nothing. THE SHIPPING CONFIG
+    -- CANNOT REACH THIS -- phases[1].radius is 2600 -- so it is a hand-built record,
+    -- the only thing that can.
     local Z = busClient()
     Z.env.BR.State.match.state = MS.PLAYING
     Z.env.BR.State.me.state    = PS.ALIVE
     Z.record(1, OCX, OCY, OR, CCX, CCY, 0.0, WAIT, SHRINK, 0.5)
     Z.env.BR.State.stormPreview = nil
-    local zp = holdAt(Z, WAIT * 0.5)
-    ok(zp.n == 0 and #Z.polys == 0,
-        'a phase-1 record whose target has collapsed draws no preview at all, rather '
-            .. 'than the one-metre ring BR.StormShape.circle\'s radius floor would '
-            .. 'otherwise hand it',
-        ('%d tris on circle 1, %d polys in frame'):format(zp.n, #Z.polys))
+    local zp = both(Z, WAIT * 0.5)
+    ok(zp.n == 0,
+        'a phase-1 record whose target has collapsed draws no circle-1 wall at all, '
+            .. 'rather than the one-metre ring the radius floor would otherwise hand it',
+        ('%d tris on circle 1'):format(zp.n))
 
-    -- ─── and the fallback reaches the new stretch, which is the easiest thing to
-    --     leave behind ───
+    -- ─── and the fallback reaches the PLAYING stretch too ───
     --
     -- mainlandLoaded's fallback was BUS ALONE, which was complete while the preview
-    -- itself was BUS alone. On a box where br_environment is not running -- or has not
-    -- reached its first announcement -- a BUS-only fallback would withhold the ENTIRE
-    -- #340 stretch and nothing would say so: the bus would have its wall, the fade-in
-    -- would arrive on time, and the two minutes between them would be empty again.
-    -- Every other client in this block fires the announcement, so this is the only
-    -- assertion that can see it.
+    -- itself was BUS alone. On a box where br_environment is not running a BUS-only
+    -- fallback would withhold circle 1's wall for the whole of phase 1 and nothing
+    -- would say so. Every other client in this block fires the announcement, so this
+    -- is the only assertion that can see it.
     local S = newStormClient()
     S.env.BR.State.storm = nil
     S.env.BR.State.match.state = MS.BUS
     S.env.BR.State.me.state    = PS.BUS
     S.env.BR.State.stormPreview = { cx = CCX, cy = CCY, r = CR }
     S.pedAt = pt(0.0, 0.0, 30.0)
-    -- #351'S RAMP RUNS OUT ON THE FALLBACK PATH TOO, and that is worth having in this
-    -- assertion rather than beside it: the ramp is armed by mainlandLoaded(), so a
-    -- ramp that only ever completed when br_environment spoke would leave a
-    -- permanently invisible wall on exactly the deployment shape this block exists for.
     S.settlePreview()
-    local fbBus = walls(S)
+    local fbBus = wall(S, PREVIEW_SHAPE)
     goPlaying(S)
-    local fbHold = holdAt(S, WAIT * 0.5)
+    local fbHold = both(S, WAIT * 0.5)
     ok(fbBus.n > 0 and fbHold.n > 0 and fbHold.alpha == PREV,
-        'with br_environment silent throughout, the match state alone carries the '
-            .. 'preview from the bus into the PLAYING hold -- a BUS-only fallback would '
-            .. 'have withheld the whole of #340 on any box that is not running it',
+        'with br_environment silent throughout, the match state alone carries circle '
+            .. '1\'s wall from the bus into the PLAYING hold',
         ('%d tris on the bus, %d at %d mid-hold'):format(
             fbBus.n, fbHold.n, fbHold.alpha))
 
     ok(C.errored() == nil and W.errored() == nil and E.errored() == nil
-        and S.errored() == nil,
-        'and the handoff runs clean on every client in this block',
-        C.errored() or W.errored() or E.errored() or S.errored())
+        and R.errored() == nil and S.errored() == nil,
+        'and phase 1\'s two walls run clean on every client in this block',
+        C.errored() or W.errored() or E.errored() or R.errored() or S.errored())
 end
 
 -- ---------------------------------------------------------------------------
@@ -6322,10 +6971,10 @@ do
     --   on a 4 Hz beat -- so the first tick that solves the new record has to send
     --   it, or the old countdown sits on screen for a beat as it shortens.
     --
-    --   THE #340 HANDOFF. The preview wall thins as the real one rises, both read
-    --   off the record's own clock through wallShare. The preview has to hold until
-    --   the last fadeInSec of the CUT hold and hand over there -- not where the old
-    --   hold would have ended, a minute and a half later.
+    --   PHASE 1'S TWO WALLS (#344). The opening wall ramps in over the hold's FIRST
+    --   fadeInSec, off the record's own tStart -- which the cut keeps, so the ramp does
+    --   not restart -- and circle 1's wall stands beside it through the whole cut hold
+    --   and into the sweep, which now starts a minute and a half early.
     --
     -- AND SINCE THE MATCH GOES LIVE AT 65% LANDED, SOME OF IT IS STILL IN THE AIR
     -- WHEN THESE RECORDS ARRIVE. So this client is gliding, not standing.
@@ -6342,31 +6991,40 @@ do
     local WAIT, SHRINK = 180000, 60000
     local CUT = env.BR.Config.Storm.hold.capSeconds * 1000.0
 
-    -- The preview is circle 1, zone 1's shape; the real wall is the opening circle,
-    -- zone 0's -- `preview.handoff` has why they are two shapes.
+    -- Circle 1's wall is zone 1's shape; `preview.twowalls` has why the opening wall
+    -- is measured against the solved zone instead.
     local PSS = env.BR.StormShape
-    local UNIT0 = env.BR.StormUnit(nil, 0)
-    local UNIT1 = env.BR.StormUnit(nil, 1)
-    local PREVIEW_SHAPE = PSS.inset(PSS.blob(CCX, CCY, CR, UNIT1), INSET)
-    local REAL_SHAPE = PSS.inset(PSS.zone(OCX, OCY, OR, CCX, CCY, CR, UNIT0, UNIT1),
-        INSET)
+    local PREVIEW_SHAPE = PSS.inset(PSS.blob(CCX, CCY, CR, env.BR.StormUnit(nil, 1)), INSET)
 
-    --- Each wall's triangle count and alpha in the last frame, told apart by which
-    --- shape their corners stand on -- `preview.handoff`'s method, for its reason.
-    local function walls()
-        local pv, rw, stray = { n = 0, alpha = 0 }, { n = 0, alpha = 0 }, nil
-        for _, t in ipairs(C.polys) do
-            local v = t[1]
-            local w
-            if math.abs(PSS.distance(PREVIEW_SHAPE, v.x, v.y)) < 1e-6 then w = pv
-            elseif math.abs(PSS.distance(REAL_SHAPE, v.x, v.y)) < 1e-6 then w = rw
-            else stray = stray or ('(%.2f, %.2f) is on neither'):format(v.x, v.y) end
-            if w then
-                if w.n > 0 and w.alpha ~= t.a then stray = stray or 'a wall stripes' end
-                w.alpha, w.n = t.a, w.n + 1
-            end
+    --- Each wall alone in the last frame -- the other's callback switched off, for the
+    --- reason `preview.twowalls` gives -- with its triangle count and alpha, and
+    --- whether its corners stand on its own shape.
+    local function wallAlone(off, shape)
+        env.BR.Loop.setEnabled(off, false)
+        C.frame()
+        env.BR.Loop.setEnabled(off, true)
+        if not shape then
+            local rec = env.BR.State.storm
+            local cx, cy, r, _, _, _, t, g = env.BR.StormAt(rec, env.BR.Clock.now())
+            shape = PSS.inset(env.BR.StormZone(rec, cx, cy, r, t, g), INSET)
         end
-        return pv, rw, stray
+        local w = { n = 0, alpha = 0, stray = nil }
+        for _, t in ipairs(C.polys) do
+            if w.n > 0 and w.alpha ~= t.a then w.stray = w.stray or 'a wall stripes' end
+            if math.abs(PSS.distance(shape, t[1].x, t[1].y)) > 1e-6 then
+                w.stray = w.stray or ('(%.2f, %.2f) is off its shape'):format(t[1].x, t[1].y)
+            end
+            w.alpha, w.n = t.a, w.n + 1
+        end
+        return w
+    end
+    --- Both walls at the harness's current moment, less the 16 ms a frame adds each.
+    local function walls()
+        local at = C.now
+        local pv = wallAlone('storm.wall', PREVIEW_SHAPE)
+        C.now = at
+        local rw = wallAlone('storm.previewWall', nil)
+        return pv, rw
     end
 
     -- On the bus, then live, gliding: the record arrives with the full priced hold.
@@ -6387,12 +7045,13 @@ do
     ok(C.last() and C.last().endsAt == T0 + WAIT,
         'the envelope carries the priced hold\'s end first',
         C.last() and tostring(C.last().endsAt))
-    C.frame()
     local bp, br = walls()
-    ok(bp.n > 0 and bp.alpha == PREV and br.n == 0,
-        'and a gliding player at the new, earlier PLAYING has the preview wall at '
-            .. 'previewAlpha and no real wall -- the bus\'s view, carried on',
-        ('preview %d at %d, real %d'):format(bp.n, bp.alpha, br.n))
+    ok(bp.n > 0 and bp.alpha == PREV and bp.stray == nil
+            and br.alpha > 0 and br.alpha < FULL,
+        'and a gliding player at the new, earlier PLAYING has circle 1\'s wall at '
+            .. 'previewAlpha -- the bus\'s view, carried on -- and the opening wall part '
+            .. 'way up its ramp from the start of the hold (#344)',
+        bp.stray or ('preview %d at %d, opening wall at %d'):format(bp.n, bp.alpha, br.alpha))
 
     -- ─── the cut lands a tenth of a second after the last envelope ───
     local pushes = #C.envelopes
@@ -6412,54 +7071,57 @@ do
         ('%d new envelopes, endsAt %s against %s'):format(#C.envelopes - pushes,
             tostring(C.last() and C.last().endsAt), tostring(T0 + cutWait)))
 
-    -- ─── and the handoff follows the cut hold, frame by frame ───
+    -- ─── and both walls follow the cut hold, step by step ───
     --
     -- The record is left alone from here and the CLOCK moves, which is how a match
-    -- actually runs. `at(msLeft)` puts the frame's own solve exactly msLeft from the
-    -- cut hold's end, counting the 16 ms C.frame adds.
+    -- actually runs. `at(msLeft)` puts each frame's own solve exactly msLeft from the
+    -- CUT hold's end, counting the 16 ms C.frame adds; negative is into the sweep.
     local cutEnd = T0 + cutWait
     local function at(msLeft)
         C.now = cutEnd - msLeft - 16
-        C.frame()
         return walls()
     end
     local steps = {}
-    for ms = CUT, FADE + 1, -2000 do steps[#steps + 1] = ms end
-    for ms = FADE, 0, -250 do steps[#steps + 1] = ms end
+    for ms = CUT, 0, -2000 do steps[#steps + 1] = ms end
+    for ms = 0, -4000, -500 do steps[#steps + 1] = ms end
 
-    local empty, stray, nonMono, sumBad, inWindow = nil, nil, nil, nil, 0
-    local lastP, lastR = PREV, 0
+    local empty, stray, rampBad, prevBad, backward = nil, nil, nil, nil, nil
+    local lastR = 0
     for _, ms in ipairs(steps) do
-        local pv, rw, s = at(ms)
-        stray = stray or (s and ('at %d ms %s'):format(ms, s))
+        local pv, rw = at(ms)
+        stray = stray or ((pv.stray or rw.stray) and ('at %d ms %s'):format(ms,
+            pv.stray or rw.stray))
         if pv.n == 0 and rw.n == 0 then empty = empty or ms end
-        if pv.alpha > lastP or rw.alpha < lastR then
-            nonMono = nonMono or ('at %d ms preview %d->%d, real %d->%d')
-                :format(ms, lastP, pv.alpha, lastR, rw.alpha)
+        -- THE OPENING WALL IS ON THE RECORD'S tStart, WHICH THE CUT KEPT: its ramp
+        -- runs on from where it was and never goes back.
+        local held = (cutEnd - T0) - ms
+        local want = (held >= FADE) and FULL or (rr.alpha * held / FADE)
+        if math.abs(rw.alpha - want) > 1.0 then
+            rampBad = rampBad or ('%d ms into the hold at %d, wanted %.1f')
+                :format(held, rw.alpha, want)
         end
-        if ms < FADE and ms > 0 then
-            inWindow = inWindow + 1
-            local sum = rw.alpha / FULL + pv.alpha / PREV
-            if math.abs(sum - 1.0) > 1.0 / FULL + 1.0 / PREV then
-                sumBad = sumBad or ('at %d ms the shares sum to %.4f'):format(ms, sum)
-            end
+        if rw.alpha < lastR then
+            backward = backward or ('at %d ms %d -> %d'):format(ms, lastR, rw.alpha)
         end
-        lastP, lastR = pv.alpha, rw.alpha
+        lastR = rw.alpha
+        if pv.n == 0 or pv.alpha ~= PREV then
+            prevBad = prevBad or ('at %d ms circle 1 is %d tris at %d'):format(ms, pv.n,
+                pv.alpha)
+        end
     end
-    local firstP, firstR = at(CUT)
-    ok(firstP.alpha == PREV and firstR.n == 0 and empty == nil and stray == nil,
-        'from the cut to the end of the hold there is a wall at every step, and the '
-            .. 'preview is at previewAlpha until the fade window -- the cut moved nothing '
-            .. 'on screen', stray or (empty and ('empty at %d ms'):format(empty)))
-    ok(nonMono == nil and sumBad == nil and inWindow > 30,
-        'and across the CUT hold\'s last fadeInSec the preview thins as the wall rises, '
-            .. 'their shares summing to one: the one-clock handoff, on the new clock',
-        nonMono or sumBad)
-    local endP, endR = at(0)
-    ok(endP.n == 0 and endR.alpha == FULL,
-        'the handoff completes where the cut hold ends -- a minute and a half before '
-            .. 'the priced one would have',
-        ('preview %d tris, real at %d'):format(endP.n, endR.alpha))
+    ok(empty == nil and stray == nil,
+        'from the cut to the end of the cut hold and into its sweep there is a wall at '
+            .. 'every step, every corner on its own shape',
+        stray or (empty and ('empty at %d ms'):format(empty)))
+    ok(rampBad == nil and backward == nil,
+        'the opening wall\'s ramp runs on off the record\'s own start, which the cut '
+            .. 'kept: it neither restarts nor steps back',
+        rampBad or backward)
+    ok(prevBad == nil,
+        'and circle 1\'s wall holds previewAlpha through the whole cut hold and the start '
+            .. 'of the sweep it now begins a minute and a half early -- the cut moved '
+            .. 'nothing on screen',
+        prevBad)
     ok(C.errored() == nil, 'and runs clean', C.errored())
 end
 
@@ -7339,29 +8001,24 @@ do
     --   "seems every storm is still a circle."            -- owner, 2026-09-22
     --
     -- The wall has been a blob since #344 and the map was a radius blip at `r`, which
-    -- is where the whole feature is visible: at phase 1 the nine corners are 1815 m
+    -- is where the whole feature is visible: at phase 1 the corners are kilometres
     -- apart along the boundary, so a player on the ground sees a stretch that reads
     -- as an arc of a circle. #347 proved ADD_AREA_OVERLAY fills an arbitrary polygon
-    -- on the radar AND the pause map, so the two zones are filled boundaries now.
+    -- on the radar AND the pause map, so the zones are filled boundaries now.
     --
-    -- ═══ WHAT THIS BLOCK IS FOR IS THE SWITCH, NOT THE POLYGON ═══
+    -- ═══ WHAT THIS BLOCK IS FOR IS THE SWITCH AND THE PICTURE, NOT THE POLYGON ═══
     --
-    -- The polygon is `shape.polyline`'s subject in tools/test_shared.lua, proved
-    -- against its sag bound, its run boundaries and the region it encloses. What can
-    -- only be tested HERE is the pair of paths: that the fill replaces the blips
-    -- rather than joining them, that a refusal anywhere puts the blips back, and that
-    -- the suppression rules and the fade clock the rings obey are the ones the fills
-    -- obey -- because those are two spellings away from being two behaviours.
+    -- The polygon is `shape.polyline`'s subject in tools/test_shared.lua. What can
+    -- only be tested HERE is the pair of paths -- that the fill replaces the blips
+    -- rather than joining them, that a refusal anywhere puts the blips back -- and the
+    -- picture a STANDING storm puts on the map: the zone's keyframes (#344), one at
+    -- full and the rest at nothing, and the destination over them. `map.motion` is the
+    -- storm moving.
+    --
     -- A SEED WHOSE CURRENT ZONE IS A POLYGON, because one zone in ten is a plain
-    -- circle now and "the fill is not a circle" is the assertion below. The first
-    -- such seed, found rather than typed, so a retune of the odds moves it with them.
+    -- circle and "the fill is not a circle" is one of the assertions below.
     -- PHASE 1'S CURRENT ZONE IS THE MAP DISC on every seed (#344 round 2), so there is
-    -- nothing to search for there.
-    --
-    -- `want`, WHEN GIVEN, IS ASKED OF THE RECORD TOO -- a block whose assertions are
-    -- about a NESTED zone names that here, and gets the first polygon seed on which
-    -- its hand-built pair nests by real shape, which is what the server's placement
-    -- would have guaranteed.
+    -- nothing to search for there. `want`, WHEN GIVEN, IS ASKED OF THE RECORD TOO.
     local function mapClient(phase, cx0, cy0, r0, cx1, cy1, r1, waitMs, shrinkMs, want)
         local C = newStormClient()
         C.mm.handle = 7
@@ -7375,6 +8032,8 @@ do
         rec.seed = s
         return C
     end
+
+    local blip = newStormClient().env.BR.Config.Storm.blip
 
     -- ─── before the gate opens, the blips carry the map ───
     --
@@ -7393,42 +8052,35 @@ do
     ok(C.errored() == nil, 'and the map callback runs clean', C.errored())
 
     -- ─── and then exactly one of the two paths is drawing ───
-    ok(#C.areas() == 2,
-        'a nested phase fills TWO areas: the safe zone and the target inside it, '
-            .. 'which is the pair the two rings were',
-        ('%d areas'):format(#C.areas()))
+    ok(#C.areas() == 3 and #C.keyframes() == 2,
+        'a phase fills THREE areas: the zone as the two keyframes of its sweep -- the '
+            .. 'zone it leaves and the one it closes on (#344) -- and the destination',
+        ('%d areas, %d keyframes'):format(#C.areas(), #C.keyframes()))
     ok(#C.rings() == 0 and #C.boxes() == 0,
         'and NOT ONE radius blip is left beside them -- a fill and a disc of the '
             .. 'same zone would be two boundaries, and a player reads the nearer',
         ('%d rings, %d boxes'):format(#C.rings(), #C.boxes()))
 
-    -- ─── the fill is on the real boundary, and the real boundary is not a circle ───
+    -- ─── the fill that SHOWS is on the real boundary, and it is not a circle ───
     --
-    -- MEASURED AGAINST BR.StormZone, which is what the WALL draws -- so this is also
-    -- the assertion that the map and the curtain cannot disagree about the edge. And
-    -- the radial spread is what makes it a test of #350 rather than of the plumbing:
-    -- every point of a CIRCLE is the same distance from the centre, so a fill that
-    -- had quietly kept drawing one would pass the first measure and fail this.
-    --
-    -- READ OFF C.shown, WHICH IS WHERE THE MOVIE PUTS IT, and not off the points that
-    -- were pushed. Since #350 a one-blob zone goes out about its own centre and is
-    -- then placed, so the pushed points are not world coordinates at all -- and this
-    -- zone happens to be centred on the origin, where the two readings agree. The
-    -- assertion has to be about what the map shows or it would pass over a zone that
-    -- was never placed.
+    -- MEASURED AGAINST BR.StormWall, which is the wall as it stands -- so this is also
+    -- the assertion that the map and the curtain cannot disagree about the edge while
+    -- the storm stands still. READ OFF C.shown, WHICH IS WHERE THE MOVIE PUTS IT: a
+    -- keyframe goes out about its own origin and is then placed, so the pushed points
+    -- are not world coordinates at all.
     local SS = C.env.BR.StormShape
     local rec = C.env.BR.State.storm
-    local zone = C.env.BR.StormZone(rec, rec.cx0, rec.cy0, rec.r0)
+    local zone = C.env.BR.StormWall(rec, 0.0)
+    local shown, shownO = C.zoneFill()
     local worstOff, lo, hi = 0.0, math.huge, 0.0
-    local shownPts = C.areas()[1] and C.shown(C.areas()[1]) or {}
+    local shownPts = shown and C.shown(shown) or {}
     for _, p in ipairs(shownPts) do
-        local d = math.abs(SS.distance(zone, p.x, p.y))
-        if d > worstOff then worstOff = d end
+        worstOff = math.max(worstOff, math.abs(SS.distance(zone, p.x, p.y)))
         local rad = math.sqrt((p.x - rec.cx0) ^ 2 + (p.y - rec.cy0) ^ 2)
         lo, hi = math.min(lo, rad), math.max(hi, rad)
     end
     ok(#shownPts >= 3 and worstOff < 1e-6,
-        'every point of the fill is ON the zone the wall is drawn on, to a micron',
+        'the keyframe that shows is ON the wall as it stands, to a micron',
         ('%d points, worst %.9f m off'):format(#shownPts, worstOff))
     ok((hi - lo) > 1.0,
         'and the boundary is genuinely not a circle: its distance from the centre '
@@ -7437,31 +8089,38 @@ do
 
     -- ─── the colour and the alpha ───
     --
-    -- THE ALPHA IS THE ONE PIECE OF ARITHMETIC ON THIS PATH THAT IS NOT OBVIOUS. The
-    -- movie sets `mc._alpha = a / 255 * 100` AND passes the same `a` to beginFill as a
-    -- Flash 0-100 alpha, so below 100 the two COMPOUND and a = 50 renders near 10%.
-    -- The fills are asked for at the alphas the blips use, so 80 has to be inverted
-    -- through areaAlpha rather than passed through -- otherwise the safe zone reads a
-    -- third fainter than the disc it replaced.
-    local blip = C.env.BR.Config.Storm.blip
+    -- A KEYFRAME GOES OUT AT FULL STRENGTH AND IS FADED, and that is the one piece of
+    -- arithmetic on this path that is not obvious. The movie takes an area's alpha
+    -- twice at the add -- `mc._alpha = a / 255 * 100` and beginFill's own Flash 0-100
+    -- alpha -- and below 100 the two COMPOUND, which areaAlpha inverts for the areas
+    -- that are never faded. SET_OVERLAY_ALPHA rewrites the first term alone, so it is
+    -- LINEAR only for an area added at 255, where the fill term is opaque: that is why
+    -- every keyframe is added at 255 and then given its alpha.
     local col  = C.env.BR.Config.Storm.render.colour
     local MO   = C.env.BR.MapOverlay
-    local zf, tf = C.areas()[1], C.areas()[2]
-    ok(zf.r == col.r and zf.g == col.g and zf.b == col.b
-        and tf.r == col.r and tf.g == col.g and tf.b == col.b,
-        'both fills are the wall\'s own purple out of render.colour',
-        ('%d,%d,%d'):format(zf.r, zf.g, zf.b))
-    ok(zf.a == MO.areaAlpha(blip.currentAlpha)
-        and tf.a == MO.areaAlpha(blip.nextAlpha),
-        'at the two blip alphas, each inverted through the movie\'s compounding',
-        ('%d and %d from %d and %d'):format(zf.a, tf.a,
-            blip.currentAlpha, blip.nextAlpha))
-    ok(zf.a ~= blip.currentAlpha and zf.a > blip.currentAlpha,
-        'and the inversion really moved the safe zone\'s alpha -- 80 is inside the '
-            .. 'compounding region, so passing it through would draw a third faint',
-        ('%d from %d'):format(zf.a, blip.currentAlpha))
+    local target = C.areas()[3]
+    local allPurple = true
+    for _, ar in ipairs(C.areas()) do
+        if ar.r ~= col.r or ar.g ~= col.g or ar.b ~= col.b then allPurple = false end
+    end
+    ok(allPurple, 'every fill is the wall\'s own purple out of render.colour')
+    local kf = C.keyframes()
+    ok(kf[1].a == 255 and kf[2].a == 255
+            and near(shownO, blip.currentAlpha / 255, 0.5 / 255)
+            and C.opacity(kf[2]) == 0.0,
+        'the keyframes go out at 255 and are faded to their share: the zone\'s at the '
+            .. 'safe zone\'s blip alpha, linear, and the other at nothing while the storm '
+            .. 'holds',
+        ('%d and %d added, showing %.4f and %.4f against %.4f'):format(kf[1].a, kf[2].a,
+            C.opacity(kf[1]), C.opacity(kf[2]), blip.currentAlpha / 255))
+    ok(target.a == MO.areaAlpha(blip.nextAlpha)
+            and near(C.opacity(target), blip.nextAlpha / 255, 0.5 / 255),
+        'while the destination, which is never faded, goes out at its blip alpha '
+            .. 'inverted through the movie\'s compounding, and renders at that alpha',
+        ('%d from %d, rendering %.4f'):format(target.a, blip.nextAlpha,
+            C.opacity(target)))
     ok(MO.areaAlpha(110) == 110 and MO.areaAlpha(255) == 255,
-        'while an alpha at or above 100 is already linear and is passed through')
+        'an alpha at or above 100 is already linear and is passed through')
     ok(MO.areaAlpha(80) == 89,
         'the inverse is 10 * sqrt(want): 80 of 255 comes back as 89, which renders '
             .. '(89/255) * (89/100) = the 80/255 that was asked for',
@@ -7469,72 +8128,77 @@ do
     ok(MO.areaAlpha(-5) == 0 and MO.areaAlpha(400) == 255,
         'and it is clamped at both ends')
 
-    -- ─── the target is drawn LAST, so it is on top ───
-    --
-    -- The movie renders its clips in push order, which is why the two rings were
-    -- recreated in a fixed order too: the purple target read as flashing on the map
-    -- when the safe zone's rebuild landed on top of it.
-    local tr = 0.0
-    for _, p in ipairs(tf.points) do
-        tr = math.max(tr, math.sqrt((p.x - rec.cx1) ^ 2 + (p.y - rec.cy1) ^ 2))
+    -- ─── the destination is drawn LAST, so it is on top, on its own shape ───
+    local tWorst = 0.0
+    local tShape = C.env.BR.StormTarget(rec)
+    for _, p in ipairs(target.points) do
+        tWorst = math.max(tWorst, math.abs(SS.distance(tShape, p.x, p.y)))
     end
-    ok(tr < rec.r0 and tr > rec.r1 * 0.5,
-        'the second fill is the TARGET, pushed after the zone so it draws over it',
-        ('reaches %.0f m from the target centre, target r %.0f'):format(tr, rec.r1))
+    ok(tWorst < 1e-6 and target._x == nil,
+        'the last fill is the DESTINATION, in world coordinates on its own shape, pushed '
+            .. 'after the zone so it draws over it, and never placed',
+        ('worst %.9f m off the destination'):format(tWorst))
 
-    -- ─── the phase-1 hold shows the target ONLY, on the wall's own clock ───
+    -- ─── the phase-1 hold shows the target ONLY, and fades the zone in by ALPHA ───
     --
     -- The safe zone during the phase-1 hold is the whole map, and a purple wash over
     -- all of Los Santos says nothing -- which is exactly why the blue ring is
-    -- suppressed there. The fill obeys the same rule from the same number: wallShare,
-    -- which is also what the curtain and the ring read. THIS IS THE ASSERTION A
-    -- SECOND SPELLING OF THE FADE WOULD FAIL.
+    -- suppressed there. The fill obeys the same rule from the same number, wallShare.
+    -- AND THE FADE IS ALPHA WRITES, NOT REBUILDS (#344): until now each step of it was
+    -- a new key and so a rebuild -- up to twenty over the hold's last ten seconds.
     local H = mapClient(1, 0.0, 0.0, 6000.0, 400.0, 0.0, 2600.0, 120000, 120000)
-    ok(H.overlayReady(), 'a phase-1 client reaches the gate too')
+    ok(H.overlayReady(), 'a phase-1 client reaches the gate')
     local FADE = (H.env.BR.Config.Storm.render.fadeInSec or 10.0) * 1000.0
-    local function holdFills(C2, msLeft)
+    local function holdAt(C2, msLeft)
         C2.env.BR.State.storm.tStart = (C2.now + 1500) - (120000 - msLeft)
         C2.tick(1)
-        return C2.areas()
     end
-    local deep = holdFills(H, 60000)
-    ok(#deep == 1,
-        'deep in the phase-1 hold only circle 1 is filled -- the whole-map safe zone '
-            .. 'is suppressed exactly as its ring is',
-        ('%d area(s)'):format(#deep))
-
-    local inFade = holdFills(H, FADE * 0.5)
-    ok(#inFade == 2,
-        'and inside the fade window the safe zone arrives, on the same countdown the '
-            .. 'curtain uses',
-        ('%d area(s)'):format(#inFade))
-    local zoneA = nil
-    for _, ar in ipairs(inFade) do
-        if ar.a ~= MO.areaAlpha(blip.nextAlpha) then zoneA = ar.a end
+    holdAt(H, 60000)
+    local _, deepO = H.zoneFill()
+    ok(#H.areas() == 3 and deepO == 0.0,
+        'deep in the phase-1 hold only circle 1 shows -- the whole-map zone is in the '
+            .. 'movie at nothing, suppressed exactly as its ring is',
+        ('%d areas, zone at %.4f'):format(#H.areas(), deepO))
+    local fadeAdds = H.mm.adds
+    local rising, lastO, steps = true, 0.0, 0
+    for ms = FADE - 500, 500, -500 do
+        H.env.BR.State.storm.tStart = (H.now + 100) - (120000 - ms)
+        H.now = H.now + 100
+        H.env.BR.Loop.step(H.env.BR.Loop.TICK)
+        local _, o = H.zoneFill()
+        if o < lastO then rising = false end
+        lastO = o
+        steps = steps + 1
     end
-    ok(zoneA ~= nil and zoneA < MO.areaAlpha(blip.currentAlpha) and zoneA > 0,
-        'at part strength rather than at full, so it fades in instead of popping',
-        ('%s against %d at full'):format(tostring(zoneA),
-            MO.areaAlpha(blip.currentAlpha)))
+    ok(rising and lastO > 0.0 and lastO < blip.currentAlpha / 255,
+        'inside the fade window the zone rises on the map\'s own countdown, at part '
+            .. 'strength rather than at full, so it fades in instead of popping',
+        ('%.4f against %.4f at full'):format(lastO, blip.currentAlpha / 255))
+    ok(H.mm.adds == fadeAdds and steps > 10,
+        'and not one polygon was added for it -- every step of the fade is one alpha '
+            .. 'write to a clip already in the movie',
+        ('%d adds over %d steps'):format(H.mm.adds - fadeAdds, steps))
 
-    -- ─── a disjoint breakout is one fill per island ───
+    -- ─── a breakout is the same picture: the zone, and the destination over it ───
     --
-    -- ONE ADD_AREA_OVERLAY PER CONTOUR, because a single filled polygon cannot be two
-    -- islands -- and since #356 an OVERLAPPING pair is one contour, so the count is
-    -- the honest question about which case the zone is in.
+    -- The union of the two is never pushed as ONE polygon any more: it could only be
+    -- moved by rebuilding it, which is the hitch 52a7caa removed. The zone's keyframes
+    -- and the destination's own fill cover exactly the union between them -- disjoint
+    -- or overlapping, the count is the same.
     local D = mapClient(4, 0.0, 0.0, 950.0, 2400.0, 0.0, 260.0, 600000, 60000)
     ok(D.overlayReady() and D.errored() == nil, 'a disjoint breakout reaches the gate')
     D.tick(2)
-    ok(#D.areas() == 3,
-        'a disjoint zone is two fills, plus the target: one call per contour',
+    ok(#D.areas() == 3 and #D.keyframes() == 2,
+        'a disjoint breakout is the zone\'s two keyframes and the destination -- two '
+            .. 'islands, each its own fill',
         ('%d areas'):format(#D.areas()))
-
     local V = mapClient(4, 0.0, 0.0, 950.0, 1100.0, 0.0, 520.0, 600000, 60000)
     ok(V.overlayReady() and V.errored() == nil, 'an overlapping breakout too')
     V.tick(2)
-    ok(#V.areas() == 2,
-        'while an OVERLAPPING zone is ONE fill for the pair -- which is #356 arriving '
-            .. 'on the map, and is why the lens does not read darker than the rest',
+    ok(#V.areas() == 3 and #V.keyframes() == 2,
+        'and so is an OVERLAPPING one: its union is the zone\'s fill and the '
+            .. 'destination\'s together, never one polygon that could only move by being '
+            .. 'rebuilt',
         ('%d areas'):format(#V.areas()))
 
     -- ─── a refused push is torn down whole, and the blips come back ───
@@ -7549,7 +8213,7 @@ do
     ok(#R.areas() == 3 and #R.rings() == 0, 'and is filling before the refusal',
         ('%d areas, %d rings'):format(#R.areas(), #R.rings()))
     R.mm.refuseAdd = true
-    R.env.BR.State.storm.r0 = 900.0          -- move it, so a rebuild is due
+    R.env.BR.State.storm.r0 = 900.0          -- a new record's geometry: a rebuild is due
     R.tick(3)
     ok(#R.areas() == 0,
         'a refused ADD leaves NOTHING of the fill behind, not the contours that '
@@ -7567,17 +8231,11 @@ do
         ('%d areas, %d rings'):format(#R.areas(), #R.rings()))
 
     -- ─── and a PARTIAL push is the case the rule is actually for ───
-    --
-    -- Every add refused leaves nothing to tear down, so it cannot tell a teardown from
-    -- a no-op. This lets the FIRST contour through and refuses the rest: the movie
-    -- holds one island of a two-island zone at the moment the second is declined, and
-    -- what must be on the map afterwards is NOTHING -- one island is a boundary in the
-    -- wrong place, and the blips draw the whole thing instead.
     R.mm.allowAdds = R.mm.adds + 1
     R.env.BR.State.storm.r0 = 860.0
     R.tick(3)
     ok(#R.areas() == 0,
-        'a push that got PART of the way through is torn down whole -- the contour '
+        'a push that got PART of the way through is torn down whole -- the keyframe '
             .. 'that succeeded does not stay on the map on its own',
         ('%d areas'):format(#R.areas()))
     ok(#R.rings() > 0,
@@ -7585,32 +8243,19 @@ do
         ('%d rings'):format(#R.rings()))
     R.mm.allowAdds = nil
 
-    -- ─── the rebuild is rate-limited, and keyed on the geometry ───
+    -- ─── the rebuild is rate-limited, and keyed on the record's geometry ───
     --
-    -- An area cannot be resized in place, so every change is every clip removed and
-    -- every clip re-added with a kilobyte of coordinates marshalled through a
-    -- Scaleform string. A rebuild per tick on a zone that has not moved would be that
-    -- cost for nothing, all match.
-    -- NESTED BEFORE AND AFTER THE CIRCLE MOVES BELOW, by real shape, because being
-    -- placed rather than rebuilt is the one-blob case's claim.
-    local function nestsBothWays(env, seed)
-        local a = env.BR.BuildStormRecord(2, 0.0, 0.0, 800.0, 300.0, 0.0, 400.0,
-            0, 1, 1, 1, seed)
-        local b = env.BR.BuildStormRecord(2, 60.0, 0.0, 700.0, 300.0, 0.0, 400.0,
-            0, 1, 1, 1, seed)
-        return env.BR.StormNested(a) and env.BR.StormNested(b)
-    end
-    local S = mapClient(2, 0.0, 0.0, 800.0, 300.0, 0.0, 400.0, 600000, 60000,
-        nestsBothWays)
+    -- An area cannot be edited, so every new picture is every clip removed and every
+    -- clip re-added with a kilobyte of coordinates marshalled through a Scaleform
+    -- string. A rebuild per tick on a zone that has not moved would be that cost for
+    -- nothing, all match.
+    local S = mapClient(2, 0.0, 0.0, 800.0, 300.0, 0.0, 400.0, 600000, 60000)
     ok(S.overlayReady(), 'the cadence client reaches the gate')
     S.tick(2)
     local before = S.areas()[1]
 
-    -- AND NOT EVEN WALKED. The rebuild test is keyed on the INPUTS so that a tick on
-    -- which nothing moved costs a few comparisons, not a boundary walk per contour
-    -- that is then thrown away -- which is what building the contours first and
-    -- deciding afterwards would be, ten times a second, all match. Counted at
-    -- polyline, the one thing every contour on this path is walked through.
+    -- AND NOT EVEN WALKED. Counted at polyline, the one thing every contour on this
+    -- path is walked through.
     local realPolyline = S.env.BR.StormShape.polyline
     local walks = 0
     S.env.BR.StormShape.polyline = function(...)
@@ -7630,45 +8275,18 @@ do
         ('%d walks in 12 ticks'):format(walks))
     ok(S.mm.calls == callsHeld,
         'and the movie is not called at all while it holds -- not a rebuild, not a '
-            .. 'placement',
+            .. 'placement, not a fade',
         ('%d method calls in 12 ticks'):format(S.mm.calls - callsHeld))
 
-    -- A ONE-BLOB ZONE THAT HAS MOVED IS PLACED, NOT REBUILT (#350). This record is
-    -- nested -- the target sits inside -- so the zone is one blob, and moving the
-    -- current circle is a translation and a scale of the one already in the movie.
+    -- AND A NEW PICTURE IS A REBUILD, WHOLE. The target moving is a different record.
     local addsHeld = S.mm.adds
-    S.env.BR.State.storm.cx0, S.env.BR.State.storm.r0 = 60.0, 700.0
-    S.tick(2)
-    ok(S.areas()[1] == before and S.mm.adds == addsHeld and #S.areas() == 2,
-        'and a one-blob zone that HAS moved is the same clip, moved -- nothing was '
-            .. 'added',
-        ('%s, %d adds'):format(S.areas()[1] == before and 'same' or 'replaced',
-            S.mm.adds - addsHeld))
-    local movedZone = S.env.BR.StormZone(S.env.BR.State.storm, 60.0, 0.0, 700.0)
-    local movedOff = S.areas()[1] and 0.0 or math.huge
-    for _, p in ipairs(S.areas()[1] and S.shown(S.areas()[1]) or {}) do
-        movedOff = math.max(movedOff,
-            math.abs(S.env.BR.StormShape.distance(movedZone, p.x, p.y)))
-    end
-    ok(movedOff < 1e-6,
-        'and the map shows it ON the moved zone, to a micron -- the placement is the '
-            .. 'movie\'s own arithmetic applied to the calls, not a claim',
-        ('worst %.9f m off'):format(movedOff))
-
-    -- AND A NEW PICTURE IS STILL A REBUILD. The target moving is a different key.
     S.env.BR.State.storm.cx1 = 250.0
     S.tick(2)
-    ok(S.areas()[1] ~= before and #S.areas() == 2 and S.mm.adds == addsHeld + 2,
-        'while a new target is a rebuild, whole -- both areas replaced',
+    ok(S.areas()[1] ~= before and #S.areas() == 3 and S.mm.adds == addsHeld + 3,
+        'while a new target is a rebuild, whole -- every area replaced',
         ('%d areas, %d adds'):format(#S.areas(), S.mm.adds - addsHeld))
 
     -- ─── the character count, which is the one unmeasured risk ───
-    --
-    -- There is no documented cap on a Scaleform string parameter, which is not the
-    -- same as there not being one: the #347 spike's coordinates were about 70
-    -- characters and a real boundary is several hundred to over a thousand. If a shape
-    -- ever draws GARBLED rather than absent, this is the number to look at -- so it is
-    -- reported, and `overlay.maxPoints` is the lever that bounds it.
     local rep = S.env.BR.MapOverlay.report()
     local sent = 0
     for _, ar in ipairs(S.areas()) do sent = sent + ar.chars end
@@ -7702,31 +8320,31 @@ end
 -- ---------------------------------------------------------------------------
 describe('map.motion')
 do
-    -- ═══ A MOVING STORM IS NOT A REBUILD TWICE A SECOND (#350) ═══
+    -- ═══ A MOVING STORM IS NEVER A REBUILD (#350), AND IT MORPHS ON THE MAP (#344) ═══
     --
     --   "there's a major client perf issue once per second which only happens while
     --    the storm is actively in motion."                 -- owner, 2026-09-23
     --
-    -- On 2026-09-24 the owner narrowed it further: ONLY a storm whose current and
-    -- next borders are conjoined, and ONLY while that border is moving. That is one
-    -- client path exactly. A nested zone has `fit` and is moved/resized in place; a
-    -- conjoined breakout has no `fit`, so it paid REM_OVERLAY plus ADD_AREA_OVERLAY
-    -- for the whole changing polygon at 0.62--1.65 Hz. A hold paid none. The moving
-    -- union now uses the already-supported map blips until it becomes static, while
-    -- the exact 3D wall and server damage shape continue unchanged.
+    -- The owner traced it to REM_OVERLAY plus ADD_AREA_OVERLAY while the storm moved,
+    -- and 52a7caa is his rule that it must not happen: a moving one-blob zone is only
+    -- PLACED, and a moving union was handed to the map blips. #344's second round asks
+    -- the map to show the wall's morph as well -- "the circles still overlap when they
+    -- are different shapes" -- and it does so INSIDE that rule: the moving wall is the
+    -- solver's circle times one unit shape V(m) (storm_solve.lua), so the phase-edge
+    -- rebuild draws V at the sweep's two ends as KEYFRAMES, and every tick of the
+    -- sweep only places them on the circle and crossfades them by m. This block is the
+    -- proof that a sweep adds and removes nothing, and of what the map shows while it
+    -- does not.
     --
     -- ═══ WHY THIS BLOCK HAS ITS OWN CLOCK ═══
     --
-    -- C.tick moves 1500 ms, which clears every throttle in the file -- what the
-    -- blocks above want, and exactly what hid the rate: at 1500 ms a tick, "at most
-    -- twice a second" and "every tick" are the same number, so nothing above could
-    -- have gone red if the ceiling vanished. The loop thread is `step; Wait(100)`, so
-    -- this steps the TICK band 100 ms at a time, which is what the game does.
+    -- C.tick moves 1500 ms, which clears every throttle in the file -- what the blocks
+    -- above want, and exactly what would hide a rate. The loop thread is
+    -- `step; Wait(100)`, so this steps the TICK band 100 ms at a time, which is what the
+    -- game does.
     --
     -- `want`, WHEN GIVEN, PICKS THE SEED: the first from 424242 up whose hand-built pair
-    -- is the case the block is about. A zone is placed inside its predecessor by its
-    -- real shape now (#344 round 2), so whether a pair of circles NESTS depends on the
-    -- two shapes the seed draws, and a block about a nested sweep has to ask for one.
+    -- is the case the block is about.
     local function sweepClient(phase, cx0, r0, cx1, r1, shrinkMs, cy0, cy1, want)
         local C = newStormClient()
         C.mm.handle = 7
@@ -7738,14 +8356,12 @@ do
         return C, rec
     end
 
-    --- The pair nests by real shape: the map's zone is one blob it can place.
+    --- The pair nests by real shape.
     local function NESTED(env, rec) return env.BR.StormNested(rec) end
 
-    --- The pair overlaps without nesting: the zone is one stitched loop, a union.
+    --- The pair overlaps without nesting: the phase is a conjoined breakout.
     local function CONJOINED(env, rec)
-        if env.BR.StormNested(rec) then return false end
-        local z = env.BR.StormZone(rec, rec.cx0, rec.cy0, rec.r0, 0.0)
-        return z.kind == 'blobUnion' and #env.BR.StormShape.components(z) == 1
+        return (env.BR.StormOverlaps(rec))
     end
 
     --- Start the record's sweep NOW, on the harness clock.
@@ -7760,35 +8376,6 @@ do
         end
     end
 
-    --- The worst distance from what the map SHOWS of area `i` to the zone right now.
-    ---
-    --- AN AREA THAT IS NOT THERE IS INFINITELY FAR OFF, rather than an index error: a
-    --- regression that loses the fill should fail every assertion that reads it, not
-    --- stop the suite at the first one and hide the rest.
-    ---
-    --- THE ZONE THE MAP DRAWS, WHICH IS NOT THE ONE THE WALL DRAWS MID-SWEEP. The wall
-    --- morphs the current zone into the target corner to corner; the map keeps the
-    --- zone the record started in, moved and scaled with the solver's circle
-    --- (BR.StormStartShape), and takes the target's once the sweep is FINISHED
-    --- (overlayPlan) -- asked explicitly, because a map that morphed would be off this
-    --- and on the wall's.
-    local function offZone(C, rec, i)
-        if not C.areas()[i] then return math.huge end
-        local cx, cy, r, st = C.env.BR.StormAt(rec, C.env.BR.Clock.now())
-        local zone
-        if st == C.env.BR.StormPhase.FINISHED then
-            zone = C.env.BR.StormZone(rec, cx, cy, r, 1.0)
-        else
-            zone = C.env.BR.StormStartShape(rec, cx, cy, r)
-        end
-        local worst = 0.0
-        for _, p in ipairs(C.shown(C.areas()[i])) do
-            worst = math.max(worst,
-                math.abs(C.env.BR.StormShape.distance(zone, p.x, p.y)))
-        end
-        return worst
-    end
-
     local function traceRow(C, name)
         for _, row in ipairs(C.env.BR.Loop.hitchStats().rows) do
             if row.name == name then return row end
@@ -7796,19 +8383,73 @@ do
         return nil
     end
 
-    -- ─── #350 can be bisected in one moving phase without changing gameplay ───
+    --- How far the keyframes the map SHOWS are from where they should be right now,
+    --- and how far each one's alpha is from its share of the crossfade.
+    ---
+    --- WHERE THEY SHOULD BE is the moving frame, asked of the solver and the record
+    --- directly and not of storm.lua: keyframe k is V(m_k) (BR.StormKeyframe) on the
+    --- solver's circle, and its share of the zone's alpha is the crossfade between the
+    --- two keyframes that bracket the frame's own m (BR.StormMorphFrame). The keyframes
+    --- are matched to their m by their SHAPE, as the movie holds them -- so a keyframe
+    --- placed on the wrong circle, drawn at the wrong m, or faded to the wrong share
+    --- each read as a distance here.
+    --- @return number worstOff, number worstAlpha, number shown  (the keyframes at > 0)
+    local function frameErr(C, rec, ms)
+        local env = C.env
+        local SS = env.BR.StormShape
+        local cx, cy, r, _, _, _, t = env.BR.StormAt(rec, env.BR.Clock.now())
+        local m = env.BR.StormMorphFrame(rec, t)
+        local A = env.BR.Config.Storm.blip.currentAlpha
+        -- The shares, by the same arithmetic the renderer claims, off the ms given --
+        -- in the MOVIE's order, which is not m's once keyframes have been added in a
+        -- hold, so the bracketing pair is found in m's order.
+        local share, order = {}, {}
+        for i = 1, #ms do share[i], order[i] = 0.0, i end
+        table.sort(order, function(x, y) return ms[x] < ms[y] end)
+        local lo, hi = order[1], order[#order]
+        if m <= ms[lo] then share[lo] = A
+        elseif m >= ms[hi] then share[hi] = A
+        else
+            for k = 1, #order - 1 do
+                local i, j = order[k], order[k + 1]
+                if m >= ms[i] and m <= ms[j] then
+                    local f = (m - ms[i]) / (ms[j] - ms[i])
+                    share[i], share[j] = (1.0 - f) * A, f * A
+                    break
+                end
+            end
+        end
+        local worstOff, worstA, shown = 0.0, 0.0, 0
+        local kfs = C.keyframes()
+        if #kfs ~= #ms then return math.huge, math.huge, 0 end
+        for i, ov in ipairs(kfs) do
+            local want = env.BR.StormKeyframe(rec, ms[i], r)
+            local o = C.opacity(ov)
+            worstA = math.max(worstA, math.abs(o - share[i] / 255))
+            if o > 0.0 then
+                shown = shown + 1
+                for _, p in ipairs(C.shown(ov)) do
+                    worstOff = math.max(worstOff,
+                        math.abs(SS.distance(want, p.x - cx, p.y - cy)))
+                end
+            end
+        end
+        return worstOff, worstA, shown
+    end
+
+    -- ─── #350 can still be bisected in one moving phase without changing gameplay ───
     --
-    -- Each mode deliberately damages only the LOCAL picture: the record and clock
-    -- keep advancing, so a smooth mode has isolated rendering rather than stopped
-    -- the storm. The command also starts a fresh capture; otherwise two modes in one
-    -- playtest would be blended into a percentage that describes neither.
+    -- Each mode deliberately damages only the LOCAL picture: the record and clock keep
+    -- advancing, so a smooth mode has isolated rendering rather than stopped the storm.
+    -- The command also starts a fresh capture; otherwise two modes in one playtest would
+    -- be blended into a percentage that describes neither.
     local D, drec = sweepClient(2, 1000.0, 2600.0, 1400.0, 1600.0, 120000,
         -700.0, -300.0, NESTED)
     ok(D.cmds.brstormbisect ~= nil, '/brstormbisect is registered')
     ok(D.overlayReady(), 'the bisect client reaches the overlay gate')
     D.tick(2)
-    local dClip = D.areas()[1]
-    local dAdds, dPlaced = D.mm.adds, D.mm.placed
+    local dClip = D.keyframes()[1]
+    local dAdds, dPlaced, dFaded = D.mm.adds, D.mm.placed, D.mm.faded
     startSweep(D, drec)
 
     D.cmds.brstormbisect(nil, { 'mapfreeze', '40' }, '')
@@ -7817,15 +8458,16 @@ do
     ok(D.env.BR.Storm.bisectMode == 'mapfreeze'
             and dHitch.enabled and dHitch.thresholdMs == 40,
         'mapfreeze is visible in state and starts a clean capture at the requested threshold')
-    ok(D.mm.adds == dAdds and D.mm.placed == dPlaced and D.areas()[1] == dClip,
-        'mapfreeze keeps the existing fill resident without one add, move or resize',
-        ('adds %+d, placements %+d'):format(D.mm.adds - dAdds, D.mm.placed - dPlaced))
-    ok(offZone(D, drec, 1) > 1.0,
+    ok(D.mm.adds == dAdds and D.mm.placed == dPlaced and D.mm.faded == dFaded
+            and D.keyframes()[1] == dClip,
+        'mapfreeze keeps the existing fill resident without one add, move, resize or fade',
+        ('adds %+d, placements %+d, fades %+d'):format(D.mm.adds - dAdds,
+            D.mm.placed - dPlaced, D.mm.faded - dFaded))
+    ok(frameErr(D, drec, { 0.0, 1.0 }) > 1.0,
         'while the server-authored storm keeps moving underneath that frozen local picture',
-        ('map is %.2f m off the live zone'):format(offZone(D, drec, 1)))
+        ('map is %.2f m off the live frame'):format(frameErr(D, drec, { 0.0, 1.0 })))
 
-    local dWidth = dClip._width
-    local dX = dClip._x
+    local dWidth, dX = dClip._width, dClip._x
     D.cmds.brstormbisect(nil, { 'mapnoresize' }, '')
     realTicks(D, 20)
     ok(D.mm.adds == dAdds and dClip._width == dWidth and dClip._x ~= dX,
@@ -7835,15 +8477,17 @@ do
     ok(traceRow(D, 'storm.map.position') ~= nil
             and traceRow(D, 'storm.map.place') == nil,
         'and the capture names position-only traffic separately from normal placement')
-    ok(offZone(D, drec, 1) > 1.0,
+    ok(frameErr(D, drec, { 0.0, 1.0 }) > 1.0,
         'the deliberately stale radius proves resize really was suppressed',
-        ('map is %.2f m off the live zone'):format(offZone(D, drec, 1)))
+        ('map is %.2f m off the live frame'):format(frameErr(D, drec, { 0.0, 1.0 })))
 
     D.cmds.brstormbisect(nil, { 'normal' }, '')
     realTicks(D, 1)
-    ok(D.env.BR.Storm.bisectMode == 'normal' and offZone(D, drec, 1) < 1e-3,
-        'normal catches the existing clip up on its next tick rather than leaving the bisect armed',
-        ('map is %.6f m off the live zone'):format(offZone(D, drec, 1)))
+    local nOff, nA = frameErr(D, drec, { 0.0, 1.0 })
+    ok(D.env.BR.Storm.bisectMode == 'normal' and nOff < 1e-3 and nA <= 0.5 / 255,
+        'normal catches the existing clips up on its next tick rather than leaving the '
+            .. 'bisect armed',
+        ('map is %.6f m off the live frame, alpha %.5f off its share'):format(nOff, nA))
 
     D.cmds.brstormbisect(nil, { 'mapoff' }, '')
     -- Shrinking blips are intentionally capped at 4 Hz, so the fallback has a
@@ -7854,10 +8498,62 @@ do
         ('%d fills, %d rings'):format(#D.areas(), #D.rings()))
     D.cmds.brstormbisect(nil, { 'normal' }, '')
     realTicks(D, 6)
-    ok(#D.areas() == 2 and #D.rings() == 0 and offZone(D, drec, 1) < 1e-3,
-        'normal restores the real filled boundary after mapoff',
-        ('%d fills, %d rings, %.6f m off'):format(
-            #D.areas(), #D.rings(), offZone(D, drec, 1)))
+    local rOff = frameErr(D, drec, { 0.0, 1.0 })
+    ok(#D.areas() == 3 and #D.rings() == 0 and rOff < 1e-3,
+        'normal restores the real filled picture after mapoff -- drawn once, mid-sweep, '
+            .. 'which is a first sight and not a motion cadence',
+        ('%d fills, %d rings, %.6f m off'):format(#D.areas(), #D.rings(), rOff))
+
+    -- ─── mapnokeys, the 52a7caa baseline for everything the crossfade adds ───
+    --
+    -- ONE keyframe, the zone's, at its own alpha and never faded, placed on the circle
+    -- every tick -- the picture and the Scaleform traffic 52a7caa shipped, so an A/B of
+    -- this against `normal` is exactly the cost of the second keyframe and its alpha
+    -- writes. It takes the destination's shape by one rebuild when the sweep finishes,
+    -- as 52a7caa did.
+    local K, krec = sweepClient(2, 1000.0, 2600.0, 1400.0, 1600.0, 20000,
+        -700.0, -300.0, NESTED)
+    K.cmds.brstormbisect(nil, { 'mapnokeys' }, '')
+    ok(K.overlayReady(), 'the mapnokeys client reaches the gate')
+    K.tick(2)
+    ok(#K.areas() == 2 and K.areas()[1].a == K.env.BR.MapOverlay.areaAlpha(
+            K.env.BR.Config.Storm.blip.currentAlpha)
+            and K.mm.faded == 0
+            -- TO A LEVEL: areaAlpha's inverse rounds, so 80 renders as 79.2 of 255.
+            and near(K.opacity(K.areas()[1]),
+                K.env.BR.Config.Storm.blip.currentAlpha / 255, 1.0 / 255),
+        'mapnokeys draws the zone as ONE fill at its own alpha, never faded, and the '
+            .. 'destination',
+        ('%d areas, %d fades, zone at %.4f'):format(#K.areas(), K.mm.faded,
+            K.opacity(K.areas()[1] or { a = 0 })))
+    local kAdds, kFaded, kPlaced = K.mm.adds, K.mm.faded, K.mm.placed
+    startSweep(K, krec)
+    local kWorst = 0.0
+    realTicks(K, 199, function()
+        local worst = math.huge
+        if K.areas()[1] then
+            local cx, cy, r, _, _, _, t = K.env.BR.StormAt(krec, K.env.BR.Clock.now())
+            local want = K.env.BR.StormKeyframe(krec, 0.0, r)
+            worst = 0.0
+            for _, p in ipairs(K.shown(K.areas()[1])) do
+                worst = math.max(worst, math.abs(
+                    K.env.BR.StormShape.distance(want, p.x - cx, p.y - cy)))
+            end
+        end
+        kWorst = math.max(kWorst, worst)
+    end)
+    ok(K.mm.adds == kAdds and K.mm.faded == kFaded and K.mm.placed - kPlaced >= 199
+            and kWorst < 1e-3,
+        'and through the sweep it only PLACES that one fill -- no add, no fade -- on the '
+            .. 'moving circle in the shape the zone set out in',
+        ('%d adds, %d fades, %d placements, %.6f m off'):format(K.mm.adds - kAdds,
+            K.mm.faded - kFaded, K.mm.placed - kPlaced, kWorst))
+    realTicks(K, 5)
+    ok(K.mm.adds == kAdds + 2 and K.errored() == nil,
+        'and it takes the destination\'s shape with one rebuild when the sweep finishes, '
+            .. 'as 52a7caa did',
+        K.errored() or ('%d adds'):format(K.mm.adds - kAdds))
+    K.cmds.brstormbisect(nil, { 'normal' }, '')
 
     local W = sweepClient(2, 1000.0, 2600.0, 1400.0, 1600.0, 120000,
         -700.0, -300.0, NESTED)
@@ -7875,95 +8571,116 @@ do
         'normal restores the wall on the next frame',
         ('restored %d of %d triangles'):format(#W.polys, wallPolys))
 
-    -- ─── a nested sweep is PLACED, start to finish, and never rebuilt ───
+    -- ─── a nested sweep, start to finish: placed and faded, never rebuilt ───
     --
     -- Phase-2 sizes, and a centre off the world's origin in BOTH axes on purpose: a
-    -- zone pushed in WORLD coordinates and then placed at its centre would land a
+    -- keyframe pushed in WORLD coordinates and then placed at the circle would land a
     -- kilometre off, and a y the movie negated twice would land on the wrong side of
     -- the equator -- and a centre on the origin, or on y = 0, hides each of those.
     local N, nrec = sweepClient(2, 1000.0, 2600.0, 1400.0, 1600.0, 120000,
         -700.0, -300.0, NESTED)
     ok(N.overlayReady(), 'the nested-sweep client reaches the gate')
     N.tick(2)
-    local zoneClip, targetClip = N.areas()[1], N.areas()[2]
-    local adds0, placed0 = N.mm.adds, N.mm.placed
+    local k0, k1, targetClip = N.keyframes()[1], N.keyframes()[2], N.areas()[3]
+    local SSN = N.env.BR.StormShape
+    -- AT THE HOLD, THE ZONE IS THE WALL. The keyframe at full is V(0) on the record's
+    -- own circle, which is the zone the wall stands on to the bit.
+    local holdWall = N.env.BR.StormWall(nrec, 0.0)
+    local holdOff = 0.0
+    for _, p in ipairs(N.shown(k0)) do
+        holdOff = math.max(holdOff, math.abs(SSN.distance(holdWall, p.x, p.y)))
+    end
+    ok(holdOff < 1e-6 and N.opacity(k1) == 0.0,
+        'held, the map shows the zone the wall stands on to a micron, and the second '
+            .. 'keyframe is in the movie at nothing',
+        ('%.9f m off, second at %.4f'):format(holdOff, N.opacity(k1)))
+    local adds0, calls0, placed0, faded0 = N.mm.adds, N.mm.calls, N.mm.placed, N.mm.faded
+    local removes0 = N.mm.calls - N.mm.placed - N.mm.faded - N.mm.adds
     N.env.BR.Loop.hitchStart(34)
     startSweep(N, nrec)
-    local nWorst, nTicks, offWall = 0.0, 0, 0.0
-    -- ONE TICK SHORT OF THE END OF THE SWEEP: the end is the one rebuild a sweep
-    -- makes, and it is asserted on its own below.
+    local nWorst, nWorstA, nTicks, maxCalls, lastCalls = 0.0, 0.0, 0, 0, N.mm.calls
+    local offWall = 0.0
+    -- ONE TICK SHORT OF THE END OF THE SWEEP, which is asserted on its own below.
     realTicks(N, 1199, function()
         nTicks = nTicks + 1
-        if nTicks % 10 == 0 then nWorst = math.max(nWorst, offZone(N, nrec, 1)) end
-        -- AND HALF WAY, HOW FAR THE MAP IS FROM THE WALL'S OWN ZONE -- the morph. A
-        -- map that morphed would be on the wall's zone and off its own.
+        maxCalls = math.max(maxCalls, N.mm.calls - lastCalls)
+        lastCalls = N.mm.calls
+        if nTicks % 10 == 0 then
+            local o, a = frameErr(N, nrec, { 0.0, 1.0 })
+            nWorst, nWorstA = math.max(nWorst, o), math.max(nWorstA, a)
+        end
+        -- AND HALF WAY, HOW FAR THE MAP IS FROM THE WALL ITSELF: the crossfade of the
+        -- sweep's two ends is a blend of them, not the morph, and the gap is what more
+        -- keyframes (overlay.keyframes) close.
         if nTicks == 600 then
             local cx, cy, r, _, _, _, t = N.env.BR.StormAt(nrec, N.env.BR.Clock.now())
             local wallZone = N.env.BR.StormZone(nrec, cx, cy, r, t)
-            for _, p in ipairs(N.shown(N.areas()[1])) do
+            local fill = N.zoneFill()
+            for _, p in ipairs(fill and N.shown(fill) or {}) do
                 offWall = math.max(offWall,
-                    math.abs(N.env.BR.StormShape.distance(wallZone, p.x, p.y)))
+                    math.abs(SSN.distance(wallZone, p.x, p.y)))
             end
         end
     end)
+    local removes = (N.mm.calls - N.mm.placed - N.mm.faded - N.mm.adds) - removes0
     ok(N.errored() == nil, 'the whole sweep runs clean', N.errored())
-    ok(N.mm.adds == adds0 and N.areas()[1] == zoneClip and N.areas()[2] == targetClip,
-        'two minutes of a nested sweep add NOTHING to the movie -- the same two clips '
-            .. 'are there at the end as at the start',
-        ('%d adds over %d ticks'):format(N.mm.adds - adds0, nTicks))
-    ok(N.mm.placed - placed0 >= nTicks,
-        'because the zone was PLACED instead, on the ticks it moved',
-        ('%d placement calls over %d ticks'):format(N.mm.placed - placed0, nTicks))
+    ok(N.mm.adds == adds0 and removes == 0 and N.keyframes()[1] == k0
+            and N.keyframes()[2] == k1 and N.areas()[3] == targetClip,
+        'two minutes of a nested sweep add NOTHING to the movie and remove nothing -- '
+            .. 'the same three clips are there at the end as at the start',
+        ('%d adds, %d removes over %d ticks'):format(N.mm.adds - adds0, removes, nTicks))
+    ok(N.mm.placed - placed0 >= nTicks and N.mm.faded > faded0 and maxCalls <= 6,
+        'because the keyframes were PLACED and FADED instead -- never more than six '
+            .. 'property writes in one tick',
+        ('%d placement calls, %d fades over %d ticks; at most %d calls a tick')
+            :format(N.mm.placed - placed0, N.mm.faded - faded0, nTicks, maxCalls))
     local nPlace = traceRow(N, 'storm.map.place')
+    local nAlpha = traceRow(N, 'storm.map.alpha')
     local nRebuild = traceRow(N, 'storm.map.rebuild')
-    ok(nPlace ~= nil and nPlace.events == nTicks,
-        'and the hitch diagnostic labels that path at its real 10 Hz cadence',
-        nPlace and ('%d markers over %d ticks'):format(nPlace.events, nTicks)
-            or 'no storm.map.place marker')
+    ok(nPlace ~= nil and nPlace.events == nTicks and nAlpha ~= nil
+            and nAlpha.events > 0 and nAlpha.events <= nTicks,
+        'and the hitch diagnostic labels both paths at their real cadence: a placement '
+            .. 'every tick, a fade on the ticks an alpha changed',
+        ('place %s, alpha %s over %d ticks'):format(
+            nPlace and tostring(nPlace.events) or 'none',
+            nAlpha and tostring(nAlpha.events) or 'none', nTicks))
     ok(nRebuild == nil or nRebuild.events == 0,
-        'without mislabelling any nested-sweep tick as a polygon rebuild',
+        'without one polygon rebuild anywhere in the sweep',
         nRebuild and tostring(nRebuild.events) or 'no rebuild row')
-    ok(nWorst < 1e-3,
-        'and what the map shows is ON the moving zone the whole way, to a millimetre '
-            .. '-- not the metres a twice-a-second rebuild lagged by',
-        ('worst %.6f m off'):format(nWorst))
-    ok(targetClip._x == nil and targetClip._width == nil,
-        'while the target, which does not move, is never touched at all')
+    ok(nWorst < 1e-3 and nWorstA <= 0.5 / 255 + 1e-12,
+        'and what the map shows is each keyframe ON the moving frame, to a millimetre, '
+            .. 'at its share of the crossfade to the rounding of one alpha level',
+        ('worst %.6f m off, alpha %.5f off'):format(nWorst, nWorstA))
+    ok(targetClip._x == nil and targetClip._width == nil and targetClip._alpha == nil,
+        'while the destination, which does not move, is never touched at all')
+    ok(offWall > 1.0,
+        'half way through, the map is a blend of the sweep\'s two ends rather than the '
+            .. 'wall\'s own morph -- which is what extra keyframes are for',
+        ('%.1f m off the wall\'s zone, on its own frame to %.6f m'):format(offWall, nWorst))
 
-    -- ═══ THE MAP DOES NOT MORPH, AND IT CHANGES SHAPE ONCE, AS THE WALL ARRIVES ═══
-    --
-    -- Half way through the sweep the wall is a morph of the two zones, and the map is
-    -- on the zone's STARTING shape instead -- by tens of metres off the wall's, at
-    -- phase-2 sizes, which is what a fill that followed the morph would have closed.
-    ok(offWall > 10.0,
-        'half way through the sweep the map is NOT on the wall\'s morphing zone -- it '
-            .. 'moves and scales the shape it set out in, which is what #350 places',
-        ('%.1f m off the wall\'s zone, on its own to %.6f m'):format(offWall, nWorst))
+    -- ═══ AND THE SWEEP'S END NEEDS NO REBUILD: THE SECOND KEYFRAME IS THE TARGET ═══
     local addsEnd = N.mm.adds
     realTicks(N, 5)
-    local cx1, cy1, r1 = nrec.cx1, nrec.cy1, nrec.r1
-    local arrived = N.env.BR.StormZone(nrec, cx1, cy1, r1, 1.0)
+    local arrived = N.env.BR.StormZone(nrec, nrec.cx1, nrec.cy1, nrec.r1, 1.0)
     local onTarget = 0.0
-    for _, p in ipairs(N.areas()[1] and N.shown(N.areas()[1]) or {}) do
-        onTarget = math.max(onTarget,
-            math.abs(N.env.BR.StormShape.distance(arrived, p.x, p.y)))
+    local fill, fillO = N.zoneFill()
+    for _, p in ipairs(fill and N.shown(fill) or {}) do
+        onTarget = math.max(onTarget, math.abs(SSN.distance(arrived, p.x, p.y)))
     end
-    ok(N.mm.adds - addsEnd == 2 and N.areas()[1] and onTarget < 1e-6,
-        'and when the sweep is FINISHED it is rebuilt ONCE -- zone and target, one '
-            .. 'push -- in the shape the wall is standing in, the target\'s',
+    ok(N.mm.adds == addsEnd and fill == k1 and N.opacity(k0) == 0.0
+            and near(fillO, N.env.BR.Config.Storm.blip.currentAlpha / 255, 0.5 / 255)
+            and onTarget < 1e-6,
+        'and when the sweep is FINISHED the second keyframe is at full on the '
+            .. 'destination\'s own circle -- which IS the destination, to a micron -- '
+            .. 'with no rebuild at all: one rebuild a phase, where there were two',
         ('%d adds, %.9f m off the arrived zone'):format(N.mm.adds - addsEnd, onTarget))
 
-    -- ─── a pentagon, a dodecagon and a circle are placed exactly as above ───
+    -- ─── a triangle, a dodecagon and a circle are placed exactly as above ───
     --
-    -- Placement rests on the zone mid-sweep being the starting zone moved and
-    -- scaled, which holds because the zone's unit is fixed for its whole life -- the
-    -- shape is drawn per zone, never per tick. Nothing in the arithmetic reads the
-    -- count, and this is where that is shown rather than argued, at the two ends of
-    -- the range and at the circle: a pentagon's bounding box sits furthest off its
-    -- own centre, which is the point the movie scales the clip about, a dodecagon is
-    -- the most points, and a circle zone is a blob the map can place like any other.
-    -- The zone the map moves in phase 2 is ZONE 1 -- the one the sweep leaves.
-    for _, want in ipairs({ 5, 12, 0 }) do
+    -- Nothing in the arithmetic reads the count, and this is where that is shown rather
+    -- than argued, at the two ends of the range and at the circle. The zone the map
+    -- moves in phase 2 is ZONE 1 -- the one the sweep leaves.
+    for _, want in ipairs({ 3, 12, 0 }) do
         local T, trec = sweepClient(2, 1000.0, 2600.0, 1400.0, 1600.0, 120000,
             -700.0, -300.0, NESTED)
         -- BOUNDED, so a config that can no longer draw this shape fails here by name
@@ -7982,142 +8699,83 @@ do
         trec.seed = seed or 1
         T.overlayReady()
         T.tick(2)
-        local tAdds, tClip, tPlaced = T.mm.adds, T.areas()[1], T.mm.placed
+        local tAdds, tPlaced = T.mm.adds, T.mm.placed
         startSweep(T, trec)
-        local tWorst, tTicks = 0.0, 0
+        local tWorst, tWorstA, tTicks = 0.0, 0.0, 0
         realTicks(T, 600, function()
             tTicks = tTicks + 1
-            if tTicks % 10 == 0 then tWorst = math.max(tWorst, offZone(T, trec, 1)) end
+            if tTicks % 10 == 0 then
+                local o, a = frameErr(T, trec, { 0.0, 1.0 })
+                tWorst, tWorstA = math.max(tWorst, o), math.max(tWorstA, a)
+            end
         end)
-        ok(T.errored() == nil and T.mm.adds == tAdds and T.areas()[1] == tClip
-                and T.mm.placed - tPlaced >= tTicks and tWorst < 1e-3,
-            ('%s zone is placed on every tick of its sweep, never rebuilt, and the map '
-                .. 'shows it on the moving zone to a millimetre')
+        ok(T.errored() == nil and T.mm.adds == tAdds
+                and T.mm.placed - tPlaced >= tTicks and tWorst < 1e-3
+                and tWorstA <= 0.5 / 255 + 1e-12,
+            ('%s zone is placed and faded on every tick of its sweep, never rebuilt, and '
+                .. 'the map shows it on the moving frame to a millimetre')
                 :format(want == 0 and 'a circle' or ('a ' .. want .. '-corner')),
             T.errored() or ('seed %d: %d adds, %d placements over %d ticks, worst %.6f m')
                 :format(trec.seed, T.mm.adds - tAdds, T.mm.placed - tPlaced, tTicks, tWorst))
     end
 
-    -- ─── a moving breakout never rebuilds its Scaleform polygon ───
+    -- ─── a conjoined breakout moves the same way, and never falls back ───
     --
-    -- A union of the moving blob and the still target is not a scaled copy of any
-    -- earlier one, so the Scaleform clip cannot be moved or resized into the next
-    -- outline. Rebuilding it was #350's remaining hitch. The safe answer is the map
-    -- path that already carries every client whose overlay is unavailable: current
-    -- and target radius blips for the moving interval only. They are approximate map
-    -- guidance for the seeded blobs; the exact 3D wall and damage shape keep moving.
-    local ov = N.env.BR.Config.Storm.overlay
+    -- 52a7caa had to hand a moving union to the map blips, because the union's outline
+    -- is not a scaled copy of any earlier one. The map does not draw the union as a
+    -- polygon any more -- the moving part is the keyframes and the destination is its
+    -- own fill -- so the breakout sweep is placed and faded like any other, and the
+    -- blips are left for refusals alone.
     local B, brec = sweepClient(6, 0.0, 260.0, 300.0, 110.0, 120000, nil, nil, CONJOINED)
     ok(B.overlayReady(), 'the breakout client reaches the gate')
     B.tick(2)
-    ok(#B.areas() == 2 and B.env.BR.StormZone(brec, 0.0, 0.0, 260.0).blob == nil,
-        'and it is the overlapping case: one union contour plus the target, and the '
-            .. 'union is not one blob',
+    ok(#B.areas() == 3,
+        'a conjoined breakout is the two keyframes and the destination',
         ('%d areas'):format(#B.areas()))
     B.env.BR.Loop.hitchStart(34)
     startSweep(B, brec)
     local bAdds0 = B.mm.adds
-    realTicks(B, 1)
-    local bCallsAtFallback = B.mm.calls
-    local bx, by, br = B.env.BR.StormAt(brec, B.env.BR.Clock.now())
-    local bCur, bNext
-    for _, ring in ipairs(B.rings()) do
-        if ring.colour == B.env.BR.Config.Storm.blip.currentColour then bCur = ring end
-        if ring.colour == B.env.BR.Config.Storm.blip.nextColour then bNext = ring end
-    end
-    ok(#B.areas() == 0 and #B.rings() == 2
-            and bCur and near(bCur.x, bx, 1e-6) and near(bCur.y, by, 1e-6)
-            and near(bCur.r, br, 1e-6)
-            and bNext and near(bNext.x, brec.cx1, 1e-6)
-            and near(bNext.y, brec.cy1, 1e-6) and near(bNext.r, brec.r1, 1e-6),
-        'on the first moving tick the conjoined fill is replaced by current/target '
-            .. 'guidance at the solved centres and radii',
-        ('%d fills, %d rings'):format(#B.areas(), #B.rings()))
-    realTicks(B, 1198) -- 119.9 s total: still SHRINKING, one tick before FINISHED
-    ok(B.errored() == nil, 'the breakout sweep runs clean', B.errored())
-    local bxEnd, byEnd, brEnd = B.env.BR.StormAt(brec, B.env.BR.Clock.now())
-    local bLag = math.sqrt((bCur.x - bxEnd) ^ 2 + (bCur.y - byEnd) ^ 2)
-        + math.abs(bCur.r - brEnd)
-    ok(bCur.exists and bLag < 1.0,
-        'the current guidance keeps following the sweep, within one metre at its '
-            .. '4 Hz refresh cadence',
-        ('%.3f m centre-plus-radius lag'):format(bLag))
-    ok(#B.areas() == 0 and #B.rings() > 0,
-        'the ordinary map blips keep carrying the moving interval',
-        ('%d fills, %d rings'):format(#B.areas(), #B.rings()))
-    ok(B.mm.adds == bAdds0 and B.mm.calls == bCallsAtFallback,
-        'the remaining 119.8 seconds issue no ADD, REMOVE, MOVE or RESIZE calls to '
-            .. 'the Scaleform movie',
-        ('%d adds, %d calls after fallback'):format(
-            B.mm.adds - bAdds0, B.mm.calls - bCallsAtFallback))
-    local bTrace = traceRow(B, 'storm.map.rebuild')
+    local bWorst = 0.0
+    realTicks(B, 1199, function()
+        local o = frameErr(B, brec, { 0.0, 1.0 })
+        bWorst = math.max(bWorst, o)
+    end)
     local bFallback = traceRow(B, 'storm.map.fallback')
-    ok((bTrace == nil or bTrace.events == 0)
-            and bFallback ~= nil and bFallback.events == 1,
-        'the diagnostic records one fallback transition and zero moving-union rebuilds',
+    local bRebuild = traceRow(B, 'storm.map.rebuild')
+    ok(B.errored() == nil and B.mm.adds == bAdds0 and #B.rings() == 0
+            and #B.areas() == 3 and bWorst < 1e-3,
+        'the whole conjoined sweep is placed and faded on the moving frame: no add, no '
+            .. 'blips, the fill on the map the whole way',
+        B.errored() or ('%d adds, %d rings, %d fills, %.6f m off')
+            :format(B.mm.adds - bAdds0, #B.rings(), #B.areas(), bWorst))
+    ok(bFallback == nil and (bRebuild == nil or bRebuild.events == 0),
+        'and the diagnostic records no fallback and no rebuild -- 52a7caa\'s moving-union '
+            .. 'blips are for a refusal now, and nothing else',
         ('fallback %s, rebuild %s'):format(
-            bFallback and tostring(bFallback.events) or 'missing',
-            bTrace and tostring(bTrace.events) or 'none'))
+            bFallback and tostring(bFallback.events) or 'none',
+            bRebuild and tostring(bRebuild.events) or 'none'))
 
-    -- The exact polygon is still useful while static. On the tick the sweep
-    -- finishes, the fallback latch clears and one fresh filled outline replaces
-    -- the temporary rings.
-    realTicks(B, 1)
-    ok(#B.areas() == 2 and #B.rings() == 0 and B.mm.adds == bAdds0 + 2,
-        'when the conjoined sweep becomes static, its exact fill returns and the '
-            .. 'temporary rings leave on that same tick',
-        ('%d fills, %d rings, %d new adds')
-            :format(#B.areas(), #B.rings(), B.mm.adds - bAdds0))
-    realTicks(B, 20)
-    ok(#B.rings() == 0 and B.mm.adds == bAdds0 + 2,
-        'and the static picture stays settled without another polygon rebuild',
-        ('%d rings, %d new adds'):format(#B.rings(), B.mm.adds - bAdds0))
-
-    -- A failed REM_OVERLAY is retained by mapoverlay.lua so its movie index remains
-    -- valid. The fallback must keep retrying that retained clip after overlayShown has
-    -- gone false; otherwise one engine refusal leaves a stale polygon for the sweep.
-    local R, rrec = sweepClient(6, 0.0, 260.0, 300.0, 110.0, 500, nil, nil, CONJOINED)
-    ok(R.overlayReady(), 'the removal-retry client reaches the gate')
-    R.tick(2)
-    local rAdds = R.mm.adds
-    R.mm.refuseRemove = true
-    startSweep(R, rrec)
-    realTicks(R, 1)
-    ok(#R.areas() == 2 and #R.rings() == 2,
-        'if the engine refuses the handoff removal, guidance still appears immediately '
-            .. 'beside the retained fill',
-        ('%d fills, %d rings'):format(#R.areas(), #R.rings()))
-    realTicks(R, 9)
-    ok(#R.areas() == 2 and #R.rings() == 2 and R.mm.adds == rAdds,
-        'a refusal that lasts through FINISHED never stacks a replacement beside '
-            .. 'the retained polygon',
-        ('%d fills, %d rings, %d new adds')
-            :format(#R.areas(), #R.rings(), R.mm.adds - rAdds))
-    R.mm.refuseRemove = false
-    realTicks(R, 5)
-    ok(#R.areas() == 2 and #R.rings() == 0 and R.mm.adds == rAdds + 2,
-        'once removal succeeds, the stale pair is replaced by one exact static pair '
-            .. 'and the guidance leaves',
-        ('%d fills, %d rings, %d new adds')
-            :format(#R.areas(), #R.rings(), R.mm.adds - rAdds))
-
-    -- A client can become ready after the sweep has already begun. It has no
-    -- overlayAt from the hold to classify, so overlayFill must decline the first
-    -- setAreas rather than paying one hitch before discovering the fallback.
+    -- ─── a client that becomes ready mid-sweep draws the picture ONCE ───
+    --
+    -- It has nothing in the movie to place, so it is drawn -- once, which is a first
+    -- sight and not a cadence -- and from then on only placed and faded, for the rest
+    -- of the sweep.
     local J, jrec = sweepClient(4, 0.0, 950.0, 2400.0, 260.0, 120000)
     startSweep(J, jrec)
-    ok(J.overlayReady(), 'a mid-sweep disjoint client reaches the gate')
-    ok(#J.areas() == 0 and #J.rings() > 0 and J.mm.adds == 0,
-        'a client becoming ready mid-union sweep sends no polygon and receives '
-            .. 'fallback guidance on that same gate-opening tick',
-        ('%d fills, %d rings, %d adds'):format(
-            #J.areas(), #J.rings(), J.mm.adds))
+    ok(J.overlayReady(), 'a mid-sweep client reaches the gate')
+    realTicks(J, 2)
+    local jAdds = J.mm.adds
+    realTicks(J, 200)
+    ok(#J.areas() == 3 and J.mm.adds == jAdds and frameErr(J, jrec, { 0.0, 1.0 }) < 1e-3,
+        'a client becoming ready mid-sweep draws the picture once and then only places '
+            .. 'and fades it',
+        ('%d fills, %d adds after the first'):format(#J.areas(), J.mm.adds - jAdds))
 
     -- ─── and rebuildHz is the ceiling whatever asks ───
     --
-    -- Moving unions no longer ask. A target changed every tick is the remaining
-    -- worst-case key churn: artificial, but it isolates the ceiling without routing
-    -- through the path the regression just removed.
+    -- A target changed every tick is the worst-case key churn: artificial, and static
+    -- -- the record is held -- so it isolates the ceiling.
+    local ov = N.env.BR.Config.Storm.overlay
     local F, frec = sweepClient(2, 0.0, 800.0, 300.0, 400.0, 60000)
     ok(F.overlayReady(), 'the ceiling client reaches the gate')
     F.tick(2)
@@ -8142,67 +8800,93 @@ do
 
     -- ─── a placement the engine refuses leaves NO zone, never a misplaced one ───
     --
-    -- The zone goes out about its own centre, so until it is placed it sits on the
-    -- world's origin. A refused placement at the moment of drawing must therefore take
-    -- the push down whole, exactly as a refused add does -- and hand the map to the
-    -- radius blips.
+    -- A keyframe goes out about its own origin at full strength, so until it is placed
+    -- and faded it sits on the world's origin. A refused placement at the moment of
+    -- drawing must take the push down whole, exactly as a refused add does -- and hand
+    -- the map to the radius blips.
     local P, prec = sweepClient(2, 1000.0, 2600.0, 1600.0, 1600.0, 120000, nil, nil,
         NESTED)
     P.mm.refusePlace = true
     ok(P.overlayReady(), 'the refusal client reaches the gate')
     P.tick(3)
     ok(#P.areas() == 0 and #P.rings() > 0,
-        'a zone that could not be placed as it was drawn is taken down whole, and the '
+        'a picture that could not be placed as it was drawn is taken down whole, and the '
             .. 'blips carry the map',
         ('%d areas, %d rings'):format(#P.areas(), #P.rings()))
     P.mm.refusePlace = false
     P.tick(3)
-    ok(#P.areas() == 2 and #P.rings() == 0 and offZone(P, prec, 1) < 1e-6,
+    ok(#P.areas() == 3 and #P.rings() == 0 and frameErr(P, prec, { 0.0, 1.0 }) < 1e-6,
         'and once the engine accepts it, the fill is back and on the zone',
         ('%d areas, %d rings'):format(#P.areas(), #P.rings()))
 
-    -- AND ONE REFUSED MID-SWEEP IS REBUILT, NOT LEFT BEHIND. The clip cannot follow
-    -- the zone any more, so the next rebuild draws it again -- which then cannot be
-    -- placed either, so it comes down and the blips take over.
+    -- AND ONE REFUSED MID-SWEEP HANDS THE REST OF THE SWEEP TO THE BLIPS. The clips
+    -- can no longer follow the storm, and the only thing that could fix them while it
+    -- moves is a rebuild -- the hitch -- so the map goes to the blips, ONCE, with no
+    -- rebuild attempts, and the exact picture comes back the moment the storm stands.
+    P.env.BR.Loop.hitchStart(34)
     startSweep(P, prec)
     realTicks(P, 5)
+    local pAdds = P.mm.adds
     P.mm.refusePlace = true
     realTicks(P, 20)
-    ok(#P.areas() == 0 and #P.rings() > 0 and P.errored() == nil,
-        'a placement refused mid-sweep ends with no fill rather than a stale one',
-        ('%d areas, %d rings'):format(#P.areas(), #P.rings()))
+    local pFall = traceRow(P, 'storm.map.fallback')
+    ok(#P.areas() == 0 and #P.rings() > 0 and P.errored() == nil and P.mm.adds == pAdds
+            and pFall ~= nil and pFall.events == 1,
+        'a placement refused mid-sweep ends with no fill rather than a stale one, the '
+            .. 'blips carrying the map -- and not one rebuild is tried while it moves',
+        ('%d areas, %d rings, %d adds, fallback %s'):format(#P.areas(), #P.rings(),
+            P.mm.adds - pAdds, pFall and tostring(pFall.events) or 'none'))
+    P.mm.refusePlace = false
+    realTicks(P, 1200)
+    ok(#P.areas() == 3 and #P.rings() == 0 and P.mm.adds == pAdds + 3,
+        'and the exact picture is drawn once the sweep is FINISHED and the storm stands '
+            .. 'still',
+        ('%d areas, %d rings, %d adds'):format(#P.areas(), #P.rings(), P.mm.adds - pAdds))
 
-    -- AND HALF A PLACEMENT IS A REFUSAL TOO. The resize is a second method; if the
-    -- engine opens the move and declines the resize, pushing the resize's parameters
-    -- anyway would push them into whatever the engine has open -- natives.lua's
-    -- header has why that is somebody else's call corrupted rather than a no-op. The
-    -- harness throws on a push with nothing open, so that shows here as an error.
-    -- What must happen instead is the fallback: the zone is rebuilt, the rebuild's
-    -- own placement needs no resize, and the map stays on the zone at rebuild pace.
+    -- AND A REFUSED FADE IS A REFUSAL TOO. An alpha write the engine declines leaves a
+    -- keyframe at some strength it was not meant to have -- a picture that is no longer
+    -- the storm's -- so it goes the same way as a refused placement.
     local Q, qrec = sweepClient(2, 1000.0, 2600.0, 1400.0, 1600.0, 120000,
         -700.0, -300.0, NESTED)
-    ok(Q.overlayReady(), 'the half-refusal client reaches the gate')
+    ok(Q.overlayReady(), 'the refused-fade client reaches the gate')
     Q.tick(2)
-    Q.mm.refuseMethod.UPDATE_OVERLAY_SIZE_OR_SCALE = true
     startSweep(Q, qrec)
-    local qWorst, qAdds = 0.0, Q.mm.adds
-    realTicks(Q, 100, function()
-        if #Q.areas() > 0 then qWorst = math.max(qWorst, offZone(Q, qrec, 1)) end
-    end)
-    ok(Q.errored() == nil and #Q.areas() == 2 and Q.mm.adds > qAdds
-            and qWorst < Q.env.BR.Config.Storm.overlay.chordM,
-        'a refused resize is answered: nothing is pushed at nothing, and the zone '
-            .. 'falls back to rebuilds that keep it on the map',
-        Q.errored() or ('%d areas, %d adds, worst %.2f m off')
-            :format(#Q.areas(), Q.mm.adds - qAdds, qWorst))
+    realTicks(Q, 5)
+    local qAdds = Q.mm.adds
+    Q.mm.refuseMethod.SET_OVERLAY_ALPHA = true
+    realTicks(Q, 30)
+    ok(Q.errored() == nil and #Q.areas() == 0 and #Q.rings() > 0 and Q.mm.adds == qAdds,
+        'a fade refused mid-sweep hands the map to the blips the same way, with nothing '
+            .. 'pushed at nothing and nothing rebuilt',
+        Q.errored() or ('%d areas, %d rings, %d adds'):format(#Q.areas(), #Q.rings(),
+            Q.mm.adds - qAdds))
+    Q.mm.refuseMethod.SET_OVERLAY_ALPHA = nil
+
+    -- AND HALF A PLACEMENT IS A REFUSAL TOO. The resize is a second method; pushing its
+    -- parameters after the engine declined to open it would push them into whatever
+    -- the engine has open -- natives.lua's header has why that is somebody else's call
+    -- corrupted. The harness throws on a push with nothing open.
+    local H, hrec = sweepClient(2, 1000.0, 2600.0, 1400.0, 1600.0, 120000,
+        -700.0, -300.0, NESTED)
+    ok(H.overlayReady(), 'the half-refusal client reaches the gate')
+    H.tick(2)
+    startSweep(H, hrec)
+    realTicks(H, 5)
+    local hAdds = H.mm.adds
+    H.mm.refuseMethod.UPDATE_OVERLAY_SIZE_OR_SCALE = true
+    realTicks(H, 30)
+    ok(H.errored() == nil and #H.areas() == 0 and #H.rings() > 0 and H.mm.adds == hAdds,
+        'a refused resize is answered: nothing is pushed at nothing, and the rest of the '
+            .. 'sweep is the blips\', not a rebuild\'s',
+        H.errored() or ('%d areas, %d rings, %d adds'):format(#H.areas(), #H.rings(),
+            H.mm.adds - hAdds))
 
     -- ─── a removal the engine refuses must not steal the slot ───
     --
-    -- A refused REM_OVERLAY leaves the old clip in the movie -- the engine's refusal,
-    -- and mapoverlay.lua keeps it on its books so the indices stay true. A replacement
-    -- must not be stacked beside it: the caller remains on blips until the old pair can
-    -- be removed, then installs one new pair whose slot 1 is safe to place.
-    -- NESTED AT BOTH TARGETS, because the replacement is placed as the sweep runs.
+    -- A refused REM_OVERLAY leaves the old clips in the movie, and mapoverlay.lua keeps
+    -- them on its books so the indices stay true. A replacement must not be stacked
+    -- beside them: the caller stays on the blips until the old picture can be removed,
+    -- then installs one new picture whose slots are safe to place.
     local function nestsAtBoth(env, rec)
         local here = NESTED(env, rec)
         local was = rec.cx1
@@ -8211,50 +8895,195 @@ do
         rec.cx1 = was
         return here and there
     end
-    local K, krec = sweepClient(2, 1000.0, 2600.0, 1400.0, 1600.0, 120000,
+    local X, xrec = sweepClient(2, 1000.0, 2600.0, 1400.0, 1600.0, 120000,
         -700.0, -300.0, nestsAtBoth)
-    ok(K.overlayReady(), 'the leftover client reaches the gate')
-    K.tick(2)
-    local kAdds = K.mm.adds
-    K.mm.refuseRemove = true
-    krec.cx1 = 1350.0                  -- a new target: a new key, so a rebuild
-    K.tick(2)
-    ok(#K.areas() == 2 and K.mm.adds == kAdds,
-        'refused removals retain the old pair without stacking the replacement',
-        ('%d areas, %d new adds'):format(#K.areas(), K.mm.adds - kAdds))
-    K.mm.refuseRemove = false
-    K.tick(2)
-    ok(#K.areas() == 2 and K.mm.adds == kAdds + 2,
-        'once removal is accepted, exactly one replacement pair is installed',
-        ('%d areas, %d new adds'):format(#K.areas(), K.mm.adds - kAdds))
-    startSweep(K, krec)
-    realTicks(K, 50)
-    ok(K.errored() == nil and offZone(K, krec, 1) < 1e-6,
-        'and slot 1 of that replacement follows the moving storm',
-        K.errored() or ('new zone %.3f m off'):format(offZone(K, krec, 1)))
+    ok(X.overlayReady(), 'the leftover client reaches the gate')
+    X.tick(2)
+    local xAdds = X.mm.adds
+    X.mm.refuseRemove = true
+    xrec.cx1 = 1350.0                  -- a new target: a new key, so a rebuild
+    X.tick(2)
+    ok(#X.areas() == 3 and X.mm.adds == xAdds,
+        'refused removals retain the old picture without stacking the replacement',
+        ('%d areas, %d new adds'):format(#X.areas(), X.mm.adds - xAdds))
+    X.mm.refuseRemove = false
+    X.tick(2)
+    ok(#X.areas() == 3 and X.mm.adds == xAdds + 3,
+        'once removal is accepted, exactly one replacement picture is installed',
+        ('%d areas, %d new adds'):format(#X.areas(), X.mm.adds - xAdds))
+    startSweep(X, xrec)
+    realTicks(X, 50)
+    ok(X.errored() == nil and frameErr(X, xrec, { 0.0, 1.0 }) < 1e-6,
+        'and its keyframes follow the moving storm',
+        X.errored() or ('%.3f m off'):format(frameErr(X, xrec, { 0.0, 1.0 })))
 
     -- ─── the last seconds of the final sweep ───
     --
-    -- The zone stops being a blob below MIN_RADIUS and then runs out of polygon
-    -- altogether. storm.map asks the shape every tick rather than assuming it is still
-    -- one blob, and this is the sweep where assuming would index a nil.
-    local L, lrec = sweepClient(8, 500.0, 40.0, 520.0, 0.0, 30000)
+    -- The destination is a point, so the frame's m is 0 the whole way: ONE keyframe,
+    -- the last zone, shrinking onto its point without changing shape -- which is the
+    -- wall exactly, every tick, until it runs out of polygon altogether.
+    local L, lrec = sweepClient(8, 500.0, 40.0, 520.0, 0.0, 30000, nil, nil, NESTED)
     ok(L.overlayReady(), 'the final-sweep client reaches the gate')
     L.tick(2)
+    ok(#L.areas() == 1 and #L.keyframes() == 1,
+        'the final phase is one keyframe and no destination fill: its destination is a '
+            .. 'point',
+        ('%d areas'):format(#L.areas()))
     startSweep(L, lrec)
-    local lWorst = 0.0
+    local lWorst, lAdds = 0.0, L.mm.adds
     realTicks(L, 320, function()
-        local cx, cy, r = L.env.BR.StormAt(lrec, L.env.BR.Clock.now())
-        if #L.areas() > 0 and L.env.BR.StormZone(lrec, cx, cy, r).blob then
-            lWorst = math.max(lWorst, offZone(L, lrec, 1))
+        local cx, cy, r, _, _, _, t = L.env.BR.StormAt(lrec, L.env.BR.Clock.now())
+        local wall = L.env.BR.StormZone(lrec, cx, cy, r, t)
+        if #L.areas() > 0 and wall.hull then
+            for _, p in ipairs(L.shown(L.areas()[1])) do
+                lWorst = math.max(lWorst,
+                    math.abs(L.env.BR.StormShape.distance(wall, p.x, p.y)))
+            end
         end
     end)
-    ok(L.errored() == nil and #L.areas() == 0,
-        'the final sweep closes to nothing without an error, and leaves no fill behind',
-        L.errored() or ('%d areas'):format(#L.areas()))
+    ok(L.errored() == nil and #L.areas() == 0 and L.mm.adds == lAdds,
+        'the final sweep closes to nothing without an error or a rebuild, and leaves no '
+            .. 'fill behind',
+        L.errored() or ('%d areas, %d adds'):format(#L.areas(), L.mm.adds - lAdds))
     ok(lWorst < 1e-3,
-        'and the fill was on the zone for every tick it was still one blob',
+        'and the fill was ON the wall for every tick the wall was still a shape',
         ('worst %.6f m off'):format(lWorst))
+
+    -- ═══ MORE KEYFRAMES: ADDED WHILE THE STORM HOLDS, CROSSFADED WHILE IT MOVES ═══
+    --
+    -- overlay.keyframes = K draws V at K - 1 more points of the morph, so that the map
+    -- comes within tens of metres of the wall's own morph instead of hundreds. Each is
+    -- an ADD_AREA_OVERLAY -- the call #350 traced -- so they are added during the HOLD,
+    -- one every keyframeGapMs, never while the storm moves, and the sweep only places
+    -- and fades what is already there. It ships at 1 until the owner has read their
+    -- cost off his hitch markers; this is the mechanism, at 8.
+    local E, erec = sweepClient(2, 1000.0, 2600.0, 1400.0, 1600.0, 120000,
+        -700.0, -300.0, NESTED)
+    local eov = E.env.BR.Config.Storm.overlay
+    eov.keyframes = 8
+    ok(E.overlayReady(), 'the keyframes client reaches the gate')
+    E.tick(1)
+    E.env.BR.Loop.hitchStart(34)
+    local eAdds0 = E.mm.adds
+    local appendAt = {}
+    realTicks(E, 200, function()
+        if E.mm.adds > eAdds0 + #appendAt then appendAt[#appendAt + 1] = E.now end
+    end)
+    local closest = math.huge
+    for i = 2, #appendAt do closest = math.min(closest, appendAt[i] - appendAt[i - 1]) end
+    local kRow = traceRow(E, 'storm.map.keyframe')
+    ok(#E.keyframes() == 9 and E.mm.adds - eAdds0 == 7 and closest >= eov.keyframeGapMs
+            and kRow ~= nil and kRow.events == 7,
+        'across twenty seconds of hold the seven keyframes between the ends are added, '
+            .. 'one at a time no closer than keyframeGapMs, each one storm.map.keyframe',
+        ('%d keyframes, %d adds, closest %s ms apart, %s marks'):format(#E.keyframes(),
+            E.mm.adds - eAdds0, tostring(closest), kRow and tostring(kRow.events) or 'no'))
+    local hidden = true
+    for i = 2, #E.keyframes() do
+        if E.opacity(E.keyframes()[i]) ~= 0.0 then hidden = false end
+    end
+    ok(hidden and #E.areas() == 10,
+        'and every one of them is in the movie at nothing while the storm holds',
+        ('%d areas'):format(#E.areas()))
+
+    -- THE SWEEP: nothing added, and the crossfade runs between whichever two bracket m.
+    -- The keyframes went in furthest-first -- a half, the quarters, the eighths -- so
+    -- the movie's order is not m's.
+    local ems = { 0.0, 1.0, 0.5, 0.25, 0.75, 0.125, 0.375, 0.625, 0.875 }
+    local eAdds1 = E.mm.adds
+    startSweep(E, erec)
+    local eWorst, eWorstA, eWall = 0.0, 0.0, 0.0
+    local eTicks = 0
+    realTicks(E, 1199, function()
+        eTicks = eTicks + 1
+        if eTicks % 10 == 0 then
+            local o, a = frameErr(E, erec, ems)
+            eWorst, eWorstA = math.max(eWorst, o), math.max(eWorstA, a)
+        end
+        if eTicks == 600 then
+            local cx, cy, r, _, _, _, t = E.env.BR.StormAt(erec, E.env.BR.Clock.now())
+            local wallZone = E.env.BR.StormZone(erec, cx, cy, r, t)
+            local fill = E.zoneFill()
+            for _, p in ipairs(fill and E.shown(fill) or {}) do
+                eWall = math.max(eWall,
+                    math.abs(E.env.BR.StormShape.distance(wallZone, p.x, p.y)))
+            end
+        end
+    end)
+    ok(E.errored() == nil and E.mm.adds == eAdds1 and eWorst < 1e-3
+            and eWorstA <= 0.5 / 255 + 1e-12,
+        'and the sweep adds nothing, every keyframe on the moving frame at its share of '
+            .. 'the crossfade between the two that bracket m',
+        E.errored() or ('%d adds, worst %.6f m, alpha %.5f'):format(E.mm.adds - eAdds1,
+            eWorst, eWorstA))
+    ok(eWall < offWall,
+        'half way through, eight keyframes put the map nearer the wall\'s own morph than '
+            .. 'the two ends alone did',
+        ('%.1f m against %.1f m'):format(eWall, offWall))
+
+    -- A SWEEP THAT STARTS BEFORE THE ADDING IS DONE USES WHAT IT HAS, and adds nothing.
+    local G, grec = sweepClient(2, 1000.0, 2600.0, 1400.0, 1600.0, 120000,
+        -700.0, -300.0, NESTED)
+    G.env.BR.Config.Storm.overlay.keyframes = 8
+    ok(G.overlayReady(), 'the early-sweep client reaches the gate')
+    G.tick(1)
+    realTicks(G, 45)
+    local gKeys, gAdds = #G.keyframes(), G.mm.adds
+    startSweep(G, grec)
+    realTicks(G, 300)
+    ok(gKeys > 2 and gKeys < 9 and G.mm.adds == gAdds and G.errored() == nil,
+        'a sweep that starts with keyframes still to add never adds them while it moves',
+        G.errored() or ('%d keyframes, %d adds in the sweep'):format(gKeys, G.mm.adds - gAdds))
+
+    -- AND A REFUSED ADD STOPS THE ADDING, leaving the picture as it was.
+    local Y = sweepClient(2, 1000.0, 2600.0, 1400.0, 1600.0, 120000,
+        -700.0, -300.0, NESTED)
+    Y.env.BR.Config.Storm.overlay.keyframes = 8
+    ok(Y.overlayReady(), 'the refused-add client reaches the gate')
+    Y.tick(1)
+    Y.mm.allowAdds = Y.mm.adds + 2
+    realTicks(Y, 200)
+    ok(#Y.keyframes() == 4 and #Y.areas() == 5 and Y.errored() == nil,
+        'a keyframe the engine refuses to add ends the adding for this record, and the '
+            .. 'picture it had stays up',
+        Y.errored() or ('%d keyframes, %d areas'):format(#Y.keyframes(), #Y.areas()))
+    Y.mm.allowAdds = nil
+
+    -- ─── a record that starts part way through a morph is keyframed from its outline ───
+    --
+    -- A freeze, its thaw and a same-phase `brphase` start a record from the wall as it
+    -- stands mid-morph (`mo`): world discs rather than a zone. Its keyframes read those
+    -- discs back into the record's own circle, so the map shows the frozen outline, and
+    -- then morphs it on as the wall does.
+    local O, orec = sweepClient(2, 1000.0, 2600.0, 1400.0, 1600.0, 120000,
+        -700.0, -300.0, NESTED)
+    local ocx, ocy, orr = O.env.BR.StormAt(orec, orec.tStart + orec.tWait + 0.4 * orec.tShrink)
+    local _, _, _, _, _, _, ot = O.env.BR.StormAt(orec,
+        orec.tStart + orec.tWait + 0.4 * orec.tShrink)
+    local mo = O.env.BR.StormMorphAt(orec, ot)
+    local mrec = O.env.BR.BuildStormRecord(2, ocx, ocy, orr, orec.cx1, orec.cy1, orec.r1,
+        O.now, 600000, 90000, 2.0, orec.seed, mo)
+    O.env.BR.State.storm = mrec
+    ok(O.overlayReady(), 'the outline client reaches the gate')
+    O.tick(2)
+    local oFill = O.zoneFill()
+    local oWall = O.env.BR.StormWall(mrec, 0.0)
+    local oOff = oFill and 0.0 or math.huge
+    for _, p in ipairs(oFill and O.shown(oFill) or {}) do
+        oOff = math.max(oOff, math.abs(O.env.BR.StormShape.distance(oWall, p.x, p.y)))
+    end
+    ok(mo ~= nil and oOff < 1e-6,
+        'a record carrying the wall\'s own outline shows that outline on the map while it '
+            .. 'holds, to a micron',
+        ('%.3e m off'):format(oOff))
+    startSweep(O, mrec)
+    local oWorst = 0.0
+    realTicks(O, 300, function()
+        oWorst = math.max(oWorst, (frameErr(O, mrec, { 0.0, 1.0 })))
+    end)
+    ok(O.errored() == nil and oWorst < 1e-3,
+        'and morphs it on through the sweep on the moving frame',
+        O.errored() or ('%.6f m off'):format(oWorst))
 end
 
 -- ---------------------------------------------------------------------------

@@ -309,10 +309,14 @@ end
 -- ON A BREAKOUT the next zone may leave the current one entirely (config/storm.lua's
 -- BREAKOUT, owner 2026-08-06: "this will force ALL players to move"), so neither
 -- rule implies the other and all three are asked. The third is part of the safe
--- zone at every instant of the phase, so a crate that clears it is never sited where
--- the damage tick bills; "inside the moving wall itself at every instant between
--- the first two" is NOT a theorem there any more, and nothing here claims it. The
--- first two say the crate is clear of the wall at the two instants it can land.
+-- zone at every instant after the hold's first `grow.seconds` -- a conjoined
+-- destination is GROWN into over those (#344), not taken at once -- and through them
+-- the wall still stands where the hold began, which is inside the safe zone the whole
+-- time; so a crate inside the wall at the soonest landing and inside the destination
+-- is never sited where the damage tick bills, whichever instant it lands at. "Inside
+-- the moving wall itself at every instant between the first two" is NOT a theorem
+-- there any more, and nothing here claims it. The first two say the crate is clear
+-- of the wall at the two instants it can land.
 --
 -- BEYOND THIS PHASE NOTHING CAN BE PROMISED FROM HERE. The record describes one
 -- phase; the circle after it has not been drawn and may break out anywhere. That

@@ -2320,6 +2320,236 @@ do
 end
 
 -- ---------------------------------------------------------------------------
+describe('blob.frame')
+do
+    -- ═══ THE MOVING WALL IS THE SOLVER'S CIRCLE TIMES ONE UNIT SHAPE (#344) ═══
+    --
+    -- Every disc of the wall travels in a straight line from (c0 + r0 a) to
+    -- (c1 + r1 b), and at sweep fraction t that is c(t) + r(t)[(1 - m) a + m b] with
+    -- m = t r1 / r(t). So the hull of the moving discs -- the wall, where it is not
+    -- resting on its destination -- is the solver's circle times V(m), and the map draws
+    -- V ahead of time and places it (client/storm.lua). This is that identity, asked of
+    -- real records: the morph's own corner list against BR.StormKeyframe moved and
+    -- scaled, to the rounding.
+    local SS = BR.StormShape
+    local worst, frames, mBad = 0.0, 0, 0.0
+    for _, s in ipairs(blobSeeds(12, 7717, 3)) do
+        for p = 2, 7 do
+            local r0, r1 = BR.Config.Storm.phases[p - 1].radius, BR.Config.Storm.phases[p].radius
+            local rec = BR.BuildStormRecord(p, 120.0, -80.0, r0, 400.0, 300.0, r1,
+                0, 1000, 1000, 1.0, s)
+            for _, t in ipairs({ 0.1, 0.33, 0.5, 0.77, 0.95 }) do
+                local cx, cy = BR.Lerp(120.0, 400.0, t), BR.Lerp(-80.0, 300.0, t)
+                local r = BR.Lerp(r0, r1, t)
+                local m = BR.StormMorphFrame(rec, t)
+                -- m's inverse is the radius the keyframe is drawn at.
+                mBad = math.max(mBad, math.abs(BR.StormMorphRadius(rec, m) - r))
+                -- THE BARE MORPH: every source disc moved t of the way, no destination
+                -- discs -- which is what the map's keyframe is.
+                local u0 = BR.StormUnit(s, p - 1)
+                local u1 = BR.StormUnit(s, p)
+                local src, dst = morphEnds(u0, 120.0, -80.0, r0, u1, 400.0, 300.0, r1)
+                local wall = SS.morph(src, dst, t, nil, cx, cy, r)
+                local key = BR.StormKeyframe(rec, m, r)
+                for _, q in ipairs(walkPoly(wall, 200)) do
+                    worst = math.max(worst, math.abs(SS.distance(key, q.x - cx, q.y - cy)))
+                end
+                for _, q in ipairs(walkPoly(key, 200)) do
+                    worst = math.max(worst, math.abs(SS.distance(wall, q.x + cx, q.y + cy)))
+                end
+                frames = frames + 1
+            end
+        end
+    end
+    ok(frames == 360 and worst < 1e-6,
+        'the wall mid-sweep IS the solver\'s circle times V(m), to a micrometre, on every '
+            .. 'phase -- which is what lets the map show it by placing a shape it already has',
+        ('%d frames, worst %.3e m'):format(frames, worst))
+    ok(mBad < 1e-6,
+        'and BR.StormMorphRadius inverts BR.StormMorphFrame: V(m) is drawn at the size it '
+            .. 'is seen at',
+        ('%.3e m'):format(mBad))
+
+    -- THE ENDS ARE THE ZONES. V(0) on the record's own circle is the zone the wall
+    -- leaves, and V(1) on the destination's is the destination.
+    local rec = BR.BuildStormRecord(3, 0.0, 0.0, 1600.0, 200.0, 100.0, 950.0, 0, 1, 1, 1, 5150)
+    local k0 = BR.StormKeyframe(rec, 0.0, 1600.0)
+    local k1 = BR.StormKeyframe(rec, 1.0, 950.0)
+    local Z = BR.StormWall(rec, 0.0)
+    local D = BR.StormTarget(rec)
+    local e0, e1 = 0.0, 0.0
+    for _, q in ipairs(walkPoly(Z, 300)) do
+        e0 = math.max(e0, math.abs(SS.distance(k0, q.x, q.y)))
+    end
+    for _, q in ipairs(walkPoly(D, 300)) do
+        e1 = math.max(e1, math.abs(SS.distance(k1, q.x - 200.0, q.y - 100.0)))
+    end
+    ok(e0 < 1e-6 and e1 < 1e-6,
+        'and its ends are the two zones themselves, each on its own circle',
+        ('%.3e m and %.3e m'):format(e0, e1))
+
+    -- A DESTINATION OF NO RADIUS IS ONE KEYFRAME: the last zone shrinks onto its point
+    -- without changing shape, so the frame's m is 0 the whole way.
+    local last = BR.BuildStormRecord(8, 0.0, 0.0, 40.0, 5.0, 0.0, 0.0, 0, 1, 1, 1, 5150)
+    ok(BR.StormMorphFrame(last, 0.5) == 0.0 and BR.StormMorphFrame(last, 1.0) == 0.0,
+        'and the final phase, whose destination is a point, never leaves V(0)')
+end
+
+-- ---------------------------------------------------------------------------
+describe('blob.grow')
+do
+    -- ═══ A CONJOINED ZONE GROWS INTO ITS DESTINATION: Z union (D intersect Z_s) ═══
+    --
+    -- Three constructions, each claimed EXACT in storm_shape.lua, and each asked here
+    -- against something that does not share its arithmetic.
+    local SS = BR.StormShape
+
+    -- ─── Z_s, a corner list grown by s: its signed distance is Z's less s ───
+    local dilBad = 0.0
+    for _, s in ipairs(blobSeeds(8, 3301, 7)) do
+        local Z = SS.blob(0.0, 0.0, 950.0, SS.blobUnit(s, 3, BR.Config.Storm.shape,
+            BR.Config.Storm.phases))
+        for _, grow in ipairs({ 0.5, 40.0, 700.0 }) do
+            local G = SS.dilate(Z, grow)
+            for gx = -10, 10 do
+                for gy = -10, 10 do
+                    local px, py = gx * 220.0, gy * 220.0
+                    dilBad = math.max(dilBad, math.abs(SS.distance(G, px, py)
+                        - (SS.distance(Z, px, py) - grow)))
+                end
+            end
+        end
+    end
+    ok(dilBad < 1e-9,
+        'a zone grown by s is the zone\'s own signed distance less s, everywhere -- inside '
+            .. 'and out -- which is what growing a convex body is',
+        ('worst %.3e m'):format(dilBad))
+
+    -- ─── A intersect B: in exactly where both are, and exact outside ───
+    --
+    -- INSIDE by both parts' own signed distances, point for point; the MAGNITUDE from
+    -- outside by walking the intersection's own boundary to its nearest point.
+    local memBad, magBad, convexBad, built = 0, 0.0, nil, 0
+    for i, s in ipairs(blobSeeds(10, 4409, 1)) do
+        local A = SS.blob(0.0, 0.0, 1600.0, SS.blobUnit(s, 2, BR.Config.Storm.shape,
+            BR.Config.Storm.phases))
+        local B = SS.blob(900.0 + 60.0 * i, -300.0 + 50.0 * i, 950.0,
+            SS.blobUnit(s, 3, BR.Config.Storm.shape, BR.Config.Storm.phases))
+        local I, why = SS.intersect(B, A)
+        if I and why == 'crossed' then
+            built = built + 1
+            local f = cornerFault(I.hull.ks)
+            if f then convexBad = convexBad or ('seed %d: %s'):format(s, f) end
+            local poly = walkPoly(I, 1500)
+            for gx = -14, 14 do
+                for gy = -14, 14 do
+                    local px, py = 500.0 + gx * 120.0, gy * 120.0
+                    local d = SS.distance(I, px, py)
+                    local da, db = SS.distance(A, px, py), SS.distance(B, px, py)
+                    if math.min(math.abs(da), math.abs(db)) > 1e-6
+                            and (d <= 0.0) ~= (da <= 0.0 and db <= 0.0) then
+                        memBad = memBad + 1
+                    end
+                    if d > 1.0 then
+                        local sa = SS.nearestArc(I, px, py)
+                        local bx, by = SS.pointAtArc(I, sa)
+                        magBad = math.max(magBad,
+                            math.abs(math.sqrt((bx - px) ^ 2 + (by - py) ^ 2) - d))
+                    end
+                end
+            end
+            if not walkTurnsLeft(poly) then
+                convexBad = convexBad or ('seed %d: the walked boundary turns right'):format(s)
+            end
+        end
+    end
+    ok(built >= 8 and memBad == 0,
+        'an intersection of two crossing zones holds exactly the points inside both',
+        ('%d built, %d points on the wrong side'):format(built, memBad))
+    ok(magBad < 1e-6,
+        'and its signed distance from outside is the distance to its walked boundary',
+        ('worst %.3e m'):format(magBad))
+    ok(convexBad == nil,
+        'and it is one convex corner list, its boundary turning left the whole way round',
+        convexBad)
+
+    -- ─── and its erosion is the intersection of the two erosions, exact ───
+    local insetBad, insetN = 0.0, 0
+    for i, s in ipairs(blobSeeds(6, 4409, 1)) do
+        local A = SS.blob(0.0, 0.0, 1600.0, SS.blobUnit(s, 2, BR.Config.Storm.shape,
+            BR.Config.Storm.phases))
+        local B = SS.blob(900.0 + 60.0 * i, -300.0 + 50.0 * i, 950.0,
+            SS.blobUnit(s, 3, BR.Config.Storm.shape, BR.Config.Storm.phases))
+        local I = SS.intersect(B, A)
+        if I and I.hull then
+            local E = SS.inset(I, 6.0)
+            for _, q in ipairs(walkPoly(E, 600)) do
+                insetN = insetN + 1
+                insetBad = math.max(insetBad, math.abs(SS.distance(I, q.x, q.y) + 6.0))
+            end
+        end
+    end
+    ok(insetN > 0 and insetBad < 1e-6,
+        'every point of an intersection eroded by six metres is six metres inside it -- '
+            .. 'the wall\'s own inset, drawn on a growing zone',
+        ('%d points, worst %.3e m'):format(insetN, insetBad))
+
+    -- ─── the growth: from Z to Z union D, only ever outward ───
+    local rec = BR.BuildStormRecord(3, 0.0, 0.0, 1600.0, 1500.0, 0.0, 950.0, 0, 1, 1, 1, 13579)
+    local seed = 13579
+    while not (BR.StormOverlaps(rec)) do seed = seed + 1 rec.seed = seed end
+    local _, reach = BR.StormOverlaps(rec)
+    local Z, D = BR.StormWall(rec, 0.0), BR.StormTarget(rec)
+    local startBad, endBad, backward, memG = 0.0, 0.0, 0, 0
+    local prev = nil
+    for k = 0, 20 do
+        local g = k / 20
+        local G = BR.StormZone(rec, 0.0, 0.0, 1600.0, 0.0, (k == 20) and (1.0 - 1e-12) or g)
+        local cur = {}
+        for gx = -14, 14 do
+            for gy = -14, 14 do
+                local px, py = 750.0 + gx * 150.0, gy * 150.0
+                local d = SS.distance(G, px, py)
+                cur[#cur + 1] = d
+                local dz, dd = SS.distance(Z, px, py), SS.distance(D, px, py)
+                if k == 0 then startBad = math.max(startBad, math.abs(d - dz)) end
+                -- IN EXACTLY WHERE Z IS, OR WHERE D IS WITHIN s OF Z.
+                local s = reach * g
+                local want = dz <= 0.0 or (dd <= 0.0 and dz - s <= 0.0)
+                if math.min(math.abs(dz), math.abs(dz - s), math.abs(dd)) > 1e-6
+                        and (d <= 0.0) ~= want then
+                    memG = memG + 1
+                end
+                if prev and d > prev[#cur] + 1e-9 then backward = backward + 1 end
+            end
+        end
+        prev = cur
+        if k == 20 then
+            local full = SS.blobUnion(BR.StormWall(rec, 0.0), BR.StormTarget(rec))
+            for gx = -14, 14 do
+                for gy = -14, 14 do
+                    local px, py = 750.0 + gx * 150.0, gy * 150.0
+                    endBad = math.max(endBad,
+                        math.abs(SS.distance(G, px, py) - SS.distance(full, px, py)))
+                end
+            end
+        end
+    end
+    ok(startBad == 0.0 and endBad < 1e-6,
+        'the growth starts as the zone the phase started in, exactly, and ends on the '
+            .. 'whole union',
+        ('%.3e m at the start, %.3e m at the end'):format(startBad, endBad))
+    ok(memG == 0 and backward == 0,
+        'and in between it holds exactly Z and the part of D within s of it, and never '
+            .. 'gives any ground back',
+        ('%d points misplaced, %d went backward'):format(memG, backward))
+    -- A NIL g IS THE WHOLE UNION: a caller never taught to pass it errs toward the player.
+    local fullNil = BR.StormZone(rec, 0.0, 0.0, 1600.0, 0.0)
+    ok(fullNil.kind == 'blobUnion' and SS.distance(fullNil, rec.cx1, rec.cy1) < 0.0,
+        'and a caller that passes no growth reads the whole union -- more ground, never less')
+end
+
+-- ---------------------------------------------------------------------------
 describe('blob.measure')
 do
     local SS = BR.StormShape
@@ -16639,8 +16869,16 @@ do
 
         local a = C.arrow()
         ok(a ~= nil, 'both bodies are outside, so there is an arrow either way')
-        local inside = C.env.BR.State.storm.r1 - 25.0
-        ok(a ~= nil and near(a.x, 0.0, 0.5) and near(a.y, inside, 0.5),
+        -- THE NEAREST POINT OF THE DESTINATION ERODED BY 25 m (#344): the arrow sits
+        -- there, so its distance from the body it was measured from is that body's
+        -- signed distance to the eroded shape, exactly -- which the watched player's is
+        -- and the corpse's is not.
+        local SS = C.env.BR.StormShape
+        local inner = SS.inset(C.env.BR.StormTarget(C.env.BR.State.storm), 25.0)
+        local fromWatched = a and math.sqrt(a.x ^ 2 + (a.y - 900.0) ^ 2)
+        local fromCorpse = a and math.sqrt((a.x - 900.0) ^ 2 + a.y ^ 2)
+        ok(a ~= nil and near(fromWatched, SS.distance(inner, 0.0, 900.0), 1e-6)
+           and fromCorpse > SS.distance(inner, 900.0, 0.0) + 1.0,
            'and it points home from the WATCHED player north of the circle, '
            .. 'not from the corpse east of it',
            a and (tostring(a.x) .. ', ' .. tostring(a.y)))
@@ -16901,70 +17139,51 @@ do
     -- ═══ THE alphaScale DEBT, THE OTHER ONE ═══
     --
     -- The column path passed rr.alpha raw, so the phase-1 fade-in clock did
-    -- nothing there: the map ring would fade in over the hold's last ten seconds
-    -- while the curtain popped into existence beside it at full strength. Both
-    -- arrive together now, which is the user call of 2026-08-04.
+    -- nothing there: the map ring would fade in while the curtain popped into
+    -- existence beside it at full strength. The curtain reads the clock now.
     --
-    -- ═══ AND WHAT "BEFORE THE FADE WINDOW" MEANS CHANGED UNDER IT (#340) ═══
+    -- ═══ AND WHAT THAT CLOCK IS CHANGED UNDER IT, TWICE (#340, #344) ═══
     --
-    -- THIS USED TO BE ONE ASSERTION READING `#C.markers == 0`, and it was right when it
-    -- was written. The owner has overturned the consequence, not the suppression:
-    -- "the storm circle should draw the entire time from while in bus to when it moves"
-    -- (2026-09-22, #340). The record's wall is still suppressed for all of the phase-1
-    -- hold but its last fadeInSec -- that has not changed and is still asserted below --
-    -- while #327's preview now stands in for it, so an EMPTY frame there is the defect
-    -- rather than the contract.
-    --
-    -- SO IT SPLITS IN TWO RATHER THAN RELAXING, and nothing was dropped: the old claim
-    -- is made verbatim about its old subject, with the preview callback switched off,
-    -- and the preview standing in for it is asserted at the same instant with the
-    -- callback back on. Please do not "restore" the single test.
-    --
-    -- AND THE TWO GATES THE OLD TEST WAS ALSO CARRYING ARE NOW EXPLICIT, because they
-    -- are untouched by the owner's change and both are reachable through the new
-    -- stretch: a LOBBY bystander must get nothing, and nothing may outlive the verdict.
+    -- THIS USED TO BE ONE ASSERTION READING `#C.markers == 0` before the hold's last
+    -- fadeInSec: the record's wall was suppressed there. #340 kept that and stood #327's
+    -- preview in for it; #344's second round overturned the suppression itself --
+    -- "perhaps we should draw 2 walls like we do with every other phase" (the owner,
+    -- 2026-09-23). The opening zone's wall is drawn from the START of the hold now,
+    -- ramping in over its first fadeInSec, and circle 1's wall stands beside it. So the
+    -- claims below are the new ones, each still made about one wall with the other's
+    -- callback off, and the two gates the old test also carried stay explicit: a LOBBY
+    -- bystander gets nothing, and the preview does not outlive the verdict.
     --
     -- A FRESH CLIENT PER MOMENT, WHICH IS NOT TIDINESS. This harness's C.frame does NOT
     -- clear C.markers -- it accumulates -- so with two walls in play `markers[1]` is
-    -- whatever the earliest frame drew. Measured while writing this: the halfway-alpha
-    -- assertion below went on passing off a PREVIEW marker left over from the
-    -- suppressed frame, which happens to read the same 55. A green test reading the
-    -- wrong wall is how this suite has gone green over a real defect before.
+    -- whatever the earliest frame drew. A green test reading the wrong wall is how this
+    -- suite has gone green over a real defect before.
     do
         local rr = newStormClient().env.BR.Config.Storm.render
         local fadeMs = rr.fadeInSec * 1000.0
 
-        --- A phase-1 hold on the column path, `msLeft` from its end, one frame drawn.
+        --- A phase-1 hold on the column path, `held` ms after it began, one frame drawn.
         ---
-        --- The 16 ms C.frame advances the clock by is added in HERE, so `msLeft` is what
-        --- the renderer actually solves. It used to be absorbed by a tolerance on the
-        --- alpha instead, which worked and hid which side of a boundary a frame landed.
-        local function holdAt(msLeft, prep)
+        --- The 16 ms C.frame advances the clock by is added in HERE, so `held` is what
+        --- the renderer actually solves.
+        local function holdAt(held, prep)
             local C = newStormClient()
             C.env.BR.Storm.wallStyle = 'columns'
             C.pedAt = pt(0.0, 0.0)
             local rec = C.env.BR.State.storm
-            rec.phase = 1                 -- the free-loot hold, where the fade is
+            rec.phase = 1                 -- the free-loot hold, where the ramp is
             if prep then prep(C) end
             -- ═══ #351'S ENTRY RAMP IS ARMED AND SPENT BEFORE THE FRAME THAT COUNTS ═══
             --
             -- The preview wall ramps up over render.fadeInSec from the first frame the
-            -- mainland is the world -- "the storm wall popped in, didn't fade in", the
-            -- owner from the bus -- so ONE frame here would read the ramp's own zero
-            -- and report the empty screen #340 was about as though it were still the
-            -- contract. The clock is pushed past the window and the record re-aimed at
-            -- the same msLeft, so what is finally drawn is the moment this block asked
-            -- for, at the preview's settled strength.
-            --
-            -- AND THE TWO BUFFERS ARE EMPTIED BEFORE THAT FRAME, because this harness's
-            -- C.frame accumulates -- which is the exact trap the note above this `do`
-            -- block records: an assertion reading `markers[1]` off an earlier frame
-            -- passed while measuring the wrong wall. Clearing is what the block's own
-            -- "a fresh client per moment" rule was buying, done in one place.
-            rec.tStart = (C.now + 16) - (rec.tWait - msLeft)
+            -- mainland is the world, so ONE frame here would read the ramp's own zero.
+            -- The clock is pushed past the window and the record re-aimed at the same
+            -- moment, and the two buffers are emptied before the frame that counts,
+            -- because this harness's C.frame accumulates.
+            rec.tStart = (C.now + 16) - held
             C.frame()
             C.now = C.now + math.floor(fadeMs)
-            rec.tStart = (C.now + 16) - (rec.tWait - msLeft)
+            rec.tStart = (C.now + 16) - held
             C.markers, C.polys = {}, {}
             C.frame()
             return C
@@ -16982,26 +17201,35 @@ do
                 error('no storm.previewWall callback to disable -- the name moved')
             end
         end
+        local function noWall(C)
+            if not C.env.BR.Loop.setEnabled('storm.wall', false) then
+                error('no storm.wall callback to disable -- the name moved')
+            end
+        end
 
-        -- Before the fade window opens, no wall OF THE RECORD'S at all.
+        -- Well into the hold, the OPENING wall at the authored alpha -- it stands from
+        -- the hold's start now, and has long since ramped in.
         local S = holdAt(fadeMs + 5000, noPreview)
-        ok(#S.markers == 0,
-           'no curtain of the record\'s own before the fade window opens', #S.markers)
+        ok(#S.markers > 0 and brightest(S) == rr.alpha,
+           'the record\'s own curtain stands through the phase-1 hold at the authored '
+               .. 'alpha, once its ramp is done -- the opening zone\'s wall, drawn like '
+               .. 'every later phase\'s (#344)',
+           ('%d markers, brightest %s'):format(#S.markers, tostring(brightest(S))))
 
-        -- And the preview standing in for it, at previewAlpha's share of the same
-        -- authored alpha -- fainter, because it marks a place the storm is going to be.
-        local P = holdAt(fadeMs + 5000)
+        -- And circle 1's wall beside it, at previewAlpha's share of the same authored
+        -- alpha -- fainter, because it marks a place the storm is going to be.
+        local P = holdAt(fadeMs + 5000, noWall)
         local pWant = math.floor(rr.alpha * (rr.previewAlpha or 0.5))
         ok(#P.markers > 0 and brightest(P) == pWant and pWant < rr.alpha,
-           'while #327\'s preview stands in for it there, at previewAlpha\'s share of '
-           .. 'the authored alpha -- the empty frame this block used to assert is the '
-           .. 'gap #340 reported',
+           'while #327\'s circle 1 stands beside it, at previewAlpha\'s share of the '
+               .. 'authored alpha -- the empty frame this block once asserted is the gap '
+               .. '#340 reported',
            ('%d markers, brightest %s, wanted %d of %d'):format(
                #P.markers, tostring(brightest(P)), pWant, rr.alpha))
 
         -- A LOBBY BYSTANDER SHARES THE MATCH STATE WITHOUT BEING IN THE MATCH, and was
         -- the report the gate was written for: storm blips on their pause map at the
-        -- vista menu. Asked at the one moment only the preview can answer.
+        -- vista menu.
         local L = holdAt(fadeMs + 5000, function(C)
             C.env.BR.State.me.state = C.env.BR.PlayerState.LOBBY
         end)
@@ -17009,31 +17237,31 @@ do
            'a LOBBY bystander still gets no curtain at all through that stretch',
            ('%d markers, %d polys'):format(#L.markers, #L.polys))
 
-        -- AND NOTHING SURVIVES A MATCH ENDING. activeRecord admits ENDED on purpose --
-        -- the grade and the rain must outlive the transition -- so a preview that
-        -- reused it would draw a circle under the verdict slam, and a match decided
-        -- inside the phase-1 hold is a two-player playtest away.
+        -- AND THE PREVIEW DOES NOT SURVIVE A MATCH ENDING. activeRecord admits ENDED on
+        -- purpose -- the grade, the rain and the zone's own wall outlive the transition
+        -- -- so a preview that reused it would stand circle 1 under the verdict slam, and
+        -- a match decided inside the phase-1 hold is a two-player playtest away.
         local E = holdAt(fadeMs + 5000, function(C)
             C.env.BR.State.match.state = C.env.BR.MatchState.ENDED
+            noWall(C)
         end)
         ok(#E.markers == 0 and #E.polys == 0,
-           'and a match that ends inside the phase-1 hold takes it down with it, '
-           .. 'though the record is still phase 1 and still HOLDING',
+           'and a match that ends inside the phase-1 hold takes circle 1\'s wall down '
+               .. 'with it, though the record is still phase 1 and still HOLDING',
            ('%d markers, %d polys'):format(#E.markers, #E.polys))
 
-        -- Halfway through the window, half strength. THE PREVIEW IS OFF FOR THIS ONE:
-        -- both walls are legitimately in frame there, fading opposite ways on the one
-        -- clock, and this assertion is about the record's.
+        -- Half way up the opening wall's ramp, half strength -- THE PREVIEW OFF: both
+        -- walls are legitimately in frame, and this assertion is about the record's.
         local H = holdAt(fadeMs * 0.5, noPreview)
         local a = H.markers[1] and H.markers[1].a
         ok(a ~= nil and math.abs(a - rr.alpha * 0.5) <= 1.0,
-           'and half the alpha halfway through the fade, as the map ring has',
+           'and half the alpha half way up its ramp at the start of the hold',
            tostring(a))
         ok(a ~= nil and a < rr.alpha,
            'rather than the authored alpha, which is what it used to pass raw',
            tostring(a))
 
-        -- And full strength once the shrink is under way.
+        -- And full strength outside phase 1's ramp altogether.
         local D = newStormClient()
         D.env.BR.Storm.wallStyle = 'columns'
         D.pedAt = pt(0.0, 0.0)

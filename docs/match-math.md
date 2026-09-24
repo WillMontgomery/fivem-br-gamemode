@@ -424,9 +424,48 @@ instead: measured in 34–52% of nested sweeps at phases 2–7 (the bare cut wou
 have been up to 374 m deep at phase 2). It is convex at every `t` (a hull), and
 its signed distance and erosion are the same corner list's, exact. A breakout
 morphs the same way without the destination in the hull, and the safe zone is
-the wall united with the destination. The map does not morph yet: it moves and
-scales the zone's starting shape for the whole sweep (#350) and takes the
-target's once, as the sweep finishes.
+the wall united with the destination.
+
+**The map shows the morph without redrawing anything.** Every disc travels in a
+straight line, so the moving wall is the solver's own circle times one unit shape:
+
+```
+disc(t)  =  c(t) + r(t) × [ (1 − m) a + m b ],      m = t · r1 / r(t)
+wall(t)  =  c(t) + r(t) × V(m),      V(m) = hull of every (1 − m) a + m b
+```
+
+where `a` and `b` are a link's two unit discs and `c(t), r(t)` the circle
+`BR.StormAt` reports. The map may not rebuild its polygons while the storm moves —
+that was #350's hitch — but it can move, scale and fade one it already has. So the
+one rebuild a phase makes, when its record arrives, draws `V(0)` and `V(1)` about
+their own origin (and the destination in place), and every tick of the sweep
+places both on the solver's circle and crossfades them by `m`: exact at the two
+ends, a blend in between. `overlay.keyframes` adds more `V(k/K)` during the hold,
+never while the storm moves; the nearest one is within 31 m on average at phase 2
+at eight keyframes, where two ends alone are within 206 (config/storm.lua has the
+table). The sweep's end needs no rebuild, because `V(1)` on the destination's
+circle is the destination.
+
+### A conjoined zone grows into its destination
+
+"If they're conjoined, today the border pops suddenly to cover the whole area.
+Instead it should grow over a period of 20s." On a breakout whose destination `D`
+overlaps the zone `Z` the wall stands in, the safe zone across the hold's first
+`grow.seconds` is
+
+```
+S     = max over D's discs of ( sd_Z(centre) + radius )     -- how far D reaches outside Z
+g     = clamp( elapsed / min(grow.seconds, hold), 0, 1 )     -- BR.StormAt's eighth answer
+G(g)  = Z  ∪  ( D ∩ Z grown by g·S )
+```
+
+Growing a convex corner list adds to every corner's radius; the intersection of
+two convex shapes is the corner list of their boundaries' runs inside each other;
+and the union is the stitch every breakout already uses — so the damage tick, the
+HUD and the wall bill, read and draw `G` exactly, off one clock. It starts as `Z`
+and ends on `Z ∪ D`, and only ever grows. A destination wholly apart from the zone
+still appears at once. The map shows `Z` under the destination's own fill for
+those twenty seconds: drawing the front would be a rebuild on a motion cadence.
 
 **What airdrop siting stands on changed with it.** The wall's support function
 used to be affine in `t`, which made "clears both ends of the window, clears every
@@ -451,11 +490,11 @@ re-derives the dead ends:
   so the rings were radius blips at `r`, over-reporting by about a sixth of `r`
   where the shape dents in. The vendored `MINIMAP_LOADER.gfx` turned out to
   carry `ADD_AREA_OVERLAY`, which fills a real concave polygon on both the radar
-  and the pause map (#347, #350). A single blob is moved and resized in place as
-  it shrinks rather than rebuilt. A merged current/target shape cannot be moved
-  as one clip without rebuilding its polygon, so during that sweep the existing
-  nominal-radius map blips provide approximate guidance; its exact filled outline
-  returns once static. The same blips remain the fallback for a client whose
+  and the pause map (#347, #350). A moving zone is never rebuilt: its keyframes
+  are moved, resized and faded in place (above), a breakout's included, since the
+  union is shown as the moving zone under the destination's own fill rather than
+  as one polygon. The nominal-radius map blips carry the map for the rest of a
+  sweep whose placement or fade the engine refuses, and for a client whose
   overlay never becomes ready.
 * **an overlapping breakout used to draw both boundaries**, showing curtain
   inside the safe zone. Two convex shapes that overlap have a union whose

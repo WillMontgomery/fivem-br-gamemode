@@ -45,14 +45,41 @@ BR = BR or {}
 ---
 ---   mo = { t = <how far the morph had got>,
 ---          d = { x1, y1, r1, x2, y2, r2, ... },   -- every moving disc, world
----          b = { i1, i2, ... } }                  -- the destination disc each
+---          b = { i1, i2, ... },                   -- the destination disc each
 ---                                                 --   one is travelling to
+---          g = <how far a conjoined zone had grown> }   -- a freeze's only
 ---
 --- -- the discs exactly, rather than the two circles they were computed from,
 --- because a freeze of a thawed record is a morph of a morph, and only the discs
 --- themselves compose. Each keeps its destination index, so a thaw and a same-phase
 --- `brphase` resume every corner toward the corner it was heading for, without a
---- snap. (BR.StormMorphAt builds it.)
+--- snap. (BR.StormMorphAt builds it.) `g` rides a freeze, which keeps the target, so
+--- a zone frozen part way through growing into its destination neither shrinks back
+--- to where it started nor grows the same ground twice.
+
+--- How long a conjoined zone takes to grow into its destination, in ms: the
+--- config's `grow.seconds`, and never longer than the hold it happens in, so the
+--- growth is always over before the wall moves -- and a dev time scale that
+--- shortens the hold shortens the growth with it. 0 is no growth: the old pop.
+local function growMs(rec)
+    local S = BR.Config and BR.Config.Storm
+    local sec = S and S.grow and tonumber(S.grow.seconds) or 0.0
+    local ms = sec * 1000.0
+    local wait = rec.tWait or 0.0
+    if wait < ms then ms = wait end
+    return ms
+end
+
+--- How far a conjoined zone has grown at `elapsed` ms into its record: 0 at the
+--- start of the hold, 1 once the growth window is over, and carried across a
+--- freeze by `mo.g`. Pure, like everything else here -- the server's damage tick
+--- and the client's wall read it off the same record and the same clock.
+local function growthAt(rec, elapsed)
+    local ms = growMs(rec)
+    if ms <= 0.0 then return 1.0 end
+    local g0 = (rec.mo and tonumber(rec.mo.g)) or 0.0
+    return BR.Clamp(g0 + elapsed / ms, 0.0, 1.0)
+end
 
 --- Solve the storm at a given time.
 ---
@@ -67,12 +94,18 @@ BR = BR or {}
 --- @return number t       how far through the sweep: 0 holding, 1 finished --
 ---                        the same fraction the circle is interpolated by, and
 ---                        the one BR.StormZone moves every corner of the wall by
+--- @return number g       how far a conjoined zone has grown into its destination
+---                        (#344): 0 at the start of the hold, 1 once `grow.seconds`
+---                        have passed -- always before the wall moves -- and read
+---                        by BR.StormZone only on a phase whose destination
+---                        overlaps the zone it starts in
 function BR.StormAt(rec, now)
     if not rec then
-        return 0.0, 0.0, 0.0, BR.StormPhase.PRE, 0.0, 0.0, 0.0
+        return 0.0, 0.0, 0.0, BR.StormPhase.PRE, 0.0, 0.0, 0.0, 1.0
     end
 
     local elapsed = now - rec.tStart
+    local g = growthAt(rec, elapsed)
 
     -- Still holding: the next circle is already known and drawn on the map, so
     -- players can see where to rotate before the wall starts moving.
@@ -89,14 +122,14 @@ function BR.StormAt(rec, now)
     if elapsed < rec.tWait then
         local state = (rec.phase == 0) and BR.StormPhase.PRE or BR.StormPhase.HOLDING
         local dps = (rec.phase <= 1) and 0.0 or rec.dps
-        return rec.cx0, rec.cy0, rec.r0, state, rec.tWait - elapsed, dps, 0.0
+        return rec.cx0, rec.cy0, rec.r0, state, rec.tWait - elapsed, dps, 0.0, g
     end
 
     local shrinkElapsed = elapsed - rec.tWait
 
     -- Collapsed.
     if shrinkElapsed >= rec.tShrink then
-        return rec.cx1, rec.cy1, rec.r1, BR.StormPhase.FINISHED, 0.0, rec.dps, 1.0
+        return rec.cx1, rec.cy1, rec.r1, BR.StormPhase.FINISHED, 0.0, rec.dps, 1.0, g
     end
 
     local t = shrinkElapsed / rec.tShrink
@@ -107,7 +140,8 @@ function BR.StormAt(rec, now)
            BR.StormPhase.SHRINKING,
            rec.tShrink - shrinkElapsed,
            rec.dps,
-           t
+           t,
+           g
 end
 
 --- THE SHAPE ONE ZONE WEARS, as a unit to be scaled by the solver's radius.
@@ -239,6 +273,43 @@ function BR.StormNested(rec)
     return e ~= nil and e.nested
 end
 
+--- Whether a record's destination OVERLAPS the zone its wall starts as without
+--- being inside it -- the conjoined case, and the only one that grows -- and how far
+--- it has to grow: S, the furthest any point of the destination is outside the zone.
+---
+--- ASKED ONCE PER RECORD, EXACTLY. The two shapes meet when the origin is inside
+--- Z + (-D), which is a corner list (BR.StormShape.sumOf), so one signed distance
+--- decides it. And D is the hull of its discs while the signed distance to Z is
+--- convex, so the furthest point of D is at a disc: fitOf, the same maximum the
+--- nesting test reads. A destination of no radius is a point and never grows; a
+--- disjoint one is the far island the owner is content to see appear at once.
+local function growthInfo(rec, e)
+    if e.overlap ~= nil then return e.overlap, e.growS end
+    local SS = BR.StormShape
+    local over, S = false, 0.0
+    if not e.nested and (rec.r1 or 0.0) > 0.0 then
+        local zks, dks = SS.discHull(e.src), SS.discHull(e.keep)
+        if zks and dks then
+            over = SS.hullDistance(SS.sumOf(zks, SS.reflect(dks)), 0.0, 0.0) < 0.0
+            if over then S = SS.fit(zks, e.keep, 0.0, 0.0, 1.0) end
+        end
+    end
+    e.overlap, e.growS = over, S
+    return over, S
+end
+
+--- Does this record's destination overlap, without nesting in, the zone its wall
+--- starts as? Those are the phases whose safe zone GROWS into the destination
+--- across the start of the hold instead of taking it all at once. See BR.StormZone.
+--- @param rec table
+--- @return boolean overlaps
+--- @return number reach   metres the zone grows by across the whole growth
+function BR.StormOverlaps(rec)
+    local e = rec and infoOf(rec)
+    if not e then return false, 0.0 end
+    return growthInfo(rec, e)
+end
+
 --- The zone a record's wall starts as, placed at (cx, cy, r) -- the record's own
 --- circle unless the caller names another. A morph's own outline when it carries
 --- one (`mo`), and the zone before this phase's otherwise.
@@ -327,7 +398,8 @@ function BR.StormWall(rec, t)
     return wallOf(rec, e, t)
 end
 
---- THE SAFE ZONE at a solved moment: the moving wall, and the destination.
+--- THE SAFE ZONE at a solved moment: the moving wall, and the destination -- grown
+--- into, on a conjoined phase, rather than taken at once.
 ---
 --- ═══ THE ONE PLACE THE ZONE IS BUILT, WHICH IS WHAT MAKES THE WALL HONEST ═══
 ---
@@ -368,17 +440,44 @@ end
 --- early is safe there (#328). A destination of no radius is phase 8's final point,
 --- which is not a disc to reach and is not a part (union2's header argues why).
 ---
---- THE MAP IS NOT THIS DURING A SWEEP, until #344's rendering stage lands: it draws
---- BR.StormStartShape instead, the zone the wall set out as, moved and scaled with
---- the solver's circle. client/storm.lua's overlayPlan says why.
+--- ═══ A CONJOINED DESTINATION IS GROWN INTO, NOT POPPED ON (#344) ═══
+---
+---   "if they're conjoined, today the border pops suddenly to cover the whole area.
+---    instead it should grow over a period of 20s to include that new area instead
+---    of popping."                                    -- the owner, 2026-09-23
+---
+--- On a phase whose destination overlaps the zone the wall starts in without being
+--- inside it (BR.StormOverlaps), the safe zone across the hold's first
+--- `grow.seconds` is that zone grown `g` of the way into the destination --
+--- Z union (D intersect Z grown by g S) -- where S is how far the destination's
+--- furthest point is outside Z (BR.StormShape.grown has the geometry, and why every
+--- piece of it is exact). It starts as Z, where the last sweep left the wall, and
+--- ends on Z union D exactly, so nothing pops at either end. The destination itself
+--- never changes; it is only intersected. `g` is BR.StormAt's eighth answer, pure in
+--- the record and the clock, so the wall, the HUD and the damage tick grow it
+--- together. A DISJOINT destination is the far island, and appears at once: the
+--- owner is content with that.
+---
+--- A NIL `g` READS AS 1, the whole union at once. A caller that was never taught to
+--- pass it therefore bills and draws the old pop -- MORE safe ground, never less.
+---
+--- A GROWTH THAT CANNOT BE BUILT -- two boundaries touching in a way the crossing
+--- finder refuses -- is the whole union too, for the same reason. The wall and the
+--- damage tick both come through here, so even then they agree.
+---
+--- THE MAP DOES NOT DRAW THE GROWTH: it shows the zone the phase started in under
+--- the destination's fill -- whose union is what the growth ends on -- because
+--- drawing the front would mean rebuilding the overlay while it moves, the hitch
+--- 52a7caa removed. client/storm.lua's overlayPlan says so where it is decided.
 ---
 --- @param rec table|nil    the published storm record
 --- @param cx number        the CURRENT centre, as BR.StormAt reports it
 --- @param cy number
 --- @param r number         the CURRENT radius
 --- @param t number|nil     how far through the sweep; nil reads as 0
+--- @param g number|nil     how far a conjoined zone has grown; nil reads as 1
 --- @return table shape
-function BR.StormZone(rec, cx, cy, r, t)
+function BR.StormZone(rec, cx, cy, r, t, g)
     if not rec then
         return BR.StormShape.circle(cx or 0.0, cy or 0.0, r or 0.0)
     end
@@ -389,46 +488,122 @@ function BR.StormZone(rec, cx, cy, r, t)
     t = BR.Clamp(t or 0.0, 0.0, 1.0)
     local wall = wallOf(rec, e, t)
     if e.nested or t >= 1.0 or (rec.r1 or 0.0) <= 0.0 then return wall end
-    return BR.StormShape.blobUnion(wall, BR.StormTarget(rec))
-end
-
---- TEMPORARY, FOR THE MAP ALONE: the zone the wall set out as, placed at (cx, cy, r).
----
---- #350's map fill moves and scales ONE clip for a whole sweep and cannot be handed
---- a new shape every tick -- rebuilding it while the storm moves is the hitch the
---- owner traced (52a7caa). So until #344's rendering stage gives the map its own
---- way to show the morph, the map keeps 52a7caa's picture: the starting zone moved
---- and scaled with the solver's circle, the destination's fill on top, and a
---- breakout's union handed to the map blips while it moves. This is that starting
---- zone, and nothing else reads it.
---- @return table shape
-function BR.StormStartShape(rec, cx, cy, r)
-    if not rec then return BR.StormShape.circle(cx or 0.0, cy or 0.0, r or 0.0) end
-    local e = infoOf(rec)
-    if not e then
-        return BR.StormShape.union2(cx, cy, r, rec.cx1, rec.cy1, rec.r1)
-    end
-    local unit = e.uA
-    if not unit then
-        -- A MORPH'S OUTLINE AS A UNIT, so it can be moved and scaled like one: its
-        -- discs about the record's own circle, over its radius.
-        unit = e.startUnit
-        if not unit then
-            local SS = BR.StormShape
-            local rr = (rec.r0 > 0.0) and rec.r0 or 1.0
-            local ds = {}
-            for i = 1, #e.src do
-                local d = e.src[i]
-                ds[i] = { x = (d.x - rec.cx0) / rr, y = (d.y - rec.cy0) / rr, r = d.r / rr }
-            end
-            local ks = SS.discHull(ds)
-            unit = { ks = ks, inradius = -SS.hullDistance(ks, 0.0, 0.0) }
-            e.startUnit = unit
+    local target = BR.StormTarget(rec)
+    g = (g == nil) and 1.0 or BR.Clamp(g, 0.0, 1.0)
+    if g < 1.0 and t <= 0.0 and wall.hull and target.hull then
+        local over, S = growthInfo(rec, e)
+        if over then
+            local zone = BR.StormShape.grown(wall, target, S * g)
+            if zone then return zone end
         end
     end
-    local here = BR.StormShape.blob(cx, cy, r, unit)
-    if e.nested or (rec.r1 or 0.0) <= 0.0 then return here end
-    return BR.StormShape.blobUnion(here, BR.StormTarget(rec))
+    return BR.StormShape.blobUnion(wall, target)
+end
+
+-- ═══ THE WALL IN ITS OWN MOVING FRAME, WHICH IS WHAT THE MAP CAN DRAW (#344) ═══
+--
+-- Every disc of the wall travels in a straight line, centre and radius both, from
+-- (c0 + r0 a) to (c1 + r1 b), a and b its two partners' unit discs. At sweep fraction
+-- t that is
+--
+--   (1-t)(c0 + r0 a) + t(c1 + r1 b)  =  c(t) + r(t) [ (1-m) a + m b ],  m = t r1 / r(t)
+--
+-- where c(t), r(t) are the solver's own circle. So the moving wall is the solver's
+-- circle times ONE unit shape, V(m) -- the hull of every (1-m) a + m b -- and V(0) is
+-- the zone the wall leaves, V(1) the one it closes on. The map cannot re-draw a
+-- polygon while the storm moves (#350, 52a7caa) and it CAN move, scale and fade a
+-- polygon it already has: so it draws V at chosen values of m ahead of time and
+-- crossfades between them while placing them on the solver's circle. At m = 0 and
+-- m = 1 that is the wall exactly. (Where a nested wall rests on its destination it is
+-- the hull of this and the destination, and the destination's own fill is drawn
+-- over it.)
+
+--- The unit discs of a record's morph, both ends, in link order: `ua` the wall
+--- leaves from and `ub` the partners it travels to. A record carrying its outline
+--- (`mo`) has world discs, read back into its own circle; an end of no radius
+--- borrows the other end's, because the frame there is a point anyway.
+local function unitDiscs(rec, e)
+    if e.ua then return e.ua, e.ub end
+    local ua, ub = {}, {}
+    local uB = e.uB
+    local r0 = rec.r0 or 0.0
+    for i = 1, #e.src do
+        ub[i] = uB.discs[e.bi[i]] or uB.discs[1]
+    end
+    if rec.mo then
+        for i = 1, #e.src do
+            local s = e.src[i]
+            if r0 > 0.0 then
+                ua[i] = { x = (s.x - rec.cx0) / r0, y = (s.y - rec.cy0) / r0, r = s.r / r0 }
+            else
+                ua[i] = ub[i]
+            end
+        end
+    else
+        local ps = BR.StormShape.pairsOf(e.uA, uB)
+        for i = 1, #ps do ua[i] = (r0 > 0.0) and ps[i].a or ub[i] end
+    end
+    if (rec.r1 or 0.0) <= 0.0 then
+        for i = 1, #ua do ub[i] = ua[i] end
+    end
+    e.ua, e.ub = ua, ub
+    return ua, ub
+end
+
+--- How far through the morph the wall is IN ITS OWN FRAME at sweep fraction `t`:
+--- the `m` for which the wall is the solver's circle times V(m). See the section.
+--- 0 the whole way for a destination of no radius -- the last zone shrinks onto its
+--- point without changing shape -- and 1 from the first instant for a wall that
+--- starts as a point.
+--- @param rec table
+--- @param t number
+--- @return number m   0..1
+function BR.StormMorphFrame(rec, t)
+    t = BR.Clamp(t or 0.0, 0.0, 1.0)
+    local r0, r1 = rec.r0 or 0.0, rec.r1 or 0.0
+    if r0 <= 0.0 then return (t > 0.0) and 1.0 or 0.0 end
+    if r1 <= 0.0 then return 0.0 end
+    local r = r0 + (r1 - r0) * t
+    return BR.Clamp(t * r1 / r, 0.0, 1.0)
+end
+
+--- The solver's radius at the moment the frame's morph fraction is `m`: the
+--- inverse of BR.StormMorphFrame, which is the size V(m) is seen at and so the size
+--- the map draws it at.
+--- @param rec table
+--- @param m number
+--- @return number metres
+function BR.StormMorphRadius(rec, m)
+    m = BR.Clamp(m or 0.0, 0.0, 1.0)
+    local r0, r1 = rec.r0 or 0.0, rec.r1 or 0.0
+    if r0 <= 0.0 then return r1 end
+    if r1 <= 0.0 then return r0 end
+    return r0 * r1 / (r1 * (1.0 - m) + m * r0)
+end
+
+--- V(m), the moving wall's shape in its own frame, drawn about the ORIGIN at
+--- radius `rDraw`: the hull of every (1-m) a + m b, scaled. Fresh every call.
+---
+--- WITHOUT the destination's discs, so a nested wall resting on its destination is
+--- this hull with the destination's fill drawn over it rather than the hull of both.
+--- nil for the pre-#344 off switch.
+--- @param rec table
+--- @param m number      0..1
+--- @param rDraw number  metres
+--- @return table|nil shape
+function BR.StormKeyframe(rec, m, rDraw)
+    local e = rec and infoOf(rec)
+    if not e then return nil end
+    m = BR.Clamp(m or 0.0, 0.0, 1.0)
+    local ua, ub = unitDiscs(rec, e)
+    local s, k = 1.0 - m, rDraw or 1.0
+    local md = {}
+    for i = 1, #ua do
+        local a, b = ua[i], ub[i]
+        md[i] = { x = (s * a.x + m * b.x) * k, y = (s * a.y + m * b.y) * k,
+                  r = (s * a.r + m * b.r) * k }
+    end
+    return BR.StormShape.discShape(md, 0.0, 0.0, k)
 end
 
 --- The fastest any corner of the wall moves during this record's sweep, in metres
@@ -465,14 +640,23 @@ end
 --- destination's own discs too, because they are part of the wall's hull and part of
 --- what the next record's morph must keep. Exact duplicates are dropped, so a chain
 --- of freezes does not grow what it carries by the discs it already has.
+---
+--- `g`, THE GROWTH, RIDES ALONG WHEN IT IS PASSED, on a conjoined record -- and then
+--- even in the hold, so a freeze part way through growing into the destination, and
+--- the thaw after it, carry on from where the zone had got to rather than shrinking
+--- back to where it started (BR.StormZone). Only a caller that keeps the target
+--- passes it: brstormfreeze's freeze does; its thaw and a same-phase `brphase`, which
+--- draw a new target with its own growth ahead of it, do not.
 --- @param rec table
 --- @param t number|nil
+--- @param g number|nil   BR.StormAt's eighth answer, for a caller keeping the target
 --- @return table|nil mo
-function BR.StormMorphAt(rec, t)
+function BR.StormMorphAt(rec, t, g)
     if not rec then return nil end
     t = BR.Clamp(t or 0.0, 0.0, 1.0)
-    if t <= 0.0 and not rec.mo then return nil end
     local e = infoOf(rec)
+    local carry = (g ~= nil and e ~= nil) and (growthInfo(rec, e)) or false
+    if t <= 0.0 and not rec.mo and not carry then return nil end
     if not e then return nil end
     local s = 1.0 - t
     local d, b, seen = {}, {}, {}
@@ -499,7 +683,9 @@ function BR.StormMorphAt(rec, t)
             add(q.x, q.y, q.r, k)
         end
     end
-    return { t = t, d = d, b = b }
+    local mo = { t = t, d = d, b = b }
+    if carry then mo.g = BR.Clamp(g, 0.0, 1.0) end
+    return mo
 end
 
 --- Pick the match anchor: the POI the whole storm sequence homes on.
