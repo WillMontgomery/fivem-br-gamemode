@@ -1367,10 +1367,14 @@ local function emotePick(kind)
     return pick
 end
 
---- The clip this ped should be playing right now, or nil. See the note above
---- EMOTE_FLAG for why each line is here.
---- @return table|nil
-local function emoteWanted()
+--- THE CONSUMABLE A LIVE CHANNEL IS SPENDING, or nil when there is none.
+---
+--- ONE READING FOR BOTH HALVES OF #11: the emote below and the combat hold in
+--- inv.controls (`healing`). Two readings would be two clocks, and the issue's
+--- third bullet allows one. See the note above EMOTE_FLAG for why the player
+--- state is read here rather than waited out.
+--- @return table|nil  the BR.Config.Consumables row
+local function channelItem()
     local u = inv.using
     if type(u) ~= 'table' then return nil end
 
@@ -1383,10 +1387,18 @@ local function emoteWanted()
     -- BR.Inv.publicFor), and the slot cannot change under a channel: every
     -- keypress that could move it is refused while one runs (#271).
     local s = inv.slots[u.slot]
-    local c = type(s) == 'table' and BR.Config.ConsumableById[s.id] or nil
+    return type(s) == 'table' and BR.Config.ConsumableById[s.id] or nil
+end
+
+--- The clip this ped should be playing right now, or nil. See the note above
+--- EMOTE_FLAG for why each line is here.
+--- @return table|nil
+local function emoteWanted()
+    local c = channelItem()
     local pick = emotePick(c and c.emote)
     if not pick then return nil end
 
+    local u = inv.using
     if u.endsAt ~= nil and emote.spent == u.endsAt then return nil end
     if offFoot(PlayerPedId()) then return nil end
     return pick
@@ -2169,6 +2181,64 @@ BR.Loop.register(BR.Loop.TICK, 'inv.apply', function()
     applyActive(false)
 end)
 
+--- ═══ NO STRIKE, NO SHOT AND NO AIM WHILE A HEAL RUNS (#11) ═══
+---
+---   "healing blocks punching too, yes"            -- owner, 2026-09-23
+---
+--- A heal brings its slot up, so the hand is empty for it -- and ATTACK on an
+--- empty hand is a punch, which knocks the emote off for about a second. The
+--- issue asked for the rest too ("no firing, no aiming, no melee"), and the hand
+--- is NOT always empty: the panel's Use sends the slot it was clicked on,
+--- server/inventory.lua's INV_USE opens a channel on any consumable slot without
+--- selecting it, and #271 then refuses the select until the channel ends. A
+--- rifle that was up when Use was clicked is up for all eight seconds of a med
+--- kit. One commitment, so one list.
+---
+--- EVERY ID WAS LOOKED UP (docs.fivem.net/docs/game-references/controls,
+--- 2026-09-23), and every one is also in client/spectate.lua's list. With the
+--- kit in hand, `canSwing` and the click block below already held all
+--- but 257, 47 and 58 the frame before the channel opened, so the ordinary heal
+--- takes no key the kit in hand had not already taken.
+---
+--- WHAT IS NOT HERE, ON PURPOSE:
+---
+---   * MOVEMENT (21, 22, 30-35). A channel has never held the legs; the note
+---     above EMOTE_FLAG says why, and #11's emote suite pins it.
+---   * 143 MELEE_BLOCK. A dodge, not a strike, and its key is SPACEBAR -- JUMP's.
+---   * 44 COVER and 45 RELOAD. Neither is a strike, a shot or an aim.
+---
+--- ON FOOT ONLY, and for #200's reason: 141 and 264 share Q with the radio
+--- wheel, and there is no punch to throw from a seat. A seat still has a
+--- drive-by with a gun the panel left up, and a kick from a bike -- but those
+--- are LMB, RMB and X, which in a seat also steer by mouse, look and duck, and
+--- #200 is this file's proof that holding one control down can take its key
+--- from another. That half is the owner's call, not this list's.
+---
+--- NOTHING RELEASES IT. DisableControlAction lasts one frame, so the frame
+--- `healing` says no -- complete, cancel, knock-down, death, teardown -- every
+--- key here is live again. client/spectate.lua makes the same argument at
+--- length above its own list.
+local HEAL_HELD = {
+    24, 25, 257,               -- ATTACK, AIM, ATTACK2: the punch and fist lock-on
+    140, 141, 142,             -- MELEE_ATTACK_LIGHT/HEAVY/ALTERNATE
+    263, 264,                  -- MELEE_ATTACK1, MELEE_ATTACK2
+    47, 58,                    -- DETONATE, THROW_GRENADE
+}
+
+--- IS A HEAL'S CHANNEL RUNNING RIGHT NOW? (#11)
+---
+--- `inv.using` through channelItem() and nothing else -- the emote's reading,
+--- so the hold and the clip start and stop on the same pass, and neither keeps
+--- a timer. A heal is a channel that moves something on the ped, health or
+--- shield: server/inventory.lua's own test (`c.health or c.armour`) where it
+--- decides who is sent partial effects. The repair kit and the shop car channel
+--- too and are not heals. Nobody asked for them, and they do not change here.
+--- @return boolean
+local function healing()
+    local c = channelItem()
+    return c ~= nil and (c.health ~= nil or c.armour ~= nil)
+end
+
 -- Control suppression and slot cycling, per frame.
 --
 -- FRAME rather than TICK because DisableControlAction only lasts one frame,
@@ -2410,6 +2480,19 @@ BR.Loop.register(BR.Loop.FRAME, 'inv.controls', function()
         end
     end
 
+    -- A HEAL HOLDS THE ARMS FOR AS LONG AS IT RUNS (#11). See HEAL_HELD for
+    -- the list, and for why a seat is not in it.
+    if healing() and not inVehicle() then
+        for i = 1, #HEAL_HELD do
+            DisableControlAction(0, HEAL_HELD[i], true)
+        end
+    end
+
+    -- `not inv.using` IS THE SECOND PRESS AND NOTHING ELSE (519e673, the line
+    -- that made the click a use). A click mid-channel must not be another use:
+    -- the server refuses a second one ("one at a time"), so all it could send is
+    -- a message for nothing. It also let go of 24 and 25 for the channel, which
+    -- is the punch #11 reports -- and for a heal, the hold above has them back.
     if not panelOpen and held and held.kind == BR.ItemKind.CONSUMABLE
        and not inv.using then
         DisableControlAction(0, 24, true)   -- ATTACK: no punching a potion

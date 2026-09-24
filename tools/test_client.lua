@@ -19997,6 +19997,213 @@ do
 end
 
 -- ---------------------------------------------------------------------------
+describe('#11 -- a heal holds every strike, shot and aim, for exactly its channel')
+-- ---------------------------------------------------------------------------
+--
+-- "healing blocks punching too, yes" (owner, 2026-09-23). The emote above
+-- ends on every way a channel ends; this is the same list of endings for the
+-- hold, because a hold that outlives one of them is a player who cannot shoot
+-- back for the rest of the match.
+--
+-- THE HAND IS NOT ALWAYS EMPTY, which is why a rifle and a machete are in here
+-- beside the kit: the panel's Use opens a channel on a slot it does not select,
+-- and #271 keeps whatever was up, up.
+do
+    local MELEE_SLOT = BR.Config.Loot.meleeSlot or 0
+    -- Every strike, shot and aim a heal holds on foot.
+    local STRIKES = { 24, 25, 257, 140, 141, 142, 263, 264, 47, 58 }
+    -- ...and what it leaves the player: the legs, jump and the dodge on jump's
+    -- key, cover and reload.
+    local LEFT = { 21, 22, 30, 31, 32, 33, 34, 35, 143, 44, 45 }
+    -- The strikes client/dbno.lua's DOWNED_BLOCKED does not hold, so a release
+    -- on the knock-down frame is ours to see rather than dbno's to mask.
+    local NOT_DOWNED = { 257, 263, 264, 47, 58 }
+
+    local function heldOf(list)
+        local out = {}
+        for _, c in ipairs(list) do
+            if disabled[c] == true then out[#out + 1] = c end
+        end
+        return out
+    end
+    local function allHeld(list) return #heldOf(list) == #list end
+    local function noneHeld(list) return #heldOf(list) == 0 end
+    local function show(list) return 'held: ' .. table.concat(heldOf(list), ', ') end
+
+    local realPressed = IsDisabledControlJustPressed
+    local pressing = nil
+    function IsDisabledControlJustPressed(_pad, c) return c == pressing end
+
+    local function kit(id)
+        return { id = id, kind = BR.ItemKind.CONSUMABLE, rarity = 1, count = 2 }
+    end
+    local RIFLE   = { id = 'carbinerifle', kind = BR.ItemKind.WEAPON, clip = 30 }
+    local MACHETE = { id = 'machete', kind = BR.ItemKind.WEAPON }
+
+    --- The server's push: `slots` by index, `active` in hand, and a channel on
+    --- slot `on` when given, with an `endsAt` from the server's own clock.
+    local function push(slots, active, on)
+        local s = { false, false, false, false, false }
+        for i, v in pairs(slots) do s[i] = v end
+        local using = nil
+        if on then using = { slot = on, endsAt = fakeTime + 8000, ms = 8000 } end
+        fire(BR.Net.INV_SET, { slots = s, ammo = {}, active = active,
+                               using = using, quiet = true })
+    end
+
+    local function asked(name)
+        local n = 0
+        for _, m in ipairs(sent) do if m.name == name then n = n + 1 end end
+        return n
+    end
+
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.State.landed = true
+    inVehicle = false
+    fire(BR.Net.STATE, { state = BR.MatchState.PLAYING })
+
+    -- ── 1. THE BASELINE: FISTS SWING WHEN NOTHING IS BEING DRUNK ────────────
+    --
+    -- Load-bearing, as the spectator block's is: a hold on keys that were
+    -- already held would pass every assertion below for the wrong reason.
+    push({ [1] = kit('bandage') }, MELEE_SLOT, nil)
+    frame()
+    ok(noneHeld(STRIKES),
+       'fists up and no channel: every strike, shot and aim is the player\'s',
+       show(STRIKES))
+
+    -- ── 2. THE REPORTED PUNCH: THE KIT UP, ITS CHANNEL RUNNING ──────────────
+    for _, id in ipairs({ 'bandage', 'medkit', 'shield', 'minishield' }) do
+        push({ [1] = kit(id) }, 1, 1)
+        frame()
+        ok(allHeld(STRIKES),
+           ('a %s mid-channel holds ATTACK and AIM -- the empty-handed punch -- '
+            .. 'and every melee and throw key with them'):format(id),
+           show(STRIKES))
+    end
+
+    -- ...AND THE LEGS ARE STILL THE PLAYER'S. #11's emote suite pins movement;
+    -- this pins that the hold did not bring any of it.
+    push({ [1] = kit('bandage') }, 1, 1)
+    frame()
+    ok(noneHeld(LEFT),
+       'mid-heal, movement, jump, the dodge, cover and reload are all live',
+       show(LEFT))
+
+    -- ── 3. THE CLICK MID-CHANNEL IS STILL NOT A SECOND USE ──────────────────
+    --
+    -- What `not inv.using` has protected since 519e673. ATTACK is held again
+    -- now, and a held control is exactly what IsDisabledControlJustPressed is
+    -- made to see -- so the clause is all that stands between this click and
+    -- another INV_USE.
+    push({ [1] = kit('bandage') }, 1, nil)
+    sent, pressing = {}, 24
+    frame()
+    ok(asked(BR.Net.INV_USE) == 1,
+       'with no channel, a click with the kit up uses it -- the press is seen',
+       ('%d INV_USE'):format(asked(BR.Net.INV_USE)))
+    push({ [1] = kit('bandage') }, 1, 1)
+    sent = {}
+    frame()
+    ok(asked(BR.Net.INV_USE) == 0,
+       'and the same click mid-channel sends nothing',
+       ('%d INV_USE'):format(asked(BR.Net.INV_USE)))
+    pressing = nil
+
+    -- ── 4. A HEAL STARTED FROM THE PANEL, WITH SOMETHING ELSE IN HAND ───────
+    push({ [1] = kit('bandage'), [2] = RIFLE }, 2, nil)
+    frame()
+    ok(disabled[24] ~= true and disabled[25] ~= true,
+       'a rifle up and no channel: the trigger and the sights are the player\'s')
+    push({ [1] = kit('bandage'), [2] = RIFLE }, 2, 1)
+    frame()
+    ok(allHeld(STRIKES),
+       'a rifle left up by the panel\'s Use cannot fire or aim for the channel',
+       show(STRIKES))
+
+    push({ [1] = kit('bandage'), [2] = MACHETE }, 2, 1)
+    frame()
+    ok(allHeld(STRIKES),
+       'a machete cannot swing for it either', show(STRIKES))
+
+    --- Open a channel on the kit with FISTS up -- the one position where
+    --- nothing but the heal holds these keys, so an ending is plain to see.
+    local function fistsHealing()
+        push({ [1] = kit('bandage') }, MELEE_SLOT, 1)
+        frame()
+        return allHeld(STRIKES)
+    end
+    ok(fistsHealing(),
+       'and fists, which swing freely otherwise, cannot punch mid-heal',
+       show(STRIKES))
+
+    -- ── 5. NOT ITS OWN TIMER ─────────────────────────────────────────────────
+    frames(100, 200)                         -- twenty seconds, no INV_SET
+    ok(allHeld(STRIKES),
+       'twenty seconds past the channel\'s own endsAt it still holds -- the '
+           .. 'clock is `inv.using`, the one the emote and the server keep',
+       show(STRIKES))
+
+    -- ── 6. EVERY ENDING RELEASES ON THE FIRST FRAME AFTER IT ────────────────
+    push({}, MELEE_SLOT, nil)                -- complete: the kit is spent
+    frame()
+    ok(noneHeld(STRIKES), 'the completion releases it', show(STRIKES))
+
+    fistsHealing()
+    push({ [1] = kit('bandage') }, MELEE_SLOT, nil)   -- a hit: kit kept
+    frame()
+    ok(noneHeld(STRIKES), 'a cancel releases it', show(STRIKES))
+
+    fistsHealing()
+    BR.State.me.state = BR.PlayerState.DBNO
+    frame()
+    ok(noneHeld(NOT_DOWNED),
+       'the delta that downs the player releases it, while `using` still '
+           .. 'stands -- the same frame the emote comes off',
+       show(NOT_DOWNED))
+    BR.State.me.state = BR.PlayerState.ALIVE
+
+    fistsHealing()
+    BR.State.me.state = BR.PlayerState.OUT
+    frame()
+    ok(noneHeld(NOT_DOWNED), 'dying releases it', show(NOT_DOWNED))
+    BR.State.me.state = BR.PlayerState.ALIVE
+
+    fistsHealing()
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+    frame()
+    ok(noneHeld(STRIKES), 'the match ending under it releases it',
+       show(STRIKES))
+    fire(BR.Net.STATE, { state = BR.MatchState.PLAYING })
+
+    -- ── 7. ONLY A HEAL ───────────────────────────────────────────────────────
+    push({ [1] = kit('repairkit') }, MELEE_SLOT, 1)
+    frame()
+    ok(noneHeld(STRIKES),
+       'a repair kit\'s channel is not a heal, and holds nothing new',
+       show(STRIKES))
+    push({}, MELEE_SLOT, nil)
+
+    -- ── 8. NOT FROM A SEAT, WHICH IS #200 ────────────────────────────────────
+    ok(fistsHealing(), 'on foot, mid-heal: held', show(STRIKES))
+    inVehicle = true
+    frame()
+    ok(disabled[141] ~= true and disabled[264] ~= true and disabled[85] ~= true,
+       'in a seat mid-heal, Q is left to the radio wheel -- #200 is not traded '
+           .. 'for #11', show({ 141, 264, 85 }))
+    inVehicle = false
+    frame()
+    ok(allHeld(STRIKES),
+       'and stepping out with the channel still running holds them again, on '
+           .. 'the first frame', show(STRIKES))
+
+    push({}, MELEE_SLOT, nil)
+    pressing = nil
+    IsDisabledControlJustPressed = realPressed
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+end
+
+-- ---------------------------------------------------------------------------
 describe('a silent delivery, and a noisy pickup')
 -- ---------------------------------------------------------------------------
 --
