@@ -483,7 +483,16 @@ BR.Config.Storm = {
         wallVisDist    = 700.0,
         height         = 300.0,  -- scaleZ, tall enough to span the visible vertical band
         colour         = { r = 150, g = 70, b = 255 },
-        alpha          = 110,
+        -- THE WALL'S ALPHA AT ITS BASE, of 255 -- the fade below multiplies it down to
+        -- nothing at the top, so this is how solid the curtain reads at a player's feet.
+        --
+        --   "decrease the transparency at the bottom of the storm, or make it more
+        --    opaque in other words"                        -- the owner, 2026-09-23
+        --
+        -- 165, about 65% opaque, from 110, about 43%. The owner gave the direction and
+        -- not the number: 165 is a pick to look at, and this is the one to turn. It is
+        -- the wall's alone -- the map's fills read the blip alphas.
+        alpha          = 165,
         -- Neighbouring cylinders should MEET, barely: heavy overlap doubles
         -- the additive alpha where they cross and renders as dark vertical
         -- banding -- the "stripes" of the first in-game wall.
