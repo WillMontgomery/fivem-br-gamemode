@@ -41,6 +41,11 @@
 -- purchase lands in the bag on the SAME callback that debited it, so there is no
 -- gap for a match to end inside and nothing to hand over at wheels-up.
 --
+-- (Two short waits have come in since, both inside one match and both through
+-- the same forfeit gate: the clerk's handover, `handoverMs`, and a buyer who is
+-- mid-channel with no free slot, who gets the gun when the bar ends -- #271.
+-- See handOver.)
+--
 -- No new item ids. `row.stack` is byte for byte what BR.RollLootStack hands back
 -- for the same weapon or the same ammo pool, so the thing given over the counter
 -- is the thing the ground would have given -- which is the owner's rule for this
@@ -402,6 +407,8 @@ end
 --- the remainder, exactly as a piece of ammo off the floor does.
 --- @param src integer
 --- @param row table
+--- @return boolean handled  false when the buyer is mid-channel with nowhere
+---                          but the hand to put it, and the handover must wait
 local function deliver(src, row)
     if type(row.stack) ~= 'table' then
         print(('^3[br_core] gunshop: "%s" has no stack to hand over^7')
@@ -441,7 +448,9 @@ local function deliver(src, row)
     --
     -- ...EXCEPT MID-CHANNEL (#271, owner 2026-09-23: "we should also prevent
     -- them from changing slots mid-use"). A buyer drinking a shield gets the gun
-    -- in its slot and keeps their hands; give() decides that, not this file.
+    -- in a slot that is not the hand and keeps their hands -- or, with no such
+    -- slot, gets it when the bar ends. give() decides which and says `busy` for
+    -- the second; this file only waits. See handOver.
     --
     -- HARMLESS ON AN AMMO ROW. That branch of give() returns before a slot is
     -- ever chosen, because a pool does not have one; passing the flag on every
@@ -452,12 +461,75 @@ local function deliver(src, row)
     if ok then
         if displaced then BR.Loot.dropForPlayer(src, displaced) end
         print(('[br_core] gunshop: %d received "%s"'):format(src, row.id))
-        return
+        return true
     end
+
+    -- ═══ HANDS BUSY IS NOT A FULL BAG, AND NOTHING GOES ON THE FLOOR (#271) ═══
+    --
+    -- The rule: a purchase is not refused and not lost; it is handed over the
+    -- moment the channel ends. Dropping it at their feet would be neither --
+    -- the gun would be one pickup away, and that pickup is refused too while
+    -- the bar runs. So nothing is handed over here and the caller waits.
+    if reason == 'busy' then return false end
 
     BR.Loot.dropForPlayer(src, stack)
     print(('[br_core] gunshop: %d had no room for "%s" (%s) -- dropped at '
            .. 'their feet'):format(src, row.id, tostring(reason)))
+    return true
+end
+
+--- HAND A PAID-FOR WEAPON OVER: NOW, WHEN THE BUYER'S HANDS COME FREE, OR NOT
+--- AT ALL.
+---
+--- THE GATE IS THE HANDOVER'S, asked every time this runs: a buyer who is no
+--- longer alive in a live match gets nothing and is not refunded, and the unit
+--- goes back on the shelf because nobody received it. The notes at the charge
+--- and at the handover in GUNSHOP_BUY say why each half of that is so.
+---
+--- ═══ A BUYER WHO IS DRINKING SOMETHING WAITS FOR IT (#271) ═══
+---
+--- give() answers `busy` when a channel runs and the gun could only go into the
+--- hand or swap something out of it. The rule (#271, 2026-09-24): not refused,
+--- not lost, handed over the moment the channel ends. So this queues itself on
+--- BR.Inv.whenFree and runs again then -- THROUGH THE SAME GATE, because a
+--- channel also ends when the buyer is knocked down, killed or leaves, and none
+--- of those is a buyer this file has ever handed a gun to. A knocked-down buyer
+--- at the end of the clerk's handover forfeits today; one whose channel is
+--- ended by the knock forfeits the same way.
+---
+--- WHEN IT DOES LAND, no channel is running and it is an ordinary purchase:
+--- straight into the hand (I3), swapping out whatever is there if the bag is
+--- still full.
+--- @param src integer
+--- @param row table
+--- @param restock fun()  GUNSHOP_BUY's `release`, which puts the reserved unit
+---                       back on the shelf -- renamed, because the
+---                       forward-local gate reads `release()` up here as that
+---                       handler's own local function
+--- @param when string    for the console line, if it is forfeited
+local function handOver(src, row, restock, when)
+    local m2 = BR.Server.matchOf(src)
+    local e3 = BR.Roster.get(src)
+    if not m2 or m2.state ~= BR.MatchState.PLAYING
+       or not e3 or e3.state ~= BR.PlayerState.ALIVE then
+        -- BACK ON THE SHELF, because nothing was handed over. The rule is
+        -- stated at `reserved` in GUNSHOP_BUY and both of the other failure
+        -- arms already keep it; a forfeit that left the count short would take
+        -- a rifle out of the match that nobody ever received.
+        restock()
+        print(('^3[br_core] gunshop: %d was charged %d Volts for "%s" and was '
+               .. 'no longer alive in a live match %s -- FORFEITED, no item and '
+               .. 'no refund^7'):format(src, row.price, row.id, when))
+        return
+    end
+
+    if deliver(src, row) then return end
+
+    print(('[br_core] gunshop: %d is mid-channel with no slot for "%s" -- '
+           .. 'handing it over when the channel ends'):format(src, row.id))
+    BR.Inv.whenFree(src, function()
+        handOver(src, row, restock, 'when their channel ended')
+    end)
 end
 
 --- IS THE POOL THIS ROW FILLS ALREADY AT ITS CEILING?
@@ -727,27 +799,15 @@ AddEventHandler(BR.Net.GUNSHOP_BUY, function(d)
             -- and says so, exactly as the first one does -- there is still no
             -- refund path, and inventing one for a window we introduced would be
             -- a rule the rest of the file does not have.
+            --
+            -- handOver is that gate, and the one place a weapon is handed over:
+            -- a buyer who is mid-channel with no free slot is handed it when
+            -- the channel ends, through the same gate again (#271).
             TriggerClientEvent(BR.Net.GUNSHOP_BOUGHT, src, { row = row.id })
 
             SetTimeout(tonumber(G.handoverMs) or 0, function()
-                local m2 = BR.Server.matchOf(src)
-                local e3 = BR.Roster.get(src)
-                if not m2 or m2.state ~= BR.MatchState.PLAYING
-                   or not e3 or e3.state ~= BR.PlayerState.ALIVE then
-                    -- BACK ON THE SHELF, because nothing was handed over. The
-                    -- rule is stated at `reserved` above and both of the other
-                    -- failure arms already keep it; a forfeit that left the
-                    -- count short would take a rifle out of the match that
-                    -- nobody ever received.
-                    release()
-                    print(('^3[br_core] gunshop: %d was charged %d Volts for '
-                           .. '"%s" and was no longer alive in a live match '
-                           .. 'when the clerk finished handing it over -- '
-                           .. 'FORFEITED, no item and no refund^7')
-                        :format(src, row.price, row.id))
-                    return
-                end
-                deliver(src, row)
+                handOver(src, row, release,
+                         'when the clerk finished handing it over')
             end)
         end)
 end)

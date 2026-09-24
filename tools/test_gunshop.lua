@@ -3109,16 +3109,38 @@ do
     do
         local MELEE = BR.Config.Loot.meleeSlot or 0
         local invHandlers = {}
+        -- THE CHANNEL TICK AND ITS CLOCK, because a purchase that waits for the
+        -- bar (below) is handed over by that tick. `invTick` is what the file
+        -- registers at load; `clock` is the GetGameTimer it reads, starting
+        -- where this block's own stub does.
+        local invTick
+        local clock = 1234567
         local IBR = setmetatable({
             Inv = {},
-            -- The channel tick registers at load; nothing here advances it.
-            Sched = { every = function() end },
+            Sched = { every = function(_, _, fn) invTick = fn end },
             LootLabel = function(s) return s.item end,
+            -- The tick walks the roster, which this block's stub cannot do.
+            Roster = {
+                get = function(src) return roster[src] end,
+                each = function(pred, fn)
+                    local ids = {}
+                    for src in pairs(roster) do ids[#ids + 1] = src end
+                    table.sort(ids)
+                    for _, src in ipairs(ids) do
+                        local e = roster[src]
+                        if not pred or pred(e) then fn(src, e) end
+                    end
+                end,
+            },
+            -- The completion stamps the health audit's window off
+            -- config/match.lua, which this suite does not load.
+            Config = setmetatable({ Combat = {} }, { __index = BR.Config }),
         }, { __index = BR })
         local env = setmetatable({
             BR = IBR,
             RegisterNetEvent = function() end,
             AddEventHandler = function(n, fn) invHandlers[n] = fn end,
+            GetGameTimer = function() return clock end,
         }, { __index = _G })
         local chunk, err = loadfile(ROOT .. 'br_core/server/inventory.lua', 't', env)
         if not chunk then
@@ -3183,6 +3205,155 @@ do
         ok(idle.slots[idle.active] and idle.slots[idle.active].item == 'carbinerifle',
             'a buyer who is not using anything has the rifle in their hands',
             ('active %s'):format(tostring(idle.active)))
+
+        -- ═══ NO SLOT BUT THE HAND: THE PURCHASE WAITS FOR THE BAR (#271) ═══
+        --
+        -- The review's second probe, at the counter: a full bag, the pistol up,
+        -- and a shield opened from the panel. The rifle used to swap the pistol
+        -- out of the hand while the bar ran. The rule: the purchase is not
+        -- refused and not lost -- not dropped at their feet either -- and is
+        -- handed over the moment the channel ends, as any purchase is: into the
+        -- hand (I3). If the buyer is knocked down, killed or leaves first, it is
+        -- what the counter already does with a buyer who is not alive at the
+        -- handover: no gun, no refund, and the unit back on the shelf.
+
+        --- A shield channel on slot 1, a gun in every other slot, and the hand
+        --- on the pistol in slot 2 -- the first gun, so it came up by itself.
+        --- @param src integer
+        --- @param shields integer|nil  a stack of more than one is not emptied
+        ---                             by the landing, so the bag stays full
+        local function busyBuyer(src, shields)
+            reset()
+            player(src)
+            BR.Inv = realInv
+            realInv.give(src, { item = 'shield', kind = BR.ItemKind.CONSUMABLE,
+                                rarity = BR.Config.ConsumableById['shield'].rarity,
+                                count = shields or 1 })
+            for _, id in ipairs({ 'pistol', 'sawnoff', 'microsmg', 'combatpdw' }) do
+                realInv.give(src, { item = id, kind = BR.ItemKind.WEAPON,
+                                    rarity = 1, count = 1, clip = 1 })
+            end
+            roster[src].hp = 80
+            _G.source = src
+            invHandlers[BR.Net.INV_USE]({ slot = 1 })
+            return realInv.of(src)
+        end
+
+        --- How many slots hold this item.
+        local function held(i, item)
+            local n = 0
+            for s = 1, BR.Config.Loot.slots do
+                if i.slots[s] and i.slots[s].item == item then n = n + 1 end
+            end
+            return n
+        end
+
+        --- One pass of the channel tick, at `at`.
+        local function tickAt(at)
+            clock = at
+            quiet(invTick)
+        end
+
+        local function onShelf() return shelfAt('pillbox').carbinerifle end
+
+        inv = busyBuyer(99)
+        ok(inv.using ~= nil and inv.active == 2 and held(inv, 'pistol') == 1
+           and inv.slots[2].item == 'pistol' and held(inv, 'sawnoff') == 1
+           and held(inv, 'microsmg') == 1 and held(inv, 'combatpdw') == 1,
+            'precondition: a channel on slot 1, every slot full, the pistol up',
+            ('active %s'):format(tostring(inv.active)))
+        local before = onShelf()
+        buy(99, 'carbinerifle')
+        ok(#charged == 1, 'the purchase goes through -- nothing is refused',
+            #charged)
+        ok(held(inv, 'carbinerifle') == 0,
+            'but the rifle is not in the bag while the bar runs -- there was no '
+                .. 'slot for it but the hand')
+        ok(inv.slots[2].item == 'pistol' and inv.active == 2,
+            'so the pistol stays in the hand, where the swap used to take it',
+            tostring(inv.slots[2].item))
+        ok(#dropped == 0,
+            'and it is not dropped at their feet -- it is not lost, it is held',
+            #dropped)
+        ok(onShelf() == before - 1, 'it is sold: the unit stays off the shelf',
+            ('%s -> %s'):format(tostring(before), tostring(onShelf())))
+        ok(inv.using ~= nil and inv.using.slot == 1, 'and the heal runs on')
+
+        tickAt(inv.using.endsAt)
+        ok(inv.using == nil and held(inv, 'shield') == 0,
+            'precondition: the bar landed and spent the shield')
+        ok(held(inv, 'carbinerifle') == 1,
+            'and the rifle is handed over on the same pass the bar lands on',
+            held(inv, 'carbinerifle'))
+        ok(inv.slots[inv.active] and inv.slots[inv.active].item == 'carbinerifle',
+            'straight into the hand, like any purchase outside a channel (I3)',
+            ('active %s'):format(tostring(inv.active)))
+        ok(lastPush(99) and lastPush(99).active == inv.active,
+            'and the client is told')
+        tickAt(clock + 250)
+        ok(held(inv, 'carbinerifle') == 1 and #dropped == 0 and #charged == 1,
+            'once, and for one payment')
+
+        -- A BAG STILL FULL WHEN THE BAR LANDS is an ordinary full bag by then:
+        -- the purchase trades out the hand, and what it trades lands at their
+        -- feet, as it does for any buyer.
+        inv = busyBuyer(100, 2)
+        buy(100, 'carbinerifle')
+        ok(held(inv, 'carbinerifle') == 0, 'precondition: held while the bar runs')
+        tickAt(inv.using.endsAt)
+        ok(inv.slots[2] and inv.slots[2].item == 'carbinerifle' and inv.active == 2,
+            'a bag the landing left full takes the rifle into the hand',
+            tostring(inv.slots[2] and inv.slots[2].item))
+        ok(#dropped == 1 and dropped[1].stack.item == 'pistol',
+            'and the pistol it traded goes down at their feet',
+            dropped[1] and dropped[1].stack.item)
+
+        -- TAKING FIRE ENDS THE CHANNEL AND COSTS THE PLAYER NOTHING -- and the
+        -- rifle comes then, because that is when the channel ended.
+        inv = busyBuyer(101)
+        buy(101, 'carbinerifle')
+        roster[101].hp = 60
+        tickAt(clock + 250)
+        ok(inv.using == nil and held(inv, 'shield') == 1,
+            'precondition: a hit ended the channel and the shield is kept')
+        ok(inv.slots[inv.active] and inv.slots[inv.active].item == 'carbinerifle',
+            'and the rifle is handed over into the hand on that pass',
+            ('active %s'):format(tostring(inv.active)))
+
+        -- KNOCKED DOWN, KILLED OR GONE BEFORE THE BAR LANDS. The counter's rule
+        -- for a buyer who is not alive at the handover, asked again: no gun,
+        -- no refund, back on the shelf.
+        inv = busyBuyer(102)
+        before = onShelf()
+        buy(102, 'carbinerifle')
+        roster[102].state = BR.PlayerState.DBNO
+        tickAt(clock + 250)
+        ok(inv.using == nil, 'precondition: going down ended the channel')
+        ok(held(inv, 'carbinerifle') == 0 and #dropped == 0,
+            'a buyer knocked down before the bar lands is not handed the rifle, '
+                .. 'as they would not be at the end of the clerk\'s handover')
+        ok(#charged == 1, 'and is not refunded -- there is no refund path')
+        ok(onShelf() == before,
+            'but the rifle goes back on the shelf, because nobody received it',
+            ('%s -> %s'):format(tostring(before), tostring(onShelf())))
+
+        inv = busyBuyer(103)
+        before = onShelf()
+        buy(103, 'carbinerifle')
+        roster[103].state = BR.PlayerState.OUT
+        realInv.dropAll(103)
+        tickAt(clock + 250)
+        ok(held(inv, 'carbinerifle') == 0 and #dropped == 0 and onShelf() == before,
+            'the same for a buyer killed first -- the death box ends the channel '
+                .. 'outside the tick, and the next pass forfeits it')
+
+        inv = busyBuyer(104)
+        before = onShelf()
+        buy(104, 'carbinerifle')
+        roster[104] = nil
+        tickAt(clock + 250)
+        ok(held(inv, 'carbinerifle') == 0 and #dropped == 0 and onShelf() == before,
+            'and for a buyer who left the server with the bar still running')
 
         BR.Inv = stubInv
     end

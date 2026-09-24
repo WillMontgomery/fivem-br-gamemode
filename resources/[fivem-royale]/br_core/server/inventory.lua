@@ -557,6 +557,70 @@ end
 -- is written down. BR.Inv.give asks it too (#271), and give comes first.
 local channelled
 
+--- ═══ WHERE A GRANT MAY LAND WHILE SOMETHING IS BEING DRUNK (#271) ═══
+---
+---   "we should also prevent them from changing slots mid-use."
+---                                                 -- owner, 2026-09-23
+---
+--- THE RULE, IN ONE PLACE: while a channel runs, a grant never lands in the
+--- slot in hand or the channeled slot, and never swaps either one out. It takes
+--- another free slot if there is one; with none it is not taken, and give()
+--- answers `busy`. These two functions are where give() finds a slot; the other
+--- half of the rule is the arming rule inside give(), which does not write
+--- `inv.active` at all while a channel runs.
+---
+--- THE ARMING RULE ALONE (2512fba) LEFT TWO WAYS for a grant to change the hand:
+---
+---   AN EMPTY SLOT IN HAND. The slot keys and the wheel select empty slots, a
+---     one-count consumable leaves one when it is spent, and the panel's Use
+---     starts a channel without selecting. When the first free slot was the
+---     hand, the gun landed IN it and the client brought it up with the bar
+---     running -- `inv.active` never moved, so the gate never saw it.
+---   A FULL BAG. The swap traded out the hand, so the new item came up
+---     mid-channel -- or, on fists, slot 1, which can be the channeled slot
+---     itself, and then the identity guard ended the channel.
+---
+--- WHAT `busy` MEANS IS THE CALLER'S, and no caller says anything to the
+--- player: a floor pickup stays on the floor (server/loot.lua), and a gun-shop
+--- purchase is handed over when the channel ends (server/gunshop.lua, through
+--- BR.Inv.whenFree).
+---
+--- A TOP-UP IS NOT A LANDING. Adding to the stack already in either slot moves
+--- nothing -- the hand holds the item it held, and the identity guard reads the
+--- same item -- so the consumable branch still tops up first, as it always has.
+---
+--- OUTSIDE A CHANNEL NOTHING CHANGES: freeSlot is the first empty slot and
+--- swapSlot is `math.max(inv.active, 1)`, which is what both branches of give()
+--- worked out inline before.
+
+--- The first empty numbered slot a grant may land in, or nil.
+---
+--- ONLY THE HAND IS SKIPPED. The channeled slot is never empty while its
+--- channel runs -- INV_SWAP and INV_DROP refuse to move it, and every path that
+--- spends it ends the channel in the same pass -- so a test for it here would
+--- be a condition with no case. On fists `inv.active` is 0, which is not a
+--- numbered slot, and nothing is skipped.
+--- @param inv table
+--- @return integer|nil
+local function freeSlot(inv)
+    local busy = channelled(inv)
+    for i = 1, SLOTS do
+        if not inv.slots[i] and not (busy and i == inv.active) then return i end
+    end
+    return nil
+end
+
+--- The slot a full bag trades out, or nil while a channel runs.
+---
+--- The hand, or slot 1 on fists: slot 0 holds nothing to displace and must
+--- stay empty.
+--- @param inv table
+--- @return integer|nil
+local function swapSlot(inv)
+    if channelled(inv) then return nil end
+    return math.max(inv.active, 1)
+end
+
 --- Put a stack into a player's inventory.
 ---
 --- Returns what happened, because the caller (a claim, a chest, a death box)
@@ -564,7 +628,8 @@ local channelled
 ---   ok        -- any of it was taken
 ---   displaced -- a stack pushed out to make room, or the part of this one
 ---                that did not fit, for the world to catch
----   reason    -- why nothing was taken
+---   reason    -- why nothing was taken. `busy` is a channel running with no
+---                slot a grant may land in; see freeSlot above
 ---
 --- WEAPONS DISPLACE, EVERYTHING ELSE REFUSES. Picking up a rifle with five
 --- full slots swaps it for whatever is in hand, which is what the muscle
@@ -660,10 +725,7 @@ function BR.Inv.give(src, stack, opts)
         end
 
         while left > 0 do
-            local free = nil
-            for i = 1, SLOTS do
-                if not inv.slots[i] then free = i break end
-            end
+            local free = freeSlot(inv)
             if not free then break end
             local move = math.min(max, left)
             inv.slots[free] = {
@@ -685,7 +747,11 @@ function BR.Inv.give(src, stack, opts)
             -- Fists cannot be swapped out -- slot 0 holds nothing to displace
             -- and must stay empty -- so a full-inventory swap made with an
             -- empty hand lands in slot 1.
-            local at = math.max(inv.active, 1)
+            --
+            -- ...AND NOTHING IS SWAPPED WHILE A CHANNEL RUNS (#271), so the
+            -- bandage stays where it was found. See freeSlot above.
+            local at = swapSlot(inv)
+            if not at then return false, nil, 'busy' end
             local displaced = inv.slots[at] or nil
 
             -- ...BUT NOT FOR AN IDENTICAL ITEM. See isLikeForLike: reaching a
@@ -721,10 +787,7 @@ function BR.Inv.give(src, stack, opts)
     end
 
     -- Weapons.
-    local free = nil
-    for i = 1, SLOTS do
-        if not inv.slots[i] then free = i break end
-    end
+    local free = freeSlot(inv)
 
     local w = BR.Config.WeaponById[stack.item]
 
@@ -749,7 +812,11 @@ function BR.Inv.give(src, stack, opts)
     if free then
         at = free
     else
-        at = math.max(inv.active, 1)   -- never slot 0: fists hold nothing
+        -- Never slot 0: fists hold nothing. And never while a channel runs
+        -- (#271): the gun stays on the floor, or the counter holds it until
+        -- the bar ends. See freeSlot above.
+        at = swapSlot(inv)
+        if not at then return false, nil, 'busy' end
         displaced = inv.slots[at] or nil
 
         -- THE SAME GUN FOR THE SAME GUN IS NOT A TRADE. Nothing has been
@@ -814,16 +881,24 @@ function BR.Inv.give(src, stack, opts)
     -- gun, or walked over one, had it come up in the hand while the bar ran
     -- on. Every grant in the game is a call to this function, and these two
     -- assignments are the only lines in it that write `inv.active` -- the
-    -- consumable and ammo branches never do -- so this is the one place a
-    -- grant is held to the same rule. See `channelled`.
+    -- consumable and ammo branches never do -- so this is where a grant is
+    -- held to the same rule. See `channelled`.
     --
-    -- THE ITEM STILL LANDS WHERE IT WOULD HAVE, and nothing is refused or
-    -- said. Only the hand stays where it was.
+    -- THIS IS HALF OF IT. The other half is WHERE the item lands, and it is
+    -- freeSlot and swapSlot above: mid-channel `at` is never the hand and
+    -- never a swap, so by this line the gun is in some other slot and the
+    -- only way left for it to reach the hand is these two assignments.
     --
     -- NOT DEFERRED TO THE END OF THE CHANNEL EITHER. The player did not ask
     -- for the switch at that moment, and a hand that moves by itself when the
     -- bar lands -- seconds after the purchase, perhaps mid-fight -- is a
     -- switch nobody pressed. What they bought is one key away.
+    --
+    -- ...WHICH IS NOT WHAT HAPPENS TO A PURCHASE THAT HAD NOWHERE TO LAND.
+    -- That one is not in the bag at all until the bar ends; the counter hands
+    -- it over then (BR.Inv.whenFree), no channel is running, and it comes up
+    -- in the hand like any purchase does (#271, 2026-09-24). A gun ARRIVING
+    -- in the hand is I3; a gun already in the bag moving there later is not.
     if not channelled(inv) then
         if type(opts) == 'table' and opts.focus == true then
             inv.active = at
@@ -997,13 +1072,15 @@ end
 ---
 --- A purchase's `focus` and a pickup into an empty hand both set `inv.active`
 --- inside BR.Inv.give, and neither is a keypress, so none of the four refusals
---- above ever saw them. The arming rule there asks this too: the item lands in
---- its slot as it always did and the hand stays where it was.
+--- above ever saw them. The arming rule there asks this too, and so does where
+--- a grant LANDS (freeSlot and swapSlot, above BR.Inv.give): never in the hand
+--- or the channeled slot, and never a swap. With no other slot free, a floor
+--- pickup stays on the floor and a purchase waits for the bar to end -- both in
+--- silence, as a refused key is.
 ---
---- ⚠ A FULL BAG IS STILL A DOOR. A grant with nowhere else to go swaps out the
---- slot give() picks -- the hand, or slot 1 on fists -- and when that is the
---- channeled slot the stack leaves and the identity guard ends the channel.
---- Refusing it needs a refusal message, which is the owner's copy.
+--- THAT CLOSES THE FULL BAG TOO. It was the last door: a grant with nowhere
+--- else to go swapped out the hand, or slot 1 on fists, and when that was the
+--- channeled slot the stack left and the identity guard ended the channel.
 ---
 --- ═══ WHAT IS DELIBERATELY STILL ABLE TO END A CHANNEL ═══
 ---
@@ -1799,6 +1876,38 @@ function BR.Inv.cancelUse(src, why)
     if why then BR.Server.notify(src, why, 'warn') end
 end
 
+--- What is waiting for a player's hands to come free. `waiting[src] = { fn }`.
+local waiting = {}
+
+--- RUN `fn` WHEN THIS PLAYER'S CHANNEL IS OVER, HOWEVER IT ENDS (#271).
+---
+--- ONE CALLER: THE GUN SHOP, for a purchase BR.Inv.give answered `busy` --
+--- a channel running and no slot but the hand to put the gun in. The rule
+--- (#271, 2026-09-24): a purchase is not refused and not lost; it is handed
+--- over the moment the channel ends. So the counter queues its own handover
+--- here and this file says when.
+---
+--- RUN ON THE PASS THE CHANNEL ENDS ON, from the tick loop below, after every
+--- channel has been stepped -- so a completion, a cancel for taking fire and
+--- the LIVE guard dropping a downed player's channel all run it on the same
+--- pass that ended the channel, before any keypress can open another. The
+--- ends that happen outside that loop -- the death box's BR.Inv.dropAll, a
+--- reset, a player leaving the roster -- run it on the next pass.
+---
+--- `fn` DECIDES WHAT THE END MEANS, not this file. A buyer who was knocked
+--- down, killed, or left is no longer somebody the counter hands a gun to, and
+--- the counter already has a rule for that; see server/gunshop.lua.
+--- @param src integer
+--- @param fn fun()
+function BR.Inv.whenFree(src, fn)
+    local q = waiting[src]
+    if not q then
+        q = {}
+        waiting[src] = q
+    end
+    q[#q + 1] = fn
+end
+
 -- 250ms: fine enough that a cancelled use stops looking like it worked, and
 -- coarse enough to be free.
 --
@@ -2288,4 +2397,26 @@ BR.Sched.every(250, 'inv.use', function()
 
             BR.Inv.push(src)
         end)
+
+    -- ═══ AND WHAT WAS WAITING FOR THOSE HANDS GOES OUT NOW (#271) ═══
+    --
+    -- After every channel above has been stepped, so a channel that ended on
+    -- this pass hands over on this pass. See BR.Inv.whenFree. A player with no
+    -- roster entry or no inventory left has no channel either, and is run too:
+    -- the caller's own rule is what turns that into a forfeit.
+    --
+    -- SORTED BY SERVER ID, because pairs() has no order; within one player,
+    -- in the order queued, so two purchases waiting on one channel land in the
+    -- order they were paid for.
+    local due = {}
+    for src in pairs(waiting) do due[#due + 1] = src end
+    table.sort(due)
+    for _, src in ipairs(due) do
+        local e = BR.Roster.get(src)
+        if not (e and e.inv and e.inv.using) then
+            local q = waiting[src]
+            waiting[src] = nil
+            for _, fn in ipairs(q) do fn() end
+        end
+    end
 end)

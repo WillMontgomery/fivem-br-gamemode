@@ -1367,10 +1367,21 @@ AddEventHandler(BR.Net.LOOT_CLAIM, function(d)
 
     local ok, displaced, reason = BR.Inv.give(src, item)
     if not ok then
-        -- ONE CALL, NO BRANCHES, NO WAY OUT WITHOUT SPEAKING. The chain this
-        -- replaces had a branch for `full`, which BR.Inv.give has never
-        -- returned, and none for `noinv`, which it can -- see the note above
-        -- REFUSAL.
+        -- ═══ ONE WAY OUT WITHOUT SPEAKING, AND IT IS #271's ═══
+        --
+        -- `busy`: a channel is running and the only place this could go is the
+        -- hand, or a swap out of it (see freeSlot in server/inventory.lua). The
+        -- rule (#271, 2026-09-24): the item stays on the floor, exactly as if
+        -- it had not been claimed. That is the same silence the slot keys get
+        -- mid-channel; what a refused key should say is the owner's copy, and
+        -- he has not written any. Nothing is retired, so the pickup works the
+        -- moment the bar ends.
+        if reason == 'busy' then return end
+
+        -- EVERY OTHER REASON: ONE CALL, NO BRANCHES, NO WAY OUT WITHOUT
+        -- SPEAKING. The chain this replaces had a branch for `full`, which
+        -- BR.Inv.give has never returned, and none for `noinv`, which it can
+        -- -- see the note above REFUSAL.
         BR.Server.notify(src, BR.Loot.refusalText(reason, item), 'warn')
         return
     end

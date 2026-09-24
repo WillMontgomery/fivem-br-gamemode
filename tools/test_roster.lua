@@ -8172,6 +8172,224 @@ do
             .. 'hand, as I3 has it',
         ('active %s'):format(tostring(inv.active)))
 
+    -- ═══ ...AND NOTHING LANDS IN THE HAND, OR SWAPS IT OUT (#271) ═══
+    --
+    -- The arming rule holds the hand's INDEX still. A review of it found two
+    -- shapes in which what the hand HOLDS changed anyway, and these are its two
+    -- probes: an empty slot in hand that is also the first free slot, and a
+    -- full bag whose swap trades out the hand. The rule: mid-channel a grant
+    -- lands in another free slot or not at all; a floor pickup that cannot
+    -- stays on the floor, in silence.
+
+    --- Put a stack on the floor under player 1 and claim it through the real
+    --- LOOT_CLAIM, the way walking over it does. Returns the floor entry.
+    local function claimFloor(stack)
+        standInCell(1, 400, 400)
+        local p = BR.Roster.get(1).pos
+        local e = BR.Loot.spawnStack(theMatch(), stack, p.x, p.y, p.z)
+        local cx, cy = BR.LootCellOf(e.x, e.y)
+        fire(BR.Net.LOOT_CELL, 1, { cx = cx, cy = cy })
+        fire(BR.Net.LOOT_CLAIM, 1, { id = e.id })
+        return e
+    end
+
+    --- Open a shield channel on slot 1 from the panel, which leaves the hand
+    --- wherever it already was.
+    local function drinkFromPanel(i)
+        pedArmour[1001] = 0
+        pedHealth[1001] = nil
+        fakeTime = fakeTime + 250
+        BR.Sched.step(fakeTime)
+        sent = {}
+        fire(BR.Net.INV_USE, 1, { slot = 1 })
+        return i
+    end
+
+    --- A shield on slot 1 and the hand on slot 2, EMPTY -- selected with a slot
+    --- key, which is allowed -- so the hand is the first free slot there is.
+    local function emptyHand()
+        lootMatch()
+        BR.Inv.reset(1)
+        BR.Inv.give(1, { item = 'shield', kind = BR.ItemKind.CONSUMABLE,
+                         rarity = shield.rarity or 2, count = 1 })
+        fire(BR.Net.INV_SELECT, 1, { slot = 2 })
+        return drinkFromPanel(BR.Inv.of(1))
+    end
+
+    --- A shield on slot 1, a gun in every other slot, and the hand on `hand`.
+    --- The first gun comes up in the empty hand, so `hand` 2 is the pistol.
+    local function fullBag(hand, shields)
+        lootMatch()
+        BR.Inv.reset(1)
+        BR.Inv.give(1, { item = 'shield', kind = BR.ItemKind.CONSUMABLE,
+                         rarity = shield.rarity or 2, count = shields or 1 })
+        for _, id in ipairs({ 'pistol', 'sawnoff', 'microsmg', 'combatpdw' }) do
+            BR.Inv.give(1, { item = id, kind = BR.ItemKind.WEAPON, rarity = 1,
+                             count = 1, clip = 1 })
+        end
+        fire(BR.Net.INV_SELECT, 1, { slot = hand })
+        return drinkFromPanel(BR.Inv.of(1))
+    end
+
+    --- Is every numbered slot holding something?
+    local function full(i)
+        for s = 1, BR.Config.Loot.slots do
+            if not i.slots[s] then return false end
+        end
+        return true
+    end
+
+    -- ── PROBE 1: THE HAND IS AN EMPTY SLOT ────────────────────────────────
+    inv = emptyHand()
+    ok(inv.using ~= nil and inv.active == 2 and inv.slots[2] == false,
+        'precondition: a channel on slot 1, and the hand on slot 2, which is '
+            .. 'empty and the first free slot',
+        ('active %s'):format(tostring(inv.active)))
+    claimFloor({ item = 'sawnoff', kind = BR.ItemKind.WEAPON, rarity = 1,
+                 count = 1, clip = 8 })
+    ok(inv.slots[2] == false,
+        'a gun walked over mid-channel does NOT land in the empty slot in hand '
+            .. '-- the index never moved, which is all the arming rule holds',
+        tostring(inv.slots[2] and inv.slots[2].item))
+    ok(inv.slots[3] and inv.slots[3].item == 'sawnoff',
+        'it takes the next free slot instead',
+        tostring(inv.slots[3] and inv.slots[3].item))
+    ok(inv.active == 2 and lastPush() and lastPush().active == 2
+       and lastPush().slots[2] == false,
+        'and the client is told its hand is on an empty slot still, so nothing '
+            .. 'comes up while the bar runs')
+    ok(inv.using ~= nil, 'with the channel running on')
+
+    inv = emptyHand()
+    buyGun('carbinerifle')
+    ok(inv.slots[2] == false and inv.slots[3]
+       and inv.slots[3].item == 'carbinerifle' and inv.active == 2,
+        'and a purchase lands past the empty hand the same way',
+        ('2:%s 3:%s active %s'):format(
+            tostring(inv.slots[2] and inv.slots[2].item),
+            tostring(inv.slots[3] and inv.slots[3].item), tostring(inv.active)))
+
+    -- ── PROBE 2: A FULL BAG, AND THE HAND ON A GUN ────────────────────────
+    inv = fullBag(2)
+    ok(inv.using ~= nil and inv.using.slot == 1 and inv.active == 2
+       and inv.slots[2] and inv.slots[2].item == 'pistol' and full(inv),
+        'precondition: a channel on slot 1, every slot full, and the hand on '
+            .. 'the pistol in slot 2', ('active %s'):format(tostring(inv.active)))
+    sent = {}
+    local rifle = claimFloor({ item = 'carbinerifle', kind = BR.ItemKind.WEAPON,
+                               rarity = 3, count = 1, clip = 30 })
+    ok(inv.slots[2] and inv.slots[2].item == 'pistol',
+        'a gun walked over with a full bag does NOT swap out the hand mid-channel',
+        tostring(inv.slots[2] and inv.slots[2].item))
+    ok(theMatch().loot.items[rifle.id] ~= nil,
+        'it stays on the floor, exactly as if it had not been claimed')
+    ok(#eventsOf(BR.Net.NOTIFY) == 0,
+        'and nothing is said -- the same silence a refused slot key gets',
+        #eventsOf(BR.Net.NOTIFY))
+    ok(inv.using ~= nil and inv.active == 2, 'with the channel running on')
+
+    -- A CONSUMABLE SWAPS OUT THE HAND TOO, in the branch of give() that took the
+    -- owner's 2026-08-05 swap, so it is a door of its own.
+    inv = fullBag(2)
+    sent = {}
+    local band = claimFloor({ item = 'bandage', kind = BR.ItemKind.CONSUMABLE,
+                              rarity = BR.Config.ConsumableById['bandage'].rarity,
+                              count = 1 })
+    ok(inv.slots[2] and inv.slots[2].item == 'pistol'
+       and theMatch().loot.items[band.id] ~= nil and #eventsOf(BR.Net.NOTIFY) == 0,
+        'a bandage walked over is left on the floor in silence as well',
+        tostring(inv.slots[2] and inv.slots[2].item))
+
+    -- AND ON FISTS THE SWAP WAS SLOT 1 -- THE CHANNELED SLOT. That was the door
+    -- 2512fba left open by name: the shield went on the floor and the identity
+    -- guard ended the channel on the next pass.
+    inv = fullBag(MELEE)
+    ok(inv.using ~= nil and inv.active == MELEE and full(inv),
+        'precondition: the same bag with the hand on fists')
+    claimFloor({ item = 'carbinerifle', kind = BR.ItemKind.WEAPON, rarity = 3,
+                 count = 1, clip = 30 })
+    fakeTime = fakeTime + 250
+    BR.Sched.step(fakeTime)
+    ok(inv.slots[1] and inv.slots[1].item == 'shield' and inv.using ~= nil,
+        'a pickup on fists does not trade out the channeled slot, and the '
+            .. 'channel it would have ended runs on',
+        tostring(inv.slots[1] and inv.slots[1].item))
+
+    -- A PURCHASE IS ANSWERED `busy`, and what the counter does with that is
+    -- tools/test_gunshop.lua's to pin: it hands the gun over when the bar ends.
+    inv = fullBag(2)
+    do
+        local took, _, why = BR.Inv.give(1, {
+            item = 'carbinerifle', kind = BR.ItemKind.WEAPON, rarity = 3,
+            count = 1, clip = 0, sold = true }, { quiet = true, focus = true })
+        ok(not took and why == 'busy',
+            'a purchase into a full bag mid-channel is not taken, and says why '
+                .. 'to its caller', tostring(why))
+    end
+    ok(inv.slots[2] and inv.slots[2].item == 'pistol' and inv.active == 2,
+        'and the hand is untouched', tostring(inv.slots[2] and inv.slots[2].item))
+
+    -- ...AND WHEN THE BAR LANDS, THE SAME FLOOR GUN IS THERE TO TAKE, and it
+    -- is taken exactly as it always was: a full bag swaps out the hand. Two
+    -- shields, so the landing does not free a slot and the swap is the only way
+    -- in. Outside a channel nothing about a pickup changed.
+    inv = fullBag(2, 2)
+    rifle = claimFloor({ item = 'carbinerifle', kind = BR.ItemKind.WEAPON,
+                         rarity = 3, count = 1, clip = 30 })
+    ok(inv.slots[2].item == 'pistol', 'precondition: refused mid-channel')
+    while inv.using and fakeTime < inv.using.endsAt + 500 do
+        fakeTime = fakeTime + 250
+        BR.Sched.step(fakeTime)
+    end
+    ok(inv.using == nil and full(inv),
+        'precondition: the channel landed, one shield left, the bag still full')
+    -- Back over the rifle: the roster's position pass ran with every tick.
+    standInCell(1, 400, 400)
+    fire(BR.Net.LOOT_CLAIM, 1, { id = rifle.id })
+    ok(inv.slots[2] and inv.slots[2].item == 'carbinerifle' and inv.active == 2
+       and theMatch().loot.items[rifle.id] == nil,
+        'the same claim after the bar swaps it into the hand, as it always did',
+        tostring(inv.slots[2] and inv.slots[2].item))
+
+    -- ── BR.Inv.whenFree: the counter's half of the rule rests on WHEN ───────
+    --
+    -- A purchase with nowhere to land is handed over "the moment the channel
+    -- ends", and this is the moment: the pass the channel ends on, however it
+    -- ends. Pinned on the inventory's side because that is where the pass is.
+    inv = nearlyDone(1000)
+    do
+        local ran, ranAt = 0, nil
+        BR.Inv.whenFree(1, function() ran = ran + 1 end)
+        fakeTime = fakeTime + 250
+        BR.Sched.step(fakeTime)
+        ok(ran == 0 and inv.using ~= nil, 'whenFree waits while the channel runs',
+            ran)
+        while inv.using and fakeTime < inv.using.endsAt + 500 do
+            fakeTime = fakeTime + 250
+            BR.Sched.step(fakeTime)
+            if not inv.using then ranAt = ran end
+        end
+        ok(ranAt == 1,
+            'and runs on the very pass the channel lands on, not a pass later',
+            tostring(ranAt))
+        fakeTime = fakeTime + 250
+        BR.Sched.step(fakeTime)
+        ok(ran == 1, 'exactly once', ran)
+    end
+
+    -- AN END OUTSIDE THE TICK -- the death box empties the bag and drops the
+    -- channel on its own -- is picked up by the next pass.
+    inv = nearlyDone(1000)
+    do
+        local ran = 0
+        BR.Inv.whenFree(1, function() ran = ran + 1 end)
+        BR.Inv.dropAll(1)
+        fakeTime = fakeTime + 250
+        BR.Sched.step(fakeTime)
+        ok(ran == 1, 'a channel dropped by the death box runs it on the next pass',
+            ran)
+    end
+
     -- ── the legitimate paths, which are the whole reason this is a lock and
     --    not a cooldown ─────────────────────────────────────────────────────
     --
