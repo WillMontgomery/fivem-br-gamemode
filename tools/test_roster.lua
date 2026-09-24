@@ -4429,9 +4429,9 @@ do
             label .. ': and on the bulge -- outside the radius, inside the wall -- they '
                 .. 'are, and it is',
             ('%.0fs left'):format(left(m) / 1000))
-        if SEED == TRI then
+        if SEED == PENT then
             ok(R1 - dentR > 100.0 and bulgeR - R1 > 100.0,
-                'and on the triangle the radius is wrong by over a hundred metres both '
+                'and on the pentagon the radius is wrong by over a hundred metres both '
                     .. 'ways -- the case the shape test exists for',
                 ('dent %.0f m in, bulge %.0f m out'):format(R1 - dentR, bulgeR - R1))
         end

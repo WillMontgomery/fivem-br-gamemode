@@ -203,8 +203,7 @@ BR.Config.Storm = {
         -- The first shrink has been tuned in both directions from live
         -- feel: 150 read as scenery (2026-08-03, cut to 60), 60 read as a
         -- charge ("far too fast -- 50% the current speed", 2026-08-04,
-        -- doubled back to 120). Note the start-cap payback in
-        -- server/storm.lua ADDS trimmed hold seconds on top of this.
+        -- doubled back to 120).
         -- dps column reads as kill time: 100, 80, 60, 45, 35, 25, 20, 15s.
         -- PHASE 1'S SHRINK CEILING IS DELIBERATELY HUGE. The sweep is priced
         -- off the furthest player's run, floored at 40s and capped by this --
