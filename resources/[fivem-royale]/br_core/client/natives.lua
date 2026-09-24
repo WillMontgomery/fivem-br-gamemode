@@ -2460,9 +2460,16 @@ function BR.Native.applyGameRules()
             -- is untouched. Not while no menu is up: with nothing on screen,
             -- Escape is the pause key's and this block has never disabled a
             -- control id for it.
+            --
+            -- AND 322, WHICH IS ESCAPE TOO. The FiveM controls table binds
+            -- INPUT_REPLAY_TOGGLE_TIMELINE to ESC beside 200, and it is the id
+            -- FiveM scripts commonly disable to keep Escape away from the pause
+            -- menu. Nothing in this tree reads it, so holding it down for the
+            -- same window costs nothing outside the Rockstar Editor.
             if menuEsc then
                 DisableControlAction(0, 199, true)  -- FRONTEND_PAUSE
                 DisableControlAction(0, 200, true)  -- FRONTEND_PAUSE_ALTERNATE
+                DisableControlAction(0, 322, true)  -- REPLAY_TOGGLE_TIMELINE
             end
             if frontendUp then
                 SetFrontendActive(false)

@@ -15631,7 +15631,7 @@ do
     -- its own; bootOn has to run after it.
     IsRawKeyDown, IsRawKeyPressed = RAW_KEYBOARD.down, RAW_KEYBOARD.pressed
 
-    --- The ENGINE's frontend, modelled by its effect as the block above does.
+    --- The ENGINE's frontend, modeled by its effect as the block above does.
     local frontendUp, frontendYields = false, true
     local frontendDisables = 0
     IsPauseMenuActive = function() return frontendUp end
@@ -15735,10 +15735,11 @@ do
     --    as it did. Every "nothing opened" below is only worth anything
     --    against this.
     -- ------------------------------------------------------------------- --
-    ok(not disabled[199] and not disabled[200],
-       'with no menu up, GTA\'s two pause controls are not touched -- the '
+    ok(not disabled[199] and not disabled[200] and not disabled[322],
+       'with no menu up, none of Escape\'s pause controls is touched -- the '
        .. 'frontend suppression is what holds its menu, as it always was',
-       ('199 %s, 200 %s'):format(tostring(disabled[199]), tostring(disabled[200])))
+       ('199 %s, 200 %s, 322 %s'):format(tostring(disabled[199]),
+           tostring(disabled[200]), tostring(disabled[322])))
     local m, seen = #events, escSeen
     tapEscape()
     ok(escSeen == seen + 1, 'Escape reached the key layer')
@@ -15838,12 +15839,14 @@ do
        .. 'are held down, every frame',
        ('%d frontend disables, 199 %s, 200 %s'):format(frontendDisables,
            tostring(disabled[199]), tostring(disabled[200])))
+    ok(disabled[322] == true,
+       'and 322, the replay timeline toggle, which is Escape as well')
 
     m = #events
     tapEscape(function() shop:Visible(false) end)
     frontendUp = true                  -- the frame after the close
     gameFrame()
-    ok(frontendUp == false and disabled[200] == true,
+    ok(frontendUp == false and disabled[200] == true and disabled[322] == true,
        'the frame after the menu closes is still held, and a frontend that '
        .. 'leaks on it is taken down')
     gameFrames(4)
@@ -15853,7 +15856,7 @@ do
 
     frontendDisables = 0
     gameFrame()
-    ok(frontendDisables == 0 and not disabled[200],
+    ok(frontendDisables == 0 and not disabled[200] and not disabled[322],
        'and once the window is over, the engine has its pause menu back')
     BR.Keys.reset('brpausemenu')
 
@@ -15879,7 +15882,26 @@ do
     reset()
 
     -- ------------------------------------------------------------------- --
-    -- 7. THE SCREENS THAT WERE ALREADY RIGHT STAY RIGHT. The gate moved from
+    -- 7. THE MAP RAISED OVER THE GUN SHOP. The map key still works at the
+    --    counter, and br_ui's frontend route drives GTA's own menu on
+    --    purpose. The map guard applies to the menu's hold as it does to the
+    --    pause key's, so the map is not taken down under the player.
+    -- ------------------------------------------------------------------- --
+    shop:Visible(true)
+    gameFrames(2)
+    m = #events
+    BR.Native.frontendMap = true
+    frontendUp = true
+    frontendDisables = 0
+    gameFrames(4)
+    ok(frontendUp == true and frontendDisables == 0 and toggles(m) == 0,
+       'a map raised over the gun shop stays up, and nothing is disabled '
+       .. 'under it', ('%d frontend disables, %d asks'):format(
+           frontendDisables, toggles(m)))
+    reset()
+
+    -- ------------------------------------------------------------------- --
+    -- 8. THE SCREENS THAT WERE ALREADY RIGHT STAY RIGHT. The gate moved from
     --    `uiScreen` to a function that also asks client/menu.lua, and the
     --    half it replaced has to survive the move. The inventory is the one
     --    that matters: it keeps game input, so the raw layer DOES deliver
