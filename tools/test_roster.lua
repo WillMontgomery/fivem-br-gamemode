@@ -2469,7 +2469,11 @@ do
     -- Nothing failed when it changed, which is precisely the argument for
     -- pinning it: a rewrite of the copy is a change to what the owner asked
     -- for, and it should have to be deliberate.
-    ok(text == 'The match will start once all players have landed.',
+    --
+    -- AND HE HAS SINCE CHANGED ONE WORD OF IT HIMSELF, because #352 starts the
+    -- match at 65% landed: "The match will start once most players have
+    -- landed." (owner, 2026-09-23). That deliberate change is this line.
+    ok(text == 'The match will start once most players have landed.',
        "the notice says the owner's sentence exactly, trailing full stop and all",
        tostring(text))
 

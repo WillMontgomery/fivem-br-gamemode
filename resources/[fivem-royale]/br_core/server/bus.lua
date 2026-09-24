@@ -462,7 +462,7 @@ end)
 --- Once per player per flight; the latch is cleared at BUS entry.
 --- @param m table
 --- Withdraw the `bus.landing` notice -- the one that says the match will start
---- once all players have landed.
+--- once most players have landed.
 ---
 --- NAMED BY ITS KEY RATHER THAN BY ITS SENTENCE, deliberately. The wording has
 --- changed twice at the owner's request and both times left comments elsewhere
@@ -525,11 +525,12 @@ function BR.Bus.landingNotices(m)
             -- are the reason the old four-second version was replaced and they
             -- all stay.
             --
-            -- ⚠ #352 MADE IT INEXACT, AND THE WORDING IS STILL HIS TO CHANGE. The
-            -- match now starts once 65% have landed (server/match.lua), not all of
-            -- them. The sentence is kept verbatim rather than rewritten here.
+            -- AND ONE WORD SINCE, BY HIM. #352 starts the match once 65% have
+            -- landed (server/match.lua), not all of them, and the owner's new
+            -- wording, 2026-09-23: "The match will start once most players have
+            -- landed." Only "all" became "most".
             BR.Server.notify(src,
-                'The match will start once all players have landed.', 'info',
+                'The match will start once most players have landed.', 'info',
                 { key = 'bus.landing', sticky = true })
             print(('[br_core] landing notice -> %s (%d): %d still airborne')
                 :format(e.name, src, airborne))
