@@ -143,7 +143,8 @@ BR.Config.Storm = {
     -- THE MAP DOES NOT DRAW THE FRONT. It shows the zone the phase started in under
     -- the destination's own fill -- the ground the growth ends on -- because a
     -- moving front on the map would be the overlay rebuilt while it moves, which is
-    -- the hitch 52a7caa removed (#350).
+    -- the hitch 52a7caa removed (#350). Once the zone has grown, the union is the
+    -- zone's fill for the rest of the hold, shown by alpha, never rebuilt.
     --
     -- MEASURED over 680 conjoined breakouts (200 matches, phases 2 to 7, every one
     -- forced to break out): the destination reaches 1.0 to 1.3 of its own radius

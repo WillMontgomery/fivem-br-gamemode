@@ -1793,14 +1793,19 @@ end
 -- markers: they are the call #350 traced. config/storm.lua has the measured error
 -- by phase and pair count.
 --
--- A BREAKOUT IS NO DIFFERENT. The moving part is the same keyframes and the
--- destination is its own fill on top, so the union is never drawn as one polygon
--- and never needs rebuilding -- 52a7caa's switch to the nominal-radius blips for a
--- moving union is gone, and those blips are what a REFUSED placement or alpha write
--- hands the map to instead. A CONJOINED GROWTH (storm_solve.lua's BR.StormZone) is
--- not drawn either: for its twenty seconds the map shows the zone the phase started
--- in under the destination's fill -- the union the growth ends on -- because drawing
--- its front would be a rebuild on a motion cadence.
+-- A BREAKOUT IS NO DIFFERENT WHILE IT MOVES. The moving part is the same keyframes
+-- and the destination is its own fill on top, so the moving union is never drawn as
+-- one polygon and never needs rebuilding -- 52a7caa's switch to the nominal-radius
+-- blips for a moving union is gone, and those blips are what a REFUSED placement or
+-- alpha write hands the map to instead. A CONJOINED GROWTH (storm_solve.lua's
+-- BR.StormZone) is not drawn either: for its twenty seconds the map shows the zone
+-- the phase started in under the destination's fill -- the union the growth ends on
+-- -- because drawing its front would be a rebuild on a motion cadence.
+--
+-- AND WHILE IT STANDS STILL, THE UNION IS THE ZONE'S FILL, as 52a7caa painted it:
+-- the same rebuild draws it in place, and the stretch of the hold that does not move
+-- -- after a conjoined zone has grown, the whole hold of one that does not touch --
+-- shows it in place of the zone's keyframe, by alpha (overlayFill).
 
 --- How many areas the overlay is currently showing for us.
 local overlayShown = 0
@@ -2010,6 +2015,7 @@ local function overlayPlan()
     -- appendKeyframe.
     local growing = st == BR.StormPhase.HOLDING and (g or 1.0) < 1.0
         and (BR.StormOverlaps(rec))
+    local apart = rec.r1 > 1.0 and not BR.StormNested(rec)
 
     -- THE SAFE ZONE IS SUPPRESSED FOR THE WHOLE-MAP PHASE-1 HOLD and ramped in on
     -- the map's own share, exactly as the ring above is -- wallShare, one number
@@ -2033,6 +2039,8 @@ local function overlayPlan()
         m = BR.StormMorphFrame(rec, t),
         state = st, zoneA = zoneA, nokeys = nokeys, done = done,
         growing = growing and true or false,
+        -- A BREAKOUT'S UNION, standing still: see overlayFill.
+        union = apart and st == BR.StormPhase.HOLDING and not growing,
     }, key
 end
 
@@ -2045,10 +2053,25 @@ end
 --- `mapnokeys` is ONE keyframe at the zone's own alpha -- V(0), or V(1) once the sweep
 --- is FINISHED -- and never faded: 52a7caa's picture, placed as it was, which is what
 --- makes it the A/B baseline for everything the crossfade adds.
+---
+--- ═══ A BREAKOUT'S UNION IS DRAWN TOO, FOR THE HOLD IT STANDS STILL IN (#344) ═══
+---
+--- On a breakout the safe zone is the wall UNION the destination, and 52a7caa's
+--- static hold painted that union as zone fill with the destination over it. The
+--- keyframes are the moving part alone, so without it the part of the destination
+--- outside the zone showed as destination only and the zone's old edge ran across
+--- the destination for the whole phase, while the wall and the damage tick read one
+--- safe zone. So the rebuild also draws the union in place -- the zone the phase
+--- starts in and the destination, stitched, two islands when they do not touch --
+--- and applyFrames shows it in place of the zone's keyframe for exactly the stretch
+--- of the hold that stands still: after a conjoined zone has finished growing, and
+--- for the whole hold of one that does not touch. It never moves, so it is shown and
+--- hidden by alpha alone; the sweep hides it and the keyframes carry the moving part.
 --- @param plan table  from overlayPlan
 --- @return table|nil areas
 --- @return table|nil frames
 --- @return table|nil pending
+--- @return table|nil unionSlots   the slots the union went out in, on a breakout
 local function overlayFill(plan)
     local ov = cfg.overlay or {}
     local out = {}
@@ -2094,13 +2117,28 @@ local function overlayFill(plan)
             frames[#frames + 1] = f
         end
     end
+    -- A BREAKOUT'S UNION, at full so that it can be faded like a keyframe, and hidden
+    -- on the tick it goes out. The zone the phase starts in is the zone at t = 0 grown
+    -- all the way, which is exactly what the damage tick bills once a growth is over.
+    local unionSlots = nil
+    if not plan.nokeys and rec.r1 > 1.0 and not BR.StormNested(rec) then
+        unionSlots = {}
+        local union = BR.StormZone(rec, rec.cx0, rec.cy0, rec.r0, 0.0, 1.0)
+        local cols = BR.StormShape.polyline(union, ov.chordM, ov.maxPoints)
+        for i = 1, #cols do
+            if #cols[i] >= 3 then
+                out[#out + 1] = { points = cols[i], colour = fillColour(255) }
+                unionSlots[#unionSlots + 1] = #out
+            end
+        end
+    end
     -- AND THE TARGET, LAST, SO IT DRAWS OVER THE ZONE. It never moves, and it is
     -- the destination's own shape where it stands -- BR.StormTarget, the shape the
     -- wall ends on and the damage tick shelters.
     if rec.r1 > 1.0 then pushWorld(BR.StormTarget(rec), cfg.blip.nextAlpha) end
 
     if #out == 0 then return nil end
-    return out, frames, pending
+    return out, frames, pending, unionSlots
 end
 
 --- Each keyframe's alpha for a morph fraction `m`: the two that bracket it share
@@ -2150,6 +2188,11 @@ end
 --- @return boolean ok
 local function applyFrames(at, plan, first)
     local alphas = (not at.fixed) and crossfade(at.frames, plan.m, plan.zoneA) or nil
+    -- A BREAKOUT STANDING STILL SHOWS ITS UNION in place of the zone's keyframe.
+    local union = at.union and plan.union
+    if union and alphas then
+        for i = 1, #alphas do alphas[i] = 0.0 end
+    end
     local resize = first or stormBisectMode ~= 'mapnoresize'
     local placeTrace, alphaTrace = nil, nil
     local ok = true
@@ -2182,6 +2225,20 @@ local function applyFrames(at, plan, first)
                 break
             end
             f.a = a
+        end
+    end
+    if ok and at.union then
+        local ua = union and math.floor(plan.zoneA + 0.5) or 0
+        if first or ua ~= at.union.a then
+            alphaTrace = alphaTrace or BR.Loop.hitchBegin('storm.map.alpha',
+                '10 Hz while the storm is SHRINKING; the phase-1 fade; a keyframe hidden')
+            for _, slot in ipairs(at.union.slots) do
+                if not BR.MapOverlay.alphaArea(slot, ua) then
+                    ok = false
+                    break
+                end
+            end
+            if ok then at.union.a = ua end
         end
     end
     BR.Loop.hitchEnd(placeTrace)
@@ -2342,7 +2399,7 @@ BR.Loop.register(BR.Loop.TICK, 'storm.map', function()
     -- boundary walk per contour.
     local rebuildTrace = BR.Loop.hitchBegin('storm.map.rebuild',
         '<= rebuildHz; once per record, or a first sight, or a refusal redrawn')
-    local areas, frames, pending = overlayFill(plan)
+    local areas, frames, pending, unionSlots = overlayFill(plan)
     if not areas then
         -- THE PLAN WANTED SOMETHING AND THE GEOMETRY HAD NOTHING LEFT -- the final
         -- sweep's last seconds, where every contour has collapsed under three points.
@@ -2357,6 +2414,7 @@ BR.Loop.register(BR.Loop.TICK, 'storm.map', function()
     local at = nil
     if drawn > 0 then
         at = { frames = frames, pending = pending, appendAt = now,
+               union = (unionSlots and #unionSlots > 0) and { slots = unionSlots } or nil,
                fixed = (plan.pv ~= nil) or plan.nokeys }
         -- A KEYFRAME IS DRAWN AT THE WORLD'S ORIGIN AT FULL STRENGTH until it is
         -- placed and faded, so both happen in the same tick -- the calls queue behind
@@ -2436,6 +2494,23 @@ function BR.Storm.setBisectMode(mode)
 end
 
 BR.Storm.bisectMode = stormBisectMode
+
+--- Which movie slots the picture on the map is made of, read-only: the zone's
+--- keyframes and a breakout's union (#344). nil while nothing is drawn. For the suite
+--- and for a dev reading /brstormhitch against what the movie holds -- nothing in
+--- the game reads it.
+--- @return table|nil  { keyframes = { slot, ... }, union = { slot, ... } }
+function BR.Storm.mapSlots()
+    local at = overlayAt
+    if not at then return nil end
+    local k, u = {}, {}
+    for i = 1, #at.frames do k[i] = at.frames[i].slot end
+    table.sort(k)
+    if at.union then
+        for i = 1, #at.union.slots do u[i] = at.union.slots[i] end
+    end
+    return { keyframes = k, union = u }
+end
 
 RegisterCommand('brstormbisect', function(_, args)
     args = args or {}

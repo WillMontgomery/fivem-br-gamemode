@@ -1247,11 +1247,27 @@ local function newStormClient()
         return best, bestO
     end
 
-    --- The keyframes in the movie (#344), in the movie's order.
+    --- The keyframes in the movie (#344), in the movie's order: the areas added at
+    --- full strength, less a breakout's UNION, which goes out at full too and is shown
+    --- and hidden the same way but never placed (C.union).
     function C.keyframes()
-        local out = {}
+        local out, skip = {}, {}
+        for _, ov in ipairs(C.union()) do skip[ov] = true end
         for _, ov in ipairs(C.mm.overlays) do
-            if ov.a == 255 then out[#out + 1] = ov end
+            if ov.a == 255 and not skip[ov] then out[#out + 1] = ov end
+        end
+        return out
+    end
+
+    --- A breakout's union (#344): the contours of the zone the phase starts in and
+    --- the destination, stitched, in world coordinates -- by the slots the renderer
+    --- says it put them in.
+    function C.union()
+        local out = {}
+        local slots = env.BR.Storm.mapSlots and env.BR.Storm.mapSlots()
+        for _, slot in ipairs(slots and slots.union or {}) do
+            local ov = C.mm.overlays[slot]
+            if ov then out[#out + 1] = ov end
         end
         return out
     end
@@ -5785,12 +5801,16 @@ do
             .. 'nanosecond -- it arrives on the union rather than popping onto it',
         ('%.3e m'):format(endErr))
 
-    -- ─── the MAP stands still through all of it ───
+    -- ─── the MAP stands still through all of it, and shows the union after ───
     --
     -- The front moving on the map would be the overlay rebuilt while it moves -- the
     -- hitch 52a7caa removed -- so the map shows the zone the phase started in under
     -- the destination's own fill, whose union is where the growth ends. Asserted as
-    -- no Scaleform traffic at all across the twenty seconds.
+    -- no Scaleform traffic at all while the zone grows. THE MOMENT IT HAS GROWN it
+    -- stands still, and the union the damage tick now bills as one safe zone is the
+    -- zone's fill (#344's review: without it the old zone's edge ran across the
+    -- destination for the rest of the phase) -- two alpha writes, the union shown and
+    -- the zone's keyframe hidden, and nothing added.
     local M = newStormClient()
     M.mm.handle = 7
     M.record(3, 0.0, 0.0, 1600.0, 1500.0, 0.0, 950.0, 90000, 90000, 1.7)
@@ -5799,8 +5819,8 @@ do
     local mrec = M.env.BR.State.storm
     mrec.tStart = M.now
     M.tick(1)
-    local calls = M.mm.calls
-    for _ = 1, 200 do
+    local calls, adds = M.mm.calls, M.mm.adds
+    for _ = 1, 180 do
         M.now = M.now + 100
         M.env.BR.Loop.step(M.env.BR.Loop.TICK)
     end
@@ -5809,10 +5829,32 @@ do
     for _, p in ipairs(fill and M.shown(fill) or {}) do
         fillOff = math.max(fillOff, math.abs(SS.distance(Z, p.x, p.y)))
     end
-    ok(M.mm.calls == calls and fillOff < 1e-6 and #M.areas() == 3,
+    ok(M.mm.calls == calls and fillOff < 1e-6 and #M.areas() == 4 and #M.union() == 1,
         'across the growth the map sends the movie nothing: it shows the zone the phase '
             .. 'started in, and the destination over it -- the ground the growth ends on',
-        ('%d calls, zone fill %.3e m off Z'):format(M.mm.calls - calls, fillOff))
+        ('%d calls, zone fill %.3e m off Z, %d areas'):format(M.mm.calls - calls, fillOff,
+            #M.areas()))
+    for _ = 1, 10 do
+        M.now = M.now + 100
+        M.env.BR.Loop.step(M.env.BR.Loop.TICK)
+    end
+    local U = SS.blobUnion(env.BR.StormWall(rec, 0.0), env.BR.StormTarget(rec))
+    local grownFill, grownO = M.zoneFill()
+    local unionOff = 0.0
+    for _, p in ipairs(grownFill and M.shown(grownFill) or {}) do
+        unionOff = math.max(unionOff, math.abs(SS.distance(U, p.x, p.y)))
+    end
+    local kfShown = 0
+    for _, kf in ipairs(M.keyframes()) do
+        if M.opacity(kf) > 0.0 then kfShown = kfShown + 1 end
+    end
+    local blipA = M.env.BR.Config.Storm.blip.currentAlpha
+    ok(M.mm.calls == calls + 2 and M.mm.adds == adds and grownFill == M.union()[1]
+            and unionOff < 1e-6 and kfShown == 0 and near(grownO, blipA / 255, 0.5 / 255),
+        'and once it has grown, two alpha writes make the union the zone\'s fill -- on Z '
+            .. 'union D, at the safe zone\'s alpha, the keyframe hidden -- with nothing added',
+        ('%d calls, %d adds, union fill %.3e m off, %d keyframes showing, %.4f'):format(
+            M.mm.calls - calls, M.mm.adds - adds, unionOff, kfShown, grownO))
     ok(M.errored() == nil, 'and runs clean', M.errored())
 end
 
@@ -8223,6 +8265,15 @@ do
         return C
     end
 
+    --- `want` for a pair that NESTS by real shape where it is placed -- the standing
+    --- picture of an ordinary phase, which a breakout adds its union to (below).
+    local function nestsAt(phase, cx0, cy0, r0, cx1, cy1, r1)
+        return function(env, s)
+            return env.BR.StormNested(env.BR.BuildStormRecord(phase, cx0, cy0, r0,
+                cx1, cy1, r1, 0, 1, 1, 1.0, s))
+        end
+    end
+
     local blip = newStormClient().env.BR.Config.Storm.blip
 
     -- ─── before the gate opens, the blips carry the map ───
@@ -8231,7 +8282,8 @@ do
     -- three seconds of session plus ten consenting passes, so every match starts with
     -- the rings and swaps to the fills a few seconds in. A first tick that drew
     -- nothing at all would be a map with no safe zone on it for that whole stretch.
-    local C = mapClient(2, 0.0, 0.0, 800.0, 300.0, 0.0, 400.0, 600000, 60000)
+    local C = mapClient(2, 0.0, 0.0, 800.0, 300.0, 0.0, 400.0, 600000, 60000,
+        nestsAt(2, 0.0, 0.0, 800.0, 300.0, 0.0, 400.0))
     C.tick(1)
     ok(#C.areas() == 0 and #C.rings() > 0,
         'before the readiness gate opens the map is radius blips and no fill at all',
@@ -8369,27 +8421,53 @@ do
             .. 'write to a clip already in the movie',
         ('%d adds over %d steps'):format(H.mm.adds - fadeAdds, steps))
 
-    -- ─── a breakout is the same picture: the zone, and the destination over it ───
+    -- ─── a breakout is the same picture, and its UNION while it stands still ───
     --
-    -- The union of the two is never pushed as ONE polygon any more: it could only be
-    -- moved by rebuilding it, which is the hitch 52a7caa removed. The zone's keyframes
-    -- and the destination's own fill cover exactly the union between them -- disjoint
-    -- or overlapping, the count is the same.
+    -- The moving part is never pushed as one polygon with the destination: it could
+    -- only be moved by rebuilding it, which is the hitch 52a7caa removed. But while
+    -- the storm STANDS STILL the safe zone is one union the wall and the damage tick
+    -- read as such, and 52a7caa painted it as zone fill with the destination over it
+    -- (#344's review: without it the old zone's edge ran across the destination for
+    -- the whole phase). So the rebuild draws the union too, in place, and the hold
+    -- shows it instead of the zone's keyframe -- by alpha, never by a rebuild.
+    local function unionShown(C2, label)
+        local rec2 = C2.env.BR.State.storm
+        local U = C2.env.BR.StormZone(rec2, rec2.cx0, rec2.cy0, rec2.r0, 0.0, 1.0)
+        local off, lowest = 0.0, 1.0
+        for _, ov in ipairs(C2.union()) do
+            lowest = math.min(lowest, C2.opacity(ov))
+            for _, p in ipairs(C2.shown(ov)) do
+                off = math.max(off, math.abs(C2.env.BR.StormShape.distance(U, p.x, p.y)))
+            end
+        end
+        local kfShown = 0
+        for _, kf in ipairs(C2.keyframes()) do
+            if C2.opacity(kf) > 0.0 then kfShown = kfShown + 1 end
+        end
+        ok(off < 1e-6 and kfShown == 0 and near(lowest, blip.currentAlpha / 255, 0.5 / 255),
+            label, ('union %.3e m off, %d keyframes showing, lowest %.4f'):format(off,
+                kfShown, lowest))
+    end
     local D = mapClient(4, 0.0, 0.0, 950.0, 2400.0, 0.0, 260.0, 600000, 60000)
     ok(D.overlayReady() and D.errored() == nil, 'a disjoint breakout reaches the gate')
     D.tick(2)
-    ok(#D.areas() == 3 and #D.keyframes() == 2,
-        'a disjoint breakout is the zone\'s two keyframes and the destination -- two '
-            .. 'islands, each its own fill',
-        ('%d areas'):format(#D.areas()))
+    ok(#D.areas() == 5 and #D.keyframes() == 2 and #D.union() == 2,
+        'a disjoint breakout is the zone\'s two keyframes, its union -- two islands, each '
+            .. 'its own fill -- and the destination',
+        ('%d areas, %d keyframes, %d union'):format(#D.areas(), #D.keyframes(),
+            #D.union()))
+    unionShown(D, 'and while it holds, both islands are the zone\'s fill at the safe '
+        .. 'zone\'s alpha, on the union to a micron, in place of the keyframe')
     local V = mapClient(4, 0.0, 0.0, 950.0, 1100.0, 0.0, 520.0, 600000, 60000)
     ok(V.overlayReady() and V.errored() == nil, 'an overlapping breakout too')
+    V.grown()
     V.tick(2)
-    ok(#V.areas() == 3 and #V.keyframes() == 2,
-        'and so is an OVERLAPPING one: its union is the zone\'s fill and the '
-            .. 'destination\'s together, never one polygon that could only move by being '
-            .. 'rebuilt',
-        ('%d areas'):format(#V.areas()))
+    ok(#V.areas() == 4 and #V.keyframes() == 2 and #V.union() == 1,
+        'and so is an OVERLAPPING one, its union one loop: never one polygon with the '
+            .. 'moving part, which could only move by being rebuilt',
+        ('%d areas, %d keyframes, %d union'):format(#V.areas(), #V.keyframes(),
+            #V.union()))
+    unionShown(V, 'and once it has grown, that one loop is the zone\'s fill')
 
     -- ─── a refused push is torn down whole, and the blips come back ───
     --
@@ -8400,7 +8478,7 @@ do
     local R = mapClient(4, 0.0, 0.0, 950.0, 2400.0, 0.0, 260.0, 600000, 60000)
     ok(R.overlayReady(), 'the refusal client reaches the gate')
     R.tick(2)
-    ok(#R.areas() == 3 and #R.rings() == 0, 'and is filling before the refusal',
+    ok(#R.areas() == 5 and #R.rings() == 0, 'and is filling before the refusal',
         ('%d areas, %d rings'):format(#R.areas(), #R.rings()))
     R.mm.refuseAdd = true
     R.env.BR.State.storm.r0 = 900.0          -- a new record's geometry: a rebuild is due
@@ -8416,7 +8494,7 @@ do
     R.mm.refuseAdd = false
     R.env.BR.State.storm.r0 = 880.0
     R.tick(3)
-    ok(#R.areas() == 3 and #R.rings() == 0,
+    ok(#R.areas() == 5 and #R.rings() == 0,
         'and when the engine stops refusing, the fill comes back and the blips go',
         ('%d areas, %d rings'):format(#R.areas(), #R.rings()))
 
@@ -8439,7 +8517,10 @@ do
     -- clip re-added with a kilobyte of coordinates marshalled through a Scaleform
     -- string. A rebuild per tick on a zone that has not moved would be that cost for
     -- nothing, all match.
-    local S = mapClient(2, 0.0, 0.0, 800.0, 300.0, 0.0, 400.0, 600000, 60000)
+    local nests300, nests250 = nestsAt(2, 0.0, 0.0, 800.0, 300.0, 0.0, 400.0),
+        nestsAt(2, 0.0, 0.0, 800.0, 250.0, 0.0, 400.0)
+    local S = mapClient(2, 0.0, 0.0, 800.0, 300.0, 0.0, 400.0, 600000, 60000,
+        function(env, s) return nests300(env, s) and nests250(env, s) end)
     ok(S.overlayReady(), 'the cadence client reaches the gate')
     S.tick(2)
     local before = S.areas()[1]
@@ -8919,25 +9000,26 @@ do
     local B, brec = sweepClient(6, 0.0, 260.0, 300.0, 110.0, 120000, nil, nil, CONJOINED)
     ok(B.overlayReady(), 'the breakout client reaches the gate')
     B.tick(2)
-    ok(#B.areas() == 3,
-        'a conjoined breakout is the two keyframes and the destination',
+    ok(#B.areas() == 4 and #B.union() == 1,
+        'a conjoined breakout is the two keyframes, its union and the destination',
         ('%d areas'):format(#B.areas()))
     B.env.BR.Loop.hitchStart(34)
     startSweep(B, brec)
     local bAdds0 = B.mm.adds
-    local bWorst = 0.0
+    local bWorst, bUnion = 0.0, 0.0
     realTicks(B, 1199, function()
         local o = frameErr(B, brec, { 0.0, 1.0 })
         bWorst = math.max(bWorst, o)
+        for _, u in ipairs(B.union()) do bUnion = math.max(bUnion, B.opacity(u)) end
     end)
     local bFallback = traceRow(B, 'storm.map.fallback')
     local bRebuild = traceRow(B, 'storm.map.rebuild')
     ok(B.errored() == nil and B.mm.adds == bAdds0 and #B.rings() == 0
-            and #B.areas() == 3 and bWorst < 1e-3,
+            and #B.areas() == 4 and bWorst < 1e-3 and bUnion == 0.0,
         'the whole conjoined sweep is placed and faded on the moving frame: no add, no '
-            .. 'blips, the fill on the map the whole way',
-        B.errored() or ('%d adds, %d rings, %d fills, %.6f m off')
-            :format(B.mm.adds - bAdds0, #B.rings(), #B.areas(), bWorst))
+            .. 'blips, the fill on the map the whole way, and the union hidden while it moves',
+        B.errored() or ('%d adds, %d rings, %d fills, %.6f m off, union at %.4f')
+            :format(B.mm.adds - bAdds0, #B.rings(), #B.areas(), bWorst, bUnion))
     ok(bFallback == nil and (bRebuild == nil or bRebuild.events == 0),
         'and the diagnostic records no fallback and no rebuild -- 52a7caa\'s moving-union '
             .. 'blips are for a refusal now, and nothing else',
@@ -8956,7 +9038,7 @@ do
     realTicks(J, 2)
     local jAdds = J.mm.adds
     realTicks(J, 200)
-    ok(#J.areas() == 3 and J.mm.adds == jAdds and frameErr(J, jrec, { 0.0, 1.0 }) < 1e-3,
+    ok(#J.areas() == 5 and J.mm.adds == jAdds and frameErr(J, jrec, { 0.0, 1.0 }) < 1e-3,
         'a client becoming ready mid-sweep draws the picture once and then only places '
             .. 'and fades it',
         ('%d fills, %d adds after the first'):format(#J.areas(), J.mm.adds - jAdds))

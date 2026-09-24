@@ -468,7 +468,9 @@ end
 --- THE MAP DOES NOT DRAW THE GROWTH: it shows the zone the phase started in under
 --- the destination's fill -- whose union is what the growth ends on -- because
 --- drawing the front would mean rebuilding the overlay while it moves, the hitch
---- 52a7caa removed. client/storm.lua's overlayPlan says so where it is decided.
+--- 52a7caa removed. Once the zone has grown it shows the union itself, drawn at the
+--- phase's one rebuild and shown by alpha. client/storm.lua's overlayFill says so
+--- where it is decided.
 ---
 --- @param rec table|nil    the published storm record
 --- @param cx number        the CURRENT centre, as BR.StormAt reports it

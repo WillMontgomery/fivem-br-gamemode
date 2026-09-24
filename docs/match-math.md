@@ -482,6 +482,10 @@ HUD and the wall bill, read and draw `G` exactly, off one clock. It starts as `Z
 and ends on `Z ∪ D`, and only ever grows. A destination wholly apart from the zone
 still appears at once. The map shows `Z` under the destination's own fill for
 those twenty seconds: drawing the front would be a rebuild on a motion cadence.
+Once the zone stands still it shows the union `Z ∪ D` as the zone's fill, with the
+destination over it, as a static breakout hold always was — drawn at the phase's
+one rebuild and shown by alpha, so the old zone's edge does not run across the
+destination for the rest of the phase.
 
 **What airdrop siting stands on changed with it.** The wall's support function
 used to be affine in `t`, which made "clears both ends of the window, clears every
@@ -508,8 +512,8 @@ re-derives the dead ends:
   carry `ADD_AREA_OVERLAY`, which fills a real concave polygon on both the radar
   and the pause map (#347, #350). A moving zone is never rebuilt: its keyframes
   are moved, resized and faded in place (above), a breakout's included, since the
-  union is shown as the moving zone under the destination's own fill rather than
-  as one polygon. The nominal-radius map blips carry the map for the rest of a
+  moving union is shown as the moving zone under the destination's own fill rather
+  than as one polygon; the union itself is shown only while it stands still. The nominal-radius map blips carry the map for the rest of a
   sweep whose placement or fade the engine refuses, and for a client whose
   overlay never becomes ready.
 * **an overlapping breakout used to draw both boundaries**, showing curtain
