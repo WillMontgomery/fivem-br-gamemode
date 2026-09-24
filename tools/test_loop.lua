@@ -316,6 +316,128 @@ do
     BR.Loop.step(BR.Loop.FRAME)
 end
 
+-- --------------------------------------- event-to-frame hitch correlation ---
+
+describe('event-to-frame hitch correlation')
+do
+    clearAll()
+    BR.Loop.captureStalls(false)
+    BR.Loop.hitchStop()
+
+    -- The shipping path is one boolean branch while disarmed: marking must not
+    -- read the native clock, allocate a row, or leave anything to report.
+    timerReads = 0
+    BR.Loop.hitchMark('t.off', 'never')
+    local off = BR.Loop.hitchStats()
+    ok(timerReads == 0, 'a disarmed marker does not read the clock',
+        ('timer reads=%d'):format(timerReads))
+    ok(#off.rows == 0, 'and records no row')
+
+    fakeTime = 20000
+    BR.Loop.resetStats()
+    BR.Loop.hitchStart(34)
+    BR.Loop.step(BR.Loop.FRAME) -- establish the first frame stamp
+
+    local function row(name)
+        for _, r in ipairs(BR.Loop.hitchStats().rows) do
+            if r.name == name then return r end
+        end
+        return nil
+    end
+
+    -- A network handler is outside the callback registry. Its marker still
+    -- lands on the next FRAME gap, which is the interval that contains it.
+    BR.Loop.hitchMark('t.damage', '1 Hz', 7)
+    fakeTime = fakeTime + 40
+    BR.Loop.step(BR.Loop.FRAME)
+
+    local h = BR.Loop.hitchStats()
+    local damage = row('t.damage')
+    ok(h.frames == 1 and h.hitches == 1,
+        'a 40ms marked frame crosses the 34ms threshold',
+        ('frames=%d hitches=%d'):format(h.frames, h.hitches))
+    ok(damage and damage.events == 1 and damage.markedFrames == 1
+            and damage.hitchFrames == 1 and damage.worstMs == 40,
+        'the external event is charged to that long frame',
+        damage and ('events=%d marked=%d hitched=%d worst=%d')
+            :format(damage.events, damage.markedFrames,
+                damage.hitchFrames, damage.worstMs) or 'missing')
+    ok(damage and damage.units == 7 and damage.maxUnits == 7,
+        'one burst keeps its work-unit count separate from its event count',
+        damage and ('units=%s max=%s'):format(
+            tostring(damage.units), tostring(damage.maxUnits)) or 'missing')
+
+    -- Cadence alone is not conviction. A 10 Hz path which happens to precede
+    -- one long frame should report 1/10, not look like ten hitch events.
+    for i = 1, 10 do
+        BR.Loop.hitchMark('t.map.place', '10 Hz')
+        fakeTime = fakeTime + (i == 10 and 40 or 16)
+        BR.Loop.step(BR.Loop.FRAME)
+    end
+    local place = row('t.map.place')
+    ok(place and place.events == 10 and place.markedFrames == 10
+            and place.hitchFrames == 1,
+        'a frequent marker reports the fraction of its frames which hitched',
+        place and ('events=%d marked=%d hitched=%d')
+            :format(place.events, place.markedFrames, place.hitchFrames) or 'missing')
+
+    -- Scheduler bands are markers too. FRAME is deliberately not one -- it
+    -- would be present on every hitch and therefore carry no information.
+    BR.Loop.step(BR.Loop.TICK)
+    fakeTime = fakeTime + 16
+    BR.Loop.step(BR.Loop.FRAME)
+    local tick = row('band.tick')
+    ok(tick and tick.events == 1 and tick.hitchFrames == 0,
+        'the 10 Hz scheduler pass is visible without fabricating a hitch')
+
+    BR.Loop.step(BR.Loop.SLOW)
+    fakeTime = fakeTime + 40
+    BR.Loop.step(BR.Loop.FRAME)
+    local slow = row('band.slow')
+    ok(slow and slow.events == 1 and slow.hitchFrames == 1,
+        'the 1 Hz scheduler pass correlates when its following frame is long')
+
+    -- A targeted begin/end gives stronger evidence when that exact operation
+    -- crosses a frame boundary, while retaining the ordinary frame marker.
+    BR.Loop.hitchContext(3, BR.StormPhase.SHRINKING, true)
+    local token = BR.Loop.hitchBegin('t.apply', '1 Hz')
+    fakeTime = fakeTime + 55
+    BR.Loop.hitchEnd(token)
+    BR.Loop.step(BR.Loop.FRAME)
+    local apply = row('t.apply')
+    h = BR.Loop.hitchStats()
+    local sample = h.samples[#h.samples]
+    ok(apply and apply.spans == 1 and apply.spanPeakMs == 55
+            and apply.hitchFrames == 1,
+        'a targeted call which crossed a frame is counted as a span',
+        apply and ('spans=%d peak=%d hitched=%d')
+            :format(apply.spans, apply.spanPeakMs, apply.hitchFrames) or 'missing')
+    ok(sample and sample.phase == 3
+            and sample.phaseState == BR.StormPhase.SHRINKING
+            and sample.outside == true,
+        'hitch samples retain the latest storm phase and inside/outside context')
+
+    -- Long frames with no marker are just as important: they prevent the
+    -- diagnostic from forcing every hitch into one of its hypotheses.
+    fakeTime = fakeTime + 45
+    BR.Loop.step(BR.Loop.FRAME)
+    h = BR.Loop.hitchStats()
+    ok(h.unmarked == 1, 'an unmarked long frame is reported as unmarked',
+        ('unmarked=%d'):format(h.unmarked))
+
+    local framesBefore = h.frames
+    BR.Loop.hitchStop()
+    BR.Loop.hitchMark('t.after.stop', 'never')
+    fakeTime = fakeTime + 50
+    BR.Loop.step(BR.Loop.FRAME)
+    local stopped = BR.Loop.hitchStats()
+    ok(not stopped.enabled and stopped.frames == framesBefore,
+        'stopping freezes the correlation window while normal frames continue')
+    ok(row('t.after.stop') == nil, 'markers are ignored after stop')
+
+    BR.Loop.resetStats()
+end
+
 -- ------------------------------------------------------- timing aggregation ---
 --
 -- THE SUITE THAT SHOULD HAVE EXISTED FIRST.

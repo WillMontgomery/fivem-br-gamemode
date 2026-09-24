@@ -382,8 +382,10 @@ re-derives the dead ends:
   where the shape dents in. The vendored `MINIMAP_LOADER.gfx` turned out to
   carry `ADD_AREA_OVERLAY`, which fills a real concave polygon on both the radar
   and the pause map (#347, #350). A single blob is moved and resized in place as
-  it shrinks rather than rebuilt; a merged shape is rebuilt only once it has
-  moved far enough to see. Radius blips remain the fallback for a client whose
+  it shrinks rather than rebuilt. A merged current/target shape cannot be moved
+  as one clip without rebuilding its polygon, so during that sweep the existing
+  nominal-radius map blips provide approximate guidance; its exact filled outline
+  returns once static. The same blips remain the fallback for a client whose
   overlay never becomes ready.
 * **an overlapping breakout used to draw both boundaries**, showing curtain
   inside the safe zone. Two convex shapes that overlap have a union whose

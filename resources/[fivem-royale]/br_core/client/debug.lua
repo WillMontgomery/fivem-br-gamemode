@@ -366,6 +366,108 @@ RegisterCommand('brab', function(_, args)
     end)
 end, false)
 
+-- #350's event-to-frame correlator.
+--
+-- The storm has several clocks that can all look like "about once a second" by
+-- eye: the server damage beat is 1 Hz, client SLOW is 1 Hz, roster sampling and
+-- storm HUD pushes are 4 Hz, map placement and storm solving are 10 Hz, and the
+-- wall is per-frame. /brstormhitch records which of those actually ran before
+-- each long frame instead of choosing one from cadence alone.
+local function stormHitchReport()
+    local h = BR.Loop.hitchStats()
+    if h.startedAt == 0 and #h.rows == 0 then
+        print('[br_core] no storm hitch capture yet. Run /brstormhitch reset [thresholdMs].')
+        return
+    end
+
+    local seconds = math.max(0.001, h.durationMs / 1000.0)
+    local hitchPct = 100.0 * h.hitches / math.max(1, h.frames)
+    print(('--- storm hitch correlation: %s, %.1fs, threshold %dms ---')
+        :format(h.enabled and 'ACTIVE' or 'stopped', seconds, h.thresholdMs))
+    print(('  frames %d  hitches %d (%.2f%%)  hitches with no marker %d')
+        :format(h.frames, h.hitches, hitchPct, h.unmarked))
+    print(('  storm bisect mode: %s')
+        :format(BR.Storm and BR.Storm.bisectMode or 'normal'))
+
+    local c = h.context
+    if c.phase then
+        print(('  latest storm context: phase %s, %s, %s')
+            :format(tostring(c.phase), tostring(c.phaseState),
+                c.outside and 'OUTSIDE' or 'inside'))
+    else
+        print('  latest storm context: no active storm record')
+    end
+
+    print('--- marker correlation (charged to the next FRAME gap) ---')
+    if #h.rows == 0 then
+        print('  no marked path ran in this window')
+    end
+    for _, r in ipairs(h.rows) do
+        local markedPct = 100.0 * r.hitchFrames / math.max(1, r.markedFrames)
+        local work = ''
+        if r.maxUnits ~= 1 or r.units ~= r.events then
+            work = ('  work %g total, max %g/event'):format(r.units, r.maxUnits)
+        end
+        local span = ''
+        if r.spans > 0 then
+            span = ('  ^1SPAN %d, peak %dms^7'):format(r.spans, r.spanPeakMs)
+        end
+        print(('  %-22s %5d events %5.2f/s  %4d marked frames  '
+                .. '%4d hitched (%5.1f%%), worst %dms%s%s')
+            :format(r.name, r.events, r.events / seconds, r.markedFrames,
+                r.hitchFrames, markedPct, r.worstMs, work, span))
+        print(('    expected: %s'):format(r.expected))
+    end
+
+    print('--- most recent hitch frames ---')
+    if #h.samples == 0 then
+        print('  none at this threshold')
+    end
+    for _, s in ipairs(h.samples) do
+        local where = 'no storm'
+        if s.phase then
+            where = ('p%s %s %s'):format(
+                tostring(s.phase), tostring(s.phaseState),
+                s.outside and 'outside' or 'inside')
+        end
+        local names = #s.markers > 0 and table.concat(s.markers, ', ') or '(unmarked)'
+        print(('  +%6.2fs  %4dms  %-24s  %s')
+            :format(s.atMs / 1000.0, s.ms, where, names))
+    end
+
+    print('  Compare each percentage with the overall hitch rate above. A 10 Hz')
+    print('  marker at baseline is coincidence; a large lift can expose engine batching.')
+    print('  A 1 Hz marker beside every hitch is still the clearest cadence match.')
+    print('  SPAN means that exact targeted call crossed a frame boundary -- strongest.')
+    print('  storm.wall is per-frame and cannot be separated this way: /brab storm.wall.')
+    print('  For a controlled render A/B: /brstormbisect (prints the available modes).')
+    print('  Keep resmon 1 open too: br_core vs br_ui separates Lua/engine from CEF.')
+end
+
+RegisterCommand('brstormhitch', function(_, args)
+    local action = args[1]
+    if action == 'reset' or action == 'start' then
+        BR.Loop.resetStats()
+        BR.Loop.hitchStart(args[2])
+        local h = BR.Loop.hitchStats()
+        print(('[br_core] storm hitch capture ON at %dms. Reproduce 30-60s, then /brstormhitch.')
+            :format(h.thresholdMs))
+        print('  Best isolation: one shrinking sample safely INSIDE, then reset and repeat OUTSIDE.')
+        print('  If net.storm.damage stays at 0 while hitches remain, the server damage path is cleared.')
+        return
+    end
+    if action == 'stop' then
+        BR.Loop.hitchStop()
+        stormHitchReport()
+        return
+    end
+    if action and action ~= 'report' then
+        print('  usage: brstormhitch [report|stop|reset [thresholdMs]]')
+        return
+    end
+    stormHitchReport()
+end, false)
+
 --- The hitch hunter.
 ---
 ---   /brhitch          read the frame-time distribution
@@ -379,11 +481,11 @@ end, false)
 --- READ IT IN THIS ORDER:
 ---   1. If almost everything is in the <17ms bucket and the worst frame is
 ---      under ~34ms, the client is fine and the "hitch" is elsewhere.
----   2. If the tail buckets have counts but the br_core band totals are tiny,
----      the stall is NOT ours -- another resource, streaming, or the engine.
----   3. Only if a br_core callback shows up in "worst frame by callback" with
+---   2. If a br_core callback shows up in "worst frame by callback" with
 ---      a real number is it ours, and then /brloop off <name> proves it in one
 ---      step: turn it off, play, and look again.
+---   3. An empty callback list is NO VERDICT on a frame-stamped clock. Use
+---      /brstormhitch for event/network correlation or /brab for one callback.
 RegisterCommand('brhitch', function(_, args)
     if args[1] == 'reset' then
         BR.Loop.resetStats()

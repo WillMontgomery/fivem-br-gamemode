@@ -7565,10 +7565,13 @@ do
     --   "there's a major client perf issue once per second which only happens while
     --    the storm is actively in motion."                 -- owner, 2026-09-23
     --
-    -- The map rebuilt its fills whenever the solved circle changed by a metre, capped
-    -- at rebuildHz -- so every second of every sweep but the slowest paid two
-    -- REM_OVERLAY/ADD_AREA_OVERLAY rounds, and no second of any hold paid one. That is
-    -- the hitch's signature exactly, and nothing else in the client has it.
+    -- On 2026-09-24 the owner narrowed it further: ONLY a storm whose current and
+    -- next borders are conjoined, and ONLY while that border is moving. That is one
+    -- client path exactly. A nested zone has `fit` and is moved/resized in place; a
+    -- conjoined breakout has no `fit`, so it paid REM_OVERLAY plus ADD_AREA_OVERLAY
+    -- for the whole changing polygon at 0.62--1.65 Hz. A hold paid none. The moving
+    -- union now uses the already-supported map blips until it becomes static, while
+    -- the exact 3D wall and server damage shape continue unchanged.
     --
     -- ═══ WHY THIS BLOCK HAS ITS OWN CLOCK ═══
     --
@@ -7623,6 +7626,92 @@ do
         return worst
     end
 
+    local function traceRow(C, name)
+        for _, row in ipairs(C.env.BR.Loop.hitchStats().rows) do
+            if row.name == name then return row end
+        end
+        return nil
+    end
+
+    -- ─── #350 can be bisected in one moving phase without changing gameplay ───
+    --
+    -- Each mode deliberately damages only the LOCAL picture: the record and clock
+    -- keep advancing, so a smooth mode has isolated rendering rather than stopped
+    -- the storm. The command also starts a fresh capture; otherwise two modes in one
+    -- playtest would be blended into a percentage that describes neither.
+    local D, drec = sweepClient(2, 1000.0, 2600.0, 1400.0, 1600.0, 120000,
+        -700.0, -300.0)
+    ok(D.cmds.brstormbisect ~= nil, '/brstormbisect is registered')
+    ok(D.overlayReady(), 'the bisect client reaches the overlay gate')
+    D.tick(2)
+    local dClip = D.areas()[1]
+    local dAdds, dPlaced = D.mm.adds, D.mm.placed
+    startSweep(D, drec)
+
+    D.cmds.brstormbisect(nil, { 'mapfreeze', '40' }, '')
+    realTicks(D, 20)
+    local dHitch = D.env.BR.Loop.hitchStats()
+    ok(D.env.BR.Storm.bisectMode == 'mapfreeze'
+            and dHitch.enabled and dHitch.thresholdMs == 40,
+        'mapfreeze is visible in state and starts a clean capture at the requested threshold')
+    ok(D.mm.adds == dAdds and D.mm.placed == dPlaced and D.areas()[1] == dClip,
+        'mapfreeze keeps the existing fill resident without one add, move or resize',
+        ('adds %+d, placements %+d'):format(D.mm.adds - dAdds, D.mm.placed - dPlaced))
+    ok(offZone(D, drec, 1) > 1.0,
+        'while the server-authored storm keeps moving underneath that frozen local picture',
+        ('map is %.2f m off the live zone'):format(offZone(D, drec, 1)))
+
+    local dWidth = dClip._width
+    local dX = dClip._x
+    D.cmds.brstormbisect(nil, { 'mapnoresize' }, '')
+    realTicks(D, 20)
+    ok(D.mm.adds == dAdds and dClip._width == dWidth and dClip._x ~= dX,
+        'mapnoresize moves the same clip but never sends the size/re-tessellation call',
+        ('x %s -> %s, width %s -> %s'):format(
+            tostring(dX), tostring(dClip._x), tostring(dWidth), tostring(dClip._width)))
+    ok(traceRow(D, 'storm.map.position') ~= nil
+            and traceRow(D, 'storm.map.place') == nil,
+        'and the capture names position-only traffic separately from normal placement')
+    ok(offZone(D, drec, 1) > 1.0,
+        'the deliberately stale radius proves resize really was suppressed',
+        ('map is %.2f m off the live zone'):format(offZone(D, drec, 1)))
+
+    D.cmds.brstormbisect(nil, { 'normal' }, '')
+    realTicks(D, 1)
+    ok(D.env.BR.Storm.bisectMode == 'normal' and offZone(D, drec, 1) < 1e-3,
+        'normal catches the existing clip up on its next tick rather than leaving the bisect armed',
+        ('map is %.6f m off the live zone'):format(offZone(D, drec, 1)))
+
+    D.cmds.brstormbisect(nil, { 'mapoff' }, '')
+    -- Shrinking blips are intentionally capped at 4 Hz, so the fallback has a
+    -- bounded 250 ms handoff rather than being required on the first 100 ms pass.
+    realTicks(D, 3)
+    ok(#D.areas() == 0 and #D.rings() > 0,
+        'mapoff removes the custom Scaleform fill and hands the map to fallback blips',
+        ('%d fills, %d rings'):format(#D.areas(), #D.rings()))
+    D.cmds.brstormbisect(nil, { 'normal' }, '')
+    realTicks(D, 6)
+    ok(#D.areas() == 2 and #D.rings() == 0 and offZone(D, drec, 1) < 1e-3,
+        'normal restores the real filled boundary after mapoff',
+        ('%d fills, %d rings, %.6f m off'):format(
+            #D.areas(), #D.rings(), offZone(D, drec, 1)))
+
+    local W = sweepClient(2, 1000.0, 2600.0, 1400.0, 1600.0, 120000,
+        -700.0, -300.0)
+    W:recordWallOnly()
+    W:frame()
+    local wallPolys = #W.polys
+    W.cmds.brstormbisect(nil, { 'walloff' }, '')
+    W:frame()
+    ok(wallPolys > 0 and #W.polys == 0,
+        'walloff removes the shaped 3D wall while its frame callback and storm record remain live',
+        ('normal %d triangles, walloff %d'):format(wallPolys, #W.polys))
+    W.cmds.brstormbisect(nil, { 'normal' }, '')
+    W:frame()
+    ok(#W.polys == wallPolys,
+        'normal restores the wall on the next frame',
+        ('restored %d of %d triangles'):format(#W.polys, wallPolys))
+
     -- ─── a nested sweep is PLACED, start to finish, and never rebuilt ───
     --
     -- Phase-2 sizes, and a centre off the world's origin in BOTH axes on purpose: a
@@ -7635,6 +7724,7 @@ do
     N.tick(2)
     local zoneClip, targetClip = N.areas()[1], N.areas()[2]
     local adds0, placed0 = N.mm.adds, N.mm.placed
+    N.env.BR.Loop.hitchStart(34)
     startSweep(N, nrec)
     local nWorst, nTicks, offWall = 0.0, 0, 0.0
     -- ONE TICK SHORT OF THE END OF THE SWEEP: the end is the one rebuild a sweep
@@ -7661,6 +7751,15 @@ do
     ok(N.mm.placed - placed0 >= nTicks,
         'because the zone was PLACED instead, on the ticks it moved',
         ('%d placement calls over %d ticks'):format(N.mm.placed - placed0, nTicks))
+    local nPlace = traceRow(N, 'storm.map.place')
+    local nRebuild = traceRow(N, 'storm.map.rebuild')
+    ok(nPlace ~= nil and nPlace.events == nTicks,
+        'and the hitch diagnostic labels that path at its real 10 Hz cadence',
+        nPlace and ('%d markers over %d ticks'):format(nPlace.events, nTicks)
+            or 'no storm.map.place marker')
+    ok(nRebuild == nil or nRebuild.events == 0,
+        'without mislabelling any nested-sweep tick as a polygon rebuild',
+        nRebuild and tostring(nRebuild.events) or 'no rebuild row')
     ok(nWorst < 1e-3,
         'and what the map shows is ON the moving zone the whole way, to a millimetre '
             .. '-- not the metres a twice-a-second rebuild lagged by',
@@ -7732,15 +7831,14 @@ do
                 :format(trec.seed, T.mm.adds - tAdds, T.mm.placed - tPlaced, tTicks, tWorst))
     end
 
-    -- ─── a breakout's union cannot be placed, so it is rebuilt when it shows ───
+    -- ─── a moving breakout never rebuilds its Scaleform polygon ───
     --
     -- A union of the moving blob and the still target is not a scaled copy of any
-    -- earlier one, so the only way to move it is a rebuild. What bounds those is
-    -- moveM: a rebuild only once the boundary may have drifted that far. Two things
-    -- are asserted and they check each other -- the COUNT, against the drift the
-    -- sweep actually covers, and the ERROR, measured off the map against the zone
-    -- with nothing of the bound's arithmetic in it. A bound that under-read the drift
-    -- would pass the first and fail the second.
+    -- earlier one, so the Scaleform clip cannot be moved or resized into the next
+    -- outline. Rebuilding it was #350's remaining hitch. The safe answer is the map
+    -- path that already carries every client whose overlay is unavailable: current
+    -- and target radius blips for the moving interval only. They are approximate map
+    -- guidance for the seeded blobs; the exact 3D wall and damage shape keep moving.
     local ov = N.env.BR.Config.Storm.overlay
     local B, brec = sweepClient(6, 0.0, 260.0, 300.0, 110.0, 120000)
     ok(B.overlayReady(), 'the breakout client reaches the gate')
@@ -7749,64 +7847,129 @@ do
         'and it is the overlapping case: one union contour plus the target, and the '
             .. 'union is not one blob',
         ('%d areas'):format(#B.areas()))
+    B.env.BR.Loop.hitchStart(34)
     startSweep(B, brec)
     local bAdds0 = B.mm.adds
-    local bWorst, bRebuilds, lastAdds = 0.0, 0, B.mm.adds
-    -- WHILE IT MOVES. The tick the sweep finishes is the map's one change of SHAPE,
-    -- which is a rebuild like any other and waits its turn behind rebuildHz -- so it
-    -- is asserted on its own below rather than read here as drift.
-    realTicks(B, 1199, function()
-        if B.mm.adds > lastAdds then bRebuilds, lastAdds = bRebuilds + 1, B.mm.adds end
-        if #B.areas() > 0 then bWorst = math.max(bWorst, offZone(B, brec, 1)) end
-    end)
-    local unit = B.env.BR.StormUnit(brec.seed, brec.phase)
-    local drift = math.abs(brec.cx1 - brec.cx0) + unit.extent * math.abs(brec.r0 - brec.r1)
-    local most = math.floor(drift / ov.moveM) + 1
+    realTicks(B, 1)
+    local bCallsAtFallback = B.mm.calls
+    local bx, by, br = B.env.BR.StormAt(brec, B.env.BR.Clock.now())
+    local bCur, bNext
+    for _, ring in ipairs(B.rings()) do
+        if ring.colour == B.env.BR.Config.Storm.blip.currentColour then bCur = ring end
+        if ring.colour == B.env.BR.Config.Storm.blip.nextColour then bNext = ring end
+    end
+    ok(#B.areas() == 0 and #B.rings() == 2
+            and bCur and near(bCur.x, bx, 1e-6) and near(bCur.y, by, 1e-6)
+            and near(bCur.r, br, 1e-6)
+            and bNext and near(bNext.x, brec.cx1, 1e-6)
+            and near(bNext.y, brec.cy1, 1e-6) and near(bNext.r, brec.r1, 1e-6),
+        'on the first moving tick the conjoined fill is replaced by current/target '
+            .. 'guidance at the solved centres and radii',
+        ('%d fills, %d rings'):format(#B.areas(), #B.rings()))
+    realTicks(B, 1198) -- 119.9 s total: still SHRINKING, one tick before FINISHED
     ok(B.errored() == nil, 'the breakout sweep runs clean', B.errored())
-    ok(bRebuilds > 0 and bRebuilds <= most,
-        'a breakout is rebuilt only as often as its boundary moves moveM -- here at '
-            .. 'most once per ' .. ov.moveM .. ' m of a sweep that covers the drift '
-            .. 'below, where the metre key rebuilt it every half second',
-        ('%d rebuilds (%d adds), at most %d for %.0f m of drift over %d s')
-            :format(bRebuilds, B.mm.adds - bAdds0, most, drift, 120))
-    ok(bWorst < ov.moveM,
-        'and between rebuilds the map is never further from the zone than moveM -- '
-            .. 'measured off the map, so a drift bound that under-read would show here',
-        ('worst %.2f m off, moveM %.1f'):format(bWorst, ov.moveM))
-    -- AND WHEN THE SWEEP ENDS, THE MAP ARRIVES WITH THE WALL. A breakout's union
-    -- collapses to one shape as its two circles coincide, and in the target's shape --
-    -- which is where the wall is -- within one rebuild interval.
-    realTicks(B, math.ceil(1000.0 / ov.rebuildHz / 100.0) + 1)
-    local arrivedOff = offZone(B, brec, 1)
-    ok(arrivedOff < 1e-6,
-        'and within one rebuild interval of the sweep ending, the map is on the zone the '
-            .. 'wall has arrived in -- the target\'s shape, not the union it left',
-        ('%.6f m off'):format(arrivedOff))
+    local bxEnd, byEnd, brEnd = B.env.BR.StormAt(brec, B.env.BR.Clock.now())
+    local bLag = math.sqrt((bCur.x - bxEnd) ^ 2 + (bCur.y - byEnd) ^ 2)
+        + math.abs(bCur.r - brEnd)
+    ok(bCur.exists and bLag < 1.0,
+        'the current guidance keeps following the sweep, within one metre at its '
+            .. '4 Hz refresh cadence',
+        ('%.3f m centre-plus-radius lag'):format(bLag))
+    ok(#B.areas() == 0 and #B.rings() > 0,
+        'the ordinary map blips keep carrying the moving interval',
+        ('%d fills, %d rings'):format(#B.areas(), #B.rings()))
+    ok(B.mm.adds == bAdds0 and B.mm.calls == bCallsAtFallback,
+        'the remaining 119.8 seconds issue no ADD, REMOVE, MOVE or RESIZE calls to '
+            .. 'the Scaleform movie',
+        ('%d adds, %d calls after fallback'):format(
+            B.mm.adds - bAdds0, B.mm.calls - bCallsAtFallback))
+    local bTrace = traceRow(B, 'storm.map.rebuild')
+    local bFallback = traceRow(B, 'storm.map.fallback')
+    ok((bTrace == nil or bTrace.events == 0)
+            and bFallback ~= nil and bFallback.events == 1,
+        'the diagnostic records one fallback transition and zero moving-union rebuilds',
+        ('fallback %s, rebuild %s'):format(
+            bFallback and tostring(bFallback.events) or 'missing',
+            bTrace and tostring(bTrace.events) or 'none'))
+
+    -- The exact polygon is still useful while static. On the tick the sweep
+    -- finishes, the fallback latch clears and one fresh filled outline replaces
+    -- the temporary rings.
+    realTicks(B, 1)
+    ok(#B.areas() == 2 and #B.rings() == 0 and B.mm.adds == bAdds0 + 2,
+        'when the conjoined sweep becomes static, its exact fill returns and the '
+            .. 'temporary rings leave on that same tick',
+        ('%d fills, %d rings, %d new adds')
+            :format(#B.areas(), #B.rings(), B.mm.adds - bAdds0))
+    realTicks(B, 20)
+    ok(#B.rings() == 0 and B.mm.adds == bAdds0 + 2,
+        'and the static picture stays settled without another polygon rebuild',
+        ('%d rings, %d new adds'):format(#B.rings(), B.mm.adds - bAdds0))
+
+    -- A failed REM_OVERLAY is retained by mapoverlay.lua so its movie index remains
+    -- valid. The fallback must keep retrying that retained clip after overlayShown has
+    -- gone false; otherwise one engine refusal leaves a stale polygon for the sweep.
+    local R, rrec = sweepClient(6, 0.0, 260.0, 300.0, 110.0, 500)
+    ok(R.overlayReady(), 'the removal-retry client reaches the gate')
+    R.tick(2)
+    local rAdds = R.mm.adds
+    R.mm.refuseRemove = true
+    startSweep(R, rrec)
+    realTicks(R, 1)
+    ok(#R.areas() == 2 and #R.rings() == 2,
+        'if the engine refuses the handoff removal, guidance still appears immediately '
+            .. 'beside the retained fill',
+        ('%d fills, %d rings'):format(#R.areas(), #R.rings()))
+    realTicks(R, 9)
+    ok(#R.areas() == 2 and #R.rings() == 2 and R.mm.adds == rAdds,
+        'a refusal that lasts through FINISHED never stacks a replacement beside '
+            .. 'the retained polygon',
+        ('%d fills, %d rings, %d new adds')
+            :format(#R.areas(), #R.rings(), R.mm.adds - rAdds))
+    R.mm.refuseRemove = false
+    realTicks(R, 5)
+    ok(#R.areas() == 2 and #R.rings() == 0 and R.mm.adds == rAdds + 2,
+        'once removal succeeds, the stale pair is replaced by one exact static pair '
+            .. 'and the guidance leaves',
+        ('%d fills, %d rings, %d new adds')
+            :format(#R.areas(), #R.rings(), R.mm.adds - rAdds))
+
+    -- A client can become ready after the sweep has already begun. It has no
+    -- overlayAt from the hold to classify, so overlayFill must decline the first
+    -- setAreas rather than paying one hitch before discovering the fallback.
+    local J, jrec = sweepClient(4, 0.0, 950.0, 2400.0, 260.0, 120000)
+    startSweep(J, jrec)
+    ok(J.overlayReady(), 'a mid-sweep disjoint client reaches the gate')
+    ok(#J.areas() == 0 and #J.rings() > 0 and J.mm.adds == 0,
+        'a client becoming ready mid-union sweep sends no polygon and receives '
+            .. 'fallback guidance on that same gate-opening tick',
+        ('%d fills, %d rings, %d adds'):format(
+            #J.areas(), #J.rings(), J.mm.adds))
 
     -- ─── and rebuildHz is the ceiling whatever asks ───
     --
-    -- moveM at ZERO makes every tick of a sweep ask for a rebuild, so the only thing
-    -- left between the map and ten rebuilds a second is the ceiling -- which is the
-    -- one assertion here that would have held on the old code and must still hold.
-    local F, frec = sweepClient(6, 0.0, 260.0, 300.0, 110.0, 60000)
-    F.env.BR.Config.Storm.overlay.moveM = 0.0
+    -- Moving unions no longer ask. A target changed every tick is the remaining
+    -- worst-case key churn: artificial, but it isolates the ceiling without routing
+    -- through the path the regression just removed.
+    local F, frec = sweepClient(2, 0.0, 800.0, 300.0, 400.0, 60000)
     ok(F.overlayReady(), 'the ceiling client reaches the gate')
     F.tick(2)
-    startSweep(F, frec)
     local gaps, lastAt, fAdds = {}, nil, F.mm.adds
-    realTicks(F, 100, function()
-        if F.mm.adds > fAdds then
-            fAdds = F.mm.adds
-            if lastAt then gaps[#gaps + 1] = F.now - lastAt end
-            lastAt = F.now
-        end
-    end)
+    for _ = 1, 100 do
+        frec.cx1 = frec.cx1 + 1.0
+        realTicks(F, 1, function()
+            if F.mm.adds > fAdds then
+                fAdds = F.mm.adds
+                if lastAt then gaps[#gaps + 1] = F.now - lastAt end
+                lastAt = F.now
+            end
+        end)
+    end
     local minGap = math.huge
     for _, g in ipairs(gaps) do minGap = math.min(minGap, g) end
     local floorMs = 1000.0 / ov.rebuildHz
     ok(#gaps >= 5 and minGap >= floorMs,
-        'with moveM out of the way, rebuilds still come no closer together than '
-            .. '1 / rebuildHz',
+        'static picture churn still rebuilds no closer together than 1 / rebuildHz',
         ('%d rebuilds in 10 s, closest %s ms apart, floor %.0f ms'):format(
             #gaps + 1, tostring(minGap), floorMs))
 
@@ -7859,7 +8022,7 @@ do
         if #Q.areas() > 0 then qWorst = math.max(qWorst, offZone(Q, qrec, 1)) end
     end)
     ok(Q.errored() == nil and #Q.areas() == 2 and Q.mm.adds > qAdds
-            and qWorst < Q.env.BR.Config.Storm.overlay.moveM,
+            and qWorst < Q.env.BR.Config.Storm.overlay.chordM,
         'a refused resize is answered: nothing is pushed at nothing, and the zone '
             .. 'falls back to rebuilds that keep it on the map',
         Q.errored() or ('%d areas, %d adds, worst %.2f m off')
@@ -7868,26 +8031,30 @@ do
     -- ─── a removal the engine refuses must not steal the slot ───
     --
     -- A refused REM_OVERLAY leaves the old clip in the movie -- the engine's refusal,
-    -- and mapoverlay.lua keeps it on its books so the indices stay true. What it must
-    -- NOT do is let a placement land on it: slot 1 means the zone the LAST push drew,
-    -- so a leftover from an earlier push is invisible to placeArea.
+    -- and mapoverlay.lua keeps it on its books so the indices stay true. A replacement
+    -- must not be stacked beside it: the caller remains on blips until the old pair can
+    -- be removed, then installs one new pair whose slot 1 is safe to place.
     local K, krec = sweepClient(2, 1000.0, 2600.0, 1400.0, 1600.0, 120000,
         -700.0, -300.0)
     ok(K.overlayReady(), 'the leftover client reaches the gate')
     K.tick(2)
+    local kAdds = K.mm.adds
     K.mm.refuseRemove = true
     krec.cx1 = 1350.0                  -- a new target: a new key, so a rebuild
     K.tick(2)
+    ok(#K.areas() == 2 and K.mm.adds == kAdds,
+        'refused removals retain the old pair without stacking the replacement',
+        ('%d areas, %d new adds'):format(#K.areas(), K.mm.adds - kAdds))
     K.mm.refuseRemove = false
-    ok(#K.areas() == 4,
-        'the refused removals left the old pair behind, and the new pair went on top',
-        ('%d areas'):format(#K.areas()))
+    K.tick(2)
+    ok(#K.areas() == 2 and K.mm.adds == kAdds + 2,
+        'once removal is accepted, exactly one replacement pair is installed',
+        ('%d areas, %d new adds'):format(#K.areas(), K.mm.adds - kAdds))
     startSweep(K, krec)
     realTicks(K, 50)
-    ok(K.errored() == nil and offZone(K, krec, 3) < 1e-6,
-        'and the zone that follows the storm is the NEW one -- the leftover is not '
-            .. 'what slot 1 names',
-        K.errored() or ('new zone %.3f m off'):format(offZone(K, krec, 3)))
+    ok(K.errored() == nil and offZone(K, krec, 1) < 1e-6,
+        'and slot 1 of that replacement follows the moving storm',
+        K.errored() or ('new zone %.3f m off'):format(offZone(K, krec, 1)))
 
     -- ─── the last seconds of the final sweep ───
     --

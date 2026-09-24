@@ -751,8 +751,16 @@ AddEventHandler(BR.Net.ROSTER_DELTA, function(batch)
     if batch.seq and batch.seq <= lastSeq then return end
     lastSeq = batch.seq or lastSeq
 
+    local deltas = batch.deltas or {}
+    local trace = BR.Loop.hitchBegin(
+        'net.roster.delta', 'change-driven batches, flushed at <=4 Hz', #deltas)
     local relationshipDirty = false
-    for _, d in ipairs(batch.deltas or {}) do
+    local vitalRows = 0
+    for _, d in ipairs(deltas) do
+        if trace and d.e and (d.e.hp ~= nil or d.e.armour ~= nil) then
+            vitalRows = vitalRows + 1
+        end
+
         if d.op == 'add' then
             relationshipDirty = true
             S.roster[d.src] = d.e
@@ -848,12 +856,23 @@ AddEventHandler(BR.Net.ROSTER_DELTA, function(batch)
         end
     end
 
+    if vitalRows > 0 then
+        -- The server samples health at 4 Hz and coalesces changed rows into one
+        -- globally broadcast batch. Storm damage can therefore produce a 1 Hz
+        -- burst, but this marker records the observation rather than assuming it
+        -- is #350's cause -- this path predates the September regression.
+        BR.Loop.hitchMark(
+            'net.roster.vitals', 'health/armour bursts; may include 1 Hz storm damage',
+            vitalRows)
+    end
     if relationshipDirty then relationshipsChanged() end
     BR.PushHud()
+    BR.Loop.hitchEnd(trace)
 end)
 
 RegisterNetEvent(BR.Net.DIGEST)
 AddEventHandler(BR.Net.DIGEST, function(d)
+    local trace = BR.Loop.hitchBegin('net.digest', '2 Hz server heartbeat')
     S.alive       = d.alive or 0
     S.squadsAlive = d.squadsAlive or 0
 
@@ -918,6 +937,7 @@ AddEventHandler(BR.Net.DIGEST, function(d)
     end
 
     BR.PushHud()
+    BR.Loop.hitchEnd(trace)
 end)
 
 -- diedThisMatch (declared at the top; the delta handler writes it): placement
@@ -2252,6 +2272,7 @@ end, false)
 -- by the renderer and the HUD; nothing about the circle is ever streamed.
 RegisterNetEvent(BR.Net.STORM_SYNC)
 AddEventHandler(BR.Net.STORM_SYNC, function(rec)
+    BR.Loop.hitchMark('net.storm.sync', 'phase edges only; not a 1 Hz stream')
     S.storm = rec
     -- THE REAL RECORD ENDS THE PREVIEW, and it ends it here in the mirror rather
     -- than only in the renderer's gate. The first record arrives at PLAYING and
@@ -2283,7 +2304,10 @@ RegisterNetEvent(BR.Net.STORM_DAMAGE)
 AddEventHandler(BR.Net.STORM_DAMAGE, function(d)
     local amount = (d and d.amount) or 0
     if amount <= 0 then return end
+    local trace = BR.Loop.hitchBegin(
+        'net.storm.damage', 'server 1 Hz, alive and outside only')
     BR.Native.applyDamage(amount, d.armourFirst)
+    BR.Loop.hitchEnd(trace)
 end)
 
 -- A VALIDATED GUNSHOT, applied to our own ped on instruction.
@@ -2437,7 +2461,8 @@ function BR.PushHud(force)
     --
     -- IT IS THE ROSTER MIRROR AND NOT A NEW WIRE. `hp` and `armour` are in
     -- roster.lua's PUBLIC_FIELDS, so this client is already told them for every
-    -- player in the match, 2 Hz, whether it is spectating or not. Asking the
+    -- player in the match through the 4 Hz roster-delta path, whether it is
+    -- spectating or not. Asking the
     -- server to send them a second time down the spectate feed would be two
     -- representations of one fact -- the bug this project is named for in half
     -- its comments -- and would leak nothing extra either way, because there is
@@ -2520,6 +2545,8 @@ function BR.PushHud(force)
     lastPush.landed = landed
     lastPush.watching = watching
 
+    local trace = BR.Loop.hitchBegin(
+        'ui.hud.send', 'change-driven HUD envelope')
     TriggerEvent('br:ui:sendLocal', BR.Nui.HUD, {
         hp          = hp,
         armour      = armour,
@@ -2531,6 +2558,7 @@ function BR.PushHud(force)
         stamina     = stamina,
         landed      = landed,
     })
+    BR.Loop.hitchEnd(trace)
 end
 
 --- Squad panel data, assembled from the mirror.
@@ -2732,8 +2760,13 @@ end
 -- holds the authoritative value and will correct us.
 BR.Loop.register(BR.Loop.TICK, 'state.vitals', function()
     local ped = PlayerPedId()
-    S.me.hp     = BR.ToDisplayHp(GetEntityHealth(ped))
-    S.me.armour = GetPedArmour(ped)
+    local hp = BR.ToDisplayHp(GetEntityHealth(ped))
+    local armour = GetPedArmour(ped)
+    if hp ~= S.me.hp or armour ~= S.me.armour then
+        BR.Loop.hitchMark(
+            'state.vitals.change', '10 Hz poll; marked only when a value changes')
+    end
+    S.me.hp, S.me.armour = hp, armour
     BR.PushHud()
 end)
 

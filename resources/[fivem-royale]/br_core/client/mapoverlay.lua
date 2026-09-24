@@ -374,6 +374,12 @@ end
 function BR.MapOverlay.setAreas(areas)
     BR.MapOverlay.removeAll()
     state.chars = 0
+    -- A REFUSED REMOVAL MEANS THE OLD PICTURE IS STILL IN THE MOVIE. Do not add
+    -- the replacement beside it: that would leave two storm boundaries resident,
+    -- and once the caller latched the successful new set there would be no reason
+    -- to retry the stale removals. Returning nothing keeps the caller on its map
+    -- fallback and lets the next rebuild attempt remove the retained clips first.
+    if #state.ours > 0 then return 0, 0 end
     if type(areas) ~= 'table' or #areas == 0 then return 0, 0 end
     if not BR.MapOverlay.ready() then return 0, 0 end
 

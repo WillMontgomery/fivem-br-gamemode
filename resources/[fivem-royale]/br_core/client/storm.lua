@@ -1400,7 +1400,15 @@ local function wallShare(rec, st, msLeft)
     return w
 end
 
+-- A DEV-ONLY RUNTIME BISECT FOR #350. `normal` is the shipping path; the other
+-- values remove exactly one recent client-side storm path while leaving the
+-- authoritative server storm, damage and phase clocks untouched. The command
+-- which changes it is below the map callback, beside the state it controls.
+local stormBisectMode = 'normal'
+
 BR.Loop.register(BR.Loop.FRAME, 'storm.wall', function()
+    if stormBisectMode == 'walloff' then return end
+
     local rec = activeRecord()
     if not rec then return end
 
@@ -1717,16 +1725,64 @@ local overlayShown = 0
 local lastOverlayAt = 0
 local overlayKey = nil
 local overlaySaid = false
+local movingUnionFallbackKey = nil
+local mapBlipsDirty = false
 
 --- WHERE the zone on the map is, as the moving circle it was last made to match.
 ---
 --- nil while nothing is drawn. `cx, cy, r` is the solved circle the drawn zone
---- agrees with -- the one it was built at, or the one it was last placed at -- and
---- `ext` is the unit blob's reach, which turns a change of radius into the furthest
---- any point of the boundary can have moved. `fit` is there only when the zone went
---- out as ONE blob drawn about its own centre, and holds what placing it needs: the
---- radius it was drawn at and its width and height at that radius.
+--- agrees with -- the one it was built at, or the one it was last placed at.
+--- `fit` is there only when the zone went out as ONE blob drawn about its own
+--- centre, and holds what placing it needs: the radius it was drawn at and its
+--- width and height at that radius.
 local overlayAt = nil
+
+--- Publish whether a custom fill is currently on the map.
+---
+--- storm.map runs before storm.state on the same TICK band. Marking the edge here
+--- lets the blip owner react on that same pass instead of waiting for its ordinary
+--- 4 Hz / 0.5 Hz refresh cadence.
+--- @param drawn integer
+local function setOverlayShown(drawn)
+    drawn = drawn or 0
+    if (overlayShown > 0) ~= (drawn > 0) then mapBlipsDirty = true end
+    overlayShown = drawn
+end
+
+--- Remove our custom map fills and hand the map back to the ordinary blips.
+---
+--- Used by both the lifecycle and #350's `mapoff` bisect. Keeping the three
+--- latches together matters: `overlayShown` controls the blip fallback while
+--- the key and placement record control whether the next tick rebuilds.
+local function clearMapOverlay()
+    -- ALWAYS ASK. removeAll keeps an engine-refused clip on its own books; limiting
+    -- retries to overlayShown would forget that clip after this function publishes
+    -- the fallback and leave the stale polygon resident for the rest of the sweep.
+    if BR.MapOverlay then BR.MapOverlay.removeAll() end
+    setOverlayShown(0)
+    overlayKey, overlayAt = nil, nil
+end
+
+--- Hand one moving non-similar union to the ordinary map blips.
+---
+--- A conjoined/disjoint pair cannot be moved by translating or scaling one
+--- polygon: one half moves while its target stays fixed, so its outline changes
+--- shape. Rebuilding that outline was the one path left with #350's reported
+--- signature -- only while moving, and about once a second. The nominal-radius
+--- blips already exist as the overlay's refusal fallback and update without the
+--- Scaleform polygon marshalling. They are approximate guidance for a seeded blob;
+--- the exact 3D wall and server damage shape are untouched.
+local function startMovingUnionFallback(key)
+    if movingUnionFallbackKey ~= key then
+        BR.Loop.hitchMark(
+            'storm.map.fallback', 'once when a moving union hands the map to blips')
+    end
+    movingUnionFallbackKey = key
+    clearMapOverlay()
+    -- Also force the mid-join case, where there was no custom fill whose state
+    -- transition could set the dirty bit.
+    mapBlipsDirty = true
+end
 
 --- Is the overlay drawing the zones right now? Then the radius blips must not.
 ---
@@ -1772,8 +1828,8 @@ end
 --- was the only client work with the hitch's signature: none while the storm holds,
 --- all of it while it moves. So the circle is held beside the key now, in overlayAt,
 --- and what a change of it costs is decided in storm.map rather than by the key --
---- usually a placement, sometimes nothing, and a rebuild only when the picture needs
---- one.
+--- usually a placement, sometimes nothing, and for a moving non-similar union the
+--- ordinary map-blip fallback instead of a recurring polygon rebuild.
 --- @return table|nil plan
 --- @return string|nil key
 local function overlayPlan()
@@ -1822,7 +1878,10 @@ local function overlayPlan()
     -- and the next record's own rebuild draws the same zone again under a new target.
     local done = (st == BR.StormPhase.FINISHED) and 1 or 0
 
-    return { rec = rec, cx = cx, cy = cy, r = r, zoneA = zoneA, m = done },
+    return {
+        rec = rec, cx = cx, cy = cy, r = r,
+        state = st, zoneA = zoneA, m = done,
+    },
         ('r|%d|%.0f|%.0f|%.0f|%d|%d|%d'):format(
             rec.phase, rec.cx1, rec.cy1, rec.r1,
             math.floor(rec.seed or 0), math.floor(zoneA + 0.5), done)
@@ -1847,8 +1906,8 @@ end
 ---
 --- ASKED OF THE SHAPE, NOT RE-DERIVED. `zone.blob` is what BR.StormShape.blob records
 --- about itself; a union of two, a circle below MIN_RADIUS and every other shape carry
---- none, so they go out in world coordinates exactly as before and are rebuilt when
---- they move. Testing the circles here instead would be a second spelling of the
+--- none, so they go out in world coordinates while static and use map blips while
+--- moving. Testing the circles here instead would be a second spelling of the
 --- containment rule BR.StormShape.zone already owns.
 --- @param plan table  from overlayPlan
 --- @return table|nil areas
@@ -1923,21 +1982,6 @@ local function overlayFill(plan)
     return out, fit
 end
 
---- The furthest any point of the drawn zone can be from the zone now.
----
---- A blob is `c + r * unit` and no point of the unit is further than `ext` from its
---- origin, so between two solved circles a boundary point moves at most |dc| + ext *
---- |dr|. That bounds a UNION too: the target never moves during a phase, so the union's
---- boundary moves no further than the part of it that does. It is a bound read off the
---- two circles, not a walk, which is what lets it run on every tick of a sweep.
---- @param at table   overlayAt
---- @param plan table from overlayPlan
---- @return number metres
-local function overlayDrift(at, plan)
-    local dx, dy = plan.cx - at.cx, plan.cy - at.cy
-    return math.sqrt(dx * dx + dy * dy) + at.ext * math.abs(plan.r - at.r)
-end
-
 BR.Loop.register(BR.Loop.TICK, 'storm.map', function()
     -- LOADED AFTER THIS FILE, SO IT IS ASKED FOR AT RUNTIME AND NEVER AT LOAD.
     -- br_core's manifest puts client/mapoverlay.lua well after client/storm.lua,
@@ -1945,17 +1989,42 @@ BR.Loop.register(BR.Loop.TICK, 'storm.map', function()
     -- not exist while this file is being read. It always exists by the first tick.
     if not BR.MapOverlay then return end
 
+    -- THE FULL MAP-OVERLAY BISECT. Remove the Scaleform polygons altogether and
+    -- let the existing radius/area blips carry the map. This changes only what
+    -- this client draws; the wall, HUD, damage and server storm continue normally.
+    if stormBisectMode == 'mapoff' then
+        clearMapOverlay()
+        return
+    end
+
     local plan, key = overlayPlan()
     if not plan then
+        movingUnionFallbackKey = nil
         -- NOTHING TO SHOW, SO NOTHING IS LEFT ON THE MAP. Between matches, in the
         -- lobby, and while the overlay is switched off, this is what takes the fills
         -- down -- and it puts the blips back in charge on the same tick, because
         -- mapFilled() is one number.
-        if overlayShown > 0 then
-            BR.MapOverlay.removeAll()
-            overlayShown = 0
-        end
-        overlayKey, overlayAt = nil, nil
+        clearMapOverlay()
+        return
+    end
+
+    -- KEEP THE EXISTING POLYGONS BUT SEND NO MOVEMENT, RESIZE OR REBUILD CALLS.
+    -- If `mapoff` and this mode both remove the hitch, the presence of the fill
+    -- is innocent and the live Scaleform update traffic is the useful boundary.
+    -- A client entering this mode before its first fill is allowed one build so
+    -- there is something resident to freeze.
+    if stormBisectMode == 'mapfreeze' and overlayShown > 0 then return end
+
+    -- Once a moving union has selected the blip fallback, stay there for the rest
+    -- of that sweep. At FINISHED or on a new record the exact static polygon is
+    -- allowed back; rebuilding it once is not the recurring moving-path hitch.
+    if movingUnionFallbackKey
+            and (key ~= movingUnionFallbackKey
+                or plan.state ~= BR.StormPhase.SHRINKING) then
+        movingUnionFallbackKey = nil
+    end
+    if movingUnionFallbackKey and stormBisectMode ~= 'mapfreeze' then
+        clearMapOverlay()
         return
     end
 
@@ -1986,26 +2055,47 @@ BR.Loop.register(BR.Loop.TICK, 'storm.map', function()
             local b = BR.StormZone(plan.rec, plan.cx, plan.cy, plan.r, plan.m).blob
             if b then
                 local s = b.r / at.fit.r
-                if BR.MapOverlay.placeArea(1, b.cx, b.cy, at.fit.w * s, at.fit.h * s) then
-                    at.cx, at.cy, at.r = plan.cx, plan.cy, plan.r
+                local resize = stormBisectMode ~= 'mapnoresize'
+                local trace = BR.Loop.hitchBegin(
+                    resize and 'storm.map.place' or 'storm.map.position',
+                    resize and '10 Hz position + resize while a nested storm is SHRINKING'
+                        or '10 Hz position only; #350 resize bisect')
+                local placed = BR.MapOverlay.placeArea(
+                    1, b.cx, b.cy,
+                    resize and (at.fit.w * s) or nil,
+                    resize and (at.fit.h * s) or nil)
+                BR.Loop.hitchEnd(trace)
+                if placed then
+                    at.cx, at.cy = plan.cx, plan.cy
+                    -- Keep the last DRAWN radius while resize is suppressed. That
+                    -- makes returning to normal catch the clip up on the next tick
+                    -- instead of believing the stale size is current.
+                    if resize then at.r = plan.r end
                     return
                 end
             end
             -- Refused, or no longer one blob. Either way what the map shows is not
             -- the zone any more, and only a rebuild below can make it so.
 
-        -- ANYTHING ELSE MOVES ONLY BY BEING REBUILT, so it is rebuilt when the change
-        -- would show and not before. `moveM` is the drawn polygon's own chord
-        -- tolerance: a boundary that has drifted less than the fill was already
-        -- allowed to sag has not moved anywhere a player can point to.
-        elseif overlayDrift(at, plan) < (ov.moveM or 8.0) then
-            return
+        -- A CONJOINED OR DISJOINT UNION CANNOT BE PLACED. One blob moves and
+        -- shrinks while the target stays fixed, so the merged outline is not a
+        -- translation or a scale of its previous frame. Rebuilding it was the
+        -- reported hitch: REM_OVERLAY plus every ADD_AREA_OVERLAY, 0.62--1.65
+        -- times a second only while this exact border moved. Use the already
+        -- supported nominal-radius blip fallback for the moving interval instead.
+        else
+            if plan.state == BR.StormPhase.SHRINKING
+                    and stormBisectMode ~= 'mapfreeze' then
+                startMovingUnionFallback(key)
+                return
+            end
+            if stormBisectMode == 'mapnoresize' then return end
         end
     end
 
     -- AND NEVER FASTER THAN rebuildHz, WHATEVER ASKED. This is the ceiling that
-    -- holds when everything above says yes -- a breakout sweeping fast enough to
-    -- cross moveM every tick, or a phase-1 fade stepping its alpha every tick.
+    -- holds when everything above says yes -- a phase edge, a changed target, a
+    -- phase-1 fade stepping its alpha, or a refused placement falling back.
     local now = GetGameTimer()
     if (now - lastOverlayAt) < (1000.0 / hz) then return end
     lastOverlayAt = now
@@ -2014,17 +2104,27 @@ BR.Loop.register(BR.Loop.TICK, 'storm.map', function()
     -- and the fill are two functions: every gate above this line is cheap, so a tick
     -- on which nothing has moved costs a handful of comparisons instead of a boundary
     -- walk per contour.
+    local rebuildTrace = BR.Loop.hitchBegin(
+        'storm.map.rebuild', '<=2 Hz; static picture, phase, alpha, or placement recovery')
     local areas, fit = overlayFill(plan)
     if not areas then
         -- THE PLAN WANTED SOMETHING AND THE GEOMETRY HAD NOTHING LEFT -- the final
         -- sweep's last seconds, where every contour has collapsed under three points.
         -- Treated as "no fill", so the radius blips take the map and the key does not
         -- latch on a push that never happened.
-        if overlayShown > 0 then
-            BR.MapOverlay.removeAll()
-            overlayShown = 0
-        end
-        overlayKey, overlayAt = nil, nil
+        clearMapOverlay()
+        BR.Loop.hitchEnd(rebuildTrace)
+        return
+    end
+
+    -- A CLIENT WHICH JOINS MID-SWEEP HAS NO `overlayAt` TO CLASSIFY. overlayFill
+    -- has now answered the same question without sending anything to Scaleform:
+    -- no fit means the moving picture is a non-similar union. Take the fallback
+    -- before setAreas, so even that first frame pays no polygon rebuild.
+    if plan.state == BR.StormPhase.SHRINKING and not fit
+            and stormBisectMode ~= 'mapfreeze' then
+        startMovingUnionFallback(key)
+        BR.Loop.hitchEnd(rebuildTrace)
         return
     end
 
@@ -2038,18 +2138,15 @@ BR.Loop.register(BR.Loop.TICK, 'storm.map', function()
         BR.MapOverlay.removeAll()
         drawn = 0
     end
-    overlayShown = drawn
+    setOverlayShown(drawn)
     -- A REFUSED PUSH DOES NOT LATCH. Clearing the key means the next tick tries
     -- again rather than believing the map is already showing this geometry, and
     -- mapFilled() is false in the meantime so the blips carry the map.
     overlayKey = (drawn > 0) and key or nil
     overlayAt = nil
     if drawn > 0 then
-        -- THE REACH OF THE SHAPE THAT MOVES, which is the current circle's, in the
-        -- shape the fill was drawn in -- the target stands still.
-        local unit = plan.rec and BR.StormCurrentUnit(plan.rec, plan.m)
         overlayAt = { cx = plan.cx, cy = plan.cy, r = plan.r,
-                      ext = unit and unit.extent or 1.0, fit = fit }
+                      fit = fit }
     end
 
     -- ONCE, AND IT NAMES THE CHARACTER COUNT. The Scaleform string-parameter cap is
@@ -2066,7 +2163,69 @@ BR.Loop.register(BR.Loop.TICK, 'storm.map', function()
         print(('[br_core] storm map overlay: %d area(s), %d points, %d coord chars')
             :format(drawn, pts, chars))
     end
+    BR.Loop.hitchEnd(rebuildTrace)
 end)
+
+-- ---------------------------------------------------------------- #350 A/B ---
+--
+-- These modes deliberately make the local picture wrong for a short dev-box
+-- measurement. They never alter the shared storm record or server authority:
+--
+--   normal       shipping path
+--   mapoff       no custom Scaleform fill; ordinary map blips take over
+--   mapfreeze    keep the fill resident but send no live map updates
+--   mapnoresize  move a nested fill but do not resize it
+--   walloff      skip the shaped 3D wall
+--
+-- The sequence distinguishes four materially different costs: merely having the
+-- overlay resident, updating it at all, the size/re-tessellation call specifically,
+-- and the per-frame shaped wall. Every change starts a new correlation window so
+-- samples from two modes cannot be mixed accidentally.
+local stormBisectModes = {
+    normal      = 'shipping storm rendering',
+    mapoff      = 'custom map fill removed; fallback blips active',
+    mapfreeze   = 'map fill resident; movement, resize and rebuilds frozen',
+    mapnoresize = 'nested map fill moves; resize call suppressed',
+    walloff     = 'shaped 3D storm wall suppressed',
+}
+
+--- @param mode string
+--- @return boolean changed
+function BR.Storm.setBisectMode(mode)
+    mode = type(mode) == 'string' and mode:lower() or ''
+    if not stormBisectModes[mode] then return false end
+
+    stormBisectMode = mode
+    BR.Storm.bisectMode = mode
+    if mode == 'mapoff' then clearMapOverlay() end
+    return true
+end
+
+BR.Storm.bisectMode = stormBisectMode
+
+RegisterCommand('brstormbisect', function(_, args)
+    args = args or {}
+    local mode = tostring(args[1] or 'status'):lower()
+    if mode == 'status' then
+        print(('[br_core] storm bisect: %s -- %s')
+            :format(stormBisectMode, stormBisectModes[stormBisectMode]))
+        print('  modes: normal | mapoff | mapfreeze | mapnoresize | walloff')
+        return
+    end
+    if not BR.Storm.setBisectMode(mode) then
+        print('  usage: brstormbisect <normal|mapoff|mapfreeze|mapnoresize|walloff> [hitchMs]')
+        return
+    end
+
+    BR.Loop.resetStats()
+    BR.Loop.hitchStart(args[2])
+    local h = BR.Loop.hitchStats()
+    print(('[br_core] storm bisect: %s -- %s')
+        :format(mode, stormBisectModes[mode]))
+    print(('  fresh hitch capture at %dms; allow 2s to settle, sample one moving phase,')
+        :format(h.thresholdMs))
+    print('  then /brstormhitch stop. Changing mode starts another clean window.')
+end, false)
 
 -- --------------------------------------------------------------- preview ---
 --
@@ -2455,8 +2614,9 @@ local solved = nil
 local lastEdgeShown = nil
 
 --- Send the storm envelope. One builder, both bands.
-local function pushStorm(edge)
+local function pushStorm(edge, marker, expected)
     if not solved then return end
+    local trace = BR.Loop.hitchBegin(marker, expected)
     lastEdgeShown = math.floor(edge + 0.5)
     TriggerEvent('br:ui:sendLocal', BR.Nui.STORM, {
         phase        = solved.phase,
@@ -2468,6 +2628,7 @@ local function pushStorm(edge)
         bearing      = BR.Bearing(solved.px, solved.py, solved.cx, solved.cy),
         dps          = solved.dps,
     })
+    BR.Loop.hitchEnd(trace)
 end
 
 local function clearBlips()
@@ -2679,6 +2840,7 @@ end
 -- state transition, so it needs no extra message to know.
 local function teardown()
     clearBlips()
+    mapBlipsDirty = false
     -- The frame job reads `solved` and nothing else. Leaving it set would
     -- keep it computing distances to a circle that no longer exists.
     solved, lastEdgeShown = nil, nil
@@ -2709,6 +2871,7 @@ end
 BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
     local rec = activeRecord()
     if not rec then
+        BR.Loop.hitchContext(nil, nil, nil)
         teardown()
         return
     end
@@ -2775,6 +2938,7 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
     -- wall morphs by.
     local zone = BR.StormZone(rec, cx, cy, r, t)
     local edge = BR.StormShape.distance(zone, p.x, p.y)   -- positive = outside
+    BR.Loop.hitchContext(rec.phase, st, edge > 0)
 
     -- Screen FX track being outside AND the storm actually hurting right now
     -- (dps is 0 for everyone during the phase-1 free-loot hold -- the solver
@@ -2885,7 +3049,8 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
     local fading   = wholeMap and share > 0.0
     local hz = (st == BR.StormPhase.SHRINKING or fading)
         and cfg.blip.refreshHzShrinking or cfg.blip.refreshHzHolding
-    if gt - lastBlipAt >= 1000 / hz then
+    if mapBlipsDirty or gt - lastBlipAt >= 1000 / hz then
+        mapBlipsDirty = false
         lastBlipAt = gt
         -- ═══ THE BLIPS ARE THE FALLBACK NOW, AND ONE OR THE OTHER DRAWS (#350) ═══
         --
@@ -3043,7 +3208,7 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
     -- Inside, nothing here changes fast enough to be worth the traffic.
     if gt - lastPush >= 250 then
         lastPush = gt
-        pushStorm(edge)
+        pushStorm(edge, 'storm.ui.tick', '<=4 Hz while a storm record is active')
     end
 end)
 
@@ -3086,7 +3251,8 @@ BR.Loop.register(BR.Loop.FRAME, 'storm.edge', function()
     -- The bearing home is read from the same position, so the arrow and the
     -- number can never describe different moments.
     solved.px, solved.py = p.x, p.y
-    pushStorm(edge)
+    pushStorm(edge, 'storm.ui.edge',
+        'per-frame check; sends only on a whole-metre change outside')
 end)
 
 -- A new record means the "next circle" moved: force the blips to rebuild so
@@ -3100,6 +3266,7 @@ end)
 -- moment somebody is watching it change.
 AddEventHandler(BR.Net.STORM_SYNC, function()
     clearBlips()
+    mapBlipsDirty = false
     lastBlipAt = 0
     lastPush = 0
 end)

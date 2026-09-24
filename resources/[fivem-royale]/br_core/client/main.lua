@@ -209,9 +209,10 @@ local bandStats = {}
 -- This measures the gap between successive FRAME passes, which is the real
 -- frame time -- our callbacks, every other resource, and the engine itself.
 -- That is deliberate: it answers "is the client hitching" first, and only then
--- "is it us", which is the order those questions have to be asked in. If the
--- frame histogram shows stalls and the band totals do not, the stall is not
--- ours.
+-- "is it us", which is the order those questions have to be asked in. A named
+-- callback crossing a frame is strong attribution. Empty callback/band timing
+-- is not exoneration because GetGameTimer is frame-stamped; use brstormhitch
+-- to correlate external events with the following FRAME gap.
 local BUCKETS = { 17, 25, 34, 50, 100 }   -- ms; last bucket is everything above
 local frameStats = {
     samples = 0,
@@ -223,13 +224,260 @@ local frameStats = {
     worstBy = nil,
 }
 
+-- OPT-IN EVENT-TO-FRAME CORRELATION.
+--
+-- /brperf can name a registered callback only when that callback itself spans a
+-- frame boundary. That leaves two important blind spots for #350:
+--
+--   * network handlers do not run through this registry at all;
+--   * engine/CEF work may be paid after the Lua call which queued it returned.
+--
+-- A frame-stamped clock can still answer the useful question: "which events ran
+-- between the previous FRAME pass and this long one?" Callers put a cheap marker
+-- beside the few paths under investigation. The next FRAME gap consumes those
+-- markers and records how often a marked frame was actually a hitch. That RATE
+-- matters: a 10 Hz map placement will naturally be near some 1 Hz hitches, but
+-- 1 marked frame in 10 is very different evidence from 30 storm-damage markers
+-- producing 30 long frames.
+--
+-- Completely dormant until /brstormhitch reset. The ordinary hot path pays one
+-- boolean test in noteFrame; marked call sites pay one boolean test of their own.
+local HITCH_SAMPLE_CAP = 16
+local hitchTrace = {
+    enabled      = false,
+    thresholdMs  = 34,
+    startedAt    = 0,
+    stoppedAt    = 0,
+    frames       = 0,
+    hitches      = 0,
+    unmarked     = 0,
+    pending      = {},
+    rows         = {},
+    samples      = {},
+    context      = { phase = nil, phaseState = nil, outside = nil },
+}
+
+local function hitchRow(name, expected)
+    local row = hitchTrace.rows[name]
+    if not row then
+        row = {
+            name         = name,
+            expected     = expected or 'event-driven',
+            events       = 0,
+            units        = 0,
+            maxUnits     = 0,
+            markedFrames = 0,
+            hitchFrames  = 0,
+            worstMs      = 0,
+            spans        = 0,
+            spanPeakMs   = 0,
+        }
+        hitchTrace.rows[name] = row
+    elseif expected and row.expected == 'event-driven' then
+        row.expected = expected
+    end
+    return row
+end
+
+--- Mark work which should be charged to the next observed FRAME gap.
+---
+--- `units` describes work inside one event (for example, health rows in one
+--- roster batch). Events remain separate from units so a single 30-row packet
+--- reports as one burst rather than pretending to be 30 packets.
+--- @param name string
+--- @param expected string|nil  human-readable cadence for the report
+--- @param units number|nil
+--- @return table|nil row  nil while the trace is off
+local function markHitch(name, expected, units)
+    if not hitchTrace.enabled then return nil end
+    if type(name) ~= 'string' or name == '' then return nil end
+
+    local row = hitchRow(name, expected)
+    local work = math.max(0, tonumber(units) or 1)
+    row.events = row.events + 1
+    row.units = row.units + work
+    if work > row.maxUnits then row.maxUnits = work end
+
+    hitchTrace.pending[name] = (hitchTrace.pending[name] or 0) + 1
+    return row
+end
+
+--- Public marker for the narrow network/UI/storm call sites under test.
+function BR.Loop.hitchMark(name, expected, units)
+    return markHitch(name, expected, units)
+end
+
+--- Begin a targeted span. The marker handles ordinary same-frame work; the
+--- begin/end pair additionally catches the stronger case where this exact call
+--- crossed a frame boundary.
+function BR.Loop.hitchBegin(name, expected, units)
+    local row = markHitch(name, expected, units)
+    if not row then return nil end
+    return { row = row, at = GetGameTimer() }
+end
+
+function BR.Loop.hitchEnd(token)
+    if not token then return end
+    local elapsed = GetGameTimer() - token.at
+    if elapsed > 0 then
+        token.row.spans = token.row.spans + 1
+        if elapsed > token.row.spanPeakMs then token.row.spanPeakMs = elapsed end
+    end
+end
+
+--- Keep the latest solved storm context beside hitch samples without making it
+--- an event of its own. Mutating three scalars avoids a table allocation on the
+--- 10 Hz storm-state path while the diagnostic is armed.
+function BR.Loop.hitchContext(phase, phaseState, outside)
+    if not hitchTrace.enabled then return end
+    hitchTrace.context.phase = phase
+    hitchTrace.context.phaseState = phaseState
+    hitchTrace.context.outside = outside
+end
+
+--- Start a fresh correlation window. This does not reset the ordinary loop
+--- stats; /brstormhitch does both so the two reports cover the same interval.
+function BR.Loop.hitchStart(thresholdMs)
+    local threshold = math.floor(tonumber(thresholdMs) or 34)
+    hitchTrace.enabled = true
+    hitchTrace.thresholdMs = math.max(17, math.min(1000, threshold))
+    hitchTrace.startedAt = GetGameTimer()
+    hitchTrace.stoppedAt = 0
+    hitchTrace.frames = 0
+    hitchTrace.hitches = 0
+    hitchTrace.unmarked = 0
+    hitchTrace.pending = {}
+    hitchTrace.rows = {}
+    hitchTrace.samples = {}
+    hitchTrace.context.phase = nil
+    hitchTrace.context.phaseState = nil
+    hitchTrace.context.outside = nil
+end
+
+function BR.Loop.hitchStop()
+    if hitchTrace.enabled then hitchTrace.stoppedAt = GetGameTimer() end
+    hitchTrace.enabled = false
+    hitchTrace.pending = {}
+end
+
+--- Snapshot the correlation window for the F8 report and unit tests.
+function BR.Loop.hitchStats()
+    local rows = {}
+    for _, row in pairs(hitchTrace.rows) do
+        rows[#rows + 1] = {
+            name         = row.name,
+            expected     = row.expected,
+            events       = row.events,
+            units        = row.units,
+            maxUnits     = row.maxUnits,
+            markedFrames = row.markedFrames,
+            hitchFrames  = row.hitchFrames,
+            worstMs      = row.worstMs,
+            spans        = row.spans,
+            spanPeakMs   = row.spanPeakMs,
+        }
+    end
+    table.sort(rows, function(a, b)
+        if a.hitchFrames ~= b.hitchFrames then return a.hitchFrames > b.hitchFrames end
+        if a.spans ~= b.spans then return a.spans > b.spans end
+        if a.markedFrames ~= b.markedFrames then return a.markedFrames > b.markedFrames end
+        return a.name < b.name
+    end)
+
+    local samples = {}
+    for i, s in ipairs(hitchTrace.samples) do
+        local names = {}
+        for j, name in ipairs(s.markers) do names[j] = name end
+        samples[i] = {
+            atMs       = s.atMs,
+            ms         = s.ms,
+            markers    = names,
+            phase      = s.phase,
+            phaseState = s.phaseState,
+            outside    = s.outside,
+        }
+    end
+
+    local endedAt = hitchTrace.enabled and GetGameTimer() or hitchTrace.stoppedAt
+    return {
+        enabled     = hitchTrace.enabled,
+        startedAt   = hitchTrace.startedAt,
+        thresholdMs = hitchTrace.thresholdMs,
+        durationMs  = math.max(0, endedAt - hitchTrace.startedAt),
+        frames      = hitchTrace.frames,
+        hitches     = hitchTrace.hitches,
+        unmarked    = hitchTrace.unmarked,
+        rows        = rows,
+        samples     = samples,
+        context     = {
+            phase      = hitchTrace.context.phase,
+            phaseState = hitchTrace.context.phaseState,
+            outside    = hitchTrace.context.outside,
+        },
+    }
+end
+
+local function noteHitchTrace(now, dt)
+    if not hitchTrace.enabled then return end
+
+    hitchTrace.frames = hitchTrace.frames + 1
+    local hit = dt >= hitchTrace.thresholdMs
+    if hit then hitchTrace.hitches = hitchTrace.hitches + 1 end
+
+    local pending = hitchTrace.pending
+    local markers = nil
+    if next(pending) ~= nil then
+        -- Allocate only on a marked frame. At 60 fps with the 10 Hz band marker
+        -- this is at most ten small tables a second, not two tables per frame.
+        hitchTrace.pending = {}
+        markers = {}
+        for name in pairs(pending) do
+            local row = hitchTrace.rows[name]
+            if row then
+                row.markedFrames = row.markedFrames + 1
+                markers[#markers + 1] = name
+                if hit then
+                    row.hitchFrames = row.hitchFrames + 1
+                    if dt > row.worstMs then row.worstMs = dt end
+                end
+            end
+        end
+        table.sort(markers)
+    end
+
+    if hit then
+        if not markers then
+            hitchTrace.unmarked = hitchTrace.unmarked + 1
+            markers = {}
+        end
+        local c = hitchTrace.context
+        hitchTrace.samples[#hitchTrace.samples + 1] = {
+            atMs       = now - hitchTrace.startedAt,
+            ms         = dt,
+            markers    = markers,
+            phase      = c.phase,
+            phaseState = c.phaseState,
+            outside    = c.outside,
+        }
+        if #hitchTrace.samples > HITCH_SAMPLE_CAP then
+            table.remove(hitchTrace.samples, 1)
+        end
+    end
+end
+
 local function noteFrame(now)
     local last = frameStats.lastAt
     frameStats.lastAt = now
-    if last <= 0 then return end
+    if last <= 0 then
+        -- There is no previous frame to measure this work against. Do not carry
+        -- startup markers into the first real interval and give them a bogus gap.
+        if hitchTrace.enabled then hitchTrace.pending = {} end
+        return
+    end
 
     local dt = now - last
     frameStats.samples = frameStats.samples + 1
+    noteHitchTrace(now, dt)
 
     local slot = #BUCKETS + 1
     for i = 1, #BUCKETS do
@@ -672,6 +920,15 @@ function BR.Loop.step(band)
     -- Only the frame band is a frame. TICK and SLOW passes say nothing about
     -- how smooth the picture is.
     if band == BR.Loop.FRAME then noteFrame(t) end
+
+    -- These two markers make the scheduler cadence visible beside the event
+    -- paths. FRAME is deliberately absent: marking every frame would correlate
+    -- with every hitch by definition and say nothing.
+    if band == BR.Loop.TICK then
+        markHitch('band.tick', '10 Hz client scheduler')
+    elseif band == BR.Loop.SLOW then
+        markHitch('band.slow', '1 Hz client scheduler')
+    end
 
     for i = 1, #list do
         local e = list[i]

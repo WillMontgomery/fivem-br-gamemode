@@ -745,7 +745,7 @@ BR.Sched.every(1000, 'storm.damage', function(dt)
 
         -- THE EDGE CUSHION. During a shrink the wall moves METRES PER SECOND
         -- (phase 1 sweeps >150 m/s), and three clocks disagree at the knife
-        -- edge: this tick, the half-second-old position sample, and the
+        -- edge: this tick, the most recent 4 Hz position sample, and the
         -- client's own view of the circle. Damage therefore starts a margin
         -- OUTSIDE the solved radius -- a base allowance plus ~0.7s of wall
         -- travel -- so a player standing at the visible curtain is always

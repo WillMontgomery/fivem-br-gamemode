@@ -174,7 +174,14 @@ BR.StormAt     = function() return nil end
 BR.IsDeadHp    = function(hp) return (hp or 0) <= 0 end
 BR.ToDisplayHp = function(hp) return hp or 100 end
 BR.ToEngineHp  = function(hp) return hp or 100 end
-BR.Native      = { applyDamage = function() end }
+local appliedDamage = {}
+BR.Native      = {
+    applyDamage = function(amount, armourFirst)
+        appliedDamage[#appliedDamage + 1] = {
+            amount = amount, armourFirst = armourFirst,
+        }
+    end,
+}
 BR.Damage      = { resync = function() end }
 -- WHICH CUES PLAYED, BY KEY, IN ORDER. Recorded rather than swallowed: two of
 -- the exits below have to be SILENT, and a stub that threw the calls away could
@@ -1195,6 +1202,71 @@ do
     ok(BR.State.relationshipVersion == before + 1,
        'clearing a squad invalidates immediately',
        BR.State.relationshipVersion)
+end
+
+describe('#350 hitch markers cover the raw storm damage and health fanout paths')
+do
+    BR.Loop.hitchStart(34)
+    appliedDamage = {}
+
+    fire(BR.Net.STORM_DAMAGE, { amount = 3, armourFirst = true })
+    ok(#appliedDamage == 1 and appliedDamage[1].amount == 3
+            and appliedDamage[1].armourFirst == true,
+       'instrumenting storm damage does not change the native application')
+
+    BR.State.me.src = 1
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.State.me.hp, BR.State.me.armour = 100, 0
+    BR.State.roster = {
+        [1] = { src = 1, state = BR.PlayerState.ALIVE, hp = 100, armour = 0 },
+        [2] = { src = 2, state = BR.PlayerState.ALIVE, hp = 100, armour = 0 },
+    }
+    deltas(
+        { op = 'update', src = 1, e = { hp = 97 } },
+        { op = 'update', src = 2, e = { hp = 94, armour = 20 } })
+
+    fire(BR.Net.DIGEST, {
+        alive = 2, squadsAlive = 2,
+        state = BR.State.match.state, mode = BR.State.match.mode,
+        endsAt = BR.State.match.endsAt,
+    })
+    fire(BR.Net.STORM_SYNC, {
+        phase = 2, cx0 = 0, cy0 = 0, r0 = 1000,
+        cx1 = 0, cy1 = 0, r1 = 500,
+        tStart = fakeTime, tWait = 0, tShrink = 60000, dps = 2,
+    })
+
+    local function traceRow(name)
+        for _, row in ipairs(BR.Loop.hitchStats().rows) do
+            if row.name == name then return row end
+        end
+        return nil
+    end
+
+    local damage = traceRow('net.storm.damage')
+    local roster = traceRow('net.roster.delta')
+    local vitals = traceRow('net.roster.vitals')
+    local digest = traceRow('net.digest')
+    local sync = traceRow('net.storm.sync')
+
+    ok(damage ~= nil and damage.events == 1,
+       'the outside-only 1 Hz damage handler has its own marker',
+       damage and damage.events or 'missing')
+    ok(roster ~= nil and roster.events == 1 and roster.units == 2,
+       'the received roster packet records one event and its two delta rows',
+       roster and ('events %d, units %d'):format(roster.events, roster.units)
+           or 'missing')
+    ok(vitals ~= nil and vitals.events == 1 and vitals.units == 2
+            and vitals.maxUnits == 2,
+       'health fanout records one burst and its health-row count',
+       vitals and ('events %d, units %d, max %d')
+           :format(vitals.events, vitals.units, vitals.maxUnits) or 'missing')
+    ok(digest ~= nil and digest.events == 1,
+       'the independent 2 Hz digest is distinguishable')
+    ok(sync ~= nil and sync.events == 1,
+       'the phase-edge storm record is distinguishable from a 1 Hz stream')
+
+    BR.Loop.hitchStop()
 end
 
 realPrint(('%s%d passed, %d failed\27[0m')
