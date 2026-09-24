@@ -165,7 +165,10 @@ BR.Config.Storm = {
     -- gameplay to really begin" complaint); a far straggler gets time to
     -- run. The authored per-phase shrink value is the CEILING. The run is
     -- read off the moving wall itself (#344), which a corner-to-corner morph
-    -- can make longer than the distance: BR.StormSweepRun.
+    -- can make longer than the distance: BR.StormSweepRun. A 3:1 zone is longer
+    -- than its circle, so more sweeps reach the ceilings than before #344 --
+    -- phase 3 68% against 54, phase 4 37 against 26 -- and there the furthest
+    -- player is no longer covered; docs/match-math.md has the table.
     shrinkPace = {
         metersPerSec = 9.0,   -- same assumed cross-map speed as the hold
         minSeconds   = 40.0,  -- even an uncontested sweep takes this long

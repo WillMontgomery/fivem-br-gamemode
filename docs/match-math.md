@@ -297,6 +297,25 @@ storm already and is priced on the distance. `BR.StormSweepRun` reads the wall a
 62 instants and refines the maxima of the players who could set the price; its
 measured error and cost are in storm_solve.lua.
 
+**What #344 cost the pacing, measured rather than argued.** The zones keep their
+phase's area, but a 3:1 zone is longer than its circle was, so the furthest run
+from the zone a phase starts in to its destination is longer too, and more sweeps
+now reach the authored ceiling — which is exactly where the price stops protecting
+the furthest player. 600 simulated matches, the same seeds on 52a7caa and now, 24
+players spread over land inside the zone each phase starts in:
+
+| Phase | Mean sweep (s) | Sweeps at the ceiling | Mean furthest run (m) |
+|---|---|---|---|
+| 2 | 130.9 → 133.4 | 65.2% → 70.5% | 2000 → 2277 |
+| 3 | 107.4 → 112.6 | 54.2% → 68.3% | 1438 → 1635 |
+| 4 | 92.8 → 98.3 | 25.5% → 36.7% | 1048 → 1193 |
+| 5 | 66.3 → 71.2 | 0.0% → 8.2% | 675 → 761 |
+| 6 | 45.3 → 46.6 | 0.0% → 0.3% | 371 → 411 |
+
+A match runs 1402 s on average against 1422 now (+19 s, 1.4%; the 90th percentile
+1531 → 1547). Pricing on the moving wall is 1.3 s of that; the rest is the shapes.
+The ceilings are the owner's to move.
+
 ### Where the next zone goes
 
 **By its real shape, wholly inside the zone before it** (#344): "the circles
