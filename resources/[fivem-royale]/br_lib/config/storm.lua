@@ -127,33 +127,34 @@ BR.Config.Storm = {
         minSeconds   = 40.0,  -- even an uncontested sweep takes this long
     },
 
-    -- The free-loot hold stretches with the match: phase 1's wait is scaled
-    -- to how far the FURTHEST player is from the anchor at the moment the
-    -- match goes live -- fair to whoever dropped at the wrong end of the
-    -- tour. phases[1].wait is the minimum; this is the rate and the cap.
+    -- THE FREE-LOOT HOLD IS PRICED ON WHERE THE PLAYERS ARE AGAINST CIRCLE 1
+    -- (#364). When the match goes live, phase 1's wait is the FURTHEST living
+    -- player's distance to circle 1's wall at metersPerSec. Anyone inside its
+    -- shape pays nothing, so a lobby that landed in it waits minSeconds, and a
+    -- player who dropped at the wrong end of the tour buys time for the run in.
+    -- server/storm.lua's BR.Storm.begin is the rule, and it measures against the
+    -- same wall the cut below counts against. (Until #364 it measured from the
+    -- match anchor.)
     --
-    -- startCapSeconds bounds the WAIT alone, not the budget: the wall starts
-    -- moving within three minutes of PLAYING no matter how wide the drop
-    -- spread, and every second the cap trims off the hold is paid back into
-    -- a SLOWER first shrink (user call, 2026-08-04). The far-drop player
-    -- gets the same total phase-1 time to make the run -- the wall just
-    -- spends more of it visibly creeping instead of parked.
+    -- startCapSeconds bounds the WAIT: the wall starts moving within three
+    -- minutes of PLAYING however wide the drop spread (user call, 2026-08-04),
+    -- and what is left of a straggler's run is priced into phase 1's sweep.
+    -- maxSeconds caps the priced hold before the start cap does, so while it
+    -- sits above startCapSeconds it never binds.
     hold = {
         metersPerSec    = 9.0,   -- assumed cross-map travel speed
         minSeconds      = 60.0,  -- floor: everyone-in-the-circle matches
                                  -- still get ONE minute of free looting,
                                  -- not three (user call, 2026-08-04)
-        maxSeconds      = 300.0, -- cap on the TOTAL priced budget
-        startCapSeconds = 180.0, -- cap on the stationary wait alone
+        maxSeconds      = 300.0, -- cap on the priced hold
+        startCapSeconds = 180.0, -- cap on the stationary wait
 
         -- ═══ AND ONCE THE LOBBY IS IN, THE WAIT IS AT MOST 1:30 (#352) ═══
         --
         --   "When >=75% are within the circle, the time is 1:30 till the storm
         --    moves"                                       -- owner, 2026-09-22
         --
-        -- The pricing above measures to the ANCHOR, and circle 1 can be drawn
-        -- kilometres off it, so a lobby standing inside circle 1 could still be
-        -- priced the full three minutes -- the solo playtest that opened this. The
+        -- The price above is set once, at go-live, by the furthest player. The
         -- first moment capInsidePct of the living players are inside circle 1's
         -- SHAPE, the rest of the hold is cut to capSeconds, and that is latched:
         -- it only ever shortens and never comes back. server/storm.lua's

@@ -1261,9 +1261,9 @@ end
 ---
 --- @param anchor table      the POI circle 1 is drawn off
 --- @param predraw boolean   run BR.Storm.drawFirstCircle at WARMUP first (#327's
----                          path), or go straight to PLAYING (the path that
----                          shipped before it, byte for byte -- nothing in
----                          BR.Storm.begin's seed-and-draw fallback changed)
+---                          path), or go straight to PLAYING (the route with
+---                          no warmup, where BR.Storm.begin makes the same draw
+---                          itself -- the order that shipped before #327)
 --- @return table  { phases = { [n] = { cx, cy, r } }, first, rngAfterDraw, S }
 local function walkMatch(anchor, predraw)
     local S = newStormServer()
@@ -5010,9 +5010,10 @@ do
     --
     -- ═══ WHY THE COMPARISON IS TWO LIVE PATHS AND NOT A GOLDEN LIST ═══
     --
-    -- BR.Storm.begin's seed-and-draw is still there, untouched, as the fallback for
-    -- the routes that never had a warmup -- so the code that shipped before #327 is
-    -- still executable, and `walkMatch(anchor, false)` IS it. Both runs hold the
+    -- BR.Storm.begin's seed-and-draw is still there as the fallback for the routes
+    -- that never had a warmup -- the same draw with the same arguments, made at
+    -- begin, which is the order that shipped before #327 -- and
+    -- `walkMatch(anchor, false)` IS it. Both runs hold the
     -- clock and the sequence number still, so both seed identically; the only
     -- difference between them is WHEN the first value comes off the stream. Hard
     -- coding the eight centres instead would have pinned the config as much as the
@@ -5186,6 +5187,193 @@ do
         and near(S.match.storm.r1, env.BR.Config.Storm.phases[1].radius, 0.001),
         'closing on the authored phase-1 radius, drawn here rather than consumed')
     ok(S.errored() == nil, 'and the forced start runs clean', S.errored())
+end
+
+-- ---------------------------------------------------------------------------
+describe('first.hold')
+do
+    -- ═══ THE FREE-LOOT HOLD IS PRICED AGAINST CIRCLE 1'S WALL (#364) ═══
+    --
+    --   "change the phase 1 hold please, based on location of the players as we
+    --    said."                                           -- owner, 2026-09-23
+    --
+    -- BR.Storm.begin prices phase 1's wait on the furthest living player's distance
+    -- to circle 1's SHAPE: the zone the 75% cut counts against and the wall ends
+    -- phase 1 on. Circle 1 is drawn with the whole opening circle as slack, so it
+    -- can sit kilometres off the anchor the hold used to be measured from.
+    --
+    -- EVERY EXPECTATION IS READ OFF THE RECORD BEGIN PUBLISHED, never off a circle
+    -- this block drew for itself: the claim is that the price and the wall agree,
+    -- so the wall is what the price is checked against.
+    local S = newStormServer()
+    local env = S.env
+    local H = env.BR.Config.Storm.hold
+    local R1 = env.BR.Config.Storm.phases[1].radius
+    local FLOOR = H.minSeconds * 1000.0
+
+    --- A fresh server holding one match at WARMUP on `anchor`, nobody in it yet.
+    --- Same anchor and clock, same seed: first.stream is what pins that.
+    local function warmup(anchor)
+        local W = newStormServer()
+        W.roster[1] = nil
+        W.match.storm = nil
+        W.match.state = W.env.BR.MatchState.WARMUP
+        W.match.anchor = { x = anchor.x, y = anchor.y, name = anchor.name }
+        return W
+    end
+
+    --- Stand living players at `spots`, replacing whoever was there.
+    local function stand(W, spots)
+        for k in pairs(W.roster) do W.roster[k] = nil end
+        for i, p in ipairs(spots) do
+            W.roster[i] = { matchId = W.match.id, name = 'P' .. i,
+                state = W.env.BR.PlayerState.ALIVE, hp = 100.0,
+                pos = { x = p.x, y = p.y, z = 30.0 } }
+        end
+    end
+
+    --- Go live, and hand back the record begin published.
+    local function goLive(W)
+        W.match.state = W.env.BR.MatchState.PLAYING
+        W.env.BR.Storm.begin(W.match)
+        return W.match.storm
+    end
+
+    --- Circle 1 as a record describes it: zone 1, at the end of phase 1's sweep.
+    local function wallOf(W, rec)
+        return W.env.BR.StormZone(rec, rec.cx1, rec.cy1, rec.r1, 1.0)
+    end
+
+    --- The rule, spelled from the config, for a furthest distance outside the wall:
+    --- floored, capped, capped again. Milliseconds, as the record carries it.
+    local function price(far)
+        return math.min(env.BR.Clamp(math.max(0.0, far) / H.metersPerSec,
+            H.minSeconds, H.maxSeconds), H.startCapSeconds) * 1000.0
+    end
+
+    -- ─── a solo player at circle 1's centre waits the floor, every match ───
+    --
+    -- What #364 measured: 300 solo matches with the player at circle 1's exact
+    -- centre, and one in five priced the full three minutes off the anchor. This is
+    -- 320, one server reused with a fresh seed each, over every POI as the anchor.
+    local m = S.match
+    local n, off, anchorOut, first = 0, 0, 0, nil
+    for trial = 1, 320 do
+        local poi = env.BR.Config.Map.POIs[(trial - 1) % #env.BR.Config.Map.POIs + 1]
+        S.now = 1000000 + trial * 7777
+        m.storm, m.stormRng, m.stormSeed, m.stormFirst = nil, nil, nil, nil
+        m.stormHoldCapped = nil
+        m.state = env.BR.MatchState.WARMUP
+        m.anchor = { x = poi.x, y = poi.y, name = poi.name }
+        env.BR.Storm.drawFirstCircle(m)
+        local f = m.stormFirst
+        stand(S, { { x = f.cx, y = f.cy } })
+        local rec = goLive(S)
+        n = n + 1
+        if env.BR.StormShape.distance(wallOf(S, rec), poi.x, poi.y) > 0 then
+            anchorOut = anchorOut + 1
+        end
+        if rec.tWait ~= FLOOR then
+            off = off + 1
+            first = first or ('trial %d, anchor %s: %.1fs'):format(trial,
+                tostring(poi.name), rec.tWait / 1000)
+        end
+    end
+    ok(n == 320 and off == 0,
+        '320 solo matches with the player at circle 1\'s centre: every one waits the '
+            .. 'one-minute floor',
+        first and ('%d of %d did not; first %s'):format(off, n, first) or nil)
+    ok(anchorOut >= 32,
+        'and the sweep is the one that mattered: the anchor sits outside circle 1 in '
+            .. 'at least one match in ten',
+        ('%d of %d'):format(anchorOut, n))
+    ok(S.errored() == nil, 'the sweep runs clean', S.errored())
+
+    -- ─── a spread lobby: the straggler pays their distance to the wall ───
+    --
+    -- One player in the middle of circle 1, one outside it beyond its DEEPEST DENT,
+    -- where the wall comes closest to the centre and a radius test is most wrong.
+    -- The price is the straggler's distance to the wall: not their distance past r,
+    -- and not their distance past r from the anchor. One of two inside is 50%, so
+    -- the 75% cut stays out of it and the number on the record is the price itself.
+    local ANCHOR = { x = 150.0, y = -900.0, name = 'Test' }
+    local W = warmup(ANCHOR)
+    W.env.BR.Storm.drawFirstCircle(W.match)
+    local f = W.match.stormFirst
+    local shape = W.env.BR.StormShape.blob(f.cx, f.cy, R1,
+        W.env.BR.StormUnit(W.match.stormSeed, 1))
+    local function wallAt(th)
+        local lo, hi = 0.0, 2.0 * R1
+        for _ = 1, 60 do
+            local mid = 0.5 * (lo + hi)
+            if W.env.BR.StormShape.distance(shape, f.cx + mid * math.cos(th),
+                    f.cy + mid * math.sin(th)) <= 0 then lo = mid else hi = mid end
+        end
+        return lo
+    end
+    local dentTh, dentR = 0.0, math.huge
+    for k = 0, 719 do
+        local w = wallAt(k * math.pi / 360.0)
+        if w < dentR then dentTh, dentR = k * math.pi / 360.0, w end
+    end
+    local OUT = 1100.0
+    local mid = { x = f.cx, y = f.cy }
+    local out = { x = f.cx + (dentR + OUT) * math.cos(dentTh),
+                  y = f.cy + (dentR + OUT) * math.sin(dentTh) }
+    stand(W, { mid, out })
+    local rec = goLive(W)
+
+    local far = W.env.BR.StormShape.distance(wallOf(W, rec), out.x, out.y)
+    local want = price(far)
+    local byRadius = price(W.env.BR.Dist(out.x, out.y, rec.cx1, rec.cy1) - R1)
+    local byAnchor = price(W.env.BR.Dist(out.x, out.y, ANCHOR.x, ANCHOR.y) - R1)
+    local detail = ('tWait %.1fs; wall %.0fm out prices %.1fs, past r %.1fs, from the '
+        .. 'anchor %.1fs; dent %.0fm in'):format(rec.tWait / 1000, far, want / 1000,
+            byRadius / 1000, byAnchor / 1000, R1 - dentR)
+    ok(W.match.stormHoldCapped ~= true and math.abs(rec.tWait - want) < 1.0
+        and want > FLOOR and want < H.startCapSeconds * 1000.0,
+        'a spread lobby is priced on the straggler\'s distance to circle 1\'s wall, '
+            .. 'between the floor and the start cap', detail)
+    ok(math.abs(want - byRadius) > 5000.0 and math.abs(want - byAnchor) > 5000.0,
+        'which is neither their run past r nor their run from the anchor', detail)
+
+    -- THE ROUTE THAT NEVER HAD A WARMUP draws circle 1 at begin instead, and must
+    -- price against the circle it then closes on. Same anchor, same clock: the same
+    -- circle, and the same price for the same two players.
+    local F = warmup(ANCHOR)
+    stand(F, { mid, out })
+    local frec = goLive(F)
+    local ffar = F.env.BR.StormShape.distance(wallOf(F, frec), out.x, out.y)
+    ok(frec.cx1 == rec.cx1 and frec.cy1 == rec.cy1
+        and math.abs(frec.tWait - price(ffar)) < 1.0
+        and math.abs(frec.tWait - rec.tWait) < 1.0,
+        'and a match that skipped warmup draws circle 1 at begin and prices the same '
+            .. 'lobby against that same wall',
+        ('circle 1 (%.1f, %.1f) vs (%.1f, %.1f), tWait %.1fs vs %.1fs'):format(
+            frec.cx1, frec.cy1, rec.cx1, rec.cy1, frec.tWait / 1000, rec.tWait / 1000))
+    ok(F.errored() == nil and W.errored() == nil, 'both run clean',
+        F.errored() or W.errored())
+
+    -- ─── and a lobby that goes live 75% inside is sent ONE record, already cut ───
+    --
+    -- Three in the middle and the same straggler, priced past 1:30. The cut runs
+    -- inside enterPhase before the first publish (#352), so the room never sees
+    -- the price and then 1:30 a second later.
+    local C = warmup(ANCHOR)
+    C.env.BR.Storm.drawFirstCircle(C.match)
+    stand(C, { mid, { x = f.cx + 20.0, y = f.cy }, { x = f.cx - 20.0, y = f.cy }, out })
+    C.sent = {}
+    local crec = goLive(C)
+    local syncs = {}
+    for _, s in ipairs(C.sent) do
+        if s.event == C.env.BR.Net.STORM_SYNC then syncs[#syncs + 1] = s.payload end
+    end
+    ok(want > H.capSeconds * 1000.0 and #syncs == 1
+        and syncs[1].tWait == H.capSeconds * 1000.0 and crec.tWait == syncs[1].tWait,
+        'three of four inside with a straggler priced past 1:30: one first record, '
+            .. 'and it already says 1:30',
+        ('%d records, first %s, straggler priced %.1fs'):format(#syncs,
+            tostring(syncs[1] and syncs[1].tWait), want / 1000))
 end
 
 -- ---------------------------------------------------------------------------

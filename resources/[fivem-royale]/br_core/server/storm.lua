@@ -197,18 +197,27 @@ local function drawCentre(m, phase, cx0, cy0, r0)
         BR.StormBreakoutFor(cfg, phase))
 end
 
+--- Circle 1 as a shape, from a phase-1 record: the boundary both phase-1 rules
+--- measure players against -- the hold's price (BR.Storm.begin) and the 75% cut
+--- (circleOneHeadcount) -- so "inside circle 1" means one thing to both.
+---
+--- ═══ THE SHAPE, NOT THE RADIUS ═══
+---
+--- Circle 1 has been a shape since #344: its boundary dents in by over a quarter
+--- of r at worst and its corners reach 0.15 r past it, so a radius test is wrong
+--- both ways -- the defect #349 fixed in airdrop siting. BR.StormZone handed
+--- circle 1 as its own current circle AT THE END OF THE SWEEP -- `t` of 1, so the
+--- current circle has finished becoming zone 1 -- is zone 1's shape at (cx1, cy1,
+--- r1), nested in itself: the same boundary the bus preview draws and the wall
+--- ends its first sweep on. Negative distance is inside it.
+--- @param rec table   a phase-1 record
+--- @return table shape
+local function circleOneZone(rec)
+    return BR.StormZone(rec, rec.cx1, rec.cy1, rec.r1, 1.0)
+end
+
 --- How many of this match's living players there are, and how many of them are
---- standing inside circle 1 (#352).
----
---- ═══ INSIDE THE SHAPE, NOT INSIDE THE RADIUS ═══
----
---- Circle 1 has been a shape since #344 and its boundary dents in by up to a
---- quarter of r, so a radius test counts people standing outside the wall -- the
---- defect #349 fixed in airdrop siting. BR.StormZone handed circle 1 as its own
---- current circle AT THE END OF THE SWEEP -- `t` of 1, so the current circle has
---- finished becoming zone 1 -- is zone 1's shape at (cx1, cy1, r1), nested in
---- itself: the same boundary the bus preview draws and the wall ends its first
---- sweep on.
+--- standing inside circle 1's shape (#352).
 ---
 --- LIVING IS BR.Server.isInMatch: standing, downed, or still in the air. A glider
 --- over circle 1 is counted where they are, and the dead are counted nowhere --
@@ -219,7 +228,7 @@ end
 --- @param rec table   a phase-1 record
 --- @return integer living, integer inside
 local function circleOneHeadcount(m, rec)
-    local zone = BR.StormZone(rec, rec.cx1, rec.cy1, rec.r1, 1.0)
+    local zone = circleOneZone(rec)
     local living, inside = 0, 0
     BR.Roster.each(
         function(e) return e.matchId == m.id and BR.Server.isInMatch(e.state) end,
@@ -431,6 +440,30 @@ local function openingRadius(ax, ay)
     return r + (cfg.openMargin or 200.0)
 end
 
+--- Draw circle 1 off this match's stream and keep it for enterPhase to spend.
+---
+--- ONE SPELLING FOR THE TWO PLACES IT HAPPENS: at warmup, for the preview, and in
+--- BR.Storm.begin for a route that never had a warmup. Both hand drawCentre
+--- phase 1 from the anchor across the opening circle -- the arguments enterPhase
+--- would use -- so where it happens decides only when the value comes off the
+--- stream.
+--- @param m table
+--- @param a table      the match anchor
+--- @param r0 number    the opening radius of it
+--- @return table       m.stormFirst
+local function drawFirst(m, a, r0)
+    local cx1, cy1, brokeOut = drawCentre(m, 1, a.x, a.y, r0)
+    -- THREE FIELDS AND NOT FOUR. The opening radius this was drawn against is
+    -- deliberately not kept: BR.Storm.begin recomputes it from the same anchor
+    -- (which nothing can change between here and there -- BR.Bus.plan sets it once)
+    -- so a stored copy would be a second source of truth with no reader.
+    -- `brokeOut` IS read: enterPhase lifts the sweep's time ceiling for a phase
+    -- whose circle left its predecessor, and that fact is decided by the draw.
+    m.stormFirst = { cx = cx1, cy = cy1, r = cfg.phases[1].radius,
+                     brokeOut = brokeOut }
+    return m.stormFirst
+end
+
 --- What a client is told about circle 1 before the storm exists: one circle,
 --- standing still, with no clock in it.
 --- @param m table
@@ -472,8 +505,8 @@ local previewPayload = BR.Storm.previewPayload
 --- rolled with the whole map as slack, so it can land nowhere near the anchor. The
 --- owner's answer dissolves that rather than solving it: make the draw happen
 --- earlier and the preview shows the real circle 1 because it IS circle 1. The
---- schedule, the radii, the solver, the damage rule and the hold pricing are all
---- untouched; only the timing of one draw changed.
+--- schedule, the radii, the solver and the damage rule are all untouched; only the
+--- timing of one draw changed.
 ---
 --- CALLED FROM THE WARMUP BRANCH OF BR.Match.onEnter, immediately after
 --- BR.Bus.plan(m) -- which is what picks m.anchor, and is therefore the earliest
@@ -498,21 +531,11 @@ function BR.Storm.drawFirstCircle(m)
 
     seedRng(m)
 
-    local a  = m.anchor
-    local r0 = openingRadius(a.x, a.y)
-    local cx1, cy1, brokeOut = drawCentre(m, 1, a.x, a.y, r0)
-    -- THREE FIELDS AND NOT FOUR. The opening radius this was drawn against is
-    -- deliberately not kept: BR.Storm.begin recomputes it from the same anchor
-    -- (which nothing can change between here and there -- BR.Bus.plan sets it once)
-    -- so a stored copy would be a second source of truth with no reader.
-    -- `brokeOut` IS read: enterPhase lifts the sweep's time ceiling for a phase
-    -- whose circle left its predecessor, and that fact is decided by the draw.
-    m.stormFirst = { cx = cx1, cy = cy1, r = cfg.phases[1].radius,
-                     brokeOut = brokeOut }
+    local a = m.anchor
+    local f = drawFirst(m, a, openingRadius(a.x, a.y))
 
     print(('[br_core] storm: match %s circle 1 drawn at warmup -- (%.0f, %.0f) r %.0f, off anchor %s')
-        :format(BR.MatchTag(m.id), cx1, cy1, cfg.phases[1].radius,
-                tostring(a.name)))
+        :format(BR.MatchTag(m.id), f.cx, f.cy, f.r, tostring(a.name)))
     BR.Broadcast.toMatch(m, BR.Net.STORM_PREVIEW, previewPayload(m))
 end
 
@@ -555,38 +578,39 @@ function BR.Storm.begin(m)
     seedRng(m)
     m.stormCarry = {}
 
-    -- The free-loot hold is priced for the FURTHEST player's run to the
-    -- FIRST TARGET CIRCLE -- distance to its edge, not to the anchor point.
-    -- Pricing to the anchor charged a player already standing inside the
-    -- phase-1 circle for the full radius they never had to cross ("everyone
-    -- is in the circle, why is the timer four minutes?"). Anyone inside the
-    -- target pays nothing; only the overshoot beyond its edge buys time.
-    -- LOBBY bystanders are not participants and never lengthen the hold.
+    -- CIRCLE 1 IS ON THE TABLE BEFORE PHASE 1 IS ENTERED, because the hold below
+    -- is priced on it. Warmup drew it (#327); a route that never had a warmup draws
+    -- it here -- the draw enterPhase would otherwise have made, off the same stream
+    -- -- and enterPhase spends it either way.
+    local r0 = openingRadius(a.x, a.y)
+    local f = m.stormFirst or drawFirst(m, a, r0)
+
+    -- ═══ THE FREE-LOOT HOLD IS PRICED ON WHERE THE PLAYERS ARE AGAINST CIRCLE 1 ═══
     --
-    -- ═══ IT STILL MEASURES TO THE ANCHOR, AND THAT IS A DECISION NOW (#327) ═══
+    --   "change the phase 1 hold please, based on location of the players as we
+    --    said."                                       -- owner, 2026-09-23 (#364)
     --
-    -- m.stormFirst is sitting right here with circle 1's real centre in it, so
-    -- this could be made exact for the first time. It deliberately is not. #327
-    -- read this line as evidence that phase 1 OUGHT to be pinned to the anchor,
-    -- and the owner answered by moving the draw instead -- "we don't need to
-    -- change where the circle goes" -- which leaves the pricing exactly as
-    -- authored. Rewriting it here would change how long every match's free-loot
-    -- hold lasts, on a commit whose whole claim is that nothing about the storm
-    -- moved. If it should be exact, that is its own issue and its own playtest.
+    -- The FURTHEST living player's distance to circle 1's wall, at
+    -- hold.metersPerSec. Anyone inside it pays nothing, so a lobby that landed in
+    -- circle 1 waits the one-minute floor; only the run in from outside its edge
+    -- buys time. LOBBY bystanders are not participants and never lengthen it.
     --
-    -- AND THIS IS WHERE #352's THREE MINUTES CAME FROM. Circle 1 is drawn with the
-    -- whole opening circle as slack, so its centre can sit eight kilometres off the
-    -- anchor: a solo player standing dead centre in it was priced past the cap one
-    -- match in five. The pricing is still left alone. capFirstHold, run inside
-    -- enterPhase below, is what answers it -- a lobby 75% inside circle 1 waits
-    -- 1:30 at most, whatever this line priced.
+    -- THE SAME WALL THE 75% CUT COUNTS AGAINST. circleOneZone is asked of the record
+    -- enterPhase is about to build -- same seed, same phase, same circle, only the
+    -- clock missing -- so both phase-1 rules agree on who is inside, and it is the
+    -- boundary phase 1's sweep ends on. A radius test would charge a player standing
+    -- in a corner past r and let one in a dent inside r ride free.
+    --
+    -- (Until #364 this measured from the match anchor, which circle 1 has not sat
+    -- on since #327.)
+    local zone = circleOneZone(BR.BuildStormRecord(1, a.x, a.y, r0,
+        f.cx, f.cy, cfg.phases[1].radius, 0, 0, 0, 0, m.stormSeed))
     local furthest = 0.0
     BR.Roster.each(
         function(e) return e.matchId == m.id and BR.Server.isInMatch(e.state) end,
         function(_, e)
             if e.pos then
-                local d = BR.Dist(e.pos.x, e.pos.y, a.x, a.y)
-                    - cfg.phases[1].radius
+                local d = BR.StormShape.distance(zone, e.pos.x, e.pos.y)
                 if d > furthest then furthest = d end
             end
         end)
@@ -598,16 +622,15 @@ function BR.Storm.begin(m)
         cfg.hold.minSeconds or cfg.phases[1].wait, cfg.hold.maxSeconds)
 
     -- THE WALL MOVES WITHIN THREE MINUTES, whatever the drop spread priced:
-    -- the stationary wait caps at startCapSeconds. The old payback (trimmed
-    -- hold seconds added to the shrink) is gone -- enterPhase now prices
-    -- every phase's shrink for the furthest player's actual run, which is
-    -- the same fairness measured directly.
+    -- the stationary wait caps at startCapSeconds. The far straggler's time goes
+    -- into phase 1's sweep instead, which enterPhase prices on their run.
     local waitSec = math.min(holdSec, cfg.hold.startCapSeconds or holdSec)
 
-    local r0 = openingRadius(a.x, a.y)
-    print(('[br_core] storm: match %s homing on %s (%.0f, %.0f) -- opening r %.0f, hold %.0fs (furthest %.0fm)')
+    print(('[br_core] storm: match %s homing on %s (%.0f, %.0f) -- opening r %.0f, hold %.0fs (furthest %.0fm outside circle 1)')
         :format(BR.MatchTag(m.id), tostring(a.name), a.x, a.y, r0, waitSec,
                 furthest))
+    -- AND THE 75% CUT STILL APPLIES: enterPhase asks capFirstHold before it
+    -- publishes, so a lobby already that far in is sent 1:30 at most from the start.
     enterPhase(m, 1, a.x, a.y, r0, GetGameTimer(), waitSec)
 
     -- A MATCH STARTED UNDER A FREEZE INHERITS IT. Without this, freezing the

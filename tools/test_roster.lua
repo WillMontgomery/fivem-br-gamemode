@@ -3576,11 +3576,11 @@ do
     BR.Sched.step(fakeTime)
     ok(mstate() == BR.MatchState.WARMUP, 'warmup starts')
 
-    -- Stand both players ON the anchor before the match goes live, so the
-    -- distance-scaled hold bottoms out at its 120s minimum and the timing
-    -- assertions below stay exact. The far-player case has its own block.
-    local a0 = manchor()
-    setPos(1, a0.x, a0.y); setPos(2, a0.x, a0.y)
+    -- Stand both players at circle 1's centre before the match goes live, so
+    -- the distance-scaled hold bottoms out at its one-minute floor and the
+    -- timing assertions below stay exact. The far-player case has its own block.
+    local f0 = theMatch().stormFirst
+    setPos(1, f0.cx, f0.cy); setPos(2, f0.cx, f0.cy)
     fakeTime = fakeTime + 1000
     BR.Sched.step(fakeTime)   -- the position sampler picks them up
 
@@ -3607,7 +3607,7 @@ do
     ok(rec.r0 >= BR.Config.Storm.radius0, 'and never shrinks below the radius0 floor')
 
     ok(rec.tWait == BR.Config.Storm.hold.minSeconds * 1000.0,
-        'players at the anchor get the minimum free-loot hold (one minute)')
+        'players inside circle 1 get the minimum free-loot hold (one minute)')
     ok(rec.r1 == BR.Config.Storm.phases[1].radius,
         'the first target circle is known the moment the match goes live')
     ok(BR.Dist(rec.cx0, rec.cy0, rec.cx1, rec.cy1) + rec.r1 <= rec.r0 + 1e-6,
@@ -3897,20 +3897,33 @@ end
 
 describe('match.storm.hold')
 do
-    -- The free-loot hold is priced for the furthest player's run to the
-    -- FIRST TARGET CIRCLE'S EDGE -- distance beyond phases[1].radius, not to
-    -- the anchor point (pricing to the anchor charged players already inside
-    -- the circle: the "everyone is in the circle, why four minutes?" report).
-    -- The SHRINK is priced the same way per phase (2026-08-04): the furthest
-    -- player's run to the target edge, floored at shrinkPace.minSeconds and
-    -- ceilinged by the authored value.
+    -- The free-loot hold is priced for the furthest player's run to CIRCLE 1's
+    -- WALL (#364): anyone inside its shape pays nothing. first.hold in
+    -- tools/test_storm.lua pins the distance itself; this block drives the
+    -- caps through the real match. The SHRINK is priced per phase
+    -- (2026-08-04): the furthest player's run to the target edge, floored at
+    -- shrinkPace.minSeconds and ceilinged by the authored value.
     --
     -- edgeBiasMax is zeroed for this block to remove the random draw --
     -- but the AABB clamp can STILL shift the target off an edge-adjacent
-    -- anchor, so shrink expectations are computed from the record's ACTUAL
-    -- target circle rather than assumed distances.
+    -- anchor, so players are placed against circle 1 itself and shrink
+    -- expectations are computed from the record's ACTUAL target circle.
     local savedBias = BR.Config.Storm.edgeBiasMax
     BR.Config.Storm.edgeBiasMax = 0.0
+
+    --- Metres from circle 1's centre to its wall along +x, found by bisection:
+    --- the shape is convex, so the ray crosses it once.
+    local function wallEast(m)
+        local f = m.stormFirst
+        local shape = BR.StormShape.blob(f.cx, f.cy, f.r, BR.StormUnit(m.stormSeed, 1))
+        local lo, hi = 0.0, 2.0 * f.r
+        for _ = 1, 60 do
+            local mid = 0.5 * (lo + hi)
+            if BR.StormShape.distance(shape, f.cx + mid, f.cy) <= 0 then
+                lo = mid else hi = mid end
+        end
+        return lo
+    end
 
     --- What enterPhase should have priced, from the same geometry it saw.
     local function expectShrink(rec2)
@@ -3931,20 +3944,22 @@ do
     BR.Sched.step(fakeTime)
 
     local r1 = BR.Config.Storm.phases[1].radius
+    local reach = BR.Config.Storm.shape.reach
     local a = manchor()
-    setPos(1, a.x + r1 + 1800.0, a.y)
-    setPos(2, a.x, a.y)
+    local f = theMatch().stormFirst
+    setPos(1, f.cx + reach * r1 + 1800.0, f.cy)
+    setPos(2, f.cx, f.cy)
     fakeTime = fakeTime + 1000
     BR.Sched.step(fakeTime)
 
     forceState(BR.MatchState.PLAYING)
     local rec = mstorm()
-    -- 200s priced, capped at the 180s start cap; the 1800m run also prices
-    -- the shrink at 200s, which the authored phase-1 value ceilings.
+    -- 1800m past the furthest any wall reaches is at least 200s priced, capped
+    -- at the 180s start cap.
     local cap    = BR.Config.Storm.hold.startCapSeconds * 1000.0
     local shrink = BR.Config.Storm.phases[1].shrink * 1000.0
     ok(math.abs(rec.tWait - cap) < 1500.0,
-        'a 200s-priced hold waits only to the start cap (180s)',
+        'a hold priced past 180s waits only to the start cap',
         ('tWait %.0fms'):format(rec.tWait))
     ok(math.abs(rec.tShrink - expectShrink(rec)) < 1500.0,
         'the shrink matches the pricing formula against the actual target',
@@ -3969,22 +3984,22 @@ do
         ('tShrink %.0fms, expected %.0fms'):format(
             mstorm().tShrink, expectShrink(mstorm())))
 
-    -- Landing INSIDE the first target circle prices at zero: the minimum
-    -- hold applies no matter where inside it you are.
+    -- Landing INSIDE circle 1's wall prices at zero: the minimum hold applies
+    -- no matter where inside it you are -- here a hundred metres short of it.
     forceState(BR.MatchState.ENDED)
     forceState(BR.MatchState.CLEANUP)
     forceState(BR.MatchState.WAITING)
     queueUp(1, 'A'); queueUp(2, 'B')
     fakeTime = fakeTime + 1000
     BR.Sched.step(fakeTime)
-    a = manchor()
-    setPos(1, a.x + BR.Config.Storm.phases[1].radius - 100.0, a.y)
-    setPos(2, a.x, a.y)
+    f = theMatch().stormFirst
+    setPos(1, f.cx + wallEast(theMatch()) - 100.0, f.cy)
+    setPos(2, f.cx, f.cy)
     fakeTime = fakeTime + 1000
     BR.Sched.step(fakeTime)
     forceState(BR.MatchState.PLAYING)
     ok(mstorm().tWait == BR.Config.Storm.hold.minSeconds * 1000.0,
-        'anyone already inside the target circle pays only the one-minute floor',
+        'anyone already inside circle 1\'s wall pays only the one-minute floor',
         ('tWait %.0fms'):format(mstorm().tWait))
     ok(math.abs(mstorm().tShrink - expectShrink(mstorm())) < 1.0,
         'an uncontested map prices at the formula (the floor when all inside)',
@@ -4481,13 +4496,13 @@ do
         ('%.0fs against %.0fs'):format(BR.Config.Airdrop.minDelayMs / 1000,
                                        SC.hold.startCapSeconds))
 
-    -- ─── the case that opened #352: a solo drop inside circle 1, swept ───
+    -- ─── the case that opened #352 and #364: a solo drop inside circle 1, swept ───
     --
     -- Landed on the far side of circle 1 from the anchor, half a radius in -- inside
-    -- the wall whatever its lumps, and as far from the anchor as circle 1 allows, so
-    -- the anchor-priced hold is as long as a player inside it can be charged. Every
-    -- match must go live on the landing and send ONE first record, already cut.
-    local mismatch, flashed, cut, trials = nil, nil, 0, 0
+    -- the wall whatever its lumps, and as far from the anchor as circle 1 allows,
+    -- which is where the anchor used to price the longest hold (#364). Every match
+    -- must go live on the landing and send ONE first record, at the one-minute floor.
+    local mismatch, flashed, trials, anchorFar = nil, nil, 0, 0
     for trial = 1, 40 do
         reset()
         fakeTime = fakeTime + 7777 * trial
@@ -4520,19 +4535,17 @@ do
         fakeTime = fakeTime + 300
         BR.Sched.step(fakeTime)
 
-        -- What BR.Storm.begin prices, spelled from the config: the furthest run past
-        -- circle 1's radius from the ANCHOR, floored, capped, capped again.
-        local H = SC.hold
-        local run = math.max(0.0, BR.Dist(px, py, a.x, a.y) - R1)
-        local priced = math.min(BR.Clamp(run / H.metersPerSec, H.minSeconds,
-            H.maxSeconds), H.startCapSeconds)
-        local want = math.min(priced, H.capSeconds) * 1000.0
+        -- Inside circle 1's wall prices nothing, so the hold is the floor. The
+        -- anchor would have charged anyone more than a floor's run past r from it.
+        local want = SC.hold.minSeconds * 1000.0
+        if BR.Dist(px, py, a.x, a.y) - R1 > SC.hold.minSeconds * SC.hold.metersPerSec then
+            anchorFar = anchorFar + 1
+        end
         local firsts = {}
         for _, s in ipairs(eventsOf(BR.Net.STORM_SYNC)) do
             if s.target == 1 then firsts[#firsts + 1] = s.args[1] end
         end
         trials = trials + 1
-        if priced > H.capSeconds then cut = cut + 1 end
         if not inside or sm.state ~= BR.MatchState.PLAYING or not sm.storm
            or math.abs(sm.storm.tWait - want) > 1.0 then
             mismatch = mismatch or ('trial %d: inside %s, %s, tWait %s against %.0f')
@@ -4544,14 +4557,12 @@ do
                 :format(trial, #firsts, tostring(firsts[1] and firsts[1].tWait))
         end
     end
-    ok(mismatch == nil and cut >= 5,
+    ok(mismatch == nil and trials == 40 and anchorFar >= 5,
         'forty solo drops, each standing inside circle 1: every one goes live on its '
-            .. 'landing and waits at most 1:30 -- and the ones priced past it by the '
-            .. 'anchor are cut to exactly 1:30',
-        mismatch or ('%d of %d were priced past 1:30'):format(cut, trials))
+            .. 'landing and waits the one-minute floor, however far off the anchor',
+        mismatch or ('%d of %d stood past the anchor\'s floor'):format(anchorFar, trials))
     ok(flashed == nil,
-        'and each is sent ONE first record, already cut -- never the priced three '
-            .. 'minutes and then 1:30 a second later', flashed)
+        'and each is sent ONE first record, already at the floor', flashed)
 
     BR.Config.Match.minToStart = savedMin
 end
