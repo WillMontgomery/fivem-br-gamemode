@@ -913,6 +913,26 @@ do
     ok(lootUps() == 0,
         'and says nothing: no door, no "Loot up"',
         ('%d toasts'):format(lootUps()))
+
+    -- AND A FIRST DROP THE NET ARMED CLAIMS IT, rather than leaving it for the
+    -- next door -- which would be a later landing than the first one (#369).
+    walkthrough(true)
+    reset()
+    fire(BR.Net.STATE, { state = BR.MatchState.WARMUP })
+    fire(BR.Net.STATE, { state = BR.MatchState.BUS })
+    BR.State.me.state = BR.PlayerState.FREEFALL   -- the server's word; no door
+    underCanopy()
+    ticks(20)
+    touchDown()
+    serve(5, fakeTime)
+    ok(BR.State.landed == true and lootUps() == 1,
+        'the first drop after finishing says it even when the net armed it',
+        ('%d toasts'):format(lootUps()))
+    reset()
+    dropAndLand()
+    ok(lootUps() == 0,
+        'AND THE NEXT DOOR DOES NOT -- the drop the net armed spent it',
+        ('%d toasts'):format(lootUps()))
 end
 
 -- ----------------------------------------------------- the formatter, pure ---

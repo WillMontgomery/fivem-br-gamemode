@@ -64,9 +64,11 @@ local landedThisDrop = false
 --- than handing it to some later match, which would be a toast about looting up
 --- arriving long after it meant anything.
 ---
---- ASSIGNED BY THE DOOR, CLEARED BY THE RE-ARM NET, and those are the only two
---- ways the machine arms -- so the landing branch, which runs once per arming,
---- can only ever read the value its own door wrote.
+--- ASSIGNED BY WHICHEVER ARMS THE MACHINE, the door or the re-arm net, and those
+--- are the only two ways it arms -- so the landing branch, which runs once per
+--- arming, can only ever read the value its own arming wrote. Both claim through
+--- takeJustFinished: a net-armed first drop left unclaimed would hand the toast
+--- to the next door, which is a later landing.
 local lootUpToast = false
 
 --- Is this ped genuinely off the ground RIGHT NOW?
@@ -1236,9 +1238,11 @@ BR.Loop.register(BR.Loop.TICK, 'skydive.state', function()
         -- by reportLanded's retry, which now actually retries.
         if landedThisDrop and not airborneNow(PlayerPedId()) then return end
         landedThisDrop = false
-        -- NO DOOR, SO NO "LOOT UP" (#369). Whatever an earlier drop claimed and
-        -- never landed is not this one's to show. See lootUpToast.
-        lootUpToast = false
+        -- NO DOOR, BUT STILL A DROP (#369). The first drop after a finish claims
+        -- the toast however it armed; whatever an earlier drop claimed and never
+        -- landed is already spent. See lootUpToast.
+        lootUpToast = BR.Tutorial ~= nil and BR.Tutorial.takeJustFinished ~= nil
+                      and BR.Tutorial.takeJustFinished() == true
         dropping = true
         -- A DESCENT THIS FILE WAS NEVER HANDED still gets measured (#245). This
         -- is the missed-handoff net, and a landing that arrives through it is

@@ -465,7 +465,7 @@ end)
 --- once most players have landed.
 ---
 --- NAMED BY ITS KEY RATHER THAN BY ITS SENTENCE, deliberately. The wording has
---- changed twice at the owner's request and both times left comments elsewhere
+--- changed three times at the owner's request and has left comments elsewhere
 --- quoting a string that no longer existed; `bus.landing` is what the code
 --- actually matches on, here and in tools/test_roster.lua.
 ---
