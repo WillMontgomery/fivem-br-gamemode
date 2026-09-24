@@ -854,12 +854,13 @@ do
     local R1 = 2600.0
     -- THE SEED IS THE TWELFTH ARGUMENT. It sat in the eleventh -- `dps` -- so every
     -- record in this file that meant a seed was seed 0, and a sweep of "200 seeds"
-    -- was one shape two hundred times. A seed whose opening zone is a POLYGON, found
-    -- rather than typed, because one zone in ten is a plain circle now and a circle
-    -- inside its own radius has no dent to find.
+    -- was one shape two hundred times. A seed whose zone 1 is a POLYGON, found rather
+    -- than typed, because one zone in ten is a plain circle and a circle inside its
+    -- own radius has no dent to find -- and a PHASE-2 record, because phase 1 starts
+    -- from zone 0, which is the map disc on every seed (#344 round 2).
     local SEED = 4242
-    while BR.StormUnit(SEED, 0).kind ~= 'polygon' do SEED = SEED + 1 end
-    local rec = BR.BuildStormRecord(1, 0.0, 0.0, R1, 0.0, 0.0, R1,
+    while BR.StormUnit(SEED, 1).kind ~= 'polygon' do SEED = SEED + 1 end
+    local rec = BR.BuildStormRecord(2, 0.0, 0.0, R1, 0.0, 0.0, R1,
         0.0, 24 * 60 * 60 * 1000, 1000, 0.0, SEED)
     local circles = BR.AirdropLandingCircles(rec, 0.0, A, A.blipMaxMs)
 
@@ -879,9 +880,9 @@ do
 
     -- IT IS THIS SEED AND THIS ZONE, derived through BR.StormUnit rather than
     -- compared against a copy of the generator -- so a change to how a shape is
-    -- built moves both sides of this together. A record's current circle is the
-    -- zone BEFORE its phase -- zone 0, the opening circle, for phase 1 -- and its
-    -- target is the phase's own; each entry is asked of its own, and of the other,
+    -- built moves both sides of this together. A record's wall starts as the zone
+    -- BEFORE its phase -- zone 1 for this phase-2 record -- and its target is the
+    -- phase's own; each entry is asked of its own, and of the other,
     -- because "it is a blob" would pass the lines above while being the wrong wall.
     local unit   = BR.StormUnit(rec.seed, rec.phase - 1)
     local target = BR.StormUnit(rec.seed, rec.phase)
@@ -1013,18 +1014,20 @@ do
     -- that.
     -- THE SEED IS THE TWELFTH ARGUMENT, and it used to be passed as the eleventh --
     -- `dps` -- so these two hundred seeds were one: seed 0, two hundred times. The
-    -- WALL is the one the hold draws: the current circle, in the current zone's shape.
+    -- WALL is the one the hold draws: the zone the record starts as. A PHASE-2 record,
+    -- because phase 1 starts from the map disc on every seed (#344 round 2), and a
+    -- disc of r has no dent inside r to find.
     local acceptedOutside, exposedSeeds = 0, 0
     local circleN, shapeN, lost = 0, 0, 0
     local seen, repeated = {}, 0
     for s = 1, SEEDS do
-        local r = BR.BuildStormRecord(1, 0.0, 0.0, 2600.0, 0.0, 0.0, 2600.0,
+        local r = BR.BuildStormRecord(2, 0.0, 0.0, 2600.0, 0.0, 0.0, 2600.0,
             0.0, 24 * 60 * 60 * 1000, 1000, 0.0, s * 7919)
         if seen[r.seed] then repeated = repeated + 1 end
         seen[r.seed] = true
         local cs = BR.AirdropLandingCircles(r, 0.0, A, A.blipMaxMs)
         local disc = { { x = 0.0, y = 0.0, r = 2600.0 } }
-        local wall = BR.StormShape.blob(0.0, 0.0, 2600.0, BR.StormCurrentUnit(r, 0.0))
+        local wall = BR.StormWall(r, 0.0)
         local exposed = false
         for _, p in ipairs(POIs) do
             local byRadius = BR.AirdropInside(disc, p.x, p.y, A.insideBy)
@@ -1055,11 +1058,13 @@ do
         ('circle %d, wall %d, lost %d'):format(circleN, shapeN, lost))
 
     -- WHAT THAT COSTS AS A FRACTION, pinned loosely because it is a measurement
-    -- and not a requirement: about a tenth of the candidate POIs at phase 1. If
-    -- this ever reads like a quarter, `insideBy` is being asked to do something
-    -- the radius used to hide and wants the owner rather than a retune.
-    ok(lost < circleN * 0.25,
-        'and the cost is a tenth of the candidates, not a quarter',
+    -- and not a requirement. A zone is drawn by AREA now and stretched up to 3:1
+    -- (#344 round 2), so it runs well inside r across its narrow side and the radius
+    -- used to hide more than it did. If this ever reads like a half, `insideBy` is
+    -- being asked to do something the radius used to hide and wants the owner rather
+    -- than a retune.
+    ok(lost < circleN * 0.5,
+        'and the cost is some of the candidates, not half of them',
         ('%.1f%%'):format(100.0 * lost / math.max(1, circleN)))
 end
 
@@ -1077,48 +1082,37 @@ do
     eq(#atSite, 3,
         'at siting: the soonest landing, the latest one the gate allows, and the next circle')
 
-    -- THE TWO ENDPOINTS BOUND EVERYTHING BETWEEN THEM, and that is convexity
-    -- rather than sampling: inside one published record the centre and the
-    -- radius are both LINEAR in time, so the signed distance to the boundary is
-    -- convex in t, and a convex function that is <= -250 at both ends is <= -250
-    -- across the interval. This drives a real shrink and checks the claim at a
-    -- hundred instants.
+    -- ═══ ON A NESTED PHASE THE DESTINATION BOUNDS EVERY INSTANT (#344 round 2) ═══
     --
-    -- ═══ AND THE ARGUMENT SURVIVED THE SHAPE (#349), WHICH IS WHY THIS BLOCK
-    --     MEASURES THE WALL AND NOT THE RADIUS ═══
-    --
-    -- For a circle it was a norm of an affine function minus an affine one. For a
-    -- blob it is BR.StormShape's hull distance: the MAXIMUM of the supporting
-    -- constraints, each of which is affine in the centre and the radius and
-    -- therefore affine in t -- so it is a max of convex functions and convex for
-    -- the same reason, more directly than before. This check used to solve the
-    -- inner instants as circles, which is a claim about a boundary the game does
-    -- not have and can differ either way: the blob bulges to 1.046 r as well as
-    -- denting to 0.848.
-    --
-    -- ═══ AND IT SURVIVED THE MORPH, BECAUSE THE MORPH WAS CHOSEN SO THAT IT WOULD ═══
-    --
-    -- Each zone keeps its own shape now, and the wall becomes the target's across the
-    -- sweep -- the Minkowski interpolation of the zone it left and the zone it arrives
-    -- at, as placed, whose support function is affine in time (BR.StormMorph). Every
-    -- constraint is still affine in t, so the argument above is unchanged; this sweep
-    -- asks each instant on the shape the wall REALLY has then -- the morph, at the
-    -- sweep fraction the solver reports -- rather than on one shape for all of them.
-    local shrinking = BR.BuildStormRecord(2, 0.0, 0.0, 2000.0,
-        900.0, 0.0, 800.0, 0.0, 0, 600000, 1.0, 913)
+    -- In the circle era, and through the Minkowski morph after it, the two ends of the
+    -- window bounded everything between them because the wall's support function was
+    -- affine in time, so the signed distance at a fixed point was convex in it. A wall
+    -- that is the hull of discs moving corner to corner is not affine in time, and that
+    -- theorem is gone. What replaced it is stronger on every phase that did not break
+    -- out: every zone is placed inside the one before it by its real shape, the wall
+    -- holds the destination the whole way across, and it NEVER MOVES OUTWARD
+    -- (BR.StormWall). So a point inside the destination is inside the wall at every
+    -- instant, and the signed distance at a fixed point only ever rises. This drives a
+    -- real nested shrink and checks both at a hundred instants.
+    local shrinking = nil
+    for seed = 913, 2000 do
+        local cand = BR.BuildStormRecord(2, 0.0, 0.0, 2000.0,
+            300.0, 0.0, 1200.0, 0.0, 0, 600000, 1.0, seed)
+        if BR.StormNested(cand) then shrinking = cand break end
+    end
+    ok(shrinking ~= nil, 'fixture: a nested phase-2 record, found rather than typed')
     local flight = (A.planeLeadMs or 0) + A.descentMs
     local circles = BR.AirdropLandingCircles(shrinking, 0.0, A, 300000)
 
     local held2, everTested = true, false
-    for _, p in ipairs({ { x = 700.0, y = 0.0 }, { x = 900.0, y = 0.0 },
-                         { x = 800.0, y = 100.0 }, { x = 300.0, y = 0.0 } }) do
+    for _, p in ipairs({ { x = 300.0, y = 0.0 }, { x = 500.0, y = 0.0 },
+                         { x = 300.0, y = 200.0 }, { x = 100.0, y = -100.0 } }) do
         if BR.AirdropInside(circles, p.x, p.y, A.insideBy) then
             everTested = true
             for i = 0, 100 do
                 local t = flight + (300000 * i / 100)
-                local cx, cy, r, _, _, _, st = BR.StormAt(shrinking, t)
-                local at = BR.StormShape.blob(cx, cy, r,
-                    BR.StormCurrentUnit(shrinking, st))
+                local _, _, _, _, _, _, st = BR.StormAt(shrinking, t)
+                local at = BR.StormWall(shrinking, st)
                 if BR.StormShape.distance(at, p.x, p.y) > -A.insideBy then
                     held2 = false
                 end
@@ -1126,46 +1120,56 @@ do
         end
     end
     ok(held2,
-        'a point that clears both ends of the window clears every instant in it')
+        'a point that clears the window clears every instant in it')
 
     -- ═══ AND THE THEOREM ITSELF, SWEPT, BECAUSE FOUR PROBES ARE A SAMPLE ═══
     --
-    -- The window rule needs the signed distance at a fixed point to be CONVEX along
-    -- the sweep -- never above the straight line between its two ends. Asked at 169
-    -- points of sixty records with a big sweep (5400 m onto 2600, the centre moving),
-    -- at twenty-one instants each, of the shape the wall really has at each instant.
-    -- MEASURED on the morph fraction BR.StormMorph chooses: nothing ever above the
-    -- chord. Measured with the fraction simply `t`: 164 m above it -- a crate sited
-    -- 250 m inside at both ends of the window, 86 m inside half way between.
-    local rise, riseAt = 0.0, nil
-    for s = 1, 60 do
-        local big = BR.BuildStormRecord(2, 0.0, 0.0, 5400.0, 900.0, -400.0, 2600.0,
+    -- Asked at 169 points of forty nested records with a big sweep (5400 m onto 2600,
+    -- the centre moving), at twenty-one instants each, of the wall the damage tick
+    -- bills at each instant: the signed distance never falls from one instant to the
+    -- next, and never reads deeper than the destination's own.
+    local fell, fellAt, deeper, deeperAt, tested = 0.0, nil, 0.0, nil, 0
+    for s = 1, 120 do
+        local big = BR.BuildStormRecord(2, 0.0, 0.0, 5400.0, 300.0, -200.0, 2600.0,
             0.0, 0, 100000, 1.0, s * 104729 + 3)
-        local walls = {}
-        for i = 0, 20 do
-            local cx, cy, r, _, _, _, st = BR.StormAt(big, 100000 * i / 20)
-            walls[i] = BR.StormShape.blob(cx, cy, r, BR.StormCurrentUnit(big, st))
-        end
-        for gx = -6, 6 do
-            for gy = -6, 6 do
-                local px, py = gx * 700.0, gy * 700.0
-                local f0 = BR.StormShape.distance(walls[0], px, py)
-                local f1 = BR.StormShape.distance(walls[20], px, py)
-                for i = 1, 19 do
-                    local v = BR.StormShape.distance(walls[i], px, py)
-                        - (f0 + (f1 - f0) * i / 20)
-                    if v > rise then
-                        rise, riseAt = v, ('seed %d at (%.0f, %.0f), instant %d')
-                            :format(big.seed, px, py, i)
+        if tested < 40 and BR.StormNested(big) then
+            tested = tested + 1
+            local target = BR.StormTarget(big)
+            local walls = {}
+            for i = 0, 20 do
+                local _, _, _, _, _, _, st = BR.StormAt(big, 100000 * i / 20)
+                walls[i] = BR.StormWall(big, st)
+            end
+            for gx = -6, 6 do
+                for gy = -6, 6 do
+                    local px, py = gx * 700.0, gy * 700.0
+                    local dt = BR.StormShape.distance(target, px, py)
+                    local prev = nil
+                    for i = 0, 20 do
+                        local v = BR.StormShape.distance(walls[i], px, py)
+                        if prev and prev - v > fell then
+                            fell, fellAt = prev - v, ('seed %d at (%.0f, %.0f), instant %d')
+                                :format(big.seed, px, py, i)
+                        end
+                        if v - dt > deeper then
+                            deeper, deeperAt = v - dt, ('seed %d at (%.0f, %.0f), instant %d')
+                                :format(big.seed, px, py, i)
+                        end
+                        prev = v
                     end
                 end
             end
         end
     end
-    ok(rise < 1e-6,
-        'and across 60 big sweeps the wall\'s signed distance at every probe stays on '
-            .. 'or below the line between its two ends -- the morph keeps the theorem',
-        ('%.4f m above it at %s'):format(rise, tostring(riseAt)))
+    ok(tested == 40 and fell < 1e-6,
+        'and across 40 big nested sweeps the wall\'s signed distance at every probe only '
+            .. 'ever rises -- the wall never moves back out over anyone',
+        ('%d sweeps, fell %.4f m at %s'):format(tested, fell, tostring(fellAt)))
+    ok(deeper < 1e-6,
+        'and never stands inside the destination anywhere -- so the destination entry '
+            .. 'alone keeps a crate margin-inside the wall at every instant',
+        ('%.4f m at %s'):format(deeper, tostring(deeperAt)))
+
     -- AND SOMETHING ACTUALLY QUALIFIED, because a window with no qualifying point
     -- in it would pass the line above by vacuum.
     ok(everTested, 'at least one of the four probes cleared the window at all')
@@ -3307,13 +3311,14 @@ do
 
     local function enterPhase(m, phase, cx0, cy0, r0, waitSec)
         local p = SC.phases[phase]
-        local minDist = 0.0
+        local hugM = nil
         if phase > #SC.phases - (SC.edgeHugPhases or 0) then
-            minDist = math.max(0.0, (r0 - p.radius) - (SC.edgeHugM or 0.0))
+            hugM = SC.edgeHugM or 0.0
         end
-        local cx1, cy1, brokeOut = BR.NextStormCentre(m.sweep.rng, cx0, cy0, r0,
-            p.radius, SC.edgeBiasMax, SC.mapAABB, minDist,
-            BR.StormBreakoutFor(SC, phase))
+        local cx1, cy1, brokeOut = BR.NextZoneCentre(m.sweep.rng,
+            BR.StormHost(m.sweep.seed, phase, cx0, cy0, r0), cx0, cy0, r0,
+            BR.StormUnit(m.sweep.seed, phase), p.radius, SC.edgeBiasMax, SC.mapAABB,
+            hugM, BR.StormBreakoutFor(SC, phase))
         local shrink = p.shrink
         if brokeOut then
             shrink = shrink * ((SC.breakout and SC.breakout.shrinkFactor) or 1.0)
@@ -3846,11 +3851,11 @@ do
     -- further from the centre than the radius allows. Left as arithmetic about a
     -- circle this was true by luck of the seed and would have gone red on the next
     -- shape the config drew.
-    -- IN THE SHAPE THE WALL HAS AT THAT INSTANT: the current zone's, morphed as far
-    -- as the sweep has got by the landing.
+    -- IN THE SHAPE THE WALL HAS AT THAT INSTANT: every corner as far toward the
+    -- target's as the sweep has carried it by the landing.
     local cx, cy, r, _, _, _, st = BR.StormAt(m.storm, rec.tLand)
     local atArrival = { { x = cx, y = cy, r = r,
-        shape = BR.StormShape.blob(cx, cy, r, BR.StormCurrentUnit(m.storm, st)) } }
+        shape = BR.StormWall(m.storm, st) } }
     ok(BR.AirdropInside(atArrival, rec.x, rec.y, A.insideBy),
         'the landing point is at least 250m inside the wall it will arrive in',
         ('%+.0fm'):format(BR.AirdropDepth(atArrival, rec.x, rec.y)))
@@ -4414,9 +4419,12 @@ do
     local rec = published[1].payload
     eq(#m.airdrop.waiting, 1, 'sited in phase 1')
 
-    -- A HELD circle, so the margin has no opinion and the phase is the only thing
-    -- that changed between the siting and the arm.
-    m.storm.phase = 8
+    -- A HELD STORM SO LARGE THE MARGIN HAS NO OPINION, so the phase is the only thing
+    -- that changed between the siting and the arm. Large, and not merely the same
+    -- circle: every phase wears its own zones' shapes (#344), and zones 7 and 8 on the
+    -- circle zones 0 and 1 stood on are a different wall with an opinion of its own.
+    m.storm = BR.BuildStormRecord(8, rec.x, rec.y, 20000.0, rec.x, rec.y, 20000.0,
+        gameMs, 24 * 60 * 60 * 1000, 1000, 1.0, m.storm.seed)
     standAt(101, rec.x, rec.y, 0.0)
     gameMs = gameMs + 1000
     tick()
@@ -4493,23 +4501,21 @@ do
         -- drop commits, publishes and announces'. A blob bulges past its own
         -- radius as well as denting inside it, so `BR.Dist <= r - insideBy` is
         -- neither the rule nor implied by it.
-        -- EACH BOUNDARY IN ITS OWN SHAPE: the wall at an instant is the current zone
-        -- morphed as far as the sweep has got, and the next circle is the target zone.
-        local function boundaryAt(cx, cy, r, unit)
-            return { { x = cx, y = cy, r = r,
-                shape = BR.StormShape.blob(cx, cy, r, unit) } }
+        -- EACH BOUNDARY IN ITS OWN SHAPE: the wall at an instant, every corner as far
+        -- toward the target's as the sweep has carried it, and the target zone itself.
+        local function boundaryAt(cx, cy, r, shape)
+            return { { x = cx, y = cy, r = r, shape = shape } }
         end
 
         -- THE POINT CLEARS THE DEADLINE, not merely the soonest landing.
         local late = sitedAt + A.blipMaxMs + FLIGHT
         local lx, ly, lr, _, _, _, lt = BR.StormAt(m.storm, late)
-        ok(BR.AirdropInside(boundaryAt(lx, ly, lr, BR.StormCurrentUnit(m.storm, lt)),
+        ok(BR.AirdropInside(boundaryAt(lx, ly, lr, BR.StormWall(m.storm, lt)),
                 rec.x, rec.y, A.insideBy),
             'it is still 250m inside the wall at the LATEST landing the gate allows')
         -- ...AND THE NEXT CIRCLE, which is the owner's own half of the proposal.
         ok(BR.AirdropInside(
-                boundaryAt(m.storm.cx1, m.storm.cy1, m.storm.r1,
-                    BR.StormUnit(m.storm.seed, m.storm.phase)),
+                boundaryAt(m.storm.cx1, m.storm.cy1, m.storm.r1, BR.StormTarget(m.storm)),
                 rec.x, rec.y, A.insideBy),
             'and 250m inside the one the storm is shrinking toward')
     end

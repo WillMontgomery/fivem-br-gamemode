@@ -164,37 +164,48 @@ end
 --- ═══ ONE DRAW SITE, BECAUSE TWO WOULD HAVE TO AGREE FOREVER ═══
 ---
 --- Circle 1 is drawn at WARMUP and phases 2 and up are drawn at phase entry, and
---- both must hand BR.NextStormCentre byte-for-byte identical arguments -- the
---- edge-hug floor, the containment slack, the breakout budget, the map bounds.
+--- both must hand BR.NextZoneCentre byte-for-byte identical arguments -- the
+--- zone being closed from, the edge hug, the breakout budget, the map bounds.
 --- Spelled at two call sites, the day somebody tunes `edgeHugPhases` is the day
 --- the preview quietly stops matching the circle it is previewing. Spelled once,
 --- they cannot disagree.
 ---
---- THE FINAL PHASES HUG THE RIM: the next centre sits within edgeHugM of the
---- current circle's circumference, so endgames resolve as a run to a place rather
---- than a shuffle in the middle. Earlier phases roam the whole containment slack
---- (edgeBiasMax 1.0). Phase 1 is never one of them, which is why the preview can
---- be drawn from the anchor alone.
+--- ═══ PLACED BY REAL SHAPE, INSIDE THE ZONE IT CLOSES FROM (#344) ═══
 ---
---- The breakout budget rides along: it lets a phase's circle leave the current
---- one, and enterPhase's sweep pricing is what keeps that fair -- the furthest
---- player's run to the TARGET's edge sets the wall's travel time, so a circle
---- that moved further simply takes longer to close.
+--- The HOST is the zone this phase's wall starts as -- zone 0, the map disc, for
+--- phase 1, the zone before otherwise, or the outline a freeze or a same-phase
+--- `brphase` carried (`mo`) -- and on a phase that does not break out the next zone
+--- lands ENTIRELY inside it, by its real shape. That is what lets the wall morph
+--- onto the target without ever crossing it.
+---
+--- THE FINAL PHASES HUG THE EDGE: the next zone sits within edgeHugM of as far as
+--- it could go on its bearing, so endgames resolve as a run to a place rather than
+--- a shuffle in the middle. Earlier phases roam the whole room there is (edgeBiasMax
+--- 1.0). Phase 1 is never one of them, which is why the preview can be drawn from
+--- the anchor alone.
+---
+--- The breakout budget rides along: it lets a phase's zone leave the current one,
+--- and enterPhase's sweep pricing is what keeps that fair -- the furthest player's
+--- run to the TARGET's wall sets the wall's travel time, so a zone that moved
+--- further simply takes longer to close.
 --- @param m table
 --- @param phase integer
 --- @param cx0 number     the circle being shrunk from
 --- @param cy0 number
 --- @param r0 number
+--- @param mo table|nil   the wall's outline, when the phase starts part way through
+---                       a morph (a thaw, a same-phase brphase)
 --- @return number, number, boolean  centre, and whether it broke out
-local function drawCentre(m, phase, cx0, cy0, r0)
+local function drawCentre(m, phase, cx0, cy0, r0, mo)
     local p = cfg.phases[phase]
-    local minDist = 0.0
+    local hugM = nil
     if phase > #cfg.phases - (cfg.edgeHugPhases or 0) then
-        minDist = math.max(0.0, (r0 - p.radius) - (cfg.edgeHugM or 0.0))
+        hugM = cfg.edgeHugM or 0.0
     end
-    return BR.NextStormCentre(m.stormRng, cx0, cy0, r0,
-        p.radius, cfg.edgeBiasMax, cfg.mapAABB, minDist,
-        BR.StormBreakoutFor(cfg, phase))
+    return BR.NextZoneCentre(m.stormRng,
+        BR.StormHost(m.stormSeed, phase, cx0, cy0, r0, mo), cx0, cy0, r0,
+        BR.StormUnit(m.stormSeed, phase), p.radius, cfg.edgeBiasMax, cfg.mapAABB,
+        hugM, BR.StormBreakoutFor(cfg, phase))
 end
 
 --- Circle 1 as a shape, from a phase-1 record: the boundary both phase-1 rules
@@ -203,13 +214,12 @@ end
 ---
 --- ═══ THE SHAPE, NOT THE RADIUS ═══
 ---
---- Circle 1 has been a shape since #344: its boundary dents in by over a quarter
---- of r at worst and its corners reach 0.15 r past it, so a radius test is wrong
---- both ways -- the defect #349 fixed in airdrop siting. BR.StormZone handed
---- circle 1 as its own current circle AT THE END OF THE SWEEP -- `t` of 1, so the
---- current circle has finished becoming zone 1 -- is zone 1's shape at (cx1, cy1,
---- r1), nested in itself: the same boundary the bus preview draws and the wall
---- ends its first sweep on. Negative distance is inside it.
+--- Circle 1 has been a shape since #344, and since round 2 one stretched up to
+--- 3:1 and held to the circle's area rather than its radius, so a radius test is
+--- wrong both ways -- the defect #349 fixed in airdrop siting. BR.StormZone at the
+--- END OF THE SWEEP -- `t` of 1, where the wall has arrived -- is the destination
+--- itself: zone 1's shape at (cx1, cy1, r1), the same boundary the bus preview
+--- draws and the wall ends its first sweep on. Negative distance is inside it.
 --- @param rec table   a phase-1 record
 --- @return table shape
 local function circleOneZone(rec)
@@ -305,7 +315,7 @@ local function capFirstHold(m, now, quiet)
     local elapsed = now - rec.tStart
     m.storm = BR.BuildStormRecord(rec.phase, rec.cx0, rec.cy0, rec.r0,
         rec.cx1, rec.cy1, rec.r1, rec.tStart, elapsed + capMs,
-        rec.tShrink, rec.dps, rec.seed, rec.m0)
+        rec.tShrink, rec.dps, rec.seed, rec.mo)
     print(('[br_core] storm: match %s phase 1 hold cut from %.0fs to %.0fs left')
         :format(BR.MatchTag(m.id), msLeft / 1000, capMs / 1000))
     if not quiet then publish(m) end
@@ -316,12 +326,12 @@ end
 --- players see where to rotate for the whole hold.
 ---
 --- THE WALL'S TRAVEL TIME IS PRICED HERE TOO, every phase (user call,
---- 2026-08-04): the furthest in-match player's run to the TARGET circle's
---- edge, at shrinkPace speed, floored at minSeconds and ceilinged by the
---- authored value. Everyone already inside the target? The sweep is quick
---- and the game moves on. A straggler two kilometres out? They get their
---- run. This replaced phase 1's hold-payback scheme -- pricing the shrink
---- directly is the same fairness without the bookkeeping.
+--- 2026-08-04): the furthest in-match player's run to the TARGET's wall, at
+--- shrinkPace speed, floored at minSeconds and ceilinged by the authored value.
+--- Everyone already inside the target? The sweep is quick and the game moves on.
+--- A straggler two kilometres out? They get their run. This replaced phase 1's
+--- hold-payback scheme -- pricing the shrink directly is the same fairness
+--- without the bookkeeping.
 --- @param m table         the match instance
 --- @param phase integer   1-based index into cfg.phases
 --- @param cx0 number      circle being held / shrunk from
@@ -329,11 +339,13 @@ end
 --- @param r0 number
 --- @param now number
 --- @param waitSec number|nil  override the authored wait (the dynamic hold)
---- @param m0 number|nil       how far the wall's shape has already morphed toward
----                            this phase's target: the thaw's and a same-phase
----                            `brphase`'s, so the wall keeps the shape it is
----                            standing in. Every ordinary entry leaves it nil.
-local function enterPhase(m, phase, cx0, cy0, r0, now, waitSec, m0)
+--- @param mo table|nil        the wall's own outline when the phase is entered part
+---                            way through a morph: the thaw's and a same-phase
+---                            `brphase`'s (BR.StormMorphAt), so the wall keeps the
+---                            shape it is standing in and every corner carries on to
+---                            the corner it was heading for. Every ordinary entry
+---                            leaves it nil.
+local function enterPhase(m, phase, cx0, cy0, r0, now, waitSec, mo)
     local p = cfg.phases[phase]
 
     -- ═══ PHASE 1 CONSUMES A DRAW ALREADY MADE; EVERY OTHER PHASE MAKES ONE ═══
@@ -364,31 +376,47 @@ local function enterPhase(m, phase, cx0, cy0, r0, now, waitSec, m0)
         m.stormFirst = nil
         cx1, cy1, brokeOut = pre.cx, pre.cy, pre.brokeOut
     else
-        cx1, cy1, brokeOut = drawCentre(m, phase, cx0, cy0, r0)
+        cx1, cy1, brokeOut = drawCentre(m, phase, cx0, cy0, r0, mo)
     end
 
-    -- Price the sweep for the furthest player's run to the target's edge --
-    -- THIS match's players only.
+    -- ═══ PRICE THE SWEEP FOR THE FURTHEST PLAYER'S RUN TO THE TARGET'S WALL ═══
+    --
+    -- THIS match's players only, and measured to the destination's REAL boundary
+    -- (#344) -- the wall the sweep ends on, as #364 did for the hold. It used to be
+    -- `distance to the next centre - nextRadius`, which on a 3:1 zone charges a
+    -- player standing off its long side a run to a circle nothing draws, and lets one
+    -- off its end ride free. Inside the shape costs nothing. Phase 8's destination is
+    -- a point, and the run is to the point.
+    local target = nil
+    if p.radius > 0.0 then
+        target = BR.StormTarget({ seed = m.stormSeed, phase = phase,
+                                  cx1 = cx1, cy1 = cy1, r1 = p.radius })
+    end
     local furthest = 0.0
     BR.Roster.each(
         function(e) return e.matchId == m.id and BR.Server.isInMatch(e.state) end,
         function(_, e)
             if e.pos then
-                local d = BR.Dist(e.pos.x, e.pos.y, cx1, cy1) - p.radius
+                local d
+                if target then
+                    d = BR.StormShape.distance(target, e.pos.x, e.pos.y)
+                else
+                    d = BR.Dist(e.pos.x, e.pos.y, cx1, cy1)
+                end
                 if d > furthest then furthest = d end
             end
         end)
     -- A BREAKOUT BUYS A LONGER SWEEP.
     --
     -- The authored per-phase `shrink` is the ceiling on travel time, and it was
-    -- written for NESTED circles -- where the furthest anyone can be from the
-    -- next circle's edge is about one radius. A circle that has separated from
-    -- its predecessor can be three times that away, and at 9 m/s the wall
-    -- would simply outrun everyone: the rotation the breakout is meant to
-    -- force becomes a cull instead. So the ceiling is lifted for exactly the
-    -- phases that broke out, and the pricing below still decides how much of
-    -- it is actually used -- if everybody happens to be near the new circle,
-    -- the sweep is short regardless.
+    -- written for NESTED zones -- where the furthest anyone can be from the next
+    -- zone's wall is about one radius. A zone that has separated from its
+    -- predecessor can be three times that away, and at 9 m/s the wall would
+    -- simply outrun everyone: the rotation the breakout is meant to force becomes
+    -- a cull instead. So the ceiling is lifted for exactly the phases that rolled
+    -- a breakout, and the pricing below still decides how much of it is actually
+    -- used -- if everybody happens to be near the new zone, the sweep is short
+    -- regardless.
     local ceiling = p.shrink
     if brokeOut then
         ceiling = p.shrink * ((cfg.breakout and cfg.breakout.shrinkFactor) or 1.0)
@@ -403,7 +431,7 @@ local function enterPhase(m, phase, cx0, cy0, r0, now, waitSec, m0)
     -- BR.BuildStormRecord's header says what a missing one would mean.
     m.storm = BR.BuildStormRecord(phase, cx0, cy0, r0, cx1, cy1, p.radius,
         now, (waitSec or p.wait) * 1000 * timeScale,
-        shrinkSec * 1000 * timeScale, p.dps, m.stormSeed, m0)
+        shrinkSec * 1000 * timeScale, p.dps, m.stormSeed, mo)
 
     -- ARMED FOR THIS PHASE'S SWEEP. Every route into a phase comes through
     -- here -- the first one, the next one, `brphase`, and the thaw -- so this
@@ -637,9 +665,15 @@ function BR.Storm.begin(m)
     -- storm and then starting a fresh match quietly gives you a live one --
     -- which is the failure you would not notice until the wall was on top of
     -- you, an hour into whatever you were actually testing.
+    --
+    -- THE FROZEN RECORD KEEPS CIRCLE 1 AS ITS TARGET, as every frozen record keeps
+    -- the target it froze under (see brstormfreeze): the wall it holds is the opening
+    -- zone, and a target pinned to the opening circle instead would be zone 1's shape
+    -- blown up to the whole map's radius, drawn beside it.
     if BR.Storm.isFrozen and BR.Storm.isFrozen() then
         local now = GetGameTimer()
-        m.storm = BR.BuildStormRecord(1, a.x, a.y, r0, a.x, a.y, r0,
+        local live = m.storm
+        m.storm = BR.BuildStormRecord(1, a.x, a.y, r0, live.cx1, live.cy1, live.r1,
             now, 24 * 60 * 60 * 1000, 1000, 0.0, m.stormSeed)
         publish(m)
         print(('[br_core] storm: match %s starts FROZEN (brstormfreeze is on)')
@@ -785,7 +819,7 @@ BR.Sched.every(1000, 'storm.damage', function(dt)
         -- union2 returns precisely that, by its first case, so the set of
         -- players this tick hurts is the same set it hurt yesterday. The rule
         -- only has an effect when the circles are NOT nested, which is the case
-        -- the owner is describing and the only case BR.NextStormCentre's
+        -- the owner is describing and the only case BR.NextZoneCentre's
         -- breakout can produce.
         --
         -- TWO DISJOINT CIRCLES ARE TWO SAFE ISLANDS WITH AN UNSAFE GAP BETWEEN
@@ -953,15 +987,16 @@ RegisterCommand('brphase', function(_, args)
     -- seamless on every client.
     --
     -- AND IN THE SHAPE IT IS STANDING IN, WHEN THAT IS A SHAPE PHASE n CAN START
-    -- FROM. Re-entering the same phase carries the morph the wall has reached, and
-    -- a finished sweep is already zone n-1 for phase n+1. A jump to any other phase
-    -- takes zone n-1's shape, which is a jump the admin asked for.
+    -- FROM. Re-entering the same phase carries the wall's own outline, every corner
+    -- still heading for the corner it was heading for; a finished sweep is already
+    -- zone n-1 for phase n+1. A jump to any other phase takes zone n-1's shape,
+    -- which is a jump the admin asked for.
     local rec = m.storm
     local cx, cy, r, _, _, _, t = BR.StormAt(rec, GetGameTimer())
-    local m0 = (n == rec.phase) and BR.StormMorph(rec, t) or nil
+    local mo = (n == rec.phase) and BR.StormMorphAt(rec, t) or nil
     print(('[br_core] admin: match %s storm jumped to phase %d')
         :format(BR.MatchTag(m.id), n))
-    enterPhase(m, n, cx, cy, r, GetGameTimer(), nil, m0)
+    enterPhase(m, n, cx, cy, r, GetGameTimer(), nil, mo)
 end, true)
 
 --- FREEZE THE STORM WHERE IT STANDS. Dev mode only.
@@ -980,10 +1015,11 @@ end, true)
 --- the phase job would not have worked: BR.StormAt solves the wall from the
 --- record's own timeline, so the circle would go on shrinking to r1 and sit
 --- there at FINISHED with the last phase's dps still burning. Instead the
---- current record is REPLACED with one whose r0 = r1 = wherever the wall is
---- this instant, dps 0, and a hold long enough to outlast any session. Every
---- client solves that to a stationary, harmless circle with no special case at
---- either end, and nothing else in the file needs to know.
+--- current record is REPLACED with one that starts wherever the wall is this
+--- instant -- its circle, and its outline in `mo` -- keeps the target it had,
+--- deals dps 0, and holds long enough to outlast any session. Every client
+--- solves that to a stationary, harmless wall with no special case at either
+--- end, and nothing else in the file needs to know.
 local frozen = false
 
 RegisterCommand('brstormfreeze', function(_, args)
@@ -998,24 +1034,29 @@ RegisterCommand('brstormfreeze', function(_, args)
 
     BR.Server.eachMatch(function(m)
         if not m.storm then return end
-        local cx, cy, r, _, _, _, t = BR.StormAt(m.storm, now)
-        local phase = m.storm.phase
-        -- THE SHAPE THE WALL IS STANDING IN, as far as it had morphed. Carried into
-        -- the frozen record and out of it again, so neither end of a freeze snaps
-        -- the wall back to the zone it set out from.
-        local m0 = BR.StormMorph(m.storm, t)
+        local live = m.storm
+        local cx, cy, r, _, _, _, t = BR.StormAt(live, now)
+        local phase = live.phase
+        -- THE OUTLINE THE WALL IS STANDING IN, as far as it had morphed -- every
+        -- moving disc and the destination disc it is heading for. Carried into the
+        -- frozen record and out of it again, so neither end of a freeze snaps the
+        -- wall back to the zone it set out from.
+        local mo = BR.StormMorphAt(live, t)
 
         if thaw then
             -- Re-enter the phase we were in, from where the wall is now.
-            enterPhase(m, phase, cx, cy, r, now, nil, m0)
+            enterPhase(m, phase, cx, cy, r, now, nil, mo)
         else
             -- A day of holding. Long enough that no session outlives it, and
             -- still a real number rather than an infinity that would poison
             -- every subtraction the clients do with it.
             -- THE SEED SURVIVES A FREEZE, so the wall keeps the shape it was
             -- standing in rather than reverting to a circle for the whole freeze.
-            m.storm = BR.BuildStormRecord(phase, cx, cy, r, cx, cy, r,
-                now, 24 * 60 * 60 * 1000, 1000, 0.0, m.storm.seed, m0)
+            -- AND SO DOES THE TARGET, so a breakout frozen part way across still
+            -- shows -- and shelters -- the destination it was running to, rather
+            -- than dropping it for the length of the freeze.
+            m.storm = BR.BuildStormRecord(phase, cx, cy, r, live.cx1, live.cy1, live.r1,
+                now, 24 * 60 * 60 * 1000, 1000, 0.0, live.seed, mo)
             publish(m)
         end
         touched = touched + 1

@@ -200,10 +200,15 @@ end
 --- wall and the server's damage tick also reach. `r` stays on the entry because
 --- the log lines and the trip arithmetic still read it.
 ---
---- EACH ENTRY WEARS ITS OWN ZONE'S SHAPE, exactly the pair BR.StormZone builds:
---- the circle at the eta on the current zone's shape, morphed as far as the sweep
---- has got by then, and the purple one on the target zone's. They shared one unit
---- until the snap at the end of every sweep was traced to the zone doing the same.
+--- EACH ENTRY WEARS ITS OWN SHAPE, the two BR.StormZone is built from: the wall at
+--- the eta, as far as its corners have travelled by then (BR.StormWall), and the
+--- purple one, the destination itself (BR.StormTarget). They shared one unit until
+--- the snap at the end of every sweep was traced to the zone doing the same.
+---
+--- ON A NESTED PHASE THE PURPLE ONE IMPLIES THE OTHER: the wall holds the
+--- destination at every instant of the sweep (BR.StormWall has why), so a
+--- destination inside it is inside the wall at the eta as well. On a breakout
+--- neither implies the other, which is why both are asked.
 ---
 --- A NON-POSITIVE RADIUS GETS NO SHAPE. config/storm.lua's phase 8 really is
 --- `radius = 0.0`, and a zero circle refuses every point -- which the comment
@@ -216,23 +221,20 @@ function BR.RescueCircles(storm, eta)
     if not storm then return {} end
 
     local out = {}
-    local function add(x, y, r, unit)
+    local function add(x, y, r, shapeOf, t)
         local e = { x = x + 0.0, y = y + 0.0, r = r + 0.0 }
-        if e.r > 0.0 then
-            e.shape = BR.StormShape.blob(e.x, e.y, e.r, unit)
-        end
+        if e.r > 0.0 then e.shape = shapeOf(storm, t) end
         out[#out + 1] = e
     end
 
     local cx, cy, r, _, _, _, t = BR.StormAt(storm, eta)
-    add(cx, cy, r, BR.StormCurrentUnit(storm, t))
+    add(cx, cy, r, BR.StormWall, t)
 
     -- The purple one. Guarded on the FIELD rather than on its value, so a
     -- collapsed final circle refuses everything instead of quietly dropping the
     -- rule at the phase it matters most.
     if type(storm.r1) == 'number' then
-        add(storm.cx1 or 0.0, storm.cy1 or 0.0, storm.r1,
-            BR.StormUnit(storm.seed, storm.phase))
+        add(storm.cx1 or 0.0, storm.cy1 or 0.0, storm.r1, BR.StormTarget)
     end
     return out
 end

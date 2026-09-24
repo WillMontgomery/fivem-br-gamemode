@@ -296,22 +296,23 @@ end
 --   * the circle at the LATEST landing   (the gate's own deadline)
 --   * the circle the storm is shrinking TOWARD
 --
--- THE FIRST TWO BOUND EVERY INSTANT BETWEEN THEM, and that is arithmetic rather
--- than optimism. Inside one published record the centre and the radius are both
--- LINEAR in time (BR.StormAt lerps them), so f(t) = |P - C(t)| - r(t) is convex
--- -- a norm of an affine function minus an affine function. A convex function
--- that is <= 0 at both ends of an interval is <= 0 across the whole of it. Two
--- checks therefore cover a four-minute window exactly, with nothing sampled and
--- nothing approximated.
+-- ON A NESTED PHASE THE THIRD BOUNDS EVERY INSTANT OF THE PHASE, and that is a
+-- theorem rather than optimism. Every zone is placed inside the one before it by
+-- its real shape now (#344), and the wall morphs onto it corner to corner holding
+-- it the whole way and never moving outward (BR.StormWall) -- so a point inside the
+-- next zone is inside the wall at every instant, soonest and latest included, and
+-- a point `margin` inside it is `margin` inside the wall. (In the circle era the
+-- first two did this work: f(t) = |P - C(t)| - r(t) was convex in t, so two checks
+-- covered the window. A hull of moving discs has no such convexity, and on a
+-- nested phase it does not need one.)
 --
--- THE THIRD IS THE OWNER'S "NEXT CIRCLE", and it is a separate check because
--- this storm's circles do not nest. config/storm.lua's BREAKOUT lets the next
--- circle leave the current one entirely (owner, 2026-08-06: "this will force ALL
--- players to move"), and the containment proof for "inside the next circle
--- implies inside every circle on the way to it" needs |C1 - C0| <= r0 - r1,
--- which is precisely what a breakout violates. So neither rule implies the
--- other and both are asked: the first two say the crate ARRIVES safe, the third
--- says it is still safe when the sweep it arrived during finishes.
+-- ON A BREAKOUT the next zone may leave the current one entirely (config/storm.lua's
+-- BREAKOUT, owner 2026-08-06: "this will force ALL players to move"), so neither
+-- rule implies the other and all three are asked. The third is part of the safe
+-- zone at every instant of the phase, so a crate that clears it is never sited where
+-- the damage tick bills; "inside the moving wall itself at every instant between
+-- the first two" is NOT a theorem there any more, and nothing here claims it. The
+-- first two say the crate is clear of the wall at the two instants it can land.
 --
 -- BEYOND THIS PHASE NOTHING CAN BE PROMISED FROM HERE. The record describes one
 -- phase; the circle after it has not been drawn and may break out anywhere. That
@@ -442,24 +443,24 @@ end
 --- circle nobody has published -- and the server refuses earlier anyway
 --- (BR.AirdropStormOk).
 ---
---- ═══ EVERY ENTRY CARRIES THE PHASE'S SHAPE, AND NOT THE ZONE (#349) ═══
+--- ═══ EVERY ENTRY CARRIES THE WALL'S SHAPE, AND NOT THE ZONE (#349) ═══
 ---
 --- `r` is still the number the solver reports and still what the log lines read,
 --- but the MARGIN is measured against the boundary the wall is actually drawn on
---- -- this phase's blob at that centre and radius, derived from the record's own
---- seed and phase index, which is the single derivation BR.StormUnit exists to be.
---- Attached here, once, because the entry is the thing that gets measured a
---- hundred-odd times per retry and the shape is the same for all of them.
+--- -- the moving wall at that instant (BR.StormWall) and the destination itself
+--- (BR.StormTarget), derived from the record's own seed and phase index, which is
+--- the single derivation BR.StormUnit exists to be. Attached here, once, because
+--- the entry is the thing that gets measured a hundred-odd times per retry and the
+--- shape is the same for all of them.
 ---
---- IT IS `blob`, NOT `BR.StormZone`, AND THE DIFFERENCE IS THE WHOLE WINDOW. The
---- zone is this phase's shape UNION the one it is closing toward, which is the
---- right answer to "is this point taking damage" and the wrong one to ask three
---- times: the third entry below IS the circle being closed toward, the union
---- contains it, and a signed distance to a superset is never larger -- so
---- unioning the first two entries would make the third one imply them both and
---- the soonest/latest window would collapse into "inside the next circle",
---- silently deleting the rule the 2026-08-23 playtest bought. Each entry is one
---- INSTANT and is measured on the boundary standing at that instant.
+--- IT IS THE WALL, NOT `BR.StormZone`. On a breakout the zone is the wall UNION the
+--- destination, which is the right answer to "is this point taking damage" and the
+--- wrong one to ask three times: the third entry below IS the destination, the
+--- union contains it, and a signed distance to a superset is never larger -- so
+--- unioning the first two entries would make the third one imply them both. Each
+--- entry is one INSTANT and is measured on the boundary standing at that instant.
+--- The section note above says what the three promise between them, on a nested
+--- phase and on a breakout.
 ---
 --- THAT MAKES THIS RULE STRICTLY STRONGER THAN THE DAMAGE TEST, never weaker: the
 --- zone contains each of these shapes, so 250 m inside one of them is at least
@@ -484,38 +485,33 @@ function BR.AirdropLandingCircles(storm, now, cfg, waitMs)
     local soonest = now + flight
     local latest  = soonest + (waitMs or 0)
 
-    -- ═══ EACH INSTANT WEARS THE SHAPE THE ZONE HAS AT THAT INSTANT ═══
+    -- ═══ EACH INSTANT WEARS THE SHAPE THE WALL HAS AT THAT INSTANT ═══
     --
-    -- A record's current circle is one zone and its target another, each with its
-    -- own shape, and the current one morphs into the target's across the sweep --
-    -- so the circle solved at an instant is measured on the shape BR.StormZone
-    -- builds for that instant, at the sweep fraction BR.StormAt reports with it, and
-    -- the target on the target zone's own shape. This used to be one unit for the
-    -- whole list, which was exactly what BR.StormZone did with the pair until the
-    -- snap at the end of every sweep was traced to it.
-    local target = storm and BR.StormUnit(storm.seed, storm.phase) or nil
-
+    -- A record's wall starts as one zone and morphs corner to corner into its
+    -- target, a different shape -- so the circle solved at an instant is measured on
+    -- the wall BR.StormWall builds for that instant, at the sweep fraction BR.StormAt
+    -- reports with it, and the target on the target zone's own shape. This used to
+    -- be one unit for the whole list, which was exactly what BR.StormZone did with
+    -- the pair until the snap at the end of every sweep was traced to it.
     local out = {}
-    local function add(x, y, r, unit)
+    local function add(x, y, r, shapeOf, t)
         local e = { x = x + 0.0, y = y + 0.0, r = r + 0.0 }
-        if e.r > 0.0 then
-            e.shape = BR.StormShape.blob(e.x, e.y, e.r, unit)
-        end
+        if e.r > 0.0 then e.shape = shapeOf(storm, t) end
         out[#out + 1] = e
     end
 
     local ax, ay, ar, _, _, _, at = BR.StormAt(storm, soonest)
-    add(ax, ay, ar, BR.StormCurrentUnit(storm, at))
+    add(ax, ay, ar, BR.StormWall, at)
     if latest > soonest then
         local bx, by, br, _, _, _, bt = BR.StormAt(storm, latest)
-        add(bx, by, br, BR.StormCurrentUnit(storm, bt))
+        add(bx, by, br, BR.StormWall, bt)
     end
-    -- THE CIRCLE THE STORM IS SHRINKING TOWARD -- the owner's "next circle".
+    -- THE ZONE THE STORM IS SHRINKING TOWARD -- the owner's "next circle".
     -- Read straight off the record rather than solved, because BR.StormAt only
     -- reaches it once the shrink is over and a drop landing mid-sweep would
     -- never be asked the question at all.
     if storm and type(storm.r1) == 'number' then
-        add(storm.cx1 or 0.0, storm.cy1 or 0.0, storm.r1, target)
+        add(storm.cx1 or 0.0, storm.cy1 or 0.0, storm.r1, BR.StormTarget)
     end
     return out
 end

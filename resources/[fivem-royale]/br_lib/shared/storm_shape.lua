@@ -7,11 +7,12 @@
 --    still matching our approximate positioning and size rules, circles are not
 --    allowed."                                      -- the owner, 2026-09-22
 --
--- The shape is blob() below: a jittered convex polygon whose corners are each
--- rounded, beveled or sharp, or one zone in ten a plain circle -- runs and arcs,
--- the piece model this file has walked since the day it was written. The
--- renderer does not know it is drawing anything in
--- particular. It asks for a perimeter, walks it in metres, and asks where the
+-- The shape is blob() below: the convex hull of a zone's corner discs -- a
+-- jittered polygon stretched up to 3:1 and held to its phase's area, its corners
+-- each rounded, beveled or sharp, or one zone in ten a plain circle -- and between
+-- two zones the hull of those discs moving corner to corner. Runs and arcs, the
+-- piece model this file has walked since the day it was written. The renderer
+-- does not know it is drawing anything in particular. It asks for a perimeter, walks it in metres, and asks where the
 -- boundary is nearest a point -- three questions a circle answers and so does
 -- everything below.
 --
@@ -121,6 +122,7 @@ BR = BR or {}
 BR.StormShape = {}
 
 local sin, cos, sqrt, atan, abs = math.sin, math.cos, math.sqrt, math.atan, math.abs
+local acos = math.acos
 local max, huge, pi = math.max, math.huge, math.pi
 local TAU = pi * 2.0
 
@@ -673,101 +675,89 @@ end
 
 -- ------------------------------------------------- the blob, which is the wall ---
 --
--- ═══ A CONVEX POLYGON WHOSE CORNERS ARE EACH ROUNDED, BEVELED OR SHARP (#344) ═══
+-- ═══ A ZONE IS THE CONVEX HULL OF ITS CORNER DISCS, DRAWN BY AREA (#344) ═══
 --
---   "we're only drawing squircles (quite well though), can we change to random
---    shapes per phase? There should be a 90% chance of not being a circle, and
---    when not a circle, there should be equal chances for each vertex to be
---    rounded, beveled, or cornered."                  -- the owner, 2026-09-23
+--   "the storm is still too circular. let's draw it by area now instead of any
+--    consideration for a radius."                     -- the owner, 2026-09-23
+--   "these shapes do be lookin far too circular...... especially the ones that
+--    aren't circles. We need more aspect ratio mix."  -- the owner, 2026-09-23
 --
--- Until this every corner was an arc of ONE radius, so every shape was the convex
--- hull of N equal discs and read from above as a soft blob whatever its count.
--- Now each vertex draws its own finish, and the three are the three things a
--- corner of a convex polygon can be:
+-- A zone is a convex polygon whose vertices each draw a finish, and the three
+-- finishes are the three things a corner of a convex polygon can be:
 --
---   rounded    an arc tangent to both edges -- one corner, one arc
---   beveled    the corner cut off by a chamfer -- two SHARP corners and a run
---   cornered   the vertex itself -- one sharp corner
+--   rounded    an arc tangent to both edges -- ONE DISC, of the arc's radius
+--   beveled    the corner cut off by a chamfer -- TWO POINTS, the chamfer's ends
+--   cornered   the vertex itself -- ONE POINT
 --
--- ═══ SO A SHAPE IS A LIST OF CORNERS, AND A SHARP CORNER IS AN ARC OF RADIUS 0 ═══
+-- and the zone is the convex hull of those discs and points. A circle zone is one
+-- disc. So every zone is described by a short list of DISCS (a point is a disc of
+-- radius 0), and three things follow from that one description:
 --
--- Every corner is a centre, a radius and the RANGE OF OUTWARD NORMALS it carries
--- the boundary through; the straight runs are what joins one corner's last normal
--- to the next corner's first. A sharp corner is the same record with a radius of
--- zero, a circle is one corner whose range is the whole turn, and a chamfer is two
--- sharp corners with a run between them. One record, three questions answered
--- exactly from it, and none of them needs the corners to be alike:
+--   THE SHAPE IS A CORNER LIST. The boundary of the hull of discs is arcs of some
+--   of them joined by runs tangent to two -- discHull below walks it -- which is
+--   the corner list every query in this file is exact for:
 --
---   THE SIGNED DISTANCE. For a convex body it is the supremum over unit directions
---   u of (<p, u> - h(u)), where h is the support function -- and h here is
---   <c, u> + rho on each corner's own range of u. So the supremum is reached on a
---   run's normal or radially from the one corner whose range holds the direction
---   to p: a maximum over the same pieces the boundary is made of, exact inside as
---   well as out. hullDistance carries it.
+--     THE SIGNED DISTANCE. For a convex body it is the supremum over unit
+--     directions u of (<p, u> - h(u)), where h is the support function -- and h
+--     here is <c, u> + rho on each corner's own range of u. So the supremum is
+--     reached on a run's normal or radially from the one corner whose range holds
+--     the direction to p: a maximum over the same pieces the boundary is made of,
+--     exact inside as well as out. hullDistance carries it.
 --
---   THE EROSION. Shrinking a convex body by d subtracts d from its support
---   function. A corner whose radius is at least d keeps its centre and loses d; a
---   corner smaller than that -- every sharp one -- becomes sharp where its two
---   offset runs meet. See erode().
+--     THE EROSION. Shrinking a convex body by d subtracts d from its support
+--     function. A corner whose radius is at least d keeps its centre and loses d; a
+--     corner smaller than that -- every sharp one -- becomes sharp where its two
+--     offset runs meet. See erode().
 --
---   THE MORPH. The support function of (1 - t) A + t B is (1 - t) h_A + t h_B, so
---   the shape half way from one zone to the next is ANOTHER CORNER LIST: the two
---   lists' normal ranges merged, each corner's centre and radius interpolated.
---   See morphUnit(), which is why the snap at a phase change could be removed
---   without leaving the piece model.
+--   CONTAINMENT IS EXACT AND CHEAP. A convex shape D is inside a convex shape Z
+--   exactly when every one of D's discs is: the hull of discs inside a convex set
+--   is inside it. So "does the next zone fit inside this one" is a maximum over a
+--   dozen signed distances (fitOf) rather than a boundary walk.
 --
--- THE HULL OF EQUAL DISCS THIS REPLACES was chosen because it made all three exact,
--- and it was right for a shape whose corners were all alike. They are not alike
--- any more, and the corner list keeps every one of the three exact without asking
--- them to be.
+--   THE MORPH IS A HULL OF MOVING DISCS. Pair each disc of the zone the wall leaves
+--   with a disc of the zone it closes on, move every pair in a straight line, and
+--   the wall at any moment is the hull of where they are. See `the morph` below.
+--
+-- ═══ BY AREA, WITH A STRETCH DRAWN ACROSS THE WHOLE RANGE ═══
+--
+-- Every zone holds `area` of its phase circle's area, exactly -- the pacing lives in
+-- that number -- and nothing about it is measured against the radius any more. What
+-- a zone may be instead is STRETCHED: longest length over narrowest width up to
+-- `stretch` (the owner's 3:1, "I'm assuming this is a maximum"), with the target
+-- drawn uniformly across [1, stretch] so long zones are ordinary rather than rare.
+-- The stretch is an area-preserving affine map of the vertex ring along a drawn
+-- axis, solved for by bisection, and measured exactly as the diameter over the
+-- minimum width off the width function h(u) + h(u + pi). See blobUnit.
 --
 -- ═══ CONVEXITY IS NOT GUARANTEED BY THE DRAW AND IS ENFORCED, NOT HOPED FOR ═══
 --
--- Radii jittered about r can put a vertex inside the line between its neighbours,
--- and a concave shape breaks all three claims above -- the support-function
--- argument IS convexity -- and #356's stitch, which walks the crossings of two
--- convex boundaries. So a draw that fails the test is redrawn from the SAME stream
--- with both jitters reduced, and the last attempt has no jitter at all, which is a
--- regular polygon and convex by construction. The loop therefore always ends on a
--- convex shape and always consumes a deterministic number of values.
+--   "if it costs us anything today let's not change it and not allow dents
+--    inward."                                         -- the owner, 2026-09-23
 --
--- THE CUTS CANNOT UNDO IT. A rounded or beveled vertex eats at most `cut` of the
--- shorter half-edge beside it, so two neighbours between them take at most `cut`
--- of the run they share and it keeps a straight stretch in the middle; the turns
--- are the polygon's own turns, split or kept. A convex polygon stays convex.
+-- Radii jittered about 1 can put a vertex inside the line between its neighbours,
+-- and a concave shape breaks every exactness claim above -- the support-function
+-- argument IS convexity -- and #356's stitch, which walks the crossings of two
+-- convex boundaries. So a draw that fails the test is redrawn from values the SAME
+-- stream already handed out, with both jitters reduced, and the last attempt has
+-- no jitter at all, which is a regular polygon and convex by construction. A hull
+-- of discs is convex whatever the discs are, so nothing after the ring can dent it.
 local BLOB_TRIES    = 6
 local BLOB_FALLOFF  = 0.75
 
--- ═══ THE CORNER COUNT IS DRAWN PER ZONE, AND THREE THINGS HAD TO MOVE WITH IT ═══
+-- ═══ THE CORNER COUNT IS DRAWN PER ZONE ═══
 --
 --   "We're able to reliably draw squircle storms, but what about random other
 --    shapes of various vertices?"                   -- the owner, 2026-09-23
+--   "triangles and squares are okay with me"        -- the owner, 2026-09-23
 --
--- Each has a knob in config/storm.lua's `shape` block:
+-- Three to twelve, and the area holds at every count because every draw is SCALED
+-- to it. The `reach` rule that kept triangles and squares out -- no corner past
+-- 1.15 of r -- is gone with the rest of the radius reasoning: a zone is placed by
+-- its real shape now (BR.NextZoneCentre), so how far a corner reaches from a centre
+-- no longer bounds anything.
 --
---   AREA FALLS WITH THE COUNT, so every draw is SCALED to `area` of the circle it
---   replaces, exactly -- the shoelace of the corner list, arcs included, below.
---
---   AND HOLDING AREA PUSHES THE CORNERS OUT, which is the trade. A draw that would
---   reach past `reach` once scaled is REJECTED like a concave one and redrawn
---   tamer, which keeps both numbers at once and pays in how irregular it may be.
---
---   AND A SLOT IS WIDER AT A LOW COUNT, so the slide is in degrees, the same at
---   every count, rather than a fraction of the slot.
---
--- WHY THE REACH IS A REJECTION AND NOT A CORRECTION. Shrinking an over-reaching
--- draw would hand back a phase that plays small, which is the defect the area
--- rule exists to remove.
---
--- THE CENTRE IS INSIDE, AND THAT IS A THEOREM RATHER THAN A HOPE. A convex shape
--- that misses its own centre lies in a half-plane, and the most of a disc of
--- radius `reach` a half-plane holds is half of it -- 0.66 of the circle at 1.15,
--- against the 0.90 every shape is scaled to. Worked through the circular segment,
--- the centre is at least 0.33 of r deep in every shape that ships. #350's
--- in-place map fill and #352's headcount both lean on it.
---
--- BLOB_MAX_CORNERS is only how far up a weight table is read, twice the top of
--- the shipping range.
+-- BLOB_MAX_CORNERS is how far up a weight table is read, and it is also how many
+-- finishes and jitter pairs every zone draws whatever its count -- see blobUnit.
 local BLOB_MAX_CORNERS = 24
 
 -- ═══ THE SLIDE IS STILL BOUNDED BY THE SLOT, BUT ONLY AS A BACKSTOP ═══
@@ -786,13 +776,57 @@ local BLOB_SLIDE_SLOT = 0.3
 -- nanoradian is convex and useless -- its own tangent length runs away as the turn
 -- goes to nothing. The upper bound is the same statement at the other end: a
 -- vertex that turns by nearly half a turn is a spike, and erode() divides by the
--- cosine of half the turn, which is what a spike sends to zero.
+-- cosine of half the turn, which is what a spike sends to zero. A stretch that
+-- would make a corner that sharp is refused by the stretch solve, which is why a
+-- long triangle stops short of the 3:1 cap more often than a long hexagon does.
 local BLOB_MIN_TURN = 0.05
 
 -- A radian a trillion times smaller than the smallest turn this file builds. Two
 -- normal angles nearer than this are ONE breakpoint when two corner lists are
 -- merged, so the merge never makes a corner that turns by nothing.
 local ANGLE_EPS = 1e-12
+
+-- Metres, or units of a unit shape, within which the disc hull treats two discs as
+-- one: a disc inside another (or on it) has no tangent to it and is not a corner.
+local HULL_EPS = 1e-9
+
+-- ═══ HOW FAR A ROUNDED CORNER'S DISC MAY GROW, AND WHY IT IS CAPPED AT ALL ═══
+--
+-- A corner's fillet is sized off the edges beside it -- `cut` of the shorter
+-- half-edge -- and at a nearly flat vertex that radius runs away: the tangent
+-- length is fixed and the radius is it times tan(half the interior angle), up to
+-- forty times the tangent length on a shipping draw. The ARC is still inside the
+-- polygon; the whole DISC is not, and a disc standing past the far side of the
+-- shape would put that side in the hull. MEASURED: without the cap, eleven percent
+-- of zones failed to fit inside their predecessor for exactly this.
+--
+-- So each rounded disc is held to RHO_FIT of the largest disc on its bisector that
+-- stays inside every other edge's line -- closed form, see finishDiscs -- and with
+-- that the zone is the hull of its discs exactly.
+--
+-- WHAT THE CAP DOES NOT PROMISE: that a big disc bounds its shape ONCE. Inside every
+-- edge line is not inside every other corner's chamfer, so on a long shape a
+-- near-flat vertex's disc can reach round to the far side and carry a stretch of it
+-- past another corner's bevel -- a disc that is two corners of the hull. The shape
+-- is still exactly the hull of its discs, and the arc it adds there is nearly
+-- straight. MEASURED on the shipping draw: 1.5 percent of zones, and no disc of any
+-- vertex ever swallowed.
+local RHO_FIT = 0.98
+
+-- How many times the stretch is bisected. Thirty halvings of a factor-of-a-few
+-- range is well under a millionth of the stretch, and it is a FIXED count so both
+-- sides of the wire stop on the same value.
+local STRETCH_STEPS = 30
+
+-- ═══ THE LADDER A ZONE CLIMBS TO FIT INSIDE THE ONE BEFORE IT ═══
+--
+-- Zone z has to fit CONCENTRIC inside zone z-1 at the ratio of their radii, with
+-- `fitClear` of r to spare -- see blobUnit for why concentric. A long zone turned
+-- across a long parent will not, so it is turned (every 15 degrees, nearer turns
+-- first) and then, if no turn fits, tamed: the stretch ladder below. The last rung
+-- is the parent's own shape, which always fits.
+local FIT_TURN  = pi / 12
+local FIT_TURNS = 12
 
 --- What a vertex can be, in the order its roll is read. Fixed, never a pairs() walk,
 --- for the reason blobUnit reads the corner counts in order.
@@ -802,33 +836,12 @@ local VERTEX_KINDS = { 'rounded', 'beveled', 'cornered' }
 --- still hits the cache rather than handing it a fresh table every call.
 local NO_OPTS = {}
 
---- The outward normal and the length of each edge of a closed vertex polygon.
----
---- Stamped ONTO the vertex list rather than returned beside it, because every
---- step below wants the normal of "edge i" keyed the same way the vertices are:
---- edge i runs from vertex i to vertex i+1, and its normal is the RIGHT of that
---- travel, which is outward for a counter-clockwise polygon.
---- @param cs table   { { x, y }, ... } counter-clockwise
---- @return boolean   false if any edge has no length, so no normal
-local function stampNormals(cs)
-    local n = #cs
-    for i = 1, n do
-        local a, b = cs[i], cs[(i % n) + 1]
-        local dx, dy = b.x - a.x, b.y - a.y
-        local len = sqrt(dx * dx + dy * dy)
-        if len <= 0.0 then return false end
-        a.ex, a.ey, a.elen = dx / len, dy / len, len
-        a.nx, a.ny = dy / len, -dx / len
-    end
-    return true
-end
-
 --- One corner: a centre, a radius, and the normals it turns the boundary through.
 ---
 --- The cosines and sines of both ends are taken HERE, once, and carried: every
---- query below reads them, and a placed or morphed corner inherits them rather
---- than asking math.cos again. `h1` is the support value on the run AFTER this
---- corner, which is the one number the signed distance reads per run.
+--- query below reads them, and a placed corner inherits them rather than asking
+--- math.cos again. `h1` is the support value on the run AFTER this corner, which
+--- is the one number the signed distance reads per run.
 local function corner(x, y, rho, a0, a1, c0, s0, c1, s1)
     c0, s0 = c0 or cos(a0), s0 or sin(a0)
     c1, s1 = c1 or cos(a1), s1 or sin(a1)
@@ -839,10 +852,10 @@ end
 
 --- Does the direction (dx, dy) fall inside corner k's range of normals?
 ---
---- Two cross products for every corner a polygon has, because every one of them
---- turns by less than half a turn. The one corner that turns by more is a CIRCLE's,
---- whose range is the whole turn, and it gets the angle instead of a test that
---- would read a reflex wedge as its complement.
+--- Two cross products for every corner that turns by less than half a turn. A
+--- corner that turns by more -- a circle's, or a big disc between two small ones
+--- in a hull -- gets the angle instead of a test that would read a reflex wedge as
+--- its complement.
 local function inRange(k, dx, dy)
     local turn = k.a1 - k.a0
     if turn >= pi then
@@ -939,9 +952,9 @@ end
 --- corner after it begins, both computed from the same stored cosines the arcs are.
 ---
 --- A RUN SHORTER THAN A NANOMETRE IS NOT A RUN. It is where two arcs meet tangent
---- to each other -- a circle's own seam, or a morph whose two shapes both turn at
---- that normal -- and left in it would be a piece with a normal read off a rounding
---- error.
+--- to each other -- a circle's own seam, or two moving discs of a morph that turn
+--- at that normal -- and left in it would be a piece with a normal read off a
+--- rounding error.
 ---
 --- THE ARCS ARE EXACT AT ANY RADIUS, not floored at MIN_RADIUS. A corner arc
 --- floored up to a metre would no longer meet the runs it was built for, and the
@@ -1019,8 +1032,8 @@ local function erode(ks, metres)
         else
             local half = 0.5 * (k.a1 - k.a0)
             -- A CORNER TURNING HALF A TURN OR MORE has no point where its runs meet:
-            -- the one such corner is a circle's, and a circle eroded past its own
-            -- radius is nothing at all.
+            -- a circle's, or a hull's big disc between two small ones, eroded past
+            -- its own radius. Handed back as nil, and inset() erodes the chords.
             if half >= 0.5 * pi then return nil end
             local d = rho / cos(half)
             local mid = k.a0 + half
@@ -1087,9 +1100,10 @@ local CHORD_SAG = 0.01
 --- WHAT IT IS FOR: the one erosion erode() cannot build exactly is a run turned
 --- inside out beside an arc, and a polygon has no arcs -- so its erosion is exact,
 --- and it is within a centimetre inside the true one. It used to fall back to the
---- inscribed CIRCLE there, which is inside too but is a different shape: measured, a
---- zone morphing through the last two phases hit that on about one frame in two
---- hundred, and the wall would have jumped to a circle and back for it.
+--- inscribed CIRCLE there, which is inside too but is a different shape: measured,
+--- the Minkowski morph through the last two phases hit that on about one frame in
+--- two hundred, and the wall would have jumped to a circle and back for it. A hull of
+--- discs does not reach it (see inset()); it stays as the guard.
 local function chorded(ks, sag)
     local out = {}
     for i = 1, #ks do
@@ -1115,170 +1129,480 @@ local function chorded(ks, sag)
     return out
 end
 
---- A convex vertex polygon, finished corner by corner, as a corner list.
+-- ------------------------------------------------------------ the disc hull ---
+
+--- THE CONVEX HULL OF A LIST OF DISCS, as a corner list. A point is a disc of
+--- radius 0.
 ---
---- nil when the polygon is not convex -- a turn outside [BLOB_MIN_TURN,
---- pi - BLOB_MIN_TURN] at any vertex.
+--- ═══ GIFT WRAPPING BY OUTWARD NORMAL ═══
+---
+--- Start on the disc that reaches furthest along +x -- the support at normal angle
+--- 0 -- and turn the normal counter-clockwise. The disc bounding the shape at the
+--- current normal keeps doing so until some other disc overtakes it, and disc j
+--- overtakes disc i where <c_j - c_i, u> = r_i - r_j first becomes true on the way
+--- round: at the angle of (c_j - c_i) less acos((r_i - r_j) / |c_j - c_i|). The
+--- smallest advance names the next corner, and the walk ends when the normal has
+--- gone once round. Every corner is one disc and the RANGE of normals it bounds
+--- the shape over, which is exactly the record the rest of this file reads.
+---
+--- A DISC CAN APPEAR TWICE, which is why this is a walk and not a sort: a big disc
+--- between two small far ones bounds the shape on both sides of them. And a disc
+--- inside another -- or on it, to HULL_EPS -- has no tangent to it at all, so it is
+--- skipped as a candidate rather than divided by nothing. That is what makes a
+--- disc list with duplicates in it (a split, the moment it opens) cost nothing.
+---
+--- EXACT: its support function matched a brute-force maximum over the discs to
+--- zero on three thousand random disc sets. The ranges climb through one whole turn
+--- and each corner's last angle IS the next one's first -- the same double -- so the
+--- chain closes to the bit.
+--- @param discs table   { { x, y, r }, ... }
+--- @return table|nil ks
+local function discHull(discs)
+    local m = #discs
+    if m == 0 then return nil end
+    local s, best = 1, -huge
+    for i = 1, m do
+        local d = discs[i]
+        local v = d.x + d.r
+        if v > best + HULL_EPS or (abs(v - best) <= HULL_EPS and d.r > discs[s].r) then
+            s, best = i, v
+        end
+    end
+
+    -- FLAT ARRAYS FOR THE WALK, because it is m candidates at every corner of a hull
+    -- built every frame of a sweep, and three field lookups a candidate were most of
+    -- its cost. The arithmetic is the same arithmetic on the same numbers.
+    local xs, ys, rs = {}, {}, {}
+    for k = 1, m do
+        local d = discs[k]
+        xs[k], ys[k], rs[k] = d.x, d.y, d.r
+    end
+
+    local seq = {}
+    local i, th, closed = s, 0.0, false
+    for _ = 1, 2 * m + 2 do
+        local xi, yi, ri = xs[i], ys[i], rs[i]
+        local nj, nadv, nL = nil, huge, -1.0
+        for j = 1, m do
+            if j ~= i then
+                local dx, dy = xs[j] - xi, ys[j] - yi
+                local L = sqrt(dx * dx + dy * dy)
+                local dr = ri - rs[j]
+                if L > abs(dr) + HULL_EPS then
+                    local phi = atan(dy, dx) - acos(dr / L)
+                    local adv = (phi - th) % TAU
+                    -- A HAIR BEHIND IS NOW, not nearly a whole turn on: the only
+                    -- disc that can be found there is one tied with this one.
+                    if adv > TAU - 1e-10 then adv = 0.0 end
+                    -- TIES GO TO THE FURTHER DISC, so three collinear points make one
+                    -- run and not a corner that turns by nothing.
+                    if adv < nadv - 1e-12 or (abs(adv - nadv) <= 1e-12 and L > nL) then
+                        nj, nadv, nL = j, adv, L
+                    end
+                end
+            end
+        end
+        if not nj or th + nadv >= TAU - 1e-10 then
+            seq[#seq + 1] = { i, th, TAU }
+            closed = true
+            break
+        end
+        seq[#seq + 1] = { i, th, th + nadv }
+        th = th + nadv
+        i = nj
+    end
+    -- A WALK THAT RAN OUT OF STEPS STILL CLOSES: the last corner is carried round to
+    -- the start. Not reachable on a proper disc set (a hull has at most 2m - 1
+    -- corners); here so that no rounding can hand back a boundary with a gap in it.
+    if not closed then seq[#seq][3] = TAU end
+
+    -- THE DISC THE WALK STARTED ON IS USUALLY ALSO WHERE IT ENDS, straddling normal
+    -- angle 0 -- one corner, begun a turn early.
+    if #seq > 1 and seq[#seq][1] == seq[1][1] then
+        seq[1][2] = seq[#seq][2] - TAU
+        seq[#seq] = nil
+    end
+
+    local ks = {}
+    for k = 1, #seq do
+        local e = seq[k]
+        if e[3] - e[2] > ANGLE_EPS or #seq == 1 then
+            local d = discs[e[1]]
+            ks[#ks + 1] = corner(d.x, d.y, d.r, e[2], e[3])
+        end
+    end
+    if #ks == 1 then
+        local c = ks[1]
+        ks[1] = corner(c.x, c.y, c.rho, 0.0, TAU)
+    end
+    return ks
+end
+
+--- Which corner of a list carries normal angle `a`. The ranges tile one whole turn.
+local function cornerAt(ks, a)
+    for i = 1, #ks do
+        local k = ks[i]
+        if ((a - k.a0) % TAU) <= (k.a1 - k.a0) then return k end
+    end
+    return ks[#ks]
+end
+
+--- The support function of a corner list at normal angle `a`.
+local function supportAt(ks, a)
+    local k = cornerAt(ks, a)
+    return k.x * cos(a) + k.y * sin(a) + k.rho
+end
+
+--- The longest length and the narrowest width of a corner list. EXACT.
+---
+--- The width across normal u is h(u) + h(u + pi). Between two breakpoints of that
+--- pair -- every corner end, and every corner end turned half a turn -- one corner
+--- bounds each side, so the width there is |c_a - c_b| cos(u - phi) plus the two
+--- radii, and both corners bounding opposite sides forces cos to be non-negative
+--- there. So the MINIMUM is at a breakpoint and the MAXIMUM is at a breakpoint or
+--- where u points along c_a - c_b. The diameter of a convex body is its widest
+--- width, which is what "longest length" means.
+--- @return number longest, number narrowest
+local function widthOf(ks)
+    if #ks == 1 then
+        local d = 2.0 * ks[1].rho
+        return d, d
+    end
+    local bps = {}
+    for i = 1, #ks do
+        bps[#bps + 1] = ks[i].a1 % TAU
+        bps[#bps + 1] = (ks[i].a1 + pi) % TAU
+    end
+    table.sort(bps)
+    local D, W = 0.0, huge
+    local function w(a) return supportAt(ks, a) + supportAt(ks, a + pi) end
+    for j = 1, #bps do
+        local lo = bps[j]
+        local hi = (j < #bps) and bps[j + 1] or (bps[1] + TAU)
+        local wl = w(lo)
+        if wl < W then W = wl end
+        if wl > D then D = wl end
+        if hi - lo > ANGLE_EPS then
+            local mid = 0.5 * (lo + hi)
+            local a, b = cornerAt(ks, mid), cornerAt(ks, mid + pi)
+            local off = (atan(a.y - b.y, a.x - b.x) - lo) % TAU
+            if off < hi - lo then
+                local wm = w(lo + off)
+                if wm > D then D = wm end
+            end
+        end
+    end
+    return D, W
+end
+
+--- How stretched a corner list is: its longest length over its narrowest width.
+--- 1 for a disc, and for a point, which has neither.
+local function stretchOf(ks)
+    local D, W = widthOf(ks)
+    if not (W > 0.0) then return 1.0, D, W end
+    return D / W, D, W
+end
+
+--- How far every disc of a list pokes OUT of a convex corner list, at the worst.
+---
+--- The discs are scaled by `k` about the origin and moved to (ox, oy) first, which
+--- is both of the questions this file asks: does a zone fit inside its predecessor
+--- concentric at the ratio of their radii, and does the next zone fit inside this
+--- one at a candidate centre. Positive is out; the shape the discs are the hull of
+--- is inside exactly when this is not.
+--- @return number metres (or units)
+local function fitOf(ks, discs, ox, oy, k)
+    local h = { ks = ks }
+    k = k or 1.0
+    local worst = -huge
+    for i = 1, #discs do
+        local d = discs[i]
+        local v = hullDistance(h, (ox or 0.0) + d.x * k, (oy or 0.0) + d.y * k) + d.r * k
+        if v > worst then worst = v end
+    end
+    return worst
+end
+
+-- ------------------------------------------------------------ the zone units ---
+
+--- The area-weighted centroid of a vertex ring.
+local function centroidOf(vs)
+    local A, cx, cy = 0.0, 0.0, 0.0
+    local n = #vs
+    for i = 1, n do
+        local p, q = vs[i], vs[(i % n) + 1]
+        local cr = p.x * q.y - q.x * p.y
+        A = A + cr
+        cx = cx + (p.x + q.x) * cr
+        cy = cy + (p.y + q.y) * cr
+    end
+    A = A * 0.5
+    if A == 0.0 then return 0.0, 0.0 end
+    return cx / (6.0 * A), cy / (6.0 * A)
+end
+
+--- A convex vertex ring, finished vertex by vertex, as DISCS.
+---
+--- nil when the ring is not convex -- a turn outside [BLOB_MIN_TURN,
+--- pi - BLOB_MIN_TURN] at any vertex. Otherwise the flat disc list and, per vertex,
+--- the record the morph pairs by: its outward-normal bisector `beta` and the one or
+--- two discs it is.
 ---
 --- ═══ ONE CUT PER VERTEX, AND IT IS THE SAME FOR A BEVEL AND AN ARC ═══
 ---
 --- `take` is how far back along each edge the finish starts: `cut` of the shorter
 --- half-edge beside the vertex, so no two neighbours can meet in the middle of the
---- run they share. A ROUNDED vertex is the arc tangent to both edges at exactly
---- those two points, and a BEVELED one is the straight chord between them -- the
---- same two points, so a bevel and an arc on the same vertex differ by the bulge
---- of the arc and nothing else. The chord is perpendicular to the vertex's
---- bisector, so its normal is exactly half way round the turn and the two sharp
---- corners at its ends split that turn equally.
+--- run they share. A ROUNDED vertex is the disc tangent to both edges at exactly
+--- those two points -- or smaller, see RHO_FIT -- and a BEVELED one is the two
+--- points themselves. The chamfer between them is square to the vertex's bisector,
+--- so the two sharp corners at its ends split that vertex's turn equally.
+---
+--- THE CAP IS CLOSED FORM. A disc tangent to both edges has its centre on the
+--- inward bisector b at rho / sin(half the interior angle), so its signed distance
+--- to another edge's line (inward normal n_k, vertex V at depth dist_k from it) is
+--- dist_k + rho <b, n_k> / sin(half) -- and it clears that line while that is at
+--- least rho, which is rho <= dist_k / (1 - <b, n_k> / sin(half)).
 --- @param vs table       vertices, counter-clockwise
 --- @param finish table   one of VERTEX_KINDS per vertex
 --- @param cut number     0..1
---- @return table|nil ks
-local function finishOf(vs, finish, cut)
+--- @return table|nil discs, table|nil verts
+local function finishDiscs(vs, finish, cut)
     local n = #vs
-    if not stampNormals(vs) then return nil end
+    local E = {}
     for i = 1, n do
-        local p, c = vs[((i - 2) % n) + 1], vs[i]
-        local t = atan(p.ex * c.ey - p.ey * c.ex, p.ex * c.ex + p.ey * c.ey)
+        local a, b = vs[i], vs[(i % n) + 1]
+        local dx, dy = b.x - a.x, b.y - a.y
+        local len = sqrt(dx * dx + dy * dy)
+        if len <= 0.0 then return nil end
+        -- Inward is the LEFT of travel on a counter-clockwise ring.
+        E[i] = { ux = dx / len, uy = dy / len, len = len,
+                 nx = -dy / len, ny = dx / len, x = a.x, y = a.y }
+    end
+    local turns = {}
+    for i = 1, n do
+        local p, c = E[((i - 2) % n) + 1], E[i]
+        local t = atan(p.ux * c.uy - p.uy * c.ux, p.ux * c.ux + p.uy * c.uy)
         if t < BLOB_MIN_TURN or t > pi - BLOB_MIN_TURN then return nil end
-        c.turn = t
+        turns[i] = t
     end
 
-    -- THE NORMAL ANGLES ARE ACCUMULATED, NOT TAKEN PER EDGE WITH atan, so that each
-    -- corner's last angle IS the next one's first -- the same double, not two
-    -- readings of one direction that differ in the last bit -- and the list climbs
-    -- monotonically through one whole turn, which the morph's merge relies on.
-    local ks = {}
-    local last = vs[n]
-    local acc = atan(last.ny, last.nx)
+    local discs, verts = {}, {}
     for i = 1, n do
-        local p, c = vs[((i - 2) % n) + 1], vs[i]
-        local take = cut * 0.5 * ((p.elen < c.elen) and p.elen or c.elen)
-        local a0, a1 = acc, acc + c.turn
+        local ip = ((i - 2) % n) + 1
+        local p, c, V = E[ip], E[i], vs[i]
+        local take = cut * 0.5 * ((p.len < c.len) and p.len or c.len)
         local how = finish[i]
+        -- The OUTWARD normal half way round the vertex's turn: the two edges'
+        -- outward normals, summed.
+        local beta = atan(-(p.ny + c.ny), -(p.nx + c.nx))
+        local set
         if how == 'cornered' then
-            ks[#ks + 1] = corner(c.x, c.y, 0.0, a0, a1)
+            set = { { x = V.x, y = V.y, r = 0.0 } }
         elseif how == 'beveled' then
-            local am = a0 + 0.5 * c.turn
-            ks[#ks + 1] = corner(c.x - p.ex * take, c.y - p.ey * take, 0.0, a0, am)
-            ks[#ks + 1] = corner(c.x + c.ex * take, c.y + c.ey * take, 0.0, am, a1)
+            set = { { x = V.x - p.ux * take, y = V.y - p.uy * take, r = 0.0 },
+                    { x = V.x + c.ux * take, y = V.y + c.uy * take, r = 0.0 } }
         else
-            -- THE ARC TANGENT TO BOTH EDGES `take` BACK FROM THE VERTEX: a radius of
-            -- take * tan(theta / 2) for an interior angle theta, centred that radius
-            -- over sin(theta / 2) in along the bisector -- which is the sum of the
-            -- two unit vectors away from the vertex along its edges.
-            local half = 0.5 * (pi - c.turn)
-            local rho = take * math.tan(half)
-            local bx, by = c.ex - p.ex, c.ey - p.ey
+            local half = 0.5 * (pi - turns[i])
+            local sh = sin(half)
+            local bx, by = c.ux - p.ux, c.uy - p.uy
             local bl = sqrt(bx * bx + by * by)
-            if bl <= 0.0 or not (rho > 0.0) then return nil end
-            local d = rho / sin(half)
-            ks[#ks + 1] = corner(c.x + bx / bl * d, c.y + by / bl * d, rho, a0, a1)
+            if bl <= 0.0 then return nil end
+            bx, by = bx / bl, by / bl
+            local rho = take * math.tan(half)
+            for k = 1, n do
+                if k ~= i and k ~= ip then
+                    local e = E[k]
+                    local dist = (V.x - e.x) * e.nx + (V.y - e.y) * e.ny
+                    local lean = 1.0 - (bx * e.nx + by * e.ny) / sh
+                    if lean > 1e-12 then
+                        local lim = RHO_FIT * dist / lean
+                        if lim < rho then rho = lim end
+                    end
+                end
+            end
+            if not (rho > 0.0) then rho = 0.0 end
+            local d = rho / sh
+            set = { { x = V.x + bx * d, y = V.y + by * d, r = rho } }
         end
-        acc = a1
+        verts[i] = { beta = beta, discs = set, finish = how }
+        for q = 1, #set do discs[#discs + 1] = set[q] end
     end
-    return ks
+    return discs, verts
 end
+
+--- A finished ring as a unit's geometry -- its discs, its vertices and the corner
+--- list of their hull -- scaled to hold exactly `area` of the unit circle. nil when
+--- the ring is not convex.
+---
+--- ═══ SCALED TO `area` OF THE CIRCLE, EXACTLY ═══
+---
+--- Scaling every centre and every radius by one factor scales the area by its
+--- square and leaves every normal where it was, so the hull stays the corner list
+--- it was -- nothing the section header claims exact stops being so. The discs are
+--- scaled in place and the corner list alongside them, rather than hulled a second
+--- time.
+local function coreOf(vs, finish, cut, area)
+    local discs, verts = finishDiscs(vs, finish, cut)
+    if not discs then return nil end
+    local ks = discHull(discs)
+    local a = ks and areaOf(ks) or 0.0
+    if not (a > 0.0) then return nil end
+    local f = sqrt(area * pi / a)
+    for i = 1, #discs do
+        local d = discs[i]
+        d.x, d.y, d.r = d.x * f, d.y * f, d.r * f
+    end
+    for i = 1, #ks do
+        local c = ks[i]
+        ks[i] = corner(c.x * f, c.y * f, c.rho * f, c.a0, c.a1, c.c0, c.s0, c.c1, c.s1)
+    end
+    return { ks = ks, discs = discs, verts = verts }
+end
+
+--- A vertex ring stretched by `a` along the axis at angle `psi` and squeezed by `a`
+--- across it -- which keeps its area -- and moved so its own centroid is the origin.
+---
+--- THE CENTROID IS THE ZONE'S CENTRE from here on: the point the solver's circle is
+--- centred on, the point the next zone is placed relative to, and the point #350's
+--- map fill scales about. A convex shape's centroid is at least a third of the way
+--- in along every chord through it, and MEASURED over the shipping draw it is never
+--- less than 0.41 r deep.
+local function stretchedRing(base, a, psi)
+    local c, s = cos(psi), sin(psi)
+    local vs = {}
+    for i = 1, #base do
+        local bx, by = base[i].x, base[i].y
+        local x, y = bx * c + by * s, -bx * s + by * c
+        x, y = x * a, y / a
+        vs[i] = { x = x * c - y * s, y = x * s + y * c }
+    end
+    local gx, gy = centroidOf(vs)
+    for i = 1, #vs do vs[i].x, vs[i].y = vs[i].x - gx, vs[i].y - gy end
+    return vs
+end
+
+--- The most stretched version of a ring along `psi` that is no more than `S`.
+---
+--- A FIXED BISECTION, and every build inside it is the whole finish-hull-scale
+--- pipeline, so the stretch measured is the stretch of the shape that ships -- the
+--- finishes and the area scaling move it, and a stretch computed off the bare ring
+--- would not know. A stretch that makes a corner too sharp to be a vertex is read
+--- as too far, which is what stops a long triangle short of the cap.
+local function solveStretch(base, psi, finish, cut, area, S)
+    local best = coreOf(stretchedRing(base, 1.0, psi), finish, cut, area)
+    if not best then return nil end
+    local s1 = stretchOf(best.ks)
+    if s1 >= S then return best end
+    local lo, hi = 1.0, 2.0 * sqrt(S / s1) + 1.0
+    for _ = 1, STRETCH_STEPS do
+        local mid = 0.5 * (lo + hi)
+        local u = coreOf(stretchedRing(base, mid, psi), finish, cut, area)
+        if u and stretchOf(u.ks) <= S then lo, best = mid, u else hi = mid end
+    end
+    return best
+end
+
+--- A unit's geometry turned by `ang` about its centre. Fresh discs, vertices that
+--- name the fresh discs, and the hull of them.
+local function turnedCore(u, ang)
+    if ang == 0.0 then return u end
+    local c, s = cos(ang), sin(ang)
+    local discs, map = {}, {}
+    for i = 1, #u.discs do
+        local d = u.discs[i]
+        local nd = { x = d.x * c - d.y * s, y = d.x * s + d.y * c, r = d.r }
+        discs[i] = nd
+        map[d] = nd
+    end
+    local verts = {}
+    for i = 1, #u.verts do
+        local v = u.verts[i]
+        local set = {}
+        for j = 1, #v.discs do set[j] = map[v.discs[j]] end
+        verts[i] = { beta = v.beta + ang, discs = set, finish = v.finish }
+    end
+    return { ks = discHull(discs), discs = discs, verts = verts }
+end
+
+--- The geometry of a plain circle of radius `rho`: one disc, one vertex.
+local function circleCore(rho)
+    local d = { x = 0.0, y = 0.0, r = rho }
+    return { ks = { corner(0.0, 0.0, rho, 0.0, TAU) }, discs = { d },
+             verts = { { beta = 0.0, discs = { d } } } }
+end
+
+--- ZONE 0, THE OPENING ZONE, IS THE MAP DISC -- EXACTLY THE CIRCLE, AT ITS WHOLE AREA.
+---
+--- The opening radius is computed per match to reach past the farthest corner of
+--- the playable map (server/storm.lua's openingRadius), so a DISC of that radius is
+--- the one opening zone nobody can land outside of, and its hold-time wall is a
+--- clean ring just past the map's corner. A drawn shape there would either leave
+--- corners of the map outside the storm or have to be grown until it covered them
+--- -- up to twice the radius, and a phase-1 sweep that long. Not scaled to `area`:
+--- the opening zone is not a phase circle a pace was tuned on, it is the map.
+local OPENING = circleCore(1.0)
+OPENING.kind, OPENING.opening = 'circle', true
+OPENING.n, OPENING.finish, OPENING.jitter, OPENING.tries = 0, {}, 0.0, 1
+OPENING.stretch, OPENING.D, OPENING.W = 1.0, 2.0, 2.0
+OPENING.extent, OPENING.inradius, OPENING.area = 1.0, 1.0, 1.0
+OPENING.rung, OPENING.turned, OPENING.homothet = 0, 0, false
 
 -- ═══ THE UNITS ARE MEMOISED, AND THE CACHE IS BOUNDED ═══
 --
 -- Every frame of the wall, every tick of the HUD and every tick of the server's
 -- damage pass ask for the SAME two units -- the zone the wall is leaving and the
--- zone it is closing on -- so building them each time would be a generator, a
--- convexity test and up to six retries of garbage per call.
+-- zone it is closing on -- and a unit is a stretch solve, a hull per step and a fit
+-- ladder: two milliseconds on average and thirteen at worst, measured. Built once.
 --
 -- ═══ AND THE KNOBS ARE READ ONCE PER CONFIG, NOT ONCE PER CALL ═══
 --
--- The cache used to be keyed on a string of every knob, formatted afresh on every
--- call -- a dozen string builds for a hit, measured at 9 us of a 48 us zone build,
--- and every zone build asks for two units now. So the knobs are read into a SPEC
--- once per options table and the units hang off it by seed and zone. Each call
--- checks that the knobs the spec was read from are still the knobs there -- a few
--- dozen comparisons and no strings -- so a config edited between two calls, in
--- place or by swapping a table in, is still never served a stale shape. A hit costs
--- about a microsecond.
+-- The knobs are read into a SPEC once per options table and the units hang off it
+-- by chain, seed and zone. Each call checks that the knobs the spec was read from
+-- are still the knobs there -- a few dozen comparisons and no strings -- so a config
+-- edited between two calls, in place or by swapping a table in, is still never
+-- served a stale shape. The CHAIN is the phase table the zones were fitted to, and
+-- its radii are checked the same way: zone z's shape depends on zone z-1's and on
+-- the ratio of their radii, so a retuned radius is a different chain.
 --
--- FLUSHED WHOLE RATHER THAN EVICTED. A server runs matches for days and each one
--- brings a fresh seed, so an unbounded cache is a slow leak. Dropping every unit at
--- a ceiling costs one rebuild per zone per live match on the call after the flush,
--- and it cannot grow. The specs are held weakly, by the options table they read.
+-- FLUSHED WHOLE RATHER THAN EVICTED, AND THE GENERATION BEFORE IS KEPT. A server
+-- runs matches for days and each one brings a fresh seed, so an unbounded cache is a
+-- slow leak: at a ceiling the whole cache becomes the OLD generation and a fresh one
+-- starts, and a unit asked for from the old one is promoted back rather than
+-- rebuilt -- so the live matches' zones survive a flush as the same tables, and only
+-- the matches that are over are dropped, one flush later. It cannot grow past twice
+-- the ceiling.
+--
+-- THE CEILING IS 256 UNITS, THIRTY-TWO MATCHES OF EIGHT ZONES. It was 64 while a
+-- unit cost fifty microseconds; one costs about two milliseconds now, and zone z
+-- cannot be built without zone z-1, so a server running more matches at once than
+-- the cache held rebuilt whole chains on every damage tick -- measured, a suite of
+-- 72 concurrent matches ran nine times slower until this changed. The specs are
+-- held weakly, by the options table they read.
 local specs = setmetatable({}, { __mode = 'k' })
 local blobGen, blobCacheN = 0, 0
-local BLOB_CACHE_MAX = 64
+local BLOB_CACHE_MAX = 256
+local NO_CHAIN = {}
 
---- HOW MANY UNITS AND MERGES HAVE ACTUALLY BEEN BUILT since this file loaded.
+--- HOW MANY UNITS AND PAIRINGS HAVE ACTUALLY BEEN BUILT since this file loaded.
 ---
 --- A COUNT AND NOT A FLAG, and it exists for one claim: that a zone's shape is
---- built ONCE and the morph between two zones is merged ONCE, however many frames
---- and ticks ask for them. A cache that silently stopped hitting would still hand
---- back correct shapes -- identical ones, rebuilt -- so nothing a shape can be
+--- built ONCE and the corner pairing between two zones is built ONCE, however many
+--- frames and ticks ask for them. A cache that silently stopped hitting would still
+--- hand back correct shapes -- identical ones, rebuilt -- so nothing a shape can be
 --- asked would show it. tools/test_storm.lua runs a sweep and reads these.
-BR.StormShape.builds = { units = 0, merges = 0 }
-
---- One attempt at a unit polygon, off `rng`. nil when the draw is not convex, or
---- reaches past `reach` once it is scaled to `area`.
----
---- Every attempt takes exactly 2N values off the stream WHETHER OR NOT IT SUCCEEDS,
---- which is what makes a retry deterministic rather than a fork: the client and
---- the server reject the same attempt at the same point and arrive at the same
---- shape. Both tests therefore run AFTER all 2N values are drawn.
---- @param slide number   radians a vertex may slide round the ring
---- @param rot number     radians the whole draw is turned by
---- @param area number    the fraction of the unit circle's area to scale to
---- @param reach number   the furthest the scaled boundary may reach from the centre
-local function blobAttempt(rng, n, jitter, slide, finish, cut, rot, area, reach)
-    local slot = TAU / n
-    if slide > slot * BLOB_SLIDE_SLOT then slide = slot * BLOB_SLIDE_SLOT end
-    local vs = {}
-    for i = 1, n do
-        -- THE ANGLE STAYS IN ITS OWN SLOT, which is what stops two vertices swapping
-        -- places, and THE WHOLE RING IS TURNED by one angle drawn with the count, so
-        -- that vertex one of every shape does not sit due east.
-        local a = rot + (i - 1) * slot + slide * (rng:float() * 2.0 - 1.0)
-        -- SYMMETRIC ABOUT 1, NOT INWARD FROM IT (#344, measured): radii drawn in
-        -- [1 - 2j, 1] cost 28 to 41 percent of the circle's area before scaling.
-        local rad = 1.0 + jitter * (rng:float() * 2.0 - 1.0)
-        vs[i] = { x = cos(a) * rad, y = sin(a) * rad }
-    end
-
-    local ks = finishOf(vs, finish, cut)
-    if not ks then return nil end
-
-    -- ═══ SCALED TO `area` OF THE CIRCLE, EXACTLY ═══
-    --
-    -- Scaling every centre and every radius by one factor scales the area by its
-    -- square and leaves every normal where it was, so the shape stays the corner
-    -- list it was -- nothing the section header claims exact stops being so.
-    local k = sqrt(area * pi / areaOf(ks))
-    for i = 1, #ks do
-        local c = ks[i]
-        ks[i] = corner(c.x * k, c.y * k, c.rho * k, c.a0, c.a1, c.c0, c.s0, c.c1, c.s1)
-    end
-
-    local extent = reachOf(ks, 0.0, 0.0)
-    if extent > reach then return nil end
-    return {
-        kind = 'polygon', n = n, ks = ks, finish = finish, jitter = jitter,
-        -- WHAT THE SHAPE MEASURES, normalised, recorded here because every consumer
-        -- that wants to compare the shape with the circle it replaced would
-        -- otherwise re-derive it: how far the boundary reaches, how near it comes,
-        -- and the area it was scaled to -- read back off the corners rather than
-        -- copied from the knob, so a scaling that went wrong would show here.
-        extent = extent,
-        inradius = -hullDistance({ ks = ks }, 0.0, 0.0),
-        area = areaOf(ks) / pi,
-    }
-end
+BR.StormShape.builds = { units = 0, pairings = 0 }
 
 --- The knobs of one options table, read: the counts on offer and their weights,
 --- the finishes and theirs, and the scalars -- and the RAW values they were read
 --- from, which is what specStill compares. nil `counts` is the off switch.
 local function readSpec(opts)
-    local sp = { units = {}, gen = blobGen, w = {}, v = {},
+    local sp = { chains = setmetatable({}, { __mode = 'k' }), gen = blobGen,
+                 w = {}, v = {},
                  rawCorners = opts.corners, rawVertex = opts.vertex,
                  rawCircle = opts.circle, rawJitter = opts.jitter,
                  rawSlide = opts.slideDeg, rawCut = opts.cut,
-                 rawArea = opts.area, rawReach = opts.reach }
+                 rawArea = opts.area, rawStretch = opts.stretch,
+                 rawDraw = opts.stretchDraw, rawClear = opts.fitClear }
 
     -- THE COUNTS ON OFFER, ascending, and their weights. Read in a fixed order
     -- rather than with pairs(), whose order is not defined and would hand the
@@ -1296,6 +1620,7 @@ local function readSpec(opts)
         end
     else
         local c = math.floor(tonumber(want) or 0)
+        if c > BLOB_MAX_CORNERS then c = BLOB_MAX_CORNERS end
         if c >= 3 then counts[1], weights[1], total = c, 1.0, 1.0 end
     end
     if total > 0.0 then sp.counts, sp.weights, sp.total = counts, weights, total end
@@ -1325,7 +1650,11 @@ local function readSpec(opts)
     if cut < 0.0 then cut = 0.0 elseif cut > 1.0 then cut = 1.0 end
     sp.cut    = cut
     sp.area   = opts.area or 0.90
-    sp.reach  = opts.reach or 1.15
+    local cap = tonumber(opts.stretch) or 3.0
+    if cap < 1.0 then cap = 1.0 end
+    sp.stretch = cap
+    sp.sqrtDraw = opts.stretchDraw == 'sqrt'
+    sp.clear  = tonumber(opts.fitClear) or 0.0
     return sp
 end
 
@@ -1336,7 +1665,8 @@ local function specStill(sp, opts)
     if opts.corners ~= sp.rawCorners or opts.vertex ~= sp.rawVertex
         or opts.circle ~= sp.rawCircle or opts.jitter ~= sp.rawJitter
         or opts.slideDeg ~= sp.rawSlide or opts.cut ~= sp.rawCut
-        or opts.area ~= sp.rawArea or opts.reach ~= sp.rawReach then
+        or opts.area ~= sp.rawArea or opts.stretch ~= sp.rawStretch
+        or opts.stretchDraw ~= sp.rawDraw or opts.fitClear ~= sp.rawClear then
         return false
     end
     local want = opts.corners
@@ -1354,39 +1684,262 @@ local function specStill(sp, opts)
     return true
 end
 
---- The plain circle a zone is one draw in ten: the corner list of one corner whose
---- range is the whole turn, at the radius that holds `area` like every other shape.
----
---- ═══ A CORNER LIST AND NOT BR.StormShape.circle, AND THE MAP IS WHY ═══
----
---- blob() builds it like any other unit, so it carries `blob` -- its centre and its
---- scale -- and #350's map fill can move and scale it in place exactly as it does a
---- polygon. A 'circle' kind would carry no such record, and a moving circle zone
---- would be rebuilt on the map every time it moved: the work #350 removed.
----
---- AT `area` OF THE CIRCLE, NOT AT r. Every other shape plays at that size, and a
---- circle phase that played a tenth bigger than its neighbours would be the size
---- defect the area rule exists to remove, spelled the other way round.
-local function circleUnit(area)
-    local rho = sqrt(area)
-    local ks = { corner(0.0, 0.0, rho, 0.0, TAU) }
-    return { kind = 'circle', n = 0, ks = ks, finish = {}, jitter = 0.0,
-             extent = rho, inradius = rho, area = areaOf(ks) / pi, tries = 1 }
+--- The unit table of one chain of one spec: the zones fitted to one phase table's
+--- radii, or to none. A chain whose radii have changed since it was built is
+--- dropped rather than served.
+local function chainOf(chains, phases)
+    local ch = chains and chains[phases or NO_CHAIN]
+    if ch and phases then
+        if #phases ~= #ch.radii then return nil end
+        for i = 1, #phases do
+            if (phases[i] and tonumber(phases[i].radius)) ~= ch.radii[i] then
+                return nil
+            end
+        end
+    end
+    return ch
 end
 
---- THE UNIT SHAPE of one zone of one match: radius 1 at the origin, to be scaled by
---- whatever radius the solver reports.
+--- @return table units   this generation's, by seed then zone
+--- @return table|nil older  the generation before's, for promotion
+local function unitsFor(sp, phases)
+    if sp.gen ~= blobGen then
+        sp.oldChains = (sp.gen == blobGen - 1) and sp.chains or nil
+        sp.chains, sp.gen = setmetatable({}, { __mode = 'k' }), blobGen
+    end
+    local ch = chainOf(sp.chains, phases)
+    if not ch then
+        ch = { radii = {}, units = {} }
+        if phases then
+            for i = 1, #phases do
+                ch.radii[i] = phases[i] and tonumber(phases[i].radius)
+            end
+        end
+        sp.chains[phases or NO_CHAIN] = ch
+    end
+    local old = chainOf(sp.oldChains, phases)
+    return ch.units, old and old.units
+end
+
+--- Put a unit in this generation, flushing first if the ceiling has been reached.
+local function remember(sp, phases, s, z, unit)
+    if blobCacheN >= BLOB_CACHE_MAX then
+        blobGen, blobCacheN = blobGen + 1, 0
+    end
+    local units = unitsFor(sp, phases)
+    local bySeed = units[s]
+    if not bySeed then
+        bySeed = {}
+        units[s] = bySeed
+    end
+    bySeed[z] = unit
+    blobCacheN = blobCacheN + 1
+end
+
+--- Draw one zone. See blobUnit, which is the only caller and carries the argument.
+--- @param parent table|nil   zone z-1's unit, when zone z must fit inside it
+--- @param k number|nil       zone z's radius over zone z-1's
+local function drawUnit(sp, s, z, parent, k)
+    local rng = BR.Rng(s * 1000003 + z * 7919 + 17)
+
+    -- ═══ 317 VALUES, ALWAYS, IN THIS ORDER, BEFORE ANYTHING IS DECIDED ═══
+    local isCircle = rng:float() < sp.chance
+    local roll = rng:float() * sp.total
+    local phi = rng:float() * TAU
+    local psi = rng:float() * TAU
+    local u = rng:float()
+    local fin = {}
+    for i = 1, BLOB_MAX_CORNERS do
+        local v = rng:float() * sp.ktotal
+        fin[i] = sp.kinds[#sp.kinds]
+        for j = 1, #sp.kinds do
+            v = v - sp.kw[j]
+            if v < 0.0 then fin[i] = sp.kinds[j] break end
+        end
+    end
+    local jit = {}
+    for a = 1, BLOB_TRIES do
+        local row = {}
+        for i = 1, 2 * BLOB_MAX_CORNERS do row[i] = rng:float() end
+        jit[a] = row
+    end
+
+    local counts, weights = sp.counts, sp.weights
+    local n = counts[#counts]
+    for i = 1, #counts do
+        roll = roll - weights[i]
+        if roll < 0.0 then n = counts[i] break end
+    end
+    local finish = {}
+    for i = 1, n do finish[i] = fin[i] end
+    local S = 1.0 + (sp.stretch - 1.0) * (sp.sqrtDraw and sqrt(u) or u)
+    local clear = sp.clear
+    local info = { rung = 0, turned = 0, homothet = false, circleLost = false }
+
+    --- The first rotation that fits `core` inside the parent, and which it was.
+    local function fitted(core)
+        if not parent then return core, 0 end
+        for j = 0, 2 * FIT_TURNS - 1 do
+            local step = (j == 0) and 0
+                or (((j % 2 == 1) and 1 or -1) * math.ceil(j / 2))
+            local turned = turnedCore(core, step * FIT_TURN)
+            if fitOf(parent.ks, turned.discs, 0.0, 0.0, k) <= -clear then
+                return turned, step
+            end
+        end
+        return nil
+    end
+
+    local core, kind, jitterUsed, tries = nil, 'polygon', 0.0, 1
+    if isCircle then
+        core = circleCore(sqrt(sp.area))
+        kind = 'circle'
+        -- A CIRCLE THAT CANNOT FIT ITS PARENT IS DRAWN AS A POLYGON, off values the
+        -- stream has already handed out: a round zone of the right area does not fit
+        -- inside a long one, and the chain is what the placement rests on.
+        if parent and fitOf(parent.ks, core.discs, 0.0, 0.0, k) > -clear then
+            core, kind, info.circleLost = nil, 'polygon', true
+        end
+    end
+
+    if not core then
+        -- THE BASE RING: the first attempt that is convex. The last one has no
+        -- jitter at all, which is a regular polygon, so this always finds one.
+        local slot = TAU / n
+        local base
+        for a = 1, BLOB_TRIES do
+            local vs = {}
+            local j, sl = 0.0, 0.0
+            if a < BLOB_TRIES then
+                local fall = BLOB_FALLOFF ^ (a - 1)
+                j = sp.jitter * fall
+                sl = ((sp.slide < slot * BLOB_SLIDE_SLOT) and sp.slide
+                      or slot * BLOB_SLIDE_SLOT) * fall
+            end
+            local row = jit[a]
+            for i = 1, n do
+                -- THE ANGLE STAYS IN ITS OWN SLOT, which is what stops two vertices
+                -- swapping places, and THE WHOLE RING IS TURNED by one drawn angle, so
+                -- that vertex one of every shape does not sit due east.
+                local ang = phi + (i - 1) * slot + sl * (row[2 * i - 1] * 2.0 - 1.0)
+                -- SYMMETRIC ABOUT 1, NOT INWARD FROM IT (#344, measured).
+                local rad = 1.0 + j * (row[2 * i] * 2.0 - 1.0)
+                vs[i] = { x = cos(ang) * rad, y = sin(ang) * rad }
+            end
+            if coreOf(stretchedRing(vs, 1.0, psi), finish, sp.cut, sp.area) then
+                base, jitterUsed, tries = vs, j, a
+                break
+            end
+        end
+
+        -- THE LADDER. The drawn stretch first, then half way to the parent's own,
+        -- the parent's, half the drawn one, and none -- and at each, every turn.
+        local rungs = { S }
+        if parent then
+            local ps = parent.stretch or 1.0
+            rungs = { S, 0.5 * (S + ps), ps, 1.0 + 0.5 * (S - 1.0), 1.0 }
+        end
+        for r = 1, #rungs do
+            local want = rungs[r]
+            if want > sp.stretch then want = sp.stretch end
+            local solved = solveStretch(base, psi, finish, sp.cut, sp.area, want)
+            if solved then
+                local got, step = fitted(solved)
+                if got then
+                    core, info.rung, info.turned = got, r - 1, step
+                    break
+                end
+            end
+        end
+    end
+
+    -- ═══ THE LAST RESORT IS THE PARENT'S OWN SHAPE, AND IT ALWAYS FITS ═══
+    --
+    -- Scaled by k < 1 about its own centre it sits inside itself with (1 - k) of its
+    -- centre's depth to spare -- over a tenth of r at every shipping ratio against a
+    -- fitClear of a twenty-fifth -- and its area scales by k squared, which is
+    -- exactly the next phase's area. MEASURED: 2.5 percent of zone 2s, 1 of zone 3s,
+    -- and nothing past zone 4.
+    local n2, finish2 = n, finish
+    if not core and not parent then
+        -- Not reachable: with no parent the first rung is always taken. Here so that
+        -- a config this file has not met draws a circle rather than indexing nil.
+        core, kind = circleCore(sqrt(sp.area)), 'circle'
+    end
+    if not core then
+        core = { ks = parent.ks, discs = parent.discs, verts = parent.verts }
+        kind, n2, finish2 = parent.kind, parent.n, parent.finish
+        info.homothet = true
+    end
+
+    local ks = core.ks
+    local st, D, W = stretchOf(ks)
+    return {
+        kind = kind, n = (kind == 'circle') and 0 or n2,
+        ks = ks, discs = core.discs, verts = core.verts,
+        finish = (kind == 'circle') and {} or finish2,
+        jitter = jitterUsed, tries = tries,
+        stretch = st, D = D, W = W, target = S,
+        rung = info.rung, turned = info.turned,
+        homothet = info.homothet, circleLost = info.circleLost,
+        -- WHAT THE SHAPE MEASURES, normalised, read back off the corners rather than
+        -- copied from the knobs, so a scaling that went wrong would show here.
+        extent = reachOf(ks, 0.0, 0.0),
+        inradius = -hullDistance({ ks = ks }, 0.0, 0.0),
+        area = areaOf(ks) / pi,
+        seed = s, zone = z,
+    }
+end
+
+--- THE UNIT SHAPE of one zone of one match: centred on the origin, holding `area`
+--- of the unit circle, to be scaled by whatever radius the solver reports.
 ---
 --- ═══ KEYED ON THE ZONE, NOT ON THE PHASE THAT IS DRAWING IT ═══
 ---
---- Zone k is the circle phase k closes on -- zone 0 is the opening circle -- and it
---- is on screen for two phases: as phase k's TARGET, and then as phase k+1's
---- CURRENT circle until that phase's sweep carries it away. It keeps this one
---- shape for the whole of that. Asked by the phase that happened to be drawing it,
---- the answer changed under a wall standing still, which is the snap the owner
---- reported: "after the storm is finished moving for that phase, the border snaps
---- to a different location." BR.StormZone is where the two zones of a record are
---- named.
+--- Zone k is the zone phase k closes on -- zone 0 is the opening zone -- and it is
+--- on screen for two phases: as phase k's TARGET, and then as phase k+1's CURRENT
+--- zone until that phase's sweep carries it away. It keeps this one shape for the
+--- whole of that. Asked by the phase that happened to be drawing it, the answer
+--- changed under a wall standing still, which is the snap the owner reported: "after
+--- the storm is finished moving for that phase, the border snaps to a different
+--- location." BR.StormZone is where the two zones of a record are named.
+---
+--- ═══ EVERY ZONE DRAWS THE SAME 317 VALUES, WHATEVER THEY DECIDE ═══
+---
+--- Off BR.Rng(seed * 1000003 + zone * 7919 + 17), in this order and ALL OF THEM
+--- ALWAYS TAKEN: the circle roll, the count roll, the ring's turn, the stretch axis,
+--- the stretch, one finish per possible vertex (BLOB_MAX_CORNERS of them, vertex i
+--- reading roll i), and a slide and a radius per possible vertex for every attempt.
+--- So everything sits at the same place in the stream however the config is
+--- spelled -- `9` and `{ [9] = 1 }` are the same shape, a zone that is a polygon at
+--- a circle chance of 0.1 is the SAME polygon at 0.2, and a retuned count never
+--- re-finishes a vertex -- and every retry, every rung and every turn below reads a
+--- value already drawn, so the client and the server reject the same attempt at the
+--- same step.
+---
+--- ═══ BUILT BY AREA ═══
+---
+--- A ring of `n` vertices jittered about the unit circle, turned by the drawn angle,
+--- STRETCHED along the drawn axis to a drawn target -- uniform across [1, stretch]
+--- -- by the area-preserving affine map that gets closest to it without passing it,
+--- finished into discs, hulled, and scaled to `area`. See the section header.
+---
+--- ═══ CHAINED: ZONE z FITS INSIDE ZONE z-1 WHERE THE SOLVER PUTS IT ═══
+---
+---   "the circles still overlap when they are different shapes."
+---                                                    -- the owner, 2026-09-23
+---
+--- With `phases`, zone z (z >= 2) must fit CONCENTRIC inside zone z-1 at the ratio
+--- of their radii, every disc at least `fitClear` of r inside: exactly, by fitOf.
+--- That is what guarantees BR.NextZoneCentre a nested place for zone z inside zone
+--- z-1 however long and however turned both are -- the concentric one, with room
+--- around it. A draw that does not fit is turned, then tamed down the ladder in
+--- drawUnit, and the last resort is zone z-1's own shape. Zone 1 is unconstrained,
+--- because zone 0 is the map disc and every zone 1 fits inside it.
+---
+--- SO ZONE z DEPENDS ON ZONE z-1, AND ON THE RATIO OF THEIR RADII. Both sides
+--- derive the chain from the same seed, so they still agree; what changes is that
+--- retuning one phase radius can reshape every later zone of a match.
 ---
 --- ═══ DETERMINISM IS A CORRECTNESS REQUIREMENT HERE, NOT A NICETY ═══
 ---
@@ -1404,15 +1957,15 @@ end
 --- Fewer than three corners is not a polygon, and it is the one way back to the
 --- pre-#344 disc union: BR.StormZone hands a nil unit to union2. A table with no
 --- positive weight at three or more is the same switch in the table spelling.
---- `circle` is not the off switch -- a chance of 1 draws every zone as a circle
---- corner list, which the map can still place.
+--- `circle` is not the off switch -- a chance of 1 draws every zone as a circle.
 ---
 --- @param seed number|nil     the match's storm seed (server/storm.lua's seedRng)
---- @param zone number|nil     0 is the opening circle, k the circle phase k closes on
---- @param opts table|nil      { circle, corners, vertex, jitter, slideDeg, cut,
----                              area, reach }
---- @return table|nil unit     { kind, n, ks, finish, extent, inradius, area, tries }
-function BR.StormShape.blobUnit(seed, zone, opts)
+--- @param zone number|nil     0 is the opening zone, k the zone phase k closes on
+--- @param opts table|nil      config/storm.lua's `shape` block
+--- @param phases table|nil    config/storm.lua's `phases`, for the chain; nil for none
+--- @return table|nil unit     { kind, n, ks, discs, verts, finish, stretch, extent,
+---                              inradius, area, tries, ... }
+function BR.StormShape.blobUnit(seed, zone, opts, phases)
     opts = opts or NO_OPTS
     local sp = specs[opts]
     if not sp or not specStill(sp, opts) then
@@ -1420,167 +1973,316 @@ function BR.StormShape.blobUnit(seed, zone, opts)
         specs[opts] = sp
     end
     if not sp.counts then return nil end
-    if sp.gen ~= blobGen then sp.units, sp.gen = {}, blobGen end
 
-    local s = math.tointeger(math.floor(seed or 0)) or 0
     local z = math.tointeger(math.floor(zone or 0)) or 0
-    local bySeed = sp.units[s]
+    if z <= 0 then return OPENING end
+    local s = math.tointeger(math.floor(seed or 0)) or 0
+
+    local units, older = unitsFor(sp, phases)
+    local bySeed = units[s]
     local hit = bySeed and bySeed[z]
     if hit then return hit end
-
-    local counts, weights, total = sp.counts, sp.weights, sp.total
-    local kinds, kw, ktotal = sp.kinds, sp.kw, sp.ktotal
-    local chance, jitter, slide = sp.chance, sp.jitter, sp.slide
-    local cut, area, reach = sp.cut, sp.area, sp.reach
-
-    local rng = BR.Rng(s * 1000003 + z * 7919 + 17)
-
-    -- ═══ THE FIRST VALUES ARE ALWAYS THE SAME ONES, WHATEVER THEY DECIDE ═══
-    --
-    -- The circle roll, the count, the turn and one finish per vertex, in that order
-    -- and ALL OF THEM ALWAYS TAKEN -- the count even when there is one to choose
-    -- from, the finishes even when the zone is a circle. So everything after sits
-    -- at the same place in the stream however the config is spelled: `9` and
-    -- `{ [9] = 1 }` are the same shape, and a zone that is a polygon at a circle
-    -- chance of 0.1 is the SAME polygon at 0.2. Retuning a weight changes which
-    -- shape a zone draws, never what a given shape looks like there.
-    local isCircle = rng:float() < chance
-    local roll = rng:float() * total
-    local n = counts[#counts]
-    for i = 1, #counts do
-        roll = roll - weights[i]
-        if roll < 0.0 then n = counts[i] break end
+    -- STILL IN USE ACROSS A FLUSH: the same table, promoted, not a copy rebuilt.
+    local was = older and older[s] and older[s][z]
+    if was then
+        remember(sp, phases, s, z, was)
+        return was
     end
-    local rot = rng:float() * TAU
-    local finish = {}
-    for i = 1, n do
-        local v = rng:float() * ktotal
-        finish[i] = kinds[#kinds]
-        for j = 1, #kinds do
-            v = v - kw[j]
-            if v < 0.0 then finish[i] = kinds[j] break end
+
+    local parent, k = nil, nil
+    if phases and z >= 2 then
+        local p0, p1 = phases[z - 1], phases[z]
+        local r0 = p0 and tonumber(p0.radius)
+        local r1 = p1 and tonumber(p1.radius)
+        if r0 and r1 and r0 > 0.0 and r1 >= 0.0 then
+            parent = BR.StormShape.blobUnit(s, z - 1, opts, phases)
+            k = r1 / r0
         end
     end
 
-    local unit
-    if isCircle then
-        unit = circleUnit(area)
-    else
-        local j, sl = jitter, slide
-        for attempt = 1, BLOB_TRIES do
-            -- THE LAST ATTEMPT HAS NO JITTER AT ALL, radial or angular, so it is a
-            -- regular polygon: convex by construction. That is what makes this loop
-            -- terminate on a shape rather than on a nil, and it is why nothing
-            -- downstream has a "there is no shape" branch to get wrong. So it is
-            -- also accepted however far it reaches -- a config asking for a reach
-            -- a regular polygon cannot meet at its area gets the regular polygon,
-            -- never a circle. config/storm.lua's corner range is what keeps the
-            -- shipping draws off that branch.
-            local last = attempt == BLOB_TRIES
-            if last then j, sl = 0.0, 0.0 end
-            unit = blobAttempt(rng, n, j, sl, finish, cut, rot, area,
-                last and huge or reach)
-            if unit then unit.tries = attempt break end
-            j, sl = j * BLOB_FALLOFF, sl * BLOB_FALLOFF
-        end
-    end
-
-    if blobCacheN >= BLOB_CACHE_MAX then
-        blobGen, blobCacheN = blobGen + 1, 0
-        sp.units, sp.gen = {}, blobGen
-    end
-    bySeed = sp.units[s]
-    if not bySeed then
-        bySeed = {}
-        sp.units[s] = bySeed
-    end
-    bySeed[z] = unit
-    blobCacheN = blobCacheN + 1
+    local unit = drawUnit(sp, s, z, parent, k)
+    remember(sp, phases, s, z, unit)
     BR.StormShape.builds.units = BR.StormShape.builds.units + 1
     return unit
 end
 
--- ═══ THE MORPH: ONE ZONE'S SHAPE BECOMING THE NEXT ONE'S, ACROSS THE SWEEP ═══
+-- ═══ THE MORPH: ONE ZONE'S SHAPE BECOMING THE NEXT ONE'S, CORNER TO CORNER ═══
 --
--- A zone keeps its shape for its whole life, so the wall at the end of a sweep is
--- the target's shape and the wall at the start of it is the previous zone's -- and
--- in between it has to become one from the other, or keeping shapes per zone
--- would only move the snap from the end of the sweep to the start of it.
+--   "I don't think blending is right here - it still doesn't do what I want. I
+--    think morphing is the correct action for it."
+--   "I don't want the destinations shape or corners to change at all. I want the
+--    moving wall's corners and lines to move and change to match the
+--    destination's. Nothing about the destination shape should ever change while
+--    in motion."                                      -- the owner, 2026-09-23
 --
--- ═══ IT IS THE MINKOWSKI COMBINATION, (1 - t) A + t B ═══
+-- What shipped before this was the Minkowski combination (1 - t) A + t B, whose
+-- corner list is BOTH lists merged: the old sides shrink away while the new ones
+-- grow in, so the wall wore two shapes at once, n + m sides mid-sweep. That is the
+-- look he rejected.
 --
--- The set of (1 - t) a + t b for a in A and b in B, of two unit shapes, placed at the
--- solved circle -- so the sweep moves and scales it and the morph reshapes it. And
--- with the fraction BR.StormMorph chooses, those two are ONE interpolation: the wall
--- is (1 - s) Z0 + s Z1 of the zone it left and the zone it arrives at, each as
--- placed, s the sweep's own fraction -- affine in s, which is what airdrop siting's
--- window argument needs (storm_solve.lua has why). Four things follow, all exact:
+-- ═══ SO EVERY CORNER OF THE WALL IS PAIRED WITH A CORNER OF THE DESTINATION ═══
 --
---   IT IS CONVEX. A Minkowski combination of convex sets is convex, at every t.
+-- Each vertex of the zone the wall leaves is linked to a vertex of the zone it
+-- closes on (pairsOf), and each disc of it travels in a straight line to its
+-- partner's disc -- centre and radius both -- across the sweep. The wall at sweep
+-- fraction t is the convex hull of where the discs are. So its corners go to the
+-- destination's corners, its runs turn and lengthen into the destination's runs,
+-- and each corner's finish becomes its partner's: a rounded corner heading for a
+-- sharp one loses its radius, a chamfer's two ends close onto a point or open out
+-- of one. max(n, m) links, never n + m.
 --
---   IT IS A CORNER LIST. Its support function is (1 - t) h_A + t h_B, and on any
---   range of normals where A is on one corner and B on one corner that is
---   <(1 - t) c_A + t c_B, u> + (1 - t) rho_A + t rho_B: a corner, with the centre
---   and the radius interpolated. So the morph is the two lists' breakpoints merged
---   and every corner lerped -- arcs and runs, the piece model this file walks, with
---   an exact signed distance and an exact erosion like any other shape. Nothing is
---   sampled, and nothing is a level set.
+-- ═══ AND THE DESTINATION IS NEVER TOUCHED ═══
 --
---   IT NEVER PLAYS SMALLER AND NEVER REACHES FURTHER. By Brunn-Minkowski its area
---   is at least the area both ends were scaled to, and its support function is a
---   blend of two that stay inside `reach`, so the farthest it reaches is at most
---   the farther of the two.
+-- On a phase whose next zone lies inside this one -- every phase that did not
+-- break out, now that zones are placed by their real shape -- the destination's
+-- own discs are added to the hull (morph()). Three things follow:
 --
---   IT STARTS AND ENDS ON THE ZONES THEMSELVES. At t = 0 it is A and at t = 1 it
---   is B -- and morphUnit hands back the unit ITSELF at both ends rather than a
---   lerp that equals it, so the wall at the end of one sweep and the wall at the
---   start of the next hold are the same table placed at the same circle, to the
---   bit.
+--   THE WALL NEVER CUTS INTO THE DESTINATION. It is a hull containing it.
 --
--- WHY NOT THE SIGNED-DISTANCE BLEND, whose zero set (1 - t) d_A + t d_B <= 0 is also
--- convex at every t and also equals each shape at its end. Two reasons: its boundary
--- is a level set, so the wall would have to find it by root-finding along rays every
--- frame, and its magnitude is only a lower bound on the distance -- a blend of two
--- unit gradients is shorter than one -- so the damage test would read players as
--- nearer the edge than they are. MEASURED on 120 pairs of shipping zones at r 1000: a
--- point 39.5 m outside the blend's boundary read as 32.7, and up to 18 percent short
--- 10 to 40 m out, which is a player twelve metres outside read as inside a ten-metre
--- cushion. This morph's signed distance is the corner list's, exact: measured to
--- 4e-12 m at 98,508 points 1 to 60 m outside moving walls of every phase.
+--   THE WALL NEVER MOVES OUTWARD. A moving disc at t2 is a blend of where it was
+--   at t1 and its partner, which is a disc of the destination, so it lies inside
+--   the hull at t1 -- and so does the whole wall at t2. Airdrop and rescue siting
+--   lean on this: see storm_solve.lua.
 --
--- AND A BREAKOUT DOES NOT TOUCH IT. The two shapes are overlaid at one circle, not
--- blended between two, so whether the old zone and the new one overlap on the map
--- is the sweep's business and never the morph's.
+--   WHERE THE BARE CORNER PATHS WOULD HAVE CUT IN, THE WALL RESTS ON THE
+--   DESTINATION instead -- the owner's own first suggestion, "at any point where it
+--   intersects with the inside circle, that part of it stops moving". MEASURED, in
+--   36 to 64 percent of nested sweeps, on 14 to 32 percent of frames.
+--
+-- IT IS CONVEX AT EVERY t, because it is a hull. Its signed distance and its
+-- erosion are the corner list's, exact -- measured to 4e-12 m at ninety thousand
+-- points outside moving walls of every phase. And it starts and ends on the zones
+-- themselves: BR.StormZone hands back the placed zones at t = 0 and t = 1, so the
+-- hand-off at a phase change is one shape to the bit.
+--
+-- A BREAKOUT MORPHS THE SAME WAY, WITHOUT THE DESTINATION IN THE HULL: the zone is
+-- the moving wall UNION the destination, stitched by blobUnion as it always was.
 
---- Merges are cached per PAIR of units, weakly, so a flushed unit takes its merges
---- with it and a merge is built once per phase rather than once per frame.
-local mergeCache = setmetatable({}, { __mode = 'k' })
+--- Pairings are cached per PAIR of units, weakly, so a flushed unit takes its
+--- pairings with it and a pairing is built once per phase rather than once per frame.
+local pairCache = setmetatable({}, { __mode = 'k' })
 
---- Which corner of `unit` carries normal angle `a`. Its ranges tile one whole turn.
-local function cornerAt(unit, a)
-    local ks = unit.ks
-    for i = 1, #ks do
-        local k = ks[i]
-        if ((a - k.a0) % TAU) < (k.a1 - k.a0) then return i end
-    end
-    return #ks
+--- The angle from b to a, wrapped into [-pi, pi).
+local function adiff(a, b)
+    return ((a - b + pi) % TAU) - pi
 end
 
---- The merged ranges of two units: every normal angle at which either turns from
---- one corner to the next, sorted, each range between two of them naming the
---- corner of A and the corner of B it lies on. Built once per pair.
-local function mergeOf(a, b)
-    local byA = mergeCache[a]
+--- A CYCLIC MONOTONE MAP of every angle in `big` onto one in `small`: each of
+--- `small` is hit at least once, in order round the circle, and the sum of the
+--- squared angular differences is the least it can be.
+---
+--- A dynamic programme over (big index, how far round small it has got) for every
+--- place `small` can start, so it is O(n^2 m) -- at most a few thousand cells for
+--- two twelve-sided zones, once per phase. The last big may land back on the small
+--- the first one did, which is a split across the seam.
+---
+--- STRICT TIE-BREAKS, IN A FIXED ORDER -- stay before advance, the first start that
+--- is strictly better -- so the client and the server pair the same way.
+--- @return table map   map[j] = index into small, for j = 1..#big
+local function align(small, big)
+    local n, m = #small, #big
+    local map = {}
+    if n == 1 then
+        for j = 1, m do map[j] = 1 end
+        return map
+    end
+    local bestCost, bestMap = huge, nil
+    for s = 1, n do
+        local function src(k) return ((s - 1 + k) % n) + 1 end
+        local dp, from = { [1] = { [0] = adiff(small[src(0)], big[1]) ^ 2 } }, { [1] = {} }
+        for j = 2, m do
+            local pj, dj, fj = dp[j - 1], {}, {}
+            for k = 0, n do
+                local stay = pj[k]
+                local adv = (k > 0) and pj[k - 1] or nil
+                local c
+                if stay and (not adv or stay <= adv) then
+                    c, fj[k] = stay, k
+                elseif adv then
+                    c, fj[k] = adv, k - 1
+                end
+                if c then dj[k] = c + adiff(small[src(k)], big[j]) ^ 2 end
+            end
+            dp[j], from[j] = dj, fj
+        end
+        for _, kEnd in ipairs({ n - 1, n }) do
+            local v = dp[m][kEnd]
+            if v and v < bestCost - 1e-12 then
+                bestCost = v
+                local out, k = {}, kEnd
+                for j = m, 1, -1 do
+                    out[j] = src(k)
+                    k = from[j][k] or 0
+                end
+                bestMap = out
+            end
+        end
+    end
+    return bestMap or map
+end
+
+--- THE CORNER PAIRING of two units: which disc of A travels to which disc of B.
+---
+--- ═══ PAIRED BY OUTWARD NORMAL, NOT BY DISTANCE ═══
+---
+--- Each vertex carries the direction it faces -- its outward-normal bisector -- and
+--- the two vertex lists are aligned by that, round the circle, by align(). A corner
+--- facing north goes to the corner facing north, which is what keeps the moving
+--- outline convex-looking and every corner visibly heading somewhere. MEASURED
+--- against pairing by world distance: cut-ins in 36 to 64 percent of sweeps against
+--- 50 to 73.
+---
+--- ═══ max(n, m) LINKS, AND WHAT A LINK MOVES ═══
+---
+--- The longer list is mapped onto the shorter, so a surplus DESTINATION vertex is a
+--- split -- two moving corners that start as one -- and a surplus SOURCE vertex is a
+--- merge. Within a link the discs travel:
+---
+---   one to one         disc to disc
+---   one to a bevel     the one disc to BOTH chamfer ends, as two
+---   a bevel to one     both chamfer ends onto the one disc
+---   a bevel to a bevel in order
+---
+--- A circle is one vertex, so a circle source feeds every destination vertex and a
+--- circle destination swallows every source vertex. A duplicate coincides with its
+--- original at t = 0 and an arrival with its partner at t = 1, and discHull skips a
+--- disc on top of another -- so a split opens from nothing and a merge closes to
+--- nothing, and nothing pops.
+---
+--- `bi` is the index of the destination disc in B.discs, which is what a record
+--- that starts part way through a morph carries across the wire (storm_solve.lua),
+--- and `link` numbers the vertex link a pair belongs to.
+--- @param uA table
+--- @param uB table
+--- @return table  { { a = disc, b = disc, bi = integer, link = integer }, ... }
+function BR.StormShape.pairsOf(uA, uB)
+    local byA = pairCache[uA]
     if not byA then
         byA = setmetatable({}, { __mode = 'k' })
-        mergeCache[a] = byA
+        pairCache[uA] = byA
     end
-    local hit = byA[b]
+    local hit = byA[uB]
     if hit then return hit end
 
+    local VA, VB = uA.verts, uB.verts
+    local aA, aB = {}, {}
+    for i = 1, #VA do aA[i] = VA[i].beta end
+    for j = 1, #VB do aB[j] = VB[j].beta end
+    local links = {}
+    if #VA <= #VB then
+        local map = align(aA, aB)
+        for j = 1, #VB do links[j] = { map[j], j } end
+    else
+        local map = align(aB, aA)
+        for i = 1, #VA do links[i] = { i, map[i] } end
+    end
+
+    local index = {}
+    for i = 1, #uB.discs do index[uB.discs[i]] = i end
+    local out = {}
+    for l = 1, #links do
+        local A, B = VA[links[l][1]].discs, VB[links[l][2]].discs
+        if #A == #B then
+            for q = 1, #A do
+                out[#out + 1] = { a = A[q], b = B[q], bi = index[B[q]], link = l }
+            end
+        elseif #A == 1 then
+            for q = 1, #B do
+                out[#out + 1] = { a = A[1], b = B[q], bi = index[B[q]], link = l }
+            end
+        else
+            for q = 1, #A do
+                out[#out + 1] = { a = A[q], b = B[1], bi = index[B[1]], link = l }
+            end
+        end
+    end
+    byA[uB] = out
+    BR.StormShape.builds.pairings = BR.StormShape.builds.pairings + 1
+    return out
+end
+
+--- A disc hull's corner list as a shape, named by a solver circle. See discShape.
+local function hullShape(ks, cx, cy, r)
+    if not ks or (#ks == 1 and ks[1].rho < MIN_RADIUS) then
+        local k = ks and ks[1]
+        return BR.StormShape.circle(k and k.x or cx or 0.0, k and k.y or cy or 0.0,
+            k and k.rho or 0.0)
+    end
+    cx, cy, r = cx or ks[1].x, cy or ks[1].y, r or 0.0
+    local shape = hullOf(ks, {
+        blob = { cx = cx, cy = cy, r = r },
+        prims = { { kind = 'radius', cx = cx, cy = cy, r = radius(r) } },
+    })
+    if shape.P <= 0.0 then return BR.StormShape.circle(ks[1].x, ks[1].y, 0.0) end
+    return shape
+end
+
+--- The convex hull of world discs, as a shape, with a solver circle to name it by.
+---
+--- `(cx, cy, r)` is recorded as the shape's `blob` -- the circle discFor stands a
+--- cylinder on and the radius-blip fallback draws -- and is NOT required to be
+--- inside the hull: queries that need a point inside ask the hull for one (see
+--- deepPoint). A hull that is a single point is not a shape and is the one-metre
+--- circle every collapsed zone is.
+--- @param discs table   { { x, y, r }, ... }
+--- @return table shape
+function BR.StormShape.discShape(discs, cx, cy, r)
+    return hullShape(discHull(discs), cx, cy, r)
+end
+
+--- THE MOVING WALL at sweep fraction `t`: every source disc moved `t` of the way to
+--- its destination disc, and the hull of them.
+---
+--- `keep` is the destination's own discs, on a phase whose destination lies inside
+--- the zone the wall left: added to the hull whenever one of them would otherwise
+--- poke out of it, which is what makes the wall rest on the destination rather than
+--- cut into it. See the section header for why that also keeps it from ever moving
+--- outward. On a breakout it is nil and the destination is a separate part.
+--- @param src table   world discs at t = 0
+--- @param dst table   world discs at t = 1, one per source disc
+--- @param t number    0..1
+--- @param keep table|nil
+--- @param cx number   the solver's circle at t, recorded on the shape
+--- @return table shape
+function BR.StormShape.morph(src, dst, t, keep, cx, cy, r)
+    local s = 1.0 - t
+    local md = {}
+    for i = 1, #src do
+        local a, b = src[i], dst[i]
+        md[i] = { x = s * a.x + t * b.x, y = s * a.y + t * b.y, r = s * a.r + t * b.r }
+    end
+    local ks = discHull(md)
+    -- ONE HULL ON AN ORDINARY FRAME, TWO ON A FRAME THE DESTINATION POKES OUT OF.
+    if keep and ks and fitOf(ks, keep, 0.0, 0.0, 1.0) > 0.0 then
+        for i = 1, #keep do md[#md + 1] = keep[i] end
+        ks = discHull(md)
+    end
+    return hullShape(ks, cx, cy, r)
+end
+
+--- How far every disc of a list pokes out of a convex shape, at the worst. See
+--- fitOf. `k` scales the discs about the origin and (ox, oy) moves them.
+--- @param ks table     a corner list: a shape's `hull.ks`, or a unit's `ks`
+--- @return number
+function BR.StormShape.fit(ks, discs, ox, oy, k)
+    return fitOf(ks, discs, ox, oy, k)
+end
+
+--- The Minkowski sum A + B of two convex corner lists, as a corner list. EXACT.
+---
+--- Its support function is h_A + h_B, and on any range of normals where A is on one
+--- corner and B on one corner that is <c_A + c_B, u> + rho_A + rho_B: a corner, with
+--- the centres and radii summed. So the sum is the two lists' breakpoints merged and
+--- every range's two corners added.
+---
+--- WHAT IT IS FOR: the gap between two convex shapes. The separation of Z and D + c
+--- is the signed distance from c to Z + (-D) -- see BR.NextZoneCentre, which places
+--- a breakout by it.
+--- @return table ks
+function BR.StormShape.sumOf(ka, kb)
     local bps = {}
-    for i = 1, #a.ks do bps[#bps + 1] = a.ks[i].a1 % TAU end
-    for i = 1, #b.ks do bps[#bps + 1] = b.ks[i].a1 % TAU end
+    for i = 1, #ka do bps[#bps + 1] = ka[i].a1 % TAU end
+    for i = 1, #kb do bps[#bps + 1] = kb[i].a1 % TAU end
     table.sort(bps)
     local cuts = {}
     for i = 1, #bps do
@@ -1589,63 +2291,66 @@ local function mergeOf(a, b)
     if #cuts > 1 and (cuts[1] + TAU) - cuts[#cuts] <= ANGLE_EPS then
         cuts[#cuts] = nil
     end
-
     local out = {}
     for j = 1, #cuts do
         local lo = cuts[j]
         local hi = (j < #cuts) and cuts[j + 1] or (cuts[1] + TAU)
         local mid = 0.5 * (lo + hi)
-        out[j] = { ia = cornerAt(a, mid), ib = cornerAt(b, mid), a0 = lo, a1 = hi,
-                   c0 = cos(lo), s0 = sin(lo), c1 = cos(hi), s1 = sin(hi) }
+        local p, q = cornerAt(ka, mid), cornerAt(kb, mid)
+        out[j] = corner(p.x + q.x, p.y + q.y, p.rho + q.rho, lo, hi)
     end
-    byA[b] = out
-    BR.StormShape.builds.merges = BR.StormShape.builds.merges + 1
     return out
 end
 
---- The unit `t` of the way from A's shape to B's: (1 - t) A + t B. See above.
----
---- A OR B ITSELF AT THE ENDS, and when the two are the same unit -- the table, not
---- a copy -- so a hold and a finished sweep never pay for a merge and never differ
---- by a rounding from the zone they are.
----
---- ONE CORNER TABLE PER MERGED RANGE PER CALL, and nothing else: the merge is cached
---- per pair, so a frame of the sweep costs the lerp and the two measurements.
---- @param a table|nil   the unit the sweep leaves
---- @param b table|nil   the unit it arrives at
---- @param t number      0..1
---- @return table|nil unit
-function BR.StormShape.morphUnit(a, b, t)
-    if not a or not b then return b or a end
-    t = t or 0.0
-    if a == b or t >= 1.0 then return b end
-    if t <= 0.0 then return a end
-    local mg = mergeOf(a, b)
-    local s = 1.0 - t
-    local ak, bk = a.ks, b.ks
-    local ks = {}
-    for j = 1, #mg do
-        local g = mg[j]
-        local ka, kb = ak[g.ia], bk[g.ib]
-        ks[j] = corner(s * ka.x + t * kb.x, s * ka.y + t * kb.y,
-            s * ka.rho + t * kb.rho, g.a0, g.a1, g.c0, g.s0, g.c1, g.s1)
+--- A corner list turned half a turn about the origin: the shape -S.
+--- @return table ks
+function BR.StormShape.reflect(ks)
+    local out = {}
+    for i = 1, #ks do
+        local k = ks[i]
+        out[i] = corner(-k.x, -k.y, k.rho, k.a0 + pi, k.a1 + pi, -k.c0, -k.s0, -k.c1, -k.s1)
     end
-    return {
-        kind = 'morph', n = #ks, ks = ks, from = a, to = b, t = t,
-        extent = reachOf(ks, 0.0, 0.0),
-        inradius = -hullDistance({ ks = ks }, 0.0, 0.0),
-    }
+    return out
+end
+
+--- The corner list of a list of discs. See discHull.
+--- @return table|nil ks
+function BR.StormShape.discHull(discs)
+    return discHull(discs)
+end
+
+--- The signed distance to a bare corner list. See hullDistance.
+--- @return number
+function BR.StormShape.hullDistance(ks, px, py)
+    return hullDistance({ ks = ks }, px, py)
+end
+
+--- The furthest a bare corner list reaches from (ox, oy). See reachOf.
+--- @return number
+function BR.StormShape.reachOf(ks, ox, oy)
+    return reachOf(ks, ox, oy)
+end
+
+--- A corner list's longest length and narrowest width. See widthOf.
+--- @return number longest, number narrowest
+function BR.StormShape.widths(ks)
+    return widthOf(ks)
+end
+
+--- A corner list's area. See areaOf.
+--- @return number
+function BR.StormShape.areaOf(ks)
+    return areaOf(ks)
 end
 
 --- A unit placed at (cx, cy) and scaled to radius `r`.
 ---
 --- ═══ SCALED, WHICH IS WHY THE SOLVER DID NOT HAVE TO CHANGE ═══
 ---
---- BR.StormAt reports a centre and a radius and knows nothing about this; the
---- shape is that radius times a unit, so a shrinking phase is a shrinking scale
---- factor and the whole hold/sweep timing machinery is untouched. `r` stays the
---- number every placement rule is written in, and the shape's own reach is never
---- past `reach` of it (measured, and bounded by the retry).
+--- BR.StormAt reports a centre and a radius and knows nothing about this; a zone is
+--- that radius times a unit, so the hold/sweep timing machinery is untouched. `r`
+--- stays the number the phase's AREA is written in -- a zone holds `area` of pi r^2
+--- -- and nothing else: where a zone may go is decided by its real shape.
 ---
 --- ═══ BELOW A METRE AND A HALF IT IS A CIRCLE ═══
 ---
@@ -1657,7 +2362,7 @@ end
 --- @param cx number
 --- @param cy number
 --- @param r number
---- @param unit table   from blobUnit or morphUnit
+--- @param unit table   from blobUnit
 --- @return table shape
 function BR.StormShape.blob(cx, cy, r, unit)
     cx, cy, r = cx + 0.0, cy + 0.0, radius(r)
@@ -1671,44 +2376,56 @@ function BR.StormShape.blob(cx, cy, r, unit)
         -- This is the radius-blip FALLBACK's descriptor, for a client whose overlay
         -- never became ready; the fill itself walks the real boundary (polyline).
         -- The ring is the CIRCLE THE SHAPE REPLACED, at the radius the solver
-        -- reports -- exact where the shape reaches r, over-reporting where it dents
-        -- in and under-reporting where a corner pokes out.
+        -- reports -- the circle of the phase's area, over-reporting where the shape
+        -- is narrow and under-reporting along its length.
         prims = { { kind = 'radius', cx = cx, cy = cy, r = r } },
     })
 end
 
---- The SAFE ZONE as one shape: the current zone and the one it is closing toward,
---- or the one that contains the other.
+--- Does convex shape `a` contain convex shape `b`? EXACT for two corner lists --
+--- b's hull corners are its discs, and a convex set holds a hull exactly when it
+--- holds what it is the hull of -- and asked of the circle's own disc otherwise.
+local function holds(a, b)
+    local ks = b and b.hull and b.hull.ks
+    local d = (not ks) and b and b.discs and b.discs[1]
+    if a and a.hull then
+        if ks then
+            for i = 1, #ks do
+                local k = ks[i]
+                if hullDistance(a.hull, k.x, k.y) + k.rho > EPS then return false end
+            end
+            return true
+        end
+        if d then return hullDistance(a.hull, d.x, d.y) + d.r <= EPS end
+        return false
+    end
+    if not (a and a.discs and #a.discs == 1) then return false end
+    local c = a.discs[1]
+    if ks then
+        for i = 1, #ks do
+            local k = ks[i]
+            if sqrt((k.x - c.x) ^ 2 + (k.y - c.y) ^ 2) + k.rho > c.r + EPS then return false end
+        end
+        return true
+    end
+    return d ~= nil and sqrt((d.x - c.x) ^ 2 + (d.y - c.y) ^ 2) + d.r <= c.r + EPS
+end
+
+--- TWO PLACED ZONES AS ONE SHAPE: the containing one, or their union.
 ---
---- ═══ TWO UNITS NOW, BECAUSE THEY ARE TWO ZONES ═══
+--- ═══ NOT WHAT THE STORM DRAWS ANY MORE, AND WHY IT IS STILL HERE ═══
 ---
---- `unit` is the CURRENT circle's shape -- the zone the sweep is leaving, morphed as
---- far toward the target as the sweep has got -- and `target` is the zone it closes
---- on. They were one unit until the snap was traced to exactly that. `target`
---- defaults to `unit` for a caller that has one shape to give both.
+--- The safe zone is built by BR.StormZone now, which morphs one zone into the next
+--- and knows which phases nest. This is the STATIC question -- two zones standing
+--- still, one here and one there -- and it is what the stitch and the map's point
+--- lists are proved against in tools/test_shared.lua.
 ---
---- ═══ THE SAME FOUR CASES union2 HAS, DECIDED THE SAME WAY ═══
+--- ═══ THE CONTAINMENT TEST IS BY REAL SHAPE ═══
 ---
---- The zone is the current shape UNION the target, so that a player who reaches
---- the new destination early is safe there (#328):
----
----   NESTED (every phase that did not break out) -- the zone is the CONTAINING
----   shape, one closed loop, and its signed distance is exact everywhere. What it
----   gives up is that the target's corners can poke out of the current shape's
----   dents, so those slivers are not pre-safe. That is grace declined rather than a
----   loss against a disc strictly inside a disc, which adds nothing either; the
----   wall is drawn on the boundary that damages, so nothing is told it is safe
----   where it is not. And it closes itself: the current shape BECOMES the target's
----   across the sweep and lands on it exactly.
----
----   DISJOINT -- two closed loops, kilometres apart, exact.
----
----   OVERLAPPING -- stitched into one loop at the crossings (#356, blobUnion).
----
---- THE CONTAINMENT TEST IS IN CIRCLE SPACE, deliberately: the solver's own nesting
---- rule (`d + r2 <= r1`), so "did this phase break out" has one answer in this
---- file and in storm_solve.lua, and the number of loops on screen never depends on
---- a jitter draw.
+--- It used to be in circle space -- the solver's old nesting rule, `d + r2 <= r1` --
+--- and a target could then poke out of the current zone on a "nested" phase and be
+--- ignored. Every zone is placed by its real shape now, so the answer is too: the
+--- containing shape when one holds the other (see holds), and the union otherwise.
 ---
 --- A DISC WITH NO RADIUS IS STILL NOT A DISC. Phase 8 closes on radius 0 and the
 --- test is on what the caller asked for, exactly as union2's is.
@@ -1726,13 +2443,11 @@ function BR.StormShape.zone(x1, y1, r1, x2, y2, r2, unit, target)
     if has2 and not has1 then return BR.StormShape.blob(x2, y2, r2, target) end
     if not has1 then return BR.StormShape.circle(x1, y1, 0.0) end
 
-    local dx, dy = x2 - x1, y2 - y1
-    local d = sqrt(dx * dx + dy * dy)
-    if d + r2 <= r1 + EPS then return BR.StormShape.blob(x1, y1, r1, unit) end
-    if d + r1 <= r2 + EPS then return BR.StormShape.blob(x2, y2, r2, target) end
-
-    return BR.StormShape.blobUnion(BR.StormShape.blob(x1, y1, r1, unit),
-                                   BR.StormShape.blob(x2, y2, r2, target))
+    local a = BR.StormShape.blob(x1, y1, r1, unit)
+    local b = BR.StormShape.blob(x2, y2, r2, target)
+    if holds(a, b) then return a end
+    if holds(b, a) then return b end
+    return BR.StormShape.blobUnion(a, b)
 end
 
 -- ═══ STITCHING TWO OVERLAPPING BOUNDARIES INTO ONE LOOP (#356) ═══
@@ -1898,13 +2613,13 @@ end
 --- drawn as two boundaries with the whole of the target's inside the safe zone.
 --- MEASURED on 27,648 reachable geometries: 38% of one such wall inside the zone.
 ---
---- ═══ WHY THIS IS ASKED AT ALL, WHEN zone() ALREADY TESTS NESTING ═══
+--- ═══ WHY THIS IS ASKED AT ALL, WHEN zone() AND THE RECORD ALREADY TEST NESTING ═══
 ---
---- zone()'s test is in CIRCLE space, deliberately -- storm_solve.lua's own nesting
---- rule, so that "did this phase break out" has one answer everywhere. A shape
---- reaches up to 1.15 of its circle and dents in by a third of it, so a pair that
---- is not nested as circles can be nested as shapes, and the two-component drawing
---- of it puts the swallowed shape's boundary inside the safe zone in its ENTIRETY.
+--- Both test the two zones as they STAND: zone() the pair it is handed, and
+--- storm_solve.lua the record once, at the start of its sweep. A breakout's moving
+--- wall is a new shape every frame, and it can come to hold its destination -- or
+--- be held by it -- part way across; the two-component drawing of that would put
+--- the swallowed shape's boundary inside the safe zone in its ENTIRETY.
 ---
 --- AND COLLAPSING IT CHANGES NOTHING distance() ANSWERS. For A inside B the
 --- signed distance to B is at most the signed distance to A everywhere, so the
@@ -2259,18 +2974,41 @@ function BR.StormShape.blobUnion(a, b)
     return seal(pieces, 'blobUnion', { parts = { a, b }, prims = prims })
 end
 
+--- A point inside a hull shape, and how deep it is there.
+---
+--- The deeper of two candidates: the shape's own centre, and the mean of its corner
+--- centres. A placed zone's centre is at least 0.41 r deep; a MORPH is named by the
+--- solver's circle, whose centre nothing guarantees is inside the moving hull --
+--- and the mean of the corner centres always is, because every one of them is.
+--- Only ever asked where the answer stands in for an inscribed radius, so the
+--- deeper of the two is the better stand-in.
+--- @return number x, number y, number depth
+local function deepPoint(shape)
+    local h, m = shape.hull, shape.blob
+    local d0 = -hullDistance(h, m.cx, m.cy)
+    local ks = h.ks
+    local sx, sy = 0.0, 0.0
+    for i = 1, #ks do sx, sy = sx + ks[i].x, sy + ks[i].y end
+    sx, sy = sx / #ks, sy / #ks
+    local d1 = -hullDistance(h, sx, sy)
+    if d1 > d0 then return sx, sy, d1 end
+    return m.cx, m.cy, d0
+end
+
 --- Is there anything left of `part` after eroding it by `metres`?
 ---
 --- The inscribed radius is the answer: a convex shape eroded by more than the
 --- radius of the largest disc that fits inside it is empty. Asked of a UNION's
 --- parts, so that a component the storm never had cannot be manufactured by the
 --- renderer's own six metres of edgeInset -- union2's header argues the decision
---- for discs and this is the same one for blobs.
+--- for discs and this is the same one for blobs. The depth of deepPoint stands in
+--- for the inscribed radius, and is never more than it -- so a part this drops can
+--- only be one that was nearly gone, and the error is inward.
 local function survivesInset(part, metres)
     local h = part and part.hull
     if h then
-        local m = part.blob
-        return (-hullDistance(h, m.cx, m.cy) - metres) > 0.0
+        local _, _, depth = deepPoint(part)
+        return (depth - metres) > 0.0
     end
     local d = part and part.discs and part.discs[1]
     return d ~= nil and (d.r - metres) > 0.0
@@ -2953,13 +3691,18 @@ function BR.StormShape.inset(shape, metres)
     -- algorithm -- so the shape's chord polygon, a centimetre inside it at most, is
     -- eroded exactly in its place: a SUBSET of the true erosion by that centimetre,
     -- so it errs INWARD, which is the direction this whole function is allowed to err
-    -- in. MEASURED at a six-metre inset over 2,000 shipping shapes a radius: never at
-    -- 25 m and above, 1 in 2,000 at 15 m, 2% at 10 m -- the last seconds of the final
-    -- sweep. See chorded().
+    -- in. See chorded(). A GUARD NOW RATHER THAN A PATH: it was reached by rounded
+    -- corners whose discs stood outside their own shape, and every zone and every
+    -- morphing wall is a hull of discs since #344's second round -- where a point
+    -- beside a disc erodes to a point beside the smaller disc and no run turns round.
+    -- MEASURED zero times at a six-metre inset over the shipping shapes from 60 m
+    -- down to 8, 15,200 morphing walls and 18,000 random disc hulls.
     --
     -- AND WHAT IS LEFT OF NOTHING IS THE INSCRIBED CIRCLE, floored like every circle:
     -- an erosion past the shape's own depth is empty, and the one-metre circle at its
-    -- centre is the point a collapsed zone has always been.
+    -- deepest point is the point a collapsed zone has always been. deepPoint, not the
+    -- shape's centre: a morphing wall is named by the solver's circle, whose centre
+    -- nothing puts inside it, and a one-metre circle there would be outside the wall.
     if kind == 'blob' then
         local h, m = shape.hull, shape.blob
         local ks = erode(h.ks, metres) or erode(chorded(h.ks, CHORD_SAG), metres)
@@ -2970,8 +3713,8 @@ function BR.StormShape.inset(shape, metres)
                             r = m.r - metres } },
             })
         end
-        return BR.StormShape.circle(m.cx, m.cy,
-            -hullDistance(h, m.cx, m.cy) - metres)
+        local x, y, depth = deepPoint(shape)
+        return BR.StormShape.circle(x, y, depth - metres)
     end
 
     -- ═══ AND A UNION ERODES ITS PARTS, WHICH IS union2's OWN COMPROMISE ═══

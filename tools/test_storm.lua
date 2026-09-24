@@ -1650,8 +1650,8 @@ do
     local trec = T.record(2, 0.0, 0.0, 2000.0, 0.0, 0.0, 1000.0,
         1000.0, 10000.0, 2.0)
     -- THE SHAPE AT THE MOMENT OF THE PROBE, which is the travelling wall rather
-    -- than the record's opening circle: r 1500, centre unmoved.
-    local moving = T.env.BR.StormZone(trec, 0.0, 0.0, 1500.0)
+    -- than the record's opening circle: half way across, r 1500, centre unmoved.
+    local moving = T.env.BR.StormZone(trec, 0.0, 0.0, 1500.0, 0.5)
     local function offMoving(m)
         return offBoundary(T.env, moving, moving.P * 0.21, m)
     end
@@ -2069,17 +2069,18 @@ do
             .. 'ordinary phase ever shows the overlapping-union artifact',
         ('%d changes, ends on %d loop(s)'):format(nFlips, nEnd))
 
-    -- r 950 at the origin closing on r 520 at 1150: 1150 is well inside 950 + 520, so
-    -- the two boundaries genuinely cross at the first frame.
+    -- r 950 at the origin closing on r 520 at 1000: well inside 950 + 520, so the
+    -- two boundaries genuinely cross at the first frame.
     --
-    -- IT WAS 1350, AND THE ZONES BEING TWO SHAPES IS WHY IT MOVED. At 1350 the
-    -- CIRCLES overlap by 120 m, and so did the shapes while both wore one unit; zone
-    -- 3's and zone 4's own shapes at this seed overlap by less than the twelve metres
-    -- the wall's inset takes off the two of them together, so the curtain drawn six
-    -- metres inside each is honestly two loops at the first frame. That is geometry
-    -- rather than the stitch -- `blob.stitch.sweep` is the stitch -- and this
-    -- assertion is about a pair that overlaps.
-    local bFlips, bEnd, bFirst = loopsAcross(4, 0, 0, 950, 1150, 0, 520, 75000, 187500)
+    -- IT WAS 1350, THEN 1150, AND THE ZONES BEING THEIR OWN SHAPES IS WHY IT MOVED.
+    -- At 1350 the CIRCLES overlap by 120 m, and so did the shapes while both wore one
+    -- unit; drawn by area and stretched (#344 round 2), zone 3's and zone 4's shapes at
+    -- this seed overlap at 1150 by less than the twelve metres the wall's inset takes
+    -- off the two of them together, so the curtain drawn six metres inside each is
+    -- honestly two loops at the first frame. That is geometry rather than the stitch --
+    -- `blob.stitch.sweep` is the stitch -- and this assertion is about a pair that
+    -- overlaps.
+    local bFlips, bEnd, bFirst = loopsAcross(4, 0, 0, 950, 1000, 0, 520, 75000, 187500)
     ok(bFlips == 0 and bFirst == 1 and bEnd == 1,
         'and an OVERLAPPING breakout is one stitched loop from its first frame to '
             .. 'its last -- this is the assertion #356 inverted',
@@ -4451,8 +4452,8 @@ do
         ('the server and the client draw the same shape -- circle or count, every '
             .. 'corner, every finish -- to the bit, on all %d zones'):format(compared),
         apart)
-    ok(nCounts == 8 and circles > 0,
-        'and those zones really do vary: every count from five to twelve is among them, '
+    ok(nCounts == 10 and circles > 0,
+        'and those zones really do vary: every count from three to twelve is among them, '
             .. 'and circles too',
         ('%d distinct counts, %d circles'):format(nCounts, circles))
 
@@ -4580,9 +4581,11 @@ end
 
 --- @param seq integer   the match's sequence number, which its storm seed is built from
 --- @return table  { [phase] = a copy of that phase's published record }
-local function walkRecords(seq)
+--- @param tweak function|nil  (env) -> nil, run on the server's config before the walk
+local function walkRecords(seq, tweak)
     local S = newStormServer()
     local env = S.env
+    if tweak then tweak(env) end
     S.roster[1] = nil
     S.match.storm = nil
     S.match.seq = seq
@@ -4688,13 +4691,12 @@ do
 
     local function copy(t) local o = {} for k, v in pairs(t) do o[k] = v end return o end
 
-    --- Does a record's target nest inside its current circle -- the solver's own
-    --- rule, and the one BR.StormShape.zone collapses a pair on? On a phase that
-    --- breaks out, the safe zone gains the new target at the phase change by design
-    --- (#328), so only a nesting phase's WHOLE zone can be held to equality there.
+    --- Does a record's target nest inside the zone its wall starts as, by real shape
+    --- -- the rule the server places every non-breakout zone to satisfy? On a phase
+    --- that breaks out, the safe zone gains the new target at the phase change by
+    --- design (#328), so only a nesting phase's WHOLE zone can be held to equality.
     local function nests(rec)
-        return math.sqrt((rec.cx1 - rec.cx0) ^ 2 + (rec.cy1 - rec.cy0) ^ 2) + rec.r1
-            <= rec.r0 + 1e-9
+        return env.BR.StormNested(rec)
     end
 
     local changes, sameUnit, shapeJump, shapeAt, targetOff = 0, 0, 0.0, nil, 0.0
@@ -4704,14 +4706,14 @@ do
             local a, b = recs[p], recs[p + 1]
             if a and b then
                 changes = changes + 1
-                -- THE CURRENT CIRCLE'S SHAPE, at the end of p's sweep and at the start
-                -- of p+1's hold: one zone, so ONE UNIT -- the same table -- and the
-                -- same shape placed on the same circle.
-                local ua = env.BR.StormCurrentUnit(a, 1.0)
-                local ub = env.BR.StormCurrentUnit(b, 0.0)
+                -- THE WALL'S SHAPE, at the end of p's sweep and at the start of p+1's
+                -- hold: one zone, so ONE UNIT -- the same table -- and the same shape
+                -- placed on the same circle.
+                local ua = env.BR.StormUnit(a.seed, a.phase)
+                local ub = env.BR.StormUnit(b.seed, b.phase - 1)
                 if ua == ub then sameUnit = sameUnit + 1 end
-                local ca = SS.blob(a.cx1, a.cy1, a.r1, ua)
-                local cb = SS.blob(b.cx0, b.cy0, b.r0, ub)
+                local ca = env.BR.StormWall(a, 1.0)
+                local cb = env.BR.StormWall(b, 0.0)
                 local R = math.max(a.r1, 40.0)
                 local d = zoneDiff(ca, cb, a.cx1, a.cy1, R)
                 if d > shapeJump then
@@ -4817,20 +4819,19 @@ do
 
     -- ═══ AND NO JUMP MID-SWEEP, WHICH IS WHAT THE MORPH IS FOR ═══
     --
-    -- The zone the wall draws is the Minkowski interpolation of the zone it leaves and
-    -- the zone it reaches, so its support function moves linearly: between two
-    -- instants dt of the sweep apart, no point of it can move further than dt times
-    -- the widest gap between the two zones' support functions -- at most the centres'
-    -- distance plus the larger of the two reaches. A shape that snapped anywhere in the
-    -- sweep, at its start included, would clear that by metres.
+    -- The wall is the hull of discs each moving in a straight line from a corner of the
+    -- zone it leaves to a corner of the zone it reaches, with the destination's own
+    -- discs standing still. A hull's support function is the largest of its discs', so
+    -- between two instants dt of the sweep apart no point of it can move further than
+    -- dt times the furthest any one disc travels -- BR.StormWallSpeed, times the sweep.
+    -- A shape that snapped anywhere in the sweep, at its start included, would clear
+    -- that by metres.
     local stepJump, stepAt, stepped = 0.0, nil, 0
     for k = 1, 3 do
         for p, rec in ipairs(matches[k]) do
             if rec.r1 > 0.0 then
-                local from = env.BR.StormCurrentUnit(rec, 0.0)
-                local to = env.BR.StormUnit(rec.seed, rec.phase)
-                local gap = math.sqrt((rec.cx1 - rec.cx0) ^ 2 + (rec.cy1 - rec.cy0) ^ 2)
-                    + math.max(rec.r0 * from.extent, rec.r1 * to.extent)
+                local gap = env.BR.StormWallSpeed(rec)
+                    * math.max(rec.tShrink / 1000.0, 1.0)
                 local N = 120
                 local prev = env.BR.StormZone(rec, rec.cx0, rec.cy0, rec.r0, 0.0)
                 for i = 1, N do
@@ -4863,6 +4864,116 @@ do
 end
 
 -- ---------------------------------------------------------------------------
+describe('zone.nest')
+do
+    -- ═══ EVERY PHASE THAT DOES NOT BREAK OUT IS WHOLLY INSIDE THE ONE BEFORE IT ═══
+    --
+    --   "the circles still overlap when they are different shapes."
+    --   "should we make the moving storm morph to match the shape of the destination
+    --    shape?"                                        -- the owner, 2026-09-23
+    --
+    -- Whole matches through the REAL server -- the warmup draw, begin, the phase job --
+    -- with the breakout chance turned off, so every phase is one the placement must
+    -- nest. Asked of each record three ways: the record's own verdict, the target's
+    -- walked boundary against the zone the wall starts as, and the wall itself at
+    -- twenty instants of the sweep -- which must hold the target, stay inside where it
+    -- started, never move outward, and bill exactly what it draws.
+    local nestedN, records, walkedOut = 0, 0, -math.huge
+    local loose, outside, outward = -math.huge, -math.huge, -math.huge
+    local speedLow, speedOver, erodeOff = nil, nil, 0.0
+    local env0 = nil
+    for k = 1, 4 do
+        local recs = walkRecords(40 + k, function(env)
+            env.BR.Config.Storm.breakout.chanceStart = 0.0
+            env.BR.Config.Storm.breakout.chanceEnd = 0.0
+            env0 = env
+        end)
+        local env = env0
+        local SS = env.BR.StormShape
+        for p = 1, #recs do
+            local rec = recs[p]
+            if rec and rec.r1 > 0.0 then
+                records = records + 1
+                if env.BR.StormNested(rec) then nestedN = nestedN + 1 end
+                local Z = env.BR.StormWall(rec, 0.0)
+                local D = env.BR.StormTarget(rec)
+                -- WALKED, so it shares nothing with the discs the placement asked.
+                local P = SS.perimeter(D)
+                for i = 0, 499 do
+                    local x, y = SS.pointAtArc(D, P * i / 500)
+                    walkedOut = math.max(walkedOut, SS.distance(Z, x, y))
+                end
+                local keep = {}
+                for _, c in ipairs(D.hull.ks) do keep[#keep + 1] = { x = c.x, y = c.y, r = c.rho } end
+                local prev = nil
+                local travel = env.BR.StormWallSpeed(rec) * math.max(rec.tShrink / 1000.0, 1.0)
+                for i = 1, 19 do
+                    local W = env.BR.StormWall(rec, i / 20)
+                    -- NO POINT OF THE WALL MOVES FURTHER IN A STEP than the fastest disc.
+                    if prev then
+                        local WP = SS.perimeter(W)
+                        for q = 0, 59 do
+                            local x, y = SS.pointAtArc(W, WP * q / 60)
+                            local moved = math.abs(SS.distance(prev, x, y))
+                            if moved > travel / 20 + 1e-6 then
+                                speedOver = speedOver or ('phase %d step %d: %.2f m against %.2f')
+                                    :format(rec.phase, i, moved, travel / 20)
+                            end
+                        end
+                    end
+                    local wd = {}
+                    for _, c in ipairs(W.hull.ks) do wd[#wd + 1] = { x = c.x, y = c.y, r = c.rho } end
+                    loose = math.max(loose, SS.fit(W.hull.ks, keep, 0.0, 0.0, 1.0))
+                    outside = math.max(outside, SS.fit(Z.hull.ks, wd, 0.0, 0.0, 1.0))
+                    if prev then outward = math.max(outward, SS.fit(prev.hull.ks, wd, 0.0, 0.0, 1.0)) end
+                    -- THE WALL'S OWN SIX METRES are exactly six metres inside the zone.
+                    if i == 10 then
+                        local ins = SS.inset(W, 6.0)
+                        if ins.hull then
+                            local IP = SS.perimeter(ins)
+                            for q = 0, 99 do
+                                local x, y = SS.pointAtArc(ins, IP * q / 100)
+                                erodeOff = math.max(erodeOff, math.abs(SS.distance(W, x, y) + 6.0))
+                            end
+                        end
+                    end
+                    prev = W
+                end
+                -- THE FASTEST CORNER IS NEVER SLOWER THAN THE CIRCLE'S EDGE WAS.
+                local circle = (rec.r0 - rec.r1) / math.max(rec.tShrink / 1000.0, 1.0)
+                if env.BR.StormWallSpeed(rec) < circle - 1e-9 then
+                    speedLow = speedLow or ('phase %d: %.2f against %.2f m/s')
+                        :format(rec.phase, env.BR.StormWallSpeed(rec), circle)
+                end
+            end
+        end
+    end
+    ok(records >= 24 and nestedN == records,
+        ('every one of %d phases the server placed without a breakout nests by real '
+            .. 'shape'):format(records), ('%d of %d'):format(nestedN, records))
+    ok(walkedOut <= 1e-6,
+        'and the target\'s own walked boundary never leaves the zone the wall starts as',
+        ('worst %.3e m out'):format(walkedOut))
+    ok(loose <= 1e-9,
+        'so the moving wall holds the target at every instant -- it never crosses it',
+        ('worst %.3e m'):format(loose))
+    ok(outside <= 1e-9 and outward <= 1e-9,
+        'and it never leaves where it started or moves back out over anyone',
+        ('%.3e m outside, %.3e m outward'):format(outside, outward))
+    ok(erodeOff < 1e-6,
+        'and the curtain drawn six metres inside it is exactly six metres inside it',
+        ('worst %.3e m'):format(erodeOff))
+    -- BR.StormWallSpeed IS FOR THE DAMAGE CUSHION (#366): a corner travelling to a
+    -- corner of another shape moves further than a circle's edge did, never less.
+    ok(speedLow == nil,
+        'and the fastest corner of every wall moves at least as fast as the circle\'s '
+            .. 'edge the cushion is priced on', speedLow)
+    ok(speedOver == nil,
+        'and no point of any wall moves faster than BR.StormWallSpeed says -- it is a '
+            .. 'bound the damage cushion can be priced on', speedOver)
+end
+
+-- ---------------------------------------------------------------------------
 describe('zone.cache')
 do
     -- ═══ A ZONE'S SHAPE IS BUILT ONCE, AND NEVER PER FRAME OR PER TICK ═══
@@ -4879,7 +4990,7 @@ do
     rec.seed = 98765
     rec.tStart = C.now - 500
     local b = env.BR.StormShape.builds
-    local units0, merges0 = b.units, b.merges
+    local units0, merges0 = b.units, b.pairings
     local frames, drew = 0, 0
     for i = 1, 1400 do
         C.frame()
@@ -4892,20 +5003,23 @@ do
         'a client draws the end of a hold, the whole sweep and its finish, frame by '
             .. 'frame, with the HUD and the map ticking beside it',
         C.errored() or ('%s, %d of %d frames drew'):format(tostring(st), drew, frames))
-    ok(b.units - units0 <= 2 and b.merges - merges0 <= 1,
-        ('and across %d frames and %d ticks it built at most the TWO zones and ONE '
-            .. 'merge of them'):format(frames, math.floor(frames / 6)),
-        ('%d units, %d merges'):format(b.units - units0, b.merges - merges0))
+    -- ZONE 3 IS FITTED INSIDE ZONE 2, WHICH IS FITTED INSIDE ZONE 1 (#344 round 2), so
+    -- a client that has never drawn this match builds the chain up to the target once:
+    -- three zones for phase 3, and never a fourth however many frames ask.
+    ok(b.units - units0 <= 3 and b.pairings - merges0 <= 1,
+        ('and across %d frames and %d ticks it built at most the THREE zones of the '
+            .. 'chain and ONE pairing of their corners'):format(frames, math.floor(frames / 6)),
+        ('%d units, %d pairings'):format(b.units - units0, b.pairings - merges0))
 
     local S = newStormServer()
     local srec = S.record(3, 0.0, 0.0, 950.0, 200.0, 0.0, 520.0, 1000, 20000, 2.0)
     srec.seed = 98765
     local sb = S.env.BR.StormShape.builds
-    local su0, sm0 = sb.units, sb.merges
+    local su0, sm0 = sb.units, sb.pairings
     for _ = 1, 25 do S.tick() end
-    ok(S.errored() == nil and sb.units - su0 <= 2 and sb.merges - sm0 <= 1,
+    ok(S.errored() == nil and sb.units - su0 <= 3 and sb.pairings - sm0 <= 1,
         'and so did the server, ticking the damage pass through the same sweep',
-        S.errored() or ('%d units, %d merges'):format(sb.units - su0, sb.merges - sm0))
+        S.errored() or ('%d units, %d pairings'):format(sb.units - su0, sb.pairings - sm0))
 end
 
 -- ---------------------------------------------------------------------------
@@ -4913,13 +5027,14 @@ describe('zone.freeze')
 do
     -- ═══ A FREEZE, ITS THAW, AND A SAME-PHASE `brphase` KEEP THE WALL'S SHAPE ═══
     --
-    -- Mid-sweep the wall is part way between two zones' shapes. `brstormfreeze`
-    -- replaces the record with one that holds the wall where it stands for a day, and
-    -- its thaw re-enters the phase from there; `brphase` with the phase already running
-    -- does the same. Each is a record whose current circle starts PART WAY through a
-    -- morph, and each carries that fraction (`m0`) -- or the wall would snap back to
-    -- the zone it set out from the moment the command landed. Driven through the real
-    -- commands on the real server file, and measured as the signed distance on a grid.
+    -- Mid-sweep the wall is part way between two zones: every corner disc on its way
+    -- from a corner of one to a corner of the other. `brstormfreeze` replaces the
+    -- record with one that holds the wall where it stands for a day, and its thaw
+    -- re-enters the phase from there; `brphase` with the phase already running does
+    -- the same. Each is a record that starts PART WAY through a morph, and each carries
+    -- the wall's own discs (`mo`) -- or the wall would snap back to the zone it set out
+    -- from the moment the command landed. Driven through the real commands on the real
+    -- server file, and measured as the signed distance on a grid.
     local S = newStormServer()
     local env = S.env
     local SS = env.BR.StormShape
@@ -4936,10 +5051,10 @@ do
     end
     rec.seed, S.match.stormSeed = seed, seed
 
-    --- The current circle's shape a record describes at `now`, placed.
+    --- The wall a record describes at `now`, placed.
     local function current(r, now)
         local cx, cy, rr, _, _, _, t = env.BR.StormAt(r, now)
-        return SS.blob(cx, cy, rr, env.BR.StormCurrentUnit(r, t)), cx, cy, rr
+        return env.BR.StormWall(r, t), cx, cy, rr
     end
     local function diff(a, b, cx, cy, r)
         local worst = 0.0
@@ -4957,31 +5072,37 @@ do
     S.now = rec.tStart + rec.tWait + 0.4 * rec.tShrink
     local before, bx, by, br = current(rec, S.now)
     local _, _, _, _, _, _, tAt = env.BR.StormAt(rec, S.now)
-    local mid = env.BR.StormMorph(rec, tAt)
-    ok(mid > 0.05 and mid < 0.95,
-        'forty percent through the sweep the wall is part way between the two zones',
-        ('%.3f of the way'):format(mid))
+    local fromZone = diff(before, SS.blob(bx, by, br, env.BR.StormUnit(seed, 2)), bx, by, br)
+    local toZone = diff(before, SS.blob(bx, by, br, env.BR.StormUnit(seed, 3)), bx, by, br)
+    ok(tAt > 0.35 and tAt < 0.45 and fromZone > 1.0 and toZone > 1.0,
+        'forty percent through the sweep the wall is part way between the two zones -- '
+            .. 'neither shape, wherever it is put',
+        ('t %.3f, %.1f m from one, %.1f from the other'):format(tAt, fromZone, toZone))
 
     S.cmds.brstormfreeze(0, {})
     local frz = S.match.storm
     local held = current(frz, S.now + 5000)
-    ok(frz ~= rec and frz.m0 == mid and diff(before, held, bx, by, br) < 1e-9,
+    ok(frz ~= rec and frz.mo ~= nil and diff(before, held, bx, by, br) < 1e-9,
         'the freeze holds the wall in the shape it was standing in, not the zone it set '
-            .. 'out from -- the frozen record carries the morph it froze at',
-        ('m0 %s against %.6f, worst %.3e m'):format(tostring(frz.m0), mid,
-            diff(before, held, bx, by, br)))
+            .. 'out from -- the frozen record carries the wall\'s own discs',
+        ('mo %s, worst %.3e m'):format(tostring(frz.mo), diff(before, held, bx, by, br)))
+    ok(frz.cx1 == rec.cx1 and frz.cy1 == rec.cy1 and frz.r1 == rec.r1,
+        'and it keeps the target it froze under, so the destination is still shown '
+            .. 'and still safe for the length of the freeze')
 
     S.now = S.now + 20000
     S.cmds.brstormfreeze(0, { 'off' })
     local th = S.match.storm
     local thawed = current(th, S.now + 1000)
-    ok(th ~= frz and th.m0 == mid and diff(before, thawed, bx, by, br) < 1e-9,
+    ok(th ~= frz and th.mo ~= nil and diff(before, thawed, bx, by, br) < 1e-9,
         'and the thaw re-enters the phase in that same shape -- then sweeps it on into '
             .. 'the target\'s, which it reaches exactly',
-        ('m0 %s, worst %.3e m'):format(tostring(th.m0), diff(before, thawed, bx, by, br)))
-    local _, _, _, _, _, _, tEnd = env.BR.StormAt(th, th.tStart + th.tWait + th.tShrink)
-    ok(env.BR.StormCurrentUnit(th, tEnd) == env.BR.StormUnit(seed, 3),
-        'the thawed sweep ends ON zone 3\'s own shape, so the next phase starts from it')
+        ('mo %s, worst %.3e m'):format(tostring(th.mo), diff(before, thawed, bx, by, br)))
+    local nearEnd = env.BR.StormWall(th, 1.0 - 1e-9)
+    local target = SS.blob(th.cx1, th.cy1, th.r1, env.BR.StormUnit(seed, 3))
+    ok(diff(nearEnd, target, th.cx1, th.cy1, th.r1) < 1e-4,
+        'the thawed sweep ends ON zone 3\'s own shape, so the next phase starts from it',
+        ('worst %.3e m'):format(diff(nearEnd, target, th.cx1, th.cy1, th.r1)))
 
     -- AND `brphase` WITH THE PHASE ALREADY RUNNING, mid-sweep of the thawed record.
     S.now = th.tStart + th.tWait + 0.5 * th.tShrink
@@ -4989,7 +5110,8 @@ do
     S.cmds.brphase(0, { '3' })
     local re = S.match.storm
     ok(re ~= th and diff(pre, current(re, S.now + 1000), px, py, pr) < 1e-9,
-        '`brphase` into the phase already running keeps the wall\'s shape too',
+        '`brphase` into the phase already running keeps the wall\'s shape too -- a '
+            .. 'morph of a morph, which is why the discs are carried and not two circles',
         ('worst %.3e m'):format(diff(pre, current(re, S.now + 1000), px, py, pr)))
     ok(S.errored() == nil, 'and all of it runs clean', S.errored())
 end
@@ -7233,13 +7355,23 @@ do
     -- A SEED WHOSE CURRENT ZONE IS A POLYGON, because one zone in ten is a plain
     -- circle now and "the fill is not a circle" is the assertion below. The first
     -- such seed, found rather than typed, so a retune of the odds moves it with them.
-    local function mapClient(phase, cx0, cy0, r0, cx1, cy1, r1, waitMs, shrinkMs)
+    -- PHASE 1'S CURRENT ZONE IS THE MAP DISC on every seed (#344 round 2), so there is
+    -- nothing to search for there.
+    --
+    -- `want`, WHEN GIVEN, IS ASKED OF THE RECORD TOO -- a block whose assertions are
+    -- about a NESTED zone names that here, and gets the first polygon seed on which
+    -- its hand-built pair nests by real shape, which is what the server's placement
+    -- would have guaranteed.
+    local function mapClient(phase, cx0, cy0, r0, cx1, cy1, r1, waitMs, shrinkMs, want)
         local C = newStormClient()
         C.mm.handle = 7
         C.pedAt = pt(0.0, 0.0)
         local rec = C.record(phase, cx0, cy0, r0, cx1, cy1, r1, waitMs, shrinkMs, 2.0)
         local s = 1
-        while C.env.BR.StormUnit(s, phase - 1).kind ~= 'polygon' do s = s + 1 end
+        while (phase > 1 and C.env.BR.StormUnit(s, phase - 1).kind ~= 'polygon')
+            or (want and not want(C.env, s)) do
+            s = s + 1
+        end
         rec.seed = s
         return C
     end
@@ -7459,7 +7591,17 @@ do
     -- every clip re-added with a kilobyte of coordinates marshalled through a
     -- Scaleform string. A rebuild per tick on a zone that has not moved would be that
     -- cost for nothing, all match.
-    local S = mapClient(2, 0.0, 0.0, 800.0, 300.0, 0.0, 400.0, 600000, 60000)
+    -- NESTED BEFORE AND AFTER THE CIRCLE MOVES BELOW, by real shape, because being
+    -- placed rather than rebuilt is the one-blob case's claim.
+    local function nestsBothWays(env, seed)
+        local a = env.BR.BuildStormRecord(2, 0.0, 0.0, 800.0, 300.0, 0.0, 400.0,
+            0, 1, 1, 1, seed)
+        local b = env.BR.BuildStormRecord(2, 60.0, 0.0, 700.0, 300.0, 0.0, 400.0,
+            0, 1, 1, 1, seed)
+        return env.BR.StormNested(a) and env.BR.StormNested(b)
+    end
+    local S = mapClient(2, 0.0, 0.0, 800.0, 300.0, 0.0, 400.0, 600000, 60000,
+        nestsBothWays)
     ok(S.overlayReady(), 'the cadence client reaches the gate')
     S.tick(2)
     local before = S.areas()[1]
@@ -7580,14 +7722,30 @@ do
     -- twice a second" and "every tick" are the same number, so nothing above could
     -- have gone red if the ceiling vanished. The loop thread is `step; Wait(100)`, so
     -- this steps the TICK band 100 ms at a time, which is what the game does.
-    local function sweepClient(phase, cx0, r0, cx1, r1, shrinkMs, cy0, cy1)
+    --
+    -- `want`, WHEN GIVEN, PICKS THE SEED: the first from 424242 up whose hand-built pair
+    -- is the case the block is about. A zone is placed inside its predecessor by its
+    -- real shape now (#344 round 2), so whether a pair of circles NESTS depends on the
+    -- two shapes the seed draws, and a block about a nested sweep has to ask for one.
+    local function sweepClient(phase, cx0, r0, cx1, r1, shrinkMs, cy0, cy1, want)
         local C = newStormClient()
         C.mm.handle = 7
         C.pedAt = pt(cx0, cy0 or 0.0)
         local rec = C.record(phase, cx0, cy0 or 0.0, r0, cx1, cy1 or 0.0, r1,
             600000, shrinkMs, 2.0)
         rec.seed = 424242
+        while want and not want(C.env, rec) do rec.seed = rec.seed + 1 end
         return C, rec
+    end
+
+    --- The pair nests by real shape: the map's zone is one blob it can place.
+    local function NESTED(env, rec) return env.BR.StormNested(rec) end
+
+    --- The pair overlaps without nesting: the zone is one stitched loop, a union.
+    local function CONJOINED(env, rec)
+        if env.BR.StormNested(rec) then return false end
+        local z = env.BR.StormZone(rec, rec.cx0, rec.cy0, rec.r0, 0.0)
+        return z.kind == 'blobUnion' and #env.BR.StormShape.components(z) == 1
     end
 
     --- Start the record's sweep NOW, on the harness clock.
@@ -7609,15 +7767,20 @@ do
     --- stop the suite at the first one and hide the rest.
     ---
     --- THE ZONE THE MAP DRAWS, WHICH IS NOT THE ONE THE WALL DRAWS MID-SWEEP. The wall
-    --- morphs the current shape into the target's; the map keeps the shape the record
-    --- started in and takes the target's once the sweep is FINISHED (overlayPlan). So
-    --- the sweep fraction here is 0, or 1 once finished -- asked explicitly, because
-    --- a map that morphed would be off this and on the wall's.
+    --- morphs the current zone into the target corner to corner; the map keeps the
+    --- zone the record started in, moved and scaled with the solver's circle
+    --- (BR.StormStartShape), and takes the target's once the sweep is FINISHED
+    --- (overlayPlan) -- asked explicitly, because a map that morphed would be off this
+    --- and on the wall's.
     local function offZone(C, rec, i)
         if not C.areas()[i] then return math.huge end
         local cx, cy, r, st = C.env.BR.StormAt(rec, C.env.BR.Clock.now())
-        local m = (st == C.env.BR.StormPhase.FINISHED) and 1.0 or 0.0
-        local zone = C.env.BR.StormZone(rec, cx, cy, r, m)
+        local zone
+        if st == C.env.BR.StormPhase.FINISHED then
+            zone = C.env.BR.StormZone(rec, cx, cy, r, 1.0)
+        else
+            zone = C.env.BR.StormStartShape(rec, cx, cy, r)
+        end
         local worst = 0.0
         for _, p in ipairs(C.shown(C.areas()[i])) do
             worst = math.max(worst,
@@ -7640,7 +7803,7 @@ do
     -- the storm. The command also starts a fresh capture; otherwise two modes in one
     -- playtest would be blended into a percentage that describes neither.
     local D, drec = sweepClient(2, 1000.0, 2600.0, 1400.0, 1600.0, 120000,
-        -700.0, -300.0)
+        -700.0, -300.0, NESTED)
     ok(D.cmds.brstormbisect ~= nil, '/brstormbisect is registered')
     ok(D.overlayReady(), 'the bisect client reaches the overlay gate')
     D.tick(2)
@@ -7697,7 +7860,7 @@ do
             #D.areas(), #D.rings(), offZone(D, drec, 1)))
 
     local W = sweepClient(2, 1000.0, 2600.0, 1400.0, 1600.0, 120000,
-        -700.0, -300.0)
+        -700.0, -300.0, NESTED)
     W:recordWallOnly()
     W:frame()
     local wallPolys = #W.polys
@@ -7719,7 +7882,7 @@ do
     -- kilometre off, and a y the movie negated twice would land on the wrong side of
     -- the equator -- and a centre on the origin, or on y = 0, hides each of those.
     local N, nrec = sweepClient(2, 1000.0, 2600.0, 1400.0, 1600.0, 120000,
-        -700.0, -300.0)
+        -700.0, -300.0, NESTED)
     ok(N.overlayReady(), 'the nested-sweep client reaches the gate')
     N.tick(2)
     local zoneClip, targetClip = N.areas()[1], N.areas()[2]
@@ -7802,12 +7965,16 @@ do
     -- The zone the map moves in phase 2 is ZONE 1 -- the one the sweep leaves.
     for _, want in ipairs({ 5, 12, 0 }) do
         local T, trec = sweepClient(2, 1000.0, 2600.0, 1400.0, 1600.0, 120000,
-            -700.0, -300.0)
+            -700.0, -300.0, NESTED)
         -- BOUNDED, so a config that can no longer draw this shape fails here by name
         -- rather than hanging the suite looking for one.
         local seed
         for s = 1, 2000 do
-            if T.env.BR.StormUnit(s, 1).n == want then seed = s break end
+            trec.seed = s
+            if T.env.BR.StormUnit(s, 1).n == want and NESTED(T.env, trec) then
+                seed = s
+                break
+            end
         end
         ok(seed ~= nil,
             ('the shipping config draws %s on zone 1 of some one of 2000 matches')
@@ -7840,7 +8007,7 @@ do
     -- and target radius blips for the moving interval only. They are approximate map
     -- guidance for the seeded blobs; the exact 3D wall and damage shape keep moving.
     local ov = N.env.BR.Config.Storm.overlay
-    local B, brec = sweepClient(6, 0.0, 260.0, 300.0, 110.0, 120000)
+    local B, brec = sweepClient(6, 0.0, 260.0, 300.0, 110.0, 120000, nil, nil, CONJOINED)
     ok(B.overlayReady(), 'the breakout client reaches the gate')
     B.tick(2)
     ok(#B.areas() == 2 and B.env.BR.StormZone(brec, 0.0, 0.0, 260.0).blob == nil,
@@ -7909,7 +8076,7 @@ do
     -- A failed REM_OVERLAY is retained by mapoverlay.lua so its movie index remains
     -- valid. The fallback must keep retrying that retained clip after overlayShown has
     -- gone false; otherwise one engine refusal leaves a stale polygon for the sweep.
-    local R, rrec = sweepClient(6, 0.0, 260.0, 300.0, 110.0, 500)
+    local R, rrec = sweepClient(6, 0.0, 260.0, 300.0, 110.0, 500, nil, nil, CONJOINED)
     ok(R.overlayReady(), 'the removal-retry client reaches the gate')
     R.tick(2)
     local rAdds = R.mm.adds
@@ -7979,7 +8146,8 @@ do
     -- world's origin. A refused placement at the moment of drawing must therefore take
     -- the push down whole, exactly as a refused add does -- and hand the map to the
     -- radius blips.
-    local P, prec = sweepClient(2, 1000.0, 2600.0, 1600.0, 1600.0, 120000)
+    local P, prec = sweepClient(2, 1000.0, 2600.0, 1600.0, 1600.0, 120000, nil, nil,
+        NESTED)
     P.mm.refusePlace = true
     ok(P.overlayReady(), 'the refusal client reaches the gate')
     P.tick(3)
@@ -8012,7 +8180,7 @@ do
     -- What must happen instead is the fallback: the zone is rebuilt, the rebuild's
     -- own placement needs no resize, and the map stays on the zone at rebuild pace.
     local Q, qrec = sweepClient(2, 1000.0, 2600.0, 1400.0, 1600.0, 120000,
-        -700.0, -300.0)
+        -700.0, -300.0, NESTED)
     ok(Q.overlayReady(), 'the half-refusal client reaches the gate')
     Q.tick(2)
     Q.mm.refuseMethod.UPDATE_OVERLAY_SIZE_OR_SCALE = true
@@ -8034,8 +8202,17 @@ do
     -- and mapoverlay.lua keeps it on its books so the indices stay true. A replacement
     -- must not be stacked beside it: the caller remains on blips until the old pair can
     -- be removed, then installs one new pair whose slot 1 is safe to place.
+    -- NESTED AT BOTH TARGETS, because the replacement is placed as the sweep runs.
+    local function nestsAtBoth(env, rec)
+        local here = NESTED(env, rec)
+        local was = rec.cx1
+        rec.cx1 = 1350.0
+        local there = NESTED(env, rec)
+        rec.cx1 = was
+        return here and there
+    end
     local K, krec = sweepClient(2, 1000.0, 2600.0, 1400.0, 1600.0, 120000,
-        -700.0, -300.0)
+        -700.0, -300.0, nestsAtBoth)
     ok(K.overlayReady(), 'the leftover client reaches the gate')
     K.tick(2)
     local kAdds = K.mm.adds

@@ -1861,12 +1861,14 @@ local function overlayPlan()
     -- ═══ THE SHAPE THE MAP DRAWS THE ZONE IN: THE ONE IT SET OUT IN, UNTIL THE
     --     WALL ARRIVES ═══
     --
-    -- The wall morphs the current zone's shape into the target's across the sweep,
-    -- and the map does not: a morph is a new shape every tick, and #350 moves and
-    -- scales one fill in place, which is exact only while the shape holds still. So
-    -- the map draws the zone in the shape the record started in -- a sweep fraction
-    -- of 0 -- the whole way, and takes the target's shape ONCE, when the sweep is
-    -- FINISHED and the wall stands on the target in exactly that shape.
+    -- The wall morphs the current zone into the target corner to corner across the
+    -- sweep, and the map does not yet: a morph is a new shape every tick, and #350
+    -- moves and scales one fill in place, which is exact only while the shape holds
+    -- still -- rebuilding it while the storm moves is the hitch 52a7caa removed. So
+    -- the map draws the zone the record started in, moved and scaled with the
+    -- solver's circle (BR.StormStartShape), the whole way, and takes the target's
+    -- shape ONCE, when the sweep is FINISHED and the wall stands on the target in
+    -- exactly that shape. #344's rendering stage is where the map learns the morph.
     --
     -- AT FINISHED AND NOT A SECOND LATER, WHEN THE NEXT RECORD ARRIVES, because a
     -- breakout is drawn as a union of the zone and its target until the two circles
@@ -1887,28 +1889,39 @@ local function overlayPlan()
             math.floor(rec.seed or 0), math.floor(zoneA + 0.5), done)
 end
 
+--- The zone the MAP draws for a plan: the record's starting zone moved and scaled
+--- with the solver's circle until the sweep is over, and the arrived zone after.
+--- See overlayPlan for why the map does not draw the morph the wall does.
+--- @param plan table  from overlayPlan
+--- @return table shape
+local function mapZone(plan)
+    if plan.m >= 1 then
+        return BR.StormZone(plan.rec, plan.cx, plan.cy, plan.r, 1.0)
+    end
+    return BR.StormStartShape(plan.rec, plan.cx, plan.cy, plan.r)
+end
+
 --- The plan's contours, ready for BR.MapOverlay.setAreas, and whether the zone among
 --- them can be PLACED from now on instead of rebuilt.
 ---
 --- ═══ ONE BLOB IS A SIMILARITY OF EVERY LATER ONE, SO IT IS DRAWN ABOUT ITS CENTRE ═══
 ---
---- On every phase that did not break out the safe zone is ONE blob --
---- BR.StormShape.zone returns the containing one -- and a blob is `c + r * unit`: the
---- same unit shape, moved and scaled. The solver only moves c and changes r, so the
---- zone at any later moment of the sweep is the zone drawn now, translated and
---- uniformly scaled, EXACTLY -- not approximately -- and the containment that makes it
---- one blob holds for the whole sweep, because both circles interpolate linearly.
---- So that zone is pushed with its points relative to its own centre, and
---- BR.MapOverlay.placeArea can then move and scale it in the movie with two property
---- writes instead of a rebuild. placeArea's header has why the centre is the whole
---- trick: the movie scales a clip about its origin, and for these points that origin
---- is the zone's centre.
+--- On every phase that did not break out the map's zone is ONE blob -- the target
+--- lies inside the starting zone by its real shape, so BR.StormStartShape returns
+--- that zone alone -- and a blob is `c + r * unit`: the same unit shape, moved and
+--- scaled. The solver only moves c and changes r, so the zone at any later moment of
+--- the sweep is the zone drawn now, translated and uniformly scaled, EXACTLY -- not
+--- approximately. So that zone is pushed with its points relative to its own centre,
+--- and BR.MapOverlay.placeArea can then move and scale it in the movie with two
+--- property writes instead of a rebuild. placeArea's header has why the centre is
+--- the whole trick: the movie scales a clip about its origin, and for these points
+--- that origin is the zone's centre.
 ---
 --- ASKED OF THE SHAPE, NOT RE-DERIVED. `zone.blob` is what BR.StormShape.blob records
 --- about itself; a union of two, a circle below MIN_RADIUS and every other shape carry
 --- none, so they go out in world coordinates while static and use map blips while
---- moving. Testing the circles here instead would be a second spelling of the
---- containment rule BR.StormShape.zone already owns.
+--- moving. Testing the record here instead would be a second spelling of the
+--- nesting rule storm_solve.lua already owns.
 --- @param plan table  from overlayPlan
 --- @return table|nil areas
 --- @return table|nil fit  { cx, cy, r, w, h } when areas[1] can be placed
@@ -1947,7 +1960,7 @@ local function overlayFill(plan)
             -- exact only while the zone is ONE shape moved and scaled, and a morphing
             -- zone is a new shape every tick -- a rebuild every tick, the work #350
             -- removed. The target fill drawn over it has been the new shape all phase.
-            local zone = BR.StormZone(rec, plan.cx, plan.cy, plan.r, plan.m)
+            local zone = mapZone(plan)
             push(zone, plan.zoneA)
             local b = zone.blob
             -- EXACTLY ONE CONTOUR, AND IT IS THE FIRST AREA. A blob is one closed loop,
@@ -2058,7 +2071,7 @@ BR.Loop.register(BR.Loop.TICK, 'storm.map', function()
         -- still to be one blob, because the last seconds of the final sweep turn it
         -- into a circle below MIN_RADIUS -- a different shape, which is a rebuild.
         if at.fit then
-            local b = BR.StormZone(plan.rec, plan.cx, plan.cy, plan.r, plan.m).blob
+            local b = mapZone(plan).blob
             if b then
                 local s = b.r / at.fit.r
                 local resize = stormBisectMode ~= 'mapnoresize'

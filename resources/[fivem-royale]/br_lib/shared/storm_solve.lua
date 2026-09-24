@@ -6,7 +6,8 @@
 -- network traffic. The server uses it to apply damage; the client uses it to draw
 -- the wall. Neither one streams the radius to the other.
 --
--- Load order: requires enums.lua and geo.lua.
+-- Load order: requires enums.lua and geo.lua. storm_shape.lua is asked for at call
+-- time only, so it may load either side of this file.
 
 BR = BR or {}
 
@@ -22,8 +23,9 @@ BR = BR or {}
 ---     tShrink,            -- ms spent interpolating
 ---     dps,                -- damage per second outside the circle
 ---     seed,               -- the match's storm seed: what SHAPE this is (#344)
----     m0,                 -- how far the current circle's shape had already
----                         --   morphed when this record began; absent is 0
+---     mo,                 -- the wall's own outline when this record began, for
+---                         --   the records that start part way through a morph;
+---                         --   absent on every ordinary record
 ---   }
 ---
 --- `seed` IS ON THE WIRE BECAUSE THE SHAPE CANNOT BE. Every zone is a random
@@ -32,13 +34,25 @@ BR = BR or {}
 --- the zone index. See BR.StormZone below, which is the only spelling of that
 --- derivation anywhere, and BR.StormShape.blobUnit, which is where it happens.
 ---
---- `m0` EXISTS FOR THE TWO RECORDS THAT START PART WAY THROUGH A MORPH. Phase p's
---- current circle wears zone p-1's shape and morphs into zone p's across the sweep,
---- so an ordinary record starts at 0 -- which is what an absent field reads as, and
---- what every record but two is. `brstormfreeze` replaces a record mid-sweep with
---- one that holds the wall where it stands, and its thaw re-enters the phase from
---- there; both carry the morph they were frozen at, so the wall keeps the shape it
---- was standing in rather than snapping back to the zone it set out from.
+--- ═══ `mo` IS THE ONE EXCEPTION, AND IT IS A DEV PATH ═══
+---
+--- Phase p's wall starts as zone p-1 and morphs corner to corner into zone p across
+--- the sweep, so an ordinary record starts as a zone -- which is what an absent
+--- field reads as, and what every record but three is. `brstormfreeze` replaces a
+--- record mid-sweep with one that holds the wall where it stands, its thaw re-enters
+--- the phase from there, and a same-phase `brphase` does the same; all three start
+--- from a wall that is NOT a zone but a moment of a morph. So they carry it:
+---
+---   mo = { t = <how far the morph had got>,
+---          d = { x1, y1, r1, x2, y2, r2, ... },   -- every moving disc, world
+---          b = { i1, i2, ... } }                  -- the destination disc each
+---                                                 --   one is travelling to
+---
+--- -- the discs exactly, rather than the two circles they were computed from,
+--- because a freeze of a thawed record is a morph of a morph, and only the discs
+--- themselves compose. Each keeps its destination index, so a thaw and a same-phase
+--- `brphase` resume every corner toward the corner it was heading for, without a
+--- snap. (BR.StormMorphAt builds it.)
 
 --- Solve the storm at a given time.
 ---
@@ -52,7 +66,7 @@ BR = BR or {}
 --- @return number dps     damage per second currently applied outside
 --- @return number t       how far through the sweep: 0 holding, 1 finished --
 ---                        the same fraction the circle is interpolated by, and
----                        the one BR.StormZone morphs the shape by
+---                        the one BR.StormZone moves every corner of the wall by
 function BR.StormAt(rec, now)
     if not rec then
         return 0.0, 0.0, 0.0, BR.StormPhase.PRE, 0.0, 0.0, 0.0
@@ -105,72 +119,215 @@ end
 ---
 --- ═══ A ZONE, NOT A PHASE ═══
 ---
---- Zone k is the circle phase k closes on, and zone 0 is the opening circle. A
---- record for phase p therefore holds TWO zones -- its current circle is zone p-1
---- and its target is zone p -- and BR.StormZone asks for both by their own index.
---- This used to be asked once, for the phase, and handed to both: the current
---- circle and the target wore one shape, so the moment the phase advanced the
---- circle the wall had just finished closing onto re-rolled in place. That is the
---- snap in #344's 2026-09-23 playtest, and it is why the argument is a zone.
+--- Zone k is the zone phase k closes on, and zone 0 is the opening zone -- the map
+--- disc. A record for phase p therefore holds TWO zones -- its wall starts as zone
+--- p-1 and its target is zone p -- and BR.StormZone asks for both by their own
+--- index. This used to be asked once, for the phase, and handed to both: the
+--- moment the phase advanced, the circle the wall had just finished closing onto
+--- re-rolled in place. That is the snap in #344's 2026-09-23 playtest, and it is
+--- why the argument is a zone.
+---
+--- ═══ AND THE PHASES RIDE ALONG, BECAUSE THE ZONES ARE A CHAIN ═══
+---
+--- Zone z is drawn to fit inside zone z-1 at the ratio of their radii, so the
+--- config's phase table is part of what a zone is. See BR.StormShape.blobUnit.
 --- @param seed number|nil    the record's seed (server/storm.lua's seedRng)
---- @param zone number|nil    0 for the opening circle, k for phase k's target
+--- @param zone number|nil    0 for the opening zone, k for phase k's target
 --- @return table|nil unit
 function BR.StormUnit(seed, zone)
-    return BR.StormShape.blobUnit(seed, zone,
-        BR.Config and BR.Config.Storm and BR.Config.Storm.shape)
+    local S = BR.Config and BR.Config.Storm
+    return BR.StormShape.blobUnit(seed, zone, S and S.shape, S and S.phases)
 end
 
---- How far the current circle's shape has morphed toward the target's, at sweep
---- fraction `t`: the record's own `m0` when it began -- 0 but for a freeze -- and 1
---- at the end of the sweep.
+-- ═══ WHAT ONE RECORD'S MORPH IS MADE OF, WORKED OUT ONCE PER RECORD ═══
+--
+-- A record names two zones and where they stand, and everything the wall does
+-- across the sweep follows from four lists: the discs the wall starts as (`src`),
+-- where each of them is going (`dst`), the index of that destination disc in the
+-- target zone's own list (`bi`), and the target zone's discs as placed (`keep`).
+-- And one verdict: whether the target lies ENTIRELY inside the zone the wall
+-- starts as -- by real shape, exactly (BR.StormShape.fit), which is what
+-- BR.NextZoneCentre places every non-breakout target to satisfy.
+--
+-- Held weakly per record, and re-derived if any field it was read from has moved
+-- or a zone unit has been rebuilt: a record is whole-table-assigned everywhere in
+-- the game, so this is a cache hit on every frame of a phase but the first.
+local recInfo = setmetatable({}, { __mode = 'k' })
+
+--- The source discs of a record: a morph's own discs when it carries one, and the
+--- zone it starts as, paired with its target, otherwise.
+local function sourceOf(rec, uA, uB)
+    local src, bi = {}, {}
+    local mo = rec.mo
+    if mo then
+        local d, b = mo.d or {}, mo.b or {}
+        local nB = #uB.discs
+        for i = 1, #b do
+            local x, y, r = d[3 * i - 2], d[3 * i - 1], d[3 * i]
+            if x and y and r then
+                src[#src + 1] = { x = x, y = y, r = r }
+                -- AN INDEX THE CURRENT UNIT DOES NOT HAVE -- a config edited under a
+                -- frozen record -- travels to the target's first disc rather than
+                -- to nothing.
+                local k = math.tointeger(b[i]) or 1
+                bi[#bi + 1] = (k >= 1 and k <= nB) and k or 1
+            end
+        end
+        return src, bi
+    end
+    local ps = BR.StormShape.pairsOf(uA, uB)
+    local cx, cy, r = rec.cx0, rec.cy0, rec.r0
+    for i = 1, #ps do
+        local p = ps[i]
+        src[i] = { x = cx + r * p.a.x, y = cy + r * p.a.y, r = r * p.a.r }
+        bi[i] = p.bi
+    end
+    return src, bi
+end
+
+--- The record's morph, worked out: see the section note. nil for the off switch.
+local function infoOf(rec)
+    local uB = BR.StormUnit(rec.seed, rec.phase)
+    if not uB then return nil end
+    local uA = nil
+    if not rec.mo then uA = BR.StormUnit(rec.seed, (rec.phase or 1) - 1) end
+    local e = recInfo[rec]
+    if e and e.uA == uA and e.uB == uB and e.mo == rec.mo
+        and e.phase == rec.phase and e.seed == rec.seed
+        and e.cx0 == rec.cx0 and e.cy0 == rec.cy0 and e.r0 == rec.r0
+        and e.cx1 == rec.cx1 and e.cy1 == rec.cy1 and e.r1 == rec.r1 then
+        return e
+    end
+
+    local SS = BR.StormShape
+    local src, bi = sourceOf(rec, uA, uB)
+    local r1 = ((rec.r1 or 0.0) > 0.0) and rec.r1 or 0.0
+    local keep = {}
+    if r1 > 0.0 then
+        for k, d in ipairs(uB.discs) do
+            keep[k] = { x = rec.cx1 + r1 * d.x, y = rec.cy1 + r1 * d.y, r = r1 * d.r }
+        end
+    else
+        -- A TARGET OF NO RADIUS IS ONE POINT, whatever unit it was drawn with.
+        keep[1] = { x = rec.cx1 + 0.0, y = rec.cy1 + 0.0, r = 0.0 }
+    end
+    local dst = {}
+    for i = 1, #src do dst[i] = keep[bi[i]] or keep[1] end
+
+    -- NESTED, BY REAL SHAPE. Every disc of the target inside the zone the wall starts
+    -- as -- the hull of those discs is then inside it too, because it is convex.
+    local zks = SS.discHull(src)
+    local nested = zks ~= nil and SS.fit(zks, keep, 0.0, 0.0, 1.0) <= 0.0
+
+    e = { uA = uA, uB = uB, mo = rec.mo, phase = rec.phase, seed = rec.seed,
+          cx0 = rec.cx0, cy0 = rec.cy0, r0 = rec.r0,
+          cx1 = rec.cx1, cy1 = rec.cy1, r1 = rec.r1,
+          src = src, dst = dst, bi = bi, keep = keep, nested = nested }
+    recInfo[rec] = e
+    return e
+end
+
+--- Is this record's target inside the zone its wall starts as, by real shape?
 ---
---- ═══ NOT `t`, AND THE AIRDROP'S WINDOW IS WHY ═══
+--- True on every phase the server placed without a breakout (BR.NextZoneCentre),
+--- and that is what the wall, the map and airdrop siting each read to know whether
+--- the destination is a separate part of the safe zone or already inside it.
+--- @param rec table
+--- @return boolean
+function BR.StormNested(rec)
+    local e = rec and infoOf(rec)
+    return e ~= nil and e.nested
+end
+
+--- The zone a record's wall starts as, placed at (cx, cy, r) -- the record's own
+--- circle unless the caller names another. A morph's own outline when it carries
+--- one (`mo`), and the zone before this phase's otherwise.
+local function sourceShape(rec, e, cx, cy, r)
+    if rec.mo then return BR.StormShape.discShape(e.src, cx, cy, r) end
+    return BR.StormShape.blob(cx, cy, r, e.uA)
+end
+
+--- The zone a phase is entered FROM, before its record exists: the host the next
+--- zone is placed inside (server/storm.lua's drawCentre).
 ---
---- The wall at sweep fraction t is the MINKOWSKI INTERPOLATION of the zone it left
---- and the zone it is closing on, AS PLACED: (1 - t) Z0 + t Z1, where Z0 is the
---- starting shape at its own centre and radius and Z1 the target's at its. Its
---- support function is then AFFINE in t -- the centre and the radius already were,
---- and now the shape is too -- so the signed distance at any fixed point is a
---- maximum of affine functions of t and CONVEX in it. That is the argument
---- BR.AirdropLandingCircles stands on: a point that clears the margin at both ends of
---- a window clears it at every instant between. Written as that sum, the wall is
---- c(t) + r0 (1 - t) U0 + r1 t B, which is the solver's circle at the unit shape
---- r1 t / r(t) of the way from U0 to B -- this number. Morphing by t itself instead
---- would scale the shape by r(t) and blend it by t, a product quadratic in t, and
---- the dip it allows between the window's ends is up to an eighth of the radius the
---- sweep gives up: over a hundred metres at phase 2, against a 250 m margin.
+--- The zone before this phase at (cx, cy, r) -- zone 0, the map disc, for phase 1
+--- -- or the outline a freeze, a thaw or a same-phase `brphase` carried in `mo`.
+--- @return table shape
+function BR.StormHost(seed, phase, cx, cy, r, mo)
+    if mo then
+        local rec = { seed = seed, phase = phase, cx0 = cx, cy0 = cy, r0 = r,
+                      cx1 = cx, cy1 = cy, r1 = 0.0, mo = mo }
+        local e = infoOf(rec)
+        if e then return BR.StormShape.discShape(e.src, cx, cy, r) end
+    end
+    local u = BR.StormUnit(seed, (phase or 1) - 1)
+    if not u then return BR.StormShape.circle(cx, cy, r) end
+    return BR.StormShape.blob(cx, cy, r, u)
+end
+
+--- THE DESTINATION, placed: zone `phase` at (cx1, cy1, r1). It never changes
+--- during the phase -- not its shape, not its corners, not where it is.
 ---
---- A RECORD THAT STARTS PART WAY THROUGH A MORPH starts at U0 = m0 of the way, and
---- the same sum carries it: r0 (1 - t) m0 of B from the start, plus r1 t of B from
---- the target, over r(t). A radius of nothing at both ends has no shape to morph,
---- and answers where it started.
+--- A TARGET OF NO RADIUS is phase 8's final point, and it is the one-metre circle
+--- every collapsed zone is (union2's header argues why a point is not a disc).
+---
+--- A FRESH SHAPE EVERY CALL, deliberately: blobUnion re-stamps the pieces of the
+--- parts it is handed, so a cached target walked after a union would read the
+--- union's arc lengths. Building one is a placement and a piece list.
+--- @param rec table
+--- @return table shape
+function BR.StormTarget(rec)
+    if not rec then return BR.StormShape.circle(0.0, 0.0, 0.0) end
+    local r1 = rec.r1 or 0.0
+    if r1 <= 0.0 then return BR.StormShape.circle(rec.cx1 or 0.0, rec.cy1 or 0.0, 0.0) end
+    local u = BR.StormUnit(rec.seed, rec.phase)
+    if not u then return BR.StormShape.circle(rec.cx1, rec.cy1, r1) end
+    return BR.StormShape.blob(rec.cx1, rec.cy1, r1, u)
+end
+
+--- The wall of a record already worked out: see BR.StormWall.
+local function wallOf(rec, e, t)
+    if t <= 0.0 then return sourceShape(rec, e, rec.cx0, rec.cy0, rec.r0) end
+    if t >= 1.0 then return BR.StormTarget(rec) end
+    return BR.StormShape.morph(e.src, e.dst, t, e.nested and e.keep or nil,
+        BR.Lerp(rec.cx0, rec.cx1, t), BR.Lerp(rec.cy0, rec.cy1, t),
+        BR.Lerp(rec.r0, rec.r1, t))
+end
+
+--- THE MOVING WALL at sweep fraction `t`, and nothing else: the zone it started as
+--- at 0, the destination at 1, and the hull of every corner disc on its straight
+--- way between (BR.StormShape.morph) in between.
+---
+--- ON A NESTED PHASE IT CONTAINS THE DESTINATION AT EVERY t and so it IS the safe
+--- zone. On a breakout the safe zone is this UNION the destination -- BR.StormZone.
+---
+--- AT THE ENDS IT IS THE PLACED ZONES THEMSELVES, not hulls that equal them, so the
+--- wall at the end of one sweep and at the start of the next hold are one shape to
+--- the bit.
+---
+--- ═══ IT NEVER MOVES OUTWARD ON A NESTED PHASE, AND THAT IS WHAT SITING RESTS ON ═══
+---
+--- Every moving disc heads for a disc of the destination, and the destination's own
+--- discs are in the hull, so the wall at a later t is inside the wall at an earlier
+--- one (storm_shape.lua's morph section has the argument). A point that is inside
+--- the wall at an instant is inside it at every earlier instant, and a point inside
+--- the destination is inside it at every instant. BR.AirdropLandingCircles and
+--- BR.RescueCircles are built on exactly that.
 --- @param rec table
 --- @param t number|nil   BR.StormAt's seventh answer; nil reads as 0
---- @return number
-function BR.StormMorph(rec, t)
-    local m0 = BR.Clamp((rec and rec.m0) or 0.0, 0.0, 1.0)
+--- @return table shape
+function BR.StormWall(rec, t)
+    if not rec then return BR.StormShape.circle(0.0, 0.0, 0.0) end
     t = BR.Clamp(t or 0.0, 0.0, 1.0)
-    if t >= 1.0 then return 1.0 end
-    local r0 = math.max(0.0, (rec and rec.r0) or 0.0)
-    local r1 = math.max(0.0, (rec and rec.r1) or 0.0)
-    local whole = r0 * (1.0 - t) + r1 * t
-    if whole <= 0.0 then return m0 end
-    return (r0 * (1.0 - t) * m0 + r1 * t) / whole
+    local e = infoOf(rec)
+    if not e then
+        return BR.StormShape.circle(BR.Lerp(rec.cx0, rec.cx1, t),
+            BR.Lerp(rec.cy0, rec.cy1, t), BR.Lerp(rec.r0, rec.r1, t))
+    end
+    return wallOf(rec, e, t)
 end
 
---- THE CURRENT CIRCLE'S SHAPE at sweep fraction `t`: zone p-1's shape morphed as far
---- toward zone p's as the sweep has got. See BR.StormShape.morphUnit.
---- @param rec table
---- @param t number|nil
---- @return table|nil unit
-function BR.StormCurrentUnit(rec, t)
-    if not rec then return nil end
-    return BR.StormShape.morphUnit(BR.StormUnit(rec.seed, (rec.phase or 0) - 1),
-        BR.StormUnit(rec.seed, rec.phase), BR.StormMorph(rec, t))
-end
-
---- THE SAFE ZONE at a solved moment: the current circle's shape at (cx, cy, r),
---- union the zone it is closing toward.
+--- THE SAFE ZONE at a solved moment: the moving wall, and the destination.
 ---
 --- ═══ THE ONE PLACE THE ZONE IS BUILT, WHICH IS WHAT MAKES THE WALL HONEST ═══
 ---
@@ -183,20 +340,37 @@ end
 --- curtain says it is safe. So the derivation lives here and the callers ask for
 --- the zone rather than assembling one.
 ---
---- ═══ AND IT MORPHS, BECAUSE THE TWO ZONES ARE TWO SHAPES ═══
+--- ═══ THE WALL MORPHS CORNER TO CORNER, AND THE DESTINATION STANDS STILL ═══
+---
+---   "I want the moving wall's corners and lines to move and change to match the
+---    destination's. Nothing about the destination shape should ever change while
+---    in motion."                                     -- the owner, 2026-09-23
 ---
 --- `t` is how far through the sweep the solved circle is -- BR.StormAt's seventh
---- answer -- and the current shape is that far from zone p-1's toward zone p's. So
---- at the end of a sweep the wall IS zone p, and the next record's hold starts from
---- zone p again, at the same circle, in the same shape: no snap, because there is
---- nothing left to change. The wall, the HUD and the damage tick all pass the `t`
---- they solved, and they agree to the bit.
+--- answer -- and the wall is BR.StormWall at that `t`. So at the end of a sweep the
+--- wall IS zone p, and the next record's hold starts from zone p again, at the same
+--- circle, in the same shape: no snap, because there is nothing left to change. The
+--- wall, the HUD and the damage tick all pass the `t` they solved, and they agree to
+--- the bit.
 ---
---- THE MAP PASSES 0 UNTIL THE SWEEP IS OVER, AND THAT IS NOT AN OMISSION. #350
---- moves and scales one fill in place for a whole sweep, which is only exact while
---- the zone is one shape moved and scaled -- so the map keeps the shape the record
---- started in, and takes the target's once, as the wall arrives on it.
---- client/storm.lua's overlayPlan says why it is then and not a second later.
+--- THE CIRCLE IS IMPLIED BY `t`. Every disc of the wall is on its own straight line
+--- between the two placed zones, so `(cx, cy, r)` adds nothing the record and `t`
+--- do not already say, and is read only for a record with no shape at all -- the
+--- pre-#344 off switch -- where the zone is still the two circles.
+---
+--- ═══ NESTED: THE WALL. A BREAKOUT: THE WALL UNION THE DESTINATION ═══
+---
+--- On every phase that did not break out the destination lies inside the zone the
+--- wall starts as, by its real shape, and the wall holds it the whole way across --
+--- so the wall is the safe zone, one closed loop. A breakout's destination is its
+--- own part: stitched to the wall where they overlap (#356), two islands where they
+--- do not, exactly as the union always was, so a player who reaches the destination
+--- early is safe there (#328). A destination of no radius is phase 8's final point,
+--- which is not a disc to reach and is not a part (union2's header argues why).
+---
+--- THE MAP IS NOT THIS DURING A SWEEP, until #344's rendering stage lands: it draws
+--- BR.StormStartShape instead, the zone the wall set out as, moved and scaled with
+--- the solver's circle. client/storm.lua's overlayPlan says why.
 ---
 --- @param rec table|nil    the published storm record
 --- @param cx number        the CURRENT centre, as BR.StormAt reports it
@@ -208,8 +382,124 @@ function BR.StormZone(rec, cx, cy, r, t)
     if not rec then
         return BR.StormShape.circle(cx or 0.0, cy or 0.0, r or 0.0)
     end
-    return BR.StormShape.zone(cx, cy, r, rec.cx1, rec.cy1, rec.r1,
-        BR.StormCurrentUnit(rec, t), BR.StormUnit(rec.seed, rec.phase))
+    local e = infoOf(rec)
+    if not e then
+        return BR.StormShape.union2(cx, cy, r, rec.cx1, rec.cy1, rec.r1)
+    end
+    t = BR.Clamp(t or 0.0, 0.0, 1.0)
+    local wall = wallOf(rec, e, t)
+    if e.nested or t >= 1.0 or (rec.r1 or 0.0) <= 0.0 then return wall end
+    return BR.StormShape.blobUnion(wall, BR.StormTarget(rec))
+end
+
+--- TEMPORARY, FOR THE MAP ALONE: the zone the wall set out as, placed at (cx, cy, r).
+---
+--- #350's map fill moves and scales ONE clip for a whole sweep and cannot be handed
+--- a new shape every tick -- rebuilding it while the storm moves is the hitch the
+--- owner traced (52a7caa). So until #344's rendering stage gives the map its own
+--- way to show the morph, the map keeps 52a7caa's picture: the starting zone moved
+--- and scaled with the solver's circle, the destination's fill on top, and a
+--- breakout's union handed to the map blips while it moves. This is that starting
+--- zone, and nothing else reads it.
+--- @return table shape
+function BR.StormStartShape(rec, cx, cy, r)
+    if not rec then return BR.StormShape.circle(cx or 0.0, cy or 0.0, r or 0.0) end
+    local e = infoOf(rec)
+    if not e then
+        return BR.StormShape.union2(cx, cy, r, rec.cx1, rec.cy1, rec.r1)
+    end
+    local unit = e.uA
+    if not unit then
+        -- A MORPH'S OUTLINE AS A UNIT, so it can be moved and scaled like one: its
+        -- discs about the record's own circle, over its radius.
+        unit = e.startUnit
+        if not unit then
+            local SS = BR.StormShape
+            local rr = (rec.r0 > 0.0) and rec.r0 or 1.0
+            local ds = {}
+            for i = 1, #e.src do
+                local d = e.src[i]
+                ds[i] = { x = (d.x - rec.cx0) / rr, y = (d.y - rec.cy0) / rr, r = d.r / rr }
+            end
+            local ks = SS.discHull(ds)
+            unit = { ks = ks, inradius = -SS.hullDistance(ks, 0.0, 0.0) }
+            e.startUnit = unit
+        end
+    end
+    local here = BR.StormShape.blob(cx, cy, r, unit)
+    if e.nested or (rec.r1 or 0.0) <= 0.0 then return here end
+    return BR.StormShape.blobUnion(here, BR.StormTarget(rec))
+end
+
+--- The fastest any corner of the wall moves during this record's sweep, in metres
+--- a second: the most any one disc travels plus the most its radius changes, over
+--- the sweep's length.
+---
+--- THE DAMAGE CUSHION'S WALL-SPEED TERM IS (r0 - r1) / T, AND THE MORPH OUTRUNS IT.
+--- That is how fast a CIRCLE's edge moves, and a corner travelling to a corner of a
+--- different shape moves further: measured at 2.2 to 3.8 times that on average
+--- across phases 7 down to 2, and 6.2 at worst. server/storm.lua's damage tick
+--- belongs to #366, which is where this is for.
+--- @param rec table
+--- @return number metres per second
+function BR.StormWallSpeed(rec)
+    if not rec then return 0.0 end
+    local T = math.max((rec.tShrink or 0.0) / 1000.0, 1.0)
+    local e = infoOf(rec)
+    if not e then return math.abs((rec.r0 or 0.0) - (rec.r1 or 0.0)) / T end
+    local best = 0.0
+    for i = 1, #e.src do
+        local a, b = e.src[i], e.dst[i]
+        local v = math.sqrt((b.x - a.x) ^ 2 + (b.y - a.y) ^ 2) + math.abs(b.r - a.r)
+        if v > best then best = v end
+    end
+    return best / T
+end
+
+--- THE WALL AT SWEEP FRACTION `t`, AS A RECORD CAN CARRY IT: the `mo` a freeze, a
+--- thaw or a same-phase `brphase` starts its record from. See the record's header.
+---
+--- nil for a record still holding in the zone it started as, because a record built
+--- from that zone's circle starts as that zone anyway. Otherwise every moving disc at
+--- `t` with the destination disc it is heading for -- and, on a nested phase, the
+--- destination's own discs too, because they are part of the wall's hull and part of
+--- what the next record's morph must keep. Exact duplicates are dropped, so a chain
+--- of freezes does not grow what it carries by the discs it already has.
+--- @param rec table
+--- @param t number|nil
+--- @return table|nil mo
+function BR.StormMorphAt(rec, t)
+    if not rec then return nil end
+    t = BR.Clamp(t or 0.0, 0.0, 1.0)
+    if t <= 0.0 and not rec.mo then return nil end
+    local e = infoOf(rec)
+    if not e then return nil end
+    local s = 1.0 - t
+    local d, b, seen = {}, {}, {}
+    local function add(x, y, r, i)
+        local key = ('%a|%a|%a|%d'):format(x, y, r, i)
+        if seen[key] then return end
+        seen[key] = true
+        d[#d + 1], d[#d + 2], d[#d + 3] = x, y, r
+        b[#b + 1] = i
+    end
+    for i = 1, #e.src do
+        local a, q = e.src[i], e.dst[i]
+        if t >= 1.0 then
+            add(q.x, q.y, q.r, e.bi[i])
+        elseif t <= 0.0 then
+            add(a.x, a.y, a.r, e.bi[i])
+        else
+            add(s * a.x + t * q.x, s * a.y + t * q.y, s * a.r + t * q.r, e.bi[i])
+        end
+    end
+    if e.nested and t > 0.0 then
+        for k = 1, #e.keep do
+            local q = e.keep[k]
+            add(q.x, q.y, q.r, k)
+        end
+    end
+    return { t = t, d = d, b = b }
 end
 
 --- Pick the match anchor: the POI the whole storm sequence homes on.
@@ -279,7 +569,7 @@ end
 ---
 --- @param cfg table      BR.Config.Storm
 --- @param phase integer  1-based phase being entered
---- @return table|nil     { chance, overhang, minRadius } for NextStormCentre
+--- @return table|nil     { chance, gapMax, minRadius } for NextZoneCentre
 function BR.StormBreakoutFor(cfg, phase)
     local bo = cfg and cfg.breakout
     if not bo then return nil end
@@ -299,136 +589,228 @@ function BR.StormBreakoutFor(cfg, phase)
     }
 end
 
---- Choose the centre of the next circle.
+-- Metres of clearance a nested placement keeps from touching the zone it is inside.
+-- A millimetre: far below anything a player can see, and nine orders of magnitude
+-- above the rounding in a signed distance -- so "is this record nested" is decided
+-- the same way on both sides of the wire however the last bits of a sine fall, and
+-- a destination is never classified at the one knife edge where it would be drawn
+-- as a second boundary inside the wall.
+local NEST_CLEAR = 1e-3
+
+-- How many times each ray is bisected. A FIXED count, so both of a phase's placements
+-- -- at warmup and at the phase itself -- stop on the same double.
+local RAY_STEPS = 48
+
+--- Choose where the next zone goes: its centre, by its REAL SHAPE.
 ---
---- Sampled uniformly inside the slack between the current and next radius, so the
---- new circle always nests inside the old one and nobody is ever caught outside a
---- circle they were legitimately standing in.
+---   "the circles still overlap when they are different shapes."
+---                                                    -- the owner, 2026-09-23
 ---
---- @param rng table       a BR.Rng instance (server only -- this must not be
----                        recomputed client-side, or clients could predict it)
---- @param cx number       current centre
+--- ═══ NESTED: THE NEXT ZONE LIES ENTIRELY INSIDE THIS ONE ═══
+---
+--- The centres the next zone can take and still fit are F = {c : D + c inside Z},
+--- which is Z eroded by D: CONVEX, and it holds this zone's own centre with room to
+--- spare, because blobUnit drew the next zone to fit there concentric (`fitClear`).
+--- So along a drawn bearing the feasible offsets are one interval from zero, and
+--- its far end L is found by bisection on the exact test -- every disc of D inside
+--- Z, BR.StormShape.fit. The offset is sqrt(u) * edgeBias * L: uniform over F when
+--- F is a disc, which is exactly what rng:pointInDisc drew in the circle era.
+---
+--- ═══ A BREAKOUT: THE GAP TO THIS ZONE, CAPPED ═══
+---
+--- A breakout may leave this zone entirely, and the gap between the two shapes is
+--- capped at `gapMax` of the current radius, as it always was (user call,
+--- 2026-08-06). The gap between Z and D + c is the signed distance from c to the
+--- Minkowski sum Z + (-D), which is a corner list (BR.StormShape.sumOf) -- so the
+--- breakout's region F_b is that sum dilated by the gap, convex, containing F, and
+--- the same bisection finds its far end on the bearing. A breakout roll can still
+--- land nested, as it always could.
+---
+--- ═══ THE DRAWS ARE FIXED, AND THEY ARE THE ONES pointInDisc TOOK ═══
+---
+--- The breakout roll -- only when there is a chance and this zone is at least the
+--- floor, the rule this always had -- then the bearing, then u. Everything after is
+--- arithmetic with fixed iteration counts. So a phase takes the same values off
+--- m.stormRng that it took when zones were circles, and `first.stream`'s alignment
+--- of warmup and phase 1 holds. (The one conditional draw the circle era had -- a
+--- random bearing for an offset of exactly zero -- is gone: the bearing is always
+--- drawn.)
+---
+--- ═══ THE EDGE HUG, THE MAP BOUNDS AND THE WATER, BY REAL SHAPE ═══
+---
+--- THE LAST PHASES HUG THE EDGE: with `hugM`, the offset is at least the nested
+--- ray's far end less hugM -- the ray standing in for the old slack.
+---
+--- THE MAP BOUNDS clamp the centre so the next zone's exact bounding box stays
+--- inside mapAABB, an axis it is wider than being centred -- ClampCircleToAABB's
+--- rule, for a shape. If that moved it out of the phase's region, it is bisected
+--- back toward this zone's centre to the last point inside: THE PHASE'S BUDGET
+--- BEATS BOUNDS, because the sweep was priced off where the solver put the zone.
+---
+--- AND NOT OFF THE MAP: the centre walks back toward this zone's in eight steps, as
+--- it always did, and the region is convex, so every step of the walk is inside it.
+---
+--- A HOST THAT CANNOT HOLD THE NEXT ZONE AT ALL -- a frozen outline thawed, or a
+--- same-phase `brphase`, part way through a morph -- leaves the centre where it is,
+--- and the phase is simply not nested. Those are dev paths.
+---
+--- @param rng table        m.stormRng (server only: clients must not predict this)
+--- @param host table       the zone being closed from, as a shape (BR.StormHost)
+--- @param cx number        its centre
 --- @param cy number
---- @param curRadius number
---- @param nextRadius number
---- @param edgeBias number  0..1, how far off-centre the next circle may sit
---- @param aabb table       playable bounds
---- @param minDist number|nil  minimum offset from the current centre -- the
----                        edge-hug rule for the final phases pushes the next
----                        centre out to at least (slack - edgeHugM). Clamped
----                        to the phase's reach budget.
---- @param breakout table|nil  { chance, overhang, minRadius } -- lets this
----                        phase's circle leave the current one entirely. Omit
----                        for the strict nesting rule.
---- @return number, number  next centre
-function BR.NextStormCentre(rng, cx, cy, curRadius, nextRadius, edgeBias, aabb, minDist, breakout)
-    local slack = curRadius - nextRadius
-    if slack <= 0 then
-        return cx, cy
+--- @param r0 number        its radius: the breakout's gap and floor are measured in it
+--- @param unit table|nil   the next zone's unit; nil for a point
+--- @param r1 number        the next zone's radius
+--- @param edgeBias number  0..1, how much of the room the offset may use
+--- @param aabb table|nil   playable bounds
+--- @param hugM number|nil  the edge hug, on the phases that have one
+--- @param breakout table|nil  { chance, gapMax, minRadius }
+--- @return number, number, boolean  the next centre, and whether it rolled a breakout
+function BR.NextZoneCentre(rng, host, cx, cy, r0, unit, r1, edgeBias, aabb, hugM, breakout)
+    local SS = BR.StormShape
+    local hks = host and host.hull and host.hull.ks
+    if not hks then
+        -- A CIRCLE HOST -- a zone so small blob() made it one: its one disc.
+        local d = host and host.discs and host.discs[1]
+        hks = SS.discHull({ { x = d and d.x or cx, y = d and d.y or cy, r = d and d.r or r0 } })
     end
 
-    -- BREAKOUT: this phase may leave the current circle entirely.
-    --
-    -- Rolled FIRST, before any draw that depends on it, so the decision costs
-    -- exactly one RNG value whether or not it fires -- a conditional draw
-    -- would make the sequence depend on the outcome and two servers on the
-    -- same seed would diverge from here on.
-    --
-    -- What it changes is the budget: `slack` is the containment limit, and a
-    -- breakout raises the ceiling on how far the centre may sit from the old
-    -- one. Everything downstream still works in terms of `reach`, so the
-    -- edge-hug and the AABB pull-back need no special case.
-    -- A BREAKOUT MAY SEPARATE THE CIRCLES ENTIRELY.
-    --
-    -- Stated as the geometry rather than as a fudge factor, because that is
-    -- how it was asked for (user, 2026-08-06): the new circle may sit wholly
-    -- outside the old one, and the GAP between their edges is capped at
-    -- `gapMax` times the predecessor's radius.
-    --
-    --     d_max = curRadius + nextRadius + gapMax * curRadius
-    --              \___________________/   \_________________/
-    --                 edges just touch        the gap allowed
-    --
-    -- Two earlier formulations were wrong in instructive ways. Scaling the
-    -- budget by the NEXT radius made the final phase (next radius 0) unable to
-    -- move at all. Scaling it by the current radius fixed that but could never
-    -- separate the circles on the early phases, where nextRadius/curRadius is
-    -- large. Expressing the thing we actually want removes both accidents.
-    local reach, broke = slack, false
+    -- THE NEXT ZONE ABOUT ITS OWN CENTRE, at its real size.
+    local D0 = {}
+    if unit and (r1 or 0.0) > 0.0 then
+        for k, d in ipairs(unit.discs) do
+            D0[k] = { x = d.x * r1, y = d.y * r1, r = d.r * r1 }
+        end
+    else
+        D0[1] = { x = 0.0, y = 0.0, r = 0.0 }
+    end
+
+    local broke = false
     if breakout and breakout.chance and breakout.chance > 0
-       and curRadius >= (breakout.minRadius or 0.0) then
-        if rng:float() < breakout.chance then
-            broke = true
-            reach = curRadius + nextRadius
-                  + (breakout.gapMax or 0.5) * curRadius
-        end
+       and r0 >= (breakout.minRadius or 0.0) then
+        if rng:float() < breakout.chance then broke = true end
     end
+    local theta = rng:float() * 2.0 * math.pi
+    local u = rng:float()
 
-    -- A config value above 1.0 would push the new centre past the reach budget
-    -- and silently overshoot it, so clamp rather than trusting it.
+    -- A config value above 1.0 would push the new centre past the region and
+    -- silently overshoot it, so clamp rather than trusting it.
     edgeBias = BR.Clamp(edgeBias or 0.55, 0.0, 1.0)
+    local dx, dy = math.cos(theta), math.sin(theta)
 
-    -- pointInDisc applies the sqrt that keeps the distribution uniform rather
-    -- than centre-clustered. Without it every match's zone path feels the same.
-    local nx, ny = rng:pointInDisc(cx, cy, reach * edgeBias)
-
-    -- The edge hug: push a too-central draw outward along its own bearing
-    -- until it clears the minimum. A zero-length draw gets a random bearing
-    -- -- there is no "outward" from the exact centre.
-    minDist = BR.Clamp(minDist or 0.0, 0.0, reach)
-    local off = BR.Dist(cx, cy, nx, ny)
-    if off < minDist then
-        local ang
-        if off > 1e-9 then
-            ang = math.atan(ny - cy, nx - cx)
-        else
-            ang = rng:float() * 2.0 * math.pi
-        end
-        nx = cx + math.cos(ang) * minDist
-        ny = cy + math.sin(ang) * minDist
+    local function nested(x, y)
+        return SS.fit(hks, D0, x, y, 1.0) <= -NEST_CLEAR
     end
+    local inside = nested
+    local sum, gap = nil, 0.0
+    if broke then
+        sum = SS.sumOf(hks, SS.reflect(SS.discHull(D0)))
+        gap = (breakout.gapMax or 0.5) * r0
+        inside = function(x, y) return SS.hullDistance(sum, x, y) <= gap end
+    end
+
+    --- The far end of the region along the drawn bearing: zero when this zone's own
+    --- centre is not in it.
+    local function ray(ok, hi)
+        if not ok(cx, cy) then return 0.0 end
+        local lo = 0.0
+        for _ = 1, RAY_STEPS do
+            local mid = 0.5 * (lo + hi)
+            if ok(cx + dx * mid, cy + dy * mid) then lo = mid else hi = mid end
+        end
+        return lo
+    end
+
+    -- A NESTED CENTRE IS INSIDE THIS ZONE -- every zone holds its own centre -- so no
+    -- ray reaches past this zone's reach from its centre. A breakout's reaches no
+    -- further than the sum's, plus the gap.
+    local Ln = ray(nested, SS.reachOf(hks, cx, cy) + 1.0)
+    local L = Ln
+    if broke then L = ray(inside, SS.reachOf(sum, cx, cy) + gap + 1.0) end
+
+    local s = math.sqrt(u) * edgeBias * L
+    if hugM then
+        local floor = Ln - hugM
+        if floor > s then s = floor end
+        if s > L then s = L end
+    end
+    local nx, ny = cx + dx * s, cy + dy * s
 
     if aabb then
-        nx, ny = BR.ClampCircleToAABB(nx, ny, nextRadius, aabb)
+        -- THE NEXT ZONE'S EXACT BOUNDING BOX about its centre: its support function in
+        -- the four axis directions.
+        local west, east, south, north = 0.0, 0.0, 0.0, 0.0
+        for k = 1, #D0 do
+            local d = D0[k]
+            west = math.max(west, -d.x + d.r)
+            east = math.max(east, d.x + d.r)
+            south = math.max(south, -d.y + d.r)
+            north = math.max(north, d.y + d.r)
+        end
+        local minX, maxX = aabb.min.x + west, aabb.max.x - east
+        local minY, maxY = aabb.min.y + south, aabb.max.y - north
+        local mx, my
+        -- If the zone is wider than the box, centring it is the best we can do.
+        if minX > maxX then
+            mx = 0.5 * (aabb.min.x + aabb.max.x) + 0.5 * (west - east)
+        else
+            mx = BR.Clamp(nx, minX, maxX)
+        end
+        if minY > maxY then
+            my = 0.5 * (aabb.min.y + aabb.max.y) + 0.5 * (south - north)
+        else
+            my = BR.Clamp(ny, minY, maxY)
+        end
 
-        -- Clamping to the map bounds can push the centre further from the old
-        -- one than the reach budget permits -- most easily when the current
-        -- circle already overhangs the bounds, which the opening circle
-        -- routinely does.
+        -- Clamping to the map bounds can push the centre out of the region the phase
+        -- settled on -- most easily when this zone already overhangs the bounds,
+        -- which the opening zone routinely does.
         --
-        -- THE REACH BUDGET WINS OVER BOUNDS. A circle poking into the ocean is
-        -- a cosmetic problem; a circle further out than the phase intended is
-        -- a run nobody was given time for, because the shrink duration was
-        -- priced off the distance the solver chose.
-        --
-        -- Note this is a bound on the OFFSET, not on containment: when the
-        -- breakout roll fires, `reach` exceeds the slack on purpose and the
-        -- new circle is legitimately not nested. What must never happen is
-        -- exceeding whatever budget this phase actually settled on.
-        local d = BR.Dist(cx, cy, nx, ny)
-        if d > reach and d > 1e-9 then
-            local t = reach / d
-            nx = cx + (nx - cx) * t
-            ny = cy + (ny - cy) * t
+        -- THE PHASE'S BUDGET WINS OVER BOUNDS. A zone poking into the ocean is a
+        -- cosmetic problem; a zone further out than the phase intended is a run
+        -- nobody was given time for, because the shrink duration was priced off the
+        -- place the solver chose. So it is walked back along the line to this zone's
+        -- centre, to the last point inside the region.
+        if mx ~= nx or my ~= ny then
+            if not inside(mx, my) then
+                local lo = 0.0
+                if inside(cx, cy) then
+                    local hi = 1.0
+                    for _ = 1, RAY_STEPS do
+                        local mid = 0.5 * (lo + hi)
+                        if inside(cx + (mx - cx) * mid, cy + (my - cy) * mid) then
+                            lo = mid
+                        else
+                            hi = mid
+                        end
+                    end
+                end
+                mx, my = cx + (mx - cx) * lo, cy + (my - cy) * lo
+            end
+            nx, ny = mx, my
         end
     end
 
     -- AND NOT OFF THE MAP.
     --
     -- The anchor is a POI and therefore always on land, but nothing stopped
-    -- the per-phase drift from walking seaward one circle at a time -- eight
-    -- phases of `slack * edgeBias` off a coastal anchor is enough to finish
-    -- over open water, and the final circle is where it matters most (user,
-    -- 2026-08-06: "rare (but possible) cases where the storm can close in to
-    -- an anchor point in the ocean").
+    -- the per-phase drift from walking seaward one zone at a time -- eight
+    -- phases of offset off a coastal anchor is enough to finish over open water,
+    -- and the final zone is where it matters most (user, 2026-08-06: "rare (but
+    -- possible) cases where the storm can close in to an anchor point in the
+    -- ocean").
     --
     -- Walked back along its own line toward the PREVIOUS centre, which is on
     -- the map by induction: phase 0 is the anchor POI, and every POI is inside
     -- the boundary (tools/check_boundary.lua is what makes that true rather
     -- than hoped). That makes this terminate, and it keeps the draw's bearing
-    -- -- the circle still moves the way the roll said, just not as far.
-    -- Containment is preserved for free, since every step is strictly closer
-    -- to the centre it was already contained by.
+    -- -- the zone still moves the way the roll said, just not as far. The region
+    -- the centre was drawn in is convex and holds the previous centre, so every
+    -- step in is still inside it: a nested zone stays nested.
+    --
+    -- THE CENTRE IS WHAT IS TESTED, and it is a good stand-in for the zone: it is
+    -- the zone's centroid, at least 0.41 of r deep in every shape that ships, and it
+    -- is phase 8's final point itself.
     --
     -- ═══ THE MASK IS THE SURVEYED BOUNDARY NOW, NOT JUST THE RECTANGLES ═══
     --
@@ -484,7 +866,8 @@ end
 --- @param shrinkMs number
 --- @param dps number
 --- @param seed number|nil    the match's storm seed -- WHAT SHAPE THIS PHASE IS
---- @param m0 number|nil      the morph the current circle starts at; see the record
+--- @param mo table|nil       the wall's outline, for a record that starts part way
+---                           through a morph; see the record's header
 --- @return table
 ---
 --- ═══ THE SEED DEFAULTS TO ZERO, AND ZERO IS A REAL SEED ═══
@@ -496,14 +879,13 @@ end
 --- exact thing #344 exists to remove, with a green suite behind it. Seed 0 is an
 --- ordinary stream and draws an ordinary blob, so a hand-built record is measured
 --- against the same kind of shape the game draws.
-function BR.BuildStormRecord(phase, cx0, cy0, r0, cx1, cy1, r1, now, waitMs, shrinkMs, dps, seed, m0)
-    -- ABSENT RATHER THAN ZERO on every ordinary record, so the wire and the
-    -- snapshot carry nothing new for the phases that start where they should.
-    local morph = BR.Clamp(m0 or 0.0, 0.0, 1.0)
+function BR.BuildStormRecord(phase, cx0, cy0, r0, cx1, cy1, r1, now, waitMs, shrinkMs, dps, seed, mo)
     return {
         phase   = phase,
         seed    = math.tointeger(math.floor(seed or 0)) or 0,
-        m0      = (morph > 0.0) and morph or nil,
+        -- ABSENT RATHER THAN EMPTY on every ordinary record, so the wire and the
+        -- snapshot carry nothing new for the phases that start where they should.
+        mo      = mo,
         cx0     = cx0 + 0.0,
         cy0     = cy0 + 0.0,
         r0      = r0 + 0.0,

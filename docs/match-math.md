@@ -226,14 +226,16 @@ Route-coupled, so the opening circle almost always contains a stretch of the
 path players actually dropped along. POI-anchored, so the centre is always a
 nameable place on land.
 
-### The opening circle
+### The opening zone
 
 ```
-radius0 = max(configRadius0, distance from anchor to the furthest AABB corner)
+radius0 = max(configRadius0, distance from anchor to the furthest AABB corner) + openMargin
 ```
 
-It covers the **whole playable map** by construction. Nobody can land outside
-circle one, so "I spawned already dying" is structurally impossible.
+It covers the **whole playable map** by construction, and it is an exact **disc**
+of that radius — zone 0 is the one zone that is not drawn (#344). Nobody can land
+outside it, so "I spawned already dying" is structurally impossible, and its wall
+during phase 1's hold is a clean ring just past the farthest map corner.
 
 ### The phases
 
@@ -248,6 +250,10 @@ circle one, so "I spawned already dying" is structurally impossible.
 | 7 | 40 | 40 s | 40 s | 5.0 |
 | 8 | 0 | 30 s | 60 s | 6.7 |
 
+A phase's radius is now the size of its zone's **area** — every zone holds 0.90
+of that circle's area, whatever its shape — rather than a bound on where its
+edge may be. See "The shape of the wall" below.
+
 DPS is in **display units per second** against a 100-point bar, so phase 1
 takes 200 s of standing still to kill and phase 8 takes 15.
 
@@ -258,120 +264,184 @@ rather than the match.
 ### How long a shrink actually takes
 
 The authored `shrink` is a **ceiling**, not the duration. The real figure is
-priced off the furthest player's run:
+priced off the furthest player's run to the wall the sweep ends on:
 
 ```
-furthest  = max over in-match players of (distance to next centre − nextRadius)
+furthest  = max over in-match players of (distance to the target's wall)   -- 0 inside it
 shrinkSec = clamp(furthest / 9.0, 40, ceiling)
 ```
 
 9 m/s is the assumed cross-map travel speed. Everyone already inside means the
 sweep takes the 40-second floor and the game moves on; a genuine straggler buys
-time up to the ceiling.
+time up to the ceiling. The wall is the destination's **real boundary** (#344,
+as #364 did for the hold): it used to be `distance to next centre − nextRadius`,
+which on a stretched zone charges a player off its long side a run to a circle
+nothing draws and lets one off its end ride free. Phase 8's destination is a
+point, and the run is to the point. Measured over 1000 simulated matches with the
+players inside the current zone, the mean price moved by under 2 s at every
+phase.
 
-### Where the next circle goes
+### Where the next zone goes
+
+**By its real shape, wholly inside the zone before it** (#344): "the circles
+still overlap when they are different shapes." The centres the next zone `D` can
+take and still fit inside the current zone `Z` are
 
 ```
-slack   = curRadius − nextRadius            -- the containment limit
-offset  ~ pointInDisc(reach × edgeBias)     -- uniform BY AREA, not by radius
+F       = { c : D + c ⊂ Z }                         -- Z eroded by D: convex
+L(θ)    = the furthest s with c0 + s·(cos θ, sin θ) in F   -- bisected, 48 steps
+offset  = √u × edgeBias × L(θ)                      -- θ = 2πU, u = U
 ```
 
-`pointInDisc` applies `√` to the radius draw. Without it, circles cluster
-toward the centre and every match's zone path feels the same.
+`F` holds the current zone's own centre with room to spare, because each zone
+is drawn to fit inside its predecessor concentric at the ratio of their radii
+(below). `√u` is what `pointInDisc` applied: uniform over `F` when `F` is a disc,
+so the zone path does not cluster toward the centre. The draws are the same two
+values `pointInDisc` took, in the same order, so the stream stays aligned.
 
-**Breakout.** With a probability that ramps by phase, the next circle may leave
-the current one entirely:
+Because a zone is fitted by its real outline rather than its circle, it has less
+room to move than a circle of the same radius had — measured over 1000 matches,
+the mean offset of a nested phase is 0.13–0.27 of the current radius at phases
+2–7, against 0.25–0.40 in the circle era.
+
+**Breakout.** With a probability that ramps by phase, the next zone may leave the
+current one entirely, with the gap between the two SHAPES capped:
 
 ```
 chance(phase) = lerp(0%, 85%, (phase − 1) / (phases − 1))
-reach         = curRadius + nextRadius + gapMax × curRadius      -- when it fires
-              = slack                                            -- when it does not
+F_b           = { c : gap(Z, D + c) ≤ gapMax × curRadius }   -- when it fires
+gap(Z, D + c) = signed distance from c to Z ⊕ (−D)            -- a corner list
 ```
 
-`gapMax` is 0.5, so the two circles may separate by up to half the
-predecessor's radius. This is safe only because the wall **sweeps**: damage
-comes from where the wall is, and a phase that broke out gets its shrink
-ceiling multiplied by `shrinkFactor` (2.5) so the run is one people can make.
+`gapMax` is 0.5, so the two zones may separate by up to half the predecessor's
+radius. `F_b` contains `F`, so a breakout roll still lands nested 6–11% of the
+time at phases 2–7. This is safe only because the wall **sweeps**: damage comes
+from where the wall is, and a phase that rolled a breakout gets its shrink ceiling
+multiplied by `shrinkFactor` (2.5) so the run is one people can make.
 
 Two earlier formulations were wrong in instructive ways — scaling the budget by
 the *next* radius made the final phase (radius 0) unable to move at all, and
 scaling by the *current* radius could never separate the early circles. Stating
 the geometry we wanted removed both accidents.
 
+**The last phases hug the edge**: the offset is at least `L(θ) − edgeHugM`.
+**The map bounds** clamp the centre so the next zone's exact bounding box stays
+inside `mapAABB` (an axis it is wider than is centred), and if that moved it out
+of the phase's region it is walked back toward the current centre to the last
+point inside — the phase's budget beats bounds, because the sweep was priced off
+where the solver put it.
+
 ### And never into the sea
 
 A drawn centre that lands in authored water is walked back along its own
 bearing toward the previous centre, which is dry by induction from the anchor.
 Without this, 210 of 600 sampled draws off a coastal centre landed in open
-water.
+water. The region a centre is drawn in is convex and holds the previous centre,
+so every step back is still a zone wholly inside its predecessor.
 
 ### The shape of the wall
 
-Everything above is about where the circles GO. Since #344 the wall itself is
-**not a circle**, and since 2026-09-23 every zone draws its own shape: one in
-ten is a plain circle, and the rest are jittered convex polygons whose vertices
-are each rounded, beveled or sharp, scaled by whatever radius the solver reports.
+Since #344 the wall is **not a circle**, and since 2026-09-23 every zone draws
+its own shape **by area**: "the storm is still too circular. let's draw it by
+area now instead of any consideration for a radius." A zone is the convex hull
+of its corner **discs**: a rounded vertex is one disc, a beveled vertex is its
+chamfer's two points, a sharp vertex is one point, and a circle zone is one disc.
 
 ```
-circle      one zone in ten, at the radius that holds the area rule
-corners     5 to 12, drawn per zone: 5–6 at weight 2, 7–12 at weight 1
+circle      one zone in ten, one disc holding the area
+corners     3 to 12, drawn per zone: 3–6 at weight 2, 7–12 at weight 1
 finish      each vertex rounded, beveled or cornered, a third each
 turn        the whole ring rotated by U(0, 360°)
 angles      each vertex slid by up to ±9° within its slot
-radii       r × (1 + 0.13 × U(−1, 1))        -- symmetric about r, not inward
+radii       1 + 0.13 × U(−1, 1)                  -- symmetric, then:
+stretch     target S = 1 + 2u, u = U(0, 1): the ring stretched along a drawn axis
+            by the area-preserving map that gets closest to S without passing it,
+            S measured exactly as longest length / narrowest width, capped at 3:1
 cut         a rounded or beveled vertex takes 0.5 of the shorter half-edge
-area        scaled to exactly 0.90 of the circle's
-reach       redrawn if it would reach past 1.15 r
+area        the hull scaled to exactly 0.90 of the circle's
 ```
 
-The radius is still `r` and every placement rule above still uses it. Every
-zone covers the same ground — 0.90 of the circle, which is what #344's fixed
-nine corners measured — so a pentagon zone plays the same size as a
-dodecagon, and a circle zone too. What holding the area costs is reach: any
-draw that would reach past 1.15 `r` is redrawn. **Triangles and squares are not
-drawn**, because a sharp corner on one cannot be held to both: the largest
-triangle inside 1.15 `r` covers 0.55 of the circle and the largest square 0.84,
-and with even finishes 94% of triangles and 71% of squares still reach past it
-after every retry. Measured over 20 000 draws per count at the shipping config:
+Every zone covers the same ground — 0.90 of its phase circle — so pacing does not
+move with its shape. **Triangles and squares are back** ("triangles and squares
+are okay with me"): the rule that removed them, no corner past 1.15 `r`, was
+radius reasoning, and a zone is placed by its real outline now. Each zone is also
+**chained**: zone `z` must fit inside zone `z−1` concentric at the ratio of their
+radii with `fitClear` (0.04 r) to spare, and a draw that does not is turned in
+15° steps, then tamed down a stretch ladder, and last of all becomes a copy of
+its predecessor's shape. Zone 1 is unconstrained — every zone 1 fits inside the
+map disc. Measured over 21 000 zones (3000 matches × zones 1–7):
 
-| corners | max extent (mean / worst) | min/max radius (mean / worst) | kept first try |
-|---|---|---|---|
-| 5 | 1.11 / 1.15 | 0.76 / 0.62 | 51% |
-| 6 | 1.10 / 1.15 | 0.77 / 0.64 | 77% |
-| 9 | 1.08 / 1.15 | 0.80 / 0.69 | 93% |
-| 12 | 1.04 / 1.15 | 0.84 / 0.72 | 22% |
+| stretch | < 1.5 | 1.5–2 | 2–2.5 | ≥ 2.5 | median | max |
+|---|---|---|---|---|---|---|
+| share | 30.4% | 25.7% | 23.3% | 20.6% | 1.88 | 3.000 |
 
-Convexity is not guaranteed by the draw and is **enforced**: a concave polygon
-is redrawn from the same deterministic stream with both jitters lowered, and
-the last attempt uses no jitter at all. The exact signed distance and the exact
-erosion the renderer depends on are only exact for a convex shape, and so is
-the stitch that joins an overlapping pair. Only pentagons ever reached the last
-attempt, on 0.2% of draws, and it is always inside `reach`.
+| zone | circles | stretch tamed | turned to fit | parent's shape |
+|---|---|---|---|---|
+| 2 | 6.5% | 17.0% | 54.7% | 3.2% |
+| 3 | 8.3% | 10.4% | 54.2% | 1.3% |
+| 4 | 9.4% | 4.6% | 42.8% | 0.1% |
+| 5 | 8.3% | 1.2% | 32.3% | 0.03% |
 
-**Each zone keeps one shape, and the wall morphs between them.** Zone k is the
-circle phase k closes on; it is phase k's target and then phase k+1's current
-circle, in the same shape throughout. Across a sweep the wall is the Minkowski
-interpolation of the zone it leaves and the zone it arrives at, as placed:
+Corners: 3, 4, 5 and 6 at 12.8–13.2% each, 7 to 12 at 6.3–6.8% each, circles
+9.0%; finishes 33.2 / 33.4 / 33.3%. Area 0.900 exactly; the centre is at least
+0.41 r deep in every zone; the furthest any corner reaches is 1.40 r on average
+and 2.64 r at worst.
+
+**Long zones are longer than the old diameters.** At phase 5 (r 260) the longest
+length is 700 m at the median and 1028 m at worst, where the circle was 520 m
+across; at phase 6 (r 110) 294 m median and 448 m worst, 0.4% of zones past the
+424 m FiveM draws players to; at phase 7 (r 40) 107 m median, 164 m worst.
+
+Convexity is not guaranteed by the draw and is **enforced**: a concave ring is
+redrawn from values the same stream already handed out, with both jitters
+lowered, and the last attempt uses no jitter at all. A hull of discs is convex
+whatever the discs are. The exact signed distance and the exact erosion the
+renderer depends on are only exact for a convex shape, and so is the stitch that
+joins an overlapping pair. Every zone reads exactly 317 values off its stream,
+whatever it decides, so a retry never shifts what comes after it.
+
+**Each zone keeps one shape, and the wall morphs corner to corner.** Zone k is
+the zone phase k closes on; it is phase k's target and then phase k+1's starting
+zone, in the same shape throughout. "I don't want the destinations shape or
+corners to change at all. I want the moving wall's corners and lines to move and
+change to match the destination's." So every vertex of the zone the wall leaves
+is paired with a vertex of the zone it closes on — by the direction each faces,
+round the circle — and every disc travels in a straight line to its partner's:
 
 ```
-wall(t)     (1 − t) × Z0  ⊕  t × Z1           -- Z0, Z1 each at its own centre and radius
+disc(t)     (1 − t) × (source disc, placed)  +  t × (destination disc, placed)
+wall(t)     hull of every disc(t)  ∪  the destination's own discs   -- nested phases
 ```
 
-It is convex at every `t`, never covers less than the area rule, never reaches
-further than the further of its two ends, and its signed distance is exact —
-the same corner list a zone is. Its support function is affine in `t`, which is
-what keeps airdrop siting's "clears both ends of the window, clears every instant
-in it" true. The map does not morph: it moves and scales the zone's starting
-shape for the whole sweep (#350) and takes the target's once, as the sweep
-finishes. Until 2026-09-23 a record's current circle and target shared one
-shape keyed on the phase, and the wall snapped 34–514 m at every phase change.
+max(n, m) links, never n + m: a surplus destination corner opens out of one that
+was already there, a surplus source corner closes onto its neighbour's partner,
+and each corner's finish becomes its partner's. The destination never moves or
+changes. On a nested phase the wall **holds the destination at every instant**
+and **never moves outward** — a moving disc's later position is a blend of its
+earlier one and a disc of the destination, both inside the earlier hull. Where the
+bare corner paths would have cut into the destination, the wall rests on it
+instead: measured in 34–52% of nested sweeps at phases 2–7 (the bare cut would
+have been up to 374 m deep at phase 2). It is convex at every `t` (a hull), and
+its signed distance and erosion are the same corner list's, exact. A breakout
+morphs the same way without the destination in the hull, and the safe zone is
+the wall united with the destination. The map does not morph yet: it moves and
+scales the zone's starting shape for the whole sweep (#350) and takes the
+target's once, as the sweep finishes.
+
+**What airdrop siting stands on changed with it.** The wall's support function
+used to be affine in `t`, which made "clears both ends of the window, clears every
+instant in it" a theorem. A hull of moving discs is not affine in `t`; on a nested
+phase the stronger statement holds instead — anything inside the destination is
+inside the wall at every instant — and on a breakout the destination entry keeps a
+crate inside what the damage tick bills at every instant.
 
 **The shape is derived, not sent.** The record carries the match's storm seed
 and the phase index; the client's wall and the server's damage tick both build
-both zones' shapes — circle, corner count and every vertex's finish included —
-from those numbers through one shared function. Nothing about the geometry
-crosses the wire, and a wall drawn from a different derivation than the one
-being billed would be a lie with no bound on its size.
+both zones' shapes — circle, corner count, stretch and every vertex's finish
+included — from those numbers through one shared function. Nothing about the
+geometry crosses the wire (but for a frozen or re-entered record's own outline,
+`mo`, on the dev commands), and a wall drawn from a different derivation than the
+one being billed would be a lie with no bound on its size.
 
 This section used to list two costs of the shapes. Both were paid off and
 validated in game on 2026-09-23, and are kept here as history so nobody

@@ -3905,8 +3905,9 @@ do
     -- WALL (#364): anyone inside its shape pays nothing. first.hold in
     -- tools/test_storm.lua pins the distance itself; this block drives the
     -- caps through the real match. The SHRINK is priced per phase
-    -- (2026-08-04): the furthest player's run to the target edge, floored at
-    -- shrinkPace.minSeconds and ceilinged by the authored value.
+    -- (2026-08-04): the furthest player's run to the target's WALL (#344 round 2,
+    -- as #364 did for the hold), floored at shrinkPace.minSeconds and ceilinged
+    -- by the authored value.
     --
     -- edgeBiasMax is zeroed for this block to remove the random draw --
     -- but the AABB clamp can STILL shift the target off an edge-adjacent
@@ -3920,7 +3921,7 @@ do
     local function wallEast(m)
         local f = m.stormFirst
         local shape = BR.StormShape.blob(f.cx, f.cy, f.r, BR.StormUnit(m.stormSeed, 1))
-        local lo, hi = 0.0, 2.0 * f.r
+        local lo, hi = 0.0, 3.0 * f.r
         for _ = 1, 60 do
             local mid = 0.5 * (lo + hi)
             if BR.StormShape.distance(shape, f.cx + mid, f.cy) <= 0 then
@@ -3929,12 +3930,14 @@ do
         return lo
     end
 
-    --- What enterPhase should have priced, from the same geometry it saw.
+    --- What enterPhase should have priced, from the same geometry it saw: each
+    --- player's run to the target's real wall, which is zero from inside it.
     local function expectShrink(rec2)
         local f = 0.0
+        local target = BR.StormTarget(rec2)
         for _, src in ipairs({ 1, 2 }) do
             local pc = pedCoords[1000 + src]
-            local d = BR.Dist(pc.x, pc.y, rec2.cx1, rec2.cy1) - rec2.r1
+            local d = BR.StormShape.distance(target, pc.x, pc.y)
             if d > f then f = d end
         end
         return BR.Clamp(f / BR.Config.Storm.shrinkPace.metersPerSec,
@@ -3948,9 +3951,11 @@ do
     BR.Sched.step(fakeTime)
 
     local r1 = BR.Config.Storm.phases[1].radius
-    local reach = BR.Config.Storm.shape.reach
     local a = manchor()
     local f = theMatch().stormFirst
+    -- PAST THE FURTHEST THIS ZONE REACHES, which is its own unit's extent times r:
+    -- a zone is drawn by area now and stretched, so no multiple of r bounds them all.
+    local reach = BR.StormUnit(theMatch().stormSeed, 1).extent
     setPos(1, f.cx + reach * r1 + 1800.0, f.cy)
     setPos(2, f.cx, f.cy)
     fakeTime = fakeTime + 1000
@@ -4374,10 +4379,10 @@ do
     -- circle 1 is convex, so each ray crosses the boundary once.
     --
     -- AND THEN A PENTAGON, which is where a radius test is most wrong: held to the
-    -- same area as every other count, the fewest sides on offer dent furthest in and
-    -- their corners reach furthest out, up to 1.15 r. The first seed whose circle 1
-    -- draws five corners -- and before it the first from 352 whose circle 1 is a
-    -- polygon at all, since one zone in ten is a plain circle, which bulges nowhere.
+    -- same area as every other count, a few sides dent far in and their corners reach
+    -- far out -- and stretched, further still. The first seed whose circle 1 draws
+    -- five corners -- and before it the first from 352 whose circle 1 is a polygon at
+    -- all, since one zone in ten is a plain circle, which bulges nowhere.
     local POLY, PENT = 352, nil
     while BR.StormUnit(POLY, 1).kind ~= 'polygon' do POLY = POLY + 1 end
     for s = 1, 2000 do
@@ -4393,7 +4398,7 @@ do
         -- opening circle's shape, zone 0, laid on circle 1.
         local zone = BR.StormZone(m.storm, CX, CY, R1, 1.0)
         local function wallAt(th)
-            local lo, hi = 0.0, 2.0 * R1
+            local lo, hi = 0.0, 3.0 * R1
             for _ = 1, 60 do
                 local mid = 0.5 * (lo + hi)
                 if BR.StormShape.distance(zone, CX + mid * math.cos(th),

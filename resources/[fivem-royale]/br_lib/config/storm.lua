@@ -12,11 +12,17 @@
 --    it can never sit in the ocean and always centres somewhere nameable. With
 --    192 tours x ~49 POIs the outcome never reads as a pattern.
 --
--- 2. LATE CIRCLES SIT INSIDE THE RENDER CEILING. FiveM's default entity culling
---    radius is 424 units, and the natives that would widen it are deprecated with
---    known unfixable issues. Players beyond that distance are not rendered and
---    cannot be shot. From phase 4 down, the circle diameter is at or under that
---    ceiling, so fights stay inside what the engine will actually draw.
+-- 2. LATE ZONES MOSTLY SIT INSIDE THE RENDER CEILING. FiveM's default entity
+--    culling radius is 424 units, and the natives that would widen it are
+--    deprecated with known unfixable issues. Players beyond that distance are not
+--    rendered and cannot be shot. A zone is drawn by AREA now and stretched up to
+--    3:1 (#344), so what the ceiling is held against is its LONGEST LENGTH rather
+--    than a diameter. MEASURED over 3,000 matches: phase 6 (r 110) is 294 m long
+--    at the median and 448 m at worst, 0.4 percent of zones past 424; phase 7
+--    (r 40) never more than 164 m. Phase 5 (r 260) is 700 m at the median and up
+--    to 1028, where its circle was 520 m across and already past the ceiling. The
+--    3:1 cap is one number for every phase; a lower cap on the late phases is the
+--    lever if a phase-6 fight ever reads as broken.
 
 BR = BR or {}
 BR.Config = BR.Config or {}
@@ -34,23 +40,25 @@ BR.Config.Storm = {
         widenMax  = 4000.0,
     },
 
-    -- The opening circle COVERS THE WHOLE MAP: its radius is computed per
-    -- match as the distance from the anchor to the farthest playable-bounds
-    -- corner (plus a margin), so nobody can land outside circle 1 -- a far
+    -- The opening zone COVERS THE WHOLE MAP: its radius is computed per match
+    -- as the distance from the anchor to the farthest playable-bounds corner
+    -- (plus a margin), and it is an exact DISC of that radius -- zone 0 is the
+    -- one zone that is not drawn (#344) -- so nobody can land outside it: a far
     -- tour-end jumper starts inside like everyone else, and the first shrink
     -- sweeps the map inward toward the anchor. radius0 is the FLOOR on that
     -- computation, not the radius itself.
     radius0     = 3500.0,
     openMargin  = 200.0,
-    -- How far off-centre the next circle may sit, as a fraction of the
-    -- containment slack. 1.0 = anywhere the nesting rule allows -- 0.55
-    -- "wasn't moving far enough" (user call, 2026-08-04).
+    -- How far off-centre the next zone may sit, as a fraction of the room it has
+    -- on its drawn bearing -- how far it can go and still lie wholly inside the
+    -- current zone, by real shape (BR.NextZoneCentre). 1.0 = anywhere the nesting
+    -- rule allows -- 0.55 "wasn't moving far enough" (user call, 2026-08-04).
     edgeBiasMax = 1.0,
 
-    -- The FINAL circles hug the edge: for the last edgeHugPhases phases the
-    -- next centre is pushed to within edgeHugM of the current circle's rim
-    -- (containment still wins at small radii, where the whole circle is
-    -- within 250m of its own circumference anyway). Endgames resolve as a
+    -- The FINAL zones hug the edge: for the last edgeHugPhases phases the next
+    -- zone is pushed out to within edgeHugM of as far as it can go on its bearing
+    -- and still lie inside the current one (containment still wins at small
+    -- radii, where the whole room is under 250 m anyway). Endgames resolve as a
     -- run to a place, not a shuffle in the middle.
     edgeHugM      = 250.0,
     edgeHugPhases = 2,
@@ -171,12 +179,13 @@ BR.Config.Storm = {
     -- onto land. Anchors are checked in the test suite so the overhang stays
     -- bounded rather than accidental.
     --
-    -- The phase's reach budget always beats these bounds. If clamping a circle
-    -- into the AABB would push it further than the budget allows,
-    -- NextStormCentre pulls it back instead -- a circle poking into the sea is
-    -- cosmetic, a circle further out than the phase priced is a run nobody was
-    -- given time for. (The budget is the containment slack, plus the breakout
-    -- overhang on the phases that roll one.)
+    -- The phase's budget always beats these bounds. If clamping a zone into the
+    -- AABB would push it out of the room the phase drew it in, NextZoneCentre
+    -- walks it back instead -- a zone poking into the sea is cosmetic, a zone
+    -- further out than the phase priced is a run nobody was given time for. (The
+    -- room is wholly inside the current zone, or within the breakout's gap of it
+    -- on the phases that roll one.) It is the next zone's EXACT bounding box that
+    -- is held inside, not a circle's.
     mapAABB = {
         min = { x = -3600.0, y = -3600.0 },
         max = { x =  4500.0, y =  8000.0 },
@@ -280,72 +289,89 @@ BR.Config.Storm = {
     -- nor round. Left at zero, nothing in the game can tell this knob exists.
     squareness = 0.0,
 
-    -- ═══ EVERY ZONE IS A RANDOM SHAPE, AND THESE ARE ITS DIALS (#344) ═══
+    -- ═══ EVERY ZONE IS A RANDOM SHAPE, DRAWN BY AREA, AND THESE ARE ITS DIALS (#344) ═══
     --
     --   "we're only drawing squircles (quite well though), can we change to random
     --    shapes per phase? There should be a 90% chance of not being a circle, and
     --    when not a circle, there should be equal chances for each vertex to be
     --    rounded, beveled, or cornered."              -- the owner, 2026-09-23
+    --   "the storm is still too circular. let's draw it by area now instead of any
+    --    consideration for a radius."
+    --   "We need more aspect ratio mix."              -- the owner, 2026-09-23
     --
-    -- One zone in ten is a plain circle, and every other is a jittered convex polygon
-    -- whose vertices each draw their own finish -- an arc, a chamfer or a sharp point
-    -- -- drawn from the match's storm seed and the ZONE's index, scaled by whatever
-    -- radius the solver reports. So the WALL and the DAMAGE BOUNDARY are both that
-    -- shape and the hold/sweep timing is untouched. br_lib/shared/storm_shape.lua's
-    -- blob() carries the geometry and BR.StormZone is the one place it is asked for.
+    -- One zone in ten is a plain circle, and every other is the convex hull of its
+    -- corner DISCS: a jittered polygon, stretched along a drawn axis up to 3:1, whose
+    -- vertices each draw a finish -- a rounded vertex is one disc, a beveled one its
+    -- chamfer's two points, a sharp one a point -- scaled to hold `area` of its phase
+    -- circle exactly. Drawn from the match's storm seed and the ZONE's index, so the
+    -- WALL and the DAMAGE BOUNDARY are both that shape and the hold/sweep timing is
+    -- untouched. br_lib/shared/storm_shape.lua's blobUnit carries the geometry and
+    -- BR.StormZone is the one place it is asked for.
+    --
+    -- ZONE 0, THE OPENING ZONE, IS THE MAP DISC on every seed: nobody can land
+    -- outside it, and its wall is a clean ring just past the farthest map corner.
     --
     -- A ZONE KEEPS ITS SHAPE FOR ITS WHOLE LIFE: as one phase's target, and then as
-    -- the next phase's current circle until that sweep carries it away. The wall
-    -- morphs from one zone's shape into the next across each sweep, so it arrives on
-    -- the target in the target's shape and nothing changes when the phase does. Until
-    -- 2026-09-23 the two shared one shape keyed on the phase, and the border "snaps to
-    -- a different location" at the end of every sweep -- 34 to 514 m of it, measured.
+    -- the next phase's starting zone until that sweep carries it away. The wall
+    -- morphs CORNER TO CORNER across each sweep -- every corner of the zone it leaves
+    -- travels to a corner of the zone it closes on, and the destination never moves
+    -- or changes -- so it arrives on the target in the target's shape and nothing
+    -- changes when the phase does.
     --
-    -- MEASURED AT THIS CONFIG, circles off, 20000 draws per count
-    -- (tools/test_shared.lua's `blob.measure` re-measures it rather than trusting this
-    -- note). Area is 0.900 of the circle at every count, exactly, because it is scaled
+    -- ═══ EVERY ZONE FITS INSIDE THE ONE BEFORE IT, AND THE PLACEMENT LEANS ON IT ═══
+    --
+    -- Zone z is drawn to fit CONCENTRIC inside zone z-1 at the ratio of their phase
+    -- radii, every disc at least `fitClear` of r inside -- turned, tamed down a
+    -- stretch ladder, or last of all a copy of zone z-1's shape if it does not. That
+    -- is what guarantees BR.NextZoneCentre room to place zone z WHOLLY inside zone
+    -- z-1 on every phase that does not break out ("the circles still overlap when
+    -- they are different shapes", the owner, 2026-09-23). SO RETUNING ONE PHASE'S
+    -- RADIUS CAN RESHAPE EVERY LATER ZONE OF A MATCH: the chain is in the ratio.
+    --
+    -- MEASURED AT THIS CONFIG over 21,000 zones -- 3,000 matches, zones one to seven,
+    -- chained exactly as BR.StormUnit builds them (tools/test_shared.lua's
+    -- `blob.measure` re-measures a smaller sweep of it rather than trusting this
+    -- note). Area is 0.900 of the circle on every draw, exactly, because it is scaled
     -- to be:
     --
-    --     corners   max extent     min/max radius   first try   last resort
-    --               mean  worst    mean  worst
-    --        5      1.11  1.15     0.76  0.62         51%         0.2%
-    --        6      1.10  1.15     0.77  0.64         77%           0
-    --        7      1.09  1.15     0.78  0.66         92%           0
-    --        8      1.08  1.15     0.79  0.68         97%           0
-    --        9      1.08  1.15     0.80  0.69         93%           0
-    --       10      1.07  1.15     0.81  0.70         73%           0
-    --       11      1.05  1.15     0.82  0.72         45%           0
-    --       12      1.04  1.15     0.84  0.72         22%           0
+    --     longest / narrowest   under 1.5   1.5-2   2-2.5   2.5 and over
+    --     share of zones          30.4%     25.7%   23.3%      20.6%
+    --     median 1.88, and never past 3.000
     --
-    -- First try is the share of draws kept on the first attempt; last resort is the
-    -- share that needed the sixth, the no-jitter regular polygon. None went past
-    -- `reach` and none was ever kept concave. Over 100000 zones of the shipping draw:
-    -- 10.0% circles, and the vertices 33.4% rounded, 33.3% beveled, 33.3% cornered.
+    --     zone   circles   stretch tamed   turned to fit   zone before's shape
+    --      2      6.5%        17.0%           54.7%              3.2%
+    --      3      8.3%        10.4%           54.2%              1.3%
+    --      4      9.4%         4.6%           42.8%              0.1%
+    --      5      8.3%         1.2%           32.3%              0.03%
     --
-    -- min/max radius is the "is it a circle" measure -- 1.00 would be one. At 0.79
-    -- the radius varies by a fifth, which on the 2600 m phase is a boundary running
-    -- between about 2200 and 2800 metres out.
+    -- Corners: three to six at 12.8 to 13.2 percent of zones each, seven to twelve at
+    -- 6.3 to 6.8 each, circles 9.0; vertices 33.2% rounded, 33.4% beveled, 33.3%
+    -- cornered. The centre is at least 0.41 of r deep in every zone; the furthest any
+    -- corner reaches is 1.40 r on average and 2.64 r at worst.
     --
     -- ═══ WHAT IT COSTS, SAID HERE RATHER THAN LEFT TO BE DISCOVERED ═══
     --
-    --   THE MAP DOES NOT MORPH. #350 moves and scales the zone's fill in place, which
-    --   is exact only while the zone is one shape -- so the map draws the zone in the
-    --   shape it set out in for the whole sweep, and takes the target's once, when the
-    --   sweep finishes. Mid-sweep the fill and the curtain disagree by the morph; the
-    --   target's own fill, drawn on top, is the new shape all phase.
+    --   NESTED ZONES MOVE ABOUT HALF AS FAR. A long zone fitted inside another long
+    --   zone by its real outline has less room than a circle had inside a circle:
+    --   measured over 1,000 matches, the mean offset of a nested phase is 0.13 to
+    --   0.27 of the current radius at phases 2 to 7, against 0.25 to 0.40 in the
+    --   circle era. `fitClear` buys some of that back; raising it buys more, at the
+    --   price of more zones becoming copies of the zone before.
     --
-    --   TRIANGLES AND SQUARES ARE NOT ON OFFER. A sharp corner reaches out, and a
-    --   triangle or square with one cannot cover 0.90 of the circle and stay inside
-    --   `reach` -- the largest triangle inside 1.15 of r covers 0.55 of the circle, the
-    --   largest square 0.84. With even finishes 94% of triangles and 71% of squares
-    --   still reach past it after every retry. Allowing them means giving up one of
-    --   the three rules: `area`, `reach`, or the even finishes.
+    --   CIRCLES DIP IN THE MIDDLE PHASES, to 6.5 percent at zone 2, because a round
+    --   zone of the right area does not fit inside a long one and is drawn as a
+    --   polygon instead.
     --
-    --   A TARGET CAN POKE OUT OF THE CURRENT SHAPE ON A NESTED PHASE. The two are
-    --   different shapes, and the nesting test is on their circles, so a corner of the
-    --   target can stand outside the current shape's dent. That ground is not safe
-    --   early -- grace declined, not a loss against a disc strictly inside a disc -- and
-    --   the wall is drawn on the boundary that damages, so nothing says otherwise.
+    --   LONG ZONES ARE LONGER THAN THE OLD DIAMETERS -- see point 2 at the top.
+    --
+    --   THE MAP DOES NOT MORPH YET. #350 moves and scales the zone's fill in place,
+    --   which is exact only while the zone is one shape -- so the map draws the zone
+    --   in the shape it set out in for the whole sweep, and takes the target's once,
+    --   when the sweep finishes. Mid-sweep the fill and the curtain disagree by the
+    --   morph; the target's own fill, drawn on top, is the new shape all phase.
+    --
+    --   A UNIT COSTS ABOUT TWO MILLISECONDS TO BUILD -- 1.7 on average, 5 at the
+    --   99th percentile, in plain Lua 5.4 -- and is built once per zone per match.
     --
     -- PHASE 8 IS RADIUS 0 AND STAYS A POINT, as it always has: a shape with no
     -- radius is not a shape, and a point is not a circle.
@@ -354,23 +380,26 @@ BR.Config.Storm = {
         -- circle". Drawn FIRST off the zone's own stream and every other value read
         -- after it whatever it decided, so retuning this changes which zones are
         -- circles and never what the others look like. A circle holds `area` like
-        -- every other shape, so it plays the size they do, a little inside r.
+        -- every other shape, so it plays the size they do. One that cannot fit inside
+        -- the zone before it is drawn as a polygon instead.
         circle      = 0.10,
 
         -- HOW MANY CORNERS, DRAWN PER ZONE, and these are the odds.
         --
         --   "We're able to reliably draw squircle storms, but what about random
         --    other shapes of various vertices?"          -- the owner, 2026-09-23
+        --   "triangles and squares are okay with me"     -- the owner, 2026-09-23
         --
         -- Each zone rolls its count off the match's storm seed, so a match runs
         -- through several polygons and the next match through different ones. The
         -- weights are relative: 2 is twice as likely as 1, and a count left out is
         -- never drawn.
         --
-        -- FIVE TO TWELVE, AND THE LOW END COUNTS DOUBLE, so two polygons in five are a
-        -- pentagon or a hexagon -- the counts that read as a named shape from above.
-        -- THREE AND FOUR ARE OUT, measured: see "what it costs" above. The generator
-        -- still draws them if they are typed here, and they will reach past `reach`.
+        -- THREE TO TWELVE, AND THE LOW END COUNTS DOUBLE, so four polygons in seven are
+        -- a triangle, a square, a pentagon or a hexagon -- the counts that read as a
+        -- named shape from above. Three and four were out while every zone had to stay
+        -- inside 1.15 of r; a zone is drawn by area and placed by its real outline now,
+        -- so nothing bounds how far a corner reaches, and they are back.
         --
         -- A NUMBER HERE IS ONE COUNT ON EVERY ZONE, which is how #344 shipped (9).
         -- BELOW 3 IS NOT A POLYGON AND IS THE WAY BACK TO CIRCLES -- the whole game
@@ -378,7 +407,7 @@ BR.Config.Storm = {
         -- a default: #335 shipped its shape behind a knob at zero and nothing in the
         -- game ever drew it, which is the mistake this block is not repeating.
         corners     = {
-            [5] = 2, [6] = 2,
+            [3] = 2, [4] = 2, [5] = 2, [6] = 2,
             [7] = 1, [8] = 1, [9] = 1, [10] = 1, [11] = 1, [12] = 1,
         },
 
@@ -388,15 +417,12 @@ BR.Config.Storm = {
         -- finish weighted at zero is never drawn.
         vertex      = { rounded = 1, beveled = 1, cornered = 1 },
 
-        -- HOW FAR EACH CORNER'S RADIUS WANDERS, as a fraction of r, SYMMETRICALLY
-        -- about it -- so r * (1 + j * U(-1, 1)) and not r * (1 - 2j * U(0, 1)).
-        -- Inward-only jitter costs 28 to 41 percent of the circle's area, measured,
-        -- because the polygon and the corner rounding have each taken some already;
-        -- jittering about r costs a tenth and keeps the extent near r, which is what
-        -- lets every placement rule keep using r as the bound.
+        -- HOW FAR EACH CORNER'S RADIUS WANDERS, as a fraction of the ring's, SYMMETRICALLY
+        -- about it -- so 1 + j * U(-1, 1) and not 1 - 2j * U(0, 1). Inward-only jitter
+        -- costs 28 to 41 percent of the circle's area, measured.
         --
-        -- THIS IS THE DIAL TO TURN AFTER A PLAYTEST. Higher is lumpier and more
-        -- often concave; lower reads more regular.
+        -- Higher is lumpier and more often concave, and a concave draw is redrawn;
+        -- lower reads more regular. Most of the variety is in `stretch` now.
         jitter      = 0.13,
 
         -- HOW FAR A CORNER MAY SLIDE AROUND THE RING, in degrees, either way.
@@ -415,27 +441,40 @@ BR.Config.Storm = {
         -- the bulge of the arc. 1.0 would leave two neighbours meeting in the middle
         -- of their shared edge; 0.5 keeps at least half of every edge straight.
         --
-        -- 0.5 AND NOT THE 0.85 THE ROUNDED CORNERS USED, for two measured reasons: at
-        -- 0.85 a beveled corner eats so much of both edges that the chamfer reads as a
-        -- side of its own, and pentagons with a sharp corner reach past `reach` on one
-        -- draw in six -- at 0.6 and below, never. Raise it for softer corners.
+        -- 0.5 AND NOT THE 0.85 THE ROUNDED CORNERS USED: at 0.85 a beveled corner eats
+        -- so much of both edges that the chamfer reads as a side of its own. Raise it
+        -- for softer corners. A rounded corner's disc is also held inside the polygon
+        -- (storm_shape.lua's RHO_FIT), so a near-flat vertex cannot grow a disc that
+        -- reaches past the far side of the shape.
         cut         = 0.5,
 
-        -- HOW BIG EVERY SHAPE IS, as a fraction of the circle's area. Every draw is
-        -- scaled to exactly this, so a pentagon zone plays the size a twelve-sided one
-        -- does, and a circle zone too. 0.90 is what #344's nine corners measured.
+        -- HOW BIG EVERY SHAPE IS, as a fraction of its phase circle's AREA. Every draw
+        -- is scaled to exactly this, so a triangle zone plays the size a twelve-sided
+        -- one does, and a long one the size a round one does. 0.90 is what #344's nine
+        -- corners measured, and it is what the pacing was tuned on -- the shape is
+        -- free, the ground it covers is not.
         area        = 0.90,
 
-        -- HOW FAR PAST r ANY SHAPE MAY REACH, as a multiple of it. A draw that would
-        -- reach further once scaled to `area` is redrawn tamer, like a concave one.
-        --
-        -- THIS IS THE TRADE AGAINST `area`, AND IT IS PAID IN SHARPNESS. A shape that
-        -- covers ninety percent of the circle and reaches no further than this cannot
-        -- be too sharp, which is what rules the sharp-cornered triangle and square
-        -- out. 1.15 sits between #344's nine-corner worst as it shipped (1.117) and the
-        -- same shape's worst once held to `area` (1.158), so no zone reaches past r
-        -- further than a shape that has already shipped.
-        reach       = 1.15,
+        -- HOW STRETCHED A ZONE MAY BE: its longest length over its narrowest width, at
+        -- most. The owner's 3:1 -- "3:1 is okay, but I'm assuming this is a maximum".
+        -- Measured exactly, off the zone's width in every direction.
+        stretch     = 3.0,
+
+        -- HOW THE STRETCH IS DRAWN, up to that maximum. 'uniform' draws the target
+        -- evenly across [1, stretch], so a long zone is as common as a round one --
+        -- "we need more aspect ratio mix" -- and the shipping mix is the table above.
+        -- 'sqrt' leans toward the long end. The zone is stretched as close to the
+        -- target as its corners allow and never past it.
+        stretchDraw = 'uniform',
+
+        -- HOW MUCH ROOM A ZONE LEAVES INSIDE THE ONE BEFORE IT, as a fraction of r:
+        -- every disc of zone z at least this far inside zone z-1 when the two are
+        -- concentric at the ratio of their radii. 0 would let a zone fit its
+        -- predecessor exactly and leave the next placement no room to move. MEASURED:
+        -- at 0.04 the placement's room on a random bearing is 17 to 22 percent wider
+        -- than at 0 at phases 2 and 3, and 1 to 15 percent later; the price is that
+        -- 3.2 percent of zone 2s become a copy of zone 1's shape, against 0.7 at 0.
+        fitClear    = 0.04,
     },
 
     -- Rendering. A single giant sphere is not an option: marker type 28 is

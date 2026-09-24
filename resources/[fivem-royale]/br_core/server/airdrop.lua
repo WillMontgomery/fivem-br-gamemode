@@ -555,7 +555,7 @@ end
 --- EVERY DRAW HAPPENS WHETHER OR NOT IT IS USED. The chance roll and the delay
 --- are both taken unconditionally, so a match where the probability roll fails
 --- burns exactly the same RNG as one where it passes -- the same discipline
---- BR.NextStormCentre applies to its breakout roll, and for the same reason: a
+--- BR.NextZoneCentre applies to its breakout roll, and for the same reason: a
 --- conditional draw makes the sequence depend on the outcome.
 --- @param m table
 function BR.Airdrop.begin(m)

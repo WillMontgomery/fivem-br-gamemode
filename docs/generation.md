@@ -220,12 +220,13 @@ tWait, tShrink, dps}` — and both sides solve it with `BR.StormAt(record, now)`
 Nothing about the circle is streamed; a shrinking storm costs zero per-frame
 network traffic.
 
-The next circle is chosen by `NextStormCentre`, which picks a point such that
-the new circle sits **inside** the old one, with an edge bias that grows over
-the match (`edgeBiasMax` 1.0) so late circles hug the rim rather than always
-converging on the middle. Containment beats the bias: the solver's `minDist`
-is `slack − 250`, so a circle that cannot both hug the edge and stay inside
-gives up the edge.
+The next zone is placed by `NextZoneCentre`, which picks a centre such that
+the new zone sits **wholly inside** the old one by its real shape (#344), with an
+edge bias (`edgeBiasMax` 1.0) and, on the last two phases, an edge hug so late
+zones run to the rim rather than always converging on the middle. Containment
+beats the hug: the offset is at least the room on its bearing less 250 m, and
+never more than the room, so a zone that cannot both hug the edge and stay inside
+gives up the edge. docs/match-math.md section 3 has the geometry.
 
 **Timing.** The first hold is priced for the furthest living player's run in to
 circle 1's wall — its shape, the same boundary the 75% cut counts against (#364):

@@ -1355,13 +1355,16 @@ do
 end
 
 -- ---------------------------------------------------------------------------
--- THE BLOB: a convex polygon whose corners are each rounded, beveled or sharp --
--- or, one zone in ten, a plain circle -- which is the shape every storm zone wears.
+-- THE BLOB: the convex hull of a zone's corner discs -- a polygon stretched up to
+-- 3:1, held to its phase's area, each corner rounded, beveled or sharp, or one zone
+-- in ten a plain circle -- which is the shape every storm zone wears.
 --
 --   "we're only drawing squircles (quite well though), can we change to random
 --    shapes per phase? There should be a 90% chance of not being a circle, and
 --    when not a circle, there should be equal chances for each vertex to be
 --    rounded, beveled, or cornered."                  -- the owner, 2026-09-23
+--   "let's draw it by area now instead of any consideration for a radius."
+--   "We need more aspect ratio mix."                  -- the owner, 2026-09-23
 --
 -- SEPARATE CLAIMS, AND EACH ONE HAS ITS OWN BLOCK, because they fail independently
 -- and most of them fail silently:
@@ -1374,10 +1377,11 @@ end
 --                   a dense walk of the boundary rather than against itself
 --   blob.inset      the erosion is EXACT: every point of the eroded boundary is
 --                   exactly `metres` inside the original
---   blob.morph      one zone's shape becoming the next's: convex at every step,
---                   exact, never smaller than the area rule, the zones at its ends
+--   blob.morph      one zone's shape becoming the next's, corner to corner: convex
+--                   at every step, exact, holding the destination, never outward
 --   blob.measure    what the shipping config actually draws, as the numbers
---                   config/storm.lua quotes, over a sweep of seeds
+--                   config/storm.lua quotes, over a sweep of seeds -- the area, the
+--                   stretch and its spread, the chain, and a hash of all of it
 --
 -- WHY THE EXACTNESS MATTERS ENOUGH TO PROVE TWICE. The client draws the wall and
 -- the server does the damage; both ask distance() and one of them asks inset()
@@ -1488,13 +1492,14 @@ end
 
 -- NINE VERTICES, NO CIRCLES AND EVEN FINISHES, PINNED, for the blocks whose subject
 -- is the geometry rather than the odds: a fixed count keeps their arithmetic literal.
+-- Stretched like the shipping draw, so the geometry is proved on long shapes too.
 local BLOB_OPTS = { corners = 9, circle = 0.0, jitter = 0.13, slideDeg = 12,
-                    cut = 0.5, area = 0.90, reach = 1.15,
+                    cut = 0.5, area = 0.90, stretch = 3.0, stretchDraw = 'uniform',
+                    fitClear = 0.04,
                     vertex = { rounded = 1, beveled = 1, cornered = 1 } }
 
 -- EVERY COUNT THE GENERATOR CAN DRAW, for the blocks whose claim has to hold on all
--- of them -- three and four included, although the shipping config no longer offers
--- them (blob.measure has why): the geometry is proved for every count it builds.
+-- of them: the geometry is proved for every count it builds.
 local BLOB_COUNTS = { 3, 4, 5, 6, 7, 8, 9, 10, 11, 12 }
 
 --- BLOB_OPTS with `n` corners, and anything in `over` on top.
@@ -1504,6 +1509,27 @@ local function blobOpts(n, over)
     o.corners = n
     for k, v in pairs(over or {}) do o[k] = v end
     return o
+end
+
+--- A unit's discs placed at (cx, cy) and scaled to r, in the world.
+local function placedDiscs(u, cx, cy, r)
+    local out = {}
+    for i, d in ipairs(u.discs) do
+        out[i] = { x = cx + r * d.x, y = cy + r * d.y, r = r * d.r }
+    end
+    return out
+end
+
+--- The two ends of a morph from unit A placed at (ax, ay, ar) to unit B at (bx, by,
+--- br): every paired disc of A, and the disc of B it travels to, in pairing order --
+--- what storm_solve.lua hands BR.StormShape.morph for an ordinary record.
+local function morphEnds(ua, ax, ay, ar, ub, bx, by, br)
+    local src, dst = {}, {}
+    for i, p in ipairs(BR.StormShape.pairsOf(ua, ub)) do
+        src[i] = { x = ax + ar * p.a.x, y = ay + ar * p.a.y, r = ar * p.a.r }
+        dst[i] = { x = bx + br * p.b.x, y = by + br * p.b.y, r = br * p.b.r }
+    end
+    return src, dst
 end
 
 --- How many vertices of a unit drew each finish.
@@ -1599,22 +1625,32 @@ do
     -- ═══ A BEVEL SPLITS ITS VERTEX'S TURN EXACTLY IN TWO ═══
     --
     -- The chamfer cuts both edges the same distance back from the vertex, so it is
-    -- square to the vertex's bisector and its normal is half way round the turn.
-    local k, bevels, worstSplit = 1, 0, 0.0
-    for _, f in ipairs(u.finish) do
-        if f == 'beveled' then
-            local p, q = u.ks[k], u.ks[k + 1]
-            bevels = bevels + 1
-            worstSplit = math.max(worstSplit,
-                math.abs((p.a1 - p.a0) - (q.a1 - q.a0)))
-            k = k + 2
-        else
-            k = k + 1
+    -- square to the vertex's bisector and its normal is half way round the turn. The
+    -- hull's corner list starts wherever the normal is due east, not at vertex one,
+    -- so each bevel's two corners are found by the two points it is.
+    local function cornerOf(d)
+        for i, c in ipairs(u.ks) do
+            if c.x == d.x and c.y == d.y and c.rho == d.r then return i end
+        end
+        return nil
+    end
+    local bevels, worstSplit, lost = 0, 0.0, 0
+    for _, v in ipairs(u.verts) do
+        if v.finish == 'beveled' then
+            local i, j = cornerOf(v.discs[1]), cornerOf(v.discs[2])
+            if not i or not j then
+                lost = lost + 1
+            else
+                local p, q = u.ks[i], u.ks[j]
+                bevels = bevels + 1
+                worstSplit = math.max(worstSplit,
+                    math.abs((p.a1 - p.a0) - (q.a1 - q.a0)))
+            end
         end
     end
-    ok(bevels == fc.beveled and worstSplit < 1e-12,
+    ok(bevels == fc.beveled and lost == 0 and worstSplit < 1e-9,
         'every bevel is two sharp corners splitting its vertex\'s turn equally',
-        ('%d bevels, worst %.3e rad'):format(bevels, worstSplit))
+        ('%d bevels, %d lost, worst %.3e rad'):format(bevels, lost, worstSplit))
 
     -- THE CHAIN CLOSES, asked the honest way: every piece boundary answered twice,
     -- once from each side, and compared.
@@ -1663,11 +1699,11 @@ do
     -- EVERY COUNT FROM THREE TO TWELVE, ninety draws each. The top of that range is
     -- where concavity lives and the bottom is where a triangle's corners crowd.
     local fault, faultAt, bent, bentAt = nil, nil, 0, nil
-    local deepest, nils, badPieces = 1, 0, nil
+    local deepest, nils, badPieces, twice = 1, 0, nil, 0
     local seenFinish = { rounded = 0, beveled = 0, cornered = 0 }
     for seed = 1, 900 do
         local want = BLOB_COUNTS[(seed % #BLOB_COUNTS) + 1]
-        local uu = SS.blobUnit(seed * 7 + 1, (seed % 9), blobOpts(want))
+        local uu = SS.blobUnit(seed * 7 + 1, (seed % 9) + 1, blobOpts(want))
         if uu == nil then
             nils = nils + 1
         else
@@ -1682,14 +1718,29 @@ do
             end
             local c = finishes(uu)
             for name, v in pairs(c) do seenFinish[name] = seenFinish[name] + v end
-            local nArc = 0
+            local nArc, arcCorners = 0, 0
             for _, pc in ipairs(bb.pieces) do
                 if pc.kind == 'arc' then nArc = nArc + 1 end
             end
-            if uu.n ~= want or #bb.comps ~= 1 or nArc ~= c.rounded
-                or #bb.pieces ~= c.rounded + #uu.ks then
-                badPieces = badPieces or ('asked %d, got %d vertices, %d pieces, %d loops')
-                    :format(want, uu.n, #bb.pieces, #bb.comps)
+            for _, k in ipairs(uu.ks) do
+                if k.rho > 0.0 then arcCorners = arcCorners + 1 end
+            end
+            -- EVERY DISC OF EVERY VERTEX IS A CORNER OF THE HULL -- nothing a vertex
+            -- was finished into is swallowed -- and the boundary is an arc per round
+            -- corner and a run after every corner.
+            local lost = 0
+            for _, d in ipairs(uu.discs) do
+                local found = false
+                for _, k in ipairs(uu.ks) do
+                    if k.x == d.x and k.y == d.y and k.rho == d.r then found = true end
+                end
+                if not found then lost = lost + 1 end
+            end
+            if #uu.ks > uu.n + c.beveled then twice = twice + 1 end
+            if uu.n ~= want or #bb.comps ~= 1 or lost > 0 or nArc ~= arcCorners
+                or nArc < c.rounded or #bb.pieces ~= nArc + #uu.ks then
+                badPieces = badPieces or ('asked %d, got %d vertices, %d pieces, %d loops, '
+                    .. '%d lost'):format(want, uu.n, #bb.pieces, #bb.comps, lost)
             end
         end
     end
@@ -1705,8 +1756,16 @@ do
         'and not one of them DRAWS a boundary that turns right anywhere',
         bentAt and ('%d bent, first at seed index %d'):format(bent, bentAt) or nil)
     ok(badPieces == nil,
-        'and every count is the count it was asked for, an arc per rounded vertex and a '
-            .. 'run per corner, in one loop', badPieces)
+        'and every count is the count it was asked for, every disc a corner of its hull, '
+            .. 'an arc per round corner and a run per corner, in one loop', badPieces)
+    -- A ROUND CORNER'S DISC CAN BOUND THE SHAPE TWICE: a near-flat vertex's fillet is
+    -- as big as the polygon lets it be, and on a long shape it can reach round to the
+    -- far side and carry a stretch of it past another corner's chamfer. The shape is
+    -- still exactly the hull of its discs, and the arc it adds there is nearly
+    -- straight. MEASURED on the shipping draw: 1.5 percent of zones.
+    ok(twice < 900 * 0.05,
+        'and a disc that bounds its shape twice is rare',
+        ('%d of 900'):format(twice))
     ok(seenFinish.rounded > 0 and seenFinish.beveled > 0 and seenFinish.cornered > 0,
         'with all three finishes among them, so the claims above are about all three',
         ('%d rounded, %d beveled, %d cornered'):format(seenFinish.rounded,
@@ -1738,6 +1797,23 @@ do
         'while a zone a little bigger is still a real shape')
 end
 
+-- THE SHIPPING DRAW, BUILT ONCE for the two blocks that count it -- zones one to
+-- eight of 500 matches, no chain -- because a zone is a stretch solve and a hull per
+-- step now, and building the same four thousand twice is most of a minute of suite.
+-- Zone 0 is the map disc on every seed and is no draw at all, so it is left out.
+local SHIPPED = nil
+local function shippedDraw()
+    if SHIPPED then return SHIPPED end
+    SHIPPED = {}
+    local cfg = BR.Config.Storm.shape
+    for i, s in ipairs(blobSeeds(500, 104729, 7)) do
+        local row = {}
+        for z = 1, 8 do row[z] = BR.StormShape.blobUnit(s, z, cfg) end
+        SHIPPED[i] = row
+    end
+    return SHIPPED
+end
+
 describe('blob.finish')
 do
     -- ═══ THE OWNER'S ODDS, MEASURED OFF THE SHIPPING CONFIG ═══
@@ -1752,16 +1828,16 @@ do
     local SS = BR.StormShape
     local cfg = BR.Config.Storm.shape
 
-    -- 18,000 zones: the standard error on a tenth is 0.0022, so a point either way is
-    -- over four of them. About 130,000 vertices: the standard error on a third is
-    -- 0.0013, so a point either way is over seven.
-    local S = blobSeeds(2000, 104729, 7)
+    -- 4,000 zones: the standard error on a tenth is 0.0047, so a point and a half
+    -- either way is three of them. About 24,000 vertices: the standard error on a
+    -- third is 0.0030, so a point either way is over three. The seeds are fixed, so
+    -- the verdict is too: this can only change when the draw does.
     local zones, circles, verts = 0, 0, 0
     local fin = { rounded = 0, beveled = 0, cornered = 0 }
     local byCount, stray = {}, nil
-    for _, s in ipairs(S) do
-        for z = 0, 8 do
-            local u = SS.blobUnit(s, z, cfg)
+    for _, row in ipairs(shippedDraw()) do
+        for z = 1, 8 do
+            local u = row[z]
             zones = zones + 1
             if u.kind == 'circle' then
                 circles = circles + 1
@@ -1778,7 +1854,7 @@ do
         end
     end
     local share = circles / zones
-    ok(math.abs(share - 0.10) < 0.01,
+    ok(math.abs(share - 0.10) < 0.015,
         ('one zone in ten is a plain circle, over %d zones'):format(zones),
         ('%.4f'):format(share))
     local worstF, worstName = 0.0, nil
@@ -1856,15 +1932,17 @@ do
     -- that are not polygons at all: a circle zone, and a morph half way between two.
     local shapes = {}
     for seed = 1, 12 do
-        local u = SS.blobUnit(seed * 31, (seed % 9),
+        local u = SS.blobUnit(seed * 31, (seed % 9) + 1,
             blobOpts(BLOB_COUNTS[((seed - 1) % #BLOB_COUNTS) + 1]))
         shapes[#shapes + 1] = { tag = ('seed %d, %d vertices'):format(seed, u.n),
                                 shape = SS.blob(300.0, -450.0, 620.0, u) }
     end
     shapes[#shapes + 1] = { tag = 'a circle zone', shape = SS.blob(300.0, -450.0, 620.0,
         SS.blobUnit(5, 5, blobOpts(9, { circle = 1.0 }))) }
-    shapes[#shapes + 1] = { tag = 'a morph', shape = SS.blob(300.0, -450.0, 620.0,
-        SS.morphUnit(SS.blobUnit(8, 2, blobOpts(5)), SS.blobUnit(8, 3, blobOpts(11)), 0.5)) }
+    local ma, mb = SS.blobUnit(8, 2, blobOpts(5)), SS.blobUnit(8, 3, blobOpts(11))
+    local msrc, mdst = morphEnds(ma, 300.0, -450.0, 620.0, mb, 340.0, -420.0, 380.0)
+    shapes[#shapes + 1] = { tag = 'a morph', shape = SS.morph(msrc, mdst, 0.5, nil,
+        320.0, -435.0, 500.0) }
 
     local worst, worstAt, checked = 0.0, nil, 0
     local worstSign = 0
@@ -1932,7 +2010,7 @@ do
     -- but the roundest -- so every sharp corner a rounded one becomes is exercised.
     local worst, at, blobs = 0.0, nil, 0
     for seed = 1, #BLOB_COUNTS do
-        local u = SS.blobUnit(seed * 101, (seed % 9), blobOpts(BLOB_COUNTS[seed]))
+        local u = SS.blobUnit(seed * 101, (seed % 9) + 1, blobOpts(BLOB_COUNTS[seed]))
         local b = SS.blob(-800.0, 250.0, 900.0, u)
         for _, m in ipairs({ 1.0, 6.0, 40.0, 120.0 }) do
             local ins = SS.inset(b, m)
@@ -1962,17 +2040,29 @@ do
     -- stay exact, and a run turned inside out beside an ARC, which is eroded off the
     -- arc's chords instead. Each is held to its own claim: exact, or inside the true
     -- erosion by at most the chords' centimetre -- and never, anywhere, outside it.
+    --
+    -- THE SECOND BRANCH IS NOT REACHED BY A HULL OF DISCS, and every zone is one now
+    -- (#344 round 2): a point beside a disc erodes to a point beside the smaller disc,
+    -- the same shape scaled about its centre, so the run between them never turns
+    -- round. MEASURED zero times over these 1,500 shapes, 15,200 morphing walls and
+    -- 18,000 random disc hulls. It is held to its claim whenever it is reached, and
+    -- the shapes it was written for -- rounded corners whose discs stood outside the
+    -- shape -- cannot be drawn any more (blob.measure asserts that too).
+    --
+    -- A SHAPE WHOSE OWN CENTRE IS NOT SIX METRES DEEP HAS NOTHING LEFT to erode to, and
+    -- a long one at eight metres is often that thin: those are the collapsed zone, and
+    -- are not asked to be a shape.
     local cfg = BR.Config.Storm.shape
     local mergedExact, chordedN, outside, deepest, nonBlob = 0, 0, -math.huge, 0.0, 0
     local worstMerged = 0.0
     for _, s in ipairs(blobSeeds(300, 7919, 5)) do
-        local su = SS.blobUnit(s, s % 9, cfg)
+        local su = SS.blobUnit(s, (s % 9) + 1, cfg)
         for _, r in ipairs({ 40.0, 25.0, 15.0, 10.0, 8.0 }) do
             local tiny = SS.blob(0.0, 0.0, r, su)
             if tiny.kind == 'blob' then
                 local eaten = SS.inset(tiny, 6.0)
                 if eaten.kind ~= 'blob' then
-                    nonBlob = nonBlob + 1
+                    if -SS.distance(tiny, 0.0, 0.0) > 6.5 then nonBlob = nonBlob + 1 end
                 else
                     local lo, hi = 0.0, -math.huge
                     for _, p in ipairs(walkPoly(eaten, 360)) do
@@ -1992,14 +2082,13 @@ do
         end
     end
     ok(nonBlob == 0,
-        'every shipping shape from forty metres down to eight still erodes to a shape',
-        ('%d did not'):format(nonBlob))
+        'every shipping shape from forty metres down to eight whose centre is deeper '
+            .. 'than the inset still erodes to a shape', ('%d did not'):format(nonBlob))
     ok(mergedExact > 0 and worstMerged < 1e-6,
         'including erosions that merged two sharp corners into one, which stay exact',
         ('%d merged, worst %.3e m'):format(mergedExact, worstMerged))
-    ok(chordedN > 0 and deepest >= -0.01 - 1e-9,
-        'and erosions that ate a run beside an arc, eroded off its chords -- a '
-            .. 'centimetre inside the true erosion at most',
+    ok(deepest >= -0.01 - 1e-9,
+        'and no erosion is more than the chords\' centimetre inside the true one',
         ('%d chorded, deepest %.4f m'):format(chordedN, deepest))
     ok(outside <= 1e-6,
         'and not one point of any of them is OUTSIDE the true erosion',
@@ -2044,119 +2133,207 @@ end
 
 describe('blob.morph')
 do
-    -- ═══ ONE ZONE'S SHAPE BECOMING THE NEXT ZONE'S, ACROSS THE SWEEP ═══
+    -- ═══ ONE ZONE'S SHAPE BECOMING THE NEXT ZONE'S, CORNER TO CORNER ═══
     --
-    --   "after the storm is finished moving for that phase, the border snaps to a
-    --    different location."                          -- the owner, 2026-09-23
+    --   "I want the moving wall's corners and lines to move and change to match the
+    --    destination's. Nothing about the destination shape should ever change while
+    --    in motion."                                     -- the owner, 2026-09-23
     --
-    -- Each zone keeps one shape now, so the wall has to BECOME the target's shape as
-    -- it sweeps onto the target's circle -- or the snap only moves from the end of the
-    -- sweep to its start. The morph is the Minkowski combination (1 - t) A + t B, and
-    -- storm_shape.lua claims four things of it; each is asked here of the morph's own
-    -- corner list and of its drawn boundary, separately.
+    -- Each vertex of the zone the wall leaves is paired with a vertex of the zone it
+    -- closes on, each disc travels to its partner's, and the wall is the hull of where
+    -- they are -- with the destination's own discs in the hull on a nested phase.
+    -- storm_shape.lua claims six things of it; each is asked here of the outline's own
+    -- corner list, of its drawn boundary, or of the pairing, separately.
     local SS = BR.StormShape
     local cfg = BR.Config.Storm.shape
+    local phases = BR.Config.Storm.phases
 
-    -- THE ENDS ARE THE ZONES THEMSELVES -- the tables, not lerps that equal them -- so
-    -- the wall at the end of one sweep and the next hold's are one shape to the bit.
-    local a, b = SS.blobUnit(777, 2, cfg), SS.blobUnit(777, 3, cfg)
-    ok(SS.morphUnit(a, b, 0.0) == a and SS.morphUnit(a, b, 1.0) == b
-            and SS.morphUnit(a, b, -0.5) == a and SS.morphUnit(a, b, 1.5) == b
-            and SS.morphUnit(a, a, 0.5) == a,
-        'a morph IS its first zone at the start and its second at the end, and a zone '
-            .. 'morphing into itself is itself throughout')
-
-    -- ═══ CONVEX, NEVER SMALLER, NEVER FURTHER, AT EVERY STEP OF EVERY PAIR ═══
-    --
-    -- Real zone pairs off the shipping config, forty seeds, and the two pairs a
-    -- circle makes -- into a polygon and out of one -- which are the ones whose
-    -- corner lists are least alike.
+    -- REAL ZONE PAIRS OFF THE SHIPPING CONFIG AND ITS CHAIN, forty seeds, and the two
+    -- pairs a circle makes -- into a polygon and out of one -- which are the ones whose
+    -- vertex lists are least alike.
     local pairsOf = {}
     for _, s in ipairs(blobSeeds(40, 6007, 11)) do
-        pairsOf[#pairsOf + 1] = { SS.blobUnit(s, 4, cfg), SS.blobUnit(s, 5, cfg) }
+        pairsOf[#pairsOf + 1] = { SS.blobUnit(s, 4, cfg, phases), SS.blobUnit(s, 5, cfg, phases) }
     end
     local circ = SS.blobUnit(3, 3, blobOpts(9, { circle = 1.0 }))
     local poly = SS.blobUnit(3, 4, blobOpts(5))
     pairsOf[#pairsOf + 1] = { circ, poly }
     pairsOf[#pairsOf + 1] = { poly, circ }
 
-    local fault, faultAt, small, smallAt, farther, bentAt = nil, nil, math.huge, nil, -math.huge, nil
-    local kinds = {}
+    -- ═══ max(n, m) LINKS, EVERY CORNER OF BOTH ENDS IN ONE ═══
+    --
+    -- The longer vertex list is mapped onto the shorter one round the circle, so there
+    -- are exactly as many links as the longer has vertices -- never the n + m corners
+    -- the rejected blend wore -- and every disc of both zones is in a pair: nothing of
+    -- the wall's start is dropped and no corner of the destination is left unreached.
+    local badLinks, orphan, kinds = nil, nil, {}
     for i, pr in ipairs(pairsOf) do
         local ua, ub = pr[1], pr[2]
         kinds[ua.kind .. '>' .. ub.kind] = true
-        for _, t in ipairs({ 0.1, 0.3, 0.5, 0.7, 0.9 }) do
-            local m = SS.morphUnit(ua, ub, t)
-            local f = cornerFault(m.ks)
-            if f and not fault then fault, faultAt = f, ('pair %d t %.1f'):format(i, t) end
-            local sh = SS.blob(0.0, 0.0, 1000.0, m)
-            local wp = walkPoly(sh, 4000)
-            local area = walkArea(wp) / (math.pi * 1000.0 * 1000.0)
-            if area < small then small, smallAt = area, ('pair %d t %.1f'):format(i, t) end
-            farther = math.max(farther, m.extent - math.max(ua.extent, ub.extent))
-            if not walkTurnsLeft(wp) then bentAt = bentAt or ('pair %d t %.1f'):format(i, t) end
+        local ps = SS.pairsOf(ua, ub)
+        local links, fromA, toB = 0, {}, {}
+        for _, p in ipairs(ps) do
+            links = math.max(links, p.link)
+            fromA[p.a], toB[p.b] = true, true
+        end
+        local want = math.max(#ua.verts, #ub.verts)
+        if links ~= want then
+            badLinks = badLinks or ('pair %d: %d links for %d and %d vertices')
+                :format(i, links, #ua.verts, #ub.verts)
+        end
+        for _, d in ipairs(ua.discs) do
+            if not fromA[d] then orphan = orphan or ('pair %d: a source disc'):format(i) end
+        end
+        for _, d in ipairs(ub.discs) do
+            if not toB[d] then orphan = orphan or ('pair %d: a destination disc'):format(i) end
         end
     end
     ok(kinds['circle>polygon'] and kinds['polygon>circle'],
         'the sweep includes a circle becoming a polygon and a polygon becoming a circle')
+    ok(badLinks == nil,
+        'every pairing is max(n, m) links -- one per vertex of the longer list', badLinks)
+    ok(orphan == nil,
+        'and every disc of both zones is in one: the wall starts as all of A and ends '
+            .. 'on all of B', orphan)
+
+    -- ═══ ON A NESTED PHASE: THE ENDS ARE THE ZONES, AND EVERY STEP IS CONVEX, HOLDS
+    ---     THE DESTINATION, STAYS INSIDE THE START, AND NEVER MOVES OUTWARD ═══
+    --
+    -- Each pair is placed the way the game places it: the destination at the ratio of
+    -- the two phase radii, inside the start by its real shape -- concentric, where the
+    -- chain guarantees it fits, then walked out along a bearing while it still does.
+    local R0 = 1000.0
+    local K = phases[5].radius / phases[4].radius
+    local function nestedCentre(ua, ub, bearing)
+        local zks = SS.blob(0.0, 0.0, R0, ua).hull.ks
+        local D0 = placedDiscs(ub, 0.0, 0.0, R0 * K)
+        local dx, dy = math.cos(bearing), math.sin(bearing)
+        local lo, hi = 0.0, R0 * 3.0
+        for _ = 1, 40 do
+            local mid = 0.5 * (lo + hi)
+            if SS.fit(zks, D0, dx * mid, dy * mid, 1.0) <= -1.0 then lo = mid else hi = mid end
+        end
+        return dx * lo * 0.8, dy * lo * 0.8
+    end
+
+    local T = { 0.0, 0.1, 0.25, 0.4, 0.5, 0.6, 0.75, 0.9, 1.0 }
+    local fault, bent, loose, outside, outward = nil, nil, 0.0, 0.0, 0.0
+    local endA, endB, nested = 0.0, 0.0, 0
+    local midCorners, bothCorners = 0, 0
+    for i, pr in ipairs(pairsOf) do
+        local ua, ub = pr[1], pr[2]
+        local cx1, cy1 = nestedCentre(ua, ub, 0.7 * i)
+        local src, dst = morphEnds(ua, 0.0, 0.0, R0, ub, cx1, cy1, R0 * K)
+        local keep = placedDiscs(ub, cx1, cy1, R0 * K)
+        local Z = SS.blob(0.0, 0.0, R0, ua)
+        local D = SS.blob(cx1, cy1, R0 * K, ub)
+        if SS.fit(Z.hull.ks, keep, 0.0, 0.0, 1.0) <= 0.0 then nested = nested + 1 end
+        local prev
+        for _, t in ipairs(T) do
+            local W = SS.morph(src, dst, t, keep, cx1 * t, cy1 * t, R0 + (R0 * K - R0) * t)
+            local tag = ('pair %d t %.2f'):format(i, t)
+            local f = cornerFault(W.hull.ks)
+            if f and not fault then fault = tag .. ': ' .. f end
+            if not walkTurnsLeft(walkPoly(W, 1200)) then bent = bent or tag end
+            -- HOLDS THE DESTINATION: every disc of D inside the wall.
+            loose = math.max(loose, SS.fit(W.hull.ks, keep, 0.0, 0.0, 1.0))
+            -- INSIDE THE ZONE IT STARTED AS, and inside itself a moment ago.
+            local wk = {}
+            for _, k in ipairs(W.hull.ks) do wk[#wk + 1] = { x = k.x, y = k.y, r = k.rho } end
+            outside = math.max(outside, SS.fit(Z.hull.ks, wk, 0.0, 0.0, 1.0))
+            if prev then outward = math.max(outward, SS.fit(prev.hull.ks, wk, 0.0, 0.0, 1.0)) end
+            prev = W
+            if t == 0.0 or t == 1.0 then
+                local ref = (t == 0.0) and Z or D
+                for gx = -8, 8 do
+                    for gy = -8, 8 do
+                        local px, py = gx * 180.0, gy * 180.0
+                        local e = math.abs(SS.distance(W, px, py) - SS.distance(ref, px, py))
+                        if t == 0.0 then endA = math.max(endA, e) else endB = math.max(endB, e) end
+                    end
+                end
+            end
+            if t == 0.5 then
+                midCorners = midCorners + #W.hull.ks
+                bothCorners = bothCorners + #Z.hull.ks + #D.hull.ks
+            end
+        end
+    end
+    ok(nested == #pairsOf,
+        'every pair is placed nested, as the server places every non-breakout zone',
+        ('%d of %d'):format(nested, #pairsOf))
+    ok(endA < 1e-6 and endB < 1e-6,
+        'the moving wall starts exactly as the zone it leaves and arrives exactly on '
+            .. 'the destination',
+        ('%.3e m and %.3e m'):format(endA, endB))
     ok(fault == nil,
-        'every step of every morph is ONE CONVEX SHAPE by its corner list',
-        fault and (faultAt .. ': ' .. fault) or nil)
-    ok(bentAt == nil,
-        'and its drawn boundary never turns right', bentAt)
-    ok(small >= 0.90 - 1e-4,
-        'and it never plays smaller than the area rule -- Brunn-Minkowski, measured off '
-            .. 'the walked shoelace', ('smallest %.5f at %s'):format(small, tostring(smallAt)))
-    ok(farther <= 1e-12,
-        'and never reaches further than the further of its two ends',
-        ('%.3e past'):format(farther))
+        'every step of every morph is ONE CONVEX SHAPE by its corner list', fault)
+    ok(bent == nil, 'and its drawn boundary never turns right', bent)
+    ok(loose <= 1e-9,
+        'and it HOLDS THE DESTINATION at every step -- the wall never cuts into the zone '
+            .. 'it is closing on', ('worst %.3e m out'):format(loose))
+    ok(outside <= 1e-9 and outward <= 1e-9,
+        'and never leaves the zone it started as, nor moves outward from one step to the '
+            .. 'next -- which is what airdrop and rescue siting stand on',
+        ('%.3e m outside the start, %.3e m outward'):format(outside, outward))
+    ok(midCorners < 0.8 * bothCorners,
+        'and half way across it wears ITS OWN corners, not both zones\' at once -- the '
+            .. 'blend the owner rejected carried the two lists merged',
+        ('%d corners against %d for the two ends together'):format(midCorners, bothCorners))
 
     -- ═══ CONTINUOUS: A SMALL STEP IN t IS A SMALL STEP OF THE WALL ═══
     --
-    -- The support function moves linearly in t, so between t and t + dt no point of
-    -- the boundary moves further than dt times the widest gap between the two support
-    -- functions -- at most dt times the sum of the two extents. Measured as the
-    -- signed distance from each walked point of one step to the shape of the next.
+    -- A hull's support function is the largest of its discs', so between t and t + dt
+    -- no point of the boundary moves further than dt times the furthest any one disc
+    -- travels. Measured as the signed distance from each walked point of one step to
+    -- the shape of the next.
     local ua, ub = pairsOf[1][1], pairsOf[1][2]
-    local bound = 0.01 * (ua.extent + ub.extent) * 1000.0
+    local cx1, cy1 = nestedCentre(ua, ub, 1.3)
+    local src, dst = morphEnds(ua, 0.0, 0.0, R0, ub, cx1, cy1, R0 * K)
+    local keep = placedDiscs(ub, cx1, cy1, R0 * K)
+    local travel = 0.0
+    for i = 1, #src do
+        travel = math.max(travel, math.sqrt((dst[i].x - src[i].x) ^ 2
+            + (dst[i].y - src[i].y) ^ 2) + math.abs(dst[i].r - src[i].r))
+    end
     local jump = 0.0
-    local prev = SS.blob(0.0, 0.0, 1000.0, ua)
+    local prev = SS.morph(src, dst, 0.0, keep)
     for k = 1, 100 do
-        local cur = SS.blob(0.0, 0.0, 1000.0, SS.morphUnit(ua, ub, k / 100))
+        local cur = SS.morph(src, dst, k / 100, keep)
         for _, p in ipairs(walkPoly(cur, 600)) do
             jump = math.max(jump, math.abs(SS.distance(prev, p.x, p.y)))
         end
         prev = cur
     end
-    ok(jump <= bound,
-        'and no step of a hundred moves the boundary further than the bound the support '
-            .. 'function puts on it -- the wall has nowhere to snap',
-        ('worst %.3f m against %.3f'):format(jump, bound))
+    ok(jump <= travel / 100 + 1e-6,
+        'and no step of a hundred moves the boundary further than the furthest disc '
+            .. 'travels in it -- the wall has nowhere to snap',
+        ('worst %.3f m against %.3f'):format(jump, travel / 100))
 
-    -- ═══ THE MERGE IS BUILT ONCE PER PAIR, NOT ONCE PER FRAME ═══
-    --
-    -- A sweep asks for the morph every frame; the ranges of normals it merges are the
-    -- same for every t, and are cached per pair of units.
-    local ma, mb = SS.blobUnit(4040, 6, cfg), SS.blobUnit(4040, 7, cfg)
-    local before = SS.builds.merges
-    for k = 1, 60 do SS.morphUnit(ma, mb, k / 61) end
-    ok(SS.builds.merges - before == (ma == mb and 0 or 1),
-        'sixty frames of a sweep merge the two zones\' corner lists exactly once',
-        ('%d merges'):format(SS.builds.merges - before))
+    -- ═══ THE PAIRING IS BUILT ONCE PER PAIR, NOT ONCE PER FRAME ═══
+    local ma, mb = SS.blobUnit(4040, 6, cfg, phases), SS.blobUnit(4040, 7, cfg, phases)
+    local before = SS.builds.pairings
+    for _ = 1, 60 do SS.pairsOf(ma, mb) end
+    ok(SS.builds.pairings - before <= 1,
+        'sixty frames of a sweep pair the two zones\' corners exactly once',
+        ('%d pairings'):format(SS.builds.pairings - before))
 end
 
+-- ---------------------------------------------------------------------------
 describe('blob.measure')
 do
     local SS = BR.StormShape
 
-    -- ═══ WHAT THE SHIPPING CONFIG ACTUALLY DRAWS, COUNT BY COUNT ═══
+    -- ═══ WHAT THE SHIPPING CONFIG ACTUALLY DRAWS ═══
     --
     -- These are the numbers config/storm.lua's `shape` table quotes, re-measured here
     -- rather than trusted -- so tuning the config retunes this block's report and a
-    -- change that quietly made a shape rounder, bigger, smaller or more often redrawn
-    -- goes red. Measured PER COUNT with circles off and the shipping finishes, because
-    -- the counts disagree about everything but the area.
+    -- change that quietly made a shape bigger, smaller, rounder or more often redrawn
+    -- goes red. PER COUNT first, with circles off and the shipping finishes, because
+    -- the counts disagree about everything but the area; then the shipping draw
+    -- itself, chained the way the game chains it.
     local cfg = BR.Config.Storm.shape
+    local phases = BR.Config.Storm.phases
 
     --- The shipping config with the count pinned and no circles.
     local function shipped(n, over)
@@ -2175,45 +2352,55 @@ do
             / (math.pi * 1000.0 * 1000.0)
     end
 
-    -- THE CENTRE'S GUARANTEED DEPTH, derived from the two knobs the way the header in
-    -- storm_shape.lua argues it: the most of a `reach` disc that lies beyond a line at
-    -- depth d from the centre, held against `area`. Bisected here rather than typed.
-    local R, A = cfg.reach, cfg.area * math.pi
-    local lo, hi = 0.0, R
-    for _ = 1, 80 do
-        local d = 0.5 * (lo + hi)
-        local held = math.pi * R * R
-            - (R * R * math.acos(d / R) - d * math.sqrt(R * R - d * d))
-        if held < A then lo = d else hi = d end
+    --- Is the unit EXACTLY the hull of its discs? Every disc inside its corner list,
+    --- and a hull of the discs rebuilt from scratch agreeing with that corner list's
+    --- support function all the way round -- the invariant every exactness claim in
+    --- storm_shape.lua rests on, and the one an uncapped fillet broke.
+    local function hullFault(u)
+        local out = SS.fit(u.ks, u.discs, 0.0, 0.0, 1.0)
+        if out > 1e-12 then return ('a disc pokes out by %.3e'):format(out) end
+        local again = SS.discHull(u.discs)
+        for q = 0, 89 do
+            local a = q * math.pi / 45 + 0.0123
+            local c, s = math.cos(a), math.sin(a)
+            local h1, h2 = -math.huge, -math.huge
+            for _, k in ipairs(u.ks) do h1 = math.max(h1, k.x * c + k.y * s + k.rho) end
+            for _, k in ipairs(again) do h2 = math.max(h2, k.x * c + k.y * s + k.rho) end
+            if math.abs(h1 - h2) > 1e-12 then
+                return ('support differs by %.3e at %.2f rad'):format(math.abs(h1 - h2), a)
+            end
+        end
+        return nil
     end
-    local DEPTH = lo
 
     local offered = {}
     for c = 3, 24 do
         if (tonumber(cfg.corners[c]) or 0) > 0 then offered[#offered + 1] = c end
     end
 
-    local PER, WALKED = 150, 20
+    local PER, WALKED = 60, 12
     local rows = {}
     local areaErr, areaErrAt, walkErr, walkErrAt = 0.0, nil, 0.0, nil
-    local overReach, shallow, lowFirst, lastResort = nil, nil, nil, nil
+    local overCap, shallow, lowFirst, lastResort, notHull = nil, nil, nil, nil, nil
     for _, n in ipairs(BLOB_COUNTS) do
-        local row = { n = n, ext = 0.0, maxExt = 0.0, ratio = 0.0, minRatio = 1.0,
-                      minInr = math.huge, first = 0, last = 0, over = 0 }
+        local row = { n = n, minInr = math.huge, first = 0, last = 0, maxSt = 0.0 }
         local walkSum = 0.0
         for s = 1, PER do
-            local u = SS.blobUnit(s * 977 + 3, (s % 9), shipped(n))
+            local u = SS.blobUnit(s * 977 + 3, (s % 9) + 1, shipped(n))
             local e = math.abs(u.area - cfg.area)
             if e > areaErr then areaErr, areaErrAt = e, ('%d corners'):format(n) end
             if s <= WALKED then walkSum = walkSum + walked(u) end
-            row.ext = row.ext + u.extent / PER
-            row.maxExt = math.max(row.maxExt, u.extent)
-            row.ratio = row.ratio + (u.inradius / u.extent) / PER
-            row.minRatio = math.min(row.minRatio, u.inradius / u.extent)
             row.minInr = math.min(row.minInr, u.inradius)
+            row.maxSt = math.max(row.maxSt, u.stretch)
             if u.tries == 1 then row.first = row.first + 1 end
             if u.tries == 6 then row.last = row.last + 1 end
-            if u.extent > cfg.reach + 1e-12 then row.over = row.over + 1 end
+            if u.stretch > cfg.stretch + 1e-9 then
+                overCap = overCap or ('%d corners, %.6f'):format(n, u.stretch)
+            end
+            if s <= 20 then
+                local f = hullFault(u)
+                if f then notHull = notHull or ('%d corners: %s'):format(n, f) end
+            end
         end
         local we = math.abs(walkSum / WALKED - cfg.area)
         if we > walkErr then walkErr, walkErrAt = we, ('%d corners'):format(n) end
@@ -2222,10 +2409,7 @@ do
     for _, n in ipairs(offered) do
         local row = rows[n]
         if row then
-            if row.over > 0 then
-                overReach = overReach or ('%d corners reach %.4f'):format(n, row.maxExt)
-            end
-            if row.minInr <= DEPTH then
+            if row.minInr < 0.40 then
                 shallow = shallow or ('%d corners, centre %.4f deep'):format(n, row.minInr)
             end
             if row.first < PER * 0.1 then
@@ -2237,18 +2421,11 @@ do
         end
     end
 
-    local report = {}
-    for _, n in ipairs(BLOB_COUNTS) do
-        local r = rows[n]
-        report[#report + 1] = ('%d: ext %.3f/%.3f ratio %.3f/%.3f first %d last %d over %d')
-            :format(n, r.ext, r.maxExt, r.ratio, r.minRatio, r.first, r.last, r.over)
-    end
-    report = table.concat(report, '; ')
+    ok(#offered == 10 and offered[1] == 3 and offered[#offered] == 12,
+        'the shipping config offers three vertices to twelve -- "triangles and squares '
+            .. 'are okay with me"', table.concat(offered, ','))
 
-    ok(#offered >= 6 and offered[1] == 5 and offered[#offered] == 12,
-        'the shipping config offers five vertices to twelve', table.concat(offered, ','))
-
-    -- ═══ THE SAME SIZE AT EVERY COUNT, WHICH IS THE WHOLE POINT OF THE SCALING ═══
+    -- ═══ THE SAME SIZE AT EVERY COUNT, WHICH IS THE WHOLE POINT OF DRAWING BY AREA ═══
     ok(areaErr < 1e-9,
         ('every draw of every count is exactly %.2f of the circle it replaces, by the '
             .. 'shoelace of its own corner list'):format(cfg.area),
@@ -2257,62 +2434,131 @@ do
         'and a dense walk of the boundary agrees, at every count -- the scaling is of '
             .. 'the shape that is drawn, not of a number beside it',
         ('worst mean off by %.5f, at %s'):format(walkErr, tostring(walkErrAt)))
+    ok(notHull == nil,
+        'and every shape IS the hull of its corner discs, exactly -- no rounded corner\'s '
+            .. 'disc stands outside the shape it rounds', notHull)
 
-    -- ═══ AND NO FURTHER PAST r THAN `reach` ON ANY COUNT THAT SHIPS ═══
-    ok(overReach == nil,
-        ('no draw of any count on offer reaches past %.2f of r'):format(cfg.reach),
-        overReach or report)
-    ok(rows[5].ext > rows[12].ext + 0.03,
-        'and that bound is doing work: at the same area a pentagon reaches measurably '
-            .. 'further than a dodecagon',
-        ('%.3f against %.3f'):format(rows[5].ext, rows[12].ext))
-
-    -- ═══ AND WHY THREE AND FOUR ARE NOT ON OFFER, MEASURED RATHER THAN SAID ═══
+    -- ═══ STRETCHED UP TO THE CAP AND NEVER PAST IT ═══
     --
-    -- A SHARP corner reaches out, and a triangle or a square with one cannot hold
-    -- ninety percent of the circle inside `reach` at all: the largest triangle inside a
-    -- disc of 1.15 is 0.55 of the circle, the largest square 0.84. So with the owner's
-    -- even finishes most of their draws exhaust the retry and are still too far out on
-    -- the regular last resort. From five up, none ever is.
-    ok(rows[3].over > PER * 0.5 and rows[4].over > PER * 0.5,
-        'three and four vertices with even finishes overshoot `reach` on most draws even '
-            .. 'after every retry -- which is why the shipping range starts at five',
-        ('%d and %d of %d'):format(rows[3].over, rows[4].over, PER))
+    --   "3:1 is okay, but I'm assuming this is a maximum"  -- the owner, 2026-09-23
+    ok(overCap == nil,
+        ('no draw of any count is longer than %.1f times its narrowest width'):format(
+            cfg.stretch), overCap)
+    ok(rows[6].maxSt > cfg.stretch - 0.01 and rows[12].maxSt > cfg.stretch - 0.01,
+        'and the cap is reached, not merely respected: a hexagon and a dodecagon both '
+            .. 'get to within a hundredth of it',
+        ('%.4f and %.4f'):format(rows[6].maxSt, rows[12].maxSt))
 
-    -- ═══ NOT A CIRCLE AT ANY COUNT, AND NOT THE SAME SHAPE AT EVERY COUNT ═══
-    local roundest = 0.0
-    for _, n in ipairs(offered) do roundest = math.max(roundest, rows[n].ratio) end
-    ok(roundest < 0.90,
-        'min/max radius stays under 0.90 at every count on offer -- the dodecagon, the '
-            .. 'roundest of them, included',
-        report)
-    ok(rows[5].ratio < rows[8].ratio and rows[8].ratio < rows[12].ratio
-            and rows[12].ratio - rows[5].ratio > 0.05,
-        'and fewer vertices is visibly sharper: a pentagon, an octagon and a dodecagon '
-            .. 'measure in that order',
-        ('%.3f, %.3f, %.3f'):format(rows[5].ratio, rows[8].ratio, rows[12].ratio))
-
-    -- ═══ THE CENTRE IS INSIDE, BY AT LEAST WHAT THE THEOREM PROMISES ═══
+    -- ═══ THE CENTRE IS INSIDE, AND DEEP ═══
+    --
+    -- The zone's centre is its ring's centroid, which the solver's circle is centred
+    -- on, the next zone is placed from, and #350's map fill scales about. MEASURED at
+    -- no less than 0.41 of r over the shipping draw; asserted at 0.40.
     ok(shallow == nil,
-        ('every shape of every count on offer has its own centre at least %.3f of r '
-            .. 'deep, the bound `area` and `reach` guarantee between them'):format(DEPTH),
+        'every shape of every count on offer has its own centre at least 0.40 of r deep',
         shallow)
 
     -- ═══ THE RETRY HOLDS ACROSS THE RANGE, AND ITS LAST RESORT IS RARE ═══
     ok(lowFirst == nil and lastResort == nil,
         'every count on offer keeps at least a tenth of its draws first try, and needs '
             .. 'the no-jitter last resort on at most one draw in fifty',
-        lowFirst or lastResort or report)
+        lowFirst or lastResort)
 
-    -- ═══ AND A REACH NOTHING CAN MEET STILL DRAWS A SHAPE, NEVER A CIRCLE ═══
+    -- ═══ THE SHIPPING DRAW, CHAINED: THE MIX THE OWNER ASKED FOR ═══
     --
-    -- The last attempt is accepted however far it reaches for exactly this: a nil here
-    -- is BR.StormZone drawing circles because of a typo.
-    local stuck = SS.blobUnit(4242, 2, shipped(3, { reach = 1.0 }))
-    ok(stuck ~= nil and stuck.tries == 6 and stuck.n == 3 and stuck.extent > 1.0,
-        'a reach no triangle can meet ends on the regular triangle of the last attempt '
-            .. 'rather than on no shape at all',
-        stuck and ('%d tries, extent %.4f'):format(stuck.tries, stuck.extent) or 'nil')
+    --   "We need more aspect ratio mix."                 -- the owner, 2026-09-23
+    --
+    -- Zones one to seven of 120 matches, off the shipping config and its phase chain,
+    -- exactly as BR.StormUnit builds them -- built once, here, for this and the hash
+    -- below. The stretch target is drawn uniformly across [1, 3]; what ships is a
+    -- little under that, because a zone that has to fit inside its predecessor is
+    -- sometimes tamed. MEASURED over 7,000 zones: under 1.5 29.6%, 1.5 to 2 24.5,
+    -- 2 to 2.5 24.4, 2.5 and over 21.4, median 1.93.
+    local CHAIN_SEEDS = blobSeeds(120, 104723, 17)
+    local CHAIN = {}
+    for i, s in ipairs(CHAIN_SEEDS) do
+        local row = {}
+        for z = 1, 8 do row[z] = SS.blobUnit(s, z, cfg, phases) end
+        CHAIN[i] = row
+    end
+    local bins, all, fitBad, chained = { 0, 0, 0, 0 }, {}, nil, 0
+    for i, s in ipairs(CHAIN_SEEDS) do
+        for z = 1, 7 do
+            local u = CHAIN[i][z]
+            local st = u.stretch
+            all[#all + 1] = st
+            local b = (st < 1.5) and 1 or (st < 2.0) and 2 or (st < 2.5) and 3 or 4
+            bins[b] = bins[b] + 1
+            -- ═══ AND EVERY ZONE FITS INSIDE THE ONE BEFORE IT, CONCENTRIC ═══
+            --
+            -- Every disc of zone z, at the ratio of the two radii, at least fitClear of
+            -- r inside zone z-1 -- the room BR.NextZoneCentre is promised.
+            if z >= 2 then
+                chained = chained + 1
+                local parent = CHAIN[i][z - 1]
+                local k = phases[z].radius / phases[z - 1].radius
+                local m = SS.fit(parent.ks, u.discs, 0.0, 0.0, k)
+                if m > -(cfg.fitClear or 0.0) + 1e-12 then
+                    fitBad = fitBad or ('seed %d zone %d: %.4f'):format(s, z, m)
+                end
+            end
+        end
+    end
+    table.sort(all)
+    local N = #all
+    local median = all[math.floor(N / 2)]
+    local pct = function(i) return 100.0 * bins[i] / N end
+    local mix = ('<1.5 %.1f%%, 1.5-2 %.1f%%, 2-2.5 %.1f%%, >=2.5 %.1f%%, median %.2f, max %.3f')
+        :format(pct(1), pct(2), pct(3), pct(4), median, all[N])
+    ok(pct(4) > 12.0 and pct(1) < 40.0 and pct(2) > 15.0 and pct(3) > 15.0
+            and median > 1.7 and median < 2.2 and all[N] <= cfg.stretch + 1e-9,
+        'the shipping draw spreads its stretch across the whole range -- long shapes are '
+            .. 'ordinary, not rare', mix)
+    ok(chained > 600 and fitBad == nil,
+        ('and all %d chained zones fit inside their predecessors concentric, with '
+            .. 'fitClear to spare'):format(chained), fitBad)
+
+    -- ═══ EVERY ZONE TAKES THE SAME 317 VALUES OFF ITS STREAM, WHATEVER IT DECIDES ═══
+    --
+    -- A circle, a polygon that fit first time, one that climbed the ladder, one that
+    -- fell back to its parent's shape: the stream must be read the same number of
+    -- times, or the client and the server could part company on a retry. Counted by
+    -- wrapping the stream every unit is drawn from.
+    local realRng = BR.Rng
+    local draws = {}
+    BR.Rng = function(seed)
+        local r = realRng(seed)
+        local rec = { n = 0 }
+        draws[#draws + 1] = rec
+        local realFloat = r.float
+        r.float = function(self)
+            rec.n = rec.n + 1
+            return realFloat(self)
+        end
+        return r
+    end
+    local counted = {}
+    local okDraws, sawCircle, sawLadder = true, false, false
+    local wide = {}
+    for k, v in pairs(cfg) do wide[k] = v end
+    wide.circle = 0.3
+    for _, s in ipairs(blobSeeds(25, 7727, 29)) do
+        for z = 1, 7 do
+            local before = #draws
+            local u = SS.blobUnit(s, z, wide, phases)
+            -- A PARENT BUILT ON THE WAY is its own stream, counted as its own.
+            for i = before + 1, #draws do counted[#counted + 1] = draws[i].n end
+            if u.kind == 'circle' then sawCircle = true end
+            if u.rung > 0 or u.homothet then sawLadder = true end
+        end
+    end
+    BR.Rng = realRng
+    for _, n in ipairs(counted) do if n ~= 317 then okDraws = false end end
+    ok(#counted > 150 and okDraws and sawCircle and sawLadder,
+        'every zone reads exactly 317 values off its stream -- circles and ladder climbs '
+            .. 'among them -- so a retry never shifts what comes after',
+        ('%d zones drawn, circle %s, ladder %s'):format(#counted, tostring(sawCircle),
+            tostring(sawLadder)))
 
     -- ═══ AND THE SAME SEED IS THE SAME SHAPE, WHICH THE WHOLE DESIGN RESTS ON ═══
     --
@@ -2341,6 +2587,39 @@ do
     ok(same(SS.blobUnit(123456.7, 5, shipped(9)), a),
         'a fractional seed floors to the integer one rather than collapsing to '
             .. 'zero, which is what #346 does to an unfloored one')
+
+    -- ═══ AND WHAT IT ALL COMES TO, AS ONE NUMBER ═══
+    --
+    -- Every decision a zone makes -- circle or count, the attempt its ring came from,
+    -- the rung and the turn it fitted at, whether it fell back, every finish -- and
+    -- every disc to a micron, for zones one to eight of 120 matches off the shipping
+    -- config and its chain, hashed. PINNED, because the storm's shapes are derived on
+    -- two machines that never compare them: a server and a client whose maths
+    -- libraries differ in a last bit can only disagree about a shape where a decision
+    -- sits on a threshold, and when one does, the hash moves. A deliberate retune of
+    -- the shape knobs or the phase radii moves it too; the new value is printed.
+    local HASH_PINNED = 0x886dd463
+    local h = 2166136261
+    local function mix(str)
+        for i = 1, #str do
+            h = ((h ~ str:byte(i)) * 16777619) & 0xffffffff
+        end
+    end
+    for i = 1, #CHAIN do
+        for z = 1, 8 do
+            local u = CHAIN[i][z]
+            mix(('%s|%d|%d|%d|%d|%s|'):format(u.kind, u.n, u.tries, u.rung, u.turned,
+                tostring(u.homothet)))
+            for _, f in ipairs(u.finish) do mix(f:sub(1, 1)) end
+            for _, d in ipairs(u.discs) do
+                mix(('%.6f,%.6f,%.6f;'):format(d.x, d.y, d.r))
+            end
+        end
+    end
+    ok(h == HASH_PINNED,
+        'and the whole shipping draw of 960 zones hashes to the pinned value -- a '
+            .. 'platform whose maths differs at a decision would not',
+        ('0x%08x against 0x%08x'):format(h, HASH_PINNED))
 end
 
 -- ---------------------------------------------------------------------------
@@ -2380,13 +2659,12 @@ do
 
     -- ═══ THE DRAW FOLLOWS THE WEIGHTS ═══
     --
-    -- About 9,500 polygon zones: the standard error on a fifth is 0.0041, so a
-    -- two-point tolerance is about five of them.
-    local S1 = blobSeeds(1500, 7919, 11)
+    -- About 3,600 polygon zones -- the shared shipping draw: the standard error on a
+    -- seventh is 0.0058, so a two-point tolerance is over three of them.
     local hist, drawn = {}, 0
-    for _, s in ipairs(S1) do
-        for z = 1, 7 do
-            local u = SS.blobUnit(s, z, cfg)
+    for _, row in ipairs(shippedDraw()) do
+        for z = 1, 8 do
+            local u = row[z]
             if u.kind ~= 'circle' then
                 hist[u.n] = (hist[u.n] or 0) + 1
                 drawn = drawn + 1
@@ -2412,28 +2690,28 @@ do
 
     -- ═══ OFF THE SEED: THE SAME ZONE OF DIFFERENT MATCHES IS DIFFERENT POLYGONS ═══
     local atZone = {}
-    for _, s in ipairs(blobSeeds(400, 104729, 3)) do
-        local u = SS.blobUnit(s, 3, cfg)
+    for _, row in ipairs(shippedDraw()) do
+        local u = row[3]
         if u.kind ~= 'circle' then atZone[u.n] = true end
     end
     local distinct = 0
     for _ in pairs(atZone) do distinct = distinct + 1 end
     ok(distinct == #offered,
-        'zone 3 of 400 different matches draws every count on offer -- the count comes '
+        'zone 3 of 500 different matches draws every count on offer -- the count comes '
             .. 'off the match\'s seed, not off the zone alone',
         ('%d distinct counts of %d'):format(distinct, #offered))
 
     -- ═══ AND OFF THE ZONE: ONE MATCH IS A RUN OF DIFFERENT SHAPES ═══
     --
-    -- Two weighted draws agree with probability sum(w^2) -- 0.14 at the shipping
+    -- Two weighted draws agree with probability sum(w^2) -- 0.11 at the shipping
     -- weights -- and a circle agrees with nothing but a circle, so neighbouring zones
     -- should differ more than four times in five. A count keyed on the seed alone
     -- would never differ at all.
     local neighbours, changed = 0, 0
-    for _, s in ipairs(blobSeeds(200, 15485863, 7)) do
-        for z = 1, 6 do
+    for _, row in ipairs(shippedDraw()) do
+        for z = 1, 7 do
             neighbours = neighbours + 1
-            local p, q = SS.blobUnit(s, z, cfg), SS.blobUnit(s, z + 1, cfg)
+            local p, q = row[z], row[z + 1]
             if p.kind ~= q.kind or p.n ~= q.n then changed = changed + 1 end
         end
     end
@@ -2479,10 +2757,11 @@ do
     --
     -- Vertex one sits in slot one, so without the turn every shape of a count in every
     -- match has a corner within the slide of due east. Twelve thirty-degree sectors,
-    -- and a pentagon's first corner has to have landed in every one of them.
+    -- and a pentagon's first VERTEX has to have landed in every one of them -- asked
+    -- of the vertex list, because the hull's corner list always starts due east.
     local sectors, hit = {}, 0
     for _, s in ipairs(blobSeeds(240, 3571, 1)) do
-        local c = SS.blobUnit(s, 2, blobOpts(5)).ks[1]
+        local c = SS.blobUnit(s, 2, blobOpts(5)).verts[1].discs[1]
         local k = math.floor((math.atan(c.y, c.x) % (2.0 * math.pi)) / (math.pi / 6.0))
         if not sectors[k] then sectors[k], hit = true, hit + 1 end
     end
@@ -2665,7 +2944,11 @@ do
     end
 
     -- ═══ NESTED AND DISJOINT MUST NOT HAVE MOVED ═══
-    local nested = SS.zone(0.0, 0.0, P1, 100.0, 0.0, P2, unit, target)
+    --
+    -- NESTED BY REAL SHAPE: the zone at a third of its size, a little off its own
+    -- centre, is inside itself by construction -- a long target at P2 need not be
+    -- inside a long zone at P1 turned the other way, and zone() asks the shapes now.
+    local nested = SS.zone(0.0, 0.0, P1, 100.0, 0.0, P1 / 3.0, unit, unit)
     ok(nested.kind == 'blob' and #SS.components(nested) == 1,
         'a nested pair is still the containing shape, one loop, no union at all',
         ('%s, %d component(s)'):format(tostring(nested.kind),
@@ -2684,35 +2967,33 @@ do
 
     -- ═══ THE CONTAINMENT COLLAPSE, DRIVEN DIRECTLY ═══
     --
-    -- blobUnion also answers the case where one shape has swallowed the other without
-    -- their circles nesting: it returns the containing one. And that case is where the
-    -- old test was wrong -- it asked every corner's WHOLE DISC to be inside, and a
-    -- rounded corner's disc can stand beyond its own shape, so a target wholly inside
-    -- the current zone was drawn as two boundaries, the whole of one inside the safe
-    -- zone. So the pair below is FOUND to have a corner disc sticking out while the
-    -- shape is inside, and must still collapse.
+    -- blobUnion also answers the case where one shape has swallowed the other: it
+    -- returns the containing one. It used to be FOUND with a corner disc sticking out
+    -- of the swallowed shape, because the old rounded corners' discs could stand beyond
+    -- their own shape and the old disc test read that as not inside. Every zone is the
+    -- hull of its discs now, so no disc stands outside its shape (blob.measure asserts
+    -- it), and the pair below has only to be wholly inside -- and CLOSE, within a
+    -- hundred metres of the container's boundary somewhere, so it is not the easy case.
     local big = SS.blob(0.0, 0.0, 1000.0, unit)
     local found, small, why = nil, nil, nil
     for _, s in ipairs(blobSeeds(80, 911, 17)) do
         local su = SS.blobUnit(s, 6, blobOpts(9))
         for _, off in ipairs({ 240.0, 300.0, 340.0 }) do
-            local cand = SS.blob(off, 0.0, 600.0, su)
-            local shapeIn = true
+            local cand = SS.blob(off, 0.0, 300.0, su)
+            local shapeIn, closest = true, math.huge
             for _, p in ipairs(walkPoly(cand, 720)) do
-                if SS.distance(big, p.x, p.y) >= 0.0 then shapeIn = false break end
+                local d = SS.distance(big, p.x, p.y)
+                if d >= 0.0 then shapeIn = false break end
+                closest = math.min(closest, -d)
             end
-            local discOut = false
-            for _, k in ipairs(cand.hull.ks) do
-                if k.rho > 0.0 and SS.distance(big, k.x, k.y) > -k.rho then discOut = true end
-            end
-            if shapeIn and discOut and not found then
+            if shapeIn and closest < 100.0 and not found then
                 found, small, why = true, cand, ('seed %d, offset %.0f'):format(s, off)
             end
         end
     end
     ok(found == true,
-        'a shape wholly inside another with one of its corner discs sticking out is '
-            .. 'reachable -- the case the disc test got wrong', why)
+        'a shape wholly inside another, within a hundred metres of its edge, is '
+            .. 'reachable', why)
     if small then
         local swallowed = SS.blobUnion(big, small)
         ok(swallowed == big,
@@ -4821,76 +5102,144 @@ do
         ('%.1f%% of crate items'):format(healShare * 100))
 end
 
+-- ---------------------------------------------------------------------------
+-- WHERE THE NEXT ZONE GOES, BY ITS REAL SHAPE (#344 round 2)
+--
+--   "the circles still overlap when they are different shapes."
+--                                                    -- the owner, 2026-09-23
+--
+-- BR.NextZoneCentre places the next zone inside the current one by the two shapes
+-- themselves, not their circles. Every claim below is asked of the SHAPES, and the
+-- containment is measured by a different derivation from the one the placement
+-- uses: a dense walk of the placed zone's own boundary against the host's signed
+-- distance, where the placement asked the corner discs.
+-- ---------------------------------------------------------------------------
+
+--- One placement off BR.NextZoneCentre the way server/storm.lua's drawCentre makes
+--- it: the zone before this phase as the host, at (cx, cy, r0), and the phase's own
+--- zone at r1.
+local function placeZone(rng, seed, phase, cx, cy, r0, r1, bias, aabb, hugM, bo)
+    local host = BR.StormHost(seed, phase, cx, cy, r0)
+    local nx, ny, broke = BR.NextZoneCentre(rng, host, cx, cy, r0,
+        BR.StormUnit(seed, phase), r1, bias, aabb, hugM, bo)
+    return nx, ny, broke, host
+end
+
+--- How far the placed zone's WALKED boundary pokes out of the host, at the worst:
+--- negative is inside, by that much. And the gap between them when it is outside:
+--- the least signed distance of any walked point, positive only when every point is
+--- out. Walked, so the answer shares nothing with the discs the placement tested.
+local function pokeAndGap(seed, phase, host, nx, ny, r1)
+    local SS = BR.StormShape
+    local shape = (r1 > 0.0) and SS.blob(nx, ny, r1, BR.StormUnit(seed, phase))
+        or SS.circle(nx, ny, 0.0)
+    if r1 <= 0.0 then
+        local d = SS.distance(host, nx, ny)
+        return d, d
+    end
+    local poke, gap = -math.huge, math.huge
+    for _, p in ipairs(walkPoly(shape, 720)) do
+        local d = SS.distance(host, p.x, p.y)
+        if d > poke then poke = d end
+        if d < gap then gap = d end
+    end
+    return poke, gap
+end
+
 describe('storm.breakout')
 do
-    -- THE CIRCLE MUST BE ABLE TO LEAVE THE CIRCLE.
+    -- THE ZONE MUST BE ABLE TO LEAVE THE ZONE.
     --
     -- Strict nesting means a player at the centre is never obliged to move and
     -- can hold one building on the hope of a favourable draw. A breakout puts
-    -- the next circle partly outside the current one, so everyone runs (user
+    -- the next zone partly outside the current one, so everyone runs (user
     -- call, 2026-08-06). This is safe only because the wall SWEEPS to the new
-    -- circle over a duration priced off the furthest player's run -- nobody is
+    -- zone over a duration priced off the furthest player's run -- nobody is
     -- damaged for standing where they legally stood.
     local bo = { chance = 0.85, gapMax = 0.5, minRadius = 0.0 }
-    local R, r = 1600.0, 950.0
+    local phases = BR.Config.Storm.phases
+    local PH = 3
+    local R, r = phases[PH - 1].radius, phases[PH].radius
 
-    -- The budget, stated as the geometry: edges touching, plus a gap of at
-    -- most half the predecessor's radius.
-    local budget = R + r + bo.gapMax * R
+    -- THE BUDGET, STATED AS THE GEOMETRY: the two shapes' edges no further apart than
+    -- half the predecessor's radius -- measured between the SHAPES, not the circles.
+    local budget = bo.gapMax * R
 
     local outside, disjoint, breached, worst = 0, 0, 0, 0.0
-    for i = 1, 800 do
-        local nx, ny = BR.NextStormCentre(BR.Rng(i), 0.0, 0.0, R, r, 1.0, nil, nil, bo)
-        local d = BR.Dist(0.0, 0.0, nx, ny)
-        -- The CENTRE outside the current circle is the weaker ask...
-        if d > R then outside = outside + 1 end
-        -- ...and the WHOLE CIRCLE outside it is the stronger one.
-        if d > R + r then disjoint = disjoint + 1 end
-        if d > budget + 1e-6 then
+    -- SIXTEEN MATCHES' ZONES, each placed from many draws: the zones are the costly
+    -- part and the placement is what is under test, so the shapes are reused rather
+    -- than rebuilt -- sixteen chains stay inside the unit cache.
+    for i = 1, 240 do
+        local seed = (i % 16) * 7919 + 3
+        local nx, ny, _, host = placeZone(BR.Rng(i), seed, PH, 0.0, 0.0, R, r, 1.0, nil, nil, bo)
+        local poke, gap = pokeAndGap(seed, PH, host, nx, ny, r)
+        if poke > 0.0 then outside = outside + 1 end
+        if gap > 0.0 then disjoint = disjoint + 1 end
+        if gap > budget + 0.5 then
             breached = breached + 1
-            if d - budget > worst then worst = d - budget end
+            if gap - budget > worst then worst = gap - budget end
         end
     end
-    ok(outside > 0, 'a breakout can put the next centre outside the current circle',
-        ('%d of 800'):format(outside))
-    ok(disjoint > 0, 'and can separate the two circles entirely',
-        ('%d of 800'):format(disjoint))
-    ok(breached == 0, 'but the gap between them never exceeds gapMax * curRadius',
+    ok(outside > 0, 'a breakout can put the next zone partly outside the current one',
+        ('%d of 240'):format(outside))
+    ok(disjoint > 0, 'and can separate the two shapes entirely',
+        ('%d of 240'):format(disjoint))
+    ok(breached == 0, 'but the gap between the two SHAPES never exceeds gapMax * curRadius',
         ('%d breaches, worst %.3f'):format(breached, worst))
 
     -- The flag has to come back, or the server cannot lengthen the sweep to
-    -- match -- and an unreachable circle is a cull, not a rotation.
+    -- match -- and an unreachable zone is a cull, not a rotation.
     local sawFlag = false
     for i = 1, 200 do
-        local _, _, broke = BR.NextStormCentre(BR.Rng(i), 0.0, 0.0, R, r, 1.0, nil, nil, bo)
+        local _, _, broke = placeZone(BR.Rng(i), (i % 16) * 7919 + 3, PH, 0.0, 0.0, R, r,
+            1.0, nil, nil, bo)
         if broke then sawFlag = true break end
     end
     ok(sawFlag, 'and reports that it broke out, so the sweep can be priced for it')
 
-    -- WITHOUT the config it is the old strict rule, unchanged. Every existing
-    -- caller that passes no breakout table keeps exact containment.
-    local violations = 0
-    for i = 1, 800 do
-        local nx, ny = BR.NextStormCentre(BR.Rng(i), 0.0, 0.0, R, r, 1.0, nil)
-        if BR.Dist(0.0, 0.0, nx, ny) + r > R + 1e-6 then
-            violations = violations + 1
-        end
+    -- WITHOUT the config it is the strict rule, by real shape: every draw lands
+    -- ENTIRELY inside the zone before it. This is the owner's "the circles still
+    -- overlap when they are different shapes", closed.
+    local violations, deepest = 0, -math.huge
+    for i = 1, 240 do
+        local seed = (i % 16) * 104729 + 11
+        local nx, ny, _, host = placeZone(BR.Rng(i), seed, PH, 0.0, 0.0, R, r, 1.0, nil)
+        local poke = pokeAndGap(seed, PH, host, nx, ny, r)
+        if poke > 1e-6 then violations = violations + 1 end
+        deepest = math.max(deepest, poke)
     end
-    ok(violations == 0, 'omitting the breakout config keeps strict nesting',
-        ('%d violations'):format(violations))
+    ok(violations == 0, 'omitting the breakout config keeps the next zone wholly inside',
+        ('%d violations, worst %.3f m out'):format(violations, deepest))
 
-    -- THE FINAL PHASE MUST BE ABLE TO MOVE, and this is what the overhang
-    -- being a fraction of the CURRENT radius buys. Phase 8 closes to radius
-    -- ZERO; an overhang scaled by the NEXT radius would be zero times
-    -- anything, so the one phase that most needs to force a run was the one
-    -- phase that mathematically could not.
+    -- THE FINAL PHASE MUST BE ABLE TO MOVE, and this is what the gap being a fraction
+    -- of the CURRENT radius buys. Phase 8 closes to a point; a gap scaled by the NEXT
+    -- radius would be zero times anything, so the one phase that most needs to force
+    -- a run was the one phase that mathematically could not.
     local finalMoves = 0
-    for i = 1, 400 do
-        local nx, ny = BR.NextStormCentre(BR.Rng(i), 0.0, 0.0, 40.0, 0.0, 1.0, nil, nil, bo)
-        if BR.Dist(0.0, 0.0, nx, ny) > 40.0 then finalMoves = finalMoves + 1 end
+    for i = 1, 200 do
+        local seed = (i % 7) * 31 + 7
+        local nx, ny, _, host = placeZone(BR.Rng(i), seed, 8, 0.0, 0.0, 40.0, 0.0, 1.0,
+            nil, nil, bo)
+        if BR.StormShape.distance(host, nx, ny) > 0.0 then finalMoves = finalMoves + 1 end
     end
     ok(finalMoves > 0, 'the last phase can still land outside its predecessor',
-        ('%d of 400'):format(finalMoves))
+        ('%d of 200'):format(finalMoves))
+
+    -- THE DRAWS ARE FIXED: the breakout roll when there is a chance, then the bearing,
+    -- then how far -- the three values rng:pointInDisc and the roll always took.
+    local function drawsOf(boArg)
+        local rng = BR.Rng(99)
+        local n = 0
+        local realFloat = rng.float
+        rng.float = function(self) n = n + 1 return realFloat(self) end
+        placeZone(rng, 12345, PH, 0.0, 0.0, R, r, 1.0, BR.Config.Storm.mapAABB, 250.0, boArg)
+        return n
+    end
+    ok(drawsOf(bo) == 3 and drawsOf(nil) == 2
+            and drawsOf({ chance = 0.0, gapMax = 0.5 }) == 2,
+        'a placement takes exactly the breakout roll, the bearing and the distance off '
+            .. 'the stream -- two values with no chance of breaking out -- whatever it lands on',
+        ('%d, %d, %d'):format(drawsOf(bo), drawsOf(nil), drawsOf({ chance = 0.0, gapMax = 0.5 })))
 
     -- THE RAMP: nothing in phase 1, 85% by phase 8.
     local cfg = BR.Config.Storm
@@ -4918,36 +5267,39 @@ do
     -- THE STORM MUST NOT CLOSE ON OPEN OCEAN.
     --
     -- The anchor is a POI and so is always on land, but nothing used to stop
-    -- the per-phase drift from walking seaward one circle at a time -- and
+    -- the per-phase drift from walking seaward one zone at a time -- and
     -- eight phases off a coastal anchor is enough to finish over water, with
     -- nowhere left to stand (user, 2026-08-06).
     --
-    -- Sited just inland of the Pacific rectangle (x > -3350) with enough slack
+    -- Sited just inland of the Pacific rectangle (x > -3350) with enough room
     -- that an unconstrained draw reaches well past it, so a fix that does
     -- nothing shows up immediately.
     local cx, cy = -3200.0, 500.0
     ok(not BR.Config.Map.IsWater(cx, cy), 'the test centre starts on dry land')
+    local phases = BR.Config.Storm.phases
 
     local wet, breaches, worst = 0, 0, 0.0
-    for i = 1, 600 do
-        local nx, ny = BR.NextStormCentre(BR.Rng(i), cx, cy, 2400.0, 1400.0, 1.0, nil)
+    for i = 1, 200 do
+        local seed = (i % 16) * 17 + 5
+        local nx, ny, _, host = placeZone(BR.Rng(i), seed, 3, cx, cy, phases[2].radius,
+            phases[3].radius, 1.0, nil)
         if BR.Config.Map.IsWater(nx, ny) then wet = wet + 1 end
-        -- The pull-back must not cost containment: every step of it moves
-        -- strictly closer to a centre the circle already nested in.
-        local slop = BR.Dist(cx, cy, nx, ny) + 1400.0 - 2400.0
-        if slop > 1e-6 then
+        -- The pull-back must not cost containment: the region the centre was drawn in
+        -- is convex and holds the previous centre, so every step back stays in it.
+        local poke = pokeAndGap(seed, 3, host, nx, ny, phases[3].radius)
+        if poke > 1e-6 then
             breaches = breaches + 1
-            if slop > worst then worst = slop end
+            if poke > worst then worst = poke end
         end
     end
     ok(wet == 0, 'no drawn centre lands in authored water',
-        ('%d of 600 landed wet'):format(wet))
+        ('%d of 200 landed wet'):format(wet))
     ok(breaches == 0, 'and pulling one back out of the sea keeps it nested',
         ('%d breaches, worst %.3f'):format(breaches, worst))
 
     -- A centre that is ALREADY wet has nothing better to offer than itself --
     -- it must still return, not loop.
-    local sx, sy = BR.NextStormCentre(BR.Rng(7), -3800.0, 0.0, 2000.0, 1000.0, 1.0, nil)
+    local sx, sy = placeZone(BR.Rng(7), 77, 3, -3800.0, 0.0, 2000.0, 1000.0, 1.0, nil)
     ok(type(sx) == 'number' and type(sy) == 'number',
         'a centre already at sea still resolves rather than hanging')
 end
@@ -4961,12 +5313,16 @@ do
     -- map outline -- they exist to stop LOOT generating in the Pacific, and the
     -- gaps between them are where the storm went. This drives the WHOLE
     -- sequence, anchor to phase 8, exactly as br_core/server/storm.lua drives
-    -- it, and asserts the final circle is somewhere a player can stand.
+    -- it -- each zone placed inside the one before by its real shape -- and asserts
+    -- the final zone is somewhere a player can stand.
     --
-    -- Before the surveyed boundary became the mask, this test failed on 20.2%
-    -- of seeds. That number is the reason it is a full-sequence simulation and
-    -- not a single call: one draw off a coastal anchor almost never lands in
-    -- the sea, and eight of them compounding is the bug.
+    -- AND IT IS WHERE "CONTAINMENT FAILURES MUST BE ZERO" IS ASKED OF A WHOLE MATCH:
+    -- every phase that did not roll a breakout lands wholly inside the zone before it.
+    --
+    -- Before the surveyed boundary became the mask, this test failed on 20.2% of
+    -- seeds. That number is the reason it is a full-sequence simulation and not a
+    -- single call: one draw off a coastal anchor almost never lands in the sea, and
+    -- eight of them compounding is the bug.
     local cfg = BR.Config.Storm
     local pois = BR.Config.Map.POIs
 
@@ -4977,10 +5333,12 @@ do
         end
     end
 
-    local N = 400
+    local N = 100
     local anchorsOut, endsOut, anyOut, worst = 0, 0, 0, 0.0
+    local nestedDraws, notNested, worstPoke = 0, 0, -math.huge
     for seed = 1, N do
         local rng = BR.Rng(seed * 7919 + 13)
+        local storm = seed * 104729 + 1
         local anchor = BR.PickStormAnchor(rng, wps, pois, cfg.anchorBand)
         if not BR.Config.Map.InBounds(anchor.x, anchor.y) then
             anchorsOut = anchorsOut + 1
@@ -4988,7 +5346,7 @@ do
 
         -- The opening radius, computed the way server/storm.lua computes it:
         -- far enough to cover every corner of the bounds, so nobody can land
-        -- outside circle 1.
+        -- outside the opening zone, which is a disc of it.
         local A = cfg.mapAABB
         local r = cfg.radius0
         for _, c in ipairs({ { A.min.x, A.min.y }, { A.min.x, A.max.y },
@@ -5001,13 +5359,16 @@ do
         local sawOut = false
         for phase = 1, #cfg.phases do
             local p = cfg.phases[phase]
-            local minDist = 0.0
-            if phase > #cfg.phases - cfg.edgeHugPhases then
-                minDist = math.max(0.0, (r - p.radius) - cfg.edgeHugM)
+            local hugM = (phase > #cfg.phases - cfg.edgeHugPhases) and cfg.edgeHugM or nil
+            local nx, ny, broke, host = placeZone(rng, storm, phase, cx, cy, r, p.radius,
+                cfg.edgeBiasMax, cfg.mapAABB, hugM, BR.StormBreakoutFor(cfg, phase))
+            if not broke then
+                nestedDraws = nestedDraws + 1
+                local poke = pokeAndGap(storm, phase, host, nx, ny, p.radius)
+                worstPoke = math.max(worstPoke, poke)
+                if poke > 1e-6 then notNested = notNested + 1 end
             end
-            cx, cy = BR.NextStormCentre(rng, cx, cy, r, p.radius, cfg.edgeBiasMax,
-                cfg.mapAABB, minDist, BR.StormBreakoutFor(cfg, phase))
-            r = p.radius
+            cx, cy, r = nx, ny, p.radius
             if not BR.Config.Map.InBounds(cx, cy) then sawOut = true end
         end
 
@@ -5021,129 +5382,146 @@ do
 
     ok(anchorsOut == 0, 'every match anchor is inside the surveyed boundary',
         ('%d of %d outside'):format(anchorsOut, N))
-    ok(endsOut == 0, 'and no match ends with its final circle off the map',
+    ok(endsOut == 0, 'and no match ends with its final zone off the map',
         ('%d of %d, worst %.0fm out'):format(endsOut, N, worst))
     ok(anyOut == 0, 'no phase of any match puts its centre off the map',
         ('%d of %d matches'):format(anyOut, N))
+    ok(nestedDraws > 250 and notNested == 0,
+        ('and all %d phases that did not break out landed WHOLLY inside the zone '
+            .. 'before them, by real shape'):format(nestedDraws),
+        ('%d not, worst %.3f m out'):format(notNested, worstPoke))
 
     -- The pull-back is a walk toward the PREVIOUS centre, and the previous
     -- centre is on the map by induction from the anchor. A centre that is
     -- already off the map breaks that induction and must still return rather
     -- than loop -- brforce and the tests both reach it.
-    local ox, oy = BR.NextStormCentre(BR.Rng(11), 3900.0, 6900.0, 2000.0, 900.0,
-        1.0, nil)
+    local ox, oy = placeZone(BR.Rng(11), 11, 3, 3900.0, 6900.0, 2000.0, 900.0, 1.0, nil)
     ok(type(ox) == 'number' and type(oy) == 'number',
         'a centre already off the map still resolves rather than hanging')
 end
 
 describe('storm.nesting')
 do
-    -- THE critical invariant. If a new circle is not fully contained by the old
-    -- one, a player standing legitimately inside the safe zone can be retroactively
-    -- outside it and start taking damage through no fault of their own.
+    -- THE critical invariant. If a new zone is not wholly inside the old one, a
+    -- player standing legitimately inside the safe zone can be retroactively
+    -- outside it and start taking damage through no fault of their own -- and the
+    -- moving wall would have to cross the destination to reach it.
+    local phases = BR.Config.Storm.phases
     local rng = BR.Rng(2024)
-    local violations, worst = 0, 0.0
-    local cx, cy = 0.0, 0.0
+    local violations, worst = 0, -math.huge
 
-    for _ = 1, 5000 do
-        local curR  = 200.0 + rng:float() * 3000.0
-        local nextR = curR * (0.3 + rng:float() * 0.5)
-        local nx, ny = BR.NextStormCentre(rng, cx, cy, curR, nextR, 0.55, nil)
-        local slop = BR.Dist(cx, cy, nx, ny) + nextR - curR
-        if slop > 1e-6 then
-            violations = violations + 1
-            if slop > worst then worst = slop end
-        end
+    --- A random phase from 2 to 8 and its two radii off the shipping table.
+    local function somePhase()
+        local ph = rng:int(2, #phases)
+        return ph, phases[ph - 1].radius, phases[ph].radius
     end
-    ok(violations == 0, 'next circle always nests inside the current one',
-        ('%d violations, worst overshoot %.3f'):format(violations, worst))
 
-    -- Degenerate case: no room to move.
-    local nx, ny = BR.NextStormCentre(rng, 10.0, 20.0, 100.0, 100.0, 0.55, nil)
-    ok(near(nx, 10.0) and near(ny, 20.0), 'zero slack leaves the centre alone')
+    -- SEVEN MATCHES' CHAINS, placed from many draws, for the reason storm.breakout
+    -- gives: the zones are the cost and the placement is the subject.
+    for i = 1, 400 do
+        local ph, curR, nextR = somePhase()
+        local seed = (i % 7) * 7 + 1
+        local nx, ny, _, host = placeZone(rng, seed, ph, 0.0, 0.0, curR, nextR, 0.55, nil)
+        local poke = pokeAndGap(seed, ph, host, nx, ny, nextR)
+        if poke > 1e-6 then violations = violations + 1 end
+        worst = math.max(worst, poke)
+    end
+    ok(violations == 0, 'the next zone always lies wholly inside the current one',
+        ('%d violations, worst %.3f m out'):format(violations, worst))
+
+    -- A HOST THAT CANNOT HOLD THE NEXT ZONE AT ALL leaves the centre where it is --
+    -- a frozen outline thawed, or the tests' own impossible pair -- and the draws are
+    -- still taken.
+    local host = BR.StormShape.blob(10.0, 20.0, 100.0, BR.StormUnit(5, 2))
+    local nx, ny = BR.NextZoneCentre(rng, host, 10.0, 20.0, 100.0,
+        BR.StormUnit(5, 3), 400.0, 0.55, nil)
+    ok(near(nx, 10.0) and near(ny, 20.0),
+        'a host with no room for the next zone leaves the centre alone')
 
     -- REGRESSION: nesting must survive AABB clamping.
     --
-    -- Clamping to the map bounds can push the new centre further from the old one
-    -- than the slack allows -- most easily when the current circle already
-    -- overhangs the bounds, which the opening circle routinely does. An earlier
-    -- version of NextStormCentre failed this in 38 of 20000 cases with overshoots
-    -- up to 162 units, which in-game reads as "I took storm damage while standing
-    -- inside the circle" and is essentially undebuggable from a bug report.
-    --
-    -- Seeded from the real POIs (the anchor candidates) so the regression is
-    -- exercised where it bit -- including the map-edge ones like Chumash and
-    -- Humane Labs whose opening circles overhang the bounds the most.
+    -- Clamping to the map bounds can push the new centre out of the region the phase
+    -- drew it in -- most easily when the current zone already overhangs the bounds,
+    -- which the opening zone routinely does. An earlier version failed this in 38 of
+    -- 20000 cases with overshoots up to 162 units, which in-game reads as "I took
+    -- storm damage while standing inside the circle" and is essentially undebuggable
+    -- from a bug report. Seeded from the real POIs, the map-edge ones included.
     local aabb = BR.Config.Storm.mapAABB
     local anchors = BR.Config.Map.POIs
-    violations, worst = 0, 0.0
-    for _ = 1, 20000 do
-        local a     = anchors[rng:int(1, #anchors)]
-        local curR  = 800.0 + rng:float() * 2700.0
-        local nextR = curR * (0.3 + rng:float() * 0.5)
-        local nx, ny = BR.NextStormCentre(rng, a.x, a.y, curR, nextR, 0.55, aabb)
-        local slop = BR.Dist(a.x, a.y, nx, ny) + nextR - curR
-        if slop > 1e-6 then
-            violations = violations + 1
-            if slop > worst then worst = slop end
-        end
+    violations, worst = 0, -math.huge
+    for i = 1, 400 do
+        local a = anchors[rng:int(1, #anchors)]
+        local ph, curR, nextR = somePhase()
+        local seed = (i % 7) * 13 + 3
+        local qx, qy, _, h = placeZone(rng, seed, ph, a.x, a.y, curR, nextR, 0.55, aabb)
+        local poke = pokeAndGap(seed, ph, h, qx, qy, nextR)
+        if poke > 1e-6 then violations = violations + 1 end
+        worst = math.max(worst, poke)
     end
     ok(violations == 0, 'nesting survives AABB clamping at the map edges',
-        ('%d violations, worst overshoot %.1f'):format(violations, worst))
+        ('%d violations, worst %.3f m out'):format(violations, worst))
 
     -- REGRESSION: a config value outside [0,1] must not be able to break
     -- containment. edgeBias = 1.8 previously produced violations in ~69% of rolls.
     violations = 0
-    for _ = 1, 5000 do
-        local nx, ny = BR.NextStormCentre(rng, 0.0, 0.0, 1000.0, 500.0, 1.8, nil)
-        if BR.Dist(0.0, 0.0, nx, ny) + 500.0 - 1000.0 > 1e-6 then
-            violations = violations + 1
-        end
+    for i = 1, 150 do
+        local ph, curR, nextR = somePhase()
+        local seed = (i % 7) * 3 + 2
+        local qx, qy, _, h = placeZone(rng, seed, ph, 0.0, 0.0, curR, nextR, 1.8, nil)
+        if pokeAndGap(seed, ph, h, qx, qy, nextR) > 1e-6 then violations = violations + 1 end
     end
     ok(violations == 0, 'out-of-range edgeBias is clamped, not trusted',
         ('%d violations'):format(violations))
 
-    -- THE EDGE HUG (2026-08-04): the final phases pass a minimum offset so
-    -- the next centre lands within edgeHugM of the current circumference --
-    -- endgames run to a place instead of shuffling in the middle. The
-    -- minimum must hold, containment must still win, and a minimum larger
-    -- than the slack must clamp instead of breaking nesting.
-    local hugViol, hugNest = 0, 0
-    for _ = 1, 5000 do
-        local curR, nextR = 1000.0, 200.0
-        local slack   = curR - nextR
-        local minDist = slack - 250.0
-        local nx2, ny2 = BR.NextStormCentre(rng, 0.0, 0.0, curR, nextR,
-            1.0, nil, minDist)
-        local off = BR.Dist(0.0, 0.0, nx2, ny2)
-        if off < minDist - 1e-6 then hugViol = hugViol + 1 end
-        if off + nextR - curR > 1e-6 then hugNest = hugNest + 1 end
+    -- THE EDGE HUG (2026-08-04): the final phases pass `hugM`, and the next zone lands
+    -- within that of as far as it could go on its bearing -- endgames run to a place
+    -- instead of shuffling in the middle. Asked of the shape: nudged a little more than
+    -- hugM further out along the same bearing, it no longer fits.
+    local hugShort, hugNest = 0, 0
+    for i = 1, 200 do
+        local seed = (i % 7) * 11 + 9
+        local ph = 7
+        local curR, nextR = phases[ph - 1].radius, phases[ph].radius
+        local qx, qy, _, h = placeZone(rng, seed, ph, 0.0, 0.0, curR, nextR, 1.0, nil, 25.0)
+        local off = math.sqrt(qx * qx + qy * qy)
+        if off > 1e-9 then
+            local ux, uy = qx / off, qy / off
+            local px, py = qx + ux * 30.0, qy + uy * 30.0
+            if pokeAndGap(seed, ph, h, px, py, nextR) <= 0.0 then hugShort = hugShort + 1 end
+        end
+        if pokeAndGap(seed, ph, h, qx, qy, nextR) > 1e-6 then hugNest = hugNest + 1 end
     end
-    ok(hugViol == 0, 'the edge hug pushes the centre out to its minimum',
-        ('%d short draws'):format(hugViol))
+    ok(hugShort == 0, 'the edge hug puts the zone within hugM of as far as it can go',
+        ('%d short draws'):format(hugShort))
     ok(hugNest == 0, 'and containment still wins over the hug',
         ('%d nesting violations'):format(hugNest))
 
-    local hx, hy = BR.NextStormCentre(rng, 0.0, 0.0, 100.0, 60.0, 1.0, nil, 9999.0)
-    ok(BR.Dist(0.0, 0.0, hx, hy) + 60.0 - 100.0 <= 1e-6,
-        'an oversized minimum clamps to the slack instead of breaking nesting')
-
-    -- Bounds are best-effort and yield to containment. Where the current circle
-    -- is itself fully inside the map, though, the next one should be too.
-    local inBounds = true
-    for _ = 1, 5000 do
-        local nextR = 200.0 + rng:float() * 800.0
-        local curR  = nextR / (0.3 + rng:float() * 0.5)
-        -- place the current circle fully inside the bounds
-        local bx = aabb.min.x + curR + rng:float() * ((aabb.max.x - aabb.min.x) - 2 * curR)
-        local by = aabb.min.y + curR + rng:float() * ((aabb.max.y - aabb.min.y) - 2 * curR)
-        local qx, qy = BR.NextStormCentre(rng, bx, by, curR, nextR, 0.55, aabb)
-        if qx - nextR < aabb.min.x - 1e-6 or qx + nextR > aabb.max.x + 1e-6
-        or qy - nextR < aabb.min.y - 1e-6 or qy + nextR > aabb.max.y + 1e-6 then
-            inBounds = false
+    -- Bounds are best-effort and yield to containment. Where the current zone is
+    -- itself well inside the map, though, the next one should be too -- its whole
+    -- bounding box.
+    local inBounds, checked = true, 0
+    for i = 1, 200 do
+        local ph = rng:int(4, #phases)
+        local curR, nextR = phases[ph - 1].radius, phases[ph].radius
+        local seed = (i % 7) * 5 + 4
+        local bx = aabb.min.x + 3.0 * curR + rng:float() * ((aabb.max.x - aabb.min.x) - 6.0 * curR)
+        local by = aabb.min.y + 3.0 * curR + rng:float() * ((aabb.max.y - aabb.min.y) - 6.0 * curR)
+        if bx > aabb.min.x and by > aabb.min.y then
+            checked = checked + 1
+            local qx, qy = placeZone(rng, seed, ph, bx, by, curR, nextR, 0.55, aabb)
+            if nextR > 0.0 then
+                local b = BR.StormShape.blob(qx, qy, nextR, BR.StormUnit(seed, ph))
+                for _, p in ipairs(walkPoly(b, 360)) do
+                    if p.x < aabb.min.x - 1e-6 or p.x > aabb.max.x + 1e-6
+                        or p.y < aabb.min.y - 1e-6 or p.y > aabb.max.y + 1e-6 then
+                        inBounds = false
+                    end
+                end
+            end
         end
     end
-    ok(inBounds, 'a contained circle keeps its successors inside the bounds')
+    ok(checked > 60 and inBounds,
+        'a zone well inside the bounds keeps its successors inside them')
 end
 
 describe('storm.anchor')
@@ -16050,10 +16428,14 @@ do
         -- `phase <= 1`, so a later phase's hold is the one shape where the
         -- storm is both stationary and genuinely hurting. Nothing in these
         -- cases then depends on how long the suite takes to run.
+        --
+        -- THE TARGET CONCENTRIC AT THE SHIPPING RATIO OF THE TWO RADII, so it nests
+        -- by real shape (#344 round 2: zone 2 is drawn to fit inside zone 1 there)
+        -- and the zone every case below measures is zone 1's shape alone.
         env.BR.State.storm = {
             phase = 2,
             cx0 = 0.0, cy0 = 0.0, r0 = 200.0,
-            cx1 = 0.0, cy1 = 0.0, r1 = 200.0,
+            cx1 = 0.0, cy1 = 0.0, r1 = 123.0,
             tStart = 0, tWait = 600000, tShrink = 60000,
             dps = 4.0,
         }
@@ -16257,7 +16639,8 @@ do
 
         local a = C.arrow()
         ok(a ~= nil, 'both bodies are outside, so there is an arrow either way')
-        ok(a ~= nil and near(a.x, 0.0, 0.5) and near(a.y, 175.0, 0.5),
+        local inside = C.env.BR.State.storm.r1 - 25.0
+        ok(a ~= nil and near(a.x, 0.0, 0.5) and near(a.y, inside, 0.5),
            'and it points home from the WATCHED player north of the circle, '
            .. 'not from the corpse east of it',
            a and (tostring(a.x) .. ', ' .. tostring(a.y)))
@@ -16329,10 +16712,15 @@ do
         watched.x = 910.0
         C.frame()
         local e = C.last()
-        ok(#C.envelopes > before
+        -- BY THE CHANGE IN THE DISTANCE, which is 10 m only where the boundary faces
+        -- due east: the zone is a shape, and its nearest point from (900, 0) need not
+        -- be on the x axis.
+        local moved = edgeFrom(C, 910.0, 0.0) - edgeFrom(C, 900.0, 0.0)
+        ok(#C.envelopes > before and moved > 5.0
            and near(e.edgeDistance, edgeFrom(C, 910.0, 0.0), 0.5)
-           and near(e.edgeDistance - edgeFrom(C, 900.0, 0.0), 10.0, 0.05),
-           'the watched player moving 10m moves the readout 10m, per frame',
+           and near(e.edgeDistance - edgeFrom(C, 900.0, 0.0), moved, 0.05),
+           'the watched player moving 10m moves the readout by what it moved them, '
+               .. 'per frame',
            e and e.edgeDistance)
     end
 
@@ -16383,7 +16771,7 @@ do
         -- Wide enough that the arc is a slice of the ring rather than all of
         -- it: at r=200 every slot is drawn and centring cannot be observed.
         C.env.BR.State.storm.r0 = 2000.0
-        C.env.BR.State.storm.r1 = 2000.0
+        C.env.BR.State.storm.r1 = 1230.0
         C.pedAt = pt(2100.0, 0.0)         -- corpse just outside, due EAST
         C.spectate(pt(0.0, 2100.0))       -- watched just outside, due NORTH
         C.frame()
@@ -16421,7 +16809,7 @@ do
         -- test could not tell them apart -- a window whose width reaches the slot
         -- count draws the same ring, just starting somewhere else.
         C.env.BR.State.storm.r0 = 350.0
-        C.env.BR.State.storm.r1 = 350.0
+        C.env.BR.State.storm.r1 = 215.0
         C.pedAt = pt(360.0, 0.0)          -- corpse just outside, due EAST
         C.spectate(pt(0.0, 360.0))        -- watched just outside, due NORTH
         C.frame()
@@ -16464,7 +16852,7 @@ do
         D.env.BR.State.me.state = D.env.BR.PlayerState.OUT
         D.env.BR.Storm.wallStyle = 'columns'
         D.env.BR.State.storm.r0 = 350.0
-        D.env.BR.State.storm.r1 = 350.0
+        D.env.BR.State.storm.r1 = 215.0
         D.pedAt = pt(-3000.0, -3000.0)
         D.frame()
         local same = #D.markers == #was
