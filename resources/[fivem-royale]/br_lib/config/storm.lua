@@ -979,24 +979,27 @@ BR.Config.Storm = {
         -- never while the storm moves -- nor while a conjoined zone is still growing
         -- into its destination, which is a hold that moves.
         --
-        -- MEASURED over 150 matches' nested sweeps, the two-sided distance in metres
-        -- from the keyframe nearest the morph's own point to the wall itself -- worst
-        -- [mean] across each sweep. At the sweep's two ends it is zero. A pause-map
-        -- pixel is about 8 m.
+        -- EACH IS PLACED WHERE IT IS TRUE: the largest copy of itself the wall holds
+        -- (BR.StormKeyframePlace), so the map's error runs one way only -- the fill may
+        -- stop short of the wall, and is never past it by more than the half-metre the
+        -- fit allows, at any count. And the keyframe shown most holds the destination
+        -- to 23 m at worst. MEASURED over 240 real sweeps, phases 2 to 7, off the
+        -- movie's own arithmetic every second of the nested ones: how far the wall runs
+        -- past all the fill the map shows, in metres, mean [worst]. A pause-map pixel
+        -- is about 8 m.
         --
         --     phase    keyframes 1    2            4            8
-        --       2       724 [206]    424 [111]    212 [58]     174 [31]
-        --       3       616 [144]    425 [78]     288 [43]     246 [24]
-        --       4       373 [84]     203 [46]     134 [25]     123 [14]
-        --       5       177 [48]     110 [27]      57 [14]      52 [8]
-        --       6       101 [23]      61 [13]      36 [7]       17 [4]
-        --       7        38 [9]       27 [6]       17 [3]       16 [2]
+        --       2       310 [1005]   165 [654]     86 [366]     44 [187]
+        --       3       209 [558]    115 [368]     61 [215]     32 [118]
+        --       4       128 [310]     72 [196]     39 [113]     21 [60]
+        --       5        66 [173]     38 [112]     21 [72]      12 [42]
+        --       6        34 [92]      20 [73]      12 [57]       8 [37]
+        --       7        15 [37]       9 [28]       5 [20]       3 [13]
         --
-        -- From four keyframes up, the worst of them is where the wall rests on its
-        -- destination for part of the sweep -- the wall there is the hull of the moving
-        -- shape AND the destination, and the destination's own fill is drawn over the
-        -- keyframe in that stretch. Against the moving shape alone, eight keyframes are
-        -- within 120 m at worst at phase 2 and 43 m at phase 4.
+        -- On the solver's circle instead, as the round before placed them, one pair
+        -- painted fill 189 m past the wall on average at phase 2 and 794 at worst --
+        -- ground the damage tick was billing -- the wall ran 112 [376] past the fill,
+        -- and the destination stood 591 m out of the keyframe shown most.
         --
         -- IT SHIPS AT 1 BECAUSE EACH EXTRA KEYFRAME IS AN ADD_AREA_OVERLAY, which is the
         -- call #350's hitch was traced to. It is spent while the storm stands still and

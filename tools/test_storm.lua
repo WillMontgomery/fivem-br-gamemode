@@ -8657,13 +8657,13 @@ do
     --- How far the keyframes the map SHOWS are from where they should be right now,
     --- and how far each one's alpha is from its share of the crossfade.
     ---
-    --- WHERE THEY SHOULD BE is the moving frame, asked of the solver and the record
-    --- directly and not of storm.lua: keyframe k is V(m_k) (BR.StormKeyframe) on the
-    --- solver's circle, and its share of the zone's alpha is the crossfade between the
-    --- two keyframes that bracket the frame's own m (BR.StormMorphFrame). The keyframes
-    --- are matched to their m by their SHAPE, as the movie holds them -- so a keyframe
-    --- placed on the wrong circle, drawn at the wrong m, or faded to the wrong share
-    --- each read as a distance here.
+    --- WHERE THEY SHOULD BE is asked of the solver and the record directly and not of
+    --- storm.lua: keyframe k is V(m_k) (BR.StormKeyframe) where BR.StormKeyframePlace
+    --- puts it -- the largest copy of it the wall holds (#344) -- and its share of the
+    --- zone's alpha is the crossfade between the two keyframes that bracket the
+    --- frame's own m (BR.StormMorphFrame). The keyframes are matched to their m by
+    --- their SHAPE, as the movie holds them -- so a keyframe placed in the wrong spot,
+    --- drawn at the wrong m, or faded to the wrong share each read as a distance here.
     --- @return number worstOff, number worstAlpha, number shown  (the keyframes at > 0)
     local function frameErr(C, rec, ms)
         local env = C.env
@@ -8690,18 +8690,53 @@ do
                 end
             end
         end
+        -- AND A KEYFRAME THAT CANNOT HOLD THE DESTINATION HANDS ITS SHARE ON to the next
+        -- keyframe up that can -- V(1) at the latest -- until it carries no more than
+        -- 0.45 of the two, all of that by twenty metres of poke (client/storm.lua's
+        -- POKE_SHARE and POKE_RAMP), from the top down, on a nested phase: asked of
+        -- BR.StormKeyframePoke where BR.StormKeyframePlace puts each keyframe.
+        if ms[hi] >= 1.0 and #order >= 2 then
+            local pokes = {}
+            local function pokeOf(i)
+                if pokes[i] == nil then
+                    local px, py, pr = env.BR.StormKeyframePlace(rec, ms[i], t)
+                    pokes[i] = env.BR.StormKeyframePoke(rec, ms[i], px, py, pr) or false
+                end
+                return pokes[i]
+            end
+            for k = #order - 1, 1, -1 do
+                local i = order[k]
+                local pk = (share[i] >= 0.5) and pokeOf(i) or false
+                if pk and pk > 0.0 then
+                    local j = hi
+                    for q = k + 1, #order - 1 do
+                        local pj = pokeOf(order[q])
+                        if pj and pj <= 0.0 then
+                            j = order[q]
+                            break
+                        end
+                    end
+                    local over = share[i] - 0.45 * (share[i] + share[j])
+                    if over > 0.0 then
+                        local moved = over * math.min(1.0, pk / 20.0)
+                        share[i], share[j] = share[i] - moved, share[j] + moved
+                    end
+                end
+            end
+        end
         local worstOff, worstA, shown = 0.0, 0.0, 0
         local kfs = C.keyframes()
         if #kfs ~= #ms then return math.huge, math.huge, 0 end
         for i, ov in ipairs(kfs) do
-            local want = env.BR.StormKeyframe(rec, ms[i], r)
+            local px, py, pr = env.BR.StormKeyframePlace(rec, ms[i], t)
+            local want = env.BR.StormKeyframe(rec, ms[i], pr)
             local o = C.opacity(ov)
             worstA = math.max(worstA, math.abs(o - share[i] / 255))
             if o > 0.0 then
                 shown = shown + 1
                 for _, p in ipairs(C.shown(ov)) do
                     worstOff = math.max(worstOff,
-                        math.abs(SS.distance(want, p.x - cx, p.y - cy)))
+                        math.abs(SS.distance(want, p.x - px, p.y - py)))
                 end
             end
         end
@@ -9026,6 +9061,114 @@ do
         ('fallback %s, rebuild %s'):format(
             bFallback and tostring(bFallback.events) or 'none',
             bRebuild and tostring(bRebuild.events) or 'none'))
+
+    -- ═══ AND THE MAP NEVER SHOWS GROUND THE WALL DOES NOT HOLD (#344) ═══
+    --
+    -- Placed on the solver's circle, the keyframe that dominated mid-sweep painted
+    -- zone fill hundreds of metres past the wall -- over ground the damage tick was
+    -- already billing -- and the destination poked out of every keyframe showing, the
+    -- owner's "the circles still overlap when they are different shapes" (the round's
+    -- review: 794 m and 591 m at phase 2). Each keyframe is now the largest copy of
+    -- itself the wall holds, and the destination's is grown about its centre from the
+    -- destination out. Asked of every keyframe the movie SHOWS -- by the movie's own
+    -- arithmetic, C.shown -- every tenth tick of a nested, a conjoined and a disjoint
+    -- sweep: no shown point past the wall by more than the half-metre the fit allows,
+    -- and on the nested one the destination inside the destination's keyframe to the
+    -- polygon's own chord, and inside whichever keyframe the map shows MOST of to the
+    -- chord and the twenty-metre ramp over which a keyframe that pokes hands its share
+    -- to the destination's.
+    --- A polygon's signed distance, positive outside -- the drawn contour itself.
+    local function polyOut(poly, x, y)
+        local inside, best, n = false, math.huge, #poly
+        local j = n
+        for i = 1, n do
+            local a, b = poly[j], poly[i]
+            if ((b.y > y) ~= (a.y > y))
+                    and (x < (a.x - b.x) * (y - b.y) / (a.y - b.y) + b.x) then
+                inside = not inside
+            end
+            local dx, dy = a.x - b.x, a.y - b.y
+            local L = dx * dx + dy * dy
+            local u = (L > 0.0) and (((x - b.x) * dx + (y - b.y) * dy) / L) or 0.0
+            if u < 0.0 then u = 0.0 elseif u > 1.0 then u = 1.0 end
+            best = math.min(best, math.sqrt((b.x + u * dx - x) ^ 2 + (b.y + u * dy - y) ^ 2))
+            j = i
+        end
+        return inside and -best or best
+    end
+    local chord = N.env.BR.Config.Storm.overlay.chordM
+    local honestCases = {
+        { 'a nested', 2, 1000.0, 2600.0, 1400.0, 1600.0, -700.0, -300.0, NESTED },
+        { 'a conjoined', 6, 0.0, 260.0, 300.0, 110.0, nil, nil, CONJOINED },
+        { 'a disjoint', 4, 0.0, 950.0, 2400.0, 260.0, nil, nil, nil },
+        -- AND FOUR PAIRS, where a keyframe the destination pokes out of hands its share
+        -- to the next one up that holds it rather than straight to V(1).
+        { 'a four-keyframe nested', 2, 1000.0, 2600.0, 1400.0, 1600.0, -700.0, -300.0,
+            NESTED, 4 },
+    }
+    for _, hc in ipairs(honestCases) do
+        local H, hrec = sweepClient(hc[2], hc[3], hc[4], hc[5], hc[6], 60000, hc[7], hc[8],
+            hc[9])
+        if hc[10] then H.env.BR.Config.Storm.overlay.keyframes = hc[10] end
+        ok(H.overlayReady(), hc[1] .. ' honesty client reaches the gate')
+        H.tick(2)
+        if hc[10] then realTicks(H, 20 * hc[10] + 20) end
+        ok(#H.keyframes() == (hc[10] or 1) + 1,
+            ('%s sweep starts with all of its keyframes in the movie'):format(hc[1]),
+            #H.keyframes())
+        startSweep(H, hrec)
+        local SS = H.env.BR.StormShape
+        local nested = H.env.BR.StormNested(hrec)
+        local D = H.env.BR.StormTarget(hrec)
+        local dWalk = SS.polyline(D, 2.0, 400)[1] or {}
+        local past, poke, domPoke, looks, ticks = -math.huge, -math.huge, -math.huge, 0, 0
+        realTicks(H, 599, function()
+            ticks = ticks + 1
+            if ticks % 10 ~= 0 then return end
+            local _, _, _, _, _, _, t = H.env.BR.StormAt(hrec, H.env.BR.Clock.now())
+            local wall = H.env.BR.StormWall(hrec, t)
+            local kfs = H.keyframes()
+            local dom, domO = nil, 0.0
+            for _, ov in ipairs(kfs) do
+                if H.opacity(ov) > domO then dom, domO = ov, H.opacity(ov) end
+            end
+            if nested and dom then
+                local dpoly = H.shown(dom)
+                for _, q in ipairs(dWalk) do
+                    domPoke = math.max(domPoke, polyOut(dpoly, q.x, q.y))
+                end
+            end
+            for i, ov in ipairs(kfs) do
+                if H.opacity(ov) > 0.0 then
+                    looks = looks + 1
+                    local poly = H.shown(ov)
+                    for _, p in ipairs(poly) do
+                        past = math.max(past, SS.distance(wall, p.x, p.y))
+                    end
+                    -- THE DESTINATION'S KEYFRAME, second in the movie at one pair.
+                    if nested and i == 2 then
+                        for _, q in ipairs(dWalk) do
+                            poke = math.max(poke, polyOut(poly, q.x, q.y))
+                        end
+                    end
+                end
+            end
+        end)
+        ok(looks > 50 and past <= 0.5 + 1e-6 and H.errored() == nil,
+            hc[1] .. ' sweep never shows zone fill past the wall: every keyframe the movie '
+                .. 'shows is inside it to the half-metre the fit allows',
+            H.errored() or ('%d looks, worst %.3f m past the wall'):format(looks, past))
+        if nested then
+            ok(poke <= chord,
+                'and the destination lies inside the destination\'s own keyframe the whole '
+                    .. 'way -- the circles do not overlap, to the polygon\'s chord',
+                ('worst %.3f m out, chord %.1f m'):format(poke, chord))
+            ok(domPoke <= chord + 20.0,
+                'and inside the keyframe the map shows most of, to the chord and the ramp a '
+                    .. 'poking keyframe hands its share over across',
+                ('worst %.3f m out'):format(domPoke))
+        end
+    end
 
     -- ─── a client that becomes ready mid-sweep draws the picture ONCE ───
     --

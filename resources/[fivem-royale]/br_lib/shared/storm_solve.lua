@@ -515,10 +515,11 @@ end
 -- the zone the wall leaves, V(1) the one it closes on. The map cannot re-draw a
 -- polygon while the storm moves (#350, 52a7caa) and it CAN move, scale and fade a
 -- polygon it already has: so it draws V at chosen values of m ahead of time and
--- crossfades between them while placing them on the solver's circle. At m = 0 and
--- m = 1 that is the wall exactly. (Where a nested wall rests on its destination it is
--- the hull of this and the destination, and the destination's own fill is drawn
--- over it.)
+-- crossfades between them. At m = 0 and m = 1 that is the wall exactly. (Where a
+-- nested wall rests on its destination it is the hull of this and the destination,
+-- and the destination's own fill is drawn over it.) Between, a keyframe on the
+-- solver's circle is a guess, so each is placed where it is TRUE --
+-- BR.StormKeyframePlace, below.
 
 --- The unit discs of a record's morph, both ends, in link order: `ua` the wall
 --- leaves from and `ub` the partners it travels to. A record carrying its outline
@@ -606,6 +607,132 @@ function BR.StormKeyframe(rec, m, rDraw)
                   r = (s * a.r + m * b.r) * k }
     end
     return BR.StormShape.discShape(md, 0.0, 0.0, k)
+end
+
+-- ═══ AND THE MAP NEVER SHOWS GROUND THE WALL DOES NOT HOLD (#344) ═══
+--
+-- Placed on the solver's circle, a keyframe is exact at its own m and a guess
+-- between: V(0) scaled down to r(t) is the zone the wall left, not the wall, and
+-- mid-sweep the more opaque of two keyframes painted zone fill hundreds of metres
+-- past the wall -- over ground the wall had already crossed and the damage tick was
+-- billing -- while the destination poked out of every keyframe showing, which is
+-- the owner's own "the circles still overlap when they are different shapes".
+-- (The review of this round measured both, at 794 m and 591 m at phase 2.)
+--
+-- So each keyframe is placed where it is TRUE, every tick: the largest copy of it
+-- that the wall holds.
+--
+--   V(1), on a nested phase, is grown about the destination's own centre from the
+--   destination outwards -- r1 up to the solver's r(t) -- until it meets the wall,
+--   so it always holds the destination and never passes the wall.
+--
+--   Every other keyframe keeps the solver's circle and is shrunk toward a point
+--   the wall holds -- the destination's centre on a nested phase, where the moving
+--   discs' centres are on a breakout -- only as far as it has to be.
+--
+-- The map's error is then all one way: somewhere inside the wall the fill may stop
+-- short of it, and nowhere does fill lie outside it. Twelve halvings of a scale
+-- against the wall's corner list, at the 10 Hz map tick: two keyframes placed and
+-- one asked whether it holds the destination (BR.StormKeyframePoke) cost 0.36 ms a
+-- tick on average and 1.8 at worst, measured over 13,720 ticks of 280 sweeps. The
+-- map's error by phase and keyframe count is in config/storm.lua's `overlay` block.
+local PLACE_TOL = 0.5      -- metres a placed keyframe may lie past the wall
+local PLACE_STEPS = 12     -- halvings of the scale
+
+--- The unit discs of V(m) about the origin, cached on the record's worked-out morph.
+local function keyDiscs(rec, e, m)
+    local c = e.keyDiscs
+    if not c then
+        c = {}
+        e.keyDiscs = c
+    end
+    local hit = c[m]
+    if hit then return hit end
+    local ua, ub = unitDiscs(rec, e)
+    local s = 1.0 - m
+    local md = {}
+    for i = 1, #ua do
+        local a, b = ua[i], ub[i]
+        md[i] = { x = s * a.x + m * b.x, y = s * a.y + m * b.y, r = s * a.r + m * b.r }
+    end
+    c[m] = md
+    return md
+end
+
+--- Where the map places keyframe V(m) at sweep fraction `t`, and how big: the
+--- centre its origin goes on and the radius it is scaled to. See the section note.
+--- A radius of 0 is a keyframe no copy of which fits -- not reached on any record
+--- measured, and the map hides it rather than showing it wrong.
+--- @param rec table
+--- @param m number   the keyframe's own morph fraction
+--- @param t number   the sweep fraction now
+--- @return number x, number y, number r
+function BR.StormKeyframePlace(rec, m, t)
+    t = BR.Clamp(t or 0.0, 0.0, 1.0)
+    m = BR.Clamp(m or 0.0, 0.0, 1.0)
+    local cx, cy = BR.Lerp(rec.cx0, rec.cx1, t), BR.Lerp(rec.cy0, rec.cy1, t)
+    local r = BR.Lerp(rec.r0, rec.r1, t)
+    local e = infoOf(rec)
+    if not e then return cx, cy, r end
+    -- AT ITS OWN END A KEYFRAME IS THE WALL, and costs nothing to place.
+    local r1 = rec.r1 or 0.0
+    if (m <= 0.0 and t <= 0.0) or (m >= 1.0 and t >= 1.0) then return cx, cy, r end
+
+    local SS = BR.StormShape
+    local ks = SS.morphHull(e.src, e.dst, t, e.nested and e.keep or nil)
+    local discs = keyDiscs(rec, e, m)
+    local function fits(ox, oy, k) return SS.fit(ks, discs, ox, oy, k) <= PLACE_TOL end
+
+    if e.nested and m >= 1.0 and r1 > 0.0 then
+        local hi = math.max(1.0, r / r1)
+        if fits(rec.cx1, rec.cy1, hi * r1) then return rec.cx1, rec.cy1, hi * r1 end
+        local lo = 1.0
+        for _ = 1, PLACE_STEPS do
+            local mid = 0.5 * (lo + hi)
+            if fits(rec.cx1, rec.cy1, mid * r1) then lo = mid else hi = mid end
+        end
+        return rec.cx1, rec.cy1, lo * r1
+    end
+
+    if fits(cx, cy, r) then return cx, cy, r end
+    local qx, qy = rec.cx1, rec.cy1
+    if not (e.nested and r1 > 0.0) then
+        qx, qy = 0.0, 0.0
+        local s = 1.0 - t
+        for i = 1, #e.src do
+            qx = qx + s * e.src[i].x + t * e.dst[i].x
+            qy = qy + s * e.src[i].y + t * e.dst[i].y
+        end
+        qx, qy = qx / #e.src, qy / #e.src
+    end
+    local lo, hi = 0.0, 1.0
+    for _ = 1, PLACE_STEPS do
+        local mid = 0.5 * (lo + hi)
+        if fits(qx + mid * (cx - qx), qy + mid * (cy - qy), mid * r) then lo = mid else hi = mid end
+    end
+    return qx + lo * (cx - qx), qy + lo * (cy - qy), lo * r
+end
+
+--- How far the destination reaches OUTSIDE keyframe V(m) placed at (x, y) at radius
+--- `r` -- 0 or less when the keyframe holds it -- on a nested phase, where every
+--- keyframe should; nil on a breakout, where the destination is its own part.
+---
+--- The map reads it to keep the keyframe it shows most of one that holds the
+--- destination (client/storm.lua's applyFrames): the owner's "the circles still
+--- overlap when they are different shapes" is a zone fill crossing the destination.
+--- @return number|nil metres
+function BR.StormKeyframePoke(rec, m, x, y, r)
+    local e = rec and infoOf(rec)
+    if not e or not e.nested or (rec.r1 or 0.0) <= 0.0 then return nil end
+    local discs = keyDiscs(rec, e, BR.Clamp(m or 0.0, 0.0, 1.0))
+    local placedDiscs = {}
+    for i = 1, #discs do
+        local d = discs[i]
+        placedDiscs[i] = { x = x + d.x * r, y = y + d.y * r, r = d.r * r }
+    end
+    local ks = BR.StormShape.discHull(placedDiscs)
+    if not ks then return nil end
+    return BR.StormShape.fit(ks, e.keep, 0.0, 0.0, 1.0)
 end
 
 --- The fastest any corner of the wall moves during this record's sweep, in metres

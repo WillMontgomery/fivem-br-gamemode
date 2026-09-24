@@ -455,12 +455,17 @@ where `a` and `b` are a link's two unit discs and `c(t), r(t)` the circle
 that was #350's hitch — but it can move, scale and fade one it already has. So the
 one rebuild a phase makes, when its record arrives, draws `V(0)` and `V(1)` about
 their own origin (and the destination in place), and every tick of the sweep
-places both on the solver's circle and crossfades them by `m`: exact at the two
-ends, a blend in between. `overlay.keyframes` adds more `V(k/K)` during the hold,
-never while the storm moves or a conjoined zone grows; the nearest one is within 31 m on average at phase 2
-at eight keyframes, where two ends alone are within 206 (config/storm.lua has the
-table). The sweep's end needs no rebuild, because `V(1)` on the destination's
-circle is the destination.
+places both and crossfades them by `m`: exact at the two ends, a blend in between.
+Each is placed where it is true — the largest copy of itself the wall holds, with
+`V(1)` grown about the destination's centre so it always holds the destination —
+so the fill is never past the wall by more than half a metre, and a keyframe the
+destination pokes out of hands most of its alpha to the next one up that holds it,
+so the keyframe shown most holds the destination to 23 m at worst. The cost is
+fill that stops short of the wall mid-sweep: 310 m on average at phase 2 at one
+pair, 44 m at eight. `overlay.keyframes` adds more `V(k/K)` during the hold, never
+while the storm moves or a conjoined zone grows (config/storm.lua has the table).
+The sweep's end needs no rebuild, because `V(1)` on the destination's circle is the
+destination.
 
 ### A conjoined zone grows into its destination
 

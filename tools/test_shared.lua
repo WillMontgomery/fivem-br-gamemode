@@ -5640,6 +5640,86 @@ do
         ('%d disagreed on whether, worst %.3e m'):format(wrongMiss, worst))
 end
 
+describe('storm.place')
+do
+    -- ═══ WHERE THE MAP PUTS A KEYFRAME: THE LARGEST COPY OF IT THE WALL HOLDS (#344) ═══
+    --
+    -- BR.StormKeyframePlace answers where keyframe V(m) goes at sweep fraction t. The
+    -- claims, asked of real placed phases -- nested and broken out -- at nine instants
+    -- of the sweep, of the placed shape's own corner list against the wall's:
+    --
+    --   every keyframe lies inside the wall, to the half-metre the fit allows;
+    --   on a nested phase V(1) holds the destination whole;
+    --   and on a nested phase neither is needlessly small -- a copy three thousandths
+    --   bigger no longer fits, unless it is already at its full size.
+    local SS = BR.StormShape
+    local phases = BR.Config.Storm.phases
+    local past, loose, slack, n, zero = -math.huge, -math.huge, 0, 0, 0
+    local nested, apart, grew = 0, 0, 0
+    local function discsOf(ks)
+        local out = {}
+        for _, c in ipairs(ks) do out[#out + 1] = { x = c.x, y = c.y, r = c.rho } end
+        return out
+    end
+    for i = 1, 16 do
+        local seed = i * 7121 + 5
+        local PH = 2 + (i % 6)
+        local R0, R1 = phases[PH - 1].radius, phases[PH].radius
+        local bo = (i % 2 == 0) and { chance = 1.0, gapMax = 0.5, minRadius = 0.0 } or nil
+        local nx, ny = placeZone(BR.Rng(i * 13), seed, PH, 0.0, 0.0, R0, R1, 1.0, nil, nil, bo)
+        local rec = BR.BuildStormRecord(PH, 0.0, 0.0, R0, nx, ny, R1, 0, 0, 1000, 1.0, seed)
+        local isNested = BR.StormNested(rec)
+        if isNested then nested = nested + 1 else apart = apart + 1 end
+        local dd = discsOf(BR.StormTarget(rec).hull.ks)
+        for k = 1, 9 do
+            local t = k / 10
+            local wall = BR.StormWall(rec, t).hull.ks
+            local cx, cy, full = t * nx, t * ny, BR.Lerp(R0, R1, t)
+            for _, m in ipairs({ 0.0, 1.0 }) do
+                local x, y, r = BR.StormKeyframePlace(rec, m, t)
+                n = n + 1
+                if not (r > 0.0) then zero = zero + 1 else
+                    local kf = BR.StormKeyframe(rec, m, r).hull.ks
+                    past = math.max(past, SS.fit(wall, discsOf(kf), x, y, 1.0))
+                    if isNested and m == 1.0 then
+                        loose = math.max(loose, SS.fit(kf, dd, -x, -y, 1.0))
+                        if r > R1 * 1.001 then grew = grew + 1 end
+                    end
+                    -- NOT NEEDLESSLY SMALL, on a nested phase, where the point a keyframe
+                    -- is scaled about is the destination's centre.
+                    if isNested and r < full * (1.0 - 1e-9) then
+                        local bx, by, br
+                        if m == 1.0 then
+                            bx, by, br = nx, ny, r * 1.003
+                        else
+                            local lam = math.min(1.0, (r / full) * 1.003)
+                            bx, by, br = nx + lam * (cx - nx), ny + lam * (cy - ny), lam * full
+                        end
+                        local bigger = BR.StormKeyframe(rec, m, br).hull.ks
+                        if SS.fit(wall, discsOf(bigger), bx, by, 1.0) <= 0.5 then
+                            slack = slack + 1
+                        end
+                    end
+                end
+            end
+        end
+    end
+    ok(nested >= 5 and apart >= 5 and zero == 0,
+        ('%d placements on %d nested and %d broken-out phases, every one of them a real '
+            .. 'copy of its keyframe'):format(n, nested, apart), ('%d with no copy'):format(zero))
+    ok(past <= 0.5 + 1e-9,
+        'and every placed keyframe lies inside the wall, to the half-metre the fit allows: '
+            .. 'the map never shows ground the wall does not hold',
+        ('worst %.4f m past'):format(past))
+    ok(loose <= 1e-6 and grew > 0,
+        'and on a nested phase the destination\'s keyframe holds the destination whole -- '
+            .. 'grown about the destination\'s centre from the destination out',
+        ('worst %.3e m of the destination outside it, %d grown past it'):format(loose, grew))
+    ok(slack == 0,
+        'and no keyframe on a nested phase is placed smaller than it has to be',
+        ('%d placements with room to spare'):format(slack))
+end
+
 describe('storm.water')
 do
     -- THE STORM MUST NOT CLOSE ON OPEN OCEAN.

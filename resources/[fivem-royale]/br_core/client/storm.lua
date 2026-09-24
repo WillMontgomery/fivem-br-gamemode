@@ -1774,12 +1774,14 @@ end
 -- it closes on. So each phase-edge rebuild, which already happens while the storm
 -- stands still, draws those two KEYFRAMES about their own origin instead of one zone,
 -- plus the destination in world coordinates; and every tick of the sweep PLACES the
--- keyframes on the solver's circle and CROSSFADES them by m. No add, no remove, from
--- the first frame of the sweep to the last:
+-- keyframes and CROSSFADES them by m. No add, no remove, from the first frame of the
+-- sweep to the last:
 --
 --   HOLDING     V(0) on the zone, at the zone's alpha; V(1) at nothing.
---   SHRINKING   both on the solver's circle, V(0) at (1 - m) of it and V(1) at m.
---               At most six property writes a tick, against the two #350 placed.
+--   SHRINKING   each the largest copy of itself the wall holds, V(0) at (1 - m) of
+--               the alpha and V(1) at m -- less what a keyframe the destination
+--               pokes out of hands to one that holds it (applyFrames). At most six
+--               property writes a tick, against the two #350 placed.
 --   FINISHED    V(1) at full, on the destination's own circle -- which IS the
 --               destination, so the sweep's end needs no rebuild at all, and a
 --               phase has ONE rebuild, where it used to have two.
@@ -1809,6 +1811,16 @@ end
 
 --- How many areas the overlay is currently showing for us.
 local overlayShown = 0
+
+--- Metres of the destination poking out of a keyframe over which that keyframe's
+--- share of the zone's alpha moves to the destination's keyframe (applyFrames): a
+--- ramp and not a switch, so the fill never pops, and short against a destination a
+--- hundred metres across and more.
+local POKE_RAMP = 20.0
+--- The share of the zone's alpha a keyframe the destination pokes out of keeps: under
+--- half, so the destination's keyframe is the stronger of the two, and not nothing,
+--- because it is the one still filling the rest of the wall.
+local POKE_SHARE = 0.45
 local lastOverlayAt = 0
 local overlayKey = nil
 local overlaySaid = false
@@ -2167,18 +2179,42 @@ local function crossfade(frames, m, A)
     return out
 end
 
---- Put the picture where the plan says: every keyframe that is showing on the
---- solver's circle, and every alpha that changed. `first` is the tick the picture
---- was drawn on, when every keyframe is placed and every alpha written whatever it is
---- -- a clip that has just been added sits on the world's origin at full strength
---- until then.
+--- Put the picture where the plan says: every keyframe that is showing where it is
+--- true, and every alpha that changed. `first` is the tick the picture was drawn on,
+--- when every keyframe is placed and every alpha written whatever it is -- a clip
+--- that has just been added sits on the world's origin at full strength until then.
+---
+--- ═══ WHERE IT IS TRUE, WHICH IS NOT ALWAYS THE SOLVER'S CIRCLE (#344) ═══
+---
+--- A keyframe on the solver's circle is the wall only at its own m. Between, the
+--- more opaque of two painted zone fill hundreds of metres past the wall, and the
+--- destination poked out of both -- the round's review measured 794 m and 591 m at
+--- phase 2. So each showing keyframe is placed by BR.StormKeyframePlace: the largest
+--- copy of it the wall holds, V(1) grown about the destination's centre so that it
+--- always holds the destination. The fill may stop short of the wall; it never lies
+--- past it. The fitting is `storm.map.fit` on the hitch markers, and a picture that
+--- never moves -- the preview, `mapnokeys` -- is placed where it always was.
+---
+--- AND A KEYFRAME THAT CANNOT HOLD THE DESTINATION HANDS ITS SHARE TO ONE THAT CAN.
+--- Fitted inside the wall, the zone the wall left can still cross the destination on
+--- a nested phase, which is the overlap the owner means. V(1) always holds it, so
+--- as the destination pokes out of an earlier keyframe, that keyframe hands its alpha
+--- on to the next keyframe up that holds the destination -- V(1) at the latest --
+--- until it carries no more than POKE_SHARE of the two, all of that by POKE_RAMP
+--- metres of poke: the keyframe the map shows most of holds the destination, and the
+--- total never changes. NOT ALL OF IT, because the crossing keyframe is also the one
+--- that fills the rest of the wall: measured at one keyframe pair, handing all of it
+--- over left the wall 680 m past any fill on average at phase 2 and 3.2 km at worst,
+--- against 310 and 1,004 keeping POKE_SHARE -- and the destination was out of the
+--- keyframe shown most by 22 m at worst either way.
 ---
 --- ═══ ONLY WHAT CHANGED, SO A HOLD COSTS NOTHING ═══
 ---
---- A keyframe is placed when the circle it was last given is not this one, and only
---- while it is showing -- one at nothing is placed on the tick it starts to show. An
---- alpha is written when its whole value changed. So a hold is no calls at all, a
---- sweep is at most three a keyframe, and the phase-1 fade is one a tick.
+--- A keyframe is placed when the placement it was last given is not this one, and
+--- only while it is showing -- one at nothing is placed on the tick it starts to
+--- show. An alpha is written when its whole value changed. So a hold is no calls at
+--- all -- a keyframe at its own end is its own placement, at no cost -- a sweep is at
+--- most three a keyframe, and the phase-1 fade is one a tick.
 ---
 --- false on a refusal: the movie's picture is then not the storm's, and the caller
 --- decides what to do about it.
@@ -2196,26 +2232,93 @@ local function applyFrames(at, plan, first)
     local resize = first or stormBisectMode ~= 'mapnoresize'
     local placeTrace, alphaTrace = nil, nil
     local ok = true
+
+    -- WHERE EACH KEYFRAME GOES, before any alpha is settled: where it goes decides
+    -- how much of the zone's alpha it can carry. A picture that never moves keeps the
+    -- solver's circle.
+    local spots = {}
+    local fitTrace = nil
+    local function spot(i)
+        if spots[i] then return spots[i] end
+        fitTrace = fitTrace or BR.Loop.hitchBegin('storm.map.fit',
+            '10 Hz per showing keyframe while the storm is SHRINKING: its largest copy '
+                .. 'the wall holds, and whether it holds the destination')
+        local px, py, pr = BR.StormKeyframePlace(plan.rec, at.frames[i].m, plan.t)
+        spots[i] = { px, py, pr }
+        return spots[i]
+    end
+    if not at.fixed then
+        local n = #at.frames
+        for i = 1, n do
+            if first or (alphas[i] >= 0.5) then
+                -- NO COPY OF IT FITS: shown at nothing rather than shown wrong.
+                if not (spot(i)[3] > 0.0) then alphas[i] = 0.0 end
+            end
+        end
+        -- A KEYFRAME THAT CANNOT HOLD THE DESTINATION HANDS ITS SHARE ON, to the next
+        -- keyframe up that can -- V(1) at the latest, which always does -- until it
+        -- carries no more than POKE_SHARE of the two of them. From the top down, so a
+        -- share handed on is never handed back.
+        if n >= 2 and not union and at.frames[n].m >= 1.0 then
+            local pokes = {}
+            local function poke(i)
+                if pokes[i] == nil then
+                    local sp = spot(i)
+                    -- nil on a breakout, where no keyframe is meant to hold it.
+                    pokes[i] = (sp[3] > 0.0) and (BR.StormKeyframePoke(plan.rec,
+                        at.frames[i].m, sp[1], sp[2], sp[3]) or false) or false
+                end
+                return pokes[i]
+            end
+            for i = n - 1, 1, -1 do
+                local pk = (alphas[i] >= 0.5) and poke(i) or false
+                if pk and pk > 0.0 then
+                    local j = n
+                    for k = i + 1, n - 1 do
+                        local pj = poke(k)
+                        if pj and pj <= 0.0 then
+                            j = k
+                            break
+                        end
+                    end
+                    local over = alphas[i] - POKE_SHARE * (alphas[i] + alphas[j])
+                    if over > 0.0 then
+                        local moved = over * math.min(1.0, pk / POKE_RAMP)
+                        alphas[i] = alphas[i] - moved
+                        alphas[j] = alphas[j] + moved
+                    end
+                end
+            end
+            for i = 1, n do
+                if alphas[i] >= 0.5 then spot(i) end
+            end
+        end
+    end
+    BR.Loop.hitchEnd(fitTrace)
+
     for i = 1, #at.frames do
         local f = at.frames[i]
         local a = alphas and math.floor(alphas[i] + 0.5) or nil
         local showing = (a == nil) or a > 0
-        if first or (showing and (f.x ~= plan.cx or f.y ~= plan.cy or f.s ~= plan.r)) then
+        local px, py, pr = plan.cx, plan.cy, plan.r
+        local sp = spots[i]
+        if sp and sp[3] > 0.0 then px, py, pr = sp[1], sp[2], sp[3] end
+        if first or (showing and (f.x ~= px or f.y ~= py or f.s ~= pr)) then
             placeTrace = placeTrace or BR.Loop.hitchBegin(
                 resize and 'storm.map.place' or 'storm.map.position',
                 resize and '10 Hz position + resize while the storm is SHRINKING'
                     or '10 Hz position only; #350 resize bisect')
-            local s = plan.r / f.r
-            if not BR.MapOverlay.placeArea(f.slot, plan.cx, plan.cy,
+            local s = pr / f.r
+            if not BR.MapOverlay.placeArea(f.slot, px, py,
                     resize and (f.w * s) or nil, resize and (f.h * s) or nil) then
                 ok = false
                 break
             end
-            f.x, f.y = plan.cx, plan.cy
+            f.x, f.y = px, py
             -- Keep the last DRAWN radius while resize is suppressed. That makes
             -- returning to normal catch the clip up on the next tick instead of
             -- believing the stale size is current.
-            if resize then f.s = plan.r end
+            if resize then f.s = pr end
         end
         if a ~= nil and (first or a ~= f.a) then
             alphaTrace = alphaTrace or BR.Loop.hitchBegin('storm.map.alpha',
