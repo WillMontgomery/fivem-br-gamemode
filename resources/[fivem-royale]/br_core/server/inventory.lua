@@ -31,18 +31,15 @@ local MELEE_SLOT = L.meleeSlot or 0
 
 -- ═══ THE ONE SENTENCE THE REPAIR KIT IS ALLOWED TO SAY (#228) ═══
 --
---   "the copy should be revised to 'You can only use this item while driving.'
---    - if they switch seats before it is finished it should still apply, and
---    same if they leave the vehicle mid-use."   -- owner, 2026-09-04
+--   "the copy should be revised to 'You can only use this item while
+--    driving.'"                                 -- owner, 2026-09-04
 --
--- A CONSTANT BECAUSE THERE ARE NOW TWO SPEAKERS. It started as one literal in
--- the press-time refusal; the owner has since asked for the same sentence on
--- the mid-channel cancels, and two copies of a string a player reads is how
--- one of them drifts. (config/shop.lua keeps its equivalent, `onFootToast`, in
--- config -- but that one is spoken by the CATALOGUE module, which has to hand
--- the string back across a module boundary. This one has one file and two call
--- sites twelve hundred lines apart, so one local is the whole of what it
--- needs.)
+-- ONE SPEAKER: THE PRESS-TIME REFUSAL. The mid-channel seat cancel said it too
+-- from 2026-09-04 until the owner withdrew that (#361, 2026-09-23): "no toast
+-- should be shown for that." (config/shop.lua keeps its equivalent,
+-- `onFootToast`, in config -- but that one is spoken by the CATALOGUE module,
+-- which has to hand the string back across a module boundary. This one has one
+-- file and one call site, so one local is the whole of what it needs.)
 --
 -- IT REPLACED "You cannot use this item while on foot", which was the same
 -- refusal described from the wrong end: it was only ever true of the on-foot
@@ -1388,9 +1385,9 @@ AddEventHandler(BR.Net.INV_USE, function(d)
     -- try to use it." So the test is no longer "is this ped in a vehicle at all"
     -- but the question the sentence is actually about.
     --
-    -- BR.Vehicles.drivingHandle IS THAT QUESTION, and it is the same one the
-    -- mid-channel arm asks -- `drivenVehicle` exported, seat -1 or nothing --
-    -- so "is this player driving" still has ONE answer on this server. On foot
+    -- BR.Vehicles.drivingHandle IS THAT QUESTION -- `drivenVehicle` exported,
+    -- seat -1 or nothing, the same read `drivenNetId` is built on -- so "is
+    -- this player driving" still has ONE answer on this server. On foot
     -- and passenger both answer nil and both are told. A DRIVER OF A CAR THE
     -- PLATFORM WILL NOT NETWORK (the Battle Bus) is the fourth situation and is
     -- still refused in silence: they ARE at a wheel, so the sentence would be a
@@ -1403,8 +1400,8 @@ AddEventHandler(BR.Net.INV_USE, function(d)
     -- nothing. Absent copy must never delete a rule -- and the guard is written
     -- as two nested tests rather than one `and` chain on purpose: an absent
     -- module read as "not driving" would say the sentence to every driver in
-    -- the game, which is how the mid-channel arm was first written and what its
-    -- test now pins.
+    -- the game, which is how the mid-channel arm was first written (before
+    -- #361 silenced it), and what this refusal's own test now pins.
     --
     -- ═══ NOTHING IS SPENT BY A REFUSAL, AND NOTHING IS SPENT BY THE PRESS ═══
     --
@@ -1951,32 +1948,17 @@ BR.Sched.every(250, 'inv.use', function()
             -- same reasoning shared/protocol.lua gives for putting the netId on
             -- the wire at all.
             --
-            -- ═══ AND THIS ARM NOW SPEAKS, FOR THE TWO CASES HE NAMED ═══
+            -- ═══ AND THIS ARM SAYS NOTHING, WHATEVER REACHED IT (#361) ═══
             --
-            --   "if they switch seats before it is finished it should still
-            --    apply, and same if they leave the vehicle mid-use."
-            --                                          -- owner, 2026-09-04
+            --   "getting out mid-repair using up the kit is fine, and no toast
+            --    should be shown for that."           -- owner, 2026-09-23
             --
-            -- "It" is the press-time sentence, USE_WHILE_DRIVING. It was silent
-            -- here until he wrote that. Whether the cancel COSTS anything is a
-            -- separate ruling, below the sentence.
-            --
-            -- FOUR SITUATIONS REACH THIS BRANCH AND THE SENTENCE IS TRUE OF TWO.
-            -- Left the vehicle, and slid into a passenger seat: both are "not
-            -- driving", both are his. Still driving a car the platform will not
-            -- network (the Battle Bus: `drivenNetId` answers nil for it), and
-            -- driving a DIFFERENT car (`nid ~= u.veh`): in both of those the
-            -- player is at a wheel, so "you can only use this while driving"
-            -- would be a lie, and there is no agreed wording for either.
-            --
-            -- SO IT ASKS THE QUESTION THE SENTENCE IS ABOUT rather than reusing
-            -- the answer that cancelled the channel. BR.Vehicles.drivingHandle
-            -- is `drivenVehicle` exported -- seat -1 or nothing, the same read
-            -- `drivenNetId` is built on -- so "is this player driving" still has
-            -- ONE answer on this server, and it is the only one of the two that
-            -- can separate a passenger from an un-networked driver. Gated on the
-            -- module in the same shape as everything else here: a build without
-            -- it still cancels, it just says nothing.
+            -- (From 2026-09-04 until then it said USE_WHILE_DRIVING on a step-out
+            -- or a seat slide.) All four situations that reach this branch now
+            -- cancel in silence: left the vehicle, slid into a passenger seat,
+            -- still driving a car the platform will not network (the Battle Bus:
+            -- `drivenNetId` answers nil for it), and driving a DIFFERENT car
+            -- (`nid ~= u.veh`). The press-time refusal keeps the sentence.
             --
             -- ═══ WHY A LEDGER AND NOT A DELTA ═══
             --
@@ -2005,17 +1987,6 @@ BR.Sched.every(250, 'inv.use', function()
                 local nid = (BR.Vehicles and BR.Vehicles.drivenNetId)
                     and BR.Vehicles.drivenNetId(src) or nil
                 if nid == nil or nid ~= u.veh then
-                    -- THE MODULE'S ABSENCE IS NOT AN ANSWER OF "NOT DRIVING",
-                    -- and writing this as one expression got that wrong: a build
-                    -- with no `drivingHandle` would have told everybody the
-                    -- sentence, including the drivers it is a lie to. Both
-                    -- conditions have to be true for a word to be said.
-                    local why = nil
-                    if BR.Vehicles and BR.Vehicles.drivingHandle
-                        and BR.Vehicles.drivingHandle(src) == nil then
-                        why = USE_WHILE_DRIVING
-                    end
-
                     -- ═══ AND IT SPENDS THE KIT (#361, owner 2026-09-23) ═══
                     --
                     -- His ruling on the issue: spend the kit when the seat rule
@@ -2046,7 +2017,7 @@ BR.Sched.every(250, 'inv.use', function()
                     -- `s` is the slot-identity guard's, proved on this pass.
                     s.count = s.count - 1
                     if s.count <= 0 then inv.slots[u.slot] = false end
-                    BR.Inv.cancelUse(src, why)
+                    BR.Inv.cancelUse(src)
                     return
                 end
 

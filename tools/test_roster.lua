@@ -8156,9 +8156,9 @@ describe('inv.repairkit')
 --   that took fire throughout as well as on one that did not, because for one
 --   day the completion sent a remainder and could not promise it.
 --
---   THE DRIVING SEAT IS RE-RULED EVERY PASS, losing it cancels, and the cancel
---   now SPEAKS the owner's sentence -- and, since #361, SPENDS THE KIT while
---   the car keeps the slices it already had.
+--   THE DRIVING SEAT IS RE-RULED EVERY PASS, losing it cancels, and since #361
+--   the cancel SPENDS THE KIT, in silence, while the car keeps the slices it
+--   already had.
 do
     lootMatch()
 
@@ -8661,16 +8661,16 @@ do
             .. 'completion is what consumes, so an interrupted use is free')
     pedHealth[1001] = nil
 
-    -- ── the driving seat, for the whole channel, and it SPEAKS ────────────
+    -- ── the driving seat, for the whole channel, and it says NOTHING ──────
     --
     -- The shop car's guard exactly: the seat is a fact about the WHOLE use and
     -- not about the frame it started on. Five seconds is long enough to be
     -- blown out of the car, to slide over, or for it to despawn.
     --
-    --   "if they switch seats before it is finished it should still apply, and
-    --    same if they leave the vehicle mid-use."  -- owner, 2026-09-04
+    --   "getting out mid-repair using up the kit is fine, and no toast should
+    --    be shown for that."                      -- owner, 2026-09-23 (#361)
     --
-    -- "It" is the press-time sentence. This arm was silent until he wrote that.
+    -- From 2026-09-04 until then this arm said the press-time sentence.
     BR.Inv.reset(1)
     BR.Inv.give(1, { item = 'repairkit', kind = BR.ItemKind.CONSUMABLE,
                      rarity = kit.rarity, count = 1 })
@@ -8695,12 +8695,10 @@ do
             .. 'completion was the only thing that spent it, and that was the '
             .. 'farm',
         tostring(BR.Inv.of(1).slots[1] and BR.Inv.of(1).slots[1].count))
-    local leftSaid = nil
-    for _, s in ipairs(eventsOf(BR.Net.NOTIFY)) do leftSaid = s.args[1].text end
-    ok(leftSaid == 'You can only use this item while driving.',
-        'and they are told why, in the owner\'s exact words -- the same '
-            .. 'sentence the press refuses with, because it is the same rule',
-        tostring(leftSaid))
+    local leftSaid = eventsOf(BR.Net.NOTIFY)
+    ok(#leftSaid == 0,
+        'and nothing is said -- no toast for getting out mid-repair',
+        leftSaid[1] and tostring(leftSaid[1].args[1] and leftSaid[1].args[1].text))
 
     sent = {}
     fakeTime = t0 + kit.useMs + 250
@@ -8718,12 +8716,10 @@ do
         'a cut-off use leaves the car partly mended rather than untouched -- '
             .. 'the kit went with the seat, and the slices it paid for stay')
 
-    -- ═══ SWITCHING SEATS SAYS IT TOO, AND STILL DRIVING DOES NOT ═══
+    -- ═══ SWITCHING SEATS IS SILENT TOO, AND SO IS STILL DRIVING ═══
     --
-    -- The second of the two moments he named. It is a different situation from
-    -- the one above and reaches the same branch, so it is proved separately:
-    -- `ridingIn` answers a vehicle for a passenger, and only
-    -- BR.Vehicles.drivingHandle can tell that seat from a driver's.
+    -- A different situation from the one above that reaches the same branch,
+    -- so it is proved separately. The 2026-09-04 ruling named both.
     BR.Inv.reset(1)
     BR.Inv.give(1, { item = 'repairkit', kind = BR.ItemKind.CONSUMABLE,
                      rarity = kit.rarity, count = 1 })
@@ -8740,22 +8736,19 @@ do
     fakeTime = t0 + 250
     BR.Sched.step(fakeTime)
     ok(BR.Inv.of(1).using == nil, 'sliding into a passenger seat cancels it')
-    local seatSaid = nil
-    for _, s in ipairs(eventsOf(BR.Net.NOTIFY)) do seatSaid = s.args[1].text end
-    ok(seatSaid == 'You can only use this item while driving.',
-        'and says the same sentence -- they are in the car, and they are not '
-            .. 'driving it',
-        tostring(seatSaid))
+    local seatSaid = eventsOf(BR.Net.NOTIFY)
+    ok(#seatSaid == 0,
+        'and says nothing either -- the passenger seat is the same seat rule',
+        seatSaid[1] and tostring(seatSaid[1].args[1] and seatSaid[1].args[1].text))
     ok(BR.Inv.of(1).slots[1] == false,
         'and it costs them the kit, the same as stepping out (#361) -- a '
             .. 'passenger seat is the seat rule too')
 
-    -- ...AND THE SENTENCE IS NOT SAID TO SOMEBODY WHO IS DRIVING. Two of the
-    -- four situations that reach this branch are a player at a wheel: a car the
-    -- platform will not network, and a DIFFERENT car. "You can only use this
-    -- item while driving" is false to both, and no wording has been given for
-    -- either, so both cancel in silence. Driven here through the un-networked
-    -- case, which is the Battle Bus.
+    -- ...AND NEITHER IS A PLAYER STILL AT A WHEEL. Two of the four situations
+    -- that reach this branch are a car the platform will not network and a
+    -- DIFFERENT car. Both were silent before #361 as well, because the sentence
+    -- is false to a driver. Driven here through the un-networked case, which is
+    -- the Battle Bus.
     BR.Inv.reset(1)
     BR.Inv.give(1, { item = 'repairkit', kind = BR.ItemKind.CONSUMABLE,
                      rarity = kit.rarity, count = 1 })
@@ -8774,35 +8767,10 @@ do
     ok(BR.Inv.of(1).using == nil,
         'a car that stops being networked mid-channel still cancels the use')
     ok(#eventsOf(BR.Net.NOTIFY) == 0,
-        'but says NOTHING, because that player is driving and the sentence '
-            .. 'would be a lie. No wording has been agreed for it')
+        'and says NOTHING, like every other way out of the seat rule')
     ok(BR.Inv.of(1).slots[1] == false,
         'and it costs them the kit as well (#361) -- silence is about the '
-            .. 'sentence, not the rule')
-
-    -- ...AND A BUILD WITH NO `drivingHandle` STILL CANCELS. Absent copy must
-    -- never delete a rule -- the same shape as the `ridingIn` guard at the
-    -- press, and the reason the sentence is gated on the module.
-    BR.Inv.reset(1)
-    BR.Inv.give(1, { item = 'repairkit', kind = BR.ItemKind.CONSUMABLE,
-                     rarity = kit.rarity, count = 1 })
-    vehSeat[VEH] = {}
-    drive(1, VEH)
-    t0 = fakeTime
-    fire(BR.Net.INV_USE, 1, { slot = 1 })
-    local realDriving = BR.Vehicles.drivingHandle
-    BR.Vehicles.drivingHandle = nil
-    stepOut(VEH)
-    sent = {}
-    fakeTime = t0 + 250
-    BR.Sched.step(fakeTime)
-    BR.Vehicles.drivingHandle = realDriving
-    ok(BR.Inv.of(1).using == nil,
-        'with no BR.Vehicles.drivingHandle to ask, the seat rule still cancels')
-    ok(#eventsOf(BR.Net.NOTIFY) == 0,
-        'and it stays silent rather than guessing -- an absent module is not '
-            .. 'an answer of "not driving", and the first spelling of this '
-            .. 'said the sentence to every driver on such a build')
+            .. 'toast, not the rule')
 
     -- ═══ AND THE SEAT GUARD SITS ABOVE THE LINE THAT SPENDS THE ITEM ═══
     --
@@ -8881,9 +8849,9 @@ do
     -- sentence to a player who slid out of the driver's seat, and the press said
     -- nothing to the same player in the same seat. Owner, 2026-09-04, asked
     -- about exactly that: "Passengers should get the toast too if they try to
-    -- use it." So both arms now answer the question the sentence is about --
-    -- `drivingHandle`, not `ridingIn` -- and a passenger is told at either
-    -- moment.
+    -- use it." So the press answers the question the sentence is about --
+    -- `drivingHandle`, not `ridingIn` -- and a passenger is told. (The
+    -- mid-channel arm has said nothing since 2026-09-23, #361.)
     armAndUse(1)
     drive(1, VEH, 0)
     sent = {}
@@ -8895,8 +8863,7 @@ do
     local pnote = eventsOf(BR.Net.NOTIFY)
     ok(#pnote == 1 and pnote[1].args[1]
        and pnote[1].args[1].text == 'You can only use this item while driving.',
-        'and IS told at the press, in the same sentence the mid-channel arm '
-            .. 'says to the same player in the same seat',
+        'and IS told at the press, in the owner\'s exact words',
         pnote[1] and tostring(pnote[1].args[1] and pnote[1].args[1].text))
 
     -- ...AND A DRIVER THE PLATFORM WILL NOT NETWORK IS STILL REFUSED IN
