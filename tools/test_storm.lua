@@ -1720,16 +1720,25 @@ do
     -- visible curtain safe when the curtain is doing 100 m/s. A build that
     -- measured against the union but dropped the travel term would pass every
     -- assertion above.
+    --
+    -- ASKED OF TWO CIRCLES, where the travel is one number (#344). The cushion is
+    -- the zone 0.7 s either side of the tick now, not a speed, and for two
+    -- concentric circles that is exactly the old (r0 - r1) / T of radius -- so the
+    -- circle keeps the numbers it always had. Every zone a circle is the config's
+    -- own `circle = 1.0`.
     local T = newStormServer()
-    -- 1000m of radius surrendered in 10s is 100 m/s of wall, so the cushion is
-    -- 10 + 100 * 0.7 = 80 metres for the whole sweep. A 1s hold in front of it,
-    -- and each probe is taken 6000ms into the phase -- 5000ms into the sweep,
-    -- half way, where the radius is 1500.
+    T.env.BR.Config.Storm.shape.circle = 1.0
+    -- The zones hold 0.9 of their circles' area, so radii 1897 and 949: 949 m of
+    -- radius surrendered in 10s is 94.9 m/s of wall, and the cushion is 10 + 66.4 =
+    -- 76.4 metres for the whole sweep. A 1s hold in front of it, and each probe is
+    -- taken 6000ms into the phase -- 5000ms into the sweep, half way.
     local trec = T.record(2, 0.0, 0.0, 2000.0, 0.0, 0.0, 1000.0,
         1000.0, 10000.0, 2.0)
     -- THE SHAPE AT THE MOMENT OF THE PROBE, which is the travelling wall rather
     -- than the record's opening circle: half way across, r 1500, centre unmoved.
     local moving = T.env.BR.StormZone(trec, 0.0, 0.0, 1500.0, 0.5)
+    ok(moving.kind == 'circle' or (moving.hull and #moving.hull.ks == 1),
+        'with every zone a circle, the moving wall is one', moving.kind)
     local function offMoving(m)
         return offBoundary(T.env, moving, moving.P * 0.21, m)
     end
@@ -1737,13 +1746,54 @@ do
     local x2, y2 = offMoving(150.0)
     local x3, y3 = offMoving(70.0)
     T.at(6000); ok(T.hurts(x1, y1) == false,
-        'fifty metres outside a wall doing 100 m/s is inside the moving cushion')
+        'fifty metres outside a wall doing 95 m/s is inside the moving cushion')
     T.at(6000); ok(T.hurts(x2, y2) == true,
         'a hundred and fifty metres outside it is not')
     T.at(6000); ok(T.hurts(x3, y3) == false,
         'and seventy metres out is still inside it, which the base ten-metre '
             .. 'cushion alone would have billed')
     ok(T.errored() == nil, 'the shrinking pass runs clean', T.errored())
+
+    -- ═══ A MORPH: EACH STRETCH OF WALL'S OWN 0.7 s, NOT A CIRCLE'S (#344) ═══
+    --
+    -- A corner travelling to its partner moves two to four times the circle's edge
+    -- speed the cushion used to add, so a player at the visible curtain beside a
+    -- fast corner -- whose client clock runs a little behind -- was billed. Found
+    -- here as the stretch of a real mid-sweep wall that travels furthest in 0.7 s,
+    -- and a player stood off it by the OLD cushion and three metres more.
+    local M = newStormServer()
+    local mrec = M.record(3, 0.0, 0.0, 950.0, 120.0, 60.0, 520.0, 1000.0, 20000.0, 2.0)
+    local SS = M.env.BR.StormShape
+    local function zoneAtMs(ms)
+        local cx, cy, r, _, _, _, t, g = M.env.BR.StormAt(mrec, mrec.tStart + ms)
+        return M.env.BR.StormZone(mrec, cx, cy, r, t, g)
+    end
+    local Wnow, Wearly = zoneAtMs(11000.0), zoneAtMs(10300.0)
+    local circle = 0.7 * (950.0 - 520.0) / 20.0
+    local best, bx, by, bnx, bny = -math.huge, 0.0, 0.0, 1.0, 0.0
+    for i = 0, 399 do
+        local x, y, nx, ny = SS.pointAtArc(Wnow, Wnow.P * i / 400)
+        local back = -SS.distance(Wearly, x, y)
+        if back > best then best, bx, by, bnx, bny = back, x, y, nx, ny end
+    end
+    ok(best > circle + 6.0,
+        'somewhere on a real mid-sweep wall a stretch travels further in 0.7 s than the '
+            .. 'circle\'s edge the old cushion added',
+        ('%.1f m against %.1f'):format(best, circle))
+    local off = 10.0 + circle + 3.0
+    local px, py = bx + bnx * off, by + bny * off
+    ok(SS.distance(Wnow, px, py) > 10.0 + circle and SS.distance(Wearly, px, py) < 9.0,
+        'a player off it by the old cushion and three metres is past what the old rule '
+            .. 'allowed, and within ten metres of where that wall stood 0.7 s ago',
+        ('%.1f m out now, %.1f then'):format(SS.distance(Wnow, px, py),
+            SS.distance(Wearly, px, py)))
+    M.at(11000); ok(M.hurts(px, py) == false,
+        'and is not billed: the slack is that stretch of wall\'s own travel')
+    local qx, qy = bx + bnx * (best + 20.0), by + bny * (best + 20.0)
+    M.at(11000); ok(M.hurts(qx, qy) == true,
+        'while twenty metres beyond where it stood 0.7 s ago still is -- the cushion is '
+            .. 'ten metres of the zone as it was, not a licence')
+    ok(M.errored() == nil, 'the morphing pass runs clean', M.errored())
 end
 
 -- ---------------------------------------------------------------------------
@@ -5606,14 +5656,20 @@ do
             probes[#probes] and probes[#probes].d or 0.0, reach))
 
     -- ─── the SERVER: each probe is billed until the front passes it, then never ───
-    local MARGIN = 10.0
+    --
+    -- PAST THE CUSHION, which is ten metres of the zone as it will stand 0.7 s from
+    -- now as well as of the zone now (#344): the front moves tens of metres a second,
+    -- and a client clock a moment ahead shows it that much further out. So the
+    -- front the server bills against is the one 0.7 s on -- still clock arithmetic.
+    local MARGIN, AHEAD = 10.0, 700.0
+    local function frontAt(tau) return reach * math.min(tau / Tg, 1.0) end
     local wrongBill, monotone, freed = nil, true, 0
     for _, q in ipairs(probes) do
         local wasSafe = false
         for tau = 0, 20000, 1000 do
             S.at(tau)
             local billed = S.hurts(q.x, q.y)
-            local s = reach * math.min(tau / Tg, 1.0)
+            local s = frontAt(tau + AHEAD)
             -- Outside the grown zone by d - s until the front reaches it; the server
             -- bills past the cushion. At the growth's end the zone is the whole union.
             local want = (q.d - s) > MARGIN
@@ -5628,9 +5684,9 @@ do
         if wasSafe then freed = freed + 1 end
     end
     ok(wrongBill == nil and S.errored() == nil,
-        'the server bills every probe exactly while the growing front is more than the '
-            .. 'cushion short of it -- the ground is taken in at one speed, from the zone '
-            .. 'out, over twenty seconds',
+        'the server bills every probe exactly while the growing front, 0.7 s on, is more '
+            .. 'than the cushion short of it -- the ground is taken in at one speed, from '
+            .. 'the zone out, over twenty seconds',
         wrongBill or S.errored())
     ok(monotone and freed == #probes,
         'and once a probe is taken in it stays safe: the growth never gives ground back, '
@@ -5669,10 +5725,11 @@ do
                     :format(q.d, tau, tostring(e))
             end
             -- AND THE SERVER, at the SAME instant, bills exactly when the HUD says the
-            -- player is past the cushion.
+            -- player is past the cushion -- the ten metres, and however far the front
+            -- moves in the next 0.7 s.
             S.at(tau)
             local billed = S.hurts(q.x, q.y)
-            if e and billed ~= (e > MARGIN) then
+            if e and billed ~= ((e - (frontAt(tau + AHEAD) - s)) > MARGIN) then
                 agreeBad = agreeBad or ('probe d %.1f at %d ms: HUD %.3f, billed %s')
                     :format(q.d, tau, e, tostring(billed))
             end
@@ -5684,7 +5741,8 @@ do
         hudBad or C.errored())
     ok(agreeBad == nil,
         'and at every instant the server bills exactly the probes the HUD shows past the '
-            .. 'cushion: wall, readout and damage are one zone through the growth',
+            .. 'cushion and the front\'s next 0.7 s: wall, readout and damage are one zone '
+            .. 'through the growth',
         agreeBad)
 
     -- ─── the WALL draws the front ───

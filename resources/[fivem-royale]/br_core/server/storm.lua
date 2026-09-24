@@ -790,11 +790,19 @@ BR.Sched.every(1000, 'storm.damage', function(dt)
         -- zone, whatever shape that edge is. It is the same three clocks and
         -- the same wall speed; nothing about a second circle makes any of them
         -- agree better.
+        --
+        -- ═══ AND THE 0.7 s OF TRAVEL IS THE ZONE 0.7 s EITHER SIDE (#344) ═══
+        --
+        -- It was (r0 - r1) / T of radius while SHRINKING -- a circle's edge
+        -- speed -- and a morphing corner moves two to four times that, and a
+        -- conjoined zone grows into its destination during the HOLD, where it
+        -- added nothing. So the slack is the zone as it stood 0.7 s ago and as it
+        -- will stand in 0.7 s, plus the ten metres: exactly the old rule for two
+        -- concentric circles, and each stretch of edge's own travel otherwise.
+        -- BR.StormCushionZones has the numbers, and hands back nothing while
+        -- nothing moves.
         local margin = 10.0
-        if st == BR.StormPhase.SHRINKING then
-            margin = margin
-                + ((rec.r0 - rec.r1) / math.max(rec.tShrink / 1000.0, 1.0)) * 0.7
-        end
+        local near = BR.StormCushionZones(rec, now, 700.0)
 
         -- ═══ THE SAFE ZONE IS BOTH CIRCLES, NOT ONLY THE ONE THE WALL IS ON ═══
         --
@@ -907,8 +915,14 @@ BR.Sched.every(1000, 'storm.damage', function(dt)
                 -- where the two discs overlap -- never the other way, and never
                 -- anywhere out here. Its header carries the numbers. This line
                 -- asks only whether a player is further outside than the
-                -- cushion allows, and that answer is exact.
-                if BR.StormShape.distance(zone, e.pos.x, e.pos.y) <= margin then
+                -- cushion allows, and that answer is exact -- of the zone now
+                -- and of the zone 0.7 s either side, while it moves.
+                local out = BR.StormShape.distance(zone, e.pos.x, e.pos.y)
+                for i = 1, #near do
+                    local d = BR.StormShape.distance(near[i], e.pos.x, e.pos.y)
+                    if d < out then out = d end
+                end
+                if out <= margin then
                     -- Inside: the ledger re-seeds from sampled reality next
                     -- time they are caught out.
                     e.stormHp  = nil

@@ -610,11 +610,11 @@ end
 --- a second: the most any one disc travels plus the most its radius changes, over
 --- the sweep's length.
 ---
---- THE DAMAGE CUSHION'S WALL-SPEED TERM IS (r0 - r1) / T, AND THE MORPH OUTRUNS IT.
---- That is how fast a CIRCLE's edge moves, and a corner travelling to a corner of a
---- different shape moves further: measured at 2.2 to 3.8 times that on average
---- across phases 7 down to 2, and 6.2 at worst. server/storm.lua's damage tick
---- belongs to #366, which is where this is for.
+--- A corner travelling to a corner of a different shape moves further than a
+--- circle's edge, (r0 - r1) / T: measured at 2.2 to 3.8 times that on average across
+--- phases 7 down to 2, and 6.2 at worst. The damage cushion no longer prices on a
+--- speed at all (BR.StormCushionZones); this is the bound the tests hold every wall
+--- to, and the one number to read when a reader wants one.
 --- @param rec table
 --- @return number metres per second
 function BR.StormWallSpeed(rec)
@@ -629,6 +629,47 @@ function BR.StormWallSpeed(rec)
         if v > best then best = v end
     end
     return best / T
+end
+
+-- ═══ THE DAMAGE CUSHION'S 0.7 s OF TRAVEL IS THE ZONE ITSELF, 0.7 s EITHER SIDE ═══
+--
+-- server/storm.lua bills a player only once they are ten metres outside the safe
+-- zone, and while the wall moved it added 0.7 s of travel on top -- (r0 - r1) / T, a
+-- CIRCLE's edge speed -- because the tick, the 4 Hz position sample and the client's
+-- own clock disagree by about that much at the knife edge.
+--
+-- TWO THINGS OUTRUN A CIRCLE'S EDGE NOW (#344). The morph moves every corner to its
+-- own partner, so parts of the wall move two to four times that speed; and a
+-- conjoined zone GROWS into its destination during the HOLD, where the rule added
+-- nothing at all -- a front doing 70 m/s on average at phase 2 and 180 at worst, so a
+-- client clock a tenth of a second ahead could show a player inside ground the
+-- server had not grown to yet, and bill them for it.
+--
+-- SO THE CUSHION IS WHERE THE ZONE WAS AND WILL BE, rather than a speed: the zone
+-- `ms` either side of the tick, whatever is moving and however fast that part of it
+-- goes. For two concentric circles that is exactly the old 0.7 s of (r0 - r1) / T;
+-- for a morph it is each stretch of wall's own travel, so a player beside a slow
+-- stretch gets no more slack than they did; for a growth it is the front's. Built
+-- once a tick, three zones where there was one, and only while something moves: a
+-- finished sweep and a grown hold are the zone alone.
+--- @param rec table
+--- @param now number   server time, ms
+--- @param ms number    how far either side
+--- @return table zones  the zone `ms` before and after `now` -- empty while it stands still
+function BR.StormCushionZones(rec, now, ms)
+    local out = {}
+    if not rec then return out end
+    local _, _, _, st, _, _, _, g = BR.StormAt(rec, now)
+    local moving = st == BR.StormPhase.SHRINKING
+    if not moving and st == BR.StormPhase.HOLDING and g < 1.0 then
+        moving = (BR.StormOverlaps(rec))
+    end
+    if not moving then return out end
+    for _, at in ipairs({ now - ms, now + ms }) do
+        local cx, cy, r, _, _, _, t, ga = BR.StormAt(rec, at)
+        out[#out + 1] = BR.StormZone(rec, cx, cy, r, t, ga)
+    end
+    return out
 end
 
 -- ═══ THE SWEEP IS PRICED ON THE WALL'S OWN ARRIVAL, NOT ON A DISTANCE (#344) ═══
