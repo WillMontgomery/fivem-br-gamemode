@@ -7583,6 +7583,137 @@ do
             .. 'per client session, not once per draw',
         ('%d replacements, was %d'):format(#painted, paintsBefore))
 
+    -- ═══════════════════════════════════════════════════════════════════════
+    -- THE LINE COMES OFF THE MAP THE MOMENT THIS PLAYER LEAVES THE PLANE -- #370
+    -- ═══════════════════════════════════════════════════════════════════════
+    --
+    -- Owner, 2026-09-23: "can you also make the blue bus route not display on
+    -- the map/minimap starting immediately after I jump?"
+    --
+    -- THE ENGINE'S ONE GPS CUSTOM ROUTE, MODELED AS A LEVEL. Whether the line
+    -- is on the map is what the owner sees, so it is read from the two natives
+    -- that put it there and take it away rather than from BR.BusLine.drawn(),
+    -- which is only this file's opinion of the same thing. The start stays the
+    -- #342 recorder underneath; the clear was a noop until here.
+    --
+    -- WHAT NONE OF THIS CAN SEE: that the pause map repaints without the line
+    -- the next time it is opened. There is one route and it is cleared, not
+    -- hidden, so there is nothing left for it to draw -- but that is the
+    -- engine's half, and a playtest's.
+    describe('the flight path leaves the map the moment this player jumps -- #370')
+
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })   -- an empty map
+    BR.State.me.state = BR.PlayerState.LOBBY
+    BR.Loop.step(BR.Loop.TICK)
+
+    local onMap = false
+    local recordStart, clearWas = StartGpsCustomRoute, ClearGpsCustomRoute
+    function StartGpsCustomRoute(...)
+        onMap = true
+        return recordStart(...)
+    end
+    function ClearGpsCustomRoute() onMap = false end
+
+    -- 1. PRESSING THE KEY IS NOT LEAVING. The server can refuse the jump, and a
+    --    rider it refused is still a rider who needs the line -- so nothing
+    --    comes down until the exit coordinates do.
+    board()
+    ok(onMap, 'precondition: aboard, the flight path is on the map')
+    frames(24, 16)   -- the doors open
+    sent = {}
+    press(0x20, 'SPACE')
+    BR.Loop.step(BR.Loop.TICK)
+    ok(jumps() == 1, 'precondition: the jump was asked for',
+        ('%d BUS_JUMP events'):format(jumps()))
+    ok(onMap,
+        'asking to jump leaves the line up until the server answers -- a '
+            .. 'refused jump is still a rider')
+
+    -- 2. THE JUMP TAKES IT DOWN, ON THE SAME MESSAGE THAT STARTS THE DROP.
+    fire(BR.Net.BUS_JUMP_OK, { x = 800.0, y = 0.0, z = 500.0, heading = 0.0 })
+    ok(not onMap,
+        'the jump takes the flight path off the map and the minimap (#370)')
+    ok(BR.BusLine.drawn() == false,
+        'and client/survey.lua is told the bus line is no longer up',
+        tostring(BR.BusLine.drawn()))
+
+    -- 3. AND NOTHING LATER IN THE MATCH PUTS IT BACK. The fall and the landing
+    --    with every loop still running, the match state re-announced, and a
+    --    revive-key arrival -- which re-enters the drop through the very same
+    --    `br:drop:begin`, with no momentum (client/revivekey.lua).
+    BR.State.me.state = BR.PlayerState.FREEFALL
+    for _ = 1, 4 do
+        frames(15, 16)
+        BR.Loop.step(BR.Loop.TICK)
+    end
+    fire(BR.Net.STATE, { state = BR.MatchState.BUS })
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.Loop.step(BR.Loop.TICK)
+    fire('br:drop:begin',
+        { x = 800.0, y = 0.0, z = 650.0, heading = 0.0, speed = 0.0 })
+    frames(15, 16)
+    BR.Loop.step(BR.Loop.TICK)
+    ok(not onMap,
+        'and it stays off for the rest of the match -- the fall, the landing, '
+            .. 'a re-announced state and a revive-key arrival all leave it down')
+
+    -- 4. THE FORCED EJECT IS A WAY OUT TOO. The end of the route -- or PLAYING
+    --    arriving first (#352) -- puts whoever is still aboard out with the
+    --    same message, flagged `forced`.
+    board()
+    ok(onMap, 'precondition: aboard a fresh flight, the line is back')
+    fire(BR.Net.BUS_JUMP_OK,
+        { x = 3200.0, y = 0.0, z = 500.0, heading = 0.0, forced = true })
+    ok(not onMap, 'a forced eject at the end of the route takes it down as well')
+
+    -- 5. ...AND SO IS THE SELF-PLACED DROP. The server flipped us to FREEFALL
+    --    and the coordinates never came, so bus.board places the drop from the
+    --    route itself after 800ms. That is still the player leaving the plane.
+    board()
+    ok(onMap, 'precondition: aboard again')
+    BR.State.me.state = BR.PlayerState.FREEFALL
+    BR.Loop.step(BR.Loop.TICK)   -- the eject is seen; nothing else arrives
+    frames(60, 16)
+    BR.Loop.step(BR.Loop.TICK)
+    ok(not onMap,
+        'and so does the fallback that places the drop itself when the exit '
+            .. 'coordinates never arrive')
+
+    -- 6. THE NEXT MATCH'S BUS HAS ITS LINE. Cleared, not switched off: a fresh
+    --    record draws exactly as it did before anybody jumped.
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+    BR.State.match = { state = BR.MatchState.WAITING }
+    BR.State.me.state = BR.PlayerState.LOBBY
+    BR.Loop.step(BR.Loop.TICK)
+    fire(BR.Net.STATE, { state = BR.MatchState.WARMUP })
+    fire(BR.Net.BUS_ROUTE, {
+        points = { { x = 0.0, y = 0.0, z = 500.0 },
+                   { x = 400.0, y = 0.0, z = 500.0 } },
+        heading = 0.0,
+    })
+    ok(onMap, "the next match's warmup preview is back on the map")
+    board()
+    ok(onMap, 'and so is its flight, for as long as this player rides it')
+
+    -- 7. A RIDE THAT ENDS WITHOUT A DROP IS NOT A JUMP. `brforce warmup` sends
+    --    the NEXT flight's preview before the roster delta that ends this ride
+    --    (server/match.lua), so a clear hung on the teardown instead of on the
+    --    drop would take the new line straight back down for the whole warmup.
+    fire(BR.Net.STATE, { state = BR.MatchState.WARMUP })
+    fire(BR.Net.BUS_ROUTE, {
+        points = { { x = 0.0, y = 0.0, z = 500.0 },
+                   { x = 400.0, y = 0.0, z = 500.0 } },
+        heading = 0.0,
+    })
+    BR.State.match = { state = BR.MatchState.WARMUP }
+    BR.State.me.state = BR.PlayerState.WARMUP
+    BR.Loop.step(BR.Loop.TICK)   -- bus.board ends the ride: no drop
+    ok(onMap,
+        'a ride ended by a return to warmup keeps the new preview on the map -- '
+            .. 'only a drop takes the line down')
+
+    StartGpsCustomRoute, ClearGpsCustomRoute = recordStart, clearWas
+
     fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
     BR.Loop.step(BR.Loop.TICK)
     sent = {}

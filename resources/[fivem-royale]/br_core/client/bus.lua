@@ -214,7 +214,8 @@ AddEventHandler(BR.Net.BUS_ROUTE, function(r)
     drawCrumbs()
 end)
 
--- The route drawing lives and dies with the pre-drop states.
+-- The route drawing lives and dies with the pre-drop states -- and, for each
+-- player, ends earlier than that: at their own jump (beginDrop, #370).
 RegisterNetEvent(BR.Net.STATE)
 AddEventHandler(BR.Net.STATE, function(d)
     if d.state ~= BR.MatchState.WARMUP and d.state ~= BR.MatchState.BUS then
@@ -223,9 +224,32 @@ AddEventHandler(BR.Net.STATE, function(d)
 end)
 
 --- Begin the drop at given coordinates: the one true handoff to skydive.lua.
+---
+--- AND THE FLIGHT PATH COMES OFF THIS PLAYER'S MAP HERE (#370). Owner,
+--- 2026-09-23: "can you also make the blue bus route not display on the
+--- map/minimap starting immediately after I jump?"
+---
+--- HERE BECAUSE EVERY WAY OUT OF THE PLANE IS A CALL TO THIS FUNCTION: the jump
+--- and the forced eject are both BUS_JUMP_OK (the end of the route, or PLAYING
+--- arriving first, only sets `forced`), and the self-place fallback runs when
+--- those coordinates never arrive. Not on the key press: the server can still
+--- refuse the jump, and a rider it refused is still a rider.
+---
+--- CLEARED, NOT HIDDEN. The GPS custom route is the whole of what drawCrumbs
+--- builds, and it is this client's own, so riders still aboard keep theirs. It
+--- stays down for the rest of the match because nothing else draws it:
+--- drawCrumbs runs only on BUS_ROUTE, which the server sends at WARMUP and at
+--- departure and never again within a flight (BR.Match.transition refuses BUS
+--- to BUS). The next flight's preview is a fresh BUS_ROUTE and draws as always.
+---
+--- NOT IN cleanup(), which the rides that end WITHOUT a drop also reach. A
+--- `brforce warmup` sends the next flight's preview before the roster delta
+--- that ends this ride, so a clear in there would take the new line straight
+--- back down; the lobby and the end of the match are the STATE handler's above.
 local function beginDrop(x, y, z, heading)
     dropBegun = true
     cleanup()   -- detaches the ped from the plane, among everything else
+    clearCrumbs()
     local ped = PlayerPedId()
     SetEntityCoordsNoOffset(ped, x + 0.0, y + 0.0, z + 0.0, false, false, false)
     SetEntityHeading(ped, heading or 0.0)
