@@ -14,6 +14,23 @@
  * and it is the later one: anything that ever wants the log during the verdict
  * still has it for all of ENDED.
  *
+ * ═══ AND AGAIN ON THE WAY INTO THE LOBBY ═══
+ *
+ * Owner, 2026-09-23, on the players CLEANUP never reaches: "yes clear them too.
+ * it should clear client-side when transitioning to lobby." Leave Match detaches
+ * a player on the spot, and a match that dissolves in warmup or the flight, or
+ * is forced to waiting, is destroyed without a CLEANUP -- so none of them hear
+ * one. What every way home does share is WAITING: a player in no match gets the
+ * lobby digest, and that is how this client's mirror settles back
+ * (server/broadcast.lua). A finished match passes through it too, after
+ * CLEANUP, which costs nothing.
+ *
+ * NOT THE PLAYER'S OWN LOBBY STATE, which is what App.tsx's showLobby also
+ * reads. The server flips that at ENDED to send everyone home under the verdict,
+ * so keying on it would empty the log before CLEANUP. For a leaver it can land
+ * half a second before their WAITING digest, but they are detached from the
+ * match on the same server tick, so no line of it can arrive in between.
+ *
  * ═══ EVERY CHANNEL, BECAUSE IT IS ONE LIST ═══
  *
  * Global, squad and system lines share the array. Nothing here filters by
@@ -46,8 +63,9 @@ import type { ChatMessage, MatchState } from '../bridge/types'
 /**
  * The chat log once a state payload has landed.
  *
- * ON THE EDGE INTO CLEANUP, the same way the warmup reset in setMatch fires on
- * the edge into WARMUP: once per match, not on every payload that repeats it.
+ * ON THE EDGE INTO CLEANUP OR WAITING, the same way the warmup reset in setMatch
+ * fires on the edge into WARMUP: once per arrival, not on every payload that
+ * repeats it. A snapshot or a participation change re-sends the same state.
  *
  * THE SAME ARRAY OTHERWISE, not a copy. setMatch runs on every state payload,
  * and a fresh array would wake everything subscribed to `chat` for nothing.
@@ -57,5 +75,6 @@ export function chatAfterState(
   now: MatchState,
   chat: ChatMessage[],
 ): ChatMessage[] {
-  return now === 'cleanup' && was !== 'cleanup' ? [] : chat
+  const clears = now === 'cleanup' || now === 'waiting'
+  return clears && was !== now ? [] : chat
 }

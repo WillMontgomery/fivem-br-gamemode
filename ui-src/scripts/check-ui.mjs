@@ -1496,33 +1496,47 @@ for (const name of builtCss) {
 }
 
 // ---------------------------------------------------------------------------
-// R23  Chat empties as the match enters CLEANUP, through the tested kernel (#365).
+// R23  Chat empties as the match enters CLEANUP and as this client lands back in
+//      the lobby, through the tested kernel (#365).
 //
 // Owner, 2026-09-23: "clear all text chat history client-side on match
-// cleanup". Nothing ever emptied `chat`, so the last match's lines were the
-// first thing the next warmup drew. store/chatClear.ts decides what the log
-// holds after a state payload, and scripts/test-chat-clear.mjs pins that
-// decision -- but only this can see that setMatch actually asks it.
+// cleanup", then "it should clear client-side when transitioning to lobby".
+// Nothing ever emptied `chat`, so the last match's lines were the first thing
+// the next warmup drew. store/chatClear.ts decides what the log holds after a
+// state payload, and scripts/test-chat-clear.mjs pins that decision -- but only
+// this can see that the payload reaches it.
 //
 // This rule fails on the ways the wiring comes undone:
+//   NOT ROUTED -- App.tsx's `state` handler no longer hands the payload to
+//     setMatch, which is the one door both edges come through;
 //   NOT ASKED -- the `chat:` line gone from setMatch, or the import with it;
 //   ASKED WRONG -- the arguments swapped, or `was` read after the write, so the
 //     edge compares the new state with itself and never fires;
 //   RE-INLINED -- a literal or a filter in place of the kernel's answer, which
 //     is a clear the test cannot reach.
 //
-// IT CAN FAIL. Delete the `chat: chatAfterState(...)` line from setMatch, or
-// swap `was` and `match.state` in it.
+// IT CAN FAIL. Delete the `chat: chatAfterState(...)` line from setMatch, swap
+// `was` and `match.state` in it, or drop `s.setMatch(d)` from the handler.
 // ---------------------------------------------------------------------------
 {
   const S = join(SRC, 'store', 'index.ts')
   const K = join(SRC, 'store', 'chatClear.ts')
-  if (!existsSync(S) || !existsSync(K)) {
-    fail('R23 chat-clear', 'src/store',
-      'index.ts or chatClear.ts is missing. If they moved, move this rule with'
-      + ' them -- it is the pair to scripts/test-chat-clear.mjs.')
+  const A = join(SRC, 'App.tsx')
+  if (!existsSync(S) || !existsSync(K) || !existsSync(A)) {
+    fail('R23 chat-clear', 'src',
+      'store/index.ts, store/chatClear.ts or App.tsx is missing. If they moved,'
+      + ' move this rule with them -- it is the pair to'
+      + ' scripts/test-chat-clear.mjs.')
   } else {
     const store = stripComments(read(S))
+
+    const sh = /useNuiEvent\(\s*'state'[\s\S]*?\n  \}\)/.exec(stripComments(read(A)))
+    if (!sh || !/\bs\.setMatch\(\s*d\s*\)/.test(sh[0])) {
+      fail('R23 chat-clear', 'src/App.tsx',
+        "the `useNuiEvent('state', ...)` handler no longer calls"
+        + ' `s.setMatch(d)`. Every state payload -- the edge into CLEANUP and'
+        + ' the way back to the lobby -- reaches the chat clear through it.')
+    }
 
     if (!/import\s*\{\s*chatAfterState\s*\}\s*from\s*'\.\/chatClear'/.test(store)) {
       fail('R23 chat-clear', 'src/store/index.ts',
@@ -1549,9 +1563,9 @@ for (const name of builtCss) {
       if (!/\bchat:\s*chatAfterState\(\s*was\s*,\s*match\.state\s*,\s*get\(\)\.chat\s*\)/.test(body)) {
         fail('R23 chat-clear', 'src/store/index.ts',
           'setMatch does not write `chat: chatAfterState(was, match.state,'
-          + ' get().chat)`. Without it the log is never emptied at CLEANUP; with'
-          + ' anything else in its place the clear is one the test cannot see'
-          + ' (#365).')
+          + ' get().chat)`. Without it the log is never emptied, at CLEANUP or on'
+          + ' the way back to the lobby; with anything else in its place the'
+          + ' clear is one the test cannot see (#365).')
       }
     }
   }

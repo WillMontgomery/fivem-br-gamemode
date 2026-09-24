@@ -525,7 +525,8 @@ export default function App() {
           menu either: last round's log bleeding through the find-a-match
           card was just noise. Unmounting alone did not empty it: the store
           kept every line and the next warmup drew them. The store now drops
-          them as the match enters CLEANUP (#365, store/chatClear.ts). */}
+          them as the match enters CLEANUP and again on the way back to the
+          lobby (#365, store/chatClear.ts). */}
       {!tearingDown && !showLobby && <Chat barsVisible={hudUp} />}
       {/* THE LOBBY STEPS ASIDE FOR ITS SUB-SCREENS rather than sitting behind
           them. The locker's scrim only covers the left half (the right half

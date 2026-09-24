@@ -75,7 +75,8 @@ export interface UiState {
   death: DeathPayload | null
   summary: SummaryPayload | null
   feed: FeedEntry[]
-  /** Every channel's lines, oldest first. Emptied as a match enters CLEANUP. */
+  /** Every channel's lines, oldest first. Emptied as a match enters CLEANUP,
+   *  and again as this client lands back in the lobby (WAITING). */
   chat: ChatMessage[]
   /** The on-screen notice stack: party events, action results, match alerts.
    *  Newest last; each expires on its own timer. `ms` is that timer, kept on
@@ -885,8 +886,9 @@ export const useUi = create<UiState>((set, get) => {
   // down, or a row with no license) would show the previous match's reward and
   // animate its bar. #91 asks for exactly the opposite: no award and no Volts
   // line rather than a celebration of something never written.
-  // AND CHAT GOES AT CLEANUP (#365), on the edge the same way. Every channel,
-  // this page's copy only -- see chatClear.ts for why CLEANUP and not ENDED.
+  // AND CHAT GOES AT CLEANUP AND AT WAITING (#365), on the edge the same way.
+  // Every channel, this page's copy only -- see chatClear.ts for why those two
+  // and not ENDED or the player's own lobby state.
   setMatch: (match) => {
     const was = get().match.state
     const fresh = match.state === 'warmup' && was !== 'warmup'
