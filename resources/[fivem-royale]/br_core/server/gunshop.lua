@@ -439,6 +439,10 @@ local function deliver(src, row)
     -- it over -- so the flag is set here and nowhere else. It is the only
     -- caller in the tree that passes it, and it defaults off.
     --
+    -- ...EXCEPT MID-CHANNEL (#271, owner 2026-09-23: "we should also prevent
+    -- them from changing slots mid-use"). A buyer drinking a shield gets the gun
+    -- in its slot and keeps their hands; give() decides that, not this file.
+    --
     -- HARMLESS ON AN AMMO ROW. That branch of give() returns before a slot is
     -- ever chosen, because a pool does not have one; passing the flag on every
     -- delivery is one fewer condition here than asking the row what kind it is,

@@ -8046,6 +8046,132 @@ do
         tostring(inv.slots[other] and inv.slots[other].item))
     ok(inv.using ~= nil, 'which the channel also does not notice')
 
+    -- ── ...and nothing HANDED to them moves the hand either ───────────────
+    --
+    --   "we should also prevent them from changing slots mid-use."
+    --                                                 -- owner, 2026-09-23
+    --
+    -- The four doors are keypresses. A grant is not one: BR.Inv.give wrote
+    -- `inv.active` itself, for a purchase's `focus` and for a gun off the floor
+    -- into an empty hand, and no refusal above ever saw it. The shape that found
+    -- it is a heal started with the use key on FISTS, which is the one hand the
+    -- pickup rule arms, and a gun arriving while the bar runs.
+    local MELEE = BR.Config.Loot.meleeSlot or 0
+
+    --- A shield channel on slot 1 with the hand on fists and no slot ever
+    --- chosen -- the hand a fresh inventory starts on and the use key keeps.
+    local function onFists()
+        lootMatch()
+        BR.Inv.reset(1)
+        BR.Inv.give(1, { item = 'shield', kind = BR.ItemKind.CONSUMABLE,
+                         rarity = shield.rarity or 2, count = 1 })
+        local i = BR.Inv.of(1)
+        pedArmour[1001] = 0
+        pedHealth[1001] = nil
+        fakeTime = fakeTime + 250
+        BR.Sched.step(fakeTime)
+        sent = {}
+        fire(BR.Net.INV_USE, 1, { slot = 1 })
+        return i
+    end
+
+    --- A gun exactly as server/gunshop.lua's deliver hands one over: the
+    --- catalogue's sold, empty stack, with the counter's own opts.
+    local function buyGun(item)
+        BR.Inv.give(1, { item = item, kind = BR.ItemKind.WEAPON, rarity = 3,
+                         count = 1, clip = 0, sold = true },
+                    { quiet = true, focus = true })
+    end
+
+    --- The last INV_SET this player was sent, which is the client's only
+    --- source for its active slot.
+    local function lastPush()
+        local p = eventsOf(BR.Net.INV_SET)
+        return p[#p] and p[#p].args[1]
+    end
+
+    inv = onFists()
+    ok(inv.using ~= nil and inv.active == MELEE and not inv.choseActive,
+        'precondition: a channel runs on slot 1 with the hand on fists, chosen '
+            .. 'by nobody', ('active %s'):format(tostring(inv.active)))
+    sent = {}
+    buyGun('carbinerifle')
+    ok(inv.active == MELEE,
+        'a gun bought mid-channel does NOT come up in the hand -- `focus` is '
+            .. 'held to the same rule as the slot keys',
+        ('active %s'):format(tostring(inv.active)))
+    ok(inv.slots[2] and inv.slots[2].item == 'carbinerifle',
+        'but it lands in the slot it always would have -- the purchase is not '
+            .. 'refused, only the hand stays put',
+        tostring(inv.slots[2] and inv.slots[2].item))
+    ok(inv.using ~= nil and inv.using.slot == 1,
+        'and the channel runs on, on the slot it started on')
+    ok(lastPush() and lastPush().active == MELEE,
+        'and the INV_SET that carries the gun tells the client its hand is '
+            .. 'still on fists, so the ped is not armed behind the server\'s back',
+        tostring(lastPush() and lastPush().active))
+
+    -- THE FLOOR, THROUGH THE REAL CLAIM. Every chest, death box and airdrop
+    -- payout reaches the bag this way, and give() is called with no opts at
+    -- all, so the arming it can do is the pickup rule's "empty hand" branch.
+    inv = onFists()
+    standInCell(1, 400, 400)
+    do
+        local p = BR.Roster.get(1).pos
+        local e = BR.Loot.spawnStack(theMatch(), {
+            item = 'sawnoff', kind = BR.ItemKind.WEAPON, rarity = 1,
+            count = 1, clip = 8,
+        }, p.x, p.y, p.z)
+        local cx, cy = BR.LootCellOf(e.x, e.y)
+        fire(BR.Net.LOOT_CELL, 1, { cx = cx, cy = cy })
+        fire(BR.Net.LOOT_CLAIM, 1, { id = e.id })
+    end
+    ok(inv.slots[2] and inv.slots[2].item == 'sawnoff',
+        'precondition: a gun walked over mid-channel is picked up',
+        tostring(inv.slots[2] and inv.slots[2].item))
+    ok(inv.active == MELEE,
+        'and it does not come up in the empty hand either',
+        ('active %s'):format(tostring(inv.active)))
+    ok(inv.using ~= nil, 'with the channel still running')
+
+    -- AND A HAND THAT IS ALREADY HOLDING A GUN, which is the case `focus`
+    -- exists to override (I3) -- the channel was opened from the panel.
+    inv = nearlyDone()
+    buyGun('carbinerifle')
+    ok(inv.active == 2,
+        'a buyer drinking with a pistol up keeps the pistol up',
+        ('active %s'):format(tostring(inv.active)))
+    ok(inv.slots[3] and inv.slots[3].item == 'carbinerifle',
+        'and the rifle is in the next free slot',
+        tostring(inv.slots[3] and inv.slots[3].item))
+
+    -- ═══ THE FOCUS IS NOT HANDED OUT LATER, and the lock ends with the bar ═══
+    --
+    -- The switch was not asked for when the bar lands, so the hand does not
+    -- move then either. After it the player takes the rifle up themselves, and
+    -- the next purchase is I3 again -- from a HELD gun, so it is `focus` that
+    -- moves the hand and not the empty-hand pickup rule.
+    inv = onFists()
+    buyGun('carbinerifle')
+    while inv.using and fakeTime < inv.using.endsAt + 500 do
+        fakeTime = fakeTime + 250
+        BR.Sched.step(fakeTime)
+    end
+    ok(inv.using == nil and inv.slots[1] == false,
+        'precondition: the channel landed and spent the shield')
+    ok(inv.active == MELEE,
+        'and the hand is still on fists after it -- the purchase\'s focus is '
+            .. 'dropped, not deferred to the end of the bar',
+        ('active %s'):format(tostring(inv.active)))
+    fire(BR.Net.INV_SELECT, 1, { slot = 2 })
+    ok(inv.active == 2, 'precondition: the rifle is in the hand by choice',
+        ('active %s'):format(tostring(inv.active)))
+    buyGun('combatpdw')
+    ok(inv.slots[inv.active] and inv.slots[inv.active].item == 'combatpdw',
+        'while a purchase with no channel running comes straight up in the '
+            .. 'hand, as I3 has it',
+        ('active %s'):format(tostring(inv.active)))
+
     -- ── the legitimate paths, which are the whole reason this is a lock and
     --    not a cooldown ─────────────────────────────────────────────────────
     --

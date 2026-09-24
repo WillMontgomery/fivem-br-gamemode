@@ -553,6 +553,10 @@ local function loadEmpty(inv, pool)
     end
 end
 
+-- DECLARED HERE, DEFINED ABOVE INV_SELECT, where the owner's ruling it carries
+-- is written down. BR.Inv.give asks it too (#271), and give comes first.
+local channelled
+
 --- Put a stack into a player's inventory.
 ---
 --- Returns what happened, because the caller (a claim, a chest, a death box)
@@ -573,7 +577,9 @@ end
 ---                        { focus = true } to put a weapon straight into their
 ---                        hands even though they were already holding one --
 ---                        see the block at the arming rule, and note the gun
----                        shop is the only caller entitled to it
+---                        shop is the only caller entitled to it. Neither it
+---                        nor the pickup rule moves the hand while a channel
+---                        runs (#271)
 --- @return boolean ok
 --- @return table|nil displaced
 --- @return string|nil reason
@@ -797,11 +803,34 @@ function BR.Inv.give(src, stack, opts)
     -- the gun shop write `inv.active` itself afterwards would put the arming
     -- rule in two files, and the second copy would not know about MELEE_SLOT or
     -- about `at`. The decision stays here and the shop supplies the reason.
-    if type(opts) == 'table' and opts.focus == true then
-        inv.active = at
-    elseif (inv.active ~= MELEE_SLOT or not inv.choseActive)
-       and (displaced or not inv.slots[inv.active] or inv.active == at) then
-        inv.active = at
+    --
+    -- ═══ ...AND NEITHER ONE MOVES A HAND THAT IS BUSY (#271) ═══
+    --
+    -- Owner, 2026-09-23: "we should also prevent them from changing slots
+    -- mid-use."
+    --
+    -- The slot keys are refused at INV_SELECT, but a grant never passes
+    -- through there. A player who started a heal on fists and then bought a
+    -- gun, or walked over one, had it come up in the hand while the bar ran
+    -- on. Every grant in the game is a call to this function, and these two
+    -- assignments are the only lines in it that write `inv.active` -- the
+    -- consumable and ammo branches never do -- so this is the one place a
+    -- grant is held to the same rule. See `channelled`.
+    --
+    -- THE ITEM STILL LANDS WHERE IT WOULD HAVE, and nothing is refused or
+    -- said. Only the hand stays where it was.
+    --
+    -- NOT DEFERRED TO THE END OF THE CHANNEL EITHER. The player did not ask
+    -- for the switch at that moment, and a hand that moves by itself when the
+    -- bar lands -- seconds after the purchase, perhaps mid-fight -- is a
+    -- switch nobody pressed. What they bought is one key away.
+    if not channelled(inv) then
+        if type(opts) == 'table' and opts.focus == true then
+            inv.active = at
+        elseif (inv.active ~= MELEE_SLOT or not inv.choseActive)
+           and (displaced or not inv.slots[inv.active] or inv.active == at) then
+            inv.active = at
+        end
     end
 
     -- A FOUND gun has to be usable. One clip's worth of reserve, capped by
@@ -962,6 +991,20 @@ end
 --- so refusing them would be a rule with no hole under it, and rearranging a
 --- bag is not "what my hands are doing".
 ---
+--- ═══ AND NOTHING HANDED TO THEM MOVES THE HAND (owner, 2026-09-23) ═══
+---
+---   "we should also prevent them from changing slots mid-use."
+---
+--- A purchase's `focus` and a pickup into an empty hand both set `inv.active`
+--- inside BR.Inv.give, and neither is a keypress, so none of the four refusals
+--- above ever saw them. The arming rule there asks this too: the item lands in
+--- its slot as it always did and the hand stays where it was.
+---
+--- ⚠ A FULL BAG IS STILL A DOOR. A grant with nowhere else to go swaps out the
+--- slot give() picks -- the hand, or slot 1 on fists -- and when that is the
+--- channeled slot the stack leaves and the identity guard ends the channel.
+--- Refusing it needs a refusal message, which is the owner's copy.
+---
 --- ═══ WHAT IS DELIBERATELY STILL ABLE TO END A CHANNEL ═══
 ---
 --- The remaining cancels are facts about the world rather than presses, and
@@ -979,7 +1022,7 @@ end
 --- @param inv table
 --- @param slot integer|nil  narrow it to one slot; nil asks about any channel
 --- @return boolean
-local function channelled(inv, slot)
+channelled = function(inv, slot)
     local u = inv.using
     if not u then return false end
     return slot == nil or u.slot == slot

@@ -3088,6 +3088,104 @@ do
     ok(#notices == 0,
         'and buying a WEAPON says nothing, because the clerk hands it over -- '
             .. 'which is his scoping rather than an omission')
+
+    -- -----------------------------------------------------------------------
+    describe('a gun bought mid-heal lands in the bag, not in the hand (#271)')
+    -- -----------------------------------------------------------------------
+    --
+    --   "we should also prevent them from changing slots mid-use."
+    --                                                 -- owner, 2026-09-23
+    --
+    -- ═══ THE REAL INVENTORY, BECAUSE THE RULE IS NOT IN THIS FILE ═══
+    --
+    -- Every case above runs against a BR.Inv stub that records `focus` and does
+    -- nothing with it, which is the right split for I3: the counter's half is
+    -- passing the flag. Whether a buyer mid-channel keeps their hands is decided
+    -- inside BR.Inv.give, and a stub cannot fail that. So server/inventory.lua is
+    -- loaded into a BR of its own that reads this block's roster, match and
+    -- client-event stubs through it, and is handed to the counter for these
+    -- cases only. tools/test_roster.lua pins the same rule from the inventory's
+    -- side, floor pickups included.
+    do
+        local MELEE = BR.Config.Loot.meleeSlot or 0
+        local invHandlers = {}
+        local IBR = setmetatable({
+            Inv = {},
+            -- The channel tick registers at load; nothing here advances it.
+            Sched = { every = function() end },
+            LootLabel = function(s) return s.item end,
+        }, { __index = BR })
+        local env = setmetatable({
+            BR = IBR,
+            RegisterNetEvent = function() end,
+            AddEventHandler = function(n, fn) invHandlers[n] = fn end,
+        }, { __index = _G })
+        local chunk, err = loadfile(ROOT .. 'br_core/server/inventory.lua', 't', env)
+        if not chunk then
+            print('\27[31mload error\27[0m server/inventory.lua: ' .. tostring(err))
+            os.exit(1)
+        end
+        chunk()
+        local realInv, stubInv = IBR.Inv, BR.Inv
+
+        --- The INV_SET this player was last sent: the client's only source for
+        --- the slot in its hand.
+        local function lastPush(src)
+            local p
+            for _, s in ipairs(sent) do
+                if s.name == BR.Net.INV_SET and s.src == src then p = s.payload end
+            end
+            return p
+        end
+
+        -- THE SHAPE THAT FOUND IT: a shield started with the use key on fists,
+        -- and a rifle bought while the bar runs.
+        reset()
+        player(97)
+        BR.Inv = realInv
+        realInv.give(97, { item = 'shield', kind = BR.ItemKind.CONSUMABLE,
+                           rarity = BR.Config.ConsumableById['shield'].rarity,
+                           count = 1 })
+        _G.source = 97
+        invHandlers[BR.Net.INV_USE]({ slot = 1 })
+        local inv = realInv.of(97)
+        ok(inv.using ~= nil and inv.active == MELEE,
+            'precondition: a channel runs on slot 1 with the hand on fists',
+            ('active %s'):format(tostring(inv.active)))
+
+        buy(97, 'carbinerifle')
+        ok(#charged == 1, 'the purchase goes through -- nothing is refused',
+            #charged)
+        ok(inv.slots[2] and inv.slots[2].item == 'carbinerifle',
+            'and the rifle lands in the slot it always would have',
+            tostring(inv.slots[2] and inv.slots[2].item))
+        ok(inv.active == MELEE,
+            'but it does NOT come up in the hand while the heal runs',
+            ('active %s'):format(tostring(inv.active)))
+        ok(inv.using ~= nil and inv.using.slot == 1,
+            'and the heal runs on, on the slot it started on')
+        ok(lastPush(97) and lastPush(97).active == MELEE,
+            'and the client is told its hand is still on fists',
+            tostring(lastPush(97) and lastPush(97).active))
+
+        -- ...WHILE A BUYER WITH NO CHANNEL RUNNING IS ARMED, as I3 has it, by
+        -- the same real inventory -- so the rule above is the channel's and not
+        -- a `focus` that stopped working. A pistol already in the hand, so it is
+        -- `focus` that moves it and not the empty-hand pickup rule.
+        reset()
+        player(98)
+        realInv.give(98, { item = 'pistol', kind = BR.ItemKind.WEAPON,
+                           rarity = 1, count = 1, clip = 12 })
+        local idle = realInv.of(98)
+        ok(idle.active == 1, 'precondition: a pistol in the hand',
+            ('active %s'):format(tostring(idle.active)))
+        buy(98, 'carbinerifle')
+        ok(idle.slots[idle.active] and idle.slots[idle.active].item == 'carbinerifle',
+            'a buyer who is not using anything has the rifle in their hands',
+            ('active %s'):format(tostring(idle.active)))
+
+        BR.Inv = stubInv
+    end
 end
 
 
