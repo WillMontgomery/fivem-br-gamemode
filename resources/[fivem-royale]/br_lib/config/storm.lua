@@ -975,7 +975,8 @@ BR.Config.Storm = {
         -- without redrawing anything (client/storm.lua has the argument). 1 is the
         -- sweep's two ends alone: EXACT at both, and a blend of them in between. More
         -- adds keyframes between them, ADDED DURING THE HOLD one every keyframeGapMs and
-        -- never while the storm moves.
+        -- never while the storm moves -- nor while a conjoined zone is still growing
+        -- into its destination, which is a hold that moves.
         --
         -- MEASURED over 150 matches' nested sweeps, the two-sided distance in metres
         -- from the keyframe nearest the morph's own point to the wall itself -- worst
@@ -999,7 +1000,8 @@ BR.Config.Storm = {
         -- IT SHIPS AT 1 BECAUSE EACH EXTRA KEYFRAME IS AN ADD_AREA_OVERLAY, which is the
         -- call #350's hitch was traced to. It is spent while the storm stands still and
         -- a couple of seconds apart, but its frame cost inside the movie cannot be
-        -- measured off the game box: /brstormhitch reset during a hold, read
+        -- measured off the game box: /brstormhitch reset during a hold -- past the
+        -- first grow.seconds of a conjoined phase, where nothing is added -- read
         -- storm.map.keyframe, and raise this if it is well under the 34 ms threshold.
         keyframes = 1,
         -- Milliseconds between two keyframes added during a hold.

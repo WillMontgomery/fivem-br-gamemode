@@ -457,7 +457,7 @@ one rebuild a phase makes, when its record arrives, draws `V(0)` and `V(1)` abou
 their own origin (and the destination in place), and every tick of the sweep
 places both on the solver's circle and crossfades them by `m`: exact at the two
 ends, a blend in between. `overlay.keyframes` adds more `V(k/K)` during the hold,
-never while the storm moves; the nearest one is within 31 m on average at phase 2
+never while the storm moves or a conjoined zone grows; the nearest one is within 31 m on average at phase 2
 at eight keyframes, where two ends alone are within 206 (config/storm.lua has the
 table). The sweep's end needs no rebuild, because `V(1)` on the destination's
 circle is the destination.

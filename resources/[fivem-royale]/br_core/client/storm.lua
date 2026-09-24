@@ -1786,8 +1786,9 @@ end
 --
 -- EXACT AT BOTH ENDS AND A BLEND IN BETWEEN, with one pair. `overlay.keyframes` adds
 -- more V(k/K) between them -- ADDed during the HOLD, one every keyframeGapMs, never
--- while the storm moves -- and the crossfade runs between whichever two bracket m, so
--- the map comes within tens of metres of the wall's own morph instead of hundreds.
+-- while the storm moves or a conjoined zone grows -- and the crossfade runs between
+-- whichever two bracket m, so the map comes within tens of metres of the wall's own
+-- morph instead of hundreds.
 -- It ships at one pair until the owner has read those adds' cost off his hitch
 -- markers: they are the call #350 traced. config/storm.lua has the measured error
 -- by phase and pair count.
@@ -2001,8 +2002,14 @@ local function overlayPlan()
 
     local rec = activeRecord()
     if not rec then return nil end
-    local cx, cy, r, st, msLeft, _, t = solveNow(rec)
+    local cx, cy, r, st, msLeft, _, t, g = solveNow(rec)
     if r <= 1.0 and rec.r1 <= 1.0 then return nil end
+
+    -- A CONJOINED ZONE GROWING INTO ITS DESTINATION IS MOVING (#344), for all that
+    -- the solver calls it a HOLD, so no keyframe is added over it: see
+    -- appendKeyframe.
+    local growing = st == BR.StormPhase.HOLDING and (g or 1.0) < 1.0
+        and (BR.StormOverlaps(rec))
 
     -- THE SAFE ZONE IS SUPPRESSED FOR THE WHOLE-MAP PHASE-1 HOLD and ramped in on
     -- the map's own share, exactly as the ring above is -- wallShare, one number
@@ -2025,6 +2032,7 @@ local function overlayPlan()
         rec = rec, cx = cx, cy = cy, r = r, t = t,
         m = BR.StormMorphFrame(rec, t),
         state = st, zoneA = zoneA, nokeys = nokeys, done = done,
+        growing = growing and true or false,
     }, key
 end
 
@@ -2185,6 +2193,15 @@ end
 --- keyframeGapMs: an add is the call #350 traced, so it is spent where the storm
 --- stands still and spread out, and a sweep is only ever placed and faded.
 ---
+--- ═══ AND NOT WHILE A CONJOINED ZONE GROWS, WHICH IS A HOLD THAT MOVES (#344) ═══
+---
+--- The first grow.seconds of a conjoined phase's hold are its zone growing into
+--- the destination -- a front doing up to 180 m/s at phase 2 -- and the owner's
+--- spec counts that as motion under 52a7caa's rule. The solver still answers
+--- HOLDING through it, so the test is the growth's own: nothing is added until the
+--- zone has finished growing, and the gap is counted from the moment it has, so a
+--- hitch read during the growth is the growth's and nothing else's.
+---
 --- THE NEW CLIP IS HIDDEN ON THE TICK IT IS ADDED, as a rebuild's are, and placed
 --- the first tick it shows. A refused add stops the adding for this record; a
 --- refused hide leaves a keyframe on the world's origin at full strength, which is a
@@ -2196,13 +2213,17 @@ local function appendKeyframe(plan)
     if not at or at.fixed or #at.pending == 0 then return true end
     if plan.state ~= BR.StormPhase.HOLDING then return true end
     local now = GetGameTimer()
+    if plan.growing then
+        at.appendAt = now
+        return true
+    end
     if (now - at.appendAt) < ((cfg.overlay or {}).keyframeGapMs or 2000) then
         return true
     end
     at.appendAt = now
     local m = table.remove(at.pending, 1)
     local trace = BR.Loop.hitchBegin('storm.map.keyframe',
-        'keyframes - 1 adds per hold, one per keyframeGapMs; never while moving')
+        'keyframes - 1 adds per hold, one per keyframeGapMs; never while moving or growing')
     local ok = true
     local f = keyframe(plan.rec, m)
     if f then

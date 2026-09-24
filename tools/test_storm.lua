@@ -9225,6 +9225,36 @@ do
         'a sweep that starts with keyframes still to add never adds them while it moves',
         G.errored() or ('%d keyframes, %d adds in the sweep'):format(gKeys, G.mm.adds - gAdds))
 
+    -- AND NONE WHILE A CONJOINED ZONE GROWS INTO ITS DESTINATION (#344). The growth
+    -- is the first grow.seconds of the HOLD and the owner's spec counts it as motion:
+    -- a front doing up to 180 m/s. The review of this round found seven adds inside
+    -- every conjoined growth at eight keyframes, under a marker that said "never while
+    -- moving". Asserted as nothing added across the growth, and the adding starting
+    -- once the zone stands still.
+    local W, wrec = sweepClient(2, 1000.0, 2600.0, 4600.0, 1600.0, 120000,
+        -700.0, -300.0, CONJOINED)
+    W.env.BR.Config.Storm.overlay.keyframes = 8
+    ok(W.overlayReady(), 'the growing client reaches the gate')
+    wrec.tStart = W.now
+    realTicks(W, 1)
+    local growMs = math.min(W.env.BR.Config.Storm.grow.seconds * 1000.0, wrec.tWait)
+    local wAdds0, wKeys0 = W.mm.adds, #W.keyframes()
+    local lastAddAt = nil
+    realTicks(W, math.floor(growMs / 100) - 2, function()
+        if W.mm.adds > wAdds0 then lastAddAt = lastAddAt or W.now end
+    end)
+    local during = W.mm.adds - wAdds0
+    realTicks(W, 200)
+    local after = W.mm.adds - wAdds0 - during
+    ok(wKeys0 == 2 and during == 0 and W.errored() == nil,
+        'across the twenty seconds a conjoined zone grows, not one keyframe is added: a '
+            .. 'hold that moves is motion',
+        W.errored() or ('%d adds during the growth, the first at %s ms of %d'):format(
+            during, tostring(lastAddAt and (lastAddAt - wrec.tStart)), growMs))
+    ok(after == 7 and #W.keyframes() == 9,
+        'and once it has grown and stands still, the seven are added as in any hold',
+        ('%d added after, %d keyframes'):format(after, #W.keyframes()))
+
     -- AND A REFUSED ADD STOPS THE ADDING, leaving the picture as it was.
     local Y = sweepClient(2, 1000.0, 2600.0, 1400.0, 1600.0, 120000,
         -700.0, -300.0, NESTED)
