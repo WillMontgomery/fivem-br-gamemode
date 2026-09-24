@@ -2343,8 +2343,25 @@ function BR.Native.applyGameRules()
     --     drives GTA's own menu on purpose and watches 199/200/202 to leave
     --     it; suppressing the frontend underneath that would trap a player
     --     inside the map with no way out.
-    if BR.Keys and BR.Keys.ownsEscape and BR.Keys.ownsEscape()
-       and not BR.Native.frontendMap then
+    --
+    -- ═══ OR AN IN-GAME MENU HOLDS ESCAPE, WHOEVER OWNS THE PAUSE KEY (#371) ═══
+    --
+    -- "pressing escape while in the gun shop menu opens the pause menu"
+    -- (owner, 2026-09-23). While a ScaleformUI menu is up, and for the three
+    -- frames after it closes, Escape is that menu's Back button and nothing
+    -- else -- so GTA's frontend is held down here even on a client whose own
+    -- pause menu IS GTA's: no raw layer, or ours rebound off Escape. The first
+    -- two guards above exist so a player is never left with no pause menu at
+    -- all, and stepping past them here cannot do that: the menu's own Back is
+    -- the way out, and GTA's menu is back three frames after it closes.
+    -- client/menu.lua's BR.Menu.holdsEscape carries the argument for the three
+    -- frames. The map guard still applies: a map raised over a menu is a
+    -- frontend we opened on purpose.
+    local ownsEsc = BR.Keys ~= nil and BR.Keys.ownsEscape ~= nil
+        and BR.Keys.ownsEscape() == true
+    local menuEsc = BR.Menu ~= nil and BR.Menu.holdsEscape ~= nil
+        and BR.Menu.holdsEscape() == true
+    if (ownsEsc or menuEsc) and not BR.Native.frontendMap then
         -- AND IF IT GETS THROUGH ANYWAY, take it back. The disable is the
         -- documented route and it is not the only path into the frontend --
         -- a controller, another resource, a frame we lost -- and "Escape
@@ -2411,8 +2428,12 @@ function BR.Native.applyGameRules()
                 -- this one live and the fault half-fixed.
                 --
                 -- Same test as client/keybinds.lua's: a screen of ours being on
-                -- top means Escape is that screen's way out.
-                if not (BR.Keys and BR.Keys.uiScreen) then
+                -- top means Escape is that screen's way out. And the same ONE
+                -- test, since #371: an in-game menu is a screen of ours that
+                -- the focus stack never sees, and the frontend this redeems
+                -- can arrive on the frame after that menu closed.
+                if not (BR.Keys and BR.Keys.screenHoldsEscape
+                        and BR.Keys.screenHoldsEscape()) then
                     TriggerEvent('br:ui:pauseToggle')
                 end
             end
@@ -2431,6 +2452,18 @@ function BR.Native.applyGameRules()
 
         if not retake.gaveUp then
             DisableFrontendThisFrame()
+            -- AND GTA'S TWO PAUSE CONTROLS, WHILE A MENU HOLDS ESCAPE (#371).
+            -- ScaleformUI disables them only on the frames it draws, so the
+            -- frame after the menu closes is the first one on which anything
+            -- reading them without the "Disabled" spelling hears that same
+            -- Escape. The library's own Back reads the disabled spelling and
+            -- is untouched. Not while no menu is up: with nothing on screen,
+            -- Escape is the pause key's and this block has never disabled a
+            -- control id for it.
+            if menuEsc then
+                DisableControlAction(0, 199, true)  -- FRONTEND_PAUSE
+                DisableControlAction(0, 200, true)  -- FRONTEND_PAUSE_ALTERNATE
+            end
             if frontendUp then
                 SetFrontendActive(false)
                 retake.asked = true

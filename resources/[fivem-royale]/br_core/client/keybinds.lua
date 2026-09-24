@@ -58,6 +58,33 @@ BR.Keys.uiOwnsKeyboard = false
 --- which is the question Escape has to ask and the other flag cannot.
 BR.Keys.uiScreen = nil
 
+--- DOES ESCAPE BELONG TO SOMETHING ALREADY ON SCREEN?
+---
+--- ═══ TWO KINDS OF SCREEN, AND ONLY ONE OF THEM IS ON THE FOCUS STACK (#371)
+---     ═══
+---
+--- `uiScreen` sees every NUI page br_ui puts up. It cannot see an in-game
+--- ScaleformUI menu -- the gun shop -- because that is a scaleform over the
+--- game and never touches the stack, so Escape at the counter raised our pause
+--- menu while the library's own Back was closing the shop (owner,
+--- 2026-09-23). BR.Menu.holdsEscape is client/menu.lua's answer for every menu
+--- built through it, including the few frames after one closes; the note there
+--- says why those frames are owed.
+---
+--- ONE QUESTION FOR BOTH ROUTES TO THE PAUSE MENU. The `pause` listener below
+--- and client/natives.lua's frontend retake each asked `uiScreen` on their own,
+--- which is how both of them missed the same menu. They ask this now.
+---
+--- NIL-GUARDED BECAUSE client/menu.lua LOADS AFTER THIS FILE and is asked at
+--- call time. A build without it has no in-game menu to be under, and the
+--- guard fails OPEN: Escape behaves exactly as it did.
+--- @return boolean
+function BR.Keys.screenHoldsEscape()
+    if BR.Keys.uiScreen ~= nil then return true end
+    return BR.Menu ~= nil and BR.Menu.holdsEscape ~= nil
+        and BR.Menu.holdsEscape() == true
+end
+
 --- Subscribe to a key action.
 --- @param action string   e.g. 'inventory', 'revive'
 --- @param fn function      receives (pressed: boolean)
@@ -696,7 +723,14 @@ BR.Keys.on('pause', function(pressed)
     -- THE OTHER SCREENS ARE UNAFFECTED because they take the keyboard outright:
     -- `uiOwnsKeyboard` is already true for them and the raw layer never delivers
     -- the key at all. This gate only changes the one screen where it did.
-    if pressed and not BR.Keys.uiScreen then TriggerEvent('br:ui:pauseToggle') end
+    --
+    -- AND THE GUN SHOP IS THE SECOND SCREEN LIKE IT (#371). A ScaleformUI menu
+    -- takes no focus, so the raw layer went on delivering Escape under it and
+    -- this handler raised our menu over the shop. screenHoldsEscape asks the
+    -- focus stack and client/menu.lua both.
+    if pressed and not BR.Keys.screenHoldsEscape() then
+        TriggerEvent('br:ui:pauseToggle')
+    end
 end)
 BR.Keys.on('players', function(pressed)
     if pressed then TriggerEvent('br:ui:playersToggle') end

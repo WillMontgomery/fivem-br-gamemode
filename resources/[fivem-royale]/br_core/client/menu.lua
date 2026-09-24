@@ -18,7 +18,8 @@
 -- IT IS DELIBERATELY TINY. Four HUD indices, three constructors, and three
 -- one-line text marks. It is not a widget kit and must not become one: the moment
 -- it starts deciding what items a menu has, it is a second menu library sitting
--- on top of the vendored one.
+-- on top of the vendored one. The one question it answers for the rest of the
+-- game is whether a menu it built is up, which is what Escape asks (#371).
 --
 -- ═══ FONTS ARE NOT OURS AND CANNOT BE ═══
 --
@@ -266,6 +267,18 @@ function BR.Menu.available()
     return type(UIMenu) == 'table' and type(SColor) == 'table'
         and type(UIMenuItem) == 'table' and type(MenuHandler) == 'table'
 end
+
+--- EVERY MENU BR.Menu.new HAS HANDED OUT, so the rest of the game can ask
+--- whether one is on screen without knowing which feature opened it (#371).
+---
+--- WEAK-KEYED, because this is a list of menus to ASK about and not a reason
+--- to keep one alive. The gun shop holds its one menu for the life of the
+--- resource; a menu some later feature builds and drops must not be pinned
+--- here forever.
+---
+--- DECLARED HERE, above BR.Menu.new, which writes it: a Lua local is invisible
+--- above its own declaration.
+local built = setmetatable({}, { __mode = 'k' })
 
 --- A PRICE, IN GOLD, FOR A RIGHT LABEL. See PRICE_HUD above for what "gold"
 --- can and cannot mean on this surface.
@@ -647,7 +660,103 @@ function BR.Menu.new(title, subtitle, banner)
     -- this version and emptying the list is what actually removes them.
     menu.InstructionalButtons = {}
 
+    -- AND IT IS COUNTED, which is what makes Escape the menu's (#371). See
+    -- BR.Menu.holdsEscape below.
+    built[menu] = true
+
     return menu
+end
+
+--- IS ONE OF OUR IN-GAME MENUS ON SCREEN RIGHT NOW?
+---
+--- ═══ A LIVE READ OF THE LIBRARY'S OWN ANSWER, AND NOT A FLAG OF OURS ═══
+---
+--- UIMenu:Visible() with no argument is the library's getter for the one field
+--- every path that shows or hides a menu writes -- Back, CloseAndClearHistory,
+--- a consumer's own close. So nothing here has to be told about a close, and
+--- there is no latch anywhere to leave standing.
+---
+--- ⚠ NOT MenuHandler:IsAnyMenuOpen(). It answers from the breadcrumb count,
+--- and Visible(false) does not pop the breadcrumb -- client/gunshop.lua's
+--- BR.Gunshop.menuUp has the whole note. It would stay true after every close
+--- the gun shop performs, and Escape would belong to a menu that is gone.
+--- @return boolean
+function BR.Menu.up()
+    for m in pairs(built) do
+        local seen, vis = pcall(m.Visible, m)
+        if seen and vis == true then return true end
+    end
+    return false
+end
+
+--- ═══════════════════════════════════════════════════════════════════════════
+--- ESCAPE AT AN IN-GAME MENU IS THE MENU'S BACK BUTTON AND NOTHING ELSE (#371)
+--- ═══════════════════════════════════════════════════════════════════════════
+---
+--- Owner, 2026-09-23: "pressing escape while in the gun shop menu opens the
+--- pause menu."
+---
+--- ═══ WHY THE FOCUS STACK COULD NOT SEE IT ═══
+---
+--- Every other screen in this game is a NUI page on br_ui's focus stack, and
+--- both routes to our pause menu already stand down for those:
+--- client/keybinds.lua's `pause` listener and client/natives.lua's frontend
+--- retake each asked BR.Keys.uiScreen first. A ScaleformUI menu is a scaleform
+--- drawn over the game, not a page -- it never touches the stack, so
+--- `uiScreen` stayed nil while the gun shop was up. The raw key layer reads
+--- Escape straight off the keyboard, which no control disabling reaches, and
+--- one press raised our pause menu while the library's own Back was closing
+--- the shop.
+---
+--- SO THE ANSWER IS HERE, WHERE EVERY MENU IS BUILT, rather than in the gun
+--- shop. A second ScaleformUI menu made through BR.Menu.new is covered the day
+--- it is written. BR.Keys.screenHoldsEscape is the one question both routes
+--- ask now, and it asks this.
+---
+--- ═══ AND FOR THREE FRAMES AFTER, BECAUSE THE CLOSE AND THE LEAK ARE NOT THE
+---     SAME FRAME ═══
+---
+--- The library goes back on the RELEASE of Escape (UIMenu:ProcessControl reads
+--- IsDisabledControlJustReleased on 177), inside a thread of its own. The
+--- press edge is while the menu is still up, which a live read answers. What a
+--- live read cannot answer is anything that arrives after the menu is gone and
+--- still belongs to that Escape. GTA's pause controls are only disabled while
+--- the menu draws, so the frame after the close is the first one on which
+--- that Escape can reach the frontend; and client/natives.lua's retake takes a
+--- leaked frontend down on the frame it appears and raises our menu on the
+--- frame after THAT. So the window is the frame the menu is first seen down,
+--- the frame after it, and the retake's redeem one frame later: three.
+---
+--- FRAMES, NOT MILLISECONDS. Every step above is one frame late, whatever the
+--- frame rate; a window in milliseconds is too short at thirty frames a second
+--- or needlessly long at a hundred and forty. Three frames is fifty
+--- milliseconds at sixty, and nobody presses Escape twice inside that.
+local ESCAPE_GRACE_FRAMES = 3
+
+--- Frames of grace left. Written by the sampler below, read by holdsEscape.
+local escapeFrames = 0
+
+-- THE SAMPLER. It runs after client/gamerules.lua and client/keybinds.lua in
+-- the frame band -- the manifest's order -- so those two read the sample from
+-- the frame before, beside a live read of their own. That is why the window
+-- counts from the last frame a menu was SEEN rather than from the close: the
+-- frame it is first seen down reads ESCAPE_GRACE_FRAMES, and each frame after
+-- reads one fewer.
+BR.Loop.register(BR.Loop.FRAME, 'menu.escape', function()
+    if BR.Menu.up() then
+        escapeFrames = ESCAPE_GRACE_FRAMES
+    elseif escapeFrames > 0 then
+        escapeFrames = escapeFrames - 1
+    end
+end)
+
+--- Does Escape belong to one of our in-game menus right now?
+---
+--- True while one is up and for the ESCAPE_GRACE_FRAMES frames after it goes
+--- down. With none open this is false and Escape is exactly what it was.
+--- @return boolean
+function BR.Menu.holdsEscape()
+    return BR.Menu.up() or escapeFrames > 0
 end
 
 --- One row: a label, a right-hand label, and a color for its panel.

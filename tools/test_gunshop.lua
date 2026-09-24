@@ -3315,8 +3315,6 @@ do
     SColor.HUD_White = SColor.FromHudColor(1)
     SColor.HUD_Panel_light = SColor.FromHudColor(152)
 
-    assert(loadfile(ROOT .. 'br_core/client/menu.lua'))()
-
     -- ═══ THE HOST, MODELLED ═══
     local loops, keys, handlers, cmds = {}, {}, {}, {}
     local dui, sfx, sent, speech, drawn = {}, {}, {}, {}, {}
@@ -3340,6 +3338,12 @@ do
         SLOW = 'slow', TICK = 'tick', FRAME = 'frame',
         register = function(_, name, fn) loops[name] = fn end,
     }
+
+    -- AFTER THE LOOP REGISTRY, which is the manifest's order: client/menu.lua
+    -- registers its Escape sampler at load (#371), and client/main.lua is the
+    -- first file in br_core.
+    assert(loadfile(ROOT .. 'br_core/client/menu.lua'))()
+
     BR.Keys = { on = function(k, fn) keys[k] = fn end, uiScreen = nil }
     BR.Dui = {
         page = function() return { w = 512, h = 256 } end,
@@ -5151,6 +5155,69 @@ do
         press()
         ok(lastMenu._visible == true, 'and pressing E opens it again')
         walkAway()
+    end
+
+    -- -----------------------------------------------------------------------
+    describe('#371: Escape at the counter belongs to the menu')
+    -- -----------------------------------------------------------------------
+    do
+        -- ═══ THE GUN SHOP IS COUNTED BECAUSE client/menu.lua BUILT IT ═══
+        --
+        -- Owner, 2026-09-23: "pressing escape while in the gun shop menu opens
+        -- the pause menu." The pause routes ask BR.Menu.holdsEscape, and that is
+        -- only true for a menu BR.Menu.new handed out. This is the one real
+        -- menu in the tree, opened the way a player opens it, so a gun shop that
+        -- stopped building through BR.Menu -- or a BR.Menu.new that stopped
+        -- counting what it built -- fails here rather than at the counter.
+        --
+        -- The sampler is stepped by hand, one call per frame, because this
+        -- sandbox's loop registry records callbacks and never runs them.
+        local sample = loops['menu.escape']
+        ok(type(sample) == 'function',
+            'client/menu.lua registers its Escape sampler on the frame band')
+
+        walkAway()
+        for _ = 1, 4 do sample() end
+        ok(BR.Menu.holdsEscape() == false,
+            'with no menu up, Escape belongs to nothing -- the pause key is the '
+                .. "pause key's")
+
+        standAt('pillbox')
+        press()
+        ok(lastMenu._visible == true, 'the menu is up')
+        ok(BR.Menu.up() == true and BR.Menu.holdsEscape() == true,
+            'and Escape is the menu\'s the moment it is, before any frame has '
+                .. 'been sampled -- the press edge is a live read')
+        sample()
+
+        -- THE LIBRARY'S OWN BACK, WHICH IS WHAT ESCAPE REALLY DOES THERE.
+        lastMenu:GoBack()
+        ok(BR.Menu.up() == false, 'Back took the menu down')
+        ok(BR.Menu.holdsEscape() == true,
+            'and on the frame it went down, Escape is still the menu\'s')
+        sample()
+        ok(BR.Menu.holdsEscape() == true,
+            'and on the frame after, when a stale release can leak a frontend')
+        sample()
+        ok(BR.Menu.holdsEscape() == true,
+            'and on the one after that, when the retake redeems that frontend')
+        sample()
+        ok(BR.Menu.holdsEscape() == false,
+            'and then it is handed back, so the next Escape opens the pause menu')
+
+        -- WALKING AWAY IS A CLOSE THIS FILE PERFORMS, NOT THE LIBRARY, and it
+        -- has to read the same way: the answer is the library's Visible, so it
+        -- cannot care who lowered it.
+        press()
+        sample()
+        walkAway()
+        ok(lastMenu._visible == false and BR.Menu.up() == false,
+            'walking away closes the menu')
+        sample()
+        sample()
+        sample()
+        ok(BR.Menu.holdsEscape() == false,
+            'and Escape comes back after a walk-away exactly as after Back')
     end
 
     -- -----------------------------------------------------------------------

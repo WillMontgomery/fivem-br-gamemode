@@ -15596,6 +15596,319 @@ do
 end
 
 -- ======================================================================== --
+-- #371. ESCAPE AT AN IN-GAME MENU CLOSES THE MENU AND NOTHING ELSE
+-- ======================================================================== --
+--
+-- "pressing escape while in the gun shop menu opens the pause menu." (owner,
+-- 2026-09-23.)
+--
+-- WHY IT WAS POSSIBLE AT ALL. Both routes to our pause menu -- the raw `pause`
+-- tap in client/keybinds.lua and the frontend retake in client/natives.lua --
+-- stood down for a screen of ours by asking BR.Keys.uiScreen, which is the top
+-- of br_ui's focus stack. The gun shop is a ScaleformUI menu: a scaleform over
+-- the game that never touches that stack. So `uiScreen` was nil at the counter
+-- and the raw layer, which reads Escape off the keyboard itself, raised our
+-- menu on the same press the library's own Back was answering.
+--
+-- WHAT IS LOADED. The real client/menu.lua, against the smallest stub of the
+-- library it will build a menu on -- a UIMenu whose Visible is a field, which
+-- is all the real getter is. The real keybinds.lua, natives.lua, br_ui's
+-- nui.lua and pause.lua are already in the room from the blocks above, so the
+-- press goes from a physical key to a pushFocus('pause') with nothing stubbed
+-- in between.
+--
+-- ONE FRAME IS THE MANIFEST'S ORDER, and it matters here. client/gamerules.lua
+-- runs applyGameRules ahead of client/keybinds.lua and client/menu.lua in the
+-- frame band, so the retake reads menu.lua's sample from the frame before.
+-- frame() cannot say that: gamerules.lua is not in this harness, so it is
+-- called here by hand, first.
+
+describe('#371 -- Escape at an in-game menu closes the menu and nothing else')
+do
+    -- THE KEYBOARD, TAKEN BACK, and re-probed. #207's block swapped
+    -- IsRawKeyDown for an escape model of its own, and the raw layer resolves
+    -- its reader at resource start -- so restoring the global is not enough on
+    -- its own; bootOn has to run after it.
+    IsRawKeyDown, IsRawKeyPressed = RAW_KEYBOARD.down, RAW_KEYBOARD.pressed
+
+    --- The ENGINE's frontend, modelled by its effect as the block above does.
+    local frontendUp, frontendYields = false, true
+    local frontendDisables = 0
+    IsPauseMenuActive = function() return frontendUp end
+    IsPauseMenuRestarting = function() return false end
+    SetFrontendActive = function(on)
+        if on == false and frontendYields then frontendUp = false end
+    end
+    DisableFrontendThisFrame = function() frontendDisables = frontendDisables + 1 end
+
+    -- ═══ THE LIBRARY, AS MUCH OF IT AS BR.Menu.new TOUCHES ═══
+    UIMenu = {}
+    UIMenu.__index = UIMenu
+    function UIMenu.New() return setmetatable({ _visible = false }, UIMenu) end
+    function UIMenu:Visible(v)
+        if v ~= nil then self._visible = v end
+        return self._visible
+    end
+    SColor = { FromHudColor = function(n) return { hud = n } end }
+    UIMenuItem, MenuHandler = {}, {}
+    loadAll({ 'br_core/client/menu.lua' })
+
+    local shop = BR.Menu.new('', '', nil)
+    ok(shop ~= nil, 'client/menu.lua built a menu on the stub library')
+
+    --- One frame, in the manifest's order. See the header.
+    local function gameFrame()
+        fakeTime = fakeTime + 16
+        disabled = {}
+        BR.Native.applyGameRules()
+        BR.Loop.step(BR.Loop.FRAME)
+        edge = {}
+        lying = {}
+    end
+    local function gameFrames(n) for _ = 1, n do gameFrame() end end
+
+    --- Escape, down on one frame and up on the next. `onRelease` runs between
+    --- them, which is where the library's Back lives: UIMenu:ProcessControl
+    --- goes back on IsDisabledControlJustReleased(177), the release.
+    local ESC = 0x1B
+    local function tapEscape(onRelease)
+        keys[ESC] = true
+        edge[ESC] = true
+        gameFrame()
+        keys[ESC] = nil
+        if onRelease then onRelease() end
+        gameFrame()
+    end
+
+    --- Every ask for the pause menu, from either route, since the marker.
+    local function toggles(from)
+        local n = 0
+        for i = from + 1, #events do
+            if events[i].name == 'br:ui:pauseToggle' then n = n + 1 end
+        end
+        return n
+    end
+    --- ...and every time it actually came up, which is the page's own push.
+    local function opens(from)
+        local n = 0
+        for i = from + 1, #events do
+            if events[i].name == 'br:ui:pushFocus'
+               and events[i].args[1] == 'pause' then n = n + 1 end
+        end
+        return n
+    end
+
+    --- The press reached the key layer. Without this, "nothing opened" would
+    --- pass on a harness whose Escape never arrived.
+    local escSeen = 0
+    BR.Keys.on('pause', function(pressed)
+        if pressed then escSeen = escSeen + 1 end
+    end)
+
+    --- Nothing up, nothing asked, nothing in flight.
+    local function reset()
+        shop:Visible(false)
+        frontendUp, frontendYields = false, true
+        BR.Native.frontendMap = false
+        while BR.Pause.closeMap() do end
+        BR.Pause.close()
+        fire('br:ui:clearFocus')
+        -- PAST THE PAUSE KEY'S OWN 220MS GUARD, which close() stamps, and past
+        -- the resync window the focus change opened -- it ends on quiet.
+        fakeTime = fakeTime + 400
+        gameFrames(6)
+        frontendDisables = 0
+    end
+
+    BR.State.me = { src = 1, state = BR.PlayerState.ALIVE }
+    BR.State.match = { state = BR.MatchState.PLAYING }
+    bootOn(true, true)
+    BR.Keys.reset('brpausemenu')
+    reset()
+
+    ok(BR.Keys.rawActive == true and BR.Keys.ownsEscape() == true,
+       'the raw layer is up and our pause menu is on Escape, so the cases '
+       .. 'below reach both routes')
+
+    -- ------------------------------------------------------------------- --
+    -- 1. THE BASELINE. With no menu up, Escape opens the pause menu exactly
+    --    as it did. Every "nothing opened" below is only worth anything
+    --    against this.
+    -- ------------------------------------------------------------------- --
+    ok(not disabled[199] and not disabled[200],
+       'with no menu up, GTA\'s two pause controls are not touched -- the '
+       .. 'frontend suppression is what holds its menu, as it always was',
+       ('199 %s, 200 %s'):format(tostring(disabled[199]), tostring(disabled[200])))
+    local m, seen = #events, escSeen
+    tapEscape()
+    ok(escSeen == seen + 1, 'Escape reached the key layer')
+    ok(toggles(m) == 1 and opens(m) == 1,
+       'with no menu up, one Escape opens the pause menu once',
+       ('%d asks, %d opens'):format(toggles(m), opens(m)))
+    reset()
+
+    -- ------------------------------------------------------------------- --
+    -- 2. THE REPORT. The gun shop is up; Escape goes down, and the library's
+    --    Back takes the menu away on the release.
+    -- ------------------------------------------------------------------- --
+    shop:Visible(true)
+    gameFrames(2)
+    m, seen = #events, escSeen
+    tapEscape(function() shop:Visible(false) end)
+    gameFrames(4)
+    ok(escSeen == seen + 1,
+       'the press still reached the key layer -- nothing upstream ate it')
+    ok(toggles(m) == 0 and opens(m) == 0,
+       'Escape at the gun shop closes the shop and does not ask for the pause '
+       .. 'menu', ('%d asks, %d opens'):format(toggles(m), opens(m)))
+    reset()
+
+    -- ------------------------------------------------------------------- --
+    -- 3. THE FRAME AFTER. The same Escape, and GTA's frontend gets through on
+    --    the frame after the menu has gone -- the first frame on which the
+    --    library is no longer holding the engine's pause controls down. The
+    --    retake takes it down there and would raise ours on the next frame,
+    --    by which point a live read says nothing is up.
+    -- ------------------------------------------------------------------- --
+    shop:Visible(true)
+    gameFrames(2)
+    m = #events
+    tapEscape(function() shop:Visible(false) end)
+    frontendUp = true
+    gameFrame()
+    ok(frontendUp == false, 'GTA\'s frontend is taken down on the frame it leaks')
+    gameFrames(4)
+    ok(toggles(m) == 0 and opens(m) == 0,
+       'and the retake does not raise our pause menu for an Escape the menu '
+       .. 'already answered', ('%d asks, %d opens'):format(toggles(m), opens(m)))
+    reset()
+
+    -- ------------------------------------------------------------------- --
+    -- 4. AND THE WINDOW ENDS. A leak once the menu has been gone for a few
+    --    frames is an ordinary leaked Escape, and the retake answers it with
+    --    our menu as it always has; the next real Escape opens it too.
+    -- ------------------------------------------------------------------- --
+    shop:Visible(true)
+    gameFrames(2)
+    shop:Visible(false)
+    gameFrames(4)
+    ok(BR.Menu.holdsEscape() == false,
+       'a few frames after the menu closes, Escape is nobody\'s again')
+    m = #events
+    frontendUp = true
+    gameFrames(2)
+    ok(opens(m) == 1,
+       'a frontend leaked after that is still taken back as our pause menu',
+       ('%d opens'):format(opens(m)))
+    reset()
+    m = #events
+    tapEscape()
+    ok(opens(m) == 1, 'and a fresh Escape opens the pause menu again',
+       ('%d opens'):format(opens(m)))
+    reset()
+
+    -- ------------------------------------------------------------------- --
+    -- 5. GTA'S PAUSE MENU, ON A CLIENT WHERE IT IS THE PAUSE MENU. Rebind
+    --    ours off Escape and the engine's comes back -- that is the guard at
+    --    the binding, and with no menu up it must stay exactly so. With the
+    --    gun shop up, Escape is the shop's, and the engine's menu is held
+    --    down for it just as ours is.
+    -- ------------------------------------------------------------------- --
+    BR.Keys.set('brpausemenu', 0x71)    -- F2
+    ok(BR.Keys.ownsEscape() == false, 'our pause menu is off Escape')
+
+    gameFrames(3)
+    ok(frontendDisables == 0 and not disabled[199] and not disabled[200],
+       'with no menu up, GTA\'s pause menu is left entirely alone',
+       ('%d frontend disables, 199 %s, 200 %s'):format(frontendDisables,
+           tostring(disabled[199]), tostring(disabled[200])))
+    m = #events
+    frontendUp = true
+    gameFrames(3)
+    ok(frontendUp == true and toggles(m) == 0,
+       'and a frontend the player opened stays open')
+    frontendUp = false
+    gameFrames(2)
+
+    shop:Visible(true)
+    frontendDisables = 0
+    gameFrame()
+    ok(frontendDisables == 1 and disabled[199] == true and disabled[200] == true,
+       'with the gun shop up, GTA\'s frontend and both of its pause controls '
+       .. 'are held down, every frame',
+       ('%d frontend disables, 199 %s, 200 %s'):format(frontendDisables,
+           tostring(disabled[199]), tostring(disabled[200])))
+
+    m = #events
+    tapEscape(function() shop:Visible(false) end)
+    frontendUp = true                  -- the frame after the close
+    gameFrame()
+    ok(frontendUp == false and disabled[200] == true,
+       'the frame after the menu closes is still held, and a frontend that '
+       .. 'leaks on it is taken down')
+    gameFrames(4)
+    ok(toggles(m) == 0,
+       'and our menu is not raised in its place on a client that does not '
+       .. 'even have it on Escape', ('%d asks'):format(toggles(m)))
+
+    frontendDisables = 0
+    gameFrame()
+    ok(frontendDisables == 0 and not disabled[200],
+       'and once the window is over, the engine has its pause menu back')
+    BR.Keys.reset('brpausemenu')
+
+    -- ------------------------------------------------------------------- --
+    -- 6. AND ON A CLIENT WITH NO RAW LAYER AT ALL, where GTA's menu is the
+    --    only Escape there is and ours is on F1.
+    -- ------------------------------------------------------------------- --
+    bootOn(false, false)
+    ok(BR.Keys.ownsEscape() == false, 'with no raw layer, Escape is the engine\'s')
+    frontendDisables = 0
+    gameFrame()
+    ok(frontendDisables == 0, 'and nothing holds its menu down with no menu up')
+    shop:Visible(true)
+    gameFrame()
+    ok(frontendDisables == 1 and disabled[200] == true,
+       'but the gun shop holds it down while it is up')
+    shop:Visible(false)
+    gameFrames(4)
+    frontendDisables = 0
+    gameFrame()
+    ok(frontendDisables == 0, 'and lets it go when it is gone')
+    bootOn(true, true)
+    reset()
+
+    -- ------------------------------------------------------------------- --
+    -- 7. THE SCREENS THAT WERE ALREADY RIGHT STAY RIGHT. The gate moved from
+    --    `uiScreen` to a function that also asks client/menu.lua, and the
+    --    half it replaced has to survive the move. The inventory is the one
+    --    that matters: it keeps game input, so the raw layer DOES deliver
+    --    Escape under it, and only the gate stands between that press and the
+    --    pause menu (owner, 2026-09-07 and 2026-09-08). The market, the locker
+    --    and the player list take the keyboard outright and are checked for
+    --    the same answer by a different road.
+    -- ------------------------------------------------------------------- --
+    for _, screen in ipairs({ 'inventory', 'market', 'locker', 'players' }) do
+        fire('br:ui:pushFocus', screen)
+        gameFrames(4)
+        m = #events
+        tapEscape()
+        gameFrames(2)
+        ok(toggles(m) == 0,
+           ('Escape with the %s up does not ask for the pause menu'):format(screen),
+           ('%d asks'):format(toggles(m)))
+        fire('br:ui:popFocus', screen)
+        reset()
+    end
+
+    -- Tidy: the library stub goes, and the engine goes back to quiet.
+    UIMenu, SColor, UIMenuItem, MenuHandler = nil, nil, nil, nil
+    IsPauseMenuActive = function() return false end
+    SetFrontendActive = function() end
+    DisableFrontendThisFrame = function() end
+end
+
+-- ======================================================================== --
 -- #208. GTA'S OWN VEHICLE NAME DOES NOT DRAW OVER OURS
 -- ======================================================================== --
 --
