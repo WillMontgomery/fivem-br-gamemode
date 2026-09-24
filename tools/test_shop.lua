@@ -5511,16 +5511,20 @@ do
         'and nothing here has changed where a car goes -- the drop is still '
             .. 'the number he named', tostring(shipped.groundDropM))
 
-    -- ═══ 15. THE WARMUP'S FADE WAITS ON THESE MODELS (#368) ═══
+    -- ═══ 15. THE WARMUP'S FADE WAITS ON THESE CARS (#368) ═══
     --
     -- Owner, 2026-09-23: "please make the warmup not fade in until all of the
     -- store's vehicle models have loaded OR 10 seconds. whichever comes first."
+    -- And, asked the same day whether it should wait for the cars to be
+    -- standing rather than only for their models: "sure".
     --
-    -- client/spawn.lua's trip asks BR.Shop.preload for the models as it starts
-    -- and holds its fade on BR.Shop.pendingModels; tools/test_lobbyseq.lua
-    -- drives that trip and its ten seconds. This is the shop's half: WHICH
-    -- models are waited on, that one this build does not have never is, and
-    -- that every request the preload makes is handed back.
+    -- client/spawn.lua's trip asks BR.Shop.preload for the models as it
+    -- starts, holds its fade on BR.Shop.pendingCars, and hurries the pad with
+    -- BR.Shop.hurry while it holds; tools/test_lobbyseq.lua drives that trip
+    -- and its ten seconds. This is the shop's half: WHICH cars are waited on,
+    -- that the count falls only as the build stands each one, that a car this
+    -- build cannot show -- or has given up on -- never holds it, and that every
+    -- request the preload makes is handed back.
     --
     -- The model natives answer 1 and 0 here, not true and false, for the reason
     -- every fixture in this file does.
@@ -5529,6 +5533,27 @@ do
     function RequestModel(h) requests[#requests + 1] = h end
     function HasModelLoaded(h) return streamed[h] and 1 or 0 end
     function SetModelAsNoLongerNeeded(h) releases[#releases + 1] = h end
+
+    -- THE BUILD RUNS AS A REAL THREAD FOR THE REST OF THIS BLOCK, one step per
+    -- Wait. "The count falls as each car stands" is a claim about the MIDDLE
+    -- of a build, and the synchronous CreateThread above finishes the whole
+    -- build inside the call that starts it.
+    local syncThread, syncWait = Citizen.CreateThread, Citizen.Wait
+    local builds = {}
+    Citizen.CreateThread = function(f) builds[#builds + 1] = coroutine.create(f) end
+    Citizen.Wait = function() coroutine.yield() end
+    --- Every build, one Wait further.
+    local function step()
+        for _, co in ipairs(builds) do
+            if coroutine.status(co) == 'suspended' then
+                local fine, err = coroutine.resume(co)
+                if not fine then error(err, 0) end
+            end
+        end
+    end
+    local function onPad(id)
+        return byId[id] ~= nil and ents[byId[id]] ~= nil
+    end
 
     local function holds(list, h)
         for _, v in ipairs(list) do if v == h then return true end end
@@ -5540,46 +5565,126 @@ do
     BR.State.me.state = BR.PlayerState.WARMUP
     BR.State.match.state = BR.MatchState.WARMUP
 
-    ok(BR.Shop.preload() == 3,
-        'the preload reports every showroom model still streaming', #requests)
+    BR.Shop.preload()
     ok(holds(requests, SULTAN) and holds(requests, BISON)
            and holds(requests, BLISTA),
-        'and asks for all of them in the one call -- side by side, not one '
-            .. 'after another the way the pad is built')
+        'the preload asks for every showroom model in the one call -- side by '
+            .. 'side, not one after another the way the pad is built')
 
-    streamed[SULTAN] = true
-    ok(BR.Shop.pendingModels() == 2, 'one streamed: two left to wait for')
-    streamed[BISON] = true
-    ok(BR.Shop.pendingModels() == 1, 'two streamed: one left')
-
-    -- ═══ A MODEL THIS BUILD DOES NOT HAVE IS NEVER WAITED FOR ═══
+    -- ═══ A STREAMED MODEL IS NOT A CAR ═══
     --
-    -- A typo, or a DLC car this client lacks. It could never arrive, so the
+    -- What ef402e9 waited on, and why a car could still appear just after the
+    -- fade: every model in, and nothing standing, because the pad is not built
+    -- until the server's paint seed arrives.
+    streamed[SULTAN], streamed[BISON], streamed[BLISTA] = true, true, true
+    ok(BR.Shop.pendingCars() == 3,
+        'every model streamed and no paint seed yet: all three cars are still '
+            .. 'waited on', BR.Shop.pendingCars())
+
+    -- ...AND A SEED THAT NEVER COMES KEEPS THEM WAITED ON. The reconciler asks
+    -- and nobody answers; the count must not drift to zero on its own, because
+    -- the warmup's ten seconds, not this, are what end that wait.
+    quiet(loops['shop.scene'])
+    quiet(loops['shop.scene'])
+    ok(BR.Shop.pendingCars() == 3 and #builds == 0,
+        'with the seed still unanswered nothing stands and all three are still '
+            .. 'counted', BR.Shop.pendingCars())
+    local askedNoSeed = #asked
+    BR.Shop.hurry()
+    ok(#asked == askedNoSeed and #builds == 0,
+        'and the gate\'s hurry, with no seed to build from, builds nothing and '
+            .. 'asks for none -- asking stays the reconciler\'s, once a second',
+        #asked - askedNoSeed)
+
+    -- ═══ A CAR THIS BUILD CANNOT SHOW IS NEVER WAITED FOR ═══
+    --
+    -- A typo, or a DLC car this client lacks. It could never stand, so the
     -- fade must not stand on it -- and the pad skips it for the same reason,
-    -- through the same test, which is what the rebuild below checks.
+    -- through the same test, which is what the build below checks.
     missing[BLISTA] = true
-    ok(BR.Shop.pendingModels() == 0,
-        'a model this build does not have is not counted -- it cannot hold the fade')
+    ok(BR.Shop.pendingCars() == 2,
+        'a car whose model this build does not have is not counted -- it '
+            .. 'cannot hold the fade', BR.Shop.pendingCars())
     requests = {}
     BR.Shop.preload()
     ok(not holds(requests, BLISTA) and holds(requests, SULTAN),
-        'and is not asked for either')
+        'and its model is not asked for either')
 
-    local farBefore = byId.far
-    quiet(loops['shop.scene'])
+    -- ═══ THE SEED LANDS; THE GATE'S HURRY PUTS THE PAD UP ON THE SPOT ═══
+    --
+    -- The reconciler would build on its next pass, up to a second away. The
+    -- gate hurries instead: the same decision, made the moment it can be, and
+    -- never an ask of its own -- the gate polls twenty times a second.
+    streamed[BISON] = nil            -- the second car's model is still coming
+    local askedBefore = #asked
     quiet(handlers['br:shop:seeded'], { s = 5 })
-    quiet(loops['shop.scene'])
-    ok(byId.near ~= nil and ents[byId.near] ~= nil and byId.far == farBefore,
-        'the pad agrees: it builds the two the fade waited on and skips the third')
-    ok((lineWith('is not a vehicle model on this build') or ''):find('blista', 1, true)
-           ~= nil,
-        'saying which one', lineWith('is not a vehicle model on this build'))
+    ok(#builds == 0 and BR.Shop.pendingCars() == 2,
+        'the seed on its own puts nothing up: before the gate, the pad keeps '
+            .. 'the reconciler\'s pace')
+    BR.Shop.hurry()
+    ok(#builds == 1, 'the hurry starts the build with no loop pass at all')
+    ok(#asked == askedBefore, 'and asks the server for nothing',
+        #asked - askedBefore)
+
+    ok(quiet(step) and onPad('near') and BR.Shop.pendingCars() == 1,
+        'the first car stands and the count falls to the one still coming',
+        BR.Shop.pendingCars())
+    BR.Shop.hurry()
+    ok(#builds == 1, 'hurrying a pad already going up starts nothing')
+
+    streamed[BISON] = true
+    ok(quiet(step) and onPad('mid') and BR.Shop.pendingCars() == 0,
+        'the last car stands and nothing is left to wait for',
+        BR.Shop.pendingCars())
+    ok(not onPad('far')
+           and (lineWith('is not a vehicle model on this build') or '')
+               :find('blista', 1, true) ~= nil,
+        'and the pad agrees: it skipped the one the fade never waited on, '
+            .. 'saying which', lineWith('is not a vehicle model on this build'))
+
+    -- ═══ A CAR THE BUILD GIVES UP ON IS NOT WAITED FOR PAST THE BUILD ═══
+    --
+    -- The build gives a model five seconds and then moves on without it. From
+    -- then on that car is never going to stand, and the fade has no more
+    -- reason to wait for it than for one this build does not have.
+    quiet(handlers['br:shop:seeded'], { s = 6 })
+    ok(BR.Shop.pendingCars() == 2,
+        'a new seed takes the pad down, and both cars are waited on again',
+        BR.Shop.pendingCars())
+    streamed[BISON] = nil
+    BR.Shop.hurry()
+    quiet(step)
+    ok(onPad('near') and BR.Shop.pendingCars() == 1,
+        'precondition: one car up, the build waiting on the other\'s model')
+    local passes = 0
+    while BR.Shop.pendingCars() > 0 and passes < 200 do
+        quiet(step)
+        passes = passes + 1
+    end
+    ok(BR.Shop.pendingCars() == 0 and not onPad('mid'),
+        'once the build has given up on a model, its car is not waited for',
+        passes)
+    ok(passes >= 100,
+        'and not before -- the build\'s own five seconds are spent first',
+        passes)
+
+    -- ═══ THE HURRY WANTS WHAT THE SCENE WANTS ═══
+    --
+    -- A player no longer in warmup has no pad to hurry, and a hurry that put
+    -- one up anyway would be a showroom standing where nobody should see it.
+    BR.State.me.state = BR.PlayerState.LOBBY
+    quiet(handlers['br:shop:seeded'], { s = 7 })
+    local n = #builds
+    BR.Shop.hurry()
+    ok(#builds == n and not onPad('near'),
+        'out of warmup, a hurry with a seed in hand puts nothing up')
+    BR.State.me.state = BR.PlayerState.WARMUP
 
     -- ═══ HANDED BACK WHEN THIS PLAYER LEAVES WARMUP, AND NOT BEFORE ═══
     --
     -- A late joiner learns the match's state from the digest, a beat after its
-    -- own. The trip's fade is waiting on these models in exactly that beat, so
-    -- a release keyed on the scene would hand them back mid-wait.
+    -- own. The trip's fade is waiting on these cars in exactly that beat, so a
+    -- release keyed on the scene would hand their models back mid-wait.
     releases = {}
     BR.State.match.state = BR.MatchState.WAITING
     quiet(loops['shop.scene'])
@@ -5594,20 +5699,25 @@ do
         'leaving warmup hands back every model the preload asked for -- a '
             .. 'warmup that ended before the pad went up must not keep them '
             .. 'in memory for the match', #releases)
-    local n = #releases
+    local released = #releases
     quiet(loops['shop.scene'])
-    ok(#releases == n, 'and only once', #releases - n)
+    ok(#releases == released, 'and only once', #releases - released)
 
     -- ═══ NO SHOP, NOTHING TO WAIT FOR ═══
     BR.State.me.state = BR.PlayerState.WARMUP
+    BR.State.match.state = BR.MatchState.WARMUP
     DIAG.enabled = false
     requests = {}
     streamed = {}
-    ok(BR.Shop.preload() == 0 and #requests == 0
-           and BR.Shop.pendingModels() == 0,
-        'with the shop switched off there is nothing to ask for and nothing to '
-            .. 'wait on', #requests)
+    n = #builds
+    BR.Shop.preload()
+    BR.Shop.hurry()
+    ok(#requests == 0 and BR.Shop.pendingCars() == 0 and #builds == n,
+        'with the shop switched off there is nothing to ask for, nothing to '
+            .. 'build and nothing to wait on', #requests)
     DIAG.enabled = true
+
+    Citizen.CreateThread, Citizen.Wait = syncThread, syncWait
 end
 print(('\n\27[32m%d passed\27[0m'):format(pass))
 if fail > 0 then

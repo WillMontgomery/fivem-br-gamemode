@@ -77,6 +77,15 @@ local coveredNow = {}
 -- one. Also what the watchdog at the bottom of this file reads.
 BR.Spawn.curtainWanted = false
 
+-- How much longer than its usual ceiling the curtain now up may legitimately
+-- stay, which the watchdog at the bottom of this file adds to it (#368).
+--
+-- NONZERO ONLY FOR A TRIP TO THE PAD THAT HAS REACHED THE SHOWROOM GATE, which
+-- sets it to the gate's own ceiling as it starts waiting, and cleared by every
+-- curtain raised after that. A leave curtain, or a warmup trip that never got
+-- as far as its ground, is watched on the ceiling it always had.
+local curtainGraceMs = 0
+
 AddEventHandler('br:ui:covered', function(kind, on)
     coveredNow[kind] = on == true
 end)
@@ -185,6 +194,7 @@ function BR.Spawn.curtain(show, kind)
     BR.Spawn.curtainWanted = show
     if show then
         BR.Spawn.curtainAt = GetGameTimer()
+        curtainGraceMs = 0
         TriggerEvent('br:ui:sendLocal', BR.Nui.LEAVING, { show = true, kind = kind })
     else
         -- The ped comes back BEFORE the page is told, so it is there by the
@@ -837,19 +847,26 @@ BR.Spawn.departure = {
     -- error handler and nothing to notice. A client left streaming a pad it
     -- never reached shows up much later as world geometry refusing to load
     -- around the player, with nothing pointing back here. Comfortably longer
-    -- than the 9s placement escape below plus the showroom gate's ceiling,
-    -- which the escape steps back for, so it can only fire on a trip that has
-    -- genuinely been abandoned. It was 14000 until that gate existed (#368).
-    focusMaxMs = 24000,
+    -- than the 9s placement escape below, so it can only fire on a trip that
+    -- has genuinely been abandoned.
+    --
+    -- AND IT STEPS BACK FOR THE SHOWROOM GATE (#368) exactly as that escape
+    -- does, rather than being widened by the gate's ceiling. It was 24000 for
+    -- a while, which widened it for every trip; now only a trip whose gate is
+    -- still inside its own deadline is waited for.
+    focusMaxMs = 14000,
 
     -- ═══ THE SHOWROOM GATE'S CEILING (#368) ═══
     --
     -- Owner, 2026-09-23: "please make the warmup not fade in until all of the
     -- store's vehicle models have loaded OR 10 seconds. whichever comes first."
+    -- And the same day, asked whether it should wait for the cars to be
+    -- standing rather than only for their models: "sure".
     --
     -- COUNTED FROM THE MOMENT THE FADE WOULD HAVE STARTED -- the ground under
     -- the ped has arrived and nothing else is holding it -- so a slow stream of
-    -- the pad's terrain does not eat into it, and a model that never arrives
+    -- the pad's terrain does not eat into it, and a car that never stands --
+    -- a model that never arrives, a paint seed the server never sends --
     -- costs at most this much extra black.
     showroomWaitMs = 10000,
 }
@@ -964,12 +981,24 @@ BR.Loop.register(BR.Loop.SLOW, 'spawn.focuswatch', function()
     releaseFocus()
 end)
 
---- Hold the warmup's fade until the showroom's models have streamed (#368).
+--- Hold the warmup's fade until the showroom's cars are standing (#368).
 ---
---- ASKED OF client/shop.lua, WHICH OWNS THE CATALOGUE. The models waited on are
---- the ones its pad will actually show, and a model this build does not have is
---- not counted at all: it could never arrive, so it is never waited for. One
---- that is on this build and still never arrives is what the deadline is for.
+--- ASKED OF client/shop.lua, WHICH OWNS THE PAD. The cars waited on are the
+--- ones its pad will actually show, and one counts once its build has stood it
+--- there -- not once its model has streamed, because a streamed model is still
+--- a paint seed from the server and a build away from being a car. A model this
+--- build does not have is not counted at all: its car could never stand, so it
+--- is never waited for, and neither is one the build has already given up on.
+--- One that is still coming and never comes -- a seed the server never sends
+--- is the loud case -- is what the deadline is for.
+---
+--- AND IT HURRIES THE PAD WHILE IT HOLDS. The shop puts its cars up from a loop
+--- that runs once a second, so a seed that lands just after that loop has run
+--- would sit unused for most of a second with the player on black waiting for
+--- exactly those cars. BR.Shop.hurry starts the build the moment everything it
+--- needs is there, and only from here: by now the ped is standing on the pad
+--- with the ground under it loaded, so the cars are settled onto a world that
+--- has streamed in rather than one a kilometer away.
 ---
 --- A PLAYER WHO IS NO LONGER IN WARMUP HAS NO SHOWROOM TO WAIT FOR -- a match
 --- that dissolved under them, a bus that left under a late joiner -- so the
@@ -979,12 +1008,15 @@ end)
 ---
 --- MUST be called from inside a Citizen thread -- it yields.
 --- @param deadline number  GetGameTimer() at which it gives up
---- @return boolean loaded  false means the deadline ran out first
+--- @return string how  'stood', 'deadline' or 'left' (warmup, that is)
+--- @return integer short  on 'deadline', how many cars were still not standing
 local function awaitShowroom(deadline)
+    --- @return integer|nil  nil once this player is no longer in warmup
     local function pending()
-        if BR.State.me.state ~= BR.PlayerState.WARMUP then return 0 end
-        if not (BR.Shop and BR.Shop.pendingModels) then return 0 end
-        local ok, n = pcall(BR.Shop.pendingModels)
+        if BR.State.me.state ~= BR.PlayerState.WARMUP then return nil end
+        if not (BR.Shop and BR.Shop.pendingCars) then return 0 end
+        if BR.Shop.hurry then pcall(BR.Shop.hurry) end
+        local ok, n = pcall(BR.Shop.pendingCars)
         if not ok then
             print(('[br_core] showroom check errored (%s) -- not waiting')
                 :format(tostring(n)))
@@ -993,11 +1025,13 @@ local function awaitShowroom(deadline)
         return tonumber(n) or 0
     end
 
-    while pending() > 0 do
-        if GetGameTimer() >= deadline then return false end
+    while true do
+        local n = pending()
+        if n == nil then return 'left', 0 end
+        if n <= 0 then return 'stood', 0 end
+        if GetGameTimer() >= deadline then return 'deadline', n end
         Citizen.Wait(50)
     end
-    return true
 end
 
 --- @return boolean  whether the trip actually started
@@ -1006,10 +1040,10 @@ function BR.Spawn.toWarmupPad()
     -- (#368). This is the earliest this client knows it is going to the pad:
     -- every road onto it -- a ready-up, a late join, a rejoin after a
     -- disconnect -- is this trip, started by spawn.gather below on the first
-    -- tick my state reads WARMUP. The fade at the far end waits on these, so
-    -- every moment they spend streaming under the curtain is one the player
-    -- does not spend on black. A refused trip keeps them streaming while the
-    -- next tick retries; asking twice costs nothing.
+    -- tick my state reads WARMUP. The fade at the far end waits on the cars
+    -- these become, so every moment they spend streaming under the curtain is
+    -- one the player does not spend on black. A refused trip keeps them
+    -- streaming while the next tick retries; asking twice costs nothing.
     if BR.Shop and BR.Shop.preload then pcall(BR.Shop.preload) end
 
     -- REFUSED, NOT SWALLOWED. The caller latches on "I have gathered this
@@ -1054,8 +1088,9 @@ function BR.Spawn.toWarmupPad()
         --                   for the whole of it, and THAT is the report.
         local t0 = GetGameTimer()
         local trace = {}
-        local function step(what)
-            trace[#trace + 1] = ('%s %dms'):format(what, GetGameTimer() - t0)
+        local function step(what, why)
+            trace[#trace + 1] = ('%s %dms%s'):format(what, GetGameTimer() - t0,
+                                                     why and (' (' .. why .. ')') or '')
         end
 
         -- 1. THE CURTAIN FIRST, AND IT IS NUI, NOT THE GAME'S FADE.
@@ -1145,6 +1180,11 @@ function BR.Spawn.toWarmupPad()
 
         local spot = BR.Spawn.warmupSpawn()
 
+        -- The showroom gate's deadline (#368), while it is holding the fade.
+        -- DECLARED UP HERE because the focus net below reads it as well as the
+        -- escape at the bottom of this thread.
+        local holdUntil = nil
+
         -- 4. THE STREAMING FOCUS GOES AHEAD OF THE PED, AND IS HELD THERE.
         --
         -- "when the lobby fades to black, before fading in, we need to move the
@@ -1178,7 +1218,20 @@ function BR.Spawn.toWarmupPad()
         -- much later as world geometry refusing to load around the player with
         -- nothing pointing back here. releaseFocus is idempotent, so a trip
         -- that finished normally makes this a no-op.
-        Citizen.SetTimeout(BR.Spawn.departure.focusMaxMs, releaseFocus)
+        --
+        -- AND IT STEPS BACK FOR THE SHOWROOM GATE, for the reason the escape
+        -- below does: a gate inside its own deadline is a trip still doing
+        -- what it was asked to, and taking the focus off the pad under it
+        -- would be the net firing on a healthy departure.
+        local function focusNet()
+            local left = holdUntil and (holdUntil - GetGameTimer()) or 0
+            if left > 0 then
+                Citizen.SetTimeout(left + 500, focusNet)
+                return
+            end
+            releaseFocus()
+        end
+        Citizen.SetTimeout(BR.Spawn.departure.focusMaxMs, focusNet)
 
         Citizen.Wait(BR.Spawn.departure.focusHoldMs)
 
@@ -1236,23 +1289,37 @@ function BR.Spawn.toWarmupPad()
         --
         -- Owner, 2026-09-23: "please make the warmup not fade in until all of
         -- the store's vehicle models have loaded OR 10 seconds. whichever comes
-        -- first."
+        -- first." And, asked the same day whether it should wait for the cars
+        -- to be standing rather than only for their models: "sure".
         --
         -- placeAt runs this at the moment it would have revealed -- the ground
         -- is under the ped and nothing else is holding the light -- so the ten
         -- seconds are counted from there, and what follows is the same fade
         -- it always was. In the trace line, `ground` is when the fade would
-        -- have started and `showroom` is when it did; the difference is how
-        -- long this held.
+        -- have started and the step after it is when it did, and why:
         --
-        -- The deadline is kept where the escape below can read it.
-        local holdUntil = nil
+        --   cars              every car the pad will show was standing
+        --   CARS-NEVER-STOOD  the ten seconds ran out first. The bracket says
+        --                     how many were still not standing; all of them
+        --                     usually means the paint seed never came.
+        --   LEFT-WARMUP       the player left warmup, so there was nothing
+        --                     left to wait for
+        --
+        -- The curtain's watchdog is told this trip may now run the gate's
+        -- ceiling longer than a trip that never waited (see curtainGraceMs).
         local function showroomGate()
             step('ground')
             holdUntil = GetGameTimer() + BR.Spawn.departure.showroomWaitMs
-            local loaded = awaitShowroom(holdUntil)
+            curtainGraceMs = BR.Spawn.departure.showroomWaitMs
+            local how, short = awaitShowroom(holdUntil)
             holdUntil = nil
-            step(loaded and 'showroom' or 'SHOWROOM-NEVER-LOADED')
+            if how == 'stood' then
+                step('cars')
+            elseif how == 'left' then
+                step('LEFT-WARMUP')
+            else
+                step('CARS-NEVER-STOOD', ('%d not standing'):format(short or 0))
+            end
         end
 
         step('ped')
@@ -1269,8 +1336,9 @@ function BR.Spawn.toWarmupPad()
         -- It may legitimately hold the reveal past these nine seconds, and an
         -- escape firing into it would fade the warmup in over the very wait it
         -- asked for. So while the gate is inside its own deadline the escape
-        -- steps back to just past it; a thread that died mid-gate is still
-        -- released there, half a second after the gate would have let go.
+        -- steps back to just past it; a gate that overran that deadline -- a
+        -- thread that died in it, a question that never came back -- is still
+        -- released there, half a second after the gate should have let go.
         local function escape()
             if not BR.Spawn.traveling then return end
             local left = holdUntil and (holdUntil - GetGameTimer()) or 0
@@ -1721,16 +1789,22 @@ end)
 -- waits on collision plus two seconds, with a 15s ceiling of its own), so this
 -- can only fire on something that has genuinely been abandoned.
 --
--- PLUS THE SHOWROOM GATE'S CEILING (#368), which can hold the trip to the pad
+-- PLUS THE SHOWROOM GATE'S CEILING (#368), BUT ONLY ON THE CURTAIN OVER A TRIP
+-- THAT REACHED THE GATE (curtainGraceMs). That gate can hold the trip to the pad
 -- that much longer. The trip itself is exempt while it runs, but the curtain
 -- comes down a beat AFTER `traveling` clears, and a warmup whose gate ran to
 -- its deadline could otherwise be old enough by then for this to lift it early
--- and blame an abandoned trip that was not one.
-local CURTAIN_MAX_MS = 15000 + BR.Spawn.departure.showroomWaitMs
+-- and blame an abandoned trip that was not one. It was added to this constant
+-- for a while, which kept every other curtain -- the leave curtain included --
+-- up ten seconds longer over a game that had genuinely lost its trip.
+local CURTAIN_MAX_MS = 15000
 BR.Loop.register(BR.Loop.SLOW, 'spawn.curtainwatch', function()
     if not BR.Spawn.curtainWanted then return end
     if BR.Spawn.traveling or BR.Spawn.holdBlack then return end
-    if GetGameTimer() - (BR.Spawn.curtainAt or 0) < CURTAIN_MAX_MS then return end
+    if GetGameTimer() - (BR.Spawn.curtainAt or 0)
+            < CURTAIN_MAX_MS + curtainGraceMs then
+        return
+    end
 
     print('[br_core] the curtain outlived its trip -- lifting (watchdog)')
     BR.Spawn.curtain(false)

@@ -3288,6 +3288,43 @@ do
         'and it does not keep handing back a focus nobody holds')
 end
 
+do
+    -- ═══ THE TRIP DIES BEFORE ITS GATE, AND `traveling` STAYS SET ═══
+    --
+    -- The one case only the focus NET covers. The watchdog above takes back a
+    -- focus held by nobody traveling, so a dead thread that left `traveling`
+    -- set is invisible to it, and no 9s escape was ever scheduled -- that line
+    -- is past the point this thread died at. The net is what hands the focus
+    -- back, focusMaxMs after it was taken: fourteen seconds, as it was before
+    -- the showroom gate (#368), because the net steps back for a gate that is
+    -- holding rather than being widened for every trip by the gate's ten.
+    reset()
+    wearChosenModel()
+    pump(3000)
+
+    order = {}
+    BR.State.me.state = BR.PlayerState.WARMUP
+    BR.Spawn.toWarmupPad()
+    -- STOPPED THE FRAME THE FOCUS IS TAKEN, which is inside the focus hold
+    -- however long the cover took to be acknowledged.
+    local limit = fakeTime + 3000
+    repeat pump(50) until BR.Spawn.focusHeld() or fakeTime >= limit
+    local _, focus = firstOf('focus')
+    ok(focus ~= nil and BR.Spawn.focusHeld() and firstOf('resurrect') == nil,
+        'precondition: the trip is holding the focus, and has not moved the ped')
+
+    threads = {}                     -- dies where it stands; still traveling
+    local at = focus and (focus.at + BR.Spawn.departure.focusMaxMs) or fakeTime
+    pump(at - fakeTime - 100)
+    ok(BR.Spawn.traveling and BR.Spawn.focusHeld(),
+        'the net leaves the focus alone inside focusMaxMs')
+    pump(150)
+    ok(not BR.Spawn.focusHeld(),
+        ('and hands it back once focusMaxMs (%dms) is up')
+            :format(BR.Spawn.departure.focusMaxMs))
+    BR.Spawn.traveling = false
+end
+
 -- ═══════════════════════════════════════════════════════════════════════════
 -- 20. THE DEPARTURE'S NUMBERS ARE NUMBERS, IN ONE PLACE
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -3311,11 +3348,17 @@ do
             :format(D.showroomWaitMs or -1))
 
     -- The net has to outlast the trip it is a net for, or it would fire on
-    -- healthy departures and take the focus off the pad mid-placement -- and
-    -- since #368 a healthy departure includes the showroom gate's whole wait.
-    ok(D.focusMaxMs > D.focusHoldMs + 9000 + (D.showroomWaitMs or 0),
-        ('the focus net outlasts the hold, the 9s placement escape and the '
-            .. 'showroom gate (%dms)'):format(D.focusMaxMs or -1))
+    -- healthy departures and take the focus off the pad mid-placement.
+    ok(D.focusMaxMs > D.focusHoldMs + 9000,
+        ('the focus net outlasts the hold plus the 9s placement escape (%dms)')
+            :format(D.focusMaxMs or -1))
+
+    -- AND THE SHOWROOM GATE'S WAIT IS NOT ADDED TO IT (#368). The net steps
+    -- back for a gate that is holding (block 22's slowest road), so every trip
+    -- that has no gate to wait on keeps the net it had.
+    ok(D.focusMaxMs < D.focusHoldMs + 9000 + (D.showroomWaitMs or 0),
+        ('and is not widened by the showroom gate\'s ceiling (%dms)')
+            :format(D.focusMaxMs or -1))
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -3738,43 +3781,75 @@ end
 --
 -- Owner, 2026-09-23: "please make the warmup not fade in until all of the
 -- store's vehicle models have loaded OR 10 seconds. whichever comes first."
+-- And, asked the same day whether it should wait for the cars to be standing
+-- rather than only for their models: "sure".
 --
--- client/shop.lua is not loaded here. Its two answers -- ask for the models,
--- say how many are still streaming -- are asserted against the real file in
--- tools/test_shop.lua. What this suite owns is the TRIP: when it asks, and
--- when the fade lands against what it asked for. So the shop is a SCHEDULE:
--- how long each model takes to stream once it has been asked for, or `false`
--- for one that never arrives. A model nobody asked for never arrives either,
--- which is what makes "the trip asked" something these blocks can see.
+-- client/shop.lua is not loaded here. Its three answers -- ask for the models,
+-- put the pad up now if it can go up, say how many cars are not standing yet
+-- -- are asserted against the real file in tools/test_shop.lua. What this suite
+-- owns is the TRIP: when it asks, when it hurries, and when the fade lands
+-- against what it was waiting for. So the shop is a SCHEDULE: how long each
+-- car takes to stand once the trip has asked for it, or `false` for one that
+-- never stands. A car nobody asked for never stands either, which is what makes
+-- "the trip asked" something these blocks can see.
 
---- [name] = ms from the ask until it has streamed, or false for never.
+--- [name] = ms from the ask until that car is standing, or false for never.
 local showroom = {}
---- [name] = the fixture time it streams at, set by the ask.
-local streamsAt = {}
+--- [name] = the fixture time it stands at, set by the ask.
+local standsAt = {}
+--- THE SEED, FOR THE BLOCK THAT IS ABOUT BR.Shop.hurry. When set, the ask
+--- stands nothing: the seed lands at this fixture time, the pad goes up on the
+--- first hurry at or after it, and each car stands its `showroom` ms after
+--- THAT -- there is no once-a-second reconciler here to put it up instead. nil
+--- for every other block.
+local seedAt = nil
+--- When the trip first hurried the pad, and when the pad went up.
+local hurriedAt, padUpAt = nil, nil
+--- One pendingCars call that parks the gate for this many ms, then answers.
+local stallMs = nil
+
+--- Stand every car on its schedule, counted from now.
+local function standAll()
+    for name, ms in pairs(showroom) do
+        if standsAt[name] == nil then
+            standsAt[name] = ms and (fakeTime + ms) or math.huge
+        end
+    end
+end
 
 BR.Shop = {
     preload = function()
         note('preload')
-        for name, ms in pairs(showroom) do
-            if streamsAt[name] == nil then
-                streamsAt[name] = ms and (fakeTime + ms) or math.huge
-            end
-        end
-        return BR.Shop.pendingModels()
+        if not seedAt then standAll() end
     end,
-    pendingModels = function()
+    hurry = function()
+        hurriedAt = hurriedAt or fakeTime
+        if seedAt and fakeTime >= seedAt and not padUpAt then
+            padUpAt = fakeTime
+            standAll()
+        end
+    end,
+    pendingCars = function()
+        if stallMs then
+            local ms = stallMs
+            stallMs = nil
+            Citizen.Wait(ms)
+        end
         local n = 0
         for name in pairs(showroom) do
-            local at = streamsAt[name]
+            local at = standsAt[name]
             if not at or fakeTime < at then n = n + 1 end
         end
         return n
     end,
 }
 
---- A fresh pad: these models, none of them asked for yet.
-local function stock(t)
-    showroom, streamsAt = t, {}
+--- A fresh pad: these cars, none of them asked for yet.
+--- @param t table  [name] = ms | false
+--- @param seedLandsAt number|nil  see `seedAt`
+local function stock(t, seedLandsAt)
+    showroom, standsAt, seedAt = t, {}, seedLandsAt
+    hurriedAt, padUpAt, stallMs = nil, nil, nil
 end
 
 --- The departure's trace line, once it has printed.
@@ -3794,7 +3869,8 @@ end
 --- the fade would have started) to whichever step ended the wait.
 local function held()
     local g = traceAt('ground')
-    local s = traceAt('showroom') or traceAt('SHOWROOM%-NEVER%-LOADED')
+    local s = traceAt('cars') or traceAt('CARS%-NEVER%-STOOD')
+        or traceAt('LEFT%-WARMUP')
     return (g and s) and (s - g) or nil
 end
 
@@ -3806,7 +3882,7 @@ local function departed()
 end
 
 do
-    -- ═══ SLOW MODELS: THE FADE WAITS FOR THE LAST ONE ═══
+    -- ═══ SLOW CARS: THE FADE WAITS FOR THE LAST ONE TO STAND ═══
     reset()
     wearChosenModel()
     pump(3000)
@@ -3827,8 +3903,8 @@ do
     local res, fin = departed()
     local last = t0 + 5000
     ok(fin ~= nil and fin >= last,
-        ('the warmup does not fade in until the slowest model has streamed '
-            .. '(fade at +%s, model at +5000)'):format(fin and (fin - t0) or 'never'))
+        ('the warmup does not fade in until the last car is standing '
+            .. '(fade at +%s, car at +5000)'):format(fin and (fin - t0) or 'never'))
     ok(fin ~= nil and fin - last <= 50,
         ('and fades in the frame it has (%sms late)')
             :format(fin and (fin - last) or '?'))
@@ -3849,16 +3925,16 @@ do
         'and the curtain still comes down after the fade, not before it')
 
     local line = traceLine() or ''
-    ok(line:find('ground', 1, true) and line:find('showroom', 1, true)
-           and not line:find('SHOWROOM-NEVER-LOADED', 1, true),
-        'the trace line says when the fade would have started and when it did',
-        line)
+    ok(line:find('ground', 1, true) and traceAt('cars') ~= nil
+           and not line:find('CARS-NEVER-STOOD', 1, true),
+        'the trace line says when the fade would have started and when the '
+            .. 'cars stood')
     ok(not said('did not report back'),
         'and the 9s escape did not mistake the wait for a lost placement')
 end
 
 do
-    -- ═══ WARM MODELS: NOTHING WAITS ═══
+    -- ═══ CARS ALREADY STANDING: NOTHING WAITS ═══
     reset()
     wearChosenModel()
     pump(3000)
@@ -3870,14 +3946,18 @@ do
     pump(20000)
 
     ok(held() == 0,
-        ('models that are already in cost the fade nothing -- it lands in the '
-            .. 'frame the ground does, as it always did (held %sms)')
+        ('cars that are already standing cost the fade nothing -- it lands in '
+            .. 'the frame the ground does, as it always did (held %sms)')
             :format(tostring(held())))
-    ok(traceAt('showroom') ~= nil, 'and the trace says the models ended it')
+    ok(traceAt('cars') ~= nil, 'and the trace says the cars ended it')
 end
 
 do
-    -- ═══ A MODEL THAT NEVER ARRIVES: TEN SECONDS, AND NOT ONE MORE ═══
+    -- ═══ A CAR THAT NEVER STANDS: TEN SECONDS, AND NOT ONE MORE ═══
+    --
+    -- A model that never streams is one way; a paint seed the server never
+    -- sends is the other, and the louder -- no seed, no pad, and every car on
+    -- it is one that never stands. To the trip both are the same schedule.
     reset()
     wearChosenModel()
     pump(3000)
@@ -3891,15 +3971,19 @@ do
     local cap = BR.Spawn.departure.showroomWaitMs
     local h = held()
     ok(h ~= nil and h >= cap,
-        ('a model that never loads holds the fade for the whole ten seconds '
+        ('a car that never stands holds the fade for the whole ten seconds '
             .. '(%sms)'):format(tostring(h)))
     ok(h ~= nil and h - cap <= 50,
         ('and no longer: counted from the moment the fade would have started '
             .. '(%sms over)'):format(h and (h - cap) or '?'))
-    ok(traceAt('SHOWROOM%-NEVER%-LOADED') ~= nil
-           and traceAt('SHOWROOM%-NEVER%-LOADED') == traceAt('in'),
-        'the trace says the deadline, not the models, ended the wait -- and the '
+    ok(traceAt('CARS%-NEVER%-STOOD') ~= nil
+           and traceAt('CARS%-NEVER%-STOOD') == traceAt('in'),
+        'the trace says the deadline, not the cars, ended the wait -- and the '
             .. 'trip landed in that same frame')
+    ok((traceLine() or ''):find('CARS%-NEVER%-STOOD %d+ms %(1 not standing%)')
+           ~= nil,
+        'and how many cars were still not standing when it did: '
+            .. tostring(traceLine()))
     local res, fin = departed()
     ok(res ~= nil and fin ~= nil, 'and the world did fade in')
     ok(not said('did not report back'),
@@ -3909,15 +3993,15 @@ do
 end
 
 do
-    -- ═══ THE SLOWEST ROAD: NO GROUND FOR FOUR SECONDS, THEN NO MODEL ═══
+    -- ═══ THE SLOWEST ROAD: NO GROUND FOR FOUR SECONDS, THEN NO CAR ═══
     --
     -- The longest a healthy trip can now be -- the placement's whole collision
     -- budget, then the gate's whole ceiling -- and the case every NET in the
-    -- trip has to have been re-sized for. The focus net was 14s from the
-    -- focus step, and this trip reaches its fade about 15s after it; the
-    -- curtain's watchdog was 15s from the curtain, and this trip lands about
-    -- 15.7s after it. Either one firing here is a watchdog blaming a trip that
-    -- is still doing exactly what it was asked to.
+    -- trip has to step back for. The focus net is 14s from the focus step,
+    -- and this trip reaches its fade about 15s after it; the curtain's
+    -- watchdog is 15s from the curtain, and this trip lands about 15.7s after
+    -- it. Either one firing here is a watchdog blaming a trip that is still
+    -- doing exactly what it was asked to.
     reset()
     wearChosenModel()
     pump(3000)
@@ -3960,11 +4044,37 @@ do
 end
 
 do
+    -- ═══ AND ONLY A CURTAIN OVER THE GATE IS GIVEN THE GATE'S TEN SECONDS ═══
+    --
+    -- The watchdog's fifteen seconds are sized for the longest trip with no
+    -- gate in it, and the leave curtain has none. So a leave curtain abandoned
+    -- over a working game is lifted on the fifteenth second, as it was before
+    -- #368 -- and it is raised straight after the block above, whose trip DID
+    -- reach the gate, so the allowance that trip earned must not follow the
+    -- next curtain up.
+    reset()
+    wearChosenModel()
+    pump(3000)
+
+    logged = {}
+    BR.Spawn.curtain(true, 'leaving')
+    pump(14900)
+    BR.Loop.step(BR.Loop.SLOW)
+    ok(BR.Spawn.curtainWanted and not said('the curtain outlived its trip'),
+        'an abandoned leave curtain is left alone inside its fifteen seconds')
+    pump(200)
+    BR.Loop.step(BR.Loop.SLOW)
+    ok(not BR.Spawn.curtainWanted and said('the curtain outlived its trip'),
+        'and lifted once they are up, not ten seconds after -- the gate\'s '
+            .. 'allowance belongs to the trip that waited on it')
+end
+
+do
     -- ═══ NO LONGER IN WARMUP: NOTHING LEFT TO WAIT FOR ═══
     --
     -- A match that dissolves under the player, or a bus that leaves under a
     -- late joiner, puts them somewhere with no showroom in it -- and a gate
-    -- still waiting on its models would be holding black over whatever that is.
+    -- still waiting on its cars would be holding black over whatever that is.
     reset()
     wearChosenModel()
     pump(3000)
@@ -3986,6 +4096,10 @@ do
     ok(fin ~= nil and fin - left <= 50,
         ('the wait ends the moment the player is no longer in warmup (%sms)')
             :format(fin and (fin - left) or 'never'))
+    ok(traceAt('LEFT%-WARMUP') ~= nil and traceAt('cars') == nil
+           and traceAt('CARS%-NEVER%-STOOD') == nil,
+        'and the trace says that is what ended it, rather than claiming the '
+            .. 'cars stood: ' .. tostring(traceLine()))
     pump(20000)
 end
 
@@ -4023,6 +4137,85 @@ do
     pump(100)
     ok(BR.Loop.setEnabled('spawn.gather', false), 'and is held off again')
     pump(20000)
+end
+
+do
+    -- ═══ THE SEED LANDS WHILE THE GATE HOLDS: THE PAD GOES UP ON THE SPOT ═══
+    --
+    -- The shop puts its pad up from a loop that runs once a second, and builds
+    -- nothing until the server's paint seed is in. A seed that lands just after
+    -- that loop has run would sit unused for most of a second, with the player
+    -- on black waiting for exactly those cars -- so the gate hurries the pad on
+    -- every pass, and the build starts in the pass the seed is there for.
+    --
+    -- THIS FIXTURE HAS NO ONCE-A-SECOND LOOP AT ALL, so a gate that did not
+    -- hurry would sit out its whole ten seconds: the failure, made loud.
+    reset()
+    wearChosenModel()
+    pump(3000)
+
+    order = {}
+    BR.State.me.state = BR.PlayerState.WARMUP
+    local t0 = fakeTime
+    stock({ veto = 300, drifttampa = 600 }, t0 + 5000)
+    ok(BR.Spawn.toWarmupPad(), 'the trip starts with no paint seed in yet')
+    pump(20000)
+
+    local g = traceAt('ground')
+    ok(g ~= nil and g < 5000,
+        'precondition: the gate was already holding when the seed landed')
+    ok(padUpAt ~= nil and padUpAt - (t0 + 5000) <= 50,
+        ('the pad goes up within one pass of the gate once the seed is in '
+            .. '(%sms after it)'):format(padUpAt and (padUpAt - t0 - 5000) or 'never'))
+    local _, fin = departed()
+    local last = padUpAt and (padUpAt + 600)
+    ok(fin ~= nil and last ~= nil and fin >= last and fin - last <= 50,
+        ('and the fade lands as its last car stands (%sms after), not on a '
+            .. 'later tick'):format((fin and last) and (fin - last) or '?'))
+    ok(traceAt('cars') ~= nil, 'with the trace saying the cars ended it')
+    ok(hurriedAt ~= nil and g ~= nil and hurriedAt >= t0 + g,
+        'and nothing hurries the pad before the gate opens: by then the ped '
+            .. 'is on the pad with its ground loaded')
+end
+
+do
+    -- ═══ A GATE THAT OVERRUNS ITS OWN DEADLINE IS STILL RELEASED ═══
+    --
+    -- The 9s escape steps back while the gate is inside its deadline, and
+    -- re-arms for half a second past it. That re-arm is the only thing that
+    -- ends a gate which does not come back when it should -- a thread that
+    -- died in it, a question that never returned -- and every block above
+    -- lets go before it could fire. Here the shop's first answer parks the
+    -- gate for fifteen seconds.
+    reset()
+    wearChosenModel()
+    pump(3000)
+    stock({ nosuchcar = false })
+    stallMs = 15000
+
+    order = {}
+    BR.State.me.state = BR.PlayerState.WARMUP
+    local t0 = fakeTime
+    ok(BR.Spawn.toWarmupPad(), 'the trip starts')
+    pump(13000)
+
+    local g = traceAt('ground')
+    local due = g and (t0 + g + BR.Spawn.departure.showroomWaitMs + 500)
+    local _, fin = departed()
+    ok(said('did not report back'),
+        'the escape releases a gate that has overrun its deadline')
+    ok(fin ~= nil and due ~= nil and fin >= due and fin - due <= 50,
+        ('half a second past that deadline, and no later (%sms off)')
+            :format((fin and due) and (fin - due) or '?'))
+    ok(not BR.Spawn.traveling and BR.LobbyPed.isNetworked()
+           and not BR.Spawn.focusHeld(),
+        'and the trip lands on that road: networked, not traveling, focus back')
+
+    -- The stalled answer comes back in the end. Let it, so its placement is
+    -- not left running under whatever block comes next.
+    pump(20000)
+    ok(BR.Spawn.diagnose().placing == false,
+        'precondition for what follows: no placement left running')
 end
 
 do

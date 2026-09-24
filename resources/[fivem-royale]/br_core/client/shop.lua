@@ -118,6 +118,15 @@ local placed = {}
 --- Is the showroom standing?
 local built = false
 
+--- Has the build been through every row? (#368)
+---
+--- `built` goes true as a build STARTS, so it cannot say this. The warmup's fade
+--- waits for the pad's cars, and a car the build has given up on -- a model that
+--- never streamed in its five seconds, a create that came back empty -- is a
+--- car that is never going to stand there. Once the build has finished, what
+--- is standing is all the pad will show, and nothing is left to wait for.
+local finished = false
+
 --- The match's paint seed, as the SERVER last stated it. nil until it answers.
 ---
 --- ═══ THE PAD IS NOT BUILT WITHOUT ONE, AND THAT IS DELIBERATE ═══
@@ -165,9 +174,9 @@ local candidate = nil
 ---
 --- BR.Shop.preload asks for every one of them the moment the trip to the pad
 --- starts, well before the reconciler below has a seed to build with, and that
---- trip's fade waits on BR.Shop.pendingModels. The build then finds each model
---- already resident, and its own SetModelAsNoLongerNeeded is what hands the
---- request back on the ordinary road.
+--- trip's fade waits on the cars they become (BR.Shop.pendingCars). The build
+--- then finds each model already resident, and its own SetModelAsNoLongerNeeded
+--- is what hands the request back on the ordinary road.
 ---
 --- WRITTEN DOWN SO THE OTHER ROADS HAND IT BACK TOO. A warmup that ends before
 --- the pad goes up -- a late joiner with seconds left, a match that dissolves --
@@ -299,6 +308,7 @@ end
 --- was never finished being built.
 local function teardown()
     built = false
+    finished = false
     gen = gen + 1            -- abandons any build still streaming models
     promptShown = false
     candidate = nil
@@ -408,6 +418,26 @@ local function showable(row)
         return model
     end
     return nil
+end
+
+--- Is this row's car actually standing on the pad on THIS client?
+---
+--- A row whose model never streamed has no entity, and a plate on a car that is
+--- not there is a price for something a player cannot see. Handed to
+--- BR.ShopSolve.nearest as its `present` filter so the SELECTION skips it,
+--- rather than being checked after the fact -- picking the nearest row and then
+--- discovering it has no car would offer nothing while a perfectly good car
+--- stood two metres further on.
+---
+--- AND IT IS WHAT THE WARMUP'S FADE WAITS ON (#368, BR.Shop.pendingCars), which
+--- is why it lives up here: a car is in `cars` only once the build below has
+--- settled, frozen and dressed it, so "standing" means standing as the player
+--- will see it.
+--- @param row table
+--- @return boolean
+local function standing(row)
+    local veh = cars[row.id]
+    return (veh ~= nil and veh ~= 0 and isTrue(DoesEntityExist(veh)))
 end
 
 --- Put the cars on the pad.
@@ -776,6 +806,11 @@ local function build(paintSeed)
                     :format(tostring(row.model)))
             end
         end
+
+        -- EVERY ROW HAS ITS ANSWER, whether that was a car or a line above
+        -- saying why not. Only this generation's: a build abandoned for a
+        -- newer one returned before it got here.
+        if mine == gen then finished = true end
     end)
 end
 
@@ -791,9 +826,8 @@ end
 ---
 --- IDEMPOTENT. Asking again for a model already asked for costs the streamer
 --- nothing, which is what lets a refused trip call this again on its retry.
---- @return integer pending  how many of them are still streaming
 function BR.Shop.preload()
-    if not BR.ShopSolve.enabled(S) then return 0 end
+    if not BR.ShopSolve.enabled(S) then return end
     for _, row in ipairs(rows) do
         local model = showable(row)
         if model then
@@ -801,19 +835,27 @@ function BR.Shop.preload()
             preloaded[model] = true
         end
     end
-    return BR.Shop.pendingModels()
 end
 
---- How many of the showroom's models have not loaded yet -- what the warmup's
---- fade waits on (#368). 0 when there is no shop, and a model this build does
---- not have is not counted: it can never arrive (see showable).
+--- How many of the showroom's cars are not standing on the pad yet -- what the
+--- warmup's fade waits on (#368).
+---
+--- THE CARS, NOT THEIR MODELS. A model that has streamed is still a paint seed
+--- from the server and a build away from being a car on the pad, and a fade
+--- that waited only for the models let a car appear a beat after it.
+---
+--- 0 when there is no shop, and 0 once the build has been through every row:
+--- whatever is standing then is all the pad will show. A model this build does
+--- not have is never counted -- its car can never stand (see showable). Before
+--- the seed arrives nothing is standing, so every car is counted, and a seed
+--- that never arrives is the warmup's ten seconds to end, not this.
 --- @return integer
-function BR.Shop.pendingModels()
+function BR.Shop.pendingCars()
     if not BR.ShopSolve.enabled(S) then return 0 end
+    if finished then return 0 end
     local n = 0
     for _, row in ipairs(rows) do
-        local model = showable(row)
-        if model and not isTrue(HasModelLoaded(model)) then n = n + 1 end
+        if showable(row) and not standing(row) then n = n + 1 end
     end
     return n
 end
@@ -839,6 +881,24 @@ local function wantScene()
     if BR.State.match.state ~= BR.MatchState.WARMUP then return false end
     if BR.State.me.state ~= BR.PlayerState.WARMUP then return false end
     return true
+end
+
+--- Put the pad up NOW, if everything it needs is here (#368).
+---
+--- Called by client/spawn.lua's showroom gate on every pass while it holds the
+--- warmup's fade, and by nothing else. The reconciler below puts the pad up
+--- once a second, which is plenty for a scene -- and is up to a second of black
+--- for nothing when a player is waiting on black for exactly these cars and the
+--- seed landed just after its last pass. This is that same decision, made the
+--- moment it can be: the scene wanted, the seed in, no pad yet.
+---
+--- IT NEVER ASKS FOR THE SEED. Asking stays the reconciler's, once a second; the
+--- gate polls twenty times a second, and every poll would be an event to the
+--- server. Nor does it ever take anything down -- that is the reconciler's
+--- alone -- and a pad already up is left exactly as it is (build refuses a
+--- second one).
+function BR.Shop.hurry()
+    if seed ~= nil and wantScene() then build(seed) end
 end
 
 --- The server naming the colours this match's showroom wears.
@@ -897,7 +957,8 @@ BR.Loop.register(BR.Loop.SLOW, 'shop.scene', function()
     -- THE PRELOAD'S NET (#368; see `preloaded`). Keyed on MY state and not on
     -- wantScene: a late joiner learns the match's state from the digest, up to
     -- half a second after its own (client/state.lua), and releasing on that
-    -- would hand back the very models the trip's fade is waiting for.
+    -- would hand the models back before the cars the trip's fade is waiting
+    -- for have been built from them.
     if BR.State.me.state ~= BR.PlayerState.WARMUP then releasePreload() end
 
     if wantScene() then
@@ -1108,21 +1169,6 @@ local function signOffsets(veh)
     end
     return d.front + (tonumber(S.signForwardM) or 0.4),
            BR.ShopSolve.signHeight(d.bottom, d.top, S.signBumperFrac, S.signLift)
-end
-
---- Is this row's car actually standing on the pad on THIS client?
----
---- A row whose model never streamed has no entity, and a plate on a car that is
---- not there is a price for something a player cannot see. Handed to
---- BR.ShopSolve.nearest as its `present` filter so the SELECTION skips it,
---- rather than being checked after the fact -- picking the nearest row and then
---- discovering it has no car would offer nothing while a perfectly good car
---- stood two metres further on.
---- @param row table
---- @return boolean
-local function standing(row)
-    local veh = cars[row.id]
-    return (veh ~= nil and veh ~= 0 and isTrue(DoesEntityExist(veh)))
 end
 
 --- Which car is the player standing at?
