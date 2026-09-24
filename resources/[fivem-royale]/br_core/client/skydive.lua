@@ -71,6 +71,24 @@ local landedThisDrop = false
 --- to the next door, which is a later landing.
 local lootUpToast = false
 
+--- Has THIS drop had its "pull your chute" warning, or passed the point where
+--- it could? (#352)
+---
+--- Owner, 2026-09-23: "it's okay if late landers can die on bad touchdown - but
+--- we can give them a quick urgent toast when they're 100m from the ground if
+--- they've not pulled the chute yet." Since #352 the match can go live under a
+--- player still in freefall, and the auto-open floor never fires there (#362).
+---
+--- ONCE PER DROP, SPENT BY WHICHEVER COMES FIRST: the warning itself, the
+--- canopy coming out, or the landing. Cleared at the door and at the start of a
+--- round, like landedThisDrop -- and NOT by the re-arm net, so a player who has
+--- landed and then walks off a ledge before the server agrees is not told again.
+local pullChuteSpent = false
+
+--- Is that warning on screen, for the canopy or the ground to take down?
+--- Separate from pullChuteSpent, which both of those set with nothing shown.
+local pullChuteUp = false
+
 --- Is this ped genuinely off the ground RIGHT NOW?
 ---
 --- THE PED'S OWN EVIDENCE, ASKED FRESH, because the two places that need this
@@ -662,6 +680,70 @@ local function hasChute(ped)
         or GetAmmoInPedWeapon(ped, CHUTE) > 0
 end
 
+-- ═══ THE LAST CALL TO PULL THE CHUTE (#352) ═══
+--
+-- The owner's wording, verbatim and bold: "**Press {key} to pull your
+-- chute!**", {key} being whatever the player has deploy on.
+--
+-- THE KEY IS A TOKEN, NOT A LETTER. BR.KeyToken marks the gap and the page
+-- draws the player's own `brdeploy` binding in it as a key cap, re-resolved on
+-- every rebind -- the same hole the voice and map notices carry. A deploy left
+-- on no key draws KeyCap's dash, which is its answer everywhere else.
+--
+-- THE BOLD IS THE NOTICE ENVELOPE'S `b` PARTS, the only bold a notice has. They
+-- were built for player names (br_lib/shared/notice.lua), and they carry our own
+-- words for the same reason they are safe for a name: a `b` part is drawn as
+-- plain text and never parsed. The key sits in a `t` part between them, because
+-- only prose goes through KeyText. `text` is the sentence flat, as always.
+local PULL_CHUTE_KEY = 'drop.pullchute'
+local PULL_CHUTE_TEXT = 'Press ' .. BR.KeyToken('brdeploy') .. ' to pull your chute!'
+local PULL_CHUTE_PARTS = {
+    { b = 'Press ' },
+    { t = BR.KeyToken('brdeploy') },
+    { b = ' to pull your chute!' },
+}
+
+--- Say it: danger, the stack's most urgent tone and one a full stack never
+--- evicts, and short, because a freefall covers 100m in moments. The canopy or
+--- the landing takes it down sooner than that.
+--- @param h number  the height it fired at, for the console
+local function pullChuteSay(h)
+    pullChuteSpent, pullChuteUp = true, true
+    TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST, {
+        text = PULL_CHUTE_TEXT, parts = PULL_CHUTE_PARTS,
+        tone = 'danger', key = PULL_CHUTE_KEY, ms = 3000,
+    })
+    print(('[br_core] drop: pull-chute warning at %.0fm'):format(h))
+end
+
+--- Take it down, if it is up. Once: a clear per tick would be a message per tick.
+local function pullChuteClear()
+    if not pullChuteUp then return end
+    pullChuteUp = false
+    TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST,
+        { key = PULL_CHUTE_KEY, clear = true, text = '' })
+end
+
+--- Metres above whatever this ped would hit: the ground, or the water over it.
+---
+--- GetEntityHeightAboveGround MEASURES TO THE SEABED (see airborneNow), so over
+--- the sea it runs long by the depth of the water, and a warning timed off it
+--- would come that much late. The surface is taken the way client/loot.lua's
+--- solidGround takes it: GetWaterHeight for any volume the engine has streamed,
+--- and sea level under a seabed, because over open ocean GetWaterHeight often
+--- answers nothing at all.
+--- @param ped integer
+--- @param agl number  GetEntityHeightAboveGround, as the drop machine has it
+--- @return number
+local function heightAboveSurface(ped, agl)
+    local p = GetEntityCoords(ped)
+    local surface = p.z - agl
+    if surface < 0.0 then surface = 0.0 end
+    local ok, wz = GetWaterHeight(p.x, p.y, p.z)
+    if isTrue(ok) and type(wz) == 'number' and wz > surface then surface = wz end
+    return p.z - surface
+end
+
 AddEventHandler('br:drop:begin', function(d)
     -- One-shot thread: the give-verify-task sequence needs real frames
     -- between steps, and the first flight ended with a player falling
@@ -684,6 +766,8 @@ AddEventHandler('br:drop:begin', function(d)
     -- the note where this is SET, at the bottom of the drop machine.
     BR.State.landed = false
     landedThisDrop = false
+    -- A new drop is owed its own warning (#352). See pullChuteSpent.
+    pullChuteSpent = false
     -- THE ONE DROP AFTER A FINISHED WALKTHROUGH, IF THIS IS IT (#369). See
     -- lootUpToast. tutorial.lua loads after this file, so it is asked here and
     -- never cached at load.
@@ -1269,6 +1353,9 @@ BR.Loop.register(BR.Loop.TICK, 'skydive.state', function()
             -- Stamped where the branch decides, not polled after it, so stage 2
             -- carries no sampling lag of its own.
             landBranch(GetGameTimer(), ped, 'seat')
+            -- A seat is the ground, as far as the warning goes (#352).
+            pullChuteSpent = true
+            pullChuteClear()
             disarmChute(ped)
             -- clearTrail() rather than the bare native: #131 routed every
             -- trail stand-down through one helper so a match killed mid-air
@@ -1345,6 +1432,28 @@ BR.Loop.register(BR.Loop.TICK, 'skydive.state', function()
     -- as everywhere else in this file.
     local inAir = isTrue(IsEntityInAir(ped)) and not isTrue(IsEntityInWater(ped))
     if (airborne or inAir) and agl > 3.0 then airborneSeen = true end
+
+    -- THE LAST CALL TO PULL THE CHUTE (#352), above the floor because the floor
+    -- returns. See pullChuteSpent. Three readings, each from whoever owns it:
+    --
+    --   the canopy is the ped's -- out at any point, and there is nothing left
+    --   to warn about this drop;
+    --
+    --   a FREEFALL is the server's word, and that is what keeps the revive-key
+    --   arrival out: it is 150m of fall like any other, but the server has the
+    --   player ALIVE all the way down;
+    --
+    --   in the air is the physics, `inAir` as the latch asks it -- not
+    --   IsPedOnFoot, which is true in freefall and false for a ped ragdolled on
+    --   the ground, the one place this must never say it.
+    if cs == BR.Native.ChuteState.OPENING or cs == BR.Native.ChuteState.OPEN then
+        pullChuteSpent = true
+        pullChuteClear()
+    elseif not pullChuteSpent and inAir
+       and BR.State.me.state == BR.PlayerState.FREEFALL then
+        local h = heightAboveSurface(ped, agl)
+        if h <= BR.Config.Drop.pullChuteAGL then pullChuteSay(h) end
+    end
     -- The floor's band has a BOTTOM as well as a top: below ~3m a chute
     -- can do nothing, and firing there is pure harm -- the vehicle-entry
     -- animation reads as "airborne at ground level" for a beat (not on
@@ -1428,6 +1537,9 @@ BR.Loop.register(BR.Loop.TICK, 'skydive.state', function()
         -- server had not answered the report, so all of them fired again on
         -- the next tick, and the next (#126). See landedThisDrop.
         landedThisDrop = true
+        -- Down is too late to be told (#352). See pullChuteSpent.
+        pullChuteSpent = true
+        pullChuteClear()
 
         if cs == BR.Native.ChuteState.OPEN then
             -- Shed the still-attached canopy along with its vanilla prompt.
@@ -1775,6 +1887,9 @@ AddEventHandler(BR.Net.STATE, function(d)
        and d.state ~= lastMatchState then
         BR.State.landed = false
         landedThisDrop = false
+        -- And a round's first drop is owed its warning, whichever way the drop
+        -- machine arms for it (#352).
+        pullChuteSpent = false
 
         -- THE BROWSER IS WARMED HERE, LONG BEFORE ANYTHING NEEDS IT (#131).
         --

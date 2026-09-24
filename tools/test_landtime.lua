@@ -97,6 +97,12 @@ local ped = {
     speed    = 0.0,
     hasChute = false,
     ammo     = 0,
+    -- WHERE THE GROUND IS, for the pull-chute warning (#352). The ped is `agl`
+    -- above `groundZ` -- the seabed, when that is below zero -- and `waterZ` is
+    -- a surface GetWaterHeight can see, nil where it answers nothing, which over
+    -- open ocean is most of the time.
+    groundZ  = 30.0,
+    waterZ   = nil,
 }
 
 --- 1 and 0, not true and false. See the header.
@@ -115,6 +121,13 @@ function GetEntityHeightAboveGround() return ped.agl end
 function GetEntitySpeed()          return ped.speed end
 function GetAmmoInPedWeapon()      return ped.ammo end
 function GetControlInstructionalButton() return '' end
+--- Measured to `groundZ`, so the position and the height above ground agree the
+--- way the engine's do: a ped `agl` up stands at `groundZ + agl`.
+function GetEntityCoords() return { x = 0.0, y = 0.0, z = ped.groundZ + ped.agl } end
+function GetWaterHeight()
+    if ped.waterZ then return 1, ped.waterZ end
+    return 0, 0.0
+end
 
 for _, n in ipairs({
     'ClearHelp', 'ClearPedTasks', 'ClearPedTasksImmediately',
@@ -330,6 +343,7 @@ local function reset()
     ped.onFoot, ped.inWater, ped.inAir, ped.inVeh = true, false, false, false
     ped.agl, ped.speed = 0.0, 0.0
     ped.hasChute, ped.ammo = false, 0
+    ped.groundZ, ped.waterZ = 30.0, nil
     ticks(2)
     logged, sent, events = {}, {}, {}
     promotedAt = nil
@@ -933,6 +947,317 @@ do
     ok(lootUps() == 0,
         'AND THE NEXT DOOR DOES NOT -- the drop the net armed spent it',
         ('%d toasts'):format(lootUps()))
+end
+
+-- ------------------------------------------- the last call to pull the chute ---
+--
+-- Owner, 2026-09-23 (#352): "yes it's okay if late landers can die on bad
+-- touchdown - but we can give them a quick urgent toast when they're 100m from
+-- the ground if they've not pulled the chute yet." The wording, his, in bold:
+-- "**Press {key} to pull your chute!**".
+--
+-- Every freefall here is the engine's as measured -- IS_PED_ON_FOOT true, the
+-- physics saying air -- so the auto-open floor stays out of it, as it does in a
+-- real drop (#362).
+
+describe('a freefall is told to pull the chute at 100 m, once, and only a freefall')
+do
+    local PULL = 'Press {key:brdeploy} to pull your chute!'
+
+    --- Every "pull your chute" put up since `events` was last cleared.
+    local function pulls()
+        local out = {}
+        for _, e in ipairs(events) do
+            if e.name == 'br:ui:sendLocal' and e.args[1] == BR.Nui.TOAST
+               and type(e.args[2]) == 'table' and e.args[2].text == PULL then
+                out[#out + 1] = e.args[2]
+            end
+        end
+        return out
+    end
+
+    --- How many times it was taken down, by the key it went up with.
+    local function clears(key)
+        local n = 0
+        for _, e in ipairs(events) do
+            local d = e.args[2]
+            if e.name == 'br:ui:sendLocal' and e.args[1] == BR.Nui.TOAST
+               and type(d) == 'table' and d.clear == true
+               and key ~= nil and d.key == key then
+                n = n + 1
+            end
+        end
+        return n
+    end
+
+    --- One tick at each height, on the way down.
+    local function fallTo(...)
+        for _, h in ipairs({ ... }) do
+            ped.agl = h
+            tick()
+        end
+    end
+
+    --- The bold is the envelope's `b` parts: every word of his sentence in one,
+    --- and the key a `{key:}` token in a `t` part of its own, so the page draws
+    --- it as the player's own binding.
+    local function boldWithKey(p)
+        if type(p) ~= 'table' or type(p.parts) ~= 'table' then return false end
+        local flat, keys = {}, 0
+        for _, part in ipairs(p.parts) do
+            if type(part.b) == 'string' then
+                flat[#flat + 1] = part.b
+            elseif part.t == '{key:brdeploy}' then
+                flat[#flat + 1] = part.t
+                keys = keys + 1
+            else
+                return false
+            end
+        end
+        return keys == 1 and table.concat(flat) == p.text
+    end
+
+    local n = function() return ('%d said'):format(#pulls()) end
+
+    -- 1. THE DROP HE MEANT: out of the door, canopy stowed, all the way down.
+    reset()
+    jump()
+    inFreefall()
+    ticks(5)
+    fallTo(300.0, 200.0, 101.0, 100.5)
+    ok(#pulls() == 0, 'nothing is said above 100 m', n())
+    fallTo(100.0)
+    local p = pulls()
+    ok(#p == 1, 'AT 100 M ABOVE THE GROUND IT IS SAID', n())
+    ok(p[1] ~= nil and p[1].text == PULL,
+        'in his words, with the deploy key as a token', p[1] and p[1].text)
+    ok(boldWithKey(p[1]), 'IN BOLD, with the key a cap between the bold words')
+    ok(p[1] ~= nil and p[1].tone == 'danger',
+        'urgent: the most urgent tone the stack has', p[1] and p[1].tone)
+    ok(p[1] ~= nil and type(p[1].key) == 'string'
+       and type(p[1].ms) == 'number' and p[1].ms <= 3000,
+        'quick, and keyed so the canopy or the ground can take it down')
+    local key = p[1] and p[1].key
+
+    fallTo(80.0, 50.0, 20.0, 6.0)
+    ok(#pulls() == 1, 'ONCE -- never again on the way down', n())
+
+    downFromFreefall()
+    serve(3, fakeTime)
+    ok(BR.State.landed == true, 'precondition: the freefall lands')
+    ok(clears(key) == 1, 'THE LANDING TAKES IT DOWN',
+        ('%d clears'):format(clears(key)))
+    ticks(20)
+    ok(#pulls() == 1 and clears(key) == 1,
+        'and nothing more is said, or cleared, on the ground', n())
+
+    -- 2. THE CHUTE ALREADY OUT: pulled at 150, and never told.
+    reset()
+    jump()
+    inFreefall()
+    ticks(5)
+    ped.agl, ped.cs = 150.0, CS.OPENING
+    tick()
+    ped.cs, ped.speed = CS.OPEN, 14.0
+    fallTo(100.0, 60.0, 20.0)
+    ok(#pulls() == 0, 'A CANOPY PULLED ABOVE 100 M IS NEVER TOLD TO PULL', n())
+
+    -- ...nor told once the canopy has gone again: the task unwinding mid-air
+    -- leaves the chute state NONE, and that chute was already pulled.
+    reset()
+    jump()
+    inFreefall()
+    ticks(5)
+    ped.agl, ped.cs = 150.0, CS.OPEN
+    tick()
+    ped.cs = CS.NONE
+    fallTo(90.0, 40.0)
+    ok(#pulls() == 0, 'a chute that has been out is never asked for again', n())
+
+    -- 3. PULLED AFTER BEING TOLD: the canopy takes it down, once.
+    reset()
+    jump()
+    inFreefall()
+    ticks(5)
+    fallTo(200.0, 95.0)
+    key = pulls()[1] and pulls()[1].key
+    ok(#pulls() == 1, 'precondition: told at 95 m', n())
+    ped.cs = CS.OPENING
+    tick()
+    ok(clears(key) == 1, 'THE CANOPY OPENING TAKES IT DOWN',
+        ('%d clears'):format(clears(key)))
+    ped.cs = CS.OPEN
+    fallTo(70.0, 40.0)
+    ok(clears(key) == 1 and #pulls() == 1,
+        'once, and it is not said again under the canopy',
+        ('%d clears, %s'):format(clears(key), n()))
+
+    -- 4. A REVIVE-KEY ARRIVAL: 150 m over the van with the chute on the back, a
+    --    fall like any other -- but the server has the player ALIVE, and it is
+    --    not a freefall to warn about.
+    reset()
+    fire(BR.Net.STATE, { state = BR.MatchState.WARMUP })
+    fire(BR.Net.STATE, { state = BR.MatchState.BUS })
+    fire(BR.Net.STATE, { state = BR.MatchState.PLAYING })
+    BR.State.me.state = BR.PlayerState.ALIVE
+    fire('br:drop:begin',
+        { x = 0.0, y = 0.0, z = 180.0, heading = 0.0, speed = 0.0 })
+    events = {}
+    inFreefall()
+    fallTo(150.0, 100.0, 60.0, 20.0)
+    ok(#pulls() == 0, 'A REVIVE-KEY ARRIVAL IS NOT WARNED', n())
+
+    -- 5. WATER IS GROUND. Over the sea the height above ground runs to the
+    --    seabed, and GetWaterHeight answers nothing there.
+    reset()
+    jump()
+    inFreefall()
+    ped.groundZ = -60.0            -- the seabed, 60 m under the sea
+    ticks(5)
+    fallTo(170.0)                  -- 110 m over the water
+    ok(#pulls() == 0, 'at 110 m over the sea, nothing', n())
+    fallTo(155.0)                  -- 95 m over the water, 155 over the seabed
+    ok(#pulls() == 1,
+        'THE SEA IS THE GROUND -- told at 95 m over the water, with the seabed '
+            .. '155 m down', n())
+
+    -- ...and a lake the engine can see, twelve metres deep.
+    reset()
+    jump()
+    inFreefall()
+    ped.groundZ, ped.waterZ = 50.0, 62.0
+    ticks(5)
+    fallTo(115.0)                  -- 103 m over the lake
+    ok(#pulls() == 0, 'at 103 m over a lake, nothing', n())
+    fallTo(110.0)                  -- 98 m over the lake, 110 over its bed
+    ok(#pulls() == 1, 'AND A LAKE IS THE GROUND TOO', n())
+
+    -- ...but water UNDER the ground is not a surface anybody lands on.
+    reset()
+    jump()
+    inFreefall()
+    ped.groundZ, ped.waterZ = 30.0, 10.0
+    ticks(5)
+    fallTo(95.0)
+    ok(#pulls() == 1, 'water the engine reports below the ground moves nothing',
+        n())
+
+    -- 6. ONCE PER DROP, EVEN THROUGH THE RE-ARM NET. Told, landed, and off a
+    --    ledge before the server has agreed: the net arms the machine again for
+    --    a player who is still FREEFALL to the server, and that is still the
+    --    same drop.
+    reset()
+    jump()
+    inFreefall()
+    ticks(5)
+    fallTo(90.0)
+    downFromFreefall()
+    tick()
+    ok(BR.State.landed == true and #pulls() == 1,
+        'precondition: told, and down', n())
+    ped.falling, ped.inAir, ped.agl = true, true, 60.0
+    ticks(3)
+    fallTo(40.0, 10.0)
+    ok(#pulls() == 1, 'NOT TOLD TWICE IN ONE DROP -- the re-arm net is no door',
+        n())
+
+    -- ...and a drop that landed untold is not told after it. The server had not
+    -- registered the jump, so the fall was never a FREEFALL to this client; its
+    -- word arrives after touchdown, and the player steps off a ledge.
+    reset()
+    fire(BR.Net.STATE, { state = BR.MatchState.WARMUP })
+    fire(BR.Net.STATE, { state = BR.MatchState.BUS })
+    BR.State.me.state = BR.PlayerState.BUS
+    fire('br:drop:begin', { heading = 0.0 })
+    inFreefall()
+    ticks(5)
+    fallTo(90.0, 40.0)
+    downFromFreefall()
+    tick()
+    ok(BR.State.landed == true and #pulls() == 0,
+        'precondition: down, never told, the server not yet caught up', n())
+    BR.State.me.state = BR.PlayerState.FREEFALL
+    ped.falling, ped.inAir, ped.agl = true, true, 60.0
+    ticks(3)
+    ok(#pulls() == 0, 'ONCE LANDED, NEVER -- whatever the server says after', n())
+
+    -- 7. A ROUND'S FIRST DROP IS OWED IT, HOWEVER IT ARMED. The last drop spent
+    --    it; the net arms this one, with no door.
+    reset()
+    fire(BR.Net.STATE, { state = BR.MatchState.WARMUP })
+    fire(BR.Net.STATE, { state = BR.MatchState.BUS })
+    BR.State.me.state = BR.PlayerState.FREEFALL   -- the server's word; no door
+    inFreefall()
+    ticks(5)
+    fallTo(90.0)
+    ok(#pulls() == 1, 'a drop the net armed is told as well', n())
+
+    -- 8. AND EVERY DOOR IS A NEW DROP, whatever the round has already said.
+    downFromFreefall()
+    serve(3, fakeTime)
+    events = {}
+    BR.State.me.state = BR.PlayerState.BUS
+    fire('br:drop:begin', { heading = 0.0 })
+    BR.State.me.state = BR.PlayerState.FREEFALL
+    inFreefall()
+    ticks(5)
+    fallTo(90.0)
+    ok(#pulls() == 1, 'a door is owed its own warning', n())
+
+    -- 9. NEVER ON THE GROUND. A drop the net arms over a player lying in a field
+    --    -- ragdolled, off their feet, nothing but ground under them -- is not
+    --    a player to tell to pull anything.
+    reset()
+    fire(BR.Net.STATE, { state = BR.MatchState.WARMUP })
+    fire(BR.Net.STATE, { state = BR.MatchState.BUS })
+    BR.State.me.state = BR.PlayerState.FREEFALL
+    ped.cs, ped.falling, ped.onFoot, ped.inAir = CS.NONE, false, false, false
+    ped.agl = 0.5
+    ticks(10)
+    ok(#pulls() == 0, 'A PLAYER ON THE GROUND IS NOT TOLD', n())
+
+    -- 10. A SEAT IS THE GROUND, as far as the warning goes.
+    reset()
+    jump()
+    inFreefall()
+    ticks(5)
+    fallTo(60.0)
+    key = pulls()[1] and pulls()[1].key
+    ped.inVeh = true
+    tick()
+    ok(#pulls() == 1 and clears(key) == 1,
+        'a drop that ends in a vehicle seat takes it down',
+        ('%d clears'):format(clears(key)))
+
+    -- ...and one that ended there untold stays untold, out of the car and off
+    -- a ledge with the server still calling it a freefall.
+    reset()
+    jump()
+    inFreefall()
+    ticks(5)
+    ped.agl = 150.0
+    ped.inVeh = true
+    tick()
+    ped.inVeh = false
+    ped.falling, ped.inAir, ped.agl = true, true, 60.0
+    ticks(3)
+    ok(#pulls() == 0, 'a seat is a landing -- nothing is said after it', n())
+
+    -- 11. THE 100 IS CONFIG. A server that wants the call earlier gets it earlier.
+    local was = BR.Config.Drop.pullChuteAGL
+    ok(was == 100.0, 'BR.Config.Drop.pullChuteAGL ships at the owner\'s 100 m',
+        tostring(was))
+    BR.Config.Drop.pullChuteAGL = 250.0
+    reset()
+    jump()
+    inFreefall()
+    ticks(5)
+    fallTo(260.0)
+    ok(#pulls() == 0, 'above a tuned 250 m, nothing', n())
+    fallTo(240.0)
+    ok(#pulls() == 1, 'AND AT 240 IT IS SAID -- the height is read from config',
+        n())
+    BR.Config.Drop.pullChuteAGL = was
 end
 
 -- ----------------------------------------------------- the formatter, pure ---
