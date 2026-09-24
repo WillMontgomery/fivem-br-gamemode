@@ -232,7 +232,10 @@ end
 --- @param z number
 --- @param heading number|nil
 --- @param cb function|nil
-function BR.Spawn.placeAt(x, y, z, heading, cb)
+--- @param hold function|nil  run in the placement's own thread once the ground
+---        has arrived and BEFORE the ped is let go and the screen revealed. It
+---        may yield, and it must bound its own wait: the reveal waits for it.
+function BR.Spawn.placeAt(x, y, z, heading, cb, hold)
     if placing then
         if BR.Server and BR.Server.devMode then
             print('[br_core] placement already in progress, ignoring')
@@ -266,6 +269,20 @@ function BR.Spawn.placeAt(x, y, z, heading, cb)
                 local found, gz = GetGroundZFor_3dCoord(x, y, z + 50.0, false)
                 if isTrue(found) then groundZ = gz + 1.0 end
                 break
+            end
+        end
+
+        -- THE REVEAL MAY BE ASKED TO WAIT, AND ONLY TO WAIT (#368). The ped
+        -- stays frozen where it was put, so the placement, the unfreeze and the
+        -- fade below still land in one breath whenever the hold lets go.
+        -- pcall'd because this thread has no handler above it: a hold that
+        -- threw would stop it here, with `placing` still set and the player
+        -- frozen on black -- the one outcome this file exists to prevent.
+        if hold then
+            local okh, err = pcall(hold)
+            if not okh then
+                print(('[br_core] placement hold errored (%s) -- revealing anyway')
+                    :format(tostring(err)))
             end
         end
 
@@ -410,7 +427,8 @@ end
 --- @param cb function|nil  called once the player is genuinely placed. Only
 ---        the non-exact path is asynchronous; the exact path calls it before
 ---        returning, so a caller never has to know which one it took.
-function BR.Spawn.respawn(x, y, z, heading, exact, cb)
+--- @param hold function|nil  the non-exact path only: see BR.Spawn.placeAt
+function BR.Spawn.respawn(x, y, z, heading, exact, cb, hold)
     local ped = PlayerPedId()
 
     NetworkResurrectLocalPlayer(x, y, z, heading or 0.0, true, false)
@@ -440,7 +458,7 @@ function BR.Spawn.respawn(x, y, z, heading, exact, cb)
         return
     end
 
-    BR.Spawn.placeAt(x, y, z, heading, cb)
+    BR.Spawn.placeAt(x, y, z, heading, cb, hold)
 end
 
 --- Stand the local player's own ped back up, wherever we want it to happen.
@@ -805,8 +823,8 @@ end
 -- THEIR NATURAL HOME IS br_lib/config/match.lua, beside lobbyEntrance's
 -- focusLeadMs, which is the mirror image of focusHoldMs below -- that one leads
 -- the arrival, this one leads the departure. They are here instead because this
--- round was not permitted to edit that file; moving them is a two-line change
--- and nothing outside this block reads either number.
+-- round was not permitted to edit that file; moving them is a short change and
+-- nothing outside this file reads any of them.
 BR.Spawn.departure = {
     -- How long the streaming focus sits on the warmup spawn BEFORE the ped is
     -- moved there. The owner's "at least 1 second". Raising it buys the world
@@ -819,9 +837,21 @@ BR.Spawn.departure = {
     -- error handler and nothing to notice. A client left streaming a pad it
     -- never reached shows up much later as world geometry refusing to load
     -- around the player, with nothing pointing back here. Comfortably longer
-    -- than the 9s placement escape below, so it can only fire on a trip that
-    -- has genuinely been abandoned.
-    focusMaxMs = 14000,
+    -- than the 9s placement escape below plus the showroom gate's ceiling,
+    -- which the escape steps back for, so it can only fire on a trip that has
+    -- genuinely been abandoned. It was 14000 until that gate existed (#368).
+    focusMaxMs = 24000,
+
+    -- ═══ THE SHOWROOM GATE'S CEILING (#368) ═══
+    --
+    -- Owner, 2026-09-23: "please make the warmup not fade in until all of the
+    -- store's vehicle models have loaded OR 10 seconds. whichever comes first."
+    --
+    -- COUNTED FROM THE MOMENT THE FADE WOULD HAVE STARTED -- the ground under
+    -- the ped has arrived and nothing else is holding it -- so a slow stream of
+    -- the pad's terrain does not eat into it, and a model that never arrives
+    -- costs at most this much extra black.
+    showroomWaitMs = 10000,
 }
 
 --- Whether WE are holding the streaming focus on a warmup spawn.
@@ -934,8 +964,54 @@ BR.Loop.register(BR.Loop.SLOW, 'spawn.focuswatch', function()
     releaseFocus()
 end)
 
+--- Hold the warmup's fade until the showroom's models have streamed (#368).
+---
+--- ASKED OF client/shop.lua, WHICH OWNS THE CATALOGUE. The models waited on are
+--- the ones its pad will actually show, and a model this build does not have is
+--- not counted at all: it could never arrive, so it is never waited for. One
+--- that is on this build and still never arrives is what the deadline is for.
+---
+--- A PLAYER WHO IS NO LONGER IN WARMUP HAS NO SHOWROOM TO WAIT FOR -- a match
+--- that dissolved under them, a bus that left under a late joiner -- so the
+--- wait ends there instead of holding the black over whatever comes next.
+---
+--- FAILS OPEN. No shop file, or a question that throws, is no wait at all.
+---
+--- MUST be called from inside a Citizen thread -- it yields.
+--- @param deadline number  GetGameTimer() at which it gives up
+--- @return boolean loaded  false means the deadline ran out first
+local function awaitShowroom(deadline)
+    local function pending()
+        if BR.State.me.state ~= BR.PlayerState.WARMUP then return 0 end
+        if not (BR.Shop and BR.Shop.pendingModels) then return 0 end
+        local ok, n = pcall(BR.Shop.pendingModels)
+        if not ok then
+            print(('[br_core] showroom check errored (%s) -- not waiting')
+                :format(tostring(n)))
+            return 0
+        end
+        return tonumber(n) or 0
+    end
+
+    while pending() > 0 do
+        if GetGameTimer() >= deadline then return false end
+        Citizen.Wait(50)
+    end
+    return true
+end
+
 --- @return boolean  whether the trip actually started
 function BR.Spawn.toWarmupPad()
+    -- THE SHOWROOM'S MODELS ARE ASKED FOR FIRST, AHEAD OF EVEN THE REFUSAL
+    -- (#368). This is the earliest this client knows it is going to the pad:
+    -- every road onto it -- a ready-up, a late join, a rejoin after a
+    -- disconnect -- is this trip, started by spawn.gather below on the first
+    -- tick my state reads WARMUP. The fade at the far end waits on these, so
+    -- every moment they spend streaming under the curtain is one the player
+    -- does not spend on black. A refused trip keeps them streaming while the
+    -- next tick retries; asking twice costs nothing.
+    if BR.Shop and BR.Shop.preload then pcall(BR.Shop.preload) end
+
     -- REFUSED, NOT SWALLOWED. The caller latches on "I have gathered this
     -- player", so a silent refusal here (a trip home still finishing when the
     -- next match's warmup arrives -- entirely possible now that readying up
@@ -1107,11 +1183,11 @@ function BR.Spawn.toWarmupPad()
         Citizen.Wait(BR.Spawn.departure.focusHoldMs)
 
         -- THE LAST THING TO LIFT IS THE CURTAIN, and it lifts on the world
-        -- being ready rather than on a timer. placeAt waits for collision and
-        -- calls reveal() (the game's fade back in) before this runs, so by
-        -- the time the curtain goes the pad is under the player's feet and
-        -- the HUD is already drawn -- the player fades INTO the warmup, which
-        -- is the whole point of the ordering.
+        -- being ready rather than on a timer. placeAt waits for collision, then
+        -- for the showroom gate below, and calls reveal() (the game's fade back
+        -- in) before this runs, so by the time the curtain goes the pad is
+        -- under the player's feet and the HUD is already drawn -- the player
+        -- fades INTO the warmup, which is the whole point of the ordering.
         local function landed()
             -- ═══ THE TELEPORT HAS HAPPENED; ONLY NOW IS THE PED NETWORKED ═══
             --
@@ -1156,21 +1232,57 @@ function BR.Spawn.toWarmupPad()
             end)
         end
 
+        -- ═══ THE FADE WAITS FOR THE SHOWROOM, AND IT ONLY WAITS (#368) ═══
+        --
+        -- Owner, 2026-09-23: "please make the warmup not fade in until all of
+        -- the store's vehicle models have loaded OR 10 seconds. whichever comes
+        -- first."
+        --
+        -- placeAt runs this at the moment it would have revealed -- the ground
+        -- is under the ped and nothing else is holding the light -- so the ten
+        -- seconds are counted from there, and what follows is the same fade
+        -- it always was. In the trace line, `ground` is when the fade would
+        -- have started and `showroom` is when it did; the difference is how
+        -- long this held.
+        --
+        -- The deadline is kept where the escape below can read it.
+        local holdUntil = nil
+        local function showroomGate()
+            step('ground')
+            holdUntil = GetGameTimer() + BR.Spawn.departure.showroomWaitMs
+            local loaded = awaitShowroom(holdUntil)
+            holdUntil = nil
+            step(loaded and 'showroom' or 'SHOWROOM-NEVER-LOADED')
+        end
+
         step('ped')
-        BR.Spawn.respawn(spot.x, spot.y, spot.z, spot.heading, false, landed)
+        BR.Spawn.respawn(spot.x, spot.y, spot.z, spot.heading, false, landed,
+                         showroomGate)
 
         -- placeAt refuses to start while another placement is running, in
         -- which case the callback above never fires -- and the curtain would
         -- stay down over a perfectly healthy game, which is the same
         -- unrecoverable black screen this file exists to prevent. The
         -- deadline is the escape, not the plan.
-        Citizen.SetTimeout(9000, function()
-            if BR.Spawn.traveling then
-                print('[br_core] warmup placement did not report back -- releasing')
-                BR.Spawn.reveal()
-                landed()
+        --
+        -- AND THE SHOWROOM GATE IS NOT A PLACEMENT THAT FAILED TO REPORT BACK.
+        -- It may legitimately hold the reveal past these nine seconds, and an
+        -- escape firing into it would fade the warmup in over the very wait it
+        -- asked for. So while the gate is inside its own deadline the escape
+        -- steps back to just past it; a thread that died mid-gate is still
+        -- released there, half a second after the gate would have let go.
+        local function escape()
+            if not BR.Spawn.traveling then return end
+            local left = holdUntil and (holdUntil - GetGameTimer()) or 0
+            if left > 0 then
+                Citizen.SetTimeout(left + 500, escape)
+                return
             end
-        end)
+            print('[br_core] warmup placement did not report back -- releasing')
+            BR.Spawn.reveal()
+            landed()
+        end
+        Citizen.SetTimeout(9000, escape)
     end)
 
     return true
@@ -1608,7 +1720,13 @@ end)
 -- Fifteen seconds is longer than the longest legitimate trip (the leave path
 -- waits on collision plus two seconds, with a 15s ceiling of its own), so this
 -- can only fire on something that has genuinely been abandoned.
-local CURTAIN_MAX_MS = 15000
+--
+-- PLUS THE SHOWROOM GATE'S CEILING (#368), which can hold the trip to the pad
+-- that much longer. The trip itself is exempt while it runs, but the curtain
+-- comes down a beat AFTER `traveling` clears, and a warmup whose gate ran to
+-- its deadline could otherwise be old enough by then for this to lift it early
+-- and blame an abandoned trip that was not one.
+local CURTAIN_MAX_MS = 15000 + BR.Spawn.departure.showroomWaitMs
 BR.Loop.register(BR.Loop.SLOW, 'spawn.curtainwatch', function()
     if not BR.Spawn.curtainWanted then return end
     if BR.Spawn.traveling or BR.Spawn.holdBlack then return end

@@ -158,6 +158,24 @@ local promptShown = false
 --- load when two rows are closer together than the reach radius.
 local candidate = nil
 
+--- The showroom models asked for AHEAD of the pad, by hash (#368).
+---
+--- Owner, 2026-09-23: "please make the warmup not fade in until all of the
+--- store's vehicle models have loaded OR 10 seconds. whichever comes first."
+---
+--- BR.Shop.preload asks for every one of them the moment the trip to the pad
+--- starts, well before the reconciler below has a seed to build with, and that
+--- trip's fade waits on BR.Shop.pendingModels. The build then finds each model
+--- already resident, and its own SetModelAsNoLongerNeeded is what hands the
+--- request back on the ordinary road.
+---
+--- WRITTEN DOWN SO THE OTHER ROADS HAND IT BACK TOO. A warmup that ends before
+--- the pad goes up -- a late joiner with seconds left, a match that dissolves --
+--- never reaches that line, and a request nobody releases keeps thirteen
+--- vehicles in memory for a whole match. The reconciler releases whatever is
+--- left here once this player is no longer in warmup.
+local preloaded = {}
+
 --- Model dimensions, cached by model hash. A model's size never changes and the
 --- plate's position is read from it every frame.
 local DIMS = {}
@@ -374,6 +392,24 @@ local function awaitCollision(veh, row, mine)
     return done(true)
 end
 
+--- The model a row stands on the pad as, or nil when this build cannot show it.
+---
+--- ONE ANSWER FOR THE BUILD AND FOR THE WARMUP'S FADE (#368). The fade waits on
+--- exactly the models the pad will show. A second copy of this test would let
+--- the two drift, and a model the build skips as "not a vehicle model on this
+--- build" -- a typo, a DLC this client does not have -- would then hold every
+--- warmup on black for the full ten seconds waiting for a car that is never
+--- going to stand there.
+--- @param row table
+--- @return integer|nil
+local function showable(row)
+    local model = GetHashKey(row.model)
+    if isTrue(IsModelValid(model)) and isTrue(IsModelAVehicle(model)) then
+        return model
+    end
+    return nil
+end
+
 --- Put the cars on the pad.
 ---
 --- ONE THREAD FOR THE WHOLE SHOWROOM, not one per car: model streaming yields,
@@ -390,8 +426,8 @@ local function build(paintSeed)
         for _, row in ipairs(rows) do
             if mine ~= gen then return end
 
-            local model = GetHashKey(row.model)
-            if isTrue(IsModelValid(model)) and isTrue(IsModelAVehicle(model)) then
+            local model = showable(row)
+            if model then
                 RequestModel(model)
                 local waited = 0
                 while not isTrue(HasModelLoaded(model)) and waited < 5000 do
@@ -743,6 +779,55 @@ local function build(paintSeed)
     end)
 end
 
+--- Ask the streamer for every model the showroom will show (#368).
+---
+--- Called by client/spawn.lua as the trip to the pad starts, and every road
+--- onto the pad is that one trip -- a ready-up, a late join, a rejoin after a
+--- disconnect -- so all of them ask at the same moment. ALL AT ONCE, which the
+--- build above deliberately is not: the point is that thirteen models stream
+--- side by side while the screen goes black, rather than one after another in
+--- front of the player. The trip raises its curtain in the same tick, so any
+--- hitch this costs lands behind it.
+---
+--- IDEMPOTENT. Asking again for a model already asked for costs the streamer
+--- nothing, which is what lets a refused trip call this again on its retry.
+--- @return integer pending  how many of them are still streaming
+function BR.Shop.preload()
+    if not BR.ShopSolve.enabled(S) then return 0 end
+    for _, row in ipairs(rows) do
+        local model = showable(row)
+        if model then
+            RequestModel(model)
+            preloaded[model] = true
+        end
+    end
+    return BR.Shop.pendingModels()
+end
+
+--- How many of the showroom's models have not loaded yet -- what the warmup's
+--- fade waits on (#368). 0 when there is no shop, and a model this build does
+--- not have is not counted: it can never arrive (see showable).
+--- @return integer
+function BR.Shop.pendingModels()
+    if not BR.ShopSolve.enabled(S) then return 0 end
+    local n = 0
+    for _, row in ipairs(rows) do
+        local model = showable(row)
+        if model and not isTrue(HasModelLoaded(model)) then n = n + 1 end
+    end
+    return n
+end
+
+--- Hand back every request BR.Shop.preload made. Safe over a model the build
+--- has already handed back: this runs only once the player has left warmup,
+--- which is when the pad comes down as well (wantScene needs them in it).
+local function releasePreload()
+    for model in pairs(preloaded) do
+        SetModelAsNoLongerNeeded(model)
+        preloaded[model] = nil
+    end
+end
+
 --- Should the pad be standing right now?
 ---
 --- WARMUP AND WARMUP ONLY, on both clocks -- the match's and this player's. A
@@ -809,6 +894,12 @@ end)
 --- event per second per client for at most a beat or two, and STOPS THE MOMENT
 --- IT IS ANSWERED -- `seed` being set is the whole of the condition.
 BR.Loop.register(BR.Loop.SLOW, 'shop.scene', function()
+    -- THE PRELOAD'S NET (#368; see `preloaded`). Keyed on MY state and not on
+    -- wantScene: a late joiner learns the match's state from the digest, up to
+    -- half a second after its own (client/state.lua), and releasing on that
+    -- would hand back the very models the trip's fade is waiting for.
+    if BR.State.me.state ~= BR.PlayerState.WARMUP then releasePreload() end
+
     if wantScene() then
         if seed == nil then
             TriggerServerEvent('br:shop:seed')

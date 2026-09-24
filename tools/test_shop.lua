@@ -5510,6 +5510,104 @@ do
     ok(shipped.groundDropM == 0.5,
         'and nothing here has changed where a car goes -- the drop is still '
             .. 'the number he named', tostring(shipped.groundDropM))
+
+    -- ═══ 15. THE WARMUP'S FADE WAITS ON THESE MODELS (#368) ═══
+    --
+    -- Owner, 2026-09-23: "please make the warmup not fade in until all of the
+    -- store's vehicle models have loaded OR 10 seconds. whichever comes first."
+    --
+    -- client/spawn.lua's trip asks BR.Shop.preload for the models as it starts
+    -- and holds its fade on BR.Shop.pendingModels; tools/test_lobbyseq.lua
+    -- drives that trip and its ten seconds. This is the shop's half: WHICH
+    -- models are waited on, that one this build does not have never is, and
+    -- that every request the preload makes is handed back.
+    --
+    -- The model natives answer 1 and 0 here, not true and false, for the reason
+    -- every fixture in this file does.
+    local requests, releases, streamed, missing = {}, {}, {}, {}
+    function IsModelValid(h) return missing[h] and 0 or 1 end
+    function RequestModel(h) requests[#requests + 1] = h end
+    function HasModelLoaded(h) return streamed[h] and 1 or 0 end
+    function SetModelAsNoLongerNeeded(h) releases[#releases + 1] = h end
+
+    local function holds(list, h)
+        for _, v in ipairs(list) do if v == h then return true end end
+        return false
+    end
+    local SULTAN, BISON, BLISTA =
+        GetHashKey('sultan'), GetHashKey('bison'), GetHashKey('blista')
+
+    BR.State.me.state = BR.PlayerState.WARMUP
+    BR.State.match.state = BR.MatchState.WARMUP
+
+    ok(BR.Shop.preload() == 3,
+        'the preload reports every showroom model still streaming', #requests)
+    ok(holds(requests, SULTAN) and holds(requests, BISON)
+           and holds(requests, BLISTA),
+        'and asks for all of them in the one call -- side by side, not one '
+            .. 'after another the way the pad is built')
+
+    streamed[SULTAN] = true
+    ok(BR.Shop.pendingModels() == 2, 'one streamed: two left to wait for')
+    streamed[BISON] = true
+    ok(BR.Shop.pendingModels() == 1, 'two streamed: one left')
+
+    -- ═══ A MODEL THIS BUILD DOES NOT HAVE IS NEVER WAITED FOR ═══
+    --
+    -- A typo, or a DLC car this client lacks. It could never arrive, so the
+    -- fade must not stand on it -- and the pad skips it for the same reason,
+    -- through the same test, which is what the rebuild below checks.
+    missing[BLISTA] = true
+    ok(BR.Shop.pendingModels() == 0,
+        'a model this build does not have is not counted -- it cannot hold the fade')
+    requests = {}
+    BR.Shop.preload()
+    ok(not holds(requests, BLISTA) and holds(requests, SULTAN),
+        'and is not asked for either')
+
+    local farBefore = byId.far
+    quiet(loops['shop.scene'])
+    quiet(handlers['br:shop:seeded'], { s = 5 })
+    quiet(loops['shop.scene'])
+    ok(byId.near ~= nil and ents[byId.near] ~= nil and byId.far == farBefore,
+        'the pad agrees: it builds the two the fade waited on and skips the third')
+    ok((lineWith('is not a vehicle model on this build') or ''):find('blista', 1, true)
+           ~= nil,
+        'saying which one', lineWith('is not a vehicle model on this build'))
+
+    -- ═══ HANDED BACK WHEN THIS PLAYER LEAVES WARMUP, AND NOT BEFORE ═══
+    --
+    -- A late joiner learns the match's state from the digest, a beat after its
+    -- own. The trip's fade is waiting on these models in exactly that beat, so
+    -- a release keyed on the scene would hand them back mid-wait.
+    releases = {}
+    BR.State.match.state = BR.MatchState.WAITING
+    quiet(loops['shop.scene'])
+    ok(#releases == 0,
+        'with MY state still warmup, a match state that trails mine releases '
+            .. 'nothing', #releases)
+
+    BR.State.me.state = BR.PlayerState.BUS
+    BR.State.match.state = BR.MatchState.BUS
+    quiet(loops['shop.scene'])
+    ok(holds(releases, SULTAN) and holds(releases, BISON),
+        'leaving warmup hands back every model the preload asked for -- a '
+            .. 'warmup that ended before the pad went up must not keep them '
+            .. 'in memory for the match', #releases)
+    local n = #releases
+    quiet(loops['shop.scene'])
+    ok(#releases == n, 'and only once', #releases - n)
+
+    -- ═══ NO SHOP, NOTHING TO WAIT FOR ═══
+    BR.State.me.state = BR.PlayerState.WARMUP
+    DIAG.enabled = false
+    requests = {}
+    streamed = {}
+    ok(BR.Shop.preload() == 0 and #requests == 0
+           and BR.Shop.pendingModels() == 0,
+        'with the shop switched off there is nothing to ask for and nothing to '
+            .. 'wait on', #requests)
+    DIAG.enabled = true
 end
 print(('\n\27[32m%d passed\27[0m'):format(pass))
 if fail > 0 then

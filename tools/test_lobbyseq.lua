@@ -3298,18 +3298,24 @@ end
 do
     local D = BR.Spawn.departure
     ok(type(D) == 'table', 'the departure has a tunable table')
-    for _, k in ipairs({ 'focusHoldMs', 'focusMaxMs' }) do
+    for _, k in ipairs({ 'focusHoldMs', 'focusMaxMs', 'showroomWaitMs' }) do
         ok(type(D[k]) == 'number', ('departure.%s is tunable'):format(k))
     end
     ok(D.focusHoldMs >= 1000,
         ('the focus hold is at least the second the owner asked for (%dms)')
             :format(D.focusHoldMs or -1))
 
+    -- "OR 10 seconds" (owner, 2026-09-23, #368).
+    ok(D.showroomWaitMs == 10000,
+        ('the showroom gate gives up at the owner\'s ten seconds (%dms)')
+            :format(D.showroomWaitMs or -1))
+
     -- The net has to outlast the trip it is a net for, or it would fire on
-    -- healthy departures and take the focus off the pad mid-placement.
-    ok(D.focusMaxMs > D.focusHoldMs + 9000,
-        ('the focus net outlasts the hold plus the 9s placement escape (%dms)')
-            :format(D.focusMaxMs or -1))
+    -- healthy departures and take the focus off the pad mid-placement -- and
+    -- since #368 a healthy departure includes the showroom gate's whole wait.
+    ok(D.focusMaxMs > D.focusHoldMs + 9000 + (D.showroomWaitMs or 0),
+        ('the focus net outlasts the hold, the 9s placement escape and the '
+            .. 'showroom gate (%dms)'):format(D.focusMaxMs or -1))
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -3725,6 +3731,329 @@ do
 
     pump(40000)
 end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 22. THE WARMUP FADES IN ON THE SHOWROOM, OR ON THE TENTH SECOND (#368)
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- Owner, 2026-09-23: "please make the warmup not fade in until all of the
+-- store's vehicle models have loaded OR 10 seconds. whichever comes first."
+--
+-- client/shop.lua is not loaded here. Its two answers -- ask for the models,
+-- say how many are still streaming -- are asserted against the real file in
+-- tools/test_shop.lua. What this suite owns is the TRIP: when it asks, and
+-- when the fade lands against what it asked for. So the shop is a SCHEDULE:
+-- how long each model takes to stream once it has been asked for, or `false`
+-- for one that never arrives. A model nobody asked for never arrives either,
+-- which is what makes "the trip asked" something these blocks can see.
+
+--- [name] = ms from the ask until it has streamed, or false for never.
+local showroom = {}
+--- [name] = the fixture time it streams at, set by the ask.
+local streamsAt = {}
+
+BR.Shop = {
+    preload = function()
+        note('preload')
+        for name, ms in pairs(showroom) do
+            if streamsAt[name] == nil then
+                streamsAt[name] = ms and (fakeTime + ms) or math.huge
+            end
+        end
+        return BR.Shop.pendingModels()
+    end,
+    pendingModels = function()
+        local n = 0
+        for name in pairs(showroom) do
+            local at = streamsAt[name]
+            if not at or fakeTime < at then n = n + 1 end
+        end
+        return n
+    end,
+}
+
+--- A fresh pad: these models, none of them asked for yet.
+local function stock(t)
+    showroom, streamsAt = t, {}
+end
+
+--- The departure's trace line, once it has printed.
+local function traceLine()
+    for _, l in ipairs(logged) do
+        if l:find('warmup departure:', 1, true) then return l end
+    end
+end
+
+--- One step of that line, in ms from the start of the trip, or nil.
+local function traceAt(what)
+    local ms = (traceLine() or ''):match(what .. ' (%d+)ms')
+    return ms and tonumber(ms)
+end
+
+--- How long the gate held the fade, read off the trace: from `ground` (when
+--- the fade would have started) to whichever step ended the wait.
+local function held()
+    local g = traceAt('ground')
+    local s = traceAt('showroom') or traceAt('SHOWROOM%-NEVER%-LOADED')
+    return (g and s) and (s - g) or nil
+end
+
+--- When the ped was put down and when the world faded in, from the ordered log.
+local function departed()
+    local _, res = firstOf('resurrect')
+    local _, fin = firstOf('fadein', function(e) return res and e.at >= res.at end)
+    return res and res.at, fin and fin.at
+end
+
+do
+    -- ═══ SLOW MODELS: THE FADE WAITS FOR THE LAST ONE ═══
+    reset()
+    wearChosenModel()
+    pump(3000)
+    stock({ veto = 2500, drifttampa = 5000 })
+
+    order = {}
+    BR.State.me.state = BR.PlayerState.WARMUP
+    local t0 = fakeTime
+    ok(BR.Spawn.toWarmupPad(), 'the trip starts')
+    pump(20000)
+
+    local iAsk, ask = firstOf('preload')
+    ok(ask ~= nil and ask.at == t0,
+        'the showroom\'s models are asked for in the tick the trip starts')
+    ok(iAsk ~= nil and iAsk < (firstOf('fadeout') or 0),
+        'before the world has even gone black')
+
+    local res, fin = departed()
+    local last = t0 + 5000
+    ok(fin ~= nil and fin >= last,
+        ('the warmup does not fade in until the slowest model has streamed '
+            .. '(fade at +%s, model at +5000)'):format(fin and (fin - t0) or 'never'))
+    ok(fin ~= nil and fin - last <= 50,
+        ('and fades in the frame it has (%sms late)')
+            :format(fin and (fin - last) or '?'))
+    ok((held() or 0) > 0,
+        ('which is later than the ground alone would have allowed (held %sms)')
+            :format(tostring(held())))
+
+    -- THE FADE ITSELF IS UNCHANGED, IT ONLY WAITS. The ped is still let go in
+    -- the frame the light comes back, and the curtain still follows the fade.
+    local _, thaw = firstOf('freeze', function(e)
+        return not e.on and res and e.at >= res
+    end)
+    ok(thaw ~= nil and fin ~= nil and thaw.at == fin,
+        'the ped stays frozen through the wait and is let go in the fade\'s frame')
+    local iIn = firstOf('fadein', function(e) return res and e.at >= res end)
+    local iDown = firstOf('curtaindown')
+    ok(iIn ~= nil and iDown ~= nil and iIn < iDown,
+        'and the curtain still comes down after the fade, not before it')
+
+    local line = traceLine() or ''
+    ok(line:find('ground', 1, true) and line:find('showroom', 1, true)
+           and not line:find('SHOWROOM-NEVER-LOADED', 1, true),
+        'the trace line says when the fade would have started and when it did',
+        line)
+    ok(not said('did not report back'),
+        'and the 9s escape did not mistake the wait for a lost placement')
+end
+
+do
+    -- ═══ WARM MODELS: NOTHING WAITS ═══
+    reset()
+    wearChosenModel()
+    pump(3000)
+    stock({ veto = 0, drifttampa = 0 })
+
+    order = {}
+    BR.State.me.state = BR.PlayerState.WARMUP
+    ok(BR.Spawn.toWarmupPad(), 'the trip starts')
+    pump(20000)
+
+    ok(held() == 0,
+        ('models that are already in cost the fade nothing -- it lands in the '
+            .. 'frame the ground does, as it always did (held %sms)')
+            :format(tostring(held())))
+    ok(traceAt('showroom') ~= nil, 'and the trace says the models ended it')
+end
+
+do
+    -- ═══ A MODEL THAT NEVER ARRIVES: TEN SECONDS, AND NOT ONE MORE ═══
+    reset()
+    wearChosenModel()
+    pump(3000)
+    stock({ veto = 0, nosuchcar = false })
+
+    order = {}
+    BR.State.me.state = BR.PlayerState.WARMUP
+    ok(BR.Spawn.toWarmupPad(), 'the trip starts')
+    pump(30000)
+
+    local cap = BR.Spawn.departure.showroomWaitMs
+    local h = held()
+    ok(h ~= nil and h >= cap,
+        ('a model that never loads holds the fade for the whole ten seconds '
+            .. '(%sms)'):format(tostring(h)))
+    ok(h ~= nil and h - cap <= 50,
+        ('and no longer: counted from the moment the fade would have started '
+            .. '(%sms over)'):format(h and (h - cap) or '?'))
+    ok(traceAt('SHOWROOM%-NEVER%-LOADED') ~= nil
+           and traceAt('SHOWROOM%-NEVER%-LOADED') == traceAt('in'),
+        'the trace says the deadline, not the models, ended the wait -- and the '
+            .. 'trip landed in that same frame')
+    local res, fin = departed()
+    ok(res ~= nil and fin ~= nil, 'and the world did fade in')
+    ok(not said('did not report back'),
+        'the 9s escape stepped back for the wait instead of firing into it')
+    ok(not BR.Spawn.traveling and BR.LobbyPed.isNetworked(),
+        'and the trip still lands: networked, not travelling')
+end
+
+do
+    -- ═══ THE SLOWEST ROAD: NO GROUND FOR FOUR SECONDS, THEN NO MODEL ═══
+    --
+    -- The longest a healthy trip can now be -- the placement's whole collision
+    -- budget, then the gate's whole ceiling -- and the case every NET in the
+    -- trip has to have been re-sized for. The focus net was 14s from the
+    -- focus step, and this trip reaches its fade about 15s after it; the
+    -- curtain's watchdog was 15s from the curtain, and this trip lands about
+    -- 15.7s after it. Either one firing here is a watchdog blaming a trip that
+    -- is still doing exactly what it was asked to.
+    reset()
+    wearChosenModel()
+    pump(3000)
+    stock({ nosuchcar = false })
+
+    local realCollision = HasCollisionLoadedAroundEntity
+    HasCollisionLoadedAroundEntity = function() return 0 end
+
+    order = {}
+    BR.State.me.state = BR.PlayerState.WARMUP
+    ok(BR.Spawn.toWarmupPad(), 'the trip starts with no ground to stand on')
+
+    -- STOPPED THE FRAME THE TRIP LANDS, because the curtain comes down 250ms
+    -- after that, and the watchdog question is about exactly that gap.
+    local limit = fakeTime + 30000
+    pump(50)
+    while BR.Spawn.traveling and fakeTime < limit do pump(50) end
+    ok(not BR.Spawn.traveling, 'precondition: the trip landed')
+
+    local res, fin = departed()
+    local cap = BR.Spawn.departure.showroomWaitMs
+    ok(res ~= nil and fin ~= nil and fin - res >= 4000 + cap,
+        ('the ten seconds start after the ground wait, not inside it (%sms '
+            .. 'from the ped to the fade)'):format((res and fin) and (fin - res) or '?'))
+
+    local iIn = firstOf('fadein', function(e) return res and e.at >= res end)
+    local iBack = firstOf('focusback')
+    ok(iIn ~= nil and iBack ~= nil and iIn < iBack,
+        'the streaming focus is not taken off the pad while the fade is waiting')
+    ok(not said('did not report back'), 'the escape did not fire into the wait')
+
+    BR.Loop.step(BR.Loop.SLOW)
+    ok(not said('the curtain outlived its trip'),
+        'and the curtain watchdog does not lift the curtain the trip is about '
+            .. 'to lower itself')
+
+    HasCollisionLoadedAroundEntity = realCollision
+    pump(2000)
+    ok(firstOf('curtaindown') ~= nil, 'which it then does')
+end
+
+do
+    -- ═══ NO LONGER IN WARMUP: NOTHING LEFT TO WAIT FOR ═══
+    --
+    -- A match that dissolves under the player, or a bus that leaves under a
+    -- late joiner, puts them somewhere with no showroom in it -- and a gate
+    -- still waiting on its models would be holding black over whatever that is.
+    reset()
+    wearChosenModel()
+    pump(3000)
+    stock({ nosuchcar = false })
+
+    order = {}
+    BR.State.me.state = BR.PlayerState.WARMUP
+    ok(BR.Spawn.toWarmupPad(), 'the trip starts')
+    pump(4000)
+
+    local res = departed()
+    ok(res ~= nil and BR.Spawn.traveling,
+        'precondition: the ped is down and the gate is holding the fade')
+    local left = fakeTime
+    BR.State.me.state = BR.PlayerState.LOBBY
+    pump(200)
+
+    local _, fin = departed()
+    ok(fin ~= nil and fin - left <= 50,
+        ('the wait ends the moment the player is no longer in warmup (%sms)')
+            :format(fin and (fin - left) or 'never'))
+    pump(20000)
+end
+
+do
+    -- ═══ A LATE JOINER, OR A REJOIN AFTER A DISCONNECT: THE SAME GATE ═══
+    --
+    -- Every road onto the pad is ONE road on this client: spawn.gather sees my
+    -- state read WARMUP and starts the trip. A late joiner's state flips while
+    -- the match is already in warmup, and a player who dropped comes back as a
+    -- lobby player and readies into the open warmup the same way -- there is
+    -- no second door for either. So this drives the gather rather than the
+    -- trip, and asks the same two questions of it.
+    reset()
+    wearChosenModel()
+    pump(3000)
+    stock({ veto = 0, drifttampa = 4000 })
+    ok(BR.Loop.setEnabled('spawn.gather', true), 'the gather runs for this block')
+
+    order = {}
+    BR.State.match.state = BR.MatchState.WARMUP     -- already open
+    local flipped = fakeTime
+    BR.State.me.state = BR.PlayerState.WARMUP
+    pump(20000)
+
+    local _, ask = firstOf('preload')
+    ok(ask ~= nil and ask.at - flipped <= 100,
+        ('a late joiner\'s trip asks for the models within a tick of the state '
+            .. 'flip (%sms)'):format(ask and (ask.at - flipped) or 'never'))
+    local _, fin = departed()
+    ok(ask ~= nil and fin ~= nil and fin >= ask.at + 4000,
+        'and its fade waits for them exactly as a ready-up\'s does')
+
+    BR.State.me.state = BR.PlayerState.LOBBY
+    BR.State.match.state = BR.MatchState.WAITING
+    pump(100)
+    ok(BR.Loop.setEnabled('spawn.gather', false), 'and is held off again')
+    pump(20000)
+end
+
+do
+    -- ═══ A HOLD THAT THROWS STILL REVEALS ═══
+    --
+    -- placeAt runs the hold in a bare thread with no handler above it. One
+    -- that threw there would stop the thread with `placing` still set and the
+    -- ped frozen on black, which is the outcome client/spawn.lua exists to
+    -- prevent -- so the reveal must not depend on the hold being well behaved.
+    reset()
+    wearChosenModel()
+    pump(3000)
+    DoScreenFadeOut()
+
+    order = {}
+    local called = false
+    local home = BR.Config.Match.lobbyPos
+    BR.Spawn.placeAt(home.x, home.y, home.z, home.heading,
+        function() called = true end,
+        function() error('a hold that throws') end)
+    pump(1000)
+
+    ok(called, 'a hold that throws still ends in the placement\'s callback')
+    ok(firstOf('fadein') ~= nil, 'and the screen is revealed')
+    ok(firstOf('freeze', function(e) return not e.on end) ~= nil,
+        'and the ped is let go')
+    ok(BR.Spawn.diagnose().placing == false, 'with no placement left running')
+    ok(said('placement hold errored'), 'and the console says why')
+end
+
+BR.Shop = nil
 
 -- And the gather loop goes back on, so nothing added after this inherits a
 -- disabled subsystem from a block that only wanted it quiet for itself.
