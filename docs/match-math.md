@@ -437,7 +437,13 @@ and **never moves outward** — a moving disc's later position is a blend of its
 earlier one and a disc of the destination, both inside the earlier hull. Where the
 bare corner paths would have cut into the destination, the wall rests on it
 instead: measured in 34–52% of nested sweeps at phases 2–7 (the bare cut would
-have been up to 374 m deep at phase 2). It is convex at every `t` (a hull), and
+have been up to 374 m deep at phase 2). While it rests it wears the destination's
+corners it rests on beside its own moving ones, so it can show more corners than
+`max(n, m)`: one more on 17.4% of mid-sweep frames, two on 2.8%, three or four on
+0.4% (10,260 frames, 150 matches) — the price of holding the destination with
+straight corner paths. Arriving early instead of resting was measured at 4.2% of
+frames, with corners up to ten times as fast; the owner decides. It is convex at
+every `t` (a hull), and
 its signed distance and erosion are the same corner list's, exact. A breakout
 morphs the same way without the destination in the hull, and the safe zone is
 the wall united with the destination.

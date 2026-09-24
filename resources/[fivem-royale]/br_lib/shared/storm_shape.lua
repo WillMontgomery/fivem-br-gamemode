@@ -2072,6 +2072,21 @@ end
 --   intersects with the inside circle, that part of it stops moving". MEASURED, in
 --   36 to 64 percent of nested sweeps, on 14 to 32 percent of frames.
 --
+--   AND WHILE IT RESTS, IT WEARS SOME OF THE DESTINATION'S CORNERS BESIDE ITS OWN.
+--   The destination's corners it rests on are corners of the wall, and the moving
+--   corners still on their way are too, so a resting frame can show more corners
+--   than max(n, m) -- a little of the two-shapes-at-once look the blend had.
+--   MEASURED over 10,260 mid-sweep frames of 150 matches' nested phases: one more
+--   corner on 17.4 percent of frames, two on 2.8, three or four on 0.4 -- 20.6
+--   percent in all, every one of them a frame resting on the destination. It is
+--   the price of holding the destination with straight corner paths. The other way
+--   to hold it -- the corner heading for a destination corner that would poke out
+--   ARRIVES early and waits there, so the corner that rests is the wall's own -- was
+--   built and measured: it cuts those frames to 4.2 percent, but a corner then
+--   covers its path in as little as a tenth of the sweep, ten times as fast, which
+--   the sweep's price would have to pay for in longer sweeps, and where the
+--   destination touches the wall no arrival is early enough. The owner decides.
+--
 -- IT IS CONVEX AT EVERY t, because it is a hull. Its signed distance and its
 -- erosion are the corner list's, exact -- measured to 4e-12 m at ninety thousand
 -- points outside moving walls of every phase. And it starts and ends on the zones
