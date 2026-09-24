@@ -971,8 +971,9 @@ end
 --- every one of them either costs the player more than it pays or banks
 --- nothing at all: taking fire (`useCancelOnDamage`), going down, dying,
 --- leaving the match, the shop car's seat rule -- which has no partial effect
---- to bank -- and the repair kit's driving-seat rule, which does. See the note
---- above the tick loop for the one that is still worth something.
+--- to bank -- and the repair kit's driving-seat rule, which does, and which
+--- therefore SPENDS THE KIT rather than handing it back (#361). See the note
+--- above the tick loop.
 ---
 --- THERE IS THEREFORE NO WAY FOR A PLAYER TO CANCEL A CHANNEL ON PURPOSE any
 --- more. An eight-second med kit started in the open is eight seconds the
@@ -1452,6 +1453,10 @@ AddEventHandler(BR.Net.INV_USE, function(d)
     -- kept too), it is what "in progress" means, and it is the owner's ruling
     -- twice over.
     --
+    -- ...EXCEPT THE SEAT, SINCE #361. Leaving the driving seat still keeps the
+    -- repair already delivered, but it now spends the kit; see the seat rule in
+    -- the tick loop. Every other interruption is still free.
+    --
     -- ═══ AND IT IS NO LONGER RE-PRESSABLE, BECAUSE IT CAN NO LONGER BE PUT
     --     DOWN (#271, owner 2026-09-23) ═══
     --
@@ -1759,11 +1764,14 @@ end
 --
 -- ═══ WHO PAYS, AND WHEN -- THE ONE CONTRACT THIS LOOP RESTS ON ═══
 --
--- THE RULE, AND IT HAS NO EXCEPTIONS AGAIN: the COMPLETION is what consumes the
--- item, so an interrupted use costs nothing and cancelling needs no refund path
--- at all. That is true of the med kit, the bandage, both shields, the shop car
--- AND THE REPAIR KIT, and it is what lets every guard below simply drop the
--- channel and walk away.
+-- THE RULE: the COMPLETION is what consumes the item, so an interrupted use
+-- costs nothing and cancelling needs no refund path at all. That is true of the
+-- med kit, the bandage, both shields, the shop car AND THE REPAIR KIT, and it is
+-- what lets every guard below simply drop the channel and walk away.
+--
+-- ONE GUARD SPENDS AS WELL AS DROPPING, AND IT IS NOT A REFUND PATH EITHER:
+-- the repair kit's driving-seat rule (#361). The last note in this header says
+-- why.
 --
 -- ONE ITEM BRIEFLY DIVERGED AND THE OWNER REVERSED IT (#228, 2026-09-03): the
 -- repair kit was debited at the keypress, which meant the slot emptied the
@@ -1792,13 +1800,14 @@ end
 --   TAKING FIRE costs them health, and is an attacker's decision.
 --   THE SHOP CAR'S SEAT RULE banks nothing -- a car is not a partial effect.
 --
--- ONE IS STILL WORTH SOMETHING AND IS NAMED SO NOBODY READS #271 AS AIRTIGHT:
--- the repair kit's driving-seat rule below. Stepping out of the seat at 4.9s
--- cancels the channel, the car keeps the slices, and the kit is still in the
--- bag. It cannot be refused the way a keypress can -- the guard exists because
--- the player really is no longer driving the car the kit was aimed at, and a
--- server cannot decline to let somebody leave a vehicle. It is slower than the
--- old loop by the length of two door animations and it is not closed.
+-- ONE WAS STILL WORTH SOMETHING AFTER #271, AND IT IS CLOSED BY SPENDING RATHER
+-- THAN REFUSING (#361, owner 2026-09-23): the repair kit's driving-seat rule
+-- below. Stepping out of the seat at 4.9s cancelled the channel, the car kept
+-- the slices, and the kit was still in the bag -- step back in and press again.
+-- It cannot be refused the way a keypress can: the guard exists because the
+-- player really is no longer driving the car the kit was aimed at, and a server
+-- cannot decline to let somebody leave a vehicle. So the seat rule now costs
+-- the kit, and the car still keeps what the slices delivered.
 BR.Sched.every(250, 'inv.use', function()
     local now = GetGameTimer()
 
@@ -1949,9 +1958,8 @@ BR.Sched.every(250, 'inv.use', function()
             --                                          -- owner, 2026-09-04
             --
             -- "It" is the press-time sentence, USE_WHILE_DRIVING. It was silent
-            -- here until he wrote that, and the cancel costs nothing either way
-            -- -- the kit is still in the bag, because the completion is what
-            -- spends it.
+            -- here until he wrote that. Whether the cancel COSTS anything is a
+            -- separate ruling, below the sentence.
             --
             -- FOUR SITUATIONS REACH THIS BRANCH AND THE SENTENCE IS TRUE OF TWO.
             -- Left the vehicle, and slid into a passenger seat: both are "not
@@ -2007,6 +2015,37 @@ BR.Sched.every(250, 'inv.use', function()
                         and BR.Vehicles.drivingHandle(src) == nil then
                         why = USE_WHILE_DRIVING
                     end
+
+                    -- ═══ AND IT SPENDS THE KIT (#361, owner 2026-09-23) ═══
+                    --
+                    -- His ruling on the issue: spend the kit when the seat rule
+                    -- ends the channel, and keep the partials.
+                    --
+                    -- THE LAST FREE-EFFECT FARM #271 LEFT OPEN. Every keypress
+                    -- that could end a channel is refused, but this one is a
+                    -- world event the server cannot refuse: press, step out at
+                    -- 4.9s, the car keeps nearly a whole repair in slices and
+                    -- the kit is still in the bag -- step back in and press
+                    -- again.
+                    --
+                    -- SO THIS CANCEL IS PAID FOR, and it is the only one in the
+                    -- loop that is. The slices already delivered stay on the car,
+                    -- exactly as before -- there is nothing to take back and he
+                    -- did not ask for it -- and the completion's full-cap grant
+                    -- is still never sent, because this returns above it.
+                    --
+                    -- EVERY WAY OUT OF THE SEAT, NOT ONLY THE DOOR. Being pulled
+                    -- out, thrown off a bike and the car vanishing all reach this
+                    -- branch too, and all of them now cost the kit; no
+                    -- voluntary/involuntary split was asked for, and the server
+                    -- could not draw one from a seat read anyway. Going down or
+                    -- dying in the seat is NOT one of them when the roster's
+                    -- state has already moved: the LIVE guard at the top of the
+                    -- pass drops that channel for free first.
+                    --
+                    -- `s` is the slot-identity guard's, proved on this pass.
+                    s.count = s.count - 1
+                    if s.count <= 0 then inv.slots[u.slot] = false end
                     BR.Inv.cancelUse(src, why)
                     return
                 end
@@ -2100,7 +2139,9 @@ BR.Sched.every(250, 'inv.use', function()
             -- AND IT IS BELOW EVERY GUARD, WHICH IS THE PROPERTY WORTH KEEPING.
             -- The seat re-rule and the shop-car re-rule both run on this same
             -- pass and both return, so there is no pass on which an item can be
-            -- spent for a use the rules had just refused.
+            -- paid out for a use the rules had just refused. (The seat re-rule
+            -- spends the kit itself since #361, and still returns above the
+            -- full-cap grant below.)
             s.count = s.count - 1
             if s.count <= 0 then inv.slots[u.slot] = false end
             inv.using = nil

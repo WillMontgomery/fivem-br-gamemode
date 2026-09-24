@@ -8132,7 +8132,8 @@ describe('inv.repairkit')
 --   that still has its icon, its label and its rarity band.
 --
 --   AN INTERRUPTED CHANNEL COSTS NOTHING and keeps the repair it earned. Both
---   halves are the owner's ruling and neither is a bug to be fixed.
+--   halves are the owner's ruling and neither is a bug to be fixed -- with the
+--   one exception below.
 --
 --   THE CAR IS AT FULL WHEN THE ITEM IS SPENT. "the vehicle health should
 --   incrementally increase to finally REACH FULL once the item has been spent"
@@ -8141,7 +8142,8 @@ describe('inv.repairkit')
 --   day the completion sent a remainder and could not promise it.
 --
 --   THE DRIVING SEAT IS RE-RULED EVERY PASS, losing it cancels, and the cancel
---   now SPEAKS the owner's sentence.
+--   now SPEAKS the owner's sentence -- and, since #361, SPENDS THE KIT while
+--   the car keeps the slices it already had.
 do
     lootMatch()
 
@@ -8424,7 +8426,8 @@ do
     -- way any channel died, and banking the slices for a keypress is the free
     -- effect loop of #271 -- so the switch is refused for as long as the channel
     -- runs (owner, 2026-09-23) and the cancel is driven here by LEAVING THE
-    -- DRIVING SEAT, which is a rule about the world rather than a press.
+    -- DRIVING SEAT, which is a rule about the world rather than a press -- and
+    -- which, since #361, is the one interruption that costs the kit.
     BR.Inv.reset(1)
     BR.Inv.give(1, { item = 'repairkit', kind = BR.ItemKind.CONSUMABLE,
                      rarity = kit.rarity, count = 1 })
@@ -8460,10 +8463,17 @@ do
     ok(BR.Inv.of(1).using == nil,
         'leaving the driving seat still cancels it -- that guard is a fact '
             .. 'about the world and is not gated on anything')
-    ok(BR.Inv.of(1).slots[1] and BR.Inv.of(1).slots[1].count == 1,
-        'and the kit is STILL THERE -- "any other consumable doesn\'t get '
-            .. 'removed until the progress bar is full"',
+    ok(BR.Inv.of(1).slots[1] == false,
+        'and it SPENDS THE KIT (#361) -- the seat is the one interruption the '
+            .. 'server cannot refuse, so it is paid for instead',
         tostring(BR.Inv.of(1).slots[1] and BR.Inv.of(1).slots[1].count))
+    -- IN THE SAME PUSH THAT ENDS THE BAR. A debit landing after cancelUse's
+    -- push would leave the plate drawing a kit the server no longer holds.
+    local pushed = eventsOf(BR.Net.INV_SET)
+    pushed = pushed[#pushed] and pushed[#pushed].args[1]
+    ok(pushed and pushed.using == nil and pushed.slots[1] == false,
+        'and the push that ends the bar already has the slot empty',
+        tostring(pushed and pushed.slots[1] and pushed.slots[1].count))
 
     sent = {}
     fakeTime = t0 + kit.useMs + 250
@@ -8473,6 +8483,66 @@ do
             .. 'car keeps the part it earned and no more -- the repair already '
             .. 'delivered is not taken back either, which is the same shape as '
             .. 'a cancelled med kit\'s partial heal')
+
+    -- ── the seat is the last door, and it is paid for (#361) ──────────────
+    --
+    -- THE FARM #271 LEFT OPEN, RUN. The issue's repro, four times: press, sit
+    -- through the bar to one tick short of landing, step out, step back in,
+    -- press again. With the seat rule's debit reverted, every trip banks ~95%
+    -- of a repair and the kit is spent nought times -- nearly four whole repairs
+    -- offered for a kit still in the bag.
+    --
+    -- THE EXIT IS NOTICED ON THE PASS THAT CROSSES `endsAt`, which is the
+    -- sharpest place to ask it: the seat rule and the completion both want that
+    -- pass, and only the seat rule may have it. A build that let the completion
+    -- run first would spend the kit too -- but it would also send the full cap,
+    -- which is what `underCap` is here for.
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'repairkit', kind = BR.ItemKind.CONSUMABLE,
+                     rarity = kit.rarity, count = 1 })
+    vehSeat[VEH] = {}
+    local farm = BR.Inv.of(1)
+    local offered, spent, opened, underCap = 0.0, 0, 0, true
+    for _ = 1, 4 do
+        drive(1, VEH)
+        local before = farm.slots[1] and farm.slots[1].count or 0
+        sent = {}
+        fire(BR.Net.INV_USE, 1, { slot = 1 })
+        local u = farm.using
+        if u then opened = opened + 1 end
+        while u and fakeTime + 250 < u.endsAt do
+            fakeTime = fakeTime + 250
+            BR.Sched.step(fakeTime)
+        end
+        stepOut(VEH)
+        fakeTime = fakeTime + 250
+        BR.Sched.step(fakeTime)
+        for _, s in ipairs(eventsOf(BR.Net.VEH_FIX)) do
+            local r = s.args[1].r or 0.0
+            offered = offered + r
+            if r >= VCAP then underCap = false end
+        end
+        local after = farm.slots[1] and farm.slots[1].count or 0
+        if after < before then spent = spent + (before - after) end
+    end
+    ok(spent == 1,
+        'the seat farm spends the kit EXACTLY ONCE -- four trips out of the '
+            .. 'seat, one kit; with the debit reverted it is spent nought times',
+        ('spent %d'):format(spent))
+    ok(opened == 1,
+        'and only the first press opens a channel, because the first exit '
+            .. 'took the kit',
+        ('opened %d'):format(opened))
+    ok(offered > 0.0 and offered <= VCAP,
+        'so the whole loop offers at most one kit\'s worth of repair -- and '
+            .. 'more than none, because the slices already delivered are kept',
+        ('offered %.1f, one kit is %.1f'):format(offered, VCAP))
+    ok(underCap,
+        'and no trip is paid the completion\'s full cap: the seat rule spends '
+            .. 'the kit and returns above it')
+
+    -- GOING DOWN IN THE SEAT IS STILL FREE, and is proved in `dbno.channel`:
+    -- DBNO is squads-only, and this block's match is solo.
 
     -- ── bullets do not stop it ────────────────────────────────────────────
     --
@@ -8605,9 +8675,10 @@ do
     BR.Sched.step(fakeTime)
     ok(BR.Inv.of(1).using == nil,
         'leaving the driving seat mid-channel cancels the use')
-    ok(BR.Inv.of(1).slots[1] and BR.Inv.of(1).slots[1].count == 1,
-        'and the kit COMES BACK -- it was never taken, because the completion '
-            .. 'is what spends it and this channel never reached one',
+    ok(BR.Inv.of(1).slots[1] == false,
+        'and the kit is SPENT (#361) -- this used to hand it back, because the '
+            .. 'completion was the only thing that spent it, and that was the '
+            .. 'farm',
         tostring(BR.Inv.of(1).slots[1] and BR.Inv.of(1).slots[1].count))
     local leftSaid = nil
     for _, s in ipairs(eventsOf(BR.Net.NOTIFY)) do leftSaid = s.args[1].text end
@@ -8629,8 +8700,8 @@ do
     -- incrementally increasing throughout the timespan of the progress bar" --
     -- and it would be silently lost by a build that only granted on completion.
     ok(before >= 1 and #eventsOf(BR.Net.VEH_FIX) == 0,
-        'a cut-off use leaves the car partly mended rather than untouched, and '
-            .. 'the player still holding the kit')
+        'a cut-off use leaves the car partly mended rather than untouched -- '
+            .. 'the kit went with the seat, and the slices it paid for stay')
 
     -- ═══ SWITCHING SEATS SAYS IT TOO, AND STILL DRIVING DOES NOT ═══
     --
@@ -8660,8 +8731,9 @@ do
         'and says the same sentence -- they are in the car, and they are not '
             .. 'driving it',
         tostring(seatSaid))
-    ok(BR.Inv.of(1).slots[1] and BR.Inv.of(1).slots[1].count == 1,
-        'and it costs them nothing')
+    ok(BR.Inv.of(1).slots[1] == false,
+        'and it costs them the kit, the same as stepping out (#361) -- a '
+            .. 'passenger seat is the seat rule too')
 
     -- ...AND THE SENTENCE IS NOT SAID TO SOMEBODY WHO IS DRIVING. Two of the
     -- four situations that reach this branch are a player at a wheel: a car the
@@ -8689,8 +8761,9 @@ do
     ok(#eventsOf(BR.Net.NOTIFY) == 0,
         'but says NOTHING, because that player is driving and the sentence '
             .. 'would be a lie. No wording has been agreed for it')
-    ok(BR.Inv.of(1).slots[1] and BR.Inv.of(1).slots[1].count == 1,
-        'and it costs them nothing either')
+    ok(BR.Inv.of(1).slots[1] == false,
+        'and it costs them the kit as well (#361) -- silence is about the '
+            .. 'sentence, not the rule')
 
     -- ...AND A BUILD WITH NO `drivingHandle` STILL CANCELS. Absent copy must
     -- never delete a rule -- the same shape as the `ridingIn` guard at the
@@ -8724,16 +8797,24 @@ do
     -- between "cancelled at 4.9 seconds" and "kit eaten for a repair nobody
     -- received". Asserted as SOURCE ORDER because the pass that would prove it
     -- at runtime is the pass that must not happen.
+    --
+    -- SINCE #361 THE SEAT RULE SPENDS THE KIT TOO, so what this ordering now
+    -- buys is the full-cap grant rather than the kit: the seat farm test above
+    -- proves it at runtime. And there are two channel debits in the file, so
+    -- the pattern carries the `inv.using = nil` that only the COMPLETION's has
+    -- -- the seat rule's is followed by cancelUse, and a bare pattern would find
+    -- that one, inside the guard, and pass on any ordering.
     local ifh = io.open(ROOT .. 'br_core/server/inventory.lua')
     local invsrc = ifh and ifh:read('a') or ''
     if ifh then ifh:close() end
     ok(#invsrc > 0, 'server/inventory.lua is readable')
     local seatGuard = invsrc:find('if nid == nil or nid ~= u%.veh then')
     local consume = invsrc:find(
-        's%.count = s%.count %- 1\n%s*if s%.count <= 0 then inv%.slots%[u%.slot%] = false end')
+        's%.count = s%.count %- 1\n%s*if s%.count <= 0 then inv%.slots%[u%.slot%] = false end'
+            .. '\n%s*inv%.using = nil')
     ok(seatGuard ~= nil and consume ~= nil and seatGuard < consume,
         'the driving-seat re-rule is above the completion debit, so no pass '
-            .. 'can spend a kit for a player who has just left the wheel')
+            .. 'can pay the completion to a player who has just left the wheel')
 
     -- ── refused, and nothing is spent ─────────────────────────────────────
     --
@@ -15495,6 +15576,45 @@ local function lastDbno(src)
         if s.event == BR.Net.DBNO_SET and s.target == src then found = s.args[1] end
     end
     return found
+end
+
+describe('dbno.channel')
+do
+    -- ═══ KNOCKED AT THE WHEEL, THE REPAIR KIT IS KEPT (#361) ═══
+    --
+    -- #361 made the repair kit's driving-seat rule SPEND the kit, and the owner
+    -- ruled on the seat and on nothing else. Being knocked is the LIVE guard's,
+    -- at the top of the `inv.use` pass, and it drops the channel for free before
+    -- the seat is asked -- so the kit stays in the bag a revive hands back.
+    --
+    -- THE BODY IS ALREADY OUT OF THE SEAT ON THAT PASS, which is what makes this
+    -- the ordering and not just the state: client/dbno.lua floors a knocked body
+    -- with a resurrection, and a resurrected ped is in no vehicle. Whether the
+    -- server's state or the seat read gets there first in a real game is a
+    -- network race this cannot settle; this pins the case where the state wins.
+    squadMatch(2)
+    local VEH = 4343
+    local kit = BR.Config.ConsumableById['repairkit']
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'repairkit', kind = BR.ItemKind.CONSUMABLE,
+                     rarity = kit.rarity, count = 1 })
+    drive(1, VEH)
+    -- One pass first, so the roster has sampled the ped the seat is read off.
+    tick(250)
+    fire(BR.Net.INV_USE, 1, { slot = 1 })
+    tick(250)
+    ok(BR.Inv.of(1).using ~= nil, 'precondition: the repair is under way')
+
+    BR.Combat.defeat(1, 'gunshot', 2)
+    ok(BR.Roster.get(1).state == BR.PlayerState.DBNO,
+        'precondition: the driver is knocked, not killed')
+    stepOut(VEH)
+    tick(250)
+    ok(BR.Inv.of(1).using == nil, 'being knocked ends the channel')
+    ok(BR.Inv.of(1).slots[1] and BR.Inv.of(1).slots[1].count == 1,
+        'and the kit is still in the bag -- being knocked is not the seat '
+            .. 'rule, even with the body already out of the seat',
+        tostring(BR.Inv.of(1).slots[1] and BR.Inv.of(1).slots[1].count))
 end
 
 describe('dbno.knock')

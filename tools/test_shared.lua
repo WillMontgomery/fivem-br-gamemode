@@ -6264,7 +6264,8 @@ do
         ok(kit and kit.spendOnPress == nil,
            'and it declares nothing about WHO PAYS: the completion spends it, '
                .. 'exactly as it spends a med kit, so an interrupted channel '
-               .. 'costs nothing')
+               .. 'costs nothing -- except the seat rule\'s (#361), which is '
+               .. 'the tick loop\'s and not this row\'s')
 
         -- ...AND NOTHING ELSE OPTS OUT OF DAMAGE-CANCEL. The field exists for
         -- this one row; a second item quietly acquiring it is a behaviour change

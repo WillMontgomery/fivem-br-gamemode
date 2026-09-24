@@ -225,6 +225,9 @@ BR.Config.Consumables = {
         -- med kit -- and the repair the slices already delivered is kept, the
         -- same way a cancelled med kit's partial heal is kept. Both halves are
         -- deliberate. server/inventory.lua's INV_USE note carries the rest.
+        -- ONE INTERRUPTION IS NOT FREE (#361): losing the driving seat spends
+        -- the kit, because that was a farm. Nothing on this row says so; it is
+        -- the seat rule's, in the tick loop.
         --
         -- ═══ `ignoresDamage` -- BEING SHOT DOES NOT STOP THE REPAIR ═══
         --

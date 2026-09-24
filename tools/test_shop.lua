@@ -2695,9 +2695,15 @@ do
     -- both of them anchor on the line UNDER the consume instead: the channel
     -- spends `u.slot`, the instant path spends `slot`, and only one of those
     -- two spellings is the pass a shop car is ever unpacked on.
+    --
+    -- ...AND #361 PUT A SECOND `u.slot` DEBIT IN THE CHANNEL, inside the repair
+    -- kit's seat rule. Only the COMPLETION's is followed by `inv.using = nil`,
+    -- so that line is part of the pattern; without it the seat rule's debit is
+    -- the first match, and this would be measuring the wrong one.
     local invsrc = readFile(RES .. 'br_core/server/inventory.lua')
     local CHANNEL_CONSUME =
         's%.count = s%.count %- 1\n%s*if s%.count <= 0 then inv%.slots%[u%.slot%] = false end'
+            .. '\n%s*inv%.using = nil'
     local consume = invsrc:find(CHANNEL_CONSUME)
     local ask = invsrc:find('BR%.Shop%.unpack%(src')
     ok(consume ~= nil, 'the channelled consume is still spelled as this suite '
@@ -2818,8 +2824,11 @@ do
     -- item's consume inside INV_USE, which is above the second ask -- so the
     -- bare pattern this used to carry would now report the guard as being
     -- BELOW the spend, on a file where nothing about the shop had changed.
+    -- (And the completion's, not the repair kit's seat-rule debit: see
+    -- CHANNEL_CONSUME above for why the pattern carries `inv.using = nil`.)
     local consume2 = invsrc2:find(
-        's%.count = s%.count %- 1\n%s*if s%.count <= 0 then inv%.slots%[u%.slot%] = false end')
+        's%.count = s%.count %- 1\n%s*if s%.count <= 0 then inv%.slots%[u%.slot%] = false end'
+            .. '\n%s*inv%.using = nil')
     ok(consume2 ~= nil and asks[2] ~= nil and asks[2] < consume2,
         'and the second ask is above the line that spends the item, so no '
             .. 'pass can consume a car for somebody sitting in a car')
