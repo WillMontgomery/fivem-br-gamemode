@@ -165,6 +165,24 @@ local offerable = false
 --- 'declined' or 'done' for anybody this latch mattered to.
 local took = false
 
+--- Has this player finished the walkthrough and not jumped out of a plane since?
+---
+--- ═══ THE ONE PLAYER THE "LOOT UP" TOAST IS FOR (#369) ═══
+---
+--- Owner, 2026-09-23: "please only ever show the 'loot up' toast for new players
+--- who just completed the tutorial. otherwise nobody needs to see that."
+---
+--- RAISED BY BR.Tutorial.finish AND BY NOTHING ELSE, which is the line the
+--- reward already draws: an abandoned run and a decline are not a completion.
+--- Lowered by the next plane door, through BR.Tutorial.takeJustFinished -- see
+--- `lootUpToast` in client/skydive.lua for why the door and not the landing.
+---
+--- NOT THE PROFILE ROW, because 'done' is forever and this has to go back down.
+--- PER-SESSION LIKE `took`: the walkthrough ends on the pad and the door is the
+--- same match's bus, and a player who leaves in between carries it to the next
+--- match's. A reconnect in that gap loses it, which errs toward nobody seeing it.
+local justFinished = false
+
 --- Is the IN-GAME walkthrough running?
 ---
 --- A THIRD FLAG, AND THEY ARE THREE MOMENTS. `offering` is the invitation in
@@ -766,8 +784,21 @@ end)
 --- again locally, which is what every branch of the dev command already does.
 function BR.Tutorial.finish()
     offerable = false
+    -- AND THEIR NEXT LANDING SAYS "LOOT UP". See `justFinished`.
+    justFinished = true
     publish()
     TriggerServerEvent(BR.Net.TUTORIAL_DONE)
+end
+
+--- Spend the finished walkthrough's one landing toast.
+---
+--- True once per finish and false until the next, so the first drop to ask is
+--- the only one that gets it. Asked by client/skydive.lua at the plane door.
+--- @return boolean
+function BR.Tutorial.takeJustFinished()
+    local was = justFinished
+    justFinished = false
+    return was
 end
 
 --- @return boolean

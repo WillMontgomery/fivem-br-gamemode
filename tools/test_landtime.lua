@@ -171,7 +171,14 @@ BR.Keys = { on = function() end, labelFor = function() return 'SPACE' end,
             set = function() end }
 BR.Inv = { reapply = function() end }
 
-loadAll({ 'br_core/client/skydive.lua' })
+loadAll({
+    'br_core/client/skydive.lua',
+    -- THE REAL WALKTHROUGH, AFTER THE DROP AS fxmanifest ORDERS IT (#369). The
+    -- "Loot up" toast is gated on a fact only tutorial.lua raises, so a stub here
+    -- would be asserting the stub. Its ticks stand down for a player who never
+    -- started it, which is every block but the toast's.
+    'br_core/client/tutorial.lua',
+})
 
 local CS = BR.Native.ChuteState
 
@@ -794,6 +801,118 @@ do
     local dbg = table.concat(logged, '\n')
     ok(dbg:find('landtime', 1, true) ~= nil,
         'brdropdbg repeats the last landing line', dbg)
+end
+
+-- ------------------------------------------------------- the "Loot up" toast ---
+--
+-- Owner, 2026-09-23: "please only ever show the 'loot up' toast for new players
+-- who just completed the tutorial. otherwise nobody needs to see that." (#369)
+--
+-- Every landing used to say it. Now the first drop after a FINISHED walkthrough
+-- claims it at the door and its landing says it; every other landing is silent.
+
+describe('the "Loot up" toast is for the first landing after a finished walkthrough')
+do
+    local LOOT_UP = 'Loot up before the storm comes!'
+
+    --- How many times the toast has been put up since `events` was last cleared.
+    local function lootUps()
+        local n = 0
+        for _, e in ipairs(events) do
+            if e.name == 'br:ui:sendLocal' and e.args[1] == BR.Nui.TOAST
+               and type(e.args[2]) == 'table' and e.args[2].text == LOOT_UP then
+                n = n + 1
+            end
+        end
+        return n
+    end
+
+    --- The in-game half on the pad, ended the way the page ends it: `done` is
+    --- the last card dismissed, and without it the run was abandoned.
+    local function walkthrough(done)
+        reset()
+        BR.State.me.state = BR.PlayerState.WARMUP
+        fire('br:tutorial:game', true)
+        fire('br:tutorial:game', false, done)
+    end
+
+    --- Out of the door, down under a canopy, onto its feet.
+    local function dropAndLand()
+        jump()
+        underCanopy()
+        ticks(20)
+        touchDown()
+        serve(5, fakeTime)
+    end
+
+    reset()
+    dropAndLand()
+    ok(BR.State.landed == true, 'a player who never touched the walkthrough lands')
+    ok(lootUps() == 0, 'AND IS NOT TOLD TO LOOT UP -- "nobody needs to see that"',
+        ('%d toasts'):format(lootUps()))
+
+    walkthrough(false)
+    dropAndLand()
+    ok(lootUps() == 0,
+        'nor is a player who abandoned it -- an abandoned run is not a completion',
+        ('%d toasts'):format(lootUps()))
+
+    walkthrough(true)
+    dropAndLand()
+    ok(lootUps() == 1,
+        'A PLAYER WHO JUST FINISHED IT IS, ON THE LANDING THAT FOLLOWS',
+        ('%d toasts'):format(lootUps()))
+    ticks(30)
+    ok(lootUps() == 1, 'once, however long they stand there',
+        ('%d toasts'):format(lootUps()))
+
+    reset()
+    dropAndLand()
+    ok(lootUps() == 0, 'AND NEVER AGAIN -- their next match lands in silence',
+        ('%d toasts'):format(lootUps()))
+
+    -- THE GAP. Finished on the pad, then off it before the bus: the next door
+    -- is the next match's, and it is still their first landing since.
+    walkthrough(true)
+    reset()
+    dropAndLand()
+    ok(lootUps() == 1,
+        'a finish outlives leaving before the bus, to the next match\'s landing',
+        ('%d toasts'):format(lootUps()))
+
+    -- CLAIMED AT THE DOOR. A drop killed mid-air spends it unshown, rather than
+    -- saving it for a landing matches later.
+    walkthrough(true)
+    jump()
+    underCanopy()
+    ticks(20)
+    fire(BR.Net.STATE, { state = BR.MatchState.ENDED })
+    reset()
+    dropAndLand()
+    ok(lootUps() == 0,
+        'THE FIRST DROP AFTER FINISHING IS THE ONLY ONE THAT CAN SAY IT -- a '
+            .. 'match killed mid-air does not hand it to the next',
+        ('%d toasts'):format(lootUps()))
+
+    -- AND A DROP THAT NEVER CAME THROUGH A DOOR -- the re-arm net's -- does not
+    -- inherit what an earlier, unlanded drop claimed.
+    walkthrough(true)
+    jump()
+    underCanopy()
+    ticks(20)
+    fire(BR.Net.STATE, { state = BR.MatchState.ENDED })
+    reset()
+    fire(BR.Net.STATE, { state = BR.MatchState.WARMUP })
+    fire(BR.Net.STATE, { state = BR.MatchState.BUS })
+    BR.State.me.state = BR.PlayerState.FREEFALL   -- the server's word; no door
+    underCanopy()
+    ticks(20)
+    touchDown()
+    serve(5, fakeTime)
+    ok(BR.State.landed == true, 'the re-armed drop lands')
+    ok(lootUps() == 0,
+        'and says nothing: no door, no "Loot up"',
+        ('%d toasts'):format(lootUps()))
 end
 
 -- ----------------------------------------------------- the formatter, pure ---

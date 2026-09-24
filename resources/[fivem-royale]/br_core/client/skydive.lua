@@ -51,6 +51,24 @@ local dropping = false
 --- round, exactly like BR.State.landed, and by nothing else.
 local landedThisDrop = false
 
+--- Does THIS drop's landing say "Loot up before the storm comes!"?
+---
+--- Owner, 2026-09-23: "please only ever show the 'loot up' toast for new players
+--- who just completed the tutorial. otherwise nobody needs to see that." (#369)
+---
+--- CLAIMED AT THE PLANE DOOR, NOT ON TOUCHDOWN. br:drop:begin asks
+--- BR.Tutorial.takeJustFinished, which says yes once per finished walkthrough,
+--- so the first drop after finishing is the only drop that can carry it. A drop
+--- that ends without the landing branch -- a vehicle seat, a match killed
+--- mid-air, a landing only the server's net saw -- takes it down unshown rather
+--- than handing it to some later match, which would be a toast about looting up
+--- arriving long after it meant anything.
+---
+--- ASSIGNED BY THE DOOR, CLEARED BY THE RE-ARM NET, and those are the only two
+--- ways the machine arms -- so the landing branch, which runs once per arming,
+--- can only ever read the value its own door wrote.
+local lootUpToast = false
+
 --- Is this ped genuinely off the ground RIGHT NOW?
 ---
 --- THE PED'S OWN EVIDENCE, ASKED FRESH, because the two places that need this
@@ -664,6 +682,11 @@ AddEventHandler('br:drop:begin', function(d)
     -- the note where this is SET, at the bottom of the drop machine.
     BR.State.landed = false
     landedThisDrop = false
+    -- THE ONE DROP AFTER A FINISHED WALKTHROUGH, IF THIS IS IT (#369). See
+    -- lootUpToast. tutorial.lua loads after this file, so it is asked here and
+    -- never cached at load.
+    lootUpToast = BR.Tutorial ~= nil and BR.Tutorial.takeJustFinished ~= nil
+                  and BR.Tutorial.takeJustFinished() == true
     -- THE STOPWATCH STARTS AT THE DOOR (#245). Out of the plane is the one
     -- moment the whole descent is measured from, and it is the same moment
     -- everything else per-drop is cleared.
@@ -1213,6 +1236,9 @@ BR.Loop.register(BR.Loop.TICK, 'skydive.state', function()
         -- by reportLanded's retry, which now actually retries.
         if landedThisDrop and not airborneNow(PlayerPedId()) then return end
         landedThisDrop = false
+        -- NO DOOR, SO NO "LOOT UP" (#369). Whatever an earlier drop claimed and
+        -- never landed is not this one's to show. See lootUpToast.
+        lootUpToast = false
         dropping = true
         -- A DESCENT THIS FILE WAS NEVER HANDED still gets measured (#245). This
         -- is the missed-handoff net, and a landing that arrives through it is
@@ -1450,9 +1476,13 @@ BR.Loop.register(BR.Loop.TICK, 'skydive.state', function()
         BR.PushHud(true)
 
         reportLanded()
-        TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST, {
-            text = 'Loot up before the storm comes!', tone = 'info', ms = 6000,
-        })
+        -- ONLY FOR A PLAYER WHO HAS JUST FINISHED THE WALKTHROUGH (#369).
+        -- Everybody else lands in silence. See lootUpToast.
+        if lootUpToast then
+            TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST, {
+                text = 'Loot up before the storm comes!', tone = 'info', ms = 6000,
+            })
+        end
         print('[br_core] landed')
     end
 end)

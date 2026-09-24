@@ -470,6 +470,36 @@ do
        'offerable = ' .. tostring(published('offerable')))
 end
 
+describe('tutorial.lootUp')
+do
+    -- ═══ ONLY A FINISH EARNS THE "LOOT UP" TOAST, AND ONLY ONCE (#369) ═══
+    --
+    -- Owner, 2026-09-23: "please only ever show the 'loot up' toast for new
+    -- players who just completed the tutorial. otherwise nobody needs to see
+    -- that." The toast is client/skydive.lua's, asked for at the plane door and
+    -- asserted there by tools/test_landtime.lua; this is the fact it asks.
+    --
+    -- The blocks above finished runs of their own, so the first take drains them.
+    BR.Tutorial.takeJustFinished()
+
+    connect(true)
+    TriggerEvent('br:tutorial:decline')
+    ok(BR.Tutorial.takeJustFinished() == false,
+       'DECLINING EARNS NOTHING -- it is an answer, not a completion')
+
+    connect(true)
+    TriggerEvent('br:tutorial:game', true, false)
+    TriggerEvent('br:tutorial:game', false, false)
+    ok(BR.Tutorial.takeJustFinished() == false, 'nor does an abandoned run')
+
+    connect(true)
+    TriggerEvent('br:tutorial:game', true, false)
+    TriggerEvent('br:tutorial:game', false, true)
+    ok(BR.Tutorial.takeJustFinished() == true, 'FINISHING DOES')
+    ok(BR.Tutorial.takeJustFinished() == false,
+       'once -- the first drop to ask is the only one that gets it')
+end
+
 -- ---------------------------------------------------------------------------
 -- PUTTING THE OFFER BACK FROM THE CONSOLE (#353)
 --
