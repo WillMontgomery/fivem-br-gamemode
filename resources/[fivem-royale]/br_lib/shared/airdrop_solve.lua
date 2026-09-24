@@ -484,13 +484,19 @@ function BR.AirdropLandingCircles(storm, now, cfg, waitMs)
     local soonest = now + flight
     local latest  = soonest + (waitMs or 0)
 
-    -- ONE UNIT FOR THE WHOLE LIST, because every entry describes the same phase
-    -- of the same match -- which is exactly what BR.StormZone does with the pair
-    -- it builds. A per-entry derivation would be the same answer three times.
-    local unit = storm and BR.StormUnit(storm.seed, storm.phase) or nil
+    -- ═══ EACH INSTANT WEARS THE SHAPE THE ZONE HAS AT THAT INSTANT ═══
+    --
+    -- A record's current circle is one zone and its target another, each with its
+    -- own shape, and the current one morphs into the target's across the sweep --
+    -- so the circle solved at an instant is measured on the shape BR.StormZone
+    -- builds for that instant, at the sweep fraction BR.StormAt reports with it, and
+    -- the target on the target zone's own shape. This used to be one unit for the
+    -- whole list, which was exactly what BR.StormZone did with the pair until the
+    -- snap at the end of every sweep was traced to it.
+    local target = storm and BR.StormUnit(storm.seed, storm.phase) or nil
 
     local out = {}
-    local function add(x, y, r)
+    local function add(x, y, r, unit)
         local e = { x = x + 0.0, y = y + 0.0, r = r + 0.0 }
         if e.r > 0.0 then
             e.shape = BR.StormShape.blob(e.x, e.y, e.r, unit)
@@ -498,18 +504,18 @@ function BR.AirdropLandingCircles(storm, now, cfg, waitMs)
         out[#out + 1] = e
     end
 
-    local ax, ay, ar = BR.StormAt(storm, soonest)
-    add(ax, ay, ar)
+    local ax, ay, ar, _, _, _, at = BR.StormAt(storm, soonest)
+    add(ax, ay, ar, BR.StormCurrentUnit(storm, at))
     if latest > soonest then
-        local bx, by, br = BR.StormAt(storm, latest)
-        add(bx, by, br)
+        local bx, by, br, _, _, _, bt = BR.StormAt(storm, latest)
+        add(bx, by, br, BR.StormCurrentUnit(storm, bt))
     end
     -- THE CIRCLE THE STORM IS SHRINKING TOWARD -- the owner's "next circle".
     -- Read straight off the record rather than solved, because BR.StormAt only
     -- reaches it once the shrink is over and a drop landing mid-sweep would
     -- never be asked the question at all.
     if storm and type(storm.r1) == 'number' then
-        add(storm.cx1 or 0.0, storm.cy1 or 0.0, storm.r1)
+        add(storm.cx1 or 0.0, storm.cy1 or 0.0, storm.r1, target)
     end
     return out
 end

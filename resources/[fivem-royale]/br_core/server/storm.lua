@@ -202,11 +202,13 @@ end
 ---
 --- ═══ INSIDE THE SHAPE, NOT INSIDE THE RADIUS ═══
 ---
---- Circle 1 has been a blob since #344 and its boundary dents in by up to a
+--- Circle 1 has been a shape since #344 and its boundary dents in by up to a
 --- quarter of r, so a radius test counts people standing outside the wall -- the
 --- defect #349 fixed in airdrop siting. BR.StormZone handed circle 1 as its own
---- current circle is phase 1's blob at (cx1, cy1, r1), nested in itself: the same
---- boundary the bus preview draws and the wall ends its first sweep on.
+--- current circle AT THE END OF THE SWEEP -- `t` of 1, so the current circle has
+--- finished becoming zone 1 -- is zone 1's shape at (cx1, cy1, r1), nested in
+--- itself: the same boundary the bus preview draws and the wall ends its first
+--- sweep on.
 ---
 --- LIVING IS BR.Server.isInMatch: standing, downed, or still in the air. A glider
 --- over circle 1 is counted where they are, and the dead are counted nowhere --
@@ -217,7 +219,7 @@ end
 --- @param rec table   a phase-1 record
 --- @return integer living, integer inside
 local function circleOneHeadcount(m, rec)
-    local zone = BR.StormZone(rec, rec.cx1, rec.cy1, rec.r1)
+    local zone = BR.StormZone(rec, rec.cx1, rec.cy1, rec.r1, 1.0)
     local living, inside = 0, 0
     BR.Roster.each(
         function(e) return e.matchId == m.id and BR.Server.isInMatch(e.state) end,
@@ -294,7 +296,7 @@ local function capFirstHold(m, now, quiet)
     local elapsed = now - rec.tStart
     m.storm = BR.BuildStormRecord(rec.phase, rec.cx0, rec.cy0, rec.r0,
         rec.cx1, rec.cy1, rec.r1, rec.tStart, elapsed + capMs,
-        rec.tShrink, rec.dps, rec.seed)
+        rec.tShrink, rec.dps, rec.seed, rec.m0)
     print(('[br_core] storm: match %s phase 1 hold cut from %.0fs to %.0fs left')
         :format(BR.MatchTag(m.id), msLeft / 1000, capMs / 1000))
     if not quiet then publish(m) end
@@ -318,7 +320,11 @@ end
 --- @param r0 number
 --- @param now number
 --- @param waitSec number|nil  override the authored wait (the dynamic hold)
-local function enterPhase(m, phase, cx0, cy0, r0, now, waitSec)
+--- @param m0 number|nil       how far the wall's shape has already morphed toward
+---                            this phase's target: the thaw's and a same-phase
+---                            `brphase`'s, so the wall keeps the shape it is
+---                            standing in. Every ordinary entry leaves it nil.
+local function enterPhase(m, phase, cx0, cy0, r0, now, waitSec, m0)
     local p = cfg.phases[phase]
 
     -- ═══ PHASE 1 CONSUMES A DRAW ALREADY MADE; EVERY OTHER PHASE MAKES ONE ═══
@@ -388,7 +394,7 @@ local function enterPhase(m, phase, cx0, cy0, r0, now, waitSec)
     -- BR.BuildStormRecord's header says what a missing one would mean.
     m.storm = BR.BuildStormRecord(phase, cx0, cy0, r0, cx1, cy1, p.radius,
         now, (waitSec or p.wait) * 1000 * timeScale,
-        shrinkSec * 1000 * timeScale, p.dps, m.stormSeed)
+        shrinkSec * 1000 * timeScale, p.dps, m.stormSeed, m0)
 
     -- ARMED FOR THIS PHASE'S SWEEP. Every route into a phase comes through
     -- here -- the first one, the next one, `brphase`, and the thaw -- so this
@@ -711,7 +717,7 @@ BR.Sched.every(1000, 'storm.damage', function(dt)
         if m.state ~= BR.MatchState.PLAYING or not m.storm then return end
 
         local rec = m.storm
-        local cx, cy, r, st, _, dps = BR.StormAt(rec, now)
+        local cx, cy, r, st, _, dps, t = BR.StormAt(rec, now)
         if dps <= 0 then return end
 
         -- THE EDGE CUSHION. During a shrink the wall moves METRES PER SECOND
@@ -804,11 +810,14 @@ BR.Sched.every(1000, 'storm.damage', function(dt)
         -- one side spelling the derivation differently is a wall in the wrong place
         -- with nothing on the wire to contradict it.
         --
-        -- EXACT ON AN OVERLAPPING BREAKOUT TOO, which is the one case the WALL is
-        -- not: a signed distance to a union is the minimum of the two, which holds
-        -- for any two shapes. StormShape.distance's header carries that and
-        -- config/storm.lua's `shape` block announces the drawing artifact.
-        local zone = BR.StormZone(rec, cx, cy, r)
+        -- EXACT ON AN OVERLAPPING BREAKOUT TOO: a signed distance to a union is the
+        -- minimum of the two, which holds for any two shapes.
+        --
+        -- AND EXACT MID-MORPH. `t` is the sweep fraction this tick solved, which is
+        -- what the wall's own frame passes, so the shape billed is the shape drawn
+        -- -- and a morph is a corner list like any other, with an exact signed
+        -- distance rather than a bound on one (storm_shape.lua's morph section).
+        local zone = BR.StormZone(rec, cx, cy, r, t)
 
         -- Capped so a long scheduler stall (or a test jumping the clock)
         -- cannot land one apocalyptic tick.
@@ -919,10 +928,17 @@ RegisterCommand('brphase', function(_, args)
 
     -- Enter phase n from wherever the wall is RIGHT NOW, so the jump is
     -- seamless on every client.
-    local cx, cy, r = BR.StormAt(m.storm, GetGameTimer())
+    --
+    -- AND IN THE SHAPE IT IS STANDING IN, WHEN THAT IS A SHAPE PHASE n CAN START
+    -- FROM. Re-entering the same phase carries the morph the wall has reached, and
+    -- a finished sweep is already zone n-1 for phase n+1. A jump to any other phase
+    -- takes zone n-1's shape, which is a jump the admin asked for.
+    local rec = m.storm
+    local cx, cy, r, _, _, _, t = BR.StormAt(rec, GetGameTimer())
+    local m0 = (n == rec.phase) and BR.StormMorph(rec, t) or nil
     print(('[br_core] admin: match %s storm jumped to phase %d')
         :format(BR.MatchTag(m.id), n))
-    enterPhase(m, n, cx, cy, r, GetGameTimer())
+    enterPhase(m, n, cx, cy, r, GetGameTimer(), nil, m0)
 end, true)
 
 --- FREEZE THE STORM WHERE IT STANDS. Dev mode only.
@@ -959,12 +975,16 @@ RegisterCommand('brstormfreeze', function(_, args)
 
     BR.Server.eachMatch(function(m)
         if not m.storm then return end
-        local cx, cy, r = BR.StormAt(m.storm, now)
+        local cx, cy, r, _, _, _, t = BR.StormAt(m.storm, now)
         local phase = m.storm.phase
+        -- THE SHAPE THE WALL IS STANDING IN, as far as it had morphed. Carried into
+        -- the frozen record and out of it again, so neither end of a freeze snaps
+        -- the wall back to the zone it set out from.
+        local m0 = BR.StormMorph(m.storm, t)
 
         if thaw then
             -- Re-enter the phase we were in, from where the wall is now.
-            enterPhase(m, phase, cx, cy, r, now)
+            enterPhase(m, phase, cx, cy, r, now, nil, m0)
         else
             -- A day of holding. Long enough that no session outlives it, and
             -- still a real number rather than an infinity that would poison
@@ -972,7 +992,7 @@ RegisterCommand('brstormfreeze', function(_, args)
             -- THE SEED SURVIVES A FREEZE, so the wall keeps the shape it was
             -- standing in rather than reverting to a circle for the whole freeze.
             m.storm = BR.BuildStormRecord(phase, cx, cy, r, cx, cy, r,
-                now, 24 * 60 * 60 * 1000, 1000, 0.0, m.storm.seed)
+                now, 24 * 60 * 60 * 1000, 1000, 0.0, m.storm.seed, m0)
             publish(m)
         end
         touched = touched + 1

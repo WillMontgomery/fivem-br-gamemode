@@ -200,9 +200,10 @@ end
 --- wall and the server's damage tick also reach. `r` stays on the entry because
 --- the log lines and the trip arithmetic still read it.
 ---
---- BOTH ENTRIES WEAR THE SAME UNIT, because both circles belong to the same
---- published phase -- exactly the pair BR.StormZone builds, with the same unit
---- applied to both halves.
+--- EACH ENTRY WEARS ITS OWN ZONE'S SHAPE, exactly the pair BR.StormZone builds:
+--- the circle at the eta on the current zone's shape, morphed as far as the sweep
+--- has got by then, and the purple one on the target zone's. They shared one unit
+--- until the snap at the end of every sweep was traced to the zone doing the same.
 ---
 --- A NON-POSITIVE RADIUS GETS NO SHAPE. config/storm.lua's phase 8 really is
 --- `radius = 0.0`, and a zero circle refuses every point -- which the comment
@@ -214,10 +215,8 @@ end
 function BR.RescueCircles(storm, eta)
     if not storm then return {} end
 
-    local unit = BR.StormUnit(storm.seed, storm.phase)
-
     local out = {}
-    local function add(x, y, r)
+    local function add(x, y, r, unit)
         local e = { x = x + 0.0, y = y + 0.0, r = r + 0.0 }
         if e.r > 0.0 then
             e.shape = BR.StormShape.blob(e.x, e.y, e.r, unit)
@@ -225,14 +224,15 @@ function BR.RescueCircles(storm, eta)
         out[#out + 1] = e
     end
 
-    local cx, cy, r = BR.StormAt(storm, eta)
-    add(cx, cy, r)
+    local cx, cy, r, _, _, _, t = BR.StormAt(storm, eta)
+    add(cx, cy, r, BR.StormCurrentUnit(storm, t))
 
     -- The purple one. Guarded on the FIELD rather than on its value, so a
     -- collapsed final circle refuses everything instead of quietly dropping the
     -- rule at the phase it matters most.
     if type(storm.r1) == 'number' then
-        add(storm.cx1 or 0.0, storm.cy1 or 0.0, storm.r1)
+        add(storm.cx1 or 0.0, storm.cy1 or 0.0, storm.r1,
+            BR.StormUnit(storm.seed, storm.phase))
     end
     return out
 end

@@ -4354,20 +4354,25 @@ do
     -- whatever the suite's clock deals. Found by walking rays out from the centre:
     -- circle 1 is convex, so each ray crosses the boundary once.
     --
-    -- AND THEN A TRIANGLE, which is where a radius test is most wrong: held to the
-    -- same area as every other count, its three sides dent furthest in and its three
-    -- corners reach furthest out, up to 1.15 r. The first seed whose circle 1 draws
-    -- three corners.
-    local TRI
+    -- AND THEN A PENTAGON, which is where a radius test is most wrong: held to the
+    -- same area as every other count, the fewest sides on offer dent furthest in and
+    -- their corners reach furthest out, up to 1.15 r. The first seed whose circle 1
+    -- draws five corners -- and before it the first from 352 whose circle 1 is a
+    -- polygon at all, since one zone in ten is a plain circle, which bulges nowhere.
+    local POLY, PENT = 352, nil
+    while BR.StormUnit(POLY, 1).kind ~= 'polygon' do POLY = POLY + 1 end
     for s = 1, 2000 do
-        if BR.StormUnit(s, 1).n == 3 then TRI = s break end
+        if BR.StormUnit(s, 1).n == 5 then PENT = s break end
     end
-    ok(TRI ~= nil, 'the shipping config draws a triangle circle 1 in 2000 matches')
-    TRI = TRI or 1
-    for _, SEED in ipairs({ 352, TRI }) do
+    ok(PENT ~= nil, 'the shipping config draws a pentagon circle 1 in 2000 matches')
+    PENT = PENT or 1
+    for _, SEED in ipairs({ POLY, PENT }) do
         local label = ('%d corners (seed %d)'):format(BR.StormUnit(SEED, 1).n, SEED)
         m = heldMatch(1, 180, SEED)
-        local zone = BR.StormZone(m.storm, CX, CY, R1)
+        -- CIRCLE 1 IS ZONE 1, AT THE END OF PHASE 1's SWEEP -- `t` of 1 -- which is
+        -- the zone server/storm.lua's headcount asks. Asked at 0 it would be the
+        -- opening circle's shape, zone 0, laid on circle 1.
+        local zone = BR.StormZone(m.storm, CX, CY, R1, 1.0)
         local function wallAt(th)
             local lo, hi = 0.0, 2.0 * R1
             for _ = 1, 60 do

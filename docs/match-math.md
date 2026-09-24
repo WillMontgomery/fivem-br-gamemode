@@ -308,49 +308,70 @@ water.
 ### The shape of the wall
 
 Everything above is about where the circles GO. Since #344 the wall itself is
-**not a circle**: each phase draws a jittered convex polygon with rounded
-corners, scaled by whatever radius the solver reports.
+**not a circle**, and since 2026-09-23 every zone draws its own shape: one in
+ten is a plain circle, and the rest are jittered convex polygons whose vertices
+are each rounded, beveled or sharp, scaled by whatever radius the solver reports.
 
 ```
-corners     3 to 12, drawn per phase: 3–6 at weight 2, 7–12 at weight 1
+circle      one zone in ten, at the radius that holds the area rule
+corners     5 to 12, drawn per zone: 5–6 at weight 2, 7–12 at weight 1
+finish      each vertex rounded, beveled or cornered, a third each
 turn        the whole ring rotated by U(0, 360°)
-angles      each corner slid by up to ±9° within its slot
+angles      each vertex slid by up to ±9° within its slot
 radii       r × (1 + 0.13 × U(−1, 1))        -- symmetric about r, not inward
-corners     filleted at 0.85 of the tightest corner's allowance
-shape       convex hull of the corner discs
+cut         a rounded or beveled vertex takes 0.5 of the shorter half-edge
 area        scaled to exactly 0.90 of the circle's
 reach       redrawn if it would reach past 1.15 r
 ```
 
 The radius is still `r` and every placement rule above still uses it. Every
-count covers the same ground — 0.90 of the circle, which is what #344's fixed
-nine corners measured — so a triangle phase plays the same size as a
-dodecagon. What holding the area costs is reach: a triangle held to 0.90 of the
-circle has to push its corners out, so any draw that would reach past 1.15 `r`
-is redrawn, and the triangles that survive are rounded ones. Measured over
-20 000 draws per count at the shipping config:
+zone covers the same ground — 0.90 of the circle, which is what #344's fixed
+nine corners measured — so a pentagon zone plays the same size as a
+dodecagon, and a circle zone too. What holding the area costs is reach: any
+draw that would reach past 1.15 `r` is redrawn. **Triangles and squares are not
+drawn**, because a sharp corner on one cannot be held to both: the largest
+triangle inside 1.15 `r` covers 0.55 of the circle and the largest square 0.84,
+and with even finishes 94% of triangles and 71% of squares still reach past it
+after every retry. Measured over 20 000 draws per count at the shipping config:
 
 | corners | max extent (mean / worst) | min/max radius (mean / worst) | kept first try |
 |---|---|---|---|
-| 3 | 1.10 / 1.15 | 0.71 / 0.56 | 66% |
-| 4 | 1.06 / 1.15 | 0.77 / 0.59 | 99.5% |
-| 6 | 1.05 / 1.15 | 0.81 / 0.66 | 100% |
-| 9 | 1.05 / 1.14 | 0.82 / 0.72 | 94% |
-| 12 | 1.02 / 1.14 | 0.86 / 0.73 | 22% |
+| 5 | 1.11 / 1.15 | 0.76 / 0.62 | 51% |
+| 6 | 1.10 / 1.15 | 0.77 / 0.64 | 77% |
+| 9 | 1.08 / 1.15 | 0.80 / 0.69 | 93% |
+| 12 | 1.04 / 1.15 | 0.84 / 0.72 | 22% |
 
 Convexity is not guaranteed by the draw and is **enforced**: a concave polygon
 is redrawn from the same deterministic stream with both jitters lowered, and
-the last attempt uses no jitter at all. Both the exact signed distance and the
-exact erosion the renderer depends on are only exact for a convex shape, and so
-is the two-crossing stitch that joins an overlapping pair. No draw at any count
-needed more than four attempts of six.
+the last attempt uses no jitter at all. The exact signed distance and the exact
+erosion the renderer depends on are only exact for a convex shape, and so is
+the stitch that joins an overlapping pair. Only pentagons ever reached the last
+attempt, on 0.2% of draws, and it is always inside `reach`.
+
+**Each zone keeps one shape, and the wall morphs between them.** Zone k is the
+circle phase k closes on; it is phase k's target and then phase k+1's current
+circle, in the same shape throughout. Across a sweep the wall is the Minkowski
+interpolation of the zone it leaves and the zone it arrives at, as placed:
+
+```
+wall(t)     (1 − t) × Z0  ⊕  t × Z1           -- Z0, Z1 each at its own centre and radius
+```
+
+It is convex at every `t`, never covers less than the area rule, never reaches
+further than the further of its two ends, and its signed distance is exact —
+the same corner list a zone is. Its support function is affine in `t`, which is
+what keeps airdrop siting's "clears both ends of the window, clears every instant
+in it" true. The map does not morph: it moves and scales the zone's starting
+shape for the whole sweep (#350) and takes the target's once, as the sweep
+finishes. Until 2026-09-23 a record's current circle and target shared one
+shape keyed on the phase, and the wall snapped 34–514 m at every phase change.
 
 **The shape is derived, not sent.** The record carries the match's storm seed
 and the phase index; the client's wall and the server's damage tick both build
-the shape — its corner count included — from those two numbers through one
-shared function. Nothing about the
-geometry crosses the wire, and a wall drawn from a different derivation than the
-one being billed would be a lie with no bound on its size.
+both zones' shapes — circle, corner count and every vertex's finish included —
+from those numbers through one shared function. Nothing about the geometry
+crosses the wire, and a wall drawn from a different derivation than the one
+being billed would be a lie with no bound on its size.
 
 This section used to list two costs of the shapes. Both were paid off and
 validated in game on 2026-09-23, and are kept here as history so nobody
@@ -365,11 +386,14 @@ re-derives the dead ends:
   moved far enough to see. Radius blips remain the fallback for a client whose
   overlay never becomes ready.
 * **an overlapping breakout used to draw both boundaries**, showing curtain
-  inside the safe zone. A blob is convex, so two that overlap cross at exactly
-  two points and each boundary's run inside the other is one connected piece;
-  `blobUnion` joins the outside runs at the crossings into one loop (#356). The
-  damage was always exact — a signed distance to a union is the minimum of the
-  two — so this was only ever a drawing defect.
+  inside the safe zone. Two convex shapes that overlap have a union whose
+  boundary is one loop, alternating between runs of each outside the other;
+  `blobUnion` finds every crossing by intersecting the two boundaries' runs and
+  arcs outright and joins the outside runs into that loop (#356). Two copies of
+  one shape cross exactly twice, and two different zones' shapes can cross four
+  or six times — 1.2% of reachable overlaps do — which is why it finds every
+  crossing rather than two. The damage was always exact — a signed distance to a
+  union is the minimum of the two — so this was only ever a drawing defect.
 
 ---
 

@@ -1404,7 +1404,7 @@ BR.Loop.register(BR.Loop.FRAME, 'storm.wall', function()
     local rec = activeRecord()
     if not rec then return end
 
-    local cx, cy, r, stt, msLeft = solveNow(rec)
+    local cx, cy, r, stt, msLeft, _, t = solveNow(rec)
     -- A COLLAPSED ZONE HAS NO WALL TO DRAW, and the zone is two circles now, so
     -- both of them have to be gone. In the shipping case that is the same test
     -- it always was: the final phase closes on a zero-radius target, so r and
@@ -1434,7 +1434,14 @@ BR.Loop.register(BR.Loop.FRAME, 'storm.wall', function()
     -- Nothing about the shape is on the wire but the seed, so a second spelling
     -- here would be a wall drawn somewhere the server is not billing -- the "20ft
     -- inside" report with no bound on how far.
-    drawWall(BR.StormZone(rec, cx, cy, r), alphaScale)
+    --
+    -- AND IT MORPHS HERE, EVERY FRAME, which costs nothing this callback was not
+    -- already paying: the zone was rebuilt every frame before it had two shapes.
+    -- `t` is the sweep fraction solveNow reported, so the curtain becomes the
+    -- target's shape exactly as it arrives on the target's circle, and the next
+    -- phase's hold starts from that same shape -- the snap at the end of every
+    -- sweep was the two zones sharing one.
+    drawWall(BR.StormZone(rec, cx, cy, r, t), alphaScale)
 end)
 
 -- Which renderer draws the wall, and /brwallstyle overrides it live.
@@ -1795,10 +1802,30 @@ local function overlayPlan()
     local zoneA = cfg.blip.currentAlpha
     if wholeMap then zoneA = cfg.blip.currentAlpha * share end
 
-    return { rec = rec, cx = cx, cy = cy, r = r, zoneA = zoneA },
-        ('r|%d|%.0f|%.0f|%.0f|%d|%d'):format(
+    -- ═══ THE SHAPE THE MAP DRAWS THE ZONE IN: THE ONE IT SET OUT IN, UNTIL THE
+    --     WALL ARRIVES ═══
+    --
+    -- The wall morphs the current zone's shape into the target's across the sweep,
+    -- and the map does not: a morph is a new shape every tick, and #350 moves and
+    -- scales one fill in place, which is exact only while the shape holds still. So
+    -- the map draws the zone in the shape the record started in -- a sweep fraction
+    -- of 0 -- the whole way, and takes the target's shape ONCE, when the sweep is
+    -- FINISHED and the wall stands on the target in exactly that shape.
+    --
+    -- AT FINISHED AND NOT A SECOND LATER, WHEN THE NEXT RECORD ARRIVES, because a
+    -- breakout is drawn as a union of the zone and its target until the two circles
+    -- coincide -- which is the instant the sweep ends -- and in the old shape that
+    -- union then collapses to the old shape alone: a boundary jump on the map with
+    -- the wall standing still, and a fill claiming ground the wall has just left. In
+    -- the target's shape it collapses to the target, which is where the wall is. The
+    -- switch is in the key, so it is the one rebuild of a sweep that has stopped --
+    -- and the next record's own rebuild draws the same zone again under a new target.
+    local done = (st == BR.StormPhase.FINISHED) and 1 or 0
+
+    return { rec = rec, cx = cx, cy = cy, r = r, zoneA = zoneA, m = done },
+        ('r|%d|%.0f|%.0f|%.0f|%d|%d|%d'):format(
             rec.phase, rec.cx1, rec.cy1, rec.r1,
-            math.floor(rec.seed or 0), math.floor(zoneA + 0.5))
+            math.floor(rec.seed or 0), math.floor(zoneA + 0.5), done)
 end
 
 --- The plan's contours, ready for BR.MapOverlay.setAreas, and whether the zone among
@@ -1854,7 +1881,14 @@ local function overlayFill(plan)
         -- one spelling of "what is safe right now", so the fill and the curtain cannot
         -- disagree about where the edge is.
         if plan.zoneA > 0.0 then
-            local zone = BR.StormZone(rec, plan.cx, plan.cy, plan.r)
+            -- ═══ AT THE PLAN'S OWN SWEEP FRACTION, AND THAT IS THE WHOLE OF #350 ═══
+            --
+            -- 0 until the sweep is over and 1 once it is -- overlayPlan has why. The
+            -- wall morphs every frame; the map does not, because placing below is
+            -- exact only while the zone is ONE shape moved and scaled, and a morphing
+            -- zone is a new shape every tick -- a rebuild every tick, the work #350
+            -- removed. The target fill drawn over it has been the new shape all phase.
+            local zone = BR.StormZone(rec, plan.cx, plan.cy, plan.r, plan.m)
             push(zone, plan.zoneA)
             local b = zone.blob
             -- EXACTLY ONE CONTOUR, AND IT IS THE FIRST AREA. A blob is one closed loop,
@@ -1949,7 +1983,7 @@ BR.Loop.register(BR.Loop.TICK, 'storm.map', function()
         -- still to be one blob, because the last seconds of the final sweep turn it
         -- into a circle below MIN_RADIUS -- a different shape, which is a rebuild.
         if at.fit then
-            local b = BR.StormZone(plan.rec, plan.cx, plan.cy, plan.r).blob
+            local b = BR.StormZone(plan.rec, plan.cx, plan.cy, plan.r, plan.m).blob
             if b then
                 local s = b.r / at.fit.r
                 if BR.MapOverlay.placeArea(1, b.cx, b.cy, at.fit.w * s, at.fit.h * s) then
@@ -2011,7 +2045,9 @@ BR.Loop.register(BR.Loop.TICK, 'storm.map', function()
     overlayKey = (drawn > 0) and key or nil
     overlayAt = nil
     if drawn > 0 then
-        local unit = plan.rec and BR.StormUnit(plan.rec.seed, plan.rec.phase)
+        -- THE REACH OF THE SHAPE THAT MOVES, which is the current circle's, in the
+        -- shape the fill was drawn in -- the target stands still.
+        local unit = plan.rec and BR.StormCurrentUnit(plan.rec, plan.m)
         overlayAt = { cx = plan.cx, cy = plan.cy, r = plan.r,
                       ext = unit and unit.extent or 1.0, fit = fit }
     end
@@ -2678,7 +2714,7 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
     end
 
     local now = BR.Clock.now()
-    local cx, cy, r, st, msLeft, dps = solveNow(rec)
+    local cx, cy, r, st, msLeft, dps, t = solveNow(rec)
 
     -- ═══ FIVE SECONDS BEFORE THE WALL SETS OFF ═══
     --
@@ -2735,8 +2771,9 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
     -- AND IT IS A SHAPE NOW (#344), through the same BR.StormZone the wall and the
     -- server's damage tick use. That is what keeps the HUD's metres, the grade, the
     -- sky and the two crossing cues describing the curtain the player can see
-    -- rather than a circle nothing draws any more.
-    local zone = BR.StormZone(rec, cx, cy, r)
+    -- rather than a circle nothing draws any more -- at the same sweep fraction the
+    -- wall morphs by.
+    local zone = BR.StormZone(rec, cx, cy, r, t)
     local edge = BR.StormShape.distance(zone, p.x, p.y)   -- positive = outside
 
     -- Screen FX track being outside AND the storm actually hurting right now

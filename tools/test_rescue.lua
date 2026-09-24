@@ -525,13 +525,15 @@ do
     ok(blobs == #circles,
         'and at the shipping config both of them are blobs', blobs)
 
-    -- IT IS THE RECORD'S OWN SEED AND PHASE, through BR.StormUnit -- the one
-    -- derivation the client's wall and the server's damage tick also reach.
-    local mine  = BR.StormShape.blob(0.0, 0.0, 1600.0,
+    -- IT IS THE RECORD'S OWN SEED AND ZONES, through BR.StormUnit -- the one
+    -- derivation the client's wall and the server's damage tick also reach. Two
+    -- zones, each in its own shape: the circle at the eta is the CURRENT one, which
+    -- in this hold is zone phase-1, and the purple one is zone `phase`.
+    local mine   = BR.StormShape.blob(0.0, 0.0, 1600.0,
+        BR.StormUnit(storm.seed, storm.phase - 1))
+    local target = BR.StormShape.blob(0.0, 0.0, 1600.0,
         BR.StormUnit(storm.seed, storm.phase))
-    local wrong = BR.StormShape.blob(0.0, 0.0, 1600.0,
-        BR.StormUnit(storm.seed, storm.phase + 1))
-    local same, differs = true, false
+    local same, sameT, differs = true, true, false
     for i = 1, 360 do
         local a = math.rad(i)
         local px, py = math.cos(a) * 1400.0, math.sin(a) * 1400.0
@@ -539,12 +541,17 @@ do
         if math.abs(got - BR.StormShape.distance(mine, px, py)) > 1e-9 then
             same = false
         end
-        if math.abs(got - BR.StormShape.distance(wrong, px, py)) > 1.0 then
+        if math.abs(BR.StormShape.distance(circles[2].shape, px, py)
+                - BR.StormShape.distance(target, px, py)) > 1e-9 then
+            sameT = false
+        end
+        if math.abs(got - BR.StormShape.distance(target, px, py)) > 1.0 then
             differs = true
         end
     end
-    ok(same, 'measured against this seed and this phase, to the nanometre')
-    ok(differs, 'and demonstrably not the next phase\'s shape')
+    ok(same, 'measured against this seed and the current zone, to the nanometre')
+    ok(sameT, 'and the purple one against the target zone, to the nanometre')
+    ok(differs, 'and the two are demonstrably different shapes -- two zones, not one')
 
     -- ═══ THE DENT, FOUND RATHER THAN ASSERTED ═══
     --

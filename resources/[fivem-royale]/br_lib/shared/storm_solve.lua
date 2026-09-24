@@ -22,13 +22,23 @@ BR = BR or {}
 ---     tShrink,            -- ms spent interpolating
 ---     dps,                -- damage per second outside the circle
 ---     seed,               -- the match's storm seed: what SHAPE this is (#344)
+---     m0,                 -- how far the current circle's shape had already
+---                         --   morphed when this record began; absent is 0
 ---   }
 ---
---- `seed` IS ON THE WIRE BECAUSE THE SHAPE CANNOT BE. Every phase is a random
+--- `seed` IS ON THE WIRE BECAUSE THE SHAPE CANNOT BE. Every zone is a random
 --- shape now, the client draws the wall and the server does the damage, and
 --- neither sends geometry -- so both derive the shape from this one integer plus
---- the phase index. See BR.StormZone below, which is the only spelling of that
+--- the zone index. See BR.StormZone below, which is the only spelling of that
 --- derivation anywhere, and BR.StormShape.blobUnit, which is where it happens.
+---
+--- `m0` EXISTS FOR THE TWO RECORDS THAT START PART WAY THROUGH A MORPH. Phase p's
+--- current circle wears zone p-1's shape and morphs into zone p's across the sweep,
+--- so an ordinary record starts at 0 -- which is what an absent field reads as, and
+--- what every record but two is. `brstormfreeze` replaces a record mid-sweep with
+--- one that holds the wall where it stands, and its thaw re-enters the phase from
+--- there; both carry the morph they were frozen at, so the wall keeps the shape it
+--- was standing in rather than snapping back to the zone it set out from.
 
 --- Solve the storm at a given time.
 ---
@@ -40,9 +50,12 @@ BR = BR or {}
 --- @return string state   one of BR.StormPhase
 --- @return number msLeft  ms remaining in the current sub-phase
 --- @return number dps     damage per second currently applied outside
+--- @return number t       how far through the sweep: 0 holding, 1 finished --
+---                        the same fraction the circle is interpolated by, and
+---                        the one BR.StormZone morphs the shape by
 function BR.StormAt(rec, now)
     if not rec then
-        return 0.0, 0.0, 0.0, BR.StormPhase.PRE, 0.0, 0.0
+        return 0.0, 0.0, 0.0, BR.StormPhase.PRE, 0.0, 0.0, 0.0
     end
 
     local elapsed = now - rec.tStart
@@ -62,14 +75,14 @@ function BR.StormAt(rec, now)
     if elapsed < rec.tWait then
         local state = (rec.phase == 0) and BR.StormPhase.PRE or BR.StormPhase.HOLDING
         local dps = (rec.phase <= 1) and 0.0 or rec.dps
-        return rec.cx0, rec.cy0, rec.r0, state, rec.tWait - elapsed, dps
+        return rec.cx0, rec.cy0, rec.r0, state, rec.tWait - elapsed, dps, 0.0
     end
 
     local shrinkElapsed = elapsed - rec.tWait
 
     -- Collapsed.
     if shrinkElapsed >= rec.tShrink then
-        return rec.cx1, rec.cy1, rec.r1, BR.StormPhase.FINISHED, 0.0, rec.dps
+        return rec.cx1, rec.cy1, rec.r1, BR.StormPhase.FINISHED, 0.0, rec.dps, 1.0
     end
 
     local t = shrinkElapsed / rec.tShrink
@@ -79,25 +92,85 @@ function BR.StormAt(rec, now)
            BR.Lerp(rec.r0,  rec.r1,  t),
            BR.StormPhase.SHRINKING,
            rec.tShrink - shrinkElapsed,
-           rec.dps
+           rec.dps,
+           t
 end
 
---- THE SHAPE THIS PHASE WEARS, as a unit blob to be scaled by the solver's radius.
+--- THE SHAPE ONE ZONE WEARS, as a unit to be scaled by the solver's radius.
 ---
 --- One line, and it is the reason the client's wall and the server's damage test
 --- cannot disagree: both reach it, so there is no second spelling of "which shape
 --- is this" to drift. The knobs live in config/storm.lua's `shape` block and a
 --- corner count below three is the documented way back to circles.
+---
+--- ═══ A ZONE, NOT A PHASE ═══
+---
+--- Zone k is the circle phase k closes on, and zone 0 is the opening circle. A
+--- record for phase p therefore holds TWO zones -- its current circle is zone p-1
+--- and its target is zone p -- and BR.StormZone asks for both by their own index.
+--- This used to be asked once, for the phase, and handed to both: the current
+--- circle and the target wore one shape, so the moment the phase advanced the
+--- circle the wall had just finished closing onto re-rolled in place. That is the
+--- snap in #344's 2026-09-23 playtest, and it is why the argument is a zone.
 --- @param seed number|nil    the record's seed (server/storm.lua's seedRng)
---- @param phase number|nil   1-based phase index
+--- @param zone number|nil    0 for the opening circle, k for phase k's target
 --- @return table|nil unit
-function BR.StormUnit(seed, phase)
-    return BR.StormShape.blobUnit(seed, phase,
+function BR.StormUnit(seed, zone)
+    return BR.StormShape.blobUnit(seed, zone,
         BR.Config and BR.Config.Storm and BR.Config.Storm.shape)
 end
 
---- THE SAFE ZONE at a solved moment: this phase's shape at (cx, cy, r), union the
---- one it is closing toward.
+--- How far the current circle's shape has morphed toward the target's, at sweep
+--- fraction `t`: the record's own `m0` when it began -- 0 but for a freeze -- and 1
+--- at the end of the sweep.
+---
+--- ═══ NOT `t`, AND THE AIRDROP'S WINDOW IS WHY ═══
+---
+--- The wall at sweep fraction t is the MINKOWSKI INTERPOLATION of the zone it left
+--- and the zone it is closing on, AS PLACED: (1 - t) Z0 + t Z1, where Z0 is the
+--- starting shape at its own centre and radius and Z1 the target's at its. Its
+--- support function is then AFFINE in t -- the centre and the radius already were,
+--- and now the shape is too -- so the signed distance at any fixed point is a
+--- maximum of affine functions of t and CONVEX in it. That is the argument
+--- BR.AirdropLandingCircles stands on: a point that clears the margin at both ends of
+--- a window clears it at every instant between. Written as that sum, the wall is
+--- c(t) + r0 (1 - t) U0 + r1 t B, which is the solver's circle at the unit shape
+--- r1 t / r(t) of the way from U0 to B -- this number. Morphing by t itself instead
+--- would scale the shape by r(t) and blend it by t, a product quadratic in t, and
+--- the dip it allows between the window's ends is up to an eighth of the radius the
+--- sweep gives up: over a hundred metres at phase 2, against a 250 m margin.
+---
+--- A RECORD THAT STARTS PART WAY THROUGH A MORPH starts at U0 = m0 of the way, and
+--- the same sum carries it: r0 (1 - t) m0 of B from the start, plus r1 t of B from
+--- the target, over r(t). A radius of nothing at both ends has no shape to morph,
+--- and answers where it started.
+--- @param rec table
+--- @param t number|nil   BR.StormAt's seventh answer; nil reads as 0
+--- @return number
+function BR.StormMorph(rec, t)
+    local m0 = BR.Clamp((rec and rec.m0) or 0.0, 0.0, 1.0)
+    t = BR.Clamp(t or 0.0, 0.0, 1.0)
+    if t >= 1.0 then return 1.0 end
+    local r0 = math.max(0.0, (rec and rec.r0) or 0.0)
+    local r1 = math.max(0.0, (rec and rec.r1) or 0.0)
+    local whole = r0 * (1.0 - t) + r1 * t
+    if whole <= 0.0 then return m0 end
+    return (r0 * (1.0 - t) * m0 + r1 * t) / whole
+end
+
+--- THE CURRENT CIRCLE'S SHAPE at sweep fraction `t`: zone p-1's shape morphed as far
+--- toward zone p's as the sweep has got. See BR.StormShape.morphUnit.
+--- @param rec table
+--- @param t number|nil
+--- @return table|nil unit
+function BR.StormCurrentUnit(rec, t)
+    if not rec then return nil end
+    return BR.StormShape.morphUnit(BR.StormUnit(rec.seed, (rec.phase or 0) - 1),
+        BR.StormUnit(rec.seed, rec.phase), BR.StormMorph(rec, t))
+end
+
+--- THE SAFE ZONE at a solved moment: the current circle's shape at (cx, cy, r),
+--- union the zone it is closing toward.
 ---
 --- ═══ THE ONE PLACE THE ZONE IS BUILT, WHICH IS WHAT MAKES THE WALL HONEST ═══
 ---
@@ -110,17 +183,33 @@ end
 --- curtain says it is safe. So the derivation lives here and the callers ask for
 --- the zone rather than assembling one.
 ---
+--- ═══ AND IT MORPHS, BECAUSE THE TWO ZONES ARE TWO SHAPES ═══
+---
+--- `t` is how far through the sweep the solved circle is -- BR.StormAt's seventh
+--- answer -- and the current shape is that far from zone p-1's toward zone p's. So
+--- at the end of a sweep the wall IS zone p, and the next record's hold starts from
+--- zone p again, at the same circle, in the same shape: no snap, because there is
+--- nothing left to change. The wall, the HUD and the damage tick all pass the `t`
+--- they solved, and they agree to the bit.
+---
+--- THE MAP PASSES 0 UNTIL THE SWEEP IS OVER, AND THAT IS NOT AN OMISSION. #350
+--- moves and scales one fill in place for a whole sweep, which is only exact while
+--- the zone is one shape moved and scaled -- so the map keeps the shape the record
+--- started in, and takes the target's once, as the wall arrives on it.
+--- client/storm.lua's overlayPlan says why it is then and not a second later.
+---
 --- @param rec table|nil    the published storm record
 --- @param cx number        the CURRENT centre, as BR.StormAt reports it
 --- @param cy number
 --- @param r number         the CURRENT radius
+--- @param t number|nil     how far through the sweep; nil reads as 0
 --- @return table shape
-function BR.StormZone(rec, cx, cy, r)
+function BR.StormZone(rec, cx, cy, r, t)
     if not rec then
         return BR.StormShape.circle(cx or 0.0, cy or 0.0, r or 0.0)
     end
     return BR.StormShape.zone(cx, cy, r, rec.cx1, rec.cy1, rec.r1,
-        BR.StormUnit(rec.seed, rec.phase))
+        BR.StormCurrentUnit(rec, t), BR.StormUnit(rec.seed, rec.phase))
 end
 
 --- Pick the match anchor: the POI the whole storm sequence homes on.
@@ -395,6 +484,7 @@ end
 --- @param shrinkMs number
 --- @param dps number
 --- @param seed number|nil    the match's storm seed -- WHAT SHAPE THIS PHASE IS
+--- @param m0 number|nil      the morph the current circle starts at; see the record
 --- @return table
 ---
 --- ═══ THE SEED DEFAULTS TO ZERO, AND ZERO IS A REAL SEED ═══
@@ -406,10 +496,14 @@ end
 --- exact thing #344 exists to remove, with a green suite behind it. Seed 0 is an
 --- ordinary stream and draws an ordinary blob, so a hand-built record is measured
 --- against the same kind of shape the game draws.
-function BR.BuildStormRecord(phase, cx0, cy0, r0, cx1, cy1, r1, now, waitMs, shrinkMs, dps, seed)
+function BR.BuildStormRecord(phase, cx0, cy0, r0, cx1, cy1, r1, now, waitMs, shrinkMs, dps, seed, m0)
+    -- ABSENT RATHER THAN ZERO on every ordinary record, so the wire and the
+    -- snapshot carry nothing new for the phases that start where they should.
+    local morph = BR.Clamp(m0 or 0.0, 0.0, 1.0)
     return {
         phase   = phase,
         seed    = math.tointeger(math.floor(seed or 0)) or 0,
+        m0      = (morph > 0.0) and morph or nil,
         cx0     = cx0 + 0.0,
         cy0     = cy0 + 0.0,
         r0      = r0 + 0.0,

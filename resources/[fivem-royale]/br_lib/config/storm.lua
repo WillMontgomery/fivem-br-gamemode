@@ -280,106 +280,113 @@ BR.Config.Storm = {
     -- nor round. Left at zero, nothing in the game can tell this knob exists.
     squareness = 0.0,
 
-    -- ═══ EVERY PHASE IS A RANDOM SHAPE, AND THESE ARE ITS DIALS (#344) ═══
+    -- ═══ EVERY ZONE IS A RANDOM SHAPE, AND THESE ARE ITS DIALS (#344) ═══
     --
-    --   "ship something that will draw random shaped storm walls for each phase,
-    --    still matching our approximate positioning and size rules, circles are
-    --    not allowed."                                -- the owner, 2026-09-22
+    --   "we're only drawing squircles (quite well though), can we change to random
+    --    shapes per phase? There should be a 90% chance of not being a circle, and
+    --    when not a circle, there should be equal chances for each vertex to be
+    --    rounded, beveled, or cornered."              -- the owner, 2026-09-23
     --
-    -- The shape is a jittered convex polygon with rounded corners, drawn from the
-    -- match's storm seed and the phase index, scaled by whatever radius the solver
-    -- reports -- so the WALL and the DAMAGE BOUNDARY are both that shape and the
-    -- hold/sweep timing is untouched. br_lib/shared/storm_shape.lua's blob()
-    -- carries the geometry and BR.StormZone is the one place it is asked for.
-    -- Since 2026-09-23 the corner count is drawn per phase as well.
+    -- One zone in ten is a plain circle, and every other is a jittered convex polygon
+    -- whose vertices each draw their own finish -- an arc, a chamfer or a sharp point
+    -- -- drawn from the match's storm seed and the ZONE's index, scaled by whatever
+    -- radius the solver reports. So the WALL and the DAMAGE BOUNDARY are both that
+    -- shape and the hold/sweep timing is untouched. br_lib/shared/storm_shape.lua's
+    -- blob() carries the geometry and BR.StormZone is the one place it is asked for.
     --
-    -- MEASURED AT THIS CONFIG, 20000 draws per count (tools/test_shared.lua's
-    -- `blob.measure` block re-measures it rather than trusting this note). Area is
-    -- 0.900 of the circle at every count, exactly, because it is scaled to be:
+    -- A ZONE KEEPS ITS SHAPE FOR ITS WHOLE LIFE: as one phase's target, and then as
+    -- the next phase's current circle until that sweep carries it away. The wall
+    -- morphs from one zone's shape into the next across each sweep, so it arrives on
+    -- the target in the target's shape and nothing changes when the phase does. Until
+    -- 2026-09-23 the two shared one shape keyed on the phase, and the border "snaps to
+    -- a different location" at the end of every sweep -- 34 to 514 m of it, measured.
     --
-    --     corners   max extent     min/max radius   corner radius   first try
-    --               mean  worst    mean  worst      mean  worst
-    --        3      1.10  1.15     0.71  0.56       0.66  0.54        66%
-    --        4      1.06  1.15     0.77  0.59       0.66  0.51        99.5%
-    --        5      1.05  1.15     0.80  0.65       0.62  0.45       100%
-    --        6      1.05  1.15     0.81  0.66       0.58  0.38       100%
-    --        7      1.05  1.14     0.82  0.68       0.53  0.32       100%
-    --        8      1.05  1.14     0.82  0.70       0.48  0.26        99.8%
-    --        9      1.05  1.14     0.82  0.72       0.43  0.24        94%
-    --       10      1.04  1.14     0.83  0.72       0.41  0.22        74%
-    --       11      1.03  1.14     0.84  0.71       0.40  0.19        45%
-    --       12      1.02  1.14     0.86  0.73       0.40  0.18        22%
+    -- MEASURED AT THIS CONFIG, circles off, 20000 draws per count
+    -- (tools/test_shared.lua's `blob.measure` re-measures it rather than trusting this
+    -- note). Area is 0.900 of the circle at every count, exactly, because it is scaled
+    -- to be:
     --
-    -- First try is the share of draws kept on the first attempt. At three and four
-    -- corners every miss is a draw that reached past `reach` -- neither ever came
-    -- out concave -- and from five up every miss is a concave one, which is the
-    -- collapse #344 measured past nine. None went deeper than four attempts of six,
-    -- and none was ever kept concave.
+    --     corners   max extent     min/max radius   first try   last resort
+    --               mean  worst    mean  worst
+    --        5      1.11  1.15     0.76  0.62         51%         0.2%
+    --        6      1.10  1.15     0.77  0.64         77%           0
+    --        7      1.09  1.15     0.78  0.66         92%           0
+    --        8      1.08  1.15     0.79  0.68         97%           0
+    --        9      1.08  1.15     0.80  0.69         93%           0
+    --       10      1.07  1.15     0.81  0.70         73%           0
+    --       11      1.05  1.15     0.82  0.72         45%           0
+    --       12      1.04  1.15     0.84  0.72         22%           0
     --
-    -- min/max radius is the "is it a circle" measure -- 1.00 would be one. At 0.81
+    -- First try is the share of draws kept on the first attempt; last resort is the
+    -- share that needed the sixth, the no-jitter regular polygon. None went past
+    -- `reach` and none was ever kept concave. Over 100000 zones of the shipping draw:
+    -- 10.0% circles, and the vertices 33.4% rounded, 33.3% beveled, 33.3% cornered.
+    --
+    -- min/max radius is the "is it a circle" measure -- 1.00 would be one. At 0.79
     -- the radius varies by a fifth, which on the 2600 m phase is a boundary running
-    -- between about 2200 and 2800 metres out: a 600 m lump, unmistakable from the
-    -- ground and from the map.
+    -- between about 2200 and 2800 metres out.
     --
     -- ═══ WHAT IT COSTS, SAID HERE RATHER THAN LEFT TO BE DISCOVERED ═══
     --
-    --   THE MAP STILL DRAWS A CIRCLE. No GTA native fills an arbitrary outline on
-    --   the minimap or the pause map (storm_shape.lua's mapPrimitives has the whole
-    --   search, including the Scaleform route and why it is not taken), so the two
-    --   rings stay radius blips at r. The ring is exact where the blob reaches r,
-    --   over-reports by about a sixth of r where it dents in and under-reports by a
-    --   twentieth where it bulges -- measured on one phase-1 draw, a boundary running
-    --   2206 to 2789 metres out against a 2600 metre ring. The WALL is drawn on the
-    --   real boundary, so a player who can see the curtain is never misled by the
-    --   ring; it is the pause map's rotation aid, where a sixth of a kilometre is a
-    --   few pixels.
+    --   THE MAP DOES NOT MORPH. #350 moves and scales the zone's fill in place, which
+    --   is exact only while the zone is one shape -- so the map draws the zone in the
+    --   shape it set out in for the whole sweep, and takes the target's once, when the
+    --   sweep finishes. Mid-sweep the fill and the curtain disagree by the morph; the
+    --   target's own fill, drawn on top, is the new shape all phase.
     --
-    --   AN OVERLAPPING BREAKOUT DRAWS BOTH BOUNDARIES. The union of two blobs is
-    --   not expressible in the arc-and-segment model without a real boolean union,
-    --   which is its own piece of work, so on a phase whose two circles CROSS the
-    --   wall draws each shape whole and the stretches that run inside the other are
-    --   drawn too: curtain visible inside the safe zone. THE DAMAGE IS STILL EXACT
-    --   -- a signed distance to a union is the minimum of the two, which holds for
-    --   any shapes -- so it is a drawing defect, not a gameplay one. Nested (every
-    --   phase that did not break out) and disjoint (a breakout that separated
-    --   entirely) are both exact and single-silhouette.
+    --   TRIANGLES AND SQUARES ARE NOT ON OFFER. A sharp corner reaches out, and a
+    --   triangle or square with one cannot cover 0.90 of the circle and stay inside
+    --   `reach` -- the largest triangle inside 1.15 of r covers 0.55 of the circle, the
+    --   largest square 0.84. With even finishes 94% of triangles and 71% of squares
+    --   still reach past it after every retry. Allowing them means giving up one of
+    --   the three rules: `area`, `reach`, or the even finishes.
     --
-    --   THE SHAPE CHANGES AT A PHASE BOUNDARY. Each phase draws its own blob, so at
-    --   the instant one phase hands over to the next the wall is standing still and
-    --   changes its lumps -- and with the corner count drawn per phase, possibly
-    --   from a triangle to a dozen sides. Morphing between two shapes instead
-    --   would mean interpolating two convex polygons, which is not convex in
-    --   general, and the exact signed distance and inset both require convex.
+    --   A TARGET CAN POKE OUT OF THE CURRENT SHAPE ON A NESTED PHASE. The two are
+    --   different shapes, and the nesting test is on their circles, so a corner of the
+    --   target can stand outside the current shape's dent. That ground is not safe
+    --   early -- grace declined, not a loss against a disc strictly inside a disc -- and
+    --   the wall is drawn on the boundary that damages, so nothing says otherwise.
     --
     -- PHASE 8 IS RADIUS 0 AND STAYS A POINT, as it always has: a shape with no
     -- radius is not a shape, and a point is not a circle.
     shape = {
-        -- HOW MANY CORNERS, DRAWN PER PHASE, and these are the odds.
+        -- ONE ZONE IN TEN IS A PLAIN CIRCLE -- the owner's "90% chance of not being a
+        -- circle". Drawn FIRST off the zone's own stream and every other value read
+        -- after it whatever it decided, so retuning this changes which zones are
+        -- circles and never what the others look like. A circle holds `area` like
+        -- every other shape, so it plays the size they do, a little inside r.
+        circle      = 0.10,
+
+        -- HOW MANY CORNERS, DRAWN PER ZONE, and these are the odds.
         --
         --   "We're able to reliably draw squircle storms, but what about random
         --    other shapes of various vertices?"          -- the owner, 2026-09-23
         --
-        -- Each phase rolls its count off the match's storm seed, so a match runs
+        -- Each zone rolls its count off the match's storm seed, so a match runs
         -- through several polygons and the next match through different ones. The
         -- weights are relative: 2 is twice as likely as 1, and a count left out is
         -- never drawn.
         --
-        -- THREE TO TWELVE, AND THE LOW HALF COUNTS DOUBLE. From seven up every
-        -- count reads as the same thing from above -- a lumpy near-circle, which is
-        -- the complaint -- and three to six are the ones that read as a named
-        -- shape. Weighted this way just over half the phases are a triangle,
-        -- square, pentagon or hexagon. Past twelve the first draw is concave most of
-        -- the time and the retry does all the work.
+        -- FIVE TO TWELVE, AND THE LOW END COUNTS DOUBLE, so two polygons in five are a
+        -- pentagon or a hexagon -- the counts that read as a named shape from above.
+        -- THREE AND FOUR ARE OUT, measured: see "what it costs" above. The generator
+        -- still draws them if they are typed here, and they will reach past `reach`.
         --
-        -- A NUMBER HERE IS ONE COUNT ON EVERY PHASE, which is how #344 shipped (9).
+        -- A NUMBER HERE IS ONE COUNT ON EVERY ZONE, which is how #344 shipped (9).
         -- BELOW 3 IS NOT A POLYGON AND IS THE WAY BACK TO CIRCLES -- the whole game
         -- draws exactly what it drew before #344. That is a deliberate edit and not
         -- a default: #335 shipped its shape behind a knob at zero and nothing in the
         -- game ever drew it, which is the mistake this block is not repeating.
         corners     = {
-            [3] = 2, [4] = 2, [5] = 2, [6] = 2,
+            [5] = 2, [6] = 2,
             [7] = 1, [8] = 1, [9] = 1, [10] = 1, [11] = 1, [12] = 1,
         },
+
+        -- WHAT EACH VERTEX IS, and the odds -- equal, which is the owner's rule.
+        -- `rounded` is an arc tangent to both edges, `beveled` the corner cut off by a
+        -- chamfer, `cornered` the sharp point. Relative weights like `corners`; a
+        -- finish weighted at zero is never drawn.
+        vertex      = { rounded = 1, beveled = 1, cornered = 1 },
 
         -- HOW FAR EACH CORNER'S RADIUS WANDERS, as a fraction of r, SYMMETRICALLY
         -- about it -- so r * (1 + j * U(-1, 1)) and not r * (1 - 2j * U(0, 1)).
@@ -389,58 +396,45 @@ BR.Config.Storm = {
         -- lets every placement rule keep using r as the bound.
         --
         -- THIS IS THE DIAL TO TURN AFTER A PLAYTEST. Higher is lumpier and more
-        -- often concave (0.20 fails one draw in two at 9 corners); lower reads
-        -- rounder. 0.12 to 0.15 is the measured band where the shape is
-        -- unmistakably not a circle and the retry is still rare.
+        -- often concave; lower reads more regular.
         jitter      = 0.13,
 
         -- HOW FAR A CORNER MAY SLIDE AROUND THE RING, in degrees, either way.
         --
-        -- DEGREES AND NOT A FRACTION OF THE SLOT, because the slot is no longer one
-        -- size: #344's 0.3 of a slot was 12 degrees at nine corners and 36 at
-        -- three, which drifts two corners of a triangle 72 degrees together and put
-        -- the storm's own centre outside the shape on one draw in twenty-two.
-        -- Nine degrees is exactly 0.3 of a twelve-corner slot, and storm_shape.lua
-        -- caps the slide there on any count whatever is typed here -- the value
-        -- #344 measured as keeping the corners in order. Higher is a less regular
+        -- DEGREES AND NOT A FRACTION OF THE SLOT, because the slot is not one size:
+        -- #344's 0.3 of a slot was 12 degrees at nine corners and 36 at three, which
+        -- put the storm's own centre outside the shape on one draw in twenty-two. Nine
+        -- degrees is exactly 0.3 of a twelve-corner slot, and storm_shape.lua caps the
+        -- slide there on any count whatever is typed here. Higher is a less regular
         -- polygon and more often redrawn.
         slideDeg    = 9,
 
-        -- HOW ROUND THE CORNERS ARE, as a fraction of the tightest corner's own
-        -- allowance (the shorter adjacent half-edge, turned into a radius by the
-        -- corner's angle). 1.0 would put two fillets tangent to each other and
-        -- leave no straight run between them; 0.85 keeps a fifteen percent run on
-        -- every edge. Lower it for a shape that reads as a polygon, raise it toward
-        -- 1.0 for one that reads as a smooth lump.
+        -- HOW MUCH OF A CORNER A ROUNDED OR BEVELED VERTEX TAKES, as a fraction of the
+        -- shorter half-edge beside it. The arc and the chamfer start the same distance
+        -- back along both edges, so the same vertex rounded or beveled differs only by
+        -- the bulge of the arc. 1.0 would leave two neighbours meeting in the middle
+        -- of their shared edge; 0.5 keeps at least half of every edge straight.
         --
-        -- ONE RADIUS FOR ALL THE CORNERS, which is what makes the signed distance
-        -- and the erosion exact rather than nearly so -- storm_shape.lua's blob
-        -- section argues it at length, and the measurement above is of what ships.
-        round       = 0.85,
+        -- 0.5 AND NOT THE 0.85 THE ROUNDED CORNERS USED, for two measured reasons: at
+        -- 0.85 a beveled corner eats so much of both edges that the chamfer reads as a
+        -- side of its own, and pentagons with a sharp corner reach past `reach` on one
+        -- draw in six -- at 0.6 and below, never. Raise it for softer corners.
+        cut         = 0.5,
 
         -- HOW BIG EVERY SHAPE IS, as a fraction of the circle's area. Every draw is
-        -- scaled to exactly this, so a triangle phase plays the size a twelve-sided
-        -- one does. 0.90 is what #344's nine corners measured, so nothing plays
-        -- smaller or larger than what shipped before the count varied -- left
-        -- unscaled, three corners measured 0.29 and twelve 0.94.
+        -- scaled to exactly this, so a pentagon zone plays the size a twelve-sided one
+        -- does, and a circle zone too. 0.90 is what #344's nine corners measured.
         area        = 0.90,
 
         -- HOW FAR PAST r ANY SHAPE MAY REACH, as a multiple of it. A draw that would
         -- reach further once scaled to `area` is redrawn tamer, like a concave one.
         --
-        -- THIS IS THE TRADE AGAINST `area`, AND IT IS PAID IN SHARPNESS. A triangle
-        -- that covers ninety percent of the circle and still reaches no further
-        -- than this has to be a rounded one: raise it and triangles get pointier
-        -- and push further past the radius every placement rule measures from;
-        -- lower it and they round off toward a lumpy circle. 1.15 sits between
-        -- #344's nine-corner worst as it shipped (1.117) and the same shape's worst
-        -- once held to `area` (1.158 over 20000 draws), so no count reaches past r
+        -- THIS IS THE TRADE AGAINST `area`, AND IT IS PAID IN SHARPNESS. A shape that
+        -- covers ninety percent of the circle and reaches no further than this cannot
+        -- be too sharp, which is what rules the sharp-cornered triangle and square
+        -- out. 1.15 sits between #344's nine-corner worst as it shipped (1.117) and the
+        -- same shape's worst once held to `area` (1.158), so no zone reaches past r
         -- further than a shape that has already shipped.
-        --
-        -- MEASURED AT 1.15: triangles keep a min/max radius of 0.71 on average
-        -- (0.57 at the sharpest) and pass first try 65 percent of the time. At
-        -- 1.20 they sharpen to about 0.68 and pass 90 percent; at 1.12, 0.73 and
-        -- 45 percent. Four corners and up barely notice any of the three.
         reach       = 1.15,
     },
 
