@@ -724,7 +724,7 @@ local function pullChuteClear()
         { key = PULL_CHUTE_KEY, clear = true, text = '' })
 end
 
---- Metres above whatever this ped would hit: the ground, or the water over it.
+--- Meters above whatever this ped would hit: the ground, or the water over it.
 ---
 --- GetEntityHeightAboveGround MEASURES TO THE SEABED (see airborneNow), so over
 --- the sea it runs long by the depth of the water, and a warning timed off it

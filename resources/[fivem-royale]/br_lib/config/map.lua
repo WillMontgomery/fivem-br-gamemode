@@ -957,7 +957,7 @@ BR.Config.Drop = {
 
     -- THE LAST CALL TO PULL THE CHUTE (#352). Owner, 2026-09-23: "we can give
     -- them a quick urgent toast when they're 100m from the ground if they've
-    -- not pulled the chute yet." Metres above whatever a falling player would
+    -- not pulled the chute yet." Meters above whatever a falling player would
     -- hit, water included. Below autoDeployAGL and still reachable, because
     -- that floor never fires in freefall and was closed as won't-fix (#362).
     pullChuteAGL    = 100.0,

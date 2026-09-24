@@ -1121,7 +1121,7 @@ do
         'THE SEA IS THE GROUND -- told at 95 m over the water, with the seabed '
             .. '155 m down', n())
 
-    -- ...and a lake the engine can see, twelve metres deep.
+    -- ...and a lake the engine can see, twelve meters deep.
     reset()
     jump()
     inFreefall()
