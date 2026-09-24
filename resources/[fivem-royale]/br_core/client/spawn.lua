@@ -593,13 +593,40 @@ local function initialSpawn()
     print('[br_core] spawned at the lobby vista')
 end
 
+-- When the heartbeat below speaks, in ms after the respawn. Doubling, so the
+-- first seconds -- where #367's freeze began -- are the finest.
+local HEARTBEAT_MS = { 1000, 2000, 4000, 8000, 16000, 32000 }
+
+--- Say, for half a minute after a trip home, how many frames the game drew.
+---
+--- A BREADCRUMB FOR #367, NOT A FEATURE. That client's log stopped dead and
+--- could not say whether the game had stopped or only slowed to a crawl; a
+--- frame count per beat says which, and a beat that never comes says when.
+local function tripHeartbeat()
+    if type(GetFrameCount) ~= 'function' then return end
+    Citizen.CreateThread(function()
+        local t0 = GetGameTimer()
+        local last, lastAt = GetFrameCount(), 0
+        for _, at in ipairs(HEARTBEAT_MS) do
+            local left = t0 + at - GetGameTimer()
+            if left > 0 then Citizen.Wait(left) end
+            local f = GetFrameCount()
+            print(('[br_core] trip home +%ds: %d frames in the last %dms')
+                :format(at // 1000, f - last, at - lastAt))
+            last, lastAt = f, at
+        end
+    end)
+end
+
 --- Return to the lobby vista behind a screen fade.
 ---
---- The sequence the transition NEEDS, in order: black first, THEN the world
---- change (the island coming back is also Los Santos going away -- watching
---- that happen was an eight-second texture void), then the teleport, then
---- collision under our feet, then light. The lobby interface renders above
---- the fade throughout, so the menu is usable the whole time.
+--- The sequence the transition NEEDS, in order: black first, then the
+--- teleport, THEN the world change (the island coming back is also Los Santos
+--- going away -- watching that happen was an eight-second texture void, and
+--- since #367 br_environment holds it until the ped is home rather than
+--- switching Los Santos off around a ped still standing in it), then collision
+--- under our feet, then light. The lobby interface renders above the fade
+--- throughout, so the menu is usable the whole time.
 --- @param holdBlack boolean|nil  end-of-match mode: let the result slam play
 ---        over the live world first, then go dark and STAY dark -- the fade
 ---        back in belongs to WAITING, when the result screen hands over to
@@ -695,8 +722,18 @@ function BR.Spawn.toLobby(holdBlack)
             Citizen.Wait(50)
         end
 
+        -- ═══ THE TRIP SAYS WHERE IT IS (#367) ═══
+        --
+        -- A client froze solid on this road and its log ended on "lobby entrance
+        -- begins" with nothing after it -- so the next one says each step before
+        -- it takes it, and the heartbeat below says whether frames kept coming.
+        print(('[br_core] trip home: black after %dms -- respawning at the lobby')
+            :format(GetGameTimer() - t0))
+
         local p = BR.Config.Match.lobbyPos
         BR.Spawn.respawn(p.x, p.y, p.z, p.heading, true)
+        print('[br_core] trip home: respawned')
+        tripHeartbeat()
 
         -- ═══ THE GRAND ENTRANCE TAKES ITS MOMENT IN THIS FRAME ═══
         --
@@ -732,19 +769,24 @@ function BR.Spawn.toLobby(holdBlack)
         end
 
         -- Hold black until the island is actually under us; br_environment
-        -- flips it on within a second of the state change.
+        -- flips it on within a second of the ped arriving here (#367).
         RequestCollisionAtCoord(p.x, p.y, p.z)
-        local deadline = GetGameTimer() + 8000
+        local c0 = GetGameTimer()
+        local deadline = c0 + 8000
         while GetGameTimer() < deadline
               and not isTrue(HasCollisionLoadedAroundEntity(PlayerPedId())) do
             Citizen.Wait(100)
         end
+        local collided = isTrue(HasCollisionLoadedAroundEntity(PlayerPedId()))
+        local waited = GetGameTimer() - c0
         Citizen.Wait(300)   -- one breath for textures behind the collision
 
         if not BR.Spawn.holdBlack then
             DoScreenFadeIn(600)
         end
         BR.Spawn.traveling = false
+        print(('[br_core] trip home: landed (collision %s after %dms)')
+            :format(collided and 'loaded' or 'NOT loaded', waited))
     end)
 end
 
@@ -1425,6 +1467,7 @@ AddEventHandler(BR.Net.TO_LOBBY, function()
     -- IMMEDIATELY; the teleport and the island swap happen under it; it
     -- lifts only once the vista genuinely exists (collision loaded, with a
     -- hard timeout -- nobody gets parked on a black screen).
+    print('[br_core] trip home: TO_LOBBY')
     BR.Spawn.curtain(true, 'leaving')
 
     BR.Spawn.toLobby()
@@ -1447,8 +1490,9 @@ AddEventHandler(BR.Net.TO_LOBBY, function()
         -- seconds: collision loads well before the island's visuals finish
         -- streaming, and lifting on collision alone still showed a
         -- half-baked Cayo (live report, 2026-08-04).
-        local minUntil = GetGameTimer() + 3500
-        local deadline = GetGameTimer() + 15000
+        local raisedAt = GetGameTimer()
+        local minUntil = raisedAt + 3500
+        local deadline = raisedAt + 15000
         while GetGameTimer() < deadline do
             local ped = PlayerPedId()
             local p = BR.Config.Match.lobbyPos
@@ -1462,6 +1506,8 @@ AddEventHandler(BR.Net.TO_LOBBY, function()
         end
         Citizen.Wait(2000)
         BR.Spawn.curtain(false)
+        print(('[br_core] trip home: curtain down after %dms')
+            :format(GetGameTimer() - raisedAt))
     end)
 end)
 
@@ -1590,6 +1636,7 @@ function BR.Spawn.leaveMatch(leaveParty)
         TriggerEvent('br:ui:pauseClose')
         if leaveParty then TriggerServerEvent(BR.Net.SQUAD_LEAVE) end
         TriggerServerEvent(BR.Net.MATCH_LEAVE)
+        print('[br_core] leave: behind the curtain -- MATCH_LEAVE sent')
 
         -- ARMED FROM THE SEND, NEVER FROM THE PRESS. This fallback covers a
         -- leave the server refused or lost, and it used to start counting at the

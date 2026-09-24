@@ -1174,6 +1174,7 @@ local function flyCamera(mine)
     local flight = C.camFlightMs or 18000
     local t0 = GetGameTimer()
     flightBegan = t0
+    print('[br_core] lobby entrance: revealed -- camera flight starts')
 
     for i = 2, #plan do
         -- EACH STEP CARRIES ITS OWN SHARE OF THE CLOCK. The boundaries used to
@@ -1201,6 +1202,7 @@ local function flyCamera(mine)
 
     flightEnded = GetGameTimer()
     camLanded = true
+    print('[br_core] lobby entrance: camera landed')
 end
 
 --- How far off the start mark still counts as standing on it.
@@ -1302,6 +1304,27 @@ local function placeOnStart()
     -- first frame of the flight.
     local plan = camPlan()
     if plan[1] then BR.LobbyCam.placeAt(plan[1]) end
+end
+
+--- What the ped is doing, for a walk that has given up on it (#367).
+---
+--- A BREADCRUMB. The two returns whose ped never took a step said only how many
+--- legs were left, which cannot tell a frozen ped from one held for collision,
+--- one still sat in a vehicle, or one attached to something. Every read is a
+--- BOOL native, so every one goes through isTrue; any that is missing reads n/a.
+--- @return string
+local function pedReport()
+    local p = PlayerPedId()
+    local function ask(fn, ...)
+        if type(fn) ~= 'function' then return 'n/a' end
+        return tostring(isTrue(fn(...)))
+    end
+    return ('frozen=%s collision=%s attached=%s vehicle=%s speed=%.2f'):format(
+        ask(IsEntityPositionFrozen, p),
+        ask(HasCollisionLoadedAroundEntity, p),
+        ask(IsEntityAttached, p),
+        ask(IsPedInAnyVehicle, p, false),
+        tonumber(GetEntitySpeed(p)) or 0.0)
 end
 
 --- The whole entrance, from the black screen to the ped standing on its mark.
@@ -1431,6 +1454,7 @@ local function run(mine)
     walking = true
     walkBegan = GetGameTimer()
     FreezeEntityPosition(ped, false)
+    print('[br_core] lobby entrance: walk starts')
 
     local radius = C.arriveRadius or 0.9
     local legMs = C.legTimeoutMs or 15000
@@ -1649,6 +1673,7 @@ local function run(mine)
                 print(('[br_core] lobby entrance: the ped was still %d leg(s) '
                     .. 'out %dms after the camera parked -- placing it')
                     :format(#path - i + 1, grace))
+                print('[br_core] lobby entrance: the ped was ' .. pedReport())
                 break
             end
 
@@ -1660,6 +1685,12 @@ local function run(mine)
             Citizen.Wait(50)
         end
         if forced then break end
+        -- A LEG THAT RAN OUT OF TIME IS SAID OUT LOUD (#367). Two returns had a
+        -- ped that never took a step, and "3 leg(s) out" was all they left.
+        if token == mine and GetGameTimer() >= until_ then
+            print(('[br_core] lobby entrance: leg %d timed out %.1fm short -- %s')
+                :format(i, best, pedReport()))
+        end
     end
     if token ~= mine then return end
 

@@ -2004,6 +2004,12 @@ BR.Loop.register(BR.Loop.TICK, 'storm.map', function()
         -- lobby, and while the overlay is switched off, this is what takes the fills
         -- down -- and it puts the blips back in charge on the same tick, because
         -- mapFilled() is one number.
+        if overlayShown > 0 then
+            -- Said once per match, before the movie is touched: it is one of the
+            -- steps a leave takes on the way home (#367).
+            print(('[br_core] storm map overlay: taking %d area(s) down')
+                :format(overlayShown))
+        end
         clearMapOverlay()
         return
     end

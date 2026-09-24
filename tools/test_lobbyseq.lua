@@ -4248,6 +4248,333 @@ end
 
 BR.Shop = nil
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 23. #367: THE ROAD HOME SAYS WHERE IT IS, IN ORDER
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- Owner, 2026-09-23: "FiveM now goes unresponsive every time I leave- or end a
+-- match." The client that froze left "lobby entrance begins" as its last line
+-- and nothing after it -- no way to tell which step never came back, or whether
+-- the game had stopped or was only crawling. So each step of the trip home now
+-- says so, and a heartbeat counts the frames drawn for half a minute after the
+-- respawn. Read back IN ORDER, because a breadcrumb printed after the step it
+-- names points the next repro at the wrong step.
+
+--- The index of the first console line containing `s`, or nil.
+local function lineOf(s)
+    for i, l in ipairs(logged) do
+        if l:find(s, 1, true) then return i end
+    end
+end
+
+do
+    reset()
+    wearChosenModel()
+    pump(70000)      -- the boot entrance, out of the way
+
+    -- One "frame" per step of the fixture's clock, which is 50ms.
+    GetFrameCount = function() return fakeTime // 50 end
+
+    -- THE RESPAWN LEAVES A MARK IN THE CONSOLE TOO, so the two lines around it
+    -- can be held to being around it: a crumb printed on the wrong side of the
+    -- native it names is the one that lies.
+    local realResurrect = NetworkResurrectLocalPlayer
+    NetworkResurrectLocalPlayer = function(...)
+        logged[#logged + 1] = '<the respawn native>'
+        return realResurrect(...)
+    end
+
+    BR.State.me.state = BR.PlayerState.ALIVE
+    ped.x, ped.y = 1500.0, 2500.0
+    pump(500)
+
+    BR.State.me.state = BR.PlayerState.LOBBY
+    TriggerEvent('br:ui:covered', 'curtain', false)
+    logged = {}
+    TriggerEvent(BR.Net.TO_LOBBY)
+    pump(40000)
+
+    local chain = {
+        'trip home: TO_LOBBY',
+        'trip home: black after',
+        '<the respawn native>',
+        'trip home: respawned',
+        'lobby entrance begins',
+        'trip home: landed (collision loaded',
+        'trip home: curtain down after',
+        'lobby entrance: walk starts',
+        'lobby entrance stopped (arrived)',
+    }
+    local prev, prevName = 0, 'nothing'
+    for _, s in ipairs(chain) do
+        local i = lineOf(s)
+        ok(i ~= nil and i > prev,
+           ('the trip home says "%s", after %s'):format(s, prevName))
+        prev, prevName = i or prev, ('"%s"'):format(s)
+    end
+
+    local cur, rev = lineOf('trip home: curtain down after'),
+                     lineOf('lobby entrance: revealed -- camera flight starts')
+    local landed = lineOf('lobby entrance: camera landed')
+    ok(rev ~= nil and cur ~= nil and rev > cur,
+       'the camera flight says it starts, once the curtain is down')
+    ok(landed ~= nil and rev ~= nil and landed > rev, 'and says when it lands')
+
+    -- THE HEARTBEAT: every beat, counted from the respawn, each one the frames
+    -- drawn since the last. 50ms frames here, so twenty to the second.
+    local res = lineOf('trip home: respawned')
+    local first = lineOf('trip home +1s: 20 frames in the last 1000ms')
+    ok(first ~= nil and res ~= nil and first > res,
+       'a heartbeat one second after the respawn counts the frames drawn')
+    ok(lineOf('trip home +4s: 40 frames in the last 2000ms') ~= nil
+       and lineOf('trip home +32s: 320 frames in the last 16000ms') ~= nil,
+       'and keeps counting, doubling its interval, for half a minute')
+    ok(not lineOf('trip home: landed (collision NOT loaded'),
+       'precondition: this fixture\'s collision loads')
+
+    GetFrameCount = nil
+    NetworkResurrectLocalPlayer = realResurrect
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 22b. #367: A PED THAT NEVER TAKES A STEP SAYS WHAT STATE IT IS IN
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- Two returns from a match (2026-09-21 and 2026-09-23) had a ped that never
+-- walked, and the only trace was "the ped was still 3 leg(s) out". A leg that
+-- times out now says so with the ped's state, and so does the placement.
+
+do
+    reset()
+    wearChosenModel()
+    pump(70000)
+
+    local realTask = TaskGoStraightToCoord
+    TaskGoStraightToCoord = function() note('task') end   -- tasked, and never moves
+    IsEntityPositionFrozen = function() return ped.frozen and 1 or 0 end
+
+    BR.State.me.state = BR.PlayerState.ALIVE
+    ped.x, ped.y = 1500.0, 2500.0
+    pump(500)
+
+    BR.State.me.state = BR.PlayerState.LOBBY
+    TriggerEvent('br:ui:covered', 'curtain', false)
+    logged = {}
+    TriggerEvent(BR.Net.TO_LOBBY)
+    pump(60000)
+
+    ok(forcedHome(), 'precondition: the grace still places a ped that never moved')
+    ok(said('lobby entrance: leg 1 timed out'),
+       'the leg that ran out of time says so')
+    ok(said('frozen=false collision=true attached=n/a vehicle=n/a speed=0.00'),
+       'with the ped\'s state -- and a native this fixture does not have reads n/a')
+    local forcedI = lineOf('after the camera parked -- placing it')
+    local stateI = lineOf('lobby entrance: the ped was frozen=')
+    ok(forcedI ~= nil and stateI == forcedI + 1,
+       'and the placement is followed by the same report')
+
+    TaskGoStraightToCoord = realTask
+    IsEntityPositionFrozen = nil
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 22c. #367: THE ISLAND WAITS FOR THE PED TO BE HOME
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- br_environment/client/ipl.lua, loaded on its own, in its own environment --
+-- it is a different resource, with its own Lua state in the game.
+--
+-- Leaving a match solo ends it, so WAITING arrives with the trip home, and the
+-- island used to be switched on at the next 1Hz poll: often inside the ~400ms
+-- the trip spends fading out, with the ped still standing in Los Santos --
+-- switching the island on switches Los Santos OFF around it. Both solo leaves
+-- whose logs show that order (2026-09-21, and the 2026-09-23 hang) stop there;
+-- the one whose trip landed first did not. Whether that ordering is the cause
+-- is unproven -- an engine cannot run here -- but it is an ordering, and orderings
+-- are what this suite is for.
+
+do
+    local isleClock = 0
+    local isleThreads, isleHandlers, isleLog = {}, {}, {}
+    local hopper = {}                          -- every ISLAND_HOPPER call
+    local isPed = { x = 0.0, y = 0.0, z = 0.0 }
+    local isCam = { x = 0.0, y = 0.0, z = 0.0 }
+    local darkNow = false
+
+    local vmt = {}
+    local function v3(x, y, z) return setmetatable({ x = x, y = y, z = z }, vmt) end
+    vmt.__sub = function(a, b) return v3(a.x - b.x, a.y - b.y, a.z - b.z) end
+    vmt.__len = function(a) return math.sqrt(a.x * a.x + a.y * a.y + a.z * a.z) end
+
+    -- THE STANDARD LIBRARY AND THESE NATIVES, AND NOTHING ELSE. A native the
+    -- file starts calling that is not here is an error, not a silent stub.
+    local env = {
+        print = function(s) isleLog[#isleLog + 1] = tostring(s) end,
+        math = math, string = string, table = table, coroutine = coroutine,
+        ipairs = ipairs, pairs = pairs, next = next, select = select,
+        type = type, tostring = tostring, tonumber = tonumber, error = error,
+        pcall = pcall, setmetatable = setmetatable, getmetatable = getmetatable,
+        rawget = rawget, rawset = rawset,
+        vector3 = v3,
+        CreateThread = function(fn)
+            isleThreads[#isleThreads + 1] = { co = coroutine.create(fn), wake = isleClock }
+        end,
+        Wait = function(ms) coroutine.yield(tonumber(ms) or 0) end,
+        Citizen = { InvokeNative = function(hash, _name, on)
+            if hash == 0x9A9D1BA639675CF1 then
+                hopper[#hopper + 1] = { on = on == true, at = isleClock,
+                                        x = isPed.x, y = isPed.y }
+                -- In the console's own sequence, so a line can be held to
+                -- coming before the switch rather than merely before "enabled".
+                isleLog[#isleLog + 1] = '<the island switch>'
+            end
+        end },
+        RequestIpl = function() end,
+        SetScenarioGroupEnabled = function() end,
+        SetAmbientZoneListStatePersistent = function() end,
+        SetDeepOceanScaler = function() end,
+        SetRadarAsExteriorThisFrame = function() end,
+        SetRadarAsInteriorThisFrame = function() end,
+        GetHashKey = GetHashKey,
+        TriggerEvent = function() end,
+        AddEventHandler = function(n, fn)
+            isleHandlers[n] = isleHandlers[n] or {}
+            table.insert(isleHandlers[n], fn)
+        end,
+        RegisterNetEvent = function() end,
+        PlayerPedId = function() return 1 end,
+        GetEntityCoords = function() return v3(isPed.x, isPed.y, isPed.z) end,
+        GetFinalRenderedCamCoord = function() return v3(isCam.x, isCam.y, isCam.z) end,
+        -- A real boolean: the file reads this one bare, and its ratchet entry
+        -- in tools/bool_natives.baseline is a separate matter from this test.
+        IsScreenFadedOut = function() return darkNow end,
+    }
+    env._G = env
+    for _, f in ipairs({ 'br_lib/shared/enums.lua', 'br_lib/shared/protocol.lua',
+                         'br_environment/client/ipl.lua' }) do
+        local chunk, err = loadfile(ROOT .. f, 't', env)
+        if not chunk then
+            realPrint('\27[31mload error\27[0m ' .. f .. ': ' .. tostring(err))
+            os.exit(1)
+        end
+        chunk()
+    end
+    local IBR = env.BR
+
+    local function isleRun(ms)
+        local target = isleClock + ms
+        while isleClock < target do
+            isleClock = isleClock + 100
+            for _, th in ipairs(isleThreads) do
+                if coroutine.status(th.co) ~= 'dead' and th.wake <= isleClock then
+                    local okr, w = coroutine.resume(th.co)
+                    if not okr then
+                        realPrint('\27[31misland thread error\27[0m ' .. tostring(w))
+                        os.exit(1)
+                    end
+                    th.wake = isleClock + (tonumber(w) or 0)
+                end
+            end
+        end
+    end
+    local function state(s)
+        for _, fn in ipairs(isleHandlers[IBR.Net.STATE] or {}) do fn({ state = s }) end
+    end
+    local function place(t, x, y) t.x, t.y, t.z = x, y, 20.0 end
+    local function isleSaid(s)
+        for i, l in ipairs(isleLog) do
+            if l:find(s, 1, true) then return i end
+        end
+    end
+    local lobby = BR.Config.Match.lobbyPos
+    local CITY_X, CITY_Y = 1616.8, 367.8        -- Land Act Dam, from a real log
+
+    --- Run a match to PLAYING: the bus takes the island away once the camera
+    --- has left it, as it always has.
+    local function toPlaying()
+        state(IBR.MatchState.BUS)
+        place(isPed, CITY_X, CITY_Y)
+        place(isCam, CITY_X, CITY_Y)
+        isleRun(3000)
+        state(IBR.MatchState.PLAYING)
+        isleRun(2000)
+    end
+
+    -- THE BOOT ROAD IS UNCHANGED: the island is the default world, switched on
+    -- at start wherever the ped happens to be.
+    isleRun(200)
+    ok(#hopper == 1 and hopper[1].on,
+       'the boot road still switches the island on at once, ped or no ped')
+    local sw, hop = isleSaid('Cayo Perico: switching on'), isleSaid('<the island switch>')
+    local en = isleSaid('Cayo Perico enabled')
+    ok(sw ~= nil and hop ~= nil and en ~= nil and sw < hop and hop < en,
+       'and says it is switching before it does, so a client stuck inside it says so')
+
+    toPlaying()
+    ok(#hopper == 2 and not hopper[2].on, 'precondition: the bus switched it off')
+
+    -- THE SOLO LEAVE. WAITING lands while the ped is still in the city.
+    isleLog = {}
+    local before = #hopper
+    state(IBR.MatchState.WAITING)
+    isleRun(3000)
+    ok(#hopper == before,
+       'the island is NOT switched on while the ped is still in Los Santos')
+    ok(isleSaid('held until the player is home') ~= nil,
+       'and the console says it is holding')
+
+    -- The trip home lands.
+    place(isPed, lobby.x, lobby.y)
+    place(isCam, lobby.x, lobby.y)
+    isleRun(1100)
+    local h = hopper[#hopper]
+    ok(#hopper == before + 1 and h.on,
+       'it is switched on within a poll of the ped arriving')
+    ok(h and math.abs(h.x - lobby.x) < 1.0 and math.abs(h.y - lobby.y) < 1.0,
+       'with the ped already standing in the lobby when it is')
+    ok(isleSaid('switching anyway') == nil, 'and without the timeout')
+
+    -- A TRIP THAT NEVER LANDS still gets its island, so the lobby is never left
+    -- over open sea -- and it gets its FULL wait, even straight after a hold
+    -- that ended: the bus's release cue takes the island away on the very next
+    -- poll here, so no quiet poll in between gets to reset the count.
+    local release = isleHandlers['br:env:releaseIsland'] or {}
+    ok(#release == 1, 'precondition: the bus\'s release cue has a handler')
+    state(IBR.MatchState.BUS)
+    for _, fn in ipairs(release) do fn() end
+    place(isPed, CITY_X, CITY_Y)
+    place(isCam, CITY_X, CITY_Y)
+    isleRun(1000)
+    ok(not hopper[#hopper].on, 'precondition: the release cue switched it straight off')
+    isleLog = {}
+    before = #hopper
+    local wantedAt = isleClock
+    state(IBR.MatchState.WAITING)
+    isleRun(9000)
+    ok(#hopper == before, 'held for as long as the ped is away...')
+    isleRun(3000)
+    h = hopper[#hopper]
+    ok(#hopper == before + 1 and h.on and h.at - wantedAt <= 12000,
+       '...and switched on anyway about ten seconds in')
+    ok(isleSaid('was not home after 10s -- switching anyway') ~= nil,
+       'saying that it gave up waiting')
+
+    -- THE VERDICT ROAD keeps its fade gate, and the ped gate sits behind it.
+    toPlaying()
+    before = #hopper
+    darkNow = false
+    state(IBR.MatchState.ENDED)
+    isleRun(2000)
+    ok(#hopper == before, 'ENDED in plain sight: still not switched')
+    darkNow = true
+    isleRun(2000)
+    ok(#hopper == before, 'black, but the ped not home yet: still not switched')
+    place(isPed, lobby.x, lobby.y)
+    isleRun(1100)
+    ok(#hopper == before + 1 and hopper[#hopper].on,
+       'black and home: switched')
+end
+
 -- And the gather loop goes back on, so nothing added after this inherits a
 -- disabled subsystem from a block that only wanted it quiet for itself.
 ok(BR.Loop.setEnabled('spawn.gather', true), 'spawn.gather is left enabled')

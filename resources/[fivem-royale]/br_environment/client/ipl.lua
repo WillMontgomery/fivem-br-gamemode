@@ -184,12 +184,29 @@ local islandActive = false   -- what we have applied
 local islandWanted = true    -- what the match state says we should have
 local matchState   = nil     -- last match state seen, for the swap gate below
 local forceSwap    = false   -- the bus said "now" -- skip the distance gate
+local heldPolls    = 0       -- polls the island has waited for the player to come home
+
+-- How long the island waits for the trip home before it is switched on anyway.
+-- The trip lands a second or so after the island is wanted; this only bounds a
+-- trip that never lands, so the lobby is never left without its island.
+local HOME_WAIT_POLLS = 10
 
 local function nearIsland()
     -- The RENDERED CAMERA, not the ped: during the bus ride the ped is
     -- parked at the airstrip while the camera flies the route -- and it is
     -- the camera's view that must not have its ground deleted.
     return #(GetFinalRenderedCamCoord() - ISLAND_CENTRE) < NEAR_ISLAND
+end
+
+--- Is the player's ped already standing on the island's side of the sea?
+---
+--- THE PED, not the camera, because it is the other direction: switching the
+--- island ON switches Los Santos OFF, and the thing standing in Los Santos when
+--- that happens is the ped -- the collision under it, the streaming focus around
+--- it and the car it was sitting in (#367).
+--- @return boolean
+local function pedHome()
+    return #(GetEntityCoords(PlayerPedId()) - ISLAND_CENTRE) < NEAR_ISLAND
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -272,6 +289,9 @@ end
 --- @param on boolean
 local function applyIsland(on)
     islandActive = on
+    -- SAID BEFORE THE SWITCH as well as after it (#367), so a client that stops
+    -- inside the switch leaves this line as its last one.
+    print(('[br_environment] Cayo Perico: switching %s'):format(on and 'on' or 'off'))
     Citizen.InvokeNative(ISLAND_HOPPER, 'HeistIsland', on)
     Citizen.InvokeNative(ISLAND_PATHS, on)
     SetScenarioGroupEnabled('Heist_Island_Peds', on)
@@ -361,7 +381,31 @@ CreateThread(function()
                 local teardown = matchState == BR.MatchState.ENDED
                               or matchState == BR.MatchState.CLEANUP
                 if not teardown or IsScreenFadedOut() then
-                    applyIsland(true)
+                    -- ═══ AND NEVER WHILE THE PLAYER IS STILL IN LOS SANTOS (#367) ═══
+                    --
+                    -- Leaving a match solo ends it, so WAITING arrives with the
+                    -- trip home and this used to switch on the next poll -- often
+                    -- inside the ~400ms the trip spends fading out, with the ped
+                    -- still standing in the city. Both solo leaves whose logs show
+                    -- that order stop on the spot, one of them the hang Windows
+                    -- recorded on 2026-09-23; the one whose trip landed first kept
+                    -- running. UNPROVEN as the cause -- no harness can run the
+                    -- engine -- but the verdict road, whose swap waits for the fade
+                    -- the trip home moves the ped under, almost never has it. So
+                    -- the island now waits for the ped to be home, on every road.
+                    if pedHome() or heldPolls >= HOME_WAIT_POLLS then
+                        if heldPolls >= HOME_WAIT_POLLS then
+                            print(('[br_environment] Cayo Perico: the player was not '
+                                .. 'home after %ds -- switching anyway'):format(heldPolls))
+                        end
+                        heldPolls = 0
+                        applyIsland(true)
+                    else
+                        if heldPolls == 0 then
+                            print('[br_environment] Cayo Perico: held until the player is home')
+                        end
+                        heldPolls = heldPolls + 1
+                    end
                 end
                 farPolls, forceSwap = 0, false
             else
@@ -387,7 +431,7 @@ CreateThread(function()
                 end
             end
         else
-            farPolls = 0
+            farPolls, heldPolls = 0, 0
         end
     end
 end)
