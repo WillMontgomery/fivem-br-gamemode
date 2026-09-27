@@ -73,11 +73,9 @@ BR.Config.Storm = {
     -- rather than the exception (2026-08-06): "this will force ALL players to
     -- move instead of allowing them to hide and hope for the best".
     --
-    -- `overhang` is extra offset allowed beyond the nesting limit, as a
-    -- fraction of the NEXT radius. The centre lands outside the current circle
-    -- whenever the draw exceeds curRadius; at 1.8 the reachable maximum is
-    -- curRadius + 0.8 * nextRadius, so that happens often and the two circles
-    -- still overlap -- a long run, not a teleport.
+    -- (An `overhang` knob, a fraction of the NEXT radius past the nesting limit,
+    -- described this once; it is gone. What a breakout may do is gapMax below,
+    -- measured between the two zones' real shapes -- BR.NextZoneCentre.)
     --
     -- THIS IS SAFE ONLY BECAUSE THE WALL SWEEPS. Damage is dealt by where the
     -- wall IS, and the wall travels from the old circle to the new one over
@@ -97,13 +95,17 @@ BR.Config.Storm = {
         chanceStart = 0.0,
         chanceEnd   = 0.85,
 
-        -- THE CIRCLES MAY SEPARATE COMPLETELY, and this is how far apart
-        -- (user call, 2026-08-06). The new circle can sit wholly outside the
-        -- old one; the GAP between their edges is capped at this fraction of
-        -- the predecessor's radius:
+        -- THE ZONES MAY SEPARATE COMPLETELY, and this is how far apart
+        -- (user call, 2026-08-06). The new zone can sit wholly outside the
+        -- old one; the GAP between their edges -- the two real SHAPES, not
+        -- their circles (#344) -- is capped at this fraction of the
+        -- predecessor's radius. In the circle era that was
         --
         --     d_max = curRadius + nextRadius + gapMax * curRadius
         --
+        -- between centres; a stretched zone reaches further than its circle
+        -- on its long axis, so its centre may now sit further out than d_max
+        -- while the ground between the edges is still the same half radius.
         -- Half a radius of clear ground between the two is a real rotation --
         -- everyone moves, nobody is already there -- without being a sprint
         -- across the county.
@@ -116,6 +118,13 @@ BR.Config.Storm = {
         -- times that, so a breakout phase is allowed a longer sweep. Without
         -- this the wall simply outruns everybody and the breakout stops being
         -- a rotation and becomes a cull.
+        --
+        -- THAT "THREE TIMES" WAS A CIRCLE'S: a separated circle's far rim is at
+        -- most (2 + gapMax) * curRadius from the next one. Real zones reach
+        -- further -- 3.4 to 4.0 curRadius at worst over 300 forced breakouts a
+        -- phase -- so BR.StormSweepCeiling lifts this factor further by however
+        -- much the phase's own pair really exceeds the circle's bound, and never
+        -- lowers it. A breakout no longer than a circle's gets exactly 2.5.
         shrinkFactor = 2.5,
 
         -- A floor on the CURRENT radius, kept as a knob and off by default:

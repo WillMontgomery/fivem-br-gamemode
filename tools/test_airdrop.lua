@@ -3319,10 +3319,8 @@ do
             BR.StormHost(m.sweep.seed, phase, cx0, cy0, r0), cx0, cy0, r0,
             BR.StormUnit(m.sweep.seed, phase), p.radius, SC.edgeBiasMax, SC.mapAABB,
             hugM, BR.StormBreakoutFor(SC, phase))
-        local shrink = p.shrink
-        if brokeOut then
-            shrink = shrink * ((SC.breakout and SC.breakout.shrinkFactor) or 1.0)
-        end
+        local shrink = BR.StormSweepCeiling(SC, BR.BuildStormRecord(phase, cx0, cy0, r0,
+            cx1, cy1, p.radius, gameMs, 0.0, 1000.0, p.dps, m.sweep.seed), brokeOut)
         if m.sweep.alone then shrink = minShrink end
         m.storm = BR.BuildStormRecord(phase, cx0, cy0, r0, cx1, cy1, p.radius,
             gameMs, (waitSec or p.wait) * 1000, shrink * 1000, p.dps, m.sweep.seed)

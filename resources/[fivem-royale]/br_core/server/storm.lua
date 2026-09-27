@@ -418,10 +418,12 @@ local function enterPhase(m, phase, cx0, cy0, r0, now, waitSec, mo)
     -- a breakout, and the pricing below still decides how much of it is actually
     -- used -- if everybody happens to be near the new zone, the sweep is short
     -- regardless.
-    local ceiling = p.shrink
-    if brokeOut then
-        ceiling = p.shrink * ((cfg.breakout and cfg.breakout.shrinkFactor) or 1.0)
-    end
+    --
+    -- BY THE REAL SHAPES' REACH, NOT THE CIRCLES' (2026-09-27). shrinkFactor was a
+    -- ratio of circle runs; a stretched zone on either side of the gap reaches
+    -- further, and BR.StormSweepCeiling lifts the ceiling by exactly how much
+    -- further this phase's pair really does. It reads the same probe record.
+    local ceiling = BR.StormSweepCeiling(cfg, probe, brokeOut)
     local shrinkSec = BR.Clamp(furthest / cfg.shrinkPace.metersPerSec,
         cfg.shrinkPace.minSeconds, ceiling)
 

@@ -358,6 +358,21 @@ time at phases 2–7. This is safe only because the wall **sweeps**: damage come
 from where the wall is, and a phase that rolled a breakout gets its shrink ceiling
 multiplied by `shrinkFactor` (2.5) so the run is one people can make.
 
+That 2.5 was a ratio of **circle** runs: a separated circle's far rim is at most
+`(2 + gapMax) × curRadius` from the next circle. Real zones reach further on both
+sides of the gap — over 300 forced breakouts a phase the longest run is 3.4–4.0
+`curRadius` at worst — and at phase 5, where the circle ceiling held every
+breakout's longest run, it fell short on 12% of them. `BR.StormSweepCeiling`
+keeps the circle's proportion instead:
+
+```
+W        = furthest any point of the zone the wall starts as lies outside D   -- exact
+ceiling  = shrink × shrinkFactor × max(1, W / ((2 + gapMax) × curRadius))
+```
+
+A breakout no longer than a circle's could be is priced exactly as before; a
+phase that did not roll one keeps its authored ceiling.
+
 Two earlier formulations were wrong in instructive ways — scaling the budget by
 the *next* radius made the final phase (radius 0) unable to move at all, and
 scaling by the *current* radius could never separate the early circles. Stating

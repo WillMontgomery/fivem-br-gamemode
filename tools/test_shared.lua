@@ -5492,6 +5492,117 @@ do
     ok(monotonic, 'and the chance never falls as the phases progress')
 end
 
+describe('storm.breakout.shape')
+do
+    -- ═══ A BREAKOUT IS DECIDED, CLASSIFIED AND PRICED BY THE REAL SHAPES ═══
+    --
+    --   "It also seems our breakout logic may still be tuned for circular storms, can
+    --    you confirm if that's true and fix it if so?"   -- the owner, 2026-09-27
+    --
+    -- Every phase from 2 to 8, every placement forced to roll a breakout, off the
+    -- shipping gap and shrink factor. Each claim is asked of a WALK of both zones'
+    -- own boundaries, which shares nothing with the corner lists the solver reads.
+    local SS = BR.StormShape
+    local cfg = BR.Config.Storm
+    local phases = cfg.phases
+    local bo = { chance = 1.0, gapMax = cfg.breakout.gapMax, minRadius = 0.0 }
+    local V = cfg.shrinkPace.metersPerSec
+    local circleK = 2.0 + cfg.breakout.gapMax
+
+    local apart, joined, nestedN, wrongApart, wrongJoined, wrongNested = 0, 0, 0, 0, 0, 0
+    local pastCircle, lifted, notLifted, liftOff = 0, 0, 0, 0.0
+    local shortLate, shortAt, worstK = 0, nil, 0.0
+    for PH = 2, #phases do
+        local R0, R1 = phases[PH - 1].radius, phases[PH].radius
+        for i = 1, 40 do
+            local seed = i * 6271 + PH * 13
+            local nx, ny, broke, host = placeZone(BR.Rng(i * 17 + PH), seed, PH, 0.0, 0.0,
+                R0, R1, cfg.edgeBiasMax, nil, nil, bo)
+            local rec = BR.BuildStormRecord(PH, 0.0, 0.0, R0, nx, ny, R1, 0, 0, 1000, 1.0, seed)
+            local D = BR.StormTarget(rec)
+
+            -- THE WALKS: how far D pokes out of Z and how deep it gets in, and the
+            -- furthest any point of Z is from D -- the longest run anyone standing in
+            -- the zone could be asked to make.
+            local poke, gap = pokeAndGap(seed, PH, host, nx, ny, R1)
+            local W = -math.huge
+            for _, q in ipairs(walkPoly(host, 720)) do
+                W = math.max(W, SS.distance(D, q.x, q.y))
+            end
+
+            -- SEPARATE, CONJOINED OR NESTED, by the records' own verdicts.
+            if R1 > 0.0 then
+                local over = BR.StormOverlaps(rec)
+                if BR.StormNested(rec) then
+                    nestedN = nestedN + 1
+                    if poke > 1e-6 then wrongNested = wrongNested + 1 end
+                elseif over then
+                    joined = joined + 1
+                    -- It crosses the zone: some of it in, some of it out.
+                    if not (gap < 0.0 and poke > 0.0) then wrongJoined = wrongJoined + 1 end
+                else
+                    apart = apart + 1
+                    -- Not one walked point of it touches the zone.
+                    if not (gap > 0.0) then wrongApart = wrongApart + 1 end
+                end
+            end
+
+            -- THE CEILING, against the circle's bound and the real reach.
+            local shrink = phases[PH].shrink
+            local ceil = BR.StormSweepCeiling(cfg, rec, broke)
+            local base = shrink * cfg.breakout.shrinkFactor
+            local bound = circleK * R0
+            worstK = math.max(worstK, W / R0)
+            if W > bound + 0.5 then
+                pastCircle = pastCircle + 1
+                -- Lifted by the real reach over the circle's: never below the walk's,
+                -- and above it by no more than the walk's own sampling (720 points on
+                -- a zone kilometres round) and the corner-disc bound the solver reads.
+                local want = base * W / bound
+                if ceil + 1e-6 < want * (1.0 - 1e-3) then notLifted = notLifted + 1
+                else lifted = lifted + 1 end
+                liftOff = math.max(liftOff, math.abs(ceil - want) / want)
+            elseif W < bound - 0.5 and math.abs(ceil - base) > 1e-9 then
+                notLifted = notLifted + 1
+            end
+            -- FROM PHASE 5 ON THE CEILING HELD EVERY CIRCLE BREAKOUT'S LONGEST RUN at
+            -- the pricing pace, and it holds every real one's.
+            if PH >= 5 and W > ceil * V + 0.5 then
+                shortLate = shortLate + 1
+                shortAt = shortAt or ('phase %d seed %d: run %.0f m, ceiling %.0f s = %.0f m')
+                    :format(PH, seed, W, ceil, ceil * V)
+            end
+        end
+    end
+    ok(apart > 20 and joined > 20,
+        ('forced breakouts land both apart (%d) and conjoined (%d)%s'):format(apart, joined,
+            nestedN > 0 and (' and sometimes nested (%d)'):format(nestedN) or ''))
+    ok(wrongApart == 0,
+        'and a breakout the record calls SEPARATE never touches the zone it leaves, walked',
+        ('%d of %d'):format(wrongApart, apart))
+    ok(wrongJoined == 0,
+        'and one it calls CONJOINED always crosses it -- part inside, part out, walked',
+        ('%d of %d'):format(wrongJoined, joined))
+    ok(wrongNested == 0, 'and one it calls nested lies wholly inside it',
+        ('%d of %d'):format(wrongNested, nestedN))
+    ok(pastCircle > 0 and worstK > circleK,
+        ('real zones reach past the circle\'s (2 + gapMax) r0 bound on %d breakouts, '
+            .. 'up to %.2f r0 -- the 2.5 was sized for circles'):format(pastCircle, worstK))
+    ok(notLifted == 0 and liftOff < 0.02,
+        'so the breakout ceiling is lifted by exactly the real reach past the circle\'s '
+            .. 'bound there, and is exactly shrink * shrinkFactor everywhere else',
+        ('%d wrong, worst %.4f off'):format(notLifted, liftOff))
+    ok(shortLate == 0,
+        'and from phase 5 on, where it held every circle breakout\'s longest run, the '
+            .. 'ceiling holds every real one\'s at the pricing pace', shortAt)
+
+    -- A PHASE THAT DID NOT ROLL ONE keeps its authored ceiling, whatever it looks like.
+    local rec = BR.BuildStormRecord(5, 0.0, 0.0, phases[4].radius, 600.0, 0.0,
+        phases[5].radius, 0, 0, 1000, 1.0, 99)
+    ok(BR.StormSweepCeiling(cfg, rec, false) == phases[5].shrink,
+        'a phase that did not break out keeps its authored ceiling')
+end
+
 describe('storm.price')
 do
     -- ═══ THE SWEEP IS PRICED ON THE MOVING WALL, AND THE SAMPLING IS HONEST (#344) ═══

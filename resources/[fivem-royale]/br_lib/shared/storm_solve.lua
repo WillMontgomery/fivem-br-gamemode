@@ -1235,6 +1235,52 @@ function BR.StormBreakoutFor(cfg, phase)
     }
 end
 
+--- The CEILING on a phase's sweep, in seconds: the authored `shrink`, lifted on a
+--- phase that rolled a breakout -- by `shrinkFactor`, and by the real shapes' reach.
+---
+--- ═══ THE 2.5 WAS A RATIO OF CIRCLE RUNS ═══
+---
+--- `shrinkFactor` was sized for circles (2026-08-06): the furthest anyone standing in
+--- the zone a phase starts in can be from a separated destination is its far rim to
+--- the destination's near one, and with the centres at most r0 + r1 + gapMax * r0
+--- apart that is never more than (2 + gapMax) * r0 -- the "three times" a nested run
+--- that the config's comment argues from. The placement has measured the gap between
+--- the SHAPES since #344, and a zone stretched up to 3:1 reaches further from its
+--- centre than its circle did, on both sides of the gap: measured over 300 forced
+--- breakouts a phase, the furthest run is 3.4 to 4.0 r0 at worst against the circle's
+--- 2.5, and phase 5's ceiling -- which covered every circle breakout's furthest run --
+--- fell short on 12 percent of them.
+---
+--- So the lift keeps the circle's proportion. W, how far the furthest point of the
+--- zone the wall starts as lies outside the destination, is read off the real shapes
+--- (BR.StormShape.fit, exact at every corner disc that is outside it), and where it
+--- is longer than any circle breakout could have been the ceiling grows with it.
+--- Never below shrink * shrinkFactor, so a breakout that stayed as close as a circle
+--- could have is priced exactly as it always was, and a phase that did not roll one
+--- keeps its authored ceiling. The pricing below the ceiling still decides how much of
+--- it is used: a lobby near the destination gets a short sweep regardless.
+--- @param cfg table        BR.Config.Storm
+--- @param rec table        the phase's record (its tShrink is not read)
+--- @param brokeOut boolean whether the placement rolled a breakout
+--- @return number seconds
+function BR.StormSweepCeiling(cfg, rec, brokeOut)
+    local p = cfg and cfg.phases and rec and cfg.phases[rec.phase]
+    local shrink = (p and p.shrink) or 0.0
+    if not brokeOut then return shrink end
+    local bo = cfg.breakout or {}
+    local ceiling = shrink * (bo.shrinkFactor or 1.0)
+    local e = infoOf(rec)
+    -- THE PRE-#344 OFF SWITCH is two circles, and a circle never passes its own bound.
+    if not e then return ceiling end
+    local SS = BR.StormShape
+    local dks = SS.discHull(e.keep)
+    local circleRun = (2.0 + (bo.gapMax or 0.5)) * (rec.r0 or 0.0)
+    if not dks or not (circleRun > 0.0) then return ceiling end
+    local W = SS.fit(dks, e.src, 0.0, 0.0, 1.0)
+    if W > circleRun then ceiling = ceiling * (W / circleRun) end
+    return ceiling
+end
+
 -- Metres of clearance a nested placement keeps from touching the zone it is inside.
 -- A millimetre: far below anything a player can see, and nine orders of magnitude
 -- above the rounding in a signed distance -- so "is this record nested" is decided
