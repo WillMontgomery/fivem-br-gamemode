@@ -53,7 +53,10 @@ actually is.
 | **Record** | The one table the server publishes per phase: current circle, target circle, timestamps, dps. Whole-record broadcasts only, never incremental mutation. |
 | **Solver** | `BR.StormAt(record, now)` — a pure function both sides run to get the circle at any instant. A shrinking storm costs zero per-frame network traffic. |
 | **Phase** | One hold-then-shrink cycle from the authored table (radius, wait, shrink, dps, warn). Phase 1's 120 s wait is the free-loot hold; the first circle is visible from the moment the match goes live. |
-| **Wall** | The rendered edge: ~40 tall cylinder markers on the arc nearest the player, drawn only when the edge is within 250 m. Cosmetic — disabling it changes nothing about damage. |
+| **Wall** | The rendered edge of the safe zone: a continuous quad strip along the zone's real outline (`BR.StormZone`), the same shape the damage tick bills. Cosmetic — disabling it changes nothing about damage. |
+| **Destination** | The zone a phase closes on (`BR.StormTarget`). It never moves or changes shape during the phase; the map draws it as its own stationary fill. |
+| **Moving zone** | The one zone a sweep moves: its outline turns into the destination's while it travels, and it lands on the destination as the sweep ends. On a breakout the safe zone is the moving zone united with the destination. There is exactly one; the map draws it as one fill over the destination. |
+| **Knee** | The instant, `morph.leadSeconds` (15 s) before a sweep ends, at which the moving zone's outline has become the destination's. Before it the outline changes every frame (the map redraws it at `overlay.morphHz`); after it the zone is one outline moved and scaled (the map only places it). |
 | **Ledger** | The authority trick. The server cannot write a ped's health, so clients are *told* to apply storm damage — but the server also tracks what the storm should have done and eliminates from its own arithmetic. A client that ignores every damage instruction dies at exactly the honest moment. |
 
 ### Loot and inventory

@@ -270,9 +270,14 @@ end
 --- Fill one polygon on the radar and the pause map.
 ---
 --- A SHAPE CANNOT BE EDITED, ONLY REPLACED. There is no method that changes an
---- area's points, so a boundary that changes SHAPE is removeAll() followed by an
---- add. A boundary that only MOVES AND SCALES is a different case and is not a
---- rebuild at all -- placeArea below has why, and what it needs from the caller.
+--- area's points -- MINIMAP_LOADER.gfx's whole method list is ADD_AREA_OVERLAY,
+--- ADD_SCALED_OVERLAY, ADD_SIZED_OVERLAY, ADD_TEXT_OVERLAY, REM_OVERLAY, CLEAR_ALL,
+--- HIDE_OVERLAY, SET_OVERLAY_ALPHA, SET_OVERLAY_COLOR, UPDATE_OVERLAY_POSITION,
+--- UPDATE_OVERLAY_ROTATION, UPDATE_OVERLAY_SIZE_OR_SCALE and UPDATE_TEXT -- so a
+--- boundary that changes SHAPE is a remove followed by an add (setAreas, or
+--- replaceFrom for the top of the picture). A boundary that only MOVES AND SCALES is
+--- a different case and is not a rebuild at all -- placeArea below has why, and what
+--- it needs from the caller.
 ---
 --- @param points table  at least 3 { x = number, y = number } in WORLD coords --
 ---                      or about an origin the caller will placeArea into the
@@ -562,32 +567,63 @@ function BR.MapOverlay.alphaArea(slot, a)
     return true
 end
 
---- Add ONE more area after the last setAreas, without removing anything (#344).
+--- Replace the areas of the last setAreas from slot `first` on with `areas`, and
+--- leave every slot below it alone (#344).
 ---
---- ═══ FOR A PICTURE THAT GROWS WHILE IT STANDS STILL, AND ONLY THEN ═══
+--- ═══ FOR A PICTURE WHOSE TOP PART CHANGES SHAPE AND WHOSE BOTTOM PART DOES NOT ═══
 ---
---- An add is the expensive call -- setAreas has the argument -- and this is an add.
---- What it saves is the REMOVE-AND-RE-ADD of everything already there: the storm
---- map uses it to add the extra shapes of a sweep one at a time across a HOLD, a
---- couple of seconds apart, so the sweep itself has everything it needs already in
---- the movie and is never asked to add anything. Never call it while the storm
---- moves; client/storm.lua does not.
+--- The storm map's destination stands still all phase while the zone above it
+--- changes outline, and an outline cannot be edited -- addArea's header -- so the
+--- zone is replaced and the destination is not. It works because of the order:
+--- REM_OVERLAY splices, so removing OUR TOP clips, highest first, moves no index
+--- below them, and the new clips go on top again. (This assumes nothing was added to
+--- the shared movie after our last push; nothing in the project adds any -- see
+--- nextIndex.)
 ---
---- THE NEW AREA IS THE NEXT SLOT, so placeArea and alphaArea reach it like any
---- other. A refusal adds nothing and changes no slot.
---- @param points table
---- @param colour table   { r, g, b, a } -- a is the LINEAR 0-255 alpha; see areaAlpha
---- @return integer|nil slot
-function BR.MapOverlay.appendArea(points, colour)
-    colour = colour or {}
-    local idx = BR.MapOverlay.addArea(points, {
-        r = colour.r, g = colour.g, b = colour.b,
-        a = BR.MapOverlay.areaAlpha(colour.a),
-    })
-    if not idx then return nil end
-    state.set[#state.set + 1] = idx
-    state.chars = state.chars + #BR.Native.minimapAreaString(points)
-    return #state.set
+--- IT IS STILL AN ADD PER CONTOUR, the call #350 measured, so the caller bounds how
+--- often it asks (config/storm.lua's `overlay.morphHz`).
+---
+--- WHOLE OR NOTHING, as setAreas is. A refused removal leaves a clip in the movie
+--- that is no longer what any slot means, so nothing is placeable and `false` sends
+--- the caller to its fallback; removeAll() will still retry that clip. A refused add
+--- takes the new ones back out.
+--- @param first integer  the first slot to replace
+--- @param areas table    as setAreas takes them
+--- @return boolean replaced
+function BR.MapOverlay.replaceFrom(first, areas)
+    if not BR.MapOverlay.ready() then return false end
+    for i = #state.set, first, -1 do
+        local idx = state.set[i]
+        if not BR.Native.minimapRemoveOverlay(state.handle, idx) then
+            state.set = {}
+            return false
+        end
+        state.set[i] = nil
+        for j = #state.ours, 1, -1 do
+            if state.ours[j] == idx then
+                table.remove(state.ours, j)
+                break
+            end
+        end
+    end
+    state.chars = 0
+    for i = 1, #(areas or {}) do
+        local ar = areas[i]
+        local col = ar.colour or {}
+        local idx = BR.MapOverlay.addArea(ar.points, {
+            r = col.r, g = col.g, b = col.b,
+            a = BR.MapOverlay.areaAlpha(col.a),
+        })
+        if not idx then
+            -- The ones this call did add come back out, so the slots below `first`
+            -- are all that is left, and the caller's fallback takes it from there.
+            BR.MapOverlay.replaceFrom(first, {})
+            return false
+        end
+        state.set[#state.set + 1] = idx
+        state.chars = state.chars + #BR.Native.minimapAreaString(ar.points)
+    end
+    return true
 end
 
 --- What this file currently believes, for /brmaparea to print.

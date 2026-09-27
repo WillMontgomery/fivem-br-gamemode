@@ -2320,82 +2320,6 @@ do
 end
 
 -- ---------------------------------------------------------------------------
-describe('blob.frame')
-do
-    -- ═══ THE MOVING WALL IS THE SOLVER'S CIRCLE TIMES ONE UNIT SHAPE (#344) ═══
-    --
-    -- Every disc of the wall travels in a straight line from (c0 + r0 a) to
-    -- (c1 + r1 b), and at sweep fraction t that is c(t) + r(t)[(1 - m) a + m b] with
-    -- m = t r1 / r(t). So the hull of the moving discs -- the wall, where it is not
-    -- resting on its destination -- is the solver's circle times V(m), and the map draws
-    -- V ahead of time and places it (client/storm.lua). This is that identity, asked of
-    -- real records: the morph's own corner list against BR.StormKeyframe moved and
-    -- scaled, to the rounding.
-    local SS = BR.StormShape
-    local worst, frames, mBad = 0.0, 0, 0.0
-    for _, s in ipairs(blobSeeds(12, 7717, 3)) do
-        for p = 2, 7 do
-            local r0, r1 = BR.Config.Storm.phases[p - 1].radius, BR.Config.Storm.phases[p].radius
-            local rec = BR.BuildStormRecord(p, 120.0, -80.0, r0, 400.0, 300.0, r1,
-                0, 1000, 1000, 1.0, s)
-            for _, t in ipairs({ 0.1, 0.33, 0.5, 0.77, 0.95 }) do
-                local cx, cy = BR.Lerp(120.0, 400.0, t), BR.Lerp(-80.0, 300.0, t)
-                local r = BR.Lerp(r0, r1, t)
-                local m = BR.StormMorphFrame(rec, t)
-                -- m's inverse is the radius the keyframe is drawn at.
-                mBad = math.max(mBad, math.abs(BR.StormMorphRadius(rec, m) - r))
-                -- THE BARE MORPH: every source disc moved t of the way, no destination
-                -- discs -- which is what the map's keyframe is.
-                local u0 = BR.StormUnit(s, p - 1)
-                local u1 = BR.StormUnit(s, p)
-                local src, dst = morphEnds(u0, 120.0, -80.0, r0, u1, 400.0, 300.0, r1)
-                local wall = SS.morph(src, dst, t, nil, cx, cy, r)
-                local key = BR.StormKeyframe(rec, m, r)
-                for _, q in ipairs(walkPoly(wall, 200)) do
-                    worst = math.max(worst, math.abs(SS.distance(key, q.x - cx, q.y - cy)))
-                end
-                for _, q in ipairs(walkPoly(key, 200)) do
-                    worst = math.max(worst, math.abs(SS.distance(wall, q.x + cx, q.y + cy)))
-                end
-                frames = frames + 1
-            end
-        end
-    end
-    ok(frames == 360 and worst < 1e-6,
-        'the wall mid-sweep IS the solver\'s circle times V(m), to a micrometre, on every '
-            .. 'phase -- which is what lets the map show it by placing a shape it already has',
-        ('%d frames, worst %.3e m'):format(frames, worst))
-    ok(mBad < 1e-6,
-        'and BR.StormMorphRadius inverts BR.StormMorphFrame: V(m) is drawn at the size it '
-            .. 'is seen at',
-        ('%.3e m'):format(mBad))
-
-    -- THE ENDS ARE THE ZONES. V(0) on the record's own circle is the zone the wall
-    -- leaves, and V(1) on the destination's is the destination.
-    local rec = BR.BuildStormRecord(3, 0.0, 0.0, 1600.0, 200.0, 100.0, 950.0, 0, 1, 1, 1, 5150)
-    local k0 = BR.StormKeyframe(rec, 0.0, 1600.0)
-    local k1 = BR.StormKeyframe(rec, 1.0, 950.0)
-    local Z = BR.StormWall(rec, 0.0)
-    local D = BR.StormTarget(rec)
-    local e0, e1 = 0.0, 0.0
-    for _, q in ipairs(walkPoly(Z, 300)) do
-        e0 = math.max(e0, math.abs(SS.distance(k0, q.x, q.y)))
-    end
-    for _, q in ipairs(walkPoly(D, 300)) do
-        e1 = math.max(e1, math.abs(SS.distance(k1, q.x - 200.0, q.y - 100.0)))
-    end
-    ok(e0 < 1e-6 and e1 < 1e-6,
-        'and its ends are the two zones themselves, each on its own circle',
-        ('%.3e m and %.3e m'):format(e0, e1))
-
-    -- A DESTINATION OF NO RADIUS IS ONE KEYFRAME: the last zone shrinks onto its point
-    -- without changing shape, so the frame's m is 0 the whole way.
-    local last = BR.BuildStormRecord(8, 0.0, 0.0, 40.0, 5.0, 0.0, 0.0, 0, 1, 1, 1, 5150)
-    ok(BR.StormMorphFrame(last, 0.5) == 0.0 and BR.StormMorphFrame(last, 1.0) == 0.0,
-        'and the final phase, whose destination is a point, never leaves V(0)')
-end
-
--- ---------------------------------------------------------------------------
 describe('blob.grow')
 do
     -- ═══ A CONJOINED ZONE GROWS INTO ITS DESTINATION: Z union (D intersect Z_s) ═══
@@ -5751,84 +5675,267 @@ do
         ('%d disagreed on whether, worst %.3e m'):format(wrongMiss, worst))
 end
 
-describe('storm.place')
+describe('storm.knee')
 do
-    -- ═══ WHERE THE MAP PUTS A KEYFRAME: THE LARGEST COPY OF IT THE WALL HOLDS (#344) ═══
+    -- ═══ ONE MOVING ZONE: THE DESTINATION'S SHAPE BY THE KNEE, THEN ONTO IT ═══
     --
-    -- BR.StormKeyframePlace answers where keyframe V(m) goes at sweep fraction t. The
-    -- claims, asked of real placed phases -- nested and broken out -- at nine instants
-    -- of the sweep, of the placed shape's own corner list against the wall's:
+    --   "the expectation is the shape of the outer (moving) circle will change at
+    --    runtime per frame to eventually match the shape of the inner
+    --    (stationary/destination) circle when it reaches, say, 15 seconds before
+    --    finishing the move."                                -- the owner, 2026-09-27
     --
-    --   every keyframe lies inside the wall, to the half-metre the fit allows;
-    --   on a nested phase V(1) holds the destination whole;
-    --   and on a nested phase neither is needlessly small -- a copy three thousandths
-    --   bigger no longer fits, unless it is already at its full size.
+    -- Asked of real placed phases, nested and broken out, at their authored sweep
+    -- lengths, of the wall BR.StormWall builds -- the one the damage tick, the 3D wall
+    -- and the map all read:
+    --
+    --   from the knee, `morph.leadSeconds` before the end, the wall IS the destination's
+    --   outline moved and scaled -- by BR.StormWallFrame on a nested phase, which is what
+    --   lets the map place it rather than redraw it, and on the solver's circle on a
+    --   breakout;
+    --   before the knee it is still turning, so there is no frame;
+    --   it starts exactly as the zone it leaves, ends exactly on the destination, and
+    --   does not jump at the knee;
+    --   and on a nested phase it holds the destination at every instant, never leaves
+    --   the zone it started as and never moves outward -- which airdrop and rescue
+    --   siting stand on.
     local SS = BR.StormShape
-    local phases = BR.Config.Storm.phases
-    local past, loose, slack, n, zero = -math.huge, -math.huge, 0, 0, 0
-    local nested, apart, grew = 0, 0, 0
+    local S = BR.Config.Storm
+    local phases = S.phases
+    local lead = S.morph.leadSeconds
     local function discsOf(ks)
         local out = {}
         for _, c in ipairs(ks) do out[#out + 1] = { x = c.x, y = c.y, r = c.rho } end
         return out
     end
-    for i = 1, 16 do
+    --- The worst distance between two outlines, walked both ways.
+    local function apartBy(a, b)
+        local w = 0.0
+        for _, q in ipairs(walkPoly(a, 240)) do w = math.max(w, math.abs(SS.distance(b, q.x, q.y))) end
+        for _, q in ipairs(walkPoly(b, 240)) do w = math.max(w, math.abs(SS.distance(a, q.x, q.y))) end
+        return w
+    end
+    local nested, apart, samples = 0, 0, 0
+    local shapeOff, frameMiss, earlyFrame = 0.0, 0, 0
+    local loose, outside, outward, kneeJump, ends = -math.huge, -math.huge, -math.huge, 0.0, 0.0
+    local kneeAt = nil
+    for i = 1, 24 do
         local seed = i * 7121 + 5
         local PH = 2 + (i % 6)
         local R0, R1 = phases[PH - 1].radius, phases[PH].radius
         local bo = (i % 2 == 0) and { chance = 1.0, gapMax = 0.5, minRadius = 0.0 } or nil
         local nx, ny = placeZone(BR.Rng(i * 13), seed, PH, 0.0, 0.0, R0, R1, 1.0, nil, nil, bo)
-        local rec = BR.BuildStormRecord(PH, 0.0, 0.0, R0, nx, ny, R1, 0, 0, 1000, 1.0, seed)
+        local T = phases[PH].shrink * 1000.0
+        local rec = BR.BuildStormRecord(PH, 0.0, 0.0, R0, nx, ny, R1, 0, 0, T, 1.0, seed)
+        local knee = 1.0 - lead * 1000.0 / T
         local isNested = BR.StormNested(rec)
         if isNested then nested = nested + 1 else apart = apart + 1 end
-        local dd = discsOf(BR.StormTarget(rec).hull.ks)
-        for k = 1, 9 do
-            local t = k / 10
-            local wall = BR.StormWall(rec, t).hull.ks
-            local cx, cy, full = t * nx, t * ny, BR.Lerp(R0, R1, t)
-            for _, m in ipairs({ 0.0, 1.0 }) do
-                local x, y, r = BR.StormKeyframePlace(rec, m, t)
+        local Z, D = BR.StormWall(rec, 0.0), BR.StormTarget(rec)
+        local dd = discsOf(D.hull.ks)
+
+        -- FROM THE KNEE: the destination's outline, moved and scaled.
+        for _, f in ipairs({ 0.0, 0.25, 0.6, 0.999 }) do
+            local t = knee + (1.0 - knee) * f
+            local W = BR.StormWall(rec, t)
+            local x, y, s = BR.StormWallFrame(rec, t)
+            if isNested then
+                if not x then frameMiss = frameMiss + 1 end
+            else
+                x, y, s = BR.Lerp(0.0, nx, t), BR.Lerp(0.0, ny, t), BR.Lerp(R0, R1, t)
+            end
+            if x then
+                local k = R1 / s
+                for _, q in ipairs(walkPoly(W, 240)) do
+                    local e = math.abs(SS.distance(D, nx + (q.x - x) * k, ny + (q.y - y) * k)) / k
+                    shapeOff = math.max(shapeOff, e)
+                end
+                samples = samples + 1
+            end
+        end
+        -- BEFORE IT: still turning, so nothing places it.
+        for _, f in ipairs({ 0.1, 0.5, 0.9 }) do
+            if BR.StormWallFrame(rec, knee * f) then earlyFrame = earlyFrame + 1 end
+        end
+        -- NO JUMP AT EITHER END OR AT THE KNEE.
+        kneeJump = math.max(kneeJump,
+            apartBy(BR.StormWall(rec, knee - 1e-7), BR.StormWall(rec, knee + 1e-7)))
+        ends = math.max(ends, apartBy(BR.StormWall(rec, 1e-9), Z),
+            apartBy(BR.StormWall(rec, 1.0 - 1e-9), D))
+        -- NESTED: holds the destination, inside the start, never outward.
+        if isNested then
+            local prev = nil
+            for k = 0, 40 do
+                local W = BR.StormWall(rec, k / 40).hull.ks
+                local wd = discsOf(W)
+                loose = math.max(loose, SS.fit(W, dd, 0.0, 0.0, 1.0))
+                outside = math.max(outside, SS.fit(Z.hull.ks, wd, 0.0, 0.0, 1.0))
+                if prev then outward = math.max(outward, SS.fit(prev, wd, 0.0, 0.0, 1.0)) end
+                prev = W
+            end
+        end
+        kneeAt = kneeAt or knee
+    end
+    ok(nested >= 8 and apart >= 8 and samples == 96 and frameMiss == 0,
+        ('on %d nested and %d broken-out phases, the moving zone from the knee on is read '
+            .. 'at %d instants, every nested one through its frame'):format(nested, apart,
+            samples), ('%d samples, %d nested instants with no frame'):format(samples, frameMiss))
+    ok(shapeOff < 1e-6,
+        ('and from the knee -- %.0f s before the sweep ends -- the wall IS the destination\'s '
+            .. 'outline moved and scaled, to a micrometre'):format(lead),
+        ('worst %.3e m'):format(shapeOff))
+    ok(earlyFrame == 0,
+        'and before the knee it is still changing shape, so nothing may place it as a copy',
+        ('%d early frames'):format(earlyFrame))
+    ok(ends < 1e-4 and kneeJump < 1e-3,
+        'it starts as the zone it leaves, ends on the destination, and does not jump at the '
+            .. 'knee', ('%.3e m at the ends, %.3e m at the knee'):format(ends, kneeJump))
+    ok(loose <= 1e-9 and outside <= 1e-9 and outward <= 1e-9,
+        'and on a nested phase it holds the destination at every instant of both legs, '
+            .. 'never leaves the zone it started as, and never moves outward',
+        ('%.3e m of the destination out, %.3e m outside the start, %.3e m outward')
+            :format(loose, outside, outward))
+
+    -- ═══ THE KNEE IS A TIME, AND 0 IS THE ONE-LEG MORPH ═══
+    --
+    -- A sweep of 20 s would turn 15 s before its end, 5 s in; it turns half way instead.
+    -- And at leadSeconds = 0 there is no knee: the shape is only the destination's as
+    -- the wall arrives, which is the morph the owner rejected, kept as the off switch.
+    local nx, ny = placeZone(BR.Rng(4), 9001, 4, 0.0, 0.0, phases[3].radius,
+        phases[4].radius, 1.0, nil, nil, nil)
+    local short = BR.BuildStormRecord(4, 0.0, 0.0, phases[3].radius, nx, ny,
+        phases[4].radius, 0, 0, 20000, 1.0, 9001)
+    ok(BR.StormNested(short) and BR.StormWallFrame(short, 0.5) ~= nil
+            and BR.StormWallFrame(short, 0.49) == nil,
+        'a sweep shorter than twice the lead takes the destination\'s shape half way')
+    local was = S.morph.leadSeconds
+    S.morph.leadSeconds = 0.0
+    local oneLeg = BR.BuildStormRecord(4, 0.0, 0.0, phases[3].radius, nx, ny,
+        phases[4].radius, 0, 0, 75000, 1.0, 9001)
+    local noFrame = BR.StormWallFrame(oneLeg, 0.9) == nil
+    S.morph.leadSeconds = was
+    ok(noFrame and kneeAt and kneeAt > 0.5,
+        'and at leadSeconds 0 the wall is still turning at 90% of the sweep: the knee is '
+            .. 'what the owner asked for, not a side effect')
+
+    -- ═══ THE LAST ZONE KEEPS ITS SHAPE ONTO ITS POINT ═══
+    local last = BR.BuildStormRecord(8, 0.0, 0.0, 40.0, 5.0, 0.0, 0.0, 0, 0, 60000, 1.0, 5150)
+    local lx, ly, ls, lid = BR.StormWallFrame(last, 0.5)
+    local lastOff = 0.0
+    local L0 = BR.StormWall(last, 0.0)
+    for _, q in ipairs(walkPoly(BR.StormWall(last, 0.5), 200)) do
+        lastOff = math.max(lastOff, math.abs(SS.distance(L0, lx + (q.x - lx) / ls,
+            ly + (q.y - ly) / ls)) * ls)
+    end
+    ok(lid == 'point' and lastOff < 1e-6,
+        'and the final phase, whose destination is a point, shrinks onto it in its own '
+            .. 'shape -- a frame the whole way', ('%s, %.3e m'):format(tostring(lid), lastOff))
+end
+
+describe('storm.gap')
+do
+    -- ═══ A LINE ACROSS OPEN STORM IS PRICED AT ITS LENGTH ═══
+    --
+    -- The breakout audit's case: phase 6, seed 2051024, placed off BR.Rng(259) with every
+    -- phase forced to break out. The destination stands apart from the zone, so a
+    -- player on the zone's edge who runs straight at it is in the storm from their
+    -- first step, and lo(t) / t read the wall retreating behind them at 1e-4 of a sweep:
+    -- 279 m over 1e-4, priced at 3.9 million metres. No pace keeps such a runner inside;
+    -- what a price can promise them is the destination by the end, which is the line's
+    -- length. Asked of that case and of 150 forced breakouts' edges besides: no player
+    -- is priced at more than a few times their distance -- where lo(t) / t still binds
+    -- -- and none at the absurd.
+    local SS = BR.StormShape
+    local phases = BR.Config.Storm.phases
+    local bo = { chance = 1.0, gapMax = 0.5, minRadius = 0.0 }
+    local nx, ny = placeZone(BR.Rng(259), 2051024, 6, 0.0, 0.0, phases[5].radius,
+        phases[6].radius, 1.0, nil, nil, bo)
+    local rec = BR.BuildStormRecord(6, 0.0, 0.0, phases[5].radius, nx, ny,
+        phases[6].radius, 0, 0, phases[6].shrink * 1000, 1.0, 2051024)
+    local Z, D = BR.StormWall(rec, 0.0), BR.StormTarget(rec)
+    local P = SS.perimeter(Z)
+    local audit, auditD = 0.0, 0.0
+    for j = 1, 64 do
+        local x, y = SS.pointAtArc(Z, P * (j - 0.5) / 64)
+        local run = BR.StormSweepRun(rec, x, y)
+        if run > audit then audit, auditD = run, SS.distance(D, x, y) end
+    end
+    ok(not BR.StormNested(rec) and not (BR.StormOverlaps(rec)) and audit <= auditD * 1.001,
+        'the audit\'s disjoint breakout prices its edge at the distance to the destination, '
+            .. 'not at millions of metres',
+        ('worst %.0f m against %.0f m'):format(audit, auditD))
+
+    local worst, where, n = 0.0, nil, 0
+    for i = 1, 150 do
+        local seed = i * 5147 + 3
+        local PH = 2 + (i % 6)
+        local bx, by = placeZone(BR.Rng(i), seed, PH, 0.0, 0.0, phases[PH - 1].radius,
+            phases[PH].radius, 1.0, nil, nil, bo)
+        local r2 = BR.BuildStormRecord(PH, 0.0, 0.0, phases[PH - 1].radius, bx, by,
+            phases[PH].radius, 0, 0, phases[PH].shrink * 1000, 1.0, seed)
+        local Z2, D2 = BR.StormWall(r2, 0.0), BR.StormTarget(r2)
+        local P2 = SS.perimeter(Z2)
+        for j = 1, 6 do
+            local x, y = SS.pointAtArc(Z2, P2 * (j - 0.5) / 6)
+            local d = SS.distance(D2, x, y)
+            if d > 50.0 then
                 n = n + 1
-                if not (r > 0.0) then zero = zero + 1 else
-                    local kf = BR.StormKeyframe(rec, m, r).hull.ks
-                    past = math.max(past, SS.fit(wall, discsOf(kf), x, y, 1.0))
-                    if isNested and m == 1.0 then
-                        loose = math.max(loose, SS.fit(kf, dd, -x, -y, 1.0))
-                        if r > R1 * 1.001 then grew = grew + 1 end
-                    end
-                    -- NOT NEEDLESSLY SMALL, on a nested phase, where the point a keyframe
-                    -- is scaled about is the destination's centre.
-                    if isNested and r < full * (1.0 - 1e-9) then
-                        local bx, by, br
-                        if m == 1.0 then
-                            bx, by, br = nx, ny, r * 1.003
-                        else
-                            local lam = math.min(1.0, (r / full) * 1.003)
-                            bx, by, br = nx + lam * (cx - nx), ny + lam * (cy - ny), lam * full
-                        end
-                        local bigger = BR.StormKeyframe(rec, m, br).hull.ks
-                        if SS.fit(wall, discsOf(bigger), bx, by, 1.0) <= 0.5 then
-                            slack = slack + 1
-                        end
-                    end
+                local k = BR.StormSweepRun(r2, x, y) / d
+                if k > worst then
+                    worst, where = k, ('phase %d seed %d: %.0f m out'):format(PH, seed, d)
                 end
             end
         end
     end
-    ok(nested >= 5 and apart >= 5 and zero == 0,
-        ('%d placements on %d nested and %d broken-out phases, every one of them a real '
-            .. 'copy of its keyframe'):format(n, nested, apart), ('%d with no copy'):format(zero))
-    ok(past <= 0.5 + 1e-9,
-        'and every placed keyframe lies inside the wall, to the half-metre the fit allows: '
-            .. 'the map never shows ground the wall does not hold',
-        ('worst %.4f m past'):format(past))
-    ok(loose <= 1e-6 and grew > 0,
-        'and on a nested phase the destination\'s keyframe holds the destination whole -- '
-            .. 'grown about the destination\'s centre from the destination out',
-        ('worst %.3e m of the destination outside it, %d grown past it'):format(loose, grew))
-    ok(slack == 0,
-        'and no keyframe on a nested phase is placed smaller than it has to be',
-        ('%d placements with room to spare'):format(slack))
+    ok(n > 400 and worst < 10.0,
+        ('and across %d players on the edges of 150 forced breakouts, none more than 50 m '
+            .. 'out is priced past ten times their distance'):format(n),
+        ('worst %.2f times, %s'):format(worst, tostring(where)))
+
+    -- ═══ AND THE SWEEP'S LENGTH IS THE ONE IT WAS PRICED AT ═══
+    --
+    -- The knee is `leadSeconds` before the end, so the wall at a fraction of the sweep
+    -- depends on its length. BR.StormSweepSeconds lengthens from the floor until the
+    -- price read at a length asks for no more than it; asked here that the answer is a
+    -- fixed point on 20 chains of real zones -- the price of the published record fits
+    -- the published length, or the length is the ceiling.
+    local S = BR.Config.Storm
+    local bad, reprices, total = 0, 0, 0
+    for m = 1, 20 do
+        local rng, prng = BR.Rng(m * 7717 + 3), BR.Rng(m * 31 + 1)
+        local seed = m * 104729 + 7
+        local cx, cy, r = 400.0, 800.0, phases[1].radius
+        for PH = 2, 7 do
+            local p = phases[PH]
+            local host = BR.StormHost(seed, PH, cx, cy, r)
+            local qx, qy = BR.NextZoneCentre(rng, host, cx, cy, r, BR.StormUnit(seed, PH),
+                p.radius, S.edgeBiasMax, S.mapAABB, nil, nil)
+            local pts, guard = {}, 0
+            while #pts < 12 and guard < 5000 do
+                guard = guard + 1
+                local x = cx + (prng:float() * 2.4 - 1.2) * r
+                local y = cy + (prng:float() * 2.4 - 1.2) * r
+                if SS.distance(host, x, y) <= 0.0 then pts[#pts + 1] = { x = x, y = y } end
+            end
+            local asked = 0
+            local function probeFor(sec)
+                asked = asked + 1
+                return BR.BuildStormRecord(PH, cx, cy, r, qx, qy, p.radius, 0, 0,
+                    sec * 1000, p.dps, seed)
+            end
+            local sec = BR.StormSweepSeconds(probeFor, pts, S.shrinkPace.metersPerSec,
+                S.shrinkPace.minSeconds, p.shrink)
+            total = total + 1
+            if asked > 1 then reprices = reprices + 1 end
+            local again = BR.StormSweepPrice(probeFor(sec), pts)
+            if sec < p.shrink - 1e-6 and again > sec * S.shrinkPace.metersPerSec + 1e-6 then
+                bad = bad + 1
+            end
+            cx, cy, r = qx, qy, p.radius
+        end
+    end
+    ok(bad == 0 and reprices > 0,
+        ('the sweep length is the one its own wall was priced at, on all %d sweeps -- %d of '
+            .. 'them needed a reprice after leaving the floor'):format(total, reprices),
+        ('%d sweeps whose published wall asks for more'):format(bad))
 end
 
 describe('storm.water')

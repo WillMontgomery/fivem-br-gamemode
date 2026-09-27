@@ -149,13 +149,8 @@ BR.Config.Storm = {
     -- the zone still appears at once: the far island is fine as it is. 0 is the old
     -- pop, on the wall and on the map.
     --
-    -- THE MAP DOES NOT DRAW THE FRONT, because a moving front on the map would be the
-    -- overlay rebuilt while it moves, which is the hitch 52a7caa removed (#350). It
-    -- fades the union -- the ground the growth ends on, drawn at the phase's one
-    -- rebuild -- in over the zone the phase started in across these same seconds, and
-    -- hands it back across the hold's last `seconds` before the storm moves: alpha
-    -- writes to clips already in the movie, never a rebuild (client/storm.lua's
-    -- overlayPlan).
+    -- THE MAP DRAWS THE FRONT: the zone's fill is the growing zone itself, redrawn at
+    -- `overlay.morphHz` while it grows, like a sweep's moving outline.
     --
     -- MEASURED over 680 conjoined breakouts (200 matches, phases 2 to 7, every one
     -- forced to break out): the destination reaches 1.0 to 1.3 of its own radius
@@ -167,6 +162,28 @@ BR.Config.Storm = {
     -- for the whole union, inset included.
     grow = {
         seconds = 20.0,
+    },
+
+    -- ═══ THE MOVING ZONE TAKES THE DESTINATION'S SHAPE BEFORE IT ARRIVES ═══
+    --
+    --   "the expectation is the shape of the outer (moving) circle will change at
+    --    runtime per frame to eventually match the shape of the inner
+    --    (stationary/destination) circle when it reaches, say, 15 seconds before
+    --    finishing the move."                            -- the owner, 2026-09-27
+    --
+    -- ONE moving zone. Its outline changes every frame from the zone it leaves to the
+    -- destination's, and is the destination's `leadSeconds` before the sweep ends;
+    -- from there it is that one outline moved and scaled onto the destination, landing
+    -- on it exactly as the sweep ends. Wall, maps and damage all read it off the solver
+    -- (storm_solve.lua's "one moving zone"). A sweep shorter than twice this -- only
+    -- under a dev time scale, since shrinkPace.minSeconds is 40 -- turns its shape half
+    -- way. 0 is the one-leg morph that finishes turning only as it arrives.
+    --
+    -- THE SWEEP'S PRICE READS IT: a corner that turns by the knee travels its path in
+    -- less than the whole sweep, and server/storm.lua prices the sweep at the length it
+    -- publishes, so the runner the price is for is still never caught.
+    morph = {
+        leadSeconds = 15.0,
     },
 
     -- SHRINK TIME IS PRICED PER PHASE, like the hold: at each phase entry
@@ -414,10 +431,9 @@ BR.Config.Storm = {
     --
     --   LONG ZONES ARE LONGER THAN THE OLD DIAMETERS -- see point 2 at the top.
     --
-    --   THE MAP'S MORPH IS A CROSSFADE. The map may not re-draw a polygon while the
-    --   storm moves (#350, 52a7caa), so it shows the wall's morph by placing and fading
-    --   shapes it drew while the storm stood still -- exact at both ends of a sweep,
-    --   a blend of them in between (`overlay.keyframes` below has the numbers).
+    --   THE MAP REDRAWS THE MORPH. No map handler edits a polygon's points, so while
+    --   the zone changes shape its fill is redrawn at `overlay.morphHz`, and once it
+    --   is the destination's shape (`morph` below) it is only moved and scaled.
     --
     --   A UNIT COSTS ABOUT TWO MILLISECONDS TO BUILD -- 1.7 on average, 5 at the
     --   99th percentile, in plain Lua 5.4 -- and is built once per zone per match: the
@@ -968,62 +984,44 @@ BR.Config.Storm = {
         -- today it never bites. BR.MapOverlay.report().chars is where to read the
         -- length that actually went out, and client/storm.lua prints it once.
         maxPoints = 96,
-        -- The CEILING on rebuilds per second, whatever asks for one.
-        --
-        -- Every rebuild is REM_OVERLAY plus ADD_AREA_OVERLAY per contour with a
-        -- kilobyte of coordinates marshalled through a Scaleform string -- an order of
-        -- magnitude more work than the radius blips' own remove-and-re-add, which is
-        -- why this is slower than blip.refreshHzShrinking rather than equal to it.
-        -- A MOVING STORM NEVER REBUILDS (#350, 52a7caa): its keyframes are placed and
-        -- faded (#344), a breakout's included, and a placement or fade the engine
-        -- refuses hands the rest of the sweep to the nominal-radius map blips. So a
-        -- phase is ONE rebuild, when its record arrives, and this ceiling is for what
-        -- else can ask while the storm stands still: a target edited by a dev command,
-        -- a first sight, or a refused picture drawn again.
+        -- The CEILING on whole rebuilds per second, whatever asks for one: every one
+        -- of our areas removed and added again. That happens once per record -- when
+        -- it arrives -- and otherwise only for a first sight or a refused picture
+        -- drawn again, so this is a ceiling and not a rate.
         rebuildHz = 2,
 
-        -- ═══ HOW MANY KEYFRAMES THE MAP CROSSFADES A SWEEP THROUGH (#344) ═══
+        -- ═══ HOW OFTEN THE MOVING ZONE IS REDRAWN WHILE ITS OUTLINE CHANGES ═══
         --
-        -- The wall morphs corner to corner, and on the map that morph is the solver's
-        -- circle times one moving unit shape -- so the map draws that shape at a few
-        -- points of the morph and fades from one to the next as the storm moves,
-        -- without redrawing anything (client/storm.lua has the argument). 1 is the
-        -- sweep's two ends alone: EXACT at both, and a blend of them in between. More
-        -- adds keyframes between them, ADDED DURING THE HOLD one every keyframeGapMs and
-        -- never while the storm moves -- nor while a conjoined zone is still growing
-        -- into its destination, which is a hold that moves.
+        -- The map shows ONE moving zone (client/storm.lua's storm.map). While it is one
+        -- fixed outline moved and scaled -- the last `morph.leadSeconds` of a nested
+        -- sweep -- it is only placed, two property writes a tick. While its outline
+        -- CHANGES -- the first leg of a sweep, a breakout's whole sweep, a conjoined
+        -- growth -- no movie handler can edit a polygon's points, so its clip is
+        -- replaced: one REM_OVERLAY and one ADD_AREA_OVERLAY per contour, the
+        -- destination under it untouched. This is how many times a second.
         --
-        -- EACH IS PLACED WHERE IT IS TRUE: the largest copy of itself the wall holds
-        -- (BR.StormKeyframePlace), so the map's error runs one way only -- the fill may
-        -- stop short of the wall, and is never past it by more than the half-metre the
-        -- fit allows, at any count. And the keyframe shown most holds the destination
-        -- to 23 m at worst. MEASURED over 240 real sweeps, phases 2 to 7, off the
-        -- movie's own arithmetic every second of the nested ones: how far the wall runs
-        -- past all the fill the map shows, in metres, mean [worst]. A pause-map pixel
-        -- is about 8 m.
+        -- 10 IS EVERY TICK OF THE MAP'S OWN 10 Hz BAND, AND IT SHIPS THERE because
+        -- the owner asked for a per-frame morph and one contour is small: 22 points and
+        -- about 290 characters on average, where #350's 2 Hz rebuild was every area at
+        -- once. MEASURED over 60 placed sweeps, phases 2 to 7 at their authored lengths:
+        -- how far the zone's boundary moves between two redraws, in metres, mean
+        -- [worst]. A pause-map pixel is about 8 m.
         --
-        --     phase    keyframes 1    2            4            8
-        --       2       310 [1005]   165 [654]     86 [366]     44 [187]
-        --       3       209 [558]    115 [368]     61 [215]     32 [118]
-        --       4       128 [310]     72 [196]     39 [113]     21 [60]
-        --       5        66 [173]     38 [112]     21 [72]      12 [42]
-        --       6        34 [92]      20 [73]      12 [57]       8 [37]
-        --       7        15 [37]       9 [28]       5 [20]       3 [13]
+        --     phase     10 Hz        5 Hz         2 Hz
+        --       2      3.3 [4.4]    6.6 [8.8]   16.4 [22.0]    (a breakout)
+        --       3      1.7 [2.7]    3.4 [5.4]    8.5 [13.5]
+        --       4      1.3 [1.8]    2.6 [3.5]    6.6 [8.8]
+        --       5      1.5 [2.9]    3.1 [5.9]    7.7 [14.7]    (a breakout)
+        --       6      0.8 [1.3]    1.6 [2.5]    3.9 [6.3]
+        --       7      0.5 [0.6]    0.9 [1.3]    2.4 [3.1]
         --
-        -- On the solver's circle instead, as the round before placed them, one pair
-        -- painted fill 189 m past the wall on average at phase 2 and 794 at worst --
-        -- ground the damage tick was billing -- the wall ran 112 [376] past the fill,
-        -- and the destination stood 591 m out of the keyframe shown most.
-        --
-        -- IT SHIPS AT 1 BECAUSE EACH EXTRA KEYFRAME IS AN ADD_AREA_OVERLAY, which is the
-        -- call #350's hitch was traced to. It is spent while the storm stands still and
-        -- a couple of seconds apart, but its frame cost inside the movie cannot be
-        -- measured off the game box: /brstormhitch reset during a hold -- past the
-        -- first grow.seconds of a conjoined phase, where nothing is added -- read
-        -- storm.map.keyframe, and raise this if it is well under the 34 ms threshold.
-        keyframes = 1,
-        -- Milliseconds between two keyframes added during a hold.
-        keyframeGapMs = 2000,
+        -- WHAT A REDRAW COSTS INSIDE THE MOVIE IS NOT MEASURABLE OFF THE GAME BOX, and
+        -- #350's hitch was traced to this call. So read it there: /brstormhitch reset
+        -- during a sweep's first leg and look for storm.map.morph on the hitch rows,
+        -- and /brstormbisect mapnomorph against normal for the A/B. If it shows, 5 keeps
+        -- the fill within about a pixel of the wall. 0 redraws only when the kind of
+        -- change does -- the sweep starting, the knee, a growth ending.
+        morphHz = 10,
     },
 }
 

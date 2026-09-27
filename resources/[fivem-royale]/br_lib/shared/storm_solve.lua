@@ -81,16 +81,6 @@ local function growthAt(rec, elapsed)
     return BR.Clamp(g0 + elapsed / ms, 0.0, 1.0)
 end
 
---- How long a record's growth window is, in ms: see growMs. The map hands a
---- breakout's union over across it, and back across the same length of time before
---- the storm moves (client/storm.lua's overlayPlan), so there is one spelling of it.
---- @param rec table
---- @return number ms
-function BR.StormGrowMs(rec)
-    if not rec then return 0.0 end
-    return growMs(rec)
-end
-
 --- Solve the storm at a given time.
 ---
 --- @param rec table|nil   the published storm record
@@ -186,17 +176,90 @@ end
 -- ═══ WHAT ONE RECORD'S MORPH IS MADE OF, WORKED OUT ONCE PER RECORD ═══
 --
 -- A record names two zones and where they stand, and everything the wall does
--- across the sweep follows from four lists: the discs the wall starts as (`src`),
--- where each of them is going (`dst`), the index of that destination disc in the
--- target zone's own list (`bi`), and the target zone's discs as placed (`keep`).
--- And one verdict: whether the target lies ENTIRELY inside the zone the wall
--- starts as -- by real shape, exactly (BR.StormShape.fit), which is what
--- BR.NextZoneCentre places every non-breakout target to satisfy.
+-- across the sweep follows from five lists: the discs the wall starts as (`src`),
+-- the discs it has become by the knee (`mid`), where each of them ends (`dst`), the
+-- index of that destination disc in the target zone's own list (`bi`), and the
+-- target zone's discs as placed (`keep`). And one verdict: whether the target lies
+-- ENTIRELY inside the zone the wall starts as -- by real shape, exactly
+-- (BR.StormShape.fit), which is what BR.NextZoneCentre places every non-breakout
+-- target to satisfy.
 --
 -- Held weakly per record, and re-derived if any field it was read from has moved
 -- or a zone unit has been rebuilt: a record is whole-table-assigned everywhere in
 -- the game, so this is a cache hit on every frame of a phase but the first.
 local recInfo = setmetatable({}, { __mode = 'k' })
+
+-- ═══ ONE MOVING ZONE, WHOSE SHAPE BECOMES THE DESTINATION'S BEFORE IT ARRIVES ═══
+--
+--   "the expectation is the shape of the outer (moving) circle will change at
+--    runtime per frame to eventually match the shape of the inner
+--    (stationary/destination) circle when it reaches, say, 15 seconds before
+--    finishing the move."                                -- the owner, 2026-09-27
+--
+-- So a sweep has two legs, split at the KNEE: `morph.leadSeconds` before the sweep
+-- ends (config/storm.lua).
+--
+--   0 .. knee   every corner disc of the zone the wall leaves travels in a straight
+--               line to its partner's disc of `mid` -- the DESTINATION'S OWN SHAPE,
+--               placed a little larger than the destination and around it. The
+--               outline changes every frame, and is the destination's by the knee.
+--   knee .. 1   the wall IS the destination's shape, one fixed outline moved and
+--               scaled onto the destination: every disc of `mid` travels straight
+--               to its own disc of the destination, so the whole outline is one
+--               similarity (BR.StormWallFrame), and it lands on the destination
+--               exactly as the sweep ends.
+--
+-- WHERE `mid` STANDS. On a phase that did not break out the destination lies inside
+-- the zone, and `mid` is the destination grown about a point inside it -- the mean
+-- of its corner centres, p -- by the solver circle's own ratio at the knee,
+-- r(knee) / r1, but never so far that it leaves the zone the wall starts as
+-- (bisected against that zone's corner list). Three things follow, and they are the
+-- three the one-leg morph before it had:
+--
+--   THE WALL HOLDS THE DESTINATION AT EVERY t. `mid` holds it (a convex set grown
+--   about a point of itself holds itself), and the first leg's hull takes `mid`'s
+--   discs in wherever they would poke out -- the wall RESTS on the grown destination
+--   rather than cutting into it.
+--
+--   IT NEVER MOVES OUTWARD. Every moving disc heads in a straight line for a disc
+--   that is in the hull for the rest of its leg -- `mid`'s in the first, the
+--   destination's in the second -- so the wall at a later t is inside the wall at an
+--   earlier one. Airdrop and rescue siting rest on that.
+--
+--   IT STARTS AND ENDS ON THE ZONES THEMSELVES. `mid` is inside the zone the wall
+--   leaves, so adding it to that zone's hull changes nothing at t = 0; and the second
+--   leg ends on the destination's discs.
+--
+-- On a BREAKOUT the destination is its own part of the safe zone and nothing has to
+-- hold it: `mid` is the destination's shape on the solver's own circle at the knee,
+-- and the zone is the wall union the destination (BR.StormZone), as it always was.
+--
+-- A DESTINATION OF NO RADIUS -- phase 8's point -- has no shape to take on. The last
+-- zone shrinks onto its point in one leg, keeping its own shape, as it always did.
+-- So does every sweep while `leadSeconds` is 0: one leg, the shape finishing only
+-- as the wall arrives. That is the off switch.
+--
+-- THE KNEE DEPENDS ON HOW LONG THE SWEEP IS, and the sweep is priced on the wall
+-- (BR.StormSweepPrice below): server/storm.lua prices it at the length it is about
+-- to publish, and lengthens it until the two agree (its sweepSeconds).
+local KNEE_MIN = 0.5        -- a sweep under twice the lead turns its shape half way
+local MID_STEPS = 20        -- halvings of the grown destination's scale
+
+--- Where the knee falls in a record's sweep, 0..1: `leadSeconds` before it ends,
+--- and never before half way. nil for a sweep with one leg -- a destination of no
+--- radius, a lead of 0 (the off switch), or a record with no sweep at all.
+--- @param rec table
+--- @return number|nil
+local function kneeOf(rec)
+    if (rec.r1 or 0.0) <= 0.0 then return nil end
+    local S = BR.Config and BR.Config.Storm
+    local lead = S and S.morph and tonumber(S.morph.leadSeconds) or 0.0
+    local T = tonumber(rec.tShrink) or 0.0
+    if lead <= 0.0 or T <= 0.0 then return nil end
+    local k = 1.0 - lead * 1000.0 / T
+    if k < KNEE_MIN then k = KNEE_MIN end
+    return k
+end
 
 --- The source discs of a record: a morph's own discs when it carries one, and the
 --- zone it starts as, paired with its target, otherwise.
@@ -229,17 +292,62 @@ local function sourceOf(rec, uA, uB)
     return src, bi
 end
 
+--- `mid`, the destination's shape the first leg ends on, as one disc per moving disc
+--- (the partner of the destination disc that one ends on), and the frame it stands
+--- in: the destination's unit at (mx, my) scaled by `ms`. See the section note.
+local function midOf(rec, e, knee)
+    local SS = BR.StormShape
+    local r1 = rec.r1
+    local rk = BR.Lerp(rec.r0, r1, knee)
+    local mx, my, ms
+    if e.nested then
+        local keep = e.keep
+        local px, py = 0.0, 0.0
+        for k = 1, #keep do px, py = px + keep[k].x, py + keep[k].y end
+        px, py = px / #keep, py / #keep
+        local rel = {}
+        for k = 1, #keep do
+            rel[k] = { x = keep[k].x - px, y = keep[k].y - py, r = keep[k].r }
+        end
+        local zks = SS.discHull(e.src)
+        local lam = math.max(1.0, rk / r1)
+        -- GROWN NO FURTHER THAN THE ZONE THE WALL LEAVES HOLDS IT. At 1 it is the
+        -- destination, which that zone holds -- the nesting verdict -- so the bisection
+        -- always has a side that fits, and keeps to it.
+        if lam > 1.0 and zks and SS.fit(zks, rel, px, py, lam) > 0.0 then
+            local lo, hi = 1.0, lam
+            for _ = 1, MID_STEPS do
+                local m = 0.5 * (lo + hi)
+                if SS.fit(zks, rel, px, py, m) <= 0.0 then lo = m else hi = m end
+            end
+            lam = lo
+        end
+        mx, my, ms = px + lam * (rec.cx1 - px), py + lam * (rec.cy1 - py), lam * r1
+    else
+        mx, my, ms = BR.Lerp(rec.cx0, rec.cx1, knee), BR.Lerp(rec.cy0, rec.cy1, knee), rk
+    end
+    local discs = e.uB.discs
+    local mid = {}
+    for i = 1, #e.src do
+        local b = discs[e.bi[i]] or discs[1]
+        mid[i] = { x = mx + ms * b.x, y = my + ms * b.y, r = ms * b.r }
+    end
+    return mid, mx, my, ms
+end
+
 --- The record's morph, worked out: see the section note. nil for the off switch.
 local function infoOf(rec)
     local uB = BR.StormUnit(rec.seed, rec.phase)
     if not uB then return nil end
     local uA = nil
     if not rec.mo then uA = BR.StormUnit(rec.seed, (rec.phase or 1) - 1) end
+    local knee = kneeOf(rec)
     local e = recInfo[rec]
     if e and e.uA == uA and e.uB == uB and e.mo == rec.mo
         and e.phase == rec.phase and e.seed == rec.seed
         and e.cx0 == rec.cx0 and e.cy0 == rec.cy0 and e.r0 == rec.r0
-        and e.cx1 == rec.cx1 and e.cy1 == rec.cy1 and e.r1 == rec.r1 then
+        and e.cx1 == rec.cx1 and e.cy1 == rec.cy1 and e.r1 == rec.r1
+        and e.knee == knee then
         return e
     end
 
@@ -267,8 +375,28 @@ local function infoOf(rec)
           cx0 = rec.cx0, cy0 = rec.cy0, r0 = rec.r0,
           cx1 = rec.cx1, cy1 = rec.cy1, r1 = rec.r1,
           src = src, dst = dst, bi = bi, keep = keep, nested = nested }
+    if knee and #src > 0 then
+        e.knee = knee
+        e.mid, e.mx, e.my, e.ms = midOf(rec, e, knee)
+    end
     recInfo[rec] = e
     return e
+end
+
+--- The leg of the sweep `t` is on: the discs it runs from and to, how far along it,
+--- and the discs a nested wall must hold on it. See the section note.
+--- @return table from, table to, number u, table|nil keep
+local function legOf(e, t)
+    local k = e.knee
+    if not k then return e.src, e.dst, t, e.nested and e.keep or nil end
+    if t < k then return e.src, e.mid, t / k, e.nested and e.mid or nil end
+    return e.mid, e.dst, (t - k) / (1.0 - k), e.nested and e.keep or nil
+end
+
+--- The moving wall's corner list at sweep fraction `t`, without the pieces.
+local function hullAt(e, t)
+    local from, to, u, keep = legOf(e, t)
+    return BR.StormShape.morphHull(from, to, u, keep)
 end
 
 --- Is this record's target inside the zone its wall starts as, by real shape?
@@ -370,14 +498,16 @@ end
 local function wallOf(rec, e, t)
     if t <= 0.0 then return sourceShape(rec, e, rec.cx0, rec.cy0, rec.r0) end
     if t >= 1.0 then return BR.StormTarget(rec) end
-    return BR.StormShape.morph(e.src, e.dst, t, e.nested and e.keep or nil,
+    local from, to, u, keep = legOf(e, t)
+    return BR.StormShape.morph(from, to, u, keep,
         BR.Lerp(rec.cx0, rec.cx1, t), BR.Lerp(rec.cy0, rec.cy1, t),
         BR.Lerp(rec.r0, rec.r1, t))
 end
 
 --- THE MOVING WALL at sweep fraction `t`, and nothing else: the zone it started as
---- at 0, the destination at 1, and the hull of every corner disc on its straight
---- way between (BR.StormShape.morph) in between.
+--- at 0, the destination at 1, and in between the hull of every corner disc on its
+--- straight way to the destination's shape by the knee and then onto the
+--- destination itself (BR.StormShape.morph, twice -- see "one moving zone" above).
 ---
 --- ON A NESTED PHASE IT CONTAINS THE DESTINATION AT EVERY t and so it IS the safe
 --- zone. On a breakout the safe zone is this UNION the destination -- BR.StormZone.
@@ -388,9 +518,10 @@ end
 ---
 --- ═══ IT NEVER MOVES OUTWARD ON A NESTED PHASE, AND THAT IS WHAT SITING RESTS ON ═══
 ---
---- Every moving disc heads for a disc of the destination, and the destination's own
---- discs are in the hull, so the wall at a later t is inside the wall at an earlier
---- one (storm_shape.lua's morph section has the argument). A point that is inside
+--- Every moving disc heads for a disc that stays in the hull for the rest of its leg
+--- -- the grown destination's in the first, the destination's own in the second --
+--- so the wall at a later t is inside the wall at an earlier one (storm_shape.lua's
+--- morph section has the argument for one leg). A point that is inside
 --- the wall at an instant is inside it at every earlier instant, and a point inside
 --- the destination is inside it at every instant. BR.AirdropLandingCircles and
 --- BR.RescueCircles are built on exactly that.
@@ -422,23 +553,25 @@ end
 --- curtain says it is safe. So the derivation lives here and the callers ask for
 --- the zone rather than assembling one.
 ---
---- ═══ THE WALL MORPHS CORNER TO CORNER, AND THE DESTINATION STANDS STILL ═══
+--- ═══ ONE MOVING ZONE BECOMES THE DESTINATION'S SHAPE, AND THE DESTINATION STANDS
+---     STILL ═══
 ---
 ---   "I want the moving wall's corners and lines to move and change to match the
 ---    destination's. Nothing about the destination shape should ever change while
 ---    in motion."                                     -- the owner, 2026-09-23
 ---
 --- `t` is how far through the sweep the solved circle is -- BR.StormAt's seventh
---- answer -- and the wall is BR.StormWall at that `t`. So at the end of a sweep the
---- wall IS zone p, and the next record's hold starts from zone p again, at the same
---- circle, in the same shape: no snap, because there is nothing left to change. The
---- wall, the HUD and the damage tick all pass the `t` they solved, and they agree to
---- the bit.
+--- answer -- and the wall is BR.StormWall at that `t`: the destination's shape by the
+--- knee, `morph.leadSeconds` before the end, and the destination itself at the end.
+--- So the next record's hold starts from zone p again, at the same circle, in the
+--- same shape: no snap, because there is nothing left to change. The wall, the HUD,
+--- the map and the damage tick all pass the `t` they solved, and they agree to the
+--- bit.
 ---
---- THE CIRCLE IS IMPLIED BY `t`. Every disc of the wall is on its own straight line
---- between the two placed zones, so `(cx, cy, r)` adds nothing the record and `t`
---- do not already say, and is read only for a record with no shape at all -- the
---- pre-#344 off switch -- where the zone is still the two circles.
+--- THE CIRCLE IS IMPLIED BY `t`. Every disc of the wall is on its own path between
+--- the two placed zones, so `(cx, cy, r)` adds nothing the record and `t` do not
+--- already say, and is read only for a record with no shape at all -- the pre-#344
+--- off switch -- where the zone is still the two circles.
 ---
 --- ═══ NESTED: THE WALL. A BREAKOUT: THE WALL UNION THE DESTINATION ═══
 ---
@@ -475,12 +608,8 @@ end
 --- finder refuses -- is the whole union too, for the same reason. The wall and the
 --- damage tick both come through here, so even then they agree.
 ---
---- THE MAP DOES NOT DRAW THE FRONT, because drawing it would mean rebuilding the
---- overlay while it moves, the hitch 52a7caa removed. It fades the union the growth
---- ends on -- drawn at the phase's one rebuild -- in over the zone the phase started
---- in by `g`, with alpha writes alone, so the destination's new ground comes onto the
---- map over the same twenty seconds rather than in one tick. client/storm.lua's
---- overlayPlan says so where it is decided.
+--- THE MAP DRAWS THIS ZONE TOO, front and all: client/storm.lua's storm.map redraws
+--- its fill from this function while the zone changes shape, at `overlay.morphHz`.
 ---
 --- @param rec table|nil    the published storm record
 --- @param cx number        the CURRENT centre, as BR.StormAt reports it
@@ -512,248 +641,57 @@ function BR.StormZone(rec, cx, cy, r, t, g)
     return BR.StormShape.blobUnion(wall, target)
 end
 
--- ═══ THE WALL IN ITS OWN MOVING FRAME, WHICH IS WHAT THE MAP CAN DRAW (#344) ═══
---
--- Every disc of the wall travels in a straight line, centre and radius both, from
--- (c0 + r0 a) to (c1 + r1 b), a and b its two partners' unit discs. At sweep fraction
--- t that is
---
---   (1-t)(c0 + r0 a) + t(c1 + r1 b)  =  c(t) + r(t) [ (1-m) a + m b ],  m = t r1 / r(t)
---
--- where c(t), r(t) are the solver's own circle. So the moving wall is the solver's
--- circle times ONE unit shape, V(m) -- the hull of every (1-m) a + m b -- and V(0) is
--- the zone the wall leaves, V(1) the one it closes on. The map cannot re-draw a
--- polygon while the storm moves (#350, 52a7caa) and it CAN move, scale and fade a
--- polygon it already has: so it draws V at chosen values of m ahead of time and
--- crossfades between them. At m = 0 and m = 1 that is the wall exactly. (Where a
--- nested wall rests on its destination it is the hull of this and the destination,
--- and the destination's own fill is drawn over it.) Between, a keyframe on the
--- solver's circle is a guess, so each is placed where it is TRUE --
--- BR.StormKeyframePlace, below.
-
---- The unit discs of a record's morph, both ends, in link order: `ua` the wall
---- leaves from and `ub` the partners it travels to. A record carrying its outline
---- (`mo`) has world discs, read back into its own circle; an end of no radius
---- borrows the other end's, because the frame there is a point anyway.
-local function unitDiscs(rec, e)
-    if e.ua then return e.ua, e.ub end
-    local ua, ub = {}, {}
-    local uB = e.uB
-    local r0 = rec.r0 or 0.0
-    for i = 1, #e.src do
-        ub[i] = uB.discs[e.bi[i]] or uB.discs[1]
-    end
-    if rec.mo then
-        for i = 1, #e.src do
-            local s = e.src[i]
-            if r0 > 0.0 then
-                ua[i] = { x = (s.x - rec.cx0) / r0, y = (s.y - rec.cy0) / r0, r = s.r / r0 }
-            else
-                ua[i] = ub[i]
-            end
-        end
-    else
-        local ps = BR.StormShape.pairsOf(e.uA, uB)
-        for i = 1, #ps do ua[i] = (r0 > 0.0) and ps[i].a or ub[i] end
-    end
-    if (rec.r1 or 0.0) <= 0.0 then
-        for i = 1, #ua do ub[i] = ua[i] end
-    end
-    e.ua, e.ub = ua, ub
-    return ua, ub
-end
-
---- How far through the morph the wall is IN ITS OWN FRAME at sweep fraction `t`:
---- the `m` for which the wall is the solver's circle times V(m). See the section.
---- 0 the whole way for a destination of no radius -- the last zone shrinks onto its
---- point without changing shape -- and 1 from the first instant for a wall that
---- starts as a point.
+--- WHEN THE SAFE ZONE IS ONE FIXED OUTLINE MOVED AND SCALED, and how: the frame it
+--- stands in at sweep fraction `t`. nil while its shape is still changing.
+---
+--- The map cannot edit a polygon's points -- MINIMAP_LOADER.gfx has no handler that
+--- does, only ones that move, scale, turn and fade a clip (client/mapoverlay.lua) --
+--- so a changing outline is a redraw, and a redraw is the costly call #350 measured.
+--- What it CAN do cheaply is place a polygon it already has, and this says when that
+--- is exact: the zone at `t` is the zone at any other `t'` of the same frame moved by
+--- (x - x') and scaled by s / s' about the frame's point.
+---
+---   the second leg of a nested sweep   the destination's shape, standing in `mid`'s
+---                                      frame at the knee and in its own at the end
+---   the last zone onto its point       its own shape, shrinking about the point
+---   a finished sweep                   the destination, standing still
+---
+--- A BREAKOUT'S ZONE IS THE WALL UNION THE DESTINATION, which is no one outline under
+--- any frame while the wall moves, so it has none until the sweep is over. `id` names
+--- the family, so a caller can tell a frame it can keep placing from a new one.
 --- @param rec table
 --- @param t number
---- @return number m   0..1
-function BR.StormMorphFrame(rec, t)
-    t = BR.Clamp(t or 0.0, 0.0, 1.0)
-    local r0, r1 = rec.r0 or 0.0, rec.r1 or 0.0
-    if r0 <= 0.0 then return (t > 0.0) and 1.0 or 0.0 end
-    if r1 <= 0.0 then return 0.0 end
-    local r = r0 + (r1 - r0) * t
-    return BR.Clamp(t * r1 / r, 0.0, 1.0)
-end
-
---- The solver's radius at the moment the frame's morph fraction is `m`: the
---- inverse of BR.StormMorphFrame, which is the size V(m) is seen at and so the size
---- the map draws it at.
---- @param rec table
---- @param m number
---- @return number metres
-function BR.StormMorphRadius(rec, m)
-    m = BR.Clamp(m or 0.0, 0.0, 1.0)
-    local r0, r1 = rec.r0 or 0.0, rec.r1 or 0.0
-    if r0 <= 0.0 then return r1 end
-    if r1 <= 0.0 then return r0 end
-    return r0 * r1 / (r1 * (1.0 - m) + m * r0)
-end
-
---- V(m), the moving wall's shape in its own frame, drawn about the ORIGIN at
---- radius `rDraw`: the hull of every (1-m) a + m b, scaled. Fresh every call.
----
---- WITHOUT the destination's discs, so a nested wall resting on its destination is
---- this hull with the destination's fill drawn over it rather than the hull of both.
---- nil for the pre-#344 off switch.
---- @param rec table
---- @param m number      0..1
---- @param rDraw number  metres
---- @return table|nil shape
-function BR.StormKeyframe(rec, m, rDraw)
+--- @return number|nil x, number y, number s, string id
+function BR.StormWallFrame(rec, t)
     local e = rec and infoOf(rec)
     if not e then return nil end
-    m = BR.Clamp(m or 0.0, 0.0, 1.0)
-    local ua, ub = unitDiscs(rec, e)
-    local s, k = 1.0 - m, rDraw or 1.0
-    local md = {}
-    for i = 1, #ua do
-        local a, b = ua[i], ub[i]
-        md[i] = { x = (s * a.x + m * b.x) * k, y = (s * a.y + m * b.y) * k,
-                  r = (s * a.r + m * b.r) * k }
-    end
-    return BR.StormShape.discShape(md, 0.0, 0.0, k)
-end
-
--- ═══ AND THE MAP NEVER SHOWS GROUND THE WALL DOES NOT HOLD (#344) ═══
---
--- Placed on the solver's circle, a keyframe is exact at its own m and a guess
--- between: V(0) scaled down to r(t) is the zone the wall left, not the wall, and
--- mid-sweep the more opaque of two keyframes painted zone fill hundreds of metres
--- past the wall -- over ground the wall had already crossed and the damage tick was
--- billing -- while the destination poked out of every keyframe showing, which is
--- the owner's own "the circles still overlap when they are different shapes".
--- (The review of this round measured both, at 794 m and 591 m at phase 2.)
---
--- So each keyframe is placed where it is TRUE, every tick: the largest copy of it
--- that the wall holds.
---
---   V(1), on a nested phase, is grown about the destination's own centre from the
---   destination outwards -- r1 up to the solver's r(t) -- until it meets the wall,
---   so it always holds the destination and never passes the wall.
---
---   Every other keyframe keeps the solver's circle and is shrunk toward a point
---   the wall holds -- the destination's centre on a nested phase, where the moving
---   discs' centres are on a breakout -- only as far as it has to be.
---
--- The map's error is then all one way: somewhere inside the wall the fill may stop
--- short of it, and nowhere does fill lie outside it. Twelve halvings of a scale
--- against the wall's corner list, at the 10 Hz map tick: two keyframes placed and
--- one asked whether it holds the destination (BR.StormKeyframePoke) cost 0.36 ms a
--- tick on average and 1.8 at worst, measured over 13,720 ticks of 280 sweeps. The
--- map's error by phase and keyframe count is in config/storm.lua's `overlay` block.
-local PLACE_TOL = 0.5      -- metres a placed keyframe may lie past the wall
-local PLACE_STEPS = 12     -- halvings of the scale
-
---- The unit discs of V(m) about the origin, cached on the record's worked-out morph.
-local function keyDiscs(rec, e, m)
-    local c = e.keyDiscs
-    if not c then
-        c = {}
-        e.keyDiscs = c
-    end
-    local hit = c[m]
-    if hit then return hit end
-    local ua, ub = unitDiscs(rec, e)
-    local s = 1.0 - m
-    local md = {}
-    for i = 1, #ua do
-        local a, b = ua[i], ub[i]
-        md[i] = { x = s * a.x + m * b.x, y = s * a.y + m * b.y, r = s * a.r + m * b.r }
-    end
-    c[m] = md
-    return md
-end
-
---- Where the map places keyframe V(m) at sweep fraction `t`, and how big: the
---- centre its origin goes on and the radius it is scaled to. See the section note.
---- A radius of 0 is a keyframe no copy of which fits -- not reached on any record
---- measured, and the map hides it rather than showing it wrong.
---- @param rec table
---- @param m number   the keyframe's own morph fraction
---- @param t number   the sweep fraction now
---- @return number x, number y, number r
-function BR.StormKeyframePlace(rec, m, t)
     t = BR.Clamp(t or 0.0, 0.0, 1.0)
-    m = BR.Clamp(m or 0.0, 0.0, 1.0)
-    local cx, cy = BR.Lerp(rec.cx0, rec.cx1, t), BR.Lerp(rec.cy0, rec.cy1, t)
-    local r = BR.Lerp(rec.r0, rec.r1, t)
-    local e = infoOf(rec)
-    if not e then return cx, cy, r end
-    -- AT ITS OWN END A KEYFRAME IS THE WALL, and costs nothing to place.
     local r1 = rec.r1 or 0.0
-    if (m <= 0.0 and t <= 0.0) or (m >= 1.0 and t >= 1.0) then return cx, cy, r end
-
-    local SS = BR.StormShape
-    local ks = SS.morphHull(e.src, e.dst, t, e.nested and e.keep or nil)
-    local discs = keyDiscs(rec, e, m)
-    local function fits(ox, oy, k) return SS.fit(ks, discs, ox, oy, k) <= PLACE_TOL end
-
-    if e.nested and m >= 1.0 and r1 > 0.0 then
-        local hi = math.max(1.0, r / r1)
-        if fits(rec.cx1, rec.cy1, hi * r1) then return rec.cx1, rec.cy1, hi * r1 end
-        local lo = 1.0
-        for _ = 1, PLACE_STEPS do
-            local mid = 0.5 * (lo + hi)
-            if fits(rec.cx1, rec.cy1, mid * r1) then lo = mid else hi = mid end
-        end
-        return rec.cx1, rec.cy1, lo * r1
+    if r1 <= 0.0 then
+        if not e.nested then return nil end
+        return rec.cx1, rec.cy1, 1.0 - t, 'point'
     end
-
-    if fits(cx, cy, r) then return cx, cy, r end
-    local qx, qy = rec.cx1, rec.cy1
-    if not (e.nested and r1 > 0.0) then
-        qx, qy = 0.0, 0.0
-        local s = 1.0 - t
-        for i = 1, #e.src do
-            qx = qx + s * e.src[i].x + t * e.dst[i].x
-            qy = qy + s * e.src[i].y + t * e.dst[i].y
-        end
-        qx, qy = qx / #e.src, qy / #e.src
+    if t >= 1.0 and not e.nested then return rec.cx1, rec.cy1, r1, 'end' end
+    if not e.nested then return nil end
+    if e.knee then
+        if t < e.knee then return nil end
+        local u = (t - e.knee) / (1.0 - e.knee)
+        return BR.Lerp(e.mx, rec.cx1, u), BR.Lerp(e.my, rec.cy1, u),
+            BR.Lerp(e.ms, r1, u), 'leg2'
     end
-    local lo, hi = 0.0, 1.0
-    for _ = 1, PLACE_STEPS do
-        local mid = 0.5 * (lo + hi)
-        if fits(qx + mid * (cx - qx), qy + mid * (cy - qy), mid * r) then lo = mid else hi = mid end
-    end
-    return qx + lo * (cx - qx), qy + lo * (cy - qy), lo * r
-end
-
---- How far the destination reaches OUTSIDE keyframe V(m) placed at (x, y) at radius
---- `r` -- 0 or less when the keyframe holds it -- on a nested phase, where every
---- keyframe should; nil on a breakout, where the destination is its own part.
----
---- The map reads it to keep the keyframe it shows most of one that holds the
---- destination (client/storm.lua's applyFrames): the owner's "the circles still
---- overlap when they are different shapes" is a zone fill crossing the destination.
---- @return number|nil metres
-function BR.StormKeyframePoke(rec, m, x, y, r)
-    local e = rec and infoOf(rec)
-    if not e or not e.nested or (rec.r1 or 0.0) <= 0.0 then return nil end
-    local discs = keyDiscs(rec, e, BR.Clamp(m or 0.0, 0.0, 1.0))
-    local placedDiscs = {}
-    for i = 1, #discs do
-        local d = discs[i]
-        placedDiscs[i] = { x = x + d.x * r, y = y + d.y * r, r = d.r * r }
-    end
-    local ks = BR.StormShape.discHull(placedDiscs)
-    if not ks then return nil end
-    return BR.StormShape.fit(ks, e.keep, 0.0, 0.0, 1.0)
+    if t >= 1.0 then return rec.cx1, rec.cy1, r1, 'leg2' end
+    return nil
 end
 
 --- The fastest any corner of the wall moves during this record's sweep, in metres
 --- a second: the most any one disc travels plus the most its radius changes, over
---- the sweep's length.
+--- the time its leg takes -- the faster of the two legs.
 ---
 --- A corner travelling to a corner of a different shape moves further than a
---- circle's edge, (r0 - r1) / T: measured at 2.2 to 3.8 times that on average across
---- phases 7 down to 2, and 6.2 at worst. The damage cushion no longer prices on a
---- speed at all (BR.StormCushionZones); this is the bound the tests hold every wall
---- to, and the one number to read when a reader wants one.
+--- circle's edge, (r0 - r1) / T, and one that turns its shape by the knee does it in
+--- less than the whole sweep. The damage cushion does not price on a speed at all
+--- (BR.StormCushionZones); this is the bound the tests hold every wall to, and the one
+--- number to read when a reader wants one.
 --- @param rec table
 --- @return number metres per second
 function BR.StormWallSpeed(rec)
@@ -761,13 +699,18 @@ function BR.StormWallSpeed(rec)
     local T = math.max((rec.tShrink or 0.0) / 1000.0, 1.0)
     local e = infoOf(rec)
     if not e then return math.abs((rec.r0 or 0.0) - (rec.r1 or 0.0)) / T end
-    local best = 0.0
-    for i = 1, #e.src do
-        local a, b = e.src[i], e.dst[i]
-        local v = math.sqrt((b.x - a.x) ^ 2 + (b.y - a.y) ^ 2) + math.abs(b.r - a.r)
-        if v > best then best = v end
+    local function fastest(from, to, secs)
+        local best = 0.0
+        for i = 1, #from do
+            local a, b = from[i], to[i]
+            local v = math.sqrt((b.x - a.x) ^ 2 + (b.y - a.y) ^ 2) + math.abs(b.r - a.r)
+            if v > best then best = v end
+        end
+        return best / secs
     end
-    return best / T
+    if not e.knee then return fastest(e.src, e.dst, T) end
+    return math.max(fastest(e.src, e.mid, e.knee * T),
+        fastest(e.mid, e.dst, (1.0 - e.knee) * T))
 end
 
 -- ═══ THE DAMAGE CUSHION'S 0.7 s OF TRAVEL IS THE ZONE ITSELF, 0.7 s EITHER SIDE ═══
@@ -828,8 +771,9 @@ end
 -- not the point of the destination nearest anybody, so parts of the wall arrive over
 -- a player sooner than their distance says. The review of this round priced a phase-5
 -- sweep by distance and knocked the runner it was priced for: 139 HP, running at
--- 9 m/s straight at the destination from the moment the wall set off. So the price
--- reads the wall:
+-- 9 m/s straight at the destination from the moment the wall set off. And since the
+-- shape finishes turning at the knee rather than at the end, its corners cover their
+-- paths in less than the sweep. So the price reads the wall, both legs of it:
 --
 --   run(P, Q) = the largest, over the sweep, of lo(t) / t
 --
@@ -873,10 +817,25 @@ end
 -- runner who outpaces the wall's front can be ahead of it in the gap; the price
 -- covers the one who keeps with it, as the blend's did.
 --
+-- A LINE ACROSS A GAP is its own length. Where the straight run already crosses open
+-- storm at the start of the sweep -- every line out of a disjoint breakout's zone,
+-- and a line from a player on the zone's edge that heads out of it -- no pace keeps
+-- the runner inside: they are in the storm from their first step until they reach
+-- the destination, which is safe from the start. lo(t) / t asked of such a line only
+-- measures how soon the wall behind them passes their starting point, and on a
+-- player standing on an edge that retreats it read 279 m / 1e-4 of a sweep: 3.9
+-- million metres (phase 6, seed 2051024, BR.Rng(259) -- the breakout audit's case,
+-- pinned in tools/test_shared.lua's storm.gap). So such a line is priced at what it
+-- can promise, the destination reached by the end of the sweep: its length.
+--
 -- READ AT 62 INSTANTS -- 48 even steps and 14 more in toward the start, where the
 -- maximum sits whenever a corner sets off faster than the blend would -- with where
 -- each line meets the zone found exactly (BR.StormShape.lineEntry), and the two best
 -- local maxima of the players who could set the price refined by golden section.
+--
+-- (The numbers below were measured on the one-leg morph, before the knee. The promise
+-- is re-asked of the two-leg wall by tools/test_storm.lua's price.run and
+-- price.outside, and what the knee costs the pacing is in docs/match-math.md.)
 --
 -- MEASURED over 5,472 players across 280 sweeps of 40 matches, against the zone the
 -- damage tick bills at 1,000 instants: a runner at the priced pace on the better line
@@ -928,7 +887,7 @@ local function priceOf(rec, e)
     pr = { ks = {}, D = D,
            dks = (D.hull and D.hull.ks) or SS.discHull(D.discs or {}),
            zone0 = BR.StormZone(rec, rec.cx0, rec.cy0, rec.r0, 0.0, 1.0),
-           keep = e.nested and e.keep or nil,
+           zks0 = SS.discHull(e.src),
            -- ON A BREAKOUT THE DESTINATION IS ITS OWN PART, and a line may reach it
            -- before it reaches the wall. A destination of no radius is no part.
            apart = (not e.nested) and (rec.r1 or 0.0) > 0.0 }
@@ -952,12 +911,38 @@ local function loAlong(pr, ks, px, py, ux, uy, L, grow)
     return s
 end
 
+--- Does the straight run along this line cross open storm at the very start of the
+--- sweep -- ground outside both the zone the wall starts as and the destination, by
+--- more than the margin `out` a player who started outside is allowed? Only a
+--- breakout's line can: a nested zone is convex and holds the player and the
+--- destination both. See "a line across a gap" in the section note.
+local function gappedAtStart(pr, px, py, ux, uy, L, out)
+    if not pr.apart or not pr.zks0 then return false end
+    local SS = BR.StormShape
+    local tol = PRICE_TOL + out
+    local qx, qy = px + ux * L, py + uy * L
+    local spans = {}
+    for _, ks in ipairs({ pr.zks0, pr.dks }) do
+        local a = SS.lineEntry(ks, px, py, ux, uy, tol)
+        if a and a <= L then
+            local back = SS.lineEntry(ks, qx, qy, -ux, -uy, tol) or L
+            spans[#spans + 1] = { a, L - back }
+        end
+    end
+    table.sort(spans, function(p, q) return p[1] < q[1] end)
+    local reach = 0.0
+    for _, sp in ipairs(spans) do
+        if sp[1] > reach + 1e-6 then return true end
+        if sp[2] > reach then reach = sp[2] end
+    end
+    return reach < L - 1e-6
+end
+
 --- run(P, Q) for one line: from (px, py) along (ux, uy) to where it is inside the
 --- destination, `L` metres on, for a player `out` m outside the zone the phase
 --- starts in -- 0 inside it -- who is held to (1 - t) out of it. Refined when `refine`.
 local function lineRun(e, pr, px, py, ux, uy, L, out, refine)
-    local SS = BR.StormShape
-    local function wallAt(t) return SS.morphHull(e.src, e.dst, t, pr.keep) end
+    local function wallAt(t) return hullAt(e, t) end
     local ts = priceTimes()
     local vals, best = {}, L
     for k = 1, #ts do
@@ -1027,7 +1012,11 @@ local function runOf(rec, e, px, py, refine)
     if r1 > 0.0 then nx, ny = SS.pointAtArc(pr.D, SS.nearestArc(pr.D, px, py)) end
     local L = BR.Dist(px, py, nx, ny)
     if not (L > 0.0) then return d end
-    local best = lineRun(e, pr, px, py, (nx - px) / L, (ny - py) / L, L, out, refine)
+    local ux0, uy0 = (nx - px) / L, (ny - py) / L
+    local best = L
+    if not gappedAtStart(pr, px, py, ux0, uy0, L, out) then
+        best = lineRun(e, pr, px, py, ux0, uy0, L, out, refine)
+    end
 
     -- AND STRAIGHT AT THE CENTRE, as far as the destination's edge.
     local C = BR.Dist(px, py, rec.cx1, rec.cy1)
@@ -1035,7 +1024,10 @@ local function runOf(rec, e, px, py, refine)
         local ux, uy = (rec.cx1 - px) / C, (rec.cy1 - py) / C
         local Lc = SS.lineEntry(pr.dks, px, py, ux, uy, 0.0)
         if Lc and Lc > 0.0 and Lc < best then
-            local v = lineRun(e, pr, px, py, ux, uy, Lc, out, refine)
+            local v = Lc
+            if not gappedAtStart(pr, px, py, ux, uy, Lc, out) then
+                v = lineRun(e, pr, px, py, ux, uy, Lc, out, refine)
+            end
             if v < best then best = v end
         end
     end
@@ -1091,15 +1083,50 @@ function BR.StormSweepPrice(rec, points)
     return best
 end
 
+--- HOW LONG A SWEEP IS, priced on the wall it will be: seconds, and the run it was
+--- priced for.
+---
+--- The price is metres per sweep, and the wall it reads turns into the destination's
+--- shape `morph.leadSeconds` before the sweep ends -- so the wall at a fraction of the
+--- sweep, and the price with it, depends on the length the price sets. This starts at
+--- the shortest sweep, whose knee is earliest and whose corners are fastest, prices a
+--- record of that length (`probeFor(seconds)`), and lengthens it to what that price
+--- asks for until the price read at a length asks for no more than that length --
+--- the length and the wall it was priced on are then the ones published. It only ever
+--- lengthens, and stops at the ceiling. MEASURED over 40 chains of placed zones, 240
+--- sweeps: 161 were repriced after leaving the floor, and every published length was
+--- one its own wall's price fits, or the ceiling (tools/test_shared.lua's storm.gap).
+--- Pricing twice costs twice: 18 ms a phase on average becomes about 36, server only.
+--- @param probeFor function   seconds -> a record of this phase with that sweep
+--- @param points table        { { x, y }, ... }
+--- @param pace number         metres per second
+--- @param minS number         the shortest sweep, seconds
+--- @param maxS number         the longest, seconds
+--- @return number seconds, number metres per sweep
+local SWEEP_ROUNDS = 4
+function BR.StormSweepSeconds(probeFor, points, pace, minS, maxS)
+    local sec = minS
+    if maxS < sec then sec = maxS end
+    local run = 0.0
+    for _ = 1, SWEEP_ROUNDS do
+        run = BR.StormSweepPrice(probeFor(sec), points)
+        local want = BR.Clamp(run / pace, minS, maxS)
+        if want <= sec then return sec, run end
+        sec = want
+    end
+    return sec, run
+end
+
 --- THE WALL AT SWEEP FRACTION `t`, AS A RECORD CAN CARRY IT: the `mo` a freeze, a
 --- thaw or a same-phase `brphase` starts its record from. See the record's header.
 ---
 --- nil for a record still holding in the zone it started as, because a record built
 --- from that zone's circle starts as that zone anyway. Otherwise every moving disc at
 --- `t` with the destination disc it is heading for -- and, on a nested phase, the
---- destination's own discs too, because they are part of the wall's hull and part of
---- what the next record's morph must keep. Exact duplicates are dropped, so a chain
---- of freezes does not grow what it carries by the discs it already has.
+--- discs the wall rests on in that leg too (the grown destination's before the knee,
+--- the destination's own after it), because they are part of the wall's hull and
+--- part of what the next record's morph must keep. Exact duplicates are dropped, so a
+--- chain of freezes does not grow what it carries by the discs it already has.
 ---
 --- `g`, THE GROWTH, RIDES ALONG WHEN IT IS PASSED, on a conjoined record -- and then
 --- even in the hold, so a freeze part way through growing into the destination, and
@@ -1118,7 +1145,6 @@ function BR.StormMorphAt(rec, t, g)
     local carry = (g ~= nil and e ~= nil) and (growthInfo(rec, e)) or false
     if t <= 0.0 and not rec.mo and not carry then return nil end
     if not e then return nil end
-    local s = 1.0 - t
     local d, b, seen = {}, {}, {}
     local function add(x, y, r, i)
         local key = ('%a|%a|%a|%d'):format(x, y, r, i)
@@ -1127,20 +1153,34 @@ function BR.StormMorphAt(rec, t, g)
         d[#d + 1], d[#d + 2], d[#d + 3] = x, y, r
         b[#b + 1] = i
     end
+    local from, to, u, keep = legOf(e, t)
+    local s = 1.0 - u
     for i = 1, #e.src do
-        local a, q = e.src[i], e.dst[i]
+        local a, q = from[i], to[i]
         if t >= 1.0 then
+            q = e.dst[i]
             add(q.x, q.y, q.r, e.bi[i])
         elseif t <= 0.0 then
+            a = e.src[i]
             add(a.x, a.y, a.r, e.bi[i])
         else
-            add(s * a.x + t * q.x, s * a.y + t * q.y, s * a.r + t * q.r, e.bi[i])
+            add(s * a.x + u * q.x, s * a.y + u * q.y, s * a.r + u * q.r, e.bi[i])
         end
     end
+    -- ON A NESTED PHASE, WHAT THE WALL RESTS ON THIS LEG: the grown destination before
+    -- the knee, each disc heading for the destination disc its partner is; the
+    -- destination itself after it.
     if e.nested and t > 0.0 then
-        for k = 1, #e.keep do
-            local q = e.keep[k]
-            add(q.x, q.y, q.r, k)
+        if keep == e.mid and t < 1.0 then
+            for i = 1, #e.mid do
+                local q = e.mid[i]
+                add(q.x, q.y, q.r, e.bi[i])
+            end
+        else
+            for k = 1, #e.keep do
+                local q = e.keep[k]
+                add(q.x, q.y, q.r, k)
+            end
         end
     end
     local mo = { t = t, d = d, b = b }

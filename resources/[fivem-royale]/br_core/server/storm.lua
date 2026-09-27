@@ -395,18 +395,22 @@ local function enterPhase(m, phase, cx0, cy0, r0, now, waitSec, mo)
     -- answers how many metres per sweep the furthest player's straight run to the
     -- destination has to cover to stay inside it -- the distance itself wherever the
     -- wall does not outrun that, and never less. A player already outside is priced
-    -- to be kept no further out than the old blend would have left them. The record
-    -- it reads is this phase's own, built with a placeholder sweep: the wall's shape
-    -- at a fraction of the sweep does not depend on how long the sweep lasts.
-    local probe = BR.BuildStormRecord(phase, cx0, cy0, r0, cx1, cy1, p.radius,
-        now, 0.0, 1000.0, p.dps, m.stormSeed, mo)
+    -- to be kept no further out than the old blend would have left them.
+    --
+    -- AT THE LENGTH IT WILL BE PUBLISHED AT. The wall takes the destination's shape
+    -- `morph.leadSeconds` before the sweep ends, so where it stands at a fraction of the
+    -- sweep depends on how long the sweep is: BR.StormSweepSeconds prices a record of
+    -- this phase at a length and lengthens it until the price and the length agree.
     local stood = {}
     BR.Roster.each(
         function(e) return e.matchId == m.id and BR.Server.isInMatch(e.state) end,
         function(_, e)
             if e.pos then stood[#stood + 1] = { x = e.pos.x, y = e.pos.y } end
         end)
-    local furthest = BR.StormSweepPrice(probe, stood)
+    local function probeFor(sec)
+        return BR.BuildStormRecord(phase, cx0, cy0, r0, cx1, cy1, p.radius,
+            now, 0.0, sec * 1000 * timeScale, p.dps, m.stormSeed, mo)
+    end
     -- A BREAKOUT BUYS A LONGER SWEEP.
     --
     -- The authored per-phase `shrink` is the ceiling on travel time, and it was
@@ -422,10 +426,12 @@ local function enterPhase(m, phase, cx0, cy0, r0, now, waitSec, mo)
     -- BY THE REAL SHAPES' REACH, NOT THE CIRCLES' (2026-09-27). shrinkFactor was a
     -- ratio of circle runs; a stretched zone on either side of the gap reaches
     -- further, and BR.StormSweepCeiling lifts the ceiling by exactly how much
-    -- further this phase's pair really does. It reads the same probe record.
-    local ceiling = BR.StormSweepCeiling(cfg, probe, brokeOut)
-    local shrinkSec = BR.Clamp(furthest / cfg.shrinkPace.metersPerSec,
-        cfg.shrinkPace.minSeconds, ceiling)
+    -- further this phase's pair really does. It reads only the start and
+    -- destination shapes, so any probe length will do.
+    local ceiling = BR.StormSweepCeiling(cfg, probeFor(cfg.shrinkPace.minSeconds),
+        brokeOut)
+    local shrinkSec, furthest = BR.StormSweepSeconds(probeFor, stood,
+        cfg.shrinkPace.metersPerSec, cfg.shrinkPace.minSeconds, ceiling)
 
     -- THE SEED RIDES ALONG, WHICH IS WHAT MAKES THE WALL A SHAPE (#344). It is the
     -- match's own storm seed, unchanged every phase -- the phase INDEX is the other

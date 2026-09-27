@@ -228,6 +228,13 @@ beats the hug: the offset is at least the room on its bearing less 250 m, and
 never more than the room, so a zone that cannot both hug the edge and stay inside
 gives up the edge. docs/match-math.md section 3 has the geometry.
 
+**The sweep** is one moving zone. Its outline turns, every frame, from the zone
+it leaves into the destination's own shape, and is that shape
+`morph.leadSeconds` (15 s) before the sweep ends — the **knee**; from there it is
+one outline moved and scaled onto the destination, landing on it as the sweep
+ends. The 3D wall, both maps and the damage tick read it from the same solver
+call, and the map shows the destination and that one zone, nothing else.
+
 **Timing.** The first hold is priced for the furthest living player's run in to
 circle 1's wall — its shape, the same boundary the 75% cut counts against (#364):
 
@@ -242,8 +249,10 @@ so a lobby that landed inside circle 1 waits the one-minute floor, and the wall
 always moves within three minutes whatever the drop spread. The
 match itself goes live when 65% of its players have landed, or when the route
 runs out, whichever is first. Every later shrink is priced
-the same way — `clamp(furthest-to-target-edge / 9, 40s, authored)` — which is
-what stops a fast circle being unsurvivable from the far side.
+the same way — `clamp(furthest-run / 9, 40s, authored)` — which is
+what stops a fast circle being unsurvivable from the far side. The run is read
+off the moving wall itself, at the length the sweep will be published at, since
+the knee's place depends on it (`BR.StormSweepSeconds`).
 
 **Damage** is `dps = 100 / killtime`, from a table that ramps 1 → 10 across the
 phases, applied 1 Hz from server-sampled positions and bypassing armour. Phase

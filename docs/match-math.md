@@ -299,7 +299,17 @@ one just outside is priced as one just inside. (It used to be the bare distance,
 seam a millimeter wide: the 139 HP runner above had started 0.5 m out. They are
 priced 634 m now, past phase 5's 60-second ceiling.) `BR.StormSweepRun` reads the
 wall at 62 instants and refines the maxima of the players who could set the price;
-its measured error and cost are in storm_solve.lua.
+its measured error and cost are in storm_solve.lua. A line that already crosses
+open storm at the start of the sweep — every line out of a disjoint breakout's
+zone — can keep nobody inside, and is priced at its length: the destination
+reached by the end (one such player used to be priced at 3.9 million metres).
+
+**Priced at the length it is published at.** The wall turns into the
+destination's shape `morph.leadSeconds` before the sweep ends, so its corners
+cover their paths in less than the sweep and the wall at a fraction of the sweep
+depends on the sweep's length. `BR.StormSweepSeconds` prices at the 40-second
+floor, lengthens to what that price asks, and reprices until the length it
+publishes asks for no more than itself.
 
 **What #344 cost the pacing, measured rather than argued.** The zones keep their
 phase's area, but a 3:1 zone is longer than its circle was, so the furthest run
@@ -319,6 +329,26 @@ players spread over land inside the zone each phase starts in:
 A match runs 1402 s on average against 1422 now (+19 s, 1.4%; the 90th percentile
 1531 → 1547). Pricing on the moving wall is 1.3 s of that; the rest is the shapes.
 The ceilings are the owner's to move.
+
+**What the knee costs the pacing.** Turning the shape 15 s early makes corners
+faster in the first leg, and the price pays for it. 40 chains of zones placed as
+the server places them, 24 players anywhere inside the zone each phase starts in,
+priced with the one-leg morph and then with the knee:
+
+| Phase | Mean sweep (s) | Sweeps at the ceiling | Mean furthest run (m) |
+|---|---|---|---|
+| 2 | 131.4 → 132.6 | 87.5% → 95.0% | 1556 → 1668 |
+| 3 | 125.3 → 127.7 | 67.5% → 82.5% | 1492 → 1571 |
+| 4 | 102.8 → 109.9 | 27.5% → 65.0% | 975 → 1046 |
+| 5 | 65.4 → 74.6 | 2.5% → 37.5% | 579 → 636 |
+| 6 | 46.7 → 48.3 | 0.0% → 5.0% | 340 → 395 |
+| 7 | 40.0 → 40.0 | 27.5% → 27.5% | 161 → 183 |
+
+About 21 s more sweep per match (4%), and many more sweeps reach the ceiling at
+phases 4 and 5, where the furthest player is then no longer covered. How big
+`mid` is barely moves it (growing it to the largest that fits: the same; the
+destination itself: 3 s worse), so this is the knee's own price; raising the
+ceilings or shortening `leadSeconds` are the levers.
 
 ### Where the next zone goes
 
@@ -454,62 +484,72 @@ renderer depends on are only exact for a convex shape, and so is the stitch that
 joins an overlapping pair. Every zone reads exactly 317 values off its stream,
 whatever it decides, so a retry never shifts what comes after it.
 
-**Each zone keeps one shape, and the wall morphs corner to corner.** Zone k is
-the zone phase k closes on; it is phase k's target and then phase k+1's starting
-zone, in the same shape throughout. "I don't want the destinations shape or
-corners to change at all. I want the moving wall's corners and lines to move and
-change to match the destination's." So every vertex of the zone the wall leaves
-is paired with a vertex of the zone it closes on — by the direction each faces,
-round the circle — and every disc travels in a straight line to its partner's:
+**Each zone keeps one shape, and ONE moving zone takes the destination's shape
+before it arrives.** Zone k is the zone phase k closes on; it is phase k's target
+and then phase k+1's starting zone, in the same shape throughout. "The expectation
+is the shape of the outer (moving) circle will change at runtime per frame to
+eventually match the shape of the inner (stationary/destination) circle when it
+reaches, say, 15 seconds before finishing the move" (the owner, 2026-09-27). So
+every vertex of the zone the wall leaves is paired with a vertex of the zone it
+closes on — by the direction each faces, round the circle — and the sweep has two
+legs, split at the **knee**, `morph.leadSeconds` (15) before it ends:
 
 ```
-disc(t)     (1 − t) × (source disc, placed)  +  t × (destination disc, placed)
-wall(t)     hull of every disc(t)  ∪  the destination's own discs   -- nested phases
+knee        k = max(1 − lead / T, 0.5)                     -- T the sweep's length
+mid         the destination's unit discs at (m, s)         -- its SHAPE, a bit bigger
+              nested:   p = mean of D's corner centres,  λ = min(r(k) / r1, largest that fits in Z)
+                        m = p + λ (c1 − p),  s = λ r1       -- D grown about p
+              breakout: m = c(k),  s = r(k)                 -- on the solver's circle
+disc(t)     t ≤ k: straight from its source disc to its mid disc, over t / k
+            t ≥ k: straight from its mid disc to its destination disc
+wall(t)     hull of every disc(t)  ∪  mid's discs (t < k) or D's (t ≥ k)  -- nested
 ```
 
+So the outline changes every frame until the knee, where it **is** the
+destination's; from there it is that one outline moved and scaled onto the
+destination (`BR.StormWallFrame`), landing on it exactly as the sweep ends.
 max(n, m) links, never n + m: a surplus destination corner opens out of one that
 was already there, a surplus source corner closes onto its neighbour's partner,
 and each corner's finish becomes its partner's. The destination never moves or
 changes. On a nested phase the wall **holds the destination at every instant**
-and **never moves outward** — a moving disc's later position is a blend of its
-earlier one and a disc of the destination, both inside the earlier hull. Where the
-bare corner paths would have cut into the destination, the wall rests on it
-instead: measured in 34–52% of nested sweeps at phases 2–7 (the bare cut would
-have been up to 374 m deep at phase 2). While it rests it wears the destination's
-corners it rests on beside its own moving ones, so it can show more corners than
-`max(n, m)`: one more on 17.4% of mid-sweep frames, two on 2.8%, three or four on
-0.4% (10,260 frames, 150 matches) — the price of holding the destination with
-straight corner paths. Arriving early instead of resting was measured at 4.2% of
-frames, with corners up to ten times as fast; the owner decides. It is convex at
-every `t` (a hull), and
-its signed distance and erosion are the same corner list's, exact. A breakout
-morphs the same way without the destination in the hull, and the safe zone is
-the wall united with the destination.
+(`mid` holds it: a convex set grown about a point of itself holds itself) and
+**never moves outward** — every moving disc heads in a straight line for a disc
+that stays in the hull for the rest of its leg. `mid` is inside the zone the wall
+leaves, so it starts on that zone exactly. Where the corner paths would cut into
+the grown destination, the wall rests on it instead. It is convex at every `t` (a
+hull), and its signed distance and erosion are the same corner list's, exact. A
+breakout morphs the same way without anything in the hull, and the safe zone is
+the wall united with the destination. The final zone, whose destination is a
+point, keeps its own shape onto the point, and `morph.leadSeconds = 0` is the old
+one-leg morph that turned only as it arrived.
 
-**The map shows the morph without redrawing anything.** Every disc travels in a
-straight line, so the moving wall is the solver's own circle times one unit shape:
+**Why it used to be two moving shapes on the map.** Until 2026-09-27 the wall
+morphed in one leg over the whole sweep, and the map showed it as a *crossfade* of
+two or more pre-drawn *keyframes* — `V(0)`, the zone it left, and `V(1)`, the one it
+closed on, both scaled onto the solver's circle and faded by `m = t·r1 / r(t)`,
+each shrunk to the largest copy of itself the wall held — plus a breakout's union
+faded in and out by alpha. That was because the map may not edit a polygon: the
+vendored `MINIMAP_LOADER.gfx` has no handler that changes an area's points, only
+ones that move, resize, turn and fade a clip; and #350 had traced a
+once-a-second hitch to redrawing the overlay while the storm moved, so 52a7caa
+made "never rebuild while moving" the rule and #344's second round kept to it with
+keyframes. The owner saw two translucent shapes of different outlines moving and
+fading into each other, and rejected it.
 
-```
-disc(t)  =  c(t) + r(t) × [ (1 − m) a + m b ],      m = t · r1 / r(t)
-wall(t)  =  c(t) + r(t) × V(m),      V(m) = hull of every (1 − m) a + m b
-```
-
-where `a` and `b` are a link's two unit discs and `c(t), r(t)` the circle
-`BR.StormAt` reports. The map may not rebuild its polygons while the storm moves —
-that was #350's hitch — but it can move, scale and fade one it already has. So the
-one rebuild a phase makes, when its record arrives, draws `V(0)` and `V(1)` about
-their own origin (and the destination in place), and every tick of the sweep
-places both and crossfades them by `m`: exact at the two ends, a blend in between.
-Each is placed where it is true — the largest copy of itself the wall holds, with
-`V(1)` grown about the destination's centre so it always holds the destination —
-so the fill is never past the wall by more than half a metre, and a keyframe the
-destination pokes out of hands most of its alpha to the next one up that holds it,
-so the keyframe shown most holds the destination to 23 m at worst. The cost is
-fill that stops short of the wall mid-sweep: 310 m on average at phase 2 at one
-pair, 44 m at eight. `overlay.keyframes` adds more `V(k/K)` during the hold, never
-while the storm moves or a conjoined zone grows (config/storm.lua has the table).
-The sweep's end needs no rebuild, because `V(1)` on the destination's circle is the
-destination.
+**The map now draws the one zone.** Two areas: the destination, drawn once per
+phase and never touched, and the safe zone itself — `BR.StormZone` at the tick,
+which is what the wall is drawn from and the damage tick bills. While the zone is
+one outline under a frame (a nested sweep past its knee, the final zone onto its
+point) it is drawn once and only moved and resized: two property writes a tick,
+exact. While its outline changes (a sweep's first leg, a breakout's whole sweep, a
+conjoined growth) its own clip is replaced — one `REM_OVERLAY` and one
+`ADD_AREA_OVERLAY` per contour, the destination under it untouched — at
+`overlay.morphHz`, 10 a second, every tick of the map's band. One contour is about
+22 points and 290 characters; between two redraws the zone's boundary moves 0.5 to
+3.3 m on average and 4.4 m at worst (60 sweeps, phases 2–7), about half a pause-map
+pixel. What a redraw costs inside the movie is only measurable in game:
+`storm.map.morph` on `/brstormhitch`, and `/brstormbisect mapnomorph` for the A/B;
+at 5 Hz the fill stays within about a pixel of the wall.
 
 ### A conjoined zone grows into its destination
 
@@ -529,17 +569,12 @@ two convex shapes is the corner list of their boundaries' runs inside each other
 and the union is the stitch every breakout already uses — so the damage tick, the
 HUD and the wall bill, read and draw `G` exactly, off one clock. It starts as `Z`
 and ends on `Z ∪ D`, and only ever grows. A destination wholly apart from the zone
-still appears at once. The map does not draw the front — that would be a rebuild
-on a motion cadence — but it does not pop either. The union `Z ∪ D`, drawn at the
-phase's one rebuild, fades in as the zone's fill across those twenty seconds while
-`Z`'s own fill fades out, alpha writes alone, composited so that `Z` keeps the
-zone's strength and only the new ground comes in. Standing still it is the zone's
-fill, with the destination over it, as a static breakout hold always was, so the
-old zone's edge does not run across the destination for the rest of the phase; and
-it is handed back to `Z`'s fill the same way across the hold's last twenty seconds,
-so the sweep does not start with a jump either. It used to switch in one tick at
-each end: 0.18 of opacity at once on the new ground, on all 80 breakout records of
-40 matches, where no tick now moves it by more than 0.002.
+still appears at once. The map draws the front: the zone's fill is the growing zone, redrawn at
+`overlay.morphHz` while it grows, so the destination's new ground comes onto the
+map exactly as the damage tick takes it in. Grown, it is the zone's fill standing
+still, with the destination under it, so the old zone's edge does not run across
+the destination for the rest of the phase; and when the sweep starts the zone is
+the moving wall united with the destination, so the new ground stays on the map.
 
 **What airdrop siting stands on changed with it.** The wall's support function
 used to be affine in `t`, which made "clears both ends of the window, clears every
@@ -564,12 +599,10 @@ re-derives the dead ends:
   so the rings were radius blips at `r`, over-reporting by about a sixth of `r`
   where the shape dents in. The vendored `MINIMAP_LOADER.gfx` turned out to
   carry `ADD_AREA_OVERLAY`, which fills a real concave polygon on both the radar
-  and the pause map (#347, #350). A moving zone is never rebuilt: its keyframes
-  are moved, resized and faded in place (above), a breakout's included, since the
-  moving union is shown as the moving zone under the destination's own fill rather
-  than as one polygon; the union itself is shown only while it stands still. The nominal-radius map blips carry the map for the rest of a
-  sweep whose placement or fade the engine refuses, and for a client whose
-  overlay never becomes ready.
+  and the pause map (#347, #350). The zone is redrawn while its outline changes
+  and moved in place while it does not (above). The nominal-radius map blips carry
+  the map for the rest of a sweep whose redraw, placement or fade the engine
+  refuses, and for a client whose overlay never becomes ready.
 * **an overlapping breakout used to draw both boundaries**, showing curtain
   inside the safe zone. Two convex shapes that overlap have a union whose
   boundary is one loop, alternating between runs of each outside the other;
