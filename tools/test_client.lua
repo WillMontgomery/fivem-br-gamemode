@@ -19987,8 +19987,11 @@ do
         local row = BR.Config.UseEmotes[kind]
         return row[row.use]
     end
-    local BANDAGE, MEDKIT, SHIELD = pick('bandage'), pick('medkit'), pick('shield')
-    for _, p in ipairs({ BANDAGE, MEDKIT, SHIELD }) do A.exists[p.dict] = true end
+    -- ONE ROW FOR EVERY HEAL AND SHIELD (owner, 2026-09-27: "all shield and
+    -- heal emotes should use whatever we use for shield"), so a bandage -- the
+    -- item most of this block drives -- plays the Shield's pick.
+    local SHIELD = pick('shield')
+    A.exists[SHIELD.dict] = true
 
     local function tick(ms)
         fakeTime = fakeTime + (ms or 100)
@@ -20045,16 +20048,16 @@ do
     -- ── 2. THE SERVER CONFIRMS: IT STREAMS, THEN IT PLAYS ────────────────────
     push('bandage', 2, true)
     tick()
-    ok(count('request') == 1 and last('request')[2] == BANDAGE.dict
+    ok(count('request') == 1 and last('request')[2] == SHIELD.dict
        and count('task') == 0,
-       'the INV_SET that opens the channel asks for the bandage\'s dictionary '
-           .. 'first, and tasks nothing it does not have',
+       'the INV_SET that opens a bandage\'s channel asks for the Shield\'s '
+           .. 'dictionary first, and tasks nothing it does not have',
        ('%d request(s), %d task(s)'):format(count('request'), count('task')))
     tick()
     local t = last('task')
-    ok(t and t[2] == BANDAGE.dict and t[3] == BANDAGE.clip
-       and A.playing == BANDAGE.dict .. '/' .. BANDAGE.clip,
-       'and the next pass puts the bandage\'s clip on the ped',
+    ok(t and t[2] == SHIELD.dict and t[3] == SHIELD.clip
+       and A.playing == SHIELD.dict .. '/' .. SHIELD.clip,
+       'and the next pass puts the Shield\'s clip on the ped',
        tostring(A.playing))
 
     -- ═══ UPPER BODY, BECAUSE THE CHANNEL HAS NEVER HELD THE LEGS ═══
@@ -20077,7 +20080,7 @@ do
     local taskAt, removeAt = nil, nil
     for i, e in ipairs(A.log) do
         if e[1] == 'task' and not taskAt then taskAt = i end
-        if e[1] == 'remove' and e[2] == BANDAGE.dict then removeAt = i end
+        if e[1] == 'remove' and e[2] == SHIELD.dict then removeAt = i end
     end
     ok(taskAt ~= nil and removeAt == taskAt + 1,
        'and the dictionary is released as soon as the clip is tasked, which is '
@@ -20102,7 +20105,7 @@ do
     push('bandage', 1, false)
     tick()
     local st = last('stop')
-    ok(st and st[2] == BANDAGE.dict and st[3] == BANDAGE.clip
+    ok(st and st[2] == SHIELD.dict and st[3] == SHIELD.clip
        and st[4] == PlayerPedId() and A.playing == nil,
        'the INV_SET that closes the channel takes that clip off that ped',
        tostring(A.playing))
@@ -20178,9 +20181,12 @@ do
     push('bandage', 2, false)
     tick()
 
-    -- ── 10. EACH KIND ITS OWN CLIP, AND AN ITEM WITH NONE PLAYS NOTHING ──────
-    ok(running('medkit') == MEDKIT.dict .. '/' .. MEDKIT.clip,
-       'a med kit plays the medkit row', tostring(A.playing))
+    -- ── 10. EVERY HEAL AND SHIELD THE ONE CLIP, AND AN ITEM WITH NONE NOTHING ─
+    ok(running('bandage') == SHIELD.dict .. '/' .. SHIELD.clip,
+       'a bandage plays the shield row', tostring(A.playing))
+    push('bandage', 2, false) tick()
+    ok(running('medkit') == SHIELD.dict .. '/' .. SHIELD.clip,
+       'and so does a med kit', tostring(A.playing))
     push('medkit', 2, false) tick()
     ok(running('shield') == SHIELD.dict .. '/' .. SHIELD.clip,
        'a shield plays the shield row', tostring(A.playing))
@@ -20219,13 +20225,13 @@ do
     push('bandage', 2, false) tick()
 
     reset()
-    A.exists[BANDAGE.dict] = nil
+    A.exists[SHIELD.dict] = nil
     push('bandage', 2, true)
     ticks(10)
     ok(count('request') == 0 and count('task') == 0,
        'a dictionary the build does not have is never requested at all',
        ('%d request(s)'):format(count('request')))
-    A.exists[BANDAGE.dict] = true
+    A.exists[SHIELD.dict] = true
     push('bandage', 2, false) tick()
 
     -- ── 12. THE ENGINE DROPS IT: PUT BACK, ONCE A SECOND AND NO FASTER ───────
@@ -20271,38 +20277,37 @@ do
     Citizen = { Wait = function() end, CreateThread = function() end,
                 SetTimeout = function() end }
     reset()
-    A.durations[BANDAGE.dict .. '/' .. BANDAGE.clip] = 3.2
-    A.durations[MEDKIT.dict .. '/' .. MEDKIT.clip] = 5.0
-    -- ...and the shield's clip is not in its dictionary on this "build".
+    --- The check's shield row, whatever else it returns alongside.
+    local function shieldRow()
+        for _, r in ipairs(BR.Inv.emoteCheck()) do
+            if r.name == 'use emote: shield' then return r end
+        end
+    end
+    A.durations[SHIELD.dict .. '/' .. SHIELD.clip] = 3.2
     local rows = BR.Inv.emoteCheck()
-    local by = {}
-    for _, r in ipairs(rows) do by[r.name] = r end
-    ok(#rows == 3 and by['use emote: bandage'] and by['use emote: medkit']
-       and by['use emote: shield'],
-       'one row per kind', tostring(#rows))
-    local b = by['use emote: bandage'] or {}
-    ok(b.ok == true and tostring(b.detail):find(BANDAGE.dict, 1, true) ~= nil
-       and tostring(b.detail):find(BANDAGE.clip, 1, true) ~= nil,
+    ok(#rows == 1 and rows[1].name == 'use emote: shield',
+       'one row per kind -- and every heal and shield is the one kind',
+       tostring(#rows))
+    local b = rows[1] or {}
+    ok(b.ok == true and tostring(b.detail):find(SHIELD.dict, 1, true) ~= nil
+       and tostring(b.detail):find(SHIELD.clip, 1, true) ~= nil,
        'a dictionary that exists with the clip in it passes, and the row names '
            .. 'both so the owner can see what was checked', tostring(b.detail))
-    local sh = by['use emote: shield'] or {}
+    -- ...and now the clip is not in its dictionary on this "build".
+    A.durations[SHIELD.dict .. '/' .. SHIELD.clip] = nil
+    local sh = shieldRow() or {}
     ok(sh.ok == false,
        'a clip the dictionary does not have FAILS -- TaskPlayAnim would have '
            .. 'played nothing, silently', tostring(sh.detail))
-    A.exists[MEDKIT.dict] = nil
-    local gone = nil
-    for _, r in ipairs(BR.Inv.emoteCheck()) do
-        if r.name == 'use emote: medkit' then gone = r end
-    end
+    A.durations[SHIELD.dict .. '/' .. SHIELD.clip] = 3.2
+    A.exists[SHIELD.dict] = nil
+    local gone = shieldRow()
     ok(gone and gone.ok == false,
        'and so does a dictionary the build does not have',
        tostring(gone and gone.detail))
-    A.exists[MEDKIT.dict] = true
+    A.exists[SHIELD.dict] = true
     A.stream = math.huge
-    local slow = nil
-    for _, r in ipairs(BR.Inv.emoteCheck()) do
-        if r.name == 'use emote: bandage' then slow = r end
-    end
+    local slow = shieldRow()
     ok(slow and slow.ok == false,
        'and one that never streams fails too -- the wait is bounded, and ends '
            .. 'on a clock that is not moving', tostring(slow and slow.detail))

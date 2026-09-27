@@ -6989,11 +6989,13 @@ do
     --
     --   "while using a heal, ideally we should have the ped play an emote but
     --    not sure which one."                     -- owner, 2026-09-23
+    --   "all shield and heal emotes should use whatever we use for shield."
+    --                                             -- owner, 2026-09-27
     --
     -- THE SHAPE, NOT THE PICK. `use` is the owner's one line to edit, so no
     -- assertion here names which entry it points at -- only that it points at
-    -- one, that each kind carries a default and two alternates to swap to, and
-    -- that every heal in the bag names a kind that exists. A misspelled kind is
+    -- one, that the row carries a default and two alternates to swap to, and
+    -- that every heal in the bag names the Shield's row. A misspelled kind is
     -- the silent failure: client/inventory.lua finds no row and the ped plays
     -- nothing, which looks exactly like the feature before it was built.
     do
@@ -7001,7 +7003,7 @@ do
         ok(type(E) == 'table', 'the emote table exists')
 
         local bad = {}
-        for _, kind in ipairs({ 'bandage', 'medkit', 'shield' }) do
+        for _, kind in ipairs({ 'shield' }) do
             local row = E and E[kind]
             if type(row) ~= 'table' then
                 bad[#bad + 1] = kind .. ': no row'
@@ -7033,8 +7035,8 @@ do
             end
         end
         ok(#bad == 0,
-           'bandage, med kit and shield each hold a default and two alternates, '
-               .. 'every one a named dict and clip, and `use` picks one of them',
+           'the shield row holds a default and two alternates, every one a '
+               .. 'named dict and clip, and `use` picks one of them',
            table.concat(bad, '; '))
 
         -- EVERY HEAL NAMES A KIND, AND EVERY NAME IS A KIND. A row that moves
@@ -7062,6 +7064,26 @@ do
         ok(C['minishield'].emote == 'shield' and C['shield'].emote == 'shield',
            'both shields are one kind -- the read is "putting a shield on", not '
                .. 'which size')
+
+        -- EVERY HEAL PLAYS WHAT THE SHIELD PLAYS (owner, 2026-09-27). Asserted
+        -- as "the same row as the Shield" rather than as a clip name, so a
+        -- `use` swap moves all of them and still passes -- and a heal given
+        -- its own row again fails here until the owner asks for that.
+        local apart = {}
+        for _, c in ipairs(BR.Config.Consumables) do
+            if (c.health or c.armour) and c.emote ~= C['shield'].emote then
+                apart[#apart + 1] = c.id .. ' -> ' .. tostring(c.emote)
+            end
+        end
+        ok(#apart == 0 and C['bandage'].emote == 'shield'
+           and C['medkit'].emote == 'shield',
+           'the bandage and the med kit play the Shield\'s emote, like every '
+               .. 'shield and heal', table.concat(apart, ', '))
+        local kinds = 0
+        for _ in pairs(E or {}) do kinds = kinds + 1 end
+        ok(kinds == 1,
+           'and the table holds that one row -- no per-heal row left behind that '
+               .. 'nothing reads', tostring(kinds))
 
         -- ...AND THE TWO THAT MUST PLAY NOTHING. The repair kit is used from
         -- the driver's seat, where a standing clip has nowhere to go; the CPR
