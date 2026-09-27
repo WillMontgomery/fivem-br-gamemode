@@ -964,6 +964,12 @@ describe('a freefall is told to pull the chute at 100 m, once, and only a freefa
 do
     local PULL = 'Press {key:brdeploy} to pull your chute!'
 
+    -- THE CASES BELOW ARE WRITTEN AT A 100 M THRESHOLD, the height #352 shipped
+    -- at. The owner tripled it after the 2026-09-27 playtest; the mechanism is
+    -- what these cases pin, so they run at 100 and case 11 pins the shipped value.
+    local SHIPPED = BR.Config.Drop.pullChuteAGL
+    BR.Config.Drop.pullChuteAGL = 100.0
+
     --- Every "pull your chute" put up since `events` was last cleared.
     local function pulls()
         local out = {}
@@ -1243,10 +1249,10 @@ do
     ticks(3)
     ok(#pulls() == 0, 'a seat is a landing -- nothing is said after it', n())
 
-    -- 11. THE 100 IS CONFIG. A server that wants the call earlier gets it earlier.
-    local was = BR.Config.Drop.pullChuteAGL
-    ok(was == 100.0, 'BR.Config.Drop.pullChuteAGL ships at the owner\'s 100 m',
-        tostring(was))
+    -- 11. THE HEIGHT IS CONFIG. A server that wants the call earlier gets it earlier.
+    ok(SHIPPED == 300.0,
+        'BR.Config.Drop.pullChuteAGL ships at the owner\'s 300 m (3x the first 100)',
+        tostring(SHIPPED))
     BR.Config.Drop.pullChuteAGL = 250.0
     reset()
     jump()
@@ -1257,7 +1263,7 @@ do
     fallTo(240.0)
     ok(#pulls() == 1, 'AND AT 240 IT IS SAID -- the height is read from config',
         n())
-    BR.Config.Drop.pullChuteAGL = was
+    BR.Config.Drop.pullChuteAGL = SHIPPED
 end
 
 -- ----------------------------------------------------- the formatter, pure ---
