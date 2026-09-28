@@ -21627,6 +21627,52 @@ do
     BR.Native    = fakeNative
 end
 
+-- ---------------------------------------------------------------------------
+describe('/brstormhitch -- a plain summary first, the rows behind an argument')
+do
+    -- ═══ "the usage of brstormhitch is super confusing to me" (the owner, 2026-09-28) ═══
+    --
+    -- So the command's default is the summary a non-expert can read: what the storm map
+    -- did while the storm moved, what staging cost, how the frames went, and a verdict.
+    -- The correlation rows -- the hunter's tool -- are `/brstormhitch rows`. The storm's
+    -- own numbers come from BR.Storm.mapStats (client/storm.lua; tools/test_storm.lua's
+    -- map.stage measures them), stood in here so each verdict can be asked for.
+    local prevStats = BR.Storm and BR.Storm.mapStats
+    BR.Storm = BR.Storm or {}
+    local stats = { sweeps = 3, sweepsStaged = 3, sweepRedraws = 0, staged = 24,
+        stagedFirstAt = 1000, stagedLastAt = 39000, stageWorstMs = 6, dropped = 20,
+        live = 30, cap = 208 }
+    BR.Storm.mapStats = function() return stats end
+    local function said(args)
+        logged = {}
+        commands['brstormhitch'](nil, args, '')
+        return table.concat(logged, '\n')
+    end
+    said({ 'reset' })
+    frames(120, 16)
+    local out = said({})
+    ok(out:find('storm map: 0 clip rebuilds during sweeps (3 sweeps, 3 shown from staged '
+            .. 'clips), staged 24 clips over 38 s during holds', 1, true) ~= nil
+            and out:find('frames: worst', 1, true) ~= nil
+            and out:find('verdict: smooth', 1, true) ~= nil
+            and out:find('/brstormhitch rows', 1, true) ~= nil
+            and out:find('marker correlation', 1, true) == nil,
+        'the default is the plain summary -- rebuilds during sweeps, what staging did, the '
+            .. 'frames, a verdict -- and it points at the rows without printing them', out)
+    stats.sweepRedraws = 12
+    out = said({ 'report' })
+    ok(out:find('verdict: the map redrew its zone 12 times while the storm moved', 1, true)
+            ~= nil, 'a sweep redrawn the old way is named as the suspect in plain words', out)
+    local rows = said({ 'rows' })
+    ok(rows:find('marker correlation', 1, true) ~= nil
+            and rows:find('verdict:', 1, true) == nil,
+        '/brstormhitch rows is the detailed correlation report, as it was', rows)
+    ok(said({ 'nonsense' }):find('usage: brstormhitch [report|rows|stop|reset', 1, true) ~= nil,
+        'and anything else prints the usage, rows included')
+    BR.Storm.mapStats = prevStats
+    BR.Loop.hitchStop()
+end
+
 realPrint(('%s%d passed, %d failed\27[0m')
     :format(fail == 0 and '\27[32m' or '\27[31m', pass, fail))
 os.exit(fail == 0 and 0 or 1)

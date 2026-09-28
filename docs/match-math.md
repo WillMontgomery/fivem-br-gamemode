@@ -495,11 +495,18 @@ closes on — by the direction each faces, round the circle — and the sweep ha
 legs, split at the **knee**, `morph.leadSeconds` (15) before it ends:
 
 ```
-knee        k = max(1 − lead / T, 0.5)                     -- T the sweep's length
-mid         the destination's unit discs at (m, s)         -- its SHAPE, a bit bigger
-              nested:   p = mean of D's corner centres,  λ = min(r(k) / r1, largest that fits in Z)
-                        m = p + λ (c1 − p),  s = λ r1       -- D grown about p
-              breakout: m = c(k),  s = r(k)                 -- on the solver's circle
+R(X)        the radius of a disc of X's area                -- the zone's SIZE
+k0          max(1 − lead / T, 0.5)                          -- T the sweep's length
+want        λ = R(Z) + k0 (R(D) − R(Z))  /  R(D)            -- the size the clock asks at k0
+mid         the destination's unit discs at (m, s)          -- its SHAPE, grown by λ
+              nested:   c = a point of D it grows about -- the mean of its corner
+                        centres p if D grown by `want` about p fits in Z, else the
+                        candidate point nearest the edge D is pinned to (its tightest
+                        discs' centres and outer points) that lets it grow most
+                        λ = min(want, the most that fits about c)
+                        m = c + λ (c1 − c),  s = λ r1        -- D grown about c
+              breakout: m = c(k),  s = r(k)                  -- on the solver's circle
+knee        k = k0, or later where λ < want: the k at which R(Z) + k (R(D) − R(Z)) = λ R(D)
 disc(t)     t ≤ k: straight from its source disc to its mid disc, over t / k
             t ≥ k: straight from its mid disc to its destination disc
 wall(t)     hull of every disc(t)  ∪  mid's discs (t < k) or D's (t ≥ k)  -- nested
@@ -523,6 +530,33 @@ the wall united with the destination. The final zone, whose destination is a
 point, keeps its own shape onto the point, and `morph.leadSeconds = 0` is the old
 one-leg morph that turned only as it arrived.
 
+**Why the zone jumped ahead of its clock, and why it no longer does (2026-09-28).**
+"At the first phase or two, the border jumped in size while moving, suddenly being
+maybe 10 seconds ahead of where it should have been." The zone never moved
+discontinuously — its step between two 100 ms instants was always within its
+fastest corner's reach — but it changed *speed* at the knee by up to 240 times.
+`mid` used to be the destination grown about `p` by `r(k) / r1`, clamped to the
+largest copy that fits in `Z`; a destination placed near the edge of the zone it
+sits in (every `edgeBiasMax = 1.0` placement near the rim) cannot grow about its
+middle at all, so `mid` was the destination or nearly, the first leg covered the
+whole sweep's travel in its first 25 of 40 seconds, and the second leg stood
+still. Walking 12 real matches' sweeps and reading the zone's size as `R`: up to
+14.9 s ahead of a steady `R` (phase 2 up to 14.7 s, and 13.9 s or more on five of
+the first six matches), the speed falling up to 240 times at the knee, and phase 1
+up to 7.2 s ahead where its destination is pinned by the opening disc's edge.
+Now `mid` grows about the point of the destination nearest the edge it is pinned
+to, to the size the clock asks — by area, since the opening zone is an exact disc
+and every other zone holds 0.9 of its circle — and where even that does not fit,
+the knee moves later to the moment the clock asks for the size that does. At most
+1 s ahead on any nested sweep, and its pace changes by 1.6 times at worst from one
+half second to the next (`zone.schedule` in tools/test_storm.lua, 8 matches × 8 phases at
+100 ms, which fails on the old solver at 14.7 s and 165×). The shape then finishes
+turning later than `leadSeconds` before the end on the sweeps whose destination has
+no room — by exactly as long as the geometry demands. `BR.StormKnee` says where it
+fell. (The knee's pacing table above was measured before this change and has not
+been re-measured; `price.run` and `price.outside` re-ask the runner guarantee of the
+new wall.)
+
 **Why it used to be two moving shapes on the map.** Until 2026-09-27 the wall
 morphed in one leg over the whole sweep, and the map showed it as a *crossfade* of
 two or more pre-drawn *keyframes* — `V(0)`, the zone it left, and `V(1)`, the one it
@@ -536,20 +570,51 @@ made "never rebuild while moving" the rule and #344's second round kept to it wi
 keyframes. The owner saw two translucent shapes of different outlines moving and
 fading into each other, and rejected it.
 
-**The map now draws the one zone.** Two areas: the destination, drawn once per
-phase and never touched, and the safe zone itself — `BR.StormZone` at the tick,
-which is what the wall is drawn from and the damage tick bills. While the zone is
-one outline under a frame (a nested sweep past its knee, the final zone onto its
-point) it is drawn once and only moved and resized: two property writes a tick,
-exact. While its outline changes (a sweep's first leg, a breakout's whole sweep, a
-conjoined growth) its own clip is replaced — one `REM_OVERLAY` and one
-`ADD_AREA_OVERLAY` per contour, the destination under it untouched — at
-`overlay.morphHz`, 10 a second, every tick of the map's band. One contour is about
-22 points and 290 characters; between two redraws the zone's boundary moves 0.5 to
-3.3 m on average and 4.4 m at worst (60 sweeps, phases 2–7), about half a pause-map
-pixel. What a redraw costs inside the movie is only measurable in game:
-`storm.map.morph` on `/brstormhitch`, and `/brstormbisect mapnomorph` for the A/B;
-at 5 Hz the fill stays within about a pixel of the wall.
+**The map draws the one zone, from outlines staged in the hold.** The destination
+is drawn once per phase and never touched; the safe zone is the zone itself. Until
+2026-09-28 a changing outline was *replaced* at `overlay.morphHz` — one
+`REM_OVERLAY` and one `ADD_AREA_OVERLAY` a tick for the whole first leg — and the
+owner felt it: "we're also back to hitches ... is there any way we can silently
+stage the textures we need over time?" So now:
+
+```
+bank      during the HOLD: the wall's outline at t_j = k · j / K, j = 0..K, each
+          drawn about its pivot P_j (the mean of its moving corner centres) at its
+          size R_j (a disc of its area) -- added HIDDEN (alpha 0), one per
+          overlay.stage.everyTicks (2) map ticks, knee and start first, then halving
+K         = ceil( spread / targetM ),  spread = the outline at 0 placed on the wall at
+          k / 2 -- the error one outline per leg would show; K outlines divide it by K.
+          Capped at maxClips (200) and at what the hold has room to stage
+sweep     t < k: the staged outline nearest t, moved to P(t) and scaled by R(t) / R_j
+          t ≥ k: the knee's outline under the wall's own frame -- exact
+          swapped by alpha when the nearest one changes; NOTHING added or removed
+breakout  the wall's outline as above, beside the destination staged at the zone's
+          strength: their union is the zone
+```
+
+A frame is still two property writes; a swap is one alpha write each way (not
+`HIDE_OVERLAY`, which the disassembly shows tweening alpha over 0.2 s). The radar
+and the pause map are the one movie, so both show it. Measured through the real
+client on 8 matches at 100 ms, both ways round — the shown outline's vertices from
+the wall and the wall's from the shown outline, chord sag included (about 5 m, which
+the redraw had too): phase 1 26 m (3.3 pause-map pixels at 8 m a pixel; its bank is
+capped at 200 outlines, the whole-map disc turning into a zone), phases 2–7 at most
+13.4 m (1.7 pixels), the last zone onto its point 4.9 m (exact but for the sag).
+Only a sweep whose bank is not usable when it sets off — a client that joined
+mid-sweep, a hold too short for even the knee's outline — is redrawn the old way,
+and a conjoined growth still is (its outline is only known once the hold has
+begun). `/brstormhitch` counts both ("clip rebuilds during sweeps").
+
+**Every staged clip is cleaned up, and never more than a fixed number exist.** A
+new record retires the last bank (hidden already); the next hold drops it one clip
+per slot **before** staging its own, so the movie holds at most one bank and the
+picture — 208 clips (`maxClips` + 8). The same slots drop the bank after a match
+ends, a player leaves, a trip home, a jump back to warmup, a `brphase` or
+`brstormfreeze` mid-sweep, and a refusal mid-sweep (which hides the bank at once and
+drops it in the next hold); an orphan a refused removal leaves is retried there
+too; `onClientResourceStop` removes everything at once. `map.teardown` walks each
+path and asserts the count returns to exactly its baseline, and that it never
+passed the cap.
 
 ### A conjoined zone grows into its destination
 

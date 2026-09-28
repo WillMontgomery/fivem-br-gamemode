@@ -444,28 +444,106 @@ local function stormHitchReport()
     print('  Keep resmon 1 open too: br_core vs br_ui separates Lua/engine from CEF.')
 end
 
+-- ═══ THE PLAIN SUMMARY, WHICH IS WHAT /brstormhitch SAYS FIRST (2026-09-28) ═══
+--
+--   "the usage of brstormhitch is super confusing to me"      -- the owner
+--
+-- The correlation rows above answer "what ran before each long frame", which is the
+-- question for somebody hunting a hitch -- and a wall of numbers for somebody asking
+-- "is it smooth?". So the command's default is four plain lines: what the storm map
+-- did while the storm moved (the thing the owner felt), what staging cost and when,
+-- how the frames went, and one sentence saying what that means. The rows are
+-- `/brstormhitch rows`.
+
+--- Frames at or over 17 ms -- over 16.7, one 60 fps frame, on a millisecond clock --
+--- out of all frames, off the loop's histogram (whose first bucket is "under 17").
+local function framesOver()
+    local f = BR.Loop.frameStats()
+    local under = (f.buckets[1] and f.buckets[1].count) or 0
+    return math.max(0, f.samples - under), f.samples, f.worstMs
+end
+
+BR.Storm = BR.Storm or {}
+
+--- The four lines. Public for the suite (tools/test_storm.lua's map.summary).
+--- @return table lines
+function BR.Storm.hitchSummaryLines()
+    local lines = {}
+    local h = BR.Loop.hitchStats()
+    local seconds = math.max(0.0, h.durationMs / 1000.0)
+    local over, frames, worst = framesOver()
+    local m = BR.Storm.mapStats and BR.Storm.mapStats() or nil
+    lines[#lines + 1] = ('storm hitch summary -- %s, %.0f s'):format(
+        h.enabled and 'capturing' or 'stopped', seconds)
+    if m then
+        local span = 0.0
+        if m.stagedFirstAt and m.stagedLastAt then
+            span = (m.stagedLastAt - m.stagedFirstAt) / 1000.0
+        end
+        local sweeps = m.sweeps == 1 and '1 sweep' or ('%d sweeps'):format(m.sweeps)
+        lines[#lines + 1] = ('storm map: %d clip rebuilds during sweeps (%s, %d shown from '
+            .. 'staged clips), staged %d clips over %.0f s during holds (the longest frame '
+            .. 'after a staging step: %d ms), %d old clips dropped, %d of ours in the map now '
+            .. '(cap %d)'):format(m.sweepRedraws, sweeps, m.sweepsStaged, m.staged, span,
+            m.stageWorstMs, m.dropped, m.live or 0, m.cap or 0)
+    end
+    lines[#lines + 1] = ('frames: worst %d ms, %d of %d over 16.7 ms (%.2f%%)'):format(
+        worst, over, frames, 100.0 * over / math.max(1, frames))
+    local verdict
+    if frames == 0 then
+        verdict = 'nothing measured yet -- play a hold and a sweep, then /brstormhitch again.'
+    elseif m and m.sweepRedraws > 0 then
+        verdict = ('the map redrew its zone %d times while the storm moved -- the old path, '
+            .. 'for a sweep whose clips were not staged in time (joined mid-sweep, a very '
+            .. 'short hold) or a refusal. That work is the suspect.'):format(m.sweepRedraws)
+    elseif over == 0 then
+        verdict = 'smooth -- no map work while the storm moved and no frame over 16.7 ms.'
+    elseif m and m.stageWorstMs >= 17 then
+        verdict = ('some long frames followed staging steps (%d ms at worst) -- those happen '
+            .. 'only while the storm holds; overlay.stage.everyTicks spaces them further '
+            .. 'apart.'):format(m.stageWorstMs)
+    else
+        verdict = 'the long frames were not the storm map\'s staging or redraws -- '
+            .. '/brstormhitch rows names what ran before each one.'
+    end
+    lines[#lines + 1] = 'verdict: ' .. verdict
+    return lines
+end
+
+local function stormHitchSummary()
+    for _, line in ipairs(BR.Storm.hitchSummaryLines()) do
+        print('[br_core] ' .. line)
+    end
+    print('  details: /brstormhitch rows    start over: /brstormhitch reset [thresholdMs]')
+end
+
 RegisterCommand('brstormhitch', function(_, args)
     local action = args[1]
     if action == 'reset' or action == 'start' then
         BR.Loop.resetStats()
         BR.Loop.hitchStart(args[2])
+        if BR.Storm.resetMapStats then BR.Storm.resetMapStats() end
         local h = BR.Loop.hitchStats()
-        print(('[br_core] storm hitch capture ON at %dms. Reproduce 30-60s, then /brstormhitch.')
-            :format(h.thresholdMs))
-        print('  Best isolation: one shrinking sample safely INSIDE, then reset and repeat OUTSIDE.')
-        print('  If net.storm.damage stays at 0 while hitches remain, the server damage path is cleared.')
+        print(('[br_core] storm hitch capture ON at %dms. Play a hold and a sweep, then '
+            .. '/brstormhitch for the summary.'):format(h.thresholdMs))
+        print('  /brstormhitch rows adds the per-path detail. Best isolation: one shrinking')
+        print('  sample safely INSIDE, then reset and repeat OUTSIDE.')
         return
     end
     if action == 'stop' then
         BR.Loop.hitchStop()
+        stormHitchSummary()
+        return
+    end
+    if action == 'rows' or action == 'detail' or action == 'details' then
         stormHitchReport()
         return
     end
     if action and action ~= 'report' then
-        print('  usage: brstormhitch [report|stop|reset [thresholdMs]]')
+        print('  usage: brstormhitch [report|rows|stop|reset [thresholdMs]]')
         return
     end
-    stormHitchReport()
+    stormHitchSummary()
 end, false)
 
 --- The hitch hunter.

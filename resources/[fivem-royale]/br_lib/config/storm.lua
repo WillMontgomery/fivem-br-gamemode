@@ -1022,6 +1022,36 @@ BR.Config.Storm = {
         -- the fill within about a pixel of the wall. 0 redraws only when the kind of
         -- change does -- the sweep starting, the knee, a growth ending.
         morphHz = 10,
+
+        -- ═══ BUT A SWEEP IS NOT REDRAWN AT ALL: ITS OUTLINES ARE STAGED IN THE HOLD ═══
+        --
+        --   "is there any way we can silently stage the textures we need over time to
+        --    be less intrusive and hitchy?"                  -- the owner, 2026-09-28
+        --
+        -- morphHz above is now only the fallback -- a client that joined mid-sweep, a
+        -- conjoined zone growing through its hold. Every other sweep is shown from a
+        -- BANK of hidden clips added during the hold before it (client/storm.lua's
+        -- "staging"): the zone's outline at K+1 instants of the first leg, each placed
+        -- on the wall's pivot and size as the sweep reaches it, swapped by alpha. Not
+        -- one clip is added or removed while the wall moves.
+        stage = {
+            enabled    = true,
+            -- At most one clip added (or an old one dropped) per this many map ticks:
+            -- 2 is five a second, and a whole phase-1 bank of 200 in 40 s of a hold
+            -- that is at least 60.
+            everyTicks = 2,
+            -- A frame longer than this after a staging slot doubles the spacing of the
+            -- next ones, up to maxTicks; a clean one brings it back a tick at a time.
+            frameMs    = 20,
+            maxTicks   = 16,
+            -- The staged outline shown can differ from the wall by how far the shape
+            -- has changed since its instant. K is chosen per record for this many
+            -- metres at worst by the bank's own estimate -- under a pause-map pixel --
+            -- up to maxClips, and no more than the hold has room to stage. MEASURED in docs/match-math.md: phase 1's
+            -- whole-map disc turning into a zone is the one sweep maxClips binds.
+            targetM    = 5.0,
+            maxClips   = 200,
+        },
     },
 }
 

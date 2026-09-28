@@ -232,8 +232,13 @@ gives up the edge. docs/match-math.md section 3 has the geometry.
 it leaves into the destination's own shape, and is that shape
 `morph.leadSeconds` (15 s) before the sweep ends — the **knee**; from there it is
 one outline moved and scaled onto the destination, landing on it as the sweep
-ends. The 3D wall, both maps and the damage tick read it from the same solver
-call, and the map shows the destination and that one zone, nothing else.
+ends. Its size keeps to the sweep's clock the whole way: where the destination
+sits so near the zone's edge that its shape cannot be the scheduled size 15 s out,
+the knee comes later instead of the zone racing ahead and stopping (2026-09-28;
+docs/match-math.md). The 3D wall, both maps and the damage tick read it from the
+same solver call, and the map shows the destination and that one zone, nothing
+else — the zone from outlines staged, hidden, during the hold before, so nothing is
+added to the map while the wall moves.
 
 **Timing.** The first hold is priced for the furthest living player's run in to
 circle 1's wall — its shape, the same boundary the 75% cut counts against (#364):

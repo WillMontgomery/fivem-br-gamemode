@@ -197,7 +197,8 @@ local recInfo = setmetatable({}, { __mode = 'k' })
 --    finishing the move."                                -- the owner, 2026-09-27
 --
 -- So a sweep has two legs, split at the KNEE: `morph.leadSeconds` before the sweep
--- ends (config/storm.lua).
+-- ends (config/storm.lua) -- or later, where the destination has no room to be the
+-- size the clock asks for there (see "where `mid` stands").
 --
 --   0 .. knee   every corner disc of the zone the wall leaves travels in a straight
 --               line to its partner's disc of `mid` -- the DESTINATION'S OWN SHAPE,
@@ -210,11 +211,14 @@ local recInfo = setmetatable({}, { __mode = 'k' })
 --               exactly as the sweep ends.
 --
 -- WHERE `mid` STANDS. On a phase that did not break out the destination lies inside
--- the zone, and `mid` is the destination grown about a point inside it -- the mean
--- of its corner centres, p -- by the solver circle's own ratio at the knee,
--- r(knee) / r1, but never so far that it leaves the zone the wall starts as
--- (bisected against that zone's corner list). Three things follow, and they are the
--- three the one-leg morph before it had:
+-- the zone, and `mid` is the destination grown about a point inside it to THE SIZE
+-- THE SWEEP'S CLOCK ASKS FOR AT THE KNEE -- read as the radius of a disc of its area,
+-- which goes from the zone's to the destination's at one rate -- about the mean of
+-- its corner centres where that fits in the zone the wall starts as, and otherwise
+-- about the point of it nearest the edge it is pinned to. Where no point lets it grow
+-- that far, it grows as far as fits and the KNEE MOVES LATER, to the instant the clock
+-- asks for that size. midOf has the numbers and why (the 2026-09-28 jump). Three
+-- things follow, and they are the three the one-leg morph before it had:
 --
 --   THE WALL HOLDS THE DESTINATION AT EVERY t. `mid` holds it (a convex set grown
 --   about a point of itself holds itself), and the first leg's hull takes `mid`'s
@@ -243,11 +247,12 @@ local recInfo = setmetatable({}, { __mode = 'k' })
 -- (BR.StormSweepPrice below): server/storm.lua prices it at the length it is about
 -- to publish, and lengthens it until the two agree (its sweepSeconds).
 local KNEE_MIN = 0.5        -- a sweep under twice the lead turns its shape half way
-local MID_STEPS = 20        -- halvings of the grown destination's scale
+local MID_STEPS = 12        -- halvings of the grown destination's scale: 1/4096 of its range
 
---- Where the knee falls in a record's sweep, 0..1: `leadSeconds` before it ends,
---- and never before half way. nil for a sweep with one leg -- a destination of no
---- radius, a lead of 0 (the off switch), or a record with no sweep at all.
+--- Where the knee is ASKED to fall in a record's sweep, 0..1: `leadSeconds` before it
+--- ends, and never before half way. nil for a sweep with one leg -- a destination of
+--- no radius, a lead of 0 (the off switch), or a record with no sweep at all. midOf may
+--- put it later; BR.StormKnee answers where it really is.
 --- @param rec table
 --- @return number|nil
 local function kneeOf(rec)
@@ -302,27 +307,146 @@ local function midOf(rec, e, knee)
     local mx, my, ms
     if e.nested then
         local keep = e.keep
+        local zks = SS.discHull(e.src)
+        -- ═══ THE SIZE THE CLOCK ASKS FOR AT THE KNEE, BY AREA ═══
+        --
+        -- The zone's size is read as the radius of a disc of its own area, R, and the
+        -- sweep takes R from the zone it leaves to the destination's at one rate: R(t) =
+        -- R0 + t (R1 - R0). `mid` is the destination grown by lam, whose R is lam R1, so
+        -- the clock asks lam = R(knee) / R1. By area rather than by the solver circle's
+        -- radius because the opening zone is an exact disc and every other zone holds
+        -- 0.9 of its circle: read by the circle, phase 1's first leg ran 1.2 to 1.7 times
+        -- as fast as its second.
+        local dks = SS.discHull(keep)
+        local R0 = zks and math.sqrt(SS.areaOf(zks) / math.pi) or rec.r0
+        local R1 = dks and math.sqrt(SS.areaOf(dks) / math.pi) or r1
+        local want = 1.0
+        if R1 > 0.0 then want = math.max(1.0, BR.Lerp(R0, R1, knee) / R1) end
+
+        --- The destination's discs relative to a point of it, (cx, cy).
+        local function relTo(cx, cy)
+            local rel = {}
+            for k = 1, #keep do
+                rel[k] = { x = keep[k].x - cx, y = keep[k].y - cy, r = keep[k].r }
+            end
+            return rel
+        end
+        --- Does the destination grown `lam` about (cx, cy) fit the zone the wall leaves?
+        local function fits(c, lam)
+            return (not zks) or SS.fit(zks, c.rel, c.x, c.y, lam) <= 0.0
+        end
+        --- The most it grows about (cx, cy) and still fits, up to `want`. At 1 it is the
+        --- destination, which that zone holds -- the nesting verdict -- so the bisection
+        --- always has a side that fits, and keeps to it.
+        local function most(c, from)
+            if fits(c, want) then return want end
+            local lo, hi = from or 1.0, want
+            for _ = 1, MID_STEPS do
+                local m = 0.5 * (lo + hi)
+                if fits(c, m) then lo = m else hi = m end
+            end
+            return lo
+        end
+
+        -- THE MEAN OF ITS CORNER CENTRES FIRST, which is where every destination with
+        -- room around it grows from.
         local px, py = 0.0, 0.0
         for k = 1, #keep do px, py = px + keep[k].x, py + keep[k].y end
         px, py = px / #keep, py / #keep
-        local rel = {}
-        for k = 1, #keep do
-            rel[k] = { x = keep[k].x - px, y = keep[k].y - py, r = keep[k].r }
-        end
-        local zks = SS.discHull(e.src)
-        local lam = math.max(1.0, rk / r1)
-        -- GROWN NO FURTHER THAN THE ZONE THE WALL LEAVES HOLDS IT. At 1 it is the
-        -- destination, which that zone holds -- the nesting verdict -- so the bisection
-        -- always has a side that fits, and keeps to it.
-        if lam > 1.0 and zks and SS.fit(zks, rel, px, py, lam) > 0.0 then
-            local lo, hi = 1.0, lam
-            for _ = 1, MID_STEPS do
-                local m = 0.5 * (lo + hi)
-                if SS.fit(zks, rel, px, py, m) <= 0.0 then lo = m else hi = m end
+        local pick = { x = px, y = py, rel = relTo(px, py) }
+        local lam = want
+
+        -- ═══ AND WHERE THAT DOES NOT FIT, THE POINT OF THE DESTINATION IT GROWS MOST
+        --     FROM -- AND THE KNEE WAITS FOR THE SIZE THE CLOCK SAYS (2026-09-28) ═══
+        --
+        --   "at the first phase or two, the border jumped in size while moving, suddenly
+        --    being maybe 10 seconds ahead of where it should have been."  -- the owner
+        --
+        -- A destination placed near the edge of the zone it sits in cannot grow about
+        -- its own middle before it pokes out of that zone, so `mid` used to be clamped to
+        -- the destination itself or near it: the first leg then did the whole sweep's
+        -- travel by the knee and the second had nothing left to do. The zone arrived 14
+        -- seconds early on 9 of 12 phase-2 sweeps measured, and its speed fell 25 to 80
+        -- times at the knee -- a wall racing in and stopping dead is the jump. So:
+        --
+        --   1. Grown about the point of the destination nearest the edge it is pinned
+        --      to, it keeps growing away from that edge -- still holding the destination
+        --      (any point of a convex shape is a centre it grows about and still holds
+        --      itself) and still inside the zone it leaves. Asked of the destination's
+        --      corner centres, the points on their discs furthest from the middle, and
+        --      the points half way out to them.
+        --   2. Where even that is short of the size the clock asks at the knee, the knee
+        --      moves LATER, to the moment the clock asks for the size it can have. The
+        --      zone is then on its schedule at the knee, and the second leg moves at the
+        --      solver circle's own rate; the shape finishes turning later than
+        --      `leadSeconds` before the end, by exactly as long as the geometry demands.
+        if not fits(pick, want) then
+            -- THE DISCS THE DESTINATION IS PINNED BY are the ones nearest the zone's edge,
+            -- and the centre it grows most about is by them: each of the three tightest
+            -- discs' centre, its point furthest from the middle, the point half way out to
+            -- it, and the point between the two tightest -- pinned on two sides. Ten
+            -- candidates at most, because this runs once per record on the client too.
+            local order = {}
+            for k = 1, #keep do
+                local q = keep[k]
+                order[k] = { q = q, slack = zks and
+                    (SS.hullDistance(zks, q.x, q.y) + q.r) or 0.0, k = k }
             end
-            lam = lo
+            table.sort(order, function(a, b)
+                if a.slack ~= b.slack then return a.slack > b.slack end
+                return a.k < b.k
+            end)
+            local cands, outer = {}, {}
+            for j = 1, math.min(3, #order) do
+                local q = order[j].q
+                local dx, dy = q.x - px, q.y - py
+                local dl = math.sqrt(dx * dx + dy * dy)
+                local ox, oy = q.x, q.y
+                if dl > 1e-9 and q.r > 0.0 then
+                    ox, oy = q.x + q.r * dx / dl, q.y + q.r * dy / dl
+                end
+                outer[j] = { x = ox, y = oy }
+                cands[#cands + 1] = { x = ox, y = oy }
+                cands[#cands + 1] = { x = q.x, y = q.y }
+                cands[#cands + 1] = { x = 0.5 * (px + ox), y = 0.5 * (py + oy) }
+            end
+            if outer[2] then
+                cands[#cands + 1] = { x = 0.5 * (outer[1].x + outer[2].x),
+                                      y = 0.5 * (outer[1].y + outer[2].y) }
+            end
+            -- The candidate that fits at the size asked and is nearest the middle, or the
+            -- one that grows most. Ties go to the earlier, so the answer is fixed.
+            local near, nearD = nil, math.huge
+            for _, c in ipairs(cands) do
+                c.rel = relTo(c.x, c.y)
+                if fits(c, want) then
+                    local d = (c.x - px) ^ 2 + (c.y - py) ^ 2
+                    if d < nearD then near, nearD = c, d end
+                end
+            end
+            if near then
+                pick = near
+            else
+                -- ONLY A CANDIDATE THAT FITS AT THE BEST SO FAR IS BISECTED, from there:
+                -- this runs once per record, on the client too, and the owner reads
+                -- hitches (a millisecond or two at worst, where bisecting every
+                -- candidate from 1 cost up to fourteen).
+                local best = most(pick)
+                for _, c in ipairs(cands) do
+                    if fits(c, best) then
+                        local m = most(c, best)
+                        if m > best then best, pick = m, c end
+                    end
+                end
+                lam = best
+                -- R(k) = lam R1, solved for k: the knee the clock allows this size at.
+                if R0 > R1 then
+                    knee = BR.Clamp((R0 - lam * R1) / (R0 - R1), knee, 1.0)
+                end
+            end
         end
-        mx, my, ms = px + lam * (rec.cx1 - px), py + lam * (rec.cy1 - py), lam * r1
+        mx, my, ms = pick.x + lam * (rec.cx1 - pick.x), pick.y + lam * (rec.cy1 - pick.y),
+            lam * r1
     else
         mx, my, ms = BR.Lerp(rec.cx0, rec.cx1, knee), BR.Lerp(rec.cy0, rec.cy1, knee), rk
     end
@@ -332,7 +456,7 @@ local function midOf(rec, e, knee)
         local b = discs[e.bi[i]] or discs[1]
         mid[i] = { x = mx + ms * b.x, y = my + ms * b.y, r = ms * b.r }
     end
-    return mid, mx, my, ms
+    return mid, mx, my, ms, knee
 end
 
 --- The record's morph, worked out: see the section note. nil for the off switch.
@@ -347,7 +471,7 @@ local function infoOf(rec)
         and e.phase == rec.phase and e.seed == rec.seed
         and e.cx0 == rec.cx0 and e.cy0 == rec.cy0 and e.r0 == rec.r0
         and e.cx1 == rec.cx1 and e.cy1 == rec.cy1 and e.r1 == rec.r1
-        and e.knee == knee then
+        and e.knee0 == knee then
         return e
     end
 
@@ -374,10 +498,17 @@ local function infoOf(rec)
     e = { uA = uA, uB = uB, mo = rec.mo, phase = rec.phase, seed = rec.seed,
           cx0 = rec.cx0, cy0 = rec.cy0, r0 = rec.r0,
           cx1 = rec.cx1, cy1 = rec.cy1, r1 = rec.r1,
-          src = src, dst = dst, bi = bi, keep = keep, nested = nested }
+          src = src, dst = dst, bi = bi, keep = keep, nested = nested, knee0 = knee }
     if knee and #src > 0 then
-        e.knee = knee
-        e.mid, e.mx, e.my, e.ms = midOf(rec, e, knee)
+        local k
+        e.mid, e.mx, e.my, e.ms, k = midOf(rec, e, knee)
+        -- A KNEE THE GEOMETRY PUSHED TO THE END IS NO KNEE: one leg, onto the
+        -- destination's own discs, which is what `mid` has become.
+        if k < 1.0 - 1e-9 then
+            e.knee = k
+        else
+            e.mid, e.mx, e.my, e.ms = nil, nil, nil, nil
+        end
     end
     recInfo[rec] = e
     return e
@@ -397,6 +528,17 @@ end
 local function hullAt(e, t)
     local from, to, u, keep = legOf(e, t)
     return BR.StormShape.morphHull(from, to, u, keep)
+end
+
+--- WHERE THIS RECORD'S KNEE REALLY FALLS, 0..1: `morph.leadSeconds` before the end --
+--- never before half way -- or later, on a nested phase whose destination has too
+--- little room to be its scheduled size there (see midOf). nil for a one-leg sweep.
+--- The client's map and the suites read this rather than re-deriving it from the lead.
+--- @param rec table
+--- @return number|nil
+function BR.StormKnee(rec)
+    local e = rec and infoOf(rec)
+    return e and e.knee or nil
 end
 
 --- Is this record's target inside the zone its wall starts as, by real shape?
@@ -608,8 +750,9 @@ end
 --- finder refuses -- is the whole union too, for the same reason. The wall and the
 --- damage tick both come through here, so even then they agree.
 ---
---- THE MAP DRAWS THIS ZONE TOO, front and all: client/storm.lua's storm.map redraws
---- its fill from this function while the zone changes shape, at `overlay.morphHz`.
+--- THE MAP DRAWS THIS ZONE TOO, front and all: client/storm.lua's storm.map shows a
+--- sweep from outlines of it staged during the hold before (BR.StormWallPivot places
+--- them), and redraws a conjoined growth from this function at `overlay.morphHz`.
 ---
 --- @param rec table|nil    the published storm record
 --- @param cx number        the CURRENT centre, as BR.StormAt reports it
@@ -662,17 +805,24 @@ end
 --- @param rec table
 --- @param t number
 --- @return number|nil x, number y, number s, string id
-function BR.StormWallFrame(rec, t)
+function BR.StormWallFrame(rec, t, wallOnly)
     local e = rec and infoOf(rec)
     if not e then return nil end
     t = BR.Clamp(t or 0.0, 0.0, 1.0)
     local r1 = rec.r1 or 0.0
     if r1 <= 0.0 then
-        if not e.nested then return nil end
+        -- A WALL SHRINKING ONTO A POINT IS ITS OWN OUTLINE SCALED ABOUT IT, nested or
+        -- not: every disc heads straight for the point. A breakout's zone is that wall
+        -- union the one-metre point, which `wallOnly` leaves out.
+        if not e.nested and not wallOnly then return nil end
         return rec.cx1, rec.cy1, 1.0 - t, 'point'
     end
     if t >= 1.0 and not e.nested then return rec.cx1, rec.cy1, r1, 'end' end
-    if not e.nested then return nil end
+    -- `wallOnly`: THE MOVING WALL'S OWN FRAME ON A BREAKOUT TOO. The safe zone there is
+    -- the wall union the destination, which has no frame; the wall itself, from the
+    -- knee, is the destination's outline on the solver's circle, and the map places it
+    -- beside a destination drawn at the zone's strength (client/storm.lua's staging).
+    if not e.nested and not (wallOnly and e.knee) then return nil end
     if e.knee then
         if t < e.knee then return nil end
         local u = (t - e.knee) / (1.0 - e.knee)
@@ -681,6 +831,35 @@ function BR.StormWallFrame(rec, t)
     end
     if t >= 1.0 then return rec.cx1, rec.cy1, r1, 'leg2' end
     return nil
+end
+
+--- WHERE THE MOVING WALL STANDS AT `t`, AS A POINT AND A SIZE: the mean of its moving
+--- corner centres, and the radius of a disc of its area. Cheap -- a hull of a dozen
+--- discs, no boundary walk -- and exact for the wall the damage tick bills.
+---
+--- The map's staged outlines are placed by it (client/storm.lua): an outline of the wall
+--- at t_j, drawn about its own pivot at its own size, moved to the pivot at t and scaled
+--- by the ratio of the sizes, stands on the wall at t to within how much the shape
+--- itself changed between the two -- which is what the staging's spacing is chosen by.
+--- nil for a record with no shape at all.
+--- @param rec table
+--- @param t number
+--- @return number|nil x, number y, number size
+function BR.StormWallPivot(rec, t)
+    local e = rec and infoOf(rec)
+    if not e or #e.src == 0 then return nil end
+    t = BR.Clamp(t or 0.0, 0.0, 1.0)
+    local from, to, u = legOf(e, t)
+    local s = 1.0 - u
+    local x, y = 0.0, 0.0
+    for i = 1, #from do
+        x = x + s * from[i].x + u * to[i].x
+        y = y + s * from[i].y + u * to[i].y
+    end
+    x, y = x / #from, y / #from
+    local ks = (t <= 0.0 and BR.StormShape.discHull(e.src)) or hullAt(e, t)
+    local area = ks and BR.StormShape.areaOf(ks) or 0.0
+    return x, y, math.sqrt(math.max(area, 0.0) / math.pi)
 end
 
 --- The fastest any corner of the wall moves during this record's sweep, in metres

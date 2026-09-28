@@ -5717,7 +5717,7 @@ do
     local nested, apart, samples = 0, 0, 0
     local shapeOff, frameMiss, earlyFrame = 0.0, 0, 0
     local loose, outside, outward, kneeJump, ends = -math.huge, -math.huge, -math.huge, 0.0, 0.0
-    local kneeAt = nil
+    local kneeAt, kneeEarly = nil, 0
     for i = 1, 24 do
         local seed = i * 7121 + 5
         local PH = 2 + (i % 6)
@@ -5726,7 +5726,12 @@ do
         local nx, ny = placeZone(BR.Rng(i * 13), seed, PH, 0.0, 0.0, R0, R1, 1.0, nil, nil, bo)
         local T = phases[PH].shrink * 1000.0
         local rec = BR.BuildStormRecord(PH, 0.0, 0.0, R0, nx, ny, R1, 0, 0, T, 1.0, seed)
-        local knee = 1.0 - lead * 1000.0 / T
+        -- THE KNEE THE SOLVER CHOSE: `leadSeconds` before the end, or later on a nested
+        -- phase whose destination has too little room to be its scheduled size there
+        -- (2026-09-28's jump -- storm.schedule has it). Never earlier.
+        local knee0 = 1.0 - lead * 1000.0 / T
+        local knee = BR.StormKnee(rec) or 1.0
+        if knee < knee0 - 1e-12 then kneeEarly = kneeEarly + 1 end
         local isNested = BR.StormNested(rec)
         if isNested then nested = nested + 1 else apart = apart + 1 end
         local Z, D = BR.StormWall(rec, 0.0), BR.StormTarget(rec)
@@ -5772,8 +5777,10 @@ do
                 prev = W
             end
         end
-        kneeAt = kneeAt or knee
+        kneeAt = kneeAt or knee0
     end
+    ok(kneeEarly == 0, 'no knee ever falls before `leadSeconds` from the end',
+        ('%d early knees'):format(kneeEarly))
     ok(nested >= 8 and apart >= 8 and samples == 96 and frameMiss == 0,
         ('on %d nested and %d broken-out phases, the moving zone from the knee on is read '
             .. 'at %d instants, every nested one through its frame'):format(nested, apart,
@@ -5803,9 +5810,13 @@ do
         phases[4].radius, 1.0, nil, nil, nil)
     local short = BR.BuildStormRecord(4, 0.0, 0.0, phases[3].radius, nx, ny,
         phases[4].radius, 0, 0, 20000, 1.0, 9001)
-    ok(BR.StormNested(short) and BR.StormWallFrame(short, 0.5) ~= nil
-            and BR.StormWallFrame(short, 0.49) == nil,
-        'a sweep shorter than twice the lead takes the destination\'s shape half way')
+    local sk = BR.StormKnee(short)
+    ok(BR.StormNested(short) and sk and sk >= 0.5 and BR.StormWallFrame(short, sk) ~= nil
+            and BR.StormWallFrame(short, 0.49) == nil
+            and (sk == 0.5 or BR.StormWallFrame(short, 0.5 * (0.5 + sk)) == nil),
+        'a sweep shorter than twice the lead takes the destination\'s shape half way, or '
+            .. 'later where the destination has no room to be its scheduled size there',
+        ('knee %s'):format(tostring(sk)))
     local was = S.morph.leadSeconds
     S.morph.leadSeconds = 0.0
     local oneLeg = BR.BuildStormRecord(4, 0.0, 0.0, phases[3].radius, nx, ny,

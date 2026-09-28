@@ -113,6 +113,10 @@ local state = {
     askedAt = 0,        -- GetGameTimer() of the last fire
     ours    = {},       -- the movie indices we added, in the order we added them
     set     = {},       -- the indices the last setAreas added, in ITS order; see placeArea
+    stale   = {},       -- picture clips whose removal the engine refused, retried first
+    staged  = {},       -- handles of the clips staged ahead of need (stageArea), live ones
+    stagedN = 0,        -- clips staged, all session
+    dropped = 0,        -- staged clips dropped again, all session
     chars   = 0,        -- coordinate characters in the last setAreas push
     moves   = 0,        -- areas placed in place rather than rebuilt, all session
     fades   = 0,        -- alpha writes to areas already in the movie, all session
@@ -142,6 +146,60 @@ local function nextIndex()
     local mm = sf and sf.Scaleforms and sf.Scaleforms.MinimapOverlays
     if mm and type(mm.minimaps) == 'table' then theirs = #mm.minimaps end
     return theirs + #state.ours
+end
+
+--- A clip at movie index `idx` has just been REMOVED. REM_OVERLAY splices, so every
+--- index above it has moved down by one: renumber every list that holds our indices --
+--- ours, the picture's slots, the refused leftovers and every staged handle -- so each
+--- still names the clip it named. Staged clips sit below the picture and above it both
+--- (stageArea), so "remove from the top and nothing moves" is no longer enough.
+local function forget(idx)
+    for i = #state.ours, 1, -1 do
+        if state.ours[i] == idx then table.remove(state.ours, i) break end
+    end
+    for i = 1, #state.ours do
+        if state.ours[i] > idx then state.ours[i] = state.ours[i] - 1 end
+    end
+    for i = 1, #state.set do
+        if state.set[i] and state.set[i] > idx then state.set[i] = state.set[i] - 1 end
+    end
+    for i = 1, #state.stale do
+        if state.stale[i] > idx then state.stale[i] = state.stale[i] - 1 end
+    end
+    for _, h in ipairs(state.staged) do
+        if h.idx and h.idx > idx then h.idx = h.idx - 1 end
+    end
+end
+
+--- Remove one of our clips by its movie index, and renumber. false when the engine
+--- refused, which leaves the clip in the movie and every index as it was.
+--- @return boolean removed
+local function removeIndex(idx)
+    if not BR.Native.minimapRemoveOverlay(state.handle, idx) then return false end
+    forget(idx)
+    return true
+end
+
+--- Remove the PICTURE -- the slots of the last setAreas and any picture clip a refusal
+--- left behind -- and leave every staged clip where it is. Highest first. false when a
+--- removal was refused: that clip stays on `stale`, to be retried by the next call.
+--- @return boolean whole
+local function removePicture()
+    local list = {}
+    for i = 1, #state.set do if state.set[i] then list[#list + 1] = state.set[i] end end
+    for i = 1, #state.stale do list[#list + 1] = state.stale[i] end
+    state.set, state.stale = {}, {}
+    table.sort(list, function(a, b) return a > b end)
+    local whole = true
+    for i = 1, #list do
+        -- A REFUSED ONE IS KEPT AND THE REST ARE STILL TRIED. The ones below it are
+        -- unaffected by its staying, and the ones above it are already gone.
+        if not removeIndex(list[i]) then
+            whole = false
+            state.stale[#state.stale + 1] = list[i]
+        end
+    end
+    return whole
 end
 
 -- ---------------------------------------------------------------- readiness ---
@@ -378,18 +436,21 @@ end
 --- @return integer drawn   areas now in the movie, 0 if nothing was drawn
 --- @return integer chars   characters of coordinate string pushed, for the cap hunt
 function BR.MapOverlay.setAreas(areas)
-    BR.MapOverlay.removeAll()
+    -- THE PICTURE ONLY. Clips staged ahead of need (stageArea) are hidden and belong
+    -- to their caller, who drops them a few at a time; taking them down here would be
+    -- the burst of removals staging exists to avoid.
+    local whole = removePicture()
     state.chars = 0
     -- A REFUSED REMOVAL MEANS THE OLD PICTURE IS STILL IN THE MOVIE. Do not add
     -- the replacement beside it: that would leave two storm boundaries resident,
     -- and once the caller latched the successful new set there would be no reason
     -- to retry the stale removals. Returning nothing keeps the caller on its map
     -- fallback and lets the next rebuild attempt remove the retained clips first.
-    if #state.ours > 0 then return 0, 0 end
+    if not whole then return 0, 0 end
     if type(areas) ~= 'table' or #areas == 0 then return 0, 0 end
     if not BR.MapOverlay.ready() then return 0, 0 end
 
-    local whole = true
+    whole = true
     for i = 1, #areas do
         local ar = areas[i]
         local col = ar.colour or {}
@@ -414,11 +475,17 @@ function BR.MapOverlay.setAreas(areas)
     end
 
     if not whole then
-        BR.MapOverlay.removeAll()
+        removePicture()
         state.chars = 0
         return 0, 0
     end
-    return #state.ours, state.chars
+    return #state.set, state.chars
+end
+
+--- Take the picture down and leave the staged clips alone (see setAreas).
+--- @return boolean whole  false when a removal was refused and is left to retry
+function BR.MapOverlay.removePicture()
+    return removePicture()
 end
 
 --- Remove everything this file added, and nothing else.
@@ -444,18 +511,125 @@ function BR.MapOverlay.removeAll()
     -- NOTHING OF THE LAST SET IS PLACEABLE ONCE THIS HAS RUN, including a clip whose
     -- removal was refused: it is still in the movie, but it is no longer the area a
     -- caller's slot number meant.
-    state.set = {}
-    table.sort(state.ours, function(a, b) return a > b end)
-    local removed, kept = 0, {}
-    for i = 1, #state.ours do
-        if BR.Native.minimapRemoveOverlay(state.handle, state.ours[i]) then
-            removed = removed + 1
-        else
-            kept[#kept + 1] = state.ours[i]
+    state.set, state.stale = {}, {}
+    -- AND EVERY STAGED HANDLE, which names nothing placeable either.
+    for _, h in ipairs(state.staged) do h.idx = nil end
+    state.staged = {}
+    local list = {}
+    for i = 1, #state.ours do list[i] = state.ours[i] end
+    table.sort(list, function(a, b) return a > b end)
+    local removed = 0
+    for i = 1, #list do
+        if removeIndex(list[i]) then removed = removed + 1 end
+    end
+    return removed
+end
+
+-- ------------------------------------------------------------------ staging ---
+--
+-- ═══ A CLIP ADDED AHEAD OF NEED, HIDDEN, AND SHOWN LATER BY ALPHA (2026-09-28) ═══
+--
+--   "is there any way we can silently stage the textures we need over time to be less
+--    intrusive and hitchy?"                                  -- the owner
+--
+-- A shape cannot be edited, only added (addArea's header), and an add is the call #350
+-- measured. So a shape the storm WILL need is added before it is needed -- while the
+-- storm holds, one at a time -- at alpha 0, and while the storm moves nothing is added
+-- or removed: a staged clip is only faded in or out (SET_OVERLAY_ALPHA, one property
+-- write) and placed (placeArea's two). HIDE_OVERLAY is NOT the hide: the disassembly
+-- has it tween _alpha to 0 or back over 0.2 s through TweenStarLite, which would
+-- cross-fade two outlines for a fifth of a second at every switch.
+--
+-- A handle, not a slot: staged clips come and go below and above the picture, and the
+-- handle's index is renumbered whenever a clip beneath it is removed (forget).
+
+--- Add one hidden clip for later. `points` about the origin the caller will place it
+--- at; added at FULL strength so every later fade is linear (alphaArea's header), and
+--- faded to 0 in the same tick, before the movie draws it anywhere.
+--- @param points table
+--- @param colour table   { r, g, b } -- the alpha is always 255 then 0
+--- @return table|nil handle
+function BR.MapOverlay.stageArea(points, colour)
+    if not BR.MapOverlay.ready() then return nil end
+    local idx = BR.MapOverlay.addArea(points,
+        { r = colour.r, g = colour.g, b = colour.b, a = 255 })
+    if not idx then return nil end
+    local h = { idx = idx, chars = #BR.Native.minimapAreaString(points) }
+    state.staged[#state.staged + 1] = h
+    state.stagedN = state.stagedN + 1
+    if not BR.MapOverlay.alphaIndex(idx, 0) then
+        -- A clip that could not be hidden is on the map at full strength at the
+        -- world's origin: it comes straight back out.
+        BR.MapOverlay.dropStaged(h)
+        return nil
+    end
+    return h
+end
+
+--- Remove one staged clip. false when the engine refused; the handle then still
+--- names the clip, which is still hidden, and a later call can try again.
+--- @param h table
+--- @return boolean
+function BR.MapOverlay.dropStaged(h)
+    if not (h and h.idx) then return true end
+    if not BR.MapOverlay.ready() then return false end
+    if not removeIndex(h.idx) then return false end
+    h.idx = nil
+    for i = #state.staged, 1, -1 do
+        if state.staged[i] == h then table.remove(state.staged, i) break end
+    end
+    state.dropped = state.dropped + 1
+    return true
+end
+
+--- Place / fade a staged clip: placeArea's and alphaArea's arithmetic, by handle.
+function BR.MapOverlay.placeStaged(h, x, y, w, hh)
+    if not (h and h.idx) then return false end
+    return BR.MapOverlay.placeIndex(h.idx, x, y, w, hh)
+end
+function BR.MapOverlay.alphaStaged(h, a)
+    if not (h and h.idx) then return false end
+    return BR.MapOverlay.alphaIndex(h.idx, a)
+end
+
+--- The movie's own index of the picture's slot `slot`, or nil.
+--- @return integer|nil
+function BR.MapOverlay.slotIndex(slot)
+    return state.set[slot]
+end
+
+--- How many clips of ours are in the movie now, picture and staged and any a refused
+--- removal left behind.
+--- @return integer
+function BR.MapOverlay.ownCount()
+    return #state.ours
+end
+
+--- Remove ONE of our clips that nothing names any more -- not the picture, not a live
+--- staged handle -- which only a refused removal can leave behind (removeAll forgets its
+--- handles whatever the engine said). The storm map calls this in its spare budget
+--- slots, so a refusal is retried at that pace instead of leaking the clip for the rest
+--- of the session.
+--- @return string  'none' (nothing orphaned), 'dropped' or 'refused'
+function BR.MapOverlay.dropOrphan()
+    if not BR.MapOverlay.ready() then return 'none' end
+    local named = {}
+    for i = 1, #state.set do if state.set[i] then named[state.set[i]] = true end end
+    for i = 1, #state.stale do named[state.stale[i]] = true end
+    for _, h in ipairs(state.staged) do if h.idx then named[h.idx] = true end end
+    for i = #state.ours, 1, -1 do
+        local idx = state.ours[i]
+        if not named[idx] then
+            return removeIndex(idx) and 'dropped' or 'refused'
         end
     end
-    state.ours = kept
-    return removed
+    return 'none'
+end
+
+--- How many staged clips are in the movie now.
+--- @return integer
+function BR.MapOverlay.stagedCount()
+    return #state.staged
 end
 
 --- Move one area of the last setAreas, and optionally resize it, WITHOUT rebuilding
@@ -501,10 +675,14 @@ end
 --- @param h number|nil   height in world metres
 --- @return boolean placed
 function BR.MapOverlay.placeArea(slot, x, y, w, h)
-    if not BR.MapOverlay.ready() then return false end
     local index = state.set[slot]
     if not index then return false end
+    return BR.MapOverlay.placeIndex(index, x, y, w, h)
+end
 
+--- placeArea by the movie's own index -- the picture's slot or a staged handle's.
+function BR.MapOverlay.placeIndex(index, x, y, w, h)
+    if not BR.MapOverlay.ready() then return false end
     if not BR.Native.minimapMethod(state.handle, 'UPDATE_OVERLAY_POSITION') then
         return false
     end
@@ -552,9 +730,14 @@ end
 --- @param a number       0-255, linear
 --- @return boolean written
 function BR.MapOverlay.alphaArea(slot, a)
-    if not BR.MapOverlay.ready() then return false end
     local index = state.set[slot]
     if not index then return false end
+    return BR.MapOverlay.alphaIndex(index, a)
+end
+
+--- alphaArea by the movie's own index.
+function BR.MapOverlay.alphaIndex(index, a)
+    if not BR.MapOverlay.ready() then return false end
     if not BR.Native.minimapMethod(state.handle, 'SET_OVERLAY_ALPHA') then
         return false
     end
@@ -594,17 +777,16 @@ function BR.MapOverlay.replaceFrom(first, areas)
     if not BR.MapOverlay.ready() then return false end
     for i = #state.set, first, -1 do
         local idx = state.set[i]
-        if not BR.Native.minimapRemoveOverlay(state.handle, idx) then
+        if not removeIndex(idx) then
+            -- NOTHING OF THE PICTURE IS PLACEABLE NOW; every slot of it goes on `stale`
+            -- so the next removal retries the lot.
+            for j = 1, #state.set do
+                if state.set[j] then state.stale[#state.stale + 1] = state.set[j] end
+            end
             state.set = {}
             return false
         end
         state.set[i] = nil
-        for j = #state.ours, 1, -1 do
-            if state.ours[j] == idx then
-                table.remove(state.ours, j)
-                break
-            end
-        end
     end
     state.chars = 0
     for i = 1, #(areas or {}) do
@@ -626,6 +808,19 @@ function BR.MapOverlay.replaceFrom(first, areas)
     return true
 end
 
+-- ═══ A RESOURCE THAT STOPS TAKES ITS CLIPS WITH IT ═══
+--
+-- The movie is ScaleformUI_Assets', not ours: it outlives br_core, so a restart would
+-- leave every fill and every staged clip we added resident for the rest of the session,
+-- and a fresh br_core would count its indices from a list that no longer knows them.
+-- Everything goes, at once -- nothing is drawing any more.
+local function onStop(res)
+    if res ~= GetCurrentResourceName() then return end
+    if state.handle and #state.ours > 0 then BR.MapOverlay.removeAll() end
+end
+AddEventHandler('onClientResourceStop', onStop)
+AddEventHandler('onResourceStop', onStop)
+
 --- What this file currently believes, for /brmaparea to print.
 --- @return table
 function BR.MapOverlay.report()
@@ -636,6 +831,9 @@ function BR.MapOverlay.report()
         asked   = state.asked,
         frames  = state.frames,
         areas   = #state.ours,
+        staged  = #state.staged,
+        stagedN = state.stagedN,
+        dropped = state.dropped,
         chars   = state.chars,
         moves   = state.moves,
         fades   = state.fades,

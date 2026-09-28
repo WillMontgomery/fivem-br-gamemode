@@ -222,6 +222,9 @@ local frameStats = {
     -- What the worst frame cost, per callback, so a spike has a suspect
     -- attached rather than just a number.
     worstBy = nil,
+    -- The longest frame since the last BR.Loop.takeFrameGap(): what the storm map's
+    -- staging reads after each clip it adds (client/storm.lua's budget).
+    gapPeak = 0,
 }
 
 -- OPT-IN EVENT-TO-FRAME CORRELATION.
@@ -478,6 +481,7 @@ local function noteFrame(now)
     local dt = now - last
     frameStats.samples = frameStats.samples + 1
     noteHitchTrace(now, dt)
+    if dt > frameStats.gapPeak then frameStats.gapPeak = dt end
 
     local slot = #BUCKETS + 1
     for i = 1, #BUCKETS do
@@ -727,6 +731,19 @@ function BR.Loop.names()
     end
     table.sort(out, function(a, b) return a.name < b.name end)
     return out
+end
+
+--- The longest frame gap since the last call, and start a new window.
+---
+--- GetGameTimer is frame-stamped, so a piece of work cannot be timed inside the frame
+--- it runs in -- but the frame it lands in can. A caller that does one costly thing on a
+--- tick reads this on its next tick and learns how long the frames around it ran: the
+--- storm map's staging budget, which spaces its adds out when one ran long.
+--- @return integer ms
+function BR.Loop.takeFrameGap()
+    local g = frameStats.gapPeak
+    frameStats.gapPeak = 0
+    return g
 end
 
 --- Frame-time distribution since the last reset.
