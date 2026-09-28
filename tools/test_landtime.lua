@@ -965,7 +965,7 @@ do
     local PULL = 'Press {key:brdeploy} to pull your chute!'
 
     -- THE CASES BELOW ARE WRITTEN AT A 100 M THRESHOLD, the height #352 shipped
-    -- at. The owner tripled it after the 2026-09-27 playtest; the mechanism is
+    -- at. The owner moved it to 175 after playtesting (2026-09-28); the mechanism is
     -- what these cases pin, so they run at 100 and case 11 pins the shipped value.
     local SHIPPED = BR.Config.Drop.pullChuteAGL
     BR.Config.Drop.pullChuteAGL = 100.0
@@ -1250,8 +1250,8 @@ do
     ok(#pulls() == 0, 'a seat is a landing -- nothing is said after it', n())
 
     -- 11. THE HEIGHT IS CONFIG. A server that wants the call earlier gets it earlier.
-    ok(SHIPPED == 300.0,
-        'BR.Config.Drop.pullChuteAGL ships at the owner\'s 300 m (3x the first 100)',
+    ok(SHIPPED == 175.0,
+        'BR.Config.Drop.pullChuteAGL ships at the owner\'s 175 m',
         tostring(SHIPPED))
     BR.Config.Drop.pullChuteAGL = 250.0
     reset()
