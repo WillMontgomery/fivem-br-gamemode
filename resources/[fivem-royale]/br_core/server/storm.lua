@@ -766,20 +766,22 @@ end
 --- IT IS KEYED ON THE SERVER'S OWN CHANNEL, the same two prohibitions as the
 --- rescue flag: `inv.using` is opened only by an INV_USE the server validated
 --- (refused at the item's cap) and ended only by the server's own rules -- the
---- completion, an attacker's hit, going down, dying, leaving. No message a
---- client sends can open one or hold one open.
+--- completion, an enemy's hit the server dealt (BR.Inv.struck), going down,
+--- dying, leaving. No message a client sends can open one, hold one open or
+--- end one: a drop the sampler believed, whoever it is credited to, ends
+--- nothing, so a heal cannot be restarted at will to pause the storm again.
 ---
 --- IT APPLIES TO THE STORM AND TO NOTHING ELSE. A bullet, a blast, fire, a fall
---- and a car all hurt a healing player exactly as before, and an enemy's hit
---- still interrupts the channel -- at which point the next tick bills again.
---- The seconds paused are not banked and charged later: a heal ran, and the
---- owner's sentence is that the storm did nothing while it did.
+--- and a car all hurt a healing player exactly as before, and an enemy's bullet
+--- or blast still interrupts the channel -- at which point the next tick bills
+--- again. The seconds paused are not banked and charged later: a heal ran, and
+--- the owner's sentence is that the storm did nothing while it did.
 ---
 --- SHIELDS DO NOT PAUSE IT. A shield restores armor, not health, so it is not
 --- "a consumable which does so"; it finishes in the storm (server/inventory.lua's
---- damage-cancel takes an attacker) while the storm goes on taking health. That
---- reading is the owner's to confirm, and flipping it is BR.Inv.healing's one
---- line.
+--- damage-cancel takes a hit the server dealt) while the storm goes on taking
+--- health. That reading is the owner's to confirm, and flipping it is
+--- BR.Inv.healing's one line.
 ---
 --- THE AMBULANCE HEAL IS NOT A CONSUMABLE AND GETS NO PAUSE.
 local DAMAGEABLE = {

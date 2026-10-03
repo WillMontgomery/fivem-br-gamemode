@@ -980,6 +980,15 @@ function BR.Damage.applyHit(shooter, victim, amount, meta)
     if e.grantHpTo then e.grantHpTo = e.grantHpTo - toHealth end
     if e.grantArmourTo then e.grantArmourTo = e.grantArmourTo - toArmour end
 
+    -- ═══ AND THIS IS THE HIT THAT CAN INTERRUPT A CHANNEL (#366) ═══
+    --
+    -- Asked here, with the ledger and the ceiling both written, because this is
+    -- the one place the server deals a hit on somebody's behalf. The inventory
+    -- marks the channel if the hit left the bar under where it started, and a
+    -- drop the sampler merely believed never gets this far -- see
+    -- BR.Inv.struck.
+    if BR.Inv and BR.Inv.struck then BR.Inv.struck(victim, shooter) end
+
     -- Read AFTER the clamp, so a knocking shot credits the damage that reached
     -- the downed floor rather than the overflow that was dropped.
     creditDamage(shooter, victim, toArmour + toHealth)

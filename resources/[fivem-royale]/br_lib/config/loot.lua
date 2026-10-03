@@ -1284,11 +1284,12 @@ BR.Config.Loot = {
     -- still in the bag; what is lost is the eight seconds and the position you
     -- stood still in. That is the interruption.
     --
-    -- AND IT TAKES ANOTHER PLAYER'S DAMAGE (#366): a hit stamped since the press
-    -- by somebody else -- a bullet, a blast, their fire, their car. A fall,
-    -- drowning, a player's own fire or the storm interrupts nothing, because a
-    -- drop nobody else caused is a drop a player can cause on purpose; see the
-    -- damage-cancel in server/inventory.lua's tick loop.
+    -- AND IT TAKES AN ENEMY'S BULLET OR BLAST (#366): a hit the server itself
+    -- validated and dealt, which leaves the bar under where the heal started.
+    -- A fall, drowning, the storm, and anybody's fire or car interrupt
+    -- nothing: the server only sees those as a drop the client reported, and a
+    -- drop -- even one credited to a fire or a car nearby -- is a drop a player
+    -- can make on purpose. See BR.Inv.struck in server/inventory.lua.
     --
     -- ONE ITEM OPTS OUT, and it opts out positively. A row carrying
     -- `ignoresDamage` is not cancelled by damage -- today the repair kit, whose

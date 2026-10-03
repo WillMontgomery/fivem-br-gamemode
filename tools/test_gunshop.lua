@@ -3315,11 +3315,12 @@ do
         -- rifle comes then, because that is when the channel ended.
         inv = busyBuyer(101)
         buy(101, 'carbinerifle')
-        -- An ENEMY's hit, as BR.Damage.applyHit leaves it on the entry: the
-        -- ledger lower and a shooter named. Since #366 a drop with nobody
-        -- behind it ends no channel.
+        -- An ENEMY's hit, as BR.Damage.applyHit deals it: the ledger lower,
+        -- then the inventory asked whether that hit interrupts the channel.
+        -- Since #366 nothing else does -- not a drop, and not a drop somebody
+        -- is credited with.
         roster[101].hp = 60
-        roster[101].lastHitAt, roster[101].lastHitBy = clock, 99
+        realInv.struck(101, 99)
         tickAt(clock + 250)
         ok(inv.using == nil and held(inv, 'shield') == 1,
             'precondition: a hit ended the channel and the shield is kept')

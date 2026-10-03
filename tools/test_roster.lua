@@ -27979,10 +27979,11 @@ do
     describe('heal.interrupt')
     -- ───────────────────────────────────────────────────────────────────────
     --
-    -- ONLY AN ATTACKER'S DAMAGE INTERRUPTS A CHANNEL. The ledger follows the ped
-    -- down on the client's word, so a drop alone is something a player can make
-    -- whenever they like; a hit with somebody else's name on it, stamped since
-    -- the press, is not.
+    -- ONLY A HIT THE SERVER DEALS INTERRUPTS A CHANNEL. The ledger follows the
+    -- ped down on the client's word, so a drop alone is something a player can
+    -- make whenever they like -- and so is a drop somebody else is merely
+    -- credited with. A validated bullet or blast that takes the bar under where
+    -- the channel started is not (BR.Inv.struck).
 
     -- ─── THE DIP-CANCEL-RESTORE LOOP ───
     --
@@ -28008,21 +28009,130 @@ do
             ('kits %d, e.hp %s'):format(count('medkit'), tostring(subject().hp)))
     end
 
-    -- ─── A FIRE THE PLAYER LIT ───
+    -- ─── A DIP BESIDE SOMEBODY'S FIRE OR CAR ───
     --
-    -- The fire ledger names the owner of the flames, and a player standing in
-    -- their own molotov is named as their own attacker. That is not somebody
-    -- else's trigger.
+    -- The fire and roadkill ledgers credit a drop to the owner of a fire the
+    -- player stands in, or to the nearest moving car -- a squadmate's included
+    -- -- and that credit is `lastHitBy`, which the damage-cancel used to read.
+    -- It is a guess made from a drop the sampler believed, so a dip beside a
+    -- car or a fire bought an "attacker": the kit ended, stayed in the bag, and
+    -- the ped climbed back to what the partials had issued. Now only a hit the
+    -- server deals itself interrupts, and the credit is left to the kill feed.
+    for _, how in ipairs({ 'an enemy\'s fire', 'a squadmate\'s car' }) do
+        local squad = how == 'a squadmate\'s car'
+        stage({ hp = 30.0, squad = squad })
+        if squad then
+            drive(3, 7)
+        else
+            BR.Damage.noteThrow(2, 'molotov')
+            fire('explosionEvent', 2, 2, { explosionType = 3,
+                posX = A0.x + 1.0, posY = A0.y, posZ = 30.0 })
+        end
+        bag({ 'medkit' })
+        press('medkit')
+        local ang = 0.0
+        --- The squadmate circles three to seven metres off at ~14 m/s.
+        local function drift()
+            if squad then
+                ang = ang + 2.0 * math.pi * 0.05 / 0.9
+                setPos(3, A0.x + 5.0 + 2.0 * math.cos(ang), A0.y + 2.0 * math.sin(ang))
+            end
+            return false
+        end
+        step(4000, drift)
+        local partial = subject().grantHpTo
+        -- Held, as a modified client holds it: the kit's next partial would
+        -- otherwise lift the ped straight back over the dip.
+        W.pinned = 25.0
+        step(500, drift)
+        W.pinned = nil
+        local credited = subject().lastHitBy
+        ok(credited == (squad and 3 or 2) and using(),
+            ('a dip under where the kit started beside %s is credited to them, '
+                .. 'and does not end the channel'):format(how),
+            ('credited %s, using %s, e.hp %s'):format(tostring(credited),
+                tostring(using()), tostring(subject().hp)))
+        pedHealth[PED] = BR.ToEngineHp(partial)
+        step(20000, function() drift(); return not using() end)
+        step(500)
+        ok(count('medkit') == 0 and subject().hp == 100,
+            ('so the kit runs to the end and is spent (%s)'):format(how),
+            ('kits %d, e.hp %s'):format(count('medkit'), tostring(subject().hp)))
+    end
+
+    -- ─── AN ENEMY'S HIT TOO LIGHT TO BREAK THE LINE, THEN A DIP ───
+    --
+    -- The old test was a drop under the line plus any attacker's hit since the
+    -- press, so a real hit that did not interrupt left the door open for a dip
+    -- to finish the job -- and keep the kit. The hit alone decides it now.
+    do
+        stage({ hp = 30.0 })
+        bag({ 'medkit' })
+        press('medkit')
+        step(4000)
+        local partial = subject().grantHpTo
+        BR.Damage.applyHit(2, 1, 5.0, { weapon = 'test' })
+        step(300)
+        ok(using(), 'precondition: a 5-point hit four seconds into a med kit does '
+            .. 'not interrupt it', tostring(subject().hp))
+        W.pinned = 20.0
+        step(500)
+        W.pinned = nil
+        ok(using(), 'and a dip under the line after it does not either',
+            ('e.hp %s'):format(tostring(subject().hp)))
+        pedHealth[PED] = BR.ToEngineHp(partial - 5.0)
+        finish(500)
+        -- (The kit's next target climbs back over the 5 points, as it does over
+        -- any hit smaller than the heal so far: #372, the owner's to rule on.)
+        ok(count('medkit') == 0 and subject().hp == 100,
+            'so the kit runs to the end and is spent',
+            ('kits %d, e.hp %s'):format(count('medkit'), tostring(subject().hp)))
+    end
+
+    -- ─── THE LINE IS THE BAR THE PLAYER WILL SEE, FOR EVERY CLIENT ───
+    --
+    -- A hit interrupts when it leaves the health the bar will show -- the
+    -- ledger, or the partial already sent and riding in -- under where the kit
+    -- started. Server numbers only: a deaf or pinned client is granted straight
+    -- up to that partial, and an honest one on a slow line trails it by a round
+    -- trip, and neither moves the line. One point either side of the gain
+    -- issued so far, on every client and line.
+    for _, lat in ipairs({ 0, 1000 }) do
+        for _, mode in ipairs({ 'honest', 'deaf', 'pinned' }) do
+            local got = {}
+            for _, side in ipairs({ -1.0, 1.0 }) do
+                stage({ hp = 30.0, lat = lat })
+                bag({ 'medkit' })
+                press('medkit')
+                if mode ~= 'honest' then W.deaf = true end
+                if mode == 'pinned' then W.pinned = 100.0 end
+                step(2000)
+                local gain = BR.ToDisplayHp(BR.ToEngineHp(subject().grantHpTo)) - 30.0
+                BR.Damage.applyHit(2, 1, gain + side, { weapon = 'test' })
+                step(300)
+                got[side] = not using()
+            end
+            ok(got[-1.0] == false and got[1.0] == true,
+                ('a hit a point under the gain issued so far does not interrupt a '
+                    .. 'med kit and a point over does: %s client, %dms line')
+                    :format(mode, lat),
+                ('under %s, over %s'):format(tostring(got[-1.0]), tostring(got[1.0])))
+        end
+    end
+
+    -- ─── THE PLAYER'S OWN BLAST ───
+    --
+    -- A grenade at their own feet is a hit the server deals (the validator lets
+    -- a first one through), and it is their own doing: it hurts, and it ends
+    -- nothing -- or it would be a way to end a channel on purpose.
     do
         stage({ hp = 30.0 })
         bag({ 'medkit' })
         press('medkit')
         step(2000)
-        local e = subject()
-        e.lastHitBy, e.lastHitAt = 1, fakeTime
-        pedHealth[PED] = BR.ToEngineHp(20.0)
+        BR.Damage.applyHit(1, 1, 40.0, { weapon = 'test', explosive = true })
         step(300)
-        ok(using(), 'a drop the player\'s own fire made does not interrupt them',
+        ok(using(), 'a player\'s own blast does not interrupt their heal',
             tostring(subject().hp))
     end
 
@@ -28684,6 +28794,108 @@ do
         ok(bad == 0,
             'a bandage pressed 0-2.4s after a pick-up outside the wall always '
                 .. 'lands', ('%d of %d did not'):format(bad, runs))
+    end
+
+    --- Stand the subject a metre past the storm's billing edge, with a
+    --- squadmate (3) driving circles three to seven metres off -- just inside
+    --- the edge, so the storm never bills the driver. Returns the step that
+    --- moves the car on, at ~14 m/s.
+    ---
+    --- The record is restarted a minute into its hold first: a zone can grow
+    --- into its shape over the hold's first seconds (#344), and an edge found
+    --- while it grows is not the edge a minute later.
+    local function besideCar(dps)
+        local m = theMatch()
+        m.storm = BR.BuildStormRecord(5, A0.x, A0.y, 500.0, A0.x, A0.y, 500.0,
+            fakeTime - 60000, 3600 * 1000, 1000, dps, m.stormSeed)
+        local lo, hi = 0.0, 3000.0
+        for _ = 1, 40 do
+            local mid = (lo + hi) / 2.0
+            local probe = { state = BR.PlayerState.ALIVE, matchId = subject().matchId,
+                            pos = { x = A0.x + mid, y = A0.y, z = 30.0 } }
+            if BR.Storm.exposed(probe) then hi = mid else lo = mid end
+        end
+        setPos(1, A0.x + hi + 1.0, A0.y)
+        drive(3, 7)
+        local ang = 0.0
+        local function circle()
+            ang = ang + 2.0 * math.pi * 0.05 / 0.9
+            setPos(3, A0.x + hi - 4.0 + 2.0 * math.cos(ang), A0.y + 2.0 * math.sin(ang))
+            return false
+        end
+        circle()
+        step(600, circle)
+        return circle
+    end
+
+    -- ─── ONE KIT, A SQUADMATE'S CAR, AND A CLIENT THAT RESTARTS IT ───
+    --
+    -- The loop the kill-credit stamps opened: press (the storm pauses), dip
+    -- under where the kit started beside a squadmate's moving car, which the
+    -- roadkill ledger credits as an attacker; the channel ends with the kit
+    -- still in the bag, the ped climbs back to what the partials issued, and the
+    -- next press pauses the storm again. One kit lived outside the wall
+    -- indefinitely. Only a hit the server deals ends a channel now.
+    do
+        local at, presses = {}, {}
+        for _, mode in ipairs({ 'honest', 'cheat' }) do
+            stage({ hp = 40.0, dps = 6.7, squad = true })
+            local circle = besideCar(6.7)
+            bag({ 'medkit' })
+            local t0, n = fakeTime, 0
+            if press('medkit') and using() then n = 1 end
+            step(90000, function()
+                circle()
+                if mode == 'cheat' then
+                    local u, e = BR.Inv.of(1).using, subject()
+                    local open = e.healUntil ~= nil and fakeTime < e.healUntil
+                    local ceiling = (open and e.grantHpTo)
+                        and BR.ToDisplayHp(BR.ToEngineHp(e.grantHpTo)) or e.hp
+                    if u and fakeTime < u.endsAt - 1200 then
+                        W.pinned = math.max(e.hp, ceiling - 1.5)
+                    elseif u then
+                        W.pinned = math.floor(u.hp0) - 1.0        -- the dip
+                    elseif open and ceiling > e.hp then
+                        W.pinned = ceiling                        -- the climb back
+                    else
+                        W.pinned = e.hp
+                        if count('medkit') > 0 and press('medkit') and using() then
+                            n = n + 1
+                        end
+                    end
+                end
+                return #W.defeats > 0
+            end)
+            at[mode] = W.defeats[1] and (W.defeats[1].t - t0) or -1
+            presses[mode] = n
+        end
+        ok(at.honest > 0 and at.cheat == at.honest and presses.cheat == 1,
+            'one med kit beside a squadmate\'s car outside the wall: a client that '
+                .. 'dips, climbs back and presses again gets one press, and the wall '
+                .. 'takes it on the honest tick',
+            ('honest +%d, cheat +%d, presses %d'):format(at.honest, at.cheat,
+                presses.cheat))
+    end
+
+    -- ─── ...AND AN HONEST SHIELD BESIDE THAT CAR FINISHES ───
+    --
+    -- The storm's own ticks lower the ledger, and the roadkill ledger credits
+    -- those drops to the nearest moving car -- so a squadmate driving past
+    -- interrupted a shield the storm was not even pausing for, and handed it
+    -- back to be drunk again.
+    do
+        stage({ hp = 80.0, dps = 4.0, squad = true })
+        local circle = besideCar(4.0)
+        bag({ 'shield' })
+        press('shield')
+        step(20000, function() circle(); return not using() end)
+        step(500, circle)
+        ok(subject().lastHitBy == 3 and count('shield') == 0
+            and subject().armour == 50,
+            'a shield drunk outside the wall with a squadmate\'s car circling, which '
+                .. 'is credited with the storm\'s ticks, still lands its whole plate',
+            ('credited %s, shields %d, armor %s'):format(tostring(subject().lastHitBy),
+                count('shield'), tostring(subject().armour)))
     end
 
     -- ─── A MED KIT LANDS OUTSIDE, AND A BULLET BEATS THE NEXT TICK ───

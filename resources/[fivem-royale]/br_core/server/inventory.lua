@@ -1097,11 +1097,11 @@ end
 ---
 --- The remaining cancels are facts about the world rather than presses, and
 --- every one of them is either somebody else's doing or banks nothing at all:
---- taking fire from ANOTHER PLAYER (`useCancelOnDamage`, #366), going down,
---- dying, leaving the match, the shop car's seat rule -- which has no partial
---- effect to bank -- and the repair kit's driving-seat rule, which does, and
---- which therefore SPENDS THE KIT rather than handing it back (#361). See the
---- note above the tick loop.
+--- a hit the server dealt on another player's behalf (`useCancelOnDamage`,
+--- BR.Inv.struck, #366), going down, dying, leaving the match, the shop car's
+--- seat rule -- which has no partial effect to bank -- and the repair kit's
+--- driving-seat rule, which does, and which therefore SPENDS THE KIT rather
+--- than handing it back (#361). See the note above the tick loop.
 ---
 --- THERE IS THEREFORE NO WAY FOR A PLAYER TO CANCEL A CHANNEL ON PURPOSE any
 --- more. An eight-second med kit started in the open is eight seconds the
@@ -1654,9 +1654,9 @@ AddEventHandler(BR.Net.INV_USE, function(d)
         item   = s.item,
         ms     = c.useMs,
         endsAt = GetGameTimer() + c.useMs,
-        -- When it opened. The damage-cancel counts only an attacker's hit
-        -- stamped since this moment (#366); see the tick loop.
-        startedAt = GetGameTimer(),
+        -- (`struckBy`, absent until somebody interrupts it: written by
+        -- BR.Inv.struck from inside the server's own hit (#366), and read by
+        -- the tick loop's damage-cancel.)
         -- Baselines: hp0 doubles as the damage-cancel reference, and both are
         -- what the per-tick partial effects interpolate FROM. hp0 counts a heal
         -- still landing (#366); see `healthBase` above this handler.
@@ -1945,8 +1945,8 @@ end
 --- THE SERVER'S OWN CHANNEL, AND NOTHING A CLIENT SAYS. `inv.using` is opened
 --- only by an INV_USE this file validated -- refused at the item's cap, so a
 --- full bar cannot buy a pause -- and closed only by this file's own rules: the
---- completion, an attacker's hit, the LIVE guard, the slot guard, dropAll, a
---- reset.
+--- completion, a hit the server dealt (BR.Inv.struck, below), the LIVE guard,
+--- the slot guard, dropAll, a reset.
 ---
 --- "A CONSUMABLE WHICH DOES SO" IS READ OFF THE ROW: an item that restores
 --- health carries `health`. Not an id list and not a new flag, so the next
@@ -1964,6 +1964,45 @@ function BR.Inv.healing(src)
     local u = e and e.inv and e.inv.using
     local c = u and BR.Config.ConsumableById[u.item]
     return c ~= nil and c.health ~= nil
+end
+
+--- The server just dealt this player a hit on somebody else's behalf. Does it
+--- interrupt the channel they are in?
+---
+--- ═══ THE ONE PLACE DAMAGE ENDS A CHANNEL, AND IT IS THE SERVER'S OWN HIT ═══
+---
+--- Called by BR.Damage.applyHit and by nothing else (#366). That is the hit the
+--- server validated and dealt itself -- a bullet or a blast, by a shooter not on
+--- their squad (the validator refuses that before applyHit runs) and not the
+--- player themselves (refused here: their own grenade is their own doing) --
+--- and it is decided HERE, at the hit, on server numbers alone: the health the
+--- bar will show once the hit and any heal already sent have landed
+--- (`healthBase`, the ledger or the ceiling the hit has just lowered), against
+--- `hp0`, where the channel started. Under it, the channel is marked, and the
+--- tick loop's damage-cancel acts on the mark.
+---
+--- WHY NOT THE DROP AND `lastHitBy`, which is what it read. The ledger follows
+--- a ped DOWN on the client's word, and `lastHitBy` is the KILL CREDIT, which
+--- the fire ledger and the roadkill ledger infer from such a drop -- "health went
+--- down beside somebody's fire, or somebody's moving car". So a modified client
+--- that dipped beside any player's car, a squadmate's included, was handed an
+--- attacker; the dip ended the med kit, the kit stayed in the bag, the ped
+--- climbed back to the ceiling the partials had issued, and the next press
+--- paused the storm again -- one kit lived outside the wall indefinitely. And
+--- after a real enemy hit too light to break the line, a dip finished the job.
+--- Nothing a client sends reaches this.
+---
+--- THE SAME LINE FOR EVERY CLIENT. A deaf or pinned client is granted straight
+--- up to the ceiling an honest one is judged on, so one bullet interrupts all
+--- three on any line.
+--- @param src integer       the player hit
+--- @param by integer|nil    who hit them
+function BR.Inv.struck(src, by)
+    if by == nil or by == src then return end
+    local e = BR.Roster.get(src)
+    local u = e and e.inv and e.inv.using
+    if u == nil then return end
+    if healthBase(e, GetGameTimer()) < (u.hp0 or 0) then u.struckBy = by end
 end
 
 --- What is waiting for a player's hands to come free. `waiting[src] = { fn }`.
@@ -2070,8 +2109,9 @@ end
 --
 --   OUT OF THE MATCH, DOWNED OR DEAD costs them the whole inventory.
 --   TAKING FIRE costs them health, and is an attacker's decision -- and since
---     #366 it takes an attacker: a drop nobody else caused ends nothing. The
---     note at the damage-cancel below has the hole that closed.
+--     #366 it takes a hit the server dealt: a drop it only believed, whoever
+--     it was credited to, ends nothing. The note at the damage-cancel below has
+--     the hole that closed.
 --   THE SHOP CAR'S SEAT RULE banks nothing -- a car is not a partial effect.
 --
 -- ONE WAS STILL WORTH SOMETHING AFTER #271, AND IT IS CLOSED BY SPENDING RATHER
@@ -2151,8 +2191,8 @@ BR.Sched.every(250, 'inv.use', function()
             -- `ignoresDamage` item no longer has one at all, while an item
             -- without the flag keeps this branch.
             --
-            -- IT IS A NARROW ROAD AND THE TEST BELOW IS WHY. The comparison is
-            -- against `u.hp0`, the health this channel STARTED from, so a
+            -- IT IS A NARROW ROAD AND THE TEST IS WHY. The comparison (made in
+            -- BR.Inv.struck) is against `u.hp0`, where this channel STARTED, so a
             -- health consumable's own partials raise the ped above the line as
             -- the bar fills: late in a med kit only a hit big enough to undo
             -- everything gained so far still cancels, and a hit that big has
@@ -2174,27 +2214,23 @@ BR.Sched.every(250, 'inv.use', function()
             -- end the storm's pause at will (BR.Inv.healing), which is a pause a
             -- player could take as often as they liked.
             --
-            -- SO THE DROP NEEDS AN ATTACKER: a hit stamped since this channel
-            -- opened (`u.startedAt`) by somebody other than the player. Every
-            -- server path that hurts one player on another's behalf writes that
-            -- pair -- BR.Damage.applyHit, the fire ledger, the roadkill ledger --
-            -- and every stamp is the server's own, so nothing a client sends can
-            -- open this door. A fire the player lit names the player and does
-            -- not count.
+            -- SO THE INTERRUPTION IS DECIDED WHERE THE SERVER DEALS A HIT, and
+            -- this only acts on it: BR.Damage.applyHit asks BR.Inv.struck, which
+            -- marks the channel (`u.struckBy`) when that hit leaves the health the
+            -- bar will show under `hp0`. No drop the sampler believed can set it
+            -- -- not a dip, and not a dip dressed up by the kill-credit stamps,
+            -- which the fire and roadkill ledgers infer from exactly such a drop
+            -- beside anybody's fire or car (BR.Inv.struck has that story).
             --
-            -- WHAT IT COSTS, AND IT IS A RULE CHANGE: a fall, drowning, a
-            -- player's own molotov and the storm no longer interrupt a heal --
-            -- so a shield drunk outside the wall now finishes while the storm
-            -- goes on taking health.
-            --
-            -- WHAT IS LEFT: once an enemy has hit them during a channel without
-            -- breaking the line, a dip can still end it. That needs a real enemy
-            -- hit every time, and it buys what a harder hit gives an honest
-            -- player anyway.
-            local attacked = e.lastHitAt ~= nil and e.lastHitAt >= (u.startedAt or 0)
-                and e.lastHitBy ~= nil and e.lastHitBy ~= src
+            -- WHAT IT COSTS, AND IT IS A RULE CHANGE: only a bullet or a blast --
+            -- a hit the server validates and deals -- interrupts a heal. A fall,
+            -- drowning, the storm, and anybody's fire or car do not, so a shield
+            -- drunk outside the wall finishes while the storm goes on taking
+            -- health. Their damage still lands; while #372 is open, a heal's next
+            -- target climbs back over any of it smaller than the heal so far, the
+            -- same as a bullet too small to interrupt.
             if L.useCancelOnDamage and not (c and c.ignoresDamage)
-                and (e.hp or 0) < (u.hp0 or 0) and attacked then
+                and u.struckBy ~= nil then
                 BR.Inv.cancelUse(src, 'Interrupted.')
                 return
             end
