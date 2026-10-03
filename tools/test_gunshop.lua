@@ -3316,11 +3316,11 @@ do
         inv = busyBuyer(101)
         buy(101, 'carbinerifle')
         -- An ENEMY's hit, as BR.Damage.applyHit deals it: the ledger lower,
-        -- then the inventory asked whether that hit interrupts the channel.
-        -- Since #366 nothing else does -- not a drop, and not a drop somebody
-        -- is credited with.
+        -- then the inventory asked whether that hit -- 20 points of health, past
+        -- any armor -- interrupts the channel. Since #366 nothing else does --
+        -- not a drop, and not a drop somebody is credited with.
         roster[101].hp = 60
-        realInv.struck(101, 99)
+        realInv.struck(101, 99, 20)
         tickAt(clock + 250)
         ok(inv.using == nil and held(inv, 'shield') == 1,
             'precondition: a hit ended the channel and the shield is kept')

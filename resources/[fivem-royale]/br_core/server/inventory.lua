@@ -1975,11 +1975,26 @@ end
 --- server validated and dealt itself -- a bullet or a blast, by a shooter not on
 --- their squad (the validator refuses that before applyHit runs) and not the
 --- player themselves (refused here: their own grenade is their own doing) --
---- and it is decided HERE, at the hit, on server numbers alone: the health the
---- bar will show once the hit and any heal already sent have landed
---- (`healthBase`, the ledger or the ceiling the hit has just lowered), against
---- `hp0`, where the channel started. Under it, the channel is marked, and the
---- tick loop's damage-cancel acts on the mark.
+--- and it is decided HERE, at the hit, on server numbers alone: the hit must
+--- take health itself (`took`, what got past the armor), and leave the health
+--- the bar will show once the hit and any heal already sent have landed
+--- (`healthBase`, the ledger or the ceiling the hit has just lowered) under
+--- `hp0`, where the channel started. Then the channel is marked, and the tick
+--- loop's damage-cancel acts on the mark. Only a bullet or a blast gets here:
+--- fire and cars are damage the engine deals, which the server only ever sees
+--- as a drop, so they interrupt nothing.
+---
+--- ═══ BY WHAT THIS HIT DID, AND NOTHING ELSE ═══
+---
+--- `hp0` is fixed at the press, and other things lower the bar after it: the
+--- storm's ticks under a shield (a shield does not pause the storm), a fall, a
+--- client dipping its own ped. Judged on the bar alone, a channel already under
+--- its line was interrupted by the next hit whatever that hit did -- a shield
+--- drunk outside the wall was ended by a hit its own armor soaked whole, while
+--- inside the wall the same hit did nothing. So a hit the armor takes all of
+--- interrupts nothing, inside the wall or out, and a hit that takes health is
+--- measured as before: for a heal, it must undo the gain the channel has issued
+--- so far; for a shield, any point of health does it, as it always did inside.
 ---
 --- WHY NOT THE DROP AND `lastHitBy`, which is what it read. The ledger follows
 --- a ped DOWN on the client's word, and `lastHitBy` is the KILL CREDIT, which
@@ -1990,15 +2005,25 @@ end
 --- climbed back to the ceiling the partials had issued, and the next press
 --- paused the storm again -- one kit lived outside the wall indefinitely. And
 --- after a real enemy hit too light to break the line, a dip finished the job.
---- Nothing a client sends reaches this.
+---
+--- WHAT A DROP THE SAMPLER BELIEVED CAN STILL DO, EXACTLY: nothing to the
+--- mark. It never sets it, and it cannot turn a hit into one that does. Not for
+--- a shield, because the hit has to take health itself and a dip changes none
+--- of the arithmetic that decides that. Not for a heal, because its line is the
+--- ceiling the channel issued, which a dip can only lower through
+--- server/roster.lua's spent-ceiling rule -- and the channel's own pass
+--- re-issues it on the same 250ms beat, straight after the sampler, before any
+--- hit can arrive between them.
 ---
 --- THE SAME LINE FOR EVERY CLIENT. A deaf or pinned client is granted straight
 --- up to the ceiling an honest one is judged on, so one bullet interrupts all
 --- three on any line.
 --- @param src integer       the player hit
 --- @param by integer|nil    who hit them
-function BR.Inv.struck(src, by)
+--- @param took number|nil   the health this hit took, after the armor's share
+function BR.Inv.struck(src, by, took)
     if by == nil or by == src then return end
+    if (tonumber(took) or 0.0) <= 0.0 then return end
     local e = BR.Roster.get(src)
     local u = e and e.inv and e.inv.using
     if u == nil then return end
@@ -2109,9 +2134,10 @@ end
 --
 --   OUT OF THE MATCH, DOWNED OR DEAD costs them the whole inventory.
 --   TAKING FIRE costs them health, and is an attacker's decision -- and since
---     #366 it takes a hit the server dealt: a drop it only believed, whoever
---     it was credited to, ends nothing. The note at the damage-cancel below has
---     the hole that closed.
+--     #366 it takes a bullet or a blast the server dealt, which itself got
+--     past the armor: a drop it only believed, whoever it was credited to, ends
+--     nothing, and so neither do fire and cars. The note at the damage-cancel
+--     below has the hole that closed.
 --   THE SHOP CAR'S SEAT RULE banks nothing -- a car is not a partial effect.
 --
 -- ONE WAS STILL WORTH SOMETHING AFTER #271, AND IT IS CLOSED BY SPENDING RATHER
@@ -2216,19 +2242,22 @@ BR.Sched.every(250, 'inv.use', function()
             --
             -- SO THE INTERRUPTION IS DECIDED WHERE THE SERVER DEALS A HIT, and
             -- this only acts on it: BR.Damage.applyHit asks BR.Inv.struck, which
-            -- marks the channel (`u.struckBy`) when that hit leaves the health the
-            -- bar will show under `hp0`. No drop the sampler believed can set it
-            -- -- not a dip, and not a dip dressed up by the kill-credit stamps,
-            -- which the fire and roadkill ledgers infer from exactly such a drop
-            -- beside anybody's fire or car (BR.Inv.struck has that story).
+            -- marks the channel (`u.struckBy`) when that hit takes health itself
+            -- and leaves the health the bar will show under `hp0`. A drop the
+            -- sampler believed never sets the mark and never turns a hit into one
+            -- that does -- not a dip, and not a dip dressed up by the kill-credit
+            -- stamps, which the fire and roadkill ledgers infer from exactly such
+            -- a drop beside anybody's fire or car. BR.Inv.struck has that story,
+            -- and the one place a dip could still have reached the line.
             --
             -- WHAT IT COSTS, AND IT IS A RULE CHANGE: only a bullet or a blast --
-            -- a hit the server validates and deals -- interrupts a heal. A fall,
-            -- drowning, the storm, and anybody's fire or car do not, so a shield
-            -- drunk outside the wall finishes while the storm goes on taking
-            -- health. Their damage still lands; while #372 is open, a heal's next
-            -- target climbs back over any of it smaller than the heal so far, the
-            -- same as a bullet too small to interrupt.
+            -- a hit the server validates and deals -- interrupts a heal, and only
+            -- by the health it takes itself. A fall, drowning, the storm, and
+            -- anybody's fire or car do not, and neither does a hit the armor
+            -- soaks whole, so a shield drunk outside the wall finishes while the
+            -- storm goes on taking health. Their damage still lands; while #372
+            -- is open, a heal's next target climbs back over any of it smaller
+            -- than the heal so far, the same as a bullet too small to interrupt.
             if L.useCancelOnDamage and not (c and c.ignoresDamage)
                 and u.struckBy ~= nil then
                 BR.Inv.cancelUse(src, 'Interrupted.')

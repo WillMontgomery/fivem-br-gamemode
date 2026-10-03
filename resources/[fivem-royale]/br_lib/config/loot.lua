@@ -1285,7 +1285,8 @@ BR.Config.Loot = {
     -- stood still in. That is the interruption.
     --
     -- AND IT TAKES AN ENEMY'S BULLET OR BLAST (#366): a hit the server itself
-    -- validated and dealt, which leaves the bar under where the heal started.
+    -- validated and dealt, which takes health itself -- armor that soaks all of
+    -- it interrupts nothing -- and leaves the bar under where the heal started.
     -- A fall, drowning, the storm, and anybody's fire or car interrupt
     -- nothing: the server only sees those as a drop the client reported, and a
     -- drop -- even one credited to a fire or a car nearby -- is a drop a player

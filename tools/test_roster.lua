@@ -27813,9 +27813,10 @@ do
 
     local A0
     --- Three ALIVE players in a PLAYING match on a phase-5 record that holds for
-    --- an hour at `o.dps`, the subject on `o.hp`. The subject stands at the
-    --- anchor, or 2km out if `o.outside`. `o.lat`, `o.extra` and `o.phase` are
-    --- the line's (see the top of this section).
+    --- an hour at `o.dps`, the subject on `o.hp` and `o.armour` (armor the
+    --- server already wrote, on the ledger and the ped alike). The subject
+    --- stands at the anchor, or 2km out if `o.outside`. `o.lat`, `o.extra` and
+    --- `o.phase` are the line's (see the top of this section).
     local function stage(o)
         o = o or {}
         reset()
@@ -27842,6 +27843,7 @@ do
         if o.outside then setPos(1, A0.x + 2000.0, A0.y) end
         pedHealth[PED] = BR.ToEngineHp(o.hp or 100.0)
         pedArmour[PED] = o.armour or 0
+        if o.armour then BR.Roster.update(1, { armour = o.armour + 0.0 }) end
         W.hist = {}
         -- The sampler commits the starting health before anything else runs.
         step(300)
@@ -28179,6 +28181,69 @@ do
             'and the partials it had already given are kept, less the hit',
             ('%s -> %s, bar %s'):format(tostring(before), tostring(subject().hp),
                 tostring(bar())))
+    end
+
+    -- ─── A SHIELD IS ENDED BY WHAT THE HIT DID, INSIDE THE WALL OR OUT ───
+    --
+    -- A shield does not pause the storm, so outside the wall its ticks take the
+    -- bar under where the shield started. The line used to be read off the bar
+    -- alone, so out there any enemy hit at all ended the shield -- even one its
+    -- armor soaked whole, which inside the wall did nothing. A hit interrupts by
+    -- what it did itself: a soaked one ends nothing anywhere, and one that gets
+    -- health through ends a shield anywhere.
+    for _, lat in ipairs({ 0, 500 }) do
+        for _, item in ipairs({ 'shield', 'minishield' }) do
+            local got = {}
+            for _, side in ipairs({ 'in', 'out' }) do
+                for _, through in ipairs({ false, true }) do
+                    stage({ hp = 80.0, armour = 20, outside = side == 'out', dps = 4.0,
+                            lat = lat })
+                    bag({ item })
+                    press(item)
+                    step(2000)
+                    local soak = subject().armour
+                    BR.Damage.applyHit(2, 1, through and (soak + 5.0) or 10.0,
+                        { weapon = 'test' })
+                    step(300)
+                    got[side .. (through and '+' or '0')] = not using()
+                end
+            end
+            ok(got.in0 == false and got.out0 == false
+                and got['in+'] == true and got['out+'] == true,
+                ('a %s is ended by a hit that gets health through, and not by one its '
+                    .. 'armor soaks, inside the wall and out (%dms line)'):format(item, lat),
+                ('soaked: in %s, out %s; through: in %s, out %s'):format(
+                    tostring(got.in0), tostring(got.out0), tostring(got['in+']),
+                    tostring(got['out+'])))
+        end
+    end
+
+    -- ─── A DIP UNDER A SHIELD DOES NOT MAKE A SOAKED GRAZE AN INTERRUPTION ───
+    --
+    -- The dip lowers the ledger under where the shield started, which the line
+    -- used to be read off: a modified client dipped two points just before an
+    -- enemy's graze its armor soaked whole, the shield ended, and it kept both
+    -- the shield and the armor already given -- one shield, drunk again.
+    for _, mode in ipairs({ 'honest', 'dip' }) do
+        stage({ hp = 80.0, armour = 20 })
+        bag({ 'shield' })
+        press('shield')
+        step(3000)
+        if mode == 'dip' then
+            W.pinned = 78.0
+            step(300)
+            W.pinned = nil
+        end
+        local hp = subject().hp
+        BR.Damage.applyHit(2, 1, 3.0, { weapon = 'test' })
+        step(300)
+        local cut = not using()
+        finish(500)
+        ok(not cut and count('shield') == 0,
+            ('an enemy\'s graze the armor soaks whole does not end a shield, and the '
+                .. 'shield is spent: %s client'):format(mode),
+            ('e.hp %s at the graze, interrupted %s, shields %d'):format(tostring(hp),
+                tostring(cut), count('shield')))
     end
 
     -- ───────────────────────────────────────────────────────────────────────
