@@ -1023,8 +1023,8 @@ end
 ---   healUntil    HEALTH's heal window: server/inventory.lua and
 ---                server/ambheal.lua, on ISSUING an INV_EFFECT that moves
 ---                health -- paired with the ceiling the caller adds below.
----                Armour has its own (`healArmourUntil`, #366), which the two
----                armour calls swap in; see `authorize` in server/inventory.lua
+---                Armor has its own (`healArmorUntil`, #366), which the two
+---                armor calls swap in; see `authorize` in server/inventory.lua
 ---   settleUntil  a revive, a respawn or a match reset the server wrote
 ---   rescue       #191, the ambulance ride; server/rescue.lua writes it
 --- @param entry table
@@ -1123,7 +1123,7 @@ local function auditHealth(src, entry, hp, armour, now, prevEngineHp)
     --
     -- AND ITS OWN HEAL WINDOW (#366): a shield's rise is excused by the window
     -- the shield opened, not by a med kit's.
-    ctx.healUntil = entry.healArmourUntil
+    ctx.healUntil = entry.healArmorUntil
     local aGain, aExcuse = BR.HealthUnexplainedGain(entry.armour, armour, ctx, {
         toleranceHp  = cfg.toleranceArmour,
         hurtGraceMs  = cfg.hurtGraceMs,
@@ -1248,7 +1248,7 @@ end
 ---     the ledger: they send the client a TARGET and let it walk its own ped up.
 ---     Those two echo the target onto the entry as `grantHpTo` / `grantArmourTo`
 ---     beside the window they stamped for that stat -- `healUntil` for health,
----     `healArmourUntil` for armour (#366) -- and this is where it is spent.
+---     `healArmorUntil` for armor (#366) -- and this is where it is spent.
 ---     The window says a heal is happening; the ceiling says how much.
 ---     SERVER DAMAGE AFTER AN ISSUE COMES OFF THE CEILING (#366): a bullet
 ---     (BR.Damage.applyHit) and a storm tick (server/storm.lua's `bill`) each
@@ -1295,7 +1295,7 @@ local function commitSample(src, entry, hp, armour, now)
         -- ledger trailed the bar it is supposed to equal at every partial. Snapped,
         -- the ledger follows exactly as far as an honest ped can be seen to
         -- climb, and a client that reads high is held to the same whole point.
-        -- Armour needs no snap: the client floors it (SetPedArmour), so an
+        -- Armor needs no snap: the client floors it (SetPedArmour), so an
         -- honest ped never reads above its ceiling.
         local hpCeiling = tonumber(entry.grantHpTo)
         if hpCeiling ~= nil and hpCeiling == hpCeiling then
@@ -1334,11 +1334,11 @@ local function commitSample(src, entry, hp, armour, now)
         -- functions up -- and `enforce` has to be carried across explicitly or
         -- the kill switch would turn off health and leave armour enforced.
         --
-        -- AND ARMOUR'S OWN WINDOW (#366), for `authorize`'s reason in
+        -- AND ARMOR'S OWN WINDOW (#366), for `authorize`'s reason in
         -- server/inventory.lua: a shield pressed the moment a bandage lands must
         -- not close the window the bandage's last target is still riding in.
         ctx.grantTo = entry.grantArmourTo
-        ctx.healUntil = entry.healArmourUntil
+        ctx.healUntil = entry.healArmorUntil
         nextArmour, armourWhy = BR.HealthCommit(entry.armour, armour, ctx, {
             enforce      = cfg.enforce,
             toleranceHp  = cfg.toleranceArmour,

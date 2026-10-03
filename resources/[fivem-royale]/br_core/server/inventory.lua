@@ -1984,7 +1984,7 @@ end
 --- refused the rise and the HEALTH_SYNC snapped the bar back -- the bandage
 --- landed short, which is #366's own symptom by another road.
 ---
---- So health has `healUntil` + `grantHpTo` and armour has `healArmourUntil` +
+--- So health has `healUntil` + `grantHpTo` and armor has `healArmorUntil` +
 --- `grantArmourTo`, and an issue touches only the pair for what it moves. A
 --- shield still cannot spend a health ceiling: health's window is a med kit's
 --- own, stamped by the med kit, and it closes healSettleMs after the med kit's
@@ -1998,7 +1998,7 @@ local function authorize(e, now, effect)
         e.healUntil, e.grantHpTo = untilMs, effect.health
     end
     if effect.armour then
-        e.healArmourUntil, e.grantArmourTo = untilMs, effect.armour
+        e.healArmorUntil, e.grantArmourTo = untilMs, effect.armour
     end
 end
 

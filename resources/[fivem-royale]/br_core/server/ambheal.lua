@@ -480,7 +480,7 @@ local function grant(rec, entry, now)
     -- same fact and an honest ped and the ledger land on the same number.
     --
     -- HEALTH'S WINDOW AND NOTHING ELSE (#366). This heal moves health only, and
-    -- armour has a window of its own (`healArmourUntil`) that only a shield
+    -- armor has a window of its own (`healArmorUntil`) that only a shield
     -- opens -- see `authorize` in server/inventory.lua. A shield plate's ceiling
     -- from a minute ago is inert without its window, and a shield drunk a moment
     -- ago keeps the ceiling its own last target still needs.

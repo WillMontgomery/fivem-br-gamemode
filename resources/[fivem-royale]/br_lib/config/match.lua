@@ -1628,7 +1628,7 @@ BR.Config.Combat = {
         -- so the last high reading arrives just under 2000ms after the hit, and
         -- a 250ms sample plus OneSync's own sync interval rides on top of that.
         -- It was 1500, which a 1000ms line outran by half a second: an honest
-        -- player shot on that line was counted and resynchronised for a hit
+        -- player shot on that line was counted and resynchronized for a hit
         -- their ped was still about to show. The rule's verdict is the same
         -- either side of the window; only the name and the correction change.
         --
@@ -1660,7 +1660,7 @@ BR.Config.Combat = {
         -- re-press loop in #271. So a bandage buys the bandage.
         --
         -- EACH STAT HAS ITS OWN WINDOW OF THIS LENGTH (#366): health's is
-        -- `healUntil`, armour's is `healArmourUntil`, and an issue opens only
+        -- `healUntil`, armor's is `healArmorUntil`, and an issue opens only
         -- the window for what it moves -- so a shield pressed as a bandage lands
         -- cannot close the window the bandage's last target is still riding in.
         --

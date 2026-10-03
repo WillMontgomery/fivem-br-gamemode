@@ -24566,7 +24566,7 @@ do
         local cheat = audited()
         cheat.healthAudit = { hp = 500.0, samples = 9, peak = 90.0, excused = {} }
         cheat.healUntil = fakeTime + 5000
-        cheat.healArmourUntil = fakeTime + 5000
+        cheat.healArmorUntil = fakeTime + 5000
         cheat.healthSettleUntil = fakeTime + 5000
         BR.Match.resetPlayer(1, cheat)
         ok(cheat.healthAudit == nil,
@@ -24576,9 +24576,9 @@ do
             'and so are both grace windows, which are deadlines on the OLD '
                 .. 'match clock -- a stale one would excuse the first seconds '
                 .. 'of the next round')
-        ok(cheat.healArmourUntil == nil,
-            'and armour\'s own heal window with them (#366)',
-            tostring(cheat.healArmourUntil))
+        ok(cheat.healArmorUntil == nil,
+            'and armor\'s own heal window with them (#366)',
+            tostring(cheat.healArmorUntil))
     end
 
     -- ═══ THE LIVE FALSE POSITIVE, REPRODUCED THROUGH THE REAL SAMPLER ═══
@@ -25102,10 +25102,10 @@ do
     do
         local subject = ledgerMatch()
 
-        -- A plate the server issued: ARMOUR's window plus its ceiling (#366 --
+        -- A plate the server issued: ARMOR's window plus its ceiling (#366 --
         -- each stat has its own window, and server/inventory.lua's `authorize`
         -- opens only the one for what the item moves).
-        subject.healArmourUntil = fakeTime + A.healSettleMs
+        subject.healArmorUntil = fakeTime + A.healSettleMs
         subject.grantArmourTo = 50.0
         pedArmour[1001] = 50
         sample()
@@ -25123,7 +25123,7 @@ do
 
         -- The soak comes off the ledger, and pinning the ped does not put it
         -- back.
-        subject.healArmourUntil = fakeTime
+        subject.healArmorUntil = fakeTime
         BR.Damage.applyHit(2, 1, 30.0, { weapon = 'test' })
         ok(subject.armour == 20.0 and subject.hp == 100.0,
             'a 30-point hit is soaked by armour and health is untouched',
@@ -27666,7 +27666,7 @@ end
 -- #366: ONE HEALTH LEDGER, AND WHAT A HEAL IS WORTH UNDER FIRE AND IN THE STORM
 -- ═══════════════════════════════════════════════════════════════════════════
 --
--- EVERY BLOCK BELOW RUNS A MODELLED CLIENT ON A MODELLED LINE, because every
+-- EVERY BLOCK BELOW RUNS A MODELED CLIENT ON A MODELED LINE, because every
 -- defect #366 turned up lived in the gap between the server's ledger and a ped
 -- that hears about it one trip later. A block that wrote the ped by hand would
 -- be asserting the order it chose to write things in.
@@ -27710,7 +27710,7 @@ do
         return v
     end
 
-    --- One instruction landing on the modelled client.
+    --- One instruction landing on the modeled client.
     local function apply(s)
         local d = s.args[1] or {}
         local hp = pedHealth[PED] or MAXHP
@@ -27923,7 +27923,7 @@ do
             tostring(subject().hp))
     end
 
-    -- ─── ...AND SO DOES ARMOUR ───
+    -- ─── ...AND SO DOES ARMOR ───
     do
         stage({ hp = 100.0 })
         bag({ 'shield' })
@@ -28128,7 +28128,7 @@ do
             and sentSince(BR.Net.HEALTH_SYNC, t0) == 0,
             'a bandage and the shield after it both land in full on a 1000ms '
                 .. 'line, with no correction',
-            ('e.hp %s, bar %s, armour %s, HEALTH_SYNC %d'):format(
+            ('e.hp %s, bar %s, armor %s, HEALTH_SYNC %d'):format(
                 tostring(subject().hp), tostring(bar()),
                 tostring(subject().armour), sentSince(BR.Net.HEALTH_SYNC, t0)))
     end

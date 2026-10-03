@@ -1148,12 +1148,12 @@ function BR.Match.resetPlayer(src, e)
     -- honest jitter across three matches would eventually be reported for
     -- having played a lot.
     --
-    -- The WINDOWS go with it -- health's heal window, armour's (#366) and the
+    -- The WINDOWS go with it -- health's heal window, armor's (#366) and the
     -- settle. All are deadlines on the old match's clock, and a stale one would
     -- excuse the first two seconds of the next match -- which is exactly the
     -- window a returning cheat would land in.
     e.healthAudit, e.armourAudit = nil, nil
-    e.healUntil, e.healArmourUntil, e.healthSettleUntil = nil, nil, nil
+    e.healUntil, e.healArmorUntil, e.healthSettleUntil = nil, nil, nil
 
     -- AND SO ARE THE LEDGER RULE'S TWO. `grantHpTo` / `grantArmourTo` are the
     -- ceilings a heal authorized (server/inventory.lua, server/ambheal.lua) and
