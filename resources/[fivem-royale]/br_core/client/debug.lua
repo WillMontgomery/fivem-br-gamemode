@@ -489,19 +489,30 @@ function BR.Storm.hitchSummaryLines()
     end
     lines[#lines + 1] = ('frames: worst %d ms, %d of %d over 16.7 ms (%.2f%%)'):format(
         worst, over, frames, 100.0 * over / math.max(1, frames))
+    -- THE REDRAWS EVERY SWEEP MAKES ARE NOT THE SUSPECT (2026-10-02): as it sets off
+    -- and at the knee (client/storm.lua's `sweepEvents`). What is left -- a redraw on
+    -- the morphHz clock, or a whole picture drawn while the wall moved -- is the old path.
+    local events = m and (m.sweepEvents or 0) or 0
+    local oldPath = m and (m.sweepRedraws - events) or 0
     local verdict
     if frames == 0 then
         verdict = 'nothing measured yet -- play a hold and a sweep, then /brstormhitch again.'
-    elseif m and m.sweepRedraws > 0 then
+    elseif oldPath > 0 then
         verdict = ('the map redrew its zone %d times while the storm moved -- the old path, '
             .. 'for a sweep whose clips were not staged in time (joined mid-sweep, a very '
-            .. 'short hold) or a refusal. That work is the suspect.'):format(m.sweepRedraws)
+            .. 'short hold) or a refusal. That work is the suspect.'):format(oldPath)
+    elseif over == 0 and events > 0 then
+        verdict = 'smooth -- no map work while the storm moved but the redraws as it set off '
+            .. 'and at its knee, and no frame over 16.7 ms.'
     elseif over == 0 then
         verdict = 'smooth -- no map work while the storm moved and no frame over 16.7 ms.'
     elseif m and m.stageWorstMs >= 17 then
         verdict = ('some long frames followed staging steps (%d ms at worst) -- those happen '
             .. 'only while the storm holds; overlay.stage.everyTicks spaces them further '
             .. 'apart.'):format(m.stageWorstMs)
+    elseif events > 0 then
+        verdict = 'the long frames were not the storm map\'s staging or old-path redraws -- '
+            .. '/brstormhitch rows names what ran before each one.'
     else
         verdict = 'the long frames were not the storm map\'s staging or redraws -- '
             .. '/brstormhitch rows names what ran before each one.'

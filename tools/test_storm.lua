@@ -10290,6 +10290,13 @@ do
             summaryBad = summaryBad or ('match %d: %d staged, %d sweeps from staged clips')
                 :format(seq, ms.staged, ms.sweepsStaged)
         end
+        -- EVERY CLIP ADDED WHILE THE WALL MOVED WAS ONE OF THE EXPECTED REDRAWS, so
+        -- /brstormhitch has nothing to call the old path (client/debug.lua).
+        if ms.sweepRedraws == 0 or ms.sweepEvents ~= ms.sweepRedraws then
+            summaryBad = summaryBad or ('match %d: %d clips redrawn in sweeps, %s of them '
+                .. 'as the kind of change switched'):format(seq, ms.sweepRedraws,
+                    tostring(ms.sweepEvents))
+        end
         stagedEver = stagedEver + BR.MapOverlay.report().stagedN
         BR.State.storm = nil
         for _ = 1, 50 do step() end
@@ -10316,9 +10323,31 @@ do
             .. 'millimetre -- a breakout\'s beside its destination at the zone\'s strength',
         ('%d ticks measured, worst %.6f m'):format(frameTicks, frameWorst))
     ok(stagedEver == 0 and summaryBad == nil and leftover == 0,
-        'no clip is ever staged, the summary says so, and after the match nothing of ours is '
-            .. 'in the movie',
+        'no clip is ever staged, the summary says so -- every redraw in a sweep one it '
+            .. 'expects -- and after the match nothing of ours is in the movie',
         summaryBad or ('%d staged, %d left'):format(stagedEver, leftover))
+
+    -- AND A REDRAW ON THE CLOCK IS STILL COUNTED AS THE OLD PATH: morphHz 10, three
+    -- seconds into a sweep's first leg, is the start's one redraw and the clock's.
+    local M = newStormClient()
+    M.env.BR.Config.Storm.overlay.morphHz = 10
+    M.mm.handle = 7
+    local mrec = M.record(2, 1000.0, -700.0, 2600.0, 1400.0, -300.0, 1600.0, 600000, 120000,
+        2.0)
+    mrec.seed = 424242
+    ok(M.overlayReady(), 'the clock client reaches the gate')
+    M.tick(2)
+    mrec.tStart = M.now - mrec.tWait
+    for _ = 1, 30 do
+        M.now = M.now + 100
+        M.env.BR.Loop.step(M.env.BR.Loop.TICK)
+    end
+    local mms, mParts = M.env.BR.Storm.mapStats(), #M.zone()
+    ok(mParts > 0 and mms.sweepEvents == mParts and mms.sweepRedraws >= 20 * mParts
+            and M.errored() == nil,
+        'at morphHz 10 the sweep\'s start is the one expected redraw and the clock\'s are not',
+        M.errored() or ('%d clips redrawn, %s expected, %d a picture'):format(
+            mms.sweepRedraws, tostring(mms.sweepEvents), mParts))
 
     -- ─── a picture the engine refuses is drawn again a few times, then waits ───
     --

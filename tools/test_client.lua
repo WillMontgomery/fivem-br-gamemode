@@ -21786,6 +21786,31 @@ do
     out = said({ 'report' })
     ok(out:find('verdict: the map redrew its zone 12 times while the storm moved', 1, true)
             ~= nil, 'a sweep redrawn the old way is named as the suspect in plain words', out)
+
+    -- ═══ THE REDRAWS EVERY SWEEP MAKES ARE NOT THE SUSPECT (2026-10-02) ═══
+    --
+    -- Since the hitch fix each sweep redraws its zone as it sets off and at its knee
+    -- (`sweepEvents`). Counted as the old path, every clean match read as a suspect.
+    stats.sweepsStaged, stats.staged, stats.sweepRedraws, stats.sweepEvents = 0, 0, 4, 4
+    said({ 'reset' })
+    frames(120, 16)
+    out = said({})
+    ok(out:find('storm map: 4 clip rebuilds during sweeps', 1, true) ~= nil
+            and out:find('verdict: smooth -- no map work while the storm moved but the '
+                .. 'redraws as it set off and at its knee, and no frame over 16.7 ms.', 1, true)
+                ~= nil,
+        'a clean sweep\'s redraws at its start and knee still read as smooth', out)
+    stats.sweepRedraws = 12
+    out = said({})
+    ok(out:find('verdict: the map redrew its zone 8 times while the storm moved', 1, true)
+            ~= nil, 'and only the redraws beyond those are named as the old path', out)
+    stats.sweepRedraws = 4
+    frames(10, 40)
+    out = said({})
+    ok(out:find('verdict: the long frames were not the storm map\'s staging or old-path '
+            .. 'redraws', 1, true) ~= nil,
+        'long frames beside only those redraws do not clear the map of them', out)
+    stats.sweepEvents = nil
     local rows = said({ 'rows' })
     ok(rows:find('marker correlation', 1, true) ~= nil
             and rows:find('verdict:', 1, true) == nil,

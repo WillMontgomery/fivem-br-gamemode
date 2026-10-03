@@ -2270,6 +2270,7 @@ local function freshMapStats()
         since = GetGameTimer(),
         sweeps = 0, sweepsStaged = 0, sweepsLegacy = 0,
         sweepRedraws = 0,        -- clip adds (redraws or rebuilds) while the wall moved
+        sweepEvents = 0,         -- of those, redraws as its kind of change switched
         sweepRemovals = 0,       -- clip removals while the wall moved
         staged = 0, stagedFirstAt = nil, stagedLastAt = nil,
         dropped = 0, slots = 0, backoffs = 0,
@@ -2755,7 +2756,11 @@ BR.Loop.register(BR.Loop.TICK, 'storm.map', function()
             ok = showStaged(at, plan)
         else
             local z = at.zone
-            local due = z.tag ~= plan.tag
+            -- A REDRAW AS THE KIND OF CHANGE SWITCHES IS EXPECTED -- the sweep setting
+            -- off, the knee -- and /brstormhitch counts it apart from one on the clock
+            -- (`sweepEvents`), so a clean sweep can still read as smooth.
+            local turned = z.tag ~= plan.tag
+            local due = turned
             if not due and plan.mode == 'morph' and stormBisectMode ~= 'mapnomorph' then
                 local mhz = ov.morphHz or 10
                 due = mhz > 0 and (now - z.at) >= 750.0 / mhz
@@ -2766,6 +2771,9 @@ BR.Loop.register(BR.Loop.TICK, 'storm.map', function()
                 if sweeping then
                     mapStats.sweepRedraws = mapStats.sweepRedraws + #at.zone.parts
                     mapStats.sweepRemovals = mapStats.sweepRemovals + #at.zone.parts
+                    if turned then
+                        mapStats.sweepEvents = mapStats.sweepEvents + #at.zone.parts
+                    end
                 end
             else
                 ok = applyZone(z, plan, false)
@@ -2955,8 +2963,10 @@ end
 
 --- What the storm map did since the last /brstormhitch reset, for its plain summary:
 --- sweeps (and how many were shown from a staged bank), clip adds and removals while a
---- sweep moved, clips staged and dropped, when staging started and stopped, the longest
---- frame that followed a staging slot, and the bank's estimated worst error in metres.
+--- sweep moved (and how many of the adds were the redraws expected as its kind of change
+--- switched -- its start and its knee), clips staged and dropped, when staging started
+--- and stopped, the longest frame that followed a staging slot, and the bank's
+--- estimated worst error in metres.
 --- A copy; the caller may keep it.
 --- @return table
 function BR.Storm.mapStats()
