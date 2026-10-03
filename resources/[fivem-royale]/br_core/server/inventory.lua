@@ -1345,6 +1345,41 @@ AddEventHandler(BR.Net.INV_RELOAD, function()
     BR.Inv.push(src)
 end)
 
+--- The health a new channel is measured from: the ledger, or the target a heal
+--- already issued and still riding in, whichever is higher (#366).
+---
+--- ═══ WHY NOT THE LEDGER ALONE ═══
+---
+--- The ledger follows an honest ped UP one round trip late, so for a moment
+--- after a heal lands it reads short of the target already sent. A second
+--- bandage pressed in that moment measured itself from the short number: on a
+--- 500ms line back-to-back bandages landed two short, and a bandage pressed as
+--- its predecessor reached the 75 cap was accepted and spent for nothing.
+---
+--- AND THE LEDGER FOLLOWS A PED DOWN ON THE CLIENT'S WORD. A client could dip
+--- one sample to 5, press a med kit -- `hp0` 5, so a bullet had to take it under
+--- 5 to interrupt it -- and climb straight back to the last heal's ceiling,
+--- which was still standing: an uninterruptible heal, and in the storm an
+--- unbreakable pause. Measured from the standing target, the line is where an
+--- honest player's is.
+---
+--- WHICH IS SAFE ONLY BECAUSE A REACHED CEILING IS SPENT BY A DROP. A real fall
+--- after a heal lowers the ceiling to where the fall left them (server/roster.lua's
+--- commitSample), so a heal pressed after it starts from 50, not from the 75 the
+--- last bandage reached -- and is not refused for a bar the fall emptied.
+--- @param e table
+--- @param now number
+--- @return number
+local function healthBase(e, now)
+    local hp = tonumber(e.hp) or 0.0
+    local ceiling = tonumber(e.grantHpTo)
+    if ceiling ~= nil and e.healUntil ~= nil and now < e.healUntil then
+        -- The whole point the ped will show, as the ledger rule reads it.
+        return math.max(hp, BR.ToDisplayHp(BR.ToEngineHp(ceiling)))
+    end
+    return hp
+end
+
 RegisterNetEvent(BR.Net.INV_USE)
 AddEventHandler(BR.Net.INV_USE, function(d)
     local src = source
@@ -1433,7 +1468,12 @@ AddEventHandler(BR.Net.INV_USE, function(d)
             'warn')
         return
     end
-    if c.health and (e.hp or 0) >= (c.healthCap or 0) then
+    --
+    -- HEALTH IS READ AS THE CHANNEL WILL READ IT (#366, `healthBase`): a heal
+    -- already sent and still landing counts, so a bandage pressed as the last
+    -- one carries the bar to its cap is refused here rather than spent for
+    -- nothing a moment later.
+    if c.health and healthBase(e, GetGameTimer()) >= (c.healthCap or 0) then
         BR.Server.notify(src,
             (c.healthCap >= 100)
                 and 'Your health is already full.'
@@ -1620,8 +1660,9 @@ AddEventHandler(BR.Net.INV_USE, function(d)
         -- stamped since this moment (#366); see the tick loop.
         startedAt = GetGameTimer(),
         -- Baselines: hp0 doubles as the damage-cancel reference, and both are
-        -- what the per-tick partial effects interpolate FROM.
-        hp0     = e.hp or 0,
+        -- what the per-tick partial effects interpolate FROM. hp0 counts a heal
+        -- still landing (#366); see `healthBase` above this handler.
+        hp0     = healthBase(e, GetGameTimer()),
         armour0 = e.armour or 0,
         -- The car this use was aimed at, and the running total of health points
         -- already granted for it -- see the tick loop for why a ledger is needed

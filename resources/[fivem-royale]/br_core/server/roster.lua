@@ -1289,6 +1289,29 @@ local function commitSample(src, entry, hp, armour, now)
         ctx.grantTo = hpCeiling
         nextHp, hpWhy = BR.HealthCommit(entry.hp, hp, ctx, cfg)
 
+        -- ═══ A CEILING THE LEDGER HAS REACHED IS SPENT BY A DROP (#366) ═══
+        --
+        -- A ceiling authorizes a climb TO a target, once. When the ledger already
+        -- stood on it and the ped then reads lower -- a fall, a fire, or a
+        -- client dipping its own ped -- the climb has been made and the drop is
+        -- the newer fact, so the ceiling comes down to where the drop left them.
+        -- Left standing, it was a second climb on the same issue: a client could
+        -- dip one sample, press a heal measured from the dip, and walk straight
+        -- back up to the old target (server/inventory.lua's `healthBase` has the
+        -- rest of that), and a real fall after a bandage was invisible to the next
+        -- heal, which measured itself from the bandage's 75 and was refused at a
+        -- cap the bar no longer showed.
+        --
+        -- ONLY A REACHED CEILING, AND ONLY A REAL DROP. A ledger still climbing
+        -- toward its target on a slow line is not on it, and a point of float
+        -- noise is not a drop; a channel still running writes the next target
+        -- over this one 250ms later either way.
+        if hpWhy == BR.HealthVerdict.SAMPLE and hpCeiling ~= nil
+           and (entry.hp or 0.0) >= hpCeiling - 1.0
+           and nextHp < (entry.hp or 0.0) - 1.0 then
+            entry.grantHpTo = nextHp
+        end
+
         -- THE ARMOUR CONFIG IS BUILT RATHER THAN PASSED WHOLE, so that
         -- `toleranceArmour` reaches the solver as the tolerance it is. Reusing
         -- `cfg` would silently measure armour against the HEALTH tolerance,

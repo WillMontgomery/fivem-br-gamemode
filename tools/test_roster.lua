@@ -28094,6 +28094,112 @@ do
                 tostring(subject().hp)))
     end
 
+    -- ───────────────────────────────────────────────────────────────────────
+    describe('heal.base')
+    -- ───────────────────────────────────────────────────────────────────────
+    --
+    -- A HEAL IS MEASURED FROM THE HEALTH ALREADY ON ITS WAY, AND A DROP SPENDS
+    -- WHAT WAS ON ITS WAY. The ledger trails an honest ped up by a round trip
+    -- and follows any ped down on its word, so neither the ledger alone nor the
+    -- last target alone is where a new channel starts.
+
+    -- ─── BACK TO BACK ON A SLOW LINE ───
+    do
+        stage({ hp = 31.0, lat = 500 })
+        bag({ 'bandage' }, 2)
+        local t0 = fakeTime
+        press('bandage')
+        step(20000, function() return not using() end)
+        press('bandage')
+        local hp0 = BR.Inv.of(1).using and BR.Inv.of(1).using.hp0
+        finish(2000)
+        ok(hp0 == 46 and subject().hp == 61 and bar() == 61
+            and sentSince(BR.Net.HEALTH_SYNC, t0) == 0,
+            'two bandages back to back on a 500ms line give thirty: the second is '
+                .. 'measured from the first one\'s target, not the ledger still '
+                .. 'catching up to it',
+            ('hp0 %s, e.hp %s, bar %s'):format(tostring(hp0),
+                tostring(subject().hp), tostring(bar())))
+    end
+
+    -- ─── ...AND ONE PRESSED AS THE LAST REACHES THE CAP IS REFUSED, NOT SPENT ───
+    do
+        stage({ hp = 62.0, lat = 500 })
+        bag({ 'bandage' }, 2)
+        press('bandage')
+        step(20000, function() return not using() end)
+        local t0 = fakeTime
+        press('bandage')
+        step(1000)
+        local said = nil
+        for _, l in ipairs(W.log) do
+            if l.event == BR.Net.NOTIFY and l.t > t0 then said = l.d.text end
+        end
+        ok(not using() and count('bandage') == 1
+            and said == 'Bandage only takes your health to 75.',
+            'a bandage pressed as the last one carries the bar to its cap is '
+                .. 'refused with the usual words, and kept',
+            ('using %s, bandages %d, said %s'):format(tostring(using()),
+                count('bandage'), tostring(said)))
+    end
+
+    -- ─── A FALL AFTER A HEAL IS THE NEWER FACT ───
+    --
+    -- The bandage's ceiling (75) is still standing when a 25-point fall takes
+    -- the bar to 50. The next heal starts from 50, and is not refused for a cap
+    -- the bar no longer shows.
+    for _, item in ipairs({ 'bandage', 'medkit' }) do
+        stage({ hp = 60.0 })
+        if item == 'medkit' then bag({ 'bandage', 'medkit' }) else bag({ 'bandage' }, 2) end
+        press('bandage')
+        finish(300)
+        ok(subject().hp == 75, ('precondition (%s): the first bandage reached '
+            .. 'the cap'):format(item), tostring(subject().hp))
+        pedHealth[PED] = BR.ToEngineHp(50.0)
+        step(600)
+        press(item)
+        local hp0 = BR.Inv.of(1).using and BR.Inv.of(1).using.hp0
+        ok(hp0 == 50,
+            ('a %s pressed after a fall that followed a full bandage starts from '
+                .. 'where the fall left them'):format(item),
+            ('using %s, hp0 %s, e.hp %s'):format(tostring(using()), tostring(hp0),
+                tostring(subject().hp)))
+        finish(500)
+    end
+
+    -- ─── THE DIP, THE PRESS AND THE CLIMB BACK ───
+    --
+    -- A client that dips one sample to 5 right after a bandage, presses a med
+    -- kit and climbs straight back used to stand on 65 with its interrupt line
+    -- at 5: a bullet that interrupts an honest player did nothing. Now its line
+    -- sits no further under its ledger than an honest player's does.
+    local margin = {}
+    for _, mode in ipairs({ 'honest', 'cheat' }) do
+        stage({ hp = 50.0 })
+        bag({ 'bandage', 'medkit' })
+        press('bandage')
+        finish(300)
+        if mode == 'cheat' then
+            pedHealth[PED] = BR.ToEngineHp(5.0)
+            step(300)
+        end
+        press('medkit')
+        local hp0 = BR.Inv.of(1).using and BR.Inv.of(1).using.hp0 or 0
+        if mode == 'cheat' then W.deaf, W.pinned = true, 100.0 end
+        step(1500)
+        margin[mode] = subject().hp - hp0
+        BR.Damage.applyHit(2, 1, 20.0, { weapon = 'test' })
+        step(600)
+        ok(not using(),
+            ('a 20-point hit 1.5s into a med kit ends it: %s'):format(mode),
+            ('e.hp %s, hp0 %s, state %s'):format(tostring(subject().hp),
+                tostring(hp0), tostring(subject().state)))
+    end
+    ok(margin.cheat <= margin.honest + 1.0,
+        'and the dip bought the cheat no more room above its interrupt line than '
+            .. 'an honest player has',
+        ('cheat %.1f, honest %.1f'):format(margin.cheat, margin.honest))
+
     GetEntityHealth, GetPedArmour = rawHealth, rawArmour
     BR.Combat.defeat = rawDefeat
 end
