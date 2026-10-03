@@ -10159,8 +10159,9 @@ do
     --   but a growth's one redraw as it ends, a sweep redraws as it sets off and at the
     --   knee, a breakout once more as it finishes;
     --   BETWEEN THEM THE ZONE IS PLACED EVERY TICK: the outline drawn as the sweep set off
-    --   on the wall's pivot and at its size to the knee, exactly; the wall's own outline
-    --   in its own frame from the knee, on the zone to a millimetre;
+    --   on the wall's pivot to the knee, as large as fits inside the wall and no larger --
+    --   never storm shown as safe; the wall's own outline in its own frame from the knee,
+    --   on the zone to a millimetre;
     --   NOTHING IS STAGED, and after the match nothing of ours is in the movie.
     local SEEDS = 3
     local function copy(t) local c = {} for k, v in pairs(t) do c[k] = v end return c end
@@ -10176,6 +10177,7 @@ do
     local holdBad, sweepBad, kindsWhere = 0, 0, nil
     local sweepsN, worstSweepEvents = 0, 0
     local pivotTicks, unplaced, pivotOff, pivotWhere = 0, 0, 0.0, nil
+    local pivotOut, outWhere, fitN, fitOff, fitWhere = -math.huge, nil, 0, 0.0, nil
     local frameTicks, frameWorst = 0, 0.0
     local stagedEver, leftover, summaryBad = 0, 0, nil
     for seq = 1, SEEDS do
@@ -10229,7 +10231,7 @@ do
             end
             local over = (BR.StormOverlaps(rec))
             local holdN, sweepN, doneN = 0, 0, 0
-            local w0, h0, prDraw = nil, nil, nil
+            local w0, h0, prDraw, drawn = nil, nil, nil, nil
             local total = math.floor((rec.tWait + rec.tShrink) / 100.0) + 3
             for i = 1, total do
                 local ops, placed, turned = step()
@@ -10256,16 +10258,52 @@ do
                             y0, y1 = math.min(y0, q.y), math.max(y1, q.y)
                         end
                         w0, h0, prDraw = x1 - x0, y1 - y0, pr
+                        -- The wall it was drawn from, as discs about its pivot.
+                        drawn = {}
+                        for _, q in ipairs(BR.StormWall(rec, t).hull.ks) do
+                            drawn[#drawn + 1] = { x = q.x - px, y = q.y - py, r = q.rho }
+                        end
                     else
                         pivotTicks = pivotTicks + 1
                         if placed == 0 then unplaced = unplaced + 1 end
                     end
                     local k = ov._width / w0
                     local off = math.max(math.abs(ov._x - px), math.abs((0 - ov._y) - py),
-                        math.abs(k * prDraw - pr) / pr, math.abs(ov._height / h0 - k))
+                        math.max(0.0, k * prDraw - pr) / pr, math.abs(ov._height / h0 - k))
                     if off > pivotOff then
                         pivotOff = off
                         pivotWhere = ('match %d phase %d t=%.3f'):format(seq, ph, t)
+                    end
+                    -- NEVER STORM SHOWN AS SAFE: every point it shows inside the wall --
+                    -- on it the tick it is drawn, and 5 cm inside on every tick after.
+                    local wall = BR.StormWall(rec, t)
+                    for _, q in ipairs(C.shown(ov)) do
+                        local d = BR.StormShape.distance(wall, q.x, q.y)
+                        if turned then d = d - 0.05 end
+                        if d > pivotOut then
+                            pivotOut = d
+                            outWhere = ('match %d phase %d t=%.3f'):format(seq, ph, t)
+                        end
+                    end
+                    -- AND AS LARGE AS FITS, by fit() and a bisection of its own, every
+                    -- tenth tick: the outline it was drawn from, 5 cm inside the wall.
+                    if not turned and pivotTicks % 10 == 0 then
+                        local ks = wall.hull.ks
+                        local lo, hi = 0.0, 2.0 * k + 1.0
+                        for _ = 1, 50 do
+                            local mid = 0.5 * (lo + hi)
+                            if BR.StormShape.fit(ks, drawn, px, py, mid) <= -0.05 then
+                                lo = mid
+                            else
+                                hi = mid
+                            end
+                        end
+                        fitN = fitN + 1
+                        if math.abs(k - lo) / lo > fitOff then
+                            fitOff = math.abs(k - lo) / lo
+                            fitWhere = ('match %d phase %d t=%.3f: %.9f against %.9f')
+                                :format(seq, ph, t, k, lo)
+                        end
                     end
                 elseif st == BR.StormPhase.SHRINKING and tag and tag:sub(1, 6) == 'frame|'
                         and i % 5 == 0 then
@@ -10315,9 +10353,16 @@ do
             .. 'finishes', kindsWhere or ('at most %d a sweep'):format(worstSweepEvents))
     ok(pivotTicks > 1000 and unplaced == 0 and pivotOff < 1e-6,
         'to the knee the outline drawn as the sweep set off is placed on the wall\'s pivot '
-            .. 'and at its size, every tick',
+            .. 'every tick, and never larger than the wall\'s size',
         ('%d ticks, %d unplaced, %.3e off at %s'):format(pivotTicks, unplaced, pivotOff,
             tostring(pivotWhere)))
+    ok(pivotOut <= -0.05 + 1e-6,
+        'and every point of it the map shows is inside the wall at that tick -- it never '
+            .. 'shows storm as safe',
+        ('%.3f m out at %s'):format(pivotOut + 0.05, tostring(outWhere)))
+    ok(fitN > 100 and fitOff < 1e-6,
+        'and it is as large as fits there, not smaller',
+        ('%d ticks measured, worst %.3e at %s'):format(fitN, fitOff, tostring(fitWhere)))
     ok(frameTicks > 100 and frameWorst < 1e-3,
         'and from the knee it is the wall\'s own outline in its own frame, on the zone to a '
             .. 'millimetre -- a breakout\'s beside its destination at the zone\'s strength',

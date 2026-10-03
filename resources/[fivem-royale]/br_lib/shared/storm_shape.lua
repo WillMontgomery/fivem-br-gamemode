@@ -2314,6 +2314,90 @@ function BR.StormShape.fit(ks, discs, ox, oy, k)
     return fitOf(ks, discs, ox, oy, k)
 end
 
+--- fitScale's ratio at normal angle `th`, for one corner of each list: huge where the
+--- inner outline does not reach out along it at all.
+local function fitRatio(th, al, be, c, ga, de, f)
+    local co, si = cos(th), sin(th)
+    local den = ga * co + de * si + f
+    if den > 0.0 then return (al * co + be * si + c) / den end
+    return huge
+end
+
+--- The index of the corner of `ks` that carries normal angle `a`, searched from index
+--- `i` on: the ranges tile one turn in order, so a caller climbing through the turn
+--- walks the list once.
+local function cornerFrom(ks, i, a)
+    local m = #ks
+    for _ = 1, m do
+        local k = ks[i]
+        if ((a - k.a0) % TAU) <= (k.a1 - k.a0) then return i end
+        i = i % m + 1
+    end
+    return i
+end
+
+--- THE MOST A CONVEX OUTLINE CAN BE SCALED AND STILL FIT: the largest k for which
+--- corner list `inner`, scaled by k about the origin and moved to (ox, oy), lies inside
+--- corner list `ks` with `clear` meters to spare -- fit() at most -clear, its corners
+--- read as discs. EXACT, and no search (2026-10-02, #350).
+---
+--- One convex set lies inside another exactly when its support function is nowhere
+--- larger, and `clear` inside it when it is `clear` smaller everywhere. So k is the
+--- least, over every normal u, of (h_ks(u) - <(ox, oy), u> - clear) / h_inner(u).
+--- Between two breakpoints of the pair -- every corner end of either list, as in sumOf
+--- -- one corner of each list is the support, so that is (a cos + b sin + c) over
+--- (d cos + e sin + f), and its least is at an end of the range or where its
+--- derivative vanishes: E + F sin + G cos = 0, two angles at most, in closed form.
+---
+--- The origin must be inside `inner` and (ox, oy) inside `ks`, which is what scaling
+--- one about a point of the other means. 0 when nothing fits.
+---
+--- IT RUNS EVERY MAP TICK OF A SWEEP'S FIRST LEG (client/storm.lua), so both lists are
+--- walked once, in step, and each breakpoint is read once: the ratio is continuous
+--- across one, both support functions being so, so a range's end is the next one's
+--- start.
+--- @param ks table      the corner list to fit inside
+--- @param inner table   a corner list about the origin
+--- @return number k
+function BR.StormShape.fitScale(ks, inner, ox, oy, clear)
+    clear = clear or 0.0
+    local bps, n = {}, 0
+    for i = 1, #ks do n = n + 1; bps[n] = ks[i].a1 % TAU end
+    for i = 1, #inner do n = n + 1; bps[n] = inner[i].a1 % TAU end
+    table.sort(bps)
+    local best, ia, ib = huge, 1, 1
+    for j = 1, n do
+        local lo = bps[j]
+        local hi = (j < n) and bps[j + 1] or (bps[1] + TAU)
+        if hi > lo then
+            local mid = 0.5 * (lo + hi)
+            ia, ib = cornerFrom(ks, ia, mid), cornerFrom(inner, ib, mid)
+            local p, q = ks[ia], inner[ib]
+            local al, be, c = p.x - ox, p.y - oy, p.rho - clear
+            local ga, de, f = q.x, q.y, q.rho
+            local v = fitRatio(lo, al, be, c, ga, de, f)
+            if v < best then best = v end
+            local E, F, G = be * ga - al * de, c * ga - al * f, be * f - c * de
+            local A = sqrt(F * F + G * G)
+            if A > 0.0 and abs(E) <= A then
+                local psi, dw = atan(F, G), acos(-E / A)
+                local off = (psi + dw - lo) % TAU
+                if off <= hi - lo then
+                    v = fitRatio(lo + off, al, be, c, ga, de, f)
+                    if v < best then best = v end
+                end
+                off = (psi - dw - lo) % TAU
+                if off <= hi - lo then
+                    v = fitRatio(lo + off, al, be, c, ga, de, f)
+                    if v < best then best = v end
+                end
+            end
+        end
+    end
+    if best == huge or best < 0.0 then return 0.0 end
+    return best
+end
+
 --- The Minkowski sum A + B of two convex corner lists, as a corner list. EXACT.
 ---
 --- Its support function is h_A + h_B, and on any range of normals where A is on one

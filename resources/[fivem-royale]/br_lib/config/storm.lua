@@ -434,8 +434,9 @@ BR.Config.Storm = {
     --
     --   THE MAP DOES NOT REDRAW THE MORPH, since the 2026-10-02 hitch. No map handler
     --   edits a polygon's points, so while the zone changes shape the map shows the
-    --   outline it set off with, moved and scaled with the wall, and once it is the
-    --   destination's shape (`morph` below) that, moved and scaled exactly.
+    --   outline it set off with, moved with the wall and scaled to fit inside it, and
+    --   once it is the destination's shape (`morph` below) that, moved and scaled
+    --   exactly.
     --   `overlay.morphHz` has why, and how far off the first is.
     --
     --   A UNIT COSTS ABOUT TWO MILLISECONDS TO BUILD -- 1.7 on average, 5 at the
@@ -1013,28 +1014,32 @@ BR.Config.Storm = {
         -- matches to that, tick by tick.
         --
         -- WHAT THE MAP SHOWS DURING A SWEEP, THEN. To the knee, the zone's STARTING
-        -- outline, moved onto the wall's pivot and scaled to its size every tick
-        -- (BR.StormWallPivot); from the knee, the destination's outline in the wall's own
-        -- frame, which is exact. A breakout's wall is shown so, beside its destination at
-        -- the zone's strength. THE 3D WALL STILL MORPHS EVERY FRAME, so to the knee the
-        -- map is off the wall by how far the shape has turned since the sweep set off.
-        -- MEASURED over 12 whole matches through the real client at 100 ms (the suite's
-        -- record walk), every fifth tick of each first leg: the map's outline from the
-        -- zone, metres, mean [worst]. Beside it, the outline left standing where the
-        -- sweep set off, and 8335b17's staged outlines. A pause-map pixel is about 8 m.
+        -- outline, moved onto the wall's pivot (BR.StormWallPivot) and scaled every tick
+        -- as far as it fits inside the wall, 5 cm to spare (BR.StormShape.fitScale); from
+        -- the knee, the destination's outline in the wall's own frame, which is exact. A
+        -- breakout's wall is shown so, beside its destination at the zone's strength. THE
+        -- 3D WALL STILL MORPHS EVERY FRAME, so to the knee the map shows less safe ground
+        -- than there is, by how far the shape has turned since the sweep set off, and never
+        -- storm as safe. MEASURED over 30 whole matches through the real client at 100 ms
+        -- (the suite's record walk), each first leg: how far the real zone's edge lies
+        -- outside the map's, every fifth tick, meters, mean [worst]. Beside it, the outline
+        -- scaled to the wall's size instead (8bf391e), off both ways -- storm as safe, then
+        -- safe as storm -- and 8335b17's staged outlines (12 matches, either way). A
+        -- pause-map pixel is about 8 m.
         --
-        --     phase      moved         standing        staged
-        --       1     1292 [3631]    3989 [10548]    5.0 [18.4]
-        --       2      359 [1066]     845 [2284]     2.6 [9.7]
-        --       3      317 [775]      601 [1499]     2.7 [8.8]
-        --       4      211 [697]      478 [1497]     2.7 [8.7]
-        --       5      103 [261]      258 [789]      2.8 [11.8]
-        --       6       48 [157]      162 [494]      2.3 [8.4]
-        --       7       21 [73]        60 [219]      2.4 [11.1]
+        --     phase     fitted           sized to the wall           staged
+        --       1    2013 [9145]     907 [3050]   1096 [6096]    5.0 [18.4]
+        --       2     675 [2646]     361 [1244]    350 [1340]    2.6 [9.7]
+        --       3     437 [1293]     312 [802]     217 [692]     2.7 [8.8]
+        --       4     291 [792]      186 [697]     172 [687]     2.7 [8.7]
+        --       5     147 [437]      108 [356]      78 [297]     2.8 [11.8]
+        --       6      66 [214]       48 [157]      36 [137]     2.3 [8.4]
+        --       7      31 [94]        23 [73]       18 [75]      2.4 [11.1]
         --
-        -- (Standing, a breakout is up to 3 km off after the knee too; moved, it is exact.)
-        -- A MAP MORPH THAT IS PER FRAME AND HITCH-FREE IS A SEPARATE DESIGN QUESTION, and
-        -- this number is not the answer to it.
+        -- Fitted, no point of the map's outline was outside the wall on any of 58,391 ticks
+        -- after the one it was drawn on, where it is the wall; the fit costs about 11 us a
+        -- tick. A MAP MORPH THAT IS PER FRAME AND HITCH-FREE IS A SEPARATE DESIGN QUESTION,
+        -- and these numbers are not the answer to it.
         --
         -- ABOVE 0 the zone is redrawn this many times a second while its outline
         -- changes -- one REM_OVERLAY and one ADD_AREA_OVERLAY per contour, the

@@ -577,13 +577,16 @@ and `/brstormbisect mapoff` stopped it. A staged clip below is still an
 than 1.6 s apart, was the hitch. So `overlay.stage.enabled = false` and
 `overlay.morphHz = 0`: a sweep's zone is redrawn as it sets off and at the knee (a
 breakout's once more as it ends) and only placed in between. To the knee that is the
-outline it set off with, on the wall's pivot and at its size, which moves with the
-wall but does not turn with it; from the knee, the wall's own frame, exactly. Over 12
-whole matches the first leg's outline is on average 1.3 km off the wall in phase 1,
-360 m in phase 2 and 21 m in phase 7 (`overlay.morphHz` in config/storm.lua has the
-table). `map.hotfix` holds whole matches to it tick by tick, and `/brstormhitch`
-counts the redraws at the start and the knee apart from the old path's. The staging
-below is kept, under its tests, for the design that replaces it.
+outline it set off with, on the wall's pivot and scaled as far as it fits inside the
+wall (`BR.StormShape.fitScale`), which moves with the wall but does not turn with it;
+from the knee, the wall's own frame, exactly. So the map never shows storm as safe,
+and over 30 whole matches the real zone's edge lies on average 2.0 km outside the
+first leg's outline in phase 1, 680 m in phase 2 and 31 m in phase 7; scaled to the
+wall's size instead, it was off by about 1 km either way in phase 1 (`overlay.morphHz`
+in config/storm.lua has the table). `map.hotfix` holds whole matches to it tick by
+tick, and `/brstormhitch` counts the redraws at the start and the knee apart from the
+old path's. The staging below is kept, under its tests, for the design that replaces
+it.
 
 **8335b17 drew the one zone from outlines staged in the hold.** The destination
 is drawn once per phase and never touched; the safe zone is the zone itself. Until

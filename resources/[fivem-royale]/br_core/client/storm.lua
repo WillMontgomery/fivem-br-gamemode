@@ -1775,9 +1775,10 @@ end
 --             sweep, the wall the destination's outline converging on it -- and the
 --             last zone onto its point, in the wall's own frame (BR.StormWallFrame),
 --             exactly. To the knee, while the outline turns, the outline drawn as the
---             sweep set off, on the wall's pivot and at its size (BR.StormWallPivot):
---             it moves with the wall but does not turn with it. Drawn once, then moved
---             and resized every tick: two property writes a contour, no polygon. A
+--             sweep set off, on the wall's pivot (BR.StormWallPivot) and as large as
+--             fits inside the wall: it moves with the wall but does not turn with it,
+--             and shows less safe ground than there is rather than more. Drawn once, then
+--             moved and resized every tick: two property writes a contour, no polygon. A
 --             breakout's wall is placed so beside its destination, drawn again at the
 --             zone's strength and never placed -- the two union to the zone.
 --   REDRAWN   when the kind of change switches -- the sweep setting off, the knee, a
@@ -2021,8 +2022,9 @@ local function overlayPlan()
     --
     -- WHILE THE WALL MOVES THE MAP FOLLOWS THE WALL ITSELF (2026-10-02): its own frame
     -- from the knee -- on a breakout too, `wallOnly` -- and before it the wall's pivot,
-    -- where the outline drawn at the last redraw is moved and scaled (zonePicture).
-    local mode, fx, fy, fs, fid = 'still', nil, nil, nil, nil
+    -- where the outline drawn at the last redraw is moved, and scaled as far as it fits
+    -- inside the wall's corner list `fks` (zonePicture, applyZone).
+    local mode, fx, fy, fs, fid, fks = 'still', nil, nil, nil, nil, nil
     local sweep = st == BR.StormPhase.SHRINKING
     if growing then
         mode = 'morph'
@@ -2032,7 +2034,7 @@ local function overlayPlan()
             mode = 'frame'
         else
             mode = 'morph'
-            fx, fy, fs = BR.StormWallPivot(rec, t)
+            fx, fy, fs, fks = BR.StormWallPivot(rec, t)
         end
     elseif st == BR.StormPhase.FINISHED then
         fx, fy, fs, fid = BR.StormWallFrame(rec, t)
@@ -2050,7 +2052,7 @@ local function overlayPlan()
         sweep = sweep and fx ~= nil,
         mode = mode,
         tag = fid and ('frame|' .. fid) or (fx and 'pivot') or mode,
-        fx = fx, fy = fy, fs = fs,
+        fx = fx, fy = fy, fs = fs, fks = fks,
     }, key
 end
 
@@ -2069,10 +2071,20 @@ local function zonePicture(plan, first)
     local rec = plan.rec
     local ox, oy, os = plan.cx, plan.cy, 1.0
     if plan.fx then ox, oy, os = plan.fx, plan.fy, plan.fs end
-    local parts
+    local parts, hk = nil, nil
     if plan.sweep then
-        parts = contoursOf(BR.StormWall(rec, plan.t), ox, oy)
+        local wall = BR.StormWall(rec, plan.t)
+        parts = contoursOf(wall, ox, oy)
         for i = 1, #parts do parts[i].kind = 'wall' end
+        -- ON THE PIVOT, ITS CORNERS ABOUT IT: what applyZone fits inside the wall. A
+        -- hull's corners are discs whose hull is that hull; a circle is its own disc.
+        if plan.fks then
+            local ds = {}
+            for _, k in ipairs(wall.hull and wall.hull.ks or wall.discs or {}) do
+                ds[#ds + 1] = { x = k.x - ox, y = k.y - oy, r = k.rho or k.r }
+            end
+            hk = BR.StormShape.discHull(ds)
+        end
         if not BR.StormNested(rec) and (rec.r1 or 0.0) > 0.0 then
             for _, c in ipairs(contoursOf(BR.StormTarget(rec), 0.0, 0.0)) do
                 c.kind, c.fixed = 'dest', true
@@ -2087,8 +2099,8 @@ local function zonePicture(plan, first)
     for i = 1, #parts do
         areas[i] = { points = parts[i].points, colour = fillColour(255) }
     end
-    return { tag = plan.tag, ox = ox, oy = oy, os = os, parts = parts, first = first,
-             at = GetGameTimer() }, areas
+    return { tag = plan.tag, ox = ox, oy = oy, os = os, hk = hk, parts = parts,
+             first = first, at = GetGameTimer() }, areas
 end
 
 --- The whole picture for a plan, ready for BR.MapOverlay.setAreas: the destination in
@@ -2126,6 +2138,10 @@ local function overlayFill(plan)
     return out, dest, zone
 end
 
+--- How far inside the wall the outline on its pivot is kept, in meters: the coordinate
+--- string's two decimals move a point by up to 7 mm, and the clip is sized off them.
+local PIVOT_CLEAR_M = 0.05
+
 --- Put the zone where the plan says, and show it at the plan's strength. `first` is
 --- the tick it was drawn on, when both are written whatever they are -- a clip that
 --- has just been added sits on the world's origin at full strength until then.
@@ -2136,6 +2152,14 @@ end
 --- beside the wall) is never placed at all. An alpha is written when its value
 --- changed, which is the phase-1 fade and nothing else.
 ---
+--- ON THE PIVOT IT IS AS LARGE AS FITS INSIDE THE WALL, AND NO LARGER (2026-10-02).
+--- The outline the sweep set off with does not turn with the wall, so scaled to the
+--- wall's area it poked out wherever the wall had turned in -- storm shown as safe, by
+--- up to 3 km in phase 1. After the tick it is drawn on, where it IS the wall, it is
+--- scaled about the pivot as far as it still fits inside the wall's corner list at the
+--- tick (BR.StormShape.fitScale, exact), PIVOT_CLEAR_M to spare: the map may show safe
+--- ground as storm there, never storm as safe.
+---
 --- false on a refusal: the movie's picture is then not the storm's, and the caller
 --- decides what to do about it.
 --- @param z table     the zone's picture
@@ -2144,7 +2168,12 @@ end
 --- @return boolean ok
 local function applyZone(z, plan, first)
     local x, y, s = z.ox, z.oy, z.os
-    if plan.fx and plan.tag == z.tag then x, y, s = plan.fx, plan.fy, plan.fs end
+    if plan.fx and plan.tag == z.tag then
+        x, y, s = plan.fx, plan.fy, plan.fs
+        if z.hk and plan.fks and not first then
+            s = z.os * BR.StormShape.fitScale(plan.fks, z.hk, x, y, PIVOT_CLEAR_M)
+        end
+    end
     local resize = first or stormBisectMode ~= 'mapnoresize'
     if first or x ~= z.x or y ~= z.y or (resize and s ~= z.s) then
         local trace = BR.Loop.hitchBegin(

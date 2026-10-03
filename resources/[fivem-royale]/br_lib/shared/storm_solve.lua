@@ -842,11 +842,13 @@ end
 --- the sweep set off, or a staged one: an outline of the wall at t_j, drawn about its
 --- own pivot at its own size, moved to the pivot at t and scaled by the ratio of the
 --- sizes, stands on the wall at t to within how much the shape itself changed between
---- the two -- which is what the staging's spacing is chosen by. nil for a record with
---- no shape at all.
+--- the two -- which is what the staging's spacing is chosen by. The one drawn as the
+--- sweep set off is scaled instead as far as it fits inside the wall (2026-10-02), by
+--- the wall's corner list at t, which is the fourth answer. nil for a record with no
+--- shape at all.
 --- @param rec table
 --- @param t number
---- @return number|nil x, number y, number size
+--- @return number|nil x, number y, number size, table ks
 function BR.StormWallPivot(rec, t)
     local e = rec and infoOf(rec)
     if not e or #e.src == 0 then return nil end
@@ -861,7 +863,7 @@ function BR.StormWallPivot(rec, t)
     x, y = x / #from, y / #from
     local ks = (t <= 0.0 and BR.StormShape.discHull(e.src)) or hullAt(e, t)
     local area = ks and BR.StormShape.areaOf(ks) or 0.0
-    return x, y, math.sqrt(math.max(area, 0.0) / math.pi)
+    return x, y, math.sqrt(math.max(area, 0.0) / math.pi), ks
 end
 
 --- The fastest any corner of the wall moves during this record's sweep, in metres
