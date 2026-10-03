@@ -280,7 +280,9 @@ BR.Config.Map.POIs = {
     { id = 'vinewood',    name = 'Vinewood Bowl',    x =   700.0, y =  1200.0, z = 350.0, radius = 220.0, tier = 3 },
     { id = 'vinehills',   name = 'Vinewood Hills',   x =  -336.2, y =   289.3, z = 130.0, radius = 260.0, tier = 1 },
     { id = 'observatory', name = 'Galileo Observatory', x = -410.0, y = 1200.0, z = 330.0, radius = 200.0, tier = 2 },
-    { id = 'casino',      name = 'Diamond Casino',   x =   925.0, y =    46.0, z =  80.0, radius = 220.0, tier = 3 },
+    -- On the ground beside the casino, not on it (user, 2026-10-03): centered
+    -- on the building, an airdrop here landed on its roof, out of reach.
+    { id = 'casino',      name = 'Diamond Casino',   x =   949.1, y =   145.8, z =  80.0, radius = 220.0, tier = 3 },
     { id = 'landact',     name = 'Land Act Dam',     x =  1616.8, y =   367.8, z = 110.0, radius = 200.0, tier = 1 },
     { id = 'ulsa',        name = 'ULSA Campus',      x = -1750.0, y =   350.0, z =  60.0, radius = 220.0, tier = 1 },
 
