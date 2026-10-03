@@ -1936,7 +1936,8 @@ function BR.Inv.cancelUse(src, why)
     if why then BR.Server.notify(src, why, 'warn') end
 end
 
---- Is this player using a consumable that heals them, right now?
+--- Is this player using a consumable that heals them -- health or armor --
+--- right now?
 ---
 --- ASKED BY THE STORM, AND THAT IS ITS WHOLE PURPOSE (#366): "During the
 --- duration of the consumption, they shall take no damage from the storm"
@@ -1950,10 +1951,13 @@ end
 --- the slot guard, dropAll, a reset.
 ---
 --- "A CONSUMABLE WHICH DOES SO" IS READ OFF THE ROW: an item that restores
---- health carries `health`. Not an id list and not a new flag, so the next
---- healing item is covered by being a healing item. A shield (`armour` only)
---- answers false; that reading waits on the owner, and `or c.armour ~= nil`
---- here is the whole of the other answer.
+--- health carries `health`, one that restores armor carries `armour`. Not an
+--- id list and not a new flag, so the next healing item is covered by being a
+--- healing item. Shields count: the owner, 2026-10-03, asked whether shields
+--- should pause the storm too -- "shields, yes" -- and "pause" is "only for the
+--- duration of arming the consumable ... the storm will still cause damage
+--- after the consumable is used". So the pause is the channel and nothing
+--- more: it ends with the completion or the interrupt, and the next tick bills.
 ---
 --- A READ AND NOTHING ELSE: it asks the roster entry rather than BR.Inv.of,
 --- which creates an inventory on first touch, because the storm asks it of
@@ -1964,7 +1968,7 @@ function BR.Inv.healing(src)
     local e = BR.Roster.get(src)
     local u = e and e.inv and e.inv.using
     local c = u and BR.Config.ConsumableById[u.item]
-    return c ~= nil and c.health ~= nil
+    return c ~= nil and (c.health ~= nil or c.armour ~= nil)
 end
 
 --- The server just dealt this player a hit on somebody else's behalf. Does it
@@ -1987,9 +1991,9 @@ end
 ---
 --- ═══ BY WHAT THIS HIT DID, AND NOTHING ELSE ═══
 ---
---- `hp0` is fixed at the press, and other things lower the bar after it: the
---- storm's ticks under a shield (a shield does not pause the storm), a fall, a
---- client dipping its own ped. Judged on the bar alone, a channel already under
+--- `hp0` is fixed at the press, and other things lower the bar after it: a
+--- fall, a client dipping its own ped (and, until shields paused the storm too
+--- on 2026-10-03, the storm's ticks under a shield). Judged on the bar alone, a channel already under
 --- its line was interrupted by the next hit whatever that hit did -- a shield
 --- drunk outside the wall was ended by a hit its own armor soaked whole, while
 --- inside the wall the same hit did nothing. So a hit the armor takes all of

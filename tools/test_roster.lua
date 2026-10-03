@@ -28186,8 +28186,8 @@ do
 
     -- ─── A SHIELD IS ENDED BY WHAT THE HIT DID, INSIDE THE WALL OR OUT ───
     --
-    -- A shield does not pause the storm, so outside the wall its ticks take the
-    -- bar under where the shield started. The line used to be read off the bar
+    -- Before shields paused the storm too (2026-10-03), outside the wall its
+    -- ticks took the bar under where the shield started. The line used to be read off the bar
     -- alone, so out there any enemy hit at all ended the shield -- even one its
     -- armor soaked whole, which inside the wall did nothing. A hit interrupts by
     -- what it did itself: a soaked one ends nothing anywhere, and one that gets
@@ -28853,26 +28853,32 @@ do
                 tostring(hp1), tostring(subject().hp)))
     end
 
-    -- ─── A SHIELD DOES NOT PAUSE IT, AND FINISHES ANYWAY ───
+    -- ─── A SHIELD PAUSES IT TOO, FOR AS LONG AS IT IS BEING DRUNK ───
     --
-    -- A shield restores armor, not health, so it is not "a consumable which
-    -- does so": the storm goes on taking health while it runs. It is no longer
-    -- interrupted by the storm, though -- that takes a hit the server deals.
-    do
+    -- Owner, 2026-10-03: "shields, yes. and when you say "pause" you mean only
+    -- for the duration of arming the consumable right? the storm will still
+    -- cause damage after the consumable is used." So nothing is billed while
+    -- the shield runs, and the first tick after it lands bills as before.
+    for _, item in ipairs({ 'shield', 'minishield' }) do
         stage({ hp = 80.0, outside = true, dps = 4.0 })
-        bag({ 'shield' })
+        bag({ item })
         local t0, hp0 = fakeTime, subject().hp
-        press('shield')
+        press(item)
         step(20000, function() return not using() end)
-        ok(stormBetween(t0, fakeTime) >= 4 and subject().hp < hp0,
-            'the storm keeps billing health while a shield runs',
+        ok(stormBetween(t0, fakeTime) == 0 and subject().hp == hp0,
+            ('the storm bills nothing while a %s is being drunk'):format(item),
             ('%d instructions, %s -> %s'):format(stormBetween(t0, fakeTime),
                 tostring(hp0), tostring(subject().hp)))
-        step(500)
-        ok(count('shield') == 0 and subject().armour == 50,
-            'and the shield still lands its whole plate',
-            ('shields %d, armor %s'):format(count('shield'),
+        ok(count(item) == 0 and subject().armour > 0,
+            ('and the %s lands its plate'):format(item),
+            ('%s left %d, armor %s'):format(item, count(item),
                 tostring(subject().armour)))
+        local t1, hp1 = fakeTime, subject().hp
+        step(2500)
+        ok(stormBetween(t1, fakeTime) >= 1 and subject().hp < hp1,
+            ('and the storm bills again once the %s has landed'):format(item),
+            ('%d instructions, %s -> %s'):format(stormBetween(t1, fakeTime),
+                tostring(hp1), tostring(subject().hp)))
     end
 
     -- ─── AN ENEMY'S HIT ENDS THE HEAL, AND THE STORM RESUMES ───
@@ -29036,8 +29042,10 @@ do
     --
     -- The storm's own ticks lower the ledger, and the roadkill ledger credits
     -- those drops to the nearest moving car -- so a squadmate driving past
-    -- interrupted a shield the storm was not even pausing for, and handed it
-    -- back to be drunk again.
+    -- interrupted a shield (the storm did not pause for shields then), and
+    -- handed it back to be drunk again. Shields pause the storm now too
+    -- (2026-10-03), so there are no ticks to credit while one runs; what stays
+    -- pinned is the outcome, with the car still circling.
     do
         stage({ hp = 80.0, dps = 4.0, squad = true })
         local circle = besideCar(4.0)
@@ -29045,10 +29053,9 @@ do
         press('shield')
         step(20000, function() circle(); return not using() end)
         step(500, circle)
-        ok(subject().lastHitBy == 3 and count('shield') == 0
-            and subject().armour == 50,
-            'a shield drunk outside the wall with a squadmate\'s car circling, which '
-                .. 'is credited with the storm\'s ticks, still lands its whole plate',
+        ok(count('shield') == 0 and subject().armour == 50,
+            'a shield drunk outside the wall with a squadmate\'s car circling '
+                .. 'still lands its whole plate',
             ('credited %s, shields %d, armor %s'):format(tostring(subject().lastHitBy),
                 count('shield'), tostring(subject().armour)))
     end

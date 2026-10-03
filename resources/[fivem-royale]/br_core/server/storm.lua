@@ -758,10 +758,11 @@ end
 ---    damage from the storm."                          -- owner, 2026-10-02
 ---
 --- While a HEALING consumable's channel runs -- an item whose row carries
---- `health`, the bandage and the med kit today -- the storm deals that player
---- nothing at all: no ledger debit, no STORM_DAMAGE, no `lastStormAt`. It is
---- asked of BR.Inv.healing in the damage tick below, after the downed check, so
---- a downed player bleeds whatever their hands were doing.
+--- `health` or `armour`: the bandage, the med kit, the shield and the small
+--- shield today -- the storm deals that player nothing at all: no ledger
+--- debit, no STORM_DAMAGE, no `lastStormAt`. It is asked of BR.Inv.healing in
+--- the damage tick below, after the downed check, so a downed player bleeds
+--- whatever their hands were doing.
 ---
 --- IT IS KEYED ON THE SERVER'S OWN CHANNEL, the same two prohibitions as the
 --- rescue flag: `inv.using` is opened only by an INV_USE the server validated
@@ -782,11 +783,11 @@ end
 --- The seconds paused are not banked and charged later: a heal ran, and the
 --- owner's sentence is that the storm did nothing while it did.
 ---
---- SHIELDS DO NOT PAUSE IT. A shield restores armor, not health, so it is not
---- "a consumable which does so"; it finishes in the storm (server/inventory.lua's
---- damage-cancel takes a hit the server dealt that took health itself, the same
---- inside the wall and out) while the storm goes on taking health. That reading
---- is the owner's to confirm, and flipping it is BR.Inv.healing's one line.
+--- SHIELDS PAUSE IT TOO, and only for as long as they are being drunk. Owner,
+--- 2026-10-03: "shields, yes. and when you say "pause" you mean only for the
+--- duration of arming the consumable right? the storm will still cause damage
+--- after the consumable is used." The pause is the channel, nothing more: the
+--- first tick after it lands or is interrupted bills as before.
 ---
 --- THE AMBULANCE HEAL IS NOT A CONSUMABLE AND GETS NO PAUSE.
 local DAMAGEABLE = {
