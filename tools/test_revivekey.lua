@@ -2444,39 +2444,39 @@ end
 -- ---------------------------------------------------------------------------
 describe('revive.storm')
 do
-    -- ═══ THE BUG THIS BLOCK EXISTS FOR, AND IT IS INVISIBLE IN A PLAYTEST ═══
+    -- ═══ THE STORM BILLS A REVIVED PLAYER FROM THE HEALTH THEY WERE GIVEN ═══
     --
-    -- server/storm.lua seeds its damage ledger from `e.stormHp` and only ever
-    -- clamps it DOWN. Nothing clears that field on death -- only
-    -- BR.Match.resetPlayer and stepping back inside the circle do. So a player
-    -- the storm killed carries a stormHp at or below zero and is eliminated
-    -- again on the very next storm tick they are outside the wall for,
-    -- regardless of the health they were just handed.
+    -- This block used to pin a real bug: the storm kept a ledger of its own
+    -- (`stormHp`) that nothing cleared on death, so a player the storm killed
+    -- and the key brought back outside the wall died again a tick later. The
+    -- storm now takes its damage off the one health ledger (#366), so the `hp`
+    -- the revive writes IS what the next tick bills from and there is nothing
+    -- of the old death left to kill them with. What is left to pin is that the
+    -- revive writes that number, and drops the storm's stamp: a stale one would
+    -- label their next death a storm death and excuse a sample as storm damage
+    -- still in flight.
     --
-    -- MOVING THE ARRIVAL TO AN AMBULANCE MADE THIS LESS LIKELY AND NOT LESS
-    -- REAL. They no longer come back on the spot the storm killed them, so the
-    -- van is usually inside -- but a squad CAN drive an ambulance into the
-    -- storm, and 150m up over a shrinking circle is not a promise of anything.
+    -- THE TICK ITSELF IS tools/test_roster.lua's, which loads server/storm.lua:
+    -- `revivekey.bringBack` and the brrevive block there bill a revived player
+    -- from the health they came back on.
     --
-    -- WHAT IT WOULD LOOK LIKE IN GAME: a squad spends 500 Volts and six seconds
-    -- of standing in the open, their mate falls out of the sky on 30 hp, and
-    -- dies again about a second later for no reason anyone can see. Being
-    -- outside the wall is still a bad place to arrive -- that is the rule -- but
-    -- the damage has to start from the health they were given.
+    -- MOVING THE ARRIVAL TO AN AMBULANCE MADE THE WALL LESS LIKELY AND NOT
+    -- IMPOSSIBLE. A squad CAN drive an ambulance into the storm, and 150m up over
+    -- a shrinking circle is not a promise of anything. Being outside the wall is
+    -- still a bad place to arrive -- that is the rule.
     local _, dead = downed()
-    dead.stormHp     = -12.0
     dead.lastStormAt = fakeTime
 
     press(2, 1)
     hush(); finish(1, 2)
 
     ok(dead.state == BR.PlayerState.ALIVE, 'the storm\'s victim is back up')
-    ok(dead.stormHp == nil,
-        'and the storm ledger is cleared -- a revived player must not be killed '
-            .. 'again by a number recorded before they died', dead.stormHp)
+    ok(dead.hp == (tonumber(BR.Config.ReviveKey.reviveHp) or 100),
+        'on the health the key hands back, which is the one ledger the storm bills',
+        tostring(dead.hp))
     ok(dead.lastStormAt == nil,
-        'and its clock with it, so the first tick after the revive measures from '
-            .. 'now rather than from before the death')
+        'and the storm\'s stamp is dropped, so nothing from before the death '
+            .. 'labels or excuses anything after it')
 end
 
 -- ---------------------------------------------------------------------------

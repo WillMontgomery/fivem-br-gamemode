@@ -506,7 +506,7 @@ end
 --- working. Nothing honest looks like that, so the threshold does not have to be
 --- clever -- it only has to be higher than zero by a comfortable margin. It is
 --- reset with the rest of the per-match record in BR.Match.resetPlayer, beside
---- the storm ledger, for the reason #161 spells out.
+--- the health ledger itself, for the reason #161 spells out.
 ---
 --- @param tally table|nil   the previous tally, or nil to start one
 --- @param gain number       from BR.HealthUnexplainedGain

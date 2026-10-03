@@ -14,11 +14,22 @@
 --
 -- AUTHORITY, stated plainly. The server cannot write a ped's health, so the
 -- visible hurt is applied client-side on instruction (STORM_DAMAGE). But the
--- server keeps its own ledger of what the storm SHOULD have done to each
--- player and eliminates from the LEDGER -- so a client that ignores the
--- instruction keeps its health bar and dies at exactly the same moment as an
--- honest one. That is what makes the M4 authority drill pass: disable every
--- client storm callback and the elimination still lands on time.
+-- storm takes its damage off the server's ONE health ledger -- `e.hp`, the
+-- number BR.Damage.applyHit takes a bullet off -- first, and only then tells
+-- the client to hurt its ped by exactly the same whole points, and it
+-- eliminates from that ledger. So a client that ignores the instruction keeps
+-- its health bar and dies at exactly the same moment as an honest one. That is
+-- what makes the M4 authority drill pass: disable every client storm callback
+-- and the elimination still lands on time.
+--
+-- ONE LEDGER, NOT TWO (#366). The storm used to keep a ledger of its own
+-- (`e.stormHp`), seeded from the sampled health and reconciled with it by a
+-- min() every tick. Every heal, revive and bullet then had to reach both, and
+-- four rounds of fixes were each one of those reconciliations going wrong in
+-- some ordering: a heal the second ledger never heard of, a kill with health on
+-- the bar, a revive re-killed by a number from before the death, and a client
+-- that ignored the damage resetting the bill by stepping inside (#373). There is
+-- nothing to reconcile now, so none of those has anywhere to live.
 --
 -- Storm damage is deliberately NOT routed through combat validation: it has no
 -- attacker, no weapon and no hit position. It is the server hurting a player,
@@ -704,7 +715,7 @@ end
 ---
 --- WHICH IS WHAT THIS FILE ALREADY DOES, and #194 §4 established that before the
 --- question was asked: the damage loop below is a position check against the
---- solved circle and a server-side ledger. It holds no ped handle and no vehicle
+--- solved circle and the one health ledger. It holds no ped handle and no vehicle
 --- handle, so a player driving through the wall takes exactly what a player
 --- walking through it takes. Nothing was added to keep it that way. The test in
 --- tools/test_roster.lua's `storm.vehicles` block is what stops it drifting,
@@ -776,125 +787,236 @@ end)
 -- Damage. Positions come from the roster's own server-side sampling -- never
 -- from anything a client reported -- so a position-lying client gains nothing
 -- here.
+
+--- The zone the storm bills against at this instant, or nil while it bills
+--- nobody (not PLAYING, no record, or a phase at zero dps -- phase 1's
+--- free-loot hold).
+---
+--- ONE FUNCTION FOR EVERY QUESTION ABOUT IT. The damage tick below asks it once
+--- per pass, and anything else that must know whether the wall is hurting a
+--- player (BR.Storm.exposed) asks the same function, so the two can never
+--- disagree about where the edge is.
+--- @param m table   the match
+--- @param now number
+--- @return table|nil  { zone, near, margin, dps }
+local function billingZone(m, now)
+    if m.state ~= BR.MatchState.PLAYING or not m.storm then return nil end
+
+    local rec = m.storm
+    local cx, cy, r, _, _, dps, t, g = BR.StormAt(rec, now)
+    if dps <= 0 then return nil end
+
+    -- THE EDGE CUSHION. During a shrink the wall moves METRES PER SECOND
+    -- (phase 1 sweeps >150 m/s), and three clocks disagree at the knife
+    -- edge: this tick, the most recent 4 Hz position sample, and the
+    -- client's own view of the circle. Damage therefore starts a margin
+    -- OUTSIDE the solved radius -- a base allowance plus ~0.7s of wall
+    -- travel -- so a player standing at the visible curtain is always
+    -- genuinely safe (live reports: hurt while 20-50ft inside the wall).
+    --
+    -- UNCHANGED BY THE UNION BELOW, and it means the same thing it always
+    -- did: the cushion is metres of slack OUTSIDE the edge of the safe
+    -- zone, whatever shape that edge is. It is the same three clocks and
+    -- the same wall speed; nothing about a second circle makes any of them
+    -- agree better.
+    --
+    -- ═══ AND THE 0.7 s OF TRAVEL IS THE ZONE 0.7 s EITHER SIDE (#344) ═══
+    --
+    -- It was (r0 - r1) / T of radius while SHRINKING -- a circle's edge
+    -- speed -- and a morphing corner moves two to four times that, and a
+    -- conjoined zone grows into its destination during the HOLD, where it
+    -- added nothing. So the slack is the zone as it stood 0.7 s ago and as it
+    -- will stand in 0.7 s, plus the ten metres: exactly the old rule for two
+    -- concentric circles, and each stretch of edge's own travel otherwise.
+    -- BR.StormCushionZones has the numbers, and hands back nothing while
+    -- nothing moves.
+    local margin = 10.0
+    local near = BR.StormCushionZones(rec, now, 700.0)
+
+    -- ═══ THE SAFE ZONE IS BOTH CIRCLES, NOT ONLY THE ONE THE WALL IS ON ═══
+    --
+    --   "take for example 2 storm circles (current and next) which are
+    --    barely overlapping - like a venn diagram. We should extend the
+    --    safezone to cover both circles, so if a player gets to the new
+    --    destination early they are safe. That logic also doesn't exist
+    --    today."                                     -- owner, 2026-09-21
+    --
+    -- THE FAILURE IT PREVENTS. A player who read the map, saw the purple
+    -- ring and ran to it before the wall set off was billed for the whole
+    -- trip and billed again for standing in the destination. That is the
+    -- storm punishing the one thing it exists to force, and it was worst on
+    -- exactly the phases the breakout was built to create -- the ones where
+    -- the next circle barely overlaps the current one or does not overlap
+    -- it at all.
+    --
+    -- ═══ WHY THIS IS SAFE TO SHIP: ON AN ORDINARY PHASE IT IS A NO-OP ═══
+    --
+    -- The next circle is normally NESTED inside the current one, and the
+    -- union of a circle with a circle inside it IS the outer circle --
+    -- union2 returns precisely that, by its first case, so the set of
+    -- players this tick hurts is the same set it hurt yesterday. The rule
+    -- only has an effect when the circles are NOT nested, which is the case
+    -- the owner is describing and the only case BR.NextZoneCentre's
+    -- breakout can produce.
+    --
+    -- TWO DISJOINT CIRCLES ARE TWO SAFE ISLANDS WITH AN UNSAFE GAP BETWEEN
+    -- THEM, and that is the intended reading rather than a case wanting its
+    -- own rule: "the far circle should be safe, that's fine" (owner, same
+    -- day). A player who has crossed to the far circle has earned it.
+    --
+    -- IT HOLDS FOR THE WHOLE PHASE, holding and shrinking both, and it is
+    -- self-closing: the two circles converge as the sweep runs and the
+    -- union collapses onto the one circle exactly when the sweep ends.
+    --
+    -- BUILT ONCE PER TICK, NOT ONCE PER PLAYER. The zone is a function of
+    -- the record and the clock and of nothing a player carries, so it
+    -- belongs out here rather than inside the roster walk, where sixty
+    -- players would each rebuild the same two discs.
+    --
+    -- ═══ THE FINAL PHASE'S DESTINATION IS A POINT, AND A POINT IS NOT A
+    --     SECOND CIRCLE TO REACH ═══
+    --
+    -- config/storm.lua's phases[8] closes on `radius = 0.0`. This block used
+    -- to say that union2 floored it at one metre and that one metre inside a
+    -- cushion of ten changed nothing a player could stand in. It changed two
+    -- things. A one-metre disc more than about 35 metres from the current
+    -- circle's centre is a SEPARATE COMPONENT, and phase 8's reachable offset
+    -- is up to 60 metres (r 40 plus gapMax half of it) -- so the wall drew a
+    -- 4.8m wide, 950m tall pillar on the exact point everyone was fighting
+    -- over, and this rule sheltered an eleven-metre bubble on it for the whole
+    -- sweep: a safe island detached from the wall in the endgame, which is the
+    -- failure `server.collapse` exists to prevent at the other end of the
+    -- phase.
+    --
+    -- The constructor NOW REFUSES A DISC WITH NO RADIUS, so neither happens and
+    -- the two files cannot disagree about whether that disc exists -- they are
+    -- looking at the same constructor. Its header argues the decision. On phase
+    -- 8 this reads exactly `r + margin` against the travelling wall, which is
+    -- what it read before #328, and the destination is sheltered when the wall
+    -- actually arrives on it rather than for the minute beforehand.
+    --
+    -- ═══ AND THE ZONE IS A SHAPE, NOT A PAIR OF CIRCLES (#344) ═══
+    --
+    -- BR.StormZone is the same call client/storm.lua's wall and HUD make, off
+    -- the same record and the same solved circle, so what this bills for is
+    -- exactly the boundary the player is looking at. That is not a tidiness
+    -- claim: the shape is derived from the record's seed rather than sent, so
+    -- one side spelling the derivation differently is a wall in the wrong place
+    -- with nothing on the wire to contradict it.
+    --
+    -- EXACT ON AN OVERLAPPING BREAKOUT TOO: a signed distance to a union is the
+    -- minimum of the two, which holds for any two shapes.
+    --
+    -- AND EXACT MID-MORPH. `t` is the sweep fraction this tick solved, which is
+    -- what the wall's own frame passes, so the shape billed is the shape drawn
+    -- -- and a morph is a corner list like any other, with an exact signed
+    -- distance rather than a bound on one (storm_shape.lua's morph section).
+    -- `g` likewise: a conjoined zone GROWS into its destination across the
+    -- hold's first seconds instead of popping (#344), and the ground billed is
+    -- the ground the wall has grown over, at this tick.
+    local zone = BR.StormZone(rec, cx, cy, r, t, g)
+
+    return { zone = zone, near = near, margin = margin, dps = dps }
+end
+
+--- Is (x, y) further outside the billing zone than the cushion allows?
+---
+--- A SIGNED DISTANCE AGAINST THE ZONE, WHICH IS WHAT `<= r + margin` ALWAYS
+--- WAS. distance() is negative inside and positive outside, so the radius is
+--- simply folded into the shape and the comparison is the same comparison.
+---
+--- IT READS THE SIGN AND A MAGNITUDE FROM OUTSIDE, WHICH IS WHERE IT IS EXACT.
+--- distance() is the minimum of the two disc distances, so it understates DEPTH
+--- strictly inside the lens where the two discs overlap -- never the other way,
+--- and never anywhere out here. Its header carries the numbers. This asks only
+--- whether a player is further outside than the cushion allows, and that answer
+--- is exact -- of the zone now and of the zone 0.7 s either side, while it
+--- moves.
+--- @param z table   from billingZone
+--- @param x number
+--- @param y number
+--- @return boolean
+local function outside(z, x, y)
+    local out = BR.StormShape.distance(z.zone, x, y)
+    for i = 1, #z.near do
+        local d = BR.StormShape.distance(z.near[i], x, y)
+        if d < out then out = d end
+    end
+    return out > z.margin
+end
+
+--- Bill one ALIVE player outside the wall for `display` points of storm.
+---
+--- ═══ THE LEDGER TAKES EXACTLY WHAT THE PED IS TOLD (#366) ═══
+---
+--- The wire carries WHOLE engine points, with the fraction carried forward so
+--- 0.5 dps lands as a point every other second instead of nothing. The
+--- ledger is debited the same whole points, converted back to display units,
+--- on the same tick -- not the exact `dps * dt`. An honest ped can only ever
+--- show whole points, so a ledger that took the exact fraction ran up to a
+--- point ahead of the bar and killed players with a point still showing;
+--- taking what was sent keeps the two equal the moment the instruction lands,
+--- and the carry makes the totals the same either way.
+---
+--- SERVER FIRST, PED SECOND. The ledger is written before STORM_DAMAGE leaves,
+--- so for one round trip an honest ped reads HIGHER than the ledger by the
+--- damage in flight. That is the same shape a bullet has had since the
+--- 2026-09-08 audit, and server/roster.lua reads `lastStormAt` beside
+--- `lastHitAt` so the sampler holds the ledger rather than calling it a lie.
+--- `lastStormAt` is stamped on every bill, a whole point sent or not.
+---
+--- THROUGH BR.Roster.update, NOT BY ASSIGNMENT. A storm-only drop is whole
+--- points and the sampler only broadcasts a CHANGE it commits, which it never
+--- will for a number the ledger already holds -- so a bare write would leave
+--- every squad panel and the Ringmaster console on the old health for as
+--- long as a player stood in the wall.
+---
+--- AND A HEAL CEILING STILL STANDING COMES DOWN WITH IT, which is
+--- BR.Damage.applyHit's rule for a bullet: a target issued before this tick
+--- is a number this tick has taken from, and leaving it would let the sampler
+--- GRANT the ledger straight back up past the storm.
+--- @param src integer
+--- @param e table      the roster entry, ALIVE
+--- @param display number  display points owed this tick
+--- @param carry table  the match's engine-point remainders, by src
+--- @param now number
+local function bill(src, e, display, carry, now)
+    e.lastStormAt = now
+
+    local engine = BR.ToEngineHpDelta(display) + (carry[src] or 0.0)
+    local whole  = math.floor(engine)
+    carry[src]   = engine - whole
+    if whole <= 0 then return end
+
+    local M = BR.Config.Match
+    local took = whole * 100.0 / (M.maxHealth - M.healthFloor)
+    BR.Roster.update(src, { hp = math.max(0.0, (e.hp or 100.0) - took) })
+    if e.grantHpTo then e.grantHpTo = e.grantHpTo - took end
+
+    -- The visible half: tell the client to hurt its ped, by what the ledger
+    -- just took.
+    TriggerClientEvent(BR.Net.STORM_DAMAGE, src, {
+        amount      = whole,
+        armourFirst = cfg.damageArmourFirst and true or false,
+    })
+
+    -- Elimination comes from the LEDGER, not the ped. An honest client's ped
+    -- reaches zero on the instruction just sent; a deaf one dies here anyway.
+    if e.hp <= 0.0 then
+        print(('[br_core] storm: ledger kill on %s (%d)'):format(e.name, src))
+        -- defeat(), not eliminate(): the wall knocks a squad player down like
+        -- anything else does. It is a bad place to be picked up, which is the
+        -- point.
+        BR.Combat.defeat(src, 'storm', nil)
+    end
+end
+
 BR.Sched.every(1000, 'storm.damage', function(dt)
     local now = GetGameTimer()
 
     BR.Server.eachMatch(function(m)
-        if m.state ~= BR.MatchState.PLAYING or not m.storm then return end
-
-        local rec = m.storm
-        local cx, cy, r, st, _, dps, t, g = BR.StormAt(rec, now)
-        if dps <= 0 then return end
-
-        -- THE EDGE CUSHION. During a shrink the wall moves METRES PER SECOND
-        -- (phase 1 sweeps >150 m/s), and three clocks disagree at the knife
-        -- edge: this tick, the most recent 4 Hz position sample, and the
-        -- client's own view of the circle. Damage therefore starts a margin
-        -- OUTSIDE the solved radius -- a base allowance plus ~0.7s of wall
-        -- travel -- so a player standing at the visible curtain is always
-        -- genuinely safe (live reports: hurt while 20-50ft inside the wall).
-        --
-        -- UNCHANGED BY THE UNION BELOW, and it means the same thing it always
-        -- did: the cushion is metres of slack OUTSIDE the edge of the safe
-        -- zone, whatever shape that edge is. It is the same three clocks and
-        -- the same wall speed; nothing about a second circle makes any of them
-        -- agree better.
-        --
-        -- ═══ AND THE 0.7 s OF TRAVEL IS THE ZONE 0.7 s EITHER SIDE (#344) ═══
-        --
-        -- It was (r0 - r1) / T of radius while SHRINKING -- a circle's edge
-        -- speed -- and a morphing corner moves two to four times that, and a
-        -- conjoined zone grows into its destination during the HOLD, where it
-        -- added nothing. So the slack is the zone as it stood 0.7 s ago and as it
-        -- will stand in 0.7 s, plus the ten metres: exactly the old rule for two
-        -- concentric circles, and each stretch of edge's own travel otherwise.
-        -- BR.StormCushionZones has the numbers, and hands back nothing while
-        -- nothing moves.
-        local margin = 10.0
-        local near = BR.StormCushionZones(rec, now, 700.0)
-
-        -- ═══ THE SAFE ZONE IS BOTH CIRCLES, NOT ONLY THE ONE THE WALL IS ON ═══
-        --
-        --   "take for example 2 storm circles (current and next) which are
-        --    barely overlapping - like a venn diagram. We should extend the
-        --    safezone to cover both circles, so if a player gets to the new
-        --    destination early they are safe. That logic also doesn't exist
-        --    today."                                     -- owner, 2026-09-21
-        --
-        -- THE FAILURE IT PREVENTS. A player who read the map, saw the purple
-        -- ring and ran to it before the wall set off was billed for the whole
-        -- trip and billed again for standing in the destination. That is the
-        -- storm punishing the one thing it exists to force, and it was worst on
-        -- exactly the phases the breakout was built to create -- the ones where
-        -- the next circle barely overlaps the current one or does not overlap
-        -- it at all.
-        --
-        -- ═══ WHY THIS IS SAFE TO SHIP: ON AN ORDINARY PHASE IT IS A NO-OP ═══
-        --
-        -- The next circle is normally NESTED inside the current one, and the
-        -- union of a circle with a circle inside it IS the outer circle --
-        -- union2 returns precisely that, by its first case, so the set of
-        -- players this tick hurts is the same set it hurt yesterday. The rule
-        -- only has an effect when the circles are NOT nested, which is the case
-        -- the owner is describing and the only case BR.NextZoneCentre's
-        -- breakout can produce.
-        --
-        -- TWO DISJOINT CIRCLES ARE TWO SAFE ISLANDS WITH AN UNSAFE GAP BETWEEN
-        -- THEM, and that is the intended reading rather than a case wanting its
-        -- own rule: "the far circle should be safe, that's fine" (owner, same
-        -- day). A player who has crossed to the far circle has earned it.
-        --
-        -- IT HOLDS FOR THE WHOLE PHASE, holding and shrinking both, and it is
-        -- self-closing: the two circles converge as the sweep runs and the
-        -- union collapses onto the one circle exactly when the sweep ends.
-        --
-        -- BUILT ONCE PER TICK, NOT ONCE PER PLAYER. The zone is a function of
-        -- the record and the clock and of nothing a player carries, so it
-        -- belongs out here rather than inside the roster walk, where sixty
-        -- players would each rebuild the same two discs.
-        --
-        -- ═══ THE FINAL PHASE'S DESTINATION IS A POINT, AND A POINT IS NOT A
-        --     SECOND CIRCLE TO REACH ═══
-        --
-        -- config/storm.lua's phases[8] closes on `radius = 0.0`. This block used
-        -- to say that union2 floored it at one metre and that one metre inside a
-        -- cushion of ten changed nothing a player could stand in. It changed two
-        -- things. A one-metre disc more than about 35 metres from the current
-        -- circle's centre is a SEPARATE COMPONENT, and phase 8's reachable offset
-        -- is up to 60 metres (r 40 plus gapMax half of it) -- so the wall drew a
-        -- 4.8m wide, 950m tall pillar on the exact point everyone was fighting
-        -- over, and this rule sheltered an eleven-metre bubble on it for the whole
-        -- sweep: a safe island detached from the wall in the endgame, which is the
-        -- failure `server.collapse` exists to prevent at the other end of the
-        -- phase.
-        --
-        -- The constructor NOW REFUSES A DISC WITH NO RADIUS, so neither happens and
-        -- the two files cannot disagree about whether that disc exists -- they are
-        -- looking at the same constructor. Its header argues the decision. On phase
-        -- 8 this reads exactly `r + margin` against the travelling wall, which is
-        -- what it read before #328, and the destination is sheltered when the wall
-        -- actually arrives on it rather than for the minute beforehand.
-        --
-        -- ═══ AND THE ZONE IS A SHAPE, NOT A PAIR OF CIRCLES (#344) ═══
-        --
-        -- BR.StormZone is the same call client/storm.lua's wall and HUD make, off
-        -- the same record and the same solved circle, so what this bills for is
-        -- exactly the boundary the player is looking at. That is not a tidiness
-        -- claim: the shape is derived from the record's seed rather than sent, so
-        -- one side spelling the derivation differently is a wall in the wrong place
-        -- with nothing on the wire to contradict it.
-        --
-        -- EXACT ON AN OVERLAPPING BREAKOUT TOO: a signed distance to a union is the
-        -- minimum of the two, which holds for any two shapes.
-        --
-        -- AND EXACT MID-MORPH. `t` is the sweep fraction this tick solved, which is
-        -- what the wall's own frame passes, so the shape billed is the shape drawn
-        -- -- and a morph is a corner list like any other, with an exact signed
-        -- distance rather than a bound on one (storm_shape.lua's morph section).
-        -- `g` likewise: a conjoined zone GROWS into its destination across the
-        -- hold's first seconds instead of popping (#344), and the ground billed is
-        -- the ground the wall has grown over, at this tick.
-        local zone = BR.StormZone(rec, cx, cy, r, t, g)
+        local z = billingZone(m, now)
+        if not z then return end
 
         -- Capped so a long scheduler stall (or a test jumping the clock)
         -- cannot land one apocalyptic tick.
@@ -913,28 +1035,10 @@ BR.Sched.every(1000, 'storm.damage', function(dt)
             function(src, e)
                 if not e.pos then return end   -- not sampled yet (OneSync warning covers why)
 
-                -- A SIGNED DISTANCE AGAINST THE ZONE, WHICH IS WHAT `<= r +
-                -- margin` ALWAYS WAS. distance() is negative inside and
-                -- positive outside, so the radius is simply folded into the
-                -- shape and the comparison is the same comparison.
-                --
-                -- IT READS THE SIGN AND A MAGNITUDE FROM OUTSIDE, WHICH IS
-                -- WHERE IT IS EXACT. distance() is the minimum of the two disc
-                -- distances, so it understates DEPTH strictly inside the lens
-                -- where the two discs overlap -- never the other way, and never
-                -- anywhere out here. Its header carries the numbers. This line
-                -- asks only whether a player is further outside than the
-                -- cushion allows, and that answer is exact -- of the zone now
-                -- and of the zone 0.7 s either side, while it moves.
-                local out = BR.StormShape.distance(zone, e.pos.x, e.pos.y)
-                for i = 1, #near do
-                    local d = BR.StormShape.distance(near[i], e.pos.x, e.pos.y)
-                    if d < out then out = d end
-                end
-                if out <= margin then
-                    -- Inside: the ledger re-seeds from sampled reality next
-                    -- time they are caught out.
-                    e.stormHp  = nil
+                if not outside(z, e.pos.x, e.pos.y) then
+                    -- Inside. Only the fraction is dropped; there is no second
+                    -- ledger to reset, so stepping in and out changes nothing
+                    -- about what the storm has already taken (#373).
                     carry[src] = nil
                     return
                 end
@@ -949,46 +1053,11 @@ BR.Sched.every(1000, 'storm.damage', function(dt)
                 -- screen is the feedback.
                 if e.state == BR.PlayerState.DBNO then
                     e.lastStormAt = now
-                    BR.Combat.bleed(src, dps * dtSec, nil, nil)
+                    BR.Combat.bleed(src, z.dps * dtSec, nil, nil)
                     return
                 end
 
-                -- THE LEDGER. Seeded from the sampled display hp, then
-                -- decremented server-side every tick they spend outside.
-                -- min() with the sample keeps it honest when the player is
-                -- ALSO being shot: the ledger may never lag above reality,
-                -- only refuse to be lied upward. (M6's reconciliation sweep
-                -- replaces this with the full model.)
-                local display = e.stormHp or e.hp or 100.0
-                if e.hp and e.hp < display then display = e.hp end
-                display = display - dps * dtSec
-                e.stormHp     = display
-                e.lastStormAt = now
-
-                -- The visible half: tell the client to hurt its ped. Engine
-                -- units, whole numbers, fraction carried forward so 1 dps
-                -- rounds to two engine points per second instead of nothing.
-                local engine = BR.ToEngineHpDelta(dps * dtSec) + (carry[src] or 0.0)
-                local whole  = math.floor(engine)
-                carry[src]   = engine - whole
-                if whole > 0 then
-                    TriggerClientEvent(BR.Net.STORM_DAMAGE, src, {
-                        amount      = whole,
-                        armourFirst = cfg.damageArmourFirst and true or false,
-                    })
-                end
-
-                -- Elimination comes from the LEDGER, not the ped. An honest
-                -- client's ped dies at the same moment anyway; a deaf one
-                -- dies here regardless.
-                if display <= 0 then
-                    print(('[br_core] storm: ledger kill on %s (%d)')
-                        :format(e.name, src))
-                    -- defeat(), not eliminate(): the wall knocks a squad
-                    -- player down like anything else does. It is a bad place
-                    -- to be picked up, which is the point.
-                    BR.Combat.defeat(src, 'storm', nil)
-                end
+                bill(src, e, z.dps * dtSec, carry, now)
             end)
     end)
 end)

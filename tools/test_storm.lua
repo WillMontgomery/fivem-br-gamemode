@@ -512,6 +512,15 @@ local function newStormServer()
                 if pred(e) then fn(src, e) end
             end
         end,
+        -- THE STORM WRITES THE ONE HEALTH LEDGER THROUGH THIS (#366), so the
+        -- squad panel hears it. The real verb also broadcasts; here the write is
+        -- the whole of it.
+        update = function(src, changes)
+            local e = S.roster[src]
+            if not e then return nil end
+            for k, v in pairs(changes) do e[k] = v end
+            return e
+        end,
     }
     env.BR.Combat = {
         bleed = function(src, amount)
@@ -580,17 +589,17 @@ local function newStormServer()
     --- Stand the one player at (x, y) and run a pass. True if the storm billed
     --- them for it.
     ---
-    --- THE LEDGER IS THE READ, NOT THE WIRE. STORM_DAMAGE carries whole engine
+    --- THE STAMP IS THE READ, NOT THE WIRE. STORM_DAMAGE carries whole engine
     --- points with the fraction carried forward, so at a low dps a given tick
-    --- legitimately sends nothing; `stormHp` is the server-side number that
-    --- decides the elimination and the inside branch is the only thing that
-    --- clears it.
+    --- legitimately sends nothing and the ledger (`hp`) does not move;
+    --- `lastStormAt` is stamped on every pass that bills the player, a whole
+    --- point sent or not (#366), and on no other.
     function S.hurts(x, y)
         local e = S.roster[1]
         e.pos = { x = x, y = y, z = 30.0 }
-        e.stormHp = nil
+        e.lastStormAt = nil
         S.tick()
-        return e.stormHp ~= nil
+        return e.lastStormAt ~= nil
     end
 
     --- The last match-wide send of one event, or nil.
@@ -1846,48 +1855,68 @@ do
     -- elimination. The union changed WHERE the boundary is and nothing about
     -- what crossing it costs, so the ledger, the wire and the defeat still
     -- behave as they did -- which is worth an assertion because the inside
-    -- branch of that test is the one that clears `stormHp`, and a rule that
-    -- returned early in the wrong direction would look like a player who is
-    -- simply good at staying in the circle.
+    -- branch of that test returns early, and a rule that returned early in the
+    -- wrong direction would look like a player who is simply good at staying in
+    -- the circle.
+    --
+    -- THE LEDGER IS THE ONE HEALTH LEDGER (#366). The storm takes its damage off
+    -- `hp` -- the number a bullet comes off -- and takes EXACTLY the whole points
+    -- it tells the ped to lose, so an honest bar and the ledger are the same
+    -- number the moment the instruction lands.
     local S = newStormServer()
     S.record(2, 0.0, 0.0, 400.0, 1200.0, 0.0, 300.0, 600000, 60000, 6.0)
 
     local e = S.env.BR.Roster.get(1)
     e.pos = { x = 700.0, y = 0.0, z = 30.0 }   -- in the gap
-    S.tick()
-    local first = e.stormHp
-    ok(first ~= nil and first < 100.0, 'the ledger opens below full health',
-        tostring(first))
-    S.tick()
-    ok(e.stormHp ~= nil and e.stormHp < first,
-        'and runs down every tick they spend out there',
-        ('%s -> %s'):format(tostring(first), tostring(e.stormHp)))
 
-    local wire = 0
-    for _, h in ipairs(S.out) do
-        if h.event == S.env.BR.Net.STORM_DAMAGE then wire = wire + 1 end
+    --- Display points the wire has told the subject to lose so far.
+    local function sentTotal()
+        local n = 0
+        for _, h in ipairs(S.out) do
+            if h.event == S.env.BR.Net.STORM_DAMAGE and h.target == 1 then
+                n = n + h.payload.amount
+            end
+        end
+        return n * 100.0 / (S.env.BR.Config.Match.maxHealth
+            - S.env.BR.Config.Match.healthFloor)
     end
-    ok(wire >= 1, 'the client is told to hurt its ped', wire)
+
+    S.tick()
+    local first = e.hp
+    ok(first < 100.0 and first == 100.0 - sentTotal(),
+        'the health ledger drops on the first tick, by exactly what the ped was told',
+        ('%s, sent %s'):format(tostring(first), tostring(sentTotal())))
+    S.tick()
+    ok(e.hp < first and e.hp == 100.0 - sentTotal(),
+        'and runs down every tick they spend out there, in lock-step with the wire',
+        ('%s -> %s, sent %s'):format(tostring(first), tostring(e.hp),
+            tostring(sentTotal())))
+    ok(e.stormHp == nil, 'and there is no second, storm-only ledger beside it')
 
     -- AND THE ELIMINATION STILL COMES FROM THE LEDGER. Sixteen more seconds at
     -- 6 dps takes 100 display points off, whatever the ped is doing.
     for _ = 1, 20 do S.tick() end
-    ok(S.defeated[1] == true,
-        'and the ledger kill still lands on a player who stays in the gap')
+    ok(S.defeated[1] == true and e.hp == 0.0,
+        'and the ledger kill still lands on a player who stays in the gap',
+        tostring(e.hp))
 
     -- WALKING INTO THE FAR ISLAND STOPS IT, which is the whole feature seen
-    -- from the ledger's side rather than from a boolean.
+    -- from the ledger's side rather than from a boolean -- and NOTHING IS
+    -- RESET: the health the storm already took stays taken (#373).
     local T = newStormServer()
     T.record(2, 0.0, 0.0, 400.0, 1200.0, 0.0, 300.0, 600000, 60000, 6.0)
     local f = T.env.BR.Roster.get(1)
     f.pos = { x = 700.0, y = 0.0, z = 30.0 }
     T.tick()
-    ok(f.stormHp ~= nil, 'a player in the gap has a ledger')
+    local billed = f.hp
+    ok(billed < 100.0 and f.lastStormAt ~= nil, 'a player in the gap is billed',
+        tostring(billed))
     f.pos = { x = 1200.0, y = 0.0, z = 30.0 }
-    T.tick()
-    ok(f.stormHp == nil,
-        'and reaching the new destination closes it -- the ledger re-seeds from '
-            .. 'sampled reality next time they are caught out')
+    f.lastStormAt = nil
+    T.tick(); T.tick()
+    ok(f.hp == billed and f.lastStormAt == nil,
+        'and reaching the new destination stops the bill without undoing it',
+        ('%s -> %s'):format(tostring(billed), tostring(f.hp)))
     ok(T.defeated[1] == nil, 'nobody is eliminated for having made the run')
 end
 
@@ -6945,11 +6974,12 @@ do
     local e = S.roster[1]
     -- Ten kilometres from it, which is outside anything on the map.
     e.pos = { x = 9000.0, y = 9000.0, z = 30.0 }
-    e.stormHp = nil
+    e.lastStormAt = nil
     local sends = #S.out
     S.tick(); S.tick(); S.tick()
 
-    ok(e.stormHp == nil, 'and standing 10km from it costs nothing')
+    ok(e.lastStormAt == nil and e.hp == 100.0,
+        'and standing 10km from it costs nothing', tostring(e.hp))
     ok(#S.out == sends, 'no STORM_DAMAGE is sent')
     ok(next(S.defeated) == nil, 'and nobody is defeated by a circle on a map')
     ok(S.errored() == nil, 'the warmup ticks run clean', S.errored())

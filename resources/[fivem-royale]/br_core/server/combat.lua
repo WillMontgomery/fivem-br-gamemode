@@ -7,7 +7,7 @@
 --
 -- M7 PUT A DECISION IN THE MIDDLE. Running out of health used to mean one
 -- thing, so four separate paths called eliminate() directly: the validated
--- damage path, the storm's ledger, the client's own death report and the
+-- damage path, the storm, the client's own death report and the
 -- server-observed health check. Now it can mean two things, and the difference
 -- is not a property of the path -- being shot, burned or caught by the wall all
 -- knock a squad player down and all kill a solo. So every one of those callers
@@ -2244,9 +2244,10 @@ end, true)
 ---     so a death being taken back must leave neither behind.
 ---   * `engineHp`, or the 1Hz server-observed death check reads the corpse
 ---     sample from before the revive and eliminates them again a second in.
----   * `stormHp` and `lastStormAt`. server/storm.lua seeds its display from the
----     first and only ever clamps it DOWN, so a player the wall killed would die
----     again on the next tick whatever health they were just handed.
+---   * `lastStormAt`, the storm's stamp. A stale one would label their next
+---     death a storm death and excuse a sample as storm damage in flight. (There
+---     is no storm ledger to undo any more: the storm takes its damage off `hp`
+---     (#366), and the health written below is what the next tick bills from.)
 ---   * `killedByLicense`, the camera's memory of who killed them. They are not
 ---     spectating anybody now, and a LATER death with no killer would otherwise
 ---     inherit this one's answer and point their camera at a stranger.
@@ -2380,7 +2381,7 @@ RegisterCommand('brrevive', function(_, args)
 
     BR.Roster.clearFields(src, {
         'placement', 'diedAt', 'engineHp',
-        'stormHp', 'lastStormAt', 'killedByLicense', 'reviveKey',
+        'lastStormAt', 'killedByLicense', 'reviveKey',
         -- None of these should be set on a body and all of them are cleared
         -- anyway, for the reason reviveHeld and bringBack both give: this is not
         -- undoing our own work, it is refusing to trust that no other path
@@ -2418,7 +2419,7 @@ RegisterCommand('brrevive', function(_, args)
         .. 'where they fell%s')
         :format(entry.name, src, BR.MatchTag(m.id), hp,
                 reviver and (' -- credited to ' .. reviver.name) or ''))
-    print(('  undone: placement %s, diedAt, engineHp, the storm ledger, the '
+    print(('  undone: placement %s, diedAt, engineHp, the '
         .. 'killer record%s%s')
         :format(tostring(placement),
                 hadKey and ', the squad\'s revive key' or '',

@@ -1135,7 +1135,10 @@ function BR.Match.resetPlayer(src, e)
     e.reviveKey = nil
 
     e.lastDamageBy, e.lastDamageAt = nil, 0
-    e.stormHp, e.lastStormAt = nil, nil
+    -- The storm's stamp, read by the death-cause label and the sampler's
+    -- hurt window. There is no storm ledger to clear: the storm takes its
+    -- damage off `hp` (#366), which is reset on the next line.
+    e.lastStormAt = nil
     e.hp, e.armour = 100.0, 0.0
 
     -- THE HEALTH AUDIT'S TALLY IS PER MATCH, for the reason #161 spells out

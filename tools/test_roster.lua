@@ -3653,8 +3653,9 @@ do
     fakeTime = fakeTime + 1000; BR.Sched.step(fakeTime)
     ok(#eventsOf(BR.Net.STORM_DAMAGE) == 0,
         'nobody takes damage during the phase-1 free-loot hold')
-    ok(BR.Roster.get(2).stormHp == nil,
-        'and the ledger stays empty for the whole map')
+    ok(BR.Roster.get(2).lastStormAt == nil and BR.Roster.get(2).hp == 100.0,
+        'and nobody on the whole map is billed for it',
+        tostring(BR.Roster.get(2).hp))
 
     -- The first shrink is where the storm goes live. RECORD-DRIVEN, not a
     -- hardcoded step: the hold and shrink are both priced dynamically now,
@@ -3680,8 +3681,12 @@ do
         'damage crosses the wire in engine units',
         lastToTwo and ('amount %s, expected %d'):format(
             tostring(lastToTwo.amount), expectEngine) or 'none')
-    ok(BR.Roster.get(2).stormHp ~= nil, 'the server ledger tracks the exposure')
-    ok(BR.Roster.get(1).stormHp == nil, 'and carries nothing for the safe player')
+    -- ...AND THE SERVER'S LEDGER TAKES IT FIRST (#366): the one health ledger,
+    -- by the whole points the wire carries, before the ped has heard a thing.
+    ok(BR.Roster.get(2).lastStormAt ~= nil and BR.Roster.get(2).hp < 100.0,
+        'the server ledger tracks the exposure', tostring(BR.Roster.get(2).hp))
+    ok(BR.Roster.get(1).lastStormAt == nil and BR.Roster.get(1).hp == 100.0,
+        'and carries nothing for the safe player', tostring(BR.Roster.get(1).hp))
 
     -- Phase advancement: jump past the rest of the shrink; the next record
     -- starts exactly where the last one finished.
@@ -4838,13 +4843,14 @@ do
     ok(mstorm() ~= nil, 'storm up')
 
     local e1 = BR.Roster.get(1)
-    e1.stormHp, e1.lastStormAt = 42.0, fakeTime
+    e1.hp, e1.lastStormAt = 42.0, fakeTime
 
     forceState(BR.MatchState.ENDED)
     forceState(BR.MatchState.CLEANUP)
     ok(mstorm() == nil, 'CLEANUP clears the storm record')
-    ok(e1.stormHp == nil and e1.lastStormAt == nil,
-        'and the per-player storm ledger with it')
+    ok(e1.lastStormAt == nil and e1.hp == 100.0,
+        'and the per-player storm stamp with it, and the health the storm took',
+        ('%s / %s'):format(tostring(e1.lastStormAt), tostring(e1.hp)))
 end
 
 describe('match.warmupFreeze')
@@ -18769,7 +18775,8 @@ do
     local aliveBefore = BR.Server.aliveCount(m)
     local squadsBefore = BR.Server.squadsAlive(m)
 
-    BR.Roster.get(1).stormHp, BR.Roster.get(1).lastStormAt = 0.0, fakeTime
+    -- The storm took them: the one health ledger at zero, and its stamp fresh.
+    BR.Roster.get(1).hp, BR.Roster.get(1).lastStormAt = 0.0, fakeTime
     BR.Combat.eliminate(1, 'storm', 2)
     ok(BR.Roster.get(1).state == BR.PlayerState.OUT, 'p1 is eliminated')
     ok(BR.Roster.get(1).placement == 4, 'and is given 4th of four',
@@ -18827,11 +18834,11 @@ do
     ok(e1.engineHp == nil,
         'the stale corpse sample is dropped, or the server-observed death check '
             .. 'eliminates them again a second into their new life')
-    ok(e1.stormHp == nil and e1.lastStormAt == nil,
-        'and the storm ledger with it -- storm.lua only ever clamps DOWN, so a '
-            .. 'player the wall killed would die to the next tick regardless of '
-            .. 'the health they were just handed',
-        tostring(e1.stormHp))
+    ok(e1.lastStormAt == nil and e1.hp == 100.0,
+        'and the storm\'s stamp with it, on the full health the next storm tick '
+            .. 'bills from -- the storm keeps no ledger of its own (#366) to kill '
+            .. 'them again with a number from before the death',
+        ('%s / %s'):format(tostring(e1.lastStormAt), tostring(e1.hp)))
     ok(e1.killedByLicense == nil,
         'and the camera\'s memory of who killed them, which a LATER death with '
             .. 'no killer would otherwise inherit')
@@ -18857,6 +18864,31 @@ do
         'they come back empty-handed -- the death box already scattered what '
             .. 'they had and another player may already have walked over it',
         carrying(1))
+
+    -- ═══ AND THE WALL BILLS THEM FROM THE HEALTH THEY CAME BACK ON ═══
+    --
+    -- "They come back where the body was, which is inside the wall if the storm
+    -- has closed over it since" -- so one storm tick out there, on a record that
+    -- bills, must take its whole points off 100 and nothing more (#366).
+    do
+        local rec0, carry0 = m.storm, m.stormCarry
+        m.storm = BR.BuildStormRecord(5, 0.0, 0.0, 500.0, 0.0, 0.0, 500.0,
+            fakeTime, 3600 * 1000, 1000, 6.7, m.stormSeed)
+        m.stormCarry = {}
+        setPos(1, 3000.0, 0.0)
+        sent = {}
+        fakeTime = fakeTime + 1000; BR.Sched.step(fakeTime)
+        local took = 0
+        for _, s in ipairs(eventsOf(BR.Net.STORM_DAMAGE)) do
+            if s.target == 1 then took = took + s.args[1].amount end
+        end
+        ok(e1.state == BR.PlayerState.ALIVE and took > 0 and e1.hp == 100.0 - took,
+            'and the next storm tick outside takes its points off the 100 they '
+                .. 'came back on -- nothing from before the death is left to bill',
+            ('%s, %s, took %d'):format(e1.state, tostring(e1.hp), took))
+        setPos(1, 0.0, 0.0)
+        m.storm, m.stormCarry = rec0, carry0
+    end
 
     -- ═══ AND THE NEXT ELIMINATION DOES NOT HAND OUT A DUPLICATE ═══
     BR.Combat.eliminate(2, 'admin', 3)
@@ -24281,11 +24313,11 @@ do
         ('driver %s, walker %s'):format(
             tostring(lastDriver and lastDriver.amount),
             tostring(lastWalker and lastWalker.amount)))
-    ok(BR.Roster.get(1).stormHp ~= nil
-       and BR.Roster.get(1).stormHp == BR.Roster.get(2).stormHp,
+    ok(BR.Roster.get(1).hp < 100.0
+       and BR.Roster.get(1).hp == BR.Roster.get(2).hp,
         'and the server-side ledger runs down at the same rate for both',
-        ('driver %s, walker %s'):format(tostring(BR.Roster.get(1).stormHp),
-                                        tostring(BR.Roster.get(2).stormHp)))
+        ('driver %s, walker %s'):format(tostring(BR.Roster.get(1).hp),
+                                        tostring(BR.Roster.get(2).hp)))
 
     -- AND DRIVING DOES NOT HELP EITHER. "if they hop in an ambulance and drive
     -- off they are not granted any sort of immunity" -- the rule is about the
@@ -24293,17 +24325,17 @@ do
     -- assertion rather than being assumed to follow from a parked one.
     --
     -- ASSERTED ON THE LEDGER RATHER THAN ON THE WIRE, and that is not a weaker
-    -- claim -- it is the stronger one. STORM_DAMAGE carries WHOLE engine points
-    -- and the fraction is carried forward, so at phase 1's rate a given tick
-    -- legitimately sends nothing; `stormHp` is the server-side number that
-    -- decides the elimination and it moves every tick without exception.
-    local before = BR.Roster.get(1).stormHp
+    -- claim -- it is the stronger one. The ledger is the one health ledger the
+    -- storm takes its whole points off (#366), and it decides the elimination.
+    -- At phase 1's 0.5 dps a whole point lands every other second, so every
+    -- assertion below watches TWO ticks.
+    local before = BR.Roster.get(1).hp
     setPos(1, a.x + rec.r0 + 4010.0, a.y)
     fakeTime = fakeTime + 1000; BR.Sched.step(fakeTime)
     fakeTime = fakeTime + 1000; BR.Sched.step(fakeTime)
-    ok(BR.Roster.get(1).stormHp < before,
+    ok(BR.Roster.get(1).hp < before,
         'a player driving through the storm goes on losing health to it',
-        ('%s -> %s'):format(tostring(before), tostring(BR.Roster.get(1).stormHp)))
+        ('%s -> %s'):format(tostring(before), tostring(BR.Roster.get(1).hp)))
 
     -- ═══ AND THE ONE EXCEPTION, WHICH IS #191's ═══
     --
@@ -24315,32 +24347,34 @@ do
     -- provably the only thing doing the work.
     local e1 = BR.Roster.get(1)
     e1.rescue = true
-    local exempt0 = e1.stormHp
+    local exempt0 = e1.hp
+    e1.lastStormAt = nil
     fakeTime = fakeTime + 1000; BR.Sched.step(fakeTime)
     fakeTime = fakeTime + 1000; BR.Sched.step(fakeTime)
-    ok(BR.Roster.get(1).stormHp == exempt0,
+    ok(BR.Roster.get(1).hp == exempt0 and BR.Roster.get(1).lastStormAt == nil,
         'a player in `rescue` state stops losing health to the storm entirely',
-        ('%s -> %s'):format(tostring(exempt0), tostring(BR.Roster.get(1).stormHp)))
+        ('%s -> %s'):format(tostring(exempt0), tostring(BR.Roster.get(1).hp)))
 
     -- The walker beside them is NOT exempt, which proves the filter narrowed to
     -- one player rather than the damage loop simply having stopped.
-    local w0 = BR.Roster.get(2).stormHp
+    local w0 = BR.Roster.get(2).hp
     fakeTime = fakeTime + 1000; BR.Sched.step(fakeTime)
-    ok(BR.Roster.get(2).stormHp < w0,
+    fakeTime = fakeTime + 1000; BR.Sched.step(fakeTime)
+    ok(BR.Roster.get(2).hp < w0,
         'while everybody else in the same storm keeps taking it',
-        ('%s -> %s'):format(tostring(w0), tostring(BR.Roster.get(2).stormHp)))
+        ('%s -> %s'):format(tostring(w0), tostring(BR.Roster.get(2).hp)))
 
     -- AND IT IS AN EXEMPTION, NOT A ONE-WAY DOOR. Every path out of a rescue
     -- clears the flag; if clearing it did not restore damage, a delivered player
     -- would be storm-immune for the rest of the match and nothing would ever
     -- say so.
     e1.rescue = nil
-    local back0 = BR.Roster.get(1).stormHp
+    local back0 = BR.Roster.get(1).hp
     fakeTime = fakeTime + 1000; BR.Sched.step(fakeTime)
     fakeTime = fakeTime + 1000; BR.Sched.step(fakeTime)
-    ok(BR.Roster.get(1).stormHp < back0,
+    ok(BR.Roster.get(1).hp < back0,
         'and clearing the flag puts them straight back in the wall',
-        ('%s -> %s'):format(tostring(back0), tostring(BR.Roster.get(1).stormHp)))
+        ('%s -> %s'):format(tostring(back0), tostring(BR.Roster.get(1).hp)))
 end
 
 describe('health.audit.live')
@@ -25543,6 +25577,8 @@ do
     end
 
     sent = {}
+    -- The storm took them: the one health ledger at zero, its stamp fresh.
+    BR.Roster.get(1).hp, BR.Roster.get(1).lastStormAt = 0.0, fakeTime
     BR.Combat.eliminate(1, 'storm', 2)
 
     local e1 = BR.Roster.get(1)
@@ -25614,15 +25650,40 @@ do
     ok(e1.engineHp == nil,
         'the stale corpse sample is dropped, or the 1Hz server-observed death '
             .. 'check eliminates them again a second into their new life')
-    ok(e1.stormHp == nil and e1.lastStormAt == nil,
-        'and the storm ledger with it -- storm.lua only ever clamps DOWN',
-        tostring(e1.stormHp))
+    ok(e1.lastStormAt == nil and e1.hp == 100.0,
+        'and the storm stamp with it, on the health the next storm tick bills '
+            .. 'from -- there is no storm ledger of its own to clear (#366)',
+        ('%s / %s'):format(tostring(e1.lastStormAt), tostring(e1.hp)))
     ok(e1.killedByLicense == nil,
         'and the camera\'s memory of who killed them, which a LATER death with '
             .. 'no killer would otherwise inherit')
     ok(e1.reviveKey == nil,
         'the key is spent -- forSquad filters on the record EXISTING, so nil is '
             .. 'the only representation of "gone" that cannot be bought twice')
+
+    -- ═══ AND A VAN PARKED IN THE WALL BILLS THEM FROM THE KEY'S HEALTH ═══
+    --
+    -- One storm tick outside, on a record that bills: its whole points come off
+    -- the 100 the key handed back, and nothing from before the death (#366).
+    do
+        local rec0, carry0 = m.storm, m.stormCarry
+        m.storm = BR.BuildStormRecord(5, 0.0, 0.0, 300.0, 0.0, 0.0, 300.0,
+            fakeTime, 3600 * 1000, 1000, 6.7, m.stormSeed)
+        m.stormCarry = {}
+        setPos(1, 3000.0, 0.0)
+        sent = {}
+        fakeTime = fakeTime + 1000; BR.Sched.step(fakeTime)
+        local took = 0
+        for _, s in ipairs(eventsOf(BR.Net.STORM_DAMAGE)) do
+            if s.target == 1 then took = took + s.args[1].amount end
+        end
+        ok(e1.state == BR.PlayerState.ALIVE and took > 0 and e1.hp == 100.0 - took,
+            'and the first storm tick outside the wall takes its points off the '
+                .. '100 the key handed back',
+            ('%s, %s, took %d'):format(e1.state, tostring(e1.hp), took))
+        setPos(1, 0.0, 0.0)
+        m.storm, m.stormCarry = rec0, carry0
+    end
 
     -- ═══ AND THE NEXT ELIMINATION DOES NOT HAND OUT A DUPLICATE ═══
     --
@@ -28199,6 +28260,175 @@ do
         'and the dip bought the cheat no more room above its interrupt line than '
             .. 'an honest player has',
         ('cheat %.1f, honest %.1f'):format(margin.cheat, margin.honest))
+
+    -- ───────────────────────────────────────────────────────────────────────
+    describe('storm.ledger')
+    -- ───────────────────────────────────────────────────────────────────────
+    --
+    -- THE STORM TAKES ITS DAMAGE OFF THE ONE HEALTH LEDGER. Server first, ped
+    -- second, by exactly the whole points the ped is told -- so the bar and the
+    -- ledger are one number once the instruction lands, and the ledger is the
+    -- server's own whatever the client does with the instruction.
+
+    --- Display points of storm the subject has been told to take so far.
+    local function stormSent()
+        local n = 0
+        for _, l in ipairs(W.log) do
+            if l.event == BR.Net.STORM_DAMAGE then n = n + (l.d.amount or 0) end
+        end
+        return n * 100.0 / (MAXHP - BR.Config.Match.healthFloor)
+    end
+    local function dead() return subject().state ~= BR.PlayerState.ALIVE end
+
+    -- ─── THE M4 DRILL, AT EVERY RATE AND ON A SLOW LINE ───
+    --
+    -- An honest client, one that ignores STORM_DAMAGE, and one that also pins
+    -- its bar, all outside from 37: they are defeated on the same tick, and the
+    -- honest bar reads zero at that tick -- never a point still showing. At
+    -- every tick the ledger is exactly the start less what the wire carried.
+    for _, dps in ipairs({ 0.5, 1.25, 2.9, 6.7 }) do
+        for _, lat in ipairs({ 0, 1000 }) do
+            local at, lockstep = {}, true
+            for _, mode in ipairs({ 'honest', 'deaf', 'pinned' }) do
+                stage({ hp = 37.0, outside = true, dps = dps, lat = lat })
+                if mode ~= 'honest' then W.deaf = true end
+                if mode == 'pinned' then W.pinned = 100.0 end
+                local t0 = fakeTime
+                step(120000, function()
+                    if not dead() and subject().hp ~= 37.0 - stormSent() then
+                        lockstep = false
+                    end
+                    return dead()
+                end)
+                local d = W.defeats[1] or {}
+                at[mode] = d.t and (d.t - t0) or -1
+                if mode == 'honest' then
+                    ok(d.cause == 'storm' and d.bar == 0.0,
+                        ('the storm kills an honest player with nothing on the bar '
+                            .. '(%.2f dps, %dms line)'):format(dps, lat),
+                        ('cause %s, bar %s'):format(tostring(d.cause), tostring(d.bar)))
+                end
+            end
+            ok(at.honest > 0 and at.deaf == at.honest and at.pinned == at.honest,
+                ('a client that ignores the storm, or pins its bar, dies on the honest '
+                    .. 'tick (%.2f dps, %dms line)'):format(dps, lat),
+                ('honest %d, deaf %d, pinned %d'):format(at.honest, at.deaf, at.pinned))
+            ok(lockstep,
+                ('and every tick the ledger is the start less exactly what the wire '
+                    .. 'carried (%.2f dps, %dms)'):format(dps, lat))
+        end
+    end
+
+    -- ─── #373: STEPPING INSIDE RESETS NOTHING ───
+    --
+    -- The old storm ledger was cleared inside the zone and re-seeded from the
+    -- sampled health the next time the player was caught out -- and a client
+    -- that ignored STORM_DAMAGE had never let its sampled health fall, so a
+    -- step inside handed it a fresh bar of storm.
+    do
+        local at = {}
+        for _, mode in ipairs({ 'honest', 'deaf' }) do
+            stage({ hp = 60.0, outside = true, dps = 6.7 })
+            if mode == 'deaf' then W.deaf = true end
+            local t0 = fakeTime
+            step(4000); goIn(); step(3000); goOut()
+            step(30000, dead)
+            at[mode] = W.defeats[1] and (W.defeats[1].t - t0) or -1
+        end
+        ok(at.honest > 0 and at.deaf == at.honest,
+            'a deaf client that steps inside and back out dies on the honest tick '
+                .. '(#373)', ('honest %d, deaf %d'):format(at.honest, at.deaf))
+    end
+
+    -- ─── THE SQUAD PANEL HEARS IT FROM THE TICK ───
+    --
+    -- A storm-only drop is whole points, and the sampler broadcasts only a
+    -- change it commits -- which it never will for a number the ledger already
+    -- holds. So the tick itself must put the new health on the wire.
+    do
+        stage({ hp = 80.0, outside = true, dps = 6.7, lat = 1000 })
+        BR.Broadcast.flushNow()
+        sent = {}
+        fakeTime = fakeTime + 1000; BR.Sched.step(fakeTime)
+        BR.Broadcast.flushNow()
+        local hp = nil
+        for _, s in ipairs(sent) do
+            if s.event == BR.Net.ROSTER_DELTA then
+                for _, d in ipairs(s.args[1].deltas or {}) do
+                    if d.src == 1 and (d.e or {}).hp ~= nil then hp = d.e.hp end
+                end
+            end
+        end
+        sent = {}
+        ok(hp ~= nil and hp == subject().hp and hp < 80.0,
+            'the storm tick broadcasts the health it took, before any sample of a '
+                .. 'ped a second behind has moved', tostring(hp))
+        ok(subject().stormHp == nil, 'and no second, storm-only ledger exists')
+    end
+
+    -- ─── A BANDAGE, THEN A CLIENT THAT STOPS LISTENING ───
+    --
+    -- The bandage's last target stands for healSettleMs. A storm tick takes its
+    -- points off that ceiling too, so a client that ignores STORM_DAMAGE from
+    -- here cannot have the sampler grant its pinned bar back up to the target.
+    for _, lat in ipairs({ 0, 500 }) do
+        local at = {}
+        for _, mode in ipairs({ 'honest', 'deaf', 'pinned' }) do
+            stage({ hp = 50.0, outside = true, dps = 6.7, lat = lat })
+            bag({ 'bandage' })
+            press('bandage')
+            step(4300)
+            if mode ~= 'honest' then W.deaf = true end
+            if mode == 'pinned' then W.pinned = 100.0 end
+            local t0 = fakeTime
+            step(30000, dead)
+            at[mode] = W.defeats[1] and (W.defeats[1].t - t0) or -1
+        end
+        ok(at.honest > 0 and at.deaf == at.honest and at.pinned == at.honest,
+            ('after a bandage, a client that stops applying the storm dies on the '
+                .. 'honest tick (%dms line)'):format(lat),
+            ('honest %d, deaf %d, pinned %d'):format(at.honest, at.deaf, at.pinned))
+    end
+
+    -- ─── AN HONEST PLAYER ON A 1000ms LINE IS NOT A SUSPECT ───
+    --
+    -- The storm writes the ledger a round trip before the ped shows it, every
+    -- tick, so for that round trip the ped reads high. That is damage in flight
+    -- -- the storm's stamp is read beside a bullet's -- not a lie.
+    do
+        stage({ hp = 100.0, outside = true, dps = 4.0, lat = 1000 })
+        local t0 = fakeTime
+        step(12000); goIn(); step(4000)
+        local t = subject().healthAudit or {}
+        ok((t.hp or 0.0) == 0.0 and sentSince(BR.Net.HEALTH_SYNC, t0) == 0
+            and subject().hp == bar(),
+            '12s in the storm on a 1000ms line: nothing counted, nothing corrected, '
+                .. 'and the bar and the ledger agree',
+            ('counted %s, HEALTH_SYNC %d, e.hp %s, bar %s'):format(tostring(t.hp),
+                sentSince(BR.Net.HEALTH_SYNC, t0), tostring(subject().hp),
+                tostring(bar())))
+    end
+
+    -- ─── KNOCKED BY THE STORM, PICKED UP OUTSIDE IT ───
+    --
+    -- The old storm ledger was never cleared by a pick-up, so a squad player the
+    -- wall knocked and a mate picked up while still outside was knocked again on
+    -- the next tick. Now the pick-up writes the ledger the storm bills.
+    do
+        stage({ hp = 8.0, outside = true, dps = 5.0, squad = true })
+        step(3000)
+        ok(subject().state == BR.PlayerState.DBNO,
+            'precondition: the storm knocked them', tostring(subject().state))
+        BR.Combat.revive(1, nil, 30)
+        local sent0, n0 = stormSent(), #W.defeats
+        step(2100)
+        ok(subject().state == BR.PlayerState.ALIVE and #W.defeats == n0
+            and subject().hp < 30.0 and subject().hp == 30.0 - (stormSent() - sent0),
+            'picked up outside, they go on from 30 less the storm since -- not '
+                .. 'knocked again by what the wall took before',
+            ('%s, e.hp %s, defeats since %d'):format(subject().state,
+                tostring(subject().hp), #W.defeats - n0))
+    end
 
     GetEntityHealth, GetPedArmour = rawHealth, rawArmour
     BR.Combat.defeat = rawDefeat

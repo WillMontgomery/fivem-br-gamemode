@@ -184,7 +184,7 @@ BR.Net = {
 
     -- Storm
     STORM_SYNC      = 'br:storm:sync',       -- S->C  full storm record (also mirrored to GlobalState)
-    STORM_DAMAGE    = 'br:storm:damage',     -- S->C  { amount, targetHp }
+    STORM_DAMAGE    = 'br:storm:damage',     -- S->C  { amount, armourFirst } -- whole engine points, already off the ledger
 
     -- S->C  { cx, cy, r } -- where circle 1 IS, published the moment the match
     -- forms and before any storm exists.

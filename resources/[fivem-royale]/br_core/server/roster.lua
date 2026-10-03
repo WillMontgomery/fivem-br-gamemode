@@ -1012,7 +1012,14 @@ end
 --- `commitSample` decides whether to BELIEVE it, and two hand-built context
 --- tables would eventually let a sample be excused by one and refused by the
 --- other. Every field is server-written; nothing a client sent reaches here.
----   lastHitAt    every server-applied damage path writes it
+---   lastHitAt    every server-applied damage path writes it -- AND THE STORM
+---                (#366): it takes its damage off the ledger before the ped
+---                hears of it, exactly as a bullet does, so the later of
+---                `lastHitAt` and `lastStormAt` is the hurt in flight. Folded
+---                here rather than written into `lastHitAt` by the storm,
+---                because `lastHitAt` is also the shooter's assist window
+---                (server/combat.lua's attributedKiller) and a storm tick must
+---                not stretch it
 ---   healUntil    HEALTH's heal window: server/inventory.lua and
 ---                server/ambheal.lua, on ISSUING an INV_EFFECT that moves
 ---                health -- paired with the ceiling the caller adds below.
@@ -1024,11 +1031,15 @@ end
 --- @param now number
 --- @return table
 local function healthCtx(entry, now)
+    local hurtAt = entry.lastHitAt
+    if entry.lastStormAt ~= nil and (hurtAt == nil or entry.lastStormAt > hurtAt) then
+        hurtAt = entry.lastStormAt
+    end
     return {
         now         = now,
         state       = entry.state,
         rescue      = entry.rescue,
-        lastHitAt   = entry.lastHitAt,
+        lastHitAt   = hurtAt,
         healUntil   = entry.healUntil,
         settleUntil = entry.healthSettleUntil,
     }
@@ -1239,6 +1250,10 @@ end
 ---     beside the window they stamped for that stat -- `healUntil` for health,
 ---     `healArmourUntil` for armour (#366) -- and this is where it is spent.
 ---     The window says a heal is happening; the ceiling says how much.
+---     SERVER DAMAGE AFTER AN ISSUE COMES OFF THE CEILING (#366): a bullet
+---     (BR.Damage.applyHit) and a storm tick (server/storm.lua's `bill`) each
+---     lower any standing ceiling by what they took, so no sample can be
+---     granted back up past damage the server dealt after the target was sent.
 ---
 --- ARMOUR IS A SECOND CALL, NOT A SECOND RULE. It has its own ceiling and its
 --- own tolerance -- the honest upward path is a different item with a different

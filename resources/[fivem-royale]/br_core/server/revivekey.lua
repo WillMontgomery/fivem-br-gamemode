@@ -1312,19 +1312,17 @@ end
 --- coordinates as the ruling read them, so the van that allowed the hold and the
 --- van they fall onto cannot be two different vans.
 ---
---- ═══ AND THE STORM LEDGER IS CLEARED, WHICH IS A REAL BUG AND NOT HYGIENE ═══
+--- ═══ AND THE STORM STARTS FROM THE HEALTH THEY WERE GIVEN ═══
 ---
---- server/storm.lua seeds its `display` from `e.stormHp` and only ever clamps it
---- DOWN. Nothing clears that field on death -- only BR.Match.resetPlayer and
---- stepping back inside the circle do. So a player the storm killed, revived at
---- their corpse and therefore still outside the wall, would carry a `stormHp` at
---- or below zero and be eliminated again on the very next storm tick REGARDLESS
---- of the health they were just handed. `lastStormAt` goes with it so the first
---- tick after the revive measures from now rather than from before they died.
+--- The storm takes its damage off the one health ledger (#366), so the `hp`
+--- written below IS what the next storm tick bills from -- there is no second
+--- storm ledger left over from before the death to kill them again, which is
+--- what this block used to clear by hand. `lastStormAt` is still cleared: a
+--- stale stamp would label their next death a storm death and excuse a sample
+--- as storm damage still in flight.
 ---
 --- Being outside the wall is still a bad place to be picked up, and that is the
---- rule -- storm.lua says so in as many words. This only makes the damage start
---- from the health they were given.
+--- rule -- storm.lua says so in as many words.
 ---
 --- ═══ AND EVERY CLEAR GOES THROUGH BR.Roster.clearFields, NOT BY ASSIGNMENT ═══
 ---
@@ -1374,7 +1372,8 @@ local function bringBack(src, e, reviverSrc, at)
         -- Or the 1Hz server-observed death check reads the corpse sample from
         -- before the revive and eliminates them again a second in.
         'engineHp',
-        'stormHp', 'lastStormAt',
+        -- The storm's stamp; see the header. There is no storm ledger to clear.
+        'lastStormAt',
         -- THE CAMERA'S MEMORY OF WHO KILLED THEM. Written by eliminate() for the
         -- spectate default and deliberately a license rather than an id, so it
         -- outlives the moment on purpose. Cleared here because they are not
