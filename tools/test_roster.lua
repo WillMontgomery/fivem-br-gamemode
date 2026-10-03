@@ -28837,6 +28837,33 @@ do
             ('started %d, %d of %d runs; %s'):format(started, bad, runs, worst))
     end
 
+    -- ─── ...AND A TICK REACHING THE PED IS NOT A DROP THAT SPENDS THE RAMP ───
+    --
+    -- At 5 dps on a 500ms line the ramp and the storm's ticks cancel: the ledger
+    -- is granted a sample from before a tick landed, stands within a point of
+    -- the ceiling, and the tick then arriving on the ped read as a drop off a
+    -- reached ceiling. Spent, the ceiling fell under the targets still on the
+    -- wire and the next tick knocked them with 4 on the bar. A drop inside the
+    -- hurt window is the server's own damage landing, and spends nothing.
+    for _, hp in ipairs({ 3.0, 5.0 }) do
+        stage({ hp = hp, dps = 5.0, lat = 500 })
+        vanAt(A0.x, A0.y)
+        fire(BR.Net.AMBHEAL_START, 1, { n = VAN })
+        local m = theMatch()
+        m.storm = BR.BuildStormRecord(5, A0.x + 4000.0, A0.y, 500.0,
+            A0.x + 4000.0, A0.y, 500.0, fakeTime, 3600 * 1000, 1000, 5.0,
+            m.stormSeed)
+        local t0 = fakeTime
+        step(6000, function() return #W.defeats > 0 end)
+        local d = W.defeats[1]
+        ok(BR.AmbHeal.active(1) and d == nil,
+            ('an ambulance heal from %d that outpaces a 5 dps wall on a 500ms '
+                .. 'line keeps them up'):format(hp),
+            d and ('%s +%dms, bar %s, e.hp %s'):format(d.cause, d.t - t0,
+                tostring(d.bar), tostring(d.hp)) or 'the heal ended')
+        if BR.AmbHeal.active(1) then BR.AmbHeal.finish(1, false, 'test') end
+    end
+
     -- ─── ...AND THE M4 DRILL STILL HOLDS THROUGH IT ───
     --
     -- A client that ignores STORM_DAMAGE, or pins its bar, is granted straight

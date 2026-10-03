@@ -1321,7 +1321,24 @@ local function commitSample(src, entry, hp, armour, now)
         -- toward its target on a slow line is not on it, and a point of float
         -- noise is not a drop; a channel still running writes the next target
         -- over this one 250ms later either way.
-        if hpWhy == BR.HealthVerdict.SAMPLE and hpCeiling ~= nil
+        --
+        -- AND NOT A DROP THE SERVER'S OWN DAMAGE STILL EXPLAINS. A storm tick
+        -- or a bullet comes off the ceiling the moment it is dealt (storm.lua's
+        -- `bill`, BR.Damage.applyHit) and reaches the ped a round trip later --
+        -- and in between the ledger can be granted a sample from BEFORE it
+        -- landed. An ambulance's ramp and the storm's ticks then cancel to
+        -- within a point of the ceiling, the damage arriving reads as a drop
+        -- off a reached ceiling, and spending it put the ceiling under the
+        -- targets still on the wire: on a 500ms line the ledger could no longer
+        -- follow them and the storm knocked a player with 4 on the bar. Inside
+        -- the hurt window a drop is the server's damage landing, which the
+        -- ceiling already carries. A fall in that window spends nothing until
+        -- the window closes, which at worst measures a heal pressed in those
+        -- seconds from before the fall.
+        local hurtAt = ctx.lastHitAt
+        local inFlight = hurtAt ~= nil
+            and (now - hurtAt) < (cfg.hurtGraceMs or 1500)
+        if hpWhy == BR.HealthVerdict.SAMPLE and hpCeiling ~= nil and not inFlight
            and (entry.hp or 0.0) >= hpCeiling - 1.0
            and nextHp < (entry.hp or 0.0) - 1.0 then
             entry.grantHpTo = nextHp
