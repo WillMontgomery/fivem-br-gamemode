@@ -1650,6 +1650,11 @@ BR.Config.Combat = {
         -- seconds per issue in which any claim at all is believed, re-stamped
         -- every 250ms for the length of a channel and openable on demand by the
         -- re-press loop in #271. So a bandage buys the bandage.
+        --
+        -- EACH STAT HAS ITS OWN WINDOW OF THIS LENGTH (#366): health's is
+        -- `healUntil`, armour's is `healArmourUntil`, and an issue opens only
+        -- the window for what it moves -- so a shield pressed as a bandage lands
+        -- cannot close the window the bandage's last target is still riding in.
         healSettleMs = 2000,
 
         -- A revive or a respawn is the LEDGER leading and the ped following, so

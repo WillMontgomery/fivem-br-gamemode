@@ -24532,6 +24532,7 @@ do
         local cheat = audited()
         cheat.healthAudit = { hp = 500.0, samples = 9, peak = 90.0, excused = {} }
         cheat.healUntil = fakeTime + 5000
+        cheat.healArmourUntil = fakeTime + 5000
         cheat.healthSettleUntil = fakeTime + 5000
         BR.Match.resetPlayer(1, cheat)
         ok(cheat.healthAudit == nil,
@@ -24541,6 +24542,9 @@ do
             'and so are both grace windows, which are deadlines on the OLD '
                 .. 'match clock -- a stale one would excuse the first seconds '
                 .. 'of the next round')
+        ok(cheat.healArmourUntil == nil,
+            'and armour\'s own heal window with them (#366)',
+            tostring(cheat.healArmourUntil))
     end
 
     -- ═══ THE LIVE FALSE POSITIVE, REPRODUCED THROUGH THE REAL SAMPLER ═══
@@ -25064,8 +25068,10 @@ do
     do
         local subject = ledgerMatch()
 
-        -- A plate the server issued: window plus ceiling, armour only.
-        subject.healUntil = fakeTime + A.healSettleMs
+        -- A plate the server issued: ARMOUR's window plus its ceiling (#366 --
+        -- each stat has its own window, and server/inventory.lua's `authorize`
+        -- opens only the one for what the item moves).
+        subject.healArmourUntil = fakeTime + A.healSettleMs
         subject.grantArmourTo = 50.0
         pedArmour[1001] = 50
         sample()
@@ -25083,7 +25089,7 @@ do
 
         -- The soak comes off the ledger, and pinning the ped does not put it
         -- back.
-        subject.healUntil = fakeTime
+        subject.healArmourUntil = fakeTime
         BR.Damage.applyHit(2, 1, 30.0, { weapon = 'test' })
         ok(subject.armour == 20.0 and subject.hp == 100.0,
             'a 30-point hit is soaked by armour and health is untouched',
@@ -27991,6 +27997,35 @@ do
             'and the partials it had already given are kept, less the hit',
             ('%s -> %s, bar %s'):format(tostring(before), tostring(subject().hp),
                 tostring(bar())))
+    end
+
+    -- ───────────────────────────────────────────────────────────────────────
+    describe('heal.windows')
+    -- ───────────────────────────────────────────────────────────────────────
+    --
+    -- EACH HEAL KEEPS ITS OWN WINDOW, SO A SHIELD CANNOT WIPE THE LAST OF A
+    -- BANDAGE. The natural chain -- bandage, then a shield the moment it lands
+    -- -- used to close health's window while the bandage's last target was
+    -- still on the wire. On a slow line the ledger never followed the ped the
+    -- last few points, the rise was refused, and HEALTH_SYNC snapped the bar
+    -- back: the bandage landed short. (A 1000ms line is `heal.slowline`'s.)
+    for _, lat in ipairs({ 500, 750 }) do
+        stage({ hp = 31.0, lat = lat })
+        bag({ 'bandage', 'shield' })
+        press('bandage')
+        step(20000, function() return not using() end)
+        local t0 = fakeTime
+        press('shield')
+        finish(2 * lat + 2000)
+        ok(subject().hp == 46 and bar() == 46
+            and sentSince(BR.Net.HEALTH_SYNC, t0) == 0,
+            ('a shield pressed as a bandage lands leaves the bandage whole: '
+                .. '%dms line'):format(lat),
+            ('e.hp %s, bar %s, HEALTH_SYNC %d'):format(tostring(subject().hp),
+                tostring(bar()), sentSince(BR.Net.HEALTH_SYNC, t0)))
+        ok(subject().armour == 50,
+            ('and the shield lands too (%dms)'):format(lat),
+            tostring(subject().armour))
     end
 
     GetEntityHealth, GetPedArmour = rawHealth, rawArmour

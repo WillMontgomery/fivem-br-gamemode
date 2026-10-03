@@ -1928,6 +1928,39 @@ function BR.Inv.whenFree(src, fn)
     q[#q + 1] = fn
 end
 
+--- Authorize the rise one INV_EFFECT is about to ask for: a window and a
+--- ceiling, for each stat the effect moves and for no other.
+---
+--- ═══ ONE WINDOW PER STAT (#366) ═══
+---
+--- server/roster.lua's ledger rule lets the ledger follow the ped UP only while
+--- a window stands and only as far as the ceiling beside it. There used to be
+--- one window for both stats and every issue wrote both ceilings, nil included,
+--- so that a shield could not spend a med kit's leftover health ceiling. It
+--- also meant a shield pressed the moment a bandage landed WIPED the bandage's
+--- health ceiling while its last target was still on the wire: on a 750-1000ms
+--- line the ledger never followed the ped the last few points, the audit
+--- refused the rise and the HEALTH_SYNC snapped the bar back -- the bandage
+--- landed short, which is #366's own symptom by another road.
+---
+--- So health has `healUntil` + `grantHpTo` and armour has `healArmourUntil` +
+--- `grantArmourTo`, and an issue touches only the pair for what it moves. A
+--- shield still cannot spend a health ceiling: health's window is a med kit's
+--- own, stamped by the med kit, and it closes healSettleMs after the med kit's
+--- last issue whatever the shield does.
+--- @param e table        the roster entry
+--- @param now number
+--- @param effect table   the INV_EFFECT payload: `health` and/or `armour` targets
+local function authorize(e, now, effect)
+    local untilMs = now + ((BR.Config.Combat.healthAudit or {}).healSettleMs or 2000)
+    if effect.health then
+        e.healUntil, e.grantHpTo = untilMs, effect.health
+    end
+    if effect.armour then
+        e.healArmourUntil, e.grantArmourTo = untilMs, effect.armour
+    end
+end
+
 -- 250ms: fine enough that a cancelled use stops looking like it worked, and
 -- coarse enough to be free.
 --
@@ -2282,8 +2315,8 @@ BR.Sched.every(250, 'inv.use', function()
                 --
                 -- server/roster.lua's ledger rule refuses every rise it did not
                 -- authorize, and this pair is the authorization: BR.HealthCommit
-                -- lets the ledger follow the ped upward while `healUntil` stands
-                -- and NOT ONE POINT past the ceiling here. The window alone
+                -- lets the ledger follow the ped upward while the stat's window
+                -- stands and NOT ONE POINT past the ceiling here. The window alone
                 -- would be a two-second amnesty per issue -- re-stamped every
                 -- tick for the length of a channel, and openable on demand by
                 -- the re-press loop in #271 -- in which a modified client could
@@ -2294,12 +2327,9 @@ BR.Sched.every(250, 'inv.use', function()
                 -- ceiling and the ped's destination are the same fact and the
                 -- ledger lands exactly where an honest ped does.
                 --
-                -- BOTH WRITTEN, INCLUDING TO nil. An item that moves only armour
-                -- must not leave a previous med kit's health ceiling standing
-                -- for its own window to spend -- a shield authorizes armour and
-                -- nothing else.
-                e.healUntil = now + ((BR.Config.Combat.healthAudit or {}).healSettleMs or 2000)
-                e.grantHpTo, e.grantArmourTo = partial.health, partial.armour
+                -- ONE WINDOW PER STAT, AND ONLY THE STAT THIS ITEM MOVES (#366).
+                -- See `authorize` above the loop.
+                authorize(e, now, partial)
                 TriggerClientEvent(BR.Net.INV_EFFECT, src, partial)
                 return
             end
@@ -2445,8 +2475,7 @@ BR.Sched.every(250, 'inv.use', function()
                 -- landing one matters most: this is the payload that carries the
                 -- FULL target, so it is the largest single rise the ped will
                 -- make and the highest the ledger is ever allowed to follow it.
-                e.healUntil = now + ((BR.Config.Combat.healthAudit or {}).healSettleMs or 2000)
-                e.grantHpTo, e.grantArmourTo = payload.health, payload.armour
+                authorize(e, now, payload)
                 TriggerClientEvent(BR.Net.INV_EFFECT, src, payload)
             end
 

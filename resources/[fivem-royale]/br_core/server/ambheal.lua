@@ -479,11 +479,13 @@ local function grant(rec, entry, now)
     -- applies it upward only -- so the ceiling and the ped's destination are the
     -- same fact and an honest ped and the ledger land on the same number.
     --
-    -- THE ARMOUR CEILING IS CLEARED RATHER THAN LEFT ALONE. This heal moves
-    -- health and nothing else, and a shield plate's ceiling left standing from a
-    -- minute ago would be spendable inside THIS window.
+    -- HEALTH'S WINDOW AND NOTHING ELSE (#366). This heal moves health only, and
+    -- armour has a window of its own (`healArmourUntil`) that only a shield
+    -- opens -- see `authorize` in server/inventory.lua. A shield plate's ceiling
+    -- from a minute ago is inert without its window, and a shield drunk a moment
+    -- ago keeps the ceiling its own last target still needs.
     entry.healUntil = now + ((BR.Config.Combat.healthAudit or {}).healSettleMs or 2000)
-    entry.grantHpTo, entry.grantArmourTo = target, nil
+    entry.grantHpTo = target
 
     TriggerClientEvent(BR.Net.INV_EFFECT, rec.src, {
         health    = target,

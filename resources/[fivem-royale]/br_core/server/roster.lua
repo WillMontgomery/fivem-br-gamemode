@@ -1013,8 +1013,11 @@ end
 --- tables would eventually let a sample be excused by one and refused by the
 --- other. Every field is server-written; nothing a client sent reaches here.
 ---   lastHitAt    every server-applied damage path writes it
----   healUntil    server/inventory.lua and server/ambheal.lua, on ISSUING an
----                INV_EFFECT -- paired with the ceiling the caller adds below
+---   healUntil    HEALTH's heal window: server/inventory.lua and
+---                server/ambheal.lua, on ISSUING an INV_EFFECT that moves
+---                health -- paired with the ceiling the caller adds below.
+---                Armour has its own (`healArmourUntil`, #366), which the two
+---                armour calls swap in; see `authorize` in server/inventory.lua
 ---   settleUntil  a revive, a respawn or a match reset the server wrote
 ---   rescue       #191, the ambulance ride; server/rescue.lua writes it
 --- @param entry table
@@ -1106,6 +1109,10 @@ local function auditHealth(src, entry, hp, armour, now, prevEngineHp)
     -- because the honest upward path is a different item (a shield potion) with
     -- a different cap, and because a single number would hide which of the two
     -- somebody was actually doing.
+    --
+    -- AND ITS OWN HEAL WINDOW (#366): a shield's rise is excused by the window
+    -- the shield opened, not by a med kit's.
+    ctx.healUntil = entry.healArmourUntil
     local aGain, aExcuse = BR.HealthUnexplainedGain(entry.armour, armour, ctx, {
         toleranceHp  = cfg.toleranceArmour,
         hurtGraceMs  = cfg.hurtGraceMs,
@@ -1229,8 +1236,9 @@ end
 ---     AMBULANCE HEAL (server/ambheal.lua) are the only paths that do NOT write
 ---     the ledger: they send the client a TARGET and let it walk its own ped up.
 ---     Those two echo the target onto the entry as `grantHpTo` / `grantArmourTo`
----     beside the `healUntil` they already stamped, and this is where it is
----     spent. The window says a heal is happening; the ceiling says how much.
+---     beside the window they stamped for that stat -- `healUntil` for health,
+---     `healArmourUntil` for armour (#366) -- and this is where it is spent.
+---     The window says a heal is happening; the ceiling says how much.
 ---
 --- ARMOUR IS A SECOND CALL, NOT A SECOND RULE. It has its own ceiling and its
 --- own tolerance -- the honest upward path is a different item with a different
@@ -1273,7 +1281,12 @@ local function commitSample(src, entry, hp, armour, now)
         -- which is the same trap the detector's armour call sidesteps three
         -- functions up -- and `enforce` has to be carried across explicitly or
         -- the kill switch would turn off health and leave armour enforced.
+        --
+        -- AND ARMOUR'S OWN WINDOW (#366), for `authorize`'s reason in
+        -- server/inventory.lua: a shield pressed the moment a bandage lands must
+        -- not close the window the bandage's last target is still riding in.
         ctx.grantTo = entry.grantArmourTo
+        ctx.healUntil = entry.healArmourUntil
         nextArmour, armourWhy = BR.HealthCommit(entry.armour, armour, ctx, {
             enforce      = cfg.enforce,
             toleranceHp  = cfg.toleranceArmour,
