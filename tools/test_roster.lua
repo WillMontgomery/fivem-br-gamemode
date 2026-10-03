@@ -28446,6 +28446,38 @@ do
         end
     end
 
+    -- ─── WHAT IS EXCUSED IS THE SERVER'S OWN POINTS, AND ONLY FOR A ROUND TRIP ───
+    --
+    -- A heal's target stands at 50 and the ledger is on it -- the window and the
+    -- ceiling written here as server/inventory.lua's `authorize` writes them. An
+    -- enemy's 10-point hit comes off both; a target issued over it, as a running
+    -- heal's next one is, puts the ceiling back; and the ped, a round trip
+    -- behind, is granted up to it before the hit reaches it. The hit then
+    -- arriving reads as a drop off a reached ceiling. It is the server's own
+    -- damage landing and spends nothing -- the ledger rule counts a hit's points
+    -- as the storm's. Three seconds on, nothing is on its way any more, and a
+    -- 5-point fall off a ceiling the ledger stands on spends it.
+    do
+        stage({ hp = 50.0, lat = 500 })
+        local e = subject()
+        e.healUntil, e.grantHpTo = fakeTime + 10000, 50.0
+        BR.Damage.applyHit(2, 1, 10.0, { weapon = 'test' })
+        e.grantHpTo = 50.0
+        step(1200)
+        local kept, landedAt = e.grantHpTo, e.hp
+        e.grantHpTo = e.hp
+        step(3000)
+        pedHealth[PED] = pedHealth[PED] - math.floor(BR.ToEngineHpDelta(5.0) + 0.5)
+        step(1200)
+        ok(kept == 50.0 and landedAt == 40.0,
+            'a hit landing on a ped that a heal\'s target was granted over, before it '
+                .. 'arrived, spends nothing: it is the server\'s own damage',
+            ('ceiling %s, e.hp %s'):format(tostring(kept), tostring(landedAt)))
+        ok(e.hp == 35.0 and e.grantHpTo == 35.0,
+            'and a fall once nothing is on its way any more spends the ceiling',
+            ('e.hp %s, ceiling %s'):format(tostring(e.hp), tostring(e.grantHpTo)))
+    end
+
     -- ─── THE DIP, THE PRESS AND THE CLIMB BACK ───
     --
     -- A client that dips one sample to 5 right after a bandage, presses a med
@@ -29243,6 +29275,45 @@ do
             d and ('%s +%dms, bar %s, e.hp %s'):format(d.cause, d.t - t0,
                 tostring(d.bar), tostring(d.hp)) or 'the heal ended')
         if BR.AmbHeal.active(1) then BR.AmbHeal.finish(1, false, 'test') end
+    end
+
+    -- ─── ...AND AT 6.7 DPS, WHERE THE RAMP READS ABOVE THE CEILING ───
+    --
+    -- The tick lowers the ceiling at once, so a reading a round trip old can
+    -- sit above it: that sample is capped onto the ceiling rather than granted
+    -- under it, and it has not seen the tick either. Excusing only the granted
+    -- ones knocked a player with 3 to 5 on the bar here.
+    do
+        local bad, runs, worst = 0, 0, '-'
+        for _, lat in ipairs({ 500, 1000 }) do
+            for _, hp in ipairs({ 2.0, 3.0, 8.0 }) do
+                for _, wall in ipairs({ 0, 1000 }) do
+                    stage({ hp = hp, dps = 6.7, lat = lat })
+                    vanAt(A0.x, A0.y)
+                    fire(BR.Net.AMBHEAL_START, 1, { n = VAN })
+                    step(wall)
+                    local m = theMatch()
+                    m.storm = BR.BuildStormRecord(5, A0.x + 4000.0, A0.y, 500.0,
+                        A0.x + 4000.0, A0.y, 500.0, fakeTime, 3600 * 1000, 1000, 6.7,
+                        m.stormSeed)
+                    local t0 = fakeTime
+                    step(8000, function() return #W.defeats > 0 end)
+                    runs = runs + 1
+                    local d = W.defeats[1]
+                    if d and d.bar > 1.0 then
+                        bad = bad + 1
+                        worst = ('%dms line, from %s, wall at %dms: %s +%dms, bar %s')
+                            :format(lat, tostring(hp), wall, d.cause, d.t - t0,
+                                tostring(d.bar))
+                    end
+                    if BR.AmbHeal.active(1) then BR.AmbHeal.finish(1, false, 'test') end
+                end
+            end
+        end
+        ok(bad == 0,
+            'an ambulance heal from low health with a 6.7 dps wall arriving: the '
+                .. 'storm never knocks them with health on the bar',
+            ('%d of %d runs; %s'):format(bad, runs, worst))
     end
 
     -- ─── ...AND THE M4 DRILL STILL HOLDS THROUGH IT ───
