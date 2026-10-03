@@ -229,6 +229,8 @@ shared_scripts {
     -- health ledger. Pure, and cfg is a parameter, so it has no load-order
     -- requirement of its own -- it sits here because it is read by
     -- server/roster.lua's sampler and belongs beside the other anticheat solver.
+    -- Its BR.HealthBase is also what server/inventory.lua measures a new heal
+    -- from and server/storm.lua judges its kill on (#366).
     '@br_lib/shared/health_solve.lua',
     -- BR.RescueDestination and the drive estimate (#191). AFTER
     -- shared/storm_solve.lua, and that IS a load order rather than a reader's

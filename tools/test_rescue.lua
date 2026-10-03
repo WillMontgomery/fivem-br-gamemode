@@ -69,6 +69,9 @@ for _, f in ipairs({
     'config/fuel.lua',
     'config/rescue.lua',
     'shared/rescue_solve.lua',
+    -- BR.HealthBase, which server/inventory.lua measures every channel from
+    -- (#366); `kit.inertWhileAlive` drives a real med kit through it.
+    'shared/health_solve.lua',
 }) do load(f) end
 
 local pass, fail = 0, 0

@@ -28686,6 +28686,49 @@ do
                 .. 'lands', ('%d of %d did not'):format(bad, runs))
     end
 
+    -- ─── A MED KIT LANDS OUTSIDE, AND A BULLET BEATS THE NEXT TICK ───
+    --
+    -- The kit's last target is on its way and the ledger trails it a round trip
+    -- (it follows the ped up a sample late). A bullet the bar can take lands in
+    -- that trip, and the sampler is drifted off the storm's tick -- as a real
+    -- server's jobs drift -- so the tick can come before the next sample does.
+    -- That tick used to empty the trailing ledger and knock a player with up to
+    -- 20 on the bar. It is judged on the ceiling the kit issued, less the bullet
+    -- and the tick (BR.HealthBase). A bullet the trailing ledger cannot absorb
+    -- is gunfire judged on the same lag, which is not the storm's to answer.
+    do
+        local bad, runs, worst = 0, 0, '-'
+        for _, lat in ipairs({ 500, 1000 }) do
+            for _, b in ipairs({ 50.0, 74.0, 86.0 }) do
+                for _, k in ipairs({ 100, 300, 500, 700 }) do
+                    stage({ hp = 1.0, dps = 6.7, lat = lat, phase = 200 })
+                    bag({ 'medkit' })
+                    goOut()
+                    press('medkit')
+                    step(20000, function() return not using() end)
+                    step(k)
+                    if b < subject().hp - 0.5 then
+                        runs = runs + 1
+                        BR.Damage.applyHit(2, 1, b, { weapon = 'test' })
+                        local t0 = fakeTime
+                        step(1100, function() return #W.defeats > 0 end)
+                        local d = W.defeats[1]
+                        if d and d.bar > 1.0 then
+                            bad = bad + 1
+                            worst = ('%dms line, %s at +%dms: %s +%dms, bar %s')
+                                :format(lat, tostring(b), k, d.cause, d.t - t0,
+                                        tostring(d.bar))
+                        end
+                    end
+                end
+            end
+        end
+        ok(runs >= 12 and bad == 0,
+            'a med kit landed outside and a bullet the bar can take: the storm '
+                .. 'never knocks them with health on the bar',
+            ('%d of %d runs; %s'):format(bad, runs, worst))
+    end
+
     -- ───────────────────────────────────────────────────────────────────────
     describe('storm.ambheal')
     -- ───────────────────────────────────────────────────────────────────────
@@ -28748,6 +28791,79 @@ do
             ('storm %s, e.hp %s, bar %s once landed'):format(
                 tostring(stormPointsSince(tw)), tostring(subject().hp),
                 tostring(landed())))
+    end
+
+    -- ─── ...IN ITS FIRST SECONDS, FROM LOW HEALTH, ON A SLOW LINE ───
+    --
+    -- The ambulance does not pause the storm, and the ledger follows its ramp up
+    -- a round trip late. A tick that took that trailing number to zero knocked
+    -- a player whose bar was about to show the ramp less the tick -- 13 on a
+    -- 1000ms line. The kill is judged on the ceiling the ramp already issued,
+    -- which the tick has already lowered (BR.HealthBase).
+    do
+        local bad, runs, started, worst = 0, 0, 0, '-'
+        for _, lat in ipairs({ 500, 1000 }) do
+            for _, phase in ipairs({ 0, 200 }) do
+                for _, hp in ipairs({ 2.0, 5.0 }) do
+                    for _, wall in ipairs({ 0, 1000, 2000 }) do
+                        stage({ hp = hp, dps = 4.0, lat = lat, phase = phase })
+                        vanAt(A0.x, A0.y)
+                        fire(BR.Net.AMBHEAL_START, 1, { n = VAN })
+                        if BR.AmbHeal.active(1) then started = started + 1 end
+                        step(wall)
+                        local m = theMatch()
+                        m.storm = BR.BuildStormRecord(5, A0.x + 4000.0, A0.y, 500.0,
+                            A0.x + 4000.0, A0.y, 500.0, fakeTime, 3600 * 1000, 1000,
+                            4.0, m.stormSeed)
+                        local t0 = fakeTime
+                        step(6000, function() return #W.defeats > 0 end)
+                        runs = runs + 1
+                        local d = W.defeats[1]
+                        if d and d.bar > 1.0 then
+                            bad = bad + 1
+                            worst = ('%dms line, phase %d, from %s, wall at %dms: '
+                                .. '%s +%dms, bar %s'):format(lat, phase,
+                                    tostring(hp), wall, d.cause, d.t - t0,
+                                    tostring(d.bar))
+                        end
+                        if BR.AmbHeal.active(1) then BR.AmbHeal.finish(1, false, 'test') end
+                    end
+                end
+            end
+        end
+        ok(started == runs and bad == 0,
+            'an ambulance heal from low health with the wall arriving: the storm '
+                .. 'never knocks them with health on the bar',
+            ('started %d, %d of %d runs; %s'):format(started, bad, runs, worst))
+    end
+
+    -- ─── ...AND THE M4 DRILL STILL HOLDS THROUGH IT ───
+    --
+    -- A client that ignores STORM_DAMAGE, or pins its bar, is granted straight
+    -- up to the same ceiling the honest one is judged on, so all three die on
+    -- the same tick.
+    for _, lat in ipairs({ 0, 1000 }) do
+        local at = {}
+        for _, mode in ipairs({ 'honest', 'deaf', 'pinned' }) do
+            stage({ hp = 5.0, dps = 4.0, lat = lat })
+            vanAt(A0.x, A0.y)
+            fire(BR.Net.AMBHEAL_START, 1, { n = VAN })
+            if mode ~= 'honest' then W.deaf = true end
+            if mode == 'pinned' then W.pinned = 100.0 end
+            step(1000)
+            local m = theMatch()
+            m.storm = BR.BuildStormRecord(5, A0.x + 4000.0, A0.y, 500.0,
+                A0.x + 4000.0, A0.y, 500.0, fakeTime, 3600 * 1000, 1000, 4.0,
+                m.stormSeed)
+            local t0 = fakeTime
+            step(60000, function() return #W.defeats > 0 end)
+            at[mode] = W.defeats[1] and (W.defeats[1].t - t0) or -1
+        end
+        ok(at.honest > 0 and at.deaf == at.honest and at.pinned == at.honest,
+            ('through an ambulance heal the wall arrived on, a client that ignores '
+                .. 'the storm or pins its bar dies on the honest tick (%dms line)')
+                :format(lat),
+            ('honest %d, deaf %d, pinned %d'):format(at.honest, at.deaf, at.pinned))
     end
 
     -- ───────────────────────────────────────────────────────────────────────

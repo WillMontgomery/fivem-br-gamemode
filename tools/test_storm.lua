@@ -146,6 +146,11 @@ local SANDBOX_LIB = {
     'br_lib/config/audio.lua',      -- the cue keys the phase job broadcasts
     'br_lib/shared/storm_solve.lua',
     'br_lib/shared/storm_shape.lua',
+    -- BR.HealthBase: the storm's kill is judged on what the bar will show once
+    -- a heal still landing has landed (#366). Pure, so the client state loads it
+    -- for nothing; the server state without it would be storm_shape's trap
+    -- again, a damage tick that errors inside the pcall and bills nobody.
+    'br_lib/shared/health_solve.lua',
 }
 
 local pass, fail = 0, 0
@@ -1921,6 +1926,64 @@ do
         'and reaching the new destination stops the bill without undoing it',
         ('%s -> %s'):format(tostring(billed), tostring(f.hp)))
     ok(T.defeated[1] == nil, 'nobody is eliminated for having made the run')
+end
+
+-- ---------------------------------------------------------------------------
+describe('server.healbase')
+do
+    -- ═══ THE KILL IS JUDGED ON WHAT THE BAR WILL SHOW (#366) ═══
+    --
+    -- A heal's target still on its way stands on the entry as a ceiling with its
+    -- window, and the ledger follows the ped up to it a round trip late. A tick
+    -- that empties that trailing ledger has not emptied the bar: the ceiling,
+    -- less this tick, is what the bar is about to show. tools/test_roster.lua
+    -- drives the real heals on a modeled line; this is the tick's own arithmetic.
+    local S = newStormServer()
+    S.record(2, 0.0, 0.0, 400.0, 0.0, 0.0, 400.0, 600000, 60000, 6.0)
+    local e = S.roster[1]
+    e.pos = { x = 900.0, y = 0.0, z = 30.0 }
+    e.hp, e.grantHpTo, e.healUntil = 2.0, 20.0, S.now + 5000
+
+    S.tick()
+    ok(S.defeated[1] == nil and e.hp == 0.0 and e.grantHpTo == 14.0,
+        'a tick that empties a ledger still trailing a heal takes its points off '
+            .. 'both, and kills nobody: the bar is about to show 14',
+        ('defeated %s, hp %s, ceiling %s'):format(tostring(S.defeated[1]),
+            tostring(e.hp), tostring(e.grantHpTo)))
+
+    -- ...BUT A CEILING IS ONLY A HEAL WHILE ITS WINDOW STANDS, AND ONLY ABOVE ZERO.
+    S.tick(); S.tick()
+    ok(S.defeated[1] == nil and e.grantHpTo == 2.0,
+        'every tick comes off the ceiling, and they live while it is above zero',
+        ('defeated %s, ceiling %s'):format(tostring(S.defeated[1]),
+            tostring(e.grantHpTo)))
+    S.tick()
+    ok(S.defeated[1] == true and e.grantHpTo < 0.0,
+        'and the tick that takes the ceiling itself past zero kills, exactly as '
+            .. 'the ledger would', ('ceiling %s'):format(tostring(e.grantHpTo)))
+
+    local T = newStormServer()
+    T.record(2, 0.0, 0.0, 400.0, 0.0, 0.0, 400.0, 600000, 60000, 6.0)
+    local f = T.roster[1]
+    f.pos = { x = 900.0, y = 0.0, z = 30.0 }
+    f.hp, f.grantHpTo, f.healUntil = 2.0, 20.0, T.now
+    T.tick()
+    ok(T.defeated[1] == true,
+        'a ceiling whose window has closed is no heal at all: the ledger is the '
+            .. 'whole answer')
+
+    -- AND IT IS READ AS THE WHOLE POINT THE PED WILL SHOW. The client rounds a
+    -- target onto its ped, so a ceiling the tick leaves at 0.4 is a bar on zero.
+    local U = newStormServer()
+    U.record(2, 0.0, 0.0, 400.0, 0.0, 0.0, 400.0, 600000, 60000, 6.0)
+    local g = U.roster[1]
+    g.pos = { x = 900.0, y = 0.0, z = 30.0 }
+    g.hp, g.grantHpTo, g.healUntil = 2.0, 6.4, U.now + 5000
+    U.tick()
+    ok(U.defeated[1] == true and math.abs(g.grantHpTo - 0.4) < 1e-9,
+        'a ceiling the tick leaves under half a point is a bar on zero, and kills',
+        ('defeated %s, ceiling %s'):format(tostring(U.defeated[1]),
+            tostring(g.grantHpTo)))
 end
 
 -- ---------------------------------------------------------------------------

@@ -1033,6 +1033,20 @@ end
 --- BR.Damage.applyHit's rule for a bullet: a target issued before this tick
 --- is a number this tick has taken from, and leaving it would let the sampler
 --- GRANT the ledger straight back up past the storm.
+---
+--- ═══ AND THE KILL IS JUDGED ON WHAT THE BAR WILL SHOW (#366) ═══
+---
+--- Not on the ledger alone. While a heal's target is still on its way the
+--- ledger trails it by a round trip -- it follows the ped up one sample late --
+--- so a tick that took that trailing number to zero killed a player whose bar
+--- was about to show the target less this very tick: an ambulance heal from 2
+--- with the wall arriving in its first seconds, or a med kit landing outside
+--- and a bullet before the next tick, knocked with up to 20 on the bar on a
+--- slow line. BR.HealthBase reads the standing ceiling beside the ledger, and
+--- that ceiling has just come down by this tick, so it is exactly the honest
+--- bar once everything sent has landed. A client that ignores the storm or pins
+--- its ped is granted straight up to that same ceiling, so all three die on the
+--- same tick.
 --- @param src integer
 --- @param e table      the roster entry, ALIVE
 --- @param display number  display points owed this tick
@@ -1064,7 +1078,8 @@ local function bill(src, e, display, carry, now)
 
     -- Elimination comes from the LEDGER, not the ped. An honest client's ped
     -- reaches zero on the instruction just sent; a deaf one dies here anyway.
-    if e.hp <= 0.0 then
+    -- Read through BR.HealthBase, so a heal still landing counts (above).
+    if BR.HealthBase(e.hp, e.grantHpTo, e.healUntil, now) <= 0.0 then
         print(('[br_core] storm: ledger kill on %s (%d)'):format(e.name, src))
         -- defeat(), not eliminate(): the wall knocks a squad player down like
         -- anything else does. It is a bad place to be picked up, which is the

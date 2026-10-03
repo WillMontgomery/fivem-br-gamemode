@@ -12,6 +12,12 @@
 --   BR.HealthUnexplainedGain  -- IS ANYBODY LYING?  (the detector; counts)
 --   BR.HealthCommit           -- WHAT DOES THE LEDGER SAY NOW?  (the rule; acts)
 --
+-- and one the server asks of the answer, because a ledger that trails a heal
+-- it already issued is short of the bar for a round trip (#366):
+--
+--   BR.HealthBase             -- WHAT WILL THE BAR SHOW?  (what a new heal and
+--                                the storm's kill are judged on)
+--
 -- The detector shipped first, alone, on the project's standing order: measure,
 -- prove the log is empty during honest play, then act (docs/security.md, and
 -- the way the damage validator shipped). The rule is the "then act" half.
@@ -489,6 +495,48 @@ function BR.HealthCommit(ledger, sampled, ctx, cfg)
     end
 
     return l, BR.HealthVerdict.REFUSED
+end
+
+--- The health a player is certain to show once every heal the server has
+--- already issued has landed: the ledger, or the standing heal ceiling while
+--- its window is open, whichever is higher (#366).
+---
+--- ═══ WHY THE LEDGER ALONE IS NOT THAT NUMBER ═══
+---
+--- A heal sends a TARGET and the ledger follows the ped up to it (clause 7 of
+--- BR.HealthCommit above) one round trip late, because the sampler reads the ped
+--- as it stood a trip ago. For that trip an honest ledger reads short of a
+--- number the server has already issued and the ped is already climbing to --
+--- harmless until something JUDGES the ledger, and wrong when something does:
+---   * a new channel measured from it started short (server/inventory.lua);
+---   * a storm tick that took it to zero killed a player whose bar was about to
+---     show the ceiling less that same tick (server/storm.lua) -- an ambulance
+---     heal from 2 with the wall arriving, or a med kit landing outside and a
+---     bullet before the next tick, knocked with up to 20 still on the bar.
+---
+--- READING THE CEILING GIVES A CLIENT NOTHING. It is the server's own number,
+--- lowered by every point of server damage dealt after it was issued
+--- (BR.Damage.applyHit, the storm's bill) and spent by a drop once the ledger
+--- has reached it (server/roster.lua's commitSample), so it is what an honest
+--- bar will read -- and a client that ignores its damage or pins its ped is
+--- granted straight up to it anyway. Honest and modified answer the same.
+---
+--- SNAPPED TO THE WHOLE POINT THE PED WILL SHOW, as the ledger rule reads it:
+--- the client rounds a target onto its ped through BR.ToEngineHp, which also
+--- floors a ceiling lowered past zero at zero.
+--- @param hp number|nil         the ledger (`hp`)
+--- @param grantTo number|nil    the standing health ceiling (`grantHpTo`)
+--- @param healUntil number|nil  health's heal window (`healUntil`)
+--- @param now number
+--- @return number
+function BR.HealthBase(hp, grantTo, healUntil, now)
+    local base = tonumber(hp) or 0.0
+    local ceiling = tonumber(grantTo)
+    if ceiling ~= nil and ceiling == ceiling and before(now, healUntil) then
+        ceiling = BR.ToDisplayHp(BR.ToEngineHp(ceiling))
+        if ceiling > base then base = ceiling end
+    end
+    return base
 end
 
 --- Fold one sample's verdict into a player's running tally.

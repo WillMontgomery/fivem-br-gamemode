@@ -1367,17 +1367,15 @@ end)
 --- after a heal lowers the ceiling to where the fall left them (server/roster.lua's
 --- commitSample), so a heal pressed after it starts from 50, not from the 75 the
 --- last bandage reached -- and is not refused for a bar the fall emptied.
+---
+--- THE SAME NUMBER THE STORM'S KILL IS JUDGED ON, so it lives in
+--- shared/health_solve.lua (BR.HealthBase) rather than here: the two can never
+--- disagree about what a player's bar is about to show.
 --- @param e table
 --- @param now number
 --- @return number
 local function healthBase(e, now)
-    local hp = tonumber(e.hp) or 0.0
-    local ceiling = tonumber(e.grantHpTo)
-    if ceiling ~= nil and e.healUntil ~= nil and now < e.healUntil then
-        -- The whole point the ped will show, as the ledger rule reads it.
-        return math.max(hp, BR.ToDisplayHp(BR.ToEngineHp(ceiling)))
-    end
-    return hp
+    return BR.HealthBase(e.hp, e.grantHpTo, e.healUntil, now)
 end
 
 RegisterNetEvent(BR.Net.INV_USE)

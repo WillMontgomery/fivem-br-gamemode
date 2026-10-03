@@ -84,6 +84,9 @@ loadAll({
     'br_lib/shared/shop_solve.lua',
     'br_lib/shared/rng.lua',
     'br_lib/shared/gunshop_solve.lua',
+    -- BR.HealthBase, which the real inventory loaded below measures every
+    -- channel from (#366). Pure, and shared in br_core's manifest beside it.
+    'br_lib/shared/health_solve.lua',
 })
 
 local pass, fail = 0, 0
