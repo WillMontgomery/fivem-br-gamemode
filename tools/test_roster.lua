@@ -28028,6 +28028,72 @@ do
             tostring(subject().armour))
     end
 
+    -- ───────────────────────────────────────────────────────────────────────
+    describe('heal.slowline')
+    -- ───────────────────────────────────────────────────────────────────────
+    --
+    -- A 1000ms ONE-WAY LINE IS INSIDE EVERY WINDOW, and a whole point is what the
+    -- ledger follows. The instruction takes a second to land and the sampler
+    -- reads the ped a second late, so the last reading that has not caught up
+    -- arrives just under two seconds after the server acted.
+
+    -- ─── A BULLET ON A 1000ms LINE ───
+    do
+        stage({ hp = 100.0, lat = 1000 })
+        local t0 = fakeTime
+        BR.Damage.applyHit(2, 1, 20.0, { weapon = 'test' })
+        step(4000)
+        ok(subject().hp == 80 and bar() == 80
+            and sentSince(BR.Net.HEALTH_SYNC, t0) == 0
+            and ((subject().healthAudit or {}).hp or 0.0) == 0.0,
+            'an honest player shot on a 1000ms line is neither counted nor '
+                .. 'corrected for a hit their ped was about to show',
+            ('e.hp %s, bar %s, HEALTH_SYNC %d, counted %s'):format(
+                tostring(subject().hp), tostring(bar()),
+                sentSince(BR.Net.HEALTH_SYNC, t0),
+                tostring((subject().healthAudit or {}).hp)))
+    end
+
+    -- ─── A BANDAGE AND A SHIELD ON A 1000ms LINE ───
+    do
+        stage({ hp = 31.0, lat = 1000 })
+        bag({ 'bandage', 'shield' })
+        local t0 = fakeTime
+        press('bandage')
+        step(20000, function() return not using() end)
+        press('shield')
+        finish(4000)
+        ok(subject().hp == 46 and bar() == 46 and subject().armour == 50
+            and sentSince(BR.Net.HEALTH_SYNC, t0) == 0,
+            'a bandage and the shield after it both land in full on a 1000ms '
+                .. 'line, with no correction',
+            ('e.hp %s, bar %s, armour %s, HEALTH_SYNC %d'):format(
+                tostring(subject().hp), tostring(bar()),
+                tostring(subject().armour), sentSince(BR.Net.HEALTH_SYNC, t0)))
+    end
+
+    -- ─── THE LEDGER CLIMBS ON THE WHOLE POINTS THE BAR SHOWS ───
+    --
+    -- A partial target is fractional and the client rounds it onto its ped, so
+    -- a fractional ceiling held the honest ledger under the bar it should equal.
+    do
+        stage({ hp = 50.0 })
+        bag({ 'bandage' })
+        press('bandage')
+        local fractions = 0
+        step(20000, function()
+            local hp = subject().hp
+            if hp ~= math.floor(hp) then fractions = fractions + 1 end
+            return not using()
+        end)
+        step(500)
+        ok(fractions == 0 and subject().hp == 65,
+            'through a whole bandage the ledger stands on whole points, and lands '
+                .. 'where the bar does',
+            ('%d fractional samples, e.hp %s'):format(fractions,
+                tostring(subject().hp)))
+    end
+
     GetEntityHealth, GetPedArmour = rawHealth, rawArmour
     BR.Combat.defeat = rawDefeat
 end

@@ -1272,7 +1272,21 @@ local function commitSample(src, entry, hp, armour, now)
         local ctx = healthCtx(entry, now)
         local hpWhy, armourWhy
 
-        ctx.grantTo = entry.grantHpTo
+        -- THE HEALTH CEILING IS SNAPPED TO THE WHOLE POINT THE PED WILL SHOW
+        -- (#366). A partial target is fractional (hp0 + 15 * 0.9375), and the
+        -- client sets its ped through BR.ToEngineHp, which rounds to a whole
+        -- engine point -- so an honest ped sent 64.8125 shows 65, while the
+        -- fractional ceiling held the ledger on 64.8125 underneath it, and the
+        -- ledger trailed the bar it is supposed to equal at every partial. Snapped,
+        -- the ledger follows exactly as far as an honest ped can be seen to
+        -- climb, and a client that reads high is held to the same whole point.
+        -- Armour needs no snap: the client floors it (SetPedArmour), so an
+        -- honest ped never reads above its ceiling.
+        local hpCeiling = tonumber(entry.grantHpTo)
+        if hpCeiling ~= nil and hpCeiling == hpCeiling then
+            hpCeiling = BR.ToDisplayHp(BR.ToEngineHp(hpCeiling))
+        end
+        ctx.grantTo = hpCeiling
         nextHp, hpWhy = BR.HealthCommit(entry.hp, hp, ctx, cfg)
 
         -- THE ARMOUR CONFIG IS BUILT RATHER THAN PASSED WHOLE, so that

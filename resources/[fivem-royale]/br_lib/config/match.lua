@@ -1621,8 +1621,16 @@ BR.Config.Combat = {
         -- client to hurt its own ped; between those two moments the ped is
         -- legitimately higher, by exactly the damage in flight. That gap is one
         -- sample interval (250ms) plus the round trip, and a player on a bad
-        -- connection is not a cheat -- so 1500ms covers a 1.2s round trip,
-        -- which is worse than anybody actually plays on.
+        -- connection is not a cheat.
+        --
+        -- 2500ms COVERS A 1000ms ONE-WAY LINE (#366): the instruction takes
+        -- 1000ms to land and the sampler reads the ped as it stood 1000ms ago,
+        -- so the last high reading arrives just under 2000ms after the hit, and
+        -- a 250ms sample plus OneSync's own sync interval rides on top of that.
+        -- It was 1500, which a 1000ms line outran by half a second: an honest
+        -- player shot on that line was counted and resynchronised for a hit
+        -- their ped was still about to show. The rule's verdict is the same
+        -- either side of the window; only the name and the correction change.
         --
         -- WHAT IT NO LONGER DOES, and this is the whole of the audit's finding:
         -- it does not COMMIT the rise. It used to -- the sampler excused the
@@ -1633,7 +1641,7 @@ BR.Config.Combat = {
         -- the client is corrected. That costs the honest player NOTHING, because
         -- the number their ped is heading for is the number the ledger already
         -- holds -- see the honest-client section of shared/health_solve.lua.
-        hurtGraceMs = 1500,
+        hurtGraceMs = 2500,
 
         -- HOW LONG A CONSUMABLE OR A REVIVE IS ALLOWED TO KEEP CLIMBING.
         --
@@ -1655,7 +1663,16 @@ BR.Config.Combat = {
         -- `healUntil`, armour's is `healArmourUntil`, and an issue opens only
         -- the window for what it moves -- so a shield pressed as a bandage lands
         -- cannot close the window the bandage's last target is still riding in.
-        healSettleMs = 2000,
+        --
+        -- AND IT IS THE SAME ROUND TRIP AS `hurtGraceMs`, SO IT IS THE SAME 2500
+        -- (#366). The last target of a heal lands 1000ms after it is sent on a
+        -- 1000ms line and is read 1000ms after that; at 2000 the window closed on
+        -- the very sample that would have carried it, the rise was refused and
+        -- HEALTH_SYNC pulled the bar back -- a shield drunk on that line landed
+        -- on 47 and a bandage could land a point short. The ceiling is what
+        -- bounds the window, not its length, so the extra half second buys a
+        -- modified client nothing it was not already issued.
+        healSettleMs = 2500,
 
         -- A revive or a respawn is the LEDGER leading and the ped following, so
         -- the sample normally reads LOW rather than high. This covers the
