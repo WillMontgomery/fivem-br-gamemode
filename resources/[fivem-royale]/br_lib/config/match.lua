@@ -1453,6 +1453,61 @@ BR.Config.Combat = {
         [2]  = 'sticky',
         [3]  = 'molotov',
     },
+
+    -- THE EXPLOSION TYPES ONLY A VEHICLE'S GUN MAKES (#322, second round).
+    -- server/damage.lua cancels an explosionEvent of one of these types from
+    -- a player the server has seated in a vehicle the #322 ruling disarms.
+    --
+    -- DOCUMENTED, NOT MEASURED. Each type is the `<Explosion><Default>` of a
+    -- VEHICLE_WEAPON_* entry, or of the ammo it fires, in Rockstar's weapon
+    -- meta files (read from the TheRealVSSVSSN/GTV_Meta_Files mirror of
+    -- vehicleweapons_*.meta and the turret metas), and of NO hand weapon's
+    -- ammo in weapons.meta or the DLC weapon metas. The numbers are GTA's
+    -- eExplosionTag as citizenfx/natives FIRE/AddExplosion.md lists it.
+    -- Nothing here has been watched arriving on a live server.
+    --
+    -- WHAT IS DELIBERATELY NOT HERE:
+    --   * 0 to 4, our own arsenal's (grenade, launcher, sticky, molotov,
+    --     rocket), and 36, the railgun's. Several vehicle guns borrow 0 and 1
+    --     -- the Tampa's mortar, the Dune FAV's and the Barrage's launchers are
+    --     GRENADELAUNCHER -- so those blasts are not refused here; their hits
+    --     still are.
+    --   * every type a vehicle makes by blowing up (6, 7, 8, 10, 15, 16, 17,
+    --     26, 31, 34 and the blimps), so a wreck still goes off.
+    --   * types no meta gives a vehicle gun, however vehicle-ish the name: 33
+    --     VEHICLE_BULLET, 45 EXPLOSIVEAMMO, 72 SCRIPT_MISSILE.
+    --   * the TITAN2 cannons, whose numbers the enum list above does not have.
+    --
+    -- The drivable rows this reaches today: the missiles of the tampa3,
+    -- vigilante, apc and chernobog (32), the APC's cannon (46), and the
+    -- Arena monster trucks' kinetic launcher (63). The rest are the same rule
+    -- for vehicles #329's engine probe may disarm that nobody listed.
+    vehicleGunExplosions = {
+        [5]  = 'TANKSHELL',
+        [32] = 'PLANE_ROCKET',
+        [41] = 'VALKYRIE_CANNON',
+        [44] = 'VEHICLEMINE',
+        [46] = 'APCSHELL',
+        [47] = 'BOMB_CLUSTER',
+        [48] = 'BOMB_GAS',
+        [49] = 'BOMB_INCENDIARY',
+        [50] = 'BOMB_STANDARD',
+        [51] = 'TORPEDO',
+        [53] = 'BOMBUSHKA_CANNON',
+        [55] = 'HUNTER_BARRAGE',
+        [56] = 'HUNTER_CANNON',
+        [57] = 'ROGUE_CANNON',
+        [60] = 'BOMB_STANDARD_WIDE',
+        [62] = 'OPPRESSOR2_CANNON',
+        [63] = 'MORTAR_KINETIC',
+        [64] = 'VEHICLEMINE_KINETIC',
+        [65] = 'VEHICLEMINE_EMP',
+        [66] = 'VEHICLEMINE_SPIKE',
+        [67] = 'VEHICLEMINE_SLICK',
+        [68] = 'VEHICLEMINE_TAR',
+        [73] = 'RCTANK_ROCKET',
+        [74] = 'BOMB_WATER',
+    },
     -- How long a fire keeps crediting the person who lit it. Molotov flames
     -- burn for a good while and a player who runs through them ten seconds
     -- later was still killed by whoever threw it. Attribution only lands on

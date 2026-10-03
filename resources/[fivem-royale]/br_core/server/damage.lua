@@ -1315,6 +1315,22 @@ local function handleEnvironmental(shooter, env, data)
         shooter, tostring(env.id), tostring(refused))
 end
 
+--- Is this player sitting, by the SERVER's own reading, in a vehicle the #322
+--- ruling drives with its gun held off?
+---
+--- One question for the three events a disarmed seat's gun can raise: a hit,
+--- a projectile, an explosion. See the note at its first use in the
+--- weaponDamageEvent handler for why it is the roster's sampled ped, why the
+--- entry rides along (#329), and why a build without server/vehicles.lua
+--- answers no.
+--- @param src integer
+--- @return boolean
+local function seatedInDisarmedVehicle(src)
+    if not (BR.Vehicles and BR.Vehicles.inDisarmedVehicle) then return false end
+    local s = BR.Roster.get(src)
+    return BR.Vehicles.inDisarmedVehicle(s and s.ped, s) == true
+end
+
 AddEventHandler('weaponDamageEvent', function(sender, data)
     if recording > 0 then record(sender, data) end
     if type(data) ~= 'table' then return end
@@ -1388,44 +1404,6 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
         BR.Damage.spendRound(shooter, data.weaponType)
     end
 
-    local ids = targetsOf(data)
-    if not ids then return end
-
-    -- CADENCE IS PER EVENT, NOT PER VICTIM, and this used to be inside the
-    -- loop below. A shotgun blast that catches two players -- or a grenade
-    -- that catches four -- arrives as ONE event listing several hits, so the
-    -- second victim was measured against a "last shot" stamped microseconds
-    -- earlier by the first, and refused as TOO_FAST. The shooter was
-    -- competing with themselves. Same reasoning that already put spendRound
-    -- outside the loop.
-    local now = GetGameTimer()
-    local since = now - (lastShot[shooter] or 0)
-
-    -- Explosives do not stamp it. A detonation is not a trigger pull, and
-    -- letting one set the clock means the next honest rifle round is measured
-    -- from the moment your own grenade went off.
-    --
-    -- ...WHICH LEFT THEIR CADENCE MEASURED BY NOTHING AT ALL, and that half was
-    -- never intended. `blast[shooter]` is the other clock: it times LAUNCHES
-    -- rather than impacts, so a grenade launcher still cannot cycle in a
-    -- millisecond while one rocket catching four people still costs one shot.
-    local explosive = fired ~= nil and isTrue(fired.explosive)
-    if not explosive then lastShot[shooter] = now end
-
-    -- THE PROJECTILE THIS EVENT MIGHT BELONG TO, resolved once for the event.
-    --
-    -- `sinceLaunch` is nil when the shooter has never launched this weapon --
-    -- which must not read as "0ms ago and therefore too fast", so the first
-    -- rocket of a match has no cadence to fail.
-    local rec, launchOpen, sinceLaunch = nil, false, nil
-    if explosive then
-        rec = blast[shooter]
-        if rec and rec.weapon == fired.id then
-            sinceLaunch = now - rec.at
-            launchOpen  = sinceLaunch <= BR.ShotBlastWindow(fired, liveCfg())
-        end
-    end
-
     -- ═══ IS THE SHOOTER SITTING IN A VEHICLE THIS GAMEMODE DISARMED (#322) ═══
     --
     -- The owner's ruling drives the armed vehicles with their gun switched off
@@ -1464,10 +1442,70 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
     -- rather than in a table keyed on the model, so that one liar cannot excuse a
     -- model for the whole match. The entry this line already holds is where it
     -- lives; without it the answer is the authored table's, which is what it was.
-    local seatedInDisarmed = false
-    if fired == nil and BR.Vehicles and BR.Vehicles.inDisarmedVehicle then
-        local s = BR.Roster.get(shooter)
-        seatedInDisarmed = BR.Vehicles.inDisarmedVehicle(s and s.ped, s)
+    local seatedInDisarmed = fired == nil and seatedInDisarmedVehicle(shooter)
+
+    -- ═══ AND WHATEVER IT HIT, IT IS CANCELED (#322, second round) ═══
+    --
+    -- The refusal below is per PLAYER victim, so until now a mounted gun from
+    -- one of these seats that hit a CAR or a PROP went through untouched: the
+    -- loop skips every id that is not a player ("most entries in that list are
+    -- scenery"). A hit like that from a client that does not run the trigger
+    -- hold -- or from whatever gets past it -- still landed on somebody's car,
+    -- with them in it.
+    --
+    -- CANCELED HERE, ONCE PER EVENT, BEFORE ANY VICTIM IS LOOKED AT -- and
+    -- before the "nothing named" return, since a hit on something unnetworked
+    -- names nothing. Behind cfg.enforce with every other cancel in this file,
+    -- and counted. It accuses nobody, for the reason VEHICLE_GUN accuses nobody:
+    -- it is a rule, not a means. A player victim still goes through the loop
+    -- below for the ring, the per-player count and the resync.
+    --
+    -- THE SAME TEST AS THE PER-PLAYER REFUSAL, AND NO WIDER: a hash in no row of
+    -- ours (the world's own damage has returned above), from somebody the server
+    -- has seated in a vehicle the ruling disarms. Ramming and running over are
+    -- the world's (BR.Config.Environmental), so a Technical driven into a car
+    -- still hurts it.
+    if seatedInDisarmed then
+        BR.Damage.vehicleGunEvents = (BR.Damage.vehicleGunEvents or 0) + 1
+        if cfg.enforce then CancelEvent() end
+    end
+
+    local ids = targetsOf(data)
+    if not ids then return end
+
+    -- CADENCE IS PER EVENT, NOT PER VICTIM, and this used to be inside the
+    -- loop below. A shotgun blast that catches two players -- or a grenade
+    -- that catches four -- arrives as ONE event listing several hits, so the
+    -- second victim was measured against a "last shot" stamped microseconds
+    -- earlier by the first, and refused as TOO_FAST. The shooter was
+    -- competing with themselves. Same reasoning that already put spendRound
+    -- outside the loop.
+    local now = GetGameTimer()
+    local since = now - (lastShot[shooter] or 0)
+
+    -- Explosives do not stamp it. A detonation is not a trigger pull, and
+    -- letting one set the clock means the next honest rifle round is measured
+    -- from the moment your own grenade went off.
+    --
+    -- ...WHICH LEFT THEIR CADENCE MEASURED BY NOTHING AT ALL, and that half was
+    -- never intended. `blast[shooter]` is the other clock: it times LAUNCHES
+    -- rather than impacts, so a grenade launcher still cannot cycle in a
+    -- millisecond while one rocket catching four people still costs one shot.
+    local explosive = fired ~= nil and isTrue(fired.explosive)
+    if not explosive then lastShot[shooter] = now end
+
+    -- THE PROJECTILE THIS EVENT MIGHT BELONG TO, resolved once for the event.
+    --
+    -- `sinceLaunch` is nil when the shooter has never launched this weapon --
+    -- which must not read as "0ms ago and therefore too fast", so the first
+    -- rocket of a match has no cadence to fail.
+    local rec, launchOpen, sinceLaunch = nil, false, nil
+    if explosive then
+        rec = blast[shooter]
+        if rec and rec.weapon == fired.id then
+            sinceLaunch = now - rec.at
+            launchOpen  = sinceLaunch <= BR.ShotBlastWindow(fired, liveCfg())
+        end
     end
 
     -- ONE EVENT, ONE HIT PER PLAYER, decided on the RESOLVED PLAYER rather than
@@ -1614,9 +1652,11 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
                     -- WHETHER #322's CLIENT-SIDE DISABLE ACTUALLY HOLDS.
                     -- VEHICLE_GUN means a mounted weapon got a shot away from a
                     -- seat this gamemode switched the gun off in, which is
-                    -- either a weapon switch inside one 100 ms pass, a client
-                    -- that does not run client/vehrefuse.lua, or that file's
-                    -- disable and trigger hold not doing what they say. It
+                    -- either a client that does not run client/vehrefuse.lua
+                    -- or that file's disable and trigger hold not doing what
+                    -- they say -- since #322's second round the hold is
+                    -- decided on every frame, so a weapon switch no longer
+                    -- leaves a pass-sized window for one to get through. It
                     -- accuses nobody -- it is a rule, not a means -- so this
                     -- counter is the whole of the evidence, and a number that
                     -- climbs during a playtest is read against `/brvehrefuse`
@@ -1775,6 +1815,51 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
 end)
 
 -- --------------------------------------------------------------------------
+-- A disarmed seat's gun launching something (#322, second round)
+-- --------------------------------------------------------------------------
+--
+-- A ROCKET OR A SHELL IS A PROJECTILE BEFORE IT IS A BLAST, and FiveM's server
+-- sees the launch: `startProjectileEvent` (CStartProjectileEvent in
+-- ServerGameState.cpp, carrying ownerId, projectileHash and weaponHash). Cancel
+-- it and the relay is not sent, so no other client builds a copy -- the same
+-- lever server/airdrop.lua already pulls for the airdrop flare, and its header
+-- has the FiveM source lines that say so. The sender's own copy was created
+-- before the event was sent and is not touched; the client hold is what stops
+-- that one.
+--
+-- TWO CONDITIONS, BOTH NARROW. The weapon hash is one this gamemode issues
+-- nobody (BR.Config.IsAllowedWeapon: no row of ours, not the parachute, not
+-- fists), so a grenade thrown from a passenger seat or our own launcher fired
+-- from one replicates exactly as it always has. And the sender is somebody the
+-- server has seated in a vehicle the ruling disarms. That a vehicle gun's
+-- projectile carries the vehicle weapon's hash in `weaponHash` is inferred from
+-- the field's name, not measured; if it carries something else, this never
+-- fires and the count says so.
+--
+-- THE AIRDROP FLARE IS IN NO ROW EITHER. server/airdrop.lua cancels its relay
+-- for everybody already, so the only difference here is that one thrown from
+-- one of these seats is counted as well.
+--
+-- Behind cfg.enforce, counted, and accusing nobody, like every vehicle-gun
+-- refusal in this file.
+AddEventHandler('startProjectileEvent', function(sender, data)
+    if type(data) ~= 'table' then return end
+    -- AN INTEGER BEFORE BR.NormHash, which is a bitwise AND and RAISES on a
+    -- fractional number in Lua 5.4. This handler sees every projectile in the
+    -- match, so a malformed payload is dropped rather than allowed to throw.
+    if type(data.weaponHash) ~= 'number' then return end
+    local h = math.tointeger(data.weaponHash)
+    if h == nil or BR.Config.IsAllowedWeapon(h) then return end
+
+    local src = tonumber(sender)
+    if not src or src == 0 then return end
+    if not seatedInDisarmedVehicle(src) then return end
+
+    BR.Damage.vehicleGunProjectiles = (BR.Damage.vehicleGunProjectiles or 0) + 1
+    if cfg.enforce then CancelEvent() end
+end)
+
+-- --------------------------------------------------------------------------
 -- Explosions and fire: attribution without ownership
 -- --------------------------------------------------------------------------
 --
@@ -1899,6 +1984,38 @@ local function explosionAllowed(owner, ev)
     }, ecfg)
 end
 
+--- Is this explosion a disarmed seat's gun going off?
+---
+--- ═══ ONLY TYPES ROCKSTAR'S OWN DATA GIVES TO VEHICLE GUNS AND TO NOTHING ELSE ═══
+---
+--- BR.Config.Combat.vehicleGunExplosions is that list, with its sources beside
+--- it. It holds no type this gamemode's own arsenal makes (0 to 4, and the
+--- railgun's 36), no type a hand weapon makes, and no type a vehicle makes by
+--- blowing up (CAR, TRUCK, BIKE and the rest), so a grenade thrown from a
+--- passenger seat and a car going off next to one are untouched.
+---
+--- WHAT IT CANNOT COVER, SAID HERE RATHER THAN DISCOVERED: the guns whose
+--- shells borrow a type our arsenal also makes. The Weaponized Tampa's mortar,
+--- the Dune FAV's and the Barrage's grenade launchers all go off as
+--- GRENADELAUNCHER (1), the same type as our grenade launcher, so they are left
+--- to the ordinary path. Their HITS are still canceled in the weaponDamageEvent
+--- handler; only the blast is drawn.
+---
+--- FROM A SENDER THE SERVER HAS SEATED IN A DISARMED VEHICLE, and from nobody
+--- else: one of these types from anybody on foot is not this rule's business.
+--- @param owner integer
+--- @param ev table
+--- @return boolean
+local function vehicleGunBlast(owner, ev)
+    local tags = cfg.vehicleGunExplosions
+    if tags == nil then return false end
+    -- tonumber first: a payload that names its type as anything but a number
+    -- is no type at all, and math.tointeger refuses a fractional one.
+    local tag = math.tointeger(tonumber(ev.explosionType))
+    if tag == nil or tags[tag] == nil then return false end
+    return seatedInDisarmedVehicle(owner)
+end
+
 AddEventHandler('explosionEvent', function(sender, ev)
     if type(ev) ~= 'table' then return end
     local owner = tonumber(sender)
@@ -1908,6 +2025,19 @@ AddEventHandler('explosionEvent', function(sender, ev)
     -- declines to claim -- cancelling those would be this file deciding the
     -- world may not have weather.
     if not owner or owner == 0 then return end
+
+    -- ═══ A DISARMED SEAT'S GUN GOING OFF (#322, second round) ═══
+    --
+    -- Canceled, so the blast is neither drawn on other screens nor allowed to
+    -- move or damage anything there. Behind cfg.enforce like every other cancel
+    -- in this file, counted, and accusing nobody: it is a rule, not a means.
+    -- Not printed: honest play never reaches it once the client holds the
+    -- trigger, and the count is in `brdamage`.
+    if vehicleGunBlast(owner, ev) then
+        BR.Damage.vehicleGunBlasts = (BR.Damage.vehicleGunBlasts or 0) + 1
+        if cfg.enforce then CancelEvent() end
+        return
+    end
 
     local ok, why = explosionAllowed(owner, ev)
     if not ok then
@@ -2154,6 +2284,14 @@ RegisterCommand('brdamage', function(_, args)
     print(('  applyOwnDamage=%s  enforce=%s  logHits=%s  refusals so far=%d')
         :format(tostring(cfg.applyOwnDamage), tostring(cfg.enforce),
                 tostring(cfg.logHits), BR.Damage.refusals or 0))
+    -- #322: WHAT A DISARMED SEAT'S GUN GOT TO THE SERVER. Shots at players,
+    -- hit events at anything, launches and blasts; all zero in a playtest where
+    -- the client's trigger hold works and nobody runs a modified client.
+    print(('  vehicle guns: %d shot(s) at players, %d hit event(s), '
+           .. '%d projectile(s), %d blast(s)')
+        :format(BR.Damage.vehicleGuns or 0, BR.Damage.vehicleGunEvents or 0,
+                BR.Damage.vehicleGunProjectiles or 0,
+                BR.Damage.vehicleGunBlasts or 0))
 end, true)
 
 -- --------------------------------------------------------------------------

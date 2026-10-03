@@ -11223,6 +11223,327 @@ do
             .. '#4006 workaround doing its job', printedSaying('age') or 'no row')
 end
 
+describe('damage.vehicle-gun backstop')
+do
+    -- ═══ #322, SECOND ROUND: STOP IT AT THE SERVER, WHATEVER IT HIT ═══
+    --
+    -- The issue asks for the gun to be stopped "at the source, so nothing fires
+    -- on any screen". The client's trigger hold is the source for an honest
+    -- player; this block is the server's half, for the window before the hold
+    -- lands and for a client that never runs it. Three events a disarmed seat's
+    -- gun can raise, and each is canceled -- behind cfg.enforce, counted, and
+    -- accusing nobody:
+    --
+    --   weaponDamageEvent   a hit on ANYTHING, not only a player. The per-player
+    --                       refusal above skipped cars and props.
+    --   startProjectileEvent  a launch, so no other client builds the rocket.
+    --   explosionEvent      only the types Rockstar's own data gives to vehicle
+    --                       guns and nothing else (vehicleGunExplosions).
+    --
+    -- AND EACH PAIRED WITH WHAT IT MUST NOT TOUCH: the same thing from a player
+    -- on foot, our own weapons from the same seat, ramming, a car going off.
+    local MOUNTED = 0xE2822A29    -- VEHICLE_WEAPON_PLAYER_BUZZARD: in no row
+    local CARBINE = 0x83BF0278    -- WEAPON_CARBINERIFLE: one of OURS
+    local GRENADE = 0x93E220BD    -- WEAPON_GRENADE: one of OURS
+    local RAMMED  = GetHashKey('WEAPON_RAMMED_BY_CAR')
+    local CAR     = 70            -- a vehicle's handle, and its network id
+
+    local realCancel = CancelEvent
+    local cancels = 0
+    CancelEvent = function() cancels = cancels + 1 end
+
+    --- Two players in a match; player 1 sits wherever `where` says.
+    --- @param where string|nil  a model name to sit in at the wheel, or nil
+    ---                          for on foot
+    local function pair(where)
+        reset()
+        queueUp(1, 'A', BR.Mode.SOLO.key)
+        queueUp(2, 'B', BR.Mode.SOLO.key)
+        fakeTime = fakeTime + 300
+        BR.Sched.step(fakeTime)
+        BR.Roster.setState(1, BR.PlayerState.ALIVE)
+        BR.Roster.setState(2, BR.PlayerState.ALIVE)
+        BR.Roster.get(1).squadId = 11
+        BR.Roster.get(2).squadId = 22
+        BR.Roster.get(1).pos = { x = 0.0, y = 0.0, z = 30.0 }
+        BR.Roster.get(2).pos = { x = 10.0, y = 0.0, z = 30.0 }
+        BR.Damage.forget(1)
+        BR.Damage.forgetRefusals(1)
+        pedVehicle[1001], vehSeat[7] = nil, nil
+        if where then
+            setModel(7, where)
+            drive(1, 7)
+        end
+        cancels = 0
+    end
+
+    --- A hit from player 1 with `weapon` on whatever `ids` names.
+    local function hit(weapon, ids)
+        fakeTime = fakeTime + 5000
+        fire('weaponDamageEvent', 1, 1, {
+            damageType = 3, weaponType = weapon, hitComponent = 0,
+            weaponDamage = 40, hitGlobalIds = ids,
+        })
+    end
+
+    -- ═══ A HIT ON A CAR ═══
+
+    pair('technical')
+    local events0 = BR.Damage.vehicleGunEvents or 0
+    local guns0   = BR.Damage.vehicleGuns or 0
+    hit(MOUNTED, { CAR })
+    ok(cancels == 1,
+        'a mounted gun\'s hit on a car, from a Technical, is canceled',
+        tostring(cancels))
+    ok((BR.Damage.vehicleGunEvents or 0) == events0 + 1,
+        'and counted as a vehicle-gun hit event',
+        tostring(BR.Damage.vehicleGunEvents))
+    ok((BR.Damage.vehicleGuns or 0) == guns0,
+        'and not as a shot at a player, because it hit none',
+        tostring(BR.Damage.vehicleGuns))
+
+    pair('technical')
+    hit(MOUNTED, nil)
+    ok(cancels == 1,
+        'and so is one that names nothing at all -- a prop the server cannot see',
+        tostring(cancels))
+
+    -- A PLAYER VICTIM STILL GETS THE PER-PLAYER PATH AS WELL: the ring row,
+    -- the per-player count, the resync. Canceling twice is canceling.
+    pair('technical')
+    guns0 = BR.Damage.vehicleGuns or 0
+    hit(MOUNTED, { 1002 })
+    ok(cancels >= 1 and (BR.Damage.vehicleGuns or 0) == guns0 + 1,
+        'a hit on a player is canceled and still counted as a shot at a player',
+        ('%d cancels, %d shots'):format(cancels, BR.Damage.vehicleGuns or 0))
+
+    -- ═══ WHAT IT MUST NOT TOUCH ═══
+
+    pair(nil)
+    hit(MOUNTED, { CAR })
+    ok(cancels == 0,
+        'the same hash on a car from somebody on foot is not this rule',
+        tostring(cancels))
+
+    pair('technical')
+    hit(CARBINE, { CAR })
+    ok(cancels == 0,
+        'a carbine of ours fired from the seat at a car is untouched',
+        tostring(cancels))
+
+    pair('technical')
+    hit(RAMMED, { CAR })
+    ok(cancels == 0,
+        'and a Technical rammed into a car still hurts it: ramming is the world\'s',
+        tostring(cancels))
+
+    pair('granger')
+    hit(MOUNTED, { CAR })
+    ok(cancels == 0, 'an ordinary car is not a disarmed one', tostring(cancels))
+
+    pair('buzzard')
+    hit(MOUNTED, { CAR })
+    ok(cancels == 0,
+        'nor is a refused one: a Buzzard is emptied, not disarmed',
+        tostring(cancels))
+
+    -- ═══ BEHIND cfg.enforce, LIKE EVERY OTHER CANCEL IN THE FILE ═══
+    do
+        local was = BR.Config.Combat.enforce
+        BR.Config.Combat.enforce = false
+        pair('technical')
+        events0 = BR.Damage.vehicleGunEvents or 0
+        hit(MOUNTED, { CAR })
+        ok(cancels == 0 and (BR.Damage.vehicleGunEvents or 0) == events0 + 1,
+            'with enforcement off it is counted and not canceled',
+            ('%d cancels'):format(cancels))
+        BR.Config.Combat.enforce = was
+        ok(BR.Config.Combat.enforce == true, 'and the shipped default is on')
+    end
+
+    -- ═══ A LAUNCH ═══
+
+    --- A projectile from player 1, with this weapon hash.
+    local function launch(weaponHash)
+        fire('startProjectileEvent', 1, 1, {
+            ownerId = 1001, projectileHash = 0x1234, weaponHash = weaponHash,
+        })
+    end
+
+    pair('technical')
+    local proj0 = BR.Damage.vehicleGunProjectiles or 0
+    launch(MOUNTED)
+    ok(cancels == 1, 'a vehicle gun\'s projectile from a Technical is canceled',
+        tostring(cancels))
+    ok((BR.Damage.vehicleGunProjectiles or 0) == proj0 + 1, 'and counted',
+        tostring(BR.Damage.vehicleGunProjectiles))
+
+    pair('technical')
+    launch(MOUNTED - 0x100000000)
+    ok(cancels == 1, 'and so is the same hash arriving signed', tostring(cancels))
+
+    pair('technical')
+    launch(GRENADE)
+    ok(cancels == 0,
+        'a grenade of ours thrown from the seat replicates as it always has',
+        tostring(cancels))
+
+    pair(nil)
+    launch(MOUNTED)
+    ok(cancels == 0, 'and nobody on foot is this rule\'s business',
+        tostring(cancels))
+
+    pair('granger')
+    launch(MOUNTED)
+    ok(cancels == 0, 'nor anybody in an ordinary car', tostring(cancels))
+
+    for _, bad in ipairs({ 'MOUNTED', 1.5, {} }) do
+        pair('technical')
+        local okRun = pcall(launch, bad)
+        ok(okRun and cancels == 0,
+            ('a malformed weapon hash (%s) neither throws nor cancels')
+                :format(type(bad) == 'number' and tostring(bad) or type(bad)),
+            tostring(cancels))
+    end
+    pair('technical')
+    ok(pcall(fire, 'startProjectileEvent', 1, 1, 'not a table') and cancels == 0,
+        'nor does a payload that is not a table')
+
+    do
+        local was = BR.Config.Combat.enforce
+        BR.Config.Combat.enforce = false
+        pair('technical')
+        proj0 = BR.Damage.vehicleGunProjectiles or 0
+        launch(MOUNTED)
+        ok(cancels == 0 and (BR.Damage.vehicleGunProjectiles or 0) == proj0 + 1,
+            'with enforcement off a launch is counted and not canceled',
+            tostring(cancels))
+        BR.Config.Combat.enforce = was
+    end
+
+    -- ═══ A BLAST ═══
+
+    --- An explosion from player 1, six meters away, of this type.
+    local function blastOf(t)
+        fire('explosionEvent', 1, 1, {
+            explosionType = t, posX = 6.0, posY = 0.0, posZ = 30.0,
+            damageScale = 1.0,
+        })
+    end
+
+    pair('technical')
+    local blasts0 = BR.Damage.vehicleGunBlasts or 0
+    local noted0  = BR.Damage.explosions or 0
+    blastOf(32)
+    ok(cancels == 1,
+        'a PLANE_ROCKET blast (the tampa3\'s and vigilante\'s missiles) from a '
+            .. 'disarmed seat is canceled', tostring(cancels))
+    ok((BR.Damage.vehicleGunBlasts or 0) == blasts0 + 1, 'and counted',
+        tostring(BR.Damage.vehicleGunBlasts))
+    ok((BR.Damage.explosions or 0) == noted0,
+        'and never attributed to anybody as one of ours')
+
+    for _, t in ipairs({ 46, 63, '32' }) do
+        pair('technical')
+        blastOf(t)
+        ok(cancels == 1, ('and so is type %s'):format(tostring(t)),
+            tostring(cancels))
+    end
+
+    -- ONE RULE PER BLAST. A vehicle-gun blast that the ordinary bounds would
+    -- also refuse -- here, five hundred meters from the sender -- is counted
+    -- once, as what it is, and never printed as an explosion refusal too.
+    pair('technical')
+    blasts0 = BR.Damage.vehicleGunBlasts or 0
+    local refused0 = BR.Damage.blastsRefused or 0
+    printed = {}
+    fire('explosionEvent', 1, 1, {
+        explosionType = 32, posX = 500.0, posY = 0.0, posZ = 30.0,
+        damageScale = 1.0,
+    })
+    ok((BR.Damage.vehicleGunBlasts or 0) == blasts0 + 1
+       and (BR.Damage.blastsRefused or 0) == refused0
+       and printedSaying('explosion refused') == nil,
+        'a far vehicle-gun blast is one vehicle-gun blast, not also a refusal',
+        ('%d blasts, %d refused'):format(BR.Damage.vehicleGunBlasts or 0,
+                                        BR.Damage.blastsRefused or 0))
+
+    -- ...AND NOTHING THAT IS NOT ON THE LIST.
+    for _, case in ipairs({
+        { t = 7,  why = 'a car going off (CAR)' },
+        { t = 17, why = 'a truck going off (TRUCK)' },
+        { t = 1,  why = 'GRENADELAUNCHER, which our launcher and the Tampa\'s '
+                        .. 'mortar share' },
+        { t = 4,  why = 'ROCKET, our RPG\'s' },
+        { t = 33, why = 'VEHICLE_BULLET, which no meta gives a vehicle gun' },
+        { t = 32.5, why = 'a fractional type' },
+    }) do
+        pair('technical')
+        blasts0 = BR.Damage.vehicleGunBlasts or 0
+        blastOf(case.t)
+        ok((BR.Damage.vehicleGunBlasts or 0) == blasts0,
+            ('%s from the seat is not this rule'):format(case.why),
+            tostring(BR.Damage.vehicleGunBlasts))
+    end
+
+    pair('technical')
+    blastOf(7)
+    ok(cancels == 0, 'and a car going off next to a Technical still goes off',
+        tostring(cancels))
+
+    pair(nil)
+    blastOf(32)
+    ok(cancels == 0, 'a PLANE_ROCKET blast from somebody on foot is not it either',
+        tostring(cancels))
+
+    pair('technical')
+    ok(pcall(blastOf, {}) and cancels == 0,
+        'and a type that is not a number neither throws nor cancels')
+
+    do
+        local was = BR.Config.Combat.enforce
+        BR.Config.Combat.enforce = false
+        pair('technical')
+        blasts0 = BR.Damage.vehicleGunBlasts or 0
+        blastOf(32)
+        ok(cancels == 0 and (BR.Damage.vehicleGunBlasts or 0) == blasts0 + 1,
+            'with enforcement off a blast is counted and not canceled',
+            tostring(cancels))
+        BR.Config.Combat.enforce = was
+    end
+
+    -- ═══ THE LIST ITSELF NEVER CLAIMS A TYPE OF OURS OR A WRECK'S ═══
+    do
+        local OURS = { [0] = true, [1] = true, [2] = true, [3] = true,
+                       [4] = true, [36] = true }
+        local WRECK = { [6] = true, [7] = true, [8] = true, [10] = true,
+                        [15] = true, [16] = true, [17] = true, [26] = true,
+                        [29] = true, [31] = true, [34] = true, [37] = true }
+        local bad = {}
+        for t in pairs(BR.Config.Combat.vehicleGunExplosions) do
+            if OURS[t] or WRECK[t]
+               or BR.Config.Combat.explosionTypes[t] ~= nil then
+                bad[#bad + 1] = tostring(t)
+            end
+        end
+        ok(#bad == 0,
+            'vehicleGunExplosions holds no type our arsenal or a wreck makes',
+            table.concat(bad, ', '))
+        ok(BR.Config.Combat.vehicleGunExplosions[32] == 'PLANE_ROCKET'
+           and BR.Config.Combat.vehicleGunExplosions[46] == 'APCSHELL'
+           and BR.Config.Combat.vehicleGunExplosions[63] == 'MORTAR_KINETIC',
+            'and names the three the drivable rows make by their enum names')
+    end
+
+    -- ═══ brdamage PRINTS THE FOUR COUNTS ═══
+    printed = {}
+    runCommand('brdamage')
+    ok(printedSaying('vehicle guns:') ~= nil,
+        'brdamage prints what a disarmed seat\'s gun got to the server')
+
+    CancelEvent = realCancel
+end
+
 describe('damage.brtestfire')
 do
     -- THE LEVER THAT MAKES THE OTHER THREE REASONS FIREABLE ON PURPOSE, and
