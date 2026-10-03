@@ -1332,13 +1332,16 @@ end
 -- one forged report would then have excused that model for EVERYBODY in the
 -- match. Per player, a lie reaches the liar and nobody else.
 --
--- AND WHAT THE LIAR BUYS IS A MISSING CASE, NOT AN EXPLOIT. The only thing this
--- fact changes is whether a shot from a weapon this gamemode issues NOBODY is
--- refused as BR.ShotRefusal.VEHICLE_GUN or as NO_WEAPON -- refused either way, no
--- damage applied either way, by br_core/server/damage.lua's validation against
--- the inventory the SERVER issued. The difference is a moderation record. The
--- owner accepted that trade for this feature; nothing else in the tree reads
--- this report, and nothing should.
+-- AND WHAT THE LIAR BUYS IS A MISSING CASE, NOT AN EXPLOIT. This fact changes
+-- whether a shot from a weapon this gamemode issues NOBODY is refused as
+-- BR.ShotRefusal.VEHICLE_GUN or as NO_WEAPON -- refused either way, no damage
+-- applied either way, by br_core/server/damage.lua's validation against the
+-- inventory the SERVER issued. The difference is a moderation record. The owner
+-- accepted that trade for this feature. Since #322 the same answer (through
+-- inDisarmedVehicle) also decides whether damage.lua cancels that player's
+-- unissued-weapon hits on cars and props, their projectile relays and their
+-- vehicle-gun blasts -- so a false report can only cancel more of the liar's
+-- own events. Nothing else in the tree reads it, and nothing should.
 --
 -- ═══ AND IT IS CHECKED LIKE EVERY OTHER CLIENT CLAIM ═══
 --

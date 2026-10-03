@@ -1181,6 +1181,18 @@ end
 --- catastrophic one.
 BR.Airdrop.flaresSuppressed = 0
 
+--- Is this projectile hash one of the airdrop's own flares?
+---
+--- Asked by server/damage.lua's vehicle-gun projectile rule (#322), so a drop's
+--- flares lit by a client that happens to be sitting in a disarmed vehicle are
+--- not counted as that seat's gun: they are this file's to cancel, and are.
+--- @param h integer  the wire's weaponHash, signed or unsigned
+--- @return boolean
+function BR.Airdrop.isFlareHash(h)
+    local n = BR.NormHash(h)
+    return n ~= nil and flareHashSet()[n] == true
+end
+
 AddEventHandler('startProjectileEvent', function(_, data)
     if type(data) ~= 'table' then return end
     -- TYPE-CHECKED BEFORE BR.NormHash, because NormHash is a bitwise AND and

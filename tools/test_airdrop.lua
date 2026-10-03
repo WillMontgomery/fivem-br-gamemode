@@ -4713,6 +4713,16 @@ do
         'the counter follows the cancels exactly, so a filter that matches '
         .. 'everything and one that matches nothing can be told apart')
 
+    -- server/damage.lua's vehicle-gun projectile rule (#322) asks this, so a
+    -- drop's flares lit from a disarmed seat are not counted as its gun.
+    ok(BR.Airdrop.isFlareHash(wireHash('weapon_flare'))
+        and BR.Airdrop.isFlareHash(wireHash('weapon_flare') - 0x100000000)
+        and BR.Airdrop.isFlareHash(wireHash('weapon_flaregun')),
+        'isFlareHash names the flares, signed or unsigned')
+    ok(not BR.Airdrop.isFlareHash(wireHash('weapon_grenade'))
+        and not BR.Airdrop.isFlareHash(0xE2822A29),
+        'and nothing else: our grenade, a vehicle gun')
+
     -- ═══ THE SIGNED/UNSIGNED TRAP, WHICH IS INVISIBLE WHEN IT FIRES ═══
     --
     -- GetHashKey answers a NEGATIVE 32-bit integer in Lua; the wire carries the

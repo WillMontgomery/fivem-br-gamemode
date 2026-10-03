@@ -1836,9 +1836,12 @@ end)
 -- the field's name, not measured; if it carries something else, this never
 -- fires and the count says so.
 --
--- THE AIRDROP FLARE IS IN NO ROW EITHER. server/airdrop.lua cancels its relay
--- for everybody already, so the only difference here is that one thrown from
--- one of these seats is counted as well.
+-- THE AIRDROP FLARE IS IN NO ROW EITHER, AND IS SKIPPED. Every client lights
+-- each drop's flares itself, every few seconds of the descent, and
+-- server/airdrop.lua cancels their relay for everybody. Counted here too, a
+-- client sitting in a Technical while a drop came down added a dozen
+-- "vehicle-gun projectiles" a drop, and brdamage's count -- the one a playtest
+-- reads for a leak -- would point at a leak that is not there.
 --
 -- Behind cfg.enforce, counted, and accusing nobody, like every vehicle-gun
 -- refusal in this file.
@@ -1850,6 +1853,9 @@ AddEventHandler('startProjectileEvent', function(sender, data)
     if type(data.weaponHash) ~= 'number' then return end
     local h = math.tointeger(data.weaponHash)
     if h == nil or BR.Config.IsAllowedWeapon(h) then return end
+    if BR.Airdrop and BR.Airdrop.isFlareHash and BR.Airdrop.isFlareHash(h) then
+        return
+    end
 
     local src = tonumber(sender)
     if not src or src == 0 then return end

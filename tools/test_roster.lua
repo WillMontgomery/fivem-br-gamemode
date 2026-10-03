@@ -11397,6 +11397,23 @@ do
     launch(MOUNTED)
     ok(cancels == 0, 'nor anybody in an ordinary car', tostring(cancels))
 
+    -- AN AIRDROP FLARE IS server/airdrop.lua'S. Every client lights each
+    -- drop's flares itself and that file cancels their relay; counted here
+    -- too, a seat during a drop read as a leak in brdamage.
+    do
+        local FLARE = 0x497FACC3   -- WEAPON_FLARE: in no row of ours
+        local was = BR.Airdrop
+        BR.Airdrop = { isFlareHash = function(h) return BR.NormHash(h) == FLARE end }
+        pair('technical')
+        proj0 = BR.Damage.vehicleGunProjectiles or 0
+        launch(FLARE)
+        ok(cancels == 0 and (BR.Damage.vehicleGunProjectiles or 0) == proj0,
+            'an airdrop flare lit from the seat is neither counted nor canceled here',
+            ('cancels %d, counted %d'):format(cancels,
+                (BR.Damage.vehicleGunProjectiles or 0) - proj0))
+        BR.Airdrop = was
+    end
+
     for _, bad in ipairs({ 'MOUNTED', 1.5, {} }) do
         pair('technical')
         local okRun = pcall(launch, bad)

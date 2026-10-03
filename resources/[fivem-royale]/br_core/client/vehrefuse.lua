@@ -445,10 +445,15 @@ end
 --
 -- WHAT THE SERVER STOPS, FOR A CLIENT THAT SKIPS ALL OF THIS. server/damage.lua
 -- refuses what a disarmed seat's gun sends -- a hit on anything, player, car or
--- prop; a projectile; an explosion of a type only vehicle guns make -- so the
--- damage and the blasts stop at the server. A machine gun's muzzle flash and
--- tracers are not an event the server sees, so nothing there can stop them
--- being drawn on other screens.
+-- prop; a projectile; an explosion of a type only vehicle guns make -- so its
+-- hits stop at the server, and so do the blasts of the types listed in
+-- BR.Config.Combat.vehicleGunExplosions. Not all of them: the Tampa mortar and
+-- the Dune launchers explode as GRENADELAUNCHER, the type our own launcher
+-- makes, and those blasts are left alone. That a projectile carries the
+-- vehicle weapon's hash, and the blast types themselves, are documented or
+-- inferred, not measured. A machine gun's muzzle flash and tracers are not an
+-- event the server sees, so nothing there can stop them being drawn on other
+-- screens.
 --
 -- ═══ AND THE SEAT THE NATIVE CANNOT SEE ═══
 --
