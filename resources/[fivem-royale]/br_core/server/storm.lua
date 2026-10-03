@@ -774,14 +774,15 @@ end
 --- IT APPLIES TO THE STORM AND TO NOTHING ELSE. A bullet, a blast, fire, a fall
 --- and a car all hurt a healing player exactly as before, and an enemy's bullet
 --- or blast that gets health through still interrupts the channel -- at which
---- point the next tick bills again. Fire and cars hurt without interrupting. The seconds paused are not banked and charged later: a heal ran, and
---- the owner's sentence is that the storm did nothing while it did.
+--- point the next tick bills again. Fire and cars hurt without interrupting.
+--- The seconds paused are not banked and charged later: a heal ran, and the
+--- owner's sentence is that the storm did nothing while it did.
 ---
 --- SHIELDS DO NOT PAUSE IT. A shield restores armor, not health, so it is not
 --- "a consumable which does so"; it finishes in the storm (server/inventory.lua's
 --- damage-cancel takes a hit the server dealt that took health itself, the same
---- inside the wall and out) while the storm goes on taking health. That reading is the owner's to confirm, and flipping it is
---- BR.Inv.healing's one line.
+--- inside the wall and out) while the storm goes on taking health. That reading
+--- is the owner's to confirm, and flipping it is BR.Inv.healing's one line.
 ---
 --- THE AMBULANCE HEAL IS NOT A CONSUMABLE AND GETS NO PAUSE.
 local DAMAGEABLE = {
@@ -1050,7 +1051,7 @@ end
 --- its ped is granted straight up to that same ceiling, so all three die on the
 --- same tick.
 ---
---- ═══ AND IT NEVER EMPTIES THE LEDGER OF A PLAYER IT DID NOT KILL (#366) ═══
+--- ═══ AND IT NEVER EMPTIES THE LEDGER OF ONE IT DID NOT KILL (#366) ═══
 ---
 --- Judging the kill on the bar left one state behind: a tick that took the
 --- trailing ledger to zero while the bar it will show stood above it, so a

@@ -28212,14 +28212,15 @@ do
             ok(got.in0 == false and got.out0 == false
                 and got['in+'] == true and got['out+'] == true,
                 ('a %s is ended by a hit that gets health through, and not by one its '
-                    .. 'armor soaks, inside the wall and out (%dms line)'):format(item, lat),
+                    .. 'armor soaks, inside the wall and out (%dms line)')
+                    :format(item, lat),
                 ('soaked: in %s, out %s; through: in %s, out %s'):format(
                     tostring(got.in0), tostring(got.out0), tostring(got['in+']),
                     tostring(got['out+'])))
         end
     end
 
-    -- ─── A DIP UNDER A SHIELD DOES NOT MAKE A SOAKED GRAZE AN INTERRUPTION ───
+    -- ─── A DIP UNDER A SHIELD DOES NOT MAKE A SOAKED GRAZE END IT ───
     --
     -- The dip lowers the ledger under where the shield started, which the line
     -- used to be read off: a modified client dipped two points just before an
@@ -28425,10 +28426,15 @@ do
     -- measured from before the fall, and healed it back for free. Only the
     -- storm's own points still on their way are excused now.
     for _, lat in ipairs({ 0, 250 }) do
-        for _, case in ipairs({ { 'medkit', 40.0, 30.0 }, { 'bandage', 30.0, 20.0 } }) do
+        for _, case in ipairs({ { 'medkit', 40.0, 30.0 },
+                                { 'bandage', 30.0, 20.0 } }) do
             local item, from, fall = case[1], case[2], case[3]
             stage({ hp = from, outside = true, dps = 4.0, lat = lat })
-            if item == 'medkit' then bag({ 'medkit', 'bandage' }) else bag({ 'bandage' }, 2) end
+            if item == 'medkit' then
+                bag({ 'medkit', 'bandage' })
+            else
+                bag({ 'bandage' }, 2)
+            end
             press(item)
             step(20000, function() return not using() end)
             step(1100)
@@ -28446,7 +28452,7 @@ do
         end
     end
 
-    -- ─── WHAT IS EXCUSED IS THE SERVER'S OWN POINTS, AND ONLY FOR A ROUND TRIP ───
+    -- ─── A HIT'S OWN POINTS ARE EXCUSED, AND ONLY FOR A ROUND TRIP ───
     --
     -- A heal's target stands at 50 and the ledger is on it -- the window and the
     -- ceiling written here as server/inventory.lua's `authorize` writes them. An
@@ -29231,8 +29237,9 @@ do
                             if #W.defeats > n0 then
                                 downed = downed + 1
                                 worst = ('%dms line, from %s, wall at %dms: e.hp %s, '
-                                    .. 'bar %s, armor %s'):format(lat, tostring(hp), wall,
-                                        tostring(e.hp), tostring(bar0), tostring(e.armour))
+                                    .. 'bar %s, armor %s'):format(lat, tostring(hp),
+                                        wall, tostring(e.hp), tostring(bar0),
+                                        tostring(e.armour))
                             end
                         end
                         return false
