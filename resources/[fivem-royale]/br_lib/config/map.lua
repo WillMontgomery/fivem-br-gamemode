@@ -312,7 +312,8 @@ BR.Config.Map.POIs = {
     { id = 'grapeseed',   name = 'Grapeseed',        x =  1700.0, y =  4800.0, z =  42.0, radius = 260.0, tier = 2 },
     { id = 'paleto',      name = 'Paleto Bay',       x =  -150.0, y =  6300.0, z =  31.0, radius = 300.0, tier = 3 },
     { id = 'sawmill',     name = 'Paleto Forest Sawmill', x = -560.0, y = 5300.0, z = 70.0, radius = 220.0, tier = 2 },
-    { id = 'chiliad',     name = 'Mount Chiliad',    x =   450.0, y =  5700.0, z = 780.0, radius = 240.0, tier = 1 },
+    -- Placed by the owner, 2026-10-03.
+    { id = 'chiliad',     name = 'Mount Chiliad',    x =   492.1, y =  5588.2, z = 780.0, radius = 240.0, tier = 1 },
     { id = 'procopio',    name = 'Procopio Beach',   x =  1450.0, y =  6550.0, z =   2.0, radius = 240.0, tier = 1 },
     { id = 'gordo',       name = 'Mount Gordo',      x =  2870.0, y =  5910.0, z = 340.0, radius = 220.0, tier = 1 },
     { id = 'humane',      name = 'Humane Labs',      x =  3600.0, y =  3700.0, z =  30.0, radius = 260.0, tier = 4 },   -- golden (#227)
