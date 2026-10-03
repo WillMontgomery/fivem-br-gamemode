@@ -28430,6 +28430,184 @@ do
                 tostring(subject().hp), #W.defeats - n0))
     end
 
+    -- ───────────────────────────────────────────────────────────────────────
+    describe('storm.heal')
+    -- ───────────────────────────────────────────────────────────────────────
+    --
+    --   "They should be able to heal in the storm if they have a consumable
+    --    which does so. During the duration of the consumption, they shall take
+    --    no damage from the storm."                     -- owner, 2026-10-02
+
+    --- STORM_DAMAGE instructions to the subject logged in (t0, t1].
+    local function stormBetween(t0, t1)
+        local n = 0
+        for _, l in ipairs(W.log) do
+            if l.event == BR.Net.STORM_DAMAGE and l.t > t0 and l.t <= t1 then
+                n = n + 1
+            end
+        end
+        return n
+    end
+    --- Display points of storm sent to the subject after `t0`.
+    local function stormPointsSince(t0)
+        local n = 0
+        for _, l in ipairs(W.log) do
+            if l.event == BR.Net.STORM_DAMAGE and l.t > t0 then
+                n = n + (l.d.amount or 0)
+            end
+        end
+        return n * 100.0 / (MAXHP - BR.Config.Match.healthFloor)
+    end
+
+    -- ─── A BANDAGE AND A MED KIT, OUTSIDE, ON ANY LINE ───
+    --
+    -- Not one storm instruction between the press and the completion, the
+    -- ledger never falls while the bar fills, and the heal lands its whole
+    -- amount: ledger and bar both settle on the item's target, less only what
+    -- the storm took after the channel ended.
+    for _, item in ipairs({ 'bandage', 'medkit' }) do
+        for _, lat in ipairs({ 0, 500, 1000 }) do
+            stage({ hp = 30.0, outside = true, dps = 6.7, lat = lat })
+            step(1000)
+            bag({ item })
+            local c = BR.Config.ConsumableById[item]
+            local hp0 = subject().hp
+            local low = hp0
+            local t0 = fakeTime
+            press(item)
+            step(20000, function()
+                if subject().hp < low then low = subject().hp end
+                return not using()
+            end)
+            local t1 = fakeTime
+            goIn()
+            step(2 * lat + 1500)
+            local want = math.min(c.healthCap, hp0 + c.health) - stormPointsSince(t1)
+            ok(stormBetween(t0, t1) == 0 and low == hp0,
+                ('no storm at all while a %s runs outside the wall (%dms line)')
+                    :format(item, lat),
+                ('%d instructions, ledger low %s from %s'):format(
+                    stormBetween(t0, t1), tostring(low), tostring(hp0)))
+            ok(count(item) == 0 and subject().hp == want and bar() == want,
+                ('and it lands in full: %s from %s settles on %s (%dms line)')
+                    :format(item, tostring(hp0), tostring(want), lat),
+                ('items %d, e.hp %s, bar %s'):format(count(item),
+                    tostring(subject().hp), tostring(bar())))
+        end
+    end
+
+    -- ─── THE NEXT TICK AFTER THE CHANNEL BILLS ───
+    do
+        stage({ hp = 40.0, outside = true, dps = 6.7 })
+        bag({ 'bandage' })
+        press('bandage')
+        step(20000, function() return not using() end)
+        local t1, hp1 = fakeTime, subject().hp
+        step(1100)
+        ok(stormBetween(t1, fakeTime) == 1 and subject().hp < hp1,
+            'the first storm tick after the bandage lands bills them as before',
+            ('%d instructions, %s -> %s'):format(stormBetween(t1, fakeTime),
+                tostring(hp1), tostring(subject().hp)))
+    end
+
+    -- ─── A SHIELD DOES NOT PAUSE IT, AND FINISHES ANYWAY ───
+    --
+    -- A shield restores armor, not health, so it is not "a consumable which
+    -- does so": the storm goes on taking health while it runs. It is no longer
+    -- interrupted by the storm, though -- that takes an attacker.
+    do
+        stage({ hp = 80.0, outside = true, dps = 4.0 })
+        bag({ 'shield' })
+        local t0, hp0 = fakeTime, subject().hp
+        press('shield')
+        step(20000, function() return not using() end)
+        ok(stormBetween(t0, fakeTime) >= 4 and subject().hp < hp0,
+            'the storm keeps billing health while a shield runs',
+            ('%d instructions, %s -> %s'):format(stormBetween(t0, fakeTime),
+                tostring(hp0), tostring(subject().hp)))
+        step(500)
+        ok(count('shield') == 0 and subject().armour == 50,
+            'and the shield still lands its whole plate',
+            ('shields %d, armor %s'):format(count('shield'),
+                tostring(subject().armour)))
+    end
+
+    -- ─── AN ENEMY'S HIT ENDS THE HEAL, AND THE STORM RESUMES ───
+    do
+        stage({ hp = 30.0, outside = true, dps = 6.7 })
+        bag({ 'medkit' })
+        local t0 = fakeTime
+        press('medkit')
+        step(2000)
+        BR.Damage.applyHit(2, 1, 40.0, { weapon = 'test' })
+        local th = fakeTime
+        step(1300)
+        ok(stormBetween(t0, th) == 0 and not using()
+            and stormBetween(th, fakeTime) >= 1,
+            'shot mid-heal outside: interrupted, and the storm bills again on its '
+                .. 'next tick',
+            ('before %d, using %s, after %d'):format(stormBetween(t0, th),
+                tostring(using()), stormBetween(th, fakeTime)))
+    end
+
+    -- ─── A DOWNED PLAYER BLEEDS, WHATEVER THEIR HANDS SAY ───
+    --
+    -- Knocked with a bandage still in the channel: the inventory drops the
+    -- channel on its next pass, but the storm asks about the knock first, so
+    -- even a pass that sees both bleeds them. The inventory's pass is held off
+    -- here to make that pass happen.
+    do
+        stage({ hp = 50.0, outside = true, dps = 6.7, squad = true })
+        bag({ 'bandage' })
+        press('bandage')
+        step(500)
+        BR.Sched.setEnabled('inv.use', false)
+        BR.Combat.defeat(1, 'gunshot', 2)
+        local e = subject()
+        ok(e.state == BR.PlayerState.DBNO and using(),
+            'precondition: knocked with the bandage still in the channel',
+            ('%s, using %s'):format(tostring(e.state), tostring(using())))
+        e.lastStormAt = nil
+        local until0 = e.dbnoUntil
+        step(1100)
+        BR.Sched.setEnabled('inv.use', true)
+        ok(e.lastStormAt ~= nil and e.dbnoUntil < until0,
+            'a downed player in the wall bleeds from the storm even with a heal '
+                .. 'channel still on the books',
+            ('stamp %s, deadline %s -> %s'):format(tostring(e.lastStormAt),
+                tostring(until0), tostring(e.dbnoUntil)))
+    end
+
+    -- ─── REVIVED OUTSIDE, BANDAGED AT ONCE ───
+    --
+    -- A player picked up in the wall and pressing a bandage in the first two
+    -- seconds -- while the revive's settle window is still freezing the
+    -- sampler -- is never interrupted by the storm, and the bandage lands.
+    do
+        local bad, runs = 0, 0
+        for _, delay in ipairs({ 0, 600, 1200, 1800, 2400 }) do
+            stage({ hp = 8.0, outside = true, dps = 5.0, squad = true })
+            step(3000)
+            BR.Combat.revive(1, nil, 30)
+            bag({ 'bandage' })
+            step(delay + 50)
+            local hp0 = subject().hp
+            press('bandage')
+            step(20000, function() return not using() end)
+            local t1 = fakeTime
+            step(300)
+            runs = runs + 1
+            local want = math.min(75.0, hp0 + 15.0) - stormPointsSince(t1)
+            if count('bandage') ~= 0 or subject().state ~= BR.PlayerState.ALIVE
+               or subject().hp ~= want then
+                bad = bad + 1
+            end
+        end
+        ok(bad == 0,
+            'a bandage pressed 0-2.4s after a pick-up outside the wall always '
+                .. 'lands', ('%d of %d did not'):format(bad, runs))
+    end
+
     GetEntityHealth, GetPedArmour = rawHealth, rawArmour
     BR.Combat.defeat = rawDefeat
 end

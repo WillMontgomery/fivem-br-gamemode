@@ -1548,6 +1548,9 @@ local function stepDowned(src, entry, now)
             -- WHICH of the two, because they are different bugs if this turns
             -- out to be firing when it should not: a storm tick lands on
             -- everybody standing in the wall, a hit lands on one person.
+            --
+            -- `lastStormAt` is stamped only on a tick the storm actually bills
+            -- (server/storm.lua), and never while a heal pauses it (#366).
             stopRevive(src, entry,
                 ((reviver.lastStormAt or 0) > (reviver.lastHitAt or 0))
                     and 'hurt: the reviver is taking storm damage'
@@ -2055,7 +2058,9 @@ AddEventHandler(BR.Net.PLAYER_DIED, function(data)
     end
 
     -- A recent storm tick outranks whatever the engine blames: the finishing
-    -- blow of a storm death often reads as generic damage.
+    -- blow of a storm death often reads as generic damage. A heal pauses the
+    -- storm without stamping it (#366), so a player shot dead mid-bandage
+    -- outside the wall is labeled by what shot them.
     local cause = describeCause(data and data.cause)
     if entry.lastStormAt and (GetGameTimer() - entry.lastStormAt) < 3000 then
         cause = 'storm'

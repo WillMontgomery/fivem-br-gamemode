@@ -1921,6 +1921,69 @@ do
 end
 
 -- ---------------------------------------------------------------------------
+describe('server.healpause')
+do
+    -- ═══ A HEALING CONSUMABLE'S CHANNEL PAUSES THE STORM FOR THAT PLAYER ═══
+    --
+    --   "During the duration of the consumption, they shall take no damage from
+    --    the storm."                                    -- owner, 2026-10-02
+    --
+    -- The damage tick asks BR.Inv.healing, which server/inventory.lua answers
+    -- from its own channel; tools/test_roster.lua drives the real one. Here it
+    -- is stubbed, so this block is about the tick: a paused player is neither
+    -- billed, told, stamped nor carried, a player beside them in the same wall
+    -- is billed as ever, and a DOWNED player bleeds whatever the answer.
+    local S = newStormServer()
+    local env = S.env
+    S.record(2, 0.0, 0.0, 400.0, 0.0, 0.0, 400.0, 600000, 60000, 6.0)
+    local healing = { [1] = true }
+    env.BR.Inv = { healing = function(src) return healing[src] == true end }
+
+    local e = S.roster[1]
+    e.pos = { x = 900.0, y = 0.0, z = 30.0 }
+    S.roster[2] = {
+        matchId = 1, name = 'Beside', state = env.BR.PlayerState.ALIVE,
+        hp = 100.0, pos = { x = 900.0, y = 5.0, z = 30.0 },
+    }
+
+    --- STORM_DAMAGE sends to one player so far.
+    local function told(src)
+        local n = 0
+        for _, h in ipairs(S.out) do
+            if h.event == env.BR.Net.STORM_DAMAGE and h.target == src then n = n + 1 end
+        end
+        return n
+    end
+
+    S.tick(); S.tick(); S.tick()
+    ok(e.hp == 100.0 and e.lastStormAt == nil and told(1) == 0
+        and (S.match.stormCarry[1] or 0.0) == 0.0,
+        'a healing player outside the wall is not billed, told, stamped or carried',
+        ('hp %s, told %d'):format(tostring(e.hp), told(1)))
+    ok(S.roster[2].hp < 100.0 and told(2) == 3,
+        'while the player beside them in the same wall is billed every tick',
+        ('hp %s, told %d'):format(tostring(S.roster[2].hp), told(2)))
+
+    -- THE CHANNEL ENDS, THE NEXT TICK BILLS.
+    healing[1] = nil
+    S.tick()
+    ok(e.hp < 100.0 and e.lastStormAt ~= nil and told(1) == 1,
+        'and the first tick after the channel ends bills them as before',
+        ('hp %s, told %d'):format(tostring(e.hp), told(1)))
+
+    -- A DOWNED PLAYER BLEEDS. The downed check comes first: a body in the wall
+    -- is not healing anything, whatever the inventory last said.
+    healing[1] = true
+    e.state = env.BR.PlayerState.DBNO
+    S.bled[1] = nil
+    S.tick()
+    ok((S.bled[1] or 0.0) > 0.0,
+        'and a downed player bleeds in the wall whatever their hands were doing',
+        tostring(S.bled[1]))
+    ok(S.errored() == nil, 'the paused passes run clean', S.errored())
+end
+
+-- ---------------------------------------------------------------------------
 describe('client.edge')
 do
     -- ═══ ONE SIGNED DISTANCE, FOUR READOUTS ═══

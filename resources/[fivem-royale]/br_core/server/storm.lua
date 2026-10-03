@@ -750,6 +750,38 @@ end
 --- branch on which a player stays exempt -- which matters more here than
 --- anywhere else, because the failure would be silent and would look exactly
 --- like a player who is simply good at staying inside the circle.
+---
+--- ═══ AND ONE PAUSE, WHICH IS NOT AN EXEMPTION FROM BEING HERE (#366) ═══
+---
+---   "They should be able to heal in the storm if they have a consumable which
+---    does so. During the duration of the consumption, they shall take no
+---    damage from the storm."                          -- owner, 2026-10-02
+---
+--- While a HEALING consumable's channel runs -- an item whose row carries
+--- `health`, the bandage and the med kit today -- the storm deals that player
+--- nothing at all: no ledger debit, no STORM_DAMAGE, no `lastStormAt`. It is
+--- asked of BR.Inv.healing in the damage tick below, after the downed check, so
+--- a downed player bleeds whatever their hands were doing.
+---
+--- IT IS KEYED ON THE SERVER'S OWN CHANNEL, the same two prohibitions as the
+--- rescue flag: `inv.using` is opened only by an INV_USE the server validated
+--- (refused at the item's cap) and ended only by the server's own rules -- the
+--- completion, an attacker's hit, going down, dying, leaving. No message a
+--- client sends can open one or hold one open.
+---
+--- IT APPLIES TO THE STORM AND TO NOTHING ELSE. A bullet, a blast, fire, a fall
+--- and a car all hurt a healing player exactly as before, and an enemy's hit
+--- still interrupts the channel -- at which point the next tick bills again.
+--- The seconds paused are not banked and charged later: a heal ran, and the
+--- owner's sentence is that the storm did nothing while it did.
+---
+--- SHIELDS DO NOT PAUSE IT. A shield restores armor, not health, so it is not
+--- "a consumable which does so"; it finishes in the storm (server/inventory.lua's
+--- damage-cancel takes an attacker) while the storm goes on taking health. That
+--- reading is the owner's to confirm, and flipping it is BR.Inv.healing's one
+--- line.
+---
+--- THE AMBULANCE HEAL IS NOT A CONSUMABLE AND GETS NO PAUSE.
 local DAMAGEABLE = {
     [BR.PlayerState.ALIVE] = true,
     [BR.PlayerState.DBNO]  = true,
@@ -1054,6 +1086,17 @@ BR.Sched.every(1000, 'storm.damage', function(dt)
                 if e.state == BR.PlayerState.DBNO then
                     e.lastStormAt = now
                     BR.Combat.bleed(src, z.dps * dtSec, nil, nil)
+                    return
+                end
+
+                -- HEALING: THE STORM DOES NOTHING TO THEM THIS TICK. See the
+                -- block above DAMAGEABLE for the owner's rule and why it is safe.
+                -- Nothing is billed, sent, stamped or carried: the fraction
+                -- stands where it was, and the next tick after the channel ends
+                -- bills exactly as if the heal had never paused anything.
+                -- Nil-guarded on the module, so a build without the inventory
+                -- bills everybody rather than nobody.
+                if BR.Inv and BR.Inv.healing and BR.Inv.healing(src) then
                     return
                 end
 

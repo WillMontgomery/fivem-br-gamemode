@@ -1937,6 +1937,33 @@ function BR.Inv.cancelUse(src, why)
     if why then BR.Server.notify(src, why, 'warn') end
 end
 
+--- Is this player using a consumable that heals them, right now?
+---
+--- ASKED BY THE STORM, AND THAT IS ITS WHOLE PURPOSE (#366): "During the
+--- duration of the consumption, they shall take no damage from the storm"
+--- (owner, 2026-10-02). server/storm.lua's damage tick skips a player for whom
+--- this answers true; the argument is above its DAMAGEABLE table.
+---
+--- THE SERVER'S OWN CHANNEL, AND NOTHING A CLIENT SAYS. `inv.using` is opened
+--- only by an INV_USE this file validated -- refused at the item's cap, so a
+--- full bar cannot buy a pause -- and closed only by this file's own rules: the
+--- completion, an attacker's hit, the LIVE guard, the slot guard, dropAll, a
+--- reset.
+---
+--- "A CONSUMABLE WHICH DOES SO" IS READ OFF THE ROW: an item that restores
+--- health carries `health`. Not an id list and not a new flag, so the next
+--- healing item is covered by being a healing item. A shield (`armour` only)
+--- answers false; that reading waits on the owner, and `or c.armour ~= nil`
+--- here is the whole of the other answer.
+--- @param src integer
+--- @return boolean
+function BR.Inv.healing(src)
+    local inv = BR.Inv.of(src)
+    local u = inv and inv.using
+    local c = u and BR.Config.ConsumableById[u.item]
+    return c ~= nil and c.health ~= nil
+end
+
 --- What is waiting for a player's hands to come free. `waiting[src] = { fn }`.
 local waiting = {}
 

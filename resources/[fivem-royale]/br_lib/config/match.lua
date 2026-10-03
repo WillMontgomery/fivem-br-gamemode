@@ -1632,6 +1632,11 @@ BR.Config.Combat = {
         -- their ped was still about to show. The rule's verdict is the same
         -- either side of the window; only the name and the correction change.
         --
+        -- THE STORM RIDES THE SAME WINDOW. It takes its damage off the ledger
+        -- before the ped hears of it, every tick (#366), and server/roster.lua
+        -- reads its stamp beside a bullet's -- so a slow honest player standing
+        -- in the wall is held, not counted and corrected once a second.
+        --
         -- WHAT IT NO LONGER DOES, and this is the whole of the audit's finding:
         -- it does not COMMIT the rise. It used to -- the sampler excused the
         -- sample and then wrote it into the ledger anyway, which is a grace
