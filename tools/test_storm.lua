@@ -497,6 +497,8 @@ local function newStormServer()
     }
     env.BR.Server = {
         devMode = false,
+        -- BY ID, for BR.Storm.exposed (#366); filled in below with the match.
+        matches = {},
         eachMatch = function(fn)
             for _, m in ipairs(S.matches) do fn(m) end
         end,
@@ -542,6 +544,7 @@ local function newStormServer()
         anchor = { x = 0.0, y = 0.0, name = 'Test' },
     }
     S.matches[1] = S.match
+    env.BR.Server.matches[S.match.id] = S.match
 
     S.roster[1] = {
         matchId = 1, name = 'Runner', state = env.BR.PlayerState.ALIVE,
@@ -1981,6 +1984,65 @@ do
         'and a downed player bleeds in the wall whatever their hands were doing',
         tostring(S.bled[1]))
     ok(S.errored() == nil, 'the paused passes run clean', S.errored())
+end
+
+-- ---------------------------------------------------------------------------
+describe('server.exposed')
+do
+    -- ═══ "WOULD THE STORM BILL THIS PLAYER NOW", ASKED OF THE TICK ITSELF ═══
+    --
+    -- server/ambheal.lua refuses to start a heal in the back of an ambulance
+    -- while this says yes (#366). It must answer exactly as the damage tick
+    -- would: the same zone and cushion, ALIVE only, never a rescue rider, and
+    -- nobody at all while the storm bills nobody.
+    local S = newStormServer()
+    local env = S.env
+    local e = S.roster[1]
+    S.record(2, 0.0, 0.0, 400.0, 0.0, 0.0, 400.0, 600000, 60000, 6.0)
+
+    e.pos = { x = 900.0, y = 0.0, z = 30.0 }
+    ok(env.BR.Storm.exposed(e) == true and S.hurts(900.0, 0.0) == true,
+        'a player the tick bills is exposed')
+    e.pos = { x = 0.0, y = 0.0, z = 30.0 }
+    ok(env.BR.Storm.exposed(e) == false and S.hurts(0.0, 0.0) == false,
+        'and one inside the zone is not, exactly as the tick has it')
+
+    -- ACROSS THE EDGE, POINT BY POINT: the two answers never disagree, cushion
+    -- included, wherever the zone's own shape puts the line.
+    local disagree, billed, spared = 0, 0, 0
+    for x = 300.0, 520.0, 4.0 do
+        e.hp = 100.0
+        e.pos = { x = x, y = 0.0, z = 30.0 }
+        local said = env.BR.Storm.exposed(e, S.now + 1000)
+        local hurt = S.hurts(x, 0.0)
+        if said ~= hurt then disagree = disagree + 1 end
+        if hurt then billed = billed + 1 else spared = spared + 1 end
+    end
+    ok(disagree == 0 and billed > 0 and spared > 0,
+        'and walked across the edge, exposed() and the tick agree at every point',
+        ('%d disagreements, %d billed, %d spared'):format(disagree, billed, spared))
+
+    e.pos = { x = 900.0, y = 0.0, z = 30.0 }
+    e.rescue = true
+    ok(env.BR.Storm.exposed(e) == false, 'a rescue rider is never exposed')
+    e.rescue = nil
+    e.state = env.BR.PlayerState.DBNO
+    ok(env.BR.Storm.exposed(e) == false,
+        'nor a downed player -- the question is only asked of the living')
+    e.state = env.BR.PlayerState.ALIVE
+
+    S.record(1, 0.0, 0.0, 400.0, 0.0, 0.0, 300.0, 600000, 60000, 0.5)
+    ok(env.BR.Storm.exposed(e) == false,
+        'and through phase 1\'s free-loot hold nobody is: the storm bills nobody')
+
+    -- POSITIONAL, NOT A RECORD OF THE LAST BILL. A heal pausing the storm, or a
+    -- revive clearing its stamp, changes nothing about where they stand.
+    S.record(2, 0.0, 0.0, 400.0, 0.0, 0.0, 400.0, 600000, 60000, 6.0)
+    env.BR.Inv = { healing = function() return true end }
+    e.lastStormAt = nil
+    ok(env.BR.Storm.exposed(e) == true and e.lastStormAt == nil,
+        'a player outside is exposed whether or not the last tick billed them')
+    env.BR.Inv = nil
 end
 
 -- ---------------------------------------------------------------------------

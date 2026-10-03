@@ -46,6 +46,16 @@
 -- the damage pipeline consults it -- shared/health_solve.lua is a detector and
 -- config/match.lua's healthAudit block spells out that it "must never refuse a
 -- sample, adjust a number or change a state".
+--
+-- ═══ THE ONE THING THAT DOES ASK WHETHER SOMEBODY IS HEALING (#366) ═══
+--
+-- The storm. "During the duration of the consumption, they shall take no
+-- damage from the storm" (owner, 2026-10-02) -- so server/storm.lua skips a
+-- player whose CONSUMABLE channel is healing them. It asks the inventory's own
+-- channel (BR.Inv.healing), not a roster flag, and it does not ask this file:
+-- the ambulance is not a consumable, gets no pause, and cannot even be started
+-- while the storm is hurting the player (`canHeal`). Every other damage path
+-- still hurts a healing player exactly as it did.
 
 BR = BR or {}
 BR.AmbHeal = {}
@@ -73,6 +83,8 @@ local A = BR.Config.AmbHeal
 ---     veh        the resolved entity, re-checked every tick
 ---     startedAt  server ms
 ---     hp0        display hp when it began -- every target is measured from this
+---     storm      display hp the storm has taken off them since it began (#366),
+---                which every target is lowered by -- see BR.AmbHeal.noteStorm
 ---     lastAt     server ms of the last grant, for the log only
 ---   }
 local claims = {}
@@ -207,6 +219,31 @@ function BR.AmbHeal.active(src)
     return healing[src] ~= nil
 end
 
+--- The storm just took `display` points off this player's ledger.
+---
+--- ═══ WHY A HEAL IN THE BACK OF A VAN HAS TO HEAR ABOUT IT (#366) ═══
+---
+--- Every target `grant` issues is absolute -- hp0 plus the ramp -- and the
+--- client applies it upward only, so a storm tick that landed between two
+--- grants was healed straight back by the next one, a quarter of a second
+--- later. The ambulance is not a consumable and does not pause the storm (that
+--- is the owner's rule for "a consumable which does so", and nothing else), so
+--- a heal already running when the wall arrives must finish with the storm's
+--- damage ON TOP of it: every later target is lowered by what the storm has
+--- taken since the heal began. Without this the van was a storm shelter --
+--- thirteen seconds in the wall ended on 97.
+---
+--- CALLED BY server/storm.lua's `bill`, the one place storm damage is written,
+--- and a no-op for a player who is not healing here. Bullets are NOT noted:
+--- whether a hit taken mid-heal should stay on the bar is #372, and waits on
+--- the owner.
+--- @param src integer
+--- @param display number  display points the storm took this tick
+function BR.AmbHeal.noteStorm(src, display)
+    local rec = claims[healing[src]]
+    if rec then rec.storm = (rec.storm or 0.0) + (tonumber(display) or 0.0) end
+end
+
 --- @return integer
 function BR.AmbHeal.count()
     local n = 0
@@ -256,6 +293,26 @@ function BR.AmbHeal.canHeal(src, entry, netId)
     -- client's side -- but it must not start a second claim, which would leak
     -- the first one for the rest of the match.
     if healing[src] ~= nil then return false, 'already healing' end
+
+    -- ═══ NOT WHILE THE STORM IS HURTING THEM (#366) ═══
+    --
+    -- The ambulance heal is not a consumable, so it does not pause the storm --
+    -- and a heal STARTED outside the wall would be one restartable fifteen
+    -- seconds after another, each topping the bar back up: a way to live
+    -- outside the wall indefinitely. So it cannot start there. A heal already
+    -- running when the wall arrives finishes, with the storm's damage on top
+    -- (BR.AmbHeal.noteStorm).
+    --
+    -- POSITIONAL, AND ASKED OF THE STORM ITSELF: BR.Storm.exposed answers from
+    -- the same zone and cushion the damage tick bills by, for an ALIVE player
+    -- not in a rescue, at a sampled position. Not "was billed last tick" -- a
+    -- heal channel pausing the storm, a revive clearing its stamp or a missed
+    -- tick would each open a gap in that. During phase 1's free-loot hold the
+    -- storm hurts nobody, so this allows it. Silent, like every refusal here.
+    -- This is the default until the owner rules on it (#366).
+    if BR.Storm and BR.Storm.exposed and BR.Storm.exposed(entry) then
+        return false, 'the storm is hurting them'
+    end
 
     -- ═══ HURT. A FULL-HEALTH PLAYER HAS NOTHING TO GAIN ═══
     --
@@ -368,6 +425,7 @@ AddEventHandler(BR.Net.AMBHEAL_START, function(d)
         netId     = netId,
         startedAt = now,
         hp0       = tonumber(entry.hp) or 100.0,
+        storm     = 0.0,
         lastAt    = now,
     })
     stat.started = stat.started + 1
@@ -446,13 +504,25 @@ end)
 --- The targets are anchored on `hp0` and applied UPWARD ONLY by the client, so
 --- being shot at 50% through a heal leaves the player with the damage AND the
 --- half-heal, and the ramp keeps climbing from underneath it. That is the same
---- arithmetic as an uninterrupted heal; nothing special happens.
+--- arithmetic as an uninterrupted heal; nothing special happens. (Not quite, as
+--- #372 found: a hit smaller than the ramp still to come is climbed back over
+--- by the next absolute target. Whether it should stay on the bar is the
+--- owner's call on that issue.)
+---
+--- ═══ THE STORM'S DAMAGE IS TAKEN OFF THE TARGET (#366) ═══
+---
+--- A heal running when the wall arrives keeps running -- the ambulance does not
+--- pause the storm -- and everything the storm has billed since the heal began
+--- (`rec.storm`, kept by BR.AmbHeal.noteStorm) comes off every target, floored
+--- at zero. The window's ceiling below is that same lowered number, so the
+--- ledger and an honest bar end on 100 less the storm, together.
 --- @param rec table
 --- @param entry table
 --- @param now number
 local function grant(rec, entry, now)
     local pct = BR.AmbHealSolve.progress(rec.startedAt, now, A.durationMs)
-    local target = BR.AmbHealSolve.target(rec.hp0, A.healTo or 100.0, pct)
+    local target = math.max(0.0,
+        BR.AmbHealSolve.target(rec.hp0, A.healTo or 100.0, pct) - (rec.storm or 0.0))
 
     -- THE SERVER JUST TOLD THIS PLAYER TO GET HEALTHIER, so server/roster.lua's
     -- health audit must not read the rise as a client lying about its own ped.

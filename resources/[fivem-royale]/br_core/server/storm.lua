@@ -977,6 +977,32 @@ local function outside(z, x, y)
     return out > z.margin
 end
 
+--- Would the storm bill this player if it ticked now?
+---
+--- ASKED BY server/ambheal.lua, which refuses to START a heal in the back of an
+--- ambulance while the answer is yes (#366): the ambulance is not a consumable
+--- and does not pause the storm, so a heal begun out here would be a way to
+--- outlast the wall.
+---
+--- THE TICK'S OWN QUESTION, NOT A RECORD OF ITS ANSWER. The same billing zone,
+--- the same cushion and the same filter the damage tick applies -- ALIVE, not
+--- riding a rescue, a sampled position -- so it cannot drift from what the tick
+--- does, and it does not ask "was this player billed last tick", which a heal
+--- pausing the storm, a revive clearing the stamp or a missed tick would each
+--- answer wrongly. False while the storm bills nobody (phase 1's hold).
+--- @param e table|nil  a roster entry
+--- @param now number|nil  defaults to the clock
+--- @return boolean
+function BR.Storm.exposed(e, now)
+    if e == nil or e.state ~= BR.PlayerState.ALIVE or e.rescue or not e.pos then
+        return false
+    end
+    local m = e.matchId and BR.Server.matches and BR.Server.matches[e.matchId]
+    if not m then return false end
+    local z = billingZone(m, now or GetGameTimer())
+    return z ~= nil and outside(z, e.pos.x, e.pos.y)
+end
+
 --- Bill one ALIVE player outside the wall for `display` points of storm.
 ---
 --- ═══ THE LEDGER TAKES EXACTLY WHAT THE PED IS TOLD (#366) ═══
@@ -1024,6 +1050,10 @@ local function bill(src, e, display, carry, now)
     local took = whole * 100.0 / (M.maxHealth - M.healthFloor)
     BR.Roster.update(src, { hp = math.max(0.0, (e.hp or 100.0) - took) })
     if e.grantHpTo then e.grantHpTo = e.grantHpTo - took end
+    -- An ambulance heal already running when the wall arrived lowers its own
+    -- targets by this (server/ambheal.lua), or its next one would heal the tick
+    -- straight back.
+    if BR.AmbHeal and BR.AmbHeal.noteStorm then BR.AmbHeal.noteStorm(src, took) end
 
     -- The visible half: tell the client to hurt its ped, by what the ledger
     -- just took.

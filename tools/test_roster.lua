@@ -28608,6 +28608,70 @@ do
                 .. 'lands', ('%d of %d did not'):format(bad, runs))
     end
 
+    -- ───────────────────────────────────────────────────────────────────────
+    describe('storm.ambheal')
+    -- ───────────────────────────────────────────────────────────────────────
+    --
+    -- THE AMBULANCE HEAL IS NOT A CONSUMABLE AND GETS NO PAUSE. It cannot start
+    -- while the storm is hurting the player, and one already running when the
+    -- wall arrives finishes with the storm's damage on top. Loaded here rather
+    -- than at the top of the suite because nothing above this section uses it;
+    -- tools/test_ambheal.lua drives it on its own at length.
+    for _, f in ipairs({ 'br_lib/config/ambheal.lua', 'br_lib/shared/ambheal_solve.lua',
+                         'br_core/server/ambheal.lua' }) do
+        local chunk, err = loadfile(ROOT .. f)
+        if not chunk then error(err) end
+        chunk()
+    end
+    local VAN = 777
+    --- An ambulance parked so the subject stands at its rear doors.
+    local function vanAt(x, y)
+        setModel(VAN, 'ambulance')
+        pedCoords[VAN] = { x = x, y = y + 3.0, z = 30.0 }
+        pedHeading[VAN] = 0.0
+    end
+
+    -- ─── NOT OUTSIDE THE WALL ───
+    do
+        stage({ hp = 40.0, outside = true, dps = 2.9 })
+        vanAt(A0.x + 2000.0, A0.y)
+        fire(BR.Net.AMBHEAL_START, 1, { n = VAN })
+        ok(not BR.AmbHeal.active(1),
+            'an ambulance heal cannot start while the storm is hurting the player')
+        goIn()
+        step(500)
+        vanAt(A0.x, A0.y)
+        fire(BR.Net.AMBHEAL_START, 1, { n = VAN })
+        ok(BR.AmbHeal.active(1),
+            'and starts as soon as the player is inside the wall')
+        BR.AmbHeal.finish(1, false, 'test')
+    end
+
+    -- ─── THE WALL ARRIVES MID-HEAL ───
+    for _, lat in ipairs({ 0, 500 }) do
+        stage({ hp = 40.0, dps = 2.9, lat = lat })
+        vanAt(A0.x, A0.y)
+        fire(BR.Net.AMBHEAL_START, 1, { n = VAN })
+        ok(BR.AmbHeal.active(1), ('precondition (%dms): healing inside'):format(lat))
+        step(3000)
+        -- The wall arrives: the record moves so where they stand is outside.
+        local m = theMatch()
+        m.storm = BR.BuildStormRecord(5, A0.x + 4000.0, A0.y, 500.0,
+            A0.x + 4000.0, A0.y, 500.0, fakeTime, 3600 * 1000, 1000, 2.9, m.stormSeed)
+        local tw = fakeTime
+        step(20000, function() return not BR.AmbHeal.active(1) end)
+        step(2 * lat + 500)
+        -- The wall is still billing them, so the bar is read as it will stand
+        -- once the instructions already on the wire have landed.
+        local want = 100.0 - stormPointsSince(tw)
+        ok(stormPointsSince(tw) > 20.0 and subject().hp == want and landed() == want,
+            ('the heal finishes with the storm on top: 100 less what the wall took '
+                .. '(%dms line)'):format(lat),
+            ('storm %s, e.hp %s, bar %s once landed'):format(
+                tostring(stormPointsSince(tw)), tostring(subject().hp),
+                tostring(landed())))
+    end
+
     GetEntityHealth, GetPedArmour = rawHealth, rawArmour
     BR.Combat.defeat = rawDefeat
 end

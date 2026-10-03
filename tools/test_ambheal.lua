@@ -690,6 +690,55 @@ do
             .. 'tripwire on BR.Roster.update would have thrown')
 
     -- ═══════════════════════════════════════════════════════════════════════
+    -- THE STORM (#366)
+    -- ═══════════════════════════════════════════════════════════════════════
+    --
+    -- The ambulance is not a consumable, so the storm does not pause for it.
+    -- A heal cannot START while the storm is hurting the player, and one already
+    -- running when the wall arrives takes the storm's damage off every target
+    -- after it. BR.Storm is stubbed: what it answers is server/storm.lua's and
+    -- is tested there (test_storm's `server.exposed`); what is under test here is
+    -- that this file ASKS, and what it does with the answer.
+    local exposedSrc = {}
+    BR.Storm = { exposed = function(e) return exposedSrc[e.src] == true end }
+
+    fakeTime = 500000
+    standing(11, 101, 40.0)
+    exposedSrc[11] = true
+    refused(11, 9101, 'A PLAYER THE STORM IS HURTING CANNOT START A HEAL -- the '
+        .. 'van is not a way to outlast the wall')
+    local ok11, why11 = BR.AmbHeal.canHeal(11, roster[11], 9101)
+    ok(not ok11 and why11 == 'the storm is hurting them',
+        'and the reason is named for /brambheal', tostring(why11))
+    exposedSrc[11] = nil
+    start(11, 9101)
+    ok(BR.AmbHeal.active(11) == true,
+        'the same player at the same van starts once the storm is not hurting them')
+
+    -- A HEAL ALREADY RUNNING TAKES THE STORM ON TOP.
+    for _ = 1, 8 do fakeTime = fakeTime + 250; tick() end
+    sent = {}
+    fakeTime = fakeTime + 250; tick()
+    local before = effects(11)[1]
+    BR.AmbHeal.noteStorm(11, 8.0)
+    sent = {}
+    fakeTime = fakeTime + 250; tick()
+    local after = effects(11)[1]
+    local rampStep = 60.0 * 250.0 / A.durationMs
+    ok(before and after
+        and math.abs(after.health - (before.health + rampStep - 8.0)) < 1e-6
+        and roster[11].grantHpTo == after.health,
+        'eight points of storm come off the next target and its ceiling, and the '
+            .. 'ramp climbs on from there',
+        ('%s -> %s, ceiling %s'):format(tostring(before and before.health),
+            tostring(after and after.health), tostring(roster[11].grantHpTo)))
+    BR.AmbHeal.noteStorm(12, 50.0)
+    ok(BR.AmbHeal.active(12) == false,
+        'and a note for somebody who is not healing here is simply ignored')
+    BR.AmbHeal.finish(11, false, 'test')
+    BR.Storm = nil
+
+    -- ═══════════════════════════════════════════════════════════════════════
     -- THE OTHER WAYS A CLAIM MUST NOT LEAK
     -- ═══════════════════════════════════════════════════════════════════════
     standing(8, 101, 40.0)
