@@ -79,6 +79,7 @@ NOTES=(
     "test_airdrop|Supply drops: two per match, away from the storm wall, carrying loot found nowhere else"
     "test_client|Player controls: interact key, opening crates, picking up loot, keybinds, voice and sounds"
     "test_spectate|A spectator's own character can't move or shoot while watching, and gets it all back after"
+    "test_emotes_client|Dance wheel: hold Left Alt to pick, on foot only; moving, aiming or going down ends it"
     "test_matchexit|Every way out of a match clears the match's screens, so nothing follows you to the lobby"
     "test_lobbyseq|Joining warmup moves your character before anyone can see it, and can be cut short cleanly"
     "test_landtime|The landing timer measures how long landing really took and names what held it up"
@@ -94,15 +95,17 @@ NOTES=(
     "test_vehrefuse|Banned vehicles are refused at the door, before the seat is taken, with the owner's words"
     "test_rescue|The CPR kit's ambulance aims for a spot that will still be safe from the storm on arrival"
     "test_ambheal|Healing in an ambulance: rear doors open, one healer at a time, a partial heal is kept"
-    "test_revivekey|Revive keys: expiry, pickup range, buying one, and two squadmates pressing at once"
+    "test_revivekey|Revive keys: a downed player can't take their own; expiry, range, buying, two at once"
     "test_ambulances|Station ambulances: visible in the match, cleaned up after it, and shown on squad maps"
     "test_shop|Warmup car shop: you get exactly the car shown, it survives the reset, never two for one"
     "test_gunshop|In-match gun shop sells exactly the map's rare-and-up guns, and nothing from airdrops"
     "test_volts|Volts spent in a match are counted only when the purchase actually went through"
+    "test_emotes|Emotes on the server: buying, equipping and granting them, all off unless dev mode is on"
     "test_warmupcrates|The four warmup crates: fixed spots, contents match their rarity, and they refill forever"
     "test_bool_natives|The yes/no misread check still catches mistakes and leaves correctly written code alone"
     "test_tutorial|A player who finished the tutorial is never shown it again, even in another mode"
     "test_gitref|The dev-mode label under Settings shows the code version the server is really running"
+    "test_emotes_ui|Market emote slots: equip, unequip and swap past eight, shown only while emotes are on"
     "scope gate|Player-side code never asks about players with game calls that only see those nearby"
     "weapon table|Each weapon's game ID matches its name, magazine sizes fit, car use is set, icons exist"
     "vehicle table|Each banned vehicle's game ID matches its name, so tanks and jets really stay banned"
@@ -118,7 +121,7 @@ NOTES=(
     "notice repeats|A message's repeat count only goes up if it repeats while the last one is still showing"
     "key glyphs|Key hints in messages draw as key pictures for the player's own bindings, or a dash"
     "vitals bars|Health and shield bars label themselves, and an empty shield shows no number"
-    "death verdict|The death message and the end-of-match screen stay separate and share one timer"
+    "death verdict|Death message and match-end screen stay apart; the message and spectator cam share a timer"
     "forward locals|No code calls a helper before the helper is defined (that silently breaks in game)"
     "player states|Every mention of a player state (alive, downed, out...) names one that really exists"
     "bool natives|Game yes/no answers are never misread (0 counts as yes in Lua); known cases only go down"
@@ -131,8 +134,9 @@ NOTES=(
     "vendored third-party|Borrowed outside code keeps its license, version and patch notes, and still gets deployed"
     "console capability boundary|The admin console and the owner-only server commands can do only what is approved"
     "test_configreport|Settings report on six fake servers: finds the server name, never shows the license key"
-    "dev gate on console commands|Typed commands are off on the public server, except three it needs; keybinds still work"
+    "dev gate on console commands|Typed commands are off on the public server but for a few; keybinds and /brleave work"
     "dev gate on net events|No request a player's game sends the server is allowed just because dev mode is on"
+    "emote gate|Every way into emotes checks the one dev-mode line, and every emote test passes without it"
     "branch-switch invariant|Switching the server to another branch can never swap out the console's control script"
     "incident surface|The anti-cheat opens a case only for cheat signs, never for warmup fights or teammates"
     "incident notice surface|The \"See something suspicious?\" notice has one sender, so the cheater is never told"
@@ -2495,7 +2499,7 @@ fi
 # asks dev mode a second way; the loop after it proves the deleted state works,
 # by running every emote suite with `requireDevMode = true,` cut out of the
 # config. Deleting the line is then a change that is already tested.
-echo "${DIM}== emote gate ==${RST}"
+section 'emote gate'
 if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
     if "$LUA" tools/check_emote_gate.lua --selftest; then
         # shellcheck disable=SC2046
