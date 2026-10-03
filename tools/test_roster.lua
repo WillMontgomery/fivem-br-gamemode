@@ -28031,7 +28031,7 @@ do
         bag({ 'medkit' })
         press('medkit')
         local ang = 0.0
-        --- The squadmate circles three to seven metres off at ~14 m/s.
+        --- The squadmate circles three to seven meters off at ~14 m/s.
         local function drift()
             if squad then
                 ang = ang + 2.0 * math.pi * 0.05 / 0.9
@@ -28138,9 +28138,8 @@ do
 
     -- ─── A HIT FROM BEFORE THE PRESS ───
     --
-    -- `startedAt` is what makes it THIS channel's attacker. A player shot,
-    -- then healing in cover, then falling off a ledge has not been interrupted
-    -- by anybody.
+    -- Only a hit dealt INTO the channel can mark it. A player shot, then healing
+    -- in cover, then falling off a ledge has not been interrupted by anybody.
     do
         stage({ hp = 60.0 })
         bag({ 'medkit' })
@@ -28702,7 +28701,7 @@ do
     --
     -- A shield restores armor, not health, so it is not "a consumable which
     -- does so": the storm goes on taking health while it runs. It is no longer
-    -- interrupted by the storm, though -- that takes an attacker.
+    -- interrupted by the storm, though -- that takes a hit the server deals.
     do
         stage({ hp = 80.0, outside = true, dps = 4.0 })
         bag({ 'shield' })
@@ -28796,8 +28795,8 @@ do
                 .. 'lands', ('%d of %d did not'):format(bad, runs))
     end
 
-    --- Stand the subject a metre past the storm's billing edge, with a
-    --- squadmate (3) driving circles three to seven metres off -- just inside
+    --- Stand the subject a meter past the storm's billing edge, with a
+    --- squadmate (3) driving circles three to seven meters off -- just inside
     --- the edge, so the storm never bills the driver. Returns the step that
     --- moves the car on, at ~14 m/s.
     ---
