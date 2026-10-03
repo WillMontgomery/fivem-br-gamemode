@@ -7882,8 +7882,8 @@ do
             tostring(blocked[2])))
 
     -- (b) THE JUMP, which is the ending nearly every ride actually takes. The
-    --     server's exit coordinates arrive, beginDrop tears the plane down --
-    --     and the player is now falling with a camera that has to work.
+    --     server's exit coordinates arrive, beginDrop takes the rider off the
+    --     plane -- and the player is now falling with a camera that has to work.
     boardWithRoll(60000)
     ok(BR.Bus.camLocked() == true, 'precondition: pinned again')
     fire(BR.Net.BUS_JUMP_OK, { x = 0.0, y = 0.0, z = 400.0, heading = 0.0 })
@@ -8100,6 +8100,137 @@ do
 
     -- Put the world back the way the blocks below expect to find it.
     SetEntityCoordsNoOffset = realCoords
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+    BR.State.me.state = BR.PlayerState.LOBBY
+    BR.Loop.step(BR.Loop.TICK)
+    frame(16)
+    sent = {}
+end
+
+describe('the plane flies on after the jump, and comes down partingMs past the route\'s end')
+do
+    -- Owner, 2026-10-03: "Can you change it so the plane entity isn't deleted
+    -- on the player's screen when they jump?" The jump now takes the RIDER off
+    -- the plane (dismount) and leaves the plane flying; bus.fly carries it past
+    -- the last point and takes it down BR.Config.Bus.partingMs later. Every
+    -- other ending still takes it down at once.
+    local threads = {}
+    Citizen.CreateThread = function(fn) threads[#threads + 1] = fn end
+
+    -- A WORLD THAT REMEMBERS WHAT IS IN IT. The file-wide DoesEntityExist
+    -- answers false for everything, under which no teardown ever reaches
+    -- DeleteEntity -- and "the plane was not deleted" would pass against any
+    -- code at all. Here the plane (258) and its pilot (259) exist from the
+    -- moment they are made until something deletes them.
+    local PLANE, PILOT = 258, 259
+    local real = {
+        CreateVehicle = CreateVehicle, CreatePed = CreatePed,
+        DoesEntityExist = DoesEntityExist, DeleteEntity = DeleteEntity,
+        SetEntityCoordsNoOffset = SetEntityCoordsNoOffset,
+    }
+    local alive, deleted = {}, {}
+    CreateVehicle = function(...) local h = real.CreateVehicle(...); alive[h] = true; return h end
+    CreatePed = function(...) local h = real.CreatePed(...); alive[h] = true; return h end
+    DoesEntityExist = function(e) return alive[e] == true end
+    DeleteEntity = function(e) alive[e] = nil; deleted[#deleted + 1] = e end
+    local planeX, planeWrites = nil, 0
+    SetEntityCoordsNoOffset = function(ent, x, ...)
+        if ent == PLANE then planeX = x; planeWrites = planeWrites + 1 end
+        return real.SetEntityCoordsNoOffset(ent, x, ...)
+    end
+    local function wasDeleted(e)
+        for _, d in ipairs(deleted) do if d == e then return true end end
+        return false
+    end
+
+    -- Along +x at 100 m/s: 400 m every 4 s, so the last point is (3200, 0)
+    -- at +32 s, and that is the route's end.
+    local tEnd
+    local function boardAndJump()
+        deleted = {}
+        local t = GetGameTimer()
+        local pts = {}
+        for i = 0, 8 do
+            pts[#pts + 1] = { x = i * 400.0, y = 0.0, z = 500.0, t = t + i * 4000 }
+        end
+        tEnd = t + 32000
+        fire(BR.Net.BUS_ROUTE, {
+            points = pts, timed = true, heading = 0.0,
+            sx = 0.0, sy = 0.0, alt = 500.0, legs = { 'a', 'b' },
+            tStart = t, rotateAt = t + 2000,
+            jumpFrom = t + 3000, doorsClose = t + 20000, tEnd = tEnd,
+        })
+        BR.State.match = { state = BR.MatchState.BUS }
+        BR.State.me.state = BR.PlayerState.BUS
+        local before = #threads
+        BR.Loop.step(BR.Loop.TICK)
+        for i = before + 1, #threads do threads[i]() end
+        frames(10, 500)   -- +5 s: doors open, plane well airborne
+        fire(BR.Net.BUS_JUMP_OK, { x = 1000.0, y = 0.0, z = 480.0, heading = 270.0 })
+        BR.State.me.state = BR.PlayerState.FREEFALL
+        BR.Loop.step(BR.Loop.TICK)
+    end
+
+    -- 1. THE JUMP LEAVES THE PLANE IN THE WORLD, AND FLYING.
+    boardAndJump()
+    ok(alive[PLANE] == true and not wasDeleted(PLANE) and not wasDeleted(PILOT),
+        'jumping out does not delete the plane or its pilot',
+        ('deleted: %s'):format(table.concat(deleted, ', ')))
+    planeWrites = 0
+    local x0 = planeX
+    frames(10, 100)
+    ok(planeWrites >= 10 and planeX and x0 and planeX > x0,
+        'and the plane keeps flying its route after the jump',
+        ('%d writes, x %s -> %s'):format(planeWrites, tostring(x0), tostring(planeX)))
+    ok(BR.Bus.camLocked() == false, 'with the rider\'s camera gone all the same')
+
+    -- 2. PAST THE LAST POINT IT FLIES ON instead of parking on it.
+    frame(tEnd + 5000 - GetGameTimer())
+    local xa = planeX
+    frame(1000)
+    ok(xa and xa > 3200.0 and planeX > xa,
+        'past the route\'s end it carries on along its last leg, not parked on the last point',
+        ('x %s then %s, last point 3200'):format(tostring(xa), tostring(planeX)))
+
+    -- 3. /brbus SAYS SO.
+    logged = {}
+    pcall(commands['brbus'], nil, {}, '')
+    local dump = table.concat(logged, '\n')
+    ok(dump:find('flying on after the jump', 1, true) ~= nil,
+        '/brbus reports the plane flying on and when it comes down', dump)
+    logged = {}
+
+    -- 4. AND IT COMES DOWN partingMs PAST THE END, NOT BEFORE.
+    frame(tEnd + BR.Config.Bus.partingMs - 100 - GetGameTimer())
+    ok(alive[PLANE] == true, 'still flying just before partingMs runs out')
+    frame(200)
+    ok(wasDeleted(PLANE) and wasDeleted(PILOT) and not alive[PLANE],
+        'and taken down, pilot and all, once it has',
+        ('deleted: %s'):format(table.concat(deleted, ', ')))
+    planeWrites = 0
+    frames(5, 16)
+    ok(planeWrites == 0, 'and nothing flies it afterwards', tostring(planeWrites))
+
+    -- 5. THE END OF THE MATCH, OR A LEAVE, TAKES IT DOWN AT ONCE.
+    boardAndJump()
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+    ok(wasDeleted(PLANE), 'leaving the match takes a plane still flying on down at once')
+
+    -- 6. SO DOES THE NEXT ROUTE, whose untimed preview would park it in the sky.
+    boardAndJump()
+    fire(BR.Net.STATE, { state = BR.MatchState.PLAYING })
+    ok(alive[PLANE] == true, 'the match going to PLAYING leaves it flying')
+    local pts = {}
+    for i = 0, 8 do pts[#pts + 1] = { x = i * 400.0, y = 0.0, z = 500.0, v = 60.0 } end
+    fire(BR.Net.BUS_ROUTE, { points = pts, timed = false, heading = 0.0,
+        sx = 0.0, sy = 0.0, alt = 500.0, legs = { 'a', 'b' },
+        waypoints = { { x = 0.0, y = 0.0 } } })
+    ok(wasDeleted(PLANE), 'and the next flight\'s route takes it down')
+
+    -- Put the world back the way the blocks below expect to find it.
+    CreateVehicle, CreatePed = real.CreateVehicle, real.CreatePed
+    DoesEntityExist, DeleteEntity = real.DoesEntityExist, real.DeleteEntity
+    SetEntityCoordsNoOffset = real.SetEntityCoordsNoOffset
     fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
     BR.State.me.state = BR.PlayerState.LOBBY
     BR.Loop.step(BR.Loop.TICK)

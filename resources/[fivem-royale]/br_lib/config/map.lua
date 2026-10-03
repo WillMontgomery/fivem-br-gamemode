@@ -879,6 +879,13 @@ BR.Config.Bus = {
     maxAccel     = 9.0,     -- m/s^2 cap smoothing every speed transition
     jumpGrace    = 5,       -- seconds after the route ends before BUS -> PLAYING
 
+    -- How long the plane flies on past the route's end once its rider has
+    -- jumped, before it is taken down (client/bus.lua, dropPlane). Owner,
+    -- 2026-10-03: "Can you change it so the plane entity isn't deleted on the
+    -- player's screen when they jump?" So it flies the rest of the route and
+    -- then this long again, straight on along its last leg, out of sight.
+    partingMs    = 30000,
+
     -- Camera orbit distance/height from the plane while riding. The Titan is
     -- ~20m long and the camera must CLEAR the hull -- the first offset
     -- (-14, +3) sat inside the tail, which rendered as a black wedge of

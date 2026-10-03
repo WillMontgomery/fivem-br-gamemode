@@ -57,13 +57,16 @@ local function angDiff(a, b)
     return ((a - b + 540.0) % 360.0) - 180.0
 end
 
-local function cleanup()
-    boardGen = boardGen + 1   -- abandon any boarding thread still streaming
-    if cam then
-        RenderScriptCams(false, false, 0, true, true)
-        DestroyCam(cam, false)
-        cam = nil
-    end
+--- Take the plane and its pilot out of the world.
+---
+--- SEPARATE FROM THE RIDER'S HALF BECAUSE THE JUMP NO LONGER ENDS THE PLANE.
+--- Owner, 2026-10-03: "Can you change it so the plane entity isn't deleted on
+--- the player's screen when they jump?" So a jump takes the rider off the plane
+--- (dismount) and leaves the plane flying its route; bus.fly carries it past the
+--- last point and calls this once BR.Config.Bus.partingMs has run out. Every
+--- other ending -- death, the lobby, the match torn down, a new route, a
+--- restart -- still takes both halves down at once through cleanup().
+local function dropPlane()
     if pilot then
         if isTrue(DoesEntityExist(pilot)) then DeleteEntity(pilot) end
         pilot = nil
@@ -75,6 +78,17 @@ local function cleanup()
     lastX, lastY, lastZ, lastT = nil, nil, nil, nil
     smoothHdg, smoothPitch, smoothRoll = nil, 0.0, 0.0
     gearAt = nil
+end
+
+--- Take the rider off the plane: camera down, ped back in the world, flags
+--- reset. The plane itself is left exactly where it is.
+local function dismount()
+    boardGen = boardGen + 1   -- abandon any boarding thread still streaming
+    if cam then
+        RenderScriptCams(false, false, 0, true, true)
+        DestroyCam(cam, false)
+        cam = nil
+    end
     if riding then
         -- Whatever ends the ride, the ped must come back to the world: off
         -- the plane (it rode ATTACHED -- that is what keeps the minimap and
@@ -87,6 +101,30 @@ local function cleanup()
     told = false
     toldClosing = false
     ejectedSeen = nil
+end
+
+--- Rider and plane both: every ending except the jump.
+local function cleanup()
+    dismount()
+    dropPlane()
+end
+
+--- Where a plane that has left its rider behind is at time t.
+---
+--- The route's own clamp parks a plane on its last point (BR.PathPosAt), which
+--- is right for the server's eject and wrong for a plane somebody is watching
+--- fly away. Past the last point this carries on along the last leg at that
+--- leg's speed, level at the last point's height, so the look-ahead below keeps
+--- pointing forward instead of swinging back to the point it just passed.
+--- @return number x, number y, number z, number dx, number dy
+local function partingPosAt(pts, t)
+    local n = #pts
+    local last = pts[n]
+    if n < 2 or t <= last.t then return BR.PathPosAt(pts, t) end
+    local prev = pts[n - 1]
+    local dx, dy = last.x - prev.x, last.y - prev.y
+    local k = (t - last.t) / math.max(1, last.t - prev.t)
+    return last.x + dx * k, last.y + dy * k, last.z, dx, dy
 end
 
 -- ------------------------------------------------------- the map drawing ---
@@ -209,6 +247,10 @@ end
 
 RegisterNetEvent(BR.Net.BUS_ROUTE)
 AddEventHandler(BR.Net.BUS_ROUTE, function(r)
+    -- A plane still flying away from the LAST jump flies by the record this
+    -- replaces; under the next flight's untimed preview bus.fly would park it
+    -- in the sky. A rider's own plane is left alone, as it always was.
+    if not riding then dropPlane() end
     route = r
     dropBegun = false   -- a fresh route is a fresh flight
     drawCrumbs()
@@ -216,10 +258,17 @@ end)
 
 -- The route drawing lives and dies with the pre-drop states -- and, for each
 -- player, ends earlier than that: at their own jump (beginDrop, #370).
+--
+-- A plane flying on after the jump lives through the bus and the match, and
+-- no further: the end of the match, a leave and the lobby all take it down.
 RegisterNetEvent(BR.Net.STATE)
 AddEventHandler(BR.Net.STATE, function(d)
     if d.state ~= BR.MatchState.WARMUP and d.state ~= BR.MatchState.BUS then
         clearCrumbs()
+    end
+    if not riding and d.state ~= BR.MatchState.BUS
+       and d.state ~= BR.MatchState.PLAYING then
+        dropPlane()
     end
 end)
 
@@ -248,7 +297,10 @@ end)
 --- back down; the lobby and the end of the match are the STATE handler's above.
 local function beginDrop(x, y, z, heading)
     dropBegun = true
-    cleanup()   -- detaches the ped from the plane, among everything else
+    -- THE RIDER LEAVES; THE PLANE FLIES ON. dismount() detaches the ped and
+    -- takes the camera down; the plane and its pilot keep flying the route in
+    -- bus.fly and are taken down there, BR.Config.Bus.partingMs past its end.
+    dismount()
     clearCrumbs()
     local ped = PlayerPedId()
     SetEntityCoordsNoOffset(ped, x + 0.0, y + 0.0, z + 0.0, false, false, false)
@@ -262,6 +314,9 @@ end
 --- inside a registered loop callback would stall every other TICK subsystem
 --- behind it. One thread per boarding, not per frame, is within the rules.
 local function board()
+    -- A plane still flying away from an earlier jump is not this ride's plane,
+    -- and `bus` is about to be the new one; take it down before it is orphaned.
+    dropPlane()
     riding = true   -- set before the async work so the loop does not re-enter
     islandCut = false   -- fresh flight, fresh island handoff
     boardGen = boardGen + 1
@@ -369,7 +424,7 @@ BR.Loop.register(BR.Loop.TICK, 'bus.board', function()
     -- `not dropBegun` closes THE JUMP RACE (repro: jump the moment the
     -- doors open). The server ejects and sends BUS_JUMP_OK immediately,
     -- but the FREEFALL state rides the 4Hz delta flush -- so the OK
-    -- often lands FIRST. beginDrop() tears the plane down, this loop
+    -- often lands FIRST. beginDrop() takes the rider off the plane, this loop
     -- then saw "not riding, mirror still says BUS" and put the player
     -- BACK ABOARD A SECOND PLANE mid-drop (handles 258/770, live log):
     -- re-attached, re-hidden, camera up -- while falling. That wrecked
@@ -478,7 +533,7 @@ end)
 -- and answers from state that four separate things take away, so EVERY exit is
 -- the same exit -- this branch stops being taken:
 --
---   THE JUMP           beginDrop -> cleanup(): cam destroyed, riding false.
+--   THE JUMP           beginDrop -> dismount(): cam destroyed, riding false.
 --   KILLED / MATCH TORN DOWN / BACK TO LOBBY / STATE FLAP
 --                      bus.board's `riding and me ~= BUS` branch -> cleanup().
 --   RESOURCE RESTART   onResourceStop -> cleanup(); and the file stops running,
@@ -553,7 +608,21 @@ BR.Loop.register(BR.Loop.FRAME, 'bus.fly', function()
     if not bus or not route or not route.timed then return end
 
     local t = BR.Clock.now()
-    local x, y, z = BR.PathPosAt(route.points, t)
+
+    -- THE PLANE FLIES ON PAST THE ROUTE'S END rather than parking on its last
+    -- point (partingPosAt), and once nobody is aboard it comes down partingMs
+    -- after that end (see dropPlane). A rider still aboard at the end is about
+    -- to be ejected by the server; their plane does not stop in the air for
+    -- the moment that takes, and does not jump forward when it ends either.
+    if not riding then
+        local tEnd = route.tEnd or route.points[#route.points].t
+        if t > tEnd + BR.Config.Bus.partingMs then
+            dropPlane()
+            return
+        end
+    end
+    local posAt = partingPosAt
+    local x, y, z = posAt(route.points, t)
 
     -- A hand on the yoke: slow layered sine drift in altitude, +/- ~8 units,
     -- driven by the SYNCED clock so all 48 planes drift identically. Only
@@ -584,7 +653,7 @@ BR.Loop.register(BR.Loop.FRAME, 'bus.fly', function()
     -- polyline -- and the exponential ease below takes out what little
     -- stepping remains. Roll banks into the heading change and pitch
     -- follows the climb, both gently.
-    local ax, ay, az = BR.PathPosAt(route.points, t + 1200)
+    local ax, ay, az = posAt(route.points, t + 1200)
     local ddx, ddy, ddz = ax - x, ay - y, az - z
     local hLen = math.sqrt(ddx * ddx + ddy * ddy)
 
@@ -1146,6 +1215,11 @@ RegisterCommand('brbus', function()
     print('=== bus (client) ===')
     print(('  riding %s   bus %s   cam %s   dropStateGate %s'):format(
         tostring(riding), tostring(bus), tostring(cam), tostring(BR.State.me.state)))
+    if bus and not riding and route and route.timed then
+        local tEnd = route.tEnd or route.points[#route.points].t
+        print(('  flying on after the jump; comes down in %.1fs'):format(
+            (tEnd + BR.Config.Bus.partingMs - BR.Clock.now()) / 1000))
+    end
     -- THE RUNWAY PIN, AND WHEN IT COMES OFF (#241). "The camera is stuck" is a
     -- sentence a playtester will produce for at least three different reasons --
     -- the pin is on, the pin is off and the shot is broken, or there is no shot
