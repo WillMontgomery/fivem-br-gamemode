@@ -27984,8 +27984,9 @@ do
     -- ONLY A HIT THE SERVER DEALS INTERRUPTS A CHANNEL. The ledger follows the
     -- ped down on the client's word, so a drop alone is something a player can
     -- make whenever they like -- and so is a drop somebody else is merely
-    -- credited with. A validated bullet or blast that takes the bar under where
-    -- the channel started is not (BR.Inv.struck).
+    -- credited with, beside their fire or their car. A validated bullet or
+    -- blast that takes health itself and leaves the bar under where the channel
+    -- started is not (BR.Inv.struck).
 
     -- ─── THE DIP-CANCEL-RESTORE LOOP ───
     --

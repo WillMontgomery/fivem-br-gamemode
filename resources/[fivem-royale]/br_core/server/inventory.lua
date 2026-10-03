@@ -1097,8 +1097,9 @@ end
 ---
 --- The remaining cancels are facts about the world rather than presses, and
 --- every one of them is either somebody else's doing or banks nothing at all:
---- a hit the server dealt on another player's behalf (`useCancelOnDamage`,
---- BR.Inv.struck, #366), going down, dying, leaving the match, the shop car's
+--- a bullet or a blast the server dealt on another player's behalf that took
+--- health itself (`useCancelOnDamage`, BR.Inv.struck, #366) -- not fire, not a
+--- car, not a fall -- going down, dying, leaving the match, the shop car's
 --- seat rule -- which has no partial effect to bank -- and the repair kit's
 --- driving-seat rule, which does, and which therefore SPENDS THE KIT rather
 --- than handing it back (#361). See the note above the tick loop.

@@ -773,14 +773,14 @@ end
 ---
 --- IT APPLIES TO THE STORM AND TO NOTHING ELSE. A bullet, a blast, fire, a fall
 --- and a car all hurt a healing player exactly as before, and an enemy's bullet
---- or blast still interrupts the channel -- at which point the next tick bills
---- again. The seconds paused are not banked and charged later: a heal ran, and
+--- or blast that gets health through still interrupts the channel -- at which
+--- point the next tick bills again. Fire and cars hurt without interrupting. The seconds paused are not banked and charged later: a heal ran, and
 --- the owner's sentence is that the storm did nothing while it did.
 ---
 --- SHIELDS DO NOT PAUSE IT. A shield restores armor, not health, so it is not
 --- "a consumable which does so"; it finishes in the storm (server/inventory.lua's
---- damage-cancel takes a hit the server dealt) while the storm goes on taking
---- health. That reading is the owner's to confirm, and flipping it is
+--- damage-cancel takes a hit the server dealt that took health itself, the same
+--- inside the wall and out) while the storm goes on taking health. That reading is the owner's to confirm, and flipping it is
 --- BR.Inv.healing's one line.
 ---
 --- THE AMBULANCE HEAL IS NOT A CONSUMABLE AND GETS NO PAUSE.
