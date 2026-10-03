@@ -965,6 +965,31 @@ BR.Net = {
     MARKET_BUY      = 'br:market:buy',       -- C->S  { id }
     MARKET_EQUIP    = 'br:market:equip',     -- C->S  { id }
 
+    -- ═══ EMOTES (#215, "Scope v2", owner 2026-10-02) ═══
+    --
+    -- MARKET_EQUIP above carries one more field for an emote: { id, replace? }.
+    -- Eight dances fit on the wheel, and equipping a ninth names the one it
+    -- takes the place of. Every other kind has one slot and ignores the field.
+    MARKET_UNEQUIP  = 'br:market:unequip',   -- C->S  { id }  emote slots only
+    -- THE CLIENT ASKS AND THE SERVER PUBLISHES. PLAY carries a catalogue id and
+    -- nothing else: ownership, the wheel slot, the state, the seat and the
+    -- position are all resolved on the server. The stop is computed at tStart +
+    -- durationMs and never messaged; an EARLY stop re-sends the same record
+    -- with `tEnd` stamped on it, to everybody the start reached, and the
+    -- record replaces the one held for `src`.
+    -- RECIPIENTS ARE THE PEOPLE IN EARSHOT, NOT THE MATCH: same routing bucket
+    -- and within BR.Config.Emotes.sendRadiusM of x/y/z, plus anybody spectating
+    -- a player that close. x/y/z would otherwise be a position the roster
+    -- deliberately withholds. Somebody who comes into range mid-dance is sent
+    -- the record then; `tSent` is the server clock at that send, so a client
+    -- whose clock has not synced yet can still seek: tSent - tStart + time
+    -- since receipt. Moving cancels a dance, so x/y/z does not go stale, and a
+    -- listener measures from its own view point instead of looking somebody
+    -- else up.
+    EMOTE_PLAY      = 'br:emote:play',       -- C->S  { id }
+    EMOTE_STOP      = 'br:emote:stop',       -- C->S  {}
+    EMOTE_RECORD    = 'br:emote:record',     -- S->C  { src, id, tStart, durationMs, x, y, z, tSent, tEnd? }
+
     -- The in-match Ammu-Nation counter (#274).
     --
     -- ═══ TWO NAMES FOR THE TWO DIRECTIONS ═══
@@ -1301,6 +1326,16 @@ BR.Nui = {
     -- whether the payload arrived draws a card with nothing in it. Every reader
     -- has to look inside, at the string.
     COMMUNITY = 'community',
+    -- Emotes (#215): { on }, whether BR.Emotes.enabled() is true on this
+    -- machine. The Market's Emotes tab and the Settings "Music volume" slider
+    -- render only while it is.
+    EMOTES      = 'emotes',
+    -- { tracks = { { src, track, pos, g } } }, about ten a second while any
+    -- dance is audible, then ONE empty list. `track` is the row's path under
+    -- br_ui/ui, `pos` is milliseconds into the dance and `g` is the 0..1
+    -- distance falloff; the page multiplies by the player's music volume, and
+    -- stops everything on its own after a second with no message.
+    EMOTE_AUDIO = 'emoteaudio',
 }
 
 --- A HOLE IN A SENTENCE WHERE A KEY BELONGS.
@@ -1397,6 +1432,9 @@ BR.NuiCb = {
     -- free, idempotent, and happens far more often. Folding them into one
     -- callback would mean every equip carried a price the server has to ignore.
     MARKET_EQUIP = 'br/market/equip',
+    -- Take a dance off the wheel (#215): { id }. Emote slots only -- every
+    -- other kind has a default to fall back to and no un-equip.
+    MARKET_UNEQUIP = 'br/market/unequip',
     -- The player list. FOCUS follows the same push/pop discipline every other
     -- overlay uses; SUBMIT carries the selected targets and their categories.
     PLAYERS_FOCUS = 'br/players/focus',

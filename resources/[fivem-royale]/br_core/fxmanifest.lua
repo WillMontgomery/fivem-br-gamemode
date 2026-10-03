@@ -182,6 +182,10 @@ shared_scripts {
     -- you own, and the client has to resolve an equipped id into the natives
     -- that actually put it on you. Both sides need the same definitions.
     '@br_lib/config/market.lua',
+    -- EMOTES (#215, "Scope v2"): the dance catalogue and the feature's ONE gate
+    -- line (requireDevMode). Its rows register into BR.Config.MarketIndex as it
+    -- loads, so it must follow config/market.lua.
+    '@br_lib/config/emotes.lua',
     -- Where the admin console lives. One key, no useful default, and it MUST
     -- precede overrides.lua: that file refuses to boot if a convar names a
     -- BR.Config key that does not exist yet, which is the anti-drift check
