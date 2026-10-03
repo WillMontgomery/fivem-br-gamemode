@@ -1045,6 +1045,47 @@ local function healthCtx(entry, now)
     }
 end
 
+--- How much health the server itself has taken off this player in the last
+--- `ms`, dropping what is older from the record as it goes.
+--- @param entry table
+--- @param now number
+--- @param ms number
+--- @return number
+local function hurtWithin(entry, now, ms)
+    local log, kept, sum = entry.hurtLog, nil, 0.0
+    if log == nil then return 0.0 end
+    for _, h in ipairs(log) do
+        if (now - h.at) < ms then
+            kept = kept or {}
+            kept[#kept + 1] = h
+            sum = sum + h.hp
+        end
+    end
+    entry.hurtLog = kept
+    return sum
+end
+
+--- The server just took `amount` off this player's health ledger itself -- a
+--- storm tick (server/storm.lua's `bill`) or a hit (BR.Damage.applyHit) --
+--- and the ped will show it a round trip from now.
+---
+--- KEPT FOR THE HURT WINDOW AND NO LONGER (#366), because one question needs
+--- the AMOUNT and not just the time: how much of a drop the sampler is about
+--- to read could be that damage reaching the ped. `lastHitAt` and
+--- `lastStormAt` say only that something was dealt, and in the storm something
+--- always was. `commitSample` has the rest.
+--- @param entry table
+--- @param amount number  display points off the ledger
+--- @param now number
+function BR.Roster.noteHurt(entry, amount, now)
+    if entry == nil or (tonumber(amount) or 0.0) <= 0.0 then return end
+    local cfg = (BR.Config.Combat or {}).healthAudit or {}
+    hurtWithin(entry, now, cfg.hurtGraceMs or 1500)
+    local log = entry.hurtLog or {}
+    log[#log + 1] = { at = now, hp = amount }
+    entry.hurtLog = log
+end
+
 --- Does this player's ped agree with the ledger the server keeps for them?
 ---
 --- CALLED FROM THE SAMPLER, ONE LINE BEFORE THE LEDGER IS DECIDED, and that
@@ -1304,6 +1345,16 @@ local function commitSample(src, entry, hp, armour, now)
         ctx.grantTo = hpCeiling
         nextHp, hpWhy = BR.HealthCommit(entry.hp, hp, ctx, cfg)
 
+        -- A RISE GRANTED HERE MAY BE READ OFF A PED THAT HAS NOT SHOWN THE
+        -- SERVER'S LATEST DAMAGE YET (#366). The sample is a round trip old, so
+        -- whatever the server took in the hurt window may still be on its way
+        -- to the ped this reading came from. Recorded, for the rule below: it
+        -- is the most a later drop off this ceiling can owe to that damage.
+        local grace = cfg.hurtGraceMs or 1500
+        if hpWhy == BR.HealthVerdict.GRANT or hpWhy == BR.HealthVerdict.CAPPED then
+            entry.hurtUnseen, entry.hurtUnseenAt = hurtWithin(entry, now, grace), now
+        end
+
         -- ═══ A CEILING THE LEDGER HAS REACHED IS SPENT BY A DROP (#366) ═══
         --
         -- A ceiling authorizes a climb TO a target, once. When the ledger already
@@ -1330,17 +1381,24 @@ local function commitSample(src, entry, hp, armour, now)
         -- within a point of the ceiling, the damage arriving reads as a drop
         -- off a reached ceiling, and spending it put the ceiling under the
         -- targets still on the wire: on a 500ms line the ledger could no longer
-        -- follow them and the storm knocked a player with 4 on the bar. Inside
-        -- the hurt window a drop is the server's damage landing, which the
-        -- ceiling already carries. A fall in that window spends nothing until
-        -- the window closes, which at worst measures a heal pressed in those
-        -- seconds from before the fall.
-        local hurtAt = ctx.lastHitAt
-        local inFlight = hurtAt ~= nil
-            and (now - hurtAt) < (cfg.hurtGraceMs or 1500)
-        if hpWhy == BR.HealthVerdict.SAMPLE and hpCeiling ~= nil and not inFlight
+        -- follow them and the storm knocked a player with 4 on the bar.
+        --
+        -- ONLY AS MUCH AS THAT DAMAGE COULD BE, AND ONLY AFTER SUCH A GRANT.
+        -- Damage dealt while the ledger already stands on the ceiling takes
+        -- both down together, so its landing is no drop at all; the ledger runs
+        -- ahead of the ped only when a grant read a ped that had not shown the
+        -- damage yet, and by no more than the damage dealt in the hurt window
+        -- before that grant (`hurtUnseen`, above). A drop past that is a fall,
+        -- a fire, a car or a dip, and spends the ceiling -- standing in the
+        -- storm, whose ticks never stop, excuses nothing more than its own
+        -- points still on their way.
+        local unseen = 0.0
+        if entry.hurtUnseenAt ~= nil and (now - entry.hurtUnseenAt) < grace then
+            unseen = entry.hurtUnseen or 0.0
+        end
+        if hpWhy == BR.HealthVerdict.SAMPLE and hpCeiling ~= nil
            and (entry.hp or 0.0) >= hpCeiling - 1.0
-           and nextHp < (entry.hp or 0.0) - 1.0 then
+           and nextHp < (entry.hp or 0.0) - 1.0 - unseen then
             entry.grantHpTo = nextHp
         end
 

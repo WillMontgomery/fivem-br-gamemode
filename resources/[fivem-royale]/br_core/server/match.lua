@@ -1164,6 +1164,9 @@ function BR.Match.resetPlayer(src, e)
     -- "counted N hp, resyncs M" as one sentence about one round.
     e.grantHpTo, e.grantArmourTo = nil, nil
     e.healthResyncs, e.healthResyncAt = nil, nil
+    -- The server's own damage still on its way, which the spent-ceiling rule
+    -- reads (server/roster.lua's noteHurt): times on the old match's clock.
+    e.hurtLog, e.hurtUnseen, e.hurtUnseenAt = nil, nil, nil
 
     -- Per-match, like the counters above. A stale diedAt would date a
     -- player's next match to their last one's clock and pay them

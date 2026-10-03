@@ -1066,6 +1066,9 @@ local function bill(src, e, display, carry, now)
     local took = whole * 100.0 / (M.maxHealth - M.healthFloor)
     BR.Roster.update(src, { hp = math.max(0.0, (e.hp or 100.0) - took) })
     if e.grantHpTo then e.grantHpTo = e.grantHpTo - took end
+    -- How much is on its way to the ped, for server/roster.lua's spent-ceiling
+    -- rule: a drop no larger than this may be the tick landing.
+    if BR.Roster.noteHurt then BR.Roster.noteHurt(e, took, now) end
     -- An ambulance heal already running when the wall arrived lowers its own
     -- targets by this (server/ambheal.lua), or its next one would heal the tick
     -- straight back.

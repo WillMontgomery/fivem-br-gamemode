@@ -28414,6 +28414,37 @@ do
         finish(500)
     end
 
+    -- ─── ...AND IN THE STORM, WHOSE TICKS ARE ALWAYS ON THEIR WAY ───
+    --
+    -- A drop the server's own damage may explain does not spend a ceiling, and
+    -- that used to mean any drop within the hurt window of the last tick -- so
+    -- outside the wall, where the storm ticks every second, no fall ever spent
+    -- one. A med kit, then a 30-point fall: a bandage was refused for a cap the
+    -- bar no longer showed. A bandage, then a 20-point fall: the next was
+    -- measured from before the fall, and healed it back for free. Only the
+    -- storm's own points still on their way are excused now.
+    for _, lat in ipairs({ 0, 250 }) do
+        for _, case in ipairs({ { 'medkit', 40.0, 30.0 }, { 'bandage', 30.0, 20.0 } }) do
+            local item, from, fall = case[1], case[2], case[3]
+            stage({ hp = from, outside = true, dps = 4.0, lat = lat })
+            if item == 'medkit' then bag({ 'medkit', 'bandage' }) else bag({ 'bandage' }, 2) end
+            press(item)
+            step(20000, function() return not using() end)
+            step(1100)
+            pedHealth[PED] = pedHealth[PED] - math.floor(BR.ToEngineHpDelta(fall) + 0.5)
+            step(500)
+            local hp = subject().hp
+            press('bandage')
+            local hp0 = using() and BR.Inv.of(1).using.hp0 or nil
+            ok(hp0 ~= nil and hp0 == hp,
+                ('a bandage pressed outside the wall after a %s and a %d-point fall '
+                    .. 'starts from where the fall left them (%dms line)')
+                    :format(item, fall, lat),
+                ('ledger %s, hp0 %s'):format(tostring(hp), tostring(hp0)))
+            finish(300)
+        end
+    end
+
     -- ─── THE DIP, THE PRESS AND THE CLIMB BACK ───
     --
     -- A client that dips one sample to 5 right after a bandage, presses a med

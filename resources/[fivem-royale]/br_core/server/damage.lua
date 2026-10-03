@@ -979,6 +979,10 @@ function BR.Damage.applyHit(shooter, victim, amount, meta)
     -- lowering a stale one costs nothing.
     if e.grantHpTo then e.grantHpTo = e.grantHpTo - toHealth end
     if e.grantArmourTo then e.grantArmourTo = e.grantArmourTo - toArmour end
+    -- How much is on its way to the ped, for server/roster.lua's spent-ceiling
+    -- rule, as the storm's tick does: a drop no larger than this may be the hit
+    -- landing.
+    if BR.Roster.noteHurt then BR.Roster.noteHurt(e, toHealth, GetGameTimer()) end
 
     -- ═══ AND THIS IS THE HIT THAT CAN INTERRUPT A CHANNEL (#366) ═══
     --
