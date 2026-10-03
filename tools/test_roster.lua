@@ -29144,6 +29144,58 @@ do
             ('started %d, %d of %d runs; %s'):format(started, bad, runs, worst))
     end
 
+    -- ─── ...AND NEVER LEAVES THEM STANDING ON AN EMPTY LEDGER ───
+    --
+    -- The kill is judged on the bar, but the tick used to empty the trailing
+    -- ledger all the same: a player ALIVE on 0 with 5 or 6 on the bar. A hit is
+    -- judged on the ledger, so any enemy hit at all then knocked or killed them
+    -- -- even a point their armor soaked whole. The tick now leaves the ledger on
+    -- the lower of where it stood and what the bar will show.
+    do
+        local zero, downed, runs, worst = 0, 0, 0, '-'
+        for _, lat in ipairs({ 500, 1000 }) do
+            for _, hp in ipairs({ 2.0, 5.0 }) do
+                for _, wall in ipairs({ 0, 500, 1000 }) do
+                    stage({ hp = hp, armour = 50, dps = 4.0, lat = lat })
+                    vanAt(A0.x, A0.y)
+                    fire(BR.Net.AMBHEAL_START, 1, { n = VAN })
+                    step(wall)
+                    local m = theMatch()
+                    m.storm = BR.BuildStormRecord(5, A0.x + 4000.0, A0.y, 500.0,
+                        A0.x + 4000.0, A0.y, 500.0, fakeTime, 3600 * 1000, 1000, 4.0,
+                        m.stormSeed)
+                    runs = runs + 1
+                    local empty, hit = false, false
+                    step(6000, function()
+                        local e = subject()
+                        if e.state ~= BR.PlayerState.ALIVE then return true end
+                        if e.hp <= 0.0 then empty = true end
+                        if not hit and e.hp <= 1.0 then
+                            hit = true
+                            local n0, bar0 = #W.defeats, landed()
+                            BR.Damage.applyHit(2, 1, 1.0, { weapon = 'test' })
+                            if #W.defeats > n0 then
+                                downed = downed + 1
+                                worst = ('%dms line, from %s, wall at %dms: e.hp %s, '
+                                    .. 'bar %s, armor %s'):format(lat, tostring(hp), wall,
+                                        tostring(e.hp), tostring(bar0), tostring(e.armour))
+                            end
+                        end
+                        return false
+                    end)
+                    if empty then zero = zero + 1 end
+                    if BR.AmbHeal.active(1) then BR.AmbHeal.finish(1, false, 'test') end
+                end
+            end
+        end
+        ok(zero == 0 and downed == 0,
+            'an ambulance heal from low health with the wall arriving never leaves '
+                .. 'them alive on an empty ledger, and a point their armor soaks '
+                .. 'never knocks them',
+            ('%d of %d runs on an empty ledger, %d knocked; %s'):format(zero, runs,
+                downed, worst))
+    end
+
     -- ─── ...AND A TICK REACHING THE PED IS NOT A DROP THAT SPENDS THE RAMP ───
     --
     -- At 5 dps on a 500ms line the ramp and the storm's ticks cancel: the ledger

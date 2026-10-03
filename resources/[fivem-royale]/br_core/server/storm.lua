@@ -1049,6 +1049,21 @@ end
 --- bar once everything sent has landed. A client that ignores the storm or pins
 --- its ped is granted straight up to that same ceiling, so all three die on the
 --- same tick.
+---
+--- ═══ AND IT NEVER EMPTIES THE LEDGER OF A PLAYER IT DID NOT KILL (#366) ═══
+---
+--- Judging the kill on the bar left one state behind: a tick that took the
+--- trailing ledger to zero while the bar it will show stood above it, so a
+--- player ALIVE on an empty ledger. Everything else reads the ledger --
+--- BR.Damage.applyHit decides a knock on it -- so any enemy hit at all then
+--- knocked or killed them, a point their armor soaked whole included, with 5
+--- or 6 still on the bar. So in that case alone the ledger stops on the lower
+--- of where it stood and what the bar will show. Gunfire is left exactly as it
+--- was: this changes only the storm's own write, and only when that write
+--- would have emptied the ledger of somebody the bar keeps alive. The ledger is
+--- not raised to the bar, either -- it follows a ped still climbing up a round
+--- trip late, and a ledger written up to the bar would be pulled straight back
+--- down by that ped's next reading.
 --- @param src integer
 --- @param e table      the roster entry, ALIVE
 --- @param display number  display points owed this tick
@@ -1064,8 +1079,12 @@ local function bill(src, e, display, carry, now)
 
     local M = BR.Config.Match
     local took = whole * 100.0 / (M.maxHealth - M.healthFloor)
-    BR.Roster.update(src, { hp = math.max(0.0, (e.hp or 100.0) - took) })
     if e.grantHpTo then e.grantHpTo = e.grantHpTo - took end
+    local hp = math.max(0.0, (e.hp or 100.0) - took)
+    -- What the bar will show once everything sent has landed (above).
+    local bar = BR.HealthBase(hp, e.grantHpTo, e.healUntil, now)
+    if hp <= 0.0 and bar > 0.0 then hp = math.min(e.hp or 100.0, bar) end
+    BR.Roster.update(src, { hp = hp })
     -- How much is on its way to the ped, for server/roster.lua's spent-ceiling
     -- rule: a drop no larger than this may be the tick landing.
     if BR.Roster.noteHurt then BR.Roster.noteHurt(e, took, now) end
@@ -1074,8 +1093,8 @@ local function bill(src, e, display, carry, now)
     -- straight back.
     if BR.AmbHeal and BR.AmbHeal.noteStorm then BR.AmbHeal.noteStorm(src, took) end
 
-    -- The visible half: tell the client to hurt its ped, by what the ledger
-    -- just took.
+    -- The visible half: tell the client to hurt its ped, by what the tick just
+    -- took off the ceiling and -- but for the one case above -- the ledger.
     TriggerClientEvent(BR.Net.STORM_DAMAGE, src, {
         amount      = whole,
         armourFirst = cfg.damageArmourFirst and true or false,
@@ -1084,7 +1103,7 @@ local function bill(src, e, display, carry, now)
     -- Elimination comes from the LEDGER, not the ped. An honest client's ped
     -- reaches zero on the instruction just sent; a deaf one dies here anyway.
     -- Read through BR.HealthBase, so a heal still landing counts (above).
-    if BR.HealthBase(e.hp, e.grantHpTo, e.healUntil, now) <= 0.0 then
+    if bar <= 0.0 then
         print(('[br_core] storm: ledger kill on %s (%d)'):format(e.name, src))
         -- defeat(), not eliminate(): the wall knocks a squad player down like
         -- anything else does. It is a bad place to be picked up, which is the

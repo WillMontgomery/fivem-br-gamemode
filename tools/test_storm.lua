@@ -1944,10 +1944,14 @@ do
     e.pos = { x = 900.0, y = 0.0, z = 30.0 }
     e.hp, e.grantHpTo, e.healUntil = 2.0, 20.0, S.now + 5000
 
+    -- AND THE LEDGER IS NOT EMPTIED UNDER IT. A player left ALIVE on a ledger
+    -- of zero was knocked by any hit at all, armor or no armor, because a hit
+    -- is judged on the ledger: it stays where it stood instead.
     S.tick()
-    ok(S.defeated[1] == nil and e.hp == 0.0 and e.grantHpTo == 14.0,
-        'a tick that empties a ledger still trailing a heal takes its points off '
-            .. 'both, and kills nobody: the bar is about to show 14',
+    ok(S.defeated[1] == nil and e.hp == 2.0 and e.grantHpTo == 14.0,
+        'a tick that would empty a ledger still trailing a heal takes its points '
+            .. 'off the ceiling, leaves the ledger where it stood, and kills nobody: '
+            .. 'the bar is about to show 14',
         ('defeated %s, hp %s, ceiling %s'):format(tostring(S.defeated[1]),
             tostring(e.hp), tostring(e.grantHpTo)))
 
@@ -1984,6 +1988,19 @@ do
         'a ceiling the tick leaves under half a point is a bar on zero, and kills',
         ('defeated %s, ceiling %s'):format(tostring(U.defeated[1]),
             tostring(g.grantHpTo)))
+
+    -- AND A LEDGER KEPT OFF ZERO STOPS ON THE BAR WHEN THE BAR IS THE LOWER.
+    local V = newStormServer()
+    V.record(2, 0.0, 0.0, 400.0, 0.0, 0.0, 400.0, 600000, 60000, 6.0)
+    local h = V.roster[1]
+    h.pos = { x = 900.0, y = 0.0, z = 30.0 }
+    h.hp, h.grantHpTo, h.healUntil = 5.0, 8.0, V.now + 5000
+    V.tick()
+    ok(V.defeated[1] == nil and h.hp == 2.0 and h.grantHpTo == 2.0,
+        'a tick that would empty the ledger under a bar of 2 leaves it on 2, not '
+            .. 'on the 5 it stood at',
+        ('defeated %s, hp %s, ceiling %s'):format(tostring(V.defeated[1]),
+            tostring(h.hp), tostring(h.grantHpTo)))
 end
 
 -- ---------------------------------------------------------------------------
