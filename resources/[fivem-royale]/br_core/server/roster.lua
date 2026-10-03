@@ -1019,7 +1019,11 @@ end
 ---                here rather than written into `lastHitAt` by the storm,
 ---                because `lastHitAt` is also the shooter's assist window
 ---                (server/combat.lua's attributedKiller) and a storm tick must
----                not stretch it
+---                not stretch it. HEALTH ONLY: the storm touches no armor
+---                (config/storm.lua's `damageArmourFirst` is false), so the two
+---                armor calls put `lastHitAt` back to the hits alone -- a
+---                storm stamp excusing armor would hold every armor lie told
+---                outside the wall, uncounted and uncorrected
 ---   healUntil    HEALTH's heal window: server/inventory.lua and
 ---                server/ambheal.lua, on ISSUING an INV_EFFECT that moves
 ---                health -- paired with the ceiling the caller adds below.
@@ -1163,8 +1167,10 @@ local function auditHealth(src, entry, hp, armour, now, prevEngineHp)
     -- somebody was actually doing.
     --
     -- AND ITS OWN HEAL WINDOW (#366): a shield's rise is excused by the window
-    -- the shield opened, not by a med kit's.
+    -- the shield opened, not by a med kit's. And its own hurt stamp: the hits
+    -- alone, without the storm's, which touches no armor (see healthCtx).
     ctx.healUntil = entry.healArmorUntil
+    ctx.lastHitAt = entry.lastHitAt
     local aGain, aExcuse = BR.HealthUnexplainedGain(entry.armour, armour, ctx, {
         toleranceHp  = cfg.toleranceArmour,
         hurtGraceMs  = cfg.hurtGraceMs,
@@ -1412,8 +1418,11 @@ local function commitSample(src, entry, hp, armour, now)
         -- AND ARMOR'S OWN WINDOW (#366), for `authorize`'s reason in
         -- server/inventory.lua: a shield pressed the moment a bandage lands must
         -- not close the window the bandage's last target is still riding in.
+        -- And the hits' own stamp without the storm's, which touches no armor
+        -- (see healthCtx): standing in the wall excuses no armor lie.
         ctx.grantTo = entry.grantArmourTo
         ctx.healUntil = entry.healArmorUntil
+        ctx.lastHitAt = entry.lastHitAt
         nextArmour, armourWhy = BR.HealthCommit(entry.armour, armour, ctx, {
             enforce      = cfg.enforce,
             toleranceHp  = cfg.toleranceArmour,

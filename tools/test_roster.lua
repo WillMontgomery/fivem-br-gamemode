@@ -28626,6 +28626,27 @@ do
                 tostring(bar())))
     end
 
+    -- ─── ...BUT ARMOR PINNED IN THE STORM IS A LIE, AS IT IS ANYWHERE ───
+    --
+    -- The storm's stamp excuses a health reading that is high by a tick still on
+    -- its way. The storm touches no armor (config/storm.lua's damageArmourFirst
+    -- is false), so it excuses no armor either: a client pinning its armor at
+    -- 100 used to be held, never counted and never corrected, for as long as it
+    -- stood outside the wall.
+    do
+        stage({ hp = 100.0, outside = true, dps = 2.9 })
+        step(5000)
+        local t0 = fakeTime
+        step(3000, function() pedArmour[PED] = 100; return false end)
+        local t = subject().armourAudit or {}
+        ok(subject().armour == 0 and (t.hp or 0.0) > 0.0
+            and sentSince(BR.Net.HEALTH_SYNC, t0) >= 1,
+            'armor pinned at 100 outside the wall is refused, counted and corrected, '
+                .. 'as it is inside',
+            ('armor %s, counted %s, HEALTH_SYNC %d'):format(tostring(subject().armour),
+                tostring(t.hp), sentSince(BR.Net.HEALTH_SYNC, t0)))
+    end
+
     -- ─── KNOCKED BY THE STORM, PICKED UP OUTSIDE IT ───
     --
     -- The old storm ledger was never cleared by a pick-up, so a squad player the
