@@ -27590,6 +27590,311 @@ do
     BR.Config.Match.minToStart = savedMin
 end
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- #366: ONE HEALTH LEDGER, AND WHAT A HEAL IS WORTH UNDER FIRE AND IN THE STORM
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- EVERY BLOCK BELOW RUNS A MODELLED CLIENT ON A MODELLED LINE, because every
+-- defect #366 turned up lived in the gap between the server's ledger and a ped
+-- that hears about it one trip later. A block that wrote the ped by hand would
+-- be asserting the order it chose to write things in.
+--
+-- THE CLIENT IS THE REAL ONE'S RULES AND NOTHING ELSE (client/state.lua,
+-- client/inventory.lua, client/dbno.lua):
+--   STORM_DAMAGE and HIT_DAMAGE take whole engine points off the ped;
+--   INV_EFFECT targets are applied UPWARD ONLY and floored, as SetEntityHealth
+--   and SetPedArmour floor them; HEALTH_SYNC sets the ped absolutely.
+-- THE LINE IS SYMMETRIC: everything the server sends lands `lat` ms later, and
+-- the sampler reads the ped as it stood `lat` ms ago.
+-- THREE CLIENTS: honest; DEAF, which ignores every damage instruction and every
+-- correction (the M4 drill's client); PINNED, which is deaf and reports a fixed
+-- health whatever its ped is on.
+do
+    local PED   = 1001
+    local MAXHP = BR.Config.Match.maxHealth
+    local W = { lat = 0, deaf = false, stormDeaf = false, pinned = nil,
+                queue = {}, hist = {}, log = {}, defeats = {} }
+
+    -- THE READ THE SERVER MAKES, one trip late. Installed for this section and
+    -- put back at its end, so no block above or below ever sees it.
+    local rawHealth, rawArmour = GetEntityHealth, GetPedArmour
+    local function replayed(field, now)
+        for i = #W.hist, 1, -1 do
+            if W.hist[i].t <= now - W.lat then return W.hist[i][field] end
+        end
+        return nil
+    end
+    GetEntityHealth = function(ped)
+        if ped ~= PED then return rawHealth(ped) end
+        if W.pinned then return BR.ToEngineHp(W.pinned) end
+        local v = pedHealth[PED] or MAXHP
+        if W.lat > 0 then v = replayed('hp', fakeTime) or v end
+        return v
+    end
+    GetPedArmour = function(ped)
+        if ped ~= PED then return rawArmour(ped) end
+        local v = pedArmour[PED] or 0
+        if W.lat > 0 then v = replayed('ar', fakeTime) or v end
+        return v
+    end
+
+    --- One instruction landing on the modelled client.
+    local function apply(s)
+        local d = s.args[1] or {}
+        local hp = pedHealth[PED] or MAXHP
+        if s.event == BR.Net.STORM_DAMAGE then
+            if not (W.deaf or W.stormDeaf) then
+                pedHealth[PED] = math.max(0, hp - math.floor((d.amount or 0) + 0.5))
+            end
+        elseif s.event == BR.Net.HIT_DAMAGE then
+            if not W.deaf then
+                pedArmour[PED] = math.max(0, (pedArmour[PED] or 0)
+                    - math.floor(tonumber(d.armour) or 0))
+                pedHealth[PED] = math.max(0, hp - math.floor(tonumber(d.amount) or 0))
+            end
+        elseif s.event == BR.Net.INV_EFFECT then
+            if d.armour then
+                local t = math.min(d.armour, d.armourCap or BR.Config.Match.maxArmour)
+                if t > (pedArmour[PED] or 0) then pedArmour[PED] = math.floor(t) end
+            end
+            if d.health then
+                local t = math.min(d.health, d.healthCap or 100.0)
+                if t > BR.ToDisplayHp(hp) then
+                    pedHealth[PED] = math.floor(BR.ToEngineHp(t))
+                end
+            end
+        elseif s.event == BR.Net.HEALTH_SYNC then
+            if not W.deaf then
+                pedHealth[PED] = BR.ToEngineHp(tonumber(d.hp) or 0)
+                pedArmour[PED] = math.floor(tonumber(d.armour) or 0)
+            end
+        end
+    end
+
+    --- Put what the server sent onto the wire, and land what has arrived.
+    local function pump()
+        for _, s in ipairs(sent) do
+            if s.target == 1 then
+                W.queue[#W.queue + 1] = { at = fakeTime + W.lat, s = s }
+                W.log[#W.log + 1] = { t = fakeTime, event = s.event, d = s.args[1] }
+            end
+        end
+        sent = {}
+        local keep = {}
+        for _, q in ipairs(W.queue) do
+            if q.at <= fakeTime then apply(q.s) else keep[#keep + 1] = q end
+        end
+        W.queue = keep
+    end
+
+    --- Run the server in 50ms steps for `ms`, or until `stop` answers true.
+    local function step(ms, stop)
+        local untilT = fakeTime + ms
+        while fakeTime < untilT do
+            fakeTime = fakeTime + 50
+            BR.Sched.step(fakeTime)
+            pump()
+            W.hist[#W.hist + 1] = { t = fakeTime, hp = pedHealth[PED] or MAXHP,
+                                    ar = pedArmour[PED] or 0 }
+            if #W.hist > 400 then table.remove(W.hist, 1) end
+            if stop and stop() then return true end
+        end
+        return false
+    end
+
+    --- What the honest bar will read once everything already sent has landed.
+    local function landed()
+        local v = pedHealth[PED] or MAXHP
+        local function ap(ev, d)
+            d = d or {}
+            if ev == BR.Net.STORM_DAMAGE and not (W.deaf or W.stormDeaf) then
+                v = v - (d.amount or 0)
+            elseif ev == BR.Net.HIT_DAMAGE and not W.deaf then
+                v = v - (d.amount or 0)
+            elseif ev == BR.Net.INV_EFFECT and d.health then
+                local t = math.min(d.health, d.healthCap or 100.0)
+                if t > BR.ToDisplayHp(v) then v = math.floor(BR.ToEngineHp(t)) end
+            end
+        end
+        for _, q in ipairs(W.queue) do ap(q.s.event, q.s.args[1]) end
+        for _, s in ipairs(sent) do
+            if s.target == 1 then ap(s.event, s.args[1]) end
+        end
+        return BR.ToDisplayHp(math.max(v, BR.Config.Match.healthFloor))
+    end
+
+    -- EVERY DEFEAT OF THE SUBJECT IS STAMPED with the bar it left behind, which
+    -- is the number "killed with health on the bar" is about.
+    local rawDefeat = BR.Combat.defeat
+    BR.Combat.defeat = function(src, cause, ...)
+        if src == 1 then
+            W.defeats[#W.defeats + 1] = { t = fakeTime, cause = cause,
+                                          bar = landed(), hp = BR.Roster.get(1).hp }
+        end
+        return rawDefeat(src, cause, ...)
+    end
+
+    local A0
+    --- Three ALIVE players in a PLAYING match on a phase-5 record that holds for
+    --- an hour at `o.dps`, the subject on `o.hp`. The subject stands at the
+    --- anchor, or 2km out if `o.outside`.
+    local function stage(o)
+        o = o or {}
+        reset()
+        W.queue, W.hist, W.log, W.defeats = {}, {}, {}, {}
+        W.lat, W.deaf, W.stormDeaf, W.pinned = o.lat or 0, false, false, nil
+        local mode = o.squad and BR.Mode.SQUAD.key or BR.Mode.SOLO.key
+        for s = 1, 3 do
+            pedHealth[1000 + s] = MAXHP
+            pedArmour[1000 + s] = 0
+        end
+        queueUp(1, 'Subject', mode); queueUp(2, 'Shooter', mode)
+        queueUp(3, 'Bystander', mode)
+        fakeTime = fakeTime + 1000; BR.Sched.step(fakeTime)
+        A0 = manchor()
+        setPos(1, A0.x, A0.y); setPos(2, A0.x, A0.y); setPos(3, A0.x + 3.0, A0.y)
+        fakeTime = fakeTime + 1000; BR.Sched.step(fakeTime)
+        forceState(BR.MatchState.PLAYING)
+        for s = 1, 3 do BR.Roster.setState(s, BR.PlayerState.ALIVE) end
+        local m = theMatch()
+        m.storm = BR.BuildStormRecord(5, A0.x, A0.y, 500.0, A0.x, A0.y, 500.0,
+            fakeTime, 3600 * 1000, 1000, o.dps or 0.0, m.stormSeed)
+        m.stormCarry = {}
+        if o.outside then setPos(1, A0.x + 2000.0, A0.y) end
+        pedHealth[PED] = BR.ToEngineHp(o.hp or 100.0)
+        pedArmour[PED] = o.armour or 0
+        W.hist = {}
+        -- The sampler commits the starting health before anything else runs.
+        step(300)
+        W.log = {}
+        return m
+    end
+
+    local function goOut() setPos(1, A0.x + 2000.0, A0.y) end
+    local function goIn() setPos(1, A0.x, A0.y) end
+    local function subject() return BR.Roster.get(1) end
+    local function bar() return BR.ToDisplayHp(pedHealth[PED] or MAXHP) end
+    local function using() return (BR.Inv.of(1) or {}).using ~= nil end
+
+    --- The subject's bag: exactly these consumables, `n` of each.
+    local function bag(items, n)
+        BR.Inv.reset(1)
+        for _, it in ipairs(items) do
+            BR.Inv.give(1, { item = it, kind = BR.ItemKind.CONSUMABLE,
+                             rarity = BR.Config.ConsumableById[it].rarity,
+                             count = n or 1 })
+        end
+        BR.Inv.of(1).active = 1
+    end
+    local function count(item)
+        local k = 0
+        for _, s in pairs(BR.Inv.of(1).slots) do
+            if s and s.item == item then k = k + (s.count or 0) end
+        end
+        return k
+    end
+    --- Press the slot that holds `item`, as the client's key does.
+    local function press(item)
+        for i, s in pairs(BR.Inv.of(1).slots) do
+            if s and s.item == item then
+                fire(BR.Net.INV_USE, 1, { slot = i })
+                return true
+            end
+        end
+        return false
+    end
+
+    --- Run the channel to its end, then `settle` ms more for the last target to
+    --- land and be sampled.
+    local function finish(settle)
+        step(20000, function() return not using() end)
+        step(settle or 0)
+    end
+
+    --- How many of one instruction reached the wire for the subject since `t0`.
+    local function sentSince(event, t0)
+        local k = 0
+        for _, l in ipairs(W.log) do
+            if l.event == event and l.t > t0 then k = k + 1 end
+        end
+        return k
+    end
+
+    -- ───────────────────────────────────────────────────────────────────────
+    describe('heal.ceiling')
+    -- ───────────────────────────────────────────────────────────────────────
+    --
+    -- A HIT THAT LANDS AFTER A HEAL TARGET WAS SENT STAYS ON THE LEDGER.
+    -- BR.Damage.applyHit lowers any standing ceiling by what it took, so the
+    -- sampler cannot GRANT the ledger back up past the bullet to a target that
+    -- was issued before it.
+
+    -- ─── A CLIENT THAT IGNORES HIT_DAMAGE, SHOT RIGHT AFTER A BANDAGE ───
+    --
+    -- The bandage's last target (65) stands for healSettleMs after it is sent.
+    -- Before this rule the deaf ped sat on 65 and the sampler granted the ledger
+    -- straight back to it: the 20-point hit was gone.
+    for _, lat in ipairs({ 0, 250 }) do
+        stage({ hp = 50.0, lat = lat })
+        bag({ 'bandage' })
+        press('bandage')
+        finish(300 + 2 * lat)
+        ok(subject().hp == 65 and not using(),
+            ('precondition (%dms): the bandage landed in full'):format(lat),
+            tostring(subject().hp))
+        W.deaf = true
+        BR.Damage.applyHit(2, 1, 20.0, { weapon = 'test' })
+        step(3000)
+        ok(subject().hp == 45,
+            ('a bullet 400ms after a bandage stays on the ledger of a client that '
+                .. 'ignores it (%dms line)'):format(lat),
+            tostring(subject().hp))
+    end
+
+    -- ─── ...AND SO DOES ARMOUR ───
+    do
+        stage({ hp = 100.0 })
+        bag({ 'shield' })
+        press('shield')
+        finish(300)
+        ok(subject().armour == 50, 'precondition: the shield landed',
+            tostring(subject().armour))
+        W.deaf = true
+        BR.Damage.applyHit(2, 1, 30.0, { weapon = 'test' })
+        step(3000)
+        ok(subject().armour == 20 and subject().hp == 100,
+            'and a deaf client keeps the soak it took, not the plate it was sold',
+            ('%s / %s'):format(tostring(subject().armour), tostring(subject().hp)))
+    end
+
+    -- ─── A MED KIT SHOT MID-CHANNEL IS INTERRUPTED THE SAME ON ANY LINE ───
+    --
+    -- On a slow line the sampler used to GRANT the ledger back up past the hit
+    -- before the cancel pass ever saw it, and a deaf or pinned client did the
+    -- same on any line. The hit is a server fact; it interrupts the same heal
+    -- whoever is on the other end.
+    for _, lat in ipairs({ 0, 500 }) do
+        for _, mode in ipairs({ 'honest', 'deaf', 'pinned' }) do
+            stage({ hp = 30.0, lat = lat })
+            bag({ 'medkit' })
+            press('medkit')
+            if mode ~= 'honest' then W.deaf = true end
+            if mode == 'pinned' then W.pinned = 100.0 end
+            step(2000)
+            BR.Damage.applyHit(2, 1, 40.0, { weapon = 'test' })
+            step(600)
+            ok(not using() and count('medkit') == 1,
+                ('a 40-point hit 2s into a med kit interrupts it: %s client, %dms line')
+                    :format(mode, lat),
+                ('using %s, kits %d, e.hp %s'):format(tostring(using()),
+                    count('medkit'), tostring(subject().hp)))
+        end
+    end
+
+    GetEntityHealth, GetPedArmour = rawHealth, rawArmour
+    BR.Combat.defeat = rawDefeat
+end
+
 realPrint(('\n\27[32m%d passed\27[0m'):format(pass))
 if fail > 0 then
     realPrint(('\27[31m%d failed\27[0m'):format(fail))

@@ -959,6 +959,27 @@ function BR.Damage.applyHit(shooter, victim, amount, meta)
     e.armour = armour - toArmour
     e.hp     = math.max(0.0, hp - toHealth)
 
+    -- ═══ AND ANY HEAL CEILING STILL STANDING COMES DOWN BY THE SAME HIT (#366) ═══
+    --
+    -- A med kit, a bandage, a shield or the ambulance heal sends the client a
+    -- TARGET and echoes it onto the entry as `grantHpTo` / `grantArmourTo`, and
+    -- server/roster.lua's ledger rule lets the ledger follow the ped up to that
+    -- number while the heal's window stands. A target issued BEFORE this hit is
+    -- a number this hit has already taken from, so leaving it standing lets the
+    -- sampler GRANT the ledger straight back up past the bullet: a client that
+    -- ignored HIT_DAMAGE erased a 20-point hit landed 300ms after a bandage that
+    -- way, and on a slow line an honest one had the hit healed back before the
+    -- med kit's damage-cancel ever saw it.
+    --
+    -- THE SAME RULE THE STORM FOLLOWS (server/storm.lua's `bill`): server damage
+    -- after an issue comes off the ceiling. The next target a running heal
+    -- issues is written fresh and replaces this one, so a heal still running is
+    -- unchanged (#372 is that half, and waits on the owner); only the gap before
+    -- the next issue is closed. A ceiling with no window open is inert, so
+    -- lowering a stale one costs nothing.
+    if e.grantHpTo then e.grantHpTo = e.grantHpTo - toHealth end
+    if e.grantArmourTo then e.grantArmourTo = e.grantArmourTo - toArmour end
+
     -- Read AFTER the clamp, so a knocking shot credits the damage that reached
     -- the downed floor rather than the overflow that was dropped.
     creditDamage(shooter, victim, toArmour + toHealth)
