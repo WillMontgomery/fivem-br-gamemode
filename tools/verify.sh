@@ -43,6 +43,140 @@ cd "$(dirname "$0")/.."
 RED=$'\033[31m'; GRN=$'\033[32m'; YEL=$'\033[33m'; DIM=$'\033[2m'; RST=$'\033[0m'
 rc=0
 
+# --- what each gate and suite is for ------------------------------------------
+#
+# ONE LINE PER GATE AND PER SUITE, printed under the gate's header and beside the
+# suite's name as each one runs. They are written for whoever reads the LOG
+# rather than this file -- the owner, reading a GitHub Actions run on 2026-10-02:
+# "can you make this more descriptive for what each section is actually testing
+# for?" So each says what is being protected, in plain words and in about ninety
+# characters, and never what the file is called; the comments beside each gate
+# are where the why lives.
+#
+# ONE TABLE, AND IT IS ENFORCED RATHER THAN REMEMBERED. The suite inventory fails
+# the build for a Lua suite with no row, and the check at the very end fails it
+# for any other gate or suite that printed with no row, and for a row that no
+# longer describes anything that ran -- so the next gate cannot arrive silent
+# and a removed one cannot leave its description behind. The name is the text
+# between a header's `==`, or a suite's file name without `.lua`.
+#
+# NOTHING READS THESE LINES. CI and tools/pre-commit act on the exit code alone,
+# and the hook only echoes the last 25 lines of a failure, so a row can be
+# reworded freely. The result lines -- ok, PASS, FAIL, skip and their counts --
+# are exactly what they were.
+NOTES=(
+    "syntax|Every Lua code file is written correctly enough for the game to load it"
+    "tests|Each feature's automated tests, run outside the game; every test file must be on the list"
+    "test_board|Warmup stat board: correct web address, sent only to its player, and facing the right way"
+    "test_shared|Core rules: storm circles, loot spawns, shot checks, downed players, chat and cheat cases"
+    "test_loop|The player's per-frame task runner: timing, pausing a task that keeps crashing, on and off"
+    "test_sched|The server's timed-job runner keeps every job running and never crashes itself"
+    "test_roster|Server player list and the whole match: parties, squads, combat, loot, inventory"
+    "test_storm|Storm: damage and the map agree on the safe zone; circle 1 is chosen once, shown at warmup"
+    "test_stats|XP and level math, and Volts paid exactly once to players whose cheat reports proved right"
+    "test_ringmaster|Game-to-admin-console link: cheat cases, player reports, match timelines, kicks and bans"
+    "test_artifacts|Cheat-case screenshots: taken at the right moments, nine at most, safe when one fails"
+    "test_airdrop|Supply drops: two per match, away from the storm wall, carrying loot found nowhere else"
+    "test_client|Player controls: interact key, opening crates, picking up loot, keybinds, voice and sounds"
+    "test_spectate|A spectator's own character can't move or shoot while watching, and gets it all back after"
+    "test_matchexit|Every way out of a match clears the match's screens, so nothing follows you to the lobby"
+    "test_lobbyseq|Joining warmup moves your character before anyone can see it, and can be cut short cleanly"
+    "test_landtime|The landing timer measures how long landing really took and names what held it up"
+    "test_config|Server setting overrides: read strictly, bad values refused, defaults kept when unset"
+    "test_admin|In-game admin tab: who is offered it, the console sign-in handoff, no slowdown for players"
+    "test_community|The Discord invite card is sent, or taken back down, exactly as the server setting says"
+    "test_guild|Discord membership check: only a confirmed member skips the invite; lookups are paced"
+    "test_fuel|Fuel use and refueling, and a car keeps its fuel level for whoever drives it next"
+    "test_sfx|The owner's chosen sound for each game event stays as picked; rapid repeats are limited"
+    "test_boost|Vehicle boost: ramp-up, the 4-second use and 6-second refill meter, and its fuel cost"
+    "test_vehdamage|Car toughness is applied once and never stacks up until a car falls apart on a curb"
+    "test_icons|The weapon-icon check still catches bad icon code (it is fed broken examples on purpose)"
+    "test_vehrefuse|Banned vehicles are refused at the door, before the seat is taken, with the owner's words"
+    "test_rescue|The CPR kit's ambulance aims for a spot that will still be safe from the storm on arrival"
+    "test_ambheal|Healing in an ambulance: rear doors open, one healer at a time, a partial heal is kept"
+    "test_revivekey|Revive keys: expiry, pickup range, buying one, and two squadmates pressing at once"
+    "test_ambulances|Station ambulances: visible in the match, cleaned up after it, and shown on squad maps"
+    "test_shop|Warmup car shop: you get exactly the car shown, it survives the reset, never two for one"
+    "test_gunshop|In-match gun shop sells exactly the map's rare-and-up guns, and nothing from airdrops"
+    "test_volts|Volts spent in a match are counted only when the purchase actually went through"
+    "test_warmupcrates|The four warmup crates: fixed spots, contents match their rarity, and they refill forever"
+    "test_bool_natives|The yes/no misread check still catches mistakes and leaves correctly written code alone"
+    "test_tutorial|A player who finished the tutorial is never shown it again, even in another mode"
+    "test_gitref|The dev-mode label under Settings shows the code version the server is really running"
+    "scope gate|Player-side code never asks about players with game calls that only see those nearby"
+    "weapon table|Each weapon's game ID matches its name, magazine sizes fit, car use is set, icons exist"
+    "vehicle table|Each banned vehicle's game ID matches its name, so tanks and jets really stay banned"
+    "POI siting|Named map spots and ambulance spawns are spread out, on land, and follow placement rules"
+    "map boundary|Every map spot and ambulance spawn sits inside the play area the owner surveyed"
+    "spectator microphone|Spectators are muted whenever they start watching and unmuted once when they stop"
+    "spectator HUD|A spectator's HUD shows the watched player, whose loadout is sent to that spectator alone"
+    "squad voice marks|The squad panel shows who is talking without telling anyone more about other players"
+    "squad levels|Teammate levels go only to their own squad, have no caption, and don't resize the panel"
+    "squad revive keys|Revive-key marks on the squad panel stay squad-only and keep all three states apart"
+    "notice names|Pop-ups that name a player show the name in bold, and a name can't change the message"
+    "cue call sites|Every sound the code asks for by name really exists in the sound list"
+    "notice repeats|A message's repeat count only goes up if it repeats while the last one is still showing"
+    "key glyphs|Key hints in messages draw as key pictures for the player's own bindings, or a dash"
+    "vitals bars|Health and shield bars label themselves, and an empty shield shows no number"
+    "death verdict|The death message and the end-of-match screen stay separate and share one timer"
+    "forward locals|No code calls a helper before the helper is defined (that silently breaks in game)"
+    "player states|Every mention of a player state (alive, downed, out...) names one that really exists"
+    "bool natives|Game yes/no answers are never misread (0 counts as yes in Lua); known cases only go down"
+    "config report|The admin console's live settings page can still find every setting it lists"
+    "voice defaults|Voice modes never overlap, and the default mode agrees in game code, menus and the build"
+    "tunable overrides|Settings a server can override are read only by the server, and loaded in the right order"
+    "manifest coverage|Every Lua file is on its resource's load list, so none is silently skipped"
+    "shared coverage|Every shared library file is actually loaded by at least one resource"
+    "deploy payload|Everything a deploy ships is present, checked by the deploy script's own pre-flight"
+    "vendored third-party|Borrowed outside code keeps its license, version and patch notes, and still gets deployed"
+    "console capability boundary|The admin console and the owner-only server commands can do only what is approved"
+    "test_configreport|Settings report on six fake servers: finds the server name, never shows the license key"
+    "dev gate on console commands|Typed commands are off on the public server, except three it needs; keybinds still work"
+    "dev gate on net events|No request a player's game sends the server is allowed just because dev mode is on"
+    "branch-switch invariant|Switching the server to another branch can never swap out the console's control script"
+    "incident surface|The anti-cheat opens a case only for cheat signs, never for warmup fights or teammates"
+    "incident notice surface|The \"See something suspicious?\" notice has one sender, so the cheater is never told"
+    "timeline entry kinds|Every match event the game records is one the database knows how to save"
+    "secrets|No passwords, keys or tokens are anywhere in the repository"
+    "br_ddb bundle|The database helper's built file matches its source, and its ban rules pass their cases"
+    "br_ddb bundle over the wire|The server status report says truthfully whether the deployed database helper is current"
+    "duplicate console commands|No two commands share a name (the later one would silently replace the earlier)"
+)
+
+NL=$'\n'; CR=$'\r'
+NOTES_USED='|'
+NOTES_MISSING=''
+
+# note_for NAME -- sets note_ to NAME's row ('' when there is none), and records
+# which it was for the check at the end. Pure bash: on Windows every process
+# this script starts costs real time, and a table lookup is not worth one.
+note_for() {
+    local row_
+    note_=''
+    for row_ in "${NOTES[@]}"; do
+        if [ "${row_%%|*}" = "$1" ]; then
+            note_="${row_#*|}"
+            NOTES_USED="${NOTES_USED}$1|"
+            return 0
+        fi
+    done
+    NOTES_MISSING="${NOTES_MISSING}$1${NL}"
+    return 1
+}
+
+# section NAME -- a gate's header, and under it the line saying what it is for.
+section() {
+    echo "${DIM}== $1 ==${RST}"
+    note_for "$1" && echo "${DIM}   ${note_}${RST}"
+}
+
+# suite_label NAME -- a suite's name and what it is for, on one line, ahead of
+# whatever the suite itself prints.
+suite_label() {
+    note_for "$1"
+    printf '%s%-18s %s%s\n' "$DIM" "$1:" "$note_" "$RST"
+}
+
 # --- locate luac -------------------------------------------------------------
 
 find_luac() {
@@ -88,7 +222,7 @@ fi
 
 # --- 1. syntax ---------------------------------------------------------------
 
-echo "${DIM}== syntax ==${RST}"
+section 'syntax'
 n=0; bad=0; hashlit=0
 while IFS= read -r f; do
     n=$((n+1))
@@ -135,7 +269,7 @@ fi
 
 # --- 2. unit tests -----------------------------------------------------------
 
-echo "${DIM}== tests ==${RST}"
+section 'tests'
 if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
     # test_client.lua is the odd one out and deliberately so: every other suite
     # here is server-side or pure arithmetic, and all three of the regressions
@@ -582,9 +716,41 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
         rc=1
     fi
 
+    # AND EVERY SUITE SAYS WHAT IT IS FOR. A suite with no row in NOTES runs,
+    # passes, and tells the log nothing about what it protected -- the exact
+    # complaint that table answers -- so a new suite needs its line as surely as
+    # it needs its place in the array above.
+    undescribed=''
     for suite in "${suites[@]}"; do
-        printf '%s' "${DIM}$(basename "$suite" .lua): ${RST}"
-        "$LUA" "$suite" || rc=1
+        name_="${suite##*/}"
+        note_for "${name_%.lua}" || undescribed="${undescribed}       ${name_%.lua}${NL}"
+    done
+    if [ -n "$undescribed" ]; then
+        echo "${RED}FAIL${RST} Lua test suites with no description:"
+        printf '%s' "$undescribed"
+        echo "     Add a 'name|what it protects' row to NOTES at the top of tools/verify.sh."
+        rc=1
+    fi
+
+    # CAPTURED, SO THE DESCRIPTION CAN END ITS OWN LINE. Most suites open with a
+    # newline, to end the bare `test_x: ` label this loop used to leave open; a
+    # few print their count straight onto it. Dropping that one leading newline
+    # puts every suite's output on the lines under its description, whichever
+    # kind it is. Nothing else is touched, and stderr still goes straight out.
+    #
+    # CR AS WELL ON WINDOWS. The native lua.exe writes text mode, so the newline
+    # a suite opens with arrives as CR LF, and stripping the LF alone left a
+    # blank line under every one of those suites on the machine this is
+    # developed on.
+    for suite in "${suites[@]}"; do
+        name_="${suite##*/}"
+        suite_label "${name_%.lua}"
+        out_=$("$LUA" "$suite") || rc=1
+        case "$out_" in
+            "$CR$NL"*) out_="${out_#"$CR$NL"}" ;;
+            "$NL"*)    out_="${out_#"$NL"}" ;;
+        esac
+        if [ -n "$out_" ]; then printf '%s\n' "$out_"; fi
     done
 else
     echo "${YEL}skip${RST} (lua interpreter not found)"
@@ -592,7 +758,7 @@ fi
 
 # --- 3. scope gate -----------------------------------------------------------
 
-echo "${DIM}== scope gate ==${RST}"
+section 'scope gate'
 BANNED='GetActivePlayers|GetPlayerFromServerId|GetPlayerPed\('
 
 # Exceptions are marked per line, not per file. A whole-file allowlist rots --
@@ -631,7 +797,7 @@ fi
 # This has cost two playtest rounds -- most recently BR.Loot's ground probe,
 # which took every crate on the map with it.
 
-echo "${DIM}== weapon table ==${RST}"
+section 'weapon table'
 if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
     "$LUA" tools/check_weapons.lua || rc=1
 else
@@ -643,14 +809,14 @@ fi
 # weapons.lua makes a gun behave oddly and somebody notices. A wrong hash in
 # vehicles.lua permits a tank, and the only symptom is an incident that is never
 # filed, which looks exactly like a clean server.
-echo "${DIM}== vehicle table ==${RST}"
+section 'vehicle table'
 if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
     "$LUA" tools/check_vehicles.lua || rc=1
 else
     echo "${YEL}skip${RST} (lua interpreter not found)"
 fi
 
-echo "${DIM}== POI siting ==${RST}"
+section 'POI siting'
 if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
     "$LUA" tools/check_pois.lua || rc=1
 else
@@ -673,7 +839,7 @@ fi
 # check_boundary.lua also pins the ring to the survey's own perimeter, area and
 # centroid, which is what stops this gate being circular: without it, a boundary
 # widened to admit a coordinate would still pass every check it makes.
-echo "${DIM}== map boundary ==${RST}"
+section 'map boundary'
 if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
     "$LUA" tools/check_boundary.lua || rc=1
 else
@@ -687,7 +853,7 @@ fi
 # session and one to close it, each of which has to reach the mute. The defect
 # it is aimed at is an edge that does not call -- a fourth way to start
 # spectating, added later, that nobody remembers to mute.
-echo "${DIM}== spectator microphone ==${RST}"
+section 'spectator microphone'
 if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
     "$LUA" tools/check_spectator_mic.lua || rc=1
 else
@@ -700,7 +866,7 @@ fi
 # the shape of the server feed, whose important property is that the target's
 # inventory goes to ONE watcher rather than to everybody. A broadcast there
 # would look perfect in game and leak every loadout in the match.
-echo "${DIM}== spectator HUD ==${RST}"
+section 'spectator HUD'
 if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
     "$LUA" tools/check_spectator_hud.lua || rc=1
 else
@@ -714,7 +880,7 @@ fi
 # (a per-player voice mode would widen what a client is told about players it
 # cannot see), that the mark stays on one row, and that the two halves of its
 # layout pair have not come apart.
-echo "${DIM}== squad voice marks ==${RST}"
+section 'squad voice marks'
 if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
     "$LUA" tools/check_squad_voice.lua || rc=1
 else
@@ -728,7 +894,7 @@ fi
 # would break and nobody would notice), that it has not grown a caption, and
 # that it has not learned to scale with the text-size preference on a plate
 # whose height must not move.
-echo "${DIM}== squad levels ==${RST}"
+section 'squad levels'
 if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
     "$LUA" tools/check_squad_level.lua || rc=1
 else
@@ -743,7 +909,7 @@ fi
 # is a picture rather than a seventh string, and that the plate stops fading a
 # recoverable mate down to nothing. It is also the only gate that catches a
 # stale UI bundle for this file.
-echo "${DIM}== squad revive keys ==${RST}"
+section 'squad revive keys'
 if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
     "$LUA" tools/check_squad_key.lua || rc=1
 else
@@ -763,7 +929,7 @@ fi
 # The regression it exists for looks like correct code: `('%s is down!'):format(
 # entry.name)` is what every one of these call sites used to be, and it produces
 # a perfectly good notice with the bold silently gone.
-echo "${DIM}== notice names ==${RST}"
+section 'notice names'
 if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
     "$LUA" tools/check_notice_names.lua $(find resources -name '*.lua' | sort) || rc=1
 else
@@ -788,7 +954,7 @@ fi
 # a key can be held in a local, passed to a helper, or asked for by the browser
 # through the SFX callback, and this scan sees none of those. Wiring a sound is
 # the owner's decision rather than a gate's.
-echo "${DIM}== cue call sites ==${RST}"
+section 'cue call sites'
 if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
     "$LUA" tools/check_cue_sites.lua $(find resources -name '*.lua' | sort) || rc=1
 else
@@ -802,7 +968,7 @@ fi
 # twice. The window is now the previous notice's OWN lifetime, which is the part
 # that rots: a `4000` written beside the log agrees with the row on screen for
 # every notice that took the default and disagrees for every one that did not.
-echo "${DIM}== notice repeats ==${RST}"
+section 'notice repeats'
 if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
     "$LUA" tools/check_notice_repeat.lua || rc=1
 else
@@ -816,7 +982,7 @@ fi
 # glyph resolves by command name and draws a dash when unbound, and that the
 # surfaces carrying those sentences still render it. A mismatch does not error
 # -- it puts a raw `{key:brptt}` in the middle of the owner's sentence.
-echo "${DIM}== key glyphs ==${RST}"
+section 'key glyphs'
 if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
     "$LUA" tools/check_key_glyphs.lua || rc=1
 else
@@ -828,7 +994,7 @@ fi
 # hides its numeral at 0, and the condition deciding that used to key off
 # whether the bar had a caption -- which stopped being a valid proxy the moment
 # these two got captions of their own.
-echo "${DIM}== vitals bars ==${RST}"
+section 'vitals bars'
 if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
     "$LUA" tools/check_vitals_bars.lua || rc=1
 else
@@ -840,7 +1006,7 @@ fi
 # The failure this catches is the two coming apart -- a second timer that agrees
 # with the first only by coincidence, leaving dead air after the word or a
 # camera that cuts away mid-sentence.
-echo "${DIM}== death verdict ==${RST}"
+section 'death verdict'
 if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
     "$LUA" tools/check_death_verdict.lua || rc=1
 else
@@ -854,7 +1020,7 @@ fi
 # gets ignored. This was a gap rather than a decision -- `bool natives` carried
 # the exclusion and this did not, which only showed when a second library was
 # vendored (2026-09-08).
-echo "${DIM}== forward locals ==${RST}"
+section 'forward locals'
 if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
     fwdfiles=$(find resources -name '*.lua' | while IFS= read -r f; do
         d=$(dirname "$f"); keep=1
@@ -881,7 +1047,7 @@ fi
 # had been exercising a nil state and passing. A test file is the WORST place
 # for this to sit, because a suite that quietly stops testing something is the
 # one thing that cannot be caught by another suite.
-echo "${DIM}== player states ==${RST}"
+section 'player states'
 if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
     # shellcheck disable=SC2046
     "$LUA" tools/check_player_states.lua $(find resources tools -name '*.lua' | sort) || rc=1
@@ -920,7 +1086,7 @@ fi
 # VENDORED RESOURCES ARE EXCLUDED, on the same argument gate 4 makes: pma-voice
 # is upstream's code, it is not edited here, and its baseline would churn on
 # every version bump for faults that are not ours to fix.
-echo "${DIM}== bool natives ==${RST}"
+section 'bool natives'
 if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
     boolfiles=$(find resources -name '*.lua' | while IFS= read -r f; do
         d=$(dirname "$f"); keep=1
@@ -965,7 +1131,7 @@ fi
 # It also proves the property the whole script depends on -- that
 # br_lib/config/*.lua still loads in a BARE Lua state with no FXServer natives.
 # The day a config file grows a GetConvar call, this is what says so.
-echo "${DIM}== config report ==${RST}"
+section 'config report'
 if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
     if report=$("$LUA" tools/config_report.lua 2>&1); then
         broken=$(printf '%s' "$report" | grep -oE '"key":"[^"]*","value":"\(unreadable[^"]*"' || true)
@@ -1015,7 +1181,7 @@ fi
 # apply.ts without running `npm run build` in ui-src changes nothing that
 # reaches a player, and looks correct in every diff.
 
-echo "${DIM}== voice defaults ==${RST}"
+section 'voice defaults'
 voice=0
 enums=$(echo resources/*/br_lib/shared/enums.lua)
 
@@ -1139,7 +1305,7 @@ fi
 # The behavioural half of this feature -- parsing, ranges, refusals, the boot
 # banner -- is unit-tested and needs none of this.
 
-echo "${DIM}== tunable overrides ==${RST}"
+section 'tunable overrides'
 tun=0
 OVR="resources/*/br_lib/config/overrides.lua"
 
@@ -1240,7 +1406,7 @@ fi
 # only visible symptom was "1 callbacks registered" where it should have said 2.
 # A file that is never loaded produces no error to grep for.
 
-echo "${DIM}== manifest coverage ==${RST}"
+section 'manifest coverage'
 missing_total=0
 skipped_vendored=0
 
@@ -1319,7 +1485,7 @@ fi
 # dead behind a green build. Only the unit tests ever saw them, because the
 # tests loadfile() them directly and never ask FiveM anything.
 
-echo "${DIM}== shared coverage ==${RST}"
+section 'shared coverage'
 orphans=0
 consumers=$(find resources -name 'fxmanifest.lua' -not -path '*/br_lib/*' | sort)
 
@@ -1362,7 +1528,7 @@ fi
 # here -- where it needs no server, no clone and no network -- moves that
 # discovery to a red build.
 
-echo "${DIM}== deploy payload ==${RST}"
+section 'deploy payload'
 bash tools/deploy.sh --check-payload "resources/[fivem-royale]" || rc=1
 
 # --- 4c-bis. vendored third-party resources -----------------------------------
@@ -1402,7 +1568,7 @@ bash tools/deploy.sh --check-payload "resources/[fivem-royale]" || rc=1
 #      resource must be in deploy.sh's list, and every entry in that list must
 #      be a real vendored resource.
 
-echo "${DIM}== vendored third-party ==${RST}"
+section 'vendored third-party'
 ven=0
 ven_n=0
 
@@ -1509,7 +1675,7 @@ fi
 # opens the write path, this gate is what gets consciously updated to allow it,
 # which is the point: the boundary moves on purpose, never by accident.
 
-echo "${DIM}== console capability boundary ==${RST}"
+section 'console capability boundary'
 boundary=0
 
 # THIS GATE MOVED IN SLICE 2, ON PURPOSE. It used to assert the console could
@@ -1650,6 +1816,7 @@ if [ -f tools/dispatch.sh ]; then
     # builds. That is the allowlist's own promise, checked from the outside on
     # output rather than from the inside on a list.
     if [ -f tools/test_configreport.sh ]; then
+        suite_label test_configreport
         bash tools/test_configreport.sh || boundary=1
     fi
 fi
@@ -2081,7 +2248,7 @@ fi
 # denylist-inside-the-gate failure the dispatch.sh verb check above records,
 # where `configreport)` did not match `config)` and a new capability was
 # invisible to the thing built to see new capabilities.
-echo "${DIM}== dev gate on console commands ==${RST}"
+section 'dev gate on console commands'
 devgate=0
 DEVGATE_FILE="resources/[fivem-royale]/br_lib/shared/devgate.lua"
 
@@ -2302,7 +2469,7 @@ fi
 # green over the thing it was written to catch -- the exact failure recorded
 # above, where a sed pattern read `[fivem-royale]` as a character class and half
 # the dev gate did nothing for weeks while printing ok.
-echo "${DIM}== dev gate on net events ==${RST}"
+section 'dev gate on net events'
 if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
     if "$LUA" tools/check_net_gates.lua --selftest; then
         # shellcheck disable=SC2046
@@ -2384,7 +2551,7 @@ else echo "${YEL}skip${RST} (lua interpreter not found)"; fi
 # ABOVE the reset needs none of that and catches the failure that actually
 # happens, which is the check being removed rather than the check being wrong.
 
-echo "${DIM}== branch-switch invariant ==${RST}"
+section 'branch-switch invariant'
 inv=0
 
 if [ -f tools/deploy.sh ]; then
@@ -2487,7 +2654,7 @@ fi
 # for teaming is not a refusal reason and never passes through BR.ShotSuspicious.
 # What this pins is that the ANTICHEAT cannot file for something an honest
 # client does constantly.
-echo "${DIM}== incident surface ==${RST}"
+section 'incident surface'
 cs_="resources/[fivem-royale]/br_lib/shared/combat_solve.lua"
 SUSPICIOUS_EXPECTED='NOT_HELD NOT_THROWN NO_AMMO NO_WEAPON SELF TOO_FAR TOO_FAST '
 if [ -f "$cs_" ]; then
@@ -2533,7 +2700,7 @@ fi
 # THE OFFENDER EXCLUSION IS #93 AND IS THE REASON THIS IS A GATE AT ALL. A
 # second sender of the notice would not fail a test that nobody thought to
 # write; it would just quietly tell somebody.
-echo "${DIM}== incident notice surface ==${RST}"
+section 'incident notice surface'
 inc_="resources/[fivem-royale]/br_core/server/incident.lua"
 ring_="resources/[fivem-royale]/br_ringmaster/server/incident.lua"
 if [ -f "$inc_" ] && [ -f "$ring_" ]; then
@@ -2634,7 +2801,7 @@ fi
 # extends this gate for free -- provided it is declared as a `*_KIND` local,
 # which is what the resolver below matches on.
 
-echo "${DIM}== timeline entry kinds ==${RST}"
+section 'timeline entry kinds'
 kinds=0
 ib_="resources/[fivem-royale]/br_lib/shared/incident_build.lua"
 cj_="js-src/br_ddb/src/close.js"
@@ -2691,7 +2858,7 @@ fi
 # See tools/check_secrets.sh for why it asks git what it would publish instead
 # of walking the disk.
 
-echo "${DIM}== secrets ==${RST}"
+section 'secrets'
 bash tools/check_secrets.sh || rc=1
 
 # --- 6. br_ddb bundle ---------------------------------------------------------
@@ -2724,7 +2891,7 @@ bash tools/check_secrets.sh || rc=1
 # 193 cases that ran on no machine that had not done an install. They run now
 # whenever Node is present, which is the only thing they ever needed.
 
-echo "${DIM}== br_ddb bundle ==${RST}"
+section 'br_ddb bundle'
 if [ ! -d js-src/br_ddb ]; then
     echo "     no br_ddb source, skipping"
 else
@@ -2776,7 +2943,7 @@ fi
 # is writable by whoever can write the bundle; this catches a deploy that did
 # not finish, which is the realistic cause and very nearly the only one.
 
-echo "${DIM}== br_ddb bundle over the wire ==${RST}"
+section 'br_ddb bundle over the wire'
 mf_="resources/[fivem-royale]/br_ddb/dist/fingerprint.json"
 js_="resources/[fivem-royale]/br_ddb/dist/server.js"
 if [ ! -f tools/dispatch.sh ] || [ ! -f "$mf_" ] || [ ! -f "$js_" ]; then
@@ -2919,7 +3086,7 @@ fi
 # tap()/hold() register indirectly -- tap('drop','brdrop',...) becomes
 # RegisterCommand('brdrop'), and hold() becomes '+name' and '-name' -- so a grep
 # for RegisterCommand alone misses exactly the case that caused #137.
-echo "${DIM}== duplicate console commands ==${RST}"
+section 'duplicate console commands'
 dupes=$(
     for side in client server; do
         for f in $(find "resources/[fivem-royale]" -path "*/$side/*.lua" 2>/dev/null); do
@@ -2936,6 +3103,53 @@ else
     echo "${RED}FAIL${RST} a console command is registered more than once in one Lua state:"
     echo "$dupes"
     echo "     The later registration wins and the earlier one never runs."
+    rc=1
+fi
+
+# --- every gate and suite said what it is for ----------------------------------
+#
+# The other half of the NOTES table at the top. A gate or suite that printed with
+# no row told the log nothing about what it protects; a row whose name never
+# printed describes something renamed or removed, and the next reader takes it
+# for a gate that runs. Silent when both hold, like the suite inventory. A Lua
+# suite is the inventory's to report and is left to it -- and so is its row on a
+# machine with no Lua interpreter, where no suite ran to be labeled.
+nodesc_=''
+seen_='|'
+rest_="$NOTES_MISSING"
+while [ -n "$rest_" ]; do
+    name_="${rest_%%"$NL"*}"
+    rest_="${rest_#*"$NL"}"
+    [ -f "tools/$name_.lua" ] && continue
+    case "$seen_" in *"|$name_|"*) continue ;; esac
+    seen_="${seen_}${name_}|"
+    nodesc_="${nodesc_}       ${name_}${NL}"
+done
+
+leftover_=''
+seen_='|'
+for row_ in "${NOTES[@]}"; do
+    key_="${row_%%|*}"
+    case "$seen_" in
+        *"|$key_|"*) leftover_="${leftover_}       ${key_} (a second row; only the first is read)${NL}"; continue ;;
+    esac
+    seen_="${seen_}${key_}|"
+    case "$NOTES_USED" in *"|$key_|"*) continue ;; esac
+    [ -f "tools/$key_.lua" ] && continue
+    leftover_="${leftover_}       ${key_}${NL}"
+done
+
+if [ -n "$nodesc_" ] || [ -n "$leftover_" ]; then
+    echo "${RED}FAIL${RST} the NOTES table at the top of tools/verify.sh is out of step with its gates"
+    if [ -n "$nodesc_" ]; then
+        echo "     printed with no description:"
+        printf '%s' "$nodesc_"
+    fi
+    if [ -n "$leftover_" ]; then
+        echo "     rows that describe nothing that ran:"
+        printf '%s' "$leftover_"
+    fi
+    echo "     One row per gate and suite, named as it prints. Rename or delete a row with its gate."
     rc=1
 fi
 
