@@ -1674,9 +1674,9 @@ BR.Config.Combat = {
         -- 1000ms line and is read 1000ms after that; at 2000 the window closed on
         -- the very sample that would have carried it, the rise was refused and
         -- HEALTH_SYNC pulled the bar back -- a shield drunk on that line landed
-        -- on 47 and a bandage could land a point short. The ceiling is what
-        -- bounds the window, not its length, so the extra half second buys a
-        -- modified client nothing it was not already issued.
+        -- on 47, three short. The ceiling is what bounds the window, not its
+        -- length, so the extra half second buys a modified client nothing it
+        -- was not already issued.
         healSettleMs = 2500,
 
         -- A revive or a respawn is the LEDGER leading and the ped following, so

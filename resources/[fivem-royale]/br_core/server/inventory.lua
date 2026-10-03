@@ -1955,11 +1955,15 @@ end
 --- healing item is covered by being a healing item. A shield (`armour` only)
 --- answers false; that reading waits on the owner, and `or c.armour ~= nil`
 --- here is the whole of the other answer.
+---
+--- A READ AND NOTHING ELSE: it asks the roster entry rather than BR.Inv.of,
+--- which creates an inventory on first touch, because the storm asks it of
+--- every player standing in the wall once a second.
 --- @param src integer
 --- @return boolean
 function BR.Inv.healing(src)
-    local inv = BR.Inv.of(src)
-    local u = inv and inv.using
+    local e = BR.Roster.get(src)
+    local u = e and e.inv and e.inv.using
     local c = u and BR.Config.ConsumableById[u.item]
     return c ~= nil and c.health ~= nil
 end
@@ -2006,7 +2010,7 @@ end
 --- one window for both stats and every issue wrote both ceilings, nil included,
 --- so that a shield could not spend a med kit's leftover health ceiling. It
 --- also meant a shield pressed the moment a bandage landed WIPED the bandage's
---- health ceiling while its last target was still on the wire: on a 750-1000ms
+--- health ceiling while its last target was still on the wire: on a 500-1000ms
 --- line the ledger never followed the ped the last few points, the audit
 --- refused the rise and the HEALTH_SYNC snapped the bar back -- the bandage
 --- landed short, which is #366's own symptom by another road.

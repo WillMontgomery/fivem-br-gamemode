@@ -28672,6 +28672,22 @@ do
                 tostring(landed())))
     end
 
+    -- ───────────────────────────────────────────────────────────────────────
+    describe('storm.heal')
+    -- ───────────────────────────────────────────────────────────────────────
+    --
+    -- THE STORM'S QUESTION IS A READ. It is asked of every player in the wall
+    -- once a second, so it must not hand anybody an inventory as a side effect
+    -- the way BR.Inv.of does on first touch.
+    do
+        stage({ hp = 100.0 })
+        local e3 = BR.Roster.get(3)
+        e3.inv = nil
+        ok(BR.Inv.healing(3) == false and e3.inv == nil,
+            'asking whether a player with no inventory is healing creates none')
+        ok(BR.Inv.healing(99) == false, 'and a source with no roster entry is not')
+    end
+
     GetEntityHealth, GetPedArmour = rawHealth, rawArmour
     BR.Combat.defeat = rawDefeat
 end
