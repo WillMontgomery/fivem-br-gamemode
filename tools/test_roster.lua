@@ -27677,14 +27677,19 @@ end
 --   INV_EFFECT targets are applied UPWARD ONLY and floored, as SetEntityHealth
 --   and SetPedArmour floor them; HEALTH_SYNC sets the ped absolutely.
 -- THE LINE IS SYMMETRIC: everything the server sends lands `lat` ms later, and
--- the sampler reads the ped as it stood `lat` ms ago.
+-- the sampler reads the ped as it stood `lat` ms ago -- `lat + extra` when a
+-- block models OneSync's own sync interval riding on top of the line.
+-- THE SAMPLER'S PHASE CAN DRIFT. Every stage jumps the clock, which lines the
+-- 250ms sampler up with the storm's 1000ms tick so each tick sees a sample
+-- taken that instant; a real server's jobs drift apart, and `phase` holds the
+-- sampler off that many ms to put a gap between the last sample and a tick.
 -- THREE CLIENTS: honest; DEAF, which ignores every damage instruction and every
 -- correction (the M4 drill's client); PINNED, which is deaf and reports a fixed
 -- health whatever its ped is on.
 do
     local PED   = 1001
     local MAXHP = BR.Config.Match.maxHealth
-    local W = { lat = 0, deaf = false, stormDeaf = false, pinned = nil,
+    local W = { lat = 0, extra = 0, deaf = false, stormDeaf = false, pinned = nil,
                 queue = {}, hist = {}, log = {}, defeats = {} }
 
     -- THE READ THE SERVER MAKES, one trip late. Installed for this section and
@@ -27692,7 +27697,7 @@ do
     local rawHealth, rawArmour = GetEntityHealth, GetPedArmour
     local function replayed(field, now)
         for i = #W.hist, 1, -1 do
-            if W.hist[i].t <= now - W.lat then return W.hist[i][field] end
+            if W.hist[i].t <= now - W.lat - W.extra then return W.hist[i][field] end
         end
         return nil
     end
@@ -27700,13 +27705,13 @@ do
         if ped ~= PED then return rawHealth(ped) end
         if W.pinned then return BR.ToEngineHp(W.pinned) end
         local v = pedHealth[PED] or MAXHP
-        if W.lat > 0 then v = replayed('hp', fakeTime) or v end
+        if W.lat + W.extra > 0 then v = replayed('hp', fakeTime) or v end
         return v
     end
     GetPedArmour = function(ped)
         if ped ~= PED then return rawArmour(ped) end
         local v = pedArmour[PED] or 0
-        if W.lat > 0 then v = replayed('ar', fakeTime) or v end
+        if W.lat + W.extra > 0 then v = replayed('ar', fakeTime) or v end
         return v
     end
 
@@ -27809,12 +27814,14 @@ do
     local A0
     --- Three ALIVE players in a PLAYING match on a phase-5 record that holds for
     --- an hour at `o.dps`, the subject on `o.hp`. The subject stands at the
-    --- anchor, or 2km out if `o.outside`.
+    --- anchor, or 2km out if `o.outside`. `o.lat`, `o.extra` and `o.phase` are
+    --- the line's (see the top of this section).
     local function stage(o)
         o = o or {}
         reset()
         W.queue, W.hist, W.log, W.defeats = {}, {}, {}, {}
-        W.lat, W.deaf, W.stormDeaf, W.pinned = o.lat or 0, false, false, nil
+        W.lat, W.extra = o.lat or 0, o.extra or 0
+        W.deaf, W.stormDeaf, W.pinned = false, false, nil
         local mode = o.squad and BR.Mode.SQUAD.key or BR.Mode.SOLO.key
         for s = 1, 3 do
             pedHealth[1000 + s] = MAXHP
@@ -27838,6 +27845,11 @@ do
         W.hist = {}
         -- The sampler commits the starting health before anything else runs.
         step(300)
+        if (o.phase or 0) > 0 then
+            BR.Sched.setEnabled('roster.positions', false)
+            step(o.phase)
+            BR.Sched.setEnabled('roster.positions', true)
+        end
         W.log = {}
         return m
     end
@@ -28428,6 +28440,72 @@ do
                 .. 'knocked again by what the wall took before',
             ('%s, e.hp %s, defeats since %d'):format(subject().state,
                 tostring(subject().hp), #W.defeats - n0))
+    end
+
+    -- ─── ...AND ON A 1000ms LINE, WHERE THE PICK-UP IS STILL ON THE WIRE ───
+    --
+    -- A downed client holds its ped on the downed floor (client/dbno.lua). On a
+    -- 1000ms line the pick-up's HEALTH_SYNC lands a second after it is sent and
+    -- is read a second after that, with OneSync's sync interval (`extra`) and a
+    -- sample on top. The revive's settle window has to outlast all of it: when
+    -- it closed first, the floor was believed as a drop, the storm billed the 5,
+    -- every honest sample of 30 after it was held as storm damage in flight, and
+    -- the wall knocked them again with 18 on the bar.
+    do
+        local bad, runs, worst = 0, 0, '-'
+        for _, extra in ipairs({ 0, 250 }) do
+            for _, phase in ipairs({ 0, 100, 200 }) do
+                for _, wait in ipairs({ 0, 400, 800 }) do
+                    stage({ hp = 8.0, outside = true, dps = 4.0, squad = true,
+                            lat = 1000, extra = extra, phase = phase })
+                    step(6000, function()
+                        return subject().state == BR.PlayerState.DBNO
+                    end)
+                    pedHealth[PED] = BR.ToEngineHp(BR.Config.Match.dbnoHp or 5)
+                    step(wait)
+                    BR.Combat.revive(1, nil, 30)
+                    local t0, n0 = fakeTime, #W.defeats
+                    step(8000, function() return #W.defeats > n0 end)
+                    runs = runs + 1
+                    local d = W.defeats[n0 + 1]
+                    if d and d.bar > 1.0 then
+                        bad = bad + 1
+                        worst = ('extra %d, phase %d, wait %d: %s +%dms, bar %s')
+                            :format(extra, phase, wait, d.cause, d.t - t0,
+                                    tostring(d.bar))
+                    end
+                end
+            end
+        end
+        ok(runs == 18 and bad == 0,
+            'picked up outside on a 1000ms line, the storm never knocks them again '
+                .. 'with health on the bar',
+            ('%d of %d runs; %s'):format(bad, runs, worst))
+    end
+
+    -- ─── ...WHICH INSIDE THE WALL WAS A SNAP BACK TO THE FLOOR ───
+    --
+    -- The same stale reading with no storm to hide it: the revived 30 became 5
+    -- and HEALTH_SYNC dragged the bar down to it.
+    for _, extra in ipairs({ 0, 250 }) do
+        stage({ hp = 50.0, squad = true, lat = 1000, extra = extra })
+        BR.Combat.defeat(1, 'gunshot', 2)
+        ok(subject().state == BR.PlayerState.DBNO,
+            ('precondition (%dms extra): knocked inside the wall'):format(extra),
+            tostring(subject().state))
+        pedHealth[PED] = BR.ToEngineHp(BR.Config.Match.dbnoHp or 5)
+        step(3000)
+        local t0 = fakeTime
+        BR.Combat.revive(1, nil, 30)
+        step(6000)
+        ok(subject().state == BR.PlayerState.ALIVE and subject().hp == 30
+            and bar() == 30 and sentSince(BR.Net.HEALTH_SYNC, t0) == 1,
+            ('picked up inside on a 1000ms line (%dms extra), they stand on the 30 '
+                .. 'they were given, corrected by nothing but the pick-up itself')
+                :format(extra),
+            ('%s, e.hp %s, bar %s, HEALTH_SYNC %d'):format(subject().state,
+                tostring(subject().hp), tostring(bar()),
+                sentSince(BR.Net.HEALTH_SYNC, t0)))
     end
 
     -- ───────────────────────────────────────────────────────────────────────

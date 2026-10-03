@@ -1683,7 +1683,20 @@ BR.Config.Combat = {
         -- the sample normally reads LOW rather than high. This covers the
         -- crossover: a client that applies HEALTH_SYNC early, or a resurrection
         -- that restores GTA's default health before our number lands.
-        settleMs = 2000,
+        --
+        -- AND IT IS THE SAME ROUND TRIP AS THE TWO ABOVE, SO IT IS THE SAME 2500
+        -- (#366). The window FREEZES the ledger while the ped still shows what it
+        -- showed before the revive -- for a pick-up, the downed floor
+        -- (client/dbno.lua holds a downed ped there). On a 1000ms line the
+        -- revive's HEALTH_SYNC lands a second after it is sent and is read a
+        -- second after that, plus a sample and OneSync's sync interval; at 2000
+        -- the window closed first, the floor was believed as a drop, and the
+        -- revived player's 30 became 5. Outside the wall that was worse than a
+        -- snap: the storm billed the 5, read every honest sample of 30 after it
+        -- as storm damage still in flight, and knocked them again with 18 on
+        -- the bar. The window holds the ledger at the number the server wrote,
+        -- so the extra half second excuses nothing a client could use.
+        settleMs = 2500,
 
         -- WHAT EARNS AN OPERATOR LINE. Cumulative unexplained recovery within
         -- one match, in display points.
