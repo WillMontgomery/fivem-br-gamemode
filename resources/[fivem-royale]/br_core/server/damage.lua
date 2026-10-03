@@ -1614,11 +1614,13 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
                     -- WHETHER #322's CLIENT-SIDE DISABLE ACTUALLY HOLDS.
                     -- VEHICLE_GUN means a mounted weapon got a shot away from a
                     -- seat this gamemode switched the gun off in, which is
-                    -- either a weapon switch inside one 100 ms pass or a native
-                    -- that did not do what it says. It accuses nobody -- it is a
-                    -- rule, not a means -- so this counter is the whole of the
-                    -- evidence, and a number that climbs during a playtest is
-                    -- the answer to the band question in client/vehrefuse.lua.
+                    -- either a weapon switch inside one 100 ms pass, a client
+                    -- that does not run client/vehrefuse.lua, or that file's
+                    -- disable and trigger hold not doing what they say. It
+                    -- accuses nobody -- it is a rule, not a means -- so this
+                    -- counter is the whole of the evidence, and a number that
+                    -- climbs during a playtest is read against `/brvehrefuse`
+                    -- on the shooter's machine.
                     if why == BR.ShotRefusal.VEHICLE_GUN then
                         BR.Damage.vehicleGuns = (BR.Damage.vehicleGuns or 0) + 1
                     end

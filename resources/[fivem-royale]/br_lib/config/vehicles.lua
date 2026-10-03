@@ -617,9 +617,11 @@ end
 --- names no weapon, client/vehrefuse.lua's `disarm` disables the hash in the
 --- hand when it is in no row of ours -- the same trade server/strip.lua makes --
 --- so a row here is not needed to stop a case in a disarmed model. Whether it
---- stops the GUN is not settled: nobody has yet sat in the Caracara's gun seat
---- with this in place and pulled the trigger (#322). Until somebody has, that
---- is the intent, not a finding.
+--- stops the GUN is half settled. The owner's report of 2026-10-03 says the
+--- disable holds on the shooter's own screen and NOT on anybody else's, so the
+--- same file now also holds the trigger down every frame (its FIRE_CONTROLS).
+--- That the other screens go quiet is the intent until a two-player playtest
+--- shows it (#322).
 ---
 --- WHAT A ROW HERE WOULD STILL BE FOR is the firetruck's own case: equipment the
 --- player is SUPPOSED to use. That is a gameplay ruling from the owner, not an

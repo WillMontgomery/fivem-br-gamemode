@@ -8,9 +8,10 @@
 -- BR.Config.IsDisarmedVehicle says which are driven with the weapon disabled.
 -- Both live in br_lib/config/vehicles.lua and both are shared with the server.
 -- This file is the client half of what happens NEXT: an ejection for the first
--- answer, a per-tick DisableVehicleWeapon for the second. They are mutually
--- exclusive -- a model the second names is allowed by the first -- and the pass
--- at the bottom is written so that they cannot both fire.
+-- answer, and for the second a per-tick DisableVehicleWeapon plus a per-frame
+-- hold on the trigger (see FIRE_CONTROLS). They are mutually exclusive -- a
+-- model the second names is allowed by the first -- and the pass at the bottom
+-- is written so that they cannot both fire.
 --
 -- #329 ADDED A THIRD SOURCE FOR THE SECOND ANSWER AND NONE AT ALL FOR THE FIRST.
 -- The engine is now asked whether the vehicle a player is actually sitting in has
@@ -352,6 +353,8 @@ local ruled = 0
 local stat = { asked = 0, cached = 0, rejected = 0, ejected = 0,
                cancelled = 0, hammered = 0, locked = 0, notified = 0,
                disarmed = 0, unnamedGun = 0,
+               -- Frames on which the trigger was held. See FIRE_CONTROLS.
+               triggerHeld = 0,
                -- #329's five. See the section on asking the vehicle.
                probed = 0, engineArmed = 0, turretSeat = 0, reported = 0,
                -- Reads of DOES_VEHICLE_HAVE_WEAPONS that reached no engine at
@@ -434,8 +437,14 @@ end
 -- talks to the server. br_core/server/damage.lua validates every shot against
 -- the inventory the SERVER issued and refuses one from a weapon it never handed
 -- out -- that is what actually stops a mounted gun hurting anybody, and it is
--- unchanged. What this removes is the noise and the desync of a gun that fires,
--- looks like it hit, and is then refused a round trip later.
+-- unchanged. What this removes is the gun firing at all, on this player's
+-- screen and on everybody else's.
+--
+-- THE DISABLE ALONE ONLY EVER DID THE FIRST HALF. Owner, 2026-10-03: "vehicle
+-- weapons are only disabled for the player who is in the vehicle - the weapon
+-- still appears to fire on others' screens". The other half is the trigger
+-- hold; see FIRE_CONTROLS for what it holds and why that reaches the other
+-- screens when the disable does not.
 --
 -- ═══ AND THE SEAT THE NATIVE CANNOT SEE ═══
 --
@@ -618,6 +627,13 @@ end
 --- a Technical's does. `disarmed` counts both; `unnamed-gun` counts the
 --- second. See `/brvehrefuse`.
 ---
+--- ═══ AND IT SAYS WHAT IT FOUND, FOR THE TRIGGER HOLD ═══
+---
+--- It returns the hash and whether that came from the hand, whether or not the
+--- disable reached the engine. `holdTrigger` holds the trigger on that answer;
+--- see the section on holding the trigger for why the disable alone does not
+--- keep the gun quiet on other screens.
+---
 --- ═══ NOTHING EVER CALLS IT WITH `false` ═══
 ---
 --- There is no re-enable path and there should not be one. The lock is per ped
@@ -657,9 +673,14 @@ end
 --- @param model integer|nil
 --- @param armed boolean   the engine says this VEHICLE carries weapons (#329)
 --- @param turret boolean  the engine says this SEAT is a turret (#329)
+--- @return integer|nil hash  the gun switched off, or nil for none
+--- @return boolean fromHand  true when the hash came from the hand
 local function disarm(ped, veh, model, armed, turret)
-    if not (BR.Config.IsDisarmedVehicle(model) or armed or turret) then return end
+    if not (BR.Config.IsDisarmedVehicle(model) or armed or turret) then
+        return nil, false
+    end
 
+    local fromHand = false
     local hash = mountedWeaponOf(ped)
     if hash == nil then
         -- THE SEAT THE NATIVE HAS NO OPINION ABOUT, WHICH IS WHAT THE
@@ -676,8 +697,9 @@ local function disarm(ped, veh, model, armed, turret)
         -- off for the whole model; this switches off one hash we issue nobody,
         -- in one seat, and the strip in client/inventory.lua still runs.
         hash = unnamedGunInHand(ped)
-        if hash == nil then return end
+        if hash == nil then return nil, false end
         stat.unnamedGun = stat.unnamedGun + 1
+        fromHand = true
     end
 
     -- COUNTED THE WAY `lock` COUNTS, AND THAT IS THE WHOLE POINT OF THE pcall
@@ -690,6 +712,10 @@ local function disarm(ped, veh, model, armed, turret)
     -- makes about the guard it deleted.
     local ok = pcall(DisableVehicleWeapon, true, hash, veh, ped)
     if ok then stat.disarmed = stat.disarmed + 1 end
+
+    -- RETURNED WHETHER OR NOT THE DISABLE REACHED THE ENGINE, so a build
+    -- without DisableVehicleWeapon still holds the trigger.
+    return hash, fromHand
 end
 
 -- ---------------------------------------------------------------------------
@@ -1032,6 +1058,168 @@ local function engineProbe(ped, veh, model)
 end
 
 -- ---------------------------------------------------------------------------
+-- Holding the trigger (#322, owner 2026-10-03)
+-- ---------------------------------------------------------------------------
+
+--- Every control a seat's gun is fired with. Held down on every frame while
+--- this player sits at a gun `disarm` has switched off (owner, 2026-10-03).
+---
+--- ═══ WHY THE DISABLE WAS NOT ENOUGH ═══
+---
+--- DisableVehicleWeapon is a lock on THIS machine, and on the owner's report it
+--- holds there: nothing fired on his screen. What it does not do is stop the
+--- seat's firing task. That task still reads the trigger, still decides to fire,
+--- and that decision is what the other clients are sent. Each of them runs its
+--- own copy of the task and fires its own copy of the gun, and none of them has
+--- the lock. INFERRED, NOT MEASURED: the engine has per-task network classes for
+--- exactly these seats (CClonedControlTaskVehicleMountedWeaponInfo,
+--- CClonedVehicleGunInfo), and FiveM's fix for citizenfx/fivem#2934 describes
+--- the same model for hand guns, where a remote shot is fired by the remote
+--- client's own task.
+---
+--- SO THE PRESS IS STOPPED BEFORE THE TASK SEES IT. A task that never sees the
+--- trigger never fires, so there is no firing state for anybody to copy and
+--- nothing is sent. DisableVehicleWeapon stays as well, on TICK, as the second
+--- layer on this machine.
+---
+--- ═══ EVERY ACTION ON THE TRIGGER, BECAUSE MISSING ONE IS THE KNOWN FAILURE ═══
+---
+--- The left mouse button is 24, 257, 69 and 92 at once. In a Cfx thread
+--- (forum.cfx.re/t/530589) disabling 24 and 92 alone did not stop the
+--- shooting, and these seven are the full list a later post there gave --
+--- which nobody in that thread confirmed, so it was checked against the FiveM
+--- controls table rather than trusted, the same reading client/spectate.lua's
+--- list was checked against. 70, 114 and 331 are the second trigger and the
+--- aircraft triggers, on the right button. Rockstar's base-jump race script
+--- (fm_bj_race_controler) holds five of them -- 24, 69, 70, 114 and 257 --
+--- beside its own vehicle-weapon calls.
+---
+--- ═══ WHAT IS DELIBERATELY NOT HERE ═══
+---
+--- Everything else. Aim (25, 68, 91), turret look (66, 67), weapon select (37,
+--- 99, 100), the horn (86), the handbrake (76), exit (75) and every driving
+--- control stay live. Nothing here moves the car or the camera; it stops a shot.
+---
+--- ═══ THE THIRD ARGUMENT IS false, AND THIS IS THE FIRST false IN THE TREE ═══
+---
+--- It is `disableRelatedActions`. That is the name Rockstar's declaration of
+--- this native gives it (the same hash in RDR3's native list), with a default
+--- of true and the note that true ALSO disables related inputs -- its example
+--- is the weapon wheel taking every weapon-select key with it. So false still
+--- disables the action it names, and only that one. citizenfx's page calls
+--- the argument `disable`, which reads as though false switched the hold off;
+--- the declaration says otherwise.
+---
+--- #200 is this project's evidence that true reaches past the action it
+--- names: the radio wheel, on Q, stopped opening for drivers while
+--- client/inventory.lua disabled two melee actions on Q every frame, and #200
+--- was closed once those were gated to on foot. On a gamepad 24, 257 and 92
+--- share RT with accelerate and 69 shares RB with the handbrake, so true here
+--- could take the throttle from a driver whose seat has a gun. Every action
+--- that fires is in the list by name, so nothing is lost by leaving the
+--- related ones alone. If a playtest ever shows the gun firing with
+--- `trigger-held` climbing, this flag is the first thing to check.
+local FIRE_CONTROLS = {
+    24,    -- INPUT_ATTACK
+    257,   -- INPUT_ATTACK2
+    69,    -- INPUT_VEH_ATTACK
+    70,    -- INPUT_VEH_ATTACK2
+    92,    -- INPUT_VEH_PASSENGER_ATTACK
+    114,   -- INPUT_VEH_FLY_ATTACK
+    331,   -- INPUT_VEH_FLY_ATTACK2
+}
+
+--- How long one TICK pass's finding holds the trigger, at most.
+---
+--- NOT HOW LONG IT IS HELD. Every TICK pass clears the latch at its top and
+--- `holdTrigger` sets it again, so in a working loop the hold follows the seat
+--- within one pass. This is the ceiling for the day the TICK callback stops
+--- running -- suspended by the loop registry, or switched off from the debug
+--- tooling -- while the latch is set: without it the player would never fire
+--- again, on foot or anywhere, until the resource restarted. A second is ten
+--- passes, well past any hitch a working loop survives.
+local TRIGGER_GRACE_MS = 1000
+
+--- Until when the FRAME callback holds the trigger, or nil for not at all.
+---
+--- ONE SLOT, for the reason `probe` and `pending` are one slot: there is one
+--- local ped. Set only by `holdTrigger`. Cleared at the top of every TICK pass
+--- and by BR.VehRefuse.reset.
+local triggerUntil = nil
+
+--- The gunner's seat the car's gun was found in THE HAND, for as long as this
+--- ped is still sitting in it.
+---
+--- ═══ WHY THE HAND ALONE CANNOT CARRY THE HOLD ═══
+---
+--- In the Caracara's gun seat the seat names no gun and the engine puts it in
+--- the hand instead, which is how `disarm` finds it. Then client/inventory.lua's
+--- strip, later in the same pass, takes it out of the hand and forces the
+--- active slot back on (`applied = nil` there). So the next pass can find the
+--- player's own weapon in the hand, `disarm` finds nothing, and a hold read off
+--- the hand alone would let go of the trigger until the engine hands the gun
+--- back -- with the turret still there to fire on every other screen. So the
+--- SEAT is remembered, and held for as long as the ped is still in it.
+---
+--- ═══ NEVER THE DRIVING SEAT ═══
+---
+--- A driver is held only on the passes where the car's gun is what is in their
+--- hand or named by their seat, so a driver who picks a pistol keeps drive-by
+--- (#197). Only a gunner's seat is remembered: a seat whose gun the engine put
+--- in the hand, and that is not the one the car is driven from.
+---
+--- KEYED ON THE HANDLE AND THE MODEL TOGETHER, for the reason `probe` is: a
+--- handle is recycled, and a different model under the same handle is a
+--- different vehicle.
+local gunSeat = { veh = 0, model = nil, seat = nil }
+
+--- No gunner's seat is remembered.
+local function clearGunSeat()
+    gunSeat.veh, gunSeat.model, gunSeat.seat = 0, nil, nil
+end
+
+--- Hold the trigger on the next frames if this pass found a gun to hold off.
+---
+--- `hash` and `fromHand` are what `disarm` answered on this pass. The trigger is
+--- held when there is a hash, from either place, and also when this ped is
+--- still in the gunner's seat the hand path found the gun in earlier.
+---
+--- WHAT IT COSTS. Nothing for anybody with no remembered seat, which is every
+--- player on foot, in an ordinary car, or at a gun the seat names: two table
+--- reads. One native a pass to confirm a remembered seat still holds this ped,
+--- the confirmation `engineProbe` pays for its own latched seat. One seat walk
+--- when the hand path first finds the gun in an occupancy.
+---
+--- A REMEMBERED SEAT THAT NO LONGER HOLDS THIS PED IS FORGOTTEN, so a player
+--- who moves out of the gunner's seat costs one native once and then nothing,
+--- and a passenger seat they move to is never held because of the seat they
+--- left.
+--- @param ped integer
+--- @param veh integer
+--- @param model integer|nil
+--- @param hash integer|nil   the gun `disarm` switched off on this pass
+--- @param fromHand boolean   that gun was read from the hand
+local function holdTrigger(ped, veh, model, hash, fromHand)
+    local stillThere = false
+    if gunSeat.seat ~= nil then
+        stillThere = gunSeat.veh == veh and gunSeat.model == model
+            and safe(GetPedInVehicleSeat, veh, gunSeat.seat) == ped
+        if not stillThere then clearGunSeat() end
+    end
+
+    if hash == nil and not stillThere then return end
+
+    if fromHand and not stillThere then
+        local seat = seatOf(veh, ped)
+        if seat ~= nil and seat ~= -1 then
+            gunSeat.veh, gunSeat.model, gunSeat.seat = veh, model, seat
+        end
+    end
+
+    triggerUntil = GetGameTimer() + TRIGGER_GRACE_MS
+end
+
+-- ---------------------------------------------------------------------------
 -- Refusing it
 -- ---------------------------------------------------------------------------
 
@@ -1172,6 +1360,15 @@ local function enabled()
 end
 
 BR.Loop.register(BR.Loop.TICK, 'vehrefuse.gate', function()
+    -- ═══ THE TRIGGER HOLD IS THIS PASS'S FINDING AND NOTHING OLDER ═══
+    --
+    -- Cleared first, before anything that can return or throw, and set again
+    -- only by `holdTrigger` at the bottom of this pass. So every way out of the
+    -- seat -- the state gate, getting out, a refusal, a driver's switch to a
+    -- hand gun -- lets go of the trigger on the pass that sees it, and a pass
+    -- that throws leaves it let go.
+    triggerUntil = nil
+
     -- ═══ THE PROBE IS CLEARED WHEREVER THE PENDING EJECTION IS ═══
     --
     -- ALL THREE OF THESE ARE "THIS PLAYER IS NOT SITTING IN ANYTHING", and an
@@ -1179,10 +1376,12 @@ BR.Loop.register(BR.Loop.TICK, 'vehrefuse.gate', function()
     -- latch outlived dismounts, deaths and match boundaries -- `BR.VehRefuse.reset`
     -- calls `clearProbe` too, but nothing in `resources/` calls that function, so
     -- the only real clear is this one. See `probe` for what a latch that outlives
-    -- its vehicle costs when the engine reissues the handle.
+    -- its vehicle costs when the engine reissues the handle. The remembered
+    -- gunner's seat is the same kind of fact and is cleared beside it.
     if not enabled() then
         clearPending()
         clearProbe()
+        clearGunSeat()
         return
     end
 
@@ -1207,6 +1406,7 @@ BR.Loop.register(BR.Loop.TICK, 'vehrefuse.gate', function()
     if not isTrue(IsPedInAnyVehicle(ped, false)) then
         clearPending()
         clearProbe()
+        clearGunSeat()
         return
     end
 
@@ -1215,6 +1415,7 @@ BR.Loop.register(BR.Loop.TICK, 'vehrefuse.gate', function()
     if veh == 0 then
         clearPending()
         clearProbe()
+        clearGunSeat()
         return
     end
 
@@ -1244,41 +1445,29 @@ BR.Loop.register(BR.Loop.TICK, 'vehrefuse.gate', function()
     -- is the one with the gun in it, and a driver-only disable would switch off
     -- the only thing nobody was using.
     --
-    -- ON TICK, WITH THE REST OF THIS FILE, AND THE BAND IS A CONDITIONAL
-    -- DECISION RATHER THAN A SETTLED ONE.
+    -- THE DISABLE IS ON TICK, WITH THE REST OF THIS FILE, AND THAT IS SETTLED.
     --
-    -- THE TWO READINGS, BECAUSE THE SOURCES DISAGREE AND NOBODY HAS MEASURED IT:
+    -- #322 left open whether DisableVehicleWeapon is a lasting lock or a
+    -- one-frame suppression. The owner's report of 2026-10-03 answers it:
+    -- "vehicle weapons are only disabled for the player who is in the vehicle".
+    -- Nothing fired on his own screen in the gaps between TICK passes, so the
+    -- lock holds on this machine and the loop is for the other half: the seat's
+    -- weapon can change under us, so the hash is re-read and the new one
+    -- disabled.
     --
-    --   A LOCK.  citizenfx's page for DisableVehicleWeapon describes a
-    --            ped-specific lock rather than a per-frame suppression. On that
-    --            reading the loop exists only for the OTHER half -- the seat's
-    --            weapon can CHANGE under us, so the hash has to be re-read and
-    --            the new one disabled -- and the exposure is at most one tenth
-    --            of a second of a gun immediately after a switch.
-    --   NOT A    #322 says the opposite in as many words: "the call does not
-    --   LOCK.    persist, so it is a loop, not a one-shot". On that reading the
-    --            gun is live for most of every 100 ms window and TICK is the
-    --            wrong band.
+    -- THE TRIGGER IS ON FRAME, BECAUSE THAT IS THE PART THAT REACHES OTHER
+    -- SCREENS. "The weapon still appears to fire on others' screens": the lock
+    -- lives here and every other client fires its own copy of the gun.
+    -- `holdTrigger` latches the hold on what `disarm` found and
+    -- 'vehrefuse.trigger' below holds FIRE_CONTROLS down every frame, since a
+    -- disabled control lasts one frame. FIRE_CONTROLS says what that holds and
+    -- why.
     --
-    -- SO WHAT THE CHOICE ACTUALLY RESTS ON IS THAT NEITHER READING COSTS A CASE.
-    -- A hit landed in the window is refused by server/damage.lua as
-    -- BR.ShotRefusal.VEHICLE_GUN -- a rule, not a means -- so it is cancelled
-    -- and accuses nobody, and the same is true of the strip report. That is what
-    -- makes the cheap band defensible while the question is open; it was not
-    -- true when this was first written, and the comment that stood here argued
-    -- from the lock reading as though it were established.
-    --
-    -- THE OTHER SIDE IS SMALL TOO, AND SMALLER THAN THIS USED TO CLAIM. FRAME
-    -- costs two natives a frame for a player SEATED IN ONE OF ROUGHLY SIXTY
-    -- MODELS -- not "every player sitting in one" of anything, since the model
-    -- test above turns an ordinary car away for one table lookup.
-    --
-    -- THE PLAYTEST THAT SETTLES IT, and it is one round: sit in a Technical,
-    -- hold the trigger on the mounted gun at another player, and run
-    -- `/brshots VEHICLE_GUN` on the server console. A shot only reaches the
-    -- validator when it HITS somebody, so an empty list means the lock held and
-    -- TICK is right. A column of them means it does not, and this comment is the
-    -- one to come back to: move the `disarm` call to a FRAME registration.
+    -- THE WINDOW THAT IS LEFT IS ONE PASS. The latch is this pass's finding, so
+    -- a player who has just sat down at the gun, or switched to it, is held
+    -- from the next TICK pass on: up to a tenth of a second. A hit landed in it
+    -- is refused by server/damage.lua as BR.ShotRefusal.VEHICLE_GUN -- a rule,
+    -- not a means -- so it is canceled and accuses nobody.
     --
     -- ═══ AND SINCE #329 THE ENGINE IS ASKED ABOUT THE ONES NOBODY WROTE DOWN ═══
     --
@@ -1287,7 +1476,36 @@ BR.Loop.register(BR.Loop.TICK, 'vehrefuse.gate', function()
     -- GUN is held off and can never touch the set that is EMPTIED. See the section
     -- above `seatOf` for which native answers which question and what it costs.
     local armed, turret = engineProbe(ped, veh, model)
-    disarm(ped, veh, model, armed, turret)
+    local hash, fromHand = disarm(ped, veh, model, armed, turret)
+    holdTrigger(ped, veh, model, hash, fromHand)
+end)
+
+--- Hold the trigger down while the last TICK pass found a gun to switch off.
+---
+--- FRAME AND NOT TICK because DisableControlAction lasts exactly one frame
+--- (client/ambheal.lua, client/fuel.lua and client/inventory.lua make the same
+--- argument for their own lists). Held on nine frames of ten, the trigger would
+--- fire on the tenth.
+---
+--- WHAT IT COSTS. A player who is not at a disabled gun -- everybody on foot and
+--- everybody in an ordinary car -- pays one upvalue read a frame. A player at
+--- one pays one clock read and seven disables. Nothing here asks the engine
+--- about the seat, the vehicle or the hand; that is the TICK pass's job.
+BR.Loop.register(BR.Loop.FRAME, 'vehrefuse.trigger', function()
+    if triggerUntil == nil then return end
+
+    -- A LATCH THE TICK PASS HAS STOPPED RENEWING IS LET GO. See
+    -- TRIGGER_GRACE_MS: in a working loop this never fires, because every pass
+    -- clears or renews the latch long before it.
+    if GetGameTimer() > triggerUntil then
+        triggerUntil = nil
+        return
+    end
+
+    for i = 1, #FIRE_CONTROLS do
+        DisableControlAction(0, FIRE_CONTROLS[i], false)
+    end
+    stat.triggerHeld = stat.triggerHeld + 1
 end)
 
 -- ---------------------------------------------------------------------------
@@ -1299,6 +1517,8 @@ function BR.VehRefuse.reset()
     rulings, ruled = {}, 0
     clearPending()
     clearProbe()
+    clearGunSeat()
+    triggerUntil = nil
     for k in pairs(stat) do stat[k] = 0 end
 end
 
@@ -1346,15 +1566,26 @@ end
 ---                  gun seat. A climbing number says the seat will not name its
 ---                  gun, NOT that the gun is live: it is the gun being switched
 ---                  off from the hand, and it climbs with `disarmed` beside it.
+---   `trigger-held` FRAMES on which FIRE_CONTROLS were held down, from either
+---                  place the hash came from or from a remembered gunner's
+---                  seat (see `gunSeat`). It climbs at the frame rate while
+---                  somebody sits at a disabled gun and stops when they leave
+---                  it. Like `disarmed`, it says the call was made, not that
+---                  the gun is silent: that is read off the other screens.
 ---
 --- SO, IN THE CARACARA'S GUN SEAT: both climbing together means the hand path
 --- is doing the work. `disarmed` climbing alone means the seat names a gun
 --- after all -- and if the gun still fires, it is naming a different one from
 --- the gun in the hand, which this file does not cover. `unnamed-gun` climbing
 --- while `disarmed` does not means the disable never reached the engine. And a
---- gun that fires with both climbing means the hand's hash is not the one the
---- engine wanted, or the lock does not survive a TICK -- see the note at the
---- `disarm` call site.
+--- gun that fires on this screen with both climbing means the hand's hash is
+--- not the one the engine wanted.
+---
+--- AND ON ANOTHER PLAYER'S SCREEN: a gun that still fires there while
+--- `trigger-held` climbs here means the hold is not reaching the seat's task --
+--- see FIRE_CONTROLS, whose third argument is the first thing to check.
+--- `trigger-held` standing still while somebody sits at the gun means `disarm`
+--- found no hash for that seat.
 ---
 --- NEITHER OF THEM IS THE ANTICHEAT'S ANSWER ANY MORE, and that is worth knowing
 --- before reading them. server/damage.lua and server/strip.lua excuse a hash we
@@ -1371,8 +1602,8 @@ RegisterCommand('brvehrefuse', function()
         :format(s.cancelled, s.ejected, s.hammered))
     print(('[vehrefuse] locked=%d shown=%d  gate=%s'):format(
         s.locked, s.notified, tostring(enabled())))
-    print(('[vehrefuse] disarmed=%d unnamed-gun=%d'):format(
-        s.disarmed, s.unnamedGun))
+    print(('[vehrefuse] disarmed=%d unnamed-gun=%d trigger-held=%d'):format(
+        s.disarmed, s.unnamedGun, s.triggerHeld))
     -- #329's FIVE, AND `armed-silent` IS THE ONE THAT ANSWERS THE BUILD QUESTION.
     -- `probed` counts OCCUPANCIES the engine was asked about at all, and it was
     -- once claimed here that a `probed` climbing with `engine-armed` at zero meant
