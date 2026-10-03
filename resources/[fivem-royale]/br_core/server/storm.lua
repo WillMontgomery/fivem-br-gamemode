@@ -767,9 +767,13 @@ end
 --- rescue flag: `inv.using` is opened only by an INV_USE the server validated
 --- (refused at the item's cap) and ended only by the server's own rules -- the
 --- completion, an enemy's hit the server dealt (BR.Inv.struck), going down,
---- dying, leaving. No message a client sends can open one, hold one open or
---- end one: a drop the sampler believed, whoever it is credited to, ends
---- nothing, so a heal cannot be restarted at will to pause the storm again.
+--- dying, leaving. No message a client sends can open one or hold one open,
+--- and a drop the sampler believed, whoever it is credited to, ends nothing
+--- by itself, so a heal cannot be restarted at will to pause the storm again.
+--- The one thing a client's reading can still do is let a REAL enemy hit end
+--- one: a lowered ARMOR reading makes a graze the armor would have soaked
+--- reach health, at the price of that graze and the armor (see BR.Inv.struck
+--- in server/inventory.lua).
 ---
 --- IT APPLIES TO THE STORM AND TO NOTHING ELSE. A bullet, a blast, fire, a fall
 --- and a car all hurt a healing player exactly as before, and an enemy's bullet
