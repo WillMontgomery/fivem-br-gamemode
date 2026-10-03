@@ -1096,12 +1096,12 @@ end
 --- ═══ WHAT IS DELIBERATELY STILL ABLE TO END A CHANNEL ═══
 ---
 --- The remaining cancels are facts about the world rather than presses, and
---- every one of them either costs the player more than it pays or banks
---- nothing at all: taking fire (`useCancelOnDamage`), going down, dying,
---- leaving the match, the shop car's seat rule -- which has no partial effect
---- to bank -- and the repair kit's driving-seat rule, which does, and which
---- therefore SPENDS THE KIT rather than handing it back (#361). See the note
---- above the tick loop.
+--- every one of them is either somebody else's doing or banks nothing at all:
+--- taking fire from ANOTHER PLAYER (`useCancelOnDamage`, #366), going down,
+--- dying, leaving the match, the shop car's seat rule -- which has no partial
+--- effect to bank -- and the repair kit's driving-seat rule, which does, and
+--- which therefore SPENDS THE KIT rather than handing it back (#361). See the
+--- note above the tick loop.
 ---
 --- THERE IS THEREFORE NO WAY FOR A PLAYER TO CANCEL A CHANNEL ON PURPOSE any
 --- more. An eight-second med kit started in the open is eight seconds the
@@ -1616,6 +1616,9 @@ AddEventHandler(BR.Net.INV_USE, function(d)
         item   = s.item,
         ms     = c.useMs,
         endsAt = GetGameTimer() + c.useMs,
+        -- When it opened. The damage-cancel counts only an attacker's hit
+        -- stamped since this moment (#366); see the tick loop.
+        startedAt = GetGameTimer(),
         -- Baselines: hp0 doubles as the damage-cancel reference, and both are
         -- what the per-tick partial effects interpolate FROM.
         hp0     = e.hp or 0,
@@ -1963,7 +1966,9 @@ end
 -- argument:
 --
 --   OUT OF THE MATCH, DOWNED OR DEAD costs them the whole inventory.
---   TAKING FIRE costs them health, and is an attacker's decision.
+--   TAKING FIRE costs them health, and is an attacker's decision -- and since
+--     #366 it takes an attacker: a drop nobody else caused ends nothing. The
+--     note at the damage-cancel below has the hole that closed.
 --   THE SHOP CAR'S SEAT RULE banks nothing -- a car is not a partial effect.
 --
 -- ONE WAS STILL WORTH SOMETHING AFTER #271, AND IT IS CLOSED BY SPENDING RATHER
@@ -2052,8 +2057,41 @@ BR.Sched.every(250, 'inv.use', function()
             -- such cover and can be cancelled by a point of health damage at any
             -- moment -- but it still takes somebody else's trigger, and armour
             -- soaks first. Left as it is on those grounds rather than overlooked.
+            --
+            -- ═══ AND "SOMEBODY ELSE'S TRIGGER" IS NOW A TEST, NOT A HOPE (#366) ═══
+            --
+            -- The line above was not true until this. The test was the drop
+            -- alone, and the ledger follows the ped DOWN on the client's own word
+            -- -- server/roster.lua's sampler believes every decrease, because the
+            -- engine owns falls and fire. So a player could end their own channel
+            -- with a one-sample dip, keep the item AND the partials, let the ped
+            -- climb back to the ceiling those partials had authorized, and press
+            -- again: the free med kit loop #271 set out to close, still open
+            -- inside the zone. Outside it, ending the channel at will would also
+            -- end the storm's pause at will (BR.Inv.healing), which is a pause a
+            -- player could take as often as they liked.
+            --
+            -- SO THE DROP NEEDS AN ATTACKER: a hit stamped since this channel
+            -- opened (`u.startedAt`) by somebody other than the player. Every
+            -- server path that hurts one player on another's behalf writes that
+            -- pair -- BR.Damage.applyHit, the fire ledger, the roadkill ledger --
+            -- and every stamp is the server's own, so nothing a client sends can
+            -- open this door. A fire the player lit names the player and does
+            -- not count.
+            --
+            -- WHAT IT COSTS, AND IT IS A RULE CHANGE: a fall, drowning, a
+            -- player's own molotov and the storm no longer interrupt a heal --
+            -- so a shield drunk outside the wall now finishes while the storm
+            -- goes on taking health.
+            --
+            -- WHAT IS LEFT: once an enemy has hit them during a channel without
+            -- breaking the line, a dip can still end it. That needs a real enemy
+            -- hit every time, and it buys what a harder hit gives an honest
+            -- player anyway.
+            local attacked = e.lastHitAt ~= nil and e.lastHitAt >= (u.startedAt or 0)
+                and e.lastHitBy ~= nil and e.lastHitBy ~= src
             if L.useCancelOnDamage and not (c and c.ignoresDamage)
-                and (e.hp or 0) < (u.hp0 or 0) then
+                and (e.hp or 0) < (u.hp0 or 0) and attacked then
                 BR.Inv.cancelUse(src, 'Interrupted.')
                 return
             end

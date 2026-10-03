@@ -7664,13 +7664,14 @@ do
     -- TAKING FIRE INTERRUPTS. Committing to an 8s med kit while being shot
     -- should lose you the med kit, not heal you through it.
     e.armour = 0.0
-    -- Driven through the PED, not by poking entry.hp: the roster samples
-    -- health off the engine four times a second, so anything written straight
-    -- onto the entry is overwritten before the next tick reads it. Setting the
-    -- stub ped's health is what a real hit looks like from the server's side.
+    -- Driven through BR.Damage.applyHit, not through the ped: since #366 the
+    -- cancel takes an ATTACKER's hit stamped after the press, and a ped that
+    -- merely reads lower -- a fall -- interrupts nothing (`heal.interrupt`
+    -- pins that half). applyHit is what a real shot is on the server's side: it
+    -- writes the ledger and names who fired.
     sent = {}
     fire(BR.Net.INV_USE, 1, { slot = 1 })
-    pedHealth[1001] = BR.ToEngineHp(80.0)
+    BR.Damage.applyHit(2, 1, 20.0, { weapon = 'test' })
     fakeTime = fakeTime + 300
     BR.Sched.step(fakeTime)
     ok(BR.Inv.of(1).using == nil, 'damage cancels a use in progress')
@@ -8492,7 +8493,9 @@ do
     banked = banked[#banked] and banked[#banked].args[1].armour or 0
     ok(banked > 0 and banked < shield.armour,
         'precondition: the slices are part-way up', ('%.2f'):format(banked))
-    pedHealth[1001] = BR.ToEngineHp(40.0)
+    -- An enemy's shot, through the server's own damage path: since #366 that is
+    -- the only drop that interrupts (see inv.use above).
+    BR.Damage.applyHit(2, 1, 60.0, { weapon = 'test' })
     sent = {}
     fakeTime = fakeTime + 250
     BR.Sched.step(fakeTime)
@@ -8975,10 +8978,11 @@ do
     --    use that to stop any type of bullet damage."
     --                                          -- owner, 2026-09-03
     --
-    -- Driven through the PED rather than by poking the roster entry: the roster
-    -- samples health off the engine four times a second, so anything written
-    -- straight onto the entry is overwritten before the tick reads it. This is
-    -- the same shape as the med kit's interruption test above.
+    -- Driven through BR.Damage.applyHit -- an enemy's shot, with the shooter
+    -- named -- and not through the ped. Since #366 a drop with nobody behind it
+    -- interrupts NOTHING, so a ped-driven drop would pass this for the wrong
+    -- reason: the row's exemption is only tested by a hit that would otherwise
+    -- cancel. This is the same shape as the med kit's interruption test above.
     ok(BR.Config.Loot.useCancelOnDamage == true,
         'precondition: damage-cancel is ON for consumables generally -- the '
             .. 'exemption below is a property of the ROW, not of the flag')
@@ -8989,10 +8993,11 @@ do
     drive(1, VEH)
     pedHealth[1001] = nil
     BR.Roster.get(1).hp = 100.0
+    BR.Roster.get(1).armour = 0.0
     sent = {}
     t0 = fakeTime
     fire(BR.Net.INV_USE, 1, { slot = 1 })
-    pedHealth[1001] = BR.ToEngineHp(40.0)
+    BR.Damage.applyHit(2, 1, 60.0, { weapon = 'test' })
     fakeTime = t0 + 250
     BR.Sched.step(fakeTime)
     ok(BR.Inv.of(1).using ~= nil,
@@ -9061,7 +9066,7 @@ do
     t0 = fakeTime
     fire(BR.Net.INV_USE, 1, { slot = 1 })
     ok(BR.Inv.of(1).using ~= nil, 'precondition: the med kit is going in')
-    pedHealth[1001] = BR.ToEngineHp(40.0)
+    BR.Damage.applyHit(2, 1, 50.0, { weapon = 'test' })
     fakeTime = t0 + 250
     BR.Sched.step(fakeTime)
     ok(BR.Inv.of(1).using == nil,
@@ -27889,6 +27894,103 @@ do
                 ('using %s, kits %d, e.hp %s'):format(tostring(using()),
                     count('medkit'), tostring(subject().hp)))
         end
+    end
+
+    -- ───────────────────────────────────────────────────────────────────────
+    describe('heal.interrupt')
+    -- ───────────────────────────────────────────────────────────────────────
+    --
+    -- ONLY AN ATTACKER'S DAMAGE INTERRUPTS A CHANNEL. The ledger follows the ped
+    -- down on the client's word, so a drop alone is something a player can make
+    -- whenever they like; a hit with somebody else's name on it, stamped since
+    -- the press, is not.
+
+    -- ─── THE DIP-CANCEL-RESTORE LOOP ───
+    --
+    -- Five seconds into a med kit the ped dips one point under where the kit
+    -- started, then climbs back to the target already issued. Before #366 the
+    -- dip ended the channel, the kit stayed in the bag and the partials stood:
+    -- a free 60 hp and a med kit to do it again with.
+    do
+        stage({ hp = 30.0 })
+        bag({ 'medkit' })
+        press('medkit')
+        step(5000)
+        local partial = subject().grantHpTo or subject().hp
+        pedHealth[PED] = BR.ToEngineHp(29.0)
+        step(250)
+        ok(using(), 'a dip below where the kit started, with nobody behind it, '
+            .. 'does not end the channel')
+        pedHealth[PED] = BR.ToEngineHp(partial)
+        finish(500)
+        ok(count('medkit') == 0 and subject().hp == 100,
+            'so the kit runs to the end and is spent like any other -- the loop '
+                .. 'gains nothing',
+            ('kits %d, e.hp %s'):format(count('medkit'), tostring(subject().hp)))
+    end
+
+    -- ─── A FIRE THE PLAYER LIT ───
+    --
+    -- The fire ledger names the owner of the flames, and a player standing in
+    -- their own molotov is named as their own attacker. That is not somebody
+    -- else's trigger.
+    do
+        stage({ hp = 30.0 })
+        bag({ 'medkit' })
+        press('medkit')
+        step(2000)
+        local e = subject()
+        e.lastHitBy, e.lastHitAt = 1, fakeTime
+        pedHealth[PED] = BR.ToEngineHp(20.0)
+        step(300)
+        ok(using(), 'a drop the player\'s own fire made does not interrupt them',
+            tostring(subject().hp))
+    end
+
+    -- ─── A HIT FROM BEFORE THE PRESS ───
+    --
+    -- `startedAt` is what makes it THIS channel's attacker. A player shot,
+    -- then healing in cover, then falling off a ledge has not been interrupted
+    -- by anybody.
+    do
+        stage({ hp = 60.0 })
+        bag({ 'medkit' })
+        BR.Damage.applyHit(2, 1, 10.0, { weapon = 'test' })
+        step(500)
+        press('medkit')
+        local hp0 = BR.Inv.of(1).using and BR.Inv.of(1).using.hp0
+        step(1000)
+        pedHealth[PED] = BR.ToEngineHp(30.0)
+        step(300)
+        ok(hp0 == 50 and using(),
+            'a hit landed before the press does not make a later fall an '
+                .. 'interruption',
+            ('hp0 %s, using %s, e.hp %s'):format(tostring(hp0), tostring(using()),
+                tostring(subject().hp)))
+    end
+
+    -- ─── AND AN ENEMY'S HIT STILL DOES, EXACTLY AS BEFORE ───
+    --
+    -- The item is kept and so are the partials: the ledger goes on from where
+    -- the heal had got to, less the hit.
+    do
+        stage({ hp = 30.0 })
+        bag({ 'medkit' })
+        press('medkit')
+        step(4000)
+        -- The BAR, not the ledger: the ledger trails the ped up by a sample, and
+        -- what the partials had given is what the player was looking at.
+        local before = bar()
+        BR.Damage.applyHit(2, 1, 60.0, { weapon = 'test' })
+        step(1500)
+        ok(not using() and count('medkit') == 1,
+            'an enemy\'s hit since the press interrupts the channel and the kit is '
+                .. 'kept', ('using %s, kits %d'):format(tostring(using()),
+                    count('medkit')))
+        ok(subject().hp == before - 60.0 and bar() == subject().hp,
+            'and the partials it had already given are kept, less the hit',
+            ('%s -> %s, bar %s'):format(tostring(before), tostring(subject().hp),
+                tostring(bar())))
     end
 
     GetEntityHealth, GetPedArmour = rawHealth, rawArmour
