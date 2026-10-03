@@ -28688,6 +28688,27 @@ do
         ok(BR.Inv.healing(99) == false, 'and a source with no roster entry is not')
     end
 
+    -- ───────────────────────────────────────────────────────────────────────
+    describe('heal.windows')
+    -- ───────────────────────────────────────────────────────────────────────
+    --
+    -- THE ARMOR DETECTOR READS ARMOR'S WINDOW TOO. A shield's rise is excused
+    -- as a heal by the window the shield opened; health's window is not open at
+    -- all, so a detector still reading it would count every honest shield.
+    for _, lat in ipairs({ 0, 500 }) do
+        stage({ hp = 100.0, lat = lat })
+        bag({ 'shield' })
+        press('shield')
+        finish(2 * lat + 1000)
+        local t = subject().armourAudit or {}
+        ok(subject().armour == 50 and (t.hp or 0.0) == 0.0
+            and (t.excused or {})[BR.HealthExcuse.HEALING] ~= nil,
+            ('an honest shield is excused as a heal, never counted (%dms line)')
+                :format(lat),
+            ('armor %s, counted %s'):format(tostring(subject().armour),
+                tostring(t.hp)))
+    end
+
     GetEntityHealth, GetPedArmour = rawHealth, rawArmour
     BR.Combat.defeat = rawDefeat
 end
