@@ -6167,8 +6167,14 @@ do
     -- destination is covered by the zone's fill exactly when the server has stopped
     -- billing it (less the cushion). Once grown the zone stands still and is not
     -- redrawn; when the sweep starts the union stays on the map as the wall moves off.
+    --
+    -- AT 10 Hz AND WITH STAGING ON, UNDER EXPLICIT CONFIG: the 8335b17 shipping values.
+    -- Both ship off since the 2026-10-02 hitch, where a growth is drawn as it starts and
+    -- redrawn once as it ends (map.hotfix).
     local M = newStormClient()
     M.mm.handle = 7
+    M.env.BR.Config.Storm.overlay.stage.enabled = true
+    M.env.BR.Config.Storm.overlay.morphHz = 10
     M.record(3, 0.0, 0.0, 1600.0, 1500.0, 0.0, 950.0, 90000, 90000, 1.7)
     M.env.BR.State.storm.seed = seed
     ok(M.overlayReady(), 'the map client reaches the gate')
@@ -6227,8 +6233,8 @@ do
             M.dest()[1] == destClip and 'kept' or 'replaced'))
     ok(growing > 150 and M.mm.adds - adds0 >= growing and growOff < 1e-6
             and M.errored() == nil,
-        'and the zone\'s fill is redrawn as it grows -- every tick at the shipping '
-            .. 'morphHz -- standing on the grown zone to a micron each time',
+        'and the zone\'s fill is redrawn as it grows -- every tick at morphHz 10 -- '
+            .. 'standing on the grown zone to a micron each time',
         M.errored() or ('%d adds over %d growing ticks, worst %.3e m off'):format(
             M.mm.adds - adds0, growing, growOff))
     ok(coverBad == nil and cover > 0 and cover < gTicks,
@@ -6293,6 +6299,7 @@ do
     -- the moment the zone stands still.
     local Q = newStormClient()
     Q.mm.handle = 7
+    Q.env.BR.Config.Storm.overlay.morphHz = 10
     Q.record(3, 0.0, 0.0, 1600.0, 1500.0, 0.0, 950.0, 90000, 90000, 1.7)
     local qrec = Q.env.BR.State.storm
     qrec.seed = seed
@@ -8897,8 +8904,9 @@ do
         'inside the fade window the zone rises on the map\'s own countdown, at part '
             .. 'strength rather than at full, so it fades in instead of popping',
         ('%.4f against %.4f at full'):format(lastO, blip.currentAlpha / 255))
-    -- THE ONLY ADDS IN THE HOLD ARE THE STAGED BANK's (2026-09-28), hidden clips for the
-    -- sweep ahead -- none of them the zone's own.
+    -- THE ONLY ADDS IN THE HOLD ARE A STAGED BANK's (2026-09-28), hidden clips for the
+    -- sweep ahead -- none of them the zone's own -- and as it ships, with staging off,
+    -- there are none at all (map.hotfix).
     local fadeStagedN = H.env.BR.MapOverlay.report().stagedN - fadeStaged
     ok(H.mm.adds - fadeAdds == fadeStagedN and steps > 10,
         'and not one polygon was added for it -- every step of the fade is one alpha '
@@ -9082,12 +9090,13 @@ do
     --
     -- The map shows the destination, standing still, and ONE zone: BR.StormZone at the
     -- tick, the very zone the wall is drawn from and the damage tick bills. While its
-    -- outline changes -- a sweep's first leg, a breakout's whole sweep -- its own clip is
-    -- replaced at overlay.morphHz, the destination untouched; while it is one outline
-    -- moved and scaled -- the last morph.leadSeconds of a nested sweep, the last zone
-    -- onto its point -- it is only placed (BR.StormWallFrame). This block asks, by the
-    -- movie's own arithmetic, that what the map shows IS the zone at every tick of every
-    -- kind of sweep, and counts what that costs.
+    -- outline changes -- a sweep's first leg -- its own clip is replaced at
+    -- overlay.morphHz, the destination untouched, and placed on the wall's pivot in
+    -- between; while it is one outline moved and scaled -- the last morph.leadSeconds of
+    -- a sweep, the last zone onto its point -- it is only placed (BR.StormWallFrame). A
+    -- breakout's moving zone is the wall beside the destination at the zone's strength.
+    -- This block asks, by the movie's own arithmetic, that what the map shows IS the zone
+    -- at every tick of every kind of sweep at 10 Hz, and counts what that costs.
     --
     -- ═══ WHY THIS BLOCK HAS ITS OWN CLOCK ═══
     --
@@ -9100,12 +9109,12 @@ do
     -- is the case the block is about.
     local function sweepClient(phase, cx0, r0, cx1, r1, shrinkMs, cy0, cy1, want)
         local C = newStormClient()
-        -- THE FALLBACK PATH, ON PURPOSE (2026-09-28). A sweep is shown from a bank of
-        -- outlines staged in the hold before it; these clients hold for three seconds,
-        -- which is the case the old redraw is still for -- a bank that could not be
-        -- staged in time -- and this block keeps that path honest. map.stage is the
-        -- staged sweep.
+        -- THE MORPH REDRAW AT 10 Hz, ON PURPOSE. It shipped from ec19f40 to 8335b17 (as
+        -- the fallback for a bank not staged in time) and ships off since the
+        -- 2026-10-02 hitch (morphHz 0, staging off: map.hotfix); this block keeps the
+        -- machinery honest under explicit config. map.stage is the staged sweep.
         C.env.BR.Config.Storm.overlay.stage.enabled = false
+        C.env.BR.Config.Storm.overlay.morphHz = 10
         C.mm.handle = 7
         C.pedAt = pt(cx0, cy0 or 0.0)
         local rec = C.record(phase, cx0, cy0 or 0.0, r0, cx1, cy1 or 0.0, r1,
@@ -9313,9 +9322,8 @@ do
     ok(N.errored() == nil, 'the whole sweep runs clean', N.errored())
     ok(legOne.ticks > 1000 and legOne.adds >= legOne.ticks - 1 and legOne.zones == 1
             and legOne.worst < 1e-6,
-        'while its outline turns, the zone is redrawn every tick at the shipping morphHz '
-            .. '-- one clip, standing on the zone the wall and the damage tick share, to a '
-            .. 'micron',
+        'while its outline turns, the zone is redrawn every tick at morphHz 10 -- one '
+            .. 'clip, standing on the zone the wall and the damage tick share, to a micron',
         ('%d ticks, %d adds, at most %d zone clips, %.3e m off'):format(legOne.ticks,
             legOne.adds, legOne.zones, legOne.worst))
     ok(turned and turned < 1e-3,
@@ -9419,11 +9427,14 @@ do
             T.errored() or ('seed %d: worst %.6f m'):format(trec.seed, tWorst))
     end
 
-    -- ─── a breakout's zone is the wall union the destination, redrawn the whole way ───
+    -- ─── a breakout's zone is the wall beside the destination, redrawn to the knee ───
     --
-    -- No outline under a frame: the union changes shape until the wall has arrived. So
-    -- the sweep is redrawn at morphHz from start to finish, the fill on the zone the
-    -- damage tick bills at every tick, and the blips are left for refusals alone.
+    -- The safe zone is the wall union the destination, and a union is under no frame, so
+    -- it could not be moved with the wall. So while the wall moves the map shows the WALL
+    -- -- redrawn at morphHz while its outline turns, then placed in its own frame from the
+    -- knee (BR.StormWallFrame's `wallOnly`) -- beside the destination drawn again at the
+    -- zone's strength and never placed. The two union to the zone the damage tick bills,
+    -- at every tick, and the blips are left for refusals alone.
     for _, bc in ipairs({
         { 'a conjoined', 6, 0.0, 260.0, 300.0, 110.0, CONJOINED, 1 },
         { 'a disjoint', 4, 0.0, 950.0, 2400.0, 260.0, nil, 2 },
@@ -9439,21 +9450,33 @@ do
         B.env.BR.Loop.hitchStart(34)
         startSweep(B, brec)
         local bDest = B.dest()[1]
-        local bWorst, bTicks, bAdds0 = 0.0, 0, B.mm.adds
+        local bKnee = B.env.BR.StormKnee(brec) or 1.0
+        local bWorst, lastA = 0.0, B.mm.adds
+        local leg1, adds1, leg2, adds2 = 0, 0, 0, 0
         realTicks(B, 599, function()
-            bTicks = bTicks + 1
+            if tNow(B, brec) < bKnee then
+                leg1, adds1 = leg1 + 1, adds1 + (B.mm.adds - lastA)
+            else
+                leg2, adds2 = leg2 + 1, adds2 + (B.mm.adds - lastA)
+            end
+            lastA = B.mm.adds
             bWorst = math.max(bWorst, B.zoneErr(brec))
         end)
         local bFallback = traceRow(B, 'storm.map.fallback')
-        ok(B.errored() == nil and #B.rings() == 0 and bWorst < 1e-6
-                and B.mm.adds - bAdds0 >= bTicks - 1 and B.dest()[1] == bDest
-                and bFallback == nil,
-            ('%s breakout\'s sweep is redrawn every tick, on the zone the damage tick bills '
-                .. 'to a micron, over the same destination clip, and never falls back')
-                :format(bc[1]),
-            B.errored() or ('%d adds over %d ticks, %d rings, %.3e m off, fallback %s')
-                :format(B.mm.adds - bAdds0, bTicks, #B.rings(), bWorst,
-                    bFallback and tostring(bFallback.events) or 'none'))
+        local bSlots = B.env.BR.Storm.mapSlots()
+        local kinds = table.concat(bSlots and bSlots.kinds or {}, ',')
+        local beside = B.zone()[2]
+        ok(B.errored() == nil and #B.rings() == 0 and bWorst < 1e-3
+                and adds1 >= leg1 - 1 and leg2 > 50 and adds2 <= 2
+                and kinds == 'wall,dest' and beside and beside._x == nil
+                and B.dest()[1] == bDest and bFallback == nil,
+            ('%s breakout\'s wall is redrawn every tick to the knee and placed after it, '
+                .. 'beside the destination at the zone\'s strength, never placed -- on the '
+                .. 'zone the damage tick bills to a millimetre, over the same destination '
+                .. 'clip, and never falls back'):format(bc[1]),
+            B.errored() or ('%d adds over %d ticks, then %d over %d; %s; %d rings, %.3e m '
+                .. 'off, fallback %s'):format(adds1, leg1, adds2, leg2, kinds, #B.rings(),
+                    bWorst, bFallback and tostring(bFallback.events) or 'none'))
     end
 
     -- ─── a client that becomes ready mid-sweep draws the picture ONCE, then follows ───
@@ -9670,8 +9693,19 @@ do
     --   own error bound of the wall, both ways round, at every tick;
     --   AT THE END, the old banks are dropped in later holds, a clip per slot, and
     --   after the match nothing of ours is left in the movie.
+    --
+    -- UNDER EXPLICIT CONFIG: staging ships OFF since the 2026-10-02 hitch -- its adds in
+    -- the hold were the hitch (map.hotfix has the shipping picture) -- and it is kept, and
+    -- held to all of the above, for the design that replaces it.
     local SEEDS = 2
     local function copy(t) local c = {} for k, v in pairs(t) do c[k] = v end return c end
+
+    --- The 8335b17 shipping values: the bank staged in every hold, and the morph redraw
+    --- at 10 Hz for the one outline no hold can stage (a conjoined growth).
+    local function staging(env)
+        env.BR.Config.Storm.overlay.stage.enabled = true
+        env.BR.Config.Storm.overlay.morphHz = 10
+    end
 
     --- The unsigned distance from (x, y) to a closed polygon's edges.
     local function edgeDist(pts, x, y)
@@ -9707,6 +9741,7 @@ do
         local C = newStormClient()
         C.mm.handle = 7
         local env = C.env
+        staging(env)
         local BR = env.BR
         local st = BR.Config.Storm.overlay.stage
         local every = st.everyTicks
@@ -9892,10 +9927,13 @@ do
     local peak, cap = 0, nil
     local burst = {}
 
-    --- A client in a hold of phase `ph`, its bank staged in full.
+    --- A client in a hold of phase `ph`, its bank staged in full -- UNDER EXPLICIT CONFIG,
+    --- since staging ships off (map.stage says why it is kept).
     local function staged(ph)
         local C = newStormClient()
         C.mm.handle = 7
+        C.env.BR.Config.Storm.overlay.stage.enabled = true
+        C.env.BR.Config.Storm.overlay.morphHz = 10
         local rec = copy(recs[ph])
         rec.tStart = C.now
         C.env.BR.State.storm = rec
@@ -10097,6 +10135,255 @@ do
         ('and on every tick of every walk our clips in the movie never exceeded the cap of '
             .. '%d -- overlay.stage.maxClips and the picture'):format(cap),
         ('peak %d'):format(peak))
+end
+
+-- ---------------------------------------------------------------------------
+describe('map.hotfix')
+do
+    -- ═══ NOTHING ADDED OR REMOVED ON A CLOCK -- ONLY AT THE FEW CHANGES OF KIND A PHASE
+    --     HAS (2026-10-02) ═══
+    --
+    --   "the game is now hitching every second or so ... the hitching is pretty
+    --    severe"                                     -- the owner, playtesting 8335b17
+    --
+    -- `/brstormbisect mapoff` stopped it, so it was the map fill, and every
+    -- ADD_AREA_OVERLAY is the call #350 traced: 8335b17 staged up to 200 hidden clips in
+    -- every hold, one each two map ticks and never further apart than 1.6 s, and redrew a
+    -- growth every tick. So the shipping config stages nothing and redraws on no clock
+    -- (overlay.stage.enabled = false, overlay.morphHz = 0). Whole real matches, through
+    -- the real client at the map band's own 100 ms, held to what that means:
+    --
+    --   THE WARMUP PREVIEW is one add, and stands;
+    --   EVERY TICK THAT ADDS OR REMOVES A CLIP is one on which the zone's kind of change
+    --   switched -- or a record arrived -- and not one is on a clock: a hold adds nothing
+    --   but a growth's one redraw as it ends, a sweep redraws as it sets off and at the
+    --   knee, a breakout once more as it finishes;
+    --   BETWEEN THEM THE ZONE IS PLACED EVERY TICK: the outline drawn as the sweep set off
+    --   on the wall's pivot and at its size to the knee, exactly; the wall's own outline
+    --   in its own frame from the knee, on the zone to a millimetre;
+    --   NOTHING IS STAGED, and after the match nothing of ours is in the movie.
+    local SEEDS = 3
+    local function copy(t) local c = {} for k, v in pairs(t) do c[k] = v end return c end
+
+    local shipOv = newStormClient().env.BR.Config.Storm.overlay
+    ok(shipOv.morphHz == 0 and shipOv.stage.enabled == false,
+        'the shipping config redraws the zone on no clock and stages no clips',
+        ('morphHz %s, stage.enabled %s'):format(tostring(shipOv.morphHz),
+            tostring(shipOv.stage.enabled)))
+
+    local previewOk, previewWhy = false, 'not run'
+    local clockOps, clockWhere = 0, nil
+    local holdBad, sweepBad, kindsWhere = 0, 0, nil
+    local sweepsN, worstSweepEvents = 0, 0
+    local pivotTicks, unplaced, pivotOff, pivotWhere = 0, 0, 0.0, nil
+    local frameTicks, frameWorst = 0, 0.0
+    local stagedEver, leftover, summaryBad = 0, 0, nil
+    for seq = 1, SEEDS do
+        local recs = walkRecords(seq)
+        local C = newStormClient()
+        C.mm.handle = 7
+        local env = C.env
+        local BR = env.BR
+        local function tagNow()
+            local s = BR.Storm.mapSlots()
+            return s and s.tag or nil
+        end
+        --- One map tick: how many clips it added and removed, how many placements it
+        --- sent, and whether the zone's kind of change switched on it.
+        local function step()
+            local a0, r0, p0, before = C.mm.adds, C.mm.removes, C.mm.placed, tagNow()
+            C.now = C.now + 100
+            BR.Loop.step(BR.Loop.TICK)
+            return (C.mm.adds - a0) + (C.mm.removes - r0), C.mm.placed - p0,
+                tagNow() ~= before
+        end
+
+        -- ─── the warmup preview: circle 1, drawn once ───
+        if seq == 1 then
+            local r1 = recs[1]
+            BR.State.storm = nil
+            BR.State.match.state = BR.MatchState.WARMUP
+            BR.State.me.state = BR.PlayerState.WARMUP
+            BR.State.stormPreview = { cx = r1.cx1, cy = r1.cy1, r = r1.r1, seed = r1.seed }
+            local ready = C.overlayReady()
+            C.tick(1)
+            local pa, pr = C.mm.adds, C.mm.removes
+            for _ = 1, 300 do step() end
+            previewOk = ready and #C.areas() == 1 and pa == 1 and C.mm.adds == pa
+                and C.mm.removes == pr
+            previewWhy = ('%d areas, %d adds, then %+d adds and %+d removals in 30 s')
+                :format(#C.areas(), pa, C.mm.adds - pa, C.mm.removes - pr)
+            BR.State.stormPreview = nil
+            BR.State.match.state = BR.MatchState.PLAYING
+            BR.State.me.state = BR.PlayerState.ALIVE
+        end
+
+        for ph = 1, #BR.Config.Storm.phases do
+            local rec = copy(recs[ph])
+            rec.tStart = C.now
+            BR.State.storm = rec
+            C.pedAt = pt(rec.cx1, rec.cy1)
+            if ph == 1 and seq > 1 then
+                C.overlayReady()
+                rec.tStart = C.now
+            end
+            local over = (BR.StormOverlaps(rec))
+            local holdN, sweepN, doneN = 0, 0, 0
+            local w0, h0, prDraw = nil, nil, nil
+            local total = math.floor((rec.tWait + rec.tShrink) / 100.0) + 3
+            for i = 1, total do
+                local ops, placed, turned = step()
+                local _, _, _, st, _, _, t = BR.StormAt(rec, BR.Clock.now())
+                if i > 1 and ops > 0 then
+                    if not turned and clockOps == 0 then
+                        clockWhere = ('match %d phase %d tick %d (%s, t=%.3f): %d ops')
+                            :format(seq, ph, i, tostring(st), t, ops)
+                    end
+                    if not turned then clockOps = clockOps + 1 end
+                    if st == BR.StormPhase.HOLDING then holdN = holdN + 1
+                    elseif st == BR.StormPhase.SHRINKING then sweepN = sweepN + 1
+                    else doneN = doneN + 1 end
+                end
+                local tag = tagNow()
+                if st == BR.StormPhase.SHRINKING and tag == 'pivot' then
+                    -- Drawn on the tick it turned, about the pivot of that instant.
+                    local ov = C.zone()[1]
+                    local px, py, pr = BR.StormWallPivot(rec, t)
+                    if turned then
+                        local x0, x1, y0, y1 = math.huge, -math.huge, math.huge, -math.huge
+                        for _, q in ipairs(ov.points) do
+                            x0, x1 = math.min(x0, q.x), math.max(x1, q.x)
+                            y0, y1 = math.min(y0, q.y), math.max(y1, q.y)
+                        end
+                        w0, h0, prDraw = x1 - x0, y1 - y0, pr
+                    else
+                        pivotTicks = pivotTicks + 1
+                        if placed == 0 then unplaced = unplaced + 1 end
+                    end
+                    local k = ov._width / w0
+                    local off = math.max(math.abs(ov._x - px), math.abs((0 - ov._y) - py),
+                        math.abs(k * prDraw - pr) / pr, math.abs(ov._height / h0 - k))
+                    if off > pivotOff then
+                        pivotOff = off
+                        pivotWhere = ('match %d phase %d t=%.3f'):format(seq, ph, t)
+                    end
+                elseif st == BR.StormPhase.SHRINKING and tag and tag:sub(1, 6) == 'frame|'
+                        and i % 5 == 0 then
+                    frameTicks = frameTicks + 1
+                    frameWorst = math.max(frameWorst, C.zoneErr(rec))
+                end
+            end
+            sweepsN = sweepsN + 1
+            worstSweepEvents = math.max(worstSweepEvents, sweepN + doneN)
+            -- A HOLD: nothing after its picture but a conjoined growth's end. A SWEEP:
+            -- its start and its knee -- or, on the last, its start and its last metre --
+            -- and a breakout's finish.
+            if holdN > ((over and 1) or 0) then holdBad = holdBad + 1 end
+            if sweepN > 2 or doneN > 1 then sweepBad = sweepBad + 1 end
+            if (holdN > ((over and 1) or 0) or sweepN > 2 or doneN > 1) and not kindsWhere then
+                kindsWhere = ('match %d phase %d: %d in the hold, %d in the sweep, %d after')
+                    :format(seq, ph, holdN, sweepN, doneN)
+            end
+        end
+        local ms = BR.Storm.mapStats()
+        if ms.staged ~= 0 or ms.sweepsStaged ~= 0 then
+            summaryBad = summaryBad or ('match %d: %d staged, %d sweeps from staged clips')
+                :format(seq, ms.staged, ms.sweepsStaged)
+        end
+        stagedEver = stagedEver + BR.MapOverlay.report().stagedN
+        BR.State.storm = nil
+        for _ = 1, 50 do step() end
+        leftover = leftover + #C.mm.overlays
+        ok(C.errored() == nil, ('match %d runs clean'):format(seq), C.errored())
+    end
+    ok(previewOk, 'the warmup preview is one add, and stands thirty seconds without another',
+        previewWhy)
+    ok(clockOps == 0,
+        ('across %d sweeps of %d whole matches, every tick that adds or removes a clip is '
+            .. 'one where the zone\'s kind of change switched or a record arrived -- not one '
+            .. 'on a clock'):format(sweepsN, SEEDS), clockWhere)
+    ok(holdBad == 0 and sweepBad == 0 and worstSweepEvents <= 3,
+        'a hold adds nothing after its picture but a growth\'s one redraw as it ends; a '
+            .. 'sweep redraws as it sets off and at the knee, a breakout once more as it '
+            .. 'finishes', kindsWhere or ('at most %d a sweep'):format(worstSweepEvents))
+    ok(pivotTicks > 1000 and unplaced == 0 and pivotOff < 1e-6,
+        'to the knee the outline drawn as the sweep set off is placed on the wall\'s pivot '
+            .. 'and at its size, every tick',
+        ('%d ticks, %d unplaced, %.3e off at %s'):format(pivotTicks, unplaced, pivotOff,
+            tostring(pivotWhere)))
+    ok(frameTicks > 100 and frameWorst < 1e-3,
+        'and from the knee it is the wall\'s own outline in its own frame, on the zone to a '
+            .. 'millimetre -- a breakout\'s beside its destination at the zone\'s strength',
+        ('%d ticks measured, worst %.6f m'):format(frameTicks, frameWorst))
+    ok(stagedEver == 0 and summaryBad == nil and leftover == 0,
+        'no clip is ever staged, the summary says so, and after the match nothing of ours is '
+            .. 'in the movie',
+        summaryBad or ('%d staged, %d left'):format(stagedEver, leftover))
+
+    -- ─── a picture the engine refuses is drawn again a few times, then waits ───
+    --
+    -- Adds accepted and the placement after them refused: the picture comes back out
+    -- whole (map.motion's refusal client). It used to be drawn again every 1 / rebuildHz
+    -- for as long as that lasted -- an add and a removal twice a second, on a clock, the
+    -- very traffic this hotfix takes away. Now PICTURE_TRIES pictures at most, each
+    -- further apart, and then the blips until the kind of change switches.
+    local R = newStormClient()
+    R.mm.handle = 7
+    local rrec = R.record(2, 1000.0, -700.0, 2600.0, 1400.0, -300.0, 1600.0, 600000, 60000,
+        2.0)
+    rrec.seed = 424242
+    ok(R.overlayReady(), 'the refusal client reaches the gate')
+    R.tick(2)
+    local rAdds = R.mm.adds
+    R.mm.refuseMethod['UPDATE_OVERLAY_POSITION'] = true
+    rrec.cx1 = rrec.cx1 + 50.0               -- a new record's geometry: a picture is due
+    local function holdTicks(n)
+        for _ = 1, n do
+            R.now = R.now + 100
+            R.env.BR.Loop.step(R.env.BR.Loop.TICK)
+        end
+    end
+    holdTicks(600)
+    local tried = R.mm.adds - rAdds
+    ok(tried >= 2 and tried <= 8 and #R.areas() == 0 and #R.rings() > 0,
+        'a minute of refused placements in a hold is four pictures at most -- not one every '
+            .. 'half second -- and the blips carry the map',
+        ('%d adds, %d areas, %d rings'):format(tried, #R.areas(), #R.rings()))
+    R.mm.refuseMethod['UPDATE_OVERLAY_POSITION'] = nil
+    local rHeld = R.mm.adds
+    holdTicks(100)
+    ok(R.mm.adds == rHeld and #R.areas() == 0,
+        'and once the engine accepts again it still waits for the next change of kind',
+        ('%d adds'):format(R.mm.adds - rHeld))
+    rrec.tStart = R.now - rrec.tWait
+    holdTicks(3)
+    local rSlots = R.env.BR.Storm.mapSlots()
+    ok(rSlots and rSlots.tag == 'pivot' and #R.zone() >= 1 and #R.rings() == 0
+            and R.errored() == nil,
+        'which the sweep setting off is: the picture is drawn, and the blips go',
+        R.errored() or ('%s, %d areas, %d rings'):format(tostring(rSlots and rSlots.tag),
+            #R.areas(), #R.rings()))
+
+    -- AND SWITCHING /brstormbisect IS NOT A REFUSAL: back to normal draws the picture at
+    -- once, however many times a dev flips it in one hold.
+    local X = newStormClient()
+    X.mm.handle = 7
+    local xrec = X.record(2, 1000.0, -700.0, 2600.0, 1400.0, -300.0, 1600.0, 600000, 60000,
+        2.0)
+    xrec.seed = 424242
+    ok(X.overlayReady(), 'the bisect client reaches the gate')
+    X.tick(2)
+    local xAreas, back = #X.areas(), 0
+    for _ = 1, 6 do
+        X.cmds.brstormbisect(nil, { 'mapoff' }, '')
+        X.tick(1)
+        X.cmds.brstormbisect(nil, { 'normal' }, '')
+        X.tick(1)
+        if xAreas > 0 and #X.areas() == xAreas then back = back + 1 end
+    end
+    ok(back == 6 and X.errored() == nil,
+        'six round trips through mapoff in one hold draw the picture back six times',
+        X.errored() or ('%d of 6'):format(back))
 end
 
 -- ---------------------------------------------------------------------------

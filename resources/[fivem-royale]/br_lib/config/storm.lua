@@ -149,8 +149,9 @@ BR.Config.Storm = {
     -- the zone still appears at once: the far island is fine as it is. 0 is the old
     -- pop, on the wall and on the map.
     --
-    -- THE MAP DRAWS THE FRONT: the zone's fill is the growing zone itself, redrawn at
-    -- `overlay.morphHz` while it grows, like a sweep's moving outline.
+    -- THE MAP DRAWS THE ZONE AS IT STARTS AND AS IT ENDS: drawn when the record arrives
+    -- and redrawn once, grown, as the growth ends -- and above `overlay.morphHz` 0, at
+    -- that rate between, the front and all. 0 ships since the 2026-10-02 hitch.
     --
     -- MEASURED over 680 conjoined breakouts (200 matches, phases 2 to 7, every one
     -- forced to break out): the destination reaches 1.0 to 1.3 of its own radius
@@ -431,9 +432,11 @@ BR.Config.Storm = {
     --
     --   LONG ZONES ARE LONGER THAN THE OLD DIAMETERS -- see point 2 at the top.
     --
-    --   THE MAP REDRAWS THE MORPH. No map handler edits a polygon's points, so while
-    --   the zone changes shape its fill is redrawn at `overlay.morphHz`, and once it
-    --   is the destination's shape (`morph` below) it is only moved and scaled.
+    --   THE MAP DOES NOT REDRAW THE MORPH, since the 2026-10-02 hitch. No map handler
+    --   edits a polygon's points, so while the zone changes shape the map shows the
+    --   outline it set off with, moved and scaled with the wall, and once it is the
+    --   destination's shape (`morph` below) that, moved and scaled exactly.
+    --   `overlay.morphHz` has why, and how far off the first is.
     --
     --   A UNIT COSTS ABOUT TWO MILLISECONDS TO BUILD -- 1.7 on average, 5 at the
     --   99th percentile, in plain Lua 5.4 -- and is built once per zone per match: the
@@ -987,25 +990,59 @@ BR.Config.Storm = {
         -- The CEILING on whole rebuilds per second, whatever asks for one: every one
         -- of our areas removed and added again. That happens once per record -- when
         -- it arrives -- and otherwise only for a first sight or a refused picture
-        -- drawn again, so this is a ceiling and not a rate.
+        -- drawn again, so this is a ceiling and not a rate. A REFUSED picture is drawn
+        -- again three times at most, each twice as far apart, and then waits for the
+        -- next change of kind (client/storm.lua's PICTURE_TRIES): retried on this clock
+        -- for as long as a refusal lasted, it was an add and a removal twice a second.
         rebuildHz = 2,
 
         -- ═══ HOW OFTEN THE MOVING ZONE IS REDRAWN WHILE ITS OUTLINE CHANGES ═══
         --
-        -- The map shows ONE moving zone (client/storm.lua's storm.map). While it is one
-        -- fixed outline moved and scaled -- the last `morph.leadSeconds` of a nested
-        -- sweep -- it is only placed, two property writes a tick. While its outline
-        -- CHANGES -- the first leg of a sweep, a breakout's whole sweep, a conjoined
-        -- growth -- no movie handler can edit a polygon's points, so its clip is
-        -- replaced: one REM_OVERLAY and one ADD_AREA_OVERLAY per contour, the
-        -- destination under it untouched. This is how many times a second.
+        --   "the game is now hitching every second or so ... the hitching is pretty
+        --    severe"                          -- the owner, 2026-10-02, playing 8335b17
         --
-        -- 10 IS EVERY TICK OF THE MAP'S OWN 10 Hz BAND, AND IT SHIPS THERE because
-        -- the owner asked for a per-frame morph and one contour is small: 22 points and
-        -- about 290 characters on average, where #350's 2 Hz rebuild was every area at
-        -- once. MEASURED over 60 placed sweeps, phases 2 to 7 at their authored lengths:
-        -- how far the zone's boundary moves between two redraws, in metres, mean
-        -- [worst]. A pause-map pixel is about 8 m.
+        -- And `/brstormbisect mapoff` -- our fill off the map, the blips instead --
+        -- stopped it. Every ADD_AREA_OVERLAY is the call #350 traced, and 8335b17 made
+        -- them on a clock: the staging below through every hold, and a conjoined growth
+        -- redrawn every tick at the 10 this used to be.
+        --
+        -- SO 0 SHIPS, AND THE STAGING BELOW IS OFF. The zone is redrawn only when the
+        -- kind of change does -- the sweep setting off, the knee, a growth ending, a
+        -- breakout's sweep ending -- two or three times a phase, and between those it is
+        -- only placed, resized and faded. tools/test_storm.lua's map.hotfix holds whole
+        -- matches to that, tick by tick.
+        --
+        -- WHAT THE MAP SHOWS DURING A SWEEP, THEN. To the knee, the zone's STARTING
+        -- outline, moved onto the wall's pivot and scaled to its size every tick
+        -- (BR.StormWallPivot); from the knee, the destination's outline in the wall's own
+        -- frame, which is exact. A breakout's wall is shown so, beside its destination at
+        -- the zone's strength. THE 3D WALL STILL MORPHS EVERY FRAME, so to the knee the
+        -- map is off the wall by how far the shape has turned since the sweep set off.
+        -- MEASURED over 12 whole matches through the real client at 100 ms (the suite's
+        -- record walk), every fifth tick of each first leg: the map's outline from the
+        -- zone, metres, mean [worst]. Beside it, the outline left standing where the
+        -- sweep set off, and 8335b17's staged outlines. A pause-map pixel is about 8 m.
+        --
+        --     phase      moved         standing        staged
+        --       1     1292 [3631]    3989 [10548]    5.0 [18.4]
+        --       2      359 [1066]     845 [2284]     2.6 [9.7]
+        --       3      317 [775]      601 [1499]     2.7 [8.8]
+        --       4      211 [697]      478 [1497]     2.7 [8.7]
+        --       5      103 [261]      258 [789]      2.8 [11.8]
+        --       6       48 [157]      162 [494]      2.3 [8.4]
+        --       7       21 [73]        60 [219]      2.4 [11.1]
+        --
+        -- (Standing, a breakout is up to 3 km off after the knee too; moved, it is exact.)
+        -- A MAP MORPH THAT IS PER FRAME AND HITCH-FREE IS A SEPARATE DESIGN QUESTION, and
+        -- this number is not the answer to it.
+        --
+        -- ABOVE 0 the zone is redrawn this many times a second while its outline
+        -- changes -- one REM_OVERLAY and one ADD_AREA_OVERLAY per contour, the
+        -- destination untouched -- and placed on the wall's pivot in between. 10 is every
+        -- tick of the map's own 10 Hz band, the per-frame morph the owner asked for,
+        -- which shipped from ec19f40 to 8335b17. MEASURED over 60 placed sweeps, phases 2
+        -- to 7 at their authored lengths: how far the zone's boundary moves between two
+        -- redraws, in metres, mean [worst].
         --
         --     phase     10 Hz        5 Hz         2 Hz
         --       2      3.3 [4.4]    6.6 [8.8]   16.4 [22.0]    (a breakout)
@@ -1015,27 +1052,29 @@ BR.Config.Storm = {
         --       6      0.8 [1.3]    1.6 [2.5]    3.9 [6.3]
         --       7      0.5 [0.6]    0.9 [1.3]    2.4 [3.1]
         --
-        -- WHAT A REDRAW COSTS INSIDE THE MOVIE IS NOT MEASURABLE OFF THE GAME BOX, and
-        -- #350's hitch was traced to this call. So read it there: /brstormhitch reset
-        -- during a sweep's first leg and look for storm.map.morph on the hitch rows,
-        -- and /brstormbisect mapnomorph against normal for the A/B. If it shows, 5 keeps
-        -- the fill within about a pixel of the wall. 0 redraws only when the kind of
-        -- change does -- the sweep starting, the knee, a growth ending.
-        morphHz = 10,
+        -- /brstormbisect mapnomorph is 0 whatever this says, for the A/B against normal.
+        morphHz = 0,
 
-        -- ═══ BUT A SWEEP IS NOT REDRAWN AT ALL: ITS OUTLINES ARE STAGED IN THE HOLD ═══
+        -- ═══ THE OUTLINES A SWEEP NEEDS, STAGED IN THE HOLD -- OFF ═══
         --
         --   "is there any way we can silently stage the textures we need over time to
         --    be less intrusive and hitchy?"                  -- the owner, 2026-09-28
         --
-        -- morphHz above is now only the fallback -- a client that joined mid-sweep, a
-        -- conjoined zone growing through its hold. Every other sweep is shown from a
-        -- BANK of hidden clips added during the hold before it (client/storm.lua's
-        -- "staging"): the zone's outline at K+1 instants of the first leg, each placed
-        -- on the wall's pivot and size as the sweep reaches it, swapped by alpha. Not
-        -- one clip is added or removed while the wall moves.
+        -- OFF SINCE 2026-10-02, BECAUSE IT WAS THE HITCH. A staged clip is hidden, but
+        -- adding it is still ADD_AREA_OVERLAY: up to maxClips of them through every hold,
+        -- one every everyTicks map ticks, and the frame budget below backs them off no
+        -- further than maxTicks, 1.6 s -- a hitch about every second all through the
+        -- hold. Kept, and held to its tests under explicit config (map.stage,
+        -- map.teardown), for the design that replaces it.
+        --
+        -- With it on, every sweep is shown from a BANK of hidden clips added during the
+        -- hold before it (client/storm.lua's "staging"): the zone's outline at K+1
+        -- instants of the first leg, each placed on the wall's pivot and size as the
+        -- sweep reaches it, swapped by alpha. Not one clip is added or removed while the
+        -- wall moves, and morphHz above is only for a client that joined mid-sweep and a
+        -- conjoined zone growing through its hold.
         stage = {
-            enabled    = true,
+            enabled    = false,
             -- At most one clip added (or an old one dropped) per this many map ticks:
             -- 2 is five a second, and a whole phase-1 bank of 200 in 40 s of a hold
             -- that is at least 60.

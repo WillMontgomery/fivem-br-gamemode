@@ -1764,41 +1764,48 @@ end
 -- the engine what that is in RGB. So the layering survives -- faint zone, stronger
 -- target -- in one hue rather than two. config/storm.lua's `overlay` block says so.
 --
--- ═══ HOW THE ZONE MOVES: PLACED WHILE IT KEEPS ITS OUTLINE, REDRAWN WHILE IT CHANGES
---     IT ═══
+-- ═══ HOW THE ZONE MOVES: PLACED, AND REDRAWN ONLY WHEN THE KIND OF CHANGE DOES ═══
 --
 -- MINIMAP_LOADER.gfx has no handler that edits an area's points (client/mapoverlay.lua
--- lists what it has: add, remove, move, resize, turn, fade, colour, hide). So there
--- are three ways to show the zone moving, and each has its stretch of the phase:
+-- lists what it has: add, remove, move, resize, turn, fade, colour, hide). So the zone
+-- is shown moving by PLACING a clip it already has, and each stretch of the phase has
+-- its way:
 --
---   PLACED    while the zone is ONE outline moved and scaled -- the last
---             `morph.leadSeconds` of a nested sweep, where it is the destination's
---             shape converging on the destination, and the last zone shrinking onto
---             its point (BR.StormWallFrame). Drawn once about the frame's point, then
---             moved and resized every tick: two property writes a contour, no
---             polygon, exact.
---   STAGED    while its outline changes in a sweep -- the first leg of every sweep,
---             and the whole sweep of a breakout: the nearest of the outlines staged,
---             hidden, during the hold before, placed on the wall's pivot and swapped by
---             alpha. Nothing added or removed while the wall moves. See "staging".
---   REDRAWN   a conjoined zone growing into its destination, and a sweep whose bank
---             was not staged in time: the zone's own clips are replaced at
---             `overlay.morphHz`; the destination under it is never touched.
---   STILL     a hold, a grown hold, a finished sweep: drawn once, faded on the
---             phase-1 clock, and otherwise left alone.
+--   PLACED    while the wall moves. From the knee -- the last `morph.leadSeconds` of a
+--             sweep, the wall the destination's outline converging on it -- and the
+--             last zone onto its point, in the wall's own frame (BR.StormWallFrame),
+--             exactly. To the knee, while the outline turns, the outline drawn as the
+--             sweep set off, on the wall's pivot and at its size (BR.StormWallPivot):
+--             it moves with the wall but does not turn with it. Drawn once, then moved
+--             and resized every tick: two property writes a contour, no polygon. A
+--             breakout's wall is placed so beside its destination, drawn again at the
+--             zone's strength and never placed -- the two union to the zone.
+--   REDRAWN   when the kind of change switches -- the sweep setting off, the knee, a
+--             growth or a breakout's sweep ending -- and, above `overlay.morphHz` 0, at
+--             that rate while the outline turns: the zone's own clips are replaced, the
+--             destination under them never touched.
+--   STAGED    off since 2026-10-02 (`overlay.stage`): the first leg shown from outlines
+--             staged, hidden, during the hold before, swapped by alpha. See "staging".
+--   STILL     a hold, a growth (drawn as it starts, redrawn as it ends), a finished
+--             sweep: drawn once, faded on the phase-1 clock, and otherwise left alone.
 --
--- At no moment is more than one zone outline VISIBLE: the staged bank waits at alpha
--- 0, and a swap hides the old outline in the tick it shows the new one -- no
--- cross-fade, nothing two outlines deep.
+-- At no moment is more than one zone outline VISIBLE: a staged bank waits at alpha 0,
+-- and a swap hides the old outline in the tick it shows the new one -- no cross-fade,
+-- nothing two outlines deep.
 --
--- ═══ AND THE REDRAW IS THE COST #350 MEASURED, SO A SWEEP NO LONGER PAYS IT ═══
+-- ═══ AND AN ADD IS THE COST #350 MEASURED, SO NOTHING PAYS IT ON A CLOCK ═══
 --
--- A redraw is REM_OVERLAY and ADD_AREA_OVERLAY for the zone's contour -- one, or two
--- islands on a disjoint breakout -- with its coordinates marshalled through a
--- Scaleform string; the destination's clip is left alone. `overlay.morphHz` bounds it,
--- and the `storm.map.morph` hitch row is where its cost is read in game
--- (/brstormhitch, and /brstormbisect mapnomorph for the A/B). config/storm.lua has
--- why it ships at the rate it does.
+--   "the game is now hitching every second or so ... the hitching is pretty severe"
+--                                          -- the owner, 2026-10-02, playing 8335b17
+--
+-- A redraw is REM_OVERLAY and ADD_AREA_OVERLAY for the zone's contours, their
+-- coordinates marshalled through a Scaleform string. 8335b17 staged hidden clips
+-- through every hold and redrew a growth every tick, and `/brstormbisect mapoff` took
+-- the hitch away. So the shipping config adds a clip only at a change of kind -- two or
+-- three a phase -- and a refused picture is drawn again a few times at most
+-- (PICTURE_TRIES). The `storm.map.morph` hitch row is where a redraw's cost is read in
+-- game (/brstormhitch); config/storm.lua's `overlay` has the rates, and how far off
+-- the map is for them.
 
 --- How many areas the overlay is currently showing for us.
 local overlayShown = 0
@@ -1807,6 +1814,18 @@ local overlayKey = nil
 local overlaySaid = false
 local movingFallbackKey = nil
 local mapBlipsDirty = false
+
+--- A WHOLE PICTURE IS DRAWN A FEW TIMES AT MOST BETWEEN TWO CHANGES OF KIND (2026-10-02).
+---
+--- A picture the engine refused -- an add, a removal, or the placement or fade after
+--- accepted adds -- used to be drawn again every 1 / rebuildHz for as long as the
+--- refusal lasted: on a refused placement that is an ADD_AREA_OVERLAY and a REM_OVERLAY
+--- twice a second, on a clock. So the pictures drawn for one record and one kind of
+--- change (its key and tag) are counted: the first, then at most PICTURE_TRIES - 1
+--- more, each twice as far apart as the last, and then the blips carry the map until
+--- the kind changes -- the sweep starting, the knee, a growth ending, a new record.
+local PICTURE_TRIES = 4
+local pictureFor, pictureN = nil, 0
 
 --- WHAT THE MOVIE HOLDS FOR THE CURRENT PICTURE, and where the zone was put.
 ---
@@ -1962,7 +1981,8 @@ end
 ---
 --- The phase, the seed, both circles and a carried outline: what the destination is
 --- drawn FROM. A new key is a whole new picture. The zone's own changes are the
---- `mode` and the `tag`: `still`, `frame|<family>` (BR.StormWallFrame) or `morph`, and
+--- `mode` and the `tag`: `still`, `frame|<family>` (BR.StormWallFrame), `pivot` (a
+--- sweep's changing outline, placed on BR.StormWallPivot) or `morph` (a growth), and
 --- a change of tag is a redraw of the zone alone.
 --- @return table|nil plan
 --- @return string|nil key
@@ -1998,16 +2018,25 @@ local function overlayPlan()
     end
 
     -- HOW THE ZONE'S OUTLINE IS CHANGING, which decides how it is shown.
+    --
+    -- WHILE THE WALL MOVES THE MAP FOLLOWS THE WALL ITSELF (2026-10-02): its own frame
+    -- from the knee -- on a breakout too, `wallOnly` -- and before it the wall's pivot,
+    -- where the outline drawn at the last redraw is moved and scaled (zonePicture).
     local mode, fx, fy, fs, fid = 'still', nil, nil, nil, nil
+    local sweep = st == BR.StormPhase.SHRINKING
     if growing then
         mode = 'morph'
-    elseif st == BR.StormPhase.SHRINKING or st == BR.StormPhase.FINISHED then
-        fx, fy, fs, fid = BR.StormWallFrame(rec, t)
+    elseif sweep then
+        fx, fy, fs, fid = BR.StormWallFrame(rec, t, true)
         if fid then
             mode = 'frame'
-        elseif st == BR.StormPhase.SHRINKING then
+        else
             mode = 'morph'
+            fx, fy, fs = BR.StormWallPivot(rec, t)
         end
+    elseif st == BR.StormPhase.FINISHED then
+        fx, fy, fs, fid = BR.StormWallFrame(rec, t)
+        if fid then mode = 'frame' end
     end
 
     local mo = rec.mo
@@ -2018,7 +2047,9 @@ local function overlayPlan()
         rec = rec, cx = cx, cy = cy, r = r, t = t, g = g,
         state = st, zoneA = zoneA, msLeft = msLeft,
         growing = growing and true or false,
-        mode = mode, tag = fid and ('frame|' .. fid) or mode,
+        sweep = sweep and fx ~= nil,
+        mode = mode,
+        tag = fid and ('frame|' .. fid) or (fx and 'pivot') or mode,
         fx = fx, fy = fy, fs = fs,
     }, key
 end
@@ -2026,14 +2057,32 @@ end
 --- The zone's picture for a plan: its contours, drawn about the frame's point when it
 --- has one -- so placing and resizing the clip moves and scales the outline exactly
 --- -- and about the solver's centre otherwise, where it is only ever placed there.
+---
+--- WHILE THE WALL MOVES it is the WALL, drawn about its frame or its pivot (overlayPlan)
+--- -- and on a breakout the destination beside it at the zone's strength, `fixed` in
+--- world coordinates and never placed: the two union to the zone, and a union could not
+--- be moved with the wall. Each part says which it is (BR.Storm.mapSlots' kinds).
 --- @param plan table
 --- @param first integer   the slot its first contour will go out in
 --- @return table zone, table areas
 local function zonePicture(plan, first)
-    local zone = BR.StormZone(plan.rec, plan.cx, plan.cy, plan.r, plan.t, plan.g)
+    local rec = plan.rec
     local ox, oy, os = plan.cx, plan.cy, 1.0
-    if plan.mode == 'frame' then ox, oy, os = plan.fx, plan.fy, plan.fs end
-    local parts = contoursOf(zone, ox, oy)
+    if plan.fx then ox, oy, os = plan.fx, plan.fy, plan.fs end
+    local parts
+    if plan.sweep then
+        parts = contoursOf(BR.StormWall(rec, plan.t), ox, oy)
+        for i = 1, #parts do parts[i].kind = 'wall' end
+        if not BR.StormNested(rec) and (rec.r1 or 0.0) > 0.0 then
+            for _, c in ipairs(contoursOf(BR.StormTarget(rec), 0.0, 0.0)) do
+                c.kind, c.fixed = 'dest', true
+                parts[#parts + 1] = c
+            end
+        end
+    else
+        parts = contoursOf(BR.StormZone(rec, plan.cx, plan.cy, plan.r, plan.t, plan.g),
+            ox, oy)
+    end
     local areas = {}
     for i = 1, #parts do
         areas[i] = { points = parts[i].points, colour = fillColour(255) }
@@ -2081,10 +2130,11 @@ end
 --- the tick it was drawn on, when both are written whatever they are -- a clip that
 --- has just been added sits on the world's origin at full strength until then.
 ---
---- ONLY WHAT CHANGED, SO A HOLD COSTS NOTHING. A zone whose outline is moving under a
---- frame is placed every tick -- two writes a contour -- and anything else stays where
---- it was drawn; an alpha is written when its value changed, which is the phase-1 fade
---- and nothing else.
+--- ONLY WHAT CHANGED, SO A HOLD COSTS NOTHING. A zone whose outline is moving -- under
+--- a frame, or on the wall's pivot -- is placed every tick, two writes a contour, and
+--- anything else stays where it was drawn; a `fixed` part (a breakout's destination
+--- beside the wall) is never placed at all. An alpha is written when its value
+--- changed, which is the phase-1 fade and nothing else.
 ---
 --- false on a refusal: the movie's picture is then not the storm's, and the caller
 --- decides what to do about it.
@@ -2094,16 +2144,16 @@ end
 --- @return boolean ok
 local function applyZone(z, plan, first)
     local x, y, s = z.ox, z.oy, z.os
-    if plan.mode == 'frame' and plan.tag == z.tag then x, y, s = plan.fx, plan.fy, plan.fs end
+    if plan.fx and plan.tag == z.tag then x, y, s = plan.fx, plan.fy, plan.fs end
     local resize = first or stormBisectMode ~= 'mapnoresize'
     if first or x ~= z.x or y ~= z.y or (resize and s ~= z.s) then
         local trace = BR.Loop.hitchBegin(
             resize and 'storm.map.place' or 'storm.map.position',
-            resize and '10 Hz position + resize while one outline moves under a frame'
+            resize and '10 Hz position + resize while one outline moves with the wall'
                 or '10 Hz position only; #350 resize bisect')
         local k = (z.os > 0.0) and (s / z.os) or 1.0
         for i, part in ipairs(z.parts) do
-            if not BR.MapOverlay.placeArea(z.first + i - 1, x, y,
+            if not part.fixed and not BR.MapOverlay.placeArea(z.first + i - 1, x, y,
                     resize and (part.w * k) or nil, resize and (part.h * k) or nil) then
                 BR.Loop.hitchEnd(trace)
                 return false
@@ -2198,6 +2248,15 @@ end
 --   last staging slot is read on the next one (BR.Loop.takeFrameGap), and a slot whose
 --   frame ran past `overlay.stage.frameMs` doubles the spacing of the next ones, up to
 --   `maxTicks`. /brstormhitch's summary says what the staging cost.
+--
+-- ═══ AND IT SHIPS OFF (2026-10-02), BECAUSE THE BANK'S ADDS WERE THE HITCH ═══
+--
+-- Hidden or not, a staged clip is an ADD_AREA_OVERLAY, and a bank of up to maxClips of
+-- them spaced no further than maxTicks apart is a hitch about every second through the
+-- hold -- "the game is now hitching every second or so", the owner on 8335b17, gone
+-- under /brstormbisect mapoff. Everything below still runs with `overlay.stage.enabled`
+-- off: it stages nothing and drops only what a refusal or an earlier bank left. Kept,
+-- under its tests, for the design that replaces it.
 
 local mapTick = 0
 local lastOpTick = -1e9
@@ -2604,6 +2663,7 @@ BR.Loop.register(BR.Loop.TICK, 'storm.map', function()
     local plan, key = overlayPlan()
     if not plan then
         movingFallbackKey = nil
+        pictureFor, pictureN = nil, 0
         -- NOTHING TO SHOW, SO NOTHING IS LEFT ON THE MAP. Between matches, in the
         -- lobby, and while the overlay is switched off, this is what takes the fills
         -- down -- and it puts the blips back in charge on the same tick, because
@@ -2659,8 +2719,8 @@ BR.Loop.register(BR.Loop.TICK, 'storm.map', function()
     --
     -- Decided once, on the sweep's first tick, and kept to its end: a bank still short
     -- of its essentials then (a client that joined mid-sweep, a hold too short to stage
-    -- even the knee's outline) is abandoned for this record and the sweep is redrawn
-    -- the old way below.
+    -- even the knee's outline) is abandoned for this record and the sweep is drawn the
+    -- old way below -- as every sweep is while `overlay.stage` is off.
     local b = stage
     if b and b.key ~= key then b = nil end
     if (sweeping or plan.state == BR.StormPhase.FINISHED) and b and b.live == nil then
@@ -2734,8 +2794,12 @@ BR.Loop.register(BR.Loop.TICK, 'storm.map', function()
     end
 
     -- AND A WHOLE NEW PICTURE NEVER FASTER THAN rebuildHz, WHATEVER ASKED -- a phase
-    -- edge, a changed target, or a refused picture being drawn again.
-    if (now - lastOverlayAt) < (1000.0 / hz) then return end
+    -- edge, a changed target, or a refused picture being drawn again -- and a refused
+    -- one only PICTURE_TRIES times between two changes of kind, further apart each time.
+    local ident = key .. '|' .. tostring(plan.tag)
+    if pictureFor ~= ident then pictureFor, pictureN = ident, 0 end
+    if pictureN >= PICTURE_TRIES then return end
+    if (now - lastOverlayAt) < (1000.0 / hz) * 2 ^ math.max(0, pictureN - 1) then return end
     lastOverlayAt = now
 
     -- A NEW RECORD'S PICTURE RETIRES THE LAST RECORD'S BANK: hidden now, dropped a clip
@@ -2758,6 +2822,7 @@ BR.Loop.register(BR.Loop.TICK, 'storm.map', function()
         return
     end
 
+    pictureN = pictureN + 1
     local drawn, chars = BR.MapOverlay.setAreas(areas)
     local at = nil
     if drawn > 0 then
@@ -2776,11 +2841,11 @@ BR.Loop.register(BR.Loop.TICK, 'storm.map', function()
         mapStats.sweepRedraws = mapStats.sweepRedraws + drawn
     end
     setOverlayShown(drawn)
-    -- A REFUSED PUSH DOES NOT LATCH. Clearing the key means the next tick tries
-    -- again rather than believing the map is already showing this geometry, and
-    -- mapFilled() is false in the meantime so the blips carry the map. EXCEPT WHILE
-    -- THE STORM MOVES, where that sweep is handed to the blips instead, and the next
-    -- still moment draws it.
+    -- A REFUSED PUSH DOES NOT LATCH. Clearing the key means a later tick tries
+    -- again (PICTURE_TRIES bounds how often) rather than believing the map is already
+    -- showing this geometry, and mapFilled() is false in the meantime so the blips
+    -- carry the map. EXCEPT WHILE THE STORM MOVES, where that sweep is handed to the
+    -- blips instead, and the next still moment draws it.
     overlayKey = (drawn > 0) and key or nil
     overlayAt = at
     if drawn == 0 and moving then
@@ -2840,6 +2905,8 @@ function BR.Storm.setBisectMode(mode)
 
     stormBisectMode = mode
     BR.Storm.bisectMode = mode
+    -- A NEW MODE MAY DRAW A NEW PICTURE AT ONCE: switching is not a refusal.
+    pictureFor, pictureN = nil, 0
     if mode == 'mapoff' then clearMapOverlay() end
     return true
 end
@@ -2849,11 +2916,12 @@ BR.Storm.bisectMode = stormBisectMode
 --- What the map is SHOWING, read-only, as positions in the movie's overlay array
 --- (1-based -- the movie's own index plus one): the destination's clips, and the clips
 --- that show the safe zone right now, with what each one is: `zone` (the picture's own
---- zone clip, while the storm holds or a sweep is redrawn), `wall` (the staged outline
---- shown for the moving wall) or `dest` (a breakout's destination, staged at the zone's
---- strength). Hidden staged clips are not listed; `staged` counts every one in the
---- movie. nil while nothing is drawn. For the suite and for a dev reading
---- /brstormhitch against what the movie holds -- nothing in the game reads it.
+--- zone clip, while the storm holds or grows), `wall` (the moving wall's outline, staged
+--- or the picture's own) or `dest` (a breakout's destination beside it at the zone's
+--- strength, staged or the picture's own). Hidden staged clips are not listed;
+--- `staged` counts every one in the movie. nil while nothing is drawn. For the suite
+--- and for a dev reading /brstormhitch against what the movie holds -- nothing in the
+--- game reads it.
 --- @return table|nil  { destination = { pos, ... }, zone = { pos, ... },
 ---                      kinds = { 'zone'|'wall'|'dest', ... }, tag = string, staged = n }
 function BR.Storm.mapSlots()
@@ -2876,9 +2944,9 @@ function BR.Storm.mapSlots()
             end
         end
     elseif at.zone then
-        for i = 1, #at.zone.parts do
+        for i, part in ipairs(at.zone.parts) do
             local idx = MO.slotIndex(at.zone.first + i - 1)
-            if idx then z[#z + 1] = idx + 1; kinds[#kinds + 1] = 'zone' end
+            if idx then z[#z + 1] = idx + 1; kinds[#kinds + 1] = part.kind or 'zone' end
         end
     end
     return { destination = d, zone = z, kinds = kinds,

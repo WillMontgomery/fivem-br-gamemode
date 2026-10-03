@@ -750,9 +750,10 @@ end
 --- finder refuses -- is the whole union too, for the same reason. The wall and the
 --- damage tick both come through here, so even then they agree.
 ---
---- THE MAP DRAWS THIS ZONE TOO, front and all: client/storm.lua's storm.map shows a
---- sweep from outlines of it staged during the hold before (BR.StormWallPivot places
---- them), and redraws a conjoined growth from this function at `overlay.morphHz`.
+--- THE MAP DRAWS THIS ZONE TOO: client/storm.lua's storm.map draws a hold and a
+--- conjoined growth from this function, and a sweep from the wall's outline placed on
+--- BR.StormWallPivot or BR.StormWallFrame -- config/storm.lua's `overlay` has how
+--- often each is redrawn, which since the 2026-10-02 hitch is only at a change of kind.
 ---
 --- @param rec table|nil    the published storm record
 --- @param cx number        the CURRENT centre, as BR.StormAt reports it
@@ -837,11 +838,12 @@ end
 --- corner centres, and the radius of a disc of its area. Cheap -- a hull of a dozen
 --- discs, no boundary walk -- and exact for the wall the damage tick bills.
 ---
---- The map's staged outlines are placed by it (client/storm.lua): an outline of the wall
---- at t_j, drawn about its own pivot at its own size, moved to the pivot at t and scaled
---- by the ratio of the sizes, stands on the wall at t to within how much the shape
---- itself changed between the two -- which is what the staging's spacing is chosen by.
---- nil for a record with no shape at all.
+--- The map's outlines of the wall are placed by it (client/storm.lua) -- the one drawn as
+--- the sweep set off, or a staged one: an outline of the wall at t_j, drawn about its
+--- own pivot at its own size, moved to the pivot at t and scaled by the ratio of the
+--- sizes, stands on the wall at t to within how much the shape itself changed between
+--- the two -- which is what the staging's spacing is chosen by. nil for a record with
+--- no shape at all.
 --- @param rec table
 --- @param t number
 --- @return number|nil x, number y, number size

@@ -570,12 +570,26 @@ made "never rebuild while moving" the rule and #344's second round kept to it wi
 keyframes. The owner saw two translucent shapes of different outlines moving and
 fading into each other, and rejected it.
 
-**The map draws the one zone, from outlines staged in the hold.** The destination
+**Since 2026-10-02 the map adds a clip only when the kind of change switches.**
+Playing 8335b17 the owner reported "the game is now hitching every second or so",
+and `/brstormbisect mapoff` stopped it. A staged clip below is still an
+`ADD_AREA_OVERLAY`, and a bank of up to 200 of them through every hold, never more
+than 1.6 s apart, was the hitch. So `overlay.stage.enabled = false` and
+`overlay.morphHz = 0`: a sweep's zone is redrawn as it sets off and at the knee (a
+breakout's once more as it ends) and only placed in between. To the knee that is the
+outline it set off with, on the wall's pivot and at its size, which moves with the
+wall but does not turn with it; from the knee, the wall's own frame, exactly. Over 12
+whole matches the first leg's outline is on average 1.3 km off the wall in phase 1,
+360 m in phase 2 and 21 m in phase 7 (`overlay.morphHz` in config/storm.lua has the
+table). `map.hotfix` holds whole matches to it tick by tick. The staging below is
+kept, under its tests, for the design that replaces it.
+
+**8335b17 drew the one zone from outlines staged in the hold.** The destination
 is drawn once per phase and never touched; the safe zone is the zone itself. Until
 2026-09-28 a changing outline was *replaced* at `overlay.morphHz` — one
 `REM_OVERLAY` and one `ADD_AREA_OVERLAY` a tick for the whole first leg — and the
 owner felt it: "we're also back to hitches ... is there any way we can silently
-stage the textures we need over time?" So now:
+stage the textures we need over time?" So 8335b17 staged them:
 
 ```
 bank      during the HOLD: the wall's outline at t_j = k · j / K, j = 0..K, each
@@ -634,9 +648,12 @@ two convex shapes is the corner list of their boundaries' runs inside each other
 and the union is the stitch every breakout already uses — so the damage tick, the
 HUD and the wall bill, read and draw `G` exactly, off one clock. It starts as `Z`
 and ends on `Z ∪ D`, and only ever grows. A destination wholly apart from the zone
-still appears at once. The map draws the front: the zone's fill is the growing zone, redrawn at
-`overlay.morphHz` while it grows, so the destination's new ground comes onto the
-map exactly as the damage tick takes it in. Grown, it is the zone's fill standing
+still appears at once. At `overlay.morphHz` 10 the map drew the front: the zone's
+fill is the growing zone, redrawn while it grows, so the destination's new ground
+came onto the map exactly as the damage tick takes it in. At the shipping 0
+(2026-10-02) the zone is drawn as the growth starts and redrawn once as it ends, so
+the new ground shows as safe at the end of the growth rather than as it is taken
+in. Grown, it is the zone's fill standing
 still, with the destination under it, so the old zone's edge does not run across
 the destination for the rest of the phase; and when the sweep starts the zone is
 the moving wall united with the destination, so the new ground stays on the map.
