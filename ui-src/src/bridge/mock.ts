@@ -76,6 +76,11 @@ const MOCK_MARKET = {
     { id: 'ban_first',    name: 'Day One',    sub: 'Banner',     kind: 'banner' as const, price: 0,    rarity: 5 as const, owned: true },
     { id: 'vd_royale',    name: 'Victory Royale', sub: 'Verdict', kind: 'verdict' as const, price: 0, rarity: 1 as const, owned: true },
     { id: 'vd_lastone',   name: 'Last One Standing', sub: 'Verdict', kind: 'verdict' as const, price: 3500, rarity: 4 as const },
+    // THE DANCES (#215), one of each state the Emotes tab draws: on the wheel
+    // at segment 1, owned and off the wheel, and for sale at the owner's 250.
+    { id: 'emote_shuffle',       name: 'Shuffle',       sub: 'Dance', kind: 'emote' as const, price: 250, rarity: 1 as const, owned: true, equipped: true, slot: 1 },
+    { id: 'emote_club_groove',   name: 'Groove',        sub: 'Dance', kind: 'emote' as const, price: 250, rarity: 1 as const, owned: true },
+    { id: 'emote_techno_karate', name: 'Techno Karate', sub: 'Dance', kind: 'emote' as const, price: 250, rarity: 1 as const },
   ],
 }
 
@@ -208,6 +213,11 @@ export async function mockFetch<Res>(name: CallbackName, data?: unknown): Promis
       },
     } as Res
   }
+
+  // Taking a dance off the wheel (#215). Answered so the page's promise
+  // resolves the way br_ui's callback does -- at once, with the real result
+  // arriving later as a new grid (which the harness does not fake).
+  if (name === 'br/market/unequip') return { ok: true } as Res
 
   return {} as Res
 }
@@ -491,6 +501,10 @@ export function startMockDriver(): void {
     },
   })
   emit({ k: 'market', d: MOCK_MARKET })
+  // The emote gate (#215), OPEN in the harness so the Emotes tab and the
+  // "Music volume" slider can be looked at in a browser. Lua sends it with
+  // every grid, so it sits beside the market emit.
+  emit({ k: 'emotes', d: { on: true } })
 
   emit({
     k: 'snapshot',

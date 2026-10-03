@@ -667,6 +667,62 @@ function BR.Menu.new(title, subtitle, banner)
     return menu
 end
 
+--- THE EMOTE WHEEL'S RADIAL, BUILT THROUGH HERE SO IT IS COUNTED (#215).
+---
+--- Owner, 2026-10-02 (#215, "Scope v2"): the wheel is ScaleformUI's own
+--- RadialMenu -- eight segments, one per wheel slot. It is a different class
+--- from UIMenu, so BR.Menu.new cannot make it, but it is still a menu this
+--- file hands out: registering it in `built` is what lets BR.Menu.up and
+--- holdsEscape see it, so Escape at an open wheel is the wheel's Back and not
+--- our pause menu (the #371 leak, closed for this surface the day it exists).
+---
+--- NO COLORS ARE SET. The segments keep the library's own HUD palette, for the
+--- reason at the top of this file: "No ScaleformUI should ever use our cyan
+--- ever". The instructional buttons are emptied the same way BR.Menu.new does
+--- it, by the plain field.
+---
+--- nil, and a console line, when the library is absent or refuses -- the same
+--- contract as BR.Menu.new: no wheel is a key that does nothing, not a throw.
+--- @return table|nil  a RadialMenu
+function BR.Menu.radial()
+    if not BR.Menu.available() then return nil end
+    if type(RadialMenu) ~= 'table' or type(SegmentItem) ~= 'table' then return nil end
+    local ok, w = pcall(RadialMenu.New, 0, 0)
+    if not ok or type(w) ~= 'table' then
+        print('^3[br_core] menu: ScaleformUI refused to build a radial menu^7')
+        return nil
+    end
+    w.InstructionalButtons = {}
+    built[w] = true
+    return w
+end
+
+--- CLOSE EVERY MENU THIS FILE HAS HANDED OUT, but one (#215).
+---
+--- The emote wheel's open dismisses whatever in-game menu is up -- the owner's
+--- "opening the wheel dismisses every screen" -- and it must happen BEFORE the
+--- wheel shows: UIMenu:Visible(false) clears MenuHandler._currentMenu and
+--- ableToDraw, so a menu closed after the wheel was shown would take the
+--- wheel's drawing down with it.
+---
+--- THROUGH Visible(false) AND NOTHING ELSE, which is the menu's own close: it
+--- fires that menu's OnMenuClose, so the gun shop tidies up exactly as it
+--- does when the player walks away from the counter.
+--- @param except table|nil  the one menu to leave alone
+function BR.Menu.closeAll(except)
+    -- LISTED FIRST, CLOSED SECOND: a close runs the menu's own OnMenuClose,
+    -- and a callback that builds a menu would add a key to `built` mid-walk,
+    -- which Lua leaves undefined for pairs().
+    local list = {}
+    for m in pairs(built) do
+        if m ~= except then list[#list + 1] = m end
+    end
+    for _, m in ipairs(list) do
+        local seen, vis = pcall(m.Visible, m)
+        if seen and vis == true then pcall(m.Visible, m, false) end
+    end
+end
+
 --- IS ONE OF OUR IN-GAME MENUS ON SCREEN RIGHT NOW?
 ---
 --- ═══ A LIVE READ OF THE LIBRARY'S OWN ANSWER, AND NOT A FLAG OF OURS ═══

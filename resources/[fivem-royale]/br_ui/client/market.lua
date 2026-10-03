@@ -26,6 +26,19 @@ BR.Market = {}
 -- would watch drop.
 local PROFILE = { level = 1, xp = 0, needed = 1 }
 
+--- Is the emote system on, on this machine, right now? (#215, "Scope v2")
+---
+--- THE OWNER'S ONE LINE, ASKED THROUGH ITS ONE READER. "Everything is
+--- devMode-required behind one config line, so removing that line makes it
+--- production-ready in the same PR" (owner, 2026-10-02): this file never reads
+--- the line or dev mode itself, it asks BR.Emotes.enabled(), and
+--- tools/check_emote_gate.lua fails the build when a door here does not.
+---
+--- NIL-SAFE, AND THE CONFIG CHECK IS NOT REDUNDANT. tools/test_client.lua
+--- loads this file without br_lib/config/emotes.lua, and a BR.Emotes stub left
+--- behind by an earlier block must not send catalogue() walking a nil table.
+local function emotesOn() return BR.Config.Emotes ~= nil and BR.Emotes ~= nil and BR.Emotes.enabled ~= nil and BR.Emotes.enabled() == true end
+
 --- The catalogue, from the shared season config.
 ---
 --- MOVED OUT OF THIS FILE, because the list is the part that changes every
@@ -57,7 +70,10 @@ local SYNTHETIC = {
 --- hope; it asks the server, the server writes conditionally, and the answer
 --- comes back as a new state. The page can lag by one round trip -- it cannot
 --- claim you own something the database refused.
-local STATE = { balance = 0, owned = {}, equipped = {} }
+---
+--- `emotes` is the wheel (#215): segment k -> catalogue id, holes absent. The
+--- server sends it only while BR.Emotes.enabled(), so a closed gate empties it.
+local STATE = { balance = 0, owned = {}, equipped = {}, emotes = {} }
 
 --- Flatten the seasons into the list the NUI renders.
 ---
@@ -106,6 +122,40 @@ local function catalogue()
         end
     end
 
+    -- THE DANCES (#215, "Scope v2"), ONLY WHILE THE ONE LINE SAYS SO. They are
+    -- in MarketIndex and never in season.items, so the loop above cannot see
+    -- them; they are walked here, in the config's own order, and only when
+    -- the gate is open -- with it closed there is no tile, no tab and nothing
+    -- to press. "Up to 8 equipped" (owner): `slot` is the wheel segment, and
+    -- an emote is equipped exactly when it has one.
+    if emotesOn() then
+        for _, id in ipairs(BR.Config.Emotes.order or {}) do
+            local item = BR.Config.MarketIndex[id]
+            if item then
+                -- Lowest segment first, so a duplicate the server should
+                -- never send still draws one stable slot rather than
+                -- whichever pairs() happened to visit last.
+                local slot = nil
+                for k = 1, 8 do
+                    if slot == nil and STATE.emotes[k] == id then slot = k end
+                end
+                out[#out + 1] = {
+                    id       = item.id,
+                    name     = item.name,
+                    sub      = item.sub,
+                    kind     = 'emote',
+                    price    = item.price,
+                    rarity   = item.rarity,
+                    season   = item.seasonName,
+                    owned    = STATE.owned[id] == true,
+                    equipped = slot ~= nil,
+                    slot     = slot,
+                    locked   = not item.purchasable,
+                }
+            end
+        end
+    end
+
     for _, item in ipairs(SYNTHETIC) do out[#out + 1] = item end
 
     return out
@@ -119,6 +169,17 @@ function BR.Market.push()
         currency = BR.Config.Market.currency,
         items    = catalogue(),
     })
+    BR.Market.pushEmotes()
+end
+
+--- Tell the page whether the emote system is on (#215): the Market's Emotes
+--- tab and the Settings "Music volume" slider render only while it is.
+---
+--- SENT WITH EVERY GRID, so a gate flip reaches the page by the same road the
+--- grid does: br_core's client watcher asks the server for MARKET_STATE on a
+--- flip, and the handler below pushes both.
+function BR.Market.pushEmotes()
+    TriggerEvent('br:ui:sendLocal', BR.Nui.EMOTES, { on = emotesOn() })
 end
 
 --- The server's answer, and the only thing that changes what the page believes.
@@ -133,6 +194,16 @@ AddEventHandler(BR.Net.MARKET_STATE, function(state)
 
     STATE.equipped = {}
     for kind, id in pairs(state.equipped or {}) do STATE.equipped[kind] = id end
+
+    -- The wheel (#215): eight strings, '' for an empty segment. Absent while
+    -- the gate is closed, which empties the mirror.
+    STATE.emotes = {}
+    if type(state.emotes) == 'table' then
+        for k = 1, 8 do
+            local id = state.emotes[k]
+            if type(id) == 'string' and id ~= '' then STATE.emotes[k] = id end
+        end
+    end
 
     -- THE SERVER OWNS THE CURVE. It evaluates BR.Xp and sends the result, so
     -- this side never derives a level -- a client that computed its own would
@@ -171,13 +242,38 @@ end)
 -- promises must always resolve, and the real answer arrives as its own
 -- MARKET_STATE. A page that awaited the round trip would hang on any dropped
 -- message, which is the one failure this protocol is shaped to survive.
+--
+-- AN EMOTE ID IS NOT FORWARDED WHILE THE ONE LINE IS CLOSED (#215, "Scope
+-- v2"). The server refuses it anyway; stopping it here as well means a closed
+-- gate sends nothing at all, and the callback still answers so the page's
+-- promise resolves.
 RegisterNUICallback(BR.NuiCb.MARKET_BUY, function(data, cb)
-    TriggerServerEvent(BR.Net.MARKET_BUY, { id = tostring(data and data.id or '') })
+    local id = tostring(data and data.id or '')
+    local item = BR.Config.MarketIndex and BR.Config.MarketIndex[id]
+    if not (item and item.kind == 'emote' and not emotesOn()) then TriggerServerEvent(BR.Net.MARKET_BUY, { id = id }) end
     cb({ ok = true })
 end)
 
+-- `replace` (#215) names the dance a ninth one takes the place of on a full
+-- wheel -- "swap one for another when more than 8 are owned" (owner). It is
+-- forwarded only as a non-empty string; every other kind ignores it.
 RegisterNUICallback(BR.NuiCb.MARKET_EQUIP, function(data, cb)
-    TriggerServerEvent(BR.Net.MARKET_EQUIP, { id = tostring(data and data.id or '') })
+    local id = tostring(data and data.id or '')
+    local item = BR.Config.MarketIndex and BR.Config.MarketIndex[id]
+    if not (item and item.kind == 'emote' and not emotesOn()) then
+        TriggerServerEvent(BR.Net.MARKET_EQUIP, {
+            id = id,
+            replace = (type(data) == 'table' and type(data.replace) == 'string' and data.replace ~= '') and data.replace or nil,
+        })
+    end
+    cb({ ok = true })
+end)
+
+-- Take a dance off the wheel (#215): "The market manages them: equip,
+-- unequip, and swap one for another when more than 8 are owned" (owner,
+-- 2026-10-02). Emote slots only, and only while the one line says so.
+RegisterNUICallback(BR.NuiCb.MARKET_UNEQUIP, function(data, cb)
+    if emotesOn() then TriggerServerEvent(BR.Net.MARKET_UNEQUIP, { id = tostring(data and data.id or '') }) end
     cb({ ok = true })
 end)
 

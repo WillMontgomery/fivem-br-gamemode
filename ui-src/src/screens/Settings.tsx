@@ -361,6 +361,8 @@ export default function Settings({
 } = {}) {
   const stored = useUi(selSettings)
   const setSettings = useUi((s) => s.setSettings)
+  // The emote gate (#215): the "Music volume" slider renders only while it is on.
+  const emotesOn = useUi((s) => s.emotesOn)
   // CLOSING IS RELEASING FOCUS, and nothing else. This screen is rendered
   // because Lua says it owns the cursor, so a local "closed" flag would be a
   // second opinion about the same fact -- which is how you end up with a
@@ -666,11 +668,23 @@ export default function Settings({
                   }}
                 />
               </div>
-              {/* THE MUSIC SLIDER IS GONE until there is music (owner,
-                  2026-08-09). A control for a system that does not exist is a
-                  control that can only ever do nothing, and its own caption
-                  said so. The stored value stays in the schema, so turning it
-                  back on is one component rather than a migration. */}
+              {/* THE MUSIC SLIDER IS BACK, BEHIND THE EMOTE GATE (#215). Owner,
+                  2026-10-02: "New 'Music volume' slider directly below
+                  'Interface sounds', shown only in dev mode (same gate)". The
+                  only music is the dances', so the control exists exactly
+                  while they do -- with the gate closed it would be the
+                  do-nothing control it was removed for (owner, 2026-08-09).
+                  volMusic never left the schema, so this is one component and
+                  no migration. No ui.hover on drag: the music itself is the
+                  feedback, and only while somebody is dancing nearby. */}
+              {emotesOn && (
+                <Slider
+                  label="Music volume" value={draft.volMusic} dflt={DEFAULT_SETTINGS.volMusic}
+                  min={0} max={1} step={0.01}
+                  format={(v) => (v === 0 ? 'Muted' : `${Math.round(v * 100)}%`)}
+                  onChange={(v) => set('volMusic', v)}
+                />
+              )}
           </Section>
 
           <Section title="Voice" tut="settings-voice">

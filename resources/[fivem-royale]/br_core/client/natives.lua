@@ -248,6 +248,11 @@ AddEventHandler('br:map:frontend', function(on)
     BR.Native.frontendMap = on == true
 end)
 
+-- br_ui raises this around its dev-only 'fullscreen' map route, which is
+-- neither GTA's frontend nor the big minimap. Read by the emote wheel,
+-- which may not open over any map (owner, #215).
+AddEventHandler('br:map:fullscreen', function(on) BR.Native.fullscreenMap = on == true end)
+
 --- Is this BOOL native true?
 ---
 --- In Lua `0` IS TRUTHY and a FiveM native declared BOOL may answer `1`/`0`
@@ -2752,6 +2757,28 @@ function BR.Native.check()
             name = 'use emotes', ok = false,
             detail = 'BR.Inv.emoteCheck is missing -- client/inventory.lua did not load',
         }
+    end
+    -- THE DANCES (#215), one row per catalogue id: the clip, and whether its
+    -- music file is in the bundle. BR.Emotes.nativeCheck says how. Missing is a
+    -- FAILED row for the same reason as the use emotes above.
+    if BR.Emotes and BR.Emotes.nativeCheck then
+        for _, r in ipairs(BR.Emotes.nativeCheck()) do results[#results + 1] = r end
+    else
+        results[#results + 1] = {
+            name = 'dances', ok = false,
+            detail = 'BR.Emotes.nativeCheck is missing -- client/emotes.lua did not load',
+        }
+    end
+    -- ...AND THE PED READS THEIR START AND CANCELS ASK (#215). Used nowhere else
+    -- in the tree, so a build without one would throw inside canStart -- every
+    -- press of the wheel -- and in the playback pass, which five throws
+    -- suspend with a looping clip on the ped. Proved present, not called.
+    -- The last two are blocked()'s, and are as new to the tree as the rest.
+    for _, n in ipairs({ 'IsPedSwimming', 'IsPedFalling', 'IsPedClimbing',
+                         'IsPedVaulting', 'IsPedRagdoll', 'IsPedInParachuteFreeFall',
+                         'IsPedShooting', 'IsPedInMeleeCombat', 'GetEntitySpeed',
+                         'IsPedSwimmingUnderWater', 'GetVehiclePedIsTryingToEnter' }) do
+        probe(n, function() assert(type(_G[n]) == 'function', 'nil') end)
     end
     probe('GetEntityHealth',         function() return GetEntityHealth(ped) end)
     probe('SetEntityMaxHealth',      function() SetEntityMaxHealth(ped, BR.Config.Match.maxHealth) end)

@@ -215,7 +215,13 @@ local function yes(v) return v == true or v == 1 end
 --- client/inventory.lua does it on the frame band. What was missing is the half
 --- above it: the panel closed and then the very next TAB opened it again, over
 --- the map. This is that press, refused.)
-local FRONTEND_SWALLOWS = { inventory = true, players = true }
+---
+--- THE EMOTE WHEEL IS THE THIRD, and it is the owner's rule rather than a
+--- choice made here (#215, 2026-10-02): "The wheel CANNOT open while the pause
+--- menu or the big map is open". client/emotewheel.lua refuses the same press
+--- again for its own reasons (our fullscreen map, the big minimap), so this is
+--- the half that also covers a press nothing downstream would have refused.
+local FRONTEND_SWALLOWS = { inventory = true, players = true, emoteWheel = true }
 
 --- Does the game say its own frontend is on screen right now?
 local function frontendUp()
@@ -399,7 +405,27 @@ end
 --- rebind that cannot take effect is refused rather than stored. The player
 --- loses the ability to move one action on an old build, and is told so, which
 --- is a different thing entirely from the action silently going away.
-local function hold(action, command, description, key)
+---
+--- ═══ AND A HOLD MAY CARRY A GATE: A ROW THAT EXISTS ONLY WHILE A FEATURE IS
+---     ON (#215) ═══
+---
+--- Owner, 2026-10-02 (#215, "Scope v2"): "Everything is devMode-required behind
+--- one config line, so removing that line makes it production-ready in the same
+--- PR." The emote wheel's key is the first row like that. `gate` is a function
+--- asked AT CALL TIME, never cached, because dev mode reaches the client as a
+--- replicated convar that can land after this file has loaded:
+---
+---   * BR.Keys.push leaves the row out while it answers false, so the settings
+---     screen never offers a key for a feature the box does not have;
+---   * BR.Keys.set refuses it while it answers false;
+---   * RegisterKeyMapping -- the row in GTA's OWN key-binding list, which
+---     nothing can take back out once it is in -- is DEFERRED until the gate
+---     first reads open. BR.Keys.mapGated does it then.
+---
+--- The +/- commands are bound here regardless, so the raw layer drives the key
+--- either way; whatever listens for the action asks the gate again.
+--- @param gate function|nil  the row exists while this returns true
+local function hold(action, command, description, key, gate)
     bindCommand('+' .. command, function()
         if BR.Keys.rawHolds then return end
         -- The press is gated for the same reason the tap above is.
@@ -427,12 +453,48 @@ local function hold(action, command, description, key)
         -- the round.
         fire(action, false)
     end, false)
-    RegisterKeyMapping('+' .. command, description, 'keyboard', key)
+    local mapped = false
+    if gate == nil or gate() then
+        RegisterKeyMapping('+' .. command, description, 'keyboard', key)
+        mapped = true
+    end
     BR.Keys.bindings[#BR.Keys.bindings + 1] = {
         action = action, command = command, label = description,
         default = key, hold = true, group = group,
+        gate = gate, mapped = mapped,
     }
 end
+
+--- Give GTA's key-binding list every gated row whose gate has opened since
+--- load, once each (#215). See hold() above: the mapping is the one part of a
+--- row that cannot be withdrawn, so it waits for the gate. Asked from
+--- client/emotes.lua's SLOW 'emotes.gate' pass; cheap and idempotent.
+---
+--- ⚠ WHETHER A MAPPING REGISTERED THIS LATE TAKES EFFECT ON THE ENGINE PATH IS
+--- UNCONFIRMED IN GAME. The raw layer never needed it: the +/- commands were
+--- bound at load and the frame reader drives the key from DEFAULT_VK.
+function BR.Keys.mapGated()
+    for _, b in ipairs(BR.Keys.bindings) do
+        if b.gate ~= nil and not b.mapped and b.gate() == true then
+            RegisterKeyMapping('+' .. b.command, b.label, 'keyboard', b.default)
+            b.mapped = true
+        end
+    end
+end
+
+--- IS THE EMOTE SYSTEM ON, ON THIS MACHINE, RIGHT NOW? The emote wheel row's
+--- gate (#215, "Scope v2": "Everything is devMode-required behind one config
+--- line"). BR.Emotes.enabled() in br_lib/config/emotes.lua is the only thing
+--- that reads that line; this only asks it.
+---
+--- NIL-SAFE, because tools/test_client.lua loads this file without the emote
+--- config, and a build that somehow lost the config has no emotes rather than
+--- a keybind file that throws at load. DECLARED ABOVE THE FIRST ROW BLOCK on
+--- purpose: the hold row below passes it as a VALUE, which
+--- tools/check_forward_locals.lua cannot see, so tools/check_emote_gate.lua
+--- pins the order instead.
+--- @return boolean
+local function emotesOn() return BR.Emotes ~= nil and BR.Emotes.enabled ~= nil and BR.Emotes.enabled() == true end
 
 -- Descriptions are prefixed so they group together and read sensibly in the
 -- pause menu, where they sit alongside every other resource's bindings.
@@ -709,6 +771,19 @@ tap ('settingsMenu', 'brsettingsmenu', 'Royale: Settings',               '')
 -- the same client the Settings screen already tells that rebinding is off.
 tap ('players',     'brplayers',   'Royale: Player list / report',       'F2', 0xC0)
 
+group = 'Emotes'
+-- THE EMOTE WHEEL (#215, owner 2026-10-02, "Scope v2"): "HOLD LEFT ALT to open
+-- the wheel, release to pick" -- Left Alt is free since BR-PATCH 3a/3b removed
+-- pma-voice's binding on it, and TAB is taken (the inventory). A HOLD, because
+-- the release is the verb: client/emotewheel.lua opens on the press and plays
+-- whatever is highlighted when the key comes up.
+--
+-- GATED BY THE FIFTH ARGUMENT. While emotes are off on this box the row is not
+-- on the settings screen, cannot be rebound, and is not in GTA's own key list
+-- -- see hold() for the three halves. LMENU is the engine's name for Left Alt;
+-- DEFAULT_VK and VK_ALSO below say which raw codes stand for it.
+hold('emoteWheel',  'bremotewheel', 'Royale: Emote wheel',                'LMENU', emotesOn)
+
 -- br_ui owns the pages; this owns the keys. TriggerEvent crosses resources,
 -- which is the same hop br_core already uses to reach the interface.
 BR.Keys.on('pause', function(pressed)
@@ -827,6 +902,9 @@ BR.Keys.actions = {
     -- 'map' was with them and is not any more (#199): it opens the map.
     'chatGlobal', 'chatSquad', 'ptt', 'map', 'specNext', 'specPrev',
     'clearWaypoint',
+    -- The emote wheel (#215). Named whether or not emotes are on, like every
+    -- other row here: the overlay reads `held`, which is a fact about the key.
+    'emoteWheel',
 }
 
 -- ---------------------------------------------------------------------------
@@ -989,6 +1067,12 @@ local DEFAULT_VK = {
     LSHIFT = 0x10,
     LEFT = 0x25, RIGHT = 0x27, UP = 0x26, DOWN = 0x28,
     F1 = 0x70, F2 = 0x71, F3 = 0x72, F4 = 0x73, F5 = 0x74,
+    -- LEFT ALT, the emote wheel (#215). 0x12 is VK_MENU, the GENERIC Alt, for
+    -- the same reasons LSHIFT above stores the generic 0x10: it is what the
+    -- settings screen's capture produces (keyCode 18 for either Alt) and it is
+    -- already 'Alt' in VK_NAME. VK_ALSO adds 0xA4 (VK_LMENU), because this
+    -- build fills shift SIDE-SPECIFICALLY and nothing says Alt is different.
+    LMENU = 0x12,
 }
 
 --- One stored slot, as three distinct answers.
@@ -1110,35 +1194,40 @@ end
 function BR.Keys.push()
     local out = {}
     for _, b in ipairs(BR.Keys.bindings) do
-        -- `or nil` folds the "deliberately unbound" false into absent: the
-        -- screen draws both as "Unbound", and the wire should not carry a
-        -- boolean in a field typed as a number.
-        local code = load()[b.command] or nil
-        -- THE SCREEN SHOWS THE KEY THAT WORKS, not the key we wrote down.
-        --
-        -- A row the engine is driving is on its default and cannot be moved.
-        -- Drawing the player's stored choice for it is the same lie the world
-        -- prompts were telling, in the one place they would go to fix it.
-        local byEngine = engineDrives(b)
-        if byEngine then code = engineCode(b) end
-        out[#out + 1] = {
-            group   = b.group,
-            command = b.command,
-            label   = (b.label:gsub('^Royale:%s*', '')),
-            vk      = code,
-            key     = code and (BR.Keys.vkName(code) or ('#' .. code)) or '',
-            default = b.default,
-            -- Whether this row is on its default, so the screen can offer a
-            -- way back. It is the only way back for a key the capture cannot
-            -- take -- Escape cancels a capture, so Escape can never be typed
-            -- into one.
-            custom  = (not byEngine) and chosen[b.command] == true,
-            -- Additive, and the interface is free to ignore it: this row is
-            -- the engine's and rebinding it here will not take. Sent so a
-            -- screen that wants to say so has the fact rather than having to
-            -- infer it from `raw` plus a hold flag it is not given.
-            engine  = byEngine or nil,
-        }
+        -- A GATED ROW WHOSE FEATURE IS OFF IS NOT ON THE SCREEN AT ALL (#215):
+        -- the settings screen must not offer a key for something this box does
+        -- not have. Asked on every push, so a flip shows on the next one.
+        if b.gate == nil or b.gate() then
+            -- `or nil` folds the "deliberately unbound" false into absent: the
+            -- screen draws both as "Unbound", and the wire should not carry a
+            -- boolean in a field typed as a number.
+            local code = load()[b.command] or nil
+            -- THE SCREEN SHOWS THE KEY THAT WORKS, not the key we wrote down.
+            --
+            -- A row the engine is driving is on its default and cannot be moved.
+            -- Drawing the player's stored choice for it is the same lie the world
+            -- prompts were telling, in the one place they would go to fix it.
+            local byEngine = engineDrives(b)
+            if byEngine then code = engineCode(b) end
+            out[#out + 1] = {
+                group   = b.group,
+                command = b.command,
+                label   = (b.label:gsub('^Royale:%s*', '')),
+                vk      = code,
+                key     = code and (BR.Keys.vkName(code) or ('#' .. code)) or '',
+                default = b.default,
+                -- Whether this row is on its default, so the screen can offer a
+                -- way back. It is the only way back for a key the capture cannot
+                -- take -- Escape cancels a capture, so Escape can never be typed
+                -- into one.
+                custom  = (not byEngine) and chosen[b.command] == true,
+                -- Additive, and the interface is free to ignore it: this row is
+                -- the engine's and rebinding it here will not take. Sent so a
+                -- screen that wants to say so has the fact rather than having to
+                -- infer it from `raw` plus a hold flag it is not given.
+                engine  = byEngine or nil,
+            }
+        end
     end
     TriggerEvent('br:ui:sendLocal', BR.Nui.KEYBINDS,
         { actions = out, raw = BR.Keys.rawActive == true })
@@ -1300,6 +1389,11 @@ end
 function BR.Keys.set(command, code)
     local b = known(command)
     if not b then return false end
+
+    -- A GATED ROW IS NOT REBINDABLE WHILE ITS FEATURE IS OFF (#215). It is not
+    -- on the screen either (BR.Keys.push), so only a stale page can ask; the
+    -- answer is no, and nothing is stored.
+    if b.gate ~= nil and not b.gate() then return false end
 
     -- A REBIND THAT CANNOT TAKE EFFECT IS REFUSED, NOT STORED.
     --
@@ -1555,6 +1649,11 @@ end
 --- code, so a reverse entry would be a row nothing could ever look up.
 local VK_ALSO = {
     [0x10] = { 0xA0, 0xA1 },   -- VK_SHIFT <- VK_LSHIFT, VK_RSHIFT
+    -- THE EMOTE WHEEL'S LEFT ALT (#215), on the shift row's evidence: the array
+    -- is filled side-specifically, so the generic slot may never read down.
+    -- LEFT ONLY -- 0xA5 (VK_RMENU, which is AltGr on many layouts) is not
+    -- asked; whether Right Alt should open the wheel too is the owner's call.
+    [0x12] = { 0xA4 },   -- VK_MENU <- VK_LMENU
 }
 
 --- Is this binding's key down, asking every code that can mean it.

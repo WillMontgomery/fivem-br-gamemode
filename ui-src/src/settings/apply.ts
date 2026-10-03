@@ -1,5 +1,6 @@
 import { CB, type SettingsPayload } from '../bridge/types'
 import { setUiVolume } from '../audio/cues'
+import { setMusicVolume } from '../audio/music'
 import { fetchNui } from '../bridge/nui'
 
 /**
@@ -56,6 +57,11 @@ export function applySettings(s: SettingsPayload): void {
   else root.setAttribute('data-cb', s.colourblind)
 
   setUiVolume(s.volUi)
+  // The emote music (#215): "New 'Music volume' slider directly below
+  // 'Interface sounds'" (owner, 2026-10-02). volMusic was already in the
+  // schema; applied whether or not the slider is shown, so a dev box that
+  // turns emotes on mid-session hears the player's saved level at once.
+  setMusicVolume(s.volMusic)
 
   // ═══ AND THE RESOLVED GREEN, BACK TO LUA, FOR THE DUI PROMPTS ═══
   //

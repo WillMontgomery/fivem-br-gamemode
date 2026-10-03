@@ -16,6 +16,7 @@ import { marshall, unmarshall } from '@aws-sdk/util-dynamodb'
 import { artifactNames, isSpoolFile } from './artifacts.js'
 import { effective } from './ban.js'
 import { buildIncidentClose } from './close.js'
+import { addableId, EMOTE_SLOTS, ownedAddUpdate, unequipUpdate } from './emotes.js'
 import { buildIncidentItem } from './incident.js'
 import { banner, resolvePrefixes } from './prefix.js'
 import { spendCost, spendUpdate } from './spend.js'
@@ -949,7 +950,11 @@ on('br:ddb:matchPut', (req, match) => {
  * condition below still refuses the second purchase, because being charged
  * twice for a no-op is exactly the bug this guards.
  */
-const EQUIP_KINDS = ['character', 'chute', 'trail', 'weapon', 'banner', 'verdict']
+//
+// THE EIGHT EMOTE SLOTS (#215, "Scope v2") are kinds here like any other, so
+// `equip` writes `equip_emote3` and `inventoryFetch` reads it back with no
+// second code path. src/emotes.js says why they are flat attributes.
+const EQUIP_KINDS = ['character', 'chute', 'trail', 'weapon', 'banner', 'verdict', ...EMOTE_SLOTS]
 
 /**
  * Everything about one player, in one read.
@@ -1234,6 +1239,107 @@ on('br:ddb:equip', (req, license, kind, itemId, allowUnowned) => {
         return
       }
       console.log('[br_ddb] equip failed for ' + license + ': ' + e.message)
+      answer(false, { error: e.message })
+    })
+})
+
+/**
+ * Empty one emote wheel slot (#215).
+ *
+ * EMOTE SLOTS ONLY. Every other kind falls back to a default and has no
+ * un-equip, so 'chute' is refused as a bad slot before anything is sent --
+ * src/emotes.js says why. One REMOVE of `equip_emoteN` and nothing else:
+ * removing an attribute that is already absent succeeds, which is the answer
+ * wanted, since the slot is empty either way.
+ *
+ * br_core never has two writes to one slot in flight at once (its per-slot
+ * busy guard), because DynamoDB does not order them.
+ */
+on('br:ddb:unequip', (req, license, kind) => {
+  const answer = (ok, extra) => {
+    emit('br:ddb:unequipResult', req, ok, extra ?? {})
+  }
+
+  if (typeof license !== 'string' || license === '') {
+    answer(false, { error: 'no license' })
+    return
+  }
+
+  const built = unequipUpdate(kind)
+  if (built === null) {
+    answer(false, { error: 'bad slot' })
+    return
+  }
+
+  withTimeout(
+    ddb().send(
+      new UpdateItemCommand({
+        TableName: `${TABLE_PREFIX_GAME}players`,
+        Key: marshall({ pk: license, sk: 'profile' }),
+        UpdateExpression: built.UpdateExpression,
+        ExpressionAttributeNames: built.ExpressionAttributeNames,
+      }),
+    ),
+    TIMEOUT_MS,
+  )
+    .then(() => answer(true, {}))
+    .catch((e) => {
+      console.log('[br_ddb] unequip failed for ' + license + ': ' + e.message)
+      answer(false, { error: e.message })
+    })
+})
+
+/**
+ * Add one emote to a profile's `owned` set without charging for it (#215).
+ *
+ * THE CONSOLE'S VERB, NOT THE STOREFRONT'S. `bremotegrant` is the only caller;
+ * a purchase goes through `br:ddb:purchase`, which debits in the same write.
+ * src/emotes.js carries the argument for why this cannot add a chute, a trail
+ * or Volts.
+ *
+ * ALREADY OWNED IS A REFUSAL, NOT AN ERROR -- `purchase`'s rule. The condition
+ * rejecting means the set already holds the id, which is an answer the console
+ * prints; anything else is the database being unhappy.
+ */
+on('br:ddb:ownedAdd', (req, license, itemId) => {
+  const answer = (ok, extra) => {
+    emit('br:ddb:ownedAddResult', req, ok, extra ?? {})
+  }
+
+  if (typeof license !== 'string' || license === '') {
+    answer(false, { error: 'no license' })
+    return
+  }
+
+  const id = addableId(itemId)
+  if (id === null) {
+    answer(false, { error: 'bad item' })
+    return
+  }
+
+  const built = ownedAddUpdate(id)
+
+  withTimeout(
+    ddb().send(
+      new UpdateItemCommand({
+        TableName: `${TABLE_PREFIX_GAME}players`,
+        Key: marshall({ pk: license, sk: 'profile' }),
+        UpdateExpression: built.UpdateExpression,
+        ConditionExpression: built.ConditionExpression,
+        ExpressionAttributeNames: built.ExpressionAttributeNames,
+        // ALREADY AttributeValues -- see ownedAddUpdate. Not marshalled again.
+        ExpressionAttributeValues: built.ExpressionAttributeValues,
+      }),
+    ),
+    TIMEOUT_MS,
+  )
+    .then(() => answer(true, {}))
+    .catch((e) => {
+      if (e.name === 'ConditionalCheckFailedException') {
+        answer(false, { refused: 'already owned' })
+        return
+      }
+      console.log('[br_ddb] ownedAdd failed for ' + license + ': ' + e.message)
       answer(false, { error: e.message })
     })
 })

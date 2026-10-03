@@ -535,6 +535,7 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
         tools/test_airdrop.lua
         tools/test_client.lua
         tools/test_spectate.lua
+        tools/test_emotes_client.lua
         tools/test_matchexit.lua
         tools/test_lobbyseq.lua
         tools/test_landtime.lua
@@ -555,10 +556,12 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
         tools/test_shop.lua
         tools/test_gunshop.lua
         tools/test_volts.lua
+        tools/test_emotes.lua
         tools/test_warmupcrates.lua
         tools/test_bool_natives.lua
         tools/test_tutorial.lua
         tools/test_gitref.lua
+        tools/test_emotes_ui.lua
     )
 
     listed=$(printf '%s\n' "${suites[@]}" | LC_ALL=C sort)
@@ -2091,11 +2094,14 @@ DEVGATE_FILE="resources/[fivem-royale]/br_lib/shared/devgate.lua"
 #                       nothing on the live box with no error anywhere.
 #   brring              the health dump DEPLOY.md sends the operator to, by
 #                       hand, on the live box, after an IAM policy change.
+#   bremotegrant        gated by the emote line in br_lib/config/emotes.lua
+#                       instead (#215 "Scope v2": "removing that line makes it
+#                       production-ready"); the emote gate section below pins it.
 #
 # bridents is deliberately NOT here: nothing invokes it and it prints licenses
 # and Discord ids for everyone connected. See the note above it in
 # br_ringmaster/server/debug.lua.
-EXEMPT_="brkick brring brspectate"
+EXEMPT_="bremotegrant brkick brring brspectate"
 
 if [ ! -f "$DEVGATE_FILE" ]; then
     echo "${RED}FAIL${RST} $DEVGATE_FILE is gone"
@@ -2313,6 +2319,27 @@ else
     # and the operator has to know which of the two they are looking at.
     echo "${YEL}skip${RST} (lua interpreter not found)"
 fi
+
+# --- 4d-quater. every emote door asks the ONE line (#215) ---------------------
+#
+# Owner, 2026-10-02 ("Scope v2"): "Everything is devMode-required behind one
+# config line, so removing that line makes it production-ready in the same PR."
+# tools/check_emote_gate.lua proves no door skips BR.Emotes.enabled() and none
+# asks dev mode a second way; the loop after it proves the deleted state works,
+# by running every emote suite with `requireDevMode = true,` cut out of the
+# config. Deleting the line is then a change that is already tested.
+echo "${DIM}== emote gate ==${RST}"
+if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
+    if "$LUA" tools/check_emote_gate.lua --selftest; then
+        # shellcheck disable=SC2046
+        "$LUA" tools/check_emote_gate.lua $(find "resources/[fivem-royale]" -name '*.lua' -not -path '*/node_modules/*' | sort) ui-src/src/screens/Settings.tsx ui-src/src/screens/Market.tsx || rc=1
+    else echo "${RED}FAIL${RST} check_emote_gate selftest"; rc=1; fi
+    # THE ONE-LINE PROMISE (owner, #215 Scope v2): every emote suite must
+    # also pass with `requireDevMode = true,` removed from the config.
+    for s in tools/test_emotes.lua tools/test_emotes_client.lua tools/test_emotes_ui.lua; do
+        BR_EMOTES_LINE_DELETED=1 "$LUA" "$s" >/dev/null || { echo "${RED}FAIL${RST} $s with the one line deleted"; rc=1; }
+    done
+else echo "${YEL}skip${RST} (lua interpreter not found)"; fi
 
 # --- 4e. the branch-switch invariant ------------------------------------------
 #

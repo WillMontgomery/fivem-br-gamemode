@@ -251,6 +251,10 @@ function BR.Spectate.stop(src, reason, final)
     return true
 end
 
+--- Who `src` is watching, or nil. A read of the session table and nothing
+--- else; the emote records use it so a spectator hears what they watch (#215).
+function BR.Spectate.targetOf(src) local s = sessions[src]; return s and s.target or nil end
+
 -- ═══════════════════════════════════════════════════════════════════════════
 -- THE ELIMINATION THAT DECIDES THE MATCH CLOSES THE CAMERA
 --

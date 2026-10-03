@@ -1572,6 +1572,91 @@ for (const name of builtCss) {
 }
 
 // ---------------------------------------------------------------------------
+// R24  The emote gate and the emote music are wired end to end (#215).
+//
+// Owner, 2026-10-02 ("Scope v2"): "One license-free .ogg per dance", and a
+// "New 'Music volume' slider directly below 'Interface sounds', shown only in
+// dev mode (same gate)". scripts/test-music.mjs pins what the music DECIDES
+// (src/audio/musicPlan.ts); only this can see that the decisions are reached:
+//
+//   NOT ROUTED -- App.tsx's `emotes` envelope no longer reaches setEmotesOn,
+//     so the Emotes tab and the slider never appear even with the gate open;
+//     or `emoteaudio` no longer reaches syncEmoteTracks, so every dance is
+//     silent and nothing errors (the router drops an envelope nobody hears,
+//     which is how `squadcue` went missing once);
+//   NOT APPLIED -- apply.ts no longer hands volMusic to the music module, so
+//     the slider moves and the music does not;
+//   NOT SHIPPED -- br_ui/fxmanifest.lua lost `'ui/emotes/*.ogg'`, so CEF
+//     cannot fetch a track that is in the bundle and the dance is silent the
+//     same way a missing file is;
+//   NOT ASKED -- music.ts stops importing ./musicPlan or calling staleStop,
+//     so the tested plan and the stale-voice watchdog are code nothing runs,
+//     and a sender that dies leaves a dance looping forever.
+//
+// IT CAN FAIL. Delete the `emotes` or `emoteaudio` handler in App.tsx, the
+// setMusicVolume line in apply.ts, the ogg glob in the manifest, or the
+// watchdog's staleStop call in music.ts.
+// ---------------------------------------------------------------------------
+{
+  const A = join(SRC, 'App.tsx')
+  const P = join(SRC, 'settings', 'apply.ts')
+  const M = join(SRC, 'audio', 'music.ts')
+  const F = join(ROOT, '..', 'resources', '[fivem-royale]', 'br_ui', 'fxmanifest.lua')
+  for (const [f, name] of [[A, 'src/App.tsx'], [P, 'src/settings/apply.ts'],
+                           [M, 'src/audio/music.ts'], [F, 'br_ui/fxmanifest.lua']]) {
+    if (!existsSync(f)) {
+      fail('R24 emote-wiring', name,
+        'file is missing. If it moved, move this rule with it -- it is the pair'
+        + ' to scripts/test-music.mjs.')
+    }
+  }
+  if (existsSync(A)) {
+    const app = stripComments(read(A))
+    if (!/useNuiEvent\(\s*'emotes'\s*,[^\n]*\bsetEmotesOn\(/.test(app)) {
+      fail('R24 emote-wiring', 'src/App.tsx',
+        "no `useNuiEvent('emotes', ...)` routed to `setEmotesOn(`. Without it"
+        + ' the Emotes tab and the "Music volume" slider never render, even'
+        + ' with the gate open (#215).')
+    }
+    if (!/useNuiEvent\(\s*'emoteaudio'\s*,[^\n]*\bsyncEmoteTracks\(/.test(app)) {
+      fail('R24 emote-wiring', 'src/App.tsx',
+        "no `useNuiEvent('emoteaudio', ...)` routed to `syncEmoteTracks(`."
+        + ' Every dance is silent and nothing errors: the router drops an'
+        + ' envelope with no subscriber (#215).')
+    }
+  }
+  if (existsSync(P) && !/\bsetMusicVolume\(\s*s\.volMusic\s*\)/.test(stripComments(read(P)))) {
+    fail('R24 emote-wiring', 'src/settings/apply.ts',
+      'applySettings no longer calls `setMusicVolume(s.volMusic)`, so the'
+      + ' "Music volume" slider moves and the music does not (#215).')
+  }
+  if (existsSync(F)) {
+    const code = read(F).split('\n').filter((l) => !/^\s*--/.test(l)).join('\n')
+    if (!code.includes("'ui/emotes/*.ogg'")) {
+      fail('R24 emote-wiring', 'br_ui/fxmanifest.lua',
+        "the files{} entry `'ui/emotes/*.ogg'` is gone. CEF cannot fetch a"
+        + ' track the manifest does not list, so every dance plays silent'
+        + ' with its file sitting in the bundle (#215).')
+    }
+  }
+  if (existsSync(M)) {
+    const music = stripComments(read(M))
+    if (!/import\s*\{[^}]*\}\s*from\s*'\.\/musicPlan'/.test(music)) {
+      fail('R24 emote-wiring', 'src/audio/music.ts',
+        "nothing is imported from './musicPlan'. That file is the tested"
+        + ' plan (scripts/test-music.mjs); music.ts deciding for itself is a'
+        + ' decision the test cannot reach (#215).')
+    }
+    if (!/\bstaleStop\(/.test(music)) {
+      fail('R24 emote-wiring', 'src/audio/music.ts',
+        'no call to `staleStop(`. Without the watchdog, a Lua sender that dies'
+        + ' or never sends its final empty list leaves a dance looping'
+        + ' forever (#215).')
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Result
 // ---------------------------------------------------------------------------
 if (failures) {

@@ -808,6 +808,7 @@ function BR.Pause.openMap()
         print(('[br_ui] map: PauseToggleFullscreenMap(true) %s')
             :format(ok and 'ok' or ('FAILED ' .. tostring(err))))
         BR.Pause.fullscreenMap = true
+        TriggerEvent('br:map:fullscreen', true)  -- the emote wheel may not open over any map (owner, #215)
         return
     end
 
@@ -886,6 +887,7 @@ function BR.Pause.closeMap()
     if BR.Pause.fullscreenMap then
         pcall(PauseToggleFullscreenMap, false)
         BR.Pause.fullscreenMap = false
+        TriggerEvent('br:map:fullscreen', false)  -- the emote wheel may not open over any map (owner, #215)
         return true
     end
     return false
@@ -1349,5 +1351,6 @@ AddEventHandler('onResourceStop', function(res)
     if BR.Pause.fullscreenMap then
         pcall(PauseToggleFullscreenMap, false)
         BR.Pause.fullscreenMap = false
+        TriggerEvent('br:map:fullscreen', false)  -- the emote wheel may not open over any map (owner, #215)
     end
 end)

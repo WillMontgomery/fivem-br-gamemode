@@ -166,6 +166,11 @@ export interface UiState {
 
   /** The store catalogue and the player's balance. Also synthetic. */
   market: MarketPayload
+  /** BR.Emotes.enabled() on this machine (#215, "Scope v2"): the Emotes tab
+   *  and the "Music volume" slider render only while it is true. False until
+   *  Lua says otherwise, so a closed gate never flashes either one. Not a
+   *  setting: it is not the player's to change. */
+  emotesOn: boolean
   /** Is the warmup shop's plate up? While it is, the ammo slot shows the
    *  player's Volts instead of being empty (owner, 2026-08-29). Only the
    *  FLAG travels; the figure itself is `market.balance`, which is already
@@ -482,6 +487,8 @@ export interface UiState {
   setCommunity: (c: CommunityPayload) => void
   setReportResult: (r: ReportResult | null) => void
   setMarket: (m: MarketPayload) => void
+  /** The emote gate (#215), from the 'emotes' envelope. */
+  setEmotesOn: (on: boolean) => void
   setShopPlate: (up: boolean) => void
   setGunshopMenu: (open: boolean) => void
   setKeybinds: (k: KeybindAction[], raw: boolean) => void
@@ -831,6 +838,7 @@ export const useUi = create<UiState>((set, get) => {
   earned: null,
   earnedStaged: false,
   market: { balance: 0, items: [] },
+  emotesOn: false,
   shopPlate: false,
   gunshopMenu: false,
   players: { players: [], categories: [], defaultCategory: 'cheating', maxTargets: 5 },
@@ -1082,6 +1090,7 @@ export const useUi = create<UiState>((set, get) => {
   },
   clearXpAward: () => set({ xpAward: null }),
   setMarket: (market) => set({ market }),
+  setEmotesOn: (emotesOn) => set({ emotesOn }),
   setShopPlate: (shopPlate) => set({ shopPlate }),
   setGunshopMenu: (gunshopMenu) => set({ gunshopMenu }),
   setPlayers: (players) => set({ players }),
