@@ -2007,14 +2007,24 @@ end
 --- paused the storm again -- one kit lived outside the wall indefinitely. And
 --- after a real enemy hit too light to break the line, a dip finished the job.
 ---
---- WHAT A DROP THE SAMPLER BELIEVED CAN STILL DO, EXACTLY: nothing to the
---- mark. It never sets it, and it cannot turn a hit into one that does. Not for
---- a shield, because the hit has to take health itself and a dip changes none
---- of the arithmetic that decides that. Not for a heal, because its line is the
---- ceiling the channel issued, which a dip can only lower through
---- server/roster.lua's spent-ceiling rule -- and the channel's own pass
---- re-issues it on the same 250ms beat, straight after the sampler, before any
---- hit can arrive between them.
+--- WHAT A DROP THE SAMPLER BELIEVED CAN STILL DO, EXACTLY. It never sets the
+--- mark. A dip of the HEALTH reading cannot turn a hit into one that sets it
+--- either: whether a hit took health is the armor's arithmetic, not the health
+--- ledger's, and a heal's line is the ceiling the channel issued, which a dip
+--- can only lower through server/roster.lua's spent-ceiling rule -- and the
+--- channel's own pass re-issues it on the same 250ms beat, straight after the
+--- sampler, before any hit can arrive between them.
+---
+--- A dip of the ARMOR reading still can, and it is left standing. The armor
+--- ledger follows it down until the next sample, so a hit that armor would
+--- have soaked reaches health and is judged like any other hit that does. The
+--- player pays for it in the health that hit then takes -- and during a heal
+--- in the armor too, which no window gives back. During a shield the shield's
+--- own window does give the armor back, so a modified client can still end a
+--- shield early on an enemy's graze, at the price of that graze in health, and
+--- keep the shield and the armor so far. Closing that means judging the soak on
+--- the armor the server issued rather than the armor ledger, which is gunfire
+--- arithmetic, not this rule.
 ---
 --- THE SAME LINE FOR EVERY CLIENT. A deaf or pinned client is granted straight
 --- up to the ceiling an honest one is judged on, so one bullet interrupts all
@@ -2245,11 +2255,12 @@ BR.Sched.every(250, 'inv.use', function()
             -- this only acts on it: BR.Damage.applyHit asks BR.Inv.struck, which
             -- marks the channel (`u.struckBy`) when that hit takes health itself
             -- and leaves the health the bar will show under `hp0`. A drop the
-            -- sampler believed never sets the mark and never turns a hit into one
-            -- that does -- not a dip, and not a dip dressed up by the kill-credit
-            -- stamps, which the fire and roadkill ledgers infer from exactly such
-            -- a drop beside anybody's fire or car. BR.Inv.struck has that story,
-            -- and the one place a dip could still have reached the line.
+            -- sampler believed never sets the mark -- not a dip, and not a dip
+            -- dressed up by the kill-credit stamps, which the fire and roadkill
+            -- ledgers infer from exactly such a drop beside anybody's fire or
+            -- car -- and a dip of the health reading never turns a hit into one
+            -- that does. A dip of the ARMOR reading can, at the price of the
+            -- health the hit then takes; BR.Inv.struck has both stories.
             --
             -- WHAT IT COSTS, AND IT IS A RULE CHANGE: only a bullet or a blast --
             -- a hit the server validates and deals -- interrupts a heal, and only
