@@ -863,19 +863,27 @@ end)
 -- pure, and settled by tools/test_client.lua, for the same reason
 -- BR.Native.teamFor is.
 
---- Everything that can stop a trigger, with the name the owner will see.
+--- Every control a trigger is pulled with, with the name the owner will see.
 ---
---- 68/69/70 are the vehicle set and 24/25/257 are the on-foot set, and BOTH are
---- listed because which pair the engine actually reads from a seat is a fact
---- about the build, not something to assume. A row that is always enabled costs
---- one line and rules out a whole file.
+--- EXACTLY THE SEVEN client/vehrefuse.lua HOLDS DOWN IN A DISARMED SEAT (its
+--- FIRE_CONTROLS), in its order, so that when a drive-by fails this readout can
+--- say whether that hold was on. tools/test_vehrefuse.lua reads this table out
+--- of this file and fails if the two lists differ by an id or a name.
+---
+--- THE NAMES WERE WRONG UNTIL #322's second round, the same mislabeling
+--- client/inventory.lua fixed on 2026-08-22: 68 was printed as VEH_ATTACK and 69
+--- as VEH_PASSENGER_ATTACK, and 92 -- the real VEH_PASSENGER_ATTACK -- was not
+--- sampled at all. Per the FiveM controls table: 68 is VEH_AIM, 69 VEH_ATTACK,
+--- 92 VEH_PASSENGER_ATTACK. The aim rows (25, 68) went with the fix, since the
+--- hold never touches aim.
 local ATTACK_CONTROLS = {
     {  24, 'ATTACK'               },
-    {  25, 'AIM'                  },
-    {  68, 'VEH_ATTACK'           },
-    {  69, 'VEH_PASSENGER_ATTACK' },
-    {  70, 'VEH_ATTACK2'          },
     { 257, 'ATTACK2'              },
+    {  69, 'VEH_ATTACK'           },
+    {  70, 'VEH_ATTACK2'          },
+    {  92, 'VEH_PASSENGER_ATTACK' },
+    { 114, 'VEH_FLY_ATTACK'       },
+    { 331, 'VEH_FLY_ATTACK2'      },
 }
 
 --- A FiveM BOOL. `0` is truthy in Lua and this project has shipped that bug
@@ -1051,7 +1059,7 @@ local function driveByReport()
     print('                       the inv.apply tick is dead (see /brperf).')
     print('  control rows         a control disabled on ANY frame is a script')
     print('                       holding your trigger down, and is fixable.')
-    print('                       All six enabled means no script is at fault.')
+    print('                       All seven enabled means no script is at fault.')
     print('  we say the seat      OUR claim, from the driveby field in')
     print('                       br_lib/config/weapons.lua. There is no native')
     print('                       that asks the engine this, so the only check on')

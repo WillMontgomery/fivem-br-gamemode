@@ -240,10 +240,11 @@ end
 --- -- the trigger hold (owner, 2026-10-03).
 ---
 --- ALL THREE ARGUMENTS ARE RECORDED. The pad and the id are what is held, and
---- the third decides whether every other action on the same key goes with it,
---- which on a gamepad includes the throttle. Without this stub the FRAME
---- callback throws on its first held frame and the registry suspends it, which
---- would look like a hold that does nothing.
+--- the third is `true`, the value every working script passes; what it does to
+--- other actions on the same button is the playtest's question, not this
+--- suite's. Without this stub the FRAME callback throws on its first held frame
+--- and the registry suspends it, which would look like a hold that does
+--- nothing.
 function DisableControlAction(pad, id, related)
     act('ctl', pad, id, related)
 end
@@ -1362,7 +1363,8 @@ end
 do
     -- THE DISABLE IS ON TICK, WITH THE NAMED PATH. Same call, same band. The
     -- FRAME band holds the trigger and nothing else (see 'holding the
-    -- trigger' below), and it holds nothing until a TICK pass has found a gun.
+    -- trigger' below) -- and before any TICK pass it holds it, because a
+    -- vehicle no pass has decided about fails closed.
     reset()
     spawn(10, CARACARA, 9, 'automobile')
     myVeh = 10
@@ -1371,8 +1373,8 @@ do
     BR.Loop.step(BR.Loop.FRAME)
     ok(did('disable') == 0, 'the hand path never calls the disable on FRAME',
        did('disable'))
-    ok(did('ctl') == 0,
-       'and FRAME holds no trigger before a TICK pass has found the gun',
+    ok(did('ctl') == 14,
+       'and FRAME holds the trigger before any TICK pass has decided',
        did('ctl'))
     tick()
     ok(did('disable') == 1, 'and one pass of TICK is what does it', did('disable'))
@@ -1553,10 +1555,10 @@ do
 end
 
 do
-    -- THE DISABLE IS ON THE TICK BAND. The owner's report of 2026-10-03 says
-    -- the lock holds on the shooter's own machine between passes, so TICK is
-    -- the right band for it. FRAME holds the trigger and nothing else, and
-    -- nothing at all before a TICK pass has found a gun.
+    -- THE DISABLE IS ON THE TICK BAND. The owner's report of 2026-10-03
+    -- points at a lock that lasts between passes on the shooter's own machine,
+    -- so TICK is the band for it. FRAME holds the trigger and nothing else --
+    -- and holds it before any TICK pass, because it fails closed.
     reset()
     spawn(10, TECHNICAL, 4, 'automobile')
     myVeh = 10
@@ -1565,7 +1567,9 @@ do
     BR.Loop.step(BR.Loop.FRAME)
     ok(did('disable') == 0, 'the disable is never called on the FRAME band',
        did('disable'))
-    ok(#acts == 0, 'and FRAME does nothing at all before a TICK pass', #acts)
+    ok(#acts == did('ctl') and did('ctl') == 14,
+       'and FRAME before a TICK pass holds the trigger and does nothing else',
+       #acts)
     tick()
     ok(did('disable') == 1, 'and one pass of TICK is what does it', did('disable'))
 end
@@ -1828,10 +1832,14 @@ do
 
     ok(did('disable') == 3, 'a listed model is disarmed on every pass, as before',
        did('disable'))
-    ok(reads.armed == 0 and reads.turret == 0 and reads.seat == 0,
-       'and the engine is never asked about it at all',
-       ('armed=%d turret=%d seat=%d')
-           :format(reads.armed, reads.turret, reads.seat))
+    ok(reads.armed == 0 and reads.turret == 0,
+       'and the probe never asks the engine about it at all',
+       ('armed=%d turret=%d'):format(reads.armed, reads.turret))
+    -- THE SEAT READS ARE THE TRIGGER HOLD'S, NOT THE PROBE'S: one walk, which
+    -- stops at the driving seat, then one confirmation a pass. See `seated`.
+    ok(reads.seat == 1 + 2,
+       'and the only seat reads are the trigger hold walk and confirmations',
+       reads.seat)
     ok(#sent == 0, 'and nothing is reported about it', #sent)
 end
 
@@ -2374,31 +2382,31 @@ describe('holding the trigger, so no other screen sees the gun fire (#322)')
 --   "vehicle weapons are only disabled for the player who is in the vehicle -
 --    the weapon still appears to fire on others' screens"
 --
--- DisableVehicleWeapon is a lock on the shooter's machine. Every other client
--- fires its own copy of the gun from the seat task's firing state, which the
--- lock never touches. So the file now also holds the trigger itself down,
--- every frame, while it has a gun switched off: a task that never sees the
--- press never fires and has nothing to send.
+-- The file holds the trigger itself down, every frame, wherever the gun may be
+-- live. WHY that should keep the other screens quiet is inferred, not measured
+-- (see FIRE_CONTROLS in the file); this block pins what the file DOES, which is
+-- the part a suite can settle.
 --
 -- WHAT IS PINNED HERE, because each one is silent when it is wrong:
 --
 --   1. WHICH CONTROLS. All seven fire actions, each asserted on its own so
 --      dropping any one fails, and NOTHING ELSE -- the throttle, brake,
---      handbrake, horn, exit, aim and weapon select stay live.
---   2. HOW. Pad 0, and `false` for disableRelatedActions: `true` would take
---      every action sharing the key, which on a gamepad is the throttle (RT)
---      and the handbrake (RB).
---   3. EVERY FRAME, ON THE FRAME BAND, latched from the TICK pass that found
---      the gun, and let go on the pass that does not.
---   4. FOR WHOM. A gun the seat names, or the unnamed gun in the Caracara's
---      hand -- and that gun seat for as long as somebody sits in it, since
---      client/inventory.lua's strip can put their own weapon back in the hand
---      there. Never a hand weapon of ours in any other seat -- drive-by --
---      never a driver once the car's gun is out of their hand, and never the
---      firetruck's hose.
+--      handbrake, horn, exit, aim and weapon select are never in the list.
+--   2. HOW. Pad 0, and `true` for the third argument: the value every working
+--      script passes.
+--   3. DECIDED ON FRAME, AND FAILING CLOSED. A vehicle no TICK pass has decided
+--      about is held -- the frames after sitting down, a vehicle being ejected
+--      from, a pass that throws -- and so is a seat the pass did not see this
+--      ped in. A driver who picks the car's gun back is held on that frame, not
+--      on the next pass.
+--   4. FOR WHOM. A gunner's seat for the whole sitting, whatever is in the hand
+--      -- a seat where the car's gun was found, named or in the hand, or one
+--      the engine calls a turret. The driving seat only on the frames the car's
+--      gun is selected. Never a hand weapon of ours in any other seat, never
+--      the firetruck, never on foot.
 --
--- WHAT IT CANNOT SETTLE: whether the other screens really go quiet. That is
--- the engine's clone task, and only two players in a live lobby can show it.
+-- WHAT IT CANNOT SETTLE: whether the other screens really go quiet, and
+-- whether `true` costs a gamepad driver the throttle. Both are the playtest's.
 do
     --- The seven fire actions, written out here rather than read from the file
     --- under test, so a list that lost one is caught by a list that did not.
@@ -2429,6 +2437,8 @@ do
 
     --- WEAPON_PISTOL: one of this gamemode's own rows, and `driveby = true`.
     local PISTOL = 0x1B06D571
+    --- Weaponized Tampa: a car whose DRIVER fires the gun.
+    local TAMPA3 = 0xB7D9F7F1
 
     --- FRAME passes, with the clock standing still: these are the frames
     --- inside one TICK window, which is the gap the hold exists to cover.
@@ -2436,18 +2446,25 @@ do
         for _ = 1, (times or 1) do BR.Loop.step(BR.Loop.FRAME) end
     end
 
+    --- How many controls the next `n` frames hold, from a clean act log.
+    local function heldOver(n)
+        acts = {}
+        frame(n)
+        return did('ctl')
+    end
+
     --- How many times each control was held, and whether every call was on
-    --- pad 0 with related actions left alone.
+    --- pad 0 with `true` for the third argument.
     local function heldIds()
         local ids, shape = {}, true
         for _, a in ipairs(acted('ctl')) do
             ids[a[2]] = (ids[a[2]] or 0) + 1
-            if a[1] ~= 0 or a[3] ~= false then shape = false end
+            if a[1] ~= 0 or a[3] ~= true then shape = false end
         end
         return ids, shape
     end
 
-    --- The whole of property 1 and 2, for `frames` held frames.
+    --- The whole of properties 1 and 2, for `frames` held frames.
     local function holdsTheTrigger(label, frames)
         local ids, shape = heldIds()
         for _, c in ipairs(FIRE) do
@@ -2465,13 +2482,49 @@ do
             ok(ids[c[1]] == nil,
                ('%s: %s (%d) is never touched'):format(label, c[2], c[1]))
         end
-        ok(shape, label .. ': every one on pad 0, with related actions left '
-           .. 'alone (false)')
+        ok(shape, label .. ': every one on pad 0, with true for the third '
+           .. 'argument')
+    end
+
+    --- One pass in a Technical's gun seat (seat 1), where the seat names the
+    --- gun. The acts are cleared after it.
+    local function atTechnicalGun()
+        reset()
+        spawn(10, TECHNICAL, 4, 'automobile')
+        myVeh = 10
+        seatPed(10, 1)
+        gunBool, gunHash = true, SEAT_GUN
+        tick()
+        acts = {}
+    end
+
+    --- One pass in the Caracara's gun seat (seat 1), with the car's gun in the
+    --- hand as the engine hands it over. The acts are cleared after it.
+    local function atCaracaraGun()
+        reset()
+        spawn(10, CARACARA, 9, 'automobile')
+        myVeh = 10
+        seatPed(10, 1)
+        gunBool, gunHash = false, 0
+        heldBool, heldHash = true, ENGINE_GUN
+        tick()
+        acts = {}
     end
 
     do
-        -- A TECHNICAL'S GUN SEAT, WHERE THE SEAT NAMES ITS GUN. One TICK pass
-        -- finds it; every frame after that holds all seven.
+        -- THE LIST THE FILE HOLDS IS THIS LIST. Exported for exactly this, and
+        -- for the /brdriveby check at the bottom of this block.
+        local ids = {}
+        for i, id in ipairs(V.FIRE_CONTROLS) do ids[i] = id end
+        local want = {}
+        for i, c in ipairs(FIRE) do want[i] = c[1] end
+        ok(table.concat(ids, ',') == table.concat(want, ','),
+           'BR.VehRefuse.FIRE_CONTROLS is the seven fire actions, in order',
+           table.concat(ids, ','))
+    end
+
+    do
+        -- A TECHNICAL'S GUN SEAT, WHERE THE SEAT NAMES ITS GUN.
         reset()
         spawn(10, TECHNICAL, 4, 'automobile')
         myVeh = 10
@@ -2492,29 +2545,23 @@ do
     do
         -- THE CARACARA'S GUN SEAT: the seat names nothing and the gun is in
         -- the hand. Same hold.
-        reset()
-        spawn(10, CARACARA, 9, 'automobile')
-        myVeh = 10
-        seatPed(10, 1)
-        gunBool, gunHash = false, 0
-        heldBool, heldHash = true, ENGINE_GUN
-        tick()
+        atCaracaraGun()
         frame(2)
         holdsTheTrigger('the Caracara\'s gun seat, from the hand', 2)
     end
 
     do
-        -- A BUILD WITHOUT DisableVehicleWeapon STILL HOLDS THE TRIGGER. The
-        -- hold is latched on what `disarm` found, whether or not the disable
-        -- reached the engine, and depends on nothing that native does.
+        -- A BUILD WITHOUT DisableVehicleWeapon STILL HOLDS THE TRIGGER.
         reset()
         spawn(10, TECHNICAL, 4, 'automobile')
         myVeh = 10
+        seatPed(10, 1)
         gunBool, gunHash = true, SEAT_GUN
         local saved = DisableVehicleWeapon
         DisableVehicleWeapon = nil
         tick()
         DisableVehicleWeapon = saved
+        acts = {}
         frame(2)
         holdsTheTrigger('a build with no DisableVehicleWeapon', 2)
         ok(V.stats().disarmed == 0,
@@ -2522,18 +2569,188 @@ do
     end
 
     do
-        -- HELD ACROSS PASSES. The clear at the top of every TICK pass is
-        -- followed by `holdTrigger` setting it again, so a player who stays
-        -- at the gun is held on every frame of every window.
+        -- HELD ACROSS PASSES, on every frame of every window.
         reset()
         spawn(10, TECHNICAL, 4, 'automobile')
         myVeh = 10
+        seatPed(10, 1)
         gunBool, gunHash = true, SEAT_GUN
         for _ = 1, 4 do
             tick()
             frame(3)
         end
         holdsTheTrigger('four passes of sitting at the gun', 12)
+    end
+
+    -- ═══ THE WINDOW: NOTHING WAITS FOR THE NEXT PASS ═══
+    --
+    -- The first version held the trigger from a latch the TICK pass set, so
+    -- every sit-down, every move into a gun seat and every switch back to the
+    -- car's gun was live for up to a pass -- and a driver could reopen it at
+    -- will. Every case below steps FRAME with no TICK in between.
+
+    do
+        -- SITTING DOWN AT THE GUN: held from the first seated frame.
+        reset()
+        spawn(10, TECHNICAL, 4, 'automobile')
+        myVeh = 10
+        seatPed(10, 1)
+        gunBool, gunHash = true, SEAT_GUN
+        frame(6)
+        holdsTheTrigger('the frames between sitting at the gun and the first pass',
+                        6)
+    end
+
+    do
+        -- AND IN ANY VEHICLE AT ALL, UNTIL A PASS HAS DECIDED. The frames
+        -- cannot tell an ordinary car from an armed one without the pass's
+        -- natives, so an undecided one is held -- and let go by the first pass.
+        reset()
+        spawn(10, ADDER, 7, 'automobile')
+        myVeh = 10
+        ok(heldOver(3) == 21,
+           'an ordinary car is held on the frames before its first pass',
+           did('ctl'))
+        tick()
+        ok(heldOver(3) == 0, 'and let go by the pass that decides it',
+           did('ctl'))
+    end
+
+    do
+        -- MOVING INTO THE GUN SEAT: the passenger seat was decided, the gun
+        -- seat was not, and the frame sees the difference itself.
+        reset()
+        spawn(10, CARACARA, 9, 'automobile')
+        myVeh = 10
+        seatPed(10, 0)
+        heldBool, heldHash = true, PISTOL
+        tick()
+        ok(heldOver(2) == 0, 'a Caracara passenger with a pistol is not held',
+           did('ctl'))
+        seatPed(10, 1)
+        ok(heldOver(4) == 28,
+           'and is held from the first frame in the gun seat, before any pass',
+           did('ctl'))
+    end
+
+    do
+        -- AND THE GUN ARRIVING IN THE HAND IN A SEAT THE PASS DECIDED ON. The
+        -- pass saw the gun seat with the player's own carbine still in hand, so
+        -- it found no gun and did not remember the seat; the frame the engine
+        -- hands the gun over is held all the same.
+        reset()
+        spawn(10, CARACARA, 9, 'automobile')
+        myVeh = 10
+        seatPed(10, 1)
+        heldBool, heldHash = true, CARBINE
+        tick()
+        ok(heldOver(2) == 0,
+           'the gun seat with only the player\'s own carbine is not yet held',
+           did('ctl'))
+        heldHash = ENGINE_GUN
+        ok(heldOver(1) == 7,
+           'and the frame the car\'s gun is in the hand is held', did('ctl'))
+        tick()
+        heldHash = CARBINE
+        ok(heldOver(2) == 14,
+           'and once a pass has seen it there, the seat stays held', did('ctl'))
+    end
+
+    do
+        -- THE DRIVER'S SWITCH-BACK, WHICH COULD BE REPEATED AT WILL. The second
+        -- reviewer's probe: a Weaponized Tampa's driver on a pistol, then the
+        -- car's gun picked -- "6 of 6 frames before the next TICK held
+        -- nothing". Now all six are held, and letting go is as quick.
+        ok(BR.Config.IsDisarmedVehicle(TAMPA3),
+           'the Weaponized Tampa is driven with its gun off')
+        reset()
+        spawn(10, TAMPA3, 4, 'automobile')   -- in the driving seat
+        myVeh = 10
+        heldBool, heldHash = true, PISTOL
+        tick()
+        ok(heldOver(3) == 0, 'a Tampa driver on a pistol is not held',
+           did('ctl'))
+        gunBool, gunHash = true, SEAT_GUN
+        acts = {}
+        frame(6)
+        holdsTheTrigger('the car\'s gun picked back, before the next pass', 6)
+        gunBool, gunHash = false, 0
+        ok(heldOver(3) == 0, 'and the pistol picked again is let go at once',
+           did('ctl'))
+        for _ = 1, 5 do
+            gunBool, gunHash = true, SEAT_GUN
+            frame()
+            gunBool, gunHash = false, 0
+            frame()
+        end
+        ok(did('ctl') == 5 * 7,
+           'and switching back and forth is held on every frame the gun is up',
+           did('ctl'))
+    end
+
+    -- ═══ A PASS THAT THROWS, OR STOPS, LEAVES THE TRIGGER HELD ═══
+
+    do
+        -- AT THE GUN, THEN EVERY PASS THROWS. Nothing is cleared before a pass
+        -- can throw, so the last decision stands.
+        atTechnicalGun()
+        local saved = IsPedInAnyVehicle
+        IsPedInAnyVehicle = function() error('boom') end
+        local before = gateErrors()
+        tick(3)
+        ok(gateErrors() == before + 3, 'the pass really is throwing',
+           gateErrors() - before)
+        ok(heldOver(3) == 21, 'and the gun seat is still held', did('ctl'))
+
+        -- ...AND A VEHICLE IT NEVER GOT TO DECIDE ABOUT IS HELD TOO.
+        spawn(11, ADDER, 7, 'automobile')
+        myVeh = 11
+        tick(3)
+        ok(heldOver(3) == 21,
+           'and so is a new vehicle, since no pass could decide about it',
+           did('ctl'))
+        IsPedInAnyVehicle = saved
+        BR.Loop.setEnabled('vehrefuse.gate', true)
+    end
+
+    do
+        -- THE GATE SWITCHED OFF, OR SUSPENDED. In a vehicle it cannot decide
+        -- about, held for as long as it stays off. On foot, never: the first
+        -- version needed a ceiling so a dead loop could not stop somebody
+        -- firing anywhere, and on foot is now decided by the frame itself.
+        atTechnicalGun()
+        BR.Loop.setEnabled('vehrefuse.gate', false)
+        spawn(11, ADDER, 7, 'automobile')
+        myVeh = 11
+        fakeTime = fakeTime + 60000
+        tick(10)
+        ok(heldOver(3) == 21,
+           'with the gate off, a vehicle it never decided about stays held',
+           did('ctl'))
+        myVeh = 0
+        ok(heldOver(3) == 0, 'and on foot nothing is held', did('ctl'))
+        BR.Loop.setEnabled('vehrefuse.gate', true)
+        myVeh = 11
+        tick()
+        ok(heldOver(3) == 0, 'and the gate back decides the car is ordinary',
+           did('ctl'))
+    end
+
+    do
+        -- #329's PROBE STILL ASKING IS NOT AN ANSWER. A car the authored table
+        -- does not name, whose DOES_VEHICLE_HAVE_WEAPONS read throws, is held
+        -- for the passes the probe keeps trying -- and settles as an ordinary
+        -- car once they are spent, which is the pre-#329 floor.
+        reset()
+        spawn(10, MYSTERY, 4, 'automobile')
+        myVeh = 10
+        throws.armed = true
+        tick()
+        ok(heldOver(2) == 14, 'a car whose probe has not answered is held',
+           did('ctl'))
+        tick(4)
+        ok(heldOver(2) == 0,
+           'and let go once the probe has used its tries', did('ctl'))
     end
 
     -- ═══ DRIVE-BY: OUR OWN WEAPONS ARE NEVER HELD ═══
@@ -2548,8 +2765,7 @@ do
         for _, m in ipairs({ { 'a Technical', TECHNICAL, 4 },
                              { 'a Caracara', CARACARA, 9 } }) do
             -- THE PASSENGER SEAT OF A DISARMED VEHICLE. The seat names no gun
-            -- and the hand holds one of ours, so `disarm` finds no hash and the
-            -- trigger is theirs.
+            -- and the hand holds one of ours, so nothing is held.
             reset()
             spawn(10, m[2], m[3], 'automobile')
             myVeh = 10
@@ -2557,8 +2773,7 @@ do
             gunBool, gunHash = false, 0
             heldBool, heldHash = true, w.hash
             tick(2)
-            frame(3)
-            ok(did('ctl') == 0,
+            ok(heldOver(3) == 0,
                ('%s in the passenger seat of %s is never held')
                    :format(w.name, m[1]), did('ctl'))
         end
@@ -2566,41 +2781,20 @@ do
 
     do
         -- THE PISTOL IS ONE OF OURS, which is the whole reason the loop above
-        -- does not hold it. Asserted against the real arsenal, so the loop
-        -- cannot pass on a hash nobody ships.
+        -- does not hold it. Asserted against the real arsenal.
         ok(BR.Config.WeaponByHash[BR.NormHash(PISTOL)] ~= nil,
            'the pistol is one of this gamemode\'s own rows')
     end
 
     do
-        -- A DRIVER WHO PICKS A HAND WEAPON IN A CAR WHOSE DRIVING SEAT HAS THE
-        -- GUN. Held while the seat names the car's gun; let go on the first
-        -- pass after it stops naming it, and the pistol is theirs. (Whether the
-        -- engine stops naming it is the playtest's question, not this one's.)
-        local TAMPA3 = 0xB7D9F7F1           -- Weaponized Tampa: the driver's gun
-        ok(BR.Config.IsDisarmedVehicle(TAMPA3),
-           'the Weaponized Tampa is driven with its gun off')
+        -- THE TECHNICAL'S DRIVER, who has no gun: never held after the first
+        -- pass, on any frame, whatever they pick.
         reset()
-        spawn(10, TAMPA3, 4, 'automobile')  -- in the driving seat
+        spawn(10, TECHNICAL, 4, 'automobile')  -- the driving seat
         myVeh = 10
-        gunBool, gunHash = true, SEAT_GUN
-        tick()
-        frame()
-        ok(did('ctl') == 7, 'held while the car\'s gun is selected', did('ctl'))
-
-        gunBool, gunHash = false, 0
         heldBool, heldHash = true, PISTOL
-        tick()
-        acts = {}
-        frame(3)
-        ok(did('ctl') == 0,
-           'and let go on the next pass once a pistol is picked', did('ctl'))
-
-        gunBool, gunHash = true, SEAT_GUN
-        tick()
-        frame()
-        ok(did('ctl') == 7, 'and held again once the car\'s gun is picked back',
-           did('ctl'))
+        tick(2)
+        ok(heldOver(5) == 0, 'the Technical\'s driver is never held', did('ctl'))
     end
 
     -- ═══ AND EVERYWHERE THE GUN IS NOT SWITCHED OFF, NOTHING IS HELD ═══
@@ -2608,7 +2802,7 @@ do
     do
         -- THE FIRETRUCK, whose hose is the point (c58745f). The engine calls it
         -- armed, the seat a turret, the seat names a gun and the hand holds
-        -- one -- and the trigger is still theirs.
+        -- one -- and after the first pass the trigger is theirs.
         reset()
         spawn(10, FIRETRUK, 18, 'automobile')
         myVeh = 10
@@ -2617,8 +2811,23 @@ do
         gunBool, gunHash = true, SEAT_GUN
         heldBool, heldHash = true, ENGINE_GUN
         tick(3)
-        frame(3)
-        ok(did('ctl') == 0, 'the firetruck\'s hose is never held', did('ctl'))
+        ok(heldOver(3) == 0, 'the firetruck\'s hose is never held', did('ctl'))
+    end
+
+    do
+        -- AND ITS HOSE SEAT, whatever the engine says about it.
+        reset()
+        spawn(10, FIRETRUK, 18, 'automobile')
+        myVeh = 10
+        seatPed(10, 1)
+        vehArmed[10] = true
+        vehTurret[10] = { [1] = true }
+        heldBool, heldHash = true, ENGINE_GUN
+        tick(2)
+        heldHash = CARBINE
+        tick(2)
+        ok(heldOver(3) == 0, 'the firetruck\'s hose seat is never held',
+           did('ctl'))
     end
 
     for _, case in ipairs({
@@ -2633,8 +2842,9 @@ do
         gunBool, gunHash = true, SEAT_GUN
         heldBool, heldHash = true, ENGINE_GUN
         tick(3)
-        frame(3)
-        ok(did('ctl') == 0, ('%s is never held'):format(case.name), did('ctl'))
+        ok(heldOver(3) == 0,
+           ('%s is never held once a pass has decided it'):format(case.name),
+           did('ctl'))
     end
 
     for _, case in ipairs({
@@ -2643,16 +2853,21 @@ do
         { name = 'a Rhino (TANK)',           model = RHINO,      class = 19 },
         { name = 'a class-net ARMED refusal', model = 0x0BADF00D, class = 19 },
     }) do
-        -- REFUSED, SO EMPTIED, AND NEVER MERELY HELD.
+        -- REFUSED, SO EMPTIED -- AND HELD UNTIL THEY ARE OUT. The pass returns
+        -- at the refusal without deciding, so the frames fail closed for as
+        -- long as the ejection takes.
         reset()
         spawn(10, case.model, case.class, case.vtype or 'automobile')
         myVeh = 10
         gunBool, gunHash = true, SEAT_GUN
         tick(3)
-        frame(3)
-        ok(did('leave') > 0 and did('ctl') == 0,
-           ('%s is ejected and its trigger never held'):format(case.name),
+        ok(did('leave') > 0 and heldOver(3) == 21,
+           ('%s is ejected, and its trigger held until they are out')
+               :format(case.name),
            ('%d leave, %d ctl'):format(did('leave'), did('ctl')))
+        myVeh = 0
+        ok(heldOver(3) == 0, ('and out of %s, nothing is held'):format(case.name),
+           did('ctl'))
     end
 
     do
@@ -2663,118 +2878,53 @@ do
         gunBool, gunHash = true, SEAT_GUN
         heldBool, heldHash = true, ENGINE_GUN
         tick(3)
-        frame(3)
-        ok(did('ctl') == 0, 'a player climbing in is never held', did('ctl'))
+        ok(heldOver(3) == 0, 'a player climbing in is never held', did('ctl'))
     end
 
-    -- ═══ LET GO ON THE PASS THAT SEES THEM LEAVE ═══
-
-    --- Sit at a Technical's gun and be held, so the next step has a hold to
-    --- let go of.
-    local function seatedAndHeld()
-        reset()
-        spawn(10, TECHNICAL, 4, 'automobile')
-        myVeh = 10
-        gunBool, gunHash = true, SEAT_GUN
-        tick()
-        frame()
-        return did('ctl') == 7
-    end
+    -- ═══ LET GO ON THE FRAME THAT SEES THEM LEAVE ═══
 
     do
-        ok(seatedAndHeld(), 'seated at the gun, the trigger is held')
+        atTechnicalGun()
+        ok(heldOver(1) == 7, 'seated at the gun, the trigger is held',
+           did('ctl'))
         myVeh = 0
-        tick()
-        acts = {}
-        frame(3)
-        ok(did('ctl') == 0, 'and getting out lets go on the next pass',
+        ok(heldOver(3) == 0,
+           'and getting out lets go on the next frame, without a pass',
            did('ctl'))
     end
 
     for _, st in ipairs({ BR.PlayerState.BUS, BR.PlayerState.FREEFALL,
-                          BR.PlayerState.DBNO, BR.PlayerState.OUT }) do
-        ok(seatedAndHeld(), 'seated at the gun, the trigger is held')
+                          BR.PlayerState.GLIDE, BR.PlayerState.DBNO,
+                          BR.PlayerState.OUT, BR.PlayerState.LOBBY }) do
+        atTechnicalGun()
         BR.State.me.state = st
-        tick()
-        acts = {}
-        frame(3)
-        ok(did('ctl') == 0,
-           ('and going %s lets go on the next pass'):format(tostring(st)),
+        ok(heldOver(3) == 0,
+           ('going %s lets go on the next frame'):format(tostring(st)),
            did('ctl'))
     end
 
     do
-        -- MOVED INTO A REFUSED VEHICLE: ejected, and the trigger let go.
-        ok(seatedAndHeld(), 'seated at the gun, the trigger is held')
-        spawn(11, BUZZARD, 15, 'heli')
-        myVeh = 11
-        tick()
-        acts = {}
-        frame(3)
-        ok(did('ctl') == 0, 'and moving into a refused vehicle lets go',
-           did('ctl'))
+        -- WARMUP IS A STATE THIS FILE RUNS IN, AND SO IS THE HOLD.
+        atTechnicalGun()
+        BR.State.me.state = BR.PlayerState.WARMUP
+        ok(heldOver(2) == 14, 'and WARMUP is held like ALIVE', did('ctl'))
     end
 
     do
-        -- BR.VehRefuse.reset LETS GO AT ONCE, without waiting for a pass.
-        ok(seatedAndHeld(), 'seated at the gun, the trigger is held')
+        -- BR.VehRefuse.reset FORGETS THE DECISION, so the vehicle is held as
+        -- undecided until the next pass decides it again.
+        atTechnicalGun()
         V.reset()
-        acts = {}
-        frame(3)
-        ok(did('ctl') == 0, 'and a reset lets go', did('ctl'))
-    end
-
-    do
-        -- ═══ A HOLD THE TICK PASS STOPPED RENEWING IS LET GO ═══
-        --
-        -- The day the TICK callback is switched off from the debug tooling, or
-        -- suspended, while the latch is set. Without the ceiling the player
-        -- would never fire again, on foot or anywhere. With it, a second.
-        ok(seatedAndHeld(), 'seated at the gun, the trigger is held')
-        local at = fakeTime
-        BR.Loop.setEnabled('vehrefuse.gate', false)
-
-        fakeTime = at + 800
-        tick()                             -- the gate is off: nothing renews
-        acts = {}
-        frame()
-        ok(did('ctl') == 7,
-           'with the gate stopped, the hold lasts out a hitch-sized gap',
+        ok(heldOver(2) == 14, 'a reset leaves the trigger held, undecided',
            did('ctl'))
-
-        fakeTime = at + 1100
-        acts = {}
-        frame(3)
-        ok(did('ctl') == 0, 'and is let go after a second of no renewal',
-           did('ctl'))
-
-        BR.Loop.setEnabled('vehrefuse.gate', true)
-        tick()
-        acts = {}
-        frame()
-        ok(did('ctl') == 7, 'and comes back with the gate', did('ctl'))
-    end
-
-    do
-        -- ═══ THE FRAME BAND ASKS THE ENGINE NOTHING ═══
-        --
-        -- The seat, the vehicle and the hand are the TICK pass's to read. A
-        -- frame callback that read any of them would be paying, every frame,
-        -- for an answer the pass already has.
         reset()
-        spawn(10, TECHNICAL, 4, 'automobile')
+        spawn(10, ADDER, 7, 'automobile')
         myVeh = 10
-        gunBool, gunHash = true, SEAT_GUN
         tick()
-        local before = {}
-        for k, v in pairs(reads) do before[k] = v end
-        frame(10)
-        local same = true
-        for k, v in pairs(reads) do
-            if before[k] ~= v then same = false end
-        end
-        ok(same, 'ten held frames read no native the TICK pass reads')
-        ok(did('disable') == 1, 'and call no disable', did('disable'))
+        V.reset()
+        ok(heldOver(1) == 7, 'even in an ordinary car', did('ctl'))
+        tick()
+        ok(heldOver(2) == 0, 'until the next pass decides it again', did('ctl'))
     end
 
     do
@@ -2789,32 +2939,129 @@ do
     end
 
     do
-        -- THE READOUT RUNS WITH THE NEW COUNTER IN IT.
-        ok(seatedAndHeld(), 'seated at the gun, the trigger is held')
-        ok(pcall(commands.brvehrefuse), '/brvehrefuse prints trigger-held')
+        -- THE READOUT PRINTS THE DECISION, so a playtest can read off whether
+        -- the seat it is sitting in is a gunner's.
+        atCaracaraGun()
+        local lines = {}
+        local savedPrint = print
+        print = function(line) lines[#lines + 1] = tostring(line) end
+        local okRun = pcall(commands.brvehrefuse)
+        print = savedPrint
+        local found = false
+        for _, line in ipairs(lines) do
+            if line:find('trigger: gun=true seat=1 gunner=true', 1, true) then
+                found = true
+            end
+        end
+        ok(okRun and found,
+           '/brvehrefuse prints the decision for the seat it is in',
+           table.concat(lines, ' | '))
     end
 
-    -- ═══ THE CARACARA'S GUNNER SEAT IS HELD FOR AS LONG AS SOMEBODY SITS IN IT ═══
-    --
-    -- client/inventory.lua's strip takes the car's gun out of the hand later in
-    -- the same pass and forces the active slot back on, so the next pass can
-    -- find the player's own weapon in the hand. A hold read off the hand alone
-    -- would let go of the trigger there while the turret is still under them.
-    -- So the seat the hand path found the gun in is remembered, and held until
-    -- the player is no longer in it.
+    -- ═══ WHAT IT COSTS, PER FRAME, WHICH ONLY A COUNT CAN SHOW ═══
 
-    --- One pass in the Caracara's gun seat (seat 1) with the car's gun in the
-    --- hand, as the engine hands it over. The acts are cleared after it.
-    local function atCaracaraGun()
+    --- The native reads `n` frames make, by name.
+    local function framesCost(n)
+        local before = {}
+        for k, v in pairs(reads) do before[k] = v end
+        frame(n)
+        local out = {}
+        for k, v in pairs(reads) do out[k] = v - before[k] end
+        return out
+    end
+
+    do
+        reset()
+        local c = framesCost(10)
+        ok(c.asks == 10 and c.seat == 0 and c.gun == 0 and c.held == 0
+           and c.model == 0,
+           'on foot, a frame asks which vehicle and nothing else',
+           ('asks=%d seat=%d gun=%d held=%d'):format(c.asks, c.seat, c.gun,
+                                                     c.held))
+    end
+
+    do
+        reset()
+        spawn(10, ADDER, 7, 'automobile')
+        myVeh = 10
+        tick()
+        local c = framesCost(10)
+        ok(c.asks == 10 and c.seat == 0 and c.gun == 0 and c.held == 0,
+           'in an ordinary car the pass has decided, nothing more',
+           ('asks=%d seat=%d gun=%d held=%d'):format(c.asks, c.seat, c.gun,
+                                                     c.held))
+    end
+
+    do
+        atTechnicalGun()
+        local c = framesCost(10)
+        ok(c.asks == 10 and c.seat == 10 and c.gun == 0 and c.held == 0,
+           'a gunner\'s seat costs one seat read a frame and no weapon reads',
+           ('asks=%d seat=%d gun=%d held=%d'):format(c.asks, c.seat, c.gun,
+                                                     c.held))
+        ok(did('disable') == 0, 'and the frames never call the disable',
+           did('disable'))
+    end
+
+    do
+        -- THE DRIVING SEAT OF A DISARMED VEHICLE pays for the weapon reads,
+        -- because the car's gun can be picked between passes.
+        reset()
+        spawn(10, TECHNICAL, 4, 'automobile')
+        myVeh = 10
+        heldBool, heldHash = true, PISTOL
+        tick()
+        local c = framesCost(10)
+        ok(c.asks == 10 and c.seat == 10 and c.gun == 10 and c.held == 10,
+           'the driving seat reads the seat, the seat\'s gun and the hand',
+           ('asks=%d seat=%d gun=%d held=%d'):format(c.asks, c.seat, c.gun,
+                                                     c.held))
+    end
+
+    do
+        -- AND ON TICK: ONE WALK PER OCCUPANCY, THEN ONE CONFIRMATION A PASS.
         reset()
         spawn(10, CARACARA, 9, 'automobile')
         myVeh = 10
         seatPed(10, 1)
-        gunBool, gunHash = false, 0
         heldBool, heldHash = true, ENGINE_GUN
         tick()
-        acts = {}
+        ok(reads.seat == 3,
+           'the first pass walks the seats once, stopping at the gun seat',
+           reads.seat)
+        tick(4)
+        ok(reads.seat == 3 + 4, 'and every later pass confirms it with one read',
+           reads.seat)
+        heldHash = CARBINE
+        tick(5)
+        ok(reads.seat == 3 + 4 + 5,
+           'and so does every pass with their own weapon back in hand',
+           reads.seat)
     end
+
+    do
+        -- A SEAT THE WALK CANNOT NAME IS SETTLED, NOT RE-WALKED. The frame has
+        -- no seat to confirm and decides on the weapon alone.
+        reset()
+        spawn(10, TECHNICAL, 4, 'automobile')
+        myVeh = 10
+        seatPed(10, 9)
+        heldBool, heldHash = true, PISTOL
+        tick(5)
+        ok(reads.seat == MAX_SEAT_WALK,
+           'a seat past the walk is walked once in five passes', reads.seat)
+        ok(heldOver(2) == 0, 'and a pistol there is not held', did('ctl'))
+        gunBool, gunHash = true, SEAT_GUN
+        ok(heldOver(2) == 14, 'and the car\'s gun there is', did('ctl'))
+    end
+
+    -- ═══ A GUNNER'S SEAT IS HELD FOR AS LONG AS SOMEBODY SITS IN IT ═══
+    --
+    -- client/inventory.lua's strip and a slot key both take every weapon out
+    -- of the hand and put the slot's back, so a hold read off the hand would
+    -- let go while the turret is still under them. GTA does not let a turret
+    -- gunner use a hand weapon (gta.wiki on the Technical and the Caracara),
+    -- so holding the seat costs it no drive-by.
 
     do
         atCaracaraGun()
@@ -2835,105 +3082,99 @@ do
         atCaracaraGun()
         heldHash = w.hash
         tick(3)
-        frame(2)
-        ok(did('ctl') == 14,
+        ok(heldOver(2) == 14,
            ('the Caracara\'s gun seat with %s in hand is still held')
                :format(w.name), did('ctl'))
     end
 
     do
-        -- WHAT IT COSTS: ONE WALK, THEN ONE SEAT READ A PASS.
+        -- THE NAMED PATH IS REMEMBERED THE SAME WAY. A slot key in the
+        -- Technical's gun seat runs applyActive, which takes every weapon and
+        -- gives the slot's back; if the seat stops naming the gun after that,
+        -- the seat is still held.
+        atTechnicalGun()
+        gunBool, gunHash = false, 0
+        heldBool, heldHash = true, CARBINE
+        tick(3)
+        ok(heldOver(2) == 14,
+           'the Technical\'s gun seat is held after a slot key swaps the hand',
+           did('ctl'))
+    end
+
+    do
+        -- #329's TURRET ANSWER IS ENOUGH ON ITS OWN. An unlisted vehicle whose
+        -- seat the engine calls a turret, with nothing named and our own
+        -- carbine in hand: held, since a turret seat has no drive-by to lose.
         reset()
-        spawn(10, CARACARA, 9, 'automobile')
+        spawn(10, MYSTERY, 4, 'automobile')
         myVeh = 10
         seatPed(10, 1)
-        heldBool, heldHash = true, ENGINE_GUN
+        vehTurret[10] = { [1] = true }
+        heldBool, heldHash = true, CARBINE
         tick()
-        ok(reads.seat == 3,
-           'the first pass walks the seats once, stopping at the gun seat',
-           reads.seat)
-        tick(4)
-        ok(reads.seat == 3 + 4,
-           'and every later pass with the gun in hand confirms it with one read',
-           reads.seat)
-        heldHash = CARBINE
-        tick(5)
-        ok(reads.seat == 3 + 4 + 5,
-           'and so does every pass with their own weapon back in hand',
-           reads.seat)
-    end
-
-    do
-        -- DRIVE-BY FROM THE OTHER SEATS (#197). Moving to the front passenger
-        -- seat with a pistol lets go, and the seat they left costs nothing
-        -- after the pass that saw them leave it.
-        atCaracaraGun()
-        seatPed(10, 0)
-        heldHash = PISTOL
-        tick()
-        acts = {}
-        frame(3)
-        ok(did('ctl') == 0,
-           'moving from the gun seat to the passenger seat with a pistol lets go',
+        ok(did('disable') == 0, 'nothing is found to disable there',
+           did('disable'))
+        ok(heldOver(2) == 14, 'and the turret seat is held all the same',
            did('ctl'))
-        local before = reads.seat
-        tick(3)
-        ok(reads.seat == before,
-           'and a seat it has let go of is never asked about again',
-           reads.seat - before)
     end
 
     do
-        -- A PASSENGER WHO NEVER SAT AT THE GUN COSTS NOTHING.
+        -- ...BUT NEVER A DRIVING SEAT, whatever the engine calls it.
         reset()
-        spawn(10, CARACARA, 9, 'automobile')
+        spawn(10, MYSTERY, 4, 'automobile')
         myVeh = 10
-        seatPed(10, 0)
+        vehTurret[10] = { [-1] = true }
         heldBool, heldHash = true, PISTOL
-        tick(5)
-        frame(3)
-        ok(did('ctl') == 0 and reads.seat == 0,
-           'a Caracara passenger with a pistol is never held and never walked',
-           ('%d ctl, %d seat reads'):format(did('ctl'), reads.seat))
+        tick(2)
+        ok(heldOver(3) == 0,
+           'a driving seat the engine calls a turret is not remembered',
+           did('ctl'))
     end
 
     do
-        -- THE DRIVING SEAT IS NEVER REMEMBERED, so a driver who has the car's
-        -- gun in hand is held only on those passes, and keeps drive-by.
+        -- THE DRIVING SEAT IS NEVER REMEMBERED, so a driver with the car's gun
+        -- in hand is held only on those frames, and keeps drive-by.
         reset()
         spawn(10, CARACARA, 9, 'automobile')   -- the driving seat
         myVeh = 10
         heldBool, heldHash = true, ENGINE_GUN
         tick()
-        acts = {}
-        frame()
-        ok(did('ctl') == 7, 'a driver with the car\'s gun in hand is held',
+        ok(heldOver(1) == 7, 'a driver with the car\'s gun in hand is held',
            did('ctl'))
         heldHash = PISTOL
+        ok(heldOver(3) == 0,
+           'and let go on the next frame once a pistol is in hand', did('ctl'))
         tick()
-        acts = {}
-        frame(3)
-        ok(did('ctl') == 0,
-           'and let go on the next pass once a pistol is in hand', did('ctl'))
+        ok(heldOver(3) == 0, 'and after the next pass too', did('ctl'))
+    end
+
+    do
+        -- DRIVE-BY FROM THE OTHER SEATS (#197). Moving from the gun seat to the
+        -- passenger seat is held until a pass has seen the move, then let go.
+        atCaracaraGun()
+        seatPed(10, 0)
+        heldHash = PISTOL
+        ok(heldOver(2) == 14,
+           'moving out of the gun seat is held until a pass has seen it',
+           did('ctl'))
+        tick()
+        ok(heldOver(3) == 0,
+           'and the passenger seat with a pistol is let go after it',
+           did('ctl'))
     end
 
     do
         -- GETTING OUT FORGETS IT. Back in the same seat with no gun in hand is
-        -- a new occupancy, held again once the engine hands the gun over.
+        -- a new occupancy.
         atCaracaraGun()
         myVeh = 0
         tick()
         myVeh = 10
         heldHash = CARBINE
         tick()
-        acts = {}
-        frame(2)
-        ok(did('ctl') == 0, 'getting out forgets the gun seat', did('ctl'))
+        ok(heldOver(2) == 0, 'getting out forgets the gun seat', did('ctl'))
         heldHash = ENGINE_GUN
-        tick()
-        acts = {}
-        frame()
-        ok(did('ctl') == 7, 'and the gun back in hand holds it again',
+        ok(heldOver(1) == 7, 'and the gun back in hand holds it again',
            did('ctl'))
     end
 
@@ -2945,20 +3186,16 @@ do
         BR.State.me.state = BR.PlayerState.ALIVE
         heldHash = CARBINE
         tick()
-        acts = {}
-        frame(2)
-        ok(did('ctl') == 0, 'going DBNO forgets the gun seat', did('ctl'))
+        ok(heldOver(2) == 0, 'going DBNO forgets the gun seat', did('ctl'))
     end
 
     do
-        -- AND SO DOES A RESET.
+        -- AND SO DOES A RESET, once a pass has decided again.
         atCaracaraGun()
         V.reset()
         heldHash = CARBINE
         tick()
-        acts = {}
-        frame(2)
-        ok(did('ctl') == 0, 'a reset forgets the gun seat', did('ctl'))
+        ok(heldOver(2) == 0, 'a reset forgets the gun seat', did('ctl'))
     end
 
     do
@@ -2974,9 +3211,7 @@ do
         myVeh = 10
         heldHash = CARBINE
         tick()
-        acts = {}
-        frame(2)
-        ok(did('ctl') == 0, 'a pass that names no vehicle forgets the gun seat',
+        ok(heldOver(2) == 0, 'a pass that names no vehicle forgets the gun seat',
            did('ctl'))
     end
 
@@ -2988,28 +3223,34 @@ do
         seatPed(10, 1)
         heldHash = CARBINE
         tick()
-        acts = {}
-        frame(2)
-        ok(did('ctl') == 0,
+        ok(heldOver(2) == 0,
            'the same handle under a different model is not held', did('ctl'))
     end
 
+    -- ═══ /brdriveby SAMPLES EXACTLY THESE CONTROLS ═══
+    --
+    -- The drive-by diagnostic (client/debug.lua) is what the owner runs when a
+    -- drive-by fails, and it labelled 68 VEH_ATTACK and 69 VEH_PASSENGER_ATTACK
+    -- and left out 92 -- so it misreported exactly what this hold holds. Its
+    -- list is read out of the source here, because that file is not loaded by
+    -- this suite, and compared id for id and name for name.
     do
-        -- THE FIRETRUCK'S HOSE SEAT IS NEVER REMEMBERED: `disarm` never finds
-        -- a gun in it, from the seat or the hand.
-        reset()
-        spawn(10, FIRETRUK, 18, 'automobile')
-        myVeh = 10
-        seatPed(10, 1)
-        vehArmed[10] = true
-        vehTurret[10] = { [1] = true }
-        heldBool, heldHash = true, ENGINE_GUN
-        tick(2)
-        heldHash = CARBINE
-        tick(2)
-        frame(3)
-        ok(did('ctl') == 0, 'the firetruck\'s hose seat is never held',
-           did('ctl'))
+        local f = io.open(ROOT .. 'br_core/client/debug.lua', 'r')
+        local src = f and f:read('a') or ''
+        if f then f:close() end
+        local block = src:match('local ATTACK_CONTROLS = (%b{})') or ''
+        local rows = {}
+        for id, name in block:gmatch("{%s*(%d+),%s*'([%w_]+)'%s*}") do
+            rows[#rows + 1] = { tonumber(id), name }
+        end
+        ok(#rows == #FIRE,
+           '/brdriveby samples as many controls as the hold holds', #rows)
+        for i, c in ipairs(FIRE) do
+            local r = rows[i] or {}
+            ok(r[1] == c[1] and 'INPUT_' .. tostring(r[2]) == c[2],
+               ('/brdriveby row %d is %s (%d)'):format(i, c[2], c[1]),
+               ('%s %s'):format(tostring(r[1]), tostring(r[2])))
+        end
     end
 end
 

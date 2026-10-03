@@ -14195,13 +14195,25 @@ do
 
     -- A CONTROL HELD DOWN EVERY FRAME, which is #197's candidate 3. The watch
     -- has to catch it, and it has to outrank everything the engine is doing.
-    disabledControls = { [69] = true }
+    --
+    -- 92 IS VEH_PASSENGER_ATTACK AND 69 IS VEH_ATTACK, per the FiveM controls
+    -- table. This block used to hold 69 down and expect the row to say
+    -- VEH_PASSENGER_ATTACK, which only passed because the readout carried the
+    -- same mislabeling (#322's second round fixed both).
+    disabledControls = { [92] = true }
     out = run(1)
     ok(out:find('VERDICT %[control%]') ~= nil,
         'a disabled VEH_PASSENGER_ATTACK is caught by the frame sampler',
         out:sub(1, 400))
-    ok(out:find('VEH_PASSENGER_ATTACK.*DISABLED on') ~= nil,
-        'and the row says so, with the frame count')
+    ok(out:find('VEH_PASSENGER_ATTACK%s+%( 92%)%s+DISABLED on') ~= nil,
+        'and its own row says so, with the frame count',
+        out:match('  control VEH_PASSENGER_ATTACK[^\n]*'))
+    disabledControls = { [69] = true }
+    out = run(1)
+    ok(out:find('control VEH_ATTACK%s+%( 69%)%s+DISABLED on') ~= nil,
+        'and 69 is named VEH_ATTACK, the driver\'s trigger',
+        out:match('  control VEH_ATTACK [^\n]*'))
+    disabledControls = { [92] = true }
 
     -- ...ON A BUILD WHERE IsControlEnabled ANSWERS NUMBERS. Same world, same
     -- expected verdict. `not 0` is false in Lua, so a raw read here would report
