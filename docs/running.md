@@ -277,11 +277,14 @@ the untouched native and that resource's commands register ungated. A gate that
 can take `brkick` off the public box by failing to load is worse than one that
 can leave `brshop` on it.
 
-**Three commands are exempt and keep working on the public server**: `brkick`
+**Four commands are exempt from this gate**: `brkick`
 and `brspectate`, which the admin console types into this console over tmux and
 which are therefore its Kick and Spectate buttons, and `brring`, which is how an
 operator finds out on the live box that the Ringmaster link is dead (see the
-IAM-policy note in [security.md](security.md)). `bridents` is *not* exempt —
+IAM-policy note in [security.md](security.md)), and `bremotegrant`, whose gate is
+the emote line instead (#215, "Scope v2": "removing that line makes it
+production-ready") — it is shut on the public box for exactly as long as
+`requireDevMode = true,` stays in `br_lib/config/emotes.lua`. `bridents` is *not* exempt —
 nothing invokes it and it prints licenses and Discord ids for every connected
 player. The keybind commands are not in this table and are not gated: FiveM
 builds keybinds out of commands, so `+brinteract` and `brslot3` are also E and
@@ -305,10 +308,12 @@ builds keybinds out of commands, so `+brinteract` and `brslot3` are also E and
 | `brcrawl` | client | The crawl: which clip the build actually resolved, and whether this client is emitting anything network-visible while lying still |
 | `brpromptcheck` | client | Which prompt glyph actually renders for a custom keybind |
 | `/brleave` | client | Leave the current match (counts as an elimination) |
+| `bremote`, `bremote <dict> <clip> [flag]`, `bremote stop`, `bremote check` | client, dev only | The emote audition tool (#215). Bare, it prints the wheel's 8 slots and the catalogue; with a dict and clip it plays that animation locally (no record, no music, same cancels), refusing flags 16, 32 and 1024; `check` probes every dance's clip and track. Dev-only even after the emote line is deleted, because it plays any animation on a ped other players see |
 | `brperf [reset\|stop]` | both | Per-subsystem calls, errors and suspension. Client `reset` clears the window and arms per-callback stall capture; `stop` removes its timer overhead while the always-on frame histogram continues. Use `brbench`/`brab` for ordinary sub-frame cost |
 | `brstormhitch [reset [ms]\|stop\|rows]` | client | `reset`, play a hold and a sweep, then `/brstormhitch`: a plain summary — how many map clips were rebuilt while the storm moved (0 when every sweep was shown from its staged clips), how many clips were staged over how long in the holds and the longest frame after a staging step, the worst frame and how many frames went over 16.7 ms, and a one-line verdict. `rows` adds the detail: which storm/map/network/UI paths ran before each long frame. Opt-in and dormant outside a capture |
 | `brstormbisect <normal\|mapoff\|mapfreeze\|mapnoresize\|mapnomorph\|walloff> [ms]` | client | Runtime A/B for #350 and #344. Each mode starts a fresh hitch capture while changing only local rendering: remove the custom map fill, freeze its live updates, suppress only its resize call, stop redrawing the moving zone on the `overlay.morphHz` clock (the fallback redraw, for a sweep that could not be staged in time, and a conjoined growth), or suppress the shaped 3D wall. `normal` restores shipping behavior |
 | `brconfig` | server | The config values that most often explain odd behaviour |
+| `bremotegrant`, `bremotegrant <player name\|#id> <emoteId\|all>` | server console only | Hand a player one dance, or every dance they do not own, without charging Volts (#215). Bare, it lists the catalogue. Takes an **exact** name (case-insensitive, spaces allowed) or `#serverId`; a partial name only lists candidates, because there is no revoke. `all` grants one at a time and stops if the id changes hands. Exempt from the dev gate and gated by the emote line instead: it prints why and does nothing while emotes are off |
 | `brring` | server | Ringmaster link: whether it is configured, and what it would send |
 | `brallowlist [on\|off]` | server | The dev-mode join allowlist: `off` stops enforcing it (bans still apply, so with br_ringmaster down every dev-mode join is still refused) until `on` or the next start of br_core, bare prints which and whether the Discord lookup is configured. Restricted |
 | `brddb` | server | Probe DynamoDB — reachability, credentials, table access |

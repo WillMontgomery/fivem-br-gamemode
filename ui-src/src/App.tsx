@@ -3,6 +3,7 @@ import { useNuiEvent } from './bridge/useNuiEvent'
 import { fetchNui } from './bridge/nui'
 import { CB } from './bridge/types'
 import { play } from './audio/cues'
+import { syncEmoteTracks } from './audio/music'
 import { useUi } from './store'
 import Hud from './hud/Hud'
 import Chat from './chat/Chat'
@@ -191,6 +192,9 @@ export default function App() {
   useNuiEvent('locker',   (d) => dispatch().setLocker(d))
   useNuiEvent('progress', (d) => dispatch().setProgress(d))
   useNuiEvent('market',   (d) => dispatch().setMarket(d))
+  // THE EMOTE GATE (#215, "Scope v2"): sent with every grid. The Market's
+  // Emotes tab and the "Music volume" slider render only while it is on.
+  useNuiEvent('emotes',   (d) => dispatch().setEmotesOn(d.on === true))
   // The warmup shop's plate, which is the ONLY thing that puts a Volts figure
   // on the HUD. A flag, not a balance -- see the envelope's note.
   useNuiEvent('shopplate', (d) => dispatch().setShopPlate(d.show === true))
@@ -218,6 +222,9 @@ export default function App() {
   // fire-and-forget event with no state any component reads, and routing it
   // through zustand would re-render every subscriber to play a sound.
   useNuiEvent('squadcue', (d) => play(d.cue))
+  // THE EMOTE MUSIC (#215), ten a second while a dance is audible. Not in the
+  // store for the same reason as squadcue: nothing on screen reads it.
+  useNuiEvent('emoteaudio', (d) => syncEmoteTracks(d))
   useNuiEvent('keybinds', (d) => dispatch().setKeybinds(d.actions, d.raw === true))
   // Separate from 'progress' on purpose: a reconnect restores the bar, it
   // does not replay a celebration.

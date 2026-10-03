@@ -524,6 +524,16 @@ client_scripts {
     -- same four names client/ambheal.lua, client/shop.lua and
     -- client/revivekey.lua list, all of which are above.
     'client/gunshop.lua',
+    -- EMOTES (#215, "Scope v2"): the server's dance records, this player's own
+    -- playback and its cancels, and the music each record is owed at this
+    -- distance. Reads BR.Inv (inventory.lua) and BR.Keys (keybinds.lua), both
+    -- above, and BR.Spectate (client/spectate.lua, BELOW) and BR.Clock -- all
+    -- of them at call time only, so nothing here depends on that order.
+    'client/emotes.lua',
+    -- The wheel: hold Left Alt, ScaleformUI's RadialMenu, release to pick.
+    -- AFTER client/menu.lua (BR.Menu.radial / closeAll) and client/emotes.lua,
+    -- and it calls BR.Keys.on at load, so client/keybinds.lua must be above.
+    'client/emotewheel.lua',
     -- The guided first run (#261). AFTER client/main.lua, which is the only
     -- order it needs: it registers a FRAME pass that takes the camera and the
     -- trigger away from a player reading a card, and BR.Loop has to exist for
@@ -770,6 +780,12 @@ server_scripts {
     'server/voice.lua',    -- voice channel authority: one room per match, one per squad
     'server/debug.lua',
     'server/market.lua',    -- inventory, purchases and equipped slots
+    -- EMOTES (#215, "Scope v2"): a dance's record, sent to the players in
+    -- earshot (same routing bucket and within sendRadiusM, plus spectators of
+    -- a dancer that close), and the `bremotegrant` console command. AFTER
+    -- market.lua, whose slotOf / owns / addOwned it calls at call time; it reads
+    -- BR.Roster, BR.Inv, BR.Vehicles and BR.Spectate at call time too.
+    'server/emotes.lua',
     -- The warmup vehicle shop (#224). AFTER market.lua, and that is a REAL
     -- order rather than a reader's in one direction and a reader's in the
     -- other:

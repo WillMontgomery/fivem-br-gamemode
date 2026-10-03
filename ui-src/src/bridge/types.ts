@@ -1140,18 +1140,46 @@ export interface MarketItem {
   id: string
   name: string
   sub?: string
-  kind: 'character' | 'chute' | 'trail' | 'weapon' | 'banner' | 'verdict'
+  kind: 'character' | 'chute' | 'trail' | 'weapon' | 'banner' | 'verdict' | 'emote'
   price: number
   rarity?: Rarity
   owned?: boolean
-  /** Exactly one item per `kind` carries this. The server decides it; the page
-   *  never infers it, because "what am I wearing" has to survive a reconnect
-   *  and only one side of this connection can promise that. */
+  /** Exactly one item per `kind` carries this -- except 'emote', where up to
+   *  eight do, one per wheel segment ("Up to 8 equipped", owner, #215). The
+   *  server decides it; the page never infers it, because "what am I wearing"
+   *  has to survive a reconnect and only one side of this connection can
+   *  promise that. */
   equipped?: boolean
+  /** EMOTES ONLY: the wheel segment (1..8); absent when not on the wheel. */
+  slot?: number
   /** From a season that has ended. Renders for its owners, cannot be bought. */
   locked?: boolean
   /** Which season it came from, for the card's provenance line. */
   season?: string
+}
+
+/** Whether the emote system is on, on this machine (#215, "Scope v2"). The
+ *  owner's one config line, asked through BR.Emotes.enabled() in Lua: the
+ *  Market's Emotes tab and the Settings "Music volume" slider render only
+ *  while it is true. */
+export interface EmotesPayload {
+  on: boolean
+}
+
+/** One dance this player can hear right now (#215). `track` is the file's path
+ *  under br_ui/ui, `pos` is milliseconds into the dance and `g` is the 0..1
+ *  distance falloff -- the page multiplies by the player's music volume. */
+export interface EmoteTrack {
+  src: number
+  track: string
+  pos: number
+  g: number
+}
+
+/** About ten a second while any dance is audible, then ONE empty list. Lua's
+ *  empty table can arrive as `{}`, so the page treats a non-array as empty. */
+export interface EmoteAudioPayload {
+  tracks: EmoteTrack[]
 }
 
 export interface MarketPayload {
@@ -1397,6 +1425,10 @@ export type Envelope =
   | { k: 'locker';   d: LockerPayload }
   | { k: 'progress'; d: ProgressPayload }
   | { k: 'market';   d: MarketPayload }
+  /** The emote gate (#215): BR.Nui.EMOTES, sent with every Market grid. */
+  | { k: 'emotes';   d: EmotesPayload }
+  /** The music each audible dance is owed (#215): BR.Nui.EMOTE_AUDIO. */
+  | { k: 'emoteaudio'; d: EmoteAudioPayload }
   | { k: 'keybinds'; d: { actions: KeybindAction[]; raw?: boolean } }
   | { k: 'xp';       d: XpAward }
   | { k: 'earned';   d: EarnedPayload }
@@ -1482,6 +1514,8 @@ export const CB = {
   MARKET_FOCUS:   'br/market/focus',
   MARKET_BUY:     'br/market/buy',
   MARKET_EQUIP:   'br/market/equip',
+  /** Take a dance off the wheel (#215): { id }. Emote slots only. */
+  MARKET_UNEQUIP: 'br/market/unequip',
   PLAYERS_FOCUS:  'br/players/focus',
   REPORT_SUBMIT:  'br/report/submit',
   PAUSE_FOCUS:    'br/pause/focus',

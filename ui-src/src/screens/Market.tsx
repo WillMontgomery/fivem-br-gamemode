@@ -33,6 +33,9 @@ import { play } from '../audio/cues'
  *   VERDICTS     the words that slam on a Victory Royale. A trophy.
  *   SPRAYS       an emote/tag. Costs the player a second of standing still,
  *                which is a mild DISADVANTAGE, which is the correct direction.
+ *   EMOTES       the dances on the Left Alt wheel (#215). Same direction as a
+ *                spray, more so: a dance ends the moment you move or aim, so
+ *                it is only ever done by somebody not fighting.
  *
  * AND WHAT IS DELIBERATELY NOT: tracer colours, anything that alters a hitbox,
  * and anything at all that could be read as pay-to-win by somebody who just
@@ -70,12 +73,48 @@ const TABS: { id: MarketItem['kind']; label: string }[] = [
   // not selling advantage was written to protect against in spirit.
 ]
 
+/**
+ * THE DANCES' TAB (#215, "Scope v2"), and it is not in TABS on purpose. It
+ * exists only while the owner's one config line says so -- "Everything is
+ * devMode-required behind one config line" (owner, 2026-10-02) -- and Lua says
+ * so through the `emotes` envelope. With the gate closed there is no tab to
+ * click, and tools/check_emote_gate.lua fails the build if 'emote' ever lands
+ * in TABS itself.
+ */
+const EMOTE_TAB = { id: 'emote' as const, label: 'Emotes' }
+
+/** "Up to 8 equipped" (owner, 2026-10-02): the wheel's segments. */
+const WHEEL_SLOTS = 8
+
 export default function Market() {
   const market = useUi((s) => s.market)
+  const emotesOn = useUi((s) => s.emotesOn)
   const [tab, setTab] = useState<MarketItem['kind']>('chute')
+  // A full wheel's Equip picks the dance to bring in; the next press, on a
+  // dance already on the wheel, names the one it replaces (#215).
+  const [swapFor, setSwapFor] = useState<string | null>(null)
+
+  const tabs = emotesOn ? [...TABS, EMOTE_TAB] : TABS
+
+  // THE GATE CAN CLOSE WITH THE TAB OPEN (a dev box turning dev mode off), and
+  // a tab that no longer exists must not stay selected over an empty grid.
+  useEffect(() => { if (!emotesOn && tab === 'emote') setTab('chute') }, [emotesOn, tab])
+  useEffect(() => { if (!emotesOn) setSwapFor(null) }, [emotesOn])
 
   const close = () => { void fetchNui(CB.MARKET_FOCUS, { open: false }) }
   const items = market.items.filter((i) => i.kind === tab)
+  const onWheel = market.items.filter((i) => i.kind === 'emote' && typeof i.slot === 'number').length
+  const wheelFull = onWheel >= WHEEL_SLOTS
+
+  // A PENDING SWAP THE GRID HAS OVERTAKEN IS DROPPED (#215). A new state can
+  // land between the two presses (a grant, a buy, a reconnect): once the dance
+  // waiting to come in is on the wheel, or no longer owned, or the wheel has a
+  // free segment again, every "Replace" it would draw is a press that no
+  // longer means what it says.
+  const pending = swapFor === null ? null : market.items.find((i) => i.id === swapFor)
+  const swapStale = swapFor !== null
+    && (!wheelFull || !pending || pending.owned !== true || typeof pending.slot === 'number')
+  useEffect(() => { if (swapStale) setSwapFor(null) }, [swapStale])
 
   // Escape closes, the same as the locker and the settings screen. This page
   // shipped without it and was the only lobby screen you could not back out
@@ -135,7 +174,7 @@ export default function Market() {
         </div>
 
         <div className="flex gap-2 mb-6">
-          {TABS.map((t) => (
+          {tabs.map((t) => (
             <button
               key={t.id}
               type="button"
@@ -149,12 +188,31 @@ export default function Market() {
                 ['--cut-max' as string]: '0.45rem',
               }}
               onPointerEnter={() => play('ui.hover')}
-              onClick={() => { play('ui.select'); setTab(t.id) }}
+              onClick={() => { play('ui.select'); setTab(t.id); setSwapFor(null) }}
             >
               {t.label}
             </button>
           ))}
         </div>
+
+        {/* HOW FULL THE WHEEL IS (#215), on the dances' tab only. Eight fit,
+            owning more is fine, and the ninth goes on by replacing one. */}
+        {tab === 'emote' && (
+          <div
+            className="plate px-4 py-2 mb-4 flex items-baseline gap-3 self-start"
+            style={{
+              ['--edgec' as string]: wheelFull
+                ? 'var(--color-royale-accent2)' : 'rgba(255,255,255,0.16)',
+              ['--plate-fill' as string]: 'rgba(24,28,40,0.94)',
+              ['--cut-max' as string]: '0.45rem',
+            }}
+          >
+            <span className="micro-label">On wheel</span>
+            <span className="font-display text-[1.1rem] tabular-nums leading-none">
+              {`${onWheel} / ${WHEEL_SLOTS}`}
+            </span>
+          </div>
+        )}
 
         {/* THE ONLY SCROLLING REGION. min-h-0 is load-bearing: a flex child
             defaults to min-height:auto and refuses to shrink below its content,
@@ -172,7 +230,10 @@ export default function Market() {
           ) : (
             <div className="grid grid-cols-4 gap-3 pb-2">
               {items.map((it) => (
-                <Card key={it.id} item={it} balance={market.balance} />
+                <Card
+                  key={it.id} item={it} balance={market.balance}
+                  swapFor={swapFor} setSwapFor={setSwapFor} wheelFull={wheelFull}
+                />
               ))}
             </div>
           )}
@@ -188,10 +249,105 @@ export default function Market() {
   )
 }
 
-function Card({ item, balance }: { item: MarketItem; balance: number }) {
+interface CardProps {
+  item: MarketItem
+  balance: number
+  /** EMOTES ONLY (#215): the dance waiting to replace one on a full wheel. */
+  swapFor: string | null
+  setSwapFor: (id: string | null) => void
+  wheelFull: boolean
+}
+
+/** The plate-button look every card action shares, in one edge colour. */
+function actionStyle(color: string) {
+  return {
+    ['--edgec' as string]: color,
+    ['--plate-fill' as string]: 'rgba(30,34,48,0.94)',
+    ['--cut-max' as string]: '0.35rem',
+    color,
+  }
+}
+
+/**
+ * A dance's action (#215), or null when it has none of its own and the card's
+ * ordinary price / closed-season line applies.
+ *
+ * EQUIPPED IS A BUTTON HERE, AND THAT IS THE RULE BELOW BROKEN ON PURPOSE.
+ * Every other kind has one slot and a default to fall back to, so "Equipped" is
+ * a fact. A dance is one of eight, and the owner asked for the hand on it:
+ * "The market manages them: equip, unequip, and swap one for another when more
+ * than 8 are owned" (owner, 2026-10-02). Every button still does something.
+ */
+function emoteAction(
+  item: MarketItem, swapFor: string | null,
+  setSwapFor: (id: string | null) => void, wheelFull: boolean,
+) {
+  const owned = item.owned === true
+  const equipped = item.equipped === true
+  const press = (fn: () => void) => () => { play('ui.select'); fn() }
+
+  if (equipped && swapFor !== null && swapFor !== item.id) {
+    return (
+      <button
+        type="button" className="btn plate w-full py-1.5 font-display uppercase tracking-[0.12em] text-[0.75rem]"
+        style={actionStyle('var(--color-royale-accent2)')}
+        onPointerEnter={() => play('ui.hover')}
+        onClick={press(() => {
+          void fetchNui(CB.MARKET_EQUIP, { id: swapFor, replace: item.id })
+          setSwapFor(null)
+        })}
+      >
+        Replace
+      </button>
+    )
+  }
+  if (equipped) {
+    return (
+      <button
+        type="button" className="btn plate w-full py-1.5 font-display uppercase tracking-[0.12em] text-[0.75rem]"
+        style={actionStyle('var(--color-royale-accent)')}
+        onPointerEnter={() => play('ui.hover')}
+        onClick={press(() => { void fetchNui(CB.MARKET_UNEQUIP, { id: item.id }) })}
+      >
+        Unequip
+      </button>
+    )
+  }
+  if (owned && swapFor === item.id) {
+    return (
+      <button
+        type="button" className="btn plate is-active w-full py-1.5 font-display uppercase tracking-[0.12em] text-[0.75rem]"
+        style={actionStyle('rgba(255,255,255,0.6)')}
+        onPointerEnter={() => play('ui.hover')}
+        onClick={press(() => setSwapFor(null))}
+      >
+        Cancel
+      </button>
+    )
+  }
+  if (owned) {
+    return (
+      <button
+        type="button" className="btn plate w-full py-1.5 font-display uppercase tracking-[0.12em] text-[0.75rem]"
+        style={actionStyle('var(--color-hp)')}
+        onPointerEnter={() => play('ui.hover')}
+        onClick={press(() => {
+          if (wheelFull) setSwapFor(item.id)
+          else void fetchNui(CB.MARKET_EQUIP, { id: item.id })
+        })}
+      >
+        Equip
+      </button>
+    )
+  }
+  return null
+}
+
+function Card({ item, balance, swapFor, setSwapFor, wheelFull }: CardProps) {
   const owned = item.owned === true
   const equipped = item.equipped === true
   const afford = balance >= item.price
+  const dance = item.kind === 'emote' ? emoteAction(item, swapFor, setSwapFor, wheelFull) : null
 
   // ARTWORK IS OPTIONAL AND ITS ABSENCE IS NOT A BROKEN IMAGE. Same convention
   // as public/items: a PNG named after the item id, copied verbatim by Vite.
@@ -247,8 +403,9 @@ function Card({ item, balance }: { item: MarketItem; balance: number }) {
       {/* THREE STATES, AND EQUIPPED IS NOT A BUTTON. A control that does
           nothing when pressed is worse than no control: the player presses it,
           nothing changes, and the reasonable conclusion is that the page is
-          broken rather than that they had already done the thing. */}
-      {equipped ? (
+          broken rather than that they had already done the thing.
+          A DANCE IS THE EXCEPTION (#215): see emoteAction. */}
+      {dance ? dance : equipped ? (
         <div
           className="text-[0.72rem] font-display uppercase tracking-[0.14em] text-center py-1"
           style={{ color: 'var(--color-royale-accent)' }}

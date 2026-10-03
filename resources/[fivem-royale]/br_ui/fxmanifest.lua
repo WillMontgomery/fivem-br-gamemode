@@ -30,6 +30,11 @@ client_scripts {
     -- The catalogue, organised by season. Shared so the definitions have one
     -- home rather than living inline in the file that renders them.
     '@br_lib/config/market.lua',
+    -- EMOTES (#215, "Scope v2"): the dance catalogue and the feature's one
+    -- gate line. Its rows register into BR.Config.MarketIndex as it loads, so
+    -- it must follow config/market.lua (it asserts so). enums.lua, which it
+    -- reads for the player states, is in shared_scripts above.
+    '@br_lib/config/emotes.lua',
 
     'client/nui.lua',
     -- Preferences live HERE rather than in br_core: they are about this
@@ -67,6 +72,12 @@ files {
     -- because the ids come from a different config and the two sets are
     -- filled in independently.
     'ui/market/*.png',
+    -- Emote music (#215): one .ogg per dance, copied verbatim out of
+    -- ui-src/public/emotes like the artwork above. EVERY STARTER FILE IS ABSENT
+    -- TODAY ("one license-free .ogg per dance, supplied by the owner later"),
+    -- and those dances play in silence: the page marks a missing track once
+    -- and never asks for it again.
+    'ui/emotes/*.ogg',
     -- The DUI page. Deliberately NOT under ui/ -- that directory is Vite's
     -- output and gets emptied on every build. This one is hand-written and
     -- loaded by URL (nui://br_ui/dui/prompt.html) rather than as the ui_page,

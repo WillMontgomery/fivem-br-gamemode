@@ -478,6 +478,12 @@ local function offFoot(ped)
     return cs == chute.OPENING or cs == chute.OPEN or cs == chute.FREEFALL
 end
 
+--- The same question, for client/emotes.lua (#215): "on foot only" (owner,
+--- 2026-10-02) is this file's answer, not a second copy of it.
+--- @param ped integer
+--- @return boolean
+function BR.Inv.offFoot(ped) return offFoot(ped) end
+
 --- When we last told the engine this player may fire from a seat, and how many
 --- times. Read by /brdriveby so "did we ever ask?" is an observation rather
 --- than an argument about which branch ran.
@@ -1778,6 +1784,12 @@ local function closePanel()
     panelOpen = false
     TriggerEvent('br:ui:popFocus', 'inventory')
 end
+
+--- Close the TAB panel if it is open (#215). The emote wheel's open dismisses
+--- it: the owner's "opening the wheel dismisses every screen", and the panel
+--- is the one screen that keeps game input, so it is the one the wheel can be
+--- opened over at all.
+function BR.Inv.closePanel() closePanel() end
 
 --- When the panel last changed state, so one press cannot count twice.
 local lastToggle = 0

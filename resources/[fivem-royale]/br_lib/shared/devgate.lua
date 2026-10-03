@@ -39,7 +39,7 @@ BR.Dev = BR.Dev or {}
 
 -- ─────────────────────────────────────────────────────────── the exemptions ---
 
--- THE THREE VERBS THAT KEEP WORKING ON THE PUBLIC BOX.
+-- THE VERBS THAT KEEP WORKING ON THE PUBLIC BOX.
 --
 --   brkick, brspectate  tools/dispatch.sh types these into this console over
 --                       tmux (send-keys, do_kick and do_spectate). They ARE the
@@ -53,7 +53,19 @@ BR.Dev = BR.Dev or {}
 --                       has been refusing us for an hour". DEPLOY.md sends the
 --                       operator here after an IAM policy change, on the live
 --                       server, by hand. Nothing types it for them.
-local EXEMPT = { brkick = true, brspectate = true, brring = true }
+--   bremotegrant        hands a player emotes from the server console (#215).
+--                       Owner, 2026-10-02 ("Scope v2"): "Everything is
+--                       devMode-required behind one config line, so removing
+--                       that line makes it production-ready in the same PR."
+--                       The grant command is part of everything, so ITS gate is
+--                       that line -- BR.Emotes.enabled(), asked first thing in
+--                       its body in br_core/server/emotes.lua -- and not this
+--                       file. Gated here as well, deleting the line would leave
+--                       it shut on the public box, and the one-line promise
+--                       would be a two-line one. Console-only (src 0) and
+--                       registered restricted, so the exemption opens it to the
+--                       box's owner and nobody else.
+local EXEMPT = { bremotegrant = true, brkick = true, brspectate = true, brring = true }
 
 -- ───────────────────────────────────────────────────────────────── the read ---
 
@@ -119,7 +131,7 @@ if not BR.Dev.installed then
 
     --- @param name string @param fn function @param restricted boolean|nil
     RegisterCommand = function(name, fn, restricted)
-        -- The exempt three go to the native untouched, and so does a call whose
+        -- The exempt verbs go to the native untouched, and so does a call whose
         -- name is not a string -- that one is malformed, and handing it to the
         -- native lets IT say so rather than having this wrapper swallow it or
         -- die inside :format. A name that is not a string is not a command

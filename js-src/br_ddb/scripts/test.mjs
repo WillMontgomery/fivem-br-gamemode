@@ -1,6 +1,9 @@
 import { artifactNames, ARTIFACT_PREFIX, isSpoolFile } from '../src/artifacts.js'
 import { effective, isActive } from '../src/ban.js'
 import { buildIncidentClose, CLOSE_LIMITS } from '../src/close.js'
+import {
+  addableId, EMOTE_ID, EMOTE_SLOTS, isEmoteSlot, ownedAddUpdate, unequipUpdate,
+} from '../src/emotes.js'
 import { buildIncidentItem, LIMITS } from '../src/incident.js'
 import { banner, resolvePrefixes } from '../src/prefix.js'
 import { spendCost, spendUpdate, SPEND_MAX } from '../src/spend.js'
@@ -1508,6 +1511,50 @@ console.log('\nspend: the condition refuses an overspend')
   check('the condition compares the positive', cmd.ExpressionAttributeValues[':cost'], 750)
 }
 
+// --------------------------------------------------------- emotes (#215) ---
+//
+// The wheel's slot names and the console grant's two refusals. Pure, so they run
+// on any box with Node; the handler blocks further down drive the same builders
+// through src/index.js.
+
+console.log('\nemotes: the eight slots and what ownedAdd will add')
+check('eight slots, emote1 to emote8 in wheel order', [...EMOTE_SLOTS],
+  ['emote1', 'emote2', 'emote3', 'emote4', 'emote5', 'emote6', 'emote7', 'emote8'])
+check('and the list cannot be pushed to', Object.isFrozen(EMOTE_SLOTS), true)
+check('emote3 is a slot', isEmoteSlot('emote3'), true)
+check('emote9 is not -- there are eight', isEmoteSlot('emote9'), false)
+check('emote0 is not', isEmoteSlot('emote0'), false)
+check('chute is not -- it has a default and no un-equip', isEmoteSlot('chute'), false)
+check('a number is not a slot name', isEmoteSlot(3), false)
+check('an emote id is addable', addableId('emote_shuffle'), 'emote_shuffle')
+// THE PROPERTY THE VERB'S SAFETY RESTS ON: it cannot hand over a paid cosmetic.
+check('a chute id is not', addableId('chute_azure'), null)
+check('nor an empty string', addableId(''), null)
+check('nor a bare prefix', addableId('emote_'), null)
+check('nor upper case', addableId('emote_Shuffle'), null)
+check('54 characters is the ceiling config/emotes.lua allows',
+  addableId('emote_' + 'a'.repeat(48)), 'emote_' + 'a'.repeat(48))
+check('and 55 is over it', addableId('emote_' + 'a'.repeat(49)), null)
+check('nor a non-string', addableId(['emote_shuffle']), null)
+check('EMOTE_ID is anchored at both ends', EMOTE_ID.test('xemote_a'), false)
+{
+  const u = ownedAddUpdate('emote_shuffle')
+  check('ownedAdd adds to the owned set', u.UpdateExpression, 'ADD #own :idset')
+  check('and only to it -- no balance, so it cannot mint Volts',
+    u.ExpressionAttributeNames, { '#own': 'owned' })
+  check('refusing an id the set already holds', u.ConditionExpression,
+    'attribute_not_exists(#own) OR NOT contains(#own, :id)')
+  // RAW AttributeValues: a plain JS array would marshall to a List, and
+  // ADDing a List to a String Set is a ValidationException at the far end.
+  check('as a string SET, not a list', u.ExpressionAttributeValues[':idset'], { SS: ['emote_shuffle'] })
+  check('and the id for the condition', u.ExpressionAttributeValues[':id'], { S: 'emote_shuffle' })
+}
+check('unequip emote5 REMOVEs equip_emote5', unequipUpdate('emote5'),
+  { UpdateExpression: 'REMOVE #eq', ExpressionAttributeNames: { '#eq': 'equip_emote5' } })
+check('and there is no un-equip for a chute', unequipUpdate('chute'), null)
+check('or for emote0', unequipUpdate('emote0'), null)
+check('or for nothing', unequipUpdate(undefined), null)
+
 // ------------------------------------------------------------ stats writes ---
 //
 // The payout's expression is load-bearing and this file had no opinion about it
@@ -2409,6 +2456,100 @@ console.log('\nspend: a refusal is not a failure')
   check('the real balance is read back for the message', res.extra.balance, 700)
 }
 
+console.log('\nemotes: the wheel slots through equip and inventoryFetch (#215)')
+{
+  bridge.reset()
+  bridge.reply({})
+  check('equip into emote3 runs', why(bridge.call('br:ddb:equip', 70, LIC, 'emote3', 'emote_shuffle', false)), null)
+  const cmd = sent(0)
+  check('it SETs the flat attribute equip_emote3', cmd.input.ExpressionAttributeNames['#eq'], 'equip_emote3')
+  check('and keeps the ownership condition', cmd.input.ConditionExpression, 'contains(#own, :id)')
+  await bridge.settle()
+  check('and answers yes', answer('br:ddb:equipResult').ok, true)
+
+  bridge.reset()
+  bridge.call('br:ddb:equip', 71, LIC, 'emote9', 'emote_shuffle', false)
+  check('emote9 sends nothing -- there are eight', bridge.calls.length, 0)
+  await bridge.settle()
+  check('and is refused as a bad slot', answer('br:ddb:equipResult').extra.error, 'bad slot or item')
+
+  bridge.reset()
+  bridge.reply({ Item: marshall({ pk: LIC, sk: 'profile', equip_emote2: 'emote_jumper', equip_chute: 'chute_azure' }) })
+  bridge.call('br:ddb:inventoryFetch', 72, LIC)
+  await bridge.settle()
+  const eq = lastEmit('br:ddb:inventoryResult').args[1].equipped
+  check('inventoryFetch reads equip_emote2 back', eq.emote2, 'emote_jumper')
+  check('beside the ordinary kinds', eq.chute, 'chute_azure')
+  check('and an empty slot is absent, not blank', Object.hasOwn(eq, 'emote1'), false)
+}
+
+console.log('\nemotes: unequip empties one slot and nothing else')
+{
+  bridge.reset()
+  bridge.reply({})
+  check('the handler runs', why(bridge.call('br:ddb:unequip', 73, LIC, 'emote5')), null)
+  const cmd = sent(0)
+  check('it is an UpdateItem', cmd.kind, 'UpdateItemCommand')
+  check('against the game table', cmd.input.TableName, 'br-players')
+  check('on the profile row', cmd.input.Key, { pk: { S: LIC }, sk: { S: 'profile' } })
+  check('REMOVEing the slot', cmd.input.UpdateExpression, 'REMOVE #eq')
+  check('which is equip_emote5', cmd.input.ExpressionAttributeNames, { '#eq': 'equip_emote5' })
+  await bridge.settle()
+  check('and answers yes', answer('br:ddb:unequipResult').ok, true)
+
+  for (const bad of ['chute', 'emote0']) {
+    bridge.reset()
+    bridge.call('br:ddb:unequip', 74, LIC, bad)
+    check(`${bad} sends nothing`, bridge.calls.length, 0)
+    await bridge.settle()
+    check(`and ${bad} is a bad slot`, answer('br:ddb:unequipResult').extra.error, 'bad slot')
+  }
+
+  bridge.reset()
+  bridge.call('br:ddb:unequip', 75, '', 'emote1')
+  await bridge.settle()
+  check('no license, no write', answer('br:ddb:unequipResult').extra.error, 'no license')
+}
+
+console.log('\nemotes: ownedAdd hands over an emote and nothing else')
+{
+  bridge.reset()
+  bridge.reply({})
+  check('the handler runs', why(bridge.call('br:ddb:ownedAdd', 76, LIC, 'emote_shuffle')), null)
+  const cmd = sent(0)
+  check('it ADDs to the owned set', cmd.input.UpdateExpression, 'ADD #own :idset')
+  check('under the not-already-owned condition', cmd.input.ConditionExpression,
+    'attribute_not_exists(#own) OR NOT contains(#own, :id)')
+  check('as a string set on the wire', cmd.input.ExpressionAttributeValues[':idset'], { SS: ['emote_shuffle'] })
+  check('with no balance anywhere in it', /bal/.test(JSON.stringify(cmd.input)), false)
+  await bridge.settle()
+  check('and answers yes', answer('br:ddb:ownedAddResult').ok, true)
+
+  for (const bad of ['chute_azure', '', 'emote_' + 'a'.repeat(49)]) {
+    bridge.reset()
+    bridge.call('br:ddb:ownedAdd', 77, LIC, bad)
+    check(`"${bad.slice(0, 12)}" sends nothing`, bridge.calls.length, 0)
+    await bridge.settle()
+    check(`and "${bad.slice(0, 12)}" is a bad item`, answer('br:ddb:ownedAddResult').extra.error, 'bad item')
+  }
+
+  bridge.reset()
+  const owned = new Error('The conditional request failed')
+  owned.name = 'ConditionalCheckFailedException'
+  bridge.reply(owned)
+  bridge.call('br:ddb:ownedAdd', 78, LIC, 'emote_shuffle')
+  await bridge.settle()
+  const res = answer('br:ddb:ownedAddResult')
+  check('a second grant is a refusal', res.ok, false)
+  check('that says already owned', res.extra.refused, 'already owned')
+  check('and is not reported as an error', res.extra.error, undefined)
+
+  bridge.reset()
+  bridge.call('br:ddb:ownedAdd', 79, '', 'emote_shuffle')
+  await bridge.settle()
+  check('no license, no write', answer('br:ddb:ownedAddResult').extra.error, 'no license')
+}
+
 console.log('\ntutorial: where an account stands with the guided first run')
 {
   // ═══ THE READ, WHICH IS THE HALF EVERY CONNECT RUNS ═══
@@ -2873,6 +3014,9 @@ console.log('\nevery verb runs: no free variables anywhere in the bridge')
     'br:ddb:awardSettle': [19, UUID],
     'br:ddb:tutorialSet': [20, LIC, 'done'],
     'br:ddb:selftest': [21],
+    // The emote wheel's two verbs (#215).
+    'br:ddb:unequip': [23, LIC, 'emote3'],
+    'br:ddb:ownedAdd': [24, LIC, 'emote_shuffle'],
   }
 
   check(

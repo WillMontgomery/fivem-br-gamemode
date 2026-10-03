@@ -28,7 +28,10 @@
 BR = BR or {}
 BR.Market = BR.Market or {}
 
---- license -> { balance, owned = {id=true}, equipped = {kind=id}, loaded }
+--- license -> { balance, owned = {id=true}, equipped = {kind=id}, loaded,
+---              emotes = {k=id}, emoteBusy = {k=true}, slotWrites }
+--- `emotes` is the emote wheel (#215): slot k is segment k is equip_emotek,
+--- and it is never folded into `equipped`, which is one item per kind.
 local inv = {}
 
 --- src -> license, so a disconnect can clear the right entry without asking
@@ -50,6 +53,8 @@ AddEventHandler('br:ddb:purchaseResult',  function(req, ok, extra) reply(req, ok
 AddEventHandler('br:ddb:equipResult',     function(req, ok, extra) reply(req, ok, extra or {}) end)
 AddEventHandler('br:ddb:spendResult',     function(req, ok, extra) reply(req, ok, extra or {}) end)
 AddEventHandler('br:ddb:tutorialSetResult', function(req, ok, extra) reply(req, ok, extra or {}) end)
+AddEventHandler('br:ddb:unequipResult',   function(req, ok, extra) reply(req, ok, extra or {}) end)
+AddEventHandler('br:ddb:ownedAddResult',  function(req, ok, extra) reply(req, ok, extra or {}) end)
 
 --- Issue one br_ddb request with a timeout, so a bridge that never answers
 --- cannot leak a pending closure per attempt for the life of the server.
@@ -77,6 +82,83 @@ local function licenseFor(src)
     local byKind = BR.Identity.ofPlayer(src)
     if not byKind or not byKind.license then return nil end
     return BR.Identity.qualified('license', byKind.license)
+end
+
+-- ═══ THE EMOTE WHEEL (#215, "Scope v2") ═══
+--
+-- Owner, 2026-10-02: "Up to 8 equipped", managed from the Market -- "equip,
+-- unequip, and swap one for another when more than 8 are owned". Every other
+-- kind is one item per slot and lives in `entry.equipped`; dances are eight
+-- slots and live in `entry.emotes`, so nothing that walks `equipped` (the
+-- cosmetics applied on spawn, the page's one-per-kind rule) ever sees one.
+--
+-- THIS FILE LOADS WITHOUT br_lib/config/emotes.lua UNDER TEST (test_volts,
+-- test_tutorial), so nothing here indexes BR.Config.Emotes: the slot count is
+-- pinned and the gate is read through emoteHidden, which is nil-safe.
+
+--- Wheel slots. The config says the same 8; this file may not read it.
+local SLOTS = 8
+
+--- A slot write is one DynamoDB UpdateItem, billed. Twenty in ten seconds is
+--- more than any hand on a Market page can click and fewer than a script can.
+local SLOT_WRITE_WINDOW_MS, SLOT_WRITE_MAX = 10000, 20
+
+--- The wheel slot a br_ddb equip kind names, or nil for every other kind.
+--- @param kind any
+--- @return integer|nil
+local function emoteSlotOf(kind)
+    local digit = type(kind) == 'string' and kind:match('^emote(%d)$') or nil
+    local k = digit and math.tointeger(tonumber(digit)) or nil
+    if k and k >= 1 and k <= SLOTS then return k end
+    return nil
+end
+
+--- THE GATE, AS THIS FILE ASKS IT. An emote item while BR.Emotes.enabled() is
+--- false (the requireDevMode line in br_lib/config/emotes.lua) is not for sale,
+--- not equippable and not grantable. tools/check_emote_gate.lua pins every
+--- door below to this or to the accessor itself.
+local function emoteHidden(item) return item ~= nil and item.kind == 'emote' and not (BR.Emotes ~= nil and BR.Emotes.enabled ~= nil and BR.Emotes.enabled()) end
+
+--- Which slot holds `id`, or nil.
+--- @param entry table
+--- @param id string
+--- @return integer|nil
+local function slotHolding(entry, id)
+    local emotes = entry and entry.emotes
+    if not emotes or id == nil then return nil end
+    for k = 1, SLOTS do
+        if emotes[k] == id then return k end
+    end
+    return nil
+end
+
+--- The lowest empty slot that has no write in flight, or nil when none.
+---
+--- BUSY SLOTS ARE SKIPPED, and that is what keeps two writes to one
+--- equip_emoteK off the wire together: a slot whose REMOVE has not answered
+--- reads empty in the cache, and a SET handed it now could land before the
+--- REMOVE -- DynamoDB does not order them -- and be erased by it.
+--- @param entry table
+--- @return integer|nil
+local function firstFree(entry)
+    for k = 1, SLOTS do
+        if entry.emotes[k] == nil and not entry.emoteBusy[k] then return k end
+    end
+    return nil
+end
+
+--- Count one slot write against a fixed window; true once it is over the cap.
+--- @param entry table
+--- @param now integer
+--- @return boolean
+local function slotWriteOver(entry, now)
+    local w = entry.slotWrites
+    if not w or now - w.since > SLOT_WRITE_WINDOW_MS then
+        w = { since = now, n = 0 }
+        entry.slotWrites = w
+    end
+    w.n = w.n + 1
+    return w.n > SLOT_WRITE_MAX
 end
 
 --- Defaults, which every player owns implicitly and which therefore never
@@ -122,9 +204,24 @@ function BR.Market.push(src)
     -- and re-publishing a value br_stats already holds is a plain assignment.
     BR.Market.publishXp(lic)
 
+    -- THE EMOTE GATE, read once per push (#215). While it is closed the page
+    -- hears nothing about dances: no `emotes`, and no emote ids in `owned`.
+    local emotesOn = BR.Emotes ~= nil and BR.Emotes.enabled ~= nil and BR.Emotes.enabled()
+
     local owned = {}
-    for id in pairs(entry.owned) do owned[#owned + 1] = id end
+    for id in pairs(entry.owned) do
+        local item = BR.Config.MarketIndex[id]
+        if emotesOn or not (item and item.kind == 'emote') then owned[#owned + 1] = id end
+    end
     table.sort(owned)   -- never send a hash's iteration order over the wire
+
+    -- EIGHT STRINGS, '' FOR AN EMPTY SLOT, because a Lua array with holes does
+    -- not survive msgpack as one: index k is wheel segment k, always.
+    local emotes = nil
+    if emotesOn then
+        emotes = {}
+        for k = 1, SLOTS do emotes[k] = (entry.emotes and entry.emotes[k]) or '' end
+    end
 
     -- PROGRESSION RIDES WITH THE MARKET STATE, because it came out of the same
     -- read. Splitting it into its own event would mean a second round trip for
@@ -152,6 +249,7 @@ function BR.Market.push(src)
         owned    = owned,
         equipped = entry.equipped,
         progress = { level = level, xp = into, needed = needed, total = entry.xp },
+        emotes   = emotes,
     })
 end
 
@@ -186,11 +284,13 @@ function BR.Market.load(src)
     -- against a charge that is in flight to DynamoDB. It is only ever moved by
     -- BR.Market.charge, which refuses while `loaded` is false -- so no spend can
     -- exist before the fetch below replaces this table.
-    inv[lic] = withDefaults({ balance = 0, spent = 0, xp = 0, owned = {}, equipped = {}, loaded = false })
+    inv[lic] = withDefaults({ balance = 0, spent = 0, xp = 0, owned = {}, equipped = {}, loaded = false,
+                              emotes = {}, emoteBusy = {}, slotWrites = nil })
 
     ask('br:ddb:inventoryFetch', function(i, extra)
         local entry = { balance = 0, spent = 0, xp = 0, owned = {}, equipped = {},
-                        tutorial = '', loaded = true }
+                        tutorial = '', loaded = true,
+                        emotes = {}, emoteBusy = {}, slotWrites = nil }
 
         if i then
             entry.balance = tonumber(i.balance) or 0
@@ -210,7 +310,24 @@ function BR.Market.load(src)
                 if BR.Config.MarketIndex[id] then entry.owned[id] = true end
             end
             for kind, id in pairs(i.equipped or {}) do
-                if BR.Config.MarketIndex[id] then entry.equipped[kind] = id end
+                -- NOT the wheel slots: cosmetics.lua applies every `equipped`
+                -- kind as something worn, and a dance is not worn.
+                if emoteSlotOf(kind) == nil and BR.Config.MarketIndex[id] then
+                    entry.equipped[kind] = id
+                end
+            end
+            -- THE WHEEL (#215). A slot keeps an id only when it is a dance this
+            -- account owns and no lower slot already holds it; anything else
+            -- is dropped from the cache and the row is left alone, because
+            -- this is a read and must not cost a write.
+            local eq = type(i.equipped) == 'table' and i.equipped or {}
+            for k = 1, SLOTS do
+                local id = eq['emote' .. k]
+                local item = id and BR.Config.MarketIndex[id]
+                if item and item.kind == 'emote' and entry.owned[id]
+                   and slotHolding(entry, id) == nil then
+                    entry.emotes[k] = id
+                end
             end
         end
         if extra and extra.error then
@@ -299,6 +416,30 @@ function BR.Market.appliedFor(src)
     return out
 end
 
+--- Does this player own `id`? (#215: bremotegrant skips what is owned.)
+--- @param src integer
+--- @param id string
+--- @return boolean
+function BR.Market.owns(src, id)
+    local lic = licenseOf[src]
+    local entry = lic and inv[lic]
+    return entry ~= nil and entry.owned[tostring(id or '')] == true
+end
+
+--- Which emote wheel slot holds `id` for this player, or nil (#215).
+---
+--- THE SERVER'S ANSWER TO "IS IT ON THE WHEEL", which is what EMOTE_PLAY asks
+--- before it publishes anything: owning a dance is not enough to play it.
+--- @param src integer
+--- @param id string
+--- @return integer|nil
+function BR.Market.slotOf(src, id)
+    local lic = licenseOf[src]
+    local entry = lic and inv[lic]
+    if not entry then return nil end
+    return slotHolding(entry, tostring(id or ''))
+end
+
 -- A CLIENT ASKING FOR ITS OWN STATE, which is the one direction this event
 -- travels other than the answer. Overloaded deliberately rather than adding a
 -- constant nobody would read: "tell me my market state" and "here is your
@@ -365,6 +506,9 @@ AddEventHandler(BR.Net.MARKET_BUY, function(data)
     -- THE PRICE IS RESOLVED HERE, from config, by id. This is the line that
     -- makes everything else safe: nothing the client sent is used as money.
     local item, why = BR.Config.buyable(id)
+    -- A DANCE IS NOT FOR SALE WHILE THE EMOTE GATE IS CLOSED (#215), and it
+    -- says so in the words every other unsellable id gets.
+    if item and emoteHidden(item) then item, why = nil, 'emotes are off' end
     if not item then
         refuse(src, 'That item is not for sale.')
         print(('^3[br_core] market: %s tried to buy "%s" -- %s^7'):format(src, id, why))
@@ -408,10 +552,24 @@ AddEventHandler(BR.Net.MARKET_BUY, function(data)
             -- BOUGHT MEANS WORN. Nobody buys a canopy in order to not use it,
             -- and an extra click between paying and seeing it is the kind of
             -- friction that reads as the purchase not having worked.
-            BR.Market.equip(src, id, true)
-            TriggerClientEvent(BR.Net.NOTIFY, src, {
-                text = ('%s equipped.'):format(item.name), tone = 'success', ms = 4000,
-            })
+            if item.kind == 'emote' then
+                -- A DANCE GOES ON THE WHEEL IF THERE IS ROOM (#215). Owning
+                -- more than eight is fine; the Market's Replace puts it on
+                -- later. The full-wheel sentence is new copy (owner question).
+                -- ASKED ONLY WHEN THERE IS ROOM, so a full wheel is this one
+                -- sentence rather than equip's refusal toast beside it.
+                local slot = firstFree(entry) and BR.Market.equip(src, id, true) or nil
+                TriggerClientEvent(BR.Net.NOTIFY, src, {
+                    text = slot and ('%s equipped.'):format(item.name)
+                        or ('%s bought -- your emote wheel is full.'):format(item.name),
+                    tone = 'success', ms = 4000,
+                })
+            else
+                BR.Market.equip(src, id, true)
+                TriggerClientEvent(BR.Net.NOTIFY, src, {
+                    text = ('%s equipped.'):format(item.name), tone = 'success', ms = 4000,
+                })
+            end
         else
             refuse(src, extra.refused and ('Purchase refused: ' .. extra.refused)
                 or 'The purchase could not be completed. Nothing was charged.')
@@ -420,17 +578,95 @@ AddEventHandler(BR.Net.MARKET_BUY, function(data)
     end, lic, id, item.price)
 end)
 
+--- Put a dance on the wheel (#215). BR.Market.equip's emote arm.
+---
+--- ═══ OPTIMISTIC, LIKE EVERY OTHER EQUIP, AND THE ROLLBACK IS THE HARD PART ═══
+---
+--- The cache moves first so the page feels instant, and a refused write puts it
+--- back. With one slot per kind "put it back" is one assignment; with eight it
+--- can DUPLICATE a dance: replace B in slot 2 with E, equip B into slot 5 while
+--- that write is in flight, and a failure that blindly restored slot 2 would
+--- leave B on the wheel twice. So the rollback restores the previous id only
+--- when nothing else holds it, and only when the slot still holds what this
+--- write put there.
+---
+--- ONE WRITE PER SLOT IN FLIGHT. A busy slot refuses (silently: the page is
+--- re-synced by the push), and firstFree never hands one out.
+--- @return integer|nil  the slot, or nil when nothing was asked
+local function equipEmote(src, lic, entry, item, replace, quiet)
+    if not entry.owned[item.id] then
+        refuse(src, 'You do not own that.')
+        return nil
+    end
+
+    -- ALREADY ON THE WHEEL IS ALREADY DONE. No write, and no second copy.
+    local held = slotHolding(entry, item.id)
+    if held then
+        if not quiet then BR.Market.push(src) end
+        return held
+    end
+
+    -- REPLACE NAMES THE DANCE WHOSE SLOT THIS TAKES; otherwise the lowest free
+    -- one. A full wheel without a replace is the Market's "Replace" prompt, so
+    -- reaching here is a stale page.
+    local k = type(replace) == 'string' and slotHolding(entry, replace) or nil
+    k = k or firstFree(entry)
+    if not k then
+        refuse(src, 'That could not be equipped.')
+        BR.Market.push(src)
+        return nil
+    end
+    if entry.emoteBusy[k] then
+        BR.Market.push(src)
+        return nil
+    end
+    if slotWriteOver(entry, GetGameTimer()) then
+        BR.Market.push(src)
+        return nil
+    end
+
+    local previous = entry.emotes[k]
+    entry.emotes[k] = item.id
+    entry.emoteBusy[k] = true
+
+    ask('br:ddb:equip', function(ok, extra)
+        entry.emoteBusy[k] = nil
+        if not ok then
+            if entry.emotes[k] == item.id then
+                entry.emotes[k] = (previous ~= nil and slotHolding(entry, previous) == nil)
+                    and previous or nil
+            end
+            refuse(src, 'That could not be equipped.')
+            print(('^3[br_core] market: equip %s into emote%d failed for %s (%s)^7')
+                :format(item.id, k, src, (extra and (extra.refused or extra.error)) or '?'))
+            BR.Market.push(src)
+            return
+        end
+        if not quiet then BR.Market.push(src) end
+    end, lic, 'emote' .. k, item.id, false)
+
+    -- `ask` answers at once when br_ddb is not started, and that answer has
+    -- already rolled the slot back; only a write still standing is a slot.
+    return entry.emotes[k] == item.id and k or nil
+end
+
 --- Equip an item into its slot.
 --- @param src integer
 --- @param id string
 --- @param quiet boolean|nil  suppress the state push (the caller will push)
-function BR.Market.equip(src, id, quiet)
+--- @param replace string|nil  EMOTES ONLY: the dance whose wheel slot this takes
+--- @return integer|nil  EMOTES ONLY: the wheel slot it went into
+function BR.Market.equip(src, id, quiet, replace)
     local lic = licenseOf[src]
     local entry = lic and inv[lic]
     if not entry then return end
 
     local item = BR.Config.MarketIndex[tostring(id or '')]
     if not item then return end
+    if emoteHidden(item) then return nil end
+    if item.kind == 'emote' then
+        return equipEmote(src, lic, entry, item, replace, quiet)
+    end
 
     -- Defaults are owned by everybody and appear in nobody's owned set, so
     -- they are the one case allowed to skip the ownership condition.
@@ -463,8 +699,110 @@ end
 RegisterNetEvent(BR.Net.MARKET_EQUIP)
 AddEventHandler(BR.Net.MARKET_EQUIP, function(data)
     local src = source
-    BR.Market.equip(src, type(data) == 'table' and data.id or data)
+    -- `replace` is the emote wheel's swap (#215): the dance whose slot this
+    -- one takes. Every other kind ignores it.
+    BR.Market.equip(src, type(data) == 'table' and data.id or data, nil,
+        type(data) == 'table' and type(data.replace) == 'string' and data.replace or nil)
 end)
+
+--- Take a dance off the wheel (#215). Emote slots only: every other kind has a
+--- default to fall back to and no un-equip.
+---
+--- SAME GUARDS AS equipEmote, and the same duplicate-safe rollback: a failed
+--- REMOVE puts the dance back only when the slot is still empty and no other
+--- slot has taken it meanwhile.
+--- @param src integer
+--- @param id string
+--- @param quiet boolean|nil
+function BR.Market.unequip(src, id, quiet)
+    local lic = licenseOf[src]
+    local entry = lic and inv[lic]
+    if not entry or not entry.emotes then return end
+
+    local item = BR.Config.MarketIndex[tostring(id or '')]
+    if not item or emoteHidden(item) or item.kind ~= 'emote' then return end
+
+    local k = slotHolding(entry, item.id)
+    if not k then
+        BR.Market.push(src)
+        return
+    end
+    if entry.emoteBusy[k] or slotWriteOver(entry, GetGameTimer()) then
+        BR.Market.push(src)
+        return
+    end
+
+    entry.emotes[k] = nil
+    entry.emoteBusy[k] = true
+
+    ask('br:ddb:unequip', function(ok, extra)
+        entry.emoteBusy[k] = nil
+        if not ok then
+            if entry.emotes[k] == nil and slotHolding(entry, item.id) == nil then
+                entry.emotes[k] = item.id
+            end
+            refuse(src, 'That could not be unequipped.')
+            print(('^3[br_core] market: unequip %s from emote%d failed for %s (%s)^7')
+                :format(item.id, k, src, (extra and (extra.refused or extra.error)) or '?'))
+            BR.Market.push(src)
+            return
+        end
+        if not quiet then BR.Market.push(src) end
+    end, lic, 'emote' .. k)
+end
+
+RegisterNetEvent(BR.Net.MARKET_UNEQUIP)
+AddEventHandler(BR.Net.MARKET_UNEQUIP, function(data)
+    local src = source
+    if not (BR.Emotes and BR.Emotes.enabled and BR.Emotes.enabled()) then return end
+    BR.Market.unequip(src, type(data) == 'table' and data.id or nil)
+end)
+
+--- Hand a player a dance without charging for it: `bremotegrant`'s write (#215).
+---
+--- ═══ THE LICENSE IS CAPTURED BY THE CALLER AND CHECKED TWICE ═══
+---
+--- Once here and once when br_ddb answers, because FiveM recycles server ids
+--- within the minute and a DynamoDB write is up to six seconds: the player
+--- sitting at `src` when the answer lands may not be the one the console named.
+--- A mismatch answers 'player changed' and touches no cache.
+---
+--- `answer`, NOT THE CHARGE PATH'S CALLBACK NAME: tools/test_shop.lua pins
+--- that spelling in this file, and this is not that path.
+--- @param src integer
+--- @param id string
+--- @param answer fun(ok:boolean, why:string|nil)
+--- @param lic string
+function BR.Market.addOwned(src, id, answer, lic)
+    if licenseOf[src] ~= lic then answer(false, 'player changed') return end
+    local entry = inv[lic]
+    if not entry or not entry.loaded then answer(false, 'profile not loaded yet') return end
+    local item = BR.Config.MarketIndex[tostring(id or '')]
+    if not item or item.kind ~= 'emote' then answer(false, 'not an emote') return end
+    if emoteHidden(item) then answer(false, 'emotes are off') return end
+    if entry.owned[item.id] then answer(false, 'already owned') return end
+
+    ask('br:ddb:ownedAdd', function(ok, extra)
+        extra = extra or {}
+        if licenseOf[src] ~= lic then answer(false, 'player changed') return end
+        if ok then
+            entry.owned[item.id] = true
+            -- GRANTED MEANS ON THE WHEEL, when there is room -- the purchase's
+            -- rule, so a granted dance and a bought one land the same way,
+            -- and a full wheel is not a refusal toast at the player.
+            if firstFree(entry) then BR.Market.equip(src, item.id, true) end
+            BR.Market.push(src)
+            answer(true)
+        elseif extra.refused == 'already owned' then
+            -- The row knew better than the cache: believe the row.
+            entry.owned[item.id] = true
+            BR.Market.push(src)
+            answer(false, 'already owned')
+        else
+            answer(false, extra.error or extra.refused or '?')
+        end
+    end, lic, item.id)
+end
 
 -- ---------------------------------------------------------------------------
 -- SPENDING VOLTS ON SOMETHING THAT IS NOT A COSMETIC (#224)

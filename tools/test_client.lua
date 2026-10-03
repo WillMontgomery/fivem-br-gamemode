@@ -13363,6 +13363,129 @@ do
 end
 
 -- ---------------------------------------------------------------------------
+-- THE EMOTE WHEEL'S KEY IS A ROW THAT EXISTS ONLY WHILE EMOTES ARE ON (#215)
+--
+-- Owner, 2026-10-02 (#215, "Scope v2"): "HOLD LEFT ALT to open the wheel", and
+-- "Everything is devMode-required behind one config line". The row lives in
+-- client/keybinds.lua like every other key, with a fifth argument -- its gate.
+-- While the gate is closed the settings screen never sees the row, the
+-- rebinder refuses it, and GTA's own key list is not given it (a mapping can
+-- never be withdrawn). The raw layer drives it either way.
+--
+-- THIS SUITE LOADS keybinds.lua WITHOUT br_lib/config/emotes.lua, which is the
+-- point of the nil-safe wrapper: BR.Emotes is nil here until this block stubs
+-- it, and it is put back exactly as found -- the br_ui market block below
+-- loads a file that also asks BR.Emotes, and fire() there has no pcall.
+-- ---------------------------------------------------------------------------
+
+describe('the emote wheel key (#215): a gated hold on Left Alt')
+do
+    local saved = BR.Emotes
+    local savedMap = RegisterKeyMapping
+    local maps = 0
+    RegisterKeyMapping = function(cmd, desc, dev, key)
+        if cmd == '+bremotewheel' then maps = maps + 1 end
+        return savedMap(cmd, desc, dev, key)
+    end
+
+    -- The harness keyboard, on a build with both raw natives, nothing up.
+    IsRawKeyDown, IsRawKeyPressed = RAW_KEYBOARD.down, RAW_KEYBOARD.pressed
+    pauseMenu.active, pauseMenu.restarting, pauseMenu.shape = false, false, nil
+    BR.Keys.uiOwnsKeyboard, BR.Keys.uiScreen = false, nil
+    bootOn(true, true)
+
+    local row
+    for _, b in ipairs(BR.Keys.bindings) do
+        if b.action == 'emoteWheel' then row = b end
+    end
+    ok(row ~= nil, 'keybinds.lua registers an emoteWheel row')
+    ok(row and row.command == 'bremotewheel' and row.default == 'LMENU'
+            and row.hold == true and row.group == 'Emotes',
+        "it is the hold 'bremotewheel' on LMENU, filed under Emotes",
+        row and ('%s %s hold=%s %s'):format(row.command, row.default,
+                                           tostring(row.hold), row.group))
+
+    --- Did the last KEYBINDS push carry the row? nil when nothing was pushed.
+    local function pushed()
+        for i = #events, 1, -1 do
+            local e = events[i]
+            if e.name == 'br:ui:sendLocal' and e.args[1] == BR.Nui.KEYBINDS then
+                for _, a in ipairs(e.args[2].actions or {}) do
+                    if a.command == 'bremotewheel' then return true end
+                end
+                return false
+            end
+        end
+        return nil
+    end
+
+    BR.Emotes = nil
+    BR.Keys.push()
+    ok(pushed() == false,
+        'with no emote config at all the settings screen is not sent the row')
+    ok(keymap['LMENU'] == nil and maps == 0,
+        'and GTA was never given a mapping for it at load',
+        tostring(keymap['LMENU']))
+
+    local gate = false
+    BR.Emotes = { enabled = function() return gate end }
+    BR.Keys.push()
+    ok(pushed() == false, 'with the gate closed the row is not pushed either')
+    ok(BR.Keys.set('bremotewheel', 0x47) == false,
+        'and the rebinder refuses it while closed')
+    BR.Keys.mapGated()
+    ok(maps == 0, 'mapGated gives GTA nothing while the gate is closed', maps)
+
+    gate = true
+    BR.Keys.push()
+    ok(pushed() == true, 'the gate opening puts the row on the settings screen')
+    BR.Keys.mapGated()
+    BR.Keys.mapGated()
+    ok(maps == 1 and keymap['LMENU'] == '+bremotewheel',
+        'and mapGated registers +bremotewheel on LMENU exactly once',
+        ('%d mapping(s), LMENU -> %s'):format(maps, tostring(keymap['LMENU'])))
+
+    -- ── THE RAW LAYER, ON THE #203 LESSON: a build may fill only the
+    -- side-specific slot, so the generic 0x12 alone could never fire.
+    local presses, releases = 0, 0
+    BR.Keys.on('emoteWheel', function(p)
+        if p then presses = presses + 1 else releases = releases + 1 end
+    end)
+    local VK_ALT, VK_LALT = 0x12, 0xA4
+    local function alt(down, codes)
+        for _, c in ipairs(codes) do
+            if down then keys[c], edge[c] = true, true else keys[c] = nil end
+        end
+        engineKey('LMENU', down)
+    end
+
+    alt(true, { VK_LALT }); frames(2)
+    ok(presses == 1 and BR.Keys.isHeld('emoteWheel'),
+        'a build that fills only 0xA4 (VK_LMENU) still presses the wheel, once',
+        ('%d press(es), held=%s'):format(presses, tostring(BR.Keys.isHeld('emoteWheel'))))
+    alt(false, { VK_LALT }); frames(2)
+    ok(releases == 1 and not BR.Keys.isHeld('emoteWheel'),
+        'and its release arrives once', releases)
+
+    alt(true, { VK_ALT }); frames(2); alt(false, { VK_ALT }); frames(2)
+    ok(presses == 2 and releases == 2, 'the generic 0x12 drives it too',
+        ('%d/%d'):format(presses, releases))
+
+    -- ── "The wheel CANNOT open while the pause menu or the big map is open"
+    pauseMenu.active = true
+    alt(true, { VK_LALT }); frames(2)
+    ok(presses == 2, 'a press is swallowed while IsPauseMenuActive', presses)
+    alt(false, { VK_LALT }); frames(2)
+    ok(releases == 3, 'and the release still goes through, as for every key',
+        releases)
+    pauseMenu.active = false
+
+    RegisterKeyMapping = savedMap
+    BR.Emotes = saved
+    ok(BR.Emotes == saved, 'BR.Emotes is handed back exactly as it was found')
+end
+
+-- ---------------------------------------------------------------------------
 -- 'None' IS NOT A PRODUCT (owner, 2026-08-20)
 --
 -- "'None' smoke trail should not exist - and btw this means the default (new
