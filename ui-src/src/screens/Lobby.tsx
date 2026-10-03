@@ -542,7 +542,7 @@ export default function Lobby({
           <div className="flex gap-2.5 mt-2">
             {([
               { id: 'solo',  name: 'Solo',   sub: 'One life. Everyone else is a rival.' },
-              { id: 'squad', name: 'Squads', sub: 'Teams of four. Revives allowed.' },
+              { id: 'squad', name: 'Squads', sub: 'Teams up to four. Revives allowed.' },
             ] as const).map((m) => (
               <button
                 key={m.id}
