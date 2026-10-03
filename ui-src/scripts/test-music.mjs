@@ -118,6 +118,13 @@ check('a dance longer than its file is compared modulo the length (no seek)',
 check('modulo the length, still drifted (seek)',
   planTracks([T(4, A, 12000 + 5600, 1)], [V(4, A, 5000, 12000, 1)], NONE, 1),
   [{ op: 'seek', src: 4, atMs: 17600 }])
+check('the element just wrapped, Lua just before the loop point: 40 ms, no seek',
+  planTracks([T(4, A, 19990, 1)], [V(4, A, 30, 10000, 1)], NONE, 1), [])
+check('the element just before the loop point, Lua just wrapped: 40 ms, no seek',
+  planTracks([T(4, A, 10030, 1)], [V(4, A, 9990, 10000, 1)], NONE, 1), [])
+check('around the loop, still drifted (seek)',
+  planTracks([T(4, A, 19900, 1)], [V(4, A, 300, 10000, 1)], NONE, 1),
+  [{ op: 'seek', src: 4, atMs: 19900 }])
 check('an unknown length compares pos directly',
   planTracks([T(4, A, 5600, 1)], [V(4, A, 5000, null, 1)], NONE, 1),
   [{ op: 'seek', src: 4, atMs: 5600 }])

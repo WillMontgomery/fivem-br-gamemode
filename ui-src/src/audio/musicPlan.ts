@@ -134,9 +134,13 @@ export function planTracks(
     if (Math.abs(gain - v.volume) > 0.01) fixes.push({ op: 'volume', src: w.src, volume: gain })
     if (v.currentMs !== null) {
       // The tracks LOOP, so a dance longer than its file is somewhere inside
-      // the file rather than past its end.
+      // the file rather than past its end -- and the distance is measured
+      // around the loop: an element that has just wrapped to 30 ms while Lua
+      // says 9990 ms of a 10 s file is 40 ms behind, not 9960 ms (#215).
       const expected = v.lengthMs ? w.pos % v.lengthMs : w.pos
-      if (Math.abs(expected - v.currentMs) > DRIFT_MS) {
+      const d = Math.abs(expected - v.currentMs)
+      const drift = v.lengthMs ? Math.min(d, v.lengthMs - d) : d
+      if (drift > DRIFT_MS) {
         fixes.push({ op: 'seek', src: w.src, atMs: w.pos })
       }
     }

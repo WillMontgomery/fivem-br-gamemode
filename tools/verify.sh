@@ -2336,9 +2336,24 @@ if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
     else echo "${RED}FAIL${RST} check_emote_gate selftest"; rc=1; fi
     # THE ONE-LINE PROMISE (owner, #215 Scope v2): every emote suite must
     # also pass with `requireDevMode = true,` removed from the config.
-    for s in tools/test_emotes.lua tools/test_emotes_client.lua tools/test_emotes_ui.lua; do
-        BR_EMOTES_LINE_DELETED=1 "$LUA" "$s" >/dev/null || { echo "${RED}FAIL${RST} $s with the one line deleted"; rc=1; }
-    done
+    #
+    # ONCE THE LINE IS DELETED, THE SUITES ABOVE ALREADY RAN WITHOUT IT. The
+    # second pass cuts the line out, and each suite fails loudly when it is
+    # not there exactly once (so a renamed line is caught); asking it to cut
+    # a line the owner has already removed would fail the very one-line PR
+    # this promises. A key left behind with any other value (say
+    # `requireDevMode = false,`) is neither state, and fails here.
+    EMOTES_CFG="resources/[fivem-royale]/br_lib/config/emotes.lua"
+    if grep -qxF '    requireDevMode = true,' "$EMOTES_CFG"; then
+        for s in tools/test_emotes.lua tools/test_emotes_client.lua tools/test_emotes_ui.lua; do
+            # Failure output is kept (last 20 lines) so CI shows the reason.
+            out=$(BR_EMOTES_LINE_DELETED=1 "$LUA" "$s" 2>&1) || { echo "$out" | tail -n 20; echo "${RED}FAIL${RST} $s with the one line deleted"; rc=1; }
+        done
+    elif grep -qE '^[[:space:]]*requireDevMode[[:space:]]*=' "$EMOTES_CFG"; then
+        echo "${RED}FAIL${RST} $EMOTES_CFG names requireDevMode but not as the one line: delete it whole"; rc=1
+    else
+        echo "${GRN}ok${RST}   the one line is deleted; the suites above already ran without it"
+    fi
 else echo "${YEL}skip${RST} (lua interpreter not found)"; fi
 
 # --- 4e. the branch-switch invariant ------------------------------------------

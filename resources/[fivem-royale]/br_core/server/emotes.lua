@@ -93,8 +93,12 @@ end
 --- ONE RULE FOR THE START, A LATE ARRIVAL AND NOTHING ELSE: the stop does not
 --- ask it, because the stop goes to whoever the start reached.
 ---   1. the dancer always;
----   2. a spectator when the player they watch is close to the dance -- the
----      spectator's own ped is a corpse wherever they fell;
+---   2. a spectator when the player they watch is in the dancer's routing
+---      bucket and close to the dance -- the spectator's own ped is a corpse
+---      wherever they fell. The bucket asked is the WATCHED player's, not the
+---      spectator's, so an admin watching from the lobby still hears; without
+---      it a spectator whose target stands near another match's dancer would
+---      be sent that match's x/y/z, which the roster withholds (#215, rule 8);
 ---   3. anybody else in the dancer's routing bucket who is close. The bucket
 ---      test keeps out lobby-bucket players who still carry the matchId, and
 ---      lets in BUS riders, who share the warmup bucket.
@@ -104,7 +108,7 @@ local function wants(s, e, a, now)
     local t = BR.Spectate and BR.Spectate.targetOf and BR.Spectate.targetOf(s)
     if t then
         local te = BR.Roster.get(t)
-        return te ~= nil and near(te, a.rec, now)
+        return te ~= nil and a.bucket ~= nil and bucketOf(t) == a.bucket and near(te, a.rec, now)
     end
     return a.bucket ~= nil and bucketOf(s) == a.bucket and near(e, a.rec, now)
 end
