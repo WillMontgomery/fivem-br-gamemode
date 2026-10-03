@@ -80,14 +80,23 @@ end
 
 --- Take the wheel down. Through the library's own close-and-clear when the
 --- wheel is its current menu, so no breadcrumb is left to keep its draw
---- thread running; otherwise the wheel's own Visible(false).
+--- thread running.
+---
+--- WHEN ANOTHER MENU IS CURRENT, ONLY THE WHEEL GOES (#215). The library's
+--- RadialMenu:Visible(false) (ScaleformUI.lua:10634-10638) clears the
+--- instructional buttons and sets MenuHandler.ableToDraw = false
+--- unconditionally, and both belong to the CURRENT menu: an Interact-opened
+--- gun shop over a held wheel would stay open, undrawn and deaf to input. So
+--- the wheel is hidden by hand -- its flag and its movie -- and the draw flag
+--- and buttons are left to the menu that owns them.
 local function close()
     open = false
     if w == nil then return end
     if MenuHandler ~= nil and MenuHandler._currentMenu == w then
         pcall(MenuHandler.CloseAndClearHistory, MenuHandler)
     else
-        pcall(w.Visible, w, false)
+        w._visible = false
+        pcall(function() ScaleformUI.Scaleforms._radialMenu:CallFunction('CLEAR_ALL') end)
     end
 end
 

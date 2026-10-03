@@ -684,6 +684,24 @@ do
     ok(#records(5) == 0, 'NOT a lobby-bucket player who still holds the matchId')
     ok(#records(7) == 0, 'NOT a player whose position is stale')
     restore()
+
+    -- A SPECTATOR IS ASKED THE WATCHED PLAYER'S BUCKET (#215, rule 8): two
+    -- concurrent matches share the map in their own buckets, and the record
+    -- carries the dancer's x/y/z, which the roster withholds across matches.
+    -- Player 6 above (bucket 9, watching 2 in bucket 1) is the positive
+    -- control: an admin watching from the lobby still hears.
+    stage()
+    player(9, { pos = { x = 900.0, y = 0.0, z = 0.0 }, bucket = 2 })
+    watching[9] = 4   -- 4 is in bucket 2, 10 m from the dancer in bucket 1
+    sent = {}
+    fire(BR.Net.EMOTE_PLAY, 1, { id = E[4] })
+    ok(#records(6) == 1, 'a spectator whose target shares the dancer\'s bucket is sent it')
+    ok(#records(9) == 0, 'NOT a spectator whose target is in range but in another match\'s bucket')
+    sweep()
+    local act = BR.Emotes.active(1)
+    ok(#records(9) == 0 and act ~= nil and not has(act.sentTo, 9), 'nor by the sweep after it')
+    watching[9] = nil
+    restore()
 end
 
 -- ---------------------------------------------------------------------------

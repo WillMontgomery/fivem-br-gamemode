@@ -166,6 +166,13 @@ function MenuHandler:CloseAndClearHistory()
     self.cleared = self.cleared + 1
 end
 
+--- The library's movies, as far as the wheel's own close reaches them: the
+--- radial's CLEAR_ALL is recorded so a hand-hidden wheel can be seen to clear.
+local radialCalls = {}
+ScaleformUI = { Scaleforms = {
+    _radialMenu = { CallFunction = function(_, fn) radialCalls[#radialCalls + 1] = fn end },
+} }
+
 SColor = { FromHudColor = function(n) return { hud = n } end }
 UIMenuItem = {}
 
@@ -617,6 +624,27 @@ do
     calm()
     ok(MenuHandler._currentMenu ~= wheelObj() or not wheelObj()._visible,
         'releasing takes the wheel down through the library')
+end
+
+describe('1. a menu shown over the wheel keeps drawing when the wheel goes')
+do
+    -- #215: Interact at a gun shop counter while Alt is held. The shop's
+    -- Visible(true) makes it the library's current menu; the wheel's close
+    -- must then hide only the wheel, not clear the shop's draw flag.
+    calm()
+    key(true)
+    ok(BR.EmoteWheel.isOpen() and MenuHandler._currentMenu == wheelObj(), 'the wheel is up and current')
+    local shop = BR.Menu.new('Ammu-Nation')
+    shop:Visible(true)
+    radialCalls = {}
+    key(false)
+    ok(not BR.EmoteWheel.isOpen() and wheelObj()._visible == false, 'the release takes the wheel down')
+    ok(MenuHandler._currentMenu == shop and MenuHandler.ableToDraw == true,
+        'and the shop stays the current, DRAWING menu')
+    ok(shop._visible == true, 'and stays open')
+    ok(radialCalls[1] == 'CLEAR_ALL', "the wheel's movie is cleared by hand", radialCalls[1])
+    shop:Visible(false)
+    calm()
 end
 
 describe('1. the segments mirror the wheel, and the highlight tells the truth')
