@@ -3937,220 +3937,111 @@ do
 end
 
 -- ---------------------------------------------------------------------------
-describe('wall.cull')
+describe('wall.whole')
 do
-    -- ═══ WHAT THE CAMERA CANNOT SEE IS NOT SUBMITTED, AND NOTHING IT CAN SEE IS
-    --     LOST (#393) ═══
+    -- ═══ EVERY QUAD IS DRAWN EVERY FRAME, WHEREVER THE CAMERA IS (#393) ═══
     --
-    -- The strip used to send every quad to the engine on every frame. It now skips
-    -- the quads whose whole vertical extent lies outside the camera's horizontal
-    -- view, widened by a margin for the camera having moved since the frame it was
-    -- read from. Off-screen triangles produce no pixels, so the claim this block
-    -- pins is a picture claim: every quad the camera can see is drawn, exactly as
-    -- it was, in the same order -- and the ones skipped are behind or beside it.
+    -- Round 1 of #393 skipped the quads outside a wedge built from the rendered
+    -- camera. Those natives describe the frame BEFORE, so a camera cut, a flick at a
+    -- low frame rate or a scope released in one frame drew a frame with wall
+    -- missing. client/storm.lua's draw loop says why no cull is safe and why a
+    -- distance LOD would move the wall; this block pins that the picture does not
+    -- depend on the camera at all.
     --
-    -- The camera is the four natives client/storm.lua reads. The rest of this
-    -- suite runs without them, which is the "this build has no such native" path:
-    -- nothing culled, every quad drawn.
+    -- So every camera native a cull would read IS here, answering for cameras all
+    -- round the circle, pitched from straight down to straight up, zoomed from a
+    -- scope's 1.5 degrees to 130, rolled, from the middle of the zone, at its wall
+    -- and outside it -- and every frame must draw exactly the triangles a client
+    -- with no camera natives at all draws, argument for argument, in the same order.
     local function camClient(cam)
         local C = newStormClient()
         C.cam = cam
-        C.camReads = 0
-        C.env.GetFinalRenderedCamCoord = function()
-            return pt(C.cam.x, C.cam.y, C.cam.z or 40.0)
-        end
-        C.env.GetFinalRenderedCamRot = function(order)
-            C.camReads = C.camReads + 1
-            C.rotOrder = order
-            return { x = C.cam.pitch or 0.0, y = C.cam.roll or 0.0, z = C.cam.yaw or 0.0 }
-        end
-        C.env.GetFinalRenderedCamFov = function() return C.cam.fov or 50.0 end
-        C.env.GetAspectRatio = function() return C.cam.aspect or (16.0 / 9.0) end
+        local function coord() return pt(C.cam.x, C.cam.y, C.cam.z) end
+        local function rot() return { x = C.cam.pitch, y = C.cam.roll, z = C.cam.yaw } end
+        local function fov() return C.cam.fov end
+        C.env.GetFinalRenderedCamCoord, C.env.GetGameplayCamCoord = coord, coord
+        C.env.GetFinalRenderedCamRot, C.env.GetGameplayCamRot = rot, rot
+        C.env.GetFinalRenderedCamFov, C.env.GetGameplayCamFov = fov, fov
+        C.env.GetAspectRatio = function() return 16.0 / 9.0 end
         return C
     end
-    local function sameRecord(C)
-        return C.record(2, 0.0, 0.0, 1600.0, 300.0, 0.0, 950.0, 600000, 60000, 1.25)
-    end
-    local function key(qd)
-        return ('%.17g,%.17g,%.17g,%.17g'):format(qd.a.x, qd.a.y, qd.b.x, qd.b.y)
-    end
-
-    -- The reference: the same wall with no camera natives, so nothing is culled.
-    local A = newStormClient()
-    sameRecord(A)
-    A.pedAt = pt(0.0, 0.0, 30.0)
-    A.frame()
-    local all = quadsOf(A)
-
-    -- Looking due east from the centre, level, at the default FOV.
-    local B = camClient({ x = 0.0, y = 0.0, z = 40.0, yaw = -90.0, pitch = 0.0 })
-    sameRecord(B)
-    B.pedAt = pt(0.0, 0.0, 30.0)
-    B.frame()
-    ok(B.errored() == nil, 'the culled strip runs clean', B.errored())
-    local seen = quadsOf(B)
-    ok(#seen > 0 and #seen < #all,
-        'with a camera, the strip submits only part of the ring',
-        ('%d of %d quads'):format(#seen, #all))
-
-    -- Every submitted quad is one of the reference quads, in the reference order,
-    -- with the identical triangles: culling removes and never alters.
-    local at, inOrder = 1, true
-    local index = {}
-    for i, qd in ipairs(all) do index[key(qd)] = i end
-    for _, qd in ipairs(seen) do
-        local i = index[key(qd)]
-        if not i or i < at then inOrder = false break end
-        at = i
-    end
-    ok(inOrder, 'every quad drawn is a reference quad, in the reference order')
-    local function triKey(t)
-        local parts = {}
-        for v = 1, 3 do
-            parts[#parts + 1] = ('%.17g/%.17g/%.17g/%s/%s'):format(t[v].x, t[v].y, t[v].z,
-                tostring(t[v].u), tostring(t[v].v))
-        end
-        parts[#parts + 1] = ('%s/%s/%s/%s/%s'):format(t.r, t.g, t.b, t.a, tostring(t.tex))
-        return table.concat(parts, '|')
-    end
-    local same, j = true, 1
-    for _, t in ipairs(B.polys) do
-        local k = triKey(t)
-        while A.polys[j] and triKey(A.polys[j]) ~= k do j = j + 1 end
-        if not A.polys[j] then same = false break end
-        j = j + 1
-    end
-    ok(same, 'and its triangles are the reference triangles, argument for argument')
-
-    -- NOTHING THE CAMERA CAN SEE IS SKIPPED. The true horizontal half-FOV, with no
-    -- margin at all: any quad with a point inside it must be drawn.
-    local ty = math.tan(math.rad(50.0) * 0.5)
-    local halfTrue = math.atan(ty * 16.0 / 9.0, 1.0)
-    local drawn = {}
-    for _, qd in ipairs(seen) do drawn[key(qd)] = true end
-    local missed, skipped, nearSkipped = 0, 0, 0
-    for _, qd in ipairs(all) do
-        local visible = false
-        for s = 0, 8 do
-            local x = qd.a.x + (qd.b.x - qd.a.x) * s / 8
-            local y = qd.a.y + (qd.b.y - qd.a.y) * s / 8
-            -- Bearing off due east (+x).
-            if math.abs(math.atan(y, x)) <= halfTrue then visible = true end
-        end
-        if not drawn[key(qd)] then
-            skipped = skipped + 1
-            if visible then missed = missed + 1 end
-            local mx, my = (qd.a.x + qd.b.x) * 0.5, (qd.a.y + qd.b.y) * 0.5
-            if math.sqrt(mx * mx + my * my) < 75.0 then nearSkipped = nearSkipped + 1 end
-        end
-    end
-    ok(missed == 0 and skipped > 0,
-        'no quad with any point inside the camera\'s field of view is skipped',
-        ('%d visible quads skipped, %d skipped in all'):format(missed, skipped))
-    ok(nearSkipped == 0, 'and nothing close to the camera is ever skipped')
-
-    -- THE MARGIN: a quad just outside the true FOV is still drawn, because the
-    -- camera read is a frame old.
-    local edgeKept, edgeAll = 0, 0
-    for _, qd in ipairs(all) do
-        local mx, my = (qd.a.x + qd.b.x) * 0.5, (qd.a.y + qd.b.y) * 0.5
-        local b = math.abs(math.atan(my, mx))
-        if b > halfTrue and b < halfTrue + math.rad(25.0) then
-            edgeAll = edgeAll + 1
-            if drawn[key(qd)] then edgeKept = edgeKept + 1 end
-        end
-    end
-    ok(edgeAll > 0 and edgeKept == edgeAll,
-        'and every quad within 25 degrees beyond the edge of the view is drawn too',
-        ('%d of %d'):format(edgeKept, edgeAll))
-
-    -- CLOSE TO THE WALL, LOOKING ALONG IT: the wall curving round behind the
-    -- camera's shoulder is tens of metres off, where a frame's movement is a big
-    -- change of bearing, so it is drawn whatever the wedge says. A small zone, so
-    -- the quads there are short enough to sit wholly outside the wedge -- which
-    -- the block checks for itself, or it would prove nothing.
-    local N = camClient({ x = 230.0, y = 0.0, z = 40.0, yaw = 0.0, pitch = 0.0 })
-    N.record(5, 0.0, 0.0, 260.0, 60.0, 0.0, 120.0, 600000, 60000, 2.9)
-    N.pedAt = pt(230.0, 0.0, 30.0)
-    N.frame()
-    local R5 = newStormClient()
-    R5.record(5, 0.0, 0.0, 260.0, 60.0, 0.0, 120.0, 600000, 60000, 2.9)
-    R5.pedAt = pt(230.0, 0.0, 30.0)
-    R5.frame()
-    local nearDrawn = {}
-    for _, qd in ipairs(quadsOf(N)) do nearDrawn[key(qd)] = true end
-    -- The widened wedge, as client/storm.lua builds it for this camera: looking
-    -- due north, level, so its boundaries are north turned by `half` each way.
-    local half = math.atan(ty * 16.0 / 9.0, 1.0) + math.rad(30.0)
-    local lx, ly = -math.sin(half), math.cos(half)
-    local rx, ry = math.sin(half), math.cos(half)
-    local function outside(dx, dy)
-        return lx * dy - ly * dx > 0.0, rx * dy - ry * dx < 0.0
-    end
-    local closeOut, closeMissing, near5 = 0, 0, 0
-    for _, qd in ipairs(quadsOf(R5)) do
-        local ex, ey = qd.b.x - qd.a.x, qd.b.y - qd.a.y
-        local dx, dy = qd.a.x - 230.0, qd.a.y
-        local k = math.max(0.0, math.min(1.0, -(dx * ex + dy * ey) / (ex * ex + ey * ey)))
-        local px, py = dx + ex * k, dy + ey * k
-        if px * px + py * py < 75.0 * 75.0 then
-            near5 = near5 + 1
-            local al, ar = outside(dx, dy)
-            local bl, br = outside(qd.b.x - 230.0, qd.b.y)
-            if (al and bl) or (ar and br) then
-                closeOut = closeOut + 1
-                if not nearDrawn[key(qd)] then closeMissing = closeMissing + 1 end
+    --- Where the frame's triangles first part from the reference's, or nil.
+    local function differs(polys, ref)
+        if #polys ~= #ref then return ('%d triangles against %d'):format(#polys, #ref) end
+        for i = 1, #ref do
+            local t, r = polys[i], ref[i]
+            if t.r ~= r.r or t.g ~= r.g or t.b ~= r.b or t.a ~= r.a or t.tex ~= r.tex then
+                return ('triangle %d has another colour or texture'):format(i)
+            end
+            for v = 1, 3 do
+                local a, b = t[v], r[v]
+                if a.x ~= b.x or a.y ~= b.y or a.z ~= b.z or a.u ~= b.u or a.v ~= b.v then
+                    return ('triangle %d is not the reference one'):format(i)
+                end
             end
         end
+        return nil
     end
-    ok(closeOut > 0 and closeMissing == 0 and #quadsOf(N) < #quadsOf(R5),
-        'a camera close to the wall still draws the wall behind its shoulder',
-        ('%d close quads wholly outside the wedge, %d of them missing; %d near, '
-            .. '%d of %d drawn'):format(closeOut, closeMissing, near5, #quadsOf(N),
-            #quadsOf(R5)))
-
-    -- A ROLLED CAMERA, OR ONE LOOKING STEEPLY DOWN, CULLS NOTHING.
-    local R = camClient({ x = 0.0, y = 0.0, z = 40.0, yaw = -90.0, pitch = 0.0, roll = 5.0 })
-    sameRecord(R)
-    R.pedAt = pt(0.0, 0.0, 30.0)
-    R.frame()
-    ok(#quadsOf(R) == #all, 'a camera with roll culls nothing',
-        ('%d of %d'):format(#quadsOf(R), #all))
-    local D = camClient({ x = 0.0, y = 0.0, z = 900.0, yaw = -90.0, pitch = -70.0 })
-    sameRecord(D)
-    D.pedAt = pt(0.0, 0.0, 30.0)
-    D.frame()
-    ok(#quadsOf(D) == #all,
-        'and neither does one looking so steeply down that every bearing is in view',
-        ('%d of %d'):format(#quadsOf(D), #all))
-
-    -- A camera that turned since the read: the next frame reads the new one.
-    B.cam.yaw = 90.0
-    B.frame()
-    local west = quadsOf(B)
-    local westOk = #west > 0
-    for _, qd in ipairs(west) do
-        local mx = (qd.a.x + qd.b.x) * 0.5
-        if mx > 1000.0 then westOk = false end
+    -- Phase 1's hold: two walls, the opening zone's and circle 1's.
+    local function hold(C)
+        local rec = C.record(1, 0.0, 0.0, 2600.0, 400.0, 0.0, 1600.0, 600000, 60000, 0.5)
+        rec.tStart = C.now - 300000
     end
-    ok(westOk, 'turning the camera round draws the other side of the ring next frame')
 
-    -- ONE CAMERA READ A FRAME, whichever walls draw: phase 1's hold has two.
-    local P = camClient({ x = 0.0, y = 0.0, z = 40.0, yaw = 0.0, pitch = 0.0 })
-    local prec = P.record(1, 0.0, 0.0, 2600.0, 400.0, 0.0, 1600.0, 600000, 60000, 0.5)
-    prec.tStart = P.now - 300000
-    P.pedAt = pt(0.0, 0.0, 30.0)
-    P.settlePreview()
-    P.camReads = 0
-    P.frame()
-    local alphas, nAlpha = {}, 0
-    for _, t in ipairs(P.polys) do
-        if not alphas[t.a] then alphas[t.a] = true nAlpha = nAlpha + 1 end
+    local viewers = {
+        { label = 'in the middle of the zone', x = 0.0, y = 0.0 },
+        { label = 'at its wall', x = 2585.0, y = 0.0 },
+        { label = 'outside it', x = 3400.0, y = 900.0 },
+    }
+    -- Every heading in 30-degree steps, every pitch and every zoom below, each
+    -- frame a cut from the one before: 36 cameras a viewer, so each pitch and each
+    -- zoom meets several headings without a full cross product.
+    local fovs = { 1.5, 8.0, 50.0, 90.0, 130.0 }
+    local pitches = { -89.0, -70.0, -50.0, -30.0, -10.0, 0.0, 15.0, 45.0, 70.0, 89.0 }
+    local CAMS = 36
+
+    local frames, bad, walls = 0, nil, nil
+    for _, v in ipairs(viewers) do
+        local R = newStormClient()
+        hold(R)
+        R.pedAt = pt(v.x, v.y, 30.0)
+        R.settlePreview()
+        R.frame()
+        local ref = R.polys
+        local alphas, nAlpha = {}, 0
+        for _, t in ipairs(R.polys) do
+            if not alphas[t.a] then alphas[t.a] = true nAlpha = nAlpha + 1 end
+        end
+        walls = math.min(walls or nAlpha, nAlpha)
+
+        local C = camClient({ x = v.x, y = v.y - 4.0, z = 32.0, yaw = 0.0, pitch = 0.0,
+                              roll = 0.0, fov = 50.0 })
+        hold(C)
+        C.pedAt = pt(v.x, v.y, 30.0)
+        C.settlePreview()
+        for i = 0, CAMS - 1 do
+            C.cam.yaw = -180.0 + 30.0 * (i % 12)
+            C.cam.pitch = pitches[i % #pitches + 1]
+            C.cam.fov = fovs[i % #fovs + 1]
+            C.cam.roll = (i % 7 == 3) and 5.0 or 0.0
+            C.frame()
+            frames = frames + 1
+            local why = differs(C.polys, ref)
+            if why and not bad then
+                bad = ('%s, yaw %d pitch %d fov %.1f: %s'):format(v.label, C.cam.yaw,
+                    C.cam.pitch, C.cam.fov, why)
+            end
+        end
+        ok(C.errored() == nil, ('the walls run clean with every camera, %s'):format(v.label),
+            C.errored())
     end
-    ok(nAlpha == 2 and P.camReads == 1 and P.rotOrder == 2,
-        'both walls in a frame share one camera read',
-        ('%d walls by alpha, %d reads, rotation order %s'):format(nAlpha, P.camReads,
-            tostring(P.rotOrder)))
+    ok(walls == 2, 'the reference is phase 1\'s hold: both walls are in every frame',
+        ('%s walls by alpha'):format(tostring(walls)))
+    ok(bad == nil and frames == #viewers * CAMS,
+        'every camera -- any heading, pitched from straight down to straight up, '
+            .. 'zoomed from a scope to 130 degrees, rolled or level, cut to from the '
+            .. 'frame before -- draws exactly the wall a client with no camera draws',
+        bad or ('%d frames'):format(frames))
 end
 
 -- ---------------------------------------------------------------------------

@@ -917,103 +917,6 @@ local function newWallMemo()
     return { zone = nil, inset = nil, shape = nil, strip = newStrip() }
 end
 
--- ═══ A QUAD NO CAMERA RAY CAN REACH IS NOT DRAWN (#393) ═══
---
--- Every quad of every wall used to go to the engine on every frame, including the
--- half of the ring behind the player: in a phase-1 hold that is the opening zone's
--- strip and circle 1's, well over three hundred DrawSpritePoly calls a frame, and
--- the native call is the expensive part of a quad. A triangle outside the view
--- frustum produces no pixels, so not submitting it changes nothing on screen.
---
--- THE TEST IS ON BEARINGS, BECAUSE A WALL QUAD IS VERTICAL. Every point of a quad
--- lies over the 2D segment between its two corners, and a camera ray can reach a
--- point only if the point's horizontal bearing from the camera is one the frustum
--- spans. For a camera with no roll, pitch theta, vertical FOV v and aspect a, the
--- frustum's bearings are its yaw plus or minus
---
---     atan(tan(v/2) * a / (cos(theta) - tan(v/2) * |sin(theta)|))
---
--- -- the bearing of its widest edge ray, the one on the side of the horizon it
--- tilts toward. So the visible region is a vertical wedge, and a quad whose two
--- corners are both outside the same side of it is outside it entirely. That holds
--- at any pitch, up to the one where the frustum contains straight up or straight
--- down and every bearing is visible: there nothing is culled. Water reflections
--- keep bearings, so they are inside the same wedge.
---
--- THE CAMERA IS LAST FRAME'S. GetFinalRenderedCamCoord/Rot report the camera the
--- previous frame rendered with, and this frame's may have turned or moved since.
--- So the wedge is widened by CULL_MARGIN_DEG beyond the frustum -- a turn of more
--- than that in one frame is about 1800 degrees a second -- and nothing within
--- CULL_NEAR_M of the camera is ever culled, where a few metres of movement is a
--- large change of bearing. Any doubt is resolved by drawing: a camera with roll, a
--- FOV or aspect out of range, or a native this build does not have, culls nothing.
-local CULL_MARGIN_DEG = 30.0
-local CULL_NEAR_M = 75.0
-local CULL_ROLL_MAX_DEG = 1.0
-
---- This frame's visible wedge, read once and shared by both walls.
-local cullWedge = { frame = nil, on = false, x = 0.0, y = 0.0,
-                    lx = 0.0, ly = 0.0, rx = 0.0, ry = 0.0 }
-local cullNatives = nil   -- whether this build has all four natives; asked once
-
---- The camera's visible wedge for this frame, or nil to draw everything.
---- @return table|nil  { x, y, lx, ly, rx, ry }: apex, and the left and right
----                    boundary directions
-local function viewWedge()
-    local w = cullWedge
-    local f = BR.Loop and BR.Loop.frameNo
-    if f ~= nil and w.frame == f then return w.on and w or nil end
-    w.frame, w.on = f, false
-    if cullNatives == nil then
-        cullNatives = type(_G.GetFinalRenderedCamCoord) == 'function'
-            and type(_G.GetFinalRenderedCamRot) == 'function'
-            and type(_G.GetFinalRenderedCamFov) == 'function'
-            and type(_G.GetAspectRatio) == 'function'
-    end
-    if not cullNatives then return nil end
-    local c = GetFinalRenderedCamCoord()
-    local rot = GetFinalRenderedCamRot(2)
-    local fov = tonumber(GetFinalRenderedCamFov())
-    local aspect = tonumber(GetAspectRatio(false))
-    if not c or not rot or not fov or not aspect then return nil end
-    if fov <= 1.0 or fov >= 170.0 or aspect <= 0.1 or aspect > 10.0 then return nil end
-    if math.abs(rot.y or 0.0) > CULL_ROLL_MAX_DEG then return nil end
-    local pitch = math.rad(rot.x or 0.0)
-    local ty = math.tan(math.rad(fov) * 0.5)
-    local den = math.cos(pitch) - ty * math.abs(math.sin(pitch))
-    if den <= 0.05 then return nil end
-    local half = math.atan(ty * aspect, den) + math.rad(CULL_MARGIN_DEG)
-    if half >= math.rad(89.0) then return nil end
-    local yaw = math.rad(rot.z or 0.0)
-    local fx, fy = -math.sin(yaw), math.cos(yaw)
-    local ch, sh = math.cos(half), math.sin(half)
-    -- The forward bearing turned left (counter-clockwise) and right by `half`.
-    w.lx, w.ly = fx * ch - fy * sh, fx * sh + fy * ch
-    w.rx, w.ry = fx * ch + fy * sh, fy * ch - fx * sh
-    w.x, w.y = c.x, c.y
-    w.on = true
-    return w
-end
-
---- True when the vertical quad over (ax, ay)-(bx, by) is outside the wedge.
-local function culled(w, ax, ay, bx, by)
-    local dax, day = ax - w.x, ay - w.y
-    local dbx, dby = bx - w.x, by - w.y
-    -- Left of the left boundary, or right of the right one, with both corners.
-    local out = (w.lx * day - w.ly * dax > 0.0 and w.lx * dby - w.ly * dbx > 0.0)
-        or (w.rx * day - w.ry * dax < 0.0 and w.rx * dby - w.ry * dbx < 0.0)
-    if not out then return false end
-    local ex, ey = bx - ax, by - ay
-    local len2 = ex * ex + ey * ey
-    local k = 0.0
-    if len2 > 0.0 then
-        k = -(dax * ex + day * ey) / len2
-        if k < 0.0 then k = 0.0 elseif k > 1.0 then k = 1.0 end
-    end
-    local px, py = dax + ex * k, day + ey * k
-    return px * px + py * py >= CULL_NEAR_M * CULL_NEAR_M
-end
-
 --- @param shape table       an inset BR.StormShape
 --- @param alphaScale number 0..1
 --- @param g table|nil      where the built strip is kept; see buildStrip
@@ -1187,14 +1090,38 @@ local function drawStrip(shape, alphaScale, g)
     -- square it -- a wall that fades to nothing by about 300 m.
     local av = math.max(0, math.min(255, math.floor(alpha + 0.5)))
     local q = g.q
-    local wedge = viewWedge()
+
+    -- ═══ EVERY QUAD, EVERY FRAME: NO CAMERA CULL AND NO DISTANCE LOD (#393) ═══
+    --
+    -- Both were tried for the cost of these calls, and both change the picture.
+    --
+    -- A CULL CANNOT KNOW THIS FRAME'S CAMERA. The rendered-camera natives describe
+    -- the frame before, so a cut (a spectate switch, the jump, the knock and
+    -- death cameras, look-behind), a fast flick at a low frame rate or a scope
+    -- released in one frame shows wall the old camera could not see -- and for
+    -- that frame it was not submitted. A 30-degree margin skipped half the ring
+    -- of a phase-1 hold and dropped the whole far wall for the first frame of a
+    -- 180-degree cut. No margin short of the whole circle is safe, so nothing is
+    -- culled.
+    --
+    -- A COARSER CHORD FAR AWAY WOULD MOVE THE WALL. The strip's chords already sag
+    -- up to chordM (2 m) off the boundary, so merging two into one puts the merged
+    -- chord about four times that off the two drawn today: about 8 m on every ring
+    -- wider than 230 m, and 3.4 percent of the radius on the small rings drawn at
+    -- the minSeg floor. On any screen, at any FOV, one radian spans at least the
+    -- screen's diagonal in pixels somewhere (the corners: 2203 px at 1080p, 4406
+    -- at 4K), and the silhouette of a ring seen from outside it shows the whole
+    -- offset. For half a pixel at 4K the merged quad must be 8812 times its offset
+    -- away: 69 km for a big ring (35 km at 1080p), 300 radii for a small one. The
+    -- farthest wall from anyone on this map is the far side of the opening ring,
+    -- about 21 km at worst. So outside the last seconds of the final ring, a wall
+    -- a few metres round, no quad is ever far enough to merge, and an LOD would
+    -- buy nothing.
     for i = 0, g.n - 1 do
         local o = i * QUAD_STRIDE
         local ax, ay, bx, by = q[o + 1], q[o + 2], q[o + 3], q[o + 4]
         local out = (vx - q[o + 5]) * q[o + 7] + (vy - q[o + 6]) * q[o + 8] >= 0.0
-        if wedge and culled(wedge, ax, ay, bx, by) then
-            -- Outside every ray the camera can cast this frame: see viewWedge.
-        elseif gradient then
+        if gradient then
             if out then
                 DrawSpritePoly(ax, ay, zb, bx, by, zb, ax, ay, zt,
                     cr, cg, cb, av, gDict, gTex,
