@@ -379,9 +379,10 @@
 --------------------------------------------------------------------------- */
 
 /* Deuteranopia and protanopia are both red/green; the collapse is green vs
-   red vs orange. Green moves to a cyan-leaning teal, legendary orange moves
-   to a warm yellow well clear of red, and danger keeps red but darkens so it
-   separates from Epic purple by lightness as well as hue.
+   red vs orange. Green moves to a cyan-leaning teal, and danger keeps red but
+   darkens so it separates from Epic purple by lightness as well as hue.
+   (Legendary used to move to a warm yellow here as well; see below for why it
+   no longer needs to.)
 
    THE RARITIES WERE RE-DERIVED FROM THE CANONICAL SET (#392), not carried
    over from the Tailwind set they were tuned against. Simulated at full
