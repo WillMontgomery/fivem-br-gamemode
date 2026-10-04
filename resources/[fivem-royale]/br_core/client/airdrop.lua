@@ -493,6 +493,29 @@ end
 -- The wire
 -- ---------------------------------------------------------------------------
 
+--- How far this player is from a drop's landing point, on the ground -- the
+--- same measure the server's 200m gate uses (BR.AirdropClosest).
+--- @param rec table
+--- @return number
+local function myDistance(rec)
+    local me = GetEntityCoords(PlayerPedId())
+    return BR.Dist(me.x, me.y, rec.x, rec.y)
+end
+
+--- One F8 line per send (#386).
+---
+--- The owner's client logs from the 2026-10-03 playtest held not one airdrop
+--- line: this file printed nothing when a drop was announced, armed or called
+--- off, so "did the server ever send the aircraft" could not be answered from the
+--- logs he had. Four sends a drop at most, so it costs nothing.
+--- @param rec table
+--- @param what string
+local function logSync(rec, what)
+    print(('[br_core] airdrop: drop %d %s at %s (%.0f, %.0f), %.0fm from me')
+        :format(math.tointeger(rec.n) or 1, what, tostring(rec.poi), rec.x, rec.y,
+                myDistance(rec)))
+end
+
 RegisterNetEvent(BR.Net.AIRDROP_SYNC)
 AddEventHandler(BR.Net.AIRDROP_SYNC, function(rec)
     if type(rec) ~= 'table' then return end
@@ -504,8 +527,24 @@ AddEventHandler(BR.Net.AIRDROP_SYNC, function(rec)
     -- time at all. It is a blip and nothing else until the second send arrives.
     if type(rec.tStart) ~= 'number' then return end
     if rec.tLand ~= nil and type(rec.tLand) ~= 'number' then return end
+    if rec.tGone ~= nil and type(rec.tGone) ~= 'number' then return end
 
     local n = math.tointeger(rec.n) or 1
+
+    -- ═══ THE SERVER CALLED IT OFF (#386) ═══
+    --
+    -- It gives a waiting drop up when the wall would be too close to where the
+    -- crate lands, and it used to tell nobody: this client kept both blips to the
+    -- four-minute ceiling, and the match ran at a crate that was never coming and
+    -- stood beside it while nothing armed. The record now arrives once more
+    -- stamped `tGone`, and that send IS the teardown -- not a replacement to draw,
+    -- and never an announcement, even to a client that never heard of the drop.
+    if rec.tGone ~= nil then
+        removeDrop(n)
+        releaseBankIfIdle()
+        logSync(rec, 'called off by the server')
+        return
+    end
 
     -- ═══ THE ANNOUNCEMENT IS AN EDGE, NOT A FIELD (owner, 2026-09-11) ═══
     --
@@ -533,10 +572,25 @@ AddEventHandler(BR.Net.AIRDROP_SYNC, function(rec)
     -- ASKED BEFORE `removeDrop`, because that is what erases the first fact.
     local announcement = drops[n] == nil and not BR.AirdropArmed(rec)
 
+    -- WHAT THIS SEND CHANGED, for the F8 line. Read off flags the wrapper took
+    -- when the last send arrived rather than off its record, which a re-send may
+    -- be the very same table as.
+    local prev = drops[n]
+    local what = 're-sent'
+    if rec.tOpen ~= nil and not (prev and prev.openSeen) then
+        what = 'opened'
+    elseif BR.AirdropArmed(rec) and not (prev and prev.armedSeen) then
+        what = 'armed'
+    elseif not prev then
+        what = 'announced'
+    end
+
     removeDrop(n)   -- a re-send replaces
 
-    local d = { rec = rec }
+    local d = { rec = rec, armedSeen = BR.AirdropArmed(rec),
+                openSeen = rec.tOpen ~= nil }
     drops[n] = d
+    logSync(rec, what)
 
     -- THE BLIP GOES UP THE MOMENT THE DROP IS ANNOUNCED, rather than on the
     -- first frame that agrees it is due: the notification the player just read
@@ -1759,12 +1813,19 @@ RegisterCommand('brairdrop', function(_, args)
             -- 200m gate (owner, 2026-08-22) and it is exactly what a broken drop
             -- looks like. This line is the difference between "the server is
             -- holding it until somebody gets near" and "something is wrong".
+            --
+            -- AND HOW FAR THIS PLAYER IS FROM IT (#386), measured the way the
+            -- server's gate measures: ground to ground. Why it has not armed is
+            -- the server's to say -- its console's `brairdrop` names the nearest
+            -- player who counts and everybody near it who does not.
             print(('    %s')
                 :format(BR.AirdropArmed(rec)
                     and ('ARMED -- the aircraft is on its way')
-                    or  ('WAITING for a player within %.0fm of the landing '
-                         .. 'point; nothing flies until then')
-                            :format(A.armWithin or 200.0)))
+                    or  ('WAITING for a living player within %.0fm of the landing '
+                         .. 'point; nothing flies until then. I am %.0fm from it '
+                         .. '-- the server console\'s brairdrop says why it has '
+                         .. 'not armed')
+                            :format(A.armWithin or 200.0, myDistance(rec))))
             -- WHICH OF THE OWNER'S TWO RULES IS DECIDING THE BLIP. "1 minute
             -- after the crate is opened" and "no longer than 4 minutes if
             -- unopened" produce the same kind of number and the wrong one is

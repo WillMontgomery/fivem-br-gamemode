@@ -520,6 +520,41 @@ function BR.AirdropLandingCircles(storm, now, cfg, waitMs)
     return out
 end
 
+--- The boundary a drop being armed NOW has to clear: the wall at the instant its
+--- crate would land, and nothing else.
+---
+--- ═══ NOT THE DESTINATION, AND THAT WAS #386 ═══
+---
+--- Owner, 2026-10-03: "Seems our airdrops don't always drop when people get
+--- close to them..."
+---
+--- The arm used to ask BR.AirdropLandingCircles(..., 0) whole: this wall AND the
+--- zone the storm is closing toward. Within the phase a drop was sited in, that
+--- zone is the one siting already held it 250m inside, so the second entry never
+--- refused anything. Once a NEW phase began during the wait it was that phase's
+--- destination -- drawn after the drop was announced, often nowhere near it --
+--- and a drop a player had walked to was abandoned with its crate due to land
+--- hundreds of meters inside the wall. Measured over 200 simulated matches with
+--- players walking to each blip: 114 of 284 drops lost that way, every one of
+--- them 250m or more inside the wall it would have landed under.
+---
+--- SO THE ARM ASKS THE SAFETY HALF ONLY. The crate never touches down within
+--- the margin of the wall -- the owner's 2026-08-23 "aidrops aren't spawning
+--- within the circle at all times" -- and the next-circle rule ("they should only
+--- spawn within the NEXT circle") is held where it was given, at the siting,
+--- against every circle the drop could land under there.
+---
+--- THE FIRST ENTRY OF BR.AirdropLandingCircles, not a second derivation of it, so
+--- the wall the drop was sited against and the wall it is armed against are one
+--- piece of arithmetic.
+--- @param storm table|nil   the published storm record
+--- @param now number
+--- @param cfg table|nil     BR.Config.Airdrop
+--- @return table[]  one entry { x, y, r, shape }
+function BR.AirdropArmCircles(storm, now, cfg)
+    return { BR.AirdropLandingCircles(storm, now, cfg, 0)[1] }
+end
+
 --- The tightest of a set of circles, for a log line.
 ---
 --- WHICH ONE DECIDED IT is the only thing a playtest can act on: "no POI
@@ -1585,6 +1620,15 @@ end
 --- to; the client's copy is, but the server keeps `landed[n]` for the match and
 --- BR.Airdrop.opened re-sends it, and a re-send the client no longer holds is
 --- simply held again. #355's sequencing counts that open (BR.AirdropResolvedAt).
+---
+--- ═══ AND AT `tGone` WHEN THE SERVER CALLS A WAITING DROP OFF (#386) ═══
+---
+--- The server abandons a waiting drop early when the wall would be too close to
+--- its landing point, or the match has lost its storm record. It used to tell
+--- nobody, so every client kept the blip to the ceiling and the match ran at a
+--- crate that was never coming -- and stood beside it, and nothing armed. It now
+--- re-sends the record stamped with the moment it gave up, and the blip ends
+--- there: on every client, in the server's own sequencing, one instant.
 --- @param rec table|nil
 --- @param cfg table|nil  BR.Config.Airdrop
 --- @return number
@@ -1594,6 +1638,7 @@ function BR.AirdropBlipEndsAt(rec, cfg)
     if rec.tOpen then
         return rec.tOpen + (cfg.blipAfterOpenMs or 60000)
     end
+    if rec.tGone then return rec.tGone end
     return (rec.tArm or rec.tStart or 0.0) + (cfg.blipMaxMs or 240000)
 end
 
@@ -1668,8 +1713,9 @@ end
 --              very POI the crate is sitting on, so the player standing at it can
 --              arm the second aircraft a second after the first crate lands.
 --   ABANDONED  when the wall moves off a waiting drop the server drops it and
---              sends nothing, so every client keeps the blip to its ceiling while
---              the next drop is announced beside it.
+--              sent nothing, so every client kept the blip to its ceiling while
+--              the next drop was announced beside it. (Since #386 the record goes
+--              out stamped `tGone` and the blip goes at that instant.)
 --
 -- The 2026-09-22 sweep counted `#waiting + #live` under a storm held still for a
 -- day, so it could see neither. Both are asked below in terms of the record and
@@ -1685,10 +1731,10 @@ end
 ---               the instant the blip goes out on every client. That is
 ---                 (tArm or tStart) + blipMaxMs
 ---               so `blipMaxMs` after the ARM for a crate that landed and was
----               never opened, and after the ANNOUNCEMENT for one that never
----               armed -- whether nobody came or the wall moved off it. The server
----               gives up on the wall case early, but it tells nobody, so the
----               blip is up until the ceiling and the ceiling is when it is gone.
+---               never opened, and after the ANNOUNCEMENT for one nobody came to.
+---               A drop the server CALLS OFF -- the wall too close to its landing
+---               point -- times out at `tGone`, the moment it was called off and
+---               its blip went from every screen (#386).
 ---
 --- ONE PREDICATE, THE CLIENT'S OWN. BR.AirdropExpired is what client/airdrop.lua
 --- tears a drop down by, so "timed out" here and "gone from the screen" there are

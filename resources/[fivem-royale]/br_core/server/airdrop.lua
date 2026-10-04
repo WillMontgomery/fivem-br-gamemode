@@ -47,10 +47,11 @@
 -- the drop is abandoned at exactly the instant the blip goes out -- one clock,
 -- one question (BR.AirdropExpired). It counts as SPENT rather than retried.
 --
--- NOT SO WHEN THE WALL ABANDONS IT. tryArm also gives a waiting drop up when the
--- storm moves off it, before its ceiling, and sends nothing -- so that blip does
--- mark a crate that is never coming, until the ceiling. holdingDrop counts on
--- exactly that (#355).
+-- AND WHEN THE WALL ABANDONS IT, THE CLIENTS ARE TOLD (#386). tryArm also gives
+-- a waiting drop up before its ceiling when the wall would be too close to where
+-- the crate lands. That used to send nothing, so the blip marked a crate that was
+-- never coming until the ceiling, and the match ran at it and stood beside it.
+-- The record now goes out once more stamped `tGone`, and every blip goes with it.
 --
 -- WHY THE CRATE IS A LOOT REGISTRY ENTRY RATHER THAN A NEW OBJECT.
 --
@@ -399,19 +400,63 @@ end
 --- one who has left, is not somebody who "gets to see the drop happen". DBNO is
 --- included deliberately: they are still in the match, still have a position,
 --- and are about to be revived or finished off right next to the crate.
+---
+--- IN A VEHICLE TOO, and that was checked rather than assumed (#386). The server
+--- reads the ped's coordinates out of its sync tree, and FiveM's CPedSyncTree
+--- GetPosition substitutes the current vehicle's position whenever the ped's game
+--- state names one ("if in a vehicle, force the current vehicle's position to be
+--- used", SyncTrees_Five.h). Every vehicle in a match is server-created and
+--- networked (server/vehicles.lua), so a driver is measured where the car is.
+---
+--- THE ONES IT DOES NOT COUNT COME BACK TOO, each with the reason, because "a
+--- player was standing on it and nothing happened" is a dead or spectating
+--- player as often as it is a bug -- and /brairdrop has to be able to say which.
 --- @param m table
---- @return table[]  array of { x, y }
-local function watchers(m)
-    local out = {}
+--- @return table[] counted  { src, name, state, x, y, posAt }
+--- @return table[] skipped  the same, plus `why`; x and y are nil without a position
+local function survey(m)
+    local counted, skipped = {}, {}
     for _, src in ipairs(BR.Server.audience(m)) do
         local e = BR.Roster.get(src)
-        if e and e.pos
-           and (e.state == BR.PlayerState.ALIVE or e.state == BR.PlayerState.DBNO)
-        then
-            out[#out + 1] = { x = e.pos.x, y = e.pos.y }
+        if e then
+            local who = {
+                src = src, name = e.name, state = e.state, posAt = e.posAt,
+                x = e.pos and e.pos.x, y = e.pos and e.pos.y,
+            }
+            if e.state ~= BR.PlayerState.ALIVE and e.state ~= BR.PlayerState.DBNO then
+                who.why = ('%s -- only alive or downed players count')
+                    :format(tostring(e.state))
+                skipped[#skipped + 1] = who
+            elseif not e.pos then
+                who.why = 'no position sampled yet'
+                skipped[#skipped + 1] = who
+            else
+                counted[#counted + 1] = who
+            end
         end
     end
-    return out
+    return counted, skipped
+end
+
+--- The players the gate counts, as { x, y } -- BR.AirdropClosest's shape.
+--- @param m table
+--- @return table[]
+local function watchers(m)
+    return (survey(m))
+end
+
+--- Take a waiting drop off every screen, now (#386).
+---
+--- The record goes out once more, stamped with the moment the server gave up on
+--- it. The client tears the blip down on that send, and BR.AirdropBlipEndsAt
+--- reads the stamp as the moment it timed out -- so the next drop's three minutes
+--- (#355) run from the instant the match stopped being shown this one.
+--- @param m table
+--- @param w table   the waiting entry
+--- @param now number
+local function callOff(m, w, now)
+    w.rec.tGone = now + 0.0
+    BR.Broadcast.toMatch(m, BR.Net.AIRDROP_SYNC, w.rec)
 end
 
 --- Has somebody come close enough to send the aircraft?
@@ -460,15 +505,25 @@ end
 --- SO THE POINT IS RE-ASKED AGAINST THE LANDING TIME THAT HAS JUST BECOME KNOWN.
 --- At siting the margin was solved against a four-minute WINDOW because the
 --- landing time was unknown (see trySite); here it is `now` plus the run-in plus
---- the fall, exactly, plus the circle the storm is shrinking toward. One
---- function builds both -- BR.AirdropLandingCircles -- so the rule the drop was
---- chosen under and the rule it is held to cannot drift apart.
+--- the fall, exactly.
 ---
---- IT FIRES BEFORE ANYBODY IS MEASURED, deliberately. A point that has stopped
---- qualifying will not start again (circles only close), so the honest moment to
---- put the blip out is the tick that notices -- not the one where somebody
---- finally arrives. That is the difference between abandoning a drop and
---- abandoning a player's run to it.
+--- ═══ AGAINST THE WALL, AND NO LONGER AGAINST THE DESTINATION (#386) ═══
+---
+--- It also asked the zone the storm is closing toward. Inside the phase the drop
+--- was sited in that is the zone siting already held it 250m inside, so it
+--- refused nothing; once a new phase began during the wait it was a destination
+--- drawn after the announcement, and it abandoned drops players had walked to
+--- with their crates due to land deep inside the wall -- 114 of 284 in a 200-match
+--- sweep. Owner, 2026-10-03: "Seems our airdrops don't always drop when people get
+--- close to them..." See BR.AirdropArmCircles. The next-circle rule is held at
+--- the siting, where it was given.
+---
+--- IT FIRES BEFORE ANYBODY IS MEASURED, deliberately. A point the wall is closing
+--- on will not clear the margin again, so the honest moment to put the blip out is
+--- the tick that notices -- not the one where somebody finally arrives. That is
+--- the difference between abandoning a drop and abandoning a player's run to it.
+---
+--- AND PUTTING IT OUT IS SENT NOW (#386). See callOff.
 --- @param m table
 --- @param w table   the waiting entry { rec, items, closest }
 --- @param now number
@@ -497,18 +552,18 @@ local function tryArm(m, w, now)
             :format(BR.MatchTag(m.id), rec.n, w.why,
                     w.closest < math.huge and ('%.0fm'):format(w.closest)
                                            or 'nobody in the match'))
+        callOff(m, w, now)
         return 'expired'
     end
 
-    -- THE MARGIN, AGAINST THE LANDING THIS DROP WOULD ACTUALLY HAVE. `waitMs` is
-    -- zero here and `blipMaxMs` at siting, and that one argument is the whole
-    -- difference between the two questions.
+    -- THE MARGIN, AGAINST THE WALL THIS DROP WOULD ACTUALLY LAND UNDER. See
+    -- BR.AirdropArmCircles for why that is the whole question here (#386).
     --
     -- A FORCED DROP IS EXEMPT, because the whole of `/brairdrop <poiId>` is
     -- "put one here anyway" -- it bypasses the margin at siting and re-imposing
     -- it here would make the verb work only where the circle already agreed,
     -- which is the case that never needed it.
-    local circles = BR.AirdropLandingCircles(m.storm, now, A, 0)
+    local circles = BR.AirdropArmCircles(m.storm, now, A)
     if not w.forced
        and not BR.AirdropInside(circles, rec.x, rec.y, A.insideBy or 250.0) then
         -- THE NUMBER THE REFUSAL ACTUALLY USED. This read the distance from the
@@ -530,6 +585,7 @@ local function tryArm(m, w, now)
             :format(BR.MatchTag(m.id), rec.n, tostring(rec.poi), w.why,
                     w.closest < math.huge and ('%.0fm'):format(w.closest)
                                            or 'nobody in the match'))
+        callOff(m, w, now)
         return 'expired'
     end
 
@@ -588,7 +644,9 @@ function BR.Airdrop.begin(m)
     -- `outcome` IS WHY THERE IS NO CRATE, when there is no crate. A match that
     -- showed a blip and produced nothing reads as a bug in a playtest, and
     -- /brairdrop has to be able to say "nobody came within 200m; the closest
-    -- anybody got was 340m" rather than shrugging.
+    -- anybody got was 340m" rather than shrugging. `ended` keeps every one of
+    -- them, in order (#386): `outcome` is only the latest, and a match whose two
+    -- drops ended two different ways printed one reason for both.
     local st = {
         -- `seq`, not `id`: see BR.Loot.begin (#291).
         rng       = BR.Rng(now + m.seq * 1299709),
@@ -599,6 +657,7 @@ function BR.Airdrop.begin(m)
         announced = {},
         sent      = 0,
         outcome   = nil,
+        ended     = {},
     }
 
     local lo = A.minDelayMs or 210000
@@ -673,6 +732,8 @@ end
 ---              the next drop was announced beside it on the same tick. A match
 ---              with one player runs the storm at its minimum shrink times, so
 ---              the wall moving under a waiting drop is the common case there too.
+---              (Since #386 the abandonment is SENT, stamped `tGone`, and the
+---              blip goes at that instant -- which is when it times out here.)
 ---
 --- The sweep that shipped it held the storm still for a day and counted
 --- `#waiting + #live`, so it could reach neither. Both are now asked in the
@@ -681,9 +742,9 @@ end
 --- ─── WHY ALL OF `announced`, NOT JUST `waiting` AND `live` ───
 ---
 --- A drop the wall abandoned is on no list here and still holds the match until
---- its blip's ceiling; a landed one is in `landed` until the match ends and is done
---- long before. So the question is asked of every record the match was shown, and
---- the latest release wins.
+--- its `tGone` plus the three minutes; a landed one is in `landed` until the match
+--- ends and is done long before. So the question is asked of every record the
+--- match was shown, and the latest release wins.
 ---
 --- STILL BOUNDED, which is what #343 needs. Every unopened record reaches its
 --- ceiling, so no drop holds the schedule forever -- at worst `blipMaxMs` for
@@ -759,16 +820,16 @@ BR.Sched.every(1000, 'airdrop.tick', function()
                 -- gate, and stays deferred until this one's blip is gone and
                 -- `nextDropAfterMs` more (#355, holdingDrop).
                 --
-                -- NOTHING IS SENT TO THE CLIENTS. When this is the blip's own
-                -- ceiling, their blip expires off the same record and the same
-                -- clock at the same instant -- see BR.AirdropExpired. When it is
-                -- the wall or the storm record, it does NOT: the blip stays up to
-                -- that same ceiling, which is why holdingDrop counts this drop
-                -- as timing out there rather than here.
+                -- THE CLIENTS ALREADY KNOW. When this is the blip's own ceiling,
+                -- their blip expires off the same record and the same clock at
+                -- the same instant -- see BR.AirdropExpired. When it is the wall
+                -- or the storm record, tryArm has just sent the record stamped
+                -- `tGone` (#386), and that is the instant it timed out for
+                -- holdingDrop too.
                 table.remove(st.waiting, i)
                 -- WHY, IN THE ABANDONER'S OWN WORDS. There are three ways a
                 -- waiting drop ends without landing now -- nobody came, the
-                -- storm passed the phase cap, or the circle moved off the point
+                -- storm passed the phase cap, or the wall closed on the point
                 -- -- and /brairdrop printing the first one for all three is how
                 -- a playtest chases the wrong bug.
                 st.outcome = {
@@ -777,6 +838,8 @@ BR.Sched.every(1000, 'airdrop.tick', function()
                         or 'nobody came within range before the blip expired',
                     closest = w.closest,
                 }
+                st.ended = st.ended or {}
+                st.ended[#st.ended + 1] = st.outcome
             end
         end
 
@@ -822,12 +885,19 @@ BR.Sched.every(1000, 'airdrop.tick', function()
                     table.remove(st.pending, i)
                     removed = true
                     if outcome == 'phase' then
+                        -- THE SAME TWO REASONS trySite prints, and the same
+                        -- rule about naming a cap that is not in force.
                         st.outcome = {
                             n = p.n,
-                            why = 'the storm was past the phase cap before a '
-                               .. 'POI ever qualified',
+                            why = BR.AirdropPhaseCap(A.maxPhase)
+                                and 'the storm was past the phase cap before a '
+                                    .. 'POI ever qualified'
+                                or 'there was no published storm record to site '
+                                    .. 'against',
                             closest = math.huge,
                         }
+                        st.ended = st.ended or {}
+                        st.ended[#st.ended + 1] = st.outcome
                     end
                 end
             end
@@ -871,6 +941,97 @@ local function nextDropNumber(st)
         if k > n then n = k end
     end
     return n + 1
+end
+
+--- Print one waiting drop, and exactly why it has not armed (#386).
+---
+--- Owner, 2026-10-03: "Seems our airdrops don't always drop when people get
+--- close to them..." -- with nothing that could say, from a chair, which of these
+--- it was: nobody who counts was close enough (and who was nearest, by name and
+--- by meters), somebody WAS close and does not count (dead, spectating, still in
+--- the air, no position yet -- each named with the reason), or the wall is about
+--- to refuse the landing. Every one of those is a line here.
+---
+--- NOT-COUNTED PLAYERS ARE LISTED ONLY INSIDE TWICE THE GATE, plus any with no
+--- position at all. Forty dead players across the map are a count, not a list;
+--- the ones standing near the drop are the ones the report is about.
+--- @param m table
+--- @param w table   the waiting entry
+--- @param now number
+local function explainWaiting(m, w, now)
+    local rec = w.rec
+    local within = A.armWithin or 200.0
+    local margin = A.insideBy or 250.0
+    local counted, skipped = survey(m)
+
+    print(('    drop %d WAITING at %s (%.0f, %.0f) -- expires in %.0fs, closest '
+           .. 'anybody has been %s')
+        :format(rec.n, tostring(rec.poi), rec.x, rec.y,
+                (BR.AirdropBlipEndsAt(rec, A) - now) / 1000,
+                w.closest < math.huge and ('%.0fm'):format(w.closest)
+                                       or 'never measured'))
+
+    local function who(p)
+        return ('%s (%s)'):format(tostring(p.name or 'player'), tostring(p.src))
+    end
+
+    local near, nearD = nil, math.huge
+    for _, p in ipairs(counted) do
+        local d = BR.Dist(p.x, p.y, rec.x, rec.y)
+        if d < nearD then near, nearD = p, d end
+    end
+    if not near then
+        print('      not armed: nobody in the match counts -- nobody is alive or '
+              .. 'downed with a sampled position')
+    else
+        local age = (near.posAt and near.posAt > 0)
+            and (', position %.1fs old'):format((now - near.posAt) / 1000) or ''
+        if nearD > within then
+            print(('      not armed: nobody who counts is within %.0fm -- nearest '
+                   .. 'is %s at %.0fm (%s%s)')
+                :format(within, who(near), nearD, tostring(near.state), age))
+        else
+            print(('      arming: %s is at %.0fm (%s%s) -- the next tick sends the '
+                   .. 'aircraft')
+                :format(who(near), nearD, tostring(near.state), age))
+        end
+    end
+
+    local far = 0
+    for _, p in ipairs(skipped) do
+        if not p.x then
+            print(('      not counted: %s -- %s'):format(who(p), p.why))
+        else
+            local d = BR.Dist(p.x, p.y, rec.x, rec.y)
+            if d <= within * 2.0 then
+                print(('      not counted: %s at %.0fm -- %s')
+                    :format(who(p), d, p.why))
+            else
+                far = far + 1
+            end
+        end
+    end
+    print(('      %d player(s) in the match: %d counted, %d not (%d of them '
+           .. 'further than %.0fm)')
+        :format(#counted + #skipped, #counted, #skipped, far, within * 2.0))
+
+    -- THE OTHER THING THAT DECIDES IT, read the way tryArm reads it.
+    if w.forced then
+        print('      forced with /brairdrop <poiId>: the wall margin is not asked')
+    elseif not m.storm then
+        print('      there is no storm record -- the next tick calls it off')
+    else
+        local depth = BR.AirdropDepth(BR.AirdropArmCircles(m.storm, now, A),
+            rec.x, rec.y)
+        if depth <= -margin then
+            print(('      if it armed now its crate would land %.0fm inside the '
+                   .. 'wall (needs %.0fm)'):format(-depth, margin))
+        else
+            print(('      if it armed now the wall would refuse it: %+.0fm to the '
+                   .. 'boundary (positive is outside it), needs %.0fm inside -- the '
+                   .. 'next tick calls it off'):format(depth, margin))
+        end
+    end
 end
 
 --- Inspect or force a drop.
@@ -945,37 +1106,25 @@ RegisterCommand('brairdrop', function(_, args)
                 (p.dueAt - now) / 1000, why))
         end
 
-        -- THE GATE, WITH BOTH NUMBERS. "Waiting" on its own cannot be told from
-        -- "stuck"; the closest approach and the time left are what make it a
-        -- readable state.
-        local live = watchers(m)
-        for _, w in ipairs(st.waiting) do
-            local d = BR.AirdropClosest(live, w.rec.x, w.rec.y)
-            print(('    drop %d SITED at %s (%.0f, %.0f) -- closest player %s '
-                   .. '(need %.0fm), closest ever %s, expires in %.0fs')
-                :format(w.rec.n, tostring(w.rec.poi), w.rec.x, w.rec.y,
-                        d < math.huge and ('%.0fm'):format(d) or 'nobody alive',
-                        A.armWithin or 200.0,
-                        w.closest < math.huge and ('%.0fm'):format(w.closest)
-                                               or 'never measured',
-                        (BR.AirdropBlipEndsAt(w.rec, A) - now) / 1000))
-        end
+        -- THE GATE, AND EXACTLY WHY IT HAS NOT OPENED (#386). "Waiting" on its
+        -- own cannot be told from "stuck"; see explainWaiting.
+        for _, w in ipairs(st.waiting) do explainWaiting(m, w, now) end
 
         for _, d in ipairs(st.live) do
             print(('    drop %d at %s lands in %.0fs')
                 :format(d.rec.n, tostring(d.rec.poi), (d.rec.tLand - now) / 1000))
         end
 
-        -- WHY THERE IS NO CRATE. The line that stops a deliberate zero reading
-        -- as a bug in the next playtest.
-        if st.outcome then
+        -- WHY THERE IS NO CRATE, for every drop that ended without one. The line
+        -- that stops a deliberate zero reading as a bug in the next playtest.
+        local ended = st.ended
+        if not ended or #ended == 0 then ended = { st.outcome } end
+        for _, o in ipairs(ended) do
             print(('  NO DROP: drop %d %s%s -- closest anybody got: %s')
-                :format(st.outcome.n, st.outcome.why,
-                        st.outcome.poi and (' at ' .. tostring(st.outcome.poi))
-                                        or '',
-                        st.outcome.closest < math.huge
-                            and ('%.0fm'):format(st.outcome.closest)
-                            or 'nobody was ever measured'))
+                :format(o.n, o.why,
+                        o.poi and (' at ' .. tostring(o.poi)) or '',
+                        o.closest < math.huge and ('%.0fm'):format(o.closest)
+                                               or 'nobody was ever measured'))
         end
         print('  usage: brairdrop [now|arm|<poiId>]')
         return
