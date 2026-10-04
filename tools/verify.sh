@@ -39,6 +39,9 @@
 #   5. SECRETS -- nothing credential-shaped reaches a public repo. THE ONLY
 #                 GATE THAT SCANS THE WHOLE REPO rather than resources/.
 #
+#   5b/5c      -- no purchased game asset in the repo, and the licensed-asset
+#                 lock and tool (#391), which need Python 3.
+#
 # Exit code is non-zero if any check fails.
 
 set -uo pipefail
@@ -153,6 +156,9 @@ NOTES=(
     "incident notice surface|The \"See something suspicious?\" notice has one sender, so the cheater is never told"
     "timeline entry kinds|Every match event the game records is one the database knows how to save"
     "secrets|No passwords, keys or tokens are anywhere in the repository"
+    "asset files|No bought game asset (maps, models, animations, sounds) is in the repository, only our own few"
+    "licensed assets|The bought-asset list holds only names, checksums, sizes, file lists and seasons, and is well formed"
+    "test_assets|Bought assets: same pack, same checksum; checked before unpacking; installed all or nothing, only in [licensed]"
     "br_ddb bundle|The database helper's built file matches its source, and its ban rules pass their cases"
     "br_ddb bundle over the wire|The server status report says truthfully whether the deployed database helper is current"
     "duplicate console commands|No two commands share a name (the later one would silently replace the earlier)"
@@ -3019,6 +3025,50 @@ fi
 
 section 'secrets'
 bash tools/check_secrets.sh || rc=1
+
+# --- 5b. no purchased game asset in the repo (#391) ---------------------------
+#
+# The same shape as secrets, for the other thing a public repo must never hold:
+# the map and emote packs were bought under licenses that forbid
+# redistribution. A game-asset file type anywhere outside the allowlist of our
+# own fails; see tools/check_asset_files.sh.
+
+section 'asset files'
+bash tools/check_asset_files.sh || rc=1
+
+# --- 5c. the licensed-asset lock and its tool (#391) ---------------------------
+#
+# assets.lock pins the bucket's archives per season and must hold nothing but
+# names, hashes, sizes, file lists and season pins; `assets.py check` says so
+# without touching the bucket. tools/test_assets.py drives the tool against a
+# fake aws, and deploy.sh against stubs.
+#
+# PYTHON 3, AND NOT THE MICROSOFT STORE'S STAND-IN. On Windows `python3` can
+# resolve to an alias that prints an install hint and fails, so a candidate
+# has to RUN before it is used; `py` is the launcher that does not.
+
+section 'licensed assets'
+PY_=()
+if command -v python3 >/dev/null 2>&1 \
+   && python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)' >/dev/null 2>&1; then
+    PY_=(python3)
+elif command -v py >/dev/null 2>&1 && py -3 -c '' >/dev/null 2>&1; then
+    PY_=(py -3)
+fi
+if [ "${#PY_[@]}" -gt 0 ]; then
+    if out_=$("${PY_[@]}" tools/assets.py check 2>&1); then
+        echo "${GRN}ok${RST}   ${out_#assets: }"
+    else
+        printf '%s\n' "$out_"
+        rc=1
+    fi
+    suite_label test_assets
+    "${PY_[@]}" tools/test_assets.py || rc=1
+else
+    echo "${YEL}skip${RST} (Python 3 not found: python3, or py on Windows)"
+    suite_label test_assets
+    echo "${YEL}skip${RST} (Python 3 not found)"
+fi
 
 # --- 6. br_ddb bundle ---------------------------------------------------------
 #

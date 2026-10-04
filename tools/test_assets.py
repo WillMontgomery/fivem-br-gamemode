@@ -1187,6 +1187,75 @@ class Deploy(unittest.TestCase):
         self.assertEqual(read(keep), b'licensed bytes')
 
 
+# =============================================================================
+# tools/check_asset_files.sh, the gate that keeps packs out of the repo
+# =============================================================================
+
+@unittest.skipUnless(BASH and GIT, 'needs bash and git')
+class AssetFileGate(unittest.TestCase):
+    """The real gate, copied into a scratch repository that holds every
+    allowlisted file and then whatever each test adds."""
+
+    def setUp(self):
+        top = tempfile.mkdtemp(prefix='assets-gate-')
+        self.addCleanup(shutil.rmtree, top, True)
+        self.repo = os.path.join(top, 'William Montgomery', 'repo')
+        script = read(os.path.join(TOOLS, 'check_asset_files.sh')).decode('utf-8')
+        block = script[script.index('ALLOW=('):script.index('\n)\n')]
+        self.allow = re.findall(r'^\s*"([^"]+)"', block, re.M)
+        self.assertGreaterEqual(len(self.allow), 8)
+        write(os.path.join(self.repo, 'tools', 'check_asset_files.sh'), script)
+        write(os.path.join(self.repo, '.gitignore'), read(os.path.join(REPO, '.gitignore')))
+        for path in self.allow:
+            write(os.path.join(self.repo, *path.split('/')), b'ours')
+        self.git('init', '-q')
+        self.git('add', '-A')
+
+    def git(self, *args):
+        r = subprocess.run([GIT, '-c', 'core.autocrlf=false'] + list(args), cwd=self.repo,
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        self.assertEqual(r.returncode, 0, r.stdout.decode('utf-8', 'replace'))
+
+    def gate(self):
+        r = subprocess.run([BASH, 'tools/check_asset_files.sh'], cwd=self.repo,
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        return r.returncode, r.stdout.decode('utf-8', 'replace')
+
+    def test_the_allowlist_alone_passes(self):
+        rc, out = self.gate()
+        self.assertEqual(rc, 0, out)
+        self.assertIn('8-file allowlist', out)
+
+    def test_a_pack_anywhere_fails(self):
+        write(os.path.join(self.repo, 'resources', '[maps]', 'legion', 'stream', 'Legion.YTD'), b'x')
+        write(os.path.join(self.repo, 'docs', 'pack.fxap'), b'x')
+        write(os.path.join(self.repo, 'NTeam Legion.zip'), b'x')
+        self.git('add', 'resources')
+        rc, out = self.gate()
+        self.assertEqual(rc, 1, out)
+        for path in ('resources/[maps]/legion/stream/Legion.YTD', 'docs/pack.fxap', 'NTeam Legion.zip'):
+            self.assertIn('ASSET\x1b[0m ' + path, out)
+        self.assertIn('3 game-asset file(s)', out)
+
+    def test_pulled_assets_in_a_checkout_pass(self):
+        write(os.path.join(self.repo, 'resources', '[licensed]', 'legion', 'stream', 'a.ytd'), b'x')
+        write(os.path.join(self.repo, '.assets-cache', 'legion', 'x.tar.gz'), b'x')
+        rc, out = self.gate()
+        self.assertEqual(rc, 0, out)
+
+    def test_a_stale_allowlist_row_fails(self):
+        os.remove(os.path.join(self.repo, *self.allow[0].split('/')))
+        self.git('add', '-A')
+        rc, out = self.gate()
+        self.assertEqual(rc, 1, out)
+        self.assertIn('allowlisted but not in the repo: ' + self.allow[0], out)
+
+    def test_the_real_repo_passes(self):
+        r = subprocess.run([BASH, os.path.join(TOOLS, 'check_asset_files.sh')], cwd=REPO,
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        self.assertEqual(r.returncode, 0, r.stdout.decode('utf-8', 'replace'))
+
+
 if __name__ == '__main__':
     # Quiet unless something fails, like the Lua suites: one count line.
     stream = io.StringIO()

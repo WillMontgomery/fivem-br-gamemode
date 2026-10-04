@@ -107,3 +107,18 @@ docs/working-agreement.md
 # rsync's --delete so a dev deploy does not wipe the placements.
 # ---------------------------------------------------------------------------
 /resources/*/br_core/devprops.json
+
+# ---------------------------------------------------------------------------
+# Licensed assets (#391)
+#
+# Purchased packs that may not be redistributed. A box's tools/assets.py pull
+# installs them into resources/[licensed]/ and keeps the archives in
+# .assets-cache/; a checkout used as a local server would hold both, and this
+# repository is public. tools/check_asset_files.sh fails the build on an asset
+# file anywhere else.
+#
+# THE BRACKETS ARE ESCAPED. Unescaped, [licensed] is a character class that
+# matches one letter, and the line would ignore nothing that is really there.
+# ---------------------------------------------------------------------------
+/resources/\[licensed\]/
+/.assets-cache/
