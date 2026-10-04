@@ -660,10 +660,15 @@ local function runThreads()
     threads = live
 end
 
+--- Run every handler of `name`. Handlers are only ever flagged removed, never
+--- taken out of the list, so walking it to its length at the start skips the
+--- ones a handler adds without copying it: a copy would be the harness's
+--- allocation charged to whoever fired the event.
 local function fire(name, key, ...)
     local list = handlers[name]
     if not list then return end
-    for _, h in ipairs({ table.unpack(list) }) do
+    for i = 1, #list do
+        local h = list[i]
         if not h.removed then call(key or ('event ' .. name), h.fn, ...) end
     end
 end
@@ -671,6 +676,33 @@ end
 --- What the server sends this client.
 local function net(name, ...)
     fire(name, 'net ' .. name, ...)
+end
+
+-- ------------------------------------------------------------- the server ---
+--
+-- What the server, and the other resources br_core talks to, answer. A request
+-- is answered on the NEXT frame, as a round trip would be. The work of answering
+-- runs under '(server)', which no phase counts -- it is not br_core's -- and its
+-- answer is delivered as the net event (or the local event) the client really
+-- receives, which is br_core's and is counted.
+local SERVER = {}      -- [server event] = fn(payload): what the server does with a request
+local SIBLING = {}     -- [local event]  = fn(...): another resource's handler of it
+local inbox = {}       -- answers due at the top of the next frame
+
+--- Queue an answer: a net event, or with `isLocal` a local one.
+local function reply(name, payload, isLocal)
+    inbox[#inbox + 1] = { name = name, payload = payload, isLocal = isLocal }
+end
+
+local function deliver()
+    if #inbox == 0 then return end
+    local due = inbox
+    inbox = {}
+    for i = 1, #due do
+        local m = due[i]
+        if m.isLocal then fire(m.name, 'event ' .. m.name, m.payload)
+        else net(m.name, m.payload) end
+    end
 end
 
 local json = {}
@@ -738,10 +770,20 @@ local RUNTIME = {
     end,
     TriggerEvent = function(name, ...)
         countAs('TriggerEvent')
+        local sib = SIBLING[name]
+        if sib then call('(server)', sib, ...) end
         fire(name, nil, ...)
     end,
-    TriggerServerEvent = function() countAs('TriggerServerEvent') end,
-    TriggerLatentServerEvent = function() countAs('TriggerServerEvent') end,
+    TriggerServerEvent = function(name, ...)
+        countAs('TriggerServerEvent')
+        local h = SERVER[name]
+        if h then call('(server)', h, ...) end
+    end,
+    TriggerLatentServerEvent = function(name, _, ...)
+        countAs('TriggerServerEvent')
+        local h = SERVER[name]
+        if h then call('(server)', h, ...) end
+    end,
     RegisterCommand = function(name, fn) commands[name] = fn end,
     RegisterKeyMapping = function() end,
     RegisterNUICallback = function() end,
@@ -911,8 +953,9 @@ if loadErrors > 0 then os.exit(2) end
 -- One player (server id 1) in a squad of four, in a 24-player match, walked
 -- through a session the way the server would walk them: the payloads are built
 -- by the same shared builders the server uses (BR.BuildStormRecord,
--- BR.BuildLootLayout, BR.BuildAirdropRecord) and delivered as the net events
--- the client really receives.
+-- BR.BuildLootLayout, BR.BuildWarmupLayout, BR.BuildAirdropRecord) and
+-- delivered as the net events the client really receives. Loot is never pushed:
+-- the client asks for its cells as it moves, and the stub server answers.
 
 local S = BR.State
 local ME, MATES = 1, { 2, 3, 4 }
@@ -925,6 +968,10 @@ local function poi(id)
 end
 local LAND = poi('lsia')             -- a tier-3 hot drop: the densest loot
 local ANCHOR = poi('vinewood') or LAND
+
+-- THE SEASON THE SERVER SERVES. Every server publishes one at boot
+-- (BR.Season.boot); Season 1 is the one that ships.
+W.convars[BR.Season.SERVED] = '1'
 
 local function setPed(h, x, y, z)
     local e = W.ents[h]
@@ -962,15 +1009,63 @@ local function matchState(st, endsIn)
                         serverNow = gameMs(), mode = 'squad' })
 end
 
---- Other players streamed in around `x, y`: real peds the client can see.
-local function streamPlayers(x, y, list)
+-- ---------------------------------------------------------------- players ---
+
+--- Server ids from..to.
+local function others(from, to)
+    local t = {}
+    for src = from, to do t[#t + 1] = src end
+    return t
+end
+
+--- Riders: peds carried with the local player every frame (the plane's
+--- passengers, whose owners fly the same route their own clients do).
+local riders = {}
+
+--- Other players streamed in: real peds the client can see, one per server id
+--- in `list`, the i-th placed at `at(i)`. With `ride`, `at` is an offset from
+--- the local player that every frame keeps.
+local function streamPlayers(list, at, ride)
     for src in pairs(W.players) do W.ents[W.players[src].ped] = nil end
-    W.players = {}
+    W.players, riders = {}, {}
     for i, src in ipairs(list) do
-        local a = i * 0.9
-        local ped = newEnt('ped', jenkins('mp_m_freemode_01'),
-            x + math.cos(a) * (8 + i * 6), y + math.sin(a) * (8 + i * 6), 30.0)
+        local x, y, z = at(i)
+        local ped = newEnt('ped', jenkins('mp_m_freemode_01'), x, y, z)
         W.players[src] = { ped = ped }
+        if ride then riders[#riders + 1] = { ped = ped, dx = x, dy = y, dz = z } end
+    end
+end
+
+local function carry()
+    if #riders == 0 then return end
+    local p = entPos(W.me)
+    for i = 1, #riders do
+        local r = riders[i]
+        local e = W.ents[r.ped]
+        if e then e.x, e.y, e.z = p.x + r.dx, p.y + r.dy, p.z + r.dz end
+    end
+end
+
+--- A ring of players around (cx, cy, cz): the i-th 8 + 6i metres out.
+local function ring(cx, cy, cz)
+    return function(i)
+        local a = i * 0.9
+        return cx + math.cos(a) * (8 + i * 6), cy + math.sin(a) * (8 + i * 6), cz
+    end
+end
+
+--- A seat in the plane's hold, as an offset from the local player.
+local function seat(i)
+    return (i % 4) * 1.5 - 2.25, (i // 4) * 2.0 - 6.0, 0.0
+end
+
+--- A sky of players around (cx, cy): spread over a few hundred metres and
+--- between `lo` and `hi` metres up, as a drop spreads out.
+local function sky(cx, cy, lo, hi)
+    return function(i)
+        local a = i * 2.39996
+        local d = 40.0 + i * 22.0
+        return cx + math.cos(a) * d, cy + math.sin(a) * d, lo + (hi - lo) * ((i * 7) % 23) / 22
     end
 end
 
@@ -992,42 +1087,98 @@ local function populate(x, y)
     end
 end
 
-local function busRoute(t0)
-    local pts = {}
-    local x, y = LAND.x - 6000.0, LAND.y - 900.0
-    local z = 40.0
-    local t = t0
-    for i = 1, 160 do
-        local speed = (i <= 33) and (i * 4.0) or 185.0
-        if i > 33 and i <= 53 then z = z + (1800.0 - 40.0) / 20.0 end
-        x = x + speed
-        y = y + speed * 0.15
-        t = t + 1000
-        pts[i] = { x = x, y = y, z = z, t = t }
+-- ------------------------------------------------------------- the server ---
+
+--- The stub server's loot: the match layout and the warmup pad's, each indexed
+--- by cell, built the first time a client asks -- as server/loot.lua does.
+local lootOf = {}
+local function lootLayout(zone)
+    local byCell = lootOf[zone]
+    if byCell then return byCell end
+    byCell = {}
+    local entries = (zone == 'pad') and BR.BuildWarmupLayout(SEED) or BR.BuildLootLayout(SEED)
+    for _, e in ipairs(entries) do
+        local k = BR.LootCellKeyAt(e.x, e.y)
+        local list = byCell[k]
+        if not list then list = {} byCell[k] = list end
+        list[#list + 1] = e
     end
-    return {
-        points = pts, waypoints = {}, legs = { 1, 2, 3, 4 },
-        jumpIdx = 60, closeIdx = 150, rotateIdx = 33,
-        alt = 1800.0, heading = 80.0, timed = true,
-        tStart = t0, rotateAt = t0 + 8000, doorsClose = pts[150].t,
-        tEnd = pts[160].t, sx = pts[1].x, sy = pts[1].y, jumpFrom = pts[60].t,
-    }
+    lootOf[zone] = byCell
+    return byCell
 end
 
-local lootSent = false
-local function sendLoot(x, y)
-    if lootSent then return end
-    lootSent = true
-    local entries = BR.BuildLootLayout(SEED)
-    local want = {}
-    for _, key in ipairs(BR.LootCellsAround(BR.LootCellOf(x, y))) do want[key] = true end
-    local list = {}
-    for _, e in ipairs(entries) do
-        if want[BR.LootCellKeyAt(e.x, e.y)] then list[#list + 1] = e end
+--- A fresh copy of a layout entry: the server sends a wire shape, never its own
+--- table, and the client writes its own fields onto what it receives.
+local function wire(e)
+    local c = {}
+    for k, v in pairs(e) do c[k] = v end
+    return c
+end
+
+--- What this client is subscribed to: the zone and its cells.
+local lootSub = { zone = nil, had = {} }
+local lootStats = { asks = 0, adds = 0, gone = 0 }
+
+-- server/loot.lua's LOOT_CELL, for one client: a player in a state that sees
+-- loot is subscribed to the 3x3 block round the cell it names, and is sent the
+-- entries of the cells it gained and told the ids of the cells it lost. Crossing
+-- between the warmup pad and the match is a new world: the old block is dropped
+-- whole. Every list is walked in a fixed order, so the answers are the same on
+-- every run.
+SERVER[BR.Net.LOOT_CELL] = function(d)
+    if type(d) ~= 'table' then return end
+    local st = S.me.state
+    if not BR.Config.LootVisibleStates[st] then return end
+    local cx, cy = math.tointeger(d.cx), math.tointeger(d.cy)
+    if not cx or not cy then return end
+    lootStats.asks = lootStats.asks + 1
+    local zone = (st == BR.PlayerState.WARMUP) and 'pad' or 'match'
+    local gone = {}
+    if lootSub.zone ~= zone then
+        local keys = {}
+        for k in pairs(lootSub.had) do keys[#keys + 1] = k end
+        table.sort(keys)
+        local old = lootSub.zone and lootLayout(lootSub.zone) or {}
+        for _, k in ipairs(keys) do
+            for _, e in ipairs(old[k] or {}) do gone[#gone + 1] = e.id end
+        end
+        lootSub.zone, lootSub.had = zone, {}
     end
-    net(BR.Net.LOOT_ADD, list)
-    -- Stand where the loot is thickest: the entry with the most others within
-    -- glow range, so the render walk has real work in front of it.
+    local byCell = lootLayout(zone)
+    local want, order = {}, BR.LootCellsAround(cx, cy)
+    for _, k in ipairs(order) do want[k] = true end
+    local adds = {}
+    for _, k in ipairs(order) do
+        if not lootSub.had[k] then
+            for _, e in ipairs(byCell[k] or {}) do adds[#adds + 1] = wire(e) end
+        end
+    end
+    local lost = {}
+    for k in pairs(lootSub.had) do if not want[k] then lost[#lost + 1] = k end end
+    table.sort(lost)
+    for _, k in ipairs(lost) do
+        for _, e in ipairs(byCell[k] or {}) do gone[#gone + 1] = e.id end
+    end
+    lootSub.had = want
+    lootStats.adds, lootStats.gone = lootStats.adds + #adds, lootStats.gone + #gone
+    if #gone > 0 then reply(BR.Net.LOOT_GONE, gone) end
+    if #adds > 0 then reply(BR.Net.LOOT_ADD, adds) end
+end
+
+-- br_environment: asked to release the lobby island once the plane is out over
+-- the water, it swaps the world and says so.
+SIBLING['br:env:releaseIsland'] = function()
+    reply('br:env:world', false, true)
+end
+
+--- The densest spot of the match's loot near (x, y): the entry with the most
+--- others within glow range, so the render walk has real work in front of it.
+local function denseSpot(x, y)
+    local byCell = lootLayout('match')
+    local list = {}
+    for _, k in ipairs(BR.LootCellsAround(BR.LootCellOf(x, y))) do
+        for _, e in ipairs(byCell[k] or {}) do list[#list + 1] = e end
+    end
     local best, bestN = nil, -1
     local g2 = BR.Config.Loot.glowDistance * BR.Config.Loot.glowDistance
     for _, a in ipairs(list) do
@@ -1037,7 +1188,78 @@ local function sendLoot(x, y)
         end
         if n > bestN then best, bestN = a, n end
     end
-    return #list, best, bestN
+    return best
+end
+
+-- ---------------------------------------------------------------- the bus ---
+
+--- The flight, as server/bus.lua plans and stamps it: parked, the roll from
+--- the spawn to wheels-up, the climb to cruise height, the ocean at cruise speed
+--- to the coast -- where the doors open -- and then the tour over the mainland at
+--- drop speed, the city belt and on to mid-map. Speeds are smoothed both ways at
+--- maxAccel and the clock is stamped off them, as BR.Bus.depart does.
+local function busRoute(t0)
+    local C = BR.Config.Bus
+    local pts = {}
+    local function push(x, y, z, v)
+        pts[#pts + 1] = { x = x + 0.0, y = y + 0.0, z = z + 0.0, v = v + 0.0 }
+    end
+    local function run(x0, y0, z0, x1, y1, z1, v0, v1, n)
+        for i = 1, n do
+            local k = i / n
+            push(x0 + (x1 - x0) * k, y0 + (y1 - y0) * k, z0 + (z1 - z0) * k,
+                 v0 + (v1 - v0) * k)
+        end
+    end
+    local sp, rp = C.spawn, C.rotatePoint
+    push(sp.x, sp.y, sp.z, 1.0)
+    run(sp.x, sp.y, sp.z, rp.x, rp.y, sp.z, 1.0, C.rollSpeed, 4)
+    local rotateIdx = #pts
+    local dx, dy = rp.x - sp.x, rp.y - sp.y
+    local len = math.sqrt(dx * dx + dy * dy)
+    dx, dy = dx / len, dy / len
+    local cx, cy = rp.x + dx * C.climbDist, rp.y + dy * C.climbDist
+    run(rp.x, rp.y, sp.z, cx, cy, C.altitude, C.rollSpeed, C.climbSpeed, 10)
+    local coast = C.legs[1][2][1]
+    run(cx, cy, C.altitude, coast.x, coast.y, C.altitude, C.climbSpeed,
+        math.max(C.cruiseSpeed, C.climbSpeed), 20)
+    local jumpIdx = #pts
+    local px, py = coast.x, coast.y
+    for _, wp in ipairs({ C.legs[2][3][1], C.legs[3][1][1] }) do
+        local n = math.max(1, math.floor(BR.Dist(px, py, wp.x, wp.y) / C.speed))
+        run(px, py, C.altitude, wp.x, wp.y, C.altitude, C.speed, C.speed, n)
+        px, py = wp.x, wp.y
+    end
+    local closeIdx = #pts
+
+    local amax = C.maxAccel or 9.0
+    for i = 2, #pts do
+        local d = BR.Dist(pts[i - 1].x, pts[i - 1].y, pts[i].x, pts[i].y)
+        local cap = math.sqrt(pts[i - 1].v ^ 2 + 2 * amax * d)
+        if pts[i].v > cap then pts[i].v = cap end
+    end
+    for i = #pts - 1, 1, -1 do
+        local d = BR.Dist(pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y)
+        local cap = math.sqrt(pts[i + 1].v ^ 2 + 2 * amax * d)
+        if pts[i].v > cap then pts[i].v = cap end
+    end
+    local clockMs = t0 + (C.boardSeconds or 5) * 1000
+    for i, p in ipairs(pts) do
+        if i > 1 then
+            local q = pts[i - 1]
+            clockMs = clockMs + BR.Dist(q.x, q.y, p.x, p.y)
+                / math.max(1.0, (q.v + p.v) * 0.5) * 1000.0
+        end
+        p.t = math.floor(clockMs)
+    end
+    return {
+        points = pts, waypoints = {}, legs = { 2, 3, 1, 1 },
+        jumpIdx = jumpIdx, closeIdx = closeIdx, rotateIdx = rotateIdx,
+        alt = C.altitude, heading = BR.GtaHeading(BR.Bearing(sp.x, sp.y, rp.x, rp.y)),
+        timed = true, tStart = pts[1].t, rotateAt = pts[rotateIdx].t,
+        jumpFrom = pts[jumpIdx].t, doorsClose = pts[closeIdx].t, tEnd = pts[#pts].t,
+        sx = sp.x, sy = sp.y,
+    }
 end
 
 local stormRec
@@ -1107,9 +1329,37 @@ local FEEDS = {
     end },
 }
 
---- The phases, in session order. `setup` runs once at the phase boundary and is
---- not measured; `settle` frames run unmeasured after it so one-shot work (model
---- loads, the storm's shape builds) does not land in the steady state.
+-- ----------------------------------------------------------------- driver ---
+
+local function followCam()
+    local p = entPos(W.me)
+    local h = math.rad(W.cam.rz)
+    W.cam.x, W.cam.y, W.cam.z = p.x + math.sin(h) * 4.0, p.y - math.cos(h) * 4.0, p.z + 1.5
+end
+
+--- One frame: last frame's answers arrive, the riders move with the plane, the
+--- camera with the player, the server's feeds go out on their clocks, and every
+--- thread due wakes.
+local function frame()
+    NOW = NOW + FRAME_MS
+    deliver()
+    carry()
+    followCam()
+    for _, f in ipairs(FEEDS) do
+        if not f.at or NOW >= f.at then
+            f.at = (f.at or NOW) + f.every
+            f.fn()
+        end
+    end
+    runThreads()
+end
+
+-- ----------------------------------------------------------------- phases ---
+--
+-- In session order. `setup` runs once at the phase boundary and is not
+-- measured; `settle` frames run unmeasured after it so one-shot work (model
+-- loads, the storm's shape builds) does not land in the steady state.
+
 local PHASES = {
     { id = 'lobby', settle = 120, setup = function()
         local L = BR.Config.Match.lobbyPos
@@ -1126,42 +1376,51 @@ local PHASES = {
         local P = BR.Config.Match.warmupPos
         setPed(W.me, P.x, P.y, P.z)
         W.cam.x, W.cam.y, W.cam.z = P.x, P.y - 4.0, P.z + 1.5
-        streamPlayers(P.x, P.y, { 2, 3, 4, 5, 6, 7, 8, 9 })
+        streamPlayers(others(2, 9), ring(P.x, P.y, 30.0))
         env.TriggerEvent('br:env:world', true)
         matchState(BR.MatchState.WARMUP, 90000)
         setStates(function() return BR.PlayerState.WARMUP end)
         net(BR.Net.STORM_PREVIEW, circleOne())
     end },
     { id = 'plane boarding', settle = 120, setup = function()
-        matchState(BR.MatchState.BUS, 180000)
+        matchState(BR.MatchState.BUS, 240000)
         setStates(function() return BR.PlayerState.BUS end)
-        route = busRoute(gameMs() + 500)
+        route = busRoute(gameMs())
         net(BR.Net.BUS_ROUTE, route)
         W.cam.rz = -90.0      -- looking along the flight, due east
-        W.players = {}
+        -- Everyone in the match is aboard, in the hold around this player.
+        streamPlayers(others(2, PLAYERS), seat, true)
     end },
     { id = 'plane cruise', settle = 60, setup = function()
-        -- Past wheels-up and the island release: bus.board has asked
-        -- br_environment to swap the world, and this is its answer.
-        while gameMs() < route.rotateAt + 6000 do
-            NOW = NOW + FRAME_MS
-            runThreads()
-        end
-        env.TriggerEvent('br:env:world', false)
+        -- THE DOORS-OPEN WINDOW: wheels-up, the island released over the water
+        -- (bus.board asks br_environment, which answers), the ocean crossed, and
+        -- three seconds past the coast where the doors open -- at cruise height
+        -- and drop speed over the mainland, every rider still aboard and the
+        -- loot below being asked for as the plane crosses its cells.
+        while gameMs() < route.jumpFrom + 3000 do frame() end
         local x, y = BR.PathPosAt(route.points, gameMs())
-        populate(x, y - 500.0)
+        populate(x, y)
     end },
     { id = 'freefall', settle = 120, setup = function()
         local x, y, z = BR.PathPosAt(route.points, gameMs())
         setPed(W.me, x, y, z - 5.0)
         W.chute = 3
-        delta({ { op = 'update', src = ME, e = { state = BR.PlayerState.FREEFALL } } })
+        -- The rest jumped around the same stretch: falling or gliding nearby.
+        streamPlayers(others(2, PLAYERS), sky(x, y, z - 300.0, z - 20.0))
+        setStates(function(src)
+            if src == ME then return BR.PlayerState.FREEFALL end
+            return (src % 2 == 0) and BR.PlayerState.FREEFALL or BR.PlayerState.GLIDE
+        end)
     end },
     { id = 'chute', settle = 60, setup = function()
         local e = W.ents[W.me]
         e.x, e.y, e.z = LAND.x, LAND.y, 300.0
         W.chute = 2
-        delta({ { op = 'update', src = ME, e = { state = BR.PlayerState.GLIDE } } })
+        streamPlayers(others(2, PLAYERS), sky(LAND.x, LAND.y, 60.0, 380.0))
+        setStates(function(src)
+            if src == ME then return BR.PlayerState.GLIDE end
+            return (src % 3 == 0) and BR.PlayerState.ALIVE or BR.PlayerState.GLIDE
+        end)
     end },
     { id = 'match', settle = 240, setup = function()
         setPed(W.me, LAND.x, LAND.y, LAND.z)
@@ -1174,12 +1433,13 @@ local PHASES = {
             return BR.PlayerState.ALIVE
         end
         setStates(stateOf)
-        streamPlayers(LAND.x, LAND.y, { 2, 3, 4, 5, 6, 7, 8, 9 })
+        streamPlayers(others(2, 9), ring(LAND.x, LAND.y, 30.0))
         populate(LAND.x, LAND.y)
         local c1 = circleOne()
         stormPhase(1, ANCHOR.x, ANCHOR.y, openingR(ANCHOR.x, ANCHOR.y),
                    c1.cx, c1.cy, c1.r, 120, 240, 30000)
-        local _, spot = sendLoot(LAND.x, LAND.y)
+        -- Stand where the loot is thickest; the client asks for its cells.
+        local spot = denseSpot(LAND.x, LAND.y)
         if spot then setPed(W.me, spot.x + 1.5, spot.y + 1.0, spot.z or LAND.z) end
         squadPos()
         local t0 = gameMs()
@@ -1200,26 +1460,6 @@ local PHASES = {
                    LAND.x + 300.0, LAND.y + 100.0, p3.radius, 90, 90, 30000)
     end },
 }
-
--- ----------------------------------------------------------------- driver ---
-
-local function followCam()
-    local p = entPos(W.me)
-    local h = math.rad(W.cam.rz)
-    W.cam.x, W.cam.y, W.cam.z = p.x + math.sin(h) * 4.0, p.y - math.cos(h) * 4.0, p.z + 1.5
-end
-
-local function frame()
-    NOW = NOW + FRAME_MS
-    followCam()
-    for _, f in ipairs(FEEDS) do
-        if not f.at or NOW >= f.at then
-            f.at = (f.at or NOW) + f.every
-            f.fn()
-        end
-    end
-    runThreads()
-end
 
 local function snapshot()
     local s = {}
