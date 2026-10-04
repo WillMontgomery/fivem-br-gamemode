@@ -203,20 +203,38 @@ version lives in the private bucket as
 at the repo root pins which version each box runs. A commit bumps an asset,
 `git revert` rolls it back; dev deploys run dev's lock, prod runs main's.
 
-**Owner, on the PC, from the repo root** (profile `blitz-assets`):
+**Owner, on each box, once, in this order:**
 
-- Push a pack: `py tools/assets.py push "D:/packs/legion"`
-- Push a version for a later season: `py tools/assets.py push "D:/packs/legion" --season 2`
-- Limit a pack to seasons: add `--from 2` and/or `--until 4` (off again from Season 4); `--until none` clears it
+1. Pull the ops clone first: `git -C /opt/misc/fivem-br-gamemode pull` (`deploy.sh` runs from there, so nothing below happens until it has this change)
+2. Add one line to `server.cfg`: `exec resources/[licensed]/licensed.cfg` (where: below)
+3. Deploy as usual; the packs land, and load at that deploy's restart
+
+**Owner, on the PC: the `Blitz Assets` folder on the Desktop.**
+
+- Drag a pack's folder (the one holding `fxmanifest.lua`) into `Season 1`, or into the season it starts in
+- A pack's version for a later season: drag that version into that season's folder
+- Retire a pack: delete its folder
+- Double-click `Publish.cmd`: it shows the plan, uploads what is new, and asks `Commit and push to dev? [y/N]`
+- `y` commits only `assets.lock` to dev and pushes it; `n` leaves `assets.lock` changed, not committed
+- Packs may sit in FiveM `[category]` folders; anything else is listed as skipped
+- To make the folder again: `py tools/assets.py init-drop "%USERPROFILE%\Desktop\Blitz Assets"`
+
+`Publish.cmd` publishes into the checkout whose path it was written with, which
+must be on `dev`. The folders are the lock: a pack in two season folders is one
+version per season, a pack dragged back after being retired goes up with no
+upload, and `from`/`until` set by hand on a pack still there are kept. A drop
+folder inside a git work tree is refused. The pre-push hook
+(`./tools/install-hooks.sh`) refuses any push carrying a game-asset file or a
+credential.
+
+**From a terminal** (profile `blitz-assets`), for the same thing by hand:
+
+- Push packs: `py tools/assets.py push "D:/packs/legion" "D:/packs/[emotes]"` (a folder of packs, or a `[category]`, pushes each)
+- For a later season: add `--season 2`; limit a pack with `--from 2` / `--until 4` (`none` clears)
 - Lock vs bucket: `py tools/assets.py status --profile blitz-assets`
-- Then commit the lock: `git add assets.lock` and commit it to dev
+- Then commit `assets.lock` to dev
 
-`push` takes one resource folder (it must hold `fxmanifest.lua`; the folder name
-is the resource name). It packs it the same way every time, uploads only when
-the bucket lacks those exact bytes, never overwrites, updates `assets.lock`, and
-never commits. With no `--season` a new pack is pinned at Season 1.
-
-**Each server.cfg, once:**
+**Where the server.cfg line goes:**
 
 ```
 exec resources/[licensed]/licensed.cfg
@@ -227,14 +245,21 @@ after `ensure ScaleformUI_Lua` and above the `ensure br_lib` block, where
 after `br_core`. Until a pull has run the file is absent and the server prints
 `No such config file` once and carries on.
 
-**At the next deploy** `deploy.sh` runs the pull from the fetched branch, before
-the code sync: it downloads what `.assets-cache/` lacks (kept, so a revert
-reinstalls with no download), checks every sha256 before unpacking anything,
-swaps the box's set into `resources/[licensed]/` all at once, removes what the
-lock no longer puts in force there, and writes `licensed.cfg`. A failed pull
-stops the deploy: code and assets both stay as they were and nothing restarts.
-`--dry-run` and `--status` print the plan and change nothing. An empty lock
-leaves the deploy exactly as it was.
+**At the next deploy** `deploy.sh` stages the pull from the fetched branch
+before the code sync: it downloads what `.assets-cache/` lacks (kept, so a
+revert reinstalls with no download), checks every sha256, and unpacks into the
+cache, changing nothing installed. A failure there stops the deploy with code
+and assets as they were. Once the code and vendored syncs have succeeded it
+swaps the staged set into `resources/[licensed]/`, removes what the lock no
+longer puts in force there, and writes `licensed.cfg`, just before the
+served-commit stamp. The swap is journaled: a failure is undone and stops the
+deploy before any restart, and a killed one is undone by the next pull. If an
+undo fails too, nothing is deleted and the error names where each old resource
+is. A ref from before #391 leaves `resources/[licensed]/` alone. A pull refuses
+a pack whose name a resource elsewhere under `resources/` already has. The cache
+drops an archive only when the lock no longer names it and it has been out of
+use for 14 days. `--dry-run` and `--status` print the plan and change nothing.
+An empty lock leaves the deploy exactly as it was.
 
 **On a box, to look:**
 
@@ -403,7 +428,7 @@ that has to reach clients is asserted **on the wire** (the captured
 `TriggerClientEvent` stream), not on the server's own tables — a bug that
 passed every server-side assertion and still shipped is what set that rule.
 
-Install the pre-commit hook with `./tools/install-hooks.sh`.
+Install the pre-commit and pre-push hooks with `./tools/install-hooks.sh`.
 
 ### In-game diagnostics
 
