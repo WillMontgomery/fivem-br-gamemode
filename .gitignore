@@ -96,3 +96,14 @@ desktop.ini
 # agreement discusses failures, timings and process in detail that is nobody
 # else's business. Kept on disk, read by the coordinator, never committed.
 docs/working-agreement.md
+
+# ---------------------------------------------------------------------------
+# Dev props (#384)
+#
+# `/brprop save` writes the dev box's prop placements into br_core with
+# SaveResourceFile. They belong to the box they were placed on, never to the
+# repo -- a local test server would otherwise commit its own furniture. The
+# name is BR.Config.Props.saveFile, and tools/deploy.sh excludes it from the
+# rsync's --delete so a dev deploy does not wipe the placements.
+# ---------------------------------------------------------------------------
+/resources/*/br_core/devprops.json

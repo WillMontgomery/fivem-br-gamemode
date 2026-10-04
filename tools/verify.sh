@@ -107,6 +107,7 @@ NOTES=(
     "test_tutorial|A player who finished the tutorial is never shown it again, even in another mode"
     "test_gitref|The dev-mode label under Settings shows the code version the server is really running"
     "test_emotes_ui|Market emote slots: equip, unequip and swap past eight, shown only while emotes are on"
+    "test_props|Dev props: server decides and syncs; pickup look, every edit key, save/load"
     "scope gate|Player-side code never asks about players with game calls that only see those nearby"
     "weapon table|Each weapon's game ID matches its name, magazine sizes fit, car use is set, icons exist"
     "vehicle table|Each banned vehicle's game ID matches its name, so tanks and jets really stay banned"
@@ -708,6 +709,7 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
         tools/test_tutorial.lua
         tools/test_gitref.lua
         tools/test_emotes_ui.lua
+        tools/test_props.lua
     )
 
     listed=$(printf '%s\n' "${suites[@]}" | LC_ALL=C sort)

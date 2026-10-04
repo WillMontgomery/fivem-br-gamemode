@@ -293,6 +293,13 @@ shared_scripts {
     -- rather than caching it, precisely so that this line's position cannot be
     -- the thing that decides what the shop stocks.
     '@br_lib/shared/gunshop_solve.lua',
+    -- Dev props (#384, /brprop): the limits, and the rules both halves check
+    -- them by -- the server to decide, the client to refuse a bad name before
+    -- it asks. SHARED because both halves need them; LAST because neither file
+    -- reads anything at load. props_solve takes every config table as an
+    -- argument, and the pickup look reads BR.Config.Loot at call time.
+    '@br_lib/config/props.lua',
+    '@br_lib/shared/props_solve.lua',
 }
 
 -- main.lua must load first on both sides: it defines the loop registry (client)
@@ -626,6 +633,12 @@ client_scripts {
     -- WHEN #347 IS ANSWERED THIS LINE GOES, one way or the other -- either the
     -- real caller replaces it or the file is deleted with the command.
     'client/mapoverlay.lua',
+    -- /brprop (#384): draws the server's dev props as local objects and moves
+    -- them by hand. Beside the other hand tools. It needs client/main.lua for
+    -- the loop registry and BR.PropSolve (shared_scripts, loaded first) at
+    -- load; BR.Keys.rawKeyDown (client/keybinds.lua) and BR.Config.Loot are
+    -- reached at call time.
+    'client/props.lua',
     'client/debug.lua',
 }
 
@@ -832,6 +845,10 @@ server_scripts {
     -- than for the loader: it asks BR.Grants.holds the question grants.lua
     -- answers, and it is declared below the file that answers it.
     'server/admin.lua',
+    -- Dev props (#384): the one place a /brprop prop exists. AFTER admin.lua
+    -- for a reader rather than for the loader -- every door in it asks
+    -- BR.Admin.devTrusted, at call time and nil-guarded.
+    'server/props.lua',
     -- The dev-mode join allowlist's Discord role. Loaded into this server state
     -- alone because nothing else reads it, NOT to keep it from clients: the file
     -- is in br_lib's `files` glob like every config file, and a role id is not a

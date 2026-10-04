@@ -1671,6 +1671,48 @@ local function rawDownAny(code)
     return false
 end
 
+--- IS THIS ONE KEY DOWN RIGHT NOW? For a dev tool that reads keys no player
+--- action is bound to -- /brprop's edit mode (#384), in client/props.lua.
+---
+--- THROUGH THIS LAYER RATHER THAN A SECOND RAW READER, because everything this
+--- layer learned the hard way applies to any key: the native picked at start
+--- (rawDownFn), the 1/0 answer normalised by truth(), and the side-specific
+--- codes in VK_ALSO that the boost only works because of. A tool calling
+--- IsRawKeyDown on its own would have to relearn all three.
+---
+--- IT BINDS NOTHING AND FIRES NOTHING. No row joins BR.Keys.bindings, no
+--- listener is called, no player binding is read or moved -- so asking cannot
+--- shadow anybody's key. A tool that must not use a key the player has bound
+--- asks BR.Keys.actionOnKey below first.
+---
+--- FALSE WHENEVER THIS LAYER WOULD NOT ACT EITHER: the layer off, one of our
+--- screens holding the keyboard (a key typed into chat is not a nudge), or the
+--- focus-change resync window, during which the readings are known to lie.
+--- @param code integer  a Windows virtual-key code
+--- @return boolean
+function BR.Keys.rawKeyDown(code)
+    if not BR.Keys.rawActive or rawDownFn == nil then return false end
+    if BR.Keys.uiOwnsKeyboard or resyncing then return false end
+    if type(code) ~= 'number' then return false end
+    return rawDownAny(code)
+end
+
+--- The player action on this key right now, and its label -- or nil.
+---
+--- Asked through boundTo, so it names the key that actually drives each row:
+--- the player's own choice when this layer reads it, the engine's default when
+--- the engine does.
+--- @param code integer
+--- @return string|nil action
+--- @return string|nil label
+function BR.Keys.actionOnKey(code)
+    for _, b in ipairs(BR.Keys.bindings) do
+        local on = BR.Keys.boundTo(b.command)
+        if on ~= nil and on == code then return b.action, b.label end
+    end
+    return nil, nil
+end
+
 BR.Loop.register(BR.Loop.FRAME, 'keybinds.raw', function()
     if not BR.Keys.rawActive then return end
 

@@ -471,10 +471,17 @@ RSYNC_OPTS=(-a --delete --human-readable --itemize-changes)
 # Trailing slash on the source and none on the destination: sync the CONTENTS of
 # the group into a directory of the same name. --delete is scoped to that one
 # directory, so anything else in [gamemodes] is untouched.
+#
+# THE DEV PROPS SAVE IS EXCLUDED, and an exclude is what keeps it: rsync's
+# --delete never removes an excluded file on the receiver. `/brprop save` (#384)
+# writes it into br_core on the box itself and it is in no checkout, so without
+# this every push to dev would wipe the owner's saved placements. The name is
+# BR.Config.Props.saveFile; tools/test_props.lua fails if the two disagree.
 say "syncing $RESOURCE_GROUP -> $TARGET_DIR/"
 rsync "${RSYNC_OPTS[@]}" \
     --exclude '.git' \
     --exclude '*.md' \
+    --exclude 'br_core/devprops.json' \
     "$SRC_GROUP/" "$TARGET_DIR/$RESOURCE_GROUP/" \
     | sed 's/^/     /' || die "rsync failed"
 
