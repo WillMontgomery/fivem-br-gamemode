@@ -2068,6 +2068,77 @@ do
         'and to the one-minute post-open window')
 end
 
+describe('a drop the storm moves (#386, option 3)')
+do
+    -- ═══ THE RECORD, MOVED IN PLACE ═══
+    local cfg = { blipAfterOpenMs = 60000, blipMaxMs = 240000 }
+    local from = { id = 'lsia', x = 100.0, y = 200.0, z = 30.0 }
+    local to   = { id = 'sandy', x = 1100.0, y = 1200.0, z = 45.0 }
+    local rec = BR.BuildAirdropSite(4, from, 260.0, 1000.0, 90.0)
+    local same = BR.MoveAirdropRecord(rec, to, 61000.0)
+    ok(same == rec, 'it is the same table, so every list holding it sees the move')
+    ok(rec.poi == 'sandy' and rec.x == 1100.0 and rec.y == 1200.0 and rec.gz == 45.0,
+        'standing on the new POI')
+    ok(rec.n == 4 and rec.heading == 90.0 and rec.alt == 260.0 and rec.tStart == 1000.0,
+        'and nothing else about the drop changes')
+    ok(not BR.AirdropArmed(rec), 'still waiting -- a move is not an arm')
+
+    -- ═══ THE WAIT RESTARTS AT THE MOVE ═══
+    eq(BR.AirdropBlipEndsAt(rec, cfg), 301000.0,
+        'four minutes from the move, not from the announcement')
+    BR.ArmAirdropRecord(rec, 90000.0, {})
+    eq(BR.AirdropBlipEndsAt(rec, cfg), 330000.0, 'and from the arm once it arms')
+    rec.tOpen = 120000.0
+    eq(BR.AirdropBlipEndsAt(rec, cfg), 180000.0, 'and a minute after it is opened')
+    local gone = BR.MoveAirdropRecord(BR.BuildAirdropSite(5, from, 260.0, 0.0), to, 50.0)
+    gone.tGone = 70.0
+    eq(BR.AirdropBlipEndsAt(gone, cfg), 70.0, 'a moved drop called off goes when it is')
+
+    -- ═══ WHICH NEXT CIRCLE IT WAS SITED AGAINST ═══
+    local s = BR.BuildStormRecord(2, 0.0, 0.0, 3000.0, 500.0, 600.0, 1600.0,
+        0.0, 1000.0, 1000.0, 1.0, 7)
+    local was = BR.AirdropNextCircleOf(s)
+    ok(was and was.phase == 2 and was.x == 500.0 and was.y == 600.0 and was.r == 1600.0,
+        'the phase and the destination it closes toward')
+    ok(not BR.AirdropNextCircleChanged(was, s), 'the same record has not changed it')
+    -- The first-hold cap re-publishes phase 1 with new timing and the same target.
+    local recut = BR.BuildStormRecord(2, 0.0, 0.0, 3000.0, 500.0, 600.0, 1600.0,
+        5000.0, 300.0, 9000.0, 1.0, 7)
+    ok(not BR.AirdropNextCircleChanged(was, recut), 'new timing is not a new circle')
+    -- A thaw re-enters the same phase with a destination drawn again.
+    local thaw = BR.BuildStormRecord(2, 0.0, 0.0, 3000.0, 520.0, 600.0, 1600.0,
+        0.0, 1000.0, 1000.0, 1.0, 7)
+    ok(BR.AirdropNextCircleChanged(was, thaw), 'a new destination in the same phase is')
+    local nextPhase = BR.BuildStormRecord(3, 500.0, 600.0, 1600.0, 500.0, 600.0, 1600.0,
+        0.0, 1000.0, 1000.0, 1.0, 7)
+    ok(BR.AirdropNextCircleChanged(was, nextPhase), 'and so is the next phase')
+    ok(BR.AirdropNextCircleChanged(nil, s) and BR.AirdropNextCircleChanged(was, nil),
+        'and an unknown circle on either side counts as changed')
+    eq(BR.AirdropNextCircleOf(nil), nil, 'no storm, no circle')
+
+    -- ═══ WHERE IT GOES: THE NEAREST QUALIFYING POI ═══
+    local pois = {
+        { id = 'a', x = 0.0,    y = 0.0 },
+        { id = 'b', x = 900.0,  y = 0.0 },     -- too near the rim
+        { id = 'c', x = 450.0,  y = 0.0 },
+        { id = 'd', x = -300.0, y = 0.0 },
+        { id = 'e', x = 300.0,  y = 0.0 },     -- not placeable
+        { id = 'f', x = 0.0,    y = -300.0 },  -- ties with d, authored later
+    }
+    local circle = { { x = 0.0, y = 0.0, r = 1000.0 } }
+    local placeable = function(x) return x ~= 300.0 end
+    local poi, seen = BR.AirdropNearestSiteIn(pois, circle, 250.0, placeable, 200.0, 0.0)
+    eq(seen, 4, 'it chooses among the same candidates the siting would')
+    eq(poi and poi.id, 'a', 'and takes the one nearest the old point')
+    poi = BR.AirdropNearestSiteIn(pois, circle, 250.0, placeable, -300.0, -300.0)
+    eq(poi and poi.id, 'd', 'a tie goes to the first in authored order')
+    poi = BR.AirdropNearestSiteIn(pois, circle, 250.0, placeable, 2000.0, 0.0)
+    eq(poi and poi.id, 'c', 'never one the margin refuses, however near')
+    local none, zero = BR.AirdropNearestSiteIn(pois, { { x = 0.0, y = 0.0, r = 200.0 } },
+        250.0, placeable, 0.0, 0.0)
+    ok(none == nil and zero == 0, 'and nothing when no POI qualifies')
+end
+
 describe('the plane')
 do
     -- The owner said no plane and then changed their mind. What it bought is
@@ -2959,10 +3030,14 @@ do
     tick()
     eq(#m.airdrop.pending, 0, 'three minutes after the timeout, drop 2 is announced')
     eq(#notices, 2, 'and the match is told')
-    local second = m.airdrop.waiting[1] and m.airdrop.waiting[1].rec
-    ok(second ~= nil and second.n ~= first.n, 'as the other drop, not a retry')
+    local second = m.airdrop.announced[#m.airdrop.announced]
+    ok(second ~= nil and second ~= first and second.n ~= first.n,
+        'as the other drop, not a retry')
 
-    -- Still on lsia, and he is still there -- so it arms, and it is the only one.
+    -- Still on lsia, and he is still there -- so it arms ON THE TICK IT IS
+    -- ANNOUNCED (#386: a drop sited with a player already in range is gated on
+    -- the same tick), and it is the only one.
+    eq(#m.airdrop.live, 1, 'he is standing on it, so drop 2 arms on the tick it is sited')
     gameMs = gameMs + 1000
     tick()
     local recs, armed = onScreen(m, gameMs)
@@ -2970,13 +3045,13 @@ do
     eq(#recs, 1, 'with nothing else marked')
 end
 
-describe('server: #355 as he saw it -- the wall moves off a drop, and its blip goes with it (#386)')
+describe('server: #355 as he saw it -- a drop the server calls off takes its blip with it (#386)')
 do
     -- ═══ THE OTHER LEAK, AND WITH ONE PLAYER THE COMMONER OF THE TWO ═══
     --
-    -- tryArm re-asks the margin every tick, and when a new phase moves the wall
-    -- off a waiting drop it abandons the drop. The rule that shipped first counted
-    -- the abandonment as done and announced drop 2 beside it on the same tick.
+    -- tryArm re-asks the margin every tick and can give a waiting drop up. The
+    -- rule that shipped first counted the abandonment as done and announced drop
+    -- 2 beside it on the same tick.
     --
     -- ═══ AND IT USED TO SEND NOTHING, WHICH WAS #386 ═══
     --
@@ -2986,6 +3061,11 @@ do
     -- don't always drop when people get close to them..." The abandonment is now
     -- SENT: the record goes out once more stamped `tGone`, every client takes the
     -- blip down at that instant, and "timed out" in #355's rule is that instant.
+    --
+    -- A NEW NEXT CIRCLE MOVES A DROP RATHER THAN ENDING IT since option 3
+    -- (owner, 2026-10-04), so the call-off here is the one that is left: the new
+    -- circle is too small for any POI to clear the margin, so there is nowhere to
+    -- move it.
     reset()
     local m = newMatch(1)
     BR.Airdrop.begin(m)
@@ -2993,24 +3073,25 @@ do
     tick()
     local first = m.airdrop.waiting[1].rec
 
-    -- The next phase starts AND closes on the far side of the map: the wall the
-    -- crate would land under is kilometers away from it.
+    -- The next phase starts AND closes on the far side of the map, on a circle
+    -- narrower than the margin: no POI anywhere is 250m inside it.
     local far, farD = nil, -1.0
     for _, p in ipairs(BR.Config.Map.POIs) do
         local d = BR.Dist(p.x, p.y, first.x, first.y)
         if d > farD and BR.LootPlaceable(p.x, p.y) then far, farD = p, d end
     end
-    m.storm = BR.BuildStormRecord(2, far.x, far.y, 1500.0, far.x, far.y, 1500.0,
+    m.storm = BR.BuildStormRecord(2, far.x, far.y, 200.0, far.x, far.y, 200.0,
         gameMs, 24 * 60 * 60 * 1000, 1000, 1.0)
     gameMs = gameMs + 1000
     local sends = #published
     tick()
     local gone = gameMs
     ok(m.airdrop.outcome ~= nil and m.airdrop.outcome.n == first.n
-       and m.airdrop.outcome.why:find('wall', 1, true) ~= nil,
-        'the server abandons drop 1 when the wall moves off it',
+       and m.airdrop.outcome.why:find('nowhere to move it', 1, true) ~= nil,
+        'the server calls drop 1 off when no POI fits the new next circle',
         m.airdrop.outcome and m.airdrop.outcome.why)
     eq(#m.airdrop.waiting, 0, 'and it is on none of the server\'s lists')
+    ok(first.tMoved == nil, 'and it was not moved anywhere first')
 
     eq(#published, sends + 1, 'and it SAYS so: the record goes out once more')
     eq(views[m][first.n] and views[m][first.n].tGone, gone,
@@ -3018,6 +3099,11 @@ do
     eq(#onScreen(m, gone + 1), 0,
         'so no client is still showing a crate that is never coming')
     eq(#m.airdrop.pending, 1, 'and drop 2 is not announced on the same tick')
+
+    -- The phase after it is roomy again, so drop 2 has somewhere to go once the
+    -- hold runs out. What is measured below is the hold, not the siting.
+    m.storm = BR.BuildStormRecord(3, far.x, far.y, 1500.0, far.x, far.y, 1500.0,
+        gameMs, 24 * 60 * 60 * 1000, 1000, 1.0)
 
     -- ═══ SO IT TIMES OUT AT THE ABANDONMENT, AND THE THREE MINUTES RUN FROM
     --     THERE ═══
@@ -3443,7 +3529,7 @@ do
     -- BR.AirdropResolvedAt -- asking the rule whether the rule held is how a
     -- mutation that breaks both sides stays green.
     local early, both = {}, 0
-    local fate = { opened = 0, unopened = 0, nobody = 0, wall = 0 }
+    local fate = { opened = 0, unopened = 0, nobody = 0, moved = 0 }
     for id = 1, MATCHES do
         local list = {}
         for _, rec in pairs(views[matches[id]] or {}) do list[#list + 1] = rec end
@@ -3452,9 +3538,10 @@ do
         for i = 2, #list do
             local prev = list[i - 1]
             -- A drop the server called off timed out the moment it said so and
-            -- its blip went (#386); one nobody came to, at its ceiling.
+            -- its blip went (#386); one nobody came to, at its ceiling -- counted
+            -- from its last move if the storm moved it (#386, option 3).
             local done = prev.tOpen or prev.tGone
-                or ((prev.tArm or prev.tStart) + A.blipMaxMs)
+                or ((prev.tArm or prev.tMoved or prev.tStart) + A.blipMaxMs)
             if list[i].tStart < done + HOLD then
                 early[#early + 1] = ('match %d: drop %d %.0fs after drop %d was done')
                     :format(id, list[i].n, (list[i].tStart - done) / 1000, prev.n)
@@ -3467,7 +3554,7 @@ do
     end
     for _, line in ipairs(logs) do
         if line:find('EXPIRED at', 1, true) then fate.nobody = fate.nobody + 1 end
-        if line:find('the wall moved off it', 1, true) then fate.wall = fate.wall + 1 end
+        if line:find(' MOVED from ', 1, true) then fate.moved = fate.moved + 1 end
     end
     ok(#early == 0, 'no drop is announced sooner than three minutes after the one '
         .. 'before it was opened or timed out',
@@ -3481,9 +3568,12 @@ do
     ok(fate.opened > 0, 'drops were opened', fate.opened)
     ok(fate.unopened > 0, 'drops landed and were never opened', fate.unopened)
     ok(fate.nobody > 0, 'drops timed out with nobody coming', fate.nobody)
-    ok(fate.wall > 0,
-        'and the wall moved off waiting drops -- the leak the old sweep could not reach',
-        fate.wall)
+    -- THE STORM MOVED UNDER WAITING DROPS, which the old sweep could not reach.
+    -- Since option 3 (#386) that moves the drop rather than leaving its blip up,
+    -- and a moved drop must still be the only one on the screen.
+    ok(fate.moved > 0,
+        'and the storm moved waiting drops -- the case the old sweep could not reach',
+        fate.moved)
     ok(both > MATCHES / 3, 'while plenty of matches still announced both drops',
         ('%d of %d'):format(both, MATCHES))
 end
@@ -4472,33 +4562,40 @@ do
     local rec = published[1].payload
     eq(#m.airdrop.waiting, 1, 'sited under the circle that was showing')
 
-    -- The storm turns over a phase while somebody walks: a new circle, four
-    -- kilometres from the place the match was told to go to.
-    m.storm = BR.BuildStormRecord(3, rec.x + 4000.0, rec.y, 900.0,
-        rec.x + 4000.0, rec.y, 900.0, gameMs, 24 * 60 * 60 * 1000, 1000, 1.0)
+    -- The storm turns over a phase while somebody walks: a new circle centred on
+    -- the POI furthest from the place the match was told to go to.
+    local far, farD = nil, -1.0
+    for _, p in ipairs(BR.Config.Map.POIs) do
+        local d = BR.Dist(p.x, p.y, rec.x, rec.y)
+        if d > farD and BR.LootPlaceable(p.x, p.y) then far, farD = p, d end
+    end
+    m.storm = BR.BuildStormRecord(3, far.x, far.y, 900.0,
+        far.x, far.y, 900.0, gameMs, 24 * 60 * 60 * 1000, 1000, 1.0)
+    local oldX, oldY = rec.x, rec.y
 
-    standAt(101, rec.x, rec.y, 0.0)
+    standAt(101, oldX, oldY, 0.0)
+    logs = {}
     gameMs = gameMs + 1000
     tick()
-    eq(#m.airdrop.live, 0, 'a player standing on it cannot arm it any more')
-    eq(#m.airdrop.waiting, 0, 'the drop is abandoned instead')
+    eq(#m.airdrop.live, 0, 'a player standing on the old point cannot arm it any more')
     eq(#spawned, 0, 'and no crate is ever put on the ground outside the circle')
-    -- WHICH RULE REFUSED IT. There are three ways a waiting drop ends without
-    -- landing and /brairdrop printing "nobody came" for all three is how a
-    -- playtest goes after the wrong bug.
-    ok(m.airdrop.outcome
-       and tostring(m.airdrop.outcome.why):find('wall moved off it', 1, true),
-        'and the outcome names the wall rather than blaming the players',
-        m.airdrop.outcome and m.airdrop.outcome.why)
-    -- AND THE NUMBER IN IT IS THE ONE THE REFUSAL USED. This line said "Xm from a
-    -- circle of r Y" -- arithmetic that stopped being the test at #349 and that a
-    -- playtest would have subtracted to conclude the comparison was broken. The
-    -- sign is the whole point of the sentence, so it is in the string.
-    ok(m.airdrop.outcome
-       and tostring(m.airdrop.outcome.why)
-               :find('positive is outside it', 1, true),
-        'and it reports a signed distance to the boundary, legibly',
-        m.airdrop.outcome and m.airdrop.outcome.why)
+    -- SINCE OPTION 3 (#386) THE DROP GOES TO THE CIRCLE rather than being lost.
+    eq(#m.airdrop.waiting, 1, 'the drop is still out')
+    ok(BR.Dist(rec.x, rec.y, oldX, oldY) > 2000.0
+       and BR.AirdropInside({ { x = far.x, y = far.y, r = 900.0,
+                                shape = BR.StormTarget(m.storm) } },
+               rec.x, rec.y, A.insideBy),
+        'moved into the new circle, 250m inside it',
+        ('%s at %.0fm from the old point'):format(tostring(rec.poi),
+            BR.Dist(rec.x, rec.y, oldX, oldY)))
+    -- AND THE NUMBER IN THE LOG IS THE ONE THE REFUSAL USED. This line said "Xm
+    -- from a circle of r Y" -- arithmetic that stopped being the test at #349 and
+    -- that a playtest would have subtracted to conclude the comparison was
+    -- broken. The sign is the whole point of the sentence, so it is in the string.
+    local said = table.concat(logs, '\n')
+    ok(said:find('new next circle (stage 3)', 1, true) ~= nil
+       and said:find('positive is outside it', 1, true) ~= nil,
+        'and the log says why, with a signed distance to the boundary', said)
 end
 
 -- =========================================================================
@@ -4507,23 +4604,39 @@ end
 --
 -- Owner, 2026-10-03, group playtest on dev c024ad6.
 --
--- THE ARM RE-ASKED THE MARGIN AGAINST A CIRCLE THE DROP WAS NEVER SITED UNDER.
--- tryArm measured the point against BR.AirdropLandingCircles(..., 0): the wall
--- at the landing instant AND the zone the storm is closing toward. Within one
--- phase the second is the very zone the drop was sited inside, so it never
--- refused anything. When a NEW phase began while the drop waited -- a wait is up
--- to four minutes and a phase is one to six -- it was the new phase's
--- destination, drawn after the drop was announced, and a point 250m inside the
--- old destination is often nowhere near the new one. The drop was abandoned
--- with its crate set to land hundreds of meters inside the wall, and nothing
--- was sent, so the blip stayed up and the match ran at it.
+-- THE STORM DREW A NEW NEXT CIRCLE WHILE THE DROP WAITED. A wait is up to four
+-- minutes and a phase can be one. tryArm re-asks the point against the wall at
+-- the landing instant AND the circle the storm is closing toward, and once a new
+-- phase began that circle was drawn after the drop was announced -- a point 250m
+-- inside the old one is often outside the new one. The drop was abandoned, and
+-- nothing was sent, so the blip stayed up and the match ran at it and stood
+-- beside it.
 --
 -- Measured with the storm model below, four players a match walking to each
--- blip: 284 drops announced in 200 matches, 114 abandoned that way -- every
--- one with the crate 250m or more inside the wall it would have landed under
--- -- and 97 of those with a player inside 200m of the blip afterwards.
+-- blip: 282 drops announced in 200 matches, 95 abandoned that way, and 107 drops
+-- showed a waiting blip with a player inside 200m.
+--
+-- Owner, 2026-10-04 (option 3): MOVE the drop to a fresh spot inside the new
+-- circle under the siting rules, and send the new blip. Drops still land only
+-- inside the next circle (2026-08-23).
 
-describe('server: #386 -- a drop announced in one phase and reached in the next still drops')
+--- A phase-2 record that starts where `s1` closes and closes toward a 1600m
+--- circle 2400m from (x, y), toward lsia: a destination drawn after the
+--- announcement, which the point is nowhere near.
+--- @return table storm
+--- @return number tx
+--- @return number ty
+local function turnOverAwayFrom(s1, x, y, now, waitMs, shrinkMs)
+    local lsia = BR.Config.Map.GetPOI('lsia')
+    local dx, dy = lsia.x - x, lsia.y - y
+    local len = math.sqrt(dx * dx + dy * dy)
+    if len < 1.0 then dx, dy, len = 1.0, 0.0, 1.0 end
+    local tx, ty = x + dx / len * 2400.0, y + dy / len * 2400.0
+    return BR.BuildStormRecord(2, s1.cx1, s1.cy1, s1.r1, tx, ty, 1600.0,
+        now, waitMs, shrinkMs, 1.25, s1.seed), tx, ty
+end
+
+describe('server: #386 -- the storm turns over, the drop moves into the new circle, and a player there gets it')
 do
     reset()
     local m = newMatch(1)
@@ -4533,51 +4646,147 @@ do
     local w = m.airdrop.waiting[1]
     ok(w ~= nil, 'sited in phase 1')
     local rec = w.rec
-    local s1 = m.storm
+    local n, poi0, x0, y0, heading = rec.n, rec.poi, rec.x, rec.y, rec.heading
+    local items = w.items
+    local sentBefore, shownBefore, toldBefore =
+        m.airdrop.sent, #m.airdrop.announced, #notices
 
     -- ═══ THE STORM TURNS OVER WHILE THEY WALK ═══
     --
-    -- Phase 2 starts where phase 1 closed -- the zone the drop was sited 250m
-    -- inside -- holds for two minutes, and closes toward a 1600m zone centred
-    -- 2400m from the drop: a destination drawn after the announcement, which the
-    -- point is nowhere near. Same seed, so the wall it starts from is phase 1's
-    -- destination in its own shape, exactly as server/storm.lua hands it over.
-    local lsia = BR.Config.Map.GetPOI('lsia')
-    local dx, dy = lsia.x - rec.x, lsia.y - rec.y
-    local len = math.sqrt(dx * dx + dy * dy)
-    if len < 1.0 then dx, dy, len = 1.0, 0.0, 1.0 end
-    local tx, ty = rec.x + dx / len * 2400.0, rec.y + dy / len * 2400.0
-    m.storm = BR.BuildStormRecord(2, s1.cx1, s1.cy1, s1.r1, tx, ty, 1600.0,
-        gameMs, 120000, 120000, 1.25, s1.seed)
+    -- Same seed, so the wall phase 2 starts from is phase 1's destination in its
+    -- own shape, exactly as server/storm.lua hands it over.
+    local tx, ty
+    m.storm, tx, ty = turnOverAwayFrom(m.storm, x0, y0, gameMs, 120000, 120000)
     ok(not BR.AirdropInside(
             { { x = tx, y = ty, r = 1600.0, shape = BR.StormTarget(m.storm) } },
-            rec.x, rec.y, 0.0),
-        'the new destination leaves the drop outside it altogether')
+            x0, y0, 0.0),
+        'the new next circle leaves the drop outside it altogether')
 
-    -- They arrive: 150m off the point, which is inside the gate.
+    -- They arrive: 150m off the OLD point, which is inside the gate.
+    standAt(101, x0, y0, 150.0)
+    logs = {}
+    local sends = #published
+    gameMs = gameMs + 1000
+    tick()
+    local movedAt = gameMs
+
+    eq(#m.airdrop.live, 0, 'nothing arms at the old point')
+    eq(#spawned, 0, 'and nothing lands outside the next circle')
+    eq(#m.airdrop.waiting, 1, 'the drop is still out')
+    ok(m.airdrop.outcome == nil, 'and nothing records it as ended',
+        m.airdrop.outcome and m.airdrop.outcome.why)
+    ok(rec.poi ~= poi0, 'it is on another POI now', tostring(rec.poi))
+
+    -- ═══ UNDER THE SITING RULES, AGAINST THE NEW CIRCLE ═══
+    --
+    -- The whole wait window the first siting used, the margin, and placeable
+    -- ground -- and of the POIs that pass, the one nearest the old point,
+    -- worked out here by hand.
+    local window = BR.AirdropLandingCircles(m.storm, movedAt, A, A.blipMaxMs)
+    ok(BR.AirdropInside(window, rec.x, rec.y, A.insideBy),
+        '250m inside the new next circle, and the wall over the whole wait')
+    ok(BR.LootPlaceable(rec.x, rec.y), 'on ground a crate can be put on')
+    local best, bestD = nil, math.huge
+    for _, p in ipairs(BR.Config.Map.POIs) do
+        if BR.AirdropInside(window, p.x, p.y, A.insideBy)
+           and BR.LootPlaceable(p.x, p.y) then
+            local d = BR.Dist(p.x, p.y, x0, y0)
+            if d < bestD then best, bestD = p, d end
+        end
+    end
+    eq(rec.poi, best and best.id, 'the qualifying POI nearest the old point')
+
+    -- ═══ THE SAME DROP, NOT ANOTHER ONE ═══
+    eq(rec.n, n, 'the same drop number')
+    eq(rec.heading, heading, 'the same heading')
+    ok(m.airdrop.waiting[1].items == items, 'the same payout')
+    eq(m.airdrop.sent, sentBefore, 'it is not counted as another drop')
+    eq(#m.airdrop.announced, shownBefore, 'nor listed as another announcement')
+    eq(#notices, toldBefore, 'and the match is not told about a new airdrop')
+
+    -- ═══ EVERY SCREEN MOVES THE BLIP ═══
+    eq(#published, sends + 1, 'the record goes out once more')
+    local view = views[m][n]
+    ok(view ~= nil and view.x == rec.x and view.y == rec.y
+       and view.tMoved == movedAt and view.tGone == nil,
+        'carrying the new point and the moment it moved')
+    eq(#onScreen(m, movedAt), 1, 'one blip on every screen, not two')
+
+    -- A FRESH WAIT: the players have somewhere new to walk to.
+    eq(BR.AirdropBlipEndsAt(view, A), movedAt + A.blipMaxMs,
+        'with the full four minutes to get there')
+
+    -- ═══ AND THE CONSOLE SAYS FROM WHERE, TO WHERE, AND WHY ═══
+    local said = table.concat(logs, '\n')
+    ok(said:find(('drop %d MOVED from %s'):format(n, poi0), 1, true) ~= nil
+       and said:find((' to %s ('):format(rec.poi), 1, true) ~= nil
+       and said:find('the storm drew a new next circle (stage 2)', 1, true) ~= nil,
+        'the console says from where, to where and why', said)
+    logs = {}
+    commands['brairdrop'](0, {}, '')
+    said = table.concat(logs, '\n')
+    ok(said:find(('moved 1 time(s) -- last from %s'):format(poi0), 1, true) ~= nil,
+        'and /brairdrop says the drop was moved, and from where', said)
+
+    -- ═══ THEY WALK OVER, AND GET IT ═══
     standAt(101, rec.x, rec.y, 150.0)
     gameMs = gameMs + 1000
     tick()
-    eq(#m.airdrop.live, 1, 'the player who walked to it gets their drop')
-    ok(m.airdrop.outcome == nil, 'and nothing records it as refused',
-        m.airdrop.outcome and m.airdrop.outcome.why)
+    eq(#m.airdrop.live, 1, 'the player who walks to the new point gets the drop')
 
-    -- ═══ AND THE SAFETY HALF OF THE MARGIN STILL HOLDS: IT LANDS 250m INSIDE
-    --     THE WALL IT LANDS UNDER ═══
     gameMs = gameMs + FLIGHT_MS
     tick()
     eq(#spawned, 1, 'the crate lands')
+    ok(spawned[1] and spawned[1].x == rec.x and spawned[1].y == rec.y,
+        'at the new point')
+    ok(BR.AirdropInside({ { x = m.storm.cx1, y = m.storm.cy1, r = m.storm.r1,
+                            shape = BR.StormTarget(m.storm) } },
+            rec.x, rec.y, A.insideBy),
+        '250m inside the next circle as it lands')
     local x, y, r, _, _, _, t = BR.StormAt(m.storm, rec.tLand or 0.0)
     ok(BR.AirdropInside({ { x = x, y = y, r = r, shape = BR.StormWall(m.storm, t) } },
             rec.x, rec.y, A.insideBy),
-        '250m inside the wall at the moment it touches down')
+        'and 250m inside the wall at the moment it touches down')
 end
 
-describe('server: #386 -- the arm still refuses a crate that would land near the wall')
+describe('server: #386 -- a new next circle no POI fits calls the drop off, and the blip leaves at once')
 do
-    -- THE HALF OF 2026-08-23 THAT WAS ABOUT SAFETY IS KEPT. Phase 2 here has
-    -- already swept onto a destination far from the drop, so the wall the crate
-    -- would land under is the thing that refuses it.
+    reset()
+    local m = newMatch(1)
+    BR.Airdrop.begin(m)
+    onlyDrop(m)
+    tick()
+    local rec = m.airdrop.waiting[1].rec
+    local poi0 = rec.poi
+
+    -- Phase 2 closes toward a circle narrower than the margin: no POI on the map
+    -- is 250m inside it, so there is nowhere to move the drop.
+    m.storm = BR.BuildStormRecord(2, m.storm.cx1, m.storm.cy1, m.storm.r1,
+        rec.x + 3000.0, rec.y, 200.0, gameMs, 120000, 120000, 1.25, m.storm.seed)
+    standAt(101, rec.x, rec.y, 0.0)
+    local sends = #published
+    gameMs = gameMs + 1000
+    tick()
+    eq(#m.airdrop.live, 0, 'a player standing on it cannot arm it')
+    eq(#m.airdrop.waiting, 0, 'the drop is called off')
+    eq(#spawned, 0, 'and nothing lands')
+    eq(rec.poi, poi0, 'it was not moved anywhere first')
+    eq(#published, sends + 1, 'the record goes out once more')
+    eq(views[m][rec.n] and views[m][rec.n].tGone, gameMs,
+        'stamped with the moment it was called off')
+    eq(#onScreen(m, gameMs + 1), 0, 'so the blip leaves every screen at once')
+    ok(m.airdrop.outcome
+       and tostring(m.airdrop.outcome.why):find('no POI qualifies', 1, true) ~= nil,
+        'and the outcome says no POI fits the new circle',
+        m.airdrop.outcome and m.airdrop.outcome.why)
+end
+
+describe('server: #386 -- inside the circle it was sited against, the wall still calls a drop off')
+do
+    -- THE HALF OF 2026-08-23 THAT WAS ABOUT SAFETY. The next circle is the one the
+    -- drop was sited against, so siting already held it inside; what refuses it
+    -- here is the wall at the landing instant. That is not a reason to move it --
+    -- the circle has not changed -- so it is called off.
     reset()
     local m = newMatch(1)
     BR.Airdrop.begin(m)
@@ -4585,37 +4794,68 @@ do
     tick()
     local rec = m.airdrop.waiting[1].rec
     local s1 = m.storm
-    local lsia = BR.Config.Map.GetPOI('lsia')
-    local dx, dy = lsia.x - rec.x, lsia.y - rec.y
-    local len = math.sqrt(dx * dx + dy * dy)
-    if len < 1.0 then dx, dy, len = 1.0, 0.0, 1.0 end
-    local tx, ty = rec.x + dx / len * 2400.0, rec.y + dy / len * 2400.0
-    -- Started ten minutes ago: no hold left and the sweep long finished.
-    m.storm = BR.BuildStormRecord(2, s1.cx1, s1.cy1, s1.r1, tx, ty, 1600.0,
-        gameMs - 600000, 0, 60000, 1.25, s1.seed)
+    local poi0 = rec.poi
+    -- The same phase and the same next circle; the wall it holds at stands six
+    -- kilometers away.
+    m.storm = BR.BuildStormRecord(s1.phase, rec.x + 6000.0, rec.y, 1000.0,
+        s1.cx1, s1.cy1, s1.r1, gameMs, 24 * 60 * 60 * 1000, 1000, 1.0, s1.seed)
+    ok(not BR.AirdropNextCircleChanged(BR.AirdropNextCircleOf(s1), m.storm),
+        'the next circle is the one it was sited against')
     standAt(101, rec.x, rec.y, 0.0)
     gameMs = gameMs + 1000
     tick()
     eq(#m.airdrop.live, 0, 'a player standing on it cannot arm it')
     eq(#spawned, 0, 'so no crate is put on the ground at the wall')
+    eq(rec.poi, poi0, 'and it is not moved')
+    eq(views[m][rec.n] and views[m][rec.n].tGone, gameMs, 'it is called off, and said so')
     ok(m.airdrop.outcome
        and tostring(m.airdrop.outcome.why):find('wall moved off it', 1, true),
         'and the outcome names the wall', m.airdrop.outcome and m.airdrop.outcome.why)
 end
 
-describe('server: #386 swept -- nobody ever stands at a blip that is waiting')
+describe('server: #386 -- a drop sited where a player already stands arms on the same tick')
+do
+    -- The gate used to run before the siting in each tick, so a drop sited on a
+    -- player showed as waiting, with somebody inside 200m, for one second.
+    reset()
+    local m = newMatch(1)
+    local lsia = BR.Config.Map.GetPOI('lsia')
+    local justOne = A.insideBy / math.min(BR.StormUnit(0, 0).inradius,
+        BR.StormUnit(0, 1).inradius) + 1.0
+    m.storm = BR.BuildStormRecord(1, lsia.x, lsia.y, justOne,
+        lsia.x, lsia.y, justOne, gameMs, 24 * 60 * 60 * 1000, 1000, 1.0)
+    BR.Airdrop.begin(m)
+    onlyDrop(m)
+    standAt(101, lsia.x, lsia.y, 50.0)
+    tick()
+    eq(#m.airdrop.waiting, 0, 'it is never waiting with a player on it')
+    eq(#m.airdrop.live, 1, 'it arms on the tick it is announced')
+    local recs, armed = onScreen(m, gameMs)
+    ok(#recs == 1 and armed == 1, 'and every screen gets the arm on that tick')
+end
+
+describe('server: #386 swept -- no blip a player can stand at is a dead drop, and every crate lands inside the next circle')
 do
     -- ═══ THE REPORT AS AN INVARIANT, OVER MATCHES WITH A MOVING STORM ═══
     --
     -- After every tick, on every screen: no blip marks a drop that is still
-    -- waiting while a living player stands within `armWithin` of it. The tick
-    -- either armed it or took it down, and those are the only two honest
-    -- answers. Two players a match start inside circle 1 and walk to each blip
-    -- as it appears -- on foot, sprinting or driving -- and stop up to 150m short
-    -- of the point, which is "close" as the owner meant it.
+    -- waiting while a living player stands within `armWithin` of it. Two players
+    -- a match start inside circle 1 and walk to each blip as it appears -- on
+    -- foot, sprinting or driving -- and stop up to 150m short of the point, which
+    -- is "close" as the owner meant it.
     --
-    -- AND THE SAFETY HALF, MEASURED RATHER THAN TRUSTED: every crate that lands
-    -- is 250m inside the wall standing at its landing instant.
+    -- THE ROOT CAUSE, NOT ONLY ITS SYMPTOM. A drop the storm left behind used to
+    -- be dropped without a word, which the ghost count catches. Calling it off
+    -- out loud instead would take its blip away and leave no ghost, and players
+    -- would still lose drops they walked to. So every call-off after a new next
+    -- circle is checked against the siting rule: if any POI qualified, the drop
+    -- should have moved there, and that is a lost drop.
+    --
+    -- AND WHERE THE CRATES LAND, MEASURED RATHER THAN TRUSTED: 250m inside the
+    -- wall at the landing instant, and 250m inside the next circle. If the storm
+    -- draws another next circle while the crate is falling -- the flight is half
+    -- a minute, and nothing can move a crate that has left the aircraft -- it is
+    -- measured against the circle that was drawn when it left.
     reset()
     local MATCHES, SECONDS = 20, 800
     local SPEEDS = { 6.0, 7.5, 25.0 }
@@ -4624,7 +4864,7 @@ do
         local anchor = BR.Rng(id * 104729):pick(BR.Config.Map.POIs)
         local prng = BR.Rng(id * 15485863)
         m.sweep = { rng = BR.Rng(id * 7919), seed = id * 7919,
-                    alone = (id % 2) == 1, ppl = {}, sited = {}, armedIn = {} }
+                    alone = (id % 2) == 1, ppl = {}, d = {} }
         for i = 1, 2 do
             local a = prng:float() * 2.0 * math.pi
             local d = math.sqrt(prng:float()) * 2000.0
@@ -4641,8 +4881,43 @@ do
         BR.Airdrop.begin(m)
     end
 
-    local ghosts, example, turnovers, lowest = 0, nil, 0, -math.huge
-    local landedSeen = 0
+    -- EVERY SEND, AS SENT. `published` holds the server's own table, which a move
+    -- and an arm on one tick have both written to by the time it is read.
+    local realToMatch = BR.Broadcast.toMatch
+    local sends = {}
+    BR.Broadcast.toMatch = function(m, event, payload)
+        realToMatch(m, event, payload)
+        if event == BR.Net.AIRDROP_SYNC and type(payload) == 'table' then
+            local snap = {}
+            for k, v in pairs(payload) do snap[k] = v end
+            sends[#sends + 1] = { m = m, rec = snap, storm = m.storm }
+        end
+    end
+
+    --- Would the siting rule have found this drop a POI, at `now`?
+    local function anySite(m, n, now)
+        local taken = {}
+        for _, list in ipairs({ m.airdrop.waiting, m.airdrop.live }) do
+            for _, e in ipairs(list) do
+                if e.rec.n ~= n then taken[e.rec.poi] = true end
+            end
+        end
+        local pois = {}
+        for _, p in ipairs(BR.Config.Map.POIs) do
+            if not taken[p.id] then pois[#pois + 1] = p end
+        end
+        return #BR.AirdropSitesIn(pois,
+            BR.AirdropLandingCircles(m.storm, now, A, A.blipMaxMs),
+            A.insideBy, BR.LootPlaceable) > 0
+    end
+    local function destDepth(storm, x, y)
+        return BR.AirdropDepth({ { x = storm.cx1, y = storm.cy1, r = storm.r1,
+                                   shape = BR.StormTarget(storm) } }, x, y)
+    end
+
+    local ghosts, example = 0, nil
+    local moved, movedArmed, badMove, calledOff, lost, lostEx = 0, 0, 0, 0, 0, nil
+    local turnovers, landedSeen, wallWorst, nextWorst = 0, 0, -math.huge, -math.huge
     for _ = 1, SECONDS do
         gameMs = gameMs + 1000
         for _, m in ipairs(matches) do
@@ -4668,10 +4943,48 @@ do
             end
         end
         local landedBefore = #spawned
+        sends = {}
         tick()
+
+        for _, s in ipairs(sends) do
+            local m, rec = s.m, s.rec
+            local d = m.sweep.d[rec.n]
+            if not d then
+                d = { next = BR.AirdropNextCircleOf(s.storm) }
+                d.first = d.next
+                m.sweep.d[rec.n] = d
+            end
+            if rec.tMoved and rec.tMoved ~= d.tMoved then
+                moved = moved + 1
+                d.tMoved, d.moved = rec.tMoved, true
+                d.next = BR.AirdropNextCircleOf(s.storm)
+                if not BR.AirdropInside(
+                        BR.AirdropLandingCircles(s.storm, rec.tMoved, A, A.blipMaxMs),
+                        rec.x, rec.y, A.insideBy) then
+                    badMove = badMove + 1
+                end
+            end
+            if rec.tGone and not d.gone then
+                d.gone = true
+                calledOff = calledOff + 1
+                if BR.AirdropNextCircleChanged(d.next, s.storm)
+                   and anySite(m, rec.n, rec.tGone) then
+                    lost = lost + 1
+                    lostEx = lostEx or ('match %d drop %d called off at %s with a POI '
+                        .. 'that qualified'):format(m.id, rec.n, tostring(rec.poi))
+                end
+            end
+            if BR.AirdropArmed(rec) and not d.armed then
+                d.armed, d.armStorm = true, s.storm
+                if d.moved then movedArmed = movedArmed + 1 end
+                if BR.AirdropNextCircleChanged(d.first, s.storm) then
+                    turnovers = turnovers + 1
+                end
+            end
+        end
+
         for _, m in ipairs(matches) do
             for _, rec in ipairs(onScreen(m, gameMs)) do
-                m.sweep.sited[rec.n] = m.sweep.sited[rec.n] or m.storm.phase
                 if not BR.AirdropArmed(rec) then
                     for _, p in ipairs(m.sweep.ppl) do
                         local d = BR.Dist(p.x, p.y, rec.x, rec.y)
@@ -4682,35 +4995,46 @@ do
                                 :format(m.id, rec.n, d)
                         end
                     end
-                elseif not m.sweep.armedIn[rec.n] then
-                    m.sweep.armedIn[rec.n] = m.storm.phase
-                    if m.storm.phase ~= m.sweep.sited[rec.n] then
-                        turnovers = turnovers + 1
-                    end
                 end
             end
         end
         for i = landedBefore + 1, #spawned do
             local s = spawned[i]
             local rec = views[s.m][s.stack.airdrop]
+            local d = s.m.sweep.d[rec.n]
             local x, y, r, _, _, _, t = BR.StormAt(s.m.storm, rec.tLand)
-            local depth = BR.AirdropDepth(
+            local wd = BR.AirdropDepth(
                 { { x = x, y = y, r = r, shape = BR.StormWall(s.m.storm, t) } },
                 rec.x, rec.y)
-            if depth > lowest then lowest = depth end
+            if wd > wallWorst then wallWorst = wd end
+            local under = s.m.storm
+            if BR.AirdropNextCircleChanged(BR.AirdropNextCircleOf(d.armStorm), under) then
+                under = d.armStorm
+            end
+            local nd = destDepth(under, rec.x, rec.y)
+            if nd > nextWorst then nextWorst = nd end
             landedSeen = landedSeen + 1
         end
     end
+    BR.Broadcast.toMatch = realToMatch
 
     eq(ghosts, 0, 'no screen ever shows a waiting drop with a player beside it'
         .. (example and (' -- e.g. ' .. example) or ''))
+    eq(lost, 0, 'no drop is called off after a new next circle while a POI qualified'
+        .. (lostEx and (' -- e.g. ' .. lostEx) or ''))
+    ok(moved > 0, 'the storm really does turn over under waiting drops, and they move',
+        moved)
+    eq(badMove, 0, 'every move lands on a point the siting rules accept')
+    ok(movedArmed > 0, 'and players reach moved drops and arm them', movedArmed)
     ok(turnovers > 0,
-        'and the case is really reached: drops sited in one phase armed in a later one',
-        turnovers)
+        'drops announced under one next circle arm under a later one', turnovers)
     ok(landedSeen > MATCHES / 2, 'plenty of crates land', landedSeen)
-    ok(lowest <= -A.insideBy + 1.0,
+    ok(wallWorst <= -A.insideBy + 1e-6,
         'every one of them 250m inside the wall at its landing instant',
-        ('the shallowest was %.1fm inside'):format(-lowest))
+        ('the shallowest was %.1fm inside'):format(-wallWorst))
+    ok(nextWorst <= -A.insideBy + 1e-6,
+        'and 250m inside the next circle as it lands',
+        ('the shallowest was %.1fm inside'):format(-nextWorst))
 end
 
 describe('server: #386 -- /brairdrop says who is nearest a waiting drop and why it has not armed')
@@ -4768,8 +5092,10 @@ do
 
     -- ═══ AND EVERY DROP THAT ENDED SAYS WHY ═══
     --
-    -- `outcome` holds only the latest, so a match whose first drop the wall took
+    -- `outcome` holds only the latest, so a match whose first drop the storm took
     -- and whose second nobody reached printed one reason for two empty skies.
+    -- The new next circle here is off the map, so there is nowhere to move drop 1
+    -- (#386) and it is called off.
     local s1 = m.storm
     m.storm = BR.BuildStormRecord(2, s1.cx1 + 9000.0, s1.cy1, 900.0,
         s1.cx1 + 9000.0, s1.cy1, 900.0, gameMs, 24 * 60 * 60 * 1000, 1000, 1.0)
@@ -4781,8 +5107,9 @@ do
     logs = {}
     commands['brairdrop'](0, {}, '')
     said = table.concat(logs, '\n')
-    ok(said:find('NO DROP: drop 1 the wall moved off it', 1, true) ~= nil,
-        'the drop the wall took is listed with the rule that refused it', said)
+    ok(said:find('NO DROP: drop 1 the storm drew a new next circle (stage 2) while '
+                 .. 'it waited and no POI qualifies', 1, true) ~= nil,
+        'the drop the storm took is listed with the rule that refused it', said)
     ok(said:find('NO DROP: drop 2 nobody came', 1, true) ~= nil,
         'and so is the one nobody reached, on a line of its own', said)
 
@@ -7001,6 +7328,57 @@ do
         'and the server calling it off')
     ok(joined:find('I am 300m from it', 1, true) ~= nil,
         'and /brairdrop says how far this player is from a waiting drop', joined)
+end
+
+describe('client: #386 -- a drop the storm moves takes both blips to the new point')
+do
+    -- Owner, 2026-10-04 (option 3): when a new next circle leaves a waiting drop
+    -- behind, the server puts it on another POI and sends the same drop again.
+    -- Every screen moves the blip; nothing is announced twice.
+    clientReset()
+    me.x, me.y = 1100.0 + 300.0, 1200.0
+    local said = {}
+    local realPrintFn = print
+    print = function(s) said[#said + 1] = tostring(s) end
+
+    local rec = announceSited()
+    local cues = cueCount('airdrop.inbound')
+    -- A fresh table, as the wire delivers it.
+    local moved = {}
+    for k, v in pairs(rec) do moved[k] = v end
+    BR.MoveAirdropRecord(moved, { id = 'sandy', x = 1100.0, y = 1200.0, z = 45.0 },
+        gameMs)
+    fire(BR.Net.AIRDROP_SYNC, moved)
+    print = realPrintFn
+
+    eq(blipCount(), 2, 'still exactly two blips, the map and the minimap')
+    ok(mapBlip() and mapBlip().x == 1100.0 and mapBlip().y == 1200.0,
+        'the map blip is on the new point')
+    ok(miniBlip() and miniBlip().x == 1100.0 and miniBlip().y == 1200.0,
+        'and so is the minimap one')
+    render()
+    ok(mapBlip() and mapBlip().x == 1100.0 and blipCount() == 2,
+        'and the render pass keeps them there')
+    eq(cueCount('airdrop.inbound'), cues, 'a move is not a second announcement')
+    local joined = table.concat(said, '\n')
+    ok(joined:find('[br_core] airdrop: drop 1 moved by the server from lsia (100, 200) '
+                   .. 'to sandy (1100, 1200), 300m from me', 1, true) ~= nil,
+        'the F8 line says from where, to where, and how far away I am', joined)
+
+    -- A GARBLED STAMP is a malformed record, refused like one.
+    local bad = {}
+    for k, v in pairs(moved) do bad[k] = v end
+    bad.x, bad.tMoved = 5000.0, 'later'
+    fire(BR.Net.AIRDROP_SYNC, bad)
+    ok(mapBlip() and mapBlip().x == 1100.0, 'a garbled move changes nothing')
+
+    -- And the arm that follows is an arm, at the new point.
+    said = {}
+    print = function(s) said[#said + 1] = tostring(s) end
+    armSited(moved)
+    print = realPrintFn
+    ok(table.concat(said, '\n'):find('drop 1 armed at sandy (1100, 1200)', 1, true) ~= nil,
+        'and the arm that follows is logged at the new point', table.concat(said, '\n'))
 end
 
 describe('client: a sited drop is a blip and NOTHING ELSE')

@@ -47,11 +47,18 @@
 -- the drop is abandoned at exactly the instant the blip goes out -- one clock,
 -- one question (BR.AirdropExpired). It counts as SPENT rather than retried.
 --
--- AND WHEN THE WALL ABANDONS IT, THE CLIENTS ARE TOLD (#386). tryArm also gives
--- a waiting drop up before its ceiling when the wall would be too close to where
--- the crate lands. That used to send nothing, so the blip marked a crate that was
--- never coming until the ceiling, and the match ran at it and stood beside it.
--- The record now goes out once more stamped `tGone`, and every blip goes with it.
+-- AND WHEN THE STORM DRAWS A NEW NEXT CIRCLE, THE DROP MOVES (#386, owner
+-- 2026-10-04: option 3). A drop waits longer than a storm phase lasts. When a new
+-- next circle leaves its point behind, the drop goes to the nearest POI that
+-- passes the siting rules against the new circle. The record is re-sent and every
+-- blip moves with it. Drops still land only inside the next circle (2026-08-23).
+--
+-- AND WHEN THE SERVER CALLS ONE OFF, THE CLIENTS ARE TOLD (#386). That happens
+-- when the wall closes on a drop inside the circle it was sited against, when no
+-- POI fits a new next circle, or when the storm record is lost. It used to send
+-- nothing, so the blip marked a crate that was never coming until the ceiling,
+-- and the match ran at it and stood beside it. The record now goes out once more
+-- stamped `tGone`, and every blip goes with it.
 --
 -- WHY THE CRATE IS A LOOT REGISTRY ENTRY RATHER THAN A NEW OBJECT.
 --
@@ -193,6 +200,33 @@ end
 -- Committing
 -- ---------------------------------------------------------------------------
 
+--- The POIs that no waiting or falling drop is already on. See the block in
+--- trySite for why the list is filtered this way. A move (#386) uses the same
+--- filter, so a drop is never moved onto another drop's POI.
+---
+--- THE WHOLE TABLE, UNCOPIED, WHEN NOTHING IS OUT, so a scheduled drop sees
+--- exactly the list it always did.
+--- @param st table   m.airdrop
+--- @return table[]
+local function freePois(st)
+    local pois = BR.Config.Map.POIs
+    local taken = nil
+    for _, list in ipairs({ st.waiting or {}, st.live or {} }) do
+        for _, e in ipairs(list) do
+            if e.rec and e.rec.poi then
+                taken = taken or {}
+                taken[e.rec.poi] = true
+            end
+        end
+    end
+    if not taken then return pois end
+    local free = {}
+    for _, p in ipairs(pois) do
+        if not taken[p.id] then free[#free + 1] = p end
+    end
+    return free
+end
+
 --- Try to SITE a pending schedule entry and announce it.
 ---
 --- ═══ THIS USED TO BE THE WHOLE DROP AND IS NOW HALF OF IT ═══
@@ -312,24 +346,8 @@ local function trySite(m, p, now)
     -- drop now: the schedule never announces one while another is out. A console
     -- drop sited beside one that is still waiting or in flight passes a table one
     -- POI shorter to the same rng, and that is the mechanism that keeps them
-    -- apart.
-    local pois = BR.Config.Map.POIs
-    local taken = nil
-    for _, list in ipairs({ m.airdrop.waiting or {}, m.airdrop.live or {} }) do
-        for _, e in ipairs(list) do
-            if e.rec and e.rec.poi then
-                taken = taken or {}
-                taken[e.rec.poi] = true
-            end
-        end
-    end
-    if taken then
-        local free = {}
-        for _, p in ipairs(pois) do
-            if not taken[p.id] then free[#free + 1] = p end
-        end
-        pois = free
-    end
+    -- apart. The filter itself is freePois, above.
+    local pois = freePois(m.airdrop)
 
     local poi, seen = BR.AirdropPickSiteIn(m.airdrop.rng, pois,
         circles, A.insideBy or 250.0, BR.LootPlaceable)
@@ -360,6 +378,10 @@ local function trySite(m, p, now)
         -- The nearest anybody has actually got, for the diagnostic. This is the
         -- number that retunes `armWithin` from a playtest instead of a guess.
         closest = math.huge,
+        -- THE NEXT CIRCLE IT WAS SITED AGAINST (#386). If the arm finds the
+        -- point outside a different next circle, the drop is moved. If the
+        -- circle is still this one, the wall closed on it and it is called off.
+        next = BR.AirdropNextCircleOf(m.storm),
     }
     m.airdrop.sent = (m.airdrop.sent or 0) + 1
     -- KEPT FOR THE WHOLE MATCH, whatever becomes of it. holdingDrop asks every
@@ -459,6 +481,54 @@ local function callOff(m, w, now)
     BR.Broadcast.toMatch(m, BR.Net.AIRDROP_SYNC, w.rec)
 end
 
+--- Move a waiting drop into the next circle the storm has just drawn (#386).
+---
+--- Owner, 2026-10-04 (option 3): when the storm has turned over and the waiting
+--- drop's point is outside the new next circle, move it to a fresh spot inside
+--- the new circle under the siting rules, and send a new blip. The 2026-08-23
+--- rule holds: drops land only inside the next circle.
+---
+--- THE SITING RULES, EXACTLY: BR.AirdropLandingCircles over the full
+--- `blipMaxMs` window (the wall at the soonest and latest landing, and the new
+--- next circle), `insideBy`, BR.LootPlaceable, and no POI another drop is on.
+--- Only the choice differs. The siting picks at random; a move takes the
+--- qualifying POI closest to the old point (BR.AirdropNearestSiteIn says why).
+---
+--- THE DROP KEEPS ITS PLACE IN THE MATCH. It keeps the same number, record,
+--- payout and heading. `sent` and `announced` do not change and nothing is
+--- re-announced, so a move is never an extra drop. The wait starts again from
+--- the move (BR.MoveAirdropRecord).
+--- @param m table
+--- @param w table      the waiting entry
+--- @param now number
+--- @param why string   why the old point failed, for the log line
+--- @return table|nil poi   where it went; nil when no POI qualifies anywhere
+--- @return integer seen
+--- @return table[] circles  what the new site was solved against
+local function moveDrop(m, w, now, why)
+    local rec = w.rec
+    local circles = BR.AirdropLandingCircles(m.storm, now, A, A.blipMaxMs or 240000)
+    local poi, seen = BR.AirdropNearestSiteIn(freePois(m.airdrop), circles,
+        A.insideBy or 250.0, BR.LootPlaceable, rec.x, rec.y)
+    if not poi then return nil, seen, circles end
+
+    local from, fx, fy = rec.poi, rec.x, rec.y
+    BR.MoveAirdropRecord(rec, poi, now)
+    w.next      = BR.AirdropNextCircleOf(m.storm)
+    w.moves     = (w.moves or 0) + 1
+    w.movedFrom = { poi = from, x = fx, y = fy, phase = m.storm.phase }
+    -- The closest anybody got to the OLD point says nothing about this one.
+    w.closest   = math.huge
+    BR.Broadcast.toMatch(m, BR.Net.AIRDROP_SYNC, rec)
+
+    print(('[br_core] airdrop: match %s drop %d MOVED from %s (%.0f, %.0f) to %s (%.0f, %.0f), %.0fm away -- %s. Nearest of %d POI(s) that qualify (%d circle(s), tightest r %.0f, margin %.0f); waits up to %.0fs again')
+        :format(BR.MatchTag(m.id), rec.n, tostring(from), fx, fy, tostring(poi.id),
+                poi.x, poi.y, BR.Dist(fx, fy, poi.x, poi.y), why, seen, #circles,
+                BR.AirdropTightest(circles), A.insideBy or 250.0,
+                (BR.AirdropBlipEndsAt(rec, A) - now) / 1000))
+    return poi, seen, circles
+end
+
 --- Has somebody come close enough to send the aircraft?
 ---
 --- ═══ A ONE-WAY LATCH, AND THAT ANSWERS "WHAT IF THEY DIE?" ═══
@@ -505,23 +575,35 @@ end
 --- SO THE POINT IS RE-ASKED AGAINST THE LANDING TIME THAT HAS JUST BECOME KNOWN.
 --- At siting the margin was solved against a four-minute WINDOW because the
 --- landing time was unknown (see trySite); here it is `now` plus the run-in plus
---- the fall, exactly.
+--- the fall, exactly, plus the circle the storm is shrinking toward. One
+--- function builds both -- BR.AirdropLandingCircles -- so the rule the drop was
+--- chosen under and the rule it is held to cannot drift apart.
 ---
---- ═══ AGAINST THE WALL, AND NO LONGER AGAINST THE DESTINATION (#386) ═══
+--- ═══ WHEN IT FAILS, WHICH CIRCLE IT FAILED DECIDES WHAT HAPPENS (#386) ═══
 ---
---- It also asked the zone the storm is closing toward. Inside the phase the drop
---- was sited in that is the zone siting already held it 250m inside, so it
---- refused nothing; once a new phase began during the wait it was a destination
---- drawn after the announcement, and it abandoned drops players had walked to
---- with their crates due to land deep inside the wall -- 114 of 284 in a 200-match
---- sweep. Owner, 2026-10-03: "Seems our airdrops don't always drop when people get
---- close to them..." See BR.AirdropArmCircles. The next-circle rule is held at
---- the siting, where it was given.
+--- Owner, 2026-10-03: "Seems our airdrops don't always drop when people get
+--- close to them..." A drop waits up to four minutes and a phase can be one, so
+--- the storm often draws a new next circle during the wait, and the old point is
+--- often outside it. That failure used to give the drop up and send nothing. In
+--- a 200-match sweep with players walking to each blip, 95 of 282 drops went that
+--- way, and 107 drops showed a waiting blip with a player inside 200m.
 ---
---- IT FIRES BEFORE ANYBODY IS MEASURED, deliberately. A point the wall is closing
---- on will not clear the margin again, so the honest moment to put the blip out is
---- the tick that notices -- not the one where somebody finally arrives. That is
---- the difference between abandoning a drop and abandoning a player's run to it.
+---   NEW NEXT CIRCLE   the storm has drawn a different next circle since the
+---                     drop was sited or last moved. The drop MOVES to the
+---                     nearest POI that passes the siting rules against it
+---                     (moveDrop; owner, 2026-10-04: option 3). If no POI
+---                     qualifies anywhere, it is called off.
+---   SAME NEXT CIRCLE  the siting already held the point inside this circle, so
+---                     what refused it is the wall at the landing instant. It
+---                     is called off.
+---
+--- A MOVED DROP IS MEASURED ON THE SAME TICK, at its new point, so a player who
+--- happens to be standing there arms it now rather than a second later.
+---
+--- IT FIRES BEFORE ANYBODY IS MEASURED, deliberately. A point that has stopped
+--- qualifying will not start again, so the honest moment to move it or put the
+--- blip out is the tick that notices -- not the one where somebody finally
+--- arrives at a crate that cannot come.
 ---
 --- AND PUTTING IT OUT IS SENT NOW (#386). See callOff.
 --- @param m table
@@ -556,16 +638,17 @@ local function tryArm(m, w, now)
         return 'expired'
     end
 
-    -- THE MARGIN, AGAINST THE WALL THIS DROP WOULD ACTUALLY LAND UNDER. See
-    -- BR.AirdropArmCircles for why that is the whole question here (#386).
+    -- THE MARGIN, AGAINST THE LANDING THIS DROP WOULD ACTUALLY HAVE. `waitMs` is
+    -- zero here and `blipMaxMs` at siting, and that one argument is the whole
+    -- difference between the two questions.
     --
     -- A FORCED DROP IS EXEMPT, because the whole of `/brairdrop <poiId>` is
     -- "put one here anyway" -- it bypasses the margin at siting and re-imposing
     -- it here would make the verb work only where the circle already agreed,
-    -- which is the case that never needed it.
-    local circles = BR.AirdropArmCircles(m.storm, now, A)
-    if not w.forced
-       and not BR.AirdropInside(circles, rec.x, rec.y, A.insideBy or 250.0) then
+    -- which is the case that never needed it. It is never moved either.
+    local margin = A.insideBy or 250.0
+    local circles = BR.AirdropLandingCircles(m.storm, now, A, 0)
+    if not w.forced and not BR.AirdropInside(circles, rec.x, rec.y, margin) then
         -- THE NUMBER THE REFUSAL ACTUALLY USED. This read the distance from the
         -- tightest circle's CENTRE against its radius, which stopped being the
         -- test at #349: a playtest handed "1350m from a circle of r 1600, margin
@@ -576,17 +659,37 @@ local function tryArm(m, w, now)
         -- SIGNED, WITH THE SIGN EXPLAINED, because both cases happen: the point
         -- can be inside the wall but no longer by the margin, or genuinely outside
         -- it, and "120m from the boundary" does not say which.
-        w.why = ('the wall moved off it while it waited -- %+.0fm to the '
-                 .. 'tightest boundary (r %.0f, positive is outside it), and '
-                 .. 'the margin is %.0fm')
+        local depth = ('%+.0fm to the tightest boundary (r %.0f, positive is '
+                       .. 'outside it), and the margin is %.0fm')
             :format(BR.AirdropDepth(circles, rec.x, rec.y),
-                    BR.AirdropTightest(circles), A.insideBy or 250.0)
-        print(('[br_core] airdrop: match %s drop %d abandoned at %s -- %s (closest player was %s)')
-            :format(BR.MatchTag(m.id), rec.n, tostring(rec.poi), w.why,
-                    w.closest < math.huge and ('%.0fm'):format(w.closest)
-                                           or 'nobody in the match'))
-        callOff(m, w, now)
-        return 'expired'
+                    BR.AirdropTightest(circles), margin)
+
+        local gone = nil
+        if not BR.AirdropNextCircleChanged(w.next, m.storm) then
+            gone = 'the wall moved off it while it waited -- ' .. depth
+        else
+            local turned = ('the storm drew a new next circle (stage %s) while it '
+                            .. 'waited -- %s'):format(tostring(m.storm.phase), depth)
+            local poi, _, window = moveDrop(m, w, now, turned)
+            if not poi then
+                gone = ('the storm drew a new next circle (stage %s) while it '
+                        .. 'waited and no POI qualifies %.0fm inside it (%d '
+                        .. 'circle(s), tightest r %.0f), so there was nowhere '
+                        .. 'to move it')
+                    :format(tostring(m.storm.phase), margin, #window,
+                            BR.AirdropTightest(window))
+            end
+        end
+
+        if gone then
+            w.why = gone
+            print(('[br_core] airdrop: match %s drop %d abandoned at %s -- %s (closest player was %s)')
+                :format(BR.MatchTag(m.id), rec.n, tostring(rec.poi), w.why,
+                        w.closest < math.huge and ('%.0fm'):format(w.closest)
+                                               or 'nobody in the match'))
+            callOff(m, w, now)
+            return 'expired'
+        end
     end
 
     local d = BR.AirdropClosest(watchers(m), rec.x, rec.y)
@@ -733,7 +836,9 @@ end
 ---              with one player runs the storm at its minimum shrink times, so
 ---              the wall moving under a waiting drop is the common case there too.
 ---              (Since #386 the abandonment is SENT, stamped `tGone`, and the
----              blip goes at that instant -- which is when it times out here.)
+---              blip goes at that instant -- which is when it times out here.
+---              And a drop a new next circle leaves behind is MOVED, not
+---              abandoned: the same record, so it holds the match as one drop.)
 ---
 --- The sweep that shipped it held the storm still for a day and counted
 --- `#waiting + #live`, so it could reach neither. Both are now asked in the
@@ -748,7 +853,9 @@ end
 ---
 --- STILL BOUNDED, which is what #343 needs. Every unopened record reaches its
 --- ceiling, so no drop holds the schedule forever -- at worst `blipMaxMs` for
---- the wait, the flight, `blipMaxMs` from the arm and `nextDropAfterMs`.
+--- the wait, the flight, `blipMaxMs` from the arm and `nextDropAfterMs`. A move
+--- (#386) restarts the wait, but only when the storm draws a new next circle,
+--- and a match draws a handful of those.
 ---
 --- A DROP IN `pending` HOLDS NOTHING, which is what closes #343's other finding
 --- here. Removing the phase cap took the retry loop's terminator away, so a drop
@@ -777,6 +884,48 @@ local function holdingDrop(st, now)
     return holder, untilAt
 end
 
+--- Run the 200m gate on one waiting drop, and file it by what happened.
+--- @param m table
+--- @param st table   m.airdrop
+--- @param i integer  its index in st.waiting
+--- @param now number
+local function gate(m, st, i, now)
+    local w = st.waiting[i]
+    local outcome = tryArm(m, w, now)
+    if outcome == 'armed' then
+        table.remove(st.waiting, i)
+        st.live[#st.live + 1] = w
+    elseif outcome == 'expired' then
+        -- NO CRATE FOR THIS DROP, EVER (owner, 2026-08-22: "if nobody goes to
+        -- the area where the drop is ready to happen within the allotted time,
+        -- then no drop should happen"). The entry is dropped and NOT returned to
+        -- `pending`: `sent` was already counted at the announcement, so
+        -- `perMatch` reads this one as spent rather than retrying it somewhere
+        -- else. The match's OTHER scheduled drop keeps its own entry, its own
+        -- delay and its own gate, and stays deferred until this one's blip is
+        -- gone and `nextDropAfterMs` more (#355, holdingDrop).
+        --
+        -- THE CLIENTS ALREADY KNOW. When this is the blip's own ceiling, their
+        -- blip expires off the same record and the same clock at the same
+        -- instant -- see BR.AirdropExpired. When tryArm called it off, it has
+        -- just sent the record stamped `tGone` (#386), and that is the instant
+        -- it timed out for holdingDrop too.
+        table.remove(st.waiting, i)
+        -- WHY, IN THE ABANDONER'S OWN WORDS. A waiting drop ends without landing
+        -- because nobody came, the storm passed the phase cap or lost its record,
+        -- the wall closed on the point, or no POI fit a new next circle --
+        -- and /brairdrop printing the first one for all of them is how a
+        -- playtest chases the wrong bug.
+        st.outcome = {
+            n = w.rec.n, poi = w.rec.poi,
+            why = w.why or 'nobody came within range before the blip expired',
+            closest = w.closest,
+        }
+        st.ended = st.ended or {}
+        st.ended[#st.ended + 1] = st.outcome
+    end
+end
+
 BR.Sched.every(1000, 'airdrop.tick', function()
     local now = GetGameTimer()
 
@@ -803,45 +952,7 @@ BR.Sched.every(1000, 'airdrop.tick', function()
         -- AT. The roster's positions are sampled at 4Hz and a sprinting player
         -- covers about seven metres a second, so the worst this costs is a
         -- second of delay on a 200m threshold.
-        for i = #st.waiting, 1, -1 do
-            local w = st.waiting[i]
-            local outcome = tryArm(m, w, now)
-            if outcome == 'armed' then
-                table.remove(st.waiting, i)
-                st.live[#st.live + 1] = w
-            elseif outcome == 'expired' then
-                -- NO CRATE FOR THIS DROP, EVER (owner, 2026-08-22: "if nobody
-                -- goes to the area where the drop is ready to happen within the
-                -- allotted time, then no drop should happen"). The entry is
-                -- dropped and NOT returned to `pending`: `sent` was already
-                -- counted at the announcement, so `perMatch` reads this one as
-                -- spent rather than retrying it somewhere else. The match's OTHER
-                -- scheduled drop keeps its own entry, its own delay and its own
-                -- gate, and stays deferred until this one's blip is gone and
-                -- `nextDropAfterMs` more (#355, holdingDrop).
-                --
-                -- THE CLIENTS ALREADY KNOW. When this is the blip's own ceiling,
-                -- their blip expires off the same record and the same clock at
-                -- the same instant -- see BR.AirdropExpired. When it is the wall
-                -- or the storm record, tryArm has just sent the record stamped
-                -- `tGone` (#386), and that is the instant it timed out for
-                -- holdingDrop too.
-                table.remove(st.waiting, i)
-                -- WHY, IN THE ABANDONER'S OWN WORDS. There are three ways a
-                -- waiting drop ends without landing now -- nobody came, the
-                -- storm passed the phase cap, or the wall closed on the point
-                -- -- and /brairdrop printing the first one for all three is how
-                -- a playtest chases the wrong bug.
-                st.outcome = {
-                    n = w.rec.n, poi = w.rec.poi,
-                    why = w.why
-                        or 'nobody came within range before the blip expired',
-                    closest = w.closest,
-                }
-                st.ended = st.ended or {}
-                st.ended[#st.ended + 1] = st.outcome
-            end
-        end
+        for i = #st.waiting, 1, -1 do gate(m, st, i, now) end
 
         -- ─── ONE AT A TIME (#355) ─── the schedule may not announce a second drop
         -- until the first has been opened or timed out and `nextDropAfterMs` has
@@ -884,7 +995,13 @@ BR.Sched.every(1000, 'airdrop.tick', function()
                 if outcome ~= 'wait' then
                     table.remove(st.pending, i)
                     removed = true
-                    if outcome == 'phase' then
+                    if outcome == 'sited' then
+                        -- SOMEBODY MAY ALREADY BE STANDING THERE (#386). The
+                        -- gate above ran before this drop existed, so without
+                        -- this it would show as waiting, with a player inside
+                        -- 200m, until the next tick.
+                        gate(m, st, #st.waiting, now)
+                    elseif outcome == 'phase' then
                         -- THE SAME TWO REASONS trySite prints, and the same
                         -- rule about naming a cap that is not in force.
                         st.outcome = {
@@ -1015,17 +1132,30 @@ local function explainWaiting(m, w, now)
            .. 'further than %.0fm)')
         :format(#counted + #skipped, #counted, #skipped, far, within * 2.0))
 
+    -- WHERE IT HAS BEEN, if the storm has moved it (#386).
+    if w.movedFrom then
+        print(('      moved %d time(s) -- last from %s (%.0f, %.0f) when the storm '
+               .. 'drew the stage %s next circle')
+            :format(w.moves or 1, tostring(w.movedFrom.poi), w.movedFrom.x,
+                    w.movedFrom.y, tostring(w.movedFrom.phase)))
+    end
+
     -- THE OTHER THING THAT DECIDES IT, read the way tryArm reads it.
     if w.forced then
         print('      forced with /brairdrop <poiId>: the wall margin is not asked')
     elseif not m.storm then
         print('      there is no storm record -- the next tick calls it off')
     else
-        local depth = BR.AirdropDepth(BR.AirdropArmCircles(m.storm, now, A),
+        local depth = BR.AirdropDepth(BR.AirdropLandingCircles(m.storm, now, A, 0),
             rec.x, rec.y)
         if depth <= -margin then
             print(('      if it armed now its crate would land %.0fm inside the '
-                   .. 'wall (needs %.0fm)'):format(-depth, margin))
+                   .. 'wall and the next circle (needs %.0fm)'):format(-depth, margin))
+        elseif BR.AirdropNextCircleChanged(w.next, m.storm) then
+            print(('      the storm has drawn a new next circle since it was sited: '
+                   .. '%+.0fm to the boundary (positive is outside it), needs %.0fm '
+                   .. 'inside -- the next tick moves it, or calls it off if no POI '
+                   .. 'qualifies'):format(depth, margin))
         else
             print(('      if it armed now the wall would refuse it: %+.0fm to the '
                    .. 'boundary (positive is outside it), needs %.0fm inside -- the '

@@ -510,10 +510,11 @@ end
 --- logs he had. Four sends a drop at most, so it costs nothing.
 --- @param rec table
 --- @param what string
-local function logSync(rec, what)
-    print(('[br_core] airdrop: drop %d %s at %s (%.0f, %.0f), %.0fm from me')
-        :format(math.tointeger(rec.n) or 1, what, tostring(rec.poi), rec.x, rec.y,
-                myDistance(rec)))
+--- @param prep string|nil  the word before the place; 'at' unless it moved there
+local function logSync(rec, what, prep)
+    print(('[br_core] airdrop: drop %d %s %s %s (%.0f, %.0f), %.0fm from me')
+        :format(math.tointeger(rec.n) or 1, what, prep or 'at', tostring(rec.poi),
+                rec.x, rec.y, myDistance(rec)))
 end
 
 RegisterNetEvent(BR.Net.AIRDROP_SYNC)
@@ -528,6 +529,7 @@ AddEventHandler(BR.Net.AIRDROP_SYNC, function(rec)
     if type(rec.tStart) ~= 'number' then return end
     if rec.tLand ~= nil and type(rec.tLand) ~= 'number' then return end
     if rec.tGone ~= nil and type(rec.tGone) ~= 'number' then return end
+    if rec.tMoved ~= nil and type(rec.tMoved) ~= 'number' then return end
 
     local n = math.tointeger(rec.n) or 1
 
@@ -575,22 +577,34 @@ AddEventHandler(BR.Net.AIRDROP_SYNC, function(rec)
     -- WHAT THIS SEND CHANGED, for the F8 line. Read off flags the wrapper took
     -- when the last send arrived rather than off its record, which a re-send may
     -- be the very same table as.
+    --
+    -- A MOVE IS A RE-SEND TOO (#386). When the storm draws a new next circle that
+    -- leaves a waiting drop behind, the server puts it on another POI and sends
+    -- the same drop again with a new `tMoved`. The replacement below puts both
+    -- blips on the new point. It is not an announcement, so there is no cue.
+    -- Where it was comes off the wrapper, because only this client knows what
+    -- it was showing.
     local prev = drops[n]
-    local what = 're-sent'
+    local what, prep = 're-sent', nil
     if rec.tOpen ~= nil and not (prev and prev.openSeen) then
         what = 'opened'
     elseif BR.AirdropArmed(rec) and not (prev and prev.armedSeen) then
         what = 'armed'
     elseif not prev then
         what = 'announced'
+    elseif rec.tMoved ~= nil and rec.tMoved ~= prev.movedSeen then
+        what = ('moved by the server from %s (%.0f, %.0f)')
+            :format(tostring(prev.poi), prev.x or 0.0, prev.y or 0.0)
+        prep = 'to'
     end
 
     removeDrop(n)   -- a re-send replaces
 
     local d = { rec = rec, armedSeen = BR.AirdropArmed(rec),
-                openSeen = rec.tOpen ~= nil }
+                openSeen = rec.tOpen ~= nil, movedSeen = rec.tMoved,
+                poi = rec.poi, x = rec.x, y = rec.y }
     drops[n] = d
-    logSync(rec, what)
+    logSync(rec, what, prep)
 
     -- THE BLIP GOES UP THE MOMENT THE DROP IS ANNOUNCED, rather than on the
     -- first frame that agrees it is due: the notification the player just read
@@ -1804,9 +1818,10 @@ RegisterCommand('brairdrop', function(_, args)
                 if type(t) ~= 'number' then return '--' end
                 return ('%+.1fs'):format((t - now) / 1000)
             end
-            print(('    tStart %s, tArm %s, tRelease %s, tLand %s, blip goes %s')
-                :format(at(rec.tStart), at(rec.tArm), at(rec.tRelease),
-                        at(rec.tLand), at(BR.AirdropBlipEndsAt(rec, A))))
+            print(('    tStart %s, tMoved %s, tArm %s, tRelease %s, tLand %s, blip goes %s')
+                :format(at(rec.tStart), at(rec.tMoved), at(rec.tArm),
+                        at(rec.tRelease), at(rec.tLand),
+                        at(BR.AirdropBlipEndsAt(rec, A))))
             -- ═══ ARMED OR STILL WAITING, WHICH IS THE FIRST THING TO ASK NOW ═══
             --
             -- A blip with no plane and no crate is a legitimate state since the
@@ -1836,7 +1851,8 @@ RegisterCommand('brairdrop', function(_, args)
                         rec.tOpen
                             and ('open + %.0fs'):format((A.blipAfterOpenMs or 60000) / 1000)
                             or  ('%s + %.0fs (cap)'):format(
-                                    rec.tArm and 'arm' or 'announce',
+                                    rec.tArm and 'arm'
+                                        or (rec.tMoved and 'move' or 'announce'),
                                     (A.blipMaxMs or 240000) / 1000)))
             print(('    released %s, landed %s, blip should be up %s, expired %s')
                 :format(tostring(BR.AirdropReleased(rec, now)),

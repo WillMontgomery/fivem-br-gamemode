@@ -138,9 +138,10 @@ BR.Config.Airdrop = {
     --   OPENED     `tOpen`, the moment a player opened the crate.
     --   TIMED OUT  the moment its blip goes out unopened -- `blipMaxMs` after the
     --              arm if it landed and nobody opened it, `blipMaxMs` after the
-    --              announcement if nobody came. A drop the server CALLS OFF early
-    --              because the wall closed on it times out the moment it does:
-    --              the record goes out stamped `tGone` and every blip goes with it
+    --              announcement (or its last move, #386) if nobody came. A drop
+    --              the server CALLS OFF early -- the wall closed on it, or no POI
+    --              fits a new next circle -- times out the moment it does: the
+    --              record goes out stamped `tGone` and every blip goes with it
     --              (#386).
     --
     -- Until one of them happens the first drop holds the schedule however long it
@@ -727,29 +728,30 @@ BR.Config.Airdrop = {
     -- exact. And the arm re-asks it against the landing time that has just
     -- become known. See BR.AirdropLandingCircles.
     --
-    -- ═══ THE ARM ASKS THE WALL ONLY, SINCE #386 ═══
+    -- ═══ AND A DROP A NEW NEXT CIRCLE LEAVES BEHIND IS MOVED (#386) ═══
     --
-    -- It used to ask the next circle too, and this block called what that cost
-    -- "the rarer of the two evils". IT WAS NOT RARE. Inside the phase a drop was
-    -- sited in, the next circle is the one siting already held it inside, so the
-    -- question refused nothing; once a NEW phase began during the wait it was
-    -- that phase's destination, drawn after the announcement. Over 200 simulated
-    -- matches with players walking to each blip, 114 of 284 drops were abandoned
-    -- that way -- every one with its crate due to land 250m or more inside the
-    -- wall -- and the blip stayed up over 97 of them while somebody stood there.
-    -- Owner, 2026-10-03: "Seems our airdrops don't always drop when people get
-    -- close to them..."
+    -- This block used to call the cost of the arm's re-check "the rarer of the
+    -- two evils": a storm that turns over a whole phase while somebody walks
+    -- leaves the point outside the new next circle, and the drop was abandoned.
+    -- IT WAS NOT RARE. A wait is up to four minutes and a phase can be one. Over
+    -- 200 simulated matches with players walking to each blip, 95 of 282 drops
+    -- were abandoned that way, with nothing sent, and 107 drops showed a waiting
+    -- blip with a player inside 200m. Owner, 2026-10-03: "Seems our airdrops
+    -- don't always drop when people get close to them..."
     --
-    -- So the next-circle rule is held at the siting, where the owner gave it, and
-    -- the arm asks only that the crate touch down `insideBy` inside the wall it
-    -- lands under -- the 2026-08-23 complaint, "aidrops aren't spawning within
-    -- the circle at all times", is still answered at the instant it was about. A
-    -- drop that fails that is called off, and the clients are told (#386).
+    -- Owner, 2026-10-04 (option 3): MOVE it. When the next circle has changed
+    -- since the drop was sited and the point fails the re-check, the drop goes
+    -- to the nearest POI that passes the siting rules against the new circle,
+    -- the record is re-sent, and every blip moves. It keeps its number, its
+    -- payout and its place in `perMatch`, and the wait starts again from the
+    -- move. Only when no POI qualifies anywhere is it called off. The 2026-08-23
+    -- rule still holds: a crate lands only inside the next circle.
     --
-    -- What the wall refusal protects is unchanged: a crate that lands at the wall
-    -- is not a consolation prize for the player who ran to it; it is a death
-    -- sentence for whoever contests it, which is the sentence `insideBy` exists
-    -- to write.
+    -- A DROP STILL INSIDE THE CIRCLE IT WAS SITED AGAINST that fails the re-check
+    -- has had the wall close on it, and is called off. A crate that lands at the
+    -- wall is not a consolation prize for the player who ran to it; it is a
+    -- death sentence for whoever contests it, which is the sentence `insideBy`
+    -- exists to write. Every call-off is sent, and the blip leaves every screen.
     --
     -- 200m IS THE OWNER'S NUMBER. /brairdrop prints the CLOSEST APPROACH any
     -- player actually made, which is how this gets retuned from a playtest
@@ -1584,9 +1586,11 @@ BR.Config.Airdrop = {
     -- WHAT THE CEILING IS MEASURED FROM MOVED ON THE SAME DAY, and that is the
     -- one thing here that is not the owner's sentence: see `armWithin` above.
     -- A drop now WAITS for somebody to come near before it falls, so the clock
-    -- restarts when it stops waiting. `tArm`, not `tStart`.
+    -- restarts when it stops waiting. `tArm`, not `tStart`. It also restarts
+    -- when the storm moves a waiting drop to a new POI (#386): `tMoved`, because
+    -- the players have a new place to walk to.
     blipAfterOpenMs = 60000,    -- 1m00 after the crate is opened
-    blipMaxMs       = 240000,   -- 4m00 from the announcement, then from the arm
+    blipMaxMs       = 240000,   -- 4m00 from the announcement (or a move), then from the arm
 
     -- Verbatim, and it must stay verbatim (owner, 2026-08-21). Written here
     -- rather than inline so there is one copy to be wrong.

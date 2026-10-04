@@ -154,6 +154,32 @@ function BR.ArmAirdropRecord(rec, now, cfg)
     return rec
 end
 
+--- The storm drew a new next circle and left this waiting drop outside it: put
+--- it on another POI (#386, owner 2026-10-04: option 3).
+---
+--- MUTATES THE RECORD IN PLACE, like the arm and the open. The same table is in
+--- the match's `announced` list, so #355's hold still sees one drop, and the
+--- same `n` is what makes every client's AIRDROP_SYNC handler replace the blip
+--- rather than add a second one. Heading and altitude stay as they were.
+---
+--- `tMoved` RESTARTS THE WAIT. A moved drop gets the full `blipMaxMs` from the
+--- move rather than whatever was left. The players have to walk again, and a
+--- drop moved with twenty seconds left would expire before anybody could reach
+--- it. See BR.AirdropBlipEndsAt.
+--- @param rec table   an unarmed record
+--- @param poi table   a BR.Config.Map.POIs entry
+--- @param now number
+--- @return table rec
+function BR.MoveAirdropRecord(rec, poi, now)
+    if not rec then return rec end
+    rec.poi    = poi.id
+    rec.x      = poi.x + 0.0
+    rec.y      = poi.y + 0.0
+    rec.gz     = (poi.z or 0.0) + 0.0
+    rec.tMoved = now + 0.0
+    return rec
+end
+
 --- Is this drop actually falling -- or has it merely been announced?
 ---
 --- ONE FIELD ANSWERS IT, and it is `tLand` rather than a flag: a record either
@@ -320,7 +346,8 @@ end
 --
 -- BEYOND THIS PHASE NOTHING CAN BE PROMISED FROM HERE. The record describes one
 -- phase; the circle after it has not been drawn and may break out anywhere. That
--- is what the re-check at the ARM is for -- see br_core/server/airdrop.lua.
+-- is what the re-check at the ARM is for, and the MOVE when a new next circle
+-- fails it (#386) -- see br_core/server/airdrop.lua.
 
 --- How far outside the TIGHTEST of these boundaries (x, y) is. Negative inside.
 ---
@@ -520,39 +547,80 @@ function BR.AirdropLandingCircles(storm, now, cfg, waitMs)
     return out
 end
 
---- The boundary a drop being armed NOW has to clear: the wall at the instant its
---- crate would land, and nothing else.
+-- ---------------------------------------------------------------------------
+-- When the storm draws a new next circle under a waiting drop (#386)
+-- ---------------------------------------------------------------------------
+--
+-- Owner, 2026-10-03: "Seems our airdrops don't always drop when people get close
+-- to them..." A drop waits up to `blipMaxMs` for somebody to come, which is longer
+-- than a storm phase, so the storm often draws a new next circle while players
+-- walk. The arm checks the point against that new circle, and a point 250m
+-- inside the old one is often outside the new one. The drop was then given up
+-- with nothing sent, and players stood at a blip that was never going to arm.
+--
+-- Owner, 2026-10-04 (option 3): MOVE the drop. Drops still land only inside the
+-- next circle (2026-08-23); a drop the new circle leaves behind is moved to a
+-- fresh site under the siting rules and its blip moves on every screen.
+
+--- The next circle a drop was sited against, as a value to compare later.
 ---
---- ═══ NOT THE DESTINATION, AND THAT WAS #386 ═══
----
---- Owner, 2026-10-03: "Seems our airdrops don't always drop when people get
---- close to them..."
----
---- The arm used to ask BR.AirdropLandingCircles(..., 0) whole: this wall AND the
---- zone the storm is closing toward. Within the phase a drop was sited in, that
---- zone is the one siting already held it 250m inside, so the second entry never
---- refused anything. Once a NEW phase began during the wait it was that phase's
---- destination -- drawn after the drop was announced, often nowhere near it --
---- and a drop a player had walked to was abandoned with its crate due to land
---- hundreds of meters inside the wall. Measured over 200 simulated matches with
---- players walking to each blip: 114 of 284 drops lost that way, every one of
---- them 250m or more inside the wall it would have landed under.
----
---- SO THE ARM ASKS THE SAFETY HALF ONLY. The crate never touches down within
---- the margin of the wall -- the owner's 2026-08-23 "aidrops aren't spawning
---- within the circle at all times" -- and the next-circle rule ("they should only
---- spawn within the NEXT circle") is held where it was given, at the siting,
---- against every circle the drop could land under there.
----
---- THE FIRST ENTRY OF BR.AirdropLandingCircles, not a second derivation of it, so
---- the wall the drop was sited against and the wall it is armed against are one
---- piece of arithmetic.
+--- ALL FOUR NUMBERS, NOT THE PHASE ALONE. A storm thaw re-enters the SAME phase
+--- with a newly drawn destination (server/storm.lua, brstormfreeze), and the
+--- first-hold cap re-publishes phase 1 with the same destination and new timing.
+--- The first moves the next circle and the second does not, and only the
+--- destination itself tells them apart.
 --- @param storm table|nil   the published storm record
---- @param now number
---- @param cfg table|nil     BR.Config.Airdrop
---- @return table[]  one entry { x, y, r, shape }
-function BR.AirdropArmCircles(storm, now, cfg)
-    return { BR.AirdropLandingCircles(storm, now, cfg, 0)[1] }
+--- @return table|nil  { phase, x, y, r }
+function BR.AirdropNextCircleOf(storm)
+    if not storm or type(storm.r1) ~= 'number' then return nil end
+    return { phase = storm.phase, x = storm.cx1 or 0.0, y = storm.cy1 or 0.0,
+             r = storm.r1 }
+end
+
+--- Has the storm drawn a different next circle since `was` was taken?
+---
+--- A drop with no record of its circle counts as changed. Moving it is the
+--- outcome that cannot strand a player, and the siting rules decide where it goes.
+--- @param was table|nil     from BR.AirdropNextCircleOf
+--- @param storm table|nil   the published storm record now
+--- @return boolean
+function BR.AirdropNextCircleChanged(was, storm)
+    local now = BR.AirdropNextCircleOf(storm)
+    if not was or not now then return true end
+    return was.phase ~= now.phase or was.x ~= now.x or was.y ~= now.y
+        or was.r ~= now.r
+end
+
+--- The qualifying POI CLOSEST to (x, y): where a moved drop goes.
+---
+--- THE SAME CANDIDATES THE SITING DRAWS FROM -- BR.AirdropSitesIn over the same
+--- circles, margin and placeability -- and only the choice among them differs.
+--- The siting draws uniformly. A move takes the nearest, for two reasons:
+---
+---   * PLAYERS WERE ALREADY WALKING THERE. The nearest site is the shortest
+---     re-route for the squad that was heading to the old blip. A uniform pick
+---     could throw the drop across the whole new circle.
+---   * NO RNG IS DRAWN. Whether a drop moves depends on where players walked. A
+---     draw here would shift the next drop's site and payout on the airdrop's
+---     own stream, the same objection that keeps the payout off the arm.
+---
+--- TIES GO TO THE FIRST IN AUTHORED ORDER, so the answer replays from a seed.
+--- @param pois table[]
+--- @param circles table[]
+--- @param margin number
+--- @param placeable function|nil
+--- @param x number
+--- @param y number
+--- @return table|nil poi
+--- @return integer candidateCount
+function BR.AirdropNearestSiteIn(pois, circles, margin, placeable, x, y)
+    local candidates = BR.AirdropSitesIn(pois, circles, margin, placeable)
+    local best, bestD = nil, math.huge
+    for _, poi in ipairs(candidates) do
+        local d = BR.Dist(poi.x, poi.y, x, y)
+        if d < bestD then best, bestD = poi, d end
+    end
+    return best, #candidates
 end
 
 --- The tightest of a set of circles, for a log line.
@@ -1629,6 +1697,13 @@ end
 --- crate that was never coming -- and stood beside it, and nothing armed. It now
 --- re-sends the record stamped with the moment it gave up, and the blip ends
 --- there: on every client, in the server's own sequencing, one instant.
+---
+--- ═══ AND THE WAIT RESTARTS AT `tMoved` (#386, option 3) ═══
+---
+--- A drop moved into a new next circle is a new place to walk to, so it gets the
+--- whole `blipMaxMs` from the move (BR.MoveAirdropRecord). The arm still wins
+--- over the move, as it wins over the announcement: once something is falling,
+--- the ceiling is about the crate.
 --- @param rec table|nil
 --- @param cfg table|nil  BR.Config.Airdrop
 --- @return number
@@ -1639,7 +1714,7 @@ function BR.AirdropBlipEndsAt(rec, cfg)
         return rec.tOpen + (cfg.blipAfterOpenMs or 60000)
     end
     if rec.tGone then return rec.tGone end
-    return (rec.tArm or rec.tStart or 0.0) + (cfg.blipMaxMs or 240000)
+    return (rec.tArm or rec.tMoved or rec.tStart or 0.0) + (cfg.blipMaxMs or 240000)
 end
 
 --- Should the map blip be up?
@@ -1729,9 +1804,10 @@ end
 ---   opened      `tOpen`. The crate is a husk and its blip has a minute left.
 ---   timed out   BR.AirdropBlipEndsAt of an UNOPENED record, once it has passed:
 ---               the instant the blip goes out on every client. That is
----                 (tArm or tStart) + blipMaxMs
+---                 (tArm or tMoved or tStart) + blipMaxMs
 ---               so `blipMaxMs` after the ARM for a crate that landed and was
----               never opened, and after the ANNOUNCEMENT for one nobody came to.
+---               never opened, and after the ANNOUNCEMENT (or the last MOVE,
+---               #386) for one nobody came to.
 ---               A drop the server CALLS OFF -- the wall too close to its landing
 ---               point -- times out at `tGone`, the moment it was called off and
 ---               its blip went from every screen (#386).
