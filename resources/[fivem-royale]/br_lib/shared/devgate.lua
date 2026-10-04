@@ -54,15 +54,14 @@ BR.Dev = BR.Dev or {}
 --                       operator here after an IAM policy change, on the live
 --                       server, by hand. Nothing types it for them.
 --   bremotegrant        hands a player emotes from the server console (#215).
---                       Owner, 2026-10-02 ("Scope v2"): "Everything is
---                       devMode-required behind one config line, so removing
---                       that line makes it production-ready in the same PR."
---                       The grant command is part of everything, so ITS gate is
---                       that line -- BR.Emotes.enabled(), asked first thing in
---                       its body in br_core/server/emotes.lua -- and not this
---                       file. Gated here as well, deleting the line would leave
---                       it shut on the public box, and the one-line promise
---                       would be a two-line one. Console-only (src 0) and
+--                       Emotes are a Season 2 feature (#388, owner 2026-10-04;
+--                       the `emotes` row in br_lib/config/seasons.lua), and the
+--                       grant command sits behind that gate like every other
+--                       emote door: BR.Season.has('emotes'), asked first thing
+--                       in its body in br_core/server/emotes.lua -- and not
+--                       this file. Gated here as well, it would stay shut on a
+--                       public box running a season that has emotes, and the
+--                       one gate would be two. Console-only (src 0) and
 --                       registered restricted, so the exemption opens it to the
 --                       box's owner and nobody else.
 local EXEMPT = { bremotegrant = true, brkick = true, brspectate = true, brring = true }
