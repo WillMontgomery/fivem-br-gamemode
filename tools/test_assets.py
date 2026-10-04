@@ -1630,6 +1630,138 @@ class AssetFileGate(unittest.TestCase):
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         self.assertEqual(r.returncode, 0, r.stdout.decode('utf-8', 'replace'))
 
+    def test_archives_data_files_and_copies_fail(self):
+        # (x.ydr~ is gitignored here, so only a forced add reaches git: the --revs test has one.)
+        bad = ['stream/Legion.ytd.bak', 'x.YMAP.old', 'pack.tar', 'pack.tar.xz', 'p.bz2', 'p.zst',
+               'p.zstd', 'p.lz4', 'p.txz', 'p.tbz2', 'data/handling.meta', 'data/water.dat', 'audio/x.dat151.rel',
+               'audio/y.dat54', 'old.fxap.orig']
+        good = ['src/metadata.json', 'docs/data.md', 'tools/x.datasource.lua', 'my.target.js', 'rel.lua',
+                'stream/readme.txt']
+        for path in bad + good:
+            write(os.path.join(self.repo, *path.split('/')), b'x')
+        rc, out = self.gate()
+        self.assertEqual(rc, 1, out)
+        for path in bad:
+            self.assertIn('ASSET\x1b[0m ' + path, out)
+        for path in good:
+            self.assertNotIn(path, out)
+        self.assertIn('%d game-asset file(s)' % len(bad), out)
+
+    def test_revs_checks_the_commits_history_and_all(self):
+        self.git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'base')
+        write(os.path.join(self.repo, 'resources', 'x.lua'), b'code')
+        self.git('add', '-A')
+        self.git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'code')
+        r = subprocess.run([BASH, 'tools/check_asset_files.sh', '--revs', 'HEAD~1..HEAD'], cwd=self.repo,
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        self.assertEqual(r.returncode, 0, r.stdout.decode('utf-8', 'replace'))
+        # Added in one commit, deleted in the next: the tip is clean, the
+        # history a push would publish is not.
+        write(os.path.join(self.repo, 'maps', 'legion pack', 'Legion.ytd'), b'x')
+        write(os.path.join(self.repo, 'maps', 'legion pack', 'Legion.ydr~'), b'x')
+        self.git('add', '-A')
+        self.git('add', '-f', 'maps/legion pack/Legion.ydr~')
+        self.git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'oops')
+        self.git('rm', '-q', 'maps/legion pack/Legion.ytd', 'maps/legion pack/Legion.ydr~')
+        self.git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'undo')
+        r = subprocess.run([BASH, 'tools/check_asset_files.sh', '--revs', 'HEAD~3..HEAD'], cwd=self.repo,
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        out = r.stdout.decode('utf-8', 'replace')
+        self.assertEqual(r.returncode, 1, out)
+        self.assertIn('ASSET\x1b[0m maps/legion pack/Legion.ytd', out)
+        self.assertIn('ASSET\x1b[0m maps/legion pack/Legion.ydr~', out)
+        self.assertNotIn('STALE', out, 'a push is not the whole tree')
+        self.assertEqual(self.gate()[0], 0, 'and the tree itself is clean')
+
+
+@unittest.skipUnless(BASH and GIT, 'needs bash and git')
+class PrePush(unittest.TestCase):
+    """tools/pre-push, installed by the real tools/install-hooks.sh into a
+    scratch clone, with real pushes into a bare remote."""
+
+    def setUp(self):
+        top = tempfile.mkdtemp(prefix='assets-prepush-')
+        self.addCleanup(shutil.rmtree, top, True)
+        base = os.path.join(top, 'William Montgomery')
+        self.repo = os.path.join(base, 'repo [dev]')
+        self.bare = os.path.join(base, 'origin.git')
+        for f in ('check_asset_files.sh', 'check_secrets.sh', 'pre-push', 'pre-commit', 'install-hooks.sh'):
+            write(os.path.join(self.repo, 'tools', f), read(os.path.join(TOOLS, f)))
+        script = read(os.path.join(TOOLS, 'check_asset_files.sh')).decode('utf-8')
+        block = script[script.index('ALLOW=('):script.index('\n)\n')]
+        for path in re.findall(r'^\s*"([^"]+)"', block, re.M):
+            write(os.path.join(self.repo, *path.split('/')), b'ours')
+        write(os.path.join(self.repo, '.gitignore'), read(os.path.join(REPO, '.gitignore')))
+        os.makedirs(self.bare)
+        self.git('init', '-q', '--bare', '-b', 'dev', cwd=self.bare)
+        self.git('init', '-q', '-b', 'dev')
+        self.git('add', '-A')
+        self.git('commit', '-qm', 'base')
+        self.git('remote', 'add', 'origin', self.bare)
+        r = subprocess.run([BASH, 'tools/install-hooks.sh'], cwd=self.repo,
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        self.assertEqual(r.returncode, 0, r.stdout.decode('utf-8', 'replace'))
+        self.assertEqual(read(os.path.join(self.repo, '.git', 'hooks', 'pre-push')),
+                         read(os.path.join(TOOLS, 'pre-push')))
+        self.assertTrue(os.path.isfile(os.path.join(self.repo, '.git', 'hooks', 'pre-commit')))
+        # The remote's starting point; not what is under test.
+        self.push_ok('--no-verify', 'dev')
+
+    def git(self, *args, cwd=None, check=True):
+        r = subprocess.run([GIT, '-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'core.autocrlf=false']
+                           + list(args), cwd=cwd or self.repo, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        out = r.stdout.decode('utf-8', 'replace')
+        if check:
+            self.assertEqual(r.returncode, 0, 'git %s: %s' % (' '.join(args), out))
+        return r.returncode, out
+
+    def commit(self, files, msg='c'):
+        for path, data in files.items():
+            if data is None:
+                self.git('rm', '-q', path)
+            else:
+                write(os.path.join(self.repo, *path.split('/')), data)
+                self.git('add', '--', path)
+        self.git('commit', '-qm', msg)
+
+    def remote_tip(self, branch='dev'):
+        return self.git('rev-parse', branch, cwd=self.bare)[1].strip()
+
+    def push_ok(self, *args):
+        rc, out = self.git('push', '-q', 'origin', *args, check=False)
+        self.assertEqual(rc, 0, out)
+        return out
+
+    def test_an_ordinary_push_of_code_passes(self):
+        self.commit({'resources/[fivem-royale]/br_core/server/x.lua': 'return 1\n', 'docs/notes on it.md': 'hi\n'})
+        self.push_ok('dev')
+        self.assertEqual(self.remote_tip(), self.git('rev-parse', 'HEAD')[1].strip())
+
+    def test_an_asset_or_a_secret_anywhere_in_the_push_is_refused(self):
+        before = self.remote_tip()
+        key = 'AKIA' + 'Q' * 16
+        self.commit({'resources/[maps]/legion/stream/Legion.ytd': b'\0licensed\0'}, 'pack')
+        self.commit({'resources/[maps]/legion/stream/Legion.ytd': None}, 'take it out again')
+        self.commit({'tools/deploy notes.sh': 'echo hi\nexport AWS_ACCESS_KEY_ID=%s\n' % key}, 'key')
+        self.commit({'tools/deploy notes.sh': 'echo hi\n'}, 'and out again')
+        rc, out = self.git('push', 'origin', 'dev', check=False)
+        self.assertNotEqual(rc, 0, out)
+        self.assertEqual(self.remote_tip(), before, 'nothing reached the remote')
+        self.assertIn('ASSET\x1b[0m resources/[maps]/legion/stream/Legion.ytd', out)
+        sha = self.git('rev-parse', '--short', 'HEAD~1')[1].strip()
+        self.assertIn('SECRET\x1b[0m tools/deploy notes.sh:2 (commit %s)  AWS access key id' % sha, out)
+        self.assertNotIn(key, out, 'the secret itself is never echoed')
+        self.assertIn('pre-push: refused', out)
+
+    def test_what_the_remote_already_has_is_not_held_against_a_later_push(self):
+        self.commit({'stream/old.ytd': b'x'}, 'pushed past the hook')
+        self.push_ok('--no-verify', 'dev')
+        self.commit({'resources/x.lua': 'return 2\n'})
+        self.push_ok('dev')
+        # A new branch from here, and deleting it, pass too.
+        self.push_ok('dev:feature')
+        self.push_ok(':feature')
+
 
 if __name__ == '__main__':
     # Quiet unless something fails, like the Lua suites: one count line.

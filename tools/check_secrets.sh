@@ -2,7 +2,8 @@
 #
 # Secret-scanning gate.
 #
-#   ./tools/check_secrets.sh
+#   ./tools/check_secrets.sh                  every file git has or would add
+#   ./tools/check_secrets.sh --revs <revs>    the text those commits add (tools/pre-push)
 #
 # This repo is PUBLIC, and so is fivem-ringmaster next door. The whole "public
 # is fine" argument rests on nothing secret ever being in either of them, and
@@ -46,21 +47,108 @@ RED=$'\033[31m'; GRN=$'\033[32m'; RST=$'\033[0m'
 #   --others           untracked files...
 #   --exclude-standard ...that are not gitignored, i.e. ones a careless
 #                      `git add -A` would sweep up
+#
+# `--revs <revs>` IS THE PRE-PUSH FORM (#391, tools/pre-push): the lines the
+# given commits ADD, every commit `git log <revs>` walks, so a key committed and
+# removed again inside one push is still caught -- the history the push
+# publishes holds it. Each (commit, file) becomes one scratch file holding just
+# those lines AT THEIR OWN LINE NUMBERS, blank elsewhere, so a hit reads as the
+# real path and line, with the commit.
 
-FILES=()
-while IFS= read -r -d '' f; do
-    case "$f" in
-        tools/check_secrets.sh) continue ;;   # describes the shapes it hunts
-        *.png|*.jpg|*.jpeg|*.gif|*.webp|*.ico|*.ytd|*.ydr|*.awc|*.oga|*.ogg|*.mp3|*.woff|*.woff2|*.ttf) continue ;;
-        package-lock.json|*/package-lock.json|*/yarn.lock) continue ;;
+skipped() {
+    case "$1" in
+        tools/check_secrets.sh) return 0 ;;   # describes the shapes it hunts
+        *.png|*.jpg|*.jpeg|*.gif|*.webp|*.ico|*.ytd|*.ydr|*.awc|*.oga|*.ogg|*.mp3|*.woff|*.woff2|*.ttf) return 0 ;;
+        package-lock.json|*/package-lock.json|*/yarn.lock) return 0 ;;
     esac
-    FILES+=("$f")
-done < <(git ls-files -z --cached --others --exclude-standard 2>/dev/null)
+    return 1
+}
 
-if [ "${#FILES[@]}" -eq 0 ]; then
-    echo "${RED}FAIL${RST} no files to scan -- is this a git checkout?"
-    exit 1
+MODE=tree
+FILES=()
+LABELS=()
+if [ "${1:-}" = "--revs" ]; then
+    shift
+    MODE=revs
+    [ "$#" -gt 0 ] || { echo "${RED}FAIL${RST} --revs needs the commits to scan"; exit 1; }
+    WORK=$(mktemp -d) || exit 1
+    trap 'rm -rf "$WORK"' EXIT
+    if ! git -c core.quotePath=false log -m -p -U0 --no-color --no-ext-diff --no-renames \
+            --diff-filter=ACMRT --format='commit %h' "$@" > "$WORK/patch"; then
+        echo "${RED}FAIL${RST} could not read the commits being pushed"
+        exit 1
+    fi
+    : > "$WORK/index"
+    # Hunk lines start with + - space or \, so `commit`, `diff --git` and `@@`
+    # at column 0 are always headers; `+++ ` is one only outside a hunk.
+    awk -v out="$WORK" '
+        /^commit [0-9a-f]+$/ { c = $2; inhunk = 0; next }
+        /^diff --git / { if (file != "") close(file); file = ""; inhunk = 0; next }
+        /^@@ / {
+            if (file == "") next
+            s = $0
+            sub(/^@@ -[0-9]+(,[0-9]+)? \+/, "", s)
+            sub(/[ ,].*$/, "", s)
+            line = s - 1
+            inhunk = 1
+            next
+        }
+        inhunk && /^\+/ {
+            if (file == "") next
+            line++
+            while (written < line - 1) { print "" > file; written++ }
+            print substr($0, 2) > file
+            written++
+            next
+        }
+        !inhunk && /^\+\+\+ / {
+            p = substr($0, 5)
+            sub(/\t$/, "", p)
+            if (p == "/dev/null") { file = ""; next }
+            if (p ~ /^"/) { p = substr(p, 2); sub(/"$/, "", p) }
+            sub(/^b\//, "", p)
+            n++
+            file = out "/f" n
+            written = 0
+            printf "" > file
+            printf "f%d\t%s\t%s\n", n, c, p > (out "/index")
+            next
+        }
+    ' "$WORK/patch" || { echo "${RED}FAIL${RST} could not read the commits being pushed"; exit 1; }
+    while IFS=$'\t' read -r id commit path; do
+        skipped "$path" && continue
+        FILES+=("$id")
+        LABELS[${id#f}]="$path|$commit"
+    done < "$WORK/index"
+    cd "$WORK" || exit 1
+    if [ "${#FILES[@]}" -eq 0 ]; then
+        echo "${GRN}ok${RST}   no added text to scan in the commits being pushed"
+        exit 0
+    fi
+else
+    while IFS= read -r -d '' f; do
+        skipped "$f" && continue
+        FILES+=("$f")
+    done < <(git ls-files -z --cached --others --exclude-standard 2>/dev/null)
+
+    if [ "${#FILES[@]}" -eq 0 ]; then
+        echo "${RED}FAIL${RST} no files to scan -- is this a git checkout?"
+        exit 1
+    fi
 fi
+
+# grep's "file:line:..." as the reader should see it: in --revs mode the real
+# path and line, and the commit.
+where() {
+    local f="${1%%:*}" rest="${1#*:}"
+    local ln="${rest%%:*}"
+    if [ "$MODE" = revs ]; then
+        local label="${LABELS[${f#f}]}"
+        printf '%s:%s (commit %s)' "${label%|*}" "$ln" "${label##*|}"
+    else
+        printf '%s:%s' "$f" "$ln"
+    fi
+}
 
 # --- the placeholder escape --------------------------------------------------
 #
@@ -77,8 +165,9 @@ findings=0
 rule() {
     local name="$1" flags="$2" re="$3" why="$4" hits
 
-    # -I skips binaries that slipped past the extension list above.
-    hits=$(grep -nI $flags -E -- "$re" "${FILES[@]}" 2>/dev/null \
+    # -I skips binaries that slipped past the extension list above. -H names
+    # the file even when there is only one.
+    hits=$(grep -HnI $flags -E -- "$re" "${FILES[@]}" 2>/dev/null \
            | grep -vE "$PLACEHOLDER" || true)
 
     [ -z "$hits" ] && return 0
@@ -87,7 +176,7 @@ rule() {
     # secret, and echoing it into a terminal (and a CI log) would be a fresh
     # copy of the thing we are trying not to spread.
     while IFS= read -r line; do
-        echo "${RED}SECRET${RST} $(printf '%s' "$line" | cut -d: -f1-2)  $name"
+        echo "${RED}SECRET${RST} $(where "$line")  $name"
         echo "       $why"
         findings=$((findings + 1))
     done <<< "$hits"
@@ -186,4 +275,8 @@ if [ "$findings" -gt 0 ]; then
     exit 1
 fi
 
-echo "${GRN}ok${RST}   nothing credential-shaped in ${#FILES[@]} scanned files"
+if [ "$MODE" = revs ]; then
+    echo "${GRN}ok${RST}   nothing credential-shaped in the text the pushed commits add (${#FILES[@]} file(s))"
+else
+    echo "${GRN}ok${RST}   nothing credential-shaped in ${#FILES[@]} scanned files"
+fi

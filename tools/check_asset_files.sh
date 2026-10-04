@@ -2,7 +2,8 @@
 #
 # Licensed-asset gate (#391).
 #
-#   ./tools/check_asset_files.sh
+#   ./tools/check_asset_files.sh                  every file git has or would add
+#   ./tools/check_asset_files.sh --revs <revs>    what those commits add (tools/pre-push)
 #
 # This repository is PUBLIC, and the packs the boxes run -- the NTeam Legion
 # map pack, the emote packs for #215 -- were bought under licenses that do not
@@ -21,6 +22,11 @@
 # tracked files, plus untracked ones that are not ignored -- what a careless
 # `git add -A` would sweep up. resources/[licensed]/ and .assets-cache/ are
 # gitignored, so a checkout used as a local server with pulled assets passes.
+#
+# --revs IS THE PRE-PUSH FORM: the paths the given commits add or change, as
+# `git log <revs>` walks them, so a pack added and deleted again inside one push
+# is still caught -- it would still be in the history the push publishes. A
+# push is not the whole tree, so the stale-row check below is skipped there.
 #
 # Pure bash after the one git call: on Windows every process costs real time.
 
@@ -46,9 +52,19 @@ ALLOW=(
 )
 
 # GTA V and FiveM asset formats -- streamed models, textures, maps, collisions,
-# animations, navmeshes, audio, scaleform, archives -- and escrow (.fxap), plus
-# the archive formats a pack is downloaded in. Matched on the lower-cased name.
-ASSET_RE='\.(ytd|ydr|ydd|yft|ymap|ytyp|ybn|ycd|ynv|ynd|ymt|ymf|ypt|yld|ysc|ypdb|yvr|ywr|yed|awc|rel|nametable|gfx|gxt2|mrf|cut|rpf|fxap|zip|rar|7z|tgz|gz)$'
+# animations, navmeshes, audio, scaleform, archives -- and escrow (.fxap); the
+# data files a pack ships beside them (.meta, .dat and .dat54-style audio data);
+# and the archive formats a pack is downloaded in. Matched on the lower-cased
+# name.
+#
+# .meta AND .dat COST NO ALLOWLIST ROWS: on 2026-10-04 the repo tracked no
+# .meta at all, and its one .dat file (br_audio's .dat54.rel) is a row already.
+#
+# A COPY OF ONE IS STILL ONE: legion.ytd.bak, x.ymap.old, a.ydr~. After the
+# asset extension the name may go on with a `.` or `~` and anything up to the
+# end of the file name.
+ASSET_EXT='ytd|ydr|ydd|yft|ymap|ytyp|ybn|ycd|ynv|ynd|ymt|ymf|ypt|yld|ysc|ypdb|yvr|ywr|yed|awc|rel|nametable|gfx|gxt2|mrf|cut|rpf|fxap|meta|dat[0-9]*|zip|rar|7z|tgz|gz|tar|xz|bz2|zst|zstd|lz4|txz|tbz2?'
+ASSET_RE="\.($ASSET_EXT)([.~][^/]*)?\$"
 
 allowed() {
     local a
@@ -58,10 +74,27 @@ allowed() {
     return 1
 }
 
+MODE=tree
+if [ "${1:-}" = "--revs" ]; then
+    shift
+    MODE=revs
+    [ "$#" -gt 0 ] || { echo "${RED}FAIL${RST} --revs needs the commits to scan"; exit 1; }
+    LIST=$(mktemp) || exit 1
+    trap 'rm -f "$LIST"' EXIT
+    # -m: a merge's own changes too. ACMRT: what a commit adds or changes.
+    if ! git -c core.quotePath=false log -z -m --format= --name-only --no-renames \
+            --diff-filter=ACMRT "$@" > "$LIST"; then
+        echo "${RED}FAIL${RST} could not list the files in the commits being pushed"
+        exit 1
+    fi
+fi
+
 found=0
 n=0
 present='|'
+reported='|'
 while IFS= read -r -d '' f; do
+    [ -n "$f" ] || continue
     n=$((n + 1))
     lower="${f,,}"
     [[ "$lower" =~ $ASSET_RE ]] || continue
@@ -69,9 +102,25 @@ while IFS= read -r -d '' f; do
         present="${present}${f}|"
         continue
     fi
+    case "$reported" in *"|$f|"*) continue ;; esac
+    reported="${reported}${f}|"
     echo "${RED}ASSET${RST} $f"
     found=$((found + 1))
-done < <(git ls-files -z --cached --others --exclude-standard 2>/dev/null)
+done < <(if [ "$MODE" = revs ]; then cat "$LIST"; else git ls-files -z --cached --others --exclude-standard 2>/dev/null; fi)
+
+if [ "$MODE" = revs ]; then
+    if [ "$found" -gt 0 ]; then
+        echo
+        echo "${RED}$found game-asset file(s) in the commits being pushed, outside the allowlist.${RST}"
+        echo "     This repo is public: pushing them publishes them, and a later commit"
+        echo "     deleting them does not take them out of the history. Take them out"
+        echo "     of these commits before pushing. A purchased pack goes to the"
+        echo "     private bucket (py tools/assets.py push <folder>, or the drop folder)."
+        exit 1
+    fi
+    echo "${GRN}ok${RST}   no game-asset files outside the allowlist in the $n path(s) the pushed commits add or change"
+    exit 0
+fi
 
 if [ "$n" -eq 0 ]; then
     echo "${RED}FAIL${RST} no files to scan -- is this a git checkout?"

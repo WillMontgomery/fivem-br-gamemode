@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+#
+# Pre-push hook (#391). Install with:  ./tools/install-hooks.sh
+#
+# THIS REPO IS PUBLIC, SO A PUSH IS PUBLICATION, and the two things that must
+# never be published have a gate each: tools/check_asset_files.sh (no bought
+# game asset -- the licensed packs live in a private bucket) and
+# tools/check_secrets.sh (nothing credential-shaped). pre-commit runs them
+# inside the whole verify.sh, which `git commit --no-verify` skips, and that
+# is how commits land here. This hook is the one that is still in the way.
+#
+# IT CHECKS WHAT IS BEING PUSHED: every commit the push sends that no
+# remote-tracking ref already has, history and all -- a pack added and deleted
+# again inside one push is still published by it. Fast: git, grep and awk, no
+# Lua, no verify.sh. An ordinary push of code passes.
+#
+# The gates are this checkout's own copies. A checkout from before #391 has no
+# check_asset_files.sh; that one is skipped with a note rather than blocking.
+#
+# Bypass a single push with:  git push --no-verify
+
+set -uo pipefail
+cd "$(git rev-parse --show-toplevel)" || exit 1
+
+RED=$'\033[31m'; YEL=$'\033[33m'; RST=$'\033[0m'
+ZERO=0000000000000000000000000000000000000000
+
+# stdin: <local ref> <local sha> <remote ref> <remote sha>, one per ref.
+revs=()
+while read -r _lref lsha _rref rsha; do
+    [ -n "${lsha:-}" ] || continue
+    [ "$lsha" = "$ZERO" ] && continue                  # a delete sends nothing
+    revs+=("$lsha")
+    # The remote's tip, when this clone has it, bounds a push to a URL too.
+    if [ -n "${rsha:-}" ] && [ "$rsha" != "$ZERO" ] && git cat-file -e "$rsha^{commit}" 2>/dev/null; then
+        revs+=("^$rsha")
+    fi
+done
+[ "${#revs[@]}" -gt 0 ] || exit 0
+revs+=(--not --remotes)
+
+fail=0
+for gate in check_asset_files.sh check_secrets.sh; do
+    if [ ! -f "tools/$gate" ]; then
+        echo "${YEL}pre-push: tools/$gate is not in this checkout; skipped${RST}"
+        continue
+    fi
+    bash "tools/$gate" --revs "${revs[@]}" || fail=1
+done
+
+if [ "$fail" -ne 0 ]; then
+    echo
+    echo "${RED}pre-push: refused. Nothing was pushed.${RST}"
+    echo "  This repo is public. Take the files above out of the commits"
+    echo "  (git reset, or an interactive rebase), then push again."
+    exit 1
+fi
+exit 0
