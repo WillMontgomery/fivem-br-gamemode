@@ -229,18 +229,22 @@ the repo in `%LOCALAPPDATA%\BlitzAssets\repo`: the first Publish on a PC clones
 dev there (git and `py` are all it needs), and every Publish fetches dev, checks
 it out and runs that `tools/assets.py`, so it is always dev's latest. It plans
 against GitHub's dev, builds the one-file commit on top of it, checks the lock
-once more and pushes; if dev moved meanwhile it plans again, pushes without
-asking when the plan is the same, and asks again when it is not. It says
-"pushed" only once GitHub's dev holds the commit.
+once more and pushes it onto exactly the dev it planned on (a lease, so a dev
+rewound meanwhile by a purge stays rewound); if dev moved or was rewound it
+plans again, pushes without asking when the plan is the same, and asks again
+when it is not. It says "pushed" only once GitHub's dev holds the commit.
 
 The folders are the lock: a pack in two season folders is one version per
 season, a pack dragged back after being removed goes up with no upload, and an
 empty folder with no earlier version is skipped as "nothing to remove". A folder
-with files but no `fxmanifest.lua` is skipped (likely a copy still running), and
-never removes anything. Every pack's files are read and hashed on every Publish;
-`.publish-index.json` only spares packing them again. A drop folder inside a
-git work tree is refused. The pre-push hook (`./tools/install-hooks.sh`)
-refuses any push carrying a game-asset file or a credential.
+with files but no `fxmanifest.lua` (at any depth, `[category]` folders too), or
+anything in a Season folder Publish cannot read, stops Publish before it uploads
+or asks: "is it still copying? nothing was published". Skipped, it would drop
+the pack it replaces out of the lock. Every pack's files are read and hashed on
+every Publish; `.publish-index.json` only spares packing them again. A drop
+folder inside a git work tree is refused. The pre-push hook
+(`./tools/install-hooks.sh`) refuses any push carrying a game-asset file or a
+credential.
 
 **From a terminal** (profile `blitz-assets`), for the same thing by hand:
 
@@ -288,12 +292,16 @@ season on, until a later pin brings a version back. Before its earliest pin a
 pack is not installed. The season is the `br_season` br_core sees when it
 starts, and FXServer reads the cfg twice to get there: an early pass runs every
 line (past `ensure br_core`) and carries what `set`, `setr` or `seta` gave
-`br_season` into the real pass, which then runs in order up to `ensure br_core`.
-So a `set br_season` below `ensure br_core` still counts, and once the convar
-exists a bare `br_season 2` line assigns too; `sets` anywhere keeps the early
-value from being carried. Unset means the latest. `brseason` on dev cannot swap
-streamed assets: it warns, naming what differs, and the assets follow when
-`br_season` in server.cfg changes and the box is redeployed and restarted.
+`br_season` into the real pass, which then runs in order up to the line that
+starts br_core: `ensure br_core`, or `ensure`/`start` of a `[category]` folder
+it sits in on the box. So a `set br_season` below `ensure br_core` still counts,
+and once the convar exists a bare `br_season 2` line assigns too; `sets`
+anywhere keeps the early value from being carried. A line splits at `;` before
+comments are known, so a `#` or `//` ends its command, not the line:
+`# note; set br_season 2` runs the set. Unset means the latest. `brseason` on
+dev cannot swap streamed assets: it warns, naming what differs, and the assets
+follow when `br_season` in server.cfg changes and the box is redeployed and
+restarted.
 
 **Escrowed packs** (`.fxap`) are stored byte for byte like anything else. Running
 them needs each box's license key from the Cfx.re account that bought them.
