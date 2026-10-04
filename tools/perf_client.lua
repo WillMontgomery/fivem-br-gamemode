@@ -439,8 +439,32 @@ IMPL.GetRuntimeTextureWidth = function() return 8 end
 IMPL.GetInteriorFromEntity = function() return 0 end
 IMPL.GetInteriorAtCoords = function() return 0 end
 IMPL.GetRoomKeyFromEntity = function() return 0 end
-IMPL.GetClockHours       = function() return 12 end
-IMPL.GetClockMinutes     = function() return 0 end
+-- THE GAME CLOCK KEEPS WHAT IT IS TOLD (#394). The clock writer reads the rate
+-- and the time back once a second and falls back to writing the time every
+-- frame when the engine has not kept them. An engine that answered 12:00:00 and
+-- no rate forever would trip that fallback in every phase and charge two
+-- natives a frame that a real client never pays, so this one remembers the
+-- override and the rate and runs the time on between reads unless paused.
+local gameClock = { sec = 12 * 3600, at = 0, msPerMin = 2000, paused = false }
+local function clockSec()
+    if gameClock.paused or gameClock.msPerMin <= 0 then return gameClock.sec end
+    return gameClock.sec + (gameMs() - gameClock.at) * 60 / gameClock.msPerMin
+end
+IMPL.NetworkOverrideClockTime = function(h, m, s)
+    gameClock.sec, gameClock.at = h * 3600 + m * 60 + s, gameMs()
+end
+IMPL.SetMillisecondsPerGameMinute = function(ms)
+    gameClock.sec, gameClock.at = clockSec(), gameMs()
+    gameClock.msPerMin = (ms and ms > 0) and ms or 2000
+end
+IMPL.GetMillisecondsPerGameMinute = function() return gameClock.msPerMin end
+IMPL.PauseClock = function(p)
+    gameClock.sec, gameClock.at = clockSec(), gameMs()
+    gameClock.paused = p == true
+end
+IMPL.GetClockHours       = function() return math.floor(clockSec() / 3600) % 24 end
+IMPL.GetClockMinutes     = function() return math.floor(clockSec() / 60) % 60 end
+IMPL.GetClockSeconds     = function() return math.floor(clockSec()) % 60 end
 IMPL.GetPedRelationshipGroupHash = function() return jenkins('PLAYER') end
 IMPL.GetBlipInfoIdCoord  = function() return vec3(0.0, 0.0, 0.0) end
 IMPL.GetBlipCoords       = function(b) local e = W.blips[b] return vec3(e and e.x or 0, e and e.y or 0, 0) end
