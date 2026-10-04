@@ -2548,6 +2548,15 @@ class PrePush(unittest.TestCase):
         self.assertIn('the check_asset_files.sh gate could not run (exit 2)', out)
         self.assertEqual(self.remote_tip(), before)
 
+    def test_a_gate_that_cannot_read_the_commits_says_so(self):
+        # Exit 2, which the hook refuses as "could not run", never 0.
+        for g in ('check_asset_files.sh', 'check_secrets.sh'):
+            r = subprocess.run([BASH, os.path.join(self.hooks, 'pre-push-gates', g), '--revs', 'no-such-rev'],
+                               cwd=self.repo, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            out = r.stdout.decode('utf-8', 'replace')
+            self.assertEqual(r.returncode, 2, g + ': ' + out)
+            self.assertIn('FAIL', out)
+
     def test_a_grep_that_cannot_run_is_not_a_pass(self):
         # The secrets gate itself, with a grep that fails the way an argument
         # list too long does (exit 2): never "ok".
