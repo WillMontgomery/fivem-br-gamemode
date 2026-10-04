@@ -2,6 +2,7 @@
 --
 --   lua tools/perf_client.lua                 the table, every phase
 --   lua tools/perf_client.lua --top 10        more contributors per phase
+--   lua tools/perf_client.lua --by 12         more natives named per contributor
 --   lua tools/perf_client.lua --phase match   one phase (and the ones before it)
 --   lua tools/perf_client.lua --check         the budget gate tools/verify.sh runs
 --   lua tools/perf_client.lua --rebaseline    print a fresh budget table
@@ -41,7 +42,8 @@ do
         local a = arg[i]
         if a == '--check' or a == '--rebaseline' or a == '--quiet' or a == '--digest' then
             ARGS[a:sub(3)] = true
-        elseif a == '--top' or a == '--phase' or a == '--frames' or a == '--root' then
+        elseif a == '--top' or a == '--phase' or a == '--frames' or a == '--root'
+            or a == '--by' then
             ARGS[a:sub(3)] = arg[i + 1]
             i = i + 1
         end
@@ -207,8 +209,11 @@ end
 -- other native name falls through to a default chosen by its verb. Either way
 -- the call is COUNTED, by name, against whoever is running.
 
-local function T() return 1 end     -- BOOL true, as the game answers it
-local function F() return 0 end
+-- BOOL natives answer Lua booleans here, as the runtime's generated wrappers
+-- answer them. Code that reads one through BR.NativeTruthy is indifferent; code
+-- that tests one bare would, under 0/1, take paths it never takes in the game.
+local function T() return true end
+local function F() return false end
 
 local IMPL = {}
 IMPL.GetGameTimer        = function() return gameMs() end
@@ -236,17 +241,18 @@ IMPL.GetPlayerFromServerId = function(src)
     if src == 1 then return 0 end
     return W.players[src] and src or -1
 end
-IMPL.NetworkIsPlayerActive = function(p) return (p == 0 or W.players[p]) and 1 or 0 end
+IMPL.NetworkIsPlayerActive = function(p) return (p == 0 or W.players[p]) and true or false end
 IMPL.GetActivePlayers    = function()
     local out = { 0 }
     for src in pairs(W.players) do out[#out + 1] = src end
     return out
 end
 IMPL.GetPlayerName       = function(p) return 'Player' .. tostring(p) end
-IMPL.DoesEntityExist     = function(h) return W.ents[h] and 1 or 0 end
+IMPL.DoesEntityExist     = function(h) return W.ents[h] ~= nil end
 IMPL.GetEntityCoords     = function(h) return entPos(h) end
 IMPL.GetEntityHeading    = function(h) local e = W.ents[h] return e and e.heading or 0.0 end
 IMPL.GetEntityRotation   = function() return vec3(0.0, 0.0, 0.0) end
+IMPL.GetEntityForwardVector = function() return vec3(0.0, 1.0, 0.0) end
 IMPL.GetEntityVelocity   = function() return vec3(0.0, 0.0, 0.0) end
 IMPL.GetEntitySpeed      = function() return 0.0 end
 IMPL.GetEntityModel      = function(h) local e = W.ents[h] return e and e.model or 0 end
@@ -254,7 +260,7 @@ IMPL.GetEntityHealth     = function(h) return W.ents[h] and 200 or 0 end
 IMPL.GetEntityMaxHealth  = function() return 200 end
 IMPL.GetPedMaxHealth     = function() return 200 end
 IMPL.GetPedArmour        = function() return 50 end
-IMPL.GetEntityHeightAboveGround = function(h) local e = W.ents[h] return e and math.max(0.0, e.z - 30.0) or 0.0 end
+IMPL.GetEntityHeightAboveGround = function(h) return math.max(0.0, entPos(h).z - 30.0) end
 IMPL.GetOffsetFromEntityInWorldCoords = function(h, ox, oy, oz)
     local e = W.ents[h] or { x = 0, y = 0, z = 0 }
     return vec3(e.x + (ox or 0), e.y + (oy or 0), e.z + (oz or 0))
@@ -269,25 +275,37 @@ IMPL.GetFinalRenderedCamFov   = function() return 50.0 end
 IMPL.GetAspectRatio      = function() return 16.0 / 9.0 end
 IMPL.AttachEntityToEntity = function(h, to) local e = W.ents[h] if e then e.attachedTo = to end end
 IMPL.DetachEntity        = function(h) local e = W.ents[h] if e then e.attachedTo = nil end end
-IMPL.IsEntityAttached    = function(h) local e = W.ents[h] return (e and e.attachedTo) and 1 or 0 end
+IMPL.IsEntityAttached    = function(h) local e = W.ents[h] return (e and e.attachedTo) and true or false end
 IMPL.GetGameplayCamFov   = function() return 50.0 end
 IMPL.GetCamCoord         = function() return vec3(W.cam.x, W.cam.y, W.cam.z) end
 IMPL.GetCamRot           = function() return vec3(W.cam.rx, 0.0, W.cam.rz) end
-IMPL.GetGroundZFor_3dCoord = function() return 1, 30.0 end
-IMPL.GetWaterHeight      = function() return 0, 0.0 end
-IMPL.GetWaterHeightNoWaves = function() return 0, 0.0 end
-IMPL.TestProbeAgainstWater = function() return 0 end
+IMPL.GetGroundZFor_3dCoord = function() return true, 30.0 end
+IMPL.GetWaterHeight      = function() return false, 0.0 end
+IMPL.GetWaterHeightNoWaves = function() return false, 0.0 end
+IMPL.TestProbeAgainstWater = F
 IMPL.GetVehiclePedIsIn   = function() return 0 end
 IMPL.GetVehiclePedIsTryingToEnter = function() return 0 end
 IMPL.GetVehiclePedIsUsing = function() return 0 end
 IMPL.GetPedInVehicleSeat = function() return 0 end
 IMPL.GetSelectedPedWeapon = function() return jenkins('weapon_unarmed') end
-IMPL.GetCurrentPedWeapon = function() return 1, jenkins('weapon_unarmed') end
+IMPL.GetCurrentPedWeapon = function() return true, jenkins('weapon_unarmed') end
 IMPL.GetPedAmmoTypeFromWeapon = function() return 0 end
 IMPL.GetAmmoInPedWeapon  = function() return 0 end
 IMPL.GetMaxAmmoInClip    = function() return 30 end
-IMPL.GetAmmoInClip       = function() return 1, 0 end
-IMPL.GetPedParachuteState = function() return -1 end
+IMPL.GetAmmoInClip       = function() return true, 0 end
+-- The drop, as far as the code can ask about it: the player is in the air above
+-- 32 m (the ground is at 30), on foot below it, and the chute is whatever the
+-- phase says (W.chute: 3 freefall, 2 open, -1 none).
+local function airborne(h)
+    local p = entPos(h)
+    local e = W.ents[h]
+    return p.z > 32.0 and not (e and e.attachedTo)
+end
+IMPL.GetPedParachuteState = function() return W.chute or -1 end
+IMPL.IsPedOnFoot         = function(h) return not airborne(h) end
+IMPL.IsEntityInAir       = function(h) return airborne(h) end
+IMPL.IsPedFalling        = function(h) return airborne(h) and W.chute == 3 end
+IMPL.IsPedInParachuteFreeFall = function(h) return airborne(h) and W.chute == 3 end
 IMPL.GetPedParachuteLandingType = function() return -1 end
 IMPL.GetPlayerWantedLevel = function() return 0 end
 IMPL.GetGamePool         = function(kind)
@@ -334,7 +352,7 @@ IMPL.GetFirstBlipInfoId  = function() return 0 end
 IMPL.GetNumberOfPlayers  = function() return 1 end
 IMPL.GetInvokingResource = function() return nil end
 IMPL.GetGameBuildNumber  = function() return 3258 end
-IMPL.GetPedLastWeaponImpactCoord = function() return 0, vec3(0, 0, 0) end
+IMPL.GetPedLastWeaponImpactCoord = function() return false, vec3(0, 0, 0) end
 IMPL.GetPedDrawableVariation = function() return 0 end
 IMPL.GetPedTextureVariation = function() return 0 end
 IMPL.GetPedPropIndex     = function() return -1 end
@@ -351,7 +369,7 @@ IMPL.GetCurrentLanguage  = function() return 0 end
 IMPL.GetPlayerRadioStationName = function() return nil end
 IMPL.NetworkGetNetworkIdFromEntity = function(h) return h end
 IMPL.NetworkGetEntityFromNetworkId = function(id) return id end
-IMPL.NetworkDoesNetworkIdExist = function() return 0 end
+IMPL.NetworkDoesNetworkIdExist = F
 IMPL.NetworkGetPlayerIndexFromPed = function(ped)
     if ped == W.me then return 0 end
     for src, pl in pairs(W.players) do if pl.ped == ped then return src end end
@@ -387,9 +405,9 @@ IMPL.IsGameplayCamRendering = T
 IMPL.IsDuiAvailable      = T
 IMPL.IsHudComponentActive = F
 IMPL.IsPauseMenuActive   = F
-IMPL.IsEntityDead        = function(h) local e = W.ents[h] return (e and e.dead) and 1 or 0 end
-IMPL.IsPedFatallyInjured = function(h) local e = W.ents[h] return (e and e.dead) and 1 or 0 end
-IMPL.IsPedDeadOrDying    = function(h) local e = W.ents[h] return (e and e.dead) and 1 or 0 end
+IMPL.IsEntityDead        = function(h) local e = W.ents[h] return (e and e.dead) and true or false end
+IMPL.IsPedFatallyInjured = IMPL.IsEntityDead
+IMPL.IsPedDeadOrDying    = IMPL.IsEntityDead
 IMPL.GetDuiHandle        = function(d) return 'dui' .. tostring(d) end
 IMPL.CreateDui           = function() W.handles = W.handles + 1 return W.handles end
 IMPL.CreateRuntimeTxd    = function() W.handles = W.handles + 1 return W.handles end
@@ -401,7 +419,7 @@ IMPL.RequestScaleformMovieInteractive = IMPL.RequestScaleformMovie
 IMPL.CreateCam           = function() W.handles = W.handles + 1 return W.handles end
 IMPL.CreateCamWithParams = IMPL.CreateCam
 IMPL.CreateCameraWithParams = IMPL.CreateCam
-IMPL.DoesCamExist        = function(c) return c and c ~= 0 and 1 or 0 end
+IMPL.DoesCamExist        = function(c) return (c and c ~= 0) and true or false end
 IMPL.StartShapeTestRay   = function() return 1 end
 IMPL.StartShapeTestLosProbe = function() return 1 end
 IMPL.StartExpensiveSynchronousShapeTestLosProbe = function() return 1 end
@@ -434,7 +452,7 @@ end
 IMPL.AddBlipForRadius    = IMPL.AddBlipForCoord
 IMPL.AddBlipForArea      = IMPL.AddBlipForCoord
 IMPL.AddBlipForEntity    = function(h) local e = W.ents[h] or {} return IMPL.AddBlipForCoord(e.x, e.y, e.z) end
-IMPL.DoesBlipExist       = function(b) return W.blips[b] and 1 or 0 end
+IMPL.DoesBlipExist       = function(b) return W.blips[b] ~= nil end
 IMPL.RemoveBlip          = function(b) W.blips[b] = nil end
 IMPL.SetBlipCoords       = function(b, x, y, z) local e = W.blips[b] if e then e.x, e.y, e.z = x, y, z end end
 IMPL.AddMinimapOverlay   = function() W.handles = W.handles + 1 return W.handles end
@@ -445,7 +463,7 @@ IMPL.BeginScaleformMovieMethodOnFrontendHeader = T
 IMPL.EndScaleformMovieMethodReturnValue = function() W.handles = W.handles + 1 return W.handles end
 IMPL.IsScaleformMovieMethodReturnValueReady = T
 IMPL.GetScaleformMovieMethodReturnValueInt = function() return 0 end
-IMPL.GetScaleformMovieMethodReturnValueBool = function() return 0 end
+IMPL.GetScaleformMovieMethodReturnValueBool = F
 IMPL.GetScaleformMovieMethodReturnValueString = function() return '' end
 
 --- Defaults by verb, for the names IMPL does not know.
@@ -1059,15 +1077,18 @@ local PHASES = {
     { id = 'freefall', settle = 120, setup = function()
         local x, y, z = BR.PathPosAt(route.points, gameMs())
         setPed(W.me, x, y, z - 5.0)
+        W.chute = 3
         delta({ { op = 'update', src = ME, e = { state = BR.PlayerState.FREEFALL } } })
     end },
     { id = 'chute', settle = 60, setup = function()
         local e = W.ents[W.me]
         e.x, e.y, e.z = LAND.x, LAND.y, 300.0
+        W.chute = 2
         delta({ { op = 'update', src = ME, e = { state = BR.PlayerState.GLIDE } } })
     end },
     { id = 'match', settle = 240, setup = function()
         setPed(W.me, LAND.x, LAND.y, LAND.z)
+        W.chute = nil
         W.cam.rz = 0.0        -- facing north, up the map
         matchState(BR.MatchState.PLAYING, 1800000)
         local stateOf = function(src)
@@ -1076,7 +1097,6 @@ local PHASES = {
             return BR.PlayerState.ALIVE
         end
         setStates(stateOf)
-        S.landed = true
         streamPlayers(LAND.x, LAND.y, { 2, 3, 4, 5, 6, 7, 8, 9 })
         populate(LAND.x, LAND.y)
         local c1 = circleOne()
@@ -1212,7 +1232,7 @@ if not ARGS.check and not ARGS.rebaseline then
         for i = 1, math.min(TOP, #r.rows) do
             local row = r.rows[i]
             local top = {}
-            for j = 1, math.min(3, #row.by) do
+            for j = 1, math.min(tonumber(ARGS.by) or 3, #row.by) do
                 top[#top + 1] = ('%s %s'):format(row.by[j].name, fmt(row.by[j].n))
             end
             realPrint(('   %-34s %7s  %6.3f ms  %7.1f KB   %s'):format(row.key, fmt(row.n),
