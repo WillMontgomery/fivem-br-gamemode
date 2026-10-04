@@ -110,6 +110,7 @@ NOTES=(
     "test_emotes_ui|Market emote slots: equip, unequip and swap past eight, shown only while emotes are on"
     "test_props|Dev props: server decides and syncs; pickup look, every edit key, save/load"
     "test_stamina|Sprint never runs out and never costs health, in every player state and on every tick"
+    "test_rarity|The five rarity colors are the owner's, and the same in the game, the page and the built page"
     "scope gate|Player-side code never asks about players with game calls that only see those nearby"
     "weapon table|Each weapon's game ID matches its name, magazine sizes fit, car use is set, icons exist"
     "vehicle table|Each banned vehicle's game ID matches its name, so tanks and jets really stay banned"
@@ -679,6 +680,11 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
     # sprint any more. A pin that skips a state or a tick is damage from
     # nowhere, so the suite steps every player state and a minute of held sprint.
     #
+    # test_rarity.lua is the voice-defaults argument applied to color (#392): one
+    # constant written in Lua, in CSS and in the built bundle, compared as text
+    # because text is all they share. The page showed two rarity palettes
+    # because nothing compared them; this pins all three to the owner's five.
+    #
     # ORDER STAYS EXPLICIT because docs/testing.md records it and the slowest,
     # broadest suites deliberately come after the cheap pure checks. Completeness
     # is discovered, though: a new test_*.lua that nobody adds here is now a red
@@ -727,6 +733,7 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
         tools/test_emotes_ui.lua
         tools/test_props.lua
         tools/test_stamina.lua
+        tools/test_rarity.lua
     )
 
     listed=$(printf '%s\n' "${suites[@]}" | LC_ALL=C sort)

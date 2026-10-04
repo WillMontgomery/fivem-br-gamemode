@@ -54,7 +54,8 @@ function SlotCard({
   canLeft: boolean
   canRight: boolean
 }) {
-  const hex = slot ? RARITY[slot.rarity].hex : 'rgba(255,255,255,0.15)'
+  // The variable, not a hex (#392) -- see the same line in hud/InventoryBar.tsx.
+  const tint = slot ? `var(--rarity-${slot.rarity})` : 'rgba(255,255,255,0.15)'
 
   return (
     // POINTER EVENTS, NOT HTML5 DRAG-AND-DROP.
@@ -77,7 +78,7 @@ function SlotCard({
       className={`plate relative p-3 flex flex-col gap-2 cursor-pointer${
         active ? ' is-active' : ''}`}
       style={{
-        ['--edgec' as string]: active ? '#ffffff' : hex,
+        ['--edgec' as string]: active ? '#ffffff' : tint,
         // Lifted off near-black so the dark weapon renders read without a
         // second panel behind each one.
         ['--plate-fill' as string]: active
@@ -94,7 +95,7 @@ function SlotCard({
         {slot && (
           <span
             className="text-[0.75rem] uppercase tracking-[0.14em] flex items-center gap-1.5"
-            style={{ color: hex }}
+            style={{ color: tint }}
           >
             {/* PIPS ARE A COUNT, and a count works for a player who cannot
                 tell two of these colours apart. Hidden by CSS unless a
@@ -118,7 +119,7 @@ function SlotCard({
                 2026-08-08). */}
             <div
               className="mb-2 flex items-center justify-center py-2"
-              style={{ color: hex }}
+              style={{ color: tint }}
             >
               <ItemIcon slot={slot} size="3.4rem" />
             </div>

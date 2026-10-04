@@ -1,6 +1,5 @@
 import { useEffect, useRef } from 'react'
 import { useUi } from '../store'
-import { RARITY } from '../bridge/types'
 import type { InvPayload, InvSlot } from '../bridge/types'
 import ItemIcon, { FistIcon } from './ItemIcon'
 
@@ -31,7 +30,10 @@ function Slot({
   active: boolean
   using: { endsAt: number; ms: number } | null
 }) {
-  const hex = slot ? RARITY[slot.rarity].hex : 'rgba(255,255,255,0.18)'
+  // THE VARIABLE, NOT A HEX (#392): a literal here is what kept the bar out of
+  // every colorblind mode. index.css owns the value and the [data-cb] blocks
+  // repaint it; every use below takes a var() as readily as a hex.
+  const tint = slot ? `var(--rarity-${slot.rarity})` : 'rgba(255,255,255,0.18)'
   const fillRef = useRef<HTMLDivElement>(null)
   const offset = useUi((s) => s.clockOffset)
 
@@ -72,7 +74,7 @@ function Slot({
       style={{
         // No color-mix() and no oklch(): CEF is Chrome 103 and drops what it
         // cannot parse, which makes the slot silently invisible.
-        ['--edgec' as string]: active ? '#ffffff' : hex,
+        ['--edgec' as string]: active ? '#ffffff' : tint,
         // Lifted off near-black: the weapon artwork is dark, and dark on
         // dark is a shape you have to squint at (user, 2026-08-08).
         ['--plate-fill' as string]: active
@@ -95,7 +97,7 @@ function Slot({
               players actually read at a glance. */}
           <div
             className="absolute bottom-0 left-0 right-0 h-[0.2rem]"
-            style={{ backgroundColor: hex }}
+            style={{ backgroundColor: tint }}
           />
           {/* THE BAND IS COLOUR, AND COLOUR ALONE IS NOT ENOUGH. With a
               colourblind mode on, the same rarity is also a COUNT sitting
@@ -103,7 +105,7 @@ function Slot({
               number in the opposite corner. CSS hides it entirely otherwise. */}
           <span
             className="rarity-pips absolute bottom-[0.35rem] right-[0.25rem]"
-            style={{ color: hex }}
+            style={{ color: tint }}
           >
             {Array.from({ length: slot.rarity }, (_, i) => <i key={i} />)}
           </span>
@@ -114,7 +116,7 @@ function Slot({
                 always the right layer for it. A rounded box inside a square
                 card is a box in a box, and it fought the plate's geometry
                 (user, 2026-08-08). */}
-            <div style={{ color: hex }}>
+            <div style={{ color: tint }}>
               <ItemIcon slot={slot} size="2.3rem" />
             </div>
             <span

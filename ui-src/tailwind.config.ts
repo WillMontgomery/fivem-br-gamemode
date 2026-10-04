@@ -53,15 +53,18 @@ export default {
         },
         hp:     '#4ade80',
         shield: '#38bdf8',
-        storm:  '#c026d3',      // magenta: clears Epic #a855f7 at a glance
+        storm:  '#c026d3',      // magenta: clears Epic #B15BFF at a glance
         danger: '#ef4444',
         // Canonical. Players arrive already knowing these -- do not redesign.
+        // POINTERS, NOT VALUES (#392): this held its own copy of the palette --
+        // Tailwind's defaults, not the set the bag and the world paint. The
+        // five live in index.css, where the colorblind modes can reach them.
         rarity: {
-          1: '#9ca3af',
-          2: '#22c55e',
-          3: '#3b82f6',
-          4: '#a855f7',
-          5: '#f59e0b',
+          1: 'var(--rarity-1)',
+          2: 'var(--rarity-2)',
+          3: 'var(--rarity-3)',
+          4: 'var(--rarity-4)',
+          5: 'var(--rarity-5)',
         },
       },
       fontFamily: {

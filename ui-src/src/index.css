@@ -314,14 +314,27 @@
   --color-text-body: rgba(255, 255, 255, 0.70);
 
   /* RARITY IS CANONICAL. Players arrive knowing these from every other battle
-     royale; redesigning them costs recognition and buys nothing. Mirrored in
-     bridge/types.ts RARITY, which is what components actually read -- these
-     exist so Lua-side markers and CSS can share one source of truth. */
-  --rarity-1: #9ca3af;
-  --rarity-2: #22c55e;
-  --rarity-3: #3b82f6;
-  --rarity-4: #a855f7;
-  --rarity-5: #f59e0b;
+     royale; redesigning them costs recognition and buys nothing.
+
+     THESE ARE BR.RarityInfo's FIVE, and that is #392. This block used to hold
+     Tailwind's defaults (#9ca3af #22c55e #3b82f6 #a855f7 #f59e0b) while the
+     bag, the menus and the world painted BR.RarityInfo's set, so the Market
+     and the Settings preview showed one palette and everything else another.
+     Owner, 2026-10-04: "The table you wrote is the one I want kept."
+
+     EVERY SURFACE ON THE PAGE READS THESE VARIABLES and none keeps a hex of
+     its own -- bridge/types.ts RARITY carries the key and the label, and no
+     color. That is what lets the [data-cb] blocks below reach the bag and the
+     inventory panel; while those read a hex, no colorblind mode ever did.
+
+     Lua draws the world and the menus from BR.RarityInfo's rgb, which no
+     stylesheet can reach. tools/test_rarity.lua pins this block, that table
+     and the built bundle to the same five values. */
+  --rarity-1: #B0B0B0;
+  --rarity-2: #4CD964;
+  --rarity-3: #3B9BFF;
+  --rarity-4: #B15BFF;
+  --rarity-5: #FFB020;
 
   /* Pre-mixed translucent variants, replacing color-mix() at the point of use. */
   --color-storm-fade:  rgba(192, 38, 211, 0.55);
@@ -368,26 +381,52 @@
 /* Deuteranopia and protanopia are both red/green; the collapse is green vs
    red vs orange. Green moves to a cyan-leaning teal, legendary orange moves
    to a warm yellow well clear of red, and danger keeps red but darkens so it
-   separates from Epic purple by lightness as well as hue. */
+   separates from Epic purple by lightness as well as hue.
+
+   THE RARITIES WERE RE-DERIVED FROM THE CANONICAL SET (#392), not carried
+   over from the Tailwind set they were tuned against. Simulated at full
+   severity (Brettel 1997 and Machado 2009) and measured in CIEDE2000, the
+   canonical five collapse twice: Rare into Epic for a deuteranope (dE 3 --
+   purple loses its red and lands on Rare's blue), Uncommon into Legendary for
+   a protanope (dE 7 -- both read as yellow). The smallest moves that clear
+   both:
+     Uncommon -> a light mint, toward teal but not all the way: a full teal
+                 lands on Common's grey once the green is gone, so this one
+                 stops partway and stands off the grey by lightness.
+     Rare     -> one step deeper, and
+     Epic     -> a light orchid, so the pair that becomes one blue separates
+                 by lightness instead.
+   COMMON AND LEGENDARY DO NOT MOVE. A grey is the one color no deficiency
+   shifts, and with Uncommon off the yellow axis the canonical orange already
+   clears everything by dE 19 -- including red danger. The warm yellow it used
+   to move to sits on the victory gold (--color-royale-accent2, dE 2), the one
+   color that means something else. Every pair now clears dE 15 in both
+   deficiencies under both models; the Tailwind-tuned values managed 5. */
 :root[data-cb="deuter"], :root[data-cb="protan"] {
   --color-hp:     #2dd4bf;
   --color-shield: #60a5fa;
   --color-danger: #f43f5e;
-  --rarity-1: #9ca3af;
-  --rarity-2: #2dd4bf;
-  --rarity-3: #3b82f6;
-  --rarity-4: #c084fc;
-  --rarity-5: #fde047;
+  --rarity-2: #72FBBD;
+  --rarity-3: #4A88F5;
+  --rarity-4: #EAB4FF;
   --color-danger-edge: rgba(244, 63, 94, 0.55);
 }
 
 /* Tritanopia is blue/yellow: shield-blue and legendary-yellow are the pair at
-   risk, and green is safe. Shield moves toward violet, legendary toward a red
-   that tritan vision reads clearly. */
+   risk, and green is safe. Shield moves toward violet.
+
+   THE RARITIES, RE-DERIVED FROM THE CANONICAL SET (#392). With blue and yellow
+   gone, green and blue both land on cyan, so Uncommon against Rare is the
+   pair that collapses (dE 11). Rare moves one step deeper -- the same value
+   the red/green block uses -- and the two separate by lightness. The lighter
+   sky blue this block used to move Rare to made that pair worse (dE 4).
+   LEGENDARY NO LONGER MOVES. The old override took an amber toward a red that
+   tritan vision reads clearly; the canonical orange is already that red to a
+   tritanope, and it clears every other rarity by dE 22. Every pair now clears
+   dE 15 under both models. */
 :root[data-cb="tritan"] {
   --color-shield: #a78bfa;
-  --rarity-3: #38bdf8;
-  --rarity-5: #fb7185;
+  --rarity-3: #4A88F5;
   --color-storm: #d946ef;
   --color-storm-fade: rgba(217, 70, 239, 0.55);
 }

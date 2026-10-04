@@ -46,12 +46,20 @@ export type ChatChannel = 'global' | 'squad' | 'system'
 /** Rarity is 1..5; index into RARITY below. */
 export type Rarity = 1 | 2 | 3 | 4 | 5
 
-export const RARITY: Record<Rarity, { key: string; label: string; hex: string }> = {
-  1: { key: 'common',    label: 'Common',    hex: '#B0B0B0' },
-  2: { key: 'uncommon',  label: 'Uncommon',  hex: '#4CD964' },
-  3: { key: 'rare',      label: 'Rare',      hex: '#3B9BFF' },
-  4: { key: 'epic',      label: 'Epic',      hex: '#B15BFF' },
-  5: { key: 'legendary', label: 'Legendary', hex: '#FFB020' },
+/**
+ * NO COLOR IN THIS TABLE, ON PURPOSE (#392). A rarity's color is
+ * `var(--rarity-N)`, written where it is painted: index.css holds the five
+ * values and the colorblind modes override them there. The hex this table
+ * used to carry is what kept the bag and the inventory panel out of every
+ * colorblind mode, so it is gone rather than mirrored. tools/test_rarity.lua
+ * fails if one comes back, and pins each key and label to BR.RarityInfo's.
+ */
+export const RARITY: Record<Rarity, { key: string; label: string }> = {
+  1: { key: 'common',    label: 'Common' },
+  2: { key: 'uncommon',  label: 'Uncommon' },
+  3: { key: 'rare',      label: 'Rare' },
+  4: { key: 'epic',      label: 'Epic' },
+  5: { key: 'legendary', label: 'Legendary' },
 }
 
 // --- payloads ---------------------------------------------------------------

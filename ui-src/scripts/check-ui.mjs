@@ -146,7 +146,7 @@ for (const f of files) {
 // wearing the one colour reserved for winning.
 // ---------------------------------------------------------------------------
 const RETIRED = [
-  ['#a855f7', 'the old brand purple (now Epic loot only -- use --color-royale-accent)'],
+  ['#a855f7', 'the old brand purple, and since #392 not Epic either (Epic is var(--rarity-4)) -- use --color-royale-accent'],
   ['#9333ea', 'the old storm purple (storm is now #c026d3)'],
   ['#4cc9f0', 'the old accent2 cyan (accent2 is now victory gold)'],
   ['rgba(52,44,80', 'the old inventory active fill'],
@@ -156,11 +156,10 @@ for (const f of files) {
   // Strip comments first. A rule that retires a colour has to be able to NAME
   // it in the comment explaining why, and the first cut of this failed on its
   // own documentation.
+  // NO EXEMPTION FOR THE RARITY TOKENS ANY MORE. #a855f7 was allowed inside a
+  // `--rarity-N:` declaration while it was Tailwind's Epic; #392 put
+  // BR.RarityInfo's set in those tokens, so it has no home left at all.
   const body = stripComments(read(f))
-    // #a855f7 is retired as a BRAND colour and is still perfectly correct as
-    // Epic loot -- that is the whole point of the move. The canonical rarity
-    // tokens are where it is allowed to live.
-    .replace(/--rarity-\d:\s*#[0-9a-fA-F]{6};/g, '')
   for (const [needle, why] of RETIRED) {
     if (body.includes(needle)) fail('R2 palette', rel(f), `uses ${needle} -- ${why}`)
   }
