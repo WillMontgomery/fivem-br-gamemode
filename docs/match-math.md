@@ -233,7 +233,8 @@ over all 192 tours the anchor was city 37% of the time.
 **The anchor's split is not the match's.** The owner's 50/50 is where matches
 open and end: circle 1's center and the final zone's. Circle 1 is drawn off the
 anchor across the whole opening zone (2.4 km away at the median), and every later
-zone off the one before, and both lean county. So `cityShare` is calibrated to
+zone off the one before, and both drift back toward about 43% city whatever the
+anchor did. So `cityShare` is calibrated to
 put circle 1 and the final zone each as near half as one number can, and the
 anchor is then city 62% of the time. Whole matches through the server's own
 `bus.lua` and `storm.lua`, city by y < 1050, with 95% intervals:

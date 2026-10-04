@@ -1373,7 +1373,8 @@ local ANCHOR_CITY_SHARE = 0.62
 ---
 --- THE ANCHOR'S SPLIT IS NOT THE MATCH'S. The owner's 50/50 is where matches
 --- open and end, and circle 1 roams off the anchor (2.4 km at the median) and
---- the final zone off circle 1, both pulled toward the county. So cityShare is
+--- the final zone off circle 1, both drifting back toward a point near 43% city
+--- whatever the anchor did. So cityShare is
 --- not 0.5: it is CALIBRATED so that circle 1 and the final zone each land in the
 --- city about half the time, and the anchor is then city about 62% of the time.
 --- config/storm.lua's anchorRegion has the measurement.
@@ -1428,6 +1429,10 @@ function BR.PickStormAnchor(rng, waypoints, pois, band, region)
         return true
     end
 
+    -- A CONFIG TYPO MUST NOT KILL WARMUP. anchorRegion = 0.62 (a number where a
+    -- table belongs) would index a number here; anything that is not a table is
+    -- read as the shipped defaults instead.
+    if region ~= nil and type(region) ~= 'table' then region = {} end
     if region then
         local share = region.cityShare
         if type(share) ~= 'number' or not (share >= 0.0 and share <= 1.0) then

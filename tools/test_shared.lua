@@ -6418,6 +6418,28 @@ do
     ok(firstOff == 0, 'the region is the first draw off the match stream',
         ('%d of 300 seeds disagree'):format(firstOff))
 
+    -- A REGION THAT IS NOT A TABLE IS THE SHIPPED DEFAULTS, NOT A CRASH. A config
+    -- typo like anchorRegion = 0.62 used to index a number inside the picker, and
+    -- an error there kills the match in warmup.
+    for _, bad in ipairs({ 0.62, true, 'city' }) do
+        local same, threw = 0, nil
+        for seed = 1, 40 do
+            local okCall, a, w, side = pcall(BR.PickStormAnchor, BR.Rng(seed),
+                drawTour(BR.Rng(seed + 1)), pois, band, bad)
+            if not okCall then threw = a break end
+            local ra, rw, rside = BR.PickStormAnchor(BR.Rng(seed), drawTour(BR.Rng(seed + 1)),
+                pois, band, region)
+            -- drawTour builds fresh waypoint tables per call, so the waypoint is
+            -- compared by position; the POI is the config's own table either way.
+            if a == ra and side == rside and w and rw and w.x == rw.x and w.y == rw.y then
+                same = same + 1
+            end
+        end
+        ok(threw == nil and same == 40,
+            ('anchorRegion = %s picks exactly what the shipped region picks'):format(tostring(bad)),
+            threw and tostring(threw) or ('%d of 40 seeds the same'):format(same))
+    end
+
     -- THE SHARE, OVER MANY MATCHES WITH THE REAL TOURS AND THE REAL POIS. Each
     -- seed draws its tour and then its anchor off one stream, the way bus.plan()
     -- does. 20,000 draws put one standard deviation of the split at 0.35 points,

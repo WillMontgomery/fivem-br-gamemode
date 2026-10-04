@@ -48,7 +48,8 @@ BR.Config.Storm = {
     --
     -- CITYSHARE IS CALIBRATED TO THE MATCH, NOT TO THE ANCHOR. The owner's 50/50
     -- is where matches OPEN and END: circle 1's center and the final zone's. Both
-    -- lean county off the anchor -- circle 1 roams 2.4 km from it at the median,
+    -- drift off the anchor back toward about 43% city -- circle 1 roams 2.4 km
+    -- from it at the median,
     -- and the final zone roams off circle 1 -- so an anchor split 50/50 opened
     -- matches in the city 46% of the time and ended them there 44%. 0.62 is the
     -- share that puts circle 1 and the final zone each as near half as one number
@@ -67,8 +68,10 @@ BR.Config.Storm = {
     -- this one, because the final zone follows the anchor less closely than
     -- circle 1 does; 0.62 splits that gap, a point or so over half and a point or
     -- so under. Anything that changes how far circle 1 or the later phases roam
-    -- moves both numbers, and tools/test_storm.lua's storm.anchor.outcome is what
-    -- says so.
+    -- moves both numbers. tools/test_storm.lua's storm.anchor.outcome measures
+    -- circle 1 through the real server code every run; the final zone it checks
+    -- only coarsely (24 matches a side), so a change to the later phases' roaming
+    -- needs this table measured again.
     --
     -- At y < 1050, 52 of the 120 POIs are city. The nearest the line on the
     -- city side are South Fuente Ridge and Observatory Ridge (y 835 and 845);
