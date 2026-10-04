@@ -682,6 +682,260 @@ class Push(Box):
         self.assertEqual(text, assets.dump_lock(json.loads(text)))
         self.assertNotIn('\r', text)
 
+    def test_push_takes_several_folders_or_a_category(self):
+        a = make_resource(self.src, 'alpha', {'a.ytd': b'a'})
+        b = make_resource(self.src, 'beta', {'b.ytd': b'b'})
+        self.run_tool('push', a, b, '--lock', self.lock)
+        self.assertEqual([e['name'] for e in self.lock_data()['resources']], ['alpha', 'beta'])
+        self.assertEqual(len(self.uploads()), 2)
+        # A parent or [category] folder pushes each resource in it, walking
+        # nested categories, and says what it skipped.
+        cat = os.path.join(self.src, '[maps]')
+        make_resource(cat, 'legion', {'m.ymap': b'm'})
+        make_resource(os.path.join(cat, '[extra]'), 'docks', {'d.ymap': b'd'})
+        write(os.path.join(cat, 'readme.txt'), b'x')
+        write(os.path.join(cat, 'loose', 'x.ymap'), b'x')
+        _, text = self.push(cat, '--season', 2)
+        e = {x['name']: x for x in self.lock_data()['resources']}
+        self.assertEqual(sorted(e), ['alpha', 'beta', 'docks', 'legion'])
+        self.assertEqual(list(e['legion']['seasons']), ['2'])
+        self.assertIn('skipped [maps]/readme.txt: not a folder', text)
+        self.assertIn('skipped [maps]/loose: no fxmanifest.lua', text)
+        # --name is for one resource.
+        _, text = self.run_tool('push', a, b, '--lock', self.lock, '--name', 'x', expect=1)
+        self.assertIn('--name names one resource', text)
+        _, text = self.run_tool('push', a, a, '--lock', self.lock, expect=1)
+        self.assertIn('one resource twice', text)
+
+
+# =============================================================================
+# the drop folder: init-drop and publish
+# =============================================================================
+
+GIT_EXE = shutil.which('git')
+
+
+@unittest.skipUnless(GIT_EXE, 'needs git')
+class Publish(Box):
+    """publish against a scratch checkout on dev with a bare remote, the fake
+    aws, and a drop folder, all under paths with spaces and brackets."""
+
+    def setUp(self):
+        super().setUp()
+        # The whole PATH after the fake aws (still found first): Git for
+        # Windows' pull fails, silently, with only its own bin directory.
+        self.env['PATH'] += os.pathsep + os.environ.get('PATH', '')
+        self.bare = os.path.join(self.tmp, 'origin.git')
+        self.repo = os.path.join(self.tmp, 'repo [dev] copy')
+        self.drop = os.path.join(self.tmp, 'Blitz Assets')
+        os.makedirs(self.bare)
+        self.g('init', '-q', '--bare', '-b', 'dev', cwd=self.bare)
+        make_resource(os.path.join(self.repo, 'resources', '[fivem-royale]'), 'br_core', {'server/x.lua': b'x'})
+        write(os.path.join(self.repo, 'assets.lock'), assets.dump_lock({'format': 1, 'resources': []}))
+        write(os.path.join(self.repo, 'README.md'), 'readme\n')
+        self.g('init', '-q', '-b', 'dev')
+        self.g('config', 'core.autocrlf', 'false')
+        self.g('config', 'user.name', 'Owner')
+        self.g('config', 'user.email', 'owner@example.invalid')
+        self.g('add', '-A')
+        self.g('commit', '-qm', 'base')
+        self.g('remote', 'add', 'origin', self.bare)
+        self.g('push', '-q', '-u', 'origin', 'dev')
+        self.run_tool('init-drop', self.drop, '--repo', self.repo)
+
+    def g(self, *args, cwd=None):
+        r = subprocess.run([GIT_EXE] + list(args), cwd=cwd or self.repo, stdout=subprocess.PIPE,
+                           stderr=subprocess.STDOUT)
+        out = r.stdout.decode('utf-8', 'replace')
+        self.assertEqual(r.returncode, 0, 'git %s: %s' % (' '.join(args), out))
+        return out.strip()
+
+    def publish(self, answer='', expect=0):
+        with mock.patch.object(sys, 'stdin', io.StringIO(answer)):
+            return self.run_tool('publish', self.drop, '--repo', self.repo, expect=expect)
+
+    def pack_in(self, where, name, files):
+        return make_resource(os.path.join(self.drop, *where.split('/')), name, files)
+
+    def repo_lock(self):
+        return json.loads(read(os.path.join(self.repo, 'assets.lock')).decode('utf-8'))
+
+    def remote_lock(self):
+        return json.loads(self.g('show', 'dev:assets.lock', cwd=self.bare))
+
+    def pins(self, lock=None):
+        lock = lock or self.repo_lock()
+        return {e['name']: e['seasons'] for e in lock['resources']}
+
+    def test_init_drop_makes_the_folders_and_publish_cmd(self):
+        self.assertEqual(sorted(os.listdir(self.drop)), ['Publish.cmd', 'Season 1', 'Season 2'])
+        self.assertEqual(os.listdir(os.path.join(self.drop, 'Season 1')), [])
+        cmd = read(os.path.join(self.drop, 'Publish.cmd')).decode('ascii')
+        self.assertTrue(cmd.endswith('\r\n') and '\n' not in cmd.replace('\r\n', ''), 'CRLF throughout')
+        tool = os.path.join(os.path.abspath(self.repo), 'tools', 'assets.py')
+        self.assertIn('py -3 "%s" publish "%%~dp0." --repo "%s"\r\n' % (tool, os.path.abspath(self.repo)), cmd)
+        self.assertTrue(cmd.rstrip().endswith('pause'), 'the window waits for a key')
+        # Running it again changes nothing; a folder inside a work tree is refused.
+        self.run_tool('init-drop', self.drop, '--repo', self.repo)
+        _, text = self.run_tool('init-drop', os.path.join(self.repo, 'drop'), '--repo', self.repo, expect=1)
+        self.assertIn('inside the git work tree', text)
+        self.assertFalse(os.path.exists(os.path.join(self.repo, 'drop')))
+
+    def test_add_change_retire_and_readd(self):
+        legion = self.pack_in('Season 1', 'legion', {'stream/a.ymap': b'v1' * 100})
+        # Unrelated work in the checkout, which the commit must leave alone.
+        write(os.path.join(self.repo, 'README.md'), 'readme, edited\n')
+        head = self.g('rev-parse', 'HEAD')
+
+        # n: the lock is written, nothing is committed or pushed.
+        _, text = self.publish('n\n')
+        v1 = self.pins()['legion']['1']
+        self.assertIn('Season 1', text)
+        self.assertIn('+ legion  %s' % v1[:12], text)
+        self.assertIn('Commit and push to dev? [y/N]', text)
+        self.assertIn('not committed', text)
+        self.assertEqual(len(self.uploads()), 1)
+        self.assertEqual(self.g('rev-parse', 'HEAD'), head)
+        self.assertEqual(self.pins(self.remote_lock()), {})
+
+        # y, with nothing new: the earlier change is what gets committed.
+        self.reset_calls()
+        _, text = self.publish('y\n')
+        self.assertEqual(self.uploads(), [])
+        self.assertEqual(self.g('show', '--name-only', '--format=', 'HEAD').splitlines(), ['assets.lock'])
+        self.assertEqual(self.g('log', '-1', '--format=%s'), 'Licensed assets: add legion')
+        self.assertIn('+ legion  %s' % v1[:12], self.g('log', '-1', '--format=%b'))
+        self.assertEqual(self.g('rev-parse', 'HEAD'), self.g('rev-parse', 'dev', cwd=self.bare), 'pushed')
+        self.assertEqual(self.pins(self.remote_lock()), {'legion': {'1': v1}})
+        self.assertEqual(read(os.path.join(self.repo, 'README.md')), b'readme, edited\n', 'left alone')
+
+        # Changed.
+        self.reset_calls()
+        write(os.path.join(legion, 'stream', 'a.ymap'), b'v2' * 100)
+        _, text = self.publish('y\n')
+        v2 = self.pins()['legion']['1']
+        self.assertIn('~ legion  %s' % v2[:12], text)
+        self.assertIn('(was %s)' % v1[:12], text)
+        self.assertEqual(len(self.uploads()), 1)
+        self.assertEqual(self.pins(self.remote_lock()), {'legion': {'1': v2}})
+
+        # Retired: the folder is deleted. Nothing uploads; the archive stays.
+        self.reset_calls()
+        shutil.rmtree(legion)
+        _, text = self.publish('y\n')
+        self.assertIn('- legion  retired', text)
+        self.assertEqual(self.uploads(), [])
+        self.assertEqual(self.pins(self.remote_lock()), {})
+        self.assertEqual(self.g('log', '-1', '--format=%s'), 'Licensed assets: retire legion')
+        self.assertTrue(os.path.isfile(self.object_path('legion', v2)))
+
+        # Dragged back: republished with no upload.
+        self.reset_calls()
+        self.pack_in('Season 1', 'legion', {'stream/a.ymap': b'v2' * 100})
+        _, text = self.publish('y\n')
+        self.assertEqual(self.uploads(), [])
+        self.assertIn('already in the bucket', text)
+        self.assertEqual(self.pins(self.remote_lock()), {'legion': {'1': v2}})
+
+        # Nothing changed at all: nothing to ask.
+        _, text = self.publish('')
+        self.assertIn('nothing to publish', text)
+        self.assertNotIn('[y/N]', text)
+
+    def test_seasons_categories_and_what_is_skipped(self):
+        self.pack_in('Season 1/[maps]', 'legion', {'m.ymap': b'one'})
+        self.pack_in('Season 2/[maps]', 'legion', {'m.ymap': b'two'})
+        self.pack_in('Season 1/[anims]/[dances]', 'emotes', {'e.ycd': b'e'})
+        self.pack_in('Season 2', 'emotes', {'e.ycd': b'e'})      # the same pack again
+        write(os.path.join(self.drop, 'Season 1', 'readme.txt'), b'x')
+        write(os.path.join(self.drop, 'Season 1', 'not a resource', 'x.lua'), b'x')
+        write(os.path.join(self.drop, 'Season 1', 'desktop.ini'), b'x')
+        write(os.path.join(self.drop, 'Old stuff', 'x.txt'), b'x')
+        write(os.path.join(self.drop, 'pack.zip'), b'x')
+        _, text = self.publish('n\n')
+        pins = self.pins()
+        self.assertEqual(sorted(pins['legion']), ['1', '2'])
+        self.assertNotEqual(pins['legion']['1'], pins['legion']['2'])
+        self.assertEqual(pins['emotes'], {'1': pins['emotes']['1']}, 'one version per season: no second pin')
+        for note in ('skipped Season 1/readme.txt: not a folder',
+                     'skipped Season 1/not a resource: no fxmanifest.lua, and not a [category] folder',
+                     'skipped Old stuff: not a "Season <n>" folder',
+                     'skipped pack.zip: not in a season folder'):
+            self.assertIn(note, text)
+        self.assertNotIn('desktop.ini', text)
+        # from/until set on a resource that is still there survive a publish.
+        data = self.repo_lock()
+        data['resources'][0]['until'] = 3
+        write(os.path.join(self.repo, 'assets.lock'), assets.dump_lock(data))
+        self.publish('n\n')
+        self.assertEqual(self.repo_lock()['resources'][0].get('until'), 3)
+        # Season folder names: any case, `Season <n>`.
+        os.rename(os.path.join(self.drop, 'Season 2'), os.path.join(self.drop, 'SEASON 2'))
+        self.publish('n\n')
+        self.assertEqual(sorted(self.pins()['legion']), ['1', '2'])
+
+    def test_the_index_spares_packing_an_unchanged_folder(self):
+        big = self.pack_in('Season 1', 'legion', {'stream/a.ymap': b'x' * 5000})
+        packs = []
+        real = assets.write_pack
+
+        def counting(files, out):
+            packs.append(out)
+            return real(files, out)
+        with mock.patch.object(assets, 'write_pack', counting):
+            self.publish('n\n')
+            self.assertEqual(len(packs), 1)
+            sha = self.pins()['legion']['1']
+            _, text = self.publish('n\n')
+            self.assertEqual(len(packs), 1, 'unchanged: hashed from the index, not packed')
+            self.assertIn('Season 1/legion: %s, 2 files, ' % sha[:12], text)
+            self.assertIn(', unchanged', text)
+            # The index hit, but the bucket lacks it: packed once, at upload,
+            # and held to the indexed sha.
+            self.g('checkout', '--', 'assets.lock')
+            os.remove(self.object_path('legion', sha))
+            self.reset_calls()
+            self.publish('n\n')
+            self.assertEqual(len(packs), 2)
+            self.assertEqual(len(self.uploads()), 1)
+            self.assertEqual(assets.sha256_file(self.object_path('legion', sha))[0], sha)
+            # A touched file is hashed again.
+            st = os.stat(os.path.join(big, 'stream', 'a.ymap'))
+            os.utime(os.path.join(big, 'stream', 'a.ymap'), ns=(st.st_atime_ns, st.st_mtime_ns + 10 ** 9))
+            self.publish('n\n')
+            self.assertEqual(len(packs), 3)
+        self.assertEqual(self.pins()['legion']['1'], sha, 'same bytes, same sha')
+
+    def test_refusals(self):
+        self.pack_in('Season 1', 'legion', {'m.ymap': b'm'})
+        lock = read(os.path.join(self.repo, 'assets.lock'))
+        # Off dev.
+        self.g('checkout', '-q', '-b', 'feature')
+        _, text = self.publish(expect=1)
+        self.assertIn('not dev', text)
+        self.g('checkout', '-q', 'dev')
+        # A drop folder inside a work tree.
+        inner = os.path.join(self.repo, 'Blitz Assets')
+        shutil.copytree(self.drop, inner)
+        with mock.patch.object(sys, 'stdin', io.StringIO('')):
+            _, text = self.run_tool('publish', inner, '--repo', self.repo, expect=1)
+        self.assertIn('inside the git work tree', text)
+        shutil.rmtree(inner)
+        # A repo resource's name; one resource twice in a season.
+        self.pack_in('Season 1', 'br_core', {'x.lua': b'x'})
+        self.pack_in('Season 1/[a]', 'docks', {'d.ymap': b'1'})
+        self.pack_in('Season 1/[b]', 'docks', {'d.ymap': b'2'})
+        _, text = self.publish(expect=1)
+        self.assertIn('br_core: a resource in this repository already has that name', text)
+        self.assertIn('Season 1/[a]/docks and Season 1/[b]/docks are one resource twice in Season 1', text)
+        # No season folder at all would retire everything: refused.
+        for d in ('Season 1', 'Season 2'):
+            shutil.rmtree(os.path.join(self.drop, d))
+        _, text = self.publish(expect=1)
+        self.assertIn('no "Season <n>" folder', text)
+        self.assertEqual(self.calls(), [], 'no refusal reached the bucket')
+        self.assertEqual(read(os.path.join(self.repo, 'assets.lock')), lock)
+
 
 # =============================================================================
 # pull

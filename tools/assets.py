@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Licensed assets: purchased resources the boxes run but this repo never holds (#391).
 
-    py tools/assets.py push <folder> [--season N] [--from N] [--until N]   on the owner's PC
+    py tools/assets.py publish <drop folder>                               on the owner's PC (Publish.cmd runs it)
+    py tools/assets.py init-drop <drop folder>                             makes the drop folder and its Publish.cmd
+    py tools/assets.py push <folder>... [--season N] [--from N] [--until N] on the owner's PC
     python3 tools/assets.py pull [--stage | --swap | --dry-run]            on a game box (deploy.sh runs it)
     py tools/assets.py status [--profile blitz-assets]                     lock vs installed vs bucket
     py tools/assets.py check                                               verify.sh and CI
@@ -27,6 +29,11 @@ br_lib/config/seasons.lua is bounded by `from` and `untilSeason`: on from Season
 season is not installed. The box's season is br_season as server.cfg sets it
 before br_core starts (exec'd files followed); unset means `latest` in
 seasons.lua, as in game.
+
+THE DROP FOLDER. The owner drags packs into `Season <n>` folders with File
+Explorer and double-clicks Publish.cmd, which runs `publish`: the folders ARE
+the lock's contents, so a pack moved, replaced or deleted there is published as
+exactly that.
 
 FOUR RULES THE CODE BELOW EXISTS TO KEEP, each pinned by tools/test_assets.py:
 
@@ -97,6 +104,13 @@ STAGE_FILE = 'stage.json'
 JOURNAL_FILE = 'journal.json'
 LAST_USED_FILE = '.last-used.json'
 PRUNE_AFTER = 14 * 24 * 3600
+
+# The drop folder (publish, init-drop).
+PUBLISH_CMD = 'Publish.cmd'
+DROP_INDEX = '.publish-index.json'
+DROP_SEASONS = (1, 2)
+SEASON_DIR_RE = re.compile(r'season[ \t]+([0-9]+)\Z', re.I)
+PUBLISH_BRANCH = 'dev'
 
 SEASONS_LUA = ('resources', '[fivem-royale]', 'br_lib', 'config', 'seasons.lua')
 SEASON_CONVAR = 'br_season'
@@ -777,11 +791,13 @@ class Aws:
         self.bucket = bucket
         self.profile = profile
 
-    def _run(self, args: list[str]) -> subprocess.CompletedProcess:
+    def _run(self, args: list[str], show_progress: bool = False) -> subprocess.CompletedProcess:
         env = dict(os.environ)
         env['AWS_PAGER'] = ''
         try:
-            return subprocess.run(self.cmd + args + self.tail, stdout=subprocess.PIPE,
+            # With progress, the CLI's own progress line goes straight to the
+            # console; only its errors are kept to report.
+            return subprocess.run(self.cmd + args + self.tail, stdout=None if show_progress else subprocess.PIPE,
                                   stderr=subprocess.PIPE, env=env)
         except OSError as e:
             raise AssetsError('cannot run the AWS CLI (%s): %s' % (self.cmd[-1], e))
@@ -810,8 +826,9 @@ class Aws:
         if r.returncode != 0:
             raise AssetsError('downloading %s failed: %s' % (self.url(key), last_line(r.stderr.decode('utf-8', 'replace'))))
 
-    def upload(self, src: str, key: str) -> None:
-        r = self._run(['s3', 'cp', src, self.url(key), '--no-progress', '--only-show-errors'])
+    def upload(self, src: str, key: str, progress: bool = False) -> None:
+        quiet = [] if progress else ['--no-progress', '--only-show-errors']
+        r = self._run(['s3', 'cp', src, self.url(key)] + quiet, show_progress=progress)
         if r.returncode != 0:
             raise AssetsError('uploading %s failed: %s' % (self.url(key), last_line(r.stderr.decode('utf-8', 'replace'))))
 
@@ -822,6 +839,86 @@ def make_aws(args, default_profile: str | None = None) -> Aws:
         profile = None
     return Aws(find_aws(args.aws), profile, args.region, args.bucket)
 
+
+def upload_missing(aws: Aws, items: list[dict], progress: bool = False) -> tuple[int, int]:
+    """Upload each {name, sha, size, archive(), label} the bucket lacks, never
+    overwriting. `archive` is called only for one that has to go up. Returns
+    (uploaded, already there)."""
+    up = there = 0
+    todo = []
+    for it in items:
+        key = object_key(it['name'], it['sha'])
+        have = aws.head(key)
+        if have is None:
+            todo.append(it)
+        elif have == it['size']:
+            there += 1
+            say('already in the bucket, not uploaded again: %s %s' % (it['label'], short(it['sha'])))
+        else:
+            raise AssetsError('%s already exists with %d bytes, not %d. Objects are never overwritten; '
+                              'nothing was changed.' % (aws.url(key), have, it['size']))
+    for i, it in enumerate(todo, 1):
+        key = object_key(it['name'], it['sha'])
+        say('uploading %d/%d: %s %s, %s' % (i, len(todo), it['label'], short(it['sha']), human(it['size'])))
+        aws.upload(it['archive'](), key, progress=progress)
+        got = aws.head(key)
+        if got != it['size']:
+            raise AssetsError('the upload did not land whole: %s holds %s bytes, the archive is %d'
+                              % (aws.url(key), got, it['size']))
+        up += 1
+    return up, there
+
+
+# --------------------------------------------------------------------------
+# finding resources: push's folders and publish's season folders
+# --------------------------------------------------------------------------
+
+def is_category(name: str) -> bool:
+    return len(name) > 2 and name.startswith('[') and name.endswith(']')
+
+
+def find_resources(folder: str, label: str, notes: list[str]) -> list[tuple[str, str, str]]:
+    """(name, path, label) for each resource in `folder`: a subfolder holding
+    fxmanifest.lua is one, named after the folder; a FiveM [category] folder is
+    walked into; anything else is noted in `notes` and skipped."""
+    out: list[tuple[str, str, str]] = []
+    try:
+        entries = sorted(os.listdir(folder), key=lambda s: (s.lower(), s))
+    except OSError as e:
+        notes.append('%s: cannot be read (%s)' % (label, e.strerror or e))
+        return out
+    for entry in entries:
+        full = os.path.join(folder, entry)
+        lab = '%s/%s' % (label, entry) if label else entry
+        if entry.lower() in JUNK_FILES or entry.lower() in JUNK_DIRS:
+            continue
+        if is_link(full):
+            notes.append('skipped %s: a link' % lab)
+        elif os.path.isdir(full):
+            if os.path.isfile(os.path.join(full, 'fxmanifest.lua')):
+                out.append((entry, full, lab))
+            elif is_category(entry):
+                out.extend(find_resources(full, lab, notes))
+            else:
+                notes.append('skipped %s: no fxmanifest.lua, and not a [category] folder' % lab)
+        else:
+            notes.append('skipped %s: not a folder' % lab)
+    return out
+
+
+def name_problems(items: list[tuple[str, str, str]], where: str) -> list[str]:
+    p = []
+    seen: dict[str, str] = {}
+    for name, _full, lab in items:
+        low = name.lower()
+        if not NAME_RE.match(name):
+            p.append('%s: %r is not a resource name (letters, digits, _ and -); rename the folder' % (lab, name))
+        if low == RECORD_RESOURCE:
+            p.append('%s: %s is reserved for the install record; rename the folder' % (lab, name))
+        if low in seen:
+            p.append('%s and %s are one resource twice%s' % (seen[low], lab, where))
+        seen[low] = lab
+    return p
 
 
 # --------------------------------------------------------------------------
@@ -866,75 +963,87 @@ def apply_push(lock: dict, name: str, sha: str, size: int, files: dict[str, int]
     return changes
 
 
+def push_targets(folders: list[str], name: str | None) -> list[tuple[str, str]]:
+    """(name, folder) for each resource the push names: a folder holding
+    fxmanifest.lua is one resource; any other folder (a parent, or a FiveM
+    [category]) pushes each resource inside it."""
+    out: list[tuple[str, str]] = []
+    notes: list[str] = []
+    for f in folders:
+        folder = os.path.abspath(f)
+        if not os.path.isdir(folder):
+            raise AssetsError('not a folder: %s' % folder)
+        if os.path.isfile(os.path.join(folder, 'fxmanifest.lua')):
+            out.append((os.path.basename(folder.rstrip('/\\')), folder))
+            continue
+        found = find_resources(folder, os.path.basename(folder.rstrip('/\\')), notes)
+        if not found:
+            raise AssetsError('%s has no fxmanifest.lua and no resource folders inside it' % folder)
+        out.extend((n, full) for n, full, _ in found)
+    for n in notes:
+        say(n)
+    if name is not None:
+        if len(out) != 1:
+            raise AssetsError('--name names one resource, and this push has %d' % len(out))
+        out = [(name, out[0][1])]
+    problems = name_problems([(n, full, full) for n, full in out], ' in this push')
+    if problems:
+        raise AssetsError('nothing was uploaded or written:\n%s' % '\n'.join('  ' + x for x in problems))
+    return out
+
 
 def cmd_push(args) -> int:
-    folder = os.path.abspath(args.folder)
-    if not os.path.isdir(folder):
-        raise AssetsError('not a folder: %s' % folder)
-    if not os.path.isfile(os.path.join(folder, 'fxmanifest.lua')):
-        raise AssetsError('%s has no fxmanifest.lua; push takes one FiveM resource folder' % folder)
-    name = args.name or os.path.basename(folder.rstrip('/\\'))
-    if not NAME_RE.match(name):
-        raise AssetsError('%r is not a resource name (letters, digits, _ and -); rename the folder or pass --name' % name)
-
+    targets = push_targets(args.folders, args.name)
     lock_path = args.lock
     names = repo_resource_names()
-    if name.lower() == RECORD_RESOURCE:
-        raise AssetsError('%s is reserved for the install record; rename the folder or pass --name' % name)
-    if name.lower() in names:
-        raise AssetsError('a resource in this repository already has the name %s; rename the folder '
-                          'or pass --name' % name)
+    for name, _ in targets:
+        if name.lower() in names:
+            raise AssetsError('a resource in this repository already has the name %s; rename the folder '
+                              'or pass --name' % name)
     lock = load_lock(lock_path, names)
-    entry = next((e for e in lock['resources'] if e['name'] == name), None)
-    if args.season is not None:
-        season = args.season
-    elif entry is None:
-        season = 1
-    elif len(entry['seasons']) == 1:
-        season = int(next(iter(entry['seasons'])))
-    else:
-        raise AssetsError('%s pins versions at Seasons %s; say which one this is with --season N'
-                          % (name, ', '.join(sorted(entry['seasons'], key=int))))
+    updated = json.loads(json.dumps(lock))
 
     with tempfile.TemporaryDirectory(prefix='assets-push-') as tmp:
-        archive = os.path.join(tmp, 'pack.tar.gz')
-        files, skipped = pack(folder, archive)
-        sha, size = sha256_file(archive)
-        say('packed %s: %d files, %s -> %s archive' % (name, len(files), human(sum(files.values())), human(size)))
-        say('  sha256 %s' % sha)
-        for s in skipped:
-            say('  left out: %s' % s)
+        items = []
+        changes: list[str] = []
+        for i, (name, folder) in enumerate(targets):
+            entry = next((e for e in updated['resources'] if e['name'] == name), None)
+            if args.season is not None:
+                season = args.season
+            elif entry is None:
+                season = 1
+            elif len(entry['seasons']) == 1:
+                season = int(next(iter(entry['seasons'])))
+            else:
+                raise AssetsError('%s pins versions at Seasons %s; say which one this is with --season N'
+                                  % (name, ', '.join(sorted(entry['seasons'], key=int))))
+            archive = os.path.join(tmp, '%d.tar.gz' % i)
+            files, skipped = pack(folder, archive)
+            sha, size = sha256_file(archive)
+            say('packed %s: %d files, %s -> %s archive' % (name, len(files), human(sum(files.values())), human(size)))
+            say('  sha256 %s' % sha)
+            for s in skipped:
+                say('  left out: %s' % s)
+            changes += apply_push(updated, name, sha, size, files, season, args.from_season, args.until_season)
+            items.append({'name': name, 'sha': sha, 'size': size, 'label': name,
+                          'archive': (lambda a=archive: a)})
 
         # THE LOCK THIS PUSH WOULD WRITE, CHECKED BEFORE ANYTHING IS UPLOADED,
         # so a refusal leaves the bucket as well as the lock as they were.
-        updated = json.loads(json.dumps(lock))
-        changes = apply_push(updated, name, sha, size, files, season, args.from_season, args.until_season)
         problems = validate(updated, names)
         if problems:
             raise AssetsError('the lock would not pass check after this push; nothing was uploaded or written:\n%s'
                               % '\n'.join('  ' + x for x in problems))
-
-        aws = make_aws(args, PUSH_PROFILE)
-        key = object_key(name, sha)
-        have = aws.head(key)
-        if have is None:
-            say('uploading %s to %s' % (human(size), aws.url(key)))
-            aws.upload(archive, key)
-            got = aws.head(key)
-            if got != size:
-                raise AssetsError('the upload did not land whole: %s holds %s bytes, the archive is %d'
-                                  % (aws.url(key), got, size))
-            say('uploaded')
-        elif have == size:
-            say('already in the bucket, not uploaded again: %s' % aws.url(key))
-        else:
-            raise AssetsError('%s already exists with %d bytes, not %d. Objects are never overwritten; '
-                              'nothing was changed.' % (aws.url(key), have, size))
+        unique: dict[tuple[str, str], dict] = {}
+        for it in items:
+            unique.setdefault((it['name'], it['sha']), it)
+        upload_missing(make_aws(args, PUSH_PROFILE), list(unique.values()))
 
     text = dump_lock(updated)
     before = read_bytes(lock_path)
     if before is not None and before.replace(b'\r\n', b'\n') == text.encode('utf-8'):
-        say('%s unchanged: %s is already pinned there' % (os.path.basename(lock_path), name))
+        say('%s unchanged: %s already pinned there' % (os.path.basename(lock_path),
+                                                       ', '.join(n for n, _ in targets)))
         return 0
     atomic_write(lock_path, text)
     for c in changes:
@@ -1588,6 +1697,425 @@ def cmd_pull(args) -> int:
 
 
 # --------------------------------------------------------------------------
+# the drop folder: publish and init-drop
+# --------------------------------------------------------------------------
+#
+# The owner's way in, because File Explorer is: a folder on the Desktop with a
+# `Season <n>` folder per season, packs dragged into the one they start in, and
+# Publish.cmd. publish makes assets.lock say exactly what the folders hold,
+# uploads what the bucket lacks, and -- asked, never assumed -- commits the
+# lock alone to dev and pushes it.
+
+def enclosing_work_tree(path: str) -> str | None:
+    """The git work tree `path` is inside (or is), or None."""
+    cur = os.path.abspath(path)
+    while True:
+        if os.path.lexists(os.path.join(cur, '.git')):
+            return cur
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            return None
+        cur = parent
+
+
+def scan_drop(drop: str) -> tuple[dict[int, list[tuple[str, str, str]]], list[str], list[str]]:
+    """{season: [(name, path, label)]}, notes on what was skipped, problems."""
+    seasons: dict[int, list[tuple[str, str, str]]] = {}
+    notes: list[str] = []
+    problems: list[str] = []
+    folder_of: dict[int, str] = {}
+    for entry in sorted(os.listdir(drop), key=lambda s: (s.lower(), s)):
+        full = os.path.join(drop, entry)
+        if entry == PUBLISH_CMD or entry.startswith(DROP_INDEX) or entry.lower() in JUNK_FILES:
+            continue
+        if not os.path.isdir(full) or is_link(full):
+            notes.append('skipped %s: not in a season folder' % entry)
+            continue
+        m = SEASON_DIR_RE.match(entry.strip())
+        n = parse_season(m.group(1)) if m else None
+        if n is None:
+            notes.append('skipped %s: not a "Season <n>" folder' % entry)
+            continue
+        if n in folder_of:
+            problems.append('%s and %s are both Season %d; merge them' % (folder_of[n], entry, n))
+            continue
+        folder_of[n] = entry
+        seasons[n] = find_resources(full, entry, notes)
+    spelled: dict[str, str] = {}
+    for n in sorted(seasons):
+        problems += name_problems(seasons[n], ' in Season %d' % n)
+        for name, _full, lab in seasons[n]:
+            low = name.lower()
+            if low in spelled and spelled[low] != name:
+                problems.append('%s is spelled %s in another season folder; FiveM tells them apart, so '
+                                'rename one to match' % (lab, spelled[low]))
+            spelled.setdefault(low, name)
+    return seasons, notes, problems
+
+
+def signature(files: list[tuple[str, str, int, int]]) -> str:
+    h = hashlib.sha256()
+    for relp, _full, size, mtime in files:
+        h.update(('%s\0%d\0%d\n' % (relp, size, mtime)).encode('utf-8'))
+    return h.hexdigest()
+
+
+def hash_folder(folder: str, key: str, index: dict, tmp: str) -> dict:
+    """The sha256 and size the folder packs to, and its file list. From the
+    index when no file's path, size or mtime has changed since it was packed,
+    so a GB-sized pack is not packed again on every publish."""
+    files, _skipped = collect(folder)
+    if not any(relp == 'fxmanifest.lua' for relp, _, _, _ in files):
+        raise AssetsError('%s has no fxmanifest.lua at its top' % folder)
+    sig = signature(files)
+    filemap = {relp: size for relp, _, size, _ in files}
+    hit = index.get(key)
+    if (isinstance(hit, dict) and hit.get('sig') == sig and isinstance(hit.get('sha'), str)
+            and SHA_RE.match(hit['sha']) and is_int(hit.get('size'))):
+        return {'sha': hit['sha'], 'size': hit['size'], 'files': filemap, 'archive': None,
+                'folder': folder, 'reused': True}
+    out = os.path.join(tmp, '%d.tar.gz' % len(os.listdir(tmp)))
+    write_pack(files, out)
+    sha, size = sha256_file(out)
+    index[key] = {'sig': sig, 'sha': sha, 'size': size}
+    return {'sha': sha, 'size': size, 'files': filemap, 'archive': out, 'folder': folder, 'reused': False}
+
+
+def lock_from_drop(old: dict, found: dict[str, dict[int, dict]]) -> dict:
+    """The lock the folders describe. A resource keeps its place in the lock
+    (licensed.cfg's ensure order) and its from/until; new ones follow, by
+    first season, then name. A season whose version is the one already in
+    force from an earlier season adds no pin."""
+    by_name = {e['name']: e for e in old['resources']}
+    names = [e['name'] for e in old['resources'] if e['name'] in found]
+    names += sorted((n for n in found if n not in by_name), key=lambda n: (min(found[n]), n.lower(), n))
+    out = []
+    for name in names:
+        e: dict = {'name': name}
+        prev = by_name.get(name)
+        for k in ('from', 'until'):
+            if prev is not None and k in prev:
+                e[k] = prev[k]
+        seasons: dict[str, str] = {}
+        versions: dict[str, dict] = {}
+        last = None
+        for n in sorted(found[name]):
+            info = found[name][n]
+            if info['sha'] == last:
+                continue
+            seasons[str(n)] = info['sha']
+            versions[info['sha']] = {'size': info['size'], 'files': dict(info['files'])}
+            last = info['sha']
+        e['seasons'] = seasons
+        e['versions'] = versions
+        out.append(e)
+    return {'format': LOCK_FORMAT, 'resources': out}
+
+
+def lock_changes(old: dict, new: dict) -> list[tuple[int, str, str, str, int, str | None]]:
+    """(season, kind, name, sha, size, was) for each pin that differs, kind
+    one of added / changed / removed / retired, sorted by season then name."""
+    o = {e['name']: e for e in old['resources']}
+    n = {e['name']: e for e in new['resources']}
+    out = []
+    for name in sorted(set(o) | set(n), key=lambda s: (s.lower(), s)):
+        os_ = o[name]['seasons'] if name in o else {}
+        ns_ = n[name]['seasons'] if name in n else {}
+        for k in sorted(set(os_) | set(ns_), key=int):
+            if k in ns_ and k not in os_:
+                sha = ns_[k]
+                out.append((int(k), 'added', name, sha, n[name]['versions'][sha]['size'], None))
+            elif k in os_ and k not in ns_:
+                sha = os_[k]
+                out.append((int(k), 'retired' if name not in n else 'removed', name, sha,
+                            o[name]['versions'][sha]['size'], None))
+            elif os_[k] != ns_[k]:
+                sha = ns_[k]
+                out.append((int(k), 'changed', name, sha, n[name]['versions'][sha]['size'], os_[k]))
+    out.sort(key=lambda c: (c[0], c[2].lower(), c[2]))
+    return out
+
+
+SIGNS = {'added': '+', 'changed': '~', 'removed': '-', 'retired': '-'}
+
+
+def change_lines(changes) -> list[str]:
+    lines = []
+    season = None
+    for s, kind, name, sha, size, was in changes:
+        if s != season:
+            lines.append('Season %d' % s)
+            season = s
+        if kind == 'added':
+            tail = '%s, %s' % (short(sha), human(size))
+        elif kind == 'changed':
+            tail = '%s, %s (was %s)' % (short(sha), human(size), short(was))
+        elif kind == 'removed':
+            tail = 'no longer pinned at Season %d' % s
+        else:
+            tail = 'retired: in no season folder (its archives stay in the bucket)'
+        lines.append('  %s %s  %s' % (SIGNS[kind], name, tail))
+    return lines
+
+
+def commit_message(changes) -> str:
+    groups = {'added': [], 'changed': [], 'retired': []}
+    for _s, kind, name, _sha, _size, _was in changes:
+        g = 'changed' if kind == 'removed' else kind
+        if name not in groups[g]:
+            groups[g].append(name)
+    parts = []
+    for g, verb in (('added', 'add'), ('changed', 'update'), ('retired', 'retire')):
+        if groups[g]:
+            parts.append('%s %s' % (verb, ', '.join(groups[g])))
+    subject = 'Licensed assets: ' + ('; '.join(parts) or 'assets.lock')
+    if len(subject) > 72:
+        subject = 'Licensed assets: %s' % ', '.join(
+            '%d %s' % (len(groups[g]), w) for g, w in (('added', 'added'), ('changed', 'updated'),
+                                                       ('retired', 'retired')) if groups[g])
+    body = change_lines(changes)
+    return '%s\n\n%s\n\nPublished from the drop folder with tools/assets.py publish (#391).\n' % (
+        subject, '\n'.join(body))
+
+
+def git_cmd() -> str:
+    g = shutil.which('git')
+    if not g:
+        raise AssetsError('git is not on PATH')
+    return g
+
+
+def git(repo: str, *args: str, check: bool = True) -> subprocess.CompletedProcess:
+    try:
+        r = subprocess.run([git_cmd(), '-C', repo] + list(args), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except OSError as e:
+        raise AssetsError('cannot run git: %s' % e)
+    r.out = r.stdout.decode('utf-8', 'replace').strip()
+    r.err = r.stderr.decode('utf-8', 'replace').strip()
+    if check and r.returncode != 0:
+        raise AssetsError('git %s failed: %s' % (' '.join(args[:2]), last_line(r.err or r.out)))
+    return r
+
+
+def ask(question: str) -> bool:
+    try:
+        answer = input(question + ' ')
+    except EOFError:
+        print()
+        return False
+    return answer.strip().lower() in ('y', 'yes')
+
+
+def head_lock(repo: str) -> dict:
+    r = git(repo, 'show', 'HEAD:' + LOCK_NAME, check=False)
+    if r.returncode != 0:
+        return {'format': LOCK_FORMAT, 'resources': []}
+    data = parse_lock_text(r.stdout.decode('utf-8', 'replace'))
+    return data if not validate(data) else {'format': LOCK_FORMAT, 'resources': []}
+
+
+def rebasing(repo: str) -> bool:
+    for d in ('rebase-merge', 'rebase-apply'):
+        r = git(repo, 'rev-parse', '--git-path', d, check=False)
+        path = r.out if os.path.isabs(r.out) else os.path.join(repo, r.out)
+        if r.returncode == 0 and r.out and os.path.isdir(path):
+            return True
+    return False
+
+
+def push_to_dev(repo: str) -> None:
+    say('git pull --rebase --autostash origin %s' % PUBLISH_BRANCH)
+    r = git(repo, 'pull', '--rebase', '--autostash', 'origin', PUBLISH_BRANCH, check=False)
+    if r.returncode != 0:
+        if rebasing(repo):
+            git(repo, 'rebase', '--abort', check=False)
+        raise AssetsError('the pull before the push failed, so nothing was pushed: %s\n'
+                          'The commit is on your local %s. Once the pull works, push it with: '
+                          'git push origin %s' % (last_line(r.err or r.out), PUBLISH_BRANCH, PUBLISH_BRANCH))
+    say('git push origin %s' % PUBLISH_BRANCH)
+    r = git(repo, 'push', 'origin', PUBLISH_BRANCH, check=False)
+    if r.returncode != 0:
+        raise AssetsError('the push failed: %s\nThe commit is on your local %s; nothing reached GitHub.'
+                          % (last_line(r.err or r.out), PUBLISH_BRANCH))
+    say('pushed to %s: %s' % (PUBLISH_BRANCH, git(repo, 'log', '-1', '--format=%h %s').out))
+
+
+def cmd_publish(args) -> int:
+    drop = os.path.abspath(args.drop)
+    repo = os.path.abspath(args.repo or REPO_ROOT)
+    if not os.path.isdir(drop):
+        raise AssetsError('not a folder: %s' % drop)
+    tree = enclosing_work_tree(drop)
+    if tree:
+        raise AssetsError('%s is inside the git work tree %s, and nothing licensed may sit in a repository. '
+                          'Move the folder out (the Desktop is fine). Nothing was uploaded or changed.'
+                          % (drop, tree))
+    branch = git(repo, 'symbolic-ref', '--quiet', '--short', 'HEAD', check=False).out
+    if branch != PUBLISH_BRANCH:
+        raise AssetsError('%s is on %s, not %s, and publish commits to %s. Switch it to %s first. '
+                          'Nothing was uploaded or changed.' % (repo, branch or 'no branch', PUBLISH_BRANCH,
+                                                                 PUBLISH_BRANCH, PUBLISH_BRANCH))
+    lock_path = os.path.join(repo, LOCK_NAME)
+    names = repo_resource_names(repo)
+    lock = load_lock(lock_path, names)
+    committed = head_lock(repo)
+
+    say('scanning %s' % drop)
+    seasons, notes, problems = scan_drop(drop)
+    for n in notes:
+        say('  ' + n)
+    if not seasons and not problems:
+        # Publishing that would retire every pack; an empty Season folder is
+        # how to ask for that.
+        problems.append('%s has no "Season <n>" folder; init-drop makes them' % drop)
+    for name in sorted({name for items in seasons.values() for name, _, _ in items if name.lower() in names}):
+        problems.append('%s: a resource in this repository already has that name; rename the folder' % name)
+    if problems:
+        raise AssetsError('nothing was uploaded or changed:\n%s' % '\n'.join('  ' + x for x in problems))
+
+    index_path = os.path.join(drop, DROP_INDEX)
+    index = read_json(index_path)
+    if not isinstance(index, dict):
+        index = {}
+    with tempfile.TemporaryDirectory(prefix='assets-publish-') as tmp:
+        found: dict[str, dict[int, dict]] = {}
+        seen_keys = set()
+        for n in sorted(seasons):
+            for name, full, lab in seasons[n]:
+                info = hash_folder(full, lab, index, tmp)
+                seen_keys.add(lab)
+                say('  %s: %s, %d files, %s%s' % (lab, short(info['sha']), len(info['files']),
+                                                  human(info['size']), ', unchanged' if info['reused'] else ''))
+                found.setdefault(name, {})[n] = info
+        index = {k: v for k, v in index.items() if k in seen_keys}
+        atomic_write(index_path, json.dumps(index, indent=1, sort_keys=True) + '\n')
+
+        updated = lock_from_drop(lock, found)
+        problems = validate(updated, names)
+        if problems:
+            raise AssetsError('the lock these folders make would not pass check; nothing was uploaded or written:\n%s'
+                              % '\n'.join('  ' + x for x in problems))
+        text = dump_lock(updated)
+        current = (read_bytes(lock_path) or b'').replace(b'\r\n', b'\n')
+        changes = lock_changes(lock, updated)
+        say()
+        if changes:
+            say('the plan:')
+            for line in change_lines(changes):
+                say('  ' + line)
+        unchanged = sum(1 for e in updated['resources'] if not any(c[2] == e['name'] for c in changes))
+        if unchanged:
+            say('  %d resource(s) unchanged' % unchanged)
+
+        if current != text.encode('utf-8'):
+            known = {(e['name'], sha) for e in lock['resources'] for sha in e['versions']}
+            items = []
+            for e in updated['resources']:
+                for k in sorted(e['seasons'], key=int):
+                    sha = e['seasons'][k]
+                    if (e['name'], sha) in known or any(i['name'] == e['name'] and i['sha'] == sha for i in items):
+                        continue
+                    info = found[e['name']][int(k)]
+
+                    def archive(info=info, name=e['name'], tmp=tmp):
+                        # An index hit was never packed this run; pack it now
+                        # and hold it to the sha the plan was made with.
+                        if info['archive'] is None:
+                            files, _ = collect(info['folder'])
+                            out = os.path.join(tmp, '%s-%s.tar.gz' % (name, short(info['sha'])))
+                            write_pack(files, out)
+                            if sha256_file(out)[0] != info['sha']:
+                                raise AssetsError('%s changed while it was being published; run Publish again'
+                                                  % info['folder'])
+                            info['archive'] = out
+                        return info['archive']
+
+                    items.append({'name': e['name'], 'sha': sha, 'size': info['size'],
+                                  'label': '%s (Season %s)' % (e['name'], k), 'archive': archive})
+            say()
+            up, there = upload_missing(make_aws(args, PUSH_PROFILE), items, progress=True) if items else (0, 0)
+            atomic_write(lock_path, text)
+            load_lock(lock_path, names)
+            say('%s written and checked: %d resource(s); %d uploaded, %d already in the bucket'
+                % (LOCK_NAME, len(updated['resources']), up, there))
+
+    to_commit = lock_changes(committed, updated)
+    if not to_commit:
+        ahead = git(repo, 'rev-list', '--count', 'origin/%s..HEAD' % PUBLISH_BRANCH, '--', LOCK_NAME, check=False)
+        if ahead.returncode == 0 and ahead.out not in ('', '0'):
+            say('nothing new to publish, but your %s has an assets.lock commit GitHub does not have yet' % PUBLISH_BRANCH)
+            if ask('Push to %s? [y/N]' % PUBLISH_BRANCH):
+                push_to_dev(repo)
+            else:
+                say('not pushed')
+            return 0
+        say('nothing to publish: assets.lock already says what the folders hold')
+        return 0
+
+    say()
+    say('the commit would be:')
+    message = commit_message(to_commit)
+    for line in message.rstrip('\n').splitlines():
+        say('  ' + line)
+    ahead = git(repo, 'rev-list', '--oneline', 'origin/%s..HEAD' % PUBLISH_BRANCH, check=False)
+    if ahead.returncode == 0 and ahead.out:
+        say('your %s also has commits GitHub does not have yet; they go up with it:' % PUBLISH_BRANCH)
+        for line in ahead.out.splitlines():
+            say('  ' + line)
+    if not ask('Commit and push to %s? [y/N]' % PUBLISH_BRANCH):
+        say('not committed: %s is changed in %s and nothing was pushed' % (LOCK_NAME, repo))
+        return 0
+    git(repo, 'add', '--', LOCK_NAME)
+    with tempfile.NamedTemporaryFile('w', encoding='utf-8', newline='\n', suffix='.txt', delete=False) as fh:
+        fh.write(message)
+        msg_path = fh.name
+    try:
+        # --no-verify: the pre-commit hook runs the whole verify.sh, minutes on
+        # this PC, for a file publish has just checked. The push still goes
+        # through the pre-push guard.
+        git(repo, 'commit', '--no-verify', '-q', '-F', msg_path, '--', LOCK_NAME)
+    finally:
+        os.remove(msg_path)
+    say('committed: %s' % git(repo, 'log', '-1', '--format=%h %s').out)
+    push_to_dev(repo)
+    return 0
+
+
+def publish_cmd_text(repo: str) -> str:
+    tool = os.path.join(repo, 'tools', 'assets.py')
+    for p in (repo, tool):
+        if not p.isascii() or '"' in p or '%' in p:
+            raise AssetsError('%r cannot be written into a .cmd file safely' % p)
+    lines = [
+        '@echo off',
+        'rem Written by tools/assets.py init-drop (#391).',
+        'py -3 "%s" publish "%%~dp0." --repo "%s"' % (tool, repo),
+        'echo.',
+        'pause',
+    ]
+    return '\r\n'.join(lines) + '\r\n'
+
+
+def cmd_init_drop(args) -> int:
+    drop = os.path.abspath(args.drop)
+    repo = os.path.abspath(args.repo or REPO_ROOT)
+    tree = enclosing_work_tree(drop)
+    if tree:
+        raise AssetsError('%s is inside the git work tree %s, and nothing licensed may sit in a repository. '
+                          'Pick a folder outside it (the Desktop is fine).' % (drop, tree))
+    text = publish_cmd_text(repo)
+    os.makedirs(drop, exist_ok=True)
+    for n in DROP_SEASONS:
+        os.makedirs(os.path.join(drop, 'Season %d' % n), exist_ok=True)
+    path = os.path.join(drop, PUBLISH_CMD)
+    if read_bytes(path) != text.encode('ascii'):
+        write_bytes_atomic(path, text.encode('ascii'))
+    say('%s: %s and %s, publishing to %s' % (drop, ', '.join('Season %d' % n for n in DROP_SEASONS),
+                                               PUBLISH_CMD, repo))
+    return 0
+
+
+# --------------------------------------------------------------------------
 # status and check
 # --------------------------------------------------------------------------
 
@@ -1688,7 +2216,7 @@ def build_parser() -> argparse.ArgumentParser:
                         help='the lock file (default: assets.lock at the repo root)')
     common.add_argument('--aws', help='the AWS CLI to run (default: aws on PATH, then /snap/bin/aws)')
     common.add_argument('--profile', help="AWS profile; 'none' for the instance role "
-                                          "(default: %s for push, none otherwise)" % PUSH_PROFILE)
+                                          "(default: %s for push and publish, none otherwise)" % PUSH_PROFILE)
     common.add_argument('--region', default=REGION)
     common.add_argument('--bucket', default=BUCKET)
 
@@ -1702,11 +2230,23 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog='assets.py', description='Licensed assets in the private bucket (#391).')
     sub = p.add_subparsers(dest='command', required=True)
 
-    sp = sub.add_parser('push', parents=[common], help='pack a resource folder, upload it, pin it in the lock')
-    sp.add_argument('folder')
-    sp.add_argument('--name', help='resource name (default: the folder name)')
-    sp.add_argument('--season', type=season_arg, help='pin this version from Season N on (default: 1, '
-                                                      'or the only season the resource pins)')
+    sp = sub.add_parser('publish', parents=[common], help="make assets.lock what the drop folder holds, upload, "
+                                                          "and (asked) commit and push it to dev")
+    sp.add_argument('drop', help='the drop folder, holding Season <n> folders')
+    sp.add_argument('--repo', help='the checkout whose assets.lock to write (default: this one)')
+    sp.set_defaults(func=cmd_publish)
+
+    sp = sub.add_parser('init-drop', help='make a drop folder with Season 1 and Season 2 folders and Publish.cmd')
+    sp.add_argument('drop')
+    sp.add_argument('--repo', help='the checkout Publish.cmd publishes into (default: this one)')
+    sp.set_defaults(func=cmd_init_drop)
+
+    sp = sub.add_parser('push', parents=[common], help='pack resource folders, upload them, pin them in the lock')
+    sp.add_argument('folders', nargs='+', metavar='folder',
+                    help='a resource folder, or a folder (or [category]) of them')
+    sp.add_argument('--name', help='resource name (default: the folder name; one resource only)')
+    sp.add_argument('--season', type=season_arg, help='pin these versions from Season N on (default: 1, '
+                                                      'or the only season a resource pins)')
     sp.add_argument('--from', dest='from_season', type=season_or_none, default=UNSET,
                     help="the resource's first season ('none' clears it)")
     sp.add_argument('--until', dest='until_season', type=season_or_none, default=UNSET,
