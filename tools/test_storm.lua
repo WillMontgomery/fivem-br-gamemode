@@ -4064,30 +4064,50 @@ do
         'and every quad within 25 degrees beyond the edge of the view is drawn too',
         ('%d of %d'):format(edgeKept, edgeAll))
 
-    -- BACKED UP TO THE WALL AND LOOKING AWAY FROM IT: the quads right behind the
-    -- camera are a few metres off, where a frame's movement is a big change of
-    -- bearing, so they are drawn whatever the wedge says.
-    local N = camClient({ x = 1540.0, y = 0.0, z = 40.0, yaw = 90.0, pitch = 0.0 })
-    sameRecord(N)
-    N.pedAt = pt(1540.0, 0.0, 30.0)
+    -- CLOSE TO THE WALL, LOOKING ALONG IT: the wall curving round behind the
+    -- camera's shoulder is tens of metres off, where a frame's movement is a big
+    -- change of bearing, so it is drawn whatever the wedge says. A small zone, so
+    -- the quads there are short enough to sit wholly outside the wedge -- which
+    -- the block checks for itself, or it would prove nothing.
+    local N = camClient({ x = 230.0, y = 0.0, z = 40.0, yaw = 0.0, pitch = 0.0 })
+    N.record(5, 0.0, 0.0, 260.0, 60.0, 0.0, 120.0, 600000, 60000, 2.9)
+    N.pedAt = pt(230.0, 0.0, 30.0)
     N.frame()
+    local R5 = newStormClient()
+    R5.record(5, 0.0, 0.0, 260.0, 60.0, 0.0, 120.0, 600000, 60000, 2.9)
+    R5.pedAt = pt(230.0, 0.0, 30.0)
+    R5.frame()
     local nearDrawn = {}
     for _, qd in ipairs(quadsOf(N)) do nearDrawn[key(qd)] = true end
-    local closeAll, closeMissing = 0, 0
-    for _, qd in ipairs(all) do
+    -- The widened wedge, as client/storm.lua builds it for this camera: looking
+    -- due north, level, so its boundaries are north turned by `half` each way.
+    local half = math.atan(ty * 16.0 / 9.0, 1.0) + math.rad(30.0)
+    local lx, ly = -math.sin(half), math.cos(half)
+    local rx, ry = math.sin(half), math.cos(half)
+    local function outside(dx, dy)
+        return lx * dy - ly * dx > 0.0, rx * dy - ry * dx < 0.0
+    end
+    local closeOut, closeMissing, near5 = 0, 0, 0
+    for _, qd in ipairs(quadsOf(R5)) do
         local ex, ey = qd.b.x - qd.a.x, qd.b.y - qd.a.y
-        local dx, dy = qd.a.x - 1540.0, qd.a.y
+        local dx, dy = qd.a.x - 230.0, qd.a.y
         local k = math.max(0.0, math.min(1.0, -(dx * ex + dy * ey) / (ex * ex + ey * ey)))
         local px, py = dx + ex * k, dy + ey * k
         if px * px + py * py < 75.0 * 75.0 then
-            closeAll = closeAll + 1
-            if not nearDrawn[key(qd)] then closeMissing = closeMissing + 1 end
+            near5 = near5 + 1
+            local al, ar = outside(dx, dy)
+            local bl, br = outside(qd.b.x - 230.0, qd.b.y)
+            if (al and bl) or (ar and br) then
+                closeOut = closeOut + 1
+                if not nearDrawn[key(qd)] then closeMissing = closeMissing + 1 end
+            end
         end
     end
-    ok(closeAll > 0 and closeMissing == 0 and #quadsOf(N) < #all,
-        'a camera backed up to the wall still draws the wall right behind it',
-        ('%d of %d close quads missing; %d of %d drawn'):format(closeMissing, closeAll,
-            #quadsOf(N), #all))
+    ok(closeOut > 0 and closeMissing == 0 and #quadsOf(N) < #quadsOf(R5),
+        'a camera close to the wall still draws the wall behind its shoulder',
+        ('%d close quads wholly outside the wedge, %d of them missing; %d near, '
+            .. '%d of %d drawn'):format(closeOut, closeMissing, near5, #quadsOf(N),
+            #quadsOf(R5)))
 
     -- A ROLLED CAMERA, OR ONE LOOKING STEEPLY DOWN, CULLS NOTHING.
     local R = camClient({ x = 0.0, y = 0.0, z = 40.0, yaw = -90.0, pitch = 0.0, roll = 5.0 })
