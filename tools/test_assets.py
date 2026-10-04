@@ -31,6 +31,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import types
 import unittest
 from unittest import mock
 
@@ -334,10 +335,11 @@ def version(files=None, size=100):
 
 
 def good_lock():
-    return {'format': 1, 'resources': [
+    return {'format': 2, 'resources': [
         {'name': 'legion_pack', 'seasons': {'1': SHA_A, '3': SHA_B},
          'versions': {SHA_A: version(), SHA_B: version()}},
-        {'name': 'emote_pack', 'from': 2, 'until': 5, 'seasons': {'2': SHA_C}, 'versions': {SHA_C: version()}},
+        # Seasons 2-4, then removed: a null pin.
+        {'name': 'emote_pack', 'seasons': {'2': SHA_C, '5': None}, 'versions': {SHA_C: version()}},
     ]}
 
 
@@ -357,7 +359,9 @@ class Lock(Box):
 
     def test_good_lock_passes(self):
         self.assertEqual(self.problems(good_lock()), [])
-        self.assertEqual(self.problems({'format': 1, 'resources': []}), [])
+        self.assertEqual(self.problems({'format': 2, 'resources': []}), [])
+        # Format 1 (from/until) never shipped in a lock, and is not read.
+        self.assertTrue(any('"format" must be 2' in x for x in self.problems({'format': 1, 'resources': []})))
 
     def test_sha_format(self):
         self.assertRefused(lambda l: l['resources'][0]['seasons'].update({'1': 'A' * 64}), 'not a sha256')
@@ -371,7 +375,7 @@ class Lock(Box):
         self.assertRefused(dup, 'listed twice')
 
     def test_duplicate_json_keys(self):
-        text = '{"format": 1, "resources": [], "resources": []}'
+        text = '{"format": 2, "resources": [], "resources": []}'
         with self.assertRaises(assets.AssetsError):
             assets.parse_lock_text(text)
 
@@ -380,17 +384,34 @@ class Lock(Box):
         self.assertRefused(lambda l: l['resources'][0].update({'license': 'KEY-123'}), 'unknown key')
         self.assertRefused(lambda l: l['resources'][0]['versions'][SHA_A].update({'content': 'x'}), 'unknown key')
 
-    def test_season_ranges(self):
-        self.assertRefused(lambda l: l['resources'][1].update({'until': 2}), 'must be after "from"')
-        self.assertRefused(lambda l: l['resources'][1].update({'from': 0}), '"from" must be a season')
-        self.assertRefused(lambda l: l['resources'][1].update({'until': True}), '"until" must be a season')
-        self.assertRefused(lambda l: l['resources'][1].update({'until': 3, 'from': 1,
-                                                                'seasons': {'2': SHA_C, '4': SHA_A},
-                                                                'versions': {SHA_C: version(), SHA_A: version()}}),
-                           'never in force')
+    def test_season_pins(self):
         self.assertRefused(lambda l: l['resources'][0]['seasons'].update({'01': SHA_A}), 'is not a season')
         self.assertRefused(lambda l: l['resources'][0]['seasons'].update({'0': SHA_A}), 'is not a season')
         self.assertRefused(lambda l: l['resources'][0].update({'seasons': {}}), 'at least one season')
+        self.assertRefused(lambda l: l['resources'][0]['seasons'].update({'2': 'none'}), 'or null')
+        # from/until are gone: null pins and the earliest pin say both.
+        self.assertRefused(lambda l: l['resources'][1].update({'until': 5}), 'unknown key(s) until')
+        self.assertRefused(lambda l: l['resources'][1].update({'from': 2}), 'unknown key(s) from')
+
+    def test_one_form_only(self):
+        # A null with nothing in force before it removes nothing.
+        self.assertRefused(lambda l: l['resources'][1]['seasons'].update({'1': None}), 'removes nothing')
+        # Nor does a null after a null.
+        self.assertRefused(lambda l: l['resources'][1]['seasons'].update({'7': None}), 'removes nothing')
+        # A pin repeating the version in force says nothing.
+        self.assertRefused(lambda l: l['resources'][0]['seasons'].update({'2': SHA_A}), 'already in force')
+        self.assertRefused(lambda l: l['resources'][0]['seasons'].update({'4': SHA_B}), 'already in force')
+        # Only nulls: nothing is ever installed.
+        self.assertRefused(lambda l: l['resources'][1].update({'seasons': {'2': None}, 'versions': {}}),
+                           'pins no version')
+        # A null then the same version again is a real change: back from 7.
+        lock = good_lock()
+        lock['resources'][1]['seasons']['7'] = SHA_C
+        self.assertEqual(self.problems(lock), [])
+        # canonical_pins makes the one form out of any other.
+        self.assertEqual(assets.canonical_pins({'1': None, '2': SHA_A, '3': SHA_A, '4': None, '5': None,
+                                                '6': SHA_A, '7': SHA_B}),
+                         {'2': SHA_A, '4': None, '6': SHA_A, '7': SHA_B})
 
     def test_versions_and_pins_agree(self):
         self.assertRefused(lambda l: l['resources'][0]['versions'].update({SHA_C: version()}), 'pinned to no season')
@@ -459,9 +480,15 @@ class Seasons(Box):
         e = {'name': 'x', 'seasons': {'1': SHA_A, '3': SHA_B}, 'versions': {}}
         self.assertEqual([assets.version_for(e, s) for s in (1, 2, 3, 4, 9)], [SHA_A, SHA_A, SHA_B, SHA_B, SHA_B])
 
-    def test_from_and_until(self):
-        e = {'name': 'x', 'from': 2, 'until': 4, 'seasons': {'1': SHA_A}, 'versions': {}}
-        self.assertEqual([assets.version_for(e, s) for s in (1, 2, 3, 4, 5)], [None, SHA_A, SHA_A, None, None])
+    def test_a_null_pin_removes_until_a_later_pin(self):
+        e = {'name': 'x', 'seasons': {'2': SHA_A, '4': None, '6': SHA_B, '8': None},
+             'versions': {SHA_A: version(), SHA_B: version()}}
+        self.assertEqual([assets.version_for(e, s) for s in range(1, 10)],
+                         [None, SHA_A, SHA_A, None, None, SHA_B, SHA_B, None, None])
+        lock = {'format': 2, 'resources': [e, {'name': 'y', 'seasons': {'1': SHA_C}, 'versions': {SHA_C: version()}}]}
+        self.assertEqual(assets.validate(lock), [])
+        self.assertEqual([n for n, _, _ in assets.plan_for(lock, 4)], ['y'])
+        self.assertEqual([n for n, _, _ in assets.plan_for(lock, 6)], ['x', 'y'])
 
     def test_absent_when_every_pin_is_later(self):
         e = {'name': 'x', 'seasons': {'3': SHA_B}, 'versions': {}}
@@ -496,12 +523,12 @@ class Seasons(Box):
 
     def test_what_br_core_sees(self):
         # br_core reads br_season once, when it starts: an assignment after the
-        # line that starts it never reaches it, and the parse must agree.
+        # line that starts it does not reach it -- unless FXServer's early exec
+        # carried it there first (test_fxserver_reads_the_cfg_twice).
         root = self.server
         for text, want in (
             ('set br_season 1\nensure br_core\nset br_season 2\n', '1'),
             ('set br_season 1\nstart br_core\nset br_season 2\n', '1'),
-            ('ensure br_core\nset br_season 2\n', None),
             ('set br_season 1\nensure br_core_extra\nset br_season 2\n', '2'),
             ('set br_season 1\nensure br_lib\nset br_season 2\nensure br_core\n', '2'),
             # One line, several commands.
@@ -509,16 +536,65 @@ class Seasons(Box):
             ('set br_season 2; ensure br_core; set br_season 3\n', '2'),
             ('set br_season "2;3"\n', '2;3'),
             ('set br_season 2 # ; set br_season 3\n', '2'),
-            # FXServer has no `br_season` command: a bare assignment is refused.
-            ('br_season 6\n', None),
-            ('set br_season 2\nbr_season 6\n', '2'),
+            # `set` takes exactly two arguments; three is no assignment.
+            ('set br_season 2\nset br_season 3 4\n', '2'),
             # Notepad's UTF-8 BOM.
             ('﻿set br_season 5\n', '5'),
-            ('﻿ensure br_core\nset br_season 5\n', None),
         ):
             self.cfg(text)
             found, _ = assets.cfg_season(root, os.path.join(root, 'server.cfg'))
             self.assertEqual(found and found[0], want, repr(text))
+
+    def test_a_bare_assignment_counts_once_the_convar_exists(self):
+        # A convar registers a command under its own name (Console.Variables.h,
+        # m_setCommand, one argument); before any set* created it, `br_season`
+        # is no command at all.
+        root = self.server
+        for text, want in (
+            ('br_season 6\n', None),
+            ('set br_season 2\nbr_season 6\n', '6'),
+            ('set br_season 2\nBR_SEASON 6\n', '6'),               # command names ignore case
+            ('setr br_season 2\nbr_season "7"\n', '7'),
+            ('set br_season 2\nbr_season 6 7\n', '2'),              # one argument, or no assignment
+            ('set br_season 2\nbr_season\n', '2'),                  # no argument prints it
+            ('set br_season 2\nensure br_core\nbr_season 6\n', '2'),
+            ('sets br_season 4\nbr_season 6\n', '6'),
+        ):
+            self.cfg(text)
+            found, _ = assets.cfg_season(root, os.path.join(root, 'server.cfg'))
+            self.assertEqual(found and found[0], want, repr(text))
+
+    def test_fxserver_reads_the_cfg_twice(self):
+        # ServerInstance::Run's early exec runs the whole cfg first -- past
+        # `ensure br_core`, nested files queued -- and forwards every convar it
+        # made into the real console with `set`, unless `sets` flagged it
+        # ServerInfo. So the real exec starts with br_season set.
+        root = self.server
+        for text, want in (
+            # Set below br_core's start: the early exec carries it there.
+            ('ensure br_core\nset br_season 2\n', '2'),
+            ('﻿ensure br_core\nset br_season 5\n', '5'),
+            # ...and so a bare one above everything assigns in the real exec.
+            ('br_season 6\nensure br_core\nset br_season 2\n', '6'),
+            ('br_season 6\nset br_season 2\nensure br_core\n', '2'),
+            # A `sets` anywhere flags it ServerInfo: nothing is forwarded.
+            ('ensure br_core\nsets br_season 2\n', None),
+            ('br_season 6\nensure br_core\nsets br_season 2\n', None),
+            ('ensure br_core\nset br_season 2\nsets br_season 3\n', None),
+            ('set br_season 1\nensure br_core\nsets br_season 3\n', '1'),
+        ):
+            self.cfg(text)
+            found, _ = assets.cfg_season(root, os.path.join(root, 'server.cfg'))
+            self.assertEqual(found and found[0], want, repr(text))
+        # The early exec queues a nested file behind the one naming it, so its
+        # last value is the nested file's -- and that is what is forwarded.
+        write(os.path.join(root, 'late.cfg'), 'set br_season 3\n')
+        self.cfg('exec late.cfg\nensure br_core\nset br_season 2\n')
+        found, _ = assets.cfg_season(root, os.path.join(root, 'server.cfg'))
+        self.assertEqual((found[0], os.path.basename(found[1])), ('3', 'late.cfg'), 'the real exec runs late.cfg first')
+        self.cfg('ensure br_core\nset br_season 2\nexec late.cfg\n')
+        found, _ = assets.cfg_season(root, os.path.join(root, 'server.cfg'))
+        self.assertEqual(found[0], '3', 'early exec order: server.cfg, then the files it queued')
 
     def test_an_exec_that_starts_br_core_ends_the_walk(self):
         root = self.server
@@ -626,18 +702,17 @@ class Push(Box):
         self.assertIn('uploading', text)
         self.assertFalse(os.path.exists(self.lock))
 
-    def test_seasons_from_and_until(self):
+    def test_seasons_and_retire(self):
         folder = make_resource(self.src, 'emotes', {'anim/a.ycd': b'v1'})
         self.push(folder)
         v1 = self.entry('emotes')['seasons']['1']
         write(os.path.join(folder, 'anim', 'a.ycd'), b'v2')
-        _, text = self.push(folder, '--season', 2, '--from', 1, '--until', 4)
+        _, text = self.push(folder, '--season', 2)
         e = self.entry('emotes')
         v2 = e['seasons']['2']
         self.assertEqual(e['seasons'], {'1': v1, '2': v2})
-        self.assertEqual((e['from'], e['until']), (1, 4))
         self.assertEqual(sorted(e['versions']), sorted([v1, v2]))
-        self.assertIn('Season 2 and later -> %s' % v2[:12], text)
+        self.assertIn('emotes: from Season 2, %s (was %s)' % (v2[:12], v1[:12]), text)
 
         # Two seasons pinned: a push must say which one it is.
         write(os.path.join(folder, 'anim', 'a.ycd'), b'v3')
@@ -646,15 +721,41 @@ class Push(Box):
         self.assertIn('--season N', text)
         self.assertEqual(read(self.lock), before)
 
-        # Replacing Season 2's version drops the old one from the lock.
-        _, text = self.push(folder, '--season', 2, '--until', 'none')
+        # retire --season writes a null pin: gone from Season 4 on.
+        self.reset_calls()
+        _, text = self.run_tool('retire', 'emotes', '--season', 4, '--lock', self.lock)
+        self.assertEqual(self.entry('emotes')['seasons'], {'1': v1, '2': v2, '4': None})
+        self.assertIn('emotes: removed from Season 4 on', text)
+        self.assertIn('"4": null', read(self.lock).decode('utf-8'))
+        self.assertEqual(self.calls(), [], 'retire never touches the bucket')
+        # Where it is gone already, nothing changes.
+        before = read(self.lock)
+        _, text = self.run_tool('retire', 'emotes', '--season', 5, '--lock', self.lock)
+        self.assertIn('nothing to remove', text)
+        self.assertEqual(read(self.lock), before)
+
+        # A later version brings it back.
+        _, text = self.push(folder, '--season', 6)
+        v3 = self.entry('emotes')['seasons']['6']
+        self.assertEqual(self.entry('emotes')['seasons'], {'1': v1, '2': v2, '4': None, '6': v3})
+        self.assertIn('emotes: from Season 6, %s (was not installed)' % v3[:12], text)
+
+        # Season 2 pinned to Season 1's version again: a pin that says nothing
+        # goes, and so does the version no season pins now.
+        write(os.path.join(folder, 'anim', 'a.ycd'), b'v1')
+        _, text = self.push(folder, '--season', 2)
         e = self.entry('emotes')
-        v3 = e['seasons']['2']
+        self.assertEqual(e['seasons'], {'1': v1, '4': None, '6': v3})
         self.assertNotIn(v2, e['versions'])
-        self.assertNotIn('until', e)
         self.assertIn('pinned to no season now', text)
         self.assertTrue(os.path.isfile(self.object_path('emotes', v2)), 'the old archive stays in the bucket')
-        self.assertEqual(sorted(e['versions']), sorted([v1, v3]))
+
+        # Without --season: out of every season, and out of the lock.
+        _, text = self.run_tool('retire', 'emotes', '--lock', self.lock)
+        self.assertEqual(self.lock_data()['resources'], [])
+        self.assertIn('retired from every season', text)
+        _, text = self.run_tool('retire', 'emotes', '--lock', self.lock, expect=1)
+        self.assertIn('not in the lock', text)
 
     def test_one_season_pinned_is_replaced_without_asking(self):
         folder = make_resource(self.src, 'map', {'m.ymap': b'1'})
@@ -670,9 +771,6 @@ class Push(Box):
         _, text = self.push(folder, expect=1)
         self.assertIn('already has the name br_core', text)
         self.assertEqual(self.uploads(), [])
-        folder = make_resource(self.src, 'emotes', {'x.ycd': b'x'})
-        _, text = self.push(folder, '--from', 3, '--until', 2, expect=1)
-        self.assertIn('would not pass check', text)
         self.assertFalse(os.path.exists(self.lock))
 
     def test_lock_is_written_in_its_one_form(self):
@@ -717,116 +815,166 @@ GIT_EXE = shutil.which('git')
 
 @unittest.skipUnless(GIT_EXE, 'needs git')
 class Publish(Box):
-    """publish against a scratch checkout on dev with a bare remote, the fake
-    aws, and a drop folder, all under paths with spaces and brackets."""
+    """publish from its own clone of a bare 'GitHub' remote, with the fake aws
+    and a drop folder, all under paths with spaces and brackets -- and beside
+    them a shared checkout on dev, the kind agents work in, which publish must
+    never touch."""
 
     def setUp(self):
         super().setUp()
         # The whole PATH after the fake aws (still found first): Git for
         # Windows' pull fails, silently, with only its own bin directory.
         self.env['PATH'] += os.pathsep + os.environ.get('PATH', '')
+        for k in ('GIT_AUTHOR', 'GIT_COMMITTER'):
+            self.env[k + '_NAME'] = 'Owner'
+            self.env[k + '_EMAIL'] = 'owner@example.invalid'
         self.bare = os.path.join(self.tmp, 'origin.git')
-        self.repo = os.path.join(self.tmp, 'repo [dev] copy')
+        self.shared = os.path.join(self.tmp, 'repo [dev] copy')
+        self.clone = os.path.join(self.tmp, 'publish clone')
         self.drop = os.path.join(self.tmp, 'Blitz Assets')
         os.makedirs(self.bare)
         self.g('init', '-q', '--bare', '-b', 'dev', cwd=self.bare)
-        make_resource(os.path.join(self.repo, 'resources', '[fivem-royale]'), 'br_core', {'server/x.lua': b'x'})
-        write(os.path.join(self.repo, 'assets.lock'), assets.dump_lock({'format': 1, 'resources': []}))
-        write(os.path.join(self.repo, 'README.md'), 'readme\n')
+        make_resource(os.path.join(self.shared, 'resources', '[fivem-royale]'), 'br_core', {'server/x.lua': b'x'})
+        write(os.path.join(self.shared, 'assets.lock'), assets.dump_lock({'format': 2, 'resources': []}))
+        write(os.path.join(self.shared, 'README.md'), 'readme\n')
+        # dev's own tool, which Publish.cmd runs out of the clone.
+        write(os.path.join(self.shared, 'tools', 'assets.py'), read(TOOL))
         self.g('init', '-q', '-b', 'dev')
         self.g('config', 'core.autocrlf', 'false')
-        self.g('config', 'user.name', 'Owner')
-        self.g('config', 'user.email', 'owner@example.invalid')
         self.g('add', '-A')
         self.g('commit', '-qm', 'base')
         self.g('remote', 'add', 'origin', self.bare)
         self.g('push', '-q', '-u', 'origin', 'dev')
-        self.run_tool('init-drop', self.drop, '--repo', self.repo)
+        self.base = self.g('rev-parse', 'HEAD')
+        self.run_tool('init-drop', self.drop, '--clone', self.clone, '--origin', self.bare)
 
     def g(self, *args, cwd=None):
-        r = subprocess.run([GIT_EXE] + list(args), cwd=cwd or self.repo, stdout=subprocess.PIPE,
-                           stderr=subprocess.STDOUT)
+        r = subprocess.run([GIT_EXE, '-c', 'user.name=t', '-c', 'user.email=t@t'] + list(args),
+                           cwd=cwd or self.shared, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         out = r.stdout.decode('utf-8', 'replace')
         self.assertEqual(r.returncode, 0, 'git %s: %s' % (' '.join(args), out))
         return out.strip()
 
-    def publish(self, answer='', expect=0):
+    def publish(self, answer='', expect=0, *extra):
         with mock.patch.object(sys, 'stdin', io.StringIO(answer)):
-            return self.run_tool('publish', self.drop, '--repo', self.repo, expect=expect)
+            return self.run_tool('publish', self.drop, '--clone', self.clone, '--origin', self.bare, *extra,
+                                 expect=expect)
 
     def pack_in(self, where, name, files):
         return make_resource(os.path.join(self.drop, *where.split('/')), name, files)
 
-    def repo_lock(self):
-        return json.loads(read(os.path.join(self.repo, 'assets.lock')).decode('utf-8'))
+    def sha_of(self, folder):
+        out = os.path.join(self.tmp, 'sha-of.tar.gz')
+        assets.pack(folder, out)
+        sha = assets.sha256_file(out)[0]
+        os.remove(out)
+        return sha
 
     def remote_lock(self):
         return json.loads(self.g('show', 'dev:assets.lock', cwd=self.bare))
 
     def pins(self, lock=None):
-        lock = lock or self.repo_lock()
+        lock = lock or self.remote_lock()
         return {e['name']: e['seasons'] for e in lock['resources']}
 
-    def test_init_drop_makes_the_folders_and_publish_cmd(self):
-        self.assertEqual(sorted(os.listdir(self.drop)), ['Publish.cmd', 'Season 1', 'Season 2'])
+    def subject(self):
+        return self.g('log', '-1', '--format=%s', 'dev', cwd=self.bare)
+
+    def checkout_state(self, path):
+        """Everything about a checkout: HEAD, its branch, every ref, the
+        index and work tree's status, and every file's bytes."""
+        return (self.g('rev-parse', 'HEAD', cwd=path),
+                self.g('rev-parse', '--abbrev-ref', 'HEAD', cwd=path),
+                self.g('for-each-ref', '--format=%(refname) %(objectname)', cwd=path),
+                self.g('status', '--porcelain=v1', '-uall', cwd=path),
+                tree(path, skip=('.git',)))
+
+    # -- init-drop ---------------------------------------------------------
+
+    def test_init_drop_makes_the_folders_readme_and_publish_cmd(self):
+        self.assertEqual(sorted(os.listdir(self.drop)), ['Publish.cmd', 'README.txt', 'Season 1', 'Season 2'])
         self.assertEqual(os.listdir(os.path.join(self.drop, 'Season 1')), [])
+        self.assertEqual(read(os.path.join(self.drop, 'README.txt')), assets.README_TEXT.replace('\n', '\r\n').encode())
+        self.assertIn(b'An empty Season 3\\legion means legion is gone from', read(os.path.join(self.drop, 'README.txt')))
         cmd = read(os.path.join(self.drop, 'Publish.cmd')).decode('ascii')
         self.assertTrue(cmd.endswith('\r\n') and '\n' not in cmd.replace('\r\n', ''), 'CRLF throughout')
-        tool = os.path.join(os.path.abspath(self.repo), 'tools', 'assets.py')
-        self.assertIn('py -3 "%s" publish "%%~dp0." --repo "%s"\r\n' % (tool, os.path.abspath(self.repo)), cmd)
+        self.assertIn('set "CLONE=%s"\r\n' % self.clone, cmd)
+        self.assertIn('set "ORIGIN=%s"\r\n' % self.bare, cmd)
+        self.assertIn('git clone --quiet --single-branch --branch dev --no-tags "%ORIGIN%" "%CLONE%"', cmd)
+        self.assertIn('git -C "%CLONE%" config blitzassets.publishclone true', cmd)
+        self.assertIn('fetch --quiet --no-tags origin +refs/heads/dev:refs/remotes/origin/dev', cmd)
+        self.assertIn('checkout --quiet --force --detach refs/remotes/origin/dev', cmd)
+        self.assertIn('py -3 "%CLONE%\\tools\\assets.py" publish "%~dp0." --clone "%CLONE%"\r\n', cmd)
+        self.assertNotIn(self.shared, cmd, 'Publish.cmd names no checkout anyone works in')
         self.assertTrue(cmd.rstrip().endswith('pause'), 'the window waits for a key')
-        # Running it again changes nothing; a folder inside a work tree is refused.
-        self.run_tool('init-drop', self.drop, '--repo', self.repo)
-        _, text = self.run_tool('init-drop', os.path.join(self.repo, 'drop'), '--repo', self.repo, expect=1)
+        # The default: the owner's LOCALAPPDATA, and GitHub.
+        default = assets.publish_cmd_text(None, assets.ORIGIN_URL)
+        self.assertIn('set "CLONE=%LOCALAPPDATA%\\BlitzAssets\\repo"', default)
+        self.assertIn('set "ORIGIN=https://github.com/WillMontgomery/fivem-br-gamemode.git"', default)
+        # The owner's README is his: run again, and it is kept as it is.
+        write(os.path.join(self.drop, 'README.txt'), b'mine')
+        self.run_tool('init-drop', self.drop, '--clone', self.clone, '--origin', self.bare)
+        self.assertEqual(read(os.path.join(self.drop, 'README.txt')), b'mine')
+        # A folder inside a work tree is refused.
+        _, text = self.run_tool('init-drop', os.path.join(self.shared, 'drop'), expect=1)
         self.assertIn('inside the git work tree', text)
-        self.assertFalse(os.path.exists(os.path.join(self.repo, 'drop')))
+        self.assertFalse(os.path.exists(os.path.join(self.shared, 'drop')))
+
+    # -- the y/N gate --------------------------------------------------------
 
     def test_add_change_retire_and_readd(self):
         legion = self.pack_in('Season 1', 'legion', {'stream/a.ymap': b'v1' * 100})
-        # Unrelated work in the checkout, which the commit must leave alone.
-        write(os.path.join(self.repo, 'README.md'), 'readme, edited\n')
-        head = self.g('rev-parse', 'HEAD')
+        v1 = self.sha_of(legion)
+        # The shared checkout has work of its own, which publish never sees.
+        write(os.path.join(self.shared, 'README.md'), 'readme, edited\n')
+        shared = self.checkout_state(self.shared)
 
-        # n: the lock is written, nothing is committed or pushed.
+        # n: the clone is made, the archive uploaded, and nothing else anywhere.
         _, text = self.publish('n\n')
-        v1 = self.pins()['legion']['1']
-        self.assertIn('Season 1', text)
-        self.assertIn('+ legion  %s' % v1[:12], text)
+        self.assertIn('first Publish here: cloning dev', text)
+        self.assertIn('+ legion: %s' % v1[:12], text)
         self.assertIn('Commit and push to dev? [y/N]', text)
-        self.assertIn('not committed', text)
+        self.assertIn('not published: nothing was committed or pushed, and no lock was written anywhere', text)
         self.assertEqual(len(self.uploads()), 1)
-        self.assertEqual(self.g('rev-parse', 'HEAD'), head)
-        self.assertEqual(self.pins(self.remote_lock()), {})
+        self.assertEqual(self.pins(), {})
+        self.assertEqual(self.g('rev-parse', 'dev', cwd=self.bare), self.base)
+        # A second n leaves the clone exactly as it was: no ref, no object.
+        clone = self.checkout_state(self.clone)
+        loose = self.g('count-objects', cwd=self.clone)
+        self.publish('n\n')
+        self.assertEqual(self.checkout_state(self.clone), clone)
+        self.assertEqual(self.g('count-objects', cwd=self.clone), loose, 'not even a blob was written')
 
-        # y, with nothing new: the earlier change is what gets committed.
+        # y: one commit on top of dev, assets.lock alone, pushed.
         self.reset_calls()
         _, text = self.publish('y\n')
-        self.assertEqual(self.uploads(), [])
-        self.assertEqual(self.g('show', '--name-only', '--format=', 'HEAD').splitlines(), ['assets.lock'])
-        self.assertEqual(self.g('log', '-1', '--format=%s'), 'Licensed assets: add legion')
-        self.assertIn('+ legion  %s' % v1[:12], self.g('log', '-1', '--format=%b'))
-        self.assertEqual(self.g('rev-parse', 'HEAD'), self.g('rev-parse', 'dev', cwd=self.bare), 'pushed')
-        self.assertEqual(self.pins(self.remote_lock()), {'legion': {'1': v1}})
-        self.assertEqual(read(os.path.join(self.repo, 'README.md')), b'readme, edited\n', 'left alone')
+        self.assertEqual(self.uploads(), [], 'uploaded at the n, and still there')
+        self.assertEqual(self.pins(), {'legion': {'1': v1}})
+        self.assertEqual(self.subject(), 'Licensed assets: add legion')
+        self.assertEqual(self.g('rev-parse', 'dev~1', cwd=self.bare), self.base)
+        self.assertEqual(self.g('show', '--name-only', '--format=', 'dev', cwd=self.bare).splitlines(), ['assets.lock'])
+        self.assertIn('+ legion: %s' % v1[:12], self.g('log', '-1', '--format=%b', 'dev', cwd=self.bare))
+        self.assertIn('pushed to dev: %s Licensed assets: add legion' % self.g('rev-parse', '--short', 'dev', cwd=self.bare), text)
+        self.assertEqual(self.checkout_state(self.shared), shared, 'the shared checkout is untouched')
 
         # Changed.
         self.reset_calls()
         write(os.path.join(legion, 'stream', 'a.ymap'), b'v2' * 100)
+        v2 = self.sha_of(legion)
         _, text = self.publish('y\n')
-        v2 = self.pins()['legion']['1']
-        self.assertIn('~ legion  %s' % v2[:12], text)
+        self.assertIn('~ legion: %s, ' % v2[:12], text)
         self.assertIn('(was %s)' % v1[:12], text)
         self.assertEqual(len(self.uploads()), 1)
-        self.assertEqual(self.pins(self.remote_lock()), {'legion': {'1': v2}})
+        self.assertEqual(self.pins(), {'legion': {'1': v2}})
 
         # Retired: the folder is deleted. Nothing uploads; the archive stays.
         self.reset_calls()
         shutil.rmtree(legion)
         _, text = self.publish('y\n')
-        self.assertIn('- legion  retired', text)
+        self.assertIn('- legion: retired', text)
         self.assertEqual(self.uploads(), [])
-        self.assertEqual(self.pins(self.remote_lock()), {})
-        self.assertEqual(self.g('log', '-1', '--format=%s'), 'Licensed assets: retire legion')
+        self.assertEqual(self.pins(), {})
+        self.assertEqual(self.subject(), 'Licensed assets: retire legion')
         self.assertTrue(os.path.isfile(self.object_path('legion', v2)))
 
         # Dragged back: republished with no upload.
@@ -835,12 +983,61 @@ class Publish(Box):
         _, text = self.publish('y\n')
         self.assertEqual(self.uploads(), [])
         self.assertIn('already in the bucket', text)
-        self.assertEqual(self.pins(self.remote_lock()), {'legion': {'1': v2}})
+        self.assertEqual(self.pins(), {'legion': {'1': v2}})
 
         # Nothing changed at all: nothing to ask.
         _, text = self.publish('')
         self.assertIn('nothing to publish', text)
         self.assertNotIn('[y/N]', text)
+        self.assertEqual(self.checkout_state(self.shared), shared)
+
+    def test_the_empty_folder_rule(self):
+        legion = self.pack_in('Season 1', 'legion', {'stream/a.ymap': b'one'})
+        v1 = self.sha_of(legion)
+        # Empty: nothing but Explorer's own file and an empty subfolder.
+        write(os.path.join(self.drop, 'Season 2', 'legion', 'desktop.ini'), b'[.ShellClassInfo]')
+        os.makedirs(os.path.join(self.drop, 'Season 2', 'legion', 'stream'))
+        _, text = self.publish('y\n')
+        self.assertIn('Season 2/legion: empty', text)
+        self.assertIn('- legion: removed from Season 2 on', text)
+        self.assertIn('Commit and push to dev? [y/N]', text, 'and it still asks')
+        self.assertEqual(self.pins(), {'legion': {'1': v1, '2': None}})
+        self.assertIn('"2": null', self.g('show', 'dev:assets.lock', cwd=self.bare))
+        self.assertEqual(self.subject(), 'Licensed assets: add legion; remove legion from Season 2 on')
+        e = self.remote_lock()['resources'][0]
+        self.assertEqual([assets.version_for(e, s) for s in (1, 2, 3)], [v1, None, None])
+        for top in ('README.txt', 'Publish.cmd', assets.DROP_INDEX):
+            self.assertNotIn(top, text, 'the top-level files are not packs or seasons')
+
+        # Empty again in a later season: removed already, so nothing to remove.
+        os.makedirs(os.path.join(self.drop, 'Season 3', 'legion'))
+        # Empty, with no earlier version anywhere: nothing to remove either.
+        os.makedirs(os.path.join(self.drop, 'Season 2', '[maps]', 'docks'))
+        os.makedirs(os.path.join(self.drop, 'Season 1', 'emotes'))
+        _, text = self.publish('')
+        self.assertIn('skipped Season 3/legion: empty, and nothing to remove: legion is removed from Season 2 on '
+                      'already', text)
+        self.assertIn('skipped Season 2/[maps]/docks: empty, and nothing to remove: no earlier Season folder has '
+                      'docks', text)
+        self.assertIn('skipped Season 1/emotes: empty, and nothing to remove', text)
+        self.assertIn('nothing to publish', text)
+
+        # A folder WITH files but no fxmanifest.lua is a copy in progress: it
+        # is skipped, and never a removal -- so Season 2's removal goes.
+        shutil.rmtree(os.path.join(self.drop, 'Season 2', 'legion'))
+        write(os.path.join(self.drop, 'Season 2', 'legion', 'stream', 'half.ymap'), b'half')
+        _, text = self.publish('n\n')
+        self.assertIn('skipped Season 2/legion: no fxmanifest.lua, and not a [category] folder', text)
+        self.assertIn('+ legion: no longer removed from Season 2 on', text)
+        self.assertEqual(self.pins(), {'legion': {'1': v1, '2': None}}, 'answered n')
+
+        # A later season's version brings it back.
+        shutil.rmtree(os.path.join(self.drop, 'Season 2', 'legion'))
+        os.makedirs(os.path.join(self.drop, 'Season 2', 'legion'))
+        v4 = self.sha_of(self.pack_in('Season 4', 'legion', {'stream/a.ymap': b'four'}))
+        _, text = self.publish('y\n')
+        self.assertIn('+ legion: %s' % v4[:12], text)
+        self.assertEqual(self.pins(), {'legion': {'1': v1, '2': None, '4': v4}})
 
     def test_seasons_categories_and_what_is_skipped(self):
         self.pack_in('Season 1/[maps]', 'legion', {'m.ymap': b'one'})
@@ -852,7 +1049,7 @@ class Publish(Box):
         write(os.path.join(self.drop, 'Season 1', 'desktop.ini'), b'x')
         write(os.path.join(self.drop, 'Old stuff', 'x.txt'), b'x')
         write(os.path.join(self.drop, 'pack.zip'), b'x')
-        _, text = self.publish('n\n')
+        _, text = self.publish('y\n')
         pins = self.pins()
         self.assertEqual(sorted(pins['legion']), ['1', '2'])
         self.assertNotEqual(pins['legion']['1'], pins['legion']['2'])
@@ -863,91 +1060,292 @@ class Publish(Box):
                      'skipped pack.zip: not in a season folder'):
             self.assertIn(note, text)
         self.assertNotIn('desktop.ini', text)
-        # from/until set on a resource that is still there survive a publish.
-        data = self.repo_lock()
-        data['resources'][0]['until'] = 3
-        write(os.path.join(self.repo, 'assets.lock'), assets.dump_lock(data))
-        self.publish('n\n')
-        self.assertEqual(self.repo_lock()['resources'][0].get('until'), 3)
         # Season folder names: any case, `Season <n>`.
         os.rename(os.path.join(self.drop, 'Season 2'), os.path.join(self.drop, 'SEASON 2'))
-        self.publish('n\n')
-        self.assertEqual(sorted(self.pins()['legion']), ['1', '2'])
+        _, text = self.publish('')
+        self.assertIn('nothing to publish', text)
 
-    def test_the_index_spares_packing_an_unchanged_folder(self):
+    # -- the index -----------------------------------------------------------
+
+    def test_the_index_spares_packing_never_reading(self):
         big = self.pack_in('Season 1', 'legion', {'stream/a.ymap': b'x' * 5000})
+        sha = self.sha_of(big)
         packs = []
         real = assets.write_pack
 
-        def counting(files, out):
+        def counting(files, out, digests=None):
             packs.append(out)
-            return real(files, out)
+            return real(files, out, digests)
         with mock.patch.object(assets, 'write_pack', counting):
             self.publish('n\n')
             self.assertEqual(len(packs), 1)
-            sha = self.pins()['legion']['1']
             _, text = self.publish('n\n')
-            self.assertEqual(len(packs), 1, 'unchanged: hashed from the index, not packed')
+            self.assertEqual(len(packs), 1, 'the same content: not packed again')
             self.assertIn('Season 1/legion: %s, 2 files, ' % sha[:12], text)
-            self.assertIn(', unchanged', text)
-            # The index hit, but the bucket lacks it: packed once, at upload,
-            # and held to the indexed sha.
-            self.g('checkout', '--', 'assets.lock')
+            self.assertIn(', packed before', text)
+            # A touched file is read again, and the same bytes are the same pack.
+            st = os.stat(os.path.join(big, 'stream', 'a.ymap'))
+            os.utime(os.path.join(big, 'stream', 'a.ymap'), ns=(st.st_atime_ns, st.st_mtime_ns + 10 ** 9))
+            self.publish('n\n')
+            self.assertEqual(len(packs), 1)
+            # The same content in another folder hits too.
+            shutil.copytree(big, os.path.join(self.drop, 'Season 2', 'legion'))
+            self.publish('n\n')
+            self.assertEqual(len(packs), 1)
+            shutil.rmtree(os.path.join(self.drop, 'Season 2', 'legion'))
+            # An index hit the bucket lacks: packed once, at upload, and held
+            # to the indexed sha.
             os.remove(self.object_path('legion', sha))
             self.reset_calls()
             self.publish('n\n')
             self.assertEqual(len(packs), 2)
             self.assertEqual(len(self.uploads()), 1)
             self.assertEqual(assets.sha256_file(self.object_path('legion', sha))[0], sha)
-            # A touched file is hashed again.
-            st = os.stat(os.path.join(big, 'stream', 'a.ymap'))
-            os.utime(os.path.join(big, 'stream', 'a.ymap'), ns=(st.st_atime_ns, st.st_mtime_ns + 10 ** 9))
-            self.publish('n\n')
-            self.assertEqual(len(packs), 3)
-        self.assertEqual(self.pins()['legion']['1'], sha, 'same bytes, same sha')
-        # An index that lies -- new bytes, same size and mtime -- is caught at
-        # upload: nothing goes into the bucket under a key that is not its sha.
-        self.g('checkout', '--', 'assets.lock')
-        os.remove(self.object_path('legion', sha))
-        path = os.path.join(big, 'stream', 'a.ymap')
+        index = json.loads(read(os.path.join(self.drop, assets.DROP_INDEX)).decode('utf-8'))
+        self.assertEqual(index['format'], 2)
+        self.assertEqual([v['sha'] for v in index['packs'].values()], [sha])
+
+    def test_a_same_size_same_mtime_edit_is_published(self):
+        # THE REVIEW'S CASE: a file's bytes change, its size and mtime do not
+        # (an Explorer copy keeps the source's mtime; a texture re-exported at
+        # one resolution keeps its size), and the old sha is already in dev's
+        # lock -- so the upload step never re-packs it to notice.
+        legion = self.pack_in('Season 1', 'legion', {'stream/a.ymap': b'x' * 178})
+        v1 = self.sha_of(legion)
+        self.publish('y\n')
+        self.assertEqual(self.pins(), {'legion': {'1': v1}})
+        path = os.path.join(legion, 'stream', 'a.ymap')
         st = os.stat(path)
-        write(path, b'y' * 5000)
+        write(path, b'y' * 178)
         os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))
+        self.assertEqual((os.stat(path).st_size, os.stat(path).st_mtime_ns), (st.st_size, st.st_mtime_ns))
+        v2 = self.sha_of(legion)
+        self.assertNotEqual(v1, v2)
         self.reset_calls()
-        _, text = self.publish('n\n', expect=1)
+        _, text = self.publish('y\n')
+        self.assertNotIn('nothing to publish', text)
+        self.assertIn('~ legion: %s, ' % v2[:12], text)
+        self.assertEqual(len(self.uploads()), 1)
+        self.assertEqual(self.pins(), {'legion': {'1': v2}})
+
+    def test_a_folder_that_changes_while_it_is_packed_is_refused(self):
+        # A copy still writing into the pack: the bytes packed are not the
+        # bytes hashed, and the index must not record either as the other.
+        legion = self.pack_in('Season 1', 'legion', {'stream/a.ymap': b'x' * 500})
+        real = assets.write_pack
+
+        def copy_lands_meanwhile(files, out, digests=None):
+            write(os.path.join(legion, 'stream', 'a.ymap'), b'z' * 500)
+            return real(files, out, digests)
+        with mock.patch.object(assets, 'write_pack', copy_lands_meanwhile):
+            _, text = self.publish('y\n', expect=1)
+        self.assertIn('changed while it was being published', text)
+        self.assertEqual(self.uploads(), [])
+        self.assertEqual(self.pins(), {})
+        self.assertFalse(os.path.exists(os.path.join(self.drop, assets.DROP_INDEX)), 'and nothing was indexed')
+
+    def test_a_pack_that_changes_before_its_upload_is_refused(self):
+        # An index hit is packed only when it has to go up; if the folder has
+        # changed by then, nothing goes into the bucket under the old sha.
+        legion = self.pack_in('Season 1', 'legion', {'stream/a.ymap': b'x' * 500})
+        sha = self.sha_of(legion)
+        self.publish('n\n')
+        os.remove(self.object_path('legion', sha))
+        real = assets.upload_missing
+
+        def edited_first(aws, items, progress=False):
+            write(os.path.join(legion, 'stream', 'a.ymap'), b'w' * 500)
+            return real(aws, items, progress)
+        self.reset_calls()
+        with mock.patch.object(assets, 'upload_missing', edited_first):
+            _, text = self.publish('y\n', expect=1)
         self.assertIn('changed while it was being published', text)
         self.assertEqual(self.uploads(), [])
         self.assertFalse(os.path.exists(self.object_path('legion', sha)))
+        self.assertEqual(self.pins(), {})
+
+    # -- never the shared checkout -----------------------------------------------
+
+    def test_the_shared_checkout_is_never_touched(self):
+        # The checkout agents share: dev with a local commit GitHub does not
+        # have, an edited tracked file, an untracked one.
+        write(os.path.join(self.shared, 'resources', 'agent.lua'), 'return 1\n')
+        self.g('add', '--', 'resources/agent.lua')
+        self.g('commit', '-qm', 'agent work, not pushed')
+        write(os.path.join(self.shared, 'README.md'), 'half done\n')
+        write(os.path.join(self.shared, 'notes.txt'), 'untracked\n')
+        before = self.checkout_state(self.shared)
+        self.pack_in('Season 1', 'legion', {'m.ymap': b'm'})
+        self.publish('y\n')
+        self.assertEqual(self.checkout_state(self.shared), before)
+        self.assertEqual(self.g('log', '--format=%s', 'dev', cwd=self.bare).splitlines(),
+                         ['Licensed assets: add legion', 'base'], "the agent's commit did not go up")
+        # And a --clone naming it is refused before anything happens.
+        self.reset_calls()
+        with mock.patch.object(sys, 'stdin', io.StringIO('y\n')):
+            _, text = self.run_tool('publish', self.drop, '--clone', self.shared, expect=1)
+        self.assertIn("is not Publish's own clone", text)
+        self.assertEqual(self.calls(), [])
+        self.assertEqual(self.checkout_state(self.shared), before)
+
+    def test_a_branch_switched_in_the_clone_mid_prompt_changes_nothing(self):
+        # Round 2 committed on whatever branch the checkout was on at the y,
+        # and said "pushed to dev" when it was not. Publish now uses no branch.
+        self.pack_in('Season 1', 'legion', {'m.ymap': b'm'})
+        self.publish('n\n')          # makes the clone
+
+        def ask(_q):
+            self.g('checkout', '-q', '-b', 'elsewhere', cwd=self.clone)
+            write(os.path.join(self.clone, 'README.md'), 'edited in the clone\n')
+            self.g('checkout', '-q', '-b', 'agent-branch', cwd=self.shared)
+            return True
+        with mock.patch.object(assets, 'ask', ask):
+            _, text = self.publish()
+        self.assertIn('pushed to dev', text)
+        self.assertEqual(self.subject(), 'Licensed assets: add legion')
+        self.assertEqual(self.g('rev-parse', 'dev~1', cwd=self.bare), self.base)
+        self.assertEqual(self.g('show', '--name-only', '--format=', 'dev', cwd=self.bare).splitlines(), ['assets.lock'])
+        self.assertEqual(self.g('log', '--format=%s', '-1', 'elsewhere', cwd=self.clone), 'base',
+                         'and no branch anywhere got the commit')
+
+    def other_clone(self):
+        other = os.path.join(self.tmp, 'another clone')
+        self.g('clone', '-q', '--branch', 'dev', self.bare, other, cwd=self.tmp)
+        return other
+
+    def test_dev_moving_during_the_prompt_with_the_same_plan_pushes_again(self):
+        self.pack_in('Season 1', 'legion', {'m.ymap': b'm'})
+        other = self.other_clone()
+        asked = []
+
+        def ask(q):
+            asked.append(q)
+            write(os.path.join(other, 'resources', 'meanwhile.lua'), 'return 2\n')
+            self.g('add', '-A', cwd=other)
+            self.g('commit', '-qm', 'meanwhile', cwd=other)
+            self.g('push', '-q', 'origin', 'dev', cwd=other)
+            return True
+        with mock.patch.object(assets, 'ask', ask):
+            _, text = self.publish()
+        self.assertEqual(len(asked), 1, 'the same plan on the new dev: pushed without asking again')
+        self.assertIn('dev moved while this was being published; the plan is the same, so pushing again', text)
+        self.assertEqual(self.g('log', '--format=%s', 'dev', cwd=self.bare).splitlines(),
+                         ['Licensed assets: add legion', 'meanwhile', 'base'])
+        self.assertEqual(self.g('show', '--name-only', '--format=', 'dev', cwd=self.bare).splitlines(), ['assets.lock'])
+        self.assertEqual(sorted(self.pins()), ['legion'])
+
+    def test_dev_moving_with_another_plan_asks_again(self):
+        self.pack_in('Season 1', 'legion', {'m.ymap': b'm'})
+        other = self.other_clone()
+        asked = []
+
+        def ask(q):
+            asked.append(q)
+            if len(asked) == 1:
+                # Another publish lands first, with a pack these folders lack.
+                write(os.path.join(other, 'assets.lock'), assets.dump_lock({'format': 2, 'resources': [
+                    {'name': 'emotes', 'seasons': {'1': SHA_C}, 'versions': {SHA_C: version()}}]}))
+                self.g('commit', '-qam', 'another publish', cwd=other)
+                self.g('push', '-q', 'origin', 'dev', cwd=other)
+                return True
+            return False
+        with mock.patch.object(assets, 'ask', ask):
+            _, text = self.publish()
+        self.assertEqual(len(asked), 2)
+        self.assertIn('the plan above is not the one you answered', text)
+        self.assertIn('- emotes: retired', text.split('the plan above is not the one you answered')[0].rsplit('the plan:', 1)[1])
+        self.assertEqual(self.subject(), 'another publish', 'answered n the second time: nothing of ours went up')
+
+    def test_success_is_read_back_from_github(self):
+        self.pack_in('Season 1', 'legion', {'m.ymap': b'm'})
+        real = assets.git
+
+        def git(repo, *args, **kw):
+            if args[:1] == ('push',):
+                return types.SimpleNamespace(returncode=0, out='', err='', stdout=b'', stderr=b'')
+            return real(repo, *args, **kw)
+        with mock.patch.object(assets, 'git', git):
+            _, text = self.publish('y\n', expect=1)
+        self.assertIn('git push said it worked, but dev on GitHub', text)
+        self.assertNotIn('pushed to dev', text)
+        self.assertEqual(self.pins(), {})
+
+    def test_the_lock_is_checked_once_more_before_the_push(self):
+        self.pack_in('Season 1', 'legion', {'m.ymap': b'm'})
+        real = assets.build_commit
+
+        def tampered(clone, base, text, message):
+            return real(clone, base, text.replace('"1": "', '"2": "'), message)
+        with mock.patch.object(assets, 'build_commit', tampered):
+            _, text = self.publish('y\n', expect=1)
+        self.assertIn('the commit failed its last check, so nothing was pushed', text)
+        self.assertIn('is not the one the plan was made from', text)
+        self.assertEqual(self.g('rev-parse', 'dev', cwd=self.bare), self.base)
 
     def test_refusals(self):
         self.pack_in('Season 1', 'legion', {'m.ymap': b'm'})
-        lock = read(os.path.join(self.repo, 'assets.lock'))
-        # Off dev.
-        self.g('checkout', '-q', '-b', 'feature')
-        _, text = self.publish(expect=1)
-        self.assertIn('not dev', text)
-        self.g('checkout', '-q', 'dev')
         # A drop folder inside a work tree.
-        inner = os.path.join(self.repo, 'Blitz Assets')
+        inner = os.path.join(self.shared, 'Blitz Assets')
         shutil.copytree(self.drop, inner)
         with mock.patch.object(sys, 'stdin', io.StringIO('')):
-            _, text = self.run_tool('publish', inner, '--repo', self.repo, expect=1)
+            _, text = self.run_tool('publish', inner, '--clone', self.clone, '--origin', self.bare, expect=1)
         self.assertIn('inside the git work tree', text)
         shutil.rmtree(inner)
-        # A repo resource's name; one resource twice in a season.
+        # A --clone that is not empty and not a clone.
+        junk = os.path.join(self.tmp, 'junk')
+        write(os.path.join(junk, 'x.txt'), b'x')
+        with mock.patch.object(sys, 'stdin', io.StringIO('')):
+            _, text = self.run_tool('publish', self.drop, '--clone', junk, '--origin', self.bare, expect=1)
+        self.assertIn('is not empty and is not a clone', text)
+        # A repo resource's name; one resource twice in a season, an empty
+        # folder included; an empty folder spelled unlike its pack.
         self.pack_in('Season 1', 'br_core', {'x.lua': b'x'})
         self.pack_in('Season 1/[a]', 'docks', {'d.ymap': b'1'})
         self.pack_in('Season 1/[b]', 'docks', {'d.ymap': b'2'})
+        os.makedirs(os.path.join(self.drop, 'Season 1', '[c]', 'legion'))
+        os.makedirs(os.path.join(self.drop, 'Season 2', 'LEGION'))
         _, text = self.publish(expect=1)
         self.assertIn('br_core: a resource in this repository already has that name', text)
         self.assertIn('Season 1/[a]/docks and Season 1/[b]/docks are one resource twice in Season 1', text)
+        self.assertIn('Season 1/legion and Season 1/[c]/legion are one resource twice in Season 1', text)
+        self.assertIn('Season 2/LEGION is spelled legion in a season folder that has the pack', text)
         # No season folder at all would retire everything: refused.
         for d in ('Season 1', 'Season 2'):
             shutil.rmtree(os.path.join(self.drop, d))
         _, text = self.publish(expect=1)
         self.assertIn('no "Season <n>" folder', text)
+        # A lock on dev that does not pass check is not built on.
+        self.pack_in('Season 1', 'legion', {'m.ymap': b'm'})
+        other = self.other_clone()
+        write(os.path.join(other, 'assets.lock'), '{"format": 2, "resources": [{"name": "x"}]}\n')
+        self.g('commit', '-qam', 'a broken lock', cwd=other)
+        self.g('push', '-q', 'origin', 'dev', cwd=other)
+        _, text = self.publish(expect=1)
+        self.assertIn("dev's assets.lock does not pass check, so nothing can be published on top of it", text)
         self.assertEqual(self.calls(), [], 'no refusal reached the bucket')
-        self.assertEqual(read(os.path.join(self.repo, 'assets.lock')), lock)
+        self.assertEqual(self.subject(), 'a broken lock')
+
+    @unittest.skipUnless(os.name == 'nt', 'Publish.cmd is run by cmd.exe')
+    def test_publish_cmd_bootstraps_its_clone_and_publishes(self):
+        self.pack_in('Season 1', 'legion', {'m.ymap': b'm'})
+        env = dict(self.env)
+
+        def run(answer):
+            r = subprocess.run(['cmd.exe', '/d', '/c', os.path.join(self.drop, 'Publish.cmd')], cwd=self.tmp, env=env,
+                               input=answer.encode('ascii'), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                               timeout=600)
+            return r.returncode, r.stdout.decode('utf-8', 'replace')
+        self.assertFalse(os.path.exists(self.clone))
+        rc, out = run('y\r\n\r\n')
+        self.assertEqual(rc, 0, out)
+        self.assertIn('First Publish here: cloning dev into', out)
+        self.assertIn('pushed to dev', out)
+        self.assertEqual(sorted(self.pins()), ['legion'])
+        self.assertEqual(self.g('config', '--get', 'blitzassets.publishclone', cwd=self.clone), 'true')
+        rc, out = run('\r\n\r\n')
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn('First Publish here', out)
+        self.assertIn('nothing to publish', out)
 
 
 # =============================================================================
@@ -1025,7 +1423,9 @@ class Pull(Box):
         write(os.path.join(legion, 'm.ymap'), b's2')
         self.push(legion, '--season', 2)
         self.push_pack('emotes', {'a.ycd': b'e'}, '--season', 2)
-        self.push_pack('old_map', {'o.ymap': b'o'}, '--until', 2)
+        self.push_pack('old_map', {'o.ymap': b'o'})
+        self.run_tool('retire', 'old_map', '--season', 2, '--lock', self.lock)   # a null pin
+        self.assertEqual(self.entry('old_map')['seasons'][str(2)], None)
 
         self.pull()
         self.assertEqual(self.cfg_lines(), ['ensure legion', 'ensure old_map'])
@@ -1164,7 +1564,7 @@ class Pull(Box):
                 tar.addfile(info, io.BytesIO(data))
         sha, size = assets.sha256_file(evil)
         write(self.object_path('evil', sha), read(evil))
-        write(self.lock, assets.dump_lock({'format': 1, 'resources': [
+        write(self.lock, assets.dump_lock({'format': 2, 'resources': [
             {'name': 'evil', 'seasons': {'1': sha}, 'versions': {sha: {'size': size, 'files': {'fxmanifest.lua': 2}}}}]}))
         _, text = self.pull(expect=1)
         self.assertIn('"." or ".." segment', text)
@@ -1180,7 +1580,7 @@ class Pull(Box):
             tar.addfile(info)
         sha, size = assets.sha256_file(link)
         write(self.object_path('link', sha), read(link))
-        write(self.lock, assets.dump_lock({'format': 1, 'resources': [
+        write(self.lock, assets.dump_lock({'format': 2, 'resources': [
             {'name': 'link', 'seasons': {'1': sha}, 'versions': {sha: {'size': size, 'files': {'fxmanifest.lua': 0}}}}]}))
         _, text = self.pull(expect=1)
         self.assertIn('not a regular file', text)
@@ -1208,7 +1608,7 @@ class Pull(Box):
     def test_an_emptied_lock_removes_everything_it_installed(self):
         self.push_pack('p', {'a.ytd': b'a'})
         self.pull()
-        write(self.lock, assets.dump_lock({'format': 1, 'resources': []}))
+        write(self.lock, assets.dump_lock({'format': 2, 'resources': []}))
         self.pull()
         self.assertFalse(os.path.exists(os.path.join(self.licensed, 'p')))
         self.assertEqual(self.cfg_lines(), [])
@@ -1217,7 +1617,7 @@ class Pull(Box):
         self.assertIn('up to date', text, 'an absent lock is an empty one')
 
     def test_nothing_to_do_creates_nothing(self):
-        write(self.lock, assets.dump_lock({'format': 1, 'resources': []}))
+        write(self.lock, assets.dump_lock({'format': 2, 'resources': []}))
         before = tree(self.server)
         _, text = self.pull()
         self.assertIn('nothing to do', text)
@@ -1551,6 +1951,16 @@ class Pull(Box):
         _, text = self.run_tool('status', '--lock', self.lock, '--offline')
         self.assertNotIn('bucket', text.split('\n', 1)[1])
         self.assertEqual(tree(self.server), before, 'status is read-only')
+        # A null pin reads as what it is.
+        self.run_tool('retire', 'p', '--season', 2, '--lock', self.lock)
+        _, text = self.run_tool('status', '--lock', self.lock, '--offline')
+        self.assertIn('Season 2: removed, not installed from this season on', text)
+        # And a version a failed swap could not record is said in words.
+        rec = os.path.join(self.licensed, 'br_licensed', 'installed.txt')
+        write(rec, read(rec).replace(('installed p ' + self.entry('p')['seasons']['1']).encode(), b'installed p unknown'))
+        _, text = self.run_tool('status', '--lock', self.lock, '--server-root', self.server, '--offline')
+        self.assertIn('installed at a version a failed swap could not record', text)
+        self.assertNotIn('installed unknown', text)
 
 
 # =============================================================================
@@ -1600,7 +2010,7 @@ print('stub pull ran: ' + mode)
 sys.exit(int(os.environ.get('FAKE_SWAP_RC' if mode == 'swap' else 'FAKE_PULL_RC', '0')))
 '''
 
-LISTING_LOCK = json.dumps({'format': 1, 'resources': [
+LISTING_LOCK = json.dumps({'format': 2, 'resources': [
     {'name': 'legion', 'seasons': {'1': SHA_A}, 'versions': {SHA_A: version()}}]}, indent=2) + '\n'
 
 
@@ -1707,7 +2117,7 @@ class Deploy(unittest.TestCase):
         return path
 
     def test_an_empty_or_absent_lock_is_todays_deploy(self):
-        for lock in ('{\n  "format": 1,\n  "resources": []\n}\n', None):
+        for lock in ('{\n  "format": 2,\n  "resources": []\n}\n', None):
             self.set_lock(lock)
             rc, out = self.deploy()
             self.assertEqual(rc, 0, out)
@@ -1820,6 +2230,52 @@ class Deploy(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertEqual(self.pulls()[-2:], [['pull', '--stage', '--server-root', root],
                                              ['pull', '--swap', '--server-root', root]])
+
+    def served_deploy_sh(self, *versions):
+        """Commit each of `versions` as the served ref's tools/deploy.sh in
+        turn; taken out again after the test."""
+        path = os.path.join(self.work, 'tools', 'deploy.sh')
+        for v in versions:
+            write(path, v)
+            self.git('add', 'tools/deploy.sh')
+            self.git('commit', '-q', '-m', 'deploy.sh')
+        self.git('push', '-q', self.bare, 'main')
+
+        def drop():
+            self.git('rm', '-q', 'tools/deploy.sh')
+            self.git('commit', '-q', '-m', 'no deploy.sh')
+            self.git('push', '-q', self.bare, 'main')
+        self.addCleanup(drop)
+
+    def test_an_ops_clone_behind_the_served_tree_is_loud(self):
+        self.set_lock(None)
+        running = read(os.path.join(TOOLS, 'deploy.sh'))
+        # Not this script, nor any version of it: a quiet note.
+        self.served_deploy_sh(b'#!/usr/bin/env bash\n# some other deploy\n')
+        rc, out = self.deploy()
+        self.assertEqual(rc, 0, out)
+        self.assertIn('deploy: note: this deploy.sh', out)
+        self.assertIn("is not main's tools/deploy.sh, nor an older version of it", out)
+        self.assertNotIn('OLDER THAN', out)
+        # This script, then a newer one: this one is older, and it is loud.
+        write(os.path.join(self.work, 'tools', 'deploy.sh'), running)
+        self.git('commit', '-qam', 'this deploy.sh')
+        write(os.path.join(self.work, 'tools', 'deploy.sh'), running + b'\n# a newer step\n')
+        self.git('commit', '-qam', 'a newer deploy.sh')
+        self.git('push', '-q', self.bare, 'main')
+        rc, out = self.deploy()
+        self.assertEqual(rc, 0, out)
+        self.assertIn("deploy: THIS deploy.sh IS OLDER THAN main's tools/deploy.sh", out)
+        self.assertIn('Pull the ops clone, then deploy again:  git -C ', out)
+        self.assertIn('\x1b[32mdeployed', out, 'a warning, not a stop')
+        # The same bytes: nothing said.
+        write(os.path.join(self.work, 'tools', 'deploy.sh'), running)
+        self.git('commit', '-qam', 'the same deploy.sh')
+        self.git('push', '-q', self.bare, 'main')
+        rc, out = self.deploy('--status')
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn('OLDER THAN', out)
+        self.assertNotIn('deploy: note:', out)
 
     def test_licensed_cannot_be_a_sync_target(self):
         self.set_lock(LISTING_LOCK)
@@ -1952,14 +2408,16 @@ class AssetFileGate(unittest.TestCase):
 @unittest.skipUnless(BASH and GIT, 'needs bash and git')
 class PrePush(unittest.TestCase):
     """tools/pre-push, installed by the real tools/install-hooks.sh into a
-    scratch clone, with real pushes into a bare remote."""
+    scratch clone, with real pushes into a bare remote -- from the clone and
+    from a linked worktree on an old base, the way ~20 agent worktrees share
+    the owner's hooks."""
 
     def setUp(self):
         top = tempfile.mkdtemp(prefix='assets-prepush-')
         self.addCleanup(shutil.rmtree, top, True)
-        base = os.path.join(top, 'William Montgomery')
-        self.repo = os.path.join(base, 'repo [dev]')
-        self.bare = os.path.join(base, 'origin.git')
+        self.base = os.path.join(top, 'William Montgomery')
+        self.repo = os.path.join(self.base, 'repo [dev]')
+        self.bare = os.path.join(self.base, 'origin.git')
         for f in ('check_asset_files.sh', 'check_secrets.sh', 'pre-push', 'pre-commit', 'install-hooks.sh'):
             write(os.path.join(self.repo, 'tools', f), read(os.path.join(TOOLS, f)))
         script = read(os.path.join(TOOLS, 'check_asset_files.sh')).decode('utf-8')
@@ -1976,35 +2434,47 @@ class PrePush(unittest.TestCase):
         r = subprocess.run([BASH, 'tools/install-hooks.sh'], cwd=self.repo,
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         self.assertEqual(r.returncode, 0, r.stdout.decode('utf-8', 'replace'))
-        self.assertEqual(read(os.path.join(self.repo, '.git', 'hooks', 'pre-push')),
-                         read(os.path.join(TOOLS, 'pre-push')))
-        self.assertTrue(os.path.isfile(os.path.join(self.repo, '.git', 'hooks', 'pre-commit')))
+        self.hooks = os.path.join(self.repo, '.git', 'hooks')
+        self.assertEqual(read(os.path.join(self.hooks, 'pre-push')), read(os.path.join(TOOLS, 'pre-push')))
+        for g in ('check_asset_files.sh', 'check_secrets.sh'):
+            self.assertEqual(read(os.path.join(self.hooks, 'pre-push-gates', g)), read(os.path.join(TOOLS, g)),
+                             'the gates are installed beside the hook')
+        self.assertTrue(os.path.isfile(os.path.join(self.hooks, 'pre-commit')))
         # The remote's starting point; not what is under test.
         self.push_ok('--no-verify', 'dev')
 
-    def git(self, *args, cwd=None, check=True):
+    def git(self, *args, cwd=None, check=True, env=None):
         r = subprocess.run([GIT, '-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'core.autocrlf=false']
-                           + list(args), cwd=cwd or self.repo, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                           + list(args), cwd=cwd or self.repo, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                           env=env)
         out = r.stdout.decode('utf-8', 'replace')
         if check:
             self.assertEqual(r.returncode, 0, 'git %s: %s' % (' '.join(args), out))
         return r.returncode, out
 
-    def commit(self, files, msg='c'):
+    def commit(self, files, msg='c', cwd=None):
+        cwd = cwd or self.repo
         for path, data in files.items():
             if data is None:
-                self.git('rm', '-q', path)
+                self.git('rm', '-q', path, cwd=cwd)
             else:
-                write(os.path.join(self.repo, *path.split('/')), data)
-                self.git('add', '--', path)
-        self.git('commit', '-qm', msg)
+                write(os.path.join(cwd, *path.split('/')), data)
+                self.git('add', '--', path, cwd=cwd)
+        self.git('commit', '-qm', msg, cwd=cwd)
 
-    def remote_tip(self, branch='dev'):
-        return self.git('rev-parse', branch, cwd=self.bare)[1].strip()
+    def remote_tip(self, branch='dev', bare=None):
+        rc, out = self.git('rev-parse', '--verify', '-q', branch, cwd=bare or self.bare, check=False)
+        return out.strip() if rc == 0 else None
 
-    def push_ok(self, *args):
-        rc, out = self.git('push', '-q', 'origin', *args, check=False)
+    def push_ok(self, *args, cwd=None):
+        rc, out = self.git('push', '-q', 'origin', *args, cwd=cwd, check=False)
         self.assertEqual(rc, 0, out)
+        return out
+
+    def push_refused(self, *args, cwd=None):
+        rc, out = self.git('push', 'origin', *args, cwd=cwd, check=False)
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn('Nothing was pushed.', out)
         return out
 
     def test_an_ordinary_push_of_code_passes(self):
@@ -2019,8 +2489,7 @@ class PrePush(unittest.TestCase):
         self.commit({'resources/[maps]/legion/stream/Legion.ytd': None}, 'take it out again')
         self.commit({'tools/deploy notes.sh': 'echo hi\nexport AWS_ACCESS_KEY_ID=%s\n' % key}, 'key')
         self.commit({'tools/deploy notes.sh': 'echo hi\n'}, 'and out again')
-        rc, out = self.git('push', 'origin', 'dev', check=False)
-        self.assertNotEqual(rc, 0, out)
+        out = self.push_refused('dev')
         self.assertEqual(self.remote_tip(), before, 'nothing reached the remote')
         self.assertIn('ASSET\x1b[0m resources/[maps]/legion/stream/Legion.ytd', out)
         sha = self.git('rev-parse', '--short', 'HEAD~1')[1].strip()
@@ -2036,6 +2505,108 @@ class PrePush(unittest.TestCase):
         # A new branch from here, and deleting it, pass too.
         self.push_ok('dev:feature')
         self.push_ok(':feature')
+
+    def test_an_old_base_worktree_gets_the_installed_gates(self):
+        # A base from before #391, as the agent worktrees have: no asset gate,
+        # and a secrets gate that would pass anything.
+        self.commit({'tools/check_asset_files.sh': None,
+                     'tools/check_secrets.sh': '#!/usr/bin/env bash\necho "old gate: ok"\nexit 0\n'}, 'old base')
+        self.push_ok('--no-verify', 'dev')
+        wt = os.path.join(self.base, 'old worktree')
+        self.git('worktree', 'add', '-q', '-b', 'old', wt, 'dev')
+        # An untracked file in its tree holding a key is not what is pushed.
+        write(os.path.join(wt, 'scratch.txt'), 'AKIA' + 'Z' * 16 + '\n')
+        self.commit({'resources/x.lua': 'return 3\n'}, 'ordinary work', cwd=wt)
+        out = self.push_ok('old', cwd=wt)
+        self.assertNotIn('old gate', out)
+        self.assertEqual(self.remote_tip('old'), self.git('rev-parse', 'old')[1].strip())
+        # A pack from there is refused, by the installed gate.
+        self.commit({'resources/[maps]/legion/stream/legion.ytd': b'\0licensed\0'}, 'a pack', cwd=wt)
+        out = self.push_refused('old', cwd=wt)
+        self.assertIn('ASSET\x1b[0m resources/[maps]/legion/stream/legion.ytd', out)
+        self.assertNotIn('old gate', out)
+        # Its old secrets gate differs from the installed one, and the refusal
+        # says how to tell; it has no asset gate to compare.
+        self.assertIn('the pushed tools/check_secrets.sh differs from the copy installed', out)
+        self.assertNotIn('the pushed tools/check_asset_files.sh differs', out)
+
+    def test_a_missing_gate_refuses_every_push(self):
+        os.remove(os.path.join(self.hooks, 'pre-push-gates', 'check_secrets.sh'))
+        before = self.remote_tip()
+        self.commit({'resources/x.lua': 'return 4\n'})
+        out = self.push_refused('dev')
+        self.assertIn('cannot run the check_secrets.sh gate', out)
+        self.assertIn('install-hooks.sh', out)
+        self.assertEqual(self.remote_tip(), before)
+
+    def test_a_gate_that_cannot_run_refuses(self):
+        write(os.path.join(self.hooks, 'pre-push-gates', 'check_asset_files.sh'),
+              '#!/usr/bin/env bash\necho "FAIL could not list"\nexit 2\n')
+        before = self.remote_tip()
+        self.commit({'resources/x.lua': 'return 5\n'})
+        out = self.push_refused('dev')
+        self.assertIn('the check_asset_files.sh gate could not run (exit 2)', out)
+        self.assertEqual(self.remote_tip(), before)
+
+    def test_a_grep_that_cannot_run_is_not_a_pass(self):
+        # The secrets gate itself, with a grep that fails the way an argument
+        # list too long does (exit 2): never "ok".
+        real = subprocess.run([BASH, '-c', 'command -v grep'], stdout=subprocess.PIPE).stdout.decode().strip()
+        fake = os.path.join(self.base, 'fake grep bin')
+        write(os.path.join(fake, 'grep'), '#!/usr/bin/env bash\ncase "$1" in -r*|-HnI*)\n'
+              '  echo "grep: f: Argument list too long" >&2; exit 2 ;;\nesac\nexec "%s" "$@"\n' % real)
+        os.chmod(os.path.join(fake, 'grep'), 0o755)
+        self.commit({'resources/x.lua': 'return 6\n'})
+        env = dict(os.environ, PATH=fake + os.pathsep + os.path.dirname(BASH) + os.pathsep + os.environ['PATH'])
+        # The installed copy in --revs form, and the tree form verify.sh runs.
+        for gate, args in ((os.path.join(self.hooks, 'pre-push-gates', 'check_secrets.sh'), ['--revs', 'HEAD', '^HEAD~1']),
+                           (os.path.join(self.repo, 'tools', 'check_secrets.sh'), [])):
+            r = subprocess.run([BASH, gate] + args, cwd=self.repo, env=env,
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            out = r.stdout.decode('utf-8', 'replace')
+            self.assertEqual(r.returncode, 2, out)
+            self.assertIn("rule could not run (grep exit 2): grep: f: Argument list too long", out)
+            self.assertNotIn('\x1b[32mok', out)
+            self.assertIn('could not run, so this is not a clean pass', out)
+
+    def test_a_remote_that_cannot_be_asked_refuses(self):
+        # The hook as git runs it, by hand: a remote it cannot ls-remote is a
+        # refusal, never a scan bounded by nothing it could check.
+        self.commit({'resources/x.lua': 'return 9\n'})
+        tip = self.git('rev-parse', 'HEAD')[1].strip()
+        r = subprocess.run([BASH, os.path.join(self.hooks, 'pre-push'), 'origin',
+                            os.path.join(self.base, 'no such remote.git')], cwd=self.repo,
+                           input=('refs/heads/dev %s refs/heads/dev %s\n' % (tip, '0' * 40)).encode(),
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        out = r.stdout.decode('utf-8', 'replace')
+        self.assertEqual(r.returncode, 1, out)
+        self.assertIn('could not ask origin what it already has', out)
+        self.assertIn('Nothing was pushed.', out)
+
+    def test_the_scan_is_bounded_by_the_remote_pushed_to(self):
+        # Another remote has a pack origin never got; its tracking ref here
+        # must not excuse it from a push to origin.
+        other = os.path.join(self.base, 'other.git')
+        os.makedirs(other)
+        self.git('init', '-q', '--bare', '-b', 'dev', cwd=other)
+        self.git('remote', 'add', 'other', other)
+        self.commit({'stream/legion.ytd': b'\0licensed\0'}, 'a pack')
+        self.git('push', '-q', '--no-verify', 'other', 'dev')
+        self.commit({'resources/x.lua': 'return 7\n'})
+        out = self.push_refused('dev')
+        self.assertIn('ASSET\x1b[0m stream/legion.ytd', out)
+
+    def test_a_stale_tracking_ref_does_not_hide_a_commit(self):
+        # A pack pushed to a branch, the branch deleted on the remote -- a
+        # purge -- while this clone's origin/feature still points at it.
+        self.commit({'stream/legion.ytd': b'\0licensed\0'}, 'a pack')
+        self.push_ok('--no-verify', 'dev:feature')
+        self.git('update-ref', '-d', 'refs/heads/feature', cwd=self.bare)
+        self.assertIsNone(self.remote_tip('feature'))
+        self.assertEqual(self.git('rev-parse', 'origin/feature')[0], 0, 'the tracking ref is stale, and here')
+        self.commit({'resources/x.lua': 'return 8\n'})
+        out = self.push_refused('dev')
+        self.assertIn('ASSET\x1b[0m stream/legion.ytd', out)
 
 
 if __name__ == '__main__':
