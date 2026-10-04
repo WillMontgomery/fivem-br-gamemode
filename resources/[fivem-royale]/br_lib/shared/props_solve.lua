@@ -13,6 +13,7 @@
 --   repeatFire / sendDue              when a held key steps, when to send
 --   hover                             the loot pickup's look, on a prop
 --   fromRow / row / whereLine         the save file and the paste line
+--   num                               a number on a brpropsv command line
 --
 -- Every function takes its config as an argument rather than reading
 -- BR.Config at load, so a test can hand it any numbers and this file can be
@@ -385,4 +386,17 @@ function S.whereLine(r)
     return ("{ model = '%s', display = '%s', x = %.3f, y = %.3f, z = %.3f, "
         .. 'pitch = %.1f, roll = %.1f, yaw = %.1f },')
         :format(r.model, r.display, r.x, r.y, r.z, r.pitch, r.roll, r.yaw)
+end
+
+--- A number as it goes into a `brpropsv` command line, and back out of one.
+---
+--- EVERY DIGIT A DOUBLE HAS. The confirm and the spawn reach the server as
+--- console text rather than as a table, and a position rounded on the way --
+--- '%.2f' would do it to the centimeter -- would put the prop a little off from
+--- the preview that was confirmed. '%.17g' reads back with tonumber() as the
+--- same double, bit for bit.
+--- @param v number
+--- @return string
+function S.num(v)
+    return ('%.17g'):format(v)
 end

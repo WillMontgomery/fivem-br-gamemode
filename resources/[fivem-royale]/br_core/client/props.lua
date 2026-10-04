@@ -15,6 +15,24 @@
 -- else it does is ASK: spawn, move, delete, display, save, load. Deleting a copy
 -- here deletes nothing anywhere else.
 --
+-- ═══ HOW IT ASKS ═══
+--
+-- Every request is the server's dev command `brpropsv`, run from here with
+-- ExecuteCommand: this client has no command by that name, so FiveM sends the
+-- line to the server, which runs it as this player behind the same dev gate
+-- as every other dev command (server/props.lua's header has the sources).
+-- `brprop` is what the player types, and it does first what only a client
+-- can: stream the model, find the ground in front of him, pick the nearest
+-- prop, run the edit keys. `list` and `where` ask nothing at all -- they read
+-- the records every client is already sent, beside what THIS client managed
+-- to draw, which the server cannot know.
+--
+-- The edit preview is the one thing that is not a command: ten updates a
+-- second would trip FiveM's rate limit on a client's server commands. It is
+-- the PROP_MOVE net event, and the server takes it only inside the edit
+-- session `brpropsv edit begin` opened for this player and this prop -- so the
+-- edit starts here when the server says the session is open, not before.
+--
 -- ═══ TWO LOOKS ═══
 --
 --   pickup  (the default) the loot pickup's own animation off the loot's own
@@ -55,6 +73,9 @@ local pending = nil
 --- The edit session, or nil.
 local E = nil
 
+--- An `edit begin` the server has not answered yet: { id, at }, or nil.
+local asking = nil
+
 --- @return table BR.Config.Props, at call time
 local function cfg() return BR.Config.Props end
 
@@ -65,6 +86,12 @@ local function loot() return BR.Config.Loot or {} end
 --- @param text string
 local function say(text)
     print('[br_core] brprop: ' .. text)
+end
+
+--- Run one request on the server, as the `brpropsv` dev command.
+--- @param line string  everything after the command name
+local function ask(line)
+    ExecuteCommand('brpropsv ' .. line)
 end
 
 -- ------------------------------------------------------------------- keys ---
@@ -388,10 +415,8 @@ local function stepSpawn(now)
         pending = nil
         local t = spot(p.hash)
         release(p.hash)
-        TriggerServerEvent(BR.Net.PROP_SPAWN, {
-            model = p.model, display = p.display,
-            x = t.x, y = t.y, z = t.z, pitch = 0.0, roll = 0.0, yaw = t.yaw,
-        })
+        ask(('spawn %s %s %s %s %s %s'):format(p.model, p.display,
+            S.num(t.x), S.num(t.y), S.num(t.z), S.num(t.yaw)))
         say(("asked the server for '%s' (%s)"):format(p.model, p.display))
     elseif now - p.since > (cfg().loadWaitMs or 5000) then
         pending = nil
@@ -413,13 +438,12 @@ local function inBounds(x, y)
     return M.InBounds(x, y) == true
 end
 
---- Send the edit's transform (or another) to the server.
---- @param id integer @param t table @param final boolean @param now integer
-local function sendMove(id, t, final, now)
+--- Send the edit's preview to the server, on the edit stream.
+--- @param id integer @param t table @param now integer
+local function sendMove(id, t, now)
     TriggerServerEvent(BR.Net.PROP_MOVE, {
         id = id, x = t.x, y = t.y, z = t.z,
         pitch = t.pitch, roll = t.roll, yaw = t.yaw,
-        final = final or nil,
     })
     if E then E.lastSentAt, E.dirty = now, false end
 end
@@ -430,20 +454,25 @@ local function copyT(t)
     return { x = t.x, y = t.y, z = t.z, pitch = t.pitch, roll = t.roll, yaw = t.yaw }
 end
 
---- End the edit. Confirm sends the preview as final; cancel sends the record
---- as it was when the edit began, so the server puts it back for everybody.
+--- End the edit. Confirm sends the preview with `edit confirm`; cancel asks the
+--- server to put back its own copy of the record from when the edit began, for
+--- everybody. Either closes the session.
 ---
 --- THE LOCAL RECORD TAKES THE ANSWER AT ONCE, rather than waiting a round trip
 --- for the echo -- otherwise the copy would jump back to the last 10 Hz update
---- for a frame or two. If the server refuses the final one it sends this client
+--- for a frame or two. If the server refuses the confirm it sends this client
 --- the record as it stands, and that corrects it.
 --- @param confirm boolean
---- @param now integer
-local function finishEdit(confirm, now)
+local function finishEdit(confirm)
     local e = E
     if not e then return end
     local t = confirm and e.t or e.orig
-    sendMove(e.id, t, true, now)
+    if confirm then
+        ask(('edit confirm %d %s %s %s %s %s %s'):format(e.id, S.num(t.x), S.num(t.y),
+            S.num(t.z), S.num(t.pitch), S.num(t.roll), S.num(t.yaw)))
+    else
+        ask(('edit cancel %d'):format(e.id))
+    end
     E = nil
     local r = recs[e.id]
     if r then
@@ -583,10 +612,10 @@ local function stepEdit(now)
             E.armed[key.name] = true
         elseif not was and E.armed[key.name] == true then
             if key.name == 'confirm' then
-                finishEdit(true, now)
+                finishEdit(true)
                 return
             elseif key.name == 'cancel' then
-                finishEdit(false, now)
+                finishEdit(false)
                 return
             elseif key.name == 'ground' then
                 snapToGround()
@@ -597,7 +626,7 @@ local function stepEdit(now)
     end
 
     if E.dirty and S.sendDue(E.lastSentAt, now, P.sendHz) then
-        sendMove(E.id, E.t, false, now)
+        sendMove(E.id, E.t, now)
     end
     readout(coarse)
 end
@@ -616,11 +645,33 @@ local function nearestId(range)
     return best
 end
 
---- `/brprop edit [id]`.
+--- Can prop `id` be edited on this client? The record, or nil and why.
+--- @param id integer
+--- @return table|nil
+--- @return string|nil why
+local function editable(id)
+    if not (BR.Keys and BR.Keys.rawActive == true and BR.Keys.rawKeyDown) then
+        return nil, 'edit needs the raw key layer, which is not running on this client (see /brkeys)'
+    end
+    local r = recs[id]
+    if not r then return nil, ('there is no prop #%s'):format(tostring(id)) end
+    local c = copies[id]
+    if not c or c.state ~= 'built' then
+        return nil, ('#%d is not drawn on this client, so it cannot be edited here'):format(id)
+    end
+    return r, nil
+end
+
+--- `/brprop edit [id]`: check what only this client can, then ask the server
+--- for the session. The edit itself starts in openEdit, on its answer.
 --- @param id integer|nil
-local function startEdit(id)
+local function askEdit(id)
     if E then
         say(('already editing #%d; Enter confirms, X cancels'):format(E.id))
+        return
+    end
+    if asking and GetGameTimer() - asking.at < (cfg().loadWaitMs or 5000) then
+        say(('still waiting for the server to open #%d'):format(asking.id))
         return
     end
     if not (BR.Keys and BR.Keys.rawActive == true and BR.Keys.rawKeyDown) then
@@ -635,14 +686,29 @@ local function startEdit(id)
             return
         end
     end
-    local r = recs[id]
-    if not r then
-        say(('there is no prop #%s'):format(tostring(id)))
+    local _, why = editable(id)
+    if why then
+        say(why)
         return
     end
-    local c = copies[id]
-    if not c or c.state ~= 'built' then
-        say(('#%d is not drawn on this client, so it cannot be edited here'):format(id))
+    asking = { id = id, at = GetGameTimer() }
+    ask(('edit begin %d'):format(id))
+end
+
+--- The server opened this player's session on `id`: start the edit.
+---
+--- AN ANSWER NOBODY IS WAITING FOR IS HANDED BACK. A session this client will
+--- not use would hold the prop against every other editor until it idled out,
+--- so it is canceled at once -- nothing was streamed, so nothing moves.
+--- @param id integer
+local function openEdit(id)
+    local wanted = asking ~= nil and asking.id == id
+    asking = nil
+    local r, why = nil, nil
+    if wanted and E == nil then r, why = editable(id) end
+    if r == nil then
+        ask(('edit cancel %d'):format(id))
+        if why then say(why) end
         return
     end
 
@@ -708,6 +774,26 @@ AddEventHandler(BR.Net.PROP_RESULT, function(text)
     say(tostring(text))
 end)
 
+-- THE SESSION, OPENED OR CLOSED BY THE SERVER. A close carrying no reason is
+-- the answer to a refused `edit begin`, whose reason already came as a result
+-- line; one with a reason ends an edit in progress, and the copy goes back to
+-- the record -- which the stream has been keeping current all along.
+RegisterNetEvent(BR.Net.PROP_EDIT)
+AddEventHandler(BR.Net.PROP_EDIT, function(msg)
+    if type(msg) ~= 'table' or type(msg.id) ~= 'number' then return end
+    if msg.open == true then
+        openEdit(msg.id)
+        return
+    end
+    if asking and asking.id == msg.id then asking = nil end
+    if E and E.id == msg.id and msg.why ~= nil then
+        E = nil
+        local c = copies[msg.id]
+        if c then c.dirty, c.settled = true, false end
+        say(('#%d edit ended by the server: %s'):format(msg.id, tostring(msg.why)))
+    end
+end)
+
 -- EVERY LOCAL COPY GOES WITH THE RESOURCE. A local object outlives the script
 -- that made it, so without this a `restart br_core` would leave each prop
 -- standing a second time beside the one the restarted file draws.
@@ -720,7 +806,7 @@ AddEventHandler('onResourceStop', function(res)
         release(pending.hash)
         pending = nil
     end
-    E = nil
+    E, asking = nil, nil
 end)
 
 -- --------------------------------------------------------------- command ---
@@ -766,7 +852,7 @@ RegisterCommand('brprop', function(_, args)
             say('delete needs an id or all')
             return
         end
-        TriggerServerEvent(BR.Net.PROP_DELETE, { id = which })
+        ask(('delete %s'):format(tostring(which)))
 
     elseif verb == 'display' then
         local id = idOf(args[2])
@@ -775,7 +861,7 @@ RegisterCommand('brprop', function(_, args)
             say('usage: brprop display <id> <pickup|static>')
             return
         end
-        TriggerServerEvent(BR.Net.PROP_DISPLAY, { id = id, display = mode })
+        ask(('display %d %s'):format(id, mode))
 
     elseif verb == 'where' then
         local id = idOf(args[2])
@@ -798,13 +884,13 @@ RegisterCommand('brprop', function(_, args)
                 return
             end
         end
-        startEdit(id)
+        askEdit(id)
 
     elseif verb == 'save' then
-        TriggerServerEvent(BR.Net.PROP_SAVE)
+        ask('save')
 
     elseif verb == 'load' then
-        TriggerServerEvent(BR.Net.PROP_LOAD)
+        ask('load')
 
     else
         print(USAGE)

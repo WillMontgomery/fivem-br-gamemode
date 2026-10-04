@@ -13,7 +13,7 @@
 -- the loot retunes these with it and the two can never drift apart.
 --
 -- Nothing here is a server tunable. The props exist only on a dev box -- every
--- door is behind BR.Admin.devTrusted -- so there is no public number to override.
+-- request is a dev-mode command -- so there is no public number to override.
 
 BR = BR or {}
 BR.Config = BR.Config or {}
@@ -46,8 +46,16 @@ BR.Config.Props = {
     --- The server drops an edit update that arrives sooner than this after the
     --- last one from the same player. The client sends at sendHz below (100ms
     --- apart); this is the floor under a client that does not. The confirm is
-    --- never dropped.
+    --- a command rather than an update, and is never dropped.
     moveMinMs   = 50,
+
+    --- An edit session the server has heard nothing on for this long is
+    --- closed, and its player told. A session is what lets one player's edit
+    --- stream move one prop; one left open by a client that lost its edit
+    --- (br_core restarted under it) would otherwise hold that prop against
+    --- every other editor until the player left. Long on purpose: WASD are
+    --- off while editing, so standing still and looking is the ordinary case.
+    editIdleMs  = 600000,
 
     --- Where `/brprop save` writes, inside br_core, with SaveResourceFile.
     --- tools/deploy.sh excludes it from the rsync's --delete and .gitignore
@@ -82,6 +90,6 @@ BR.Config.Props = {
     repeatMs      = 50,
 
     --- How often the edit preview is sent to the server while it changes.
-    --- The issue says at most 10 Hz; the confirm is sent once more on top.
+    --- The issue says at most 10 Hz; the confirm goes as a command on top.
     sendHz      = 10,
 }

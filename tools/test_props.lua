@@ -19,14 +19,19 @@
 --           edit axis at both step sizes and several camera angles, the key
 --           repeat, the send throttle, and the pickup look off the LOOT's own
 --           numbers.
---   PART B  br_core/server/props.lua -- the dev gate on every door, the
---           refusals, ids, the broadcast and the late joiner's full list, the
---           move rate limit, and save -> restart -> load.
+--   PART B  br_core/server/props.lua behind the REAL br_lib/shared/devgate.lua
+--           -- the `brpropsv` command refused with dev mode off and run with it
+--           on for a player holding no grant; the refusals, ids, the broadcast
+--           and the late joiner's full list, the move rate limit, save ->
+--           restart -> load; and the edit session, the only door the edit
+--           stream has, opened by the command and closed on every way out.
 --   PART C  br_core/client/props.lua over the REAL client/keybinds.lua -- the
 --           copy lifecycle (spawn, replace, delete, display), model refusal and
---           release, the hover as drawn, the edit keys read through the raw
---           layer at both step sizes, throttled sends, confirm and cancel, and
---           cleanup on resource stop.
+--           release, the hover as drawn, every request run as `brpropsv`, the
+--           edit starting only on the server's answer, the edit keys read
+--           through the raw layer at both step sizes, throttled sends, confirm
+--           and cancel, and cleanup on resource stop.
+--   PART D  the exact lines PART C's client ran, typed into PART B's server.
 --
 -- Run via tools/verify.sh, or directly:  lua tools/test_props.lua
 
@@ -560,15 +565,16 @@ end
 -- PART B -- the server
 -- =========================================================================
 
-local handlers, toClient, consoleLines, files, trusted, roster
+local handlers, toClient, consoleLines, files, roster, svCommands, svConvars, jobs, adminAsked
 local clock = 100000
 
 local function bootServer(opts)
     opts = opts or {}
     BR = nil
-    handlers, toClient, consoleLines = {}, {}, {}
+    handlers, toClient, consoleLines, svCommands, jobs = {}, {}, {}, {}, {}
     files = opts.files or {}
-    trusted = { [1] = true, [2] = true, [3] = true }
+    svConvars = { sv_devMode = (opts.devMode == false) and 'false' or 'true' }
+    adminAsked = 0
     roster = {
         [1] = { pos = { x = INSIDE.x, y = INSIDE.y, z = INSIDE.z } },
         [2] = { pos = { x = OUTSIDE.x, y = OUTSIDE.y, z = OUTSIDE.z } },
@@ -578,6 +584,16 @@ local function bootServer(opts)
     function GetGameTimer() return clock end
     function GetCurrentResourceName() return 'br_core' end
     function IsDuplicityVersion() return true end
+    function GetConvar(n, d)
+        local v = svConvars[n]
+        if v == nil then return d end
+        return v
+    end
+    -- The native, as devgate.lua finds it: what it registers, and whether
+    -- restricted, so the test reads what the server would really be handed.
+    function RegisterCommand(name, fn, restricted)
+        svCommands[name] = { fn = fn, restricted = restricted }
+    end
     function RegisterNetEvent() end
     function AddEventHandler(name, fn)
         handlers[name] = handlers[name] or {}
@@ -594,7 +610,10 @@ local function bootServer(opts)
     function LoadResourceFile(res, name) return files[res .. '/' .. name] end
     print = function(s) consoleLines[#consoleLines + 1] = tostring(s) end
 
+    -- THE REAL DEV GATE FIRST, as br_core's manifest loads it: the command is
+    -- registered through its wrap, so dev mode off is tested, not assumed.
     loadAll({
+        'br_lib/shared/devgate.lua',
         'br_lib/shared/enums.lua',
         'br_lib/shared/protocol.lua',
         'br_lib/shared/polygon.lua',
@@ -604,13 +623,17 @@ local function bootServer(opts)
         'br_lib/shared/props_solve.lua',
     })
     if opts.maxProps then BR.Config.Props.maxProps = opts.maxProps end
+    -- A GRANT MODULE THAT REFUSES EVERYBODY AND COUNTS WHO ASKS. Nobody in
+    -- these tests holds a grant, and /brprop must work anyway without ever
+    -- asking -- the scopes it wanted stopped existing on 2026-08-29.
     BR.Admin = {
-        devTrusted = function(src)
-            if trusted[src] == true then return true, nil end
+        devTrusted = function()
+            adminAsked = adminAsked + 1
             return false, 'not-admin'
         end,
     }
     BR.Roster = { get = function(src) return roster[src] end }
+    BR.Sched = { every = function(ms, name, fn) jobs[name] = { ms = ms, fn = fn } end }
     loadAll({ 'br_core/server/props.lua' })
 end
 
@@ -619,6 +642,15 @@ local function fireAs(src, name, ...)
     source = src
     for _, fn in ipairs(handlers[name] or {}) do fn(...) end
     source = prev
+end
+
+--- Type one `brpropsv` line as player `src` (0 is the server console), split
+--- on whitespace the way the console splits it.
+local function sv(src, line)
+    local args = {}
+    for w in line:gmatch('%S+') do args[#args + 1] = w end
+    local c = svCommands.brpropsv
+    if c then c.fn(src, args, 'brpropsv ' .. line) end
 end
 
 local function sentTo(target, name)
@@ -643,46 +675,111 @@ local function spawnReq(over)
     return d
 end
 
-describe('server: every door is behind BR.Admin.devTrusted')
+--- The line client/props.lua sends for a spawn.
+local function spawnLine(over)
+    local d = spawnReq(over)
+    return ('spawn %s %s %s %s %s %s'):format(d.model, d.display,
+        S.num(d.x), S.num(d.y), S.num(d.z), S.num(d.yaw))
+end
+
+--- The line client/props.lua sends for a confirm.
+local function confirmLine(id, t)
+    return ('edit confirm %d %s %s %s %s %s %s'):format(id, S.num(t.x), S.num(t.y),
+        S.num(t.z), S.num(t.pitch or 0), S.num(t.roll or 0), S.num(t.yaw or 0))
+end
+
+local function mv(over)
+    local d = { id = 1, x = INSIDE.x + 3, y = INSIDE.y, z = INSIDE.z, pitch = 10, roll = 20, yaw = 400 }
+    for k, v in pairs(over or {}) do d[k] = v end
+    return d
+end
+
+describe('server: every request is the dev command brpropsv, and dev mode is its whole gate')
 do
     bootServer()
+    local c = svCommands.brpropsv
+    ok(c ~= nil, 'brpropsv is registered')
+    eq(c and c.restricted, false,
+        'unrestricted: restricted would ask the player for the command.brpropsv ACE')
+    ok(svCommands.brprop == nil, 'and the server has no brprop -- that is the client\'s, which runs this')
+
+    -- DEV MODE OFF: every verb refused at the wrap, by name, and nothing moves.
+    bootServer({ devMode = false })
     BR.Props.create(1, spawnReq())
     toClient = {}
-    trusted[1] = false
-    local doors = {
-        { BR.Net.PROP_SPAWN, spawnReq() },
-        { BR.Net.PROP_MOVE, { id = 1, x = INSIDE.x, y = INSIDE.y, z = INSIDE.z, final = true } },
-        { BR.Net.PROP_DELETE, { id = 1 } },
-        { BR.Net.PROP_DISPLAY, { id = 1, display = 'static' } },
-        { BR.Net.PROP_SAVE },
-        { BR.Net.PROP_LOAD },
+    local lines = {
+        spawnLine(), 'delete 1', 'delete all', 'display 1 static', 'save', 'load',
+        'edit begin 1', confirmLine(1, INSIDE), 'edit cancel 1', 'frobnicate',
     }
-    for _, door in ipairs(doors) do
+    for _, line in ipairs(lines) do
         consoleLines = {}
-        fireAs(1, door[1], door[2])
-        eq(#toClient, 0, door[1] .. ': nothing sent to anybody, the asker included')
-        local said = table.concat(consoleLines, '\n')
-        ok(said:find('refused: not%-admin') ~= nil, door[1] .. ': the reason is on the server console', said)
+        sv(1, line)
+        eq(#toClient, 0, line .. ': dev mode off, nothing sent to anybody')
+        ok(table.concat(consoleLines, '\n'):find('brpropsv is dev%-mode only') ~= nil,
+            line .. ': and this console says which gate closed', table.concat(consoleLines, '\n'))
     end
     eq(BR.Props.count(), 1, 'the prop is still there')
     local r = BR.Props.get(1)
     ok(r and r.x == INSIDE.x + 2 and r.display == 'pickup', 'and unchanged')
-    eq(files['br_core/devprops.json'], nil, 'and nothing was saved')
+    eq(files['br_core/devprops.json'], nil, 'nothing was saved')
+    eq(BR.Props.editing(1), nil, 'and no edit session opened')
 
-    -- AND THE GATE IS THE HELPER, NOT A COPY OF IT: with admin.lua absent the
-    -- doors refuse rather than throw or open.
-    trusted[1] = true
+    -- DEV MODE ON, A PLAYER WITH NO GRANT: every verb runs.
+    bootServer()
+    sv(1, spawnLine())
+    sv(1, spawnLine({ model = 'second' }))
+    eq(BR.Props.count(), 2, 'spawn')
+    sv(1, 'display 1 static')
+    eq(BR.Props.get(1).display, 'static', 'display')
+    sv(1, 'save')
+    ok(files['br_core/devprops.json'] ~= nil, 'save')
+    sv(1, 'delete 2')
+    eq(BR.Props.count(), 1, 'delete')
+    sv(1, 'load')
+    eq(BR.Props.count(), 2, 'load')
+    sv(1, 'edit begin 1')
+    eq(BR.Props.editing(1), 1, 'edit begin')
+    sv(1, confirmLine(1, { x = INSIDE.x + 4, y = INSIDE.y, z = INSIDE.z }))
+    eq(BR.Props.get(1).x, INSIDE.x + 4, 'edit confirm')
+    sv(1, 'edit begin 1')
+    sv(1, 'edit cancel 1')
+    eq(BR.Props.editing(1), nil, 'edit cancel')
+    sv(1, 'delete all')
+    eq(BR.Props.count(), 0, 'delete all')
+    eq(adminAsked, 0, 'and not one of them asked BR.Admin.devTrusted')
+
+    -- EITHER CONVAR OPENS IT, as BR.Dev.on() reads them.
+    bootServer({ devMode = false })
+    svConvars.br_devMode = 'true'
+    sv(1, spawnLine())
+    eq(BR.Props.count(), 1, 'br_devMode alone opens it too')
+
+    -- AND THERE IS NO GRANT MODULE TO NEED: with none loaded it still works.
+    bootServer()
     BR.Admin = nil
-    consoleLines = {}
-    fireAs(1, BR.Net.PROP_SPAWN, spawnReq())
-    eq(BR.Props.count(), 1, 'no admin module: no prop')
-    ok(table.concat(consoleLines):find('no%-admin%-module') ~= nil, 'and it says so')
+    sv(1, spawnLine())
+    eq(BR.Props.count(), 1, 'no admin module at all: still a prop')
+end
+
+describe('server: nothing in server/props.lua asks for a grant')
+do
+    local fh = io.open(ROOT .. 'br_core/server/props.lua', 'r')
+    local src = fh and fh:read('a') or ''
+    if fh then fh:close() end
+    local code = {}
+    for line in (src .. '\n'):gmatch('([^\n]*)\n') do code[#code + 1] = (line:gsub('%-%-.*$', '')) end
+    local text = table.concat(code, '\n')
+    ok(#src > 0, 'the file is there')
+    ok(text:find('BR%.Admin') == nil, 'no BR.Admin in its code')
+    ok(text:find('BR%.Grants') == nil, 'no BR.Grants either')
+    ok(text:find("RegisterCommand%('brpropsv'") ~= nil, 'it registers brpropsv through RegisterCommand')
+    ok(text:find('rawCommand') == nil, 'and never through the ungated door')
 end
 
 describe('server: a spawn makes a record, numbers it, and tells everybody')
 do
     bootServer()
-    fireAs(1, BR.Net.PROP_SPAWN, spawnReq({ model = 'PROP_Box_Wood05a' }))
+    sv(1, spawnLine({ model = 'PROP_Box_Wood05a' }))
     eq(BR.Props.count(), 1, 'one prop')
     local r = BR.Props.get(1)
     ok(r ~= nil and r.model == 'prop_box_wood05a', 'id 1, model lower-cased')
@@ -694,29 +791,44 @@ do
     if set and set[1] then set[1].x = -1 end
     ok(BR.Props.get(1).x ~= -1, 'as a copy: changing the payload changes no record')
     ok((lastResult(1) or ''):find('spawned #1') ~= nil, 'and the asker is told', lastResult(1))
+    ok(table.concat(consoleLines, '\n'):find('client 1') ~= nil, 'and this console records who')
 
-    fireAs(1, BR.Net.PROP_SPAWN, spawnReq({ display = 'static' }))
+    sv(1, spawnLine({ display = 'static' }))
     eq(BR.Props.get(2) and BR.Props.get(2).display, 'static', 'the next is #2, static as asked')
     BR.Props.remove(2)
-    fireAs(1, BR.Net.PROP_SPAWN, spawnReq())
+    sv(1, spawnLine())
     ok(BR.Props.get(3) ~= nil and BR.Props.get(2) == nil, 'an id is never reused')
+
+    -- THROUGH A COMMAND LINE AND BACK, BIT FOR BIT.
+    sv(1, spawnLine({ x = INSIDE.x + 0.123456789, y = INSIDE.y - 1 / 3, yaw = 33.3 }))
+    local r4 = BR.Props.get(4)
+    ok(r4 and r4.x == INSIDE.x + 0.123456789 and r4.y == INSIDE.y - 1 / 3,
+        'the position survives the command line exactly', r4 and ('%.17g'):format(r4.x))
+    close(r4 and r4.yaw, 33.3, 'and the yaw comes through', 1e-9)
+    sv(1, ('spawn prop_x pickup %s %s %s'):format(S.num(INSIDE.x), S.num(INSIDE.y), S.num(INSIDE.z)))
+    local r5 = BR.Props.get(5)
+    ok(r5 and r5.yaw == 0 and r5.pitch == 0 and r5.roll == 0, 'no yaw given is upright, facing north')
 end
 
 describe('server: a spawn that breaks a rule is refused, and the asker hears why')
 do
     bootServer()
     local cases = {
-        { 'a bad name', { model = 'a b' }, 'letters' },
-        { 'no name', { model = '' }, 'no model' },
-        { 'a bad display', { display = 'hover' }, 'pickup or static' },
-        { 'a NaN position', { x = 0 / 0 }, 'real numbers' },
-        { 'outside the world', { x = 1e7 }, 'outside the world' },
+        { 'a bad name', spawnLine({ model = 'a/b' }), 'letters' },
+        { 'no name', 'spawn', 'no model' },
+        { 'a bad display', spawnLine({ display = 'hover' }), 'pickup or static' },
+        { 'a NaN position', spawnLine({ x = 0 / 0 }), 'real numbers' },
+        { 'a word for a number', 'spawn prop_x pickup 200 north 30', 'real numbers' },
+        { 'no position', 'spawn prop_x pickup', 'real numbers' },
+        { 'a word for the yaw', ('spawn prop_x pickup %s %s %s east')
+            :format(S.num(INSIDE.x), S.num(INSIDE.y), S.num(INSIDE.z)), 'rotation' },
+        { 'outside the world', spawnLine({ x = 1e7 }), 'outside the world' },
         { 'outside the boundary and far away',
-          { x = OUTSIDE.x, y = OUTSIDE.y, z = OUTSIDE.z }, 'more than 150 m' },
+          spawnLine({ x = OUTSIDE.x, y = OUTSIDE.y, z = OUTSIDE.z }), 'more than 150 m' },
     }
     for _, c in ipairs(cases) do
         toClient = {}
-        fireAs(1, BR.Net.PROP_SPAWN, spawnReq(c[2]))
+        sv(1, c[2])
         eq(BR.Props.count(), 0, c[1] .. ': no prop')
         eq(#sentTo(-1, BR.Net.PROP_SYNC), 0, c[1] .. ': nothing broadcast')
         local said = lastResult(1) or ''
@@ -725,23 +837,28 @@ do
     end
 
     -- Outside the boundary is fine NEAR the asker -- the warmup pad case.
-    fireAs(2, BR.Net.PROP_SPAWN, spawnReq({ x = OUTSIDE.x + 3, y = OUTSIDE.y, z = OUTSIDE.z }))
+    sv(2, spawnLine({ x = OUTSIDE.x + 3, y = OUTSIDE.y, z = OUTSIDE.z }))
     eq(BR.Props.count(), 1, 'outside the boundary but beside the asker: allowed')
     -- And the position is the SERVER's sample of the asker, not anything sent.
     roster[2] = nil
-    fireAs(2, BR.Net.PROP_SPAWN, spawnReq({ x = OUTSIDE.x + 3, y = OUTSIDE.y, z = OUTSIDE.z }))
+    sv(2, spawnLine({ x = OUTSIDE.x + 3, y = OUTSIDE.y, z = OUTSIDE.z }))
     eq(BR.Props.count(), 1, 'an asker the server has not sampled cannot place outside')
-    fireAs(2, BR.Net.PROP_SPAWN, spawnReq())
+    sv(2, spawnLine())
     eq(BR.Props.count(), 2, 'but can place inside the boundary')
+    -- The server console has no position at all.
+    sv(0, spawnLine({ x = OUTSIDE.x + 3, y = OUTSIDE.y, z = OUTSIDE.z }))
+    eq(BR.Props.count(), 2, 'nor can the server console')
+    ok(table.concat(consoleLines, '\n'):find('client 0%): spawn refused') ~= nil,
+        'and the console answer is on the console')
 end
 
 describe('server: the cap on live props')
 do
     bootServer({ maxProps = 3 })
-    for _ = 1, 3 do fireAs(1, BR.Net.PROP_SPAWN, spawnReq()) end
+    for _ = 1, 3 do sv(1, spawnLine()) end
     eq(BR.Props.count(), 3, 'three of three')
     toClient = {}
-    fireAs(1, BR.Net.PROP_SPAWN, spawnReq())
+    sv(1, spawnLine())
     eq(BR.Props.count(), 3, 'the fourth is refused')
     eq(#sentTo(-1, BR.Net.PROP_SYNC), 0, 'and not broadcast')
     ok((lastResult(1) or ''):find('already 3') ~= nil, 'the refusal names the cap', lastResult(1))
@@ -749,64 +866,253 @@ do
     eq(BR.Config.Props.maxProps, 64, 'and the shipped cap is 64')
 end
 
-describe('server: moves are checked, rate-limited, rebroadcast, and the confirm always lands')
+describe('server: the edit stream moves a prop only inside its session, checked and rate-limited')
 do
     bootServer()
     BR.Props.create(1, spawnReq())
-    toClient = {}
-    local function mv(over)
-        local d = { id = 1, x = INSIDE.x + 3, y = INSIDE.y, z = INSIDE.z, pitch = 10, roll = 20, yaw = 400 }
-        for k, v in pairs(over or {}) do d[k] = v end
-        return d
-    end
+    BR.Props.create(1, spawnReq({ x = INSIDE.x + 10 }))
+    toClient, consoleLines = {}, {}
 
+    -- NO SESSION: the stream is nobody's door.
+    fireAs(1, BR.Net.PROP_MOVE, mv())
+    eq(BR.Props.get(1).x, INSIDE.x + 2, 'no session: the stream moves nothing')
+    eq(#toClient, 0, 'and nothing is sent to anybody')
+    eq(#consoleLines, 0, 'or said on this console -- any client can send it')
+
+    -- A SESSION, OPENED BY THE COMMAND.
+    sv(1, 'edit begin 1')
+    eq(BR.Props.editing(1), 1, 'edit begin opens a session on #1')
+    local open = sentTo(1, BR.Net.PROP_EDIT)
+    ok(#open == 1 and open[1].data.id == 1 and open[1].data.open == true,
+        'and tells that player, alone, that it is open')
+    toClient = {}
     fireAs(1, BR.Net.PROP_MOVE, mv())
     local r = BR.Props.get(1)
-    ok(r.x == INSIDE.x + 3 and r.pitch == 10 and r.roll == 20 and r.yaw == 40, 'moved and turned, yaw folded')
+    ok(r.x == INSIDE.x + 3 and r.pitch == 10 and r.roll == 20 and r.yaw == 40,
+        'inside it: moved and turned, yaw folded')
     eq(#sentTo(-1, BR.Net.PROP_SYNC), 1, 'rebroadcast to everybody')
     eq(#sentTo(1, BR.Net.PROP_RESULT), 0, 'an ordinary update is not answered')
 
+    -- THE WRONG PROP, AND THE WRONG PLAYER.
+    clock = clock + 100
+    toClient = {}
+    fireAs(1, BR.Net.PROP_MOVE, mv({ id = 2, x = INSIDE.x + 9 }))
+    eq(BR.Props.get(2).x, INSIDE.x + 10, 'the session is on #1: an update for #2 moves nothing')
+    eq(#toClient, 0, 'silently')
+    fireAs(3, BR.Net.PROP_MOVE, mv({ x = INSIDE.x + 9 }))
+    eq(BR.Props.get(1).x, INSIDE.x + 3, 'and nobody else streams into this player\'s session')
+    fireAs(1, BR.Net.PROP_MOVE, 'not a table')
+    eq(BR.Props.get(1).x, INSIDE.x + 3, 'a payload that is not a table moves nothing')
+
+    -- THE FLOOR.
+    clock = clock + 100
+    fireAs(1, BR.Net.PROP_MOVE, mv({ x = INSIDE.x + 5 }))
     clock = clock + 20
     toClient = {}
     fireAs(1, BR.Net.PROP_MOVE, mv({ x = INSIDE.x + 4 }))
-    eq(BR.Props.get(1).x, INSIDE.x + 3, '20 ms later: dropped')
+    eq(BR.Props.get(1).x, INSIDE.x + 5, '20 ms later: dropped')
     eq(#toClient, 0, 'silently')
-
-    fireAs(1, BR.Net.PROP_MOVE, mv({ x = INSIDE.x + 5, final = true }))
-    eq(BR.Props.get(1).x, INSIDE.x + 5, 'but a final one inside the window lands')
-    ok((lastResult(1) or ''):find('#1 placed') ~= nil, 'and is answered', lastResult(1))
-
+    fireAs(1, BR.Net.PROP_MOVE, mv({ x = INSIDE.x + 4, final = true }))
+    eq(BR.Props.get(1).x, INSIDE.x + 5, '`final` on the stream does not skip the floor')
     clock = clock + BR.Config.Props.moveMinMs
     fireAs(1, BR.Net.PROP_MOVE, mv({ x = INSIDE.x + 6 }))
     eq(BR.Props.get(1).x, INSIDE.x + 6, 'moveMinMs later: taken')
 
-    -- Another player's clock is his own.
-    fireAs(3, BR.Net.PROP_MOVE, mv({ x = INSIDE.x + 7 }))
-    eq(BR.Props.get(1).x, INSIDE.x + 7, 'a second player is not limited by the first')
-
+    -- A REFUSAL INSIDE THE SESSION IS THE EDITOR'S OWN BUSINESS.
     clock = clock + 100
     toClient = {}
     fireAs(1, BR.Net.PROP_MOVE, mv({ x = OUTSIDE.x, y = OUTSIDE.y, z = OUTSIDE.z }))
-    eq(BR.Props.get(1).x, INSIDE.x + 7, 'a move out to sea is refused')
-    ok((lastResult(1) or ''):find('move refused') ~= nil, 'the asker hears why', lastResult(1))
+    eq(BR.Props.get(1).x, INSIDE.x + 6, 'a move out to sea is refused')
+    ok((lastResult(1) or ''):find('move refused') ~= nil, 'the editor hears why', lastResult(1))
     local back = sentTo(1, BR.Net.PROP_SYNC)
-    ok(#back == 1 and back[1].data.set[1].x == INSIDE.x + 7,
+    ok(#back == 1 and back[1].data.set[1].x == INSIDE.x + 6,
         'and is sent the record as it stands, to put his preview back')
     eq(#sentTo(-1, BR.Net.PROP_SYNC), 0, 'nobody else is bothered')
-
-    clock = clock + 100
-    toClient = {}
-    fireAs(1, BR.Net.PROP_MOVE, mv({ id = 99 }))
-    ok((lastResult(1) or ''):find('no prop #99') ~= nil, 'an unknown id is refused', lastResult(1))
     clock = clock + 100
     fireAs(1, BR.Net.PROP_MOVE, mv({ yaw = 0 / 0 }))
     eq(BR.Props.get(1).yaw, 40, 'a NaN rotation is refused')
 
+    -- AND ONCE IT CLOSES, NOTHING.
+    sv(1, confirmLine(1, { x = INSIDE.x + 7, y = INSIDE.y, z = INSIDE.z }))
+    eq(BR.Props.editing(1), nil, 'the confirm closes the session')
+    clock = clock + 100
+    toClient = {}
+    fireAs(1, BR.Net.PROP_MOVE, mv({ x = INSIDE.x + 8 }))
+    eq(BR.Props.get(1).x, INSIDE.x + 7, 'after the session closed, the stream moves nothing')
+    eq(#toClient, 0, 'and says nothing')
+
     -- A player who leaves takes his rate window with him.
-    fireAs(1, BR.Net.PROP_MOVE, mv({ x = INSIDE.x + 8, final = true }))
+    sv(1, 'edit begin 1')
+    fireAs(1, BR.Net.PROP_MOVE, mv({ x = INSIDE.x + 8 }))
     fireAs(1, 'playerDropped')
+    sv(1, 'edit begin 1')
     fireAs(1, BR.Net.PROP_MOVE, mv({ x = INSIDE.x + 9 }))
     eq(BR.Props.get(1).x, INSIDE.x + 9, 'after playerDropped the next update is not "too soon"')
+end
+
+describe('server: confirm lands at once; cancel puts back the server\'s own copy')
+do
+    bootServer()
+    BR.Props.create(1, spawnReq({ yaw = 30 }))
+    sv(1, 'edit begin 1')
+    fireAs(1, BR.Net.PROP_MOVE, mv())
+    clock = clock + 10
+    local want = { x = INSIDE.x + 0.123456789, y = INSIDE.y - 1 / 3, z = INSIDE.z + 1.75,
+                   pitch = 1.5, roll = -2.25, yaw = -179.5 }
+    sv(1, confirmLine(1, want))
+    local r = BR.Props.get(1)
+    ok(r.x == want.x and r.y == want.y and r.z == want.z and r.pitch == want.pitch
+       and r.roll == want.roll and r.yaw == want.yaw,
+        'a confirm 10 ms after an update lands, every field exact')
+    ok((lastResult(1) or ''):find('#1 placed') ~= nil, 'and is answered', lastResult(1))
+    eq(BR.Props.editing(1), nil, 'and closes the session')
+    sv(1, confirmLine(1, want))
+    ok((lastResult(1) or ''):find('confirm refused: you have no open edit') ~= nil,
+        'a second confirm finds no session', lastResult(1))
+
+    -- CANCEL: the record from `edit begin`, even with the player far away now.
+    BR.Props.create(2, spawnReq({ x = OUTSIDE.x + 3, y = OUTSIDE.y, z = OUTSIDE.z, yaw = 15 }))
+    sv(2, 'edit begin 2')
+    fireAs(2, BR.Net.PROP_MOVE, { id = 2, x = OUTSIDE.x + 6, y = OUTSIDE.y, z = OUTSIDE.z, yaw = 90 })
+    eq(BR.Props.get(2).x, OUTSIDE.x + 6, 'streamed off its start')
+    roster[2] = { pos = { x = OUTSIDE.x + 400, y = OUTSIDE.y, z = OUTSIDE.z } }
+    toClient = {}
+    sv(2, 'edit cancel 2')
+    local c = BR.Props.get(2)
+    ok(c.x == OUTSIDE.x + 3 and c.yaw == 15,
+        'cancel puts it back, though the player is now 400 m away off the island')
+    local s = sentTo(-1, BR.Net.PROP_SYNC)
+    ok(#s == 1 and s[1].data.set[1].x == OUTSIDE.x + 3, 'for everybody')
+    eq(BR.Props.editing(2), nil, 'and closes the session')
+
+    -- A REFUSED CONFIRM STILL CLOSES, and puts the preview back.
+    sv(1, 'edit begin 1')
+    toClient = {}
+    sv(1, confirmLine(1, OUTSIDE))
+    eq(BR.Props.get(1).x, want.x, 'a confirm out to sea is refused')
+    ok((lastResult(1) or ''):find('confirm refused') ~= nil, 'with the reason', lastResult(1))
+    local b = sentTo(1, BR.Net.PROP_SYNC)
+    ok(#b == 1 and b[1].data.set[1].x == want.x, 'and the record as it stands')
+    eq(BR.Props.editing(1), nil, 'and the session is closed all the same')
+
+    -- AN END FOR ANOTHER PROP is refused and leaves the session alone.
+    BR.Props.create(1, spawnReq())
+    sv(1, 'edit begin 1')
+    sv(1, 'edit cancel 3')
+    ok((lastResult(1) or ''):find('your open edit is #1') ~= nil, 'an end for #3 is refused', lastResult(1))
+    eq(BR.Props.editing(1), 1, 'and #1 is still open')
+    sv(1, 'edit')
+    ok((lastResult(1) or ''):find('usage: brpropsv') ~= nil, 'a bare edit prints the usage')
+end
+
+describe('server: edit begin is refused for the console, an unknown prop, and a prop being edited')
+do
+    bootServer()
+    BR.Props.create(1, spawnReq())
+    sv(0, 'edit begin 1')
+    ok(table.concat(consoleLines, '\n'):find('edit refused: edit needs a player') ~= nil,
+        'the server console cannot hold a session')
+    eq(BR.Props.editing(0), nil, 'and does not')
+
+    toClient = {}
+    sv(1, 'edit begin 9')
+    ok((lastResult(1) or ''):find('no prop #9') ~= nil, 'an unknown id is refused', lastResult(1))
+    local e = sentTo(1, BR.Net.PROP_EDIT)
+    ok(#e == 1 and e[1].data.id == 9 and e[1].data.open == false,
+        'and the client is told the session is not open, so it stops waiting')
+
+    sv(1, 'edit begin 1')
+    sv(3, 'edit begin 1')
+    ok((lastResult(3) or ''):find('client 1 is editing #1') ~= nil,
+        'a prop another player is editing is refused', lastResult(3))
+    eq(BR.Props.editing(3), nil, 'no second session')
+    clock = clock + 100
+    fireAs(3, BR.Net.PROP_MOVE, mv({ x = INSIDE.x + 9 }))
+    eq(BR.Props.get(1).x, INSIDE.x + 2, 'and the second player\'s stream moves nothing')
+    sv(1, 'edit cancel 1')
+    sv(3, 'edit begin 1')
+    eq(BR.Props.editing(3), 1, 'once the first closes, the next player may')
+end
+
+describe('server: a session closes on every way out')
+do
+    --- One stream update from `src` on `id`, a second after the last; did it
+    --- move the prop?
+    local function streams(src, id)
+        clock = clock + 1000
+        local before = BR.Props.get(id)
+        fireAs(src, BR.Net.PROP_MOVE, { id = id, x = INSIDE.x + 1, y = INSIDE.y,
+            z = (before and before.z or 0) + 0.5, pitch = 0, roll = 0, yaw = 0 })
+        local after = BR.Props.get(id)
+        return before ~= nil and after ~= nil and after.z ~= before.z
+    end
+
+    bootServer()
+    for _ = 1, 4 do BR.Props.create(1, spawnReq()) end
+    sv(1, 'edit begin 1')
+    ok(streams(1, 1), 'the probe moves a prop inside a session')
+
+    sv(1, confirmLine(1, { x = INSIDE.x, y = INSIDE.y, z = INSIDE.z }))
+    ok(not streams(1, 1), 'confirm closes it')
+    sv(1, 'edit begin 1')
+    sv(1, 'edit cancel 1')
+    ok(not streams(1, 1), 'cancel closes it')
+
+    sv(1, 'edit begin 1')
+    fireAs(1, 'playerDropped')
+    eq(BR.Props.editing(1), nil, 'a disconnect closes it')
+    ok(not streams(1, 1), 'and the stream is shut')
+
+    sv(1, 'edit begin 2')
+    toClient = {}
+    sv(3, 'delete 2')
+    eq(BR.Props.editing(1), nil, 'deleting the prop, by anybody, closes it')
+    eq(#sentTo(1, BR.Net.PROP_EDIT), 0, 'without a second word -- the client ends on the gone')
+    sv(1, 'edit begin 3')
+    sv(3, 'delete 4')
+    eq(BR.Props.editing(1), 3, 'deleting another prop does not')
+
+    sv(1, 'save')
+    toClient = {}
+    sv(3, 'load')
+    eq(BR.Props.editing(1), nil, 'a load closes it')
+    local e = sentTo(1, BR.Net.PROP_EDIT)
+    ok(#e == 1 and e[1].data.id == 3 and e[1].data.open == false
+       and tostring(e[1].data.why):find('reloaded') ~= nil, 'and tells the editor why')
+    ok(not streams(1, 3), 'and the stream is shut')
+
+    sv(1, 'edit begin 1')
+    sv(1, 'edit begin 3')
+    eq(BR.Props.editing(1), 3, 'another edit begin moves the session')
+    ok(not streams(1, 1), 'off the first prop')
+    ok(streams(1, 3), 'and onto the second')
+
+    sv(3, 'delete all')
+    eq(BR.Props.editing(1), nil, 'delete all closes it')
+
+    -- IDLE.
+    BR.Props.create(1, spawnReq())
+    local id = BR.Props.list()[1].id
+    local idle = BR.Config.Props.editIdleMs
+    sv(1, 'edit begin ' .. id)
+    clock = clock + idle - 1
+    BR.Props.expireSessions(clock)
+    eq(BR.Props.editing(1), id, 'one ms short of editIdleMs: still open')
+    ok(streams(1, id), 'and an update keeps it alive')
+    clock = clock + idle - 1
+    BR.Props.expireSessions(clock)
+    eq(BR.Props.editing(1), id, 'counted from the last update, not the begin')
+    clock = clock + 2000
+    toClient = {}
+    local job = jobs['props.sessions']
+    ok(job ~= nil and job.ms <= 10000, 'a scheduled job checks every few seconds')
+    if job then job.fn() end
+    eq(BR.Props.editing(1), nil, 'past editIdleMs the job closes it')
+    local t = sentTo(1, BR.Net.PROP_EDIT)
+    ok(#t == 1 and t[1].data.open == false and tostring(t[1].data.why):find('idle') ~= nil,
+        'and tells the editor why')
+    ok(not streams(1, id), 'and the stream is shut')
+    eq(idle, 600000, 'ten minutes')
 end
 
 describe('server: delete one, delete all, change the display')
@@ -814,31 +1120,38 @@ do
     bootServer()
     for _ = 1, 3 do BR.Props.create(1, spawnReq()) end
     toClient = {}
-    fireAs(1, BR.Net.PROP_DELETE, { id = 2 })
+    sv(1, 'delete 2')
     eq(BR.Props.count(), 2, 'one deleted')
     local g = sentTo(-1, BR.Net.PROP_SYNC)
     ok(#g == 1 and g[1].data.gone and g[1].data.gone[1] == 2 and #g[1].data.gone == 1,
         'the id goes to everybody as gone')
-    fireAs(1, BR.Net.PROP_DELETE, { id = 2 })
+    sv(1, 'delete 2')
     ok((lastResult(1) or ''):find('no prop #2') ~= nil, 'deleting it twice is refused')
+    sv(1, 'delete')
+    ok((lastResult(1) or ''):find('delete refused') ~= nil, 'and so is no id at all')
 
-    fireAs(1, BR.Net.PROP_DISPLAY, { id = 1, display = 'static' })
+    sv(1, 'display 1 static')
     eq(BR.Props.get(1).display, 'static', 'display changed')
     local s = sentTo(-1, BR.Net.PROP_SYNC)
     eq(s[#s].data.set[1].display, 'static', 'and broadcast')
-    fireAs(1, BR.Net.PROP_DISPLAY, { id = 1, display = 'spin' })
+    sv(1, 'display 1 spin')
     eq(BR.Props.get(1).display, 'static', 'a bad mode is refused')
-    fireAs(1, BR.Net.PROP_DISPLAY, { id = 1 })
+    sv(1, 'display 1')
     eq(BR.Props.get(1).display, 'static', 'and so is no mode at all (not read as pickup)')
     ok((lastResult(1) or ''):find('display refused') ~= nil, 'with a reason')
 
     toClient = {}
-    fireAs(1, BR.Net.PROP_DELETE, { id = 'all' })
+    sv(1, 'delete ALL')
     eq(BR.Props.count(), 0, 'all deleted')
     local ga = sentTo(-1, BR.Net.PROP_SYNC)
     ok(#ga == 1 and #ga[1].data.gone == 2 and ga[1].data.gone[1] == 1 and ga[1].data.gone[2] == 3,
         'every id in one message, in order')
     ok((lastResult(1) or ''):find('deleted every prop %(2%)') ~= nil, 'and counted', lastResult(1))
+
+    sv(1, '')
+    ok((lastResult(1) or ''):find('usage: brpropsv') ~= nil, 'bare prints the usage')
+    sv(1, 'frobnicate')
+    ok((lastResult(1) or ''):find('usage: brpropsv') ~= nil, 'and so does a verb it does not know')
 end
 
 describe('server: a late joiner, and a restarted br_core, get the whole list')
@@ -857,11 +1170,12 @@ do
     m.data.props[1].x = -1
     ok(BR.Props.get(1).x ~= -1, 'the payload is a copy')
 
-    -- READY carries no gate: an ordinary player draws the props too.
-    trusted[9] = nil
+    -- READY carries no gate, dev mode included: every player draws the props.
+    bootServer({ devMode = false })
+    BR.Props.create(1, spawnReq())
     toClient = {}
     fireAs(9, BR.Net.READY)
-    eq(#toClient, 1, 'an untrusted player is still sent the list to draw')
+    eq(#toClient, 1, 'with dev mode off a joiner is still sent the list to draw')
 end
 
 describe('server: save, restart, load -- the placements come back exactly')
@@ -874,7 +1188,7 @@ do
     BR.Props.move(1, { id = 3, x = INSIDE.x + 0.123456789, y = INSIDE.y - 0.5, z = INSIDE.z + 1.75,
                        pitch = 1, roll = 2, yaw = -179.5, final = true })
     local before = BR.Props.list()
-    fireAs(1, BR.Net.PROP_SAVE)
+    sv(1, 'save')
     local body = files['br_core/devprops.json']
     ok(type(body) == 'string' and body:find('"three"') ~= nil, 'written to br_core/devprops.json')
     ok((lastResult(1) or ''):find('saved 2 prop') ~= nil, 'and counted', lastResult(1))
@@ -883,7 +1197,7 @@ do
     bootServer({ files = files })
     eq(BR.Props.count(), 0, 'a restarted server starts empty')
     toClient = {}
-    fireAs(1, BR.Net.PROP_LOAD)
+    sv(1, 'load')
     local after = BR.Props.list()
     eq(#after, #before, 'the same number come back')
     local same = true
@@ -907,16 +1221,21 @@ describe('server: a load that cannot read the file changes nothing')
 do
     bootServer()
     BR.Props.create(1, spawnReq())
-    fireAs(1, BR.Net.PROP_LOAD)
+    sv(1, 'load')
     eq(BR.Props.count(), 1, 'no file: the prop stays')
     ok((lastResult(1) or ''):find('load failed') ~= nil, 'and the asker is told', lastResult(1))
 
     files['br_core/devprops.json'] = 'this is not { json'
-    fireAs(1, BR.Net.PROP_LOAD)
+    sv(1, 'load')
     eq(BR.Props.count(), 1, 'garbage: the prop stays')
     files['br_core/devprops.json'] = '{"v":1}'
-    fireAs(1, BR.Net.PROP_LOAD)
+    sv(1, 'load')
     eq(BR.Props.count(), 1, 'no props array: the prop stays')
+
+    -- AND AN EDIT IN PROGRESS SURVIVES A LOAD THAT CHANGED NOTHING.
+    sv(1, 'edit begin 1')
+    sv(3, 'load')
+    eq(BR.Props.editing(1), 1, 'a failed load closes no session')
 end
 
 describe('server: a load skips bad rows, keeps good ones, and never collides')
@@ -931,7 +1250,7 @@ do
         { id = 9, model = 'fourth', x = 1, y = 2, z = 3 },
         { id = 10, model = 'fifth', x = 1, y = 2, z = 3 },
     } })
-    fireAs(1, BR.Net.PROP_LOAD)
+    sv(1, 'load')
     eq(BR.Props.count(), 4, 'four good rows kept, to the cap')
     eq(BR.Props.get(5) and BR.Props.get(5).model, 'good', 'an id is kept')
     eq(BR.Props.get(9) and BR.Props.get(9).model, 'fourth', 'and another')
@@ -947,7 +1266,7 @@ describe('server: a save that cannot write says so')
 do
     bootServer({ saveFails = true })
     BR.Props.create(1, spawnReq())
-    fireAs(1, BR.Net.PROP_SAVE)
+    sv(1, 'save')
     ok((lastResult(1) or ''):find('save failed') ~= nil, 'a refused write is a failure', lastResult(1))
 end
 
@@ -973,8 +1292,12 @@ print = realPrint
 
 local now = 50000
 local logged = {}
-local cHandlers, commands, toServer = {}, {}, {}
+local cHandlers, commands, toServer, executed = {}, {}, {}, {}
 local convars = { br_devMode = 'true' }
+
+--- Lines the client handed the server, kept for PART D to type into a real
+--- server: { spawn, confirm }.
+local handed = {}
 
 -- The world.
 local hashOf, nameOfHash = {}, {}
@@ -1005,7 +1328,7 @@ end
 
 local function bootClient()
     BR = nil
-    logged, cHandlers, commands, toServer = {}, {}, {}, {}
+    logged, cHandlers, commands, toServer, executed = {}, {}, {}, {}, {}
     objects, released, requestedAt = {}, {}, {}
     disabled, drawn, keys = {}, {}, {}
 
@@ -1023,6 +1346,9 @@ local function bootClient()
         for _, fn in ipairs(cHandlers[n] or {}) do fn(...) end
     end
     function TriggerServerEvent(n, data) toServer[#toServer + 1] = { name = n, data = data, at = now } end
+    -- A command this client does not have goes to the server (see the header
+    -- of server/props.lua); here it is written down instead.
+    function ExecuteCommand(line) executed[#executed + 1] = line end
     function RegisterCommand(n, fn) commands[n] = fn end
     function RegisterKeyMapping() end
     local kvp = {}
@@ -1140,6 +1466,27 @@ end
 
 local function sync(msg) TriggerEvent(BR.Net.PROP_SYNC, msg) end
 
+--- The server's answer to `edit begin`: the session is open.
+local function serverOpens(id) TriggerEvent(BR.Net.PROP_EDIT, { id = id, open = true }) end
+
+--- Every `brpropsv` line this client ran, as word lists, whose first words
+--- match `prefix` ('spawn', 'edit confirm', ...).
+local function ran(prefix)
+    local out = {}
+    for _, line in ipairs(executed) do
+        local rest = line:match('^brpropsv (.*)$')
+        if rest and rest:sub(1, #prefix) == prefix then
+            local w = {}
+            for x in rest:gmatch('%S+') do w[#w + 1] = x end
+            out[#out + 1] = w
+        end
+    end
+    return out
+end
+
+--- The last line this client ran, or nil.
+local function lastRan() return executed[#executed] end
+
 local function rec(id, over)
     local r = { id = id, model = 'prop_test', display = 'pickup',
                 x = INSIDE.x + 20, y = INSIDE.y, z = GROUND + 0.25, pitch = 0.0, roll = 0.0, yaw = 0.0 }
@@ -1195,12 +1542,13 @@ do
     convars.br_devMode = 'false'
     bootClient()
     cmd('save')
-    eq(#toServer, 0, 'dev mode off: /brprop sends nothing')
+    eq(#toServer + #executed, 0, 'dev mode off: /brprop sends nothing')
     ok(saidLike('brprop is dev%-mode only') ~= nil, 'and says which gate closed')
     convars.br_devMode = 'true'
     bootClient()
     cmd('save')
-    eq(#sentOf(BR.Net.PROP_SAVE), 1, 'dev mode on: it asks the server')
+    eq(lastRan(), 'brpropsv save', 'dev mode on: it runs the server dev command')
+    eq(#toServer, 0, 'and sends no net event')
 end
 
 describe('client: a record becomes a local, frozen, non-networked object, and its model is let go')
@@ -1301,31 +1649,34 @@ do
     bootClient()
     ped.heading = 0.0
     cmd('spawn PROP_Test')
-    eq(#sentOf(BR.Net.PROP_SPAWN), 0, 'nothing asked before the model streams')
+    eq(#ran('spawn'), 0, 'nothing asked before the model streams')
     frames(10, 16)
-    local s = sentOf(BR.Net.PROP_SPAWN)
+    local s = ran('spawn')
     eq(#s, 1, 'asked once')
-    local d = s[1] and s[1].data or {}
-    eq(d.model, 'prop_test', 'by its lower-cased name')
-    eq(d.display, 'pickup', 'as a pickup by default')
-    close(d.x, ped.x, 'straight ahead at heading 0: same x')
-    close(d.y, ped.y + P.spawnAheadM + 0.5, 'spawnAheadM plus half its footprint north')
-    close(d.z, GROUND + 0.25, 'its bottom on the ground, not its origin')
-    ok(d.pitch == 0 and d.roll == 0 and d.yaw == 0, 'upright, facing the way he faces')
+    local w = s[1] or {}
+    eq(#w, 7, 'spawn <model> <display> <x> <y> <z> <yaw>')
+    eq(w[2], 'prop_test', 'by its lower-cased name')
+    eq(w[3], 'pickup', 'as a pickup by default')
+    close(tonumber(w[4]), ped.x, 'straight ahead at heading 0: same x')
+    close(tonumber(w[5]), ped.y + P.spawnAheadM + 0.5, 'spawnAheadM plus half its footprint north')
+    close(tonumber(w[6]), GROUND + 0.25, 'its bottom on the ground, not its origin')
+    eq(tonumber(w[7]), 0, 'facing the way he faces')
     ok(released[GetHashKey('prop_test')] == true, 'and the model is let go')
-    eq(#sentOf(BR.Net.PROP_SPAWN), 1, 'it is not asked twice')
+    eq(#ran('spawn'), 1, 'it is not asked twice')
+    eq(#toServer, 0, 'and no net event carries it')
+    handed.spawn = lastRan()
 
     ped.heading = 90.0
     cmd('spawn prop_test static')
     frames(10, 16)
-    s = sentOf(BR.Net.PROP_SPAWN)
-    local d2 = s[2] and s[2].data or {}
-    close(d2.x, ped.x - (P.spawnAheadM + 0.5), 'heading 90 (west): in front is -x')
-    eq(d2.display, 'static', 'static when asked')
-    eq(d2.yaw, 90.0, 'facing west')
+    s = ran('spawn')
+    local w2 = s[2] or {}
+    close(tonumber(w2[4]), ped.x - (P.spawnAheadM + 0.5), 'heading 90 (west): in front is -x')
+    eq(w2[3], 'static', 'static when asked')
+    eq(tonumber(w2[7]), 90, 'facing west')
     ped.heading = 0.0
 
-    toServer = {}
+    toServer, executed = {}, {}
     cmd('spawn nope_model')
     ok(saidLike("'nope_model' is not in the game's CD image") ~= nil, 'a missing model: F8 names it')
     cmd('spawn bad/name')
@@ -1336,7 +1687,7 @@ do
     frames(60, 100)
     ok(saidLike("'prop_never' did not load within 5000 ms") ~= nil, 'a model that never streams is refused')
     ok(released[GetHashKey('prop_never')] == true, 'and let go')
-    eq(#toServer, 0, 'and none of them asked the server anything')
+    eq(#toServer + #executed, 0, 'and none of them asked the server anything')
 end
 
 describe('client: the pickup look, as drawn, off the loot numbers')
@@ -1399,6 +1750,7 @@ local function bootEditing(over)
     sync({ set = { rec(1, over) } })
     frames(10, 16)
     cmd('edit')
+    serverOpens(1)
     frame(16)
     return objOf('prop_test')
 end
@@ -1406,6 +1758,85 @@ end
 local function lastMove()
     local m = sentOf(BR.Net.PROP_MOVE)
     return m[#m] and m[#m].data or nil
+end
+
+describe('client: edit asks the server for the session, and starts only on its answer')
+do
+    bootClient()
+    ped.x, ped.y, ped.z = INSIDE.x, INSIDE.y, INSIDE.z
+    sync({ set = { rec(1) } })
+    frames(10, 16)
+    local o = objOf('prop_test')
+    local y = o.y
+    cmd('edit')
+    eq(lastRan(), 'brpropsv edit begin 1', 'edit runs `edit begin` for the nearest prop')
+    frame(16)
+    ok(not table.concat(drawn, '\n'):find('#1  prop_test'), 'no readout before the server answers')
+    tap(VK.W)
+    eq(o.y, y, 'and W moves nothing yet')
+    eq(#sentOf(BR.Net.PROP_MOVE), 0, 'nor streams anything')
+    cmd('edit')
+    ok(saidLike('still waiting for the server to open #1') ~= nil, 'asking twice is refused')
+    eq(#ran('edit begin'), 1, 'and asks once')
+    serverOpens(1)
+    frame(16)
+    ok(table.concat(drawn, '\n'):find('#1  prop_test') ~= nil, 'the answer starts the edit')
+    tap(VK.W)
+    ok(o.y > y, 'and W moves it')
+
+    -- A REFUSAL: the reason comes as a result line, then the session's close.
+    bootClient()
+    sync({ set = { rec(1) } })
+    frames(10, 16)
+    cmd('edit 1')
+    TriggerEvent(BR.Net.PROP_RESULT, 'edit refused: client 3 is editing #1')
+    TriggerEvent(BR.Net.PROP_EDIT, { id = 1, open = false })
+    ok(saidLike('edit refused: client 3 is editing #1') ~= nil, 'the reason is on F8')
+    executed = {}
+    cmd('edit 1')
+    eq(lastRan(), 'brpropsv edit begin 1', 'and the next edit asks again at once')
+
+    -- AN ANSWER NOBODY ASKED FOR is handed straight back.
+    bootClient()
+    sync({ set = { rec(5) } })
+    frames(10, 16)
+    serverOpens(5)
+    eq(lastRan(), 'brpropsv edit cancel 5', 'an unasked session is canceled')
+    frame(16)
+    ok(not table.concat(drawn, '\n'):find('#5'), 'and no edit starts')
+
+    -- AND ONE FOR A PROP THAT WENT IN THE MEANTIME.
+    bootClient()
+    sync({ set = { rec(1) } })
+    frames(10, 16)
+    cmd('edit 1')
+    sync({ gone = { 1 } })
+    serverOpens(1)
+    eq(lastRan(), 'brpropsv edit cancel 1', 'a session for a prop now gone is canceled')
+    ok(saidLike('there is no prop #1') ~= nil, 'and F8 says why')
+end
+
+describe('client: the server can end an edit, and the edit stops at once')
+do
+    local o = bootEditing()
+    tap(VK.W)
+    frames(10, 16)
+    local y = o.y
+    ok(y > INSIDE.y, 'nudged first')
+    -- The server's echo of the update it took: the record the stream kept current.
+    sync({ set = { rec(1, { y = y }) } })
+    executed = {}
+    TriggerEvent(BR.Net.PROP_EDIT, { id = 1, open = false, why = 'idle for 600 s' })
+    ok(saidLike('#1 edit ended by the server: idle for 600 s') ~= nil, 'F8 says so, and why')
+    frame(16)
+    ok(next(disabled) == nil, 'the controls are back')
+    tap(VK.ENTER)
+    eq(#executed, 0, 'Enter confirms nothing: there is no edit to confirm')
+    tap(VK.W)
+    eq(o.y, y, 'and W walks rather than nudging; the prop stays on its record')
+    logged = {}
+    TriggerEvent(BR.Net.PROP_EDIT, { id = 1, open = false, why = 'again' })
+    ok(saidLike('ended by the server') == nil, 'a close for an edit already over says nothing')
 end
 
 describe('client: edit takes the nearest prop and shows the readout')
@@ -1479,16 +1910,25 @@ do
         if moves[i].at - moves[i - 1].at < 100 then gapOk = false end
     end
     ok(gapOk, 'never two within 100 ms')
-    ok(moves[1] and moves[1].data.final == nil, 'the previews are not final')
+    local anyFinal = false
+    for _, m in ipairs(moves) do if m.data.final ~= nil then anyFinal = true end end
+    ok(not anyFinal, 'the stream never says final')
+    ok(moves[1] and moves[1].data.id == 1, 'and names the prop')
     local before = #moves
     frames(20, 16)
     eq(#sentOf(BR.Net.PROP_MOVE), before, 'nothing sent while nothing changes')
 
     local o = objOf('prop_test')
     tap(VK.ENTER)
-    local fin = lastMove()
-    ok(fin and fin.final == true and near(fin.y, o.y, 1e-9), 'Enter sends the preview once more, as final')
+    eq(#sentOf(BR.Net.PROP_MOVE), before, 'Enter is not another stream update')
+    local fin = ran('edit confirm')
+    local w = fin[#fin] or {}
+    ok(#fin == 1 and w[3] == '1' and #w == 9, 'Enter runs `edit confirm 1 <x y z pitch roll yaw>`', lastRan())
+    ok(tonumber(w[4]) == o.x and tonumber(w[5]) == o.y and tonumber(w[6]) == o.z
+       and tonumber(w[7]) == o.pitch and tonumber(w[8]) == o.roll and tonumber(w[9]) == o.yaw,
+        'carrying the preview exactly', lastRan())
     ok(saidLike('#1 confirmed') ~= nil, 'and says so')
+    handed.confirm = lastRan()
     frame(16)
     local y = o.y
     tap(VK.W)
@@ -1508,10 +1948,10 @@ do
     frames(10, 16)
     ok(o.x ~= start.x and o.z ~= start.z and o.yaw ~= start.yaw, 'moved and turned first')
     ok(#sentOf(BR.Net.PROP_MOVE) > 0, 'and the server heard about it')
+    local streamed = #sentOf(BR.Net.PROP_MOVE)
     tap(VK.X)
-    local fin = lastMove()
-    ok(fin and fin.final == true and fin.x == start.x and fin.z == start.z and fin.yaw == start.yaw,
-        'X sends the record as it was, as final')
+    eq(lastRan(), 'brpropsv edit cancel 1', 'X runs `edit cancel 1`; the server keeps the original')
+    eq(#sentOf(BR.Net.PROP_MOVE), streamed, 'and streams nothing more')
     frames(3, 16)
     ok(o.x == start.x and o.z == start.z and o.yaw == start.yaw, 'and the copy is back at once')
     ok(saidLike('edit cancelled') ~= nil, 'F8 says so')
@@ -1524,12 +1964,13 @@ do
     frames(10, 16)
     keys[VK.ENTER] = true
     cmd('edit 1')
+    serverOpens(1)
     frames(5, 16)
-    eq(#sentOf(BR.Net.PROP_MOVE), 0, 'the Enter that submitted the command does not confirm')
+    eq(#ran('edit confirm'), 0, 'the Enter that submitted the command does not confirm')
     keys[VK.ENTER] = nil
     frame(16)
     tap(VK.ENTER)
-    ok(lastMove() and lastMove().final == true, 'a fresh press does')
+    eq(#ran('edit confirm'), 1, 'a fresh press does')
 
     -- AND A MOVE KEY THE SAME: W still down from walking up to the prop must
     -- not shove it the moment the edit opens.
@@ -1540,6 +1981,7 @@ do
     local y = o.y
     keys[VK.W] = true
     cmd('edit 1')
+    serverOpens(1)
     frames(30, 16)
     eq(o.y, y, 'W held through the start of the edit moves nothing')
     keys[VK.W] = nil
@@ -1577,6 +2019,7 @@ do
     sync({ set = { rec(1, { x = OUTSIDE.x, y = OUTSIDE.y + P.nearM - 10, z = OUTSIDE.z }) } })
     frames(10, 16)
     cmd('edit 1')
+    serverOpens(1)
     frame(16)   -- one frame with nothing held, or the hold is never armed
     keys[VK.LCTRL], keys[VK.W] = true, true
     frames(450, 16)
@@ -1601,6 +2044,7 @@ do
     local fired = 0
     BR.Keys.on('slot1', function(pressed) if pressed then fired = fired + 1 end end)
     cmd('edit 1')
+    serverOpens(1)
     ok(saidLike("J is your key for 'Royale: Slot 1'") ~= nil, 'F8 says J is taken, and by what')
     local o = objOf('prop_test')
     local yaw = o.yaw
@@ -1623,6 +2067,7 @@ do
     ok(saidLike('#2 is not drawn on this client') ~= nil, 'a prop this client cannot draw: said so')
     cmd('edit 9')
     ok(saidLike('there is no prop #9') ~= nil, 'an unknown id: said so')
+    eq(#executed, 0, 'and none of them asked the server')
 
     bootClient()
     sync({ set = { rec(1) } })
@@ -1667,24 +2112,22 @@ describe('client: the other verbs ask the server for exactly what was typed')
 do
     bootClient()
     sync({ set = { rec(3, { yaw = 90, x = 1.5, y = 2.25, z = 3.125 }) } })
-    toServer = {}
+    toServer, executed = {}, {}
     cmd('delete 3')
-    cmd('delete all')
-    cmd('display 3 static')
+    cmd('delete ALL')
+    cmd('display 3 STATIC')
     cmd('save')
     cmd('load')
-    local d = sentOf(BR.Net.PROP_DELETE)
-    ok(#d == 2 and d[1].data.id == 3 and d[2].data.id == 'all', 'delete <id> and delete all')
-    local s = sentOf(BR.Net.PROP_DISPLAY)
-    ok(#s == 1 and s[1].data.id == 3 and s[1].data.display == 'static', 'display <id> <mode>')
-    eq(#sentOf(BR.Net.PROP_SAVE), 1, 'save')
-    eq(#sentOf(BR.Net.PROP_LOAD), 1, 'load')
+    eq(table.concat(executed, ' | '),
+        'brpropsv delete 3 | brpropsv delete all | brpropsv display 3 static | brpropsv save | brpropsv load',
+        'each runs brpropsv with exactly what was typed')
+    eq(#toServer, 0, 'and no net event')
 
-    toServer = {}
+    executed = {}
     cmd('delete')
     cmd('display 3')
     cmd('display x static')
-    eq(#toServer, 0, 'a malformed verb asks nothing')
+    eq(#executed, 0, 'a malformed verb asks nothing')
 
     logged = {}
     cmd('where 3')
@@ -1692,6 +2135,7 @@ do
         'where prints the paste line')
     cmd('list')
     ok(saidLike('#3 +prop_test') ~= nil, 'list lists it')
+    eq(#executed + #toServer, 0, 'where and list read this client\'s records and ask nothing')
     logged = {}
     cmd('')
     ok(saidLike('usage: brprop spawn <model>') ~= nil, 'bare prints the usage')
@@ -1710,6 +2154,7 @@ do
     cmd('spawn prop_never')
     frame(16)
     cmd('edit 1')
+    serverOpens(1)
     eq(countObjects(), 2, 'two drawn, one streaming, a spawn pending, an edit open')
     TriggerEvent('onResourceStop', 'some_other_resource')
     eq(countObjects(), 2, 'another resource stopping changes nothing')
@@ -1721,6 +2166,49 @@ do
     frame(16)
     ok(next(disabled) == nil, 'and the edit is over')
     eq(errorsOf('props.frame'), 0, 'no frame errors anywhere in the client suite')
+end
+
+-- =========================================================================
+-- PART D -- the client's own lines, typed into the server
+-- =========================================================================
+--
+-- PARTS B AND C EACH PIN ONE SIDE OF THE COMMAND LINE. This is the seam: the
+-- exact strings client/props.lua handed ExecuteCommand above, split the way
+-- the console splits them, run through the real server/props.lua behind the
+-- real dev gate. A field renamed or reordered on one side only fails here.
+
+describe('the lines the client runs are the lines the server reads')
+do
+    ok(handed.spawn ~= nil and handed.confirm ~= nil, 'PART C handed over a spawn and a confirm',
+        tostring(handed.spawn) .. ' / ' .. tostring(handed.confirm))
+    bootServer()
+    local function words(line)
+        local w = {}
+        for x in (line or ''):gmatch('%S+') do w[#w + 1] = x end
+        return w
+    end
+    local function typed(line)
+        local rest = (line or ''):gsub('^brpropsv ', '', 1)
+        sv(1, rest)
+    end
+
+    typed(handed.spawn)
+    local sw = words(handed.spawn)
+    local r = BR.Props.get(1)
+    ok(r ~= nil and r.model == sw[3] and r.display == sw[4], 'the spawn line makes that prop', handed.spawn)
+    ok(r ~= nil and r.x == tonumber(sw[5]) and r.y == tonumber(sw[6]) and r.z == tonumber(sw[7])
+       and r.yaw == S.angle(tonumber(sw[8]) or 0 / 0), 'where the client put it, to the bit')
+
+    typed('brpropsv edit begin 1')
+    eq(BR.Props.editing(1), 1, 'edit begin opens the session the confirm needs')
+    typed(handed.confirm)
+    local cw = words(handed.confirm)
+    local c = BR.Props.get(1)
+    ok(c ~= nil and c.x == tonumber(cw[5]) and c.y == tonumber(cw[6]) and c.z == tonumber(cw[7])
+       and c.pitch == tonumber(cw[8]) and c.roll == tonumber(cw[9]) and c.yaw == tonumber(cw[10]),
+        'the confirm line puts it exactly where the preview was', handed.confirm)
+    eq(BR.Props.editing(1), nil, 'and closes the session')
+    ok((lastResult(1) or ''):find('#1 placed') ~= nil, 'and is answered', lastResult(1))
 end
 
 print = realPrint

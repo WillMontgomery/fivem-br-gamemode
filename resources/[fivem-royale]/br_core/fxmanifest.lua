@@ -845,9 +845,9 @@ server_scripts {
     -- than for the loader: it asks BR.Grants.holds the question grants.lua
     -- answers, and it is declared below the file that answers it.
     'server/admin.lua',
-    -- Dev props (#384): the one place a /brprop prop exists. AFTER admin.lua
-    -- for a reader rather than for the loader -- every door in it asks
-    -- BR.Admin.devTrusted, at call time and nil-guarded.
+    -- Dev props (#384): the one place a /brprop prop exists. Its requests are
+    -- the dev command `brpropsv`, gated by devgate.lua (shared_scripts, first);
+    -- BR.Roster and BR.Sched are reached at call time and nil-guarded.
     'server/props.lua',
     -- The dev-mode join allowlist's Discord role. Loaded into this server state
     -- alone because nothing else reads it, NOT to keep it from clients: the file

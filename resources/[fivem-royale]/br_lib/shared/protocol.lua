@@ -1141,28 +1141,32 @@ BR.Net = {
 
     -- DEV PROPS (#384), /brprop. THE SERVER OWNS EVERY ONE: it assigns the id,
     -- holds the record and decides every change; each client draws its own
-    -- local, non-networked copy the way loot is drawn. So every C->S event
-    -- below is a REQUEST, and each is behind BR.Admin.devTrusted in
-    -- br_core/server/props.lua -- dev mode AND a console grant, never dev mode
-    -- alone (tools/check_net_gates.lua).
-    PROP_SPAWN      = 'br:prop:spawn',    -- C->S { model, display, x, y, z, pitch, roll, yaw }
-    -- C->S { id, x, y, z, pitch, roll, yaw, final? }. The edit preview, at most
-    -- 10 Hz, and once more with `final` on confirm or cancel. A non-final one
-    -- arriving too soon after the last is dropped; a final one never is.
+    -- local, non-networked copy the way loot is drawn.
+    --
+    -- THE REQUESTS ARE NOT NET EVENTS. Spawn, delete, display, save, load and
+    -- the start and end of an edit are the server command `brpropsv`, which
+    -- client/props.lua's `brprop` runs with ExecuteCommand -- so they sit behind
+    -- br_lib/shared/devgate.lua's wrap like every other dev command, dev mode
+    -- and nothing else. The one C->S event left is the edit stream below, and
+    -- it is authorized by an edit session that only that command can open,
+    -- never by dev mode (tools/check_net_gates.lua).
+    --
+    -- C->S { id, x, y, z, pitch, roll, yaw }. The edit preview, at most 10 Hz.
+    -- Taken only from the player whose open edit session is on that id; one
+    -- arriving too soon after the last is dropped. The confirm is not sent
+    -- here: it is `brpropsv edit confirm`, and it is never dropped.
     PROP_MOVE       = 'br:prop:move',
-    PROP_DELETE     = 'br:prop:delete',   -- C->S { id }   id is a number or 'all'
-    PROP_DISPLAY    = 'br:prop:display',  -- C->S { id, display }
-    PROP_SAVE       = 'br:prop:save',     -- C->S (no payload) write the save file
-    PROP_LOAD       = 'br:prop:load',     -- C->S (no payload) replace every prop from it
     -- S->C { full?, props?, set?, gone? }. `full` with `props` is the whole list
     -- and replaces whatever the client had -- sent on br:ready, so a late joiner
     -- and a restarted br_core both get it, and after a load. Otherwise `set` is
     -- an array of changed records and `gone` an array of deleted ids, to all.
     PROP_SYNC       = 'br:prop:sync',
+    -- S->C { id, open, why? }. To one player: their edit session on prop `id`
+    -- is open (start the edit) or closed by the server (stop it) -- an idle
+    -- timeout, a load, or a refused `edit begin`.
+    PROP_EDIT       = 'br:prop:edit',
     -- S->C '<text>'. The answer to one request, to the requester alone, printed
-    -- in their F8 console and nowhere else. A refusal by the dev gate itself is
-    -- NOT answered here: it goes to the server console, for the reason
-    -- server/loot.lua's LOOT_DEV note gives.
+    -- in their F8 console and nowhere else.
     PROP_RESULT     = 'br:prop:result',
 }
 
