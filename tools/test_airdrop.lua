@@ -4651,6 +4651,12 @@ do
     local sentBefore, shownBefore, toldBefore =
         m.airdrop.sent, #m.airdrop.announced, #notices
 
+    -- On their way: 205m out, just short of the gate.
+    standAt(101, x0, y0, 205.0)
+    gameMs = gameMs + 1000
+    tick()
+    eq(#m.airdrop.live, 0, 'nothing arms from 205m')
+
     -- ═══ THE STORM TURNS OVER WHILE THEY WALK ═══
     --
     -- Same seed, so the wall phase 2 starts from is phase 1's destination in its
@@ -4727,6 +4733,13 @@ do
     said = table.concat(logs, '\n')
     ok(said:find(('moved 1 time(s) -- last from %s'):format(poi0), 1, true) ~= nil,
         'and /brairdrop says the drop was moved, and from where', said)
+    -- THE CLOSEST APPROACH STARTS AGAIN: 205m from the old point says nothing
+    -- about how near anybody has come to this one.
+    local dNew = BR.Dist(x0 + 150.0, y0, rec.x, rec.y)
+    ok(dNew > 205.0, 'the new point is further from them than they had got to the old one',
+        dNew)
+    ok(said:find(('closest anybody has been %.0fm'):format(dNew), 1, true) ~= nil,
+        'and the closest approach is measured to the new point', said)
 
     -- ═══ THEY WALK OVER, AND GET IT ═══
     standAt(101, rec.x, rec.y, 150.0)
@@ -4747,6 +4760,34 @@ do
     ok(BR.AirdropInside({ { x = x, y = y, r = r, shape = BR.StormWall(m.storm, t) } },
             rec.x, rec.y, A.insideBy),
         'and 250m inside the wall at the moment it touches down')
+end
+
+describe('server: #386 -- a moved drop is held to the circle it moved into')
+do
+    -- After a move, the circle it was moved into is the one it was sited
+    -- against. If the wall then closes on it under that same circle, that is
+    -- the wall, and it is called off -- not moved a second time.
+    reset()
+    local m = newMatch(1)
+    BR.Airdrop.begin(m)
+    onlyDrop(m)
+    tick()
+    local rec = m.airdrop.waiting[1].rec
+    m.storm = turnOverAwayFrom(m.storm, rec.x, rec.y, gameMs, 120000, 120000)
+    gameMs = gameMs + 1000
+    tick()
+    ok(rec.tMoved == gameMs, 'the turnover moves it')
+    local s2, poi1 = m.storm, rec.poi
+
+    m.storm = BR.BuildStormRecord(s2.phase, rec.x + 6000.0, rec.y, 1000.0,
+        s2.cx1, s2.cy1, s2.r1, gameMs, 24 * 60 * 60 * 1000, 1000, 1.0, s2.seed)
+    gameMs = gameMs + 1000
+    tick()
+    eq(rec.poi, poi1, 'the wall closing on it under the same circle does not move it again')
+    eq(#m.airdrop.waiting, 0, 'it is called off')
+    ok(m.airdrop.outcome
+       and tostring(m.airdrop.outcome.why):find('wall moved off it', 1, true),
+        'for the wall', m.airdrop.outcome and m.airdrop.outcome.why)
 end
 
 describe('server: #386 -- a move never lands a drop on a POI another drop is on')
