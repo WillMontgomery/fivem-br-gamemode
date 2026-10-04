@@ -1775,6 +1775,10 @@ if not ARGS.check and not ARGS.rebaseline then
                 fmt(row.d), row.kb, table.concat(top, ', ')))
         end
     end
+    -- What the stub server did, so a scene that should have loot can be seen to.
+    realPrint('')
+    realPrint(('stub server, whole session: %d loot cell asks answered, %d entries added, %d gone')
+        :format(lootStats.asks, lootStats.adds, lootStats.gone))
     local errs = {}
     for k, b in pairs(buckets) do
         if (b.errs or 0) > 0 then errs[#errs + 1] = ('%s x%d'):format(k, b.errs) end
