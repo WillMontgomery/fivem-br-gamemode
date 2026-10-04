@@ -1671,8 +1671,245 @@ local LATCH_REFRESH_MS = 1000
 local latch = {
     at = 0, ped = nil, state = nil, match = nil,
     shield = nil, invincible = nil, visible = nil,
-    clockSec = nil, clockHour = nil, clockMin = nil,
 }
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- THE CLOCK (#394): SET ONCE, THEN LEFT TO RUN
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- Owner, 2026-10-04: "Right now, our game is set to 12pm noon - but resetting
+-- the time back to 12pm each second causes the clouds to constantly skip back
+-- and forth each second." Then: "Please ensure warmup and lobby are always
+-- 12pm."
+--
+-- ═══ WHY IT SKIPPED ═══
+--
+-- NetworkOverrideClockTime SETS the clock; it does not stop it. Between writes
+-- the engine runs the clock at its own rate -- 2000 ms per game minute, thirty
+-- game seconds every real second -- so the old pin, which wrote 12:00:ss once a
+-- second, pulled the clock back about 29 game seconds every time. The clouds
+-- are drawn from the clock, so every pull showed. It was not always once a
+-- second: 56c0ba7 (2026-08-23) moved the write off every frame, where the
+-- engine only crept half a game second between corrections, and that is the
+-- change that made the creep a visible yank.
+--
+-- ═══ WHAT REPLACES IT: THE RATE, THE TIME ONCE, AND THEN NOTHING ═══
+--
+--   hold  the lobby, the warmup pad and `brtime`. Rate CLOCK_HELD_MS, the
+--         clock paused, then the time with the seconds at zero. THE RATE IS
+--         THE REAL BRAKE: at 99,999,999 ms a game minute the clock gains about
+--         0.6 game seconds in ten real minutes (Renewed-Weathersync freezes
+--         with the same number). PAUSE IS A SECOND BRAKE ONLY: whether
+--         PauseClock holds in a network session is contested -- vMenu and KOTH
+--         rely on it alongside a clock override, jSync gave up on it.
+--   run   from bus start until the trip home. The clock unpaused, the
+--         anchor's rate, then the time the anchor gives -- real whole seconds,
+--         never zeroed.
+--
+-- THE RATE NATIVE IS FiveM'S OWN, SET_MILLISECONDS_PER_GAME_MINUTE
+-- (citizenfx/fivem, extra-natives-five/src/TimeExtraNatives.cpp). It writes the
+-- engine's ms-per-minute value and keeps a copy. On game build 2189 and up the
+-- engine puts that value back to 2000 on every clock override, through a
+-- function that just returns 2000 -- and FiveM hooks that function to return the
+-- copy instead. So the rate survives every later clock write; only a session
+-- shutdown, or a value of 0 or less, puts 2000 back. This server enforces build
+-- 3889 (server.cfg.example).
+--
+-- AFTER THE WRITE, NOTHING IS WRITTEN. Once a second the engine's clock is
+-- READ and compared with what it should be; past BR.Config.World.driftSec the
+-- whole write is made again and counted. That should never happen. `brclock`
+-- (client/debug.lua) prints the count, so if it does, it shows.
+--
+-- THE ARGUMENTS ARE ALWAYS IN RANGE, through BR.World.hms: FiveM drops a clock
+-- write with an hour of 24 or more, or a minute or second of 60 or more,
+-- without a word (NativeFixes.cpp, FixClockTimeOverrideNative).
+--
+-- THE HOLD STOPS THE SECONDS TOO, which the old pin deliberately did not: it
+-- kept them spinning in case an engine system steps on clock deltas, with
+-- wetness decay as the named suspect -- never confirmed. The owner asked for
+-- 12:00 held still. If the ground stays wet in the lobby after a storm match,
+-- that suspicion was right, and this is the place to look.
+--
+-- ═══ ONE WRITER ═══
+--
+-- Every clock native this client calls is called in this section and nowhere
+-- else, and tools/test_client.lua counts them across both resources' client
+-- files. A second writer would undo this one, at random, and look exactly like
+-- the clock not doing what it was told.
+
+--- The hold rate: slow enough to be stopped. MUST BE ABOVE ZERO -- FiveM reads
+--- 0 or less as "back to GTA's 2000".
+local CLOCK_HELD_MS = 99999999
+
+--- How often the engine's clock is READ to see that it is where it should be.
+local CLOCK_CHECK_MS = 1000
+
+--- What the clock writer last did and last saw. Filled by clockReset.
+local clk = {}
+
+--- Forget everything the writer believes, so the next frame writes afresh.
+local function clockReset()
+    clk.key     = nil   -- the plan key last written; nil writes on the next frame
+    clk.checkAt = 0     -- local time the engine's clock was last read
+    clk.plan    = nil   -- the last plan, which brclock prints
+    -- The inputs the last plan was made from, compared every frame WITHOUT
+    -- building a table, so a settled frame costs a few comparisons.
+    clk.st, clk.anchor, clk.watching, clk.watchAnchor = nil, nil, nil, nil
+    clk.oh, clk.om, clk.synced = nil, nil, nil
+    -- What brclock reports.
+    clk.writes, clk.corrections = 0, 0
+    clk.engine, clk.drift, clk.lastFix = nil, nil, nil
+end
+clockReset()
+
+--- THE ONE PLACE THE CLOCK IS WRITTEN: rate, brake, time, all three every time.
+--- A write that set the time and trusted an older rate to still be there would
+--- be the same guess the old pin made.
+--- @param rate integer  real ms per game minute
+--- @param paused boolean
+--- @param sec number  second of the day
+local function writeClock(rate, paused, sec)
+    local h, m, s = BR.World.hms(sec)
+    SetMillisecondsPerGameMinute(rate)
+    PauseClock(paused)
+    NetworkOverrideClockTime(h, m, s)
+    clk.writes = clk.writes + 1
+end
+
+--- The second of the day a plan wants, right now.
+--- @param plan table  a 'hold' or 'run' plan from BR.World.clockPlan
+--- @return number
+local function planSec(plan)
+    if plan.mode == 'hold' then return plan.h * 3600 + plan.m * 60 end
+    return plan.sec
+end
+
+--- Write what a plan asks for.
+--- @param plan table
+local function applyPlan(plan)
+    if plan.mode == 'hold' then
+        writeClock(CLOCK_HELD_MS, true, planSec(plan))
+    else
+        writeClock(plan.rate, false, planSec(plan))
+    end
+end
+
+--- Where the engine's clock is, in seconds of the day. READ ONLY.
+--- @return integer
+local function engineClock()
+    return GetClockHours() * 3600 + GetClockMinutes() * 60 + GetClockSeconds()
+end
+
+--- Keep the clock where BR.World.clockPlan says it should be. Called every
+--- frame from applyGameRules; on a settled frame it compares a handful of
+--- values and returns.
+---
+--- WRITES only when the plan's key changes: lobby -> warmup is one hold and no
+--- write, warmup -> bus is the one write that starts the match clock, the whole
+--- match after that is the same anchor and no write, and the trip home is one
+--- write back to the hold. READS the engine once a second.
+---
+--- NIL-GUARDED on BR.World, as the old pin was: a build without
+--- br_lib/shared/world.lua should leave the clock alone rather than throw inside
+--- the per-frame rules, where an uncaught error costs the whole loop.
+--- @param now number  GetGameTimer()
+function BR.Native.applyClock(now)
+    local W = BR.World
+    if not (W and W.clockPlan) then return end
+
+    local me, match = BR.State.me, BR.State.match
+    local st     = me and me.state
+    local anchor = match and match.clock
+    local Sp = BR.Spectate
+    local watching = Sp ~= nil and Sp.active ~= nil and Sp.active() == true
+    local watchAnchor = nil
+    if watching and Sp.clock then watchAnchor = Sp.clock() end
+    local oh, om = W.override.hour, W.override.minute
+    local C = BR.Clock
+    local synced = C ~= nil and C.synced == true
+
+    local changed = clk.plan == nil
+        or st ~= clk.st or anchor ~= clk.anchor
+        or watching ~= clk.watching or watchAnchor ~= clk.watchAnchor
+        or oh ~= clk.oh or om ~= clk.om or synced ~= clk.synced
+    local due = (now - clk.checkAt) >= CLOCK_CHECK_MS
+    if not changed and not due then return end
+
+    clk.st, clk.anchor, clk.watching, clk.watchAnchor = st, anchor, watching, watchAnchor
+    clk.oh, clk.om, clk.synced = oh, om, synced
+
+    local plan = W.clockPlan({
+        state = st, anchor = anchor,
+        spectating = watching, watchAnchor = watchAnchor,
+        now = synced and C.now() or nil, synced = synced,
+    })
+    clk.plan = plan
+    if plan.mode == 'wait' then return end
+
+    -- A NEW PLAN IS THE ONE WRITE.
+    if plan.key ~= clk.key then
+        clk.key = plan.key
+        clk.checkAt = now
+        applyPlan(plan)
+        return
+    end
+
+    -- THE SAME PLAN: read, compare, and only past the threshold write again.
+    if not due then return end
+    clk.checkAt = now
+    local engine = engineClock()
+    local drift = W.drift(engine, planSec(plan))
+    clk.engine, clk.drift = engine, drift
+    if math.abs(drift) > BR.Config.World.driftSec then
+        clk.corrections = clk.corrections + 1
+        clk.lastFix = { at = now, drift = drift, mode = plan.mode }
+        applyPlan(plan)
+        print(('[br_core] clock: %s was %+.0f game seconds off, set again '
+            .. '(%d time(s) since the last reset -- brclock for more)')
+            :format(plan.mode, drift, clk.corrections))
+    end
+end
+
+--- What the clock writer is doing, for `brclock` and for the tests. A copy:
+--- nothing that reads it can change what the writer believes.
+--- @return table
+function BR.Native.clockStatus()
+    return {
+        plan        = clk.plan,
+        writes      = clk.writes,
+        corrections = clk.corrections,
+        lastFix     = clk.lastFix,
+        engine      = clk.engine,
+        drift       = clk.drift,
+        heldMs      = CLOCK_HELD_MS,
+    }
+end
+
+--- Hand the clock back to the game: br_core is stopping.
+---
+--- THE RATE IS ENGINE-WIDE AND OUTLIVES THIS RESOURCE -- FiveM resets it only
+--- when the session shuts down -- so a br_core stopped mid-hold would leave the
+--- whole client frozen at noon under whatever runs next. Same three calls
+--- vMenu's stop path makes. 0 is FiveM's "back to 2000". The override is
+--- cleared HERE AND NOWHERE ELSE: in a running session, clearing it hands the
+--- clock back to the network clock, which a Cfx.re report saw re-applying
+--- itself about once a second.
+---
+--- A LOCAL, CAPTURED BY THE HANDLER BELOW, rather than looked up on BR.Native
+--- when the event fires: the handler belongs to this file's writer and must
+--- release THIS writer's state.
+local function releaseClock()
+    NetworkClearClockTimeOverride()
+    PauseClock(false)
+    SetMillisecondsPerGameMinute(0)
+    clockReset()
+end
+BR.Native.releaseClock = releaseClock
+
+AddEventHandler('onResourceStop', function(res)
+    if res ~= GetCurrentResourceName() then return end
+    releaseClock()
+end)
 
 --- Forget every belief about the engine's rule state, so the next
 --- applyGameRules writes all of it again.
@@ -1682,8 +1919,8 @@ local latch = {
 function BR.Native.forgetRules()
     latch.at, latch.ped, latch.state, latch.match = 0, nil, nil, nil
     latch.shield, latch.invincible = nil, nil
-    latch.visible, latch.clockSec = nil, nil
-    latch.clockHour, latch.clockMin = nil, nil
+    latch.visible = nil
+    clockReset()
 end
 
 --- Should my own ped be visible? THE ONE RULE, for both writers below.
@@ -2598,51 +2835,12 @@ function BR.Native.applyGameRules()
     SetRandomVehicleDensityMultiplierThisFrame(inWorld and amb.vehicles or 0.0)
     SetParkedVehicleDensityMultiplierThisFrame(inWorld and amb.parked or 0.0)
 
-    -- HIGH NOON, FOREVER (for now -- user call, 2026-08-04). Weather is
-    -- already gamemode-owned; the clock joins it. The SECONDS still spin
-    -- (invisible at sun-angle scale) so any engine system that steps on
-    -- clock deltas -- wetness decay is a suspect -- keeps stepping.
-    --
-    -- ...EXCEPT WHEN THE CONSOLE HAS SAID OTHERWISE (owner, 2026-08-31:
-    -- "can you make me a brtime command on the server which will set the time
-    -- in-game?"). THE PIN LEARNED THE OVERRIDE RATHER THAN GAINING A RIVAL:
-    -- this is still the only NetworkOverrideClockTime call in the tree, still
-    -- on the same band, still latched the same way -- it is handed a different
-    -- pair of numbers. A second writer somewhere else would have lost the
-    -- argument within one frame, every frame, and looked like the verb simply
-    -- not working. BR.World.clockHM answers the pinned noon until a
-    -- BR.Net.WORLD_SET envelope says otherwise.
-    --
-    -- NIL-GUARDED because client/world.lua is the file that receives that
-    -- envelope and br_lib/shared/world.lua is what defines the accessor; a
-    -- build without either should stand at noon rather than throw inside the
-    -- per-frame rules, which is where an uncaught error costs the whole loop.
-    --
-    -- ONCE A SECOND, WHICH IS EVERY TIME THE ARGUMENT CHANGES. The third
-    -- argument is whole seconds, so at 60fps this native was being handed the
-    -- IDENTICAL (12, 0, s) triple about sixty times per distinct value -- and
-    -- overriding the network clock is not a free write. Comparing the second
-    -- first makes the call happen exactly when the number it carries is new.
-    --
-    -- The seconds still spin at exactly the rate they did, which is the whole
-    -- of the note above: this drops fifty-nine redundant writes per second and
-    -- changes nothing about the sequence of values the engine sees.
-    --
-    -- THE HOUR AND MINUTE ARE LATCHED BESIDE THE SECOND, and that is not
-    -- symmetry for its own sake: comparing the second alone would hold a new
-    -- override back until the second happened to tick, so `brtime 21` would
-    -- land somewhere in the following second rather than on the keystroke.
-    local hour, minute = 12, 0
-    if BR.World and BR.World.clockHM then hour, minute = BR.World.clockHM() end
-
-    local clockSec = math.floor(now / 1000) % 60
-    if clockSec ~= latch.clockSec
-       or hour ~= latch.clockHour or minute ~= latch.clockMin then
-        latch.clockSec  = clockSec
-        latch.clockHour = hour
-        latch.clockMin  = minute
-        NetworkOverrideClockTime(hour, minute, clockSec)
-    end
+    -- THE TIME OF DAY (#394). Held still at noon in the lobby and on the warmup
+    -- pad, running from the match's anchor from bus start -- see the section
+    -- over BR.Native.applyClock, which writes when the plan changes and reads
+    -- once a second. It is called from here so the clock keeps the frame band
+    -- it has always had, and so nothing else needs a loop of its own for it.
+    BR.Native.applyClock(now)
 
     -- Never let the engine's own death/respawn flow run; the gamemode owns it.
     --

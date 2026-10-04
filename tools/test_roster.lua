@@ -398,6 +398,10 @@ for _, f in ipairs({
     -- name a player with it, and server/broadcast.lua unpacks them.
     'br_lib/shared/notice.lua',
     'br_lib/shared/rng.lua', 'br_lib/shared/geo.lua', 'br_lib/shared/clock.lua',
+    -- BR.World, after clock.lua as br_core's fxmanifest orders it: server/match.lua
+    -- stamps the match clock's anchor through BR.World.anchor at bus start (#394),
+    -- and a state without it would raise on every flight.
+    'br_lib/shared/world.lua',
     'br_lib/shared/sched.lua',   -- BR.Sched; br_core/server/* registers into it
     'br_lib/shared/identity.lua',-- BR.Identity; BR.Roster.ringmaster resolves licenses
     -- BR.MatchTag; every console line that names a match writes it in hex,
@@ -5752,6 +5756,110 @@ do
     join(6, 'S3')
     fire(BR.Net.QUEUE_JOIN, 6, { mode = BR.Mode.SOLO.key })
     ok(BR.Server.matchOf(6) == SO, 'a solo ready-up joins the solo warmup')
+end
+
+describe('match.clock')
+do
+    -- THE MATCH CLOCK'S ANCHOR (#394). Owner, 2026-10-04: "Please ensure warmup
+    -- and lobby are always 12pm." The server stamps ONE anchor the moment the
+    -- bus departs and sends it with every state after it; every client works
+    -- its sky out from that record, which is what makes it the same sky for all
+    -- of them. What is asserted here is the server's half: when it is stamped,
+    -- what it carries, which messages carry it, and when it goes.
+    reset()
+    BR.Server.devMode = true
+    local cfg = BR.Config.World
+    join(1, 'A'); join(2, 'B')
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = 'solo' })
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = 'solo' })
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    local m = theMatch()
+    ok(m ~= nil and m.state == BR.MatchState.WARMUP and m.clock == nil,
+        'a match on the warmup pad has no clock -- the pad holds noon')
+
+    sent = {}
+    BR.Match.transition(m, BR.MatchState.BUS)
+    local stamped = m.clock
+    ok(stamped ~= nil and stamped.at == fakeTime
+       and stamped.startSec == cfg.hour * 3600 + cfg.minute * 60
+       and stamped.msPerMin == cfg.msPerGameMinute,
+        'the bus departing stamps the anchor: the server time it left, the '
+        .. 'configured start and the configured rate',
+        stamped and ('%s %s %s'):format(tostring(stamped.at), tostring(stamped.startSec),
+                                        tostring(stamped.msPerMin)) or 'none')
+    local bus = {}
+    for _, s in ipairs(eventsOf(BR.Net.STATE)) do
+        if s.args[1].state == BR.MatchState.BUS then bus[#bus + 1] = s end
+    end
+    ok(#bus == 2 and bus[1].args[1].clock == stamped and bus[2].args[1].clock == stamped,
+        'and the one \'bus\' event each rider gets carries it', ('%d events'):format(#bus))
+
+    -- THE LATE JOINER'S COPY, AND THE NET UNDER THE TRANSITION.
+    sent = {}
+    BR.Broadcast.snapshot(1)
+    local snap = eventsOf(BR.Net.SNAPSHOT)[1]
+    ok(snap ~= nil and snap.args[1].match.clock == stamped,
+        'a client that loads mid-match gets it in the snapshot\'s match view')
+
+    join(3, 'Bystander')
+    sent = {}
+    fakeTime = fakeTime + 1000
+    BR.Sched.step(fakeTime)
+    local rider, bystander = nil, nil
+    for _, s in ipairs(eventsOf(BR.Net.DIGEST)) do
+        if s.target == 1 then rider = s.args[1] end
+        if s.target == 3 then bystander = s.args[1] end
+    end
+    ok(rider ~= nil and rider.clock == stamped,
+        'the twice-a-second digest carries it too, so a missed \'bus\' event still lands')
+    ok(bystander ~= nil and bystander.clock == nil,
+        'and a lobby bystander\'s digest carries none -- the lobby holds noon')
+
+    -- KEPT UNTIL THE PLAYERS ARE HOME.
+    sent = {}
+    BR.Match.transition(m, BR.MatchState.PLAYING)
+    local playing = nil
+    for _, s in ipairs(eventsOf(BR.Net.STATE)) do
+        if s.args[1].state == BR.MatchState.PLAYING then playing = s.args[1] end
+    end
+    ok(m.clock == stamped and playing ~= nil and playing.clock == stamped,
+        'PLAYING keeps the same anchor -- the clock runs on rather than from noon again')
+    sent = {}
+    BR.Match.transition(m, BR.MatchState.ENDED)
+    local ended = nil
+    for _, s in ipairs(eventsOf(BR.Net.STATE)) do
+        if s.args[1].state == BR.MatchState.ENDED then ended = s.args[1] end
+    end
+    ok(m.clock == stamped and ended ~= nil and ended.clock == stamped,
+        'and so does ENDED -- the match keeps its clock until the trip home')
+
+    -- brforce: back to the pad drops it, a second departure is a second anchor.
+    BR.Match.transition(m, BR.MatchState.WARMUP)
+    ok(m.clock == nil, '`brforce warmup` takes the clock away: the pad is noon again')
+    fakeTime = fakeTime + 5000
+    BR.Match.transition(m, BR.MatchState.BUS)
+    ok(m.clock ~= nil and m.clock ~= stamped and m.clock.at == fakeTime,
+        'and the next bus stamps a new anchor from its own departure')
+
+    -- AND A MATCH THAT SKIPS THE BUS STILL GETS A CLOCK.
+    reset()
+    BR.Server.devMode = true
+    join(1, 'A'); join(2, 'B')
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = 'solo' })
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = 'solo' })
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    m = theMatch()
+    sent = {}
+    BR.Match.transition(m, BR.MatchState.PLAYING)
+    local first = nil
+    for _, s in ipairs(eventsOf(BR.Net.STATE)) do
+        if s.args[1].state == BR.MatchState.PLAYING then first = first or s.args[1] end
+    end
+    ok(m.clock ~= nil and m.clock.at == fakeTime and first ~= nil and first.clock == m.clock,
+        '`brforce playing` straight off the pad stamps the anchor on arrival, and the '
+        .. 'state event announcing it carries it')
 end
 
 describe('match.teardownWire')

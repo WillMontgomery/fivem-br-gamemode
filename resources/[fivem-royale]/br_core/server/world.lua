@@ -6,16 +6,18 @@
 --
 --   brtime <hour> [minute]     move the clock for everyone
 --   brtime <hh:mm>             the same thing, spelled the way a clock is
---   brtime reset               back to the pinned 12:00
+--   brtime reset               back to the state's own clock: 12:00 in the
+--                              lobby and on the warmup pad, the match's
+--                              running clock from bus start (#394)
 --   brweather <name>           set the sky for everyone
 --   brweather                  print the fifteen names
 --   brweather reset            hand the sky back to the storm and the island
 --
 -- ═══ WHY THIS IS A BROADCAST AND NOT A SETTING ═══
 --
--- NEITHER OF THESE IS SERVER STATE. GTA's clock is overridden per client, by
--- br_core/client/natives.lua's per-frame NetworkOverrideClockTime; the weather
--- is written per client by client/storm.lua and br_environment/client/ipl.lua,
+-- NEITHER OF THESE IS SERVER STATE. GTA's clock is set per client, by
+-- br_core/client/natives.lua's clock writer; the weather is written per client
+-- by client/storm.lua and br_environment/client/ipl.lua,
 -- whose own comment says "Per-client weather, like the storm's: nothing syncs
 -- it." There is nothing on this box to change. What this file owns is the
 -- OVERRIDE -- one small record, held in BR.World (br_lib/shared/world.lua), sent
@@ -24,10 +26,11 @@
 -- ═══ THE LATE JOINER ═══
 --
 -- A client that connects after the command was typed has never seen the
--- broadcast, and its own pin would put it at noon while the rest of the session
--- stood at dusk. So the override is also sent to ONE client on br:ready, which
--- is the message every client sends when it has finished loading and wants a
--- snapshot -- the same hook server/community.lua and server/admin.lua answer.
+-- broadcast, and its own clock would stand at noon while the rest of the
+-- session stood at dusk. So the override is also sent to ONE client on
+-- br:ready, which is the message every client sends when it has finished
+-- loading and wants a snapshot -- the same hook server/community.lua and
+-- server/admin.lua answer.
 --
 -- IT IS SENT EVEN WHEN IT IS EMPTY, for server/community.lua's reason: a client
 -- that reconnects after a `brtime reset` must be told the override is gone, and
@@ -37,10 +40,10 @@
 --
 -- GTA's ambient population is TIME-GATED, so this is not only a lighting knob.
 -- server/rescue.lua's ambient-ambulance note is the specific case and it is
--- written from the other side of this decision: "The world clock is pinned to
--- high noon permanently. Several of GTA's ambulance population points are
--- time-gated to evening and night, so those spawns never fire at all." Move the
--- clock into the evening and some of them start firing -- which changes what
+-- written from the other side of this decision: the clock never reaches night
+-- in a match (noon to about 17:00, #394), and "Several of GTA's ambulance
+-- population points are time-gated to evening and night". Move the clock into
+-- the evening and some of them start firing -- which changes what
 -- BR.Rescue's discovery ledger can find, and therefore where a squad can spend a
 -- revive key. That is a gameplay difference, not a screenshot difference, and it
 -- is why this verb is dev-mode only rather than merely console-only.
@@ -115,7 +118,7 @@ local function usageTime()
     print('  usage: brtime <hour> [minute]    hour 0-23, minute 0-59')
     print('         brtime <hh:mm>')
     print('         brtime reset              back to the pinned '
-        .. ('%02d:%02d'):format(BR.World.DEFAULT_HOUR, BR.World.DEFAULT_MINUTE))
+        .. ('%02d:%02d'):format(BR.World.restHM()))
     print('    Every client pins its own clock every frame; this moves the pin')
     print('    for all of them, including anyone who joins afterwards.')
     print('    Ambient population is time-gated: evening and night change which')
@@ -160,7 +163,7 @@ RegisterCommand('brtime', function(src, args)
         BR.World.clearTime()
         send(-1)
         print(('[br_core] brtime: back on the pin, %02d:%02d for everyone')
-            :format(BR.World.DEFAULT_HOUR, BR.World.DEFAULT_MINUTE))
+            :format(BR.World.restHM()))
         return
     end
 

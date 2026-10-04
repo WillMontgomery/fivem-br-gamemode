@@ -13,7 +13,10 @@ BR.Net = {
     SNAPSHOT        = 'br:snapshot',         -- S->C  full roster + match + inventory state
 
     -- Match lifecycle
-    STATE           = 'br:state',            -- S->C  { state, endsAt, meta }
+    -- S->C  { state, endsAt, mode, clock, serverNow, meta }. `clock` is the
+    -- match clock's anchor (#394), from BR.World.anchor at bus start; absent
+    -- before it. It also rides the snapshot's match view and the digest.
+    STATE           = 'br:state',
     -- S->C  array of roster changes (coalesced). Each entry is
     -- { op, src, e?, clear?, cause? }, where `e` is the mirror -- facts that
     -- PERSIST about the player -- and `cause` is a fact about the TRANSITION,
@@ -667,7 +670,8 @@ BR.Net = {
     -- at a time, and told it BY THE SERVER, which is also the only side that can
     -- see the position of a player who is out of scope.
     --
-    -- S->C. `{ targetSrc, name, admin, x, y, z }` while a session is running,
+    -- S->C. `{ targetSrc, name, admin, x, y, z, inv, clock }` while a session
+    -- is running (`clock` is the watched player's match-clock anchor, #394),
     -- re-sent at BR.Config.Spectate.feedMs so the camera has somewhere to be;
     -- `{ stop = true, reason = <string> }` when it ends, for whatever reason.
     -- ONE EVENT FOR BOTH so a stop can never be lost behind a position push

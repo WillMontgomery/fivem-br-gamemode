@@ -1059,6 +1059,8 @@ end
 -- ---------------------------------------------------------------------------
 
 BR.State = {
+    -- `clock`, absent until the bus leaves, is the match clock's anchor (#394):
+    -- { at, startSec, msPerMin }, from BR.World.anchor on the server.
     match    = { state = BR.MatchState.WAITING, endsAt = 0, mode = BR.Mode.SOLO.key },
     me       = { src = 0, squadId = nil, state = BR.PlayerState.LOBBY, hp = 100.0, armour = 0.0 },
     roster   = {},   -- [serverId] = { name, squadId, state, ... } -- mirror only

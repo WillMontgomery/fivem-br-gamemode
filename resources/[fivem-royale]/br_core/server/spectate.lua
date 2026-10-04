@@ -203,6 +203,14 @@ local function push(src, s)
     local sendInv = (sig ~= s.invSig)
     s.invSig = sig
 
+    -- THE WATCHED PLAYER'S MATCH CLOCK (#394), so the sky a spectator sees is
+    -- the one the player they are watching stands under. A dead player watching
+    -- their own squad already has it; this is for the admin watching from the
+    -- lobby or from another match. Looked up the way `resolve` below looks a
+    -- match up. Absent before that match's bus has left, which the client reads
+    -- as "fall back to your own clock".
+    local tm = e and e.matchId and BR.Server.matches and BR.Server.matches[e.matchId]
+
     TriggerClientEvent(BR.Net.SPECTATE_SET, src, {
         targetSrc = s.target,
         name      = s.name,
@@ -217,6 +225,7 @@ local function push(src, s)
         -- inventory that blinked out every time nothing happened would be the
         -- reported bug with extra steps.
         inv = sendInv and inv or nil,
+        clock = tm and tm.clock or nil,
     })
 end
 

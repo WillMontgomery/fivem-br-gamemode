@@ -1575,6 +1575,65 @@ do
        'and sends nobody a second seal', ('%d -> %d'):format(before, S.seals(1)))
 end
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- THE WATCHED MATCH'S CLOCK (#394)
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- A spectator's sky is the watched player's. A dead player watching their own
+-- squad is on that clock already; an admin watching from the lobby is not, so
+-- the server sends the watched match's anchor with every push, and the client
+-- keeps the last one it was sent for client/natives.lua's clock writer.
+
+describe("the watched match's clock")
+do
+    local A = { at = 5000, startSec = 43200, msPerMin = 5000 }
+
+    -- ── the client keeps what the last push said ──
+    stop()
+    ok(BR.Spectate.clock() == nil, 'with no session there is no watched clock')
+    fire(BR.Net.SPECTATE_SET, { targetSrc = 7, name = 'Watched', admin = true,
+                                x = 1.0, y = 2.0, z = 3.0, clock = A })
+    ok(BR.Spectate.clock() == A, "a push carrying the watched match's anchor is kept")
+    fire(BR.Net.SPECTATE_SET, { targetSrc = 7, name = 'Watched', admin = true,
+                                x = 1.0, y = 2.0, z = 3.0 })
+    ok(BR.Spectate.clock() == nil,
+       'and a push without one means that match has no clock -- not "unchanged"')
+    fire(BR.Net.SPECTATE_SET, { targetSrc = 7, name = 'Watched', admin = true,
+                                x = 1.0, y = 2.0, z = 3.0, clock = A })
+    stop()
+    ok(BR.Spectate.clock() == nil, 'and a stop takes it away with the session')
+
+    -- ── the server sends the WATCHED player's match anchor ──
+    local S = newServer()
+    local PS = S.env.BR.PlayerState
+    S.add(1, PS.OUT)
+    S.add(2, PS.ALIVE)
+    S.match.clock = A
+    S.cycle(1, 0)
+    S.feed()
+
+    local function lastPush(src)
+        local d = nil
+        for _, msg in ipairs(S.toClient) do
+            if msg.name == S.env.BR.Net.SPECTATE_SET and msg.src == src
+               and not msg.d.stop then
+                d = msg.d
+            end
+        end
+        return d
+    end
+
+    local d = lastPush(1)
+    ok(d ~= nil and d.clock == A,
+       "every push carries the watched player's match anchor", d and tostring(d.clock))
+    S.match.clock = nil
+    S.feed()
+    d = lastPush(1)
+    ok(d ~= nil and d.clock == nil,
+       'and none while that match has no clock -- before its bus has left',
+       d and tostring(d.clock))
+end
+
 -- ---------------------------------------------------------------- result ---
 
 realPrint(('\n\27[32m%d passed\27[0m'):format(pass))

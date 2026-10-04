@@ -1,4 +1,5 @@
--- The world override: the time of day and the sky, when somebody has said so.
+-- The world: the time of day and the sky -- the match's clock, and the console's
+-- override of both.
 --
 -- PURE, AND THE SAME TABLE ON BOTH SIDES OF THE WIRE. server/world.lua holds the
 -- authoritative override (brtime and brweather write it); every client holds a
@@ -8,19 +9,27 @@
 --
 -- ═══ WHY AN OVERRIDE RATHER THAN A SETTING ═══
 --
--- Neither of these is server state in GTA. The clock is pinned per-client, by
--- br_core/client/natives.lua's per-frame NetworkOverrideClockTime, and the sky
--- is written per-client by client/storm.lua and br_environment/client/ipl.lua --
--- "Per-client weather, like the storm's: nothing syncs it" (ipl.lua). There is
--- no server-side value to change; there is only a broadcast, and a client that
--- has to be TOLD.
+-- Neither of these is server state in GTA. The clock is set per-client, by
+-- br_core/client/natives.lua's clock writer, and the sky is written per-client
+-- by client/storm.lua and br_environment/client/ipl.lua -- "Per-client weather,
+-- like the storm's: nothing syncs it" (ipl.lua). There is no server-side value
+-- to change; there is only a broadcast, and a client that has to be TOLD.
 --
 -- So the shape is: one override, held here, mirrored everywhere, and read by the
 -- code that was already writing those two things. Nothing in this repository
--- grew a second writer for either -- the clock pin reads clockHM() instead of
--- the literal 12, and every weather write on a client goes through
--- client/world.lua's resolveSky. Two writers disagreeing about the clock is the
--- bug this file exists to not create.
+-- grew a second writer for either -- the clock writer asks clockPlan() below,
+-- and every weather write on a client goes through client/world.lua's
+-- resolveSky. Two writers disagreeing about the clock is the bug this file
+-- exists to not create.
+--
+-- ═══ THE MATCH CLOCK (#394) ═══
+--
+-- The lobby and the warmup pad stand still at BR.Config.World's hour:minute.
+-- From bus start the clock runs, slower than GTA's own, from an ANCHOR the
+-- server stamps once per match (BR.World.anchor) and sends with the match
+-- state. Every client in the match works out the same time from the same
+-- anchor, so nobody has to tick the clock over the network. The arithmetic for
+-- that lives here, pure, so tools/test_shared.lua can run every branch of it.
 --
 -- ═══ WHAT IS NOT HERE ═══
 --
@@ -34,17 +43,23 @@ BR.World = BR.World or {}
 local W = BR.World
 
 -- ---------------------------------------------------------------------------
--- The pin
+-- The rest time
 -- ---------------------------------------------------------------------------
 
---- High noon, which is where the clock sits when nobody has overridden it.
+--- Where the clock stands in the lobby and on the warmup pad, and where every
+--- bus departs: BR.Config.World's hour and minute, high noon as shipped.
 ---
---- THIS PAIR IS THE ONLY PLACE THE PINNED TIME IS WRITTEN DOWN. It used to be
---- the literal `(12, 0, ...)` inside client/natives.lua's per-frame rules; the
---- reset path needs the same two numbers, and a second copy of them is a second
---- copy to get wrong the day the pin moves.
-W.DEFAULT_HOUR   = 12
-W.DEFAULT_MINUTE = 0
+--- CONFIG IS THE ONLY PLACE THE TIME IS WRITTEN DOWN. It used to be a pair of
+--- constants here, and before that the literal `(12, 0, ...)` inside
+--- client/natives.lua's per-frame rules.
+---
+--- READ AT CALL TIME, NOT AT LOAD. br_core's fxmanifest loads this file before
+--- br_lib/config/match.lua, so a load-time read would see no config at all.
+--- @return number hour, number minute
+function W.restHM()
+    local c = BR.Config.World
+    return c.hour, c.minute
+end
 
 -- ---------------------------------------------------------------------------
 -- The sky
@@ -138,25 +153,159 @@ function W.clearWeather()
     W.override.weather = nil
 end
 
---- The time the clock pin should write this frame.
+--- The time the console has set, or the rest time when it has set none.
 ---
---- ALWAYS ANSWERS A PAIR. The caller is a per-frame native call in
---- client/natives.lua and there is no useful "no answer" for it -- an
---- unoverridden world is noon, which is the pin it has always written.
+--- ALWAYS ANSWERS A PAIR. Read by server/world.lua's confirmation lines and by
+--- clockPlan below; an unoverridden world answers the rest time.
 --- @return number hour, number minute
 function W.clockHM()
     local h = W.override.hour
     local m = W.override.minute
     if type(h) ~= 'number' or type(m) ~= 'number' then
-        return W.DEFAULT_HOUR, W.DEFAULT_MINUTE
+        return W.restHM()
     end
     return h, m
 end
 
---- Is the clock currently somewhere other than its pin?
+--- Has the console set the time (`brtime`)?
 --- @return boolean
 function W.holdsTime()
     return type(W.override.hour) == 'number'
+end
+
+-- ---------------------------------------------------------------------------
+-- The match clock (#394)
+-- ---------------------------------------------------------------------------
+
+W.DAY_SEC = 86400
+
+--- The player states that stand still at the rest time. Everything after the
+--- bus leaves -- aboard, falling, alive, downed, out -- runs from the anchor.
+local HOLD_STATE = { [BR.PlayerState.LOBBY] = true, [BR.PlayerState.WARMUP] = true }
+
+--- The anchor a match's clock runs from. The server stamps it ONCE, the moment
+--- the match's bus departs, and sends it with the match state.
+---
+--- THE START AND THE RATE TRAVEL IN IT, rather than every client reading its
+--- own config, so that the server's copy is the one every player in the match
+--- runs from.
+--- @param serverNow number  the server's GetGameTimer() at bus start
+--- @return table { at, startSec, msPerMin }
+function W.anchor(serverNow)
+    local h, m = W.restHM()
+    return {
+        at       = serverNow,
+        startSec = h * 3600 + m * 60,
+        msPerMin = BR.Config.World.msPerGameMinute,
+    }
+end
+
+--- Is this an anchor a clock can run from?
+---
+--- CHECKED ON ARRIVAL, because it came over the wire: a zero rate would divide
+--- by nothing, and a half-built anchor would run a clock from nowhere.
+--- @param a any
+--- @return boolean
+function W.validAnchor(a)
+    return type(a) == 'table'
+       and type(a.at) == 'number'
+       and type(a.startSec) == 'number'
+       and type(a.msPerMin) == 'number' and a.msPerMin > 0
+end
+
+--- The second of the day the anchor says it is, at server time `now`.
+---
+--- FRACTIONAL, and wrapped into one day: a match long enough to run past
+--- midnight carries on into the next morning rather than off the clock.
+--- @param a table  a valid anchor
+--- @param now number  server time, ms (BR.Clock.now() on a client)
+--- @return number seconds since midnight, 0 <= t < 86400
+function W.timeAt(a, now)
+    return (a.startSec + (now - a.at) * 60.0 / a.msPerMin) % W.DAY_SEC
+end
+
+--- A second of the day as the three whole numbers the clock native takes.
+---
+--- ALWAYS IN RANGE. FiveM silently drops a clock write with an hour of 24 or
+--- more, or a minute or second of 60 or more (NativeFixes.cpp,
+--- FixClockTimeOverrideNative), so a value that rounded up to the next day
+--- would simply not land, with nothing to say so.
+--- @param t number
+--- @return integer hour, integer minute, integer second
+function W.hms(t)
+    local s = math.floor(t) % W.DAY_SEC
+    return s // 3600, (s // 60) % 60, s % 60
+end
+
+--- How far `engine` is from `target`, in game seconds, signed, taking the
+--- shorter way round midnight: 23:59:50 is ten seconds behind 00:00:00, not a
+--- day ahead of it.
+--- @param engine number @param target number
+--- @return number  in [-43200, 43200)
+function W.drift(engine, target)
+    local d = (engine - target) % W.DAY_SEC
+    if d >= W.DAY_SEC / 2 then d = d - W.DAY_SEC end
+    return d
+end
+
+--- What the clock should be doing on this client right now.
+---
+--- THREE ANSWERS, and the writer in client/natives.lua acts on them:
+---
+---   hold  stand still at h:m. The console's `brtime`, the lobby, the warmup
+---         pad, and anything with no anchor to run from.
+---   run   run from `anchor` at `rate`; `sec` is where it should be now.
+---   wait  there is an anchor but this client's estimate of the server's time
+---         is not ready yet (BR.Clock.synced). Writing a time worked out from
+---         an unsynced clock would put the sky somewhere arbitrary and then
+---         snap it once the estimate settled; the writer leaves the engine
+---         alone instead.
+---
+--- `key` IS WHAT "ONCE" MEANS. The writer sets the clock when the key changes
+--- and never otherwise: for a hold it is the time held, for a run it is the
+--- anchor. So BUS -> FREEFALL -> ALIVE -> DBNO -> OUT, all one anchor, is one
+--- write.
+---
+--- A SPECTATOR RUNS FROM THE WATCHED PLAYER'S MATCH when the server sent that
+--- anchor with the session (server/spectate.lua) -- an admin watching from the
+--- lobby sees the match's sky, not the lobby's. A spectator with no such anchor
+--- falls through to their own state's rule.
+--- @param o table { state, anchor, spectating, watchAnchor, now, synced }
+--- @return table { mode, why, key, h, m, anchor, rate, sec }
+function W.clockPlan(o)
+    o = o or {}
+
+    if W.holdsTime() then
+        local h, m = W.clockHM()
+        return { mode = 'hold', why = 'brtime', h = h, m = m,
+                 key = ('hold %d:%d'):format(h, m) }
+    end
+
+    local a, why = nil, nil
+    if o.spectating == true and W.validAnchor(o.watchAnchor) then
+        a, why = o.watchAnchor, 'spectating'
+    elseif o.state ~= nil and not HOLD_STATE[o.state] then
+        a, why = o.anchor, 'match'
+    end
+
+    if not W.validAnchor(a) then
+        local h, m = W.restHM()
+        local because = (o.state == nil or HOLD_STATE[o.state])
+            and tostring(o.state or 'no state') or 'no anchor'
+        return { mode = 'hold', why = because, h = h, m = m,
+                 key = ('hold %d:%d'):format(h, m) }
+    end
+
+    if o.synced ~= true then
+        return { mode = 'wait', why = 'server clock not synced yet', anchor = a }
+    end
+
+    return {
+        mode = 'run', why = why, anchor = a, rate = a.msPerMin,
+        sec  = W.timeAt(a, tonumber(o.now) or a.at),
+        key  = ('run %s %s %s'):format(tostring(a.at), tostring(a.startSec),
+                                       tostring(a.msPerMin)),
+    }
 end
 
 --- The overridden weather, or nil when the game owns the sky.

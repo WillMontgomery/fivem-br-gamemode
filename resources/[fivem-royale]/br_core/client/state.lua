@@ -662,6 +662,9 @@ AddEventHandler(BR.Net.SNAPSHOT, function(payload)
     S.match.state  = payload.match.state
     S.match.mode   = payload.match.mode
     S.match.endsAt = payload.match.endsAt
+    -- The match clock's anchor (#394), or nil before the bus has left. What a
+    -- client that joins or reloads mid-match runs its sky from.
+    S.match.clock  = payload.match.clock
 
     -- The same WAITING replay the digest performs (see its handler for the
     -- full note). It must live HERE too: a match being destroyed re-seeds
@@ -675,6 +678,7 @@ AddEventHandler(BR.Net.SNAPSHOT, function(payload)
         TriggerEvent(BR.Net.STATE, {
             state     = S.match.state,
             endsAt    = S.match.endsAt,
+            clock     = S.match.clock,
             serverNow = payload.serverNow,
             meta      = { from = was, reason = 'snapshot' },
         })
@@ -887,6 +891,11 @@ AddEventHandler(BR.Net.DIGEST, function(d)
     -- attached to a match that is ALREADY in warmup and so never hears a
     -- transition -- this is the only channel that reaches them.
     S.match.mode   = d.mode or S.match.mode
+    -- THE CLOCK'S ANCHOR (#394) IS ASSIGNED, NOT DEFAULTED. Every digest is the
+    -- whole view of the receiver's match, so a missing anchor means there is
+    -- none -- the lobby's view, or a match still on the warmup pad -- and
+    -- keeping an old one would run the sky from a match that is gone.
+    S.match.clock  = d.clock
     if S.match.state ~= was or S.match.endsAt ~= wasEnd
        or S.match.mode ~= wasMode then
         pushMatchState()
@@ -931,6 +940,9 @@ AddEventHandler(BR.Net.DIGEST, function(d)
             state     = S.match.state,
             endsAt    = S.match.endsAt,
             mode      = S.match.mode,
+            -- CARRIED, because the handler assigns it: a replayed ENDED with no
+            -- anchor would stop the match clock before the trip home.
+            clock     = S.match.clock,
             serverNow = d.serverNow,
             meta      = { from = was, reason = 'digest' },
         })
@@ -1098,6 +1110,10 @@ AddEventHandler(BR.Net.STATE, function(d)
     S.match.state  = d.state
     S.match.endsAt = d.endsAt
     S.match.mode   = d.mode or S.match.mode
+    -- The match clock's anchor (#394): stamped by the server at bus start and
+    -- sent with every state after it, nil before. Assigned rather than kept,
+    -- for the digest's reason above.
+    S.match.clock  = d.clock
 
     -- A new match forgives old deaths.
     if d.state == BR.MatchState.WARMUP or d.state == BR.MatchState.BUS then

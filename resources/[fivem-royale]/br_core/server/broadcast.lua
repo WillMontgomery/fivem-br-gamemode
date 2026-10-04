@@ -210,6 +210,11 @@ local function digest()
             state       = m.state,
             mode        = m.mode,
             endsAt      = m.endsAt,
+            -- THE MATCH CLOCK'S ANCHOR (#394), nil until the bus leaves. It
+            -- rides the heartbeat for the reason mode does: the digest is the
+            -- net under the transition broadcast, and a client that missed the
+            -- 'bus' event would otherwise stand at noon for the whole match.
+            clock       = m.clock,
             serverNow   = now,
         }
     end)
@@ -234,7 +239,10 @@ local function viewFor(src)
         -- formed (#327). Sent as the raw field -- one circle, no clock -- and nil
         -- from PLAYING onward, because enterPhase has spent it by then and `storm`
         -- above is the honest answer from that moment on.
-        return { state = m.state, mode = m.mode, endsAt = m.endsAt },
+        -- `clock` IS WHAT A MID-MATCH (RE)LOAD RUNS ITS SKY FROM (#394): the
+        -- anchor server/match.lua stamped at bus start, nil before it.
+        return { state = m.state, mode = m.mode, endsAt = m.endsAt,
+                 clock = m.clock },
                BR.Server.aliveCount(m), BR.Server.squadsAlive(m), m.storm,
                -- ASKED FOR RATHER THAN REBUILT (#344). This used to spell the
                -- table out here, which was a second copy of server/storm.lua's
@@ -308,6 +316,9 @@ function BR.Broadcast.state(m, state, endsAt, meta)
         state     = state,
         endsAt    = endsAt,
         mode      = m.mode,
+        -- The match clock's anchor (#394). The 'bus' event is the first to
+        -- carry one; every state after it carries the same one.
+        clock     = m.clock,
         serverNow = GetGameTimer(),
         meta      = meta,
     })

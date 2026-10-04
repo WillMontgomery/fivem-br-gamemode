@@ -2730,8 +2730,9 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function(dt)
             -- and a second meaning for a channel that already has one (user
             -- call, 2026-08-06).
             --
-            -- An OUTLINE carries it, not the light: the world is pinned to
-            -- noon, where a light is very nearly invisible -- which is why the
+            -- An OUTLINE carries it, not the light: the world is in afternoon
+            -- daylight (noon to about 17:00, #394), where a light is very
+            -- nearly invisible -- which is why the
             -- previous version read as no glow at all. The light stays at low
             -- intensity for interiors and storm gloom.
             if isContainer(e) then

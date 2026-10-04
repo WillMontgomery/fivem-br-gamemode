@@ -440,6 +440,40 @@ function BR.Match.destroy(m)
     BR.Broadcast.snapshot()
 end
 
+--- Start, keep or drop the match clock's anchor for the state being entered
+--- (#394; owner, 2026-10-04: "Please ensure warmup and lobby are always 12pm").
+---
+--- STAMPED THE MOMENT THE BUS DEPARTS, and fresh every time it does, so
+--- `brforce bus` run twice starts the clock twice. Every client in the match
+--- works its sky out from this one record (BR.World.clockPlan), which is what
+--- makes the time the same for all of them, late joiners and spectators
+--- included.
+---
+--- KEPT THROUGH PLAYING, ENDED AND CLEANUP: a match keeps its clock until its
+--- players are home. Each client switches back to the held noon itself on the
+--- trip home, under the black cover.
+---
+--- STAMPED ON ARRIVAL IN A LATER STATE TOO if there is none, because
+--- `brforce playing` and `brforce ended` can skip the bus entirely and a match
+--- with no anchor would stand at noon.
+---
+--- DROPPED ON A RETURN TO WARMUP, which only `brforce warmup` can do, so the pad
+--- stands at noon again.
+---
+--- Called by transition() BEFORE anything is broadcast, so the state event that
+--- announces the bus is the one that carries the anchor.
+--- @param m table
+--- @param state string
+local function stampClock(m, state)
+    if state == BR.MatchState.WARMUP then
+        m.clock = nil
+    elseif state == BR.MatchState.BUS
+        or (m.clock == nil and (state == BR.MatchState.PLAYING
+                                or state == BR.MatchState.ENDED)) then
+        m.clock = BR.World.anchor(GetGameTimer())
+    end
+end
+
 --- Move an instance to a new state.
 ---
 --- The only way a match state ever changes. Everything else calls this, so
@@ -491,6 +525,8 @@ function BR.Match.transition(m, state, durationSec)
         heldByFreeze
             and ' (HELD by brwarmupfreeze -- `brwarmupfreeze off` releases it)'
             or (secs and (' (%ds)'):format(secs) or '')))
+
+    stampClock(m, state)
 
     -- Broadcast BEFORE onEnter -- the ordering is a CONTRACT. At ENDED the
     -- client must hear the match ended BEFORE the roster sweep flips its

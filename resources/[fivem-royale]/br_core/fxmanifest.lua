@@ -317,7 +317,7 @@ client_scripts {
     'client/natives.lua',
     -- The world override this client is holding, and THE ONLY PLACE THIS CLIENT
     -- WRITES WEATHER. AFTER natives.lua for a reader rather than for the loader
-    -- -- natives.lua's clock pin asks BR.World.clockHM() at call time and
+    -- -- natives.lua's clock writer asks BR.World.clockPlan() at call time and
     -- nil-guards it -- but BEFORE client/storm.lua, which is a real order in
     -- the sense that matters: storm.lua's weather branches are now claims made
     -- through BR.World.want, and a claim made into a nil table would take the

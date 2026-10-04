@@ -1193,6 +1193,31 @@ BR.Config.Ambient = {
     erraticRetaskMs   = 8000,
 }
 
+-- The time of day (#394). Owner, 2026-10-04: "Right now, our game is set to
+-- 12pm noon - but resetting the time back to 12pm each second causes the
+-- clouds to constantly skip back and forth each second." Then: "Please ensure
+-- warmup and lobby are always 12pm."
+--
+-- So the lobby and the warmup pad stand STILL at hour:minute, and every bus
+-- departs at it. From the moment the bus leaves, the clock runs at
+-- msPerGameMinute. GTA's own rate is 2000 (a 48-minute day); 5000 is two and a
+-- half times slower, so a ~25-minute match runs from 12:00 to about 17:00.
+--
+-- THE SERVER STAMPS THESE INTO THE MATCH'S ANCHOR AT BUS START
+-- (BR.World.anchor), and clients run from the anchor rather than from this
+-- table, so every player in one match sees the same time.
+--
+-- driftSec is how far, in game seconds, a client's engine clock may wander
+-- from the anchor before it is set again. 60 game seconds is 5 real seconds at
+-- 5000, and a quarter of a degree of sun. It should almost never be reached:
+-- the engine advances the clock itself at the rate it was given.
+BR.Config.World = {
+    hour            = 12,
+    minute          = 0,
+    msPerGameMinute = 5000,
+    driftSec        = 60,
+}
+
 --- Resolve the minimum players to start, honouring dev mode.
 --- @param devMode boolean
 --- @return integer

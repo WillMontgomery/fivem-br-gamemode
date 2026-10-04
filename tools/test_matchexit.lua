@@ -1269,6 +1269,58 @@ do
     BR.Loop.hitchStop()
 end
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- THE MATCH CLOCK'S ANCHOR RIDES INTO THE MIRROR, AND OUT AGAIN (#394)
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- client/natives.lua runs this client's sky from BR.State.match.clock, and
+-- this file is where that field is written: by the state event, the snapshot
+-- and the digest, each of which carries the WHOLE view -- so a missing anchor
+-- is "there is none", never "keep the last one". The trip home is the case
+-- that matters most: an ENDED replayed by the digest must not lose the anchor
+-- before the player is home, and a lobby view must not keep one.
+
+describe('the match clock\'s anchor in the mirror')
+do
+    local A = { at = 5000, startSec = 43200, msPerMin = 5000 }
+    inMatch()
+    ok(BR.State.match.clock == nil, 'a match with no bus yet has no clock in the mirror')
+
+    fire(BR.Net.STATE, { state = BR.MatchState.BUS, endsAt = 0, mode = 'solo',
+                         serverNow = fakeTime, clock = A })
+    ok(BR.State.match.clock == A, 'the \'bus\' event puts the anchor in the mirror')
+
+    fire(BR.Net.STATE, { state = BR.MatchState.PLAYING, endsAt = 0, mode = 'solo',
+                         serverNow = fakeTime, clock = A })
+    ok(BR.State.match.clock == A, 'and every state event after it keeps it there')
+
+    -- THE DIGEST'S ENDED REPLAY. The digest moves the mirror to ENDED and
+    -- re-fires the state event locally; that replay must carry the anchor, or
+    -- the match clock would stop under the verdict screen.
+    fire(BR.Net.DIGEST, { alive = 1, squadsAlive = 1, state = BR.MatchState.ENDED,
+                          mode = 'solo', endsAt = 0, serverNow = fakeTime, clock = A })
+    ok(BR.State.match.state == BR.MatchState.ENDED and BR.State.match.clock == A,
+       'an ENDED that arrives by the digest, and is replayed from it, keeps the anchor',
+       tostring(BR.State.match.clock))
+
+    -- THE LOBBY'S VIEW HAS NONE, AND THAT IS THE CLEAR.
+    fire(BR.Net.DIGEST, { alive = 0, squadsAlive = 0, state = BR.MatchState.WAITING,
+                          mode = 'solo', endsAt = 0, serverNow = fakeTime })
+    ok(BR.State.match.clock == nil,
+       'the lobby\'s digest carries no anchor, and the mirror lets the old one go')
+
+    -- THE SNAPSHOT: the late joiner's copy, and the reload's.
+    seq = seq + 1
+    fire(BR.Net.SNAPSHOT, {
+        seq = seq, serverNow = fakeTime,
+        roster = { [1] = { src = 1, state = BR.PlayerState.ALIVE } },
+        match = { state = BR.MatchState.PLAYING, mode = 'solo', endsAt = 0, clock = A },
+    })
+    ok(BR.State.match.clock == A, 'a client loading mid-match takes the anchor from the snapshot')
+    snapshot(BR.PlayerState.LOBBY, BR.MatchState.WAITING)
+    ok(BR.State.match.clock == nil, 'and a lobby snapshot carries none')
+end
+
 realPrint(('%s%d passed, %d failed\27[0m')
     :format(fail == 0 and '\27[32m' or '\27[31m', pass, fail))
 os.exit(fail == 0 and 0 or 1)

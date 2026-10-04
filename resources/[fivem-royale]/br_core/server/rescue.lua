@@ -1223,9 +1223,10 @@ end)
 --
 -- ═══ AND THE SUPPLY IS SMALLER THAN THE MAP SUGGESTS ═══
 --
--- The world clock is pinned to high noon permanently. Several of GTA's ambulance
--- population points are time-gated to evening and night, so those spawns never
--- fire at all. Nothing here is sized on ambient ambulances being available: the
+-- The world clock stands at noon until the bus leaves and runs to about 17:00
+-- over a match (#394), so it never reaches night. Several of GTA's ambulance
+-- population points are time-gated to evening and night, so those spawns fire
+-- seldom if at all. Nothing here is sized on ambient ambulances being available: the
 -- authored station points are the backbone, this is a bonus, and a match in
 -- which none is ever discovered is the expected case rather than a fault.
 --

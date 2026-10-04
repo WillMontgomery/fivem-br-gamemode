@@ -1797,6 +1797,76 @@ RegisterCommand('brdrivers', function()
     end
 end, false)
 
+-- ---------------------------------------------------------------- the clock ---
+--
+-- ═══ IS THE SKY WHERE IT SHOULD BE, AND IS IT STAYING THERE? (#394) ═══
+--
+-- The lobby and the warmup pad hold still at noon; from bus start the clock runs
+-- from the match's anchor at BR.Config.World's rate. Whether the engine honors
+-- the rate and the hold is something only the game can answer, so this prints
+-- what the writer in client/natives.lua decided, what the engine says back,
+-- and how many times the writer has had to set the clock again. In a healthy
+-- match: one write per state change, corrections 0, drift a second or two.
+--
+-- EVERY NUMBER IS READ, NOTHING IS WRITTEN: this command must not be the thing
+-- that moves the clock it is reporting on.
+
+--- A second of the day as hh:mm:ss.
+--- @param t number|nil
+--- @return string
+local function clockText(t)
+    if t == nil then return '--:--:--' end
+    return ('%02d:%02d:%02d'):format(BR.World.hms(t))
+end
+
+RegisterCommand('brclock', function()
+    local st = BR.Native.clockStatus and BR.Native.clockStatus()
+    if not st then
+        print('[br_core] brclock: client/natives.lua has no clock writer')
+        return
+    end
+    local p = st.plan
+
+    print('--- the clock (#394) ---')
+    print(('  player state     %s   match state %s')
+        :format(tostring(BR.State.me.state), tostring(BR.State.match.state)))
+    if not p then
+        print('  plan             none yet -- the writer has not run')
+        return
+    end
+    print(('  mode             %s (%s)'):format(p.mode:upper(), tostring(p.why)))
+
+    local a = p.anchor
+    if a then
+        local age = (BR.Clock.now() - a.at) / 1000.0
+        print(('  anchor           bus left %.0fs ago, from %s at %d ms per game minute')
+            :format(age, clockText(a.startSec), a.msPerMin))
+    else
+        print('  anchor           none')
+    end
+
+    local want = nil
+    if p.mode == 'hold' then
+        want = p.h * 3600 + p.m * 60
+    elseif p.mode == 'run' and a then
+        want = BR.World.timeAt(a, BR.Clock.now())
+    end
+    local engine = GetClockHours() * 3600 + GetClockMinutes() * 60 + GetClockSeconds()
+    print(('  expected         %s'):format(clockText(want)))
+    print(('  engine           %s   drift %s game s (sets again past %d)')
+        :format(clockText(engine),
+                want and ('%+.0f'):format(BR.World.drift(engine, want)) or '-',
+                BR.Config.World.driftSec))
+    print(('  engine rate      %d ms per game minute (a hold uses %d; GTA\'s own is 2000)')
+        :format(GetMillisecondsPerGameMinute(), st.heldMs))
+    print(('  writes           %d   corrections %d%s')
+        :format(st.writes, st.corrections,
+                st.lastFix and ('   last %+.0f s while %s'):format(
+                    st.lastFix.drift, tostring(st.lastFix.mode)) or ''))
+    print(('  server clock     %s (offset %.0f ms)')
+        :format(BR.Clock.synced and 'synced' or 'NOT SYNCED', BR.Clock.offset))
+end, false)
+
 -- ---------------------------------------------------------- map area spike ---
 --
 -- ═══ DOES ADD_AREA_OVERLAY ACTUALLY FILL A POLYGON? (#347) ═══

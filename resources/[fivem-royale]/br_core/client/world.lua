@@ -6,11 +6,11 @@
 --
 -- ═══ THE CLOCK IS NOT HERE, AND THAT IS THE DESIGN ═══
 --
--- client/natives.lua pins the clock with NetworkOverrideClockTime on the FRAME
--- band, and anything this file did to the clock would be overwritten inside one
--- frame. So nothing here touches it. The pin reads BR.World.clockHM() instead of
--- the literal `12, 0` it used to carry, and the override is a value that
--- function answers -- one writer, unchanged, told a different number.
+-- client/natives.lua owns the clock (BR.Native.applyClock): it holds the lobby
+-- and the warmup pad still at noon and runs the match from its anchor (#394),
+-- and anything this file did to the clock would undo that or be undone by it.
+-- So nothing here touches it. The writer asks BR.World.clockPlan(), which
+-- answers the override first -- one writer, told a different time.
 --
 -- ═══ THE SKY IS HERE, AND IT DID NOT USED TO BE ANYWHERE ═══
 --

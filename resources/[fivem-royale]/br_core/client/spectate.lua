@@ -42,7 +42,7 @@
 BR = BR or {}
 BR.Spectate = {}
 
---- The running session, or nil. `{ targetSrc, name, admin }`
+--- The running session, or nil. `{ targetSrc, name, admin, clock }`
 local session = nil
 
 --- Has the server said this match's camera is closed for good?
@@ -133,6 +133,18 @@ end
 --- @return boolean
 function BR.Spectate.active()
     return session ~= nil
+end
+
+--- The watched player's match-clock anchor, or nil.
+---
+--- Read by client/natives.lua's clock writer (#394), so a spectator's sky is
+--- the one the watched player stands under -- for an admin watching from the
+--- lobby, that is not their own. nil when no session is running or the
+--- watched match has not left on its bus, and the writer then uses this
+--- player's own clock.
+--- @return table|nil
+function BR.Spectate.clock()
+    return session and session.clock or nil
 end
 
 --- WHO is being watched, or nil.
@@ -278,7 +290,11 @@ AddEventHandler(BR.Net.SPECTATE_SET, function(d)
     end
 
     local fresh = (session == nil) or (session.targetSrc ~= d.targetSrc)
-    session = { targetSrc = d.targetSrc, name = d.name, admin = d.admin == true }
+    -- `clock` is the WATCHED player's match-clock anchor (#394), sent on every
+    -- push and absent before that match's bus has left. Kept as sent, so the
+    -- last push is always the answer.
+    session = { targetSrc = d.targetSrc, name = d.name, admin = d.admin == true,
+                clock = d.clock }
 
     -- THE TARGET'S INVENTORY, WHEN THE SERVER SENT ONE.
     --

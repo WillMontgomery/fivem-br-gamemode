@@ -27,8 +27,9 @@ for _, f in ipairs({
     -- shared/storm_solve.lua, which calls InBounds to keep a circle on the map.
     'shared/polygon.lua',
     'shared/clock.lua',
-    -- The world override -- the pinned noon, the fifteen weather names, and the
-    -- priority order that decides whose sky wins. Pure: no natives, no config.
+    -- The world -- the noon rest time and the match clock's arithmetic (#394),
+    -- the fifteen weather names, and the priority order that decides whose sky
+    -- wins. Pure: no natives; it reads BR.Config.World at call time only.
     'shared/world.lua',
     'shared/sched.lua',
     'shared/outbox.lua',
@@ -20944,8 +20945,8 @@ do
     W.applyPayload(nil)
 
     local h, m = W.clockHM()
-    ok(h == 12 and m == 0 and h == W.DEFAULT_HOUR,
-       'an unoverridden world reads high noon -- the pin natives.lua used to spell out')
+    ok(h == 12 and m == 0 and h == BR.Config.World.hour,
+       'an unoverridden world reads high noon -- the rest time in BR.Config.World')
     ok(W.holdsTime() == false, 'and says it is not holding the clock')
     ok(W.weatherName() == nil, 'and claims no sky')
 
@@ -21034,6 +21035,179 @@ do
 
     name = W.resolveSky({ weather = { name = 'RAIN' } })
     ok(name == nil, 'a key that is not a ranked source is not a claim')
+end
+
+-- ---------------------------------------------------------------------------
+-- The match clock (#394): the pure arithmetic under client/natives.lua's
+-- clock writer. Owner, 2026-10-04: "Please ensure warmup and lobby are always
+-- 12pm." The writer acts on what clockPlan answers, so every branch of that
+-- answer is run here, where nothing has to be stubbed to reach it.
+-- ---------------------------------------------------------------------------
+
+describe('world / the match clock')
+do
+    local W   = BR.World
+    local cfg = BR.Config.World
+    local PS  = BR.PlayerState
+    W.applyPayload(nil)
+
+    -- ── the rest time and the anchor come from config, read at call time ──
+    local h, m = W.restHM()
+    ok(h == cfg.hour and m == cfg.minute and h == 12 and m == 0,
+       'the rest time is BR.Config.World\'s, high noon as shipped',
+       ('%s:%s'):format(tostring(h), tostring(m)))
+    ok(cfg.msPerGameMinute == 5000 and cfg.driftSec == 60,
+       'and the rate is one game minute every 5000 ms, the threshold a game minute',
+       ('%s / %s'):format(tostring(cfg.msPerGameMinute), tostring(cfg.driftSec)))
+
+    local a = W.anchor(1000)
+    ok(a.at == 1000 and a.startSec == 12 * 3600 and a.msPerMin == 5000,
+       'the anchor carries the server time, the start and the rate',
+       ('%s %s %s'):format(tostring(a.at), tostring(a.startSec), tostring(a.msPerMin)))
+
+    local keepH, keepM, keepRate = cfg.hour, cfg.minute, cfg.msPerGameMinute
+    cfg.hour, cfg.minute, cfg.msPerGameMinute = 7, 15, 4000
+    local h2, m2 = W.restHM()
+    local a2 = W.anchor(0)
+    ok(h2 == 7 and m2 == 15 and a2.startSec == 7 * 3600 + 15 * 60 and a2.msPerMin == 4000,
+       'and both follow the config when it changes -- read at call time, not at load',
+       ('%s:%s, %s, %s'):format(h2, m2, a2.startSec, a2.msPerMin))
+    local ch, cm = W.clockHM()
+    ok(ch == 7 and cm == 15, 'an unoverridden clockHM answers the same rest time')
+    cfg.hour, cfg.minute, cfg.msPerGameMinute = keepH, keepM, keepRate
+
+    -- ── an anchor off the wire is checked before anything runs from it ──
+    ok(W.validAnchor(a), 'a stamped anchor is valid')
+    ok(not W.validAnchor(nil) and not W.validAnchor({})
+       and not W.validAnchor({ at = 1, startSec = 1 })
+       and not W.validAnchor({ at = 1, startSec = 1, msPerMin = 0 })
+       and not W.validAnchor({ at = 1, startSec = 1, msPerMin = -5000 })
+       and not W.validAnchor({ at = '1', startSec = 1, msPerMin = 5000 }),
+       'a missing, partial, zero-rate or mistyped anchor is not one')
+
+    -- ── the time the anchor gives ──
+    ok(W.timeAt(a, 1000) == 12 * 3600, 'at the anchor itself it is the start')
+    ok(W.timeAt(a, 1000 + 5000) == 12 * 3600 + 60, 'one rate later it is a game minute later')
+    ok(W.timeAt(a, 1000 + 25 * 60000) == 17 * 3600,
+       'and a 25-minute match ends at 17:00', W.timeAt(a, 1000 + 25 * 60000))
+    local nightA = { at = 0, startSec = 23 * 3600 + 59 * 60, msPerMin = 5000 }
+    ok(W.timeAt(nightA, 10000) == 60,
+       'past midnight it carries on into the morning rather than off the clock',
+       W.timeAt(nightA, 10000))
+    ok(W.timeAt(a, 1000 - 5000) == 12 * 3600 - 60,
+       'and a server time a little BEFORE the anchor is a little before the start')
+
+    -- ── the three numbers the clock native takes are always in range ──
+    local hh, mm, ss = W.hms(86399.999)
+    ok(hh == 23 and mm == 59 and ss == 59, '86399.999 is 23:59:59 -- rounded down, never to 24:00:00',
+       ('%s:%s:%s'):format(hh, mm, ss))
+    hh, mm, ss = W.hms(86400)
+    ok(hh == 0 and mm == 0 and ss == 0, 'a whole day wraps to midnight')
+    hh, mm, ss = W.hms(-1)
+    ok(hh == 23 and mm == 59 and ss == 59, 'one second before midnight is 23:59:59')
+    hh, mm, ss = W.hms(12 * 3600 + 34 * 60 + 56.7)
+    ok(hh == 12 and mm == 34 and ss == 56
+       and math.type(hh) == 'integer' and math.type(mm) == 'integer'
+       and math.type(ss) == 'integer',
+       'and they are whole integers -- the seconds are real, never zeroed',
+       ('%s:%s:%s %s'):format(hh, mm, ss, math.type(ss)))
+
+    -- ── drift takes the short way round midnight ──
+    ok(W.drift(10, 86390) == 20, '00:00:10 is twenty seconds AHEAD of 23:59:50')
+    ok(W.drift(86390, 10) == -20, 'and 23:59:50 twenty seconds behind 00:00:10')
+    ok(W.drift(43260, 43200) == 60 and W.drift(43140, 43200) == -60,
+       'a minute either side is plus or minus sixty')
+
+    -- ── the plan ──
+    local function plan(o) return W.clockPlan(o) end
+    local now = 1000 + 600000
+
+    for _, st in ipairs({ PS.LOBBY, PS.WARMUP }) do
+        local p = plan({ state = st, anchor = a, now = now, synced = true })
+        ok(p.mode == 'hold' and p.h == 12 and p.m == 0,
+           ('%s HOLDS at noon, even with an anchor in the mirror'):format(st),
+           p.mode .. ' ' .. tostring(p.why))
+    end
+    local p0 = plan({})
+    ok(p0.mode == 'hold' and p0.h == 12, 'a client that knows nothing yet holds noon')
+
+    local keys = {}
+    for _, st in ipairs({ PS.BUS, PS.FREEFALL, PS.GLIDE, PS.ALIVE, PS.DBNO, PS.OUT }) do
+        local p = plan({ state = st, anchor = a, now = now, synced = true })
+        ok(p.mode == 'run' and p.rate == 5000 and p.sec == W.timeAt(a, now),
+           ('%s RUNS from the anchor'):format(st), p.mode .. ' ' .. tostring(p.sec))
+        keys[p.key] = true
+    end
+    local n = 0
+    for _ in pairs(keys) do n = n + 1 end
+    ok(n == 1,
+       'and every state from the bus to out is ONE key -- one write for the whole match',
+       ('%d keys'):format(n))
+
+    local pa = plan({ state = PS.ALIVE, anchor = a, now = now, synced = true })
+    local pb = plan({ state = PS.ALIVE, anchor = W.anchor(5000), now = now, synced = true })
+    ok(pa.key ~= pb.key, 'a new anchor -- a new bus -- is a new key, and so a new write')
+    local pc = plan({ state = PS.ALIVE, now = now, synced = true,
+                      anchor = { at = a.at, startSec = a.startSec, msPerMin = a.msPerMin } })
+    ok(pa.key == pc.key,
+       'the same anchor arriving again in a new table is the SAME key -- a digest '
+       .. 'twice a second writes nothing')
+
+    local noAnchor = plan({ state = PS.ALIVE, now = now, synced = true })
+    ok(noAnchor.mode == 'hold' and noAnchor.h == 12,
+       'a running state with no anchor holds noon rather than inventing a clock',
+       noAnchor.mode .. ' ' .. tostring(noAnchor.why))
+    local bad = plan({ state = PS.ALIVE, now = now, synced = true,
+                       anchor = { at = 1, startSec = 1, msPerMin = 0 } })
+    ok(bad.mode == 'hold', 'and so does one with a zero-rate anchor', bad.mode)
+
+    local unsynced = plan({ state = PS.ALIVE, anchor = a, now = now, synced = false })
+    ok(unsynced.mode == 'wait' and unsynced.key == nil,
+       'an anchor with no synced server time WAITS -- no guess, so no snap after it',
+       unsynced.mode)
+
+    -- ── spectating ──
+    local watched = W.anchor(1000 - 300000)
+    local ps = plan({ state = PS.LOBBY, spectating = true, watchAnchor = watched,
+                      now = now, synced = true })
+    ok(ps.mode == 'run' and ps.anchor == watched and ps.why == 'spectating',
+       'a spectator in the lobby runs from the WATCHED match\'s anchor', ps.mode)
+    local ps2 = plan({ state = PS.LOBBY, spectating = true, now = now, synced = true })
+    ok(ps2.mode == 'hold', 'with no anchor sent for the watched match, the lobby holds noon')
+    local ps3 = plan({ state = PS.OUT, anchor = a, spectating = true, now = now, synced = true })
+    ok(ps3.mode == 'run' and ps3.key == pa.key,
+       'and a dead player with no watched anchor keeps their own match\'s clock')
+
+    -- ── the override comes first ──
+    W.setTime(21, 30)
+    local pt = plan({ state = PS.ALIVE, anchor = a, now = now, synced = true })
+    ok(pt.mode == 'hold' and pt.h == 21 and pt.m == 30 and pt.why == 'brtime',
+       'brtime HOLDS its time over a running match', pt.mode .. ' ' .. tostring(pt.why))
+    local pl = plan({ state = PS.LOBBY })
+    ok(pl.key == pt.key, 'and over the lobby, with the same key')
+    W.setTime(0, 0)
+    local pm = plan({ state = PS.ALIVE, anchor = a, now = now, synced = true })
+    ok(pm.mode == 'hold' and pm.h == 0 and pm.m == 0, 'midnight is a real override')
+    W.clearTime()
+    local pr = plan({ state = PS.ALIVE, anchor = a, now = now, synced = true })
+    ok(pr.mode == 'run' and pr.key == pa.key,
+       'and clearing it hands the match its own clock back, on the same anchor')
+
+    -- ── the late joiner: same anchor, same server time, same sky ──
+    --
+    -- Two clients whose local timers and offsets differ by hours, estimating the
+    -- same server time. What each passes clockPlan is BR.Clock.now(), local timer
+    -- plus offset, so the answer cannot depend on either half on its own.
+    local serverNow = a.at + 600000
+    local early = { timer = 5000,     offset = serverNow - 5000 }
+    local lateC = { timer = 98765432, offset = serverNow - 98765432 }
+    local pe = plan({ state = PS.ALIVE, anchor = a, synced = true,
+                      now = early.timer + early.offset })
+    local pj = plan({ state = PS.ALIVE, anchor = a, synced = true,
+                      now = lateC.timer + lateC.offset })
+    ok(pe.sec == pj.sec and pe.sec == 14 * 3600,
+       'a late joiner and a player who rode the bus compute the same time: ten '
+       .. 'minutes after the bus is 14:00 for both', ('%s / %s'):format(pe.sec, pj.sec))
 end
 
 -- ---------------------------------------------------------------------------
