@@ -8243,7 +8243,11 @@ do
         said({ 'rotor', v.name })
         eq((plays()[#plays()] or {}).name, v.sound, ('`rotor %s` plays %s'):format(v.name, v.sound))
     end
-    eq(#A.rotorVariants, 4, 'four variants: default, near, far, loud')
+    eq(#A.rotorVariants, 5, 'five variants: default, near, far, loud, before')
+    -- `before` (2026-10-03's default, for an A/B by ear) is picked by name too.
+    said({ 'rotor', 'before' })
+    eq((plays()[#plays()] or {}).name, 'cargobob_rotor_before',
+       '`rotor before` plays the old default')
 
     -- OFF: engine only, now and on the next flyover, and no bank asked for.
     said({ 'rotor', 'off' })

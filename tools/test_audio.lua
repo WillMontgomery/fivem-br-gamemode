@@ -95,16 +95,25 @@ local A = BR.Config.Airdrop
 -- units are undocumented, so four variants of one wave bracket the target and
 -- `/brairdrop rotor at 300` picks by ear. Changing a rung is a decision; it
 -- changes here and in tools/build_audio.mjs together.
+--
+-- Owner, 2026-10-04: "please double the audible volume of the cargobob if you
+-- can." Every rung is +1000 (+10 dB) on 2026-10-03's, at the same scale, and
+-- `before` is that day's default exactly, for an A/B by ear.
 local LADDER = {
-    { name = 'default', script = 'cargobob_rotor',      sound = 'br_cargobob_rotor_sp',
+    { name = 'default', script = 'cargobob_rotor',        sound = 'br_cargobob_rotor_sp',
+      curveScale = 1000, category = 'scripted',        volume = 1000 },
+    { name = 'near',    script = 'cargobob_rotor_near',   sound = 'br_cargobob_rotor_near_sp',
+      curveScale = 300,  category = 'scripted',        volume = 1000 },
+    { name = 'far',     script = 'cargobob_rotor_far',    sound = 'br_cargobob_rotor_far_sp',
+      curveScale = 2500, category = 'scripted',        volume = 1000 },
+    { name = 'loud',    script = 'cargobob_rotor_loud',   sound = 'br_cargobob_rotor_loud_sp',
+      curveScale = 1000, category = 'scripted_louder', volume = 1600 },
+    { name = 'before',  script = 'cargobob_rotor_before', sound = 'br_cargobob_rotor_before_sp',
       curveScale = 1000, category = 'scripted',        volume = 0 },
-    { name = 'near',    script = 'cargobob_rotor_near', sound = 'br_cargobob_rotor_near_sp',
-      curveScale = 300,  category = 'scripted',        volume = 0 },
-    { name = 'far',     script = 'cargobob_rotor_far',  sound = 'br_cargobob_rotor_far_sp',
-      curveScale = 2500, category = 'scripted',        volume = 0 },
-    { name = 'loud',    script = 'cargobob_rotor_loud', sound = 'br_cargobob_rotor_loud_sp',
-      curveScale = 1000, category = 'scripted_louder', volume = 600 },
 }
+-- What shipped 2026-10-03, rung for rung: the +10 dB is measured against it.
+local SHIPPED = { default = 0, near = 0, far = 0, loud = 600 }
+local DOUBLE_MB = 1000
 local PACK, CONTAINER = 'br_sfx', 'br_cargobob'
 local STREAM = 'br_cargobob_rotor'
 local SOUNDSET = 'br_airdrop_soundset'
@@ -357,7 +366,7 @@ end
 local records = {}         -- [nameHash] = { at (data-block offset), len, ... }
 local dataLen
 
-describe('the .rel: a soundset, four variants, one wave between them')
+describe('the .rel: a soundset, five variants, one wave between them')
 do
     local relType, pos
     relType, dataLen, pos = string.unpack('<I4I4', rel)
@@ -382,7 +391,7 @@ do
     -- THE INDEX, sorted by name hash rotated right 8 bits.
     local count
     count, pos = string.unpack('<I4', rel, pos)
-    eq(count, #LADDER + 1, 'five entries: four SimpleSounds and the SoundSet')
+    eq(count, #LADDER + 1, 'six entries: five SimpleSounds and the SoundSet')
     local prev = -1
     local sorted = true
     local covered = 4
@@ -401,6 +410,7 @@ do
 
     -- THE SIMPLESOUNDS: each variant's numbers, and the one wave.
     local packWant, hashWant = {}, {}
+    local volumeOf = {}
     for _, v in ipairs(LADDER) do
         local r = records[joaat(v.sound)]
         ok(r ~= nil, ('%s is in the index'):format(v.sound))
@@ -418,6 +428,7 @@ do
             eq(h.Category, joaat(v.category),
                ('%s: category %s'):format(v.name, v.category))
             eq(h.Volume, v.volume, ('%s: volume %d'):format(v.name, v.volume))
+            volumeOf[v.name] = h.Volume
             eq(h.AttackTime, 1000, v.name .. ': a one-second fade in')
             eq(h.ReleaseTime, 1500, v.name .. ': a 1.5-second fade out on stop')
             eq(h.DopplerFactor, 0, v.name .. ': no doppler on a teleported aircraft')
@@ -438,6 +449,26 @@ do
         end
     end
 
+    -- TWICE AS LOUD (owner, 2026-10-04), read off the file: every rung that
+    -- shipped 2026-10-03 is +10 dB on it.
+    for name, old in pairs(SHIPPED) do
+        eq((volumeOf[name] or old) - old, DOUBLE_MB,
+           ('%s is +10 dB on what shipped 2026-10-03'):format(name))
+    end
+
+    -- AND `before` IS THAT DAY'S DEFAULT TO THE BYTE: the default's record with
+    -- its Volume put back to 0, everything else (category, scale, envelope,
+    -- wave) the same. Volume is the first field after the type and flags.
+    local function record(sound)
+        local r = records[joaat(sound)]
+        if not r then return '' end
+        return rel:sub(dataStart + r.at, dataStart + r.at + r.len - 1)
+    end
+    local now, was = record('br_cargobob_rotor_sp'), record('br_cargobob_rotor_before_sp')
+    ok(#was == #now and was:sub(1, 5) == now:sub(1, 5) and was:sub(8) == now:sub(8),
+       '`before` is the default\'s record but for its Volume')
+    eq(volumeOf.before, SHIPPED.default, '`before` plays at the 2026-10-03 default\'s volume')
+
     -- THE SOUNDSET: script name -> SimpleSound, sorted by script-name hash.
     local s = records[joaat(SOUNDSET)]
     ok(s ~= nil, 'br_airdrop_soundset is in the index')
@@ -451,7 +482,7 @@ do
         eq(h.Flags, 0xAAAAAAAA, 'with no header fields')
         local n
         n, p = string.unpack('<i4', rel, p)
-        eq(n, #LADDER, 'four entries')
+        eq(n, #LADDER, 'five entries')
         local byScript = {}
         local last = -1
         local inOrder = true

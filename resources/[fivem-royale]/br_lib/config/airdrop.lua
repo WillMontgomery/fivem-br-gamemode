@@ -640,6 +640,10 @@ BR.Config.Airdrop = {
     --   far      2.5x the middle guess   loud  the middle guess, a louder
     --                                          category and +6 dB
     --
+    -- TWICE AS LOUD SINCE 2026-10-04 ("please double the audible volume of the
+    -- cargobob if you can"): every rung is +10 dB, the distance unchanged.
+    -- `before` is the 2026-10-03 default exactly, for an A/B by ear.
+    --
     -- `rotorSound` nil turns the recording off; the engine still plays.
     rotorBank       = 'br_sfx/br_cargobob',
     rotorSoundSet   = 'br_airdrop_soundset',
@@ -653,6 +657,7 @@ BR.Config.Airdrop = {
         { name = 'near',    sound = 'cargobob_rotor_near' },
         { name = 'far',     sound = 'cargobob_rotor_far' },
         { name = 'loud',    sound = 'cargobob_rotor_loud' },
+        { name = 'before',  sound = 'cargobob_rotor_before' },
     },
 
     -- ------------------------------------------------------------------

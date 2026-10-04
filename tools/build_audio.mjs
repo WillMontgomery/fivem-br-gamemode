@@ -49,6 +49,22 @@
 // reading as 1.0x is inferred, and vanilla sirens use 300. So four variants
 // bracket the target, and `/brairdrop rotor at 300` in game picks between them.
 // Change a number here, rebuild, and tools/test_audio.lua says what to update.
+//
+// ═══ TWICE AS LOUD: +10 dB IN THE SOUND DATA, NOT IN THE WAVE ═══
+//
+// Owner, 2026-10-04: "please double the audible volume of the cargobob if you
+// can." Twice as loud to the ear is about +10 dB, so every variant's Volume went
+// up by 1000 (hundredths of a dB). `before` is the old default, kept for an A/B.
+//
+// THE WAVE COULD NOT GIVE IT. It already sits at -15.3 LUFS with a -0.8 dBTP
+// peak. Another +10 dB into the same limiter measured -11.2 LUFS: +4.1 LU for
+// +10 dB of gain, the rest squashed flat (loudness range 1.1 -> 0.3 LU).
+//
+// THE SOUND DATA CAN. Volume is a signed 16-bit level that the game adds up the
+// category tree, and Rockstar's own sounds.dat54 uses positive values on 2060
+// sounds, 17 of them +10 to +12 dB on `scripted`. FiveM's categories.dat22 puts
+// `scripted` at -14 dB net (base -13, game_world -7, scripted +6), so +10 dB on
+// top still nets -4 dB. `scripted_louder` is a child of `scripted` at +6 dB more.
 
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, writeFileSync, existsSync } from 'node:fs';
@@ -68,8 +84,9 @@ const SPEC = {
     trimEnd: 57.5,
     crossfade: 0.5,
     rate: 32000,
-    // +6 dB into a limiter at -1 dBFS: about +4 LU on this file. Distance has to
-    // come from the sound data; the wave has little left to give.
+    // +6 dB into a limiter at -1 dBFS: +5.4 LU on this file (-20.7 to -15.3
+    // LUFS, measured 2026-10-04). Loudness and distance have to come from the
+    // sound data; the wave has little left to give.
     gainDb: 6,
     limit: 0.891,
 
@@ -88,15 +105,19 @@ const SPEC = {
     // The aircraft is moved by coordinate writes, so its velocity is not to be
     // trusted with a pitch shift.
     doppler: 0,
+    // Volumes are +1000 on what shipped 2026-10-03 (0, 0, 0, 600); `before` is
+    // that day's default exactly.
     variants: [
-        { script: 'cargobob_rotor',      sound: 'br_cargobob_rotor_sp',
-          volume: 0,   category: 'scripted',        curveScale: 1000 },
-        { script: 'cargobob_rotor_near', sound: 'br_cargobob_rotor_near_sp',
-          volume: 0,   category: 'scripted',        curveScale: 300 },
-        { script: 'cargobob_rotor_far',  sound: 'br_cargobob_rotor_far_sp',
-          volume: 0,   category: 'scripted',        curveScale: 2500 },
-        { script: 'cargobob_rotor_loud', sound: 'br_cargobob_rotor_loud_sp',
-          volume: 600, category: 'scripted_louder', curveScale: 1000 },
+        { script: 'cargobob_rotor',        sound: 'br_cargobob_rotor_sp',
+          volume: 1000, category: 'scripted',        curveScale: 1000 },
+        { script: 'cargobob_rotor_near',   sound: 'br_cargobob_rotor_near_sp',
+          volume: 1000, category: 'scripted',        curveScale: 300 },
+        { script: 'cargobob_rotor_far',    sound: 'br_cargobob_rotor_far_sp',
+          volume: 1000, category: 'scripted',        curveScale: 2500 },
+        { script: 'cargobob_rotor_loud',   sound: 'br_cargobob_rotor_loud_sp',
+          volume: 1600, category: 'scripted_louder', curveScale: 1000 },
+        { script: 'cargobob_rotor_before', sound: 'br_cargobob_rotor_before_sp',
+          volume: 0,    category: 'scripted',        curveScale: 1000 },
     ],
 };
 
@@ -507,7 +528,7 @@ function main() {
     console.log(`rel  ${rel.length} bytes  soundset ${SPEC.soundSet}, bank `
                 + `${SPEC.pack}/${SPEC.container}`);
     for (const v of SPEC.variants) {
-        console.log(`     ${v.script.padEnd(20)} scale ${String(v.curveScale).padStart(4)}  `
+        console.log(`     ${v.script.padEnd(22)} scale ${String(v.curveScale).padStart(4)}  `
                     + `${v.category.padEnd(15)} volume ${v.volume}`);
     }
 }
