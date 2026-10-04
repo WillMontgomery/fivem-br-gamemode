@@ -676,72 +676,46 @@ local function resolveFade(fc, zb, zt)
             ramp.tries or 0, math.max(1, math.floor(fc.nameTries or 32)))
 end
 
---- @param shape table       an inset BR.StormShape
---- @param alphaScale number 0..1
-local function drawStrip(shape, alphaScale)
-    local rr = cfg.render
-    -- EVERY NUMBER BELOW HAS AN `or` DEFAULT AND THIS IS WHY. A config without a
-    -- `strip` table is the one shape of failure that would be silent: the FRAME
-    -- callback is pcall'd, so indexing nil would lose the whole wall and leave one
-    -- line in the console rather than a crash anybody notices.
-    local sp = rr.strip or {}
-    local col = rr.colour
-    local SS = BR.StormShape
+-- ═══ THE STRIP IS BUILT ONCE PER SHAPE AND DRAWN EVERY FRAME (#393) ═══
+--
+-- Owner, 2026-10-04, from resmon at 1080p: br_core went from about 0.34 ms a frame
+-- to 0.7 from the plane's cruise and 1.45 in a match. The walls were most of it,
+-- and part of that was this file rebuilding geometry that had not changed: the
+-- preview circle is one still circle for its whole life and the zone is still for
+-- every hold, yet both were walked from nothing on every frame -- the runs, the
+-- per-run budget, a trig lookup per vertex and three fresh closures.
+--
+-- So the walk is buildStrip and the frame is drawStrip. The walk writes the quads
+-- into a flat array the CALLER keeps (`g`), and runs again only when the shape or
+-- one of the four numbers it reads changes. A shape that really does move -- a
+-- sweep -- is new every frame and rebuilds every frame, into the same array, so it
+-- pays the walk it always paid and none of the allocation.
+--
+-- NOTHING ABOUT THE PICTURE CHANGES. The walk below is the walk that was here,
+-- moved; each quad's corners, midpoint and normal are the same expressions it
+-- used, computed once instead of once a frame; the face test and the draws are
+-- the same calls in the same order with the same arguments.
 
+--- Numbers per quad in a built strip: ax, ay, bx, by, mid x, mid y, normal x, normal y.
+local QUAD_STRIDE = 8
+
+--- Walk `shape` into `g`: g.q holds g.n quads, QUAD_STRIDE numbers each.
+--- @param g table          the caller's strip; its arrays are reused
+--- @param shape table      an inset BR.StormShape
+--- @param chordM number
+--- @param minSeg number
+--- @param maxPolys number
+--- @param quadPolys number polys one quad costs on the settled fade path
+local function buildStrip(g, shape, chordM, minSeg, maxPolys, quadPolys)
+    local SS = BR.StormShape
     local comps = SS.components(shape)
     local nComp = #comps
+    local q = g.q
+    local nq = 0
+    g.shape, g.chordM, g.minSeg, g.maxPolys, g.quadPolys = shape, chordM, minSeg,
+        maxPolys, quadPolys
+    g.n = 0
     if nComp == 0 then return end
-
-    -- ═══ ROUNDNESS SETS THE STEP, AND THE BUDGET OVERRULES IT ═══
-    --
-    -- Sag goes as ds^2 / 8r, so the step that keeps a quad within chordM of the arc
-    -- it replaces is sqrt(8 * r * chordM). That is priced PER RUN below, off the run
-    -- radius StormShape.runs hands out -- see the note at the walk, which carries
-    -- the two things this used to get wrong and the metres each one cost.
-    local chordM = sp.chordM or 2.0
-
-    -- ═══ THE SPAN IS READ BEFORE THE FADE, BECAUSE THE FADE IS BAKED FROM IT ═══
-    --
-    -- These two used to be read further down, next to the walk. The ramp texture is
-    -- built from the SPAN -- the flat section runs from zb to rampBaseZ and the slope
-    -- from there to zt -- so the span has to exist before the path is resolved, not
-    -- after. It is latched for the session with the texture, which is correct for a
-    -- config read once at boot and would be a live bug the day baseZ or topZ became
-    -- something the game changes mid-match. Nothing does that today.
-    --
-    -- A WALL WITH NO HEIGHT IS NOT A WALL, and the reason to say so here rather than
-    -- trust the config is that the fade DIVIDES by the span. A topZ at or under baseZ
-    -- would make every alpha a nan, and a nan alpha is an invisible wall with nothing
-    -- in the console -- the silent failure this whole file is written against. Drawing
-    -- nothing at all is the honest answer to a wall of no height, and refusing BEFORE
-    -- the ramp is baked also keeps a nan out of the texture, where it would be latched
-    -- for the rest of the session.
-    local zb, zt = sp.baseZ or -150.0, sp.topZ or 850.0
-    if zt <= zb then return end
-
-    -- ═══ WHICH FADE PATH, AND IT IS SETTLED BEFORE THE BUDGET IS DIVIDED ═══
-    --
-    -- Because it CHANGES WHAT A QUAD COSTS. A banded quad is `bands` stacked
-    -- quads, so it is 2 * bands polys and not 2, and a budget that priced every
-    -- quad at two triangles would stop being a poly ceiling the moment the fade
-    -- fell back. Dividing by the real cost is what keeps maxPolys meaning polys.
-    local fc = sp.fade or {}
-    resolveFade(fc, zb, zt)
-    -- A GRADIENT QUAD IS ONE BAND, WHICH IS THE POINT OF IT: the ramp lives inside
-    -- the texture the two triangles are drawn with, instead of being approximated by
-    -- stacking more of them.
-    local gradient = fade.path == 'gradient'
-    local gDict, gTex = ramp.txd, ramp.name
-    -- THE INSET v RANGE COMES OFF THE TEXTURE, NOT OFF THE CONFIG, and it is read
-    -- WITHOUT an `or` default on purpose -- unlike every other number in this
-    -- function. A default of 0.0/1.0 here would be the #341 defect spelled as a
-    -- fallback: silent, invisible in review, and reachable the day buildRamp grows a
-    -- path that forgets to set them. `gradient` is only true after buildRamp returned
-    -- true, and buildRamp sets these before it does.
-    local gV0, gV1 = ramp.v0, ramp.v1
-    local bands = gradient and 1 or math.max(1, math.floor(fc.bands or 3))
-    local quadPolys = 2 * bands
-    sayFade(bands, quadPolys)
 
     -- THE BUDGET IS DIVIDED BEFORE ROUNDNESS IS CONSULTED, so no shape can talk
     -- its way past it: two loops of a disjoint phase-2 breakout would each like
@@ -755,137 +729,7 @@ local function drawStrip(shape, alphaScale)
     -- one loop or two and nothing else in the game builds a shape, so that is a
     -- note for whoever adds the third constructor rather than a live hole.
     local per = math.max(3,
-        math.floor(math.floor((sp.maxPolys or 1024) / quadPolys) / nComp))
-
-    local p = viewpoint()
-    local vx, vy = p.x, p.y
-    local cr, cg, cb = col.r, col.g, col.b
-    local alpha = rr.alpha * alphaScale
-
-    -- ═══ THE RAMP HAS A KINK IN IT, AND ONLY ONE OF THE TWO PATHS DRAWS IT EXACTLY
-    --     -- WHICH IS THE WHOLE DIFFERENCE BETWEEN THEM ═══
-    --
-    -- rampAlpha is the curve: flat at baseAlpha from the wall's bottom up to ground
-    -- level, then falling to topAlpha at the top. The GRADIENT has it baked row by
-    -- row into the texture, so what it draws is the curve. The BANDS sample it at
-    -- each band's own centre and hold that value flat across the band, so what they
-    -- draw is a staircase approximation of the same curve -- which is exactly why the
-    -- owner saw three steps, and exactly why both paths can be compared.
-    --
-    -- THE BANDS SAMPLE AT THE CENTRE RATHER THAN AT THE BOTTOM EDGE, deliberately: a
-    -- flat band is closest to the curve it replaces when it takes the curve's value
-    -- halfway along, and sampling the bottom edge instead would leave the TOP band at
-    -- a non-zero alpha and give the wall a hard cut-off line at 850 m where there is
-    -- currently nothing to see. Centre sampling is not what made the base too faint;
-    -- the ramp starting 150 m underground was, and rampAlpha is where that is fixed.
-    local function alphaAtZ(z)
-        local v = math.floor(alpha * rampAlpha(fc, zb, zt, z) + 0.5)
-        if v < 0 then v = 0 elseif v > 255 then v = 255 end
-        return v
-    end
-
-    --- One quad of the strip, from (ax, ay) to (bx, by), bottom z to top z.
-    ---
-    --- The outward winding is (A_bot, B_bot, A_top) and (B_bot, B_top, A_top):
-    --- take the first triangle's edges as (B_bot - A_bot) and (A_top - A_bot) and
-    --- their cross product is (t.y, -t.x, 0) times the height, which is the right
-    --- of travel and therefore outward. The inward face is each of those two
-    --- triangles wound in reverse, which negates the cross product and nothing
-    --- else -- the geometry is the same surface either way, and only which side
-    --- of it exists changes.
-    ---
-    --- ═══ THE BANDS STACK INSIDE ONE QUAD, SO THE WINDING TEST IS STILL ONE
-    ---     DOT PRODUCT ═══
-    ---
-    --- Every band of a quad is the same vertical plane with the same tangent, so
-    --- the face the viewer is shown is decided once for the quad and not once per
-    --- band. That matters beyond tidiness: a per-band test could in principle
-    --- disagree between bands of one quad and show the viewer a wall with holes in
-    --- it, and there is no geometry in which that would be right.
-    ---
-    --- THE SHARED HORIZONTAL EDGES ARE THE SAME NUMBERS, for the same reason the
-    --- vertical ones are: band i's top z is band i+1's bottom z, carried in a
-    --- variable rather than recomputed from i.
-    --- The gradient spelling of one quad: two triangles, ONE alpha, and the ramp in
-    --- the texture.
-    ---
-    --- ═══ THE ARGUMENT LIST IS THE ONE dui.lua HAS BEEN SHIPPING SINCE #236 ═══
-    ---
-    --- 25 arguments: nine position floats, then ONE (r, g, b, a) for the whole
-    --- triangle, then the dictionary and texture, then nine UVW floats. Copied off
-    --- the four working call sites at dui.lua:410 and :1131 rather than off a
-    --- reference, which is the point of using this native instead of the per-vertex
-    --- one -- the spelling is not a guess here.
-    ---
-    --- THE RGB ARE PLAIN 0-255 INTS, exactly as DRAW_POLY takes them, so the colour
-    --- needs no conversion and gets none.
-    ---
-    --- ═══ THE UVs, AND EVERY ONE OF THE THREE IS A DECISION ═══
-    ---
-    ---   * `w = 1.0`, not 0.0. Every proven call in dui.lua passes 1.0 per vertex.
-    ---     The earlier dormant version of this function passed 0.0, which was read
-    ---     off a reference saying the component is ignored -- but "ignored" is a
-    ---     claim about a native nothing in this tree had ever successfully called,
-    ---     and the working call sites are better evidence than the claim.
-    ---   * `u = 0.5` at every vertex, so every sample lands in the middle of eight
-    ---     identical columns. The u axis carries no information at all; giving it a
-    ---     constant in the interior means no clamp rule, wrap rule or bilinear edge
-    ---     case can reach the result.
-    ---   * `v` spans the wall's BOTTOM to its top, and v = 0 is the texture's first
-    ---     row -- so row 0 holds the base alpha. buildRamp's header has the convention
-    ---     and where in this tree it is already relied on. It runs gV0 to gV1 -- the
-    ---     CENTRES of the first and last rows -- rather than 0.0 to 1.0, and that half
-    ---     texel is #341: the bright hairline the owner saw along the top edge is a
-    ---     sampler reading across the wrap boundary at v = 1.0. buildRamp's tail has
-    ---     the measurement and what each address mode does with it.
-    local function gradientQuad(ax, ay, bx, by, out, av)
-        if out then
-            DrawSpritePoly(ax, ay, zb, bx, by, zb, ax, ay, zt,
-                cr, cg, cb, av, gDict, gTex,
-                0.5, gV0, 1.0,  0.5, gV0, 1.0,  0.5, gV1, 1.0)
-            DrawSpritePoly(bx, by, zb, bx, by, zt, ax, ay, zt,
-                cr, cg, cb, av, gDict, gTex,
-                0.5, gV0, 1.0,  0.5, gV1, 1.0,  0.5, gV1, 1.0)
-        else
-            DrawSpritePoly(ax, ay, zt, bx, by, zb, ax, ay, zb,
-                cr, cg, cb, av, gDict, gTex,
-                0.5, gV1, 1.0,  0.5, gV0, 1.0,  0.5, gV0, 1.0)
-            DrawSpritePoly(ax, ay, zt, bx, by, zt, bx, by, zb,
-                cr, cg, cb, av, gDict, gTex,
-                0.5, gV1, 1.0,  0.5, gV1, 1.0,  0.5, gV0, 1.0)
-        end
-    end
-
-    local function quad(ax, ay, bx, by)
-        local nx, ny = by - ay, -(bx - ax)
-        local out = (vx - (ax + bx) * 0.5) * nx
-            + (vy - (ay + by) * 0.5) * ny >= 0.0
-        if gradient then
-            -- THE SINGLE ALPHA IS render.alpha TIMES THE PHASE CLOCK AND NOTHING
-            -- ELSE. The ramp is already in the texture, so multiplying it in here as
-            -- well would square it -- a wall that fades to nothing by about 300 m.
-            gradientQuad(ax, ay, bx, by, out,
-                math.max(0, math.min(255, math.floor(alpha + 0.5))))
-            return
-        end
-        local h = (zt - zb) / bands
-        local z0 = zb
-        for i = 1, bands do
-            -- THE LAST BAND TAKES zt ITSELF rather than `zb + i * h`, so the top of
-            -- the wall is exactly the config's top and not a rounding of it -- the
-            -- same reason the closing quad of a loop reuses the stored first point.
-            local z1 = (i == bands) and zt or (z0 + h)
-            local av = alphaAtZ((z0 + z1) * 0.5)
-            if out then
-                DrawPoly(ax, ay, z0, bx, by, z0, ax, ay, z1, cr, cg, cb, av)
-                DrawPoly(bx, by, z0, bx, by, z1, ax, ay, z1, cr, cg, cb, av)
-            else
-                DrawPoly(ax, ay, z1, bx, by, z0, ax, ay, z0, cr, cg, cb, av)
-                DrawPoly(ax, ay, z1, bx, by, z1, bx, by, z0, cr, cg, cb, av)
-            end
-            z0 = z1
-        end
-    end
+        math.floor(math.floor(maxPolys / quadPolys) / nComp))
 
     -- ═══ ONE CLOSED STRIP PER COMPONENT, AND NEVER A QUAD BETWEEN THEM ═══
     --
@@ -975,7 +819,7 @@ local function drawStrip(shape, alphaScale)
         -- above spelled in rounding. Summed, that total is the component's own count
         -- -- so n is derived from roundness instead of from the perimeter, and the
         -- split below then hands each run back exactly what it asked for.
-        local want, total = {}, 0
+        local want, total = g.want, 0
         for i = 1, nRuns do
             local rn = runs[i]
             local k = 1
@@ -987,7 +831,7 @@ local function drawStrip(shape, alphaScale)
         end
 
         local n = math.max(nRuns, math.max(3,
-            math.min(per, math.max(sp.minSeg or 24, total))))
+            math.min(per, math.max(minSeg, total))))
 
         -- WHERE EACH RUN ENDS, AS A POINT INDEX, and it is CUMULATIVE rather than
         -- a share handed to each run separately. Rounding each run's own share
@@ -1002,7 +846,8 @@ local function drawStrip(shape, alphaScale)
         -- integer, so each run is handed back precisely the count it asked for. The
         -- minSeg floor spreads the surplus proportionally and the poly budget takes
         -- its share back the same way.
-        local edge = { [0] = 0 }
+        local edge = g.edge
+        edge[0] = 0
         local cum = 0
         for i = 1, nRuns do
             cum = cum + want[i]
@@ -1041,12 +886,245 @@ local function drawStrip(shape, alphaScale)
                     -- the vertex is ON the corner either way rather than past it.
                     bx, by = SS.pointAtComponent(shape, c, t0 + rlen * j / cnt)
                 end
-                quad(ax, ay, bx, by)
+                -- The quad, stored rather than drawn: its corners, and the midpoint
+                -- and normal drawStrip's face test reads -- the same expressions
+                -- that test always computed, so the same numbers.
+                local o = nq * QUAD_STRIDE
+                q[o + 1], q[o + 2], q[o + 3], q[o + 4] = ax, ay, bx, by
+                q[o + 5], q[o + 6] = (ax + bx) * 0.5, (ay + by) * 0.5
+                q[o + 7], q[o + 8] = by - ay, -(bx - ax)
+                nq = nq + 1
                 ax, ay = bx, by
             end
         end
     end
+    g.n = nq
 end
+
+--- The strip a caller that keeps none is drawn from, and the per-frame band
+--- samples. File-level so the frame allocates neither.
+local scratchStrip = { q = {}, want = {}, edge = { [0] = 0 }, n = 0 }
+local stripBands = { z0 = {}, z1 = {}, a = {} }
+
+--- A strip for a caller to keep between frames; see buildStrip.
+local function newStrip()
+    return { q = {}, want = {}, edge = { [0] = 0 }, n = 0 }
+end
+
+--- What drawWall keeps for a caller between frames: the zone it was last handed,
+--- that zone's inset, and the inset's built strip.
+local function newWallMemo()
+    return { zone = nil, inset = nil, shape = nil, strip = newStrip() }
+end
+
+--- @param shape table       an inset BR.StormShape
+--- @param alphaScale number 0..1
+--- @param g table|nil      where the built strip is kept; see buildStrip
+local function drawStrip(shape, alphaScale, g)
+    local rr = cfg.render
+    -- EVERY NUMBER BELOW HAS AN `or` DEFAULT AND THIS IS WHY. A config without a
+    -- `strip` table is the one shape of failure that would be silent: the FRAME
+    -- callback is pcall'd, so indexing nil would lose the whole wall and leave one
+    -- line in the console rather than a crash anybody notices.
+    local sp = rr.strip or {}
+    local col = rr.colour
+    local SS = BR.StormShape
+
+    if #SS.components(shape) == 0 then return end
+
+    -- ═══ ROUNDNESS SETS THE STEP, AND THE BUDGET OVERRULES IT ═══
+    --
+    -- Sag goes as ds^2 / 8r, so the step that keeps a quad within chordM of the arc
+    -- it replaces is sqrt(8 * r * chordM). That is priced PER RUN below, off the run
+    -- radius StormShape.runs hands out -- see the note at the walk, which carries
+    -- the two things this used to get wrong and the metres each one cost.
+    local chordM = sp.chordM or 2.0
+
+    -- ═══ THE SPAN IS READ BEFORE THE FADE, BECAUSE THE FADE IS BAKED FROM IT ═══
+    --
+    -- These two used to be read further down, next to the walk. The ramp texture is
+    -- built from the SPAN -- the flat section runs from zb to rampBaseZ and the slope
+    -- from there to zt -- so the span has to exist before the path is resolved, not
+    -- after. It is latched for the session with the texture, which is correct for a
+    -- config read once at boot and would be a live bug the day baseZ or topZ became
+    -- something the game changes mid-match. Nothing does that today.
+    --
+    -- A WALL WITH NO HEIGHT IS NOT A WALL, and the reason to say so here rather than
+    -- trust the config is that the fade DIVIDES by the span. A topZ at or under baseZ
+    -- would make every alpha a nan, and a nan alpha is an invisible wall with nothing
+    -- in the console -- the silent failure this whole file is written against. Drawing
+    -- nothing at all is the honest answer to a wall of no height, and refusing BEFORE
+    -- the ramp is baked also keeps a nan out of the texture, where it would be latched
+    -- for the rest of the session.
+    local zb, zt = sp.baseZ or -150.0, sp.topZ or 850.0
+    if zt <= zb then return end
+
+    -- ═══ WHICH FADE PATH, AND IT IS SETTLED BEFORE THE BUDGET IS DIVIDED ═══
+    --
+    -- Because it CHANGES WHAT A QUAD COSTS. A banded quad is `bands` stacked
+    -- quads, so it is 2 * bands polys and not 2, and a budget that priced every
+    -- quad at two triangles would stop being a poly ceiling the moment the fade
+    -- fell back. Dividing by the real cost is what keeps maxPolys meaning polys.
+    local fc = sp.fade or {}
+    resolveFade(fc, zb, zt)
+    -- A GRADIENT QUAD IS ONE BAND, WHICH IS THE POINT OF IT: the ramp lives inside
+    -- the texture the two triangles are drawn with, instead of being approximated by
+    -- stacking more of them.
+    local gradient = fade.path == 'gradient'
+    local gDict, gTex = ramp.txd, ramp.name
+    -- THE INSET v RANGE COMES OFF THE TEXTURE, NOT OFF THE CONFIG, and it is read
+    -- WITHOUT an `or` default on purpose -- unlike every other number in this
+    -- function. A default of 0.0/1.0 here would be the #341 defect spelled as a
+    -- fallback: silent, invisible in review, and reachable the day buildRamp grows a
+    -- path that forgets to set them. `gradient` is only true after buildRamp returned
+    -- true, and buildRamp sets these before it does.
+    local gV0, gV1 = ramp.v0, ramp.v1
+    local bands = gradient and 1 or math.max(1, math.floor(fc.bands or 3))
+    local quadPolys = 2 * bands
+    sayFade(bands, quadPolys)
+
+    local minSeg, maxPolys = sp.minSeg or 24, sp.maxPolys or 1024
+    g = g or scratchStrip
+    if g.shape ~= shape or g.chordM ~= chordM or g.minSeg ~= minSeg
+        or g.maxPolys ~= maxPolys or g.quadPolys ~= quadPolys then
+        buildStrip(g, shape, chordM, minSeg, maxPolys, quadPolys)
+    end
+
+    local p = viewpoint()
+    local vx, vy = p.x, p.y
+    local cr, cg, cb = col.r, col.g, col.b
+    local alpha = rr.alpha * alphaScale
+
+    -- ═══ THE RAMP HAS A KINK IN IT, AND ONLY ONE OF THE TWO PATHS DRAWS IT EXACTLY
+    --     -- WHICH IS THE WHOLE DIFFERENCE BETWEEN THEM ═══
+    --
+    -- rampAlpha is the curve: flat at baseAlpha from the wall's bottom up to ground
+    -- level, then falling to topAlpha at the top. The GRADIENT has it baked row by
+    -- row into the texture, so what it draws is the curve. The BANDS sample it at
+    -- each band's own centre and hold that value flat across the band, so what they
+    -- draw is a staircase approximation of the same curve -- which is exactly why the
+    -- owner saw three steps, and exactly why both paths can be compared.
+    --
+    -- THE BANDS SAMPLE AT THE CENTRE RATHER THAN AT THE BOTTOM EDGE, deliberately: a
+    -- flat band is closest to the curve it replaces when it takes the curve's value
+    -- halfway along, and sampling the bottom edge instead would leave the TOP band at
+    -- a non-zero alpha and give the wall a hard cut-off line at 850 m where there is
+    -- currently nothing to see. Centre sampling is not what made the base too faint;
+    -- the ramp starting 150 m underground was, and rampAlpha is where that is fixed.
+    --
+    -- Sampled once a frame per band rather than once per band per quad: the value
+    -- depends on the band and the frame's alpha and on nothing about the quad, so
+    -- every quad drew the same numbers.
+    local bandZ0, bandZ1, bandA = stripBands.z0, stripBands.z1, stripBands.a
+    if not gradient then
+        local h = (zt - zb) / bands
+        local z0 = zb
+        for i = 1, bands do
+            -- THE LAST BAND TAKES zt ITSELF rather than `zb + i * h`, so the top of
+            -- the wall is exactly the config's top and not a rounding of it -- the
+            -- same reason the closing quad of a loop reuses the stored first point.
+            local z1 = (i == bands) and zt or (z0 + h)
+            local v = math.floor(alpha * rampAlpha(fc, zb, zt, (z0 + z1) * 0.5) + 0.5)
+            if v < 0 then v = 0 elseif v > 255 then v = 255 end
+            bandZ0[i], bandZ1[i], bandA[i] = z0, z1, v
+            z0 = z1
+        end
+    end
+
+    --- One quad of the strip, from (ax, ay) to (bx, by), bottom z to top z.
+    ---
+    --- The outward winding is (A_bot, B_bot, A_top) and (B_bot, B_top, A_top):
+    --- take the first triangle's edges as (B_bot - A_bot) and (A_top - A_bot) and
+    --- their cross product is (t.y, -t.x, 0) times the height, which is the right
+    --- of travel and therefore outward. The inward face is each of those two
+    --- triangles wound in reverse, which negates the cross product and nothing
+    --- else -- the geometry is the same surface either way, and only which side
+    --- of it exists changes.
+    ---
+    --- ═══ THE BANDS STACK INSIDE ONE QUAD, SO THE WINDING TEST IS STILL ONE
+    ---     DOT PRODUCT ═══
+    ---
+    --- Every band of a quad is the same vertical plane with the same tangent, so
+    --- the face the viewer is shown is decided once for the quad and not once per
+    --- band. That matters beyond tidiness: a per-band test could in principle
+    --- disagree between bands of one quad and show the viewer a wall with holes in
+    --- it, and there is no geometry in which that would be right.
+    ---
+    --- THE SHARED HORIZONTAL EDGES ARE THE SAME NUMBERS, for the same reason the
+    --- vertical ones are: band i's top z is band i+1's bottom z, carried in a
+    --- variable rather than recomputed from i.
+    --- The gradient spelling of one quad: two triangles, ONE alpha, and the ramp in
+    --- the texture.
+    ---
+    --- ═══ THE ARGUMENT LIST IS THE ONE dui.lua HAS BEEN SHIPPING SINCE #236 ═══
+    ---
+    --- 25 arguments: nine position floats, then ONE (r, g, b, a) for the whole
+    --- triangle, then the dictionary and texture, then nine UVW floats. Copied off
+    --- the four working call sites at dui.lua:410 and :1131 rather than off a
+    --- reference, which is the point of using this native instead of the per-vertex
+    --- one -- the spelling is not a guess here.
+    ---
+    --- THE RGB ARE PLAIN 0-255 INTS, exactly as DRAW_POLY takes them, so the colour
+    --- needs no conversion and gets none.
+    ---
+    --- ═══ THE UVs, AND EVERY ONE OF THE THREE IS A DECISION ═══
+    ---
+    ---   * `w = 1.0`, not 0.0. Every proven call in dui.lua passes 1.0 per vertex.
+    ---     The earlier dormant version of this function passed 0.0, which was read
+    ---     off a reference saying the component is ignored -- but "ignored" is a
+    ---     claim about a native nothing in this tree had ever successfully called,
+    ---     and the working call sites are better evidence than the claim.
+    ---   * `u = 0.5` at every vertex, so every sample lands in the middle of eight
+    ---     identical columns. The u axis carries no information at all; giving it a
+    ---     constant in the interior means no clamp rule, wrap rule or bilinear edge
+    ---     case can reach the result.
+    ---   * `v` spans the wall's BOTTOM to its top, and v = 0 is the texture's first
+    ---     row -- so row 0 holds the base alpha. buildRamp's header has the convention
+    ---     and where in this tree it is already relied on. It runs gV0 to gV1 -- the
+    ---     CENTRES of the first and last rows -- rather than 0.0 to 1.0, and that half
+    ---     texel is #341: the bright hairline the owner saw along the top edge is a
+    ---     sampler reading across the wrap boundary at v = 1.0. buildRamp's tail has
+    ---     the measurement and what each address mode does with it.
+    -- THE SINGLE ALPHA IS render.alpha TIMES THE PHASE CLOCK AND NOTHING ELSE. The
+    -- ramp is already in the texture, so multiplying it in here as well would
+    -- square it -- a wall that fades to nothing by about 300 m.
+    local av = math.max(0, math.min(255, math.floor(alpha + 0.5)))
+    local q = g.q
+    for i = 0, g.n - 1 do
+        local o = i * QUAD_STRIDE
+        local ax, ay, bx, by = q[o + 1], q[o + 2], q[o + 3], q[o + 4]
+        local out = (vx - q[o + 5]) * q[o + 7] + (vy - q[o + 6]) * q[o + 8] >= 0.0
+        if gradient then
+            if out then
+                DrawSpritePoly(ax, ay, zb, bx, by, zb, ax, ay, zt,
+                    cr, cg, cb, av, gDict, gTex,
+                    0.5, gV0, 1.0,  0.5, gV0, 1.0,  0.5, gV1, 1.0)
+                DrawSpritePoly(bx, by, zb, bx, by, zt, ax, ay, zt,
+                    cr, cg, cb, av, gDict, gTex,
+                    0.5, gV0, 1.0,  0.5, gV1, 1.0,  0.5, gV1, 1.0)
+            else
+                DrawSpritePoly(ax, ay, zt, bx, by, zb, ax, ay, zb,
+                    cr, cg, cb, av, gDict, gTex,
+                    0.5, gV1, 1.0,  0.5, gV0, 1.0,  0.5, gV0, 1.0)
+                DrawSpritePoly(ax, ay, zt, bx, by, zt, bx, by, zb,
+                    cr, cg, cb, av, gDict, gTex,
+                    0.5, gV1, 1.0,  0.5, gV1, 1.0,  0.5, gV0, 1.0)
+            end
+        else
+            for b = 1, bands do
+                local z0, z1, ab = bandZ0[b], bandZ1[b], bandA[b]
+                if out then
+                    DrawPoly(ax, ay, z0, bx, by, z0, ax, ay, z1, cr, cg, cb, ab)
+                    DrawPoly(bx, by, z0, bx, by, z1, ax, ay, z1, cr, cg, cb, ab)
+                else
+                    DrawPoly(ax, ay, z1, bx, by, z0, ax, ay, z0, cr, cg, cb, ab)
+                    DrawPoly(ax, ay, z1, bx, by, z1, bx, by, z0, cr, cg, cb, ab)
+                end
+            end
+        end
+    end
+end
+
 
 --- Draw a curtain on the boundary of `zone`, at `alphaScale` of full strength.
 ---
@@ -1071,9 +1149,18 @@ end
 --- NOTHING HERE READS THE RECORD, THE CLOCK OR THE MATCH STATE. Every one of those
 --- is the caller's business, and that is what makes the same pixels available to a
 --- preview that has no record and no clock at all.
+---
+--- ═══ AND A CALLER WHOSE ZONE STAYS PUT PASSES A MEMO (#393) ═══
+---
+--- `memo` is the caller's own, from newWallMemo(). Handed the same zone table as
+--- last frame, the wall reuses last frame's inset and its built strip instead of
+--- deriving both again; handed a new one, it derives both into the memo. So the
+--- caller decides what "the same zone" means -- the preview by its circle, the live
+--- wall by its record and clock -- and this function only compares identities.
 --- @param zone table        a BR.StormShape
 --- @param alphaScale number 0..1
-local function drawWall(zone, alphaScale)
+--- @param memo table|nil    newWallMemo(), kept by the caller between frames
+local function drawWall(zone, alphaScale, memo)
     -- FIXED SLOTS AROUND THE CIRCLE, ALWAYS DRAWN. Both lessons below were learnt
     -- on the marker paths and are kept BECAUSE the marker paths are still the A/B
     -- baseline; the strip inherits both by construction and the second outright,
@@ -1107,7 +1194,14 @@ local function drawWall(zone, alphaScale)
     -- and it would have come straight back the first time anybody typed
     -- /brwallstyle. The shipping path has inset since the day the report landed;
     -- this is that same one line, spelled for a shape.
-    local shape = SS.inset(zone, rr.edgeInset or 0.0)
+    local inset = rr.edgeInset or 0.0
+    local shape
+    if memo and memo.zone == zone and memo.inset == inset then
+        shape = memo.shape
+    else
+        shape = SS.inset(zone, inset)
+        if memo then memo.zone, memo.inset, memo.shape = zone, inset, shape end
+    end
 
     -- ═══ THE STRIP IS THE WALL, AND THE TWO MARKER PATHS ARE THE BASELINE ═══
     --
@@ -1141,7 +1235,7 @@ local function drawWall(zone, alphaScale)
     end
 
     if style == 'strip' then
-        drawStrip(shape, alphaScale)
+        drawStrip(shape, alphaScale, memo and memo.strip)
         return
     end
 
@@ -3274,6 +3368,10 @@ BR.Loop.register(BR.Loop.TICK, 'storm.preview', function()
         cfg.blip.nextColour, cfg.blip.nextAlpha, 'Next Safe Zone')
 end)
 
+--- previewWallCircle's circle for a record, kept so phase 1 hands the wall the same
+--- table on every frame.
+local previewOfRec = setmetatable({}, { __mode = 'k' })
+
 --- Circle 1 for the preview WALL, over every stretch it now spans, with its share of
 --- previewAlpha.
 ---
@@ -3361,7 +3459,35 @@ local function previewWallCircle()
         return nil
     end
     if share <= 0.0 then return nil end
-    return { cx = rec.cx1, cy = rec.cy1, r = rec.r1, seed = rec.seed }, base * share
+    -- The same table every frame for the same record, rather than a new one (#393).
+    local c = previewOfRec[rec]
+    if not c or c.cx ~= rec.cx1 or c.cy ~= rec.cy1 or c.r ~= rec.r1
+        or c.seed ~= rec.seed then
+        c = { cx = rec.cx1, cy = rec.cy1, r = rec.r1, seed = rec.seed }
+        previewOfRec[rec] = c
+    end
+    return c, base * share
+end
+
+--- The preview wall's blob, and the circle and unit it was built for.
+local previewKey = { cx = nil, cy = nil, r = nil, seed = nil, unit = nil, blob = nil }
+local previewMemo = newWallMemo()
+
+--- Circle 1's blob: the same table for as long as the circle and its unit are the
+--- same. The unit is asked for every frame, as it always was, so a unit rebuilt
+--- under a changed shape config is a new blob on the next frame.
+--- @param pv table  { cx, cy, r, seed }
+--- @return table    a BR.StormShape
+local function previewBlob(pv)
+    local unit = BR.StormUnit(pv.seed, 1)
+    local k = previewKey
+    if k.blob and k.cx == pv.cx and k.cy == pv.cy and k.r == pv.r
+        and k.seed == pv.seed and k.unit == unit then
+        return k.blob
+    end
+    k.cx, k.cy, k.r, k.seed, k.unit = pv.cx, pv.cy, pv.r, pv.seed, unit
+    k.blob = BR.StormShape.blob(pv.cx, pv.cy, pv.r, unit)
+    return k.blob
 end
 
 BR.Loop.register(BR.Loop.FRAME, 'storm.previewWall', function()
@@ -3437,8 +3563,15 @@ BR.Loop.register(BR.Loop.FRAME, 'storm.previewWall', function()
     -- by construction -- the entry runs once when the world arrives and has completed
     -- long before the sweep's last fadeInSec, where the thinning takes over -- and
     -- their product can never exceed either.
-    drawWall(BR.StormShape.blob(pv.cx, pv.cy, pv.r, BR.StormUnit(pv.seed, 1)),
-        alphaScale * entry)
+    --
+    -- ═══ AND THE BLOB IS BUILT ONCE PER CIRCLE (#393) ═══
+    --
+    -- Circle 1 does not move for the whole of its life, from the bus to the end of
+    -- phase 1's sweep, so neither does its blob, its inset or its strip. previewBlob
+    -- hands back the same table while the circle and the phase-1 unit are the same,
+    -- and drawWall's memo then reuses the rest: what is left each frame is the face
+    -- test and the draws.
+    drawWall(previewBlob(pv), alphaScale * entry, previewMemo)
 end)
 
 -- ----------------------------------------------------- blips, FX, envelope ---
