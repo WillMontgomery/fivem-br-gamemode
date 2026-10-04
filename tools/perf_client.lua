@@ -39,7 +39,7 @@ do
     local i = 1
     while i <= #arg do
         local a = arg[i]
-        if a == '--check' or a == '--rebaseline' or a == '--quiet' or a == '--natives' then
+        if a == '--check' or a == '--rebaseline' or a == '--quiet' or a == '--digest' then
             ARGS[a:sub(3)] = true
         elseif a == '--top' or a == '--phase' or a == '--frames' or a == '--root' then
             ARGS[a:sub(3)] = arg[i + 1]
@@ -455,17 +455,44 @@ local function defaultImpl(name)
     return function() end
 end
 
+--- --digest: a fingerprint of every Draw* call's arguments, in call order, so a
+--- refactor that must not change the picture can be compared with the tree it
+--- replaced (--root at the other checkout). Exact: each number by its bits.
+local digest = { h = 0, n = 0 }
+local spack, sunpack = string.pack, string.unpack
+local function fold(h, v)
+    local t = type(v)
+    local x
+    if t == 'number' then
+        x = sunpack('j', spack('d', v + 0.0))
+    elseif t == 'string' then
+        x = #v
+        for i = 1, #v do x = x * 31 + v:byte(i) end
+    elseif t == 'boolean' then
+        x = v and 1 or 2
+    else
+        x = 3
+    end
+    return (h * 1099511628211 + x) & 0x7fffffffffffffff
+end
+
 local natives = {}
 local seenNative = {}
 local function nativeFn(name)
     local f = natives[name]
     if f then return f end
     local body = IMPL[name] or defaultImpl(name)
+    local draws = ARGS.digest and name:match('^Draw')
     f = function(...)
         local b = curB
         b.n = b.n + 1
         local by = b.by
         by[name] = (by[name] or 0) + 1
+        if draws then
+            local h = fold(digest.h, name)
+            for i = 1, select('#', ...) do h = fold(h, (select(i, ...))) end
+            digest.h, digest.n = h, digest.n + 1
+        end
         return body(...)
     end
     natives[name] = f
@@ -961,7 +988,7 @@ local function lobbyStatus()
         ids = {}, players = players })
 end
 
-local function digest()
+local function digestFeed()
     net(BR.Net.DIGEST, { alive = 16, squadsAlive = 4, state = S.match.state, mode = 'squad',
         endsAt = S.match.endsAt, serverNow = gameMs() })
 end
@@ -969,7 +996,7 @@ end
 --- What the server keeps sending on its own clock, whatever the phase.
 local FEEDS = {
     { every = 500,  fn = lobbyStatus },
-    { every = 500,  fn = digest },
+    { every = 500,  fn = digestFeed },
     { every = 1000, fn = function()
         local st = S.match.state
         if st == BR.MatchState.PLAYING then squadPos() end
@@ -1142,12 +1169,14 @@ for _, ph in ipairs(PHASES) do
         os.exit(2)
     end
     for _ = 1, ph.settle do frame() gcMaybe() end
+    digest.h, digest.n = 0, 0
     local before = snapshot()
     local c0 = clock()
     for _ = 1, MEASURE_FRAMES do frame() gcMaybe() end
     local wall = (clock() - c0) * 1000.0 / MEASURE_FRAMES
     local rows, tot = diff(before, snapshot(), MEASURE_FRAMES)
-    results[#results + 1] = { id = ph.id, rows = rows, tot = tot, wall = wall }
+    results[#results + 1] = { id = ph.id, rows = rows, tot = tot, wall = wall,
+                              digest = ('%016x/%d'):format(digest.h, digest.n) }
     if ARGS.phase and ph.id == ARGS.phase then break end
 end
 collectgarbage('restart')
@@ -1165,6 +1194,7 @@ if not ARGS.check and not ARGS.rebaseline then
         realPrint('')
         realPrint(('== %-14s natives/frame %7s   Lua ms/frame %6.3f (wall %6.3f)   KB/frame %7.1f')
             :format(r.id, fmt(r.tot.n), r.tot.ms, r.wall, r.tot.kb))
+        if ARGS.digest then realPrint('   draw digest ' .. r.digest) end
         for i = 1, math.min(TOP, #r.rows) do
             local row = r.rows[i]
             local top = {}
