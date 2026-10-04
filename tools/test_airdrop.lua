@@ -7462,6 +7462,38 @@ do
     said({ 'rotor', 'default' })
     fire('onResourceStop', 'br_core')
     eq(liveIds(), 0, 'a resource stop takes the emitter\'s sound too')
+
+    -- A PICK WHILE THE EMITTER WAITS FOR THE BANK. Both commands wait on the
+    -- same bank; if the pick wakes first it plays on the emitter, and the
+    -- emitter must then stop that one and play the CURRENT pick -- not leak an
+    -- id under a second sound, nor play the variant picked before the wait.
+    audioReset()
+    said({ 'rotor', 'default' })
+    snd.bankAnswer = 0
+    local cos = {}
+    local realCreate, realWait = Citizen.CreateThread, Citizen.Wait
+    Citizen.CreateThread = function(fn) cos[#cos + 1] = coroutine.create(fn) end
+    Citizen.Wait = function() coroutine.yield() end
+    said({ 'rotor', 'at', '300' })
+    said({ 'rotor', 'far' })
+    Citizen.CreateThread = realCreate
+    local function step(co)
+        if co and coroutine.status(co) == 'suspended' then coroutine.resume(co) end
+    end
+    for _, co in ipairs(cos) do step(co) end     -- both ask, both wait
+    snd.bankAnswer = 1
+    for i = #cos, 1, -1 do step(cos[i]) end      -- the pick wakes first
+    Citizen.Wait = realWait
+    for _, co in ipairs(cos) do
+        while coroutine.status(co) == 'suspended' do coroutine.resume(co) end
+    end
+    eq(#cos, 2, 'both commands wait in threads (the race is real)')
+    eq(liveIds(), 1, 'a pick during the emitter\'s bank wait leaves one sound playing')
+    eq((plays()[#plays()] or {}).name, 'cargobob_rotor_far',
+        'and it is the variant picked during the wait')
+    said({ 'rotor', 'stop' })
+    eq(liveIds(), 0, 'and `rotor stop` stops it')
+    said({ 'rotor', 'default' })
 end
 
 removeAudio()

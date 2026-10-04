@@ -1569,6 +1569,16 @@ local function startCalib(meters)
     requestRotorBank()
     awaitRotorBank()
     if calib.gen ~= gen then return end
+    -- A VARIANT PICKED DURING THAT WAIT has already played on this emitter
+    -- (switchRotor sees calib.obj), so stop it rather than leak its id under a
+    -- second sound -- and play what is picked NOW, not what was picked before.
+    stopRotor(calib.rotor)
+    sound = pickedRotor()
+    if not sound then
+        print('[br_core] airdrop rotor: the recording was switched off while the '
+              .. 'emitter waited; /brairdrop rotor stop removes it')
+        return
+    end
     calib.rotor = playRotor(obj, sound)
     probeRotor(calib.rotor)
     if calib.gen ~= gen then return end
