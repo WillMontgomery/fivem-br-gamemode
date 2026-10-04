@@ -570,10 +570,10 @@ made "never rebuild while moving" the rule and #344's second round kept to it wi
 keyframes. The owner saw two translucent shapes of different outlines moving and
 fading into each other, and rejected it.
 
-**Since 2026-10-04 the map does not show the zone moving.** "When the sweep
-starts, the old shape fades away and only the new shape is left. That means the
+**Since 2026-10-04 the map does not show the zone moving.** "when the sweep
+starts, the old shape fades away and only the new shape is left. that means the
 only indicator of the actual current shape of the storm is looking in the 3d
-world" (the owner). Through a hold the radar and the pause map show the zone and
+world." (the owner). Through a hold the radar and the pause map show the zone and
 the destination; as the sweep sets off the zone fades out over
 `overlay.sweepFadeSec` (1 s) — one `SET_OVERLAY_ALPHA` a contour on each 10 Hz map
 tick — and the destination is left until the next record's hold draws it again as
