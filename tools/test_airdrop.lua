@@ -4705,7 +4705,8 @@ do
     -- ═══ THE SAME DROP, NOT ANOTHER ONE ═══
     eq(rec.n, n, 'the same drop number')
     eq(rec.heading, heading, 'the same heading')
-    ok(m.airdrop.waiting[1].items == items, 'the same payout')
+    ok(m.airdrop.waiting[1] ~= nil and m.airdrop.waiting[1].items == items,
+        'the same payout')
     eq(m.airdrop.sent, sentBefore, 'it is not counted as another drop')
     eq(#m.airdrop.announced, shownBefore, 'nor listed as another announcement')
     eq(#notices, toldBefore, 'and the match is not told about a new airdrop')
@@ -5089,7 +5090,8 @@ do
                 rec.x, rec.y)
             if wd > wallWorst then wallWorst = wd end
             local under = s.m.storm
-            if BR.AirdropNextCircleChanged(BR.AirdropNextCircleOf(d.armStorm), under) then
+            if d and d.armStorm and BR.AirdropNextCircleChanged(
+                    BR.AirdropNextCircleOf(d.armStorm), under) then
                 under = d.armStorm
             end
             local nd = destDepth(under, rec.x, rec.y)
