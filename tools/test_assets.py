@@ -31,6 +31,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import types
 import unittest
 from unittest import mock
@@ -886,6 +887,34 @@ class Push(Box):
 GIT_EXE = shutil.which('git')
 
 
+def backdate(root, seconds):
+    """Everything under `root`, and `root`, created, written and read
+    `seconds` ago: settled, for a Publish in its own process, whose clock a
+    test cannot move. Windows only: nothing portable sets a creation time."""
+    import ctypes
+    from ctypes import wintypes
+    k32 = ctypes.WinDLL('kernel32', use_last_error=True)
+    k32.CreateFileW.restype = wintypes.HANDLE
+    k32.CreateFileW.argtypes = (wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+                                wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE)
+    k32.SetFileTime.restype = wintypes.BOOL
+    k32.SetFileTime.argtypes = (wintypes.HANDLE,) + (ctypes.POINTER(wintypes.FILETIME),) * 3
+    k32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    ticks = int((time.time() - seconds) * 10 ** 7) + 116444736000000000
+    ft = wintypes.FILETIME(ticks & 0xFFFFFFFF, ticks >> 32)
+    paths = [root] + [os.path.join(d, n) for d, dirs, files in os.walk(root) for n in dirs + files]
+    for p in reversed(paths):
+        # FILE_WRITE_ATTRIBUTES, any sharing, OPEN_EXISTING, BACKUP_SEMANTICS for a folder.
+        h = k32.CreateFileW(p, 0x100, 7, None, 3, 0x02000000, None)
+        if h is None or h == wintypes.HANDLE(-1).value:
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            if not k32.SetFileTime(h, ctypes.byref(ft), ctypes.byref(ft), ctypes.byref(ft)):
+                raise ctypes.WinError(ctypes.get_last_error())
+        finally:
+            k32.CloseHandle(h)
+
+
 @unittest.skipUnless(GIT_EXE, 'needs git')
 class Publish(Box):
     """publish from its own clone of a bare 'GitHub' remote, with the fake aws
@@ -920,6 +949,15 @@ class Publish(Box):
         self.g('push', '-q', '-u', 'origin', 'dev')
         self.base = self.g('rev-parse', 'HEAD')
         self.run_tool('init-drop', self.drop, '--clone', self.clone, '--origin', self.bare)
+        # Everything here is seconds old, so Publish's clock runs an hour
+        # ahead: settled. The settle window's own tests set it themselves.
+        clock = mock.patch.object(assets, 'wall_clock', lambda: time.time() + 3600)
+        clock.start()
+        self.addCleanup(clock.stop)
+
+    def clock_at(self, now):
+        """Publish's clock: `now`, or time.time() when None."""
+        return mock.patch.object(assets, 'wall_clock', time.time if now is None else (lambda: now))
 
     def g(self, *args, cwd=None):
         r = subprocess.run([GIT_EXE, '-c', 'user.name=t', '-c', 'user.email=t@t'] + list(args),
@@ -1245,10 +1283,10 @@ class Publish(Box):
 
     # -- a copy still running ------------------------------------------------------
 
-    def assert_refused_untouched(self, text, pins):
+    def assert_refused_untouched(self, text, pins, said='is it still copying? nothing was published'):
         """Refused before any upload and before asking: no aws call at all,
         no prompt, and dev's lock as it was."""
-        self.assertIn('is it still copying? nothing was published', text)
+        self.assertIn(said, text)
         self.assertNotIn('[y/N]', text)
         self.assertEqual(self.calls(), [])
         self.assertEqual(self.pins(), pins)
@@ -1305,26 +1343,205 @@ class Publish(Box):
         self.publish('y\n')
         self.assertEqual(self.pins(), {'legion': {'1': v1, '2': None, '3': v4, '4': None}})
 
-    def test_a_copy_started_during_the_prompt_refuses_the_retry(self):
-        # dev moves while the owner reads the plan, so it is made again --
-        # and by then a copy has started. Refused, and the refusal says the
-        # upload already made stays.
+    def test_a_copy_started_during_the_prompt_is_never_committed(self):
+        # dev moves while the owner reads the plan, and a copy starts. The
+        # folders are read again after his answer: refused there, before any
+        # commit, and the refusal says the upload already made stays.
         self.pack_in('Season 1', 'legion', {'m.ymap': b'm'})
         other = self.other_clone()
 
         def ask(_q):
-            write(os.path.join(other, 'resources', 'meanwhile.lua'), 'return 2\n')
-            self.g('add', '-A', cwd=other)
-            self.g('commit', '-qm', 'meanwhile', cwd=other)
-            self.g('push', '-q', 'origin', 'dev', cwd=other)
+            self.move_dev(other)
             write(os.path.join(self.drop, 'Season 2', 'emotes', 'stream', 'e.ycd'), b'e')
             return True
         with mock.patch.object(assets, 'ask', ask):
             _, text = self.publish(expect=1)
-        self.assertIn('nothing was committed or pushed (what was uploaded stays in the bucket):\n'
-                      '  Season 2/emotes has files but no fxmanifest.lua', text)
+        self.assertIn(assets.FOLDERS_CHANGED + ':\n  Season 2/emotes has files but no fxmanifest.lua', text)
+        self.assertEqual(assets.FOLDERS_CHANGED, 'the folders changed after the plan was shown; run Publish again; '
+                                                 'nothing was committed or pushed (uploads stay in the bucket)')
+        self.assertNotIn('git push', text)
         self.assertEqual(self.subject(), 'meanwhile')
         self.assertEqual(len(self.uploads()), 1)
+
+    def move_dev(self, other, name='meanwhile'):
+        """Another push lands on dev, from `other`."""
+        write(os.path.join(other, 'resources', name + '.lua'), 'return 2\n')
+        self.g('add', '-A', cwd=other)
+        self.g('commit', '-qm', name, cwd=other)
+        self.g('push', '-q', 'origin', 'dev', cwd=other)
+
+    def test_folders_changed_before_a_retry_are_never_committed(self):
+        # dev moves during the prompt, so the push is refused and the plan
+        # made again -- and by then the folders have changed.
+        legion = self.pack_in('Season 1', 'legion', {'m.ymap': b'm'})
+        other = self.other_clone()
+        real = assets.push_commit
+        meanwhile = []
+        moves = []
+
+        def ask(_q):
+            moves.append(1)
+            self.move_dev(other, 'meanwhile %d' % len(moves))
+            return True
+
+        def push(clone, base, commit):
+            if meanwhile:
+                meanwhile.pop(0)()
+            return real(clone, base, commit)
+        # 1. The same pack copied into Season 2: the same plan, so it would
+        #    be pushed without asking, but not from the folders answered.
+        meanwhile.append(lambda: shutil.copytree(legion, os.path.join(self.drop, 'Season 2', 'legion')))
+        with mock.patch.object(assets, 'ask', ask), mock.patch.object(assets, 'push_commit', push):
+            _, text = self.publish(expect=1)
+        self.assertIn(assets.FOLDERS_CHANGED + ':\n  Season 2/legion is new', text)
+        self.assertNotIn('pushing again', text)
+        self.assertEqual(self.subject(), 'meanwhile 1')
+        self.assertEqual(self.pins(), {})
+        # 2. A copy still running: the new plan's own scan refuses, and says
+        #    the upload already made stays.
+        shutil.rmtree(os.path.join(self.drop, 'Season 2', 'legion'))
+        meanwhile.append(lambda: write(os.path.join(self.drop, 'Season 2', 'emotes', 'e.ycd'), b'e'))
+        with mock.patch.object(assets, 'ask', ask), mock.patch.object(assets, 'push_commit', push):
+            _, text = self.publish(expect=1)
+        self.assertIn('nothing was committed or pushed (what was uploaded stays in the bucket):\n'
+                      '  Season 2/emotes has files but no fxmanifest.lua', text)
+        self.assertEqual(self.subject(), 'meanwhile 2')
+        self.assertEqual(self.pins(), {})
+        self.assertEqual(len(self.uploads()), 1)
+
+    # -- the settle window and the second read -------------------------------------
+
+    def test_a_pack_still_landing_refuses_publish(self):
+        # THE REVIEW'S P1. File Explorer copies a pack's data/, then its
+        # fxmanifest.lua, then stream/: caught between them, the pack holds a
+        # manifest and part of its files, and was planned as a version.
+        legion = self.pack_in('Season 1', 'legion', {'stream/a.ymap': b'one' * 50})
+        v1 = self.sha_of(legion)
+        self.publish('y\n')
+        landing = os.path.join(self.drop, 'Season 2', '[maps]', 'legion')
+        write(os.path.join(landing, 'data', 'carcols.meta'), b'<c/>')
+        write(os.path.join(landing, 'fxmanifest.lua'), MANIFEST)
+        self.reset_calls()
+        with self.clock_at(None):
+            _, text = self.publish('y\n', expect=1)
+        # (Everything this test made is seconds old: Season 1 is named too.)
+        self.assertIn('nothing was uploaded or changed:\n', text)
+        self.assertIn('\n  Season 2/[maps]/legion changed less than a minute ago: is it still copying? wait a minute '
+                      'and run Publish again; nothing was published\n', text)
+        for above in ('Season 2', 'Season 2/[maps]'):
+            self.assertNotIn('  %s changed' % above, text, 'the pack is named, not every folder above it')
+        self.assert_refused_untouched(text, {'legion': {'1': v1}}, 'is it still copying? wait a minute')
+        # Its stream/ lands; a minute on, the whole pack is published.
+        write(os.path.join(landing, 'stream', 'b.ymap'), b'two' * 50)
+        v2 = self.sha_of(landing)
+        with self.clock_at(time.time() + 2 * assets.SETTLE_SECONDS):
+            _, text = self.publish('y\n')
+        self.assertIn('pushed to dev', text)
+        self.assertEqual(self.pins(), {'legion': {'1': v1, '2': v2}})
+
+    def stamps(self, root):
+        return [os.lstat(os.path.join(d, n)) for d, dirs, files in os.walk(root) for n in dirs + files]
+
+    def test_the_settle_window_reads_when_a_file_came_to_be(self):
+        # File Explorer gives a copy its source's mtime, so a pack copied
+        # this second can say it was last written three years ago. Its
+        # creation time (on Linux, its inode change time) says it just landed.
+        legion = self.pack_in('Season 1', 'legion', {'stream/a.ymap': b'one' * 50})
+        old = time.time() - 3 * 365 * 86400
+        for d, dirs, files in os.walk(self.drop, topdown=False):
+            for n in dirs + files:
+                os.utime(os.path.join(d, n), (old, old))
+        for st in self.stamps(os.path.join(self.drop, 'Season 1')):
+            self.assertLess(st.st_mtime, old + 1)
+            self.assertGreater(assets.entry_stamps(st)[1], time.time() - 60)
+        with self.clock_at(None):
+            _, text = self.publish('y\n', expect=1)
+        self.assertIn('Season 1/legion changed less than a minute ago: is it still copying?', text)
+        self.assert_refused_untouched(text, {}, 'wait a minute and run Publish again; nothing was published')
+        now = time.time() + 2 * assets.SETTLE_SECONDS
+        with self.clock_at(now):
+            self.publish('y\n')
+        self.assertEqual(self.pins(), {'legion': {'1': self.sha_of(legion)}})
+        # An mtime ahead of the clock is a source's (a zip made five hours
+        # east, read here): only this PC's clock dates a copy, so it is no
+        # copy landing.
+        os.utime(os.path.join(legion, 'stream', 'a.ymap'), (now + 5 * 3600, now + 5 * 3600))
+        with self.clock_at(now):
+            _, text = self.publish('')
+        self.assertIn('nothing to publish', text)
+
+    def test_a_season_folder_written_to_lately_refuses_publish(self):
+        # A pack deleted (or moved in, which keeps every stamp it had)
+        # leaves nothing new under the Season folder: its own mtime moves.
+        self.pack_in('Season 1', 'legion', {'m.ymap': b'm'})
+        docks = self.pack_in('Season 1', 'docks', {'d.ymap': b'd'})
+        self.publish('y\n')
+        pins = self.pins()
+        now = time.time() + 3600
+        shutil.rmtree(docks)
+        os.utime(os.path.join(self.drop, 'Season 1'), (now - 5, now - 5))
+        self.reset_calls()
+        with self.clock_at(now):
+            _, text = self.publish('y\n', expect=1)
+        self.assertIn('  Season 1 changed less than a minute ago: is it still copying? wait a minute', text)
+        self.assertNotIn('retired', text)
+        self.assert_refused_untouched(text, pins, 'wait a minute and run Publish again; nothing was published')
+        with self.clock_at(now + 2 * assets.SETTLE_SECONDS):
+            _, text = self.publish('y\n')
+        self.assertIn('- docks: retired', text)
+        self.assertEqual(sorted(self.pins()), ['legion'])
+
+    def test_a_copy_finishing_during_the_prompt_is_never_committed(self):
+        # THE REVIEW'S P2. The plan is made from a pack half landed -- its
+        # fxmanifest.lua and data/ in, stream/ not yet, and still for a
+        # minute (a copy stopped at a "Replace or Skip" prompt is) -- and
+        # the rest lands while the owner reads it.
+        legion = self.pack_in('Season 1', 'legion', {'stream/a.ymap': b'one' * 50})
+        v1 = self.sha_of(legion)
+        self.publish('y\n')
+        landing = self.pack_in('Season 2', 'legion', {'data/carcols.meta': b'<c/>'})
+        half = self.sha_of(landing)
+        meanwhile = []
+
+        def ask(_q):
+            meanwhile.pop(0)()
+            return True
+        meanwhile.append(lambda: write(os.path.join(landing, 'stream', 'b.ymap'), b'two' * 50))
+        self.reset_calls()
+        with mock.patch.object(assets, 'ask', ask):
+            _, text = self.publish(expect=1)
+        self.assertIn('+ legion: %s' % half[:12], text, 'the plan answered was the half')
+        self.assertIn('reading the folders again before the commit\n', text)
+        self.assertIn(assets.FOLDERS_CHANGED + ':\n  Season 2/legion changed\n', text)
+        self.assertNotIn('git push', text)
+        self.assertEqual(self.g('rev-parse', 'dev~1', cwd=self.bare), self.base, 'nothing was committed')
+        self.assertEqual(self.pins(), {'legion': {'1': v1}})
+        self.assertEqual(len(self.uploads()), 1, 'the half went up before the answer, and stays')
+        # Run again: the whole pack.
+        v2 = self.sha_of(landing)
+        self.publish('y\n')
+        self.assertEqual(self.pins(), {'legion': {'1': v1, '2': v2}})
+        # A pack dragged in, and another deleted, while he reads the plan.
+        self.pack_in('Season 1', 'docks', {'d.ymap': b'd'})
+        meanwhile.append(lambda: (shutil.rmtree(landing), self.pack_in('Season 2', 'emotes', {'e.ycd': b'e'})))
+        with mock.patch.object(assets, 'ask', ask):
+            _, text = self.publish(expect=1)
+        self.assertIn(assets.FOLDERS_CHANGED + ':\n  Season 2/emotes is new\n  Season 2/legion is gone\n', text)
+        self.assertEqual(self.pins(), {'legion': {'1': v1, '2': v2}})
+        # The second read has the settle window too: with the clock not moved
+        # on past the answer, it names what landed.
+        shutil.rmtree(os.path.join(self.drop, 'Season 2', 'emotes'))
+        answered = []
+
+        def clock():
+            return time.time() + (0 if answered else 3600)
+        meanwhile.append(lambda: (write(os.path.join(legion, 'stream', 'c.ymap'), b'three'), answered.append(1)))
+        with mock.patch.object(assets, 'ask', ask), mock.patch.object(assets, 'wall_clock', clock):
+            _, text = self.publish(expect=1)
+        self.assertIn(assets.FOLDERS_CHANGED + ':\n', text)
+        self.assertIn('\n  Season 1/legion changed less than a minute ago: is it still copying? wait a minute and '
+                      'run Publish again; nothing was published\n', text)
+        self.assertEqual(self.pins(), {'legion': {'1': v1, '2': v2}})
 
     @contextlib.contextmanager
     def unreadable(self, path):
@@ -1377,6 +1594,60 @@ class Publish(Box):
             self.assertIn('%s cannot be read (Permission denied): is it still copying? nothing was published'
                           % said, text)
             self.assert_refused_untouched(text, pins)
+
+    def link_dir(self, target, link):
+        """A link to the folder `target`: a symlink, or on Windows without
+        the right to make one, a junction."""
+        try:
+            os.symlink(target, link, target_is_directory=True)
+        except OSError:
+            if os.name != 'nt':
+                raise
+            import _winapi
+            _winapi.CreateJunction(target, link)
+        self.assertTrue(assets.is_link(link))
+
+    def test_links_and_what_cannot_be_stated_refuse_publish(self):
+        # Skipped with a note, each dropped the pack it stood for out of the
+        # lock: retired, or its later version unpinned.
+        legion = self.pack_in('Season 1', 'legion', {'stream/a.ymap': b'one' * 50})
+        self.pack_in('Season 1/[maps]', 'docks', {'d.ymap': b'd'})
+        self.publish('y\n')
+        pins = self.pins()
+        elsewhere = make_resource(self.src, 'legion', {'stream/a.ymap': b'one' * 50})
+        moved = os.path.join(self.tmp, 'legion moved')
+        for link, said in ((legion, 'Season 1/legion'),
+                           (os.path.join(self.drop, 'Season 1', '[maps]', 'docks'), 'Season 1/[maps]/docks'),
+                           (os.path.join(self.drop, 'Season 1', '[maps]'), 'Season 1/[maps]'),
+                           (os.path.join(self.drop, 'Season 1'), 'Season 1')):
+            os.rename(link, moved)
+            self.link_dir(elsewhere if link == legion else moved, link)
+            self.reset_calls()
+            try:
+                _, text = self.publish('y\n', expect=1)
+            finally:
+                (os.rmdir if os.name == 'nt' else os.unlink)(link)
+                os.rename(moved, link)
+            self.assertIn('nothing was uploaded or changed:\n  %s is a link; put the folder itself there, not a '
+                          'link to it\n' % said, text)
+            self.assert_refused_untouched(text, pins, 'is a link')
+        real_lstat = os.lstat
+        for path, said in ((legion, 'Season 1/legion'), (os.path.join(self.drop, 'Season 1'), 'Season 1'),
+                           (os.path.join(legion, 'stream', 'a.ymap'), 'Season 1/legion/stream/a.ymap')):
+            denied = os.path.normcase(path)
+
+            def lstat(p, *args, **kwargs):
+                if not isinstance(p, int) and os.path.normcase(os.path.abspath(os.fsdecode(p))) == denied:
+                    raise PermissionError(13, 'Permission denied', os.fsdecode(p))
+                return real_lstat(p, *args, **kwargs)
+            self.reset_calls()
+            with mock.patch.object(os, 'lstat', lstat):
+                _, text = self.publish('y\n', expect=1)
+            self.assertIn('%s cannot be read (Permission denied): is it still copying? nothing was published'
+                          % said, text)
+            self.assert_refused_untouched(text, pins)
+        self.publish('')
+        self.assertEqual(self.pins(), pins)
 
     # -- never the shared checkout -----------------------------------------------
 
@@ -1599,6 +1870,8 @@ class Publish(Box):
     @unittest.skipUnless(os.name == 'nt', 'Publish.cmd is run by cmd.exe')
     def test_publish_cmd_bootstraps_its_clone_and_publishes(self):
         self.pack_in('Season 1', 'legion', {'m.ymap': b'm'})
+        # Its own process, on the real clock: made and written an hour ago.
+        backdate(self.drop, 3600)
         env = dict(self.env)
 
         def run(answer):

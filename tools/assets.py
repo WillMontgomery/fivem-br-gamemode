@@ -36,10 +36,13 @@ THE DROP FOLDER. The owner drags packs into `Season <n>` folders with File
 Explorer and double-clicks Publish.cmd, which runs `publish`: the folders ARE
 the lock's contents, so a pack moved, replaced or deleted there is published as
 exactly that, and an EMPTY folder with a pack's name in a later season is a
-null pin there. A folder with files but no fxmanifest.lua, or anything that
-cannot be read, is most likely a copy still running, and Publish refuses
-(find_resources). Publish works in its own clone of the repo, never in a
-checkout anyone else uses (see cmd_publish).
+null pin there. A folder with files but no fxmanifest.lua, anything that
+cannot be read, and anything made or written in the last minute is most
+likely a copy still running, and Publish refuses (find_resources, unsettled);
+so does a link. After the owner's y the folders are read again, and anything
+that differs from the plan he answered refuses the commit (cmd_publish).
+Publish works in its own clone of the repo, never in a checkout anyone else
+uses (see cmd_publish).
 
 FOUR RULES THE CODE BELOW EXISTS TO KEEP, each pinned by tools/test_assets.py:
 
@@ -125,6 +128,9 @@ DROP_INDEX = '.publish-index.json'
 DROP_SEASONS = (1, 2)
 SEASON_DIR_RE = re.compile(r'season[ \t]+([0-9]+)\Z', re.I)
 PUBLISH_BRANCH = 'dev'
+# Publish plans only from Season folders nothing has been made in or written
+# to for this long, the Season folder itself included (unsettled()).
+SETTLE_SECONDS = 60
 
 # Publish's own clone of the repo (cmd_publish): made on first use, fetched on
 # every Publish, and never a work tree an agent or the owner works in. The
@@ -1123,6 +1129,10 @@ def still_copying(text: str) -> str:
     return text + ': is it still copying? nothing was published'
 
 
+def link_text(label: str) -> str:
+    return '%s is a link; put the folder itself there, not a link to it' % label
+
+
 def find_resources(folder: str, label: str, notes: list[str], empties: list | None = None,
                    problems: list[str] | None = None) -> list[tuple[str, str, str]]:
     """(name, path, label) for each resource in `folder`: a subfolder holding
@@ -1132,9 +1142,10 @@ def find_resources(folder: str, label: str, notes: list[str], empties: list | No
     PUBLISH PASSES `empties` AND `problems`, AND THEN NOTHING THAT MIGHT BE A
     PACK IS SKIPPED. An EMPTY folder goes to `empties` as (name, path, label):
     a null pin. A folder with files but no fxmanifest.lua -- at any depth
-    under the Season folder, [category] folders too -- and any Season,
-    [category] or pack folder that cannot be read go to `problems`, and
-    Publish refuses: that is most likely a copy still running, and skipping it
+    under the Season folder, [category] folders too -- any Season, [category]
+    or pack folder that cannot be read, any entry that cannot be stat'ed, and
+    any link go to `problems`, and Publish refuses: that is most likely a copy
+    still running (or, for a link, something the pack is not), and skipping it
     would drop the pack it replaces out of the lock (retired from every
     season, or a later season's version unpinned so an earlier null carries
     on). A pack's own files are read when it is hashed (cmd_publish)."""
@@ -1152,9 +1163,20 @@ def find_resources(folder: str, label: str, notes: list[str], empties: list | No
         lab = '%s/%s' % (label, entry) if label else entry
         if entry.lower() in JUNK_FILES or entry.lower() in JUNK_DIRS:
             continue
-        if is_link(full):
-            notes.append('skipped %s: a link' % lab)
-        elif os.path.isdir(full):
+        try:
+            st = os.lstat(full)
+        except OSError as e:
+            if problems is None:
+                notes.append('skipped %s: cannot be read (%s)' % (lab, e.strerror or e))
+            else:
+                problems.append(still_copying(unreadable_text(lab, full, e)))
+            continue
+        if stat.S_ISLNK(st.st_mode) or is_link(full):
+            if problems is None:
+                notes.append('skipped %s: a link' % lab)
+            else:
+                problems.append(link_text(lab))
+        elif stat.S_ISDIR(st.st_mode):
             if os.path.isfile(os.path.join(full, 'fxmanifest.lua')):
                 out.append((entry, full, lab))
             elif is_category(entry):
@@ -2087,6 +2109,73 @@ def drop_top_level_file(entry: str) -> bool:
             or low in JUNK_FILES)
 
 
+def wall_clock() -> float:
+    """Now, for the settle window; a test moves it."""
+    return time.time()
+
+
+def entry_stamps(st: os.stat_result) -> tuple[float, float]:
+    """(when it was last written, when it came to be here). File Explorer
+    gives a copy its source's mtime, so mtime alone calls a file copied a
+    second ago years old; when it came to be here is when it landed. That is
+    the creation time -- st_birthtime on Windows from Python 3.12, st_ctime
+    before it (which IS the creation time on Windows) -- and on Linux the
+    inode change time, which a copy (and a utime) sets too."""
+    born = getattr(st, 'st_birthtime', None)
+    return st.st_mtime, (st.st_ctime if born is None else born)
+
+
+def settling(text: str) -> str:
+    return text + ': is it still copying? wait a minute and run Publish again; nothing was published'
+
+
+def unsettled(folder: str, label: str) -> list[str]:
+    """A problem for each pack (or [category], or the Season folder itself)
+    under the Season folder `folder` holding anything made or written in the
+    last SETTLE_SECONDS: a copy still landing, or one that landed so lately
+    the next file may be on its way. File Explorer copies a folder's data/,
+    then fxmanifest.lua, then stream/ (robocopy and xcopy a folder's own files
+    before its subfolders), so a pack can hold fxmanifest.lua and half its
+    files. The Season folder's own mtime counts: adding or deleting a folder
+    in it moves it. Explorer's own files are left out, as from a pack; what
+    cannot be read is find_resources', folder_holds' and collect's to refuse.
+
+    A stamp more than a second ahead of now does not count: only a source's
+    clock puts one there (an mtime Explorer kept, a zip's local time read in
+    another zone), and the copy's own creation time is this PC's."""
+    units: list[str] = []
+
+    def unit(path: str) -> str:
+        """The Season folder, or the path under it down to its first folder
+        that is not a [category]."""
+        keep = [label]
+        if path != folder:
+            for part in os.path.relpath(path, folder).split(os.sep):
+                keep.append(part)
+                if not is_category(part):
+                    break
+        return '/'.join(keep)
+
+    def check(path: str) -> None:
+        try:
+            st = os.lstat(path)
+        except OSError:
+            return
+        now = wall_clock()
+        if any(-1 < now - t < SETTLE_SECONDS for t in entry_stamps(st)) and unit(path) not in units:
+            units.append(unit(path))
+
+    check(folder)
+    for dirpath, dirnames, filenames in os.walk(folder, followlinks=False):
+        dirnames[:] = sorted(d for d in dirnames
+                             if d.lower() not in JUNK_DIRS and not is_link(os.path.join(dirpath, d)))
+        for name in dirnames + sorted(f for f in filenames if f.lower() not in JUNK_FILES):
+            check(os.path.join(dirpath, name))
+    # A pack landing moves the folders above it too; name the pack alone.
+    return [settling('%s changed less than a minute ago' % u) for u in units
+            if not any(v.startswith(u + '/') for v in units)]
+
+
 def scan_drop(drop: str):
     """({season: [(name, path, label)]} of packs, the same of EMPTY folders,
     notes on what was skipped, problems)."""
@@ -2099,11 +2188,25 @@ def scan_drop(drop: str):
         full = os.path.join(drop, entry)
         if drop_top_level_file(entry):
             continue
-        if not os.path.isdir(full) or is_link(full):
-            notes.append('skipped %s: not in a season folder' % entry)
-            continue
         m = SEASON_DIR_RE.match(entry.strip())
         n = parse_season(m.group(1)) if m else None
+        # A Season folder that is a link, or cannot be stat'ed, would be
+        # skipped, and every pack in it retired: refused instead.
+        try:
+            st = os.lstat(full)
+        except OSError as e:
+            if n is None:
+                notes.append('skipped %s: not in a season folder' % entry)
+            else:
+                problems.append(still_copying('%s cannot be read (%s)' % (entry, e.strerror or e)))
+            continue
+        link = stat.S_ISLNK(st.st_mode) or is_link(full)
+        if link and n is not None:
+            problems.append(link_text(entry))
+            continue
+        if link or not stat.S_ISDIR(st.st_mode):
+            notes.append('skipped %s: not in a season folder' % entry)
+            continue
         if n is None:
             notes.append('skipped %s: not a "Season <n>" folder' % entry)
             continue
@@ -2113,6 +2216,7 @@ def scan_drop(drop: str):
         folder_of[n] = entry
         empties[n] = []
         seasons[n] = find_resources(full, entry, notes, empties[n], problems)
+        problems += unsettled(full, entry)
     spelled: dict[str, str] = {}
     for n in sorted(seasons):
         problems += name_problems(seasons[n], ' in Season %d' % n)
@@ -2174,14 +2278,19 @@ def save_index(path: str, packs: dict, used: set) -> None:
     atomic_write(path, json.dumps({'format': INDEX_FORMAT, 'packs': keep}, indent=1, sort_keys=True) + '\n')
 
 
+def read_content(folder: str) -> tuple[list[tuple[str, str, int, int]], str]:
+    """A pack's files (collect's) and its content digest, every byte read."""
+    files, _skipped = collect(folder)
+    if not any(relp == 'fxmanifest.lua' for relp, _, _, _ in files):
+        raise AssetsError('%s has no fxmanifest.lua at its top' % folder)
+    return files, content_digest((relp, size, sha256_file(full)[0]) for relp, full, size, _ in files)
+
+
 def hash_folder(folder: str, index: dict, tmp: str) -> dict:
     """The sha256 and size the folder packs to, and its file list. Every
     file's bytes are read and hashed; the archive comes from the index when
     exactly that content was packed before, and is packed here otherwise."""
-    files, _skipped = collect(folder)
-    if not any(relp == 'fxmanifest.lua' for relp, _, _, _ in files):
-        raise AssetsError('%s has no fxmanifest.lua at its top' % folder)
-    content = content_digest((relp, size, sha256_file(full)[0]) for relp, full, size, _ in files)
+    files, content = read_content(folder)
     filemap = {relp: size for relp, _, size, _ in files}
     info = {'files': filemap, 'folder': folder, 'content': content, 'archive': None}
     hit = index.get(content)
@@ -2213,6 +2322,50 @@ def archive_for(info: dict, name: str, tmp: str) -> str:
             raise AssetsError('%s changed while it was being published; run Publish again' % info['folder'])
         info['archive'] = out
     return info['archive']
+
+
+# -- the folders again, after the answer ------------------------------------------
+#
+# The owner reads the plan for as long as he likes, and a copy can finish, or
+# start, meanwhile. So after his y the folders are read again -- every byte,
+# but nothing packed -- and the commit is built only when they hold exactly
+# what the plan he answered was made from.
+
+FOLDERS_CHANGED = ('the folders changed after the plan was shown; run Publish again; nothing was committed or '
+                   'pushed (uploads stay in the bucket)')
+
+
+def drop_now(drop: str) -> tuple[dict[str, str | None], list[str]]:
+    """({label: content digest, or None for an empty folder} for what the
+    drop folder holds now, problems): scan_drop's refusals, the settle window
+    included, and any pack that cannot be read now."""
+    seasons, empties, _notes, problems = scan_drop(drop)
+    held: dict[str, str | None] = {}
+    for n in sorted(seasons):
+        for _name, full, lab in seasons[n]:
+            try:
+                held[lab] = read_content(full)[1]
+            except OSError as e:
+                problems.append(still_copying(unreadable_text(lab, full, e)))
+            except AssetsError as e:
+                problems.append('%s: %s' % (lab, e))
+        for _name, _full, lab in empties[n]:
+            held[lab] = None
+    return held, problems
+
+
+def folders_changed(planned: dict[str, str | None], now: dict[str, str | None]) -> list[str]:
+    """Each pack or empty folder that is new, gone or different since the
+    plan, in words."""
+    out = []
+    for lab in sorted(set(planned) | set(now), key=lambda s: (s.lower(), s)):
+        if lab not in now:
+            out.append('%s is gone' % lab)
+        elif lab not in planned:
+            out.append('%s is new' % lab)
+        elif now[lab] != planned[lab]:
+            out.append('%s changed' % lab)
+    return out
 
 
 # -- the lock the folders describe ---------------------------------------------
@@ -2540,19 +2693,25 @@ def cmd_publish(args) -> int:
 
       1. fetch dev; the plan is made against GitHub's dev, its lock and its
          resource names, never a local file;
-      2. hash every pack, and compute the lock the folders make on top of
+      2. scan the Season folders, refusing anything that looks like a copy
+         still running -- files with no fxmanifest.lua, anything unreadable,
+         anything made or written in the last minute -- and any link;
+      3. hash every pack, and compute the lock the folders make on top of
          dev's lock; show the plan;
-      3. upload what the bucket lacks;
-      4. ask y/N. n: nothing is written anywhere -- no lock, no commit --
+      4. upload what the bucket lacks;
+      5. ask y/N. n: nothing is written anywhere -- no lock, no commit --
          and only the uploaded archives remain;
-      5. y: build a commit on top of the fetched dev whose only change is
+      6. y: read the folders again (step 2, and every byte hashed again) and
+         refuse unless they hold exactly what the plan was made from;
+      7. build a commit on top of the fetched dev whose only change is
          assets.lock, check it once more, and push it to refs/heads/dev,
          leased to the dev the plan was made on (push_commit);
-      6. dev is not that commit any more -- moved on, or rewound by a purge
+      8. dev is not that commit any more -- moved on, or rewound by a purge
          (the lease refuses the push either way): fetch, make the plan again
-         from the folders on the new dev, push without asking if it is
-         unchanged, and ask again if it is not;
-      7. "pushed" only once GitHub's dev is fetched back and holds the commit.
+         from the folders on the new dev (steps 1-4), refuse if the folders
+         differ from the ones answered, push without asking if the plan is
+         unchanged, and ask again (step 5 on) if it is not;
+      9. "pushed" only once GitHub's dev is fetched back and holds the commit.
     """
     drop = os.path.abspath(args.drop)
     if not os.path.isdir(drop):
@@ -2568,7 +2727,9 @@ def cmd_publish(args) -> int:
                           % (clone, drop))
     ensure_clone(clone, args.origin)
     index_path = os.path.join(drop, DROP_INDEX)
-    approved = None
+    # The plan the owner said y to, and what the folders held when it was made.
+    approved: list[str] | None = None
+    approved_held: dict[str, str | None] = {}
     aws_box: list[Aws] = []
 
     with tempfile.TemporaryDirectory(prefix='assets-publish-') as tmp:
@@ -2595,6 +2756,7 @@ def cmd_publish(args) -> int:
             used: set[str] = set()
             found: dict[str, dict[int, dict]] = {}
             removed: dict[str, dict[int, str]] = {}
+            held: dict[str, str | None] = {}
             for n in sorted(seasons):
                 for name, full, lab in seasons[n]:
                     try:
@@ -2605,9 +2767,11 @@ def cmd_publish(args) -> int:
                     say('  %s: %s, %d files, %s%s' % (lab, short(info['sha']), len(info['files']),
                                                       human(info['size']), ', packed before' if info['reused'] else ''))
                     found.setdefault(name, {})[n] = info
+                    held[lab] = info['content']
                 for name, _full, lab in empties[n]:
                     say('  %s: empty' % lab)
                     removed.setdefault(name, {})[n] = lab
+                    held[lab] = None
             save_index(index_path, index, used)
 
             updated, rnotes = lock_from_drop(old, found, removed)
@@ -2653,7 +2817,8 @@ def cmd_publish(args) -> int:
                 say('%d uploaded, %d already in the bucket' % (up, there))
 
             message = commit_message(changes)
-            if plan != approved:
+            asked = plan != approved
+            if asked:
                 say()
                 if approved is not None:
                     say('%s moved while this was being published, and the plan above is not the one you '
@@ -2665,8 +2830,15 @@ def cmd_publish(args) -> int:
                     say('not published: nothing was committed or pushed, and no lock was written anywhere%s'
                         % ('; what was uploaded stays in the bucket for next time' if items else ''))
                     return 0
-                approved = plan
+                approved, approved_held = plan, held
+                say('reading the folders again before the commit')
+                held, problems = drop_now(drop)
             else:
+                problems = []           # `held` was read this pass, after the answer
+            problems = problems or folders_changed(approved_held, held)
+            if problems:
+                raise AssetsError('%s:\n%s' % (FOLDERS_CHANGED, '\n'.join('  ' + x for x in problems)))
+            if not asked:
                 say('%s moved while this was being published; the plan is the same, so pushing again' % PUBLISH_BRANCH)
             text = dump_lock(updated)
             commit = build_commit(clone, base, text, message)
