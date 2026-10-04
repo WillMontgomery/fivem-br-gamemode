@@ -284,6 +284,15 @@ end)
 -- exact failure the line below warns about.
 local looted = {}
 
+-- Peds already told to keep their guns when they die, and the set being built on
+-- this pass. SetPedDropsWeaponsWhenDead is a flag ON THE PED, so it needs saying
+-- once per ped rather than ten times a second for as long as the ped is streamed
+-- in -- which, with the mainland's ambient population around, was two natives per
+-- ped per tick (#393). A handle missing from one pass's pool is forgotten on that
+-- pass, so a handle the game recycles for a new ped is flagged again the first
+-- time it is seen. Declared here, above the handler that clears them; see above.
+local noDrop, noDropNext = {}, {}
+
 --- Clear the death latch when the server moves us somewhere new, so a respawn
 --- into the next match is not treated as still-dead.
 RegisterNetEvent(BR.Net.STATE)
@@ -293,6 +302,7 @@ AddEventHandler(BR.Net.STATE, function(d)
         -- Ped handles are recycled between matches, so a stale entry here
         -- would silently refuse a legitimate drop later.
         looted = {}
+        noDrop = {}
     end
 end)
 
@@ -340,10 +350,19 @@ BR.Loop.register(BR.Loop.TICK, 'gamerules.pickups', function()
     --    weapon looked up in our own table, and the SERVER asked to place a
     --    real entry -- which then behaves exactly like every other item on the
     --    ground.
+    --
+    --    A ped is told once, the first pass it is in the pool (see noDrop): a pool
+    --    member exists, and the flag stays on it.
+    local was, now = noDrop, noDropNext
+    for k in pairs(now) do now[k] = nil end
     for _, other in ipairs(GetGamePool('CPed')) do
-        if other ~= ped and DoesEntityExist(other) then
+        local flagged = was[other]
+        if not flagged and other ~= ped and DoesEntityExist(other) then
             SetPedDropsWeaponsWhenDead(other, false)
-
+            flagged = true
+        end
+        if flagged then
+            now[other] = true
             if canLoot and not looted[other] and IsPedDeadOrDying(other, true) then
                 looted[other] = true
                 -- Ours only: the kill has to be attributable to this player,
@@ -375,6 +394,7 @@ BR.Loop.register(BR.Loop.TICK, 'gamerules.pickups', function()
             end
         end
     end
+    noDrop, noDropNext = now, was
 
     -- 2. Anything that got through goes away. RemovePickup is the engine's own
     --    call for this -- DeleteEntity does not apply to a pickup handle.

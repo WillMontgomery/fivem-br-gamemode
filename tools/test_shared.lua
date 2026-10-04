@@ -18229,6 +18229,120 @@ do
     end
 end
 
+
+-- ---------------------------------------------------------------------------
+-- gamerules.pickups tells each ped ONCE to keep its gun when it dies (#393).
+--
+-- SetPedDropsWeaponsWhenDead is a flag on the ped, and the 10 Hz sweep used to
+-- set it on every streamed ped on every pass -- two natives per ped per tick once
+-- the mainland's ambient population is around. What must not change: every ped
+-- that enters the pool is told before anything else can happen to it, a handle
+-- the game recycles for a new ped is told again, the local ped is never told,
+-- and the vanilla-pickup sweep still runs on every pass.
+-- ---------------------------------------------------------------------------
+
+describe('gamerules / no drops, told once')
+do
+    local PED = 1
+
+    local function newPickupClient()
+        local env = newSandbox()
+        local C = { now = 1000, peds = {}, told = {}, removed = 0, handlers = {} }
+
+        env.GetGameTimer = function() return C.now end
+        env.print = function() end
+        env.GetCurrentResourceName = function() return 'br_core' end
+        env.GetHashKey = function(s) return #tostring(s) end
+        env.PlayerId = function() return 0 end
+        env.GetPlayerServerId = function() return 1 end
+        env.AddEventHandler = function(name, fn)
+            C.handlers[name] = C.handlers[name] or {}
+            table.insert(C.handlers[name], fn)
+        end
+        env.RegisterNetEvent = function() end
+        env.RegisterCommand = function() end
+        env.TriggerServerEvent = function() end
+        env.Citizen = { CreateThread = function() end, Wait = function() end,
+                        SetTimeout = function() end }
+
+        loadInto(env, SANDBOX_LIB)
+
+        env.PlayerPedId     = function() return PED end
+        env.GetEntityCoords = function() return { x = 0.0, y = 0.0, z = 0.0 } end
+        env.DoesEntityExist = function(e) return (e == PED or C.peds[e]) and 1 or 0 end
+        env.GetGamePool = function(kind)
+            local out = {}
+            if kind == 'CPed' then
+                out[1] = PED
+                for h in pairs(C.peds) do out[#out + 1] = h end
+                table.sort(out)
+            elseif kind == 'CPickup' then
+                out[1] = 77
+            end
+            return out
+        end
+        env.SetPedDropsWeaponsWhenDead = function(ped, drops)
+            C.told[ped] = (C.told[ped] or 0) + 1
+            C.dropsArg = drops
+        end
+        env.IsPedDeadOrDying = function() return false end
+        env.IsEntityDead        = function() return false end
+        env.IsPedFatallyInjured = function() return false end
+        env.DoesPickupExist  = function() return 1 end
+        env.GetPickupCoords  = function() return { x = 5.0, y = 0.0, z = 0.0 } end
+        env.RemovePickup     = function() C.removed = C.removed + 1 end
+
+        loadInto(env, { 'br_core/client/main.lua' })
+        env.BR.Native = env.BR.Native or {}
+        env.BR.Native.applyGameRules = function() end
+        env.BR.State.me.state = env.BR.PlayerState.ALIVE
+
+        loadInto(env, { 'br_core/client/gamerules.lua' })
+
+        C.env = env
+        function C.tick(n)
+            for _ = 1, n or 1 do
+                C.now = C.now + 100
+                env.BR.Loop.step(env.BR.Loop.TICK)
+            end
+        end
+        return C
+    end
+
+    local C = newPickupClient()
+    C.peds = { [10] = true, [11] = true, [12] = true }
+    C.tick()
+    ok(C.told[10] == 1 and C.told[11] == 1 and C.told[12] == 1 and C.dropsArg == false,
+        'every ped in the pool is told on the first pass, with false')
+    ok(C.told[PED] == nil, 'and the local ped is never told')
+    C.tick(9)
+    ok(C.told[10] == 1 and C.told[11] == 1 and C.told[12] == 1,
+        'and nine passes later nobody has been told again',
+        ('%s %s %s'):format(C.told[10], C.told[11], C.told[12]))
+    ok(C.removed == 10, 'while the vanilla pickup sweep ran on every one of the ten',
+        C.removed)
+
+    C.peds[13] = true
+    C.tick()
+    ok(C.told[13] == 1, 'a ped that streams in is told on the pass it first appears')
+
+    -- The game recycles a handle: the ped leaves the pool, and a new ped turns up
+    -- under the same number.
+    C.peds[11] = nil
+    C.tick()
+    C.peds[11] = true
+    C.tick()
+    ok(C.told[11] == 2, 'a handle that left the pool and came back is told again',
+        C.told[11])
+
+    -- A new round clears the record, and every ped is told again.
+    for _, fn in ipairs(C.handlers[C.env.BR.Net.STATE] or {}) do
+        fn({ state = C.env.BR.MatchState.WARMUP })
+    end
+    C.tick()
+    ok(C.told[10] == 2 and C.told[12] == 2 and C.told[13] == 2,
+        'and the warmup that starts the next round has every ped told afresh')
+end
 -- ---------------------------------------------------------------------------
 -- The storm: WHOSE BODY the client reads it from.
 --
