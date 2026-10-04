@@ -262,7 +262,7 @@ do
     ok(stateLua ~= nil and not stateLua:find('stamina%s*='),
        'the HUD envelope carries no stamina field')
     ok(types ~= nil and not types:find('stamina%??%s*:'),
-       'and the page's HudPayload declares none')
+       "and the page's HudPayload declares none")
 end
 
 -- ---------------------------------------------------------------- result ---
