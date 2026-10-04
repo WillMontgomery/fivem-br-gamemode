@@ -251,6 +251,14 @@ ensure pma-voice
 ensure ScaleformUI_Assets
 ensure ScaleformUI_Lua
 
+# LICENSED ASSETS (#391). Bought packs (maps, emote animations) this public
+# repository never holds: tools/assets.py pull, which tools/deploy.sh runs,
+# installs the ones assets.lock pins for this box's season into
+# resources/[licensed]/ and writes this file, one `ensure` per pack. Uncomment
+# on a box that pulls them (both Blitz Royale boxes). Before the first pull the
+# file is absent, and FXServer prints `No such config file` and carries on.
+# exec resources/[licensed]/licensed.cfg
+
 # SCREENSHOTS ON AN INCIDENT (#34). THIRD-PARTY, NOT IN THIS REPOSITORY, AND
 # DELIBERATELY NOT VENDORED -- see docs/security.md for why this one is
 # installed rather than copied in, unlike pma-voice above.

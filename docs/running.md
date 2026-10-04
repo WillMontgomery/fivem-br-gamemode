@@ -191,7 +191,93 @@ every client's F8. Each client re-reads its season off the replicated value, so
 the lobby label, the Market's Emotes tab and the Settings key and Music slider
 follow. One thing cannot: GTA has no way to withdraw a key mapping, so after a
 switch away from Season 2 the emote wheel's row stays in GTA's own key-binding
-list, and pressing it does nothing.
+list, and pressing it does nothing. Nor can licensed assets (below): a switch
+whose season runs a different set warns and names the resources.
+
+### Licensed assets: the private bucket and `assets.lock` (#391)
+
+Bought packs (the NTeam Legion map pack, the #215 emote packs) may not be
+redistributed, and this repo is public, so they are never committed. Each
+version lives in the private bucket as
+`s3://blitz-royale-assets/assets/<resource>/<sha256>.tar.gz`, and `assets.lock`
+at the repo root pins which version each box runs. A commit bumps an asset,
+`git revert` rolls it back; dev deploys run dev's lock, prod runs main's.
+
+**Owner, on the PC, from the repo root** (profile `blitz-assets`):
+
+- Push a pack: `py tools/assets.py push "D:/packs/legion"`
+- Push a version for a later season: `py tools/assets.py push "D:/packs/legion" --season 2`
+- Limit a pack to seasons: add `--from 2` and/or `--until 4` (off again from Season 4); `--until none` clears it
+- Lock vs bucket: `py tools/assets.py status --profile blitz-assets`
+- Then commit the lock: `git add assets.lock` and commit it to dev
+
+`push` takes one resource folder (it must hold `fxmanifest.lua`; the folder name
+is the resource name). It packs it the same way every time, uploads only when
+the bucket lacks those exact bytes, never overwrites, updates `assets.lock`, and
+never commits. With no `--season` a new pack is pinned at Season 1.
+
+**Each server.cfg, once:**
+
+```
+exec resources/[licensed]/licensed.cfg
+```
+
+after `ensure ScaleformUI_Lua` and above the `ensure br_lib` block, where
+`server.cfg.example` carries it commented. Nothing found needs it before or
+after `br_core`. Until a pull has run the file is absent and the server prints
+`No such config file` once and carries on.
+
+**At the next deploy** `deploy.sh` runs the pull from the fetched branch, before
+the code sync: it downloads what `.assets-cache/` lacks (kept, so a revert
+reinstalls with no download), checks every sha256 before unpacking anything,
+swaps the box's set into `resources/[licensed]/` all at once, removes what the
+lock no longer puts in force there, and writes `licensed.cfg`. A failed pull
+stops the deploy: code and assets both stay as they were and nothing restarts.
+`--dry-run` and `--status` print the plan and change nothing. An empty lock
+leaves the deploy exactly as it was.
+
+**On a box, to look:**
+
+- The plan: `python3 /opt/fivem-server-classic/.gamemode-src/tools/assets.py pull --dry-run`
+- Lock vs bucket vs installed: `python3 /opt/fivem-server-classic/.gamemode-src/tools/assets.py status`
+
+**Seasons.** A box installs the version pinned at the newest season at or below
+its `br_season` (unset means the latest), like `BR.Season.pick`, inside the
+entry's `from`/`until`; a pack with no version for that season is not installed.
+`brseason` on dev cannot swap streamed assets: it warns, naming what differs,
+and the assets follow when `br_season` in server.cfg changes and the box is
+redeployed and restarted.
+
+**Escrowed packs** (`.fxap`) are stored byte for byte like anything else. Running
+them needs each box's license key from the Cfx.re account that bought them.
+
+The lock holds names, checksums, sizes, file lists and season pins, and nothing
+else (`assets.py check` refuses any other key). The file lists let a test check
+that an anim dict or model our code names is in a pack without the pack:
+
+```json
+{
+  "format": 1,
+  "resources": [
+    {
+      "name": "emotes_pack",
+      "from": 2,
+      "seasons": {
+        "2": "3f2a…"
+      },
+      "versions": {
+        "3f2a…": {
+          "size": 48213377,
+          "files": {
+            "fxmanifest.lua": 412,
+            "stream/emotes@dance.ycd": 90112
+          }
+        }
+      }
+    }
+  ]
+}
+```
 
 ### Voice is pma-voice, and it is vendored and pinned
 
