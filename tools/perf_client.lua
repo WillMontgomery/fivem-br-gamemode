@@ -56,9 +56,29 @@ local RES  = ROOT .. 'resources/'
 local FR   = RES .. '[fivem-royale]/'
 local TOP  = tonumber(ARGS.top) or 5
 local MEASURE_FRAMES = tonumber(ARGS.frames) or 600
+local BUDGET_FILE = ROOT .. 'tools/perf_budget.lua'
+
+--- The recorded budget, or nil. Under --check its frame count is the one used,
+--- so the per-frame averages are taken over the same window it was written from.
+local budget = nil
+if ARGS.check then
+    local chunk = loadfile(BUDGET_FILE)
+    budget = chunk and chunk() or nil
+    if type(budget) ~= 'table' or type(budget.phases) ~= 'table' then
+        realPrint('\27[31mFAIL\27[0m no readable budget at ' .. BUDGET_FILE)
+        realPrint('     Write one: lua tools/perf_client.lua --rebaseline')
+        os.exit(1)
+    end
+    MEASURE_FRAMES = tonumber(budget.frames) or MEASURE_FRAMES
+end
 
 local realPrint = print
 local clock = os.clock
+
+-- The code under test draws a few things with math.random (a warmup spawn, a
+-- lobby idle clip). Seeded, so every run is the same session and the counts
+-- the budget compares are exact.
+math.randomseed(393)
 
 -- ------------------------------------------------------------ attribution ---
 
@@ -1259,6 +1279,123 @@ if not ARGS.check and not ARGS.rebaseline then
         table.sort(errs)
         realPrint('')
         realPrint('errors (the harness, not the game -- fix the model): ' .. table.concat(errs, '; '))
+    end
+end
+
+-- ------------------------------------------------------------------ budget ---
+--
+-- THE GUARD. A ceiling per phase on native calls per frame, recorded in
+-- tools/perf_budget.lua with modest headroom over what the tree measured when it
+-- was written. Native calls only: they are exact and the same on every run and
+-- every machine, where Lua time on this box moves by tens of percent with
+-- whatever else it is doing. A new per-frame loop that nothing gates shows up
+-- here as calls in every phase it runs in, which is what this exists to catch.
+
+local HEADROOM = 1.05      -- 5% over the measured number...
+local HEADROOM_MIN = 2.0   -- ...and never less than two calls a frame
+
+local function harnessErrors()
+    local errs = {}
+    for k, b in pairs(buckets) do
+        if (b.errs or 0) > 0 then errs[#errs + 1] = ('%s x%d'):format(k, b.errs) end
+    end
+    table.sort(errs)
+    return errs
+end
+
+if ARGS.rebaseline then
+    local lines = {
+        '-- br_core\'s per-frame budget: native calls per frame, per phase, that',
+        '-- `lua tools/perf_client.lua --check` allows (tools/verify.sh runs it).',
+        '--',
+        '-- WRITTEN, NOT EDITED: `lua tools/perf_client.lua --rebaseline` measures the',
+        ('-- tree and writes this file with each phase\'s number plus %d%% (at least %d'):format(
+            math.floor((HEADROOM - 1.0) * 100 + 0.5), math.floor(HEADROOM_MIN)),
+        '-- calls). Rebaseline only for a change that is MEANT to cost more, and say so',
+        '-- in its commit. See docs/testing.md.',
+        'return {',
+        ('    frames = %d,'):format(MEASURE_FRAMES),
+        '    phases = {',
+    }
+    for _, r in ipairs(results) do
+        local ceiling = math.ceil(math.max(r.tot.n * HEADROOM, r.tot.n + HEADROOM_MIN))
+        lines[#lines + 1] = ('        { id = %q, measured = %s, budget = %d },')
+            :format(r.id, fmt(r.tot.n), ceiling)
+    end
+    lines[#lines + 1] = '    },'
+    lines[#lines + 1] = '}'
+    local errs = harnessErrors()
+    if #errs > 0 then
+        realPrint('\27[31mrefusing to write a budget over harness errors:\27[0m '
+            .. table.concat(errs, '; '))
+        os.exit(1)
+    end
+    local fh = assert(io.open(BUDGET_FILE, 'w'))
+    fh:write(table.concat(lines, '\n'), '\n')
+    fh:close()
+    realPrint('wrote ' .. BUDGET_FILE)
+    for _, r in ipairs(results) do
+        realPrint(('   %-14s %7s natives/frame'):format(r.id, fmt(r.tot.n)))
+    end
+end
+
+if ARGS.check then
+    local want = {}
+    for _, b in ipairs(budget.phases) do want[b.id] = b end
+    local bad = 0
+    for _, r in ipairs(results) do
+        local b = want[r.id]
+        if not b then
+            realPrint(('\27[31mFAIL\27[0m phase %q has no budget -- rebaseline'):format(r.id))
+            bad = bad + 1
+        elseif r.tot.n > b.budget then
+            bad = bad + 1
+            realPrint(('\27[31mFAIL\27[0m %-14s %7s natives/frame, budget %d (was %s)')
+                :format(r.id, fmt(r.tot.n), b.budget, fmt(b.measured)))
+            for i = 1, math.min(5, #r.rows) do
+                local row = r.rows[i]
+                realPrint(('       %-34s %7s'):format(row.key, fmt(row.n)))
+            end
+        elseif not ARGS.quiet then
+            realPrint(('\27[32mok\27[0m   %-14s %7s natives/frame, budget %d')
+                :format(r.id, fmt(r.tot.n), b.budget))
+        end
+        want[r.id] = nil
+    end
+    for id in pairs(want) do
+        realPrint(('\27[31mFAIL\27[0m budgeted phase %q was not measured -- rebaseline'):format(id))
+        bad = bad + 1
+    end
+    local errs = harnessErrors()
+    if #errs > 0 then
+        -- A callback that throws under the model stops being counted, which would
+        -- pass the budget for the wrong reason.
+        realPrint('\27[31mFAIL\27[0m callbacks errored under the profiler: '
+            .. table.concat(errs, '; '))
+        bad = bad + 1
+    end
+    if bad == 0 and ARGS.quiet then
+        -- One line for tools/verify.sh: how many phases, and where the match sits.
+        local matchBudget, matchN = nil, nil
+        for _, b in ipairs(budget.phases) do
+            if b.id == 'match' then matchBudget = b.budget end
+        end
+        for _, r in ipairs(results) do
+            if r.id == 'match' then matchN = r.tot.n end
+        end
+        local tail = ''
+        if matchBudget and matchN then
+            tail = (', the match at %s of %d natives a frame'):format(fmt(matchN), matchBudget)
+        end
+        realPrint(('%sok%s   %d phases within budget%s'):format(string.char(27) .. '[32m',
+            string.char(27) .. '[0m', #results, tail))
+    end
+    if bad > 0 then
+        realPrint('     A phase over budget means something new runs per frame there.')
+        realPrint('     Find it: lua tools/perf_client.lua --top 15 --phase <phase>')
+        realPrint('     Meant to cost more? lua tools/perf_client.lua --rebaseline, and')
+        realPrint('     say why in the commit. See docs/testing.md.')
+        os.exit(1)
     end
 end
 

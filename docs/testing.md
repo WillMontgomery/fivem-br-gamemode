@@ -30,6 +30,7 @@ absent it prints the matching Homebrew, apt, or winget command.
 |---|---|
 | **Syntax** | `luac -p` on every `.lua`. FiveM runs Lua 5.4 and so does this, so a pass means the resource will at least load. The floor, not the ceiling. |
 | **Unit tests** | 44 suites, over 10,000 assertions, covering the pure shared modules, server model, client interaction layer, AWS-facing subsystems, and individual files where a rule lives. The run order stays explicit, but `verify.sh` compares it with every `tools/test_*.lua` file and fails if either side has an extra entry — a new suite cannot exist without running in CI. |
+| **Frame budget** | br_core's native calls per frame, phase by phase through a simulated session from the lobby to a match, stay under `tools/perf_budget.lua`. See [the frame profiler](#the-frame-profiler-and-its-budget). |
 | **Scope gate** | Bans OneSync scope-limited natives from client gameplay code. |
 | **Weapon table** | Re-derives every weapon hash from its name, and requires every weapon and throwable to say explicitly whether a car seat accepts it — a missing `driveby` field reads as "no" and would silently drop a gun out of the drive-by hint. See [Vehicle data overrides](vehicle-data.md). |
 | **Vehicle table** | Re-derives every refused-vehicle hash from its name, signed and unsigned. The refusal list is what keeps aircraft and weaponised vehicles out, including out of the showroom catalogue, so a hash that stopped matching its name would silently stop refusing anything. |
@@ -275,6 +276,57 @@ Worth being explicit about, because it shapes where the effort goes:
   enumerate what else is running before anyone reasons from its numbers.
 - **Anything visual.** Crate glow, label placement, bar animation. The UI build
   runs `tsc` and a Chrome-103 CSS gate, but "does it look right" needs eyes.
+
+---
+
+## The frame profiler and its budget
+
+`tools/perf_client.lua` measures what br_core costs per frame without starting
+the game (#393). It loads every br_core client file in fxmanifest order, plus
+the vendored ScaleformUI that runs inside br_core, against a modelled engine: a
+60 fps clock, threads as coroutines, the three `BR.Loop` bands on their real
+threads, events, entities, blips and a camera. It then walks one squad player
+through nine phases — lobby, warmup, plane boarding, plane cruise (after the
+island release), freefall, the chute, and a match in a phase-1 hold, its sweep,
+and a later hold — with payloads built by the server's own shared builders.
+
+```bash
+lua tools/perf_client.lua                  # the table, every phase
+lua tools/perf_client.lua --top 15 --by 8  # more rows, more natives named per row
+lua tools/perf_client.lua --phase match    # stop after one phase
+lua tools/perf_client.lua --digest --root <other checkout>/  # same draws as another tree?
+lua tools/perf_client.lua --check          # the verify.sh gate
+lua tools/perf_client.lua --rebaseline     # rewrite tools/perf_budget.lua
+```
+
+Each row is one loop callback (`frame storm.wall`), raw thread
+(`thread ScaleformUI.lua:18774`) or event handler (`net br:squad:pos`), with
+native calls per frame, Lua ms per frame and KB allocated per frame, and the
+natives it called most.
+
+**Native calls per frame is the number to read.** It is exact and the same on
+every run and every machine. Lua ms is this machine's PUC Lua 5.4 with the
+stubs included — fine for ranking and for a before/after, not for absolute
+cost. **What it cannot see** is the engine's side of a call: a `DrawSpritePoly`
+counts one here and is a textured triangle on the render thread in the game, and
+real native costs differ by orders of magnitude. resmon, `brbench <name>` and
+`brab <name>` are the in-game measure.
+
+**The gate.** `verify.sh`'s `frame budget` stage runs `--check`, which fails a
+phase whose native calls per frame exceed `tools/perf_budget.lua`, and fails if
+any callback errored under the model (a callback that throws stops being
+counted). The budget is the measured number plus 5%, at least two calls.
+
+**When it fails**, run the table for that phase and find the new row. If the
+cost is a mistake — a per-frame loop with no gate, a native read per frame
+whose answer cannot change — fix it. If it is a feature that is *meant* to
+cost more, run `--rebaseline`, commit `tools/perf_budget.lua` with the change,
+and say why in the commit message. Never edit the budget by hand.
+
+**When the model is wrong** — a new client file that errors on load, a native
+whose stubbed answer sends the code down a path the game never takes — extend
+`IMPL` or the scene in `tools/perf_client.lua`, then rebaseline in its own
+commit so the number that moved is the model's and not a feature's.
 
 ---
 
