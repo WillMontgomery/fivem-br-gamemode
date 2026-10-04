@@ -30,7 +30,10 @@
 # rule lists should be kept in step.
 
 set -uo pipefail
-cd "$(dirname "$0")/.."
+# --revs reads git's objects in the repository it is run in (tools/pre-push
+# runs an installed copy of this file from the hooks dir); the tree form scans
+# the checkout this file is in.
+[ "${1:-}" = "--revs" ] || cd "$(dirname "$0")/.."
 
 RED=$'\033[31m'; GRN=$'\033[32m'; RST=$'\033[0m'
 
@@ -53,7 +56,12 @@ RED=$'\033[31m'; GRN=$'\033[32m'; RST=$'\033[0m'
 # removed again inside one push is still caught -- the history the push
 # publishes holds it. Each (commit, file) becomes one scratch file holding just
 # those lines AT THEIR OWN LINE NUMBERS, blank elsewhere, so a hit reads as the
-# real path and line, with the commit.
+# real path and line, with the commit. grep reads that scratch DIRECTORY (-r),
+# never a list of files on its command line, so no push is too big for it.
+#
+# FAILS CLOSED: exit 0 clean, 1 on a finding, 2 when it could not look. A git
+# call that fails, or a grep that cannot run (exit 2 or more: an unreadable
+# file, an argument list too long), is never a pass.
 
 skipped() {
     case "$1" in
@@ -64,20 +72,23 @@ skipped() {
     return 1
 }
 
+WORK=$(mktemp -d) || { echo "${RED}FAIL${RST} could not make a scratch directory"; exit 2; }
+trap 'rm -rf "$WORK"' EXIT
+
 MODE=tree
 FILES=()
 LABELS=()
+SCANNED=0
 if [ "${1:-}" = "--revs" ]; then
     shift
     MODE=revs
-    [ "$#" -gt 0 ] || { echo "${RED}FAIL${RST} --revs needs the commits to scan"; exit 1; }
-    WORK=$(mktemp -d) || exit 1
-    trap 'rm -rf "$WORK"' EXIT
+    [ "$#" -gt 0 ] || { echo "${RED}FAIL${RST} --revs needs the commits to scan"; exit 2; }
     if ! git -c core.quotePath=false log -m -p -U0 --no-color --no-ext-diff --no-renames \
             --diff-filter=ACMRT --format='commit %h' "$@" > "$WORK/patch"; then
         echo "${RED}FAIL${RST} could not read the commits being pushed"
-        exit 1
+        exit 2
     fi
+    mkdir "$WORK/f" || { echo "${RED}FAIL${RST} could not make a scratch directory"; exit 2; }
     : > "$WORK/index"
     # Hunk lines start with + - space or \, so `commit`, `diff --git` and `@@`
     # at column 0 are always headers; `+++ ` is one only outside a hunk.
@@ -108,30 +119,40 @@ if [ "${1:-}" = "--revs" ]; then
             if (p ~ /^"/) { p = substr(p, 2); sub(/"$/, "", p) }
             sub(/^b\//, "", p)
             n++
-            file = out "/f" n
+            file = out "/f/f" n
             written = 0
             printf "" > file
             printf "f%d\t%s\t%s\n", n, c, p > (out "/index")
             next
         }
-    ' "$WORK/patch" || { echo "${RED}FAIL${RST} could not read the commits being pushed"; exit 1; }
+    ' "$WORK/patch" || { echo "${RED}FAIL${RST} could not read the commits being pushed"; exit 2; }
+    # What is skipped stays on disk and is left out by name (grep --exclude-from).
+    : > "$WORK/skip"
     while IFS=$'\t' read -r id commit path; do
-        skipped "$path" && continue
-        FILES+=("$id")
+        if skipped "$path"; then
+            printf '%s\n' "$id" >> "$WORK/skip"
+            continue
+        fi
+        SCANNED=$((SCANNED + 1))
         LABELS[${id#f}]="$path|$commit"
     done < "$WORK/index"
-    cd "$WORK" || exit 1
-    if [ "${#FILES[@]}" -eq 0 ]; then
+    cd "$WORK" || { echo "${RED}FAIL${RST} could not enter the scratch directory"; exit 2; }
+    if [ "$SCANNED" -eq 0 ]; then
         echo "${GRN}ok${RST}   no added text to scan in the commits being pushed"
         exit 0
     fi
 else
+    if ! git ls-files -z --cached --others --exclude-standard > "$WORK/list"; then
+        echo "${RED}FAIL${RST} could not list the files git has -- is this a git checkout?"
+        exit 2
+    fi
     while IFS= read -r -d '' f; do
         skipped "$f" && continue
         FILES+=("$f")
-    done < <(git ls-files -z --cached --others --exclude-standard 2>/dev/null)
+    done < "$WORK/list"
+    SCANNED=${#FILES[@]}
 
-    if [ "${#FILES[@]}" -eq 0 ]; then
+    if [ "$SCANNED" -eq 0 ]; then
         echo "${RED}FAIL${RST} no files to scan -- is this a git checkout?"
         exit 1
     fi
@@ -143,7 +164,8 @@ where() {
     local f="${1%%:*}" rest="${1#*:}"
     local ln="${rest%%:*}"
     if [ "$MODE" = revs ]; then
-        local label="${LABELS[${f#f}]}"
+        local id="${f##*/}"
+        local label="${LABELS[${id#f}]}"
         printf '%s:%s (commit %s)' "${label%|*}" "$ln" "${label##*|}"
     else
         printf '%s:%s' "$f" "$ln"
@@ -160,15 +182,33 @@ where() {
 PLACEHOLDER='REPLACE|CHANGE_?ME|CHANGEME|YOUR_|EXAMPLE|PLACEHOLDER|xxx+|\.\.\.|<[^>]+>|ACCOUNT_ID|TODO'
 
 findings=0
+unscanned=0
 
 # rule <name> <grep-flags> <regex> <why>
 rule() {
-    local name="$1" flags="$2" re="$3" why="$4" hits
+    local name="$1" flags="$2" re="$3" why="$4" hits st
 
     # -I skips binaries that slipped past the extension list above. -H names
     # the file even when there is only one.
-    hits=$(grep -HnI $flags -E -- "$re" "${FILES[@]}" 2>/dev/null \
-           | grep -vE "$PLACEHOLDER" || true)
+    if [ "$MODE" = revs ]; then
+        grep -rHnI $flags --exclude-from="$WORK/skip" -E -- "$re" f > "$WORK/hits" 2> "$WORK/err"
+    else
+        grep -HnI $flags -E -- "$re" "${FILES[@]}" > "$WORK/hits" 2> "$WORK/err"
+    fi
+    st=$?
+    # 0 found, 1 found nothing; anything else is a grep that did not look.
+    if [ "$st" -gt 1 ]; then
+        echo "${RED}FAIL${RST} the '$name' rule could not run (grep exit $st): $(tail -n 1 "$WORK/err")"
+        unscanned=$((unscanned + 1))
+        return 0
+    fi
+    hits=$(grep -vE "$PLACEHOLDER" "$WORK/hits")
+    st=$?
+    if [ "$st" -gt 1 ]; then
+        echo "${RED}FAIL${RST} the '$name' rule's placeholder filter could not run (grep exit $st)"
+        unscanned=$((unscanned + 1))
+        return 0
+    fi
 
     [ -z "$hits" ] && return 0
 
@@ -275,8 +315,14 @@ if [ "$findings" -gt 0 ]; then
     exit 1
 fi
 
+if [ "$unscanned" -gt 0 ]; then
+    echo
+    echo "${RED}$unscanned rule(s) could not run, so this is not a clean pass.${RST}"
+    exit 2
+fi
+
 if [ "$MODE" = revs ]; then
-    echo "${GRN}ok${RST}   nothing credential-shaped in the text the pushed commits add (${#FILES[@]} file(s))"
+    echo "${GRN}ok${RST}   nothing credential-shaped in the text the pushed commits add ($SCANNED file(s))"
 else
-    echo "${GRN}ok${RST}   nothing credential-shaped in ${#FILES[@]} scanned files"
+    echo "${GRN}ok${RST}   nothing credential-shaped in $SCANNED scanned files"
 fi

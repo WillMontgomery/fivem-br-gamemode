@@ -10,15 +10,27 @@
 # Copies them where git reads hooks from: .git/hooks in an ordinary checkout,
 # the main checkout's in a linked worktree (hooks are shared), or
 # core.hooksPath when that is set.
+#
+# pre-push takes its gates with it: check_asset_files.sh and check_secrets.sh
+# are copied into <hooks>/pre-push-gates/, and the hook runs those copies, so
+# every worktree sharing these hooks gets the same gates whatever its own
+# tools/ holds (#391). Run this again after either gate changes.
 
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
 hooks="$(git rev-parse --git-path hooks)"
-mkdir -p "$hooks"
+mkdir -p "$hooks/pre-push-gates"
+# The gates first: a hook installed without them refuses every push.
+for g in check_asset_files.sh check_secrets.sh; do
+    cp "tools/$g" "$hooks/pre-push-gates/$g"
+    cmp -s "tools/$g" "$hooks/pre-push-gates/$g"
+    echo "installed $hooks/pre-push-gates/$g"
+done
 for h in pre-commit pre-push; do
     cp "tools/$h" "$hooks/$h"
     chmod +x "$hooks/$h"
+    cmp -s "tools/$h" "$hooks/$h"
     echo "installed $hooks/$h"
 done
 

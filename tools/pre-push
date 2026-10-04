@@ -3,56 +3,112 @@
 # Pre-push hook (#391). Install with:  ./tools/install-hooks.sh
 #
 # THIS REPO IS PUBLIC, SO A PUSH IS PUBLICATION, and the two things that must
-# never be published have a gate each: tools/check_asset_files.sh (no bought
-# game asset -- the licensed packs live in a private bucket) and
-# tools/check_secrets.sh (nothing credential-shaped). pre-commit runs them
-# inside the whole verify.sh, which `git commit --no-verify` skips, and that
-# is how commits land here. This hook is the one that is still in the way.
+# never be published have a gate each: check_asset_files.sh (no bought game
+# asset -- the licensed packs live in a private bucket) and check_secrets.sh
+# (nothing credential-shaped). pre-commit runs them inside the whole
+# verify.sh, which `git commit --no-verify` skips, and that is how commits land
+# here. This hook is the one that is still in the way.
 #
-# IT CHECKS WHAT IS BEING PUSHED: every commit the push sends that no
-# remote-tracking ref already has, history and all -- a pack added and deleted
-# again inside one push is still published by it. Fast: git, grep and awk, no
-# Lua, no verify.sh. An ordinary push of code passes.
+# SELF-CONTAINED. The gates it runs are the copies install-hooks.sh put
+# beside it, in <hooks>/pre-push-gates/, never the pushing work tree's tools/.
+# Every linked worktree shares this hooks dir, and a worktree on an old base
+# has no asset gate, or an old secrets gate that scans its whole tree: from
+# here, a push behaves the same from every worktree.
 #
-# The gates are this checkout's own copies. A checkout from before #391 has no
-# check_asset_files.sh; that one is skipped with a note rather than blocking.
+# ONLY THE PUSHED COMMITS, AND ONLY THROUGH GIT: every commit the push sends
+# that the remote being pushed to does not already have, history and all -- a
+# pack added and deleted again inside one push is still published by it. What
+# the remote has is asked of the remote (`git ls-remote`), not read off this
+# clone's remote-tracking refs, which can be stale or another remote's. No
+# working tree is read.
+#
+# FAILS CLOSED. A gate that is missing, cannot run, or cannot read what it
+# was given refuses the push; only a gate's clean pass lets it through.
 #
 # Bypass a single push with:  git push --no-verify
 
 set -uo pipefail
-cd "$(git rev-parse --show-toplevel)" || exit 1
 
 RED=$'\033[31m'; YEL=$'\033[33m'; RST=$'\033[0m'
 ZERO=0000000000000000000000000000000000000000
 
+remote="${1:-}"
+url="${2:-$remote}"
+hooks="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+gates="$hooks/pre-push-gates"
+
+refuse() {
+    echo
+    echo "${RED}pre-push: $1${RST}"
+    shift
+    local line
+    for line in "$@"; do echo "  $line"; done
+    echo "  Nothing was pushed."
+    exit 1
+}
+
+for g in check_asset_files.sh check_secrets.sh; do
+    [ -r "$gates/$g" ] || refuse "cannot run the $g gate: $gates/$g is missing." \
+        "Install the hooks again: bash tools/install-hooks.sh"
+done
+
 # stdin: <local ref> <local sha> <remote ref> <remote sha>, one per ref.
-revs=()
+tips=()
+bounds=()
 while read -r _lref lsha _rref rsha; do
     [ -n "${lsha:-}" ] || continue
     [ "$lsha" = "$ZERO" ] && continue                  # a delete sends nothing
-    revs+=("$lsha")
-    # The remote's tip, when this clone has it, bounds a push to a URL too.
-    if [ -n "${rsha:-}" ] && [ "$rsha" != "$ZERO" ] && git cat-file -e "$rsha^{commit}" 2>/dev/null; then
-        revs+=("^$rsha")
+    tips+=("$lsha")
+    if [ -n "${rsha:-}" ] && [ "$rsha" != "$ZERO" ]; then
+        bounds+=("$rsha")
     fi
 done
-[ "${#revs[@]}" -gt 0 ] || exit 0
-revs+=(--not --remotes)
+[ "${#tips[@]}" -gt 0 ] || exit 0
+
+# WHAT THE REMOTE HAS NOW: every branch and tag tip it advertises. Those this
+# clone has bound the scan; the rest it cannot have pushed from here anyway.
+if ! advertised=$(git ls-remote "$url" 2>&1); then
+    refuse "could not ask $remote what it already has:" "$(printf '%s\n' "$advertised" | tail -n 1)"
+fi
+while read -r sha ref; do
+    case "$ref" in
+        *'^{}') ;;
+        refs/heads/*|refs/tags/*) bounds+=("$sha") ;;
+    esac
+done <<< "$advertised"
+revs=("${tips[@]}")
+if [ "${#bounds[@]}" -gt 0 ]; then
+    if ! known=$(printf '%s\n' "${bounds[@]}" | git cat-file --batch-check='%(objectname) %(objecttype)'); then
+        refuse "could not look up the remote's tips in this clone."
+    fi
+    while read -r sha type; do
+        case "$type" in commit|tag) revs+=("^$sha") ;; esac
+    done <<< "$known"
+fi
 
 fail=0
-for gate in check_asset_files.sh check_secrets.sh; do
-    if [ ! -f "tools/$gate" ]; then
-        echo "${YEL}pre-push: tools/$gate is not in this checkout; skipped${RST}"
-        continue
-    fi
-    bash "tools/$gate" --revs "${revs[@]}" || fail=1
+for g in check_asset_files.sh check_secrets.sh; do
+    bash "$gates/$g" --revs "${revs[@]}"
+    rc=$?
+    case "$rc" in
+        0) ;;
+        1) fail=1 ;;
+        *) refuse "the $g gate could not run (exit $rc)." \
+               "Fix what it says above, or install the hooks again: bash tools/install-hooks.sh" ;;
+    esac
 done
 
 if [ "$fail" -ne 0 ]; then
-    echo
-    echo "${RED}pre-push: refused. Nothing was pushed.${RST}"
-    echo "  This repo is public. Take the files above out of the commits"
-    echo "  (git reset, or an interactive rebase), then push again."
-    exit 1
+    for g in check_asset_files.sh check_secrets.sh; do
+        # The commits may carry a newer gate (a file newly ours on the
+        # allowlist, say) than the copy installed here.
+        if git cat-file -e "${tips[0]}:tools/$g" 2>/dev/null \
+                && ! git cat-file blob "${tips[0]}:tools/$g" | cmp -s - "$gates/$g"; then
+            echo "${YEL}pre-push: the pushed tools/$g differs from the copy installed in $gates;${RST}"
+            echo "${YEL}  if that is why, install the hooks again: bash tools/install-hooks.sh${RST}"
+        fi
+    done
+    refuse "refused." "This repo is public. Take the files above out of the commits" \
+        "(git reset, or an interactive rebase), then push again."
 fi
 exit 0

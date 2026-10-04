@@ -27,11 +27,16 @@
 # `git log <revs>` walks them, so a pack added and deleted again inside one push
 # is still caught -- it would still be in the history the push publishes. A
 # push is not the whole tree, so the stale-row check below is skipped there.
+# It reads git's objects only, in the repository it is run in (the hook's), and
+# never a work tree: tools/pre-push runs an installed copy of this file from
+# the hooks dir, the same for every worktree.
+#
+# Exit 0 clean, 1 when it finds something, 2 when it could not look.
 #
 # Pure bash after the one git call: on Windows every process costs real time.
 
 set -uo pipefail
-cd "$(dirname "$0")/.."
+[ "${1:-}" = "--revs" ] || cd "$(dirname "$0")/.."
 
 RED=$'\033[31m'; GRN=$'\033[32m'; RST=$'\033[0m'
 
@@ -75,18 +80,21 @@ allowed() {
 }
 
 MODE=tree
-if [ "${1:-}" = "--revs" ]; then
+[ "${1:-}" = "--revs" ] && MODE=revs
+LIST=$(mktemp) || { echo "${RED}FAIL${RST} could not make a scratch file"; exit 2; }
+trap 'rm -f "$LIST"' EXIT
+if [ "$MODE" = revs ]; then
     shift
-    MODE=revs
-    [ "$#" -gt 0 ] || { echo "${RED}FAIL${RST} --revs needs the commits to scan"; exit 1; }
-    LIST=$(mktemp) || exit 1
-    trap 'rm -f "$LIST"' EXIT
+    [ "$#" -gt 0 ] || { echo "${RED}FAIL${RST} --revs needs the commits to scan"; exit 2; }
     # -m: a merge's own changes too. ACMRT: what a commit adds or changes.
     if ! git -c core.quotePath=false log -z -m --format= --name-only --no-renames \
             --diff-filter=ACMRT "$@" > "$LIST"; then
         echo "${RED}FAIL${RST} could not list the files in the commits being pushed"
-        exit 1
+        exit 2
     fi
+elif ! git ls-files -z --cached --others --exclude-standard > "$LIST"; then
+    echo "${RED}FAIL${RST} could not list the files git has -- is this a git checkout?"
+    exit 2
 fi
 
 found=0
@@ -106,7 +114,7 @@ while IFS= read -r -d '' f; do
     reported="${reported}${f}|"
     echo "${RED}ASSET${RST} $f"
     found=$((found + 1))
-done < <(if [ "$MODE" = revs ]; then cat "$LIST"; else git ls-files -z --cached --others --exclude-standard 2>/dev/null; fi)
+done < "$LIST"
 
 if [ "$MODE" = revs ]; then
     if [ "$found" -gt 0 ]; then
