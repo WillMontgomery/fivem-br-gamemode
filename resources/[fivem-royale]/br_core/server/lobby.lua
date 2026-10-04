@@ -459,6 +459,8 @@ BR.Sched.every(500, 'lobby.status', function()
     end)
     table.sort(players, function(a, b) return a.src < b.src end)
 
+    local devOn = BR.Dev and BR.Dev.on and BR.Dev.on()
+
     TriggerClientEvent(BR.Net.LOBBY_STATUS, -1, {
         queued    = BR.Lobby.count(),
         needed    = BR.Lobby.needed(),
@@ -480,7 +482,14 @@ BR.Sched.every(500, 'lobby.status', function()
         -- Settings button. Asked of BR.Dev.on() every tick rather than latched,
         -- which is how every dev gate in the project reads the switch; on a
         -- public box this is nil and the key is not sent at all.
-        commit    = (BR.Dev and BR.Dev.on and BR.Dev.on()) and BR.Lobby.commit or nil,
+        commit    = devOn and BR.Lobby.commit or nil,
+
+        -- THE SEASON THIS SERVER RUNS (#388), beside that hex and under the same
+        -- gate: owner, 2026-10-04, "season should show next to the version label
+        -- in lobby (on dev)". The server's own latched season, the number every
+        -- server door is deciding with. Sent even when the hex could not be
+        -- read, so a dev box with no stamp still shows which season it is on.
+        season    = devOn and BR.Season.current() or nil,
     })
 end)
 

@@ -3,13 +3,12 @@
 
     Owner, 2026-10-02 (#215, "Scope v2"): one PR with the complete SOLO system.
     "Anywhere except the lobby, on foot only." Up to eight dances on a wheel,
-    bought in the Market for 250 Volts each, one license-free track per dance,
-    and "everything is devMode-required behind one config line, so removing that
-    line makes it production-ready in the same PR". That line is `requireDevMode`
-    in br_lib/config/emotes.lua, and every door in this file asks
-    BR.Emotes.enabled() -- never the dev convars, never BR.Dev -- so deleting it
-    opens all of them at once. tools/check_emote_gate.lua fails the build when
-    one does not ask.
+    bought in the Market for 250 Volts each, one license-free track per dance.
+    Emotes are a Season 2 feature (#388, owner 2026-10-04): every door in this
+    file asks BR.Season.has('emotes') -- never the dev convars, never BR.Dev,
+    never the season number itself -- so the `emotes` row in
+    br_lib/config/seasons.lua opens or shuts all of them at once.
+    tools/check_emote_gate.lua fails the build when one does not ask.
 
     ═══ THE CLIENT ASKS AND THE SERVER PUBLISHES ═══
 
@@ -202,7 +201,7 @@ end
 RegisterNetEvent(BR.Net.EMOTE_PLAY)
 AddEventHandler(BR.Net.EMOTE_PLAY, function(d)
     local src = source
-    if not BR.Emotes.enabled() then return end
+    if not BR.Season.has('emotes') then return end
 
     local entry = BR.Roster.get(src)
     if not entry then return end
@@ -255,16 +254,17 @@ end)
 RegisterNetEvent(BR.Net.EMOTE_STOP)
 AddEventHandler(BR.Net.EMOTE_STOP, function()
     local src = source
-    if not BR.Emotes.enabled() then return end
+    if not BR.Season.has('emotes') then return end
     BR.Emotes.stop(src, 'asked')
 end)
 
 -- THE SWEEP: what this side can re-check about a live dance, and the late
--- arrivals. A closed gate stops every dance at once -- dev mode turned off
--- mid-dance on a box that still has the line.
+-- arrivals. A closed gate stops every dance at once. This server's season is
+-- fixed from boot, so in game that is a guard rather than an event; the suites
+-- close it mid-dance to prove the stop.
 BR.Sched.every(C.sweepMs, 'emotes.sweep', function()
     if next(active) == nil then return end
-    local open = BR.Emotes.enabled()
+    local open = BR.Season.has('emotes')
     local now = GetGameTimer()
     for src, a in pairs(active) do
         if now >= a.rec.tStart + a.rec.durationMs then
@@ -353,13 +353,15 @@ local function resolve(q)
 end
 
 -- DEVGATE-EXEMPT (br_lib/shared/devgate.lua), SO THIS BODY IS THE GATE. Owner,
--- "Scope v2": the grant command sits behind the one line like everything else,
--- and only that line -- gated by devgate as well, deleting the line would
--- leave it shut. Console only, and registered restricted.
+-- "Scope v2": the grant command sits behind the feature's gate like everything
+-- else, and only that gate -- which is the season now (#388). Gated by devgate
+-- as well, it would stay shut on a public box running a season that has
+-- emotes. Console only, and registered restricted.
 RegisterCommand('bremotegrant', function(src, args)
     if tonumber(src) ~= 0 then print('  bremotegrant is server-console only') return end
-    if not BR.Emotes.enabled() then
-        print('  bremotegrant: emotes are off on this box (the requireDevMode line in br_lib/config/emotes.lua, and dev mode is off)')
+    if not BR.Season.has('emotes') then
+        print(('  bremotegrant: emotes are off on this box (it runs Season %d; br_lib/config/seasons.lua)')
+            :format(BR.Season.current()))
         return
     end
 

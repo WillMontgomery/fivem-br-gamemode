@@ -182,9 +182,17 @@ shared_scripts {
     -- you own, and the client has to resolve an equipped id into the natives
     -- that actually put it on you. Both sides need the same definitions.
     '@br_lib/config/market.lua',
-    -- EMOTES (#215, "Scope v2"): the dance catalogue and the feature's ONE gate
-    -- line (requireDevMode). Its rows register into BR.Config.MarketIndex as it
-    -- loads, so it must follow config/market.lua.
+    -- SEASONS (#388): the season this server runs and the one door every
+    -- season-gated feature asks, BR.Season.has(id), then the one list of those
+    -- features. SHARED because both sides ask: the server decides, the client
+    -- shows. Neither reads anything at load, so the order is a reader's; they
+    -- sit above config/emotes.lua because emotes are the first feature listed.
+    -- server/main.lua calls BR.Season.boot() at resource start.
+    '@br_lib/shared/season.lua',
+    '@br_lib/config/seasons.lua',
+    -- EMOTES (#215, "Scope v2"): the dance catalogue. Gated by the season (the
+    -- `emotes` row in config/seasons.lua). Its rows register into
+    -- BR.Config.MarketIndex as it loads, so it must follow config/market.lua.
     '@br_lib/config/emotes.lua',
     -- Where the admin console lives. One key, no useful default, and it MUST
     -- precede overrides.lua: that file refuses to boot if a convar names a

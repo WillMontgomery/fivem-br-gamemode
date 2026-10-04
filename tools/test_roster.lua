@@ -467,6 +467,10 @@ for _, f in ipairs({
     'br_lib/shared/health_solve.lua',
     'br_lib/shared/spectate_solve.lua', -- the squad rule; server/spectate.lua asks it
     'br_lib/shared/evidence_buf.lua', -- BR.EvidenceBuf; server/evidence.lua wraps it
+    -- BR.Season (#388): server/lobby.lua puts the season beside the dev-mode
+    -- commit, and `lobby.commit` below reads it off the broadcast.
+    'br_lib/shared/season.lua',
+    'br_lib/config/seasons.lua',
     'br_core/server/main.lua',
     'br_core/server/broadcast.lua',
     'br_core/server/roster.lua',
@@ -2117,9 +2121,22 @@ do
     ok(d.commit == 'a6cbdab', 'dev mode on: the lobby broadcast carries the commit',
         tostring(d.commit))
 
+    -- THE SEASON RIDES BESIDE IT (#388), and it is the server's own: booted
+    -- here off a br_season of 1, as server/main.lua would at resource start.
+    local function bootSeason(raw)
+        BR.Season.boot(function(name) return name == 'br_season' and raw or '' end, function() end)
+    end
+    bootSeason('1')
+    d = lastStatus()
+    ok(d.season == 1, 'dev mode on: the broadcast carries the season the server booted', tostring(d.season))
+    bootSeason('')
+    d = lastStatus()
+    ok(d.season == BR.Config.Seasons.latest, 'an unset br_season sends the latest season', tostring(d.season))
+
     BR.Dev = { on = function() return false end }
     d = lastStatus()
     ok(d.commit == nil, 'dev mode off: the key is not sent', tostring(d.commit))
+    ok(d.season == nil, 'dev mode off: nor is the season', tostring(d.season))
 
     -- THE GATE IS BR.Dev.on(), NOT A FLAG LATCHED AT START. The task named that
     -- switch, and it is the one every dev-only verb in the project reads.
@@ -2130,6 +2147,7 @@ do
     BR.Dev = nil
     d = lastStatus()
     ok(d.commit == nil, 'with no dev gate loaded nothing is sent', tostring(d.commit))
+    ok(d.season == nil, 'not even the season', tostring(d.season))
 
     -- NOTHING READ, NOTHING SENT, even on a dev box.
     BR.Dev = { on = function() return true end }
@@ -2137,6 +2155,8 @@ do
     d = lastStatus()
     ok(d.commit == nil, 'a box whose clone could not be read sends no commit',
         tostring(d.commit))
+    ok(d.season == BR.Config.Seasons.latest, 'but still sends its season, so the label is not blank',
+        tostring(d.season))
 
     -- THE BOOT BANNER'S LINE. The first version of the hex drew nothing on the
     -- dev box and said nothing anywhere; this line is how the next such failure

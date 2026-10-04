@@ -1,28 +1,28 @@
 -- Unit tests for br_ui's half of the emote system (#215, "Scope v2").
 --
--- Owner, 2026-10-02: "Everything is devMode-required behind one config line,
--- so removing that line makes it production-ready in the same PR." And of the
--- Market: "The market manages them: equip, unequip, and swap one for another
--- when more than 8 are owned."
+-- Emotes are a Season 2 feature (#388; owner, 2026-10-04), gated by
+-- BR.Season.has('emotes'). And of the Market (owner, 2026-10-02): "The market
+-- manages them: equip, unequip, and swap one for another when more than 8 are
+-- owned."
 --
 -- ═══ WHAT THIS LOADS FOR REAL ═══
 --
--- br_lib's enums, protocol, devgate, config/market and config/emotes, then the
--- REAL br_ui/client/market.lua, with RegisterNUICallback, TriggerServerEvent
+-- br_lib's enums, protocol, devgate, config/market, config/emotes, the season
+-- module and its list, then the REAL br_ui/client/market.lua, with RegisterNUICallback, TriggerServerEvent
 -- and TriggerEvent captured. So every assertion below is about what the page
 -- is actually sent and what the server is actually asked, not about a stub.
 --
--- ═══ THE ONE-LINE DISCIPLINE ═══
+-- ═══ THE SEASON DISCIPLINE ═══
 --
--- config/emotes.lua is loaded through `loadEmotesConfig`, which -- when
--- BR_EMOTES_LINE_DELETED=1 -- removes the exact line `    requireDevMode =
--- true,` first. tools/verify.sh runs this suite both ways. A gate-closed case
--- calls gateClosed(), which forces the line back on AND turns dev mode off; a
--- gate-open case calls gateOpen(), which turns dev mode on. Each group puts
--- requireDevMode back to whatever the file loaded with, so no assertion
--- depends on the line being in the file -- deleting it is a change this suite
--- has already run. Group 0 runs only with the line deleted and proves the
--- open behaviour with dev mode OFF and nothing forced.
+-- br_ui is a client resource: it reads br_seasonServed, the season br_core's
+-- server booted with and replicated, at call time. This file sets it the way
+-- the server would have -- BR_SEASON resolved by the module's own rule, the
+-- latest when unset -- and tools/verify.sh runs it with no BR_SEASON, then at
+-- the season before the emotes row's `from` (off) and at `from` (on). A
+-- gate-closed case calls gateClosed() (the season before `from`), a gate-open
+-- case gateOpen() (`from`), and restore() puts the run's season back, so no
+-- assertion depends on the run. Dev mode stays OFF throughout. Group 0 asserts
+-- whatever the run's own season means.
 --
 -- ═══ WHAT IT DELIBERATELY DOES NOT TEST ═══
 --
@@ -30,7 +30,8 @@
 -- (tools/test_emotes.lua) and the wheel and playback (tools/test_emotes_client.lua).
 
 local RES = 'resources/[fivem-royale]/'
-local LINE_DELETED = os.getenv('BR_EMOTES_LINE_DELETED') == '1'
+--- The season this run's server booted with: verify.sh's BR_SEASON, or nil.
+local RUN_SEASON = os.getenv('BR_SEASON')
 
 local realPrint = print
 local printed = {}
@@ -44,11 +45,13 @@ end
 -- Natives and engine stubs
 -- ---------------------------------------------------------------------------
 
--- DEV MODE IS A CONVAR, read at call time by BR.Dev.on() -- so this switch is
--- the whole of "is this a dev box" for the suite.
+-- DEV MODE IS A CONVAR, read at call time by BR.Dev.on(); it stays off. THE
+-- SEASON IS ONE TOO: br_seasonServed, read at call time by BR.Season.current().
 local devOn = false
+local convars = {}
 function GetConvar(name, dflt)
     if name == 'sv_devMode' or name == 'br_devMode' then return devOn and 'true' or 'false' end
+    if convars[name] ~= nil then return convars[name] end
     return dflt
 end
 function GetCurrentResourceName() return 'br_ui' end
@@ -84,38 +87,30 @@ local function loadAt(f)
     chunk()
 end
 
---- config/emotes.lua, optionally with the owner's one line deleted.
-local function loadEmotesConfig()
-    local path = RES .. 'br_lib/config/emotes.lua'
-    local fh = assert(io.open(path, 'rb'))
-    local src = fh:read('a')
-    fh:close()
-    if LINE_DELETED then
-        local n
-        src, n = src:gsub('\n    requireDevMode = true,\n', '\n', 1)
-        if n ~= 1 then
-            realPrint('\27[31mFAIL\27[0m BR_EMOTES_LINE_DELETED=1 but the one line was not found exactly once')
-            os.exit(1)
-        end
-    end
-    local chunk, err = load(src, '@br_lib/config/emotes.lua')
-    if not chunk then
-        realPrint('\27[31mload error\27[0m config/emotes.lua: ' .. tostring(err))
-        os.exit(1)
-    end
-    chunk()
-end
-
 -- br_ui's own manifest order: devgate first, then enums and protocol, then the
--- client scripts with config/market.lua and config/emotes.lua at their head.
+-- client scripts with config/market.lua, config/emotes.lua and the season
+-- module and its list at their head.
 loadAt('br_lib/shared/devgate.lua')
 loadAt('br_lib/shared/enums.lua')
 loadAt('br_lib/shared/protocol.lua')
 loadAt('br_lib/config/market.lua')
-loadEmotesConfig()
+loadAt('br_lib/config/emotes.lua')
+loadAt('br_lib/shared/season.lua')
+loadAt('br_lib/config/seasons.lua')
 loadAt('br_ui/client/market.lua')
 
-local LOADED_LINE = BR.Config.Emotes.requireDevMode
+-- A TYPO'D ID FAILS THIS SUITE rather than quietly closing a door.
+BR.Season.strict = true
+
+local ROW = BR.Config.Seasons.features.emotes
+local FROM = ROW.from
+local OFF = FROM - 1
+if OFF < 1 then
+    realPrint('\27[31mFAIL\27[0m emotes are on from Season 1, so there is no season to close them in')
+    os.exit(1)
+end
+local RUN_SERVED = tostring((BR.Season.resolve(RUN_SEASON)))
+convars.br_seasonServed = RUN_SERVED
 
 -- ---------------------------------------------------------------------------
 -- Harness
@@ -131,9 +126,9 @@ local function ok(cond, name, detail)
     end
 end
 
-local function gateClosed() BR.Config.Emotes.requireDevMode = true; devOn = false end
-local function gateOpen() devOn = true end
-local function restore() BR.Config.Emotes.requireDevMode = LOADED_LINE; devOn = false end
+local function gateClosed() convars.br_seasonServed = tostring(OFF) end
+local function gateOpen() convars.br_seasonServed = tostring(FROM) end
+local function restore() convars.br_seasonServed = RUN_SERVED; devOn = false end
 local function reset() toServer, toLocal = {}, {} end
 
 --- The most recent payload sent to the page under `kind`, or nil.
@@ -174,24 +169,29 @@ end
 local function eightEmpty() return { '', '', '', '', '', '', '', '' } end
 
 -- ---------------------------------------------------------------------------
--- 0. THE LINE DELETED: open with dev mode OFF and nothing forced
+-- 0. THIS RUN'S SEASON, with dev mode OFF and nothing forced
 -- ---------------------------------------------------------------------------
 
-if LINE_DELETED then
-    describe('0. the one line deleted')
+describe("0. this run's season")
+do
     devOn = false
+    restore()
     reset()
-    ok(BR.Config.Emotes.requireDevMode == nil, 'the loaded config has no requireDevMode')
-    ok(BR.Emotes.enabled() == true, 'enabled() is true with dev mode off')
+    local season = BR.Season.current()
+    local want = season >= FROM and (ROW.untilSeason == nil or season < ROW.untilSeason)
+    ok(tostring(season) == RUN_SERVED, 'the page follows the season the server replicated', season)
+    ok(BR.Season.has('emotes') == want,
+        ('Season %d: emotes are %s, with dev mode off'):format(season, want and 'on' or 'off'))
     fire(BR.Net.MARKET_STATE, { balance = 0, owned = {}, equipped = {}, emotes = eightEmpty() })
     local e = lastLocal(BR.Nui.EMOTES)
-    ok(e ~= nil and e.on == true, 'EMOTES {on=true} is sent', e and tostring(e.on))
-    ok(#emoteItems(lastLocal(BR.Nui.MARKET)) == #BR.Config.Emotes.order,
-        'the emote rows are on the grid', #emoteItems(lastLocal(BR.Nui.MARKET)))
+    ok(e ~= nil and e.on == want, 'EMOTES {on=' .. tostring(want) .. '} is sent', e and tostring(e.on))
+    ok(#emoteItems(lastLocal(BR.Nui.MARKET)) == (want and #BR.Config.Emotes.order or 0),
+        'the emote rows are on the grid exactly when the season has them',
+        #emoteItems(lastLocal(BR.Nui.MARKET)))
     reset()
     local answered = callCb(BR.NuiCb.MARKET_UNEQUIP, { id = 'emote_shuffle' })
-    ok(#serverSent(BR.Net.MARKET_UNEQUIP) == 1 and answered and answered.ok == true,
-        'MARKET_UNEQUIP forwards')
+    ok(#serverSent(BR.Net.MARKET_UNEQUIP) == (want and 1 or 0) and answered and answered.ok == true,
+        'MARKET_UNEQUIP forwards exactly when the season has emotes, and always answers')
     restore()
 end
 
@@ -202,7 +202,7 @@ end
 describe('1. gate closed')
 do
     gateClosed()
-    ok(BR.Emotes.enabled() == false, 'enabled() is false (line forced, dev off)')
+    ok(BR.Season.has('emotes') == false, ('has(emotes) is false at Season %d'):format(OFF))
     reset()
     fire(BR.Net.MARKET_STATE, { balance = 500, owned = { 'chute_azure' }, equipped = {} })
     local grid = lastLocal(BR.Nui.MARKET)
@@ -268,7 +268,7 @@ end
 describe('2. gate open')
 do
     gateOpen()
-    ok(BR.Emotes.enabled() == true, 'enabled() is true (dev on)')
+    ok(BR.Season.has('emotes') == true, ('has(emotes) is true at Season %d, dev mode off'):format(FROM))
     reset()
     fire(BR.Net.MARKET_STATE, { balance = 1000, owned = { 'emote_shuffle', 'emote_jumper' },
         equipped = {}, emotes = { 'emote_shuffle', '', 7, 'emote_jumper', '', '', '', '' } })
@@ -394,13 +394,13 @@ do
 end
 
 -- ---------------------------------------------------------------------------
--- 4. Robustness: a BR.Emotes stub with no config (the test_client case)
+-- 4. Robustness: a BR.Season stub with no config (the test_client case)
 -- ---------------------------------------------------------------------------
 
 describe('4. robustness')
 do
-    local savedEmotes, savedConfig = BR.Emotes, BR.Config.Emotes
-    BR.Emotes = { enabled = function() return true end }
+    local savedSeason, savedConfig = BR.Season, BR.Config.Emotes
+    BR.Season = { has = function() return true end }
     BR.Config.Emotes = nil
     reset()
     local okPush, err = pcall(BR.Market.push)
@@ -415,11 +415,12 @@ do
     local answered, okCb = callCb(BR.NuiCb.MARKET_UNEQUIP, { id = 'emote_shuffle' })
     ok(okCb and answered and answered.ok == true and #serverSent(BR.Net.MARKET_UNEQUIP) == 0,
         'MARKET_UNEQUIP with no config forwards nothing and answers')
-    BR.Emotes = nil
+    BR.Season = nil
+    BR.Config.Emotes = savedConfig
     reset()
     okPush = pcall(BR.Market.push)
-    ok(okPush and lastLocal(BR.Nui.EMOTES).on == false, 'BR.Emotes nil: push works, gate off')
-    BR.Emotes, BR.Config.Emotes = savedEmotes, savedConfig
+    ok(okPush and lastLocal(BR.Nui.EMOTES).on == false, 'BR.Season nil: push works, gate off')
+    BR.Season, BR.Config.Emotes = savedSeason, savedConfig
 end
 
 -- ---------------------------------------------------------------------------
@@ -484,4 +485,4 @@ if failn > 0 then
     realPrint(('\27[31m%d failed\27[0m, %d passed'):format(failn, pass))
     os.exit(1)
 end
-realPrint(('\27[32m%d passed\27[0m'):format(pass))
+realPrint(('\27[32m%d passed\27[0m (Season %s)'):format(pass, RUN_SEASON or 'unset'))

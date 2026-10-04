@@ -781,6 +781,9 @@ export interface LobbyPayload {
   /** Short hex of the commit the server is serving. Sent only while dev mode
    *  is on (br_core/server/lobby.lua), so its presence is the whole gate. */
   commit?: string
+  /** The season the server runs (#388), drawn beside `commit`. Sent under the
+   *  same dev-mode gate, so its presence is the gate too. */
+  season?: number
 }
 
 /**
@@ -1156,9 +1159,9 @@ export interface MarketItem {
   season?: string
 }
 
-/** Whether the emote system is on, on this machine (#215, "Scope v2"). The
- *  owner's one config line, asked through BR.Emotes.enabled() in Lua: the
- *  Market's Emotes tab and the Settings "Music volume" slider render only
+/** Whether the emote system is on, on this machine (#215, "Scope v2"):
+ *  BR.Season.has('emotes') in Lua, which is the season the server runs (#388).
+ *  The Market's Emotes tab and the Settings "Music volume" slider render only
  *  while it is true. */
 export interface EmotesPayload {
   on: boolean

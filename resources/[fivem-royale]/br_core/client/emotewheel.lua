@@ -109,7 +109,7 @@ end
 BR.Keys.on('emoteWheel', function(pressed)
     if pressed then
         if open then return end
-        if not BR.Emotes.enabled() then return end
+        if not BR.Season.has('emotes') then return end
         -- KEYBOARD-OWNING SCREENS BLOCK THE WHEEL AND ARE NOT DISMISSED. The
         -- hold already drops a press while a screen owns the keyboard; this
         -- says so here as well, and adds every screen but the inventory --
@@ -200,7 +200,7 @@ BR.Loop.register(BR.Loop.FRAME, 'emotes.wheel', function()
     end
     -- What would refuse an open closes an open wheel. blocked() covers a
     -- vehicle: the library leaves the enter control live.
-    if not BR.Emotes.enabled() or BR.Emotes.blocked() ~= nil or frontendUp()
+    if not BR.Season.has('emotes') or BR.Emotes.blocked() ~= nil or frontendUp()
        or BR.Keys.uiOwnsKeyboard then
         close()
         return

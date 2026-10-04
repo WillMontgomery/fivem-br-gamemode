@@ -5,8 +5,8 @@
 -- Owner, 2026-10-02 (#215, "Scope v2"): "HOLD LEFT ALT to open the wheel,
 -- release to pick." "Anywhere except the lobby, on foot only." A dance ends
 -- when its time is up or the player moves, aims, gets in a vehicle, goes down
--- or dies -- and "damage does not cancel". "Everything is devMode-required
--- behind one config line, so removing that line makes it production-ready."
+-- or dies -- and "damage does not cancel". Emotes are a Season 2 feature
+-- (#388; owner, 2026-10-04), gated by BR.Season.has('emotes').
 --
 -- THE REAL FILES, A MODELLED WORLD. client/menu.lua, client/emotes.lua and
 -- client/emotewheel.lua are loaded as they ship, over the real config, the
@@ -17,18 +17,22 @@
 -- RadialMenu -- eight segments, Visible() firing OnMenuClose, the
 -- currentSelection the library hands its movie, and a MenuHandler.
 --
--- ═══ THE ONE-LINE DISCIPLINE ═══
+-- ═══ THE SEASON DISCIPLINE ═══
 --
--- config/emotes.lua is loaded through a local loader. Run with
--- BR_EMOTES_LINE_DELETED=1 it deletes the exact `requireDevMode = true,` line
--- first, which is what verify.sh does to prove that deleting it is already a
--- tested change. So no assertion here may depend on the line being in the
--- file: a gate-closed case calls gateClosed() (the line forced back AND dev
--- mode off), a gate-open case calls gateOpen() (dev on), and each puts the
--- loaded value back. Group 0 only runs in line-deleted mode.
+-- A client never reads br_season: it reads br_seasonServed, the season the
+-- server booted with and replicated (br_lib/shared/season.lua), at call time.
+-- So this file sets that convar the way the server would have -- to BR_SEASON
+-- resolved by the module's own rule, the latest when it is unset -- and
+-- verify.sh runs it with no BR_SEASON, then at the season before the emotes
+-- row's `from` (off) and at `from` (on). No assertion may depend on which: a
+-- gate-closed case calls gateClosed() (the season before `from`), a gate-open
+-- case gateOpen() (`from`), and restoreSeason() puts the run's season back.
+-- Dev mode stays OFF throughout. Group 0 asserts whatever the run's season
+-- means.
 
 local ROOT = 'resources/[fivem-royale]/'
-local LINE_DELETED = os.getenv('BR_EMOTES_LINE_DELETED') == '1'
+--- The season this run's server booted with: verify.sh's BR_SEASON, or nil.
+local RUN_SEASON = os.getenv('BR_SEASON')
 
 -- ------------------------------------------------------------ native stubs ---
 
@@ -39,8 +43,9 @@ function GetPlayerServerId() return 7 end
 function PlayerId() return 0 end
 function vector3(x, y, z) return { x = x, y = y, z = z } end
 
---- Replicated convars as this client sees them. br_devMode is the one that
---- matters: BR.Dev.on() reads it at call time.
+--- Replicated convars as this client sees them. br_seasonServed is the one that
+--- matters: BR.Season.current() reads it at call time. br_devMode is never set,
+--- so dev mode is off for the whole file.
 local convars = {}
 function GetConvar(name, default)
     local v = convars[name]
@@ -263,19 +268,6 @@ local function readFile(path)
     return s
 end
 
---- THE LOADER. With BR_EMOTES_LINE_DELETED=1 the one line is removed from the
---- source first, exactly once, and the file runs from that text.
-local function loadEmotesConfig()
-    local src = readFile(ROOT .. 'br_lib/config/emotes.lua')
-    assert(src ~= '', 'br_lib/config/emotes.lua is unreadable')
-    if LINE_DELETED then
-        local n
-        src, n = src:gsub('\n    requireDevMode = true,\n', '\n')
-        assert(n == 1, ('expected exactly one requireDevMode line, found %d'):format(n))
-    end
-    assert(load(src, '@br_lib/config/emotes.lua'))()
-end
-
 for _, f in ipairs({ 'br_lib/shared/enums.lua', 'br_lib/shared/protocol.lua',
                      'br_lib/shared/devgate.lua' }) do loadFile(f) end
 
@@ -290,12 +282,23 @@ RegisterCommand = function(n, fn, restricted)
 end
 
 for _, f in ipairs({ 'br_lib/shared/geo.lua', 'br_lib/shared/clock.lua',
-                     'br_lib/config/market.lua' }) do loadFile(f) end
-loadEmotesConfig()
+                     'br_lib/config/market.lua', 'br_lib/shared/season.lua',
+                     'br_lib/config/seasons.lua', 'br_lib/config/emotes.lua' }) do loadFile(f) end
 loadFile('br_core/client/main.lua')
 
 local C = BR.Config.Emotes
-local LOADED_LINE = C.requireDevMode
+
+-- A TYPO'D ID FAILS THIS SUITE rather than quietly closing a door.
+BR.Season.strict = true
+
+--- The emotes row, the two seasons either side of its edge, and what the
+--- server would have replicated for this run.
+local ROW = BR.Config.Seasons.features.emotes
+local FROM = ROW.from
+local OFF = FROM - 1
+assert(OFF >= 1, 'emotes are on from Season 1, so there is no season to close them in')
+local RUN_SERVED = tostring((BR.Season.resolve(RUN_SEASON)))
+convars.br_seasonServed = RUN_SERVED
 
 -- The collaborators, modelled.
 local keyListeners, keyPushes, mapGatedCalls, heldKeys = {}, 0, 0, {}
@@ -345,16 +348,9 @@ local function fire(name, ...)
     for _, fn in ipairs(handlers[name] or {}) do fn(...) end
 end
 
-local function gateClosed()
-    C.requireDevMode = true
-    convars.br_devMode = 'false'
-end
-local function gateOpen()
-    convars.br_devMode = 'true'
-end
-local function restoreLine()
-    C.requireDevMode = LOADED_LINE
-end
+local function gateClosed() convars.br_seasonServed = tostring(OFF) end
+local function gateOpen() convars.br_seasonServed = tostring(FROM) end
+local function restoreSeason() convars.br_seasonServed = RUN_SERVED end
 
 local function tick(ms) fakeTime = fakeTime + (ms or 100); BR.Loop.step(BR.Loop.TICK) end
 local function frame(ms)
@@ -406,7 +402,6 @@ local function calm()
     BR.State.me.state = BR.PlayerState.ALIVE
     watch = nil
     pedPos.x, pedPos.y, pedPos.z = 0.0, 0.0, 0.0
-    restoreLine()
     gateOpen()
     trail = {}
     sent = {}
@@ -501,24 +496,26 @@ do
     ok(#stops == stopsBefore + 1, 'the gate closing takes the clip off the ped')
     ok(next(BR.Emotes.records()) == nil, 'and drops every record')
 
-    -- Left CLOSED, so group 0's first pass (line deleted) is a flip.
-    restoreLine()
+    -- Left CLOSED, so in a run whose season has emotes, group 0's first pass
+    -- is a flip.
 end
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- 0. THE ONE LINE DELETED: emotes are on with dev mode off and nothing forced.
 -- ════════════════════════════════════════════════════════════════════════════
 
-if LINE_DELETED then
-    describe('0. the one line deleted')
-    do
-        convars.br_devMode = 'false'
-        restoreLine()
-        ok(C.requireDevMode == nil, 'the loaded config has no requireDevMode')
-        ok(BR.Emotes.enabled() == true, 'and enabled() is true with dev mode off')
-        local pushes = keyPushes
-        sent = {}
-        slow()
+describe("0. this run's season, with dev mode off")
+do
+    restoreSeason()
+    local season = BR.Season.current()
+    local want = season >= FROM and (ROW.untilSeason == nil or season < ROW.untilSeason)
+    ok(tostring(season) == RUN_SERVED, 'the client runs the season the server replicated', season)
+    ok(BR.Dev.on() == false and BR.Season.has('emotes') == want,
+        ('Season %d: emotes are %s, with dev mode off'):format(season, want and 'on' or 'off'))
+    local pushes = keyPushes
+    sent = {}
+    slow()
+    if want then
         ok(keyPushes == pushes + 1 and count(BR.Net.MARKET_STATE) == 1,
             'the watcher sees the gate open: the keybind row is pushed and the '
                 .. 'market state asked for')
@@ -532,6 +529,13 @@ if LINE_DELETED then
         ok(#tasks > 0 and tasks[#tasks].dict == BR.Emotes.row(A).dict,
             'and an own record plays its clip')
         idle()
+    else
+        ok(keyPushes == pushes and count(BR.Net.MARKET_STATE) == 0,
+            'the watcher sees no flip: the gate stays shut and nothing is asked')
+        setWheel({ A })
+        key(true)
+        ok(not BR.EmoteWheel.isOpen(), 'the wheel does not open')
+        ok(BR.Emotes.request(A) == false and #plays() == 0, 'and request() sends nothing')
     end
 end
 
@@ -1255,7 +1259,7 @@ end
 describe('loops')
 ok(#threw == 0, 'no emotes loop callback threw', threw[1])
 
-restoreLine()
-realPrint(('%s%d passed, %d failed%s%s'):format(fail == 0 and '\27[32m' or '\27[31m',
-    pass, fail, LINE_DELETED and ' (one line deleted)' or '', '\27[0m'))
+restoreSeason()
+realPrint(('%s%d passed, %d failed (Season %s)%s'):format(fail == 0 and '\27[32m' or '\27[31m',
+    pass, fail, RUN_SEASON or 'unset', '\27[0m'))
 os.exit(fail == 0 and 0 or 1)

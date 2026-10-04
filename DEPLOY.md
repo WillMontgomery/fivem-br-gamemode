@@ -464,6 +464,7 @@ Edit `server.cfg`:
 | `sv_licenseKey` | **Not in `server.cfg`.** It lives in `server-identity.cfg` beside it, with `sv_hostname`. See below. |
 | `add_principal` | Uncomment and insert your own license identifier to get admin. |
 | `sv_devMode` / `br_devMode` | **Set both to `false` for production.** They lower the minimum players to start, enable client dev tools, and move `br_ddb` onto the `dev-` tables (section 2). |
+| `br_season` | **Set it explicitly on production** — `set br_season 1` at launch, above `ensure br_core`. The season this box runs (#388): features from later seasons stay off. **An unset box runs the latest season the code knows** and warns at boot, so a public box left unset would switch a new season's features on with the deploy that adds them. Read once as `br_core` starts. See [running.md](docs/running.md#the-season-a-box-runs-br_season). |
 | `sv_maxclients` | 48 is the free OneSync ceiling — see the note in `server.cfg` before raising it. |
 
 ### The identity: `server-identity.cfg`

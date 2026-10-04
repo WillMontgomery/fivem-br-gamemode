@@ -6,16 +6,17 @@
 -- wheel, managed from the Market. One license-free .ogg per dance, supplied by
 -- the owner later.
 --
--- ═══ THE ONE LINE ═══
+-- ═══ THE GATE IS THE SEASON ═══
 --
--- "Everything is devMode-required behind one config line, so removing that
--- line makes it production-ready in the same PR." It is `requireDevMode` below,
--- and BR.Emotes.enabled() is the only thing that reads it. Every server
--- handler, client key, page control and console command asks that function
--- instead (bremotegrant included: it is exempt from the console-command dev
--- gate for exactly this reason), and tools/check_emote_gate.lua fails the
--- build when one does not. verify.sh also runs every emote suite with the line
--- deleted, so deleting it is a change that is already tested.
+-- Emotes were dev-mode only behind one line here until #388 (owner,
+-- 2026-10-04): they are the first Season 2 feature, and their gate is now the
+-- `emotes` row in br_lib/config/seasons.lua. Every server handler, client key,
+-- page control and console command asks BR.Season.has('emotes') and nothing
+-- else (bremotegrant included: it is exempt from the console-command dev gate
+-- for exactly this reason), and tools/check_emote_gate.lua fails the build when
+-- one does not, or when anything asks dev mode a second way. verify.sh runs
+-- every emote suite at the season before the row's `from` (off) and at `from`
+-- (on).
 --
 -- ═══ ONE ROW SHAPE, WHEREVER THE CLIP COMES FROM ═══
 --
@@ -62,9 +63,6 @@ assert(type(BR.Config.MarketIndex) == 'table' and type(BR.Config.Market) == 'tab
 BR.Config.ItemKind.EMOTE = 'emote'
 
 BR.Config.Emotes = {
-    -- ═══ THE ONE LINE. Delete it and emotes are live for everybody. ═══
-    requireDevMode = true,
-
     -- "Up to 8 equipped" (owner). Wheel segment N is slot N is equip_emoteN.
     slots       = 8,
     -- Music falls linearly to silence at this distance from the dancer.
@@ -79,6 +77,8 @@ BR.Config.Emotes = {
     -- A wheel released sooner than this after it opened is a tap, not a pick.
     tapMs       = 200,
     -- The Market season the rows are sold under; an inactive season stops sales.
+    -- A catalogue set in config/market.lua, not the season the server runs:
+    -- that one is BR.Season (config/seasons.lua), and it is what gates emotes.
     season      = 'founders',
     -- Where a dance may start and keep playing: the warmup pad and the match,
     -- alive. Not the lobby ("anywhere except the lobby"), and not DBNO or dead,
@@ -160,17 +160,6 @@ BR.Config.Emotes = {
           flag = 1, durationMs = 12000, track = 'emotes/emote_the_woogie.ogg', price = 250 },
     },
 }
-
---- Is the emote system on, on this machine, right now?
----
---- THE ONLY READER OF requireDevMode. Read at call time, never cached: the
---- client learns dev mode from a replicated convar, which can land after its
---- scripts load (br_lib/shared/devgate.lua says why).
---- @return boolean
-function BR.Emotes.enabled()
-    if BR.Config.Emotes.requireDevMode ~= true then return true end
-    return BR.Dev ~= nil and BR.Dev.on ~= nil and BR.Dev.on() == true
-end
 
 --- Why a TaskPlayAnim flag may not be used for a dance, or nil when it may.
 --- 16/32 free the legs (the dancer walks off); 1024 desyncs the ped for every

@@ -166,7 +166,7 @@ export interface UiState {
 
   /** The store catalogue and the player's balance. Also synthetic. */
   market: MarketPayload
-  /** BR.Emotes.enabled() on this machine (#215, "Scope v2"): the Emotes tab
+  /** BR.Season.has('emotes') on this machine (#215, #388): the Emotes tab
    *  and the "Music volume" slider render only while it is true. False until
    *  Lua says otherwise, so a closed gate never flashes either one. Not a
    *  setting: it is not the player's to change. */

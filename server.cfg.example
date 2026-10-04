@@ -376,6 +376,9 @@ exec "tunables.cfg"
 # set br_discord_bot_token "<the bot token, from the Discord developer portal>"
 # set br_discord_guild_id  "<the guild id, digits only>"
 
+# The season this box runs (#388); later seasons' features stay off. Unset = latest.
+# set br_season 1
+
 # ---------------------------------------------------------------------------
 # Gamemode
 #

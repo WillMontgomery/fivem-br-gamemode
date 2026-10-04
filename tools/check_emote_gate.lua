@@ -1,33 +1,36 @@
--- Static gate: every emote entry point asks the ONE line.
+-- Static gate: every emote entry point asks the ONE gate.
 --
 -- ═══ WHY THIS EXISTS ═══
 --
--- Owner, 2026-10-02 (#215, "Scope v2"): "Everything is devMode-required behind
--- one config line, so removing that line makes it production-ready in the same
--- PR." The line is `requireDevMode = true,` in br_lib/config/emotes.lua and the
--- only thing that reads it is BR.Emotes.enabled(). That promise is made of two
--- halves, and either can rot without a sound:
+-- Emotes (#215) were dev-mode only behind one config line. Since #388 (owner,
+-- 2026-10-04) they are the first Season 2 feature: the gate is the `emotes` row
+-- in br_lib/config/seasons.lua, asked as BR.Season.has('emotes'). That promise
+-- is made of two halves, and either can rot without a sound:
 --
 --   * A DOOR THAT DOES NOT ASK. A new net handler, key, loop or console command
---     that forgets the gate is LIVE on the public box while the line is still
---     there -- the feature leaks before anybody decided to ship it.
---   * A SECOND GATE. A door that asks dev mode directly (BR.Dev.on(), the
---     convars, BR.Server.devMode) is still SHUT after the line is deleted --
---     the "one line" is then two, and the second is wherever somebody hid it.
+--     that forgets the gate is LIVE on a Season 1 box -- the feature leaks
+--     into a season that was never meant to have it.
+--   * A SECOND GATE. A door that asks dev mode (BR.Dev.on(), the convars,
+--     BR.Server.devMode), keeps an accessor of its own, or compares the season
+--     number itself is still SHUT -- or still open -- whatever the row says.
+--     The one row is then two, and the second is wherever somebody hid it.
 --
--- tools/verify.sh also runs every emote suite with the line deleted, which
--- proves the deleted state WORKS. This file proves there is no door the suites
--- do not know about. Neither is enough alone.
+-- tools/verify.sh also runs every emote suite at the season before the row's
+-- `from` (off) and at `from` (on), which proves both states WORK. This file
+-- proves there is no door the suites do not know about. Neither is enough alone.
 --
 -- ═══ THE RULES ═══
 --
---   G1 THE ONE LINE        exactly the shipped spelling, in the config only, and
---                          read only inside BR.Emotes.enabled()
---   G2 THE ACCESSOR        one BR.Emotes.enabled(), in the config, asking BR.Dev
---   G3 NO SECOND GATE      no dev-mode read in an emote file or a gated body,
---                          and nobody replaces the BR.Emotes table
---   G4 EVERY DOOR ASKS     each discovered entry point calls BR.Emotes.enabled()
---                          or that file's pinned nil-safe wrapper
+--   G1 THE ONE ROW         exactly one `emotes = { from = <n> ... }` row in
+--                          br_lib/config/seasons.lua, and the old dev-mode line
+--                          (requireDevMode) named nowhere
+--   G2 NO ACCESSOR         BR.Emotes.enabled is gone: neither defined nor asked
+--   G3 NO SECOND GATE      no dev-mode read and no season-number comparison or
+--                          pick() in an emote file or a gated body, and nobody
+--                          replaces the BR.Emotes table
+--   G4 EVERY DOOR ASKS     each discovered entry point calls
+--                          BR.Season.has('emotes') or that file's pinned
+--                          nil-safe wrapper
 --   G5 NOT VACUOUS         every door the contract names is actually found
 --   G6 THE PAGE            the Music volume slider and the Emotes tab render
 --                          only behind `emotesOn`, in the agreed places
@@ -43,7 +46,7 @@
 -- Run standalone:  lua tools/check_emote_gate.lua <file>...   (.lua and .tsx)
 --                  lua tools/check_emote_gate.lua --selftest
 
-local CONFIG = 'br_lib/config/emotes.lua'
+local SEASONS = 'br_lib/config/seasons.lua'
 
 -- ---------------------------------------------------------------------------
 -- Reading Lua without parsing Lua
@@ -179,7 +182,7 @@ local INDENTED = {
     "^%s+BR%.Loop%.register%(.-'emotes%.",
 }
 
-local GATE = 'BR%.Emotes%.enabled%(%)'
+local GATE = "BR%.Season%.has%(%s*'emotes'%s*%)"
 
 -- ---------------------------------------------------------------------------
 -- The check
@@ -196,14 +199,13 @@ local function run(files)
     local found = {}           -- G5: what was seen
     local function saw(key) found[key] = true end
     local doors = 0
-    local accessors = {}
+    local rows, sawSeasons = 0, false
 
     for _, f in ipairs(files) do
         local path = f.path
         if endsWith(path, '.lua') then
             local code, names = views(f.src)
             local lower = path:lower()
-            local isConfig = endsWith(path, CONFIG)
             local isEmote = lower:find('emote', 1, true) ~= nil
             local isServer = path:find('/server/', 1, true) ~= nil
             local isClient = path:find('/client/', 1, true) ~= nil
@@ -215,8 +217,11 @@ local function run(files)
                 end
                 return #code
             end
-            local function bodyOf(a, b)
-                return table.concat(code, '\n', a, b)
+            --- A body on the NAMES view: the gate's id is a string, and the code
+            --- view blanks strings, so `has('emotes')` and `has('dances')` would
+            --- read the same there.
+            local function namesOf(a, b)
+                return table.concat(names, '\n', a, b)
             end
 
             -- The pinned wrappers this file defines, and whether each asks.
@@ -225,38 +230,34 @@ local function run(files)
                 local w = l:match('^local function (emotesOn)%(') or l:match('^local function (emoteHidden)%(')
                 if w then
                     local stop = l:match('%f[%w]end%s*$') and i or stopAt(i + 1, '^end')
-                    wrappers[w] = { line = i, asks = bodyOf(i, stop):find(GATE) ~= nil }
+                    wrappers[w] = { line = i, asks = namesOf(i, stop):find(GATE) ~= nil }
                 end
             end
 
-            -- ── G1 / G2 ────────────────────────────────────────────────────
-            local accFrom, accTo = nil, nil
-            for i, l in ipairs(code) do
-                if l:match('^function BR%.Emotes%.enabled%(%)') then
-                    accessors[#accessors + 1] = { path = path, line = i }
-                    if isConfig and not accFrom then
-                        accFrom, accTo = i, stopAt(i + 1, '^end')
-                        if not bodyOf(accFrom, accTo):find('BR%.Dev%.on%(%)') then
-                            fail(path, i, 'G2', 'BR.Emotes.enabled() no longer asks BR.Dev.on() -- the line would gate nothing')
+            -- ── G1: the one row, and the old line nowhere ───────────────────
+            if endsWith(path, SEASONS) then
+                sawSeasons = true
+                for i, l in ipairs(code) do
+                    if l:match('^%s*emotes%s*=') then
+                        rows = rows + 1
+                        if rows > 1 then
+                            fail(path, i, 'G1', 'a second `emotes` row -- there is ONE')
+                        elseif not l:match('^%s*emotes%s*=%s*{%s*from%s*=%s*%d+%s*[,}]') then
+                            fail(path, i, 'G1', 'the row must read `emotes = { from = <n> ... }` on one line -- verify.sh reads `from` off it')
                         end
                     end
                 end
             end
-            local assigned = 0
             for i, l in ipairs(code) do
                 if l:find('%f[%w_]requireDevMode%f[^%w_]') then
-                    if not isConfig then
-                        fail(path, i, 'G1', 'names requireDevMode -- only br_lib/config/emotes.lua may, and only BR.Emotes.enabled() reads it')
-                    elseif l:find('requireDevMode%s*=') and not l:find('requireDevMode%s*==') then
-                        assigned = assigned + 1
-                        if assigned > 1 then
-                            fail(path, i, 'G1', 'a second requireDevMode assignment -- there is ONE line')
-                        elseif names[i]:gsub('%s+$', '') ~= '    requireDevMode = true,' then
-                            fail(path, i, 'G1', 'the one line must read exactly `    requireDevMode = true,`')
-                        end
-                    elseif not (accFrom and i > accFrom and i <= accTo) then
-                        fail(path, i, 'G1', 'requireDevMode read outside BR.Emotes.enabled()')
-                    end
+                    fail(path, i, 'G1', 'names requireDevMode -- that line is gone (#388); emotes are gated by their row in ' .. SEASONS)
+                end
+            end
+
+            -- ── G2: no accessor of its own ──────────────────────────────────
+            for i, l in ipairs(code) do
+                if l:find('BR%.Emotes%.enabled%f[^%w_]') then
+                    fail(path, i, 'G2', "BR.Emotes.enabled is gone (#388) -- a second door beside BR.Season.has('emotes')")
                 end
             end
 
@@ -265,10 +266,21 @@ local function run(files)
                 return code[i]:find('BR%.Dev%.on') or code[i]:find('BR%.Server%.devMode')
                     or names[i]:find('GetConvar%s*%(%s*[\'"][bs][rv]_devMode')
             end
-            if isEmote and not isConfig then
+            --- The season NUMBER deciding something, rather than the row:
+            --- current() beside a comparison, or a pick().
+            local function seasonRead(i)
+                local l = code[i]
+                return l:find('BR%.Season%.current%(%)%s*[<>=~]') or l:find('[<>=]%s*BR%.Season%.current%(%)')
+                    or l:find('BR%.Season%.pick%f[^%w_]')
+            end
+            if isEmote then
                 for i = 1, #code do
                     if devRead(i) then
-                        fail(path, i, 'G3', 'an emote file reads dev mode itself -- ask BR.Emotes.enabled(), the one line')
+                        fail(path, i, 'G3', "an emote file reads dev mode itself -- ask BR.Season.has('emotes'), the one gate")
+                    end
+                    if seasonRead(i) then
+                        fail(path, i, 'G3', "an emote file decides by the season number -- ask BR.Season.has('emotes'), so the row in "
+                            .. SEASONS .. ' stays the one place')
                     end
                 end
             end
@@ -283,17 +295,20 @@ local function run(files)
             local function door(i, stop, label)
                 doors = doors + 1
                 starts[i] = true
-                local text = bodyOf(i, stop)
+                local text = namesOf(i, stop)
                 local asks = text:find(GATE) ~= nil
                 for w, def in pairs(wrappers) do
                     if not asks and text:find('%f[%w_]' .. w .. '%(') and def.asks then asks = true end
                 end
                 if not asks then
-                    fail(path, i, 'G4', label .. ' does not ask BR.Emotes.enabled() (or a pinned wrapper that does)')
+                    fail(path, i, 'G4', label .. " does not ask BR.Season.has('emotes') (or a pinned wrapper that does)")
                 end
                 for j = i, stop do
                     if devRead(j) then
-                        fail(path, j, 'G3', label .. ' reads dev mode -- a second gate the one line cannot open')
+                        fail(path, j, 'G3', label .. ' reads dev mode -- a second gate the season row cannot open')
+                    end
+                    if seasonRead(j) then
+                        fail(path, j, 'G3', label .. ' decides by the season number -- a second gate beside the row')
                     end
                 end
             end
@@ -353,7 +368,7 @@ local function run(files)
                                 fail(path, def.line, 'G4', 'emotesOn is declared BELOW the hold row that names it -- a value reference the forward-locals gate cannot see, nil at load')
                             end
                             if not def.asks then
-                                fail(path, def.line, 'G4', 'emotesOn does not ask BR.Emotes.enabled()')
+                                fail(path, def.line, 'G4', "emotesOn does not ask BR.Season.has('emotes')")
                             end
                         end
                     end
@@ -391,11 +406,11 @@ local function run(files)
         end
     end
 
-    -- ── G2: exactly one accessor, in the config ──────────────────────────────
-    if #accessors ~= 1 or not endsWith(accessors[1].path, CONFIG) then
-        local at = accessors[2] or accessors[1]
-        fail(at and at.path or CONFIG, at and at.line or 0, 'G2',
-            ('%d BR.Emotes.enabled() definitions; there must be exactly one, in %s'):format(#accessors, CONFIG))
+    -- ── G1: the row exists ───────────────────────────────────────────────────
+    if not sawSeasons then
+        fail(SEASONS, 0, 'G1', 'not passed to the gate')
+    elseif rows == 0 then
+        fail(SEASONS, 0, 'G1', "no `emotes` row -- every BR.Season.has('emotes') is off in every season")
     end
 
     -- ── G6: the page ─────────────────────────────────────────────────────────
@@ -479,16 +494,20 @@ local R = 'resources/[fivem-royale]/'
 local function goodTree()
     return {
         [R .. 'br_lib/config/emotes.lua'] = table.concat({
-            '-- requireDevMode in a comment is prose',
+            "-- requireDevMode and BR.Season.has('emotes') in a comment are prose",
             'BR.Emotes = BR.Emotes or {}',
             'BR.Config.Emotes = {',
-            '    requireDevMode = true,',
             '    slots = 8,',
             '}',
-            'function BR.Emotes.enabled()',
-            '    if BR.Config.Emotes.requireDevMode ~= true then return true end',
-            '    return BR.Dev ~= nil and BR.Dev.on ~= nil and BR.Dev.on() == true',
-            'end',
+        }, '\n'),
+        [R .. 'br_lib/config/seasons.lua'] = table.concat({
+            '-- <id> = { from = <n> } in a comment is prose; so is emotes = 9',
+            'BR.Config.Seasons = {',
+            '    latest = 2,',
+            '    features = {',
+            '        emotes = { from = 2 },',
+            '    },',
+            '}',
         }, '\n'),
         [R .. 'br_core/server/emotes.lua'] = table.concat({
             '--[[ AddEventHandler(BR.Net.EMOTE_PLAY, function() BR.Dev.on() end) ]]',
@@ -496,24 +515,24 @@ local function goodTree()
             'RegisterNetEvent(BR.Net.EMOTE_PLAY)',
             'AddEventHandler(BR.Net.EMOTE_PLAY, function(d)',
             '    local src = source',
-            '    if not BR.Emotes.enabled() then return end',
+            "    if not BR.Season.has('emotes') then return end",
             'end)',
             'RegisterNetEvent(BR.Net.EMOTE_STOP)',
             'AddEventHandler(BR.Net.EMOTE_STOP, function()',
-            '    if not BR.Emotes.enabled() then return end',
+            "    if not BR.Season.has('emotes') then return end",
             'end)',
             "BR.Sched.every(250, 'emotes.sweep', function()",
-            '    local open = BR.Emotes.enabled()',
+            "    local open = BR.Season.has('emotes')",
             'end)',
             "AddEventHandler('playerDropped', function() end)",
             "RegisterCommand('bremotegrant', function(src, args)",
-            '    if not BR.Emotes.enabled() then return end',
+            "    if not BR.Season.has('emotes') then return end",
             'end, true)',
         }, '\n'),
         [R .. 'br_core/server/market.lua'] = table.concat({
-            'local function emoteHidden(item) return item.kind == \'emote\' and not BR.Emotes.enabled() end',
+            "local function emoteHidden(item) return item.kind == 'emote' and not BR.Season.has('emotes') end",
             'function BR.Market.push(src)',
-            '    local on = BR.Emotes.enabled()',
+            "    local on = BR.Season.has('emotes')",
             'end',
             'AddEventHandler(BR.Net.MARKET_BUY, function(data)',
             '    if emoteHidden(item) then return end',
@@ -526,7 +545,7 @@ local function goodTree()
             'end',
             'RegisterNetEvent(BR.Net.MARKET_UNEQUIP)',
             'AddEventHandler(BR.Net.MARKET_UNEQUIP, function(data)',
-            '    if not (BR.Emotes and BR.Emotes.enabled and BR.Emotes.enabled()) then return end',
+            "    if not (BR.Season and BR.Season.has and BR.Season.has('emotes')) then return end",
             'end)',
             'function BR.Market.addOwned(src, id)',
             '    if emoteHidden(item) then return end',
@@ -537,49 +556,49 @@ local function goodTree()
             'AddEventHandler(BR.Net.MARKET_STATE, function(state) end)',
             'RegisterNetEvent(BR.Net.EMOTE_RECORD)',
             'AddEventHandler(BR.Net.EMOTE_RECORD, function(rec)',
-            '    if not BR.Emotes.enabled() then return end',
+            "    if not BR.Season.has('emotes') then return end",
             'end)',
             'function BR.Emotes.blocked()',
-            "    if not BR.Emotes.enabled() then return 'gate' end",
+            "    if not BR.Season.has('emotes') then return 'gate' end",
             'end',
             'function BR.Emotes.canStart()',
-            '    if not BR.Emotes.enabled() then return false end',
+            "    if not BR.Season.has('emotes') then return false end",
             'end',
             'function BR.Emotes.request(id)',
-            '    if not BR.Emotes.enabled() then return false end',
+            "    if not BR.Season.has('emotes') then return false end",
             'end',
             'function BR.Emotes.nativeCheck()',
-            '    if not BR.Emotes.enabled() then return {} end',
+            "    if not BR.Season.has('emotes') then return {} end",
             'end',
             "BR.Loop.register(BR.Loop.TICK, 'emotes.play', function()",
-            '    if not BR.Emotes.enabled() then return end',
+            "    if not BR.Season.has('emotes') then return end",
             'end)',
             "BR.Loop.register(BR.Loop.TICK, 'emotes.audio', function()",
-            '    if not BR.Emotes.enabled() then return end',
+            "    if not BR.Season.has('emotes') then return end",
             'end)',
             "BR.Loop.register(BR.Loop.SLOW, 'emotes.gate', function()",
-            '    local on = BR.Emotes.enabled()',
+            "    local on = BR.Season.has('emotes')",
             'end)',
             "AddEventHandler('onClientResourceStop', function() end)",
             "RegisterCommand('bremote', function(_, args)",
-            '    if not BR.Emotes.enabled() then return end',
+            "    if not BR.Season.has('emotes') then return end",
             'end, false)',
         }, '\n'),
         [R .. 'br_core/client/emotewheel.lua'] = table.concat({
             "BR.Keys.on('emoteWheel', function(pressed)",
-            '    if not BR.Emotes.enabled() then return end',
+            "    if not BR.Season.has('emotes') then return end",
             'end)',
             "BR.Loop.register(BR.Loop.FRAME, 'emotes.wheel', function()",
-            '    if BR.Emotes.blocked() ~= nil and BR.Emotes.enabled() then return end',
+            "    if BR.Emotes.blocked() ~= nil and BR.Season.has('emotes') then return end",
             'end)',
             "AddEventHandler('br:ui:focusChanged', function(screen) end)",
         }, '\n'),
         [R .. 'br_core/client/keybinds.lua'] = table.concat({
-            'local function emotesOn() return BR.Emotes ~= nil and BR.Emotes.enabled ~= nil and BR.Emotes.enabled() == true end',
+            "local function emotesOn() return BR.Season ~= nil and BR.Season.has ~= nil and BR.Season.has('emotes') == true end",
             "hold('emoteWheel',  'bremotewheel', 'Royale: Emote wheel',                'LMENU', emotesOn)",
         }, '\n'),
         [R .. 'br_ui/client/market.lua'] = table.concat({
-            'local function emotesOn() return BR.Config.Emotes ~= nil and BR.Emotes ~= nil and BR.Emotes.enabled ~= nil and BR.Emotes.enabled() == true end',
+            "local function emotesOn() return BR.Config.Emotes ~= nil and BR.Season ~= nil and BR.Season.has ~= nil and BR.Season.has('emotes') == true end",
             'local function catalogue()',
             '    if emotesOn() then end',
             'end',
@@ -628,41 +647,57 @@ end
 
 local CFG, SRV, MKT, CLI = R .. 'br_lib/config/emotes.lua', R .. 'br_core/server/emotes.lua',
     R .. 'br_core/server/market.lua', R .. 'br_core/client/emotes.lua'
+local SEA = R .. 'br_lib/config/seasons.lua'
 local WHL, KEY, UIM = R .. 'br_core/client/emotewheel.lua', R .. 'br_core/client/keybinds.lua',
     R .. 'br_ui/client/market.lua'
 local SET, MTX = 'ui-src/src/screens/Settings.tsx', 'ui-src/src/screens/Market.tsx'
 
 local FIXTURES = {
     { name = 'the good tree passes', want = nil },
-    { name = 'line deleted is still green', want = nil,
-      mut = function(t) return edit(t, CFG, '    requireDevMode = true,\n', '') end },
-    { name = 'the line set false', want = 'G1',
-      mut = function(t) return edit(t, CFG, 'requireDevMode = true,', 'requireDevMode = false,') end },
-    { name = 'a second assignment', want = 'G1',
+    { name = 'emotes moved to Season 1 is still green', want = nil,
+      mut = function(t) return edit(t, SEA, 'emotes = { from = 2 },', 'emotes = { from = 1 },') end },
+    { name = 'emotes removed again from Season 3 is still green', want = nil,
+      mut = function(t) return edit(t, SEA, 'emotes = { from = 2 },', 'emotes = { from = 2, untilSeason = 3 },') end },
+    { name = 'the row removed', want = 'G1',
+      mut = function(t) return edit(t, SEA, '        emotes = { from = 2 },\n', '') end },
+    { name = 'a second row', want = 'G1',
+      mut = function(t) return edit(t, SEA, '        emotes = { from = 2 },', '        emotes = { from = 2 },\n        emotes = { from = 3 },') end },
+    { name = 'a row verify.sh cannot read from', want = 'G1',
+      mut = function(t) return edit(t, SEA, 'emotes = { from = 2 },', 'emotes = { untilSeason = 4, from = 2 },') end },
+    { name = 'the seasons file not passed', want = 'G1',
+      mut = function(t) t[SEA] = nil return t end },
+    { name = 'the old line back in the config', want = 'G1',
       mut = function(t) return edit(t, CFG, '    slots = 8,', '    slots = 8,\n    requireDevMode = true,') end },
-    { name = 'requireDevMode read in another file', want = 'G1',
+    { name = 'the old line read in another file', want = 'G1',
       mut = function(t) return edit(t, CLI, 'function BR.Emotes.blocked()', 'function BR.Emotes.blocked()\n    local x = BR.Config.Emotes.requireDevMode') end },
-    { name = 'the accessor stops asking BR.Dev.on()', want = 'G2',
-      mut = function(t) return edit(t, CFG, 'BR.Dev.on() == true', 'true') end },
-    { name = 'a second accessor', want = 'G2',
-      mut = function(t) return edit(t, CLI, 'BR.Emotes = BR.Emotes or {}', 'BR.Emotes = BR.Emotes or {}\nfunction BR.Emotes.enabled() return true end') end },
+    { name = 'the accessor defined again', want = 'G2',
+      mut = function(t) return edit(t, CFG, '    slots = 8,\n}', '    slots = 8,\n}\nfunction BR.Emotes.enabled() return BR.Season.has(\'emotes\') end') end },
+    { name = 'a door asking the old accessor', want = 'G2',
+      mut = function(t) return edit(t, WHL, "    if not BR.Season.has('emotes') then return end\nend)\nBR.Loop.register", "    if not BR.Emotes.enabled() then return end\nend)\nBR.Loop.register") end },
+    { name = 'a door comparing the season number', want = 'G3',
+      mut = function(t) return edit(t, SRV, "    local open = BR.Season.has('emotes')", '    local open = BR.Season.current() >= 2') end },
+    { name = 'a season pick() in an emote file', want = 'G3',
+      mut = function(t) return edit(t, WHL, "AddEventHandler('br:ui:focusChanged'", "local n = BR.Season.pick({ [1] = 0, [2] = 8 })\nAddEventHandler('br:ui:focusChanged'") end },
+    { name = 'a door asking another feature', want = 'G4',
+      mut = function(t) return edit(t, SRV, "AddEventHandler(BR.Net.EMOTE_STOP, function()\n    if not BR.Season.has('emotes') then return end",
+          "AddEventHandler(BR.Net.EMOTE_STOP, function()\n    if not BR.Season.has('dances') then return end") end },
     { name = 'BR.Dev.on() inside br_ui\'s MARKET_BUY callback', want = 'G3',
       mut = function(t) return edit(t, UIM, "    if not (item and item.kind == 'emote' and not emotesOn()) then end\nend)\nRegisterNUICallback(BR.NuiCb.MARKET_EQUIP",
           "    if not BR.Dev.on() then return end\n    if not (item and item.kind == 'emote' and not emotesOn()) then end\nend)\nRegisterNUICallback(BR.NuiCb.MARKET_EQUIP") end },
     { name = 'a dev convar read in an emote file', want = 'G3',
       mut = function(t) return edit(t, WHL, "AddEventHandler('br:ui:focusChanged'", "local dev = GetConvar('br_devMode', 'false')\nAddEventHandler('br:ui:focusChanged'") end },
     { name = 'BR.Server.devMode in the server emote file', want = 'G3',
-      mut = function(t) return edit(t, SRV, '    local open = BR.Emotes.enabled()', '    local open = BR.Emotes.enabled() and BR.Server.devMode') end },
+      mut = function(t) return edit(t, SRV, "    local open = BR.Season.has('emotes')", "    local open = BR.Season.has('emotes') and BR.Server.devMode") end },
     { name = 'the BR.Emotes table replaced', want = 'G3',
       mut = function(t) return edit(t, CLI, 'BR.Emotes = BR.Emotes or {}', 'BR.Emotes = {}') end },
     { name = 'a handler that does not ask', want = 'G4',
-      mut = function(t) return edit(t, SRV, 'AddEventHandler(BR.Net.EMOTE_STOP, function()\n    if not BR.Emotes.enabled() then return end',
+      mut = function(t) return edit(t, SRV, "AddEventHandler(BR.Net.EMOTE_STOP, function()\n    if not BR.Season.has('emotes') then return end",
           'AddEventHandler(BR.Net.EMOTE_STOP, function()\n    local x = 1') end },
     { name = 'a named body that does not ask', want = 'G4',
       mut = function(t) return edit(t, MKT, 'function BR.Market.unequip(src, id)\n    if emoteHidden(item) then return end',
           'function BR.Market.unequip(src, id)\n    local x = 1') end },
     { name = 'a wrapper that does not ask', want = 'G4',
-      mut = function(t) return edit(t, UIM, 'BR.Emotes.enabled ~= nil and BR.Emotes.enabled() == true end', 'true end') end },
+      mut = function(t) return edit(t, UIM, "BR.Season.has ~= nil and BR.Season.has('emotes') == true end", 'true end') end },
     { name = 'the hold row without its gate', want = 'G4',
       mut = function(t) return edit(t, KEY, "'LMENU', emotesOn)", "'LMENU')") end },
     { name = 'an emotesOn defined below the hold row', want = 'G4',
@@ -726,7 +761,7 @@ local function selftest()
     end
     if bad == 0 then
         io.write(('ok   %d selftest fixtures: G1-G7 each fire on a broken tree, and a good one -- '
-            .. 'with the line or without it -- passes\n'):format(#FIXTURES))
+            .. 'whatever season its row names -- passes\n'):format(#FIXTURES))
     end
     return bad
 end
@@ -758,5 +793,5 @@ if #findings > 0 then
     end
     os.exit(1)
 end
-io.write(('ok   every emote entry point asks BR.Emotes.enabled() (%d entry points; the one line is %s)\n')
-    :format(doors, CONFIG))
+io.write(("ok   every emote entry point asks BR.Season.has('emotes') (%d entry points; the one row is in %s)\n")
+    :format(doors, SEASONS))

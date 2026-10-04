@@ -671,6 +671,7 @@ export default function Settings({
               {/* THE MUSIC SLIDER IS BACK, BEHIND THE EMOTE GATE (#215). Owner,
                   2026-10-02: "New 'Music volume' slider directly below
                   'Interface sounds', shown only in dev mode (same gate)". The
+                  gate is the season now (#388): emotes are Season 2+. The
                   only music is the dances', so the control exists exactly
                   while they do -- with the gate closed it would be the
                   do-nothing control it was removed for (owner, 2026-08-09).

@@ -101,11 +101,12 @@ NOTES=(
     "test_shop|Warmup car shop: you get exactly the car shown, it survives the reset, never two for one"
     "test_gunshop|In-match gun shop sells exactly the map's rare-and-up guns, and nothing from airdrops"
     "test_volts|Volts spent in a match are counted only when the purchase actually went through"
-    "test_emotes|Emotes on the server: buying, equipping and granting them, all off unless dev mode is on"
+    "test_emotes|Emotes on the server: buying, equipping and granting them, all off before Season 2"
     "test_warmupcrates|The four warmup crates: fixed spots, contents match their rarity, and they refill forever"
     "test_bool_natives|The yes/no misread check still catches mistakes and leaves correctly written code alone"
     "test_tutorial|A player who finished the tutorial is never shown it again, even in another mode"
     "test_gitref|The dev-mode label under Settings shows the code version the server is really running"
+    "test_season|Seasons: the one convar read once, unset runs the latest and warns, and the dev label"
     "test_emotes_ui|Market emote slots: equip, unequip and swap past eight, shown only while emotes are on"
     "test_props|Dev props: server decides and syncs; pickup look, every edit key, save/load"
     "test_stamina|Sprint never runs out and never costs health, in every player state and on every tick"
@@ -139,7 +140,8 @@ NOTES=(
     "test_configreport|Settings report on six fake servers: finds the server name, never shows the license key"
     "dev gate on console commands|Typed commands are off on the public server but for a few; keybinds and /brleave work"
     "dev gate on net events|No request a player's game sends the server is allowed just because dev mode is on"
-    "emote gate|Every way into emotes checks the one dev-mode line, and every emote test passes without it"
+    "season gates|Every season-gated feature is on the one list, and only the season module reads br_season"
+    "emote gate|Every way into emotes asks the season, and every emote test passes in Seasons 1 and 2"
     "branch-switch invariant|Switching the server to another branch can never swap out the console's control script"
     "incident surface|The anti-cheat opens a case only for cheat signs, never for warmup fights or teammates"
     "incident notice surface|The \"See something suspicious?\" notice has one sender, so the cheater is never told"
@@ -626,6 +628,12 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
     # one, a detached sha -- and every unreadable case are walked here without a
     # .git anywhere. A wrong parse shows a stale hex that looks right, which no
     # playtest would ever catch.
+    # test_season.lua is seasons (#388): one br_season, read once as br_core
+    # starts, replicated to clients under its own name, and the one door every
+    # gated feature asks. Every wrong answer there is a legal one -- a server
+    # quietly running the wrong season -- so the parse, the fallback and its
+    # banner, has() and pick() at every edge, and the season crossing from a
+    # server Lua state to a client one are walked here, in separate states.
     # test_storm.lua is the twelfth suite to load a real SERVER file and the
     # eighth to load a CLIENT one, and it is the first to load one of each --
     # because the rule it pins has to hold on both sides of the wire or it is
@@ -715,6 +723,7 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
         tools/test_bool_natives.lua
         tools/test_tutorial.lua
         tools/test_gitref.lua
+        tools/test_season.lua
         tools/test_emotes_ui.lua
         tools/test_props.lua
         tools/test_stamina.lua
@@ -2283,9 +2292,10 @@ DEVGATE_FILE="resources/[fivem-royale]/br_lib/shared/devgate.lua"
 #                       nothing on the live box with no error anywhere.
 #   brring              the health dump DEPLOY.md sends the operator to, by
 #                       hand, on the live box, after an IAM policy change.
-#   bremotegrant        gated by the emote line in br_lib/config/emotes.lua
-#                       instead (#215 "Scope v2": "removing that line makes it
-#                       production-ready"); the emote gate section below pins it.
+#   bremotegrant        gated by the season instead: emotes are Season 2+
+#                       (#388, the `emotes` row in br_lib/config/seasons.lua),
+#                       so a public box running Season 2 can grant them. The
+#                       emote gate section below pins it.
 #
 # bridents is deliberately NOT here: nothing invokes it and it prints licenses
 # and Discord ids for everyone connected. See the note above it in
@@ -2509,39 +2519,69 @@ else
     echo "${YEL}skip${RST} (lua interpreter not found)"
 fi
 
-# --- 4d-quater. every emote door asks the ONE line (#215) ---------------------
+# --- 4d-ter. the season list and its one door (#388) -------------------------
 #
-# Owner, 2026-10-02 ("Scope v2"): "Everything is devMode-required behind one
-# config line, so removing that line makes it production-ready in the same PR."
-# tools/check_emote_gate.lua proves no door skips BR.Emotes.enabled() and none
-# asks dev mode a second way; the loop after it proves the deleted state works,
-# by running every emote suite with `requireDevMode = true,` cut out of the
-# config. Deleting the line is then a change that is already tested.
+# Owner, 2026-10-04: features are gated "by a server convar (set at startup)
+# for which season the server should be running", so one codebase runs Season 3
+# on dev and Season 2 on prod. The mechanism is one list,
+# br_lib/config/seasons.lua, and one door, BR.Season.has(id) in
+# br_lib/shared/season.lua, and every way it rots is silent: a typo'd id is off
+# in every season, a row nothing asks gates nothing, a `from` past `latest` is a
+# feature an unset box never runs, an untilSeason at or before its `from` is a
+# feature no season has, and a second reader of br_season decides on its own
+# unvalidated copy. tools/check_seasons.lua fails each one (S1-S5), and its
+# self-test runs first for the reason the net-event gate's does.
+section 'season gates'
+if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
+    if "$LUA" tools/check_seasons.lua --selftest; then
+        # shellcheck disable=SC2046
+        "$LUA" tools/check_seasons.lua $(find "resources/[fivem-royale]" -name '*.lua' -not -path '*/node_modules/*' | sort) || rc=1
+    else
+        echo "${RED}FAIL${RST} tools/check_seasons.lua's own fixtures no longer hold"
+        echo "     A green run of it would mean nothing. Fix the checker first."
+        rc=1
+    fi
+else echo "${YEL}skip${RST} (lua interpreter not found)"; fi
+
+# --- 4d-quater. every emote door asks the ONE gate (#215, #388) ---------------
+#
+# Emotes were dev-mode only behind one config line; since #388 (owner,
+# 2026-10-04) they are the first Season 2 feature, gated by the `emotes` row in
+# br_lib/config/seasons.lua and asked as BR.Season.has('emotes').
+# tools/check_emote_gate.lua proves no door skips that and none asks dev mode
+# or the season number a second way; the loop after it proves both sides of the
+# row's edge work, by running every emote suite at the season before `from`
+# (emotes off) and at `from` (on).
 section 'emote gate'
 if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
     if "$LUA" tools/check_emote_gate.lua --selftest; then
         # shellcheck disable=SC2046
         "$LUA" tools/check_emote_gate.lua $(find "resources/[fivem-royale]" -name '*.lua' -not -path '*/node_modules/*' | sort) ui-src/src/screens/Settings.tsx ui-src/src/screens/Market.tsx || rc=1
     else echo "${RED}FAIL${RST} check_emote_gate selftest"; rc=1; fi
-    # THE ONE-LINE PROMISE (owner, #215 Scope v2): every emote suite must
-    # also pass with `requireDevMode = true,` removed from the config.
-    #
-    # ONCE THE LINE IS DELETED, THE SUITES ABOVE ALREADY RAN WITHOUT IT. The
-    # second pass cuts the line out, and each suite fails loudly when it is
-    # not there exactly once (so a renamed line is caught); asking it to cut
-    # a line the owner has already removed would fail the very one-line PR
-    # this promises. A key left behind with any other value (say
-    # `requireDevMode = false,`) is neither state, and fails here.
-    EMOTES_CFG="resources/[fivem-royale]/br_lib/config/emotes.lua"
-    if grep -qxF '    requireDevMode = true,' "$EMOTES_CFG"; then
-        for s in tools/test_emotes.lua tools/test_emotes_client.lua tools/test_emotes_ui.lua; do
-            # Failure output is kept (last 20 lines) so CI shows the reason.
-            out=$(BR_EMOTES_LINE_DELETED=1 "$LUA" "$s" 2>&1) || { echo "$out" | tail -n 20; echo "${RED}FAIL${RST} $s with the one line deleted"; rc=1; }
-        done
-    elif grep -qE '^[[:space:]]*requireDevMode[[:space:]]*=' "$EMOTES_CFG"; then
-        echo "${RED}FAIL${RST} $EMOTES_CFG names requireDevMode but not as the one line: delete it whole"; rc=1
+    # THE PAIR OF RUNS, READ OFF THE ROW rather than written here, so moving
+    # emotes to another season moves the runs with it. check_emote_gate.lua's
+    # G1 pins the row to one line in this shape, so the sed cannot miss it
+    # silently. The suites above already ran once as a box with no br_season
+    # (the latest); these two pin the edge. An untilSeason, if the row ever
+    # grows one, is a third run: the season that takes emotes away again.
+    SEASONS_CFG="resources/[fivem-royale]/br_lib/config/seasons.lua"
+    erow_=$(grep -E '^[[:space:]]*emotes[[:space:]]*=' "$SEASONS_CFG" | head -n 1)
+    efrom_=$(printf '%s\n' "$erow_" | sed -n 's/.*[{,][[:space:]]*from[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p')
+    euntil_=$(printf '%s\n' "$erow_" | sed -n 's/.*untilSeason[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p')
+    if [ -z "$efrom_" ]; then
+        echo "${RED}FAIL${RST} could not read the emotes row's \`from\` out of $SEASONS_CFG"; rc=1
     else
-        echo "${GRN}ok${RST}   the one line is deleted; the suites above already ran without it"
+        eruns_="$efrom_"
+        [ "$efrom_" -gt 1 ] && eruns_="$((efrom_ - 1)) $eruns_"
+        [ -n "$euntil_" ] && eruns_="$eruns_ $euntil_"
+        efail_=0
+        for season_ in $eruns_; do
+            for s in tools/test_emotes.lua tools/test_emotes_client.lua tools/test_emotes_ui.lua; do
+                # Failure output is kept (last 20 lines) so CI shows the reason.
+                out=$(BR_SEASON="$season_" "$LUA" "$s" 2>&1) || { echo "$out" | tail -n 20; echo "${RED}FAIL${RST} $s at Season $season_"; rc=1; efail_=1; }
+            done
+        done
+        [ "$efail_" -eq 0 ] && echo "${GRN}ok${RST}   every emote suite passes at Season ${eruns_// /, Season } (emotes are on from Season $efrom_)"
     fi
 else echo "${YEL}skip${RST} (lua interpreter not found)"; fi
 

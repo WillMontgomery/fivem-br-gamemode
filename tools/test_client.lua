@@ -13496,22 +13496,23 @@ end
 -- ---------------------------------------------------------------------------
 -- THE EMOTE WHEEL'S KEY IS A ROW THAT EXISTS ONLY WHILE EMOTES ARE ON (#215)
 --
--- Owner, 2026-10-02 (#215, "Scope v2"): "HOLD LEFT ALT to open the wheel", and
--- "Everything is devMode-required behind one config line". The row lives in
--- client/keybinds.lua like every other key, with a fifth argument -- its gate.
+-- Owner, 2026-10-02 (#215, "Scope v2"): "HOLD LEFT ALT to open the wheel".
+-- Emotes are a Season 2 feature (#388), asked as BR.Season.has('emotes'). The
+-- row lives in client/keybinds.lua like every other key, with a fifth argument
+-- -- its gate.
 -- While the gate is closed the settings screen never sees the row, the
 -- rebinder refuses it, and GTA's own key list is not given it (a mapping can
 -- never be withdrawn). The raw layer drives it either way.
 --
--- THIS SUITE LOADS keybinds.lua WITHOUT br_lib/config/emotes.lua, which is the
--- point of the nil-safe wrapper: BR.Emotes is nil here until this block stubs
+-- THIS SUITE LOADS keybinds.lua WITHOUT br_lib/shared/season.lua, which is the
+-- point of the nil-safe wrapper: BR.Season is nil here until this block stubs
 -- it, and it is put back exactly as found -- the br_ui market block below
--- loads a file that also asks BR.Emotes, and fire() there has no pcall.
+-- loads a file that also asks BR.Season, and fire() there has no pcall.
 -- ---------------------------------------------------------------------------
 
 describe('the emote wheel key (#215): a gated hold on Left Alt')
 do
-    local saved = BR.Emotes
+    local saved = BR.Season
     local savedMap = RegisterKeyMapping
     local maps = 0
     RegisterKeyMapping = function(cmd, desc, dev, key)
@@ -13550,16 +13551,16 @@ do
         return nil
     end
 
-    BR.Emotes = nil
+    BR.Season = nil
     BR.Keys.push()
     ok(pushed() == false,
-        'with no emote config at all the settings screen is not sent the row')
+        'with no season module at all the settings screen is not sent the row')
     ok(keymap['LMENU'] == nil and maps == 0,
         'and GTA was never given a mapping for it at load',
         tostring(keymap['LMENU']))
 
     local gate = false
-    BR.Emotes = { enabled = function() return gate end }
+    BR.Season = { has = function(id) return id == 'emotes' and gate end }
     BR.Keys.push()
     ok(pushed() == false, 'with the gate closed the row is not pushed either')
     ok(BR.Keys.set('bremotewheel', 0x47) == false,
@@ -13612,8 +13613,8 @@ do
     pauseMenu.active = false
 
     RegisterKeyMapping = savedMap
-    BR.Emotes = saved
-    ok(BR.Emotes == saved, 'BR.Emotes is handed back exactly as it was found')
+    BR.Season = saved
+    ok(BR.Season == saved, 'BR.Season is handed back exactly as it was found')
 end
 
 -- ---------------------------------------------------------------------------

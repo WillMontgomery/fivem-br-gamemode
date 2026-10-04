@@ -125,6 +125,50 @@ that player, a timeout, a 429, a guild the bot cannot see — every one of them
 shows the card, because a card that hid itself whenever the lookup failed would
 stop inviting exactly the people it is for, in the states nobody is watching.
 
+### The season a box runs: `br_season`
+
+Features are gated by the season a server runs (#388; owner, 2026-10-04: "This
+is how we can run season 3 on dev and season 2 on prod with the same codebase").
+`br_season` is a whole number from 1, set in `server.cfg` above `ensure br_core`:
+
+```
+set br_season 1
+```
+
+**Prod must set it.** A box that does not runs the **latest** season this code
+knows (`latest` in `br_lib/config/seasons.lua`, Season 2 today) and prints a
+warning banner at boot. That suits a dev box that should always run the newest
+season, and it is exactly what a public box must not rely on: the first deploy
+after a new season's first feature lands would switch that feature on there. A
+value that is not a season (`two`, `0`, `1.5`) also runs the latest, with a
+banner quoting what was set.
+
+**It is read once, as `br_core` starts.** Every deploy restarts the server, so a
+changed `server.cfg` applies on the next one; by hand it is `set br_season <n>`
+then `restart br_core`. A value typed into a live console otherwise changes
+nothing, and the console says so once. The boot banner's `season` line says
+which season is running and why, and in dev mode the lobby shows it beside the
+version under Settings, as `S2 · 1a2b3c4`.
+
+Clients never read `br_season`. The server replicates the season it is running
+as `br_seasonServed`, which nothing should set by hand.
+
+**Gating the next feature:**
+
+1. Add a row to `br_lib/config/seasons.lua`: `myfeature = { from = 3 }` (and
+   raise `latest` if Season 3 is new). `untilSeason = 4` would switch it off
+   again from Season 4.
+2. Put `if not BR.Season.has('myfeature') then return end` at every door,
+   on the server for anything a player could cheat; the client asks the same
+   question for what it shows.
+3. For a version of a value or a function rather than on/off, use
+   `BR.Season.pick({ [1] = old, [3] = new })` where it is used, never at file
+   load.
+
+`verify.sh`'s *season gates* fails an id with no row, a row nothing asks about, a
+`from` past `latest`, and any file but `br_lib/shared/season.lua` that reads
+`br_season`.
+
 ### Voice is pma-voice, and it is vendored and pinned
 
 Voice runs on **[pma-voice](https://github.com/AvarianKnight/pma-voice)** (MIT,
@@ -282,9 +326,8 @@ and `brspectate`, which the admin console types into this console over tmux and
 which are therefore its Kick and Spectate buttons, and `brring`, which is how an
 operator finds out on the live box that the Ringmaster link is dead (see the
 IAM-policy note in [security.md](security.md)), and `bremotegrant`, whose gate is
-the emote line instead (#215, "Scope v2": "removing that line makes it
-production-ready") — it is shut on the public box for exactly as long as
-`requireDevMode = true,` stays in `br_lib/config/emotes.lua`. `bridents` is *not* exempt —
+the season instead (#388): it works on any box running a season that has
+emotes — Season 2 and later — and is shut on a Season 1 box. `bridents` is *not* exempt —
 nothing invokes it and it prints licenses and Discord ids for every connected
 player. The keybind commands are not in this table and are not gated: FiveM
 builds keybinds out of commands, so `+brinteract` and `brslot3` are also E and
@@ -308,14 +351,14 @@ builds keybinds out of commands, so `+brinteract` and `brslot3` are also E and
 | `brcrawl` | client | The crawl: which clip the build actually resolved, and whether this client is emitting anything network-visible while lying still |
 | `brpromptcheck` | client | Which prompt glyph actually renders for a custom keybind |
 | `/brleave` | client | Leave the current match (counts as an elimination) |
-| `bremote`, `bremote <dict> <clip> [flag]`, `bremote stop`, `bremote check` | client, dev only | The emote audition tool (#215). Bare, it prints the wheel's 8 slots and the catalogue; with a dict and clip it plays that animation locally (no record, no music, same cancels), refusing flags 16, 32 and 1024; `check` probes every dance's clip and track. Dev-only even after the emote line is deleted, because it plays any animation on a ped other players see |
+| `bremote`, `bremote <dict> <clip> [flag]`, `bremote stop`, `bremote check` | client, dev only | The emote audition tool (#215). Bare, it prints the wheel's 8 slots and the catalogue; with a dict and clip it plays that animation locally (no record, no music, same cancels), refusing flags 16, 32 and 1024; `check` probes every dance's clip and track. Dev-only even in a season that has emotes, because it plays any animation on a ped other players see |
 | `brprop spawn <model> [pickup\|static]`, `brprop list`, `brprop delete <id\|all>`, `brprop display <id> <pickup\|static>`, `brprop where <id>`, `brprop edit [id]`, `brprop save`, `brprop load` | client, dev mode | Dev props (#384): spawn a model by name in front of you, shown as a pickup (hovers, bobs and spins when you are near, like loot) or static, and move or turn it by hand — W/S, A/D, Q/Z move; J/L, I/K, U/O turn; Ctrl for coarse steps (10 cm / 15 deg, fine is 1 cm / 1 deg); F to the ground, C clears the rotation, Enter confirms, X cancels. `where` prints a paste-ready Lua line; `save` and `load` use `br_core/devprops.json`, which deploys keep and git ignores. Dev mode and nothing else — no grant. Every request runs on the server as `brpropsv`, which `brprop` types for you; `list` and `where` read this client's copies and show any model it failed to draw |
 | `brpropsv <verb> ...` | server, dev mode | The server half of `brprop`, which runs it for you with `ExecuteCommand`; registered unrestricted, so dev mode is its only gate. Typed on the server console, `brpropsv delete`, `display`, `save` and `load` work as written; `edit` needs a player |
 | `brperf [reset\|stop]` | both | Per-subsystem calls, errors and suspension. Client `reset` clears the window and arms per-callback stall capture; `stop` removes its timer overhead while the always-on frame histogram continues. Use `brbench`/`brab` for ordinary sub-frame cost |
 | `brstormhitch [reset [ms]\|stop\|rows]` | client | `reset`, play a hold and a sweep, then `/brstormhitch`: a plain summary — how many map clips were rebuilt while the storm moved (0 when every sweep was shown from its staged clips; with staging off, the redraws as each sweep sets off and at its knee, which the verdict does not count as the old path), how many clips were staged over how long in the holds and the longest frame after a staging step, the worst frame and how many frames went over 16.7 ms, and a one-line verdict. `rows` adds the detail: which storm/map/network/UI paths ran before each long frame. Opt-in and dormant outside a capture |
 | `brstormbisect <normal\|mapoff\|mapfreeze\|mapnoresize\|mapnomorph\|walloff> [ms]` | client | Runtime A/B for #350 and #344. Each mode starts a fresh hitch capture while changing only local rendering: remove the custom map fill, freeze its live updates, suppress only its resize call, stop redrawing the moving zone on the `overlay.morphHz` clock (the fallback redraw, for a sweep that could not be staged in time, and a conjoined growth), or suppress the shaped 3D wall. `normal` restores shipping behavior |
 | `brconfig` | server | The config values that most often explain odd behaviour |
-| `bremotegrant`, `bremotegrant <player name\|#id> <emoteId\|all>` | server console only | Hand a player one dance, or every dance they do not own, without charging Volts (#215). Bare, it lists the catalogue. Takes an **exact** name (case-insensitive, spaces allowed) or `#serverId`; a partial name only lists candidates, because there is no revoke. `all` grants one at a time and stops if the id changes hands. Exempt from the dev gate and gated by the emote line instead: it prints why and does nothing while emotes are off |
+| `bremotegrant`, `bremotegrant <player name\|#id> <emoteId\|all>` | server console only | Hand a player one dance, or every dance they do not own, without charging Volts (#215). Bare, it lists the catalogue. Takes an **exact** name (case-insensitive, spaces allowed) or `#serverId`; a partial name only lists candidates, because there is no revoke. `all` grants one at a time and stops if the id changes hands. Exempt from the dev gate and gated by the season instead (emotes are Season 2+, #388): it prints the season and does nothing while emotes are off |
 | `brring` | server | Ringmaster link: whether it is configured, and what it would send |
 | `brallowlist [on\|off]` | server | The dev-mode join allowlist: `off` stops enforcing it (bans still apply, so with br_ringmaster down every dev-mode join is still refused) until `on` or the next start of br_core, bare prints which and whether the Discord lookup is configured. Restricted |
 | `brddb` | server | Probe DynamoDB — reachability, credentials, table access |

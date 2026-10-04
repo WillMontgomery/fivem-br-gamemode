@@ -30,11 +30,16 @@ client_scripts {
     -- The catalogue, organised by season. Shared so the definitions have one
     -- home rather than living inline in the file that renders them.
     '@br_lib/config/market.lua',
-    -- EMOTES (#215, "Scope v2"): the dance catalogue and the feature's one
-    -- gate line. Its rows register into BR.Config.MarketIndex as it loads, so
-    -- it must follow config/market.lua (it asserts so). enums.lua, which it
-    -- reads for the player states, is in shared_scripts above.
+    -- EMOTES (#215, "Scope v2"): the dance catalogue. Its rows register into
+    -- BR.Config.MarketIndex as it loads, so it must follow config/market.lua
+    -- (it asserts so). enums.lua, which it reads for the player states, is in
+    -- shared_scripts above.
     '@br_lib/config/emotes.lua',
+    -- SEASONS (#388): emotes are a Season 2 feature, and client/market.lua asks
+    -- BR.Season.has('emotes') -- which reads the season br_core's server
+    -- replicated (br_seasonServed) at call time, so this order is a reader's.
+    '@br_lib/shared/season.lua',
+    '@br_lib/config/seasons.lua',
 
     'client/nui.lua',
     -- Preferences live HERE rather than in br_core: they are about this

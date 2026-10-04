@@ -278,6 +278,23 @@ AddEventHandler('onResourceStart', function(res)
         SetConvarReplicated('br_devMode', tostring(BR.Server.devMode))
     end
 
+    -- THE SEASON (#388), read once, here, and replicated -- the way dev mode is
+    -- above, but under a name of its own: br_lib/shared/season.lua says why, and
+    -- is the only file that names the convar. Unset or not a season runs the
+    -- latest and says so in the banner below. FIRST THING, beside dev mode and
+    -- ahead of the scheduler's first pass, because every server door that asks
+    -- BR.Season.has runs from a handler or a job, never at file load.
+    local seasonLines = BR.Season.boot()
+
+    -- A LATER CHANGE IS IGNORED UNTIL br_core RESTARTS, and said so once, so a
+    -- `set br_season 3` typed into a live console is not mistaken for a season
+    -- that changed. Five seconds is soon enough for a person and costs one
+    -- string compare.
+    BR.Sched.every(5000, 'season.watch', function()
+        local changed = BR.Season.recheck()
+        if changed then print(changed) end
+    end)
+
     BR.Sched.start()
 
     -- ONESYNC IS NOT OPTIONAL FOR THIS GAMEMODE.
@@ -295,6 +312,7 @@ AddEventHandler('onResourceStart', function(res)
     print('[br_core] server started')
     print(('[br_core]   onesync      %s'):format(BR.Server.onesync))
     print(('[br_core]   devMode      %s'):format(tostring(BR.Server.devMode)))
+    for _, l in ipairs(seasonLines) do print(l) end
     -- The served commit, or why it could not be read -- dev boxes only. Built by
     -- server/lobby.lua, which loads after this file and before this event fires.
     local commitLine = BR.Lobby and BR.Lobby.commitLine and BR.Lobby.commitLine()

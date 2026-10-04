@@ -118,6 +118,11 @@ export default function Lobby({
 }) {
   const match = useUi(selMatch)
   const lobby = useUi(selLobby)
+  // The dev-box label under Settings: the season, then the served commit --
+  // "S2 · 1a2b3c4" (#388). Lua sends both only in dev mode, so an empty string
+  // here is a public box and nothing is drawn.
+  const versionLabel = [lobby?.season ? `S${lobby.season}` : '', lobby?.commit ?? '']
+    .filter((part) => part !== '').join(' · ')
   const squad = useUi(selSquad)
   // False from first paint until the boot choreography's flip -- a store
   // field with a boot-safe default, NOT read off the screen payload: the
@@ -915,9 +920,13 @@ export default function Lobby({
             >
               Settings
             </Btn>
-            {/* THE SERVED COMMIT, DEV BOXES ONLY. Lua sends it only while dev
-                mode is on, so its presence is the gate and a public box never
-                draws it. ABSOLUTE, so it adds no height to a column whose
+            {/* THE SEASON AND THE SERVED COMMIT, DEV BOXES ONLY. Lua sends both
+                only while dev mode is on, so their presence is the gate and a
+                public box never draws either. The season goes in front of the
+                hex (#388; owner, 2026-10-04: "season should show next to the
+                version label in lobby (on dev)"), and a dev box whose stamp
+                could not be read still shows its season alone.
+                ABSOLUTE, so it adds no height to a column whose
                 budget the note below measures, and it sits outside this
                 wrapper's box, so the walkthrough's ring around Settings does
                 not grow to include it.
@@ -925,12 +934,12 @@ export default function Lobby({
                 alpha, which reads as whatever is behind it, and the owner asked
                 for grey. #9ca3af on the scrim is about 7:1, and still near 6:1
                 with a bright sky behind the scrim's 12% at this column. */}
-            {lobby?.commit && (
+            {versionLabel !== '' && (
               <div
                 className="absolute inset-x-0 top-full mt-1 text-center text-[0.7rem] tabular-nums"
                 style={{ color: '#9ca3af' }}
               >
-                {lobby.commit}
+                {versionLabel}
               </div>
             )}
           </div>

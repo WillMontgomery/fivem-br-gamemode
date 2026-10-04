@@ -2414,6 +2414,9 @@ AddEventHandler(BR.Net.LOBBY_STATUS, function(d)
         -- The served commit's short hex. The server sends it only in dev mode
         -- (server/lobby.lua), so passing it through is the whole of the gate.
         commit    = d.commit,
+        -- The season the server runs (#388), drawn beside that hex. Sent under
+        -- the same dev-mode gate, and passed through the same way.
+        season    = d.season,
     })
 end)
 

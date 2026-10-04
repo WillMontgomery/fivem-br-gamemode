@@ -5,10 +5,9 @@
 -- Owner, 2026-10-02 (#215, "Scope v2"): one PR with the complete SOLO system.
 -- "Anywhere except the lobby, on foot only." A dance plays until its time is up
 -- or the player moves, aims, gets in a vehicle, goes down or dies -- "damage
--- does not cancel". And "Everything is devMode-required behind one config
--- line": every entry point below asks BR.Emotes.enabled(), which is the only
--- reader of that line (br_lib/config/emotes.lua), and tools/check_emote_gate.lua
--- fails the build when one does not.
+-- does not cancel". Emotes are a Season 2 feature (#388): every entry point
+-- below asks BR.Season.has('emotes'), the one gate (br_lib/config/seasons.lua),
+-- and tools/check_emote_gate.lua fails the build when one does not.
 --
 -- ═══ THE CLIENT ASKS AND THE SERVER PUBLISHES ═══
 --
@@ -136,7 +135,7 @@ end)
 -- record is the same record ending early, and a new tStart is a new dance.
 RegisterNetEvent(BR.Net.EMOTE_RECORD)
 AddEventHandler(BR.Net.EMOTE_RECORD, function(d)
-    if not BR.Emotes.enabled() then return end
+    if not BR.Season.has('emotes') then return end
     if type(d) ~= 'table' or type(d.src) ~= 'number' then return end
     if BR.Emotes.row(d.id) == nil then return end
     for _, f in ipairs({ 'tStart', 'durationMs', 'x', 'y', 'z' }) do
@@ -233,7 +232,7 @@ end
 --- those two are asked at the pick (canStart).
 --- @return string|nil
 function BR.Emotes.blocked()
-    if not BR.Emotes.enabled() then return 'gate' end
+    if not BR.Season.has('emotes') then return 'gate' end
     local why = bodyWhy()
     if why then return why end
     if channeling() then return 'item' end
@@ -246,7 +245,7 @@ end
 --- @return boolean
 --- @return string|nil why
 function BR.Emotes.canStart()
-    if not BR.Emotes.enabled() then return false, 'gate' end
+    if not BR.Season.has('emotes') then return false, 'gate' end
     local why = BR.Emotes.blocked()
     if why then return false, why end
     local ped = PlayerPedId()
@@ -264,7 +263,7 @@ end
 --- @return boolean
 --- @return string|nil why
 function BR.Emotes.request(id)
-    if not BR.Emotes.enabled() then return false, 'gate' end
+    if not BR.Season.has('emotes') then return false, 'gate' end
     local ok, why = BR.Emotes.canStart()
     if not ok then return false, why end
     local slotted = false
@@ -321,7 +320,7 @@ end
 --- up again; no health is read and no task flag is used for it.
 --- @return string|nil
 local function cancelWhy()
-    if not BR.Emotes.enabled() then return 'gate' end
+    if not BR.Season.has('emotes') then return 'gate' end
     local why = bodyWhy()
     if why then return why end
     if BR.Emotes.moving() then return 'moving' end
@@ -359,7 +358,7 @@ end
 
 BR.Loop.register(BR.Loop.TICK, 'emotes.play', function()
     local want, key, rec = nil, nil, nil
-    if BR.Emotes.enabled() then
+    if BR.Season.has('emotes') then
         rec = BR.Emotes.mine()
         if rec then
             want = BR.Emotes.row(rec.id)
@@ -435,7 +434,7 @@ local function silence()
 end
 
 BR.Loop.register(BR.Loop.TICK, 'emotes.audio', function()
-    if not BR.Emotes.enabled() then
+    if not BR.Season.has('emotes') then
         if audioLive then silence() end
         audioLive = false
         return
@@ -487,7 +486,7 @@ end)
 -- file's wheel mirror), the keybind table is re-pushed so the wheel row
 -- appears or goes, and a closed gate takes everything off.
 BR.Loop.register(BR.Loop.SLOW, 'emotes.gate', function()
-    local on = BR.Emotes.enabled() == true
+    local on = BR.Season.has('emotes') == true
     if on and BR.Keys and BR.Keys.mapGated then BR.Keys.mapGated() end
 
     if (lastOn == nil and on) or (lastOn ~= nil and on ~= lastOn) then
@@ -525,9 +524,9 @@ end)
 --- command and never in a loop pass -- BR.Inv.emoteCheck's shape.
 --- @return table array of { name, ok, detail }
 function BR.Emotes.nativeCheck()
-    if not BR.Emotes.enabled() then
+    if not BR.Season.has('emotes') then
         return { { name = 'dances', ok = true,
-                   detail = 'emotes are off (requireDevMode line, dev mode off)' } }
+                   detail = ('emotes are off (this box runs Season %d)'):format(BR.Season.current()) } }
     end
     local rows = {}
     for _, id in ipairs(BR.Config.Emotes.order) do
@@ -581,14 +580,14 @@ local function printRows(rows)
     end
 end
 
--- THE AUDITION TOOL. Dev-only even after the one line is deleted: it plays ANY
+-- THE AUDITION TOOL. Dev-only even in a season that has emotes: it plays ANY
 -- dictionary and clip on a ped other players can see (an owner question on
 -- #215), so it stays behind the console-command dev gate as well as asking
 -- the emote gate first.
 RegisterCommand('bremote', function(_, args)
-    if not BR.Emotes.enabled() then
-        print('[br_core] bremote: emotes are off (the requireDevMode line in '
-              .. 'br_lib/config/emotes.lua, and dev mode is off)')
+    if not BR.Season.has('emotes') then
+        print(('[br_core] bremote: emotes are off (this box runs Season %d; '
+              .. 'br_lib/config/seasons.lua)'):format(BR.Season.current()))
         return
     end
     args = type(args) == 'table' and args or {}

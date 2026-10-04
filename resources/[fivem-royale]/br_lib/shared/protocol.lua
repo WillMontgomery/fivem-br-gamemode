@@ -1356,8 +1356,8 @@ BR.Nui = {
     -- whether the payload arrived draws a card with nothing in it. Every reader
     -- has to look inside, at the string.
     COMMUNITY = 'community',
-    -- Emotes (#215): { on }, whether BR.Emotes.enabled() is true on this
-    -- machine. The Market's Emotes tab and the Settings "Music volume" slider
+    -- Emotes (#215): { on }, whether BR.Season.has('emotes') is true on this
+    -- machine (#388). The Market's Emotes tab and the Settings "Music volume" slider
     -- render only while it is.
     EMOTES      = 'emotes',
     -- { tracks = { { src, track, pos, g } } }, about ten a second while any

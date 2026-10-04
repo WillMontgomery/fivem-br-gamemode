@@ -113,11 +113,13 @@ local function emoteSlotOf(kind)
     return nil
 end
 
---- THE GATE, AS THIS FILE ASKS IT. An emote item while BR.Emotes.enabled() is
---- false (the requireDevMode line in br_lib/config/emotes.lua) is not for sale,
---- not equippable and not grantable. tools/check_emote_gate.lua pins every
---- door below to this or to the accessor itself.
-local function emoteHidden(item) return item ~= nil and item.kind == 'emote' and not (BR.Emotes ~= nil and BR.Emotes.enabled ~= nil and BR.Emotes.enabled()) end
+--- THE GATE, AS THIS FILE ASKS IT. An emote item while BR.Season.has('emotes')
+--- is false (this server's season is before the `emotes` row in
+--- br_lib/config/seasons.lua) is not for sale, not equippable and not
+--- grantable. tools/check_emote_gate.lua pins every door below to this or to
+--- the gate itself. NIL-SAFE: test_volts and test_tutorial load this file
+--- without the season module, and a market with no season has no emotes.
+local function emoteHidden(item) return item ~= nil and item.kind == 'emote' and not (BR.Season ~= nil and BR.Season.has ~= nil and BR.Season.has('emotes')) end
 
 --- Which slot holds `id`, or nil.
 --- @param entry table
@@ -206,7 +208,7 @@ function BR.Market.push(src)
 
     -- THE EMOTE GATE, read once per push (#215). While it is closed the page
     -- hears nothing about dances: no `emotes`, and no emote ids in `owned`.
-    local emotesOn = BR.Emotes ~= nil and BR.Emotes.enabled ~= nil and BR.Emotes.enabled()
+    local emotesOn = BR.Season ~= nil and BR.Season.has ~= nil and BR.Season.has('emotes')
 
     local owned = {}
     for id in pairs(entry.owned) do
@@ -754,7 +756,7 @@ end
 RegisterNetEvent(BR.Net.MARKET_UNEQUIP)
 AddEventHandler(BR.Net.MARKET_UNEQUIP, function(data)
     local src = source
-    if not (BR.Emotes and BR.Emotes.enabled and BR.Emotes.enabled()) then return end
+    if not (BR.Season and BR.Season.has and BR.Season.has('emotes')) then return end
     BR.Market.unequip(src, type(data) == 'table' and data.id or nil)
 end)
 

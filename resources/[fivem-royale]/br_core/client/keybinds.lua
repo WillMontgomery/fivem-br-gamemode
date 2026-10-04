@@ -409,11 +409,10 @@ end
 --- ═══ AND A HOLD MAY CARRY A GATE: A ROW THAT EXISTS ONLY WHILE A FEATURE IS
 ---     ON (#215) ═══
 ---
---- Owner, 2026-10-02 (#215, "Scope v2"): "Everything is devMode-required behind
---- one config line, so removing that line makes it production-ready in the same
---- PR." The emote wheel's key is the first row like that. `gate` is a function
---- asked AT CALL TIME, never cached, because dev mode reaches the client as a
---- replicated convar that can land after this file has loaded:
+--- The emote wheel's key is the first row like that (#215): emotes are a
+--- Season 2 feature (#388). `gate` is a function asked AT CALL TIME, never
+--- cached, because the season reaches the client as a replicated convar that
+--- can land after this file has loaded (br_lib/shared/season.lua):
 ---
 ---   * BR.Keys.push leaves the row out while it answers false, so the settings
 ---     screen never offers a key for a feature the box does not have;
@@ -483,18 +482,17 @@ function BR.Keys.mapGated()
 end
 
 --- IS THE EMOTE SYSTEM ON, ON THIS MACHINE, RIGHT NOW? The emote wheel row's
---- gate (#215, "Scope v2": "Everything is devMode-required behind one config
---- line"). BR.Emotes.enabled() in br_lib/config/emotes.lua is the only thing
---- that reads that line; this only asks it.
+--- gate (#215). It asks BR.Season.has('emotes'), the one gate (#388), and
+--- nothing else.
 ---
---- NIL-SAFE, because tools/test_client.lua loads this file without the emote
---- config, and a build that somehow lost the config has no emotes rather than
---- a keybind file that throws at load. DECLARED ABOVE THE FIRST ROW BLOCK on
+--- NIL-SAFE, because tools/test_client.lua loads this file without the season
+--- module, and a build that somehow lost it has no emotes rather than a keybind
+--- file that throws at load. DECLARED ABOVE THE FIRST ROW BLOCK on
 --- purpose: the hold row below passes it as a VALUE, which
 --- tools/check_forward_locals.lua cannot see, so tools/check_emote_gate.lua
 --- pins the order instead.
 --- @return boolean
-local function emotesOn() return BR.Emotes ~= nil and BR.Emotes.enabled ~= nil and BR.Emotes.enabled() == true end
+local function emotesOn() return BR.Season ~= nil and BR.Season.has ~= nil and BR.Season.has('emotes') == true end
 
 -- Descriptions are prefixed so they group together and read sensibly in the
 -- pause menu, where they sit alongside every other resource's bindings.

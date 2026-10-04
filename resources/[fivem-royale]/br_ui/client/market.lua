@@ -28,16 +28,17 @@ local PROFILE = { level = 1, xp = 0, needed = 1 }
 
 --- Is the emote system on, on this machine, right now? (#215, "Scope v2")
 ---
---- THE OWNER'S ONE LINE, ASKED THROUGH ITS ONE READER. "Everything is
---- devMode-required behind one config line, so removing that line makes it
---- production-ready in the same PR" (owner, 2026-10-02): this file never reads
---- the line or dev mode itself, it asks BR.Emotes.enabled(), and
---- tools/check_emote_gate.lua fails the build when a door here does not.
+--- THE ONE GATE, ASKED AS IT IS EVERYWHERE. Emotes are a Season 2 feature
+--- (#388, owner 2026-10-04): this file never reads the season or dev mode
+--- itself, it asks BR.Season.has('emotes'), and tools/check_emote_gate.lua
+--- fails the build when a door here does not. The page's Emotes tab and Music
+--- slider follow it through the EMOTES flag pushEmotes sends.
 ---
 --- NIL-SAFE, AND THE CONFIG CHECK IS NOT REDUNDANT. tools/test_client.lua
---- loads this file without br_lib/config/emotes.lua, and a BR.Emotes stub left
---- behind by an earlier block must not send catalogue() walking a nil table.
-local function emotesOn() return BR.Config.Emotes ~= nil and BR.Emotes ~= nil and BR.Emotes.enabled ~= nil and BR.Emotes.enabled() == true end
+--- loads this file without br_lib/config/emotes.lua or the season module, and
+--- a BR.Season stub left behind by an earlier block must not send catalogue()
+--- walking a nil table.
+local function emotesOn() return BR.Config.Emotes ~= nil and BR.Season ~= nil and BR.Season.has ~= nil and BR.Season.has('emotes') == true end
 
 --- The catalogue, from the shared season config.
 ---
@@ -72,7 +73,7 @@ local SYNTHETIC = {
 --- claim you own something the database refused.
 ---
 --- `emotes` is the wheel (#215): segment k -> catalogue id, holes absent. The
---- server sends it only while BR.Emotes.enabled(), so a closed gate empties it.
+--- server sends it only while BR.Season.has('emotes'), so a closed gate empties it.
 local STATE = { balance = 0, owned = {}, equipped = {}, emotes = {} }
 
 --- Flatten the seasons into the list the NUI renders.
@@ -122,7 +123,7 @@ local function catalogue()
         end
     end
 
-    -- THE DANCES (#215, "Scope v2"), ONLY WHILE THE ONE LINE SAYS SO. They are
+    -- THE DANCES (#215, "Scope v2"), ONLY WHILE THE SEASON HAS THEM. They are
     -- in MarketIndex and never in season.items, so the loop above cannot see
     -- them; they are walked here, in the config's own order, and only when
     -- the gate is open -- with it closed there is no tile, no tab and nothing
@@ -243,8 +244,8 @@ end)
 -- MARKET_STATE. A page that awaited the round trip would hang on any dropped
 -- message, which is the one failure this protocol is shaped to survive.
 --
--- AN EMOTE ID IS NOT FORWARDED WHILE THE ONE LINE IS CLOSED (#215, "Scope
--- v2"). The server refuses it anyway; stopping it here as well means a closed
+-- AN EMOTE ID IS NOT FORWARDED WHILE THE GATE IS CLOSED (#215, #388). The
+-- server refuses it anyway; stopping it here as well means a closed
 -- gate sends nothing at all, and the callback still answers so the page's
 -- promise resolves.
 RegisterNUICallback(BR.NuiCb.MARKET_BUY, function(data, cb)
@@ -271,7 +272,7 @@ end)
 
 -- Take a dance off the wheel (#215): "The market manages them: equip,
 -- unequip, and swap one for another when more than 8 are owned" (owner,
--- 2026-10-02). Emote slots only, and only while the one line says so.
+-- 2026-10-02). Emote slots only, and only while the season has emotes.
 RegisterNUICallback(BR.NuiCb.MARKET_UNEQUIP, function(data, cb)
     if emotesOn() then TriggerServerEvent(BR.Net.MARKET_UNEQUIP, { id = tostring(data and data.id or '') }) end
     cb({ ok = true })

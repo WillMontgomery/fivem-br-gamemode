@@ -75,11 +75,10 @@ const TABS: { id: MarketItem['kind']; label: string }[] = [
 
 /**
  * THE DANCES' TAB (#215, "Scope v2"), and it is not in TABS on purpose. It
- * exists only while the owner's one config line says so -- "Everything is
- * devMode-required behind one config line" (owner, 2026-10-02) -- and Lua says
- * so through the `emotes` envelope. With the gate closed there is no tab to
- * click, and tools/check_emote_gate.lua fails the build if 'emote' ever lands
- * in TABS itself.
+ * exists only while the server's season has emotes -- Season 2 and later
+ * (#388) -- and Lua says so through the `emotes` envelope. With the gate closed
+ * there is no tab to click, and tools/check_emote_gate.lua fails the build if
+ * 'emote' ever lands in TABS itself.
  */
 const EMOTE_TAB = { id: 'emote' as const, label: 'Emotes' }
 
@@ -96,7 +95,7 @@ export default function Market() {
 
   const tabs = emotesOn ? [...TABS, EMOTE_TAB] : TABS
 
-  // THE GATE CAN CLOSE WITH THE TAB OPEN (a dev box turning dev mode off), and
+  // THE GATE CAN CLOSE WITH THE TAB OPEN (br_core restarted on an earlier season), and
   // a tab that no longer exists must not stay selected over an empty grid.
   useEffect(() => { if (!emotesOn && tab === 'emote') setTab('chute') }, [emotesOn, tab])
   useEffect(() => { if (!emotesOn) setSwapFor(null) }, [emotesOn])
