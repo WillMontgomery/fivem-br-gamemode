@@ -2819,6 +2819,38 @@ do
     clearWorld()
 end
 
+describe('a lit entry re-probes its ground every ten seconds, on the frame clock')
+do
+    -- #393: loot.render reads the clock once a frame and hands it to the ground
+    -- cache instead of each entry reading it again. The cache's ten seconds must
+    -- still be ten seconds: no probe inside them, and a fresh one after.
+    bootOn(true, true)
+    clearWorld()
+    setGround({ 30.0 })
+    local ITEM = BR.Config.Consumables[1].id
+    local probes = 0
+    local real = GetGroundZFor_3dCoord
+    GetGroundZFor_3dCoord = function(...)
+        probes = probes + 1
+        return real(...)
+    end
+    fire(BR.Net.LOOT_ADD, { {
+        id = 9201, kind = BR.ItemKind.CONSUMABLE, item = ITEM,
+        x = 1.0, y = 0.0, z = 30.0, rarity = BR.Rarity.COMMON, count = 1,
+    } })
+    frames(2)
+    local first = probes
+    frames(500)            -- 8 seconds of 16 ms frames
+    local within = probes
+    frames(200)            -- past the ten seconds
+    GetGroundZFor_3dCoord = real
+    ok(first > 0 and within == first,
+        'no ground probe inside the ten seconds the answer is kept',
+        ('%d probes at first, %d after eight seconds'):format(first, within))
+    ok(probes > within, 'and a fresh probe once they are up',
+        ('%d after eleven seconds'):format(probes))
+end
+
 describe('the crate plate IS drawn at a corpse, which is the caller #321 changes')
 do
     -- THIS BLOCK IS ABOUT WHOSE PROMPT DISAPPEARS, AND IT EXISTS BECAUSE THAT

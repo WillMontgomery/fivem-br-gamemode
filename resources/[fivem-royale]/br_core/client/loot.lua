@@ -1162,10 +1162,15 @@ end
 ---
 --- SO THE WORST CASE OF THIS WHOLE FEATURE IS TODAY'S BEHAVIOUR: the crate sits
 --- where it landed, exactly as it did before any of this was written.
+---
+--- `now` is the caller's GetGameTimer() when it already has one: the clock is
+--- latched for the frame, so it is the same number, read once instead of once per
+--- entry (#393).
 --- @param e table
+--- @param now number|nil
 --- @return number
-local function groundZ(e)
-    local now = GetGameTimer()
+local function groundZ(e, now)
+    now = now or GetGameTimer()
     if e.gz and now - (e.gzAt or 0) < 10000 then return e.gz end
     -- THE LINE THE OWNER'S BRIDGE REPORT LANDS ON. This used to probe from
     -- 1200m unconditionally, which under an overpass answers with the deck --
@@ -2278,7 +2283,7 @@ local function animate(e, d2, dt, now)
     if not e.obj or not DoesEntityExist(e.obj) then return end
     if isContainer(e) or isHusk(e) then return end
 
-    local gz = groundZ(e)
+    local gz = groundZ(e, now)
 
     -- WHERE "ON THE GROUND" ACTUALLY IS -- ASKED, NOT CALCULATED.
     --
@@ -2571,7 +2576,10 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function(dt)
     -- hitching that appeared as the POI count grew (user, 2026-08-06). The
     -- FADE below still runs every frame, so nothing looks any less smooth.
     local shineMax = L.shineDistance or 18.0
-    local now = GetGameTimer()
+    -- The frame's clock, read once at the top (#393): GetGameTimer is latched for
+    -- the frame, so a second read here and a third for the pulse were the same
+    -- number.
+    local now = frameNow
     if now - shineAt >= (L.shineScanMs or 100) then
         shineAt = now
         shineId = nil
@@ -2615,7 +2623,7 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function(dt)
     -- A slow, shallow breath. The old pulse swung 0.72..1.0 in under a second,
     -- which read as flashing; this is a fade you notice without being nagged
     -- by it.
-    local pulse = 0.55 + 0.20 * math.sin(GetGameTimer() / 900.0)
+    local pulse = 0.55 + 0.20 * math.sin(frameNow / 900.0)
     local SHINE = L.shineColour or { 255, 150, 30 }
 
     -- PUT OUT WHATEVER IS LIT AND SHOULD NOT BE, unconditionally and before
@@ -2648,7 +2656,7 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function(dt)
 
         if d2 <= glow2 and not isHusk(e) and e.gzOk then
             animate(e, d2, dt, frameNow)
-            local gz = groundZ(e)
+            local gz = groundZ(e, frameNow)
             local info = BR.RarityInfo[e.rarity] or BR.RarityInfo[BR.Rarity.COMMON]
             local c = info.rgb
 
