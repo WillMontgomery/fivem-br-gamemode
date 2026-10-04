@@ -905,6 +905,19 @@ class Publish(Box):
             self.publish('n\n')
             self.assertEqual(len(packs), 3)
         self.assertEqual(self.pins()['legion']['1'], sha, 'same bytes, same sha')
+        # An index that lies -- new bytes, same size and mtime -- is caught at
+        # upload: nothing goes into the bucket under a key that is not its sha.
+        self.g('checkout', '--', 'assets.lock')
+        os.remove(self.object_path('legion', sha))
+        path = os.path.join(big, 'stream', 'a.ymap')
+        st = os.stat(path)
+        write(path, b'y' * 5000)
+        os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))
+        self.reset_calls()
+        _, text = self.publish('n\n', expect=1)
+        self.assertIn('changed while it was being published', text)
+        self.assertEqual(self.uploads(), [])
+        self.assertFalse(os.path.exists(self.object_path('legion', sha)))
 
     def test_refusals(self):
         self.pack_in('Season 1', 'legion', {'m.ymap': b'm'})
@@ -1504,7 +1517,10 @@ class Pull(Box):
         ghost = os.path.join(self.cache, 'ghost', 'f' * 64 + '.tar.gz')
         write(ghost, b'x')
         long_ago = 1_000_000_000
-        for path in (ghost, os.path.join(self.cache, 'later', lsha + '.tar.gz')):
+        # v1 too: downloaded long ago, but in force until today. Its recorded
+        # last use, not its file time, is what counts.
+        for path in (ghost, os.path.join(self.cache, 'later', lsha + '.tar.gz'),
+                     os.path.join(self.cache, 'p', v1 + '.tar.gz')):
             os.utime(path, (long_ago, long_ago))
         cached = lambda name, sha: os.path.isfile(os.path.join(self.cache, name, sha + '.tar.gz'))
         now = __import__('time').time()
@@ -1918,7 +1934,12 @@ class AssetFileGate(unittest.TestCase):
         self.git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'oops')
         self.git('rm', '-q', 'maps/legion pack/Legion.ytd', 'maps/legion pack/Legion.ydr~')
         self.git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'undo')
-        r = subprocess.run([BASH, 'tools/check_asset_files.sh', '--revs', 'HEAD~3..HEAD'], cwd=self.repo,
+        # ...and more code on top, so the pack is in an older commit, not the
+        # newest one that adds anything.
+        write(os.path.join(self.repo, 'resources', 'y.lua'), b'more code')
+        self.git('add', '-A')
+        self.git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'more')
+        r = subprocess.run([BASH, 'tools/check_asset_files.sh', '--revs', 'HEAD~4..HEAD'], cwd=self.repo,
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         out = r.stdout.decode('utf-8', 'replace')
         self.assertEqual(r.returncode, 1, out)
