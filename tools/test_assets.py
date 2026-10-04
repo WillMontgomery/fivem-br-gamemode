@@ -595,6 +595,15 @@ class Seasons(Box):
         self.cfg('ensure br_core\nset br_season 2\nexec late.cfg\n')
         found, _ = assets.cfg_season(root, os.path.join(root, 'server.cfg'))
         self.assertEqual(found[0], '3', 'early exec order: server.cfg, then the files it queued')
+        # Queued, not inline: the rest of server.cfg runs before late.cfg.
+        self.cfg('ensure br_core\nexec late.cfg\nset br_season 2\n')
+        found, _ = assets.cfg_season(root, os.path.join(root, 'server.cfg'))
+        self.assertEqual(found[0], '3')
+        # And first queued, first run.
+        write(os.path.join(root, 'early.cfg'), 'set br_season 1\n')
+        self.cfg('ensure br_core\nexec late.cfg\nexec early.cfg\n')
+        found, _ = assets.cfg_season(root, os.path.join(root, 'server.cfg'))
+        self.assertEqual((found[0], os.path.basename(found[1])), ('1', 'early.cfg'))
 
     def test_an_exec_that_starts_br_core_ends_the_walk(self):
         root = self.server
@@ -1192,7 +1201,13 @@ class Publish(Box):
         # Round 2 committed on whatever branch the checkout was on at the y,
         # and said "pushed to dev" when it was not. Publish now uses no branch.
         self.pack_in('Season 1', 'legion', {'m.ymap': b'm'})
-        self.publish('n\n')          # makes the clone
+        self.publish('n\n')          # makes the clone, its HEAD at dev as it was then
+        other = self.other_clone()
+        write(os.path.join(other, 'resources', 'later.lua'), 'return 1\n')
+        self.g('add', '-A', cwd=other)
+        self.g('commit', '-qm', 'later work', cwd=other)
+        self.g('push', '-q', 'origin', 'dev', cwd=other)
+        later = self.g('rev-parse', 'HEAD', cwd=other)
 
         def ask(_q):
             self.g('checkout', '-q', '-b', 'elsewhere', cwd=self.clone)
@@ -1203,7 +1218,8 @@ class Publish(Box):
             _, text = self.publish()
         self.assertIn('pushed to dev', text)
         self.assertEqual(self.subject(), 'Licensed assets: add legion')
-        self.assertEqual(self.g('rev-parse', 'dev~1', cwd=self.bare), self.base)
+        self.assertEqual(self.g('rev-parse', 'dev~1', cwd=self.bare), later,
+                         "on top of GitHub's dev, not the clone's stale HEAD")
         self.assertEqual(self.g('show', '--name-only', '--format=', 'dev', cwd=self.bare).splitlines(), ['assets.lock'])
         self.assertEqual(self.g('log', '--format=%s', '-1', 'elsewhere', cwd=self.clone), 'base',
                          'and no branch anywhere got the commit')
