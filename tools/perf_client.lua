@@ -227,6 +227,15 @@ local W = {
     convars = {},
     kvp = {},
     muted = {},         -- pma-voice's mute list, [serverId] = true
+    -- What the player is doing, as the match scenes set it: keys held by their
+    -- virtual-key code, controls pressed by id, aiming, the weapon in hand and
+    -- the weapons carried, and the car they are driving.
+    keys = {},
+    controls = {},
+    aiming = false,
+    weapon = nil,
+    carried = {},
+    veh = nil,
     handles = 100,
 }
 W.ents[W.me] = { x = 0.0, y = 0.0, z = 30.0, kind = 'ped', heading = 0.0 }
@@ -313,7 +322,9 @@ IMPL.GetEntityHeading    = function(h) local e = W.ents[h] return e and e.headin
 IMPL.GetEntityRotation   = function() return vec3(0.0, 0.0, 0.0) end
 IMPL.GetEntityForwardVector = function() return vec3(0.0, 1.0, 0.0) end
 IMPL.GetEntityVelocity   = function() return vec3(0.0, 0.0, 0.0) end
-IMPL.GetEntitySpeed      = function() return 0.0 end
+IMPL.GetEntitySpeed      = function(h)
+    return (W.veh and (h == W.veh or h == W.me)) and 28.0 or 0.0
+end
 IMPL.GetEntityModel      = function(h) local e = W.ents[h] return e and e.model or 0 end
 IMPL.GetEntityHealth     = function(h) return W.ents[h] and 200 or 0 end
 IMPL.GetEntityMaxHealth  = function() return 200 end
@@ -330,24 +341,49 @@ IMPL.GetGameplayCamCoord = function() return vec3(W.cam.x, W.cam.y, W.cam.z) end
 IMPL.GetGameplayCamRot   = function() return vec3(W.cam.rx, 0.0, W.cam.rz) end
 IMPL.GetFinalRenderedCamCoord = function() return vec3(W.cam.x, W.cam.y, W.cam.z) end
 IMPL.GetFinalRenderedCamRot   = function() return vec3(W.cam.rx, 0.0, W.cam.rz) end
-IMPL.GetFinalRenderedCamFov   = function() return 50.0 end
+IMPL.GetFinalRenderedCamFov   = function() return W.cam.fov or 50.0 end
 IMPL.GetAspectRatio      = function() return 16.0 / 9.0 end
 IMPL.AttachEntityToEntity = function(h, to) local e = W.ents[h] if e then e.attachedTo = to end end
 IMPL.DetachEntity        = function(h) local e = W.ents[h] if e then e.attachedTo = nil end end
 IMPL.IsEntityAttached    = function(h) local e = W.ents[h] return (e and e.attachedTo) and true or false end
-IMPL.GetGameplayCamFov   = function() return 50.0 end
+IMPL.GetGameplayCamFov   = function() return W.cam.fov or 50.0 end
 IMPL.GetCamCoord         = function() return vec3(W.cam.x, W.cam.y, W.cam.z) end
 IMPL.GetCamRot           = function() return vec3(W.cam.rx, 0.0, W.cam.rz) end
 IMPL.GetGroundZFor_3dCoord = function() return true, 30.0 end
 IMPL.GetWaterHeight      = function() return false, 0.0 end
 IMPL.GetWaterHeightNoWaves = function() return false, 0.0 end
 IMPL.TestProbeAgainstWater = F
-IMPL.GetVehiclePedIsIn   = function() return 0 end
+IMPL.GetVehiclePedIsIn   = function(p) return (p == W.me and W.veh) or 0 end
 IMPL.GetVehiclePedIsTryingToEnter = function() return 0 end
-IMPL.GetVehiclePedIsUsing = function() return 0 end
-IMPL.GetPedInVehicleSeat = function() return 0 end
-IMPL.GetSelectedPedWeapon = function() return jenkins('weapon_unarmed') end
-IMPL.GetCurrentPedWeapon = function() return true, jenkins('weapon_unarmed') end
+IMPL.GetVehiclePedIsUsing = IMPL.GetVehiclePedIsIn
+IMPL.GetPedInVehicleSeat = function(v, seat)
+    return (W.veh and v == W.veh and seat == -1) and W.me or 0
+end
+IMPL.IsPedInAnyVehicle   = function(p) return p == W.me and W.veh ~= nil end
+IMPL.IsPedInVehicle      = function(p, v) return p == W.me and W.veh ~= nil and v == W.veh end
+IMPL.GetVehicleFuelLevel = function() return 65.0 end
+IMPL.GetSelectedPedWeapon = function() return W.weapon or jenkins('weapon_unarmed') end
+IMPL.GetCurrentPedWeapon = function() return true, W.weapon or jenkins('weapon_unarmed') end
+IMPL.SetCurrentPedWeapon = function(p, h) if p == W.me then W.weapon = h end end
+IMPL.GiveWeaponToPed     = function(p, h, _, _, equip)
+    if p ~= W.me then return end
+    W.carried[h] = true
+    if equip == true or equip == 1 then W.weapon = h end
+end
+IMPL.HasPedGotWeapon     = function(p, h) return p == W.me and W.carried[h] == true end
+IMPL.RemoveWeaponFromPed = function(p, h)
+    if p ~= W.me then return end
+    W.carried[h] = nil
+    if W.weapon == h then W.weapon = nil end
+end
+IMPL.RemoveAllPedWeapons = function(p) if p == W.me then W.carried, W.weapon = {}, nil end end
+IMPL.IsRawKeyDown        = function(code) return W.keys[code] == true end
+IMPL.IsControlPressed    = function(_, c) return W.controls[c] == true end
+IMPL.IsDisabledControlPressed = IMPL.IsControlPressed
+IMPL.IsPlayerFreeAiming  = function() return W.aiming == true end
+IMPL.IsUsingKeyboard     = T     -- the owner plays on keyboard and mouse
+IMPL.IsAimCamActive      = IMPL.IsPlayerFreeAiming
+IMPL.IsFirstPersonAimCamActive = IMPL.IsPlayerFreeAiming
 IMPL.GetPedAmmoTypeFromWeapon = function() return 0 end
 IMPL.GetAmmoInPedWeapon  = function() return 0 end
 IMPL.GetMaxAmmoInClip    = function() return 30 end
@@ -361,7 +397,7 @@ local function airborne(h)
     return p.z > 32.0 and not (e and e.attachedTo)
 end
 IMPL.GetPedParachuteState = function() return W.chute or -1 end
-IMPL.IsPedOnFoot         = function(h) return not airborne(h) end
+IMPL.IsPedOnFoot         = function(h) return not airborne(h) and not (h == W.me and W.veh) end
 IMPL.IsEntityInAir       = function(h) return airborne(h) end
 IMPL.IsPedFalling        = function(h) return airborne(h) and W.chute == 3 end
 IMPL.IsPedInParachuteFreeFall = function(h) return airborne(h) and W.chute == 3 end
@@ -889,6 +925,10 @@ for _, f in ipairs(files) do
     for name in src:gmatch('\n%s*function%s+([A-Z][%w_]*)[%.:%(]') do defined[name] = true end
     for name in src:gmatch('^%s*([A-Z][%w_]*)%s*=[^=]') do defined[name] = true end
 end
+-- A native whose name the scan above mistakes for a definition, because some
+-- table has a field spelled the same: ScaleformUI's controls state carries
+-- `IsUsingKeyboard = false,`, and its radial menu calls the native of that name.
+defined.IsUsingKeyboard = nil
 
 local BR
 
@@ -1319,6 +1359,17 @@ local function digestFeed()
         endsAt = S.match.endsAt, serverNow = gameMs() })
 end
 
+--- The squadmate this player is spectating, or nil.
+local watching = nil
+
+--- server/spectate.lua's feed: where the watched player is.
+local function spectateFeed()
+    local pl = W.players[watching]
+    local p = entPos(pl and pl.ped or W.me)
+    net(BR.Net.SPECTATE_SET, { targetSrc = watching, name = 'Player' .. watching,
+                               x = p.x, y = p.y, z = p.z })
+end
+
 --- What the server keeps sending on its own clock, whatever the phase.
 local FEEDS = {
     { every = 500,  fn = lobbyStatus },
@@ -1327,7 +1378,43 @@ local FEEDS = {
         local st = S.match.state
         if st == BR.MatchState.PLAYING then squadPos() end
     end },
+    { every = 250, fn = function() if watching then spectateFeed() end end },
 }
+
+--- The server's mirror of this player's inventory: a carbine in slot 1 and a
+--- sniper rifle in slot 2, with `active` in hand.
+local function loadout(active)
+    local slots = {}
+    for i = 1, BR.Config.Loot.slots or 5 do slots[i] = false end
+    local function weapon(id)
+        local w = BR.Config.WeaponById[id]
+        return { id = id, label = w.label, kind = BR.ItemKind.WEAPON, rarity = w.rarity,
+                 count = 1, clip = w.clip, pool = w.ammo }
+    end
+    slots[1], slots[2] = weapon('carbinerifle'), weapon('sniperrifle')
+    local ammo = {}
+    for _, pool in ipairs(BR.Config.AmmoOrder) do ammo[pool] = 120 end
+    return { slots = slots, ammo = ammo, active = active }
+end
+
+--- Hold or release a bound action's key, by its command.
+local function holdKey(command, down)
+    local code = BR.Keys.boundTo(command)
+    if code then W.keys[code] = down or nil end
+end
+
+--- Where the player stood before a scene moved them, so the next scene starts
+--- from the same place.
+local home = nil
+local function stepTo(x, y, z)
+    local p = entPos(W.me)
+    home = { x = p.x, y = p.y, z = p.z }
+    setPed(W.me, x, y, z)
+end
+local function stepBack()
+    if home then setPed(W.me, home.x, home.y, home.z) end
+    home = nil
+end
 
 -- ----------------------------------------------------------------- driver ---
 
@@ -1441,23 +1528,125 @@ local PHASES = {
         -- Stand where the loot is thickest; the client asks for its cells.
         local spot = denseSpot(LAND.x, LAND.y)
         if spot then setPed(W.me, spot.x + 1.5, spot.y + 1.0, spot.z or LAND.z) end
+        -- A carbine in hand and a sniper rifle on the bar.
+        net(BR.Net.INV_SET, loadout(1))
         squadPos()
         local t0 = gameMs()
         net(BR.Net.AIRDROP_SYNC, BR.BuildAirdropRecord(1,
             { id = LAND.id, x = LAND.x + 150.0, y = LAND.y - 80.0, z = LAND.z },
             260.0, t0, t0 + 60000, 90.0, t0 + 15000))
     end },
+
+    -- ═══ THE MATCH, PLAYED: each of these is the passive match above with one
+    --     thing the player does, so the callbacks that only run while they do
+    --     it are measured and held to a budget too ═══
+    { id = 'match aim', settle = 60, setup = function()
+        -- Down the sniper's scope: the rifle in hand, the aim button held, the
+        -- camera zoomed in.
+        net(BR.Net.INV_SET, loadout(2))
+        W.aiming, W.controls[25], W.cam.fov = true, true, 8.0
+    end, after = function()
+        W.aiming, W.controls[25], W.cam.fov = false, nil, nil
+        net(BR.Net.INV_SET, loadout(1))
+    end },
+    { id = 'match pings', settle = 60, setup = function()
+        -- The whole squad has a marker down, near and across the map.
+        for i, src in ipairs({ ME, 2, 3, 4 }) do
+            net(BR.Net.MARKER_SYNC, { owner = src, i = i,
+                x = LAND.x + 300.0 * i, y = LAND.y + 900.0 * i })
+        end
+    end, after = function()
+        for _, src in ipairs({ ME, 2, 3, 4 }) do
+            net(BR.Net.MARKER_SYNC, { owner = src, op = 'clear' })
+        end
+    end },
+    { id = 'match drive', settle = 60, setup = function()
+        -- At the wheel of a car, boost held.
+        local p = entPos(W.me)
+        W.veh = newEnt('veh', jenkins('sultan'), p.x, p.y, p.z)
+        holdKey('brboost', true)
+    end, after = function()
+        holdKey('brboost', false)
+        if W.veh then W.ents[W.veh] = nil end
+        W.veh = nil
+    end },
+    { id = 'match revive', settle = 60, setup = function()
+        -- Kneeling at the downed squadmate, the interact key held.
+        local m = entPos(W.players[DOWNED].ped)
+        stepTo(m.x + 1.0, m.y, m.z)
+        holdKey('brinteract', true)
+    end, after = function()
+        holdKey('brinteract', false)
+        stepBack()
+    end },
+    { id = 'match ptt', settle = 60, setup = function()
+        -- Talking to the squad: push-to-talk held.
+        holdKey('brptt', true)
+    end, after = function()
+        holdKey('brptt', false)
+    end },
+    { id = 'match loot', settle = 0, setup = function()
+        -- Opening a chest: stood at the nearest one, facing it, interact held.
+        -- No settle: the hold is a second long, and it is what is measured.
+        local p, best, bestD = entPos(W.me), nil, math.huge
+        local byCell = lootLayout('match')
+        for _, k in ipairs(BR.LootCellsAround(BR.LootCellOf(p.x, p.y))) do
+            for _, e in ipairs(byCell[k] or {}) do
+                local d = BR.Dist2(p.x, p.y, e.x, e.y)
+                if e.kind == 'chest' and d < bestD then best, bestD = e, d end
+            end
+        end
+        if best then
+            stepTo(best.x, best.y - 1.2, best.z or LAND.z)
+            W.cam.rz = 0.0
+        end
+        holdKey('brinteract', true)
+    end, after = function()
+        holdKey('brinteract', false)
+        stepBack()
+    end },
+
     { id = 'match sweep', settle = 60, setup = function()
         local c1 = circleOne()
         stormPhase(1, ANCHOR.x, ANCHOR.y, openingR(ANCHOR.x, ANCHOR.y),
                    c1.cx, c1.cy, c1.r, 120, 240, 120000 + 100000)
     end },
     { id = 'match late', settle = 120, setup = function()
-        -- Later on: the downed squadmate has been picked up.
+        -- Later on: the downed squadmate has been picked up. A long hold, so
+        -- the scenes after this one are all inside it.
         delta({ { op = 'update', src = DOWNED, e = { state = BR.PlayerState.ALIVE } } })
         local p2, p3 = BR.Config.Storm.phases[2], BR.Config.Storm.phases[3]
         stormPhase(3, LAND.x + 200.0, LAND.y + 300.0, p2.radius,
-                   LAND.x + 300.0, LAND.y + 100.0, p3.radius, 90, 90, 30000)
+                   LAND.x + 300.0, LAND.y + 100.0, p3.radius, 300, 90, 30000)
+    end },
+    { id = 'match outside', settle = 60, setup = function()
+        -- Caught outside the storm: well past the zone's edge.
+        stepTo(stormRec.cx0 + stormRec.r0 + 250.0, stormRec.cy0, LAND.z)
+    end, after = function()
+        stepBack()
+    end },
+    { id = 'match emote', settle = 60, setup = function()
+        -- Season 2's emote wheel, open: the dev-mode brseason switch, then the
+        -- wheel key held.
+        W.convars[BR.Season.SERVED] = '2'
+        net(BR.Net.SEASON_SWITCHED, { season = 2, by = 'perf' })
+        holdKey('bremotewheel', true)
+    end, after = function()
+        holdKey('bremotewheel', false)
+        W.convars[BR.Season.SERVED] = '1'
+        net(BR.Net.SEASON_SWITCHED, { season = 1, by = 'perf' })
+    end },
+    { id = 'match downed', settle = 60, setup = function()
+        -- Knocked: down, crawling and bleeding out.
+        delta({ { op = 'update', src = ME, e = { state = BR.PlayerState.DBNO } } })
+        net(BR.Net.DBNO_SET, { downed = true, bleedEndsAt = gameMs() + 90000 })
+    end },
+    { id = 'match spectate', settle = 120, setup = function()
+        -- Bled out, and watching a squadmate on the server's feed.
+        net(BR.Net.DBNO_SET, { downed = false })
+        delta({ { op = 'update', src = ME, e = { state = BR.PlayerState.OUT } } })
+        watching = 2
+        spectateFeed()
     end },
 }
 
@@ -1542,6 +1731,18 @@ for _, ph in ipairs(PHASES) do
     results[#results + 1] = { id = ph.id, rows = rows, tot = tot, wall = wall,
                               digest = ('%016x/%d'):format(digest.h, digest.n) }
     if ARGS.phase and ph.id == ARGS.phase then break end
+    -- A scene's `after` puts back what it changed, unmeasured, so the next one
+    -- starts from the match it was written against.
+    if ph.after then
+        enter('net setup ' .. ph.id)
+        local okA, errA = pcall(ph.after)
+        leave()
+        if not okA then
+            realPrint(('\27[31m[perf] teardown of %s failed: %s\27[0m'):format(ph.id,
+                tostring(errA)))
+            os.exit(2)
+        end
+    end
 end
 collectgarbage('restart')
 
