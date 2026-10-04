@@ -1069,6 +1069,7 @@ end
 --- every circle this file builds on its own; see blob() for the small-zone case.
 --- @param ks table     placed corners, counter-clockwise
 --- @param meta table
+--- @param pool table|nil  build into its tables (see "a pool" at the top)
 local function hullOf(ks, meta, pool)
     local m = #ks
     local pieces = poolList(pool, 'pieces')
@@ -1129,9 +1130,11 @@ end
 ---   an arc cut by a line, and that is the one case handed back as nil.
 ---
 --- FRESH CORNER TABLES, because the shape being eroded is still live -- the wall
---- insets the zone the HUD is measuring against on the same frame.
+--- insets the zone the HUD is measuring against on the same frame. Built into a
+--- pool they are fresh too: a pool hands out only tables this build has not used.
 --- @param ks table      placed corners
 --- @param metres number
+--- @param pool table|nil  build into its tables (see "a pool" at the top)
 --- @return table|nil ks
 local function erode(ks, metres, pool)
     local out = poolList(pool, 'eroded')
@@ -1242,6 +1245,14 @@ end
 
 -- ------------------------------------------------------------ the disc hull ---
 
+--- One step of the hull walk: { disc index, from angle, to angle }.
+local function step(pool, i, a0, a1)
+    if not pool then return { i, a0, a1 } end
+    local e = poolTake(pool, 'step')
+    e[1], e[2], e[3] = i, a0, a1
+    return e
+end
+
 --- THE CONVEX HULL OF A LIST OF DISCS, as a corner list. A point is a disc of
 --- radius 0.
 ---
@@ -1267,15 +1278,8 @@ end
 --- and each corner's last angle IS the next one's first -- the same double -- so the
 --- chain closes to the bit.
 --- @param discs table   { { x, y, r }, ... }
+--- @param pool table|nil  build into its tables (see "a pool" at the top)
 --- @return table|nil ks
---- One step of the hull walk: { disc index, from angle, to angle }.
-local function step(pool, i, a0, a1)
-    if not pool then return { i, a0, a1 } end
-    local e = poolTake(pool, 'step')
-    e[1], e[2], e[3] = i, a0, a1
-    return e
-end
-
 local function discHull(discs, pool)
     local m = #discs
     if m == 0 then return nil end
@@ -2354,7 +2358,6 @@ function BR.StormShape.pairsOf(uA, uB)
     return out
 end
 
---- A disc hull's corner list as a shape, named by a solver circle. See discShape.
 --- The `meta` a blob is sealed with -- its solver circle, and the map's radius
 --- primitive drawn at it with radius `primR` -- from the pool when there is one.
 local function blobMeta(cx, cy, r, unit, primR, pool)
@@ -2376,6 +2379,7 @@ local function blobMeta(cx, cy, r, unit, primR, pool)
     return meta
 end
 
+--- A disc hull's corner list as a shape, named by a solver circle. See discShape.
 local function hullShape(ks, cx, cy, r, pool)
     if not ks or (#ks == 1 and ks[1].rho < MIN_RADIUS) then
         local k = ks and ks[1]
@@ -2414,7 +2418,6 @@ end
 --- @param t number    0..1
 --- @param keep table|nil
 --- @param cx number   the solver's circle at t, recorded on the shape
---- @return table shape
 --- @param pool table|nil  BR.StormShape.newPool(): build into its tables (see
 ---                         "a pool" at the top of this file)
 --- @return table shape
@@ -2425,6 +2428,7 @@ end
 --- The moving wall's CORNER LIST at sweep fraction `t`: what morph() builds its shape
 --- from, without the pieces -- for a caller that asks the wall's signed distance at
 --- many instants and never draws it (storm_solve.lua's sweep price, #344).
+--- @param pool table|nil  build into its tables (see "a pool" at the top)
 --- @return table|nil ks
 function BR.StormShape.morphHull(src, dst, t, keep, pool)
     local s = 1.0 - t
@@ -3743,6 +3747,7 @@ end
 ---
 --- @param shape table
 --- @param ci number    a component index, as components() orders them
+--- @param pool table|nil  build into its tables (see "a pool" at the top)
 --- @return table  { { t0 = number, len = number, r = number|nil }, ... }
 function BR.StormShape.runs(shape, ci, pool)
     local out = poolList(pool, 'runs')
@@ -4228,6 +4233,8 @@ end
 --- them answers for and the other does not is a renderer drawing a boundary it
 --- cannot then ask questions about.
 ---
+--- @param pool table|nil  a blob is eroded and sealed into its tables (see "a
+---                         pool" at the top); every other kind ignores it
 --- @return table shape
 function BR.StormShape.inset(shape, metres, pool)
     local kind = shape and shape.kind
