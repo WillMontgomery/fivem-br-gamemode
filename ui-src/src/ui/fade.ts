@@ -5,18 +5,21 @@
  * Owner, 2026-10-03: "the lobby UI doesn't go away when getting into warmup -
  * it only happens if you sit AFK in lobby for a long time, like 30+ minutes or
  * so". His log had the whole Lua side of the ready-up in order, and the page
- * alive enough to answer the curtain's handshake -- so the page HAD the warmup
- * state. What it did not do was take the lobby off the screen.
+ * alive enough to answer the curtain's handshake. That handshake comes BEFORE
+ * Lua sends warmup, so it proves the page was running, not that it held the
+ * warmup state -- the F8 screen line is what tells those apart now.
  *
  * THE LOBBY CAME DOWN BY A CSS TRANSITION AND BY NOTHING ELSE. Its root went to
  * `opacity: 0` over 200ms, and `visibility: hidden` was itself a transition,
  * delayed by those 200ms. Both are run by the browser's animation clock. JS
  * timers, fetch and message delivery are not -- and in this page they are the
- * things that kept working. Stop that clock in a real Chromium and the page
- * does what the owner saw: the store says warmup, `aria-hidden` says true, and
- * the menu stays drawn with nothing in any log for as long as you care to wait.
- * The curtain is worse, because its "I am black" report has a timer fallback:
- * Lua is told the screen is covered while the curtain is still at opacity 0.
+ * things that kept working. Stop that clock in Chromium (DevTools'
+ * Animation.setPlaybackRate 0) and the page shows the same symptom: the store
+ * says warmup, `aria-hidden` says true, and the menu stays drawn. Whether a
+ * stalled clock is what happened in his game is NOT known; it is the one
+ * page-side cause that fits his log. The curtain's "I am black" report used to
+ * have a bare timer fallback that told Lua "covered" at opacity 0; it now waits
+ * for the forced black and a drawn frame (LeaveScreen.tsx).
  *
  * SO THE END OF A FADE IS NOW APPLIED BY A TIMER, NOT REACHED BY ONE. Once a
  * fade's own duration (plus a margin) has passed on the JS clock, the layer
