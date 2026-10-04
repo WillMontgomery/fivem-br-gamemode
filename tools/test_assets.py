@@ -99,11 +99,13 @@ sys.exit(2)
 '''
 
 
-def tree(root):
+def tree(root, skip=()):
     """Every file and directory under root, with size and mtime, for 'did
-    anything change' comparisons."""
+    anything change' comparisons. Top-level names in `skip` are not entered."""
     out = {}
     for dirpath, dirnames, filenames in os.walk(root):
+        if dirpath == root:
+            dirnames[:] = [d for d in dirnames if d not in skip]
         for d in dirnames:
             full = os.path.join(dirpath, d)
             out[os.path.relpath(full, root).replace(os.sep, '/') + '/'] = None
@@ -957,6 +959,232 @@ class Pull(Box):
         _, text = self.run_tool('status', '--lock', self.lock, '--offline')
         self.assertNotIn('bucket', text.split('\n', 1)[1])
         self.assertEqual(tree(self.server), before, 'status is read-only')
+
+
+# =============================================================================
+# deploy.sh, with the pull stubbed
+# =============================================================================
+
+def find_bash():
+    """A POSIX bash with sed, grep and find beside it: Git Bash's on Windows,
+    never System32's, which is WSL's launcher."""
+    found = shutil.which('bash')
+    if os.name != 'nt':
+        return found
+    candidates = [found] if found else []
+    candidates += [r'C:\Program Files\Git\usr\bin\bash.exe', r'C:\Program Files\Git\bin\bash.exe']
+    for c in candidates:
+        if c and os.path.isfile(c) and 'system32' not in c.lower() and 'windowsapps' not in c.lower():
+            return c
+    return None
+
+
+BASH = find_bash()
+GIT = shutil.which('git')
+
+FAKE_RSYNC = r'''#!/usr/bin/env bash
+# test_assets.py's rsync: logs where it was pointed, copies unless --dry-run.
+printf 'ARGS %s\n' "$*" >> "$FAKE_RSYNC_LOG"
+dry=0; skip=0; pos=()
+for a in "$@"; do
+    if [ "$skip" -eq 1 ]; then skip=0; continue; fi
+    case "$a" in
+        --dry-run) dry=1 ;;
+        --exclude) skip=1 ;;
+        -*) ;;
+        *) pos+=("$a") ;;
+    esac
+done
+printf 'DEST %s\n' "${pos[1]}" >> "$FAKE_RSYNC_LOG"
+[ "$dry" -eq 1 ] && exit 0
+mkdir -p "${pos[1]}" && cp -R "${pos[0]}." "${pos[1]}"
+'''
+
+FAKE_PULL = r'''import json, os, sys
+with open(os.environ['FAKE_PULL_LOG'], 'a', encoding='utf-8') as fh:
+    fh.write(json.dumps(sys.argv[1:]) + '\n')
+print('stub pull ran')
+sys.exit(int(os.environ.get('FAKE_PULL_RC', '0')))
+'''
+
+LISTING_LOCK = json.dumps({'format': 1, 'resources': [
+    {'name': 'legion', 'seasons': {'1': SHA_A}, 'versions': {SHA_A: version()}}]}, indent=2) + '\n'
+
+
+@unittest.skipUnless(BASH and GIT, 'needs bash and git')
+class Deploy(unittest.TestCase):
+    """tools/deploy.sh run for real against a local bare repo, with rsync and
+    the clone's tools/assets.py replaced by stubs that log what they were
+    asked. What is pinned is deploy.sh's half: when the pull runs, that its
+    failure stops the deploy before the code sync, that an empty lock is
+    today's deploy, that a dry run changes nothing, and that no rsync is ever
+    pointed into resources/[licensed]/."""
+
+    @classmethod
+    def git(cls, *args, cwd=None):
+        r = subprocess.run([GIT, '-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'core.autocrlf=false',
+                            '-c', 'init.defaultBranch=main'] + list(args),
+                           cwd=cwd or cls.work, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        if r.returncode != 0:
+            raise AssertionError('git %s: %s' % (' '.join(args), r.stdout.decode('utf-8', 'replace')))
+
+    @classmethod
+    def setUpClass(cls):
+        # ONE ORIGIN FOR THE CLASS: process creation is what costs on Windows,
+        # and every test sets the lock it needs before it deploys.
+        top = tempfile.mkdtemp(prefix='assets-deploy-')
+        cls.addClassCleanup(shutil.rmtree, top, True)
+        cls.base = os.path.join(top, 'William Montgomery')
+        cls.work = os.path.join(cls.base, 'work')
+        cls.bare = os.path.join(cls.base, 'origin.git')
+        cls.bin = os.path.join(cls.base, 'fake bin')
+        write(os.path.join(cls.bin, 'rsync'), FAKE_RSYNC)
+        os.chmod(os.path.join(cls.bin, 'rsync'), 0o755)
+
+        g = os.path.join(cls.work, 'resources', '[fivem-royale]')
+        for r in ('br_lib', 'br_core', 'br_ui'):
+            write(os.path.join(g, r, 'fxmanifest.lua'), MANIFEST)
+        write(os.path.join(g, 'br_ui', 'ui', 'index.html'), '<html></html>\n')
+        write(os.path.join(g, 'br_ui', 'ui', 'assets', 'app.js'), '1\n')
+        for v in ('[voice]/pma-voice', '[scaleformui]/ScaleformUI_Assets', '[scaleformui]/ScaleformUI_Lua'):
+            write(os.path.join(cls.work, 'resources', *v.split('/'), 'fxmanifest.lua'), MANIFEST)
+        write(os.path.join(cls.work, 'tools', 'dispatch.sh'), '#!/bin/sh\n')
+        write(os.path.join(cls.work, 'tools', 'assets.py'), FAKE_PULL)
+        cls.git('init', '-q', '-b', 'main')
+        cls.git('add', '-A')
+        cls.git('update-index', '--chmod=+x', 'tools/dispatch.sh')
+        cls.git('commit', '-q', '-m', 'base')
+        cls.git('init', '-q', '--bare', '-b', 'main', cls.bare, cwd=cls.base)
+        cls.git('push', '-q', cls.bare, 'main')
+
+    def setUp(self):
+        run = tempfile.mkdtemp(prefix='run ', dir=self.base)
+        self.server = os.path.join(run, 'server root')
+        self.rsync_log = os.path.join(run, 'rsync.log')
+        self.pull_log = os.path.join(run, 'pull.log')
+        os.makedirs(os.path.join(self.server, 'resources'))
+        for p in (self.rsync_log, self.pull_log):
+            write(p, b'')
+
+    def set_lock(self, text):
+        """The lock the next deploy fetches; None deletes it."""
+        path = os.path.join(self.work, 'assets.lock')
+        if text is None:
+            if os.path.exists(path):
+                self.git('rm', '-q', 'assets.lock')
+        else:
+            write(path, text)
+            self.git('add', 'assets.lock')
+        self.git('commit', '-q', '--allow-empty', '-m', 'lock')
+        self.git('push', '-q', self.bare, 'main')
+
+    def deploy(self, *args, pull_rc=0, extra_env=None):
+        env = dict(os.environ)
+        env.update({
+            'PATH': self.bin + os.pathsep + os.path.dirname(BASH) + os.pathsep + env.get('PATH', ''),
+            'BR_REPO': self.bare.replace('\\', '/'),
+            'BR_SERVER_ROOT': self.server.replace('\\', '/'),
+            'BR_BRANCH': 'main',
+            'BR_PYTHON': sys.executable.replace('\\', '/'),
+            'FAKE_RSYNC_LOG': self.rsync_log,
+            'FAKE_PULL_LOG': self.pull_log,
+            'FAKE_PULL_RC': str(pull_rc),
+        })
+        env.update(extra_env or {})
+        r = subprocess.run([BASH, os.path.join(TOOLS, 'deploy.sh')] + list(args), env=env,
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        return r.returncode, r.stdout.decode('utf-8', 'replace')
+
+    def pulls(self):
+        with open(self.pull_log, encoding='utf-8') as fh:
+            return [json.loads(l) for l in fh if l.strip()]
+
+    def rsync_dests(self):
+        with open(self.rsync_log, encoding='utf-8') as fh:
+            return [l[5:].rstrip('\n') for l in fh if l.startswith('DEST ')]
+
+    def served(self):
+        """Every file under the server root but the clone deploy.sh keeps."""
+        return tree(self.server, skip=('.gamemode-src',))
+
+    def sentinel(self):
+        path = os.path.join(self.server, 'resources', '[licensed]', 'legion', 'stream', 'keep.ytd')
+        write(path, b'licensed bytes')
+        return path
+
+    def test_an_empty_or_absent_lock_is_todays_deploy(self):
+        for lock in ('{\n  "format": 1,\n  "resources": []\n}\n', None):
+            self.set_lock(lock)
+            rc, out = self.deploy()
+            self.assertEqual(rc, 0, out)
+            self.assertIn('deployed', out)
+            self.assertEqual(self.pulls(), [], 'no Python ran')
+            self.assertNotIn('licensed', out)
+            self.assertFalse(os.path.exists(os.path.join(self.server, 'resources', '[licensed]')))
+
+    def test_the_pull_runs_and_licensed_is_never_synced_into(self):
+        self.set_lock(LISTING_LOCK)
+        keep = self.sentinel()
+        rc, out = self.deploy()
+        self.assertEqual(rc, 0, out)
+        root = self.server.replace('\\', '/')
+        self.assertEqual(self.pulls(), [['pull', '--server-root', root]])
+        self.assertIn('stub pull ran', out)
+        self.assertIn('(licensed, from assets.lock', out)
+        dests = self.rsync_dests()
+        self.assertEqual(len(dests), 4, dests)
+        for d in dests:
+            self.assertNotIn('[licensed]', d)
+        self.assertEqual(read(keep), b'licensed bytes')
+        # The pull ran BEFORE the code sync.
+        self.assertLess(out.index('stub pull ran'), out.index('syncing [fivem-royale]'))
+
+    def test_a_failed_pull_stops_the_deploy_before_the_sync(self):
+        self.set_lock(LISTING_LOCK)
+        keep = self.sentinel()
+        before = self.served()
+        rc, out = self.deploy(pull_rc=1)
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn('licensed asset pull failed', out)
+        self.assertIn('nothing has been deployed', out)
+        self.assertNotIn('\x1b[32mdeployed', out, 'no success line')
+        self.assertEqual(self.rsync_dests(), [], 'no code was synced')
+        self.assertEqual(self.served(), before)
+        self.assertEqual(read(keep), b'licensed bytes')
+
+    def test_a_dry_run_touches_nothing(self):
+        self.set_lock(LISTING_LOCK)
+        self.sentinel()
+        before = self.served()
+        rc, out = self.deploy('--dry-run')
+        self.assertEqual(rc, 0, out)
+        root = self.server.replace('\\', '/')
+        self.assertEqual(self.pulls(), [['pull', '--dry-run', '--server-root', root]])
+        self.assertEqual({k: v for k, v in self.served().items() if not k.endswith('/')},
+                         {k: v for k, v in before.items() if not k.endswith('/')})
+        self.assertIn('dry run -- nothing was changed', out)
+
+    def test_something_installed_is_reconciled_even_with_no_lock(self):
+        self.set_lock(None)
+        write(os.path.join(self.server, 'resources', '[licensed]', 'br_licensed', 'installed.txt'), 'format 1\n')
+        rc, out = self.deploy('--status')
+        self.assertEqual(rc, 0, out)
+        root = self.server.replace('\\', '/')
+        self.assertEqual(self.pulls(), [['pull', '--dry-run', '--server-root', root]])
+        self.assertIn('licensed: ' + root + '/resources/[licensed]', out)
+        rc, out = self.deploy()
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.pulls()[-1], ['pull', '--server-root', root])
+
+    def test_licensed_cannot_be_a_sync_target(self):
+        self.set_lock(LISTING_LOCK)
+        keep = self.sentinel()
+        rc, out = self.deploy(extra_env={'BR_TARGET_CATEGORY': '[licensed]'})
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn('belongs to tools/assets.py', out)
+        self.assertEqual(self.rsync_dests(), [])
+        self.assertEqual(self.pulls(), [])
+        self.assertEqual(read(keep), b'licensed bytes')
 
 
 if __name__ == '__main__':

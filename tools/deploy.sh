@@ -15,6 +15,10 @@
 #
 #   /opt/fivem-server-classic/deploy.sh && cd /opt/fivem-server-classic && ./run.sh +exec server.cfg
 #
+# LICENSED ASSETS (#391): when the fetched assets.lock lists any, or some are
+# installed, tools/assets.py pull runs before the sync and a failure stops the
+# deploy there. See the section above `--- sync ---`.
+#
 # ---------------------------------------------------------------------------
 # A NOTE ON THE SQUARE BRACKETS
 #
@@ -99,6 +103,21 @@ VENDORED_RESOURCES=(
     "[scaleformui]/ScaleformUI_Lua"
 )
 
+# --- licensed assets (#391) ----------------------------------------------------
+#
+# THE THIRD THING A DEPLOY PUTS ON THE BOX, AND THE ONE THAT IS IN NO CLONE.
+# Purchased packs may not be redistributed, so this public repository holds
+# only assets.lock -- names, hashes, sizes, file lists, season pins -- and
+# tools/assets.py (run from the FETCHED clone, so the lock and the tool are the
+# branch being deployed) pulls the archives from the private bucket into
+# resources/[licensed]/ for the season this box's server.cfg sets.
+#
+# THAT DIRECTORY BELONGS TO assets.py. Nothing in this script rsyncs into it,
+# and the preflight refuses a target or a vendored entry that would: a --delete
+# pointed there would remove every licensed resource the box has.
+LICENSED_GROUP="[licensed]"
+PYTHON="${BR_PYTHON:-python3}"
+
 DRY_RUN=0
 STATUS_ONLY=0
 CHECK_PAYLOAD_DIR=""
@@ -120,6 +139,25 @@ done
 RED=$'\033[31m'; GRN=$'\033[32m'; YEL=$'\033[33m'; DIM=$'\033[2m'; RST=$'\033[0m'
 die() { echo "${RED}deploy: $*${RST}" >&2; exit 1; }
 say() { echo "${DIM}==${RST} $*"; }
+
+LICENSED_DIR="$SERVER_ROOT/resources/$LICENSED_GROUP"
+LICENSED_RECORD="$LICENSED_DIR/br_licensed/installed.txt"
+
+# Whether this deploy has licensed assets to reconcile: the fetched lock lists
+# something, or an earlier pull installed something -- an emptied or deleted
+# lock still has to take that away again. Neither, and the deploy is exactly
+# what it was before #391: no Python, no aws, nothing under [licensed].
+assets_wanted() {
+    [ -f "$LICENSED_RECORD" ] && return 0
+    [ -f "$SRC_DIR/assets.lock" ] || return 1
+    # The empty lock, as assets.py writes it.
+    if grep -qE '"resources"[[:space:]]*:[[:space:]]*\[[[:space:]]*\]' "$SRC_DIR/assets.lock"; then
+        return 1
+    fi
+    return 0
+}
+
+assets_python_ok() { "$PYTHON" -c '' >/dev/null 2>&1; }
 
 # --- payload validation -------------------------------------------------------
 #
@@ -290,6 +328,19 @@ command -v rsync >/dev/null || die "rsync is not installed:  sudo apt install -y
 
 TARGET_DIR="$SERVER_ROOT/resources/$TARGET_CATEGORY"
 
+# Quoted patterns, so the brackets are compared as text rather than read as a
+# character class (see the note at the top of this file).
+case "$TARGET_CATEGORY" in
+    "$LICENSED_GROUP"|"$LICENSED_GROUP"/*)
+        die "BR_TARGET_CATEGORY may not be $LICENSED_GROUP: that directory belongs to tools/assets.py" ;;
+esac
+for v in "${VENDORED_RESOURCES[@]}"; do
+    case "$v" in
+        "$LICENSED_GROUP"|"$LICENSED_GROUP"/*)
+            die "vendored resource $v would sync into $LICENSED_GROUP, which belongs to tools/assets.py" ;;
+    esac
+done
+
 # --- which ref ----------------------------------------------------------------
 #
 # In order: $BR_BRANCH, the pin file, whatever the clone already has checked
@@ -438,6 +489,18 @@ if [ "$STATUS_ONLY" -eq 1 ]; then
         [ -d "$SERVER_ROOT/resources/$v" ] \
             && echo "            deployed: yes" || echo "            deployed: no"
     done
+    if assets_wanted; then
+        echo "  licensed: $LICENSED_DIR"
+        if assets_python_ok; then
+            "$PYTHON" "$SRC_DIR/tools/assets.py" pull --dry-run --server-root "$SERVER_ROOT" 2>&1 \
+                | sed 's/^/            /' \
+                || echo "            (the plan could not be computed; a deploy would stop here)"
+        else
+            echo "            ($PYTHON is not installed; a deploy would stop here)"
+        fi
+    else
+        echo "  licensed: none (assets.lock lists nothing)"
+    fi
     exit 0
 fi
 
@@ -460,6 +523,37 @@ for v in "${VENDORED_RESOURCES[@]}"; do
         || die "vendored resource has no fxmanifest.lua: resources/$v
   FiveM will not load it."
 done
+
+# --- licensed assets (#391) ---------------------------------------------------
+#
+# BEFORE THE CODE SYNC, ON PURPOSE. The pull is the step most likely to fail --
+# it is the only one that downloads -- and running it first means a failure
+# leaves the code AND the licensed assets on this box exactly as they were, in
+# step with each other, with the server never restarted: `die` exits non-zero,
+# so neither the chained start nor royale-deploy.service's restart runs.
+#
+# assets.py does its own all-or-nothing inside resources/[licensed]/: every
+# archive is downloaded and its sha256 checked before anything is unpacked,
+# and the new set is swapped in only once all of it is staged.
+#
+# On --dry-run it prints the plan and downloads and changes nothing.
+ASSETS_PULLED=0
+if assets_wanted; then
+    assets_python_ok || die "$PYTHON is not installed, and assets.lock lists licensed assets.
+  Nothing has been deployed.  sudo apt install -y python3"
+    say "licensed assets: assets.lock -> $LICENSED_DIR/"
+    if [ "$DRY_RUN" -eq 1 ]; then
+        "$PYTHON" "$SRC_DIR/tools/assets.py" pull --dry-run --server-root "$SERVER_ROOT" 2>&1 \
+            | sed 's/^/     /' || die "the licensed asset plan failed (above)."
+    else
+        "$PYTHON" "$SRC_DIR/tools/assets.py" pull --server-root "$SERVER_ROOT" 2>&1 \
+            | sed 's/^/     /' || die "the licensed asset pull failed (above) -- nothing has been deployed.
+  The code and the licensed assets on this box are both as they were, and the
+  server has not been restarted. assets.lock in the branch decides what a pull
+  installs: fix the lock or the bucket, then deploy again."
+        ASSETS_PULLED=1
+    fi
+fi
 
 # --- sync --------------------------------------------------------------------
 
@@ -562,6 +656,9 @@ echo "  -> $TARGET_DIR/$RESOURCE_GROUP"
 for v in "${VENDORED_RESOURCES[@]}"; do
     echo "  -> $SERVER_ROOT/resources/$v  ${DIM}(vendored)${RST}"
 done
+if [ "$ASSETS_PULLED" -eq 1 ]; then
+    echo "  -> $LICENSED_DIR  ${DIM}(licensed, from assets.lock; they load on a full restart)${RST}"
+fi
 echo
 echo "The server does not pick this up on its own while running. Either restart"
 echo "it, or from the server console:"
