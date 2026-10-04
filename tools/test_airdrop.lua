@@ -4749,6 +4749,46 @@ do
         'and 250m inside the wall at the moment it touches down')
 end
 
+describe('server: #386 -- a move never lands a drop on a POI another drop is on')
+do
+    -- The siting filters out every POI a waiting or falling drop stands on, so
+    -- two crates never share a point and one player never arms two at once. A
+    -- move is under the same rule.
+    reset()
+    local m = newMatch(1)
+    BR.Airdrop.begin(m)
+    onlyDrop(m)
+    tick()
+    local rec = m.airdrop.waiting[1].rec
+    local storm2 = turnOverAwayFrom(m.storm, rec.x, rec.y, gameMs, 120000, 120000)
+
+    -- Where it WOULD go, and a forced drop put there first.
+    local window = BR.AirdropLandingCircles(storm2, gameMs + 1000, A, A.blipMaxMs)
+    local others = {}
+    for _, p in ipairs(BR.Config.Map.POIs) do
+        if p.id ~= rec.poi then others[#others + 1] = p end
+    end
+    local first = BR.AirdropNearestSiteIn(others, window, A.insideBy,
+        BR.LootPlaceable, rec.x, rec.y)
+    ok(first ~= nil, 'the new circle has a POI for it')
+    commands['brairdrop'](0, { first.id }, '')
+    eq(#m.airdrop.waiting, 2, 'a second drop waits on that POI')
+
+    local rest = {}
+    for _, p in ipairs(others) do
+        if p.id ~= first.id then rest[#rest + 1] = p end
+    end
+    local second = BR.AirdropNearestSiteIn(rest, window, A.insideBy,
+        BR.LootPlaceable, rec.x, rec.y)
+
+    m.storm = storm2
+    gameMs = gameMs + 1000
+    tick()
+    ok(rec.poi ~= first.id, 'the move skips the POI the other drop is on',
+        tostring(rec.poi))
+    eq(rec.poi, second and second.id, 'and takes the next nearest instead')
+end
+
 describe('server: #386 -- a new next circle no POI fits calls the drop off, and the blip leaves at once')
 do
     reset()
