@@ -18827,8 +18827,14 @@ Citizen.CreateThread(function()
             if ScaleformUI.Scaleforms._radioMenu == nil then
                 ScaleformUI.Scaleforms._radioMenu = Scaleform.RequestWidescreen("radiomenu")
             end
-            if not ScaleformUI.Scaleforms._pauseMenu:IsLoaded() then
-                ScaleformUI.Scaleforms._pauseMenu:Load()
+            -- BR-PATCH 6: PauseMenu:Load() returns at once when its three movie
+            -- handles exist, so asking IsLoaded() first -- three
+            -- HasScaleformMovieLoaded calls on every idle frame of the session --
+            -- decided nothing once they did. Load() is now called exactly when it
+            -- can do something: while one of the handles is still nil.
+            local pm = ScaleformUI.Scaleforms._pauseMenu
+            if pm._header == nil or pm._pause == nil or pm._pauseBG == nil then
+                pm:Load()
             end
         end
         Citizen.Wait(0)

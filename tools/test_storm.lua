@@ -11225,6 +11225,21 @@ do
             or src:match('#4167.-[Gg][Uu][Ee][Ss][Ss]') ~= nil,
             'and the window it waits is called a guess in the source, because #4167 '
                 .. 'publishes no safe one')
+
+        -- BR-PATCH 6 (#393): the main loop asks for the pause menu's Load() only
+        -- while one of its three handles is nil, instead of asking IsLoaded() --
+        -- three HasScaleformMovieLoaded natives -- on every idle frame. That is
+        -- the same behaviour only because Load() itself returns at once when all
+        -- three handles exist, so that premise is pinned here as well.
+        ok(src:match('BR%-PATCH 6') ~= nil, 'BR-PATCH 6 is marked in the bundle')
+        ok(code:match('if pm%._header == nil or pm%._pause == nil or pm%._pauseBG == nil then'
+            .. '\n%s*pm:Load%(%)') ~= nil
+            and not code:match('if not ScaleformUI%.Scaleforms%._pauseMenu:IsLoaded%(%) then'),
+            'the idle loop calls Load() while a pause-menu handle is nil, and no longer '
+                .. 'asks IsLoaded() first')
+        ok(code:match('function PauseMenu:Load%(%)\n%s*if %(self%._header ~= nil and '
+            .. 'self%._pause ~= nil and self%._pauseBG ~= nil%) then return end') ~= nil,
+            'which is equivalent because Load() returns at once when all three exist')
     end
 end
 

@@ -1,10 +1,10 @@
 {
   "_comment": [
     "THIRD-PARTY VENDORED SOURCE. This directory is not ours. It is the published",
-    "ScaleformUI_Lua.zip from upstream release 5.8.1, extracted whole, plus the four",
+    "ScaleformUI_Lua.zip from upstream release 5.8.1, extracted whole, plus the six",
     "local patches listed below and nothing else -- no reformatting, no",
     "restructuring, no 'improvements'. Every byte outside the BR-PATCH blocks --",
-    "two in fxmanifest.lua, three in ScaleformUI.lua -- is byte-identical to that",
+    "two in fxmanifest.lua, four in ScaleformUI.lua -- is byte-identical to that",
     "release asset, whose sha256 is recorded in `release_assets` below, so the next",
     "upstream bump is: download the new ScaleformUI_Lua.zip, extract it over this",
     "directory, then re-apply the patches. Keeping that true is the whole reason",
@@ -75,7 +75,7 @@
 
   "provenance_check": {
     "claim": "This directory is the extracted ScaleformUI_Lua.zip of release 5.8.1, and that zip's ScaleformUI.lua is not an opaque build artifact -- it is the tag's own source, concatenated. All 125 .lua files under ScaleformUI_Lua/src/ at tag 5.8.1 appear in it verbatim, in case-insensitive path order, separated by a 73-character banner comment. Nothing is added and nothing is removed: the 9,124 characters by which the bundle exceeds the sum of its sources are exactly those 125 banners.",
-    "claim_is_as_vendored": "That claim describes this directory as it was vendored, at commit 731c5d0. BR-PATCH 1 and BR-PATCH 3 have since reshaped fxmanifest.lua into an include-only resource; BR-PATCH 2, BR-PATCH 4 and BR-PATCH 5 edit the documented hot paths inside ScaleformUI.lua. Every other byte of the bundle is still the release asset.",
+    "claim_is_as_vendored": "That claim describes this directory as it was vendored, at commit 731c5d0. BR-PATCH 1 and BR-PATCH 3 have since reshaped fxmanifest.lua into an include-only resource; BR-PATCH 2, BR-PATCH 4, BR-PATCH 5 and BR-PATCH 6 edit the documented hot paths inside ScaleformUI.lua. Every other byte of the bundle is still the release asset.",
     "verified_on": "2026-09-08",
     "how": [
       "curl -sSL -o ScaleformUI_Lua.zip https://github.com/manups4e/ScaleformUI/releases/download/5.8.1/ScaleformUI_Lua.zip",
@@ -160,6 +160,15 @@
       "what_was_deliberately_not_done": "Load() itself was not gated, and neither were the Add*OverlayToMap functions that call it on demand. A caller that genuinely asks for an overlay is asking for one now, and making its call block on a session would change what those functions mean; nothing in resources/[fivem-royale] calls them, and example.lua -- the only thing upstream that does -- is kept out of the manifest by BR-PATCH 1. The spin-wait inside Load() was left alone too: an overlay handle of 0 would hang that thread, which is upstream's bug to have and is not reachable from the gate added here.",
       "upstream_fixable": "yes, and it should be -- an ungated ADD_MINIMAP_OVERLAY at resource start is a crash upstream would want fixed. Not offered, because this project's vendored-code rule is local patches only. The deeper fix is upstream's alone: restore minimapHandle so isLoaded can turn true, after which the retry branch this gate lives in stops being taken at all.",
       "recheck_at_next_bump": "Grep initializeScaleforms() for MinimapOverlays:Load(). If upstream still calls it there, delete it again. Then look at the retry thread's else branch: if its Load() is still ungated, re-apply the counter. If upstream has added its own NetworkIsGameInProgress or IsMinimapRendering test -- or has restored minimapHandle, which stops that branch being taken at all -- this patch is no longer load-bearing and should be dropped rather than rebased."
+    },
+    {
+      "id": "BR-PATCH 6",
+      "file": "ScaleformUI.lua",
+      "symbol": "the main Citizen.CreateThread after initializeScaleforms(): its `if not _pauseMenu:IsLoaded() then _pauseMenu:Load() end`",
+      "what": "The per-frame IsLoaded()/Load() pair is now `if any of _header, _pause, _pauseBG is nil then Load() end`. PauseMenu:Load, PauseMenu:IsLoaded and the rest of the loop are untouched.",
+      "why": "PauseMenu:Load() returns immediately when all three movie handles exist, so once initializeScaleforms() has created them the per-frame IsLoaded() -- three HasScaleformMovieLoaded natives on every idle frame of the session, billed to br_core -- could never lead to any work. While a handle is nil, IsLoaded() is false by its own first test, so Load() runs on exactly the frames it ran on before. Found by tools/perf_client.lua (#393).",
+      "upstream_fixable": "yes -- check the handles instead of the movies' load state before calling Load()",
+      "recheck_at_next_bump": "If upstream's main loop no longer calls IsLoaded() before an idempotent Load(), drop this patch."
     }
   ],
 
