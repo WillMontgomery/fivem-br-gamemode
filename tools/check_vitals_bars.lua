@@ -120,12 +120,6 @@ if vitals then
                  'the rule is real and split; it has to be asked directly '
                  .. 'rather than inferred from another prop: ' .. showNum)
         end
-        -- AND IT IS STILL GATED ON `num` AT ALL. A rule that dropped that
-        -- would print a numeral on the stamina bar, which passes neither.
-        if not showNum:find('num') then
-            fail('the numeral rule no longer asks whether a numeral was wanted',
-                 'stamina passes no `num` and must stay a bare bar: ' .. showNum)
-        end
     end
     if not vitals:find('zeroNum === true') then
         fail('Fill has no explicit control over drawing a zero',

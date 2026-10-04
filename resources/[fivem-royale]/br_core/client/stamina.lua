@@ -1,93 +1,28 @@
--- Sprint stamina, Fortnite-shaped.
+-- Sprint is unlimited (#389).
 --
--- One meter: drains while genuinely sprinting on foot, recharges after a
--- short breath, and an EMPTIED meter blocks sprint until it climbs back to a
--- threshold -- so running dry costs a real tactical beat, not one frame.
+--   "eliminates the concept of the stamina/sprint bar, and instead allows
+--    infinite stamina."                              -- owner, 2026-10-04
 --
--- GTA has its own stamina stat with a much worse failure mode: run it dry
--- and the engine drains HEALTH. RestorePlayerStamina keeps the engine's
--- meter topped up every tick, so ours is the only limiter that exists.
+-- There is no sprint meter of ours any more: no drain, no block on an empty
+-- meter, no bar on the HUD. What is left is the job that sat underneath it.
+-- GTA has its own stamina stat, and running it dry drains HEALTH -- so with
+-- nothing of ours ending a sprint, the engine's meter is what a long one would
+-- run down, and it must never be allowed to empty.
 --
--- Purely client-side: the meter gates a CONTROL, not an outcome, so there
--- is nothing here worth server authority. The value rides the HUD envelope
--- for the bar above the vitals strip.
+-- EVERY STATE, NOT A LIST OF THE ONES WHERE SPRINT SEEMS POSSIBLE. The old
+-- meter only topped the engine up in warmup and in a match, which was safe
+-- while our own meter stopped a sprint long before the engine's could run out.
+-- With no meter of ours, a missed state is a player losing health for running,
+-- and a list of states is a thing that goes stale. Topping up a full meter
+-- costs nothing.
+--
+-- tools/test_stamina.lua pins it: every player state, every tick.
 
 BR = BR or {}
-BR.State = BR.State or {}
 
-local cfgS  = BR.Config.Stamina
-local stam  = cfgS.max
-local lastDrainAt = 0
-local blocked = false
-local lastAt  = 0
-
-BR.State.stamina = 100.0
-
--- The states where sprinting is a thing that can happen and cost something.
-local ACTIVE = {}
-local function activeStates()
-    ACTIVE[BR.PlayerState.WARMUP] = true
-    ACTIVE[BR.PlayerState.ALIVE]  = true
-end
-
-BR.Loop.register(BR.Loop.TICK, 'stamina.meter', function()
-    if not next(ACTIVE) then activeStates() end
-
-    local now = GetGameTimer()
-    local dt = (lastAt > 0) and math.min(now - lastAt, 500) / 1000.0 or 0.0
-    lastAt = now
-
-    local me = BR.State.me.state
-    if not ACTIVE[me] then
-        -- Lobby, bus, descent, dead: the meter rests full and costs nothing.
-        stam, blocked = cfgS.max, false
-        BR.State.stamina = stam
-        return
-    end
-
-    local ped = PlayerPedId()
-
-    -- The engine's own meter stays pinned full -- see the header. The
-    -- argument is percentage POINTS: at 10Hz this restores far faster than
-    -- any sprint can drain it.
+BR.Loop.register(BR.Loop.TICK, 'stamina.pin', function()
+    -- RESTORE_PLAYER_STAMINA ADDS a share of the maximum, documented as 0.0 to
+    -- 1.0 (1.0 is all of it). 25.0 is far past that, so every call fills the
+    -- meter outright, and at 10 Hz no sprint drains it between two calls.
     RestorePlayerStamina(PlayerId(), 25.0)
-
-    -- Belt AND suspenders on the detection: IsPedSprinting has been
-    -- observed returning false through entire sprints ("stamina seems
-    -- infinite", live report), so the sprint key held while genuinely
-    -- moving fast on foot counts too.
-    local sprinting = IsPedOnFoot(ped)
-        and (IsPedSprinting(ped)
-             or (IsControlPressed(0, 21) and GetEntitySpeed(ped) > 5.0))
-    if sprinting then
-        stam = math.max(0.0, stam - cfgS.drainPerSec * dt)
-        lastDrainAt = now
-        if stam <= 0.0 then blocked = true end
-    elseif now - lastDrainAt >= cfgS.regenDelayMs then
-        stam = math.min(cfgS.max, stam + cfgS.regenPerSec * dt)
-    end
-
-    if blocked and stam >= cfgS.minToSprint then
-        blocked = false
-    end
-
-    BR.State.stamina = stam
 end)
-
--- The block itself is per-frame: DisableControlAction lasts one frame.
-BR.Loop.register(BR.Loop.FRAME, 'stamina.block', function()
-    if blocked then
-        DisableControlAction(0, 21, true)   -- INPUT_SPRINT
-    end
-end)
-
---- Everything about the meter, in one paste.
-RegisterCommand('brstam', function()
-    local ped = PlayerPedId()
-    print('=== stamina ===')
-    print(('  meter %.1f   blocked %s   state %s'):format(
-        stam, tostring(blocked), tostring(BR.State.me.state)))
-    print(('  IsPedSprinting %s   sprintKey %s   speed %.1f   onFoot %s'):format(
-        tostring(IsPedSprinting(ped)), tostring(IsControlPressed(0, 21)),
-        GetEntitySpeed(ped), tostring(IsPedOnFoot(ped))))
-end, false)

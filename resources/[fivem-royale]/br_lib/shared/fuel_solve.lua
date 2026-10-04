@@ -547,8 +547,7 @@ end
 --- ROUNDED HERE RATHER THAN AT THE CALL SITE, because rounding is what makes
 --- the dedupe below work: a bar cannot show a fraction, and float churn in the
 --- third decimal place would push a new payload every tick for a readout that
---- has not visibly moved. client/state.lua floors stamina before it pushes it
---- for the same reason.
+--- has not visibly moved.
 ---
 --- NaN IS NOT A READING. `v ~= v` is the only NaN test Lua has, and it is here
 --- because math.floor of a NaN is not a number a bar can be drawn from either.

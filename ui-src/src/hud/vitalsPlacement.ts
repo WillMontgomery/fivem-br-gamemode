@@ -91,7 +91,7 @@ export function vitalsLift(fit: VitalsFit): string {
  *     text at all.
  *   - visibility (visible / scoped): toggles opacity only. .hud-safe and the
  *     strip stay laid out, so geometry is unchanged.
- *   - hp / armour / stamina / storm / feed / squad / voice / vehicle / ...:
+ *   - hp / armour / storm / feed / squad / voice / vehicle / ...:
  *     none feed a measured length. These are the renders whose reads #319 drops.
  *
  * check-ui rule R21 asserts Hud.tsx's measurement effect is keyed on exactly

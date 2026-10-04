@@ -505,7 +505,7 @@ export default function Hud({ visible }: { visible: boolean }) {
           />
           {/* data-tut: the in-game walkthrough's first card (#261). */}
           <span data-tut="hud-vitals" className="block">
-            <Vitals hp={hud.hp} armour={hud.armour} stamina={hud.stamina} />
+            <Vitals hp={hud.hp} armour={hud.armour} />
           </span>
         </div>
 

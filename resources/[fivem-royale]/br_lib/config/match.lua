@@ -1193,25 +1193,6 @@ BR.Config.Ambient = {
     erraticRetaskMs   = 8000,
 }
 
--- Sprint stamina, Fortnite-shaped: a meter that drains while sprinting and
--- recharges after a beat off the key. OUR meter is the only limiter -- GTA's
--- own stamina stat is kept topped up (running it dry drains HEALTH, which
--- has no place here). Client-side and cosmetic-plus-controls only; nothing
--- about it crosses the wire.
-BR.Config.Stamina = {
-    max          = 100.0,
-    -- 12.5 was ~8 seconds of sprint, which a second playtester called too
-    -- short (2026-08-07). 6.5 gives about 15 -- long enough to cross a street
-    -- and break line of sight, which is what the meter is for, without making
-    -- it free.
-    -- 100 / 7.8: cut 35% off the twelve-second version (user, 2026-08-07).
-    -- The meter is for breaking line of sight, not for crossing a district.
-    drainPerSec  = 12.82,
-    regenPerSec  = 25.0,   -- ~4 seconds to refill
-    regenDelayMs = 900,    -- breath caught before the refill starts
-    minToSprint  = 15.0,   -- an emptied meter must climb back here to sprint
-}
-
 --- Resolve the minimum players to start, honouring dev mode.
 --- @param devMode boolean
 --- @return integer

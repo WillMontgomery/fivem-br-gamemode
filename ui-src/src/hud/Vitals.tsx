@@ -194,8 +194,8 @@ export function Fill({ value, colour, segments = 0, num, label, zeroNum }: {
   )
 }
 
-export default function Vitals({ hp, armour, stamina = 100 }:
-  { hp: number; armour: number; stamina?: number }) {
+export default function Vitals({ hp, armour }:
+  { hp: number; armour: number }) {
   // THE HIT FLASH. Storm ticks drain health silently, one point at a time,
   // and a slim bar quietly getting shorter is easy to miss entirely (user
   // report, 2026-08-04). Every DROP in hp remounts a red overlay over the
@@ -215,55 +215,33 @@ export default function Vitals({ hp, armour, stamina = 100 }:
   }, [hp])
 
   // The container is BOTTOM-ANCHORED to the minimap's lower edge, so any
-  // in-flow sibling grows the box UPWARD and shoves the health row over
-  // the map (live report, 2026-08-04). The stamina bar is therefore
-  // absolutely positioned BELOW the row -- out of flow, the health bar
-  // exactly where it always was.
+  // in-flow sibling added here grows the box UPWARD and shoves the health row
+  // over the map (live report, 2026-08-04). The strip is this one row.
+  //
+  // 1.05rem, grown twice: 0.6, then 0.75 so the numerals would fit, and they
+  // still could not be read at a glance. The bar is the container for the
+  // number, so making the number legible means making the bar tall enough to
+  // hold it -- and the whole strip then moved DOWN, clear of the radar,
+  // because a bottom-anchored bar grows upward and this one had started
+  // covering the minimap. See --vitals-drop in Hud.tsx.
+  //
+  // THE CAPTIONS ARE THE `title` ATTRIBUTES BESIDE THEM, and deliberately the
+  // same two strings rather than a second pair -- see the `label` note on Fill.
+  // NEITHER PASSES `zeroNum`: a dead player's 0 and an empty shield's 0 stay
+  // hidden, which is the behaviour the captions would have silently taken away
+  // under the old heuristic.
   return (
-    <div className="relative">
-      {/* 1.05rem, grown twice: 0.6, then 0.75 so the numerals would fit, and
-          they still could not be read at a glance. The bar is the container
-          for the number, so making the number legible means making the bar
-          tall enough to hold it -- and the whole strip then moved DOWN, clear
-          of the radar, because a bottom-anchored bar grows upward and this
-          one had started covering the minimap. See --vitals-drop in Hud.tsx. */}
-      {/* THE CAPTIONS ARE THE `title` ATTRIBUTES BESIDE THEM, and deliberately
-          the same two strings rather than a second pair -- see the `label` note
-          on Fill. NEITHER PASSES `zeroNum`: a dead player's 0 and an empty
-          shield's 0 stay hidden, which is the behaviour the captions would have
-          silently taken away under the old heuristic. */}
-      <div className="flex gap-[3px] items-stretch h-[1.05rem]">
-        <div className="basis-[62%] relative" title="Health">
-          <Fill value={hp} colour="var(--color-hp)" label="Health" num />
-          {hit > 0 && <div key={hit} className="vitals-hit-flash" />}
-        </div>
-        <div className="basis-[38%]" title="Shield">
-          {/* Four segments: the shield cap is 100 and a big potion is 50, so
-              each notch is half a potion. The notches are the reason a
-              shield reads as a resource you are spending. */}
-          <Fill value={armour} colour="var(--color-shield)" segments={4}
-                label="Shield" num />
-        </div>
+    <div className="flex gap-[3px] items-stretch h-[1.05rem]">
+      <div className="basis-[62%] relative" title="Health">
+        <Fill value={hp} colour="var(--color-hp)" label="Health" num />
+        {hit > 0 && <div key={hit} className="vitals-hit-flash" />}
       </div>
-      {/* Sprint stamina: full-width and the SAME HEIGHT as health and
-          shield (user call, restated 2026-08-09 -- it had drifted thinner
-          than both), hanging below the row. Fades away entirely at full,
-          Fortnite-style -- hold SPRINT while running to drain it. */}
-      <div
-        className="absolute left-0 right-0 h-[1.05rem] transition-opacity duration-300"
-        // ABOVE the row now, not below, and that swap is what let the health
-        // strip come down off the minimap at all.
-        //
-        // There are only a couple of rem between the radar's bottom edge and
-        // the safe margin -- not enough for the strip AND a bar hanging under
-        // it. Something has to overlap the radar, and it should be the one
-        // that is USUALLY NOT THERE: stamina fades out entirely at full, so
-        // for most of a match this space is empty, while health and shield
-        // are on screen every second of it.
-        style={{ bottom: 'calc(100% + 3px)', opacity: stamina >= 99.5 ? 0 : 1 }}
-        title="Stamina"
-      >
-        <Fill value={stamina} colour="rgba(255,255,255,0.9)" />
+      <div className="basis-[38%]" title="Shield">
+        {/* Four segments: the shield cap is 100 and a big potion is 50, so
+            each notch is half a potion. The notches are the reason a
+            shield reads as a resource you are spending. */}
+        <Fill value={armour} colour="var(--color-shield)" segments={4}
+              label="Shield" num />
       </div>
     </div>
   )

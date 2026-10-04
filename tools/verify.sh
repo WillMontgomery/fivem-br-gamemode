@@ -108,6 +108,7 @@ NOTES=(
     "test_gitref|The dev-mode label under Settings shows the code version the server is really running"
     "test_emotes_ui|Market emote slots: equip, unequip and swap past eight, shown only while emotes are on"
     "test_props|Dev props: server decides and syncs; pickup look, every edit key, save/load"
+    "test_stamina|Sprint never runs out and never costs health, in every player state and on every tick"
     "scope gate|Player-side code never asks about players with game calls that only see those nearby"
     "weapon table|Each weapon's game ID matches its name, magazine sizes fit, car use is set, icons exist"
     "vehicle table|Each banned vehicle's game ID matches its name, so tanks and jets really stay banned"
@@ -664,6 +665,12 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
     # `first.stream` block walks a whole match's centres down both code paths and is
     # the only thing that can tell them apart.
     #
+    # test_stamina.lua stands up br_core/client/stamina.lua, which is one call
+    # since #389 made sprint unlimited: GTA's own stamina refilled on every
+    # tick, because running it dry drains HEALTH and no meter of ours ends a
+    # sprint any more. A pin that skips a state or a tick is damage from
+    # nowhere, so the suite steps every player state and a minute of held sprint.
+    #
     # ORDER STAYS EXPLICIT because docs/testing.md records it and the slowest,
     # broadest suites deliberately come after the cheap pure checks. Completeness
     # is discovered, though: a new test_*.lua that nobody adds here is now a red
@@ -710,6 +717,7 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
         tools/test_gitref.lua
         tools/test_emotes_ui.lua
         tools/test_props.lua
+        tools/test_stamina.lua
     )
 
     listed=$(printf '%s\n' "${suites[@]}" | LC_ALL=C sort)

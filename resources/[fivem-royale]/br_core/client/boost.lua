@@ -117,9 +117,11 @@ end
 --
 --   "The vehicle boost will be akin to SPRINT ON FOOT"
 --
--- Sprint stamina belongs to the player (client/stamina.lua) and follows them
--- between fights. The boost is described the same way -- a key the player holds
--- -- so the meter follows the player between cars.
+-- Sprint is the player's, wherever they run. The boost is described the same
+-- way -- a key the player holds -- so the meter follows the player between
+-- cars. (When this was written sprint had a per-player meter of its own; #389
+-- made sprint unlimited. The two practical consequences below carry the
+-- decision on their own.)
 --
 -- FUEL'S PRECEDENT POINTS THE OTHER WAY AND DOES NOT APPLY. Fuel is per vehicle
 -- by an explicit owner decision, "a vehicle must not be a permanent advantage",
@@ -169,10 +171,10 @@ local run = {
 --- delivers nothing, and the next frame it is dry again. The result is a held
 --- key producing an endless stutter of ramp-restarts and no acceleration at all.
 ---
---- REQUIRING A RELEASE IS THE FIX THAT ADDS NO NUMBER. client/stamina.lua solves
---- the same shape with `minToSprint`, a threshold an emptied meter must climb
---- back to -- but that is a figure the owner gave for sprint and did not give
---- for this, and "let go and press again" is what a player would predict anyway.
+--- REQUIRING A RELEASE IS THE FIX THAT ADDS NO NUMBER. The other shape -- a
+--- threshold an emptied meter must climb back to before it can be used -- needs
+--- a figure the owner never gave for this, and "let go and press again" is what
+--- a player would predict anyway.
 --- It takes nothing away from partial spend: releasing and re-pressing on a
 --- part-charged meter spends exactly what is there, which is the spec.
 local dry = false
@@ -1432,7 +1434,7 @@ function BR.Boost.verdict(f)
         :format(n('heldFrames'), n('forced'), gain, asked)
 end
 
---- Everything about the meter, in one paste. The same shape as /brstam.
+--- Everything about the meter, in one paste.
 RegisterCommand('brboostinfo', function()
     print('=== boost ===')
     print(('  enabled %s   meter %.0f%%  (%.0f / %.0f ms)'):format(

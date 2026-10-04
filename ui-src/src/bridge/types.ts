@@ -78,8 +78,6 @@ export interface HudPayload {
   state: PlayerState
   /** True while GTA's pause menu is open; the HUD hides under it. */
   paused?: boolean
-  /** Sprint stamina 0..100, client-computed. The bar hides at full. */
-  stamina?: number
   /**
    * MY OWN PED SAYS IT HAS TOUCHED DOWN, which is not the same claim as
    * `state`.
@@ -188,7 +186,7 @@ export interface VehiclePayload {
    *
    * PER PLAYER, NOT PER VEHICLE, which is why it does not reset when the driver
    * changes car -- the owner's spec opens "akin to sprint on foot", and sprint
-   * stamina belongs to the player. See br_core/client/boost.lua for the full
+   * is the player's. See br_core/client/boost.lua for the full
    * argument and for the one place that would change.
    *
    * A PERCENTAGE HERE AND MILLISECONDS EVERYWHERE ELSE, for the same reason

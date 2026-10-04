@@ -334,7 +334,7 @@ client_scripts {
     'client/lobbyped.lua',
     'client/gamerules.lua',
     'client/state.lua',
-    'client/stamina.lua',   -- needs BR.State (state.lua) and the loops
+    'client/stamina.lua',   -- keeps GTA's stamina full; needs the loops
     'client/squadmates.lua',
     'client/sfx.lua',      -- one cue table; everything else asks it for a sound
     'client/keybinds.lua',

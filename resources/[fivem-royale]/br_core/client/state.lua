@@ -2496,9 +2496,6 @@ function BR.PushHud(force)
     -- The HUD gets out of the way of the pause menu (the map fills the
     -- screen and our chrome floats over it otherwise).
     local paused = IsPauseMenuActive()
-    -- Whole numbers: the bar cannot show fractions and fractional churn
-    -- would defeat the dedupe below.
-    local stamina = math.floor((S.stamina or 100.0) + 0.5)
 
     -- MY FEET ARE ON THE GROUND, WHATEVER THE SERVER STILL THINKS.
     --
@@ -2527,7 +2524,7 @@ function BR.PushHud(force)
        and hp == lastPush.hp and armour == lastPush.armour
        and S.alive == lastPush.alive and S.squadsAlive == lastPush.squads
        and kills == lastPush.kills and me.state == lastPush.state
-       and paused == lastPush.paused and stamina == lastPush.stamina
+       and paused == lastPush.paused
        and landed == lastPush.landed
        -- WHO THE BARS ARE ABOUT IS PART OF WHAT CHANGED. Two squadmates on the
        -- same health are the same three numbers, so without this a cycle to the
@@ -2541,7 +2538,6 @@ function BR.PushHud(force)
     lastPush.alive, lastPush.squads = S.alive, S.squadsAlive
     lastPush.kills, lastPush.state = kills, me.state
     lastPush.paused = paused
-    lastPush.stamina = stamina
     lastPush.landed = landed
     lastPush.watching = watching
 
@@ -2555,7 +2551,6 @@ function BR.PushHud(force)
         kills       = kills,
         state       = me.state,
         paused      = paused,
-        stamina     = stamina,
         landed      = landed,
     })
     BR.Loop.hitchEnd(trace)
