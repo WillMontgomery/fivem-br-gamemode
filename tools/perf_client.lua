@@ -161,7 +161,9 @@ local W = {
     nextBlip = 9000,
     me = 1,             -- PlayerPedId
     players = {},       -- [serverId] = { ped = handle } -- streamed in
-    cam = { x = 0.0, y = 0.0, z = 0.0, rx = 0.0, rz = 0.0 },
+    -- The rendered camera: a third-person camera behind the player, looking along
+    -- `rz` (GTA heading) and slightly down. Moved with the player every frame.
+    cam = { x = 0.0, y = 0.0, z = 0.0, rx = -8.0, rz = 0.0 },
     convars = {},
     kvp = {},
     handles = 100,
@@ -178,6 +180,9 @@ end
 local function entPos(h)
     local e = W.ents[h]
     if not e then return vec3(0.0, 0.0, 0.0) end
+    -- An attached entity (the player riding the plane) is where its parent is.
+    local parent = e.attachedTo and W.ents[e.attachedTo]
+    if parent then return vec3(parent.x, parent.y, parent.z) end
     return vec3(e.x, e.y, e.z)
 end
 
@@ -261,6 +266,10 @@ IMPL.GetGameplayCamRot   = function() return vec3(W.cam.rx, 0.0, W.cam.rz) end
 IMPL.GetFinalRenderedCamCoord = function() return vec3(W.cam.x, W.cam.y, W.cam.z) end
 IMPL.GetFinalRenderedCamRot   = function() return vec3(W.cam.rx, 0.0, W.cam.rz) end
 IMPL.GetFinalRenderedCamFov   = function() return 50.0 end
+IMPL.GetAspectRatio      = function() return 16.0 / 9.0 end
+IMPL.AttachEntityToEntity = function(h, to) local e = W.ents[h] if e then e.attachedTo = to end end
+IMPL.DetachEntity        = function(h) local e = W.ents[h] if e then e.attachedTo = nil end end
+IMPL.IsEntityAttached    = function(h) local e = W.ents[h] return (e and e.attachedTo) and 1 or 0 end
 IMPL.GetGameplayCamFov   = function() return 50.0 end
 IMPL.GetCamCoord         = function() return vec3(W.cam.x, W.cam.y, W.cam.z) end
 IMPL.GetCamRot           = function() return vec3(W.cam.rx, 0.0, W.cam.rz) end
@@ -1033,6 +1042,7 @@ local PHASES = {
         setStates(function() return BR.PlayerState.BUS end)
         route = busRoute(gameMs() + 500)
         net(BR.Net.BUS_ROUTE, route)
+        W.cam.rz = -90.0      -- looking along the flight, due east
         W.players = {}
     end },
     { id = 'plane cruise', settle = 60, setup = function()
@@ -1058,7 +1068,7 @@ local PHASES = {
     end },
     { id = 'match', settle = 240, setup = function()
         setPed(W.me, LAND.x, LAND.y, LAND.z)
-        W.cam.x, W.cam.y, W.cam.z = LAND.x - 3.0, LAND.y - 3.0, LAND.z + 2.0
+        W.cam.rz = 0.0        -- facing north, up the map
         matchState(BR.MatchState.PLAYING, 1800000)
         local stateOf = function(src)
             if src == DOWNED then return BR.PlayerState.DBNO end
@@ -1073,10 +1083,7 @@ local PHASES = {
         stormPhase(1, ANCHOR.x, ANCHOR.y, openingR(ANCHOR.x, ANCHOR.y),
                    c1.cx, c1.cy, c1.r, 120, 240, 30000)
         local _, spot = sendLoot(LAND.x, LAND.y)
-        if spot then
-            setPed(W.me, spot.x + 1.5, spot.y + 1.0, spot.z or LAND.z)
-            W.cam.x, W.cam.y, W.cam.z = spot.x - 1.5, spot.y - 2.0, (spot.z or LAND.z) + 2.0
-        end
+        if spot then setPed(W.me, spot.x + 1.5, spot.y + 1.0, spot.z or LAND.z) end
         squadPos()
         local t0 = gameMs()
         net(BR.Net.AIRDROP_SYNC, BR.BuildAirdropRecord(1,
@@ -1097,8 +1104,15 @@ local PHASES = {
 
 -- ----------------------------------------------------------------- driver ---
 
+local function followCam()
+    local p = entPos(W.me)
+    local h = math.rad(W.cam.rz)
+    W.cam.x, W.cam.y, W.cam.z = p.x + math.sin(h) * 4.0, p.y - math.cos(h) * 4.0, p.z + 1.5
+end
+
 local function frame()
     NOW = NOW + FRAME_MS
+    followCam()
     for _, f in ipairs(FEEDS) do
         if not f.at or NOW >= f.at then
             f.at = (f.at or NOW) + f.every
