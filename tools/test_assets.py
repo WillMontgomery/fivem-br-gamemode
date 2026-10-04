@@ -2283,6 +2283,8 @@ class Deploy(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertIn("deploy: THIS deploy.sh IS OLDER THAN main's tools/deploy.sh", out)
         self.assertIn('Pull the ops clone, then deploy again:  git -C ', out)
+        # Which branch it is on: a pull helps only once that branch has it.
+        self.assertRegex(out, r"\(it is on [^;]+; the pull helps once that branch has main's deploy\.sh\)")
         self.assertIn('\x1b[32mdeployed', out, 'a warning, not a stop')
         # The same bytes: nothing said.
         write(os.path.join(self.work, 'tools', 'deploy.sh'), running)

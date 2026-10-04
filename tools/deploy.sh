@@ -501,8 +501,12 @@ SERVED_BLOB="$(git -C "$SRC_DIR" rev-parse -q --verify "HEAD:tools/deploy.sh" 2>
 SELF_BLOB="$(git -C "$SRC_DIR" hash-object --stdin < "$SELF_SCRIPT" 2>/dev/null || true)"
 if [ -n "$SERVED_BLOB" ] && [ "$SELF_BLOB" != "$SERVED_BLOB" ]; then
     OPS_CLONE="$(git -C "$(dirname "$SELF_SCRIPT")" rev-parse --show-toplevel 2>/dev/null || true)"
+    OPS_ON=""
     if [ -n "$OPS_CLONE" ]; then
         OPS_PULL="git -C $OPS_CLONE pull"
+        # A pull brings only its own branch's deploy.sh: one tracking main
+        # catches up with dev's only after the dev->main merge.
+        OPS_ON="$(git -C "$OPS_CLONE" symbolic-ref -q --short HEAD 2>/dev/null || echo 'a detached HEAD')"
     else
         OPS_PULL="replace $SELF_SCRIPT with $BRANCH's tools/deploy.sh"
     fi
@@ -521,6 +525,9 @@ if [ -n "$SERVED_BLOB" ] && [ "$SELF_BLOB" != "$SERVED_BLOB" ]; then
             echo "${RED}deploy: THIS deploy.sh IS OLDER THAN $BRANCH's tools/deploy.sh${RST}"
             echo "${RED}  running: $SELF_SCRIPT${RST}"
             echo "${RED}  Pull the ops clone, then deploy again:  $OPS_PULL${RST}"
+            if [ -n "$OPS_ON" ]; then
+                echo "${RED}  (it is on $OPS_ON; the pull helps once that branch has $BRANCH's deploy.sh)${RST}"
+            fi
             echo "${RED}  Until then each deploy runs the old script's steps, and leaves${RST}"
             echo "${RED}  out whatever the new one added.${RST}"
             echo "${RED}================================================================${RST}"
