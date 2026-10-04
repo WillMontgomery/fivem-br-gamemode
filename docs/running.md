@@ -234,6 +234,12 @@ rewound meanwhile by a purge stays rewound); if dev moved or was rewound it
 plans again, pushes without asking when the plan is the same, and asks again
 when it is not. It says "pushed" only once GitHub's dev holds the commit.
 
+It also guards against a copy still running. Publish refuses anything in a
+season folder created or written in the last minute ("is it still copying?").
+After the `y`, it reads every pack again and refuses if anything differs from
+the plan it showed. Neither can see a copy that has stopped partway, for
+example Explorer waiting at a "file in use" dialog, so let a copy finish first.
+
 The folders are the lock: a pack in two season folders is one version per
 season, a pack dragged back after being removed goes up with no upload, and an
 empty folder with no earlier version is skipped as "nothing to remove". A folder
