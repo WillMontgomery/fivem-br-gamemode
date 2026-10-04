@@ -2803,7 +2803,10 @@ local function nearestDowned()
     local me = BR.State.me
     if me.state ~= BR.PlayerState.ALIVE or not me.squadId then return nil end
 
-    local p = GetEntityCoords(PlayerPedId())
+    -- My own position is read only once a downed squadmate with a ped has been
+    -- found (#393). This runs on every frame of a squad match, and on almost all
+    -- of them nobody is down; the answer is the same either way.
+    local p = nil
     local reach = M.dbnoReviveDist or 1.5
     local bestSrc, bestD = nil, nil
 
@@ -2812,6 +2815,7 @@ local function nearestDowned()
            and e.state == BR.PlayerState.DBNO then
             local ped = BR.Squadmates.pedOf(src)
             if ped ~= 0 then
+                p = p or GetEntityCoords(PlayerPedId())
                 local c = GetEntityCoords(ped)
                 local d = #(c - p)
                 if d <= reach and (not bestD or d < bestD) then
