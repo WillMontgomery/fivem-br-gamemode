@@ -13359,28 +13359,16 @@ do
         local k0 = env.BR.Dbno.knock
 
         -- ═══ THE EMOTE ═══
+        -- `settle august` is the SHOT knock before 12bcfdc; THIS body came down
+        -- the `fell` path 12bcfdc was written for, so august runs `old` here
+        -- (settleArm) -- a car can still throw a body onto this path.
         if SETTLE == 'august' then
-            -- ONE clear, the resurrection's, and no settle of any kind.
-            ok(k0.settle == 'august' and k0.settles == 0 and k0.clears == 0
-               and clears == 1,
-                ('`settle august` fires nothing on the frame a thrown body lands '
-                 .. 'either -- no settle, no settle clear; the one clear is the '
-                 .. 'resurrection\'s (%s)'):format(where),
-                ('%d settle(s), %d settle clear(s), %d clear(s) in all')
-                    :format(k0.settles, k0.clears, clears))
-            if ANSWER == 'the render' then
-                ok(pose == CRAWL,
-                    'and the watchdog poses the thrown body once the getup is '
-                        .. 'done, when the native answers about the render',
-                    tostring(pose))
-            else
-                ok(pose ~= CRAWL,
-                    'and, answering about the task, it never does: 12bcfdc\'s '
-                        .. 'case, back -- for a body only a blast could throw, '
-                        .. 'and a blast no longer knocks anybody down',
-                    tostring(pose))
-            end
-        else
+            ok(k0.settle == 'august' and k0.fell == true and k0.settles >= 1,
+                ("`settle august` on a thrown (`fell`) body still runs 12bcfdc's "
+                 .. 'settle (%s)'):format(where),
+                ('switch %s, fell %s, %d settle(s)'):format(tostring(k0.settle),
+                    tostring(k0.fell), k0.settles))
+        end
         ok(pose == CRAWL,
             ('a body an explosion threw ends up in the downed pose, when the '
              .. 'engine answers about %s -- BEFORE: the `fell` path has no '
@@ -13388,18 +13376,15 @@ do
              .. 'the pose was asked for once, mid-flight, where nothing could '
              .. 'take it'):format(where),
             ('rendering %s after %d task(s)'):format(tostring(pose), tasks))
-        end
 
-        if SETTLE == 'august' then
-            -- asserted above
-        elseif SETTLE == 'old' then
+        if SETTLE == 'old' or SETTLE == 'august' then
             ok(posedAt ~= nil and (posedAt - looseEndedAt) <= POSE_BY_MS,
                 ('and it is back in it within %dms of the physics letting go, '
                  .. 'not after a getup has finished standing it up (%s)')
                     :format(POSE_BY_MS, where),
                 posedAt and ('%dms later'):format(posedAt - looseEndedAt)
                         or 'never posed at all')
-            ok(k0.settle == 'old' and k0.clears >= 2,
+            ok(k0.clears >= 2,
                 ('and it got there by clearing the tasks on every settle (%s)')
                     :format(where),
                 ('%d settle clear(s)'):format(k0.clears))
@@ -13449,9 +13434,8 @@ do
         -- distinguishable from a fall in one paste, without the owner having to
         -- describe what they saw.
         local k = env.BR.Dbno.knock
-        ok(k.looseFrames > 0
-           and (SETTLE == 'august' and k.settles == 0
-                or SETTLE ~= 'august' and k.settles >= 2),
+        -- (august runs `old` on this `fell` body -- see settleArm.)
+        ok(k.looseFrames > 0 and k.settles >= 2,
             ('the knock record names the physics as the condition, and counts '
              .. 'the re-poses that answered them (%s)'):format(where),
             ('%d loose frames (%d ragdoll, %d air), %d settle re-pose(s)')
@@ -15058,7 +15042,7 @@ do
         if s:find('a/b    :', 1, true) then line = s end
         if s:find('dbno knock #', 1, true) then verdict = s end
     end
-    ok(line ~= nil and line:find('settle august, args old', 1, true) ~= nil
+    ok(line ~= nil and line:find('settle august (ran august, shot path), args old', 1, true) ~= nil
        and line:find('0 task clear(s)', 1, true) ~= nil,
         'and the downed player\'s own knock report prints the arms, unasked',
         tostring(line))

@@ -429,6 +429,22 @@ local AB_CHOICES = {
 local ab = { settle = 'august', args = 'old', keeper = 'off' }
 BR.Dbno.ab = ab
 
+--- The settle arm THIS knock runs.
+---
+--- `august` IS THE SHOT KNOCK BEFORE 12bcfdc, AND ONLY THAT. 12bcfdc's settle was
+--- written for a body the world threw -- the `fell` path, which resurrects and
+--- has no knockdown beat of its own -- and since 2026-09-12 blasts kill outright,
+--- but a car can still throw a body onto that path. So on a `fell` knock august
+--- keeps 12bcfdc's settle (`old`), which is what that path has run since
+--- 2026-08-29; a shot knock gets the August knock. `new` and `old` are what they
+--- say on both paths. The knock report prints both the switch and this answer.
+--- @return string 'august', 'new' or 'old'
+local function settleArm()
+    local s = knock.settle or ab.settle
+    if s == 'august' and knock.fell == true then return 'old' end
+    return s
+end
+
 --- The crawl's last three TaskPlayAnim arguments, by `args` choice. FiveM
 --- documents them as lockX, lockY, lockZ; ScriptHookVDotNet, ox_lib and the
 --- RDR3 native database name them phaseControlled, ikFlags and
@@ -465,6 +481,7 @@ local function noteKnock()
     knock.tasksAt     = crawlTasks
     -- THE SWITCHES ARE READ HERE AND NOWHERE ELSE for the rest of this knock.
     knock.settle, knock.args = ab.settle, ab.args
+    knock.fell = false
     knock.clears, knock.regetups = 0, 0
     knock.spent       = false
 end
@@ -1361,6 +1378,7 @@ local function enterDowned()
         -- 2. WHICH KIND OF KNOCK THIS IS, asked with the predicate the death
         --    watcher uses rather than with the flag alone. See worldTookUs.
         local fell = worldTookUs(PlayerPedId())
+        knock.fell = fell == true   -- which path settleArm() prices this knock on
 
         if fell then
             -- THE RESURRECTION AND THE POSE ARE ONE TICK -- see floorTheBody.
@@ -2066,7 +2084,7 @@ local function settleBody(ped)
     --   below), which is what the clear was buying on this screen;
     --   `settle old` is 12bcfdc as shipped, the build the owner reported on.
     coverPose()
-    if (knock.settle or ab.settle) == 'old' then
+    if settleArm() == 'old' then
         ClearPedTasksImmediately(ped)
         knock.clears = knock.clears + 1
     else
@@ -2188,10 +2206,11 @@ local function knockReport(ped)
            .. 'task is the contract'):format(resyncs, crawlTasks))
     -- #390: which A/B arm this knock ran, so a watcher's report can be read
     -- against it without anybody having to remember what they typed.
-    print(('  a/b    : settle %s, args %s -- %d task clear(s) on this ped, %d '
-           .. 're-pose(s) after an engine getup')
-        :format(tostring(knock.settle), tostring(knock.args), knock.clears,
-                knock.regetups))
+    print(('  a/b    : settle %s (ran %s, %s path), args %s -- %d task clear(s) '
+           .. 'on this ped, %d re-pose(s) after an engine getup')
+        :format(tostring(knock.settle), tostring(settleArm()),
+                knock.fell and 'fell' or 'shot', tostring(knock.args),
+                knock.clears, knock.regetups))
 end
 
 BR.Loop.register(BR.Loop.FRAME, 'dbno.controls', function()
@@ -2313,15 +2332,16 @@ BR.Loop.register(BR.Loop.FRAME, 'dbno.controls', function()
     -- actually ended up. It cannot fire on a body that never left the ground,
     -- so a fall and a quiet knock pay nothing at all.
     --
-    -- ...AND UNDER `settle august`, THE DEFAULT (#390), IT DOES NOT FIRE AT
-    -- ALL. That is the knock as it was before 12bcfdc, which had no settle:
+    -- ...AND UNDER `settle august`, THE DEFAULT (#390), IT DOES NOT FIRE ON A
+    -- SHOT KNOCK (a `fell` knock keeps 12bcfdc's settle -- see settleArm). That
+    -- is the shot knock as it was before 12bcfdc, which had no settle:
     -- this frame was simply the first one the ragdoll branch above did not
     -- return on. `loose` is still cleared and the loose frames are still
     -- counted -- the knock report reads them -- but nothing is covered,
     -- cleared or tasked here. See the A/B block at the top of the file.
     if loose then
         loose = false
-        if (knock.settle or ab.settle) ~= 'august' then settleBody(ped) end
+        if settleArm() ~= 'august' then settleBody(ped) end
     end
 
     -- ...AND, UNDER `settle new`, THE FRAME AN ENGINE GETUP ENDS (#390). One
