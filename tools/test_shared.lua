@@ -18231,17 +18231,20 @@ end
 
 
 -- ---------------------------------------------------------------------------
--- gamerules.pickups tells each ped ONCE to keep its gun when it dies (#393).
+-- gamerules.pickups tells each ped to keep its gun when it dies on the pass it
+-- appears, then once a second -- not ten times a second (#393).
 --
 -- SetPedDropsWeaponsWhenDead is a flag on the ped, and the 10 Hz sweep used to
 -- set it on every streamed ped on every pass -- two natives per ped per tick once
--- the mainland's ambient population is around. What must not change: every ped
--- that enters the pool is told before anything else can happen to it, a handle
--- the game recycles for a new ped is told again, the local ped is never told,
--- and the vanilla-pickup sweep still runs on every pass.
+-- the mainland's ambient population is around. Told only once, a flag something
+-- else took off (an owner's sync, a migration) would stay off, so every ped is
+-- told again every ten passes, on a pass its handle picks. What must not change:
+-- every ped that enters the pool is told before anything else can happen to it,
+-- a handle the game recycles for a new ped is told again, the local ped is never
+-- told, and the vanilla-pickup sweep still runs on every pass.
 -- ---------------------------------------------------------------------------
 
-describe('gamerules / no drops, told once')
+describe('gamerules / no drops, told on arrival and once a second')
 do
     local PED = 1
 
@@ -18315,11 +18318,34 @@ do
     ok(C.told[10] == 1 and C.told[11] == 1 and C.told[12] == 1 and C.dropsArg == false,
         'every ped in the pool is told on the first pass, with false')
     ok(C.told[PED] == nil, 'and the local ped is never told')
-    C.tick(9)
-    ok(C.told[10] == 1 and C.told[11] == 1 and C.told[12] == 1,
-        'and nine passes later nobody has been told again',
+
+    -- ONCE A SECOND AFTER THAT, AND NEVER TWO PASSES RUNNING: the next ten passes
+    -- tell each ped exactly once more, on a pass its handle picks, so three peds
+    -- with consecutive handles are told on three different passes.
+    local when = {}
+    for pass = 1, 10 do
+        local before = { C.told[10], C.told[11], C.told[12] }
+        C.tick()
+        for i, h in ipairs({ 10, 11, 12 }) do
+            if C.told[h] ~= before[i] then
+                when[h] = when[h] and 'twice' or pass
+            end
+        end
+    end
+    ok(C.told[10] == 2 and C.told[11] == 2 and C.told[12] == 2,
+        'and over the next ten passes -- a second -- each is told exactly once more',
         ('%s %s %s'):format(C.told[10], C.told[11], C.told[12]))
-    ok(C.removed == 10, 'while the vanilla pickup sweep ran on every one of the ten',
+    ok(type(when[10]) == 'number' and type(when[11]) == 'number'
+            and type(when[12]) == 'number'
+            and when[10] ~= when[11] and when[11] ~= when[12] and when[10] ~= when[12],
+        'on a pass of its own, so the peds are spread across the second',
+        ('%s %s %s'):format(tostring(when[10]), tostring(when[11]), tostring(when[12])))
+    C.tick(30)
+    ok(C.told[10] == 5 and C.told[11] == 5 and C.told[12] == 5,
+        'and three seconds later, three times more: a lost flag is put back within a '
+            .. 'second, at a tenth of what telling every pass cost',
+        ('%s %s %s'):format(C.told[10], C.told[11], C.told[12]))
+    ok(C.removed == 41, 'while the vanilla pickup sweep ran on every one of the 41 passes',
         C.removed)
 
     C.peds[13] = true
@@ -18328,19 +18354,21 @@ do
 
     -- The game recycles a handle: the ped leaves the pool, and a new ped turns up
     -- under the same number.
+    local had11 = C.told[11]
     C.peds[11] = nil
     C.tick()
     C.peds[11] = true
     C.tick()
-    ok(C.told[11] == 2, 'a handle that left the pool and came back is told again',
+    ok(C.told[11] == had11 + 1, 'a handle that left the pool and came back is told again',
         C.told[11])
 
-    -- A new round clears the record, and every ped is told again.
+    -- A new round clears the record, and every ped is told again on the next pass.
     for _, fn in ipairs(C.handlers[C.env.BR.Net.STATE] or {}) do
         fn({ state = C.env.BR.MatchState.WARMUP })
     end
+    local t10, t12, t13 = C.told[10], C.told[12], C.told[13]
     C.tick()
-    ok(C.told[10] == 2 and C.told[12] == 2 and C.told[13] == 2,
+    ok(C.told[10] == t10 + 1 and C.told[12] == t12 + 1 and C.told[13] == t13 + 1,
         'and the warmup that starts the next round has every ped told afresh')
 end
 -- ---------------------------------------------------------------------------

@@ -286,12 +286,29 @@ local looted = {}
 
 -- Peds already told to keep their guns when they die, and the set being built on
 -- this pass. SetPedDropsWeaponsWhenDead is a flag ON THE PED, so it needs saying
--- once per ped rather than ten times a second for as long as the ped is streamed
--- in -- which, with the mainland's ambient population around, was two natives per
--- ped per tick (#393). A handle missing from one pass's pool is forgotten on that
--- pass, so a handle the game recycles for a new ped is flagged again the first
--- time it is seen. Declared here, above the handler that clears them; see above.
+-- far less often than ten times a second for as long as the ped is streamed in --
+-- which, with the mainland's ambient population around, was two natives per ped
+-- per tick (#393). A ped is told the first pass it is in the pool, and a handle
+-- missing from one pass's pool is forgotten on that pass, so a handle the game
+-- recycles for a new ped is told again the first time it is seen.
+--
+-- ═══ AND AGAIN ONCE A SECOND, BECAUSE NOTHING HERE CAN SEE THE FLAG GO ═══
+--
+-- Told once and never again, a flag that something else took off would stay off.
+-- What could take it off is not something this code can check: a network clone's
+-- ped flags may be written by its owner's sync, and ownership can migrate. Asking
+-- after the owner (NetworkGetEntityOwner per ped per pass) would cost half of what
+-- telling once saved and would still not see an owner's sync overwrite it. So
+-- every ped is told again on a slow cadence instead -- every NO_DROP_REASSERT
+-- passes, on a pass set by its handle so the peds are spread across the second
+-- rather than told together -- which puts back a lost flag whatever took it, for
+-- a tenth of what the old every-pass telling cost. What a lost flag can do in
+-- the meantime is unchanged: the pickup sweep below runs on every pass, and takes
+-- a dropped vanilla gun away within a tenth of a second.
+-- Declared here, above the handler that clears them; see above.
 local noDrop, noDropNext = {}, {}
+local NO_DROP_REASSERT = 10     -- passes: once a second at the TICK band's 10 Hz
+local noDropPass = 0
 
 --- Clear the death latch when the server moves us somewhere new, so a respawn
 --- into the next match is not treated as still-dead.
@@ -351,13 +368,16 @@ BR.Loop.register(BR.Loop.TICK, 'gamerules.pickups', function()
     --    real entry -- which then behaves exactly like every other item on the
     --    ground.
     --
-    --    A ped is told once, the first pass it is in the pool (see noDrop): a pool
-    --    member exists, and the flag stays on it.
+    --    A ped is told the first pass it is in the pool, and again once a second
+    --    on a pass its handle picks (see noDrop).
     local was, now = noDrop, noDropNext
     for k in pairs(now) do now[k] = nil end
+    noDropPass = noDropPass + 1
     for _, other in ipairs(GetGamePool('CPed')) do
         local flagged = was[other]
-        if not flagged and other ~= ped and DoesEntityExist(other) then
+        if other ~= ped
+            and (not flagged or (other + noDropPass) % NO_DROP_REASSERT == 0)
+            and BR.NativeTruthy(DoesEntityExist(other)) then
             SetPedDropsWeaponsWhenDead(other, false)
             flagged = true
         end

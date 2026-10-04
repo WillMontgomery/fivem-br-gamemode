@@ -14,7 +14,7 @@
 1	resources/[fivem-royale]/br_core/client/dui.lua	DoesEntityExist
 1	resources/[fivem-royale]/br_core/client/fuel.lua	GetVehiclePedIsEntering
 1	resources/[fivem-royale]/br_core/client/fuel.lua	GetVehiclePedIsIn
-2	resources/[fivem-royale]/br_core/client/gamerules.lua	DoesEntityExist
+1	resources/[fivem-royale]/br_core/client/gamerules.lua	DoesEntityExist
 1	resources/[fivem-royale]/br_core/client/gamerules.lua	DoesPickupExist
 1	resources/[fivem-royale]/br_core/client/gamerules.lua	HasEntityBeenDamagedByEntity
 1	resources/[fivem-royale]/br_core/client/gamerules.lua	IsPedDeadOrDying
