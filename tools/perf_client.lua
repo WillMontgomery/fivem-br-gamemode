@@ -1330,7 +1330,7 @@ if ARGS.rebaseline then
             .. table.concat(errs, '; '))
         os.exit(1)
     end
-    local fh = assert(io.open(BUDGET_FILE, 'w'))
+    local fh = assert(io.open(BUDGET_FILE, 'wb'))   -- LF on every platform
     fh:write(table.concat(lines, '\n'), '\n')
     fh:close()
     realPrint('wrote ' .. BUDGET_FILE)
