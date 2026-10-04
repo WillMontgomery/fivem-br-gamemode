@@ -624,29 +624,48 @@ local function playCrawl(force, snap)
         return
     end
 
-    -- THE LAST THREE BOOLEANS ARE THE MOVER, AND ALL THREE USED TO BE FALSE.
+    -- ═══ THE LAST THREE ARGUMENTS ARE NOT AXIS LOCKS, AND THEY ARE ALL FALSE
+    --     AGAIN (#390) ═══
     --
-    -- "There's no way for a DBNO player to stop crawling" (owner, 2026-08-17).
-    -- The comment that used to sit here said the clip "plays IN PLACE", and
-    -- nothing ever made that true. `move_injured_ground` is a LOCOMOTION
-    -- dictionary: its clips carry the translation the move blender normally
-    -- extracts and turns into velocity, and TaskPlayAnim applies that
-    -- translation to the ped unless the lock flags tell it not to. A player
-    -- who let go of the keyboard went on crawling, because the animation --
-    -- not the input -- was driving them.
+    -- Owner, 2026-10-04: "when bleeding out, from other player's screens it
+    -- appears the peds are standing in place."
     --
-    -- lockX/lockY stop the clip pushing the ped across the ground. Z is left
-    -- free so gravity still owns their height. Whether these flags bite is the
-    -- engine's answer and not one that can be read off a file, which is
-    -- exactly why the hold in dbno.controls exists as well: that one measures
-    -- the ped's position and puts it back, so a downed player stays put
-    -- whatever the clip is doing.
+    -- 58502b0 set the first two to true, reading FiveM's parameter names --
+    -- lockX, lockY, lockZ -- as "stop the clip pushing the ped across the
+    -- ground". The engine's names are different, and three independent
+    -- sources agree on them:
+    --
+    --   * ScriptHookVDotNet, TaskInvoker.cs, passes TASK_PLAY_ANIM
+    --     (..., startPhase, phaseControlled, (int)ikFlags, 0) and says "the
+    --     last argument is named bAllowOverrideCloneUpdate";
+    --   * ox_lib's lib.playAnim spells the same three phaseControlled,
+    --     controlFlags (DISABLE_LEG_IK = 1, ...) and overrideCloneUpdate;
+    --   * the RDR3 native database types the second one `int ikFlags` on the
+    --     very same hash, 0xEA47FE3719165B94.
+    --
+    -- So the crawl went out PHASE-CONTROLLED with leg IK switched off, and it
+    -- never locked a mover at all. What actually keeps the body still is the
+    -- hold (stayPut) and the rate override (crawlPlaying) -- 8ac5ab5's drift
+    -- measurement already assumed the "locks" did nothing, and got 0.006m.
+    --
+    -- IT IS THE ONE CLIP IN THIS CODEBASE TASKED THAT WAY. The CPR emote, the
+    -- stretcher pose, the heal emote and the dance wheel -- every clip other
+    -- players are meant to see -- pass false, false, false. And the owner's
+    -- symptom is a known one for exactly this argument list: a lying-down
+    -- clip tasked with them set "doesn't sync to others" (they see the player
+    -- standing still), and setting all three false "finally" synced it
+    -- (forum.cfx.re/t/animation-sync-this-ffss/178690, 2018). Which of the
+    -- two set flags the engine objects to is not something a file can show;
+    -- see the clone keeper further down for the half that does not depend on
+    -- the answer.
     --
     -- `snap` is the resurrection case. The pose being blended FROM there is a
     -- standing idle the player must never see, so it is not blended from.
     local blend = snap and 1000.0 or 8.0
     TaskPlayAnim(ped, c.dict, c.anim, blend, -blend, -1, 1, 0.0,
-                 true, true, false)
+                 false,    -- phaseControlled
+                 false,    -- ikFlags: none
+                 false)    -- bAllowOverrideCloneUpdate: this task is the networked one
     -- A fresh task runs at rate 1.0 whatever we last asked for.
     crawlMoving = nil
     crawlTasks  = crawlTasks + 1
@@ -1398,11 +1417,12 @@ local HOLD_SLACK = 0.01
 --- Keep the ped on the spot it stopped at.
 ---
 --- THE OTHER READING OF "NO WAY TO STOP CRAWLING", AND THE ONE THAT DOES NOT
---- DEPEND ON A NATIVE'S GOODWILL. The lock flags in playCrawl tell the engine
---- not to let the clip drive the ped; this MEASURES whether something did
---- anyway and puts them back. Between the two, a downed player who is not
---- pressing anything stays where they are whatever the animation is made of --
---- which is the only claim about this that can be made from outside the game.
+--- DEPEND ON A NATIVE'S GOODWILL. This MEASURES whether something moved the
+--- ped and puts them back, so a downed player who is not pressing anything
+--- stays where they are whatever the animation is made of -- which is the only
+--- claim about this that can be made from outside the game. (The "lock flags"
+--- this used to be paired with were never locks: #390, see playCrawl. This
+--- was always the whole of it.)
 ---
 --- X and Y only. Pinning Z as well would hold a downed player in the air over
 --- a slope they should be sliding down, and gravity is not the thing moving
@@ -1432,7 +1452,8 @@ end
 -- There are two of them and neither crosses the wire:
 --
 --   * the lock flags in playCrawl are arguments to TaskPlayAnim on THIS
---     machine;
+--     machine (#390: and they were never locks at all -- see playCrawl -- so
+--     the local pin was only ever stayPut and the rate override);
 --   * crawlPlaying() is SetEntityAnimSpeed, which is a playback-rate override
 --     on this machine's copy of the ped.
 --
@@ -2851,10 +2872,10 @@ local function cprStart(target)
 
     -- Flag 1 is LOOPING and -1 is "until something stops it", which together
     -- are what make this a pose held for the length of a hold rather than one
-    -- pass of a clip. The three trailing `false`s are the position locks, left
-    -- off deliberately: this ped is standing on its own feet and nothing else
-    -- in this file is writing its position, so there is no second writer to
-    -- fight -- unlike the crawl, which is a locomotion clip with a mover in it.
+    -- pass of a clip. The three trailing `false`s are phaseControlled, ikFlags
+    -- and bAllowOverrideCloneUpdate -- not position locks, whatever FiveM's docs
+    -- call them (#390, see playCrawl) -- and all three false is the form other
+    -- players see.
     --
     -- AND FLAG 1 IS NOT 1024. See the networking block above the constants:
     -- 1024 (OVERRIDE_PHYSICS) is the one value citizenfx/fivem#3733 reports as
@@ -3230,6 +3251,333 @@ BR.Keys.on('interact', function(pressed)
     lastAsk = 0
 end)
 
+-- ==========================================================================
+-- #390: EVERY OTHER SCREEN KEEPS A DOWNED BODY DOWN, ON ITS OWN COPY.
+-- ==========================================================================
+--
+-- "when bleeding out, from other player's screens it appears the peds are
+--  standing in place." (owner, 2026-10-04, group playtest on c024ad6.)
+--
+-- ═══ WHY THE DOWNED PLAYER'S OWN MACHINE CANNOT PROMISE THIS ═══
+--
+-- What another client shows for a downed player is whatever task its CLONE is
+-- running, and the only thing that ever puts the crawl there is the one
+-- replicated TaskPlayAnim that playCrawl issues. If that copy never starts on
+-- a clone, or is lost, the clone falls back to its motion state -- a standing
+-- idle -- and nothing on the owning machine can tell: its watchdog asks
+-- IsEntityPlayingAnim of ITS OWN ped, which is playing the clip perfectly.
+--
+-- Clones losing exactly this task is reported, open, against the platform:
+--
+--   * citizenfx/fivem#2683: TaskPlayAnim on a downed/ragdolled player -- "for
+--     others it will show how the player slowly gets up";
+--   * citizenfx/fivem#2684: ClearPedTasksImmediately then TaskPlayAnim on a
+--     ragdolled player, and the other player sees them "within the standing up
+--     animation, while the client is in reality already in the desired anim".
+--     That is settleBody's sequence, and the knockdown beat's;
+--   * citizenfx/fivem#3731: a clip re-asserted on the owner, and "Client 2
+--     nearby does not see them playing any animation".
+--
+-- playCrawl's argument fix is the likeliest cause and the cheapest repair. This
+-- is the half that does not depend on it being the only one.
+--
+-- ═══ SO EACH OBSERVER ASKS ITS OWN COPY, AND PUTS THE POSE BACK ═══
+--
+-- Every client knows who is down (the roster mirror) and can ask its own clone
+-- what it is playing. A downed player's clone that is NOT playing the crawl
+-- gets it from this client, with TaskPlayAnim's last argument --
+-- bAllowOverrideCloneUpdate -- set: the MP-only switch (alloc8or's nativedb:
+-- "0 for single player, can be 1 but only for MP"; ox_lib: other clients
+-- "can't see the animation playing on the ped, even if the ped is not the
+-- client itself"). A LOCAL task on a LOCAL copy, for this screen only.
+--
+-- WHAT IT NEVER DOES, each one a rule an earlier round paid for:
+--
+--   * IT NEVER WRITES A POSITION. Where the clone lies is the network's answer
+--     and #226 is about trusting it -- nothing here moves a ped.
+--   * IT NEVER RUNS THE CLIP ON A BODY THAT IS LYING STILL. #164 was a clone
+--     replaying the crawl at rate 1.0 with its mover intact and walking off.
+--     This copy is held at rate 0.0 unless the clone itself is traveling --
+--     its owner crawling -- so there is no mover to walk with, and the arms
+--     move when the body does. Written every tick, not once: a fresh task on
+--     the owner's side arrives at rate 1.0 and nothing announces it.
+--   * IT NEVER FIGHTS A WORKING COPY. A clone already playing the clip only has
+--     its rate held; the re-pose fires on one that has gone a full second
+--     without it -- the owner's own task gets its round trip first -- and then
+--     once a second at most.
+--   * IT NEVER POSES A BODY THE ENGINE HAS. A ragdolling clone is the knock
+--     itself and is meant to be watched, so it is waited out. A clone that
+--     reads dead (the bleed-out arriving), is attached (the stretcher) or is in
+--     a vehicle has its own task, and any pose this client put on it comes off.
+--   * IT LETS GO WHEN THE ROSTER DOES. Revived, bled out, left, out of scope,
+--     match teardown, resource stop: StopAnimTask on the copy, naming our clip
+--     -- never ClearPedTasks, which aimed at a clone is clearPedTasksEvent, a
+--     network event that clears the OWNER's ped.
+
+--- How long a clone may go without the pose before this client poses it, ms.
+--- The owner's own task is in flight for a round trip after every knock and
+--- every settle, and posing over it would only hide whether it ever arrived.
+--- The same second the cover gives a local re-pose to land (POSE_SETTLE_MS).
+local CLONE_GRACE_MS = 1000
+
+--- How often a clone that has lost the pose may be posed again, ms. A task
+--- asked for this tick is not evaluated until after it (holdCover's note), so
+--- asking again sooner is asking about the same answer.
+local CLONE_REPOSE_MS = 1000
+
+--- Faster than this, in meters a second, and the clone is crawling, so the
+--- clip runs. A crawl is dbnoCrawlSpeed (0.55); the #164 step is 9mm out and
+--- back, which reads under 0.1 across one 100ms tick.
+local CLONE_CRAWL_MPS = 0.15
+
+--- Faster than THIS is not a crawl but the network catching a body up -- a
+--- stream-in, a knockdown landing -- and no reason to move the arms.
+local CLONE_WARP_MPS = 3.0
+
+--- How long the clip keeps running after the clone last moved, ms, so a crawl
+--- sampled between two network updates does not stutter.
+local CLONE_CRAWL_HOLD_MS = 400
+
+--- When the observer's own line prints, ms after a downed player is first seen.
+--- Later than the downed player's (KNOCK_REPORT_MS) by the outside of a
+--- knockdown ragdoll (1600) plus the grace: by then this screen has either
+--- received their pose or posed them itself, and the line says which.
+local CLONE_REPORT_MS = 4000
+
+--- [src] = this client's record of one downed player's clone.
+local clones = {}
+
+--- Session totals, for /brdbno and for the suites. Read-only by convention.
+local cloneLedger = { poses = 0, lastPoseAt = nil, unposes = 0, letGo = 0,
+                      rateWrites = 0, reports = 0 }
+BR.Dbno.clones      = clones
+BR.Dbno.cloneLedger = cloneLedger
+
+--- A guarded BOOL read: a build without the native answers no, and an answer
+--- of `0` is no rather than Lua's truthy zero.
+--- @param fn function|nil
+--- @return boolean
+local function says(fn, ...)
+    if not fn then return false end
+    return didHit(fn(...))
+end
+
+--- This client's copy of a player's ped, or 0 when it has none.
+--- @param src integer
+--- @return integer
+local function cloneOf(src)
+    if not GetPlayerFromServerId or not GetPlayerPed then return 0 end -- scope-ok: existence guard, nothing is called
+    local ply = GetPlayerFromServerId(src) -- scope-ok: posing a clone this client already streams; out of scope there is no copy to pose
+    if not ply or ply == -1 then return 0 end
+    local ped = GetPlayerPed(ply) -- scope-ok: same presentation-only use
+    if not ped or ped == 0 or not says(DoesEntityExist, ped) then return 0 end
+    return ped
+end
+
+--- Take this client's pose off a clone. Only ever OUR clip, by name.
+--- @param k table
+local function unpose(k)
+    if not k.ours then return end
+    k.ours = false
+    cloneLedger.unposes = cloneLedger.unposes + 1
+    if crawl and StopAnimTask and says(DoesEntityExist, k.ped) then
+        StopAnimTask(k.ped, crawl.dict, crawl.anim, 8.0)
+    end
+end
+
+--- Forget a downed player entirely, taking our pose off their clone first.
+--- @param src integer
+local function letGo(src)
+    local k = clones[src]
+    if not k then return end
+    unpose(k)
+    clones[src] = nil
+    cloneLedger.letGo = cloneLedger.letGo + 1
+end
+
+--- Keep one downed player's clone in the downed pose, on this screen.
+--- @param src integer
+--- @param now number
+local function keepPose(src, now)
+    local ped = cloneOf(src)
+    local k = clones[src]
+    if ped == 0 then
+        -- OUT OF SCOPE: no copy to pose, and none of ours left on one -- a
+        -- clone that leaves scope is deleted with whatever it was carrying.
+        if k then clones[src] = nil end
+        return
+    end
+    if not k or k.ped ~= ped then
+        k = { ped = ped, since = now, poses = 0, posedAt = nil, ours = false,
+              playing = false, missingSince = nil, held = nil, rate = nil,
+              x = nil, y = nil, at = nil, movingUntil = nil, reported = false }
+        clones[src] = k
+    end
+
+    -- THE ENGINE'S BODY. See the block above for each of the four. The grace
+    -- clock restarts behind every one of them: the owner re-poses on the frame
+    -- the physics let go, and that task is owed its round trip too.
+    if says(IsEntityDead, ped) or says(IsPedFatallyInjured, ped)
+       or says(IsEntityAttached, ped) or says(IsPedInAnyVehicle, ped, false) then
+        k.held, k.at, k.missingSince = 'engine', nil, nil
+        unpose(k)
+        return
+    end
+    if says(IsPedRagdoll, ped) then
+        k.held, k.at, k.missingSince = 'ragdoll', nil, nil
+        return
+    end
+    k.held = nil
+
+    local playing = says(IsEntityPlayingAnim, ped, crawl.dict, crawl.anim, 3)
+    k.playing = playing
+
+    if not playing then
+        k.rate, k.at = nil, nil
+        k.missingSince = k.missingSince or now
+        if now - k.missingSince < CLONE_GRACE_MS then return end
+        if k.posedAt and now - k.posedAt < CLONE_REPOSE_MS then return end
+        if not says(HasAnimDictLoaded, crawl.dict) then
+            if RequestAnimDict then RequestAnimDict(crawl.dict) end
+            return
+        end
+        TaskPlayAnim(ped, crawl.dict, crawl.anim, 8.0, -8.0, -1, 1, 0.0,
+                     false,    -- phaseControlled
+                     false,    -- ikFlags: none
+                     true)     -- bAllowOverrideCloneUpdate: this screen's copy only
+        k.posedAt, k.ours = now, true
+        k.poses = k.poses + 1
+        cloneLedger.poses = cloneLedger.poses + 1
+        cloneLedger.lastPoseAt = now
+        return
+    end
+    k.missingSince = nil
+
+    -- THE RATE. Measured off the clone's own travel, because that is the only
+    -- evidence this machine has that its owner is crawling.
+    local c = GetEntityCoords(ped)
+    if k.at and now > k.at then
+        local dx, dy = c.x - k.x, c.y - k.y
+        local v = math.sqrt(dx * dx + dy * dy) / ((now - k.at) / 1000.0)
+        if v >= CLONE_CRAWL_MPS and v < CLONE_WARP_MPS then
+            k.movingUntil = now + CLONE_CRAWL_HOLD_MS
+        end
+    end
+    k.x, k.y, k.at = c.x, c.y, now
+    k.rate = (k.movingUntil and now < k.movingUntil) and 1.0 or 0.0
+    if SetEntityAnimSpeed then
+        SetEntityAnimSpeed(ped, crawl.dict, crawl.anim, k.rate)
+        cloneLedger.rateWrites = cloneLedger.rateWrites + 1
+    end
+end
+
+--- Say, once per knock and on THIS screen, what this client is showing for a
+--- downed player -- the observer's half of the knock report, and the line the
+--- next playtest is read off. Printed rather than kept behind /brdbno for the
+--- reason knockReport gives: the person who can answer is the one standing
+--- there, mid-fight.
+--- @param src integer
+--- @param k table
+--- @param now number
+local function reportClone(src, k, now)
+    if k.reported or now - k.since < CLONE_REPORT_MS then return end
+    k.reported = true
+    cloneLedger.reports = cloneLedger.reports + 1
+
+    local verdict
+    if k.held == 'engine' then
+        verdict = 'the engine has the body (dead, attached or in a vehicle) -- '
+               .. 'not posed here'
+    elseif k.poses == 0 and k.playing then
+        verdict = 'clip PLAYING from their own task -- nothing re-posed here'
+    elseif k.poses > 0 and k.playing then
+        verdict = ('their own task did NOT reach this screen within %dms; '
+                .. 're-posed here %d time(s) and it holds')
+                :format(CLONE_GRACE_MS, k.poses)
+    elseif k.poses > 0 then
+        verdict = ('NOT PLAYING after %d re-pose(s) here -- this build is not '
+                .. 'taking the local pose'):format(k.poses)
+    else
+        verdict = 'NOT PLAYING and not re-posed yet (' .. tostring(k.held or
+                  'waiting') .. ')'
+    end
+    local e = BR.State.roster and BR.State.roster[src]
+    print(('[br_core] dbno: %s (%s) is down -- on this screen: %s, rate %s')
+        :format(tostring(e and e.name or '?'), tostring(src), verdict,
+                k.rate and ('%.1f'):format(k.rate) or '-'))
+end
+
+BR.Loop.register(BR.Loop.TICK, 'dbno.clones', function()
+    local now = GetGameTimer()
+    local me  = BR.State.me
+    local down = {}
+    -- `crawl` as a TABLE: resolved, and present on this build. Unresolved
+    -- waits for the boot thread; `false` is a build that lies still, and posing
+    -- somebody else in a clip this machine cannot play is not a thing.
+    if type(crawl) == 'table' then
+        for src, e in pairs(BR.State.roster or {}) do
+            if src ~= (me and me.src) and e.state == BR.PlayerState.DBNO then
+                down[src] = true
+                keepPose(src, now)
+                local k = clones[src]
+                if k then reportClone(src, k, now) end
+            end
+        end
+    end
+    for src in pairs(clones) do
+        if not down[src] then letGo(src) end
+    end
+end)
+
+--- Take this client's pose off every clone. The two endings that can stop
+--- the loop above call it by hand: the match teardown and the resource stop.
+local function letGoAll()
+    for src in pairs(clones) do letGo(src) end
+end
+
+-- GET_IS_TASK_ACTIVE's numbers for the four tasks that decide what a downed
+-- body looks like (alloc8or's nativedb, eTaskType): the clip itself, the two
+-- getups that stand a body up, and the blend out of a ragdoll.
+local TASK_SCRIPTED_ANIMATION = 134
+local TASK_GET_UP             = 16
+local TASK_GET_UP_STAND_STILL = 17
+local TASK_BLEND_FROM_NM      = 407
+
+-- GET_SCRIPT_TASK_STATUS's answers, by name (0..7 in the nativedb's enum).
+local TASK_STATUS = { [0] = 'waiting', [1] = 'performing', [2] = 'dormant',
+                      [3] = 'vacant', [7] = 'finished' }
+
+--- What the ENGINE says a ped is doing, in one line, for /brdbno (#390).
+---
+--- Every reading is taken now and none of it is this file's belief: the clip
+--- by name, whether a scripted-anim task is in the tree at all (a different
+--- clip there is a different fault from no task), the play-anim script status,
+--- and the three things that stand a body up or throw it. Works on our own ped
+--- and on a clone alike, which is the point -- the two lines are read side by
+--- side, one on each machine.
+--- @param ped integer
+--- @return string
+local function poseLine(ped)
+    local status = GetScriptTaskStatus
+        and GetScriptTaskStatus(ped, GetHashKey('SCRIPT_TASK_PLAY_ANIM'))
+    return ('clip %s | anim task %s | play-anim %s | getup %s, ragdoll %s, '
+            .. 'dead %s')
+        :format(
+            (type(crawl) == 'table'
+                and says(IsEntityPlayingAnim, ped, crawl.dict, crawl.anim, 3))
+                and 'PLAYING' or 'NOT PLAYING',
+            says(GetIsTaskActive, ped, TASK_SCRIPTED_ANIMATION) and 'in tree'
+                or 'none',
+            status and (TASK_STATUS[status] or tostring(status)) or '?',
+            (says(GetIsTaskActive, ped, TASK_GET_UP)
+             or says(GetIsTaskActive, ped, TASK_GET_UP_STAND_STILL)
+             or says(GetIsTaskActive, ped, TASK_BLEND_FROM_NM))
+                and 'YES' or 'no',
+            says(IsPedRagdoll, ped) and 'YES' or 'no',
+            (says(IsEntityDead, ped) or says(IsPedFatallyInjured, ped))
+                and 'YES' or 'no')
+end
+
 -- --------------------------------------------------------------------------
 -- Teardown
 -- --------------------------------------------------------------------------
@@ -3259,6 +3607,10 @@ local function forgetAll()
     -- guaranteed to be looked at, over a body that is already gone.
     cprSince = nil
     cprStop()
+    -- ...and every pose this client put on somebody else's clone (#390). The
+    -- match is over, the roster is about to be replaced, and a copy left posed
+    -- by hand is one nothing would ever take back off.
+    letGoAll()
 end
 
 RegisterNetEvent(BR.Net.STATE)
@@ -3288,6 +3640,9 @@ AddEventHandler('onClientResourceStop', function(res)
     -- chest compressions with nothing left running to stop them.
     cprSince = nil
     cprStop()
+    -- ...and the same is true of a pose on somebody else's clone (#390): the
+    -- TICK loop that would let go of it is the thing being stopped.
+    letGoAll()
 end)
 
 -- --------------------------------------------------------------------------
@@ -3369,6 +3724,11 @@ RegisterCommand('brdbno', function()
             or (crawlMoving and 'running' or 'held still'),
         SetEntityAnimSpeed and 'SetEntityAnimSpeed present'
                             or 'NO SetEntityAnimSpeed on this build'))
+    -- THE ENGINE'S ANSWER FOR MY OWN PED (#390), beside the belief above. Read
+    -- it against the `downed players on this screen` block at the bottom of a
+    -- TEAMMATE'S paste: this line is what my machine plays, theirs is what
+    -- their copy of me plays.
+    print(('  own pose   : %s'):format(poseLine(PlayerPedId())))
     -- BOTH OF THE ABOVE ARE LOCAL-ONLY. This is the line that says whether
     -- anything is being done about the copies on other machines (#164).
     --
@@ -3587,4 +3947,43 @@ RegisterCommand('brdbno', function()
         end
     end
     if n == 0 then print('    (none)') end
+
+    -- ------------------------------------------------------------------ #390
+    -- WHAT THIS SCREEN SHOWS FOR EVERY OTHER DOWNED PLAYER, squad or not. Two
+    -- lines each: the engine's reading of OUR COPY of them, and what the clone
+    -- keeper has done to it. `clip PLAYING` with `re-posed 0` is their own task
+    -- arriving; climbing re-poses is it failing to and this screen covering;
+    -- `NOT PLAYING` after re-poses is the local pose not taking either.
+    print(('  --- downed players on this screen (%d re-pose(s), %d let go, '
+           .. '%d rate writes this session) ---')
+        :format(cloneLedger.poses, cloneLedger.letGo, cloneLedger.rateWrites))
+    local mine0 = GetEntityCoords(PlayerPedId())
+    local shown = 0
+    for src, e in pairs(BR.State.roster) do
+        if e.state == BR.PlayerState.DBNO and src ~= BR.State.me.src then
+            shown = shown + 1
+            local ped = cloneOf(src)
+            if ped == 0 then
+                print(('    %-4d %-18s not streamed on this screen'):format(
+                    src, tostring(e.name)))
+            else
+                local c = GetEntityCoords(ped)
+                local dx, dy, dz = c.x - mine0.x, c.y - mine0.y, c.z - mine0.z
+                local k = clones[src]
+                print(('    %-4d %-18s ped %d at %.1fm: %s'):format(
+                    src, tostring(e.name), ped,
+                    math.sqrt(dx * dx + dy * dy + dz * dz), poseLine(ped)))
+                print(('         keeper: %s'):format(k and (
+                    ('re-posed %d (%s), ours %s, rate %s%s'):format(
+                        k.poses,
+                        k.posedAt and ('last %dms ago'):format(
+                            GetGameTimer() - k.posedAt) or 'never',
+                        tostring(k.ours),
+                        k.rate and ('%.1f'):format(k.rate) or '-',
+                        k.held and (', engine has it: ' .. k.held) or ''))
+                    or 'no record yet'))
+            end
+        end
+    end
+    if shown == 0 then print('    (none)') end
 end, false)

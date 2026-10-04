@@ -14147,6 +14147,512 @@ do
 end
 
 -- ==========================================================================
+-- #390: A DOWNED BODY STANDS UP ON EVERYBODY ELSE'S SCREEN.
+-- ==========================================================================
+--
+-- "when bleeding out, from other player's screens it appears the peds are
+--  standing in place." (owner, 2026-10-04, group playtest on c024ad6.)
+--
+-- WHAT CAN AND CANNOT BE ASSERTED FROM OUTSIDE THE GAME, said once: nothing in
+-- this process replicates a task to a second machine, so whether the owner's
+-- crawl now REACHES a clone is a playtest question. What is pinned here is
+-- everything either machine DOES about it:
+--
+--   1. the downed client tasks its own crawl in the networked form -- the
+--      three trailing TaskPlayAnim arguments, which are phaseControlled, ikFlags
+--      and bAllowOverrideCloneUpdate rather than the axis locks FiveM's docs
+--      name them, all false -- on every path that tasks it, and puts it back
+--      when it is lost;
+--   2. every OTHER client keeps its own copy of a downed player in the pose:
+--      it leaves a copy that is playing alone, poses one that is not (locally,
+--      with the clone override set) after a grace and at most once a second,
+--      holds the clip still unless the body is traveling, never writes a
+--      position or clears a task on somebody else's ped, stays off bodies the
+--      engine has, and takes its pose off again on every ending;
+--   3. the #164 and #226 rules are untouched: the downed client's position
+--      writes are still keepTasks/keepIK/no-warp, and a quiet bleed still ends
+--      exactly where it started.
+--
+-- THE REMOTE NATIVES ANSWER 1/0 ON PURPOSE. Every one of them is declared BOOL
+-- and `0` is truthy in Lua; the keeper reads five of them per body per tick,
+-- and a raw read of IsEntityAttached would skip every downed player on a build
+-- that hands numbers back.
+
+--- A two-player rig: this client (src 1, ped 5001) and a squadmate (src 2, ped
+--- 5002) whose CLONE this client holds. Every native the keeper touches is
+--- recorded per ped, and the clone's task is a real object.
+local function newObserver()
+    local peds = { [5001] = { x = 0.0, y = 0.0, z = 30.0 },
+                   [5002] = { x = 3.0, y = 0.0, z = 30.0 } }
+    local CLI = newReviver(1, 2, peds)
+    local env = CLI.env
+    local R = { CLI = CLI, env = env, peds = peds, prints = {},
+                inScope = true,
+                -- what the clone is playing, or nil: { dict, anim, override }
+                clone = nil,
+                -- whether a local pose on the clone takes (the override works)
+                overrideTakes = true,
+                flags = { dead = 0, fatal = 0, attached = 0, vehicle = 0,
+                          ragdoll = 0 },
+                tasks = {}, stops = {}, rates = {}, coords = {}, clears = {} }
+
+    env.print = function(s) R.prints[#R.prints + 1] = tostring(s) end
+
+    -- THIS CLIENT RESOLVES ITSELF TOO, as the engine does (player 0, ped
+    -- 5001) -- so a keeper that forgot to skip its own src would find a ped
+    -- and pose it, rather than being saved by the rig.
+    env.GetPlayerFromServerId = function(src)
+        if src == 1 then return 0 end
+        if src == 2 and R.inScope then return 2 end
+        return -1
+    end
+    env.GetPlayerPed = function(ply)
+        if ply == 0 then return 5001 end
+        return ply == 2 and 5002 or 0
+    end
+    env.DoesEntityExist = function() return 1 end
+
+    -- OUR OWN PED keeps the rig's single task slot; the CLONE gets its own.
+    local own = nil
+    env.TaskPlayAnim = function(ped, d, a, bi, bo, dur, flag, phase, pc, ik, ovr)
+        R.tasks[#R.tasks + 1] = { ped = ped, dict = d, anim = a, flag = flag,
+            dur = dur, phase = phase, pc = pc, ik = ik, ovr = ovr, at = CLI.now }
+        if ped == 5002 then
+            if R.overrideTakes then R.clone = { dict = d, anim = a, ovr = ovr } end
+        else
+            own = d .. '/' .. a
+        end
+    end
+    env.IsEntityPlayingAnim = function(ped, d, a)
+        if ped == 5002 then
+            return (R.clone and R.clone.dict == d and R.clone.anim == a) and 1 or 0
+        end
+        return own == d .. '/' .. a
+    end
+    env.StopAnimTask = function(ped, d, a)
+        R.stops[#R.stops + 1] = { ped = ped, dict = d, anim = a, at = CLI.now }
+        if ped == 5002 and R.clone and R.clone.dict == d and R.clone.anim == a then
+            R.clone = nil
+        end
+    end
+    env.SetEntityAnimSpeed = function(ped, d, a, rate)
+        R.rates[#R.rates + 1] = { ped = ped, dict = d, anim = a, rate = rate,
+                                  at = CLI.now }
+    end
+    env.SetEntityCoordsNoOffset = function(ped, x, y, z, keepTasks, keepIK, warp)
+        R.coords[#R.coords + 1] = { ped = ped, keepTasks = keepTasks,
+                                    keepIK = keepIK, warp = warp }
+        local p = peds[ped]
+        if p then p.x, p.y, p.z = x, y, z end
+    end
+    env.ClearPedTasks = function(ped) R.clears[#R.clears + 1] = ped end
+    env.ClearPedTasksImmediately = function(ped)
+        R.clears[#R.clears + 1] = ped
+        if ped == 5001 then own = nil end
+    end
+    -- 1/0 FOR THE CLONE, which is the shape the keeper must survive; plain
+    -- `false` for our own ped, whose readers are not what this block is about.
+    local function flag(name)
+        return function(ped)
+            if ped ~= 5002 then return false end
+            return R.flags[name]
+        end
+    end
+    env.IsEntityDead        = flag('dead')
+    env.IsPedFatallyInjured = flag('fatal')
+    env.IsEntityAttached    = flag('attached')
+    env.IsPedInAnyVehicle   = flag('vehicle')
+    env.IsPedRagdoll        = function(ped)
+        return ped == 5002 and R.flags.ragdoll or false
+    end
+
+    --- Advance by `ms` in 16ms frames, stepping the 10Hz band on its own beat.
+    local nextTick = 0
+    function R.run(ms, each)
+        local target = CLI.now + ms
+        while CLI.now < target do
+            CLI.now = CLI.now + 16
+            if each then each(CLI.now) end
+            CLI.frame()
+            if CLI.now >= nextTick then
+                nextTick = CLI.now + 100
+                env.BR.Loop.step(env.BR.Loop.TICK)
+            end
+        end
+    end
+
+    --- Clone-only slices of the recorders.
+    function R.on(list, ped, from)
+        local n = {}
+        for _, e in ipairs(list) do
+            if e.ped == ped and (not from or e.at >= from) then n[#n + 1] = e end
+        end
+        return n
+    end
+
+    function R.loopErrors(name)
+        for _, s in ipairs(env.BR.Loop.stats()) do
+            if s.name == name then return s.errors, s.suspended end
+        end
+        return nil, nil
+    end
+
+    -- PAST THE BOOT THREAD, which is what resolves the crawl on every client --
+    -- an observer included -- five seconds after the resource starts.
+    R.run(5200)
+    return R
+end
+
+describe('dbno.remote.pose')
+do
+    -- ---------------------------------------------------- 1. a healthy copy
+    local R = newObserver()
+    local env = R.env
+    local DICT, ANIM = 'move_injured_ground', 'front_loop'
+    ok(env.BR.Dbno.clones ~= nil and env.BR.Dbno.cloneLedger ~= nil,
+        'the clone keeper publishes its readings for /brdbno and the suites')
+
+    -- The mate goes down and their own task REACHES this screen 300ms later.
+    env.BR.State.roster[2].state = env.BR.PlayerState.DBNO
+    local t0 = R.CLI.now
+    R.run(300)
+    R.clone = { dict = DICT, anim = ANIM, ovr = false }
+    R.run(9700)
+
+    ok(#R.on(R.tasks, 5002) == 0,
+        'a clone whose own task arrived is never re-posed -- not even when it '
+            .. 'arrived 300ms late, inside the grace',
+        ('%d local poses'):format(#R.on(R.tasks, 5002)))
+    local still = R.on(R.rates, 5002, t0 + 1000)
+    local allZero = #still > 0
+    for _, r in ipairs(still) do
+        if r.rate ~= 0.0 or r.dict ~= DICT or r.anim ~= ANIM then allZero = false end
+    end
+    ok(allZero,
+        'and its clip is HELD STILL on this screen while the body lies still -- '
+            .. 'the #164 mover has nothing to walk with',
+        ('%d rate writes, last %s'):format(#still,
+            still[#still] and tostring(still[#still].rate) or '-'))
+    ok(#still >= 80,
+        'held every tick, not once -- a fresh task from the owner arrives at '
+            .. 'rate 1.0 and nothing announces it',
+        ('%d writes in ~9s'):format(#still))
+    ok(#R.on(R.coords, 5002) == 0 and #R.clears == 0,
+        'and nothing on this screen ever writes a position on, or clears the '
+            .. 'tasks of, somebody else\'s ped (#226; clearPedTasksEvent)',
+        ('%d writes, %d clears'):format(#R.on(R.coords, 5002), #R.clears))
+    local said = nil
+    for _, s in ipairs(R.prints) do
+        if s:find('is down', 1, true) then said = s end
+    end
+    ok(said ~= nil and said:find('their own task', 1, true) ~= nil,
+        'and this screen says once, unasked, that the pose arrived on its own',
+        tostring(said))
+
+    -- ...THE BODY CRAWLS, AND THE ARMS MOVE WITH IT. 0.55 m/s for two seconds.
+    local crawlFrom = R.CLI.now
+    R.run(2000, function()
+        R.peds[5002].y = R.peds[5002].y + 0.55 * 0.016
+    end)
+    local moving = R.on(R.rates, 5002, crawlFrom + 300)
+    local allOne = #moving > 0
+    for _, r in ipairs(moving) do if r.rate ~= 1.0 then allOne = false end end
+    ok(allOne,
+        'a clone that is traveling at crawl speed has its clip RUNNING -- the '
+            .. 'crawl is visible, not a body sliding',
+        ('%d writes, rates %s'):format(#moving,
+            moving[1] and tostring(moving[1].rate) or '-'))
+    local stopAt = R.CLI.now
+    R.run(1500)
+    local after = R.on(R.rates, 5002, stopAt + 600)
+    ok(#after > 0 and after[#after].rate == 0.0,
+        'and held again once it stops',
+        after[#after] and tostring(after[#after].rate) or 'no writes')
+
+    -- THE #164 STEP IS NOT A CRAWL. 9mm out, 9mm back, two frames.
+    local stepAt = R.CLI.now
+    local f = 0
+    R.run(1000, function()
+        f = f + 1
+        if f == 10 then R.peds[5002].y = R.peds[5002].y + 0.009 end
+        if f == 11 then R.peds[5002].y = R.peds[5002].y - 0.009 end
+    end)
+    local stepped = R.on(R.rates, 5002, stepAt)
+    local anyOne = false
+    for _, r in ipairs(stepped) do if r.rate ~= 0.0 then anyOne = true end end
+    ok(not anyOne, 'the owner\'s 9mm resync step does not start the arms')
+
+    -- ...AND A WARP IS NOT A CRAWL EITHER: the network catching a body up.
+    local warpAt = R.CLI.now
+    f = 0
+    R.run(1000, function()
+        f = f + 1
+        if f == 10 then R.peds[5002].x = R.peds[5002].x + 5.0 end
+    end)
+    anyOne = false
+    for _, r in ipairs(R.on(R.rates, 5002, warpAt)) do
+        if r.rate ~= 0.0 then anyOne = true end
+    end
+    ok(not anyOne, 'and five meters in one tick is a catch-up, not a crawl')
+
+    -- ----------------------------------------------------- 2. a lost copy
+    -- Something takes the clip off the clone and the owner never knows.
+    local lostAt = R.CLI.now
+    R.clone = nil
+    R.run(900)
+    ok(#R.on(R.tasks, 5002, lostAt) == 0,
+        'a clone that loses the pose is given the grace first (owner\'s task '
+            .. 'in flight)', ('%d poses inside the grace')
+            :format(#R.on(R.tasks, 5002, lostAt)))
+    R.run(300)
+    local posed = R.on(R.tasks, 5002, lostAt)
+    local p = posed[1]
+    ok(#posed == 1 and p.dict == DICT and p.anim == ANIM,
+        'and then THIS SCREEN puts the crawl back on its own copy, once',
+        ('%d poses'):format(#posed))
+    ok(p ~= nil and p.flag == 1 and p.dur == -1 and p.pc == false
+       and p.ik == false and p.ovr == true,
+        'looping, until stopped, not phase-controlled, no IK flags -- and with '
+            .. 'bAllowOverrideCloneUpdate SET: a local copy, for this screen only',
+        p and ('flag %s dur %s phaseControlled %s ikFlags %s override %s')
+            :format(tostring(p.flag), tostring(p.dur), tostring(p.pc),
+                    tostring(p.ik), tostring(p.ovr)) or 'no pose')
+    R.run(5000)
+    ok(#R.on(R.tasks, 5002, lostAt) == 1,
+        'and a pose that takes is not asked for again',
+        ('%d poses'):format(#R.on(R.tasks, 5002, lostAt)))
+
+    -- A build where the local pose does NOT take: at most once a second.
+    R.overrideTakes = false
+    R.clone = nil
+    local refusedAt = R.CLI.now
+    R.run(4000)
+    local n = #R.on(R.tasks, 5002, refusedAt)
+    ok(n >= 2 and n <= 4,
+        'a pose that never takes is re-asked at most once a second, after the '
+            .. 'grace -- never per frame, never per tick', ('%d in 4s'):format(n))
+    R.overrideTakes = true
+
+    local e1, s1 = R.loopErrors('dbno.clones')
+    ok(e1 == 0 and not s1, 'the keeper never threw',
+        ('%s errors, suspended %s'):format(tostring(e1), tostring(s1)))
+end
+
+do
+    -- ---------------------------------------- 3. bodies the engine has
+    local R = newObserver()
+    local env = R.env
+    env.BR.State.roster[2].state = env.BR.PlayerState.DBNO
+
+    -- A KNOCKDOWN: the clone ragdolls for 1.5s with no task. Waited out --
+    -- the fall is the knock -- and the grace starts when it lets go.
+    R.flags.ragdoll = 1
+    R.run(1500)
+    ok(#R.on(R.tasks, 5002) == 0, 'a ragdolling clone is not posed -- the '
+        .. 'knock itself is meant to be watched')
+    R.flags.ragdoll = 0
+    local released = R.CLI.now
+    R.run(900)
+    ok(#R.on(R.tasks, 5002) == 0,
+        'and the owner\'s settle re-pose gets its round trip after the ragdoll '
+            .. 'lets go before this screen poses anything')
+    R.run(400)
+    ok(#R.on(R.tasks, 5002) == 1 and R.clone ~= nil,
+        'then a clone that never got it is posed here',
+        ('%d poses %dms after the ragdoll'):format(#R.on(R.tasks, 5002),
+            R.CLI.now - released))
+
+    -- THE STRETCHER: IsEntityAttached answers 1. Our pose comes off.
+    R.flags.attached = 1
+    local attachedAt = R.CLI.now
+    R.run(2000)
+    local stops = R.on(R.stops, 5002, attachedAt)
+    ok(#stops == 1 and stops[1].dict == 'move_injured_ground' and R.clone == nil,
+        'a clone that is attached (the ambulance) has this screen\'s pose taken '
+            .. 'off, by name', ('%d stops'):format(#stops))
+    ok(#R.on(R.tasks, 5002, attachedAt) == 0, 'and is not posed again while it is')
+
+    -- THE ZERO. IsEntityAttached answers 0 -- not attached -- and that must be
+    -- read as NO. A raw read would skip the body forever.
+    R.flags.attached = 0
+    local zeroAt = R.CLI.now
+    R.run(1500)
+    ok(#R.on(R.tasks, 5002, zeroAt) == 1,
+        'an answer of 0 from a BOOL native is "no": the detached body is posed '
+            .. 'again', ('%d poses'):format(#R.on(R.tasks, 5002, zeroAt)))
+
+    -- IN A VEHICLE, the same rule.
+    R.flags.vehicle = 1
+    local carAt = R.CLI.now
+    R.run(1500)
+    ok(#R.on(R.stops, 5002, carAt) == 1 and #R.on(R.tasks, 5002, carAt) == 0,
+        'and so has one in a vehicle')
+    R.flags.vehicle = 0
+    R.run(1500)
+
+    -- THE BLEED-OUT ARRIVING: the clone reads dead before the roster says OUT.
+    R.flags.dead = 1
+    local deadAt = R.CLI.now
+    R.run(2000)
+    ok(#R.on(R.stops, 5002, deadAt) == 1 and #R.on(R.tasks, 5002, deadAt) == 0,
+        'a clone that reads dead gets its death: the pose comes off and is not '
+            .. 'put back', ('%d stops %d poses'):format(
+                #R.on(R.stops, 5002, deadAt), #R.on(R.tasks, 5002, deadAt)))
+    R.flags.dead = 0
+    R.flags.fatal = 1
+    local fatalAt = R.CLI.now
+    R.run(1500)
+    ok(#R.on(R.tasks, 5002, fatalAt) == 0,
+        'and the same for the window before the death flag settles')
+    R.flags.fatal = 0
+end
+
+do
+    -- ------------------------------------------------------ 4. letting go
+    local R = newObserver()
+    local env = R.env
+    local P = env.BR.PlayerState
+
+    local function posedThenSet(state)
+        R.clone = nil
+        env.BR.State.roster[2].state = P.DBNO
+        R.run(1500)
+        local had = R.clone ~= nil
+        local from = R.CLI.now
+        env.BR.State.roster[2].state = state
+        R.run(1000)
+        return had, R.on(R.stops, 5002, from), R.on(R.tasks, 5002, from),
+               R.on(R.rates, 5002, from + 100)
+    end
+
+    for _, case in ipairs({ { P.ALIVE, 'revived' }, { P.OUT, 'bled out' } }) do
+        local had, stops, poses, rates = posedThenSet(case[1])
+        ok(had and #stops == 1 and R.clone == nil,
+            ('a %s player has this screen\'s pose taken off their clone'):format(
+                case[2]), ('%d stops'):format(#stops))
+        ok(#poses == 0 and #rates == 0 and env.BR.Dbno.clones[2] == nil,
+            ('and after being %s, nothing touches their ped again'):format(case[2]),
+            ('%d poses %d rates'):format(#poses, #rates))
+    end
+
+    -- A MATCH TEARDOWN mid-bleed: the loop is about to stop seeing anybody.
+    R.clone = nil
+    env.BR.State.roster[2].state = P.DBNO
+    R.run(1500)
+    local from = R.CLI.now
+    env.TriggerEvent(env.BR.Net.STATE, { state = env.BR.MatchState.ENDED })
+    ok(#R.on(R.stops, 5002, from) == 1,
+        'a match that ends takes this screen\'s poses off with it')
+
+    -- A RESOURCE STOP: the loop that would let go is the thing being stopped.
+    R.clone = nil
+    R.run(1500)
+    from = R.CLI.now
+    env.TriggerEvent('onClientResourceStop', 'br_core')
+    ok(#R.on(R.stops, 5002, from) == 1,
+        'and so does `restart br_core`')
+
+    -- OUT OF SCOPE: no copy, no calls, no error.
+    R.clone = nil
+    R.inScope = false
+    -- ONE PAST NOW: the last tick of the run above landed on this very
+    -- millisecond, in scope, and its rate write is not this case's.
+    from = R.CLI.now + 1
+    R.run(3000)
+    ok(#R.on(R.tasks, 5002, from) == 0 and #R.on(R.rates, 5002, from) == 0,
+        'a downed player who is not streamed here costs nothing and asks nothing',
+        ('%d poses %d rate writes'):format(#R.on(R.tasks, 5002, from),
+                                          #R.on(R.rates, 5002, from)))
+    ok(#R.clears == 0, 'and no path here ever clears a task on a clone')
+    local e, s = R.loopErrors('dbno.clones')
+    ok(e == 0 and not s, 'without the keeper ever throwing',
+        ('%s errors'):format(tostring(e)))
+end
+
+do
+    -- --------------------------- 5. the downed player's own machine (#164/#226)
+    local R = newObserver()
+    local env = R.env
+    local DICT = 'move_injured_ground'
+
+    -- THIS client goes down, and the roster says so too -- the keeper must
+    -- never mistake its own body for somebody else's.
+    env.BR.State.me.state = env.BR.PlayerState.DBNO
+    env.BR.State.roster[1].state = env.BR.PlayerState.DBNO
+    env.TriggerEvent(env.BR.Net.DBNO_SET,
+        { downed = true, bleedEndsAt = 120000, revivePct = 0.0 })
+    local downAt = R.CLI.now
+    local start = { x = R.peds[5001].x, y = R.peds[5001].y }
+    R.run(20000)
+
+    local own = R.on(R.tasks, 5001)
+    local crawlTasks, networked = 0, true
+    for _, t in ipairs(own) do
+        if t.dict == DICT then
+            crawlTasks = crawlTasks + 1
+            if t.pc ~= false or t.ik ~= false or t.ovr ~= false
+               or t.flag ~= 1 or t.dur ~= -1 then networked = false end
+        end
+    end
+    ok(crawlTasks >= 1 and networked,
+        'every crawl this client tasks on ITS OWN ped is the networked form -- '
+            .. 'phaseControlled, ikFlags and the clone override all false (#390)',
+        ('%d crawl tasks, all networked: %s'):format(crawlTasks, tostring(networked)))
+    local selfPose = false
+    for _, t in ipairs(own) do if t.ovr == true then selfPose = true end end
+    ok(not selfPose and env.BR.Dbno.clones[1] == nil,
+        'and the clone keeper never treats this client\'s own body as a clone')
+
+    -- THE #164 BODY: twenty quiet seconds end exactly where they started.
+    ok(math.abs(R.peds[5001].x - start.x) < 1e-9
+       and math.abs(R.peds[5001].y - start.y) < 1e-9,
+        'a quiet bleed still ends exactly where it was put down (#164)',
+        ('%.6f, %.6f'):format(R.peds[5001].x - start.x, R.peds[5001].y - start.y))
+
+    -- LOST ON THIS MACHINE: the watchdog puts it back, networked again.
+    local before = #R.on(R.tasks, 5001)
+    env.ClearPedTasksImmediately(5001)
+    local lostAt = R.CLI.now
+    R.run(1000)
+    local back = R.on(R.tasks, 5001, lostAt)
+    ok(#R.on(R.tasks, 5001) > before and back[1] and back[1].dict == DICT
+       and back[1].pc == false and back[1].ik == false and back[1].ovr == false,
+        'a crawl lost on the downed player\'s own ped is re-tasked, in the '
+            .. 'networked form', ('%d re-tasks'):format(#back))
+
+    -- A REAL CRAWL, then a turn: every position write is keepTasks, keepIK, no
+    -- warp -- `false` there cleared the clip 59 times in 60 frames (#164).
+    local crawling = true
+    env.GetDisabledControlNormal = function(_, c)
+        if c == 31 and crawling then return -1.0 end
+        if c == 30 and not crawling then return 1.0 end
+        return 0.0
+    end
+    R.run(2000)
+    crawling = false
+    R.run(1000)
+    env.GetDisabledControlNormal = function() return 0.0 end
+    R.run(1000)
+    local writes, allKeep = 0, true
+    for _, c in ipairs(R.coords) do
+        if c.ped == 5001 then
+            writes = writes + 1
+            if c.keepTasks ~= true or c.keepIK ~= true or c.warp ~= false then
+                allKeep = false
+            end
+        end
+    end
+    ok(writes > 60 and allKeep,
+        'and every position the downed client writes keeps its tasks and IK and '
+            .. 'does not warp', ('%d writes, all keep: %s'):format(writes,
+            tostring(allKeep)))
+    ok(R.peds[5001].y > start.y + 0.5,
+        'while the crawl itself still carries the body',
+        ('%.2fm'):format(R.peds[5001].y - start.y))
+    local _ = downAt
+end
+
+-- ==========================================================================
 -- THE SQUAD HEARS IT; THE SUBJECT DOES NOT.
 -- ==========================================================================
 --

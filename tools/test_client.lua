@@ -9167,17 +9167,40 @@ do
         note('anim:request', d)
         if anim.exists[d] then anim.loaded = true end
     end
-    function TaskPlayAnim(_, dict, name, blendIn, _bo, _dur, flag, _rate,
-                          lockX, lockY, lockZ)
+    -- THE LAST THREE ARE NAMED AS THE ENGINE NAMES THEM (#390): FiveM's docs
+    -- call them lockX/lockY/lockZ, and they are phaseControlled, ikFlags and
+    -- bAllowOverrideCloneUpdate. The stub used to record them under the doc
+    -- names, which is how an assertion that the crawl was tasked "with its
+    -- mover locked" pinned two flags that never locked anything.
+    --
+    -- AND A CLONE'S TASK IS ITS OWN. Everything below this file's own ped (1)
+    -- is recorded in `cloneAnim` instead, because client/dbno.lua's clone
+    -- keeper now poses a downed mate's copy on this screen -- and a stub that
+    -- let that write over `anim` would have the mate's pose answer questions
+    -- about OUR crawl.
+    local cloneAnim = {}
+    function TaskPlayAnim(ped, dict, name, blendIn, _bo, _dur, flag, _rate,
+                          phaseControlled, ikFlags, overrideClone)
+        if ped ~= 1 then
+            cloneAnim[ped] = { dict = dict, name = name, flag = flag,
+                               phaseControlled = phaseControlled,
+                               ikFlags = ikFlags, overrideClone = overrideClone }
+            return
+        end
         note('anim:play')
         anim.playing = true
         -- A fresh task runs at the engine's rate whatever it was last told.
         anim.speed = 1.0
         anim.last = { dict = dict, name = name, blendIn = blendIn, flag = flag,
-                      lockX = lockX, lockY = lockY, lockZ = lockZ }
+                      phaseControlled = phaseControlled, ikFlags = ikFlags,
+                      overrideClone = overrideClone }
     end
-    function IsEntityPlayingAnim() return anim.playing end
-    function SetEntityAnimSpeed(_, _, _, s)
+    function IsEntityPlayingAnim(ped)
+        if ped ~= 1 then return cloneAnim[ped] ~= nil end
+        return anim.playing
+    end
+    function SetEntityAnimSpeed(ped, _, _, s)
+        if ped ~= 1 then return end
         anim.speed = s
         note('anim:speed', s)
     end
@@ -9783,15 +9806,23 @@ do
     input.lr, input.ud = 0.0, 0.0
     frame(16)   -- the pose is on, the hold is taken
 
-    ok(anim.last ~= nil and anim.last.lockX == true and anim.last.lockY == true,
-        'the crawl clip is tasked with its mover locked, not left to drive the ped',
-        anim.last and ('lockX %s lockY %s lockZ %s'):format(
-            tostring(anim.last.lockX), tostring(anim.last.lockY),
-            tostring(anim.last.lockZ)) or 'no anim was tasked')
+    -- #390. These used to be asserted TRUE, as "lockX/lockY: the mover locked".
+    -- They are phaseControlled and ikFlags, they never locked a mover, and the
+    -- crawl was the one clip in the codebase tasked with them set -- the clip
+    -- other players then saw as a ped standing still. All three false is the
+    -- networked form every other clip here already uses.
+    ok(anim.last ~= nil and anim.last.phaseControlled == false
+       and anim.last.ikFlags == false and anim.last.overrideClone == false,
+        'the crawl clip is tasked in the networked form -- not phase-controlled, '
+            .. 'no IK flags, no clone override (#390)',
+        anim.last and ('phaseControlled %s ikFlags %s overrideClone %s'):format(
+            tostring(anim.last.phaseControlled), tostring(anim.last.ikFlags),
+            tostring(anim.last.overrideClone)) or 'no anim was tasked')
 
-    -- THE CONSEQUENCE, NOT THE CALL. The clip is modelled as one that moves the
-    -- ped by itself -- see the header -- so this fails on any build where the
-    -- client does not actively hold them still.
+    -- THE CONSEQUENCE, NOT THE CALL -- and now the only evidence of the hold,
+    -- because nothing in the call above was ever holding anything. The clip is
+    -- modeled as one that moves the ped by itself -- see the header -- so this
+    -- fails on any build where the client does not actively hold them still.
     world.mover = 0.009        -- about the crawl's own speed, per frame
     bodies[1].x, bodies[1].y = 0.0, 0.0
     frame(16)                  -- the frame that takes the hold
@@ -9999,6 +10030,25 @@ do
         ok(said:find(word, 1, true) ~= nil,
             ('the readout carries "%s"'):format(word), said)
     end
+
+    -- #390: THE ENGINE'S ANSWER, FOR THIS PED AND FOR EVERY DOWNED COPY HERE.
+    -- "Standing in place on other screens" is a question about a clone, and
+    -- until this readout no line anywhere was about one.
+    local wasState = BR.State.roster[2] and BR.State.roster[2].state
+    BR.State.roster[2] = BR.State.roster[2] or { src = 2, name = 'Bravo' }
+    BR.State.roster[2].state = BR.PlayerState.DBNO
+    tickBand()
+    logged = {}
+    ok(pcall(commands['brdbno'], nil, {}, ''),
+        '/brdbno does not throw with a downed mate in view')
+    said = table.concat(logged, '\n')
+    for _, word in ipairs({ 'own pose', 'anim task', 'play-anim',
+                            'downed players on this screen', 'keeper:' }) do
+        ok(said:find(word, 1, true) ~= nil,
+            ('the readout carries "%s" (#390)'):format(word), said)
+    end
+    BR.State.roster[2].state = wasState
+    tickBand()
 
     -- ====================================================================== --
     -- NOTHING IN THIS FILE MAY WRITE DAMAGE STATE ONTO A CLONE IT DOES NOT OWN
