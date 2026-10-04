@@ -17085,6 +17085,10 @@ do
     frames(30, 100)
     cs = BR.Native.clockStatus()
     said = clockLines()
+    ok(cs.fixLimit == 3 and cs.fixWindowMs == 60000,
+       'the guard\'s trigger is the one docs/running.md and brclock state: three '
+       .. 'corrections inside a minute',
+       ('%d inside %d ms'):format(cs.fixLimit, cs.fixWindowMs))
     ok(cs.everyFrame ~= nil and cs.corrections == cs.fixLimit,
        'AN ENGINE THAT REPORTS THE RATE AND IGNORES IT is caught by the guard: the '
        .. 'third correction inside a minute switches to every frame',
@@ -17354,6 +17358,24 @@ do
        and last('time').h == 12 and last('time').m == 0 and last('time').s == 0,
        'A RESTART IN THE LOBBY IS SEAMLESS: 12:00:00 through the stop, the gap and '
        .. 'the restarted writer\'s first write', seq() .. ' ' .. hms(engineAt()))
+
+    -- THE FALLBACK IS A FINDING ABOUT THE SESSION, NOT A BELIEF ABOUT THE LAST
+    -- WRITE: the stop's reset of the writer's beliefs does not drop it. Only
+    -- forgetRules does. (A real restart is a new Lua state, which finds out
+    -- again within a second.)
+    fresh()
+    gameClock.rateSticks = false
+    frames(1.5, 50)
+    ok(BR.Native.clockStatus().everyFrame ~= nil, 'a client on the fallback')
+    clockStopHandler('br_core')
+    clockWrites = {}
+    frames(1, 50)
+    ok(BR.Native.clockStatus().everyFrame ~= nil and count('rate') == 0
+       and count('time') == 20,
+       'stays on it through the stop\'s reset: every frame, no rate',
+       ('%d time, %d rate'):format(count('time'), count('rate')))
+    BR.Native.forgetRules()
+    ok(BR.Native.clockStatus().everyFrame == nil, 'and forgetRules is what drops it')
 
     -- ------------------------------------------------------------------ --
     describe('the clock -- one writer, counted in the tree (#394)')
