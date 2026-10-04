@@ -1986,6 +1986,18 @@ AddEventHandler('br:ui:ready', function()
     BR.Keys.push()
 end)
 
+-- `brseason` MOVED THIS CLIENT'S SEASON (#388; client/season.lua raises this
+-- once the replicated value has landed). A gated row is the one thing here a
+-- season decides: one its new season opens is given GTA's key mapping now
+-- rather than at the next 'emotes.gate' pass, and the table is re-pushed so
+-- the Settings screen shows or drops it. A mapping already made stays -- GTA
+-- has no way to take one back -- and its press asks the gate, so a season that
+-- shuts the row leaves a key that does nothing.
+AddEventHandler('br:season:changed', function()
+    BR.Keys.mapGated()
+    BR.Keys.push()
+end)
+
 AddEventHandler('onClientResourceStart', function(res)
     if res ~= GetCurrentResourceName() then return end
 

@@ -259,9 +259,11 @@ AddEventHandler(BR.Net.EMOTE_STOP, function()
 end)
 
 -- THE SWEEP: what this side can re-check about a live dance, and the late
--- arrivals. A closed gate stops every dance at once. This server's season is
--- fixed from boot, so in game that is a guard rather than an event; the suites
--- close it mid-dance to prove the stop.
+-- arrivals. A closed gate stops every dance at once. This server's season moves
+-- only at a br_core start or through the dev-mode `brseason`, which never
+-- applies a switch while a match is running (server/season.lua), so in game
+-- that is a guard rather than an event; the suites close it mid-dance to prove
+-- the stop.
 BR.Sched.every(C.sweepMs, 'emotes.sweep', function()
     if next(active) == nil then return end
     local open = BR.Season.has('emotes')

@@ -200,6 +200,16 @@ AddEventHandler('br:emotes:gate', function()
     BR.Market.push()
 end)
 
+--- `brseason` moved this client's season (#388; br_core's client/season.lua
+--- raises this once the replicated value has landed): the same re-send, from
+--- the same read, so the Emotes tab and the Music slider follow the switch
+--- at once. The server pushes every MARKET_STATE again as it applies one, and
+--- that answer can land before the season does -- this re-send is what puts
+--- the grid right whichever comes first.
+AddEventHandler('br:season:changed', function()
+    BR.Market.push()
+end)
+
 --- The server's answer, and the only thing that changes what the page believes.
 RegisterNetEvent(BR.Net.MARKET_STATE)
 AddEventHandler(BR.Net.MARKET_STATE, function(state)

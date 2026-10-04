@@ -258,6 +258,53 @@ do
 end
 
 -- ---------------------------------------------------------------------------
+-- brseason (#388): A SWITCH MID-SESSION. The dev-mode command moves the season
+-- the server replicates while br_ui is running, and br_core's client/season.lua
+-- raises br:season:changed once the value has landed. br_ui re-sends the grid
+-- and the EMOTES flag from its own read, so the Emotes tab and the Music
+-- slider follow the switch -- and the server's own MARKET_STATE push, which
+-- can land BEFORE the value does, cannot leave the page on the old season.
+-- ---------------------------------------------------------------------------
+
+describe('brseason: the page follows a switch')
+do
+    gateOpen()
+    reset()
+    local wheel = { 'emote_shuffle', '', '', '', '', '', '', '' }
+    fire(BR.Net.MARKET_STATE, { balance = 0, owned = { 'emote_shuffle' }, equipped = {}, emotes = wheel })
+    ok(lastLocal(BR.Nui.EMOTES).on == true, ('Season %d: the page has the tab'):format(FROM))
+
+    -- THE SERVER'S PUSH FIRST: the switch to OFF pushes a state with no dances
+    -- while this client still reads FROM, so the page briefly keeps the tab.
+    reset()
+    fire(BR.Net.MARKET_STATE, { balance = 0, owned = {}, equipped = {} })
+    ok(lastLocal(BR.Nui.EMOTES).on == true, 'the server push alone, before the season lands, cannot close the tab')
+    -- THEN THE VALUE, AND br:season:changed.
+    gateClosed()
+    reset()
+    fire('br:season:changed', OFF, FROM)
+    local e = lastLocal(BR.Nui.EMOTES)
+    ok(e ~= nil and e.on == false, ('switched to Season %d: EMOTES {on=false} is re-sent'):format(OFF),
+        e and tostring(e.on))
+    ok(lastLocal(BR.Nui.MARKET) ~= nil and #emoteItems(lastLocal(BR.Nui.MARKET)) == 0, 'and the dances leave the grid')
+    ok(#toServer == 0, 'with nothing asked of the server', #toServer)
+
+    -- AND BACK, the value first and the server's push after.
+    gateOpen()
+    reset()
+    fire('br:season:changed', FROM, OFF)
+    e = lastLocal(BR.Nui.EMOTES)
+    ok(e ~= nil and e.on == true, ('switched back to Season %d: EMOTES {on=true} is re-sent'):format(FROM),
+        e and tostring(e.on))
+    ok(#emoteItems(lastLocal(BR.Nui.MARKET)) == #BR.Config.Emotes.order, 'and the dances are back on the grid')
+    reset()
+    fire(BR.Net.MARKET_STATE, { balance = 0, owned = { 'emote_shuffle' }, equipped = {}, emotes = wheel })
+    local tile = itemById(lastLocal(BR.Nui.MARKET), 'emote_shuffle')
+    ok(tile ~= nil and tile.owned == true and tile.slot == 1, 'and the push that follows fills in ownership and the slot')
+    restore()
+end
+
+-- ---------------------------------------------------------------------------
 -- 0. THIS RUN'S SEASON, with dev mode OFF and nothing forced
 -- ---------------------------------------------------------------------------
 

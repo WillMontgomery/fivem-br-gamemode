@@ -13599,8 +13599,17 @@ do
     ok(maps == 0, 'and mapGated gives GTA nothing', maps)
     BR.Season = saved
 
-    -- ── AND AT `from`: the row appears, and GTA is given it once.
+    -- ── `brseason` SWITCHES IT TO `from` (#388). br_core's client/season.lua
+    -- raises br:season:changed once the replicated value has landed, and this
+    -- file maps the row and re-pushes the table then -- not at the next
+    -- 'emotes.gate' pass.
     convars.br_seasonServed = tostring(FROM)
+    fire('br:season:changed', FROM, OFF)
+    ok(pushed() == true and maps == 1 and keymap['LMENU'] == '+bremotewheel',
+        ('switched to Season %d: br:season:changed maps the wheel and puts it on the settings screen'):format(FROM),
+        ('%d mapping(s), pushed %s'):format(maps, tostring(pushed())))
+
+    -- ── AND AT `from`: the row is there, and GTA was given it once.
     BR.Keys.push()
     ok(pushed() == true, ('at Season %d the row is on the settings screen'):format(FROM))
     BR.Keys.mapGated()
@@ -13608,6 +13617,18 @@ do
     ok(maps == 1 and keymap['LMENU'] == '+bremotewheel',
         'and mapGated registers +bremotewheel on LMENU exactly once',
         ('%d mapping(s), LMENU -> %s'):format(maps, tostring(keymap['LMENU'])))
+
+    -- ── SWITCHED BACK BELOW `from`: the row leaves the settings screen and
+    -- the rebinder refuses it again; GTA's mapping stays, because GTA has no
+    -- way to take one back, and its press asks the gate (client/emotewheel.lua).
+    convars.br_seasonServed = tostring(OFF)
+    fire('br:season:changed', OFF, FROM)
+    ok(pushed() == false, ('switched to Season %d: the row leaves the settings screen'):format(OFF))
+    ok(BR.Keys.set('bremotewheel', 0x47) == false, 'and the rebinder refuses it again')
+    ok(maps == 1 and keymap['LMENU'] == '+bremotewheel', 'and no second mapping is made', maps)
+    convars.br_seasonServed = tostring(FROM)
+    fire('br:season:changed', FROM, OFF)
+    ok(pushed() == true and maps == 1, 'switched back: on the screen again, still mapped once', maps)
 
     -- ── THE RAW LAYER, ON THE #203 LESSON: a build may fill only the
     -- side-specific slot, so the generic 0x12 alone could never fire.

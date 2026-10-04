@@ -1168,6 +1168,19 @@ BR.Net = {
     -- S->C '<text>'. The answer to one request, to the requester alone, printed
     -- in their F8 console and nowhere else.
     PROP_RESULT     = 'br:prop:result',
+
+    -- SEASONS (#388), the dev-mode `brseason` (br_core/server/season.lua). There
+    -- is no C->S event: the request is the console command itself, behind
+    -- br_lib/shared/devgate.lua's wrap.
+    --
+    -- S->C { season, from, by }. To everybody, the moment a switch is applied
+    -- (at once, or when the last running match is torn down to the lobby):
+    -- printed in every F8 console, and the client re-reads its season off the
+    -- replicated value -- never off this payload (br_core/client/season.lua).
+    SEASON_SWITCHED = 'br:season:switched',
+    -- S->C '<text>'. One `brseason` answer, to the player who typed it alone,
+    -- printed in their F8 console and nowhere else.
+    SEASON_RESULT   = 'br:season:result',
 }
 
 --- Chat channels. `squad` is routed server-side to squad members only -- the

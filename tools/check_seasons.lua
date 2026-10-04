@@ -18,6 +18,10 @@
 --     before its `from` is a feature no season has.
 --   * A SECOND READER of br_season decides on its own copy of the answer --
 --     at load time, unvalidated, without the fallback or the warning.
+--   * A SECOND WRITER of the season in force. BR.Season.switch moves it
+--     without a restart, and the owner's rule is that only the dev-mode
+--     `brseason` does that (prod is restart-only); a call anywhere else is a
+--     season that changes under a running box with no command typed.
 --
 -- ═══ THE RULES ═══
 --
@@ -32,6 +36,8 @@
 --                    BR.Season.CONVAR or BR.Season.SERVED
 --   S5 ONE DOOR      BR.Season.has is only ever CALLED (or nil-checked) -- never
 --                    aliased or passed along, where S1 could not see the id
+--   S6 ONE SWITCH    BR.Season.switch is named only by br_core/server/season.lua,
+--                    the dev-mode `brseason` (and defined by the module)
 --
 -- READS TEXT, NOT A PARSE TREE, with the same lexer as tools/check_emote_gate.lua
 -- so prose that QUOTES a pattern is never read as code. The registry itself is
@@ -42,6 +48,7 @@
 
 local REGISTRY = 'br_lib/config/seasons.lua'
 local MODULE = 'br_lib/shared/season.lua'
+local SWITCHER = 'br_core/server/season.lua'
 
 -- ---------------------------------------------------------------------------
 -- Reading Lua without parsing Lua (tools/check_emote_gate.lua's lexer)
@@ -251,6 +258,11 @@ local function run(files)
                     if code[i]:find('function%s+BR%.Season%.has%f[^%w_]') or code[i]:find('BR%.Season%.has%s*=[^=]') then
                         fail(f.path, i, 'S5', 'a second BR.Season.has -- the door is ' .. MODULE .. "'s")
                     end
+                    -- S6: the season in force moves only through brseason.
+                    if not endsWith(f.path, SWITCHER) and code[i]:find('BR%.Season%.switch%f[^%w_]') then
+                        fail(f.path, i, 'S6', 'names BR.Season.switch -- only ' .. SWITCHER
+                            .. ' (the dev-mode brseason) moves the season in force; prod is restart-only')
+                    end
                 end
             end
         end
@@ -297,8 +309,13 @@ local function goodTree()
             "    local raw = GetConvar('br_season', '')",
             'end',
         }, '\n'),
+        [R .. 'br_core/server/season.lua'] = table.concat({
+            '-- BR.Season.switch(n) in a comment is prose here too',
+            'local now = BR.Season.switch(target)',
+        }, '\n'),
         [R .. 'br_core/server/emotes.lua'] = table.concat({
             "-- GetConvar('br_season') and BR.Season.has(x) in a comment are prose",
+            '-- and so is BR.Season.switch(1)',
             "if not BR.Season.has('emotes') then return end",
             "local on = BR.Season ~= nil and BR.Season.has ~= nil and BR.Season.has(\"emotes\")",
             "if not (BR.Season and BR.Season.has and BR.Season.has( 'oldmap' )) then return end",
@@ -354,6 +371,12 @@ local FIXTURES = {
     { name = 'a second door defined', want = 'S5',
       mut = function(t) return edit(t, SRV, "if not BR.Season.has('emotes') then return end",
           "function BR.Season.has() return true end\nif not BR.Season.has('emotes') then return end") end },
+    { name = 'a switch outside brseason', want = 'S6',
+      mut = function(t) return edit(t, SRV, "if not BR.Season.has('emotes') then return end",
+          "BR.Season.switch(1)\nif not BR.Season.has('emotes') then return end") end },
+    { name = 'the switch aliased outside brseason', want = 'S6',
+      mut = function(t) return edit(t, SRV, "if not BR.Season.has('emotes') then return end",
+          "local sw = BR.Season.switch\nif not BR.Season.has('emotes') then return end") end },
 }
 
 local function asFiles(tree)
@@ -386,7 +409,7 @@ local function selftest()
         end
     end
     if bad == 0 then
-        io.write(('ok   %d selftest fixtures: S1-S5 each fire on a broken tree, and a good one passes\n')
+        io.write(('ok   %d selftest fixtures: S1-S6 each fire on a broken tree, and a good one passes\n')
             :format(#FIXTURES))
     end
     return bad
@@ -419,5 +442,5 @@ if #findings > 0 then
     end
     os.exit(1)
 end
-io.write(('ok   %d gated feature(s), latest Season %d, %d BR.Season.has call(s), each a listed id; only %s reads br_season\n')
-    :format(sum.rows, sum.latest or 0, sum.asks, MODULE))
+io.write(('ok   %d gated feature(s), latest Season %d, %d BR.Season.has call(s), each a listed id; only %s reads br_season, and only %s switches it\n')
+    :format(sum.rows, sum.latest or 0, sum.asks, MODULE, SWITCHER))

@@ -551,6 +551,11 @@ client_scripts {
     -- AFTER client/menu.lua (BR.Menu.radial / closeAll) and client/emotes.lua,
     -- and it calls BR.Keys.on at load, so client/keybinds.lua must be above.
     'client/emotewheel.lua',
+    -- SEASONS (#388), the client half of the dev-mode `brseason`: the F8 lines,
+    -- and `br:season:changed` once this client's own read of the season moves.
+    -- Needs client/main.lua for the loop registry and nothing else at load;
+    -- client/keybinds.lua and br_ui's market listen at call time.
+    'client/season.lua',
     -- The guided first run (#261). AFTER client/main.lua, which is the only
     -- order it needs: it registers a FRAME pass that takes the camera and the
     -- trigger away from a player reading a card, and BR.Loop has to exist for
@@ -809,6 +814,13 @@ server_scripts {
     -- market.lua, whose slotOf / owns / addOwned it calls at call time; it reads
     -- BR.Roster, BR.Inv, BR.Vehicles and BR.Spectate at call time too.
     'server/emotes.lua',
+    -- SEASONS (#388): the dev-mode `brseason`, which switches the season in
+    -- force without a restart, at once with no match running and otherwise when
+    -- the last one is torn down. AFTER market.lua for a reader: an applied
+    -- switch re-pushes every market state through BR.Market.push, at call time.
+    -- It reads BR.Server.matches and BR.Roster at call time and listens for
+    -- `br:match:destroyed`, which server/match.lua raises.
+    'server/season.lua',
     -- The warmup vehicle shop (#224). AFTER market.lua, and that is a REAL
     -- order rather than a reader's in one direction and a reader's in the
     -- other:

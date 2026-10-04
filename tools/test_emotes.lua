@@ -184,7 +184,7 @@ BR.Roster = {
     end,
     licenseOf = function(src) local e = entries[src]; return e and e.license or nil end,
 }
-BR.Server = { devMode = false }
+BR.Server = { devMode = false, matches = {} }
 local riding, using, watching = {}, {}, {}
 BR.Vehicles = { ridingIn = function(ped) return riding[ped] end }
 BR.Inv = { of = function(src) return entries[src] and { using = using[src] } or nil end }
@@ -192,6 +192,9 @@ BR.Spectate = { targetOf = function(src) return watching[src] end }
 
 loadAt('br_core/server/market.lua')
 loadAt('br_core/server/emotes.lua')
+-- brseason (#388), for group 10: a switch with no match running is at once,
+-- and every door above answers the new season.
+loadAt('br_core/server/season.lua')
 
 -- ---------------------------------------------------------------------------
 -- Assertions
@@ -941,6 +944,88 @@ do
     printed = {}
     ok(rawRegistered.bremote and rawRegistered.bremote.fn(0, {}, '') == nil
        and said('bremote is dev-mode only'), 'while a devgate-wrapped bremote refuses with dev off')
+    restore()
+end
+
+-- ---------------------------------------------------------------------------
+describe('10. brseason: every server door answers the switched season')
+-- ---------------------------------------------------------------------------
+-- The dev-mode `brseason` (server/season.lua) moves the season in force
+-- without a restart. Called here as its RAW body, captured like every command
+-- this suite registers -- tools/test_season.lua drives it through devgate's
+-- wrap. What this group pins is the emote half: after a switch, the play
+-- door, the sweep, the market push and the grant all answer the new season,
+-- and every connected player is pushed the state that season decides.
+do
+    reset(); gateOpen()
+    local brseason = commands.brseason and commands.brseason.fn
+    ok(brseason ~= nil and commands.brseason.restricted == true, 'server/season.lua registers brseason, restricted')
+    local function saidLike(needle)
+        for i = #printed, 1, -1 do
+            if printed[i]:find(needle, 1, true) then return true end
+        end
+        return false
+    end
+    player(1, { owned = { E[4], E[5] }, equipped = { emote1 = E[4] }, bucket = 1 })
+    player(2, { owned = { E[6] }, equipped = { emote1 = E[6] }, pos = { x = 10.0, y = 0.0, z = 0.0 }, bucket = 1 })
+    fire(BR.Net.EMOTE_PLAY, 1, { id = E[4] })
+    ok(#records(1) == 1 and #records(2) == 1, ('Season %d: a dance plays, and the player beside it hears'):format(FROM))
+
+    -- OFF, WITH NO MATCH RUNNING: at once.
+    sent, printed = {}, {}
+    brseason(0, { tostring(OFF) })
+    ok(BR.Season.current() == OFF and BR.Season.has('emotes') == false,
+        ("brseason %d with no match: the server's gate answers Season %d at once"):format(OFF, OFF))
+    ok(replicated.br_seasonServed == tostring(OFF), 'and the clients are sent it', replicated.br_seasonServed)
+    local s1, s2 = lastState(1), lastState(2)
+    ok(s1 and s1.emotes == nil and not has(s1.owned, E[4]) and s2 and s2.emotes == nil and not has(s2.owned, E[6]),
+        'every connected player is pushed a market state with no wheel and no dance in owned')
+    sweep()
+    local stop = records(1)[1]
+    ok(stop and stop.tEnd == fakeTime and BR.Emotes.active(1) == nil and records(2)[1] ~= nil,
+        'the sweep stops the dance that was playing, for everybody it reached')
+    sent = {}
+    entries[1].posAt = fakeTime
+    fire(BR.Net.EMOTE_PLAY, 1, { id = E[4] })
+    ok(allRecords() == 0, 'a play is refused')
+    printed = {}
+    commands.bremotegrant.fn(0, { 'Player1', E[5] })
+    ok(saidLike(('bremotegrant: emotes are off on this box (it runs Season %d'):format(OFF)),
+        'and bremotegrant says the box runs the switched season', printed[1])
+
+    -- RESET: back to the startup season, and everything comes back.
+    sent = {}
+    brseason(0, { 'reset' })
+    ok(BR.Season.current() == FROM and BR.Season.has('emotes') == true,
+        ('brseason reset: back to Season %d, the gate open again'):format(FROM))
+    ok(replicated.br_seasonServed == tostring(FROM), 'replicated')
+    s1 = lastState(1)
+    ok(s1 and type(s1.emotes) == 'table' and s1.emotes[1] == E[4] and has(s1.owned, E[4]),
+        'and the next push carries the wheel and the dances again')
+    sent = {}
+    fakeTime = fakeTime + 11000
+    entries[1].posAt = fakeTime
+    fire(BR.Net.EMOTE_PLAY, 1, { id = E[4] })
+    ok(#records(1) == 1, 'a play is published again')
+    sweep(13000)
+
+    -- WITH A MATCH RUNNING: staged, and the doors keep the season in force
+    -- until the teardown.
+    BR.Server.matches[1] = { id = 1, seq = 1, state = BR.MatchState.PLAYING }
+    sent = {}
+    brseason(0, { tostring(OFF) })
+    ok(BR.Season.has('emotes') == true and lastState(1) == nil and replicated.br_seasonServed == tostring(FROM),
+        'typed with a match running: staged -- the gate stays open, nothing is pushed or replicated')
+    fakeTime = fakeTime + 11000
+    entries[1].posAt = fakeTime
+    fire(BR.Net.EMOTE_PLAY, 1, { id = E[4] })
+    ok(#records(1) == 1, 'and a play mid-match is still published')
+    BR.Server.matches[1] = nil
+    fire('br:match:destroyed', nil, { matchId = 1 })
+    ok(BR.Season.has('emotes') == false and replicated.br_seasonServed == tostring(OFF),
+        'the teardown applies it')
+    s1 = lastState(1)
+    ok(s1 and s1.emotes == nil, 'and the push follows')
     restore()
 end
 

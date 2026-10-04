@@ -172,6 +172,27 @@ does not assume the latest, which is only the server's answer to an unset
 `from` past `latest`, and any file but `br_lib/shared/season.lua` that reads
 `br_season`.
 
+**On a dev box, `brseason` switches without a restart** (owner, 2026-10-04:
+"That was my only real intended use case for faster-than-restart switching").
+It is a dev command, so a box without dev mode refuses it and prod stays
+restart-only; `br_season` itself is never touched, so the next `br_core` start
+reads it as always.
+
+- `brseason` — the season in force, where it came from, and any staged switch
+- `brseason <n>` — switch to Season n (1 to `latest`)
+- `brseason reset` — back to the season `br_core` started on
+
+With no match running it applies at once. While any match is running —
+warmup to cleanup — it is staged and applied when the last one is torn down to
+the lobby, never mid-match; a second `brseason` replaces a staged one. Applying
+moves the season the server's doors answer, replicates it, pushes every
+player's market state again, and prints who switched in the console and in
+every client's F8. Each client re-reads its season off the replicated value, so
+the lobby label, the Market's Emotes tab and the Settings key and Music slider
+follow. One thing cannot: GTA has no way to withdraw a key mapping, so after a
+switch away from Season 2 the emote wheel's row stays in GTA's own key-binding
+list, and pressing it does nothing.
+
 ### Voice is pma-voice, and it is vendored and pinned
 
 Voice runs on **[pma-voice](https://github.com/AvarianKnight/pma-voice)** (MIT,
@@ -361,6 +382,7 @@ builds keybinds out of commands, so `+brinteract` and `brslot3` are also E and
 | `brstormhitch [reset [ms]\|stop\|rows]` | client | `reset`, play a hold and a sweep, then `/brstormhitch`: a plain summary — how many map clips were rebuilt while the storm moved (0 when every sweep was shown from its staged clips; with staging off, the redraws as each sweep sets off and at its knee, which the verdict does not count as the old path), how many clips were staged over how long in the holds and the longest frame after a staging step, the worst frame and how many frames went over 16.7 ms, and a one-line verdict. `rows` adds the detail: which storm/map/network/UI paths ran before each long frame. Opt-in and dormant outside a capture |
 | `brstormbisect <normal\|mapoff\|mapfreeze\|mapnoresize\|mapnomorph\|walloff> [ms]` | client | Runtime A/B for #350 and #344. Each mode starts a fresh hitch capture while changing only local rendering: remove the custom map fill, freeze its live updates, suppress only its resize call, stop redrawing the moving zone on the `overlay.morphHz` clock (the fallback redraw, for a sweep that could not be staged in time, and a conjoined growth), or suppress the shaped 3D wall. `normal` restores shipping behavior |
 | `brconfig` | server | The config values that most often explain odd behaviour |
+| `brseason`, `brseason <n>`, `brseason reset` | server, dev mode | Switch the season this box runs without restarting `br_core` (#388); see *The season a box runs*. At once with no match running, otherwise staged until the last match is torn down to the lobby. Bare, it prints the season in force, where it came from (`br_season`, the latest by default, or a `brseason` override) and any staged switch. Dev mode plus restricted |
 | `bremotegrant`, `bremotegrant <player name\|#id> <emoteId\|all>` | server console only | Hand a player one dance, or every dance they do not own, without charging Volts (#215). Bare, it lists the catalogue. Takes an **exact** name (case-insensitive, spaces allowed) or `#serverId`; a partial name only lists candidates, because there is no revoke. `all` grants one at a time and stops if the id changes hands. Exempt from the dev gate and gated by the season instead (emotes are Season 2+, #388): it prints the season and does nothing while emotes are off |
 | `brring` | server | Ringmaster link: whether it is configured, and what it would send |
 | `brallowlist [on\|off]` | server | The dev-mode join allowlist: `off` stops enforcing it (bans still apply, so with br_ringmaster down every dev-mode join is still refused) until `on` or the next start of br_core, bare prints which and whether the Discord lookup is configured. Restricted |

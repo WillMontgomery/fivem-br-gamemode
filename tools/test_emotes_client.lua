@@ -328,6 +328,9 @@ BR.State.me.state = BR.PlayerState.ALIVE
 loadFile('br_core/client/menu.lua')
 loadFile('br_core/client/emotes.lua')
 loadFile('br_core/client/emotewheel.lua')
+-- brseason's client half (#388): it raises br:season:changed when this
+-- client's season moves, and prints the switch in F8. Group 9 drives it.
+loadFile('br_core/client/season.lua')
 
 -- ------------------------------------------------------------------ harness ---
 
@@ -1297,6 +1300,85 @@ do
     end
     ok(#missing == 0, 'BR.Native.check probes every ped native the emotes added',
         table.concat(missing, ','))
+end
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- 9. brseason (#388): A SWITCH MID-SESSION, ON THIS CLIENT
+-- ════════════════════════════════════════════════════════════════════════════
+
+-- The dev-mode `brseason` moves the season the server replicates while this
+-- client is running, and tells it so (BR.Net.SEASON_SWITCHED). Nothing here
+-- may take the season off that message: every door answers the replicated
+-- value, and br_core's client/season.lua raises `br:season:changed` only once
+-- that value has landed. Both orders are walked -- the message first, then the
+-- value first -- each way across the emotes row's edge.
+describe('9. brseason: every client door follows a switch')
+do
+    local function changes()
+        local n = 0
+        for _, e in ipairs(events) do if e.name == 'br:season:changed' then n = n + 1 end end
+        return n
+    end
+    local function told(season)
+        return ('[br_core] brseason: Will (#3) switched this server to Season %d'):format(season)
+    end
+    local function logs(line)
+        for i = #logged, 1, -1 do if logged[i] == line then return true end end
+        return false
+    end
+
+    calm()
+    idle()
+    slow()
+    setWheel({ A })
+    key(true)
+    ok(BR.EmoteWheel.isOpen(), ('Season %d: the wheel opens'):format(FROM))
+    fakeTime = fakeTime + 300
+    key(false)
+    record({ id = A })
+    tick(); tick()
+    ok(playing ~= nil, 'and an own record is playing')
+    local base, ui, pushes, asks, stopsBefore = changes(), uiTold(), keyPushes, count(BR.Net.MARKET_STATE), #stops
+
+    -- THE MESSAGE BEFORE THE VALUE: printed, and nothing moves.
+    fire(BR.Net.SEASON_SWITCHED, { season = OFF, from = FROM, by = 'Will (#3)' })
+    ok(logs(told(OFF)), 'the F8 says who switched', logged[#logged])
+    ok(changes() == base and BR.Season.has('emotes') == true and playing ~= nil,
+        'and until the value lands, nothing is re-read and the dance plays on')
+
+    -- THE VALUE LANDS.
+    gateClosed()
+    tick()
+    ok(playing == nil and #stops == stopsBefore + 1, 'the next TICK takes the clip off the ped')
+    slow()
+    ok(changes() == base + 1, 'the next SLOW pass raises br:season:changed, once', changes() - base)
+    ok(uiTold() == ui + 1 and keyPushes == pushes + 1 and count(BR.Net.MARKET_STATE) == asks + 1,
+        'and the gate pass sees the flip: br_ui told, the keys re-pushed, the market asked once')
+    ok(next(BR.Emotes.records()) == nil, 'every record is dropped')
+    key(true)
+    ok(not BR.EmoteWheel.isOpen(), ('Season %d: the wheel does not open'):format(OFF))
+    key(false)
+    ok(BR.Emotes.request(A) == false and BR.Emotes.blocked() == 'gate', 'request() and blocked() answer the gate')
+    record({ id = A })
+    ok(next(BR.Emotes.records()) == nil, 'and a record that arrives now is ignored')
+    slow()
+    ok(changes() == base + 1, 'a later pass raises nothing more')
+
+    -- THE VALUE BEFORE THE MESSAGE: raised as the message arrives.
+    gateOpen()
+    fire(BR.Net.SEASON_SWITCHED, { season = FROM, from = OFF, by = 'Will (#3)' })
+    ok(logs(told(FROM)) and changes() == base + 2,
+        'with the value already landed, the message itself raises br:season:changed')
+    local maps = mapGatedCalls
+    slow()
+    ok(changes() == base + 2, 'and the pass after does not raise it twice')
+    ok(mapGatedCalls == maps + 1 and keyPushes == pushes + 2, 'the gate pass maps the row and re-pushes the keys')
+    setWheel({ A })
+    key(true)
+    ok(BR.EmoteWheel.isOpen(), ('Season %d again: the wheel opens'):format(FROM))
+    fakeTime = fakeTime + 300
+    key(false)
+    calm()
 end
 
 -- ════════════════════════════════════════════════════════════════════════════

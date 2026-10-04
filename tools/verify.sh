@@ -106,7 +106,7 @@ NOTES=(
     "test_bool_natives|The yes/no misread check still catches mistakes and leaves correctly written code alone"
     "test_tutorial|A player who finished the tutorial is never shown it again, even in another mode"
     "test_gitref|The dev-mode label under Settings shows the code version the server is really running"
-    "test_season|Seasons: the one convar read once, unset runs the latest and warns, and the dev label"
+    "test_season|Seasons: the one convar read once, unset runs the latest and warns, the dev label, and brseason"
     "test_emotes_ui|Market emote slots: equip, unequip and swap past eight, shown only while emotes are on"
     "test_props|Dev props: server decides and syncs; pickup look, every edit key, save/load"
     "test_stamina|Sprint never runs out and never costs health, in every player state and on every tick"
@@ -141,7 +141,7 @@ NOTES=(
     "test_configreport|Settings report on six fake servers: finds the server name, never shows the license key"
     "dev gate on console commands|Typed commands are off on the public server but for a few; keybinds and /brleave work"
     "dev gate on net events|No request a player's game sends the server is allowed just because dev mode is on"
-    "season gates|Every season-gated feature is on the one list, and only the season module reads br_season"
+    "season gates|Every season-gated feature is on the one list, only the season module reads br_season, and only brseason switches it"
     "emote gate|Every way into emotes asks the season, and every emote test passes in Seasons 1 and 2"
     "branch-switch invariant|Switching the server to another branch can never swap out the console's control script"
     "incident surface|The anti-cheat opens a case only for cheat signs, never for warmup fights or teammates"
@@ -635,6 +635,9 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
     # quietly running the wrong season -- so the parse, the fallback and its
     # banner, has() and pick() at every edge, and the season crossing from a
     # server Lua state to a client one are walked here, in separate states.
+    # So is the dev-mode `brseason`: the switch over devgate's real wrap, staged
+    # while any match runs and applied at the teardown, and the client that
+    # follows the replicated value rather than the message.
     # test_storm.lua is the twelfth suite to load a real SERVER file and the
     # eighth to load a CLIENT one, and it is the first to load one of each --
     # because the rule it pins has to hold on both sides of the wire or it is
@@ -2536,7 +2539,8 @@ fi
 # in every season, a row nothing asks gates nothing, a `from` past `latest` is a
 # feature an unset box never runs, an untilSeason at or before its `from` is a
 # feature no season has, and a second reader of br_season decides on its own
-# unvalidated copy. tools/check_seasons.lua fails each one (S1-S5), and its
+# unvalidated copy -- and a second WRITER of the season in force: only the
+# dev-mode brseason may switch it. tools/check_seasons.lua fails each one (S1-S6), and its
 # self-test runs first for the reason the net-event gate's does.
 section 'season gates'
 if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then

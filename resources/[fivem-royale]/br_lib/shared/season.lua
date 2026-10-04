@@ -24,9 +24,20 @@
 --     at once while the server kept the season it started with, so what the
 --     page shows and what the server allows would disagree until a restart.
 --
--- br_seasonServed is written only here, only by boot, and only with the number
--- the server is actually running. Nobody types it, so nothing but a br_core
--- start can move it.
+-- br_seasonServed is written only here -- by boot, and by switch() below -- and
+-- only with the number the server is actually running. Nobody types it, so
+-- nothing but a br_core start or the dev-mode `brseason` can move it.
+--
+-- ═══ ON A DEV BOX, `brseason` MOVES IT WITHOUT A RESTART ═══
+--
+-- Owner, 2026-10-04: "Please add the devmode command. That was my only real
+-- intended use case for faster-than-restart switching." br_core/server/season.lua
+-- owns the command and its timing rule (never mid-match); switch() is the one
+-- write it makes, here, because this file holds the latch. It moves the season
+-- in force and br_seasonServed together and nothing else: br_season is not
+-- touched, so the next br_core start reads it as it always did. Prod is
+-- restart-only because the command is a dev command (br_lib/shared/devgate.lua);
+-- this file still reads no dev mode.
 --
 -- ═══ EVERYWHERE ELSE IT IS READ AT CALL TIME ═══
 --
@@ -35,7 +46,8 @@
 -- br_devMode (br_lib/shared/devgate.lua says why: a replicated convar can land
 -- after the scripts load, and a value kept from load time would be wrong for
 -- the life of the process). So NOTHING may call has() or pick() while a file
--- loads and keep the answer.
+-- loads and keep the answer. It is also what lets a client follow `brseason`:
+-- the replicated value moves and the next question gets the new answer.
 --
 -- ═══ UNTIL IT ARRIVES, THE SEASON IS UNKNOWN, AND EVERY GATE IS SHUT ═══
 --
@@ -53,7 +65,7 @@
 --
 -- A client's answer drives what it SHOWS and what it bothers to ask for. Every
 -- door a modified client could walk through asks again on the server, which
--- holds the season it booted with and never reads a client's word for it.
+-- holds the season in force and never reads a client's word for it.
 --
 -- ═══ DEV MODE IS SEPARATE ═══
 --
@@ -65,7 +77,7 @@ BR.Season = BR.Season or {}
 
 --- What the operator sets in server.cfg. Read by boot() and recheck() only.
 BR.Season.CONVAR = 'br_season'
---- What boot() replicates: the season the server is running.
+--- What boot() and switch() replicate: the season the server is running.
 BR.Season.SERVED = 'br_seasonServed'
 
 --- THE TESTS' SWITCH. With it on, has() of an id with no row and pick() of a
@@ -77,7 +89,9 @@ if BR.Season.strict == nil then BR.Season.strict = false end
 --- a number too long to be an integer is refused rather than rounded.
 local MAX = 9999
 
---- br_core's server only, from boot() on: { season, raw }.
+--- br_core's server only, from boot() on: { season, raw, why, boot }. `season`
+--- is the season in force; `boot` the one br_core started on, which `season`
+--- leaves only through switch().
 local latched = nil
 --- recheck() has already reported a change.
 local reported = false
@@ -192,7 +206,7 @@ function BR.Season.boot(get, set)
     local raw = get and get(BR.Season.CONVAR, '') or ''
     if type(raw) ~= 'string' then raw = '' end
     local n, why = BR.Season.resolve(raw)
-    latched = { season = n, raw = raw }
+    latched = { season = n, raw = raw, why = why, boot = n }
     reported = false
     -- Guarded for the unit suites, which run without the Cfx runtime, as
     -- server/main.lua guards the dev-mode write.
@@ -220,9 +234,77 @@ function BR.Season.recheck(get)
         :format(quoted(raw), latched.season)
 end
 
+--- The newest season this code knows: `latest` in br_lib/config/seasons.lua,
+--- or 1 when the registry is missing or malformed. `brseason` names its bounds
+--- with it.
+--- @return integer
+function BR.Season.latest()
+    return latest()
+end
+
+--- br_core's server only: the season br_core started on, which `brseason
+--- reset` goes back to. nil on every state that never booted.
+--- @return integer|nil
+function BR.Season.startup()
+    return latched and latched.boot or nil
+end
+
+--- br_core's server only: where the season in force came from, for brseason's
+--- status line. nil on every state that never booted.
+---
+---   'convar'    br_season named it as br_core started
+---   'latest'    br_season was unset or not a season, so the latest
+---   'override'  `brseason` moved it off the season br_core started on
+---
+--- The second return says so in words, quoting br_season the way the boot
+--- banner does -- here, because no other file may name the convar.
+--- @return string|nil source
+--- @return string|nil words
+function BR.Season.origin()
+    if latched == nil then return nil, nil end
+    local started
+    if latched.why == nil then
+        started = ('br_season %d'):format(latched.boot)
+    elseif latched.why == 'unset' then
+        started = 'br_season is not set: the latest'
+    else
+        started = ('br_season %s is not a season: the latest'):format(quoted(latched.raw))
+    end
+    if latched.season ~= latched.boot then
+        return 'override', ('brseason override; br_core started on Season %d (%s)'):format(latched.boot, started)
+    end
+    return latched.why == nil and 'convar' or 'latest', started
+end
+
+--- br_core's server only, for `brseason` (br_core/server/season.lua): put the
+--- season in force to `n`, or back to the one br_core started on when `n` is
+--- nil, and replicate it as br_seasonServed, exactly as boot() did.
+---
+--- THE TIMING IS THE CALLER'S. This moves the latch the moment it is called;
+--- br_core/server/season.lua is what holds a switch until no match is running.
+--- A season is a whole number from 1 to `latest` -- the startup season is
+--- taken back whatever it was, since br_core already chose to run it.
+--- @param n integer|nil
+--- @param set function|nil  (name, value); SetConvarReplicated by default
+--- @return integer|nil season  the season now in force, or nil
+--- @return string|nil why      'not booted' or 'not a season'
+function BR.Season.switch(n, set)
+    if latched == nil then return nil, 'not booted' end
+    if n == nil then
+        n = latched.boot
+    elseif math.type(n) ~= 'integer' or n < 1 or n > latest() then
+        return nil, 'not a season'
+    end
+    set = set or SetConvarReplicated
+    latched.season = n
+    if set then set(BR.Season.SERVED, tostring(n)) end
+    return n, nil
+end
+
 --- The season this machine is running, or nil while it is not known.
 ---
---- On br_core's server after boot, the season it booted with. Everywhere else,
+--- On br_core's server after boot, the season in force: the one it booted
+--- with, or the one `brseason` switched it to since. Everywhere else,
 --- br_seasonServed read now, and NIL until it holds a season: a client before
 --- the server's answer arrives (see the header). Every caller copes with nil.
 --- @return integer|nil

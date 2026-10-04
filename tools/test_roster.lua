@@ -478,6 +478,11 @@ for _, f in ipairs({
     'br_core/server/lobby.lua',
     'br_core/server/party.lua',
     'br_core/server/match.lua',
+    -- brseason (#388): the dev-mode season switch, LOADED HERE for the
+    -- `season.brseason` block -- a switch staged during a real match lands
+    -- at the real teardown. It registers a `br:match:destroyed` handler that
+    -- does nothing while nothing is staged, which is every other block.
+    'br_core/server/season.lua',
     'br_core/server/bus.lua',
     'br_core/server/combat.lua',
     'br_core/server/storm.lua',
@@ -5844,6 +5849,116 @@ do
     BR.Broadcast.flushNow()
     ok(lobbyDeltaFor(2) ~= nil,
         'a client that never reports is swept home on the deadline')
+end
+
+-- ---------------------------------------------------------------------------
+-- brseason (#388) AGAINST THE REAL MATCH MACHINE.
+--
+-- tools/test_season.lua walks the command over a registry it fills by hand.
+-- This is the same property in the game's own terms: a switch typed while a
+-- match runs moves nothing through warmup, the bus, the fight, the verdict and
+-- the cleanup, and lands at the teardown -- the players already home, the
+-- match already out of the registry -- and the dev-mode lobby label follows.
+--
+-- THIS HARNESS RECORDS TriggerEvent RATHER THAN DISPATCHING IT, so the
+-- `br:match:destroyed` that BR.Match.destroy raises is handed to its handlers
+-- here, straight after the step that raised it -- which is when the runtime
+-- would run them, inside the destroy, before anything else.
+-- ---------------------------------------------------------------------------
+
+describe('season.brseason')
+do
+    reset()
+    local prevDev, prevSet = BR.Dev, SetConvarReplicated
+    BR.Dev = { on = function() return true end }
+    local wrote = {}
+    SetConvarReplicated = function(name, value) wrote[name] = value end
+    BR.Season.boot(function() return '' end)
+    local LATEST = BR.Config.Seasons.latest
+    ok(BR.Season.current() == LATEST and wrote.br_seasonServed == tostring(LATEST),
+        'an unset box runs the latest season, and replicates it')
+
+    --- The lobby broadcast's season, after one scheduler pass.
+    local function label()
+        fakeTime = fakeTime + 600
+        BR.Sched.step(fakeTime)
+        local status = eventsOf(BR.Net.LOBBY_STATUS)
+        return status[#status] and status[#status].args[1].season or nil
+    end
+    --- Hand the newest br:match:destroyed events to their handlers, as the
+    --- runtime would have inside BR.Match.destroy.
+    local seen = #firedOf('br:match:destroyed')
+    local function deliverTeardowns()
+        local all = firedOf('br:match:destroyed')
+        for i = seen + 1, #all do fire('br:match:destroyed', nil, all[i]) end
+        seen = #all
+    end
+
+    join(1, 'A'); join(2, 'B')
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = 'solo' })
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = 'solo' })
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    local m = theMatch()
+    ok(m ~= nil and m.state == BR.MatchState.WARMUP, 'two ready-ups form a match, in WARMUP')
+
+    sent = {}
+    ok(runCommandAs(1, 'brseason', '1'), 'brseason is registered on the server')
+    local stg = BR.SeasonSwitch.staged()
+    ok(stg ~= nil and stg.season == 1 and stg.by == 'A (#1)', 'typed in WARMUP by a player: staged, naming them',
+        stg and stg.by)
+    ok(BR.Season.current() == LATEST and wrote.br_seasonServed == tostring(LATEST),
+        'and nothing moves: the server and the replicated value keep the latest')
+    local lbl = label()
+    ok(lbl == LATEST, 'the dev-mode lobby label keeps the season in force', tostring(lbl))
+
+    for _, s in ipairs({ BR.MatchState.BUS, BR.MatchState.PLAYING, BR.MatchState.ENDED, BR.MatchState.CLEANUP }) do
+        forceState(s)
+        deliverTeardowns()
+        ok(m.state == s and BR.Season.current() == LATEST and #eventsOf(BR.Net.SEASON_SWITCHED) == 0,
+            ('the match in %s: still the latest, nobody told'):format(s))
+    end
+
+    -- TYPED AGAIN DURING CLEANUP, by the other player. A match in CLEANUP is
+    -- still a match running, so this replaces the staged switch -- it does
+    -- not apply it.
+    runCommandAs(2, 'brseason', '1')
+    stg = BR.SeasonSwitch.staged()
+    ok(BR.Season.current() == LATEST and #eventsOf(BR.Net.SEASON_SWITCHED) == 0 and stg ~= nil and stg.by == 'B (#2)',
+        'typed again during CLEANUP: still staged, now naming the second typer', stg and stg.by)
+
+    -- CLEANUP RUNS OUT ON ITS OWN CLOCK, and the switch waits for it.
+    local steps = 0
+    while BR.Server.matches[m.id] ~= nil and steps < 30 do
+        ok(BR.Season.current() == LATEST, ('cleanup, %ds in: the match is still registered and nothing has moved'):format(steps))
+        fakeTime = fakeTime + 1000
+        BR.Sched.step(fakeTime)
+        steps = steps + 1
+    end
+    ok(BR.Server.matches[m.id] == nil, 'the match is destroyed when CLEANUP runs out', steps)
+    ok(BR.Roster.get(1).state == BR.PlayerState.LOBBY and BR.Roster.get(2).state == BR.PlayerState.LOBBY,
+        'and both players are back in the lobby')
+
+    deliverTeardowns()
+    ok(BR.Season.current() == 1, 'the teardown applies the staged switch: Season 1 is in force', tostring(BR.Season.current()))
+    ok(wrote.br_seasonServed == '1', 'and replicated', tostring(wrote.br_seasonServed))
+    local sw = eventsOf(BR.Net.SEASON_SWITCHED)
+    ok(#sw == 1 and sw[1].target == -1 and sw[1].args[1].season == 1 and sw[1].args[1].by == 'B (#2)',
+        'every client is told once, naming who staged it last')
+    ok(BR.SeasonSwitch.staged() == nil, 'nothing is left staged')
+    lbl = label()
+    ok(lbl == 1, 'and the dev-mode lobby label shows Season 1', tostring(lbl))
+
+    -- WITH NO MATCH, AT ONCE.
+    sent = {}
+    runCommandAs(0, 'brseason', 'reset')
+    ok(BR.Season.current() == LATEST and wrote.br_seasonServed == tostring(LATEST) and #eventsOf(BR.Net.SEASON_SWITCHED) == 1,
+        'brseason reset in the lobby goes back to the latest at once')
+    lbl = label()
+    ok(lbl == LATEST, 'and the label follows', tostring(lbl))
+
+    BR.Dev, SetConvarReplicated = prevDev, prevSet
+    BR.Season.boot(function() return '' end, function() end)
 end
 
 describe('match.memberless')

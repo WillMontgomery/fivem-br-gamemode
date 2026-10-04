@@ -497,6 +497,573 @@ do
 end
 
 -- =========================================================================
+-- brseason (#388): the dev-mode switch, without a restart
+-- =========================================================================
+--
+-- Owner, 2026-10-04: "Please add the devmode command. That was my only real
+-- intended use case for faster-than-restart switching." `brseason <n>` puts a
+-- season in force at once when no match is running; while one is, it is
+-- STAGED and applied when the last match is torn down to the lobby -- never
+-- mid-match. `reset` goes back to the season br_core started on. It is a dev
+-- command, so a box without dev mode refuses it.
+--
+-- WHAT IS WORTH TESTING is the same as everywhere in this file: every wrong
+-- answer is a legal one. A switch that lands mid-match changes the doors a
+-- match is being played through and logs nothing; a staged switch that never
+-- applies leaves the box on a season nobody asked for; a client that took the
+-- season off the message rather than the replicated value runs a season the
+-- server is not serving. So the module's one write, the command over
+-- devgate's real wrap, the teardown that applies a staged switch, and the
+-- client that follows it are all walked here. The real match machine's
+-- teardown is driven in tools/test_roster.lua ('season.brseason').
+
+describe('season.switch')
+do
+    -- A STATE THAT NEVER BOOTED CANNOT SWITCH: a client, or a server before
+    -- br_core's start.
+    local st = state()
+    local n, why = st.S.switch(1)
+    ok(n == nil and why == 'not booted', 'a state that never booted switches nothing, and says why', why)
+    eq(st.wire.br_seasonServed, nil, 'and replicates nothing')
+    eq(st.S.startup(), nil, 'a state that never booted has no startup season')
+    eq(st.S.origin(), nil, 'and no origin')
+
+    -- AN UNSET BOX: the latest, switched down and back.
+    st.S.boot()
+    eq(st.S.startup(), LATEST, 'an unset box started on the latest season')
+    local src, words = st.S.origin()
+    ok(src == 'latest' and words == 'br_season is not set: the latest',
+        'and says where it came from: br_season unset, so the latest', words)
+    eq(st.S.switch(1), 1, 'switch(1) puts Season 1 in force and says so')
+    eq(st.S.current(), 1, 'current() answers the season in force')
+    eq(st.wire.br_seasonServed, '1', 'and it is replicated as br_seasonServed, as boot does')
+    eq(st.wire.br_season, nil, 'br_season is never written')
+    eq(st.cfg.br_season, nil, "and the operator's own is untouched")
+    eq(st.S.has('emotes'), false, 'the door answers the new season from the next question on')
+    src, words = st.S.origin()
+    eq(src, 'override', 'the origin is an override')
+    eq(words, ('brseason override; br_core started on Season %d (br_season is not set: the latest)'):format(LATEST),
+        'naming the season br_core started on and why')
+    eq(st.S.startup(), LATEST, 'the startup season does not move')
+    eq(st.S.switch(nil), LATEST, 'switch(nil) is the startup season again')
+    eq(st.wire.br_seasonServed, tostring(LATEST), 'replicated as well')
+    eq((st.S.origin()), 'latest', 'and the origin is the startup one again, not an override')
+
+    -- BOUNDS: a whole number from 1 to latest, and nothing else.
+    for _, bad in ipairs({ 0, -1, LATEST + 1, 1.0, 1.5, '1', true }) do
+        local before = st.wire.br_seasonServed
+        local got, w = st.S.switch(bad)
+        ok(got == nil and w == 'not a season' and st.S.current() == LATEST and st.wire.br_seasonServed == before,
+            ('switch(%s %s) is refused, and nothing moves'):format(type(bad), tostring(bad)),
+            ('%s %s, in force %s'):format(tostring(got), tostring(w), tostring(st.S.current())))
+    end
+    eq(st.S.switch(LATEST), LATEST, 'the latest itself is in bounds')
+    local wrote = {}
+    eq(st.S.switch(1, function(name, value) wrote[name] = value end), 1, 'switch(n, set) takes a setter')
+    eq(wrote.br_seasonServed, '1', 'and writes through it, as boot(get, set) does')
+
+    -- A SET BOX.
+    st = state({ cfg = { br_season = '1' } })
+    st.S.boot()
+    src, words = st.S.origin()
+    ok(src == 'convar' and words == 'br_season 1', 'br_season 1: the origin is the convar', words)
+    st.S.switch(2)
+    eq((st.S.origin()), 'override', 'switched off it: an override')
+    st.S.switch(nil)
+    ok(st.S.current() == 1 and (st.S.origin()) == 'convar', 'and back: the convar again')
+
+    -- GARBAGE, quoted the way the boot banner quotes it.
+    st = state({ cfg = { br_season = 'two' } })
+    st.S.boot()
+    src, words = st.S.origin()
+    ok(src == 'latest' and words == 'br_season "two" is not a season: the latest',
+        'a br_season that is not a season: the latest, quoting it', words)
+
+    -- PAST THE LATEST: br_core runs what br_season named. brseason may not name
+    -- it, but a reset takes it back -- br_core already chose to run it.
+    st = state({ cfg = { br_season = tostring(LATEST + 3) } })
+    st.S.boot()
+    eq(st.S.switch(LATEST + 3), nil, 'brseason may not name a season past the latest')
+    eq(st.S.switch(1), 1, 'it may switch off one')
+    eq(st.S.switch(nil), LATEST + 3, 'and a reset takes back the startup season br_season named past the latest')
+
+    -- recheck() STILL WATCHES br_season, AND NAMES THE SEASON IN FORCE.
+    st = state({ cfg = { br_season = '2' } })
+    st.S.boot()
+    st.S.switch(1)
+    eq(st.S.recheck(), nil, 'a switch is not a change to br_season')
+    st.cfg.br_season = '1'
+    eq(st.S.recheck(), '[br_core] br_season is now "1"; this server keeps running Season 1 until br_core restarts.',
+        'a later br_season change is still seen once, naming the season in force')
+
+    -- THE NEXT br_core START drops the override: br_season is read as always.
+    st.cfg.br_season = '2'
+    st.S.boot()
+    ok(st.S.current() == 2 and (st.S.origin()) == 'convar' and st.wire.br_seasonServed == '2',
+        'the next br_core start reads br_season again and the override is gone')
+end
+
+describe('season.switch: both sides of the wire')
+do
+    local wire = {}
+    local server = state({ wire = wire })
+    local client = state({ wire = wire })
+    server.S.boot()
+    ok(server.S.has('emotes') and client.S.has('emotes'), 'an unset box: emotes on both sides at the latest')
+    server.S.switch(1)
+    eq(client.S.current(), 1, 'a switch reaches the client on the replicated value')
+    ok(server.S.has('emotes') == false and client.S.has('emotes') == false,
+        'and the emote gate answers Season 1 on both sides')
+    server.S.switch(nil)
+    ok(server.S.has('emotes') == true and client.S.has('emotes') == true,
+        'a reset opens it on both again')
+    local n, why = client.S.switch(1)
+    ok(n == nil and why == 'not booted' and client.S.current() == LATEST and wire.br_seasonServed == tostring(LATEST),
+        'a client cannot switch anything: it never booted')
+end
+
+--- A br_core server with `brseason` loaded the way the game loads it: the
+--- protocol, devgate.lua's wrap in front of RegisterCommand, the season module
+--- and its list, then server/season.lua -- over a match registry, a roster and
+--- a market this suite can read. The REAL wrap, so dev mode is a real gate.
+--- @param o table|nil  { cfg, wire, registry, dev = false }
+local function commandServer(o)
+    o = o or {}
+    local st = state({ cfg = o.cfg, wire = o.wire, registry = o.registry })
+    local env = st.env
+    st.dev = o.dev ~= false
+    st.matches, st.roster, st.pushed, st.out, st.handlers, st.raw = {}, {}, {}, {}, {}, {}
+    local get = env.GetConvar
+    env.GetConvar = function(name, default)
+        if name == 'sv_devMode' or name == 'br_devMode' then return st.dev and 'true' or 'false' end
+        return get(name, default)
+    end
+    env.GetCurrentResourceName = function() return 'br_core' end
+    env.GetPlayerName = function(s) return 'P' .. tostring(s) end
+    env.RegisterCommand = function(name, fn, restricted) st.raw[name] = { fn = fn, restricted = restricted } end
+    env.TriggerClientEvent = function(event, target, payload)
+        st.out[#st.out + 1] = { event = event, target = target, payload = payload }
+    end
+    env.AddEventHandler = function(name, fn)
+        st.handlers[name] = st.handlers[name] or {}
+        table.insert(st.handlers[name], fn)
+    end
+    for _, f in ipairs({ 'br_lib/shared/enums.lua', 'br_lib/shared/protocol.lua', 'br_lib/shared/devgate.lua' }) do
+        assert(loadfile(RES .. f, 't', env))()
+    end
+    env.BR.Server = { matches = st.matches }
+    env.BR.Roster = {
+        get = function(s) return st.roster[s] end,
+        each = function(pred, fn)
+            local keys = {}
+            for s in pairs(st.roster) do keys[#keys + 1] = s end
+            table.sort(keys)
+            for _, s in ipairs(keys) do
+                if not pred or pred(st.roster[s]) then fn(s, st.roster[s]) end
+            end
+        end,
+    }
+    env.BR.Market = { push = function(s) st.pushed[#st.pushed + 1] = s end }
+    -- br_core's onResourceStart boots it; the file below reads it at call time.
+    st.S.boot()
+    assert(loadfile(RES .. 'br_core/server/season.lua', 't', env))()
+    st.SW = env.BR.SeasonSwitch
+    st.Net = env.BR.Net
+    st.MS = env.BR.MatchState
+
+    --- Type it, as FiveM calls a command: from the console (0) or a player.
+    function st.run(src, ...) st.raw.brseason.fn(src, { ... }, 'brseason') end
+    function st.fire(name, ...)
+        for _, fn in ipairs(st.handlers[name] or {}) do fn(...) end
+    end
+    --- A match instance, in a state.
+    function st.match(id, s)
+        st.matches[id] = { id = id, seq = id, state = s }
+        return st.matches[id]
+    end
+    --- Its teardown, as BR.Match.destroy does it: the registry entry goes,
+    --- then `br:match:destroyed` is raised.
+    function st.destroy(id)
+        st.matches[id] = nil
+        st.fire('br:match:destroyed', { matchId = id })
+    end
+    function st.switched()
+        local out = {}
+        for _, e in ipairs(st.out) do
+            if e.event == st.Net.SEASON_SWITCHED then out[#out + 1] = e end
+        end
+        return out
+    end
+    --- The `brseason` answers sent to one player's F8.
+    function st.f8(src)
+        local out = {}
+        for _, e in ipairs(st.out) do
+            if e.event == st.Net.SEASON_RESULT and e.target == src then out[#out + 1] = e.payload end
+        end
+        return out
+    end
+    function st.said(needle)
+        for i = #st.printed, 1, -1 do
+            if st.printed[i]:find(needle, 1, true) then return st.printed[i] end
+        end
+        return nil
+    end
+    function st.clear()
+        st.out, st.pushed = {}, {}
+        for k in pairs(st.printed) do st.printed[k] = nil end
+    end
+    return st
+end
+
+describe('brseason: dev mode off refuses')
+do
+    local st = commandServer({ dev = false })
+    ok(st.raw.brseason ~= nil, "brseason reaches the native through devgate.lua's wrap")
+    eq(st.raw.brseason and st.raw.brseason.restricted, true, 'registered restricted, like brforce')
+    st.roster[3] = { name = 'Will' }
+    st.run(0, '1')
+    st.run(3, '1')
+    st.run(0, 'reset')
+    st.run(0)
+    eq(st.S.current(), LATEST, 'with dev mode off nothing switches')
+    eq(st.wire.br_seasonServed, tostring(LATEST), 'nothing new is replicated')
+    eq(#st.out, 0, 'no client is told anything, and no F8 answered')
+    eq(#st.pushed, 0, 'no market state is pushed')
+    eq(st.SW.staged(), nil, 'and nothing is staged')
+    ok(st.said('[br_core] brseason is dev-mode only') ~= nil and st.said('in force') == nil,
+        'the console says which gate closed, and the command body never ran', st.printed[1])
+
+    st.dev = true
+    st.run(0, '1')
+    eq(st.S.current(), 1, 'the same box with dev mode on switches')
+end
+
+describe('brseason: no match running switches at once')
+do
+    local st = commandServer()
+    st.roster[3] = { name = 'Will' }
+    st.roster[5] = { name = 'Ana' }
+
+    st.run(0)
+    ok(st.said(('[br_core] brseason: Season %d in force -- br_season is not set: the latest'):format(LATEST)) ~= nil,
+        'bare: the season in force and where it came from', st.printed[1])
+    ok(st.said('brseason: no switch staged') ~= nil, 'and that nothing is staged')
+    ok(st.said(('brseason: usage: brseason | brseason <1-%d> | brseason reset'):format(LATEST)) ~= nil,
+        'and how to use it')
+    eq(#st.out, 0, 'the console asked, so no F8 is sent anything')
+    eq(st.S.current(), LATEST, 'and nothing moved')
+
+    st.clear()
+    st.run(3, '1')
+    eq(st.S.current(), 1, 'brseason 1 with no match running puts Season 1 in force at once')
+    eq(st.wire.br_seasonServed, '1', 'and replicates it')
+    eq(st.S.has('emotes'), false, 'every server door answers it from the next question on')
+    local sw = st.switched()
+    ok(#sw == 1 and sw[1].target == -1, 'every client is told, once', #sw)
+    local p = sw[1] and sw[1].payload or {}
+    ok(p.season == 1 and p.from == LATEST and p.by == 'Will (#3)',
+        'with the season, the one before it, and who switched',
+        ('%s %s %s'):format(tostring(p.season), tostring(p.from), tostring(p.by)))
+    eq(math.type(p.season), 'integer', 'the season crosses as a whole number')
+    ok(st.said(('[br_core] brseason: Will (#3) switched this server to Season 1 (was Season %d)'):format(LATEST)) ~= nil,
+        'the console says who switched', st.printed[1])
+    eq(table.concat(st.pushed, ','), '3,5', "every connected player's market state is pushed again, against the new season")
+    eq(st.SW.staged(), nil, 'nothing is left staged')
+
+    st.clear()
+    st.run(3)
+    local f8 = st.f8(3)
+    ok(#f8 == 3 and f8[1] == ('brseason: Season 1 in force -- brseason override; br_core started on Season %d (br_season is not set: the latest)'):format(LATEST),
+        'a bare brseason typed in F8 is answered in that F8: Season 1, an override, and the startup season', f8[1])
+
+    st.clear()
+    st.run(0, '1')
+    ok(#st.switched() == 0 and #st.pushed == 0 and st.said('brseason: Season 1 is already in force') ~= nil,
+        'naming the season in force switches nothing')
+
+    st.clear()
+    st.run(5, 'reset')
+    eq(st.S.current(), LATEST, 'brseason reset with no match running goes back to the startup season at once')
+    eq((st.S.origin()), 'latest', 'and where it came from is the startup again')
+    sw = st.switched()
+    ok(#sw == 1 and sw[1].payload.season == LATEST and sw[1].payload.from == 1 and sw[1].payload.by == 'Ana (#5)',
+        'every client is told, naming who reset it')
+    eq(#st.pushed, 2, 'and every market state is pushed again')
+
+    st.clear()
+    st.run(0, 'reset')
+    ok(#st.switched() == 0 and st.said(('brseason: Season %d is already in force'):format(LATEST)) ~= nil,
+        'reset on the startup season switches nothing')
+end
+
+describe('brseason: bounds')
+do
+    local st = commandServer()
+    for _, bad in ipairs({ '0', '00', '-1', tostring(LATEST + 1), '1.5', '2.0', 'two', 'S1', '0x1',
+                           '99999999999999999999', '' }) do
+        st.clear()
+        st.run(0, bad)
+        ok(st.S.current() == LATEST and #st.out == 0 and #st.pushed == 0 and st.SW.staged() == nil
+                and st.said(('is not a season this code knows -- 1 to %d, or reset'):format(LATEST)) ~= nil,
+            ('%q is refused, and nothing moves'):format(bad), st.printed[1])
+    end
+    st.clear()
+    st.run(4, 'nope')
+    local f8 = st.f8(4)
+    ok(#f8 == 1 and f8[1]:find('"nope" is not a season', 1, true) ~= nil, 'a refusal typed in F8 is answered in that F8', f8[1])
+    for season = 1, LATEST do
+        st.run(0, tostring(season))
+        eq(st.S.current(), season, ('Season %d is in bounds'):format(season))
+    end
+    -- A refused one does not touch a staged one.
+    st.match(1, st.MS.PLAYING)
+    st.run(0, '1')
+    st.run(0, tostring(LATEST + 1))
+    ok(st.SW.staged() ~= nil and st.SW.staged().season == 1, 'a refused season leaves a staged switch where it was')
+end
+
+describe('brseason: staged in every match state, applied at the teardown and not before')
+do
+    for i, s in ipairs({ 'WARMUP', 'BUS', 'PLAYING', 'ENDED', 'CLEANUP' }) do
+        local st = commandServer()
+        local states = { st.MS.WARMUP, st.MS.BUS, st.MS.PLAYING, st.MS.ENDED, st.MS.CLEANUP }
+        st.roster[3] = { name = 'Will' }
+        local m = st.match(101, states[i])
+
+        st.run(3, '1')
+        eq(st.S.current(), LATEST, ('typed during %s: the season in force does not move'):format(s))
+        eq(st.wire.br_seasonServed, tostring(LATEST), ('typed during %s: nothing is replicated'):format(s))
+        ok(#st.switched() == 0 and #st.pushed == 0, ('typed during %s: no client is told, no market pushed'):format(s))
+        local stg = st.SW.staged()
+        ok(stg ~= nil and stg.season == 1 and stg.by == 'Will (#3)', ('typed during %s: it is staged, naming who'):format(s))
+        local f8 = st.f8(3)
+        ok(f8[1] == 'brseason: 1 match running -- Season 1 is staged, and applies when the last one is torn down to the lobby',
+            ('typed during %s: the F8 says it is staged and when it applies'):format(s), f8[1])
+
+        for j = i + 1, #states do
+            m.state = states[j]
+            st.run(0)
+            eq(st.S.current(), LATEST, ('still staged as the match moves on to %s'):format(states[j]))
+        end
+        st.run(0)
+        ok(st.said('brseason: Season 1 staged by Will (#3), for when the last of 1 running match is torn down to the lobby') ~= nil,
+            'a bare brseason shows the staged switch')
+
+        -- The event with the match still in the registry is not a teardown.
+        st.fire('br:match:destroyed', { matchId = 101 })
+        eq(st.S.current(), LATEST, 'br:match:destroyed with the match still registered applies nothing')
+
+        st.clear()
+        st.destroy(101)
+        eq(st.S.current(), 1, ('torn down from %s: Season 1 is in force'):format(s))
+        eq(st.wire.br_seasonServed, '1', 'and replicated')
+        local sw = st.switched()
+        ok(#sw == 1 and sw[1].target == -1 and sw[1].payload.season == 1 and sw[1].payload.by == 'Will (#3)',
+            'every client is told once, naming who staged it')
+        eq(table.concat(st.pushed, ','), '3', 'and the market state is pushed again')
+        eq(st.SW.staged(), nil, 'nothing is left staged')
+        ok(st.said('[br_core] brseason: Will (#3) switched this server to Season 1') ~= nil, 'the console says who')
+    end
+
+    -- TWO MATCHES: the LAST teardown applies it.
+    local st = commandServer()
+    st.match(1, st.MS.PLAYING)
+    st.match(2, st.MS.WARMUP)
+    st.run(0, '1')
+    ok(st.said('brseason: 2 matches running -- Season 1 is staged') ~= nil,
+        'two matches running: staged, and the console counts them')
+    st.destroy(1)
+    eq(st.S.current(), LATEST, 'one of two torn down: still staged')
+    ok(st.SW.staged() ~= nil and #st.switched() == 0, 'and nobody is told')
+    st.destroy(2)
+    eq(st.S.current(), 1, 'the last one torn down applies it')
+    eq(#st.switched(), 1, 'once')
+
+    -- A teardown with nothing staged moves nothing.
+    st.clear()
+    st.match(3, st.MS.WARMUP)
+    st.destroy(3)
+    ok(st.S.current() == 1 and #st.switched() == 0 and #st.pushed == 0, 'a teardown with nothing staged moves nothing')
+end
+
+describe('brseason: a second one replaces a staged one, and reset stages too')
+do
+    -- Three seasons, so a replacement can name a third.
+    local reg = { latest = 3, features = { emotes = { from = 2 } } }
+    local st = commandServer({ registry = reg })
+    eq(st.S.current(), 3, 'an unset box on a three-season list runs Season 3')
+    st.roster[3] = { name = 'Will' }
+    st.roster[5] = { name = 'Ana' }
+
+    st.match(7, st.MS.PLAYING)
+    st.run(3, '1')
+    st.run(5, '2')
+    local stg = st.SW.staged()
+    ok(stg ~= nil and stg.season == 2 and stg.by == 'Ana (#5)', 'the second replaces the first, naming who typed it')
+    ok((st.f8(5)[1] or ''):find('Season 2 is staged, replacing the one staged before', 1, true) ~= nil,
+        'and says it replaced one', st.f8(5)[1])
+    st.destroy(7)
+    eq(st.S.current(), 2, 'the teardown applies the replacement, not the first')
+    eq(#st.switched(), 1, 'once')
+
+    st.clear()
+    st.match(8, st.MS.BUS)
+    st.run(0, '1')
+    st.run(0, '2')
+    eq(st.SW.staged(), nil, 'brseason naming the season in force drops a staged switch')
+    ok(st.said('brseason: Season 2 is already in force -- the staged switch is dropped') ~= nil, 'and says so')
+    st.destroy(8)
+    ok(st.S.current() == 2 and #st.switched() == 0, 'and the teardown applies nothing')
+
+    st.clear()
+    st.match(9, st.MS.ENDED)
+    st.run(3, 'reset')
+    stg = st.SW.staged()
+    ok(stg ~= nil and stg.reset == true and stg.season == 3, 'brseason reset during a match is staged, like any other')
+    eq(st.S.current(), 2, 'and moves nothing yet')
+    ok((st.f8(3)[1] or ''):find('Season 3 (reset) is staged', 1, true) ~= nil, 'the F8 says the reset is staged', st.f8(3)[1])
+    st.destroy(9)
+    ok(st.S.current() == 3 and (st.S.origin()) == 'latest', 'the teardown applies it: the startup season, from where it started')
+
+    st.clear()
+    st.match(10, st.MS.WARMUP)
+    st.run(0, '1')
+    st.run(0, 'reset')
+    eq(st.SW.staged(), nil, 'reset on the startup season drops a staged switch')
+    st.destroy(10)
+    ok(st.S.current() == 3 and #st.switched() == 0, 'and the teardown applies nothing')
+
+    -- A STAGED RESET TAKES BACK A STARTUP SEASON PAST THE LATEST.
+    local past = commandServer({ cfg = { br_season = tostring(LATEST + 2) } })
+    past.run(0, '1')
+    eq(past.S.current(), 1, 'a box started past the latest switches down')
+    past.match(1, past.MS.WARMUP)
+    past.run(0, 'reset')
+    past.destroy(1)
+    eq(past.S.current(), LATEST + 2, 'and a staged reset takes back the season br_season named, past the latest')
+end
+
+--- A client with br_core's client/season.lua loaded over the real season
+--- module, its own copy of the replicated convars, and a SLOW pass this suite
+--- steps by hand.
+local function followClient(wire)
+    local cl = state({ wire = wire })
+    local env = cl.env
+    cl.handlers, cl.raised, cl.slow = {}, {}, nil
+    env.BR.Loop = {
+        SLOW = 'slow',
+        register = function(band, name, fn)
+            if band == 'slow' and name == 'season.follow' then cl.slow = fn end
+        end,
+    }
+    env.RegisterNetEvent = function() end
+    env.AddEventHandler = function(name, fn)
+        cl.handlers[name] = cl.handlers[name] or {}
+        table.insert(cl.handlers[name], fn)
+    end
+    env.TriggerEvent = function(name, ...) cl.raised[#cl.raised + 1] = { name = name, args = { ... } } end
+    assert(loadfile(RES .. 'br_lib/shared/protocol.lua', 't', env))()
+    assert(loadfile(RES .. 'br_core/client/season.lua', 't', env))()
+    cl.Net = env.BR.Net
+    function cl.deliver(name, ...)
+        for _, fn in ipairs(cl.handlers[name] or {}) do fn(...) end
+    end
+    function cl.changes()
+        local out = {}
+        for _, e in ipairs(cl.raised) do
+            if e.name == 'br:season:changed' then out[#out + 1] = e end
+        end
+        return out
+    end
+    function cl.said(line)
+        for i = #cl.printed, 1, -1 do
+            if cl.printed[i] == line then return true end
+        end
+        return false
+    end
+    return cl
+end
+
+describe('brseason: every client is told, and follows the replicated value')
+do
+    local srvWire, cliWire = {}, {}
+    local srv = commandServer({ wire = srvWire })
+    local cl = followClient(cliWire)
+    ok(cl.slow ~= nil, "client/season.lua registers a SLOW pass, 'season.follow'")
+    local function land() for k, v in pairs(srvWire) do cliWire[k] = v end end
+
+    cl.slow()
+    eq(#cl.changes(), 0, 'no season yet: nothing to re-read')
+    land()
+    cl.slow()
+    eq(#cl.changes(), 0, 'the season arriving is not a switch: the emote gate pass handles an arrival')
+
+    -- THE MESSAGE BEFORE THE VALUE.
+    srv.run(3, '1')
+    local p = srv.switched()[1].payload
+    cl.deliver(cl.Net.SEASON_SWITCHED, p)
+    ok(cl.said('[br_core] brseason: P3 (#3) switched this server to Season 1'),
+        'every F8 is told who switched', cl.printed[#cl.printed])
+    eq(#cl.changes(), 0, 'the message alone re-reads nothing: the client runs what it reads, and has not read Season 1')
+    eq(cl.S.has('emotes'), true, 'so its gate still answers the season it has')
+    cl.slow()
+    eq(#cl.changes(), 0, 'nor does a pass before the value lands')
+    land()
+    cl.slow()
+    local ch = cl.changes()
+    eq(#ch, 1, 'the pass after the value lands raises br:season:changed, once')
+    ok(ch[1] and ch[1].args[1] == 1 and ch[1].args[2] == LATEST, 'carrying the new season and the one before')
+    ok(cl.S.has('emotes') == false and srv.S.has('emotes') == false,
+        'and the emote gate answers Season 1 on both sides')
+    cl.slow()
+    eq(#cl.changes(), 1, 'a later pass does not raise it again')
+
+    -- THE VALUE BEFORE THE MESSAGE.
+    srv.clear()
+    srv.run(0, 'reset')
+    land()
+    cl.deliver(cl.Net.SEASON_SWITCHED, srv.switched()[1].payload)
+    eq(#cl.changes(), 2, 'with the value already there, the message raises it at once')
+    cl.slow()
+    eq(#cl.changes(), 2, 'and the pass after does not raise it twice')
+    ok(cl.S.has('emotes') == true and srv.S.has('emotes') == true, 'both sides open again')
+
+    -- A STAGED ONE: nothing reaches the client until the teardown.
+    srv.clear()
+    srv.match(1, srv.MS.PLAYING)
+    srv.run(0, '1')
+    land()
+    cl.slow()
+    ok(#srv.switched() == 0 and #cl.changes() == 2 and cl.S.current() == LATEST,
+        'staged during a match: nothing is sent and nothing moves on the client')
+    srv.destroy(1)
+    cl.deliver(cl.Net.SEASON_SWITCHED, srv.switched()[1].payload)
+    land()
+    cl.slow()
+    ok(#cl.changes() == 3 and cl.S.current() == 1, 'the teardown sends it, and the client follows')
+
+    -- GARBAGE moves nothing and raises nothing.
+    local before = #cl.printed
+    cl.deliver(cl.Net.SEASON_SWITCHED, 'x')
+    cl.deliver(cl.Net.SEASON_SWITCHED, { season = 'two' })
+    cl.deliver(cl.Net.SEASON_SWITCHED, nil)
+    ok(#cl.printed == before and #cl.changes() == 3, 'a malformed message prints nothing and moves nothing')
+    cliWire.br_seasonServed = 'x'
+    cl.slow()
+    eq(#cl.changes(), 3, 'a garbled read is no switch')
+    cliWire.br_seasonServed = '1'
+    cl.slow()
+    eq(#cl.changes(), 3, 'and the season it was is still the one compared against')
+
+    -- THE F8 ANSWER.
+    cl.deliver(cl.Net.SEASON_RESULT, 'brseason: Season 1 is already in force')
+    ok(cl.said('[br_core] brseason: Season 1 is already in force'), 'a brseason answer lands in the F8 of whoever typed it')
+    before = #cl.printed
+    cl.deliver(cl.Net.SEASON_RESULT, { 'x' })
+    eq(#cl.printed, before, 'and anything but text is ignored')
+end
+
+-- =========================================================================
 -- the wiring: who boots, who loads, what crosses to the page
 -- =========================================================================
 
@@ -529,6 +1096,58 @@ do
             and man:find("'@br_lib/config/seasons.lua'", 1, true) ~= nil,
             res .. ' loads the season module and the list')
     end
+end
+
+describe('brseason.wiring')
+do
+    -- BOTH HALVES ARE LOADED, each on its own side.
+    local man = code(assert(readFile(RES .. 'br_core/fxmanifest.lua')))
+    local cliAt = man:find('client_scripts%s*{')
+    local srvAt = man:find('server_scripts%s*{')
+    local cmain = man:find("'client/main.lua'", 1, true)
+    local cl = man:find("'client/season.lua'", 1, true)
+    local market = man:find("'server/market.lua'", 1, true)
+    local sv = man:find("'server/season.lua'", 1, true)
+    ok(cliAt and srvAt and cmain and cl and cliAt < cmain and cmain < cl and cl < srvAt,
+        "br_core's client_scripts load client/season.lua, after client/main.lua (the loop registry)")
+    ok(srvAt and market and sv and srvAt < market and market < sv,
+        "br_core's server_scripts load server/season.lua, after server/market.lua")
+
+    -- THE COMMAND IS AN ORDINARY DEV COMMAND: through the wrapped door,
+    -- restricted, and reading no dev mode of its own -- the wrap is the gate.
+    local cmd = code(assert(readFile(RES .. 'br_core/server/season.lua')))
+    ok(cmd:find("RegisterCommand('brseason', function(src, args)", 1, true) ~= nil,
+        'server/season.lua registers brseason through RegisterCommand, which devgate.lua wraps')
+    ok(cmd:find('end, true%)%s*$') ~= nil, 'restricted: its last line is `end, true)`')
+    ok(cmd:find('rawCommand', 1, true) == nil and cmd:find('BR.Dev', 1, true) == nil
+        and cmd:find('devMode', 1, true) == nil,
+        'and it never goes round the wrap or reads dev mode itself')
+    ok(cmd:find("AddEventHandler('br:match:destroyed'", 1, true) ~= nil,
+        'it applies a staged switch on br:match:destroyed')
+
+    -- THE TEARDOWN IT HANGS OFF: BR.Match.destroy sends every player home,
+    -- drops the registry entry, and only then raises the event -- so a staged
+    -- switch lands with the lobby already the lobby and the count already
+    -- leaving the destroyed match out.
+    local match = code(assert(readFile(RES .. 'br_core/server/match.lua')))
+    local d0 = match:find('function BR.Match.destroy(m)', 1, true)
+    local d1 = d0 and match:find('\nfunction ', d0 + 1, true)
+    local home = d0 and match:find('BR.Roster.setState(src, BR.PlayerState.LOBBY)', d0, true)
+    local gone = d0 and match:find('BR.Server.matches[m.id] = nil', d0, true)
+    local raised = d0 and match:find("TriggerEvent('br:match:destroyed'", d0, true)
+    ok(d0 and d1 and home and gone and raised and home < gone and gone < raised and raised < d1,
+        'BR.Match.destroy sends players to the lobby, drops the match, then raises br:match:destroyed')
+
+    -- WHO LISTENS FOR THE CLIENT'S RE-READ, and who raises it.
+    local keybinds = code(assert(readFile(RES .. 'br_core/client/keybinds.lua')))
+    ok(keybinds:find("AddEventHandler('br:season:changed', function()\n    BR.Keys.mapGated()\n    BR.Keys.push()\nend)", 1, true) ~= nil,
+        'client/keybinds.lua maps and re-pushes on br:season:changed')
+    local uiMarket = code(assert(readFile(RES .. 'br_ui/client/market.lua')))
+    ok(uiMarket:find("AddEventHandler('br:season:changed', function()\n    BR.Market.push()\nend)", 1, true) ~= nil,
+        "br_ui's market re-sends the grid and the EMOTES flag on br:season:changed")
+    local follow = code(assert(readFile(RES .. 'br_core/client/season.lua')))
+    ok(follow:find("TriggerEvent('br:season:changed', now, before)", 1, true) ~= nil,
+        'client/season.lua raises it, with the new season and the one before')
 end
 
 describe('season.label')
