@@ -1007,9 +1007,9 @@ local function squadPos()
     for i, src in ipairs(MATES) do
         local r = S.roster[src] or {}
         list[#list + 1] = { src = src, name = 'Player' .. src, x = e.x + off[src][1],
-            y = e.y + off[src][2], state = r.state, hp = (src == DOWNED) and 0 or 100,
+            y = e.y + off[src][2], state = r.state, hp = (r.state == BR.PlayerState.DBNO) and 0 or 100,
             armour = 0, level = 10, i = i + 1,
-            bleedEndsAt = (src == DOWNED) and (gameMs() + 60000) or nil }
+            bleedEndsAt = (r.state == BR.PlayerState.DBNO) and (gameMs() + 60000) or nil }
     end
     net(BR.Net.SQUAD_POS, list)
 end
@@ -1126,6 +1126,8 @@ local PHASES = {
                    c1.cx, c1.cy, c1.r, 120, 240, 120000 + 100000)
     end },
     { id = 'match late', settle = 120, setup = function()
+        -- Later on: the downed squadmate has been picked up.
+        delta({ { op = 'update', src = DOWNED, e = { state = BR.PlayerState.ALIVE } } })
         local p2, p3 = BR.Config.Storm.phases[2], BR.Config.Storm.phases[3]
         stormPhase(3, LAND.x + 200.0, LAND.y + 300.0, p2.radius,
                    LAND.x + 300.0, LAND.y + 100.0, p3.radius, 90, 90, 30000)
