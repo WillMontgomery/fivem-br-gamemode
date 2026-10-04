@@ -1534,6 +1534,52 @@ end
 -- which changes it is below the map callback, beside the state it controls.
 local stormBisectMode = 'normal'
 
+-- ═══ THE ZONE IS BUILT ONCE FOR AS LONG AS IT STANDS STILL (#393) ═══
+--
+-- BR.StormZone is pure over the record, the clock's (cx, cy, r, t, g) and the
+-- record's two shape units, and through a hold none of them move: t is exactly 0
+-- for the whole of HOLDING and exactly 1 at FINISHED, cx/cy/r are the record's own,
+-- and g settles at 1 once growth is done. Yet storm.wall built the zone every
+-- frame and storm.state built the identical one ten times a second.
+--
+-- One slot, shared by both. It answers the stored zone only when every input
+-- compares equal -- the record by identity AND by the fields the solve reads, so a
+-- record edited in place is a miss -- and the two units by identity, asked for
+-- exactly as BR.StormZone asked for them, so a unit rebuilt under a changed shape
+-- config is a miss too. `g` is compared only when it can matter: BR.StormZone
+-- reads it only for a conjoined zone at the start of its hold, and everywhere else
+-- a growing g would otherwise rebuild an unchanged zone for the hold's first
+-- grow.seconds.
+local zoneKey = { zone = nil }
+
+--- BR.StormZone(rec, cx, cy, r, t, g), built only when an input changed.
+local function zoneFor(rec, cx, cy, r, t, g)
+    local uB = BR.StormUnit(rec.seed, rec.phase)
+    local uA = BR.StormUnit(rec.seed, (rec.phase or 1) - 1)
+    local k = zoneKey
+    if k.zone and k.rec == rec and k.t == t and k.cx == cx and k.cy == cy and k.r == r
+        and (k.g == g or not k.gMatters) and k.uA == uA and k.uB == uB
+        and k.phase == rec.phase and k.seed == rec.seed and k.mo == rec.mo
+        and k.cx0 == rec.cx0 and k.cy0 == rec.cy0 and k.r0 == rec.r0
+        and k.cx1 == rec.cx1 and k.cy1 == rec.cy1 and k.r1 == rec.r1
+        and k.tWait == rec.tWait and k.tShrink == rec.tShrink then
+        return k.zone
+    end
+    local zone = BR.StormZone(rec, cx, cy, r, t, g)
+    k.zone, k.rec, k.t, k.cx, k.cy, k.r, k.g, k.uA, k.uB = zone, rec, t, cx, cy, r, g, uA, uB
+    k.phase, k.seed, k.mo = rec.phase, rec.seed, rec.mo
+    k.cx0, k.cy0, k.r0, k.cx1, k.cy1, k.r1 = rec.cx0, rec.cy0, rec.r0, rec.cx1, rec.cy1, rec.r1
+    k.tWait, k.tShrink = rec.tWait, rec.tShrink
+    -- The one case BR.StormZone reads g: a hold (t at 0) of a zone that is not
+    -- nested in its destination and overlaps it.
+    k.gMatters = (t or 0.0) <= 0.0 and (rec.r1 or 0.0) > 0.0
+        and not BR.StormNested(rec) and (BR.StormOverlaps(rec)) == true
+    return zone
+end
+
+--- What drawWall keeps for the live wall between frames.
+local wallMemo = newWallMemo()
+
 BR.Loop.register(BR.Loop.FRAME, 'storm.wall', function()
     if stormBisectMode == 'walloff' then return end
 
@@ -1576,7 +1622,12 @@ BR.Loop.register(BR.Loop.FRAME, 'storm.wall', function()
     -- destination across the start of the hold, the same number the damage tick
     -- passes, so the curtain spreads over the destination exactly as the billing
     -- does rather than popping out to it.
-    drawWall(BR.StormZone(rec, cx, cy, r, t, g), alphaScale)
+    --
+    -- AND IT IS ASKED FOR THROUGH zoneFor (#393), which hands back last frame's
+    -- zone while nothing it depends on has moved -- every hold once growth is done,
+    -- and FINISHED -- so the memo keeps last frame's inset and strip too. A sweep's
+    -- zone is new every frame and is built every frame, exactly as before.
+    drawWall(zoneFor(rec, cx, cy, r, t, g), alphaScale, wallMemo)
 end)
 
 -- Which renderer draws the wall, and /brwallstyle overrides it live.
@@ -3942,7 +3993,7 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
     -- sky and the two crossing cues describing the curtain the player can see
     -- rather than a circle nothing draws any more -- at the same sweep fraction the
     -- wall morphs by, and the same growth a conjoined zone spreads by.
-    local zone = BR.StormZone(rec, cx, cy, r, t, g)
+    local zone = zoneFor(rec, cx, cy, r, t, g)
     local edge = BR.StormShape.distance(zone, p.x, p.y)   -- positive = outside
     BR.Loop.hitchContext(rec.phase, st, edge > 0)
 
