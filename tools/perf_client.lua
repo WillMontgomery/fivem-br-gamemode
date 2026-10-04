@@ -11,17 +11,28 @@
 -- ScaleformUI that loads inside br_core, run in one Lua state against a modelled
 -- engine: a clock that moves 1/60 s a frame, threads as coroutines woken by that
 -- clock, the three BR.Loop bands on their real threads, events and net events,
--- entities, blips and a camera. The session is then walked through the phases a
--- player sees -- lobby, warmup, the plane before and after the island release,
--- the jump, and a match -- and each phase is measured for a few hundred frames.
+-- entities, blips, keys and a camera, and a stub server that answers what the
+-- client asks it (loot cells). The session is then walked through the phases a
+-- player sees -- lobby, warmup, boarding, the plane's doors-open cruise over the
+-- mainland, the jump, a match -- and the match through the things a player does
+-- in it: aiming down a scope, pinging, driving with boost, reviving, talking,
+-- standing outside the storm, the emote wheel, going down and spectating. Each
+-- phase is measured for a few hundred frames.
 --
--- WHAT IT COUNTS. Every native the code calls goes through a stub that counts it
--- against whatever is running: a loop callback by its registered name, a raw
--- thread by the file and line that created it, an event handler by its event.
--- Native calls per frame is the headline, because it is deterministic and
--- because a native is where the cost is in the game. Lua time per frame
--- (os.clock over the measured frames) and kilobytes allocated per frame (GC
--- stopped while measuring) are printed beside it.
+-- WHAT IT COUNTS, three ways, each exact and the same on every run:
+--   natives  every native the code calls, through a stub that charges it to
+--            whatever is running: a loop callback by its registered name, a raw
+--            thread by the file and line that created it, an event handler by
+--            its event.
+--   draws    the natives among those named Draw* (DrawSpritePoly, DrawPoly,
+--            DrawMarker, DrawSprite, DrawRect...), counted again on their own:
+--            a draw is a native here and a piece of render-thread work in the
+--            game, so a draw that comes back must show as a draw.
+--   KB       kilobytes allocated per frame, with the collector stopped while
+--            measuring. Deterministic, and the cost a geometry rebuild shows as.
+-- Lua time is printed per phase only, over the whole measured window, beside
+-- the step of the clock it was read from (os.clock ticks a whole millisecond on
+-- Windows' PUC Lua): per callback, a call is shorter than one tick.
 --
 -- WHAT IT CANNOT SEE. The engine side of a native: a DrawSpritePoly counts one
 -- here and costs the render thread a triangle there, and a GetEntityCoords is a
@@ -30,10 +41,10 @@
 -- includes the stubs. Use it to rank and to compare a before with an after; the
 -- in-game numbers are brbench / brab (client/debug.lua) and resmon.
 --
--- THE BUDGET. tools/perf_budget.lua holds a ceiling per phase on native calls
--- per frame. --check fails when a phase goes over it, which is how an ungated
--- per-frame loop gets caught before a playtest does. docs/testing.md says how to
--- rebaseline.
+-- THE BUDGET. tools/perf_budget.lua holds a ceiling per phase on each of the
+-- three counts. --check fails when a phase goes over any of them, which is how
+-- an ungated per-frame loop, a draw that came back or a rebuild every frame gets
+-- caught before a playtest does. docs/testing.md says how to rebaseline.
 
 local ARGS = {}
 do
@@ -58,6 +69,9 @@ local TOP  = tonumber(ARGS.top) or 5
 local MEASURE_FRAMES = tonumber(ARGS.frames) or 600
 local BUDGET_FILE = ROOT .. 'tools/perf_budget.lua'
 
+local realPrint = print
+local clock = os.clock
+
 --- The recorded budget, or nil. Under --check its frame count is the one used,
 --- so the per-frame averages are taken over the same window it was written from.
 local budget = nil
@@ -72,8 +86,25 @@ if ARGS.check then
     MEASURE_FRAMES = tonumber(budget.frames) or MEASURE_FRAMES
 end
 
-local realPrint = print
-local clock = os.clock
+--- The step of `clock` on this machine, in ms: the smallest nonzero difference
+--- between two readings, over a 50 ms busy loop. Lua time is printed beside it,
+--- because a number read off a clock is only as fine as its tick -- and on
+--- Windows' PUC Lua that tick is a whole millisecond, longer than most frames'
+--- worth of br_core here.
+local function clockStep()
+    local best = math.huge
+    local t0 = clock()
+    local last = t0
+    while true do
+        local now = clock()
+        if now ~= last then
+            if now - last < best then best = now - last end
+            last = now
+        end
+        if now - t0 >= 0.05 then break end
+    end
+    return best * 1000.0
+end
 
 -- The code under test draws a few things with math.random (a warmup spawn, a
 -- lobby idle clip). Seeded, so every run is the same session and the counts
@@ -81,12 +112,20 @@ local clock = os.clock
 math.randomseed(393)
 
 -- ------------------------------------------------------------ attribution ---
+--
+-- KILOBYTES ARE THE CODE'S OWN. Each bucket is charged what the collector counts
+-- between entering and leaving it, minus two things that are not the code under
+-- test: the harness's bookkeeping (the stack record below is made between two
+-- readings and charged to nobody) and what a native stub hands back. A stub's
+-- vector3 is a table here and a value in CfxLua, which allocates nothing for it,
+-- so counting it would charge GetEntityCoords to whoever asked.
 
+local gcCount = collectgarbage
 local buckets = {}
 local function bucket(key)
     local b = buckets[key]
     if not b then
-        b = { key = key, n = 0, t = 0.0, kb = 0.0, calls = 0, by = {} }
+        b = { key = key, n = 0, d = 0, kb = 0.0, calls = 0, by = {} }
         buckets[key] = b
     end
     return b
@@ -94,51 +133,50 @@ end
 
 local curB = bucket('(load)')
 local stack = {}
-local measuring = false
 
 --- Enter `key`, pausing whoever was running. Exclusive attribution: an event a
 --- callback triggers is charged to the event, not to the callback.
 local function enter(key)
-    local now, kb = clock(), collectgarbage('count')
+    local kb = gcCount('count')
     local top = stack[#stack]
-    if top then
-        top.b.t  = top.b.t + (now - top.t0)
-        top.b.kb = top.b.kb + (kb - top.kb0)
-    end
+    if top then top.b.kb = top.b.kb + (kb - top.kb0) end
     local b = bucket(key)
     b.calls = b.calls + 1
-    stack[#stack + 1] = { b = b, t0 = now, kb0 = kb }
+    local rec = { b = b, kb0 = 0.0 }
+    stack[#stack + 1] = rec
     curB = b
+    rec.kb0 = gcCount('count')
 end
 
 local function leave()
-    local now, kb = clock(), collectgarbage('count')
+    local kb = gcCount('count')
     local top = stack[#stack]
     stack[#stack] = nil
-    top.b.t  = top.b.t + (now - top.t0)
     top.b.kb = top.b.kb + (kb - top.kb0)
     local under = stack[#stack]
     if under then
-        under.t0, under.kb0 = now, kb
+        under.kb0 = gcCount('count')
         curB = under.b
     else
         curB = bucket('(harness)')
     end
 end
 
+--- Run `fn` under `key`. Its results are not wanted by any caller here, so none
+--- are packed: a packed result table would be the harness's allocation charged
+--- to the code.
 local function call(key, fn, ...)
     enter(key)
-    local res = table.pack(pcall(fn, ...))
+    local ok, err = pcall(fn, ...)
     leave()
-    if not res[1] then
+    if not ok then
         local b = bucket(key)
         b.errs = (b.errs or 0) + 1
         if not b.errSaid then
             b.errSaid = true
-            realPrint(('\27[33m[perf] %s errored: %s\27[0m'):format(key, tostring(res[2])))
+            realPrint(('\27[33m[perf] %s errored: %s\27[0m'):format(key, tostring(err)))
         end
     end
-    return table.unpack(res, 1, res.n)
 end
 
 -- ------------------------------------------------------------------- world ---
@@ -530,18 +568,27 @@ local function nativeFn(name)
     local f = natives[name]
     if f then return f end
     local body = IMPL[name] or defaultImpl(name)
-    local draws = ARGS.digest and name:match('^Draw')
+    local isDraw = name:match('^Draw') ~= nil
+    local fingerprint = ARGS.digest and isDraw
     f = function(...)
         local b = curB
         b.n = b.n + 1
+        if isDraw then b.d = b.d + 1 end
         local by = b.by
         by[name] = (by[name] or 0) + 1
-        if draws then
+        if fingerprint then
             local h = fold(digest.h, name)
             for i = 1, select('#', ...) do h = fold(h, (select(i, ...))) end
             digest.h, digest.n = h, digest.n + 1
         end
-        return body(...)
+        -- WHAT THE STUB ALLOCATES IS THE ENGINE'S, not the caller's: moved off
+        -- the running bucket by advancing its starting reading. No stub answers
+        -- more than six values.
+        local k0 = gcCount('count')
+        local r1, r2, r3, r4, r5, r6 = body(...)
+        local top = stack[#stack]
+        if top then top.kb0 = top.kb0 + (gcCount('count') - k0) end
+        return r1, r2, r3, r4, r5, r6
     end
     natives[name] = f
     seenNative[name] = true
@@ -819,7 +866,7 @@ local function hookLoop()
                 b.errs = (b.errs or 0) + 1
                 if not b.errSaid then
                     b.errSaid = true
-                    realPrint(('[33m[perf] %s errored: %s[0m'):format(key, tostring(err)))
+                    realPrint(('\27[33m[perf] %s errored: %s\27[0m'):format(key, tostring(err)))
                 end
                 error(err, 0)
             end
@@ -840,7 +887,7 @@ for _, f in ipairs(files) do
         chunk, err = load(fixed, name, 't', env)
     end
     if not chunk then
-        realPrint('[31mload error[0m ' .. f .. ': ' .. tostring(err))
+        realPrint('\27[31mload error\27[0m ' .. f .. ': ' .. tostring(err))
         loadErrors = loadErrors + 1
     else
         local key = 'load ' .. (f:match('([^/]+)$'))
@@ -848,7 +895,7 @@ for _, f in ipairs(files) do
         local ok, e2 = pcall(chunk)
         leave()
         if not ok then
-            realPrint('[31mrun error[0m ' .. f .. ': ' .. tostring(e2))
+            realPrint('\27[31mrun error\27[0m ' .. f .. ': ' .. tostring(e2))
             loadErrors = loadErrors + 1
         end
         if f:match('br_core/client/main%.lua$') then
@@ -1179,35 +1226,46 @@ local function snapshot()
     for k, b in pairs(buckets) do
         local by = {}
         for n, c in pairs(b.by) do by[n] = c end
-        s[k] = { n = b.n, t = b.t, kb = b.kb, calls = b.calls, by = by }
+        s[k] = { n = b.n, d = b.d, kb = b.kb, calls = b.calls, by = by }
     end
     return s
+end
+
+--- Buckets that are not br_core: the harness itself, the stub server, and the
+--- one-off file loads.
+local function counted(k)
+    return k ~= '(harness)' and k ~= '(server)' and not k:match('^load ')
 end
 
 local function diff(a, b, frames)
     local rows = {}
     for k, nb in pairs(b) do
-        local oa = a[k] or { n = 0, t = 0, kb = 0, calls = 0, by = {} }
-        local dn, dt, dkb = nb.n - oa.n, nb.t - oa.t, nb.kb - oa.kb
-        if (dn > 0 or dt > 0 or dkb > 0) and k ~= '(harness)'
-            and not k:match('^load ') then
+        local oa = a[k] or { n = 0, d = 0, kb = 0, calls = 0, by = {} }
+        local dn, dd, dkb = nb.n - oa.n, nb.d - oa.d, nb.kb - oa.kb
+        if (dn > 0 or dkb > 0) and counted(k) then
             local by = {}
             for n, c in pairs(nb.by) do
                 local d = c - (oa.by[n] or 0)
                 if d > 0 then by[#by + 1] = { name = n, n = d / frames } end
             end
-            table.sort(by, function(x, y) return x.n > y.n end)
-            rows[#rows + 1] = { key = k, n = dn / frames, ms = dt * 1000.0 / frames,
+            table.sort(by, function(x, y)
+                if x.n ~= y.n then return x.n > y.n end
+                return x.name < y.name
+            end)
+            rows[#rows + 1] = { key = k, n = dn / frames, d = dd / frames,
                                 kb = dkb / frames, by = by }
         end
     end
+    -- A TOTAL ORDER, so the sums below are taken in the same order on every run:
+    -- pairs() walks string keys in an order Lua 5.4 seeds afresh each run.
     table.sort(rows, function(x, y)
         if x.n ~= y.n then return x.n > y.n end
-        return x.ms > y.ms
+        if x.kb ~= y.kb then return x.kb > y.kb end
+        return x.key < y.key
     end)
-    local tot = { n = 0, ms = 0, kb = 0 }
+    local tot = { n = 0, d = 0, kb = 0 }
     for _, r in ipairs(rows) do
-        tot.n, tot.ms, tot.kb = tot.n + r.n, tot.ms + r.ms, tot.kb + r.kb
+        tot.n, tot.d, tot.kb = tot.n + r.n, tot.d + r.d, tot.kb + r.kb
     end
     return rows, tot
 end
@@ -1252,14 +1310,18 @@ collectgarbage('restart')
 local function fmt(n) return ('%.1f'):format(n) end
 
 if not ARGS.check and not ARGS.rebaseline then
+    local step = clockStep()
     realPrint(('br_core client, offline: %d measured frames per phase at 60 fps')
         :format(MEASURE_FRAMES))
-    realPrint('natives/frame is exact for this scene; Lua ms is this machine\'s PUC Lua, stubs included;')
-    realPrint('engine-side cost of a native (a DrawSpritePoly\'s triangles) is invisible here.')
+    realPrint('natives, draws (Draw* natives) and KB allocated per frame are exact and the same on every run.')
+    realPrint(("Lua ms is the whole phase on this machine's PUC Lua, stubs included, read off a clock "
+        .. 'that ticks %.3f ms: +/- %.4f ms/frame from the tick alone.'):format(step,
+        step / MEASURE_FRAMES))
+    realPrint("engine-side cost of a native (a DrawSpritePoly's triangles) is invisible here.")
     for _, r in ipairs(results) do
         realPrint('')
-        realPrint(('== %-14s natives/frame %7s   Lua ms/frame %6.3f (wall %6.3f)   KB/frame %7.1f')
-            :format(r.id, fmt(r.tot.n), r.tot.ms, r.wall, r.tot.kb))
+        realPrint(('== %-16s natives/frame %7s   draws/frame %6s   KB/frame %6.2f   Lua ms/frame %6.3f')
+            :format(r.id, fmt(r.tot.n), fmt(r.tot.d), r.tot.kb, r.wall))
         if ARGS.digest then realPrint('   draw digest ' .. r.digest) end
         for i = 1, math.min(TOP, #r.rows) do
             local row = r.rows[i]
@@ -1267,8 +1329,8 @@ if not ARGS.check and not ARGS.rebaseline then
             for j = 1, math.min(tonumber(ARGS.by) or 3, #row.by) do
                 top[#top + 1] = ('%s %s'):format(row.by[j].name, fmt(row.by[j].n))
             end
-            realPrint(('   %-34s %7s  %6.3f ms  %7.1f KB   %s'):format(row.key, fmt(row.n),
-                row.ms, row.kb, table.concat(top, ', ')))
+            realPrint(('   %-34s %7s  %6s draws  %6.2f KB   %s'):format(row.key, fmt(row.n),
+                fmt(row.d), row.kb, table.concat(top, ', ')))
         end
     end
     local errs = {}
