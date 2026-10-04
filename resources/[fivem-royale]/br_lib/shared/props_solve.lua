@@ -128,7 +128,13 @@ end
 function S.placeOk(t, near, inBounds, cfg)
     if inBounds ~= nil and inBounds(t.x, t.y) == true then return true, nil end
     local r = cfg.nearM or 150.0
-    if type(near) == 'table' and finite(near.x) and finite(near.y) and finite(near.z) then
+    -- NO type(near) == 'table' TEST: in CfxLua GetEntityCoords answers a
+    -- vector3, whose type() is 'vector3', and a table-only guard refused every
+    -- real position (server/fuel.lua records the same mistake). The field reads
+    -- work on a vector and on a plain table alike.
+    if near ~= nil and type(near) ~= 'number' and type(near) ~= 'string'
+       and type(near) ~= 'boolean'
+       and finite(near.x) and finite(near.y) and finite(near.z) then
         local dx, dy, dz = t.x - near.x, t.y - near.y, t.z - near.z
         if dx * dx + dy * dy + dz * dz <= r * r then return true, nil end
     end
@@ -284,8 +290,11 @@ end
 --- bobAmplitude, bobPeriodMs, spinDegPerSec and hoverPitch, read here at call
 --- time. Inside prompt range the lift eases toward 1 over hoverRiseMs and back
 --- to 0 over hoverFallMs; the height, the bob and the spin all scale with the
---- eased lift, so a prop at rest is perfectly still; and the pitch eases from
---- the prop's own toward hoverPitch, exactly as a rifle's does.
+--- eased lift, so a prop at rest is perfectly still; and the pitch tilts by
+--- hoverPitch from the prop's OWN pitch with the lift (a rifle rests flat, so
+--- for loot that is the same thing; a prop placed pitched keeps its pitch).
+--- The frame step is clamped to 100 ms, as loot.render clamps it, so a hitch
+--- does not jump the lift and the spin in one frame.
 ---
 --- WHY A TWIN RATHER THAN A CALL. animate() is a local in loot.lua threaded
 --- through a loot entry's arrival arc, its scale and its settle-once ground
@@ -311,6 +320,7 @@ end
 --- @return number yawOff  degrees added to the recorded yaw
 --- @return number k  the eased lift, 0 at rest
 function S.hover(st, restPitch, d2, dt, now, L)
+    dt = math.min(math.max(dt or 0.0, 0.0), 100.0)
     local pr = L.promptDistance or 2.5
     local want = (d2 <= pr * pr) and 1.0 or 0.0
     local lift = st.lift or 0.0
@@ -330,7 +340,7 @@ function S.hover(st, restPitch, d2, dt, now, L)
     local bob = math.sin(now / math.max(L.bobPeriodMs or 1900, 1) * math.pi * 2.0)
               * (L.bobAmplitude or 0.06) * k
     local rp = restPitch or 0.0
-    local pitch = rp + ((L.hoverPitch or 0.0) - rp) * k
+    local pitch = rp + (L.hoverPitch or 0.0) * k
     return k * (L.hoverHeight or 0.55) + bob, pitch, st.off, k
 end
 

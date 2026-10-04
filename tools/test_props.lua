@@ -310,6 +310,18 @@ do
     local up = { x = OUTSIDE.x, y = OUTSIDE.y, z = OUTSIDE.z + P.nearM + 1 }
     ok(not S.placeOk(up, OUTSIDE, IB, P), 'nearM is a 3-D distance: straight up counts')
     ok(not S.placeOk(OUTSIDE, nil, IB, P), 'outside with no known requester is refused')
+
+    -- A REAL POSITION IS A vector3, and type() of one is 'vector3' in CfxLua.
+    -- Stood in for here by answering 'vector3' for one table: a table-only
+    -- guard refused every real position, so every edit off the island failed.
+    do
+        local VEC = { x = OUTSIDE.x, y = OUTSIDE.y, z = OUTSIDE.z }
+        local realType = type
+        type = function(v) if v == VEC then return 'vector3' end return realType(v) end
+        local okVec = S.placeOk(justIn, VEC, IB, P)
+        type = realType
+        ok(okVec, 'a requester position that is a vector3 counts, not only a table')
+    end
     ok(not S.placeOk(OUTSIDE, { x = 0 / 0, y = 0, z = 0 }, IB, P),
         'a NaN requester position is no position')
     ok(not S.placeOk(OUTSIDE, nil, function() return 1 end, P),
@@ -445,7 +457,8 @@ do
     eq(k, 1.0, 'near for longer than hoverRiseMs: fully lifted')
     local bob = math.sin(t / LOOT.bobPeriodMs * math.pi * 2.0) * LOOT.bobAmplitude
     close(z, LOOT.hoverHeight + bob, 'the height is hoverHeight plus the bob', 1e-9)
-    close(pitch, LOOT.hoverPitch, 'the pitch has eased to hoverPitch', 1e-9)
+    close(pitch, 90.0 + LOOT.hoverPitch,
+        "the pitch tilts by hoverPitch from the prop's own, not toward it", 1e-9)
 
     -- Each number, changed on its own, changes what is drawn.
     local function sample(L)
@@ -472,15 +485,22 @@ do
                  hoverFallMs = 400, bobAmplitude = 0.0, bobPeriodMs = 1000,
                  spinDegPerSec = 90.0, hoverPitch = 0.0 }
     st = {}
-    local z1, _, _, k1 = S.hover(st, 0.0, 1.0, 500, 1000, L3)
+    local z1, k1
+    for i = 1, 5 do z1, _, _, k1 = S.hover(st, 0.0, 1.0, 100, 1000 + i * 100, L3) end
     close(st.lift, 0.5, 'half of hoverRiseMs is half the lift')
     close(k1, S.ease(0.5), 'and the height follows the eased lift')
     close(z1, 2.0 * S.ease(0.5), 'scaled by hoverHeight')
-    S.hover(st, 0.0, 1.0, 500, 1500, L3)
-    S.hover(st, 0.0, 1.0, 1000, 2500, L3)
-    local _, _, offFull = S.hover(st, 0.0, 1.0, 1000, 3500, L3)
-    close(offFull, S.angle(90.0 * 0.5 * S.ease(0.5) + 90.0 * 0.5 * 1.0 + 90.0 * 2.0),
-        'the spin is spinDegPerSec scaled by the lift', 1e-6)
+    for i = 6, 10 do S.hover(st, 0.0, 1.0, 100, 1000 + i * 100, L3) end
+    local _, _, off0 = S.hover(st, 0.0, 1.0, 0, 2000, L3)
+    local offFull
+    for i = 1, 10 do _, _, offFull = S.hover(st, 0.0, 1.0, 100, 2000 + i * 100, L3) end
+    close(S.angle(offFull - off0), 90.0,
+        'fully lifted, the spin is spinDegPerSec: a second turns it 90 degrees', 1e-6)
+
+    -- A HITCH IS CLAMPED to 100 ms, as loot.render clamps it.
+    st = {}
+    S.hover(st, 0.0, 1.0, 5000, 9000, L3)
+    close(st.lift, 0.1, 'a five-second frame lifts by 100 ms, not to the top')
 
     -- Outside prompt range nothing moves at all.
     st = {}

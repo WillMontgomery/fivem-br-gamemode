@@ -139,8 +139,13 @@ local function allowed(src, verb)
         ok, why = BR.Admin.devTrusted(src)
     end
     if ok ~= true then
-        print(('^3[br_core] brprop %s (client %s) refused: %s^7')
-            :format(verb, tostring(src), tostring(why)))
+        -- NOT PRINTED WHEN DEV MODE IS OFF: on a public server any client can
+        -- send these events, and a console line each would let one fill the
+        -- console. Off a dev box the answer is simply no.
+        if why ~= 'dev-mode-off' then
+            print(('^3[br_core] brprop %s (client %s) refused: %s^7')
+                :format(verb, tostring(src), tostring(why)))
+        end
         return false
     end
     return true
