@@ -99,8 +99,8 @@ local A = BR.Config.Airdrop
 local isTrue = BR.NativeTruthy
 
 --- [n] = { rec, obj, chute, flares, plane, pilot, blip, blipMini, gz, gzAt,
----         spawning, flying, warned, audio, assetsTried, primed, flaresReady,
----         groundTried, planeZ, planeZFrom, roof }
+---         spawning, flying, warned, audio, rotor, assetsTried, primed,
+---         flaresReady, groundTried, planeZ, planeZFrom, roof }
 ---
 --- `planeZ` IS THE WHOLE OF THE FLIGHT PLAN'S HEIGHT and `planeZFrom` is which
 --- authored POI raised it, or nil for "nothing did". Solved once by flightZ()
@@ -124,7 +124,219 @@ local isTrue = BR.NativeTruthy
 --- and lives in client/flares.lua. On the default projectile route it holds
 --- nothing at all -- the engine owns every flare it lights and expires them on
 --- AMMO_FLARE's own clock -- so there is no array here to tear down.
+---
+--- `rotor` IS THE RECEIPT FOR THE ROTOR RECORDING played from the aircraft --
+--- see playRotor -- and outlives the aircraft so /brairdrop can still say what
+--- happened.
 local drops = {}
+
+-- ---------------------------------------------------------------------------
+-- The rotor recording (#382)
+-- ---------------------------------------------------------------------------
+--
+-- Owner, 2026-10-03: "is it possible to make the cargobob louder for the
+-- airdrops?", then "I want to hear it from 300m away" and "the engine sound can
+-- still play".
+--
+-- His recording, built into the br_audio bank by tools/build_audio.mjs, played
+-- from the local aircraft with PlaySoundFromEntity on top of its own engine.
+-- Every client builds its own Cargobob, so every client plays its own copy and
+-- nothing crosses the wire.
+--
+-- THREE RULES CARRY IT:
+--
+--   * A REAL SOUND ID, ALWAYS. The wave loops until it is stopped, so a sound
+--     started with -1 could never be stopped at all. Every id is stopped and
+--     released in dropPlane, BEFORE the aircraft is deleted, and dropPlane is
+--     the one exit every teardown goes through. Ids are a pool of about a
+--     hundred, so a leaked one is a leak for the rest of the session.
+--   * ONE BANK FOR EVERY DROP. Two drops can overlap, so the bank is asked for
+--     once and released when nothing is left that wants it -- never per drop,
+--     and never by removeDrop, because a re-send removes a drop and puts it
+--     straight back.
+--   * THE BANK'S ANSWER IS RECORDED, NOT OBEYED. RequestScriptAudioBank has been
+--     seen answering no for a bank that did load (citizenfx/fivem#2989), so the
+--     wait is bounded and the sound plays either way. /brairdrop prints what the
+--     bank said and whether the sound really started.
+--
+-- EVERY NATIVE IS GUARDED AND pcall'd, the same rule as setPlaneAudio: an audio
+-- problem must not cost the match its aircraft.
+
+--- The shared bank. `state` is 'idle', 'loading', 'ready' (it said yes),
+--- 'unanswered' (it never did within rotorBankWaitMs) or 'missing' (no native
+--- on this build). `gen` moves on every release, which is how a request still
+--- waiting finds out it has been canceled.
+local rotorBank = { state = 'idle', gen = 0, waitedMs = 0 }
+
+--- The test emitter `/brairdrop rotor at <meters>` puts up. Not a drop; it
+--- holds the bank while it exists.
+local calib = { obj = nil, rotor = nil, meters = nil, gen = 0 }
+
+--- Which recording plays: nil for the configured one, false for none (engine
+--- only), or the script name picked with `/brairdrop rotor <variant>`. This
+--- client, this session.
+local rotorPick = nil
+
+--- @return string|nil  the script name to play, nil for none
+local function pickedRotor()
+    if rotorPick == false then return nil end
+    return rotorPick or A.rotorSound
+end
+
+--- Stop one sound and hand its id back. Safe on nil, and on a build without
+--- the natives.
+--- @param id integer|nil
+local function stopRotorId(id)
+    if type(id) ~= 'number' or id < 0 then return end
+    if StopSound then pcall(StopSound, id) end
+    if ReleaseSoundId then pcall(ReleaseSoundId, id) end
+end
+
+--- Stop what a receipt is playing. The receipt stays, for /brairdrop.
+--- @param r table|nil
+local function stopRotor(r)
+    if not r then return end
+    stopRotorId(r.id)
+    r.id = nil
+    r.stopped = true
+end
+
+--- Start the recording `sound` on entity `ent`, with a real sound id.
+--- @param ent integer|nil
+--- @param sound string|nil  a script name in A.rotorSoundSet
+--- @return table  the receipt: { sound, id, bank, why, started, stopped }
+local function playRotor(ent, sound)
+    local r = { sound = sound, bank = rotorBank.state }
+    if not sound then
+        r.why = 'off (engine only)'
+        return r
+    end
+    if not ent or ent == 0 or not isTrue(DoesEntityExist(ent)) then
+        r.why = 'no entity to play from'
+        return r
+    end
+    if not GetSoundId or not PlaySoundFromEntity then
+        r.why = 'GetSoundId or PlaySoundFromEntity does not exist on this build'
+        return r
+    end
+    local gotId, id = pcall(GetSoundId)
+    if not gotId or type(id) ~= 'number' or id < 0 then
+        r.why = 'no free sound id'
+        return r
+    end
+    -- false = not a network sound: every client is playing its own copy from
+    -- its own aircraft, exactly as client/sfx.lua's playFrom does.
+    local played, err = pcall(PlaySoundFromEntity, id, sound, ent,
+                              A.rotorSoundSet, false, 0)
+    if not played then
+        stopRotorId(id)
+        r.why = 'threw: ' .. tostring(err)
+        return r
+    end
+    r.id = id
+    r.why = 'asked'
+    return r
+end
+
+--- Did the engine actually start it? WAITS up to half a second, so it runs in a
+--- thread. Any frame that says "not finished" settles it; a sound the engine
+--- cannot find reports finished at once, which is what a wrong name or a bank
+--- that is not loaded looks like from here.
+--- @param r table|nil
+local function probeRotor(r)
+    if not r or not r.id or not HasSoundFinished then return end
+    local verdict = 'silent'
+    for _ = 1, 10 do
+        Citizen.Wait(50)
+        if not r.id then return end
+        local asked, fin = pcall(HasSoundFinished, r.id)
+        if not asked then
+            verdict = 'unknown'
+            break
+        end
+        if not isTrue(fin) then
+            verdict = 'playing'
+            break
+        end
+    end
+    r.started = verdict
+end
+
+--- @return boolean  whether anything still wants the bank
+local function bankWanted()
+    return next(drops) ~= nil or calib.obj ~= nil
+end
+
+local function releaseRotorBank()
+    if rotorBank.state == 'idle' then return end
+    rotorBank.gen = rotorBank.gen + 1
+    rotorBank.state = 'idle'
+    if A.rotorBank and ReleaseNamedScriptAudioBank then
+        pcall(ReleaseNamedScriptAudioBank, A.rotorBank)
+    end
+end
+
+--- Release the bank once nothing wants it. Called where a drop is really gone
+--- -- the expiry in the render loop and clearAll -- and where the test emitter
+--- goes, and NOT from removeDrop: see the rules above.
+local function releaseBankIfIdle()
+    if not bankWanted() then releaseRotorBank() end
+end
+
+--- Ask for the bank and wait for its answer, bounded. WAITS, so it runs in a
+--- thread. While one request is waiting, another returns at once rather than
+--- asking twice; a bank that never answered is asked again next time.
+local function requestRotorBank()
+    local st = rotorBank.state
+    if (st ~= 'idle' and st ~= 'unanswered') or not A.rotorBank then return end
+    if not RequestScriptAudioBank then
+        rotorBank.state = 'missing'
+        return
+    end
+    rotorBank.gen = rotorBank.gen + 1
+    local gen = rotorBank.gen
+    rotorBank.state = 'loading'
+
+    local limit = A.rotorBankWaitMs or 5000
+    local waited = 0
+    local answered = false
+    while true do
+        local asked, yes = pcall(RequestScriptAudioBank, A.rotorBank, false)
+        if asked and isTrue(yes) then
+            answered = true
+            break
+        end
+        if waited >= limit then break end
+        Citizen.Wait(50)
+        -- RELEASED WHILE THIS WAITED: everything that wanted the bank has gone,
+        -- and asking again would load a bank nobody is left to release.
+        if rotorBank.gen ~= gen then return end
+        waited = waited + 50
+    end
+    rotorBank.waitedMs = waited
+    rotorBank.state = answered and 'ready' or 'unanswered'
+end
+
+--- Wait, bounded, for a bank another thread is still loading -- a client that
+--- joined mid-arm builds the aircraft on the same frame it first hears of the
+--- drop. WAITS, so it runs in a thread.
+local function awaitRotorBank()
+    local waited, limit = 0, A.rotorBankWaitMs or 5000
+    while rotorBank.state == 'loading' and waited < limit do
+        Citizen.Wait(50)
+        waited = waited + 50
+    end
+end
+
+--- Take the test emitter down, its sound first. The caller releases the bank.
+local function stopCalib()
+    calib.gen = calib.gen + 1
+    stopRotor(calib.rotor)
+    if calib.obj and isTrue(DoesEntityExist(calib.obj)) then
+        DeleteEntity(calib.obj)
+    end
+    calib.obj, calib.rotor, calib.meters = nil, nil, nil
+end
 
 -- ---------------------------------------------------------------------------
 -- Teardown
@@ -133,6 +345,11 @@ local drops = {}
 --- The plane and its crew. Separate from dropProps because it goes FIRST: the
 --- aircraft's work is done at the release, and the crate's has only just begun.
 local function dropPlane(d)
+    -- THE RECORDING FIRST, while the aircraft it plays from still exists. Every
+    -- teardown path reaches this line -- the end of the flyover, a re-send, the
+    -- expiry, the match ending, the resource stopping -- and a looping wave on
+    -- an id nobody stops plays for the rest of the session.
+    stopRotor(d.rotor)
     if d.pilot and isTrue(DoesEntityExist(d.pilot)) then DeleteEntity(d.pilot) end
     if d.plane and isTrue(DoesEntityExist(d.plane)) then DeleteEntity(d.plane) end
     d.plane, d.pilot = nil, nil
@@ -198,6 +415,7 @@ end
 
 local function clearAll()
     for n in pairs(drops) do removeDrop(n) end
+    releaseBankIfIdle()
 end
 
 -- ---------------------------------------------------------------------------
@@ -346,6 +564,8 @@ end)
 -- -- one owner, one teardown.
 AddEventHandler('onResourceStop', function(res)
     if res ~= GetCurrentResourceName() then return end
+    -- The test emitter first, so clearAll finds nothing left wanting the bank.
+    stopCalib()
     clearAll()
 end)
 
@@ -550,7 +770,11 @@ local function spawnPlane(d)
         -- it just does it with the props stopped, which is worse and is not
         -- worth losing the flyover over.
         local pilotModel = GetHashKey(A.planePilot or 's_m_m_pilot_01')
-        if loadModel(pilotModel) and isTrue(DoesEntityExist(plane)) then
+        -- STILL THIS DROP'S AIRCRAFT AFTER THE WAIT, not merely "an entity with
+        -- this handle": the game reuses handles, and a drop torn down while the
+        -- pilot streamed has no record to read and nobody to delete a pilot.
+        if loadModel(pilotModel) and d.rec and d.plane == plane
+           and isTrue(DoesEntityExist(plane)) then
             local pilot = CreatePed(4, pilotModel, px, py, flightZ(d),
                 d.rec.heading or 0.0, false, false)
             SetModelAsNoLongerNeeded(pilotModel)
@@ -588,7 +812,23 @@ local function spawnPlane(d)
         -- it was the maximum would look exactly like the native doing nothing.
         d.audio = BR.Airdrop.setPlaneAudio(plane, A.planeAudioPriority)
 
+        -- ═══ THE ROTOR RECORDING (#382), ON TOP OF THE ENGINE ═══
+        --
+        -- After the engine is on, so the two start together, and after a bank
+        -- still loading has answered. Only while this is still the drop's
+        -- aircraft: the waits above can outlast the drop, and a drop torn down
+        -- inside one has already deleted this plane -- exactly the moment an id
+        -- would be taken that nothing will ever stop.
+        if pickedRotor() then awaitRotorBank() end
+        if d.rec and d.plane == plane then
+            stopRotor(d.rotor)
+            d.rotor = playRotor(plane, pickedRotor())
+        end
+
         d.flying = false
+
+        -- Whether it really started, for /brairdrop. Last, because it waits.
+        probeRotor(d.rotor)
     end)
 end
 
@@ -848,6 +1088,10 @@ local function primeAssets(d)
     -- on the very next frame and keep doing it until the blip expired.
     if d.assetsTried then return end
     d.assetsTried = true
+
+    -- THE ROTOR BANK (#382), on a thread of its own so its wait never holds up
+    -- the props' streams. Minutes before the aircraft is built, like the rest.
+    if pickedRotor() then Citizen.CreateThread(requestRotorBank) end
 
     Citizen.CreateThread(function()
         -- THE PROJECTILE ROUTE'S WEAPON ASSET, which is the one with a
@@ -1139,6 +1383,8 @@ BR.Loop.register(BR.Loop.FRAME, 'airdrop.render', function()
             -- (owner, 2026-08-22). The blip goes and with it the whole entry.
             -- What is left on the ground is ordinary loot with ordinary rules.
             removeDrop(n)
+            -- And the rotor bank, if that was the last drop wanting it.
+            releaseBankIfIdle()
         else
             -- Re-asserted, not assumed. addBlip is idempotent and cheap, and
             -- this is what makes the marker survive anything that removes it
@@ -1234,6 +1480,189 @@ end)
 
 -- ---------------------------------------------------------------- observing ---
 
+--- The variant a word names: its short name ('near') or its script name.
+--- @param word string|nil
+--- @return table|nil  { name, sound }
+local function rotorVariant(word)
+    for _, v in ipairs(A.rotorVariants or {}) do
+        if word == v.name or word == v.sound then return v end
+    end
+    return nil
+end
+
+--- 'near (cargobob_rotor_near)', or 'off'.
+--- @param sound string|nil
+--- @return string
+local function rotorLabel(sound)
+    if not sound then return 'off' end
+    local v = rotorVariant(sound)
+    return v and ('%s (%s)'):format(v.name, sound) or tostring(sound)
+end
+
+--- One receipt as one line.
+--- @param r table|nil
+--- @return string
+local function rotorLine(r)
+    if not r then return 'nothing played yet' end
+    local state = r.stopped and 'stopped' or tostring(r.why)
+    return ('%s, sound id %s, %s, started %s, bank was %s')
+        :format(rotorLabel(r.sound), tostring(r.id), state,
+                tostring(r.started or 'not probed'), tostring(r.bank))
+end
+
+--- The bank as one line.
+--- @return string
+local function bankLine()
+    local s = rotorBank.state
+    if s == 'ready' or s == 'unanswered' then
+        s = ('%s after %dms'):format(s, rotorBank.waitedMs)
+    end
+    return ('bank %s %s'):format(tostring(A.rotorBank), s)
+end
+
+--- ═══ `/brairdrop rotor at <meters>`: THE OWNER'S TUNING TOOL ═══
+---
+--- A test emitter that far away in a straight line, so the target ("I want to
+--- hear it from 300m away") can be checked without waiting for a drop. It sits
+--- at the aircraft's height above the player where the distance allows -- 250m
+--- up, so 300 means 166m out and 250m up -- and straight ahead of where the
+--- player faces. It plays the picked variant; `/brairdrop rotor near` and the
+--- rest switch it in place, so the ladder can be walked at one distance.
+---
+--- A crate prop, visible on purpose: something to look at while listening, and
+--- built the way every part of a drop is (makePart: local, frozen, no collision).
+--- WAITS (the model, the bank), so it runs in a thread.
+--- @param meters number
+local function startCalib(meters)
+    stopCalib()
+    local gen = calib.gen
+    local sound = pickedRotor()
+    if not sound then
+        print('[br_core] airdrop rotor: the recording is off -- pick a variant '
+              .. 'first, e.g. /brairdrop rotor default')
+        releaseBankIfIdle()
+        return
+    end
+
+    local ped = PlayerPedId()
+    local p = GetEntityCoords(ped)
+    local h = math.rad(GetEntityHeading(ped) or 0.0)
+    local up = math.min(A.planeHeight or 250.0, meters)
+    local out = math.sqrt(math.max(meters * meters - up * up, 0.0))
+    local x, y, z = p.x - math.sin(h) * out, p.y + math.cos(h) * out, p.z + up
+
+    local model = GetHashKey(A.crateProp or 'prop_box_wood05a')
+    if not loadModel(model) then
+        print('[br_core] airdrop rotor: the emitter prop would not load')
+        releaseBankIfIdle()
+        return
+    end
+    if calib.gen ~= gen then return end     -- stopped or replaced meanwhile
+    local obj = makePart(model, x, y, z, nil)
+    if not obj then
+        print('[br_core] airdrop rotor: the emitter prop could not be created')
+        releaseBankIfIdle()
+        return
+    end
+    calib.obj, calib.meters = obj, meters
+
+    requestRotorBank()
+    awaitRotorBank()
+    if calib.gen ~= gen then return end
+    calib.rotor = playRotor(obj, sound)
+    probeRotor(calib.rotor)
+    if calib.gen ~= gen then return end
+    print(('[br_core] airdrop rotor: test emitter %.0fm away (%.0fm out, %.0fm '
+           .. 'up) -- %s; %s. /brairdrop rotor stop removes it')
+        :format(meters, out, up, rotorLine(calib.rotor), bankLine()))
+end
+
+--- `/brairdrop rotor <variant>`: pick it, and switch everything playing now.
+--- WAITS, so it runs in a thread.
+--- @param v table  { name, sound }
+local function switchRotor(v)
+    rotorPick = v.sound
+    -- A pick made while the recording was off may find the bank never asked for.
+    if bankWanted() then
+        requestRotorBank()
+        awaitRotorBank()
+    end
+
+    -- A SNAPSHOT, because the probe below waits and a drop can arrive meanwhile:
+    -- adding a key to a table being walked with pairs() is undefined in Lua.
+    local live = {}
+    for n, d in pairs(drops) do
+        if d.plane and isTrue(DoesEntityExist(d.plane)) then
+            live[#live + 1] = { n = n, d = d }
+        end
+    end
+    for _, it in ipairs(live) do
+        local d = it.d
+        if d.plane and isTrue(DoesEntityExist(d.plane)) then
+            stopRotor(d.rotor)
+            d.rotor = playRotor(d.plane, v.sound)
+            probeRotor(d.rotor)
+            print(('[br_core] airdrop rotor: drop %d -- %s; %s')
+                :format(it.n, rotorLine(d.rotor), bankLine()))
+        end
+    end
+    if calib.obj then
+        stopRotor(calib.rotor)
+        calib.rotor = playRotor(calib.obj, v.sound)
+        probeRotor(calib.rotor)
+        print(('[br_core] airdrop rotor: test emitter %.0fm away -- %s; %s')
+            :format(calib.meters or 0, rotorLine(calib.rotor), bankLine()))
+    end
+    if #live == 0 and not calib.obj then
+        print(('[br_core] airdrop rotor: picked %s -- it plays on the next flyover, '
+               .. 'and on /brairdrop rotor at <meters>'):format(rotorLabel(v.sound)))
+    end
+end
+
+--- @param args table  the command's words, args[1] == 'rotor'
+local function rotorCommand(args)
+    local verb = args[2]
+    if verb == 'at' then
+        local m = tonumber(args[3])
+        if not m or m < 1 or m > 5000 then
+            print('[br_core] /brairdrop rotor at <meters> -- 1 to 5000')
+            return
+        end
+        Citizen.CreateThread(function() startCalib(m) end)
+        return
+    end
+    if verb == 'stop' then
+        stopCalib()
+        releaseBankIfIdle()
+        print('[br_core] airdrop rotor: test emitter removed')
+        return
+    end
+    if verb == 'off' then
+        rotorPick = false
+        for _, d in pairs(drops) do stopRotor(d.rotor) end
+        stopCalib()
+        releaseBankIfIdle()
+        print('[br_core] airdrop rotor: off -- the aircraft play their engine only, '
+              .. 'until /brairdrop rotor <variant>')
+        return
+    end
+    local v = rotorVariant(verb)
+    if v then
+        Citizen.CreateThread(function() switchRotor(v) end)
+        return
+    end
+
+    local names = {}
+    for _, it in ipairs(A.rotorVariants or {}) do names[#names + 1] = it.name end
+    print(('[br_core] /brairdrop rotor <%s> -- pick the recording; it switches on '
+           .. 'the aircraft and the test emitter at once'):format(table.concat(names, '|')))
+    print('[br_core] /brairdrop rotor at <meters> -- a test emitter that far away '
+          .. '(250m up where it can be), playing the pick')
+    print('[br_core] /brairdrop rotor stop -- remove the test emitter')
+    print('[br_core] /brairdrop rotor off -- engine only, until a variant is picked')
+    print(('[br_core] picked: %s; %s'):format(rotorLabel(pickedRotor()), bankLine()))
+end
+
 --- What this client currently believes about the match's airdrop.
 ---
 --- WRITTEN BECAUSE A SILENT FAILURE HERE COSTS A WHOLE ROUND. A match gets
@@ -1255,7 +1684,15 @@ end)
 --- setting 0 and then 2 on the SAME aircraft, on the same pass, and listening.
 --- Across two matches the altitude, the weather and where you are standing have
 --- all changed; within one flyover, nothing has but the number.
+---
+--- `/brairdrop rotor ...` IS THE SAME IDEA FOR THE ROTOR RECORDING (#382): pick
+--- a variant and it switches on the aircraft in the air, or put up a test
+--- emitter at a given distance with `rotor at <meters>`. See rotorCommand.
 RegisterCommand('brairdrop', function(_, args)
+    if args and args[1] == 'rotor' then
+        rotorCommand(args)
+        return
+    end
     if args and args[1] == 'audio' then
         local n = tonumber(args[2])
         if not n then
@@ -1436,11 +1873,22 @@ RegisterCommand('brairdrop', function(_, args)
             :format(au and tostring(au.asked) or 'nothing yet',
                     au and tostring(au.applied) or 'false',
                     au and tostring(au.why) or 'the plane has not been built'))
+        -- THE ROTOR RECORDING'S RECEIPT (#382): which variant, the sound id,
+        -- whether the engine really started it, and what the bank had said by
+        -- then. "started silent" with "bank was unanswered" is a bank that never
+        -- loaded; "started silent" with "bank was ready" is a name that does
+        -- not match.
+        print(('    rotor: %s'):format(rotorLine(d.rotor)))
     end
     if not any then
         print('  no drop record on this client -- nothing has been announced, '
               .. 'or it has already expired')
     end
+    print(('  rotor: picked %s; %s; test emitter %s')
+        :format(rotorLabel(pickedRotor()), bankLine(),
+                calib.obj and ('%.0fm away -- %s'):format(calib.meters or 0,
+                                                         rotorLine(calib.rotor))
+                          or 'none'))
 
     -- ═══ THE FLARE LINE IS THE ONE THAT COST TWO ROUNDS ═══
     --

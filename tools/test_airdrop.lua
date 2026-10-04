@@ -6876,6 +6876,597 @@ do
         crate2 and ('%.1f'):format(crate2.z) or 'no crate')
 end
 
+-- =========================================================================
+-- PART C, continued -- the rotor recording (#382)
+-- =========================================================================
+--
+-- The owner's Cargobob recording, played from the aircraft with a REAL sound id
+-- out of the br_audio bank. Every block above ran with these natives ABSENT,
+-- which is the "missing on this build" case passing silently; from here on they
+-- are stubbed, and every call lands in one ordered log so a test can ask not
+-- only whether the sound was stopped but whether it was stopped BEFORE the
+-- aircraft it plays from was deleted.
+--
+-- WHAT THIS CANNOT TELL YOU: whether the bank loads, whether the names resolve
+-- in the game, or how far the sound carries. tools/test_audio.lua reads the
+-- built files back; the rest is `/brairdrop rotor at 300` on the dev box.
+
+local snd = {}
+local sndLog = {}
+
+local AUDIO_NATIVES = { 'GetSoundId', 'PlaySoundFromEntity', 'StopSound',
+                        'ReleaseSoundId', 'HasSoundFinished',
+                        'RequestScriptAudioBank', 'ReleaseNamedScriptAudioBank' }
+
+local function installAudio()
+    function GetSoundId()
+        snd.nextId = snd.nextId + 1
+        return snd.nextId
+    end
+    function PlaySoundFromEntity(id, name, ent, set, net, p5)
+        sndLog[#sndLog + 1] = { op = 'play', id = id, name = name, ent = ent,
+                                set = set, net = net, p5 = p5 }
+        snd.live[id] = true
+    end
+    function StopSound(id)
+        sndLog[#sndLog + 1] = { op = 'stop', id = id }
+        snd.live[id] = nil
+    end
+    function ReleaseSoundId(id)
+        sndLog[#sndLog + 1] = { op = 'release', id = id }
+        snd.released[id] = true
+    end
+    --- 0 by default: a BOOL "no", which is truthy in Lua -- the shape that
+    --- would read a playing sound as finished if it were read bare.
+    function HasSoundFinished() return snd.finished end
+    function RequestScriptAudioBank(name, net)
+        snd.bankAsks = snd.bankAsks + 1
+        sndLog[#sndLog + 1] = { op = 'ask', name = name, net = net }
+        return snd.bankAnswer
+    end
+    function ReleaseNamedScriptAudioBank(name)
+        sndLog[#sndLog + 1] = { op = 'bankRelease', name = name }
+    end
+end
+
+local function removeAudio()
+    for _, k in ipairs(AUDIO_NATIVES) do _G[k] = nil end
+end
+
+--- A clean client, the audio natives in, and every count back at zero. The
+--- reset's own resource stop releases whatever the previous block left, so
+--- the log is cleared AFTER it.
+local function audioReset()
+    installAudio()
+    clientReset()
+    snd = { nextId = 0, live = {}, released = {}, finished = 0,
+            bankAnswer = 1, bankAsks = 0 }
+    sndLog = {}
+end
+
+-- The aircraft's deletion goes in the same log, so an order can be asserted.
+local realDeleteEntity = DeleteEntity
+function DeleteEntity(e)
+    if vehicles[e] then sndLog[#sndLog + 1] = { op = 'delete', e = e } end
+    realDeleteEntity(e)
+end
+
+local function planeHandle()
+    for h in pairs(vehicles) do return h end
+    return nil
+end
+
+local function plays()
+    local out = {}
+    for _, e in ipairs(sndLog) do
+        if e.op == 'play' then out[#out + 1] = e end
+    end
+    return out
+end
+
+local function count(op)
+    local n = 0
+    for _, e in ipairs(sndLog) do
+        if e.op == op then n = n + 1 end
+    end
+    return n
+end
+
+local function liveIds()
+    local n = 0
+    for _ in pairs(snd.live) do n = n + 1 end
+    return n
+end
+
+--- Was `id` stopped AND released, both before `plane` was deleted?
+local function stoppedFirst(id, plane)
+    local stopAt, relAt, delAt
+    for i, e in ipairs(sndLog) do
+        if e.op == 'stop' and e.id == id and not stopAt then stopAt = i end
+        if e.op == 'release' and e.id == id and not relAt then relAt = i end
+        if e.op == 'delete' and e.e == plane and not delAt then delAt = i end
+    end
+    return stopAt ~= nil and relAt ~= nil and delAt ~= nil
+           and stopAt < delAt and relAt < delAt,
+        ('stop at %s, release at %s, delete at %s'):format(tostring(stopAt),
+            tostring(relAt), tostring(delAt))
+end
+
+--- A drop whose aircraft is in the air from the announcement and flies the
+--- real schedule: released planeLeadMs later, gone planeTrailMs after that.
+local function flyover(n, poi)
+    local t0  = gameMs
+    local rel = t0 + A.planeLeadMs
+    local rec = BR.BuildAirdropRecord(n or 1,
+        poi or { id = 'lsia', x = 100.0, y = 200.0, z = 30.0 },
+        260.0, t0, rel + A.descentMs, 0.0, rel)
+    fire(BR.Net.AIRDROP_SYNC, rec)
+    render()
+    return rec
+end
+
+--- Everything /brairdrop prints, as one string.
+local function said(args)
+    local lines = {}
+    local realPrintFn = print
+    print = function(s) lines[#lines + 1] = tostring(s) end
+    local okRun, err = pcall(commands['brairdrop'], 0, args or {}, '')
+    print = realPrintFn
+    return table.concat(lines, '\n'), okRun, err
+end
+
+describe('client: the rotor recording plays from the aircraft, on a real id')
+do
+    audioReset()
+    flyover()
+    local plane = planeHandle()
+    ok(plane ~= nil, 'the aircraft is up')
+
+    local p = plays()
+    eq(#p, 1, 'the recording is started once')
+    local first = p[1] or {}
+    eq(first.name, A.rotorSound, 'the configured variant')
+    eq(first.name, 'cargobob_rotor', 'which is the default rung of the ladder')
+    eq(first.set, 'br_airdrop_soundset', 'out of the br_audio soundset')
+    eq(first.ent, plane, 'from the aircraft itself')
+    eq(first.net, false, 'as a local sound: every client plays its own copy')
+    ok(type(first.id) == 'number' and first.id >= 0,
+        'on a real id, never -1 -- a looping wave on -1 can never be stopped',
+        tostring(first.id))
+
+    -- THE BANK, AT THE ANNOUNCEMENT AND BEFORE THE PLAY.
+    local askAt, playAt
+    for i, e in ipairs(sndLog) do
+        if e.op == 'ask' and not askAt then askAt = i end
+        if e.op == 'play' and not playAt then playAt = i end
+    end
+    ok(askAt and playAt and askAt < playAt, 'the bank is asked for before the play')
+    local ask = sndLog[askAt or 1] or {}
+    eq(ask.name, 'br_sfx/br_cargobob', 'by the name br_audio mounts it under')
+    eq(ask.net, false, 'and not over the network')
+    eq(snd.bankAsks, 1, 'a bank that says yes is asked once')
+
+    local text = said({})
+    ok(text:find('rotor: default (cargobob_rotor), sound id 1, asked, started '
+                 .. 'playing, bank was ready', 1, true) ~= nil,
+        '/brairdrop prints the receipt: variant, id, started, and the bank', text)
+    ok(text:find('bank br_sfx/br_cargobob ready after 0ms', 1, true) ~= nil,
+        'and the bank line')
+end
+
+describe('client: every way the aircraft goes stops and releases its sound')
+do
+    -- dropPlane is the single exit, and these are all the ways into it. Each
+    -- one must stop AND release the id, BEFORE the aircraft is deleted.
+
+    -- 1. The flyover ends: the render loop's plane window closes.
+    audioReset()
+    local rec = flyover()
+    local plane, id = planeHandle(), (plays()[1] or {}).id
+    gameMs = rec.tRelease + A.planeTrailMs + 1
+    render()
+    eq(planeHandle(), nil, 'the flyover ends and the aircraft goes')
+    local good, why = stoppedFirst(id, plane)
+    ok(good, 'and its sound is stopped and released first', why)
+    eq(liveIds(), 0, 'nothing is left playing')
+
+    -- 2. A re-send of the same drop while the aircraft is up. It replaces the
+    -- drop, so the old aircraft and its sound go and a new pair comes up.
+    audioReset()
+    rec = flyover()
+    plane, id = planeHandle(), (plays()[1] or {}).id
+    fire(BR.Net.AIRDROP_SYNC, rec)
+    good, why = stoppedFirst(id, plane)
+    ok(good, 'a re-send stops and releases the old sound before the old aircraft', why)
+    render()
+    eq(#plays(), 2, 'and the new aircraft starts its own')
+    eq(liveIds(), 1, 'one sound playing, not two')
+    eq(count('bankRelease'), 0, 'and the bank is NOT released by a re-send')
+
+    -- 3. The match leaves PLAYING, in each of the three states that clear it.
+    for _, st in ipairs({ BR.MatchState.WAITING, BR.MatchState.ENDED,
+                          BR.MatchState.CLEANUP }) do
+        audioReset()
+        flyover()
+        plane, id = planeHandle(), (plays()[1] or {}).id
+        fire(BR.Net.STATE, { state = st })
+        good, why = stoppedFirst(id, plane)
+        ok(good, ('%s stops and releases the sound before the aircraft'):format(st), why)
+        eq(count('bankRelease'), 1, ('%s releases the bank'):format(st))
+    end
+
+    -- 4. The player is back in the lobby: the render loop clears everything.
+    audioReset()
+    flyover()
+    plane, id = planeHandle(), (plays()[1] or {}).id
+    BR.State.me.state = BR.PlayerState.LOBBY
+    render()
+    good, why = stoppedFirst(id, plane)
+    ok(good, 'back at the lobby, the sound stops before the aircraft goes', why)
+    eq(count('bankRelease'), 1, 'and the bank is released')
+    BR.State.me.state = BR.PlayerState.ALIVE
+
+    -- 5. The resource stops.
+    audioReset()
+    flyover()
+    plane, id = planeHandle(), (plays()[1] or {}).id
+    fire('onResourceStop', 'br_core')
+    good, why = stoppedFirst(id, plane)
+    ok(good, 'a resource stop stops and releases the sound first', why)
+    eq(count('bankRelease'), 1, 'and releases the bank')
+
+    -- 6. A drop torn down while its aircraft's pilot is still streaming: the
+    -- aircraft is built and deleted before the thread gets to the sound, and
+    -- the thread must not take an id nothing will ever stop.
+    --
+    -- AND THE GAME REUSES ENTITY HANDLES, so "does the plane still exist" is
+    -- not enough: the deleted aircraft's handle can already belong to the next
+    -- drop's aircraft, and a sound started on it from the dead drop would be
+    -- one nobody holds. So every handle answers "exists" while this runs, and
+    -- the dead drop must still play nothing.
+    audioReset()
+    local queued = {}
+    local realCreate = Citizen.CreateThread
+    Citizen.CreateThread = function(fn) queued[#queued + 1] = fn end
+    flyover()
+    Citizen.CreateThread = realCreate
+    local realLoaded, realExists = HasModelLoaded, DoesEntityExist
+    HasModelLoaded = function(m)
+        if m == A.planePilot then
+            -- The pilot is still streaming when the match ends.
+            fire(BR.Net.STATE, { state = BR.MatchState.ENDED })
+        end
+        return realLoaded(m)
+    end
+    DoesEntityExist = function() return 1 end
+    for _, fn in ipairs(queued) do fn() end
+    HasModelLoaded, DoesEntityExist = realLoaded, realExists
+    eq(#plays(), 0, 'a drop torn down mid-spawn plays nothing, even on a reused handle')
+    eq(liveIds(), 0, 'and holds no id')
+end
+
+describe('client: one bank for every drop, released when none is left')
+do
+    -- TWO DROPS AT ONCE. One request between them, and the bank stays until
+    -- the second is gone too.
+    audioReset()
+    local t0 = gameMs
+    local poi = { id = 'lsia', x = 100.0, y = 200.0, z = 30.0 }
+    fire(BR.Net.AIRDROP_SYNC, BR.BuildAirdropRecord(1, poi, 260.0, t0,
+        t0 + A.descentMs, 0.0))
+    fire(BR.Net.AIRDROP_SYNC, BR.BuildAirdropRecord(2, poi, 260.0, t0 + 100000,
+        t0 + 100000 + A.descentMs, 0.0))
+    render()
+    eq(snd.bankAsks, 1, 'two drops, one request for the bank')
+
+    gameMs = t0 + A.blipMaxMs + 1
+    render()
+    eq(count('bankRelease'), 0, 'the first drop expiring leaves the bank for the second')
+
+    gameMs = t0 + 100000 + A.blipMaxMs + 1
+    render()
+    eq(count('bankRelease'), 1, 'the last drop expiring releases it')
+    eq((sndLog[#sndLog] or {}).name, 'br_sfx/br_cargobob', 'by its name')
+
+    -- THE ARM IS A RE-SEND, and it is the moment the aircraft is built. A
+    -- release there would make every drop's sound race a fresh bank load.
+    audioReset()
+    local rec = announceSited()
+    render()
+    eq(snd.bankAsks, 1, 'a sited drop asks for the bank at the announcement')
+    armSited(rec)
+    render()
+    eq(count('bankRelease'), 0, 'the arm does not release it')
+    eq(snd.bankAsks, 1, 'and does not ask again')
+    eq(#plays(), 1, 'and the armed aircraft plays')
+
+    -- RELEASED WHILE THE REQUEST IS STILL WAITING. The request thread must stop
+    -- asking: one more ask after the release would load a bank nobody is left
+    -- to release.
+    audioReset()
+    snd.bankAnswer = 0
+    local queued = {}
+    local realCreate = Citizen.CreateThread
+    Citizen.CreateThread = function(fn) queued[#queued + 1] = fn end
+    announce()
+    render()
+    Citizen.CreateThread = realCreate
+    local waits = 0
+    local realWait = Citizen.Wait
+    Citizen.Wait = function()
+        waits = waits + 1
+        if waits == 3 then fire(BR.Net.STATE, { state = BR.MatchState.ENDED }) end
+    end
+    queued[1]()                       -- primeAssets starts the bank first
+    Citizen.Wait = realWait
+    eq(snd.bankAsks, 3, 'the request stops asking the moment it is released')
+    local lastAsk, releasedAt = 0, nil
+    for i, e in ipairs(sndLog) do
+        if e.op == 'ask' then lastAsk = i end
+        if e.op == 'bankRelease' and not releasedAt then releasedAt = i end
+    end
+    ok(releasedAt ~= nil and lastAsk < releasedAt,
+        'and no ask comes after the release')
+    for i = 2, #queued do queued[i]() end
+    eq(#plays(), 0, 'the torn-down drop plays nothing')
+
+    -- AND THE NEXT DROP STARTS FROM A RELEASED BANK, so it asks again.
+    snd.bankAnswer = 1
+    announce()
+    render()
+    eq(snd.bankAsks, 4, 'the next announcement asks for the bank again')
+end
+
+describe('client: a bank that never answers still plays, and says so')
+do
+    -- citizenfx/fivem#2989: RequestScriptAudioBank can answer no for a bank
+    -- that did load. So the wait is bounded and the play goes ahead. Both "no"
+    -- shapes, because a bare `if yes` reads a 0 as a yes.
+    for _, no in ipairs({ 0, false }) do
+        audioReset()
+        snd.bankAnswer = no
+        flyover()
+        eq(snd.bankAsks, (A.rotorBankWaitMs // 50) + 1,
+            ('a bank answering %s is asked every 50ms for %dms, then left')
+                :format(tostring(no), A.rotorBankWaitMs))
+        eq(#plays(), 1, ('and the aircraft still plays (answer %s)'):format(tostring(no)))
+        local text = said({})
+        ok(text:find('bank was unanswered', 1, true) ~= nil,
+            'the receipt records that the bank never answered', text)
+        ok(text:find('unanswered after 5000ms', 1, true) ~= nil,
+            'and how long it waited')
+    end
+
+    -- Both "yes" shapes settle it on the first ask.
+    for _, yes in ipairs({ 1, true }) do
+        audioReset()
+        snd.bankAnswer = yes
+        flyover()
+        eq(snd.bankAsks, 1, ('a bank answering %s is asked once'):format(tostring(yes)))
+    end
+    eq(A.rotorBankWaitMs, 5000, 'the wait is five seconds')
+
+    -- HasSoundFinished is a BOOL too. A 1 at once is a sound the engine could
+    -- not find; a 0 is one that is playing -- and 0 is truthy in Lua.
+    audioReset()
+    snd.finished = 1
+    flyover()
+    ok(said({}):find('started silent', 1, true) ~= nil,
+        'a sound finished at once is reported silent')
+    audioReset()
+    snd.finished = 0
+    flyover()
+    ok(said({}):find('started playing', 1, true) ~= nil,
+        'a sound not finished (a 0) is reported playing')
+end
+
+describe('client: an aircraft built while the bank is still loading waits for it')
+do
+    -- A CLIENT THAT JOINED MID-ARM hears of the drop and builds its aircraft on
+    -- the same frame, so the bank request and the aircraft race. Threads are
+    -- coroutines here and Citizen.Wait yields, so the race can be stepped: the
+    -- bank hears "no" first, the aircraft gets as far as its sound, and only
+    -- then does the bank say yes. The play must come after that yes.
+    audioReset()
+    snd.bankAnswer = 0
+    local cos = {}
+    local realCreate, realWait = Citizen.CreateThread, Citizen.Wait
+    Citizen.CreateThread = function(fn) cos[#cos + 1] = coroutine.create(fn) end
+    Citizen.Wait = function() coroutine.yield() end
+    flyover()
+    Citizen.CreateThread = realCreate
+    local function step(co)
+        if coroutine.status(co) ~= 'suspended' then return end
+        local okR, err = coroutine.resume(co)
+        ok(okR, 'a thread runs without error', err)
+    end
+
+    step(cos[1])                      -- primeAssets starts the bank first
+    eq(snd.bankAsks, 1, 'the bank is asked, says no, and waits')
+    for i = 2, #cos do step(cos[i]) end
+    ok(planeHandle() ~= nil, 'the aircraft is built meanwhile')
+    eq(#plays(), 0, 'but its sound waits for the bank')
+
+    snd.bankAnswer = 1
+    step(cos[1])
+    eq(snd.bankAsks, 2, 'the bank says yes')
+    for i = 2, #cos do step(cos[i]) end
+    eq(#plays(), 1, 'and only then is the sound played')
+    local yesAt, playAt
+    for i, e in ipairs(sndLog) do
+        if e.op == 'ask' then yesAt = i end
+        if e.op == 'play' then playAt = i end
+    end
+    ok(yesAt and playAt and yesAt < playAt, 'after the yes, not before it')
+    ok(said({}):find('bank was ready', 1, true) ~= nil,
+        'and its receipt says the bank was ready')
+
+    Citizen.Wait = realWait
+    for _, co in ipairs(cos) do
+        while coroutine.status(co) == 'suspended' do coroutine.resume(co) end
+    end
+
+    -- AND AN AIRCRAFT DELETED UNDER THAT WAIT -- by another resource clearing
+    -- the area, say -- is still this drop's on paper. The play must look at the
+    -- entity itself and take no id for something that is not there.
+    audioReset()
+    snd.bankAnswer = 0
+    cos = {}
+    Citizen.CreateThread = function(fn) cos[#cos + 1] = coroutine.create(fn) end
+    Citizen.Wait = function() coroutine.yield() end
+    flyover()
+    Citizen.CreateThread = realCreate
+    step(cos[1])
+    for i = 2, #cos do step(cos[i]) end
+    local gone = planeHandle()
+    ok(gone ~= nil, 'the aircraft is built while the bank loads')
+    realDeleteEntity(gone)            -- not ours: no teardown runs
+    snd.bankAnswer = 1
+    step(cos[1])
+    for i = 2, #cos do step(cos[i]) end
+    eq(#plays(), 0, 'an aircraft deleted by somebody else gets no sound')
+    eq(liveIds(), 0, 'and no id is taken for it')
+    Citizen.Wait = realWait
+    for _, co in ipairs(cos) do
+        while coroutine.status(co) == 'suspended' do coroutine.resume(co) end
+    end
+end
+
+describe('client: nothing throws when the audio natives are missing')
+do
+    -- A BUILD WITHOUT THE BINDINGS. The aircraft must still fly, and every
+    -- command must still answer.
+    audioReset()
+    removeAudio()
+    local okFly, errFly = pcall(flyover)
+    ok(okFly, 'a flyover with no audio natives does not throw', errFly)
+    ok(planeHandle() ~= nil, 'and the aircraft still flies')
+    ok(said({}):find('br_cargobob missing', 1, true) ~= nil,
+        'the bank line says the native is missing')
+    for _, args in ipairs({ {}, { 'rotor' }, { 'rotor', 'near' },
+                            { 'rotor', 'at', '300' }, { 'rotor', 'stop' },
+                            { 'rotor', 'off' }, { 'rotor', 'default' } }) do
+        local _, okRun, err = said(args)
+        ok(okRun, ('/brairdrop %s does not throw'):format(table.concat(args, ' ')), err)
+    end
+    local okEnd, errEnd = pcall(fire, BR.Net.STATE, { state = BR.MatchState.ENDED })
+    ok(okEnd, 'and neither does the teardown', errEnd)
+
+    -- NATIVES THAT THROW. GetSoundId throwing plays nothing; a play that throws
+    -- hands its id straight back rather than leaking it.
+    audioReset()
+    GetSoundId = function() error('no ids today') end
+    local okA = pcall(flyover)
+    ok(okA and planeHandle() ~= nil, 'GetSoundId throwing costs the sound, not the aircraft')
+    ok(said({}):find('no free sound id', 1, true) ~= nil, 'and says why')
+
+    audioReset()
+    PlaySoundFromEntity = function() error('bad sound') end
+    local okB = pcall(flyover)
+    ok(okB and planeHandle() ~= nil, 'a play that throws costs the sound, not the aircraft')
+    ok(snd.released[1] == true, 'and its id is released at once')
+    ok(said({}):find('threw: ', 1, true) ~= nil, 'and the receipt says it threw')
+    installAudio()
+end
+
+describe('client: /brairdrop rotor switches the recording, and tests it at a distance')
+do
+    -- ON THE AIRCRAFT IN THE AIR: the old sound goes, the new one starts on the
+    -- same aircraft.
+    audioReset()
+    flyover()
+    local plane = planeHandle()
+    local before = (plays()[1] or {}).id
+    said({ 'rotor', 'near' })
+    local p = plays()
+    eq(#p, 2, '`rotor near` starts the near variant')
+    eq((p[2] or {}).name, 'cargobob_rotor_near', 'by its script name')
+    eq((p[2] or {}).ent, plane, 'on the same aircraft')
+    ok(snd.released[before] == true and count('stop') == 1,
+        'after stopping and releasing the one it replaces')
+    eq(liveIds(), 1, 'one sound playing')
+
+    -- EVERY RUNG OF THE LADDER IS PICKABLE BY ITS SHORT NAME.
+    for _, v in ipairs(A.rotorVariants) do
+        said({ 'rotor', v.name })
+        eq((plays()[#plays()] or {}).name, v.sound, ('`rotor %s` plays %s'):format(v.name, v.sound))
+    end
+    eq(#A.rotorVariants, 4, 'four variants: default, near, far, loud')
+
+    -- OFF: engine only, now and on the next flyover, and no bank asked for.
+    said({ 'rotor', 'off' })
+    eq(liveIds(), 0, '`rotor off` stops the recording on the aircraft')
+    audioReset()
+    said({ 'rotor', 'off' })
+    flyover()
+    eq(#plays(), 0, 'and a flyover after it plays none')
+    eq(snd.bankAsks, 0, 'and does not even ask for the bank')
+    ok(planeHandle() ~= nil, 'though the aircraft still flies, engine and all')
+    said({ 'rotor', 'default' })
+    eq((plays()[1] or {}).name, 'cargobob_rotor', '`rotor default` puts it back')
+
+    -- THE TEST EMITTER: 300m away in a straight line, at the flight height.
+    audioReset()
+    local text = said({ 'rotor', 'at', '300' })
+    local emitter, eh = nil, nil
+    for h, e in pairs(ents) do emitter, eh = e, h end
+    ok(emitter ~= nil, '`rotor at 300` puts up an emitter with no drop in the air')
+    if emitter then
+        local d = math.sqrt((emitter.x - me.x) ^ 2 + (emitter.y - me.y) ^ 2
+                            + (emitter.z - me.z) ^ 2)
+        ok(near(d, 300.0, 0.01), 'exactly 300m from the player', ('%.2f'):format(d))
+        ok(near(emitter.z - me.z, A.planeHeight, 0.01),
+            'at the aircraft\'s height above them', ('%.1f'):format(emitter.z - me.z))
+        eq(emitter.isNetwork, false, 'local and non-networked')
+    end
+    eq(snd.bankAsks, 1, 'it asks for the bank itself')
+    eq((plays()[1] or {}).ent, eh, 'and plays from the emitter')
+    ok(text:find('300m away (166m out, 250m up)', 1, true) ~= nil,
+        'and says where it is', text)
+
+    said({ 'rotor', 'far' })
+    local last = plays()[#plays()] or {}
+    eq(last.name, 'cargobob_rotor_far', 'a pick switches the emitter in place')
+    eq(last.ent, eh, 'on the same emitter')
+    eq(liveIds(), 1, 'one sound playing')
+
+    said({ 'rotor', 'stop' })
+    eq(liveIds(), 0, '`rotor stop` stops it')
+    ok(ents[eh] == nil, 'and removes the emitter')
+    eq(count('bankRelease'), 1, 'and releases the bank, nothing else wanting it')
+
+    -- CLOSER THAN THE FLIGHT HEIGHT: straight up.
+    audioReset()
+    said({ 'rotor', 'at', '100' })
+    for _, e in pairs(ents) do emitter = e end
+    ok(emitter and near(emitter.z - me.z, 100.0, 0.01) and near(emitter.x, me.x, 0.01)
+       and near(emitter.y, me.y, 0.01), 'under 250m, it is straight overhead')
+
+    -- A REPLACEMENT TAKES THE OLD EMITTER DOWN, and the bank stays.
+    said({ 'rotor', 'at', '500' })
+    local n = 0
+    for _ in pairs(ents) do n = n + 1 end
+    eq(n, 1, 'a second `rotor at` replaces the first emitter')
+    eq(liveIds(), 1, 'and its sound')
+    eq(count('bankRelease'), 0, 'without releasing the bank between them')
+
+    -- THE EMITTER HOLDS THE BANK TOO: a drop ending under it must not take the
+    -- bank away from the sound still playing.
+    flyover()
+    fire(BR.Net.STATE, { state = BR.MatchState.ENDED })
+    eq(count('bankRelease'), 0, 'a drop ending while the emitter plays keeps the bank')
+    eq(liveIds(), 1, 'and the emitter keeps playing')
+
+    local _, okBad = said({ 'rotor', 'at', 'far' })
+    ok(okBad, 'a distance that is not a number is refused, not thrown')
+    said({ 'rotor', 'default' })
+    fire('onResourceStop', 'br_core')
+    eq(liveIds(), 0, 'a resource stop takes the emitter\'s sound too')
+end
+
+removeAudio()
+DeleteEntity = realDeleteEntity
+
 -- ----------------------------------------------------------------- result ---
 
 print = realPrint
