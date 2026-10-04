@@ -13227,11 +13227,24 @@ do
     -- downed state looks different from death at a distance.
     local POSE_BY_MS = 400
 
+    -- ═══ #390: BOTH SETTLE ARMS, AND THEY ARE HELD TO DIFFERENT PROMISES ═══
+    --
+    -- `settle old` is 12bcfdc as it shipped: ClearPedTasksImmediately kills the
+    -- getup, so THIS screen has the pose back within POSE_BY_MS. On every OTHER
+    -- screen that is citizenfx/fivem#2684's repro (a clear on a ped just out of
+    -- a ragdoll, then the clip: others see the stand-up), and it is the default
+    -- no longer. `settle new` clears nothing: the engine's getup is allowed to
+    -- run -- a task the engine replicates like any other -- and the pose must
+    -- be back on the frame after it ends, in BOTH readings of the ambiguous
+    -- native, with no task clear from the settle at all.
+    for _, SETTLE in ipairs({ 'old', 'new' }) do
     for _, ANSWER in ipairs({ 'the render', 'the task' }) do
         local peds = { [5001] = { x = 0.0, y = 0.0, z = 30.0 },
                        [5002] = { x = 0.8, y = 0.0, z = 30.0 } }
         local CLI = newReviver(1, 2, peds)
         local env = CLI.env
+        env.BR.Dbno.ab.settle = SETTLE
+        local where = ('%s, settle %s'):format(ANSWER, SETTLE)
 
         -- THE ENGINE, in the three states this fixture is about.
         local dead       = true    -- the blast killed the ped outright
@@ -13253,10 +13266,18 @@ do
         -- against a blast that is still going.
         env.SetPedCanRagdoll = function() end
 
+        local clears = 0
         env.ClearPedTasksImmediately = function()
+            clears = clears + 1
             accepted, pose, pending, getupUntil = false, nil, nil, nil
         end
         env.ClearPedTasks = function() accepted, pose, pending = false, nil, nil end
+        -- THE GETUP IS A TASK THE ENGINE REPORTS (GET_IS_TASK_ACTIVE 16), and
+        -- it answers 1/0 here: `settle new` reads it to know when to re-pose.
+        env.GetIsTaskActive = function(_, task)
+            if task == 16 and getupUntil and CLI.now < getupUntil then return 1 end
+            return 0
+        end
 
         env.TaskPlayAnim = function(_, d, a)
             tasks = tasks + 1
@@ -13333,15 +13354,46 @@ do
              .. 'engine answers about %s -- BEFORE: the `fell` path has no '
              .. 're-pose after a ragdoll (only the live-knock path does), so '
              .. 'the pose was asked for once, mid-flight, where nothing could '
-             .. 'take it'):format(ANSWER),
+             .. 'take it'):format(where),
             ('rendering %s after %d task(s)'):format(tostring(pose), tasks))
 
-        ok(posedAt ~= nil and (posedAt - looseEndedAt) <= POSE_BY_MS,
-            ('and it is back in it within %dms of the physics letting go, not '
-             .. 'after a getup has finished standing it up (%s)')
-                :format(POSE_BY_MS, ANSWER),
-            posedAt and ('%dms later'):format(posedAt - looseEndedAt)
-                    or 'never posed at all')
+        local k0 = env.BR.Dbno.knock
+        if SETTLE == 'old' then
+            ok(posedAt ~= nil and (posedAt - looseEndedAt) <= POSE_BY_MS,
+                ('and it is back in it within %dms of the physics letting go, '
+                 .. 'not after a getup has finished standing it up (%s)')
+                    :format(POSE_BY_MS, where),
+                posedAt and ('%dms later'):format(posedAt - looseEndedAt)
+                        or 'never posed at all')
+            ok(k0.settle == 'old' and k0.clears >= 2,
+                ('and it got there by clearing the tasks on every settle (%s)')
+                    :format(where),
+                ('%d settle clear(s)'):format(k0.clears))
+        else
+            ok(posedAt ~= nil
+               and (posedAt - looseEndedAt) <= GETUP_MS + 3 * 16,
+                ('and it is back in it on the frame after the engine\'s getup '
+                 .. 'ends -- the getup is allowed, the stand-up after it is not '
+                 .. '(%s)'):format(where),
+                posedAt and ('%dms after the physics let go, getup %dms')
+                    :format(posedAt - looseEndedAt, GETUP_MS)
+                        or 'never posed at all')
+            -- ONE clear in the whole knock, and it is the RESURRECTION'S: a
+            -- blast kills the ped, so floorTheBody stands it up and clears the
+            -- dying task first. The settle itself clears nothing.
+            ok(k0.settle == 'new' and k0.clears == 0 and clears == 1,
+                ('and no settle ever ran ClearPedTasksImmediately -- the one '
+                 .. 'clear is the resurrection\'s (%s, #390)'):format(where),
+                ('%d settle clear(s), %d clear(s) in all'):format(k0.clears,
+                                                                 clears))
+            if ANSWER == 'the task' then
+                ok(k0.regetups >= 1,
+                    'and when the native says "playing" through the getup, it '
+                        .. 'is the getup ending that puts the pose back -- the '
+                        .. 'watchdog would never have asked',
+                    ('%d re-pose(s) after a getup'):format(k0.regetups))
+            end
+        end
 
         -- ═══ THE POSITION ═══
         local M    = env.BR.Config.Match
@@ -13352,7 +13404,7 @@ do
             ('and the other machines have been told where it ended up (%s) -- '
              .. 'BEFORE: the pair armed at the knock spends itself in the lull '
              .. 'and nothing re-arms it, so the second leg of the throw is '
-             .. 'carried by nothing at all'):format(ANSWER),
+             .. 'carried by nothing at all'):format(where),
             ('%.2fm between the body and the last position the clones were '
              .. 'given'):format(gap))
 
@@ -13365,9 +13417,10 @@ do
         local k = env.BR.Dbno.knock
         ok(k.looseFrames > 0 and k.settles >= 2,
             ('the knock record names the physics as the condition, and counts '
-             .. 'the re-poses that answered them (%s)'):format(ANSWER),
+             .. 'the re-poses that answered them (%s)'):format(where),
             ('%d loose frames (%d ragdoll, %d air), %d settle re-pose(s)')
                 :format(k.looseFrames, k.ragdollFrames, k.airFrames, k.settles))
+    end
     end
 
     -- ═══ AND A KNOCK THE PHYSICS NEVER TOUCHED PAYS NOTHING FOR ANY OF IT ═══
@@ -14158,11 +14211,10 @@ end
 -- crawl now REACHES a clone is a playtest question. What is pinned here is
 -- everything either machine DOES about it:
 --
---   1. the downed client tasks its own crawl in the networked form -- the
---      three trailing TaskPlayAnim arguments, which are phaseControlled, ikFlags
---      and bAllowOverrideCloneUpdate rather than the axis locks FiveM's docs
---      name them, all false -- on every path that tasks it, and puts it back
---      when it is lost;
+--   1. the downed client tasks its own crawl in the form its `args` switch
+--      names -- by default true, true, false, the form other screens were
+--      watched playing in August (#164) -- and never with the clone override,
+--      on every path that tasks it, and puts it back when it is lost;
 --   2. every OTHER client keeps its own copy of a downed player in the pose:
 --      it leaves a copy that is playing alone, poses one that is not (locally,
 --      with the clone override set) after a grace and at most once a second,
@@ -14214,6 +14266,9 @@ local function newObserver()
 
     -- OUR OWN PED keeps the rig's single task slot; the CLONE gets its own.
     local own = nil
+    -- WHETHER StopAnimTask ON THE CLONE TAKES. Nobody has watched it undo a
+    -- pose set with bAllowOverrideCloneUpdate, so the rig can answer no.
+    R.stopTakes = true
     env.TaskPlayAnim = function(ped, d, a, bi, bo, dur, flag, phase, pc, ik, ovr)
         R.tasks[#R.tasks + 1] = { ped = ped, dict = d, anim = a, flag = flag,
             dur = dur, phase = phase, pc = pc, ik = ik, ovr = ovr, at = CLI.now }
@@ -14231,7 +14286,8 @@ local function newObserver()
     end
     env.StopAnimTask = function(ped, d, a)
         R.stops[#R.stops + 1] = { ped = ped, dict = d, anim = a, at = CLI.now }
-        if ped == 5002 and R.clone and R.clone.dict == d and R.clone.anim == a then
+        if ped == 5002 and R.stopTakes and R.clone and R.clone.dict == d
+           and R.clone.anim == a then
             R.clone = nil
         end
     end
@@ -14590,14 +14646,15 @@ do
     for _, t in ipairs(own) do
         if t.dict == DICT then
             crawlTasks = crawlTasks + 1
-            if t.pc ~= false or t.ik ~= false or t.ovr ~= false
+            if t.pc ~= true or t.ik ~= true or t.ovr ~= false
                or t.flag ~= 1 or t.dur ~= -1 then networked = false end
         end
     end
     ok(crawlTasks >= 1 and networked,
-        'every crawl this client tasks on ITS OWN ped is the networked form -- '
-            .. 'phaseControlled, ikFlags and the clone override all false (#390)',
-        ('%d crawl tasks, all networked: %s'):format(crawlTasks, tostring(networked)))
+        'every crawl this client tasks on ITS OWN ped is the default `args old` '
+            .. 'form -- true, true and never the clone override (#390)',
+        ('%d crawl tasks, all in that form: %s'):format(crawlTasks,
+            tostring(networked)))
     local selfPose = false
     for _, t in ipairs(own) do if t.ovr == true then selfPose = true end end
     ok(not selfPose and env.BR.Dbno.clones[1] == nil,
@@ -14616,9 +14673,9 @@ do
     R.run(1000)
     local back = R.on(R.tasks, 5001, lostAt)
     ok(#R.on(R.tasks, 5001) > before and back[1] and back[1].dict == DICT
-       and back[1].pc == false and back[1].ik == false and back[1].ovr == false,
-        'a crawl lost on the downed player\'s own ped is re-tasked, in the '
-            .. 'networked form', ('%d re-tasks'):format(#back))
+       and back[1].pc == true and back[1].ik == true and back[1].ovr == false,
+        'a crawl lost on the downed player\'s own ped is re-tasked, in the same '
+            .. 'form and never the clone override', ('%d re-tasks'):format(#back))
 
     -- A REAL CRAWL, then a turn: every position write is keepTasks, keepIK, no
     -- warp -- `false` there cleared the clip 59 times in 60 frames (#164).
@@ -14650,6 +14707,422 @@ do
         'while the crawl itself still carries the body',
         ('%.2fm'):format(R.peds[5001].y - start.y))
     local _ = downAt
+end
+
+-- ==========================================================================
+-- #390: THE SETTLE THAT CLEARS A RAGDOLLED PED, AND THE SWITCHES THAT TEST IT.
+-- ==========================================================================
+--
+-- What changed between the owner watching other screens play the crawl
+-- (2026-08-17..21, #164) and "the peds are standing in place" (2026-10-04) is,
+-- of everything that tasks a SHOT-knocked ped, one line: 12bcfdc's settleBody
+-- runs ClearPedTasksImmediately on the frame the knockdown ragdoll lets go, and
+-- then the crawl. That is citizenfx/fivem#2684's repro: other players see the
+-- stand-up while the owner is already in the clip. client/dbno.lua's A/B block
+-- has the rest of the list.
+--
+-- No sandbox can watch a second machine, so what is pinned is what THIS client
+-- puts on the wire for each arm of each switch: whether a settle clears the
+-- ped's tasks, which argument form every crawl task carries, that both are read
+-- once per knock, and that `settle new` still puts the pose back on the frame
+-- an engine getup ends -- which is the job the clear was doing on this screen.
+
+--- A downed player shot down, with the knockdown ragdoll and the engine's
+--- getup modeled. opts.getup: the engine runs a getup (and reports it through
+--- GET_IS_TASK_ACTIVE 16) when the ragdoll lets go; opts.answer: what
+--- IsEntityPlayingAnim says ('the render' or 'the task', see dbno.blast.body).
+local function newShotRig(opts)
+    local peds = { [5001] = { x = 0.0, y = 0.0, z = 30.0 },
+                   [5002] = { x = 0.8, y = 0.0, z = 30.0 } }
+    local CLI = newReviver(1, 2, peds)
+    local env = CLI.env
+    local R = { CLI = CLI, env = env, tasks = {}, clears = 0, prints = {},
+                pose = nil, accepted = false }
+    local GETUP_MS = 800
+    local ragUntil, getupUntil, pending, gotUp = nil, nil, nil, true
+
+    env.print = function(s) R.prints[#R.prints + 1] = tostring(s) end
+    env.BR.Native.knockdown = function()
+        ragUntil, gotUp = CLI.now + 1400, false
+    end
+    env.IsPedRagdoll = function(ped)
+        return ped == 5001 and ragUntil ~= nil and CLI.now < ragUntil
+    end
+    if opts.getup then
+        env.GetIsTaskActive = function(_, task)
+            if task == 16 and getupUntil and CLI.now < getupUntil then return 1 end
+            return 0
+        end
+    end
+    env.TaskPlayAnim = function(ped, d, a, _, _, _, _, _, pc, ik, ovr)
+        R.tasks[#R.tasks + 1] = { ped = ped, dict = d, at = CLI.now,
+                                  pc = pc, ik = ik, ovr = ovr }
+        if ped ~= 5001 then return end
+        R.accepted = true
+        -- A ragdoll outranks a task and so does a getup: accepted, not posed.
+        if ragUntil and CLI.now < ragUntil then return end
+        if getupUntil and CLI.now < getupUntil then return end
+        pending = d .. '/' .. a
+    end
+    env.IsEntityPlayingAnim = function(ped)
+        if ped ~= 5001 then return false end
+        if opts.answer == 'the task' then return R.accepted end
+        return R.pose ~= nil
+    end
+    env.ClearPedTasksImmediately = function(ped)
+        if ped ~= 5001 then return end
+        R.clears = R.clears + 1
+        R.pose, pending, R.accepted, getupUntil = nil, nil, false, nil
+    end
+    env.ClearPedTasks = function() R.pose, pending, R.accepted = nil, nil, false end
+
+    function R.run(ms)
+        local target = CLI.now + ms
+        while CLI.now < target do
+            if pending then R.pose, pending = pending, nil end
+            if ragUntil and CLI.now >= ragUntil and not gotUp then
+                gotUp = true
+                if opts.getup then getupUntil = ragUntil + GETUP_MS end
+            end
+            if ragUntil and CLI.now < ragUntil then R.pose = nil end
+            if getupUntil then
+                if CLI.now < getupUntil then R.pose = nil
+                else
+                    R.getupEndedAt = R.getupEndedAt or getupUntil
+                    getupUntil = nil
+                end
+            end
+            CLI.now = CLI.now + 16
+            CLI.frame()
+        end
+    end
+    function R.knock()
+        env.TriggerEvent(env.BR.Net.DBNO_SET,
+            { downed = true, bleedEndsAt = 120000, revivePct = 0.0 })
+    end
+    function R.revive()
+        env.TriggerEvent(env.BR.Net.DBNO_SET, { downed = false })
+        R.run(500)
+        R.pose, pending, R.accepted = nil, nil, false
+    end
+    --- A car shoves the downed body: a short ragdoll and nothing else.
+    function R.bump() ragUntil, gotUp = CLI.now + 300, false end
+    --- The crawl tasks on our own ped, from `from` on.
+    function R.own(from)
+        local n = {}
+        for _, t in ipairs(R.tasks) do
+            if t.ped == 5001 and t.dict == 'move_injured_ground'
+               and (not from or t.at >= from) then n[#n + 1] = t end
+        end
+        return n
+    end
+    function R.form(list, pc, ik)
+        if #list == 0 then return false end
+        for _, t in ipairs(list) do
+            if t.pc ~= pc or t.ik ~= ik or t.ovr ~= false then return false end
+        end
+        return true
+    end
+    R.GETUP_MS = GETUP_MS
+    return R
+end
+
+describe('dbno.settle.ab')
+do
+    local CRAWL = 'move_injured_ground/front_loop'
+
+    -- ---------------------------------------------------- 1. the defaults
+    local R = newShotRig({ getup = true, answer = 'the render' })
+    local env = R.env
+    ok(env.BR.Dbno.ab.settle == 'new' and env.BR.Dbno.ab.args == 'old'
+       and env.BR.Dbno.ab.keeper == 'on',
+        'the switches default to settle new, args old, keeper on',
+        ('%s %s %s'):format(tostring(env.BR.Dbno.ab.settle),
+            tostring(env.BR.Dbno.ab.args), tostring(env.BR.Dbno.ab.keeper)))
+    R.knock()
+    R.run(5000)
+    local k = env.BR.Dbno.knock
+    ok(k.settles >= 1 and R.clears == 0 and k.clears == 0,
+        'A SHOT KNOCK NO LONGER CLEARS THE PED\'S TASKS on the frame the '
+            .. 'knockdown ragdoll lets go -- BEFORE (12bcfdc): '
+            .. 'ClearPedTasksImmediately then the crawl, citizenfx/fivem#2684\'s '
+            .. 'repro for "others see the stand-up"',
+        ('%d settle(s), %d clear(s)'):format(k.settles, R.clears))
+    ok(R.pose == CRAWL,
+        'and the body still ends up in the crawl after the engine\'s own getup',
+        tostring(R.pose))
+    ok(R.form(R.own(), true, true),
+        'every crawl task of the knock carries the default `args old` form -- '
+            .. 'true, true, and never the clone override',
+        ('%d crawl tasks'):format(#R.own()))
+    ok(k.settle == 'new' and k.args == 'old',
+        'and the knock record says which arms it ran',
+        ('settle %s args %s'):format(tostring(k.settle), tostring(k.args)))
+    local line = nil
+    for _, s in ipairs(R.prints) do
+        if s:find('a/b    :', 1, true) then line = s end
+    end
+    ok(line ~= nil and line:find('settle new, args old', 1, true) ~= nil
+       and line:find('0 task clear(s)', 1, true) ~= nil,
+        'and the downed player\'s own knock report prints the arms, unasked',
+        tostring(line))
+
+    -- ---------------------------------------------------- 2. settle old
+    R = newShotRig({ getup = true, answer = 'the render' })
+    env = R.env
+    env.BR.Dbno.ab.settle = 'old'
+    R.knock()
+    R.run(5000)
+    k = env.BR.Dbno.knock
+    ok(R.clears == 1 and k.clears == 1 and k.settle == 'old',
+        '`settle old` is 12bcfdc exactly: one ClearPedTasksImmediately on the '
+            .. 'frame the knockdown lets go',
+        ('%d clear(s)'):format(R.clears))
+    ok(R.pose == CRAWL, 'and the crawl lands', tostring(R.pose))
+
+    -- ------------------------------------- 3. read once per knock, not live
+    R = newShotRig({ getup = true, answer = 'the render' })
+    env = R.env
+    R.knock()
+    R.run(3000)
+    env.BR.Dbno.ab.settle = 'old'           -- flipped mid-bleed
+    R.bump()
+    R.run(2000)
+    k = env.BR.Dbno.knock
+    ok(k.settles >= 2 and R.clears == 0,
+        'a switch flipped mid-bleed does not change the knock in progress: a '
+            .. 'second settle still clears nothing',
+        ('%d settle(s), %d clear(s)'):format(k.settles, R.clears))
+    R.revive()
+    R.knock()
+    R.run(5000)
+    ok(R.clears == 1 and env.BR.Dbno.knock.settle == 'old',
+        'and the NEXT knock runs the arm that was set',
+        ('%d clear(s), settle %s'):format(R.clears,
+            tostring(env.BR.Dbno.knock.settle)))
+
+    -- ------------------------------------------------------ 4. args new
+    R = newShotRig({ getup = true, answer = 'the render' })
+    env = R.env
+    env.BR.Dbno.ab.args = 'new'
+    R.knock()
+    R.run(3000)
+    env.BR.Dbno.ab.args = 'old'             -- flipped mid-bleed
+    R.bump()
+    R.run(2000)
+    ok(R.form(R.own(), false, false) and env.BR.Dbno.knock.args == 'new',
+        '`args new` tasks every crawl of the knock false, false, false (81503b4\'s '
+            .. 'form) -- including the re-poses after the switch was flipped back',
+        ('%d crawl tasks'):format(#R.own()))
+    R.revive()
+    local from = R.CLI.now
+    R.knock()
+    R.run(3000)
+    ok(R.form(R.own(from), true, true),
+        'and the next knock is back on the August form',
+        ('%d crawl tasks'):format(#R.own(from)))
+
+    -- ------------------- 5. the getup ending is what re-poses under `new`
+    R = newShotRig({ getup = true, answer = 'the task' })
+    env = R.env
+    R.knock()
+    R.run(5000)
+    k = env.BR.Dbno.knock
+    local after = R.getupEndedAt and R.own(R.getupEndedAt) or {}
+    ok(k.regetups == 1 and R.pose == CRAWL,
+        'when the native answers "playing" for a task the getup is running '
+            .. 'over, the frame the getup ENDS re-poses the body -- once -- '
+            .. 'so `settle new` does not need the clear to get the pose back '
+            .. 'on this screen',
+        ('%d re-pose(s) after the getup, rendering %s'):format(k.regetups,
+            tostring(R.pose)))
+    ok(#after >= 1 and after[1].at - R.getupEndedAt <= 32,
+        'and it lands on the frame after the getup, not a watchdog beat later',
+        after[1] and ('%dms after'):format(after[1].at - R.getupEndedAt)
+                 or 'no task after the getup')
+    ok(#after == 1,
+        'and nothing else is asked for after it', ('%d tasks'):format(#after))
+
+    R = newShotRig({ getup = false, answer = 'the task' })
+    env = R.env
+    R.knock()
+    R.run(5000)
+    ok(env.BR.Dbno.knock.regetups == 0 and R.pose == CRAWL,
+        'and with no getup reported (or no GetIsTaskActive on the build) it '
+            .. 'adds nothing at all',
+        ('%d re-pose(s)'):format(env.BR.Dbno.knock.regetups))
+end
+
+-- ==========================================================================
+-- #390: THE NET UNDER IT, AND WHETHER IT LETS GO.
+-- ==========================================================================
+--
+-- The clone keeper (dbno.remote.pose) puts the crawl on another player's copy
+-- with bAllowOverrideCloneUpdate set -- the flag that stops network updates
+-- replacing a pose. Whether StopAnimTask on a clone takes that pose off again
+-- is something nobody has watched, and if it does not, a revived player stays
+-- lying down on that screen. So letting go is CHECKED: the copy is asked again
+-- every tick, asked to drop it again up to RELEASE_TRIES times, and if it still
+-- carries the clip this screen says so, once. And a copy back in the keeper's
+-- hands is never asked to drop the pose it is supposed to have.
+
+describe('dbno.remote.release')
+do
+    local DICT = 'move_injured_ground'
+
+    --- The mate goes down, nothing of theirs arrives, and this screen poses them.
+    local function posedDown(R)
+        R.clone = nil
+        R.env.BR.State.roster[2].state = R.env.BR.PlayerState.DBNO
+        R.run(1500)
+        return R.clone ~= nil
+    end
+    local function said(R, needle)
+        for _, s in ipairs(R.prints) do
+            if s:find(needle, 1, true) then return s end
+        end
+        return nil
+    end
+
+    -- --------------------------------------- 1. a pose that will not come off
+    local R = newObserver()
+    local env = R.env
+    local L = env.BR.Dbno.cloneLedger
+    R.stopTakes = false
+    ok(posedDown(R), 'the keeper poses a copy that never got the owner\'s task')
+    local from = R.CLI.now + 1
+    env.BR.State.roster[2].state = env.BR.PlayerState.ALIVE
+    R.run(5000)
+    local stops = R.on(R.stops, 5002, from)
+    ok(#stops == 6,
+        'a revived player whose copy keeps this screen\'s pose is asked to drop '
+            .. 'it again and again -- six asks, then no more: bounded',
+        ('%d StopAnimTask(s) in 5s'):format(#stops))
+    local allOurs = #stops > 0
+    for _, s in ipairs(stops) do if s.dict ~= DICT then allOurs = false end end
+    ok(allOurs and #R.clears == 0,
+        'every ask names our clip, and nothing clears a task on the copy')
+    ok(said(R, 'could NOT take this screen\'s crawl pose off') ~= nil
+       and L.releaseFails == 1 and env.BR.Dbno.releasing[2]
+       and env.BR.Dbno.releasing[2].failed == true,
+        'and this screen SAYS so in F8, once, and keeps it listed for /brdbno',
+        tostring(said(R, 'could NOT')))
+    local n0 = #R.prints
+    R.run(2000)
+    ok(#R.on(R.stops, 5002, from) == 6 and #R.prints == n0,
+        'and asks nothing more, and says nothing more, after the bound')
+    R.clone = nil                            -- it comes off, late
+    R.run(300)
+    ok(env.BR.Dbno.releasing[2] == nil and tostring(L.lastRelease):find('LATE', 1, true),
+        'a pose that comes off after the bound is recorded as late, not as fine',
+        tostring(L.lastRelease))
+
+    -- ---------------------------------- 2. one that comes off on the third ask
+    R = newObserver()
+    env = R.env
+    R.stopTakes = false
+    posedDown(R)
+    from = R.CLI.now + 1
+    env.BR.State.roster[2].state = env.BR.PlayerState.OUT
+    R.run(3000, function()
+        if #R.on(R.stops, 5002, from) >= 2 then R.stopTakes = true end
+    end)
+    ok(#R.on(R.stops, 5002, from) == 3 and R.clone == nil
+       and env.BR.Dbno.releasing[2] == nil
+       and env.BR.Dbno.cloneLedger.releaseFails == 0,
+        'a bled-out player\'s copy that drops the pose on the third ask is left '
+            .. 'alone from then on, with nothing reported',
+        ('%d asks'):format(#R.on(R.stops, 5002, from)))
+
+    -- ---------------- 3. the death arriving before the roster says OUT
+    R = newObserver()
+    env = R.env
+    R.stopTakes = false
+    posedDown(R)
+    from = R.CLI.now + 1
+    R.flags.dead = 1
+    R.run(5000)
+    ok(#R.on(R.stops, 5002, from) == 6 and #R.on(R.tasks, 5002, from) == 0,
+        'a copy that reads dead while the roster still says down is let go and '
+            .. 're-checked the same way, and never re-posed',
+        ('%d asks %d poses'):format(#R.on(R.stops, 5002, from),
+                                    #R.on(R.tasks, 5002, from)))
+
+    -- ------- 4. back in the keeper's hands: never asked to drop it again
+    R = newObserver()
+    env = R.env
+    R.stopTakes = false
+    posedDown(R)
+    R.flags.attached = 1                     -- the stretcher
+    R.run(300)
+    R.flags.attached = 0                     -- ...and off it, still down
+    from = R.CLI.now + 1
+    R.run(3000)
+    ok(#R.on(R.stops, 5002, from) == 0 and env.BR.Dbno.releasing[2] == nil
+       and tostring(env.BR.Dbno.cloneLedger.lastRelease):find('handed back', 1, true),
+        'a copy back off the stretcher while still down is the keeper\'s again: '
+            .. 'nothing asks it to drop the crawl, which may now be the OWNER\'s',
+        ('%d asks, last: %s'):format(#R.on(R.stops, 5002, from),
+            tostring(env.BR.Dbno.cloneLedger.lastRelease)))
+
+    -- ------------------------------------------------ 5. scope lost mid-release
+    R = newObserver()
+    env = R.env
+    R.stopTakes = false
+    posedDown(R)
+    env.BR.State.roster[2].state = env.BR.PlayerState.ALIVE
+    R.run(200)
+    R.inScope = false
+    from = R.CLI.now + 1
+    R.run(3000)
+    ok(#R.on(R.stops, 5002, from) == 0 and env.BR.Dbno.releasing[2] == nil
+       and tostring(env.BR.Dbno.cloneLedger.lastRelease):find('copy gone', 1, true),
+        'a copy that leaves scope takes the pose with it, and is not chased',
+        tostring(env.BR.Dbno.cloneLedger.lastRelease))
+    local e, s = R.loopErrors('dbno.clones')
+    ok(e == 0 and not s, 'and the keeper never threw through any of it',
+        ('%s errors'):format(tostring(e)))
+
+    -- ------------------------------------------------------ 6. keeper off
+    R = newObserver()
+    env = R.env
+    env.BR.Dbno.ab.keeper = 'off'
+    R.clone = nil
+    env.BR.State.roster[2].state = env.BR.PlayerState.DBNO
+    R.run(5000)
+    ok(#R.on(R.tasks, 5002) == 0 and #R.on(R.rates, 5002) == 0,
+        '`keeper off`: a copy with no pose is watched and NOT posed, and no '
+            .. 'rate is written on it either',
+        ('%d poses %d rates'):format(#R.on(R.tasks, 5002), #R.on(R.rates, 5002)))
+    ok(said(R, 'the keeper is off') ~= nil,
+        'and this screen\'s line says the keeper was off, so the paste is '
+            .. 'readable without asking', tostring(said(R, 'is down')))
+    env.BR.Dbno.ab.keeper = 'on'             -- flipped while they are down
+    R.run(3000)
+    ok(#R.on(R.tasks, 5002) == 0,
+        'and turning it on mid-bleed waits for the next downed body')
+    env.BR.State.roster[2].state = env.BR.PlayerState.ALIVE
+    R.run(500)
+    env.BR.State.roster[2].state = env.BR.PlayerState.DBNO
+    R.run(1500)
+    ok(#R.on(R.tasks, 5002) == 1,
+        'which it then poses', ('%d poses'):format(#R.on(R.tasks, 5002)))
+
+    -- ------------------------- 7. a task reading is not reported as a picture
+    R = newObserver()
+    env = R.env
+    env.BR.State.roster[2].state = env.BR.PlayerState.DBNO
+    R.run(300)
+    R.clone = { dict = DICT, anim = 'front_loop', ovr = false }
+    R.run(5000)
+    local line = said(R, 'copy now:')
+    ok(said(R, 'from their own task') ~= nil and line ~= nil
+       and line:find('not a picture', 1, true) ~= nil
+       and line:find('getup', 1, true) ~= nil,
+        'a copy the engine says is playing the clip is reported as a TASK '
+            .. 'reading, with its getup reading beside it -- never as proof the '
+            .. 'body looks down',
+        tostring(line))
 end
 
 -- ==========================================================================

@@ -9167,11 +9167,12 @@ do
         note('anim:request', d)
         if anim.exists[d] then anim.loaded = true end
     end
-    -- THE LAST THREE ARE NAMED AS THE ENGINE NAMES THEM (#390): FiveM's docs
-    -- call them lockX/lockY/lockZ, and they are phaseControlled, ikFlags and
+    -- THE LAST THREE ARE NAMED AS THREE OTHER SOURCES NAME THEM (#390):
+    -- FiveM's docs call them lockX/lockY/lockZ; ScriptHookVDotNet, ox_lib and
+    -- the RDR3 native database call them phaseControlled, ikFlags and
     -- bAllowOverrideCloneUpdate. The stub used to record them under the doc
     -- names, which is how an assertion that the crawl was tasked "with its
-    -- mover locked" pinned two flags that never locked anything.
+    -- mover locked" pinned two flags that may never have locked anything.
     --
     -- AND A CLONE'S TASK IS ITS OWN. Everything below this file's own ped (1)
     -- is recorded in `cloneAnim` instead, because client/dbno.lua's clone
@@ -9806,15 +9807,19 @@ do
     input.lr, input.ud = 0.0, 0.0
     frame(16)   -- the pose is on, the hold is taken
 
-    -- #390. These used to be asserted TRUE, as "lockX/lockY: the mover locked".
-    -- They are phaseControlled and ikFlags, they never locked a mover, and the
-    -- crawl was the one clip in the codebase tasked with them set -- the clip
-    -- other players then saw as a ped standing still. All three false is the
-    -- networked form every other clip here already uses.
-    ok(anim.last ~= nil and anim.last.phaseControlled == false
-       and anim.last.ikFlags == false and anim.last.overrideClone == false,
-        'the crawl clip is tasked in the networked form -- not phase-controlled, '
-            .. 'no IK flags, no clone override (#390)',
+    -- #390. These used to be asserted as "lockX/lockY: the mover locked", and
+    -- 81503b4 then flipped them to all-false as the fix for other screens
+    -- seeing a standing body. Neither reading holds up: the owner watched other
+    -- screens play the crawl with exactly true, true, false in August (#164),
+    -- so that form is the DEFAULT again (`args old`), and the other one is an
+    -- A/B switch (`brdbno args new`, driven in test_shared dbno.settle.ab).
+    -- What this pins is the default and the override argument: the downed
+    -- player's OWN task must never be the clone-override form.
+    ok(anim.last ~= nil and anim.last.phaseControlled == true
+       and anim.last.ikFlags == true and anim.last.overrideClone == false,
+        'by default the crawl clip is tasked in the form other screens were '
+            .. 'watched playing in August -- true, true, and never the clone '
+            .. 'override (#390, args old)',
         anim.last and ('phaseControlled %s ikFlags %s overrideClone %s'):format(
             tostring(anim.last.phaseControlled), tostring(anim.last.ikFlags),
             tostring(anim.last.overrideClone)) or 'no anim was tasked')
@@ -10043,10 +10048,31 @@ do
         '/brdbno does not throw with a downed mate in view')
     said = table.concat(logged, '\n')
     for _, word in ipairs({ 'own pose', 'anim task', 'play-anim',
-                            'downed players on this screen', 'keeper:' }) do
+                            'downed players on this screen', 'keeper:',
+                            'a/b        : next knock settle new, args old; '
+                                .. 'keeper on',
+                            'releases:' }) do
         ok(said:find(word, 1, true) ~= nil,
             ('the readout carries "%s" (#390)'):format(word), said)
     end
+
+    -- THE SWITCHES ARE ON THE SAME COMMAND, and a typo changes nothing.
+    logged = {}
+    ok(pcall(commands['brdbno'], nil, { 'settle', 'old' }, ''),
+        '`brdbno settle old` does not throw (#390)')
+    ok(BR.Dbno.ab.settle == 'old',
+        '`brdbno settle old` sets the next knock\'s settle (#390)',
+        tostring(BR.Dbno.ab.settle))
+    logged = {}
+    ok(pcall(commands['brdbno'], nil, { 'settle', 'maybe' }, ''),
+        'an unknown switch value does not throw (#390)')
+    ok(BR.Dbno.ab.settle == 'old'
+       and table.concat(logged, '\n'):find('settle old|new', 1, true) ~= nil,
+        'and it changes nothing and prints the three switches (#390)',
+        table.concat(logged, '\n'))
+    commands['brdbno'](nil, { 'settle', 'new' }, '')
+    ok(BR.Dbno.ab.settle == 'new', 'and `brdbno settle new` puts it back',
+        tostring(BR.Dbno.ab.settle))
     BR.State.roster[2].state = wasState
     tickBand()
 

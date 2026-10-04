@@ -309,12 +309,98 @@ local knock = {
     settles = 0,            -- forced re-poses on the frame physics let go
     posedAt = nil,          -- when the crawl was first CONFIRMED on the ped
     tasksAt = 0,            -- crawlTasks at the knock, so the delta is readable
+    -- #390: the A/B choices this knock was made with (latched at the knock, so
+    -- a switch flipped mid-bleed waits for the next one), and what they did.
+    settle = nil,           -- 'old' or 'new', see AB below
+    args = nil,             -- 'old' or 'new', see CRAWL_ARGS below
+    clears = 0,             -- ClearPedTasksImmediately on this ped by a settle
+    regetups = 0,           -- re-poses on the frame an engine getup ended
     spent = true,
 }
 
 -- PUBLISHED beside the revive ledger, and for the same two readers: /brdbno,
 -- and the suite that has to prove a fix bit. Read-only by convention.
 BR.Dbno.knock = knock
+
+-- ==========================================================================
+-- #390: THREE SWITCHES, SO ONE PLAYTEST CAN SAY WHICH CHANGE IT WAS.
+-- ==========================================================================
+--
+-- "when bleeding out, from other player's screens it appears the peds are
+--  standing in place." (owner, 2026-10-04, group playtest on c024ad6.)
+--
+-- ═══ WHAT CHANGED BETWEEN THE LAST TIME IT WORKED AND THAT PLAYTEST ═══
+--
+-- The owner watched other players' copies of a downed body play the crawl --
+-- mover and all -- from 2026-08-17 to 2026-08-21 (#164, closed after a
+-- playtest watched from the squadmate's screen). The crawl's TaskPlayAnim
+-- arguments were true, true, false that whole time and stayed so until #390,
+-- so they are not what changed. What did change, to how a downed ped is
+-- tasked, ragdolled, cleared or placed (git log on this file and its callers):
+--
+--   1. 12bcfdc, 2026-08-29: settleBody. On the frame the physics let go of the
+--      body -- which is EVERY shot knock, because the knockdown is a ragdoll --
+--      it runs ClearPedTasksImmediately and then the crawl TaskPlayAnim. That
+--      is citizenfx/fivem#2684's repro step for step (open: "player is within
+--      the standing up animation, while the client is in reality already in
+--      the desired anim"). Before it, a shot knock was never cleared: the
+--      crawl was queued during the ragdoll and re-asserted at the knockdown
+--      beat, and that is the build the owner watched work. The same
+--      clear-then-task already ran on the `fell` path (floorTheBody, since
+--      ef501ef), and the only recorded sighting of THAT path from another
+--      screen is the owner's 2026-08-29 explosion report: "their ped did not
+--      properly emote".
+--   2. The pinned game build, 3095 -> 3889. The repo's example config changed
+--      on 2026-09-07 (e1f9619) and the owner called it "old news", so the box
+--      may have run 3889 well before that; the date is unknown. No switch can
+--      flip it in a playtest; it is what is left if the settle and args
+--      switches below change nothing.
+--   3. Smaller, and not touching the crawl task: 33ca88c (2026-08-30) arms the
+--      9mm resync pair when somebody streams the body in; 8ff028d (2026-09-12)
+--      fire-proofs the downed ped; c0016d6/4b032fd (2026-08-28) hand the body
+--      to the ambulance only while riding.
+--
+-- So the switches below are the two suspects that live in this file plus the
+-- observer-side net, each printed in /brdbno and each taking effect from the
+-- NEXT knock (`brdbno settle old` mid-bleed changes nothing about this one).
+-- They are per machine: settle and args matter on the DOWNED player's client,
+-- keeper on the WATCHING client's.
+--
+--   settle  new  (default) the frame the physics let go re-poses WITHOUT
+--                ClearPedTasksImmediately, and re-poses once more on the frame
+--                an engine getup ends;
+--           old  12bcfdc's ClearPedTasksImmediately, then the crawl.
+--   args    old  (default) the crawl's last three TaskPlayAnim arguments are
+--                true, true, false -- the form watched replicating in August;
+--           new  false, false, false, as every other clip here and 81503b4.
+--   keeper  on   (default) this screen keeps other downed players' copies in
+--                the pose (the block at the bottom of this file);
+--           off  it only watches and reports.
+local AB_CHOICES = {
+    settle = { old = true, new = true },
+    args   = { old = true, new = true },
+    keeper = { on = true, off = true },
+}
+local ab = { settle = 'new', args = 'old', keeper = 'on' }
+BR.Dbno.ab = ab
+
+--- The crawl's last three TaskPlayAnim arguments, by `args` choice. FiveM
+--- documents them as lockX, lockY, lockZ; ScriptHookVDotNet, ox_lib and the
+--- RDR3 native database name them phaseControlled, ikFlags and
+--- bAllowOverrideCloneUpdate. Whichever is right, `old` is the form the owner
+--- watched other screens play in August, which is why it is the default.
+local CRAWL_ARGS = {
+    old = { true,  true,  false },
+    new = { false, false, false },
+}
+
+-- GET_IS_TASK_ACTIVE's numbers for the tasks that decide what a downed body
+-- looks like (alloc8or's nativedb, eTaskType): the clip itself, the two getups
+-- that stand a body up, and the blend out of a ragdoll.
+local TASK_SCRIPTED_ANIMATION = 134
+local TASK_GET_UP             = 16
+local TASK_GET_UP_STAND_STILL = 17
+local TASK_BLEND_FROM_NM      = 407
 
 --- A knock has just arrived. Start a fresh record.
 ---
@@ -332,6 +418,9 @@ local function noteKnock()
     knock.settles     = 0
     knock.posedAt     = nil
     knock.tasksAt     = crawlTasks
+    -- THE SWITCHES ARE READ HERE AND NOWHERE ELSE for the rest of this knock.
+    knock.settle, knock.args = ab.settle, ab.args
+    knock.clears, knock.regetups = 0, 0
     knock.spent       = false
 end
 
@@ -408,6 +497,12 @@ local hold = nil      -- { x = number, y = number } or nil
 -- matters is the same one, "longer than any frame".
 local loose    = false
 local settleAt = nil
+
+-- #390, `settle new`: a settle that did NOT clear the tasks watches for the
+-- engine's own getup and re-poses once on the frame it ends. { at, getup } or
+-- nil. Declared up here because leaveDowned clears it and is written above
+-- the settle (see corpseAt's note on assignments to undeclared locals).
+local settleWatch = nil
 
 --- The resting place the last #246 corpse write published, or nil.
 ---
@@ -624,16 +719,12 @@ local function playCrawl(force, snap)
         return
     end
 
-    -- ═══ THE LAST THREE ARGUMENTS ARE NOT AXIS LOCKS, AND THEY ARE ALL FALSE
-    --     AGAIN (#390) ═══
-    --
-    -- Owner, 2026-10-04: "when bleeding out, from other player's screens it
-    -- appears the peds are standing in place."
+    -- ═══ THE LAST THREE ARGUMENTS, AND WHAT IS AND IS NOT KNOWN ABOUT THEM
+    --     (#390) ═══
     --
     -- 58502b0 set the first two to true, reading FiveM's parameter names --
     -- lockX, lockY, lockZ -- as "stop the clip pushing the ped across the
-    -- ground". The engine's names are different, and three independent
-    -- sources agree on them:
+    -- ground". Three other sources name them differently:
     --
     --   * ScriptHookVDotNet, TaskInvoker.cs, passes TASK_PLAY_ANIM
     --     (..., startPhase, phaseControlled, (int)ikFlags, 0) and says "the
@@ -643,29 +734,26 @@ local function playCrawl(force, snap)
     --   * the RDR3 native database types the second one `int ikFlags` on the
     --     very same hash, 0xEA47FE3719165B94.
     --
-    -- So the crawl went out PHASE-CONTROLLED with leg IK switched off, and it
-    -- never locked a mover at all. What actually keeps the body still is the
-    -- hold (stayPut) and the rate override (crawlPlaying) -- 8ac5ab5's drift
-    -- measurement already assumed the "locks" did nothing, and got 0.006m.
+    -- If they are right, the "locks" never locked a mover: what keeps the body
+    -- still is the hold (stayPut) and the rate override (crawlPlaying), and
+    -- 8ac5ab5's drift measurement already assumed the locks did nothing.
     --
-    -- IT IS THE ONE CLIP IN THIS CODEBASE TASKED THAT WAY. The CPR emote, the
-    -- stretcher pose, the heal emote and the dance wheel -- every clip other
-    -- players are meant to see -- pass false, false, false. And the owner's
-    -- symptom is a known one for exactly this argument list: a lying-down
-    -- clip tasked with them set "doesn't sync to others" (they see the player
-    -- standing still), and setting all three false "finally" synced it
-    -- (forum.cfx.re/t/animation-sync-this-ffss/178690, 2018). Which of the
-    -- two set flags the engine objects to is not something a file can show;
-    -- see the clone keeper further down for the half that does not depend on
-    -- the answer.
+    -- WHAT THEY ARE NOT IS THE REASON OTHER SCREENS SHOW A STANDING BODY. 81503b4
+    -- claimed so and history says otherwise: true, true, false went out from
+    -- 2026-08-17, and the owner then watched other players' copies play this
+    -- clip, mover and all (#164, "they are synced", closed 2026-08-21). The
+    -- 2018 forum thread it leaned on (forum.cfx.re/t/178690) passed 1 for ALL
+    -- three, the override included, so it was never this argument list. So
+    -- the default stays the August form, and the other one is a switch -- see
+    -- CRAWL_ARGS and the A/B block at the top of this file. The cause the
+    -- history does point at is settleBody's ClearPedTasksImmediately.
     --
     -- `snap` is the resurrection case. The pose being blended FROM there is a
     -- standing idle the player must never see, so it is not blended from.
     local blend = snap and 1000.0 or 8.0
+    local a = CRAWL_ARGS[knock.args] or CRAWL_ARGS[ab.args] or CRAWL_ARGS.old
     TaskPlayAnim(ped, c.dict, c.anim, blend, -blend, -1, 1, 0.0,
-                 false,    -- phaseControlled
-                 false,    -- ikFlags: none
-                 false)    -- bAllowOverrideCloneUpdate: this task is the networked one
+                 a[1], a[2], a[3])
     -- A fresh task runs at rate 1.0 whatever we last asked for.
     crawlMoving = nil
     crawlTasks  = crawlTasks + 1
@@ -1340,8 +1428,8 @@ local function leaveDowned()
     -- ...and the settle edge, which is downed-shaped in exactly the same way: a
     -- player revived mid-ragdoll would otherwise carry `loose` into standing up
     -- and spend the first frame of their NEXT knock re-posing for a ragdoll
-    -- that happened in the previous one.
-    loose, settleAt = false, nil
+    -- that happened in the previous one. The getup watch goes with it (#390).
+    loose, settleAt, settleWatch = false, nil, nil
     -- ...and the turn watchdog with them: a body that stood up owes the clones
     -- nothing, and a stale taskHeading would re-task the first crawl of the
     -- NEXT knock for a turn that happened in a previous one.
@@ -1421,8 +1509,8 @@ local HOLD_SLACK = 0.01
 --- ped and puts them back, so a downed player who is not pressing anything
 --- stays where they are whatever the animation is made of -- which is the only
 --- claim about this that can be made from outside the game. (The "lock flags"
---- this used to be paired with were never locks: #390, see playCrawl. This
---- was always the whole of it.)
+--- this used to be paired with are, by three sources' naming, not locks at
+--- all: #390, see playCrawl. If so, this was always the whole of it.)
 ---
 --- X and Y only. Pinning Z as well would hold a downed player in the air over
 --- a slope they should be sliding down, and gravity is not the thing moving
@@ -1452,8 +1540,9 @@ end
 -- There are two of them and neither crosses the wire:
 --
 --   * the lock flags in playCrawl are arguments to TaskPlayAnim on THIS
---     machine (#390: and they were never locks at all -- see playCrawl -- so
---     the local pin was only ever stayPut and the rate override);
+--     machine (#390: and by three sources' naming not locks at all -- see
+--     playCrawl -- so the local pin may only ever have been stayPut and the
+--     rate override);
 --   * crawlPlaying() is SetEntityAnimSpeed, which is a playback-rate override
 --     on this machine's copy of the ped.
 --
@@ -1905,10 +1994,76 @@ local function settleBody(ped)
     --
     -- Ten seconds is a twelfth of the longest bleed config/match.lua can
     -- produce, so the first row is about two metres of body by the end of it.
+    --
+    -- ═══ #390: AND THE CLEAR IS NOW `settle old`, OFF BY DEFAULT ═══
+    --
+    -- Everything above about the getup is about THIS screen. On every OTHER
+    -- screen, ClearPedTasksImmediately-then-TaskPlayAnim on a ped that was just
+    -- ragdolled is citizenfx/fivem#2684's repro, open: the other player sees
+    -- the body "within the standing up animation, while the client is in
+    -- reality already in the desired anim". This line runs on EVERY shot knock
+    -- (the knockdown is a ragdoll), it arrived on 2026-08-29, and it is the one
+    -- change to how a shot-knocked ped is tasked between the owner watching
+    -- copies crawl in August and "the peds are standing in place" (2026-10-04).
+    -- See the A/B block at the top of the file for the rest of that list.
+    --
+    -- So by default nothing here clears a task. The crawl is re-asked, forced,
+    -- exactly as before -- the KNOCKDOWN_LANDED beat has always done the same
+    -- without a clear, and the watchdog has been queueing it through the whole
+    -- ragdoll -- and if the engine runs its own getup anyway, the frame that
+    -- getup ENDS gets one more forced re-pose (settleWatch, below), which is
+    -- what the clear was buying on this screen. A getup the engine runs is a
+    -- task it replicates like any other; a clear landing on a ragdoll is the
+    -- one sequence reported to leave other screens standing.
     coverPose()
-    ClearPedTasksImmediately(ped)
+    if (knock.settle or ab.settle) == 'old' then
+        ClearPedTasksImmediately(ped)
+        knock.clears = knock.clears + 1
+    else
+        settleWatch = { at = now, getup = false }
+    end
     playCrawl(true, true)
     SetPedCanRagdoll(ped, false)
+end
+
+--- How long after a `settle new` re-pose this file watches for the engine's
+--- own getup to end, ms. A knockdown getup is about a second; this is the
+--- bound, not the expectation, and nothing is re-posed if no getup is seen.
+local GETUP_WATCH_MS = 3000
+
+--- Is the engine standing this ped up right now? Each read through didHit, and
+--- a build without GetIsTaskActive answers no -- which simply means the
+--- watchdog, as before, is the only thing that re-poses after a getup.
+--- @param ped integer
+--- @return boolean
+local function getupRunning(ped)
+    if not GetIsTaskActive then return false end
+    return didHit(GetIsTaskActive(ped, TASK_GET_UP))
+        or didHit(GetIsTaskActive(ped, TASK_GET_UP_STAND_STILL))
+        or didHit(GetIsTaskActive(ped, TASK_BLEND_FROM_NM))
+end
+
+--- `settle new`'s other half: once per settle, the frame a getup ends.
+---
+--- WHY THE WATCHDOG IS NOT ENOUGH ON ITS OWN. It asks IsEntityPlayingAnim, and
+--- for a crawl task the engine ACCEPTED and then let a getup run over, nobody
+--- has watched what that answers (dbno.blast.body drives both readings). If it
+--- says "playing", the unforced watchdog never asks again. This asks the
+--- other question -- is a getup running -- and forces one task when it stops.
+--- At most one per settle, and only after a getup was actually seen.
+--- @param ped integer
+local function afterGetup(ped)
+    local w = settleWatch
+    if not w then return end
+    if GetGameTimer() - w.at > GETUP_WATCH_MS then settleWatch = nil return end
+    if getupRunning(ped) then
+        w.getup = true
+        return
+    end
+    if not w.getup then return end
+    settleWatch = nil
+    knock.regetups = knock.regetups + 1
+    playCrawl(true)
 end
 
 --- Say, once, what this knock actually did to the body.
@@ -1973,6 +2128,12 @@ local function knockReport(ped)
                 crawlTasks - knock.tasksAt, knock.settles))
     print(('  clones : %d resync step(s) for %d task(s) this session -- one per '
            .. 'task is the contract'):format(resyncs, crawlTasks))
+    -- #390: which A/B arm this knock ran, so a watcher's report can be read
+    -- against it without anybody having to remember what they typed.
+    print(('  a/b    : settle %s, args %s -- %d task clear(s) on this ped, %d '
+           .. 're-pose(s) after an engine getup')
+        :format(tostring(knock.settle), tostring(knock.args), knock.clears,
+                knock.regetups))
 end
 
 BR.Loop.register(BR.Loop.FRAME, 'dbno.controls', function()
@@ -2016,7 +2177,7 @@ BR.Loop.register(BR.Loop.FRAME, 'dbno.controls', function()
         -- knock's own pose has had a chance to land -- and `settleAt` left
         -- standing would throttle that knock's FIRST settle behind the last
         -- one, which is the same mistake `taskAt` is cleared here to avoid.
-        loose, settleAt = false, nil
+        loose, settleAt, settleWatch = false, nil, nil
         return
     end
 
@@ -2097,6 +2258,10 @@ BR.Loop.register(BR.Loop.FRAME, 'dbno.controls', function()
         loose = false
         settleBody(ped)
     end
+
+    -- ...AND, UNDER `settle new`, THE FRAME AN ENGINE GETUP ENDS (#390). One
+    -- forced re-pose at most per settle; see afterGetup.
+    afterGetup(ped)
 
     -- Turn on the horizontal axis, inch forward on the vertical one. Both are
     -- read from the DISABLED control, which is the whole point of disabling it.
@@ -2872,10 +3037,10 @@ local function cprStart(target)
 
     -- Flag 1 is LOOPING and -1 is "until something stops it", which together
     -- are what make this a pose held for the length of a hold rather than one
-    -- pass of a clip. The three trailing `false`s are phaseControlled, ikFlags
-    -- and bAllowOverrideCloneUpdate -- not position locks, whatever FiveM's docs
-    -- call them (#390, see playCrawl) -- and all three false is the form other
-    -- players see.
+    -- pass of a clip. The three trailing `false`s are what FiveM's docs call
+    -- lockX/Y/Z and other sources call phaseControlled, ikFlags and
+    -- bAllowOverrideCloneUpdate (#390, see playCrawl); all three false is the
+    -- form the rest of this codebase plays for other players.
     --
     -- AND FLAG 1 IS NOT 1024. See the networking block above the constants:
     -- 1024 (OVERRIDE_PHYSICS) is the one value citizenfx/fivem#3733 reports as
@@ -3274,12 +3439,16 @@ end)
 --   * citizenfx/fivem#2684: ClearPedTasksImmediately then TaskPlayAnim on a
 --     ragdolled player, and the other player sees them "within the standing up
 --     animation, while the client is in reality already in the desired anim".
---     That is settleBody's sequence, and the knockdown beat's;
+--     That is settleBody's sequence under `settle old`, and floorTheBody's;
 --   * citizenfx/fivem#3731: a clip re-asserted on the owner, and "Client 2
 --     nearby does not see them playing any animation".
 --
--- playCrawl's argument fix is the likeliest cause and the cheapest repair. This
--- is the half that does not depend on it being the only one.
+-- The fix for the likeliest cause lives on the downed player's machine (the
+-- settle no longer clears a ragdolled ped's tasks; see settleBody and the A/B
+-- block at the top of this file). This is a NET under it, switchable
+-- (`brdbno keeper on|off`), and it is held to the rules below because a net
+-- that can leave a revived player lying down on somebody's screen is worse
+-- than no net.
 --
 -- ═══ SO EACH OBSERVER ASKS ITS OWN COPY, AND PUTS THE POSE BACK ═══
 --
@@ -3309,10 +3478,25 @@ end)
 --     itself and is meant to be watched, so it is waited out. A clone that
 --     reads dead (the bleed-out arriving), is attached (the stretcher) or is in
 --     a vehicle has its own task, and any pose this client put on it comes off.
---   * IT LETS GO WHEN THE ROSTER DOES. Revived, bled out, left, out of scope,
---     match teardown, resource stop: StopAnimTask on the copy, naming our clip
---     -- never ClearPedTasks, which aimed at a clone is clearPedTasksEvent, a
---     network event that clears the OWNER's ped.
+--   * IT NEVER CLEARS A TASK ON A COPY. ClearPedTasks aimed at a clone is
+--     clearPedTasksEvent, a network event that clears the OWNER's ped. Only
+--     StopAnimTask, naming our clip.
+--   * AND IT DOES NOT TRUST ITS OWN LETTING GO. Revived, bled out, the engine
+--     taking the body, left, match teardown: StopAnimTask on the copy -- and
+--     then the copy is ASKED again every tick whether our clip is still on it,
+--     and asked to drop it again up to RELEASE_TRIES times. Nobody has watched
+--     StopAnimTask on a clone undo a pose set with bAllowOverrideCloneUpdate,
+--     and that flag exists to stop network updates replacing the pose -- so a
+--     copy that keeps it is the one way this net can leave a revived player
+--     lying down on this screen. If it outlasts the retries, this screen says
+--     so once in F8 and /brdbno lists it under `releases`.
+--
+-- AND WHAT ITS READINGS ARE NOT: IsEntityPlayingAnim on a copy answers about
+-- the TASK, and this file's own POSE_SETTLE_MS note says that native goes true
+-- while a ped is still standing up out of its old state. So "PLAYING" in the
+-- lines below is never reported as the body looking down; the copy's getup
+-- reading is printed beside it, and the eyes of the person watching are the
+-- verdict.
 
 --- How long a clone may go without the pose before this client poses it, ms.
 --- The owner's own task is in flight for a round trip after every knock and
@@ -3344,13 +3528,27 @@ local CLONE_CRAWL_HOLD_MS = 400
 --- received their pose or posed them itself, and the line says which.
 local CLONE_REPORT_MS = 4000
 
+--- Letting go, checked: how often a copy still carrying our clip is asked to
+--- drop it again, ms, and how many asks in all (the first included) before
+--- this screen gives up and says so. Three seconds, bounded.
+local RELEASE_RETRY_MS = 500
+local RELEASE_TRIES    = 6
+
 --- [src] = this client's record of one downed player's clone.
 local clones = {}
 
+--- [src] = a pose this client put on a copy and has asked to drop, still being
+--- checked: { ped, since, tries, lastTry, why, failed }. Gone from here means
+--- the copy no longer carries the clip, or the copy itself is gone.
+local releasing = {}
+
 --- Session totals, for /brdbno and for the suites. Read-only by convention.
 local cloneLedger = { poses = 0, lastPoseAt = nil, unposes = 0, letGo = 0,
-                      rateWrites = 0, reports = 0 }
+                      rateWrites = 0, reports = 0,
+                      releases = 0, released = 0, releaseRetries = 0,
+                      releaseFails = 0, lastRelease = nil }
 BR.Dbno.clones      = clones
+BR.Dbno.releasing   = releasing
 BR.Dbno.cloneLedger = cloneLedger
 
 --- A guarded BOOL read: a build without the native answers no, and an answer
@@ -3374,28 +3572,126 @@ local function cloneOf(src)
     return ped
 end
 
---- Take this client's pose off a clone. Only ever OUR clip, by name.
+--- Is our clip on this ped, by the engine's task reading? Only a reading.
+--- @param ped integer
+--- @return boolean
+local function carriesCrawl(ped)
+    return type(crawl) == 'table'
+        and says(IsEntityPlayingAnim, ped, crawl.dict, crawl.anim, 3)
+end
+
+-- GET_SCRIPT_TASK_STATUS's answers, by name (0..7 in the nativedb's enum).
+local TASK_STATUS = { [0] = 'waiting', [1] = 'performing', [2] = 'dormant',
+                      [3] = 'vacant', [7] = 'finished' }
+
+--- What the ENGINE says a ped is doing, in one line, for /brdbno (#390).
+---
+--- Every reading is taken now and none of it is this file's belief: the clip
+--- by name, whether a scripted-anim task is in the tree at all (a different
+--- clip there is a different fault from no task), the play-anim script status,
+--- and the three things that stand a body up or throw it. Works on our own ped
+--- and on a clone alike, which is the point -- the two lines are read side by
+--- side, one on each machine. None of it is a picture: `clip PLAYING` beside
+--- `getup YES` is a body the engine is standing up with the clip underneath.
+--- @param ped integer
+--- @return string
+local function poseLine(ped)
+    local status = GetScriptTaskStatus
+        and GetScriptTaskStatus(ped, GetHashKey('SCRIPT_TASK_PLAY_ANIM'))
+    return ('clip %s | anim task %s | play-anim %s | getup %s, ragdoll %s, '
+            .. 'dead %s')
+        :format(
+            carriesCrawl(ped) and 'PLAYING' or 'NOT PLAYING',
+            says(GetIsTaskActive, ped, TASK_SCRIPTED_ANIMATION) and 'in tree'
+                or 'none',
+            status and (TASK_STATUS[status] or tostring(status)) or '?',
+            (says(GetIsTaskActive, ped, TASK_GET_UP)
+             or says(GetIsTaskActive, ped, TASK_GET_UP_STAND_STILL)
+             or says(GetIsTaskActive, ped, TASK_BLEND_FROM_NM))
+                and 'YES' or 'no',
+            says(IsPedRagdoll, ped) and 'YES' or 'no',
+            (says(IsEntityDead, ped) or says(IsPedFatallyInjured, ped))
+                and 'YES' or 'no')
+end
+
+--- Ask a copy to drop the clip. StopAnimTask names OUR clip and nothing else.
+--- @param ped integer
+local function askToDrop(ped)
+    if type(crawl) == 'table' and StopAnimTask and says(DoesEntityExist, ped) then
+        StopAnimTask(ped, crawl.dict, crawl.anim, 8.0)
+    end
+end
+
+--- Take this client's pose off a clone -- and start checking that it went.
 --- @param k table
-local function unpose(k)
+--- @param src integer
+--- @param why string
+local function unpose(k, src, why)
     if not k.ours then return end
     k.ours = false
     cloneLedger.unposes = cloneLedger.unposes + 1
-    if crawl and StopAnimTask and says(DoesEntityExist, k.ped) then
-        StopAnimTask(k.ped, crawl.dict, crawl.anim, 8.0)
+    askToDrop(k.ped)
+    local now = GetGameTimer()
+    releasing[src] = { ped = k.ped, since = now, tries = 1, lastTry = now,
+                       why = why, failed = false }
+    cloneLedger.releases = cloneLedger.releases + 1
+end
+
+--- One release, settled: the copy no longer carries the clip, or is gone.
+--- @param src integer
+--- @param r table
+--- @param how string
+local function released(src, r, how)
+    releasing[src] = nil
+    cloneLedger.released = cloneLedger.released + 1
+    cloneLedger.lastRelease = ('%s (%s): %s after %d ask(s), %s')
+        :format(tostring(src), r.why, how, r.tries,
+                r.failed and 'LATE -- past the retries' or 'in time')
+end
+
+--- Re-check one pose this client asked a copy to drop, and ask again if the
+--- copy still carries it -- up to RELEASE_TRIES asks, then say so, once.
+--- @param src integer
+--- @param r table
+--- @param now number
+local function checkRelease(src, r, now)
+    local ped = cloneOf(src)
+    -- THE COPY ITSELF IS GONE (scope lost) OR WAS REBUILT: a fresh clone has no
+    -- local task on it, so whatever we put on the old one went with it.
+    if ped == 0 or ped ~= r.ped then return released(src, r, 'copy gone') end
+    if not carriesCrawl(ped) then return released(src, r, 'clip off') end
+    if r.failed or now - r.lastTry < RELEASE_RETRY_MS then return end
+    if r.tries < RELEASE_TRIES then
+        askToDrop(ped)
+        r.tries, r.lastTry = r.tries + 1, now
+        cloneLedger.releaseRetries = cloneLedger.releaseRetries + 1
+        return
     end
+    -- STILL WATCHED AFTER THIS, so a pose that comes off late is recorded as
+    -- such -- but never asked again: the bound is the bound.
+    r.failed = true
+    cloneLedger.releaseFails = cloneLedger.releaseFails + 1
+    local e = BR.State.roster and BR.State.roster[src]
+    print(('[br_core] dbno: could NOT take this screen\'s crawl pose off %s '
+           .. '(%s) after %d StopAnimTask(s) over %dms (%s) -- their body may '
+           .. 'still look downed here; paste /brdbno')
+        :format(tostring(e and e.name or '?'), tostring(src), r.tries,
+                now - r.since, r.why))
 end
 
 --- Forget a downed player entirely, taking our pose off their clone first.
 --- @param src integer
-local function letGo(src)
+--- @param why string
+local function letGo(src, why)
     local k = clones[src]
     if not k then return end
-    unpose(k)
+    unpose(k, src, why)
     clones[src] = nil
     cloneLedger.letGo = cloneLedger.letGo + 1
 end
 
---- Keep one downed player's clone in the downed pose, on this screen.
+--- Keep one downed player's clone in the downed pose, on this screen -- or,
+--- with the keeper off, only read it.
 --- @param src integer
 --- @param now number
 local function keepPose(src, now)
@@ -3408,9 +3704,12 @@ local function keepPose(src, now)
         return
     end
     if not k or k.ped ~= ped then
+        -- `keeper` IS READ HERE, once per record: a switch flipped while this
+        -- body is down waits for the next one this screen sees.
         k = { ped = ped, since = now, poses = 0, posedAt = nil, ours = false,
               playing = false, missingSince = nil, held = nil, rate = nil,
-              x = nil, y = nil, at = nil, movingUntil = nil, reported = false }
+              x = nil, y = nil, at = nil, movingUntil = nil, reported = false,
+              keeper = ab.keeper }
         clones[src] = k
     end
 
@@ -3420,8 +3719,16 @@ local function keepPose(src, now)
     if says(IsEntityDead, ped) or says(IsPedFatallyInjured, ped)
        or says(IsEntityAttached, ped) or says(IsPedInAnyVehicle, ped, false) then
         k.held, k.at, k.missingSince = 'engine', nil, nil
-        unpose(k)
+        unpose(k, src, 'the engine has the body')
         return
+    end
+    -- ...AND A COPY BACK OUT OF THE ENGINE'S HANDS IS THE KEEPER'S AGAIN. A
+    -- release still pending from the engine branch above stops here, because
+    -- the crawl it was checking for is now the pose this body is supposed to
+    -- have -- and from here on it may well be the OWNER's own task, which a
+    -- StopAnimTask would take off this screen.
+    if releasing[src] then
+        released(src, releasing[src], 'handed back, still down')
     end
     if says(IsPedRagdoll, ped) then
         k.held, k.at, k.missingSince = 'ragdoll', nil, nil
@@ -3429,8 +3736,16 @@ local function keepPose(src, now)
     end
     k.held = nil
 
-    local playing = says(IsEntityPlayingAnim, ped, crawl.dict, crawl.anim, 3)
+    local playing = carriesCrawl(ped)
     k.playing = playing
+
+    -- KEEPER OFF: read, record, report -- and touch nothing. No pose, and no
+    -- rate write either, so what this screen shows is the owner's task alone.
+    if k.keeper == 'off' then
+        k.rate, k.at = nil, nil
+        k.missingSince = (not playing) and (k.missingSince or now) or nil
+        return
+    end
 
     if not playing then
         k.rate, k.at = nil, nil
@@ -3442,8 +3757,8 @@ local function keepPose(src, now)
             return
         end
         TaskPlayAnim(ped, crawl.dict, crawl.anim, 8.0, -8.0, -1, 1, 0.0,
-                     false,    -- phaseControlled
-                     false,    -- ikFlags: none
+                     false,    -- phaseControlled / lockX
+                     false,    -- ikFlags / lockY
                      true)     -- bAllowOverrideCloneUpdate: this screen's copy only
         k.posedAt, k.ours = now, true
         k.poses = k.poses + 1
@@ -3476,6 +3791,10 @@ end
 --- next playtest is read off. Printed rather than kept behind /brdbno for the
 --- reason knockReport gives: the person who can answer is the one standing
 --- there, mid-fight.
+---
+--- "PLAYING" IS A TASK READING AND IS SAID AS ONE. The line ends with the
+--- copy's whole engine reading, getup included, and the person reading it
+--- answers the only question that matters with their eyes: does it LOOK down.
 --- @param src integer
 --- @param k table
 --- @param now number
@@ -3489,22 +3808,29 @@ local function reportClone(src, k, now)
         verdict = 'the engine has the body (dead, attached or in a vehicle) -- '
                .. 'not posed here'
     elseif k.poses == 0 and k.playing then
-        verdict = 'clip PLAYING from their own task -- nothing re-posed here'
+        verdict = 'the engine reports the clip on this copy from their own task, '
+               .. 'nothing re-posed here'
     elseif k.poses > 0 and k.playing then
-        verdict = ('their own task did NOT reach this screen within %dms; '
-                .. 're-posed here %d time(s) and it holds')
+        verdict = ('their own task was NOT on this copy %dms in; re-posed here '
+                .. '%d time(s) and the engine now reports the clip')
                 :format(CLONE_GRACE_MS, k.poses)
     elseif k.poses > 0 then
         verdict = ('NOT PLAYING after %d re-pose(s) here -- this build is not '
                 .. 'taking the local pose'):format(k.poses)
+    elseif k.keeper == 'off' then
+        verdict = 'NOT PLAYING on this copy, and the keeper is off, so nothing '
+               .. 're-posed it'
     else
         verdict = 'NOT PLAYING and not re-posed yet (' .. tostring(k.held or
                   'waiting') .. ')'
     end
     local e = BR.State.roster and BR.State.roster[src]
-    print(('[br_core] dbno: %s (%s) is down -- on this screen: %s, rate %s')
+    print(('[br_core] dbno: %s (%s) is down -- on this screen: %s, rate %s, '
+           .. 'keeper %s')
         :format(tostring(e and e.name or '?'), tostring(src), verdict,
-                k.rate and ('%.1f'):format(k.rate) or '-'))
+                k.rate and ('%.1f'):format(k.rate) or '-', tostring(k.keeper)))
+    print(('  copy now: %s -- a task reading, not a picture: say whether the '
+           .. 'body LOOKS down'):format(poseLine(k.ped)))
 end
 
 BR.Loop.register(BR.Loop.TICK, 'dbno.clones', function()
@@ -3525,57 +3851,17 @@ BR.Loop.register(BR.Loop.TICK, 'dbno.clones', function()
         end
     end
     for src in pairs(clones) do
-        if not down[src] then letGo(src) end
+        if not down[src] then letGo(src, 'no longer down') end
     end
+    -- AND EVERY POSE THIS SCREEN LET GO OF IS CHECKED UNTIL IT IS GONE.
+    for src, r in pairs(releasing) do checkRelease(src, r, now) end
 end)
 
 --- Take this client's pose off every clone. The two endings that can stop
 --- the loop above call it by hand: the match teardown and the resource stop.
-local function letGoAll()
-    for src in pairs(clones) do letGo(src) end
-end
-
--- GET_IS_TASK_ACTIVE's numbers for the four tasks that decide what a downed
--- body looks like (alloc8or's nativedb, eTaskType): the clip itself, the two
--- getups that stand a body up, and the blend out of a ragdoll.
-local TASK_SCRIPTED_ANIMATION = 134
-local TASK_GET_UP             = 16
-local TASK_GET_UP_STAND_STILL = 17
-local TASK_BLEND_FROM_NM      = 407
-
--- GET_SCRIPT_TASK_STATUS's answers, by name (0..7 in the nativedb's enum).
-local TASK_STATUS = { [0] = 'waiting', [1] = 'performing', [2] = 'dormant',
-                      [3] = 'vacant', [7] = 'finished' }
-
---- What the ENGINE says a ped is doing, in one line, for /brdbno (#390).
----
---- Every reading is taken now and none of it is this file's belief: the clip
---- by name, whether a scripted-anim task is in the tree at all (a different
---- clip there is a different fault from no task), the play-anim script status,
---- and the three things that stand a body up or throw it. Works on our own ped
---- and on a clone alike, which is the point -- the two lines are read side by
---- side, one on each machine.
---- @param ped integer
---- @return string
-local function poseLine(ped)
-    local status = GetScriptTaskStatus
-        and GetScriptTaskStatus(ped, GetHashKey('SCRIPT_TASK_PLAY_ANIM'))
-    return ('clip %s | anim task %s | play-anim %s | getup %s, ragdoll %s, '
-            .. 'dead %s')
-        :format(
-            (type(crawl) == 'table'
-                and says(IsEntityPlayingAnim, ped, crawl.dict, crawl.anim, 3))
-                and 'PLAYING' or 'NOT PLAYING',
-            says(GetIsTaskActive, ped, TASK_SCRIPTED_ANIMATION) and 'in tree'
-                or 'none',
-            status and (TASK_STATUS[status] or tostring(status)) or '?',
-            (says(GetIsTaskActive, ped, TASK_GET_UP)
-             or says(GetIsTaskActive, ped, TASK_GET_UP_STAND_STILL)
-             or says(GetIsTaskActive, ped, TASK_BLEND_FROM_NM))
-                and 'YES' or 'no',
-            says(IsPedRagdoll, ped) and 'YES' or 'no',
-            (says(IsEntityDead, ped) or says(IsPedFatallyInjured, ped))
-                and 'YES' or 'no')
+--- @param why string
+local function letGoAll(why)
+    for src in pairs(clones) do letGo(src, why) end
 end
 
 -- --------------------------------------------------------------------------
@@ -3610,7 +3896,7 @@ local function forgetAll()
     -- ...and every pose this client put on somebody else's clone (#390). The
     -- match is over, the roster is about to be replaced, and a copy left posed
     -- by hand is one nothing would ever take back off.
-    letGoAll()
+    letGoAll('match teardown')
 end
 
 RegisterNetEvent(BR.Net.STATE)
@@ -3642,7 +3928,7 @@ AddEventHandler('onClientResourceStop', function(res)
     cprStop()
     -- ...and the same is true of a pose on somebody else's clone (#390): the
     -- TICK loop that would let go of it is the thing being stopped.
-    letGoAll()
+    letGoAll('resource stop')
 end)
 
 -- --------------------------------------------------------------------------
@@ -3704,7 +3990,24 @@ RegisterCommand('brcrawl', function(_, args)
     print('  T-posed everybody. Watch it before believing it.')
 end, false)
 
-RegisterCommand('brdbno', function()
+RegisterCommand('brdbno', function(_, args)
+    -- #390: THE A/B SWITCHES -- `brdbno settle old|new`, `brdbno args old|new`,
+    -- `brdbno keeper on|off`. Dev mode only, like the rest of this command
+    -- (br_lib/shared/devgate.lua). Each takes effect from the NEXT knock:
+    -- settle and args on this machine's own next knock, keeper on the next
+    -- downed body this screen sees. The current values print below.
+    local which = args and args[1]
+    if which ~= nil then
+        local v = args[2]
+        if AB_CHOICES[which] and AB_CHOICES[which][v] then
+            ab[which] = v
+            print(('[br_core] brdbno: %s %s, from the next knock'):format(which, v))
+        else
+            print('[br_core] brdbno: settle old|new, args old|new, keeper on|off')
+        end
+        return
+    end
+
     print('=== dbno (client) ===')
     print(('  me         : %s'):format(tostring(BR.State.me.state)))
     print(('  downed     : %s  bleedEndsAt %s  (%.1fs left)')
@@ -3729,6 +4032,13 @@ RegisterCommand('brdbno', function()
     -- TEAMMATE'S paste: this line is what my machine plays, theirs is what
     -- their copy of me plays.
     print(('  own pose   : %s'):format(poseLine(PlayerPedId())))
+    -- ...AND WHICH A/B ARM IS SET (#390). `next` is what the next knock will
+    -- latch; `last knock` is what the most recent one on this machine ran.
+    print(('  a/b        : next knock settle %s, args %s; keeper %s   (last knock: '
+           .. 'settle %s, args %s, %d task clear(s), %d re-pose(s) after a '
+           .. 'getup)')
+        :format(ab.settle, ab.args, ab.keeper, tostring(knock.settle),
+                tostring(knock.args), knock.clears, knock.regetups))
     -- BOTH OF THE ABOVE ARE LOCAL-ONLY. This is the line that says whether
     -- anything is being done about the copies on other machines (#164).
     --
@@ -3974,8 +4284,8 @@ RegisterCommand('brdbno', function()
                     src, tostring(e.name), ped,
                     math.sqrt(dx * dx + dy * dy + dz * dz), poseLine(ped)))
                 print(('         keeper: %s'):format(k and (
-                    ('re-posed %d (%s), ours %s, rate %s%s'):format(
-                        k.poses,
+                    ('%s, re-posed %d (%s), ours %s, rate %s%s'):format(
+                        tostring(k.keeper), k.poses,
                         k.posedAt and ('last %dms ago'):format(
                             GetGameTimer() - k.posedAt) or 'never',
                         tostring(k.ours),
@@ -3986,4 +4296,26 @@ RegisterCommand('brdbno', function()
         end
     end
     if shown == 0 then print('    (none)') end
+
+    -- ...AND EVERY POSE THIS SCREEN PUT ON A COPY AND ASKED TO DROP (#390).
+    -- `NOT gone` is the one line in this block that means a body may still
+    -- look downed here after a revive or a bleed-out; it is printed in F8 the
+    -- moment it happens, too.
+    print(('  --- releases: %d asked, %d settled, %d re-ask(s), %d NOT gone after '
+           .. '%d asks ---')
+        :format(cloneLedger.releases, cloneLedger.released,
+                cloneLedger.releaseRetries, cloneLedger.releaseFails,
+                RELEASE_TRIES))
+    local pending = 0
+    for src, r in pairs(releasing) do
+        pending = pending + 1
+        print(('    %-4s %s: %d ask(s) over %dms -- %s'):format(
+            tostring(src), r.why, r.tries, GetGameTimer() - r.since,
+            r.failed and 'STILL CARRIES THE CLIP, could not remove it'
+                     or 'still checking'))
+    end
+    if pending == 0 then print('    (none pending)') end
+    if cloneLedger.lastRelease then
+        print('    last settled: ' .. cloneLedger.lastRelease)
+    end
 end, false)
