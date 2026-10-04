@@ -487,7 +487,11 @@ function BR.Storm.hitchSummaryLines()
     -- An add or a removal then is a picture drawn mid-sweep -- a client joining, a
     -- refusal drawn again, a /brstormbisect switch -- and those are the map's only
     -- candidates for a long frame in a sweep.
+    --
+    -- AND A CAPTURE THAT SAW NO SWEEP SAYS NOTHING ABOUT THEM: "it only faded the old
+    -- zone out" would be a claim about a sweep nobody measured.
     local drawn = m and ((m.sweepAdds or 0) + (m.sweepRemoves or 0)) or 0
+    local swept = m ~= nil and (m.sweeps or 0) > 0
     local verdict
     if frames == 0 then
         verdict = 'nothing measured yet -- play a hold and a sweep, then /brstormhitch again.'
@@ -498,6 +502,10 @@ function BR.Storm.hitchSummaryLines()
             .. 'storm moved -- a picture drawn mid-sweep (a join, a refusal drawn again, a '
             .. '/brstormbisect switch). /brstormhitch rows names what ran before each one.')
             :format(drawn)
+    elseif not swept then
+        verdict = 'no sweep was captured, so this says nothing about the storm map while '
+            .. 'the storm moves -- reset and play through a sweep. /brstormhitch rows names '
+            .. 'what ran before each long frame.'
     else
         verdict = 'the long frames were not the storm map\'s -- while the storm moved it only '
             .. 'faded the old zone out. /brstormhitch rows names what ran before each one.'

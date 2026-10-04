@@ -239,7 +239,8 @@ docs/match-math.md). The 3D wall and the damage tick read it from the same solve
 call. The maps do not show it moving (2026-10-04): through the hold they show the
 zone and the destination, and as the sweep sets off the zone fades out over a
 second (`overlay.sweepFadeSec`) and the destination is left — the 3D wall is the
-only picture of the moving shape (docs/match-math.md).
+only picture of the moving shape (docs/match-math.md). Phase 1's zone, the whole
+map, is never drawn: circle 1 alone shows through its hold and sweep.
 
 **Timing.** The first hold is priced for the furthest living player's run in to
 circle 1's wall — its shape, the same boundary the 75% cut counts against (#364):

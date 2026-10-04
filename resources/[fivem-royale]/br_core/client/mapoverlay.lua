@@ -331,7 +331,7 @@ end
 ---
 --- AND NOTHING HERE MOVES OR SCALES ONE ANY MORE (2026-10-04). The disassembly shows
 --- UPDATE_OVERLAY_POSITION and UPDATE_OVERLAY_SIZE_OR_SCALE set an area clip's _x/_y
---- and _width/_height, which moves and scales a polygon drawn about its own centre --
+--- and _width/_height, which moves and scales a polygon drawn about its own center --
 --- #350 used that to follow the moving wall. The storm map stopped showing a moving
 --- shape ("the only indicator of the actual current shape of the storm is looking in
 --- the 3d world", the owner), so every area goes out in world coordinates and stays.

@@ -1513,11 +1513,10 @@ end
 --   the sweep they are the same boundary -- and gone at FINISHED
 --   (previewWallCircle).
 --
--- THE MAP KEEPS ITS OWN CLOCK, and wallShare below is that clock and nothing else now:
--- the whole-map zone fill and its fallback ring stay suppressed through the hold and
--- fade in across its last fadeInSec, exactly as they did. A purple wash over all of
--- Los Santos on the map still says nothing; a wall on the horizon says where the edge
--- of the storm is.
+-- THE MAP DRAWS NEITHER OF THESE AS A ZONE: phase 1's zone is the whole map, and it is
+-- never on either map -- circle 1 alone shows there, through the hold and the sweep
+-- (mapShare, 2026-10-04). A purple wash over all of Los Santos on the map says
+-- nothing; a wall on the horizon says where the edge of the storm is.
 
 --- How much of the opening zone's wall is showing: 0 at the first instant of phase
 --- 1's hold, 1 once fadeInSec of it has passed, and 1 for every other phase and
@@ -1537,37 +1536,6 @@ local function wallRamp(rec, st, msLeft)
     if held >= fadeMs then return 1.0 end
     if held <= 0.0 then return 0.0 end
     return held / fadeMs
-end
-
--- ═══ ONE FADE CLOCK FOR THE MAP (#340) ═══
---
--- The map ring and the map's zone fill share this countdown (user call, 2026-08-04):
--- during phase 1's hold the whole-map zone is suppressed on the map, and it fades in
--- across the hold's last fadeInSec, at full strength as the shrink begins. It used to
--- be the 3D curtain's clock too, and #327's circle-1 wall was its complement; since
--- #344's second round the curtain has its own ramp (wallRamp, above) and circle 1's
--- wall stands beside it rather than in for it, so this is the MAP's number alone.
---
--- A fadeInSec OF ZERO IS ANSWERED HERE TOO, and it used to be a nan. The old spelling
--- tested `msLeft > fadeMs` and then divided by fadeMs, so a zero divided 0 by 0 on the
--- one frame that got through -- a nan alpha, which is the silent failure this file is
--- written against. Zero now means "no fade window": the zone is suppressed for the
--- whole hold and arrives at full strength with the shrink.
---
--- AND msLeft == fadeMs RETURNS 0 RATHER THAN DRAWING AT 0: identical on the map, and it
--- keeps "the zone is showing" one instant rather than two adjacent ones.
---- @param rec table     the storm record
---- @param st string     the phase state solveNow reported
---- @param msLeft number ms until that phase state changes
---- @return number       0..1 of the map's zone fill and ring
-local function wallShare(rec, st, msLeft)
-    if rec.phase ~= 1 or st ~= BR.StormPhase.HOLDING then return 1.0 end
-    local fadeMs = (cfg.render.fadeInSec or 10.0) * 1000.0
-    if fadeMs <= 0.0 then return 0.0 end
-    if msLeft >= fadeMs then return 0.0 end
-    local w = 1.0 - msLeft / fadeMs
-    if w < 0.0 then return 0.0 elseif w > 1.0 then return 1.0 end
-    return w
 end
 
 -- A DEV-ONLY RUNTIME BISECT FOR #350. `normal` is the shipping path; the other
@@ -1969,9 +1937,12 @@ end
 -- destination reads as storm on the map until the wall gets there. The next record's
 -- hold starts from that destination, drawn again as its zone. A picture drawn FIRST
 -- while the storm moves -- a client that joined mid-sweep, or one drawn again after a
--- refusal -- is the destination alone. The phase-1 hold shows the destination only,
--- the whole-map zone fading in over its last seconds (wallShare), and that zone fades
--- out with the sweep like any other.
+-- refusal -- is the destination alone.
+--
+-- PHASE 1 NEVER SHOWS ITS ZONE. It is the whole map, and a purple wash over all of Los
+-- Santos says nothing: it used to fade in over the hold's last ten seconds and out a
+-- second into the sweep, eleven seconds of it every match. So circle 1 alone shows,
+-- through the hold and the sweep -- the same picture the bus showed (mapShare).
 --
 -- THE DESTINATION IS DRAWN FIRST AND THE ZONE AFTER IT, both in world coordinates.
 -- BOTH IN THE WALL'S OWN PURPLE. An overlay takes an RGB and a blip takes a palette
@@ -1985,10 +1956,10 @@ end
 --                                          -- the owner, 2026-10-02, playing 8335b17
 --
 -- A picture is REM_OVERLAY and ADD_AREA_OVERLAY for every contour, their coordinates
--- marshalled through a Scaleform string. It is drawn once per storm record, as the
+-- marshaled through a Scaleform string. It is drawn once per storm record, as the
 -- record arrives, and otherwise only for a first sight or a refused picture drawn again,
 -- a few times at most (PICTURE_TRIES). Between pictures the movie hears nothing but
--- alpha writes: the phase-1 fade in and a sweep's fade out. Until 2026-10-04 a sweep
+-- alpha writes: a sweep's fade out. Until 2026-10-04 a sweep
 -- was shown moving -- its outline moved and scaled every tick, redrawn as it set off and
 -- at its knee; before 2026-10-02 staged in the hold or redrawn at 10 Hz -- and all of
 -- that is gone. /brstormhitch's summary counts what still reaches the movie while the
@@ -2088,8 +2059,9 @@ end
 --- because the movie's alpha compounds below 100 -- its header has the arithmetic.
 --- Done there rather than here so that every caller of setAreas gets it. The zone
 --- goes out at 255, where there is nothing to compound, because it is FADED
---- afterwards (BR.MapOverlay.alphaArea) -- the phase-1 hold, and a sweep setting off
---- -- and that write is linear only for an area added at full strength.
+--- afterwards (BR.MapOverlay.alphaArea) -- to the safe zone's alpha as it is drawn, and
+--- out as a sweep sets off -- and that write is linear only for an area added at full
+--- strength.
 --- @param alpha number
 --- @return table  { r, g, b, a }
 local function fillColour(alpha)
@@ -2121,12 +2093,19 @@ end
 --- How strongly the map shows the ZONE, 0..1 of the safe zone's alpha. The overlay's
 --- zone fill and the fallback ring (storm.state) both read it, so they are one picture:
 ---
----   the phase-1 hold   wallShare: nothing, then in over the hold's last fadeInSec
+---   phase 1            none, in the hold and the sweep: its zone is the whole map
 ---   any other hold     all of it
 ---   a sweep            out over its first `overlay.sweepFadeSec`, on the record's own
 ---                      clock -- every screen fades together, and a client whose
 ---                      picture is drawn half way through draws no zone at all
 ---   finished           none
+---
+--- NONE IS NOT DRAWN, NOT DRAWN AT NOTHING: a picture drawn while the storm holds
+--- carries the zone only when this is above zero, and the ring is never drawn for it.
+--- PHASE 1'S ZONE used to be in the picture at nothing, fade in over the hold's last
+--- fadeInSec and out a second into the sweep -- eleven seconds of purple over the
+--- whole map every match, saying nothing. Circle 1 alone shows there now, as the bus
+--- showed it (2026-10-04).
 ---
 --- A sweepFadeSec OF ZERO IS NO FADE: the zone is gone on the sweep's first tick,
 --- answered before anything divides by it.
@@ -2135,8 +2114,8 @@ end
 --- @param msLeft number ms until that phase state changes
 --- @return number       0..1
 local function mapShare(rec, st, msLeft)
-    if st == BR.StormPhase.FINISHED then return 0.0 end
-    if st ~= BR.StormPhase.SHRINKING then return wallShare(rec, st, msLeft) end
+    if rec.phase == 1 or st == BR.StormPhase.FINISHED then return 0.0 end
+    if st ~= BR.StormPhase.SHRINKING then return 1.0 end
     local fadeMs = ((cfg.overlay or {}).sweepFadeSec or 1.0) * 1000.0
     if fadeMs <= 0.0 then return 0.0 end
     local into = (rec.tShrink or 0.0) - msLeft
@@ -2156,8 +2135,9 @@ end
 --- ═══ THE KEY IS THE RECORD'S GEOMETRY AND NOTHING THAT MOVES (#350, #344) ═══
 ---
 --- The phase, the seed, both circles and a carried outline: what the picture is drawn
---- FROM. A new key is a whole new picture. `moving` -- the wall sweeping, or finished --
---- says whether a picture drawn now carries the zone.
+--- FROM. A new key is a whole new picture. `moving` is the wall sweeping, or finished;
+--- `zoned` says whether a picture drawn now carries the zone -- only while the storm
+--- holds, and only a zone the map shows at all (mapShare).
 --- @return table|nil plan
 --- @return string|nil key
 local function overlayPlan()
@@ -2182,15 +2162,19 @@ local function overlayPlan()
     local key = ('r|%d|%d|%.0f|%.0f|%.0f|%.0f|%.0f|%.0f|%s'):format(
         rec.phase, math.floor(rec.seed or 0), rec.cx0, rec.cy0, rec.r0,
         rec.cx1, rec.cy1, rec.r1, mo and ('%.6f'):format(mo.t or 0.0) or '-')
+    local moving = st == BR.StormPhase.SHRINKING or st == BR.StormPhase.FINISHED
+    local share = mapShare(rec, st, msLeft)
     return {
         rec = rec, cx = cx, cy = cy, r = r, state = st,
-        moving = st == BR.StormPhase.SHRINKING or st == BR.StormPhase.FINISHED,
-        zoneA = cfg.blip.currentAlpha * mapShare(rec, st, msLeft),
+        moving = moving,
+        zoned = not moving and share > 0.0,
+        zoneA = cfg.blip.currentAlpha * share,
     }, key
 end
 
 --- The whole picture for a plan, ready for BR.MapOverlay.setAreas: the destination,
---- then -- while the storm holds -- the zone. THE PREVIEW is circle 1 alone.
+--- then -- while the storm holds, after phase 1 -- the zone. THE PREVIEW is circle 1
+--- alone, and so is phase 1.
 --- @param plan table  from overlayPlan
 --- @return table|nil areas
 --- @return integer dest    how many of them are the destination (or circle 1)
@@ -2216,8 +2200,8 @@ local function overlayFill(plan)
     local dest = #out
     -- THE ZONE AS THE HOLD BEGAN, AND ONLY WHILE IT HOLDS: `t` 0, and `g` 0, so a
     -- conjoined zone is the shape the last sweep left rather than wherever its growth
-    -- has got to (the section note has why).
-    if not plan.moving then
+    -- has got to (the section note has why). Never phase 1's (mapShare).
+    if plan.zoned then
         push(BR.StormZone(rec, plan.cx, plan.cy, plan.r, 0.0, 0.0), 255)
     end
     if #out == 0 then return nil, 0, 0 end
@@ -2225,9 +2209,9 @@ local function overlayFill(plan)
 end
 
 --- Show the zone at the plan's strength: one alpha write a contour, and only when the
---- value changed -- the phase-1 fade in, a sweep's fade out, and once as the zone is
---- drawn, because it goes out at full strength (fillColour). Nothing else is ever sent
---- to a picture once it is in the movie.
+--- value changed -- a sweep's fade out, and once as the zone is drawn, because it goes
+--- out at full strength (fillColour). Nothing else is ever sent to a picture once it
+--- is in the movie.
 ---
 --- false on a refusal: the movie's picture is then not the storm's, and the caller
 --- decides what to do about it.
@@ -2240,8 +2224,7 @@ local function fadeZone(at, plan, first)
     local a = math.floor((plan.zoneA or 0.0) + 0.5)
     if not first and a == at.a then return true end
     local trace = BR.Loop.hitchBegin('storm.map.alpha',
-        'the phase-1 fade in, a sweep\'s fade out over overlay.sweepFadeSec, and once per '
-            .. 'drawn zone')
+        'a sweep\'s fade out over overlay.sweepFadeSec, and once per drawn zone')
     for i = 1, at.zone do
         if not BR.MapOverlay.alphaArea(at.dest + i, a) then
             BR.Loop.hitchEnd(trace)
@@ -2642,9 +2625,9 @@ end)
 --
 -- ═══ NOT A SECOND CLOCK, WHICH IS #340'S WHOLE POINT ═══
 --
--- The window is render.fadeInSec -- the SAME number the opening wall fades in over and
--- the map ring fades in over -- so there is one fade length in this file and the
--- preview reads it at both ends of its life: in over fadeInSec when the world
+-- The window is render.fadeInSec -- the SAME number the opening wall fades in over --
+-- so there is one fade length for the walls in this file, and the preview reads it
+-- at both ends of its life: in over fadeInSec when the world
 -- arrives, out over fadeInSec as the sweep's wall lands on it. Retuning that one
 -- value retunes all of them. What is new here is a TIMESTAMP, not a duration, and it
 -- is the one thing the existing clock cannot supply: nothing about the phase-1
@@ -2796,12 +2779,12 @@ local previewOfRec = setmetatable({}, { __mode = 'k' })
 ---
 --- ═══ PHASE 1 DRAWS TWO WALLS, SO THIS ONE STAYS UNTIL THE OTHER ARRIVES (#344) ═══
 ---
---- Circle 1's wall used to hand OFF to the opening wall -- wallShare's complement,
---- gone as the opening ring faded in over the hold's last seconds -- and then the
---- sweep brought that ring in from the map's edge: the reset the owner saw. The
---- opening wall now stands from the start of the hold (storm.wall's wallRamp), and
---- this one stands beside it, exactly as every later phase shows the zone and the
---- destination, through the whole hold AND the whole sweep:
+--- Circle 1's wall used to hand OFF to the opening wall -- the complement of the map's
+--- old phase-1 fade, gone as the opening ring faded in over the hold's last seconds --
+--- and then the sweep brought that ring in from the map's edge: the reset the owner
+--- saw. The opening wall now stands from the start of the hold (storm.wall's
+--- wallRamp), and this one stands beside it, exactly as every later phase shows the
+--- zone and the destination, through the whole hold AND the whole sweep:
 ---
 ---   HOLDING     at previewAlpha, the strength the bus saw it at, so nothing changes
 ---               at the BUS -> PLAYING boundary either;
@@ -2810,8 +2793,9 @@ local previewOfRec = setmetatable({}, { __mode = 'k' })
 ---               the two are the same boundary, and one of them is enough;
 ---   FINISHED    gone, with the moving wall standing on it at full strength.
 ---
---- ONE FADE LENGTH STILL, render.fadeInSec, read by this, by the opening wall's ramp
---- and by the map -- so there is nothing to tune out of step.
+--- ONE FADE LENGTH STILL, render.fadeInSec, read by this and by the opening wall's
+--- ramp -- so there is nothing to tune out of step. (The map read it too until
+--- 2026-10-04, for phase 1's zone, which it no longer draws.)
 ---
 --- ═══ AND IT CARRIES THE SEED, BECAUSE IT IS PHASE 1'S SHAPE (#344) ═══
 ---
@@ -2904,9 +2888,8 @@ BR.Loop.register(BR.Loop.FRAME, 'storm.previewWall', function()
     -- that could be replaced with `return 1.0` and put the pop straight back, with
     -- nothing to notice.
     --
-    -- AND NOTHING IS DRAWN AT ZERO, which is the reading wallShare's header argues for
-    -- its own boundary: a whole wall's worth of triangles at alpha 0 is identical on
-    -- screen and a frame of geometry dearer.
+    -- AND NOTHING IS DRAWN AT ZERO: a whole wall's worth of triangles at alpha 0 is
+    -- identical on screen and a frame of geometry dearer.
     local entry = entryShare()
     if not worldAt then worldAt = GetGameTimer() end
     if entry <= 0.0 then return end
@@ -2967,6 +2950,11 @@ end)
 -- ----------------------------------------------------- blips, FX, envelope ---
 
 local curBlip, nextBlip = nil, nil
+--- The record the rings above were drawn for. A record is whole-table-assigned
+--- everywhere in the game -- STORM_SYNC, and the SNAPSHOT a join or a match teardown
+--- sends, which sets S.storm without a STORM_SYNC -- so a different table is a new
+--- record however it arrived, and storm.state draws its rings afresh.
+local ringsFor = nil
 local dirBlip = nil       -- centre marker: clamps to the minimap edge = direction home
 local lastBlipAt = 0
 local lastBlipR = -1.0
@@ -3236,6 +3224,7 @@ end
 -- state transition, so it needs no extra message to know.
 local function teardown()
     clearBlips()
+    ringsFor = nil
     mapBlipsDirty = false
     -- The frame job reads `solved` and nothing else. Leaving it set would
     -- keep it computing distances to a circle that no longer exists.
@@ -3270,6 +3259,28 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
         BR.Loop.hitchContext(nil, nil, nil)
         teardown()
         return
+    end
+
+    -- ═══ A NEW RECORD: BOTH RINGS COME DOWN, AND A NEW COUNTDOWN GOES OUT AT ONCE ═══
+    --
+    -- The old destination's ring must never linger on the map. It did, in the fallback,
+    -- when a record arrived by SNAPSHOT rather than STORM_SYNC mid-sweep: only
+    -- STORM_SYNC cleared the rings, and a sweep draws nothing but its destination's
+    -- ring when there is none -- so the last record's destination stood there until the
+    -- next hold. Asked here, of the record itself, it holds whichever way one arrives,
+    -- and both rings are drawn for it on this same pass.
+    --
+    -- AND THE COUNTDOWN IS SENT ON THIS TICK RATHER THAN ON THE NEXT 4 Hz ENVELOPE BEAT
+    -- (#352). The server cuts the phase-1 hold to 1:30 by publishing a record with a
+    -- shorter wait, and the page derives its digits from the `endsAt` this file
+    -- forwards -- so a throttled push would leave up to a quarter of a second of the old
+    -- countdown on screen at the one moment somebody is watching it change.
+    if rec ~= ringsFor then
+        ringsFor = rec
+        clearBlips()
+        mapBlipsDirty = false
+        lastBlipAt = 0
+        lastPush = 0
     end
 
     local now = BR.Clock.now()
@@ -3429,31 +3440,25 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
 
     -- Blips: the overlay's fallback, and the same picture (#350, 2026-10-04) -- the
     -- zone's ring while the storm holds, faded out as a sweep sets off and not drawn
-    -- again until the next hold, and the destination's ring throughout. A radius blip
-    -- cannot be resized in place, so nothing here follows the moving wall: the ring is
-    -- drawn once a hold, and its fades are alpha writes on a cadence -- brisk while it
-    -- fades, lazy otherwise.
+    -- again until the next hold, never phase 1's, and the destination's ring
+    -- throughout. A radius blip cannot be resized in place, so nothing here follows the
+    -- moving wall: the ring is drawn once a hold, and its fade is alpha writes on a
+    -- cadence -- brisk while it fades, lazy otherwise.
     local gt = GetGameTimer()
-    -- ═══ THE MAP RING READS THE MAP'S OWN FADE CLOCK, NOT A COPY OF IT ═══
+    -- ═══ THE MAP RING READS THE MAP'S OWN SHARE, NOT A COPY OF IT ═══
     --
-    -- The map ring and the map's zone fill arrive together (user call, 2026-08-04),
+    -- The map ring and the map's zone fill are one picture (user call, 2026-08-04),
     -- and until #350 that was TWO SPELLINGS of one fade: `msLeft <= fadeMs` and
-    -- `1 - msLeft / fadeMs` written out here beside wallShare's own identical
-    -- arithmetic. Two spellings of one number are two things that can stop agreeing
-    -- -- and this copy did not carry wallShare's fadeInSec-of-zero answer either, so
-    -- it was right about that case by accident rather than by rule. There is one
-    -- share now -- mapShare, the fade in at the end of the phase-1 hold and the fade
-    -- out as a sweep sets off -- and the overlay in storm.map reads the same one. (The
-    -- 3D curtain has its own ramp since #344's second round -- wallRamp -- because
-    -- phase 1 draws the opening wall from the start of the hold; the map still waits
-    -- for the last fadeInSec, where a purple wash over the whole map would say nothing.)
+    -- `1 - msLeft / fadeMs` written out here beside the overlay's own identical
+    -- arithmetic. Two spellings of one number are two things that can stop agreeing.
+    -- There is one share now -- mapShare: none for phase 1, all of it through any other
+    -- hold, and out as a sweep sets off -- and the overlay in storm.map reads the same
+    -- one.
     local share = mapShare(rec, st, msLeft)
-    local wholeMap = rec.phase == 1 and st == BR.StormPhase.HOLDING
-    local swept    = st == BR.StormPhase.SHRINKING or st == BR.StormPhase.FINISHED
-    local fading   = wholeMap and share > 0.0
+    local swept = st == BR.StormPhase.SHRINKING or st == BR.StormPhase.FINISHED
     -- BRISK UNTIL THE OLD RING IS GONE, not just while its share is above nothing: the
     -- pass that removes it is the first after the fade, not the next lazy one.
-    local hz = (fading or (swept and curBlip ~= nil)) and cfg.blip.refreshHzFading
+    local hz = (swept and curBlip ~= nil) and cfg.blip.refreshHzFading
         or cfg.blip.refreshHzHolding
     if mapBlipsDirty or gt - lastBlipAt >= 1000 / hz then
         mapBlipsDirty = false
@@ -3470,34 +3475,26 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
             curBlip  = removeBlips(curBlip)
             nextBlip = removeBlips(nextBlip)
             lastBlipR = -1.0
+        -- ═══ NO ZONE ON THE MAP: PHASE 1 THROUGHOUT, AND A SWEEP ONCE ITS FADE IS DONE ═══
+        --
+        -- Phase 1's zone is the whole map, and a ring around all of Los Santos tells
+        -- players nothing, so it is never drawn -- circle 1's ring below is the whole
+        -- picture, hold and sweep, as it was on the bus. And a sweep's old ring, faded
+        -- out, comes down here on the first pass after its fade.
+        elseif share <= 0.0 then
+            if curBlip then curBlip = removeBlips(curBlip) lastBlipR = -1.0 end
         -- ═══ THE OLD RING FADES OUT AS THE SWEEP SETS OFF, AND STAYS GONE ═══
         --
         -- The overlay's rule (storm.map): nothing on the map moves while the wall does.
         -- The ring the hold drew is faded where it stands -- its alpha written to the
-        -- blips already on the map, no blip rebuilt -- and then removed; a client with
-        -- no ring by then, one that joined mid-sweep, gets none. The destination's ring
-        -- below is all that is left until the next record's hold draws its zone.
+        -- blips already on the map, no blip rebuilt -- and then removed (above); a
+        -- client with no ring by then, one that joined mid-sweep, gets none. The
+        -- destination's ring below is all that is left until the next record's hold
+        -- draws its zone.
         elseif swept then
-            if curBlip and share > 0.0 then
+            if curBlip then
                 local a = math.floor(cfg.blip.currentAlpha * share + 0.5)
                 for i = 1, #curBlip do SetBlipAlpha(curBlip[i], a) end
-            elseif curBlip then
-                curBlip = removeBlips(curBlip) lastBlipR = -1.0
-            end
-        -- The CURRENT circle is not drawn while it is still the whole map
-        -- (phase-1 hold): a ring around all of Los Santos on every map told
-        -- players nothing... until the hold's last fadeInSec, when its map ring
-        -- fades in -- alpha ramped on the map's own countdown, the one the zone
-        -- fill reads, so it does not pop.
-        elseif wholeMap then
-            if fading then
-                local a = math.floor(cfg.blip.currentAlpha * share + 0.5)
-                curBlip = mapBlips(curBlip, zoneShape(cx, cy, r),
-                    cfg.blip.currentColour, a, 'Safe Zone')
-                lastBlipR = r
-                nextBlip = removeBlips(nextBlip)
-            elseif curBlip then
-                curBlip = removeBlips(curBlip) lastBlipR = -1.0
             end
         elseif math.abs(r - lastBlipR) > 1.0 or not curBlip then
             lastBlipR = r
@@ -3724,21 +3721,8 @@ BR.Loop.register(BR.Loop.TICK, 'storm.units', function()
     end
 end)
 
--- A new record means the "next circle" moved: force the blips to rebuild so
--- the old target ring never lingers on the map.
---
--- AND IT MEANS A NEW COUNTDOWN, WHICH IS SENT ON THE FIRST TICK THAT SOLVES IT
--- RATHER THAN ON THE NEXT 4 Hz ENVELOPE BEAT (#352). The server cuts the phase-1
--- hold to 1:30 by publishing a record with a shorter wait, and the page derives
--- its digits from the `endsAt` this file forwards -- so a throttled push would
--- leave up to a quarter of a second of the old countdown on screen at the one
--- moment somebody is watching it change.
-AddEventHandler(BR.Net.STORM_SYNC, function()
-    clearBlips()
-    mapBlipsDirty = false
-    lastBlipAt = 0
-    lastPush = 0
-end)
+-- (A new record's rings and countdown are storm.state's: it asks of the record itself,
+-- so a SNAPSHOT is a new record as surely as a STORM_SYNC.)
 
 AddEventHandler('onResourceStop', function(res)
     if res ~= GetCurrentResourceName() then return end

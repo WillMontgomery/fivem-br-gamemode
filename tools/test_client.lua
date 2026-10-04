@@ -22115,6 +22115,14 @@ do
     ok(out:find('verdict: the long frames were not the storm map\'s -- while the storm moved '
             .. 'it only faded the old zone out.', 1, true) ~= nil,
         'long frames beside nothing but the fade do not blame the map', out)
+    -- AND A CAPTURE THAT SAW NO SWEEP DOES NOT VOUCH FOR ONE.
+    stats.sweeps, stats.sweepFades = 0, 0
+    out = said({})
+    ok(out:find('verdict: no sweep was captured, so this says nothing about the storm map', 1,
+            true) ~= nil and out:find('only faded', 1, true) == nil,
+        'long frames with no sweep captured say so, rather than "it only faded the old zone '
+            .. 'out" about a sweep nobody measured', out)
+    stats.sweeps, stats.sweepFades = 3, 30
     stats.sweepAdds, stats.sweepRemoves = 2, 3
     out = said({})
     ok(out:find('verdict: some long frames may be the 5 clips the map added or removed while '

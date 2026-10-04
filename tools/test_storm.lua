@@ -9278,7 +9278,7 @@ do
     -- alpha -- and below 100 the two COMPOUND, which areaAlpha inverts for the areas
     -- that are never faded. SET_OVERLAY_ALPHA rewrites the first term alone, so it is
     -- LINEAR only for an area added at 255, where the fill term is opaque: that is why
-    -- the zone -- which the phase-1 hold fades -- is added at 255 and then given its
+    -- the zone -- which a sweep fades -- is added at 255 and then given its
     -- alpha.
     local col  = C.env.BR.Config.Storm.render.colour
     local MO   = C.env.BR.MapOverlay
@@ -9321,45 +9321,7 @@ do
             .. 'never placed',
         ('worst %.9f m off the destination'):format(tWorst))
 
-    -- ─── the phase-1 hold shows the target ONLY, and fades the zone in by ALPHA ───
-    --
-    -- The safe zone during the phase-1 hold is the whole map, and a purple wash over
-    -- all of Los Santos says nothing -- which is exactly why the blue ring is
-    -- suppressed there. The fill obeys the same rule from the same number, wallShare.
-    -- AND THE FADE IS ALPHA WRITES, NOT REBUILDS (#344): until now each step of it was
-    -- a new key and so a rebuild -- up to twenty over the hold's last ten seconds.
-    local H = mapClient(1, 0.0, 0.0, 6000.0, 400.0, 0.0, 2600.0, 120000, 120000)
-    ok(H.overlayReady(), 'a phase-1 client reaches the gate')
-    local FADE = (H.env.BR.Config.Storm.render.fadeInSec or 10.0) * 1000.0
-    local function holdAt(C2, msLeft)
-        C2.env.BR.State.storm.tStart = (C2.now + 1500) - (120000 - msLeft)
-        C2.tick(1)
-    end
-    holdAt(H, 60000)
-    local _, deepO = H.zoneFill()
-    ok(#H.areas() == 2 and deepO == 0.0,
-        'deep in the phase-1 hold only circle 1 shows -- the whole-map zone is in the '
-            .. 'movie at nothing, suppressed exactly as its ring is',
-        ('%d areas, zone at %.4f'):format(#H.areas(), deepO))
-    local fadeAdds = H.mm.adds
-    local rising, lastO, steps = true, 0.0, 0
-    for ms = FADE - 500, 500, -500 do
-        H.env.BR.State.storm.tStart = (H.now + 100) - (120000 - ms)
-        H.now = H.now + 100
-        H.env.BR.Loop.step(H.env.BR.Loop.TICK)
-        local _, o = H.zoneFill()
-        if o < lastO then rising = false end
-        lastO = o
-        steps = steps + 1
-    end
-    ok(rising and lastO > 0.0 and lastO < blip.currentAlpha / 255,
-        'inside the fade window the zone rises on the map\'s own countdown, at part '
-            .. 'strength rather than at full, so it fades in instead of popping',
-        ('%.4f against %.4f at full'):format(lastO, blip.currentAlpha / 255))
-    ok(H.mm.adds == fadeAdds and steps > 10,
-        'and not one polygon was added for it -- every step of the fade is one alpha '
-            .. 'write to a clip already in the movie',
-        ('%d adds over %d steps'):format(H.mm.adds - fadeAdds, steps))
+    -- (Phase 1 is circle 1 alone, its whole-map zone never drawn: `map.phase1`.)
 
     -- ─── a breakout's zone is the zone as its hold began ───
     --
@@ -9711,7 +9673,7 @@ do
 
     -- ─── a nested sweep, start to finish ───
     --
-    -- Phase-2 sizes, and a centre off the world's origin in BOTH axes on purpose: a fill
+    -- Phase-2 sizes, and a center off the world's origin in BOTH axes on purpose: a fill
     -- the movie had been told to move would show off the destination by however far.
     local N, nrec = sweepClient(2, 1000.0, 2600.0, 1400.0, 1600.0, 120000,
         -700.0, -300.0, NESTED)
@@ -10356,8 +10318,8 @@ do
     --
     --   THE WARMUP PREVIEW is one add, and stands;
     --   A HOLD adds and removes clips only on its record's first tick -- its picture --
-    --   and after it sends nothing but phase 1's fade in: a conjoined growth is not
-    --   redrawn;
+    --   and after it sends nothing at all: a conjoined growth is not redrawn;
+    --   PHASE 1 is circle 1 alone, hold and sweep: its whole-map zone is never drawn;
     --   A SWEEP sends nothing but SET_OVERLAY_ALPHA, and only inside its first
     --   overlay.sweepFadeSec: no add, no removal, no move, no resize. The zone's alpha
     --   only falls and is nothing once the fade is over, and the destination the hold
@@ -10399,6 +10361,7 @@ do
     local rose, roseWhere = 0, nil
     local leftOn, leftWhere = 0, nil
     local destBad, destWhere = 0, nil
+    local p1Bad, p1Where, p1Ticks = 0, nil, 0
     local sweepsN, fadesN, growHolds = 0, 0, 0
     local summaryBad, leftover = nil, 0
     for seq = 1, SEEDS do
@@ -10461,19 +10424,26 @@ do
                 local d = step()
                 local _, _, rr, st, msLeft = BR.StormAt(rec, BR.Clock.now())
                 local where = ('match %d phase %d tick %d (%s)'):format(seq, ph, i, tostring(st))
+                -- PHASE 1 IS CIRCLE 1 ALONE, from its record's first tick to its last.
+                if ph == 1 and i > 1 then
+                    p1Ticks = p1Ticks + 1
+                    if not (#C.zone() == 0 and #C.dest() == 1 and #C.visible() == 1
+                            and C.visible()[1] == C.dest()[1]) then
+                        p1Bad = p1Bad + 1
+                        p1Where = p1Where or (('%s: %d zone, %d destination, %d visible')
+                            :format(where, #C.zone(), #C.dest(), #C.visible()))
+                    end
+                end
                 if st == BR.StormPhase.HOLDING then
-                    -- THE RECORD'S FIRST TICK DRAWS ITS PICTURE; after it, only phase 1's
-                    -- fade in may write, and only an alpha.
+                    -- THE RECORD'S FIRST TICK DRAWS ITS PICTURE; after it, nothing.
                     if i > 1 then
-                        for k in pairs(d) do
-                            if not (k == 'SET_OVERLAY_ALPHA' and ph == 1) then
-                                holdBad = holdBad + 1
-                                holdWhere = holdWhere or (where .. ': ' .. said(d))
-                            end
+                        for _ in pairs(d) do
+                            holdBad = holdBad + 1
+                            holdWhere = holdWhere or (where .. ': ' .. said(d))
                         end
                     end
                 elseif st == BR.StormPhase.SHRINKING and (rr > 1.0 or rec.r1 > 1.0) then
-                    -- (THE LAST ZONE'S LAST METRE is not a sweep: with nothing left to
+                    -- (THE LAST ZONE'S LAST METER is not a sweep: with nothing left to
                     -- fill, the faded picture comes down and the blips -- none -- take
                     -- the map.)
                     sweepTick = sweepTick + 1
@@ -10535,9 +10505,12 @@ do
     ok(previewOk, 'the warmup preview is one add, and stands thirty seconds without another',
         previewWhy)
     ok(holdBad == 0 and growHolds > 0,
-        ('across %d whole matches every hold sends the movie nothing after its picture but '
-            .. 'phase 1\'s fade in -- %d conjoined growths among them, not one redrawn')
-            :format(SEEDS, growHolds), holdWhere)
+        ('across %d whole matches every hold sends the movie nothing after its picture -- %d '
+            .. 'conjoined growths among them, not one redrawn'):format(SEEDS, growHolds),
+        holdWhere)
+    ok(p1Bad == 0 and p1Ticks > 0,
+        ('and phase 1 shows circle 1 alone on every one of its %d ticks, hold and sweep -- '
+            .. 'its whole-map zone is never in the picture'):format(p1Ticks), p1Where)
     ok(sweepBad == 0 and sweepsN == SEEDS * 8,
         ('and every one of %d sweeps sends nothing but alpha writes -- no add, no removal, no '
             .. 'move, no resize'):format(sweepsN), sweepWhere)
@@ -10644,6 +10617,199 @@ do
     ok(back == 6 and X.errored() == nil,
         'six round trips through mapoff in one hold draw the picture back six times',
         X.errored() or ('%d of 6'):format(back))
+end
+
+-- ---------------------------------------------------------------------------
+describe('map.phase1')
+do
+    -- ═══ PHASE 1 IS CIRCLE 1 ALONE, ON BOTH MAPS, HOLD AND SWEEP (2026-10-04) ═══
+    --
+    -- Phase 1's zone is the whole map. It used to be in the picture at nothing, fade in
+    -- over the hold's last fadeInSec and fade out a second into the sweep: about eleven
+    -- seconds of purple over all of Los Santos every match, saying nothing. It is never
+    -- drawn now, by the overlay or as a fallback ring. What the bus showed -- circle 1 --
+    -- is the whole picture until phase 2's record, and once it is drawn the movie hears
+    -- nothing more. Walked from the bus into PLAYING, through the hold's last fadeInSec
+    -- and the sweep's first seconds, at the map band's own 100 ms, once on each path.
+    local recs = walkRecords(1)
+    local function copy(t) local c = {} for k, v in pairs(t) do c[k] = v end return c end
+
+    for _, overlay in ipairs({ true, false }) do
+        local C = newStormClient()
+        local BR = C.env.BR
+        local CFG = BR.Config.Storm
+        local FADE_MS = (CFG.render.fadeInSec or 10.0) * 1000.0
+        local SWEEP_MS = (CFG.overlay.sweepFadeSec or 1.0) * 1000.0
+        local path = overlay and 'the overlay' or 'the fallback rings'
+        C.mm.handle = overlay and 7 or nil
+        local r1 = recs[1]
+        local circle1 = BR.StormShape.blob(r1.cx1, r1.cy1, r1.r1, BR.StormUnit(r1.seed, 1))
+
+        --- The worst distance of any point the map shows of `ov` from `shape`.
+        local function off(ov, shape)
+            local w = 0.0
+            for _, p in ipairs(C.shown(ov)) do
+                w = math.max(w, math.abs(BR.StormShape.distance(shape, p.x, p.y)))
+            end
+            return w
+        end
+
+        --- What the map shows, if it is circle 1 alone; nil and why when it is not.
+        local function circle1Alone()
+            if overlay then
+                local vis = C.visible()
+                if not (#C.areas() == 1 and #vis == 1 and #C.zone() == 0) then
+                    return nil, ('%d fills, %d showing, %d zone'):format(#C.areas(), #vis,
+                        #C.zone())
+                end
+                local w, o = off(vis[1], circle1), C.opacity(vis[1])
+                if w > 1e-6 or not near(o, CFG.blip.nextAlpha / 255, 0.5 / 255) then
+                    return nil, ('a fill %.3e m off circle 1 at %.4f'):format(w, o)
+                end
+                return vis[1]
+            end
+            local rings = C.rings()
+            if #rings ~= 1 or #C.boxes() ~= 0 then
+                return nil, ('%d rings, %d boxes'):format(#rings, #C.boxes())
+            end
+            local g = rings[1]
+            if not (near(g.x, r1.cx1, 1e-6) and near(g.y, r1.cy1, 1e-6)
+                    and near(g.r, r1.r1, 1e-6) and g.colour == CFG.blip.nextColour) then
+                return nil, ('a ring of %.1f m at %.1f, %.1f in color %s'):format(g.r, g.x,
+                    g.y, tostring(g.colour))
+            end
+            return g
+        end
+
+        -- ─── the bus: circle 1, as it always was ───
+        BR.State.storm = nil
+        BR.State.match.state = BR.MatchState.BUS
+        BR.State.me.state = BR.PlayerState.BUS
+        BR.State.stormPreview = { cx = r1.cx1, cy = r1.cy1, r = r1.r1, seed = r1.seed }
+        C.pedAt = pt(r1.cx1, r1.cy1)
+        local ready = (not overlay) or C.overlayReady()
+        C.tick(2)
+        local bus, busWhy = circle1Alone()
+        ok(ready and bus ~= nil and C.errored() == nil,
+            ('on the bus %s show circle 1 alone, unchanged'):format(path),
+            C.errored() or busWhy)
+
+        -- ─── PLAYING: the hold's last fadeInSec and three seconds more, then the sweep ───
+        local rec = copy(r1)
+        BR.State.match.state = BR.MatchState.PLAYING
+        BR.State.me.state = BR.PlayerState.ALIVE
+        BR.State.stormPreview = nil
+        rec.tStart = C.now - (rec.tWait - (FADE_MS + 3000.0))
+        BR.State.storm = rec
+        local calls, faded, held = nil, nil, nil
+        local bad, badWhere, windowTicks, sweepTicks = 0, nil, 0, 0
+        for i = 1, math.floor((FADE_MS + 3000.0 + 3000.0) / 100.0) do
+            C.now = C.now + 100
+            BR.Loop.step(BR.Loop.TICK)
+            local _, _, _, st, msLeft = BR.StormAt(rec, BR.Clock.now())
+            if i >= 2 then
+                if i == 2 then calls, faded = C.mm.calls, C.mm.faded end
+                local shown, why = circle1Alone()
+                if i == 2 then held = shown end
+                if not shown or shown ~= held then
+                    bad = bad + 1
+                    badWhere = badWhere or ('tick %d (%s, %.0f ms left): %s'):format(i,
+                        tostring(st), msLeft, why or 'circle 1 drawn again')
+                end
+                if st == BR.StormPhase.SHRINKING then sweepTicks = sweepTicks + 1 end
+                local inHold = st == BR.StormPhase.HOLDING and msLeft <= FADE_MS
+                local inSweep = st == BR.StormPhase.SHRINKING
+                    and rec.tShrink - msLeft <= SWEEP_MS
+                if inHold or inSweep then windowTicks = windowTicks + 1 end
+            end
+        end
+        ok(bad == 0 and windowTicks >= (FADE_MS + SWEEP_MS) / 100.0 - 2 and sweepTicks >= 20
+                and C.errored() == nil,
+            ('through phase 1\'s hold and into its sweep %s show circle 1 alone -- the same '
+                .. 'one, never a whole-map zone, not even across the eleven seconds it used to '
+                .. 'fade in and out'):format(path),
+            C.errored() or badWhere or ('%d ticks in the window, %d in the sweep'):format(
+                windowTicks, sweepTicks))
+        if overlay then
+            ok(held ~= nil and off(held, BR.StormTarget(rec)) < 1e-6
+                    and C.mm.calls == calls and C.mm.faded == faded,
+                'and that fill is phase 1\'s destination, drawn once: the movie hears nothing '
+                    .. 'after it -- no alpha write, no add, no removal',
+                ('%d calls, %d alpha writes after the picture'):format(
+                    C.mm.calls - (calls or 0), C.mm.faded - (faded or 0)))
+        end
+    end
+end
+
+-- ---------------------------------------------------------------------------
+describe('map.swap')
+do
+    -- ═══ A RECORD SWAPPED IN WITHOUT A STORM_SYNC STILL REDRAWS THE RINGS ═══
+    --
+    -- A join and a match teardown send a SNAPSHOT, and client/state.lua sets S.storm
+    -- from it without a STORM_SYNC. Only STORM_SYNC used to take the fallback rings
+    -- down, and a sweep draws nothing but its destination's ring when there is none --
+    -- so a record swapped in mid-sweep left the last record's destination on the map
+    -- until the next hold, and one swapped in mid-hold at the same radius kept both old
+    -- rings. The rings follow the record itself now, however it arrived. No overlay
+    -- here: the rings are the map.
+    local function copy(t) local c = {} for k, v in pairs(t) do c[k] = v end return c end
+    local function ticks(C, n)
+        for _ = 1, n do
+            C.now = C.now + 100
+            C.env.BR.Loop.step(C.env.BR.Loop.TICK)
+        end
+    end
+    --- The rings on the map as "r@x,y", sorted -- what a player sees.
+    local function ringsSaid(C)
+        local out = {}
+        for _, g in ipairs(C.rings()) do
+            out[#out + 1] = ('%.0f@%.0f,%.0f'):format(g.r, g.x, g.y)
+        end
+        table.sort(out)
+        return table.concat(out, ' ')
+    end
+    local function ringClient(intoSweepMs)
+        local C = newStormClient()
+        C.mm.handle = nil
+        local rec = C.record(2, 0.0, 0.0, 2600.0, 300.0, 0.0, 1600.0, 600000, 120000, 2.0)
+        rec.seed = 424242
+        if intoSweepMs then rec.tStart = C.now - rec.tWait - intoSweepMs end
+        C.pedAt = pt(300.0, 0.0)
+        return C, rec
+    end
+
+    -- ─── mid-sweep: the old destination's ring goes, the new one's comes ───
+    local S, srec = ringClient(3000)
+    ticks(S, 5)
+    local was = ringsSaid(S)
+    local swapped = copy(srec)
+    swapped.cx1, swapped.r1 = -400.0, 1200.0
+    S.env.BR.State.storm = swapped
+    ticks(S, 3)
+    ok(was == '1600@300,0' and ringsSaid(S) == '1200@-400,0' and S.errored() == nil,
+        'a record swapped in mid-sweep without a STORM_SYNC takes the last destination\'s ring '
+            .. 'down and draws its own -- the one ring a sweep shows',
+        S.errored() or ('%s, then %s'):format(was, ringsSaid(S)))
+
+    -- ─── mid-hold, at the same radius: both rings move ───
+    local H, hrec = ringClient(nil)
+    ticks(H, 5)
+    local held = ringsSaid(H)
+    local moved = copy(hrec)
+    moved.cx0, moved.cx1, moved.tWait = 200.0, -300.0, 500000
+    H.env.BR.State.storm = moved
+    ticks(H, 1)
+    local first = H.last()
+    ticks(H, 2)
+    ok(held == '1600@300,0 2600@0,0' and ringsSaid(H) == '1600@-300,0 2600@200,0'
+            and H.errored() == nil,
+        'and one swapped in mid-hold at the same radius moves both rings onto it',
+        H.errored() or ('%s, then %s'):format(held, ringsSaid(H)))
+    ok(first and first.endsAt == moved.tStart + moved.tWait,
+        'and its countdown goes out on that first tick, as a STORM_SYNC\'s does (#352)',
+        first and ('%s against %s'):format(tostring(first.endsAt),
+            tostring(moved.tStart + moved.tWait)) or 'nothing sent')
 end
 
 -- ---------------------------------------------------------------------------

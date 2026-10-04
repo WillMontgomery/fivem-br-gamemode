@@ -691,7 +691,7 @@ end
 --- a property of how the wrapper draws, not of the movie.
 ---
 --- NOTHING HERE USES EITHER ANY MORE. #350 drew the moving storm zone about its own
---- centre and moved and scaled it every tick; the storm map stopped showing a moving
+--- center and moved and scaled it every tick; the storm map stopped showing a moving
 --- shape on 2026-10-04 (the old zone fades out as a sweep starts), so every shape
 --- goes out in WORLD coordinates and stays where it was drawn.
 --- @param handle integer|nil

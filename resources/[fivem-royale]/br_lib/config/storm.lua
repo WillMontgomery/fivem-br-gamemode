@@ -931,8 +931,8 @@ BR.Config.Storm = {
 
     -- Minimap rings, the overlay's fallback. Radius blips cannot be resized in place;
     -- they must be removed and re-added, so nothing follows the moving wall: the zone's
-    -- ring is drawn once a hold and faded by alpha (in at the end of the phase-1 hold,
-    -- out as a sweep sets off) at refreshHzFading, and otherwise only re-asserted.
+    -- ring is drawn once a hold (never phase 1's, which is the whole map) and faded out
+    -- by alpha as a sweep sets off at refreshHzFading, and otherwise only re-asserted.
     blip = {
         refreshHzFading    = 4,
         refreshHzHolding   = 0.5,
@@ -1003,7 +1003,8 @@ BR.Config.Storm = {
         --    storm is looking in the 3d world."            -- the owner, 2026-10-04
         --
         -- While the storm holds, both maps show the zone (as the hold began) and the
-        -- destination. As a sweep sets off the zone fades out over this many seconds --
+        -- destination -- phase 1 the destination alone, circle 1, because its zone is
+        -- the whole map. As a sweep sets off the zone fades out over this many seconds --
         -- one alpha write a contour on each of the map band's 10 Hz ticks, nothing
         -- added, removed, moved or resized -- and the destination is all that is left
         -- until the next record's hold draws it again as the zone. The fallback ring

@@ -581,8 +581,14 @@ the zone. A sweep sends the movie nothing else: no add, no removal, no move, no
 resize. A picture drawn first while the wall moves (a client that joins mid-sweep,
 a refusal drawn again) is the destination alone. The ground between the moving
 wall and the destination reads as storm on the map until the wall gets there.
-`map.nomorph` in tools/test_storm.lua holds whole matches to it tick by tick, and
-`/brstormhitch` counts what reaches the movie while the wall moves.
+Phase 1's zone is the whole map and is never drawn: through its hold and its sweep
+both maps show circle 1 alone, as the bus did (it used to fade in over the hold's
+last `render.fadeInSec` and out with the sweep — about eleven seconds of purple over
+the whole map, saying nothing). The fallback rings follow the same rule, and are
+drawn afresh for every new record, whether it arrived by `STORM_SYNC` or by a
+snapshot. `map.nomorph` in tools/test_storm.lua holds whole matches to it tick by
+tick, `map.phase1` and `map.swap` hold the last two, and `/brstormhitch` counts what
+reaches the movie while the wall moves.
 
 **What came before it**, kept so nobody re-derives the dead ends. 35258d1 moved and
 resized the zone's clip every tick instead of redrawing it; ec19f40 redrew a
