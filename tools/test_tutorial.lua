@@ -396,6 +396,60 @@ do
 end
 
 -- ---------------------------------------------------------------------------
+-- THE OWNER'S REPORT, 2026-10-03 (#387)
+--
+-- "Seems after getting paid for the tutorial, after finishing the match, the
+-- tutorial continue toggle is still in lobby."
+--
+-- `offerable` falling is not enough for the page to hide that toggle. It falls
+-- on a DECLINE too, and the page keeps the toggle up after a decline that was
+-- taken back (Lobby.tsx, 2026-09-08) -- so a finished player and a player who
+-- re-ticked the box look the same to it. The page needs the finish as its own
+-- fact, `done`, and this block pins that Lua publishes it. The page's half is
+-- ui-src/scripts/test-continue-toggle.mjs.
+-- ---------------------------------------------------------------------------
+
+describe('tutorial.finishedNeverShown')
+do
+    connect(true)
+
+    -- THE WHOLE RUN, THROUGH THE SAME DOORWAYS THE PAGE USES. Start tutorial,
+    -- the lobby half to its last card, then the in-game half on the pad.
+    TriggerEvent('br:tutorial:set', true)
+    TriggerEvent('br:tutorial:set', false)
+    ok(published('done') == false,
+       'THE LOBBY HALF IS NOT A FINISH -- nothing has been paid yet',
+       'done = ' .. tostring(published('done')))
+
+    BR.State.me.state = BR.PlayerState.WARMUP
+    TriggerEvent('br:tutorial:game', true, false)
+    sent = {}
+    TriggerEvent('br:tutorial:game', false, true)
+    ok(sentOne(BR.Net.TUTORIAL_DONE) ~= nil, 'the last card claims the 500 Volts')
+
+    ok(published('done') == true,
+       'AND THE PAGE IS TOLD THEY FINISHED -- the one fact that tells a paid '
+       .. 'player apart from one who declined and re-ticked the box',
+       'done = ' .. tostring(published('done')))
+
+    -- ── THEY PLAY THE MATCH OUT AND LAND BACK IN THE LOBBY ───────────────
+    --
+    -- Every loop that reads match state is stepped on the way, so a tick that
+    -- republished on any of these edges would show up here.
+    for _, st in ipairs({ BR.PlayerState.BUS, BR.PlayerState.ALIVE,
+                          BR.PlayerState.OUT, BR.PlayerState.LOBBY }) do
+        BR.State.me.state = st
+        pump('tutorial.spend')
+        pump('tutorial.leave')
+    end
+    ok(published('done') == true and published('offerable') == false,
+       'STILL FINISHED IN THE NEXT LOBBY -- the match ending moves nothing, '
+       .. 'which is the boundary the report crossed',
+       ('done = %s offerable = %s')
+           :format(tostring(published('done')), tostring(published('offerable'))))
+end
+
+-- ---------------------------------------------------------------------------
 -- THE NEGATIVES -- the fix must not go further than the report
 -- ---------------------------------------------------------------------------
 
@@ -428,6 +482,11 @@ do
        'BUT THE OFFER SURVIVES -- an abandoned run is not a decline and not a '
        .. 'completion, so they are still offered another go',
        'offerable = ' .. tostring(published('offerable')))
+    -- AND IT IS NOT A FINISH (#387). The block above finished one, so this also
+    -- asserts the offer arriving again is what clears it.
+    ok(published('done') == false,
+       'and it does not read as finished, so the continue toggle stays',
+       'done = ' .. tostring(published('done')))
 end
 
 describe('tutorial.decline')
@@ -443,6 +502,10 @@ do
        'declining spends the offer, exactly as finishing now does')
     ok(sentOne(BR.Net.TUTORIAL_DECLINE) ~= nil,
        'and the row is written on the far side so it is still gone tomorrow')
+    ok(published('done') == false,
+       'BUT A DECLINE IS NOT A FINISH (#387) -- the page keeps the toggle for a '
+       .. 'player who takes it back, and only `done` may veto that',
+       'done = ' .. tostring(published('done')))
 end
 
 describe('tutorial.devCommand')
@@ -468,6 +531,10 @@ do
        'AND /brtutorial PUTS IT BACK LOCALLY -- the row still says done and is '
        .. 'untouched; this raises the client\'s mirror so the lobby draws',
        'offerable = ' .. tostring(published('offerable')))
+    ok(published('done') == false,
+       'and un-finishes it locally too (#387), or the continue toggle would '
+       .. 'never come back for the owner testing it',
+       'done = ' .. tostring(published('done')))
 end
 
 describe('tutorial.lootUp')
@@ -650,6 +717,12 @@ do
     ok(BR.Market.tutorialOf(licOf(7)) == 'done',
        'and the session cache holds that answer, which is what the warmup hold '
        .. 'is refused against')
+    -- THIS CLIENT FINISHED A RUN ABOVE (#387), and a no is what a re-read of
+    -- the row sends -- br_core restarting mid-session, say. Only a yes may
+    -- un-finish it, or the toggle comes back on the next publish.
+    ok(published('done') == true,
+       'A NO DOES NOT UN-FINISH THE ACCOUNT -- the continue toggle stays gone',
+       'done = ' .. tostring(published('done')))
 
     -- ═══ THE TOOL. CLEARING IS WHAT THE CLIENT IS TOLD, WITHOUT A RECONNECT ═══
     --
@@ -671,6 +744,12 @@ do
        .. 'and the account is offerable again, on the same connection',
        ('offer = %s offerable = %s')
            :format(tostring(published('offer')), tostring(published('offerable'))))
+    -- The blocks above finished runs of their own, so this client WAS finished
+    -- when the reset arrived (#387).
+    ok(published('done') == false,
+       'AND NO LONGER FINISHED -- a reset that left `done` up would bring back '
+       .. 'the first toggle and keep the continue toggle hidden',
+       'done = ' .. tostring(published('done')))
 
     -- ═══ AND THE ROW IS NOT WRITTEN, WHICH IS THE TOOL'S ONE LIMIT ═══
     --
@@ -771,6 +850,7 @@ if fail > 0 then
 end
 realPrint(('\27[32mok\27[0m   %d assertions: finishing spends the account\'s '
     .. 'offer, so does a first match nobody took it into, abandoning does '
-    .. 'neither, /brtutorial still outranks all three, and brtutorialreset puts '
-    .. 'the offer back for one named player without writing a row')
+    .. 'neither, /brtutorial still outranks all three, brtutorialreset puts '
+    .. 'the offer back for one named player without writing a row, and a finish '
+    .. 'reaches the page as done until the offer is put back')
     :format(pass))

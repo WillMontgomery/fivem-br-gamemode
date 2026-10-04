@@ -1657,6 +1657,68 @@ for (const name of builtCss) {
 }
 
 // ---------------------------------------------------------------------------
+// R25  The continue toggle is drawn through the tested rule, and a finish
+//      reaches it (#387).
+//
+// Owner, 2026-10-03: "Seems after getting paid for the tutorial, after
+// finishing the match, the tutorial continue toggle is still in lobby."
+// src/tutorial/continueToggle.ts decides, scripts/test-continue-toggle.mjs pins
+// the decision, and tools/test_tutorial.lua pins Lua publishing `done`. Only
+// this can see the two meet:
+//
+//   RE-INLINED -- Lobby.tsx gates the `tutorial-continue` toggle on its own
+//     expression again, which is a rule the test cannot reach;
+//   NOT FED -- the call no longer passes `done: tutorialDone`, so the veto is
+//     never asked and a finished player sees the toggle again;
+//   NOT ROUTED -- App.tsx's `tutorial` handler stops copying `d.done` into the
+//     store, so Lua says it and nothing hears it.
+//
+// IT CAN FAIL. Put the old `(tutorialOfferable || ...)` expression back in
+// front of the toggle, drop `done: tutorialDone` from the call, or delete the
+// `setTutorialDone(` line from the handler.
+// ---------------------------------------------------------------------------
+{
+  const L = join(SRC, 'screens', 'Lobby.tsx')
+  const K = join(SRC, 'tutorial', 'continueToggle.ts')
+  const A = join(SRC, 'App.tsx')
+  if (!existsSync(L) || !existsSync(K) || !existsSync(A)) {
+    fail('R25 continue-toggle', 'src',
+      'screens/Lobby.tsx, tutorial/continueToggle.ts or App.tsx is missing. If'
+      + ' they moved, move this rule with them -- it is the pair to'
+      + ' scripts/test-continue-toggle.mjs.')
+  } else {
+    const lobby = stripComments(read(L))
+    if (!/import\s*\{\s*showContinueToggle\s*\}\s*from\s*'\.\.\/tutorial\/continueToggle'/.test(lobby)) {
+      fail('R25 continue-toggle', 'src/screens/Lobby.tsx',
+        'showContinueToggle is no longer imported from ../tutorial/continueToggle.'
+        + ' It is the one definition of when the continue toggle draws, tested by'
+        + ' scripts/test-continue-toggle.mjs (#387).')
+    }
+    const gate = /showContinueToggle\(\{([^}]*)\}\)\s*&&\s*\(\s*<TutorialToggle\s+tut="tutorial-continue"/
+      .exec(lobby)
+    if (!gate) {
+      fail('R25 continue-toggle', 'src/screens/Lobby.tsx',
+        'the `tut="tutorial-continue"` toggle is not gated by'
+        + ' `showContinueToggle({ ... }) && (`. Anything else in front of it is a'
+        + ' rule the test cannot see (#387).')
+    } else if (!/\bdone:\s*tutorialDone\b/.test(gate[1])
+               || !/const\s+tutorialDone\s*=\s*useUi\(\(s\)\s*=>\s*s\.tutorialDone\)/.test(lobby)) {
+      fail('R25 continue-toggle', 'src/screens/Lobby.tsx',
+        'the call does not pass `done: tutorialDone` read from the store. Without'
+        + ' it the veto is never asked and a player who finished and was paid'
+        + ' sees the toggle again (#387).')
+    }
+    const th = /useNuiEvent\(\s*'tutorial'[\s\S]*?\n  \}\)/.exec(stripComments(read(A)))
+    if (!th || !/\bs\.setTutorialDone\(\s*d\.done\s*===\s*true\s*\)/.test(th[0])) {
+      fail('R25 continue-toggle', 'src/App.tsx',
+        "the `useNuiEvent('tutorial', ...)` handler no longer calls"
+        + ' `s.setTutorialDone(d.done === true)`. Lua publishes the finish as'
+        + ' `done`; without this line the store never hears it (#387).')
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Result
 // ---------------------------------------------------------------------------
 if (failures) {

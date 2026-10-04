@@ -1383,6 +1383,15 @@ export type Envelope =
          * row's answer and it outlives the run.
          */
         offerable?: boolean
+        /**
+         * Has this account FINISHED it? (#387)
+         *
+         * NOT `!offerable`, which a decline lowers too -- and the continue
+         * toggle stays up for a player who declined and re-ticked it. This is
+         * the finish on its own, raised by BR.Tutorial.finish, and the toggle
+         * treats it as a veto. See src/tutorial/continueToggle.ts.
+         */
+        done?: boolean
         game?: boolean
         /**
          * How many of the four warmup crates this player has opened during the

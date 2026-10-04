@@ -7,6 +7,7 @@ import PartyPanel from './PartyPanel'
 import Progress from './Progress'
 import { fetchNui } from '../bridge/nui'
 import { CB } from '../bridge/types'
+import { showContinueToggle } from '../tutorial/continueToggle'
 
 /**
  * Lobby and queue.
@@ -143,6 +144,8 @@ export default function Lobby({
   /** Read as well as written: the toggle stays mounted while the card is up. */
   const tutorialDeclineCard = useUi((s) => s.tutorialDeclineCard)
   const tutorialOfferable = useUi((s) => s.tutorialOfferable)
+  /** The account finished it. Vetoes the continue toggle (#387). */
+  const tutorialDone = useUi((s) => s.tutorialDone)
   // Which screen is on top -- the offer is retired while Settings covers the
   // lobby, so the control does not vanish under the cursor that pressed it.
   const focus = useUi((s) => s.focus)
@@ -757,8 +760,21 @@ export default function Lobby({
                   server lowered it the instant they unticked -- so without
                   `tutorialGameOn` here, turning the box back on would dismiss
                   the card and unmount the box in the same frame. */}
-              {(tutorialOfferable || tutorialDeclineCard || tutorialGameOn)
-               && (tutorialStep === 'ready' || tutorialGameShown) && (
+              {/* ...AND NEVER FOR A PLAYER WHO FINISHED IT (#387). Owner,
+                  2026-10-03: "after getting paid for the tutorial, after
+                  finishing the match, the tutorial continue toggle is still in
+                  lobby." A finish left the box on and the latch up, which is
+                  the take-back case above to the letter; `tutorialDone` is the
+                  veto. The rule lives in tutorial/continueToggle.ts, where
+                  scripts/test-continue-toggle.mjs can reach it. */}
+              {showContinueToggle({
+                done: tutorialDone,
+                offerable: tutorialOfferable,
+                declineCard: tutorialDeclineCard,
+                gameOn: tutorialGameOn,
+                step: tutorialStep,
+                offered: tutorialGameShown,
+              }) && (
                 <TutorialToggle
                   tut="tutorial-continue"
                   on={tutorialGameOn}

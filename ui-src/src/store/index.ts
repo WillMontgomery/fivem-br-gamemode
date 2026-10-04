@@ -330,6 +330,8 @@ export interface UiState {
   tutorialSlots: number
   /** Does this ACCOUNT still have the offer? See the `tutorial` envelope. */
   tutorialOfferable: boolean
+  /** Has this account FINISHED it? Lua's `done` -- see the envelope (#387). */
+  tutorialDone: boolean
   /**
    * Has the second toggle been offered at all this session?
    *
@@ -437,6 +439,7 @@ export interface UiState {
   setTutorialWaypoints: (n: number) => void
   setTutorialSlots: (n: number) => void
   setTutorialOfferable: (v: boolean) => void
+  setTutorialDone: (v: boolean) => void
   setTutorialGameOffered: (v: boolean) => void
   setTutorialDeclineCard: (v: boolean) => void
   setTutorialChat: (m: ChatMessage | null) => void
@@ -866,6 +869,7 @@ export const useUi = create<UiState>((set, get) => {
   tutorialWaypoints: 0,
   tutorialSlots: 0,
   tutorialOfferable: false,
+  tutorialDone: false,
   tutorialGameOffered: false,
   tutorialDeclineCard: false,
   tutorialChat: null,
@@ -932,6 +936,7 @@ export const useUi = create<UiState>((set, get) => {
   setTutorialWaypoints: (tutorialWaypoints) => set({ tutorialWaypoints }),
   setTutorialSlots: (tutorialSlots) => set({ tutorialSlots }),
   setTutorialOfferable: (tutorialOfferable) => set({ tutorialOfferable }),
+  setTutorialDone: (tutorialDone) => set({ tutorialDone }),
   setTutorialGameOffered: (tutorialGameOffered) => set({ tutorialGameOffered }),
   setTutorialDeclineCard: (tutorialDeclineCard) => set({ tutorialDeclineCard }),
   setTutorialChat: (tutorialChat) => set({ tutorialChat }),

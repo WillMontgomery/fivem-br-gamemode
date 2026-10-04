@@ -183,6 +183,29 @@ local took = false
 --- match's. A reconnect in that gap loses it, which errs toward nobody seeing it.
 local justFinished = false
 
+--- Has this account finished the walkthrough? Published to the page as `done`.
+---
+--- ═══ `offerable` CANNOT SAY THIS, BECAUSE A DECLINE LOWERS IT TOO (#387) ═══
+---
+--- Owner, 2026-10-03: "Seems after getting paid for the tutorial, after
+--- finishing the match, the tutorial continue toggle is still in lobby."
+---
+--- The page keeps the continue toggle up for a player who declined and then
+--- re-ticked it (2026-09-08), and that player reads `offerable = false` exactly
+--- as a finished one does. With the box left on -- the normal way to finish --
+--- the two were the same to the page, so the toggle stayed. This is the one fact
+--- that separates them, and the page treats it as a veto.
+---
+--- RAISED BY BR.Tutorial.finish, the same place `offerable` falls and for the
+--- same reason: this client saw the finish first-hand. LOWERED only when the
+--- offer is put back -- a TUTORIAL_OFFER that says yes (brtutorialreset) or
+--- `/brtutorial` -- since either one means the account may take it again. Unlike
+--- `justFinished`, the plane door does not lower it; the toggle stays gone.
+---
+--- PER-SESSION LIKE `took`. A reconnect starts from the profile row, which says
+--- 'done', and a fresh page has none of the latches that drew the toggle.
+local finished = false
+
 --- Is the IN-GAME walkthrough running?
 ---
 --- A THIRD FLAG, AND THEY ARE THREE MOMENTS. `offering` is the invitation in
@@ -337,6 +360,7 @@ end)
 local function publish()
     TriggerEvent('br:ui:sendLocal', BR.Nui.TUTORIAL,
                  { run = running, offer = offering, offerable = offerable,
+                   done = finished,
                    game = inGame, crates = crates, waypoints = waypoints,
                    slots = slots })
 end
@@ -630,6 +654,9 @@ end
 --- @param on boolean
 function BR.Tutorial.offerable(on)
     offerable = on == true
+    -- AND IT UN-FINISHES THE ACCOUNT LOCALLY (#387), or the page's `done` veto
+    -- would keep the continue toggle away from the owner testing it.
+    if offerable then finished = false end
     publish()
 end
 
@@ -690,6 +717,10 @@ AddEventHandler(BR.Net.TUTORIAL_OFFER, function(data)
     -- note -- and the checkbox is raised from it once, here, because this is the
     -- moment we learn whether to show it at all.
     offerable = may
+    -- AN OFFER MADE AGAIN IS AN ACCOUNT THAT MAY TAKE IT AGAIN (#387). This is
+    -- how brtutorialreset reaches a player who finished earlier this session;
+    -- a no leaves `finished` alone, since only a yes means anything changed.
+    if may then finished = false end
     BR.Tutorial.offer(may)
 end)
 
@@ -784,6 +815,8 @@ end)
 --- again locally, which is what every branch of the dev command already does.
 function BR.Tutorial.finish()
     offerable = false
+    -- AND THE PAGE LEARNS IT WAS A FINISH, NOT A DECLINE. See `finished`.
+    finished = true
     -- AND THEIR NEXT LANDING SAYS "LOOT UP". See `justFinished`.
     justFinished = true
     publish()
