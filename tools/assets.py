@@ -2,7 +2,7 @@
 """Licensed assets: purchased resources the boxes run but this repo never holds (#391).
 
     py tools/assets.py push <folder> [--season N] [--from N] [--until N]   on the owner's PC
-    python3 tools/assets.py pull [--dry-run]                               on a game box (deploy.sh runs it)
+    python3 tools/assets.py pull [--stage | --swap | --dry-run]            on a game box (deploy.sh runs it)
     py tools/assets.py status [--profile blitz-assets]                     lock vs installed vs bucket
     py tools/assets.py check                                               verify.sh and CI
 
@@ -24,21 +24,24 @@ one pinned at the newest season at or below the box's season, exactly like
 BR.Season.pick. `from` and `until` bound the whole entry the way a row in
 br_lib/config/seasons.lua is bounded by `from` and `untilSeason`: on from Season
 `from`, off again from Season `until`. A resource with no version for the box's
-season is not installed. The box's season is br_season as its server.cfg sets
-it (exec'd files followed); unset means `latest` in seasons.lua, as in game.
+season is not installed. The box's season is br_season as server.cfg sets it
+before br_core starts (exec'd files followed); unset means `latest` in
+seasons.lua, as in game.
 
-THREE RULES THE CODE BELOW EXISTS TO KEEP, each pinned by tools/test_assets.py:
+FOUR RULES THE CODE BELOW EXISTS TO KEEP, each pinned by tools/test_assets.py:
 
   * EVERY ARCHIVE'S SHA256 IS CHECKED BEFORE IT IS UNPACKED. fetch_verified()
-    is the only door to an archive path, and pull unpacks nothing until every
+    is the only door to an archive path, and a pull unpacks nothing until every
     archive it needs has come through it.
   * NOTHING OUTSIDE resources/[licensed]/ IS EVER REMOVED OR REPLACED, and a
     failed pull leaves what was installed exactly as it was: everything is
     downloaded, verified and unpacked into a staging directory first, and only
-    then swapped in, with every move undone if one fails.
+    then swapped in, journaled, with every move undone if one fails.
+  * A TRASH DIR IS NEVER DELETED WHILE IT HOLDS THE ONLY COPY OF SOMETHING. A
+    swap whose undo fails too leaves it, says where everything is, and stops.
   * AN OBJECT IN THE BUCKET IS NEVER OVERWRITTEN. The key is the archive's own
-    sha256, so a different archive is a different key, and push skips the
-    upload when the key exists.
+    sha256, so a different archive is a different key, and nothing uploads
+    when the key exists.
 
 Stdlib only, and the transfers go through the `aws` CLI so credentials stay
 with the CLI: a profile on the owner's PC, the instance role on a box. This
@@ -48,6 +51,7 @@ file never reads them.
 from __future__ import annotations
 
 import argparse
+import base64
 import contextlib
 import gzip
 import hashlib
@@ -60,6 +64,8 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
+import types
 
 BUCKET = 'blitz-royale-assets'
 REGION = 'us-east-2'
@@ -83,8 +89,20 @@ RECORD_FILE = 'installed.txt'
 CACHE_DIR = '.assets-cache'
 DEFAULT_SERVER_ROOT = '/opt/fivem-server-classic'
 
+# Inside the cache: the staged set between `pull --stage` and `pull --swap`,
+# the stage's description of it, a swap's journal (in its trash dir), and when
+# each archive was last in force (for the prune).
+STAGED_DIR = '.staged'
+STAGE_FILE = 'stage.json'
+JOURNAL_FILE = 'journal.json'
+LAST_USED_FILE = '.last-used.json'
+PRUNE_AFTER = 14 * 24 * 3600
+
 SEASONS_LUA = ('resources', '[fivem-royale]', 'br_lib', 'config', 'seasons.lua')
 SEASON_CONVAR = 'br_season'
+# br_core reads br_season once, when it starts; a value set after the line
+# that starts it is never seen.
+SEASON_READER = 'br_core'
 MAX_SEASON = 9999
 
 TOOL_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -112,7 +130,11 @@ game 'gta5'
 
 
 class AssetsError(Exception):
-    """A refusal with a message for the operator. Exit 1, nothing changed."""
+    """A refusal with a message for the operator. Exit 1."""
+
+
+class DoubleFault(AssetsError):
+    """A swap failed and so did its undo. The trash dir is kept."""
 
 
 def say(msg: str = '') -> None:
@@ -177,11 +199,57 @@ def bad_rel_path(p) -> str | None:
     return None
 
 
-def atomic_write(path: str, text: str) -> None:
+# --------------------------------------------------------------------------
+# durable writes
+# --------------------------------------------------------------------------
+#
+# A swap renames directories into resources/[licensed]/. A rename is atomic,
+# but on Linux the bytes behind it are not on disk until they are synced: a
+# power cut after the rename could leave a resource whose files are empty. So
+# everything staged is fsynced, files and directories, before the first rename,
+# and the directories a rename touched are fsynced after it.
+
+def fsync_file(path: str) -> None:
+    # Windows' FlushFileBuffers needs a handle opened for writing.
+    flags = (os.O_RDWR | getattr(os, 'O_BINARY', 0)) if os.name == 'nt' else os.O_RDONLY
+    fd = os.open(path, flags)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def fsync_dir(path: str) -> None:
+    """A directory's entries, durable. POSIX only: Windows cannot open a
+    directory this way, and NTFS journals its own metadata."""
+    if os.name == 'nt':
+        return
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def fsync_tree(root: str) -> None:
+    for dirpath, _dirnames, filenames in os.walk(root):
+        for f in filenames:
+            fsync_file(os.path.join(dirpath, f))
+        fsync_dir(dirpath)
+
+
+def write_bytes_atomic(path: str, data: bytes) -> None:
     tmp = '%s.tmp-%d' % (path, os.getpid())
-    with open(tmp, 'w', encoding='utf-8', newline='\n') as fh:
-        fh.write(text)
+    with open(tmp, 'wb') as fh:
+        fh.write(data)
+        fh.flush()
+        os.fsync(fh.fileno())
     os.replace(tmp, path)
+    fsync_dir(os.path.dirname(path) or '.')
+
+
+def atomic_write(path: str, text: str) -> None:
+    write_bytes_atomic(path, text.encode('utf-8'))
 
 
 def read_bytes(path: str) -> bytes | None:
@@ -192,6 +260,16 @@ def read_bytes(path: str) -> bytes | None:
         return None
 
 
+def read_json(path: str):
+    raw = read_bytes(path)
+    if raw is None:
+        return None
+    try:
+        return json.loads(raw.decode('utf-8'))
+    except (ValueError, UnicodeDecodeError):
+        return None
+
+
 def is_link(path: str) -> bool:
     if os.path.islink(path):
         return True
@@ -199,18 +277,25 @@ def is_link(path: str) -> bool:
     return bool(isjunction and isjunction(path))
 
 
+def inside(path: str, root: str) -> bool:
+    p = os.path.normcase(os.path.abspath(path))
+    r = os.path.normcase(os.path.abspath(root))
+    return p.startswith(r.rstrip(os.sep) + os.sep)
+
+
 # --------------------------------------------------------------------------
 # packing
 # --------------------------------------------------------------------------
 
-def collect(folder: str) -> tuple[list[tuple[str, str, int]], list[str]]:
-    """The files a pack holds, as (relative path, full path, size), sorted.
+def collect(folder: str) -> tuple[list[tuple[str, str, int, int]], list[str]]:
+    """The files a pack holds, as (relative path, full path, size, mtime_ns),
+    sorted, and what was left out.
 
     Plain files only: a link anywhere in the folder is refused rather than
     followed, because what it points at is not part of the resource.
     """
     root = os.path.abspath(folder)
-    files: list[tuple[str, str, int]] = []
+    files: list[tuple[str, str, int, int]] = []
     skipped: list[str] = []
 
     def rel(full):
@@ -241,27 +326,21 @@ def collect(folder: str) -> tuple[list[tuple[str, str, int]], list[str]]:
             why = bad_rel_path(relp)
             if why:
                 raise AssetsError('%s: %s' % (relp, why))
-            files.append((relp, full, st.st_size))
+            files.append((relp, full, st.st_size, st.st_mtime_ns))
     files.sort(key=lambda t: t[0].encode('utf-8'))
     return files, sorted(skipped)
 
 
-def pack(folder: str, out_path: str) -> tuple[dict[str, int], list[str]]:
-    """Pack a resource folder into a .tar.gz, deterministically.
-
-    THE SAME FOLDER ALWAYS GIVES THE SAME BYTES, so pushing an unchanged pack is
-    a no-op rather than a new version: entries sorted, no directory entries,
+def write_pack(files: list[tuple[str, str, int, int]], out_path: str) -> None:
+    """THE SAME FILES ALWAYS GIVE THE SAME BYTES, so an unchanged pack is a
+    no-op rather than a new version: entries sorted, no directory entries,
     mtime 0, owner 0:0 with no names, mode 0644, and a gzip header with no file
     name and no timestamp. Paths are relative to the folder, so the resource's
-    name comes from the lock and never from inside an archive.
-    """
-    files, skipped = collect(folder)
-    if not any(relp == 'fxmanifest.lua' for relp, _, _ in files):
-        raise AssetsError('%s has no fxmanifest.lua at its top; it is not a FiveM resource folder' % folder)
+    name comes from the lock and never from inside an archive."""
     with open(out_path, 'wb') as raw:
         with gzip.GzipFile(filename='', mode='wb', fileobj=raw, compresslevel=6, mtime=0) as gz:
             with tarfile.open(fileobj=gz, mode='w', format=tarfile.PAX_FORMAT, encoding='utf-8') as tar:
-                for relp, full, size in files:
+                for relp, full, size, _mtime in files:
                     info = tarfile.TarInfo(relp)
                     info.size = size
                     info.mtime = 0
@@ -271,7 +350,15 @@ def pack(folder: str, out_path: str) -> tuple[dict[str, int], list[str]]:
                     info.type = tarfile.REGTYPE
                     with open(full, 'rb') as fh:
                         tar.addfile(info, fh)
-    return {relp: size for relp, _, size in files}, skipped
+
+
+def pack(folder: str, out_path: str) -> tuple[dict[str, int], list[str]]:
+    """Pack a resource folder into a .tar.gz, deterministically."""
+    files, skipped = collect(folder)
+    if not any(relp == 'fxmanifest.lua' for relp, _, _, _ in files):
+        raise AssetsError('%s has no fxmanifest.lua at its top; it is not a FiveM resource folder' % folder)
+    write_pack(files, out_path)
+    return {relp: size for relp, _, size, _ in files}, skipped
 
 
 def unpack(archive: str, dest: str, files: dict[str, int]) -> None:
@@ -534,39 +621,62 @@ def parse_season(raw) -> int | None:
     return n if 1 <= n <= MAX_SEASON else None
 
 
-def cfg_tokens(line: str) -> list[str]:
-    """One cfg line as FXServer splits it: whitespace, double quotes, and a
-    comment from a `#` or `//` that starts a token."""
-    toks: list[str] = []
-    i, n = 0, len(line)
-    while i < n:
-        c = line[i]
-        if c.isspace():
-            i += 1
-            continue
-        if c == '"':
-            j = line.find('"', i + 1)
-            if j < 0:
-                j = n
-            toks.append(line[i + 1:j])
-            i = j + 1
-            continue
-        if c == '#' or line.startswith('//', i):
-            break
-        j = i
-        while j < n and not line[j].isspace() and line[j] != '"':
-            j += 1
-        toks.append(line[i:j])
-        i = j
-    return toks
+def cfg_commands(text: str) -> list[tuple[int, list[str]]]:
+    """The commands a cfg's text runs, as FXServer splits them: (line, tokens).
+
+    A UTF-8 BOM at the top is dropped. A line holds several commands split on
+    `;` outside double quotes. Tokens split on whitespace, a double-quoted
+    token keeps its spaces and semicolons, and a `#` or `//` that starts a
+    token ends the line."""
+    if text.startswith('\ufeff'):
+        text = text[1:]
+    out: list[tuple[int, list[str]]] = []
+    for lineno, line in enumerate(text.splitlines(), 1):
+        toks: list[str] = []
+        i, n = 0, len(line)
+        while i < n:
+            c = line[i]
+            if c == ';':
+                if toks:
+                    out.append((lineno, toks))
+                    toks = []
+                i += 1
+                continue
+            if c.isspace():
+                i += 1
+                continue
+            if c == '"':
+                j = line.find('"', i + 1)
+                if j < 0:
+                    j = n
+                toks.append(line[i + 1:j])
+                i = j + 1
+                continue
+            if c == '#' or line.startswith('//', i):
+                break
+            j = i
+            while j < n and not line[j].isspace() and line[j] not in '";':
+                j += 1
+            toks.append(line[i:j])
+            i = j
+        if toks:
+            out.append((lineno, toks))
+    return out
 
 
 def cfg_season(server_root: str, cfg_path: str) -> tuple[tuple[str, str, int] | None, list[str]]:
-    """The last value server.cfg gives br_season, following exec, as
-    (value, file, line), plus notes on anything that could not be followed."""
+    """The value br_core sees for br_season, as (value, file, line), plus notes
+    on anything that could not be followed.
+
+    WHAT br_core SEES, which is not the last assignment in the file: br_core
+    reads the convar once, when it starts, so the walk follows exec in order
+    and STOPS at the `ensure br_core` or `start br_core` that starts it. Only
+    `set`, `setr`, `sets` and `seta` assign; a bare `br_season 2` line is not
+    a command FXServer knows, and is ignored here as it is there."""
     found: list = [None]
     notes: list[str] = []
     seen: set[str] = set()
+    started = [False]
 
     def walk(path: str, depth: int) -> None:
         key = os.path.normcase(os.path.abspath(path))
@@ -576,7 +686,6 @@ def cfg_season(server_root: str, cfg_path: str) -> tuple[tuple[str, str, int] | 
             notes.append('%s: exec nested too deep, not followed' % path)
             return
         seen.add(key)
-        raw = None
         try:
             raw = read_bytes(path)
         except OSError as e:
@@ -585,15 +694,15 @@ def cfg_season(server_root: str, cfg_path: str) -> tuple[tuple[str, str, int] | 
         if raw is None:
             notes.append('%s does not exist' % path)
             return
-        for lineno, line in enumerate(raw.decode('utf-8', 'replace').splitlines(), 1):
-            t = cfg_tokens(line)
-            if not t:
-                continue
+        for lineno, t in cfg_commands(raw.decode('utf-8', 'replace')):
+            if started[0]:
+                return
             cmd = t[0].lower()
             if cmd in ('set', 'setr', 'sets', 'seta') and len(t) >= 3 and t[1].lower() == SEASON_CONVAR:
                 found[0] = (t[2], path, lineno)
-            elif cmd == SEASON_CONVAR and len(t) >= 2:
-                found[0] = (t[1], path, lineno)
+            elif cmd in ('ensure', 'start') and len(t) >= 2 and t[1] == SEASON_READER:
+                started[0] = True
+                return
             elif cmd == 'exec' and len(t) >= 2:
                 target = t[1]
                 if target.startswith('@'):
@@ -714,6 +823,7 @@ def make_aws(args, default_profile: str | None = None) -> Aws:
     return Aws(find_aws(args.aws), profile, args.region, args.bucket)
 
 
+
 # --------------------------------------------------------------------------
 # push
 # --------------------------------------------------------------------------
@@ -754,6 +864,7 @@ def apply_push(lock: dict, name: str, sha: str, size: int, files: dict[str, int]
             changes.append('%s: %s is pinned to no season now; dropped from the lock '
                            '(its archive stays in the bucket)' % (name, short(s)))
     return changes
+
 
 
 def cmd_push(args) -> int:
@@ -835,6 +946,38 @@ def cmd_push(args) -> int:
 # --------------------------------------------------------------------------
 # pull
 # --------------------------------------------------------------------------
+#
+# TWO HALVES, SO deploy.sh CAN PUT THE CODE SYNC BETWEEN THEM:
+#
+#   pull --stage   download, check every sha256, unpack into <cache>/.staged.
+#                  Changes nothing installed. deploy.sh runs it before the
+#                  code sync, where a failure stops the deploy with nothing
+#                  changed anywhere.
+#   pull --swap    swap the staged set into resources/[licensed]/, then write
+#                  licensed.cfg and the install record. deploy.sh runs it after
+#                  the code and vendored syncs have succeeded, just before the
+#                  served-commit stamp, so new assets never sit under old code.
+#   pull           both, one after the other.
+#
+# A SWAP IS JOURNALED. Before its first rename, every rename it will make and
+# the old bytes of every file it rewrites go into journal.json in its trash
+# dir. A failure is undone in process from the journal; a run that was killed
+# is undone by the next pull, from the journal, before anything else. When an
+# undo itself fails, nothing is deleted: the trash dir stays, the record and
+# licensed.cfg are rewritten to say what is really in [licensed], and the
+# error names where every old resource is.
+
+def box_paths(args) -> types.SimpleNamespace:
+    p = types.SimpleNamespace()
+    p.server_root = os.path.abspath(args.server_root)
+    p.resources = os.path.join(p.server_root, 'resources')
+    if not os.path.isdir(p.resources):
+        raise AssetsError('no resources/ under %s -- wrong --server-root?' % p.server_root)
+    p.licensed = os.path.join(p.resources, LICENSED_GROUP)
+    p.cache = os.path.abspath(args.cache) if args.cache else os.path.join(p.server_root, CACHE_DIR)
+    p.staged = os.path.join(p.cache, STAGED_DIR)
+    return p
+
 
 def read_record(licensed: str) -> dict[str, str] | None:
     raw = read_bytes(os.path.join(licensed, RECORD_RESOURCE, RECORD_FILE))
@@ -848,37 +991,53 @@ def read_record(licensed: str) -> dict[str, str] | None:
     return rec
 
 
-def record_text(lock: dict, season: int, latest: int, plan: list) -> str:
-    """The install record br_core reads for brseason: what is installed, and
-    what every season it could switch to would install instead."""
+def season_plans(lock: dict, season: int, latest: int) -> list[list]:
+    """[season, [[name, sha], ...]] for every season brseason could switch to."""
     seasons = list(range(1, latest + 1))
     if season not in seasons:
         seasons.append(season)
+    return [[s, [[name, sha] for name, sha, _ in plan_for(lock, s)]] for s in seasons]
+
+
+def record_text(season: int, plans: list, installed: list) -> str:
+    """The install record br_core reads for brseason: what is installed, and
+    what every season it could switch to would install instead."""
     lines = [
         '# GENERATED by tools/assets.py pull (#391). Do not edit: the next pull rewrites it.',
         '# br_core reads it so brseason can say when a switch needs other licensed assets.',
         'format 1',
         'season %d' % season,
-        'seasons %s' % ' '.join(str(s) for s in seasons),
+        'seasons %s' % ' '.join(str(s) for s, _ in plans),
     ]
-    for name, sha, _ in plan:
+    for name, sha in installed:
         lines.append('installed %s %s' % (name, sha))
-    for s in seasons:
-        for name, sha, _ in plan_for(lock, s):
+    for s, pins in plans:
+        for name, sha in pins:
             lines.append('plan %d %s %s' % (s, name, sha))
     return '\n'.join(lines) + '\n'
 
 
-def cfg_text(season: int, plan: list) -> str:
+def cfg_text(season: int, names: list[str]) -> str:
     lines = [
         '# GENERATED by tools/assets.py pull (#391) for Season %d. Do not edit: the next pull rewrites it.' % season,
         '# server.cfg runs it with:  exec resources/%s/%s' % (LICENSED_GROUP, CFG_FILE),
     ]
-    if not plan:
+    if not names:
         lines.append('# Nothing licensed is installed for Season %d.' % season)
-    for name, _, _ in plan:
+    for name in names:
         lines.append('ensure %s' % name)
     return '\n'.join(lines) + '\n'
+
+
+def state_writes(licensed: str, season: int, plans: list, installed: list) -> list[tuple[str, str]]:
+    """The three files that describe [licensed]: the record's manifest, the
+    record, and licensed.cfg -- for `installed`, [[name, sha], ...]."""
+    rec_dir = os.path.join(licensed, RECORD_RESOURCE)
+    return [
+        (os.path.join(rec_dir, 'fxmanifest.lua'), RECORD_MANIFEST),
+        (os.path.join(rec_dir, RECORD_FILE), record_text(season, plans, installed)),
+        (os.path.join(licensed, CFG_FILE), cfg_text(season, [n for n, _ in installed])),
+    ]
 
 
 def installed_dirs(licensed: str) -> list[str]:
@@ -893,6 +1052,74 @@ def installed_dirs(licensed: str) -> list[str]:
             continue
         out.append(entry)
     return out
+
+
+def resources_elsewhere(resources: str, names) -> list[tuple[str, str]]:
+    """(name, path) for each of `names` that a resource OUTSIDE [licensed]
+    already has. FiveM would then see two resources with one name and load
+    whichever it found first."""
+    want = {n.lower() for n in names}
+    hits: list[tuple[str, str]] = []
+    if not want:
+        return hits
+    for dirpath, dirnames, filenames in os.walk(resources):
+        if os.path.normcase(dirpath) == os.path.normcase(resources):
+            dirnames[:] = [d for d in dirnames if d != LICENSED_GROUP]
+        dirnames[:] = sorted(d for d in dirnames if d != 'node_modules' and not d.startswith('.'))
+        if 'fxmanifest.lua' in filenames or '__resource.lua' in filenames:
+            base = os.path.basename(dirpath)
+            if base.lower() in want:
+                hits.append((base, dirpath))
+            dirnames[:] = []
+    return hits
+
+
+def survey(args, p) -> types.SimpleNamespace:
+    """Everything a pull decides, read-only: the plan for this box's season,
+    against what is installed."""
+    s = types.SimpleNamespace(**vars(p))
+    s.lock = load_lock(args.lock)
+    s.latest = read_latest()
+    s.season, s.how = resolve_season(args, s.server_root, s.latest)
+    s.plan = plan_for(s.lock, s.season)
+    s.record = read_record(s.licensed) or {}
+    s.present = installed_dirs(s.licensed)
+    wanted = {name for name, _, _ in s.plan}
+    s.lines = ['Season %d (%s): %d licensed resource(s) in force' % (s.season, s.how, len(s.plan))]
+    s.installs = []
+    for name, sha, ver in s.plan:
+        target = os.path.join(s.licensed, name)
+        if s.record.get(name) == sha and os.path.isdir(target) and dir_files(target) == ver['files']:
+            s.lines.append('  = %s %s' % (name, short(sha)))
+            continue
+        cached = os.path.isfile(os.path.join(s.cache, name, sha + '.tar.gz'))
+        was = s.record.get(name)
+        verb = '~' if name in s.present else '+'
+        detail = (' (was %s)' % short(was)) if (was and was != sha) else (' (reinstall)' if was == sha else '')
+        s.lines.append('  %s %s %s%s, %s' % (verb, name, short(sha), detail,
+                                             'cached' if cached else 'to download, %s' % human(ver['size'])))
+        s.installs.append((name, sha, ver))
+    s.removals = [d for d in s.present if d not in wanted]
+    for d in s.removals:
+        s.lines.append('  - %s (not in force for Season %d)' % (d, s.season))
+    s.plans = season_plans(s.lock, s.season, s.latest)
+    s.writes = state_writes(s.licensed, s.season, s.plans, [[n, sha] for n, sha, _ in s.plan])
+    s.conflicts = resources_elsewhere(s.resources, [n for n, _, _ in s.plan])
+    if not s.plan and not os.path.isdir(s.licensed):
+        s.todo = False
+    else:
+        s.todo = bool(s.installs or s.removals
+                      or not all(read_bytes(path) == text.encode('utf-8') for path, text in s.writes))
+    return s
+
+
+def conflict_error(s) -> AssetsError:
+    lines = ['a resource with the same name as a licensed one is already on this box, outside %s:' % LICENSED_GROUP]
+    for name, path in s.conflicts:
+        lines.append('  %s: %s' % (name, path))
+    lines.append('FiveM would see two resources with one name. Remove that copy (or rename the pack), '
+                 'then run the pull again. Nothing was changed.')
+    return AssetsError('\n'.join(lines))
 
 
 def fetch_verified(get_aws, cache: str, name: str, sha: str, size: int) -> tuple[str, str]:
@@ -944,104 +1171,296 @@ def held(cache: str):
         fh.close()
 
 
-def commit(licensed: str, staging: str, trash: str, installs: list[str], removals: list[str],
-           writes: list[tuple[str, str]]) -> None:
+# -- the journaled swap -------------------------------------------------------
+
+def commit(s, trash: str) -> None:
     """Swap the staged resources in and the stale ones out, then write the
-    record and licensed.cfg. Any failure undoes every step taken so far, so the
-    installed set is either all old or all new."""
-    moved: list[tuple[str, str]] = []
-    created: list[str] = []
-    restored: list[tuple[str, bytes | None]] = []
-
-    def move(a: str, b: str) -> None:
-        os.rename(a, b)
-        moved.append((a, b))
-
+    record and licensed.cfg. Journaled first; any failure is undone from the
+    journal, so the installed set is either all old or all new -- or, when
+    the undo fails too, a DoubleFault that keeps the trash and says why."""
+    moves = []
+    for name in s.removals:
+        moves.append({'kind': 'out', 'name': name, 'src': os.path.join(s.licensed, name),
+                      'dst': os.path.join(trash, name)})
+    for name, _sha, _ver in s.installs:
+        target = os.path.join(s.licensed, name)
+        if os.path.lexists(target):
+            moves.append({'kind': 'out', 'name': name, 'src': target, 'dst': os.path.join(trash, name)})
+        moves.append({'kind': 'in', 'name': name, 'src': os.path.join(s.staged, name), 'dst': target})
+    rec_dir = os.path.join(s.licensed, RECORD_RESOURCE)
+    files = {}
+    for path, _text in s.writes:
+        old = read_bytes(path)
+        files[path] = None if old is None else base64.b64encode(old).decode('ascii')
+    journal = {
+        'format': 1,
+        'licensed': s.licensed,
+        'staged': s.staged,
+        'trash': trash,
+        'moves': moves,
+        'created': [] if os.path.isdir(rec_dir) else [rec_dir],
+        'files': files,
+        'before': {name: s.record.get(name, 'unknown') for name in s.present},
+        'installs': {name: sha for name, sha, _ in s.installs},
+        'order': [name for name, _, _ in s.plan],
+        'season': s.season,
+        'plans': s.plans,
+    }
+    atomic_write(os.path.join(trash, JOURNAL_FILE), json.dumps(journal, indent=1))
     try:
-        for name in removals:
-            move(os.path.join(licensed, name), os.path.join(trash, name))
-        for name in installs:
-            target = os.path.join(licensed, name)
-            if os.path.lexists(target):
-                move(target, os.path.join(trash, name))
-            move(os.path.join(staging, name), target)
-        rec_dir = os.path.join(licensed, RECORD_RESOURCE)
-        if not os.path.isdir(rec_dir):
+        for m in moves:
+            os.rename(m['src'], m['dst'])
+        for d in (s.licensed, trash, s.staged):
+            fsync_dir(d)
+        if journal['created']:
             os.makedirs(rec_dir)
-            created.append(rec_dir)
-        for path, text in writes:
-            restored.append((path, read_bytes(path)))
+        for path, text in s.writes:
             atomic_write(path, text)
-    except BaseException:
-        for path, old in reversed(restored):
-            try:
-                if old is None:
-                    if os.path.exists(path):
-                        os.remove(path)
-                else:
-                    with open(path, 'wb') as fh:
-                        fh.write(old)
-            except OSError:
-                pass
-        for d in reversed(created):
-            shutil.rmtree(d, ignore_errors=True)
-        for a, b in reversed(moved):
-            os.rename(b, a)
+    except BaseException as exc:
+        failures, actual = rollback(journal)
+        if failures:
+            raise DoubleFault(double_fault_text(journal, failures, actual, exc)) from exc
         raise
 
 
-def cmd_pull(args) -> int:
-    server_root = os.path.abspath(args.server_root)
-    resources = os.path.join(server_root, 'resources')
-    if not os.path.isdir(resources):
-        raise AssetsError('no resources/ under %s -- wrong --server-root?' % server_root)
-    licensed = os.path.join(resources, LICENSED_GROUP)
-    cache = os.path.abspath(args.cache) if args.cache else os.path.join(server_root, CACHE_DIR)
+def rollback(j: dict) -> tuple[list[str], list]:
+    """Undo a swap from its journal: the files it rewrote, the record dir it
+    made, then its renames, last first. Each rename's state is read off the
+    disk, so this undoes a swap that failed in this process and one that was
+    killed alike. Returns (what could not be undone, [[name, sha], ...] in
+    [licensed] when something could not be -- and then the record and
+    licensed.cfg have been rewritten to say exactly that)."""
+    failures: list[str] = []
+    for path, old in j['files'].items():
+        try:
+            if old is None:
+                if os.path.lexists(path):
+                    os.remove(path)
+            else:
+                write_bytes_atomic(path, base64.b64decode(old))
+        except OSError as e:
+            failures.append('%s could not be put back: %s' % (path, e.strerror or e))
+    for d in j['created']:
+        with contextlib.suppress(OSError):
+            if os.path.isdir(d) and not os.listdir(d):
+                os.rmdir(d)
+    for m in reversed(j['moves']):
+        src, dst = m['src'], m['dst']
+        if m['kind'] == 'in':
+            # Staged -> [licensed]. Happened when the staged copy is gone and
+            # [licensed] has one.
+            if not (os.path.lexists(dst) and not os.path.lexists(src)):
+                continue
+        else:
+            # [licensed] -> trash. Happened when the trash has it.
+            if not os.path.lexists(dst):
+                continue
+            if os.path.lexists(src):
+                failures.append('%s cannot go back to %s: something else is there' % (dst, src))
+                continue
+        try:
+            os.rename(dst, src)
+        except OSError as e:
+            failures.append('%s -> %s: %s' % (dst, src, e.strerror or e))
+    for d in (j['licensed'], j['trash'], j['staged']):
+        with contextlib.suppress(OSError):
+            fsync_dir(d)
+    if not failures:
+        return failures, []
+    actual = actual_state(j)
+    try:
+        rec_dir = os.path.join(j['licensed'], RECORD_RESOURCE)
+        os.makedirs(rec_dir, exist_ok=True)
+        for path, text in state_writes(j['licensed'], j['season'], j['plans'], actual):
+            atomic_write(path, text)
+    except OSError as e:
+        failures.append('the record and licensed.cfg could not be rewritten to match: %s' % (e.strerror or e))
+    return failures, actual
 
-    lock = load_lock(args.lock)
-    latest = read_latest()
-    season, how = resolve_season(args, server_root, latest)
-    plan = plan_for(lock, season)
-    record = read_record(licensed) or {}
-    present = installed_dirs(licensed)
-    wanted = {name for name, _, _ in plan}
 
-    say('Season %d (%s): %d licensed resource(s) in force' % (season, how, len(plan)))
-
-    installs: list[tuple[str, str, dict]] = []
-    for name, sha, ver in plan:
-        target = os.path.join(licensed, name)
-        if record.get(name) == sha and os.path.isdir(target) and dir_files(target) == ver['files']:
-            say('  = %s %s' % (name, short(sha)))
+def actual_state(j: dict) -> list:
+    """[[name, sha], ...] for what is really in [licensed] now, in lock order."""
+    names = list(j['order'])
+    for n in sorted(set(j['before']) | set(j['installs'])):
+        if n not in names:
+            names.append(n)
+    out = []
+    for name in names:
+        if not os.path.isdir(os.path.join(j['licensed'], name)):
             continue
-        cached = os.path.isfile(os.path.join(cache, name, sha + '.tar.gz'))
-        was = record.get(name)
-        verb = '~' if name in present else '+'
-        detail = (' (was %s)' % short(was)) if (was and was != sha) else (' (reinstall)' if was == sha else '')
-        say('  %s %s %s%s, %s' % (verb, name, short(sha), detail,
-                                  'cached' if cached else 'to download, %s' % human(ver['size'])))
-        installs.append((name, sha, ver))
-    removals = [d for d in present if d not in wanted]
-    for d in removals:
-        say('  - %s (not in force for Season %d)' % (d, season))
+        new_in = any(m['kind'] == 'in' and m['name'] == name and not os.path.lexists(m['src']) for m in j['moves'])
+        out.append([name, j['installs'][name] if new_in else j['before'].get(name, 'unknown')])
+    return out
 
-    if args.dry_run:
-        say('dry run: nothing was downloaded or changed')
-        return 0
-    if not plan and not os.path.isdir(licensed):
-        say('nothing licensed for Season %d and nothing installed; nothing to do' % season)
-        return 0
 
-    rec_dir = os.path.join(licensed, RECORD_RESOURCE)
-    writes = [
-        (os.path.join(rec_dir, 'fxmanifest.lua'), RECORD_MANIFEST),
-        (os.path.join(rec_dir, RECORD_FILE), record_text(lock, season, latest, plan)),
-        (os.path.join(licensed, CFG_FILE), cfg_text(season, plan)),
-    ]
-    if not installs and not removals and all(read_bytes(p) == t.encode('utf-8') for p, t in writes):
-        say('up to date')
-        return 0
+def double_fault_text(j: dict, failures: list[str], actual: list, exc) -> str:
+    lines = ['the swap into %s failed (%s), and undoing it failed too. NOTHING WAS DELETED.'
+             % (j['licensed'], exc if isinstance(exc, str) else (str(exc) or type(exc).__name__))]
+    stranded = [m for m in j['moves'] if m['kind'] == 'out' and os.path.lexists(m['dst'])]
+    if stranded:
+        lines.append('The resources that were installed before are still in the trash dir %s:' % j['trash'])
+        for m in stranded:
+            lines.append('  %s  belongs at  %s' % (m['dst'], m['src']))
+    lines.append('%s now holds: %s' % (j['licensed'], ', '.join('%s %s' % (n, short(sha)) for n, sha in actual)
+                                       or 'no licensed resource'))
+    lines.append('installed.txt and licensed.cfg say exactly that.')
+    lines.append('What could not be undone:')
+    lines += ['  ' + f for f in failures]
+    lines.append('Fix what stopped it and run the pull again (it retries the undo first), '
+                 'or move each one above back by hand.')
+    return '\n'.join(lines)
 
+
+def journal_is_ours(j, p) -> bool:
+    try:
+        roots = (p.licensed, p.cache)
+        if os.path.normcase(os.path.abspath(j['licensed'])) != os.path.normcase(os.path.abspath(p.licensed)):
+            return False
+        for m in j['moves']:
+            if m['kind'] not in ('in', 'out') or not all(any(inside(m[k], r) for r in roots) for k in ('src', 'dst')):
+                return False
+        return all(inside(path, p.licensed) for path in list(j['files']) + list(j['created']))
+    except (KeyError, TypeError, AttributeError):
+        return False
+
+
+def recover_trash(trash: str, p) -> None:
+    """A trash dir a pull left behind: undo the swap it journaled, or put back
+    what it holds, and only then delete it. Stops, deleting nothing, when that
+    cannot be done."""
+    j = read_json(os.path.join(trash, JOURNAL_FILE))
+    held_items = [e for e in os.listdir(trash) if not e.startswith(JOURNAL_FILE)]
+    if j is None:
+        clash = [e for e in held_items if os.path.lexists(os.path.join(p.licensed, e))]
+        if clash:
+            raise AssetsError('%s, left by a pull that did not finish, holds %s, and %s has its own copy. '
+                              'Nothing was deleted: keep one of each, delete the other, and run the pull again.'
+                              % (trash, ', '.join(clash), p.licensed))
+        if held_items:
+            os.makedirs(p.licensed, exist_ok=True)
+        for e in held_items:
+            try:
+                os.rename(os.path.join(trash, e), os.path.join(p.licensed, e))
+            except OSError as err:
+                raise AssetsError('%s holds %s, left by a pull that did not finish, and it could not be put back '
+                                  'in %s (%s). Nothing was deleted.' % (trash, e, p.licensed, err.strerror or err))
+        if held_items:
+            say('put back %s from %s, left by a pull that did not finish' % (', '.join(held_items), trash))
+    else:
+        if not journal_is_ours(j, p):
+            raise AssetsError('%s holds a journal naming paths outside %s and %s; nothing was touched or deleted.'
+                              % (trash, p.licensed, p.cache))
+        failures, actual = rollback(j)
+        if failures:
+            raise DoubleFault(double_fault_text(j, failures, actual, 'a pull that did not finish'))
+        say('undid a swap that did not finish: %s is as it was before it' % p.licensed)
+    rest = [e for e in os.listdir(trash) if not e.startswith(JOURNAL_FILE)]
+    if rest:
+        raise AssetsError('%s still holds %s; nothing was deleted.' % (trash, ', '.join(rest)))
+    shutil.rmtree(trash)
+
+
+def leftovers(cache: str) -> list[str]:
+    if not os.path.isdir(cache):
+        return []
+    return sorted(e for e in os.listdir(cache)
+                  if (e.startswith('.staging-') or e.startswith('.trash-')) and os.path.isdir(os.path.join(cache, e)))
+
+
+def recover(p) -> None:
+    """What a killed pull left in the cache: half-unpacked staging dirs and
+    half-downloaded archives go, a trash dir is undone first (recover_trash)."""
+    for e in leftovers(p.cache):
+        full = os.path.join(p.cache, e)
+        if e.startswith('.staging-'):
+            shutil.rmtree(full)
+            say('removed %s, left by a pull that did not finish' % full)
+        else:
+            recover_trash(full, p)
+    for e in os.listdir(p.cache):
+        d = os.path.join(p.cache, e)
+        if e.startswith('.') or not os.path.isdir(d):
+            continue
+        for f in os.listdir(d):
+            if '.tar.gz.part-' in f:
+                with contextlib.suppress(OSError):
+                    os.remove(os.path.join(d, f))
+
+
+def discard_trash(trash: str) -> None:
+    """After an undo that finished: the trash holds only the journal."""
+    rest = [e for e in os.listdir(trash) if not e.startswith(JOURNAL_FILE)]
+    if rest:
+        say('warning: kept %s, which still holds %s' % (trash, ', '.join(rest)))
+        return
+    shutil.rmtree(trash, ignore_errors=True)
+
+
+# -- the cache's housekeeping -------------------------------------------------
+
+def mark_used(s) -> None:
+    """Record that every archive in force here was in use now."""
+    path = os.path.join(s.cache, LAST_USED_FILE)
+    used = read_json(path)
+    if not isinstance(used, dict):
+        used = {}
+    now = int(time.time())
+    for name, sha, _ in s.plan:
+        used['%s/%s' % (name, sha)] = now
+    atomic_write(path, json.dumps(used, indent=1, sort_keys=True) + '\n')
+
+
+def prune_cache(s) -> list[str]:
+    """Drop cached archives the lock no longer names at all and that have not
+    been in force here for PRUNE_AFTER. An archive the lock names, for any
+    season, is never dropped: it is what a revert or a season change needs."""
+    if not os.path.isdir(s.cache):
+        return []
+    referenced = {'%s/%s' % (e['name'], sha) for e in s.lock['resources'] for sha in e['versions']}
+    path = os.path.join(s.cache, LAST_USED_FILE)
+    used = read_json(path)
+    if not isinstance(used, dict):
+        used = {}
+    now = time.time()
+    dropped: list[str] = []
+    on_disk: set[str] = set()
+    for name in sorted(os.listdir(s.cache)):
+        d = os.path.join(s.cache, name)
+        if name.startswith('.') or not os.path.isdir(d) or is_link(d):
+            continue
+        for f in sorted(os.listdir(d)):
+            if not f.endswith('.tar.gz'):
+                continue
+            key = '%s/%s' % (name, f[:-len('.tar.gz')])
+            on_disk.add(key)
+            if key in referenced:
+                continue
+            full = os.path.join(d, f)
+            last = used.get(key)
+            if not isinstance(last, (int, float)):
+                last = os.path.getmtime(full)
+            if now - last > PRUNE_AFTER:
+                try:
+                    os.remove(full)
+                    dropped.append(key)
+                    on_disk.discard(key)
+                except OSError as e:
+                    say('warning: could not prune %s: %s' % (full, e.strerror or e))
+        with contextlib.suppress(OSError):
+            if not os.listdir(d):
+                os.rmdir(d)
+    kept = {k: v for k, v in used.items() if k in on_disk}
+    if kept != used:
+        atomic_write(path, json.dumps(kept, indent=1, sort_keys=True) + '\n')
+    for k in dropped:
+        say('pruned %s from the cache: the lock no longer names it, and it was last in force over %d days ago'
+            % (k, PRUNE_AFTER // 86400))
+    return dropped
+
+
+# -- the two halves -----------------------------------------------------------
+
+def stage(s, args) -> None:
     aws_box: list[Aws] = []
 
     def get_aws() -> Aws:
@@ -1049,32 +1468,122 @@ def cmd_pull(args) -> int:
             aws_box.append(make_aws(args))
         return aws_box[0]
 
-    with held(cache):
-        # 1. EVERY ARCHIVE, VERIFIED, BEFORE ANYTHING IS UNPACKED.
-        archives: dict[str, str] = {}
-        for name, sha, ver in installs:
-            path, how_got = fetch_verified(get_aws, cache, name, sha, ver['size'])
-            archives[name] = path
-            say('  %s %s: sha256 verified (%s)' % (name, short(sha), how_got))
-        os.makedirs(licensed, exist_ok=True)
-        if os.stat(cache).st_dev != os.stat(licensed).st_dev:
-            raise AssetsError('%s and %s are on different filesystems, so the swap cannot be atomic; '
-                              'pass --cache with a directory beside resources/' % (cache, licensed))
-        staging = tempfile.mkdtemp(prefix='.staging-', dir=cache)
-        trash = tempfile.mkdtemp(prefix='.trash-', dir=cache)
-        try:
-            # 2. UNPACKED BESIDE THE CACHE, never inside resources/.
-            for name, sha, ver in installs:
-                unpack(archives[name], os.path.join(staging, name), ver['files'])
-            # 3. SWAPPED IN, all or nothing.
-            commit(licensed, staging, trash, [n for n, _, _ in installs], removals, writes)
-        finally:
-            shutil.rmtree(staging, ignore_errors=True)
-            shutil.rmtree(trash, ignore_errors=True)
+    # 1. EVERY ARCHIVE, VERIFIED, BEFORE ANYTHING IS UNPACKED.
+    archives: dict[str, str] = {}
+    for name, sha, ver in s.installs:
+        path, how_got = fetch_verified(get_aws, s.cache, name, sha, ver['size'])
+        archives[name] = path
+        say('  %s %s: sha256 verified (%s)' % (name, short(sha), how_got))
+    home = s.licensed if os.path.isdir(s.licensed) else s.resources
+    if os.stat(s.cache).st_dev != os.stat(home).st_dev:
+        raise AssetsError('%s and %s are on different filesystems, so the swap cannot be atomic; '
+                          'pass --cache with a directory beside resources/' % (s.cache, home))
+    # 2. UNPACKED BESIDE THE CACHE, never inside resources/, and on disk for
+    # real before it is called staged.
+    tmp = tempfile.mkdtemp(prefix='.staging-', dir=s.cache)
+    try:
+        for name, sha, ver in s.installs:
+            unpack(archives[name], os.path.join(tmp, name), ver['files'])
+        atomic_write(os.path.join(tmp, STAGE_FILE), json.dumps(stage_description(s), indent=1))
+        fsync_tree(tmp)
+        if os.path.lexists(s.staged):
+            shutil.rmtree(s.staged)
+        os.rename(tmp, s.staged)
+        fsync_dir(s.cache)
+    except BaseException:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
+    mark_used(s)
+    say('staged for Season %d: %s; nothing installed has changed yet'
+        % (s.season, ', '.join(n for n, _, _ in s.installs) or 'removals only'))
 
-    say('installed for Season %d: %s' % (season, ', '.join(n for n, _, _ in plan) or 'nothing'))
-    if installs or removals:
-        say('licensed assets changed: they load on the next server restart')
+
+def stage_description(s) -> dict:
+    return {'format': 1, 'season': s.season,
+            'installs': [[n, sha] for n, sha, _ in s.installs], 'removals': list(s.removals)}
+
+
+def swap(s) -> None:
+    staged = read_json(os.path.join(s.staged, STAGE_FILE))
+    if staged is None:
+        raise AssetsError('nothing is staged in %s. Run `pull --stage` first (deploy.sh does, before the '
+                          'code sync); nothing was changed.' % s.staged)
+    if staged != stage_description(s):
+        raise AssetsError('what is staged in %s is not what assets.lock asks for now; run the pull again. '
+                          'Nothing was changed.' % s.staged)
+    for name, _sha, ver in s.installs:
+        if dir_files(os.path.join(s.staged, name)) != ver['files']:
+            raise AssetsError('the staged copy of %s is not whole; run the pull again. Nothing was changed.' % name)
+    os.makedirs(s.licensed, exist_ok=True)
+    trash = tempfile.mkdtemp(prefix='.trash-', dir=s.cache)
+    try:
+        commit(s, trash)
+    except DoubleFault:
+        raise
+    except OSError as e:
+        discard_trash(trash)
+        raise AssetsError('the swap failed and was undone, so %s holds exactly what it held before: %s'
+                          % (s.licensed, e))
+    except BaseException:
+        discard_trash(trash)
+        raise
+    # Done: what the trash holds is the versions just replaced, each still
+    # cached as an archive while the lock names it.
+    shutil.rmtree(trash, ignore_errors=True)
+    shutil.rmtree(s.staged, ignore_errors=True)
+    prune_cache(s)
+    say('installed for Season %d: %s' % (s.season, ', '.join(n for n, _, _ in s.plan) or 'nothing'))
+    say('licensed assets changed: they load on the next server restart')
+
+
+def cmd_pull(args) -> int:
+    p = box_paths(args)
+    if args.dry_run:
+        s = survey(args, p)
+        for line in s.lines:
+            say(line)
+        for e in leftovers(p.cache):
+            say('note: %s was left by a pull that did not finish; the next pull recovers it'
+                % os.path.join(p.cache, e))
+        if s.conflicts:
+            raise conflict_error(s)
+        say('dry run: nothing was downloaded or changed')
+        return 0
+    if not os.path.isdir(p.cache):
+        # Nothing has ever been pulled here: nothing to recover, nothing staged.
+        s = survey(args, p)
+        if s.conflicts:
+            for line in s.lines:
+                say(line)
+            raise conflict_error(s)
+        if not s.todo:
+            for line in s.lines:
+                say(line)
+            if not s.plan and not os.path.isdir(s.licensed):
+                say('nothing licensed for Season %d and nothing installed; nothing to do' % s.season)
+            else:
+                say('up to date')
+            return 0
+    with held(p.cache):
+        recover(p)
+        s = survey(args, p)
+        for line in s.lines:
+            say(line)
+        if s.conflicts:
+            raise conflict_error(s)
+        if not s.todo:
+            if os.path.lexists(s.staged):
+                shutil.rmtree(s.staged)
+            if not args.swap:
+                mark_used(s)
+            if not args.stage:
+                prune_cache(s)
+            say('up to date')
+            return 0
+        if not args.swap:
+            stage(s, args)
+        if not args.stage:
+            swap(s)
     return 0
 
 
@@ -1126,6 +1635,8 @@ def cmd_status(args) -> int:
         for d in installed_dirs(licensed):
             if d not in {n for n, _, _ in plan}:
                 say('  %s: installed, not in force for Season %d (the next pull removes it)' % (d, season))
+        for e in leftovers(cache):
+            say('  %s: left by a pull that did not finish (the next pull recovers it)' % os.path.join(cache, e))
     if missing:
         say('%d archive(s) the lock names are not in the bucket' % missing)
         return 1
@@ -1203,7 +1714,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_push)
 
     sp = sub.add_parser('pull', parents=[common, box], help="install the lock's resources for this box's season")
-    sp.add_argument('--dry-run', action='store_true', help='print the plan; download and change nothing')
+    mode = sp.add_mutually_exclusive_group()
+    mode.add_argument('--dry-run', action='store_true', help='print the plan; download and change nothing')
+    mode.add_argument('--stage', action='store_true', help='download, verify and unpack into the staging dir; '
+                                                           'change nothing installed')
+    mode.add_argument('--swap', action='store_true', help='swap what --stage staged into resources/[licensed]/')
     sp.set_defaults(func=cmd_pull)
 
     sp = sub.add_parser('status', parents=[common, box], help='lock vs bucket (and vs this box), read-only')
@@ -1227,7 +1742,7 @@ def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     try:
         return args.func(args) or 0
-    except AssetsError as e:
+    except (AssetsError, OSError) as e:
         lines = str(e).splitlines() or ['failed']
         print('assets: error: ' + lines[0], file=sys.stderr, flush=True)
         for line in lines[1:]:

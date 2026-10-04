@@ -485,7 +485,6 @@ class Seasons(Box):
             ('setr br_season "3"\n', '3'),
             ('sets br_season 4  # comment\n', '4'),
             ('seta BR_SEASON 5\n', '5'),
-            ('br_season 6\n', '6'),
             ('# set br_season 7\n// set br_season 8\n', None),
             ('set br_season 1\nset br_season 2\n', '2'),
             ('set br_season 1\r\nset sv_x 2\r\n', '1'),
@@ -494,6 +493,39 @@ class Seasons(Box):
             self.cfg(text)
             found, _ = assets.cfg_season(root, os.path.join(root, 'server.cfg'))
             self.assertEqual(found and found[0], want, repr(text))
+
+    def test_what_br_core_sees(self):
+        # br_core reads br_season once, when it starts: an assignment after the
+        # line that starts it never reaches it, and the parse must agree.
+        root = self.server
+        for text, want in (
+            ('set br_season 1\nensure br_core\nset br_season 2\n', '1'),
+            ('set br_season 1\nstart br_core\nset br_season 2\n', '1'),
+            ('ensure br_core\nset br_season 2\n', None),
+            ('set br_season 1\nensure br_core_extra\nset br_season 2\n', '2'),
+            ('set br_season 1\nensure br_lib\nset br_season 2\nensure br_core\n', '2'),
+            # One line, several commands.
+            ('set sv_x 1; set br_season 4\n', '4'),
+            ('set br_season 2; ensure br_core; set br_season 3\n', '2'),
+            ('set br_season "2;3"\n', '2;3'),
+            ('set br_season 2 # ; set br_season 3\n', '2'),
+            # FXServer has no `br_season` command: a bare assignment is refused.
+            ('br_season 6\n', None),
+            ('set br_season 2\nbr_season 6\n', '2'),
+            # Notepad's UTF-8 BOM.
+            ('﻿set br_season 5\n', '5'),
+            ('﻿ensure br_core\nset br_season 5\n', None),
+        ):
+            self.cfg(text)
+            found, _ = assets.cfg_season(root, os.path.join(root, 'server.cfg'))
+            self.assertEqual(found and found[0], want, repr(text))
+
+    def test_an_exec_that_starts_br_core_ends_the_walk(self):
+        root = self.server
+        write(os.path.join(root, 'gamemode.cfg'), 'set br_season 2\nensure br_core\nset br_season 3\n')
+        self.cfg('set br_season 1\nexec gamemode.cfg\nset br_season 4\n')
+        found, _ = assets.cfg_season(root, os.path.join(root, 'server.cfg'))
+        self.assertEqual((found[0], os.path.basename(found[1]), found[2]), ('2', 'gamemode.cfg', 1))
 
     def test_exec_is_followed_in_order(self):
         root = self.server
@@ -948,6 +980,294 @@ class Pull(Box):
         self.assertEqual(self.cfg_lines(), ['ensure p'])
         self.assertNotIn(b'\r', read(os.path.join(self.licensed, 'licensed.cfg')))
 
+    # -- stage, then swap (#391 round 2) ------------------------------------
+
+    @property
+    def cache(self):
+        return os.path.join(self.server, '.assets-cache')
+
+    @property
+    def staged(self):
+        return os.path.join(self.cache, '.staged')
+
+    def cache_dirs(self, prefix):
+        return [n for n in os.listdir(self.cache) if n.startswith(prefix)] if os.path.isdir(self.cache) else []
+
+    def test_stage_changes_nothing_installed_and_swap_puts_it_in(self):
+        folder = self.push_pack('p', {'a.ytd': b'v1'})
+        self.push_pack('gone', {'g.ytd': b'g'})
+        self.pull()
+        write(os.path.join(folder, 'a.ytd'), b'v2')
+        self.push(folder)
+        data = self.lock_data()
+        data['resources'] = [e for e in data['resources'] if e['name'] != 'gone']
+        write(self.lock, assets.dump_lock(data))
+        before = tree(self.licensed)
+        _, text = self.pull('--stage')
+        self.assertEqual(tree(self.licensed), before, '--stage changed nothing installed')
+        self.assertIn('nothing installed has changed yet', text)
+        self.assertEqual(read(os.path.join(self.staged, 'p', 'a.ytd')), b'v2')
+        self.reset_calls()
+        _, text = self.pull('--swap')
+        self.assertEqual(self.calls(), [], 'the swap downloads nothing')
+        self.assertEqual(read(os.path.join(self.licensed, 'p', 'a.ytd')), b'v2')
+        self.assertFalse(os.path.exists(os.path.join(self.licensed, 'gone')))
+        self.assertEqual(self.cfg_lines(), ['ensure p'])
+        self.assertFalse(os.path.exists(self.staged))
+        self.assertEqual(self.cache_dirs('.trash-'), [])
+
+    def test_swap_refuses_without_a_matching_stage(self):
+        folder = self.push_pack('p', {'a.ytd': b'v1'})
+        self.pull()
+        write(os.path.join(folder, 'a.ytd'), b'v2')
+        self.push(folder)
+        before = tree(self.licensed)
+        _, text = self.pull('--swap', expect=1)
+        self.assertIn('nothing is staged', text)
+        self.assertEqual(tree(self.licensed), before)
+        # Staged for one lock, swapped under another.
+        self.pull('--stage')
+        write(os.path.join(folder, 'a.ytd'), b'v3')
+        self.push(folder)
+        _, text = self.pull('--swap', expect=1)
+        self.assertIn('not what assets.lock asks for now', text)
+        self.assertEqual(tree(self.licensed), before)
+        # An up-to-date swap is fine with nothing staged.
+        self.pull()
+        _, text = self.pull('--swap')
+        self.assertIn('up to date', text)
+
+    # -- rollback ------------------------------------------------------------
+
+    def content(self, root):
+        """tree() without mtimes: a restored file is rewritten, so its bytes
+        are what has to match."""
+        return {k: (v[0], v[2]) if v else v for k, v in tree(root).items()}
+
+    def two_sets(self):
+        """Installed: a and b at v1, and c. The lock then wants a and b at v2,
+        a new d, and no c -- every kind of rename a swap makes."""
+        fa = self.push_pack('a', {'a.ytd': b'a1'})
+        fb = self.push_pack('b', {'b.ytd': b'b1'})
+        self.push_pack('c', {'c.ytd': b'c1'})
+        self.pull()
+        old = self.content(self.licensed)
+        write(os.path.join(fa, 'a.ytd'), b'a2')
+        write(os.path.join(fb, 'b.ytd'), b'b2')
+        self.push(fa)
+        self.push(fb)
+        self.push_pack('d', {'d.ytd': b'd1'})
+        data = self.lock_data()
+        data['resources'] = [e for e in data['resources'] if e['name'] != 'c']
+        write(self.lock, assets.dump_lock(data))
+        self.pull('--stage')
+        return old
+
+    def failing(self, fail_at=(), undo_fail=None, exc=OSError):
+        """os.rename that raises on the forward calls numbered in `fail_at`,
+        and on the undo of the rename whose source ends with `undo_fail`."""
+        real = os.rename
+        n = [0]
+
+        def rename(a, b):
+            n[0] += 1
+            if n[0] in fail_at:
+                raise exc(13, 'injected rename failure')
+            if undo_fail and str(b).replace('\\', '/').endswith(undo_fail):
+                raise OSError(13, 'injected undo failure')
+            return real(a, b)
+        return mock.patch.object(assets.os, 'rename', rename)
+
+    def test_a_failure_at_every_rename_restores_the_old_set_exactly(self):
+        old = self.two_sets()
+        staged = self.content(self.staged)
+        # c out, a out, a in, b out, b in, d in: six renames, then the writes.
+        for k in range(1, 7):
+            with self.failing(fail_at=(k,)):
+                _, text = self.pull('--swap', expect=1)
+            self.assertIn('injected rename failure', text)
+            self.assertEqual(self.content(self.licensed), old, 'failure at rename %d' % k)
+            self.assertEqual(self.content(self.staged), staged, 'and the staged set is whole again')
+            self.assertEqual(self.cache_dirs('.trash-'), [], 'an undone trash dir is deleted')
+        real_write = assets.atomic_write
+
+        def bad_cfg(path, text):
+            if path.endswith('licensed.cfg'):
+                raise OSError(28, 'injected: no space left')
+            return real_write(path, text)
+        with mock.patch.object(assets, 'atomic_write', bad_cfg):
+            self.pull('--swap', expect=1)
+        self.assertEqual(self.content(self.licensed), old, 'a failed write after the renames is undone too')
+        self.pull('--swap')
+        self.assertEqual(read(os.path.join(self.licensed, 'a', 'a.ytd')), b'a2')
+        self.assertEqual(self.cfg_lines(), ['ensure a', 'ensure b', 'ensure d'])
+
+    def test_a_failed_undo_deletes_nothing_and_says_where_everything_is(self):
+        self.two_sets()
+        # Rename 4 (b out) fails; undoing rename 3 (a in) fails too.
+        with self.failing(fail_at=(4,), undo_fail='/.staged/a'):
+            _, text = self.pull('--swap', expect=1)
+        self.assertIn('NOTHING WAS DELETED', text)
+        trash = self.cache_dirs('.trash-')
+        self.assertEqual(len(trash), 1, 'the trash dir is kept')
+        trash = os.path.join(self.cache, trash[0])
+        self.assertEqual(read(os.path.join(trash, 'a', 'a.ytd')), b'a1', 'holding the old a')
+        self.assertIn('%s  belongs at  %s' % (os.path.join(trash, 'a'), os.path.join(self.licensed, 'a')), text)
+        # [licensed] is the new a, the old b, and c (both undone), and the
+        # record and licensed.cfg say exactly that.
+        self.assertEqual(read(os.path.join(self.licensed, 'a', 'a.ytd')), b'a2')
+        self.assertEqual(read(os.path.join(self.licensed, 'b', 'b.ytd')), b'b1')
+        self.assertEqual(sorted(assets.installed_dirs(self.licensed)), ['a', 'b', 'c'])
+        self.assertEqual(sorted(self.cfg_lines()), ['ensure a', 'ensure b', 'ensure c'])
+        rec = assets.read_record(self.licensed)
+        lock = {e['name']: e['seasons']['1'] for e in self.lock_data()['resources']}
+        self.assertEqual(rec['a'], lock['a'], 'the record names the new a')
+        self.assertNotEqual(rec['b'], lock['b'], 'and the old b')
+        self.assertIn('c', rec)
+        # Whatever stopped it is fixed: the next pull retries the undo first,
+        # then swaps, and the trash goes.
+        self.pull('--swap')
+        self.assertEqual(self.cache_dirs('.trash-'), [])
+        self.assertEqual(self.cfg_lines(), ['ensure a', 'ensure b', 'ensure d'])
+        self.assertEqual(read(os.path.join(self.licensed, 'b', 'b.ytd')), b'b2')
+
+    def test_a_killed_swap_is_undone_by_the_next_pull(self):
+        class Killed(BaseException):
+            pass
+
+        old = self.two_sets()
+        staged = self.content(self.staged)
+        real_write = assets.atomic_write
+
+        def killed_at_cfg(path, text):
+            if path.endswith('licensed.cfg'):
+                raise Killed()
+            return real_write(path, text)
+
+        # Killed after 1..5 of the six renames, after all six, and after the
+        # record but before licensed.cfg. No in-process undo runs at all.
+        for k in list(range(2, 7)) + [None]:
+            with contextlib.ExitStack() as stack:
+                if k is None:
+                    stack.enter_context(mock.patch.object(assets, 'atomic_write', killed_at_cfg))
+                else:
+                    stack.enter_context(self.failing(fail_at=(k,), exc=lambda *a: Killed()))
+                stack.enter_context(mock.patch.object(assets, 'rollback', mock.Mock(side_effect=Killed())))
+                with self.assertRaises(Killed):
+                    self.pull('--swap')
+            self.assertEqual(len(self.cache_dirs('.trash-')), 1, 'killed at %s: the trash is left' % k)
+            _, text = self.pull('--stage')
+            self.assertIn('undid a swap that did not finish', text)
+            self.assertEqual(self.content(self.licensed), old, 'killed at %s' % k)
+            self.assertEqual(self.content(self.staged), staged)
+            self.assertEqual(self.cache_dirs('.trash-'), [])
+
+    def test_leftovers_are_cleaned_but_a_lone_copy_is_never_deleted(self):
+        self.push_pack('p', {'a.ytd': b'1'})
+        self.pull()
+        sha = self.entry('p')['seasons']['1']
+        write(os.path.join(self.cache, '.staging-dead', 'p', 'a.ytd'), b'half')
+        write(os.path.join(self.cache, 'p', sha + '.tar.gz.part-99'), b'half')
+        # A trash dir with no journal, holding a resource [licensed] lacks.
+        make_resource(os.path.join(self.cache, '.trash-old'), 'lost', {'l.ytd': b'only copy'})
+        _, text = self.pull()
+        self.assertEqual(self.cache_dirs('.staging-'), [])
+        self.assertFalse(os.path.exists(os.path.join(self.cache, 'p', sha + '.tar.gz.part-99')))
+        self.assertIn('put back lost', text)
+        self.assertEqual(self.cache_dirs('.trash-'), [])
+        # ...and then removed by the plan like any other stale resource, which
+        # is the lock's call to make, not the cleanup's.
+        self.assertIn('- lost', text)
+        # One [licensed] already has: refused, nothing deleted.
+        make_resource(os.path.join(self.cache, '.trash-old'), 'p', {'x.ytd': b'which one?'})
+        _, text = self.pull(expect=1)
+        self.assertIn('Nothing was deleted', text)
+        self.assertEqual(read(os.path.join(self.cache, '.trash-old', 'p', 'x.ytd')), b'which one?')
+
+    def test_a_dry_run_leaves_leftovers_for_the_next_pull(self):
+        self.two_sets()
+        with self.failing(fail_at=(4,), undo_fail='/.staged/a'):
+            self.pull('--swap', expect=1)
+        before = tree(self.server)
+        _, text = self.pull('--dry-run')
+        self.assertIn('the next pull recovers it', text)
+        self.assertEqual(tree(self.server), before)
+
+    # -- housekeeping --------------------------------------------------------
+
+    def test_staged_files_and_dirs_are_synced_before_the_first_swap_rename(self):
+        self.push_pack('p', {'stream/a.ytd': b'a', 'stream/deep/b.ydr': b'b'})
+        events = []
+        real_rename = os.rename
+        norm = lambda p: os.path.normcase(os.path.normpath(p))
+
+        def rename(a, b):
+            events.append(('rename', norm(a), norm(b)))
+            return real_rename(a, b)
+        with mock.patch.object(assets, 'fsync_file', lambda p: events.append(('file', norm(p)))), \
+                mock.patch.object(assets, 'fsync_dir', lambda p: events.append(('dir', norm(p)))), \
+                mock.patch.object(assets.os, 'rename', rename):
+            self.pull()
+        lic = norm(self.licensed) + os.sep
+        first = next(i for i, e in enumerate(events) if e[0] == 'rename' and e[2].startswith(lic))
+        before = set(events[:first])
+        # The staging dir was renamed to .staged once it was whole and synced.
+        root = next(e[1] for e in events if e[0] == 'rename' and e[2] == norm(self.staged))
+        for rel in ('p/fxmanifest.lua', 'p/stream/a.ytd', 'p/stream/deep/b.ydr', 'stage.json'):
+            self.assertIn(('file', norm(os.path.join(root, rel))), before, rel)
+        for rel in ('.', 'p', 'p/stream', 'p/stream/deep'):
+            self.assertIn(('dir', norm(os.path.join(root, rel))), before, 'directory ' + rel)
+        self.assertIn(('dir', norm(self.cache)), before, 'the rename to .staged, synced')
+        self.assertTrue(any(e[0] == 'dir' and os.path.basename(e[1]).startswith('.trash-') for e in before),
+                        'the journal is on disk before the first rename')
+
+    def test_a_same_named_resource_elsewhere_refuses_the_pull(self):
+        other = make_resource(os.path.join(self.server, 'resources', '[maps]'), 'legion', {'x.ymap': b'x'})
+        self.push_pack('legion', {'m.ymap': b'm'})
+        _, text = self.pull('--dry-run', expect=1)
+        self.assertIn(other, text)
+        _, text = self.pull(expect=1)
+        self.assertIn(other, text)
+        self.assertIn('two resources with one name', text)
+        self.assertFalse(os.path.exists(self.licensed))
+        self.assertEqual(self.downloads(), [])
+
+    def test_the_cache_drops_only_unnamed_archives_unused_for_14_days(self):
+        folder = self.push_pack('p', {'a.ytd': b'v1'})
+        self.pull()
+        v1 = self.entry('p')['seasons']['1']
+        write(os.path.join(folder, 'a.ytd'), b'v2')
+        self.push(folder)
+        self.pull()
+        v2 = self.entry('p')['seasons']['1']
+        # Named by the lock for a later season, never in force here, old.
+        later = self.push_pack('later', {'l.ytd': b'l'}, '--season', 3)
+        lsha = self.entry('later')['seasons']['3']
+        out = os.path.join(self.tmp, 'later.tar.gz')
+        assets.pack(later, out)
+        write(os.path.join(self.cache, 'later', lsha + '.tar.gz'), read(out))
+        # Named by nothing, never recorded, downloaded long ago.
+        ghost = os.path.join(self.cache, 'ghost', 'f' * 64 + '.tar.gz')
+        write(ghost, b'x')
+        long_ago = 1_000_000_000
+        for path in (ghost, os.path.join(self.cache, 'later', lsha + '.tar.gz')):
+            os.utime(path, (long_ago, long_ago))
+        cached = lambda name, sha: os.path.isfile(os.path.join(self.cache, name, sha + '.tar.gz'))
+        now = __import__('time').time()
+        with mock.patch.object(assets.time, 'time', return_value=now + 13 * 86400):
+            self.pull()
+        self.assertTrue(cached('p', v1), 'v1 was in force 13 days ago: kept')
+        self.assertFalse(os.path.exists(ghost), 'never recorded and old: dropped')
+        with mock.patch.object(assets.time, 'time', return_value=now + 15 * 86400):
+            _, text = self.pull()
+        self.assertFalse(cached('p', v1), 'v1: named by nothing, out of force for 15 days')
+        self.assertIn('pruned p/%s' % v1, text)
+        self.assertTrue(cached('p', v2), 'the version in force stays')
+        self.assertTrue(cached('later', lsha), 'a version the lock names stays, however old')
+        used = json.loads(read(os.path.join(self.cache, '.last-used.json')).decode('utf-8'))
+        self.assertNotIn('p/' + v1, used)
+        self.assertIn('p/' + v2, used)
+
     def test_status(self):
         self.push_pack('p', {'a.ytd': b'a'})
         self.pull()
@@ -1005,8 +1325,9 @@ mkdir -p "${pos[1]}" && cp -R "${pos[0]}." "${pos[1]}"
 FAKE_PULL = r'''import json, os, sys
 with open(os.environ['FAKE_PULL_LOG'], 'a', encoding='utf-8') as fh:
     fh.write(json.dumps(sys.argv[1:]) + '\n')
-print('stub pull ran')
-sys.exit(int(os.environ.get('FAKE_PULL_RC', '0')))
+mode = 'swap' if '--swap' in sys.argv else ('stage' if '--stage' in sys.argv else 'plan')
+print('stub pull ran: ' + mode)
+sys.exit(int(os.environ.get('FAKE_SWAP_RC' if mode == 'swap' else 'FAKE_PULL_RC', '0')))
 '''
 
 LISTING_LOCK = json.dumps({'format': 1, 'resources': [
@@ -1080,7 +1401,7 @@ class Deploy(unittest.TestCase):
         self.git('commit', '-q', '--allow-empty', '-m', 'lock')
         self.git('push', '-q', self.bare, 'main')
 
-    def deploy(self, *args, pull_rc=0, extra_env=None):
+    def deploy(self, *args, pull_rc=0, swap_rc=0, extra_env=None):
         env = dict(os.environ)
         env.update({
             'PATH': self.bin + os.pathsep + os.path.dirname(BASH) + os.pathsep + env.get('PATH', ''),
@@ -1091,6 +1412,7 @@ class Deploy(unittest.TestCase):
             'FAKE_RSYNC_LOG': self.rsync_log,
             'FAKE_PULL_LOG': self.pull_log,
             'FAKE_PULL_RC': str(pull_rc),
+            'FAKE_SWAP_RC': str(swap_rc),
         })
         env.update(extra_env or {})
         r = subprocess.run([BASH, os.path.join(TOOLS, 'deploy.sh')] + list(args), env=env,
@@ -1124,22 +1446,43 @@ class Deploy(unittest.TestCase):
             self.assertNotIn('licensed', out)
             self.assertFalse(os.path.exists(os.path.join(self.server, 'resources', '[licensed]')))
 
+    def stamp(self):
+        return os.path.join(self.server, 'resources', '[gamemodes]', '[fivem-royale]', 'br_core', 'served-commit')
+
     def test_the_pull_runs_and_licensed_is_never_synced_into(self):
         self.set_lock(LISTING_LOCK)
         keep = self.sentinel()
         rc, out = self.deploy()
         self.assertEqual(rc, 0, out)
         root = self.server.replace('\\', '/')
-        self.assertEqual(self.pulls(), [['pull', '--server-root', root]])
-        self.assertIn('stub pull ran', out)
+        self.assertEqual(self.pulls(), [['pull', '--stage', '--server-root', root],
+                                        ['pull', '--swap', '--server-root', root]])
         self.assertIn('(licensed, from assets.lock', out)
         dests = self.rsync_dests()
         self.assertEqual(len(dests), 4, dests)
         for d in dests:
             self.assertNotIn('[licensed]', d)
         self.assertEqual(read(keep), b'licensed bytes')
-        # The pull ran BEFORE the code sync.
-        self.assertLess(out.index('stub pull ran'), out.index('syncing [fivem-royale]'))
+        self.assertTrue(os.path.isfile(self.stamp()))
+        # New assets must never sit under old code: the stage (which can fail
+        # for reasons off this box) runs first, the swap only once the code
+        # and every vendored resource are synced, and the stamp after it.
+        at = [out.index('stub pull ran: stage'), out.index('syncing [fivem-royale]'),
+              out.index('syncing [voice]/pma-voice'), out.index('syncing [scaleformui]/ScaleformUI_Lua'),
+              out.index('stub pull ran: swap'), out.index('\x1b[32mdeployed')]
+        self.assertEqual(at, sorted(at), out)
+
+    def test_a_failed_swap_dies_with_no_stamp_and_no_success(self):
+        self.set_lock(LISTING_LOCK)
+        keep = self.sentinel()
+        rc, out = self.deploy(swap_rc=1)
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn('licensed asset swap failed', out)
+        self.assertIn('has not been restarted', out)
+        self.assertNotIn('\x1b[32mdeployed', out, 'no success line, so no restart')
+        self.assertEqual(len(self.rsync_dests()), 4, 'the swap runs after every sync')
+        self.assertFalse(os.path.exists(self.stamp()), 'no served-commit stamp for a deploy that died')
+        self.assertEqual(read(keep), b'licensed bytes')
 
     def test_a_failed_pull_stops_the_deploy_before_the_sync(self):
         self.set_lock(LISTING_LOCK)
@@ -1151,8 +1494,37 @@ class Deploy(unittest.TestCase):
         self.assertIn('nothing has been deployed', out)
         self.assertNotIn('\x1b[32mdeployed', out, 'no success line')
         self.assertEqual(self.rsync_dests(), [], 'no code was synced')
+        self.assertEqual([p[1] for p in self.pulls()], ['--stage'], 'and nothing was swapped')
         self.assertEqual(self.served(), before)
         self.assertEqual(read(keep), b'licensed bytes')
+
+    def test_a_ref_from_before_391_leaves_licensed_alone(self):
+        # Deploying a ref with no tools/assets.py while something is installed:
+        # warn, deploy the code, touch nothing in [licensed].
+        self.set_lock(LISTING_LOCK)
+        keep = self.sentinel()
+        write(os.path.join(self.server, 'resources', '[licensed]', 'br_licensed', 'installed.txt'), 'format 1\n')
+        self.git('rm', '-q', 'tools/assets.py')
+        self.git('commit', '-q', '-m', 'before 391')
+        self.git('push', '-q', self.bare, 'main')
+
+        def restore():
+            self.git('checkout', 'HEAD~1', '--', 'tools/assets.py')
+            self.git('commit', '-q', '-m', 'restore')
+            self.git('push', '-q', self.bare, 'main')
+        self.addCleanup(restore)
+        lic = os.path.join(self.server, 'resources', '[licensed]')
+        before = tree(lic)
+        rc, out = self.deploy()
+        self.assertEqual(rc, 0, out)
+        self.assertIn('has no tools/assets.py (it predates #391)', out)
+        self.assertIn('\x1b[32mdeployed', out)
+        self.assertEqual(self.pulls(), [])
+        self.assertEqual(tree(lic), before)
+        self.assertEqual(read(keep), b'licensed bytes')
+        rc, out = self.deploy('--status')
+        self.assertEqual(rc, 0, out)
+        self.assertIn('predates #391', out)
 
     def test_a_dry_run_touches_nothing(self):
         self.set_lock(LISTING_LOCK)
@@ -1176,7 +1548,8 @@ class Deploy(unittest.TestCase):
         self.assertIn('licensed: ' + root + '/resources/[licensed]', out)
         rc, out = self.deploy()
         self.assertEqual(rc, 0, out)
-        self.assertEqual(self.pulls()[-1], ['pull', '--server-root', root])
+        self.assertEqual(self.pulls()[-2:], [['pull', '--stage', '--server-root', root],
+                                             ['pull', '--swap', '--server-root', root]])
 
     def test_licensed_cannot_be_a_sync_target(self):
         self.set_lock(LISTING_LOCK)

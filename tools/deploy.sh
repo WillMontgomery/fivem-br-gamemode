@@ -16,8 +16,8 @@
 #   /opt/fivem-server-classic/deploy.sh && cd /opt/fivem-server-classic && ./run.sh +exec server.cfg
 #
 # LICENSED ASSETS (#391): when the fetched assets.lock lists any, or some are
-# installed, tools/assets.py pull runs before the sync and a failure stops the
-# deploy there. See the section above `--- sync ---`.
+# installed, tools/assets.py stages them before the sync (a failure stops the
+# deploy there) and swaps them in after it. See `--- licensed assets ---`.
 #
 # ---------------------------------------------------------------------------
 # A NOTE ON THE SQUARE BRACKETS
@@ -158,6 +158,13 @@ assets_wanted() {
 }
 
 assets_python_ok() { "$PYTHON" -c '' >/dev/null 2>&1; }
+
+# A ref from before #391 has no tools/assets.py, and so no way to reconcile
+# what an earlier deploy installed. Its code is deployed and [licensed] is left
+# exactly as it is: the boxes ran fine without the packs before, and taking
+# them away is the next #391-aware deploy's call, not this one's.
+assets_tool_present() { [ -f "$SRC_DIR/tools/assets.py" ]; }
+ASSETS_PREDATES_NOTE="has no tools/assets.py (it predates #391): resources/$LICENSED_GROUP/ is left as it is"
 
 # --- payload validation -------------------------------------------------------
 #
@@ -491,7 +498,9 @@ if [ "$STATUS_ONLY" -eq 1 ]; then
     done
     if assets_wanted; then
         echo "  licensed: $LICENSED_DIR"
-        if assets_python_ok; then
+        if ! assets_tool_present; then
+            echo "            $BRANCH $ASSETS_PREDATES_NOTE"
+        elif assets_python_ok; then
             "$PYTHON" "$SRC_DIR/tools/assets.py" pull --dry-run --server-root "$SERVER_ROOT" 2>&1 \
                 | sed 's/^/            /' \
                 || echo "            (the plan could not be computed; a deploy would stop here)"
@@ -524,34 +533,41 @@ for v in "${VENDORED_RESOURCES[@]}"; do
   FiveM will not load it."
 done
 
-# --- licensed assets (#391) ---------------------------------------------------
+# --- licensed assets, part 1 of 2: stage (#391) --------------------------------
 #
-# BEFORE THE CODE SYNC, ON PURPOSE. The pull is the step most likely to fail --
-# it is the only one that downloads -- and running it first means a failure
-# leaves the code AND the licensed assets on this box exactly as they were, in
-# step with each other, with the server never restarted: `die` exits non-zero,
-# so neither the chained start nor royale-deploy.service's restart runs.
+# TWO HALVES WITH THE CODE SYNC BETWEEN THEM, so new assets never sit under old
+# code. `pull --stage` here does everything that can fail for a reason outside
+# this box -- download, sha256 check, unpack into the cache's staging dir --
+# and changes NOTHING installed. A failure dies here: the code and the
+# licensed assets are both as they were, in step, and the server is never
+# restarted (`die` exits non-zero, so neither the chained start nor
+# royale-deploy.service's restart runs).
 #
-# assets.py does its own all-or-nothing inside resources/[licensed]/: every
-# archive is downloaded and its sha256 checked before anything is unpacked,
-# and the new set is swapped in only once all of it is staged.
+# `pull --swap`, after the code and vendored syncs have succeeded and just
+# before the served-commit stamp, renames the staged set into
+# resources/[licensed]/. It is journaled and undoes itself on failure.
 #
-# On --dry-run it prints the plan and downloads and changes nothing.
-ASSETS_PULLED=0
+# On --dry-run (and --status) it prints the plan and downloads and changes
+# nothing.
+ASSETS_STAGED=0
 if assets_wanted; then
-    assets_python_ok || die "$PYTHON is not installed, and assets.lock lists licensed assets.
-  Nothing has been deployed.  sudo apt install -y python3"
-    say "licensed assets: assets.lock -> $LICENSED_DIR/"
-    if [ "$DRY_RUN" -eq 1 ]; then
-        "$PYTHON" "$SRC_DIR/tools/assets.py" pull --dry-run --server-root "$SERVER_ROOT" 2>&1 \
-            | sed 's/^/     /' || die "the licensed asset plan failed (above)."
+    if ! assets_tool_present; then
+        echo "${YEL}deploy: $BRANCH $ASSETS_PREDATES_NOTE${RST}" >&2
     else
-        "$PYTHON" "$SRC_DIR/tools/assets.py" pull --server-root "$SERVER_ROOT" 2>&1 \
-            | sed 's/^/     /' || die "the licensed asset pull failed (above) -- nothing has been deployed.
+        assets_python_ok || die "$PYTHON is not installed, and assets.lock lists licensed assets.
+  Nothing has been deployed.  sudo apt install -y python3"
+        say "licensed assets: assets.lock -> $LICENSED_DIR/"
+        if [ "$DRY_RUN" -eq 1 ]; then
+            "$PYTHON" "$SRC_DIR/tools/assets.py" pull --dry-run --server-root "$SERVER_ROOT" 2>&1 \
+                | sed 's/^/     /' || die "the licensed asset plan failed (above)."
+        else
+            "$PYTHON" "$SRC_DIR/tools/assets.py" pull --stage --server-root "$SERVER_ROOT" 2>&1 \
+                | sed 's/^/     /' || die "the licensed asset pull failed (above) -- nothing has been deployed.
   The code and the licensed assets on this box are both as they were, and the
   server has not been restarted. assets.lock in the branch decides what a pull
   installs: fix the lock or the bucket, then deploy again."
-        ASSETS_PULLED=1
+            ASSETS_STAGED=1
+        fi
     fi
 fi
 
@@ -578,22 +594,6 @@ rsync "${RSYNC_OPTS[@]}" \
     --exclude 'br_core/devprops.json' \
     "$SRC_GROUP/" "$TARGET_DIR/$RESOURCE_GROUP/" \
     | sed 's/^/     /' || die "rsync failed"
-
-# THE SERVED COMMIT, for the dev-mode hex under the lobby's Settings button.
-#
-# The game server cannot read $SRC_DIR/.git: FXServer's Lua sandbox refuses io on
-# any path in the server root outside a resource folder. So the sha goes INSIDE a
-# resource, where br_core reads it with LoadResourceFile (br_lib/shared/gitref.lua).
-#
-# AFTER THE RSYNC, AND THAT IS THE ORDER THAT KEEPS IT HONEST. The stamp is not in
-# the source, so the --delete above removes it on every deploy (a dry run lists
-# that as `*deleting`); a deploy that dies before this line leaves no stamp rather
-# than the previous commit's. Not on a dry run, which must change nothing.
-if [ "$DRY_RUN" -eq 0 ]; then
-    STAMP="$TARGET_DIR/$RESOURCE_GROUP/br_core/served-commit"
-    git -C "$SRC_DIR" rev-parse HEAD > "$STAMP.tmp.$$" && mv -f "$STAMP.tmp.$$" "$STAMP" \
-        || die "could not write $STAMP"
-fi
 
 # Vendored third-party resources, one rsync each.
 #
@@ -642,6 +642,37 @@ if [ "$DRY_RUN" -eq 1 ]; then
     exit 0
 fi
 
+# --- licensed assets, part 2 of 2: swap (#391) ---------------------------------
+#
+# The code and every vendored resource are synced, so the staged set goes in
+# now and the two land together. A swap that fails is undone by assets.py --
+# [licensed] goes back to exactly what it held -- and the deploy dies here, so
+# nothing restarts. If the undo fails too, assets.py says where every old
+# resource is and deletes nothing.
+if [ "$ASSETS_STAGED" -eq 1 ]; then
+    "$PYTHON" "$SRC_DIR/tools/assets.py" pull --swap --server-root "$SERVER_ROOT" 2>&1 \
+        | sed 's/^/     /' || die "the licensed asset swap failed (above), and the server has not been restarted.
+  The code is synced, and resources/$LICENSED_GROUP/ holds what it held before
+  this deploy unless the lines above say otherwise. A restart now would run the
+  new code with the old licensed assets: fix what stopped the swap and deploy
+  again instead."
+fi
+
+# THE SERVED COMMIT, for the dev-mode hex under the lobby's Settings button.
+#
+# The game server cannot read $SRC_DIR/.git: FXServer's Lua sandbox refuses io on
+# any path in the server root outside a resource folder. So the sha goes INSIDE a
+# resource, where br_core reads it with LoadResourceFile (br_lib/shared/gitref.lua).
+#
+# AFTER EVERY SYNC AND THE SWAP, AND THAT IS THE ORDER THAT KEEPS IT HONEST. The
+# stamp is not in the source, so the --delete above removes it on every deploy (a
+# dry run lists that as `*deleting`); a deploy that dies before this line leaves
+# no stamp rather than the previous commit's. Never on a dry run, which exited
+# above.
+STAMP="$TARGET_DIR/$RESOURCE_GROUP/br_core/served-commit"
+git -C "$SRC_DIR" rev-parse HEAD > "$STAMP.tmp.$$" && mv -f "$STAMP.tmp.$$" "$STAMP" \
+    || die "could not write $STAMP"
+
 # --- done --------------------------------------------------------------------
 
 echo
@@ -656,7 +687,7 @@ echo "  -> $TARGET_DIR/$RESOURCE_GROUP"
 for v in "${VENDORED_RESOURCES[@]}"; do
     echo "  -> $SERVER_ROOT/resources/$v  ${DIM}(vendored)${RST}"
 done
-if [ "$ASSETS_PULLED" -eq 1 ]; then
+if [ "$ASSETS_STAGED" -eq 1 ]; then
     echo "  -> $LICENSED_DIR  ${DIM}(licensed, from assets.lock; they load on a full restart)${RST}"
 fi
 echo
