@@ -166,6 +166,34 @@ for (const f of files) {
 }
 
 // ---------------------------------------------------------------------------
+// R2b  A rarity is painted from its token, never from a literal hex (#392).
+//
+// The bug #392 fixed was exactly this shape: the bag painted RARITY.hex while
+// the market painted var(--rarity-N), so the two drifted apart and colorblind
+// modes reached only one of them. The five canonical values live in ONE place,
+// index.css's base :root block (tools/test_rarity.lua pins them equal to
+// BR.RarityInfo); anywhere else a literal copy is how the next drift starts.
+//
+// ALLOWED, each with a reason: a literal that happens to equal a rarity value
+// but means something else.
+// ---------------------------------------------------------------------------
+const RARITY_HEX = ['#b0b0b0', '#4cd964', '#3b9bff', '#b15bff', '#ffb020']
+const RARITY_HEX_ALLOWED = new Map([
+  ['src/index.css', 'the token block itself (test_rarity pins it)'],
+  ['src/hud/Notices.tsx', "the 'warn' tone: an amber that means caution, not Legendary"],
+  ['src/screens/Lobby.tsx', "var(--color-warn, #FFB020): the warn tone's fallback, not a rarity"],
+])
+for (const f of files) {
+  if (RARITY_HEX_ALLOWED.has(rel(f))) continue
+  const body = stripComments(read(f)).toLowerCase()
+  for (const hex of RARITY_HEX) {
+    if (body.includes(hex)) {
+      fail('R2b rarity', rel(f), `paints ${hex} as a literal -- use var(--rarity-N) so colorblind modes reach it`)
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // R3  Interactive controls must carry the button language.
 //
 // A bare <button> with no `btn` class has no press travel, no hover cue and no

@@ -179,7 +179,7 @@
 
      The old palette had ONE PURPLE doing five jobs: brand mark, every button,
      the lobby backdrop, own-kill highlights -- and it sat a shade from Epic
-     loot (#a855f7), so a purple glow on the ground was about to mean both
+     loot (then #a855f7), so a purple glow on the ground was about to mean both
      "rare item" and "the storm". Threat and invitation cannot share a hue.
 
        cyan    you may act        buttons, focus, your own kills, your marker
@@ -398,11 +398,12 @@
      Epic     -> a light orchid, so the pair that becomes one blue separates
                  by lightness instead.
    COMMON AND LEGENDARY DO NOT MOVE. A grey is the one color no deficiency
-   shifts, and with Uncommon off the yellow axis the canonical orange already
-   clears everything by dE 19 -- including red danger. The warm yellow it used
-   to move to sits on the victory gold (--color-royale-accent2, dE 2), the one
-   color that means something else. Every pair now clears dE 15 in both
-   deficiencies under both models; the Tailwind-tuned values managed 5. */
+   shifts, and with Uncommon moved off the yellow axis the canonical orange
+   needs no move to stay apart from every other rarity: every pair now clears
+   dE 15 in both deficiencies under both models (the Tailwind-tuned values
+   managed 5). Under these deficiencies Legendary reads close to the victory
+   and Volts golds, as the old yellow override did; that is unchanged, not
+   new. */
 :root[data-cb="deuter"], :root[data-cb="protan"] {
   --color-hp:     #2dd4bf;
   --color-shield: #60a5fa;

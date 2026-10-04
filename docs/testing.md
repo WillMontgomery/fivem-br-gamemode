@@ -29,7 +29,7 @@ absent it prints the matching Homebrew, apt, or winget command.
 | Stage | What it proves |
 |---|---|
 | **Syntax** | `luac -p` on every `.lua`. FiveM runs Lua 5.4 and so does this, so a pass means the resource will at least load. The floor, not the ceiling. |
-| **Unit tests** | 42 suites, over 10,000 assertions, covering the pure shared modules, server model, client interaction layer, AWS-facing subsystems, and individual files where a rule lives. The run order stays explicit, but `verify.sh` compares it with every `tools/test_*.lua` file and fails if either side has an extra entry — a new suite cannot exist without running in CI. |
+| **Unit tests** | 44 suites, over 10,000 assertions, covering the pure shared modules, server model, client interaction layer, AWS-facing subsystems, and individual files where a rule lives. The run order stays explicit, but `verify.sh` compares it with every `tools/test_*.lua` file and fails if either side has an extra entry — a new suite cannot exist without running in CI. |
 | **Scope gate** | Bans OneSync scope-limited natives from client gameplay code. |
 | **Weapon table** | Re-derives every weapon hash from its name, and requires every weapon and throwable to say explicitly whether a car seat accepts it — a missing `driveby` field reads as "no" and would silently drop a gun out of the drive-by hint. See [Vehicle data overrides](vehicle-data.md). |
 | **Vehicle table** | Re-derives every refused-vehicle hash from its name, signed and unsigned. The refusal list is what keeps aircraft and weaponised vehicles out, including out of the showroom catalogue, so a hash that stopped matching its name would silently stop refusing anything. |
