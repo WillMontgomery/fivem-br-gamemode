@@ -484,6 +484,52 @@ fi
 COMMIT=$(git -C "$SRC_DIR" rev-parse --short HEAD)
 SUBJECT=$(git -C "$SRC_DIR" log -1 --pretty=%s)
 
+# --- is this deploy.sh the one the served tree has? (#391) ------------------
+#
+# THIS SCRIPT RUNS FROM THE OPS CLONE (/opt/misc/fivem-br-gamemode), WHICH
+# NOTHING PULLS BUT A PERSON. The tree it serves is fetched fresh above, so the
+# two drift: a box whose ops clone was never pulled runs an old deploy.sh
+# against new code -- one that predates the licensed-asset pull would deploy a
+# lock full of packs and install none of them, and say nothing. So compare the
+# content, as git blobs (so no checkout's line endings can count as a change),
+# and when this script is an OLDER version of the served tree's own
+# tools/deploy.sh (its blob is in that file's history), say so loudly and name
+# the pull. A deploy.sh that differs and is in no such history (a newer ops
+# clone deploying an older ref) gets a quieter note. Neither stops the deploy.
+SELF_SCRIPT="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")"
+SERVED_BLOB="$(git -C "$SRC_DIR" rev-parse -q --verify "HEAD:tools/deploy.sh" 2>/dev/null || true)"
+SELF_BLOB="$(git -C "$SRC_DIR" hash-object --stdin < "$SELF_SCRIPT" 2>/dev/null || true)"
+if [ -n "$SERVED_BLOB" ] && [ "$SELF_BLOB" != "$SERVED_BLOB" ]; then
+    OPS_CLONE="$(git -C "$(dirname "$SELF_SCRIPT")" rev-parse --show-toplevel 2>/dev/null || true)"
+    if [ -n "$OPS_CLONE" ]; then
+        OPS_PULL="git -C $OPS_CLONE pull"
+    else
+        OPS_PULL="replace $SELF_SCRIPT with $BRANCH's tools/deploy.sh"
+    fi
+    # Every version tools/deploy.sh has had on the served ref, one blob a line.
+    # Into a variable, not `| grep -q`: under pipefail an early grep exit can
+    # fail the pipeline with SIGPIPE and read as "not found".
+    DEPLOY_BLOBS="$(git -C "$SRC_DIR" log --format= --raw --no-abbrev HEAD -- tools/deploy.sh \
+        | awk '{ print $4 }' || true)"
+    SELF_IS_OLDER=0
+    case $'\n'"$DEPLOY_BLOBS"$'\n' in
+        *$'\n'"$SELF_BLOB"$'\n'*) if [ -n "$SELF_BLOB" ]; then SELF_IS_OLDER=1; fi ;;
+    esac
+    if [ "$SELF_IS_OLDER" -eq 1 ]; then
+        {
+            echo "${RED}================================================================${RST}"
+            echo "${RED}deploy: THIS deploy.sh IS OLDER THAN $BRANCH's tools/deploy.sh${RST}"
+            echo "${RED}  running: $SELF_SCRIPT${RST}"
+            echo "${RED}  Pull the ops clone, then deploy again:  $OPS_PULL${RST}"
+            echo "${RED}  Until then each deploy runs the old script's steps, and leaves${RST}"
+            echo "${RED}  out whatever the new one added.${RST}"
+            echo "${RED}================================================================${RST}"
+        } >&2
+    else
+        echo "${YEL}deploy: note: this deploy.sh ($SELF_SCRIPT) is not $BRANCH's tools/deploy.sh, nor an older version of it${RST}" >&2
+    fi
+fi
+
 if [ "$STATUS_ONLY" -eq 1 ]; then
     echo
     echo "  source:   $SRC_DIR"

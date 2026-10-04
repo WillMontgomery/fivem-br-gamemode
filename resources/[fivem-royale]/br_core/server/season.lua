@@ -96,6 +96,16 @@ end
 local LICENSED_RESOURCE = 'br_licensed'
 local LICENSED_FILE = 'installed.txt'
 
+--- Whether a record's version is a real sha256. After a swap whose undo also
+--- failed, a resource the pull found in [licensed] with no earlier record of
+--- it is written as `installed <name> unknown` (UNKNOWN_VERSION in
+--- tools/assets.py): installed, at a version nobody can name.
+--- @param v string|nil
+--- @return boolean
+local function knownVersion(v)
+    return type(v) == 'string' and #v == 64 and v:find('^[0-9a-f]+$') ~= nil
+end
+
 --- The install record, parsed, or nil when it is absent or not format 1:
 ---   { season = n, installed = { [name] = sha }, plans = { [season] = { [name] = sha } } }
 --- `plans` holds every season the pull planned for, an empty set included.
@@ -171,6 +181,9 @@ local function licensedWarning(src, season)
             parts[#parts + 1] = ('%s (not installed)'):format(d.name)
         elseif d.want == nil then
             parts[#parts + 1] = ('%s (installed, not in Season %d)'):format(d.name, season)
+        elseif not knownVersion(d.have) then
+            parts[#parts + 1] = ('%s (installed at a version a failed swap could not record, Season %d has %s)')
+                :format(d.name, season, d.want:sub(1, 8))
         else
             parts[#parts + 1] = ('%s (installed %s, Season %d has %s)')
                 :format(d.name, d.have:sub(1, 8), season, d.want:sub(1, 8))

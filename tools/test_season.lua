@@ -1045,6 +1045,19 @@ do
     ok(gap.said('brseason: WARNING -- the licensed asset record on this box has no plan for Season 1; redeploy to refresh it') ~= nil,
         'a season the record never planned is said to be unknown')
 
+    -- After a swap whose undo failed too, a resource the pull found with no
+    -- earlier record of it is `installed <name> unknown`: said in words, not
+    -- printed as if `unknown` were a version.
+    local unk = licensedServer(record({ 'format 1', 'season 1', 'seasons 1 2', 'installed legion unknown',
+        'installed emotes unknown', 'plan 1 legion ' .. sha('a'), 'plan 2 legion ' .. sha('a') }),
+        { cfg = { br_season = '1' } })
+    unk.run(0, '2')
+    ok(unk.said('Season 2 runs different licensed assets from the ones installed: '
+        .. 'emotes (installed, not in Season 2), '
+        .. 'legion (installed at a version a failed swap could not record, Season 2 has aaaaaaaa)') ~= nil,
+        'an unknown version is named as one, with what the season has', unk.printed[#unk.printed - 1])
+    ok(unk.said('installed unknown') == nil, 'and `unknown` is never printed as a version')
+
     -- The parser: CRLF from a hand-copied file, a format it does not know.
     local P = st.SW.parseLicensed
     local crlf = P((RECORD:gsub('\n', '\r\n')))
@@ -1278,6 +1291,8 @@ do
     for _, l in ipairs({ "'format 1'", "'season %d' % season", "'seasons %s'", "'installed %s %s'", "'plan %d %s %s'" }) do
         ok(py:find(l, 1, true) ~= nil, 'and writes the line ' .. l)
     end
+    ok(py:find("UNKNOWN_VERSION = 'unknown'", 1, true) ~= nil,
+        'and writes `unknown` for a version it cannot name, which the warning above says in words')
     local cmd = code(assert(readFile(RES .. 'br_core/server/season.lua')))
     ok(cmd:find("local LICENSED_RESOURCE = 'br_licensed'", 1, true) ~= nil
         and cmd:find("local LICENSED_FILE = 'installed.txt'", 1, true) ~= nil,
