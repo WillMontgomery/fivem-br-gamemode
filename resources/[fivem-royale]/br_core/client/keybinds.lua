@@ -421,6 +421,10 @@ end
 ---     nothing can take back out once it is in -- is DEFERRED until the gate
 ---     first reads open. BR.Keys.mapGated does it then.
 ---
+--- UNTIL THE SEASON HAS ARRIVED THE GATE READS SHUT, on every season: the
+--- season module answers has() false while br_seasonServed is unknown, so this
+--- file maps nothing at load on a box whose season turns out to be 1.
+---
 --- The +/- commands are bound here regardless, so the raw layer drives the key
 --- either way; whatever listens for the action asks the gate again.
 --- @param gate function|nil  the row exists while this returns true

@@ -169,6 +169,52 @@ end
 local function eightEmpty() return { '', '', '', '', '', '', '', '' } end
 
 -- ---------------------------------------------------------------------------
+-- BEFORE THE SEASON ARRIVES (#388). br_seasonServed is replicated and may land
+-- after br_ui starts; until it does the season is unknown and the page must
+-- not show a tab or a slider the server's season may not have.
+-- ---------------------------------------------------------------------------
+
+describe('before the season arrives')
+do
+    convars.br_seasonServed = nil
+    reset()
+    ok(BR.Season.current() == nil and BR.Season.has('emotes') == false,
+        'no season yet: br_ui does not guess one, and the gate reads shut')
+    fire('onClientResourceStart', 'br_ui')
+    local e = lastLocal(BR.Nui.EMOTES)
+    ok(e ~= nil and e.on == false,
+        "br_ui's own start sends EMOTES {on=false}: no Emotes tab, no Music slider",
+        e and tostring(e.on))
+    ok(lastLocal(BR.Nui.MARKET) ~= nil and #emoteItems(lastLocal(BR.Nui.MARKET)) == 0,
+        'and a grid with no emote tile')
+
+    reset()
+    local a1, ok1 = callCb(BR.NuiCb.MARKET_BUY, { id = 'emote_shuffle' })
+    local a2, ok2 = callCb(BR.NuiCb.MARKET_EQUIP, { id = 'emote_shuffle' })
+    local a3, ok3 = callCb(BR.NuiCb.MARKET_UNEQUIP, { id = 'emote_shuffle' })
+    ok(ok1 and ok2 and ok3 and #toServer == 0,
+        'the three Market callbacks forward nothing for an emote', #toServer)
+    ok(a1 and a1.ok and a2 and a2.ok and a3 and a3.ok, 'and all three still answer')
+
+    -- A STATE FROM THE SERVER CAN BEAT THE CONVAR HERE; it still opens nothing.
+    reset()
+    fire(BR.Net.MARKET_STATE, { balance = 0, owned = { 'emote_shuffle' }, equipped = {},
+        emotes = { 'emote_shuffle', '', '', '', '', '', '', '' } })
+    e = lastLocal(BR.Nui.EMOTES)
+    ok(e ~= nil and e.on == false and #emoteItems(lastLocal(BR.Nui.MARKET)) == 0,
+        'a market state arriving first still sends no tab and no tile')
+
+    -- THE SEASON ARRIVES AT THE ONE BEFORE `from`: still shut.
+    gateClosed()
+    reset()
+    fire(BR.Net.MARKET_STATE, { balance = 0, owned = {}, equipped = {} })
+    e = lastLocal(BR.Nui.EMOTES)
+    ok(e ~= nil and e.on == false and #emoteItems(lastLocal(BR.Nui.MARKET)) == 0,
+        ('Season %d arrives: still no tab and no tile'):format(OFF))
+    restore()
+end
+
+-- ---------------------------------------------------------------------------
 -- 0. THIS RUN'S SEASON, with dev mode OFF and nothing forced
 -- ---------------------------------------------------------------------------
 

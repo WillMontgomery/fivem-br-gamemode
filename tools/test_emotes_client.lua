@@ -449,16 +449,66 @@ local function near(a, b) return math.abs(a - b) < 1e-6 end
 -- 5. THE GATE WATCHER. Run first, because its first pass is a one-time event.
 -- ════════════════════════════════════════════════════════════════════════════
 
+-- BEFORE THE SEASON ARRIVES (#388). br_seasonServed is a replicated convar and
+-- may land after these files load; until it does the season is unknown and
+-- every door must read shut -- on a Season 1 box, a door opened in that
+-- window would be a Season 2 feature on a Season 1 client, and the wheel's
+-- key mapping can never be taken back. Every door this file has is asked.
+describe('5. gate: before the season arrives, every door is shut')
+do
+    convars.br_seasonServed = nil
+    sent = {}
+    ok(BR.Season.current() == nil and BR.Season.has('emotes') == false,
+        'no season yet: the client does not guess one, and the gate reads shut',
+        tostring(BR.Season.current()))
+    setWheel({ A })
+    key(true)
+    ok(not BR.EmoteWheel.isOpen(), 'the wheel does not open')
+    key(false)
+    local tasksBefore, audioBefore = #tasks, audioCount()
+    record({ src = 51, id = A, x = 1.0 })
+    record({ id = A })
+    ok(next(BR.Emotes.records()) == nil, 'records are ignored')
+    tick(); tick()
+    ok(#tasks == tasksBefore and audioCount() == audioBefore, 'nothing plays and no audio is sent')
+    ok(BR.Emotes.request(A) == false and #plays() == 0, 'request() sends nothing')
+    ok(BR.Emotes.blocked() == 'gate', "blocked() says 'gate'", BR.Emotes.blocked())
+
+    local lines = #logged
+    local okCmd, err = pcall(rawCmds.bremote, 0, {})
+    ok(okCmd and logged[lines + 1] ~= nil
+            and logged[lines + 1]:find("bremote: emotes are off (the server's season has not arrived yet", 1, true) ~= nil,
+        'the raw bremote handler says the season has not arrived, and does not throw',
+        okCmd and logged[lines + 1] or err)
+    local okRows, rows = pcall(BR.Emotes.nativeCheck)
+    ok(okRows and #rows == 1 and rows[1].ok == true
+            and rows[1].detail:find('has not arrived', 1, true) ~= nil,
+        'nativeCheck is one ok row saying so, and does not throw',
+        okRows and rows[1] and rows[1].detail or rows)
+
+    slow()
+    slow()
+    ok(count(BR.Net.MARKET_STATE) == 0 and keyPushes == 0 and mapGatedCalls == 0,
+        'the gate pass maps nothing, pushes no keys and asks the server for nothing',
+        ('%d/%d/%d'):format(count(BR.Net.MARKET_STATE), keyPushes, mapGatedCalls))
+    ok(#sent == 0, 'and nothing at all reaches the server', #sent)
+end
+
 describe('5. gate: the watcher')
 do
+    -- THE SEASON ARRIVES AT THE ONE BEFORE `from`: still shut, and no flip.
     gateClosed()
     sent = {}
     slow()
     ok(count(BR.Net.MARKET_STATE) == 0,
-        'the first pass with the gate closed asks the server for nothing')
+        ('Season %d arriving asks the server for nothing'):format(OFF))
     ok(keyPushes == 0 and mapGatedCalls == 0,
         'and neither re-pushes the keys nor maps the gated row', keyPushes)
+    key(true)
+    ok(not BR.EmoteWheel.isOpen(), 'and the wheel still does not open')
+    key(false)
 
+    -- AND AT `from`: the flip, once.
     gateOpen()
     slow()
     ok(count(BR.Net.MARKET_STATE) == 1,

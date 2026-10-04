@@ -1214,6 +1214,11 @@ loadAll({
     -- resolves to is the first of the four things the smoke-trail prompt is
     -- made of, and BR.Config.MarketIndex is where that answer lives.
     'br_lib/config/market.lua',
+    -- SEASONS (#388), ahead of keybinds.lua as br_core's manifest puts them,
+    -- and with br_seasonServed UNSET: a client whose scripts load before the
+    -- server's season has arrived. The emote wheel's key block proves that
+    -- window maps nothing.
+    'br_lib/shared/season.lua', 'br_lib/config/seasons.lua',
     'br_lib/shared/storm_solve.lua', 'br_lib/shared/loot_gen.lua',
     -- THE BOOST PAIR, AND THE ORDER IS THE MANIFEST'S RATHER THAN A
     -- PREFERENCE. config/boost.lua derives `addMps` from BR.BoostSolve.MPH at
@@ -13504,15 +13509,22 @@ end
 -- rebinder refuses it, and GTA's own key list is not given it (a mapping can
 -- never be withdrawn). The raw layer drives it either way.
 --
--- THIS SUITE LOADS keybinds.lua WITHOUT br_lib/shared/season.lua, which is the
--- point of the nil-safe wrapper: BR.Season is nil here until this block stubs
--- it, and it is put back exactly as found -- the br_ui market block below
--- loads a file that also asks BR.Season, and fire() there has no pcall.
+-- THIS SUITE LOADS keybinds.lua OVER THE REAL SEASON MODULE, with
+-- br_seasonServed unset: a client whose scripts ran before the server's season
+-- arrived. Until it arrives the season is unknown and every gate reads shut
+-- (#388), so nothing may be mapped at load or after it -- a Season 1 box that
+-- mapped the wheel there would show it in GTA's key list for the session. The
+-- season then lands, at the season before the row's `from` and then at
+-- `from`. BR.Season is also set to nil once (the nil-safe wrapper) and put
+-- back exactly as found, with the convar unset again -- the br_ui market block
+-- below loads a file that also asks BR.Season, and fire() there has no pcall.
 -- ---------------------------------------------------------------------------
 
 describe('the emote wheel key (#215): a gated hold on Left Alt')
 do
     local saved = BR.Season
+    local FROM = BR.Config.Seasons.features.emotes.from
+    local OFF = FROM - 1
     local savedMap = RegisterKeyMapping
     local maps = 0
     RegisterKeyMapping = function(cmd, desc, dev, key)
@@ -13551,26 +13563,46 @@ do
         return nil
     end
 
+    -- ── BEFORE THE SEASON ARRIVES (#388): keybinds.lua has already loaded,
+    -- and every door this block can reach is asked with the season unknown.
+    convars.br_seasonServed = nil
+    ok(saved ~= nil and saved.current ~= nil and saved.current() == nil
+            and saved.has('emotes') == false,
+        'keybinds.lua loaded over the real season module, with no season yet',
+        saved and saved.current and tostring(saved.current()))
+    ok(keymap['LMENU'] == nil,
+        'and GTA was never given a mapping for the wheel at load',
+        tostring(keymap['LMENU']))
+    BR.Keys.push()
+    ok(pushed() == false, 'with no season yet the settings screen is not sent the row')
+    ok(BR.Keys.set('bremotewheel', 0x47) == false,
+        'and the rebinder refuses it')
+    BR.Keys.mapGated()
+    ok(maps == 0 and keymap['LMENU'] == nil,
+        'and mapGated gives GTA nothing', maps)
+
+    -- ── THE SEASON ARRIVES AT THE ONE BEFORE `from`: still shut.
+    convars.br_seasonServed = tostring(OFF)
+    BR.Keys.push()
+    ok(pushed() == false, ('at Season %d the row is not pushed'):format(OFF))
+    ok(BR.Keys.set('bremotewheel', 0x47) == false,
+        'and the rebinder refuses it while closed')
+    BR.Keys.mapGated()
+    ok(maps == 0 and keymap['LMENU'] == nil,
+        'mapGated gives GTA nothing while the gate is closed', maps)
+
     BR.Season = nil
     BR.Keys.push()
     ok(pushed() == false,
         'with no season module at all the settings screen is not sent the row')
-    ok(keymap['LMENU'] == nil and maps == 0,
-        'and GTA was never given a mapping for it at load',
-        tostring(keymap['LMENU']))
-
-    local gate = false
-    BR.Season = { has = function(id) return id == 'emotes' and gate end }
-    BR.Keys.push()
-    ok(pushed() == false, 'with the gate closed the row is not pushed either')
-    ok(BR.Keys.set('bremotewheel', 0x47) == false,
-        'and the rebinder refuses it while closed')
     BR.Keys.mapGated()
-    ok(maps == 0, 'mapGated gives GTA nothing while the gate is closed', maps)
+    ok(maps == 0, 'and mapGated gives GTA nothing', maps)
+    BR.Season = saved
 
-    gate = true
+    -- ── AND AT `from`: the row appears, and GTA is given it once.
+    convars.br_seasonServed = tostring(FROM)
     BR.Keys.push()
-    ok(pushed() == true, 'the gate opening puts the row on the settings screen')
+    ok(pushed() == true, ('at Season %d the row is on the settings screen'):format(FROM))
     BR.Keys.mapGated()
     BR.Keys.mapGated()
     ok(maps == 1 and keymap['LMENU'] == '+bremotewheel',
@@ -13614,7 +13646,9 @@ do
 
     RegisterKeyMapping = savedMap
     BR.Season = saved
-    ok(BR.Season == saved, 'BR.Season is handed back exactly as it was found')
+    convars.br_seasonServed = nil
+    ok(BR.Season == saved and BR.Season.current() == nil,
+        'BR.Season is handed back exactly as it was found, with no season')
 end
 
 -- ---------------------------------------------------------------------------

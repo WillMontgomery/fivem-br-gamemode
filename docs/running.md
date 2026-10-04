@@ -151,7 +151,10 @@ which season is running and why, and in dev mode the lobby shows it beside the
 version under Settings, as `S2 · 1a2b3c4`.
 
 Clients never read `br_season`. The server replicates the season it is running
-as `br_seasonServed`, which nothing should set by hand.
+as `br_seasonServed`, which nothing should set by hand. Until it reaches a
+client, that client knows no season and every season gate there is shut; it
+does not assume the latest, which is only the server's answer to an unset
+`br_season`.
 
 **Gating the next feature:**
 

@@ -386,7 +386,12 @@ do
     local server = state({ cfg = { br_season = '1' }, wire = wire })
     local client = state({ wire = wire })
 
-    eq(client.S.current(), LATEST, 'a client before the convar arrives reads the latest')
+    -- BEFORE IT ARRIVES THE CLIENT DOES NOT KNOW, AND SAYS SO (#388): not the
+    -- latest, which is the server's answer to an unset br_season and would
+    -- open Season 2's doors on a Season 1 client until the 1 landed.
+    eq(client.S.current(), nil, 'a client before the convar arrives has no season')
+    eq(client.S.has('emotes'), false, 'and every gate is shut: no emotes')
+    eq(client.S.pick({ [1] = 'one', [2] = 'two' }), nil, 'and pick() has no version to give')
 
     server.S.boot()
     eq(wire.br_seasonServed, '1', 'the server boots Season 1 and replicates it')
@@ -415,17 +420,61 @@ do
     eq(client.S.current(), LATEST, 'and the client runs it')
 
     -- GARBAGE ON THE WIRE (nobody writes it but boot, which writes a number):
-    -- the client falls back the way the server would have.
+    -- not a season the server sent, so the client still does not know one.
     wire.br_seasonServed = 'x'
-    eq(client.S.current(), LATEST, 'a garbled br_seasonServed reads as the latest')
+    eq(client.S.current(), nil, 'a garbled br_seasonServed is no season')
+    eq(client.S.has('emotes'), false, 'and shuts every gate')
 
     -- READ AT CALL TIME on the client, never held: a value that lands late
     -- is used as soon as it lands.
     wire.br_seasonServed = nil
     local before = client.S.current()
     wire.br_seasonServed = '1'
-    ok(before == LATEST and client.S.current() == 1, 'the client never keeps a value from before it arrived')
+    ok(before == nil and client.S.current() == 1, 'the client never keeps a value from before it arrived')
     eq(client.S.recheck(), nil, 'a client never booted, so it never reports a change')
+
+    -- THE SERVER IS UNTOUCHED BY ANY OF IT: it latched at boot.
+    eq(server.S.current(), LATEST, 'the server still runs what it booted with')
+end
+
+describe('season.before-arrival')
+do
+    -- EVERY ROW IS SHUT while the season is unknown -- a launch feature, one a
+    -- later season brings, and one a later season takes away -- and each
+    -- opens exactly as its season says once the season lands.
+    local reg = {
+        latest = 3,
+        features = {
+            base    = { from = 1 },
+            later   = { from = 2 },
+            removed = { from = 1, untilSeason = 2 },
+        },
+    }
+    local wire = {}
+    local client = state({ registry = reg, wire = wire })
+    for _, id in ipairs({ 'base', 'later', 'removed' }) do
+        eq(client.S.has(id), false, ('no season yet: %s is shut'):format(id))
+    end
+    eq(client.S.pick({ [1] = 'one' }), nil, 'no season yet: not even a Season 1 version is picked')
+    for _, raw in ipairs({ '', '  ', '0', 'two', '1.5' }) do
+        wire.br_seasonServed = raw
+        ok(client.S.current() == nil and client.S.has('base') == false,
+            ('%q on the wire is no season, and shuts even a launch feature'):format(raw))
+    end
+
+    wire.br_seasonServed = '1'
+    ok(client.S.has('base') and not client.S.has('later') and client.S.has('removed'),
+        'Season 1 lands: the launch features open, the later one stays shut')
+    eq(client.S.pick({ [1] = 'one', [2] = 'two' }), 'one', 'and pick() takes Season 1\'s version')
+    wire.br_seasonServed = '2'
+    ok(client.S.has('base') and client.S.has('later') and not client.S.has('removed'),
+        'Season 2 lands: the later feature opens, the removed one shuts')
+
+    -- STRICT STILL RAISES on a typo'd id, known season or not.
+    wire.br_seasonServed = nil
+    client.S.strict = true
+    ok(not pcall(client.S.has, 'bse'), 'under strict an unknown id raises before the season arrives')
+    ok(not pcall(client.S.pick, { ['1'] = 'x' }), 'and so does a key that is not a season')
 end
 
 -- =========================================================================

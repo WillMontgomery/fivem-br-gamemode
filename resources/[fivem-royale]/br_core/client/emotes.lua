@@ -113,6 +113,16 @@ local function myId()
     return BR.State and BR.State.me and BR.State.me.src or nil
 end
 
+--- Why emotes are off, for a console line, given BR.Season.current(): the
+--- season this client was told, or nil before the server's answer arrives
+--- (#388: the season is unknown until then, and every gate is shut).
+--- @param season integer|nil
+--- @return string
+local function offWhy(season)
+    if season == nil then return "the server's season has not arrived yet" end
+    return ('this box runs Season %d'):format(season)
+end
+
 -- --------------------------------------------------------------- the wire ---
 
 -- THE WHEEL AND THE COLLECTION, MIRRORED. The server pushes MARKET_STATE on
@@ -485,6 +495,10 @@ end)
 -- market state again (which refreshes br_ui's Emotes tab and slider and this
 -- file's wheel mirror), the keybind table is re-pushed so the wheel row
 -- appears or goes, and a closed gate takes everything off.
+--
+-- BEFORE THE SEASON ARRIVES the gate reads shut (br_lib/shared/season.lua), so
+-- these passes do nothing that cannot be undone. The pass that sees it land
+-- on a season with emotes is a flip, and maps the wheel's key from here.
 BR.Loop.register(BR.Loop.SLOW, 'emotes.gate', function()
     local on = BR.Season.has('emotes') == true
     if on and BR.Keys and BR.Keys.mapGated then BR.Keys.mapGated() end
@@ -526,7 +540,7 @@ end)
 function BR.Emotes.nativeCheck()
     if not BR.Season.has('emotes') then
         return { { name = 'dances', ok = true,
-                   detail = ('emotes are off (this box runs Season %d)'):format(BR.Season.current()) } }
+                   detail = ('emotes are off (%s)'):format(offWhy(BR.Season.current())) } }
     end
     local rows = {}
     for _, id in ipairs(BR.Config.Emotes.order) do
@@ -586,8 +600,8 @@ end
 -- the emote gate first.
 RegisterCommand('bremote', function(_, args)
     if not BR.Season.has('emotes') then
-        print(('[br_core] bremote: emotes are off (this box runs Season %d; '
-              .. 'br_lib/config/seasons.lua)'):format(BR.Season.current()))
+        print(('[br_core] bremote: emotes are off (%s; '
+              .. 'br_lib/config/seasons.lua)'):format(offWhy(BR.Season.current())))
         return
     end
     args = type(args) == 'table' and args or {}

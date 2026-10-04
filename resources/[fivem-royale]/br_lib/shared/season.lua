@@ -35,9 +35,19 @@
 -- br_devMode (br_lib/shared/devgate.lua says why: a replicated convar can land
 -- after the scripts load, and a value kept from load time would be wrong for
 -- the life of the process). So NOTHING may call has() or pick() while a file
--- loads and keep the answer. Unset or garbled is read as `latest` there too,
--- the same rule the server applies; a client sees it only before the convar
--- arrives, because the server always sends a valid number.
+-- loads and keep the answer.
+--
+-- ═══ UNTIL IT ARRIVES, THE SEASON IS UNKNOWN, AND EVERY GATE IS SHUT ═══
+--
+-- `latest` is the SERVER's answer to an unset br_season, decided once at boot.
+-- It is not a client's answer to a convar that has not landed yet: a Season 1
+-- client that guessed `latest` would open Season 2's doors until the server's
+-- 1 arrived, and one of those doors -- the emote wheel's RegisterKeyMapping --
+-- can never be shut again. So where nothing is latched, an unset or garbled
+-- br_seasonServed is UNKNOWN: current() returns nil, has() answers false for
+-- every row and pick() answers nil. The gate passes that ask on a timer pick
+-- the season up when it lands. br_core's server latches in onResourceStart,
+-- before any handler or job can ask, so it never sees the unknown answer.
 --
 -- ═══ THE CLIENT DECIDES NOTHING A PLAYER COULD CHEAT ═══
 --
@@ -210,15 +220,16 @@ function BR.Season.recheck(get)
         :format(quoted(raw), latched.season)
 end
 
---- The season this machine is running.
+--- The season this machine is running, or nil while it is not known.
 ---
 --- On br_core's server after boot, the season it booted with. Everywhere else,
---- br_seasonServed read now (see the header).
---- @return integer
+--- br_seasonServed read now, and NIL until it holds a season: a client before
+--- the server's answer arrives (see the header). Every caller copes with nil.
+--- @return integer|nil
 function BR.Season.current()
     if latched then return latched.season end
     local raw = GetConvar and GetConvar(BR.Season.SERVED, '') or ''
-    return (BR.Season.resolve(raw))
+    return (BR.Season.parse(raw))
 end
 
 --- Is this feature on, in the season this machine is running?
@@ -227,7 +238,8 @@ end
 --- AN ID WITH NO ROW IS OFF, and the console is told once: a door that asks
 --- about a feature nobody listed is a typo, and a typo must close a door rather
 --- than open it. Under BR.Season.strict (the suites) it raises instead.
---- A row whose numbers are not whole numbers is off too.
+--- A row whose numbers are not whole numbers is off too, and EVERY row is off
+--- while the season is unknown (current() is nil).
 --- @param id string  a key of BR.Config.Seasons.features, written as a literal
 --- @return boolean
 function BR.Season.has(id)
@@ -247,6 +259,7 @@ function BR.Season.has(id)
         return false
     end
     local s = BR.Season.current()
+    if s == nil then return false end
     local from, till = row.from, row.untilSeason
     if math.type(from) ~= 'integer' or s < from then return false end
     if till ~= nil and (math.type(till) ~= 'integer' or s >= till) then return false end
@@ -254,7 +267,8 @@ function BR.Season.has(id)
 end
 
 --- The version for this season: the entry with the highest key at or below the
---- season this machine is running, or nil when every key is above it.
+--- season this machine is running, or nil when every key is above it -- and
+--- nil while the season is unknown, which a client-side caller must cope with.
 ---
 ---   local spawnDelayMs = BR.Season.pick({ [1] = 3000, [3] = 1500 })
 ---   BR.Season.pick({ [1] = oldScore, [3] = newScore })(kills, place)
@@ -273,7 +287,7 @@ function BR.Season.pick(versions)
     local bestK, best = nil, nil
     for k, v in pairs(versions) do
         if math.type(k) == 'integer' and k >= 1 then
-            if k <= s and (bestK == nil or k > bestK) then bestK, best = k, v end
+            if s ~= nil and k <= s and (bestK == nil or k > bestK) then bestK, best = k, v end
         elseif BR.Season.strict then
             error(('BR.Season.pick: key %s is not a season (a whole number from 1)'):format(tostring(k)), 2)
         end
