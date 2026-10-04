@@ -60,6 +60,17 @@ export interface FadeClock {
 }
 
 /**
+ * The fade clock's default: MONOTONIC, never the wall clock.
+ *
+ * It was `Date.now`, and a fallback that exists for long idles is the worst
+ * place for a wall clock: a long idle is when Windows resyncs the system time.
+ * Stepped back, the settle would wait out the step; stepped forward, a healthy
+ * fade would be cut short. `performance.now` only moves forward, at the rate
+ * time passes (round 1's review, #252).
+ */
+export const monotonicNow = (): number => performance.now()
+
+/**
  * @param shown     the value the layer starts at -- settled, since a layer is
  *                  not mid-fade on the frame it mounts
  * @param windowMs  the fade's duration plus FADE_SETTLE_MARGIN_MS
@@ -69,7 +80,7 @@ export interface FadeClock {
 export function createFadeClock(
   shown: boolean,
   windowMs: number,
-  now: () => number = Date.now,
+  now: () => number = monotonicNow,
 ): FadeClock {
   let target = shown
   let settled = true

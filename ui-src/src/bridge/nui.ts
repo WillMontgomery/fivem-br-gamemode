@@ -35,6 +35,32 @@ const handlers = new Map<EnvelopeKind, Set<Handler>>()
  */
 const seq = createSeqGate()
 
+/**
+ * THE TWO SILENT DROPS, COUNTED (#252).
+ *
+ * Every other way an envelope can fail to land is logged. These two are not,
+ * by design -- a stale envelope is normal traffic after a restart, and one
+ * nobody listens for is normal before React mounts -- and that is exactly why
+ * round 1 could only argue about whether the warmup had been dropped. The
+ * screen report carries both counts and the gate's high-water mark, which is
+ * what br_ui compares against the sequence it sent the state on.
+ */
+let staleDropped = 0
+let unheardDropped = 0
+
+export interface BridgeStats {
+  /** The highest sequence the gate has admitted (or re-seeded to). */
+  seq: number
+  /** Envelopes refused as stale since this page loaded. */
+  stale: number
+  /** Envelopes that arrived with no handler subscribed. */
+  unheard: number
+}
+
+export function bridgeStats(): BridgeStats {
+  return { seq: seq.last, stale: staleDropped, unheard: unheardDropped }
+}
+
 export function subscribe(kind: EnvelopeKind, fn: Handler): () => void {
   let set = handlers.get(kind)
   if (!set) {
@@ -73,6 +99,7 @@ export function dispatch(msg: WireEnvelope): void {
   if (msg.k === 'snapshot') {
     seq.reseed(msg.s)
   } else if (!seq.fresh(msg.s)) {
+    staleDropped++
     return
   }
 
@@ -85,7 +112,10 @@ export function dispatch(msg: WireEnvelope): void {
   // arriving in that gap were dropped AND counted as delivered, so the resend
   // that followed looked stale and was discarded too. The UI then sat on
   // defaults until something unrelated happened to push state again.
-  if (!set || set.size === 0) return
+  if (!set || set.size === 0) {
+    unheardDropped++
+    return
+  }
 
   if (msg.k !== 'snapshot') seq.commit(msg.s)
   for (const fn of set) {

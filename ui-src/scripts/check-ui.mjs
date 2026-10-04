@@ -1844,11 +1844,252 @@ for (const name of builtCss) {
         + ' line that says which screen the page is showing after the lobby comes'
         + ' down or goes back up (#252).')
     }
+    // br_ui's half -- printing the line, and comparing the page with what Lua
+    // sent -- is pinned in R26b below.
+  }
+}
+
+// ---------------------------------------------------------------------------
+// R26b  The ready-up's report reads every failure shape, the curtain says
+//       "black" only once it is, and the rest of the page settles too (#252,
+//       round 2).
+//
+// Round 1's review refuted three things this pins:
+//
+//   ARMED ON EVERY STEP -- the report armed only on the lobby flipping, so a
+//     page that never got the warmup printed nothing. useScreenReport must arm
+//     off screenChanges() and off the cover report, and nui.ts must count the
+//     two silent drops it reads.
+//   LUA'S STATE IN THE VERDICT -- br_ui must remember what it sent
+//     (noteTold in send()), compose the line itself (screenLine) and print the
+//     NO ANSWER watchdog, or WRONG cannot fire on a page-state miss.
+//   BLACK BEFORE IT WAS -- the curtain's 700ms timer posted covered=true while
+//     its opacity was still 0. The curtain passes `null` (no timer) and reports
+//     from an effect that runs only once the settle has committed and reads the
+//     element's own computed opacity.
+//
+// And the rest of what a stopped clock could strand: the clock is monotonic;
+// a sub-screen whose entrance never ran is swapped to `.page-shown`; GTA's
+// menu gate and the lobby's menu column settle the way the lobby does.
+//
+// IT CAN FAIL. Put `FADE_MS + 100` back as the curtain's cover deadline, drop
+// `noteTold(kind, data, seq)` from send(), arm useScreenReport on showLobby
+// alone, or write `transition: 'opacity 120ms linear'` on the gate again.
+// ---------------------------------------------------------------------------
+{
+  const C = join(SRC, 'screens', 'LeaveScreen.tsx')
+  const R = join(SRC, 'bridge', 'useScreenReport.ts')
+  const N = join(SRC, 'bridge', 'nui.ts')
+  const F = join(SRC, 'ui', 'fade.ts')
+  const P = join(SRC, 'ui', 'Page.tsx')
+  const A = join(SRC, 'App.tsx')
+  const L = join(SRC, 'screens', 'Lobby.tsx')
+  const CSS = join(SRC, 'index.css')
+  const B = join(ROOT, '..', 'resources', '[fivem-royale]', 'br_ui', 'client', 'nui.lua')
+  const need = [[C, 'src/screens/LeaveScreen.tsx'], [R, 'src/bridge/useScreenReport.ts'],
+                [N, 'src/bridge/nui.ts'], [F, 'src/ui/fade.ts'], [P, 'src/ui/Page.tsx'],
+                [A, 'src/App.tsx'], [L, 'src/screens/Lobby.tsx'], [CSS, 'src/index.css'],
+                [B, 'br_ui/client/nui.lua']]
+  const gone = need.filter(([f]) => !existsSync(f))
+  for (const [, name] of gone) {
+    fail('R26 settled-fade', name, 'file is missing. If it moved, move this rule with it (#252).')
+  }
+  if (gone.length === 0) {
+    const curtain = stripComments(read(C))
+    if (!/useCoverReport\(\s*'curtain'\s*,\s*show\s*,\s*null\s*\)/.test(curtain)) {
+      fail('R26 settled-fade', 'src/screens/LeaveScreen.tsx',
+        "the curtain's cover report has a timer again (`useCoverReport('curtain', show,"
+        + " null)` expected). A timer races the forced settle and tells Lua \"black\" over"
+        + ' a curtain still at opacity 0 (#252, round 1 review).')
+    }
+    const ack = /useEffect\(\(\)\s*=>\s*\{\s*if\s*\(\s*!show\s*\|\|\s*!settled\s*\)\s*return([\s\S]*?)\}\s*,\s*\[\s*show\s*,\s*settled\s*\]\s*\)/.exec(curtain)
+    if (!ack || !/getComputedStyle\(\s*el\s*\)\.opacity\)\s*>=\s*0\.99\)\s*onCovered\(\)/.test(ack[1])) {
+      fail('R26 settled-fade', 'src/screens/LeaveScreen.tsx',
+        'no effect on `[show, settled]` that calls onCovered() only when the'
+        + " curtain's own computed opacity is 1. That is the cover report's fallback:"
+        + ' after the black has committed, never before (#252).')
+    }
+    const report = stripComments(read(R))
+    if (!/screenChanges\(\s*prev\.current\s*,/.test(report) || !/onCoverReported\(/.test(report)) {
+      fail('R26 settled-fade', 'src/bridge/useScreenReport.ts',
+        'the report no longer arms off screenChanges() and the cover report. Armed on'
+        + ' the lobby flipping alone, a page that never got the warmup says nothing (#252).')
+    }
+    const nui = stripComments(read(N))
+    if (!/staleDropped\+\+/.test(nui) || !/unheardDropped\+\+/.test(nui) || !/export function bridgeStats\(/.test(nui)) {
+      fail('R26 settled-fade', 'src/bridge/nui.ts',
+        'the dispatcher no longer counts its two silent drops (stale, unheard) for'
+        + ' bridgeStats(). They are what tells a dropped warmup from a missing one (#252).')
+    }
+    const fade = stripComments(read(F))
+    if (!/now:\s*\(\)\s*=>\s*number\s*=\s*monotonicNow/.test(fade) || !/monotonicNow\s*=\s*\(\)\s*:\s*number\s*=>\s*performance\.now\(\)/.test(fade)) {
+      fail('R26 settled-fade', 'src/ui/fade.ts',
+        "the fade clock's default is not performance.now. A wall clock resynced after a"
+        + ' long idle would hold a fade open, or cut a healthy one short (#252).')
+    }
+    const page = stripComments(read(P))
+    if (!/useFade\(\s*null\s*,\s*show\s*,\s*ENTER_MS\s*,\s*undefined\s*,\s*\{\s*enterOnMount:\s*true\s*\}\s*\)/.test(page)
+        || !/stuck\s*\?\s*'page-shown'\s*:\s*'page-in'/.test(page)
+        || !/\.page-shown\s*\{[^}]*opacity:\s*1;[^}]*transform:\s*translate3d\(0,\s*0,\s*0\)/.test(read(CSS))) {
+      fail('R26 settled-fade', 'src/ui/Page.tsx',
+        "a sub-screen's entrance no longer settles: `useFade(null, show, ENTER_MS, ...,"
+        + " { enterOnMount: true })` and `stuck ? 'page-shown' : 'page-in'`, with"
+        + ' `.page-shown` in index.css. `.page-in` fills from opacity 0, and on a stopped'
+        + ' clock the page is never drawn (#252).')
+    }
+    const app = stripComments(read(A))
+    if (!/useFade\(\s*'ui'\s*,\s*!frontendUp\s*,\s*120\s*,/.test(app)
+        || !/transition:\s*uiSettled\s*\?\s*'none'\s*:\s*'opacity 120ms linear'/.test(app)
+        || !/transition:\s*tutSettled\s*\?\s*'none'\s*:\s*'opacity 120ms linear'/.test(app)
+        || !app.includes('data-layer="ui"')) {
+      fail('R26 settled-fade', 'src/App.tsx',
+        "GTA's menu gate no longer settles (`useFade('ui', !frontendUp, 120, ...)` and"
+        + " `transition: uiSettled ? 'none' : ...`, the walkthrough's copy likewise, and"
+        + ' `data-layer="ui"`). On a stopped clock it either draws over GTA\'s menu or'
+        + ' leaves the whole interface invisible after it (#252).')
+    }
+    const lobby = stripComments(read(L))
+    if (!/const\s+panelSettled\s*=\s*useFade\(\s*null\s*,\s*panelShown\s*,/.test(lobby)
+        || !/transition:\s*panelSettled\s*\?\s*'none'\s*:\s*undefined/.test(lobby)) {
+      fail('R26 settled-fade', 'src/screens/Lobby.tsx',
+        "the lobby's menu column no longer settles its fade back from under a"
+        + ' sub-screen. On a stopped clock the menu stays invisible after the market'
+        + ' closes (#252).')
+    }
     const lua = read(B).split('\n').filter((l) => !/^\s*--/.test(l)).join('\n')
-    if (!/callback\(\s*BR\.NuiCb\.SCREEN\s*,[\s\S]*?print\(\s*'\[br_ui\] '\s*\.\.\s*line\s*\)/.test(lua)) {
+    const sendFn = /local function send\(kind, data\)[\s\S]*?\nend/.exec(lua)
+    if (!sendFn || !/noteTold\(\s*kind\s*,\s*data\s*,\s*seq\s*\)/.test(sendFn[0])
+        || !/NO ANSWER/.test(lua) || !/Citizen\.SetTimeout\(\s*SCREEN_ANSWER_MS\s*,/.test(lua)) {
       fail('R26 settled-fade', 'br_ui/client/nui.lua',
-        'no `callback(BR.NuiCb.SCREEN, ...)` that prints the line. The page sends'
-        + ' it and nothing would say it (#252).')
+        'send() no longer records what it told the page (`noteTold(kind, data, seq)`),'
+        + ' or the NO ANSWER watchdog is gone. Without them WRONG cannot fire on a'
+        + ' page-state miss, and a dead page prints nothing (#252).')
+    }
+    if (!/callback\(\s*BR\.NuiCb\.SCREEN\s*,[\s\S]*?print\(\s*'\[br_ui\] '\s*\.\.\s*screenLine\(\s*data\s*\)\s*\)/.test(lua)) {
+      fail('R26 settled-fade', 'br_ui/client/nui.lua',
+        'no `callback(BR.NuiCb.SCREEN, ...)` that prints `screenLine(data)`. The page'
+        + ' sends its reading and nothing would compare it or say it (#252).')
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// R27  A layer nobody can see does no animation work (#252).
+//
+// The curtain is always mounted at opacity 0, and its loading ring spun for the
+// whole of every lobby: ~144 style recalcs a second headless, up to FiveM's 240
+// fps cap in game, for as long as a player sat AFK. index.css's `layer-off`
+// block pauses every ENDLESS animation under a layer that is off for good;
+// this keeps it complete and keeps the layers using it:
+//
+//   UNLISTED -- an `infinite` animation in index.css, an inline one in a
+//     screen, or a Tailwind `animate-*` loop that the `.layer-off` block does
+//     not pause. For a rule that pairs a finite entrance with a loop, only the
+//     loop may be paused (`running, paused`): a paused entrance would resume
+//     half way when its layer comes back, which is a visible change.
+//   UNUSED -- the curtain, the HUD, the lobby and its menu column, or the two
+//     gates under GTA's menu stop adding `layer-off` once they are off.
+//
+// IT CAN FAIL. Add `animation: spin 1s linear infinite` to any rule, drop
+// `.layer-off .ldring.is-indeterminate svg` from the block, or the `off`
+// class from LeaveScreen.tsx.
+// ---------------------------------------------------------------------------
+{
+  const cssPath = join(SRC, 'index.css')
+  if (existsSync(cssPath)) {
+    const css = stripComments(read(cssPath))
+    /** Split on commas that are not inside parentheses. */
+    const splitTop = (s) => {
+      const out = []; let depth = 0; let cur = ''
+      for (const ch of s) {
+        if (ch === '(') depth++
+        if (ch === ')') depth--
+        if (ch === ',' && depth === 0) { out.push(cur.trim()); cur = '' } else cur += ch
+      }
+      if (cur.trim()) out.push(cur.trim())
+      return out
+    }
+    const rules = []
+    for (const m of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      // Only the selector: drop any `@tailwind ...;` statement in front of it.
+      const sel = m[1].split(';').pop().trim()
+      if (/^(from|to|[\d.]+%)(\s*,\s*([\d.]+%|from|to))*$/.test(sel)) continue
+      rules.push({ sels: splitTop(sel), body: m[2] })
+    }
+    // What the block pauses: `.layer-off X` -> the play-state list.
+    const paused = new Map()
+    for (const r of rules) {
+      const ps = /animation-play-state\s*:\s*([^;]+?)\s*(!important)?\s*(;|$)/.exec(r.body)
+      if (!ps) continue
+      for (const s of r.sels) {
+        const m = /^\.layer-off\s+(.+)$/.exec(s)
+        if (m) paused.set(m[1].replace(/\s+/g, ' '), splitTop(ps[1]))
+      }
+    }
+    if (paused.size === 0) {
+      fail('R27 idle-animation', 'src/index.css',
+        'no `.layer-off ... { animation-play-state: paused }` block. A hidden layer'
+        + ' animates forever: the curtain\'s ring alone kept an idle lobby at ~144 style'
+        + ' recalcs a second (#252).')
+    }
+    for (const r of rules) {
+      const an = /(?:^|;)\s*animation\s*:\s*([^;]+)/.exec(r.body)
+      const count = /animation-iteration-count\s*:\s*infinite/.test(r.body)
+      if (!an && !count) continue
+      const entries = an ? splitTop(an[1]) : ['infinite']
+      const loops = entries.map((e) => /\binfinite\b/.test(e))
+      if (!loops.some(Boolean)) continue
+      for (const sel of r.sels) {
+        if (sel.startsWith('.layer-off') || sel.startsWith('@')) continue
+        const key = sel.replace(/\s+/g, ' ')
+        const want = loops.length === 1 ? ['paused'] : loops.map((l) => (l ? 'paused' : 'running'))
+        const got = paused.get(key)
+        if (!got || JSON.stringify(got) !== JSON.stringify(want)) {
+          fail('R27 idle-animation', 'src/index.css',
+            `\`${sel}\` runs an endless animation that the \`.layer-off\` block does not`
+            + ` pause as \`${want.join(', ')}\`${got ? ` (it says \`${got.join(', ')}\`)` : ''}.`
+            + ' Under a hidden layer it would animate for as long as the player idles (#252).')
+        }
+      }
+    }
+    const tsx = files.filter((f) => extname(f) === '.tsx')
+    for (const f of tsx) {
+      const src = stripComments(read(f))
+      for (const m of src.matchAll(/\banimate-(pulse|spin|ping|bounce)\b/g)) {
+        if (JSON.stringify(paused.get(`.animate-${m[1]}`)) !== '["paused"]') {
+          fail('R27 idle-animation', rel(f),
+            `uses Tailwind's endless \`animate-${m[1]}\`, which the \`.layer-off\` block in`
+            + ' index.css does not pause (#252).')
+        }
+      }
+      if (/animation\s*:\s*[`'"][^`'"]*\binfinite\b/.test(src)
+          && JSON.stringify(paused.get('[style*="infinite"]')) !== '["paused"]') {
+        fail('R27 idle-animation', rel(f),
+          'has an inline endless animation, and the `.layer-off [style*="infinite"]`'
+          + ' pause is gone from index.css (#252).')
+      }
+    }
+  }
+  const users = [
+    [join(SRC, 'screens', 'LeaveScreen.tsx'), 'src/screens/LeaveScreen.tsx',
+      [/const\s+off\s*=\s*settled\s*&&\s*!show/, /\$\{off\s*\?\s*' layer-off'\s*:\s*''\}/]],
+    [join(SRC, 'hud', 'Hud.tsx'), 'src/hud/Hud.tsx',
+      [/const\s+off\s*=\s*settled\s*&&\s*!shown/, /\$\{off\s*\?\s*' layer-off'\s*:\s*''\}/]],
+    [join(SRC, 'screens', 'Lobby.tsx'), 'src/screens/Lobby.tsx',
+      [/const\s+off\s*=\s*settled\s*&&\s*!visible/, /\$\{off\s*\?\s*' layer-off'\s*:\s*''\}/,
+       /const\s+panelOff\s*=\s*panelSettled\s*&&\s*!panelShown/, /panelOff\s*\?\s*' layer-off'\s*:\s*''/]],
+    [join(SRC, 'App.tsx'), 'src/App.tsx',
+      [/className=\{uiSettled\s*&&\s*frontendUp\s*\?\s*'layer-off'\s*:\s*undefined\}/,
+       /className=\{tutSettled\s*&&\s*tutHidden\s*\?\s*'layer-off'\s*:\s*undefined\}/]],
+  ]
+  for (const [f, name, pats] of users) {
+    if (!existsSync(f)) { fail('R27 idle-animation', name, 'file is missing (#252).'); continue }
+    const src = stripComments(read(f))
+    if (!pats.every((p) => p.test(src))) {
+      fail('R27 idle-animation', name,
+        'a layer here no longer adds `layer-off` once it is off for good -- settled'
+        + ' and hidden. Its endless animations would run for every minute it is not'
+        + ' drawn (#252).')
     }
   }
 }

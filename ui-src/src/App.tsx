@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { useNuiEvent } from './bridge/useNuiEvent'
 import { fetchNui } from './bridge/nui'
 import { CB } from './bridge/types'
@@ -26,6 +26,7 @@ import { DECLINE_STEPS } from './tutorial/steps'
 import Admin from './screens/Admin'
 import Page from './ui/Page'
 import { useScreenReport } from './bridge/useScreenReport'
+import { useFade } from './ui/useFade'
 
 /**
  * Screens that take the whole screen while the lobby is behind them. The base
@@ -471,11 +472,28 @@ export default function App() {
   // its position when the radar is hidden, so they need to know.
   const hudUp = !showLobby && !ridingBus && !ridingAmbulance && !tearingDown
 
-  // ONE F8 LINE A SECOND AFTER THE LOBBY COMES DOWN OR GOES BACK UP (#252):
+  // ONE F8 LINE AFTER EVERY STEP OF A READY-UP OR A RETURN TO THE LOBBY (#252):
   // what this state wants on screen against what the page's computed styles
-  // are actually drawing. The owner's report had every Lua step of the
-  // ready-up and nothing from here; the next one will say which it was.
+  // are actually drawing, and br_ui adds what Lua last sent so a page that
+  // never got the warmup can be told from one that never drew it. The owner's
+  // report had every Lua step of the ready-up and nothing from here; the next
+  // one will say which it was. See bridge/useScreenReport.ts for when.
   useScreenReport(showLobby, hudUp && !hudPaused, leaving)
+
+  // ═══ GTA'S MENU GATE SETTLES ON THE JS CLOCK TOO (#252) ═══
+  //
+  // The wrapper below fades the WHOLE interface out under GTA's own menu and
+  // back in after it, by a 120ms transition. On a stopped animation clock the
+  // fade out never runs -- our screens drawn over the engine's menu, #122's
+  // bug -- and a fade back in that never runs leaves every screen of ours,
+  // lobby included, invisible. Settled the way the lobby is (ui/fade.ts): the
+  // same fade while it runs, the end state outright once it has had its time.
+  // And once it is settled shut, nothing under it animates (`layer-off`).
+  const uiRef = useRef<HTMLDivElement>(null)
+  const uiSettled = useFade('ui', !frontendUp, 120, uiRef)
+  // The walkthrough's own copy of the gate, which the map lets through.
+  const tutHidden = frontendUp && !(frontendReason === 'map' && tutorialGameRun)
+  const tutSettled = useFade(null, !tutHidden, 120)
 
   return (
     /* THE WHOLE INTERFACE, BEHIND ONE GATE (#122).
@@ -500,10 +518,13 @@ export default function App() {
      */
     <>
     <div
+      ref={uiRef}
+      data-layer="ui"
+      className={uiSettled && frontendUp ? 'layer-off' : undefined}
       style={{
         opacity: frontendUp ? 0 : 1,
         pointerEvents: frontendUp ? 'none' : undefined,
-        transition: 'opacity 120ms linear',
+        transition: uiSettled ? 'none' : 'opacity 120ms linear',
       }}
       aria-hidden={frontendUp || undefined}
     >
@@ -747,17 +768,13 @@ export default function App() {
           drawn over the world map would be the #122 overlay again wearing a
           different hat. */}
       <div
+        className={tutSettled && tutHidden ? 'layer-off' : undefined}
         style={{
-          opacity: frontendUp && !(frontendReason === 'map' && tutorialGameRun) ? 0 : 1,
-          pointerEvents:
-            frontendUp && !(frontendReason === 'map' && tutorialGameRun)
-              ? 'none' : undefined,
-          transition: 'opacity 120ms linear',
+          opacity: tutHidden ? 0 : 1,
+          pointerEvents: tutHidden ? 'none' : undefined,
+          transition: tutSettled ? 'none' : 'opacity 120ms linear',
         }}
-        aria-hidden={
-          frontendUp && !(frontendReason === 'map' && tutorialGameRun)
-            ? true : undefined
-        }
+        aria-hidden={tutHidden ? true : undefined}
       >
       {tutorialGameRun && (
         <TutorialLayer

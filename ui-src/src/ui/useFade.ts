@@ -20,24 +20,40 @@ export function fadeEnd(layer: string): FadeEnd | undefined {
   return ends.get(layer)
 }
 
+export interface FadeOptions {
+  /**
+   * The layer's entrance plays from its first frame. A sub-screen (ui/Page.tsx)
+   * mounts AS it opens, so its window opens at mount rather than starting
+   * settled the way a layer that is simply there on the first frame does.
+   */
+  enterOnMount?: boolean
+}
+
 /**
  * Whether `shown` has been held long enough that the layer should drop its
  * transition and simply BE its final value. See ui/fade.ts for why.
  *
- * @param layer   a name for the screen report
+ * ALSO WHAT TELLS A LAYER IT IS OFF FOR GOOD: `settled && !shown` is a layer
+ * nobody can see, which is when it adds `layer-off` and stops animating
+ * (index.css, #252).
+ *
+ * @param layer   a name for the screen report, or null for a fade it does not read
  * @param shown   the value the layer is going to, from the latest state
  * @param fadeMs  the layer's own fade duration
  * @param ref     the faded element, read once at the deadline to tell a fade
  *                the browser finished from one the timer had to finish
  */
 export function useFade(
-  layer: string,
+  layer: string | null,
   shown: boolean,
   fadeMs: number,
   ref?: RefObject<HTMLElement | null>,
+  opts?: FadeOptions,
 ): boolean {
   const clock = useRef<FadeClock | null>(null)
-  if (clock.current === null) clock.current = createFadeClock(shown, fadeMs + FADE_SETTLE_MARGIN_MS)
+  if (clock.current === null) {
+    clock.current = createFadeClock(opts?.enterOnMount ? false : shown, fadeMs + FADE_SETTLE_MARGIN_MS)
+  }
   const c = clock.current
   // EVERY RENDER, NOT ONLY THE EDGE. Idempotent: only a change of value reopens
   // the window, so this render already draws the fade rather than the settled
@@ -48,7 +64,7 @@ export function useFade(
 
   useEffect(() => {
     if (c.poll()) return
-    ends.set(layer, 'fading')
+    if (layer) ends.set(layer, 'fading')
 
     let done = false
     let timer = 0
@@ -60,12 +76,14 @@ export function useFade(
       off()
       // Read BEFORE the re-render drops the transition: this is the one moment
       // the element still shows whether the browser got there on its own.
-      const el = ref?.current
-      if (el) {
-        const at = parseFloat(getComputedStyle(el).opacity)
-        ends.set(layer, Math.abs(at - (c.shown ? 1 : 0)) > 0.01 ? 'forced' : 'transition')
-      } else {
-        ends.delete(layer)
+      if (layer) {
+        const el = ref?.current
+        if (el) {
+          const at = parseFloat(getComputedStyle(el).opacity)
+          ends.set(layer, Math.abs(at - (c.shown ? 1 : 0)) > 0.01 ? 'forced' : 'transition')
+        } else {
+          ends.delete(layer)
+        }
       }
       rerender()
     }

@@ -22853,54 +22853,191 @@ do
     BR.Loop.hitchStop()
 end
 
--- ═══ #252: THE PAGE SAYS WHICH SCREEN IT IS SHOWING, AND br_ui PRINTS IT ═══
+-- ═══ #252: THE PAGE SAYS WHAT IT IS SHOWING, br_ui SAYS WHETHER THAT IS RIGHT ═══
 --
 -- Owner, 2026-10-03: "the lobby UI doesn't go away when getting into warmup".
 -- His log had every Lua step of the ready-up and nothing from the page, so
 -- whether it never applied warmup or never drew it could only be argued. The
--- page now composes one line a second after the lobby comes down or goes back
--- up (ui-src/src/bridge/screenReport.ts, pinned by scripts/test-fade.mjs), and
--- this is the half that puts it in F8: ONE line, as sent, never two, never a
--- control character, and a fetch that is always answered.
+-- page reports what it holds and draws after every step of a ready-up
+-- (ui-src/src/bridge/screenReport.ts, pinned by scripts/test-fade.mjs). This is
+-- the half that makes the reading TRUE:
+--
+--   * WRONG CAN FIRE ON A PAGE-STATE MISS. Round 1's line compared the page
+--     against itself, so a page that never got the warmup agreed with what it
+--     drew. br_ui now remembers what it SENT and compares (round 1's review).
+--   * A READING TAKEN BEFORE LUA'S LATEST CHANGE IS A RACE, NOT A FAULT, and
+--     says so instead of crying WRONG.
+--   * SILENCE IS A READING. My own state crossing the lobby's border arms a
+--     watchdog; a page that never answers it is printed as NO ANSWER.
+--   * ONE LINE, flattened and capped, and a fetch that is always answered.
 --
 -- THE REAL br_ui BRIDGE, loaded the way the focus-gate block loads it, with
--- RegisterNUICallback captured instead of dropped.
+-- RegisterNUICallback and Citizen.SetTimeout captured. Envelopes go through
+-- THIS instance's own br:ui:sendLocal handler -- earlier blocks loaded the
+-- bridge too, and firing the event would drive every copy of it.
 
-describe('#252 -- br_ui prints the page\'s screen report as one line')
+describe('#252 -- the screen report compares the page with what Lua sent')
 do
     local nuiCb = {}
     function RegisterNUICallback(name, fn) nuiCb[name] = fn end
+    function SendNUIMessage() end
+    function SetNuiFocus() end
+    function SetNuiFocusKeepInput() end
     Citizen.CreateThread = function() end
+    local timers = {}
+    local realSetTimeout = Citizen.SetTimeout
+    Citizen.SetTimeout = function(ms, fn) timers[#timers + 1] = { ms = ms, fn = fn } end
 
+    local before = #(handlers['br:ui:sendLocal'] or {})
     local coreName = GetCurrentResourceName
     GetCurrentResourceName = function() return 'br_ui' end
     loadAll({ 'br_ui/client/nui.lua' })
     GetCurrentResourceName = coreName
+    timers = {}
+    local mine = (handlers['br:ui:sendLocal'] or {})[before + 1]
+    ok(type(mine) == 'function', 'this copy of the bridge took br:ui:sendLocal')
 
     local cb = nuiCb[BR.NuiCb.SCREEN]
     ok(BR.NuiCb.SCREEN == 'br/ui/screen' and type(cb) == 'function',
        'br_ui registers br/ui/screen', tostring(BR.NuiCb.SCREEN))
-    if type(cb) == 'function' then
-        local before, answer = #logged, nil
-        cb({ line = 'screen after warmup/warmup: wanted hud, showing LOBBY -- WRONG'
-                 .. ' | lobby on (1 visible, fading)\nsecond line' },
-           function(r) answer = r end)
-        ok(#logged == before + 1, 'one report is exactly one printed line',
-           ('%d line(s)'):format(#logged - before))
-        ok(logged[#logged] == '[br_ui] screen after warmup/warmup: wanted hud, showing'
-               .. ' LOBBY -- WRONG | lobby on (1 visible, fading) second line',
-           'printed as sent, under [br_ui], with the newline flattened', logged[#logged])
-        ok(type(answer) == 'table' and answer.ok == true,
-           'and the page\'s fetch is answered')
 
-        cb({ line = string.rep('x', 900) }, function() end)
-        ok(#logged[#logged] <= #'[br_ui] ' + 403,
-           'a runaway line is capped rather than flooding F8', #logged[#logged])
+    if type(mine) == 'function' and type(cb) == 'function' then
+        -- Lua's envelope counter, read back off the order of sends.
+        local sent = 0
+        local function lua(kind, data) sent = sent + 1; mine(kind, data); return sent end
+        --- One report, as the page posts it; returns the printed line.
+        local function report(over)
+            local data = {
+                why = 'curtain down', wanted = 'hud', showing = 'hud', forced = false,
+                frames = 72, match = 'warmup', me = 'warmup', leaving = false,
+                focus = 'none', seq = sent,
+                detail = 'lobby off (0 hidden, transition) | hud on (1, transition) | 72 frames in 500ms',
+            }
+            for k, v in pairs(over or {}) do data[k] = v end
+            local n, answer = #logged, nil
+            cb(data, function(r) answer = r end)
+            ok(#logged == n + 1, 'one report is exactly one printed line', ('%d line(s)'):format(#logged - n))
+            ok(type(answer) == 'table' and answer.ok == true, 'and the page\'s fetch is answered')
+            return logged[#logged]
+        end
+        local function has(label, line, part)
+            ok(type(line) == 'string' and line:find(part, 1, true) ~= nil, label,
+               ('%s\n       missing: %s'):format(tostring(line), part))
+        end
+        local function hasnt(label, line, part)
+            ok(type(line) == 'string' and line:find(part, 1, true) == nil, label, tostring(line))
+        end
 
-        cb({}, function() end)
-        ok(logged[#logged] == '[br_ui] (empty)', 'a report with no line still says so',
-           logged[#logged])
+        -- The lobby, as br:ui:ready leaves it.
+        lua(BR.Nui.STATE, { state = 'waiting' })
+        lua(BR.Nui.HUD, { state = 'lobby', hp = 100 })
+        lua(BR.Nui.FOCUS, { screen = 'lobby' })
+        ok(#timers == 0, 'the boot arms no watchdog -- the first state is not a crossing', #timers)
+
+        -- THE READY-UP, in Lua's order: the curtain, focus, then release().
+        lua(BR.Nui.LEAVING, { show = true, kind = 'dropping' })
+        lua(BR.Nui.FOCUS, { screen = 'none' })
+        lua(BR.Nui.STATE, { state = 'warmup' })
+        lua(BR.Nui.HUD, { state = 'warmup', hp = 100 })
+        ok(#timers == 1 and timers[1].ms == 10000,
+           'my own state leaving the lobby arms one 10s watchdog', #timers)
+        lua(BR.Nui.HUD, { state = 'warmup', hp = 90 })
+        ok(#timers == 1, '...and a HUD push that changes nothing else does not arm another')
+
+        -- Healthy, under the curtain.
+        local line = report({ why = 'curtain up, black, me lobby>warmup', wanted = 'curtain',
+                              showing = 'curtain', leaving = true })
+        has('a healthy page under the curtain reads ok', line,
+            '[br_ui] screen after curtain up, black, me lobby>warmup -- ok | wanted curtain, showing curtain')
+        has('...with the page\'s state beside the one Lua sent', line,
+            '| page warmup/warmup, lua warmup/warmup |')
+        has('...and the page\'s evidence after it', line, '| lobby off (0 hidden, transition)')
+
+        -- The answer disarms the watchdog: firing it now prints nothing.
+        local n = #logged
+        timers[1].fn()
+        ok(#logged == n, 'a report taken after the crossing answers the watchdog', logged[#logged])
+
+        lua(BR.Nui.LEAVING, { show = false })
+        line = report({})
+        has('after the curtain, the HUD the state wants is the HUD on screen', line,
+            '-- ok | wanted hud, showing hud | page warmup/warmup, lua warmup/warmup')
+
+        -- THE PAGE-STATE MISS: the page holds the lobby; Lua sent warmup.
+        line = report({ match = 'waiting', me = 'lobby', wanted = 'lobby', showing = 'lobby' })
+        has('a page that never got the warmup is WRONG, though it draws what it holds', line,
+            '-- WRONG (page holds waiting/lobby, lua sent warmup/warmup)')
+
+        -- The styles disagree with the page's own state.
+        line = report({ showing = 'lobby' })
+        has('a page whose styles show the lobby while its state wants the HUD is WRONG', line,
+            '-- WRONG (showing lobby, wanted hud)')
+
+        -- The curtain and focus are compared too.
+        line = report({ leaving = true, wanted = 'curtain', showing = 'curtain' })
+        has('a curtain the page still holds after Lua lowered it is WRONG', line,
+            'curtain up on the page, down from lua')
+        line = report({ focus = 'lobby' })
+        has('a focus the page holds that Lua did not send is WRONG', line,
+            'focus lobby on the page, none from lua')
+
+        -- The readings that are not about state.
+        line = report({ frames = 0 })
+        has('no frames is its own reading', line, '-- 0 frames |')
+        line = report({ forced = true })
+        has('a fade the JS clock had to finish reads forced', line, '-- forced |')
+        line = report({ forced = true, frames = 0, me = 'lobby' })
+        has('several at once are all named, WRONG first', line,
+            '-- WRONG (page holds warmup/lobby, lua sent warmup/warmup), 0 frames, forced |')
+
+        -- THE RACE: Lua changed the state after the page took its reading.
+        lua(BR.Nui.HUD, { state = 'bus', hp = 100 })
+        line = report({ seq = sent - 1 })
+        hasnt('a reading older than Lua\'s latest change is not called WRONG', line, 'WRONG')
+        has('...and says Lua moved on after it', line,
+            ('lua warmup/bus (sent at seq %d, after this reading at %d)'):format(sent, sent - 1))
+
+        -- THE PAGE THAT NEVER ANSWERS. Back to the lobby, then nothing.
+        timers = {}
+        local homeSeq = lua(BR.Nui.HUD, { state = 'lobby', hp = 100 })
+        lua(BR.Nui.STATE, { state = 'waiting' })
+        ok(#timers == 1, 'my own state coming home arms the watchdog too', #timers)
+        n = #logged
+        report({ seq = homeSeq - 1, match = 'warmup', me = 'bus', wanted = 'nothing', showing = 'nothing' })
+        timers[1].fn()
+        has('a report taken before the crossing is not its answer: NO ANSWER after 10s',
+            logged[#logged], '[br_ui] screen after me bus>lobby (lua) -- NO ANSWER |')
+        has('...naming the crossing and what Lua has sent since', logged[#logged],
+            ('the page sent no screen report within 10s of seq %d; lua has sent waiting/lobby'):format(homeSeq))
+        ok(#logged == n + 2, '...once', #logged - n)
+        timers[1].fn()
+        ok(#logged == n + 2, 'and a watchdog that has spoken does not speak again', #logged - n)
+
+        -- A newer crossing replaces the older watch.
+        timers = {}
+        lua(BR.Nui.HUD, { state = 'warmup', hp = 100 })
+        lua(BR.Nui.HUD, { state = 'lobby', hp = 100 })
+        n = #logged
+        timers[1].fn()
+        ok(#logged == n, 'a superseded watchdog stays quiet', logged[#logged])
+        timers[2].fn()
+        ok(#logged == n + 1 and logged[#logged]:find('NO ANSWER', 1, true) ~= nil,
+           '...and the newest one speaks for the page', logged[#logged])
+
+        -- ONE LINE, ALWAYS.
+        line = report({ why = 'curtain\ndown', detail = string.rep('x', 2000) .. '\nmore' })
+        ok(not line:find('[\r\n]'), 'control characters are flattened', line:sub(1, 80))
+        ok(#line < 900, 'a runaway report is capped rather than flooding F8', #line)
+        line = report({ why = false, wanted = false, showing = false, detail = false, seq = false,
+                        match = false, me = false })
+        ok(type(line) == 'string' and line:find('[br_ui] screen after', 1, true) == 1,
+           'a report with nothing in it still prints one line', line)
+        local m = #logged
+        cb(nil, function() end)
+        ok(#logged == m + 1, 'even a report with no body', logged[#logged])
     end
+
+    Citizen.SetTimeout = realSetTimeout
 end
 
 realPrint(('%s%d passed, %d failed\27[0m')

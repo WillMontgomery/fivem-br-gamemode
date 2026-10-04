@@ -26,7 +26,7 @@
  * the lobby, or the warmup pad.
  */
 
-import { useRef } from 'react'
+import { useEffect, useRef } from 'react'
 import Ring from '../hud/Ring'
 import { useCoverReport } from '../bridge/cover'
 import { useFade } from '../ui/useFade'
@@ -36,8 +36,9 @@ export type CurtainKind = 'leaving' | 'dropping' | 'disconnecting'
 
 /**
  * The opacity transition's own duration, in ms, and it MUST match the class
- * below. It is the fallback deadline for the cover report -- see
- * bridge/cover.ts -- not a second place the fade is timed.
+ * below. The fade's settle is read off it, and the settle is the cover
+ * report's fallback (see below and bridge/cover.ts) -- not a second place the
+ * fade is timed.
  */
 const FADE_MS = 600
 
@@ -67,28 +68,53 @@ export default function LeaveScreen({
   // the cut this component exists to cover.
   //
   // transitionend on the opacity above is the honest signal -- the browser
-  // saying it has finished painting -- and the duration is only the fallback
-  // for the case where it optimises the transition away entirely.
-  const onCovered = useCoverReport('curtain', show, FADE_MS + 100)
+  // saying it has finished painting. The fallback for the case where it never
+  // fires is NOT a timer here (`null`): it is the settle below.
+  const onCovered = useCoverReport('curtain', show, null)
 
   // ═══ AND IT IS BLACK WHEN IT SAYS SO, WHETHER THE FADE RAN OR NOT (#252) ═══
   //
-  // The report above has a timer fallback, which is right -- but on its own it
-  // let the page tell Lua "black" about a curtain whose fade had never run and
-  // was still at opacity 0. Stop the browser's animation clock and that is what
+  // The report used to have its own 700ms timer, and on its own that let the
+  // page tell Lua "black" about a curtain whose fade had never run and was
+  // still at opacity 0. Stop the browser's animation clock and that is what
   // happens: the ready-up goes ahead in front of a lobby that is still drawn.
-  // At the same deadline the fade is now dropped and the final opacity set
-  // outright (ui/fade.ts), so the fallback's "black" is true on the next frame,
-  // and a curtain on its way down cannot be left over the world either.
+  // At that same deadline the fade is now dropped and the final opacity set
+  // outright (ui/fade.ts), and a curtain on its way down cannot be left over
+  // the world either.
   const rootRef = useRef<HTMLDivElement>(null)
   const settled = useFade('curtain', show, FADE_MS, rootRef)
+
+  // ═══ THE FALLBACK "BLACK" GOES OUT ONLY ONCE THE BLACK HAS COMMITTED ═══
+  //
+  // Round 1 kept the 700ms timer and settled the fade at the same 700ms, and
+  // the timer was registered first: the POST went out with the curtain's
+  // computed opacity still 0 and the forced black a render behind it -- a race
+  // against Lua's next tick (round 1's review measured opacity 0 at the POST in
+  // all three stopped-clock runs). So the fallback IS the settle now: this runs
+  // after the render that set `transition: none; opacity: 1` has committed, and
+  // reports only what the element's own computed opacity says. A healthy fade
+  // has already reported off transitionend at 600ms and this is a no-op.
+  useEffect(() => {
+    if (!show || !settled) return
+    const el = rootRef.current
+    if (el && parseFloat(getComputedStyle(el).opacity) >= 0.99) onCovered()
+    // `onCovered` is this render's; `show` and `settled` are the edge.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [show, settled])
+
+  // OFF FOR GOOD -- down, and its fade over -- IT STOPS ANIMATING (#252). The
+  // curtain is always mounted, so its ring spun at opacity 0 for every minute
+  // of every lobby: ~144 style recalcs a second headless, up to FiveM's 240 fps
+  // cap in game, for the whole AFK. `layer-off` pauses it (index.css); it
+  // resumes the moment the curtain is asked for again, before it is visible.
+  const off = settled && !show
 
   return (
     <div
       ref={rootRef}
       data-layer="curtain"
-      className="fixed inset-0 z-[60] flex flex-col items-center justify-center gap-6
-                 bg-black transition-opacity duration-[600ms]"
+      className={`fixed inset-0 z-[60] flex flex-col items-center justify-center gap-6
+                 bg-black transition-opacity duration-[600ms]${off ? ' layer-off' : ''}`}
       // AN OPAQUE SCREEN SWALLOWS CLICKS -- while it is up, and only then.
       //
       // This was `'none'` unconditionally, which was harmless while there was

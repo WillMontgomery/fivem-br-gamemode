@@ -13,8 +13,11 @@
  * JS clock, and what the layer looks like before and after. These drive it the
  * way the owner's session did -- shown for 87 minutes, then hidden -- with a
  * fake clock and NO animation event of any kind, which is the point: nothing
- * here can be waiting on one. And src/bridge/screenReport.ts is the one F8 line
- * that says which screen the page is showing; its verdicts are pinned below.
+ * here can be waiting on one -- and on the default clock, which must be the
+ * monotonic one (round 2). And src/bridge/screenReport.ts is the page's half of
+ * the F8 line: which steps of a ready-up arm it, and what it carries. br_ui's
+ * half -- the comparison with what Lua sent, the verdict, the NO ANSWER
+ * watchdog -- is pinned in tools/test_client.lua.
  *
  * WHY node RUNS .ts FILES DIRECTLY. Both have no runtime imports, so node's type
  * stripping loads them as-is -- the same shape as test-chat-clear.mjs.
@@ -26,8 +29,8 @@
  * Run: npm run test:fade   (and as part of npm run build)
  */
 
-import { createFadeClock, fadeStyle, FADE_SETTLE_MARGIN_MS } from '../src/ui/fade.ts'
-import { formatScreenLine, showing } from '../src/bridge/screenReport.ts'
+import { createFadeClock, fadeStyle, FADE_SETTLE_MARGIN_MS, monotonicNow } from '../src/ui/fade.ts'
+import { screenChanges, screenPayload, showing } from '../src/bridge/screenReport.ts'
 
 let failed = 0
 let ran = 0
@@ -123,57 +126,147 @@ console.log('the clock follows the latest value')
     fadeStyle(false, c.settled, LOBBY_MS).visibility], [true, 'hidden'])
 }
 
-// ── the F8 line ─────────────────────────────────────────────────────────────
+// ── the clock is monotonic ──────────────────────────────────────────────────
+console.log('the default clock is performance.now, not the wall clock')
+{
+  // A real wait, and a synchronous one: this file has no event loop to spare.
+  const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+  const realNow = Date.now
+  // The wall clock is replaced BEFORE either clock is made, so a default that
+  // reads Date.now would be reading this one.
+  let wall = realNow()
+  Date.now = () => wall
+  try {
+    const ahead = createFadeClock(true, WINDOW)
+    ahead.want(false)
+    wall += 60 * 60 * 1000
+    check('the wall clock stepping an hour FORWARD does not cut a fade short', ahead.poll(), false)
+
+    const behind = createFadeClock(true, WINDOW)
+    behind.want(false)
+    wall -= 2 * 60 * 60 * 1000
+    pause(WINDOW + 30)
+    check('...and stepping an hour BACK does not hold a fade open past its time', behind.poll(), true)
+  } finally {
+    Date.now = realNow
+  }
+  const a = monotonicNow()
+  check('monotonicNow is performance.now', Math.abs(a - performance.now()) < 50, true)
+}
+
+// ── what arms a report ──────────────────────────────────────────────────────
+console.log('every step of a ready-up arms the screen report')
+
+const key = (over) => ({ match: 'waiting', me: 'lobby', leaving: false, focus: 'lobby', showLobby: true, ...over })
+{
+  check('the first reading is the boot, not a transition', screenChanges(null, key({})), [])
+  check('a re-render that changes nothing arms nothing', screenChanges(key({}), key({})), [])
+
+  // Lua's order on a ready-up: the curtain, focus, then STATE + the forced HUD.
+  let k = key({})
+  const steps = []
+  const step = (over) => { const n = { ...k, ...over }; steps.push(...screenChanges(k, n)); k = n }
+  step({ leaving: true })
+  step({ focus: 'none' })
+  step({ match: 'warmup', me: 'warmup', showLobby: false })
+  step({ leaving: false })
+  check('...the curtain, the focus, both states, the lobby and the curtain lifting', steps,
+    ['curtain up', 'focus lobby>none', 'match waiting>warmup', 'me lobby>warmup', 'lobby off', 'curtain down'])
+
+  // THE PAGE-STATE MISS: STATE and HUD never arrive. The lobby never flips --
+  // which is all round 1 armed on -- and the curtain still arms twice.
+  k = key({})
+  steps.length = 0
+  step({ leaving: true })
+  step({ focus: 'none' })
+  step({ leaving: false })
+  check('a page that never got the warmup still reports, on the curtain', steps,
+    ['curtain up', 'focus lobby>none', 'curtain down'])
+
+  check('the drop\'s own states do not arm -- no line per jump',
+    screenChanges(key({ match: 'playing', me: 'bus', showLobby: false }),
+                  key({ match: 'playing', me: 'freefall', showLobby: false })), [])
+  check('...but walking home does',
+    screenChanges(key({ match: 'playing', me: 'alive', showLobby: false }),
+                  key({ match: 'playing', me: 'lobby', showLobby: true })), ['me alive>lobby', 'lobby on'])
+  check('a bystander\'s match starting arms (the lobby stays, the state moved)',
+    screenChanges(key({}), key({ match: 'warmup' })), ['match waiting>warmup'])
+  check('TAB in a match arms nothing -- focus away from the lobby is not a step of it',
+    screenChanges(key({ match: 'playing', me: 'alive', focus: 'none', showLobby: false }),
+                  key({ match: 'playing', me: 'alive', focus: 'inventory', showLobby: false })), [])
+  check('the market opening over the lobby arms',
+    screenChanges(key({}), key({ focus: 'market' })), ['focus lobby>market'])
+}
+
+// ── the report ──────────────────────────────────────────────────────────────
 console.log('the screen report')
 
 const off = (end) => ({ opacity: 0, visibility: 'hidden', end })
 const on = (end) => ({ opacity: 1, visibility: 'visible', end })
 const reading = (over) => ({
-  match: 'warmup', me: 'warmup', focus: 'none', wanted: 'hud',
+  why: ['curtain down'],
+  match: 'warmup', me: 'warmup', focus: 'none', leaving: false, wanted: 'hud',
   lobby: off('transition'), hud: on('transition'), curtain: { opacity: 0, visibility: 'visible', end: 'transition' },
+  ui: { opacity: 1, visibility: 'visible' },
   frames: 58, frameMs: 500, pageVisible: 'visible', focused: true, upMs: (87 * 60 + 12) * 1000,
+  seq: 812, stale: 0, unheard: 0,
   ...over,
 })
 
 {
-  const line = formatScreenLine(reading({}))
-  has('a healthy warmup names the state the page holds', line, 'screen after warmup/warmup:')
-  has('...the screen it wants and the one it shows, and agrees', line, 'wanted hud, showing hud -- ok')
-  has('...the lobby off, hidden, by its own transition', line, 'lobby off (0 hidden, transition)')
-  has('...the HUD on', line, 'hud on (1, transition)')
-  has('...the frame count', line, '58 frames in 500ms')
-  has('...and how long the page has been up, so a reload cannot hide', line, 'up 87m12s')
-  check('one line, always', /[\r\n]/.test(line), false)
-  check('short enough that br_ui never has to cut it', line.length < 400, true)
+  const p = screenPayload(reading({}))
+  check('a healthy warmup: what it wants, what it shows, and the state it holds',
+    [p.why, p.wanted, p.showing, p.match, p.me, p.leaving, p.focus, p.seq, p.forced, p.frames],
+    ['curtain down', 'hud', 'hud', 'warmup', 'warmup', false, 'none', 812, false, 58])
+  has('...the lobby off, hidden, by its own transition', p.detail, 'lobby off (0 hidden, transition)')
+  has('...the HUD on', p.detail, 'hud on (1, transition)')
+  has('...the gate open', p.detail, 'ui on (1)')
+  has('...the frame count', p.detail, '58 frames in 500ms')
+  has('...the gate\'s sequence and the silent drops', p.detail, 'seq 812, 0 stale')
+  has('...and how long the page has been up, so a reload cannot hide', p.detail, 'up 87m12s')
+  check('one line, always', /[\r\n]/.test(p.detail), false)
+  check('short enough that br_ui never has to cut it', p.detail.length < 420, true)
 }
 {
   // What the page looked like on 2026-10-03 under a stopped animation clock,
-  // before this fix: the transition still pending, the menu fully drawn.
-  const line = formatScreenLine(reading({ lobby: on('fading'), hud: { opacity: 0, visibility: 'visible', end: 'fading' } }))
-  has('the #252 state is called WRONG, by name', line, 'wanted hud, showing LOBBY -- WRONG')
-  has('...with the lobby still on and its fade never finished', line, 'lobby on (1 visible, fading)')
+  // before round 1: the transition still pending, the menu fully drawn.
+  const p = screenPayload(reading({ lobby: on('fading'), hud: { opacity: 0, visibility: 'visible', end: 'fading' } }))
+  check('the #252 picture shows the lobby where the HUD was wanted', [p.wanted, p.showing], ['hud', 'lobby'])
+  has('...with the lobby still on and its fade never finished', p.detail, 'lobby on (1 visible, fading)')
 }
 {
-  const line = formatScreenLine(reading({ lobby: off('forced'), hud: on('forced') }))
-  has('a stopped clock the fix covered reads ok, and says it had to force it', line,
-    'showing hud -- ok | lobby off (0 hidden, forced) | hud on (1, forced)')
+  const p = screenPayload(reading({ lobby: off('forced'), hud: on('forced') }))
+  check('a fade the JS clock had to finish is flagged forced', [p.showing, p.forced], ['hud', true])
+  check('...from any layer, the gate included',
+    screenPayload(reading({ ui: { opacity: 1, visibility: 'visible', end: 'forced' } })).forced, true)
 }
 {
-  const line = formatScreenLine(reading({ frames: 0 }))
-  has('a page drawing no frames says so -- right styles, old screen', line,
+  const p = screenPayload(reading({ frames: 0 }))
+  has('a page drawing no frames says so -- right styles, old screen', p.detail,
     '0 frames in 500ms (nothing is being drawn)')
+  check('...and carries the count for br_ui\'s verdict', p.frames, 0)
 }
 {
   const r = reading({ match: 'waiting', me: 'lobby', wanted: 'lobby', lobby: on('transition'), hud: off('transition'),
     curtain: { opacity: 1, visibility: 'visible' } })
   check('a curtain still up is what the player sees, over everything', showing(r), 'curtain')
-  has('...and is reported as the wrong screen when the lobby was wanted', formatScreenLine(r),
-    'wanted lobby, showing CURTAIN -- WRONG')
+}
+{
+  const r = reading({ ui: { opacity: 0, visibility: 'visible', end: 'transition' }, wanted: 'nothing' })
+  check('under GTA\'s menu nothing of ours is drawn, whatever the layers say', showing(r), 'nothing')
+  check('a page with no gate element is read as open',
+    showing(reading({ ui: { opacity: 0, visibility: 'missing' } })), 'hud')
 }
 {
   const r = reading({ lobby: { opacity: 0, visibility: 'missing' }, hud: { opacity: 0, visibility: 'missing' },
     curtain: { opacity: 0, visibility: 'missing' } })
   check('a page with none of the layers shows nothing', showing(r), 'nothing')
+}
+{
+  check('several reasons are listed in order',
+    screenPayload(reading({ why: ['curtain up', 'black', 'me lobby>warmup'] })).why, 'curtain up, black, me lobby>warmup')
+  check('a stale drop and an unheard one are counted in the line',
+    screenPayload(reading({ stale: 2, unheard: 1 })).detail.includes('seq 812, 2 stale, 1 unheard'), true)
 }
 
 // ── result ──────────────────────────────────────────────────────────────────

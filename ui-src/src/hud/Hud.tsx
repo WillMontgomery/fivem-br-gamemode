@@ -329,12 +329,17 @@ export default function Hud({ visible }: { visible: boolean }) {
   const shown = visible && !scoped
   const rootRef = useRef<HTMLDivElement>(null)
   const settled = useFade('hud', shown, 200, rootRef)
+  // AND A HUD NOBODY CAN SEE DOES NO ANIMATION WORK. It is mounted at opacity 0
+  // for the whole lobby, and a talk pulse or a hot card's edge under it ran for
+  // every minute of that (#252). `layer-off` pauses only the endless ones
+  // (index.css); they resume with the fade-in, before anything is visible.
+  const off = settled && !shown
 
   return (
     <div
       ref={rootRef}
       data-layer="hud"
-      className="hud-layer fixed inset-0 transition-opacity duration-200"
+      className={`hud-layer fixed inset-0 transition-opacity duration-200${off ? ' layer-off' : ''}`}
       style={{ opacity: shown ? 1 : 0, transition: settled ? 'none' : undefined }}
       aria-hidden={!visible || scoped}
     >

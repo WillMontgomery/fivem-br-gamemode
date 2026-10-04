@@ -13,6 +13,8 @@ import { useFade } from '../ui/useFade'
 
 /** The root's fade, both ways. The settle deadline in ui/fade.ts is read off it. */
 const LOBBY_FADE_MS = 200
+/** The menu column's longer fade (`duration-700`); `.page-under`'s 260ms fits inside it. */
+const PANEL_FADE_MS = 700
 
 /**
  * Lobby and queue.
@@ -431,6 +433,21 @@ export default function Lobby({
   const rootRef = useRef<HTMLDivElement>(null)
   const settled = useFade('lobby', visible, LOBBY_FADE_MS, rootRef)
 
+  // THE MENU COLUMN'S OWN FADE, SETTLED THE SAME WAY (#252). It recedes to
+  // opacity 0 under a sub-screen and fades back when the sub-screen closes --
+  // by transition, so a stopped animation clock could leave the menu
+  // invisible after the market closed, the same failure as the lobby staying
+  // up, in the other direction. Read against the longer of its two fades: the
+  // 700ms worldReady/return fade, which also covers `.page-under`'s 260ms.
+  const panelShown = !under && worldReady
+  const panelSettled = useFade(null, panelShown, PANEL_FADE_MS)
+
+  // OFF FOR GOOD, NO ANIMATION WORK: the lobby hidden in a match, or the menu
+  // column receded under a sub-screen, pauses its endless animations -- the
+  // searching ring above all (index.css `layer-off`).
+  const off = settled && !visible
+  const panelOff = panelSettled && !panelShown
+
   return (
     <div
       ref={rootRef}
@@ -438,7 +455,7 @@ export default function Lobby({
       // NO `transition-opacity` CLASS: the transition comes from fadeStyle
       // below, because it carries a second property with a delay on it and
       // has to be droppable once the fade is over.
-      className="fixed inset-0"
+      className={`fixed inset-0${off ? ' layer-off' : ''}`}
       style={{
         // ═══ INVISIBLE AND STILL CLICKABLE, WHICH IS ITS OWN BUG ═══
         //
@@ -527,10 +544,13 @@ export default function Lobby({
         data-tut="lobby-menu"
         className={`interactive absolute inset-y-0 left-0 w-[38rem] max-w-[62vw]
                    flex flex-col justify-center px-[3.5rem] py-[3rem]
-                   transition-opacity duration-700${under ? ' page-under' : ''}`}
-        style={under ? undefined : {
+                   transition-opacity duration-700${under ? ' page-under' : ''}${
+                   panelOff ? ' layer-off' : ''}`}
+        // Over the class's transition (or `.page-under`'s) once settled.
+        style={under ? (panelSettled ? { transition: 'none' } : undefined) : {
           opacity: worldReady ? 1 : 0,
           pointerEvents: worldReady ? 'auto' : 'none',
+          transition: panelSettled ? 'none' : undefined,
         }}
       >
         <div>

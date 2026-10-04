@@ -1,32 +1,38 @@
 import { useEffect, useRef } from 'react'
 import { useUi } from '../store'
 import { fadeEnd } from '../ui/useFade'
-import { fetchNui } from './nui'
+import { onCoverReported } from './cover'
+import { bridgeStats, fetchNui } from './nui'
 import { CB } from './types'
-import { formatScreenLine, type LayerReading, type ScreenName } from './screenReport'
+import { screenChanges, screenPayload, type LayerReading, type ScreenKey, type ScreenName } from './screenReport'
 
 /**
- * Report what is on screen once the lobby has come down, or gone back up (#252).
+ * Report what is on screen after every page-side step of a ready-up or a
+ * return to the lobby (#252).
  *
  * See bridge/screenReport.ts for the line and how to read it. This is only the
  * WHEN and the measuring:
  *
- *   * ON A FLIP OF THE LOBBY, NOT ON EVERY STATE. Twice a match: into warmup
- *     and back to the lobby. That is the transition #252 is about, and a line
- *     per HUD state would bury it.
- *   * AFTER THE CURTAIN. A ready-up takes the lobby down behind the curtain, so
- *     a reading taken then would only ever say "curtain". The report waits for
- *     the curtain to come down and for its fade to settle -- and is sent at the
- *     deadline regardless, so a curtain that never lifts is reported too.
+ *   * ON EVERY STEP, NOT ONLY THE LOBBY FLIPPING. Round 1 armed on `showLobby`
+ *     alone, so the failure it most needed to name -- a page that never got the
+ *     warmup, whose lobby therefore never flipped -- printed nothing at all.
+ *     Now LEAVING arriving, the curtain reaching black, the curtain coming down,
+ *     a state change at the lobby's border, the lobby flipping and the lobby
+ *     taking or giving up focus each arm it (screenChanges), and br_ui compares
+ *     the page's state with what Lua sent.
+ *   * ONE LINE PER BURST. A ready-up is five of those steps inside a second; a
+ *     report goes QUIET_MS after the last of them (by which time every fade has
+ *     settled), or MAX_WAIT_MS after the first if they keep coming. A healthy
+ *     ready-up prints two: under the curtain, and after it lifts.
  *   * FRAMES ARE COUNTED BY A TIMER-CLOSED WINDOW. The case this exists to see
  *     is a page producing no frames, and a count that waited on a frame to end
  *     would never be sent in exactly that case.
  */
 
-/** After the curtain is down: its 600ms fade and the settle margin, with room. */
-const REPORT_AFTER_MS = 1000
-/** Sent by now whatever the curtain is doing -- past br_core's 15s curtain lift. */
-const REPORT_DEADLINE_MS = 20000
+/** After the last step: the curtain's 600ms fade and the settle margin, with room. */
+const QUIET_MS = 1000
+/** Sent by now whatever keeps changing. */
+const MAX_WAIT_MS = 5000
 /** The frame-count window. */
 const FRAME_WINDOW_MS = 500
 
@@ -57,50 +63,78 @@ function readLayer(name: string): LayerReading {
  * @param leaving    whether the curtain is wanted
  */
 export function useScreenReport(showLobby: boolean, hudShown: boolean, leaving: boolean): void {
+  const match = useUi((s) => s.match.state)
+  const me = useUi((s) => s.hud.state)
+  const focus = useUi((s) => s.focus)
+
   // What App wants RIGHT NOW, read when the report is taken rather than when it
   // was scheduled.
   const live = useRef({ showLobby, hudShown, leaving })
   live.current = { showLobby, hudShown, leaving }
 
-  const last = useRef<boolean | null>(null)
-  const since = useRef<number | null>(null)
+  const prev = useRef<ScreenKey | null>(null)
+  const pending = useRef<{ why: string[]; first: number } | null>(null)
+  const timer = useRef(0)
 
-  // A flip arms a report. The first render is not a flip: the lobby at boot is
-  // the page's default, not a transition.
-  useEffect(() => {
-    if (last.current !== null && last.current !== showLobby) since.current = Date.now()
-    last.current = showLobby
-  }, [showLobby])
+  // One stable function for the life of the page, so the cover listener below
+  // and the effects share the same pending report.
+  const arm = useRef((why: string[]) => {
+    const now = performance.now()
+    const p = pending.current ?? (pending.current = { why: [], first: now })
+    for (const w of why) if (!p.why.includes(w)) p.why.push(w)
+    window.clearTimeout(timer.current)
+    const at = Math.min(now + QUIET_MS, p.first + MAX_WAIT_MS)
+    timer.current = window.setTimeout(take, Math.max(0, at - now))
+  }).current
+
+  function take() {
+    const p = pending.current
+    pending.current = null
+    if (!p) return
+    void countFrames(FRAME_WINDOW_MS).then((frames) => {
+      const want = live.current
+      const s = useUi.getState()
+      const wanted: ScreenName = s.frontendUp ? 'nothing'
+        : want.leaving ? 'curtain'
+        : want.showLobby ? 'lobby'
+        : want.hudShown && !s.scoped ? 'hud'
+        : 'nothing'
+      const b = bridgeStats()
+      void fetchNui(CB.SCREEN, screenPayload({
+        why: p.why,
+        match: s.match.state,
+        me: s.hud.state,
+        focus: s.focus,
+        leaving: s.leaving,
+        wanted,
+        lobby: readLayer('lobby'),
+        hud: readLayer('hud'),
+        curtain: readLayer('curtain'),
+        ui: readLayer('ui'),
+        frames,
+        frameMs: FRAME_WINDOW_MS,
+        pageVisible: document.visibilityState,
+        focused: document.hasFocus(),
+        upMs: performance.now(),
+        seq: b.seq,
+        stale: b.stale,
+        unheard: b.unheard,
+      }))
+    })
+  }
 
   useEffect(() => {
-    if (since.current === null) return
-    const left = Math.max(0, REPORT_DEADLINE_MS - (Date.now() - since.current))
-    const t = window.setTimeout(() => {
-      since.current = null
-      void countFrames(FRAME_WINDOW_MS).then((frames) => {
-        const want = live.current
-        const s = useUi.getState()
-        const wanted: ScreenName = want.leaving ? 'curtain'
-          : want.showLobby ? 'lobby'
-          : want.hudShown && !s.scoped ? 'hud'
-          : 'nothing'
-        const line = formatScreenLine({
-          match: s.match.state,
-          me: s.hud.state,
-          focus: s.focus,
-          wanted,
-          lobby: readLayer('lobby'),
-          hud: readLayer('hud'),
-          curtain: readLayer('curtain'),
-          frames,
-          frameMs: FRAME_WINDOW_MS,
-          pageVisible: document.visibilityState,
-          focused: document.hasFocus(),
-          upMs: performance.now(),
-        })
-        void fetchNui(CB.SCREEN, { line })
-      })
-    }, leaving ? left : Math.min(REPORT_AFTER_MS, left))
-    return () => window.clearTimeout(t)
-  }, [showLobby, leaving])
+    const key: ScreenKey = { match, me, leaving, focus, showLobby }
+    const why = screenChanges(prev.current, key)
+    prev.current = key
+    if (why.length > 0) arm(why)
+  }, [match, me, leaving, focus, showLobby, arm])
+
+  // The curtain reaching black is a step too: it is the moment Lua is told it
+  // may change the world, and the one round 1's review caught going out early.
+  useEffect(() => onCoverReported((kind, covered) => {
+    if (kind === 'curtain' && covered) arm(['black'])
+  }), [arm])
+
+  useEffect(() => () => window.clearTimeout(timer.current), [])
 }

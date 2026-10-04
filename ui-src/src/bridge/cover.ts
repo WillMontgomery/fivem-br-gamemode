@@ -52,11 +52,20 @@ export type CoverKind = 'curtain' | 'verdict'
  */
 const reported: Partial<Record<CoverKind, boolean>> = {}
 
+/** Who hears a cover report go out -- the screen report, which counts one as news (#252). */
+const heard = new Set<(kind: CoverKind, covered: boolean) => void>()
+
+export function onCoverReported(fn: (kind: CoverKind, covered: boolean) => void): () => void {
+  heard.add(fn)
+  return () => { heard.delete(fn) }
+}
+
 /** Report a cover's state to Lua, unless Lua already knows it. */
 export function reportCover(kind: CoverKind, covered: boolean): void {
   if (reported[kind] === covered) return
   reported[kind] = covered
   void fetchNui(CB.COVERED, { kind, covered })
+  for (const fn of [...heard]) fn(kind, covered)
 }
 
 /**
@@ -69,11 +78,14 @@ export function reportCover(kind: CoverKind, covered: boolean): void {
  *                 fallback described at the top of this file -- the real signal
  *                 is the returned handler. Give it the animation's real
  *                 duration plus a little, not a guess at the frame budget.
+ *                 NULL MEANS THE CALLER OWNS THE FALLBACK: the curtain reports
+ *                 only once its forced black has committed (LeaveScreen.tsx,
+ *                 #252), and a timer here would race that and win.
  */
 export function useCoverReport(
   kind: CoverKind,
   active: boolean,
-  settleMs: number,
+  settleMs: number | null,
 ): () => void {
   useEffect(() => {
     if (!active) {
@@ -84,9 +96,9 @@ export function useCoverReport(
       return
     }
 
-    const t = window.setTimeout(() => reportCover(kind, true), settleMs)
+    const t = settleMs === null ? 0 : window.setTimeout(() => reportCover(kind, true), settleMs)
     return () => {
-      window.clearTimeout(t)
+      if (t) window.clearTimeout(t)
 
       // GOING AWAY IS NEWS TOO, AND THIS IS THE HALF THAT WOULD HAVE ROTTED.
       //

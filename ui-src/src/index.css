@@ -975,6 +975,13 @@ html, body, #root {
   to   { opacity: 0; transform: translate3d(-1.4rem, 0.5rem, 0); }
 }
 .page-in  { animation: pageIn 260ms var(--ease-out) both; }
+/* pageIn's LAST KEYFRAME, WRITTEN OUT, for a page whose entrance had its time
+   and never got there -- opened on a stopped animation clock, it would sit at
+   the first keyframe, invisible (ui/Page.tsx, #252). The transform is
+   included, since it is what makes `.page` the containing block and the
+   stacking context its screens are built for. A healthy page never gets this
+   class: it keeps `.page-in`, held at the same values. */
+.page-shown { opacity: 1; transform: translate3d(0, 0, 0); }
 /* pointer-events off on the way out: a page mid-exit is still on screen for
    200ms and must not eat a click meant for the page arriving behind it. */
 .page-out { animation: pageOut 200ms ease-in both; pointer-events: none; }
@@ -1948,4 +1955,47 @@ html, body, #root {
   0%   { opacity: 0.55; transform: scale(1); }
   70%  { opacity: 0;    transform: scale(1.22); }
   100% { opacity: 0;    transform: scale(1.22); }
+}
+
+/* ═══ A LAYER NOBODY CAN SEE DOES NO ANIMATION WORK (#252) ═══
+
+   The curtain is always mounted, at opacity 0, and its loading ring spun the
+   whole time: in an idle lobby the page never idled -- ~144 style recalcs a
+   second headless, and in game as many as FiveM's 240 fps cap allows, for as
+   long as the player sat there. Windows logged a suspected memory leak
+   (RADAR_PRE_LEAK) for FiveM's CEF process during exactly such an idle, the
+   one before the owner's "the lobby UI doesn't go away" report. Whether the
+   two are connected is not proven; a page that does no work while nothing on
+   it moves is right either way.
+
+   `layer-off` is set by a layer that is OFF FOR GOOD -- hidden, and its fade
+   over (ui/useFade.ts): the curtain, the HUD, the lobby, the lobby's menu
+   column under a sub-screen, and the whole page under GTA's own menu. Under
+   it, every ENDLESS animation is paused. Nothing changes on screen: the layer
+   is not drawn, the class comes off in the same render that starts its fade
+   back in, and a spinner, pulse or halo has no phase anybody can see.
+
+   ONLY THE ENDLESS ONES, AND ONLY THEIR ENDLESS HALF. A finite entrance that
+   was still running when its layer went away -- a hot card's drop, a storm
+   shock -- must finish on its own clock exactly as before, not resume half
+   way when the layer returns. So a rule that pairs an entrance with a loop
+   pauses the second animation only (`running, paused`).
+
+   EVERY `infinite` IN THIS FILE OR INLINE IN A SCREEN MUST BE LISTED HERE;
+   scripts/check-ui.mjs R27 fails the build on one that is not. */
+.layer-off .ldring.is-indeterminate svg,
+.layer-off .ldring.is-indeterminate .ring-arc,
+.layer-off .xp-head,
+.layer-off .xp-spark,
+.layer-off .mate-pulse,
+.layer-off .mate-talk,
+.layer-off .tut-ring--click::after,
+.layer-off .animate-pulse,
+.layer-off [style*="infinite"] {
+  animation-play-state: paused !important;
+}
+.layer-off .panel-hot,
+.layer-off .storm-warning,
+.layer-off .tut-ring {
+  animation-play-state: running, paused !important;
 }

@@ -1446,9 +1446,10 @@ BR.NuiCb = {
     SFX          = 'br/sfx',
     ERROR        = 'br/err',  -- CEF exception sink; without this a crash is a blank screen
     ENV          = 'br/ui/env',  -- CEF capability report, printed at startup
-    -- What the page is actually showing, one line a second after the lobby
-    -- comes down or goes back up (#252). The page writes the line; br_ui
-    -- prints it. See ui-src/src/bridge/screenReport.ts.
+    -- What the page is actually showing, after every step of a ready-up or a
+    -- return to the lobby (#252). The page reports what it holds and draws;
+    -- br_ui compares that with what it sent and prints one line. See
+    -- ui-src/src/bridge/screenReport.ts.
     SCREEN       = 'br/ui/screen',
     -- Settings. SAVE carries the whole object; Lua writes it to KVP and echoes
     -- it back, so the page never has to believe its own optimistic copy.

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { useFade } from './useFade'
 
 /**
  * A lobby sub-screen, with an entrance and an exit.
@@ -21,6 +22,8 @@ import { useEffect, useRef, useState } from 'react'
 
 /** Must match .page-out's duration in index.css. */
 const EXIT_MS = 200
+/** Must match .page-in's duration in index.css. */
+const ENTER_MS = 260
 
 export default function Page({
   show, children,
@@ -37,6 +40,33 @@ export default function Page({
     const t = window.setTimeout(() => setMounted(false), EXIT_MS)
     return () => window.clearTimeout(t)
   }, [show])
+
+  // ═══ AN ENTRANCE THE ANIMATION CLOCK NEVER RAN IS FINISHED ON THE JS CLOCK (#252) ═══
+  //
+  // `.page-in` fills BOTH ways from opacity 0, so a sub-screen opened on a
+  // stopped animation clock stays at its first keyframe: focus says the market
+  // is up, the cursor is on it, and nothing is drawn. The same failure as the
+  // lobby that would not come down (ui/fade.ts), here on the way in.
+  //
+  // ONLY A PAGE THAT IS STILL SHORT OF ITS LAST KEYFRAME IS TOUCHED. Once the
+  // entrance has had its time, the wrapper's computed opacity is read; a page
+  // that got there keeps `.page-in` exactly as before -- a held animation and a
+  // static style of the same values do not composite to the same pixels (one
+  // level apart on some, measured), and a healthy page must not move by one.
+  // A page that did not is swapped to `.page-shown`, that keyframe written out
+  // (index.css), and appears.
+  //
+  // THE EXIT NEEDS NOTHING: it ends on EXIT_MS above, a timer, which unmounts
+  // the page whether `.page-out` ever ran or not.
+  const ref = useRef<HTMLDivElement>(null)
+  const settled = useFade(null, show, ENTER_MS, undefined, { enterOnMount: true })
+  const [stuck, setStuck] = useState(false)
+  useEffect(() => {
+    if (!show) { setStuck(false); return }
+    if (!settled) return
+    const el = ref.current
+    if (el && parseFloat(getComputedStyle(el).opacity) < 0.99) setStuck(true)
+  }, [show, settled])
 
   if (!mounted) return null
 
@@ -55,6 +85,8 @@ export default function Page({
   // resolves to exactly the box it would have had anyway. The transform stays
   // and the children never learn about any of this.
   return (
-    <div className={`page ${show ? 'page-in' : 'page-out'}`}>{held.current}</div>
+    <div ref={ref} className={`page ${show ? (stuck ? 'page-shown' : 'page-in') : 'page-out'}`}>
+      {held.current}
+    </div>
   )
 }
