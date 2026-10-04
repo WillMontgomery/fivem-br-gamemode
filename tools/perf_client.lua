@@ -168,6 +168,7 @@ local W = {
     cam = { x = 0.0, y = 0.0, z = 0.0, rx = -8.0, rz = 0.0 },
     convars = {},
     kvp = {},
+    muted = {},         -- pma-voice's mute list, [serverId] = true
     handles = 100,
 }
 W.ents[W.me] = { x = 0.0, y = 0.0, z = 30.0, kind = 'ped', heading = 0.0 }
@@ -679,13 +680,22 @@ local RUNTIME = {
     RegisterNUICallback = function() end,
     SendNUIMessage = function() countAs('SendNUIMessage') end,
     AddStateBagChangeHandler = function() end,
+    -- Another resource's exports: each call is counted, and pma-voice's mute
+    -- list is kept, since br_core reads it back before toggling (a toggle, not a
+    -- setter, so an export that forgot would be asked to toggle every tick).
     exports = setmetatable({}, {
         __call = function() end,
         __index = function(_, res)
             return setmetatable({}, { __index = function(_, fnName)
-                return function()
+                return function(_, a)
                     countAs('export ' .. tostring(res) .. '.' .. tostring(fnName))
-                    if fnName == 'getMutedPlayers' then return {} end
+                    if fnName == 'getMutedPlayers' then
+                        local out = {}
+                        for src in pairs(W.muted) do out[src] = true end
+                        return out
+                    elseif fnName == 'toggleMutePlayer' then
+                        if W.muted[a] then W.muted[a] = nil else W.muted[a] = true end
+                    end
                     return nil
                 end
             end })
