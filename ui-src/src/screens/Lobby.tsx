@@ -8,6 +8,11 @@ import Progress from './Progress'
 import { fetchNui } from '../bridge/nui'
 import { CB } from '../bridge/types'
 import { showContinueToggle } from '../tutorial/continueToggle'
+import { fadeStyle } from '../ui/fade'
+import { useFade } from '../ui/useFade'
+
+/** The root's fade, both ways. The settle deadline in ui/fade.ts is read off it. */
+const LOBBY_FADE_MS = 200
 
 /**
  * Lobby and queue.
@@ -421,13 +426,20 @@ export default function Lobby({
     await fetchNui(CB.QUEUE_LEAVE, {})
   }
 
+  // Whether the root's fade has had its time and should simply BE its final
+  // value (#252). See the style block below and ui/fade.ts.
+  const rootRef = useRef<HTMLDivElement>(null)
+  const settled = useFade('lobby', visible, LOBBY_FADE_MS, rootRef)
+
   return (
     <div
-      // NO `transition-opacity` CLASS: the transition is written out below
-      // because it now carries a second property with a delay on it.
+      ref={rootRef}
+      data-layer="lobby"
+      // NO `transition-opacity` CLASS: the transition comes from fadeStyle
+      // below, because it carries a second property with a delay on it and
+      // has to be droppable once the fade is over.
       className="fixed inset-0"
       style={{
-        opacity: visible ? 1 : 0,
         // ═══ INVISIBLE AND STILL CLICKABLE, WHICH IS ITS OWN BUG ═══
         //
         // Owner, 2026-09-05, during warmup: "the lobby buttons aren't visible
@@ -449,10 +461,20 @@ export default function Lobby({
         // instant as opacity would make the menu pop instead of dissolving, so
         // it is held for the length of the fade on the way out and switched
         // immediately on the way in.
-        visibility: visible ? 'visible' : 'hidden',
-        transition: visible
-          ? 'opacity 200ms linear'
-          : 'opacity 200ms linear, visibility 0s linear 200ms',
+        //
+        // ═══ OPACITY, VISIBILITY AND THEIR TRANSITION COME FROM ui/fade.ts ═══
+        //
+        // Owner, 2026-10-03, #252: "the lobby UI doesn't go away when getting
+        // into warmup - it only happens if you sit AFK in lobby for a long
+        // time". The page had the warmup state -- it answered the curtain's
+        // handshake -- and the menu stayed. The ONLY thing that took it off the
+        // screen was this transition, which the browser's animation clock runs,
+        // and stopping that clock in a real Chromium leaves the menu up exactly
+        // that way. fadeStyle draws the same fade as before while it runs, and
+        // once LOBBY_FADE_MS plus a margin has passed on the JS clock it drops
+        // the transition and sets the final values outright -- so the menu goes
+        // whether or not the fade ever ran. See ui/fade.ts.
+        ...fadeStyle(visible, settled, LOBBY_FADE_MS),
         pointerEvents: visible ? 'auto' : 'none',
         // A SCRIM WEIGHTED TO THE LEFT, not a centred vignette.
         //

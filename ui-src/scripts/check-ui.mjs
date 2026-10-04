@@ -1746,6 +1746,114 @@ for (const name of builtCss) {
 }
 
 // ---------------------------------------------------------------------------
+// R26  The lobby, the curtain and the HUD reach their final state without the
+//      animation clock, and the page reports which one is showing (#252).
+//
+// Owner, 2026-10-03: "the lobby UI doesn't go away when getting into warmup -
+// it only happens if you sit AFK in lobby for a long time". The page held the
+// warmup state and kept the menu drawn: the only thing that took it off the
+// screen was a CSS transition, and a stopped animation clock never finishes
+// one. src/ui/fade.ts decides when a fade has had its time and what the layer
+// looks like after; scripts/test-fade.mjs pins that. Only this can see the three
+// layers of a ready-up actually draw from it:
+//
+//   RE-INLINED -- Lobby.tsx's root writes its own transition again, the
+//     pre-#252 shape, which the animation clock alone decides the end of;
+//   NOT SETTLED -- the lobby, curtain or HUD root no longer asks useFade, or
+//     no longer drops its transition once settled;
+//   NO FALLBACK -- the dispatcher stops ticking the open fades on each
+//     envelope, so a timer that never fired is the end of it;
+//   NOT REPORTED -- App.tsx stops calling useScreenReport, a layer loses the
+//     `data-layer` the report reads it by, or br_ui stops printing the line.
+//
+// IT CAN FAIL. Put `transition: visible ? 'opacity 200ms linear' : ...` back
+// on the lobby root, delete `transition: settled ? 'none' : undefined` from the
+// curtain, drop the `ticks` loop from dispatch(), or the useScreenReport call.
+// ---------------------------------------------------------------------------
+{
+  const L = join(SRC, 'screens', 'Lobby.tsx')
+  const C = join(SRC, 'screens', 'LeaveScreen.tsx')
+  const H = join(SRC, 'hud', 'Hud.tsx')
+  const N = join(SRC, 'bridge', 'nui.ts')
+  const A = join(SRC, 'App.tsx')
+  const F = join(SRC, 'ui', 'fade.ts')
+  const U = join(SRC, 'ui', 'useFade.ts')
+  const B = join(ROOT, '..', 'resources', '[fivem-royale]', 'br_ui', 'client', 'nui.lua')
+  const files26 = [[L, 'src/screens/Lobby.tsx'], [C, 'src/screens/LeaveScreen.tsx'],
+                   [H, 'src/hud/Hud.tsx'], [N, 'src/bridge/nui.ts'], [A, 'src/App.tsx'],
+                   [F, 'src/ui/fade.ts'], [U, 'src/ui/useFade.ts'], [B, 'br_ui/client/nui.lua']]
+  const missing = files26.filter(([f]) => !existsSync(f))
+  for (const [, name] of missing) {
+    fail('R26 settled-fade', name,
+      'file is missing. If it moved, move this rule with it -- it is the pair to'
+      + ' scripts/test-fade.mjs (#252).')
+  }
+  if (missing.length === 0) {
+    const lobby = stripComments(read(L))
+    if (!/const\s+settled\s*=\s*useFade\(\s*'lobby'\s*,\s*visible\s*,/.test(lobby)
+        || !/\.\.\.fadeStyle\(\s*visible\s*,\s*settled\s*,/.test(lobby)) {
+      fail('R26 settled-fade', 'src/screens/Lobby.tsx',
+        "the lobby root no longer draws `...fadeStyle(visible, settled, ...)` with"
+        + " `settled` from `useFade('lobby', visible, ...)`. Without it the menu"
+        + ' leaves the screen only if its transition finishes, and on a stopped'
+        + ' animation clock it never does (#252).')
+    }
+    if (/visibility\s+0s\s+linear/.test(lobby) || /transition:\s*visible\s*\?/.test(lobby)) {
+      fail('R26 settled-fade', 'src/screens/Lobby.tsx',
+        'the lobby writes its own transition again. That is the pre-#252 shape:'
+        + ' the end of the fade belongs to the animation clock alone. The fade is'
+        + " fadeStyle's, in src/ui/fade.ts.")
+    }
+    for (const [f, name, layer, shown] of [[C, 'src/screens/LeaveScreen.tsx', 'curtain', 'show'],
+                                           [H, 'src/hud/Hud.tsx', 'hud', 'shown']]) {
+      const body = stripComments(read(f))
+      if (!new RegExp(String.raw`const\s+settled\s*=\s*useFade\(\s*'${layer}'\s*,\s*${shown}\s*,`).test(body)
+          || !/transition:\s*settled\s*\?\s*'none'\s*:\s*undefined/.test(body)) {
+        fail('R26 settled-fade', name,
+          `the ${layer} root no longer asks \`useFade('${layer}', ${shown}, ...)\` and drops`
+          + " its transition once settled (`transition: settled ? 'none' : undefined`)."
+          + ' A fade the animation clock never runs leaves it where it started (#252).')
+      }
+    }
+    for (const [f, name, layer] of [[L, 'src/screens/Lobby.tsx', 'lobby'],
+                                    [C, 'src/screens/LeaveScreen.tsx', 'curtain'],
+                                    [H, 'src/hud/Hud.tsx', 'hud']]) {
+      if (!read(f).includes(`data-layer="${layer}"`)) {
+        fail('R26 settled-fade', name,
+          `the root lost \`data-layer="${layer}"\`, which is how the screen report`
+          + ' finds it. The F8 line would read the layer as missing (#252).')
+      }
+    }
+    const nui = stripComments(read(N))
+    const disp = /export function dispatch\([\s\S]*?\n\}/.exec(nui)
+    if (!/export function onEnvelope\(/.test(nui) || !disp
+        || !/for\s*\(\s*const\s+fn\s+of\s+\[\.\.\.ticks\]\s*\)/.test(disp[0])) {
+      fail('R26 settled-fade', 'src/bridge/nui.ts',
+        'dispatch() no longer runs the `ticks` that onEnvelope() registers. They'
+        + " are the fallback under a fade's timer: without them a timer that never"
+        + ' fired leaves the screen where it was until the next fade (#252).')
+    }
+    if (!/\bonEnvelope\(/.test(stripComments(read(U)))) {
+      fail('R26 settled-fade', 'src/ui/useFade.ts',
+        'useFade no longer registers onEnvelope(). The next envelope from Lua is'
+        + ' what settles a fade whose timer never fired (#252).')
+    }
+    if (!/\buseScreenReport\(\s*showLobby\s*,/.test(stripComments(read(A)))) {
+      fail('R26 settled-fade', 'src/App.tsx',
+        'App no longer calls `useScreenReport(showLobby, ...)`. That is the one F8'
+        + ' line that says which screen the page is showing after the lobby comes'
+        + ' down or goes back up (#252).')
+    }
+    const lua = read(B).split('\n').filter((l) => !/^\s*--/.test(l)).join('\n')
+    if (!/callback\(\s*BR\.NuiCb\.SCREEN\s*,[\s\S]*?print\(\s*'\[br_ui\] '\s*\.\.\s*line\s*\)/.test(lua)) {
+      fail('R26 settled-fade', 'br_ui/client/nui.lua',
+        'no `callback(BR.NuiCb.SCREEN, ...)` that prints the line. The page sends'
+        + ' it and nothing would say it (#252).')
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Result
 // ---------------------------------------------------------------------------
 if (failures) {

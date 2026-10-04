@@ -1568,6 +1568,12 @@ export const CB = {
   ERROR:        'br/err',
   ENV:          'br/ui/env',
   /**
+   * "This is what I am actually showing." One line, printed by br_ui to F8 a
+   * second after the lobby comes down or goes back up (#252). Reported upward,
+   * like PALETTE: a fact only the page can know. See bridge/screenReport.ts.
+   */
+  SCREEN:       'br/ui/screen',
+  /**
    * "This is what --color-hp resolved to."
    *
    * REPORTED UPWARD, WHICH NOTHING ELSE IN THIS TABLE DOES. Every other name

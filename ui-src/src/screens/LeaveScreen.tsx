@@ -26,8 +26,10 @@
  * the lobby, or the warmup pad.
  */
 
+import { useRef } from 'react'
 import Ring from '../hud/Ring'
 import { useCoverReport } from '../bridge/cover'
+import { useFade } from '../ui/useFade'
 
 /** What the curtain is covering. Lua names it; the wording lives here. */
 export type CurtainKind = 'leaving' | 'dropping' | 'disconnecting'
@@ -69,8 +71,22 @@ export default function LeaveScreen({
   // for the case where it optimises the transition away entirely.
   const onCovered = useCoverReport('curtain', show, FADE_MS + 100)
 
+  // ═══ AND IT IS BLACK WHEN IT SAYS SO, WHETHER THE FADE RAN OR NOT (#252) ═══
+  //
+  // The report above has a timer fallback, which is right -- but on its own it
+  // let the page tell Lua "black" about a curtain whose fade had never run and
+  // was still at opacity 0. Stop the browser's animation clock and that is what
+  // happens: the ready-up goes ahead in front of a lobby that is still drawn.
+  // At the same deadline the fade is now dropped and the final opacity set
+  // outright (ui/fade.ts), so the fallback's "black" is true on the next frame,
+  // and a curtain on its way down cannot be left over the world either.
+  const rootRef = useRef<HTMLDivElement>(null)
+  const settled = useFade('curtain', show, FADE_MS, rootRef)
+
   return (
     <div
+      ref={rootRef}
+      data-layer="curtain"
       className="fixed inset-0 z-[60] flex flex-col items-center justify-center gap-6
                  bg-black transition-opacity duration-[600ms]"
       // AN OPAQUE SCREEN SWALLOWS CLICKS -- while it is up, and only then.
@@ -90,7 +106,12 @@ export default function LeaveScreen({
       // better of two bad states, and it is already watched for from both sides
       // -- br_core lifts an abandoned curtain after 15s, and /brunstuck drops it
       // by hand.
-      style={{ opacity: show ? 1 : 0, pointerEvents: show ? 'auto' : 'none' }}
+      style={{
+        opacity: show ? 1 : 0,
+        pointerEvents: show ? 'auto' : 'none',
+        // Over the class's transition once the fade has had its time.
+        transition: settled ? 'none' : undefined,
+      }}
       aria-hidden={!show}
       // THIS ELEMENT'S OWN OPACITY, AND NOTHING ELSE'S. transitionend bubbles,
       // so any child of this curtain that ever grows a transition would

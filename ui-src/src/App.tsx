@@ -25,6 +25,7 @@ import { GAME_STEPS } from './tutorial/gameSteps'
 import { DECLINE_STEPS } from './tutorial/steps'
 import Admin from './screens/Admin'
 import Page from './ui/Page'
+import { useScreenReport } from './bridge/useScreenReport'
 
 /**
  * Screens that take the whole screen while the lobby is behind them. The base
@@ -469,6 +470,12 @@ export default function App() {
   // Whether the vitals strip is on screen -- chat and notices fall back to
   // its position when the radar is hidden, so they need to know.
   const hudUp = !showLobby && !ridingBus && !ridingAmbulance && !tearingDown
+
+  // ONE F8 LINE A SECOND AFTER THE LOBBY COMES DOWN OR GOES BACK UP (#252):
+  // what this state wants on screen against what the page's computed styles
+  // are actually drawing. The owner's report had every Lua step of the
+  // ready-up and nothing from here; the next one will say which it was.
+  useScreenReport(showLobby, hudUp && !hudPaused, leaving)
 
   return (
     /* THE WHOLE INTERFACE, BEHIND ONE GATE (#122).

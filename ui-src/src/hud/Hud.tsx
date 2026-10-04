@@ -17,6 +17,7 @@ import SpectateHint from './SpectateHint'
 import HitFeedback from './HitFeedback'
 import TalkingBar from './TalkingBar'
 import VoiceNotice from './VoiceNotice'
+import { useFade } from '../ui/useFade'
 import { fitsBelow, roundStrip, nextFit, vitalsLift } from './vitalsPlacement'
 
 /**
@@ -320,10 +321,21 @@ export default function Hud({ visible }: { visible: boolean }) {
   const descending =
     (hud.state === 'freefall' || hud.state === 'glide') && !hud.landed
 
+  // THE HUD ARRIVES WHETHER THE FADE RUNS OR NOT (#252). The other half of the
+  // lobby coming down: in a page whose animation clock has stopped, this fade
+  // never ran either, and warmup was a lobby menu over no HUD at all. Once the
+  // 200ms fade has had its time the class's transition is dropped and the
+  // opacity is simply set -- see ui/fade.ts.
+  const shown = visible && !scoped
+  const rootRef = useRef<HTMLDivElement>(null)
+  const settled = useFade('hud', shown, 200, rootRef)
+
   return (
     <div
+      ref={rootRef}
+      data-layer="hud"
       className="hud-layer fixed inset-0 transition-opacity duration-200"
-      style={{ opacity: (visible && !scoped) ? 1 : 0 }}
+      style={{ opacity: shown ? 1 : 0, transition: settled ? 'none' : undefined }}
       aria-hidden={!visible || scoped}
     >
       {/* Storm vignette is full-bleed: it should ignore the safe zone, because

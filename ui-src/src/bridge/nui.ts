@@ -45,6 +45,21 @@ export function subscribe(kind: EnvelopeKind, fn: Handler): () => void {
   return () => { set!.delete(fn) }
 }
 
+/**
+ * Called after EVERY envelope the handlers have taken, whatever its kind (#252).
+ *
+ * The fallback under a timer. A fade that is still open re-checks its clock on
+ * each one (ui/useFade.ts), so the screen settles on the latest state with the
+ * next message even if the timer meant to settle it never fired. Nothing is
+ * read from the envelope: this is a clock tick, not a channel.
+ */
+const ticks = new Set<() => void>()
+
+export function onEnvelope(fn: () => void): () => void {
+  ticks.add(fn)
+  return () => { ticks.delete(fn) }
+}
+
 /** Feed an envelope through the dispatcher. Exported so mock.ts can drive it. */
 export function dispatch(msg: WireEnvelope): void {
   if (!msg || msg.t !== 'br') return
@@ -80,6 +95,14 @@ export function dispatch(msg: WireEnvelope): void {
       // One bad handler must not stop the others, and must not kill the
       // listener -- a thrown error here would silently freeze the whole UI.
       reportError(`handler for "${msg.k}"`, err)
+    }
+  }
+  // A copy, because a tick that settles its fade unsubscribes itself.
+  for (const fn of [...ticks]) {
+    try {
+      fn()
+    } catch (err) {
+      reportError('envelope tick', err)
     }
   }
 }

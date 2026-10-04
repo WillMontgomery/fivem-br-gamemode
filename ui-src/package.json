@@ -6,7 +6,7 @@
   "description": "NUI for Blitz Royale. Builds into resources/[fivem-royale]/br_ui/ui.",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build && npm run check:css && npm run check:ui && npm run test:envelope && npm run test:countdown && npm run test:placement && npm run test:cardplacement && npm run test:chatclear && npm run test:music && npm run test:continuetoggle",
+    "build": "tsc --noEmit && vite build && npm run check:css && npm run check:ui && npm run test:envelope && npm run test:countdown && npm run test:placement && npm run test:cardplacement && npm run test:chatclear && npm run test:music && npm run test:continuetoggle && npm run test:fade",
     "build:check": "node scripts/check-build.mjs",
     "build:only": "vite build",
     "watch": "vite build --watch",
@@ -19,7 +19,8 @@
     "test:cardplacement": "node scripts/test-card-placement.mjs",
     "test:chatclear": "node scripts/test-chat-clear.mjs",
     "test:music": "node scripts/test-music.mjs",
-    "test:continuetoggle": "node scripts/test-continue-toggle.mjs"
+    "test:continuetoggle": "node scripts/test-continue-toggle.mjs",
+    "test:fade": "node scripts/test-fade.mjs"
   },
   "//": "Pinned to the HeroUI 2.x line and Tailwind 3.x deliberately. FiveM's CEF is Chrome 103, which cannot parse oklch/oklab/lch/color-mix -- and HeroUI 3 + Tailwind 4 emit those throughout their colour systems. scripts/check-css.mjs fails the build if any reach the bundle.",
   "dependencies": {

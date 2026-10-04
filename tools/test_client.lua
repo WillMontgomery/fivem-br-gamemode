@@ -22853,6 +22853,56 @@ do
     BR.Loop.hitchStop()
 end
 
+-- ═══ #252: THE PAGE SAYS WHICH SCREEN IT IS SHOWING, AND br_ui PRINTS IT ═══
+--
+-- Owner, 2026-10-03: "the lobby UI doesn't go away when getting into warmup".
+-- His log had every Lua step of the ready-up and nothing from the page, so
+-- whether it never applied warmup or never drew it could only be argued. The
+-- page now composes one line a second after the lobby comes down or goes back
+-- up (ui-src/src/bridge/screenReport.ts, pinned by scripts/test-fade.mjs), and
+-- this is the half that puts it in F8: ONE line, as sent, never two, never a
+-- control character, and a fetch that is always answered.
+--
+-- THE REAL br_ui BRIDGE, loaded the way the focus-gate block loads it, with
+-- RegisterNUICallback captured instead of dropped.
+
+describe('#252 -- br_ui prints the page\'s screen report as one line')
+do
+    local nuiCb = {}
+    function RegisterNUICallback(name, fn) nuiCb[name] = fn end
+    Citizen.CreateThread = function() end
+
+    local coreName = GetCurrentResourceName
+    GetCurrentResourceName = function() return 'br_ui' end
+    loadAll({ 'br_ui/client/nui.lua' })
+    GetCurrentResourceName = coreName
+
+    local cb = nuiCb[BR.NuiCb.SCREEN]
+    ok(BR.NuiCb.SCREEN == 'br/ui/screen' and type(cb) == 'function',
+       'br_ui registers br/ui/screen', tostring(BR.NuiCb.SCREEN))
+    if type(cb) == 'function' then
+        local before, answer = #logged, nil
+        cb({ line = 'screen after warmup/warmup: wanted hud, showing LOBBY -- WRONG'
+                 .. ' | lobby on (1 visible, fading)\nsecond line' },
+           function(r) answer = r end)
+        ok(#logged == before + 1, 'one report is exactly one printed line',
+           ('%d line(s)'):format(#logged - before))
+        ok(logged[#logged] == '[br_ui] screen after warmup/warmup: wanted hud, showing'
+               .. ' LOBBY -- WRONG | lobby on (1 visible, fading) second line',
+           'printed as sent, under [br_ui], with the newline flattened', logged[#logged])
+        ok(type(answer) == 'table' and answer.ok == true,
+           'and the page\'s fetch is answered')
+
+        cb({ line = string.rep('x', 900) }, function() end)
+        ok(#logged[#logged] <= #'[br_ui] ' + 403,
+           'a runaway line is capped rather than flooding F8', #logged[#logged])
+
+        cb({}, function() end)
+        ok(logged[#logged] == '[br_ui] (empty)', 'a report with no line still says so',
+           logged[#logged])
+    end
+end
+
 realPrint(('%s%d passed, %d failed\27[0m')
     :format(fail == 0 and '\27[32m' or '\27[31m', pass, fail))
 os.exit(fail == 0 and 0 or 1)

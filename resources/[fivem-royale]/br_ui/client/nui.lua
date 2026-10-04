@@ -566,6 +566,25 @@ callback(BR.NuiCb.ENV, function(data)
     return { ok = true }
 end)
 
+--- What the page is actually showing, after the lobby comes down or goes back up
+--- (#252).
+---
+--- Owner, 2026-10-03: "the lobby UI doesn't go away when getting into warmup".
+--- His log had every Lua step of the ready-up, in order, and nothing from the
+--- page -- so whether the page never applied warmup or applied it and never
+--- drew it could only be argued. The page now says, in one line: the state it
+--- holds, the screen that state wants, the screen its computed styles show, and
+--- whether it is producing frames at all. bridge/screenReport.ts in ui-src has
+--- the format and how to read it.
+---
+--- PRINTED AS SENT, MINUS CONTROL CHARACTERS AND CAPPED: one line, always.
+callback(BR.NuiCb.SCREEN, function(data)
+    local line = (tostring(data.line or '(empty)'):gsub('%c', ' '))
+    if #line > 400 then line = line:sub(1, 400) .. '...' end
+    print('[br_ui] ' .. line)
+    return { ok = true }
+end)
+
 --- The error sink. Without this, a CEF exception is a blank screen and there is
 --- nowhere to look for the cause.
 callback(BR.NuiCb.ERROR, function(data)
