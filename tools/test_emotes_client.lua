@@ -449,6 +449,14 @@ local function near(a, b) return math.abs(a - b) < 1e-6 end
 -- 5. THE GATE WATCHER. Run first, because its first pass is a one-time event.
 -- ════════════════════════════════════════════════════════════════════════════
 
+--- How many times br_ui has been told to re-send the page its grid and the
+--- EMOTES flag (br:emotes:gate, #388).
+local function uiTold()
+    local n = 0
+    for _, e in ipairs(events) do if e.name == 'br:emotes:gate' then n = n + 1 end end
+    return n
+end
+
 -- BEFORE THE SEASON ARRIVES (#388). br_seasonServed is a replicated convar and
 -- may land after these files load; until it does the season is unknown and
 -- every door must read shut -- on a Season 1 box, a door opened in that
@@ -486,8 +494,13 @@ do
         'nativeCheck is one ok row saying so, and does not throw',
         okRows and rows[1] and rows[1].detail or rows)
 
+    -- br_core's FIRST pass is its start (or a `restart br_core`): br_ui is told
+    -- to re-send the page the gate as it reads now, shut or not.
+    ok(uiTold() == 0, 'nothing has told br_ui anything before the first gate pass')
     slow()
+    ok(uiTold() == 1, "br_core's first gate pass tells br_ui to re-send, with the gate shut", uiTold())
     slow()
+    ok(uiTold() == 1, 'and a second pass with nothing moved tells it nothing more', uiTold())
     ok(count(BR.Net.MARKET_STATE) == 0 and keyPushes == 0 and mapGatedCalls == 0,
         'the gate pass maps nothing, pushes no keys and asks the server for nothing',
         ('%d/%d/%d'):format(count(BR.Net.MARKET_STATE), keyPushes, mapGatedCalls))
@@ -504,6 +517,7 @@ do
         ('Season %d arriving asks the server for nothing'):format(OFF))
     ok(keyPushes == 0 and mapGatedCalls == 0,
         'and neither re-pushes the keys nor maps the gated row', keyPushes)
+    ok(uiTold() == 1, 'nor tells br_ui again: the page already has it shut', uiTold())
     key(true)
     ok(not BR.EmoteWheel.isOpen(), 'and the wheel still does not open')
     key(false)
@@ -515,19 +529,20 @@ do
         'opening it sends exactly one MARKET_STATE request', count(BR.Net.MARKET_STATE))
     ok(keyPushes == 1, 'and re-pushes the keybind table once', keyPushes)
     ok(mapGatedCalls == 1, 'and asks BR.Keys.mapGated while open', mapGatedCalls)
+    ok(uiTold() == 2, 'and tells br_ui to re-send at once, without the round trip', uiTold())
 
     slow()
-    ok(count(BR.Net.MARKET_STATE) == 1 and keyPushes == 1,
+    ok(count(BR.Net.MARKET_STATE) == 1 and keyPushes == 1 and uiTold() == 2,
         'a pass with no flip sends nothing more')
     ok(mapGatedCalls == 2, 'but mapGated is asked on every open pass', mapGatedCalls)
 
     gateClosed()
     slow()
-    ok(count(BR.Net.MARKET_STATE) == 2 and keyPushes == 2,
-        'closing it is a flip: one more request and one more push')
+    ok(count(BR.Net.MARKET_STATE) == 2 and keyPushes == 2 and uiTold() == 3,
+        'closing it is a flip: one more request, one more push, and br_ui told')
     gateOpen()
     slow()
-    ok(count(BR.Net.MARKET_STATE) == 3 and keyPushes == 3,
+    ok(count(BR.Net.MARKET_STATE) == 3 and keyPushes == 3 and uiTold() == 4,
         'and so is opening it again')
     local blank = true
     for _, s in ipairs(sent) do

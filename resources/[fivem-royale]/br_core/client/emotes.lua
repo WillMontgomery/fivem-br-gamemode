@@ -491,19 +491,29 @@ end)
 -- ------------------------------------------------------------------- gate ---
 
 -- THE GATE IS ASKED, NOT REMEMBERED, everywhere above. This pass is for the
--- three things that have to HAPPEN when it moves: the server is asked for the
--- market state again (which refreshes br_ui's Emotes tab and slider and this
--- file's wheel mirror), the keybind table is re-pushed so the wheel row
--- appears or goes, and a closed gate takes everything off.
+-- things that have to HAPPEN when it moves: br_ui is told to re-send the page
+-- its grid and the EMOTES flag (the Emotes tab and the Music slider), the
+-- server is asked for the market state again (which refreshes ownership in
+-- br_ui's grid and this file's wheel mirror), the keybind table is re-pushed
+-- so the wheel row appears or goes, and a closed gate takes everything off.
 --
 -- BEFORE THE SEASON ARRIVES the gate reads shut (br_lib/shared/season.lua), so
 -- these passes do nothing that cannot be undone. The pass that sees it land
 -- on a season with emotes is a flip, and maps the wheel's key from here.
+--
+-- br_ui IS TOLD ON br_core's FIRST PASS TOO, WITH THE GATE SHUT (#388). A
+-- `restart br_core` onto an earlier season leaves the page holding the old
+-- season's EMOTES {on=true}, and this pass is the only thing that knows
+-- br_core came back. br_ui answers from its own read of the season, with no
+-- server round trip; if br_ui is not running yet nothing answers, and its own
+-- start pushes anyway.
 BR.Loop.register(BR.Loop.SLOW, 'emotes.gate', function()
     local on = BR.Season.has('emotes') == true
     if on and BR.Keys and BR.Keys.mapGated then BR.Keys.mapGated() end
 
-    if (lastOn == nil and on) or (lastOn ~= nil and on ~= lastOn) then
+    local moved = lastOn ~= nil and on ~= lastOn
+    if lastOn == nil or moved then TriggerEvent('br:emotes:gate') end
+    if (lastOn == nil and on) or moved then
         TriggerServerEvent(BR.Net.MARKET_STATE)
         if BR.Keys and BR.Keys.push then BR.Keys.push() end
     end

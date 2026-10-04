@@ -177,11 +177,28 @@ end
 --- tab and the Settings "Music volume" slider render only while it is.
 ---
 --- SENT WITH EVERY GRID, so a gate flip reaches the page by the same road the
---- grid does: br_core's client watcher asks the server for MARKET_STATE on a
---- flip, and the handler below pushes both.
+--- grid does. br_core's client watcher ('emotes.gate') raises br:emotes:gate
+--- on its first pass and on every flip, and the handler below re-pushes both
+--- at once; it also asks the server for MARKET_STATE on a flip, whose handler
+--- pushes both again with the ownership filled in.
+---
+--- UNTIL THE SEASON ARRIVES emotesOn() is false (br_lib/shared/season.lua),
+--- so a push from this resource's own start sends on=false (#388). A season
+--- with emotes landing is a flip, which re-sends it as on=true; one without
+--- leaves the on=false already sent standing.
 function BR.Market.pushEmotes()
     TriggerEvent('br:ui:sendLocal', BR.Nui.EMOTES, { on = emotesOn() })
 end
+
+--- br_core's client read the emote gate on its first pass after starting, or
+--- saw it move (client/emotes.lua's 'emotes.gate'): re-send the grid and the
+--- EMOTES flag from this resource's own read of the season, now, rather than
+--- waiting on a server round trip that a DynamoDB fault could lose. This is
+--- what closes the page's Emotes tab after `restart br_core` onto a season
+--- without emotes, where nothing changed on this side.
+AddEventHandler('br:emotes:gate', function()
+    BR.Market.push()
+end)
 
 --- The server's answer, and the only thing that changes what the page believes.
 RegisterNetEvent(BR.Net.MARKET_STATE)

@@ -211,6 +211,49 @@ do
     e = lastLocal(BR.Nui.EMOTES)
     ok(e ~= nil and e.on == false and #emoteItems(lastLocal(BR.Nui.MARKET)) == 0,
         ('Season %d arrives: still no tab and no tile'):format(OFF))
+
+    -- A SEASON WITH EMOTES LANDS INSTEAD: br_core's gate pass sees the flip and
+    -- raises br:emotes:gate, and br_ui re-sends from its own read at once --
+    -- before, and without, any answer from the server.
+    convars.br_seasonServed = nil
+    reset()
+    fire('onClientResourceStart', 'br_ui')
+    gateOpen()
+    reset()
+    fire('br:emotes:gate')
+    e = lastLocal(BR.Nui.EMOTES)
+    ok(e ~= nil and e.on == true, ('Season %d arrives: EMOTES {on=true} is re-sent'):format(FROM),
+        e and tostring(e.on))
+    ok(#emoteItems(lastLocal(BR.Nui.MARKET)) == #BR.Config.Emotes.order,
+        'with the dances on the grid', #emoteItems(lastLocal(BR.Nui.MARKET)))
+    ok(#toServer == 0, 'and no server round trip in between', #toServer)
+    restore()
+end
+
+-- ---------------------------------------------------------------------------
+-- `restart br_core` ONTO AN EARLIER SEASON (#388, dev boxes). Nothing changes
+-- on br_ui's side, and br_core's restarted client has no flip to see -- its
+-- first gate pass reads the gate shut with nothing before it. That first pass
+-- raises br:emotes:gate anyway, so the page's Emotes tab still closes.
+-- ---------------------------------------------------------------------------
+
+describe('br_core restarted onto an earlier season')
+do
+    gateOpen()
+    reset()
+    fire(BR.Net.MARKET_STATE, { balance = 0, owned = { 'emote_shuffle' }, equipped = {},
+        emotes = { 'emote_shuffle', '', '', '', '', '', '', '' } })
+    ok(lastLocal(BR.Nui.EMOTES).on == true, ('Season %d: the page has the tab'):format(FROM))
+
+    gateClosed()
+    reset()
+    fire('br:emotes:gate')
+    local e = lastLocal(BR.Nui.EMOTES)
+    ok(e ~= nil and e.on == false,
+        ("br_core's first pass at Season %d: EMOTES {on=false} is re-sent"):format(OFF),
+        e and tostring(e.on))
+    ok(#emoteItems(lastLocal(BR.Nui.MARKET)) == 0, 'and the dances leave the grid')
+    ok(#toServer == 0, 'with nothing asked of the server', #toServer)
     restore()
 end
 

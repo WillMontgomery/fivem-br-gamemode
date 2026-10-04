@@ -95,8 +95,10 @@ export default function Market() {
 
   const tabs = emotesOn ? [...TABS, EMOTE_TAB] : TABS
 
-  // THE GATE CAN CLOSE WITH THE TAB OPEN (br_core restarted on an earlier season), and
-  // a tab that no longer exists must not stay selected over an empty grid.
+  // THE GATE CAN CLOSE WITH THE TAB OPEN: `restart br_core` onto an earlier
+  // season, whose first gate pass has br_ui re-send `emotes` {on: false}
+  // (#388). A tab that no longer exists must not stay selected over an empty
+  // grid.
   useEffect(() => { if (!emotesOn && tab === 'emote') setTab('chute') }, [emotesOn, tab])
   useEffect(() => { if (!emotesOn) setSwapFor(null) }, [emotesOn])
 
