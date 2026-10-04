@@ -83,7 +83,12 @@ if [ "${1:-}" = "--revs" ]; then
     shift
     MODE=revs
     [ "$#" -gt 0 ] || { echo "${RED}FAIL${RST} --revs needs the commits to scan"; exit 2; }
-    if ! git -c core.quotePath=false log -m -p -U0 --no-color --no-ext-diff --no-renames \
+    # --text --no-textconv: the bytes as committed, whatever .gitattributes
+    # says. Without them a path marked -diff or binary is "Binary files
+    # differ" and a textconv driver shows its output instead -- text the
+    # tree form, which reads the files, would have scanned. A file that
+    # really is binary still reaches grep -I, which skips it as before.
+    if ! git -c core.quotePath=false log -m -p -U0 --text --no-textconv --no-color --no-ext-diff --no-renames \
             --diff-filter=ACMRT --format='commit %h' "$@" > "$WORK/patch"; then
         echo "${RED}FAIL${RST} could not read the commits being pushed"
         exit 2

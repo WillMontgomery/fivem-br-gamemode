@@ -535,7 +535,6 @@ class Seasons(Box):
             ('set sv_x 1; set br_season 4\n', '4'),
             ('set br_season 2; ensure br_core; set br_season 3\n', '2'),
             ('set br_season "2;3"\n', '2;3'),
-            ('set br_season 2 # ; set br_season 3\n', '2'),
             # `set` takes exactly two arguments; three is no assignment.
             ('set br_season 2\nset br_season 3 4\n', '2'),
             # Notepad's UTF-8 BOM.
@@ -544,6 +543,64 @@ class Seasons(Box):
             self.cfg(text)
             found, _ = assets.cfg_season(root, os.path.join(root, 'server.cfg'))
             self.assertEqual(found and found[0], want, repr(text))
+
+    def test_a_comment_ends_its_command_not_the_line(self):
+        # ExecuteBuffer cuts at `;` and newlines BEFORE Tokenize knows what a
+        # comment is (Console.cpp): the review's cases first.
+        root = self.server
+        for text, want in (
+            ('# Season 2 from Oct 10; set br_season 2\nensure br_core\n', '2'),
+            ('set br_season 1\n# switch with; br_season 3\nensure br_core\n', '3'),
+            ('set br_season 1 # pinned; br_season 3\nensure br_core\n', '3'),
+            ('set br_season 2 # ; set br_season 3\n', '3'),
+            ('set br_season 1 // pinned; br_season 3\n', '3'),
+            ('#set br_season 2\n', None),
+            # A quote in a comment still holds the `;` for the cut.
+            ('# a "quoted; set br_season 2\n', None),
+            ('# a "quoted"; set br_season 2\n', '2'),
+            # A `#` inside a token is part of it.
+            ('set br_season 2#3\n', '2#3'),
+            # `/*` at a command's start ends it; later, it skips itself and
+            # one character, so `/* x */` is two more tokens.
+            ('/* note */ set br_season 2\n', None),
+            ('set br_season 2 /* x */\n', None),
+            ('set br_season 3 /*x\n', '3'),
+            ('set br_season /*x4\n', '4'),
+            # \" inside a quoted token; a lone CR ends a command.
+            ('set br_season "a\\"b"\n', 'a"b'),
+            ('set br_season 1\rset br_season 2\n', '2'),
+        ):
+            self.cfg(text)
+            found, _ = assets.cfg_season(root, os.path.join(root, 'server.cfg'))
+            self.assertEqual(found and found[0], want, repr(text))
+
+    def test_starting_a_category_br_core_is_in_starts_it(self):
+        # `ensure [x]` / `start [x]` start every resource with a folder [x]
+        # anywhere on its path below resources/ (FindByPathComponent).
+        root = self.server
+        for path in (('[fivem-royale]', '[core]', 'br_core'), ('[maps]', 'legion'), ('[deep]', 'not a category', 'br_core')):
+            write(os.path.join(root, 'resources', *path, 'fxmanifest.lua'), MANIFEST)
+        for text, want in (
+            ('set br_season 1\nensure [fivem-royale]\nset br_season 2\n', '1'),
+            ('set br_season 1\nstart [core]\nset br_season 2\n', '1'),
+            ('set br_season 1; ensure [core]; set br_season 2\n', '1'),
+            ('set br_season 1\nensure [maps]\nset br_season 2\n', '2'),
+            ('set br_season 1\nensure [nowhere]\nset br_season 2\n', '2'),
+            # FXServer walks into [category] folders only: a br_core inside a
+            # resource folder is no resource.
+            ('set br_season 1\nensure [deep]\nset br_season 2\n', '2'),
+            # One argument, or an argument-count mismatch that starts nothing.
+            ('set br_season 1\nensure br_core extra\nset br_season 2\n', '2'),
+            ('set br_season 1\nensure [fivem-royale] x\nset br_season 2\n', '2'),
+        ):
+            self.cfg(text)
+            found, _ = assets.cfg_season(root, os.path.join(root, 'server.cfg'))
+            self.assertEqual(found and found[0], want, repr(text))
+        self.assertEqual(assets.reader_categories(root), frozenset(('[fivem-royale]', '[core]')))
+        # And the pull's season is read the same way.
+        self.cfg('set br_season 1\nensure [fivem-royale]\nset br_season 2\n')
+        args = mock.Mock(season=None, server_cfg=None)
+        self.assertEqual(assets.resolve_season(args, root, 3), (1, 'br_season 1, server.cfg:1'))
 
     def test_a_bare_assignment_counts_once_the_convar_exists(self):
         # A convar registers a command under its own name (Console.Variables.h,
@@ -625,6 +682,13 @@ class Seasons(Box):
         self.cfg('exec tunables.cfg\nset br_season 2\n')
         found, _ = assets.cfg_season(root, os.path.join(root, 'server.cfg'))
         self.assertEqual(found[0], '2', 'a set after the exec wins')
+        # `exec` takes one argument; given more, it runs nothing, in either pass.
+        self.cfg('set br_season 2\nexec tunables.cfg extra\n')
+        found, _ = assets.cfg_season(root, os.path.join(root, 'server.cfg'))
+        self.assertEqual(found[0], '2')
+        self.cfg('ensure br_core\nexec tunables.cfg extra\n')
+        found, _ = assets.cfg_season(root, os.path.join(root, 'server.cfg'))
+        self.assertIsNone(found, 'the early exec queued nothing to carry')
 
     def test_unset_and_garbled_mean_latest(self):
         latest = assets.read_latest()
@@ -1031,14 +1095,16 @@ class Publish(Box):
         self.assertIn('skipped Season 1/emotes: empty, and nothing to remove', text)
         self.assertIn('nothing to publish', text)
 
-        # A folder WITH files but no fxmanifest.lua is a copy in progress: it
-        # is skipped, and never a removal -- so Season 2's removal goes.
+        # A folder WITH files but no fxmanifest.lua is a copy in progress:
+        # Publish refuses, so it is never a removal, nor a removal undone.
         shutil.rmtree(os.path.join(self.drop, 'Season 2', 'legion'))
         write(os.path.join(self.drop, 'Season 2', 'legion', 'stream', 'half.ymap'), b'half')
-        _, text = self.publish('n\n')
-        self.assertIn('skipped Season 2/legion: no fxmanifest.lua, and not a [category] folder', text)
-        self.assertIn('+ legion: no longer removed from Season 2 on', text)
-        self.assertEqual(self.pins(), {'legion': {'1': v1, '2': None}}, 'answered n')
+        _, text = self.publish('y\n', expect=1)
+        self.assertIn('Season 2/legion has files but no fxmanifest.lua, and is not a [category] folder: '
+                      'is it still copying? nothing was published', text)
+        self.assertNotIn('no longer removed', text)
+        self.assertNotIn('[y/N]', text)
+        self.assertEqual(self.pins(), {'legion': {'1': v1, '2': None}})
 
         # A later season's version brings it back.
         shutil.rmtree(os.path.join(self.drop, 'Season 2', 'legion'))
@@ -1054,17 +1120,21 @@ class Publish(Box):
         self.pack_in('Season 1/[anims]/[dances]', 'emotes', {'e.ycd': b'e'})
         self.pack_in('Season 2', 'emotes', {'e.ycd': b'e'})      # the same pack again
         write(os.path.join(self.drop, 'Season 1', 'readme.txt'), b'x')
-        write(os.path.join(self.drop, 'Season 1', 'not a resource', 'x.lua'), b'x')
         write(os.path.join(self.drop, 'Season 1', 'desktop.ini'), b'x')
         write(os.path.join(self.drop, 'Old stuff', 'x.txt'), b'x')
         write(os.path.join(self.drop, 'pack.zip'), b'x')
+        # A folder in a Season folder that is no pack, no [category] and not
+        # empty could be a pack still copying: refused, never skipped.
+        write(os.path.join(self.drop, 'Season 1', 'not a resource', 'x.lua'), b'x')
+        _, text = self.publish('y\n', expect=1)
+        self.assertIn('Season 1/not a resource has files but no fxmanifest.lua', text)
+        shutil.rmtree(os.path.join(self.drop, 'Season 1', 'not a resource'))
         _, text = self.publish('y\n')
         pins = self.pins()
         self.assertEqual(sorted(pins['legion']), ['1', '2'])
         self.assertNotEqual(pins['legion']['1'], pins['legion']['2'])
         self.assertEqual(pins['emotes'], {'1': pins['emotes']['1']}, 'one version per season: no second pin')
         for note in ('skipped Season 1/readme.txt: not a folder',
-                     'skipped Season 1/not a resource: no fxmanifest.lua, and not a [category] folder',
                      'skipped Old stuff: not a "Season <n>" folder',
                      'skipped pack.zip: not in a season folder'):
             self.assertIn(note, text)
@@ -1173,6 +1243,141 @@ class Publish(Box):
         self.assertFalse(os.path.exists(self.object_path('legion', sha)))
         self.assertEqual(self.pins(), {})
 
+    # -- a copy still running ------------------------------------------------------
+
+    def assert_refused_untouched(self, text, pins):
+        """Refused before any upload and before asking: no aws call at all,
+        no prompt, and dev's lock as it was."""
+        self.assertIn('is it still copying? nothing was published', text)
+        self.assertNotIn('[y/N]', text)
+        self.assertEqual(self.calls(), [])
+        self.assertEqual(self.pins(), pins)
+
+    def test_a_half_copied_folder_refuses_publish(self):
+        # THE REVIEW'S CASES. Skipped, a folder with files but no
+        # fxmanifest.lua dropped the pack it was replacing out of the lock.
+        legion = self.pack_in('Season 1', 'legion', {'stream/a.ymap': b'one' * 50})
+        v1 = self.sha_of(legion)
+        self.publish('y\n')
+        # 1. Its only version, mid-replacement: deleted, and the new one's
+        #    audio/ copied in before its fxmanifest.lua. It was "retired".
+        shutil.rmtree(legion)
+        write(os.path.join(legion, 'audio', 'x.awc'), b'z' * 300)
+        self.reset_calls()
+        _, text = self.publish('y\n', expect=1)
+        self.assertIn('Season 1/legion has files but no fxmanifest.lua, and is not a [category] folder: '
+                      'is it still copying? nothing was published', text)
+        self.assertNotIn('retired', text)
+        self.assert_refused_untouched(text, {'legion': {'1': v1}})
+
+        # 2. A later season's version mid-replacement, after a null: its pin
+        #    went, and the null carried on.
+        shutil.rmtree(legion)
+        self.pack_in('Season 1', 'legion', {'stream/a.ymap': b'one' * 50})
+        os.makedirs(os.path.join(self.drop, 'Season 2', 'legion'))
+        s3 = self.pack_in('Season 3', 'legion', {'stream/a.ymap': b'three'})
+        v3 = self.sha_of(s3)
+        self.publish('y\n')
+        self.assertEqual(self.pins(), {'legion': {'1': v1, '2': None, '3': v3}})
+        shutil.rmtree(s3)
+        write(os.path.join(s3, 'stream', 'a.ymap'), b'four')
+        self.reset_calls()
+        _, text = self.publish('y\n', expect=1)
+        self.assertIn('Season 3/legion has files but no fxmanifest.lua', text)
+        self.assertNotIn('no longer pinned', text)
+        self.assert_refused_untouched(text, {'legion': {'1': v1, '2': None, '3': v3}})
+        # The copy finishes: published.
+        write(os.path.join(s3, 'fxmanifest.lua'), MANIFEST)
+        v4 = self.sha_of(s3)
+        self.publish('y\n')
+        self.assertEqual(self.pins(), {'legion': {'1': v1, '2': None, '3': v4}})
+
+        # 3. At any depth under a Season folder, [category] folders too; and
+        #    an empty folder beside it is still a null pin, once it is alone.
+        docks = os.path.join(self.drop, 'Season 1', '[maps]', '[docks]', 'docks')
+        write(os.path.join(docks, 'stream', 'docks.ymap'), b'd')
+        os.makedirs(os.path.join(self.drop, 'Season 4', 'legion'))
+        self.reset_calls()
+        _, text = self.publish('y\n', expect=1)
+        self.assertIn('Season 1/[maps]/[docks]/docks has files but no fxmanifest.lua', text)
+        self.assert_refused_untouched(text, {'legion': {'1': v1, '2': None, '3': v4}})
+        shutil.rmtree(docks)
+        self.publish('y\n')
+        self.assertEqual(self.pins(), {'legion': {'1': v1, '2': None, '3': v4, '4': None}})
+
+    def test_a_copy_started_during_the_prompt_refuses_the_retry(self):
+        # dev moves while the owner reads the plan, so it is made again --
+        # and by then a copy has started. Refused, and the refusal says the
+        # upload already made stays.
+        self.pack_in('Season 1', 'legion', {'m.ymap': b'm'})
+        other = self.other_clone()
+
+        def ask(_q):
+            write(os.path.join(other, 'resources', 'meanwhile.lua'), 'return 2\n')
+            self.g('add', '-A', cwd=other)
+            self.g('commit', '-qm', 'meanwhile', cwd=other)
+            self.g('push', '-q', 'origin', 'dev', cwd=other)
+            write(os.path.join(self.drop, 'Season 2', 'emotes', 'stream', 'e.ycd'), b'e')
+            return True
+        with mock.patch.object(assets, 'ask', ask):
+            _, text = self.publish(expect=1)
+        self.assertIn('nothing was committed or pushed (what was uploaded stays in the bucket):\n'
+                      '  Season 2/emotes has files but no fxmanifest.lua', text)
+        self.assertEqual(self.subject(), 'meanwhile')
+        self.assertEqual(len(self.uploads()), 1)
+
+    @contextlib.contextmanager
+    def unreadable(self, path):
+        """Every read of `path` refused, as a copy holding it open or a
+        permission refuses it: listing it, walking into it, opening it. By
+        hand, because chmod cannot do it on Windows."""
+        denied = os.path.normcase(os.path.abspath(path))
+        real_listdir, real_scandir = os.listdir, os.scandir
+
+        def check(p):
+            if not isinstance(p, int):
+                p = os.fsdecode(os.fspath(p))
+                if os.path.normcase(os.path.abspath(p)) == denied:
+                    raise PermissionError(13, 'Permission denied', p)
+
+        def listdir(p='.'):
+            check(p)
+            return real_listdir(p)
+
+        def scandir(p='.'):
+            check(p)
+            return real_scandir(p)
+
+        def opener(p, *args, **kwargs):
+            check(p)
+            return open(p, *args, **kwargs)
+        with mock.patch.object(os, 'listdir', listdir), mock.patch.object(os, 'scandir', scandir), \
+                mock.patch.object(assets, 'open', opener, create=True):
+            yield
+
+    def test_anything_unreadable_refuses_publish(self):
+        legion = self.pack_in('Season 1', 'legion', {'stream/a.ymap': b'one' * 50})
+        self.pack_in('Season 1/[maps]', 'docks', {'d.ymap': b'd'})
+        os.makedirs(os.path.join(self.drop, 'Season 2', 'legion'))
+        self.publish('y\n')
+        pins = self.pins()
+        self.assertEqual(sorted(pins), ['docks', 'legion'])
+        for path, said in (
+            (os.path.join(self.drop, 'Season 2'), 'Season 2'),
+            (os.path.join(self.drop, 'Season 1', '[maps]'), 'Season 1/[maps]'),
+            (legion, 'Season 1/legion'),
+            (os.path.join(legion, 'stream'), 'Season 1/legion/stream'),
+            (os.path.join(legion, 'stream', 'a.ymap'), 'Season 1/legion/stream/a.ymap'),
+            # An empty folder means something, so an unreadable one is not empty.
+            (os.path.join(self.drop, 'Season 2', 'legion'), 'Season 2/legion'),
+        ):
+            self.reset_calls()
+            with self.unreadable(path):
+                _, text = self.publish('y\n', expect=1)
+            self.assertIn('%s cannot be read (Permission denied): is it still copying? nothing was published'
+                          % said, text)
+            self.assert_refused_untouched(text, pins)
+
     # -- never the shared checkout -----------------------------------------------
 
     def test_the_shared_checkout_is_never_touched(self):
@@ -1271,6 +1476,56 @@ class Publish(Box):
         self.assertIn('the plan above is not the one you answered', text)
         self.assertIn('- emotes: retired', text.split('the plan above is not the one you answered')[0].rsplit('the plan:', 1)[1])
         self.assertEqual(self.subject(), 'another publish', 'answered n the second time: nothing of ours went up')
+
+    def test_a_dev_rewound_during_the_prompt_stays_rewound(self):
+        # THE REVIEW'S CASE: dev allows force-pushes, and a purge rewinds it
+        # while the owner sits at the prompt. The lock commit, built on the
+        # purged commit, still fast-forwards the rewound dev: pushed plainly,
+        # GitHub took it and the purged commit came back.
+        write(os.path.join(self.shared, 'leak.txt'), 'pretend this is a licensed file\n')
+        self.g('add', 'leak.txt')
+        self.g('commit', '-qm', 'a leak')
+        self.g('push', '-q', 'origin', 'dev')
+        leak = self.g('rev-parse', 'HEAD')
+        self.pack_in('Season 1', 'legion', {'m.ymap': b'm'})
+        asked = []
+
+        def ask(q):
+            asked.append(q)
+            self.g('update-ref', 'refs/heads/dev', self.base, cwd=self.bare)
+            return True
+        with mock.patch.object(assets, 'ask', ask):
+            _, text = self.publish()
+        self.assertEqual(len(asked), 1, 'the same plan on the rewound dev: pushed without asking again')
+        self.assertIn('--force-with-lease=refs/heads/dev:%s origin' % leak[:12], text)
+        self.assertIn('dev moved while this was being published; the plan is the same, so pushing again', text)
+        self.assertIn('pushed to dev', text)
+        self.assertEqual(self.g('log', '--format=%s', 'dev', cwd=self.bare).splitlines(),
+                         ['Licensed assets: add legion', 'base'])
+        r = subprocess.run([GIT_EXE, '-C', self.bare, 'merge-base', '--is-ancestor', leak, 'dev'])
+        self.assertEqual(r.returncode, 1, 'the purged commit stays purged')
+        self.assertEqual(self.g('show', '--name-only', '--format=', 'dev', cwd=self.bare).splitlines(), ['assets.lock'])
+
+    def test_only_a_fast_forward_of_the_planned_dev_is_pushed(self):
+        # The lease lets a push through while dev is still the planned commit;
+        # a commit not on top of it would rewrite dev. Refused before git runs.
+        self.pack_in('Season 1', 'legion', {'m.ymap': b'm'})
+        self.publish('n\n')
+        orphan = self.g('commit-tree', self.g('rev-parse', 'dev^{tree}', cwd=self.bare), '-m', 'no parent',
+                        cwd=self.clone)
+        real = assets.git
+        pushes = []
+
+        def git(repo, *args, **kw):
+            if args[:1] == ('push',):
+                pushes.append(args)
+            return real(repo, *args, **kw)
+        with mock.patch.object(assets, 'git', git), contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(assets.AssetsError) as cm:
+                assets.push_commit(self.clone, self.base, orphan)
+        self.assertIn('is not a fast-forward of dev at %s, so it was not pushed' % self.base[:12], str(cm.exception))
+        self.assertEqual(pushes, [])
+        self.assertEqual(self.g('rev-parse', 'dev', cwd=self.bare), self.base)
 
     def test_success_is_read_back_from_github(self):
         self.pack_in('Season 1', 'legion', {'m.ymap': b'm'})
@@ -2514,6 +2769,25 @@ class PrePush(unittest.TestCase):
         self.assertIn('SECRET\x1b[0m tools/deploy notes.sh:2 (commit %s)  AWS access key id' % sha, out)
         self.assertNotIn(key, out, 'the secret itself is never echoed')
         self.assertIn('pre-push: refused', out)
+
+    def test_text_marked_binary_or_textconv_is_scanned_as_committed(self):
+        # .gitattributes makes `git log -p` print "Binary files differ" for a
+        # path marked -diff or binary, and a textconv driver's output for one
+        # with a driver; the tree form reads the files, so --revs must too.
+        key = 'AKIA' + 'R' * 16
+        self.git('config', 'diff.hide.textconv', 'echo')
+        self.commit({'.gitattributes': 'nodiff.txt -diff\nbin.txt binary\nconv.txt diff=hide\n'}, 'attributes')
+        self.commit({f: 'notes\nkey %s\n' % key for f in ('nodiff.txt', 'bin.txt', 'conv.txt')}, 'keys')
+        sha = self.git('rev-parse', '--short', 'HEAD')[1].strip()
+        _, log = self.git('log', '-p', '-1', '--format=')
+        self.assertNotIn(key, log, 'git log -p alone hides all three')
+        out = self.push_refused('dev')
+        for f in ('nodiff.txt', 'bin.txt', 'conv.txt'):
+            self.assertIn('SECRET\x1b[0m %s:2 (commit %s)  AWS access key id' % (f, sha), out)
+        self.assertNotIn(key, out)
+        r = subprocess.run([BASH, 'tools/check_secrets.sh'], cwd=self.repo, stdout=subprocess.PIPE,
+                           stderr=subprocess.STDOUT)
+        self.assertEqual(r.returncode, 1, 'the tree form finds them too')
 
     def test_what_the_remote_already_has_is_not_held_against_a_later_push(self):
         self.commit({'stream/old.ytd': b'x'}, 'pushed past the hook')

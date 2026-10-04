@@ -36,7 +36,9 @@ THE DROP FOLDER. The owner drags packs into `Season <n>` folders with File
 Explorer and double-clicks Publish.cmd, which runs `publish`: the folders ARE
 the lock's contents, so a pack moved, replaced or deleted there is published as
 exactly that, and an EMPTY folder with a pack's name in a later season is a
-null pin there. Publish works in its own clone of the repo, never in a
+null pin there. A folder with files but no fxmanifest.lua, or anything that
+cannot be read, is most likely a copy still running, and Publish refuses
+(find_resources). Publish works in its own clone of the repo, never in a
 checkout anyone else uses (see cmd_publish).
 
 FOUR RULES THE CODE BELOW EXISTS TO KEEP, each pinned by tools/test_assets.py:
@@ -335,7 +337,11 @@ def collect(folder: str) -> tuple[list[tuple[str, str, int, int]], list[str]]:
     def rel(full):
         return os.path.relpath(full, root).replace(os.sep, '/')
 
-    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+    def unreadable(e: OSError) -> None:
+        raise e
+
+    # A folder that cannot be listed is an error, never a folder left out.
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False, onerror=unreadable):
         keep = []
         for d in dirnames:
             full = os.path.join(dirpath, d)
@@ -701,46 +707,72 @@ def parse_season(raw) -> int | None:
 
 
 def cfg_commands(text: str) -> list[tuple[int, list[str]]]:
-    """The commands a cfg's text runs, as FXServer splits them: (line, tokens).
+    """The commands a cfg's text runs, as FXServer reads them: (line, tokens).
 
-    A UTF-8 BOM at the top is dropped. A line holds several commands split on
-    `;` outside double quotes. Tokens split on whitespace, a double-quoted
-    token keeps its spaces and semicolons, and a `#` or `//` that starts a
-    token ends the line."""
+    TWO STEPS, IN FXServer's ORDER (code/client/citicore/console/Console.cpp),
+    and comments belong to the second:
+
+      1. Context::ExecuteBuffer cuts the text into commands at every newline
+         and at every `;` outside double quotes. Any `"` toggles the quoting,
+         one in a comment too, because comments are not known yet.
+      2. Tokenize reads each command on its own. Whitespace is any character
+         up to the space. A `#` or `//` that starts a token ends THAT
+         COMMAND, not the line -- so `# note; set br_season 2` runs the set,
+         and `set br_season 1 # pinned; br_season 3` ends at 3. A `/*` at the
+         very start of a command ends it too; one later skips itself and the
+         character after it (its loop stops at the `*`), and nothing else. A
+         double-quoted token keeps its spaces and semicolons, with `\\"` a
+         quote inside it; a `"` ends an unquoted token.
+
+    A UTF-8 BOM at the top is dropped."""
     if text.startswith('\ufeff'):
         text = text[1:]
     out: list[tuple[int, list[str]]] = []
-    for lineno, line in enumerate(text.splitlines(), 1):
-        toks: list[str] = []
-        i, n = 0, len(line)
-        while i < n:
-            c = line[i]
-            if c == ';':
+    for lineno, line in enumerate(re.split(r'\r\n|[\r\n]', text), 1):
+        quoted, start = False, 0
+        for i, c in enumerate(line + ';'):
+            if c == '"':
+                quoted = not quoted
+            elif c == ';' and (not quoted or i == len(line)):
+                toks = cfg_tokens(line[start:i])
                 if toks:
                     out.append((lineno, toks))
-                    toks = []
-                i += 1
-                continue
-            if c.isspace():
-                i += 1
-                continue
-            if c == '"':
-                j = line.find('"', i + 1)
-                if j < 0:
-                    j = n
-                toks.append(line[i + 1:j])
-                i = j + 1
-                continue
-            if c == '#' or line.startswith('//', i):
-                break
-            j = i
-            while j < n and not line[j].isspace() and line[j] not in '";':
-                j += 1
-            toks.append(line[i:j])
-            i = j
-        if toks:
-            out.append((lineno, toks))
+                start, quoted = i + 1, False
     return out
+
+
+def cfg_tokens(cmd: str) -> list[str]:
+    """One command's tokens, as Tokenize reads them (cfg_commands)."""
+    toks: list[str] = []
+    i, n = 0, len(cmd)
+    while True:
+        while i < n and cmd[i] <= ' ':
+            i += 1
+        if i >= n:
+            return toks
+        if cmd[i] == '#' or cmd.startswith('//', i):
+            return toks
+        if cmd.startswith('/*', i):
+            if i == 0:
+                return toks
+            i += 3
+            continue
+        if cmd[i] == '"':
+            arg: list[str] = []
+            i += 1
+            while i < n and cmd[i] != '"':
+                if cmd[i] == '\\' and cmd.startswith('"', i + 1):
+                    i += 1
+                arg.append(cmd[i])
+                i += 1
+            toks.append(''.join(arg))
+            i += 1
+            continue
+        j = i
+        while j < n and cmd[j] > ' ' and cmd[j] != '"':
+            j += 1
+        toks.append(cmd[i:j])
+        i = j
 
 
 SET_COMMANDS = ('set', 'setr', 'sets', 'seta')
@@ -762,6 +794,33 @@ def season_assignment(t: list[str], exists: bool) -> str | None:
     return None
 
 
+def reader_categories(server_root: str) -> frozenset[str]:
+    """The [category] folders br_core sits in on this box: every bracketed
+    folder on the way from resources/ to a folder named br_core, walked as
+    FXServer's resource scan walks (ServerResourceList::ScanResources): into
+    [category] folders only, since any other folder is a resource. `ensure`
+    or `start` of any of them starts br_core. Read at pull time from the tree
+    FXServer will scan; a tree that is absent or cannot be read gives none."""
+    found: set[str] = set()
+
+    def walk(path: str, cats: tuple[str, ...], depth: int) -> None:
+        try:
+            entries = os.listdir(path)
+        except OSError:
+            return
+        for e in entries:
+            if not os.path.isdir(os.path.join(path, e)):
+                continue
+            if len(e) >= 2 and e[0] == '[' and e[-1] == ']':
+                if depth < 16:
+                    walk(os.path.join(path, e), cats + (e,), depth + 1)
+            elif e == SEASON_READER:
+                found.update(cats)
+
+    walk(os.path.join(server_root, 'resources'), (), 0)
+    return frozenset(found)
+
+
 def cfg_season(server_root: str, cfg_path: str) -> tuple[tuple[str, str, int] | None, list[str]]:
     """The value br_core sees for br_season, as (value, file, line), plus notes
     on anything that could not be followed.
@@ -781,8 +840,17 @@ def cfg_season(server_root: str, cfg_path: str) -> tuple[tuple[str, str, int] | 
       2. THE REAL EXEC, the same file's `exec` command (AddCommand("exec"))
          runs each file inline through Context::ExecuteBuffer
          (code/client/citicore/console/Console.cpp), which splits commands on
-         newlines and on `;` outside quotes. br_core reads br_season once,
-         when `ensure br_core` (or `start`) starts it, so the walk STOPS there.
+         newlines and on `;` outside quotes (cfg_commands). br_core reads
+         br_season once, when it starts, so the walk STOPS at the command
+         that starts it: `ensure br_core` or `start br_core`, or `ensure` or
+         `start` of a [category] br_core sits in. Both commands take a
+         [category] as every resource under a folder of that name, at any
+         depth below resources/ (citizen-server-impl ServerResources.cpp,
+         FindByPathComponent; ServerResourceList indexes every bracketed
+         component of a resource's path), so the box's own resources/ tree is
+         read for br_core's (reader_categories). Each takes ONE argument, as
+         `exec` does: with more it is an argument-count mismatch, and runs
+         nothing.
 
     And in both passes a bare `br_season 6` is an assignment once the convar
     exists: ConsoleVariableEntry registers a set command under the convar's
@@ -795,9 +863,11 @@ def cfg_season(server_root: str, cfg_path: str) -> tuple[tuple[str, str, int] | 
     last value, whenever the early pass created it without `sets`: a
     `set br_season 2` BELOW `ensure br_core` still reaches br_core, and a bare
     `br_season 6` above everything assigns. Not modeled: `+set` on the command
-    line (deploy.sh's boxes pass only `+exec server.cfg`), and a file exec'd
-    twice, which is followed once."""
+    line (deploy.sh's boxes pass only `+exec server.cfg`), a file exec'd
+    twice, which is followed once, and a resource that starts br_core as its
+    dependency."""
     notes: list[str] = []
+    categories = reader_categories(server_root)
 
     def target_of(path: str, lineno: int, t: list[str]) -> str | None:
         target = t[1]
@@ -830,7 +900,7 @@ def cfg_season(server_root: str, cfg_path: str) -> tuple[tuple[str, str, int] | 
                 early_exists = True
                 if t[0].lower() == 'sets':
                     early_serverinfo = True
-            elif t[0].lower() == 'exec' and len(t) >= 2:
+            elif t[0].lower() == 'exec' and len(t) == 2:
                 target = target_of(path, lineno, t)
                 key = target and os.path.normcase(os.path.abspath(target))
                 if key and key not in queued:
@@ -861,10 +931,10 @@ def cfg_season(server_root: str, cfg_path: str) -> tuple[tuple[str, str, int] | 
             if v is not None:
                 found[0] = (v, path, lineno)
                 exists[0] = True
-            elif cmd in ('ensure', 'start') and len(t) >= 2 and t[1] == SEASON_READER:
+            elif cmd in ('ensure', 'start') and len(t) == 2 and (t[1] == SEASON_READER or t[1] in categories):
                 started[0] = True
                 return
-            elif cmd == 'exec' and len(t) >= 2:
+            elif cmd == 'exec' and len(t) == 2:
                 target = target_of(path, lineno, t)
                 if target:
                     walk(target, depth + 1)
@@ -1026,32 +1096,56 @@ def is_category(name: str) -> bool:
     return len(name) > 2 and name.startswith('[') and name.endswith(']')
 
 
-def is_empty_folder(path: str) -> bool:
-    """No file at all, however deep, but File Explorer's own (desktop.ini,
-    Thumbs.db, .DS_Store). A link, or anything that cannot be read, is not
-    empty: an empty folder means something, so it has to be certain."""
-    unreadable: list = []
-    for dirpath, dirnames, filenames in os.walk(path, followlinks=False, onerror=unreadable.append):
-        if any(is_link(os.path.join(dirpath, d)) for d in dirnames):
-            return False
-        if any(f.lower() not in JUNK_FILES for f in filenames):
-            return False
-    return not unreadable
+def folder_holds(path: str) -> tuple[bool, OSError | None]:
+    """(whether anything is anywhere under `path` but File Explorer's own
+    files -- desktop.ini, Thumbs.db, .DS_Store -- a link counting, the first
+    error reading it). Empty is neither: an empty folder means something, so
+    it has to be certain."""
+    errors: list[OSError] = []
+    for dirpath, dirnames, filenames in os.walk(path, followlinks=False, onerror=errors.append):
+        if any(is_link(os.path.join(dirpath, d)) for d in dirnames) \
+                or any(f.lower() not in JUNK_FILES for f in filenames):
+            return True, None
+    return False, (errors[0] if errors else None)
 
 
-def find_resources(folder: str, label: str, notes: list[str],
-                   empties: list | None = None) -> list[tuple[str, str, str]]:
+def unreadable_text(label: str, folder: str, e: OSError) -> str:
+    """`<label>[/<path inside>] cannot be read (<why>)` for an error reading
+    something in `folder`, which `label` names."""
+    where = label
+    name = getattr(e, 'filename', None)
+    if isinstance(name, str) and inside(name, folder):
+        where = '%s/%s' % (label, os.path.relpath(name, folder).replace(os.sep, '/'))
+    return '%s cannot be read (%s)' % (where, e.strerror or e)
+
+
+def still_copying(text: str) -> str:
+    return text + ': is it still copying? nothing was published'
+
+
+def find_resources(folder: str, label: str, notes: list[str], empties: list | None = None,
+                   problems: list[str] | None = None) -> list[tuple[str, str, str]]:
     """(name, path, label) for each resource in `folder`: a subfolder holding
     fxmanifest.lua is one, named after the folder; a FiveM [category] folder is
-    walked into; anything else is noted in `notes` and skipped -- except, when
-    `empties` is given, an EMPTY folder, which goes there as (name, path,
-    label). A folder with files but no fxmanifest.lua is always skipped: it is
-    most likely a copy still in progress, and never means anything."""
+    walked into; anything else is noted in `notes` and skipped.
+
+    PUBLISH PASSES `empties` AND `problems`, AND THEN NOTHING THAT MIGHT BE A
+    PACK IS SKIPPED. An EMPTY folder goes to `empties` as (name, path, label):
+    a null pin. A folder with files but no fxmanifest.lua -- at any depth
+    under the Season folder, [category] folders too -- and any Season,
+    [category] or pack folder that cannot be read go to `problems`, and
+    Publish refuses: that is most likely a copy still running, and skipping it
+    would drop the pack it replaces out of the lock (retired from every
+    season, or a later season's version unpinned so an earlier null carries
+    on). A pack's own files are read when it is hashed (cmd_publish)."""
     out: list[tuple[str, str, str]] = []
     try:
         entries = sorted(os.listdir(folder), key=lambda s: (s.lower(), s))
     except OSError as e:
-        notes.append('%s: cannot be read (%s)' % (label, e.strerror or e))
+        if problems is None:
+            notes.append('%s: cannot be read (%s)' % (label, e.strerror or e))
+        else:
+            problems.append(still_copying('%s cannot be read (%s)' % (label, e.strerror or e)))
         return out
     for entry in entries:
         full = os.path.join(folder, entry)
@@ -1064,11 +1158,18 @@ def find_resources(folder: str, label: str, notes: list[str],
             if os.path.isfile(os.path.join(full, 'fxmanifest.lua')):
                 out.append((entry, full, lab))
             elif is_category(entry):
-                out.extend(find_resources(full, lab, notes, empties))
-            elif empties is not None and is_empty_folder(full):
-                empties.append((entry, full, lab))
-            else:
+                out.extend(find_resources(full, lab, notes, empties, problems))
+            elif problems is None or empties is None:
                 notes.append('skipped %s: no fxmanifest.lua, and not a [category] folder' % lab)
+            else:
+                held, error = folder_holds(full)
+                if held:
+                    problems.append(still_copying('%s has files but no fxmanifest.lua, and is not a [category] '
+                                                  'folder' % lab))
+                elif error is not None:
+                    problems.append(still_copying(unreadable_text(lab, full, error)))
+                else:
+                    empties.append((entry, full, lab))
         else:
             notes.append('skipped %s: not a folder' % lab)
     return out
@@ -2011,7 +2112,7 @@ def scan_drop(drop: str):
             continue
         folder_of[n] = entry
         empties[n] = []
-        seasons[n] = find_resources(full, entry, notes, empties[n])
+        seasons[n] = find_resources(full, entry, notes, empties[n], problems)
     spelled: dict[str, str] = {}
     for n in sorted(seasons):
         problems += name_problems(seasons[n], ' in Season %d' % n)
@@ -2394,11 +2495,27 @@ def check_commit(clone: str, base: str, commit: str, text: str, names: frozenset
 
 
 def push_commit(clone: str, base: str, commit: str) -> bool:
-    """Push `commit` to dev. True when GitHub's dev now holds it -- read back
-    from GitHub, never taken from the push's word -- and False when dev had
-    moved on from `base`, so the plan has to be made again. Raises otherwise."""
-    say('git push origin %s:refs/heads/%s' % (short(commit), PUBLISH_BRANCH))
-    r = git(clone, 'push', 'origin', '%s:refs/heads/%s' % (commit, PUBLISH_BRANCH), check=False)
+    """Push `commit` to dev, ONLY ONTO EXACTLY `base`. True when GitHub's dev
+    now holds it -- read back from GitHub, never taken from the push's word --
+    and False when dev is not `base` any more, so the plan has to be made
+    again. Raises otherwise.
+
+    A PLAIN PUSH TAKES ANY dev THE COMMIT FAST-FORWARDS, and dev allows
+    force-pushes. Rewound while the owner sat at the prompt -- a purge of a
+    leaked file -- dev is an ancestor of `base`, the commit still
+    fast-forwards it, GitHub takes it, and the purged commit comes back. So
+    the push carries a lease, --force-with-lease=refs/heads/dev:<base>, and
+    GitHub updates dev only while it is exactly `base`, checked in the same
+    ref update. A lease that holds would let a push rewrite dev, though, so
+    the commit must fast-forward `base` -- its one parent -- or it is never
+    pushed."""
+    parents = git(clone, 'rev-list', '--parents', '-n', '1', commit).out.split()[1:]
+    if parents != [base]:
+        raise AssetsError('%s is not a fast-forward of %s at %s, so it was not pushed. Nothing reached GitHub.'
+                          % (short(commit), PUBLISH_BRANCH, short(base)))
+    lease = '--force-with-lease=refs/heads/%s:%s' % (PUBLISH_BRANCH, base)
+    say('git push %s origin %s:refs/heads/%s' % (lease[:-len(base)] + short(base), short(commit), PUBLISH_BRANCH))
+    r = git(clone, 'push', lease, 'origin', '%s:refs/heads/%s' % (commit, PUBLISH_BRANCH), check=False)
     now = fetch_dev(clone)
     if git(clone, 'merge-base', '--is-ancestor', commit, now, check=False).returncode == 0:
         say('pushed to %s: %s%s' % (PUBLISH_BRANCH, git(clone, 'log', '-1', '--format=%h %s', commit).out,
@@ -2429,10 +2546,12 @@ def cmd_publish(args) -> int:
       4. ask y/N. n: nothing is written anywhere -- no lock, no commit --
          and only the uploaded archives remain;
       5. y: build a commit on top of the fetched dev whose only change is
-         assets.lock, check it once more, and push it to refs/heads/dev;
-      6. dev moved meanwhile (the push is refused as not a fast-forward):
-         fetch, make the plan again from the folders on the new dev, push
-         without asking if it is unchanged, and ask again if it is not;
+         assets.lock, check it once more, and push it to refs/heads/dev,
+         leased to the dev the plan was made on (push_commit);
+      6. dev is not that commit any more -- moved on, or rewound by a purge
+         (the lease refuses the push either way): fetch, make the plan again
+         from the folders on the new dev, push without asking if it is
+         unchanged, and ask again if it is not;
       7. "pushed" only once GitHub's dev is fetched back and holds the commit.
     """
     drop = os.path.abspath(args.drop)
@@ -2467,7 +2586,10 @@ def cmd_publish(args) -> int:
             for name in sorted({name for items in seasons.values() for name, _, _ in items if name.lower() in names}):
                 problems.append('%s: a resource in this repository already has that name; rename the folder' % name)
             if problems:
-                raise AssetsError('nothing was uploaded or changed:\n%s' % '\n'.join('  ' + x for x in problems))
+                # A retry (dev moved) may follow uploads: those stay, and say so.
+                raise AssetsError('nothing was %s:\n%s' % (
+                    'committed or pushed (what was uploaded stays in the bucket)' if aws_box else 'uploaded or changed',
+                    '\n'.join('  ' + x for x in problems)))
 
             index = load_index(index_path)
             used: set[str] = set()
@@ -2475,7 +2597,10 @@ def cmd_publish(args) -> int:
             removed: dict[str, dict[int, str]] = {}
             for n in sorted(seasons):
                 for name, full, lab in seasons[n]:
-                    info = hash_folder(full, index, tmp)
+                    try:
+                        info = hash_folder(full, index, tmp)
+                    except OSError as e:
+                        raise AssetsError(still_copying(unreadable_text(lab, full, e)))
                     used.add(info['content'])
                     say('  %s: %s, %d files, %s%s' % (lab, short(info['sha']), len(info['files']),
                                                       human(info['size']), ', packed before' if info['reused'] else ''))
