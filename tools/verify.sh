@@ -14,8 +14,9 @@
 #                 These have no FiveM dependencies, so they can and should be
 #                 tested outside the game.
 #
-#   2b. FRAME  -- br_core's per-frame native calls, phase by phase through a
-#                 simulated session, held to tools/perf_budget.lua (#393).
+#   2b. FRAME  -- br_core's per-frame native calls, draw calls and allocation,
+#                 phase by phase through a simulated session, held to
+#                 tools/perf_budget.lua (#393).
 #
 #   3. SCOPE   -- the ban on scope-poisoned natives in br_core/client. Under
 #                 OneSync big mode, GetActivePlayers and GetPlayerFromServerId
@@ -114,7 +115,7 @@ NOTES=(
     "test_props|Dev props: server decides and syncs; pickup look, every edit key, save/load"
     "test_stamina|Sprint never runs out and never costs health, in every player state and on every tick"
     "test_rarity|The five rarity colors are the owner's, and the same in the game, the page and the built page"
-    "frame budget|The player's per-frame game calls stay within budget, lobby through match"
+    "frame budget|Per-frame game calls, draws and memory stay within budget, lobby to match, every scene"
     "scope gate|Player-side code never asks about players with game calls that only see those nearby"
     "weapon table|Each weapon's game ID matches its name, magazine sizes fit, car use is set, icons exist"
     "vehicle table|Each banned vehicle's game ID matches its name, so tanks and jets really stay banned"
@@ -812,13 +813,16 @@ fi
 # callback DOES and none what it COSTS.
 #
 # tools/perf_client.lua loads every br_core client file under a modelled engine,
-# walks one player through a session (lobby, warmup, the plane, the jump, a
-# match) and counts every native call per frame, per phase. --check holds each
-# phase to tools/perf_budget.lua, which is the tree's own numbers plus a little
-# headroom, written by --rebaseline. Native calls rather than time: they are
-# exact and identical on every run and every machine, and a native is where the
-# cost is in the game. An ungated per-frame loop is calls in every frame of
-# every phase it runs in, which is the creep this exists to stop.
+# walks one player through a session (lobby, warmup, the plane's doors-open
+# cruise, the jump, a match, and the match played: scoped, pinging, driving,
+# reviving, talking, looting, outside the storm, emoting, downed, spectating)
+# and counts three things per frame, per phase: native calls, draw calls, and
+# kilobytes allocated. --check holds each phase to tools/perf_budget.lua, the
+# tree's own numbers written by --rebaseline, with a slack small enough that a
+# 3-call loop, one more draw or one more kilobyte a frame fails. Counts rather
+# than time: they are exact and the same on every run, and each regression this
+# exists to stop shows in one of them -- an ungated loop is calls, a quad that
+# came back is a draw, a geometry rebuild every frame is allocation and no call.
 #
 # WHAT IT CANNOT SEE is the engine's side of a call -- a DrawSpritePoly counts
 # one here and costs the render thread a triangle in the game -- and real native

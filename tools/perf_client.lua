@@ -5,7 +5,7 @@
 --   lua tools/perf_client.lua --by 12         more natives named per contributor
 --   lua tools/perf_client.lua --phase match   one phase (and the ones before it)
 --   lua tools/perf_client.lua --check         the budget gate tools/verify.sh runs
---   lua tools/perf_client.lua --rebaseline    print a fresh budget table
+--   lua tools/perf_client.lua --rebaseline    measure and rewrite the budget
 --
 -- WHAT IT IS. Every br_core client file, in fxmanifest order, plus the vendored
 -- ScaleformUI that loads inside br_core, run in one Lua state against a modelled
@@ -41,10 +41,11 @@
 -- includes the stubs. Use it to rank and to compare a before with an after; the
 -- in-game numbers are brbench / brab (client/debug.lua) and resmon.
 --
--- THE BUDGET. tools/perf_budget.lua holds a ceiling per phase on each of the
--- three counts. --check fails when a phase goes over any of them, which is how
--- an ungated per-frame loop, a draw that came back or a rebuild every frame gets
--- caught before a playtest does. docs/testing.md says how to rebaseline.
+-- THE BUDGET. tools/perf_budget.lua holds what each phase measured on each of the
+-- three counts. --check fails a phase that goes over any of them by more than a
+-- small slack (see the budget section at the bottom), which is how an ungated
+-- per-frame loop, a draw that came back or a rebuild every frame gets caught
+-- before a playtest does. docs/testing.md says how to rebaseline.
 
 local ARGS = {}
 do
@@ -1787,15 +1788,40 @@ end
 
 -- ------------------------------------------------------------------ budget ---
 --
--- THE GUARD. A ceiling per phase on native calls per frame, recorded in
--- tools/perf_budget.lua with modest headroom over what the tree measured when it
--- was written. Native calls only: they are exact and the same on every run and
--- every machine, where Lua time on this box moves by tens of percent with
--- whatever else it is doing. A new per-frame loop that nothing gates shows up
--- here as calls in every phase it runs in, which is what this exists to catch.
+-- THE GUARD. tools/perf_budget.lua records, per phase, what the tree measured
+-- when it was written, three ways: native calls, draws and kilobytes allocated,
+-- each per frame. --check fails a phase that goes over any of them by more than
+-- SLACK, which is set so that the smallest regression worth catching fails:
+--
+--   natives  2.5 a frame -- one more per-frame loop of three calls fails
+--   draws    0.9 a frame -- one more draw call every frame fails
+--   KB       0.9 a frame -- one more kilobyte allocated every frame fails
+--
+-- THREE COUNTS AND NOT ONE, because each regression this exists to stop shows in
+-- a different one. A loop nothing gates is native calls. A wall quad, a marker or
+-- a sprite that comes back is a draw, which the game pays for on the render
+-- thread as well -- and a draw that replaced another native would leave the
+-- native count where it was. A geometry rebuild every frame allocates and calls
+-- no native at all: it is invisible to the other two and is what KB is for.
+--
+-- STABLE BECAUSE IT IS EXACT. All three are counts, not timings: the clock is
+-- the model's, math.random is seeded and the stub server answers in a fixed
+-- order. The one wobble is main.lua starting its band threads in pairs() order,
+-- which Lua seeds afresh each run, so a SLOW pass and the loot prop thread can
+-- swap places within a frame: up to 0.1 natives a frame in the plane phases,
+-- nothing in draws or KB. The slack is twenty-five times that. Lua time is not
+-- budgeted at all: on this box it moves by tens of percent with whatever else is
+-- running.
+--
+-- THE SLACK LIVES HERE AND NOT IN THE BUDGET FILE, which holds only what was
+-- measured, so a rebaseline cannot loosen it and nobody edits it by hand.
 
-local HEADROOM = 1.05      -- 5% over the measured number...
-local HEADROOM_MIN = 2.0   -- ...and never less than two calls a frame
+local SLACK = { n = 2.5, d = 0.9, kb = 0.9 }
+local METRICS = {
+    { key = 'n',  field = 'natives', unit = 'natives' },
+    { key = 'd',  field = 'draws',   unit = 'draws' },
+    { key = 'kb', field = 'kb',      unit = 'KB' },
+}
 
 local function harnessErrors()
     local errs = {}
@@ -1808,22 +1834,23 @@ end
 
 if ARGS.rebaseline then
     local lines = {
-        '-- br_core\'s per-frame budget: native calls per frame, per phase, that',
-        '-- `lua tools/perf_client.lua --check` allows (tools/verify.sh runs it).',
+        '-- br_core\'s per-frame budget: what each phase measured, per frame, as native',
+        '-- calls, draw calls (natives named Draw*) and kilobytes allocated.',
+        '-- `lua tools/perf_client.lua --check` (tools/verify.sh runs it) fails a phase',
+        ('-- that goes over any of them by more than %.1f natives, %.1f draws or %.1f KB.'):format(
+            SLACK.n, SLACK.d, SLACK.kb),
         '--',
         '-- WRITTEN, NOT EDITED: `lua tools/perf_client.lua --rebaseline` measures the',
-        ('-- tree and writes this file with each phase\'s number plus %d%% (at least %d'):format(
-            math.floor((HEADROOM - 1.0) * 100 + 0.5), math.floor(HEADROOM_MIN)),
-        '-- calls). Rebaseline only for a change that is MEANT to cost more, and say so',
-        '-- in its commit. See docs/testing.md.',
+        '-- tree and writes this file. The slack is in tools/perf_client.lua, not here.',
+        '-- Rebaseline only for a change that is MEANT to cost more (or that costs',
+        '-- less, to keep the guard tight), and say so in its commit. See docs/testing.md.',
         'return {',
         ('    frames = %d,'):format(MEASURE_FRAMES),
         '    phases = {',
     }
     for _, r in ipairs(results) do
-        local ceiling = math.ceil(math.max(r.tot.n * HEADROOM, r.tot.n + HEADROOM_MIN))
-        lines[#lines + 1] = ('        { id = %q, measured = %s, budget = %d },')
-            :format(r.id, fmt(r.tot.n), ceiling)
+        lines[#lines + 1] = ('        { id = %q, natives = %.3f, draws = %.3f, kb = %.3f },')
+            :format(r.id, r.tot.n, r.tot.d, r.tot.kb)
     end
     lines[#lines + 1] = '    },'
     lines[#lines + 1] = '}'
@@ -1838,7 +1865,8 @@ if ARGS.rebaseline then
     fh:close()
     realPrint('wrote ' .. BUDGET_FILE)
     for _, r in ipairs(results) do
-        realPrint(('   %-14s %7s natives/frame'):format(r.id, fmt(r.tot.n)))
+        realPrint(('   %-16s %7s natives  %6s draws  %6.2f KB  per frame'):format(r.id,
+            fmt(r.tot.n), fmt(r.tot.d), r.tot.kb))
     end
 end
 
@@ -1851,17 +1879,35 @@ if ARGS.check then
         if not b then
             realPrint(('\27[31mFAIL\27[0m phase %q has no budget -- rebaseline'):format(r.id))
             bad = bad + 1
-        elseif r.tot.n > b.budget then
-            bad = bad + 1
-            realPrint(('\27[31mFAIL\27[0m %-14s %7s natives/frame, budget %d (was %s)')
-                :format(r.id, fmt(r.tot.n), b.budget, fmt(b.measured)))
-            for i = 1, math.min(5, #r.rows) do
-                local row = r.rows[i]
-                realPrint(('       %-34s %7s'):format(row.key, fmt(row.n)))
+        else
+            local over = false
+            for _, m in ipairs(METRICS) do
+                local was = tonumber(b[m.field])
+                if was == nil then
+                    realPrint(('\27[31mFAIL\27[0m %-16s has no %s budget -- rebaseline')
+                        :format(r.id, m.unit))
+                    bad, over = bad + 1, true
+                elseif r.tot[m.key] > was + SLACK[m.key] then
+                    bad, over = bad + 1, true
+                    realPrint(('\27[31mFAIL\27[0m %-16s %8.2f %s/frame, budget %.2f (measured %.2f + %.1f)')
+                        :format(r.id, r.tot[m.key], m.unit, was + SLACK[m.key], was,
+                            SLACK[m.key]))
+                    -- The biggest contributors to the count that went over.
+                    local top = {}
+                    for _, row in ipairs(r.rows) do top[#top + 1] = row end
+                    table.sort(top, function(x, y)
+                        if x[m.key] ~= y[m.key] then return x[m.key] > y[m.key] end
+                        return x.key < y.key
+                    end)
+                    for i = 1, math.min(5, #top) do
+                        realPrint(('       %-34s %8.2f'):format(top[i].key, top[i][m.key]))
+                    end
+                end
             end
-        elseif not ARGS.quiet then
-            realPrint(('\27[32mok\27[0m   %-14s %7s natives/frame, budget %d')
-                :format(r.id, fmt(r.tot.n), b.budget))
+            if not over and not ARGS.quiet then
+                realPrint(('\27[32mok\27[0m   %-16s %7s natives  %6s draws  %6.2f KB  per frame')
+                    :format(r.id, fmt(r.tot.n), fmt(r.tot.d), r.tot.kb))
+            end
         end
         want[r.id] = nil
     end
@@ -1879,23 +1925,19 @@ if ARGS.check then
     end
     if bad == 0 and ARGS.quiet then
         -- One line for tools/verify.sh: how many phases, and where the match sits.
-        local matchBudget, matchN = nil, nil
-        for _, b in ipairs(budget.phases) do
-            if b.id == 'match' then matchBudget = b.budget end
-        end
-        for _, r in ipairs(results) do
-            if r.id == 'match' then matchN = r.tot.n end
-        end
         local tail = ''
-        if matchBudget and matchN then
-            tail = (', the match at %s of %d natives a frame'):format(fmt(matchN), matchBudget)
+        for _, r in ipairs(results) do
+            if r.id == 'match' then
+                tail = (', the match at %s natives, %s draws, %.2f KB a frame')
+                    :format(fmt(r.tot.n), fmt(r.tot.d), r.tot.kb)
+            end
         end
-        realPrint(('%sok%s   %d phases within budget%s'):format(string.char(27) .. '[32m',
-            string.char(27) .. '[0m', #results, tail))
+        realPrint(('%sok%s   %d phases within budget on natives, draws and KB%s')
+            :format(string.char(27) .. '[32m', string.char(27) .. '[0m', #results, tail))
     end
     if bad > 0 then
-        realPrint('     A phase over budget means something new runs per frame there.')
-        realPrint('     Find it: lua tools/perf_client.lua --top 15 --phase <phase>')
+        realPrint('     A phase over budget means something new runs, draws or allocates')
+        realPrint('     per frame there. Find it: lua tools/perf_client.lua --top 15 --phase <phase>')
         realPrint('     Meant to cost more? lua tools/perf_client.lua --rebaseline, and')
         realPrint('     say why in the commit. See docs/testing.md.')
         os.exit(1)
