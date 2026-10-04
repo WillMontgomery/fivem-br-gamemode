@@ -3937,6 +3937,203 @@ do
 end
 
 -- ---------------------------------------------------------------------------
+describe('wall.cull')
+do
+    -- ═══ WHAT THE CAMERA CANNOT SEE IS NOT SUBMITTED, AND NOTHING IT CAN SEE IS
+    --     LOST (#393) ═══
+    --
+    -- The strip used to send every quad to the engine on every frame. It now skips
+    -- the quads whose whole vertical extent lies outside the camera's horizontal
+    -- view, widened by a margin for the camera having moved since the frame it was
+    -- read from. Off-screen triangles produce no pixels, so the claim this block
+    -- pins is a picture claim: every quad the camera can see is drawn, exactly as
+    -- it was, in the same order -- and the ones skipped are behind or beside it.
+    --
+    -- The camera is the four natives client/storm.lua reads. The rest of this
+    -- suite runs without them, which is the "this build has no such native" path:
+    -- nothing culled, every quad drawn.
+    local function camClient(cam)
+        local C = newStormClient()
+        C.cam = cam
+        C.camReads = 0
+        C.env.GetFinalRenderedCamCoord = function()
+            return pt(C.cam.x, C.cam.y, C.cam.z or 40.0)
+        end
+        C.env.GetFinalRenderedCamRot = function(order)
+            C.camReads = C.camReads + 1
+            C.rotOrder = order
+            return { x = C.cam.pitch or 0.0, y = C.cam.roll or 0.0, z = C.cam.yaw or 0.0 }
+        end
+        C.env.GetFinalRenderedCamFov = function() return C.cam.fov or 50.0 end
+        C.env.GetAspectRatio = function() return C.cam.aspect or (16.0 / 9.0) end
+        return C
+    end
+    local function sameRecord(C)
+        return C.record(2, 0.0, 0.0, 1600.0, 300.0, 0.0, 950.0, 600000, 60000, 1.25)
+    end
+    local function key(qd)
+        return ('%.17g,%.17g,%.17g,%.17g'):format(qd.a.x, qd.a.y, qd.b.x, qd.b.y)
+    end
+
+    -- The reference: the same wall with no camera natives, so nothing is culled.
+    local A = newStormClient()
+    sameRecord(A)
+    A.pedAt = pt(0.0, 0.0, 30.0)
+    A.frame()
+    local all = quadsOf(A)
+
+    -- Looking due east from the centre, level, at the default FOV.
+    local B = camClient({ x = 0.0, y = 0.0, z = 40.0, yaw = -90.0, pitch = 0.0 })
+    sameRecord(B)
+    B.pedAt = pt(0.0, 0.0, 30.0)
+    B.frame()
+    ok(B.errored() == nil, 'the culled strip runs clean', B.errored())
+    local seen = quadsOf(B)
+    ok(#seen > 0 and #seen < #all,
+        'with a camera, the strip submits only part of the ring',
+        ('%d of %d quads'):format(#seen, #all))
+
+    -- Every submitted quad is one of the reference quads, in the reference order,
+    -- with the identical triangles: culling removes and never alters.
+    local at, inOrder = 1, true
+    local index = {}
+    for i, qd in ipairs(all) do index[key(qd)] = i end
+    for _, qd in ipairs(seen) do
+        local i = index[key(qd)]
+        if not i or i < at then inOrder = false break end
+        at = i
+    end
+    ok(inOrder, 'every quad drawn is a reference quad, in the reference order')
+    local function triKey(t)
+        local parts = {}
+        for v = 1, 3 do
+            parts[#parts + 1] = ('%.17g/%.17g/%.17g/%s/%s'):format(t[v].x, t[v].y, t[v].z,
+                tostring(t[v].u), tostring(t[v].v))
+        end
+        parts[#parts + 1] = ('%s/%s/%s/%s/%s'):format(t.r, t.g, t.b, t.a, tostring(t.tex))
+        return table.concat(parts, '|')
+    end
+    local same, j = true, 1
+    for _, t in ipairs(B.polys) do
+        local k = triKey(t)
+        while A.polys[j] and triKey(A.polys[j]) ~= k do j = j + 1 end
+        if not A.polys[j] then same = false break end
+        j = j + 1
+    end
+    ok(same, 'and its triangles are the reference triangles, argument for argument')
+
+    -- NOTHING THE CAMERA CAN SEE IS SKIPPED. The true horizontal half-FOV, with no
+    -- margin at all: any quad with a point inside it must be drawn.
+    local ty = math.tan(math.rad(50.0) * 0.5)
+    local halfTrue = math.atan(ty * 16.0 / 9.0, 1.0)
+    local drawn = {}
+    for _, qd in ipairs(seen) do drawn[key(qd)] = true end
+    local missed, skipped, nearSkipped = 0, 0, 0
+    for _, qd in ipairs(all) do
+        local visible = false
+        for s = 0, 8 do
+            local x = qd.a.x + (qd.b.x - qd.a.x) * s / 8
+            local y = qd.a.y + (qd.b.y - qd.a.y) * s / 8
+            -- Bearing off due east (+x).
+            if math.abs(math.atan(y, x)) <= halfTrue then visible = true end
+        end
+        if not drawn[key(qd)] then
+            skipped = skipped + 1
+            if visible then missed = missed + 1 end
+            local mx, my = (qd.a.x + qd.b.x) * 0.5, (qd.a.y + qd.b.y) * 0.5
+            if math.sqrt(mx * mx + my * my) < 75.0 then nearSkipped = nearSkipped + 1 end
+        end
+    end
+    ok(missed == 0 and skipped > 0,
+        'no quad with any point inside the camera\'s field of view is skipped',
+        ('%d visible quads skipped, %d skipped in all'):format(missed, skipped))
+    ok(nearSkipped == 0, 'and nothing close to the camera is ever skipped')
+
+    -- THE MARGIN: a quad just outside the true FOV is still drawn, because the
+    -- camera read is a frame old.
+    local edgeKept, edgeAll = 0, 0
+    for _, qd in ipairs(all) do
+        local mx, my = (qd.a.x + qd.b.x) * 0.5, (qd.a.y + qd.b.y) * 0.5
+        local b = math.abs(math.atan(my, mx))
+        if b > halfTrue and b < halfTrue + math.rad(25.0) then
+            edgeAll = edgeAll + 1
+            if drawn[key(qd)] then edgeKept = edgeKept + 1 end
+        end
+    end
+    ok(edgeAll > 0 and edgeKept == edgeAll,
+        'and every quad within 25 degrees beyond the edge of the view is drawn too',
+        ('%d of %d'):format(edgeKept, edgeAll))
+
+    -- BACKED UP TO THE WALL AND LOOKING AWAY FROM IT: the quads right behind the
+    -- camera are a few metres off, where a frame's movement is a big change of
+    -- bearing, so they are drawn whatever the wedge says.
+    local N = camClient({ x = 1540.0, y = 0.0, z = 40.0, yaw = 90.0, pitch = 0.0 })
+    sameRecord(N)
+    N.pedAt = pt(1540.0, 0.0, 30.0)
+    N.frame()
+    local nearDrawn = {}
+    for _, qd in ipairs(quadsOf(N)) do nearDrawn[key(qd)] = true end
+    local closeAll, closeMissing = 0, 0
+    for _, qd in ipairs(all) do
+        local ex, ey = qd.b.x - qd.a.x, qd.b.y - qd.a.y
+        local dx, dy = qd.a.x - 1540.0, qd.a.y
+        local k = math.max(0.0, math.min(1.0, -(dx * ex + dy * ey) / (ex * ex + ey * ey)))
+        local px, py = dx + ex * k, dy + ey * k
+        if px * px + py * py < 75.0 * 75.0 then
+            closeAll = closeAll + 1
+            if not nearDrawn[key(qd)] then closeMissing = closeMissing + 1 end
+        end
+    end
+    ok(closeAll > 0 and closeMissing == 0 and #quadsOf(N) < #all,
+        'a camera backed up to the wall still draws the wall right behind it',
+        ('%d of %d close quads missing; %d of %d drawn'):format(closeMissing, closeAll,
+            #quadsOf(N), #all))
+
+    -- A ROLLED CAMERA, OR ONE LOOKING STEEPLY DOWN, CULLS NOTHING.
+    local R = camClient({ x = 0.0, y = 0.0, z = 40.0, yaw = -90.0, pitch = 0.0, roll = 5.0 })
+    sameRecord(R)
+    R.pedAt = pt(0.0, 0.0, 30.0)
+    R.frame()
+    ok(#quadsOf(R) == #all, 'a camera with roll culls nothing',
+        ('%d of %d'):format(#quadsOf(R), #all))
+    local D = camClient({ x = 0.0, y = 0.0, z = 900.0, yaw = -90.0, pitch = -70.0 })
+    sameRecord(D)
+    D.pedAt = pt(0.0, 0.0, 30.0)
+    D.frame()
+    ok(#quadsOf(D) == #all,
+        'and neither does one looking so steeply down that every bearing is in view',
+        ('%d of %d'):format(#quadsOf(D), #all))
+
+    -- A camera that turned since the read: the next frame reads the new one.
+    B.cam.yaw = 90.0
+    B.frame()
+    local west = quadsOf(B)
+    local westOk = #west > 0
+    for _, qd in ipairs(west) do
+        local mx = (qd.a.x + qd.b.x) * 0.5
+        if mx > 1000.0 then westOk = false end
+    end
+    ok(westOk, 'turning the camera round draws the other side of the ring next frame')
+
+    -- ONE CAMERA READ A FRAME, whichever walls draw: phase 1's hold has two.
+    local P = camClient({ x = 0.0, y = 0.0, z = 40.0, yaw = 0.0, pitch = 0.0 })
+    local prec = P.record(1, 0.0, 0.0, 2600.0, 400.0, 0.0, 1600.0, 600000, 60000, 0.5)
+    prec.tStart = P.now - 300000
+    P.pedAt = pt(0.0, 0.0, 30.0)
+    P.settlePreview()
+    P.camReads = 0
+    P.frame()
+    local alphas, nAlpha = {}, 0
+    for _, t in ipairs(P.polys) do
+        if not alphas[t.a] then alphas[t.a] = true nAlpha = nAlpha + 1 end
+    end
+    ok(nAlpha == 2 and P.camReads == 1 and P.rotOrder == 2,
+        'both walls in a frame share one camera read',
+        ('%d walls by alpha, %d reads, rotation order %s'):format(nAlpha, P.camReads,
+            tostring(P.rotOrder)))
+end
+
+-- ---------------------------------------------------------------------------
 describe('wall.ramp')
 do
     -- ═══ THE BAKED ALPHA RAMP, WHICH IS WHY THE WALL IS SMOOTH ═══

@@ -26,6 +26,7 @@ BR.Loop = {
     FRAME = 'frame',  -- every frame: markers, prompts, control disables
     TICK  = 'tick',   -- 10 Hz: HUD envelopes, proximity scans, storm in/out
     SLOW  = 'slow',   -- 1 Hz: loot cells, blip refresh, cache expiry
+    frameNo = 0,      -- FRAME passes so far; see BR.Loop.step
 }
 
 local INTERVALS = {
@@ -936,7 +937,15 @@ function BR.Loop.step(band)
 
     -- Only the frame band is a frame. TICK and SLOW passes say nothing about
     -- how smooth the picture is.
-    if band == BR.Loop.FRAME then noteFrame(t) end
+    --
+    -- BR.Loop.frameNo counts FRAME passes, so a value read from the engine once
+    -- per frame can be shared by every callback that needs it (#393: the storm's
+    -- two walls share one camera read). GetGameTimer cannot serve: it is a native
+    -- call itself, and two frames can share a millisecond.
+    if band == BR.Loop.FRAME then
+        BR.Loop.frameNo = BR.Loop.frameNo + 1
+        noteFrame(t)
+    end
 
     -- These two markers make the scheduler cadence visible beside the event
     -- paths. FRAME is deliberately absent: marking every frame would correlate
