@@ -745,7 +745,11 @@ BR.Config.Airdrop = {
     -- the record is re-sent, and every blip moves. It keeps its number, its
     -- payout and its place in `perMatch`, and the wait starts again from the
     -- move. Only when no POI qualifies anywhere is it called off. The 2026-08-23
-    -- rule still holds: a crate lands only inside the next circle.
+    -- rule holds at the ARM: a drop is only released 250m inside the next
+    -- circle in force at that moment. A crate already falling cannot be moved,
+    -- so a new circle drawn during its ~29s flight can leave it outside that
+    -- one (about 1 crate in 7, the same as before #386); the 250m wall margin
+    -- at touchdown holds for every crate.
     --
     -- A DROP STILL INSIDE THE CIRCLE IT WAS SITED AGAINST that fails the re-check
     -- has had the wall close on it, and is called off. A crate that lands at the

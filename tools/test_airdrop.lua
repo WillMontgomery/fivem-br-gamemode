@@ -3378,7 +3378,7 @@ do
 end
 
 --- A MODEL OF server/storm.lua's enterPhase, not the file: the same config, the
---- same centre draw and the same record, with the pricing reduced to its two
+--- same center draw and the same record, with the pricing reduced to its two
 --- extremes. `m.sweep` carries the match's own rng, seed and whether it is paced
 --- for one player (`alone`, the minimum shrink) or a full lobby (the ceiling).
 --- Shared by the two sweeps below (#355, #386), so both walk the same storm.
@@ -3420,7 +3420,7 @@ do
     -- straggler gets the authored ceiling. The owner was alone.
     --
     -- THE STORM HERE IS A MODEL OF server/storm.lua's enterPhase, not the file:
-    -- the same config, the same centre draw and the same record, with the pricing
+    -- the same config, the same center draw and the same record, with the pricing
     -- reduced to its two extremes. What this block asserts does not depend on
     -- where the circles go -- only that they MOVE under a waiting drop, which is
     -- the thing the old sweep could not do.
@@ -4562,7 +4562,7 @@ do
     local rec = published[1].payload
     eq(#m.airdrop.waiting, 1, 'sited under the circle that was showing')
 
-    -- The storm turns over a phase while somebody walks: a new circle centred on
+    -- The storm turns over a phase while somebody walks: a new circle centered on
     -- the POI furthest from the place the match was told to go to.
     local far, farD = nil, -1.0
     for _, p in ipairs(BR.Config.Map.POIs) do
@@ -7444,7 +7444,7 @@ do
         'and the render pass keeps them there')
     eq(cueCount('airdrop.inbound'), cues, 'a move is not a second announcement')
     local joined = table.concat(said, '\n')
-    ok(joined:find('[br_core] airdrop: drop 1 moved by the server from lsia (100, 200) '
+    ok(joined:find('[br_core] airdrop: drop 1 moved by the server (the storm drew a new next circle) from lsia (100, 200) '
                    .. 'to sandy (1100, 1200), 300m from me', 1, true) ~= nil,
         'the F8 line says from where, to where, and how far away I am', joined)
 

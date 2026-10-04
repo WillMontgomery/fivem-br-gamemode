@@ -593,7 +593,7 @@ AddEventHandler(BR.Net.AIRDROP_SYNC, function(rec)
     elseif not prev then
         what = 'announced'
     elseif rec.tMoved ~= nil and rec.tMoved ~= prev.movedSeen then
-        what = ('moved by the server from %s (%.0f, %.0f)')
+        what = ('moved by the server (the storm drew a new next circle) from %s (%.0f, %.0f)')
             :format(tostring(prev.poi), prev.x or 0.0, prev.y or 0.0)
         prep = 'to'
     end
