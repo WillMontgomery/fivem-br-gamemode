@@ -7463,10 +7463,11 @@ do
     fire('onResourceStop', 'br_core')
     eq(liveIds(), 0, 'a resource stop takes the emitter\'s sound too')
 
-    -- A PICK WHILE THE EMITTER WAITS FOR THE BANK. Both commands wait on the
-    -- same bank; if the pick wakes first it plays on the emitter, and the
-    -- emitter must then stop that one and play the CURRENT pick -- not leak an
-    -- id under a second sound, nor play the variant picked before the wait.
+    -- A PICK WHILE THE EMITTER WAITS FOR THE BANK. A drop's own thread is
+    -- loading the bank; the emitter goes up and waits on that load, and so
+    -- does a variant picked meanwhile. When the bank says yes the pick may run
+    -- first and play on the emitter -- and the emitter must then stop that one
+    -- and play the current pick, not leak an id under a second sound.
     audioReset()
     said({ 'rotor', 'default' })
     snd.bankAnswer = 0
@@ -7474,25 +7475,52 @@ do
     local realCreate, realWait = Citizen.CreateThread, Citizen.Wait
     Citizen.CreateThread = function(fn) cos[#cos + 1] = coroutine.create(fn) end
     Citizen.Wait = function() coroutine.yield() end
+    flyover()
+    local nDrop = #cos                           -- the drop's threads: loader first
     said({ 'rotor', 'at', '300' })
     said({ 'rotor', 'far' })
-    Citizen.CreateThread = realCreate
     local function step(co)
         if co and coroutine.status(co) == 'suspended' then coroutine.resume(co) end
     end
-    for _, co in ipairs(cos) do step(co) end     -- both ask, both wait
+    local calibCo, pickCo = cos[nDrop + 1], cos[nDrop + 2]
+    ok(calibCo and pickCo and calibCo ~= pickCo,
+        'both commands run in threads of their own (the race is real)')
+    for i = 1, nDrop do step(cos[i]) end         -- the drop asks the bank: no
+    step(calibCo)                                -- emitter up, waits on the load
+    step(pickCo)                                 -- the pick waits on it too
     snd.bankAnswer = 1
-    for i = #cos, 1, -1 do step(cos[i]) end      -- the pick wakes first
+    step(cos[1])                                 -- the load says yes
+    -- The pick wakes first and runs until it has played on the emitter (its
+    -- probes wait between plays), and only then does the emitter wake.
+    local plane = planeHandle()
+    local function pickOnEmitter()
+        for _, pl in ipairs(plays()) do
+            if pl.ent ~= plane and pl.name == 'cargobob_rotor_far' then return true end
+        end
+        return false
+    end
+    for _ = 1, 50 do
+        if pickOnEmitter() or coroutine.status(pickCo) ~= 'suspended' then break end
+        step(pickCo)
+    end
+    ok(pickOnEmitter(), 'the pick played on the emitter before the emitter woke')
+    step(calibCo)                                -- ...then the emitter
+    Citizen.CreateThread = realCreate
     Citizen.Wait = realWait
     for _, co in ipairs(cos) do
         while coroutine.status(co) == 'suspended' do coroutine.resume(co) end
     end
-    eq(#cos, 2, 'both commands wait in threads (the race is real)')
-    eq(liveIds(), 1, 'a pick during the emitter\'s bank wait leaves one sound playing')
-    eq((plays()[#plays()] or {}).name, 'cargobob_rotor_far',
-        'and it is the variant picked during the wait')
+    local lastName = nil
+    for _, pl in ipairs(plays()) do
+        if pl.ent ~= plane then lastName = pl.name end
+    end
+    eq(liveIds(), 2, "a pick during the emitter's bank wait leaves one sound on it "
+        .. '(and one on the aircraft)')
+    eq(lastName, 'cargobob_rotor_far',
+        'and the emitter plays the variant picked during the wait')
     said({ 'rotor', 'stop' })
-    eq(liveIds(), 0, 'and `rotor stop` stops it')
+    fire(BR.Net.STATE, { state = BR.MatchState.ENDED })
+    eq(liveIds(), 0, 'and `rotor stop` plus the drop ending stop both')
     said({ 'rotor', 'default' })
 end
 

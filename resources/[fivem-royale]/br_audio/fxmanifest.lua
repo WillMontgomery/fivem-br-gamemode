@@ -9,9 +9,10 @@
 --
 -- FiveM mounts these data files when the resource starts and unmounts them when
 -- it stops, for every connected client, and unloading game data mid-session has
--- crashed clients before. Every deploy ends with `restart br_core`; this
--- resource is not in that list and must not be added to it. A change to these
--- files ships with a SERVER restart, and testers reconnect.
+-- crashed clients before. A deploy is picked up by a whole-server restart, or
+-- by hand with the resource list tools/deploy.sh prints (br_lib, br_core,
+-- br_ui, ...); this resource is not in that list and must not be added to it.
+-- A change to these files ships with a SERVER restart, and testers reconnect.
 --
 -- `ensure br_audio` sits above `ensure br_core` in server.cfg, so the bank is
 -- mounted before anything asks for it.
