@@ -570,69 +570,29 @@ made "never rebuild while moving" the rule and #344's second round kept to it wi
 keyframes. The owner saw two translucent shapes of different outlines moving and
 fading into each other, and rejected it.
 
-**Since 2026-10-02 the map adds a clip only when the kind of change switches.**
-Playing 8335b17 the owner reported "the game is now hitching every second or so",
-and `/brstormbisect mapoff` stopped it. A staged clip below is still an
-`ADD_AREA_OVERLAY`, and a bank of up to 200 of them through every hold, never more
-than 1.6 s apart, was the hitch. So `overlay.stage.enabled = false` and
-`overlay.morphHz = 0`: a sweep's zone is redrawn as it sets off and at the knee (a
-breakout's once more as it ends) and only placed in between. To the knee that is the
-outline it set off with, on the wall's pivot and scaled as far as it fits inside the
-wall (`BR.StormShape.fitScale`), which moves with the wall but does not turn with it;
-from the knee, the wall's own frame, exactly. So the map never shows storm as safe,
-and over 30 whole matches the real zone's edge lies on average 2.0 km outside the
-first leg's outline in phase 1, 680 m in phase 2 and 31 m in phase 7; scaled to the
-wall's size instead, it was off by about 1 km either way in phase 1 (`overlay.morphHz`
-in config/storm.lua has the table). `map.hotfix` holds whole matches to it tick by
-tick, and `/brstormhitch` counts the redraws at the start and the knee apart from the
-old path's. The staging below is kept, under its tests, for the design that replaces
-it.
+**Since 2026-10-04 the map does not show the zone moving.** "When the sweep
+starts, the old shape fades away and only the new shape is left. That means the
+only indicator of the actual current shape of the storm is looking in the 3d
+world" (the owner). Through a hold the radar and the pause map show the zone and
+the destination; as the sweep sets off the zone fades out over
+`overlay.sweepFadeSec` (1 s) — one `SET_OVERLAY_ALPHA` a contour on each 10 Hz map
+tick — and the destination is left until the next record's hold draws it again as
+the zone. A sweep sends the movie nothing else: no add, no removal, no move, no
+resize. A picture drawn first while the wall moves (a client that joins mid-sweep,
+a refusal drawn again) is the destination alone. The ground between the moving
+wall and the destination reads as storm on the map until the wall gets there.
+`map.nomorph` in tools/test_storm.lua holds whole matches to it tick by tick, and
+`/brstormhitch` counts what reaches the movie while the wall moves.
 
-**8335b17 drew the one zone from outlines staged in the hold.** The destination
-is drawn once per phase and never touched; the safe zone is the zone itself. Until
-2026-09-28 a changing outline was *replaced* at `overlay.morphHz` — one
-`REM_OVERLAY` and one `ADD_AREA_OVERLAY` a tick for the whole first leg — and the
-owner felt it: "we're also back to hitches ... is there any way we can silently
-stage the textures we need over time?" So 8335b17 staged them:
-
-```
-bank      during the HOLD: the wall's outline at t_j = k · j / K, j = 0..K, each
-          drawn about its pivot P_j (the mean of its moving corner centres) at its
-          size R_j (a disc of its area) -- added HIDDEN (alpha 0), one per
-          overlay.stage.everyTicks (2) map ticks, knee and start first, then halving
-K         = ceil( spread / targetM ),  spread = the outline at 0 placed on the wall at
-          k / 2 -- the error one outline per leg would show; K outlines divide it by K.
-          Capped at maxClips (200) and at what the hold has room to stage
-sweep     t < k: the staged outline nearest t, moved to P(t) and scaled by R(t) / R_j
-          t ≥ k: the knee's outline under the wall's own frame -- exact
-          swapped by alpha when the nearest one changes; NOTHING added or removed
-breakout  the wall's outline as above, beside the destination staged at the zone's
-          strength: their union is the zone
-```
-
-A frame is still two property writes; a swap is one alpha write each way (not
-`HIDE_OVERLAY`, which the disassembly shows tweening alpha over 0.2 s). The radar
-and the pause map are the one movie, so both show it. Measured through the real
-client on 8 matches at 100 ms, both ways round — the shown outline's vertices from
-the wall and the wall's from the shown outline, chord sag included (about 5 m, which
-the redraw had too): phase 1 26 m (3.3 pause-map pixels at 8 m a pixel; its bank is
-capped at 200 outlines, the whole-map disc turning into a zone), phases 2–7 at most
-13.4 m (1.7 pixels), the last zone onto its point 4.9 m (exact but for the sag).
-Only a sweep whose bank is not usable when it sets off — a client that joined
-mid-sweep, a hold too short for even the knee's outline — is redrawn the old way,
-and a conjoined growth still is (its outline is only known once the hold has
-begun). `/brstormhitch` counts both ("clip rebuilds during sweeps").
-
-**Every staged clip is cleaned up, and never more than a fixed number exist.** A
-new record retires the last bank (hidden already); the next hold drops it one clip
-per slot **before** staging its own, so the movie holds at most one bank and the
-picture — 208 clips (`maxClips` + 8). The same slots drop the bank after a match
-ends, a player leaves, a trip home, a jump back to warmup, a `brphase` or
-`brstormfreeze` mid-sweep, and a refusal mid-sweep (which hides the bank at once and
-drops it in the next hold); an orphan a refused removal leaves is retried there
-too; `onClientResourceStop` removes everything at once. `map.teardown` walks each
-path and asserts the count returns to exactly its baseline, and that it never
-passed the cap.
+**What came before it**, kept so nobody re-derives the dead ends. 35258d1 moved and
+resized the zone's clip every tick instead of redrawing it; ec19f40 redrew a
+changing outline at `overlay.morphHz` (10 Hz); 8335b17 staged up to 200 hidden
+outlines through every hold and swapped them by alpha, and those adds were the
+once-a-second hitch the owner reported on 2026-10-02 (`/brstormbisect mapoff`
+stopped it); 8bf391e and 3a66284 then redrew the zone only as the sweep set off and
+at its knee, the starting outline placed on the wall's pivot and fitted inside the
+wall before the knee — where the real zone's edge lay on average 2.0 km outside the
+map's outline in phase 1 and 31 m in phase 7. All of it went on 2026-10-04.
 
 ### A conjoined zone grows into its destination
 
@@ -652,15 +612,11 @@ two convex shapes is the corner list of their boundaries' runs inside each other
 and the union is the stitch every breakout already uses — so the damage tick, the
 HUD and the wall bill, read and draw `G` exactly, off one clock. It starts as `Z`
 and ends on `Z ∪ D`, and only ever grows. A destination wholly apart from the zone
-still appears at once. At `overlay.morphHz` 10 the map drew the front: the zone's
-fill is the growing zone, redrawn while it grows, so the destination's new ground
-came onto the map exactly as the damage tick takes it in. At the shipping 0
-(2026-10-02) the zone is drawn as the growth starts and redrawn once as it ends, so
-the new ground shows as safe at the end of the growth rather than as it is taken
-in. Grown, it is the zone's fill standing
-still, with the destination under it, so the old zone's edge does not run across
-the destination for the rest of the phase; and when the sweep starts the zone is
-the moving wall united with the destination, so the new ground stays on the map.
+still appears at once. The map does not follow the growth (2026-10-04): it shows
+the zone as the hold began and the destination, whose own fill covers the ground
+the zone grows into, so the two fills cover the grown zone at every instant
+without either changing shape; when the sweep starts the zone fades out and the
+destination is left.
 
 **What airdrop siting stands on changed with it.** The wall's support function
 used to be affine in `t`, which made "clears both ends of the window, clears every
@@ -685,10 +641,10 @@ re-derives the dead ends:
   so the rings were radius blips at `r`, over-reporting by about a sixth of `r`
   where the shape dents in. The vendored `MINIMAP_LOADER.gfx` turned out to
   carry `ADD_AREA_OVERLAY`, which fills a real concave polygon on both the radar
-  and the pause map (#347, #350). The zone is redrawn while its outline changes
-  and moved in place while it does not (above). The nominal-radius map blips carry
-  the map for the rest of a sweep whose redraw, placement or fade the engine
-  refuses, and for a client whose overlay never becomes ready.
+  and the pause map (#347, #350). The zone is drawn once a hold and fades out as
+  the sweep sets off (above). The nominal-radius map blips carry the map, by the
+  same rule, for the rest of a sweep whose fade the engine refuses, and for a
+  client whose overlay never becomes ready.
 * **an overlapping breakout used to draw both boundaries**, showing curtain
   inside the safe zone. Two convex shapes that overlap have a union whose
   boundary is one loop, alternating between runs of each outside the other;

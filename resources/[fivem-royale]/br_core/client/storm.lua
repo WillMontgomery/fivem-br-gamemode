@@ -1942,73 +1942,57 @@ end
 -- both directions -- exactly one of the two paths draws, and the blips are already
 -- written and already tested.
 --
--- ═══ WHAT IT DRAWS: THE DESTINATION, AND ONE MOVING ZONE ═══
+-- ═══ WHAT IT DRAWS: THE DESTINATION, AND THE ZONE WHILE THE STORM HOLDS ═══
 --
---   "the expectation is the shape of the outer (moving) circle will change at
---    runtime per frame to eventually match the shape of the inner
---    (stationary/destination) circle ... Today we do some dumb shit like multiple
---    moving circles and fade between them."             -- the owner, 2026-09-27
+--   "today as the storm moves, the current shape (txd on minimap/bigmap) shrinks until
+--    it pops to the new shape and finishes by scaling into the new size. Let's remove
+--    that all together so when the sweep starts, the old shape fades away and only the
+--    new shape is left. that means the only indicator of the actual current shape of
+--    the storm is looking in the 3d world."              -- the owner, 2026-10-04
 --
--- Two things and no more: the DESTINATION, standing still where it will stand all
--- phase, and the SAFE ZONE -- BR.StormZone at this instant, the very shape the wall is
--- drawn from and the damage tick bills: the moving wall, and on a breakout the wall
--- union the destination, grown into across a conjoined hold. The whole-map phase-1
--- hold shows the destination only, the zone fading in over its last seconds.
+-- Two shapes at most, and neither of them ever moves:
 --
--- THE DESTINATION IS DRAWN FIRST AND THE ZONE AFTER IT, which is the order the zone
--- can be REPLACED in: the movie's REM_OVERLAY splices, so the clips at the top of our
--- list come off without renumbering the one below. The order does not change the
--- picture -- both are the wall's purple, and two fills of one colour composite the
--- same whichever is on top.
+--   THE DESTINATION, where it will stand all phase -- BR.StormTarget, the shape the
+--   wall ends on and the damage tick shelters -- at the next zone's strength.
 --
+--   THE ZONE, while the storm holds -- BR.StormZone as the hold began: the shape the
+--   last sweep left the wall in, and on a disjoint breakout that union the far island
+--   -- at the safe zone's strength. A CONJOINED zone growing into its destination
+--   through the hold is not followed: the destination's own fill already covers the
+--   ground it grows into, and redrawing the zone as the growth ended was one more
+--   shape changing on the map.
+--
+-- AS A SWEEP STARTS, THE ZONE FADES OUT -- over `overlay.sweepFadeSec`, one alpha write
+-- a contour a tick on this band's 10 Hz -- and the destination is all that is left.
+-- Nothing on either map moves, shrinks or changes shape while the wall does: the 3D
+-- wall is the only picture of where the storm is, and the ground between it and the
+-- destination reads as storm on the map until the wall gets there. The next record's
+-- hold starts from that destination, drawn again as its zone. A picture drawn FIRST
+-- while the storm moves -- a client that joined mid-sweep, or one drawn again after a
+-- refusal -- is the destination alone. The phase-1 hold shows the destination only,
+-- the whole-map zone fading in over its last seconds (wallShare), and that zone fades
+-- out with the sweep like any other.
+--
+-- THE DESTINATION IS DRAWN FIRST AND THE ZONE AFTER IT, both in world coordinates.
 -- BOTH IN THE WALL'S OWN PURPLE. An overlay takes an RGB and a blip takes a palette
 -- index; `blip.currentColour = 3` is GTA's blip blue and nothing on this path can ask
 -- the engine what that is in RGB. So the layering survives -- faint zone, stronger
 -- target -- in one hue rather than two. config/storm.lua's `overlay` block says so.
 --
--- ═══ HOW THE ZONE MOVES: PLACED, AND REDRAWN ONLY WHEN THE KIND OF CHANGE DOES ═══
---
--- MINIMAP_LOADER.gfx has no handler that edits an area's points (client/mapoverlay.lua
--- lists what it has: add, remove, move, resize, turn, fade, colour, hide). So the zone
--- is shown moving by PLACING a clip it already has, and each stretch of the phase has
--- its way:
---
---   PLACED    while the wall moves. From the knee -- the last `morph.leadSeconds` of a
---             sweep, the wall the destination's outline converging on it -- and the
---             last zone onto its point, in the wall's own frame (BR.StormWallFrame),
---             exactly. To the knee, while the outline turns, the outline drawn as the
---             sweep set off, on the wall's pivot (BR.StormWallPivot) and as large as
---             fits inside the wall: it moves with the wall but does not turn with it,
---             and shows less safe ground than there is rather than more. Drawn once, then
---             moved and resized every tick: two property writes a contour, no polygon. A
---             breakout's wall is placed so beside its destination, drawn again at the
---             zone's strength and never placed -- the two union to the zone.
---   REDRAWN   when the kind of change switches -- the sweep setting off, the knee, a
---             growth or a breakout's sweep ending -- and, above `overlay.morphHz` 0, at
---             that rate while the outline turns: the zone's own clips are replaced, the
---             destination under them never touched.
---   STAGED    off since 2026-10-02 (`overlay.stage`): the first leg shown from outlines
---             staged, hidden, during the hold before, swapped by alpha. See "staging".
---   STILL     a hold, a growth (drawn as it starts, redrawn as it ends), a finished
---             sweep: drawn once, faded on the phase-1 clock, and otherwise left alone.
---
--- At no moment is more than one zone outline VISIBLE: a staged bank waits at alpha 0,
--- and a swap hides the old outline in the tick it shows the new one -- no cross-fade,
--- nothing two outlines deep.
---
--- ═══ AND AN ADD IS THE COST #350 MEASURED, SO NOTHING PAYS IT ON A CLOCK ═══
+-- ═══ AND AN ADD IS THE COST #350 MEASURED, SO IT IS PAID ONCE A RECORD ═══
 --
 --   "the game is now hitching every second or so ... the hitching is pretty severe"
 --                                          -- the owner, 2026-10-02, playing 8335b17
 --
--- A redraw is REM_OVERLAY and ADD_AREA_OVERLAY for the zone's contours, their
--- coordinates marshalled through a Scaleform string. 8335b17 staged hidden clips
--- through every hold and redrew a growth every tick, and `/brstormbisect mapoff` took
--- the hitch away. So the shipping config adds a clip only at a change of kind -- two or
--- three a phase -- and a refused picture is drawn again a few times at most
--- (PICTURE_TRIES). The `storm.map.morph` hitch row is where a redraw's cost is read in
--- game (/brstormhitch); config/storm.lua's `overlay` has the rates, and how far off
--- the map is for them.
+-- A picture is REM_OVERLAY and ADD_AREA_OVERLAY for every contour, their coordinates
+-- marshalled through a Scaleform string. It is drawn once per storm record, as the
+-- record arrives, and otherwise only for a first sight or a refused picture drawn again,
+-- a few times at most (PICTURE_TRIES). Between pictures the movie hears nothing but
+-- alpha writes: the phase-1 fade in and a sweep's fade out. Until 2026-10-04 a sweep
+-- was shown moving -- its outline moved and scaled every tick, redrawn as it set off and
+-- at its knee; before 2026-10-02 staged in the hold or redrawn at 10 Hz -- and all of
+-- that is gone. /brstormhitch's summary counts what still reaches the movie while the
+-- wall moves.
 
 --- How many areas the overlay is currently showing for us.
 local overlayShown = 0
@@ -2020,38 +2004,26 @@ local mapBlipsDirty = false
 
 --- A WHOLE PICTURE IS DRAWN A FEW TIMES AT MOST BETWEEN TWO CHANGES OF KIND (2026-10-02).
 ---
---- A picture the engine refused -- an add, a removal, or the placement or fade after
---- accepted adds -- used to be drawn again every 1 / rebuildHz for as long as the
---- refusal lasted: on a refused placement that is an ADD_AREA_OVERLAY and a REM_OVERLAY
---- twice a second, on a clock. So the pictures drawn for one record and one kind of
---- change (its key and tag) are counted: the first, then at most PICTURE_TRIES - 1
---- more, each twice as far apart as the last, and then the blips carry the map until
---- the kind changes -- the sweep starting, the knee, a growth ending, a new record.
+--- A picture the engine refused -- an add, a removal, or the fade after accepted adds --
+--- used to be drawn again every 1 / rebuildHz for as long as the refusal lasted: an
+--- ADD_AREA_OVERLAY and a REM_OVERLAY twice a second, on a clock. So the pictures drawn
+--- for one record and one kind (still, or moving) are counted: the first, then at most
+--- PICTURE_TRIES - 1 more, each twice as far apart as the last, and then the blips carry
+--- the map until the kind changes -- the sweep starting, a new record.
 local PICTURE_TRIES = 4
 local pictureFor, pictureN = nil, 0
 
---- WHAT THE MOVIE HOLDS FOR THE CURRENT PICTURE, and where the zone was put.
----
---- nil while nothing is drawn. `dest` is how many of our slots, from the first, are
---- the destination; `zone` is the zone's picture after them -- the tag of the outline
---- it was drawn for, the point and scale it was drawn about, each contour's extents,
---- when it was drawn, and where and how strongly it was last shown. `fixed` marks the
---- #327 preview, which never moves.
+--- WHAT THE MOVIE HOLDS FOR THE CURRENT PICTURE. nil while nothing is drawn. `dest` is
+--- how many of our slots, from the first, are the destination -- or circle 1, for the
+--- preview; `zone` is how many after them are the zone, 0 for a picture drawn while the
+--- storm moves; `a` is the alpha the zone was last given.
 local overlayAt = nil
-
---- The staged bank of the current record, and the clips of earlier banks waiting to be
---- dropped: see "staging" below, where both are used. Declared here because the two
---- teardowns just below reset them.
-local stage = nil
-local retired = {}
---- Hide the current bank and hand its clips to `retired` (defined with the staging).
-local retireStage
 
 --- Publish whether a custom fill is currently on the map.
 ---
 --- storm.map runs before storm.state on the same TICK band. Marking the edge here
 --- lets the blip owner react on that same pass instead of waiting for its ordinary
---- 4 Hz / 0.5 Hz refresh cadence.
+--- refresh cadence.
 --- @param drawn integer
 local function setOverlayShown(drawn)
     drawn = drawn or 0
@@ -2059,58 +2031,41 @@ local function setOverlayShown(drawn)
     overlayShown = drawn
 end
 
---- Remove our custom map fills and hand the map back to the ordinary blips.
----
---- Used by both the lifecycle and #350's `mapoff` bisect. Keeping the three
---- latches together matters: `overlayShown` controls the blip fallback while
---- the key and placement record control whether the next tick rebuilds.
+--- Remove every custom map fill of ours and hand the map back to the ordinary blips:
+--- `mapoff`. A removal the engine refuses is kept on the overlay's own books and tried
+--- again by the next removal (BR.MapOverlay.removeAll).
 local function clearMapOverlay()
-    -- ALWAYS ASK. removeAll keeps an engine-refused clip on its own books; limiting
-    -- retries to overlayShown would forget that clip after this function publishes
-    -- the fallback and leave the stale polygon resident for the rest of the sweep.
     if BR.MapOverlay then BR.MapOverlay.removeAll() end
-    -- EVERYTHING WENT, the staged bank with it: removeAll takes every clip we own and
-    -- keeps a refused one on its own books to retry.
-    stage, retired = nil, {}
     setOverlayShown(0)
     overlayKey, overlayAt = nil, nil
 end
 
---- Take the PICTURE down -- destination and zone -- and leave the staged clips, which
---- are hidden, to be dropped a few at a time (see staging). The ordinary teardown: a
---- match ending, the overlay switched off, a final zone that has run out of polygon.
---- A refused removal is retried on the next call (BR.MapOverlay.removePicture).
+--- Take the PICTURE down -- destination and zone. The ordinary teardown: a match
+--- ending, the overlay switched off, a final zone that has run out of polygon, a
+--- refusal. A refused removal is retried on the next call (BR.MapOverlay.removePicture).
 local function takeDownPicture()
     if BR.MapOverlay and BR.MapOverlay.removePicture then BR.MapOverlay.removePicture() end
     setOverlayShown(0)
     overlayKey, overlayAt = nil, nil
 end
 
---- Hand a MOVING picture the engine has refused to the ordinary map blips, for the
---- rest of the sweep -- or of the conjoined growth it was refused in.
+--- Hand a picture the engine refused WHILE THE WALL MOVES to the ordinary map blips,
+--- for the rest of the sweep.
 ---
---- A refused placement, fade or redraw leaves the movie holding a zone that is not
---- the storm's, and trying again on every tick of the sweep would be a stream of
---- refused calls on a motion cadence. The nominal-radius blips already exist as the
---- overlay's fallback and update without any polygon marshalling. They are
---- approximate guidance for a seeded shape; the 3D wall and the server's damage are
---- untouched, and the exact fill comes back the moment the storm stands still.
+--- A refused fade leaves the old zone in the movie at whatever strength it had reached
+--- -- an old shape on the map, the one thing a sweep's picture is for not showing -- and
+--- a refused redraw leaves nothing. Trying again on every tick of the sweep would be a
+--- stream of refused calls. The blips are the overlay's fallback and keep its rule
+--- (storm.state: the old ring fades, the destination's stays); the exact picture comes
+--- back the moment the storm stands still.
 local function startMovingFallback(key)
     if movingFallbackKey ~= key then
         BR.Loop.hitchMark(
             'storm.map.fallback',
-            'once when a refusal mid-sweep or mid-growth hands the map to blips')
+            'once when a refusal mid-sweep hands the map to blips')
     end
     movingFallbackKey = key
-    -- THE PICTURE COMES DOWN AND THE BANK IS HIDDEN AND RETIRED, to be dropped a clip
-    -- at a time once the storm stands still -- not two hundred removals in one tick of
-    -- a sweep. Only if a hide is refused too, so a staged outline might be left showing
-    -- somewhere wrong, does everything come out at once.
-    if retireStage() then
-        takeDownPicture()
-    else
-        clearMapOverlay()
-    end
+    takeDownPicture()
     -- Also force the mid-join case, where there was no custom fill whose state
     -- transition could set the dirty bit.
     mapBlipsDirty = true
@@ -2119,9 +2074,9 @@ end
 --- Is the overlay drawing the zones right now? Then the radius blips must not.
 ---
 --- READ BY THE TWO BLIP SITES ABOVE AND WRITTEN IN EXACTLY ONE PLACE -- the count
---- of our areas in the movie, set by a rebuild and by a redraw of the zone. A boolean
---- of its own beside it would be a second expression of one fact, which is the
---- mistake client/mapoverlay.lua's own header talks itself out of twice.
+--- of our areas in the movie, set by a rebuild. A boolean of its own beside it would
+--- be a second expression of one fact, which is the mistake client/mapoverlay.lua's
+--- own header talks itself out of twice.
 --- @return boolean
 local function mapFilled()
     return overlayShown > 0
@@ -2133,8 +2088,8 @@ end
 --- because the movie's alpha compounds below 100 -- its header has the arithmetic.
 --- Done there rather than here so that every caller of setAreas gets it. The zone
 --- goes out at 255, where there is nothing to compound, because it is FADED
---- afterwards (BR.MapOverlay.alphaArea) -- the phase-1 hold -- and that write is
---- linear only for an area added at full strength.
+--- afterwards (BR.MapOverlay.alphaArea) -- the phase-1 hold, and a sweep setting off
+--- -- and that write is linear only for an area added at full strength.
 --- @param alpha number
 --- @return table  { r, g, b, a }
 local function fillColour(alpha)
@@ -2143,13 +2098,12 @@ local function fillColour(alpha)
              a = math.floor((alpha or 255) + 0.5) }
 end
 
---- A shape's contours for the movie, each drawn about (ox, oy) -- world coordinates
---- when that is the origin -- with the extents placeArea scales by. A contour under
---- three points is not a polygon, and the movie would be handed a coordinate string
---- it cannot close: dropped here so that "drawn whole or not at all" is not tripped
---- by a zone that has genuinely run out of geometry.
---- @return table  { { points, w, h }, ... }
-local function contoursOf(shape, ox, oy)
+--- A shape's contours for the movie, in world coordinates. A contour under three
+--- points is not a polygon, and the movie would be handed a coordinate string it
+--- cannot close: dropped here so that "drawn whole or not at all" is not tripped by a
+--- zone that has genuinely run out of geometry.
+--- @return table  { points, ... }
+local function contoursOf(shape)
     local ov = cfg.overlay or {}
     local cols = BR.StormShape.polyline(shape, ov.chordM, ov.maxPoints)
     local out = {}
@@ -2157,36 +2111,53 @@ local function contoursOf(shape, ox, oy)
         local c = cols[i]
         if #c >= 3 then
             local pts = {}
-            local x0, x1, y0, y1 = math.huge, -math.huge, math.huge, -math.huge
-            for j = 1, #c do
-                local x, y = c[j].x - ox, c[j].y - oy
-                pts[j] = { x = x, y = y }
-                if x < x0 then x0 = x end
-                if x > x1 then x1 = x end
-                if y < y0 then y0 = y end
-                if y > y1 then y1 = y end
-            end
-            out[#out + 1] = { points = pts, w = x1 - x0, h = y1 - y0 }
+            for j = 1, #c do pts[j] = { x = c[j].x, y = c[j].y } end
+            out[#out + 1] = pts
         end
     end
     return out
+end
+
+--- How strongly the map shows the ZONE, 0..1 of the safe zone's alpha. The overlay's
+--- zone fill and the fallback ring (storm.state) both read it, so they are one picture:
+---
+---   the phase-1 hold   wallShare: nothing, then in over the hold's last fadeInSec
+---   any other hold     all of it
+---   a sweep            out over its first `overlay.sweepFadeSec`, on the record's own
+---                      clock -- every screen fades together, and a client whose
+---                      picture is drawn half way through draws no zone at all
+---   finished           none
+---
+--- A sweepFadeSec OF ZERO IS NO FADE: the zone is gone on the sweep's first tick,
+--- answered before anything divides by it.
+--- @param rec table     the storm record
+--- @param st string     the phase state solveNow reported
+--- @param msLeft number ms until that phase state changes
+--- @return number       0..1
+local function mapShare(rec, st, msLeft)
+    if st == BR.StormPhase.FINISHED then return 0.0 end
+    if st ~= BR.StormPhase.SHRINKING then return wallShare(rec, st, msLeft) end
+    local fadeMs = ((cfg.overlay or {}).sweepFadeSec or 1.0) * 1000.0
+    if fadeMs <= 0.0 then return 0.0 end
+    local into = (rec.tShrink or 0.0) - msLeft
+    if into >= fadeMs then return 0.0 end
+    if into <= 0.0 then return 1.0 end
+    return 1.0 - into / fadeMs
 end
 
 --- WHAT the overlay should be showing, as numbers, and its own key.
 ---
 --- ═══ THE PLAN IS CHEAP AND THE WALK IS NOT, WHICH IS WHY THEY ARE TWO CALLS ═══
 ---
---- A rebuild or a redraw walks a boundary and marshals a kilobyte of coordinates
---- through a Scaleform string, so both are rate-limited. This runs at the tick rate
---- and says what the picture should be; the walk runs only when it has to.
+--- A picture walks a boundary and marshals a kilobyte of coordinates through a
+--- Scaleform string, so it is rate-limited. This runs at the tick rate and says what
+--- the picture should be; the walk runs only when it has to.
 ---
 --- ═══ THE KEY IS THE RECORD'S GEOMETRY AND NOTHING THAT MOVES (#350, #344) ═══
 ---
---- The phase, the seed, both circles and a carried outline: what the destination is
---- drawn FROM. A new key is a whole new picture. The zone's own changes are the
---- `mode` and the `tag`: `still`, `frame|<family>` (BR.StormWallFrame), `pivot` (a
---- sweep's changing outline, placed on BR.StormWallPivot) or `morph` (a growth), and
---- a change of tag is a redraw of the zone alone.
+--- The phase, the seed, both circles and a carried outline: what the picture is drawn
+--- FROM. A new key is a whole new picture. `moving` -- the wall sweeping, or finished --
+--- says whether a picture drawn now carries the zone.
 --- @return table|nil plan
 --- @return string|nil key
 local function overlayPlan()
@@ -2204,692 +2175,110 @@ local function overlayPlan()
 
     local rec = activeRecord()
     if not rec then return nil end
-    local cx, cy, r, st, msLeft, _, t, g = solveNow(rec)
+    local cx, cy, r, st, msLeft = solveNow(rec)
     if r <= 1.0 and rec.r1 <= 1.0 then return nil end
-
-    -- A CONJOINED ZONE GROWING INTO ITS DESTINATION IS MOVING (#344), for all that
-    -- the solver calls it a HOLD: its outline changes, so it is redrawn like a sweep.
-    local growing = st == BR.StormPhase.HOLDING and (g or 1.0) < 1.0
-        and (BR.StormOverlaps(rec))
-
-    -- THE SAFE ZONE IS SUPPRESSED FOR THE WHOLE-MAP PHASE-1 HOLD and ramped in on
-    -- the map's own share, exactly as the ring above is -- wallShare, one number
-    -- read by the ring and this.
-    local zoneA = cfg.blip.currentAlpha
-    if rec.phase == 1 and st == BR.StormPhase.HOLDING then
-        zoneA = cfg.blip.currentAlpha * wallShare(rec, st, msLeft)
-    end
-
-    -- HOW THE ZONE'S OUTLINE IS CHANGING, which decides how it is shown.
-    --
-    -- WHILE THE WALL MOVES THE MAP FOLLOWS THE WALL ITSELF (2026-10-02): its own frame
-    -- from the knee -- on a breakout too, `wallOnly` -- and before it the wall's pivot,
-    -- where the outline drawn at the last redraw is moved, and scaled as far as it fits
-    -- inside the wall's corner list `fks` (zonePicture, applyZone).
-    local mode, fx, fy, fs, fid, fks = 'still', nil, nil, nil, nil, nil
-    local sweep = st == BR.StormPhase.SHRINKING
-    if growing then
-        mode = 'morph'
-    elseif sweep then
-        fx, fy, fs, fid = BR.StormWallFrame(rec, t, true)
-        if fid then
-            mode = 'frame'
-        else
-            mode = 'morph'
-            fx, fy, fs, fks = BR.StormWallPivot(rec, t)
-        end
-    elseif st == BR.StormPhase.FINISHED then
-        fx, fy, fs, fid = BR.StormWallFrame(rec, t)
-        if fid then mode = 'frame' end
-    end
 
     local mo = rec.mo
     local key = ('r|%d|%d|%.0f|%.0f|%.0f|%.0f|%.0f|%.0f|%s'):format(
         rec.phase, math.floor(rec.seed or 0), rec.cx0, rec.cy0, rec.r0,
         rec.cx1, rec.cy1, rec.r1, mo and ('%.6f'):format(mo.t or 0.0) or '-')
     return {
-        rec = rec, cx = cx, cy = cy, r = r, t = t, g = g,
-        state = st, zoneA = zoneA, msLeft = msLeft,
-        growing = growing and true or false,
-        sweep = sweep and fx ~= nil,
-        mode = mode,
-        tag = fid and ('frame|' .. fid) or (fx and 'pivot') or mode,
-        fx = fx, fy = fy, fs = fs, fks = fks,
+        rec = rec, cx = cx, cy = cy, r = r, state = st,
+        moving = st == BR.StormPhase.SHRINKING or st == BR.StormPhase.FINISHED,
+        zoneA = cfg.blip.currentAlpha * mapShare(rec, st, msLeft),
     }, key
 end
 
---- The zone's picture for a plan: its contours, drawn about the frame's point when it
---- has one -- so placing and resizing the clip moves and scales the outline exactly
---- -- and about the solver's centre otherwise, where it is only ever placed there.
----
---- WHILE THE WALL MOVES it is the WALL, drawn about its frame or its pivot (overlayPlan)
---- -- and on a breakout the destination beside it at the zone's strength, `fixed` in
---- world coordinates and never placed: the two union to the zone, and a union could not
---- be moved with the wall. Each part says which it is (BR.Storm.mapSlots' kinds).
---- @param plan table
---- @param first integer   the slot its first contour will go out in
---- @return table zone, table areas
-local function zonePicture(plan, first)
-    local rec = plan.rec
-    local ox, oy, os = plan.cx, plan.cy, 1.0
-    if plan.fx then ox, oy, os = plan.fx, plan.fy, plan.fs end
-    local parts, hk = nil, nil
-    if plan.sweep then
-        local wall = BR.StormWall(rec, plan.t)
-        parts = contoursOf(wall, ox, oy)
-        for i = 1, #parts do parts[i].kind = 'wall' end
-        -- ON THE PIVOT, ITS CORNERS ABOUT IT: what applyZone fits inside the wall. A
-        -- hull's corners are discs whose hull is that hull; a circle is its own disc.
-        if plan.fks then
-            local ds = {}
-            for _, k in ipairs(wall.hull and wall.hull.ks or wall.discs or {}) do
-                ds[#ds + 1] = { x = k.x - ox, y = k.y - oy, r = k.rho or k.r }
-            end
-            hk = BR.StormShape.discHull(ds)
-        end
-        if not BR.StormNested(rec) and (rec.r1 or 0.0) > 0.0 then
-            for _, c in ipairs(contoursOf(BR.StormTarget(rec), 0.0, 0.0)) do
-                c.kind, c.fixed = 'dest', true
-                parts[#parts + 1] = c
-            end
-        end
-    else
-        parts = contoursOf(BR.StormZone(rec, plan.cx, plan.cy, plan.r, plan.t, plan.g),
-            ox, oy)
-    end
-    local areas = {}
-    for i = 1, #parts do
-        areas[i] = { points = parts[i].points, colour = fillColour(255) }
-    end
-    return { tag = plan.tag, ox = ox, oy = oy, os = os, hk = hk, parts = parts,
-             first = first, at = GetGameTimer() }, areas
-end
-
---- The whole picture for a plan, ready for BR.MapOverlay.setAreas: the destination in
---- world coordinates, then the zone. THE PREVIEW is circle 1 alone, in world
---- coordinates: it never moves.
+--- The whole picture for a plan, ready for BR.MapOverlay.setAreas: the destination,
+--- then -- while the storm holds -- the zone. THE PREVIEW is circle 1 alone.
 --- @param plan table  from overlayPlan
 --- @return table|nil areas
---- @return integer dest    how many of them are the destination
---- @return table|nil zone  the zone's picture
+--- @return integer dest    how many of them are the destination (or circle 1)
+--- @return integer zone    how many of them are the zone
 local function overlayFill(plan)
     local out = {}
-    local function pushWorld(shape, alpha)
-        for _, c in ipairs(contoursOf(shape, 0.0, 0.0)) do
-            out[#out + 1] = { points = c.points, colour = fillColour(alpha) }
+    local function push(shape, alpha)
+        for _, pts in ipairs(contoursOf(shape)) do
+            out[#out + 1] = { points = pts, colour = fillColour(alpha) }
         end
     end
 
     if plan.pv then
         local pv = plan.pv
-        pushWorld(BR.StormShape.blob(pv.cx, pv.cy, pv.r, BR.StormUnit(pv.seed, 1)),
+        push(BR.StormShape.blob(pv.cx, pv.cy, pv.r, BR.StormUnit(pv.seed, 1)),
             cfg.blip.nextAlpha)
-        if #out == 0 then return nil, 0, nil end
-        return out, #out, nil
+        if #out == 0 then return nil, 0, 0 end
+        return out, #out, 0
     end
 
-    -- THE DESTINATION, FIRST. It never moves, and it is the destination's own shape
-    -- where it stands -- BR.StormTarget, the shape the wall ends on and the damage
-    -- tick shelters.
     local rec = plan.rec
-    if rec.r1 > 1.0 then pushWorld(BR.StormTarget(rec), cfg.blip.nextAlpha) end
+    if rec.r1 > 1.0 then push(BR.StormTarget(rec), cfg.blip.nextAlpha) end
     local dest = #out
-    local zone, areas = zonePicture(plan, dest + 1)
-    for i = 1, #areas do out[#out + 1] = areas[i] end
-    if #out == 0 then return nil, 0, nil end
-    return out, dest, zone
+    -- THE ZONE AS THE HOLD BEGAN, AND ONLY WHILE IT HOLDS: `t` 0, and `g` 0, so a
+    -- conjoined zone is the shape the last sweep left rather than wherever its growth
+    -- has got to (the section note has why).
+    if not plan.moving then
+        push(BR.StormZone(rec, plan.cx, plan.cy, plan.r, 0.0, 0.0), 255)
+    end
+    if #out == 0 then return nil, 0, 0 end
+    return out, dest, #out - dest
 end
 
---- How far inside the wall the outline on its pivot is kept, in meters: the coordinate
---- string's two decimals move a point by up to 7 mm, and the clip is sized off them.
-local PIVOT_CLEAR_M = 0.05
-
---- Put the zone where the plan says, and show it at the plan's strength. `first` is
---- the tick it was drawn on, when both are written whatever they are -- a clip that
---- has just been added sits on the world's origin at full strength until then.
----
---- ONLY WHAT CHANGED, SO A HOLD COSTS NOTHING. A zone whose outline is moving -- under
---- a frame, or on the wall's pivot -- is placed every tick, two writes a contour, and
---- anything else stays where it was drawn; a `fixed` part (a breakout's destination
---- beside the wall) is never placed at all. An alpha is written when its value
---- changed, which is the phase-1 fade and nothing else.
----
---- ON THE PIVOT IT IS AS LARGE AS FITS INSIDE THE WALL, AND NO LARGER (2026-10-02).
---- The outline the sweep set off with does not turn with the wall, so scaled to the
---- wall's area it poked out wherever the wall had turned in -- storm shown as safe, by
---- up to 3 km in phase 1. After the tick it is drawn on, where it IS the wall, it is
---- scaled about the pivot as far as it still fits inside the wall's corner list at the
---- tick (BR.StormShape.fitScale, exact), PIVOT_CLEAR_M to spare: the map may show safe
---- ground as storm there, never storm as safe.
+--- Show the zone at the plan's strength: one alpha write a contour, and only when the
+--- value changed -- the phase-1 fade in, a sweep's fade out, and once as the zone is
+--- drawn, because it goes out at full strength (fillColour). Nothing else is ever sent
+--- to a picture once it is in the movie.
 ---
 --- false on a refusal: the movie's picture is then not the storm's, and the caller
 --- decides what to do about it.
---- @param z table     the zone's picture
+--- @param at table     overlayAt
 --- @param plan table
---- @param first boolean
+--- @param first boolean the tick the picture was drawn on
 --- @return boolean ok
-local function applyZone(z, plan, first)
-    local x, y, s = z.ox, z.oy, z.os
-    if plan.fx and plan.tag == z.tag then
-        x, y, s = plan.fx, plan.fy, plan.fs
-        if z.hk and plan.fks and not first then
-            s = z.os * BR.StormShape.fitScale(plan.fks, z.hk, x, y, PIVOT_CLEAR_M)
-        end
-    end
-    local resize = first or stormBisectMode ~= 'mapnoresize'
-    if first or x ~= z.x or y ~= z.y or (resize and s ~= z.s) then
-        local trace = BR.Loop.hitchBegin(
-            resize and 'storm.map.place' or 'storm.map.position',
-            resize and '10 Hz position + resize while one outline moves with the wall'
-                or '10 Hz position only; #350 resize bisect')
-        local k = (z.os > 0.0) and (s / z.os) or 1.0
-        for i, part in ipairs(z.parts) do
-            if not part.fixed and not BR.MapOverlay.placeArea(z.first + i - 1, x, y,
-                    resize and (part.w * k) or nil, resize and (part.h * k) or nil) then
-                BR.Loop.hitchEnd(trace)
-                return false
-            end
-        end
-        z.x, z.y = x, y
-        -- Keep the last DRAWN scale while resize is suppressed, so returning to normal
-        -- catches the clip up on the next tick instead of believing it current.
-        if resize then z.s = s end
-        BR.Loop.hitchEnd(trace)
-    end
+local function fadeZone(at, plan, first)
+    if at.zone == 0 then return true end
     local a = math.floor((plan.zoneA or 0.0) + 0.5)
-    if first or a ~= z.a then
-        local trace = BR.Loop.hitchBegin('storm.map.alpha',
-            'the phase-1 fade, and once per drawn zone')
-        for i = 1, #z.parts do
-            if not BR.MapOverlay.alphaArea(z.first + i - 1, a) then
-                BR.Loop.hitchEnd(trace)
-                return false
-            end
+    if not first and a == at.a then return true end
+    local trace = BR.Loop.hitchBegin('storm.map.alpha',
+        'the phase-1 fade in, a sweep\'s fade out over overlay.sweepFadeSec, and once per '
+            .. 'drawn zone')
+    for i = 1, at.zone do
+        if not BR.MapOverlay.alphaArea(at.dest + i, a) then
+            BR.Loop.hitchEnd(trace)
+            return false
         end
-        z.a = a
-        BR.Loop.hitchEnd(trace)
     end
+    at.a = a
+    BR.Loop.hitchEnd(trace)
     return true
 end
 
---- Replace the zone's clips with the zone as it is now, and nothing else: the
---- destination under it is not touched. See the section note for when.
---- @return boolean ok
-local function redrawZone(at, plan)
-    local trace = BR.Loop.hitchBegin('storm.map.morph',
-        '<= overlay.morphHz while the zone changes outline; once as it starts or stops')
-    local zone, areas = zonePicture(plan, at.dest + 1)
-    local ok = BR.MapOverlay.replaceFrom(at.dest + 1, areas)
-    if ok then
-        at.zone = zone
-        setOverlayShown(at.dest + #zone.parts)
-        ok = applyZone(zone, plan, true)
-    end
-    BR.Loop.hitchEnd(trace)
-    return ok
-end
-
--- ═══════════════════════════════════════════════════════════════════ staging ═══
---
---   "We're also back to hitches ... I think it's because of the issue we resolved
---    earlier of drawing new runtime textures for morphing ... We need to not
---    compromise on function here - is there any way we can silently stage the
---    textures we need over time to be less intrusive and hitchy?"
---                                                    -- the owner, 2026-09-28
---
--- The zone's clip used to be REPLACED ten times a second while its outline turned --
--- one REM_OVERLAY and one ADD_AREA_OVERLAY a tick, the call #350 traced its hitch to.
--- Every outline a sweep will show is known the moment its record arrives, so they are
--- drawn AHEAD, while the storm holds, and the sweep only chooses between them:
---
---   THE BANK. During the hold the zone's outlines at K+1 instants of the sweep's first
---   leg -- t_j = knee * j / K, the last one the knee's outline -- go into the movie as
---   HIDDEN clips (BR.MapOverlay.stageArea: added at full strength, faded to 0 in the
---   same tick), ONE per `overlay.stage.everyTicks` map ticks at most. Each is drawn
---   about the wall's pivot at its own instant (BR.StormWallPivot: the mean of its moving
---   corner centres, and the radius of a disc of its area). A breakout also stages its
---   destination at the zone's strength: the wall and that are its safe zone.
---
---   THE SWEEP. Nothing is added or removed while the wall moves. Each tick shows the
---   staged outline nearest the sweep's instant, placed on the wall's pivot NOW and
---   scaled by the ratio of the sizes -- two property writes -- and swaps which one is
---   visible by alpha when the nearest changes. From the knee the knee's outline is
---   placed by the wall's own frame (BR.StormWallFrame), which is exact: the second leg
---   IS one outline moved and scaled.
---
---   HOW MANY. The placed outline differs from the wall by how much the shape itself
---   changed since its instant, which is linear in the spacing: `stageSpread` measures
---   it once per record -- the outline at the start placed onto the wall half way
---   through the first leg -- and K is that over `overlay.stage.targetM`, capped at
---   `maxClips` and at what the hold has room to stage. Measured in docs/match-math.md.
---
---   A HOLD TOO SHORT FOR ALL OF THEM (a dev time scale, the phase-1 cut to 1:30)
---   STILL SWEEPS WITHOUT ADDS: the bank is staged coarse to fine -- the knee's outline,
---   the start's, then halving -- so whatever is in the movie when the wall sets off is
---   spread across the leg, and the nearest STAGED outline is the one shown. Only a
---   sweep that arrives before even those (a client that joined mid-sweep) is redrawn
---   the old way, at `overlay.morphHz`.
---
---   THE CLEAN-UP IS SPREAD TOO. A new record retires the old bank -- hidden already --
---   and the retired clips are dropped one per budget slot in the next hold, after the
---   new bank is staged. Never while the storm moves.
---
---   THE BUDGET IS MEASURED. GetGameTimer is frame-stamped, so the cost of one add cannot
---   be read inside its frame; the frame it lands in can. The longest frame since the
---   last staging slot is read on the next one (BR.Loop.takeFrameGap), and a slot whose
---   frame ran past `overlay.stage.frameMs` doubles the spacing of the next ones, up to
---   `maxTicks`. /brstormhitch's summary says what the staging cost.
---
--- ═══ AND IT SHIPS OFF (2026-10-02), BECAUSE THE BANK'S ADDS WERE THE HITCH ═══
---
--- Hidden or not, a staged clip is an ADD_AREA_OVERLAY, and a bank of up to maxClips of
--- them spaced no further than maxTicks apart is a hitch about every second through the
--- hold -- "the game is now hitching every second or so", the owner on 8335b17, gone
--- under /brstormbisect mapoff. Everything below still runs with `overlay.stage.enabled`
--- off: it stages nothing and drops only what a refusal or an earlier bank left. Kept,
--- under its tests, for the design that replaces it.
-
-local mapTick = 0
-local lastOpTick = -1e9
-local stageGap = nil
-local opPending = false
-
---- What the storm map did since the last /brstormhitch reset -- the plain summary.
+--- What the storm map sent the movie since the last /brstormhitch reset, for its plain
+--- summary: the sweeps it saw, and what reached the movie while the wall moved -- alpha
+--- writes (the old zone fading out) and adds and removals (a picture drawn mid-sweep:
+--- a client joining, a refusal drawn again, a /brstormbisect switch).
 local mapStats = nil
 local function freshMapStats()
     return {
         since = GetGameTimer(),
-        sweeps = 0, sweepsStaged = 0, sweepsLegacy = 0,
-        sweepRedraws = 0,        -- clip adds (redraws or rebuilds) while the wall moved
-        sweepEvents = 0,         -- of those, redraws as its kind of change switched
-        sweepRemovals = 0,       -- clip removals while the wall moved
-        staged = 0, stagedFirstAt = nil, stagedLastAt = nil,
-        dropped = 0, slots = 0, backoffs = 0,
-        stageWorstMs = 0,        -- the longest frame that followed a staging slot
-        worstErrM = 0.0,         -- the bank's estimated worst placement error
+        sweeps = 0,
+        sweepFades = 0,          -- alpha writes while the wall moved
+        sweepAdds = 0,           -- clip adds while the wall moved
+        sweepRemoves = 0,        -- clip removals while the wall moved
     }
 end
 mapStats = freshMapStats()
 
---- The staging knobs, defaulted: config/storm.lua's `overlay.stage`.
-local function stageCfg()
-    local st = (cfg.overlay or {}).stage or {}
-    return {
-        enabled    = st.enabled ~= false,
-        everyTicks = math.max(1, math.floor(st.everyTicks or 2)),
-        maxTicks   = math.max(1, math.floor(st.maxTicks or 16)),
-        frameMs    = st.frameMs or 20,
-        targetM    = st.targetM or 8.0,
-        maxClips   = math.max(2, math.floor(st.maxClips or 160)),
-    }
-end
-
---- The map band's period. Its thread is `step; Wait(100)`.
-local TICK_MS = 100.0
-
---- The most clips the PICTURE can hold beside a bank: the destination (one contour),
---- the zone (two islands at most) and a redraw's replacement -- with room to spare.
---- The movie never holds more of ours than `overlay.stage.maxClips` + this: the bank
---- is staged only below it, and the old bank goes before the new one comes.
-local PICTURE_CLIPS = 8
-
---- The fixed ceiling on our clips in the movie, for the suite and the summary.
-function BR.Storm.mapClipCap()
-    return stageCfg().maxClips + PICTURE_CLIPS
-end
-
---- How far the wall's outline at the start of its first leg, placed on the wall half
---- way through it, is from that wall: the error ONE staged outline per leg would show
---- at worst, which K staged outlines divide by K (their spacing halves the distance in
---- the sweep to the nearest, and the shape's change is linear in it). Both ways round,
---- at the polyline's own vertices.
---- @return number metres
-local function stageSpread(rec, legEnd)
-    local SS = BR.StormShape
-    local ov = cfg.overlay or {}
-    local tb = 0.5 * legEnd
-    local A, B = BR.StormWall(rec, 0.0), BR.StormWall(rec, tb)
-    local ax, ay, ar = BR.StormWallPivot(rec, 0.0)
-    local bx, by, br = BR.StormWallPivot(rec, tb)
-    if not (ax and bx) or ar <= 0.0 or br <= 0.0 then return 0.0 end
-    local worst = 0.0
-    local function one(from, fx, fy, fr, to, tx, ty, tr)
-        local k = tr / fr
-        for _, c in ipairs(SS.polyline(from, ov.chordM, ov.maxPoints)) do
-            for _, q in ipairs(c) do
-                local d = math.abs(SS.distance(to, tx + (q.x - fx) * k, ty + (q.y - fy) * k))
-                if d > worst then worst = d end
-            end
-        end
-    end
-    one(A, ax, ay, ar, B, bx, by, br)
-    one(B, bx, by, br, A, ax, ay, ar)
-    return worst
-end
-
---- Coarse to fine: the order the bank's first-leg outlines are staged in, so a hold
---- cut short leaves them spread across the leg. 0 and K first, then the halvings.
-local function stageOrder(K)
-    local order, seen = {}, {}
-    local function add(j) if not seen[j] then seen[j] = true; order[#order + 1] = j end end
-    add(K); add(0)
-    local step = K
-    while step > 1 do
-        local half = step / 2.0
-        local j = half
-        while j < K do
-            add(math.floor(j + 0.5))
-            j = j + step
-        end
-        step = half
-    end
-    for j = 0, K do add(j) end
-    return order
-end
-
---- Plan a record's bank: which outlines, where each is drawn about, in what order.
---- false when this record has nothing to stage -- no shape at all -- and the sweep is
---- drawn the old way.
-local function planStage(b, msLeft)
-    local rec = b.rec
-    local sc = stageCfg()
-    local r1 = rec.r1 or 0.0
-    local nested = BR.StormNested(rec)
-    b.nested = nested
-    b.apart = (not nested) and r1 > 0.0
-    local frames = {}
-    if r1 <= 0.0 then
-        -- THE LAST ZONE ONTO ITS POINT: one outline, its own, under the 'point' frame
-        -- the whole sweep -- on a breakout too, whose zone is that wall and a one-metre
-        -- point beside it.
-        local fx, fy, fs = BR.StormWallFrame(rec, 0.0, true)
-        if not fx then return false end
-        frames[1] = { t = 0.0, j = 0, ox = fx, oy = fy, refs = { frame = { fx, fy, fs } } }
-        b.point, b.K, b.legEnd = true, 0, 1.0
-        b.order = { 0 }
-        b.estM = 0.0
-    else
-        local knee = BR.StormKnee(rec)
-        local legEnd = knee or 1.0
-        local c = stageSpread(rec, legEnd)
-        local K = math.max(1, math.ceil(c / sc.targetM))
-        -- NO MORE THAN THE HOLD HAS ROOM FOR, AFTER THE RETIRED CLIPS ARE DROPPED --
-        -- which they are first (stageSlot).
-        local room = math.floor((msLeft or 0.0) / (sc.everyTicks * TICK_MS))
-            - #retired - (b.apart and 1 or 0) - 2
-        K = math.max(1, math.min(K, sc.maxClips - (b.apart and 2 or 1), room - 1))
-        for j = 0, K do
-            local t = legEnd * j / K
-            local px, py, pr = BR.StormWallPivot(rec, t)
-            local f = { t = t, j = j, ox = px, oy = py, refs = { pivot = { px, py, pr } } }
-            if j == K and knee then
-                local fx, fy, fs = BR.StormWallFrame(rec, knee, true)
-                if fx then f.refs.frame = { fx, fy, fs } end
-            end
-            frames[j + 1] = f
-        end
-        b.knee, b.legEnd, b.K = knee, legEnd, K
-        b.order = stageOrder(K)
-        b.estM = c / K
-    end
-    b.frames = frames
-    b.cursor = 1
-    b.planned = true
-    if b.estM > mapStats.worstErrM then mapStats.worstErrM = b.estM end
-    return true
-end
-
---- Note a staged clip in the summary.
-local function noteStaged()
-    local now = GetGameTimer()
-    mapStats.staged = mapStats.staged + 1
-    mapStats.stagedFirstAt = mapStats.stagedFirstAt or now
-    mapStats.stagedLastAt = now
-end
-
---- One staging slot's work: plan, stage one outline, or stage the breakout's
---- destination. false when there was nothing left to do -- the bank is complete.
-local function stageStep(b, msLeft)
-    if not b.planned then
-        if not planStage(b, msLeft) then b.failed = true end
-        return true
-    end
-    local j = b.order[b.cursor]
-    if j == nil and b.apart and not b.dest then
-        local trace = BR.Loop.hitchBegin('storm.map.stage',
-            '<= 1 clip per overlay.stage.everyTicks ticks, only while the storm holds')
-        local parts = {}
-        for _, c in ipairs(contoursOf(BR.StormTarget(b.rec), 0.0, 0.0)) do
-            local h = BR.MapOverlay.stageArea(c.points, fillColour(255))
-            if not h then b.failed = true break end
-            parts[#parts + 1] = { h = h }
-            noteStaged()
-        end
-        b.dest = { parts = parts }
-        BR.Loop.hitchEnd(trace)
-        return true
-    end
-    if j == nil then
-        b.ready = true
-        return false
-    end
-    local f = b.frames[j + 1]
-    local trace = BR.Loop.hitchBegin('storm.map.stage',
-        '<= 1 clip per overlay.stage.everyTicks ticks, only while the storm holds')
-    local parts = {}
-    for _, c in ipairs(contoursOf(BR.StormWall(b.rec, f.t), f.ox, f.oy)) do
-        local h = BR.MapOverlay.stageArea(c.points, fillColour(255))
-        if not h then b.failed = true break end
-        parts[#parts + 1] = { h = h, w = c.w, hh = c.h }
-        noteStaged()
-    end
-    f.parts = parts
-    b.cursor = b.cursor + 1
-    -- ENOUGH TO SWEEP ON: the knee's outline, the start's and, on a breakout, the
-    -- destination. Everything after only makes the nearest one nearer.
-    BR.Loop.hitchEnd(trace)
-    return true
-end
-
---- Is this bank able to carry a sweep without an add?
-local function stageUsable(b)
-    if not b or b.failed or not b.planned then return false end
-    if b.point then return b.frames[1].parts ~= nil end
-    if not (b.frames[1].parts and b.frames[b.K + 1].parts) then return false end
-    if b.apart and not b.dest then return false end
-    return true
-end
-
---- Hide a bank and hand its clips to the retired list.
---- true when every clip that was showing is hidden now; false when the engine refused
---- a hide, and a clip of it may still be on the map.
-retireStage = function()
-    local b = stage
-    stage = nil
-    if not b then return true end
-    local hidden = true
-    local function take(parts, visible)
-        for _, p in ipairs(parts or {}) do
-            if visible and p.h.idx and not BR.MapOverlay.alphaStaged(p.h, 0) then
-                hidden = false
-            end
-            retired[#retired + 1] = p.h
-        end
-    end
-    for _, f in ipairs(b.frames or {}) do take(f.parts, b.shown == f) end
-    if b.dest then take(b.dest.parts, true) end
-    return hidden
-end
-
---- One budget slot, if the budget has one. Never called while the storm moves.
----
---- ═══ THE OLD CLIPS GO FIRST, SO THE MOVIE NEVER HOLDS TWO BANKS ═══
----
--- A retired bank is dropped before the new one is staged (planStage leaves the room
--- for it), so the movie holds at most one bank and the picture: MAP_CLIP_CAP. Then
--- the bank, then any ORPHAN -- a clip of ours that nothing names any more, which only
--- a refused removal can leave (BR.MapOverlay.dropOrphan) -- so a refusal is retried
--- here at the budget's pace rather than leaked.
-local function stageSlot(plan, key)
-    local sc = stageCfg()
-    stageGap = stageGap or sc.everyTicks
-    if (mapTick - lastOpTick) < stageGap then return end
-    local worked = false
-    if #retired > 0 then
-        local h = retired[1]
-        local trace = BR.Loop.hitchBegin('storm.map.drop',
-            '<= 1 clip per overlay.stage.everyTicks ticks, a retired bank, while the storm holds')
-        if BR.MapOverlay.dropStaged(h) or not h.idx then
-            table.remove(retired, 1)
-            mapStats.dropped = mapStats.dropped + 1
-        else
-            -- REFUSED: to the back of the line, and the next slot tries the next one.
-            table.remove(retired, 1)
-            retired[#retired + 1] = h
-        end
-        BR.Loop.hitchEnd(trace)
-        worked = true
-    elseif sc.enabled and plan and plan.rec and key and stage and stage.key == key
-            and not stage.ready and not stage.failed
-            and BR.MapOverlay.ownCount() + 2 <= sc.maxClips + PICTURE_CLIPS then
-        worked = stageStep(stage, plan.msLeft)
-    end
-    if not worked then
-        local r = BR.MapOverlay.dropOrphan()
-        if r ~= 'none' then
-            worked = true
-            if r == 'dropped' then mapStats.dropped = mapStats.dropped + 1 end
-        end
-    end
-    if worked then
-        lastOpTick = mapTick
-        opPending = true
-        mapStats.slots = mapStats.slots + 1
-    end
-end
-
---- Read the frames since the last tick against the budget: a slot whose frame ran long
---- spaces the next ones out; a clean one brings the spacing back.
-local function stageMeasure()
-    local gap = BR.Loop.takeFrameGap and BR.Loop.takeFrameGap() or 0
-    if not opPending then return end
-    opPending = false
-    local sc = stageCfg()
-    stageGap = stageGap or sc.everyTicks
-    if gap > mapStats.stageWorstMs then mapStats.stageWorstMs = gap end
-    if gap > sc.frameMs then
-        stageGap = math.min(stageGap * 2, sc.maxTicks)
-        mapStats.backoffs = mapStats.backoffs + 1
-    elseif stageGap > sc.everyTicks then
-        stageGap = stageGap - 1
-    end
-end
-
---- Place one staged outline for the sweep's instant: `fam` names the reference it is
---- placed in -- the wall's pivot, or its frame -- and (X, Y, S) is that reference now.
-local function placeFrame(f, fam, X, Y, S)
-    local ref = f.refs[fam]
-    if not ref or not X or ref[3] <= 0.0 then return true end
-    local k = S / ref[3]
-    local x = X + (f.ox - ref[1]) * k
-    local y = Y + (f.oy - ref[2]) * k
-    if f.lx == x and f.ly == y and f.lk == k then return true end
-    local trace = BR.Loop.hitchBegin('storm.map.place',
-        '10 Hz position + resize of the one staged outline shown')
-    for _, p in ipairs(f.parts) do
-        if not BR.MapOverlay.placeStaged(p.h, x, y, p.w * k, p.hh * k) then
-            BR.Loop.hitchEnd(trace)
-            return false
-        end
-    end
-    f.lx, f.ly, f.lk = x, y, k
-    BR.Loop.hitchEnd(trace)
-    return true
-end
-
-local function alphaParts(parts, a)
-    for _, p in ipairs(parts or {}) do
-        if not BR.MapOverlay.alphaStaged(p.h, a) then return false end
-    end
-    return true
-end
-
---- The staged outline nearest to first-leg index `want`.
-local function nearestStaged(b, want)
-    local best, bestD = nil, math.huge
-    for _, f in ipairs(b.frames) do
-        if f.parts then
-            local d = math.abs(f.j - want)
-            if d < bestD then best, bestD = f, d end
-        end
-    end
-    return best
-end
-
---- Show the sweep from the bank: see the section note. false on a refusal.
-local function showStaged(at, plan)
-    local b = stage
-    local rec, t = plan.rec, plan.t or 0.0
-    local sel, fam, X, Y, S = nil, nil, nil, nil, nil
-    if b.point then
-        sel, fam = b.frames[1], 'frame'
-        X, Y, S = BR.StormWallFrame(rec, t, true)
-    elseif t >= 1.0 and b.apart then
-        sel = nil      -- the zone is the destination, and the destination is shown
-    elseif b.knee and t >= b.knee then
-        sel, fam = b.frames[b.K + 1], 'frame'
-        X, Y, S = BR.StormWallFrame(rec, t, true)
-    elseif t >= 1.0 then
-        sel, fam = b.frames[b.K + 1], 'pivot'
-        X, Y, S = BR.StormWallPivot(rec, 1.0)
-    else
-        sel, fam = nearestStaged(b, t / b.legEnd * b.K), 'pivot'
-        X, Y, S = BR.StormWallPivot(rec, t)
-    end
-    local a = math.floor((plan.zoneA or 0.0) + 0.5)
-
-    -- THE HOLD'S OWN ZONE CLIP STEPS ASIDE, once: the bank's outline at 0 is the same
-    -- zone, so the hand-over at the start of the sweep is one alpha write each way.
-    if at.zone and not at.zoneHidden then
-        for i = 1, #at.zone.parts do
-            if not BR.MapOverlay.alphaArea(at.zone.first + i - 1, 0) then return false end
-        end
-        at.zoneHidden = true
-    end
-    if b.dest and b.dest.a ~= a then
-        if not alphaParts(b.dest.parts, a) then return false end
-        b.dest.a = a
-    end
-    if sel and not placeFrame(sel, fam, X, Y, S) then return false end
-    if sel ~= b.shown or (sel and b.shownA ~= a) then
-        local trace = BR.Loop.hitchBegin('storm.map.switch',
-            'an alpha write each way when the nearest staged outline changes')
-        if sel and not alphaParts(sel.parts, a) then BR.Loop.hitchEnd(trace) return false end
-        if b.shown and b.shown ~= sel and not alphaParts(b.shown.parts, 0) then
-            BR.Loop.hitchEnd(trace)
-            return false
-        end
-        b.shown, b.shownA = sel, a
-        BR.Loop.hitchEnd(trace)
-    end
-    return true
-end
-
-BR.Loop.register(BR.Loop.TICK, 'storm.map', function()
-    -- LOADED AFTER THIS FILE, SO IT IS ASKED FOR AT RUNTIME AND NEVER AT LOAD.
-    -- br_core's manifest puts client/mapoverlay.lua well after client/storm.lua,
-    -- which is deliberate -- it needs client/natives.lua -- so BR.MapOverlay does
-    -- not exist while this file is being read. It always exists by the first tick.
-    if not BR.MapOverlay then return end
-    mapTick = mapTick + 1
-    stageMeasure()
-
+--- One pass of the map band. true when the storm was sweeping on it, which is what
+--- the summary counts the movie's work against.
+--- @return boolean sweeping
+local function mapStep()
     -- THE FULL MAP-OVERLAY BISECT. Remove the Scaleform polygons altogether and
     -- let the existing radius/area blips carry the map. This changes only what
     -- this client draws; the wall, HUD, damage and server storm continue normally.
     if stormBisectMode == 'mapoff' then
         clearMapOverlay()
-        return
+        return false
     end
 
     local plan, key = overlayPlan()
@@ -2906,33 +2295,31 @@ BR.Loop.register(BR.Loop.TICK, 'storm.map', function()
             print(('[br_core] storm map overlay: taking %d area(s) down')
                 :format(overlayShown))
         end
-        -- THE PICTURE NOW, THE HIDDEN BANK A CLIP AT A TIME (see staging).
-        retireStage()
         takeDownPicture()
-        if BR.MapOverlay.ready() then stageSlot(nil, nil) end
-        return
+        return false
     end
 
-    -- KEEP THE EXISTING POLYGONS BUT SEND NO MOVEMENT, RESIZE, FADE OR REDRAW
-    -- CALLS. If `mapoff` and this mode both remove a hitch, the presence of the
-    -- fill is innocent and the live Scaleform update traffic is the useful boundary.
-    -- A client entering this mode before its first fill is allowed one build so
-    -- there is something resident to freeze.
-    if stormBisectMode == 'mapfreeze' and overlayShown > 0 then return end
+    local sweeping = plan.state == BR.StormPhase.SHRINKING
+    if sweeping and key ~= mapStats.sweepKey then
+        mapStats.sweepKey = key
+        mapStats.sweeps = mapStats.sweeps + 1
+    end
+
+    -- KEEP THE EXISTING POLYGONS BUT SEND NO FADE OR REDRAW. If `mapoff` and this mode
+    -- both remove a hitch, the presence of the fill is innocent and the live Scaleform
+    -- traffic is the useful boundary. A client entering this mode before its first fill
+    -- is allowed one build so there is something resident to freeze.
+    if stormBisectMode == 'mapfreeze' and overlayShown > 0 then return sweeping end
 
     -- Once a refusal mid-sweep has selected the blip fallback, stay there for the
     -- rest of that sweep. At FINISHED or on a new record the exact picture is
-    -- allowed back; drawing it once is not the recurring moving-path cost. A
-    -- CONJOINED GROWTH IS MOTION TOO, and is held to the same.
-    local sweeping = plan.state == BR.StormPhase.SHRINKING
-    local moving = sweeping or plan.growing
-    if movingFallbackKey
-            and (key ~= movingFallbackKey or not moving) then
+    -- allowed back.
+    if movingFallbackKey and (key ~= movingFallbackKey or not sweeping) then
         movingFallbackKey = nil
     end
     if movingFallbackKey then
         takeDownPicture()
-        return
+        return sweeping
     end
 
     -- THE GATE IS STEPPED ONLY WHILE SOMETHING WANTS AN OVERLAY. Stepping it costs
@@ -2940,154 +2327,75 @@ BR.Loop.register(BR.Loop.TICK, 'storm.map', function()
     -- in the lobby with no zone to draw should not be paying it -- and the settle
     -- window starting at warmup rather than at join is also what keeps our own call
     -- furthest from the #4167 race.
-    if not BR.MapOverlay.step() then return end
+    if not BR.MapOverlay.step() then return sweeping end
 
-    local ov = cfg.overlay
-    local hz = ov.rebuildHz or 2
-    if hz <= 0 then return end
+    local hz = cfg.overlay.rebuildHz or 2
+    if hz <= 0 then return sweeping end
     local now = GetGameTimer()
 
-    -- ═══ A SWEEP IS SHOWN FROM THE BANK WHEN THE BANK CAN CARRY IT ═══
-    --
-    -- Decided once, on the sweep's first tick, and kept to its end: a bank still short
-    -- of its essentials then (a client that joined mid-sweep, a hold too short to stage
-    -- even the knee's outline) is abandoned for this record and the sweep is drawn the
-    -- old way below -- as every sweep is while `overlay.stage` is off.
-    local b = stage
-    if b and b.key ~= key then b = nil end
-    if (sweeping or plan.state == BR.StormPhase.FINISHED) and b and b.live == nil then
-        b.live = stageUsable(b)
-        if not b.live then b.failed = true end
-    end
-    if sweeping and key ~= mapStats.sweepKey then
-        mapStats.sweepKey = key
-        mapStats.sweeps = mapStats.sweeps + 1
-        if b and b.live then
-            mapStats.sweepsStaged = mapStats.sweepsStaged + 1
-        else
-            mapStats.sweepsLegacy = mapStats.sweepsLegacy + 1
-        end
-    end
-
-    -- ═══ THE SAME RECORD: THE ZONE IS PLACED, FADED, OR REDRAWN ═══
-    --
-    -- A redraw when its outline is a new kind of change -- the sweep starting, the
-    -- knee, a growth ending -- and, while it keeps changing, every 1 / morphHz. A tick
-    -- a little early still counts: the band runs at 10 Hz and its ticks jitter.
+    -- ═══ THE SAME RECORD: THE ZONE IS FADED, AND NOTHING ELSE IS SENT ═══
     if key == overlayKey and overlayAt then
-        -- THE WARMUP PREVIEW STANDS STILL, and a bank an earlier match retired (a
-        -- brforce back to warmup) is dropped under it at the budget's pace.
-        if plan.pv then
-            stageSlot(nil, nil)
-            return
-        end
-        local at = overlayAt
-        local ok, redrew = nil, false
-        if b and b.live then
-            ok = showStaged(at, plan)
-        else
-            local z = at.zone
-            -- A REDRAW AS THE KIND OF CHANGE SWITCHES IS EXPECTED -- the sweep setting
-            -- off, the knee -- and /brstormhitch counts it apart from one on the clock
-            -- (`sweepEvents`), so a clean sweep can still read as smooth.
-            local turned = z.tag ~= plan.tag
-            local due = turned
-            if not due and plan.mode == 'morph' and stormBisectMode ~= 'mapnomorph' then
-                local mhz = ov.morphHz or 10
-                due = mhz > 0 and (now - z.at) >= 750.0 / mhz
-            end
-            if due then
-                redrew = true
-                ok = redrawZone(at, plan)
-                if sweeping then
-                    mapStats.sweepRedraws = mapStats.sweepRedraws + #at.zone.parts
-                    mapStats.sweepRemovals = mapStats.sweepRemovals + #at.zone.parts
-                    if turned then
-                        mapStats.sweepEvents = mapStats.sweepEvents + #at.zone.parts
-                    end
-                end
-            else
-                ok = applyZone(z, plan, false)
-            end
-        end
-        if ok then
-            -- THE BANK IS STAGED WHILE THE STORM HOLDS, AND ONLY THEN -- and not on a
-            -- tick a conjoined growth has just redrawn its zone on.
-            if plan.state == BR.StormPhase.HOLDING and not redrew then
-                if not stage or stage.key ~= key then
-                    retireStage()
-                    stage = { key = key, rec = plan.rec }
-                end
-                stageSlot(plan, key)
-            end
-            return
-        end
-        -- REFUSED. What the movie shows is not the storm any more. While it moves,
-        -- the blips carry the map to the end of the sweep; standing still, it is
-        -- drawn again below.
-        if moving then
+        if fadeZone(overlayAt, plan, false) then return sweeping end
+        -- REFUSED. What the movie shows is not the storm any more. While the wall
+        -- moves, the blips carry the map to the end of the sweep; standing still, it
+        -- is drawn again below.
+        if sweeping then
             startMovingFallback(key)
-            return
+            return sweeping
         end
-        clearMapOverlay()
+        takeDownPicture()
     end
 
-    -- AND A WHOLE NEW PICTURE NEVER FASTER THAN rebuildHz, WHATEVER ASKED -- a phase
-    -- edge, a changed target, or a refused picture being drawn again -- and a refused
+    -- AND A WHOLE NEW PICTURE NEVER FASTER THAN rebuildHz, WHATEVER ASKED -- a new
+    -- record, a first sight, or a refused picture being drawn again -- and a refused
     -- one only PICTURE_TRIES times between two changes of kind, further apart each time.
-    local ident = key .. '|' .. tostring(plan.tag)
+    local ident = key .. '|' .. (plan.moving and 'moving' or 'still')
     if pictureFor ~= ident then pictureFor, pictureN = ident, 0 end
-    if pictureN >= PICTURE_TRIES then return end
-    if (now - lastOverlayAt) < (1000.0 / hz) * 2 ^ math.max(0, pictureN - 1) then return end
+    if pictureN >= PICTURE_TRIES then return sweeping end
+    if (now - lastOverlayAt) < (1000.0 / hz) * 2 ^ math.max(0, pictureN - 1) then
+        return sweeping
+    end
     lastOverlayAt = now
 
-    -- A NEW RECORD'S PICTURE RETIRES THE LAST RECORD'S BANK: hidden now, dropped a clip
-    -- at a time in this record's hold.
-    if stage and stage.key ~= key then retireStage() end
-
-    -- THE WALK HAPPENS HERE AND IN redrawZone AND NOWHERE EARLIER, which is the whole
-    -- reason the plan and the fill are two functions: every gate above this line is
-    -- cheap, so a tick on which nothing has changed costs a handful of comparisons.
+    -- THE WALK HAPPENS HERE AND NOWHERE EARLIER, which is the whole reason the plan
+    -- and the fill are two functions: every gate above this line is cheap, so a tick
+    -- on which nothing has changed costs a handful of comparisons.
     local rebuildTrace = BR.Loop.hitchBegin('storm.map.rebuild',
-        '<= rebuildHz; once per record, or a first sight, or a refusal redrawn')
+        '<= rebuildHz; once per record, or a first sight, or a refusal drawn again')
     local areas, dest, zone = overlayFill(plan)
     if not areas then
         -- THE PLAN WANTED SOMETHING AND THE GEOMETRY HAD NOTHING LEFT -- the final
-        -- sweep's last seconds, where every contour has collapsed under three points.
-        -- Treated as "no fill", so the radius blips take the map and the key does not
-        -- latch on a push that never happened.
+        -- sweep, whose destination is a point. Treated as "no fill", so the blips take
+        -- the map and the key does not latch on a push that never happened.
         takeDownPicture()
         BR.Loop.hitchEnd(rebuildTrace)
-        return
+        return sweeping
     end
 
     pictureN = pictureN + 1
     local drawn, chars = BR.MapOverlay.setAreas(areas)
     local at = nil
     if drawn > 0 then
-        at = { dest = dest, zone = zone, fixed = plan.pv ~= nil }
-        -- THE ZONE IS DRAWN AT THE WORLD'S ORIGIN AT FULL STRENGTH until it is placed
-        -- and faded, so both happen in the same tick -- the calls queue behind the
-        -- adds -- and a refusal takes the whole push down, for the reason setAreas
-        -- tears down a partial one: a zone in the wrong place is worse than none, and
-        -- none is what hands the map back to the radius blips.
-        if zone and not applyZone(zone, plan, true) then
+        at = { dest = dest, zone = zone }
+        -- THE ZONE IS DRAWN AT FULL STRENGTH until it is faded, so the fade happens in
+        -- the same tick -- the call queues behind the adds -- and a refusal takes the
+        -- whole push down, for the reason setAreas tears down a partial one: a zone at
+        -- the wrong strength is a wrong picture, and none is what hands the map back to
+        -- the radius blips.
+        if not fadeZone(at, plan, true) then
             BR.MapOverlay.removePicture()
             drawn, at = 0, nil
         end
-    end
-    if sweeping and drawn > 0 then
-        mapStats.sweepRedraws = mapStats.sweepRedraws + drawn
     end
     setOverlayShown(drawn)
     -- A REFUSED PUSH DOES NOT LATCH. Clearing the key means a later tick tries
     -- again (PICTURE_TRIES bounds how often) rather than believing the map is already
     -- showing this geometry, and mapFilled() is false in the meantime so the blips
-    -- carry the map. EXCEPT WHILE THE STORM MOVES, where that sweep is handed to the
+    -- carry the map. EXCEPT WHILE THE WALL MOVES, where that sweep is handed to the
     -- blips instead, and the next still moment draws it.
     overlayKey = (drawn > 0) and key or nil
     overlayAt = at
-    if drawn == 0 and moving then
+    if drawn == 0 and sweeping then
         startMovingFallback(key)
     end
 
@@ -3106,6 +2414,22 @@ BR.Loop.register(BR.Loop.TICK, 'storm.map', function()
             :format(drawn, pts, chars))
     end
     BR.Loop.hitchEnd(rebuildTrace)
+    return sweeping
+end
+
+BR.Loop.register(BR.Loop.TICK, 'storm.map', function()
+    -- LOADED AFTER THIS FILE, SO IT IS ASKED FOR AT RUNTIME AND NEVER AT LOAD.
+    -- br_core's manifest puts client/mapoverlay.lua well after client/storm.lua,
+    -- which is deliberate -- it needs client/natives.lua -- so BR.MapOverlay does
+    -- not exist while this file is being read. It always exists by the first tick.
+    if not BR.MapOverlay then return end
+    local a0, r0, f0 = BR.MapOverlay.counts()
+    if mapStep() then
+        local a1, r1, f1 = BR.MapOverlay.counts()
+        mapStats.sweepAdds = mapStats.sweepAdds + (a1 - a0)
+        mapStats.sweepRemoves = mapStats.sweepRemoves + (r1 - r0)
+        mapStats.sweepFades = mapStats.sweepFades + (f1 - f0)
+    end
 end)
 
 -- ---------------------------------------------------------------- #350 A/B ---
@@ -3115,25 +2439,19 @@ end)
 --
 --   normal       shipping path
 --   mapoff       no custom Scaleform fill; ordinary map blips take over
---   mapfreeze    keep the fill resident but send no live map updates
---   mapnoresize  move and fade the fill but do not resize it
---   mapnomorph   never redraw the zone on the morphHz clock -- only when its kind
---                of change does -- so the zone holds the outline a sweep started
---                with: what the morph's redraws cost, against normal
+--   mapfreeze    keep the fill resident but send it nothing -- no fade, no redraw
 --   walloff      skip the shaped 3D wall
 --
 -- The sequence distinguishes materially different costs: merely having the overlay
--- resident, updating it at all, the size/re-tessellation call specifically, the
--- morph's redraws (mapnomorph against normal), and the per-frame shaped wall. Every
--- change starts a new correlation window so samples from two modes cannot be mixed
--- accidentally.
+-- resident, updating it at all, and the per-frame shaped wall. Every change starts a
+-- new correlation window so samples from two modes cannot be mixed accidentally.
+-- (`mapnoresize` and `mapnomorph` went with the moving map shape, 2026-10-04: there is
+-- no resize and no redraw on a clock left to take away.)
 local stormBisectModes = {
-    normal      = 'shipping storm rendering',
-    mapoff      = 'custom map fill removed; fallback blips active',
-    mapfreeze   = 'map fill resident; movement, resize, fades and redraws frozen',
-    mapnoresize = 'map fill moves and fades; resize call suppressed',
-    mapnomorph  = 'zone redrawn only when its kind of change does, never on morphHz',
-    walloff     = 'shaped 3D storm wall suppressed',
+    normal    = 'shipping storm rendering',
+    mapoff    = 'custom map fill removed; fallback blips active',
+    mapfreeze = 'map fill resident; fades and redraws frozen',
+    walloff   = 'shaped 3D storm wall suppressed',
 }
 
 --- @param mode string
@@ -3153,57 +2471,35 @@ end
 BR.Storm.bisectMode = stormBisectMode
 
 --- What the map is SHOWING, read-only, as positions in the movie's overlay array
---- (1-based -- the movie's own index plus one): the destination's clips, and the clips
---- that show the safe zone right now, with what each one is: `zone` (the picture's own
---- zone clip, while the storm holds or grows), `wall` (the moving wall's outline, staged
---- or the picture's own) or `dest` (a breakout's destination beside it at the zone's
---- strength, staged or the picture's own). Hidden staged clips are not listed;
---- `staged` counts every one in the movie. nil while nothing is drawn. For the suite
---- and for a dev reading /brstormhitch against what the movie holds -- nothing in the
---- game reads it.
---- @return table|nil  { destination = { pos, ... }, zone = { pos, ... },
----                      kinds = { 'zone'|'wall'|'dest', ... }, tag = string, staged = n }
+--- (1-based -- the movie's own index plus one): the destination's clips (circle 1's,
+--- for the preview), and the zone's -- in the movie while the storm holds, and faded to
+--- nothing once a sweep has set off -- with the alpha the zone was last given. nil
+--- while nothing is drawn. For the suite and for a dev reading /brstormhitch against
+--- what the movie holds -- nothing in the game reads it.
+--- @return table|nil  { destination = { pos, ... }, zone = { pos, ... }, zoneAlpha = n }
 function BR.Storm.mapSlots()
     local at = overlayAt
     if not at then return nil end
     local MO = BR.MapOverlay
-    local d, z, kinds = {}, {}, {}
+    local d, z = {}, {}
     for i = 1, at.dest do
         local idx = MO.slotIndex(i)
         if idx then d[#d + 1] = idx + 1 end
     end
-    local b = stage
-    if b and b.key == overlayKey and b.live and at.zoneHidden then
-        for _, p in ipairs(b.shown and b.shown.parts or {}) do
-            if p.h.idx then z[#z + 1] = p.h.idx + 1; kinds[#kinds + 1] = 'wall' end
-        end
-        if b.dest and (b.dest.a or 0) > 0 then
-            for _, p in ipairs(b.dest.parts) do
-                if p.h.idx then z[#z + 1] = p.h.idx + 1; kinds[#kinds + 1] = 'dest' end
-            end
-        end
-    elseif at.zone then
-        for i, part in ipairs(at.zone.parts) do
-            local idx = MO.slotIndex(at.zone.first + i - 1)
-            if idx then z[#z + 1] = idx + 1; kinds[#kinds + 1] = part.kind or 'zone' end
-        end
+    for i = 1, at.zone do
+        local idx = MO.slotIndex(at.dest + i)
+        if idx then z[#z + 1] = idx + 1 end
     end
-    return { destination = d, zone = z, kinds = kinds,
-             tag = at.zone and at.zone.tag or nil, staged = MO.stagedCount() }
+    return { destination = d, zone = z, zoneAlpha = at.a }
 end
 
---- What the storm map did since the last /brstormhitch reset, for its plain summary:
---- sweeps (and how many were shown from a staged bank), clip adds and removals while a
---- sweep moved (and how many of the adds were the redraws expected as its kind of change
---- switched -- its start and its knee), clips staged and dropped, when staging started
---- and stopped, the longest frame that followed a staging slot, and the bank's
---- estimated worst error in metres.
+--- What the storm map did since the last /brstormhitch reset, for its plain summary
+--- (freshMapStats has the fields), and how many clips of ours are in the movie now.
 --- A copy; the caller may keep it.
 --- @return table
 function BR.Storm.mapStats()
     local out = {}
     for k, v in pairs(mapStats) do out[k] = v end
-    out.cap = BR.Storm.mapClipCap()
     out.live = BR.MapOverlay and BR.MapOverlay.ownCount and BR.MapOverlay.ownCount() or 0
     return out
 end
@@ -3213,31 +2509,17 @@ function BR.Storm.resetMapStats()
     mapStats = freshMapStats()
 end
 
---- The staged bank of the current record, read-only, for the suite: how many outlines
---- it planned (K + 1), how many are in the movie, its estimated worst error in metres,
---- where its knee is, and whether the sweep is being shown from it.
---- @return table|nil
-function BR.Storm.mapBank()
-    local b = stage
-    if not b then return nil end
-    local staged = 0
-    for _, f in ipairs(b.frames or {}) do if f.parts then staged = staged + 1 end end
-    return { planned = b.frames and #b.frames or 0, staged = staged, K = b.K,
-             estM = b.estM, knee = b.knee, live = b.live, ready = b.ready,
-             failed = b.failed, apart = b.apart, retired = #retired }
-end
-
 RegisterCommand('brstormbisect', function(_, args)
     args = args or {}
     local mode = tostring(args[1] or 'status'):lower()
     if mode == 'status' then
         print(('[br_core] storm bisect: %s -- %s')
             :format(stormBisectMode, stormBisectModes[stormBisectMode]))
-        print('  modes: normal | mapoff | mapfreeze | mapnoresize | mapnomorph | walloff')
+        print('  modes: normal | mapoff | mapfreeze | walloff')
         return
     end
     if not BR.Storm.setBisectMode(mode) then
-        print('  usage: brstormbisect <normal|mapoff|mapfreeze|mapnoresize|mapnomorph|walloff> [hitchMs]')
+        print('  usage: brstormbisect <normal|mapoff|mapfreeze|walloff> [hitchMs]')
         return
     end
 
@@ -4145,9 +3427,12 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
     -- it, and interrupting the one activity the hold exists for. The
     -- countdown IS the announcement.
 
-    -- Blips: radius blips cannot resize in place, so refresh on a cadence --
-    -- brisk while shrinking, lazy while holding, and only when the radius
-    -- moved enough to see.
+    -- Blips: the overlay's fallback, and the same picture (#350, 2026-10-04) -- the
+    -- zone's ring while the storm holds, faded out as a sweep sets off and not drawn
+    -- again until the next hold, and the destination's ring throughout. A radius blip
+    -- cannot be resized in place, so nothing here follows the moving wall: the ring is
+    -- drawn once a hold, and its fades are alpha writes on a cadence -- brisk while it
+    -- fades, lazy otherwise.
     local gt = GetGameTimer()
     -- ═══ THE MAP RING READS THE MAP'S OWN FADE CLOCK, NOT A COPY OF IT ═══
     --
@@ -4157,15 +3442,19 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
     -- arithmetic. Two spellings of one number are two things that can stop agreeing
     -- -- and this copy did not carry wallShare's fadeInSec-of-zero answer either, so
     -- it was right about that case by accident rather than by rule. There is one
-    -- share now, and the overlay in storm.map reads the same one. (The 3D curtain has
-    -- its own ramp since #344's second round -- wallRamp -- because phase 1 draws the
-    -- opening wall from the start of the hold; the map still waits for the last
-    -- fadeInSec, where a purple wash over the whole map would say nothing.)
-    local share = wallShare(rec, st, msLeft)
+    -- share now -- mapShare, the fade in at the end of the phase-1 hold and the fade
+    -- out as a sweep sets off -- and the overlay in storm.map reads the same one. (The
+    -- 3D curtain has its own ramp since #344's second round -- wallRamp -- because
+    -- phase 1 draws the opening wall from the start of the hold; the map still waits
+    -- for the last fadeInSec, where a purple wash over the whole map would say nothing.)
+    local share = mapShare(rec, st, msLeft)
     local wholeMap = rec.phase == 1 and st == BR.StormPhase.HOLDING
+    local swept    = st == BR.StormPhase.SHRINKING or st == BR.StormPhase.FINISHED
     local fading   = wholeMap and share > 0.0
-    local hz = (st == BR.StormPhase.SHRINKING or fading)
-        and cfg.blip.refreshHzShrinking or cfg.blip.refreshHzHolding
+    -- BRISK UNTIL THE OLD RING IS GONE, not just while its share is above nothing: the
+    -- pass that removes it is the first after the fade, not the next lazy one.
+    local hz = (fading or (swept and curBlip ~= nil)) and cfg.blip.refreshHzFading
+        or cfg.blip.refreshHzHolding
     if mapBlipsDirty or gt - lastBlipAt >= 1000 / hz then
         mapBlipsDirty = false
         lastBlipAt = gt
@@ -4181,6 +3470,20 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
             curBlip  = removeBlips(curBlip)
             nextBlip = removeBlips(nextBlip)
             lastBlipR = -1.0
+        -- ═══ THE OLD RING FADES OUT AS THE SWEEP SETS OFF, AND STAYS GONE ═══
+        --
+        -- The overlay's rule (storm.map): nothing on the map moves while the wall does.
+        -- The ring the hold drew is faded where it stands -- its alpha written to the
+        -- blips already on the map, no blip rebuilt -- and then removed; a client with
+        -- no ring by then, one that joined mid-sweep, gets none. The destination's ring
+        -- below is all that is left until the next record's hold draws its zone.
+        elseif swept then
+            if curBlip and share > 0.0 then
+                local a = math.floor(cfg.blip.currentAlpha * share + 0.5)
+                for i = 1, #curBlip do SetBlipAlpha(curBlip[i], a) end
+            elseif curBlip then
+                curBlip = removeBlips(curBlip) lastBlipR = -1.0
+            end
         -- The CURRENT circle is not drawn while it is still the whole map
         -- (phase-1 hold): a ring around all of Los Santos on every map told
         -- players nothing... until the hold's last fadeInSec, when its map ring

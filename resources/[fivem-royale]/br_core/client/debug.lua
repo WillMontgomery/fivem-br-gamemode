@@ -370,7 +370,7 @@ end, false)
 --
 -- The storm has several clocks that can all look like "about once a second" by
 -- eye: the server damage beat is 1 Hz, client SLOW is 1 Hz, roster sampling and
--- storm HUD pushes are 4 Hz, map placement and storm solving are 10 Hz, and the
+-- storm HUD pushes are 4 Hz, map fades and storm solving are 10 Hz, and the
 -- wall is per-frame. /brstormhitch records which of those actually ran before
 -- each long frame instead of choosing one from cadence alone.
 local function stormHitchReport()
@@ -451,9 +451,8 @@ end
 -- The correlation rows above answer "what ran before each long frame", which is the
 -- question for somebody hunting a hitch -- and a wall of numbers for somebody asking
 -- "is it smooth?". So the command's default is four plain lines: what the storm map
--- did while the storm moved (the thing the owner felt), what staging cost and when,
--- how the frames went, and one sentence saying what that means. The rows are
--- `/brstormhitch rows`.
+-- sent the movie while the storm moved (the thing the owner felt), how the frames
+-- went, and one sentence saying what that means. The rows are `/brstormhitch rows`.
 
 --- Frames at or over 17 ms -- over 16.7, one 60 fps frame, on a millisecond clock --
 --- out of all frames, off the loop's histogram (whose first bucket is "under 17").
@@ -465,7 +464,7 @@ end
 
 BR.Storm = BR.Storm or {}
 
---- The four lines. Public for the suite (tools/test_storm.lua's map.summary).
+--- The four lines. Public for the suite (tools/test_client.lua's /brstormhitch block).
 --- @return table lines
 function BR.Storm.hitchSummaryLines()
     local lines = {}
@@ -476,46 +475,32 @@ function BR.Storm.hitchSummaryLines()
     lines[#lines + 1] = ('storm hitch summary -- %s, %.0f s'):format(
         h.enabled and 'capturing' or 'stopped', seconds)
     if m then
-        local span = 0.0
-        if m.stagedFirstAt and m.stagedLastAt then
-            span = (m.stagedLastAt - m.stagedFirstAt) / 1000.0
-        end
-        local sweeps = m.sweeps == 1 and '1 sweep' or ('%d sweeps'):format(m.sweeps)
-        lines[#lines + 1] = ('storm map: %d clip rebuilds during sweeps (%s, %d shown from '
-            .. 'staged clips), staged %d clips over %.0f s during holds (the longest frame '
-            .. 'after a staging step: %d ms), %d old clips dropped, %d of ours in the map now '
-            .. '(cap %d)'):format(m.sweepRedraws, sweeps, m.sweepsStaged, m.staged, span,
-            m.stageWorstMs, m.dropped, m.live or 0, m.cap or 0)
+        local sweeps = m.sweeps == 1 and '1 sweep' or ('%d sweeps'):format(m.sweeps or 0)
+        lines[#lines + 1] = ('storm map while the storm moved (%s): %d fade writes, %d clips '
+            .. 'added, %d removed; %d of ours in the map now'):format(sweeps,
+            m.sweepFades or 0, m.sweepAdds or 0, m.sweepRemoves or 0, m.live or 0)
     end
     lines[#lines + 1] = ('frames: worst %d ms, %d of %d over 16.7 ms (%.2f%%)'):format(
         worst, over, frames, 100.0 * over / math.max(1, frames))
-    -- THE REDRAWS EVERY SWEEP MAKES ARE NOT THE SUSPECT (2026-10-02): as it sets off
-    -- and at the knee (client/storm.lua's `sweepEvents`). What is left -- a redraw on
-    -- the morphHz clock, or a whole picture drawn while the wall moved -- is the old path.
-    local events = m and (m.sweepEvents or 0) or 0
-    local oldPath = m and (m.sweepRedraws - events) or 0
+    -- WHILE THE WALL MOVES THE MAP ONLY FADES THE OLD ZONE OUT (2026-10-04): no clip is
+    -- moved, resized, added or removed on a clock any more (client/storm.lua's storm.map).
+    -- An add or a removal then is a picture drawn mid-sweep -- a client joining, a
+    -- refusal drawn again, a /brstormbisect switch -- and those are the map's only
+    -- candidates for a long frame in a sweep.
+    local drawn = m and ((m.sweepAdds or 0) + (m.sweepRemoves or 0)) or 0
     local verdict
     if frames == 0 then
         verdict = 'nothing measured yet -- play a hold and a sweep, then /brstormhitch again.'
-    elseif oldPath > 0 then
-        verdict = ('the map redrew its zone %d times while the storm moved -- the old path, '
-            .. 'for a sweep whose clips were not staged in time (joined mid-sweep, a very '
-            .. 'short hold) or a refusal. That work is the suspect.'):format(oldPath)
-    elseif over == 0 and events > 0 then
-        verdict = 'smooth -- no map work while the storm moved but the redraws as it set off '
-            .. 'and at its knee, and no frame over 16.7 ms.'
     elseif over == 0 then
-        verdict = 'smooth -- no map work while the storm moved and no frame over 16.7 ms.'
-    elseif m and m.stageWorstMs >= 17 then
-        verdict = ('some long frames followed staging steps (%d ms at worst) -- those happen '
-            .. 'only while the storm holds; overlay.stage.everyTicks spaces them further '
-            .. 'apart.'):format(m.stageWorstMs)
-    elseif events > 0 then
-        verdict = 'the long frames were not the storm map\'s staging or old-path redraws -- '
-            .. '/brstormhitch rows names what ran before each one.'
+        verdict = 'smooth -- no frame over 16.7 ms.'
+    elseif drawn > 0 then
+        verdict = ('some long frames may be the %d clips the map added or removed while the '
+            .. 'storm moved -- a picture drawn mid-sweep (a join, a refusal drawn again, a '
+            .. '/brstormbisect switch). /brstormhitch rows names what ran before each one.')
+            :format(drawn)
     else
-        verdict = 'the long frames were not the storm map\'s staging or redraws -- '
-            .. '/brstormhitch rows names what ran before each one.'
+        verdict = 'the long frames were not the storm map\'s -- while the storm moved it only '
+            .. 'faded the old zone out. /brstormhitch rows names what ran before each one.'
     end
     lines[#lines + 1] = 'verdict: ' .. verdict
     return lines

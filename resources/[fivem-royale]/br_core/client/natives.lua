@@ -688,17 +688,14 @@ end
 --- transforms on an area "due to their vector boundaries" (ScaleformUI.lua:16855,
 --- :16868, :16883) because IT draws areas in world coordinates -- where a resize
 --- scales the shape about the world origin and flings it across the map. That is
---- a property of how the wrapper draws, not of the movie. Rotation is still not
---- done, because nothing here needs it.
+--- a property of how the wrapper draws, not of the movie.
 ---
---- So `points` is one of two things. A shape that is rebuilt on change goes out in
---- WORLD coordinates, as it always did. A shape that is PLACED is pushed relative to
---- its own centre and then moved and scaled every tick through
---- BR.MapOverlay.placeArea, which is what took a shrinking storm off the
---- remove-and-re-add path that hitched the client once a second.
+--- NOTHING HERE USES EITHER ANY MORE. #350 drew the moving storm zone about its own
+--- centre and moved and scaled it every tick; the storm map stopped showing a moving
+--- shape on 2026-10-04 (the old zone fades out as a sweep starts), so every shape
+--- goes out in WORLD coordinates and stays where it was drawn.
 --- @param handle integer|nil
---- @param points table    array of { x, y }: world coordinates for a rebuilt shape,
----                        centre-relative for one BR.MapOverlay.placeArea will move
+--- @param points table    array of { x, y } in world coordinates
 --- @param outline boolean
 --- @param r integer
 --- @param g integer

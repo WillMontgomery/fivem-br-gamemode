@@ -713,7 +713,7 @@ local function newStormClient()
         -- nothing to tear down, so the teardown is unobservable.
         allowAdds = nil,
         adds = 0,
-        removes = 0,            -- REM_OVERLAY calls handled (2026-09-28's staging)
+        removes = 0,            -- REM_OVERLAY calls handled
         -- ═══ AND PLACEMENT (#350), WHICH IS TWO METHODS OF THE SAME MOVIE ═══
         --
         -- UPDATE_OVERLAY_POSITION and UPDATE_OVERLAY_SIZE_OR_SCALE, reached through
@@ -728,6 +728,9 @@ local function newStormClient()
         placed = 0,
         faded = 0,              -- SET_OVERLAY_ALPHA calls handled (#344)
         calls = 0,
+        -- EVERY METHOD THE MOVIE RAN, BY NAME, adds and removals included: what
+        -- "a sweep sends the movie nothing but the fade" (2026-10-04) is counted on.
+        byMethod = {},
         open = nil,
     }
     env.NetworkIsGameInProgress  = function() return C.mm.inGame end
@@ -958,6 +961,11 @@ local function newStormClient()
     env.SetBlipRotation = function(h, rot)
         if C.blips[h] then C.blips[h].rot = rot end
     end
+    -- THE FALLBACK RING FADES BY ALPHA, ON THE BLIP ALREADY ON THE MAP (2026-10-04):
+    -- a sweep's old ring is faded where it stands, never rebuilt.
+    env.SetBlipAlpha = function(h, a)
+        if C.blips[h] then C.blips[h].alpha = a end
+    end
 
     loadInto(env, { 'br_core/client/main.lua' })
     env.BR.Native = env.BR.Native or {}
@@ -1026,6 +1034,7 @@ local function newStormClient()
         if type(points) ~= 'table' or #points < 3 then return false end
         C.mm.adds = C.mm.adds + 1
         C.mm.calls = C.mm.calls + 1
+        C.mm.byMethod.ADD_AREA_OVERLAY = (C.mm.byMethod.ADD_AREA_OVERLAY or 0) + 1
         if C.mm.allowAdds ~= nil and C.mm.adds > C.mm.allowAdds then return false end
         C.mm.overlays[#C.mm.overlays + 1] = {
             points = points, outline = outline, r = r, g = g, b = b, a = a,
@@ -1040,6 +1049,7 @@ local function newStormClient()
         if C.mm.overlays[index + 1] == nil then return false end
         C.mm.calls = C.mm.calls + 1
         C.mm.removes = C.mm.removes + 1
+        C.mm.byMethod.REM_OVERLAY = (C.mm.byMethod.REM_OVERLAY or 0) + 1
         -- IT SPLICES. Every index above the one removed shifts DOWN by one, which is
         -- the whole reason client/mapoverlay.lua removes highest-first.
         table.remove(C.mm.overlays, index + 1)
@@ -1070,6 +1080,7 @@ local function newStormClient()
         C.mm.open = nil
         if not call then error('END with no method open') end
         C.mm.calls = C.mm.calls + 1
+        C.mm.byMethod[call.method] = (C.mm.byMethod[call.method] or 0) + 1
         local p = call.params
         local ov = C.mm.overlays[(p[1] or -1) + 1]
         if not ov then error(('%s on index %s, which is not in the movie')
@@ -1253,8 +1264,9 @@ local function newStormClient()
     function C.areas() return C.mm.overlays end
 
     --- The areas the renderer says are one part of its picture (#344): `zone` -- the
-    --- one moving safe zone, one contour or two islands -- or `destination`, by the
-    --- slots BR.Storm.mapSlots names, in the movie's order.
+    --- safe zone as the hold began, one contour or two islands, faded to nothing once a
+    --- sweep sets off -- or `destination`, by the slots BR.Storm.mapSlots names, in the
+    --- movie's order.
     local function slotAreas(which)
         local out = {}
         local slots = env.BR.Storm.mapSlots and env.BR.Storm.mapSlots()
@@ -1275,39 +1287,26 @@ local function newStormClient()
         return ov, C.opacity(ov)
     end
 
-    --- How far the zone the map SHOWS is from the safe zone right now, by the movie's
-    --- own arithmetic (C.shown) against BR.StormZone at the harness clock: the worst
-    --- signed distance of any shown point from that zone's boundary. math.huge when
-    --- nothing of the zone is in the movie.
-    ---
-    --- EACH CLIP AGAINST WHAT IT SHOWS (2026-09-28). A sweep shown from the staged bank
-    --- is, on a breakout, the moving wall's outline beside the destination at the zone's
-    --- strength -- their union is the zone -- so a `wall` clip is measured against
-    --- BR.StormWall and a `dest` clip against BR.StormTarget, and the picture's own
-    --- `zone` clip against BR.StormZone as it always was (BR.Storm.mapSlots' kinds).
+    --- How far the zone the map SHOWS is from the zone as the hold began, by the movie's
+    --- own arithmetic (C.shown) against BR.StormZone at `t` 0 and `g` 0 -- what the map
+    --- draws while the storm holds (2026-10-04): the worst distance of any shown point
+    --- from that zone's boundary. math.huge when nothing of the zone is in the movie.
     function C.zoneErr(rec)
-        local cx, cy, r, _, _, _, t, g = env.BR.StormAt(rec, env.BR.Clock.now())
-        local want = {
-            zone = env.BR.StormZone(rec, cx, cy, r, t, g),
-            wall = env.BR.StormWall(rec, t),
-            dest = env.BR.StormTarget(rec),
-        }
-        local slots = env.BR.Storm.mapSlots and env.BR.Storm.mapSlots()
-        local kinds = slots and slots.kinds or {}
+        local want = env.BR.StormZone(rec, rec.cx0, rec.cy0, rec.r0, 0.0, 0.0)
         local worst, any = 0.0, false
-        for i, ov in ipairs(C.zone()) do
-            local w = want[kinds[i] or 'zone']
+        for _, ov in ipairs(C.zone()) do
             for _, p in ipairs(C.shown(ov)) do
                 any = true
-                worst = math.max(worst, math.abs(env.BR.StormShape.distance(w, p.x, p.y)))
+                worst = math.max(worst, math.abs(env.BR.StormShape.distance(want, p.x, p.y)))
             end
         end
         return any and worst or math.huge
     end
 
-    --- Every area the map is DRAWING -- in the movie and not faded to nothing. Staged
-    --- clips waiting in the bank are in the movie at alpha 0 (2026-09-28), so "how many
-    --- fills does the player see" is this, not #C.areas().
+    --- Every area the map is DRAWING -- in the movie and not faded to nothing. A zone a
+    --- sweep has faded out stays in the movie at alpha 0 until the next record's
+    --- picture (2026-10-04), so "how many fills does the player see" is this, not
+    --- #C.areas().
     function C.visible()
         local out = {}
         for _, ov in ipairs(C.mm.overlays) do
@@ -5553,9 +5552,10 @@ do
 
     -- ═══ THE MAP, ON THE SAME CHANGES ═══
     --
-    -- The map changes shape once, as the sweep finishes -- so where the next phase
-    -- nests, the fill the phase ended on and the fill the next phase starts with have
-    -- to be the same polygon.
+    -- The map shows nothing that moves (2026-10-04): a sweep fades its zone out and
+    -- leaves the destination, and the next hold draws that destination again as its
+    -- zone -- so where the next phase nests, the destination a phase ended on and the
+    -- zone the next phase starts with have to be the same polygon.
     local M = newStormClient()
     M.mm.handle = 7
     M.pedAt = pt(0.0, 0.0)
@@ -5572,9 +5572,11 @@ do
             a.tStart = M.now - a.tWait - a.tShrink - 5000
             M.env.BR.State.storm = a
             M.tick(2)
-            -- THE ONE ZONE THE MAP SHOWS (#344): the destination's shape as a sweep
-            -- finishes, the zone's own as a hold begins -- the same outline.
-            local A = M.zoneFill() and M.shown(M.zoneFill()) or {}
+            -- THE DESTINATION AS A SWEEP FINISHES -- the only fill a finished sweep
+            -- shows, its zone faded to nothing -- and the zone as the next hold begins:
+            -- the same outline.
+            local shows = #M.visible() == 1 and M.dest()[1] and M.visible()[1] == M.dest()[1]
+            local A = shows and M.shown(M.dest()[1]) or {}
             b.tStart = M.now + 20000
             M.env.BR.State.storm = b
             M.fire(M.env.BR.Net.STORM_SYNC)
@@ -5589,7 +5591,8 @@ do
         end
     end
     ok(mapPairs >= 10 and mapJump < 1e-6 and M.errored() == nil,
-        'and the MAP\'s fill is the same polygon on both sides of every change',
+        'and the MAP\'s destination as a sweep finishes is the zone the next hold draws, '
+            .. 'the same polygon on both sides of every change',
         M.errored() or ('%d changes, worst %.3e m at %s'):format(mapPairs, mapJump,
             tostring(mapAt)))
 
@@ -6659,27 +6662,22 @@ do
             .. 'nanosecond -- it arrives on the union rather than popping onto it',
         ('%.3e m'):format(endErr))
 
-    -- ─── the MAP draws the growing zone itself, over a destination it never touches ───
+    -- ─── the MAP does not follow the growth: Z as the hold began, and D beside it ───
     --
-    --   "Today we do some dumb shit like multiple moving circles and fade between
-    --    them"                                             -- the owner, 2026-09-27
+    --   "when the sweep starts, the old shape fades away and only the new shape is
+    --    left. that means the only indicator of the actual current shape of the storm
+    --    is looking in the 3d world."                     -- the owner, 2026-10-04
     --
-    -- The map used to hand a union it drew at the phase's rebuild over the zone's own
-    -- fill by alpha across the growth. It draws ONE zone now -- BR.StormZone, the one
-    -- the damage tick bills -- so across the growth its fill is redrawn at
-    -- overlay.morphHz as the front moves, and the destination under it is never
-    -- touched. At every tick the fill stands on the grown zone, and the far end of the
-    -- destination is covered by the zone's fill exactly when the server has stopped
-    -- billing it (less the cushion). Once grown the zone stands still and is not
-    -- redrawn; when the sweep starts the union stays on the map as the wall moves off.
-    --
-    -- AT 10 Hz AND WITH STAGING ON, UNDER EXPLICIT CONFIG: the 8335b17 shipping values.
-    -- Both ship off since the 2026-10-02 hitch, where a growth is drawn as it starts and
-    -- redrawn once as it ends (map.hotfix).
+    -- The 3D wall and the damage tick grow the zone into D over grow.seconds; the map
+    -- shows nothing that changes shape. It draws the zone as the hold began -- Z, where
+    -- the last sweep left the wall -- and the destination, whose own fill covers the
+    -- ground Z grows into: so the two fills cover the grown zone at every instant, and
+    -- the whole union once it has grown, with nothing added, removed, moved, resized or
+    -- faded. (Until 2026-10-04 the zone's fill was redrawn as the growth ended -- and
+    -- before 2026-10-02 every tick of it.) A refusal mid-growth is therefore no case of
+    -- its own any more: there is nothing to refuse until the sweep's fade.
     local M = newStormClient()
     M.mm.handle = 7
-    M.env.BR.Config.Storm.overlay.stage.enabled = true
-    M.env.BR.Config.Storm.overlay.morphHz = 10
     M.record(3, 0.0, 0.0, 1600.0, 1500.0, 0.0, 950.0, 90000, 90000, 1.7)
     M.env.BR.State.storm.seed = seed
     ok(M.overlayReady(), 'the map client reaches the gate')
@@ -6687,9 +6685,9 @@ do
     mrec.tStart = M.now
     M.tick(1)
 
-    --- Whether a point is inside any contour of the zone's fill as the movie shows it.
-    local function zoneCovers(C2, x, y)
-        for _, ov in ipairs(C2.zone()) do
+    --- Whether a point is inside any contour of `list` as the movie shows it.
+    local function covers(C2, list, x, y)
+        for _, ov in ipairs(list) do
             local poly, inside = C2.shown(ov), false
             local j = #poly
             for i = 1, #poly do
@@ -6704,151 +6702,100 @@ do
         end
         return false
     end
-    local blipA = M.env.BR.Config.Storm.blip.currentAlpha
-    local zoneO = blipA / 255
-    local destClip = M.dest()[1]
-    local adds0, placed0 = M.mm.adds, M.mm.placed
-    local growOff, gTicks, cover, coverBad = 0.0, 0, 0, nil
-    local zonesSeen, growing = 0, 0
+    local function filled(C2, x, y)
+        return covers(C2, C2.zone(), x, y) or covers(C2, C2.dest(), x, y)
+    end
+    local chord = M.env.BR.Config.Storm.overlay.chordM
+    local zoneO = M.env.BR.Config.Storm.blip.currentAlpha / 255
+    local destO = M.env.BR.Config.Storm.blip.nextAlpha / 255
+    local mZ = M.env.BR.StormWall(mrec, 0.0)
+    local zFill, zO = M.zoneFill()
+    local zOff = zFill and 0.0 or math.huge
+    for _, p in ipairs(zFill and M.shown(zFill) or {}) do
+        zOff = math.max(zOff, math.abs(SS.distance(mZ, p.x, p.y)))
+    end
+    ok(#M.zone() == 1 and #M.dest() == 1 and zOff < 1e-6 and near(zO, zoneO, 0.5 / 255),
+        'as the hold begins the map shows Z -- the wall where the last sweep left it -- at '
+            .. 'the safe zone\'s strength, and the destination beside it',
+        ('%d zone, %d destination, %.3e m off Z, %.4f'):format(#M.zone(), #M.dest(), zOff,
+            zO))
+
+    local destClip, zoneClip = M.dest()[1], M.zone()[1]
+    local calls0 = M.mm.calls
+    local gTicks, growing, uncovered, probed, coverBad = 0, 0, 0, 0, nil
     for _ = 1, 190 do
         M.now = M.now + 100
         M.env.BR.Loop.step(M.env.BR.Loop.TICK)
         gTicks = gTicks + 1
-        local _, _, _, _, _, _, _, gNow = M.env.BR.StormAt(mrec, M.env.BR.Clock.now())
-        if gNow < 1.0 then growing = growing + 1 end
-        growOff = math.max(growOff, M.zoneErr(mrec))
-        zonesSeen = math.max(zonesSeen, #M.zone())
-        -- The far probe, against the solve at this instant: inside the grown zone
-        -- (with the fill's chord to spare either way) exactly when the fill covers it.
         local cx, cy, r, _, _, _, t, g = M.env.BR.StormAt(mrec, M.env.BR.Clock.now())
-        local dz = SS.distance(M.env.BR.StormZone(mrec, cx, cy, r, t, g), far.x, far.y)
-        local c = zoneCovers(M, far.x, far.y)
-        if c then cover = cover + 1 end
-        if math.abs(dz) > 10.0 and c ~= (dz < 0.0) then
-            coverBad = coverBad or ('%d ms: %.1f m from the zone, covered %s')
-                :format(gTicks * 100, dz, tostring(c))
+        if g < 1.0 then growing = growing + 1 end
+        -- EVERY PROBE THE GROWN ZONE HAS TAKEN IN, with the fill's chord to spare, is
+        -- under one of the two fills -- by the solve at this instant.
+        local G = M.env.BR.StormZone(mrec, cx, cy, r, t, g)
+        for _, pr in ipairs(probes) do
+            if SS.distance(G, pr.x, pr.y) < -chord then
+                probed = probed + 1
+                if not filled(M, pr.x, pr.y) then
+                    uncovered = uncovered + 1
+                    coverBad = coverBad or ('%d ms: (%.0f, %.0f) is safe and unfilled')
+                        :format(gTicks * 100, pr.x, pr.y)
+                end
+            end
         end
     end
-    ok(M.dest()[1] == destClip and destClip._x == nil and destClip._alpha == nil
-            and #M.dest() == 1 and zonesSeen == 1,
-        'across the growth the destination is the same clip, never placed or faded, and '
-            .. 'the zone is ONE fill over it -- no union beside a keyframe, nothing handed '
-            .. 'over by alpha',
-        ('%d zone fills at most, destination %s'):format(zonesSeen,
-            M.dest()[1] == destClip and 'kept' or 'replaced'))
-    ok(growing > 150 and M.mm.adds - adds0 >= growing and growOff < 1e-6
-            and M.errored() == nil,
-        'and the zone\'s fill is redrawn as it grows -- every tick at morphHz 10 -- '
-            .. 'standing on the grown zone to a micron each time',
-        M.errored() or ('%d adds over %d growing ticks, worst %.3e m off'):format(
-            M.mm.adds - adds0, growing, growOff))
-    ok(coverBad == nil and cover > 0 and cover < gTicks,
-        'so the far end of the destination comes onto the zone\'s fill as the front '
-            .. 'reaches it, the same instant the solve takes it in -- not at the start, '
-            .. 'not at the end',
-        coverBad or ('covered on %d of %d ticks'):format(cover, gTicks))
-    local U = SS.blobUnion(env.BR.StormWall(rec, 0.0), env.BR.StormTarget(rec))
-    local grownFill, grownO = M.zoneFill()
-    local unionOff = 0.0
-    for _, p in ipairs(grownFill and M.shown(grownFill) or {}) do
-        unionOff = math.max(unionOff, math.abs(SS.distance(U, p.x, p.y)))
-    end
-    ok(grownFill ~= nil and #M.zone() == 1 and unionOff < 1e-6
-            and near(grownO, zoneO, 0.5 / 255),
-        'and once it has grown the zone\'s fill is Z union D, at the safe zone\'s alpha',
-        ('union fill %.3e m off, %d zone fills, %.4f'):format(unionOff, #M.zone(), grownO))
+    ok(growing > 150 and M.mm.calls == calls0 and M.dest()[1] == destClip
+            and M.zone()[1] == zoneClip and #M.areas() == 2 and M.errored() == nil,
+        'across the growth the movie hears nothing -- no add, removal, placement or fade -- '
+            .. 'and the same two clips stand',
+        M.errored() or ('%d growing ticks, %d calls'):format(growing, M.mm.calls - calls0))
+    ok(uncovered == 0 and probed > 0,
+        'and every probe the growing zone has taken in is under the zone\'s fill or the '
+            .. 'destination\'s at every tick -- the map covers the grown zone without changing '
+            .. 'shape', coverBad or ('%d probe readings'):format(probed))
 
-    -- ─── grown, it stands still; and the sweep starts without a jump ───
-    local addsB, placedB = M.mm.adds, M.mm.placed
-    local stagedB = M.env.BR.MapOverlay.report().stagedN
-    local zoneClipB = M.zone()[1]
+    -- ─── grown, the union is covered by the two fills, and nothing beyond it ───
+    local U = SS.blobUnion(env.BR.StormWall(rec, 0.0), env.BR.StormTarget(rec))
+    local inBad, outBad = 0, 0
+    for gx = -30, 30 do
+        for gy = -30, 30 do
+            local x, y = 750.0 + gx * 60.0, gy * 60.0
+            local d = SS.distance(U, x, y)
+            if d < -chord and not filled(M, x, y) then inBad = inBad + 1 end
+            if d > chord and filled(M, x, y) then outBad = outBad + 1 end
+        end
+    end
+    ok(inBad == 0 and outBad == 0,
+        'once grown, every point of Z union D is under one of the two fills and no point '
+            .. 'outside it is', ('%d safe points unfilled, %d storm points filled'):format(
+            inBad, outBad))
+
+    -- ─── the rest of the hold sends nothing; the sweep fades Z and leaves D ───
     for _ = 1, 694 do
         M.now = M.now + 100
         M.env.BR.Loop.step(M.env.BR.Loop.TICK)
     end
     local _, _, _, stB, msB = M.env.BR.StormAt(mrec, M.env.BR.Clock.now())
-    -- THE REST OF THE HOLD STAGES THE SWEEP'S BANK (2026-09-28) -- hidden clips, one a
-    -- slot -- and that is all it adds: the zone standing still is the clip drawn once.
-    local stagedHold = M.env.BR.MapOverlay.report().stagedN - stagedB
-    ok(stB == M.env.BR.StormPhase.HOLDING and msB <= 100.0
-            and M.mm.adds - addsB == stagedHold and stagedHold > 0
-            and M.zone()[1] == zoneClipB and #M.visible() == #M.dest() + #M.zone(),
-        'the rest of the hold draws nothing on the map: the zone standing still is the '
-            .. 'clip drawn once, and the only adds are the sweep\'s staged clips, hidden',
-        ('%s, %.0f ms left, %d adds, %d staged'):format(tostring(stB), msB,
-            M.mm.adds - addsB, stagedHold))
-    addsB = M.mm.adds
-    local lost = 0
+    ok(stB == M.env.BR.StormPhase.HOLDING and msB <= 100.0 and M.mm.calls == calls0,
+        'the rest of the hold sends the movie nothing at all',
+        ('%s, %.0f ms left, %d calls'):format(tostring(stB), msB, M.mm.calls - calls0))
+    local by0 = {}
+    for k, v in pairs(M.mm.byMethod) do by0[k] = v end
     for _ = 1, 30 do
         M.now = M.now + 100
         M.env.BR.Loop.step(M.env.BR.Loop.TICK)
-        if not zoneCovers(M, far.x, far.y) then lost = lost + 1 end
     end
-    local mBank = M.env.BR.Storm.mapBank()
-    local mBound = 2.0 * math.max(M.env.BR.Config.Storm.overlay.stage.targetM,
-        mBank and mBank.estM or 0.0) + M.env.BR.Config.Storm.overlay.chordM
-    ok(lost == 0 and M.mm.adds == addsB and mBank and mBank.live
-            and M.zoneErr(mrec) < mBound,
-        'and through the sweep\'s first three seconds the new ground stays on the zone\'s '
-            .. 'fill -- the moving wall\'s staged outline beside the destination at the '
-            .. 'zone\'s strength, which union to the zone -- where the union used to drop '
-            .. 'out of it, and not one clip is added to do it',
-        ('uncovered on %d ticks, %d adds, %.3f m off against %.1f'):format(lost,
-            M.mm.adds - addsB, M.zoneErr(mrec), mBound))
-
-    -- ─── a refusal mid-growth is motion's, and hands the map to the blips ───
-    --
-    -- The growth is redrawn on a motion cadence, and the engine can refuse the add.
-    -- So a refusal there is handled as one mid-sweep: the blips carry the map to the end
-    -- of the growth rather than a stream of refused adds, and the picture is drawn again
-    -- the moment the zone stands still.
-    local Q = newStormClient()
-    Q.mm.handle = 7
-    Q.env.BR.Config.Storm.overlay.morphHz = 10
-    Q.record(3, 0.0, 0.0, 1600.0, 1500.0, 0.0, 950.0, 90000, 90000, 1.7)
-    local qrec = Q.env.BR.State.storm
-    qrec.seed = seed
-    ok(Q.overlayReady(), 'the refusal client reaches the gate')
-    qrec.tStart = Q.now
-    Q.tick(1)
-    for _ = 1, 50 do
-        Q.now = Q.now + 100
-        Q.env.BR.Loop.step(Q.env.BR.Loop.TICK)
+    local sent = {}
+    for k, v in pairs(M.mm.byMethod) do
+        if v ~= (by0[k] or 0) then sent[#sent + 1] = ('%s %d'):format(k, v - (by0[k] or 0)) end
     end
-    Q.mm.refuseAdd = true
-    Q.now = Q.now + 100
-    Q.env.BR.Loop.step(Q.env.BR.Loop.TICK)
-    Q.mm.refuseAdd = false
-    local qAdds = Q.mm.adds
-    local qRings, qMid = 0, 0
-    for _ = 1, 120 do
-        Q.now = Q.now + 100
-        Q.env.BR.Loop.step(Q.env.BR.Loop.TICK)
-        if #Q.rings() > 0 then qRings = qRings + 1 end
-        qMid = qMid + 1
-    end
-    local _, _, _, _, _, _, _, qg = Q.env.BR.StormAt(qrec, Q.env.BR.Clock.now())
-    ok(qg < 1.0 and Q.mm.adds == qAdds and #Q.areas() == 0 and qRings >= qMid - 1
-            and Q.errored() == nil,
-        'an add refused while the zone grows hands the map to the blips for the rest of '
-            .. 'the growth, with nothing added while it grows',
-        ('g %.3f, %d adds, %d areas, rings on %d of %d ticks'):format(qg, Q.mm.adds - qAdds,
-            #Q.areas(), qRings, qMid))
-    for _ = 1, 50 do
-        Q.now = Q.now + 100
-        Q.env.BR.Loop.step(Q.env.BR.Loop.TICK)
-    end
-    local qFill, qO = Q.zoneFill()
-    local qOff = 0.0
-    for _, p in ipairs(qFill and Q.shown(qFill) or {}) do
-        qOff = math.max(qOff, math.abs(SS.distance(U, p.x, p.y)))
-    end
-    ok(Q.mm.adds > qAdds and qFill ~= nil and qOff < 1e-6 and near(qO, zoneO, 0.5 / 255)
-            and #Q.rings() == 0,
-        'and once it has grown the picture is drawn again, the union the zone\'s fill',
-        ('%d adds, %.3e m off, %.4f, %d rings'):format(Q.mm.adds - qAdds, qOff, qO,
-            #Q.rings()))
-    ok(Q.errored() == nil, 'and the refusal client runs clean', Q.errored())
+    table.sort(sent)
+    ok(#sent == 1 and sent[1]:find('^SET_OVERLAY_ALPHA') ~= nil
+            and M.opacity(zoneClip) == 0.0 and M.dest()[1] == destClip
+            and near(M.opacity(destClip), destO, 0.5 / 255) and #M.visible() == 1,
+        'and three seconds into the sweep Z has faded off -- alpha writes and nothing else -- '
+            .. 'and the destination is the one fill left, untouched',
+        ('%s; zone %.4f, destination %.4f, %d visible'):format(table.concat(sent, ', '),
+            M.opacity(zoneClip), M.opacity(destClip), #M.visible()))
     ok(M.errored() == nil, 'and runs clean', M.errored())
 end
 
@@ -9302,8 +9249,8 @@ do
     -- MEASURED AGAINST BR.StormWall, which is the wall as it stands -- so this is also
     -- the assertion that the map and the curtain cannot disagree about the edge while
     -- the storm stands still. READ OFF C.shown, WHICH IS WHERE THE MOVIE PUTS IT: the
-    -- zone goes out about its own origin and is then placed, so the pushed points are
-    -- not world coordinates at all.
+    -- zone goes out in world coordinates and is never moved (2026-10-04), and C.shown
+    -- would carry any move or resize the movie had been sent.
     local SS = C.env.BR.StormShape
     local rec = C.env.BR.State.storm
     local zone = C.env.BR.StormWall(rec, 0.0)
@@ -9395,7 +9342,6 @@ do
             .. 'movie at nothing, suppressed exactly as its ring is',
         ('%d areas, zone at %.4f'):format(#H.areas(), deepO))
     local fadeAdds = H.mm.adds
-    local fadeStaged = H.env.BR.MapOverlay.report().stagedN
     local rising, lastO, steps = true, 0.0, 0
     for ms = FADE - 500, 500, -500 do
         H.env.BR.State.storm.tStart = (H.now + 100) - (120000 - ms)
@@ -9410,27 +9356,22 @@ do
         'inside the fade window the zone rises on the map\'s own countdown, at part '
             .. 'strength rather than at full, so it fades in instead of popping',
         ('%.4f against %.4f at full'):format(lastO, blip.currentAlpha / 255))
-    -- THE ONLY ADDS IN THE HOLD ARE A STAGED BANK's (2026-09-28), hidden clips for the
-    -- sweep ahead -- none of them the zone's own -- and as it ships, with staging off,
-    -- there are none at all (map.hotfix).
-    local fadeStagedN = H.env.BR.MapOverlay.report().stagedN - fadeStaged
-    ok(H.mm.adds - fadeAdds == fadeStagedN and steps > 10,
+    ok(H.mm.adds == fadeAdds and steps > 10,
         'and not one polygon was added for it -- every step of the fade is one alpha '
-            .. 'write to a clip already in the movie; the hold\'s only adds are the hidden '
-            .. 'clips staged for the sweep',
-        ('%d adds over %d steps, %d of them staged'):format(H.mm.adds - fadeAdds, steps,
-            fadeStagedN))
+            .. 'write to a clip already in the movie',
+        ('%d adds over %d steps'):format(H.mm.adds - fadeAdds, steps))
 
-    -- ─── a breakout is the same picture: its zone is the union ───
+    -- ─── a breakout's zone is the zone as its hold began ───
     --
     -- On a breakout the safe zone is the wall UNION the destination, which the wall and
-    -- the damage tick read as one zone. The map's zone is that union -- two islands when
-    -- they do not touch, one loop once a conjoined zone has grown -- at the safe zone's
-    -- alpha, with the destination under it: so the zone's old edge never runs across the
-    -- destination, and nothing beside it is waiting to be faded in.
-    local function unionShown(C2, label)
+    -- the damage tick read as one zone. The map's zone is that zone as the hold began
+    -- (2026-10-04): on a DISJOINT pair the union, two islands, at the safe zone's alpha
+    -- with the destination under the far one -- and on a CONJOINED pair the wall alone,
+    -- because the zone's growth into the destination is not followed on the map: the
+    -- destination's own fill covers what it grows into (grow.agree).
+    local function unionShown(C2, label, g)
         local rec2 = C2.env.BR.State.storm
-        local U = C2.env.BR.StormZone(rec2, rec2.cx0, rec2.cy0, rec2.r0, 0.0, 1.0)
+        local U = C2.env.BR.StormZone(rec2, rec2.cx0, rec2.cy0, rec2.r0, 0.0, g)
         local off, lowest = 0.0, 1.0
         for _, ov in ipairs(C2.zone()) do
             lowest = math.min(lowest, C2.opacity(ov))
@@ -9449,15 +9390,16 @@ do
             .. 'each its own fill',
         ('%d areas, %d zone, %d destination'):format(#D.areas(), #D.zone(), #D.dest()))
     unionShown(D, 'and while it holds, both islands are the zone\'s fill at the safe '
-        .. 'zone\'s alpha, on the union to a micron')
+        .. 'zone\'s alpha, on the union to a micron', 1.0)
     local V = mapClient(4, 0.0, 0.0, 950.0, 1100.0, 0.0, 520.0, 600000, 60000)
     ok(V.overlayReady() and V.errored() == nil, 'an overlapping breakout too')
     V.grown()
     V.tick(2)
     ok(#V.areas() == 2 and #V.zone() == 1,
-        'and so is an OVERLAPPING one, its union one loop',
+        'and an OVERLAPPING one is its destination and one zone loop',
         ('%d areas, %d zone'):format(#V.areas(), #V.zone()))
-    unionShown(V, 'and once it has grown, that one loop is the zone\'s fill')
+    unionShown(V, 'and even once it has grown, that loop is the wall where the hold began '
+        .. '-- the growth is not redrawn on the map', 0.0)
 
     -- ─── a refused push is torn down whole, and the blips come back ───
     --
@@ -9511,10 +9453,6 @@ do
         nestsAt(2, 0.0, 0.0, 800.0, 250.0, 0.0, 400.0)
     local S = mapClient(2, 0.0, 0.0, 800.0, 300.0, 0.0, 400.0, 600000, 60000,
         function(env, s) return nests300(env, s) and nests250(env, s) end)
-    -- STAGING OFF FOR THIS CLIENT: what is asserted here is the PICTURE's cadence, and a
-    -- hold is also when the sweep's bank is staged, a clip every other tick -- that has
-    -- its own block, map.stage.
-    S.env.BR.Config.Storm.overlay.stage.enabled = false
     ok(S.overlayReady(), 'the cadence client reaches the gate')
     S.tick(2)
     local before = S.areas()[1]
@@ -9583,44 +9521,67 @@ do
 end
 
 -- ---------------------------------------------------------------------------
-describe('map.motion')
+-- Shared by the map blocks below: what the movie ran, by method name.
+-- ---------------------------------------------------------------------------
+
+--- A copy of the movie's per-method counts, to diff against later.
+local function mmSnap(C)
+    local t = {}
+    for k, v in pairs(C.mm.byMethod) do t[k] = v end
+    return t
+end
+
+--- What the movie ran since `since`, as "NAME n" sorted and joined -- '' for nothing.
+local function mmSince(C, since)
+    local out = {}
+    for k, v in pairs(C.mm.byMethod) do
+        local d = v - (since[k] or 0)
+        if d ~= 0 then out[#out + 1] = ('%s %d'):format(k, d) end
+    end
+    table.sort(out)
+    return table.concat(out, ', ')
+end
+
+--- How far the destination fill the map shows is from BR.StormTarget, worst point --
+--- math.huge when there is none.
+local function destErr(C, rec)
+    local ov = C.dest()[1]
+    if not ov then return math.huge end
+    local D = C.env.BR.StormTarget(rec)
+    local w = 0.0
+    for _, p in ipairs(C.shown(ov)) do
+        w = math.max(w, math.abs(C.env.BR.StormShape.distance(D, p.x, p.y)))
+    end
+    return w
+end
+
+-- ---------------------------------------------------------------------------
+describe('map.sweep')
 do
-    -- ═══ ONE MOVING ZONE ON THE MAP, REDRAWN WHILE IT CHANGES SHAPE AND PLACED WHILE
-    --     IT ONLY MOVES (#344, #350) ═══
+    -- ═══ AS A SWEEP SETS OFF THE OLD ZONE FADES, AND ONLY THE DESTINATION IS LEFT
+    --     (#350, 2026-10-04) ═══
     --
-    --   "the expectation is the shape of the outer (moving) circle will change at
-    --    runtime per frame to eventually match the shape of the inner
-    --    (stationary/destination) circle when it reaches, say, 15 seconds before
-    --    finishing the move. Today we do some dumb shit like multiple moving circles and
-    --    fade between them"                                -- the owner, 2026-09-27
+    --   "today as the storm moves, the current shape (txd on minimap/bigmap) shrinks
+    --    until it pops to the new shape and finishes by scaling into the new size.
+    --    Let's remove that all together so when the sweep starts, the old shape fades
+    --    away and only the new shape is left."            -- the owner, 2026-10-04
     --
-    -- The map shows the destination, standing still, and ONE zone: BR.StormZone at the
-    -- tick, the very zone the wall is drawn from and the damage tick bills. While its
-    -- outline changes -- a sweep's first leg -- its own clip is replaced at
-    -- overlay.morphHz, the destination untouched, and placed on the wall's pivot in
-    -- between; while it is one outline moved and scaled -- the last morph.leadSeconds of
-    -- a sweep, the last zone onto its point -- it is only placed (BR.StormWallFrame). A
-    -- breakout's moving zone is the wall beside the destination at the zone's strength.
-    -- This block asks, by the movie's own arithmetic, that what the map shows IS the zone
-    -- at every tick of every kind of sweep at 10 Hz, and counts what that costs.
+    -- The map used to show the moving zone -- its outline moved and scaled onto the wall
+    -- every tick, redrawn as the sweep set off and at its knee. Now nothing on it moves.
+    -- This block asks, kind of sweep by kind of sweep, at the map band's own 100 ms: that
+    -- the movie hears nothing but the zone's fade -- SET_OVERLAY_ALPHA, falling to
+    -- nothing over overlay.sweepFadeSec from the sweep's first tick -- and that the
+    -- destination, the very clip the hold drew, is the one fill left.
     --
-    -- ═══ WHY THIS BLOCK HAS ITS OWN CLOCK ═══
-    --
-    -- C.tick moves 1500 ms, which clears every throttle in the file -- what the blocks
-    -- above want, and exactly what would hide a rate. The loop thread is
-    -- `step; Wait(100)`, so this steps the TICK band 100 ms at a time, which is what the
-    -- game does.
-    --
-    -- `want`, WHEN GIVEN, PICKS THE SEED: the first from 424242 up whose hand-built pair
-    -- is the case the block is about.
+    -- C.tick moves 1500 ms, which clears every throttle in the file; this steps the TICK
+    -- band 100 ms at a time, which is what the game does. `want`, WHEN GIVEN, PICKS THE
+    -- SEED: the first from 424242 up whose hand-built pair is the case asked about.
+    local CFG = newStormClient().env.BR.Config.Storm
+    local blip = CFG.blip
+    local FADE_MS = CFG.overlay.sweepFadeSec * 1000.0
+
     local function sweepClient(phase, cx0, r0, cx1, r1, shrinkMs, cy0, cy1, want)
         local C = newStormClient()
-        -- THE MORPH REDRAW AT 10 Hz, ON PURPOSE. It shipped from ec19f40 to 8335b17 (as
-        -- the fallback for a bank not staged in time) and ships off since the
-        -- 2026-10-02 hitch (morphHz 0, staging off: map.hotfix); this block keeps the
-        -- machinery honest under explicit config. map.stage is the staged sweep.
-        C.env.BR.Config.Storm.overlay.stage.enabled = false
-        C.env.BR.Config.Storm.overlay.morphHz = 10
         C.mm.handle = 7
         C.pedAt = pt(cx0, cy0 or 0.0)
         local rec = C.record(phase, cx0, cy0 or 0.0, r0, cx1, cy1 or 0.0, r1,
@@ -9643,10 +9604,10 @@ do
 
     --- `n` passes of the TICK band, 100 ms apart, calling `each` after every one.
     local function realTicks(C, n, each)
-        for _ = 1, n do
+        for i = 1, n do
             C.now = C.now + 100
             C.env.BR.Loop.step(C.env.BR.Loop.TICK)
-            if each then each() end
+            if each then each(i) end
         end
     end
 
@@ -9657,16 +9618,14 @@ do
         return nil
     end
 
-    --- The sweep fraction of the harness clock, and the knee.
-    local function tNow(C, rec)
-        local _, _, _, _, _, _, t = C.env.BR.StormAt(rec, C.env.BR.Clock.now())
-        return t
-    end
-    local function kneeOf(C, rec)
-        return 1.0 - C.env.BR.Config.Storm.morph.leadSeconds * 1000.0 / rec.tShrink
+    --- The strongest any zone clip is showing, 0..1.
+    local function zoneShowing(C)
+        local a = 0.0
+        for _, ov in ipairs(C.zone()) do a = math.max(a, C.opacity(ov)) end
+        return a
     end
 
-    -- ─── #350 can still be bisected in one moving phase without changing gameplay ───
+    -- ─── #350's bisect still works on a sweep, and names only the modes that mean something ───
     --
     -- Each mode deliberately damages only the LOCAL picture: the record and clock keep
     -- advancing, so a smooth mode has isolated rendering rather than stopped the storm.
@@ -9677,8 +9636,8 @@ do
     ok(D.cmds.brstormbisect ~= nil, '/brstormbisect is registered')
     ok(D.overlayReady(), 'the bisect client reaches the overlay gate')
     D.tick(2)
-    local dAdds, dPlaced, dFaded = D.mm.adds, D.mm.placed, D.mm.faded
-    local dClip = D.zone()[1]
+    local dZone, dDest = D.zone()[1], D.dest()[1]
+    local dSince = mmSnap(D)
     startSweep(D, drec)
 
     D.cmds.brstormbisect(nil, { 'mapfreeze', '40' }, '')
@@ -9687,76 +9646,52 @@ do
     ok(D.env.BR.Storm.bisectMode == 'mapfreeze'
             and dHitch.enabled and dHitch.thresholdMs == 40,
         'mapfreeze is visible in state and starts a clean capture at the requested threshold')
-    ok(D.mm.adds == dAdds and D.mm.placed == dPlaced and D.mm.faded == dFaded
-            and D.zone()[1] == dClip,
-        'mapfreeze keeps the existing fill resident without one add, move, resize or fade',
-        ('adds %+d, placements %+d, fades %+d'):format(D.mm.adds - dAdds,
-            D.mm.placed - dPlaced, D.mm.faded - dFaded))
-    ok(D.zoneErr(drec) > 1.0,
-        'while the server-authored storm keeps moving underneath that frozen local picture',
-        ('map is %.2f m off the live zone'):format(D.zoneErr(drec)))
-
-    -- MAPNOMORPH: the sweep is under way, so the zone was redrawn as it set off -- and
-    -- then never on the morphHz clock, which is exactly the traffic it takes away.
-    D.cmds.brstormbisect(nil, { 'mapnomorph' }, '')
-    realTicks(D, 2)
-    local nmAdds = D.mm.adds
-    local nmRow = traceRow(D, 'storm.map.morph')
-    local nmEvents = nmRow and nmRow.events or 0
-    realTicks(D, 20)
-    nmRow = traceRow(D, 'storm.map.morph')
-    ok(D.mm.adds == nmAdds and D.zoneErr(drec) > 1.0
-            and (nmRow and nmRow.events or 0) == nmEvents,
-        'mapnomorph sends no redraw on the morphHz clock, and the zone lags the wall for it',
-        ('%d adds, %.2f m off'):format(D.mm.adds - nmAdds, D.zoneErr(drec)))
+    ok(mmSince(D, dSince) == '' and D.zone()[1] == dZone
+            and near(D.opacity(dZone), blip.currentAlpha / 255, 0.5 / 255),
+        'mapfreeze keeps the fill resident and sends it nothing -- not even the fade, so the '
+            .. 'old zone stays on the map while the storm moves on',
+        mmSince(D, dSince))
 
     D.cmds.brstormbisect(nil, { 'normal' }, '')
     realTicks(D, 1)
-    local nOff = D.zoneErr(drec)
-    ok(D.env.BR.Storm.bisectMode == 'normal' and nOff < 1e-6,
-        'normal catches the zone up on its next tick rather than leaving the bisect armed',
-        ('map is %.9f m off the live zone'):format(nOff))
+    ok(D.env.BR.Storm.bisectMode == 'normal' and D.opacity(dZone) == 0.0
+            and D.dest()[1] == dDest and destErr(D, drec) < 1e-6,
+        'normal fades the old zone off on its next tick -- the sweep is past its fade -- and '
+            .. 'the destination is the fill left', ('zone at %.4f'):format(D.opacity(dZone)))
 
     D.cmds.brstormbisect(nil, { 'mapoff' }, '')
-    -- Shrinking blips are intentionally capped at 4 Hz, so the fallback has a
-    -- bounded 250 ms handoff rather than being required on the first 100 ms pass.
+    -- The fallback rings refresh on their own cadence, so the handoff is bounded rather
+    -- than required on the first 100 ms pass.
     realTicks(D, 3)
-    ok(#D.areas() == 0 and #D.rings() > 0,
-        'mapoff removes the custom Scaleform fill and hands the map to fallback blips',
-        ('%d fills, %d rings'):format(#D.areas(), #D.rings()))
+    local dRings = D.rings()
+    ok(#D.areas() == 0 and #dRings == 1 and dRings[1].r == drec.r1
+            and dRings[1].colour == blip.nextColour,
+        'mapoff removes the custom fill and hands the map to the fallback blips -- which keep '
+            .. 'the same rule mid-sweep: the destination\'s ring alone',
+        ('%d fills, %d rings'):format(#D.areas(), #dRings))
     D.cmds.brstormbisect(nil, { 'normal' }, '')
     realTicks(D, 6)
-    local rOff = D.zoneErr(drec)
-    ok(#D.areas() == 2 and #D.rings() == 0 and rOff < 1e-6,
-        'normal restores the real filled picture after mapoff, on the moving zone',
-        ('%d fills, %d rings, %.9f m off'):format(#D.areas(), #D.rings(), rOff))
+    ok(#D.areas() == 1 and #D.dest() == 1 and #D.zone() == 0 and #D.rings() == 0
+            and destErr(D, drec) < 1e-6,
+        'normal draws the picture again mid-sweep -- the destination alone -- and the blips go',
+        ('%d fills, %d zone, %d rings'):format(#D.areas(), #D.zone(), #D.rings()))
 
-    -- MAPNORESIZE, in the second leg, where the zone is placed rather than redrawn.
-    local Z2, zrec = sweepClient(2, 1000.0, 2600.0, 1400.0, 1600.0, 120000,
-        -700.0, -300.0, NESTED)
-    ok(Z2.overlayReady(), 'the resize-bisect client reaches the gate')
-    Z2.tick(2)
-    zrec.tStart = Z2.now - zrec.tWait - math.floor(zrec.tShrink * (kneeOf(Z2, zrec) + 0.02))
-    realTicks(Z2, 2)
-    local zClip = Z2.zone()[1]
-    local zWidth, zX = zClip._width, zClip._x
-    Z2.cmds.brstormbisect(nil, { 'mapnoresize' }, '')
-    realTicks(Z2, 20)
-    ok(Z2.zone()[1] == zClip and zClip._width == zWidth and zClip._x ~= zX,
-        'mapnoresize moves the same clip but never sends the size/re-tessellation call',
-        ('x %s -> %s, width %s -> %s'):format(
-            tostring(zX), tostring(zClip._x), tostring(zWidth), tostring(zClip._width)))
-    ok(traceRow(Z2, 'storm.map.position') ~= nil
-            and traceRow(Z2, 'storm.map.place') == nil,
-        'and the capture names position-only traffic separately from normal placement')
-    ok(Z2.zoneErr(zrec) > 1.0,
-        'the deliberately stale size proves resize really was suppressed',
-        ('map is %.2f m off the live zone'):format(Z2.zoneErr(zrec)))
-    Z2.cmds.brstormbisect(nil, { 'normal' }, '')
-    realTicks(Z2, 1)
-    ok(Z2.zoneErr(zrec) < 1e-3,
-        'and normal catches the size up on the next tick',
-        ('%.6f m off'):format(Z2.zoneErr(zrec)))
+    -- THE TWO MODES THAT WENT WITH THE MOVING SHAPE ARE REFUSED, and the status names
+    -- only the four left.
+    local dp = #D.prints
+    D.cmds.brstormbisect(nil, { 'mapnomorph' }, '')
+    D.cmds.brstormbisect(nil, { 'mapnoresize' }, '')
+    D.cmds.brstormbisect(nil, {}, '')
+    local said = table.concat(D.prints, '\n', dp + 1)
+    local usages = 0
+    for _ in said:gmatch('usage: brstormbisect <normal|mapoff|mapfreeze|walloff>') do
+        usages = usages + 1
+    end
+    ok(D.env.BR.Storm.bisectMode == 'normal' and usages == 2
+            and said:find('modes: normal | mapoff | mapfreeze | walloff', 1, true) ~= nil
+            and not D.env.BR.Storm.setBisectMode('mapnomorph'),
+        'mapnomorph and mapnoresize are gone -- there is no redraw clock and no resize to take '
+            .. 'away -- and the status lists the four modes left', said)
 
     local W = sweepClient(2, 1000.0, 2600.0, 1400.0, 1600.0, 120000,
         -700.0, -300.0, NESTED)
@@ -9776,171 +9711,108 @@ do
 
     -- ─── a nested sweep, start to finish ───
     --
-    -- Phase-2 sizes, and a centre off the world's origin in BOTH axes on purpose: a
-    -- zone pushed in WORLD coordinates and then placed at a frame would land a
-    -- kilometre off, and a y the movie negated twice would land on the wrong side of
-    -- the equator -- and a centre on the origin, or on y = 0, hides each of those.
+    -- Phase-2 sizes, and a centre off the world's origin in BOTH axes on purpose: a fill
+    -- the movie had been told to move would show off the destination by however far.
     local N, nrec = sweepClient(2, 1000.0, 2600.0, 1400.0, 1600.0, 120000,
         -700.0, -300.0, NESTED)
     ok(N.overlayReady(), 'the nested-sweep client reaches the gate')
     N.tick(2)
-    local targetClip = N.dest()[1]
-    ok(N.zoneErr(nrec) < 1e-6 and #N.areas() == 2,
+    local nZone, nDest = N.zone()[1], N.dest()[1]
+    ok(N.zoneErr(nrec) < 1e-6 and #N.areas() == 2
+            and near(N.opacity(nZone), blip.currentAlpha / 255, 0.5 / 255),
         'held, the map shows the destination and the zone the wall stands on, to a micron',
         ('%.9f m off, %d areas'):format(N.zoneErr(nrec), #N.areas()))
-    local knee = kneeOf(N, nrec)
-    local calls0 = N.mm.calls
     N.env.BR.Loop.hitchStart(34)
+    local nSince = mmSnap(N)
     startSweep(N, nrec)
-    local legOne = { ticks = 0, adds = 0, worst = 0.0, zones = 0 }
-    local legTwo = { ticks = 0, adds = 0, worst = 0.0, calls = 0 }
-    local lastAdds, lastCalls = N.mm.adds, N.mm.calls
-    local turned = nil
-    -- ONE TICK SHORT OF THE END OF THE SWEEP, which is asserted on its own below.
-    realTicks(N, 1199, function()
-        local t = tNow(N, nrec)
-        local leg = (t < knee) and legOne or legTwo
-        leg.ticks = leg.ticks + 1
-        leg.adds = leg.adds + (N.mm.adds - lastAdds)
-        if leg == legTwo then
-            -- The tick the kind of change turns is one redraw; every other is placement.
-            if N.mm.adds == lastAdds then
-                leg.calls = math.max(leg.calls, N.mm.calls - lastCalls)
-            end
-        else
-            leg.zones = math.max(leg.zones, #N.zone())
-        end
-        lastAdds, lastCalls = N.mm.adds, N.mm.calls
-        leg.worst = math.max(leg.worst, N.zoneErr(nrec))
-        -- THE SHAPE AT THE KNEE IS THE DESTINATION'S: the zone's fill then is the
-        -- destination's own outline, moved and scaled.
-        if not turned and t >= knee then
-            local x, y, s = N.env.BR.StormWallFrame(nrec, t)
-            local Dsh = N.env.BR.StormTarget(nrec)
-            turned = 0.0
-            for _, p in ipairs(N.shown(N.zone()[1])) do
-                turned = math.max(turned, math.abs(N.env.BR.StormShape.distance(Dsh,
-                    nrec.cx1 + (p.x - x) * nrec.r1 / s, nrec.cy1 + (p.y - y) * nrec.r1 / s))
-                    * s / nrec.r1)
-            end
+    local writesIn, writesAfter, rose, lastO, zeroAt, firstDest = 0, 0, false, 1.0, nil, nil
+    local lastFaded = N.mm.faded
+    -- TO THE TICK BEFORE THE SWEEP ENDS, and five after it.
+    realTicks(N, 1205, function(i)
+        local into = i * 100
+        local w = N.mm.faded - lastFaded
+        lastFaded = N.mm.faded
+        if into <= FADE_MS + 100 then writesIn = writesIn + w else writesAfter = writesAfter + w end
+        local o = N.opacity(nZone)
+        if o > lastO + 1e-9 then rose = true end
+        lastO = o
+        if o == 0.0 and not zeroAt then zeroAt = into end
+        if i == 1 then
+            firstDest = { same = N.dest()[1] == nDest, o = N.opacity(nDest),
+                          err = destErr(N, nrec), visible = #N.visible() }
         end
     end)
-    ok(N.errored() == nil, 'the whole sweep runs clean', N.errored())
-    ok(legOne.ticks > 1000 and legOne.adds >= legOne.ticks - 1 and legOne.zones == 1
-            and legOne.worst < 1e-6,
-        'while its outline turns, the zone is redrawn every tick at morphHz 10 -- one '
-            .. 'clip, standing on the zone the wall and the damage tick share, to a micron',
-        ('%d ticks, %d adds, at most %d zone clips, %.3e m off'):format(legOne.ticks,
-            legOne.adds, legOne.zones, legOne.worst))
-    ok(turned and turned < 1e-3,
-        'and at the knee, morph.leadSeconds before the end, the zone on the map IS the '
-            .. 'destination\'s outline',
-        ('%s m off it'):format(tostring(turned)))
-    ok(legTwo.ticks >= 140 and legTwo.adds <= 1 and legTwo.worst < 1e-3
-            and legTwo.calls <= 2,
-        'and from there it is only PLACED -- one outline moved and scaled onto the '
-            .. 'destination, two property writes a tick, still on the zone to a millimetre',
-        ('%d ticks, %d adds, at most %d calls a tick, %.6f m off'):format(legTwo.ticks,
-            legTwo.adds, legTwo.calls, legTwo.worst))
-    ok(N.dest()[1] == targetClip and targetClip._x == nil and targetClip._width == nil
-            and targetClip._alpha == nil,
-        'while the destination, which does not move, is never touched at all')
-    local nMorph = traceRow(N, 'storm.map.morph')
-    local nPlace = traceRow(N, 'storm.map.place')
+    local nSent = mmSince(N, nSince)
+    ok(N.errored() == nil and nSent == ('SET_OVERLAY_ALPHA %d'):format(writesIn)
+            and writesIn >= 5 and writesAfter == 0,
+        'the whole sweep sends the movie nothing but the zone\'s fade -- no add, no removal, '
+            .. 'no move and no resize -- and nothing at all once the fade is over',
+        N.errored() or ('%s; %d writes in the fade, %d after'):format(nSent, writesIn,
+            writesAfter))
+    ok(not rose and zeroAt ~= nil and zeroAt <= FADE_MS + 100 and zeroAt >= FADE_MS - 100,
+        ('the zone\'s alpha only falls, and is nothing %.1f s into the sweep: '
+            .. 'overlay.sweepFadeSec'):format(FADE_MS / 1000.0),
+        ('rose %s, gone at %s ms'):format(tostring(rose), tostring(zeroAt)))
+    ok(firstDest and firstDest.same and firstDest.err < 1e-6 and firstDest.visible == 2
+            and near(firstDest.o, blip.nextAlpha / 255, 0.5 / 255),
+        'the destination is on the map from the sweep\'s first tick -- the same clip the hold '
+            .. 'drew, on BR.StormTarget, at its own strength -- beside the zone fading out',
+        firstDest and ('%s, %.3e m, %.4f, %d visible'):format(tostring(firstDest.same),
+            firstDest.err, firstDest.o, firstDest.visible) or 'no first tick')
+    ok(N.dest()[1] == nDest and nDest._x == nil and nDest._width == nil
+            and nDest._alpha == nil and #N.visible() == 1 and N.visible()[1] == nDest,
+        'and the destination is never moved, resized or faded: when the sweep is done it is the '
+            .. 'one fill on the map')
+    local nAlpha = traceRow(N, 'storm.map.alpha')
     local nRebuild = traceRow(N, 'storm.map.rebuild')
-    ok(nMorph ~= nil and nMorph.events >= legOne.ticks - 1
-            and nMorph.events <= legOne.ticks + 2
-            and nPlace ~= nil and nPlace.events >= legTwo.ticks - 1
-            and (nRebuild == nil or nRebuild.events == 0),
-        'and the hitch diagnostic names both at their real cadence -- storm.map.morph for '
-            .. 'every redraw of the first leg, storm.map.place for every placement of the '
-            .. 'second -- with no whole rebuild anywhere in the sweep',
-        ('morph %s, place %s, rebuild %s'):format(
-            nMorph and tostring(nMorph.events) or 'none',
-            nPlace and tostring(nPlace.events) or 'none',
-            nRebuild and tostring(nRebuild.events) or 'none'))
-
-    -- ═══ AND THE SWEEP'S END NEEDS NO REBUILD: THE ZONE IS ALREADY THE TARGET ═══
-    local addsEnd = N.mm.adds
-    realTicks(N, 5)
-    local arrived = N.env.BR.StormZone(nrec, nrec.cx1, nrec.cy1, nrec.r1, 1.0)
-    local onTarget = 0.0
-    local fill, fillO = N.zoneFill()
-    for _, p in ipairs(fill and N.shown(fill) or {}) do
-        onTarget = math.max(onTarget, math.abs(N.env.BR.StormShape.distance(arrived, p.x, p.y)))
+    local gone = {}
+    for _, name in ipairs({ 'storm.map.place', 'storm.map.position', 'storm.map.morph',
+            'storm.map.stage', 'storm.map.switch', 'storm.map.drop' }) do
+        if traceRow(N, name) then gone[#gone + 1] = name end
     end
-    ok(N.mm.adds == addsEnd and fill ~= nil
-            and near(fillO, N.env.BR.Config.Storm.blip.currentAlpha / 255, 0.5 / 255)
-            and onTarget < 1e-3,
-        'and when the sweep is FINISHED the zone stands on the destination, to a '
-            .. 'millimetre, with no rebuild at all',
-        ('%d adds, %.6f m off the arrived zone'):format(N.mm.adds - addsEnd, onTarget))
-    ok(N.mm.calls > calls0, 'and the movie was called along the way')
+    ok(nAlpha ~= nil and nAlpha.events * #N.zone() == writesIn
+            and (nRebuild == nil or nRebuild.events == 0) and #gone == 0,
+        'and the hitch diagnostic names it -- storm.map.alpha for each tick of the fade, no '
+            .. 'rebuild, and none of the rows that went with the moving shape',
+        ('alpha %s, rebuild %s, gone rows present: %s'):format(
+            nAlpha and tostring(nAlpha.events) or 'none',
+            nRebuild and tostring(nRebuild.events) or 'none', table.concat(gone, ',')))
 
-    -- ─── morphHz is the rate ───
-    --
-    -- At 5 the first leg's redraws are every other tick; at 0, only when the kind of
-    -- change does -- the sweep setting off and the knee.
-    for _, hz in ipairs({ 5, 0 }) do
+    -- ─── overlay.sweepFadeSec is the fade ───
+    for _, sec in ipairs({ 0.0, 3.0 }) do
         local R, rrec = sweepClient(2, 1000.0, 2600.0, 1400.0, 1600.0, 120000,
             -700.0, -300.0, NESTED)
-        R.env.BR.Config.Storm.overlay.morphHz = hz
-        ok(R.overlayReady(), ('the %d Hz client reaches the gate'):format(hz))
+        R.env.BR.Config.Storm.overlay.sweepFadeSec = sec
+        ok(R.overlayReady(), ('the %.0f s client reaches the gate'):format(sec))
         R.tick(2)
-        local rAdds = R.mm.adds
+        local rZone, f0 = R.zone()[1], R.mm.faded
         startSweep(R, rrec)
-        realTicks(R, 100)
-        local made = R.mm.adds - rAdds
-        local want = (hz == 5) and 50 or 1
-        ok(math.abs(made - want) <= 1 and R.errored() == nil,
-            ('at morphHz %d, ten seconds of the first leg are %d redraws'):format(hz, want),
-            R.errored() or ('%d'):format(made))
-    end
-
-    -- ─── a triangle, a dodecagon and a circle are drawn exactly as above ───
-    --
-    -- Nothing in the arithmetic reads the count, and this is where that is shown rather
-    -- than argued, at the two ends of the range and at the circle. The zone the map
-    -- moves in phase 2 is ZONE 1 -- the one the sweep leaves.
-    for _, want in ipairs({ 3, 12, 0 }) do
-        local T, trec = sweepClient(2, 1000.0, 2600.0, 1400.0, 1600.0, 60000,
-            -700.0, -300.0, NESTED)
-        -- BOUNDED, so a config that can no longer draw this shape fails here by name
-        -- rather than hanging the suite looking for one.
-        local seed
-        for s = 1, 2000 do
-            trec.seed = s
-            if T.env.BR.StormUnit(s, 1).n == want and NESTED(T.env, trec) then
-                seed = s
-                break
-            end
-        end
-        ok(seed ~= nil,
-            ('the shipping config draws %s on zone 1 of some one of 2000 matches')
-                :format(want == 0 and 'a circle' or (want .. ' corners')))
-        trec.seed = seed or 1
-        T.overlayReady()
-        T.tick(2)
-        startSweep(T, trec)
-        local tWorst, tTicks = 0.0, 0
-        realTicks(T, 599, function()
-            tTicks = tTicks + 1
-            if tTicks % 10 == 0 then tWorst = math.max(tWorst, T.zoneErr(trec)) end
+        local rZero, rFirst = nil, nil
+        realTicks(R, 50, function(i)
+            if i == 1 then rFirst = R.opacity(rZone) end
+            if not rZero and R.opacity(rZone) == 0.0 then rZero = i * 100 end
         end)
-        ok(T.errored() == nil and tWorst < 1e-3 and #T.areas() == 2,
-            ('%s zone is on the moving zone at every tenth tick of its sweep, to a '
-                .. 'millimetre'):format(want == 0 and 'a circle' or ('a ' .. want .. '-corner')),
-            T.errored() or ('seed %d: worst %.6f m'):format(trec.seed, tWorst))
+        local writes = R.mm.faded - f0
+        if sec == 0.0 then
+            ok(rZero == 100 and writes == #R.zone() and R.errored() == nil,
+                'at sweepFadeSec 0 the zone is gone on the sweep\'s first tick, in one write',
+                R.errored() or ('gone at %s ms, %d writes'):format(tostring(rZero), writes))
+        else
+            ok(rFirst and rFirst > 0.0 and rZero and rZero >= 2900 and rZero <= 3100
+                    and writes >= 28 * #R.zone() and writes <= 31 * #R.zone()
+                    and R.errored() == nil,
+                'at 3 the fade takes three seconds, a write a tick',
+                R.errored() or ('first %.4f, gone at %s ms, %d writes'):format(rFirst or -1,
+                    tostring(rZero), writes))
+        end
     end
 
-    -- ─── a breakout's zone is the wall beside the destination, redrawn to the knee ───
+    -- ─── a breakout is the same: its zone fades, its destination stays ───
     --
-    -- The safe zone is the wall union the destination, and a union is under no frame, so
-    -- it could not be moved with the wall. So while the wall moves the map shows the WALL
-    -- -- redrawn at morphHz while its outline turns, then placed in its own frame from the
-    -- knee (BR.StormWallFrame's `wallOnly`) -- beside the destination drawn again at the
-    -- zone's strength and never placed. The two union to the zone the damage tick bills,
-    -- at every tick, and the blips are left for refusals alone.
+    -- The safe zone is the wall union the destination. The hold shows the zone as it
+    -- began -- the union of a disjoint pair, the wall of a conjoined one -- beside the
+    -- destination; the sweep fades that zone off and leaves the destination, which is
+    -- the half of the safe zone the wall does not draw.
     for _, bc in ipairs({
         { 'a conjoined', 6, 0.0, 260.0, 300.0, 110.0, CONJOINED, 1 },
         { 'a disjoint', 4, 0.0, 950.0, 2400.0, 260.0, nil, 2 },
@@ -9949,59 +9821,124 @@ do
         ok(B.overlayReady(), bc[1] .. ' breakout client reaches the gate')
         B.grown()
         B.tick(2)
-        ok(#B.zone() == bc[8] and #B.dest() == 1,
-            ('%s breakout holds as its destination and its union -- %d contour%s')
-                :format(bc[1], bc[8], bc[8] == 1 and '' or 's'),
-            ('%d zone, %d destination'):format(#B.zone(), #B.dest()))
+        ok(#B.zone() == bc[8] and #B.dest() == 1 and B.zoneErr(brec) < 1e-6,
+            ('%s breakout holds as its destination and the zone as the hold began -- %d '
+                .. 'contour%s'):format(bc[1], bc[8], bc[8] == 1 and '' or 's'),
+            ('%d zone, %d destination, %.3e m'):format(#B.zone(), #B.dest(),
+                B.zoneErr(brec)))
         B.env.BR.Loop.hitchStart(34)
+        local bDest, bSince = B.dest()[1], mmSnap(B)
         startSweep(B, brec)
-        local bDest = B.dest()[1]
-        local bKnee = B.env.BR.StormKnee(brec) or 1.0
-        local bWorst, lastA = 0.0, B.mm.adds
-        local leg1, adds1, leg2, adds2 = 0, 0, 0, 0
-        realTicks(B, 599, function()
-            if tNow(B, brec) < bKnee then
-                leg1, adds1 = leg1 + 1, adds1 + (B.mm.adds - lastA)
-            else
-                leg2, adds2 = leg2 + 1, adds2 + (B.mm.adds - lastA)
+        local bShown = 0
+        realTicks(B, 599, function(i)
+            if i * 100 > FADE_MS + 100 and not (#B.visible() == 1 and B.visible()[1] == bDest) then
+                bShown = bShown + 1
             end
-            lastA = B.mm.adds
-            bWorst = math.max(bWorst, B.zoneErr(brec))
         end)
-        local bFallback = traceRow(B, 'storm.map.fallback')
-        local bSlots = B.env.BR.Storm.mapSlots()
-        local kinds = table.concat(bSlots and bSlots.kinds or {}, ',')
-        local beside = B.zone()[2]
-        ok(B.errored() == nil and #B.rings() == 0 and bWorst < 1e-3
-                and adds1 >= leg1 - 1 and leg2 > 50 and adds2 <= 2
-                and kinds == 'wall,dest' and beside and beside._x == nil
-                and B.dest()[1] == bDest and bFallback == nil,
-            ('%s breakout\'s wall is redrawn every tick to the knee and placed after it, '
-                .. 'beside the destination at the zone\'s strength, never placed -- on the '
-                .. 'zone the damage tick bills to a millimetre, over the same destination '
-                .. 'clip, and never falls back'):format(bc[1]),
-            B.errored() or ('%d adds over %d ticks, then %d over %d; %s; %d rings, %.3e m '
-                .. 'off, fallback %s'):format(adds1, leg1, adds2, leg2, kinds, #B.rings(),
-                    bWorst, bFallback and tostring(bFallback.events) or 'none'))
+        local bSent = mmSince(B, bSince)
+        ok(B.errored() == nil and bSent:match('^SET_OVERLAY_ALPHA %d+$') ~= nil
+                and bShown == 0 and #B.rings() == 0 and B.dest()[1] == bDest
+                and bDest._x == nil and bDest._alpha == nil and destErr(B, brec) < 1e-6
+                and traceRow(B, 'storm.map.fallback') == nil,
+            ('%s breakout\'s sweep sends nothing but the zone\'s fade, and from the end of it '
+                .. 'shows the destination alone -- the same clip, untouched -- and never falls '
+                .. 'back'):format(bc[1]),
+            B.errored() or ('%s; %d ticks showing more, %d rings'):format(bSent, bShown,
+                #B.rings()))
     end
 
-    -- ─── a client that becomes ready mid-sweep draws the picture ONCE, then follows ───
+    -- ─── a picture drawn first while the storm moves is the destination alone ───
     local J, jrec = sweepClient(4, 0.0, 950.0, 2400.0, 260.0, 120000)
     startSweep(J, jrec)
     ok(J.overlayReady(), 'a mid-sweep client reaches the gate')
     realTicks(J, 2)
-    local jDest = J.dest()[1]
+    local jDest, jSince = J.dest()[1], mmSnap(J)
     realTicks(J, 200)
-    ok(#J.areas() == 3 and J.dest()[1] == jDest and J.zoneErr(jrec) < 1e-6,
-        'a client becoming ready mid-sweep draws the picture once and then follows the '
-            .. 'zone over the same destination',
-        ('%d fills, %.3e m off'):format(#J.areas(), J.zoneErr(jrec)))
+    ok(#J.areas() == 1 and #J.zone() == 0 and J.dest()[1] == jDest and jDest ~= nil
+            and destErr(J, jrec) < 1e-6 and mmSince(J, jSince) == '' and #J.rings() == 0,
+        'a client becoming ready mid-sweep draws the destination alone -- no zone, old or '
+            .. 'moving -- and sends the movie nothing after it',
+        ('%d fills, %d zone, %s'):format(#J.areas(), #J.zone(), mmSince(J, jSince)))
+
+    -- AND INSIDE THE FADE WINDOW TOO: a new record whose sweep set off 300 ms ago.
+    local K, krec = sweepClient(2, 1000.0, 2600.0, 1400.0, 1600.0, 120000,
+        -700.0, -300.0, NESTED)
+    ok(K.overlayReady(), 'the fade-window client reaches the gate')
+    K.tick(2)
+    local k2 = {}
+    for k, v in pairs(krec) do k2[k] = v end
+    k2.r0 = krec.r0 - 1.0
+    k2.tStart = K.now - k2.tWait - 300
+    K.env.BR.State.storm = k2
+    realTicks(K, 1)
+    ok(#K.areas() == 1 and #K.zone() == 0 and #K.dest() == 1
+            and near(K.opacity(K.dest()[1]), blip.nextAlpha / 255, 0.5 / 255),
+        'and one whose picture is drawn inside the sweep\'s fade window shows no zone to fade: '
+            .. 'the destination alone',
+        ('%d fills, %d zone'):format(#K.areas(), #K.zone()))
+
+    -- AND AFTER THE SWEEP HAS FINISHED, before the next record arrives.
+    local Fn, fnrec = sweepClient(2, 1000.0, 2600.0, 1400.0, 1600.0, 120000,
+        -700.0, -300.0, NESTED)
+    fnrec.tStart = Fn.now - fnrec.tWait - fnrec.tShrink - 5000
+    ok(Fn.overlayReady(), 'the finished-sweep client reaches the gate')
+    Fn.tick(1)
+    ok(#Fn.areas() == 1 and #Fn.zone() == 0 and destErr(Fn, fnrec) < 1e-6,
+        'and so does one that becomes ready after the sweep has finished',
+        ('%d fills, %d zone'):format(#Fn.areas(), #Fn.zone()))
+
+    -- ─── and the fallback rings keep the same rule ───
+    --
+    -- A client whose overlay never becomes ready draws the zone and the destination as
+    -- radius blips. A radius blip cannot be resized in place, and it is not followed any
+    -- more: the zone's ring fades where it stands -- the same blip, its alpha falling --
+    -- and is removed, and the destination's is the ring left.
+    local Bf, bfrec = sweepClient(2, 1000.0, 2600.0, 1400.0, 1600.0, 120000,
+        -700.0, -300.0, NESTED)
+    Bf.mm.handle = nil
+    Bf.tick(3)
+    local cur, nxt = nil, nil
+    for h, b in pairs(Bf.blips) do
+        if b.exists and b.kind == 'radius' then
+            if b.r == bfrec.r0 then cur = h elseif b.r == bfrec.r1 then nxt = h end
+        end
+    end
+    ok(#Bf.areas() == 0 and cur ~= nil and nxt ~= nil and #Bf.rings() == 2
+            and Bf.blips[cur].alpha == blip.currentAlpha,
+        'a client with no overlay holds with the zone\'s ring and the destination\'s',
+        ('%d rings'):format(#Bf.rings()))
+    startSweep(Bf, bfrec)
+    local seen, between, falling, last, extra, goneAt = {}, 0, true, blip.currentAlpha, 0, nil
+    realTicks(Bf, 100, function(i)
+        local b = Bf.blips[cur]
+        if not b.exists and not goneAt then goneAt = i * 100 end
+        if b.exists then
+            if b.alpha > last then falling = false end
+            last = b.alpha
+            if b.alpha > 0 and b.alpha < blip.currentAlpha and not seen[b.alpha] then
+                seen[b.alpha] = true
+                between = between + 1
+            end
+        end
+        for h, bb in pairs(Bf.blips) do
+            if bb.exists and bb.kind == 'radius' and h ~= cur and h ~= nxt then
+                extra = extra + 1
+            end
+        end
+    end)
+    ok(cur and not Bf.blips[cur].exists and Bf.blips[nxt].exists and extra == 0
+            and falling and between >= 2 and goneAt and goneAt <= FADE_MS + 600
+            and Bf.errored() == nil,
+        'and as the sweep sets off its zone ring fades where it stands -- the same blip, its '
+            .. 'alpha falling, never rebuilt or moved -- and is gone as the fade ends, the '
+            .. 'destination\'s ring the one left',
+        Bf.errored() or ('%d steps between, %d other rings, falling %s, gone at %s ms')
+            :format(between, extra, tostring(falling), tostring(goneAt)))
 
     -- ─── and rebuildHz is the ceiling on whole pictures whatever asks ───
     --
     -- A target changed every tick is the worst-case key churn: artificial, and static
     -- -- the record is held -- so it isolates the ceiling.
-    local ov = N.env.BR.Config.Storm.overlay
     local F, frec = sweepClient(2, 0.0, 800.0, 300.0, 400.0, 60000)
     ok(F.overlayReady(), 'the ceiling client reaches the gate')
     F.tick(2)
@@ -10018,25 +9955,24 @@ do
     end
     local minGap = math.huge
     for _, g in ipairs(gaps) do minGap = math.min(minGap, g) end
-    local floorMs = 1000.0 / ov.rebuildHz
+    local floorMs = 1000.0 / CFG.overlay.rebuildHz
     ok(#gaps >= 5 and minGap >= floorMs,
         'static picture churn still rebuilds no closer together than 1 / rebuildHz',
         ('%d rebuilds in 10 s, closest %s ms apart, floor %.0f ms'):format(
             #gaps + 1, tostring(minGap), floorMs))
 
-    -- ─── a placement the engine refuses leaves NO zone, never a misplaced one ───
+    -- ─── a zone the engine will not fade as it is drawn leaves NO picture ───
     --
-    -- The zone goes out about its own origin at full strength, so until it is placed and
-    -- faded it sits on the world's origin. A refused placement at the moment of drawing
-    -- must take the push down whole, exactly as a refused add does -- and hand the map
-    -- to the radius blips.
+    -- The zone goes out at full strength and is faded to the safe zone's alpha on the
+    -- same tick. A refused fade there must take the push down whole, exactly as a
+    -- refused add does -- and hand the map to the radius blips.
     local P, prec = sweepClient(2, 1000.0, 2600.0, 1600.0, 1600.0, 120000, nil, nil,
         NESTED)
     P.mm.refusePlace = true
     ok(P.overlayReady(), 'the refusal client reaches the gate')
     P.tick(3)
     ok(#P.areas() == 0 and #P.rings() > 0,
-        'a picture that could not be placed as it was drawn is taken down whole, and the '
+        'a picture whose zone could not be faded as it was drawn is taken down whole, and the '
             .. 'blips carry the map',
         ('%d areas, %d rings'):format(#P.areas(), #P.rings()))
     P.mm.refusePlace = false
@@ -10045,17 +9981,21 @@ do
         'and once the engine accepts it, the fill is back and on the zone',
         ('%d areas, %d rings'):format(#P.areas(), #P.rings()))
 
-    -- AND ONE REFUSED MID-SWEEP HANDS THE REST OF THE SWEEP TO THE BLIPS, ONCE: every
-    -- redraw after it would be one more refused call on a motion cadence, so the map
-    -- goes to the blips and the exact picture comes back the moment the storm stands.
-    for _, refusal in ipairs({ 'add', 'SET_OVERLAY_ALPHA', 'UPDATE_OVERLAY_SIZE_OR_SCALE' }) do
+    -- ─── a refusal mid-sweep ───
+    --
+    -- A sweep asks the movie for nothing but the fade, so a refused add changes nothing.
+    -- A refused fade would leave the old zone part-faded on the map -- the one thing the
+    -- sweep's picture is for not showing -- so the picture comes down and the blips carry
+    -- the map, by the same rule, to the end of the sweep; the exact picture comes back the
+    -- moment the storm stands still.
+    for _, refusal in ipairs({ 'add', 'SET_OVERLAY_ALPHA' }) do
         local Q, qrec = sweepClient(2, 1000.0, 2600.0, 1400.0, 1600.0, 120000,
             -700.0, -300.0, NESTED)
         ok(Q.overlayReady(), ('the refused %s client reaches the gate'):format(refusal))
         Q.tick(2)
         Q.env.BR.Loop.hitchStart(34)
         startSweep(Q, qrec)
-        realTicks(Q, 5)
+        realTicks(Q, 3)
         if refusal == 'add' then Q.mm.refuseAdd = true
         else Q.mm.refuseMethod[refusal] = true end
         realTicks(Q, 2)
@@ -10064,17 +10004,30 @@ do
         local qAdds = Q.mm.adds
         realTicks(Q, 30)
         local qFall = traceRow(Q, 'storm.map.fallback')
-        ok(Q.errored() == nil and #Q.areas() == 0 and #Q.rings() > 0 and Q.mm.adds == qAdds
-                and qFall ~= nil and qFall.events == 1,
-            ('a refused %s mid-sweep ends with no fill rather than a stale one, the blips '
-                .. 'carrying the map -- and nothing drawn again while it moves'):format(refusal),
-            Q.errored() or ('%d areas, %d rings, %d adds, fallback %s'):format(#Q.areas(),
-                #Q.rings(), Q.mm.adds - qAdds, qFall and tostring(qFall.events) or 'none'))
+        local qRings = Q.rings()
+        if refusal == 'add' then
+            ok(Q.errored() == nil and #Q.areas() == 2 and #Q.visible() == 1
+                    and Q.visible()[1] == Q.dest()[1] and Q.mm.adds == qAdds
+                    and qFall == nil and #qRings == 0,
+                'an add refused mid-sweep changes nothing -- the sweep asks for none -- and the '
+                    .. 'fade still finishes',
+                Q.errored() or ('%d areas, %d visible, fallback %s'):format(#Q.areas(),
+                    #Q.visible(), qFall and tostring(qFall.events) or 'none'))
+        else
+            ok(Q.errored() == nil and #Q.areas() == 0 and #qRings == 1
+                    and qRings[1].r == qrec.r1 and Q.mm.adds == qAdds
+                    and qFall ~= nil and qFall.events == 1,
+                'a fade refused mid-sweep takes the picture down rather than leave the old zone '
+                    .. 'part-faded, and the blips carry the map by the same rule -- the '
+                    .. 'destination\'s ring alone -- with nothing drawn again while the wall moves',
+                Q.errored() or ('%d areas, %d rings, %d adds, fallback %s'):format(#Q.areas(),
+                    #qRings, Q.mm.adds - qAdds, qFall and tostring(qFall.events) or 'none'))
+        end
         realTicks(Q, 1200)
-        ok(#Q.areas() == 2 and #Q.rings() == 0 and Q.zoneErr(qrec) < 1e-6,
-            'and the exact picture is drawn once the sweep is FINISHED and the storm stands '
-                .. 'still',
-            ('%d areas, %d rings'):format(#Q.areas(), #Q.rings()))
+        ok(#Q.visible() == 1 and Q.visible()[1] == Q.dest()[1] and #Q.rings() == 0
+                and destErr(Q, qrec) < 1e-6,
+            'and once the sweep has finished the map shows the destination alone, the blips gone',
+            ('%d visible, %d rings'):format(#Q.visible(), #Q.rings()))
     end
 
     -- ─── a removal the engine refuses must not steal the slot ───
@@ -10082,7 +10035,7 @@ do
     -- A refused REM_OVERLAY leaves the old clips in the movie, and mapoverlay.lua keeps
     -- them on its books so the indices stay true. A replacement must not be stacked
     -- beside them: the caller stays on the blips until the old picture can be removed,
-    -- then installs one new picture whose slots are safe to place.
+    -- then installs one new picture.
     local function nestsAtBoth(env, rec)
         local here = NESTED(env, rec)
         local was = rec.cx1
@@ -10109,42 +10062,40 @@ do
         ('%d areas, %d new adds'):format(#X.areas(), X.mm.adds - xAdds))
     startSweep(X, xrec)
     realTicks(X, 50)
-    ok(X.errored() == nil and #X.areas() == 2 and X.zoneErr(xrec) < 1e-6,
-        'and its zone follows the moving storm, replacing only itself',
-        X.errored() or ('%d areas, %.3f m off'):format(#X.areas(), X.zoneErr(xrec)))
+    ok(X.errored() == nil and #X.areas() == 2 and #X.visible() == 1
+            and X.visible()[1] == X.dest()[1],
+        'and its sweep fades that zone off and leaves that destination',
+        X.errored() or ('%d areas, %d visible'):format(#X.areas(), #X.visible()))
 
     -- ─── the last seconds of the final sweep ───
     --
-    -- The destination is a point, so there is no destination fill and no shape to take
-    -- on: the last zone shrinks onto its point in its own shape, ONE outline under a
-    -- frame, placed every tick and never redrawn, until it runs out of polygon.
+    -- The destination is a point, so there is no destination fill: the final sweep fades
+    -- its zone off and leaves nothing in its place, and no ring stands in for it -- the 3D
+    -- wall closing on the point is the whole picture. The one removal is the faded clip,
+    -- as the last zone runs out of polygon.
     local L, lrec = sweepClient(8, 500.0, 40.0, 520.0, 0.0, 30000, nil, nil, NESTED)
     ok(L.overlayReady(), 'the final-sweep client reaches the gate')
     L.tick(2)
     ok(#L.areas() == 1 and #L.zone() == 1 and #L.dest() == 0,
         'the final phase is the zone alone and no destination fill: its destination is a '
-            .. 'point',
-        ('%d areas'):format(#L.areas()))
+            .. 'point', ('%d areas'):format(#L.areas()))
     startSweep(L, lrec)
-    local lWorst = 0.0
-    realTicks(L, 2)
-    local lAdds = L.mm.adds
-    realTicks(L, 318, function()
-        if #L.areas() > 0 then lWorst = math.max(lWorst, L.zoneErr(lrec)) end
+    local lSince, lRings = mmSnap(L), 0
+    realTicks(L, 320, function()
+        if #L.rings() > 0 then lRings = lRings + 1 end
     end)
-    ok(L.errored() == nil and #L.areas() == 0 and L.mm.adds == lAdds,
-        'the final sweep closes to nothing without an error or a redraw, and leaves no '
-            .. 'fill behind',
-        L.errored() or ('%d areas, %d adds'):format(#L.areas(), L.mm.adds - lAdds))
-    ok(lWorst < 1e-3,
-        'and the fill was ON the wall for every tick the wall was still a shape',
-        ('worst %.6f m off'):format(lWorst))
+    local lSent = mmSince(L, lSince)
+    ok(L.errored() == nil and #L.areas() == 0 and lRings == 0
+            and lSent:match('^REM_OVERLAY 1, SET_OVERLAY_ALPHA %d+$') ~= nil,
+        'the final sweep fades its zone off and draws nothing in its place, and no ring stands '
+            .. 'in for it',
+        L.errored() or ('%s; rings on %d ticks'):format(lSent, lRings))
 
-    -- ─── a record that starts part way through a morph shows its outline ───
+    -- ─── a record that starts part way through a morph shows its outline, then fades ───
     --
     -- A freeze, its thaw and a same-phase `brphase` start a record from the wall as it
-    -- stands mid-morph (`mo`): world discs rather than a zone. The map shows the frozen
-    -- outline while it holds, and then the zone as it morphs on.
+    -- stands mid-morph (`mo`): world discs rather than a zone. The map shows that outline
+    -- while it holds, and fades it off as its sweep sets off like any other.
     local O, orec = sweepClient(2, 1000.0, 2600.0, 1400.0, 1600.0, 120000,
         -700.0, -300.0, NESTED)
     local ocx, ocy, orr = O.env.BR.StormAt(orec, orec.tStart + orec.tWait + 0.4 * orec.tShrink)
@@ -10167,342 +10118,83 @@ do
             .. 'holds, to a micron',
         ('%.3e m off'):format(oOff))
     startSweep(O, mrec)
-    local oWorst = 0.0
-    realTicks(O, 300, function()
-        oWorst = math.max(oWorst, O.zoneErr(mrec))
-    end)
-    ok(O.errored() == nil and oWorst < 1e-6,
-        'and follows it through the sweep',
-        O.errored() or ('%.6f m off'):format(oWorst))
-end
-
--- ---------------------------------------------------------------------------
-describe('map.stage')
-do
-    -- ═══ THE SWEEP IS SHOWN FROM OUTLINES STAGED IN THE HOLD: NO ADD, NO REMOVE WHILE
-    --     THE WALL MOVES (2026-09-28) ═══
-    --
-    --   "We're also back to hitches ... is there any way we can silently stage the
-    --    textures we need over time to be less intrusive and hitchy?"  -- the owner
-    --
-    -- Whole real matches, every phase, through the real client at the map band's own
-    -- 100 ms: each record arrives, holds for as long as the server made it hold, and
-    -- sweeps. Asked of every one:
-    --
-    --   IN THE HOLD, the bank is staged at no more than one clip per
-    --   `overlay.stage.everyTicks` ticks -- an add or a drop of an old bank's clip, never
-    --   two -- and every staged clip is hidden (the map shows what it showed before);
-    --   IN THE SWEEP, not one ADD_AREA_OVERLAY and not one REM_OVERLAY -- only the
-    --   staged outline nearest the sweep's instant, placed, and swapped by alpha; the
-    --   map shows exactly the destination and ONE zone outline (and a breakout's
-    --   destination at the zone's strength); and that outline stays within the bank's
-    --   own error bound of the wall, both ways round, at every tick;
-    --   AT THE END, the old banks are dropped in later holds, a clip per slot, and
-    --   after the match nothing of ours is left in the movie.
-    --
-    -- UNDER EXPLICIT CONFIG: staging ships OFF since the 2026-10-02 hitch -- its adds in
-    -- the hold were the hitch (map.hotfix has the shipping picture) -- and it is kept, and
-    -- held to all of the above, for the design that replaces it.
-    local SEEDS = 2
-    local function copy(t) local c = {} for k, v in pairs(t) do c[k] = v end return c end
-
-    --- The 8335b17 shipping values: the bank staged in every hold, and the morph redraw
-    --- at 10 Hz for the one outline no hold can stage (a conjoined growth).
-    local function staging(env)
-        env.BR.Config.Storm.overlay.stage.enabled = true
-        env.BR.Config.Storm.overlay.morphHz = 10
-    end
-
-    --- The unsigned distance from (x, y) to a closed polygon's edges.
-    local function edgeDist(pts, x, y)
-        local best = math.huge
-        local j = #pts
-        for i = 1, #pts do
-            local a, b = pts[j], pts[i]
-            local ex, ey = b.x - a.x, b.y - a.y
-            local el = ex * ex + ey * ey
-            local u = 0.0
-            if el > 0.0 then
-                u = ((x - a.x) * ex + (y - a.y) * ey) / el
-                if u < 0.0 then u = 0.0 elseif u > 1.0 then u = 1.0 end
-            end
-            local dx, dy = x - (a.x + ex * u), y - (a.y + ey * u)
-            local d = math.sqrt(dx * dx + dy * dy)
-            if d < best then best = d end
-            j = i
-        end
-        return best
-    end
-
-    local phasesN, sweeps, liveSweeps = 0, 0, 0
-    local sweepAdds, sweepRemoves, badShown = 0, 0, 0
-    local holdBurst, holdClose, visibleStaged = 0, 0, 0
-    local errOver, errWorst, errWhere = 0.0, 0.0, nil
-    local perPhase = {}
-    local staged, minGap = 0, math.huge
-    local leftover, endBurst = -1, 0
-    local summaryBad = nil
-    for seq = 1, SEEDS do
-        local recs = walkRecords(seq)
-        local C = newStormClient()
-        C.mm.handle = 7
-        local env = C.env
-        staging(env)
-        local BR = env.BR
-        local st = BR.Config.Storm.overlay.stage
-        local every = st.everyTicks
-        local last = #BR.Config.Storm.phases
-        local lastOpTick = -1e9
-        local tick = 0
-        local function step(each)
-            local a0, r0 = C.mm.adds, C.mm.removes
-            C.now = C.now + 100
-            env.BR.Loop.step(env.BR.Loop.TICK)
-            tick = tick + 1
-            if each then each(C.mm.adds - a0, C.mm.removes - r0) end
-        end
-        for ph = 1, last do
-            local rec = copy(recs[ph])
-            rec.tStart = C.now
-            env.BR.State.storm = rec
-            C.pedAt = pt(rec.cx1, rec.cy1)
-            if ph == 1 then
-                ok(C.overlayReady(), ('match %d reaches the overlay gate'):format(seq))
-                rec.tStart = C.now
-            end
-            phasesN = phasesN + 1
-            -- THE HOLD. The first two ticks are the new record's picture (its rebuild).
-            local holdTicks = math.floor(rec.tWait / 100.0) - 1
-            local k = 0
-            for _ = 1, holdTicks do
-                k = k + 1
-                -- A CONJOINED ZONE GROWING is redrawn at morphHz through the start of
-                -- its hold (#344), the one outline no hold can stage ahead of: its own
-                -- ticks, and the tick it ends on, are not staging slots.
-                local _, _, _, _, _, _, _, g = BR.StormAt(rec, BR.Clock.now())
-                local growing = g < 1.0 and (BR.StormOverlaps(rec))
-                step(function(adds, removes)
-                    if k <= 2 or growing then return end
-                    local ops = adds + removes
-                    if ops > 1 then holdBurst = holdBurst + 1 end
-                    if ops > 0 then
-                        if tick - lastOpTick < every then holdClose = holdClose + 1 end
-                        minGap = math.min(minGap, tick - lastOpTick)
-                        lastOpTick = tick
-                    end
-                end)
-            end
-            local slots = BR.Storm.mapSlots()
-            -- Every staged clip is hidden while the storm holds: the map shows the
-            -- destination and the zone and nothing else.
-            if slots and #C.visible() ~= #slots.destination + #slots.zone then
-                visibleStaged = visibleStaged + 1
-            end
-            local bank = BR.Storm.mapBank()
-            staged = staged + (bank and bank.staged or 0)
-            -- THE SWEEP, to the tick after it ends.
-            local sweepTicks = math.floor(rec.tShrink / 100.0) + 2
-            local pw = perPhase[ph] or { worst = 0.0, est = 0.0, K = 0 }
-            perPhase[ph] = pw
-            sweeps = sweeps + 1
-            local wasLive = false
-            for i = 1, sweepTicks do
-                -- (THE LAST ZONE'S LAST METRE is not a sweep: with nothing left to fill,
-                -- the picture comes down and the blips take the map, as they always did.)
-                local _, _, rr, stt = BR.StormAt(rec, BR.Clock.now() + 100)
-                local moving = stt == BR.StormPhase.SHRINKING and (rr > 1.0 or rec.r1 > 1.0)
-                step(function(adds, removes)
-                    local b = BR.Storm.mapBank()
-                    if b and b.live then wasLive = true end
-                    if moving then
-                        sweepAdds = sweepAdds + adds
-                        sweepRemoves = sweepRemoves + removes
-                    end
-                    local s2 = BR.Storm.mapSlots()
-                    if not s2 then return end
-                    -- One zone outline, plus a breakout's destination at the zone's
-                    -- strength, plus the destination itself. Nothing else is visible.
-                    if #C.visible() ~= #s2.destination + #s2.zone then badShown = badShown + 1 end
-                    if i % 5 == 0 or i == sweepTicks then
-                        local cx, cy, r, _, _, _, t, g = BR.StormAt(rec, BR.Clock.now())
-                        local wall = BR.StormWall(rec, t)
-                        local e = C.zoneErr(rec)
-                        -- AND THE OTHER WAY ROUND: the wall's own vertices from the outline
-                        -- the map shows for it.
-                        for n, ov in ipairs(C.zone()) do
-                            if s2.kinds[n] == 'wall' then
-                                local pts = C.shown(ov)
-                                for _, c in ipairs(BR.StormShape.polyline(wall,
-                                        BR.Config.Storm.overlay.chordM,
-                                        BR.Config.Storm.overlay.maxPoints)) do
-                                    for _, q in ipairs(c) do
-                                        e = math.max(e, edgeDist(pts, q.x, q.y))
-                                    end
-                                end
-                            end
-                        end
-                        if e > pw.worst then pw.worst = e end
-                        local bound = math.max(st.targetM, (b and b.estM or 0.0)) * 1.5
-                            + BR.Config.Storm.overlay.chordM
-                        if e > bound and e - bound > errOver then
-                            errOver = e - bound
-                            errWhere = ('match %d phase %d t=%.3f: %.1f m against %.1f')
-                                :format(seq, ph, t, e, bound)
-                        end
-                        errWorst = math.max(errWorst, e)
-                    end
-                end)
-            end
-            local b = BR.Storm.mapBank()
-            if wasLive then liveSweeps = liveSweeps + 1 end
-            pw.est = math.max(pw.est, b and b.estM or 0.0)
-            pw.K = math.max(pw.K, b and b.K or 0)
-        end
-        -- /brstormhitch's summary counts the same thing, off the client's own books.
-        local ms = BR.Storm.mapStats()
-        if not (ms.sweeps == last and ms.sweepsStaged == last and ms.sweepRedraws == 0
-                and ms.staged > 0 and ms.stagedLastAt > ms.stagedFirstAt) then
-            summaryBad = summaryBad or ('match %d: %d sweeps, %d staged, %d redraws, %d clips')
-                :format(seq, ms.sweeps, ms.sweepsStaged, ms.sweepRedraws, ms.staged)
-        end
-        -- AFTER THE MATCH: the storm is gone, and the bank goes a clip at a time.
-        env.BR.State.storm = nil
-        local burst = 0
-        for _ = 1, 2000 do
-            step(function(_, removes) if removes > 1 then burst = burst + 1 end end)
-            if #C.mm.overlays == 0 then break end
-        end
-        -- The picture comes down at once -- two clips on the first tick -- and every
-        -- tick after drops at most one.
-        endBurst = endBurst + math.max(0, burst - 1)
-        leftover = math.max(leftover, #C.mm.overlays)
-        ok(C.errored() == nil, ('match %d runs clean'):format(seq), C.errored())
-    end
-    ok(sweeps == SEEDS * 8 and liveSweeps == sweeps,
-        ('every one of %d sweeps of %d real matches is shown from its staged bank')
-            :format(sweeps, SEEDS), ('%d of %d'):format(liveSweeps, sweeps))
-    ok(sweepAdds == 0 and sweepRemoves == 0,
-        'and not one clip is added or removed while the wall moves',
-        ('%d adds, %d removals during sweeps'):format(sweepAdds, sweepRemoves))
-    ok(holdBurst == 0 and holdClose == 0 and minGap >= 2,
-        'in the holds the bank is staged -- and old banks dropped -- at most one clip a '
-            .. 'slot, a slot at most every overlay.stage.everyTicks ticks',
-        ('%d ticks with more than one, %d slots too close, closest %s ticks'):format(
-            holdBurst, holdClose, tostring(minGap)))
-    ok(staged > 16 * SEEDS and visibleStaged == 0,
-        'every staged clip waits hidden: the hold shows what it showed before',
-        ('%d staged, %d holds showing more'):format(staged, visibleStaged))
-    ok(badShown == 0,
-        'through every sweep the map shows the destination and one zone outline -- a '
-            .. 'breakout\'s destination at the zone\'s strength beside it -- and nothing else',
-        ('%d ticks showing more or fewer'):format(badShown))
-    local line = {}
-    for ph = 1, #perPhase do
-        line[#line + 1] = ('p%d %.1f m (est %.1f, K %d)'):format(ph, perPhase[ph].worst,
-            perPhase[ph].est, perPhase[ph].K)
-    end
-    ok(errOver == 0.0,
-        'and the outline shown is within the bank\'s own bound of the wall, both ways, '
-            .. 'at every tick measured: ' .. table.concat(line, ', '),
-        tostring(errWhere))
-    ok(summaryBad == nil,
-        '/brstormhitch\'s summary reads the same off the client: every sweep shown from '
-            .. 'staged clips, no rebuild during one, and the clips staged in the holds',
-        summaryBad)
-    ok(leftover == 0 and endBurst == 0,
-        'after the match the picture comes down and the banks follow, one clip a tick at '
-            .. 'most, until nothing of ours is in the movie',
-        ('%d left, %d ticks removing more than one'):format(leftover, endBurst))
+    local oSince = mmSnap(O)
+    realTicks(O, 300)
+    local oSent = mmSince(O, oSince)
+    ok(O.errored() == nil and oSent:match('^SET_OVERLAY_ALPHA %d+$') ~= nil
+            and #O.visible() == 1 and O.visible()[1] == O.dest()[1] and zoneShowing(O) == 0.0,
+        'and fades it off as its sweep sets off, the destination left',
+        O.errored() or ('%s, %d visible'):format(oSent, #O.visible()))
 end
 
 -- ---------------------------------------------------------------------------
 describe('map.teardown')
 do
-    -- ═══ EVERY STAGED CLIP IS CLEANED UP, ON EVERY WAY OUT, AND THERE ARE NEVER MORE
-    --     THAN A FIXED NUMBER OF THEM (2026-09-28) ═══
+    -- ═══ THE PICTURE IS CLEANED UP ON EVERY WAY OUT, AND IS NEVER MORE THAN THREE
+    --     CLIPS ═══
     --
-    -- A staged clip is ours in a movie that is not ours: ScaleformUI_Assets' minimap
+    -- A clip of ours is a clip in a movie that is not ours: ScaleformUI_Assets' minimap
     -- outlives a match, a trip home and br_core itself. So each way a picture can stop
-    -- being wanted is walked here from a hold with a staged bank in the movie, and the
-    -- count of our clips must come back to EXACTLY its baseline -- nothing, when nothing
-    -- is drawn; the picture and the current bank, when a new record is showing -- with
-    -- the book-keeping agreeing with the movie clip for clip. And at every tick of every
-    -- walk, our clips in the movie never exceed BR.Storm.mapClipCap().
+    -- being wanted is walked here from a hold, and the count of our clips must come back
+    -- to exactly its baseline -- nothing when nothing is drawn, the new picture when a
+    -- new record is showing -- with the book-keeping agreeing with the movie clip for
+    -- clip. And at every tick of every walk our clips in the movie never exceed three:
+    -- the destination and a zone of two islands at most. (Until 2026-10-04 a bank of up
+    -- to two hundred hidden outlines could sit beside them, staged for the sweep.)
     local recs = walkRecords(3)
     local function copy(t) local c = {} for k, v in pairs(t) do c[k] = v end return c end
-    local peak, cap = 0, nil
-    local burst = {}
+    local peak = 0
 
-    --- A client in a hold of phase `ph`, its bank staged in full -- UNDER EXPLICIT CONFIG,
-    --- since staging ships off (map.stage says why it is kept).
-    local function staged(ph)
+    --- A client in a hold of phase `ph`, its picture drawn.
+    local function holding(ph)
         local C = newStormClient()
         C.mm.handle = 7
-        C.env.BR.Config.Storm.overlay.stage.enabled = true
-        C.env.BR.Config.Storm.overlay.morphHz = 10
         local rec = copy(recs[ph])
         rec.tStart = C.now
         C.env.BR.State.storm = rec
         C.pedAt = pt(rec.cx1, rec.cy1)
         C.overlayReady()
         rec.tStart = C.now
-        cap = cap or C.env.BR.Storm.mapClipCap()
         return C, rec
     end
 
-    --- `n` map ticks at 100 ms. Keeps the peak, and the worst removals in one tick
-    --- after the first (the picture's own two), under `label`. Stops early once
-    --- `done()` says so, and returns how many ticks it took.
-    local function run(C, n, label, done)
+    --- `n` map ticks at 100 ms, keeping the peak. Stops early once `done()` says so,
+    --- and returns how many ticks it took.
+    local function run(C, n, done)
         for i = 1, n do
-            local r0 = C.mm.removes
             C.now = C.now + 100
             C.env.BR.Loop.step(C.env.BR.Loop.TICK)
             peak = math.max(peak, #C.mm.overlays)
-            if label and i > 1 then
-                burst[label] = math.max(burst[label] or 0, C.mm.removes - r0)
-            end
             if done and done() then return i end
         end
         return n
     end
 
     --- The book-keeping agrees with the movie, and the movie holds exactly the picture
-    --- the map shows plus the current bank -- no retired clip, no orphan.
+    --- the map shows -- no leftover, no orphan.
     local function onlyCurrent(C)
-        local MO = C.env.BR.MapOverlay
-        local rep = MO.report()
+        local rep = C.env.BR.MapOverlay.report()
         local slots = C.env.BR.Storm.mapSlots()
-        local bank = C.env.BR.Storm.mapBank()
         local picture = slots and (#slots.destination + #slots.zone) or 0
-        return rep.areas == #C.mm.overlays
-            and rep.areas == picture + rep.staged
-            and (bank == nil or bank.retired == 0),
-            ('%d in the movie, %d on the books, %d picture, %d staged, %s retired')
-                :format(#C.mm.overlays, rep.areas, picture, rep.staged,
-                    tostring(bank and bank.retired))
+        return rep.areas == #C.mm.overlays and rep.areas == picture and picture > 0,
+            ('%d in the movie, %d on the books, %d picture'):format(#C.mm.overlays,
+                rep.areas, picture)
     end
     local function empty(C) return #C.mm.overlays == 0 end
     local function holdOut(C, rec) run(C, math.floor(rec.tWait / 100.0) - 3) end
 
-    -- ─── the bank is really there to be cleaned up ───
-    local A, arec = staged(2)
+    -- ─── 1. the phase edge: the next record's picture replaces the last, whole ───
+    local A, arec = holding(2)
     holdOut(A, arec)
-    local aBank = A.env.BR.Storm.mapBank()
-    ok(aBank and aBank.staged > 10 and A.env.BR.MapOverlay.report().staged > 10,
-        'a phase-2 hold stages its bank into the movie',
-        ('%s staged'):format(tostring(aBank and aBank.staged)))
-
-    -- ─── 1. the phase edge: the next record's hold drops the old bank first ───
     run(A, math.floor(arec.tShrink / 100.0) + 3)
     local nrec = copy(recs[3])
     nrec.tStart = A.now
     A.env.BR.State.storm = nrec
-    run(A, math.floor(nrec.tWait / 100.0) - 3, 'edge')
+    run(A, 3)
     local okE, whyE = onlyCurrent(A)
-    ok(okE and (burst.edge or 0) <= 2,
-        'at a phase edge the old bank is dropped in the next hold -- a clip a slot -- and '
-            .. 'the movie holds the new picture and the new bank, nothing else', whyE)
+    ok(okE and #A.zone() >= 1 and #A.dest() == 1,
+        'at a phase edge the new record\'s picture replaces the old one: the movie holds the '
+            .. 'new destination and zone and nothing else', whyE)
 
     -- ─── 2-4. the match ends, the player leaves, the trip home ───
     for _, path in ipairs({
@@ -10519,35 +10211,48 @@ do
             C.env.BR.State.me.state = C.env.BR.PlayerState.LOBBY
         end },
     }) do
-        local C, rec = staged(2)
+        local C, rec = holding(2)
         holdOut(C, rec)
         local had = #C.mm.overlays
         path[2](C)
-        run(C, 3000, path[1], function() return empty(C) end)
+        run(C, 3000, function() return empty(C) end)
         local rep = C.env.BR.MapOverlay.report()
-        ok(had > 10 and empty(C) and rep.areas == 0 and rep.staged == 0
-                and (burst[path[1]] or 0) <= 1,
-            ('%s takes the picture down at once and the bank a clip at a time, back to '
-                .. 'nothing of ours in the movie'):format(path[1]),
-            ('%d before, %d left, %d on the books, worst %d removals in a tick'):format(had,
-                #C.mm.overlays, rep.areas, burst[path[1]] or 0))
+        ok(had >= 2 and empty(C) and rep.areas == 0,
+            ('%s takes the picture down, back to nothing of ours in the movie'):format(path[1]),
+            ('%d before, %d left, %d on the books'):format(had, #C.mm.overlays, rep.areas))
     end
 
     -- ─── and a removal the engine refuses is retried, not leaked ───
-    local R, rrec = staged(2)
+    local R, rrec = holding(2)
     holdOut(R, rrec)
     R.mm.refuseRemove = true
     R.env.BR.State.me.state = R.env.BR.PlayerState.LOBBY
     run(R, 50)
     local held = #R.mm.overlays
     R.mm.refuseRemove = false
-    run(R, 3000, nil, function() return empty(R) end)
-    ok(held > 10 and empty(R) and R.env.BR.MapOverlay.report().areas == 0,
-        'removals the engine refused are retried at the budget\'s pace until every clip '
-            .. 'is gone', ('%d held while refused, %d left'):format(held, #R.mm.overlays))
+    local took = run(R, 3000, function() return empty(R) end)
+    ok(held >= 2 and empty(R) and R.env.BR.MapOverlay.report().areas == 0 and took <= 2,
+        'removals the engine refused are retried on every tick until it accepts, and then '
+            .. 'every clip is gone', ('%d held while refused, %d left, %d ticks'):format(held,
+            #R.mm.overlays, took))
+
+    -- AND ONE mapoff COULD NOT REMOVE IS TRIED AGAIN TOO, not forgotten in the movie.
+    local Mo, morec = holding(2)
+    holdOut(Mo, morec)
+    Mo.mm.refuseRemove = true
+    Mo.cmds.brstormbisect(nil, { 'mapoff' }, '')
+    run(Mo, 3)
+    local moHeld = #Mo.mm.overlays
+    Mo.mm.refuseRemove = false
+    Mo.cmds.brstormbisect(nil, { 'normal' }, '')
+    run(Mo, 30)
+    local okM, whyM = onlyCurrent(Mo)
+    ok(moHeld >= 2 and okM,
+        'a mapoff whose removals were refused leaves nothing behind once the engine accepts: '
+            .. 'back on normal the movie holds the one picture', whyM)
 
     -- ─── 5. death and spectating keep the map, and leak nothing ───
-    local D, drec = staged(2)
+    local D, drec = holding(2)
     holdOut(D, drec)
     D.env.BR.State.me.state = D.env.BR.PlayerState.OUT
     run(D, math.floor(drec.tShrink / 100.0) + 3)
@@ -10556,13 +10261,13 @@ do
     D.env.BR.State.storm = d2
     run(D, math.floor(d2.tWait / 100.0) - 3)
     local okD, whyD = onlyCurrent(D)
-    ok(okD and D.env.BR.Storm.mapBank() and D.env.BR.Storm.mapBank().live == nil,
-        'an eliminated or spectating player keeps the storm on the map, and its banks are '
+    ok(okD,
+        'an eliminated or spectating player keeps the storm on the map, and its picture is '
             .. 'handed over at the phase edge like anybody\'s', whyD)
 
     -- ─── 6-7. brphase and brstormfreeze: a new record mid-sweep ───
     for _, path in ipairs({ { 'brphase', 120000 }, { 'brstormfreeze', 24 * 3600 * 1000 } }) do
-        local C, rec = staged(2)
+        local C, rec = holding(2)
         holdOut(C, rec)
         run(C, math.floor(rec.tShrink * 0.4 / 100.0))
         local BR = C.env.BR
@@ -10571,61 +10276,57 @@ do
         local jumped = BR.BuildStormRecord(rec.phase, cx, cy, r, rec.cx1, rec.cy1, rec.r1,
             C.now, path[2], rec.tShrink, 2.0, rec.seed, mo)
         C.env.BR.State.storm = jumped
-        run(C, 1200, path[1])
+        run(C, 600)
         local okP, whyP = onlyCurrent(C)
-        ok(okP and (burst[path[1]] or 0) <= 2,
-            ('%s mid-sweep retires the bank it was showing, and the new record\'s hold drops '
-                .. 'it and stages its own'):format(path[1]), whyP)
+        ok(okP and #C.zone() >= 1,
+            ('%s mid-sweep draws the new record\'s hold -- the outline where the wall stood, '
+                .. 'and the destination -- in place of the last picture'):format(path[1]), whyP)
     end
 
-    -- ─── 8. brforce back to warmup: the preview, and the old bank dropped under it ───
-    local W, wrec = staged(2)
-    holdOut(W, wrec)
-    W.env.BR.State.match.state = W.env.BR.MatchState.WARMUP
-    W.env.BR.State.me.state = W.env.BR.PlayerState.WARMUP
-    W.env.BR.State.stormPreview = { cx = wrec.cx0, cy = wrec.cy0, r = 2600.0, seed = wrec.seed }
-    run(W, 3000, 'brforce', function()
-        return W.env.BR.MapOverlay.report().staged == 0
-    end)
-    local okW, whyW = onlyCurrent(W)
-    ok(okW and #W.mm.overlays == 1 and (burst.brforce or 0) <= 2,
-        'a jump back to warmup shows the preview alone, and the old bank is dropped under it',
-        whyW)
+    -- ─── 8. brforce back to warmup: the preview, alone ───
+    local Wf, wrec = holding(2)
+    holdOut(Wf, wrec)
+    Wf.env.BR.State.match.state = Wf.env.BR.MatchState.WARMUP
+    Wf.env.BR.State.me.state = Wf.env.BR.PlayerState.WARMUP
+    Wf.env.BR.State.stormPreview = { cx = wrec.cx0, cy = wrec.cy0, r = 2600.0, seed = wrec.seed }
+    run(Wf, 30)
+    local okW, whyW = onlyCurrent(Wf)
+    ok(okW and #Wf.mm.overlays == 1,
+        'a jump back to warmup shows the preview alone', whyW)
 
-    -- ─── 9. the fallback: a refusal mid-sweep hides the bank and drops it later ───
-    local F, frec = staged(2)
+    -- ─── 9. the fallback: a fade refused mid-sweep, and the next hold ───
+    local F, frec = holding(2)
     holdOut(F, frec)
-    run(F, 50)
-    F.mm.refuseMethod['UPDATE_OVERLAY_POSITION'] = true
+    run(F, 5)
+    F.mm.refuseMethod['SET_OVERLAY_ALPHA'] = true
     run(F, 2)
-    F.mm.refuseMethod['UPDATE_OVERLAY_POSITION'] = nil
-    local fShown = 0
-    for _, ov in ipairs(F.mm.overlays) do if F.opacity(ov) > 0.0 then fShown = fShown + 1 end end
-    run(F, math.floor(frec.tShrink / 100.0), 'fallback')
+    F.mm.refuseMethod['SET_OVERLAY_ALPHA'] = nil
+    local fShown = #F.visible()
+    run(F, math.floor(frec.tShrink / 100.0))
     local f2 = copy(recs[3])
     f2.tStart = F.now
     F.env.BR.State.storm = f2
     run(F, math.floor(f2.tWait / 100.0) - 3)
     local okF, whyF = onlyCurrent(F)
     ok(fShown == 0 and okF,
-        'a refusal mid-sweep takes the picture down, hides the bank at once, and the next '
-            .. 'hold drops it: nothing leaks and nothing is left showing', whyF)
+        'a fade refused mid-sweep takes the picture down at once -- nothing left showing -- and '
+            .. 'the next hold draws its own: nothing leaks', whyF)
 
     -- ─── 10. the resource stopping takes everything, at once ───
-    local S, srec = staged(2)
+    local S, srec = holding(2)
     holdOut(S, srec)
     local before = #S.mm.overlays
     S.fire('onClientResourceStop', 'some_other_resource')
     local kept = #S.mm.overlays
     S.fire('onClientResourceStop', 'br_core')
-    ok(before > 10 and kept == before and #S.mm.overlays == 0,
+    ok(before >= 2 and kept == before and #S.mm.overlays == 0,
         'br_core stopping removes every clip of ours from the shared movie -- and another '
             .. 'resource stopping touches none of them',
         ('%d before, %d after another stopped, %d after br_core'):format(before, kept,
             #S.mm.overlays))
 
-    -- ─── and a burst of records never piles banks up ───
-    local B = staged(2)
+    -- ─── and a burst of records never piles pictures up ───
+    local B = holding(2)
     for i = 1, 25 do
         local r2 = copy(recs[2 + (i % 5)])
         r2.tStart = B.now
@@ -10633,77 +10334,95 @@ do
         run(B, 40)
     end
     B.env.BR.State.me.state = B.env.BR.PlayerState.LOBBY
-    run(B, 4000, nil, function() return empty(B) end)
+    run(B, 4000, function() return empty(B) end)
     ok(empty(B), 'twenty-five records in a row, then home: nothing of ours is left',
         ('%d left'):format(#B.mm.overlays))
 
-    ok(peak <= cap,
-        ('and on every tick of every walk our clips in the movie never exceeded the cap of '
-            .. '%d -- overlay.stage.maxClips and the picture'):format(cap),
-        ('peak %d'):format(peak))
+    ok(peak <= 3,
+        'and on every tick of every walk our clips in the movie never exceeded three -- the '
+            .. 'destination and a zone of two islands at most', ('peak %d'):format(peak))
 end
 
 -- ---------------------------------------------------------------------------
-describe('map.hotfix')
+describe('map.nomorph')
 do
-    -- ═══ NOTHING ADDED OR REMOVED ON A CLOCK -- ONLY AT THE FEW CHANGES OF KIND A PHASE
-    --     HAS (2026-10-02) ═══
+    -- ═══ WHOLE MATCHES: NOTHING ON THE MAP MOVES WHILE THE STORM DOES (2026-10-04) ═══
     --
-    --   "the game is now hitching every second or so ... the hitching is pretty
-    --    severe"                                     -- the owner, playtesting 8335b17
+    --   "that means the only indicator of the actual current shape of the storm is
+    --    looking in the 3d world."                        -- the owner, 2026-10-04
     --
-    -- `/brstormbisect mapoff` stopped it, so it was the map fill, and every
-    -- ADD_AREA_OVERLAY is the call #350 traced: 8335b17 staged up to 200 hidden clips in
-    -- every hold, one each two map ticks and never further apart than 1.6 s, and redrew a
-    -- growth every tick. So the shipping config stages nothing and redraws on no clock
-    -- (overlay.stage.enabled = false, overlay.morphHz = 0). Whole real matches, through
-    -- the real client at the map band's own 100 ms, held to what that means:
+    -- Whole real matches, every phase, through the real client at the map band's own
+    -- 100 ms, held to what that means:
     --
     --   THE WARMUP PREVIEW is one add, and stands;
-    --   EVERY TICK THAT ADDS OR REMOVES A CLIP is one on which the zone's kind of change
-    --   switched -- or a record arrived -- and not one is on a clock: a hold adds nothing
-    --   but a growth's one redraw as it ends, a sweep redraws as it sets off and at the
-    --   knee, a breakout once more as it finishes;
-    --   BETWEEN THEM THE ZONE IS PLACED EVERY TICK: the outline drawn as the sweep set off
-    --   on the wall's pivot to the knee, as large as fits inside the wall and no larger --
-    --   never storm shown as safe; the wall's own outline in its own frame from the knee,
-    --   on the zone to a millimetre;
-    --   NOTHING IS STAGED, and after the match nothing of ours is in the movie.
+    --   A HOLD adds and removes clips only on its record's first tick -- its picture --
+    --   and after it sends nothing but phase 1's fade in: a conjoined growth is not
+    --   redrawn;
+    --   A SWEEP sends nothing but SET_OVERLAY_ALPHA, and only inside its first
+    --   overlay.sweepFadeSec: no add, no removal, no move, no resize. The zone's alpha
+    --   only falls and is nothing once the fade is over, and the destination the hold
+    --   drew is on the map from the sweep's first tick, on BR.StormTarget, untouched;
+    --   /brstormhitch's summary reads the same off the client, and after the match
+    --   nothing of ours is in the movie.
+    --
+    -- AND THE MACHINERY THAT SHOWED THE MOVING SHAPE IS GONE, not switched off: the
+    -- morph clock, the staged bank, the overlay's placement and replacement, the wall's
+    -- pivot and the fit inside it.
     local SEEDS = 3
     local function copy(t) local c = {} for k, v in pairs(t) do c[k] = v end return c end
 
-    local shipOv = newStormClient().env.BR.Config.Storm.overlay
-    ok(shipOv.morphHz == 0 and shipOv.stage.enabled == false,
-        'the shipping config redraws the zone on no clock and stages no clips',
-        ('morphHz %s, stage.enabled %s'):format(tostring(shipOv.morphHz),
-            tostring(shipOv.stage.enabled)))
+    local ship = newStormClient().env
+    local shipOv = ship.BR.Config.Storm.overlay
+    local leftBehind = {}
+    for _, name in ipairs({ 'placeArea', 'placeIndex', 'replaceFrom', 'stageArea',
+            'dropStaged', 'placeStaged', 'alphaStaged', 'dropOrphan', 'stagedCount' }) do
+        if ship.BR.MapOverlay[name] ~= nil then leftBehind[#leftBehind + 1] = 'MapOverlay.' .. name end
+    end
+    for _, name in ipairs({ 'mapBank', 'mapClipCap' }) do
+        if ship.BR.Storm[name] ~= nil then leftBehind[#leftBehind + 1] = 'Storm.' .. name end
+    end
+    if ship.BR.StormWallPivot ~= nil then leftBehind[#leftBehind + 1] = 'StormWallPivot' end
+    if ship.BR.StormShape.fitScale ~= nil then leftBehind[#leftBehind + 1] = 'StormShape.fitScale' end
+    if shipOv.morphHz ~= nil then leftBehind[#leftBehind + 1] = 'overlay.morphHz' end
+    if shipOv.stage ~= nil then leftBehind[#leftBehind + 1] = 'overlay.stage' end
+    ok(#leftBehind == 0 and type(shipOv.sweepFadeSec) == 'number'
+            and shipOv.sweepFadeSec > 0.0 and shipOv.sweepFadeSec <= 2.0,
+        'the moving map shape is gone, not switched off -- and the old zone fades out over '
+            .. 'about a second', ('left behind: %s; sweepFadeSec %s'):format(
+            table.concat(leftBehind, ', '), tostring(shipOv.sweepFadeSec)))
+    local FADE_MS = shipOv.sweepFadeSec * 1000.0
 
     local previewOk, previewWhy = false, 'not run'
-    local clockOps, clockWhere = 0, nil
-    local holdBad, sweepBad, kindsWhere = 0, 0, nil
-    local sweepsN, worstSweepEvents = 0, 0
-    local pivotTicks, unplaced, pivotOff, pivotWhere = 0, 0, 0.0, nil
-    local pivotOut, outWhere, fitN, fitOff, fitWhere = -math.huge, nil, 0, 0.0, nil
-    local frameTicks, frameWorst = 0, 0.0
-    local stagedEver, leftover, summaryBad = 0, 0, nil
+    local holdBad, holdWhere = 0, nil
+    local sweepBad, sweepWhere = 0, nil
+    local lateFade, lateWhere = 0, nil
+    local rose, roseWhere = 0, nil
+    local leftOn, leftWhere = 0, nil
+    local destBad, destWhere = 0, nil
+    local sweepsN, fadesN, growHolds = 0, 0, 0
+    local summaryBad, leftover = nil, 0
     for seq = 1, SEEDS do
         local recs = walkRecords(seq)
         local C = newStormClient()
         C.mm.handle = 7
         local env = C.env
         local BR = env.BR
-        local function tagNow()
-            local s = BR.Storm.mapSlots()
-            return s and s.tag or nil
-        end
-        --- One map tick: how many clips it added and removed, how many placements it
-        --- sent, and whether the zone's kind of change switched on it.
+        --- One map tick, and what the movie ran on it: { [method] = n }.
         local function step()
-            local a0, r0, p0, before = C.mm.adds, C.mm.removes, C.mm.placed, tagNow()
+            local before = mmSnap(C)
             C.now = C.now + 100
             BR.Loop.step(BR.Loop.TICK)
-            return (C.mm.adds - a0) + (C.mm.removes - r0), C.mm.placed - p0,
-                tagNow() ~= before
+            local d = {}
+            for k, v in pairs(C.mm.byMethod) do
+                if v ~= (before[k] or 0) then d[k] = v - (before[k] or 0) end
+            end
+            return d
+        end
+        local function said(d)
+            local out = {}
+            for k, n in pairs(d) do out[#out + 1] = ('%s %d'):format(k, n) end
+            table.sort(out)
+            return table.concat(out, ', ')
         end
 
         -- ─── the warmup preview: circle 1, drawn once ───
@@ -10735,113 +10454,79 @@ do
                 C.overlayReady()
                 rec.tStart = C.now
             end
-            local over = (BR.StormOverlaps(rec))
-            local holdN, sweepN, doneN = 0, 0, 0
-            local w0, h0, prDraw, drawn = nil, nil, nil, nil
+            if BR.StormOverlaps(rec) then growHolds = growHolds + 1 end
             local total = math.floor((rec.tWait + rec.tShrink) / 100.0) + 3
+            local sweepTick, lastA, destClip = 0, nil, nil
             for i = 1, total do
-                local ops, placed, turned = step()
-                local _, _, _, st, _, _, t = BR.StormAt(rec, BR.Clock.now())
-                if i > 1 and ops > 0 then
-                    if not turned and clockOps == 0 then
-                        clockWhere = ('match %d phase %d tick %d (%s, t=%.3f): %d ops')
-                            :format(seq, ph, i, tostring(st), t, ops)
-                    end
-                    if not turned then clockOps = clockOps + 1 end
-                    if st == BR.StormPhase.HOLDING then holdN = holdN + 1
-                    elseif st == BR.StormPhase.SHRINKING then sweepN = sweepN + 1
-                    else doneN = doneN + 1 end
-                end
-                local tag = tagNow()
-                if st == BR.StormPhase.SHRINKING and tag == 'pivot' then
-                    -- Drawn on the tick it turned, about the pivot of that instant.
-                    local ov = C.zone()[1]
-                    local px, py, pr = BR.StormWallPivot(rec, t)
-                    if turned then
-                        local x0, x1, y0, y1 = math.huge, -math.huge, math.huge, -math.huge
-                        for _, q in ipairs(ov.points) do
-                            x0, x1 = math.min(x0, q.x), math.max(x1, q.x)
-                            y0, y1 = math.min(y0, q.y), math.max(y1, q.y)
-                        end
-                        w0, h0, prDraw = x1 - x0, y1 - y0, pr
-                        -- The wall it was drawn from, as discs about its pivot.
-                        drawn = {}
-                        for _, q in ipairs(BR.StormWall(rec, t).hull.ks) do
-                            drawn[#drawn + 1] = { x = q.x - px, y = q.y - py, r = q.rho }
-                        end
-                    else
-                        pivotTicks = pivotTicks + 1
-                        if placed == 0 then unplaced = unplaced + 1 end
-                    end
-                    local k = ov._width / w0
-                    local off = math.max(math.abs(ov._x - px), math.abs((0 - ov._y) - py),
-                        math.max(0.0, k * prDraw - pr) / pr, math.abs(ov._height / h0 - k))
-                    if off > pivotOff then
-                        pivotOff = off
-                        pivotWhere = ('match %d phase %d t=%.3f'):format(seq, ph, t)
-                    end
-                    -- NEVER STORM SHOWN AS SAFE: every point it shows inside the wall --
-                    -- on it the tick it is drawn, and 5 cm inside on every tick after.
-                    local wall = BR.StormWall(rec, t)
-                    for _, q in ipairs(C.shown(ov)) do
-                        local d = BR.StormShape.distance(wall, q.x, q.y)
-                        if turned then d = d - 0.05 end
-                        if d > pivotOut then
-                            pivotOut = d
-                            outWhere = ('match %d phase %d t=%.3f'):format(seq, ph, t)
-                        end
-                    end
-                    -- AND AS LARGE AS FITS, by fit() and a bisection of its own, every
-                    -- tenth tick: the outline it was drawn from, 5 cm inside the wall.
-                    if not turned and pivotTicks % 10 == 0 then
-                        local ks = wall.hull.ks
-                        local lo, hi = 0.0, 2.0 * k + 1.0
-                        for _ = 1, 50 do
-                            local mid = 0.5 * (lo + hi)
-                            if BR.StormShape.fit(ks, drawn, px, py, mid) <= -0.05 then
-                                lo = mid
-                            else
-                                hi = mid
+                local d = step()
+                local _, _, rr, st, msLeft = BR.StormAt(rec, BR.Clock.now())
+                local where = ('match %d phase %d tick %d (%s)'):format(seq, ph, i, tostring(st))
+                if st == BR.StormPhase.HOLDING then
+                    -- THE RECORD'S FIRST TICK DRAWS ITS PICTURE; after it, only phase 1's
+                    -- fade in may write, and only an alpha.
+                    if i > 1 then
+                        for k in pairs(d) do
+                            if not (k == 'SET_OVERLAY_ALPHA' and ph == 1) then
+                                holdBad = holdBad + 1
+                                holdWhere = holdWhere or (where .. ': ' .. said(d))
                             end
                         end
-                        fitN = fitN + 1
-                        if math.abs(k - lo) / lo > fitOff then
-                            fitOff = math.abs(k - lo) / lo
-                            fitWhere = ('match %d phase %d t=%.3f: %.9f against %.9f')
-                                :format(seq, ph, t, k, lo)
+                    end
+                elseif st == BR.StormPhase.SHRINKING and (rr > 1.0 or rec.r1 > 1.0) then
+                    -- (THE LAST ZONE'S LAST METRE is not a sweep: with nothing left to
+                    -- fill, the faded picture comes down and the blips -- none -- take
+                    -- the map.)
+                    sweepTick = sweepTick + 1
+                    local into = rec.tShrink - msLeft
+                    if sweepTick == 1 then
+                        sweepsN = sweepsN + 1
+                        if rec.r1 > 1.0 then
+                            destClip = C.dest()[1]
+                            if not destClip or C.opacity(destClip) <= 0.0
+                                    or destErr(C, rec) > 1e-6 then
+                                destBad = destBad + 1
+                                destWhere = destWhere or (where .. ': no destination shown')
+                            end
                         end
                     end
-                elseif st == BR.StormPhase.SHRINKING and tag and tag:sub(1, 6) == 'frame|'
-                        and i % 5 == 0 then
-                    frameTicks = frameTicks + 1
-                    frameWorst = math.max(frameWorst, C.zoneErr(rec))
+                    for k, n in pairs(d) do
+                        if k ~= 'SET_OVERLAY_ALPHA' then
+                            sweepBad = sweepBad + 1
+                            sweepWhere = sweepWhere or (where .. ': ' .. said(d))
+                        elseif into > FADE_MS + 100 then
+                            lateFade = lateFade + 1
+                            lateWhere = lateWhere or (('%s, %.0f ms in: %s'):format(where,
+                                into, said(d)))
+                        else
+                            fadesN = fadesN + n
+                        end
+                    end
+                    local a = 0.0
+                    for _, ov in ipairs(C.zone()) do a = math.max(a, C.opacity(ov)) end
+                    if lastA and a > lastA + 1e-9 then
+                        rose = rose + 1
+                        roseWhere = roseWhere or where
+                    end
+                    lastA = a
+                    if into > FADE_MS + 100 and #C.visible() ~= #C.dest() then
+                        leftOn = leftOn + 1
+                        leftWhere = leftWhere or (('%s: %d visible, %d destination')
+                            :format(where, #C.visible(), #C.dest()))
+                    end
+                    if destClip and (C.dest()[1] ~= destClip or destClip._x ~= nil
+                            or destClip._width ~= nil or destClip._alpha ~= nil) then
+                        destBad = destBad + 1
+                        destWhere = destWhere or (where .. ': destination touched')
+                    end
                 end
-            end
-            sweepsN = sweepsN + 1
-            worstSweepEvents = math.max(worstSweepEvents, sweepN + doneN)
-            -- A HOLD: nothing after its picture but a conjoined growth's end. A SWEEP:
-            -- its start and its knee -- or, on the last, its start and its last metre --
-            -- and a breakout's finish.
-            if holdN > ((over and 1) or 0) then holdBad = holdBad + 1 end
-            if sweepN > 2 or doneN > 1 then sweepBad = sweepBad + 1 end
-            if (holdN > ((over and 1) or 0) or sweepN > 2 or doneN > 1) and not kindsWhere then
-                kindsWhere = ('match %d phase %d: %d in the hold, %d in the sweep, %d after')
-                    :format(seq, ph, holdN, sweepN, doneN)
             end
         end
         local ms = BR.Storm.mapStats()
-        if ms.staged ~= 0 or ms.sweepsStaged ~= 0 then
-            summaryBad = summaryBad or ('match %d: %d staged, %d sweeps from staged clips')
-                :format(seq, ms.staged, ms.sweepsStaged)
+        if not (ms.sweeps == #BR.Config.Storm.phases and ms.sweepAdds == 0
+                and ms.sweepRemoves == 0 and ms.sweepFades > 0) then
+            summaryBad = summaryBad or ('match %d: %d sweeps, %d fades, %d adds, %d removals')
+                :format(seq, ms.sweeps, ms.sweepFades, ms.sweepAdds, ms.sweepRemoves)
         end
-        -- EVERY CLIP ADDED WHILE THE WALL MOVED WAS ONE OF THE EXPECTED REDRAWS, so
-        -- /brstormhitch has nothing to call the old path (client/debug.lua).
-        if ms.sweepRedraws == 0 or ms.sweepEvents ~= ms.sweepRedraws then
-            summaryBad = summaryBad or ('match %d: %d clips redrawn in sweeps, %s of them '
-                .. 'as the kind of change switched'):format(seq, ms.sweepRedraws,
-                    tostring(ms.sweepEvents))
-        end
-        stagedEver = stagedEver + BR.MapOverlay.report().stagedN
         BR.State.storm = nil
         for _ = 1, 50 do step() end
         leftover = leftover + #C.mm.overlays
@@ -10849,64 +10534,59 @@ do
     end
     ok(previewOk, 'the warmup preview is one add, and stands thirty seconds without another',
         previewWhy)
-    ok(clockOps == 0,
-        ('across %d sweeps of %d whole matches, every tick that adds or removes a clip is '
-            .. 'one where the zone\'s kind of change switched or a record arrived -- not one '
-            .. 'on a clock'):format(sweepsN, SEEDS), clockWhere)
-    ok(holdBad == 0 and sweepBad == 0 and worstSweepEvents <= 3,
-        'a hold adds nothing after its picture but a growth\'s one redraw as it ends; a '
-            .. 'sweep redraws as it sets off and at the knee, a breakout once more as it '
-            .. 'finishes', kindsWhere or ('at most %d a sweep'):format(worstSweepEvents))
-    ok(pivotTicks > 1000 and unplaced == 0 and pivotOff < 1e-6,
-        'to the knee the outline drawn as the sweep set off is placed on the wall\'s pivot '
-            .. 'every tick, and never larger than the wall\'s size',
-        ('%d ticks, %d unplaced, %.3e off at %s'):format(pivotTicks, unplaced, pivotOff,
-            tostring(pivotWhere)))
-    ok(pivotOut <= -0.05 + 1e-6,
-        'and every point of it the map shows is inside the wall at that tick -- it never '
-            .. 'shows storm as safe',
-        ('%.3f m out at %s'):format(pivotOut + 0.05, tostring(outWhere)))
-    ok(fitN > 100 and fitOff < 1e-6,
-        'and it is as large as fits there, not smaller',
-        ('%d ticks measured, worst %.3e at %s'):format(fitN, fitOff, tostring(fitWhere)))
-    ok(frameTicks > 100 and frameWorst < 1e-3,
-        'and from the knee it is the wall\'s own outline in its own frame, on the zone to a '
-            .. 'millimetre -- a breakout\'s beside its destination at the zone\'s strength',
-        ('%d ticks measured, worst %.6f m'):format(frameTicks, frameWorst))
-    ok(stagedEver == 0 and summaryBad == nil and leftover == 0,
-        'no clip is ever staged, the summary says so -- every redraw in a sweep one it '
-            .. 'expects -- and after the match nothing of ours is in the movie',
-        summaryBad or ('%d staged, %d left'):format(stagedEver, leftover))
+    ok(holdBad == 0 and growHolds > 0,
+        ('across %d whole matches every hold sends the movie nothing after its picture but '
+            .. 'phase 1\'s fade in -- %d conjoined growths among them, not one redrawn')
+            :format(SEEDS, growHolds), holdWhere)
+    ok(sweepBad == 0 and sweepsN == SEEDS * 8,
+        ('and every one of %d sweeps sends nothing but alpha writes -- no add, no removal, no '
+            .. 'move, no resize'):format(sweepsN), sweepWhere)
+    ok(lateFade == 0 and fadesN > 0,
+        'and those only inside overlay.sweepFadeSec of the sweep setting off',
+        lateWhere or ('%d writes'):format(fadesN))
+    ok(rose == 0 and leftOn == 0,
+        'the zone\'s alpha only falls, and once the fade is over the map shows the destination '
+            .. 'and nothing else', roseWhere or leftWhere)
+    ok(destBad == 0,
+        'the destination is on the map from every sweep\'s first tick, on BR.StormTarget, and '
+            .. 'is never touched', destWhere)
+    ok(summaryBad == nil and leftover == 0,
+        '/brstormhitch\'s summary reads the same off the client -- every sweep only faded -- '
+            .. 'and after the match nothing of ours is in the movie',
+        summaryBad or ('%d left'):format(leftover))
 
-    -- AND A REDRAW ON THE CLOCK IS STILL COUNTED AS THE OLD PATH: morphHz 10, three
-    -- seconds into a sweep's first leg, is the start's one redraw and the clock's.
-    local M = newStormClient()
-    M.env.BR.Config.Storm.overlay.morphHz = 10
-    M.mm.handle = 7
-    local mrec = M.record(2, 1000.0, -700.0, 2600.0, 1400.0, -300.0, 1600.0, 600000, 120000,
-        2.0)
-    mrec.seed = 424242
-    ok(M.overlayReady(), 'the clock client reaches the gate')
-    M.tick(2)
-    mrec.tStart = M.now - mrec.tWait
-    for _ = 1, 30 do
-        M.now = M.now + 100
-        M.env.BR.Loop.step(M.env.BR.Loop.TICK)
+    -- ─── a client that becomes ready mid-sweep of a real match ───
+    local jrecs = walkRecords(1)
+    for _, ph in ipairs({ 3, 6 }) do
+        local J = newStormClient()
+        J.mm.handle = 7
+        local rec = copy(jrecs[ph])
+        rec.tStart = J.now - rec.tWait - math.floor(rec.tShrink * 0.3)
+        J.env.BR.State.storm = rec
+        J.pedAt = pt(rec.cx1, rec.cy1)
+        local ready = J.overlayReady()
+        local _, _, _, jst = J.env.BR.StormAt(rec, J.env.BR.Clock.now())
+        local since = mmSnap(J)
+        for _ = 1, 100 do
+            J.now = J.now + 100
+            J.env.BR.Loop.step(J.env.BR.Loop.TICK)
+        end
+        ok(ready and jst == J.env.BR.StormPhase.SHRINKING and #J.areas() == 1
+                and #J.zone() == 0 and destErr(J, rec) < 1e-6 and mmSince(J, since) == ''
+                and J.errored() == nil,
+            ('a client that becomes ready mid-sweep of phase %d shows the destination alone, '
+                .. 'and sends nothing after it'):format(ph),
+            J.errored() or ('%s, %d fills, %d zone, %s'):format(tostring(jst), #J.areas(),
+                #J.zone(), mmSince(J, since)))
     end
-    local mms, mParts = M.env.BR.Storm.mapStats(), #M.zone()
-    ok(mParts > 0 and mms.sweepEvents == mParts and mms.sweepRedraws >= 20 * mParts
-            and M.errored() == nil,
-        'at morphHz 10 the sweep\'s start is the one expected redraw and the clock\'s are not',
-        M.errored() or ('%d clips redrawn, %s expected, %d a picture'):format(
-            mms.sweepRedraws, tostring(mms.sweepEvents), mParts))
 
     -- ─── a picture the engine refuses is drawn again a few times, then waits ───
     --
-    -- Adds accepted and the placement after them refused: the picture comes back out
-    -- whole (map.motion's refusal client). It used to be drawn again every 1 / rebuildHz
-    -- for as long as that lasted -- an add and a removal twice a second, on a clock, the
-    -- very traffic this hotfix takes away. Now PICTURE_TRIES pictures at most, each
-    -- further apart, and then the blips until the kind of change switches.
+    -- Adds accepted and the fade after them refused: the picture comes back out whole
+    -- (map.sweep's refusal client). It used to be drawn again every 1 / rebuildHz for as
+    -- long as that lasted -- an add and a removal twice a second, on a clock. Now
+    -- PICTURE_TRIES pictures at most, each further apart, and then the blips until the
+    -- kind of picture changes -- the sweep setting off.
     local R = newStormClient()
     R.mm.handle = 7
     local rrec = R.record(2, 1000.0, -700.0, 2600.0, 1400.0, -300.0, 1600.0, 600000, 60000,
@@ -10915,7 +10595,7 @@ do
     ok(R.overlayReady(), 'the refusal client reaches the gate')
     R.tick(2)
     local rAdds = R.mm.adds
-    R.mm.refuseMethod['UPDATE_OVERLAY_POSITION'] = true
+    R.mm.refuseMethod['SET_OVERLAY_ALPHA'] = true
     rrec.cx1 = rrec.cx1 + 50.0               -- a new record's geometry: a picture is due
     local function holdTicks(n)
         for _ = 1, n do
@@ -10926,10 +10606,10 @@ do
     holdTicks(600)
     local tried = R.mm.adds - rAdds
     ok(tried >= 2 and tried <= 8 and #R.areas() == 0 and #R.rings() > 0,
-        'a minute of refused placements in a hold is four pictures at most -- not one every '
-            .. 'half second -- and the blips carry the map',
+        'a minute of refused fades in a hold is four pictures at most -- not one every half '
+            .. 'second -- and the blips carry the map',
         ('%d adds, %d areas, %d rings'):format(tried, #R.areas(), #R.rings()))
-    R.mm.refuseMethod['UPDATE_OVERLAY_POSITION'] = nil
+    R.mm.refuseMethod['SET_OVERLAY_ALPHA'] = nil
     local rHeld = R.mm.adds
     holdTicks(100)
     ok(R.mm.adds == rHeld and #R.areas() == 0,
@@ -10937,12 +10617,12 @@ do
         ('%d adds'):format(R.mm.adds - rHeld))
     rrec.tStart = R.now - rrec.tWait
     holdTicks(3)
-    local rSlots = R.env.BR.Storm.mapSlots()
-    ok(rSlots and rSlots.tag == 'pivot' and #R.zone() >= 1 and #R.rings() == 0
+    ok(#R.dest() == 1 and #R.zone() == 0 and #R.areas() == 1 and #R.rings() == 0
             and R.errored() == nil,
-        'which the sweep setting off is: the picture is drawn, and the blips go',
-        R.errored() or ('%s, %d areas, %d rings'):format(tostring(rSlots and rSlots.tag),
-            #R.areas(), #R.rings()))
+        'which the sweep setting off is: the picture -- the destination alone -- is drawn, and '
+            .. 'the blips go',
+        R.errored() or ('%d areas, %d zone, %d rings'):format(#R.areas(), #R.zone(),
+            #R.rings()))
 
     -- AND SWITCHING /brstormbisect IS NOT A REFUSAL: back to normal draws the picture at
     -- once, however many times a dev flips it in one hold.

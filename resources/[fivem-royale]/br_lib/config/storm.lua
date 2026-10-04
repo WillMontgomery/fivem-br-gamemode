@@ -149,9 +149,8 @@ BR.Config.Storm = {
     -- the zone still appears at once: the far island is fine as it is. 0 is the old
     -- pop, on the wall and on the map.
     --
-    -- THE MAP DRAWS THE ZONE AS IT STARTS AND AS IT ENDS: drawn when the record arrives
-    -- and redrawn once, grown, as the growth ends -- and above `overlay.morphHz` 0, at
-    -- that rate between, the front and all. 0 ships since the 2026-10-02 hitch.
+    -- THE MAP DOES NOT FOLLOW IT (2026-10-04): it shows the zone as the hold began and
+    -- the destination, whose own fill covers the ground the zone grows into.
     --
     -- MEASURED over 680 conjoined breakouts (200 matches, phases 2 to 7, every one
     -- forced to break out): the destination reaches 1.0 to 1.3 of its own radius
@@ -175,10 +174,11 @@ BR.Config.Storm = {
     -- ONE moving zone. Its outline changes every frame from the zone it leaves to the
     -- destination's, and is the destination's `leadSeconds` before the sweep ends;
     -- from there it is that one outline moved and scaled onto the destination, landing
-    -- on it exactly as the sweep ends. Wall, maps and damage all read it off the solver
-    -- (storm_solve.lua's "one moving zone"). A sweep shorter than twice this -- only
-    -- under a dev time scale, since shrinkPace.minSeconds is 40 -- turns its shape half
-    -- way. 0 is the one-leg morph that finishes turning only as it arrives.
+    -- on it exactly as the sweep ends. The wall and the damage tick read it off the
+    -- solver (storm_solve.lua's "one moving zone"); the maps show only the destination
+    -- while the wall moves (`overlay.sweepFadeSec`). A sweep shorter than twice this
+    -- -- only under a dev time scale, since shrinkPace.minSeconds is 40 -- turns its
+    -- shape half way. 0 is the one-leg morph that finishes turning only as it arrives.
     --
     -- THE SWEEP'S PRICE READS IT: a corner that turns by the knee travels its path in
     -- less than the whole sweep, and server/storm.lua prices the sweep at the length it
@@ -432,12 +432,9 @@ BR.Config.Storm = {
     --
     --   LONG ZONES ARE LONGER THAN THE OLD DIAMETERS -- see point 2 at the top.
     --
-    --   THE MAP DOES NOT REDRAW THE MORPH, since the 2026-10-02 hitch. No map handler
-    --   edits a polygon's points, so while the zone changes shape the map shows the
-    --   outline it set off with, moved with the wall and scaled to fit inside it, and
-    --   once it is the destination's shape (`morph` below) that, moved and scaled
-    --   exactly.
-    --   `overlay.morphHz` has why, and how far off the first is.
+    --   THE MAP DOES NOT SHOW THE MORPH (2026-10-04). The zone fades off both maps as
+    --   a sweep sets off and the destination is left; the 3D wall is the only picture
+    --   of the moving shape. `overlay.sweepFadeSec` has the owner's call.
     --
     --   A UNIT COSTS ABOUT TWO MILLISECONDS TO BUILD -- 1.7 on average, 5 at the
     --   99th percentile, in plain Lua 5.4 -- and is built once per zone per match: the
@@ -932,10 +929,12 @@ BR.Config.Storm = {
         usePostFx       = false,  -- opt in once a name is confirmed in-game
     },
 
-    -- Minimap. Radius blips cannot be resized in place; they must be removed and
-    -- re-added, so we refresh at a rate that reads as smooth without churning.
+    -- Minimap rings, the overlay's fallback. Radius blips cannot be resized in place;
+    -- they must be removed and re-added, so nothing follows the moving wall: the zone's
+    -- ring is drawn once a hold and faded by alpha (in at the end of the phase-1 hold,
+    -- out as a sweep sets off) at refreshHzFading, and otherwise only re-asserted.
     blip = {
-        refreshHzShrinking = 4,
+        refreshHzFading    = 4,
         refreshHzHolding   = 0.5,
         currentColour      = 3,    -- blue
         nextColour         = 27,   -- purple
@@ -997,105 +996,25 @@ BR.Config.Storm = {
         -- for as long as a refusal lasted, it was an add and a removal twice a second.
         rebuildHz = 2,
 
-        -- ═══ HOW OFTEN THE MOVING ZONE IS REDRAWN WHILE ITS OUTLINE CHANGES ═══
+        -- ═══ THE MAP DOES NOT MOVE WHILE THE STORM DOES ═══
         --
-        --   "the game is now hitching every second or so ... the hitching is pretty
-        --    severe"                          -- the owner, 2026-10-02, playing 8335b17
+        --   "when the sweep starts, the old shape fades away and only the new shape is
+        --    left. that means the only indicator of the actual current shape of the
+        --    storm is looking in the 3d world."            -- the owner, 2026-10-04
         --
-        -- And `/brstormbisect mapoff` -- our fill off the map, the blips instead --
-        -- stopped it. Every ADD_AREA_OVERLAY is the call #350 traced, and 8335b17 made
-        -- them on a clock: the staging below through every hold, and a conjoined growth
-        -- redrawn every tick at the 10 this used to be.
+        -- While the storm holds, both maps show the zone (as the hold began) and the
+        -- destination. As a sweep sets off the zone fades out over this many seconds --
+        -- one alpha write a contour on each of the map band's 10 Hz ticks, nothing
+        -- added, removed, moved or resized -- and the destination is all that is left
+        -- until the next record's hold draws it again as the zone. The fallback ring
+        -- fades on the same clock. 0 takes the zone off on the sweep's first tick.
         --
-        -- SO 0 SHIPS, AND THE STAGING BELOW IS OFF. The zone is redrawn only when the
-        -- kind of change does -- the sweep setting off, the knee, a growth ending, a
-        -- breakout's sweep ending -- two or three times a phase, and between those it is
-        -- only placed, resized and faded. tools/test_storm.lua's map.hotfix holds whole
-        -- matches to that, tick by tick.
-        --
-        -- WHAT THE MAP SHOWS DURING A SWEEP, THEN. To the knee, the zone's STARTING
-        -- outline, moved onto the wall's pivot (BR.StormWallPivot) and scaled every tick
-        -- as far as it fits inside the wall, 5 cm to spare (BR.StormShape.fitScale); from
-        -- the knee, the destination's outline in the wall's own frame, which is exact. A
-        -- breakout's wall is shown so, beside its destination at the zone's strength. THE
-        -- 3D WALL STILL MORPHS EVERY FRAME, so to the knee the map shows less safe ground
-        -- than there is, by how far the shape has turned since the sweep set off, and never
-        -- storm as safe. MEASURED over 30 whole matches through the real client at 100 ms
-        -- (the suite's record walk), each first leg: how far the real zone's edge lies
-        -- outside the map's, every fifth tick, meters, mean [worst]. Beside it, the outline
-        -- scaled to the wall's size instead (8bf391e), off both ways -- storm as safe, then
-        -- safe as storm -- and 8335b17's staged outlines (12 matches, either way). A
-        -- pause-map pixel is about 8 m.
-        --
-        --     phase     fitted           sized to the wall           staged
-        --       1    2013 [9145]     907 [3050]   1096 [6096]    5.0 [18.4]
-        --       2     675 [2646]     361 [1244]    350 [1340]    2.6 [9.7]
-        --       3     437 [1293]     312 [802]     217 [692]     2.7 [8.8]
-        --       4     291 [792]      186 [697]     172 [687]     2.7 [8.7]
-        --       5     147 [437]      108 [356]      78 [297]     2.8 [11.8]
-        --       6      66 [214]       48 [157]      36 [137]     2.3 [8.4]
-        --       7      31 [94]        23 [73]       18 [75]      2.4 [11.1]
-        --
-        -- Fitted, no point of the map's outline was outside the wall on any of 58,391 ticks
-        -- after the one it was drawn on, where it is the wall; the fit costs about 11 us a
-        -- tick. A MAP MORPH THAT IS PER FRAME AND HITCH-FREE IS A SEPARATE DESIGN QUESTION,
-        -- and these numbers are not the answer to it.
-        --
-        -- ABOVE 0 the zone is redrawn this many times a second while its outline
-        -- changes -- one REM_OVERLAY and one ADD_AREA_OVERLAY per contour, the
-        -- destination untouched -- and placed on the wall's pivot in between. 10 is every
-        -- tick of the map's own 10 Hz band, the per-frame morph the owner asked for,
-        -- which shipped from ec19f40 to 8335b17. MEASURED over 60 placed sweeps, phases 2
-        -- to 7 at their authored lengths: how far the zone's boundary moves between two
-        -- redraws, in metres, mean [worst].
-        --
-        --     phase     10 Hz        5 Hz         2 Hz
-        --       2      3.3 [4.4]    6.6 [8.8]   16.4 [22.0]    (a breakout)
-        --       3      1.7 [2.7]    3.4 [5.4]    8.5 [13.5]
-        --       4      1.3 [1.8]    2.6 [3.5]    6.6 [8.8]
-        --       5      1.5 [2.9]    3.1 [5.9]    7.7 [14.7]    (a breakout)
-        --       6      0.8 [1.3]    1.6 [2.5]    3.9 [6.3]
-        --       7      0.5 [0.6]    0.9 [1.3]    2.4 [3.1]
-        --
-        -- /brstormbisect mapnomorph is 0 whatever this says, for the A/B against normal.
-        morphHz = 0,
-
-        -- ═══ THE OUTLINES A SWEEP NEEDS, STAGED IN THE HOLD -- OFF ═══
-        --
-        --   "is there any way we can silently stage the textures we need over time to
-        --    be less intrusive and hitchy?"                  -- the owner, 2026-09-28
-        --
-        -- OFF SINCE 2026-10-02, BECAUSE IT WAS THE HITCH. A staged clip is hidden, but
-        -- adding it is still ADD_AREA_OVERLAY: up to maxClips of them through every hold,
-        -- one every everyTicks map ticks, and the frame budget below backs them off no
-        -- further than maxTicks, 1.6 s -- a hitch about every second all through the
-        -- hold. Kept, and held to its tests under explicit config (map.stage,
-        -- map.teardown), for the design that replaces it.
-        --
-        -- With it on, every sweep is shown from a BANK of hidden clips added during the
-        -- hold before it (client/storm.lua's "staging"): the zone's outline at K+1
-        -- instants of the first leg, each placed on the wall's pivot and size as the
-        -- sweep reaches it, swapped by alpha. Not one clip is added or removed while the
-        -- wall moves, and morphHz above is only for a client that joined mid-sweep and a
-        -- conjoined zone growing through its hold.
-        stage = {
-            enabled    = false,
-            -- At most one clip added (or an old one dropped) per this many map ticks:
-            -- 2 is five a second, and a whole phase-1 bank of 200 in 40 s of a hold
-            -- that is at least 60.
-            everyTicks = 2,
-            -- A frame longer than this after a staging slot doubles the spacing of the
-            -- next ones, up to maxTicks; a clean one brings it back a tick at a time.
-            frameMs    = 20,
-            maxTicks   = 16,
-            -- The staged outline shown can differ from the wall by how far the shape
-            -- has changed since its instant. K is chosen per record for this many
-            -- metres at worst by the bank's own estimate -- under a pause-map pixel --
-            -- up to maxClips, and no more than the hold has room to stage. MEASURED in docs/match-math.md: phase 1's
-            -- whole-map disc turning into a zone is the one sweep maxClips binds.
-            targetM    = 5.0,
-            maxClips   = 200,
-        },
+        -- WHAT WENT WITH THE MOVING SHAPE: the zone's outline moved and scaled onto the
+        -- wall every tick (35258d1), redrawn as the sweep set off and at its knee and
+        -- fitted inside the wall before it (8bf391e, 3a66284); `morphHz`, the clock that
+        -- redrew it at up to 10 Hz (ec19f40); and `stage`, the bank of hidden outlines
+        -- added through every hold (8335b17), whose adds were the 2026-10-02 hitch.
+        sweepFadeSec = 1.0,
     },
 }
 

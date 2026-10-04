@@ -22077,15 +22077,18 @@ do
     -- ═══ "the usage of brstormhitch is super confusing to me" (the owner, 2026-09-28) ═══
     --
     -- So the command's default is the summary a non-expert can read: what the storm map
-    -- did while the storm moved, what staging cost, how the frames went, and a verdict.
-    -- The correlation rows -- the hunter's tool -- are `/brstormhitch rows`. The storm's
-    -- own numbers come from BR.Storm.mapStats (client/storm.lua; tools/test_storm.lua's
-    -- map.stage measures them), stood in here so each verdict can be asked for.
+    -- sent the movie while the storm moved, how the frames went, and a verdict. The
+    -- correlation rows -- the hunter's tool -- are `/brstormhitch rows`. The storm's own
+    -- numbers come from BR.Storm.mapStats (client/storm.lua; tools/test_storm.lua's
+    -- map.nomorph measures them), stood in here so each verdict can be asked for.
+    --
+    -- SINCE 2026-10-04 THE MAP ONLY FADES THE OLD ZONE OUT WHILE THE WALL MOVES, so the
+    -- old path -- redraws on a clock, the sweep's start and knee, staged clips -- is gone
+    -- from the summary, and an add or a removal mid-sweep (a picture drawn for a join,
+    -- a refusal or a bisect switch) is the one map suspect left.
     local prevStats = BR.Storm and BR.Storm.mapStats
     BR.Storm = BR.Storm or {}
-    local stats = { sweeps = 3, sweepsStaged = 3, sweepRedraws = 0, staged = 24,
-        stagedFirstAt = 1000, stagedLastAt = 39000, stageWorstMs = 6, dropped = 20,
-        live = 30, cap = 208 }
+    local stats = { sweeps = 3, sweepFades = 30, sweepAdds = 0, sweepRemoves = 0, live = 2 }
     BR.Storm.mapStats = function() return stats end
     local function said(args)
         logged = {}
@@ -22095,43 +22098,29 @@ do
     said({ 'reset' })
     frames(120, 16)
     local out = said({})
-    ok(out:find('storm map: 0 clip rebuilds during sweeps (3 sweeps, 3 shown from staged '
-            .. 'clips), staged 24 clips over 38 s during holds', 1, true) ~= nil
+    ok(out:find('storm map while the storm moved (3 sweeps): 30 fade writes, 0 clips added, '
+            .. '0 removed; 2 of ours in the map now', 1, true) ~= nil
             and out:find('frames: worst', 1, true) ~= nil
-            and out:find('verdict: smooth', 1, true) ~= nil
+            and out:find('verdict: smooth -- no frame over 16.7 ms.', 1, true) ~= nil
             and out:find('/brstormhitch rows', 1, true) ~= nil
-            and out:find('marker correlation', 1, true) == nil,
-        'the default is the plain summary -- rebuilds during sweeps, what staging did, the '
-            .. 'frames, a verdict -- and it points at the rows without printing them', out)
-    stats.sweepRedraws = 12
-    out = said({ 'report' })
-    ok(out:find('verdict: the map redrew its zone 12 times while the storm moved', 1, true)
-            ~= nil, 'a sweep redrawn the old way is named as the suspect in plain words', out)
+            and out:find('marker correlation', 1, true) == nil
+            and out:find('stag', 1, true) == nil and out:find('knee', 1, true) == nil,
+        'the default is the plain summary -- what reached the movie while the storm moved, '
+            .. 'the frames, a verdict -- with no word of the staging or the knee redraws '
+            .. 'that went with the moving map, and it points at the rows without printing them',
+        out)
 
-    -- ═══ THE REDRAWS EVERY SWEEP MAKES ARE NOT THE SUSPECT (2026-10-02) ═══
-    --
-    -- Since the hitch fix each sweep redraws its zone as it sets off and at its knee
-    -- (`sweepEvents`). Counted as the old path, every clean match read as a suspect.
-    stats.sweepsStaged, stats.staged, stats.sweepRedraws, stats.sweepEvents = 0, 0, 4, 4
-    said({ 'reset' })
-    frames(120, 16)
-    out = said({})
-    ok(out:find('storm map: 4 clip rebuilds during sweeps', 1, true) ~= nil
-            and out:find('verdict: smooth -- no map work while the storm moved but the '
-                .. 'redraws as it set off and at its knee, and no frame over 16.7 ms.', 1, true)
-                ~= nil,
-        'a clean sweep\'s redraws at its start and knee still read as smooth', out)
-    stats.sweepRedraws = 12
-    out = said({})
-    ok(out:find('verdict: the map redrew its zone 8 times while the storm moved', 1, true)
-            ~= nil, 'and only the redraws beyond those are named as the old path', out)
-    stats.sweepRedraws = 4
     frames(10, 40)
     out = said({})
-    ok(out:find('verdict: the long frames were not the storm map\'s staging or old-path '
-            .. 'redraws', 1, true) ~= nil,
-        'long frames beside only those redraws do not clear the map of them', out)
-    stats.sweepEvents = nil
+    ok(out:find('verdict: the long frames were not the storm map\'s -- while the storm moved '
+            .. 'it only faded the old zone out.', 1, true) ~= nil,
+        'long frames beside nothing but the fade do not blame the map', out)
+    stats.sweepAdds, stats.sweepRemoves = 2, 3
+    out = said({})
+    ok(out:find('verdict: some long frames may be the 5 clips the map added or removed while '
+            .. 'the storm moved', 1, true) ~= nil,
+        'a picture drawn mid-sweep is named as the map\'s one suspect, in plain words', out)
+
     local rows = said({ 'rows' })
     ok(rows:find('marker correlation', 1, true) ~= nil
             and rows:find('verdict:', 1, true) == nil,

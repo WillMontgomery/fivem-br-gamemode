@@ -707,9 +707,8 @@ end
 --- answer -- and the wall is BR.StormWall at that `t`: the destination's shape by the
 --- knee, `morph.leadSeconds` before the end, and the destination itself at the end.
 --- So the next record's hold starts from zone p again, at the same circle, in the
---- same shape: no snap, because there is nothing left to change. The wall, the HUD,
---- the map and the damage tick all pass the `t` they solved, and they agree to the
---- bit.
+--- same shape: no snap, because there is nothing left to change. The wall, the HUD
+--- and the damage tick all pass the `t` they solved, and they agree to the bit.
 ---
 --- THE CIRCLE IS IMPLIED BY `t`. Every disc of the wall is on its own path between
 --- the two placed zones, so `(cx, cy, r)` adds nothing the record and `t` do not
@@ -751,10 +750,10 @@ end
 --- finder refuses -- is the whole union too, for the same reason. The wall and the
 --- damage tick both come through here, so even then they agree.
 ---
---- THE MAP DRAWS THIS ZONE TOO: client/storm.lua's storm.map draws a hold and a
---- conjoined growth from this function, and a sweep from the wall's outline placed on
---- BR.StormWallPivot or BR.StormWallFrame -- config/storm.lua's `overlay` has how
---- often each is redrawn, which since the 2026-10-02 hitch is only at a change of kind.
+--- THE MAP DRAWS THIS ZONE AS A HOLD BEGINS -- `t` 0 and `g` 0, beside the
+--- destination -- and fades it off as the sweep sets off: since 2026-10-04 the maps show
+--- nothing that moves, and the 3D wall is the only picture of the zone in motion
+--- (client/storm.lua's storm.map, config/storm.lua's `overlay.sweepFadeSec`).
 ---
 --- @param rec table|nil    the published storm record
 --- @param cx number        the CURRENT centre, as BR.StormAt reports it
@@ -794,45 +793,35 @@ function BR.StormZone(rec, cx, cy, r, t, g, pool)
     return BR.StormShape.blobUnion(wall, target)
 end
 
---- WHEN THE SAFE ZONE IS ONE FIXED OUTLINE MOVED AND SCALED, and how: the frame it
---- stands in at sweep fraction `t`. nil while its shape is still changing.
+--- WHEN THE WALL IS ONE FIXED OUTLINE MOVED AND SCALED, and how: the frame it stands
+--- in at sweep fraction `t`. nil while its shape is still changing.
 ---
---- The map cannot edit a polygon's points -- MINIMAP_LOADER.gfx has no handler that
---- does, only ones that move, scale, turn and fade a clip (client/mapoverlay.lua) --
---- so a changing outline is a redraw, and a redraw is the costly call #350 measured.
---- What it CAN do cheaply is place a polygon it already has, and this says when that
---- is exact: the zone at `t` is the zone at any other `t'` of the same frame moved by
---- (x - x') and scaled by s / s' about the frame's point.
+--- The wall at `t` is the wall at any other `t'` of the same frame moved by (x - x')
+--- and scaled by s / s' about the frame's point:
 ---
 ---   the second leg of a nested sweep   the destination's shape, standing in `mid`'s
 ---                                      frame at the knee and in its own at the end
 ---   the last zone onto its point       its own shape, shrinking about the point
----   a finished sweep                   the destination, standing still
 ---
---- A BREAKOUT'S ZONE IS THE WALL UNION THE DESTINATION, which is no one outline under
---- any frame while the wall moves, so it has none until the sweep is over. `id` names
---- the family, so a caller can tell a frame it can keep placing from a new one.
+--- It is the knee's own claim -- from the knee the wall IS the destination's outline --
+--- in a form a test can hold the wall to (tools/test_shared.lua's storm.knee). The map
+--- used to place its outline by it; since 2026-10-04 the maps show nothing that moves,
+--- and the suite is what reads it. A BREAKOUT'S ZONE IS THE WALL UNION THE
+--- DESTINATION, which is no one outline under any frame while the wall moves, so it has
+--- none. `id` names the family.
 --- @param rec table
 --- @param t number
 --- @return number|nil x, number y, number s, string id
-function BR.StormWallFrame(rec, t, wallOnly)
+function BR.StormWallFrame(rec, t)
     local e = rec and infoOf(rec)
-    if not e then return nil end
+    if not e or not e.nested then return nil end
     t = BR.Clamp(t or 0.0, 0.0, 1.0)
     local r1 = rec.r1 or 0.0
     if r1 <= 0.0 then
-        -- A WALL SHRINKING ONTO A POINT IS ITS OWN OUTLINE SCALED ABOUT IT, nested or
-        -- not: every disc heads straight for the point. A breakout's zone is that wall
-        -- union the one-metre point, which `wallOnly` leaves out.
-        if not e.nested and not wallOnly then return nil end
+        -- A WALL SHRINKING ONTO A POINT IS ITS OWN OUTLINE SCALED ABOUT IT: every disc
+        -- heads straight for the point.
         return rec.cx1, rec.cy1, 1.0 - t, 'point'
     end
-    if t >= 1.0 and not e.nested then return rec.cx1, rec.cy1, r1, 'end' end
-    -- `wallOnly`: THE MOVING WALL'S OWN FRAME ON A BREAKOUT TOO. The safe zone there is
-    -- the wall union the destination, which has no frame; the wall itself, from the
-    -- knee, is the destination's outline on the solver's circle, and the map places it
-    -- beside a destination drawn at the zone's strength (client/storm.lua's staging).
-    if not e.nested and not (wallOnly and e.knee) then return nil end
     if e.knee then
         if t < e.knee then return nil end
         local u = (t - e.knee) / (1.0 - e.knee)
@@ -841,38 +830,6 @@ function BR.StormWallFrame(rec, t, wallOnly)
     end
     if t >= 1.0 then return rec.cx1, rec.cy1, r1, 'leg2' end
     return nil
-end
-
---- WHERE THE MOVING WALL STANDS AT `t`, AS A POINT AND A SIZE: the mean of its moving
---- corner centres, and the radius of a disc of its area. Cheap -- a hull of a dozen
---- discs, no boundary walk -- and exact for the wall the damage tick bills.
----
---- The map's outlines of the wall are placed by it (client/storm.lua) -- the one drawn as
---- the sweep set off, or a staged one: an outline of the wall at t_j, drawn about its
---- own pivot at its own size, moved to the pivot at t and scaled by the ratio of the
---- sizes, stands on the wall at t to within how much the shape itself changed between
---- the two -- which is what the staging's spacing is chosen by. The one drawn as the
---- sweep set off is scaled instead as far as it fits inside the wall (2026-10-02), by
---- the wall's corner list at t, which is the fourth answer. nil for a record with no
---- shape at all.
---- @param rec table
---- @param t number
---- @return number|nil x, number y, number size, table ks
-function BR.StormWallPivot(rec, t)
-    local e = rec and infoOf(rec)
-    if not e or #e.src == 0 then return nil end
-    t = BR.Clamp(t or 0.0, 0.0, 1.0)
-    local from, to, u = legOf(e, t)
-    local s = 1.0 - u
-    local x, y = 0.0, 0.0
-    for i = 1, #from do
-        x = x + s * from[i].x + u * to[i].x
-        y = y + s * from[i].y + u * to[i].y
-    end
-    x, y = x / #from, y / #from
-    local ks = (t <= 0.0 and BR.StormShape.discHull(e.src)) or hullAt(e, t)
-    local area = ks and BR.StormShape.areaOf(ks) or 0.0
-    return x, y, math.sqrt(math.max(area, 0.0) / math.pi), ks
 end
 
 --- The fastest any corner of the wall moves during this record's sweep, in metres
