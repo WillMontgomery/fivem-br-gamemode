@@ -484,7 +484,7 @@ local function finishEdit(confirm)
     if confirm then
         say(('#%d confirmed'):format(e.id))
     else
-        say(('#%d edit cancelled; put back where it was'):format(e.id))
+        say(('#%d edit canceled; put back where it was'):format(e.id))
     end
 end
 

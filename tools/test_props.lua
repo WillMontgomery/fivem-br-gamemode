@@ -1954,7 +1954,7 @@ do
     eq(#sentOf(BR.Net.PROP_MOVE), streamed, 'and streams nothing more')
     frames(3, 16)
     ok(o.x == start.x and o.z == start.z and o.yaw == start.yaw, 'and the copy is back at once')
-    ok(saidLike('edit cancelled') ~= nil, 'F8 says so')
+    ok(saidLike('edit canceled') ~= nil, 'F8 says so')
 end
 
 describe('client: a key held when the edit began does nothing until let go')
